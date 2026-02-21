@@ -254,13 +254,19 @@ def nightly_content_generation():
                     item.generated_at = datetime.now(timezone.utc)
                     item.status = ContentStatus.DRAFT
 
-                    # Imagen 3 이미지 생성
-                    image_url, image_prompt = await generate_image(item.content_type, hospital.slug)
-                    item.image_url = image_url
-                    item.image_prompt = image_prompt
-
+                    # 텍스트 콘텐츠 먼저 커밋 (이미지 실패가 텍스트를 롤백하지 않도록)
                     await db.commit()
                     logger.info(f"Content generated: {hospital.name} — {item.title}")
+
+                    # Imagen 3 이미지 생성 (실패해도 텍스트는 유지)
+                    try:
+                        image_url, image_prompt = await generate_image(item.content_type, hospital.slug)
+                        item.image_url = image_url
+                        item.image_prompt = image_prompt
+                        await db.commit()
+                    except Exception as img_e:
+                        logger.warning(f"Image generation failed for {item.id} (text saved): {img_e}")
+                        await db.rollback()
 
                 except Exception as e:
                     logger.error(f"Content generation failed for {item.id}: {e}")
