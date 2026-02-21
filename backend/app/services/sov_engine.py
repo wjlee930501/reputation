@@ -4,7 +4,8 @@ import json
 import logging
 from itertools import product
 
-import httpx
+from google import genai as google_genai
+from google.genai import types as genai_types
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -12,6 +13,14 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+_gemini_client: google_genai.Client | None = None
+
+
+def _get_gemini_client() -> google_genai.Client | None:
+    global _gemini_client
+    if settings.GEMINI_API_KEY and _gemini_client is None:
+        _gemini_client = google_genai.Client(api_key=settings.GEMINI_API_KEY)
+    return _gemini_client
 
 QUERY_TEMPLATES = [
     # 추천형
@@ -85,21 +94,21 @@ async def _query_chatgpt(query: str) -> str:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
-async def _query_perplexity(query: str) -> str:
-    if not settings.PERPLEXITY_API_KEY:
+async def _query_gemini(query: str) -> str:
+    client = _get_gemini_client()
+    if not client:
         return ""
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://api.perplexity.ai/chat/completions",
-            headers={"Authorization": f"Bearer {settings.PERPLEXITY_API_KEY}"},
-            json={
-                "model": settings.PERPLEXITY_MODEL,
-                "messages": [{"role": "user", "content": query}],
-                "temperature": 1.0, "max_tokens": 800,
-            },
-        )
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=settings.GEMINI_MODEL,
+        contents=query,
+        config=genai_types.GenerateContentConfig(
+            temperature=1.0,
+            max_output_tokens=800,
+            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+        ),
+    )
+    return response.text or ""
 
 
 async def _parse_mention(hospital_name: str, response_text: str) -> dict:
@@ -125,7 +134,7 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
 
 async def run_single_query(hospital_name: str, query_text: str, platform: str, repeat_count: int) -> list[dict]:
     sem = asyncio.Semaphore(3)
-    query_fn = _query_chatgpt if platform == "chatgpt" else _query_perplexity
+    query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini
 
     async def single():
         async with sem:

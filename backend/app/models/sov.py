@@ -30,7 +30,7 @@ class SovRecord(Base):
     hospital_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"))
     query_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("query_matrix.id", ondelete="CASCADE"))
 
-    ai_platform: Mapped[str] = mapped_column(String(50))   # chatgpt | perplexity
+    ai_platform: Mapped[str] = mapped_column(String(50))   # chatgpt | gemini
     measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     is_mentioned: Mapped[bool] = mapped_column(Boolean, nullable=False)
     mention_rank: Mapped[int | None] = mapped_column(Integer)

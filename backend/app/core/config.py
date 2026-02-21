@@ -30,9 +30,9 @@ class Settings(BaseSettings):
     OPENAI_MODEL_QUERY: str = "gpt-4o"
     OPENAI_MODEL_PARSE: str = "gpt-4o-mini"
 
-    # Perplexity — SoV
-    PERPLEXITY_API_KEY: str = ""
-    PERPLEXITY_MODEL: str = "sonar"
+    # Gemini — SoV
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-flash-latest"
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""

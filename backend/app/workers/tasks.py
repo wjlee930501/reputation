@@ -320,8 +320,8 @@ def run_sov_for_hospital(self, hospital_id: str):
             queries = result.scalars().all()
 
             platforms = ["chatgpt"]
-            if settings.PERPLEXITY_API_KEY:
-                platforms.append("perplexity")
+            if settings.GEMINI_API_KEY:
+                platforms.append("gemini")
 
             records = []
             for q in queries:

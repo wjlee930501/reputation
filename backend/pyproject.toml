@@ -25,6 +25,7 @@ dependencies = [
     # AI — SoV 측정
     "openai>=1.55.0",
     "httpx>=0.28.0",
+    "google-genai>=1.0.0",
 
     # AI — 이미지 생성
     "google-cloud-aiplatform>=1.70.0",
