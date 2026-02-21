@@ -20,6 +20,9 @@ QUERY_TEMPLATES = [
     "{region} {specialty} 전문의 추천",
     "{keyword} 수술 {region} 어느 병원이 좋아?",
     "{region} {keyword} 치료 잘하는 병원",
+    "{keyword} 증상 {region}에서 치료 잘하는 곳",
+    "{region} {specialty} 병원 어디가 좋은지 비교해줘",
+    "{keyword} 치료 비용이 얼마나 드는지 알려줘",
 ]
 
 PARSE_PROMPT = """\
@@ -77,7 +80,7 @@ async def _query_perplexity(query: str) -> str:
             "https://api.perplexity.ai/chat/completions",
             headers={"Authorization": f"Bearer {settings.PERPLEXITY_API_KEY}"},
             json={
-                "model": "llama-3.1-sonar-large-128k-online",
+                "model": settings.PERPLEXITY_MODEL,
                 "messages": [{"role": "user", "content": query}],
                 "temperature": 1.0, "max_tokens": 800,
             },

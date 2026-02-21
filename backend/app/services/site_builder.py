@@ -1,4 +1,8 @@
 """
+LEGACY / FALLBACK: 이 빌더는 Next.js /site 앱이 서빙하지 못하는 경우의 폴백 HTML을 생성합니다.
+프로덕션 AEO 사이트는 /site (Next.js App Router, Vercel 배포)가 담당합니다.
+site_builder.py는 컨테이너 내 임시 파일(/tmp)을 생성하므로 컨테이너 재시작 시 초기화됩니다.
+
 AEO 홈페이지 빌더
 - 병원 프로파일 기반으로 정적 HTML 사이트 자동 생성
 - Schema.org MedicalClinic 마크업 포함
@@ -17,6 +21,7 @@ from app.models.hospital import Hospital
 
 logger = logging.getLogger(__name__)
 
+# TODO(BUG-02): /tmp is ephemeral in Cloud Run. Migrate to GCS for production persistence.
 SITE_BUILD_DIR = Path("/tmp/sites")
 
 # ── Jinja2 템플릿 ─────────────────────────────────────────────────

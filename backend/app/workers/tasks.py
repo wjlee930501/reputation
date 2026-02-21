@@ -16,6 +16,7 @@ from itertools import product
 
 import arrow
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -222,9 +223,9 @@ def nightly_content_generation():
             # TODO: 병원 수 증가 시 페이징(offset 기반) 처리 필요
             stmt = select(ContentItem).where(
                 ContentItem.scheduled_date == tomorrow,
-                ContentItem.status == ContentStatus.DRAFT,
+                ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
                 ContentItem.body.is_(None),  # 아직 생성 안 됨
-            ).limit(50)
+            ).options(selectinload(ContentItem.hospital)).limit(50)
             result = await db.execute(stmt)
             items = result.scalars().all()
 
@@ -233,7 +234,6 @@ def nightly_content_generation():
                 return
 
             for item in items:
-                await db.refresh(item, ["hospital"])
                 hospital = item.hospital
 
                 try:
@@ -252,6 +252,7 @@ def nightly_content_generation():
                     item.body = content_data["body"]
                     item.meta_description = content_data.get("meta_description")
                     item.generated_at = datetime.now(timezone.utc)
+                    item.status = ContentStatus.DRAFT
 
                     # Imagen 3 이미지 생성
                     image_url, image_prompt = await generate_image(item.content_type, hospital.slug)
@@ -282,12 +283,11 @@ def morning_content_notification():
                 ContentItem.scheduled_date == today,
                 ContentItem.status == ContentStatus.DRAFT,
                 ContentItem.body.isnot(None),
-            )
+            ).options(selectinload(ContentItem.hospital))
             result = await db.execute(stmt)
             items = result.scalars().all()
 
             for item in items:
-                await db.refresh(item, ["hospital"])
                 admin_url = f"{settings.ADMIN_BASE_URL}/hospitals/{item.hospital_id}/content/{item.id}"
                 await notifier.notify_content_draft_ready(
                     hospital_name=item.hospital.name,
@@ -315,7 +315,7 @@ def run_sov_for_hospital(self, hospital_id: str):
             stmt = select(QueryMatrix).where(
                 QueryMatrix.hospital_id == hospital.id,
                 QueryMatrix.is_active == True,
-            )
+            ).limit(10)
             result = await db.execute(stmt)
             queries = result.scalars().all()
 

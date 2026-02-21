@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     # Perplexity — SoV
     PERPLEXITY_API_KEY: str = ""
+    PERPLEXITY_MODEL: str = "sonar"
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""
