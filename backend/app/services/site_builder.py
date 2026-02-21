@@ -291,6 +291,35 @@ def build_content_page(hospital: Hospital, content: dict) -> str:
     title_escaped = escape(content.get("title", ""))
     meta_escaped = escape(content.get("meta_description", ""))
     hospital_name_escaped = escape(hospital.name)
+    director_name_escaped = escape(hospital.director_name or "")
+
+    # E-E-A-T: 발행일 + 원장 크레딧 (AI 인용률 직결)
+    published_at = content.get("published_at") or content.get("scheduled_date", "")
+    try:
+        from datetime import datetime
+        pub_date = datetime.fromisoformat(published_at).strftime("%Y년 %m월 %d일") if published_at else ""
+    except (ValueError, TypeError):
+        pub_date = str(published_at)
+
+    author_line = ""
+    if director_name_escaped or pub_date:
+        author_line = (
+            f'<p class="meta">'
+            f'{"✍️ " + str(director_name_escaped) + " 원장 " if director_name_escaped else ""}'
+            f'{"· " + pub_date if pub_date else ""}'
+            f'</p>'
+        )
+
+    # Schema.org Article — E-E-A-T structured data
+    article_schema = json.dumps({
+        "@context": "https://schema.org",
+        "@type": "Article",
+        "headline": str(title_escaped),
+        "author": {"@type": "Physician", "name": str(director_name_escaped)},
+        "publisher": {"@type": "MedicalClinic", "name": str(hospital_name_escaped)},
+        "datePublished": published_at,
+        "description": str(meta_escaped),
+    }, ensure_ascii=False)
 
     image_tag = ""
     if content.get("image_url"):
@@ -303,15 +332,18 @@ def build_content_page(hospital: Hospital, content: dict) -> str:
 <meta charset="UTF-8">
 <title>{title_escaped} — {hospital_name_escaped}</title>
 <meta name="description" content="{meta_escaped}">
+<script type="application/ld+json">{article_schema}</script>
 <style>
   body{{font-family:'Malgun Gothic',sans-serif;max-width:800px;margin:0 auto;padding:40px 20px;color:#2d2d2d;}}
-  h1{{color:#1A4B8C;margin-bottom:20px;}}
+  h1{{color:#1A4B8C;margin-bottom:12px;}}
+  .meta{{color:#888;font-size:0.9em;margin-bottom:20px;}}
   .body-content h2{{color:#1A4B8C;margin:20px 0 10px;}}
   .body-content p{{line-height:1.8;margin-bottom:12px;}}
 </style>
 </head>
 <body>
 <h1>{title_escaped}</h1>
+{author_line}
 {image_tag}
 <div class="body-content">{body_html}</div>
 </body>

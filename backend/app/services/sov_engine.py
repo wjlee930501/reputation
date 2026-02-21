@@ -14,15 +14,28 @@ logger = logging.getLogger(__name__)
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 QUERY_TEMPLATES = [
+    # 추천형
     "{region} {keyword} 잘 보는 병원 추천해줘",
     "{region} {specialty} 어디가 좋아",
     "{sub_region} {keyword} 잘하는 곳",
     "{region} {specialty} 전문의 추천",
     "{keyword} 수술 {region} 어느 병원이 좋아?",
     "{region} {keyword} 치료 잘하는 병원",
+    # 증상·탐색형
     "{keyword} 증상 {region}에서 치료 잘하는 곳",
+    "{keyword} 있는데 {region} 어느 병원 가야 해?",
+    "{keyword} 초기 증상이 뭔지 알려줘",
+    "{keyword} 치료하려면 어떤 전문의한테 가야 해?",
+    "{region} {keyword} 빨리 낫는 병원",
+    # 비교형
     "{region} {specialty} 병원 어디가 좋은지 비교해줘",
+    "{region} {keyword} 병원 후기 좋은 곳",
+    "{sub_region} {specialty} 잘한다고 소문난 병원",
+    # 비용·정보형
     "{keyword} 치료 비용이 얼마나 드는지 알려줘",
+    "{keyword} 수술 후 회복 기간 얼마나 돼?",
+    "{keyword} 비수술 치료 가능한 병원 {region}",
+    "{region} {specialty} 비용 어느 정도야?",
 ]
 
 PARSE_PROMPT = """\
