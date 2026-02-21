@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.venv
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+*.log
+
+# Node
+node_modules/
+.next/
+out/
+*.local
+
+# Build artifacts
+/tmp/sites/
+/tmp/reports/
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
+
+# OMC state
+.omc/
+
+# Secrets
+*.pem
+*.key
+service-account.json
+google-credentials.json

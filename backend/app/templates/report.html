@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 18mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; font-size: 11pt; color: #2d2d2d; }
+
+  .cover { background: #1A4B8C; color: white; padding: 36px; border-radius: 4px; margin-bottom: 28px; }
+  .cover .badge { font-size: 9pt; background: rgba(255,255,255,0.2); display: inline-block; padding: 4px 10px; border-radius: 20px; margin-bottom: 10px; }
+  .cover h1 { font-size: 26pt; font-weight: bold; }
+  .cover .meta { font-size: 9.5pt; color: #B8D0F0; margin-top: 14px; }
+
+  h2 { font-size: 14pt; color: #1A4B8C; border-bottom: 2px solid #1A4B8C; padding-bottom: 5px; margin: 22px 0 12px; }
+
+  .kpi-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 14px 0; }
+  .kpi { background: #E8F0FB; border-radius: 6px; padding: 16px; text-align: center; }
+  .kpi .val { font-size: 26pt; font-weight: bold; color: #1A4B8C; }
+  .kpi .lbl { font-size: 9pt; color: #666; margin-top: 4px; }
+
+  .note { font-size: 9pt; color: #888; margin-top: 8px; }
+  .highlight { background: #fff8e1; border-left: 4px solid #f5a623; padding: 12px 16px; border-radius: 4px; margin: 14px 0; font-size: 10.5pt; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 10pt; margin: 10px 0; }
+  th { background: #1A4B8C; color: white; padding: 7px 10px; text-align: left; }
+  td { padding: 6px 10px; border-bottom: 1px solid #e0e0e0; }
+  tr:nth-child(even) td { background: #F5F6FA; }
+
+  .footer { margin-top: 36px; border-top: 1px solid #ddd; padding-top: 10px; font-size: 8.5pt; color: #aaa; text-align: center; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="badge">{% if report_type == 'V0' %}V0 AI 검색 진단 리포트{% else %}월간 SoV 리포트{% endif %}</div>
+  <h1>{{ hospital.name }}</h1>
+  <div class="meta">
+    분석 기간: {{ period_start.strftime('%Y년 %m월 %d일') }} ~ {{ period_end.strftime('%Y년 %m월 %d일') }}<br>
+    생성일: {{ generated_at.strftime('%Y-%m-%d') }} | MotionLabs Re:putation
+  </div>
+</div>
+
+{% if report_type == 'V0' %}
+<div class="highlight">
+  이 리포트는 서비스 시작 전 현재 AI 검색 노출 현황을 진단한 <strong>베이스라인 리포트</strong>입니다.
+  향후 월간 리포트와 비교하여 개선 효과를 측정합니다.
+</div>
+{% endif %}
+
+<h2>📊 AI 검색 노출 현황 (SoV)</h2>
+<div class="kpi-grid">
+  <div class="kpi">
+    <div class="val">{{ "%.1f"|format(sov_pct) }}%</div>
+    <div class="lbl">통합 SoV</div>
+  </div>
+  <div class="kpi">
+    <div class="val">{{ hospital.region|join(' ') }}</div>
+    <div class="lbl">분석 지역</div>
+  </div>
+  <div class="kpi">
+    <div class="val">{{ hospital.specialties|join(', ') }}</div>
+    <div class="lbl">분석 진료과</div>
+  </div>
+</div>
+<p class="note">※ 각 검색 쿼리를 10회 반복 발송하여 통계적으로 측정한 수치입니다.</p>
+
+{% if report_type == 'MONTHLY' %}
+<h2>📝 이번 달 콘텐츠 발행 현황</h2>
+<div class="kpi-grid">
+  <div class="kpi">
+    <div class="val">{{ published_count }}</div>
+    <div class="lbl">발행 완료 콘텐츠</div>
+  </div>
+  <div class="kpi">
+    <div class="val">{{ hospital.plan }}</div>
+    <div class="lbl">요금제</div>
+  </div>
+</div>
+{% endif %}
+
+<h2>💡 개선 방향</h2>
+<table>
+  <tr><th>우선순위</th><th>항목</th><th>기대 효과</th></tr>
+  {% if sov_pct < 20 %}
+  <tr><td>🔴 높음</td><td>AEO 콘텐츠 집중 발행 (FAQ·질환 가이드)</td><td>AI 인용 가능성 증가</td></tr>
+  <tr><td>🔴 높음</td><td>리뷰 수집 캠페인 실행</td><td>로컬 신뢰도 향상</td></tr>
+  {% elif sov_pct < 50 %}
+  <tr><td>🟡 중간</td><td>지역 특화 키워드 콘텐츠 강화</td><td>SoV 점진적 개선</td></tr>
+  {% else %}
+  <tr><td>🟢 유지</td><td>콘텐츠 정기 업데이트 유지</td><td>현재 노출 수준 유지</td></tr>
+  {% endif %}
+</table>
+
+<div class="footer">
+  본 리포트는 MotionLabs Re:putation 시스템이 자동 생성하였습니다.<br>
+  AI 검색 결과는 알고리즘 특성상 매회 상이할 수 있으며, 본 수치는 통계적 평균값입니다.<br>
+  문의: contact@motionlabs.co.kr
+</div>
+</body>
+</html>
