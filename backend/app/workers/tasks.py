@@ -355,6 +355,85 @@ def run_sov_for_hospital(self, hospital_id: str):
         raise self.retry(exc=exc, countdown=300)
 
 
+# ══════════════════════════════════════════════════════════════════
+# 다음 달 콘텐츠 슬롯 자동 생성 (매월 25일 00:00)
+# ══════════════════════════════════════════════════════════════════
+@celery_app.task(name="app.workers.tasks.monthly_slot_generation")
+def monthly_slot_generation():
+    """매월 25일: 다음 달 콘텐츠 슬롯을 미리 생성"""
+    async def _run_inner():
+        today = arrow.now("Asia/Seoul")
+        if today.day != 25:
+            logger.info(f"Not the 25th ({today.date()}), skipping monthly slot generation")
+            return
+
+        next_month = today.shift(months=1).floor("month")
+        next_month_start = next_month.date()
+        next_month_end = next_month.ceil("month").date()
+
+        async with AsyncSessionLocal() as db:
+            stmt = (
+                select(ContentSchedule)
+                .where(ContentSchedule.is_active == True)
+                .options(selectinload(ContentSchedule.hospital))
+            )
+            result = await db.execute(stmt)
+            schedules = result.scalars().all()
+
+            created_count = 0
+            for schedule in schedules:
+                hospital = schedule.hospital
+                if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
+                    continue
+
+                # 이미 다음 달 슬롯이 있으면 스킵
+                existing = await db.execute(
+                    select(ContentItem.id).where(
+                        ContentItem.hospital_id == hospital.id,
+                        ContentItem.scheduled_date >= next_month_start,
+                        ContentItem.scheduled_date <= next_month_end,
+                    ).limit(1)
+                )
+                if existing.scalar():
+                    continue
+
+                # 슬롯 생성 (content.py의 _generate_monthly_slots 동일 로직)
+                distribution = PLAN_DISTRIBUTION.get(schedule.plan, {})
+                type_sequence: list = []
+                for ctype, count in distribution.items():
+                    type_sequence.extend([ctype] * count)
+                total = len(type_sequence)
+
+                dates = []
+                day = next_month.floor("month")
+                end = next_month.ceil("month")
+                while day <= end:
+                    if day.weekday() in schedule.publish_days:
+                        dates.append(day.date())
+                    day = day.shift(days=1)
+
+                for i, (pub_date, ctype) in enumerate(zip(dates, type_sequence)):
+                    db.add(ContentItem(
+                        hospital_id=hospital.id,
+                        schedule_id=schedule.id,
+                        content_type=ctype,
+                        sequence_no=i + 1,
+                        total_count=total,
+                        scheduled_date=pub_date,
+                        status=ContentStatus.DRAFT,
+                    ))
+                created_count += 1
+                logger.info(
+                    f"Next month slots created: {hospital.name} "
+                    f"{next_month.format('YYYY-MM')} ({len(dates)} slots)"
+                )
+
+            await db.commit()
+            logger.info(f"monthly_slot_generation done: {created_count} hospitals processed")
+
+    _run(_run_inner())
+
+
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
 def run_weekly_monitoring():
     async def _run_inner():

@@ -4,8 +4,10 @@ GET /admin/hospitals/{hospital_id}/reports              — 리포트 목록 (�
 GET /admin/hospitals/{hospital_id}/reports/{report_id}  — 리포트 상세
 """
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +42,29 @@ async def get_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: AsyncSess
     if not r or r.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Report not found")
     return _serialize(r, full=True)
+
+
+@router.get("/{hospital_id}/reports/{report_id}/download")
+async def download_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """PDF 파일 다운로드"""
+    await _get_hospital_or_404(db, hospital_id)
+
+    r = await db.get(MonthlyReport, report_id)
+    if not r or r.hospital_id != hospital_id:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    pdf_path = Path(r.pdf_path)
+    if not pdf_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="PDF 파일을 찾을 수 없습니다. 컨테이너 재시작으로 삭제되었을 수 있습니다. 리포트를 다시 생성해 주세요.",
+        )
+
+    return FileResponse(
+        path=str(pdf_path),
+        media_type="application/pdf",
+        filename=pdf_path.name,
+    )
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────

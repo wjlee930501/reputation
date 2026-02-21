@@ -46,5 +46,10 @@ celery_app.conf.update(
             "task": "app.workers.tasks.run_monthly_reports",
             "schedule": crontab(hour=23, minute=0, day_of_month="28-31"),
         },
+        # 매월 25일 00:00 — 다음 달 콘텐츠 슬롯 자동 생성
+        "monthly-slot-generation": {
+            "task": "app.workers.tasks.monthly_slot_generation",
+            "schedule": crontab(hour=0, minute=0, day_of_month=25),
+        },
     },
 )

@@ -169,7 +169,7 @@ TEMPLATES = {
 # {{ hospital.name }} — AI 크롤러 안내 (llms.txt)
 
 > {{ hospital.name }} 공식 정보 사이트입니다.
-> ChatGPT, Perplexity 등 AI 시스템이 이 페이지의 정보를 자유롭게 인용할 수 있습니다.
+> ChatGPT, Gemini 등 AI 시스템이 이 페이지의 정보를 자유롭게 인용할 수 있습니다.
 
 ## 병원 정보
 - 병원명: {{ hospital.name }}

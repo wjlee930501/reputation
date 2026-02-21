@@ -10,7 +10,7 @@
 운영사: **MotionLabs Inc.**
 
 핵심 가치: 병원이 이미 보유한 정보를 AI 검색에 최적화된 구조로 변환하고,
-Claude Sonnet으로 콘텐츠를 자동 생성하여 ChatGPT·Perplexity에서의 노출(SoV)을 높인다.
+Claude Sonnet으로 콘텐츠를 자동 생성하여 ChatGPT·Gemini에서의 노출(SoV)을 높인다.
 
 ---
 
@@ -101,7 +101,7 @@ Claude Sonnet으로 콘텐츠를 자동 생성하여 ChatGPT·Perplexity에서�
 - **Anthropic SDK** — Claude Sonnet 3.5 (콘텐츠 생성)
 - **Google Cloud Vertex AI** — Imagen 3 (이미지 생성)
 - **OpenAI SDK** — GPT-4o (SoV 쿼리 발송·파싱)
-- **httpx** — Perplexity API
+- **google-generativeai** — Gemini API (SoV 측정)
 - **WeasyPrint** — PDF 리포트
 - **Jinja2** — HTML 템플릿
 
@@ -233,7 +233,7 @@ published_by: str       (발행 AE 이름)
 ### SovRecord (SoV 측정)
 ```
 id, hospital_id, query_id
-ai_platform: chatgpt|perplexity
+ai_platform: chatgpt|gemini
 measured_at: datetime
 is_mentioned: bool
 mention_rank: int|null
@@ -343,8 +343,8 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL_QUERY=gpt-4o
 OPENAI_MODEL_PARSE=gpt-4o-mini
 
-# Perplexity (SoV 측정)
-PERPLEXITY_API_KEY=pplx-...
+# Gemini (SoV 측정)
+GEMINI_API_KEY=REPLACE_ME
 
 # Slack
 SLACK_WEBHOOK_URL=https://hooks.slack.com/...

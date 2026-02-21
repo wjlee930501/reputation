@@ -33,7 +33,7 @@ async def notify_v0_report_ready(hospital_name: str, sov_pct: float, pdf_path: s
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
                 f"🔍 *[V0 리포트]* *{hospital_name}* V0 AI 검색 진단 리포트 생성 완료\n"
-                f"현재 ChatGPT+Perplexity 통합 SoV: *{sov_pct:.1f}%*\n"
+                f"현재 ChatGPT+Gemini 통합 SoV: *{sov_pct:.1f}%*\n"
                 f"파일: `{pdf_path}`\n\n"
                 f"원장 보고 전 내용 확인 후 전달해 주세요."
             )},
