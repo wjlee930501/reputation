@@ -33,6 +33,8 @@ services:
     volumes:
       - ./backend:/app
       - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp-key.json:ro
+      - ./reports:/tmp/reports
+      - sites_data:/tmp/sites
     env_file: .env
     environment:
       GOOGLE_APPLICATION_CREDENTIALS: /gcp-key.json
@@ -48,6 +50,7 @@ services:
     volumes:
       - ./backend:/app
       - ./reports:/tmp/reports
+      - sites_data:/tmp/sites
     env_file: .env
     depends_on:
       db:
@@ -75,3 +78,4 @@ services:
 
 volumes:
   postgres_data:
+  sites_data:
