@@ -9,7 +9,7 @@ class ReportResponse(BaseModel):
     period_year: int
     period_month: int
     report_type: str
-    pdf_path: Optional[str]
+    has_pdf: bool
     sov_summary: Optional[Any]
     content_summary: Optional[Any]
     created_at: str

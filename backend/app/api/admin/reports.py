@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.hospital import Hospital
 from app.models.report import MonthlyReport
@@ -53,18 +54,19 @@ async def download_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: Asyn
     if not r or r.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    pdf_path = Path(r.pdf_path)
+    allowed_dir = Path(settings.REPORT_OUTPUT_DIR).resolve()
+    pdf_path = Path(r.pdf_path).resolve()
+
+    # 경로 이탈 방지
+    if not str(pdf_path).startswith(str(allowed_dir)):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if not pdf_path.exists():
         raise HTTPException(
             status_code=404,
             detail="PDF 파일을 찾을 수 없습니다. 컨테이너 재시작으로 삭제되었을 수 있습니다. 리포트를 다시 생성해 주세요.",
         )
-
-    return FileResponse(
-        path=str(pdf_path),
-        media_type="application/pdf",
-        filename=pdf_path.name,
-    )
+    return FileResponse(path=str(pdf_path), media_type="application/pdf", filename=pdf_path.name)
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
@@ -82,7 +84,7 @@ def _serialize(r: MonthlyReport, full: bool = False) -> dict:
         "period_year": r.period_year,
         "period_month": r.period_month,
         "report_type": r.report_type,
-        "pdf_path": r.pdf_path,
+        "has_pdf": r.pdf_path is not None,
         "sov_summary": r.sov_summary if full else None,
         "content_summary": r.content_summary if full else None,
         "created_at": r.created_at.isoformat() if r.created_at else None,

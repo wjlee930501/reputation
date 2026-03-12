@@ -12,6 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+_api_semaphore = asyncio.Semaphore(5)  # 전체 외부 API 동시 호출 제한
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 _gemini_client: google_genai.Client | None = None
 
@@ -133,11 +134,10 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
 
 
 async def run_single_query(hospital_name: str, query_text: str, platform: str, repeat_count: int) -> list[dict]:
-    sem = asyncio.Semaphore(3)
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini
 
     async def single():
-        async with sem:
+        async with _api_semaphore:
             try:
                 raw = await query_fn(query_text)
                 parsed = await _parse_mention(hospital_name, raw)

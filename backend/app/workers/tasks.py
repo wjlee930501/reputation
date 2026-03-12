@@ -12,7 +12,6 @@ import asyncio
 import logging
 import uuid
 from datetime import date, datetime, timezone, timedelta
-from itertools import product
 
 import arrow
 from sqlalchemy import select
@@ -38,11 +37,7 @@ SOV_REPEAT = min(settings.SOV_REPEAT_COUNT, 20)  # 최대 20회로 제한 (비�
 
 
 def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    return asyncio.run(coro)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -74,8 +69,11 @@ def trigger_v0_report(self, hospital_id: str):
             result = await db.execute(stmt)
             sample_queries = result.scalars().all()
 
+            platforms = ["chatgpt"]
+            if settings.GEMINI_API_KEY:
+                platforms.append("gemini")
             for q in sample_queries:
-                for platform in ["chatgpt"]:
+                for platform in platforms:
                     results = await run_single_query(
                         hospital.name, q.query_text, platform, repeat_count=5
                     )
@@ -116,7 +114,7 @@ def trigger_v0_report(self, hospital_id: str):
                 period_month=now.month,
                 report_type="V0",
                 pdf_path=pdf_path,
-                sov_summary={"sov_pct": sov_pct, "platform": "chatgpt"},
+                sov_summary={"sov_pct": sov_pct, "platforms": platforms},
             )
             db.add(report)
             hospital.v0_report_done = True
@@ -163,53 +161,6 @@ def build_aeo_site(self, hospital_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════
-# 콘텐츠 캘린더 생성
-# ══════════════════════════════════════════════════════════════════
-def _build_monthly_calendar(
-    schedule: ContentSchedule,
-    target_month: arrow.Arrow,
-) -> tuple[list[tuple[date, ContentType, int]], int]:
-    """
-    해당 월의 발행 날짜·유형·순번 목록 생성.
-    Returns: ([(scheduled_date, content_type, seq_no), ...], total)
-
-    🔴 CRITICAL fix: return type annotation was `list[tuple[...]]` but function
-    actually returns a `(list, int)` tuple — callers unpacking as `result, total`
-    would silently unpack wrong values with the incorrect annotation.
-    """
-    distribution = PLAN_DISTRIBUTION.get(schedule.plan, {})
-    publish_days = schedule.publish_days  # [1, 4] = 화·금
-
-    # 발행 날짜 목록 (해당 월의 지정 요일)
-    dates = []
-    day = target_month.floor("month")
-    end = target_month.ceil("month")
-    while day <= end:
-        if day.weekday() in publish_days:
-            dates.append(day.date())
-        day = day.shift(days=1)
-
-    # 유형 시퀀스 생성 (순환)
-    type_sequence = []
-    for content_type, count in distribution.items():
-        type_sequence.extend([content_type] * count)
-
-    total = len(type_sequence)
-    result = []
-    for i, (pub_date, ctype) in enumerate(zip(dates, type_sequence)):
-        result.append((pub_date, ctype, i + 1))
-
-    # 🟡 WARNING: zip() silently truncates when dates < type_sequence
-    if len(result) < total:
-        logger.warning(
-            f"Calendar slots ({len(result)}) < plan total ({total}) for schedule "
-            f"{schedule.id}. Not enough publish days in {target_month.format('YYYY-MM')}."
-        )
-
-    return result, total
-
-
-# ══════════════════════════════════════════════════════════════════
 # 야간 콘텐츠 자동 생성 (매일 밤 23:00)
 # ══════════════════════════════════════════════════════════════════
 @celery_app.task(name="app.workers.tasks.nightly_content_generation")
@@ -220,12 +171,11 @@ def nightly_content_generation():
 
         async with AsyncSessionLocal() as db:
             # 내일 발행 예정이고 아직 생성 안 된 콘텐츠 조회
-            # TODO: 병원 수 증가 시 페이징(offset 기반) 처리 필요
             stmt = select(ContentItem).where(
                 ContentItem.scheduled_date == tomorrow,
                 ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
                 ContentItem.body.is_(None),  # 아직 생성 안 됨
-            ).options(selectinload(ContentItem.hospital)).limit(50)
+            ).options(selectinload(ContentItem.hospital))
             result = await db.execute(stmt)
             items = result.scalars().all()
 
@@ -267,6 +217,7 @@ def nightly_content_generation():
                     except Exception as img_e:
                         logger.warning(f"Image generation failed for {item.id} (text saved): {img_e}")
                         await db.rollback()
+                        await db.refresh(item)  # re-sync after rollback
 
                 except Exception as e:
                     logger.error(f"Content generation failed for {item.id}: {e}")
@@ -397,35 +348,23 @@ def monthly_slot_generation():
                 if existing.scalar():
                     continue
 
-                # 슬롯 생성 (content.py의 _generate_monthly_slots 동일 로직)
-                distribution = PLAN_DISTRIBUTION.get(schedule.plan, {})
-                type_sequence: list = []
-                for ctype, count in distribution.items():
-                    type_sequence.extend([ctype] * count)
-                total = len(type_sequence)
-
-                dates = []
-                day = next_month.floor("month")
-                end = next_month.ceil("month")
-                while day <= end:
-                    if day.weekday() in schedule.publish_days:
-                        dates.append(day.date())
-                    day = day.shift(days=1)
-
-                for i, (pub_date, ctype) in enumerate(zip(dates, type_sequence)):
+                # 슬롯 생성
+                from app.services.content_calendar import generate_monthly_slots
+                slots = generate_monthly_slots(schedule.plan, schedule.publish_days, next_month)
+                for slot_date, ctype, seq_no, total in slots:
                     db.add(ContentItem(
                         hospital_id=hospital.id,
                         schedule_id=schedule.id,
                         content_type=ctype,
-                        sequence_no=i + 1,
+                        sequence_no=seq_no,
                         total_count=total,
-                        scheduled_date=pub_date,
+                        scheduled_date=slot_date,
                         status=ContentStatus.DRAFT,
                     ))
                 created_count += 1
                 logger.info(
                     f"Next month slots created: {hospital.name} "
-                    f"{next_month.format('YYYY-MM')} ({len(dates)} slots)"
+                    f"{next_month.format('YYYY-MM')} ({len(slots)} slots)"
                 )
 
             await db.commit()

@@ -17,13 +17,14 @@ celery_app.conf.update(
     timezone="Asia/Seoul",
     enable_utc=True,
     task_routes={
-        "app.workers.tasks.generate_content_draft": {"queue": "content"},
-        "app.workers.tasks.notify_content_ready": {"queue": "content"},
+        "app.workers.tasks.nightly_content_generation": {"queue": "content"},
+        "app.workers.tasks.morning_content_notification": {"queue": "content"},
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
         "app.workers.tasks.run_monthly_reports": {"queue": "reports"},
         "app.workers.tasks.trigger_v0_report": {"queue": "reports"},
         "app.workers.tasks.build_aeo_site": {"queue": "default"},
+        "app.workers.tasks.monthly_slot_generation": {"queue": "default"},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성

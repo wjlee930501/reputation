@@ -9,15 +9,16 @@ POST   /admin/hospitals/{id}/content/{cid}/reject   — 반려
 import logging
 import uuid
 from datetime import date, datetime, timezone
+from typing import Optional
 
 import arrow
-
-logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.models.content import (
@@ -26,6 +27,7 @@ from app.models.content import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.schemas.content import ContentItemDetail, ContentItemResponse
 from app.services import notifier
+from app.services.content_calendar import generate_monthly_slots
 from app.services.site_builder import build_content_page
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Content"])
@@ -83,7 +85,7 @@ async def set_schedule(
 
     # 이번 달 콘텐츠 슬롯 자동 생성
     target_month = arrow.get(body.active_from).floor("month")
-    slots = _generate_monthly_slots(schedule, target_month, body.plan)
+    slots = generate_monthly_slots(body.plan, body.publish_days, target_month)
 
     for slot_date, ctype, seq_no, total in slots:
         db.add(ContentItem(
@@ -117,7 +119,7 @@ async def list_content(
     hospital_id: uuid.UUID,
     year: int = Query(default=None),
     month: int = Query(default=None),
-    status_filter: str = Query(default=None, alias="status"),
+    status_filter: Optional[ContentStatus] = Query(default=None, alias="status"),
     db: AsyncSession = Depends(get_db),
 ):
     """월별 콘텐츠 목록"""
@@ -207,31 +209,6 @@ async def reject_content(
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
-def _generate_monthly_slots(
-    schedule: ContentSchedule, target_month: arrow.Arrow, plan: str
-) -> list[tuple[date, ContentType, int, int]]:
-    """(발행일, 콘텐츠유형, 순번, 총편수) 목록 생성"""
-    distribution = PLAN_DISTRIBUTION.get(plan, {})
-    type_sequence = []
-    for ctype, count in distribution.items():
-        type_sequence.extend([ctype] * count)
-    total = len(type_sequence)
-
-    # 해당 월의 발행 요일 날짜 목록
-    dates = []
-    day = target_month.floor("month")
-    end = target_month.ceil("month")
-    while day <= end:
-        if day.weekday() in schedule.publish_days:
-            dates.append(day.date())
-        day = day.shift(days=1)
-
-    return [
-        (pub_date, ctype, i + 1, total)
-        for i, (pub_date, ctype) in enumerate(zip(dates, type_sequence))
-    ]
-
-
 async def _get_hospital(db, hospital_id) -> Hospital:
     h = await db.get(Hospital, hospital_id)
     if not h:

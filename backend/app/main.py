@@ -25,8 +25,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Admin-Key", "Authorization"],
 )
 
 # Admin 라우터: X-Admin-Key 인증 필수
@@ -41,4 +41,4 @@ app.include_router(public_site.router, prefix="/api/v1")
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "env": settings.APP_ENV}
+    return {"status": "ok"}

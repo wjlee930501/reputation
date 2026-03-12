@@ -52,7 +52,7 @@ class HospitalProfileUpdate(BaseModel):
     # 연락처
     address: str | None = Field(None, max_length=500)
     phone: str | None = Field(None, max_length=50)
-    business_hours: dict | None = None
+    business_hours: BusinessHours | None = None
 
     # URL
     website_url: str | None = Field(None, max_length=500)
@@ -71,7 +71,7 @@ class HospitalProfileUpdate(BaseModel):
     director_philosophy: str | None = Field(None, max_length=1000)
 
     # 진료 항목
-    treatments: list[dict] | None = None
+    treatments: list[TreatmentItem] | None = None
 
     # 완료 플래그 (프로파일 다 입력됐으면 True로)
     profile_complete: bool | None = None
@@ -143,6 +143,25 @@ async def update_profile(
     for field, value in update_data.items():
         setattr(h, field, value)
 
+    # 프로파일 완료 시 필수 필드 검증
+    if h.profile_complete and not was_complete:
+        required_missing = []
+        if not h.region:
+            required_missing.append("region")
+        if not h.specialties:
+            required_missing.append("specialties")
+        if not h.keywords:
+            required_missing.append("keywords")
+        if not h.director_name:
+            required_missing.append("director_name")
+        if not h.address:
+            required_missing.append("address")
+        if required_missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"프로파일 완료에 필요한 필드 누락: {', '.join(required_missing)}",
+            )
+
     await db.commit()
     await db.refresh(h)
 
@@ -182,6 +201,22 @@ async def connect_domain(
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """ACTIVE 상태로 전환 (도메인 연결 + 스케줄 설정 완료 후)"""
     h = await _get_or_404(db, hospital_id)
+
+    missing = []
+    if not h.profile_complete:
+        missing.append("profile_complete")
+    if not h.v0_report_done:
+        missing.append("v0_report_done")
+    if not h.site_built:
+        missing.append("site_built")
+    if not h.schedule_set:
+        missing.append("schedule_set")
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"활성화 사전 조건 미충족: {', '.join(missing)}",
+        )
+
     h.status = HospitalStatus.ACTIVE
     h.site_live = True
     await db.commit()

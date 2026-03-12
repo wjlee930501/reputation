@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 import arrow
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -33,8 +33,10 @@ async def generate_pdf_report(
     filename = f"{hospital.slug}_{label}.pdf"
     pdf_path = str(output_dir / filename)
 
-    # TODO(security): autoescape=True 추가 권장 — PDF 전용이라 XSS 위험은 낮으나 방어적으로 적용 가능
-    env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATE_DIR)),
+        autoescape=select_autoescape(enabled_extensions=("html",)),
+    )
     template = env.get_template("report.html")
     html = template.render(
         hospital=hospital,
