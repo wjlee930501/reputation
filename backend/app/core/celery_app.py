@@ -3,6 +3,11 @@ from celery.schedules import crontab
 
 from app.core.config import settings
 
+if settings.SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    sentry_sdk.init(dsn=settings.SENTRY_DSN, integrations=[CeleryIntegration()], traces_sample_rate=0.1)
+
 celery_app = Celery(
     "reputation",
     broker=settings.REDIS_URL,

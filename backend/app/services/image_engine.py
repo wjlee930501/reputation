@@ -51,7 +51,7 @@ IMAGE_PROMPTS = {
 async def generate_image(content_type: ContentType, hospital_name: str) -> tuple[str, str]:
     """
     Imagen 3로 이미지 생성 후 GCS에 저장.
-    Returns: (gcs_public_url, prompt_used)
+    Returns: (gcs_path, prompt_used)  — gs://bucket/path 형태
     """
     import asyncio
 
@@ -98,11 +98,10 @@ def _generate_and_upload(prompt: str, hospital_name: str) -> str:
         filename = f"content/{hospital_name}/{uuid.uuid4().hex}.png"
         blob = bucket.blob(filename)
         blob.upload_from_file(BytesIO(image_bytes), content_type="image/png")
-        blob.make_public()
 
-        url = f"https://storage.googleapis.com/{settings.GCP_STORAGE_BUCKET}/{filename}"
-        logger.info(f"Image uploaded: {url}")
-        return url
+        gcs_path = f"gs://{settings.GCP_STORAGE_BUCKET}/{filename}"
+        logger.info(f"Image uploaded: {gcs_path}")
+        return gcs_path
 
     except ImportError:
         logger.error("Vertex AI or GCS SDK not installed")

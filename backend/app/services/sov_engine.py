@@ -51,6 +51,7 @@ QUERY_TEMPLATES = [
 PARSE_PROMPT = """\
 다음 AI 답변에서 "{hospital_name}"이 언급되었는지 분석하라.
 병원명 축약형·변형도 언급으로 인정한다.
+예: "장편한외과" = "장편한외과의원" = "장편한 외과" = "장편한" 등 — 앞 2~3글자가 일치하면 동일 병원으로 간주한다.
 
 [답변]
 {response}
@@ -88,7 +89,7 @@ async def _query_chatgpt(query: str) -> str:
             {"role": "system", "content": "지역 병원 정보를 잘 아는 의료 정보 도우미입니다. 구체적인 병원 이름을 포함해 답변하세요."},
             {"role": "user", "content": query},
         ],
-        temperature=1.0,
+        temperature=0.7,
         max_tokens=800,
     )
     return response.choices[0].message.content or ""

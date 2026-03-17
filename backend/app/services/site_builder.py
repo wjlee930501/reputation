@@ -1,6 +1,10 @@
 """
-LEGACY / FALLBACK: 이 빌더는 Next.js /site 앱이 서빙하지 못하는 경우의 폴백 HTML을 생성합니다.
+DEPRECATED: build_site() 및 build_content_page()는 더 이상 사용되지 않습니다.
+- build_site(): workers/tasks.py의 build_aeo_site 태스크에서 호출 제거됨
+- build_content_page(): api/admin/content.py의 publish_content 엔드포인트에서 호출 제거됨
 프로덕션 AEO 사이트는 /site (Next.js App Router, Vercel 배포)가 담당합니다.
+
+LEGACY / FALLBACK: 이 빌더는 Next.js /site 앱이 서빙하지 못하는 경우의 폴백 HTML을 생성합니다.
 site_builder.py는 컨테이너 내 임시 파일(/tmp)을 생성하므로 컨테이너 재시작 시 초기화됩니다.
 
 AEO 홈페이지 빌더

@@ -15,6 +15,7 @@ class QueryMatrix(Base):
     hospital_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"))
     query_text: Mapped[str] = mapped_column(String(500), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[str] = mapped_column(String(20), default="NORMAL")  # HIGH, NORMAL, LOW
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     hospital: Mapped["Hospital"] = relationship(back_populates="query_matrix")

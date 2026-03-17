@@ -39,9 +39,14 @@ class Settings(BaseSettings):
 
     # Report
     REPORT_OUTPUT_DIR: str = "/tmp/reports"
+    GCS_REPORTS_BUCKET: str = "reputation-reports"
+
+    # Sentry
+    SENTRY_DSN: str = ""
 
     # SoV
     SOV_REPEAT_COUNT: int = 10
+    SOV_REPEAT_COUNT_WEEKLY: int = 5
 
     # Admin
     ADMIN_BASE_URL: str = "http://localhost:3000"  # 🔴 CRITICAL: 환경변수로 분리 (.env에서 프로덕션 URL 설정)

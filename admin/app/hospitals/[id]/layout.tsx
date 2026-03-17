@@ -2,8 +2,12 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useEffect, useState } from 'react'
+import { fetchAPI } from '@/lib/api'
+import { Hospital, STATUS_LABELS } from '@/types'
 
 const TABS = [
+  { label: '대시보드', path: 'dashboard' },
   { label: '프로파일', path: 'profile' },
   { label: '콘텐츠', path: 'content' },
   { label: '스케줄', path: 'schedule' },
@@ -18,6 +22,15 @@ export default function HospitalLayout({
   params: { id: string }
 }) {
   const pathname = usePathname()
+  const [hospital, setHospital] = useState<Hospital | null>(null)
+
+  useEffect(() => {
+    fetchAPI(`/admin/hospitals/${params.id}`)
+      .then(setHospital)
+      .catch(() => null)
+  }, [params.id])
+
+  const statusInfo = hospital ? (STATUS_LABELS[hospital.status] ?? { label: hospital.status, color: 'bg-gray-100 text-gray-700' }) : null
 
   return (
     <div className="flex flex-col h-full">
@@ -30,6 +43,11 @@ export default function HospitalLayout({
           >
             ← 목록
           </Link>
+          {hospital && statusInfo && (
+            <span className={`mr-4 inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusInfo.color}`}>
+              {statusInfo.label}
+            </span>
+          )}
           {TABS.map((tab) => {
             const href = `/hospitals/${params.id}/${tab.path}`
             const isActive = pathname.startsWith(href)

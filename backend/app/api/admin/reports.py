@@ -2,20 +2,20 @@
 Admin API — 리포트 조회
 GET /admin/hospitals/{hospital_id}/reports              — 리포트 목록 (최신순)
 GET /admin/hospitals/{hospital_id}/reports/{report_id}  — 리포트 상세
+GET /admin/hospitals/{hospital_id}/reports/{report_id}/download — PDF signed URL
 """
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.models.hospital import Hospital
 from app.models.report import MonthlyReport
 from app.schemas.report import ReportResponse
+from app.services.gcs_utils import get_signed_url
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Reports"])
 
@@ -47,26 +47,24 @@ async def get_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: AsyncSess
 
 @router.get("/{hospital_id}/reports/{report_id}/download")
 async def download_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """PDF 파일 다운로드"""
+    """PDF 다운로드 — GCS signed URL로 리다이렉트 (1시간 만료)"""
     await _get_hospital_or_404(db, hospital_id)
 
     r = await db.get(MonthlyReport, report_id)
     if not r or r.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    allowed_dir = Path(settings.REPORT_OUTPUT_DIR).resolve()
-    pdf_path = Path(r.pdf_path).resolve()
+    if not r.pdf_path:
+        raise HTTPException(status_code=404, detail="PDF 경로가 없습니다.")
 
-    # 경로 이탈 방지
-    if not str(pdf_path).startswith(str(allowed_dir)):
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    if not pdf_path.exists():
+    signed_url = get_signed_url(r.pdf_path, expiration_minutes=60)
+    if not signed_url:
         raise HTTPException(
-            status_code=404,
-            detail="PDF 파일을 찾을 수 없습니다. 컨테이너 재시작으로 삭제되었을 수 있습니다. 리포트를 다시 생성해 주세요.",
+            status_code=503,
+            detail="PDF URL 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.",
         )
-    return FileResponse(path=str(pdf_path), media_type="application/pdf", filename=pdf_path.name)
+
+    return RedirectResponse(url=signed_url, status_code=302)
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────

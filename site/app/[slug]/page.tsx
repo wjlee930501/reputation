@@ -11,9 +11,16 @@ interface Props {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
+    const description = `${hospital.name}의 진료정보, 원장 소개, 의료 콘텐츠`
     return {
       title: `${hospital.name} | AEO 의료정보`,
-      description: `${hospital.name}의 진료정보, 원장 소개, 의료 콘텐츠`,
+      description,
+      openGraph: {
+        title: `${hospital.name} | AEO 의료정보`,
+        description,
+        url: `/${params.slug}`,
+        type: 'website',
+      },
     }
   } catch {
     return { title: 'AEO 의료정보' }

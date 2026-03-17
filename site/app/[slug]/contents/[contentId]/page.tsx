@@ -15,9 +15,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       fetchHospital(params.slug),
       fetchContent(params.slug, params.contentId),
     ])
+    const description =
+      (content as { meta_description?: string | null }).meta_description ||
+      `${hospital.name}의 ${TYPE_LABELS[content.content_type] || ''} 콘텐츠`
     return {
       title: `${content.title} | ${hospital.name}`,
-      description: `${hospital.name}의 ${TYPE_LABELS[content.content_type] || ''} 콘텐츠`,
+      description,
+      openGraph: {
+        title: `${content.title} | ${hospital.name}`,
+        description,
+        url: `/${params.slug}/contents/${params.contentId}`,
+        type: 'article',
+        images: content.image_url ? [{ url: content.image_url }] : [],
+      },
     }
   } catch {
     return { title: 'AEO 의료정보' }

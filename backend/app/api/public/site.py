@@ -13,8 +13,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.gcs_utils import get_signed_url
 
 router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
+
+
+@router.get("")
+async def list_hospitals(db: AsyncSession = Depends(get_db)):
+    """Public list of active hospitals for sitemap generation."""
+    stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
+    result = await db.execute(stmt)
+    hospitals = result.scalars().all()
+    return [
+        {
+            "slug": h.slug,
+            "updated_at": h.updated_at.isoformat() if h.updated_at else h.created_at.isoformat() if h.created_at else None,
+        }
+        for h in hospitals
+    ]
 
 
 @router.get("/{slug}")
@@ -95,7 +111,7 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "content_type": item.content_type,
         "title": item.title,
         "meta_description": item.meta_description,
-        "image_url": item.image_url,
+        "image_url": get_signed_url(item.image_url) if item.image_url else None,
         "scheduled_date": str(item.scheduled_date),
         "published_at": item.published_at.isoformat() if item.published_at else None,
     }

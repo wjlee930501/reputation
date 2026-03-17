@@ -1,8 +1,9 @@
 """
 Admin API — 콘텐츠 스케줄 + 발행
-POST   /admin/hospitals/{id}/schedule           — 스케줄 설정
-GET    /admin/hospitals/{id}/content            — 콘텐츠 목록 (월별)
-GET    /admin/hospitals/{id}/content/{cid}      — 상세 조회
+POST   /admin/hospitals/{id}/schedule               — 스케줄 설정
+GET    /admin/hospitals/{id}/content                — 콘텐츠 목록 (월별)
+GET    /admin/hospitals/{id}/content/{cid}          — 상세 조회
+PATCH  /admin/hospitals/{id}/content/{cid}          — 제목/본문/meta 수정
 POST   /admin/hospitals/{id}/content/{cid}/publish  — 발행
 POST   /admin/hospitals/{id}/content/{cid}/reject   — 반려
 """
@@ -28,9 +29,21 @@ from app.models.hospital import Hospital, HospitalStatus
 from app.schemas.content import ContentItemDetail, ContentItemResponse
 from app.services import notifier
 from app.services.content_calendar import generate_monthly_slots
-from app.services.site_builder import build_content_page
+from app.services.gcs_utils import get_signed_url
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Content"])
+
+
+FORBIDDEN_EXPRESSIONS = [
+    "1등", "최고", "최우수", "유일", "완치", "100%",
+    "성공률", "부작용 없는", "검증된", "가장 잘하는",
+    "국내 최초", "세계 최초", "특허", "독보적",
+]
+
+
+def _check_forbidden(text: str) -> list[str]:
+    """텍스트에서 의료광고 금지 표현을 찾아 목록으로 반환한다."""
+    return [expr for expr in FORBIDDEN_EXPRESSIONS if expr in text]
 
 
 class ScheduleCreate(BaseModel):
@@ -47,6 +60,12 @@ class ScheduleCreate(BaseModel):
             if day not in range(7):
                 raise ValueError(f"Invalid day: {day}. Must be 0-6 (월-일)")
         return list(set(v))  # 중복 제거
+
+
+class ContentPatch(BaseModel):
+    title: str | None = Field(default=None, max_length=300)
+    body: str | None = None
+    meta_description: str | None = Field(default=None, max_length=500)
 
 
 class PublishBody(BaseModel):
@@ -156,6 +175,50 @@ async def get_content(
     return _serialize_item(item, full=True)
 
 
+@router.patch("/{hospital_id}/content/{content_id}", response_model=ContentItemDetail)
+async def update_content(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    body: ContentPatch,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    제목/본문/meta 수정.
+    저장 시 의료광고 금지표현 검사 → 위반 시 400 + 위반 목록 반환.
+    """
+    item = await _get_content(db, content_id, hospital_id)
+
+    # 금지 표현 검사 (수정 대상 필드만)
+    violations: list[str] = []
+    new_title = body.title if body.title is not None else item.title
+    new_body = body.body if body.body is not None else item.body
+    new_meta = body.meta_description if body.meta_description is not None else item.meta_description
+
+    for field_value in [new_title, new_body, new_meta]:
+        if field_value:
+            violations.extend(_check_forbidden(field_value))
+
+    # 중복 제거
+    violations = list(dict.fromkeys(violations))
+
+    if violations:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "의료광고 금지 표현이 포함되어 있습니다.", "violations": violations},
+        )
+
+    if body.title is not None:
+        item.title = body.title
+    if body.body is not None:
+        item.body = body.body
+    if body.meta_description is not None:
+        item.meta_description = body.meta_description
+
+    await db.commit()
+    await db.refresh(item)
+    return _serialize_item(item, full=True)
+
+
 @router.post("/{hospital_id}/content/{content_id}/publish")
 async def publish_content(
     hospital_id: uuid.UUID,
@@ -179,12 +242,6 @@ async def publish_content(
     item.published_at = datetime.now(timezone.utc)
     item.published_by = body.published_by
     await db.commit()
-
-    # AEO 사이트에 콘텐츠 페이지 즉시 생성
-    try:
-        build_content_page(hospital, _serialize_item(item, full=True))
-    except Exception as e:
-        logger.error(f"Site build failed for content {content_id}: {e}")  # 🔴 CRITICAL fix: was `pass`
 
     # Slack 알림
     await notifier.notify_content_published(hospital.name, item.title or "")
@@ -231,7 +288,7 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "total_count": item.total_count,
         "title": item.title,
         "meta_description": item.meta_description,
-        "image_url": item.image_url,
+        "image_url": get_signed_url(item.image_url) if item.image_url else None,
         "scheduled_date": str(item.scheduled_date),
         "status": item.status,
         "generated_at": item.generated_at.isoformat() if item.generated_at else None,
