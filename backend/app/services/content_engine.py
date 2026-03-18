@@ -13,28 +13,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from app.core.config import settings
 from app.models.content import ContentType
 from app.models.hospital import Hospital
+from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
 
 client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-
-# ── 의료광고 금지 표현 (정규식 패턴) ──────────────────────────────
-FORBIDDEN_PATTERNS = {
-    "1등": r"1등|일등|1위|일위",
-    "최고": r"최고[의]?|최상[의]?",
-    "최우수": r"최우수",
-    "유일": r"유일[한]?|유일무이",
-    "완치": r"완치[율]?|완전\s*치료",
-    "100%": r"100\s*%|백\s*퍼센트",
-    "성공률": r"성공률|성공\s*확률",
-    "부작용 없는": r"부작용\s*(없|zero|제로)",
-    "검증된": r"검증[된]?|입증[된]?",
-    "가장 잘하는": r"가장\s*(잘|뛰어)",
-    "국내 최초": r"(국내|세계|아시아)\s*최초",
-    "세계 최초": r"세계\s*최초",
-    "특허": r"특허[를]?\s*(보유|획득|취득)",
-    "독보적": r"독보적[인]?",
-}
 
 # ── 시스템 프롬프트 ───────────────────────────────────────────────
 SYSTEM_PROMPT = """\
@@ -128,15 +111,6 @@ def _build_profile_context(hospital: Hospital) -> str:
 """.strip()
 
 
-def _check_forbidden(text: str) -> list[str]:
-    """금지 표현 포함 여부 검사 (정규식 기반). 위반된 표현 레이블 목록 반환"""
-    violations = []
-    for label, pattern in FORBIDDEN_PATTERNS.items():
-        if re.search(pattern, text):
-            violations.append(label)
-    return violations
-
-
 def _fill_type_prompt(content_type: ContentType, hospital: Hospital) -> str:
     template = TYPE_PROMPTS.get(content_type, "")
     region_text = " ".join(hospital.region or [])
@@ -197,7 +171,7 @@ async def generate_content(
 
     # 금지 표현 검사
     full_text = result.get("title", "") + result.get("body", "") + result.get("meta_description", "")
-    violations = _check_forbidden(full_text)
+    violations = check_forbidden(full_text)
     if violations:
         logger.warning(f"Forbidden expressions found: {violations} — retrying")
         raise ValueError(f"Forbidden medical expressions: {violations}")

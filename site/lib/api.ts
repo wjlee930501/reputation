@@ -41,8 +41,11 @@ export async function fetchHospital(slug: string): Promise<Hospital> {
   return res.json()
 }
 
-export async function fetchContents(slug: string): Promise<ContentItem[]> {
-  const res = await fetch(`${BASE}/hospitals/${slug}/contents`, { next: { revalidate: 1800 } })
+export async function fetchContents(slug: string, limit?: number): Promise<ContentItem[]> {
+  const url = limit
+    ? `${BASE}/hospitals/${slug}/contents?limit=${limit}`
+    : `${BASE}/hospitals/${slug}/contents`
+  const res = await fetch(url, { next: { revalidate: 1800 } })
   if (!res.ok) return []
   return res.json()
 }

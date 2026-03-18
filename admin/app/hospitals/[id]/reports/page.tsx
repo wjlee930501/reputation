@@ -10,7 +10,8 @@ interface Report {
   period_year: number
   period_month: number
   report_type: string
-  pdf_path: string | null
+  has_pdf: boolean
+  download_url: string | null
   created_at: string
   sent_at: string | null
   sov_summary?: Record<string, unknown> | null
@@ -87,9 +88,9 @@ export default function ReportsPage() {
                     {new Date(r.created_at).toLocaleDateString('ko-KR')}
                   </td>
                   <td className="px-6 py-4 text-center">
-                    {r.pdf_path ? (
+                    {r.download_url ? (
                       <a
-                        href={r.pdf_path}
+                        href={r.download_url}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="px-3 py-1 bg-blue-100 text-blue-700 text-xs rounded hover:bg-blue-200"
@@ -140,9 +141,9 @@ export default function ReportsPage() {
                   ))}
                 </div>
               )}
-              {selected.pdf_path && (
+              {selected.download_url && (
                 <a
-                  href={selected.pdf_path}
+                  href={selected.download_url}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="block w-full text-center py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"

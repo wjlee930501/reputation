@@ -9,13 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.hospital import Hospital, HospitalStatus
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Domain"])
-
-# AEO 플랫폼 CNAME 타겟 (도메인 연결 시 이 값을 CNAME으로 지정해야 함)
-CNAME_TARGET = "sites.motionlabs.io"
 
 
 class DomainVerifyResponse(BaseModel):
@@ -39,7 +37,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     domain = hospital.aeo_domain
     cname_value = _resolve_cname(domain)
-    verified = cname_value is not None and CNAME_TARGET in cname_value
+    verified = cname_value is not None and settings.CNAME_TARGET in cname_value
 
     if verified:
         hospital.site_live = True
@@ -51,14 +49,14 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     else:
         message = (
             f"CNAME 검증 실패. DNS에 CNAME 레코드를 추가해 주세요: "
-            f"{domain} → {CNAME_TARGET}"
+            f"{domain} → {settings.CNAME_TARGET}"
         )
 
     return DomainVerifyResponse(
         domain=domain,
         verified=verified,
         cname_value=cname_value,
-        expected_cname=CNAME_TARGET,
+        expected_cname=settings.CNAME_TARGET,
         message=message,
     )
 

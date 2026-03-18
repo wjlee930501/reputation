@@ -57,7 +57,7 @@ async def download_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: Asyn
     if not r.pdf_path:
         raise HTTPException(status_code=404, detail="PDF 경로가 없습니다.")
 
-    signed_url = get_signed_url(r.pdf_path, expiration_minutes=60)
+    signed_url = get_signed_url(r.pdf_path)
     if not signed_url:
         raise HTTPException(
             status_code=503,
@@ -83,6 +83,7 @@ def _serialize(r: MonthlyReport, full: bool = False) -> dict:
         "period_month": r.period_month,
         "report_type": r.report_type,
         "has_pdf": r.pdf_path is not None,
+        "download_url": f"/api/v1/admin/hospitals/{r.hospital_id}/reports/{r.id}/download" if r.pdf_path else None,
         "sov_summary": r.sov_summary if full else None,
         "content_summary": r.content_summary if full else None,
         "created_at": r.created_at.isoformat() if r.created_at else None,

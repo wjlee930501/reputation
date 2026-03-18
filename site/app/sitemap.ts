@@ -15,47 +15,61 @@ interface ContentEntry {
 }
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const entries: MetadataRoute.Sitemap = []
+  // Always include the base URL as a fallback
+  const entries: MetadataRoute.Sitemap = [
+    {
+      url: SITE_URL,
+      lastModified: new Date(),
+      changeFrequency: 'daily',
+      priority: 1.0,
+    },
+  ]
 
+  let hospitals: HospitalEntry[]
   try {
     const res = await fetch(`${API_BASE}/hospitals`, { next: { revalidate: 3600 } })
-    if (!res.ok) return entries
-
-    const hospitals: HospitalEntry[] = await res.json()
-
-    for (const hospital of hospitals) {
-      // Hospital main page
-      entries.push({
-        url: `${SITE_URL}/${hospital.slug}`,
-        lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
-        changeFrequency: 'weekly',
-        priority: 0.8,
-      })
-
-      // Hospital contents
-      try {
-        const cRes = await fetch(`${API_BASE}/hospitals/${hospital.slug}/contents`, {
-          next: { revalidate: 3600 },
-        })
-        if (cRes.ok) {
-          const contents: ContentEntry[] = await cRes.json()
-          for (const content of contents) {
-            entries.push({
-              url: `${SITE_URL}/${hospital.slug}/contents/${content.id}`,
-              lastModified: content.published_at
-                ? new Date(content.published_at)
-                : new Date(content.scheduled_date),
-              changeFrequency: 'monthly',
-              priority: 0.6,
-            })
-          }
-        }
-      } catch {
-        // skip this hospital's contents on error
-      }
+    if (!res.ok) {
+      console.error(`[sitemap] Failed to fetch hospitals: HTTP ${res.status}`)
+      return entries
     }
-  } catch {
-    // return empty sitemap on error
+    hospitals = await res.json()
+  } catch (err) {
+    console.error('[sitemap] Error fetching hospitals:', err)
+    return entries
+  }
+
+  for (const hospital of hospitals) {
+    // Hospital main page
+    entries.push({
+      url: `${SITE_URL}/${hospital.slug}`,
+      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      changeFrequency: 'weekly',
+      priority: 0.8,
+    })
+
+    // Hospital contents — fetch all published content (up to 500)
+    try {
+      const cRes = await fetch(`${API_BASE}/hospitals/${hospital.slug}/contents?limit=500`, {
+        next: { revalidate: 3600 },
+      })
+      if (cRes.ok) {
+        const contents: ContentEntry[] = await cRes.json()
+        for (const content of contents) {
+          entries.push({
+            url: `${SITE_URL}/${hospital.slug}/contents/${content.id}`,
+            lastModified: content.published_at
+              ? new Date(content.published_at)
+              : new Date(content.scheduled_date),
+            changeFrequency: 'monthly',
+            priority: 0.6,
+          })
+        }
+      } else {
+        console.warn(`[sitemap] Failed to fetch contents for ${hospital.slug}: HTTP ${cRes.status}`)
+      }
+    } catch (err) {
+      console.warn(`[sitemap] Error fetching contents for ${hospital.slug}:`, err)
+    }
   }
 
   return entries

@@ -9,10 +9,8 @@ export async function GET(_req: Request, { params }: Props) {
   try {
     const [hospital, contents] = await Promise.all([
       fetchHospital(params.slug),
-      fetchContents(params.slug),
+      fetchContents(params.slug, 500),
     ])
-
-    const recentContents = contents.slice(0, 20)
 
     const lines: string[] = [
       `# ${hospital.name}`,
@@ -38,9 +36,9 @@ export async function GET(_req: Request, { params }: Props) {
       lines.push('')
     }
 
-    if (recentContents.length > 0) {
+    if (contents.length > 0) {
       lines.push('## 최신 콘텐츠')
-      for (const c of recentContents) {
+      for (const c of contents) {
         const type = TYPE_LABELS[c.content_type] || c.content_type
         const date = c.published_at
           ? new Date(c.published_at).toLocaleDateString('ko-KR')

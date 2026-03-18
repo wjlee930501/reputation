@@ -416,21 +416,25 @@ export default function ProfilePage({ params }: { params: { id: string } }) {
             <button
               type="button"
               onClick={async () => {
-                if (!confirm('도메인 DNS 연결이 완료되었나요? LIVE 상태로 변경합니다.')) return
                 try {
-                  await fetchAPI(`/admin/hospitals/${params.id}/activate`, {
-                    method: 'PATCH',
+                  const result = await fetchAPI(`/admin/hospitals/${params.id}/domain/verify`, {
+                    method: 'POST',
                   })
-                  setProfile((prev) => ({ ...prev, site_live: true }))
-                  setSuccess(true)
-                  setTimeout(() => setSuccess(false), 3000)
+                  if (result.verified) {
+                    setProfile((prev) => ({ ...prev, site_live: true }))
+                    setError(null)
+                    setSuccess(true)
+                    setTimeout(() => setSuccess(false), 3000)
+                  } else {
+                    setError(result.message ?? 'CNAME 설정이 확인되지 않았습니다.')
+                  }
                 } catch (e: unknown) {
-                  setError(e instanceof Error ? e.message : '활성화에 실패했습니다.')
+                  setError(e instanceof Error ? e.message : '도메인 검증에 실패했습니다.')
                 }
               }}
               className="w-full py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition-colors"
             >
-              LIVE 활성화
+              DNS 확인 및 LIVE 활성화
             </button>
           )}
           {profile.site_live && (

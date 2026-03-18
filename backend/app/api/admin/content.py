@@ -30,20 +30,9 @@ from app.schemas.content import ContentItemDetail, ContentItemResponse
 from app.services import notifier
 from app.services.content_calendar import generate_monthly_slots
 from app.services.gcs_utils import get_signed_url
+from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Content"])
-
-
-FORBIDDEN_EXPRESSIONS = [
-    "1등", "최고", "최우수", "유일", "완치", "100%",
-    "성공률", "부작용 없는", "검증된", "가장 잘하는",
-    "국내 최초", "세계 최초", "특허", "독보적",
-]
-
-
-def _check_forbidden(text: str) -> list[str]:
-    """텍스트에서 의료광고 금지 표현을 찾아 목록으로 반환한다."""
-    return [expr for expr in FORBIDDEN_EXPRESSIONS if expr in text]
 
 
 class ScheduleCreate(BaseModel):
@@ -196,7 +185,7 @@ async def update_content(
 
     for field_value in [new_title, new_body, new_meta]:
         if field_value:
-            violations.extend(_check_forbidden(field_value))
+            violations.extend(check_forbidden(field_value))
 
     # 중복 제거
     violations = list(dict.fromkeys(violations))

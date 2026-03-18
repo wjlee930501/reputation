@@ -46,7 +46,7 @@ async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
 @router.get("/{slug}/contents")
 async def list_published_contents(
     slug: str,
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
     """발행된 콘텐츠 목록 (최신순)"""

@@ -20,6 +20,8 @@ from app.core.database import get_db
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.workers.tasks import trigger_v0_report, build_aeo_site
+from app.api.admin.domain import _resolve_cname
+from app.core.config import settings
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
 
@@ -199,7 +201,7 @@ async def connect_domain(
 
 @router.patch("/{hospital_id}/activate")
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """ACTIVE 상태로 전환 (도메인 연결 + 스케줄 설정 완료 후)"""
+    """ACTIVE 상태로 전환 (도메인 DNS 검증 + 스케줄 설정 완료 후)"""
     h = await _get_or_404(db, hospital_id)
 
     missing = []
@@ -215,6 +217,19 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
         raise HTTPException(
             status_code=400,
             detail=f"활성화 사전 조건 미충족: {', '.join(missing)}",
+        )
+
+    if not h.aeo_domain:
+        raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다. 먼저 도메인을 입력해 주세요.")
+
+    cname_value = _resolve_cname(h.aeo_domain)
+    if cname_value is None or settings.CNAME_TARGET not in cname_value:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"CNAME 설정이 확인되지 않았습니다. "
+                f"{h.aeo_domain} → {settings.CNAME_TARGET} 로 설정해 주세요."
+            ),
         )
 
     h.status = HospitalStatus.ACTIVE

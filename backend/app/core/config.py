@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     SOV_REPEAT_COUNT: int = 10
     SOV_REPEAT_COUNT_WEEKLY: int = 5
 
+    # Domain
+    CNAME_TARGET: str = "aeo.motionlabs.io"
+
     # Admin
     ADMIN_BASE_URL: str = "http://localhost:3000"  # 🔴 CRITICAL: 환경변수로 분리 (.env에서 프로덕션 URL 설정)
 

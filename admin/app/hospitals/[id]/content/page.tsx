@@ -14,6 +14,9 @@ const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   REJECTED:  { label: '반려', color: 'bg-red-100 text-red-700' },
 }
 
+// 프론트엔드 미리보기용 금지 표현 목록 (단순 포함 검사)
+// 정식 정의는 backend/app/utils/medical_filter.py의 FORBIDDEN_EXPRESSIONS를 따름
+// 변형(예: "최고의", "유일한")은 백엔드 저장 시 정규식으로 최종 검증됨
 const FORBIDDEN = [
   '1등', '최고', '최우수', '유일', '완치', '100%',
   '성공률', '부작용 없는', '검증된', '가장 잘하는',
