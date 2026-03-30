@@ -12,8 +12,28 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-_api_semaphore = asyncio.Semaphore(5)  # 전체 외부 API 동시 호출 제한
-openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+import threading
+
+_sem_lock = threading.Lock()
+_api_semaphore: asyncio.Semaphore | None = None
+_semaphore_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    """Lazily create semaphore bound to the current event loop.
+    Thread-safe: uses a lock for creation. Recreates if the loop changed.
+    """
+    global _api_semaphore, _semaphore_loop
+    current_loop = asyncio.get_running_loop()
+    if _api_semaphore is None or _semaphore_loop is not current_loop:
+        with _sem_lock:
+            if _api_semaphore is None or _semaphore_loop is not current_loop:
+                _api_semaphore = asyncio.Semaphore(5)
+                _semaphore_loop = current_loop
+    return _api_semaphore
+
+
+openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=30.0)
 _gemini_client: google_genai.Client | None = None
 
 
@@ -100,15 +120,18 @@ async def _query_gemini(query: str) -> str:
     client = _get_gemini_client()
     if not client:
         return ""
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=settings.GEMINI_MODEL,
-        contents=query,
-        config=genai_types.GenerateContentConfig(
-            temperature=1.0,
-            max_output_tokens=800,
-            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+    response = await asyncio.wait_for(
+        asyncio.to_thread(
+            client.models.generate_content,
+            model=settings.GEMINI_MODEL,
+            contents=query,
+            config=genai_types.GenerateContentConfig(
+                temperature=1.0,
+                max_output_tokens=800,
+                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+            ),
         ),
+        timeout=30.0,
     )
     return response.text or ""
 
@@ -138,7 +161,7 @@ async def run_single_query(hospital_name: str, query_text: str, platform: str, r
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini
 
     async def single():
-        async with _api_semaphore:
+        async with _get_semaphore():
             try:
                 raw = await query_fn(query_text)
                 parsed = await _parse_mention(hospital_name, raw)

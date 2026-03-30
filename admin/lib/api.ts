@@ -1,12 +1,13 @@
 const BASE = '/api/admin'
 
 export async function fetchAPI(path: string, options?: RequestInit) {
+  const { headers: customHeaders, ...rest } = options ?? {}
   const res = await fetch(`${BASE}${path}`, {
+    ...rest,
     headers: {
       'Content-Type': 'application/json',
-      ...options?.headers,
+      ...customHeaders,
     },
-    ...options,
   })
 
   if (!res.ok) {
@@ -15,5 +16,6 @@ export async function fetchAPI(path: string, options?: RequestInit) {
   }
 
   if (res.status === 204) return null
-  return res.json()
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
 }

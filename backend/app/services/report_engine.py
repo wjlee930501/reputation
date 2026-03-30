@@ -58,11 +58,12 @@ def generate_pdf_report(
     # GCS 업로드
     gcs_path = _upload_to_gcs(local_pdf_path, hospital.slug, filename)
 
-    # 업로드 후 로컬 파일 삭제
-    try:
-        local_pdf_path.unlink()
-    except Exception as e:
-        logger.warning(f"Failed to delete local PDF {local_pdf_path}: {e}")
+    # GCS 업로드 성공 시에만 로컬 파일 삭제
+    if gcs_path.startswith("gs://"):
+        try:
+            local_pdf_path.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to delete local PDF {local_pdf_path}: {e}")
 
     return gcs_path
 

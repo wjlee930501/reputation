@@ -37,13 +37,23 @@ ADMIN_BASE_URL = settings.ADMIN_BASE_URL
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)      # 주간 측정용
 
 
+import threading
+
+_tls = threading.local()
+
+
 def _run_async(coro):
-    """Run an async coroutine safely in a sync Celery task."""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    """Run an async coroutine safely in a sync Celery task.
+
+    Reuses a single event loop per thread to avoid connection pool corruption
+    in async clients (OpenAI, httpx) that are bound to a specific loop.
+    """
+    loop = getattr(_tls, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _tls.loop = loop
+    return loop.run_until_complete(coro)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -218,6 +228,7 @@ def nightly_content_generation():
             except Exception as e:
                 logger.error(f"Content generation failed for {item.id}: {e}")
                 db.rollback()
+                db.expire_all()  # expire stale ORM state after rollback
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -73,7 +73,8 @@ def _generate_and_upload(prompt: str, hospital_name: str) -> str:
     try:
         import vertexai
         from vertexai.preview.vision_models import ImageGenerationModel
-        from google.cloud import storage
+
+        from app.services.gcs_utils import _get_gcs_client
 
         vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
         model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
@@ -92,7 +93,7 @@ def _generate_and_upload(prompt: str, hospital_name: str) -> str:
         image_bytes = images.images[0]._image_bytes
 
         # GCS 업로드
-        gcs_client = storage.Client()
+        gcs_client = _get_gcs_client()
         bucket = gcs_client.bucket(settings.GCP_STORAGE_BUCKET)
 
         filename = f"content/{hospital_name}/{uuid.uuid4().hex}.png"

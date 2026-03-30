@@ -4,8 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    APP_ENV: str = "development"
-    ADMIN_SECRET_KEY: str = "change-me"
+    APP_ENV: str = "production"
+    ADMIN_SECRET_KEY: str
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
 
     # DB

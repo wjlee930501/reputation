@@ -140,9 +140,17 @@ async def update_profile(
     """
     h = await _get_or_404(db, hospital_id)
 
+    PROFILE_FIELDS = {
+        "address", "phone", "business_hours", "website_url", "blog_url",
+        "kakao_channel_url", "region", "specialties", "keywords", "competitors",
+        "director_name", "director_career", "director_philosophy", "treatments",
+        "profile_complete",
+    }
     update_data = body.model_dump(exclude_none=True)
     was_complete = h.profile_complete
     for field, value in update_data.items():
+        if field not in PROFILE_FIELDS:
+            continue
         setattr(h, field, value)
 
     # 프로파일 완료 시 필수 필드 검증

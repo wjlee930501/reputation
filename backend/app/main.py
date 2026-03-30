@@ -34,10 +34,31 @@ app = FastAPI(
     description="병원 특화 AEO 관리 플랫폼 — MotionLabs Inc.",
     version="0.2.0",
     lifespan=lifespan,
+    docs_url="/docs" if settings.APP_ENV == "development" else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if settings.APP_ENV == "development" else None,
 )
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if settings.APP_ENV != "development":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

@@ -31,10 +31,11 @@ class Base(DeclarativeBase):
 
 
 async def get_db():
+    """Yield an async DB session. Callers MUST call ``await db.commit()``
+    explicitly in write endpoints — the session does NOT auto-commit."""
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise

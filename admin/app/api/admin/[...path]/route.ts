@@ -3,11 +3,17 @@ import { NextRequest, NextResponse } from "next/server";
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const ADMIN_KEY = process.env.ADMIN_SECRET_KEY || "";
 
+const ALLOWED_PREFIXES = ["hospitals", "content", "reports", "sov", "domain"];
+
 async function handler(
   req: NextRequest,
   { params }: { params: { path: string[] } }
 ) {
   const path = params.path.join("/");
+  const firstSegment = path.split("/")[0];
+  if (!ALLOWED_PREFIXES.includes(firstSegment)) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
   const url = new URL(`/api/v1/admin/${path}`, BACKEND_URL);
 
   req.nextUrl.searchParams.forEach((value, key) => {

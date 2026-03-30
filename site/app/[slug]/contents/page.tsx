@@ -14,12 +14,19 @@ export default function ContentsPage() {
   const [hospital, setHospital] = useState<Hospital | null>(null)
   const [contents, setContents] = useState<ContentItem[]>([])
   const [activeType, setActiveType] = useState('ALL')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
 
   useEffect(() => {
-    Promise.all([fetchHospital(slug), fetchContents(slug)]).then(([h, c]) => {
-      setHospital(h)
-      setContents(c)
-    })
+    setLoading(true)
+    setError(false)
+    Promise.all([fetchHospital(slug), fetchContents(slug)])
+      .then(([h, c]) => {
+        setHospital(h)
+        setContents(c)
+      })
+      .catch(() => setError(true))
+      .finally(() => setLoading(false))
   }, [slug])
 
   const filtered = activeType === 'ALL' ? contents : contents.filter(c => c.content_type === activeType)
@@ -37,6 +44,13 @@ export default function ContentsPage() {
       </div>
 
       <div className="max-w-4xl mx-auto px-6 py-8">
+        {loading && (
+          <p className="text-center text-gray-400 py-16">로딩 중...</p>
+        )}
+        {error && (
+          <p className="text-center text-red-400 py-16">데이터를 불러오지 못했습니다.</p>
+        )}
+        {!loading && !error && <>
         {/* Type filter */}
         <div className="flex flex-wrap gap-2 mb-8">
           {ALL_TYPES.map(type => (
@@ -96,6 +110,7 @@ export default function ContentsPage() {
             ))}
           </div>
         )}
+        </>}
       </div>
     </div>
   )

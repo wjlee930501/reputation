@@ -32,15 +32,16 @@ def generate_monthly_slots(
             dates.append(day.date())
         day = day.shift(days=1)
 
+    if len(dates) < total:
+        raise ValueError(
+            f"발행일 수({len(dates)})가 요금제 편수({total})보다 적습니다. "
+            f"발행 요일을 추가하거나 요금제를 변경해 주세요. "
+            f"({target_month.format('YYYY-MM')})"
+        )
+
     result = [
         (pub_date, ctype, i + 1, total)
         for i, (pub_date, ctype) in enumerate(zip(dates, type_sequence))
     ]
-
-    if len(result) < total:
-        logger.warning(
-            f"Calendar slots ({len(result)}) < plan total ({total}). "
-            f"Not enough publish days in {target_month.format('YYYY-MM')}."
-        )
 
     return result
