@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import threading
 from itertools import product
 
 from google import genai as google_genai
@@ -12,7 +13,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-import threading
 
 _sem_lock = threading.Lock()
 _api_semaphore: asyncio.Semaphore | None = None

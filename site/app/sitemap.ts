@@ -1,6 +1,7 @@
 import { MetadataRoute } from 'next'
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1/public'
+import { getApiBase } from '@/lib/config'
+
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 interface HospitalEntry {
@@ -15,6 +16,8 @@ interface ContentEntry {
 }
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  const apiBase = getApiBase(false)
+
   // Always include the base URL as a fallback
   const entries: MetadataRoute.Sitemap = [
     {
@@ -25,9 +28,13 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     },
   ]
 
+  if (!apiBase) {
+    return entries
+  }
+
   let hospitals: HospitalEntry[]
   try {
-    const res = await fetch(`${API_BASE}/hospitals`, { next: { revalidate: 3600 } })
+    const res = await fetch(`${apiBase}/hospitals`, { next: { revalidate: 3600 } })
     if (!res.ok) {
       console.error(`[sitemap] Failed to fetch hospitals: HTTP ${res.status}`)
       return entries
@@ -49,7 +56,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
     // Hospital contents — fetch all published content (up to 500)
     try {
-      const cRes = await fetch(`${API_BASE}/hospitals/${hospital.slug}/contents?limit=500`, {
+      const cRes = await fetch(`${apiBase}/hospitals/${hospital.slug}/contents?limit=500`, {
         next: { revalidate: 3600 },
       })
       if (cRes.ok) {

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
@@ -66,16 +66,16 @@ export default function ContentPage() {
   const [bulkProgress, setBulkProgress] = useState<string | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
 
-  const load = () => {
+  const load = useCallback(() => {
     setLoading(true)
     setSelectedIds(new Set())
     fetchAPI(`/admin/hospitals/${id}/content?year=${year}&month=${month}`)
       .then(setItems)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
-  }
+  }, [id, month, year])
 
-  useEffect(() => { load() }, [id, year, month])
+  useEffect(() => { load() }, [load])
 
   // Bulk-selectable: DRAFT with body
   const selectableIds = items

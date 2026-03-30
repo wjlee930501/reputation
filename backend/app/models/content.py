@@ -1,12 +1,16 @@
 import enum
 import uuid
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.hospital import Hospital
 
 
 class ContentType(str, enum.Enum):
@@ -60,6 +64,7 @@ PLAN_DISTRIBUTION = {
 
 class ContentSchedule(Base):
     """병원별 콘텐츠 발행 스케줄"""
+
     __tablename__ = "content_schedules"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -81,6 +86,7 @@ class ContentSchedule(Base):
 
 class ContentItem(Base):
     """개별 콘텐츠 아이템"""
+
     __tablename__ = "content_items"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

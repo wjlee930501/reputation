@@ -15,7 +15,6 @@ AEO 홈페이지 빌더
 """
 import json
 import logging
-import os
 from pathlib import Path
 
 from jinja2 import Environment, DictLoader, select_autoescape

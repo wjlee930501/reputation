@@ -1,12 +1,18 @@
 import enum
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import JSON, Boolean, DateTime, Enum, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.content import ContentItem, ContentSchedule
+    from app.models.report import MonthlyReport
+    from app.models.sov import QueryMatrix, SovRecord
 
 
 class Plan(str, enum.Enum):

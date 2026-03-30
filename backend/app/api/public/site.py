@@ -46,7 +46,7 @@ async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
 @router.get("/{slug}/contents")
 async def list_published_contents(
     slug: str,
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
     """발행된 콘텐츠 목록 (최신순)"""
@@ -90,6 +90,7 @@ def _serialize_hospital(h: Hospital) -> dict:
         "id": str(h.id),
         "name": h.name,
         "slug": h.slug,
+        "plan": h.plan,
         "address": h.address,
         "phone": h.phone,
         "business_hours": h.business_hours,
@@ -98,7 +99,9 @@ def _serialize_hospital(h: Hospital) -> dict:
         "aeo_domain": h.aeo_domain,
         "region": h.region,
         "specialties": h.specialties,
+        "keywords": h.keywords,
         "director_name": h.director_name,
+        "director_career": h.director_career,
         "director_philosophy": h.director_philosophy,
         "director_photo_url": h.director_photo_url,
         "treatments": h.treatments,

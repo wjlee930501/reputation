@@ -14,23 +14,20 @@ from typing import Optional
 
 import arrow
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-logger = logging.getLogger(__name__)
-
 from app.core.database import get_db
-from app.models.content import (
-    ContentItem, ContentSchedule, ContentStatus, ContentType, PLAN_DISTRIBUTION
-)
+from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.schemas.content import ContentItemDetail, ContentItemResponse
 from app.services import notifier
 from app.services.content_calendar import generate_monthly_slots
 from app.services.gcs_utils import get_signed_url
-from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden
+from app.utils.medical_filter import check_forbidden
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Content"])
 
@@ -76,7 +73,7 @@ async def set_schedule(
     # 기존 스케줄 비활성화
     old_stmt = select(ContentSchedule).where(
         ContentSchedule.hospital_id == hospital_id,
-        ContentSchedule.is_active == True,
+        ContentSchedule.is_active,
     )
     old_result = await db.execute(old_stmt)
     for old in old_result.scalars().all():

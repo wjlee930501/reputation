@@ -1,4 +1,4 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1/public'
+import { getApiBase } from '@/lib/config'
 
 export interface Hospital {
   id: number
@@ -36,22 +36,23 @@ export interface ContentItem {
 }
 
 export async function fetchHospital(slug: string): Promise<Hospital> {
-  const res = await fetch(`${BASE}/hospitals/${slug}`, { next: { revalidate: 3600 } })
+  const res = await fetch(`${getApiBase()}/hospitals/${slug}`, { next: { revalidate: 3600 } })
   if (!res.ok) throw new Error(`Hospital not found: ${slug}`)
   return res.json()
 }
 
 export async function fetchContents(slug: string, limit?: number): Promise<ContentItem[]> {
+  const base = getApiBase()
   const url = limit
-    ? `${BASE}/hospitals/${slug}/contents?limit=${limit}`
-    : `${BASE}/hospitals/${slug}/contents`
+    ? `${base}/hospitals/${slug}/contents?limit=${limit}`
+    : `${base}/hospitals/${slug}/contents`
   const res = await fetch(url, { next: { revalidate: 1800 } })
   if (!res.ok) return []
   return res.json()
 }
 
 export async function fetchContent(slug: string, contentId: string): Promise<ContentItem> {
-  const res = await fetch(`${BASE}/hospitals/${slug}/contents/${contentId}`, { next: { revalidate: 1800 } })
+  const res = await fetch(`${getApiBase()}/hospitals/${slug}/contents/${contentId}`, { next: { revalidate: 1800 } })
   if (!res.ok) throw new Error(`Content not found: ${contentId}`)
   return res.json()
 }

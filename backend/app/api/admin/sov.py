@@ -5,11 +5,10 @@ GET /admin/hospitals/{id}/sov/queries  — 쿼리별 멘션율
 """
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
 
 import arrow
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -70,7 +69,7 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     # 활성 쿼리 목록
     q_stmt = select(QueryMatrix).where(
         QueryMatrix.hospital_id == hospital_id,
-        QueryMatrix.is_active == True,
+        QueryMatrix.is_active,
     )
     queries = (await db.execute(q_stmt)).scalars().all()
 

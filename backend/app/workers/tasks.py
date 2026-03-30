@@ -11,6 +11,7 @@ Celery 태스크 전체
 """
 import asyncio
 import logging
+import threading
 import uuid
 from datetime import date, datetime, timezone, timedelta
 
@@ -21,7 +22,7 @@ from sqlalchemy.orm import joinedload
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
-from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType, PLAN_DISTRIBUTION
+from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.report import MonthlyReport
 from app.models.sov import QueryMatrix, SovRecord
@@ -35,9 +36,6 @@ logger = logging.getLogger(__name__)
 
 ADMIN_BASE_URL = settings.ADMIN_BASE_URL
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)      # 주간 측정용
-
-
-import threading
 
 _tls = threading.local()
 
@@ -279,7 +277,7 @@ def run_sov_for_hospital(self, hospital_id: str):
 
             stmt = select(QueryMatrix).where(
                 QueryMatrix.hospital_id == hospital.id,
-                QueryMatrix.is_active == True,
+                QueryMatrix.is_active,
             )
             result = db.execute(stmt)
             all_queries = result.scalars().all()
@@ -345,7 +343,7 @@ def monthly_slot_generation():
     with SyncSessionLocal() as db:
         stmt = (
             select(ContentSchedule)
-            .where(ContentSchedule.is_active == True)
+            .where(ContentSchedule.is_active)
             .options(joinedload(ContentSchedule.hospital))
         )
         result = db.execute(stmt)
@@ -416,7 +414,7 @@ def adjust_query_priorities():
         for h in hospitals:
             q_stmt = select(QueryMatrix).where(
                 QueryMatrix.hospital_id == h.id,
-                QueryMatrix.is_active == True,
+                QueryMatrix.is_active,
             )
             q_result = db.execute(q_stmt)
             queries = q_result.scalars().all()

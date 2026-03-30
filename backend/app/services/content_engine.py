@@ -142,7 +142,7 @@ async def generate_content(
 
     avoid_titles = ""
     if existing_titles:
-        avoid_titles = f"\n\n이미 작성된 제목 (중복 금지):\n" + "\n".join(f"- {t}" for t in existing_titles)
+        avoid_titles = "\n\n이미 작성된 제목 (중복 금지):\n" + "\n".join(f"- {t}" for t in existing_titles)
 
     user_message = f"{profile_ctx}\n\n{type_prompt}{avoid_titles}"
 
