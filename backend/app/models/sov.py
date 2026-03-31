@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +42,8 @@ class SovRecord(Base):
     mention_sentiment: Mapped[str | None] = mapped_column(String(20))
     mention_context: Mapped[str | None] = mapped_column(Text)
     raw_response: Mapped[str] = mapped_column(Text, nullable=False)
+    competitor_mentions: Mapped[list | None] = mapped_column(JSON)
+    # 예: [{"name": "경쟁병원", "is_mentioned": true, "mention_rank": 2}]
 
     hospital: Mapped["Hospital"] = relationship(back_populates="sov_records")
     query: Mapped["QueryMatrix"] = relationship(back_populates="sov_records")

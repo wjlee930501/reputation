@@ -86,10 +86,11 @@ def trigger_v0_report(self, hospital_id: str):
             platforms = ["chatgpt"]
             if settings.GEMINI_API_KEY:
                 platforms.append("gemini")
+            competitors = hospital.competitors or []
             for q in sample_queries:
                 for platform in platforms:
                     results = _run_async(
-                        run_single_query(hospital.name, q.query_text, platform, repeat_count=5)
+                        run_single_query(hospital.name, q.query_text, platform, repeat_count=5, competitors=competitors)
                     )
                     for r in results:
                         record = SovRecord(
@@ -101,6 +102,7 @@ def trigger_v0_report(self, hospital_id: str):
                             mention_sentiment=r.get("sentiment"),
                             mention_context=r.get("mention_context"),
                             raw_response=r["raw_response"],
+                            competitor_mentions=r.get("competitor_mentions"),
                         )
                         db.add(record)
                         all_records.append(r)
@@ -301,10 +303,11 @@ def run_sov_for_hospital(self, hospital_id: str):
             if settings.GEMINI_API_KEY:
                 platforms.append("gemini")
 
+            competitors = hospital.competitors or []
             records = []
             for q in queries:
                 for platform in platforms:
-                    results = _run_async(run_single_query(hospital.name, q.query_text, platform, SOV_REPEAT_WEEKLY))
+                    results = _run_async(run_single_query(hospital.name, q.query_text, platform, SOV_REPEAT_WEEKLY, competitors=competitors))
                     for r in results:
                         records.append(SovRecord(
                             hospital_id=hospital.id,
@@ -315,6 +318,7 @@ def run_sov_for_hospital(self, hospital_id: str):
                             mention_sentiment=r.get("sentiment"),
                             mention_context=r.get("mention_context"),
                             raw_response=r["raw_response"],
+                            competitor_mentions=r.get("competitor_mentions"),
                         ))
 
             db.add_all(records)
