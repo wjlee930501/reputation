@@ -395,21 +395,31 @@ async def _apply_content_brief_update(
     query_target: AIQueryTarget | None = None
     exposure_action: ExposureAction | None = None
     link_changed = False
+    previous_exposure_action_id = item.exposure_action_id
 
     if "exposure_action_id" in fields:
         link_changed = True
-        item.exposure_action_id = body.exposure_action_id
         if body.exposure_action_id:
             exposure_action = await _get_exposure_action_or_404(
                 db,
                 hospital.id,
                 body.exposure_action_id,
             )
+            await _clear_replaced_action_content_link(db, exposure_action, item.id)
+            item.exposure_action_id = exposure_action.id
             exposure_action.linked_content_id = item.id
             if "query_target_id" not in fields and exposure_action.query_target_id:
                 item.query_target_id = exposure_action.query_target_id
         else:
             item.exposure_action_id = None
+        if previous_exposure_action_id and previous_exposure_action_id != body.exposure_action_id:
+            previous_action = await _get_exposure_action_or_404(
+                db,
+                hospital.id,
+                previous_exposure_action_id,
+            )
+            if previous_action.linked_content_id == item.id:
+                previous_action.linked_content_id = None
     elif item.exposure_action_id:
         exposure_action = await _get_exposure_action_or_404(db, hospital.id, item.exposure_action_id)
 
@@ -458,6 +468,18 @@ async def _apply_content_brief_update(
             item.brief_approved_by = None
     elif "brief_approved_by" in fields and item.brief_status == BRIEF_STATUS_APPROVED:
         item.brief_approved_by = body.brief_approved_by
+
+
+async def _clear_replaced_action_content_link(
+    db: AsyncSession,
+    exposure_action: ExposureAction,
+    replacement_content_id: uuid.UUID,
+) -> None:
+    if not exposure_action.linked_content_id or exposure_action.linked_content_id == replacement_content_id:
+        return
+    previous = await db.get(ContentItem, exposure_action.linked_content_id)
+    if previous and previous.exposure_action_id == exposure_action.id:
+        previous.exposure_action_id = None
 
 
 def _serialize_item(item: ContentItem, full: bool = False) -> dict:

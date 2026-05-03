@@ -233,3 +233,155 @@ async def test_update_content_brief_links_action_infers_target_and_approves(monk
     assert item.brief_approved_at is not None
     assert response["query_target_id"] == str(target_id)
     assert response["content_brief"]["target_query"] == "강남 치질 수술 회복 기간은?"
+
+
+async def test_update_content_brief_reassigns_action_without_stale_links(monkeypatch):
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    target_id = uuid.uuid4()
+    old_action_id = uuid.uuid4()
+    new_action_id = uuid.uuid4()
+    replaced_item_id = uuid.uuid4()
+
+    hospital = _hospital(hospital_id)
+    item = _content_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        exposure_action_id=old_action_id,
+    )
+    target = _query_target(target_id=target_id, hospital_id=hospital_id)
+    old_action = _exposure_action(
+        action_id=old_action_id,
+        hospital_id=hospital_id,
+        target_id=target_id,
+    )
+    old_action.linked_content_id = item_id
+    new_action = _exposure_action(
+        action_id=new_action_id,
+        hospital_id=hospital_id,
+        target_id=target_id,
+    )
+    new_action.linked_content_id = replaced_item_id
+    replaced_item = _content_item(
+        id=replaced_item_id,
+        hospital_id=hospital_id,
+        exposure_action_id=new_action_id,
+    )
+
+    class FakeDB:
+        committed = False
+
+        async def commit(self):
+            self.committed = True
+
+        async def refresh(self, refreshed_item):
+            assert refreshed_item is item
+
+        async def get(self, model, requested_id):
+            if requested_id == replaced_item_id:
+                return replaced_item
+            return None
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        assert requested_item_id == item_id
+        assert requested_hospital_id == hospital_id
+        return item
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return hospital
+
+    async def fake_get_target(db, requested_hospital_id, requested_target_id):
+        assert requested_hospital_id == hospital_id
+        assert requested_target_id == target_id
+        return target
+
+    async def fake_get_action(db, requested_hospital_id, requested_action_id):
+        assert requested_hospital_id == hospital_id
+        if requested_action_id == old_action_id:
+            return old_action
+        if requested_action_id == new_action_id:
+            return new_action
+        raise AssertionError(f"Unexpected action id: {requested_action_id}")
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    monkeypatch.setattr(content_api, "_get_query_target_or_404", fake_get_target)
+    monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
+
+    db = FakeDB()
+    response = await content_api.update_content_brief(
+        hospital_id,
+        item_id,
+        ContentBriefUpdate(
+            exposure_action_id=new_action_id,
+            content_brief={"target_query": "manual"},
+        ),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert item.exposure_action_id == new_action_id
+    assert item.query_target_id == target_id
+    assert old_action.linked_content_id is None
+    assert new_action.linked_content_id == item_id
+    assert replaced_item.exposure_action_id is None
+    assert response["exposure_action_id"] == str(new_action_id)
+
+
+async def test_update_content_brief_unlinks_action_clears_work_queue_link(monkeypatch):
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    action_id = uuid.uuid4()
+
+    hospital = _hospital(hospital_id)
+    item = _content_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        exposure_action_id=action_id,
+    )
+    action = _exposure_action(action_id=action_id, hospital_id=hospital_id)
+    action.linked_content_id = item_id
+
+    class FakeDB:
+        committed = False
+
+        async def commit(self):
+            self.committed = True
+
+        async def refresh(self, refreshed_item):
+            assert refreshed_item is item
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        assert requested_item_id == item_id
+        assert requested_hospital_id == hospital_id
+        return item
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return hospital
+
+    async def fake_get_action(db, requested_hospital_id, requested_action_id):
+        assert requested_hospital_id == hospital_id
+        assert requested_action_id == action_id
+        return action
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
+
+    db = FakeDB()
+    response = await content_api.update_content_brief(
+        hospital_id,
+        item_id,
+        ContentBriefUpdate(
+            exposure_action_id=None,
+            content_brief={"target_query": "manual"},
+        ),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert item.exposure_action_id is None
+    assert action.linked_content_id is None
+    assert response["exposure_action_id"] is None
