@@ -457,13 +457,21 @@ async def _apply_content_brief_update(
             item.brief_approved_by = None
 
     if "brief_status" in fields:
-        item.brief_status = body.brief_status
         if body.brief_status == BRIEF_STATUS_APPROVED:
             if not item.content_brief:
                 raise HTTPException(status_code=400, detail="Cannot approve an empty content brief")
+            philosophy = await _get_approved_philosophy(db, hospital.id)
+            if philosophy is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot approve a content brief without an approved content philosophy",
+                )
+            item.content_philosophy_id = philosophy.id
+            item.brief_status = body.brief_status
             item.brief_approved_at = datetime.now(timezone.utc)
             item.brief_approved_by = body.brief_approved_by or item.brief_approved_by or "AE"
         else:
+            item.brief_status = body.brief_status
             item.brief_approved_at = None
             item.brief_approved_by = None
     elif "brief_approved_by" in fields and item.brief_status == BRIEF_STATUS_APPROVED:

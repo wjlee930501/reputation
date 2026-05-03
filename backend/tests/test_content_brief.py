@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.api.admin import content as content_api
@@ -228,11 +229,68 @@ async def test_update_content_brief_links_action_infers_target_and_approves(monk
     assert item.query_target_id == target_id
     assert item.exposure_action_id == action_id
     assert action.linked_content_id == item_id
+    assert item.content_philosophy_id == philosophy.id
     assert item.brief_status == "APPROVED"
     assert item.brief_approved_by == "Ops"
     assert item.brief_approved_at is not None
     assert response["query_target_id"] == str(target_id)
     assert response["content_brief"]["target_query"] == "강남 치질 수술 회복 기간은?"
+
+
+async def test_update_content_brief_blocks_approval_without_approved_philosophy(monkeypatch):
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    hospital = _hospital(hospital_id)
+    item = _content_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        content_brief={"target_query": "manual"},
+    )
+
+    class FakeDB:
+        committed = False
+
+        async def commit(self):
+            self.committed = True
+
+        async def refresh(self, refreshed_item):
+            raise AssertionError("Brief approval without philosophy should not commit")
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        assert requested_item_id == item_id
+        assert requested_hospital_id == hospital_id
+        return item
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return hospital
+
+    async def fake_get_philosophy(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return None
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
+
+    db = FakeDB()
+    with pytest.raises(HTTPException) as exc_info:
+        await content_api.update_content_brief(
+            hospital_id,
+            item_id,
+            ContentBriefUpdate(
+                brief_status="APPROVED",
+                brief_approved_by="Ops",
+            ),
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "approved content philosophy" in exc_info.value.detail
+    assert db.committed is False
+    assert item.brief_status is None
+    assert item.brief_approved_at is None
+    assert item.brief_approved_by is None
 
 
 async def test_update_content_brief_reassigns_action_without_stale_links(monkeypatch):
