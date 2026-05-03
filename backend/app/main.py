@@ -4,12 +4,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response
 
 from app.api.admin import hospitals as admin_hospitals
 from app.api.admin import content as admin_content
 from app.api.admin import reports as admin_reports
 from app.api.admin import sov as admin_sov
+from app.api.admin import query_targets as admin_query_targets
 from app.api.admin import domain as admin_domain
+from app.api.admin import essence as admin_essence
+from app.api.admin import exposure_actions as admin_exposure_actions
 from app.api.public import site as public_site
 from app.core.config import settings
 from app.core.security import verify_admin_key
@@ -42,10 +48,6 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request as StarletteRequest
-from starlette.responses import Response
-
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next):
@@ -74,7 +76,10 @@ app.include_router(admin_hospitals.router, prefix="/api/v1", dependencies=admin_
 app.include_router(admin_content.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_reports.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_sov.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_query_targets.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_domain.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_essence.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_exposure_actions.router, prefix="/api/v1", dependencies=admin_deps)
 
 # Public 라우터: 인증 불필요 (의도적)
 app.include_router(public_site.router, prefix="/api/v1")

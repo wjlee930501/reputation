@@ -1,28 +1,13 @@
+import { timingSafeEqual } from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto'
 
-function generateSessionToken(secret: string): string {
-  const nonce = randomBytes(16).toString('hex')
-  const sig = createHmac('sha256', secret).update(nonce).digest('hex')
-  return `${nonce}.${sig}`
-}
+import { generateSessionToken } from '@/lib/session'
 
-function verifySessionToken(token: string, secret: string): boolean {
-  const parts = token.split('.')
-  if (parts.length !== 2) return false
-  const [nonce, sig] = parts
-  const expected = createHmac('sha256', secret).update(nonce).digest('hex')
-  try {
-    return timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))
-  } catch {
-    return false
-  }
-}
-
-export { verifySessionToken }
+export const runtime = 'nodejs'
 
 export async function POST(req: NextRequest) {
-  const { password } = await req.json()
+  const payload = await req.json().catch(() => null)
+  const password = typeof payload?.password === 'string' ? payload.password : ''
   const secret = process.env.ADMIN_SESSION_SECRET
 
   if (!secret) {
@@ -36,7 +21,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid password' }, { status: 401 })
   }
 
-  const token = generateSessionToken(secret)
+  const token = await generateSessionToken(secret)
 
   const res = NextResponse.json({ ok: true })
   res.cookies.set('admin_session', token, {

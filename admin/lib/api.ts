@@ -1,8 +1,14 @@
 const BASE = '/api/admin'
 
+function normalizePath(path: string): string {
+  if (path.startsWith('/api/admin/')) return path.slice('/api/admin'.length)
+  if (path.startsWith('/admin/')) return path.slice('/admin'.length)
+  return path.startsWith('/') ? path : `/${path}`
+}
+
 export async function fetchAPI(path: string, options?: RequestInit) {
   const { headers: customHeaders, ...rest } = options ?? {}
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE}${normalizePath(path)}`, {
     ...rest,
     headers: {
       'Content-Type': 'application/json',

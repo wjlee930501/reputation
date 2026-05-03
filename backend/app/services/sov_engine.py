@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import threading
 from itertools import product
 
 from google import genai as google_genai
@@ -12,7 +13,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-import threading
 
 _sem_lock = threading.Lock()
 _api_semaphore: asyncio.Semaphore | None = None
@@ -78,6 +78,19 @@ PARSE_PROMPT = """\
 
 반드시 아래 JSON만 출력:
 {{"is_mentioned": true/false, "mention_rank": null 또는 정수, "sentiment": "positive"/"neutral"/"negative"/null, "mention_context": "언급 문장 또는 null"}}"""
+
+COMPETITOR_PARSE_PROMPT = """\
+다음 AI 답변에서 아래 병원들이 각각 언급되었는지 분석하라.
+병원명 축약형·변형도 언급으로 인정한다 (앞 2~3글자 일치 시 동일 병원).
+
+[분석 대상 병원 목록]
+{competitor_names}
+
+[답변]
+{response}
+
+반드시 아래 JSON만 출력 (배열):
+[{{"name": "병원명", "is_mentioned": true/false, "mention_rank": null 또는 정수}}]"""
 
 
 def generate_query_matrix(region: list[str], specialties: list[str], keywords: list[str]) -> list[str]:
@@ -157,7 +170,37 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
         return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None}
 
 
-async def run_single_query(hospital_name: str, query_text: str, platform: str, repeat_count: int) -> list[dict]:
+async def _parse_competitors(competitors: list[str], response_text: str) -> list[dict]:
+    if not competitors or not response_text.strip():
+        return []
+    # 빠른 사전 필터: 어떤 경쟁사의 앞 2글자도 없으면 스킵
+    if not any(c[:2] in response_text for c in competitors):
+        return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
+
+    result = await openai_client.chat.completions.create(
+        model=settings.OPENAI_MODEL_PARSE,
+        messages=[{"role": "user", "content": COMPETITOR_PARSE_PROMPT.format(
+            response=response_text[:3000],
+            competitor_names="\n".join(f"- {c}" for c in competitors),
+        )}],
+        temperature=0, max_tokens=500,
+        response_format={"type": "json_object"},
+    )
+    try:
+        parsed = json.loads(result.choices[0].message.content or "{}")
+        if isinstance(parsed, dict) and "competitors" in parsed:
+            parsed = parsed["competitors"]
+        if isinstance(parsed, list):
+            return parsed
+        return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
+    except Exception:
+        return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
+
+
+async def run_single_query(
+    hospital_name: str, query_text: str, platform: str, repeat_count: int,
+    competitors: list[str] | None = None,
+) -> list[dict]:
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini
 
     async def single():
@@ -165,10 +208,11 @@ async def run_single_query(hospital_name: str, query_text: str, platform: str, r
             try:
                 raw = await query_fn(query_text)
                 parsed = await _parse_mention(hospital_name, raw)
-                return {**parsed, "raw_response": raw}
+                comp_mentions = await _parse_competitors(competitors or [], raw) if competitors else []
+                return {**parsed, "raw_response": raw, "competitor_mentions": comp_mentions or None}
             except Exception as e:
                 logger.error(f"Query failed: {e}")
-                return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None, "raw_response": ""}
+                return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None, "raw_response": "", "competitor_mentions": None}
 
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))
 

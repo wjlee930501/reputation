@@ -11,6 +11,7 @@ class HospitalListItem(BaseModel):
     plan: Optional[str]
     profile_complete: bool
     v0_report_done: bool
+    site_built: bool
     site_live: bool
     schedule_set: bool
     created_at: Optional[str]
@@ -22,7 +23,13 @@ class HospitalDetail(HospitalListItem):
     business_hours: Optional[Any]
     website_url: Optional[str]
     blog_url: Optional[str]
+    kakao_channel_url: Optional[str]
+    google_business_profile_url: Optional[str]
+    google_maps_url: Optional[str]
+    naver_place_url: Optional[str]
     aeo_domain: Optional[str]
+    latitude: Optional[float]
+    longitude: Optional[float]
     region: list
     specialties: list
     keywords: list

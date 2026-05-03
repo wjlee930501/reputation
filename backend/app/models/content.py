@@ -1,12 +1,22 @@
 import enum
 import uuid
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.essence import HospitalContentPhilosophy
+    from app.models.hospital import Hospital
+    from app.models.sov import AIQueryTarget, ExposureAction
+
+
+def _jsonb_type():
+    return JSON().with_variant(JSONB, "postgresql")
 
 
 class ContentType(str, enum.Enum):
@@ -60,6 +70,7 @@ PLAN_DISTRIBUTION = {
 
 class ContentSchedule(Base):
     """병원별 콘텐츠 발행 스케줄"""
+
     __tablename__ = "content_schedules"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -81,6 +92,7 @@ class ContentSchedule(Base):
 
 class ContentItem(Base):
     """개별 콘텐츠 아이템"""
+
     __tablename__ = "content_items"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -103,6 +115,21 @@ class ContentItem(Base):
     # 스케줄·상태
     scheduled_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[ContentStatus] = mapped_column(Enum(ContentStatus), default=ContentStatus.DRAFT)
+    content_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
+    )
+    query_target_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("ai_query_targets.id", ondelete="SET NULL")
+    )
+    exposure_action_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("exposure_actions.id", ondelete="SET NULL")
+    )
+    content_brief: Mapped[dict | None] = mapped_column(_jsonb_type())
+    brief_status: Mapped[str | None] = mapped_column(String(30))
+    brief_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    brief_approved_by: Mapped[str | None] = mapped_column(String(100))
+    essence_status: Mapped[str | None] = mapped_column(String(50))
+    essence_check_summary: Mapped[dict | None] = mapped_column(_jsonb_type())
 
     # 타임스탬프
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -113,3 +140,10 @@ class ContentItem(Base):
 
     hospital: Mapped["Hospital"] = relationship(back_populates="content_items")
     schedule: Mapped["ContentSchedule"] = relationship(back_populates="content_items")
+    content_philosophy: Mapped["HospitalContentPhilosophy | None"] = relationship(
+        back_populates="content_items"
+    )
+    query_target: Mapped["AIQueryTarget | None"] = relationship()
+    exposure_action: Mapped["ExposureAction | None"] = relationship(
+        foreign_keys=[exposure_action_id]
+    )

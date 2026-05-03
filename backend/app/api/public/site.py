@@ -27,6 +27,7 @@ async def list_hospitals(db: AsyncSession = Depends(get_db)):
     return [
         {
             "slug": h.slug,
+            "aeo_domain": h.aeo_domain,
             "updated_at": h.updated_at.isoformat() if h.updated_at else h.created_at.isoformat() if h.created_at else None,
         }
         for h in hospitals
@@ -46,7 +47,7 @@ async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
 @router.get("/{slug}/contents")
 async def list_published_contents(
     slug: str,
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
     """발행된 콘텐츠 목록 (최신순)"""
@@ -90,15 +91,24 @@ def _serialize_hospital(h: Hospital) -> dict:
         "id": str(h.id),
         "name": h.name,
         "slug": h.slug,
+        "plan": h.plan,
         "address": h.address,
         "phone": h.phone,
         "business_hours": h.business_hours,
         "website_url": h.website_url,
         "blog_url": h.blog_url,
+        "kakao_channel_url": h.kakao_channel_url,
+        "google_business_profile_url": h.google_business_profile_url,
+        "google_maps_url": h.google_maps_url,
+        "naver_place_url": h.naver_place_url,
         "aeo_domain": h.aeo_domain,
+        "latitude": h.latitude,
+        "longitude": h.longitude,
         "region": h.region,
         "specialties": h.specialties,
+        "keywords": h.keywords,
         "director_name": h.director_name,
+        "director_career": h.director_career,
         "director_philosophy": h.director_philosophy,
         "director_photo_url": h.director_photo_url,
         "treatments": h.treatments,

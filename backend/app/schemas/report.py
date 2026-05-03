@@ -13,5 +13,6 @@ class ReportResponse(BaseModel):
     download_url: Optional[str] = None
     sov_summary: Optional[Any]
     content_summary: Optional[Any]
+    essence_summary: Optional[Any] = None
     created_at: str
     sent_at: Optional[str]

@@ -9,18 +9,28 @@ PATCH  /admin/hospitals/{id}/activate   — ACTIVE 전환
 """
 import re
 import uuid
+from dataclasses import dataclass
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from slugify import slugify
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.models.content import ContentItem, ContentStatus
+from app.models.essence import HospitalContentPhilosophy, HospitalSourceAsset, PhilosophyStatus, SourceStatus
 from app.models.hospital import Hospital, HospitalStatus, Plan
+from app.models.report import MonthlyReport
+from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
+from app.services.essence_engine import (
+    ESSENCE_STATUS_MISSING_APPROVED,
+    ESSENCE_STATUS_NEEDS_REVIEW,
+    compute_sources_snapshot_hash,
+)
 from app.workers.tasks import trigger_v0_report, build_aeo_site
-from app.api.admin.domain import _resolve_cname
+from app.api.admin.domain import _normalize_dns_name, _resolve_cname
 from app.core.config import settings
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
@@ -60,6 +70,11 @@ class HospitalProfileUpdate(BaseModel):
     website_url: str | None = Field(None, max_length=500)
     blog_url: str | None = Field(None, max_length=500)
     kakao_channel_url: str | None = Field(None, max_length=500)
+    google_business_profile_url: str | None = Field(None, max_length=500)
+    google_maps_url: str | None = Field(None, max_length=500)
+    naver_place_url: str | None = Field(None, max_length=500)
+    latitude: float | None = Field(None, ge=-90, le=90)
+    longitude: float | None = Field(None, ge=-180, le=180)
 
     # 타겟
     region: list[str] | None = None
@@ -88,6 +103,15 @@ class DomainConnect(BaseModel):
         if not _DOMAIN_RE.match(v):
             raise ValueError("Invalid domain format")
         return v.lower()
+
+
+@dataclass(frozen=True)
+class ReadinessCheck:
+    key: str
+    label: str
+    passed: bool
+    weight: int
+    next_action: str
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────
@@ -142,7 +166,8 @@ async def update_profile(
 
     PROFILE_FIELDS = {
         "address", "phone", "business_hours", "website_url", "blog_url",
-        "kakao_channel_url", "region", "specialties", "keywords", "competitors",
+        "kakao_channel_url", "google_business_profile_url", "google_maps_url",
+        "naver_place_url", "latitude", "longitude", "region", "specialties", "keywords", "competitors",
         "director_name", "director_career", "director_philosophy", "treatments",
         "profile_complete",
     }
@@ -195,7 +220,17 @@ async def connect_domain(
 ):
     """도메인 연결 완료 처리 + 사이트 리빌드"""
     h = await _get_or_404(db, hospital_id)
+    previous_domain = h.aeo_domain
+    domain_changed = _normalize_dns_name(previous_domain) != _normalize_dns_name(body.domain)
     h.aeo_domain = body.domain
+
+    # 도메인이 바뀌면 기존 DNS 검증은 더 이상 유효하지 않다.
+    # 이미 라이브였던 병원이 새 미검증 도메인으로도 라이브처럼 보이는 것을 막는다.
+    if domain_changed:
+        h.site_live = False
+        if h.status == HospitalStatus.ACTIVE:
+            h.status = HospitalStatus.PENDING_DOMAIN
+
     await db.commit()
 
     # 사이트 리빌드 (도메인 반영)
@@ -231,7 +266,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
         raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다. 먼저 도메인을 입력해 주세요.")
 
     cname_value = _resolve_cname(h.aeo_domain)
-    if cname_value is None or settings.CNAME_TARGET not in cname_value:
+    if _normalize_dns_name(cname_value) != _normalize_dns_name(settings.CNAME_TARGET):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -246,12 +281,213 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     return {"detail": f"{h.name} activated"}
 
 
+@router.get("/{hospital_id}/readiness")
+async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """병원별 AI 검색 운영 준비도를 계산한다."""
+    h = await _get_or_404(db, hospital_id)
+
+    published_count = await _count(
+        db,
+        select(func.count())
+        .select_from(ContentItem)
+        .where(ContentItem.hospital_id == h.id, ContentItem.status == ContentStatus.PUBLISHED),
+    )
+    sov_count = await _count(
+        db,
+        select(func.count()).select_from(SovRecord).where(SovRecord.hospital_id == h.id),
+    )
+    report_count = await _count(
+        db,
+        select(func.count()).select_from(MonthlyReport).where(MonthlyReport.hospital_id == h.id),
+    )
+    processed_sources_result = await db.execute(
+        select(HospitalSourceAsset).where(
+            HospitalSourceAsset.hospital_id == h.id,
+            HospitalSourceAsset.status == SourceStatus.PROCESSED,
+        )
+    )
+    processed_sources = processed_sources_result.scalars().all()
+    approved_result = await db.execute(
+        select(HospitalContentPhilosophy).where(
+            HospitalContentPhilosophy.hospital_id == h.id,
+            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+        )
+    )
+    approved_philosophy = approved_result.scalar_one_or_none()
+    current_snapshot_hash = compute_sources_snapshot_hash(processed_sources)
+    essence_fresh = bool(
+        approved_philosophy
+        and processed_sources
+        and approved_philosophy.source_snapshot_hash == current_snapshot_hash
+    )
+    essence_blocked_content_count = await _count(
+        db,
+        select(func.count())
+        .select_from(ContentItem)
+        .where(
+            ContentItem.hospital_id == h.id,
+            ContentItem.essence_status.in_([
+                ESSENCE_STATUS_MISSING_APPROVED,
+                ESSENCE_STATUS_NEEDS_REVIEW,
+            ]),
+        ),
+    )
+
+    has_core_profile = all([
+        h.name,
+        h.address,
+        h.phone,
+        h.region,
+        h.specialties,
+        h.keywords,
+        h.director_name,
+        h.treatments,
+    ])
+    has_local_entity = bool(h.google_business_profile_url or h.google_maps_url)
+    has_external_profiles = bool(
+        h.website_url or h.blog_url or h.kakao_channel_url or h.naver_place_url
+    )
+
+    checks = [
+        ReadinessCheck(
+            "core_profile",
+            "병원 핵심 프로파일",
+            bool(has_core_profile),
+            18,
+            "프로파일에서 주소, 전화, 지역, 진료과목, 키워드, 원장, 진료항목을 채우세요.",
+        ),
+        ReadinessCheck(
+            "local_entity",
+            "Google 로컬 엔티티",
+            has_local_entity,
+            14,
+            "Google Business Profile 또는 Google Maps URL을 입력하세요.",
+        ),
+        ReadinessCheck(
+            "external_profiles",
+            "외부 공식 채널",
+            has_external_profiles,
+            8,
+            "기존 홈페이지, 블로그, 카카오 채널, Naver Place 중 하나 이상을 연결하세요.",
+        ),
+        ReadinessCheck(
+            "essence_sources",
+            "Essence 원천 자료",
+            len(processed_sources) > 0,
+            12,
+            "Essence 탭에서 온보딩 자료를 입력하고 raw_text 기반 추출을 완료하세요.",
+        ),
+        ReadinessCheck(
+            "essence_philosophy",
+            "승인된 콘텐츠 철학",
+            approved_philosophy is not None,
+            14,
+            "Essence 탭에서 근거 기반 콘텐츠 철학 초안을 생성하고 승인하세요.",
+        ),
+        ReadinessCheck(
+            "essence_freshness",
+            "Essence source freshness",
+            essence_fresh,
+            8,
+            "처리된 source가 바뀌었습니다. 콘텐츠 철학 새 버전을 검토하세요.",
+        ),
+        ReadinessCheck(
+            "content_alignment",
+            "콘텐츠 Essence 정렬",
+            essence_blocked_content_count == 0,
+            6,
+            "승인 철학 누락 또는 재검수 상태 콘텐츠를 수정하세요.",
+        ),
+        ReadinessCheck(
+            "v0_report",
+            "V0 진단 리포트",
+            bool(h.v0_report_done or report_count > 0),
+            12,
+            "프로파일 완료 후 V0 리포트를 생성하세요.",
+        ),
+        ReadinessCheck(
+            "site_built",
+            "AEO 사이트 준비",
+            bool(h.site_built),
+            10,
+            "AEO 사이트 준비 태스크를 완료하세요.",
+        ),
+        ReadinessCheck(
+            "domain",
+            "도메인 연결",
+            bool(h.aeo_domain and h.site_live),
+            10,
+            "AEO 도메인을 입력하고 DNS 검증을 완료하세요.",
+        ),
+        ReadinessCheck(
+            "schedule",
+            "콘텐츠 스케줄",
+            bool(h.schedule_set),
+            8,
+            "월간 콘텐츠 스케줄을 설정하세요.",
+        ),
+        ReadinessCheck(
+            "published_content",
+            "발행 콘텐츠",
+            published_count > 0,
+            12,
+            "초안 콘텐츠를 검수하고 최소 1편 이상 발행하세요.",
+        ),
+        ReadinessCheck(
+            "sov_data",
+            "SoV 측정 데이터",
+            sov_count > 0,
+            8,
+            "ChatGPT/Gemini 질의 세트 측정을 실행하세요.",
+        ),
+    ]
+
+    total_weight = sum(c.weight for c in checks)
+    earned = sum(c.weight for c in checks if c.passed)
+    score = round(earned / total_weight * 100)
+
+    return {
+        "hospital_id": str(h.id),
+        "score": score,
+        "status": (
+            "READY"
+            if score >= 80 and h.site_live and approved_philosophy is not None and essence_fresh
+            else "NEEDS_WORK"
+        ),
+        "published_content_count": published_count,
+        "sov_record_count": sov_count,
+        "report_count": report_count,
+        "essence": {
+            "processed_source_count": len(processed_sources),
+            "approved_philosophy_exists": approved_philosophy is not None,
+            "philosophy_version": approved_philosophy.version if approved_philosophy else None,
+            "source_stale": bool(approved_philosophy and not essence_fresh),
+            "blocked_content_count": essence_blocked_content_count,
+        },
+        "checks": [
+            {
+                "key": c.key,
+                "label": c.label,
+                "passed": c.passed,
+                "weight": c.weight,
+                "next_action": c.next_action,
+            }
+            for c in checks
+        ],
+    }
+
+
 # ── 헬퍼 ─────────────────────────────────────────────────────────
 async def _get_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:
     h = await db.get(Hospital, hospital_id)
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return h
+
+
+async def _count(db: AsyncSession, stmt) -> int:
+    result = await db.execute(stmt)
+    return int(result.scalar_one() or 0)
 
 
 def _serialize(h: Hospital) -> dict:
@@ -266,7 +502,13 @@ def _serialize(h: Hospital) -> dict:
         "business_hours": h.business_hours,
         "website_url": h.website_url,
         "blog_url": h.blog_url,
+        "kakao_channel_url": h.kakao_channel_url,
+        "google_business_profile_url": h.google_business_profile_url,
+        "google_maps_url": h.google_maps_url,
+        "naver_place_url": h.naver_place_url,
         "aeo_domain": h.aeo_domain,
+        "latitude": h.latitude,
+        "longitude": h.longitude,
         "region": h.region,
         "specialties": h.specialties,
         "keywords": h.keywords,
@@ -293,6 +535,7 @@ def _serialize_list(h: Hospital) -> dict:
         "plan": h.plan,
         "profile_complete": h.profile_complete,
         "v0_report_done": h.v0_report_done,
+        "site_built": h.site_built,
         "site_live": h.site_live,
         "schedule_set": h.schedule_set,
         "created_at": h.created_at.isoformat() if h.created_at else None,

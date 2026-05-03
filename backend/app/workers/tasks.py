@@ -11,6 +11,7 @@ Celery 태스크 전체
 """
 import asyncio
 import logging
+import threading
 import uuid
 from datetime import date, datetime, timezone, timedelta
 
@@ -21,12 +22,19 @@ from sqlalchemy.orm import joinedload
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
-from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType, PLAN_DISTRIBUTION
+from app.models.content import ContentItem, ContentSchedule, ContentStatus
+from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.report import MonthlyReport
 from app.models.sov import QueryMatrix, SovRecord
 from app.services import notifier
+from app.services.content_brief import BRIEF_STATUS_APPROVED
 from app.services.content_engine import generate_content
+from app.services.essence_engine import (
+    ESSENCE_STATUS_MISSING_APPROVED,
+    build_monthly_essence_summary,
+    screen_content_against_philosophy,
+)
 from app.services.image_engine import generate_image
 from app.services.report_engine import generate_pdf_report
 from app.services.sov_engine import generate_query_matrix, run_single_query, calculate_sov
@@ -35,9 +43,6 @@ logger = logging.getLogger(__name__)
 
 ADMIN_BASE_URL = settings.ADMIN_BASE_URL
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)      # 주간 측정용
-
-
-import threading
 
 _tls = threading.local()
 
@@ -88,10 +93,11 @@ def trigger_v0_report(self, hospital_id: str):
             platforms = ["chatgpt"]
             if settings.GEMINI_API_KEY:
                 platforms.append("gemini")
+            competitors = hospital.competitors or []
             for q in sample_queries:
                 for platform in platforms:
                     results = _run_async(
-                        run_single_query(hospital.name, q.query_text, platform, repeat_count=5)
+                        run_single_query(hospital.name, q.query_text, platform, repeat_count=5, competitors=competitors)
                     )
                     for r in results:
                         record = SovRecord(
@@ -103,6 +109,7 @@ def trigger_v0_report(self, hospital_id: str):
                             mention_sentiment=r.get("sentiment"),
                             mention_context=r.get("mention_context"),
                             raw_response=r["raw_response"],
+                            competitor_mentions=r.get("competitor_mentions"),
                         )
                         db.add(record)
                         all_records.append(r)
@@ -202,13 +209,44 @@ def nightly_content_generation():
                 )
                 existing_titles = [r[0] for r in existing.all()]
 
+                philosophy = db.execute(
+                    select(HospitalContentPhilosophy).where(
+                        HospitalContentPhilosophy.hospital_id == hospital.id,
+                        HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+                    )
+                ).scalar_one_or_none()
+                if not philosophy:
+                    item.content_philosophy_id = None
+                    item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
+                    item.essence_check_summary = {
+                        "blocking": True,
+                        "findings": ["승인된 콘텐츠 철학이 없어 자동 생성/발행 품질을 통과할 수 없습니다."],
+                        "checked_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    db.commit()
+                    logger.warning(f"Skipping content generation without approved philosophy: {hospital.name}")
+                    continue
+
                 # Claude Sonnet 콘텐츠 생성
-                content_data = _run_async(generate_content(hospital, item.content_type, existing_titles))
+                approved_brief = item.content_brief if item.brief_status == BRIEF_STATUS_APPROVED else None
+                content_data = _run_async(
+                    generate_content(
+                        hospital,
+                        item.content_type,
+                        existing_titles,
+                        philosophy,
+                        approved_brief,
+                    )
+                )
                 item.title = content_data["title"]
                 item.body = content_data["body"]
                 item.meta_description = content_data.get("meta_description")
                 item.generated_at = datetime.now(timezone.utc)
                 item.status = ContentStatus.DRAFT
+                item.content_philosophy_id = philosophy.id
+                screening = screen_content_against_philosophy(item, philosophy)
+                item.essence_status = screening.status
+                item.essence_check_summary = screening.summary
 
                 # 텍스트 콘텐츠 먼저 커밋 (이미지 실패가 텍스트를 롤백하지 않도록)
                 db.commit()
@@ -279,7 +317,7 @@ def run_sov_for_hospital(self, hospital_id: str):
 
             stmt = select(QueryMatrix).where(
                 QueryMatrix.hospital_id == hospital.id,
-                QueryMatrix.is_active == True,
+                QueryMatrix.is_active,
             )
             result = db.execute(stmt)
             all_queries = result.scalars().all()
@@ -303,10 +341,11 @@ def run_sov_for_hospital(self, hospital_id: str):
             if settings.GEMINI_API_KEY:
                 platforms.append("gemini")
 
+            competitors = hospital.competitors or []
             records = []
             for q in queries:
                 for platform in platforms:
-                    results = _run_async(run_single_query(hospital.name, q.query_text, platform, SOV_REPEAT_WEEKLY))
+                    results = _run_async(run_single_query(hospital.name, q.query_text, platform, SOV_REPEAT_WEEKLY, competitors=competitors))
                     for r in results:
                         records.append(SovRecord(
                             hospital_id=hospital.id,
@@ -317,6 +356,7 @@ def run_sov_for_hospital(self, hospital_id: str):
                             mention_sentiment=r.get("sentiment"),
                             mention_context=r.get("mention_context"),
                             raw_response=r["raw_response"],
+                            competitor_mentions=r.get("competitor_mentions"),
                         ))
 
             db.add_all(records)
@@ -345,7 +385,7 @@ def monthly_slot_generation():
     with SyncSessionLocal() as db:
         stmt = (
             select(ContentSchedule)
-            .where(ContentSchedule.is_active == True)
+            .where(ContentSchedule.is_active)
             .options(joinedload(ContentSchedule.hospital))
         )
         result = db.execute(stmt)
@@ -416,7 +456,7 @@ def adjust_query_priorities():
         for h in hospitals:
             q_stmt = select(QueryMatrix).where(
                 QueryMatrix.hospital_id == h.id,
-                QueryMatrix.is_active == True,
+                QueryMatrix.is_active,
             )
             q_result = db.execute(q_stmt)
             queries = q_result.scalars().all()
@@ -522,6 +562,7 @@ def run_monthly_reports():
                     sov_pct=sov_pct,
                     published_count=len(published_contents),
                 )
+                essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
 
                 db.add(MonthlyReport(
                     hospital_id=h.id,
@@ -531,6 +572,7 @@ def run_monthly_reports():
                     pdf_path=pdf_path,
                     sov_summary={"sov_pct": sov_pct, "prev_sov_pct": prev_sov, "change_pct": change_pct},
                     content_summary={"published_count": len(published_contents)},
+                    essence_summary=essence_summary,
                 ))
                 db.commit()
 

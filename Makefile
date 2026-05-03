@@ -1,4 +1,4 @@
-.PHONY: setup up down logs migrate revision test
+.PHONY: setup up down logs migrate revision test demo-seed essence-backfill
 
 setup:
 	cp .env.example .env
@@ -30,6 +30,12 @@ revision:
 
 test:
 	docker compose exec api pytest -v
+
+demo-seed:
+	docker compose exec api python -m app.utils.demo_seed
+
+essence-backfill:
+	docker compose exec api python -m app.utils.essence_backfill
 
 # ── 수동 태스크 실행 ───────────────────────────────────────────────
 v0:

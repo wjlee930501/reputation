@@ -1,12 +1,30 @@
 import enum
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.content import ContentItem, ContentSchedule
+    from app.models.essence import (
+        HospitalContentPhilosophy,
+        HospitalSourceAsset,
+        HospitalSourceEvidenceNote,
+    )
+    from app.models.report import MonthlyReport
+    from app.models.sov import (
+        AIQueryTarget,
+        ExposureAction,
+        ExposureGap,
+        MeasurementRun,
+        QueryMatrix,
+        SovRecord,
+    )
 
 
 class Plan(str, enum.Enum):
@@ -45,8 +63,13 @@ class Hospital(Base):
     website_url: Mapped[str | None] = mapped_column(String(500))
     blog_url: Mapped[str | None] = mapped_column(String(500))
     kakao_channel_url: Mapped[str | None] = mapped_column(String(500))
+    google_business_profile_url: Mapped[str | None] = mapped_column(String(500))
+    google_maps_url: Mapped[str | None] = mapped_column(String(500))
+    naver_place_url: Mapped[str | None] = mapped_column(String(500))
     aeo_domain: Mapped[str | None] = mapped_column(String(200))  # 연결된 AEO 도메인
     aeo_site_path: Mapped[str | None] = mapped_column(String(500))  # 빌드된 사이트 경로
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
 
     # ── 타겟 파라미터 ────────────────────────────────────────────────
     region: Mapped[list] = mapped_column(JSON, default=list)         # ["수원시", "영통구"]
@@ -87,10 +110,31 @@ class Hospital(Base):
     query_matrix: Mapped[list["QueryMatrix"]] = relationship(
         back_populates="hospital", cascade="all, delete-orphan"
     )
+    query_targets: Mapped[list["AIQueryTarget"]] = relationship(
+        back_populates="hospital", cascade="all, delete-orphan"
+    )
+    exposure_gaps: Mapped[list["ExposureGap"]] = relationship(
+        back_populates="hospital", cascade="all, delete-orphan"
+    )
+    exposure_actions: Mapped[list["ExposureAction"]] = relationship(
+        back_populates="hospital", cascade="all, delete-orphan"
+    )
+    measurement_runs: Mapped[list["MeasurementRun"]] = relationship(
+        back_populates="hospital", cascade="all, delete-orphan"
+    )
     sov_records: Mapped[list["SovRecord"]] = relationship(
         back_populates="hospital", cascade="all, delete-orphan"
     )
     monthly_reports: Mapped[list["MonthlyReport"]] = relationship(
+        back_populates="hospital", cascade="all, delete-orphan"
+    )
+    source_assets: Mapped[list["HospitalSourceAsset"]] = relationship(
+        back_populates="hospital", cascade="all, delete-orphan"
+    )
+    evidence_notes: Mapped[list["HospitalSourceEvidenceNote"]] = relationship(
+        back_populates="hospital", cascade="all, delete-orphan"
+    )
+    content_philosophies: Mapped[list["HospitalContentPhilosophy"]] = relationship(
         back_populates="hospital", cascade="all, delete-orphan"
     )
 

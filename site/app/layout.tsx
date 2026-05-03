@@ -14,6 +14,7 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || "https://reputation.co.kr"),
   title: "AEO 의료정보",
   description: "AI 검색 최적화 병원 의료정보 서비스",
 };

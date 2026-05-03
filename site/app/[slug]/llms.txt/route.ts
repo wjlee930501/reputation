@@ -5,6 +5,8 @@ interface Props {
   params: { slug: string }
 }
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
+
 export async function GET(_req: Request, { params }: Props) {
   try {
     const [hospital, contents] = await Promise.all([
@@ -18,6 +20,8 @@ export async function GET(_req: Request, { params }: Props) {
       `## 병원 정보`,
       `- 주소: ${hospital.address}`,
       `- 전화: ${hospital.phone}`,
+      hospital.website_url ? `- 공식 홈페이지: ${hospital.website_url}` : '',
+      hospital.google_maps_url ? `- Google Maps: ${hospital.google_maps_url}` : '',
       `- 전문과목: ${hospital.specialties?.join(', ') || ''}`,
       `- 지역: ${hospital.region?.join(', ') || ''}`,
       '',
@@ -44,6 +48,10 @@ export async function GET(_req: Request, { params }: Props) {
           ? new Date(c.published_at).toLocaleDateString('ko-KR')
           : c.scheduled_date
         lines.push(`- [${type}] ${c.title} (${date})`)
+        lines.push(`  URL: ${SITE_URL}/${params.slug}/contents/${c.id}`)
+        if (c.meta_description) {
+          lines.push(`  요약: ${c.meta_description}`)
+        }
       }
     }
 
