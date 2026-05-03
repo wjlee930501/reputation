@@ -6,6 +6,7 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 interface HospitalEntry {
   slug: string
+  aeo_domain?: string | null
   updated_at?: string
 }
 
@@ -25,6 +26,12 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       lastModified: new Date(),
       changeFrequency: 'daily',
       priority: 1.0,
+    },
+    {
+      url: `${SITE_URL}/llms.txt`,
+      lastModified: new Date(),
+      changeFrequency: 'daily',
+      priority: 0.5,
     },
   ]
 
@@ -52,6 +59,18 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
       changeFrequency: 'weekly',
       priority: 0.8,
+    })
+    entries.push({
+      url: `${SITE_URL}/${hospital.slug}/contents`,
+      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      changeFrequency: 'weekly',
+      priority: 0.7,
+    })
+    entries.push({
+      url: `${SITE_URL}/${hospital.slug}/llms.txt`,
+      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      changeFrequency: 'daily',
+      priority: 0.5,
     })
 
     // Hospital contents — fetch all published content (up to 500)

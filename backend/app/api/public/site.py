@@ -27,6 +27,7 @@ async def list_hospitals(db: AsyncSession = Depends(get_db)):
     return [
         {
             "slug": h.slug,
+            "aeo_domain": h.aeo_domain,
             "updated_at": h.updated_at.isoformat() if h.updated_at else h.created_at.isoformat() if h.created_at else None,
         }
         for h in hospitals
@@ -96,7 +97,13 @@ def _serialize_hospital(h: Hospital) -> dict:
         "business_hours": h.business_hours,
         "website_url": h.website_url,
         "blog_url": h.blog_url,
+        "kakao_channel_url": h.kakao_channel_url,
+        "google_business_profile_url": h.google_business_profile_url,
+        "google_maps_url": h.google_maps_url,
+        "naver_place_url": h.naver_place_url,
         "aeo_domain": h.aeo_domain,
+        "latitude": h.latitude,
+        "longitude": h.longitude,
         "region": h.region,
         "specialties": h.specialties,
         "keywords": h.keywords,

@@ -21,6 +21,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {
       title: `${content.title} | ${hospital.name}`,
       description,
+      alternates: {
+        canonical: `/${params.slug}/contents/${params.contentId}`,
+      },
       openGraph: {
         title: `${content.title} | ${hospital.name}`,
         description,
@@ -54,6 +57,7 @@ export default async function ContentDetailPage({ params }: Props) {
     '@context': 'https://schema.org',
     '@type': 'Article',
     headline: content.title,
+    description: content.meta_description,
     author: {
       '@type': 'Physician',
       name: hospital.director_name,
@@ -63,6 +67,8 @@ export default async function ContentDetailPage({ params }: Props) {
       name: hospital.name,
     },
     datePublished: content.published_at || content.scheduled_date,
+    dateModified: content.published_at || content.scheduled_date,
+    mainEntityOfPage: `/${params.slug}/contents/${params.contentId}`,
     image: content.image_url,
   }
 

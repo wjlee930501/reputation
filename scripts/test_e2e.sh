@@ -22,7 +22,7 @@
 set -uo pipefail
 
 BASE="http://localhost:8000"
-ADMIN_KEY="dev-secret-key"
+ADMIN_KEY="${ADMIN_SECRET_KEY:-$(grep -E '^ADMIN_SECRET_KEY=' .env 2>/dev/null | cut -d= -f2-)}"
 DB_CONTAINER="reputation-db-1"
 API_CONTAINER="reputation-api-1"
 

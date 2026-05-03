@@ -4,15 +4,22 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.core.config import settings
 
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.APP_ENV == "development",
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
-)
+engine = None
+AsyncSessionLocal = None
 
-AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+def get_async_sessionmaker():
+    global engine, AsyncSessionLocal
+    if AsyncSessionLocal is None:
+        engine = create_async_engine(
+            settings.DATABASE_URL,
+            echo=settings.APP_ENV == "development",
+            pool_pre_ping=True,
+            pool_size=10,
+            max_overflow=20,
+        )
+        AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    return AsyncSessionLocal
 
 # Sync engine for Celery workers (Celery does not support async)
 sync_engine = create_engine(
@@ -33,7 +40,8 @@ class Base(DeclarativeBase):
 async def get_db():
     """Yield an async DB session. Callers MUST call ``await db.commit()``
     explicitly in write endpoints — the session does NOT auto-commit."""
-    async with AsyncSessionLocal() as session:
+    sessionmaker_ = get_async_sessionmaker()
+    async with sessionmaker_() as session:
         try:
             yield session
         except Exception:

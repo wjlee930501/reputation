@@ -12,6 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.models.content import ContentType
+from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.utils.medical_filter import check_forbidden
 
@@ -124,11 +125,72 @@ def _fill_type_prompt(content_type: ContentType, hospital: Hospital) -> str:
     )
 
 
+def _build_philosophy_context(philosophy: HospitalContentPhilosophy | None) -> str:
+    if not philosophy:
+        return ""
+    treatments = "\n".join(
+        f"- {item.get('treatment', '진료 항목')}: {item.get('angle', '')}"
+        for item in (philosophy.treatment_narratives or [])
+        if isinstance(item, dict)
+    )
+    return f"""
+[승인된 콘텐츠 철학]
+version: {philosophy.version}
+positioning_statement: {philosophy.positioning_statement or ''}
+doctor_voice: {philosophy.doctor_voice or ''}
+patient_promise: {philosophy.patient_promise or ''}
+content_principles:
+{_bullet_list(philosophy.content_principles or [])}
+tone_guidelines:
+{_bullet_list(philosophy.tone_guidelines or [])}
+must_use_messages:
+{_bullet_list(philosophy.must_use_messages or [])}
+avoid_messages:
+{_bullet_list(philosophy.avoid_messages or [])}
+medical_ad_risk_rules:
+{_bullet_list(philosophy.medical_ad_risk_rules or [])}
+treatment_narratives:
+{treatments}
+
+규칙:
+- 위 콘텐츠 철학 밖의 병원 고유 주장, 장비, 수상, 치료 효과, 비교 우위를 새로 만들지 마세요.
+- source-backed message와 inferred editorial guidance를 섞어 과장하지 마세요.
+- avoid_messages와 medical_ad_risk_rules에 해당하는 표현은 사용하지 마세요.
+""".strip()
+
+
+def _build_content_brief_context(content_brief: dict | None) -> str:
+    if not content_brief:
+        return ""
+
+    return f"""
+[승인된 콘텐츠 brief]
+target_query: {content_brief.get('target_query') or ''}
+patient_intent: {content_brief.get('patient_intent') or ''}
+treatment_narrative: {content_brief.get('treatment_narrative') or ''}
+must_use_messages:
+{_bullet_list(content_brief.get('must_use_messages') or [])}
+avoid_messages:
+{_bullet_list(content_brief.get('avoid_messages') or [])}
+medical_risk_rules:
+{_bullet_list(content_brief.get('medical_risk_rules') or [])}
+internal_link_target: {content_brief.get('internal_link_target') or ''}
+operator_notes:
+{_bullet_list(content_brief.get('operator_notes') or [])}
+""".strip()
+
+
+def _bullet_list(values: list) -> str:
+    return "\n".join(f"- {value}" for value in values if value) or "- 없음"
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
 async def generate_content(
     hospital: Hospital,
     content_type: ContentType,
     existing_titles: list[str] | None = None,
+    philosophy: HospitalContentPhilosophy | None = None,
+    content_brief: dict | None = None,
 ) -> dict:
     """
     Claude Sonnet으로 콘텐츠 생성.
@@ -138,13 +200,17 @@ async def generate_content(
     import json
 
     profile_ctx = _build_profile_context(hospital)
+    philosophy_ctx = _build_philosophy_context(philosophy)
+    brief_ctx = _build_content_brief_context(content_brief)
     type_prompt = _fill_type_prompt(content_type, hospital)
 
     avoid_titles = ""
     if existing_titles:
         avoid_titles = "\n\n이미 작성된 제목 (중복 금지):\n" + "\n".join(f"- {t}" for t in existing_titles)
 
-    user_message = f"{profile_ctx}\n\n{type_prompt}{avoid_titles}"
+    essence_context = f"\n\n{philosophy_ctx}" if philosophy_ctx else ""
+    brief_context = f"\n\n{brief_ctx}" if brief_ctx else ""
+    user_message = f"{profile_ctx}{essence_context}{brief_context}\n\n{type_prompt}{avoid_titles}"
 
     # asyncio에서 sync anthropic 클라이언트 호출
     loop = asyncio.get_running_loop()

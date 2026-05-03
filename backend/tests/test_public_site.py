@@ -14,7 +14,13 @@ def test_serialize_hospital_includes_public_profile_fields():
         business_hours={"mon": "09:00-18:00"},
         website_url="https://example.com",
         blog_url=None,
+        kakao_channel_url="https://pf.kakao.com/_example",
+        google_business_profile_url="https://business.google.com/example",
+        google_maps_url="https://maps.google.com/?cid=123",
+        naver_place_url="https://naver.me/example",
         aeo_domain="info.example.com",
+        latitude=37.5,
+        longitude=127.0,
         region=["서울", "강남"],
         specialties=["피부과"],
         keywords=["여드름", "리프팅"],
@@ -30,3 +36,5 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["plan"] == "PLAN_16"
     assert serialized["keywords"] == ["여드름", "리프팅"]
     assert serialized["director_career"] == "전문의"
+    assert serialized["google_maps_url"] == "https://maps.google.com/?cid=123"
+    assert serialized["latitude"] == 37.5

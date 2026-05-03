@@ -8,7 +8,7 @@
 set -euo pipefail
 
 BASE="http://localhost:8000"
-ADMIN_KEY="dev-secret-key"
+ADMIN_KEY="${ADMIN_SECRET_KEY:-$(grep -E '^ADMIN_SECRET_KEY=' .env 2>/dev/null | cut -d= -f2-)}"
 PASS=0
 FAIL=0
 SKIP=0

@@ -10,6 +10,12 @@ export interface Hospital {
   business_hours: Record<string, string>
   website_url: string | null
   blog_url: string | null
+  kakao_channel_url: string | null
+  google_business_profile_url: string | null
+  google_maps_url: string | null
+  naver_place_url: string | null
+  latitude: number | null
+  longitude: number | null
   region: string[]
   specialties: string[]
   keywords: string[]
@@ -28,6 +34,7 @@ export interface ContentItem {
   total_count: number
   title: string
   body: string
+  meta_description: string | null
   image_url: string | null
   scheduled_date: string
   status: string

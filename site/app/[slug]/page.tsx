@@ -8,6 +8,26 @@ interface Props {
   params: { slug: string }
 }
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
+const DAY_LABELS: Record<string, string> = {
+  mon: '월',
+  tue: '화',
+  wed: '수',
+  thu: '목',
+  fri: '금',
+  sat: '토',
+  sun: '일',
+}
+const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
+  mon: 'Monday',
+  tue: 'Tuesday',
+  wed: 'Wednesday',
+  thu: 'Thursday',
+  fri: 'Friday',
+  sat: 'Saturday',
+  sun: 'Sunday',
+}
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
@@ -15,6 +35,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     return {
       title: `${hospital.name} | AEO 의료정보`,
       description,
+      alternates: {
+        canonical: `/${params.slug}`,
+      },
       openGraph: {
         title: `${hospital.name} | AEO 의료정보`,
         description,
@@ -40,21 +63,51 @@ export default async function HospitalPage({ params }: Props) {
   }
 
   const recentContents = contents.slice(0, 3)
+  const sameAs = [
+    hospital.website_url,
+    hospital.blog_url,
+    hospital.kakao_channel_url,
+    hospital.google_business_profile_url,
+    hospital.google_maps_url,
+    hospital.naver_place_url,
+  ].filter(Boolean)
 
   const jsonLd = {
     '@context': 'https://schema.org',
-    '@type': 'MedicalClinic',
+    '@type': ['MedicalClinic', 'LocalBusiness'],
     name: hospital.name,
+    url: `${SITE_URL}/${params.slug}`,
+    sameAs,
     address: {
       '@type': 'PostalAddress',
       streetAddress: hospital.address,
+      addressCountry: 'KR',
     },
     telephone: hospital.phone,
     medicalSpecialty: hospital.specialties,
+    openingHoursSpecification: Object.entries(hospital.business_hours || {}).map(([day, hours]) => ({
+      '@type': 'OpeningHoursSpecification',
+      dayOfWeek: SCHEMA_DAY_OF_WEEK[day] || day,
+      description: String(hours),
+    })),
+    hasMap: hospital.google_maps_url || undefined,
+    geo: hospital.latitude && hospital.longitude
+      ? {
+          '@type': 'GeoCoordinates',
+          latitude: hospital.latitude,
+          longitude: hospital.longitude,
+        }
+      : undefined,
     physician: {
       '@type': 'Physician',
       name: hospital.director_name,
+      description: hospital.director_career,
     },
+    availableService: (hospital.treatments || []).map((treatment) => ({
+      '@type': 'MedicalProcedure',
+      name: treatment.name,
+      description: treatment.description,
+    })),
   }
 
   return (
@@ -131,7 +184,7 @@ export default async function HospitalPage({ params }: Props) {
               <h3 className="font-semibold text-gray-800 mb-1">진료시간</h3>
               {Object.entries(hospital.business_hours || {}).map(([day, hours]) => (
                 <p key={day} className="text-gray-600 text-sm">
-                  {day}: {hours}
+                  {DAY_LABELS[day] || day}: {hours}
                 </p>
               ))}
             </div>

@@ -37,7 +37,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     domain = hospital.aeo_domain
     cname_value = _resolve_cname(domain)
-    verified = cname_value is not None and settings.CNAME_TARGET in cname_value
+    verified = _normalize_dns_name(cname_value) == _normalize_dns_name(settings.CNAME_TARGET)
 
     if verified:
         hospital.site_live = True
@@ -79,6 +79,12 @@ def _resolve_cname(domain: str) -> str | None:
         return resolved if resolved != domain else None
     except Exception:
         return None
+
+
+def _normalize_dns_name(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.strip().rstrip(".").lower()
 
 
 async def _get_hospital_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:

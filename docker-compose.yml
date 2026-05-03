@@ -45,9 +45,12 @@ services:
     command: celery -A app.core.celery_app worker --loglevel=info -Q default,content,sov,reports -c 4
     volumes:
       - ./backend:/app
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp-key.json:ro
       - ./reports:/tmp/reports
       - sites_data:/tmp/sites
     env_file: .env
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /gcp-key.json
     depends_on:
       db:
         condition: service_healthy

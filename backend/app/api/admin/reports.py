@@ -5,9 +5,10 @@ GET /admin/hospitals/{hospital_id}/reports/{report_id}  — 리포트 상세
 GET /admin/hospitals/{hospital_id}/reports/{report_id}/download — PDF signed URL
 """
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,6 +58,15 @@ async def download_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: Asyn
     if not r.pdf_path:
         raise HTTPException(status_code=404, detail="PDF 경로가 없습니다.")
 
+    if not r.pdf_path.startswith("gs://"):
+        local_path = Path(r.pdf_path)
+        if local_path.exists() and local_path.is_file():
+            return FileResponse(
+                path=str(local_path),
+                filename=local_path.name,
+                media_type="application/pdf",
+            )
+
     signed_url = get_signed_url(r.pdf_path)
     if not signed_url:
         raise HTTPException(
@@ -83,9 +93,10 @@ def _serialize(r: MonthlyReport, full: bool = False) -> dict:
         "period_month": r.period_month,
         "report_type": r.report_type,
         "has_pdf": r.pdf_path is not None,
-        "download_url": f"/api/v1/admin/hospitals/{r.hospital_id}/reports/{r.id}/download" if r.pdf_path else None,
+        "download_url": f"/api/admin/hospitals/{r.hospital_id}/reports/{r.id}/download" if r.pdf_path else None,
         "sov_summary": r.sov_summary if full else None,
         "content_summary": r.content_summary if full else None,
+        "essence_summary": r.essence_summary if full else None,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "sent_at": r.sent_at.isoformat() if r.sent_at else None,
     }

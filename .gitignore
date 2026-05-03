@@ -21,6 +21,11 @@ out/
 # Build artifacts
 /tmp/sites/
 /tmp/reports/
+reports/
+*.tsbuildinfo
+celerybeat-schedule
+backend/celerybeat-schedule
+.hermes/
 
 # IDE
 .DS_Store
