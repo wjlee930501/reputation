@@ -3,7 +3,7 @@ import type { NextRequest } from 'next/server'
 
 import { verifySessionToken } from '@/lib/session'
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const sessionSecret = process.env.ADMIN_SESSION_SECRET
   if (!sessionSecret) {
     return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 })

@@ -278,9 +278,13 @@ async def patch_philosophy(
     for field_name, value in update.items():
         setattr(philosophy, field_name, value)
 
-    if "evidence_map" in update:
+    if _touches_source_backed_fields(update):
         notes = await _get_notes_for_philosophy(db, philosophy)
-        grounding_errors = validate_philosophy_grounding(philosophy, notes)
+        grounding_errors = validate_philosophy_grounding(
+            philosophy,
+            notes,
+            require_text_support=True,
+        )
         if grounding_errors:
             raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
 
@@ -301,7 +305,7 @@ async def approve_philosophy(
         raise HTTPException(status_code=400, detail="DRAFT philosophy만 승인할 수 있습니다.")
 
     notes = await _get_notes_for_philosophy(db, philosophy)
-    grounding_errors = validate_philosophy_grounding(philosophy, notes)
+    grounding_errors = validate_philosophy_grounding(philosophy, notes, require_text_support=True)
     if grounding_errors:
         raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
 
@@ -522,3 +526,20 @@ def _clean_optional(value: str | None) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _touches_source_backed_fields(update: dict) -> bool:
+    source_backed_fields = {
+        "positioning_statement",
+        "doctor_voice",
+        "patient_promise",
+        "content_principles",
+        "tone_guidelines",
+        "must_use_messages",
+        "avoid_messages",
+        "treatment_narratives",
+        "local_context",
+        "medical_ad_risk_rules",
+        "evidence_map",
+    }
+    return bool(source_backed_fields.intersection(update.keys()))

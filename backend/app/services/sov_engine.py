@@ -89,8 +89,8 @@ COMPETITOR_PARSE_PROMPT = """\
 [답변]
 {response}
 
-반드시 아래 JSON만 출력 (배열):
-[{{"name": "병원명", "is_mentioned": true/false, "mention_rank": null 또는 정수}}]"""
+반드시 아래 JSON 객체만 출력:
+{{"competitors": [{{"name": "병원명", "is_mentioned": true/false, "mention_rank": null 또는 정수}}]}}"""
 
 
 def generate_query_matrix(region: list[str], specialties: list[str], keywords: list[str]) -> list[str]:

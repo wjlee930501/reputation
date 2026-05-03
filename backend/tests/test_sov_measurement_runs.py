@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin.sov import get_sov_measurement_runs, get_sov_queries, get_sov_trend
+from app.workers.tasks import _measurement_status_for_result
 
 
 class _ScalarResult:
@@ -142,3 +143,11 @@ async def test_measurement_runs_endpoint_404s_unknown_hospital():
         await get_sov_measurement_runs(uuid.uuid4(), _FakeDB(hospital=None))
 
     assert exc_info.value.status_code == 404
+
+
+def test_measurement_status_treats_empty_raw_response_as_failed():
+    assert _measurement_status_for_result({"raw_response": "답변", "is_mentioned": False}) == ("SUCCESS", None)
+    assert _measurement_status_for_result({"raw_response": "", "is_mentioned": False}) == (
+        "FAILED",
+        "empty_raw_response",
+    )

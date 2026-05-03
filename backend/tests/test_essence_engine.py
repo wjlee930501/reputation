@@ -50,6 +50,24 @@ def test_synthesize_philosophy_requires_evidence_map_for_non_empty_fields():
     assert validate_philosophy_grounding(payload, [note]) == []
 
 
+def test_grounding_validation_rejects_text_not_supported_by_mapped_evidence():
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        source_excerpt="충분히 설명합니다.",
+        note_metadata={},
+    )
+    payload = {
+        "positioning_statement": "자료와 무관한 새로운 마케팅 문구입니다.",
+        "evidence_map": {"positioning_statement": [str(note.id)]},
+    }
+
+    errors = validate_philosophy_grounding(payload, [note], require_text_support=True)
+
+    assert errors
+    assert "positioning_statement" in errors[0]
+
+
 def test_screen_content_blocks_missing_or_risky_essence_statuses():
     item = SimpleNamespace(
         title="치료 안내",

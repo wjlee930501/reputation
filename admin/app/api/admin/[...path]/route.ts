@@ -7,9 +7,10 @@ const ALLOWED_PREFIXES = ["hospitals", "content", "reports", "sov", "domain", "e
 
 async function handler(
   req: NextRequest,
-  { params }: { params: { path: string[] } }
+  { params }: { params: Promise<{ path: string[] }> }
 ) {
-  const path = params.path.join("/");
+  const { path: pathSegments } = await params;
+  const path = pathSegments.join("/");
   if (!ADMIN_KEY) {
     return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
   }

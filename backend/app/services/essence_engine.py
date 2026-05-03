@@ -307,9 +307,15 @@ def synthesize_philosophy(
     }
 
 
-def validate_philosophy_grounding(payload: Any, notes: list[HospitalSourceEvidenceNote]) -> list[str]:
+def validate_philosophy_grounding(
+    payload: Any,
+    notes: list[HospitalSourceEvidenceNote],
+    *,
+    require_text_support: bool = False,
+) -> list[str]:
     """Ensure non-empty philosophy fields point to existing evidence notes."""
-    valid_note_ids = {_note_id(note) for note in notes}
+    notes_by_id = {_note_id(note): note for note in notes}
+    valid_note_ids = set(notes_by_id)
     evidence_map = _payload_get(payload, "evidence_map") or {}
     errors: list[str] = []
 
@@ -337,6 +343,9 @@ def validate_philosophy_grounding(payload: Any, notes: list[HospitalSourceEviden
         unknown = [note_id for note_id in mapped_ids if note_id not in valid_note_ids]
         if unknown:
             errors.append(f"{field_name} 필드가 존재하지 않는 evidence note를 참조합니다: {', '.join(unknown)}")
+            continue
+        if require_text_support and not _value_contains_mapped_evidence(value, mapped_ids, notes_by_id):
+            errors.append(f"{field_name} 필드가 매핑된 evidence note 발췌를 포함하지 않습니다.")
 
     return errors
 
@@ -570,6 +579,40 @@ def _flatten_ids(value: Any) -> list[str]:
             result.extend(_flatten_ids(item))
         return result
     return [str(value)]
+
+
+def _value_contains_mapped_evidence(
+    value: Any,
+    mapped_ids: list[str],
+    notes_by_id: dict[str, HospitalSourceEvidenceNote],
+) -> bool:
+    text = _flatten_text(value)
+    if not text.strip():
+        return True
+    normalized_text = _normalize_for_grounding(text)
+    for note_id in mapped_ids:
+        note = notes_by_id.get(note_id)
+        excerpt = getattr(note, "source_excerpt", "") if note else ""
+        normalized_excerpt = _normalize_for_grounding(excerpt)
+        if normalized_excerpt and normalized_excerpt in normalized_text:
+            return True
+    return False
+
+
+def _flatten_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(_flatten_text(item) for item in value)
+    if isinstance(value, dict):
+        return " ".join(_flatten_text(item) for item in value.values())
+    return str(value)
+
+
+def _normalize_for_grounding(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _string_items(values: Iterable[Any]) -> list[str]:

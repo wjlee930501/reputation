@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { useParams, usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 import { Hospital, PLAN_LABELS, STATUS_LABELS } from '@/types'
@@ -18,19 +18,19 @@ const TABS: Array<{ label: string; path: string; hint: string }> = [
 
 export default function HospitalLayout({
   children,
-  params,
 }: {
   children: React.ReactNode
-  params: { id: string }
 }) {
   const pathname = usePathname()
+  const params = useParams<{ id: string }>()
+  const hospitalId = params.id
   const [hospital, setHospital] = useState<Hospital | null>(null)
 
   useEffect(() => {
-    fetchAPI(`/admin/hospitals/${params.id}`)
+    fetchAPI(`/admin/hospitals/${hospitalId}`)
       .then(setHospital)
       .catch(() => null)
-  }, [params.id])
+  }, [hospitalId])
 
   const statusInfo = hospital
     ? STATUS_LABELS[hospital.status] ?? { label: hospital.status, color: 'bg-gray-100 text-gray-700' }
@@ -99,7 +99,7 @@ export default function HospitalLayout({
         {/* Tab navigation */}
         <nav className="flex items-end gap-1 -mb-px overflow-x-auto" aria-label="병원 작업 탭">
           {TABS.map((tab) => {
-            const href = `/hospitals/${params.id}/${tab.path}`
+            const href = `/hospitals/${hospitalId}/${tab.path}`
             const isActive = pathname.startsWith(href)
             return (
               <Link

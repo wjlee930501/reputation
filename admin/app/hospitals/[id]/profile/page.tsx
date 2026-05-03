@@ -1,5 +1,6 @@
 'use client'
 
+import { useParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 
@@ -247,7 +248,9 @@ const STATUS_CHIP: Record<ChecklistStatus, { label: string; cls: string }> = {
   },
 }
 
-export default function ProfilePage({ params }: { params: { id: string } }) {
+export default function ProfilePage() {
+  const params = useParams<{ id: string }>()
+  const hospitalId = params.id
   const [profile, setProfile] = useState<Partial<HospitalProfile>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -260,7 +263,7 @@ export default function ProfilePage({ params }: { params: { id: string } }) {
   const [domainSavedValue, setDomainSavedValue] = useState<string>('')
 
   useEffect(() => {
-    fetchAPI(`/admin/hospitals/${params.id}`)
+    fetchAPI(`/admin/hospitals/${hospitalId}`)
       .then((data) => {
         setProfile({
           ...data,
@@ -277,7 +280,7 @@ export default function ProfilePage({ params }: { params: { id: string } }) {
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }, [params.id])
+  }, [hospitalId])
 
   function updateField<K extends keyof HospitalProfile>(key: K, value: HospitalProfile[K]) {
     setProfile((prev) => ({ ...prev, [key]: value }))
@@ -313,7 +316,7 @@ export default function ProfilePage({ params }: { params: { id: string } }) {
     setError(null)
     setSuccess(false)
     try {
-      await fetchAPI(`/admin/hospitals/${params.id}/profile`, {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, {
         method: 'PATCH',
         body: JSON.stringify(profile),
       })
@@ -705,7 +708,7 @@ export default function ProfilePage({ params }: { params: { id: string } }) {
           setDomainSaving(true)
           setDomainFeedback(null)
           try {
-            await fetchAPI(`/admin/hospitals/${params.id}/domain`, {
+            await fetchAPI(`/admin/hospitals/${hospitalId}/domain`, {
               method: 'PATCH',
               body: JSON.stringify({ domain }),
             })
@@ -729,7 +732,7 @@ export default function ProfilePage({ params }: { params: { id: string } }) {
           setDomainVerifying(true)
           setDomainFeedback(null)
           try {
-            const result = await fetchAPI(`/admin/hospitals/${params.id}/domain/verify`, {
+            const result = await fetchAPI(`/admin/hospitals/${hospitalId}/domain/verify`, {
               method: 'POST',
             })
             if (result?.expected_cname) setDomainExpectedCname(result.expected_cname)

@@ -1,5 +1,6 @@
 'use client'
 
+import { useParams } from 'next/navigation'
 import { Dispatch, FormEvent, SetStateAction, useEffect, useMemo, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 import {
@@ -44,7 +45,9 @@ const DEFAULT_FORM: FormState = {
   variants: '',
 }
 
-export default function QueryTargetsPage({ params }: { params: { id: string } }) {
+export default function QueryTargetsPage() {
+  const params = useParams<{ id: string }>()
+  const hospitalId = params.id
   const [targets, setTargets] = useState<AIQueryTarget[]>([])
   const [form, setForm] = useState<FormState>(DEFAULT_FORM)
   const [variantDrafts, setVariantDrafts] = useState<Record<string, string>>({})
@@ -59,13 +62,13 @@ export default function QueryTargetsPage({ params }: { params: { id: string } })
   useEffect(() => {
     loadTargets()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.id])
+  }, [hospitalId])
 
   async function loadTargets() {
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchAPI(`/admin/hospitals/${params.id}/query-targets?include_archived=true`)
+      const data = await fetchAPI(`/admin/hospitals/${hospitalId}/query-targets?include_archived=true`)
       setTargets(data ?? [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AI 쿼리 전략을 불러오지 못했습니다.')
@@ -79,7 +82,7 @@ export default function QueryTargetsPage({ params }: { params: { id: string } })
     setSaving(true)
     setError(null)
     try {
-      await fetchAPI(`/admin/hospitals/${params.id}/query-targets`, {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/query-targets`, {
         method: 'POST',
         body: JSON.stringify({
           name: form.name,
@@ -117,7 +120,7 @@ export default function QueryTargetsPage({ params }: { params: { id: string } })
   async function patchTarget(target: AIQueryTarget, patch: Partial<AIQueryTarget>) {
     setError(null)
     try {
-      await fetchAPI(`/admin/hospitals/${params.id}/query-targets/${target.id}`, {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/query-targets/${target.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ ...patch, updated_by: 'MotionLabs Ops' }),
       })
@@ -140,7 +143,7 @@ export default function QueryTargetsPage({ params }: { params: { id: string } })
     setVariantSavingByTarget((prev) => ({ ...prev, [target.id]: true }))
     setError(null)
     try {
-      await fetchAPI(`/admin/hospitals/${params.id}/query-targets/${target.id}/variants`, {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/query-targets/${target.id}/variants`, {
         method: 'POST',
         body: JSON.stringify({
           query_text: queryText,

@@ -17,7 +17,7 @@ from datetime import date, datetime, timezone, timedelta
 
 import arrow
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -26,7 +26,7 @@ from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.report import MonthlyReport
-from app.models.sov import QueryMatrix, SovRecord
+from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
 from app.services import notifier
 from app.services.content_brief import BRIEF_STATUS_APPROVED
 from app.services.content_engine import generate_content
@@ -83,7 +83,15 @@ def trigger_v0_report(self, hospital_id: str):
             db.flush()
 
             # SoV 측정 (V0: 쿼리 수 최대 5개로 제한, 빠른 실행)
+            run = _start_measurement_run(
+                db,
+                hospital,
+                run_label="V0 baseline",
+                config={"source": "trigger_v0_report", "repeat_count": 5},
+            )
             all_records = []
+            success_count = 0
+            failure_count = 0
             stmt = select(QueryMatrix).where(
                 QueryMatrix.hospital_id == hospital.id
             ).limit(5)
@@ -100,9 +108,15 @@ def trigger_v0_report(self, hospital_id: str):
                         run_single_query(hospital.name, q.query_text, platform, repeat_count=5, competitors=competitors)
                     )
                     for r in results:
+                        measurement_status, failure_reason = _measurement_status_for_result(r)
+                        if measurement_status == "SUCCESS":
+                            success_count += 1
+                        else:
+                            failure_count += 1
                         record = SovRecord(
                             hospital_id=hospital.id,
                             query_id=q.id,
+                            measurement_run_id=run.id,
                             ai_platform=platform,
                             is_mentioned=r["is_mentioned"],
                             mention_rank=r.get("mention_rank"),
@@ -110,10 +124,13 @@ def trigger_v0_report(self, hospital_id: str):
                             mention_context=r.get("mention_context"),
                             raw_response=r["raw_response"],
                             competitor_mentions=r.get("competitor_mentions"),
+                            measurement_status=measurement_status,
+                            failure_reason=failure_reason,
                         )
                         db.add(record)
                         all_records.append(r)
 
+            _finish_measurement_run(run, success_count, failure_count)
             db.commit()
 
             # SoV 계산
@@ -321,6 +338,15 @@ def run_sov_for_hospital(self, hospital_id: str):
             )
             result = db.execute(stmt)
             all_queries = result.scalars().all()
+            target_result = db.execute(
+                select(AIQueryTarget)
+                .options(selectinload(AIQueryTarget.variants))
+                .where(
+                    AIQueryTarget.hospital_id == hospital.id,
+                    AIQueryTarget.status == "ACTIVE",
+                )
+            )
+            query_targets = target_result.scalars().all()
 
             # priority 필터 적용:
             # HIGH: 항상 포함
@@ -333,38 +359,185 @@ def run_sov_for_hospital(self, hospital_id: str):
                 or (q.priority == "LOW" and is_month_start)
             ]
 
-            if not queries:
+            measurement_specs = _build_measurement_specs(
+                db=db,
+                hospital=hospital,
+                query_targets=query_targets,
+                fallback_queries=queries,
+            )
+
+            if not measurement_specs:
                 logger.info(f"No queries to run for hospital {hospital_id} this week (priority filter)")
                 return
 
-            platforms = ["chatgpt"]
-            if settings.GEMINI_API_KEY:
-                platforms.append("gemini")
-
             competitors = hospital.competitors or []
+            run = _start_measurement_run(
+                db,
+                hospital,
+                run_label=f"weekly_sov_{date.today().isoformat()}",
+                config={
+                    "source": "run_sov_for_hospital",
+                    "repeat_count": SOV_REPEAT_WEEKLY,
+                    "spec_count": len(measurement_specs),
+                },
+            )
             records = []
-            for q in queries:
-                for platform in platforms:
-                    results = _run_async(run_single_query(hospital.name, q.query_text, platform, SOV_REPEAT_WEEKLY, competitors=competitors))
-                    for r in results:
-                        records.append(SovRecord(
-                            hospital_id=hospital.id,
-                            query_id=q.id,
-                            ai_platform=platform,
-                            is_mentioned=r["is_mentioned"],
-                            mention_rank=r.get("mention_rank"),
-                            mention_sentiment=r.get("sentiment"),
-                            mention_context=r.get("mention_context"),
-                            raw_response=r["raw_response"],
-                            competitor_mentions=r.get("competitor_mentions"),
-                        ))
+            success_count = 0
+            failure_count = 0
+            for spec in measurement_specs:
+                results = _run_async(
+                    run_single_query(
+                        hospital.name,
+                        spec["query_text"],
+                        spec["platform"],
+                        SOV_REPEAT_WEEKLY,
+                        competitors=competitors,
+                    )
+                )
+                for r in results:
+                    measurement_status, failure_reason = _measurement_status_for_result(r)
+                    if measurement_status == "SUCCESS":
+                        success_count += 1
+                    else:
+                        failure_count += 1
+                    records.append(SovRecord(
+                        hospital_id=hospital.id,
+                        query_id=spec["query_id"],
+                        measurement_run_id=run.id,
+                        ai_query_target_id=spec["target_id"],
+                        ai_query_variant_id=spec["variant_id"],
+                        ai_platform=spec["platform"],
+                        is_mentioned=r["is_mentioned"],
+                        mention_rank=r.get("mention_rank"),
+                        mention_sentiment=r.get("sentiment"),
+                        mention_context=r.get("mention_context"),
+                        raw_response=r["raw_response"],
+                        competitor_mentions=r.get("competitor_mentions"),
+                        measurement_status=measurement_status,
+                        failure_reason=failure_reason,
+                    ))
 
             db.add_all(records)
-            db.flush()
+            _finish_measurement_run(run, success_count, failure_count)
             db.commit()
 
     except Exception as exc:
         raise self.retry(exc=exc, countdown=300)
+
+
+def _start_measurement_run(db, hospital: Hospital, *, run_label: str, config: dict) -> MeasurementRun:
+    now = datetime.now(timezone.utc)
+    run = MeasurementRun(
+        hospital_id=hospital.id,
+        run_label=run_label,
+        measurement_method="OPENAI_RESPONSE",
+        status="RUNNING",
+        query_count=0,
+        success_count=0,
+        failure_count=0,
+        started_at=now,
+        model_name=settings.OPENAI_MODEL_QUERY,
+        search_mode="web" if settings.GEMINI_API_KEY else "model",
+        config=config,
+    )
+    db.add(run)
+    db.flush()
+    return run
+
+
+def _finish_measurement_run(run: MeasurementRun, success_count: int, failure_count: int) -> None:
+    total = success_count + failure_count
+    run.query_count = total
+    run.success_count = success_count
+    run.failure_count = failure_count
+    run.completed_at = datetime.now(timezone.utc)
+    if total == 0:
+        run.status = "FAILED"
+        run.error_summary = {"reason": "no_measurements"}
+    elif failure_count == 0:
+        run.status = "COMPLETED"
+    elif success_count == 0:
+        run.status = "FAILED"
+        run.error_summary = {"failed_count": failure_count}
+    else:
+        run.status = "PARTIAL"
+        run.error_summary = {"failed_count": failure_count}
+
+
+def _measurement_status_for_result(result: dict) -> tuple[str, str | None]:
+    if (result.get("raw_response") or "").strip():
+        return "SUCCESS", None
+    return "FAILED", "empty_raw_response"
+
+
+def _build_measurement_specs(
+    *,
+    db,
+    hospital: Hospital,
+    query_targets: list[AIQueryTarget],
+    fallback_queries: list[QueryMatrix],
+) -> list[dict]:
+    specs: list[dict] = []
+    seen: set[tuple[uuid.UUID, str]] = set()
+    for target in query_targets:
+        active_variants = [variant for variant in target.variants if variant.is_active]
+        for variant in active_variants:
+            platform = _normalize_platform(variant.platform)
+            if platform == "gemini" and not settings.GEMINI_API_KEY:
+                continue
+            query = _ensure_variant_query_matrix(db, hospital, variant)
+            key = (query.id, platform)
+            if key in seen:
+                continue
+            seen.add(key)
+            specs.append({
+                "query_id": query.id,
+                "query_text": variant.query_text,
+                "platform": platform,
+                "target_id": target.id,
+                "variant_id": variant.id,
+            })
+
+    if specs:
+        return specs
+
+    platforms = ["chatgpt"]
+    if settings.GEMINI_API_KEY:
+        platforms.append("gemini")
+    for query in fallback_queries:
+        for platform in platforms:
+            specs.append({
+                "query_id": query.id,
+                "query_text": query.query_text,
+                "platform": platform,
+                "target_id": None,
+                "variant_id": None,
+            })
+    return specs
+
+
+def _ensure_variant_query_matrix(db, hospital: Hospital, variant: AIQueryVariant) -> QueryMatrix:
+    if variant.query_matrix_id:
+        query = db.get(QueryMatrix, variant.query_matrix_id)
+        if query and query.hospital_id == hospital.id:
+            return query
+
+    query = QueryMatrix(
+        hospital_id=hospital.id,
+        query_text=variant.query_text,
+        priority="HIGH",
+    )
+    db.add(query)
+    db.flush()
+    variant.query_matrix_id = query.id
+    return query
+
+
+def _normalize_platform(platform: str) -> str:
+    value = (platform or "CHATGPT").strip().lower()
+    if value in {"gemini", "google"}:
+        return "gemini"
+    return "chatgpt"
 
 
 # ══════════════════════════════════════════════════════════════════

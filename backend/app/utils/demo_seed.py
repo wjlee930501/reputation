@@ -1,7 +1,6 @@
 """Deterministic local demo seed for browser E2E."""
 from __future__ import annotations
 
-import uuid
 from datetime import date, datetime, timezone
 
 import arrow
