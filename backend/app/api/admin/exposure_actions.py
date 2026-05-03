@@ -147,19 +147,27 @@ async def create_exposure_action_brief(
     philosophy = await _get_approved_philosophy(db, hospital_id)
     query_target = getattr(action, "query_target", None)
 
+    has_existing_linked_brief = _has_existing_linked_brief(action, item)
+
     await _clear_previous_content_link(db, action, item.id)
     item.query_target_id = action.query_target_id
     item.exposure_action_id = action.id
-    item.content_brief = build_content_brief(
-        hospital=hospital,
-        content_item=item,
-        query_target=query_target,
-        exposure_action=action,
-        philosophy=philosophy,
-    )
-    item.brief_status = BRIEF_STATUS_DRAFT
-    item.brief_approved_at = None
-    item.brief_approved_by = None
+    if has_existing_linked_brief:
+        if item.brief_status is None:
+            item.brief_status = BRIEF_STATUS_DRAFT
+            item.brief_approved_at = None
+            item.brief_approved_by = None
+    else:
+        item.content_brief = build_content_brief(
+            hospital=hospital,
+            content_item=item,
+            query_target=query_target,
+            exposure_action=action,
+            philosophy=philosophy,
+        )
+        item.brief_status = BRIEF_STATUS_DRAFT
+        item.brief_approved_at = None
+        item.brief_approved_by = None
     action.linked_content_id = item.id
     action.linked_content = item
 
@@ -299,6 +307,16 @@ async def _clear_previous_content_link(
     previous = await db.get(ContentItem, action.linked_content_id)
     if previous and previous.exposure_action_id == action.id:
         previous.exposure_action_id = None
+
+
+def _has_existing_linked_brief(action: ExposureAction, item: ContentItem) -> bool:
+    if not getattr(item, "content_brief", None):
+        return False
+    action_id = _uuid_or_none(getattr(action, "id", None))
+    item_id = _uuid_or_none(getattr(item, "id", None))
+    action_content_id = _uuid_or_none(getattr(action, "linked_content_id", None))
+    item_action_id = _uuid_or_none(getattr(item, "exposure_action_id", None))
+    return item_action_id == action_id or (item_id is not None and action_content_id == item_id)
 
 
 async def _resolve_content_slot_for_brief(

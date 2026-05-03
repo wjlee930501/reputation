@@ -563,6 +563,78 @@ async def test_create_brief_without_philosophy_links_draft_and_reports_review_ga
     assert "review" in response["philosophy_gate"]["message"]
 
 
+async def test_create_brief_reuses_existing_linked_brief_without_resetting_approval(monkeypatch):
+    hospital_id = uuid.uuid4()
+    action_id = uuid.uuid4()
+    target_id = uuid.uuid4()
+    previous_target_id = uuid.uuid4()
+    content_id = uuid.uuid4()
+    approved_at = datetime(2026, 5, 4, 9, 30, tzinfo=timezone.utc)
+    existing_brief = {
+        "target_query": "운영자가 수정한 brief",
+        "must_use_messages": ["기존 승인 문구를 유지합니다."],
+    }
+    hospital = _hospital(hospital_id)
+    action = _action(hospital_id=hospital_id, action_id=action_id, target_id=target_id)
+    action.linked_content_id = content_id
+    item = _content_item(
+        hospital_id=hospital_id,
+        content_id=content_id,
+        target_id=previous_target_id,
+    )
+    item.content_brief = existing_brief
+    item.brief_status = "APPROVED"
+    item.brief_approved_at = approved_at
+    item.brief_approved_by = "Ops Lead"
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return hospital
+
+    async def fake_get_action(db, requested_hospital_id, requested_action_id):
+        assert requested_hospital_id == hospital_id
+        assert requested_action_id == action_id
+        return action
+
+    async def fake_resolve_slot(db, requested_hospital_id, requested_action, body):
+        assert requested_hospital_id == hospital_id
+        assert requested_action is action
+        return item
+
+    async def fake_get_philosophy(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return None
+
+    def fail_build_content_brief(*args, **kwargs):
+        raise AssertionError("Existing linked briefs should be reused, not regenerated")
+
+    monkeypatch.setattr(exposure_actions_api, "_get_hospital_or_404", fake_get_hospital)
+    monkeypatch.setattr(exposure_actions_api, "_get_action_or_404", fake_get_action)
+    monkeypatch.setattr(exposure_actions_api, "_resolve_content_slot_for_brief", fake_resolve_slot)
+    monkeypatch.setattr(exposure_actions_api, "_get_approved_philosophy", fake_get_philosophy)
+    monkeypatch.setattr(exposure_actions_api, "build_content_brief", fail_build_content_brief)
+
+    db = _MutatingDB()
+    response = await exposure_actions_api.create_exposure_action_brief(
+        hospital_id,
+        action_id,
+        body=exposure_actions_api.CreateBriefBody(),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert action.linked_content_id == content_id
+    assert action.linked_content is item
+    assert item.query_target_id == target_id
+    assert item.exposure_action_id == action_id
+    assert item.content_brief is existing_brief
+    assert item.brief_status == "APPROVED"
+    assert item.brief_approved_at == approved_at
+    assert item.brief_approved_by == "Ops Lead"
+    assert response["content_item"]["content_brief"] == existing_brief
+    assert response["content_item"]["brief_status"] == "APPROVED"
+
+
 async def test_resolve_brief_slot_reuses_existing_linked_content(monkeypatch):
     hospital_id = uuid.uuid4()
     existing_item_id = uuid.uuid4()
