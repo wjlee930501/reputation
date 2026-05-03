@@ -11,6 +11,7 @@ const TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '프로파일', path: 'profile', hint: '병원 기본 정보' },
   { label: 'Essence', path: 'essence', hint: '콘텐츠 철학 승인' },
   { label: 'AI 노출 쿼리', path: 'query-targets', hint: 'ChatGPT·Gemini 질의 전략' },
+  { label: '노출 액션', path: 'exposure-actions', hint: '진단 액션·brief 연결' },
   { label: '콘텐츠', path: 'content', hint: '초안 검수·발행' },
   { label: '스케줄', path: 'schedule', hint: '발행 캘린더' },
   { label: '리포트', path: 'reports', hint: '월간 리포트' },

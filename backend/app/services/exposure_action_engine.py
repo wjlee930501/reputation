@@ -107,6 +107,7 @@ async def list_top_exposure_actions(
         .options(
             selectinload(ExposureAction.query_target),
             selectinload(ExposureAction.gap),
+            selectinload(ExposureAction.linked_content),
         )
         .where(
             ExposureAction.hospital_id == hospital_id,
