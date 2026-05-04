@@ -60,6 +60,7 @@ BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("evidence note", re.compile(r"evidence\s+note", re.I)),
     ("status philosophy", re.compile(r"\b(?:APPROVED|ARCHIVED|DRAFT)\s+philosophy\b", re.I)),
     ("source_asset_ids 형식", re.compile(r"source_asset_ids\s+형식", re.I)),
+    ("raw evidence map JSON", re.compile(r"JSON\.stringify\(selectedDraft\.(?:evidence_map|unsupported_gaps)", re.I)),
 ]
 
 # Internal docs/comments that are not shown to operators can be allowed by path.

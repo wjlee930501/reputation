@@ -51,6 +51,19 @@ const EVIDENCE_NOTE_TYPE_LABELS: Record<string, string> = {
   CONFLICT: '상충 자료',
 }
 
+const PHILOSOPHY_FIELD_LABELS: Record<string, string> = {
+  positioning_statement: '병원이 알려져야 할 기준',
+  doctor_voice: '원장님 말투와 설명 방식',
+  patient_promise: '환자에게 일관되게 전달할 약속',
+  content_principles: '콘텐츠 작성 원칙',
+  tone_guidelines: '말투 기준',
+  must_use_messages: '반드시 담을 메시지',
+  avoid_messages: '피해야 할 표현',
+  treatment_narratives: '진료·시술 설명',
+  local_context: '지역 환자 맥락',
+  medical_ad_risk_rules: '의료광고 리스크 규칙',
+}
+
 function listToText(values: unknown): string {
   return Array.isArray(values) ? values.map((item) => String(item)).join('\n') : ''
 }
@@ -145,6 +158,13 @@ export default function EssencePage() {
     () => philosophies.find((item) => item.id === selectedDraftId) ?? null,
     [philosophies, selectedDraftId]
   )
+  const evidenceNoteById = useMemo(() => {
+    const entries = [
+      ...sources.flatMap((source) => source.evidence_notes ?? []),
+      ...(selectedSource?.evidence_notes ?? []),
+    ].map((note) => [note.id, note] as const)
+    return new Map(entries)
+  }, [sources, selectedSource])
   const draftCount = philosophies.filter((item) => item.status === 'DRAFT').length
   const evidenceTotal = sources.reduce((sum, item) => sum + (item.evidence_note_count ?? 0), 0)
 
@@ -726,21 +746,17 @@ export default function EssencePage() {
             <aside className="space-y-4">
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
                 <p className="text-[11px] font-semibold text-slate-600 tracking-wider mb-2">항목별 근거 연결</p>
-                <pre className="text-xs text-slate-600 whitespace-pre-wrap break-words max-h-48 overflow-auto">
-                  {JSON.stringify(selectedDraft.evidence_map, null, 2)}
-                </pre>
+                <EvidenceMapSummary evidenceMap={selectedDraft.evidence_map} evidenceNoteById={evidenceNoteById} />
               </div>
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
                 <p className="text-[11px] font-semibold text-slate-600 tracking-wider mb-2">근거가 부족해 비워둔 항목</p>
-                <pre className="text-xs text-slate-600 whitespace-pre-wrap break-words max-h-48 overflow-auto">
-                  {JSON.stringify(selectedDraft.unsupported_gaps, null, 2)}
-                </pre>
+                <UnsupportedGapSummary gaps={selectedDraft.unsupported_gaps} />
               </div>
               {selectedDraft.status === 'DRAFT' && (
                 <div className="bg-white border border-emerald-200 rounded-lg p-4 space-y-3">
                   <p className="text-sm font-semibold text-slate-900">승인</p>
                   <p className="text-[11px] text-slate-500 leading-relaxed">
-                    승인 전 체크: ① 항목별 근거 연결의 모든 ID가 실제 근거 노트인지 ② 반드시 담을 메시지 / 피해야 할 표현이 의료광고 금지 표현과 충돌하지 않는지 ③ 근거가 부족한 항목을 운영 기준에서 허용해도 되는지.
+                    승인 전 체크: ① 항목별 근거 연결이 실제 근거 노트와 맞는지 ② 반드시 담을 메시지 / 피해야 할 표현이 의료광고 금지 표현과 충돌하지 않는지 ③ 근거가 부족한 항목을 운영 기준에서 허용해도 되는지.
                   </p>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">검토자</label>
@@ -850,6 +866,72 @@ function TextArea({
         className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none disabled:bg-slate-50 disabled:text-slate-500"
       />
     </div>
+  )
+}
+
+function EvidenceMapSummary({
+  evidenceMap,
+  evidenceNoteById,
+}: {
+  evidenceMap: Record<string, unknown>
+  evidenceNoteById: Map<string, EvidenceNote>
+}) {
+  const entries = Object.entries(evidenceMap ?? {}).filter(([, value]) => Array.isArray(value) && value.length > 0)
+
+  if (entries.length === 0) {
+    return <p className="text-xs text-slate-400">연결된 근거 노트가 없습니다.</p>
+  }
+
+  return (
+    <div className="space-y-3 max-h-56 overflow-auto pr-1">
+      {entries.map(([field, noteIds]) => (
+        <div key={field} className="space-y-1.5">
+          <p className="text-xs font-semibold text-slate-700">{PHILOSOPHY_FIELD_LABELS[field] ?? '추가 운영 항목'}</p>
+          <ul className="space-y-1.5">
+            {(noteIds as unknown[]).map((noteId) => {
+              const note = typeof noteId === 'string' ? evidenceNoteById.get(noteId) : null
+              return (
+                <li key={String(noteId)} className="rounded-md bg-white border border-slate-200 px-2.5 py-2 text-xs text-slate-600 leading-relaxed">
+                  {note ? (
+                    <>
+                      <span className="font-semibold text-slate-700">{EVIDENCE_NOTE_TYPE_LABELS[note.note_type] ?? '근거 노트'}</span>
+                      <span className="text-slate-400"> · </span>
+                      <span>{note.claim}</span>
+                    </>
+                  ) : (
+                    <span>근거 노트를 다시 불러와 확인이 필요합니다.</span>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function UnsupportedGapSummary({ gaps }: { gaps: unknown[] }) {
+  if (!Array.isArray(gaps) || gaps.length === 0) {
+    return <p className="text-xs text-slate-400">근거가 부족한 항목이 없습니다.</p>
+  }
+
+  return (
+    <ul className="space-y-2 max-h-48 overflow-auto pr-1">
+      {gaps.map((gap, index) => {
+        const item = typeof gap === 'object' && gap !== null ? gap as Record<string, unknown> : {}
+        const field = typeof item.field === 'string' ? item.field : ''
+        const rawReason = typeof item.reason === 'string' ? item.reason : '추가 자료 확인이 필요합니다.'
+        const reason = rawReason.replace(/note/g, '노트')
+        return (
+          <li key={`${field}-${index}`} className="rounded-md bg-white border border-slate-200 px-2.5 py-2 text-xs text-slate-600 leading-relaxed">
+            <span className="font-semibold text-slate-700">{PHILOSOPHY_FIELD_LABELS[field] ?? '추가 운영 항목'}</span>
+            <span className="text-slate-400"> · </span>
+            <span>{reason}</span>
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
