@@ -392,7 +392,7 @@ async def test_update_content_brief_blocks_approval_without_approved_philosophy(
         )
 
     assert exc_info.value.status_code == 409
-    assert "approved content philosophy" in exc_info.value.detail
+    assert "approved clinic writing standard" in exc_info.value.detail
     assert db.committed is False
     assert item.brief_status is None
     assert item.brief_approved_at is None

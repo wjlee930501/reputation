@@ -285,7 +285,7 @@ async def publish_content(
         raise HTTPException(
             status_code=400,
             detail={
-                "message": "Essence 검수 상태 때문에 발행할 수 없습니다.",
+                "message": "병원답게 콘텐츠를 쓰기 위한 기준 검수 상태 때문에 발행할 수 없습니다.",
                 "essence_status": screening.status,
                 "essence_check_summary": screening.summary,
             },
@@ -472,7 +472,7 @@ async def _apply_content_brief_update(
             if philosophy is None:
                 raise HTTPException(
                     status_code=409,
-                    detail="Cannot approve a content brief without an approved content philosophy",
+                    detail="Cannot approve a content guide without an approved clinic writing standard",
                 )
             item.content_philosophy_id = philosophy.id
             item.brief_status = body.brief_status
