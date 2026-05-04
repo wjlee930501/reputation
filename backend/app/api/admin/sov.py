@@ -1,6 +1,6 @@
 """
-Admin API — SoV 분석
-GET /admin/hospitals/{id}/sov/trend    — 주간 SoV 추이 (최근 12주)
+Admin API — AI 답변 언급률 분석
+GET /admin/hospitals/{id}/sov/trend    — 주간 AI 답변 언급률 추이 (최근 12주)
 GET /admin/hospitals/{id}/sov/queries  — 쿼리별 멘션율
 GET /admin/hospitals/{id}/sov/measurement-runs — 최근 측정 실행 목록
 """
@@ -18,7 +18,7 @@ from app.core.database import get_db
 from app.models.hospital import Hospital
 from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
 
-router = APIRouter(prefix="/admin/hospitals", tags=["Admin — SoV"])
+router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Answer Mention Rate"])
 
 
 @router.get("/{hospital_id}/sov/measurement-runs")
@@ -27,7 +27,7 @@ async def get_sov_measurement_runs(
     db: AsyncSession = Depends(get_db),
     limit: int = 20,
 ):
-    """최근 SoV 측정 실행 목록."""
+    """최근 AI 답변 언급률 측정 실행 목록."""
     await _get_hospital_or_404(db, hospital_id)
 
     safe_limit = max(1, min(limit, 100))
@@ -44,7 +44,7 @@ async def get_sov_measurement_runs(
 @router.get("/{hospital_id}/sov/trend")
 async def get_sov_trend(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """
-    최근 12주 주간 SoV 추이.
+    최근 12주 주간 AI 답변 언급률 추이.
     Returns: [{week_start, sov_pct, mention_count, total_count}, ...]
     """
     await _get_hospital_or_404(db, hospital_id)

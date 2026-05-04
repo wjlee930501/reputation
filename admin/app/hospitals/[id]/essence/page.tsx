@@ -105,7 +105,7 @@ export default function EssencePage() {
       setSelectedDraftId(latestDraft?.id ?? null)
       if (latestDraft) setDraftFields(latestDraft)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Essence 데이터를 불러오지 못했습니다.')
+      setError(e instanceof Error ? e.message : '콘텐츠 운영 기준 데이터를 불러오지 못했습니다.')
     } finally {
       setLoading(false)
     }
@@ -241,7 +241,7 @@ export default function EssencePage() {
       })
       setSelectedDraftId(draft.id)
       setDraftFields(draft)
-      setNotice('콘텐츠 철학 초안이 생성되었습니다. 내용을 검토 후 승인하세요.')
+      setNotice('콘텐츠 운영 기준 초안이 생성되었습니다. 내용을 검토 후 승인하세요.')
       await load()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '초안 생성에 실패했습니다.')
@@ -295,7 +295,7 @@ export default function EssencePage() {
       })
       setApprovalNote('')
       setConfirmEvidence(false)
-      setNotice('콘텐츠 철학이 승인되었습니다. 자동 콘텐츠 생성에 적용됩니다.')
+      setNotice('콘텐츠 운영 기준이 승인되었습니다. 자동 콘텐츠 생성에 적용됩니다.')
       await load()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '승인에 실패했습니다.')
@@ -484,7 +484,7 @@ export default function EssencePage() {
             <div className="min-w-0">
               <StepLabel index={2} label="근거 추출 · 초안 만들기" />
               <p className="text-xs text-slate-500 mt-1.5">
-                각 자료의 [근거 추출]을 실행한 뒤, 사용할 자료를 체크해 콘텐츠 철학 초안을 만듭니다.
+                각 자료의 [근거 추출]을 실행한 뒤, 사용할 자료를 체크해 콘텐츠 운영 기준 초안을 만듭니다.
               </p>
             </div>
             <button
@@ -623,7 +623,7 @@ export default function EssencePage() {
       <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <StepLabel index={3} label="콘텐츠 철학 검토 및 승인" />
+            <StepLabel index={3} label="콘텐츠 운영 기준 검토 및 승인" />
             <p className="text-xs text-slate-500 mt-1.5">
               초안 상태만 편집할 수 있습니다. 승인하려면 각 메시지가 어떤 자료에서 나왔는지 확인되어야 합니다.
             </p>
@@ -661,7 +661,7 @@ export default function EssencePage() {
 
         {!selectedDraft && !approved && (
           <div className="bg-slate-50 border border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-500 space-y-2">
-            <p className="text-sm font-medium text-slate-600">승인된 콘텐츠 철학이 없습니다.</p>
+            <p className="text-sm font-medium text-slate-600">승인된 콘텐츠 운영 기준이 없습니다.</p>
             <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
               자료를 1개 이상 입력 → 근거 추출 → “선택 자료로 초안 만들기” 순서로 진행하세요.
               승인 전에는 자동 콘텐츠가 발행 차단됩니다.

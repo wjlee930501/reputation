@@ -250,7 +250,7 @@ async def publish_content(
 ):
     """
     AE가 검토 후 [발행] 클릭.
-    AEO 홈페이지에 즉시 게재.
+    AI 노출 웹블로그에 즉시 게재.
     """
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)

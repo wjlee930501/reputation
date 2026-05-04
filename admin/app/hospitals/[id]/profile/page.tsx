@@ -913,7 +913,7 @@ export default function ProfilePage() {
         )
       })()}
 
-      {/* 온보딩 완료 및 V0 리포트/사이트 빌드 시작 */}
+      {/* 온보딩 완료 및 초기 리포트/AI 노출 웹블로그 준비 시작 */}
       <section
         className={`rounded-xl border overflow-hidden ${
           requiredReady

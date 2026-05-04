@@ -1,4 +1,4 @@
-.PHONY: setup up down logs migrate revision test demo-seed essence-backfill
+.PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard
 
 setup:
 	cp .env.example .env
@@ -36,6 +36,9 @@ demo-seed:
 
 essence-backfill:
 	docker compose exec api python -m app.utils.essence_backfill
+
+copy-guard:
+	python3 scripts/check_user_facing_terms.py
 
 # ── 수동 태스크 실행 ───────────────────────────────────────────────
 v0:

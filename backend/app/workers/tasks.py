@@ -237,7 +237,7 @@ def nightly_content_generation():
                     item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
                     item.essence_check_summary = {
                         "blocking": True,
-                        "findings": ["승인된 콘텐츠 철학이 없어 자동 생성/발행 품질을 통과할 수 없습니다."],
+                        "findings": ["승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."],
                         "checked_at": datetime.now(timezone.utc).isoformat(),
                     }
                     db.commit()
@@ -619,7 +619,7 @@ def run_weekly_monitoring():
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
 def adjust_query_priorities():
-    """Adjust query priorities based on recent SoV results. Run AFTER weekly SoV tasks complete."""
+    """Adjust query priorities based on recent AI mention results. Run after weekly measurement tasks complete."""
     with SyncSessionLocal() as db:
         four_weeks_ago = datetime.now(timezone.utc) - timedelta(weeks=4)
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)

@@ -9,7 +9,7 @@ import { Hospital, PLAN_LABELS, STATUS_LABELS } from '@/types'
 const TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '대시보드', path: 'dashboard', hint: 'AI 언급률과 운영 준비 상태 한눈에 보기' },
   { label: '프로파일', path: 'profile', hint: '병원 기본 정보' },
-  { label: 'Essence', path: 'essence', hint: '콘텐츠 운영 기준(진료 철학·말투·금기 표현) 승인' },
+  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준(진료 철학·말투·금기 표현) 승인' },
   { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini 같은 AI 답변 서비스에 노출시킬 환자 질문 정의' },
   { label: '노출 보완 작업', path: 'exposure-actions', hint: 'AI에 더 잘 노출되도록 보완할 작업과 콘텐츠 가이드 연결' },
   { label: '콘텐츠', path: 'content', hint: '초안 검수·발행' },

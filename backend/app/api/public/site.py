@@ -1,5 +1,5 @@
 """
-Public API — AEO 사이트용
+Public API — AI 노출 웹블로그용
 GET /api/v1/public/hospitals/{slug}                      — 병원 기본정보
 GET /api/v1/public/hospitals/{slug}/contents             — 발행된 콘텐츠 목록
 GET /api/v1/public/hospitals/{slug}/contents/{content_id} — 콘텐츠 상세

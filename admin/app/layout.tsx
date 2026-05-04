@@ -54,7 +54,7 @@ export default function RootLayout({
                 도움말
               </p>
               <div className="px-3 py-2 text-[11px] text-slate-400 leading-relaxed">
-                병원 자료 → 콘텐츠 운영 기준(Essence) 승인 → 콘텐츠 자동 생성 → 발행 → 월간 리포트 순서로 진행합니다.
+                병원 자료 → 콘텐츠 운영 기준 승인 → 콘텐츠 자동 생성 → 발행 → 월간 리포트 순서로 진행합니다.
               </div>
             </nav>
 

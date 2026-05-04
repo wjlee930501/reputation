@@ -1,6 +1,6 @@
 """Deterministic exposure gap/action engine.
 
-This module uses only local query-target and SoV measurement state. It never calls
+This module uses only local patient-question and AI mention measurement state. It never calls
 external AI, Slack, or network APIs.
 """
 import uuid

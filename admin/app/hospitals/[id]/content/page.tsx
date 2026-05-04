@@ -9,7 +9,7 @@ import { AIQueryTarget, ContentItem, ExposureAction, TYPE_LABELS } from '@/types
 
 const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
   ALIGNED: { label: '운영 기준 통과', color: 'bg-green-100 text-green-700' },
-  NEEDS_ESSENCE_REVIEW: { label: 'Essence 재검토', color: 'bg-orange-100 text-orange-700' },
+  NEEDS_ESSENCE_REVIEW: { label: '운영 기준 재검토', color: 'bg-orange-100 text-orange-700' },
   MISSING_APPROVED_PHILOSOPHY: { label: '운영 기준 없음', color: 'bg-red-100 text-red-700' },
 }
 
@@ -75,7 +75,7 @@ function getReviewState(item: ContentItem): ReviewState {
   }
   if (item.essence_status !== 'ALIGNED') {
     const reason =
-      item.essence_status === 'NEEDS_ESSENCE_REVIEW' ? 'Essence 재검토 필요' :
+      item.essence_status === 'NEEDS_ESSENCE_REVIEW' ? '운영 기준 재검토 필요' :
       item.essence_status === 'MISSING_APPROVED_PHILOSOPHY' ? '승인된 운영 기준 없음' :
       '운영 기준 미검수'
     return { key: 'needsReview', label: '검토 필요', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
@@ -400,7 +400,7 @@ export default function ContentPage() {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">콘텐츠 검수 · 발행</h2>
             <p className="text-sm text-gray-500 mt-1">
-              콘텐츠 운영 기준(Essence) 통과 여부와 의료광고 리스크를 확인한 뒤 발행합니다.
+              콘텐츠 운영 기준 통과 여부와 의료광고 리스크를 확인한 뒤 발행합니다.
             </p>
           </div>
 
@@ -457,7 +457,7 @@ export default function ContentPage() {
           ))}
         </select>
         <span className="text-xs text-gray-500 ml-1">
-          콘텐츠 운영 기준(Essence)을 통과한 초안만 일괄 선택할 수 있습니다.
+          콘텐츠 운영 기준을 통과한 초안만 일괄 선택할 수 있습니다.
         </span>
       </div>
 
@@ -833,7 +833,7 @@ export default function ContentPage() {
                   </div>
                   <div className="p-4 space-y-3 text-sm">
                     <CheckRow
-                      label="콘텐츠 운영 기준(Essence)"
+                      label="콘텐츠 운영 기준"
                       value={
                         selected.essence_status
                           ? ESSENCE_LABELS[selected.essence_status]?.label ?? selected.essence_status

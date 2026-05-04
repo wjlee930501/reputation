@@ -96,7 +96,7 @@ COMPETITOR_PARSE_PROMPT = """\
 def generate_query_matrix(region: list[str], specialties: list[str], keywords: list[str]) -> list[str]:
     # 🔴 CRITICAL fix: empty inputs cause product() to yield zero combinations,
     # returning an empty list. Without this guard, V0 report runs with 0 queries
-    # and produces a meaningless 0% SoV result silently.
+    # and produces a meaningless 0% AI mention-rate result silently.
     if not keywords or not specialties:
         logger.warning(
             f"generate_query_matrix called with empty inputs: "

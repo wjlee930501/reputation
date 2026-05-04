@@ -607,7 +607,7 @@ function DetailPanel({
         )}
         <p className="text-[11px] leading-5 text-slate-500">
           {canCreateBrief
-            ? '콘텐츠 운영 기준(Essence)이 아직 승인되지 않은 경우에도 콘텐츠 가이드 초안은 생성할 수 있지만, 발행 전에 반드시 운영 기준 승인이 필요합니다. 이 화면에서는 자동 승인·발행이 일어나지 않습니다.'
+            ? '콘텐츠 운영 기준이 아직 승인되지 않은 경우에도 콘텐츠 가이드 초안은 생성할 수 있지만, 발행 전에 반드시 운영 기준 승인이 필요합니다. 이 화면에서는 자동 승인·발행이 일어나지 않습니다.'
             : getBriefUnavailableMessage(action.action_type)}
         </p>
         {briefResult && (
@@ -633,7 +633,7 @@ function BriefResultPanel({ result }: { result: BriefResultState }) {
         </dd>
         <dt>발행 예정</dt>
         <dd>{contentItem.scheduled_date}</dd>
-        <dt>Brief 상태</dt>
+        <dt>콘텐츠 가이드 상태</dt>
         <dd>{contentItem.brief_status ?? '미정'}</dd>
         <dt>제목</dt>
         <dd className="truncate" title={contentItem.title ?? undefined}>
@@ -648,9 +648,9 @@ function BriefResultPanel({ result }: { result: BriefResultState }) {
         }`}
       >
         {philosophyGate.has_approved_philosophy
-          ? '승인된 Essence 기준이 적용되었습니다. 콘텐츠 탭에서 검수 후 발행하세요.'
+          ? '승인된 콘텐츠 운영 기준이 적용되었습니다. 콘텐츠 탭에서 검수 후 발행하세요.'
           : philosophyGate.message ??
-            '발행 전에 승인된 Essence(콘텐츠 운영 기준)가 필요합니다. Essence 탭에서 승인을 먼저 진행하세요.'}
+            '발행 전에 승인된 콘텐츠 운영 기준이 필요합니다. 운영 기준 탭에서 승인을 먼저 진행하세요.'}
       </div>
     </div>
   )

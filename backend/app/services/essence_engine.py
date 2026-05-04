@@ -1,4 +1,4 @@
-"""Source-backed Content Essence engine.
+"""Source-backed content operating standard engine.
 
 MVP behavior is intentionally deterministic. It extracts short evidence notes
 from operator-provided source text and synthesizes only fields that can point
@@ -359,7 +359,7 @@ def screen_content_against_philosophy(
             status=ESSENCE_STATUS_MISSING_APPROVED,
             summary={
                 "blocking": True,
-                "findings": ["승인된 콘텐츠 철학이 없습니다."],
+                "findings": ["승인된 콘텐츠 운영 기준이 없습니다."],
                 "checked_at": _now_iso(),
             },
         )
@@ -442,13 +442,13 @@ def build_monthly_essence_summary(db, hospital: Hospital, period_start: datetime
 
     recommended_actions = []
     if not approved:
-        recommended_actions.append("승인된 콘텐츠 철학을 생성/승인하세요.")
+        recommended_actions.append("승인된 콘텐츠 운영 기준을 생성/승인하세요.")
     if not processed_sources:
         recommended_actions.append("온보딩 자료를 1개 이상 원문 텍스트 기반으로 처리하세요.")
     if source_stale:
         recommended_actions.append("처리된 자료가 승인된 운영 기준과 달라졌습니다. 새 초안을 검토하세요.")
     if needs_review_count:
-        recommended_actions.append("Essence 재검수가 필요한 콘텐츠를 수정하세요.")
+        recommended_actions.append("운영 기준 재검수가 필요한 콘텐츠를 수정하세요.")
     if missing_count:
         recommended_actions.append("승인 철학 없이 생성된 콘텐츠를 재생성하거나 검수하세요.")
     if medical_risk_findings:

@@ -134,7 +134,7 @@ def _build_philosophy_context(philosophy: HospitalContentPhilosophy | None) -> s
         if isinstance(item, dict)
     )
     return f"""
-[승인된 콘텐츠 철학]
+[승인된 콘텐츠 운영 기준]
 version: {philosophy.version}
 positioning_statement: {philosophy.positioning_statement or ''}
 doctor_voice: {philosophy.doctor_voice or ''}
@@ -153,7 +153,7 @@ treatment_narratives:
 {treatments}
 
 규칙:
-- 위 콘텐츠 철학 밖의 병원 고유 주장, 장비, 수상, 치료 효과, 비교 우위를 새로 만들지 마세요.
+- 위 콘텐츠 운영 기준 밖의 병원 고유 주장, 장비, 수상, 치료 효과, 비교 우위를 새로 만들지 마세요.
 - 근거 자료에서 확인된 메시지와 운영자가 덧붙인 작성 방향을 섞어 과장하지 마세요.
 - avoid_messages와 medical_ad_risk_rules에 해당하는 표현은 사용하지 마세요.
 """.strip()
