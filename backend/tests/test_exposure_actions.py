@@ -345,6 +345,49 @@ async def test_patch_exposure_action_updates_work_queue_fields(monkeypatch):
     assert response["linked_content_id"] == str(content_id)
 
 
+async def test_patch_linked_content_null_clears_reverse_content_link(monkeypatch):
+    hospital_id = uuid.uuid4()
+    action_id = uuid.uuid4()
+    content_id = uuid.uuid4()
+    action = _action(hospital_id=hospital_id, action_id=action_id)
+    item = _content_item(hospital_id=hospital_id, content_id=content_id, action_id=action_id)
+    action.linked_content_id = content_id
+    action.linked_content = item
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return _hospital(hospital_id)
+
+    async def fake_get_action(db, requested_hospital_id, requested_action_id):
+        assert requested_hospital_id == hospital_id
+        assert requested_action_id == action_id
+        return action
+
+    class FakeDB(_MutatingDB):
+        async def get(self, model, requested_content_id):
+            assert model is exposure_actions_api.ContentItem
+            assert requested_content_id == content_id
+            return item
+
+    monkeypatch.setattr(exposure_actions_api, "_get_hospital_or_404", fake_get_hospital)
+    monkeypatch.setattr(exposure_actions_api, "_get_action_or_404", fake_get_action)
+
+    db = FakeDB()
+    response = await exposure_actions_api.update_exposure_action(
+        hospital_id,
+        action_id,
+        exposure_actions_api.ExposureActionPatch(linked_content_id=None),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert action.linked_content_id is None
+    assert action.linked_content is None
+    assert item.exposure_action_id is None
+    assert response["linked_content_id"] is None
+    assert response["linked_content"] is None
+
+
 async def test_patch_linked_content_aligns_existing_query_target(monkeypatch):
     hospital_id = uuid.uuid4()
     action_id = uuid.uuid4()
