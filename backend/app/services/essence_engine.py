@@ -281,7 +281,7 @@ def synthesize_philosophy(
     if operator_note:
         unsupported_gaps.append({
             "field": "operator_note",
-            "reason": "초안 생성 메모는 참고만 했고, 저장 필드는 evidence note에 매핑된 값으로 제한했습니다.",
+            "reason": "초안 생성 메모는 참고만 했고, 저장 필드는 근거 노트에 매핑된 값으로 제한했습니다.",
         })
 
     return {
@@ -342,10 +342,10 @@ def validate_philosophy_grounding(
             continue
         unknown = [note_id for note_id in mapped_ids if note_id not in valid_note_ids]
         if unknown:
-            errors.append(f"{field_name} 필드가 존재하지 않는 evidence note를 참조합니다: {', '.join(unknown)}")
+            errors.append(f"{field_name} 필드가 존재하지 않는 근거 노트를 참조합니다: {', '.join(unknown)}")
             continue
         if require_text_support and not _value_contains_mapped_evidence(value, mapped_ids, notes_by_id):
-            errors.append(f"{field_name} 필드가 매핑된 evidence note 발췌를 포함하지 않습니다.")
+            errors.append(f"{field_name} 필드가 매핑된 근거 노트 발췌를 포함하지 않습니다.")
 
     return errors
 

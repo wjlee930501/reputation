@@ -47,6 +47,13 @@ BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("출처 신호", re.compile(r"출처\s*신호")),
     ("근거 신호", re.compile(r"근거\s*신호")),
     ("크롤링/색인", re.compile(r"크롤링\s*/\s*색인")),
+    ("url/raw_text required", re.compile(r"url\s+또는\s+raw_text", re.I)),
+    ("URL-only source", re.compile(r"URL-only\s+source", re.I)),
+    ("Excluded source", re.compile(r"Excluded\s+source", re.I)),
+    ("처리된 source", re.compile(r"처리된\s+source", re.I)),
+    ("evidence note", re.compile(r"evidence\s+note", re.I)),
+    ("status philosophy", re.compile(r"\b(?:APPROVED|ARCHIVED|DRAFT)\s+philosophy\b", re.I)),
+    ("source_asset_ids 형식", re.compile(r"source_asset_ids\s+형식", re.I)),
 ]
 
 # Internal docs/comments that are not shown to operators can be allowed by path.

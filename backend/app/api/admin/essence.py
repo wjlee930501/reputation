@@ -117,7 +117,7 @@ async def patch_source(
         setattr(source, field_name, value)
 
     if not ((source.url and source.url.strip()) or (source.raw_text and source.raw_text.strip())):
-        raise HTTPException(status_code=400, detail="url 또는 raw_text 중 하나는 필수입니다.")
+        raise HTTPException(status_code=400, detail="자료 URL 또는 자료 본문 중 하나는 필수입니다.")
 
     if material_changed:
         await db.execute(
@@ -148,9 +148,9 @@ async def process_source(
 ):
     source = await _get_source_or_404(db, hospital_id, source_id)
     if source.status == SourceStatus.EXCLUDED:
-        raise HTTPException(status_code=400, detail="Excluded source는 처리할 수 없습니다.")
+        raise HTTPException(status_code=400, detail="제외 처리된 자료는 처리할 수 없습니다.")
     if not source.raw_text or not source.raw_text.strip():
-        raise HTTPException(status_code=400, detail="raw_text가 없는 URL-only source는 처리할 수 없습니다.")
+        raise HTTPException(status_code=400, detail="자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다.")
 
     try:
         payloads = process_source_asset(source)
@@ -238,11 +238,11 @@ async def create_philosophy_draft(
     hospital = await _get_hospital_or_404(db, hospital_id)
     sources = await _select_processed_sources(db, hospital_id, body.source_asset_ids)
     if not sources:
-        raise HTTPException(status_code=400, detail="처리된 source가 1개 이상 필요합니다.")
+        raise HTTPException(status_code=400, detail="처리된 병원 자료가 1개 이상 필요합니다.")
 
     notes = await _get_notes_for_sources(db, [source.id for source in sources])
     if not notes:
-        raise HTTPException(status_code=400, detail="철학 초안 생성에 사용할 evidence note가 없습니다.")
+        raise HTTPException(status_code=400, detail="운영 기준 초안 생성에 사용할 근거 노트가 없습니다.")
 
     payload = synthesize_philosophy(hospital, sources, notes, operator_note=body.operator_note)
     grounding_errors = validate_philosophy_grounding(payload, notes)
@@ -272,7 +272,7 @@ async def patch_philosophy(
 ):
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
     if philosophy.status != PhilosophyStatus.DRAFT:
-        raise HTTPException(status_code=400, detail="APPROVED/ARCHIVED philosophy는 직접 수정할 수 없습니다.")
+        raise HTTPException(status_code=400, detail="승인 또는 보관된 콘텐츠 운영 기준은 직접 수정할 수 없습니다.")
 
     update = body.model_dump(exclude_unset=True)
     for field_name, value in update.items():
@@ -302,7 +302,7 @@ async def approve_philosophy(
 ):
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
     if philosophy.status != PhilosophyStatus.DRAFT:
-        raise HTTPException(status_code=400, detail="DRAFT philosophy만 승인할 수 있습니다.")
+        raise HTTPException(status_code=400, detail="초안 상태의 콘텐츠 운영 기준만 승인할 수 있습니다.")
 
     notes = await _get_notes_for_philosophy(db, philosophy)
     grounding_errors = validate_philosophy_grounding(philosophy, notes, require_text_support=True)
@@ -431,7 +431,7 @@ async def _select_processed_sources(
         try:
             ids = [uuid.UUID(str(item)) for item in source_asset_ids]
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="source_asset_ids 형식이 올바르지 않습니다.") from exc
+            raise HTTPException(status_code=400, detail="선택한 병원 자료 ID 형식이 올바르지 않습니다.") from exc
         stmt = stmt.where(HospitalSourceAsset.id.in_(ids))
     stmt = stmt.order_by(HospitalSourceAsset.processed_at.desc())
     result = await db.execute(stmt)

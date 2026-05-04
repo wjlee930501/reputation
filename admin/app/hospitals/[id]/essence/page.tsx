@@ -374,7 +374,7 @@ export default function EssencePage() {
         <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 text-emerald-800 text-sm">{notice}</div>
       )}
 
-      {/* Active approved philosophy (sticky priority above workflow) */}
+      {/* 승인된 운영 기준은 작업 흐름 위에 고정 표시 */}
       {approved && (
         <section className="bg-white rounded-xl border border-emerald-200 p-5">
           <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -833,7 +833,7 @@ function TextArea({
 
 function EvidenceList({ notes }: { notes: EvidenceNote[] }) {
   if (notes.length === 0) {
-    return <div className="bg-slate-50 rounded-lg p-8 text-center text-slate-400 text-sm">추출된 evidence note가 없습니다.</div>
+    return <div className="bg-slate-50 rounded-lg p-8 text-center text-slate-400 text-sm">추출된 근거 노트가 없습니다.</div>
   }
   return (
     <div className="grid md:grid-cols-2 gap-3">

@@ -241,7 +241,7 @@ def nightly_content_generation():
                         "checked_at": datetime.now(timezone.utc).isoformat(),
                     }
                     db.commit()
-                    logger.warning(f"Skipping content generation without approved philosophy: {hospital.name}")
+                    logger.warning(f"Skipping content generation without approved clinic writing standard: {hospital.name}")
                     continue
 
                 # Claude Sonnet 콘텐츠 생성
