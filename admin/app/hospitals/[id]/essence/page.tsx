@@ -12,21 +12,43 @@ import {
 } from '@/types'
 
 const SOURCE_TYPES: Array<{ value: SourceType; label: string }> = [
-  { value: 'NAVER_BLOG', label: 'Naver Blog' },
-  { value: 'YOUTUBE', label: 'YouTube' },
-  { value: 'HOMEPAGE', label: 'Homepage' },
-  { value: 'INTERVIEW', label: 'Interview' },
-  { value: 'LANDING_PAGE', label: 'Landing Page' },
-  { value: 'BROCHURE', label: 'Brochure' },
-  { value: 'INTERNAL_NOTE', label: 'Internal Note' },
-  { value: 'OTHER', label: 'Other' },
+  { value: 'NAVER_BLOG', label: '네이버 블로그' },
+  { value: 'YOUTUBE', label: '유튜브' },
+  { value: 'HOMEPAGE', label: '병원 홈페이지' },
+  { value: 'INTERVIEW', label: '원장 인터뷰' },
+  { value: 'LANDING_PAGE', label: '랜딩 페이지' },
+  { value: 'BROCHURE', label: '브로슈어' },
+  { value: 'INTERNAL_NOTE', label: '내부 메모' },
+  { value: 'OTHER', label: '기타 자료' },
 ]
+
+const SOURCE_TYPE_LABELS = Object.fromEntries(
+  SOURCE_TYPES.map((sourceType) => [sourceType.value, sourceType.label]),
+) as Record<SourceType, string>
 
 const SOURCE_STATUS_STYLE: Record<SourceStatus, { label: string; color: string }> = {
   PENDING: { label: '대기', color: 'bg-slate-100 text-slate-700' },
   PROCESSED: { label: '처리완료', color: 'bg-emerald-100 text-emerald-700' },
   EXCLUDED: { label: '제외', color: 'bg-red-50 text-red-600' },
   ERROR: { label: '오류', color: 'bg-orange-100 text-orange-700' },
+}
+
+const PHILOSOPHY_STATUS_LABELS: Record<string, string> = {
+  APPROVED: '승인됨',
+  DRAFT: '초안',
+  ARCHIVED: '보관됨',
+}
+
+const EVIDENCE_NOTE_TYPE_LABELS: Record<string, string> = {
+  KEY_MESSAGE: '핵심 메시지',
+  TONE_SIGNAL: '말투 기준',
+  TREATMENT_SIGNAL: '진료 설명 근거',
+  RISK_SIGNAL: '주의 표현',
+  PATIENT_PROMISE: '환자에게 약속하는 기준',
+  DOCTOR_PHILOSOPHY: '원장 진료 관점',
+  LOCAL_CONTEXT: '지역 환자 맥락',
+  PROOF_POINT: '확인된 근거',
+  CONFLICT: '상충 자료',
 }
 
 function listToText(values: unknown): string {
@@ -534,7 +556,7 @@ export default function EssencePage() {
                       <p className="font-medium text-slate-900">{source.title}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
                         <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 mr-1.5">
-                          {source.source_type}
+                          {SOURCE_TYPE_LABELS[source.source_type] ?? source.source_type}
                         </span>
                         {source.url ? (
                           <a
@@ -606,7 +628,7 @@ export default function EssencePage() {
             <div>
               <h3 className="text-base font-semibold text-slate-900">{selectedSource.title}</h3>
               <p className="text-xs text-slate-500 mt-1">
-                {selectedSource.source_type} · 처리일 {formatDate(selectedSource.processed_at)}
+                {SOURCE_TYPE_LABELS[selectedSource.source_type] ?? selectedSource.source_type} · 처리일 {formatDate(selectedSource.processed_at)}
               </p>
             </div>
             <button
@@ -640,10 +662,10 @@ export default function EssencePage() {
                       ? 'border-blue-500 text-blue-700 bg-blue-50'
                       : 'border-slate-200 text-slate-600 hover:border-slate-300'
                   }`}
-                  title={`${item.status} · ${formatDate(item.created_at)}`}
+                  title={`${PHILOSOPHY_STATUS_LABELS[item.status] ?? item.status} · ${formatDate(item.created_at)}`}
                 >
                   v{item.version}
-                  <span className="ml-1.5 text-[10px] uppercase opacity-70">{item.status}</span>
+                  <span className="ml-1.5 text-[10px] opacity-70">{PHILOSOPHY_STATUS_LABELS[item.status] ?? item.status}</span>
                 </button>
               ))}
             </div>
@@ -654,7 +676,7 @@ export default function EssencePage() {
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-5 text-sm text-blue-900 space-y-2">
             <p className="font-semibold">검토 대기 중인 초안이 없습니다.</p>
             <p>
-              승인된 v{approved.version} 철학이 자동 생성 기준으로 사용됩니다. 신규 자료를 처리한 뒤 위에서 “선택한 N개로 초안 만들기”를 눌러 새 버전을 만들 수 있습니다.
+              승인된 v{approved.version} 콘텐츠 운영 기준이 자동 생성 기준으로 사용됩니다. 신규 자료를 처리한 뒤 위에서 “선택한 N개로 초안 만들기”를 눌러 새 버전을 만들 수 있습니다.
             </p>
           </div>
         )}
@@ -674,20 +696,20 @@ export default function EssencePage() {
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusBadge(selectedDraft.status)}`}>
-                  {selectedDraft.status}
+                  {PHILOSOPHY_STATUS_LABELS[selectedDraft.status] ?? selectedDraft.status}
                 </span>
-                <span className="text-sm text-slate-500">version {selectedDraft.version}</span>
+                <span className="text-sm text-slate-500">v{selectedDraft.version}</span>
               </div>
-              <TextArea label="Positioning Statement" value={draftPositioning} onChange={setDraftPositioning} disabled={selectedDraft.status !== 'DRAFT'} rows={3} />
-              <TextArea label="Doctor Voice" value={draftVoice} onChange={setDraftVoice} disabled={selectedDraft.status !== 'DRAFT'} rows={3} />
-              <TextArea label="Patient Promise" value={draftPromise} onChange={setDraftPromise} disabled={selectedDraft.status !== 'DRAFT'} rows={3} />
+              <TextArea label="병원이 알려져야 할 기준" value={draftPositioning} onChange={setDraftPositioning} disabled={selectedDraft.status !== 'DRAFT'} rows={3} />
+              <TextArea label="원장님 말투와 설명 방식" value={draftVoice} onChange={setDraftVoice} disabled={selectedDraft.status !== 'DRAFT'} rows={3} />
+              <TextArea label="환자에게 일관되게 전달할 약속" value={draftPromise} onChange={setDraftPromise} disabled={selectedDraft.status !== 'DRAFT'} rows={3} />
               <div className="grid md:grid-cols-2 gap-4">
-                <TextArea label="Content Principles" value={draftPrinciples} onChange={setDraftPrinciples} disabled={selectedDraft.status !== 'DRAFT'} rows={6} hint="한 줄에 하나씩" />
-                <TextArea label="Tone Guidelines" value={draftTone} onChange={setDraftTone} disabled={selectedDraft.status !== 'DRAFT'} rows={6} hint="한 줄에 하나씩" />
-                <TextArea label="Must-use Messages" value={draftMustUse} onChange={setDraftMustUse} disabled={selectedDraft.status !== 'DRAFT'} rows={6} hint="한 줄에 하나씩" />
-                <TextArea label="Avoid Messages" value={draftAvoid} onChange={setDraftAvoid} disabled={selectedDraft.status !== 'DRAFT'} rows={6} hint="한 줄에 하나씩" />
+                <TextArea label="콘텐츠 작성 원칙" value={draftPrinciples} onChange={setDraftPrinciples} disabled={selectedDraft.status !== 'DRAFT'} rows={6} hint="한 줄에 하나씩" />
+                <TextArea label="말투 기준" value={draftTone} onChange={setDraftTone} disabled={selectedDraft.status !== 'DRAFT'} rows={6} hint="한 줄에 하나씩" />
+                <TextArea label="반드시 담을 메시지" value={draftMustUse} onChange={setDraftMustUse} disabled={selectedDraft.status !== 'DRAFT'} rows={6} hint="한 줄에 하나씩" />
+                <TextArea label="피해야 할 표현" value={draftAvoid} onChange={setDraftAvoid} disabled={selectedDraft.status !== 'DRAFT'} rows={6} hint="한 줄에 하나씩" />
               </div>
-              <TextArea label="Medical Ad Risk Rules" value={draftRiskRules} onChange={setDraftRiskRules} disabled={selectedDraft.status !== 'DRAFT'} rows={4} hint="의료광고법 관련 추가 운영 규칙 (한 줄에 하나씩)" />
+              <TextArea label="의료광고 리스크 규칙" value={draftRiskRules} onChange={setDraftRiskRules} disabled={selectedDraft.status !== 'DRAFT'} rows={4} hint="의료광고법 관련 추가 운영 규칙 (한 줄에 하나씩)" />
               {selectedDraft.status === 'DRAFT' && (
                 <div className="flex gap-3">
                   <button
@@ -703,13 +725,13 @@ export default function EssencePage() {
 
             <aside className="space-y-4">
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
-                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Evidence Map</p>
+                <p className="text-[11px] font-semibold text-slate-600 tracking-wider mb-2">항목별 근거 연결</p>
                 <pre className="text-xs text-slate-600 whitespace-pre-wrap break-words max-h-48 overflow-auto">
                   {JSON.stringify(selectedDraft.evidence_map, null, 2)}
                 </pre>
               </div>
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
-                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Unsupported Gaps</p>
+                <p className="text-[11px] font-semibold text-slate-600 tracking-wider mb-2">근거가 부족해 비워둔 항목</p>
                 <pre className="text-xs text-slate-600 whitespace-pre-wrap break-words max-h-48 overflow-auto">
                   {JSON.stringify(selectedDraft.unsupported_gaps, null, 2)}
                 </pre>
@@ -718,7 +740,7 @@ export default function EssencePage() {
                 <div className="bg-white border border-emerald-200 rounded-lg p-4 space-y-3">
                   <p className="text-sm font-semibold text-slate-900">승인</p>
                   <p className="text-[11px] text-slate-500 leading-relaxed">
-                    승인 전 체크: ① evidence_map의 모든 ID가 실제 근거 note인지 ② must_use / avoid 메시지가 의료광고 금지 표현과 충돌하지 않는지 ③ unsupported_gaps의 빈 칸이 운영 기준에 허용되는지.
+                    승인 전 체크: ① 항목별 근거 연결의 모든 ID가 실제 근거 노트인지 ② 반드시 담을 메시지 / 피해야 할 표현이 의료광고 금지 표현과 충돌하지 않는지 ③ 근거가 부족한 항목을 운영 기준에서 허용해도 되는지.
                   </p>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">검토자</label>
@@ -840,7 +862,7 @@ function EvidenceList({ notes }: { notes: EvidenceNote[] }) {
       {notes.map((note) => (
         <div key={note.id} className="border border-slate-200 rounded-lg p-4 bg-slate-50/40">
           <div className="flex items-center justify-between gap-3 mb-2">
-            <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">{note.note_type}</span>
+            <span className="text-xs font-semibold text-blue-700 tracking-wide">{EVIDENCE_NOTE_TYPE_LABELS[note.note_type] ?? note.note_type}</span>
             <span className="text-xs text-slate-400">신뢰도 {note.confidence ? Math.round(note.confidence * 100) : '-'}%</span>
           </div>
           <p className="text-sm font-medium text-slate-800">{note.claim}</p>
