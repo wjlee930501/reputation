@@ -266,7 +266,7 @@ export default function ExposureActionsPage() {
     <main className="p-8 space-y-6 bg-slate-50 min-h-full">
       <section className="rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 p-7 text-white shadow-sm">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">
-          Exposure Action Work Queue
+          AI 노출 운영 작업 큐
         </p>
         <div className="mt-2 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">

@@ -286,7 +286,7 @@ async def test_update_content_brief_blocks_measurement_exposure_action(monkeypat
         )
 
     assert exc_info.value.status_code == 409
-    assert "content-producing exposure actions" in exc_info.value.detail
+    assert "content-producing AI exposure work items" in exc_info.value.detail
     assert db.committed is False
     assert item.exposure_action_id is None
     assert action.linked_content_id is None

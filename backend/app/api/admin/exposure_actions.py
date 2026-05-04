@@ -27,7 +27,7 @@ from app.services.exposure_action_engine import (
     list_top_exposure_actions,
 )
 
-router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Exposure Actions"])
+router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Exposure Work Queue"])
 
 ACTION_STATUSES = {"OPEN", "IN_PROGRESS", "BLOCKED", "COMPLETED", "CANCELLED", "ARCHIVED"}
 BRIEF_CAPABLE_ACTION_TYPES = {"CONTENT", "WEBBLOG_IA", "SOURCE"}
@@ -90,7 +90,7 @@ async def update_exposure_action(
 
     if "status" in fields:
         if body.status is None or body.status not in ACTION_STATUSES:
-            raise HTTPException(status_code=400, detail="Invalid exposure action status")
+            raise HTTPException(status_code=400, detail="Invalid AI exposure work status")
         action.status = body.status
         if body.status == "COMPLETED":
             if action.completed_at is None:
@@ -133,7 +133,7 @@ async def create_exposure_action_brief(
         raise HTTPException(
             status_code=409,
             detail=(
-                "No available non-published content slot was found for the action month, "
+                "No available non-published content slot was found for the work month, "
                 "and no active content schedule exists to create one."
             ),
         )
@@ -141,7 +141,7 @@ async def create_exposure_action_brief(
     if _uuid_or_none(getattr(item, "exposure_action_id", None)) not in {None, action.id}:
         raise HTTPException(
             status_code=409,
-            detail="Content item is already linked to another exposure action",
+            detail="Content item is already linked to another AI exposure work item",
         )
 
     philosophy = await _get_approved_philosophy(db, hospital_id)
@@ -208,7 +208,7 @@ async def _get_action_or_404(
     )
     action = result.scalar_one_or_none()
     if not action:
-        raise HTTPException(status_code=404, detail="Exposure action not found")
+        raise HTTPException(status_code=404, detail="AI exposure work item not found")
     return action
 
 
@@ -229,7 +229,7 @@ async def _lock_action_for_update(
         .with_for_update()
     )
     if result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=404, detail="Exposure action not found")
+        raise HTTPException(status_code=404, detail="AI exposure work item not found")
 
 
 async def _get_content_item_or_404(
@@ -281,12 +281,12 @@ async def _apply_linked_content_update(
     if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
         raise HTTPException(
             status_code=409,
-            detail="Cannot link a published content item to an exposure action",
+            detail="Cannot link a published content item to an AI exposure work item",
         )
     if _uuid_or_none(item.exposure_action_id) not in {None, action.id}:
         raise HTTPException(
             status_code=409,
-            detail="Content item is already linked to another exposure action",
+            detail="Content item is already linked to another AI exposure work item",
         )
 
     await _clear_previous_content_link(db, action, item.id)
@@ -408,7 +408,7 @@ async def _create_content_slot(
     if scheduled_date < period_start or scheduled_date > period_end:
         raise HTTPException(
             status_code=400,
-            detail="scheduled_date must be within the exposure action month",
+            detail="scheduled_date must be within the AI exposure work month",
         )
 
     sequence_no = body.sequence_no or await _next_sequence_no(
@@ -479,7 +479,7 @@ def _validate_due_month(due_month: str) -> date:
         year, month = (int(part) for part in due_month.split("-", 1))
         return arrow.Arrow(year, month, 1).date()
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid exposure action due_month")
+        raise HTTPException(status_code=400, detail="Invalid AI exposure work due_month")
 
 
 def _ensure_brief_capable_action(action: ExposureAction) -> None:
@@ -488,8 +488,8 @@ def _ensure_brief_capable_action(action: ExposureAction) -> None:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Content brief creation is only available for content-producing exposure "
-                "actions (CONTENT, WEBBLOG_IA, SOURCE). Measurement actions should be "
+                "Content brief creation is only available for content-producing AI exposure "
+                "work items (CONTENT, WEBBLOG_IA, SOURCE). Measurement work should be "
                 "handled by running baseline measurement."
             ),
         )

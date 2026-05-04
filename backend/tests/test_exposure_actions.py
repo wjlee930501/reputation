@@ -465,7 +465,7 @@ async def test_patch_linked_content_blocks_measurement_actions(monkeypatch):
         )
     except HTTPException as exc:
         assert exc.status_code == 409
-        assert "content-producing exposure actions" in exc.detail
+        assert "content-producing AI exposure work items" in exc.detail
     else:
         raise AssertionError("Expected PATCH linked_content_id to reject MEASUREMENT actions")
 
@@ -826,7 +826,7 @@ async def test_create_brief_blocks_measurement_action_before_creating_slot(monke
         )
     except HTTPException as exc:
         assert exc.status_code == 409
-        assert "content-producing exposure actions" in exc.detail
+        assert "content-producing AI exposure work items" in exc.detail
         assert "baseline measurement" in exc.detail
     else:
         raise AssertionError("Expected create_brief to reject MEASUREMENT actions")

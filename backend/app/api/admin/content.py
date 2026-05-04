@@ -405,7 +405,7 @@ async def _apply_content_brief_update(
             if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
                 raise HTTPException(
                     status_code=409,
-                    detail="Cannot link a published content item to an exposure action",
+                    detail="Cannot link a published content item to an AI exposure work item",
                 )
             exposure_action = await _get_exposure_action_or_404(
                 db,
@@ -504,8 +504,8 @@ def _ensure_brief_capable_exposure_action(exposure_action: ExposureAction) -> No
         raise HTTPException(
             status_code=409,
             detail=(
-                "Content brief links are only available for content-producing exposure "
-                "actions (CONTENT, WEBBLOG_IA, SOURCE). Measurement actions should be "
+                "Content brief links are only available for content-producing AI exposure "
+                "work items (CONTENT, WEBBLOG_IA, SOURCE). Measurement work should be "
                 "handled by running baseline measurement."
             ),
         )

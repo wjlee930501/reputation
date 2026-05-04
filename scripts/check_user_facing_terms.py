@@ -24,6 +24,7 @@ BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("AEO", re.compile(r"\bAEO\b")),
     ("SoV", re.compile(r"\bSoV\b")),
     ("Query Target", re.compile(r"Query\s+Target", re.I)),
+    ("Exposure Action", re.compile(r"Exposure\s+Action", re.I)),
     ("Content Essence", re.compile(r"Content\s+Essence", re.I)),
     ("AI Visibility", re.compile(r"AI\s+Visibility", re.I)),
     ("Source Signal", re.compile(r"Source\s+Signal", re.I)),
@@ -73,7 +74,19 @@ def main() -> int:
     violations: list[str] = []
     for path in iter_files():
         rel = path.relative_to(ROOT).as_posix()
+        in_triple_quoted_comment = False
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith(('"""', "'''")):
+                if stripped.count('"""') == 1 or stripped.count("'''") == 1:
+                    in_triple_quoted_comment = not in_triple_quoted_comment
+                continue
+            if in_triple_quoted_comment:
+                if stripped.endswith(('"""', "'''")):
+                    in_triple_quoted_comment = False
+                continue
+            if stripped.startswith("#"):
+                continue
             if is_probably_non_user_line(line):
                 continue
             for label, pattern in BANNED_PATTERNS:

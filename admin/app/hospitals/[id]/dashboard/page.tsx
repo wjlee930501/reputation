@@ -426,7 +426,7 @@ export default function DashboardPage() {
         </section>
       )}
 
-      {/* Top exposure actions */}
+      {/* Top AI exposure work queue items */}
       {!loading && (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
