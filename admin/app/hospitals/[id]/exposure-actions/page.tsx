@@ -404,6 +404,9 @@ function DetailPanel({
       color: 'bg-slate-50 text-slate-700 border-slate-200',
     }
   const canCreateBrief = isBriefCapableActionType(action.action_type)
+  const briefGuidanceMessage = canCreateBrief
+    ? '콘텐츠 brief 생성 가능: 생성 후 콘텐츠 탭에서 Essence 정합성과 의료광고 리스크를 검수하세요.'
+    : getBriefUnavailableMessage(action.action_type)
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -414,6 +417,19 @@ function DetailPanel({
       </div>
       <h3 className="mt-3 text-lg font-semibold text-slate-900">{action.title}</h3>
       <p className="mt-2 whitespace-pre-line text-sm text-slate-600">{action.description}</p>
+
+      <div
+        className={`mt-4 rounded-xl border px-4 py-3 text-xs leading-5 ${
+          canCreateBrief
+            ? 'border-blue-200 bg-blue-50 text-blue-800'
+            : 'border-amber-200 bg-amber-50 text-amber-800'
+        }`}
+      >
+        <div className="font-semibold">
+          {canCreateBrief ? 'Brief 전환 가능' : 'Brief 전환 차단'}
+        </div>
+        <p className="mt-1">{briefGuidanceMessage}</p>
+      </div>
 
       <div className="mt-5 space-y-3">
         <Field label="상태">
