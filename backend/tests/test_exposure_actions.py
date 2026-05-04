@@ -200,7 +200,10 @@ async def test_exposure_actions_endpoint_shape(monkeypatch):
                 gap_id=gap_id,
                 action_type="CONTENT",
                 title="환자 질문과 연결된 근거 콘텐츠 보강",
-                description="최근 성공 측정에서 병원 언급이 없습니다.",
+                description=(
+                    "최근 성공 측정에서 병원 언급이 없습니다. "
+                    "환자 질문 의도와 맞는 FAQ/질환/치료 콘텐츠 가이드를 우선 보강하세요."
+                ),
                 owner="MotionLabs Ops",
                 due_month="2026-05",
                 status="OPEN",
@@ -246,7 +249,10 @@ async def test_exposure_actions_endpoint_shape(monkeypatch):
             "evidence": {"mention_rate": 0.0},
             "action_type": "CONTENT",
             "title": "환자 질문과 연결된 근거 콘텐츠 보강",
-            "description": "최근 성공 측정에서 병원 언급이 없습니다.",
+            "description": (
+                "최근 성공 측정에서 병원 언급이 없습니다. "
+                "환자 질문 의도와 맞는 자주 묻는 질문/질환/치료 안내 콘텐츠 가이드를 우선 보강하세요."
+            ),
             "owner": "MotionLabs Ops",
             "due_month": "2026-05",
             "status": "OPEN",

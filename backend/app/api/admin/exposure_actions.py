@@ -504,6 +504,20 @@ def _plan_total(plan: str | None) -> int:
         return 1
 
 
+STALE_OPERATOR_COPY_REPLACEMENTS = {
+    "FAQ/질환/치료 콘텐츠": "자주 묻는 질문/질환/치료 안내 콘텐츠",
+}
+
+
+def _wash_stale_operator_copy(value: str | None) -> str | None:
+    if value is None:
+        return None
+    washed = value
+    for old, new in STALE_OPERATOR_COPY_REPLACEMENTS.items():
+        washed = washed.replace(old, new)
+    return washed
+
+
 def _serialize_action(action: ExposureAction) -> dict[str, Any]:
     gap = getattr(action, "gap", None)
     target = getattr(action, "query_target", None)
@@ -516,8 +530,8 @@ def _serialize_action(action: ExposureAction) -> dict[str, Any]:
         "severity": getattr(gap, "severity", None),
         "evidence": getattr(gap, "evidence", None) or {},
         "action_type": action.action_type,
-        "title": action.title,
-        "description": action.description,
+        "title": _wash_stale_operator_copy(action.title),
+        "description": _wash_stale_operator_copy(action.description),
         "owner": action.owner,
         "due_month": action.due_month,
         "status": action.status,
