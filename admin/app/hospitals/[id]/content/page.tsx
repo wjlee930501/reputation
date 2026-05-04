@@ -47,10 +47,33 @@ function highlightForbidden(text: string, violations: string[]): string {
   return result
 }
 
+function washContentGuideText(text: string): string {
+  return text
+    .split('FAQ/질환/치료 콘텐츠').join('자주 묻는 질문/질환/치료 안내 콘텐츠')
+    .split('FAQ 콘텐츠').join('자주 묻는 질문 콘텐츠')
+}
+
+function washContentGuideValue(value: unknown): unknown {
+  if (typeof value === 'string') return washContentGuideText(value)
+  if (Array.isArray(value)) return value.map(washContentGuideValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, washContentGuideValue(nested)]),
+    )
+  }
+  return value
+}
+
 function formatBriefValue(value: unknown): string {
   if (value == null || value === '') return '미작성'
-  if (typeof value === 'string') return value
-  return JSON.stringify(value)
+  if (typeof value === 'string') return washContentGuideText(value)
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>
+    if (typeof record.path === 'string') return record.path
+    if (typeof record.label === 'string') return record.label
+    if (typeof record.title === 'string') return record.title
+  }
+  return JSON.stringify(washContentGuideValue(value))
 }
 
 type ReviewStateKey = 'publishable' | 'needsReview' | 'notGenerated' | 'published' | 'rejected'
@@ -265,7 +288,7 @@ export default function ContentPage() {
     setBriefExposureActionId(selected.exposure_action_id ?? '')
     setBriefStatus((selected.brief_status as BriefStatus | null) ?? 'DRAFT')
     setBriefApprovedBy(selected.brief_approved_by ?? 'AE')
-    setBriefJson(selected.content_brief ? JSON.stringify(selected.content_brief, null, 2) : '')
+    setBriefJson(selected.content_brief ? JSON.stringify(washContentGuideValue(selected.content_brief), null, 2) : '')
     setBriefError(null)
     setBriefEditMode(true)
   }
@@ -341,12 +364,12 @@ export default function ContentPage() {
       try {
         const parsed = JSON.parse(trimmed)
         if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-          setBriefError('Brief JSON은 객체여야 합니다.')
+          setBriefError('콘텐츠 가이드 원본은 객체 형태여야 합니다.')
           return
         }
         parsedBrief = parsed as Record<string, unknown>
       } catch {
-        setBriefError('Brief JSON 형식이 올바르지 않습니다.')
+        setBriefError('콘텐츠 가이드 원본 형식이 올바르지 않습니다.')
         return
       }
     }
@@ -697,7 +720,7 @@ export default function ContentPage() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">콘텐츠 가이드(JSON)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">콘텐츠 가이드 원본(고급 편집)</label>
                   <textarea
                     value={briefJson}
                     onChange={(e) => setBriefJson(e.target.value)}
@@ -735,7 +758,7 @@ export default function ContentPage() {
                   />
                 </div>
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Meta Description</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">검색 미리보기 설명</label>
                   <input
                     type="text"
                     value={editMeta}

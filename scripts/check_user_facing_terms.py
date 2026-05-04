@@ -32,6 +32,7 @@ BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("사이트 빌드", re.compile(r"사이트\s*빌드")),
     ("AI 검색 최적화", re.compile(r"AI\s*검색\s*최적화")),
     ("Brief 상태", re.compile(r"Brief\s*상태")),
+    ("Brief JSON", re.compile(r"\bBrief\s+JSON\b", re.I)),
     ("Content brief", re.compile(r"Content\s+brief", re.I)),
     ("draft brief", re.compile(r"draft\s+brief", re.I)),
     ("콘텐츠 철학", re.compile(r"콘텐츠\s*철학")),

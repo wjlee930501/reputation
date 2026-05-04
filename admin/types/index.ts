@@ -294,7 +294,7 @@ export const PLAN_LABELS: Record<string, string> = {
 }
 
 export const TYPE_LABELS: Record<string, string> = {
-  FAQ: 'FAQ',
+  FAQ: '자주 묻는 질문',
   DISEASE: '질환 가이드',
   TREATMENT: '시술 안내',
   COLUMN: '원장 칼럼',
