@@ -71,7 +71,7 @@ export default function QueryTargetsPage() {
       const data = await fetchAPI(`/admin/hospitals/${hospitalId}/query-targets?include_archived=true`)
       setTargets(data ?? [])
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI 쿼리 전략을 불러오지 못했습니다.')
+      setError(err instanceof Error ? err.message : 'AI 노출용 환자 질문 전략을 불러오지 못했습니다.')
     } finally {
       setLoading(false)
     }
@@ -111,7 +111,7 @@ export default function QueryTargetsPage() {
       setForm(DEFAULT_FORM)
       await loadTargets()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI 쿼리 전략을 저장하지 못했습니다.')
+      setError(err instanceof Error ? err.message : 'AI 노출용 환자 질문 전략을 저장하지 못했습니다.')
     } finally {
       setSaving(false)
     }
@@ -137,7 +137,7 @@ export default function QueryTargetsPage() {
       (variant) => variant.query_text.trim() === queryText && variant.platform === (target.platforms[0] ?? 'CHATGPT'),
     )
     if (alreadyExists) {
-      setError('이미 등록된 질의 변형입니다.')
+      setError('이미 등록된 질문 변형입니다.')
       return
     }
     setVariantSavingByTarget((prev) => ({ ...prev, [target.id]: true }))
@@ -155,7 +155,7 @@ export default function QueryTargetsPage() {
       setVariantDrafts((prev) => ({ ...prev, [target.id]: '' }))
       await loadTargets()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '질의 변형을 추가하지 못했습니다.')
+      setError(err instanceof Error ? err.message : '질문 변형을 추가하지 못했습니다.')
     } finally {
       setVariantSavingByTarget((prev) => ({ ...prev, [target.id]: false }))
     }
@@ -169,10 +169,10 @@ export default function QueryTargetsPage() {
         </p>
         <div className="mt-2 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
-            <h2 className="text-2xl font-bold">AI 노출 쿼리 전략</h2>
+            <h2 className="text-2xl font-bold">AI에 노출시킬 환자 질문</h2>
             <p className="mt-2 text-sm leading-6 text-blue-50/90">
-              환자가 ChatGPT·Gemini에서 병원을 찾을 때 어떤 질문에 노출되어야 하는지 정의합니다.
-              일반 SEO 키워드가 아니라 SoV 측정 → 노출 진단 → 쿼리 연결 콘텐츠 brief까지
+              환자가 ChatGPT·Gemini 같은 AI 답변 서비스에서 병원을 찾을 때 어떤 질문에 우리 병원이 떠야 하는지 정의합니다.
+              일반 검색 키워드가 아니라 AI 언급률 측정 → 노출 진단 → 환자 질문에 맞춘 콘텐츠 가이드 작성까지
               운영 흐름의 단위가 되는 타깃입니다.
             </p>
           </div>
@@ -200,8 +200,8 @@ export default function QueryTargetsPage() {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-lg font-semibold text-slate-900">타깃 쿼리 목록</h3>
-              <p className="text-sm text-slate-500">우선순위가 높은 질의부터 이번 달 콘텐츠/측정 루프에 연결합니다.</p>
+              <h3 className="text-lg font-semibold text-slate-900">타깃 질문 목록</h3>
+              <p className="text-sm text-slate-500">우선순위가 높은 환자 질문부터 이번 달 콘텐츠와 측정 흐름에 연결합니다.</p>
             </div>
             <button
               type="button"
@@ -214,13 +214,13 @@ export default function QueryTargetsPage() {
 
           {loading ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-              AI 쿼리 전략을 불러오는 중입니다.
+              AI에 노출시킬 환자 질문 목록을 불러오는 중입니다.
             </div>
           ) : targets.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-blue-200 bg-white p-8 text-center">
-              <h4 className="text-base font-semibold text-slate-900">아직 AI 노출 쿼리 전략이 없습니다.</h4>
+              <h4 className="text-base font-semibold text-slate-900">아직 등록된 환자 질문이 없습니다.</h4>
               <p className="mt-2 text-sm text-slate-500">
-                첫 타깃을 만들면 이후 SoV baseline, gap diagnosis, query-linked content planning의 기준으로 사용할 수 있습니다.
+                첫 환자 질문을 만들면 이후 첫 AI 언급률 측정, 부족한 부분 진단, 환자 질문에 맞춘 콘텐츠 기획의 기준으로 사용할 수 있습니다.
               </p>
             </div>
           ) : (
@@ -242,13 +242,13 @@ export default function QueryTargetsPage() {
         </div>
 
         <aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm h-fit">
-          <h3 className="text-lg font-semibold text-slate-900">새 타깃 만들기</h3>
+          <h3 className="text-lg font-semibold text-slate-900">새 환자 질문 만들기</h3>
           <p className="mt-1 text-sm text-slate-500">
-            환자 질문을 먼저 정의하고, 실제 측정에 사용할 질의 변형을 함께 입력합니다.
+            환자 질문을 먼저 정의하고, 실제 AI에 던질 질문 변형을 함께 입력합니다.
           </p>
 
           <form onSubmit={handleCreate} className="mt-5 space-y-4">
-            <Input label="타깃 이름" value={form.name} onChange={(value) => setFormValue(setForm, 'name', value)} placeholder="예: 강남 치질 수술 추천" required />
+            <Input label="질문 이름" value={form.name} onChange={(value) => setFormValue(setForm, 'name', value)} placeholder="예: 강남 치질 수술 추천" required />
             <div className="grid grid-cols-2 gap-3">
               <Input label="의도" value={form.target_intent} onChange={(value) => setFormValue(setForm, 'target_intent', value)} placeholder="추천형" required />
               <Input label="대상 월" value={form.target_month} onChange={(value) => setFormValue(setForm, 'target_month', value)} placeholder="2026-06" />
@@ -274,9 +274,9 @@ export default function QueryTargetsPage() {
             </div>
             <Textarea label="지역어" value={form.region_terms} onChange={(value) => setFormValue(setForm, 'region_terms', value)} placeholder="강남\n서초" />
             <Textarea label="선택 기준" value={form.decision_criteria} onChange={(value) => setFormValue(setForm, 'decision_criteria', value)} placeholder="통증 부담\n회복 기간\n전문의 경험" />
-            <Textarea label="측정 플랫폼" value={form.platforms} onChange={(value) => setFormValue(setForm, 'platforms', value)} placeholder="CHATGPT\nGEMINI" />
+            <Textarea label="측정 대상 AI" value={form.platforms} onChange={(value) => setFormValue(setForm, 'platforms', value)} placeholder="CHATGPT\nGEMINI" />
             <Textarea label="경쟁 병원" value={form.competitor_names} onChange={(value) => setFormValue(setForm, 'competitor_names', value)} placeholder="경쟁 병원명을 줄바꿈으로 입력" />
-            <Textarea label="초기 질의 변형" value={form.variants} onChange={(value) => setFormValue(setForm, 'variants', value)} placeholder="강남 치질 병원 추천\n치질 수술 어디가 좋아" />
+            <Textarea label="초기 질문 변형" value={form.variants} onChange={(value) => setFormValue(setForm, 'variants', value)} placeholder="강남 치질 병원 추천\n치질 수술 어디가 좋아" />
             <Input label="언어" value={form.patient_language} onChange={(value) => setFormValue(setForm, 'patient_language', value)} placeholder="ko" />
 
             <button
@@ -284,7 +284,7 @@ export default function QueryTargetsPage() {
               disabled={saving || !form.name.trim() || !form.target_intent.trim() || toList(form.platforms).length === 0}
               className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
-              {saving ? '저장 중...' : 'AI 쿼리 타깃 저장'}
+              {saving ? '저장 중...' : '환자 질문 저장'}
             </button>
           </form>
         </aside>
@@ -353,9 +353,9 @@ function TargetCard({
 
       <div className="mt-4 grid gap-3 md:grid-cols-4">
         <InfoBlock label="지역" value={target.region_terms.join(', ') || '미지정'} />
-        <InfoBlock label="플랫폼" value={target.platforms.join(', ') || '미지정'} />
+        <InfoBlock label="측정 대상 AI" value={target.platforms.join(', ') || '미지정'} />
         <InfoBlock label="경쟁 병원" value={target.competitor_names.join(', ') || '미지정'} />
-        <InfoBlock label="질의 변형" value={`${target.summary.active_variant_count}/${target.summary.variant_count}개 운영`} />
+        <InfoBlock label="질문 변형" value={`${target.summary.active_variant_count}/${target.summary.variant_count}개 운영`} />
       </div>
 
       {target.decision_criteria.length > 0 && (
@@ -370,12 +370,12 @@ function TargetCard({
 
       <div className="mt-4 rounded-xl bg-slate-50 p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-medium text-slate-700">실제 측정 질의 변형</p>
-          <p className="text-xs text-slate-400">QueryMatrix 연결 {target.summary.linked_query_matrix_count}개</p>
+          <p className="text-sm font-medium text-slate-700">실제 AI에 던질 질문 변형</p>
+          <p className="text-xs text-slate-400">측정 매트릭스 연결 {target.summary.linked_query_matrix_count}개</p>
         </div>
         <div className="mt-3 space-y-2">
           {target.variants.length === 0 ? (
-            <p className="text-sm text-slate-500">아직 등록된 질의 변형이 없습니다.</p>
+            <p className="text-sm text-slate-500">아직 등록된 질문 변형이 없습니다.</p>
           ) : (
             visibleVariants.map((variant) => (
               <div key={variant.id} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-sm">
@@ -386,7 +386,7 @@ function TargetCard({
           )}
           {hiddenVariantCount > 0 && (
             <p className="rounded-lg bg-white px-3 py-2 text-xs text-slate-500">
-              나머지 {hiddenVariantCount}개 질의 변형은 목록 성능을 위해 접어두었습니다.
+              나머지 {hiddenVariantCount}개 질문 변형은 목록 성능을 위해 접어두었습니다.
             </p>
           )}
         </div>
@@ -394,7 +394,7 @@ function TargetCard({
           <input
             value={variantDraft}
             onChange={(event) => onVariantDraftChange(event.target.value)}
-            placeholder="새 질의 변형 추가"
+            placeholder="새 질문 변형 추가"
             className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
           />
           <button

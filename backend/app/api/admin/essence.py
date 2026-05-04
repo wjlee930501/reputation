@@ -1,4 +1,4 @@
-"""Admin API — hospital source-backed Content Essence."""
+"""Admin API — hospital source-backed content operating standard."""
 import uuid
 from datetime import datetime, timezone
 

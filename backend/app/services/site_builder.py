@@ -2,12 +2,12 @@
 DEPRECATED: build_site() 및 build_content_page()는 더 이상 사용되지 않습니다.
 - build_site(): workers/tasks.py의 build_aeo_site 태스크에서 호출 제거됨
 - build_content_page(): api/admin/content.py의 publish_content 엔드포인트에서 호출 제거됨
-프로덕션 AEO 사이트는 /site (Next.js App Router, Vercel 배포)가 담당합니다.
+프로덕션 AI 노출 웹블로그는 /site (Next.js App Router, Vercel 배포)가 담당합니다.
 
 LEGACY / FALLBACK: 이 빌더는 Next.js /site 앱이 서빙하지 못하는 경우의 폴백 HTML을 생성합니다.
 site_builder.py는 컨테이너 내 임시 파일(/tmp)을 생성하므로 컨테이너 재시작 시 초기화됩니다.
 
-AEO 홈페이지 빌더
+AI 노출 웹블로그 준비 도구
 - 병원 프로파일 기반으로 정적 HTML 사이트 자동 생성
 - Schema.org MedicalClinic 마크업 포함
 - llms.txt 생성 (AI 크롤러 안내)
@@ -234,7 +234,7 @@ def _build_physician_schema(hospital: Hospital) -> str:
 
 def build_site(hospital: Hospital, domain: str, published_contents: list = None) -> str:
     """
-    병원 AEO 홈페이지 정적 파일 빌드.
+    병원 AI 노출 웹블로그 상태를 준비합니다.
     Returns: 빌드 디렉토리 경로
     """
     build_path = SITE_BUILD_DIR / hospital.slug

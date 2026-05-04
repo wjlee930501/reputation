@@ -1,12 +1,12 @@
 """
 Celery 태스크 전체
 - trigger_v0_report: 프로파일 완료 시 V0 분석 트리거
-- build_aeo_site: AEO 홈페이지 빌드
+- build_aeo_site: AI 노출 웹블로그 상태 준비
 - nightly_content_generation: 매일 밤 내일 콘텐츠 생성
 - morning_content_notification: 매일 아침 오늘 콘텐츠 Slack
-- run_sov_for_hospital: 단일 병원 SoV 측정
+- run_sov_for_hospital: 단일 병원 AI 답변 언급률 측정
 - run_weekly_monitoring: 전체 병원 주간 측정
-- adjust_query_priorities: SoV 결과 기반 쿼리 우선순위 조정
+- adjust_query_priorities: AI 답변 언급 결과 기반 질문 우선순위 조정
 - run_monthly_reports: 전체 병원 월간 리포트
 """
 import asyncio
@@ -82,7 +82,7 @@ def trigger_v0_report(self, hospital_id: str):
                 db.add(QueryMatrix(hospital_id=hospital.id, query_text=q_text))
             db.flush()
 
-            # SoV 측정 (V0: 쿼리 수 최대 5개로 제한, 빠른 실행)
+            # AI 답변 언급률 측정 (V0: 쿼리 수 최대 5개로 제한, 빠른 실행)
             run = _start_measurement_run(
                 db,
                 hospital,
@@ -133,7 +133,7 @@ def trigger_v0_report(self, hospital_id: str):
             _finish_measurement_run(run, success_count, failure_count)
             db.commit()
 
-            # SoV 계산
+            # AI 답변 언급률 계산
             sov_pct = calculate_sov(all_records)
 
             # PDF 리포트 생성
@@ -164,7 +164,7 @@ def trigger_v0_report(self, hospital_id: str):
             # Slack 알림
             _run_async(notifier.notify_v0_report_ready(hospital.name, sov_pct, pdf_path))
 
-            # AEO 사이트 빌드 태스크 큐잉
+            # AI 노출 웹블로그 준비 태스크 큐잉
             build_aeo_site.apply_async(args=[hospital_id], queue="default")
 
     except Exception as exc:
@@ -173,11 +173,11 @@ def trigger_v0_report(self, hospital_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════
-# AEO 사이트 빌드
+# AI 노출 웹블로그 준비
 # ══════════════════════════════════════════════════════════════════
 @celery_app.task(name="app.workers.tasks.build_aeo_site", bind=True)
 def build_aeo_site(self, hospital_id: str):
-    """AEO 홈페이지 상태 전환 + Slack 알림 (실제 빌드는 Next.js /site 담당)"""
+    """AI 노출 웹블로그 상태 전환 + Slack 알림 (실제 공개 화면은 Next.js /site 담당)"""
     with SyncSessionLocal() as db:
         hospital = db.get(Hospital, uuid.UUID(hospital_id))
         if not hospital:
@@ -237,7 +237,7 @@ def nightly_content_generation():
                     item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
                     item.essence_check_summary = {
                         "blocking": True,
-                        "findings": ["승인된 콘텐츠 철학이 없어 자동 생성/발행 품질을 통과할 수 없습니다."],
+                        "findings": ["승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."],
                         "checked_at": datetime.now(timezone.utc).isoformat(),
                     }
                     db.commit()
@@ -316,7 +316,7 @@ def morning_content_notification():
 
 
 # ══════════════════════════════════════════════════════════════════
-# SoV 측정
+# AI 답변 언급률 측정
 # ══════════════════════════════════════════════════════════════════
 @celery_app.task(name="app.workers.tasks.run_sov_for_hospital", bind=True, max_retries=1)
 def run_sov_for_hospital(self, hospital_id: str):
@@ -619,7 +619,7 @@ def run_weekly_monitoring():
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
 def adjust_query_priorities():
-    """Adjust query priorities based on recent SoV results. Run AFTER weekly SoV tasks complete."""
+    """Adjust query priorities based on recent AI mention results. Run after weekly measurement tasks complete."""
     with SyncSessionLocal() as db:
         four_weeks_ago = datetime.now(timezone.utc) - timedelta(weeks=4)
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
@@ -693,7 +693,7 @@ def run_monthly_reports():
                     )
                     continue
 
-                # 이번 달 SoV 집계
+                # 이번 달 AI 답변 언급률 집계
                 sov_stmt = select(SovRecord).where(
                     SovRecord.hospital_id == h.id,
                     SovRecord.measured_at >= period_start,
@@ -703,7 +703,7 @@ def run_monthly_reports():
                 sov_records = sov_result.scalars().all()
                 sov_pct = calculate_sov([{"is_mentioned": r.is_mentioned} for r in sov_records])
 
-                # 전월 SoV
+                # 전월 AI 답변 언급률
                 prev_start = now.shift(months=-1).floor("month").datetime
                 prev_end = now.floor("month").datetime
                 prev_stmt = select(SovRecord).where(

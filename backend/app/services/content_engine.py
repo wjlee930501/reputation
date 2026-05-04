@@ -23,10 +23,10 @@ client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 # ── 시스템 프롬프트 ───────────────────────────────────────────────
 SYSTEM_PROMPT = """\
 당신은 병원 의료 콘텐츠 전문 작가입니다.
-아래 병원 정보를 바탕으로 AEO(Answer Engine Optimization) 최적화 콘텐츠를 작성합니다.
+아래 병원 정보를 바탕으로 ChatGPT·Gemini가 병원을 잘 이해할 수 있는 의료 콘텐츠를 작성합니다.
 
 작성 규칙:
-1. 첫 문단에서 핵심 내용을 완결 (ChatGPT·Gemini 인용 최적화)
+1. 첫 문단에서 환자 질문에 대한 답을 먼저 제시합니다. ChatGPT·Gemini가 그대로 이해해도 어색하지 않아야 합니다.
 2. 환자의 실제 언어로 작성 — 의학 용어 최소화, 쉽고 친근하게
 3. 지역명·병원명·원장명을 자연스럽게 포함
 4. 분량: 600~900자 (한국어 기준)
@@ -63,7 +63,7 @@ TYPE_PROMPTS = {
     ContentType.COLUMN: """\
 [콘텐츠 유형: 원장 칼럼]
 원장님의 시각에서 환자에게 전하는 의견형 글을 작성하세요.
-원장명이 자연스럽게 3회 이상 등장해야 합니다 (AI 인용 시 전문의명 co-occurrence 목적).
+원장명이 자연스럽게 등장해야 합니다. 억지 반복 없이 전문성과 진료 철학이 연결되어야 합니다.
 원장명: {director_name}
 전문 분야: {specialties}
 진료 철학: {director_philosophy}
@@ -75,7 +75,7 @@ TYPE_PROMPTS = {
 """,
     ContentType.LOCAL: """\
 [콘텐츠 유형: 지역 특화]
-"{region} {keywords[0]}" 관련 콘텐츠로, 로컬 AI 검색에서 직접 노출되도록 지역명을 자연스럽게 반복 포함하세요.
+"{region} {keywords[0]}" 관련 콘텐츠로, 환자가 지역과 증상을 함께 물었을 때 AI가 병원을 이해하기 쉽도록 지역명을 자연스럽게 포함하세요.
 지역: {region}
 진료 키워드: {keywords}
 """,
@@ -134,7 +134,7 @@ def _build_philosophy_context(philosophy: HospitalContentPhilosophy | None) -> s
         if isinstance(item, dict)
     )
     return f"""
-[승인된 콘텐츠 철학]
+[승인된 콘텐츠 운영 기준]
 version: {philosophy.version}
 positioning_statement: {philosophy.positioning_statement or ''}
 doctor_voice: {philosophy.doctor_voice or ''}
@@ -153,8 +153,8 @@ treatment_narratives:
 {treatments}
 
 규칙:
-- 위 콘텐츠 철학 밖의 병원 고유 주장, 장비, 수상, 치료 효과, 비교 우위를 새로 만들지 마세요.
-- source-backed message와 inferred editorial guidance를 섞어 과장하지 마세요.
+- 위 콘텐츠 운영 기준 밖의 병원 고유 주장, 장비, 수상, 치료 효과, 비교 우위를 새로 만들지 마세요.
+- 근거 자료에서 확인된 메시지와 운영자가 덧붙인 작성 방향을 섞어 과장하지 마세요.
 - avoid_messages와 medical_ad_risk_rules에 해당하는 표현은 사용하지 마세요.
 """.strip()
 
@@ -164,7 +164,7 @@ def _build_content_brief_context(content_brief: dict | None) -> str:
         return ""
 
     return f"""
-[승인된 콘텐츠 brief]
+[승인된 콘텐츠 가이드]
 target_query: {content_brief.get('target_query') or ''}
 patient_intent: {content_brief.get('patient_intent') or ''}
 treatment_narrative: {content_brief.get('treatment_narrative') or ''}

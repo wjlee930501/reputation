@@ -80,7 +80,7 @@ export default function HospitalsPage() {
         <div className="bg-white border border-dashed border-slate-300 rounded-xl py-16 px-6 text-center">
           <p className="text-base font-semibold text-slate-700">아직 등록된 병원이 없습니다.</p>
           <p className="text-sm text-slate-500 mt-2 max-w-md mx-auto">
-            계약이 체결된 병원을 등록하면 V0 리포트 → AEO 사이트 빌드 → 콘텐츠 생성 흐름이 시작됩니다.
+            계약이 체결된 병원을 등록하면 초기 진단 리포트 → 병원 정보 허브 준비 → 콘텐츠 자동 생성 순서로 진행됩니다.
           </p>
           <Link
             href="/hospitals/new"
@@ -117,7 +117,7 @@ export default function HospitalsPage() {
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">상태</th>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">요금제</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">프로파일</th>
-                  <th className="text-center px-4 py-3 text-slate-600 font-medium">사이트</th>
+                  <th className="text-center px-4 py-3 text-slate-600 font-medium">병원 정보 허브</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">스케줄</th>
                   <th className="px-4 py-3"></th>
                 </tr>

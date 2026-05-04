@@ -4,7 +4,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'Re:putation Ops',
-  description: 'MotionLabs 내부 운영 콘솔 — 병원 AEO 관리',
+  description: 'MotionLabs 내부 운영 콘솔 — 병원 AI 노출 운영',
 }
 
 export default function RootLayout({
@@ -54,7 +54,7 @@ export default function RootLayout({
                 도움말
               </p>
               <div className="px-3 py-2 text-[11px] text-slate-400 leading-relaxed">
-                병원 자료 → Essence 승인 → 콘텐츠 자동 생성 → 발행 → 월간 리포트 흐름으로 진행합니다.
+                병원 자료 → 콘텐츠 운영 기준 승인 → 콘텐츠 자동 생성 → 발행 → 월간 리포트 순서로 진행합니다.
               </div>
             </nav>
 

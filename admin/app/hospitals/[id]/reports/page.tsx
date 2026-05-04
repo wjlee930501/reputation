@@ -64,9 +64,9 @@ function asString(v: unknown): string | null {
 }
 
 const SUMMARY_LABEL_MAP: Record<string, string> = {
-  sov_pct: '통합 SoV',
-  prev_sov_pct: '전월 SoV',
-  change_pct: 'SoV 변화',
+  sov_pct: '통합 AI 답변 언급률',
+  prev_sov_pct: '전월 AI 답변 언급률',
+  change_pct: 'AI 답변 언급률 변화',
   chatgpt: 'ChatGPT',
   gemini: 'Gemini',
   overall: '통합',
@@ -187,7 +187,7 @@ export default function ReportsPage() {
       <div className="mb-6">
         <h2 className="text-xl font-bold text-gray-900">리포트 스크리닝</h2>
         <p className="mt-1 text-sm text-gray-600">
-          원장님께 전달하기 전 AI 검색 노출, 콘텐츠 성과, Essence 정합성을 확인합니다.
+          원장님께 전달하기 전 AI 답변 노출, 콘텐츠 성과, 운영 기준 정합성을 확인합니다.
         </p>
       </div>
 
@@ -372,9 +372,9 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
                 label="PDF 준비 완료"
                 hint={report.download_url ? undefined : '생성이 완료되면 다운로드 버튼이 활성화됩니다.'}
               />
-              <ChecklistRow ok={Boolean(sov)} label="AI 검색/SoV 요약 존재" />
+              <ChecklistRow ok={Boolean(sov)} label="AI 답변 언급률 요약 존재" />
               <ChecklistRow ok={Boolean(content)} label="콘텐츠 성과 요약 존재" />
-              <ChecklistRow ok={Boolean(essence)} label="Essence 요약 존재" />
+              <ChecklistRow ok={Boolean(essence)} label="운영 기준 요약 존재" />
               {recommendedActions.length > 0 && (
                 <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3">
                   <div className="text-xs font-semibold text-amber-800 mb-1">권장 조치</div>
@@ -392,7 +392,7 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
             <h4 className="text-sm font-semibold text-gray-900 mb-3">이번 달 핵심 변화</h4>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-lg bg-blue-50 border border-blue-100 p-4">
-                <p className="text-xs font-semibold text-blue-700 mb-2">AI 검색 / SoV</p>
+                <p className="text-xs font-semibold text-blue-700 mb-2">AI 답변 언급률</p>
                 {sov ? <SummaryGrid data={sov} /> : <p className="text-sm text-gray-400">데이터 없음</p>}
               </div>
               <div className="rounded-lg bg-gray-50 border border-gray-200 p-4">
@@ -404,11 +404,11 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
 
           {essence && (
             <section>
-              <h4 className="text-sm font-semibold text-gray-900 mb-3">Essence 운영 기준</h4>
+              <h4 className="text-sm font-semibold text-gray-900 mb-3">콘텐츠 운영 기준</h4>
               <div className="rounded-lg border border-gray-200 p-4 space-y-3">
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                   <EssenceRow
-                    label="승인 철학"
+                    label="승인된 운영 기준"
                     value={
                       essence.approved_philosophy_exists
                         ? `v${asNumber(essence.philosophy_version) ?? '-'}${
@@ -419,7 +419,7 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
                     tone={essence.approved_philosophy_exists ? 'ok' : 'warn'}
                   />
                   <EssenceRow
-                    label="Source 처리"
+                    label="자료 처리"
                     value={`${asNumber(essence.processed_source_count) ?? 0} / ${asNumber(essence.source_count) ?? 0}`}
                     tone={asNumber(essence.processed_source_count) ? 'ok' : 'warn'}
                   />
@@ -434,12 +434,12 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
                     tone={asNumber(essence.needs_review_content_count) ? 'warn' : 'ok'}
                   />
                   <EssenceRow
-                    label="철학 누락 콘텐츠"
+                    label="운영 기준 누락 콘텐츠"
                     value={String(asNumber(essence.missing_philosophy_content_count) ?? 0)}
                     tone={asNumber(essence.missing_philosophy_content_count) ? 'warn' : 'ok'}
                   />
                   <EssenceRow
-                    label="Source 스냅샷"
+                    label="자료 최신성"
                     value={essence.source_stale ? '변경됨 (재검토 필요)' : '최신'}
                     tone={essence.source_stale ? 'warn' : 'ok'}
                   />

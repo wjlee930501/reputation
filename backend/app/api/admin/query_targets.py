@@ -1,5 +1,5 @@
 """
-Admin API — AI Query Target strategy
+Admin API — patient-question strategy
 GET    /admin/hospitals/{id}/query-targets
 POST   /admin/hospitals/{id}/query-targets
 GET    /admin/hospitals/{id}/query-targets/{target_id}
@@ -29,7 +29,7 @@ from app.schemas.query_target import (
     AIQueryVariantUpdate,
 )
 
-router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Query Targets"])
+router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Patient Questions"])
 
 ARCHIVED = "ARCHIVED"
 
@@ -40,7 +40,7 @@ async def list_query_targets(
     include_archived: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
 ):
-    """List strategy-level AI query targets for a hospital."""
+    """List strategy-level patient questions for a hospital."""
     await _get_hospital_or_404(db, hospital_id)
 
     stmt = (
@@ -67,7 +67,7 @@ async def create_query_target(
     body: AIQueryTargetCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a strategy-level query target and optional initial variants."""
+    """Create a strategy-level patient question and optional initial variants."""
     await _get_hospital_or_404(db, hospital_id)
 
     target_data = body.model_dump(exclude={"variants"})
@@ -226,7 +226,7 @@ async def _get_target_or_404(
     )
     target = result.scalar_one_or_none()
     if not target:
-        raise HTTPException(status_code=404, detail="Query target not found")
+        raise HTTPException(status_code=404, detail="Patient question not found")
     return target
 
 

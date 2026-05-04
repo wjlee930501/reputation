@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Content"])
 
+BRIEF_CAPABLE_ACTION_TYPES = {"CONTENT", "WEBBLOG_IA", "SOURCE"}
+
 
 class ScheduleCreate(BaseModel):
     plan: str = Field(pattern=r"^PLAN_(16|12|8)$")  # PLAN_16 | PLAN_12 | PLAN_8
@@ -248,7 +250,7 @@ async def publish_content(
 ):
     """
     AE가 검토 후 [발행] 클릭.
-    AEO 홈페이지에 즉시 게재.
+    AI 노출 웹블로그에 즉시 게재.
     """
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
@@ -395,21 +397,37 @@ async def _apply_content_brief_update(
     query_target: AIQueryTarget | None = None
     exposure_action: ExposureAction | None = None
     link_changed = False
+    previous_exposure_action_id = item.exposure_action_id
 
     if "exposure_action_id" in fields:
         link_changed = True
-        item.exposure_action_id = body.exposure_action_id
         if body.exposure_action_id:
+            if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot link a published content item to an exposure action",
+                )
             exposure_action = await _get_exposure_action_or_404(
                 db,
                 hospital.id,
                 body.exposure_action_id,
             )
+            _ensure_brief_capable_exposure_action(exposure_action)
+            await _clear_replaced_action_content_link(db, exposure_action, item.id)
+            item.exposure_action_id = exposure_action.id
             exposure_action.linked_content_id = item.id
             if "query_target_id" not in fields and exposure_action.query_target_id:
                 item.query_target_id = exposure_action.query_target_id
         else:
             item.exposure_action_id = None
+        if previous_exposure_action_id and previous_exposure_action_id != body.exposure_action_id:
+            previous_action = await _get_exposure_action_or_404(
+                db,
+                hospital.id,
+                previous_exposure_action_id,
+            )
+            if previous_action.linked_content_id == item.id:
+                previous_action.linked_content_id = None
     elif item.exposure_action_id:
         exposure_action = await _get_exposure_action_or_404(db, hospital.id, item.exposure_action_id)
 
@@ -447,17 +465,54 @@ async def _apply_content_brief_update(
             item.brief_approved_by = None
 
     if "brief_status" in fields:
-        item.brief_status = body.brief_status
         if body.brief_status == BRIEF_STATUS_APPROVED:
             if not item.content_brief:
                 raise HTTPException(status_code=400, detail="Cannot approve an empty content brief")
+            philosophy = await _get_approved_philosophy(db, hospital.id)
+            if philosophy is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot approve a content brief without an approved content philosophy",
+                )
+            item.content_philosophy_id = philosophy.id
+            item.brief_status = body.brief_status
             item.brief_approved_at = datetime.now(timezone.utc)
             item.brief_approved_by = body.brief_approved_by or item.brief_approved_by or "AE"
         else:
+            item.brief_status = body.brief_status
             item.brief_approved_at = None
             item.brief_approved_by = None
     elif "brief_approved_by" in fields and item.brief_status == BRIEF_STATUS_APPROVED:
         item.brief_approved_by = body.brief_approved_by
+
+
+async def _clear_replaced_action_content_link(
+    db: AsyncSession,
+    exposure_action: ExposureAction,
+    replacement_content_id: uuid.UUID,
+) -> None:
+    if not exposure_action.linked_content_id or exposure_action.linked_content_id == replacement_content_id:
+        return
+    previous = await db.get(ContentItem, exposure_action.linked_content_id)
+    if previous and previous.exposure_action_id == exposure_action.id:
+        previous.exposure_action_id = None
+
+
+def _ensure_brief_capable_exposure_action(exposure_action: ExposureAction) -> None:
+    action_type = str(_enum_value(exposure_action.action_type)).upper()
+    if action_type not in BRIEF_CAPABLE_ACTION_TYPES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Content brief links are only available for content-producing exposure "
+                "actions (CONTENT, WEBBLOG_IA, SOURCE). Measurement actions should be "
+                "handled by running baseline measurement."
+            ),
+        )
+
+
+def _enum_value(value):
+    return value.value if hasattr(value, "value") else value
 
 
 def _serialize_item(item: ContentItem, full: bool = False) -> dict:

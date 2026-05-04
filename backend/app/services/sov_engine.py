@@ -1,4 +1,4 @@
-"""SoV 엔진 — 쿼리 자동 생성·발송·파싱·계산"""
+"""AI 답변 언급률 엔진 — 환자 질문 생성·발송·파싱·계산"""
 import asyncio
 import json
 import logging
@@ -96,7 +96,7 @@ COMPETITOR_PARSE_PROMPT = """\
 def generate_query_matrix(region: list[str], specialties: list[str], keywords: list[str]) -> list[str]:
     # 🔴 CRITICAL fix: empty inputs cause product() to yield zero combinations,
     # returning an empty list. Without this guard, V0 report runs with 0 queries
-    # and produces a meaningless 0% SoV result silently.
+    # and produces a meaningless 0% AI mention-rate result silently.
     if not keywords or not specialties:
         logger.warning(
             f"generate_query_matrix called with empty inputs: "

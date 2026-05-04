@@ -1,6 +1,6 @@
 """Deterministic exposure gap/action engine.
 
-This module uses only local query-target and SoV measurement state. It never calls
+This module uses only local patient-question and AI mention measurement state. It never calls
 external AI, Slack, or network APIs.
 """
 import uuid
@@ -107,6 +107,7 @@ async def list_top_exposure_actions(
         .options(
             selectinload(ExposureAction.query_target),
             selectinload(ExposureAction.gap),
+            selectinload(ExposureAction.linked_content),
         )
         .where(
             ExposureAction.hospital_id == hospital_id,
@@ -255,7 +256,7 @@ def _diagnose_target(
                 (
                     f"최근 성공 측정 {len(successful_records)}건에서 "
                     "병원 언급이 없습니다. 타깃 질의 의도와 맞는 "
-                    "FAQ/질환/치료 콘텐츠 brief를 우선 보강하세요."
+                    "FAQ/질환/치료 콘텐츠 가이드를 우선 보강하세요."
                 ),
                 due_month,
             )
@@ -317,8 +318,8 @@ def _diagnose_target(
                 "SOURCE",
                 "AI가 인용할 공식 출처 신호 보강",
                 (
-                    "성공 측정의 과반에서 source URL 근거가 비어 있습니다. "
-                    "홈페이지, Google Business Profile, 공개 콘텐츠의 "
+                    "성공한 측정의 과반에서 AI가 참고할 URL 근거가 비어 있습니다. "
+                    "기존 홈페이지, Google Business Profile, 공개 콘텐츠의 "
                     "병원명/진료/지역 신호를 정리하세요."
                 ),
                 due_month,

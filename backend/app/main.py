@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Re:putation API",
-    description="병원 특화 AEO 관리 플랫폼 — MotionLabs Inc.",
+    description="병원이 ChatGPT·Gemini 답변에서 더 잘 이해되고 언급되도록 돕는 운영 플랫폼 — MotionLabs Inc.",
     version="0.2.0",
     lifespan=lifespan,
     docs_url="/docs" if settings.APP_ENV == "development" else None,

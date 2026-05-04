@@ -42,7 +42,7 @@ celery_app.conf.update(
             "task": "app.workers.tasks.morning_content_notification",
             "schedule": crontab(hour=8, minute=0),
         },
-        # 매주 월요일 02:00 — 전체 병원 SoV 측정
+        # 매주 월요일 02:00 — 전체 병원 AI 답변 언급률 측정
         "weekly-sov-monitoring": {
             "task": "app.workers.tasks.run_weekly_monitoring",
             "schedule": crontab(hour=2, minute=0, day_of_week=1),

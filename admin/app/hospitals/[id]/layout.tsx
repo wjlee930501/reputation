@@ -7,10 +7,11 @@ import { fetchAPI } from '@/lib/api'
 import { Hospital, PLAN_LABELS, STATUS_LABELS } from '@/types'
 
 const TABS: Array<{ label: string; path: string; hint: string }> = [
-  { label: '대시보드', path: 'dashboard', hint: 'SoV·준비도 모니터링' },
+  { label: '대시보드', path: 'dashboard', hint: 'AI 언급률과 운영 준비 상태 한눈에 보기' },
   { label: '프로파일', path: 'profile', hint: '병원 기본 정보' },
-  { label: 'Essence', path: 'essence', hint: '콘텐츠 철학 승인' },
-  { label: 'AI 노출 쿼리', path: 'query-targets', hint: 'ChatGPT·Gemini 질의 전략' },
+  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준(진료 철학·말투·금기 표현) 승인' },
+  { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini 같은 AI 답변 서비스에 노출시킬 환자 질문 정의' },
+  { label: '노출 보완 작업', path: 'exposure-actions', hint: 'AI에 더 잘 노출되도록 보완할 작업과 콘텐츠 가이드 연결' },
   { label: '콘텐츠', path: 'content', hint: '초안 검수·발행' },
   { label: '스케줄', path: 'schedule', hint: '발행 캘린더' },
   { label: '리포트', path: 'reports', hint: '월간 리포트' },
@@ -72,14 +73,14 @@ export default function HospitalLayout({
                   <>
                     <span aria-hidden className="text-slate-300">·</span>
                     <span>
-                      도메인 <span className="text-slate-600">{hospital.aeo_domain}</span>
+                      병원 정보 허브 도메인 <span className="text-slate-600">{hospital.aeo_domain}</span>
                     </span>
                   </>
                 )}
                 {hospital.site_live && (
                   <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    사이트 라이브
+                    병원 정보 허브 운영중
                   </span>
                 )}
               </div>
@@ -89,8 +90,8 @@ export default function HospitalLayout({
           {hospital && (
             <div className="hidden md:flex items-center gap-4 text-[11px] text-slate-500 shrink-0">
               <ProgressDot label="프로파일 완료" done={hospital.profile_complete} />
-              <ProgressDot label="V0 리포트 완료" done={hospital.v0_report_done} />
-              <ProgressDot label="사이트 라이브" done={hospital.site_live} />
+              <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
+              <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
               <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
             </div>
           )}

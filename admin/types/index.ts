@@ -231,11 +231,37 @@ export interface ExposureAction {
   due_month: string | null
   status: ExposureActionStatus | string
   linked_content_id: string | null
+  linked_content: ExposureActionContentSummary | null
   linked_report_id: string | null
   completed_at: string | null
   created_at: string | null
   updated_at: string | null
   query_target: ExposureActionQueryTarget | null
+}
+
+export interface ExposureActionContentSummary {
+  id: string
+  content_type: ContentItem['content_type']
+  sequence_no: number
+  total_count: number
+  scheduled_date: string
+  status: ContentItem['status']
+  title: string | null
+  query_target_id: string | null
+  exposure_action_id: string | null
+  brief_status: ContentItem['brief_status']
+  brief_approved_at: string | null
+  brief_approved_by: string | null
+  content_brief: Record<string, unknown> | null
+}
+
+export interface ExposureActionCreateBriefResponse {
+  action: ExposureAction
+  content_item: ExposureActionContentSummary
+  philosophy_gate: {
+    has_approved_philosophy: boolean
+    message: string | null
+  }
 }
 
 export interface Report {

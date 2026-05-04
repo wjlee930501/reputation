@@ -11,7 +11,7 @@ interface HospitalEntry {
 
 export async function GET() {
   const apiBase = getApiBase(false)
-  const lines = ['# Re:putation AEO Hospital Index', '']
+  const lines = ['# Re:putation AI-readable hospital information index', '']
 
   if (!apiBase) {
     return new NextResponse(lines.join('\n'), {

@@ -171,8 +171,8 @@ function buildChecklist(profile: Partial<HospitalProfile>): ChecklistItem[] {
     },
     {
       key: 'ai_channels',
-      label: 'AI 검색 채널',
-      hint: '네이버 플레이스와 Google Maps(또는 Google Business Profile) URL을 등록합니다.',
+      label: 'AI가 참고할 외부 채널',
+      hint: '네이버 플레이스와 Google Maps(또는 Google Business Profile) URL을 등록합니다. AI 답변과 로컬 검색이 우리 병원을 정확히 인식하기 위한 기본 자료입니다.',
       required: true,
     },
     {
@@ -214,7 +214,7 @@ function buildChecklist(profile: Partial<HospitalProfile>): ChecklistItem[] {
   items.push({
     key: 'competitors',
     label: '경쟁 병원',
-    hint: 'SoV 비교 대상 병원을 1개 이상 등록하면 리포트 정확도가 올라갑니다.',
+    hint: 'AI 언급률 비교 대상 병원을 1개 이상 등록하면 리포트 정확도가 올라갑니다.',
     required: false,
     status: (profile.competitors ?? []).length > 0 ? 'done' : 'recommended',
   })
@@ -222,10 +222,10 @@ function buildChecklist(profile: Partial<HospitalProfile>): ChecklistItem[] {
   const hasDomain = trimmed(profile.aeo_domain).length > 0
   items.push({
     key: 'domain',
-    label: '고객 병원 소유 도메인',
+    label: '병원 소유 도메인',
     hint: profile.site_built
       ? '발급된 도메인을 입력하고 DNS 검증까지 완료합니다.'
-      : '사이트 빌드 후 도메인 카드에서 연결합니다. (지금은 사전 입력만 가능)',
+      : '병원 정보 허브 준비가 끝난 뒤 도메인 카드에서 연결합니다. (지금은 사전 입력만 가능)',
     required: false,
     status: hasDomain ? 'done' : 'recommended',
   })
@@ -380,7 +380,7 @@ export default function ProfilePage() {
               <p className="text-xs text-gray-600 mt-1">
                 {nextActionLabel
                   ? <>다음 작업: <span className="font-medium text-gray-800">{nextActionLabel}</span></>
-                  : '모든 항목이 채워졌습니다. 하단의 온보딩 완료 카드에서 V0 리포트와 사이트 빌드를 시작하세요.'}
+                  : '모든 항목이 채워졌습니다. 하단의 온보딩 완료 카드에서 초기 진단 리포트와 병원 정보 허브 준비를 시작하세요.'}
               </p>
             </div>
             <div className="text-right shrink-0">
@@ -462,7 +462,7 @@ export default function ProfilePage() {
         <div>
           <h3 className="text-base font-semibold text-gray-800">병원 연락처</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            AEO 사이트와 AI 답변 노출에 그대로 사용되는 공개 정보입니다. 실제 영업 정보와 일치하는지 확인해 주세요.
+            병원 정보 허브와 AI 답변 노출에 그대로 사용되는 공개 정보입니다. 실제 영업 정보와 일치하는지 확인해 주세요.
           </p>
         </div>
         <div>
@@ -523,12 +523,12 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      {/* AI 검색 자산 */}
+      {/* AI가 참고할 외부 채널 */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
         <div>
-          <h3 className="text-base font-semibold text-gray-800">AI 검색 자산</h3>
+          <h3 className="text-base font-semibold text-gray-800">AI가 참고할 외부 채널</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            네이버 플레이스·Google Maps·Google Business Profile URL과 좌표는 AI 답변과 로컬 검색 노출에 직접 영향을 줍니다.
+            네이버 플레이스·Google Maps·Google Business Profile URL과 좌표는 AI 답변과 로컬 검색에서 우리 병원을 인식시키는 기본 자료입니다.
           </p>
         </div>
         <div className="grid grid-cols-2 gap-4">
@@ -604,7 +604,7 @@ export default function ProfilePage() {
         <div>
           <h3 className="text-base font-semibold text-gray-800">타겟 정보</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            지역·전문과목·키워드는 LOCAL/AEO 콘텐츠 타게팅과 SoV 측정 쿼리에 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
+            지역·전문과목·키워드는 지역 특화 콘텐츠와 AI 노출 콘텐츠 타게팅, AI 언급률 측정 질문에 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
           </p>
         </div>
         <TagInput
@@ -635,7 +635,7 @@ export default function ProfilePage() {
           <div>
             <h3 className="text-base font-semibold text-gray-800">진료 항목</h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              TREATMENT·DISEASE 콘텐츠 자동 생성의 기준이 됩니다. 실제 진료하는 항목만 입력해 주세요.
+              시술·치료 안내와 질환 가이드 콘텐츠 자동 생성의 기준이 됩니다. 실제 진료하는 항목만 입력해 주세요.
             </p>
           </div>
           <button
@@ -693,10 +693,10 @@ export default function ProfilePage() {
               : 'waiting'
 
         const statusBadge = {
-          live:    { label: '사이트 라이브',    cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-          waiting: { label: '검증 대기',        cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-          unsaved: { label: '저장 필요',        cls: 'bg-blue-50 text-blue-700 border-blue-200' },
-          empty:   { label: '도메인 미설정',    cls: 'bg-gray-50 text-gray-600 border-gray-200' },
+          live:    { label: '병원 정보 허브 운영중', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+          waiting: { label: '검증 대기',             cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+          unsaved: { label: '저장 필요',             cls: 'bg-blue-50 text-blue-700 border-blue-200' },
+          empty:   { label: '도메인 미설정',         cls: 'bg-gray-50 text-gray-600 border-gray-200' },
         }[status]
 
         async function handleSaveDomain() {
@@ -716,7 +716,7 @@ export default function ProfilePage() {
             setProfile((prev) => ({ ...prev, aeo_domain: domain, site_live: false }))
             setDomainFeedback({
               tone: 'success',
-              message: '도메인이 저장되었습니다. DNS 전파 후 [DNS 확인하고 사이트 라이브 전환]을 눌러주세요.',
+              message: '도메인이 저장되었습니다. DNS 전파 후 [DNS 확인하고 병원 정보 허브 운영 시작]을 눌러주세요.',
             })
           } catch (e: unknown) {
             setDomainFeedback({
@@ -740,7 +740,7 @@ export default function ProfilePage() {
               setProfile((prev) => ({ ...prev, site_live: true }))
               setDomainFeedback({
                 tone: 'success',
-                message: result.message ?? '도메인 연결이 확인되어 사이트가 라이브 상태로 전환되었습니다.',
+                message: result.message ?? '도메인 연결이 확인되어 병원 정보 허브가 운영 상태로 전환되었습니다.',
               })
             } else {
               setDomainFeedback({
@@ -764,12 +764,12 @@ export default function ProfilePage() {
             <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-white px-6 py-5 border-b border-gray-100">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-base font-semibold text-gray-900">원장 소유 도메인 연결</h3>
+                  <h3 className="text-base font-semibold text-gray-900">병원 소유 도메인 연결</h3>
                   <p className="text-sm text-gray-700 mt-1">
-                    원장님 소유 도메인으로 AI 검색 자산을 운영합니다.
+                    원장님 소유 도메인으로 병원 정보 허브를 운영합니다.
                   </p>
                   <p className="text-xs text-gray-500 mt-1">
-                    계정·콘텐츠가 플랫폼에 종속되지 않고 병원 브랜드 자산으로 남습니다.
+                    계정·콘텐츠가 플랫폼에 묶이지 않고 병원 브랜드 자산으로 남습니다.
                   </p>
                 </div>
                 <span
@@ -848,21 +848,21 @@ export default function ProfilePage() {
                 </p>
               </div>
 
-              {/* STEP 3 — 검증 및 라이브 전환 */}
+              {/* STEP 3 — 검증 및 운영 시작 */}
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">3</span>
-                  <label className="text-sm font-semibold text-gray-800">연결 검증 및 사이트 라이브</label>
+                  <label className="text-sm font-semibold text-gray-800">연결 검증 및 병원 정보 허브 운영 시작</label>
                 </div>
                 {profile.site_live && !hasUnsavedChange ? (
                   <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-                        <span className="text-sm font-semibold text-emerald-800">사이트 라이브</span>
+                        <span className="text-sm font-semibold text-emerald-800">병원 정보 허브 운영중</span>
                       </div>
                       <p className="text-xs text-emerald-700 mt-0.5">
-                        원장님 소유 도메인으로 AEO 사이트가 정상 운영되고 있습니다.
+                        원장님 소유 도메인으로 병원 정보 허브가 정상 운영되고 있습니다.
                       </p>
                     </div>
                     {currentDomain && (
@@ -889,7 +889,7 @@ export default function ProfilePage() {
                         ? '변경한 도메인을 먼저 저장해 주세요'
                         : !domainSavedValue
                           ? '도메인을 먼저 저장해 주세요'
-                          : 'DNS 확인하고 사이트 라이브 전환'}
+                          : 'DNS 확인하고 병원 정보 허브 운영 시작'}
                   </button>
                 )}
               </div>
@@ -913,7 +913,7 @@ export default function ProfilePage() {
         )
       })()}
 
-      {/* 온보딩 완료 및 V0 리포트/사이트 빌드 시작 */}
+      {/* 온보딩 완료 및 초기 리포트/AI 노출 웹블로그 준비 시작 */}
       <section
         className={`rounded-xl border overflow-hidden ${
           requiredReady
@@ -924,9 +924,9 @@ export default function ProfilePage() {
         <div className="px-6 py-5 border-b border-gray-100/80">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-base font-semibold text-gray-900">온보딩 완료 및 V0 리포트/사이트 빌드 시작</h3>
+              <h3 className="text-base font-semibold text-gray-900">온보딩 완료 및 초기 진단 리포트·병원 정보 허브 준비 시작</h3>
               <p className="text-xs text-gray-600 mt-1">
-                체크 후 저장하면 V0 리포트 생성과 AEO 사이트 빌드가 자동으로 시작됩니다.
+                체크 후 저장하면 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다.
                 필수 항목을 모두 채운 뒤 진행하세요.
               </p>
             </div>
@@ -959,7 +959,7 @@ export default function ProfilePage() {
                 ))}
               </ul>
               <p className="text-[11px] text-amber-700 mt-2">
-                필수 항목이 비어 있으면 V0 리포트 정확도가 떨어지고 AEO 사이트 빌드 결과물이 부실해질 수 있습니다.
+                필수 항목이 비어 있으면 초기 진단 리포트 정확도가 떨어지고 병원 정보 허브 결과물이 부실해질 수 있습니다.
               </p>
             </div>
           )}
@@ -969,7 +969,7 @@ export default function ProfilePage() {
               <div className="flex items-center gap-2">
                 <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
                 <p className="text-xs font-semibold text-emerald-800">
-                  필수 항목이 모두 준비되었습니다. V0 리포트와 사이트 빌드를 시작할 수 있습니다.
+                  필수 항목이 모두 준비되었습니다. 초기 진단 리포트와 병원 정보 허브 준비를 시작할 수 있습니다.
                 </p>
               </div>
             </div>
@@ -985,7 +985,7 @@ export default function ProfilePage() {
             <div>
               <span className="text-sm font-medium text-gray-800">프로파일 완료로 표시</span>
               <p className="text-xs text-gray-500 mt-0.5">
-                저장 시점에 V0 리포트와 AEO 사이트 빌드가 트리거됩니다. 빌드 결과는 Slack으로 알림됩니다.
+                저장 시점에 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다. 결과는 Slack으로 알림됩니다.
               </p>
               {!requiredReady && (profile.profile_complete ?? false) && (
                 <p className="text-[11px] text-amber-700 mt-1.5">

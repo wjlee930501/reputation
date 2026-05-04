@@ -177,32 +177,32 @@ export default function DashboardPage() {
   type NextStep = { label: string; href: string; hint: string }
   const nextStep: NextStep = !hasQueryTargets
     ? {
-        label: 'Query Target 정의',
+        label: '환자 질문 정의',
         href: queryTargetsHref,
-        hint: '환자가 ChatGPT·Gemini에서 던지는 질문을 운영 단위로 만듭니다.',
+        hint: '환자가 ChatGPT·Gemini 같은 AI 답변 서비스에 묻는 질문을 운영 단위로 정리합니다.',
       }
     : !hasMeasurement
       ? {
-          label: '베이스라인 SoV 측정',
+          label: '첫 AI 언급률 측정',
           href: queryTargetsHref,
-          hint: '쿼리 타깃별로 첫 노출 측정을 실행합니다.',
+          hint: '환자 질문별로 우리 병원이 AI 답변에 얼마나 등장하는지 처음 측정합니다.',
         }
       : !hasExposureActions
         ? {
-            label: '노출 진단·액션 검토',
+            label: 'AI 노출 진단·보완 작업 검토',
             href: queryTargetsHref,
-            hint: '측정 결과의 부족 원인을 진단하고 개선 액션을 만듭니다.',
+            hint: '측정 결과에서 부족한 부분을 진단하고, AI에 더 잘 노출되도록 보완할 작업을 정리합니다.',
           }
         : !hasBrief
           ? {
-              label: '쿼리 연결 콘텐츠 brief',
+              label: '환자 질문에 맞춘 콘텐츠 가이드 작성',
               href: contentHref,
-              hint: '확정된 액션을 이번 달 콘텐츠 brief로 이어 붙입니다.',
+              hint: '확정된 보완 작업을 이번 달 콘텐츠 작성 가이드로 이어 붙입니다.',
             }
           : {
-              label: '재측정·월간 환류',
+              label: '재측정·월간 회고',
               href: reportsHref,
-              hint: '발행 후 재측정 결과를 다음 액션으로 환류합니다.',
+              hint: '발행 후 다시 측정한 결과를 다음 달 작업으로 이어 갑니다.',
             }
 
   const isAnalyticsEmpty = !loading && !error && trendData.length === 0
@@ -218,29 +218,29 @@ export default function DashboardPage() {
           <div className="max-w-2xl">
             <h2 className="text-2xl font-bold">AI 노출 운영 보드</h2>
             <p className="mt-2 text-sm leading-6 text-blue-50/90">
-              ChatGPT·Gemini 쿼리 타깃 → SoV 측정 → 노출 진단·액션 → 쿼리 연결 콘텐츠 brief를
-              한 화면에서 운영합니다. AI가 이해하기 좋은 정보 구조를 만들어 노출을 개선하는
-              내부 콘솔이며, 노출 보장이 아니라 개선·재측정 루프를 관리합니다.
+              환자 질문 정의 → AI 언급률 측정 → 부족한 부분 진단·보완 작업 → 환자 질문에 맞춘 콘텐츠 가이드 작성을
+              한 화면에서 운영합니다. AI가 우리 병원을 정확히 이해하고 추천 후보에 올리도록 정보 구조를 다듬는
+              내부 콘솔이며, 노출을 보장하는 게 아니라 개선과 재측정을 반복하는 흐름을 관리합니다.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[440px]">
             <HeroStat
-              label="쿼리 타깃"
+              label="환자 질문"
               value={`${activeTargets.length}/${nonArchivedTargets.length}`}
               hint="운영중 / 전체"
             />
             <HeroStat
-              label="현재 SoV"
+              label="현재 AI 언급률"
               value={currentSov !== null ? `${currentSov.toFixed(1)}%` : '-'}
               hint={
                 change !== null
                   ? `전주 대비 ${change > 0 ? '+' : ''}${change.toFixed(1)}%p`
-                  : '베이스라인 측정 전'
+                  : '첫 측정 전'
               }
               tone={change === null ? 'neutral' : change >= 0 ? 'up' : 'down'}
             />
             <HeroStat
-              label="진행중 액션"
+              label="진행중 보완 작업"
               value={`${openActionCount}건`}
               hint={
                 blockedActionCount > 0
@@ -249,7 +249,7 @@ export default function DashboardPage() {
               }
             />
             <HeroStat
-              label="준비도"
+              label="AI 노출 준비도"
               value={readiness ? String(readiness.score) : '-'}
               hint={readiness ? '/ 100' : '측정 후 산출'}
             />
@@ -288,7 +288,7 @@ export default function DashboardPage() {
             <div>
               <h3 className="text-sm font-semibold text-slate-900">운영 흐름</h3>
               <p className="mt-1 text-xs text-slate-500">
-                각 단계의 상태가 다음 단계의 입력이 됩니다. 측정 → 진단 → 액션 → 콘텐츠 → 재측정
+                각 단계의 결과가 다음 단계의 재료가 됩니다. 측정 → 진단 → 보완 작업 → 콘텐츠 → 재측정
                 순서로 흐름을 유지합니다.
               </p>
             </div>
@@ -296,37 +296,37 @@ export default function DashboardPage() {
           <ol className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <WorkflowStep
               index={1}
-              title="Query Target"
-              caption="환자 질문 정의"
+              title="환자 질문"
+              caption="AI에 노출시킬 질문 정의"
               done={hasQueryTargets}
               summary={
                 hasQueryTargets
                   ? `${activeTargets.length}개 운영중`
-                  : '운영 중인 쿼리 타깃이 없습니다.'
+                  : '운영 중인 환자 질문이 없습니다.'
               }
               href={queryTargetsHref}
               cta={hasQueryTargets ? '관리' : '만들기'}
             />
             <WorkflowStep
               index={2}
-              title="SoV 측정"
-              caption="ChatGPT·Gemini"
+              title="AI 언급률 측정"
+              caption="ChatGPT·Gemini 답변 확인"
               done={hasMeasurement}
               summary={
                 lastRun
                   ? `최근 ${formatRunStatus(lastRun.status)} · ${formatDateTime(
                       lastRun.completed_at ?? lastRun.started_at,
                     )}`
-                  : '베이스라인 측정 전'
+                  : '첫 측정 전'
               }
               href={queryTargetsHref}
-              cta={hasMeasurement ? '재측정' : '베이스라인 측정'}
+              cta={hasMeasurement ? '재측정' : '첫 측정'}
               disabled={!hasQueryTargets}
             />
             <WorkflowStep
               index={3}
-              title="노출 진단·액션"
-              caption="개선 액션 도출"
+              title="AI 노출 진단·보완 작업"
+              caption="부족한 부분 보완 정리"
               done={hasExposureActions}
               summary={
                 hasExposureActions
@@ -341,8 +341,8 @@ export default function DashboardPage() {
             />
             <WorkflowStep
               index={4}
-              title="쿼리 연결 콘텐츠"
-              caption="brief → 발행"
+              title="환자 질문 연결 콘텐츠"
+              caption="콘텐츠 가이드 → 발행"
               done={hasBrief}
               summary={
                 readiness
@@ -350,7 +350,7 @@ export default function DashboardPage() {
                   : '아직 발행된 콘텐츠가 없습니다.'
               }
               href={contentHref}
-              cta={hasBrief ? '편성' : 'brief 생성'}
+              cta={hasBrief ? '편성' : '콘텐츠 가이드 만들기'}
               disabled={!hasExposureActions}
             />
           </ol>
@@ -364,8 +364,8 @@ export default function DashboardPage() {
             <div>
               <h3 className="text-base font-semibold text-slate-900">측정 실행 로그</h3>
               <p className="mt-1 text-sm text-slate-500">
-                측정 메서드는 실행 단위 값이며, 명시되지 않은 실행을 ChatGPT Search로 단정하지
-                않습니다. 성공/실패 집계와 실패율은 안정성 지표이며 SoV 분모와 분리됩니다.
+                측정 방식은 실행 단위로 기록되며, 명시되지 않은 실행을 ChatGPT Search로 단정하지
+                않습니다. 성공/실패 집계와 실패율은 측정 안정성 지표로 따로 보고, AI 언급률 계산에는 들어가지 않습니다.
               </p>
             </div>
             <Link
@@ -381,14 +381,14 @@ export default function DashboardPage() {
               title={
                 hasQueryTargets
                   ? '아직 측정 실행이 없습니다.'
-                  : 'Query Target을 먼저 만든 뒤 측정을 시작합니다.'
+                  : '환자 질문을 먼저 만든 뒤 측정을 시작합니다.'
               }
               hint={
                 hasQueryTargets
-                  ? '쿼리 타깃 화면에서 베이스라인 측정을 실행하세요. 첫 측정 후 SoV 추이가 누적됩니다.'
-                  : '운영 흐름은 쿼리 타깃 정의 → 베이스라인 측정 순서로 진행됩니다.'
+                  ? '환자 질문 화면에서 첫 측정을 실행하세요. 측정이 끝나면 AI 언급률 추이가 누적됩니다.'
+                  : '운영 흐름은 환자 질문 정의 → 첫 측정 순서로 진행됩니다.'
               }
-              ctaLabel={hasQueryTargets ? '베이스라인 측정 실행' : 'Query Target 만들기'}
+              ctaLabel={hasQueryTargets ? '첫 측정 실행' : '환자 질문 만들기'}
               ctaHref={queryTargetsHref}
             />
           ) : (
@@ -404,7 +404,7 @@ export default function DashboardPage() {
                       <RunStatusPill status={run.status} />
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      AI 노출 측정 방식: {formatMeasurementMethod(run.measurement_method)}
+                      측정 방식: {formatMeasurementMethod(run.measurement_method)}
                     </p>
                   </div>
                   <div className="text-sm text-slate-700">
@@ -412,7 +412,7 @@ export default function DashboardPage() {
                       성공 {run.success_count}/{run.query_count} · 실패 {run.failure_count}
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      실패율 {run.failure_rate.toFixed(1)}% · SoV 분모 제외
+                      실패율 {run.failure_rate.toFixed(1)}% · AI 언급률 계산에서 제외
                     </p>
                   </div>
                   <div className="text-xs text-slate-500 md:text-right">
@@ -433,8 +433,7 @@ export default function DashboardPage() {
             <div>
               <h3 className="text-base font-semibold text-slate-900">이번 달 AI 노출 개선 TOP 3</h3>
               <p className="mt-1 text-sm text-slate-500">
-                쿼리 타깃 SoV 진단에서 우선순위가 높은 개선 액션을 표시합니다. 상세 편집은 쿼리
-                타깃 화면에서 진행합니다.
+                환자 질문별 AI 언급률 진단에서 우선순위가 높은 보완 작업을 표시합니다. 상세 편집은 환자 질문 화면에서 진행합니다.
               </p>
             </div>
             <Link
@@ -450,14 +449,14 @@ export default function DashboardPage() {
               title={
                 hasMeasurement
                   ? '진단 결과가 아직 없습니다.'
-                  : '측정이 끝나야 진단·액션이 생성됩니다.'
+                  : '측정이 끝나야 진단·보완 작업이 생성됩니다.'
               }
               hint={
                 hasMeasurement
-                  ? '쿼리 타깃 화면에서 SoV 진단을 실행해 부족 원인과 개선 액션을 만들어 주세요.'
-                  : '베이스라인 측정 후 쿼리별 노출 부족 원인이 진단되며, 개선 액션이 자동으로 제안됩니다.'
+                  ? '환자 질문 화면에서 AI 언급률 진단을 실행해 부족한 부분과 보완 작업을 만들어 주세요.'
+                  : '첫 측정 후 환자 질문별로 AI에 부족한 부분이 진단되고, 보완 작업이 자동으로 제안됩니다.'
               }
-              ctaLabel={hasMeasurement ? '진단·액션 검토' : '베이스라인 측정으로 이동'}
+              ctaLabel={hasMeasurement ? '진단·보완 작업 검토' : '첫 측정으로 이동'}
               ctaHref={queryTargetsHref}
             />
           ) : (
@@ -494,7 +493,7 @@ export default function DashboardPage() {
                       </div>
                       <div className="shrink-0 text-left md:w-56 md:text-right">
                         <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                          연결 타깃
+                          연결된 환자 질문
                         </p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">
                           {action.query_target?.name ?? '-'}
@@ -521,10 +520,9 @@ export default function DashboardPage() {
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex items-start justify-between gap-6">
                 <div>
-                  <h3 className="text-base font-semibold text-slate-900">AI 검색 준비도</h3>
+                  <h3 className="text-base font-semibold text-slate-900">AI 노출 준비도</h3>
                   <p className="mt-1 text-sm text-slate-500">
-                    OpenAI Search crawler, Google 로컬 엔티티, 공개 콘텐츠, 측정 데이터를 기준으로
-                    계산합니다.
+                    OpenAI 검색 크롤러 접근, Google 로컬에 등록된 병원 정보, 공개 콘텐츠, 측정 데이터를 기준으로 계산합니다.
                   </p>
                 </div>
                 <div className="text-right">
@@ -563,19 +561,19 @@ export default function DashboardPage() {
           {isAnalyticsEmpty ? (
             <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-10 text-center">
               <p className="text-sm font-semibold text-slate-700">
-                SoV 추이는 첫 주간 측정이 끝난 뒤부터 누적됩니다.
+                AI 언급률 추이는 첫 주간 측정이 끝난 뒤부터 누적됩니다.
               </p>
               <p className="mt-2 text-xs text-slate-500">
-                위 운영 흐름에서 베이스라인 측정을 먼저 실행해 주세요.
+                위 운영 흐름에서 첫 측정을 먼저 실행해 주세요.
               </p>
             </div>
           ) : (
             <>
               <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-base font-semibold text-slate-900">SoV 주간 추이</h3>
+                  <h3 className="text-base font-semibold text-slate-900">AI 언급률 주간 추이</h3>
                   <span className="text-xs text-slate-400">
-                    측정 쿼리 {queryCount}개 · 누적 {trendData.length}주
+                    측정한 환자 질문 {queryCount}개 · 누적 {trendData.length}주
                   </span>
                 </div>
                 <div className="mt-4">
@@ -596,7 +594,7 @@ export default function DashboardPage() {
                         dataKey="sov_pct"
                         stroke="#1A4B8C"
                         strokeWidth={2}
-                        name="SoV"
+                        name="AI 언급률"
                         dot={false}
                         connectNulls
                       />
@@ -608,16 +606,16 @@ export default function DashboardPage() {
               {queries.length > 0 && (
                 <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <div className="border-b border-slate-100 px-6 py-4">
-                    <h3 className="text-base font-semibold text-slate-900">쿼리별 멘션율</h3>
+                    <h3 className="text-base font-semibold text-slate-900">질문별 AI 언급률</h3>
                     <p className="mt-1 text-xs text-slate-500">
-                      쿼리 변형 단위 멘션율입니다. 운영 액션 우선순위를 정하는 보조 지표로 사용합니다.
+                      환자 질문 변형 단위로 본 AI 언급률입니다. 보완 작업 우선순위를 정하는 보조 지표로 사용합니다.
                     </p>
                   </div>
                   <table className="w-full text-sm">
                     <thead className="border-b border-slate-200 bg-slate-50">
                       <tr>
-                        <th className="px-6 py-3 text-left font-medium text-slate-600">쿼리</th>
-                        <th className="px-6 py-3 text-center font-medium text-slate-600">멘션율</th>
+                        <th className="px-6 py-3 text-left font-medium text-slate-600">환자 질문</th>
+                        <th className="px-6 py-3 text-center font-medium text-slate-600">AI 언급률</th>
                         <th className="px-6 py-3 text-center font-medium text-slate-600">최근 측정</th>
                       </tr>
                     </thead>
