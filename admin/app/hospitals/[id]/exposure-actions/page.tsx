@@ -39,13 +39,94 @@ const GAP_TYPE_LABELS: Record<string, string> = {
   MISSING_MENTION: '병원 미언급',
   LOW_MENTION_RATE: '낮은 언급률',
   MENTIONS_COMPETITOR_ONLY: '경쟁 병원만 언급',
+  COMPETITOR_VISIBILITY: '경쟁 병원 노출 우위',
+  COMPETITOR_DOMINANCE: '경쟁 병원 노출 우위',
   NO_PUBLIC_CONTENT: '대응 콘텐츠 없음',
   WEAK_ENTITY_FACTS: '엔티티 정보 부족',
   TECHNICAL_CRAWL_GAP: '크롤링/색인 보강',
   SOURCE_GAP: '근거 source 부족',
+  SOURCE_SIGNAL_GAP: '근거 신호 부족',
+  SOURCE_AUTHORITY_GAP: '근거 권위 부족',
   CONTENT_STALE: '콘텐츠 신선도 낮음',
   MEDICAL_RISK_BLOCKED: '의료광고 리스크 차단',
 }
+
+const EVIDENCE_KEY_LABELS: Record<string, string> = {
+  share_of_voice: 'SoV',
+  sov: 'SoV',
+  sov_pct: 'SoV',
+  sov_percent: 'SoV',
+  mention_rate: '언급률',
+  mentioned_rate: '언급률',
+  mentioned_count: '언급 횟수',
+  mention_count: '언급 횟수',
+  successful_count: '성공 측정 수',
+  success_count: '성공 측정 수',
+  failed_count: '실패 측정 수',
+  total_count: '전체 측정 수',
+  total_queries: '전체 쿼리 수',
+  query_count: '쿼리 수',
+  measured_count: '측정 수',
+  competitor_names: '경쟁 병원',
+  competitors: '경쟁 병원',
+  competitor: '경쟁 병원',
+  competitor_share: '경쟁 점유율',
+  competitor_mentions: '경쟁 병원 언급',
+  competitor_mention_rate: '경쟁 병원 언급률',
+  missing_topics: '누락 토픽',
+  topics: '토픽',
+  keyword: '키워드',
+  keywords: '키워드',
+  query: '쿼리',
+  query_text: '쿼리',
+  query_name: '질의 타깃',
+  query_target: '질의 타깃',
+  query_target_name: '질의 타깃',
+  target_priority: '타깃 우선순위',
+  rule: '진단 규칙',
+  ai_platform: 'AI 플랫폼',
+  platform: 'AI 플랫폼',
+  platforms: 'AI 플랫폼',
+  source_count: '근거 source 수',
+  source_total: '근거 source 수',
+  sources: '근거 source',
+  source_urls: '근거 URL',
+  source_types: '근거 유형',
+  authority_score: '권위 점수',
+  freshness_days: '경과 일수',
+  last_published_at: '최근 발행',
+  last_measured_at: '최근 측정',
+  measured_at: '측정 시각',
+  observed_at: '관측 시각',
+  severity: '심각도',
+  threshold: '임계값',
+  gap_id: 'Gap ID',
+  reason: '사유',
+  note: '메모',
+  notes: '메모',
+  message: '메시지',
+}
+
+const EVIDENCE_VALUE_LABELS: Record<string, string> = {
+  chatgpt: 'ChatGPT',
+  gemini: 'Gemini',
+  claude: 'Claude',
+  positive: '긍정',
+  neutral: '중립',
+  negative: '부정',
+  no_successful_measurements: '성공 측정 없음',
+  missing_mention: '병원 미언급',
+  competitor_visibility: '경쟁 병원 노출 우위',
+  source_signal_gap: '근거 신호 부족',
+  HIGH: '높음',
+  NORMAL: '보통',
+  LOW: '낮음',
+  high: '높음',
+  normal: '보통',
+  low: '낮음',
+}
+
+const PERCENT_KEY_RE = /(rate|share_of_voice|sov|percent|pct)/i
 
 const ACTION_LIST_LIMIT = 20
 
@@ -576,7 +657,7 @@ function BriefResultPanel({ result }: { result: BriefResultState }) {
 }
 
 function EvidenceList({ evidence }: { evidence: Record<string, unknown> }) {
-  const entries = Object.entries(evidence ?? {}).filter(([, value]) => value !== null && value !== '')
+  const entries = Object.entries(evidence ?? {}).filter(([, value]) => !isEmptyEvidenceValue(value))
   if (entries.length === 0) {
     return <p className="mt-2 text-sm text-slate-500">기록된 근거가 없습니다.</p>
   }
@@ -584,8 +665,8 @@ function EvidenceList({ evidence }: { evidence: Record<string, unknown> }) {
     <dl className="mt-2 grid grid-cols-1 gap-x-3 gap-y-1 text-xs text-slate-600">
       {entries.map(([key, value]) => (
         <div key={key} className="flex gap-2">
-          <dt className="shrink-0 font-medium text-slate-500">{key}</dt>
-          <dd className="text-slate-700 break-words">{formatEvidenceValue(value)}</dd>
+          <dt className="shrink-0 font-medium text-slate-500">{formatEvidenceKey(key)}</dt>
+          <dd className="text-slate-700 break-words">{formatEvidenceValue(value, key)}</dd>
         </div>
       ))}
     </dl>
@@ -627,7 +708,15 @@ function InfoBlock({ label, value, muted }: { label: string; value: string; mute
 
 function hasEvidence(evidence: Record<string, unknown> | null | undefined): boolean {
   if (!evidence) return false
-  return Object.values(evidence).some((value) => value !== null && value !== '')
+  return Object.values(evidence).some((value) => !isEmptyEvidenceValue(value))
+}
+
+function isEmptyEvidenceValue(value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return true
+  if (value instanceof Date) return Number.isNaN(value.getTime())
+  if (Array.isArray(value)) return value.length === 0
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length === 0
+  return false
 }
 
 function isBriefCapableActionType(actionType: ExposureAction['action_type']): boolean {
@@ -662,24 +751,66 @@ function formatLinkedContent(content: ExposureActionContentSummary | null | unde
 
 function summarizeEvidence(evidence: Record<string, unknown> | null | undefined): string {
   if (!evidence) return '근거 없음'
-  const entries = Object.entries(evidence).filter(([, value]) => value !== null && value !== '')
+  const entries = Object.entries(evidence).filter(([, value]) => !isEmptyEvidenceValue(value))
   if (entries.length === 0) return '근거 없음'
   return entries
     .slice(0, 2)
-    .map(([key, value]) => `${key}: ${formatEvidenceValue(value)}`)
+    .map(([key, value]) => `${formatEvidenceKey(key)}: ${formatEvidenceValue(value, key)}`)
     .join(' · ')
 }
 
-function formatEvidenceValue(value: unknown): string {
-  if (value === null || value === undefined) return '-'
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value)
+function formatEvidenceKey(key: string): string {
+  const direct = EVIDENCE_KEY_LABELS[key] ?? EVIDENCE_KEY_LABELS[key.toLowerCase()]
+  if (direct) return direct
+  return key.replaceAll('_', ' ')
+}
+
+function formatEvidenceValueLabel(value: string): string {
+  return EVIDENCE_VALUE_LABELS[value] ?? EVIDENCE_VALUE_LABELS[value.toLowerCase()] ?? value
+}
+
+function formatNumberForKey(value: number, key?: string): string {
+  if (key && PERCENT_KEY_RE.test(key)) {
+    const pct = value > 0 && value <= 1 ? value * 100 : value
+    const rounded = Math.round(pct * 10) / 10
+    return `${rounded}%`
   }
-  try {
-    return JSON.stringify(value)
-  } catch {
-    return String(value)
+  if (Number.isInteger(value)) return String(value)
+  return String(Math.round(value * 100) / 100)
+}
+
+function formatEvidenceValue(value: unknown, key?: string): string {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'boolean') return value ? '예' : '아니오'
+  if (typeof value === 'number') return formatNumberForKey(value, key)
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? '-' : formatDateTime(value.toISOString())
+  if (typeof value === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}T/.test(value)) return formatDateTime(value)
+    return formatEvidenceValueLabel(value)
   }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '-'
+    const items = value
+      .slice(0, 5)
+      .map((item) =>
+        typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean'
+          ? formatEvidenceValue(item, key)
+          : formatEvidenceValue(item),
+      )
+    const more = value.length > items.length ? ` 외 ${value.length - items.length}건` : ''
+    return `${items.join(', ')}${more}`
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([, v]) => !isEmptyEvidenceValue(v),
+    )
+    if (entries.length === 0) return '-'
+    return entries
+      .slice(0, 4)
+      .map(([k, v]) => `${formatEvidenceKey(k)}: ${formatEvidenceValue(v, k)}`)
+      .join(', ')
+  }
+  return String(value)
 }
 
 function formatDateTime(value: string | null | undefined): string {
