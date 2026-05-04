@@ -331,7 +331,7 @@ async def _resolve_content_slot_for_brief(
         if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
             raise HTTPException(
                 status_code=409,
-                detail="Cannot create a draft brief on published content",
+                detail="Cannot create a draft content guide on published content",
             )
         return item
 
@@ -341,7 +341,7 @@ async def _resolve_content_slot_for_brief(
         if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
             raise HTTPException(
                 status_code=409,
-                detail="Cannot regenerate a draft brief on published linked content",
+                detail="Cannot regenerate a draft content guide on published linked content",
             )
         return item
 
@@ -488,7 +488,7 @@ def _ensure_brief_capable_action(action: ExposureAction) -> None:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Content brief creation is only available for content-producing AI exposure "
+                "Content guide creation is only available for content-producing AI exposure "
                 "work items (CONTENT, WEBBLOG_IA, SOURCE). Measurement work should be "
                 "handled by running the first AI mention-rate measurement."
             ),
@@ -557,7 +557,7 @@ def _serialize_philosophy_gate(philosophy: HospitalContentPhilosophy | None) -> 
     return {
         "has_approved_philosophy": False,
         "message": (
-            "Approved content philosophy is missing; keep this brief in review "
+            "Approved clinic writing standard is missing; keep this content guide in review "
             "before approval or publishing."
         ),
     }

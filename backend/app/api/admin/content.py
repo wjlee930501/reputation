@@ -467,7 +467,7 @@ async def _apply_content_brief_update(
     if "brief_status" in fields:
         if body.brief_status == BRIEF_STATUS_APPROVED:
             if not item.content_brief:
-                raise HTTPException(status_code=400, detail="Cannot approve an empty content brief")
+                raise HTTPException(status_code=400, detail="Cannot approve an empty content guide")
             philosophy = await _get_approved_philosophy(db, hospital.id)
             if philosophy is None:
                 raise HTTPException(
@@ -504,7 +504,7 @@ def _ensure_brief_capable_exposure_action(exposure_action: ExposureAction) -> No
         raise HTTPException(
             status_code=409,
             detail=(
-                "Content brief links are only available for content-producing AI exposure "
+                "Content guide links are only available for content-producing AI exposure "
                 "work items (CONTENT, WEBBLOG_IA, SOURCE). Measurement work should be "
                 "handled by running the first AI mention-rate measurement."
             ),
