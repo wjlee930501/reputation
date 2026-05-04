@@ -1,4 +1,4 @@
-"""SoV 엔진 — 쿼리 자동 생성·발송·파싱·계산"""
+"""AI 답변 언급률 엔진 — 환자 질문 생성·발송·파싱·계산"""
 import asyncio
 import json
 import logging

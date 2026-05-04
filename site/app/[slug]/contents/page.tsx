@@ -27,7 +27,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       },
     }
   } catch {
-    return { title: 'AEO 의료정보' }
+    return { title: 'AI가 읽기 쉬운 병원 의료정보' }
   }
 }
 

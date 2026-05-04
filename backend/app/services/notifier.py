@@ -28,12 +28,12 @@ async def _send(text: str, blocks: list | None = None) -> bool:
 async def notify_v0_report_ready(hospital_name: str, sov_pct: float, pdf_path: str) -> bool:
     """V0 리포트 생성 완료 → AE에게"""
     return await _send(
-        text=f"🔍 [V0 리포트] {hospital_name} AI 검색 진단 완료",
+        text=f"🔍 [V0 리포트] {hospital_name} AI 답변 노출 진단 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"🔍 *[V0 리포트]* *{hospital_name}* V0 AI 검색 진단 리포트 생성 완료\n"
-                f"현재 ChatGPT+Gemini 통합 SoV: *{sov_pct:.1f}%*\n"
+                f"🔍 *[V0 리포트]* *{hospital_name}* AI 답변 노출 진단 리포트 생성 완료\n"
+                f"현재 ChatGPT+Gemini 답변 내 병원 언급률: *{sov_pct:.1f}%*\n"
                 f"파일: `{pdf_path}`\n\n"
                 f"원장 보고 전 내용 확인 후 전달해 주세요."
             )},
@@ -42,13 +42,13 @@ async def notify_v0_report_ready(hospital_name: str, sov_pct: float, pdf_path: s
 
 
 async def notify_site_built(hospital_name: str, preview_url: str) -> bool:
-    """AEO 사이트 빌드 완료 → AE에게"""
+    """AI 노출 웹블로그 준비 완료 → AE에게"""
     return await _send(
-        text=f"🏗️ [사이트 빌드] {hospital_name} AEO 홈페이지 빌드 완료",
+        text=f"🏗️ [AI 노출 웹블로그] {hospital_name} 준비 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"🏗️ *[사이트 빌드]* *{hospital_name}* AEO 홈페이지 빌드 완료\n"
+                f"🏗️ *[AI 노출 웹블로그]* *{hospital_name}* 병원 정보 허브 준비 완료\n"
                 f"미리보기: {preview_url}\n\n"
                 f"Admin에서 도메인을 연결해 주세요."
             )},
@@ -94,12 +94,12 @@ async def notify_monthly_report_ready(
     """월간 리포트 생성 완료 → AE에게"""
     change_text = f" | 전월 대비: *{change_pct:+.1f}%p*" if change_pct is not None else ""
     return await _send(
-        text=f"📊 [월간 리포트] {hospital_name} {year}년 {month}월 SoV 리포트 완료",
+        text=f"📊 [월간 리포트] {hospital_name} {year}년 {month}월 AI 답변 언급 리포트 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"📊 *[월간 리포트]* *{hospital_name}* {year}년 {month}월 SoV 리포트 생성 완료\n"
-                f"통합 SoV: *{sov_pct:.1f}%*{change_text}\n"
+                f"📊 *[월간 리포트]* *{hospital_name}* {year}년 {month}월 AI 답변 언급 리포트 생성 완료\n"
+                f"AI 답변 내 병원 언급률: *{sov_pct:.1f}%*{change_text}\n"
                 f"파일: `{pdf_path}`\n\n"
                 f"원장 보고 자료를 확인해 주세요."
             )},
@@ -108,4 +108,4 @@ async def notify_monthly_report_ready(
 
 
 async def notify_monitoring_done(total: int, success: int) -> bool:
-    return await _send(text=f"📊 주간 SoV 모니터링 완료 ({success}/{total}개 병원)")
+    return await _send(text=f"📊 주간 AI 답변 언급 모니터링 완료 ({success}/{total}개 병원)")

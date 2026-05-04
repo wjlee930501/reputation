@@ -18,12 +18,12 @@ const ESSENCE_FALLBACK = { label: '미검수', color: 'bg-gray-100 text-gray-500
 type BriefStatus = 'DRAFT' | 'APPROVED' | 'NEEDS_REVIEW'
 
 const BRIEF_LABELS: Record<BriefStatus, { label: string; color: string }> = {
-  DRAFT: { label: 'Brief 작성중', color: 'bg-gray-100 text-gray-600' },
-  APPROVED: { label: 'Brief 승인', color: 'bg-green-100 text-green-700' },
-  NEEDS_REVIEW: { label: 'Brief 재검토', color: 'bg-orange-100 text-orange-700' },
+  DRAFT: { label: '콘텐츠 가이드 작성중', color: 'bg-gray-100 text-gray-600' },
+  APPROVED: { label: '콘텐츠 가이드 승인', color: 'bg-green-100 text-green-700' },
+  NEEDS_REVIEW: { label: '콘텐츠 가이드 재검토', color: 'bg-orange-100 text-orange-700' },
 }
 
-const BRIEF_FALLBACK = { label: 'Brief 없음', color: 'bg-gray-50 text-gray-400 border border-gray-200' }
+const BRIEF_FALLBACK = { label: '콘텐츠 가이드 없음', color: 'bg-gray-50 text-gray-400 border border-gray-200' }
 
 // 프론트엔드 미리보기용 금지 표현 목록 (단순 포함 검사)
 // 정식 정의는 backend/app/utils/medical_filter.py의 FORBIDDEN_EXPRESSIONS를 따름
@@ -400,7 +400,7 @@ export default function ContentPage() {
           <div>
             <h2 className="text-2xl font-bold text-gray-900">콘텐츠 검수 · 발행</h2>
             <p className="text-sm text-gray-500 mt-1">
-              Essence 운영 기준과 의료광고 리스크를 확인한 뒤 발행합니다.
+              콘텐츠 운영 기준(Essence) 통과 여부와 의료광고 리스크를 확인한 뒤 발행합니다.
             </p>
           </div>
 
@@ -429,8 +429,8 @@ export default function ContentPage() {
 
         {/* Summary cards */}
         <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <SummaryCard label="발행 가능" value={summary.publishable} tone="green" hint="Essence 통과 · 본문 완성" />
-          <SummaryCard label="검토 필요" value={summary.needsReview} tone="orange" hint="Essence 재검토 · 운영 기준 미통과" />
+          <SummaryCard label="발행 가능" value={summary.publishable} tone="green" hint="콘텐츠 운영 기준 통과 · 본문 완성" />
+          <SummaryCard label="검토 필요" value={summary.needsReview} tone="orange" hint="콘텐츠 운영 기준 재검토 필요" />
           <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" />
           <SummaryCard label="발행 완료" value={summary.published} tone="blue" hint="이번 달 누적" />
         </div>
@@ -457,7 +457,7 @@ export default function ContentPage() {
           ))}
         </select>
         <span className="text-xs text-gray-500 ml-1">
-          Essence 운영 기준을 통과한 초안만 일괄 선택할 수 있습니다.
+          콘텐츠 운영 기준(Essence)을 통과한 초안만 일괄 선택할 수 있습니다.
         </span>
       </div>
 
@@ -486,8 +486,8 @@ export default function ContentPage() {
                 <th className="text-left px-6 py-3 text-gray-600 font-medium">제목</th>
                 <th className="text-center px-6 py-3 text-gray-600 font-medium">순번</th>
                 <th className="text-center px-6 py-3 text-gray-600 font-medium">검수 상태</th>
-                <th className="text-center px-6 py-3 text-gray-600 font-medium">Essence</th>
-                <th className="text-center px-6 py-3 text-gray-600 font-medium">Brief</th>
+                <th className="text-center px-6 py-3 text-gray-600 font-medium">운영 기준</th>
+                <th className="text-center px-6 py-3 text-gray-600 font-medium">콘텐츠 가이드</th>
                 <th className="text-right px-6 py-3 text-gray-600 font-medium">액션</th>
               </tr>
             </thead>
@@ -604,7 +604,7 @@ export default function ContentPage() {
                     onClick={enterBriefEditMode}
                     className="px-3 py-1.5 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50"
                   >
-                    Brief 편집
+                    콘텐츠 가이드 편집
                   </button>
                 )}
                 {!editMode && !briefEditMode && selected.status === 'DRAFT' && (
@@ -644,7 +644,7 @@ export default function ContentPage() {
               <div className="p-6 space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">Query Target</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">연결할 환자 질문</label>
                     <select
                       value={briefQueryTargetId}
                       onChange={(e) => setBriefQueryTargetId(e.target.value)}
@@ -659,7 +659,7 @@ export default function ContentPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">Exposure Action</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">연결할 노출 보완 작업</label>
                     <select
                       value={briefExposureActionId}
                       onChange={(e) => setBriefExposureActionId(e.target.value)}
@@ -674,7 +674,7 @@ export default function ContentPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">Brief 상태</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">콘텐츠 가이드 상태</label>
                     <select
                       value={briefStatus}
                       onChange={(e) => setBriefStatus(e.target.value as BriefStatus)}
@@ -697,12 +697,12 @@ export default function ContentPage() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Brief JSON</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">콘텐츠 가이드(JSON)</label>
                   <textarea
                     value={briefJson}
                     onChange={(e) => setBriefJson(e.target.value)}
                     rows={18}
-                    placeholder="비워두면 연결된 Query Target / Exposure Action 기준으로 fallback brief를 생성합니다."
+                    placeholder="비워두면 연결한 환자 질문과 노출 보완 작업을 기준으로 콘텐츠 가이드 초안이 자동 생성됩니다."
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                   />
                 </div>
@@ -712,7 +712,7 @@ export default function ContentPage() {
                     disabled={briefSaving}
                     className="px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
                   >
-                    {briefSaving ? '저장 중...' : 'Brief 저장'}
+                    {briefSaving ? '저장 중...' : '콘텐츠 가이드 저장'}
                   </button>
                   <button
                     onClick={() => { setBriefEditMode(false); setBriefError(null) }}
@@ -795,7 +795,7 @@ export default function ContentPage() {
               <div className="p-6">
                 <div className="mb-5 border border-gray-200 rounded-lg overflow-hidden">
                   <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-600 uppercase tracking-wide">
-                    AI 노출 Brief
+                    AI 노출 콘텐츠 가이드
                   </div>
                   <div className="p-4 space-y-3 text-sm">
                     <div className="flex flex-wrap items-center gap-2">
@@ -812,17 +812,17 @@ export default function ContentPage() {
                         </span>
                       )}
                     </div>
-                    <BriefField label="Query Target" value={selectedTarget?.name ?? selected.query_target_id ?? '미연결'} />
-                    <BriefField label="Exposure Action" value={selectedAction?.title ?? selected.exposure_action_id ?? '미연결'} />
-                    <BriefField label="Target Query" value={String(selected.content_brief?.target_query ?? '미작성')} />
-                    <BriefField label="Patient Intent" value={String(selected.content_brief?.patient_intent ?? '미작성')} />
+                    <BriefField label="연결된 환자 질문" value={selectedTarget?.name ?? selected.query_target_id ?? '미연결'} />
+                    <BriefField label="연결된 노출 보완 작업" value={selectedAction?.title ?? selected.exposure_action_id ?? '미연결'} />
+                    <BriefField label="타겟 질문" value={String(selected.content_brief?.target_query ?? '미작성')} />
+                    <BriefField label="환자 의도" value={String(selected.content_brief?.patient_intent ?? '미작성')} />
                     <BriefField
-                      label="Internal Link"
+                      label="내부 링크"
                       value={formatBriefValue(selected.content_brief?.internal_link_target)}
                     />
-                    <BriefList label="Must Use" values={selected.content_brief?.must_use_messages} />
-                    <BriefList label="Avoid" values={selected.content_brief?.avoid_messages} />
-                    <BriefList label="Medical Risk" values={selected.content_brief?.medical_risk_rules} />
+                    <BriefList label="반드시 담을 메시지" values={selected.content_brief?.must_use_messages} />
+                    <BriefList label="피해야 할 표현" values={selected.content_brief?.avoid_messages} />
+                    <BriefList label="의료광고 리스크 규칙" values={selected.content_brief?.medical_risk_rules} />
                   </div>
                 </div>
 
@@ -833,7 +833,7 @@ export default function ContentPage() {
                   </div>
                   <div className="p-4 space-y-3 text-sm">
                     <CheckRow
-                      label="Essence 운영 기준"
+                      label="콘텐츠 운영 기준(Essence)"
                       value={
                         selected.essence_status
                           ? ESSENCE_LABELS[selected.essence_status]?.label ?? selected.essence_status
@@ -868,7 +868,7 @@ export default function ContentPage() {
                     />
                     {!selectedReview.publishable && selected.essence_status && selected.essence_status !== 'ALIGNED' && (
                       <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded px-2 py-1.5">
-                        운영 기준 검토 후 발행 가능합니다.
+                        콘텐츠 운영 기준 검토 후 발행 가능합니다.
                       </p>
                     )}
                   </div>

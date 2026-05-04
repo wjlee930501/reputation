@@ -97,7 +97,7 @@ def validate_source_excerpt(asset: HospitalSourceAsset, excerpt: str) -> bool:
 def process_source_asset(asset: HospitalSourceAsset) -> list[EvidenceNotePayload]:
     """Extract source-backed evidence notes from pasted raw text/operator notes."""
     if not asset.raw_text or not asset.raw_text.strip():
-        raise ValueError("raw_text가 없는 source는 처리할 수 없습니다.")
+        raise ValueError("원문 텍스트가 없는 자료는 처리할 수 없습니다.")
 
     snippets = _candidate_excerpts(asset)
     payloads: list[EvidenceNotePayload] = []
@@ -444,9 +444,9 @@ def build_monthly_essence_summary(db, hospital: Hospital, period_start: datetime
     if not approved:
         recommended_actions.append("승인된 콘텐츠 철학을 생성/승인하세요.")
     if not processed_sources:
-        recommended_actions.append("온보딩 source를 1개 이상 raw_text 기반으로 처리하세요.")
+        recommended_actions.append("온보딩 자료를 1개 이상 원문 텍스트 기반으로 처리하세요.")
     if source_stale:
-        recommended_actions.append("처리된 source가 승인된 철학 snapshot과 달라졌습니다. 새 draft를 검토하세요.")
+        recommended_actions.append("처리된 자료가 승인된 운영 기준과 달라졌습니다. 새 초안을 검토하세요.")
     if needs_review_count:
         recommended_actions.append("Essence 재검수가 필요한 콘텐츠를 수정하세요.")
     if missing_count:

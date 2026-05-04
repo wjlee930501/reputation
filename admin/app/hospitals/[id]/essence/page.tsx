@@ -129,8 +129,8 @@ export default function EssencePage() {
   // Operator next-action hint
   const nextAction = useMemo(() => {
     if (sources.length === 0) return '① 자료를 1개 이상 입력하세요.'
-    if (processedSources.length === 0) return '② source의 [근거 추출]을 실행하세요.'
-    if (!selectedDraft && !approved) return '③ 처리된 source를 선택하고 [선택 source로 초안 만들기]를 누르세요.'
+    if (processedSources.length === 0) return '② 자료의 [근거 추출]을 실행하세요.'
+    if (!selectedDraft && !approved) return '③ 처리된 자료를 선택하고 [선택 자료로 초안 만들기]를 누르세요.'
     if (selectedDraft && selectedDraft.status === 'DRAFT')
       return '④ 초안 내용을 검토 후 우측에서 [승인]하세요.'
     if (approved) return '운영 중 — 새 자료를 추가하면 새 버전 초안을 만들 수 있습니다.'
@@ -170,10 +170,10 @@ export default function EssencePage() {
       setSourceUrl('')
       setSourceRawText('')
       setSourceOperatorNote('')
-      setNotice('Source가 저장되었습니다. [근거 추출]을 실행해 다음 단계로 진행하세요.')
+      setNotice('자료가 저장되었습니다. [근거 추출]을 실행해 다음 단계로 진행하세요.')
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Source 저장에 실패했습니다.')
+      setError(e instanceof Error ? e.message : '자료 저장에 실패했습니다.')
     } finally {
       setActionLoading(null)
     }
@@ -188,10 +188,10 @@ export default function EssencePage() {
         method: 'POST',
       })
       setSelectedSource(detail)
-      setNotice('근거 note 추출이 완료되었습니다.')
+      setNotice('근거 추출이 완료되었습니다.')
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Source 처리에 실패했습니다.')
+      setError(e instanceof Error ? e.message : '자료 처리에 실패했습니다.')
     } finally {
       setActionLoading(null)
     }
@@ -204,14 +204,14 @@ export default function EssencePage() {
       const detail = await fetchAPI(`/admin/hospitals/${id}/essence/sources/${sourceId}`)
       setSelectedSource(detail)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Source 상세를 불러오지 못했습니다.')
+      setError(e instanceof Error ? e.message : '자료 상세를 불러오지 못했습니다.')
     } finally {
       setActionLoading(null)
     }
   }
 
   async function excludeSource(sourceId: string) {
-    if (!confirm('이 source를 제외하시겠습니까?')) return
+    if (!confirm('이 자료를 제외하시겠습니까?')) return
     setActionLoading(`exclude-${sourceId}`)
     setError(null)
     try {
@@ -219,7 +219,7 @@ export default function EssencePage() {
       setSelectedSource(null)
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Source 제외에 실패했습니다.')
+      setError(e instanceof Error ? e.message : '자료 제외에 실패했습니다.')
     } finally {
       setActionLoading(null)
     }
@@ -322,15 +322,15 @@ export default function EssencePage() {
       {/* Page header */}
       <div className="flex items-start justify-between gap-6 flex-wrap">
         <div className="min-w-0">
-          <h2 className="text-xl font-bold text-slate-900">Content Essence</h2>
+          <h2 className="text-xl font-bold text-slate-900">콘텐츠 운영 기준</h2>
           <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            병원 자료에서 근거 노트를 추출하고, 승인된 콘텐츠 철학을 자동 생성의 운영 기준으로 고정합니다.
+            병원 자료에서 AI가 참고할 근거를 뽑고, 콘텐츠가 지켜야 할 말투와 메시지를 운영 기준으로 고정합니다.
             승인 전에는 자동 콘텐츠가 발행 차단됩니다.
           </p>
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 min-w-[480px]">
           <SummaryCard
-            label="승인 철학"
+            label="승인된 운영 기준"
             value={approved ? `v${approved.version} 운영 중` : '미승인'}
             tone={approved ? 'good' : 'warn'}
           />
@@ -384,7 +384,7 @@ export default function EssencePage() {
                   운영 기준
                 </span>
                 <p className="text-base font-semibold text-slate-900">
-                  콘텐츠 철학 v{approved.version} 운영 중
+                  콘텐츠 운영 기준 v{approved.version} 운영 중
                 </p>
               </div>
               <p className="text-xs text-slate-500">
@@ -392,7 +392,7 @@ export default function EssencePage() {
               </p>
             </div>
             <p className="text-xs text-slate-600 max-w-md">
-              자동 생성되는 콘텐츠는 이 철학으로 essence 검사를 통과해야 발행됩니다. 새 자료를 추가하면 신규 초안을 만들어 갱신하세요.
+              자동 생성되는 콘텐츠는 이 운영 기준을 통과해야 발행됩니다. 새 자료를 추가하면 신규 초안을 만들어 갱신하세요.
             </p>
           </div>
         </section>
@@ -405,7 +405,7 @@ export default function EssencePage() {
           <header>
             <StepLabel index={1} label="자료 입력" />
             <p className="text-xs text-slate-500 mt-1.5">
-              인터뷰·블로그·홈페이지 등 원장 목소리가 담긴 자료를 입력합니다. URL은 metadata만 저장되니, 처리하려면 원문 텍스트를 붙여넣어야 합니다.
+              인터뷰·블로그·기존 홈페이지 등 원장 목소리가 담긴 자료를 입력합니다. AI가 참고할 근거를 뽑으려면 원문 텍스트를 붙여넣어야 합니다.
             </p>
           </header>
           <div>
@@ -491,11 +491,11 @@ export default function EssencePage() {
               onClick={createDraft}
               disabled={selectedSourceIds.size === 0 || actionLoading === 'create-draft'}
               className="shrink-0 whitespace-nowrap px-4 py-2 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-              title={selectedSourceIds.size === 0 ? '먼저 처리완료된 source를 선택하세요.' : ''}
+              title={selectedSourceIds.size === 0 ? '먼저 처리완료된 자료를 선택하세요.' : ''}
             >
               {actionLoading === 'create-draft'
                 ? '생성 중...'
-                : `선택한 ${selectedSourceIds.size}개로 초안 만들기`}
+                : `선택한 ${selectedSourceIds.size}개 자료로 초안 만들기`}
             </button>
           </div>
           <table className="w-full text-sm">
@@ -625,7 +625,7 @@ export default function EssencePage() {
           <div>
             <StepLabel index={3} label="콘텐츠 철학 검토 및 승인" />
             <p className="text-xs text-slate-500 mt-1.5">
-              DRAFT만 편집할 수 있으며, 승인은 evidence_map 검사를 통과해야 합니다.
+              초안 상태만 편집할 수 있습니다. 승인하려면 각 메시지가 어떤 자료에서 나왔는지 확인되어야 합니다.
             </p>
           </div>
           {philosophies.length > 0 && (
@@ -663,7 +663,7 @@ export default function EssencePage() {
           <div className="bg-slate-50 border border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-500 space-y-2">
             <p className="text-sm font-medium text-slate-600">승인된 콘텐츠 철학이 없습니다.</p>
             <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-              자료를 1개 이상 입력 → 처리(근거 note 추출) → “선택 source로 초안 만들기” 순서로 진행하세요.
+              자료를 1개 이상 입력 → 근거 추출 → “선택 자료로 초안 만들기” 순서로 진행하세요.
               승인 전에는 자동 콘텐츠가 발행 차단됩니다.
             </p>
           </div>
@@ -744,7 +744,7 @@ export default function EssencePage() {
                       onChange={(e) => setConfirmEvidence(e.target.checked)}
                       className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                     />
-                    evidence note와 source excerpt를 검토했습니다.
+                    근거 노트와 원문 발췌를 검토했습니다.
                   </label>
                   <button
                     onClick={approveDraft}
