@@ -90,7 +90,7 @@ def test_serialize_target_summarizes_variants_and_next_action():
     assert serialized["summary"]["variant_count"] == 2
     assert serialized["summary"]["active_variant_count"] == 1
     assert serialized["summary"]["linked_query_matrix_count"] == 1
-    assert serialized["summary"]["next_action"] == "baseline 측정 대기"
+    assert serialized["summary"]["next_action"] == "첫 AI 언급률 측정 대기"
     assert serialized["variants"][0]["query_text"] == active_variant.query_text
 
 

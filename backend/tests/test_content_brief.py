@@ -84,7 +84,7 @@ def _exposure_action(action_id=None, hospital_id=None, target_id=None, action_ty
         hospital_id=hospital_id or uuid.uuid4(),
         query_target_id=target_id,
         action_type=action_type,
-        title="타깃 질의 답변 콘텐츠 보강",
+        title="환자 질문 답변 콘텐츠 보강",
         description="AI 답변에서 병원 언급을 보강할 콘텐츠가 필요합니다.",
         due_month="2026-06",
         status="OPEN",

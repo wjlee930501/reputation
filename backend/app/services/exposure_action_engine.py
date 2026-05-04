@@ -215,11 +215,11 @@ def _diagnose_target(
                     "rule": "no_successful_measurements",
                 },
                 "MEASUREMENT",
-                "baseline AI 노출 측정 실행",
+                "첫 AI 언급률 측정 실행",
                 (
                     "성공한 ChatGPT/Gemini 측정값이 없어 "
                     "노출 상태를 판단할 수 없습니다. "
-                    "활성 질의 변형을 확인한 뒤 baseline 측정을 실행하세요."
+                    "등록된 환자 질문 문구를 확인한 뒤 첫 측정을 실행하세요."
                 ),
                 due_month,
             )
@@ -252,11 +252,11 @@ def _diagnose_target(
                     "rule": "zero_hospital_mentions",
                 },
                 "CONTENT",
-                "타깃 질의와 연결된 근거 콘텐츠 보강",
+                "환자 질문과 연결된 근거 콘텐츠 보강",
                 (
                     f"최근 성공 측정 {len(successful_records)}건에서 "
-                    "병원 언급이 없습니다. 타깃 질의 의도와 맞는 "
-                    "FAQ/질환/치료 콘텐츠 가이드를 우선 보강하세요."
+                    "병원 언급이 없습니다. 환자 질문 의도와 맞는 "
+                    "자주 묻는 질문/질환/치료 안내 콘텐츠 가이드를 우선 보강하세요."
                 ),
                 due_month,
             )
@@ -295,11 +295,11 @@ def _diagnose_target(
                     "rule": "competitor_mentions_match_or_exceed_hospital_mentions",
                 },
                 "WEBBLOG_IA",
-                "경쟁 병원 대비 웹블로그 정보 구조 보강",
+                "경쟁 병원 대비 병원 정보 구조 보강",
                 (
                     "경쟁 병원 언급이 병원 언급과 같거나 더 많습니다. "
-                    "타깃 질의에서 선택 기준, 지역성, 진료 근거가 "
-                    "드러나도록 웹블로그 IA를 조정하세요."
+                    "환자 질문에서 선택 기준, 지역성, 진료 근거가 "
+                    "드러나도록 병원 정보 구조를 조정하세요."
                 ),
                 due_month,
             )
@@ -316,11 +316,11 @@ def _diagnose_target(
                     "rule": "source_urls_missing_for_majority_of_successful_measurements",
                 },
                 "SOURCE",
-                "AI가 인용할 공식 출처 신호 보강",
+                "AI가 참고할 공식 근거 자료 보강",
                 (
                     "성공한 측정의 과반에서 AI가 참고할 URL 근거가 비어 있습니다. "
-                    "기존 홈페이지, Google Business Profile, 공개 콘텐츠의 "
-                    "병원명/진료/지역 신호를 정리하세요."
+                    "기존 홈페이지, 구글 병원·지도 정보, 공개 콘텐츠에 "
+                    "병원명/진료/지역 정보가 일관되게 보이도록 정리하세요."
                 ),
                 due_month,
             )

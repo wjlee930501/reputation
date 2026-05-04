@@ -69,7 +69,7 @@ def _action(
         query_target_id=target_id,
         gap_id=uuid.uuid4(),
         action_type=action_type,
-        title="타깃 질의 답변 콘텐츠 보강",
+        title="환자 질문 답변 콘텐츠 보강",
         description="AI 답변에서 병원 언급을 보강할 콘텐츠가 필요합니다.",
         owner="MotionLabs Ops",
         due_month="2026-05",
@@ -199,7 +199,7 @@ async def test_exposure_actions_endpoint_shape(monkeypatch):
                 query_target_id=target_id,
                 gap_id=gap_id,
                 action_type="CONTENT",
-                title="타깃 질의와 연결된 근거 콘텐츠 보강",
+                title="환자 질문과 연결된 근거 콘텐츠 보강",
                 description="최근 성공 측정에서 병원 언급이 없습니다.",
                 owner="MotionLabs Ops",
                 due_month="2026-05",
@@ -245,7 +245,7 @@ async def test_exposure_actions_endpoint_shape(monkeypatch):
             "severity": "HIGH",
             "evidence": {"mention_rate": 0.0},
             "action_type": "CONTENT",
-            "title": "타깃 질의와 연결된 근거 콘텐츠 보강",
+            "title": "환자 질문과 연결된 근거 콘텐츠 보강",
             "description": "최근 성공 측정에서 병원 언급이 없습니다.",
             "owner": "MotionLabs Ops",
             "due_month": "2026-05",
@@ -827,7 +827,7 @@ async def test_create_brief_blocks_measurement_action_before_creating_slot(monke
     except HTTPException as exc:
         assert exc.status_code == 409
         assert "content-producing AI exposure work items" in exc.detail
-        assert "baseline measurement" in exc.detail
+        assert "first AI mention-rate measurement" in exc.detail
     else:
         raise AssertionError("Expected create_brief to reject MEASUREMENT actions")
 

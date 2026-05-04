@@ -319,7 +319,7 @@ export const EXPOSURE_ACTION_TYPE_LABELS: Record<string, { label: string; color:
   MEASUREMENT: { label: '측정', color: 'bg-blue-50 text-blue-700 border-blue-200' },
   CONTENT: { label: '콘텐츠', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   SOURCE: { label: '출처', color: 'bg-amber-50 text-amber-700 border-amber-200' },
-  WEBBLOG_IA: { label: '웹블로그 IA', color: 'bg-violet-50 text-violet-700 border-violet-200' },
+  WEBBLOG_IA: { label: '정보 구조', color: 'bg-violet-50 text-violet-700 border-violet-200' },
 }
 
 export const EXPOSURE_ACTION_STATUS_LABELS: Record<string, { label: string; color: string }> = {

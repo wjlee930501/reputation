@@ -326,7 +326,7 @@ def _serialize_target(target: AIQueryTarget) -> dict:
             "latest_sov_pct": None,
             "last_measured_at": None,
             "gap_status": None,
-            "next_action": "baseline 측정 대기" if active_variant_count > 0 else "variant 추가 필요",
+            "next_action": "첫 AI 언급률 측정 대기" if active_variant_count > 0 else "질문 문구 추가 필요",
         },
     }
 

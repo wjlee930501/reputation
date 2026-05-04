@@ -172,7 +172,7 @@ function buildChecklist(profile: Partial<HospitalProfile>): ChecklistItem[] {
     {
       key: 'ai_channels',
       label: 'AI가 참고할 외부 채널',
-      hint: '네이버 플레이스와 Google Maps(또는 Google Business Profile) URL을 등록합니다. AI 답변과 로컬 검색이 우리 병원을 정확히 인식하기 위한 기본 자료입니다.',
+      hint: '네이버 플레이스와 구글 지도/병원 정보 URL을 등록합니다. AI 답변과 로컬 검색이 우리 병원을 정확히 인식하기 위한 기본 자료입니다.',
       required: true,
     },
     {
@@ -528,12 +528,12 @@ export default function ProfilePage() {
         <div>
           <h3 className="text-base font-semibold text-gray-800">AI가 참고할 외부 채널</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            네이버 플레이스·Google Maps·Google Business Profile URL과 좌표는 AI 답변과 로컬 검색에서 우리 병원을 인식시키는 기본 자료입니다.
+            네이버 플레이스·구글 지도/병원 정보 URL과 좌표는 AI 답변과 로컬 검색에서 우리 병원을 인식시키는 기본 자료입니다.
           </p>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Google Business Profile URL</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">구글 병원 정보 URL</label>
             <input
               type="url"
               value={profile.google_business_profile_url ?? ''}
@@ -604,7 +604,7 @@ export default function ProfilePage() {
         <div>
           <h3 className="text-base font-semibold text-gray-800">타겟 정보</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            지역·전문과목·키워드는 지역 특화 콘텐츠와 AI 노출 콘텐츠 타게팅, AI 언급률 측정 질문에 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
+            지역·전문과목·키워드는 지역 특화 콘텐츠와 AI 노출 콘텐츠 주제 선정, AI 언급률 측정 질문에 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
           </p>
         </div>
         <TagInput

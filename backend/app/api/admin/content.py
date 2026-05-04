@@ -506,7 +506,7 @@ def _ensure_brief_capable_exposure_action(exposure_action: ExposureAction) -> No
             detail=(
                 "Content brief links are only available for content-producing AI exposure "
                 "work items (CONTENT, WEBBLOG_IA, SOURCE). Measurement work should be "
-                "handled by running baseline measurement."
+                "handled by running the first AI mention-rate measurement."
             ),
         )
 

@@ -86,7 +86,7 @@ def trigger_v0_report(self, hospital_id: str):
             run = _start_measurement_run(
                 db,
                 hospital,
-                run_label="V0 baseline",
+                run_label="V0 first measurement",
                 config={"source": "trigger_v0_report", "repeat_count": 5},
             )
             all_records = []

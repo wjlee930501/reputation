@@ -361,7 +361,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "Google 지도·프로필 정보",
             has_local_entity,
             14,
-            "Google Business Profile 또는 Google Maps URL을 입력하세요.",
+            "구글 병원 정보 또는 구글 지도 URL을 입력하세요.",
         ),
         ReadinessCheck(
             "external_profiles",

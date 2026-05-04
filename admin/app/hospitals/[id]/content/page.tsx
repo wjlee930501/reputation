@@ -814,7 +814,7 @@ export default function ContentPage() {
                     </div>
                     <BriefField label="연결된 환자 질문" value={selectedTarget?.name ?? selected.query_target_id ?? '미연결'} />
                     <BriefField label="연결된 노출 보완 작업" value={selectedAction?.title ?? selected.exposure_action_id ?? '미연결'} />
-                    <BriefField label="타겟 질문" value={String(selected.content_brief?.target_query ?? '미작성')} />
+                    <BriefField label="환자 질문" value={String(selected.content_brief?.target_query ?? '미작성')} />
                     <BriefField label="환자 의도" value={String(selected.content_brief?.patient_intent ?? '미작성')} />
                     <BriefField
                       label="내부 링크"
