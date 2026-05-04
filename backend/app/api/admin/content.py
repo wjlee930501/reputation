@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Content"])
 
+BRIEF_CAPABLE_ACTION_TYPES = {"CONTENT", "WEBBLOG_IA", "SOURCE"}
+
 
 class ScheduleCreate(BaseModel):
     plan: str = Field(pattern=r"^PLAN_(16|12|8)$")  # PLAN_16 | PLAN_12 | PLAN_8
@@ -400,11 +402,17 @@ async def _apply_content_brief_update(
     if "exposure_action_id" in fields:
         link_changed = True
         if body.exposure_action_id:
+            if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Cannot link a published content item to an exposure action",
+                )
             exposure_action = await _get_exposure_action_or_404(
                 db,
                 hospital.id,
                 body.exposure_action_id,
             )
+            _ensure_brief_capable_exposure_action(exposure_action)
             await _clear_replaced_action_content_link(db, exposure_action, item.id)
             item.exposure_action_id = exposure_action.id
             exposure_action.linked_content_id = item.id
@@ -488,6 +496,23 @@ async def _clear_replaced_action_content_link(
     previous = await db.get(ContentItem, exposure_action.linked_content_id)
     if previous and previous.exposure_action_id == exposure_action.id:
         previous.exposure_action_id = None
+
+
+def _ensure_brief_capable_exposure_action(exposure_action: ExposureAction) -> None:
+    action_type = str(_enum_value(exposure_action.action_type)).upper()
+    if action_type not in BRIEF_CAPABLE_ACTION_TYPES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Content brief links are only available for content-producing exposure "
+                "actions (CONTENT, WEBBLOG_IA, SOURCE). Measurement actions should be "
+                "handled by running baseline measurement."
+            ),
+        )
+
+
+def _enum_value(value):
+    return value.value if hasattr(value, "value") else value
 
 
 def _serialize_item(item: ContentItem, full: bool = False) -> dict:

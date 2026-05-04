@@ -78,12 +78,12 @@ def _query_target(target_id=None, hospital_id=None):
     )
 
 
-def _exposure_action(action_id=None, hospital_id=None, target_id=None):
+def _exposure_action(action_id=None, hospital_id=None, target_id=None, action_type="CONTENT"):
     return SimpleNamespace(
         id=action_id or uuid.uuid4(),
         hospital_id=hospital_id or uuid.uuid4(),
         query_target_id=target_id,
-        action_type="CONTENT",
+        action_type=action_type,
         title="타깃 질의 답변 콘텐츠 보강",
         description="AI 답변에서 병원 언급을 보강할 콘텐츠가 필요합니다.",
         due_month="2026-06",
@@ -235,6 +235,112 @@ async def test_update_content_brief_links_action_infers_target_and_approves(monk
     assert item.brief_approved_at is not None
     assert response["query_target_id"] == str(target_id)
     assert response["content_brief"]["target_query"] == "강남 치질 수술 회복 기간은?"
+
+
+async def test_update_content_brief_blocks_measurement_exposure_action(monkeypatch):
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    action_id = uuid.uuid4()
+    hospital = _hospital(hospital_id)
+    item = _content_item(id=item_id, hospital_id=hospital_id)
+    action = _exposure_action(
+        action_id=action_id,
+        hospital_id=hospital_id,
+        action_type="MEASUREMENT",
+    )
+
+    class FakeDB:
+        committed = False
+
+        async def commit(self):
+            self.committed = True
+
+        async def refresh(self, refreshed_item):
+            raise AssertionError("Measurement exposure actions should not be linked")
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        assert requested_item_id == item_id
+        assert requested_hospital_id == hospital_id
+        return item
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return hospital
+
+    async def fake_get_action(db, requested_hospital_id, requested_action_id):
+        assert requested_hospital_id == hospital_id
+        assert requested_action_id == action_id
+        return action
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
+
+    db = FakeDB()
+    with pytest.raises(HTTPException) as exc_info:
+        await content_api.update_content_brief(
+            hospital_id,
+            item_id,
+            ContentBriefUpdate(exposure_action_id=action_id),
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "content-producing exposure actions" in exc_info.value.detail
+    assert db.committed is False
+    assert item.exposure_action_id is None
+    assert action.linked_content_id is None
+
+
+async def test_update_content_brief_blocks_published_content_action_link(monkeypatch):
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    action_id = uuid.uuid4()
+    hospital = _hospital(hospital_id)
+    item = _content_item(id=item_id, hospital_id=hospital_id, status="PUBLISHED")
+    action_was_loaded = False
+
+    class FakeDB:
+        committed = False
+
+        async def commit(self):
+            self.committed = True
+
+        async def refresh(self, refreshed_item):
+            raise AssertionError("Published content should not be relinked to exposure actions")
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        assert requested_item_id == item_id
+        assert requested_hospital_id == hospital_id
+        return item
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return hospital
+
+    async def fake_get_action(db, requested_hospital_id, requested_action_id):
+        nonlocal action_was_loaded
+        action_was_loaded = True
+        raise AssertionError("Published content should be rejected before loading the action")
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
+
+    db = FakeDB()
+    with pytest.raises(HTTPException) as exc_info:
+        await content_api.update_content_brief(
+            hospital_id,
+            item_id,
+            ContentBriefUpdate(exposure_action_id=action_id),
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "published content" in exc_info.value.detail
+    assert action_was_loaded is False
+    assert db.committed is False
+    assert item.exposure_action_id is None
 
 
 async def test_update_content_brief_blocks_approval_without_approved_philosophy(monkeypatch):
