@@ -185,9 +185,9 @@ export default function ReportsPage() {
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h2 className="text-xl font-bold text-gray-900">리포트 스크리닝</h2>
+        <h2 className="text-xl font-bold text-gray-900">리포트 검수</h2>
         <p className="mt-1 text-sm text-gray-600">
-          원장님께 전달하기 전 AI 답변 노출, 콘텐츠 성과, 운영 기준 정합성을 확인합니다.
+          PDF를 내려받기 전에 AI 답변 노출, 콘텐츠 성과, 운영 기준 검수 결과를 먼저 확인합니다.
         </p>
       </div>
 
@@ -208,7 +208,7 @@ export default function ReportsPage() {
 
       {detailError && (
         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-800 text-sm">
-          리포트 상세를 불러오지 못했습니다. 원장 보고 전 스크리닝 데이터가 불완전할 수 있습니다. ({detailError})
+          리포트 상세를 불러오지 못했습니다. 원장 보고 전 검수 데이터가 불완전할 수 있습니다. ({detailError})
         </div>
       )}
 
@@ -219,7 +219,7 @@ export default function ReportsPage() {
               <tr>
                 <th className="text-left px-6 py-3 text-gray-600 font-medium">기간</th>
                 <th className="text-left px-6 py-3 text-gray-600 font-medium">리포트 유형</th>
-                <th className="text-left px-6 py-3 text-gray-600 font-medium">스크리닝 상태</th>
+                <th className="text-left px-6 py-3 text-gray-600 font-medium">검수 상태</th>
                 <th className="text-center px-6 py-3 text-gray-600 font-medium">PDF</th>
                 <th className="text-left px-6 py-3 text-gray-600 font-medium">생성일</th>
                 <th className="text-right px-6 py-3 text-gray-600 font-medium">액션</th>
@@ -329,6 +329,11 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
   const medicalRiskFindings = essence && Array.isArray(essence.medical_risk_findings)
     ? (essence.medical_risk_findings as Array<Record<string, unknown>>)
     : []
+  const needsReviewCount = essence ? asNumber(essence.needs_review_content_count) ?? 0 : 0
+  const missingStandardCount = essence ? asNumber(essence.missing_philosophy_content_count) ?? 0 : 0
+  const alignedContentCount = essence ? asNumber(essence.aligned_content_count) ?? 0 : 0
+  const processedSourceCount = essence ? asNumber(essence.processed_source_count) ?? 0 : 0
+  const totalSourceCount = essence ? asNumber(essence.source_count) ?? 0 : 0
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
@@ -375,6 +380,33 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
               <ChecklistRow ok={Boolean(sov)} label="AI 답변 언급률 요약 존재" />
               <ChecklistRow ok={Boolean(content)} label="콘텐츠 성과 요약 존재" />
               <ChecklistRow ok={Boolean(essence)} label="운영 기준 요약 존재" />
+              {essence && (
+                <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+                  <div className="text-xs font-semibold text-slate-700 mb-2">PDF 확인 전 먼저 볼 운영 기준 검수</div>
+                  <div className="grid gap-2 text-sm md:grid-cols-2">
+                    <ChecklistRow
+                      ok={Boolean(essence.approved_philosophy_exists)}
+                      label={essence.approved_philosophy_exists ? '승인된 콘텐츠 운영 기준 있음' : '승인된 콘텐츠 운영 기준 없음'}
+                      hint={essence.approved_at ? `승인일 ${formatDate(asString(essence.approved_at))}` : undefined}
+                    />
+                    <ChecklistRow
+                      ok={processedSourceCount > 0 && processedSourceCount === totalSourceCount}
+                      label={`검토된 병원 자료 ${processedSourceCount}/${totalSourceCount}`}
+                      hint={processedSourceCount === totalSourceCount ? undefined : '아직 검토가 끝나지 않은 병원 자료가 있습니다.'}
+                    />
+                    <ChecklistRow
+                      ok={needsReviewCount === 0 && missingStandardCount === 0}
+                      label={`재검토 필요 콘텐츠 ${needsReviewCount + missingStandardCount}건`}
+                      hint={alignedContentCount ? `운영 기준에 맞는 콘텐츠 ${alignedContentCount}건` : undefined}
+                    />
+                    <ChecklistRow
+                      ok={medicalRiskFindings.length === 0}
+                      label={`의료광고 리스크 ${medicalRiskFindings.length}건`}
+                      hint={medicalRiskFindings.length ? '원장님께 전달하기 전 표현 수정 여부를 확인하세요.' : undefined}
+                    />
+                  </div>
+                </div>
+              )}
               {recommendedActions.length > 0 && (
                 <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3">
                   <div className="text-xs font-semibold text-amber-800 mb-1">권장 조치</div>
