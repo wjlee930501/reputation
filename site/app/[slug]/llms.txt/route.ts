@@ -28,7 +28,6 @@ export async function GET(_req: Request, { params }: Props) {
       `## 원장 소개`,
       `- 원장명: ${hospital.director_name}`,
       hospital.director_career ? `- 약력: ${hospital.director_career}` : '',
-      hospital.director_philosophy ? `- 진료 철학: ${hospital.director_philosophy}` : '',
       '',
     ]
 

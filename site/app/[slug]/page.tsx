@@ -134,11 +134,6 @@ export default async function HospitalPage({ params }: Props) {
           <div className="bg-blue-50 rounded-2xl p-8">
             <h3 className="text-xl font-semibold text-blue-800 mb-2">{hospital.director_name} 원장</h3>
             <p className="text-gray-600 mb-4 whitespace-pre-line">{hospital.director_career}</p>
-            {hospital.director_philosophy && (
-              <blockquote className="border-l-4 border-blue-400 pl-4 italic text-gray-700">
-                {'"'}{hospital.director_philosophy}{'"'}
-              </blockquote>
-            )}
           </div>
         </div>
       </section>

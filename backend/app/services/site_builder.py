@@ -75,7 +75,7 @@ TEMPLATES = {
 </nav>
 <div class="hero">
   <h2>{{ hospital.region|join(' ') }} {{ hospital.specialties|join(', ') }} 전문 병원</h2>
-  <p>{{ hospital.director_philosophy or '' }}</p>
+  <p>{{ hospital.name }}의 진료 정보와 의료 콘텐츠를 한곳에서 확인할 수 있습니다.</p>
 </div>
 <div class="info-grid">
   <div class="card">
@@ -124,15 +124,11 @@ TEMPLATES = {
   body{font-family:'Malgun Gothic',sans-serif;max-width:800px;margin:0 auto;padding:40px 20px;color:#2d2d2d;}
   h1{color:#1A4B8C;margin-bottom:16px;}
   .career{white-space:pre-line;line-height:1.8;background:#f0f4fc;padding:20px;border-radius:8px;}
-  .philosophy{margin-top:20px;padding:20px;border-left:4px solid #1A4B8C;font-style:italic;}
 </style>
 </head>
 <body>
 <h1>{{ hospital.director_name }} 원장 — {{ hospital.region|join(' ') }} {{ hospital.specialties|join(', ') }} 전문의</h1>
 <div class="career">{{ hospital.director_career or '' }}</div>
-{% if hospital.director_philosophy %}
-<div class="philosophy">{{ hospital.director_philosophy }}</div>
-{% endif %}
 </body>
 </html>
 """,

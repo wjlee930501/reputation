@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.gcs_utils import get_signed_url
 
 router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
@@ -58,6 +59,7 @@ async def list_published_contents(
         .where(
             ContentItem.hospital_id == h.id,
             ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.essence_status == ESSENCE_STATUS_ALIGNED,
         )
         .order_by(ContentItem.published_at.desc())
         .limit(limit)
@@ -72,7 +74,7 @@ async def get_content_public(slug: str, content_id: uuid.UUID, db: AsyncSession 
     h = await _get_active_hospital(db, slug)
 
     item = await db.get(ContentItem, content_id)
-    if not item or item.hospital_id != h.id or item.status != ContentStatus.PUBLISHED:
+    if not item or item.hospital_id != h.id or not _is_public_safe_content(item):
         raise HTTPException(status_code=404, detail="Content not found")
     return _serialize_item(item, full=True)
 
@@ -109,10 +111,17 @@ def _serialize_hospital(h: Hospital) -> dict:
         "keywords": h.keywords,
         "director_name": h.director_name,
         "director_career": h.director_career,
-        "director_philosophy": h.director_philosophy,
+        # Legacy profile notes are intentionally not exposed publicly. Public-facing
+        # clinic writing standards must come from an approved, source-backed review
+        # flow rather than the free-text profile field.
+        "director_philosophy": None,
         "director_photo_url": h.director_photo_url,
         "treatments": h.treatments,
     }
+
+
+def _is_public_safe_content(item: ContentItem) -> bool:
+    return item.status == ContentStatus.PUBLISHED and item.essence_status == ESSENCE_STATUS_ALIGNED
 
 
 def _serialize_item(item: ContentItem, full: bool = False) -> dict:
