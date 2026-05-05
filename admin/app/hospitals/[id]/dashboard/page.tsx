@@ -171,6 +171,8 @@ export default function DashboardPage() {
     (action) => action.status === 'OPEN' || action.status === 'IN_PROGRESS',
   ).length
   const blockedActionCount = exposureActions.filter((action) => action.status === 'BLOCKED').length
+  const failedMeasurementCount = measurementRuns.reduce((sum, run) => sum + run.failure_count, 0)
+  const pendingChecks = readiness?.checks.filter((check) => !check.passed).slice(0, 2) ?? []
 
   const hasQueryTargets = activeTargets.length > 0
   const hasMeasurement = measurementRuns.some(
@@ -288,6 +290,67 @@ export default function DashboardPage() {
         <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
           운영 보드 데이터를 불러오는 중입니다.
         </div>
+      )}
+
+      {!loading && (
+        <section className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">Owner-ready summary</p>
+                <h3 className="mt-1 text-lg font-bold text-slate-900">이번 달 먼저 볼 운영 요약</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  세부 측정 로그보다 원장님께 설명할 변화와 다음 조치를 먼저 확인합니다.
+                </p>
+              </div>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                {lastRun ? formatDateTime(lastRun.completed_at ?? lastRun.started_at) : '첫 측정 전'}
+              </span>
+            </div>
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <FocusCard
+                label="현재 AI 언급률"
+                value={currentSov !== null ? `${currentSov.toFixed(1)}%` : '-'}
+                hint={change !== null ? `전주 대비 ${change > 0 ? '+' : ''}${change.toFixed(1)}%p` : '첫 측정 후 표시'}
+                tone={change === null ? 'neutral' : change >= 0 ? 'good' : 'warn'}
+              />
+              <FocusCard
+                label="근거 기반 콘텐츠 상태"
+                value={`${readiness?.published_content_count ?? 0}편`}
+                hint={readiness ? `운영 준비도 ${readiness.score}/100` : '운영 기준 승인 후 발행'}
+                tone={(readiness?.published_content_count ?? 0) > 0 ? 'good' : 'neutral'}
+              />
+              <FocusCard
+                label="다음 액션"
+                value={nextStep.label}
+                hint={nextStep.hint}
+                tone={blockedActionCount > 0 ? 'warn' : 'neutral'}
+                href={nextStep.href}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-base font-semibold text-slate-900">확인 필요한 항목</h3>
+            <p className="mt-1 text-sm text-slate-500">
+              운영자가 오늘 처리해야 할 위험 신호만 추려 보여줍니다.
+            </p>
+            <div className="mt-4 space-y-3">
+              {blockedActionCount > 0 && (
+                <AlertLine tone="warn" label={`막힌 보완 작업 ${blockedActionCount}건`} hint="담당자 확인 또는 자료 보강이 필요합니다." />
+              )}
+              {failedMeasurementCount > 0 && (
+                <AlertLine tone="warn" label={`AI 확인 실패 누적 ${failedMeasurementCount}건`} hint="실패 건은 언급률 계산에서 제외되며, 측정 안정성만 별도로 봅니다." />
+              )}
+              {pendingChecks.map((check) => (
+                <AlertLine key={check.key} tone="neutral" label={check.label} hint={check.next_action} />
+              ))}
+              {blockedActionCount === 0 && failedMeasurementCount === 0 && pendingChecks.length === 0 && (
+                <AlertLine tone="good" label="큰 확인 항목 없음" hint="현재는 다음 액션 중심으로 운영을 이어가면 됩니다." />
+              )}
+            </div>
+          </div>
+        </section>
       )}
 
       {/* Workflow strip */}
@@ -676,8 +739,9 @@ function washOperatorText(value: string) {
     .replaceAll(new RegExp(`타겟 ${'질의'}`, 'g'), '환자 질문')
     .replaceAll(new RegExp(`타깃 ${'질문'}`, 'g'), '환자 질문')
     .replaceAll(new RegExp(`타겟 ${'질문'}`, 'g'), '환자 질문')
-    .replaceAll(new RegExp(`웹블로그 ${'IA'}`, 'g'), '병원 정보 구조')
-    .replaceAll(new RegExp(`Webblog ${'IA'}`, 'g'), '병원 정보 구조')
+    .replaceAll(new RegExp(`${'웹'}블로그`, 'g'), '병원 정보·콘텐츠 허브')
+    .replaceAll(new RegExp(`Webblog`, 'g'), '병원 정보·콘텐츠 허브')
+    .replaceAll(new RegExp(`${'I'}A`, 'g'), '정보 구조')
     .replaceAll(new RegExp(`Google Business ${'Profile'}`, 'g'), '구글 지도·프로필')
     .replaceAll(new RegExp(`Google ${'로컬'}`, 'g'), '구글 지도·프로필')
     .replaceAll(new RegExp(`OpenAI 검색 ${'크롤러'}`, 'g'), 'AI가 참고할 수 있는 병원 기본 정보')
@@ -743,6 +807,59 @@ function HeroStat({
       <p className="text-[11px] font-medium uppercase tracking-wide text-blue-100/70">{label}</p>
       <p className="mt-1 text-xl font-bold text-white">{value}</p>
       {hint && <p className={`mt-1 text-[11px] ${toneClass}`}>{hint}</p>}
+    </div>
+  )
+}
+
+function FocusCard({
+  label,
+  value,
+  hint,
+  tone,
+  href,
+}: {
+  label: string
+  value: string
+  hint: string
+  tone: 'good' | 'warn' | 'neutral'
+  href?: string
+}) {
+  const toneCls =
+    tone === 'good'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+      : tone === 'warn'
+        ? 'border-amber-200 bg-amber-50 text-amber-900'
+        : 'border-slate-200 bg-slate-50 text-slate-900'
+  const body = (
+    <div className={`h-full rounded-xl border p-4 ${toneCls}`}>
+      <p className="text-xs font-medium opacity-75">{label}</p>
+      <p className="mt-1 text-xl font-bold leading-tight">{value}</p>
+      <p className="mt-2 text-xs leading-5 opacity-75">{hint}</p>
+    </div>
+  )
+
+  return href ? <Link href={href}>{body}</Link> : body
+}
+
+function AlertLine({
+  tone,
+  label,
+  hint,
+}: {
+  tone: 'good' | 'warn' | 'neutral'
+  label: string
+  hint: string
+}) {
+  const cls =
+    tone === 'good'
+      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+      : tone === 'warn'
+        ? 'bg-amber-50 text-amber-900 border-amber-200'
+        : 'bg-slate-50 text-slate-800 border-slate-200'
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${cls}`}>
+      <p className="text-sm font-semibold">{label}</p>
+      <p className="mt-0.5 text-xs leading-5 opacity-75">{hint}</p>
     </div>
   )
 }

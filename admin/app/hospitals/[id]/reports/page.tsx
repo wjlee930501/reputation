@@ -90,7 +90,9 @@ function renderSummaryValue(key: string, value: unknown): string {
     return Number.isInteger(num) ? String(num) : num.toFixed(2)
   }
   if (typeof value === 'string') return value
-  return JSON.stringify(value)
+  if (Array.isArray(value)) return `${value.length}개 항목`
+  if (isPlainObject(value)) return `${Object.keys(value).length}개 항목`
+  return '-'
 }
 
 function SummaryGrid({ data }: { data: Record<string, unknown> }) {
@@ -103,13 +105,7 @@ function SummaryGrid({ data }: { data: Record<string, unknown> }) {
       {entries.map(([k, v]) => (
         <div key={k} className="flex justify-between gap-2 text-sm">
           <span className="text-gray-600">{humanizeKey(k)}</span>
-          {isPlainObject(v) || Array.isArray(v) ? (
-            <pre className="text-xs bg-white border border-gray-200 rounded px-2 py-1 max-w-[60%] overflow-x-auto">
-              {JSON.stringify(v, null, 2)}
-            </pre>
-          ) : (
-            <span className="font-medium text-gray-900">{renderSummaryValue(k, v)}</span>
-          )}
+          <span className="font-medium text-gray-900">{renderSummaryValue(k, v)}</span>
         </div>
       ))}
     </div>
@@ -508,14 +504,19 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
           <section>
             <h4 className="text-sm font-semibold text-gray-900 mb-3">원장 보고 자료</h4>
             {report.download_url ? (
-              <a
-                href={report.download_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block w-full text-center py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
-              >
-                PDF 다운로드
-              </a>
+              <div className="space-y-2">
+                <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900">
+                  위 운영 기준 검수와 권장 조치를 먼저 확인한 뒤 원장님께 전달할 PDF를 내려받습니다.
+                </p>
+                <a
+                  href={report.download_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block w-full text-center py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+                >
+                  PDF 다운로드
+                </a>
+              </div>
             ) : (
               <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 py-4 text-center text-sm text-gray-500">
                 {report.has_pdf ? 'PDF 링크 준비 중' : 'PDF 생성 중 — 잠시 후 다시 확인해 주세요.'}
