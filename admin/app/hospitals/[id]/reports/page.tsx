@@ -224,8 +224,8 @@ export default function ReportsPage() {
             <tbody className="divide-y divide-gray-100">
               {reports.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="text-center py-12 text-gray-400">
-                    아직 생성된 리포트가 없습니다. 월간 리포트가 생성되면 여기에서 검수 후 원장님께 전달합니다.
+                  <td colSpan={6} className="px-6 py-10">
+                    <EmptyReportState />
                   </td>
                 </tr>
               )}
@@ -312,6 +312,67 @@ function SummaryCard({
   )
 }
 
+function EmptyReportState() {
+  return (
+    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-6 py-8 text-center">
+      <p className="text-sm font-semibold text-gray-800">아직 검수할 리포트가 없습니다.</p>
+      <p className="mt-2 text-sm leading-6 text-gray-500">
+        병원 자료와 콘텐츠 운영 기준을 검토한 뒤 AI 언급률 측정과 콘텐츠 성과가 쌓이면 리포트가 생성됩니다.
+      </p>
+      <div className="mt-4 grid gap-2 text-left text-xs text-gray-600 md:grid-cols-3">
+        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-gray-200">1. 운영 기준 승인 확인</span>
+        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-gray-200">2. AI 언급률 측정 실행</span>
+        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-gray-200">3. 발행 콘텐츠 성과 확인</span>
+      </div>
+    </div>
+  )
+}
+
+function ReportGuidance({
+  missingItems,
+  recommendedActions,
+  medicalRiskCount,
+}: {
+  missingItems: string[]
+  recommendedActions: string[]
+  medicalRiskCount: number
+}) {
+  const hasGuidance = missingItems.length > 0 || recommendedActions.length > 0 || medicalRiskCount > 0
+  if (!hasGuidance) {
+    return (
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+        원장님께 전달하기 전 필수 요약은 모두 준비되어 있습니다. PDF 내용만 최종 확인하면 됩니다.
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+      <div className="text-xs font-semibold text-amber-800">전달 전 보완할 항목</div>
+      {missingItems.length > 0 && (
+        <ul className="mt-2 list-disc list-inside text-sm text-amber-900 space-y-0.5">
+          {missingItems.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      )}
+      {medicalRiskCount > 0 && (
+        <p className="mt-2 text-sm text-amber-900">의료광고 리스크 {medicalRiskCount}건은 PDF 전달 전 표현 수정 여부를 확인해야 합니다.</p>
+      )}
+      {recommendedActions.length > 0 && (
+        <div className="mt-3 rounded-md bg-white/70 p-2">
+          <div className="text-xs font-semibold text-amber-800">권장 조치</div>
+          <ul className="mt-1 list-disc list-inside text-sm text-amber-900 space-y-0.5">
+            {recommendedActions.map((action, i) => (
+              <li key={i}>{action}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void }) {
   const status = getScreeningStatus(report)
   const meta = SCREENING_LABELS[status]
@@ -330,6 +391,15 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
   const alignedContentCount = essence ? asNumber(essence.aligned_content_count) ?? 0 : 0
   const processedSourceCount = essence ? asNumber(essence.processed_source_count) ?? 0 : 0
   const totalSourceCount = essence ? asNumber(essence.source_count) ?? 0 : 0
+  const missingItems = [
+    !report.download_url && !report.has_pdf ? 'PDF 생성이 끝난 뒤 최종 검수할 수 있습니다.' : null,
+    !sov ? 'AI 답변 언급률 요약이 없어 측정 결과를 먼저 확인해야 합니다.' : null,
+    !content ? '콘텐츠 성과 요약이 없어 발행 콘텐츠 상태를 먼저 확인해야 합니다.' : null,
+    !essence ? '운영 기준 요약이 없어 승인된 콘텐츠 운영 기준과 자료 검토 상태를 먼저 확인해야 합니다.' : null,
+    essence && !essence.approved_philosophy_exists ? '승인된 콘텐츠 운영 기준이 없습니다.' : null,
+    essence && totalSourceCount > 0 && processedSourceCount < totalSourceCount ? '검토가 끝나지 않은 병원 자료가 있습니다.' : null,
+    essence && (needsReviewCount + missingStandardCount) > 0 ? '재검토가 필요한 콘텐츠를 먼저 정리해야 합니다.' : null,
+  ].filter(Boolean) as string[]
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
@@ -367,15 +437,22 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
         <div className="p-6 space-y-6">
           <section className="rounded-lg border border-gray-200 p-4">
             <h4 className="text-sm font-semibold text-gray-900 mb-3">원장 보고 전 체크</h4>
-            <div className="space-y-2">
-              <ChecklistRow
-                ok={Boolean(report.download_url || report.has_pdf)}
-                label="PDF 준비 완료"
-                hint={report.download_url ? undefined : '생성이 완료되면 다운로드 버튼이 활성화됩니다.'}
+            <div className="space-y-3">
+              <ReportGuidance
+                missingItems={missingItems}
+                recommendedActions={recommendedActions}
+                medicalRiskCount={medicalRiskFindings.length}
               />
-              <ChecklistRow ok={Boolean(sov)} label="AI 답변 언급률 요약 존재" />
-              <ChecklistRow ok={Boolean(content)} label="콘텐츠 성과 요약 존재" />
-              <ChecklistRow ok={Boolean(essence)} label="운영 기준 요약 존재" />
+              <div className="space-y-2">
+                <ChecklistRow
+                  ok={Boolean(report.download_url || report.has_pdf)}
+                  label="PDF 준비 완료"
+                  hint={report.download_url ? undefined : '생성이 완료되면 다운로드 버튼이 활성화됩니다.'}
+                />
+                <ChecklistRow ok={Boolean(sov)} label="AI 답변 언급률 요약 존재" hint={sov ? undefined : '환자 질문 측정 결과를 먼저 확인하세요.'} />
+                <ChecklistRow ok={Boolean(content)} label="콘텐츠 성과 요약 존재" hint={content ? undefined : '발행 콘텐츠 수와 성과 요약을 먼저 확인하세요.'} />
+                <ChecklistRow ok={Boolean(essence)} label="운영 기준 요약 존재" hint={essence ? undefined : '승인된 운영 기준과 자료 검토 상태를 먼저 확인하세요.'} />
+              </div>
               {essence && (
                 <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
                   <div className="text-xs font-semibold text-slate-700 mb-2">PDF 확인 전 먼저 볼 운영 기준 검수</div>
@@ -403,16 +480,6 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
                   </div>
                 </div>
               )}
-              {recommendedActions.length > 0 && (
-                <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3">
-                  <div className="text-xs font-semibold text-amber-800 mb-1">권장 조치</div>
-                  <ul className="list-disc list-inside text-sm text-amber-900 space-y-0.5">
-                    {recommendedActions.map((action, i) => (
-                      <li key={i}>{action}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
             </div>
           </section>
 
@@ -430,7 +497,7 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
             </div>
           </section>
 
-          {essence && (
+          {essence ? (
             <section>
               <h4 className="text-sm font-semibold text-gray-900 mb-3">콘텐츠 운영 기준</h4>
               <div className="rounded-lg border border-gray-200 p-4 space-y-3">
@@ -497,6 +564,13 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
                     </ul>
                   </div>
                 )}
+              </div>
+            </section>
+          ) : (
+            <section>
+              <h4 className="text-sm font-semibold text-gray-900 mb-3">콘텐츠 운영 기준</h4>
+              <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                운영 기준 요약이 아직 리포트에 포함되지 않았습니다. 원장님께 전달하기 전 병원 자료 검토와 승인된 운영 기준 상태를 먼저 확인하세요.
               </div>
             </section>
           )}
