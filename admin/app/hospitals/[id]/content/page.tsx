@@ -719,16 +719,21 @@ export default function ContentPage() {
                     />
                   </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">콘텐츠 가이드 원본(고급 편집)</label>
+                <details className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                  <summary className="cursor-pointer text-sm font-medium text-gray-700">
+                    콘텐츠 가이드 고급 편집 열기
+                  </summary>
+                  <p className="mt-2 text-xs text-gray-500">
+                    보통은 위의 환자 질문·노출 보완 작업 연결만 조정하면 됩니다. 원본 구조를 직접 수정해야 할 때만 펼쳐서 사용하세요.
+                  </p>
                   <textarea
                     value={briefJson}
                     onChange={(e) => setBriefJson(e.target.value)}
                     rows={18}
                     placeholder="비워두면 연결한 환자 질문과 노출 보완 작업을 기준으로 콘텐츠 가이드 초안이 자동 생성됩니다."
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    className="mt-3 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none bg-white"
                   />
-                </div>
+                </details>
                 <div className="flex gap-3">
                   <button
                     onClick={handleSaveBrief}
