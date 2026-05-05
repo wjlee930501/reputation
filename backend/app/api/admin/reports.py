@@ -20,6 +20,55 @@ from app.services.gcs_utils import get_signed_url
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Reports"])
 
+REPORT_TYPE_DISPLAY_LABELS = {
+    "V0": "V0 진단",
+    "MONTHLY": "월간 리포트",
+}
+SCREENING_STATUS_DISPLAY = {
+    "PDF_PENDING": {"label": "PDF 생성 중"},
+    "AWAITING_REVIEW": {"label": "검수 대기"},
+    "DELIVERED": {"label": "전달 완료"},
+}
+PDF_STATUS_LABELS = {
+    "READY": "다운로드 가능",
+    "LINK_PENDING": "링크 준비 중",
+    "GENERATING": "생성 중",
+}
+
+
+def _report_type_label(report_type: str | None) -> str | None:
+    if report_type is None:
+        return None
+    return REPORT_TYPE_DISPLAY_LABELS.get(report_type) or report_type
+
+
+def _screening_status(r: MonthlyReport) -> str:
+    if r.sent_at:
+        return "DELIVERED"
+    if not r.pdf_path:
+        return "PDF_PENDING"
+    return "AWAITING_REVIEW"
+
+
+def _pdf_status(r: MonthlyReport) -> str:
+    if not r.pdf_path:
+        return "GENERATING"
+    if str(r.pdf_path).startswith("gs://") or Path(str(r.pdf_path)).exists():
+        return "READY"
+    return "LINK_PENDING"
+
+
+def _serialize_display(r: MonthlyReport) -> dict:
+    screening_status = _screening_status(r)
+    pdf_status = _pdf_status(r)
+    return {
+        "report_type_label": _report_type_label(r.report_type),
+        "screening_status": screening_status,
+        "screening_status_label": SCREENING_STATUS_DISPLAY[screening_status]["label"],
+        "pdf_status": pdf_status,
+        "pdf_status_label": PDF_STATUS_LABELS[pdf_status],
+    }
+
 
 @router.get("/{hospital_id}/reports", response_model=list[ReportResponse])
 async def list_reports(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
@@ -92,6 +141,7 @@ def _serialize(r: MonthlyReport, full: bool = False) -> dict:
         "period_year": r.period_year,
         "period_month": r.period_month,
         "report_type": r.report_type,
+        "display": _serialize_display(r),
         "has_pdf": r.pdf_path is not None,
         "download_url": f"/api/admin/hospitals/{r.hospital_id}/reports/{r.id}/download" if r.pdf_path else None,
         "sov_summary": r.sov_summary if full else None,

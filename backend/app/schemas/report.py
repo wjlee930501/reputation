@@ -9,6 +9,7 @@ class ReportResponse(BaseModel):
     period_year: int
     period_month: int
     report_type: str
+    display: Optional[dict[str, Any]] = None
     has_pdf: bool
     download_url: Optional[str] = None
     sov_summary: Optional[Any]

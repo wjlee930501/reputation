@@ -43,6 +43,13 @@ def test_report_list_hides_internal_summaries_but_keeps_pdf_contract():
     assert payload["id"] == str(report.id)
     assert payload["hospital_id"] == str(report.hospital_id)
     assert payload["has_pdf"] is True
+    assert payload["display"] == {
+        "report_type_label": "월간 리포트",
+        "screening_status": "AWAITING_REVIEW",
+        "screening_status_label": "검수 대기",
+        "pdf_status": "READY",
+        "pdf_status_label": "다운로드 가능",
+    }
     assert payload["download_url"] == f"/api/admin/hospitals/{report.hospital_id}/reports/{report.id}/download"
     assert payload["sov_summary"] is None
     assert payload["content_summary"] is None
@@ -57,6 +64,8 @@ def test_report_detail_serializes_essence_summary_for_pre_pdf_review():
     assert payload["sov_summary"] == {"sov_pct": 42.0}
     assert payload["content_summary"] == {"published_count": 8}
     assert payload["essence_summary"] == report.essence_summary
+    assert payload["display"]["report_type_label"] == "월간 리포트"
+    assert payload["display"]["screening_status_label"] == "검수 대기"
     assert payload["essence_summary"]["approved_philosophy_exists"] is True
     assert payload["essence_summary"]["philosophy_version"] == 3
     assert payload["essence_summary"]["source_count"] == 4

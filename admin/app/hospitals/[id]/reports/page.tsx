@@ -10,6 +10,13 @@ interface Report {
   period_year: number
   period_month: number
   report_type: string
+  display?: {
+    report_type_label?: string | null
+    screening_status?: ScreeningStatus | string | null
+    screening_status_label?: string | null
+    pdf_status?: string | null
+    pdf_status_label?: string | null
+  }
   has_pdf: boolean
   download_url: string | null
   created_at: string
@@ -33,9 +40,30 @@ const SCREENING_LABELS: Record<ScreeningStatus, { label: string; cls: string }> 
 }
 
 function getScreeningStatus(r: Report): ScreeningStatus {
+  const displayStatus = r.display?.screening_status
+  if (displayStatus === 'DELIVERED' || displayStatus === 'PDF_PENDING' || displayStatus === 'AWAITING_REVIEW') {
+    return displayStatus
+  }
   if (r.sent_at) return 'DELIVERED'
   if (!r.download_url && !r.has_pdf) return 'PDF_PENDING'
   return 'AWAITING_REVIEW'
+}
+
+function getScreeningMeta(r: Report): { label: string; cls: string } {
+  const status = getScreeningStatus(r)
+  const fallback = SCREENING_LABELS[status]
+  return { ...fallback, label: r.display?.screening_status_label ?? fallback.label }
+}
+
+function getReportTypeLabel(r: Report): string {
+  return r.display?.report_type_label ?? TYPE_LABELS[r.report_type] ?? r.report_type
+}
+
+function getPdfStatusLabel(r: Report): string {
+  if (r.display?.pdf_status_label) return r.display.pdf_status_label
+  if (r.download_url) return '다운로드'
+  if (r.has_pdf) return '링크 준비 중'
+  return '생성 중'
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -231,14 +259,14 @@ export default function ReportsPage() {
               )}
               {reports.map((r) => {
                 const status = getScreeningStatus(r)
-                const meta = SCREENING_LABELS[status]
+                const meta = getScreeningMeta(r)
                 return (
                   <tr key={r.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 text-gray-900 font-medium">
                       {r.period_year}년 {r.period_month}월
                     </td>
                     <td className="px-6 py-4 text-gray-600">
-                      {TYPE_LABELS[r.report_type] ?? r.report_type}
+                      {getReportTypeLabel(r)}
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
@@ -256,9 +284,9 @@ export default function ReportsPage() {
                           다운로드
                         </a>
                       ) : r.has_pdf ? (
-                        <span className="text-blue-600 text-xs">링크 준비 중</span>
+                        <span className="text-blue-600 text-xs">{getPdfStatusLabel(r)}</span>
                       ) : (
-                        <span className="text-gray-400 text-xs">생성 중</span>
+                        <span className="text-gray-400 text-xs">{getPdfStatusLabel(r)}</span>
                       )}
                     </td>
                     <td className="px-6 py-4 text-gray-600">
@@ -374,8 +402,7 @@ function ReportGuidance({
 }
 
 function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void }) {
-  const status = getScreeningStatus(report)
-  const meta = SCREENING_LABELS[status]
+  const meta = getScreeningMeta(report)
   const sov = isPlainObject(report.sov_summary) ? report.sov_summary : null
   const content = isPlainObject(report.content_summary) ? report.content_summary : null
   const essence = isPlainObject(report.essence_summary) ? report.essence_summary : null
@@ -408,7 +435,7 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-lg font-bold text-gray-900">
-                {TYPE_LABELS[report.report_type] ?? report.report_type} — {report.period_year}년 {report.period_month}월
+                {getReportTypeLabel(report)} — {report.period_year}년 {report.period_month}월
               </h3>
               <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
                 {meta.label}
@@ -593,7 +620,7 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 py-4 text-center text-sm text-gray-500">
-                {report.has_pdf ? 'PDF 링크 준비 중' : 'PDF 생성 중 — 잠시 후 다시 확인해 주세요.'}
+                {report.has_pdf ? getPdfStatusLabel(report) : `${getPdfStatusLabel(report)} — 잠시 후 다시 확인해 주세요.`}
               </div>
             )}
           </section>
