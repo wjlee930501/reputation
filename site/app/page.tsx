@@ -1,27 +1,27 @@
 const processSteps = [
   {
-    title: 'AI 답변 현황 진단',
-    body: '환자가 실제로 물어볼 질문을 정리하고 ChatGPT·Gemini 답변에서 병원이 어떻게 언급되는지 확인합니다.',
+    title: '먼저, 환자 질문을 정합니다',
+    body: '“강남에서 허리 통증을 어디서 봐야 할까?”처럼 실제 환자가 AI에게 물을 법한 질문을 병원별로 정리합니다.',
   },
   {
-    title: '진료 강점과 기준 정리',
-    body: '진료 강점, 원장님의 설명 방식, 병원이 자신 있게 말할 수 있는 근거를 운영 기준으로 정리합니다.',
+    title: 'AI 답변 속 현재 모습을 확인합니다',
+    body: 'ChatGPT·Gemini 답변에서 병원이 언급되는지, 어떤 정보가 부족한지, 주변 병원과 비교해 어떤 빈틈이 있는지 봅니다.',
   },
   {
-    title: '근거 기반 콘텐츠 운영',
-    body: '환자 질문에 맞춘 콘텐츠 가이드를 만들고 의료광고 리스크와 병원 운영 기준을 확인한 뒤 발행합니다.',
+    title: '병원답게 말할 기준을 세웁니다',
+    body: '진료 강점, 원장님의 설명 방식, 병원이 자신 있게 말할 수 있는 근거를 콘텐츠 운영 기준으로 정리합니다.',
   },
   {
-    title: '월간 리포트와 다음 조치',
-    body: 'AI에서 보인 변화, 아직 잡히지 않는 질문, 다음 달 집중할 주제를 원장님이 이해하기 쉽게 보고합니다.',
+    title: '매달 보완하고 다시 확인합니다',
+    body: '환자 질문에 답하는 콘텐츠를 근거 기반으로 운영하고, 다음 달 AI 답변에서 무엇이 달라졌는지 원장님께 보고합니다.',
   },
 ]
 
-const proofItems = [
-  'AI 답변 안에서 우리 병원이 언급되는 비율 측정',
-  '환자 질문별 부족한 정보와 보완 작업 정리',
-  '병원 자료·공식 채널·진료 기준 기반의 콘텐츠 가이드',
-  '의료광고 리스크 검수 및 발행 전 승인 절차',
+const storyPoints = [
+  '환자는 이제 “근처 병원”을 검색하는 대신 AI에게 상황을 설명하고 추천을 묻습니다.',
+  'AI는 병원의 광고 문구보다 공개된 정보, 일관된 설명, 근거가 연결된 콘텐츠를 바탕으로 답합니다.',
+  '좋은 병원이어도 AI가 읽을 수 있는 정보가 부족하면 답변 안에서 빠질 수 있습니다.',
+  'Re:putation은 그 빈틈을 진단하고, 병원이 알려져야 할 기준을 매달 쌓아갑니다.',
 ]
 
 const targetClinics = [
@@ -51,18 +51,19 @@ export default function Home() {
               로컬 병원을 위한 AI 노출 컨설팅·콘텐츠 운영
             </p>
             <h1 className="max-w-4xl text-4xl font-semibold leading-[1.08] tracking-[-0.04em] md:text-6xl lg:text-7xl">
-              환자와 AI가 병원을 더 정확히 이해하도록 만듭니다.
+              환자들이 AI로 병원을 찾는 시대,
+              우리 병원은 대비되어 있을까요?
             </h1>
             <p className="mt-7 max-w-2xl text-lg leading-8 text-white/72 md:text-xl">
-              병원의 강점과 근거를 정리하고, ChatGPT·Gemini 답변에서 빠지는 정보를 매달 콘텐츠로 보완합니다.
-              원장님이 설명할 수 있는 기준과 환자가 실제로 묻는 질문을 연결하는 운영 시스템입니다.
+              환자가 AI에게 증상과 지역을 묻는 순간, AI는 이미 공개된 병원 정보를 바탕으로 답을 만듭니다.
+              Re:putation은 우리 병원이 그 답변 안에서 더 정확히 이해되도록 진료 강점, 근거, 콘텐츠 운영을 연결합니다.
             </p>
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
               <a href="#lead" className="rounded-full bg-[#f3c46b] px-6 py-4 text-center font-semibold text-[#17130f] transition hover:bg-[#ffd886]">
-                무료 AI 노출 진단 문의
+                우리 병원 대비 상태 확인하기
               </a>
               <a href="#system" className="rounded-full border border-white/20 px-6 py-4 text-center font-semibold text-white transition hover:bg-white/10">
-                진단 과정 보기
+                어떻게 대비하는지 보기
               </a>
             </div>
           </div>
@@ -72,26 +73,26 @@ export default function Home() {
               <div className="mb-5 flex items-center justify-between border-b border-[#e7dece] pb-4">
                 <div>
                   <p className="text-xs font-semibold tracking-[0.22em] text-[#8b6a2f]">원장 보고 리포트</p>
-                  <h2 className="mt-1 text-xl font-semibold">이번 달 AI 노출 요약</h2>
+                  <h2 className="mt-1 text-xl font-semibold">우리 병원 AI 대비 현황</h2>
                 </div>
                 <span className="rounded-full bg-[#dff2df] px-3 py-1 text-xs font-medium text-[#2d6b34]">검토 완료</span>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <p className="text-sm text-[#776c61]">현재 AI 언급률</p>
-                  <p className="mt-2 text-3xl font-semibold">진단 중</p>
-                  <p className="mt-2 text-xs text-[#776c61]">질문별 확인 결과 기반</p>
+                  <p className="text-sm text-[#776c61]">AI 답변 속 현재 상태</p>
+                  <p className="mt-2 text-3xl font-semibold">확인 필요</p>
+                  <p className="mt-2 text-xs text-[#776c61]">환자 질문별로 점검</p>
                 </div>
                 <div className="rounded-2xl bg-white p-4 shadow-sm">
-                  <p className="text-sm text-[#776c61]">다음 보완 주제</p>
-                  <p className="mt-2 text-lg font-semibold">환자가 묻는 핵심 질문</p>
-                  <p className="mt-2 text-xs text-[#776c61]">진료 강점과 근거 연결</p>
+                  <p className="text-sm text-[#776c61]">먼저 정리할 부분</p>
+                  <p className="mt-2 text-lg font-semibold">환자가 AI에 묻는 질문</p>
+                  <p className="mt-2 text-xs text-[#776c61]">병원 기준과 근거 연결</p>
                 </div>
               </div>
               <div className="mt-4 rounded-2xl bg-[#17130f] p-5 text-white">
                 <p className="text-sm text-white/60">원장님께 설명할 핵심</p>
                 <p className="mt-2 leading-7 text-white/88">
-                  “AI 답변에서 병원이 빠지는 이유를 찾고, 병원이 잘 알려져야 할 진료 기준을 콘텐츠로 보강합니다.”
+                  “AI가 우리 병원을 어떻게 이해하고 있는지 확인하고, 부족한 정보를 병원답게 채워갑니다.”
                 </p>
               </div>
             </div>
@@ -100,23 +101,21 @@ export default function Home() {
       </section>
 
       <section className="mx-auto max-w-7xl px-6 py-16 md:px-10 md:py-24">
-        <div className="max-w-3xl">
-          <p className="text-sm font-semibold tracking-[0.22em] text-[#9a6a21]">지금 필요한 이유</p>
-          <h2 className="mt-4 text-3xl font-semibold tracking-[-0.03em] md:text-5xl">
-            이제 환자는 검색창뿐 아니라 AI에게 병원을 묻습니다.
-          </h2>
-          <p className="mt-5 text-lg leading-8 text-[#665f56]">
-            문제는 AI가 병원을 추천하지 않는 이유가 단순히 “홍보가 부족해서”가 아닐 수 있다는 점입니다.
-            병원 정보가 흩어져 있거나, 진료 강점이 근거와 연결되지 않았거나, 환자 질문에 답할 공개 콘텐츠가 부족할 수 있습니다.
-          </p>
-        </div>
-        <div className="mt-10 grid gap-4 md:grid-cols-4">
-          {proofItems.map((item) => (
-            <div key={item} className="rounded-3xl border border-[#dfd6c9] bg-white/70 p-5 shadow-sm">
-              <div className="mb-5 h-1.5 w-10 rounded-full bg-[#c58b2b]" />
-              <p className="leading-7 text-[#29231d]">{item}</p>
-            </div>
-          ))}
+        <div className="grid gap-10 md:grid-cols-[0.8fr_1.2fr]">
+          <div>
+            <p className="text-sm font-semibold tracking-[0.22em] text-[#9a6a21]">지금 필요한 이유</p>
+            <h2 className="mt-4 text-3xl font-semibold tracking-[-0.03em] md:text-5xl">
+              병원 선택의 첫 대화가 바뀌고 있습니다.
+            </h2>
+          </div>
+          <div className="space-y-4">
+            {storyPoints.map((item, index) => (
+              <div key={item} className="rounded-3xl border border-[#dfd6c9] bg-white/70 p-6 shadow-sm">
+                <p className="mb-4 text-sm font-semibold text-[#9a6a21]">0{index + 1}</p>
+                <p className="text-lg leading-8 text-[#29231d]">{item}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -125,7 +124,7 @@ export default function Home() {
           <div className="grid gap-10 md:grid-cols-[0.8fr_1.2fr]">
             <div>
               <p className="text-sm font-semibold tracking-[0.22em] text-[#9a6a21]">운영 시스템</p>
-              <h2 className="mt-4 max-w-xl text-3xl font-semibold tracking-[-0.03em] md:text-5xl">한 번 만들고 끝나는 페이지가 아니라, 매달 좋아지는 운영 흐름입니다.</h2>
+              <h2 className="mt-4 max-w-xl text-3xl font-semibold tracking-[-0.03em] md:text-5xl">대비는 한 번의 제작물이 아니라, 매달 쌓이는 운영입니다.</h2>
             </div>
             <div className="grid gap-4">
               {processSteps.map((step, index) => (
@@ -149,9 +148,9 @@ export default function Home() {
           <div className="grid gap-10 md:grid-cols-[1fr_1fr]">
             <div>
               <p className="text-sm font-semibold tracking-[0.22em] text-[#f3c46b]">추천 진료과</p>
-              <h2 className="mt-4 text-3xl font-semibold tracking-[-0.03em] md:text-5xl">이런 병원에 먼저 맞습니다.</h2>
+              <h2 className="mt-4 text-3xl font-semibold tracking-[-0.03em] md:text-5xl">이런 고민이 있다면 먼저 점검해볼 만합니다.</h2>
               <p className="mt-5 leading-8 text-white/68">
-                이미 진료 경쟁력은 있지만, 온라인에 그 강점이 충분히 정리되어 있지 않거나 AI 답변에서 주변 경쟁 병원보다 덜 보이는 병원에 적합합니다.
+                이미 진료 경쟁력은 있지만 환자 질문에 맞춰 강점과 근거가 정리되어 있지 않은 병원부터 효과적으로 점검할 수 있습니다.
               </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
@@ -170,10 +169,9 @@ export default function Home() {
         <div className="mx-auto grid max-w-7xl gap-10 px-6 md:grid-cols-[0.95fr_1.05fr] md:px-10">
           <div>
             <p className="text-sm font-semibold tracking-[0.22em] text-[#9a6a21]">진단 문의</p>
-            <h2 className="mt-4 max-w-xl text-3xl font-semibold tracking-[-0.03em] md:text-5xl">우리 병원이 AI 답변에서 어떻게 보이는지 먼저 확인해보세요.</h2>
+            <h2 className="mt-4 max-w-xl text-3xl font-semibold tracking-[-0.03em] md:text-5xl">우리 병원의 AI 대비 상태를 먼저 확인해보세요.</h2>
             <p className="mt-5 leading-8 text-[#665f56]">
-              병원명, 진료과, 지역, 확인하고 싶은 환자 질문을 남기면 1차 진단 범위를 정리할 수 있습니다.
-              다음 단계에서 저장·알림 연동을 붙이면 바로 리드 수집 흐름으로 사용할 수 있습니다.
+              병원명, 진료과, 지역, 확인하고 싶은 환자 질문을 남겨주시면 어떤 질문부터 점검해야 할지 정리할 수 있습니다.
             </p>
           </div>
           <form className="rounded-[2rem] bg-white p-6 shadow-xl shadow-[#91724d]/10" action="#" method="post">
@@ -196,7 +194,7 @@ export default function Home() {
               </label>
             </div>
             <button className="mt-5 w-full rounded-full bg-[#17130f] px-6 py-4 font-semibold text-white transition hover:bg-[#2b241e]" type="submit">
-              AI 노출 진단 요청하기
+              AI 대비 상태 문의하기
             </button>
             <p className="mt-3 text-center text-xs leading-5 text-[#776c61]">
               입력 항목은 1차 진단 범위를 정리하기 위한 최소 정보입니다.

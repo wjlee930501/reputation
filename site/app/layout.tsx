@@ -15,8 +15,8 @@ const geistMono = localFont({
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || "https://reputation.co.kr"),
-  title: "Re:putation — 병원을 위한 AI 노출 컨설팅",
-  description: "ChatGPT와 Gemini가 병원을 더 정확히 이해하도록 Clinic Essence, 근거 기반 콘텐츠 운영, 원장 보고 리포트를 연결하는 Re:putation 리드 페이지",
+  title: "Re:putation — 환자들이 AI로 병원을 찾는 시대",
+  description: "환자가 AI로 병원을 찾는 시대에 우리 병원이 대비되어 있는지 진단하고, 진료 강점과 근거 기반 콘텐츠 운영을 연결하는 Re:putation 리드 페이지",
 };
 
 export default function RootLayout({
