@@ -22,7 +22,7 @@ export default function RootLayout({
               <Link href="/hospitals" className="block">
                 <div className="flex items-baseline gap-1.5">
                   <span className="text-lg font-bold tracking-tight text-white">Re:putation</span>
-                  <span className="text-[11px] font-semibold text-blue-300 uppercase tracking-wider">Ops</span>
+                  <span className="text-[11px] font-semibold text-blue-300 tracking-wider">운영</span>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-0.5">MotionLabs 내부 운영 콘솔</p>
               </Link>
@@ -30,7 +30,7 @@ export default function RootLayout({
 
             <nav className="flex-1 px-3 py-4 space-y-0.5">
               <p className="px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
-                Workspace
+                운영 메뉴
               </p>
               <Link
                 href="/hospitals"
@@ -54,13 +54,13 @@ export default function RootLayout({
                 도움말
               </p>
               <div className="px-3 py-2 text-[11px] text-slate-400 leading-relaxed">
-                병원 자료 → 콘텐츠 운영 기준 승인 → 콘텐츠 자동 생성 → 발행 → 월간 리포트 순서로 진행합니다.
+                병원 자료 → 콘텐츠 운영 기준 승인 → 콘텐츠 가이드 작성 → 발행 검수 → 월간 리포트 순서로 진행합니다.
               </div>
             </nav>
 
             <div className="px-4 py-3 border-t border-slate-800 space-y-1">
-              <p className="text-[11px] text-slate-300 font-medium">MotionLabs Inc.</p>
-              <p className="text-[10px] text-slate-500">Internal Operator Console</p>
+              <p className="text-[11px] text-slate-300 font-medium">MotionLabs</p>
+              <p className="text-[10px] text-slate-500">내부 운영 콘솔</p>
             </div>
           </aside>
 

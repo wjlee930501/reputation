@@ -241,7 +241,7 @@ export default function DashboardPage() {
       {/* Hero */}
       <section className="rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 p-7 text-white shadow-sm">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">
-          AI Exposure Operations
+          AI 노출 운영
         </p>
         <div className="mt-2 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
@@ -269,7 +269,7 @@ export default function DashboardPage() {
               tone={change === null ? 'neutral' : change >= 0 ? 'up' : 'down'}
             />
             <HeroStat
-              label="진행중 보완 작업"
+              label="진행 작업"
               value={`${openActionCount}건`}
               hint={
                 blockedActionCount > 0
@@ -315,7 +315,7 @@ export default function DashboardPage() {
           <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">Owner-ready summary</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">원장 보고 요약</p>
                 <h3 className="mt-1 text-lg font-bold text-slate-900">이번 달 먼저 볼 운영 요약</h3>
                 <p className="mt-1 text-sm text-slate-500">
                   세부 측정 로그보다 원장님께 설명할 변화와 다음 조치를 먼저 확인합니다.
@@ -806,7 +806,7 @@ function HeroStat({
         : 'text-blue-100/80'
   return (
     <div className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-blue-100/70">{label}</p>
+      <p className="text-[11px] font-medium tracking-wide text-blue-100/70">{label}</p>
       <p className="mt-1 text-xl font-bold text-white">{value}</p>
       {hint && <p className={`mt-1 text-[11px] ${toneClass}`}>{hint}</p>}
     </div>
