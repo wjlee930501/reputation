@@ -108,24 +108,17 @@ def trigger_v0_report(self, hospital_id: str):
                         run_single_query(hospital.name, q.query_text, platform, repeat_count=5, competitors=competitors)
                     )
                     for r in results:
-                        measurement_status, failure_reason = _measurement_status_for_result(r)
+                        measurement_status, _failure_reason = _measurement_status_for_result(r)
                         if measurement_status == "SUCCESS":
                             success_count += 1
                         else:
                             failure_count += 1
-                        record = SovRecord(
+                        record = _build_sov_record_from_result(
                             hospital_id=hospital.id,
                             query_id=q.id,
                             measurement_run_id=run.id,
-                            ai_platform=platform,
-                            is_mentioned=r["is_mentioned"],
-                            mention_rank=r.get("mention_rank"),
-                            mention_sentiment=r.get("sentiment"),
-                            mention_context=r.get("mention_context"),
-                            raw_response=r["raw_response"],
-                            competitor_mentions=r.get("competitor_mentions"),
-                            measurement_status=measurement_status,
-                            failure_reason=failure_reason,
+                            platform=platform,
+                            result=r,
                         )
                         db.add(record)
                         all_records.append(r)
@@ -395,27 +388,22 @@ def run_sov_for_hospital(self, hospital_id: str):
                     )
                 )
                 for r in results:
-                    measurement_status, failure_reason = _measurement_status_for_result(r)
+                    measurement_status, _failure_reason = _measurement_status_for_result(r)
                     if measurement_status == "SUCCESS":
                         success_count += 1
                     else:
                         failure_count += 1
-                    records.append(SovRecord(
-                        hospital_id=hospital.id,
-                        query_id=spec["query_id"],
-                        measurement_run_id=run.id,
-                        ai_query_target_id=spec["target_id"],
-                        ai_query_variant_id=spec["variant_id"],
-                        ai_platform=spec["platform"],
-                        is_mentioned=r["is_mentioned"],
-                        mention_rank=r.get("mention_rank"),
-                        mention_sentiment=r.get("sentiment"),
-                        mention_context=r.get("mention_context"),
-                        raw_response=r["raw_response"],
-                        competitor_mentions=r.get("competitor_mentions"),
-                        measurement_status=measurement_status,
-                        failure_reason=failure_reason,
-                    ))
+                    records.append(
+                        _build_sov_record_from_result(
+                            hospital_id=hospital.id,
+                            query_id=spec["query_id"],
+                            measurement_run_id=run.id,
+                            platform=spec["platform"],
+                            result=r,
+                            target_id=spec["target_id"],
+                            variant_id=spec["variant_id"],
+                        )
+                    )
 
             db.add_all(records)
             _finish_measurement_run(run, success_count, failure_count)
@@ -468,6 +456,35 @@ def _measurement_status_for_result(result: dict) -> tuple[str, str | None]:
     if (result.get("raw_response") or "").strip():
         return "SUCCESS", None
     return "FAILED", "empty_raw_response"
+
+
+def _build_sov_record_from_result(
+    *,
+    hospital_id: uuid.UUID,
+    query_id: uuid.UUID,
+    measurement_run_id: uuid.UUID,
+    platform: str,
+    result: dict,
+    target_id: uuid.UUID | None = None,
+    variant_id: uuid.UUID | None = None,
+) -> SovRecord:
+    measurement_status, failure_reason = _measurement_status_for_result(result)
+    return SovRecord(
+        hospital_id=hospital_id,
+        query_id=query_id,
+        measurement_run_id=measurement_run_id,
+        ai_query_target_id=target_id,
+        ai_query_variant_id=variant_id,
+        ai_platform=platform,
+        is_mentioned=bool(result.get("is_mentioned")),
+        mention_rank=result.get("mention_rank"),
+        mention_sentiment=result.get("sentiment"),
+        mention_context=result.get("mention_context"),
+        raw_response=result.get("raw_response") or "",
+        competitor_mentions=result.get("competitor_mentions"),
+        measurement_status=measurement_status,
+        failure_reason=failure_reason,
+    )
 
 
 def _build_measurement_specs(

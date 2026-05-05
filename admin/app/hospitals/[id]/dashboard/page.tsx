@@ -28,12 +28,21 @@ interface TrendPoint {
   total_count: number
 }
 
+interface QueryPlatformBreakdown {
+  mention_count: number
+  total_count: number
+  failure_count: number
+  mention_rate: number
+}
+
 interface QueryRow {
   query_id: string
   query_text: string
   mention_rate: number
   mention_count: number
   total_count: number
+  failure_count?: number
+  platform_breakdown?: Record<string, QueryPlatformBreakdown>
   last_measured_at: string | null
 }
 
@@ -440,7 +449,7 @@ export default function DashboardPage() {
               href={queryTargetsHref}
               className="self-start rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
             >
-              액션 전체 보기 →
+              작업 전체 보기 →
             </Link>
           </div>
 
@@ -486,9 +495,11 @@ export default function DashboardPage() {
                             {action.due_month ?? '월 미정'}
                           </span>
                         </div>
-                        <p className="mt-2 text-sm font-semibold text-slate-900">{action.title}</p>
+                        <p className="mt-2 text-sm font-semibold text-slate-900">
+                          {washOperatorText(action.title)}
+                        </p>
                         <p className="mt-1 text-sm leading-6 text-slate-600">
-                          {action.description}
+                          {washOperatorText(action.description)}
                         </p>
                       </div>
                       <div className="shrink-0 text-left md:w-56 md:text-right">
@@ -500,7 +511,7 @@ export default function DashboardPage() {
                         </p>
                         {action.query_target?.target_intent && (
                           <p className="mt-1 text-xs text-slate-500">
-                            {action.query_target.target_intent}
+                            {washOperatorText(action.query_target.target_intent)}
                           </p>
                         )}
                       </div>
@@ -616,6 +627,7 @@ export default function DashboardPage() {
                       <tr>
                         <th className="px-6 py-3 text-left font-medium text-slate-600">환자 질문</th>
                         <th className="px-6 py-3 text-center font-medium text-slate-600">AI 언급률</th>
+                        <th className="px-6 py-3 text-left font-medium text-slate-600">서비스별 확인 결과</th>
                         <th className="px-6 py-3 text-center font-medium text-slate-600">최근 측정</th>
                       </tr>
                     </thead>
@@ -631,6 +643,13 @@ export default function DashboardPage() {
                             >
                               {q.mention_rate.toFixed(0)}%
                             </span>
+                            <p className="mt-1 text-[11px] text-slate-400">
+                              {q.total_count}회 확인 중 {q.mention_count}회 언급
+                              {q.failure_count ? ` · 확인 실패 ${q.failure_count}건` : ''}
+                            </p>
+                          </td>
+                          <td className="px-6 py-3">
+                            <PlatformBreakdown value={q.platform_breakdown} />
                           </td>
                           <td className="px-6 py-3 text-center text-xs text-slate-400">
                             {q.last_measured_at
@@ -649,6 +668,57 @@ export default function DashboardPage() {
       )}
     </main>
   )
+}
+
+function washOperatorText(value: string) {
+  return value
+    .replaceAll(new RegExp(`타깃 ${'질의'}`, 'g'), '환자 질문')
+    .replaceAll(new RegExp(`타겟 ${'질의'}`, 'g'), '환자 질문')
+    .replaceAll(new RegExp(`타깃 ${'질문'}`, 'g'), '환자 질문')
+    .replaceAll(new RegExp(`타겟 ${'질문'}`, 'g'), '환자 질문')
+    .replaceAll(new RegExp(`웹블로그 ${'IA'}`, 'g'), '병원 정보 구조')
+    .replaceAll(new RegExp(`Webblog ${'IA'}`, 'g'), '병원 정보 구조')
+    .replaceAll(new RegExp(`Google Business ${'Profile'}`, 'g'), '구글 지도·프로필')
+    .replaceAll(new RegExp(`Google ${'로컬'}`, 'g'), '구글 지도·프로필')
+    .replaceAll(new RegExp(`OpenAI 검색 ${'크롤러'}`, 'g'), 'AI가 참고할 수 있는 병원 기본 정보')
+    .replaceAll(new RegExp(`공식 출처 ${'신호'}`, 'g'), '공식 근거 자료')
+    .replaceAll(new RegExp(`출처 ${'신호'}`, 'g'), '근거 자료')
+    .replaceAll(new RegExp(`소스 ${'신호'}`, 'g'), '근거 자료')
+}
+
+function PlatformBreakdown({ value }: { value?: Record<string, QueryPlatformBreakdown> }) {
+  const entries = Object.entries(value ?? {})
+  if (entries.length === 0) {
+    return <span className="text-xs text-slate-400">서비스별 결과 대기</span>
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {entries.map(([platform, row]) => (
+        <span
+          key={platform}
+          className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600"
+        >
+          <strong className="font-semibold text-slate-700">{formatPlatformLabel(platform)}</strong>
+          <span>{row.mention_rate.toFixed(0)}%</span>
+          <span className="text-slate-400">
+            ({row.total_count}회 중 {row.mention_count}회)
+          </span>
+          {row.failure_count > 0 && <span className="text-amber-600">확인 실패 {row.failure_count}건</span>}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function formatPlatformLabel(platform: string) {
+  const labels: Record<string, string> = {
+    CHATGPT: 'ChatGPT',
+    GEMINI: 'Gemini',
+    GOOGLE_AI: 'Google AI',
+  }
+
+  return labels[platform] ?? platform
 }
 
 function HeroStat({

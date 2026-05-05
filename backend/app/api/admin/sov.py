@@ -126,6 +126,7 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
             "mention_count": mentioned,
             "total_count": total,
             "failure_count": failure_count,
+            "platform_breakdown": _build_platform_breakdown(records),
             "last_measured_at": last_measured.isoformat() if last_measured else None,
         })
 
@@ -147,6 +148,27 @@ def _is_successful_measurement(record: Any) -> bool:
 
 def _is_failed_measurement(record: Any) -> bool:
     return not _is_successful_measurement(record)
+
+
+def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:
+    breakdown: dict[str, dict[str, Any]] = {}
+    for record in records:
+        platform = str(getattr(record, "ai_platform", None) or "UNKNOWN").upper()
+        bucket = breakdown.setdefault(
+            platform,
+            {"mention_count": 0, "total_count": 0, "failure_count": 0, "mention_rate": 0.0},
+        )
+        if _is_successful_measurement(record):
+            bucket["total_count"] += 1
+            if getattr(record, "is_mentioned", False):
+                bucket["mention_count"] += 1
+        else:
+            bucket["failure_count"] += 1
+
+    for bucket in breakdown.values():
+        total = bucket["total_count"]
+        bucket["mention_rate"] = round(bucket["mention_count"] / total * 100, 1) if total else 0.0
+    return dict(sorted(breakdown.items()))
 
 
 def _serialize_measurement_run(run: MeasurementRun) -> dict[str, Any]:

@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin.sov import get_sov_measurement_runs, get_sov_queries, get_sov_trend
-from app.workers.tasks import _measurement_status_for_result
+from app.workers.tasks import _build_sov_record_from_result, _measurement_status_for_result
 
 
 class _ScalarResult:
@@ -33,11 +33,12 @@ class _FakeDB:
         return self.execute_results.pop(0)
 
 
-def _record(query_id, *, status="SUCCESS", is_mentioned=False, measured_at=None):
+def _record(query_id, *, status="SUCCESS", is_mentioned=False, measured_at=None, ai_platform="chatgpt"):
     return SimpleNamespace(
         query_id=query_id,
         measurement_status=status,
         is_mentioned=is_mentioned,
+        ai_platform=ai_platform,
         measured_at=measured_at or datetime(2026, 5, 1, tzinfo=timezone.utc),
     )
 
@@ -62,6 +63,33 @@ async def test_sov_queries_exclude_failed_records_from_denominator():
     assert response[0]["total_count"] == 2
     assert response[0]["failure_count"] == 1
     assert response[0]["mention_rate"] == 50.0
+
+
+async def test_sov_queries_split_success_and_failure_by_platform():
+    hospital_id = uuid.uuid4()
+    query_id = uuid.uuid4()
+    query = SimpleNamespace(id=query_id, query_text="강남 치질 병원 추천")
+    records = [
+        _record(query_id, status="SUCCESS", is_mentioned=True, ai_platform="chatgpt"),
+        _record(query_id, status="SUCCESS", is_mentioned=False, ai_platform="chatgpt"),
+        _record(query_id, status="SUCCESS", is_mentioned=True, ai_platform="gemini"),
+        _record(query_id, status="FAILED", is_mentioned=True, ai_platform="gemini"),
+    ]
+    db = _FakeDB(
+        hospital=SimpleNamespace(id=hospital_id),
+        execute_results=[_ScalarResult([query]), _ScalarResult(records)],
+    )
+
+    response = await get_sov_queries(hospital_id, db)
+
+    assert response[0]["mention_count"] == 2
+    assert response[0]["total_count"] == 3
+    assert response[0]["failure_count"] == 1
+    assert response[0]["mention_rate"] == 66.7
+    assert response[0]["platform_breakdown"] == {
+        "CHATGPT": {"mention_count": 1, "total_count": 2, "failure_count": 0, "mention_rate": 50.0},
+        "GEMINI": {"mention_count": 1, "total_count": 1, "failure_count": 1, "mention_rate": 100.0},
+    }
 
 
 async def test_sov_trend_excludes_failed_records_from_denominator():
@@ -151,3 +179,33 @@ def test_measurement_status_treats_empty_raw_response_as_failed():
         "FAILED",
         "empty_raw_response",
     )
+
+
+def test_sov_record_builder_persists_platform_and_failure_reason():
+    hospital_id = uuid.uuid4()
+    query_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    target_id = uuid.uuid4()
+    variant_id = uuid.uuid4()
+
+    record = _build_sov_record_from_result(
+        hospital_id=hospital_id,
+        query_id=query_id,
+        measurement_run_id=run_id,
+        platform="gemini",
+        target_id=target_id,
+        variant_id=variant_id,
+        result={"is_mentioned": True, "raw_response": "", "competitor_mentions": [{"name": "경쟁의원"}]},
+    )
+
+    assert record.hospital_id == hospital_id
+    assert record.query_id == query_id
+    assert record.measurement_run_id == run_id
+    assert record.ai_query_target_id == target_id
+    assert record.ai_query_variant_id == variant_id
+    assert record.ai_platform == "gemini"
+    assert record.is_mentioned is True
+    assert record.raw_response == ""
+    assert record.competitor_mentions == [{"name": "경쟁의원"}]
+    assert record.measurement_status == "FAILED"
+    assert record.failure_reason == "empty_raw_response"
