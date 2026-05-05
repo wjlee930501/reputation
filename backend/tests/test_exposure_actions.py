@@ -248,6 +248,12 @@ async def test_exposure_actions_endpoint_shape(monkeypatch):
             "severity": "HIGH",
             "evidence": {"mention_rate": 0.0},
             "action_type": "CONTENT",
+            "display": {
+                "action_type_label": "콘텐츠",
+                "status_label": "대기",
+                "gap_type_label": "병원 미언급",
+                "severity_label": "높음",
+            },
             "title": "환자 질문과 연결된 근거 콘텐츠 보강",
             "description": (
                 "최근 성공 측정에서 병원 언급이 없습니다. "

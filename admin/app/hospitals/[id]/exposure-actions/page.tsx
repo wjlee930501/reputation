@@ -348,14 +348,14 @@ export default function ExposureActionsPage() {
               {actions.map((action) => {
                 const isSelected = action.id === selectedId
                 const typeLabel = EXPOSURE_ACTION_TYPE_LABELS[action.action_type] ?? {
-                  label: action.action_type,
+                  label: action.display?.action_type_label ?? action.action_type,
                   color: 'bg-slate-50 text-slate-700 border-slate-200',
                 }
                 const statusLabel = EXPOSURE_ACTION_STATUS_LABELS[action.status] ?? {
-                  label: action.status,
+                  label: action.display?.status_label ?? action.status,
                   color: 'bg-slate-50 text-slate-700 border-slate-200',
                 }
-                const severityLabel = action.severity ? SEVERITY_LABELS[action.severity] : null
+                const severityLabel = action.severity ? getSeverityLabel(action) : null
 
                 return (
                   <li
@@ -486,12 +486,12 @@ function DetailPanel({
 
   const statusLabel =
     EXPOSURE_ACTION_STATUS_LABELS[action.status] ?? {
-      label: action.status,
+      label: action.display?.status_label ?? action.status,
       color: 'bg-slate-50 text-slate-700 border-slate-200',
     }
   const typeLabel =
     EXPOSURE_ACTION_TYPE_LABELS[action.action_type] ?? {
-      label: action.action_type,
+      label: action.display?.action_type_label ?? action.action_type,
       color: 'bg-slate-50 text-slate-700 border-slate-200',
     }
   const canCreateBrief = isBriefCapableActionType(action.action_type)
@@ -504,7 +504,7 @@ function DetailPanel({
       <div className="flex flex-wrap items-center gap-2">
         <Badge label={typeLabel.label} color={typeLabel.color} />
         <Badge label={statusLabel.label} color={statusLabel.color} />
-        {action.gap_type && <Badge label={formatGapType(action.gap_type)} color="bg-slate-100 text-slate-600 border-slate-200" />}
+        {action.gap_type && <Badge label={formatGapType(action)} color="bg-slate-100 text-slate-600 border-slate-200" />}
       </div>
       <h3 className="mt-3 text-lg font-semibold text-slate-900">{action.title}</h3>
       <p className="mt-2 whitespace-pre-line text-sm text-slate-600">{action.description}</p>
@@ -740,7 +740,17 @@ function getBriefUnavailableMessage(actionType: ExposureAction['action_type']): 
   return '이 작업 유형은 콘텐츠 가이드 생성 대상이 아닙니다. 작업 설명에 따라 큐에서 처리하세요.'
 }
 
-function formatGapType(gapType: string): string {
+function getSeverityLabel(action: ExposureAction): { label: string; color: string } {
+  return SEVERITY_LABELS[action.severity ?? ''] ?? {
+    label: action.display?.severity_label ?? action.severity ?? '',
+    color: 'bg-slate-50 text-slate-600 border-slate-200',
+  }
+}
+
+function formatGapType(action: ExposureAction): string {
+  if (action.display?.gap_type_label) return action.display.gap_type_label
+  const gapType = action.gap_type
+  if (!gapType) return ''
   return GAP_TYPE_LABELS[gapType] ?? gapType.replaceAll('_', ' ').toLowerCase()
 }
 

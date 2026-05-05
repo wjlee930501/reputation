@@ -225,6 +225,12 @@ export interface ExposureAction {
   severity: string | null
   evidence: Record<string, unknown>
   action_type: ExposureActionType | string
+  display?: {
+    action_type_label?: string | null
+    status_label?: string | null
+    gap_type_label?: string | null
+    severity_label?: string | null
+  }
   title: string
   description: string
   owner: string | null

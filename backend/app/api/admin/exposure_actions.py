@@ -508,6 +508,46 @@ STALE_OPERATOR_COPY_REPLACEMENTS = {
     "FAQ/질환/치료 콘텐츠": "자주 묻는 질문/질환/치료 안내 콘텐츠",
 }
 
+ACTION_TYPE_DISPLAY_LABELS = {
+    "MEASUREMENT": "측정",
+    "CONTENT": "콘텐츠",
+    "SOURCE": "근거 자료",
+    "WEBBLOG_IA": "정보 구조",
+}
+
+ACTION_STATUS_DISPLAY_LABELS = {
+    "OPEN": "대기",
+    "IN_PROGRESS": "진행중",
+    "BLOCKED": "확인필요",
+    "COMPLETED": "완료",
+    "CANCELLED": "취소",
+    "ARCHIVED": "보관",
+}
+
+GAP_TYPE_DISPLAY_LABELS = {
+    "NO_SUCCESSFUL_MEASUREMENT": "측정값 없음",
+    "MISSING_MENTION": "병원 미언급",
+    "LOW_MENTION_RATE": "낮은 AI 언급률",
+    "MENTIONS_COMPETITOR_ONLY": "경쟁 병원만 언급",
+    "COMPETITOR_VISIBILITY": "경쟁 병원이 더 많이 노출",
+    "COMPETITOR_DOMINANCE": "경쟁 병원이 더 많이 노출",
+    "NO_PUBLIC_CONTENT": "대응 콘텐츠 없음",
+    "WEAK_ENTITY_FACTS": "병원 기본 정보 부족",
+    "TECHNICAL_CRAWL_GAP": "검색 반영 보강",
+    "SOURCE_GAP": "AI가 참고할 근거 자료 부족",
+    "SOURCE_SIGNAL_GAP": "AI가 참고할 근거 자료 부족",
+    "SOURCE_AUTHORITY_GAP": "근거 자료의 권위 부족",
+    "CONTENT_STALE": "콘텐츠 신선도 낮음",
+    "MEDICAL_RISK_BLOCKED": "의료광고 리스크 차단",
+}
+
+SEVERITY_DISPLAY_LABELS = {
+    "CRITICAL": "심각",
+    "HIGH": "높음",
+    "MEDIUM": "중간",
+    "LOW": "낮음",
+}
+
 
 def _wash_stale_operator_copy(value: str | None) -> str | None:
     if value is None:
@@ -530,6 +570,7 @@ def _serialize_action(action: ExposureAction) -> dict[str, Any]:
         "severity": getattr(gap, "severity", None),
         "evidence": getattr(gap, "evidence", None) or {},
         "action_type": action.action_type,
+        "display": _serialize_action_display(action, gap),
         "title": _wash_stale_operator_copy(action.title),
         "description": _wash_stale_operator_copy(action.description),
         "owner": action.owner,
@@ -544,6 +585,19 @@ def _serialize_action(action: ExposureAction) -> dict[str, Any]:
         "created_at": _iso_or_none(action.created_at),
         "updated_at": _iso_or_none(action.updated_at),
         "query_target": _serialize_target(target),
+    }
+
+
+def _serialize_action_display(action: ExposureAction, gap: Any) -> dict[str, str | None]:
+    action_type = str(_enum_value(action.action_type)) if action.action_type else None
+    status = str(_enum_value(action.status)) if action.status else None
+    gap_type = str(getattr(gap, "gap_type", "")) or None
+    severity = str(getattr(gap, "severity", "")) or None
+    return {
+        "action_type_label": ACTION_TYPE_DISPLAY_LABELS.get(action_type or "", action_type),
+        "status_label": ACTION_STATUS_DISPLAY_LABELS.get(status or "", status),
+        "gap_type_label": GAP_TYPE_DISPLAY_LABELS.get(gap_type or "", gap_type),
+        "severity_label": SEVERITY_DISPLAY_LABELS.get(severity or "", severity),
     }
 
 
