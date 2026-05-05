@@ -608,7 +608,7 @@ export default function DashboardPage() {
                   <div className="border-b border-slate-100 px-6 py-4">
                     <h3 className="text-base font-semibold text-slate-900">질문별 AI 언급률</h3>
                     <p className="mt-1 text-xs text-slate-500">
-                      환자 질문 변형 단위로 본 AI 언급률입니다. 보완 작업 우선순위를 정하는 보조 지표로 사용합니다.
+                      환자 질문 문구 단위로 본 AI 언급률입니다. 보완 작업 우선순위를 정하는 보조 지표로 사용합니다.
                     </p>
                   </div>
                   <table className="w-full text-sm">

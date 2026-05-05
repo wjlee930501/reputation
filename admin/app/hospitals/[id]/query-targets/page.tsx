@@ -137,7 +137,7 @@ export default function QueryTargetsPage() {
       (variant) => variant.query_text.trim() === queryText && variant.platform === (target.platforms[0] ?? 'CHATGPT'),
     )
     if (alreadyExists) {
-      setError('이미 등록된 질문 변형입니다.')
+      setError('이미 등록된 환자 질문 문구입니다.')
       return
     }
     setVariantSavingByTarget((prev) => ({ ...prev, [target.id]: true }))
@@ -155,7 +155,7 @@ export default function QueryTargetsPage() {
       setVariantDrafts((prev) => ({ ...prev, [target.id]: '' }))
       await loadTargets()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '질문 변형을 추가하지 못했습니다.')
+      setError(err instanceof Error ? err.message : '환자 질문 문구를 추가하지 못했습니다.')
     } finally {
       setVariantSavingByTarget((prev) => ({ ...prev, [target.id]: false }))
     }
@@ -165,15 +165,15 @@ export default function QueryTargetsPage() {
     <main className="p-8 space-y-6 bg-slate-50 min-h-full">
       <section className="rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 p-7 text-white shadow-sm">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">
-          AI Exposure Strategy
+          AI 답변에 확인할 핵심 질문
         </p>
         <div className="mt-2 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
             <h2 className="text-2xl font-bold">AI에 노출시킬 환자 질문</h2>
             <p className="mt-2 text-sm leading-6 text-blue-50/90">
               환자가 ChatGPT·Gemini 같은 AI 답변 서비스에서 병원을 찾을 때 어떤 질문에 우리 병원이 떠야 하는지 정의합니다.
-              일반 검색 키워드가 아니라 AI 언급률 측정 → 노출 진단 → 환자 질문에 맞춘 콘텐츠 가이드 작성까지
-              운영 흐름의 단위가 되는 타깃입니다.
+              일반 검색 키워드가 아니라 AI 답변 안에서 우리 병원이 언급되는 비율 확인 → 부족한 부분 진단 → 환자 질문에 맞춘 콘텐츠 가이드 작성까지
+              운영 흐름의 기준이 되는 질문입니다.
             </p>
           </div>
           <div className="grid grid-cols-3 gap-2 text-center text-xs lg:min-w-[320px]">
@@ -200,7 +200,7 @@ export default function QueryTargetsPage() {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-lg font-semibold text-slate-900">타깃 질문 목록</h3>
+              <h3 className="text-lg font-semibold text-slate-900">환자 질문 목록</h3>
               <p className="text-sm text-slate-500">우선순위가 높은 환자 질문부터 이번 달 콘텐츠와 측정 흐름에 연결합니다.</p>
             </div>
             <button
@@ -244,7 +244,7 @@ export default function QueryTargetsPage() {
         <aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm h-fit">
           <h3 className="text-lg font-semibold text-slate-900">새 환자 질문 만들기</h3>
           <p className="mt-1 text-sm text-slate-500">
-            환자 질문을 먼저 정의하고, 실제 AI에 던질 질문 변형을 함께 입력합니다.
+            환자 질문을 먼저 정의하고, 실제 AI에 물어볼 문장을 함께 입력합니다.
           </p>
 
           <form onSubmit={handleCreate} className="mt-5 space-y-4">
@@ -276,7 +276,7 @@ export default function QueryTargetsPage() {
             <Textarea label="선택 기준" value={form.decision_criteria} onChange={(value) => setFormValue(setForm, 'decision_criteria', value)} placeholder="통증 부담\n회복 기간\n전문의 경험" />
             <Textarea label="측정 대상 AI" value={form.platforms} onChange={(value) => setFormValue(setForm, 'platforms', value)} placeholder="CHATGPT\nGEMINI" />
             <Textarea label="경쟁 병원" value={form.competitor_names} onChange={(value) => setFormValue(setForm, 'competitor_names', value)} placeholder="경쟁 병원명을 줄바꿈으로 입력" />
-            <Textarea label="초기 질문 변형" value={form.variants} onChange={(value) => setFormValue(setForm, 'variants', value)} placeholder="강남 치질 병원 추천\n치질 수술 어디가 좋아" />
+            <Textarea label="초기 환자 질문 문구" value={form.variants} onChange={(value) => setFormValue(setForm, 'variants', value)} placeholder="강남 치질 병원 추천\n치질 수술 어디가 좋아" />
             <Input label="언어" value={form.patient_language} onChange={(value) => setFormValue(setForm, 'patient_language', value)} placeholder="ko" />
 
             <button
@@ -355,7 +355,7 @@ function TargetCard({
         <InfoBlock label="지역" value={target.region_terms.join(', ') || '미지정'} />
         <InfoBlock label="측정 대상 AI" value={target.platforms.join(', ') || '미지정'} />
         <InfoBlock label="경쟁 병원" value={target.competitor_names.join(', ') || '미지정'} />
-        <InfoBlock label="질문 변형" value={`${target.summary.active_variant_count}/${target.summary.variant_count}개 운영`} />
+        <InfoBlock label="환자 질문 문구" value={`${target.summary.active_variant_count}/${target.summary.variant_count}개 운영`} />
       </div>
 
       {target.decision_criteria.length > 0 && (
@@ -370,12 +370,12 @@ function TargetCard({
 
       <div className="mt-4 rounded-xl bg-slate-50 p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-medium text-slate-700">실제 AI에 던질 질문 변형</p>
-          <p className="text-xs text-slate-400">측정 매트릭스 연결 {target.summary.linked_query_matrix_count}개</p>
+          <p className="text-sm font-medium text-slate-700">실제 AI에 물어볼 환자 질문 문구</p>
+          <p className="text-xs text-slate-400">AI 언급률 확인 문항 연결 {target.summary.linked_query_matrix_count}개</p>
         </div>
         <div className="mt-3 space-y-2">
           {target.variants.length === 0 ? (
-            <p className="text-sm text-slate-500">아직 등록된 질문 변형이 없습니다.</p>
+            <p className="text-sm text-slate-500">아직 등록된 환자 질문 문구가 없습니다.</p>
           ) : (
             visibleVariants.map((variant) => (
               <div key={variant.id} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-sm">
@@ -386,7 +386,7 @@ function TargetCard({
           )}
           {hiddenVariantCount > 0 && (
             <p className="rounded-lg bg-white px-3 py-2 text-xs text-slate-500">
-              나머지 {hiddenVariantCount}개 질문 변형은 목록 성능을 위해 접어두었습니다.
+              나머지 {hiddenVariantCount}개 환자 질문 문구는 목록 성능을 위해 접어두었습니다.
             </p>
           )}
         </div>
@@ -394,7 +394,7 @@ function TargetCard({
           <input
             value={variantDraft}
             onChange={(event) => onVariantDraftChange(event.target.value)}
-            placeholder="새 질문 변형 추가"
+            placeholder="새 환자 질문 문구 추가"
             className="min-w-0 flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
           />
           <button
