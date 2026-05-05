@@ -522,7 +522,7 @@ export default function DashboardPage() {
                 <div>
                   <h3 className="text-base font-semibold text-slate-900">AI 노출 준비도</h3>
                   <p className="mt-1 text-sm text-slate-500">
-                    OpenAI 검색 크롤러 접근, Google 로컬에 등록된 병원 정보, 공개 콘텐츠, 측정 데이터를 기준으로 계산합니다.
+                    AI가 참고할 수 있는 병원 기본 정보, 구글 지도·프로필, 공개 콘텐츠, 환자 질문 측정 데이터를 기준으로 계산합니다.
                   </p>
                 </div>
                 <div className="text-right">

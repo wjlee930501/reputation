@@ -396,7 +396,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "콘텐츠 운영 기준 정렬",
             essence_blocked_content_count == 0,
             6,
-            "승인 철학 누락 또는 재검수 상태 콘텐츠를 수정하세요.",
+            "승인된 콘텐츠 운영 기준이 없거나 재검토가 필요한 콘텐츠를 수정하세요.",
         ),
         ReadinessCheck(
             "v0_report",
@@ -438,7 +438,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "AI 답변 언급률 측정 데이터",
             sov_count > 0,
             8,
-            "ChatGPT/Gemini 질의 세트 측정을 실행하세요.",
+            "ChatGPT/Gemini에 확인할 환자 질문 측정을 실행하세요.",
         ),
     ]
 

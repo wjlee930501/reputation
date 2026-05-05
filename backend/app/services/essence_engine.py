@@ -450,7 +450,7 @@ def build_monthly_essence_summary(db, hospital: Hospital, period_start: datetime
     if needs_review_count:
         recommended_actions.append("운영 기준 재검수가 필요한 콘텐츠를 수정하세요.")
     if missing_count:
-        recommended_actions.append("승인 철학 없이 생성된 콘텐츠를 재생성하거나 검수하세요.")
+        recommended_actions.append("승인된 콘텐츠 운영 기준 없이 생성된 콘텐츠를 재생성하거나 검수하세요.")
     if medical_risk_findings:
         recommended_actions.append("의료광고 리스크 표현이 있는 콘텐츠를 발행 전 수정하세요.")
 
