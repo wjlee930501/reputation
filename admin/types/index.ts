@@ -99,6 +99,10 @@ export interface SourceAsset {
   id: string
   hospital_id: string
   source_type: SourceType
+  display?: {
+    source_type_label?: string | null
+    status_label?: string | null
+  }
   title: string
   url: string | null
   raw_text?: string | null
@@ -121,6 +125,9 @@ export interface ContentPhilosophy {
   hospital_id: string
   version: number
   status: 'DRAFT' | 'APPROVED' | 'ARCHIVED'
+  display?: {
+    status_label?: string | null
+  }
   positioning_statement: string | null
   doctor_voice: string | null
   patient_promise: string | null

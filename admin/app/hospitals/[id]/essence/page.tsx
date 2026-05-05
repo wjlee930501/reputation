@@ -85,6 +85,19 @@ function statusBadge(status: string) {
   return 'bg-slate-100 text-slate-700'
 }
 
+function getSourceTypeLabel(source: SourceAsset): string {
+  return source.display?.source_type_label ?? SOURCE_TYPE_LABELS[source.source_type] ?? source.source_type
+}
+
+function getSourceStatusStyle(source: SourceAsset): { label: string; color: string } {
+  const fallback = SOURCE_STATUS_STYLE[source.status] ?? { label: source.status, color: 'bg-slate-100 text-slate-700' }
+  return { ...fallback, label: source.display?.status_label ?? fallback.label }
+}
+
+function getPhilosophyStatusLabel(philosophy: ContentPhilosophy): string {
+  return philosophy.display?.status_label ?? PHILOSOPHY_STATUS_LABELS[philosophy.status] ?? philosophy.status
+}
+
 export default function EssencePage() {
   const { id } = useParams<{ id: string }>()
 
@@ -559,7 +572,7 @@ export default function EssencePage() {
                 </tr>
               )}
               {sources.map((source) => {
-                const statusStyle = SOURCE_STATUS_STYLE[source.status]
+                const statusStyle = getSourceStatusStyle(source)
                 return (
                   <tr key={source.id} className="hover:bg-slate-50/70">
                     <td className="px-4 py-4 align-top">
@@ -576,7 +589,7 @@ export default function EssencePage() {
                       <p className="font-medium text-slate-900">{source.title}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
                         <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 mr-1.5">
-                          {SOURCE_TYPE_LABELS[source.source_type] ?? source.source_type}
+                          {getSourceTypeLabel(source)}
                         </span>
                         {source.url ? (
                           <a
@@ -648,7 +661,7 @@ export default function EssencePage() {
             <div>
               <h3 className="text-base font-semibold text-slate-900">{selectedSource.title}</h3>
               <p className="text-xs text-slate-500 mt-1">
-                {SOURCE_TYPE_LABELS[selectedSource.source_type] ?? selectedSource.source_type} · 처리일 {formatDate(selectedSource.processed_at)}
+                {getSourceTypeLabel(selectedSource)} · 처리일 {formatDate(selectedSource.processed_at)}
               </p>
             </div>
             <button
@@ -682,10 +695,10 @@ export default function EssencePage() {
                       ? 'border-blue-500 text-blue-700 bg-blue-50'
                       : 'border-slate-200 text-slate-600 hover:border-slate-300'
                   }`}
-                  title={`${PHILOSOPHY_STATUS_LABELS[item.status] ?? item.status} · ${formatDate(item.created_at)}`}
+                  title={`${getPhilosophyStatusLabel(item)} · ${formatDate(item.created_at)}`}
                 >
                   v{item.version}
-                  <span className="ml-1.5 text-[10px] opacity-70">{PHILOSOPHY_STATUS_LABELS[item.status] ?? item.status}</span>
+                  <span className="ml-1.5 text-[10px] opacity-70">{getPhilosophyStatusLabel(item)}</span>
                 </button>
               ))}
             </div>
@@ -716,7 +729,7 @@ export default function EssencePage() {
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold ${statusBadge(selectedDraft.status)}`}>
-                  {PHILOSOPHY_STATUS_LABELS[selectedDraft.status] ?? selectedDraft.status}
+                  {getPhilosophyStatusLabel(selectedDraft)}
                 </span>
                 <span className="text-sm text-slate-500">v{selectedDraft.version}</span>
               </div>

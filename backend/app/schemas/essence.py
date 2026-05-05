@@ -49,6 +49,7 @@ class SourceAssetResponse(BaseModel):
     id: str
     hospital_id: str
     source_type: SourceType
+    display: dict[str, Any] | None = None
     title: str
     url: str | None
     raw_text: str | None = None
@@ -107,6 +108,7 @@ class PhilosophyResponse(BaseModel):
     hospital_id: str
     version: int
     status: PhilosophyStatus
+    display: dict[str, Any] | None = None
     positioning_statement: str | None
     doctor_voice: str | None
     patient_promise: str | None

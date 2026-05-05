@@ -36,6 +36,34 @@ from app.services.essence_engine import (
 
 router = APIRouter(prefix="/admin/hospitals/{hospital_id}/essence", tags=["Admin — Essence"])
 
+SOURCE_TYPE_DISPLAY_LABELS = {
+    SourceType.NAVER_BLOG: "네이버 블로그",
+    SourceType.YOUTUBE: "유튜브",
+    SourceType.HOMEPAGE: "병원 홈페이지",
+    SourceType.INTERVIEW: "원장 인터뷰",
+    SourceType.LANDING_PAGE: "랜딩 페이지",
+    SourceType.BROCHURE: "브로슈어",
+    SourceType.INTERNAL_NOTE: "내부 메모",
+    SourceType.OTHER: "기타 자료",
+}
+SOURCE_STATUS_DISPLAY_LABELS = {
+    SourceStatus.PENDING: "대기",
+    SourceStatus.PROCESSED: "처리완료",
+    SourceStatus.EXCLUDED: "제외",
+    SourceStatus.ERROR: "오류",
+}
+PHILOSOPHY_STATUS_DISPLAY_LABELS = {
+    PhilosophyStatus.APPROVED: "승인됨",
+    PhilosophyStatus.DRAFT: "초안",
+    PhilosophyStatus.ARCHIVED: "보관됨",
+}
+
+
+def _display_label(labels: dict, value) -> str | None:
+    if value is None:
+        return None
+    return labels.get(value) or labels.get(str(value)) or labels.get(str(value).upper()) or str(value)
+
 
 @router.get("/sources", response_model=list[SourceAssetResponse])
 async def list_sources(
@@ -461,6 +489,7 @@ def _serialize_source(
         "id": str(source.id),
         "hospital_id": str(source.hospital_id),
         "source_type": source.source_type,
+        "display": _serialize_source_display(source),
         "title": source.title,
         "url": source.url,
         "raw_text": source.raw_text,
@@ -476,6 +505,19 @@ def _serialize_source(
         "updated_at": source.updated_at.isoformat() if source.updated_at else None,
         "evidence_note_count": evidence_note_count,
         "evidence_notes": [_serialize_note(note) for note in evidence_notes] if evidence_notes is not None else None,
+    }
+
+
+def _serialize_source_display(source: HospitalSourceAsset) -> dict:
+    return {
+        "source_type_label": _display_label(SOURCE_TYPE_DISPLAY_LABELS, source.source_type),
+        "status_label": _display_label(SOURCE_STATUS_DISPLAY_LABELS, source.status),
+    }
+
+
+def _serialize_philosophy_display(philosophy: HospitalContentPhilosophy) -> dict:
+    return {
+        "status_label": _display_label(PHILOSOPHY_STATUS_DISPLAY_LABELS, philosophy.status),
     }
 
 
@@ -501,6 +543,7 @@ def _serialize_philosophy(philosophy: HospitalContentPhilosophy) -> dict:
         "hospital_id": str(philosophy.hospital_id),
         "version": philosophy.version,
         "status": philosophy.status,
+        "display": _serialize_philosophy_display(philosophy),
         "positioning_statement": philosophy.positioning_statement,
         "doctor_voice": philosophy.doctor_voice,
         "patient_promise": philosophy.patient_promise,
