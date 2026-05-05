@@ -278,6 +278,10 @@ async def test_exposure_actions_endpoint_shape(monkeypatch):
                 "target_intent": "추천형",
                 "priority": "HIGH",
                 "status": "ACTIVE",
+                "display": {
+                    "priority_label": "높음",
+                    "status_label": "운영중",
+                },
                 "target_month": "2026-05",
             },
         }
@@ -310,6 +314,23 @@ async def test_get_exposure_action_detail(monkeypatch):
     assert response["id"] == str(action_id)
     assert response["gap_type"] == "MISSING_MENTION"
     assert response["query_target"]["name"] == "강남 치질 수술 추천"
+    assert response["query_target"]["display"] == {"priority_label": "높음", "status_label": "운영중"}
+
+
+def test_serialize_target_washes_stale_operator_copy():
+    target = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="테스트 환자 질문",
+        target_intent="타겟 질의 기반 Webblog IA 보강",
+        priority="NORMAL",
+        status="PAUSED",
+        target_month="2026-05",
+    )
+
+    response = exposure_actions_api._serialize_target(target)
+
+    assert response["target_intent"] == "환자 질문 기반 병원 정보·콘텐츠 허브 정보 구조 보강"
+    assert response["display"] == {"priority_label": "보통", "status_label": "일시정지"}
 
 
 async def test_patch_exposure_action_updates_work_queue_fields(monkeypatch):

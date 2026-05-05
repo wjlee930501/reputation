@@ -599,10 +599,10 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      {/* 타겟 정보 */}
+      {/* 운영 기준 정보 */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
         <div>
-          <h3 className="text-base font-semibold text-gray-800">타겟 정보</h3>
+          <h3 className="text-base font-semibold text-gray-800">운영 기준 정보</h3>
           <p className="text-xs text-gray-500 mt-0.5">
             지역·전문과목·키워드는 지역 특화 콘텐츠와 AI 노출 콘텐츠 주제 선정, AI 언급률 측정 질문에 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
           </p>

@@ -505,6 +505,13 @@ def _plan_total(plan: str | None) -> int:
 
 
 STALE_OPERATOR_COPY_REPLACEMENTS = {
+    f"타{'깃'} 질의": "환자 질문",
+    f"타{'겟'} 질의": "환자 질문",
+    f"타{'깃'} 질문": "환자 질문",
+    f"타{'겟'} 질문": "환자 질문",
+    f"웹{'블로그'}": "병원 정보·콘텐츠 허브",
+    "Webblog": "병원 정보·콘텐츠 허브",
+    "IA": "정보 구조",
     "FAQ/질환/치료 콘텐츠": "자주 묻는 질문/질환/치료 안내 콘텐츠",
 }
 
@@ -546,6 +553,16 @@ SEVERITY_DISPLAY_LABELS = {
     "HIGH": "높음",
     "MEDIUM": "중간",
     "LOW": "낮음",
+}
+QUERY_TARGET_PRIORITY_DISPLAY_LABELS = {
+    "HIGH": "높음",
+    "NORMAL": "보통",
+    "LOW": "낮음",
+}
+QUERY_TARGET_STATUS_DISPLAY_LABELS = {
+    "ACTIVE": "운영중",
+    "PAUSED": "일시정지",
+    "ARCHIVED": "보관됨",
 }
 
 EVIDENCE_KEY_DISPLAY_LABELS = {
@@ -788,12 +805,18 @@ def _serialize_philosophy_gate(philosophy: HospitalContentPhilosophy | None) -> 
 def _serialize_target(target: Any) -> dict[str, Any] | None:
     if target is None:
         return None
+    priority = str(_enum_value(target.priority)) if getattr(target, "priority", None) else None
+    status = str(_enum_value(target.status)) if getattr(target, "status", None) else None
     return {
         "id": str(target.id),
         "name": target.name,
-        "target_intent": target.target_intent,
+        "target_intent": _wash_stale_operator_copy(target.target_intent),
         "priority": target.priority,
         "status": target.status,
+        "display": {
+            "priority_label": QUERY_TARGET_PRIORITY_DISPLAY_LABELS.get(priority or "", priority),
+            "status_label": QUERY_TARGET_STATUS_DISPLAY_LABELS.get(status or "", status),
+        },
         "target_month": target.target_month,
     }
 

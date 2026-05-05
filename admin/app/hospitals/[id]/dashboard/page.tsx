@@ -115,18 +115,20 @@ function getReadinessCheckStateLabel(check: ReadinessCheck): string {
   return check.display?.state_label ?? (check.passed ? '완료' : '필요')
 }
 
-function getExposureActionTypeLabel(actionType: string) {
-  return EXPOSURE_ACTION_TYPE_LABELS[actionType] ?? {
-    label: actionType,
+function getExposureActionTypeLabel(action: ExposureAction) {
+  const fallback = EXPOSURE_ACTION_TYPE_LABELS[action.action_type] ?? {
+    label: String(action.action_type),
     color: 'bg-slate-50 text-slate-700 border-slate-200',
   }
+  return { ...fallback, label: action.display?.action_type_label ?? fallback.label }
 }
 
-function getExposureActionStatusLabel(status: string) {
-  return EXPOSURE_ACTION_STATUS_LABELS[status] ?? {
-    label: status,
+function getExposureActionStatusLabel(action: ExposureAction) {
+  const fallback = EXPOSURE_ACTION_STATUS_LABELS[action.status] ?? {
+    label: String(action.status),
     color: 'bg-slate-50 text-slate-700 border-slate-200',
   }
+  return { ...fallback, label: action.display?.status_label ?? fallback.label }
 }
 
 export default function DashboardPage() {
@@ -550,8 +552,8 @@ export default function DashboardPage() {
           ) : (
             <div className="mt-4 grid gap-3">
               {topExposureActions.map((action) => {
-                const actionType = getExposureActionTypeLabel(action.action_type)
-                const actionStatus = getExposureActionStatusLabel(action.status)
+                const actionType = getExposureActionTypeLabel(action)
+                const actionStatus = getExposureActionStatusLabel(action)
                 return (
                   <div
                     key={action.id}
@@ -575,10 +577,10 @@ export default function DashboardPage() {
                           </span>
                         </div>
                         <p className="mt-2 text-sm font-semibold text-slate-900">
-                          {washOperatorText(action.title)}
+                          {action.title}
                         </p>
                         <p className="mt-1 text-sm leading-6 text-slate-600">
-                          {washOperatorText(action.description)}
+                          {action.description}
                         </p>
                       </div>
                       <div className="shrink-0 text-left md:w-56 md:text-right">
@@ -590,7 +592,7 @@ export default function DashboardPage() {
                         </p>
                         {action.query_target?.target_intent && (
                           <p className="mt-1 text-xs text-slate-500">
-                            {washOperatorText(action.query_target.target_intent)}
+                            {action.query_target.target_intent}
                           </p>
                         )}
                       </div>
@@ -749,22 +751,6 @@ export default function DashboardPage() {
   )
 }
 
-function washOperatorText(value: string) {
-  return value
-    .replaceAll(new RegExp(`타깃 ${'질의'}`, 'g'), '환자 질문')
-    .replaceAll(new RegExp(`타겟 ${'질의'}`, 'g'), '환자 질문')
-    .replaceAll(new RegExp(`타깃 ${'질문'}`, 'g'), '환자 질문')
-    .replaceAll(new RegExp(`타겟 ${'질문'}`, 'g'), '환자 질문')
-    .replaceAll(new RegExp(`${'웹'}블로그`, 'g'), '병원 정보·콘텐츠 허브')
-    .replaceAll(new RegExp(`Webblog`, 'g'), '병원 정보·콘텐츠 허브')
-    .replaceAll(new RegExp(`${'I'}A`, 'g'), '정보 구조')
-    .replaceAll(new RegExp(`Google Business ${'Profile'}`, 'g'), '구글 지도·프로필')
-    .replaceAll(new RegExp(`Google ${'로컬'}`, 'g'), '구글 지도·프로필')
-    .replaceAll(new RegExp(`OpenAI 검색 ${'크롤러'}`, 'g'), 'AI가 참고할 수 있는 병원 기본 정보')
-    .replaceAll(new RegExp(`공식 출처 ${'신호'}`, 'g'), '공식 근거 자료')
-    .replaceAll(new RegExp(`출처 ${'신호'}`, 'g'), '근거 자료')
-    .replaceAll(new RegExp(`소스 ${'신호'}`, 'g'), '근거 자료')
-}
 
 function PlatformBreakdown({ value }: { value?: Record<string, QueryPlatformBreakdown> }) {
   const entries = Object.entries(value ?? {})
