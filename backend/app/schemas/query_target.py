@@ -66,6 +66,7 @@ class AIQueryVariantResponse(BaseModel):
     platform: str
     language: str
     is_active: bool
+    display: dict[str, object] | None = None
     query_matrix_id: str | None
     created_at: str | None
     updated_at: str | None
@@ -198,6 +199,7 @@ class AIQueryTargetListItem(BaseModel):
     competitor_names: list[str]
     priority: str
     status: str
+    display: dict[str, object] | None = None
     target_month: str | None
     created_by: str | None
     updated_by: str | None

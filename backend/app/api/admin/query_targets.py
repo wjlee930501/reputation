@@ -33,6 +33,38 @@ router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Patient Questions
 
 ARCHIVED = "ARCHIVED"
 
+QUERY_TARGET_PRIORITY_DISPLAY_LABELS = {
+    "HIGH": "높음",
+    "NORMAL": "보통",
+    "LOW": "낮음",
+}
+QUERY_TARGET_STATUS_DISPLAY_LABELS = {
+    "ACTIVE": "운영중",
+    "PAUSED": "일시정지",
+    "ARCHIVED": "보관",
+}
+PLATFORM_DISPLAY_LABELS = {
+    "CHATGPT": "ChatGPT",
+    "GEMINI": "Gemini",
+    "GOOGLE_AI_OVERVIEW": "Google AI Overview",
+    "PERPLEXITY": "Perplexity",
+}
+VARIANT_STATUS_DISPLAY_LABELS = {True: "운영중", False: "일시정지"}
+
+
+def _display_label(labels: dict, value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return labels.get(value.upper(), value)
+    return labels.get(value, str(value))
+
+
+def _platform_label(platform: str | None) -> str | None:
+    if platform is None:
+        return None
+    return PLATFORM_DISPLAY_LABELS.get(str(platform).upper(), str(platform))
+
 
 @router.get("/{hospital_id}/query-targets", response_model=list[AIQueryTargetListItem])
 async def list_query_targets(
@@ -313,6 +345,7 @@ def _serialize_target(target: AIQueryTarget) -> dict:
         "competitor_names": target.competitor_names or [],
         "priority": target.priority,
         "status": target.status,
+        "display": _serialize_target_display(target),
         "target_month": target.target_month,
         "created_by": target.created_by,
         "updated_by": target.updated_by,
@@ -331,6 +364,22 @@ def _serialize_target(target: AIQueryTarget) -> dict:
     }
 
 
+def _serialize_target_display(target: AIQueryTarget) -> dict:
+    platforms = target.platforms or []
+    return {
+        "priority_label": _display_label(QUERY_TARGET_PRIORITY_DISPLAY_LABELS, target.priority),
+        "status_label": _display_label(QUERY_TARGET_STATUS_DISPLAY_LABELS, target.status),
+        "platform_labels": [_platform_label(platform) for platform in platforms],
+    }
+
+
+def _serialize_variant_display(variant: AIQueryVariant) -> dict:
+    return {
+        "platform_label": _platform_label(variant.platform),
+        "status_label": _display_label(VARIANT_STATUS_DISPLAY_LABELS, variant.is_active),
+    }
+
+
 def _serialize_variant(variant: AIQueryVariant) -> dict:
     return {
         "id": str(variant.id),
@@ -339,6 +388,7 @@ def _serialize_variant(variant: AIQueryVariant) -> dict:
         "platform": variant.platform,
         "language": variant.language,
         "is_active": variant.is_active,
+        "display": _serialize_variant_display(variant),
         "query_matrix_id": str(variant.query_matrix_id) if variant.query_matrix_id else None,
         "created_at": variant.created_at.isoformat() if variant.created_at else None,
         "updated_at": variant.updated_at.isoformat() if variant.updated_at else None,

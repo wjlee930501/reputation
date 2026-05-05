@@ -20,6 +20,32 @@ from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Answer Mention Rate"])
 
+MEASUREMENT_METHOD_DISPLAY_LABELS = {
+    "OPENAI_RESPONSE": "AI 답변 측정",
+    "OPENAI_SEARCH": "AI 검색 측정",
+    "CHATGPT_SEARCH": "ChatGPT 검색 측정",
+}
+MEASUREMENT_RUN_STATUS_DISPLAY_LABELS = {
+    "PENDING": "대기",
+    "RUNNING": "실행 중",
+    "COMPLETED": "완료",
+    "FAILED": "실패",
+    "PARTIAL": "일부 완료",
+}
+PLATFORM_DISPLAY_LABELS = {
+    "CHATGPT": "ChatGPT",
+    "GEMINI": "Gemini",
+    "GOOGLE_AI_OVERVIEW": "Google AI Overview",
+    "PERPLEXITY": "Perplexity",
+    "UNKNOWN": "미확인",
+}
+
+
+def _display_label(labels: dict[str, str], value: str | None) -> str | None:
+    if value is None:
+        return None
+    return labels.get(str(value).upper(), str(value))
+
 
 @router.get("/{hospital_id}/sov/measurement-runs")
 async def get_sov_measurement_runs(
@@ -156,7 +182,13 @@ def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:
         platform = str(getattr(record, "ai_platform", None) or "UNKNOWN").upper()
         bucket = breakdown.setdefault(
             platform,
-            {"mention_count": 0, "total_count": 0, "failure_count": 0, "mention_rate": 0.0},
+            {
+                "platform_label": _display_label(PLATFORM_DISPLAY_LABELS, platform),
+                "mention_count": 0,
+                "total_count": 0,
+                "failure_count": 0,
+                "mention_rate": 0.0,
+            },
         )
         if _is_successful_measurement(record):
             bucket["total_count"] += 1
@@ -181,6 +213,10 @@ def _serialize_measurement_run(run: MeasurementRun) -> dict[str, Any]:
         "run_label": run.run_label,
         "measurement_method": run.measurement_method,
         "status": run.status,
+        "display": {
+            "measurement_method_label": _display_label(MEASUREMENT_METHOD_DISPLAY_LABELS, run.measurement_method),
+            "status_label": _display_label(MEASUREMENT_RUN_STATUS_DISPLAY_LABELS, run.status),
+        },
         "query_count": query_count,
         "success_count": success_count,
         "failure_count": failure_count,

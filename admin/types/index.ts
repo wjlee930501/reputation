@@ -155,6 +155,10 @@ export interface AIQueryVariant {
   platform: string
   language: string
   is_active: boolean
+  display?: {
+    platform_label?: string | null
+    status_label?: string | null
+  }
   query_matrix_id: string | null
   created_at: string | null
   updated_at: string | null
@@ -185,6 +189,11 @@ export interface AIQueryTarget {
   competitor_names: string[]
   priority: AIQueryTargetPriority
   status: AIQueryTargetStatus
+  display?: {
+    priority_label?: string | null
+    status_label?: string | null
+    platform_labels?: string[] | null
+  }
   target_month: string | null
   created_by: string | null
   updated_by: string | null
@@ -200,6 +209,10 @@ export interface MeasurementRun {
   run_label: string | null
   measurement_method: string
   status: string
+  display?: {
+    measurement_method_label?: string | null
+    status_label?: string | null
+  }
   query_count: number
   success_count: number
   failure_count: number
@@ -224,6 +237,10 @@ export interface ExposureActionQueryTarget {
   target_intent: string
   priority: AIQueryTargetPriority
   status: AIQueryTargetStatus
+  display?: {
+    priority_label?: string | null
+    status_label?: string | null
+  }
   target_month: string | null
 }
 

@@ -310,8 +310,9 @@ function TargetCard({
   onStatusChange: (status: AIQueryTargetStatus) => void
   onPriorityChange: (priority: AIQueryTargetPriority) => void
 }) {
-  const priority = QUERY_TARGET_PRIORITY_LABELS[target.priority]
-  const status = QUERY_TARGET_STATUS_LABELS[target.status]
+  const priority = getPriorityLabel(target)
+  const status = getStatusLabel(target)
+  const platformLabels = target.display?.platform_labels?.filter(Boolean) ?? target.platforms
   const visibleVariants = target.variants.slice(0, 20)
   const hiddenVariantCount = Math.max(target.variants.length - visibleVariants.length, 0)
 
@@ -353,7 +354,7 @@ function TargetCard({
 
       <div className="mt-4 grid gap-3 md:grid-cols-4">
         <InfoBlock label="지역" value={target.region_terms.join(', ') || '미지정'} />
-        <InfoBlock label="확인할 AI 서비스" value={target.platforms.join(', ') || '미지정'} />
+        <InfoBlock label="확인할 AI 서비스" value={platformLabels.join(', ') || '미지정'} />
         <InfoBlock label="경쟁 병원" value={target.competitor_names.join(', ') || '미지정'} />
         <InfoBlock label="환자 질문 문구" value={`${target.summary.active_variant_count}/${target.summary.variant_count}개 운영`} />
       </div>
@@ -380,7 +381,7 @@ function TargetCard({
             visibleVariants.map((variant) => (
               <div key={variant.id} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-sm">
                 <span className={variant.is_active ? 'text-slate-800' : 'text-slate-400 line-through'}>{variant.query_text}</span>
-                <span className="shrink-0 text-xs text-slate-400">{variant.platform}</span>
+                <span className="shrink-0 text-xs text-slate-400">{variant.display?.platform_label ?? variant.platform}</span>
               </div>
             ))
           )}
@@ -409,6 +410,22 @@ function TargetCard({
       </div>
     </article>
   )
+}
+
+function getPriorityLabel(target: AIQueryTarget) {
+  const fallback = QUERY_TARGET_PRIORITY_LABELS[target.priority] ?? {
+    label: target.priority,
+    color: 'bg-slate-50 text-slate-700 border-slate-200',
+  }
+  return { ...fallback, label: target.display?.priority_label ?? fallback.label }
+}
+
+function getStatusLabel(target: AIQueryTarget) {
+  const fallback = QUERY_TARGET_STATUS_LABELS[target.status] ?? {
+    label: target.status,
+    color: 'bg-slate-50 text-slate-700 border-slate-200',
+  }
+  return { ...fallback, label: target.display?.status_label ?? fallback.label }
 }
 
 function SummaryPill({ label, value }: { label: string; value: string }) {

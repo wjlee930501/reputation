@@ -87,8 +87,20 @@ async def test_sov_queries_split_success_and_failure_by_platform():
     assert response[0]["failure_count"] == 1
     assert response[0]["mention_rate"] == 66.7
     assert response[0]["platform_breakdown"] == {
-        "CHATGPT": {"mention_count": 1, "total_count": 2, "failure_count": 0, "mention_rate": 50.0},
-        "GEMINI": {"mention_count": 1, "total_count": 1, "failure_count": 1, "mention_rate": 100.0},
+        "CHATGPT": {
+            "platform_label": "ChatGPT",
+            "mention_count": 1,
+            "total_count": 2,
+            "failure_count": 0,
+            "mention_rate": 50.0,
+        },
+        "GEMINI": {
+            "platform_label": "Gemini",
+            "mention_count": 1,
+            "total_count": 1,
+            "failure_count": 1,
+            "mention_rate": 100.0,
+        },
     }
 
 
@@ -149,6 +161,10 @@ async def test_measurement_runs_endpoint_shape():
             "run_label": "baseline",
             "measurement_method": "OPENAI_RESPONSE",
             "status": "COMPLETED",
+            "display": {
+                "measurement_method_label": "AI 답변 측정",
+                "status_label": "완료",
+            },
             "query_count": 10,
             "success_count": 8,
             "failure_count": 2,

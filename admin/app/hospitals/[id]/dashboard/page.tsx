@@ -29,6 +29,7 @@ interface TrendPoint {
 }
 
 interface QueryPlatformBreakdown {
+  platform_label?: string | null
   mention_count: number
   total_count: number
   failure_count: number
@@ -386,7 +387,7 @@ export default function DashboardPage() {
               done={hasMeasurement}
               summary={
                 lastRun
-                  ? `최근 ${formatRunStatus(lastRun.status)} · ${formatDateTime(
+                  ? `최근 ${lastRun.display?.status_label ?? formatRunStatus(lastRun.status)} · ${formatDateTime(
                       lastRun.completed_at ?? lastRun.started_at,
                     )}`
                   : '첫 측정 전'
@@ -473,10 +474,10 @@ export default function DashboardPage() {
                   <div>
                     <p className="text-sm font-medium text-slate-900">
                       {run.run_label || '측정 실행'} ·{' '}
-                      <RunStatusPill status={run.status} />
+                      <RunStatusPill status={run.status} label={run.display?.status_label} />
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      측정 방식: {formatMeasurementMethod(run.measurement_method)}
+                      측정 방식: {run.display?.measurement_method_label ?? formatMeasurementMethod(run.measurement_method)}
                     </p>
                   </div>
                   <div className="text-sm text-slate-700">
@@ -763,7 +764,7 @@ function PlatformBreakdown({ value }: { value?: Record<string, QueryPlatformBrea
           key={platform}
           className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600"
         >
-          <strong className="font-semibold text-slate-700">{formatPlatformLabel(platform)}</strong>
+          <strong className="font-semibold text-slate-700">{row.platform_label ?? formatPlatformLabel(platform)}</strong>
           <span>{row.mention_rate.toFixed(0)}%</span>
           <span className="text-slate-400">
             ({row.total_count}회 중 {row.mention_count}회)
@@ -928,7 +929,7 @@ function WorkflowStep({
   )
 }
 
-function RunStatusPill({ status }: { status: string }) {
+function RunStatusPill({ status, label }: { status: string; label?: string | null }) {
   const tone =
     status === 'COMPLETED'
       ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
@@ -942,7 +943,7 @@ function RunStatusPill({ status }: { status: string }) {
 
   return (
     <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${tone}`}>
-      {formatRunStatus(status)}
+      {label ?? formatRunStatus(status)}
     </span>
   )
 }

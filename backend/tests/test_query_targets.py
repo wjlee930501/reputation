@@ -91,7 +91,13 @@ def test_serialize_target_summarizes_variants_and_next_action():
     assert serialized["summary"]["active_variant_count"] == 1
     assert serialized["summary"]["linked_query_matrix_count"] == 1
     assert serialized["summary"]["next_action"] == "첫 AI 언급률 측정 대기"
+    assert serialized["display"] == {
+        "priority_label": "높음",
+        "status_label": "운영중",
+        "platform_labels": ["ChatGPT", "Gemini"],
+    }
     assert serialized["variants"][0]["query_text"] == active_variant.query_text
+    assert serialized["variants"][0]["display"] == {"platform_label": "ChatGPT", "status_label": "운영중"}
 
 
 def test_serialize_variant_redacts_none_query_matrix_id():
