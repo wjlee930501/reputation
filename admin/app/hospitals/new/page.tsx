@@ -57,16 +57,16 @@ export default function NewHospitalPage() {
 
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1.5">
-            요금제 <span className="text-red-500">*</span>
+            월간 운영량 <span className="text-red-500">*</span>
           </label>
           <select
             value={plan}
             onChange={(e) => setPlan(e.target.value)}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
           >
-            <option value="PLAN_16">PLAN_16 — 16편/월</option>
-            <option value="PLAN_12">PLAN_12 — 12편/월</option>
-            <option value="PLAN_8">PLAN_8 — 8편/월</option>
+            <option value="PLAN_16">월 16편 집중 운영</option>
+            <option value="PLAN_12">월 12편 표준 운영</option>
+            <option value="PLAN_8">월 8편 기본 운영</option>
           </select>
         </div>
 

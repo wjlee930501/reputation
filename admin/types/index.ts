@@ -331,9 +331,9 @@ export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 }
 
 export const PLAN_LABELS: Record<string, string> = {
-  PLAN_16: '월 콘텐츠 16편',
-  PLAN_12: '월 콘텐츠 12편',
-  PLAN_8: '월 콘텐츠 8편',
+  PLAN_16: '월 16편 집중 운영',
+  PLAN_12: '월 12편 표준 운영',
+  PLAN_8: '월 8편 기본 운영',
 }
 
 export const TYPE_LABELS: Record<string, string> = {

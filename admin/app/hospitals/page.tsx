@@ -115,7 +115,7 @@ export default function HospitalsPage() {
                 <tr>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">병원</th>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">상태</th>
-                  <th className="text-left px-6 py-3 text-slate-600 font-medium">요금제</th>
+                  <th className="text-left px-6 py-3 text-slate-600 font-medium">월간 운영량</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">프로파일</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">병원 정보 허브</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">스케줄</th>

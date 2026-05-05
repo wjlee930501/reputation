@@ -45,7 +45,10 @@ export default function SchedulePage() {
 
   return (
     <div className="p-8 max-w-lg">
-      <h2 className="text-xl font-bold text-gray-900 mb-6">콘텐츠 스케줄 설정</h2>
+      <h2 className="text-xl font-bold text-gray-900 mb-2">콘텐츠 운영 스케줄</h2>
+      <p className="text-sm text-gray-600 mb-6">
+        병원 콘텐츠 허브에 발행할 월간 콘텐츠 수와 운영 요일을 설정합니다.
+      </p>
 
       {result ? (
         <div className="bg-green-50 border border-green-200 rounded-xl p-6">
@@ -67,17 +70,17 @@ export default function SchedulePage() {
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-6">
-          {/* 요금제 */}
+          {/* 월간 운영량 */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">요금제</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">월간 운영량</label>
             <select
               value={plan}
               onChange={(e) => setPlan(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             >
-              <option value="PLAN_16">PLAN_16 — 16편/월</option>
-              <option value="PLAN_12">PLAN_12 — 12편/월</option>
-              <option value="PLAN_8">PLAN_8 — 8편/월</option>
+              <option value="PLAN_16">월 16편 집중 운영</option>
+              <option value="PLAN_12">월 12편 표준 운영</option>
+              <option value="PLAN_8">월 8편 기본 운영</option>
             </select>
           </div>
 

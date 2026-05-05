@@ -543,7 +543,7 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Google Maps URL</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">구글 지도 URL</label>
             <input
               type="url"
               value={profile.google_maps_url ?? ''}
@@ -553,7 +553,7 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Naver Place URL</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">네이버 플레이스 URL</label>
             <input
               type="url"
               value={profile.naver_place_url ?? ''}
@@ -604,7 +604,7 @@ export default function ProfilePage() {
         <div>
           <h3 className="text-base font-semibold text-gray-800">운영 기준 정보</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            지역·전문과목·키워드는 지역 특화 콘텐츠와 AI 노출 콘텐츠 주제 선정, AI 언급률 측정 질문에 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
+            지역·전문과목·키워드는 콘텐츠 운영 주제와 AI 언급률 측정 질문을 정리하는 기준으로 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
           </p>
         </div>
         <TagInput
@@ -823,17 +823,17 @@ export default function ProfilePage() {
                   <table className="w-full text-xs">
                     <tbody className="divide-y divide-gray-200">
                       <tr>
-                        <td className="px-3 py-2 w-32 text-gray-500 font-medium">Type</td>
+                        <td className="px-3 py-2 w-32 text-gray-500 font-medium">레코드 종류</td>
                         <td className="px-3 py-2 font-mono text-gray-800">CNAME</td>
                       </tr>
                       <tr>
-                        <td className="px-3 py-2 text-gray-500 font-medium">Name / Host</td>
+                        <td className="px-3 py-2 text-gray-500 font-medium">도메인 이름</td>
                         <td className="px-3 py-2 font-mono text-gray-800">
                           {currentDomain || <span className="text-gray-400">입력한 도메인</span>}
                         </td>
                       </tr>
                       <tr>
-                        <td className="px-3 py-2 text-gray-500 font-medium">Value / Target</td>
+                        <td className="px-3 py-2 text-gray-500 font-medium">연결 대상값</td>
                         <td className="px-3 py-2 font-mono text-gray-800">{domainExpectedCname}</td>
                       </tr>
                       <tr>
@@ -985,7 +985,7 @@ export default function ProfilePage() {
             <div>
               <span className="text-sm font-medium text-gray-800">프로파일 완료로 표시</span>
               <p className="text-xs text-gray-500 mt-0.5">
-                저장 시점에 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다. 결과는 Slack으로 알림됩니다.
+                저장 시점에 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다. 운영 알림으로 결과를 확인합니다.
               </p>
               {!requiredReady && (profile.profile_complete ?? false) && (
                 <p className="text-[11px] text-amber-700 mt-1.5">
