@@ -303,6 +303,11 @@ async def approve_philosophy(
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
     if philosophy.status != PhilosophyStatus.DRAFT:
         raise HTTPException(status_code=400, detail="초안 상태의 콘텐츠 운영 기준만 승인할 수 있습니다.")
+    if not body.confirm_evidence_reviewed:
+        raise HTTPException(
+            status_code=400,
+            detail="검토된 병원 자료와 근거 노트를 확인해야 콘텐츠 운영 기준을 승인할 수 있습니다.",
+        )
 
     notes = await _get_notes_for_philosophy(db, philosophy)
     grounding_errors = validate_philosophy_grounding(philosophy, notes, require_text_support=True)
