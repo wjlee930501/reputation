@@ -42,15 +42,15 @@ async def notify_v0_report_ready(hospital_name: str, sov_pct: float, pdf_path: s
 
 
 async def notify_site_built(hospital_name: str, preview_url: str) -> bool:
-    """AI 노출 웹블로그 준비 완료 → AE에게"""
+    """콘텐츠 허브 노출 준비 완료 → AE에게 (legacy function name)"""
     return await _send(
-        text=f"🏗️ [AI 노출 웹블로그] {hospital_name} 준비 완료",
+        text=f"🏗️ [AI 노출 콘텐츠 허브] {hospital_name} 노출 준비 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"🏗️ *[AI 노출 웹블로그]* *{hospital_name}* 병원 정보 허브 준비 완료\n"
+                f"🏗️ *[AI 노출 콘텐츠 허브]* *{hospital_name}* 병원 정보와 콘텐츠 허브 노출 준비 완료\n"
                 f"미리보기: {preview_url}\n\n"
-                f"Admin에서 도메인을 연결해 주세요."
+                f"Admin에서 공개 정보와 도메인 상태를 확인해 주세요."
             )},
         }],
     )

@@ -621,7 +621,7 @@
     <span class="tag">Perplexity 노출 최적화</span>
     <span class="tag">SoV 측정 자동화</span>
     <span class="tag">AI 콘텐츠 생성</span>
-    <span class="tag">AEO 홈페이지 자동 빌드</span>
+    <span class="tag">콘텐츠 허브 노출 준비</span>
   </div>
   <div class="meta">Version 1.1 &nbsp;·&nbsp; 2026년 2월 &nbsp;·&nbsp; Internal</div>
 </div>
@@ -642,7 +642,7 @@
     <div class="toc-num">2</div>
     <div>
       <div class="toc-title">서비스 전체 플로우 (8단계)</div>
-      <div class="toc-sub">계약 → 프로파일 → V0 리포트 → 사이트 빌드 → 도메인 → 스케줄 → 콘텐츠 사이클 → 월간 리포트</div>
+      <div class="toc-sub">계약 → 프로파일 → V0 리포트 → 콘텐츠 허브 노출 준비 → 도메인 → 스케줄 → 콘텐츠 사이클 → 월간 리포트</div>
     </div>
   </div>
 
@@ -665,7 +665,7 @@
   <div class="toc-item">
     <div class="toc-num">5</div>
     <div>
-      <div class="toc-title">AEO 홈페이지 빌더</div>
+      <div class="toc-title">콘텐츠 허브 빌더</div>
       <div class="toc-sub">Schema.org 마크업 · E-E-A-T 신호 · llms.txt · 구조</div>
     </div>
   </div>
@@ -755,7 +755,7 @@
         <ul class="checklist">
           <li>V0 리포트로 현황 즉시 진단</li>
           <li>매월 AI 최적화 콘텐츠 자동 생성</li>
-          <li>AEO 홈페이지 자동 빌드 & 운영</li>
+          <li>콘텐츠 허브 노출 준비 & 운영</li>
           <li>월간 SoV 리포트로 효과 측정</li>
         </ul>
       </div>
@@ -832,8 +832,8 @@
         <div class="step-line"></div>
       </div>
       <div class="flow-step-content">
-        <h4>AEO 홈페이지 자동 빌드 <span class="step-badge badge-auto">자동</span></h4>
-        <p>Schema.org MedicalClinic 마크업, 원장 소개, FAQ, llms.txt 포함 정적 홈페이지 자동 생성. 빌드 완료 시 Slack 알림.</p>
+        <h4>콘텐츠 허브 노출 준비 <span class="step-badge badge-auto">자동</span></h4>
+        <p>Schema.org MedicalClinic 마크업, 원장 소개, FAQ, llms.txt 포함 정적 콘텐츠 허브 노출 준비. 빌드 완료 시 Slack 알림.</p>
       </div>
     </div>
 
@@ -843,8 +843,8 @@
         <div class="step-line"></div>
       </div>
       <div class="flow-step-content">
-        <h4>도메인 연결 <span class="step-badge badge-human">수동</span></h4>
-        <p>Admin에서 도메인 입력 → DNS 가이드 제공 → 연결 확인 후 LIVE 상태 전환.</p>
+        <h4>공개 도메인 상태 확인 <span class="step-badge badge-human">수동</span></h4>
+        <p>Admin에서 공개 도메인 입력 → DNS 가이드 제공 → 연결 확인 후 공개 노출 상태 전환.</p>
       </div>
     </div>
 
@@ -867,7 +867,7 @@
       <div class="flow-step-content">
         <h4>콘텐츠 자동 생성 사이클 <span class="step-badge badge-auto">자동</span></h4>
         <p><strong>발행일 전날 23:00</strong> — Claude Sonnet으로 본문 생성 + Google Imagen 3으로 이미지 생성 → DB 저장(DRAFT)</p>
-        <p><strong>발행일 당일 08:00</strong> — Slack 알림 → AE가 Admin에서 확인 후 [발행] 클릭 → AEO 홈페이지 즉시 게재</p>
+        <p><strong>발행일 당일 08:00</strong> — Slack 알림 → AE가 Admin에서 확인 후 [발행] 클릭 → 콘텐츠 허브 즉시 게재</p>
       </div>
     </div>
 
@@ -1054,7 +1054,7 @@
           <li>Slack → AE 알림 발송</li>
           <li>AE가 Admin에서 콘텐츠 확인</li>
           <li>[발행] 버튼 클릭</li>
-          <li>AEO 홈페이지 즉시 게재 (PUBLISHED)</li>
+          <li>콘텐츠 허브 즉시 게재 (PUBLISHED)</li>
           <li>[반려] 시 → 당일 밤 재생성</li>
         </ul>
       </div>
@@ -1085,11 +1085,11 @@
   </div>
 </div>
 
-<!-- ══════════════════════ 5. AEO 홈페이지 ══════════════════════ -->
+<!-- ══════════════════════ 5. 콘텐츠 허브 ══════════════════════ -->
 <div class="page">
   <div class="section-header">
     <div class="section-label">Section 05</div>
-    <h2 class="section-title">AEO 홈페이지 <span>빌더</span></h2>
+    <h2 class="section-title">콘텐츠 허브 <span>빌더</span></h2>
     <p class="section-desc">병원 프로파일을 기반으로 AI 검색에 최적화된 홈페이지를 자동으로 생성합니다.</p>
   </div>
 
@@ -1183,7 +1183,7 @@
       <div class="arch-layer-items">
         <span class="arch-item" style="background:white;">AE (Admin UI)</span>
         <span class="arch-item" style="background:white;">AI 크롤러 (GPTBot 등)</span>
-        <span class="arch-item" style="background:white;">환자 (AEO 사이트)</span>
+        <span class="arch-item" style="background:white;">환자 (콘텐츠 허브)</span>
       </div>
     </div>
     <div class="arch-arrow">↓</div>
@@ -1312,11 +1312,11 @@
   <div class="card-grid card-grid-2">
     <div class="card">
       <h4>🏥 병원 목록 (/hospitals)</h4>
-      <p>전체 계약 병원 현황. 단계별 상태(ONBOARDING → ACTIVE) 한눈에 파악. V0 리포트 / 사이트 빌드 / 도메인 연결 체크리스트 표시</p>
+      <p>전체 계약 병원 현황. 단계별 상태(ONBOARDING → ACTIVE) 한눈에 파악. V0 리포트 / 콘텐츠 허브 노출 준비 / 공개 도메인 상태 확인 체크리스트 표시</p>
     </div>
     <div class="card">
       <h4>📋 프로파일 편집 (/hospitals/[id]/profile)</h4>
-      <p>원장 정보, 진료 항목, 지역·키워드 등 프로파일 수정. 저장 시 AEO 사이트 자동 재빌드 트리거</p>
+      <p>원장 정보, 진료 항목, 지역·키워드 등 프로파일 수정. 저장 시 콘텐츠 허브 자동 재빌드 트리거</p>
     </div>
     <div class="card">
       <h4>📝 콘텐츠 관리 (/hospitals/[id]/content)</h4>
@@ -1331,8 +1331,8 @@
       <p>V0 리포트 및 월간 SoV 리포트 PDF 다운로드. ChatGPT/Perplexity 플랫폼별 SoV 추이 확인</p>
     </div>
     <div class="card">
-      <h4>🌐 도메인 연결 (/hospitals/[id]/profile)</h4>
-      <p>aeo_domain 필드에 도메인 입력. DNS 가이드 자동 제공. 연결 확인 후 LIVE 상태 전환</p>
+      <h4>🌐 공개 도메인 상태 확인 (/hospitals/[id]/profile)</h4>
+      <p>aeo_domain 필드에 공개 도메인 입력. DNS 가이드 자동 제공. 연결 확인 후 공개 노출 상태 전환</p>
     </div>
   </div>
 
@@ -1348,9 +1348,9 @@
         <td>병원명, 현재 SoV%, 확인 요청</td>
       </tr>
       <tr>
-        <td>사이트 빌드 완료</td>
+        <td>콘텐츠 허브 노출 준비 완료</td>
         <td>빌드 직후</td>
-        <td>병원명, 도메인 연결 안내</td>
+        <td>병원명, 공개 도메인 상태 확인 안내</td>
       </tr>
       <tr>
         <td>콘텐츠 초안 완료</td>
@@ -1370,7 +1370,7 @@
     <ul class="checklist">
       <li>계약 후 24시간 내 프로파일 입력 완료</li>
       <li>V0 리포트 확인 후 원장에게 직접 보고 (시스템이 보내지 않음)</li>
-      <li>도메인 연결 후 LIVE 상태 수동 전환</li>
+      <li>공개 도메인 상태 확인 후 공개 노출 상태 수동 전환</li>
       <li>매일 08:00 Slack 알림 확인 → 콘텐츠 검토 후 발행</li>
       <li>월간 리포트 수신 후 원장에게 직접 보고</li>
     </ul>
@@ -1453,7 +1453,7 @@
       <h4>✅ 포함</h4>
       <ul class="checklist">
         <li>V0 AI 검색 현황 진단 리포트</li>
-        <li>AEO 홈페이지 자동 빌드 & 운영</li>
+        <li>콘텐츠 허브 노출 준비 & 운영</li>
         <li>월간 콘텐츠 자동 생성 (AI 본문 + 이미지)</li>
         <li>의료광고 금지 표현 자동 필터</li>
         <li>월간 SoV 리포트 (ChatGPT + Perplexity)</li>
@@ -1466,7 +1466,7 @@
       <ul class="checklist">
         <li>병원 프로파일 최초 입력</li>
         <li>V0 리포트 원장 전달</li>
-        <li>도메인 연결 처리</li>
+        <li>공개 도메인 상태 확인</li>
         <li>발행일 콘텐츠 검토 & 발행</li>
         <li>월간 리포트 원장 전달</li>
       </ul>

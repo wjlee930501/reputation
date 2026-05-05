@@ -4,7 +4,7 @@ POST   /admin/hospitals                 — 신규 등록
 GET    /admin/hospitals                 — 전체 목록
 GET    /admin/hospitals/{id}            — 상세 조회
 PATCH  /admin/hospitals/{id}/profile    — 프로파일 수정 + 완료 시 V0 트리거
-PATCH  /admin/hospitals/{id}/domain     — 도메인 연결
+PATCH  /admin/hospitals/{id}/domain     — 공개 도메인 상태 확인
 PATCH  /admin/hospitals/{id}/activate   — ACTIVE 전환
 """
 import re
@@ -218,7 +218,7 @@ async def connect_domain(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    """도메인 연결 완료 처리 + 사이트 리빌드"""
+    """공개 도메인 정보 저장 + 콘텐츠 허브 노출 상태 갱신"""
     h = await _get_or_404(db, hospital_id)
     previous_domain = h.aeo_domain
     domain_changed = _normalize_dns_name(previous_domain) != _normalize_dns_name(body.domain)
@@ -233,18 +233,18 @@ async def connect_domain(
 
     await db.commit()
 
-    # 사이트 리빌드 (도메인 반영)
+    # 콘텐츠 허브 노출 상태 갱신 (legacy task name)
     background_tasks.add_task(
         build_aeo_site.apply_async,
         args=[str(hospital_id)],
         queue="default",
     )
-    return {"detail": f"Domain {body.domain} set. Site rebuild triggered."}
+    return {"detail": f"Domain {body.domain} set. Content hub exposure refresh triggered."}
 
 
 @router.patch("/{hospital_id}/activate")
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """ACTIVE 상태로 전환 (도메인 DNS 검증 + 스케줄 설정 완료 후)"""
+    """ACTIVE 상태로 전환 (공개 도메인/노출 상태 + 스케줄 설정 완료 후)"""
     h = await _get_or_404(db, hospital_id)
 
     missing = []
@@ -407,17 +407,17 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ),
         ReadinessCheck(
             "site_built",
-            "AI 노출 웹블로그 준비",
+            "콘텐츠 허브 노출 준비",
             bool(h.site_built),
             10,
-            "AI 노출 웹블로그 준비 작업을 완료하세요.",
+            "승인된 병원 정보와 콘텐츠가 공개 표면에 노출될 준비를 완료하세요.",
         ),
         ReadinessCheck(
             "domain",
-            "도메인 연결",
+            "공개 도메인 상태",
             bool(h.aeo_domain and h.site_live),
             10,
-            "병원 정보 허브 도메인을 입력하고 DNS 검증을 완료하세요.",
+            "병원 정보 허브의 공개 도메인과 노출 상태를 확인하세요.",
         ),
         ReadinessCheck(
             "schedule",

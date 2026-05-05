@@ -36,8 +36,8 @@ class Plan(str, enum.Enum):
 class HospitalStatus(str, enum.Enum):
     ONBOARDING = "ONBOARDING"     # 프로파일 입력 중
     ANALYZING = "ANALYZING"       # V0 분석 중
-    BUILDING = "BUILDING"         # AI 노출 웹블로그 준비 중
-    PENDING_DOMAIN = "PENDING_DOMAIN"  # 도메인 연결 대기
+    BUILDING = "BUILDING"         # 콘텐츠 허브 노출 준비 중
+    PENDING_DOMAIN = "PENDING_DOMAIN"  # 공개 도메인 확인 대기
     ACTIVE = "ACTIVE"             # 운영 중
     PAUSED = "PAUSED"             # 일시 정지
 

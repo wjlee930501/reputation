@@ -16,10 +16,17 @@ def _report(**overrides):
         sov_summary={"sov_pct": 42.0},
         content_summary={"published_count": 8},
         essence_summary={
-            "approved_philosophy": {"exists": True, "version": 3},
-            "source_assets": {"reviewed_count": 4},
-            "content_alignment": {"needs_review_count": 1},
-            "medical_ad_risks": {"risk_count": 2},
+            "approved_philosophy_exists": True,
+            "philosophy_version": 3,
+            "approved_at": "2026-05-05T12:00:00+00:00",
+            "source_count": 4,
+            "processed_source_count": 4,
+            "generated_content_count": 8,
+            "aligned_content_count": 7,
+            "needs_review_content_count": 1,
+            "missing_philosophy_content_count": 0,
+            "medical_risk_findings": [{"content_id": "demo", "risk": "과장 표현"}],
+            "recommended_actions": ["재검토 필요 콘텐츠 1건을 수정하세요."],
         },
         created_at=datetime(2026, 5, 5, 12, 30, tzinfo=timezone.utc),
         sent_at=None,
@@ -50,7 +57,12 @@ def test_report_detail_serializes_essence_summary_for_pre_pdf_review():
     assert payload["sov_summary"] == {"sov_pct": 42.0}
     assert payload["content_summary"] == {"published_count": 8}
     assert payload["essence_summary"] == report.essence_summary
-    assert payload["essence_summary"]["approved_philosophy"]["exists"] is True
-    assert payload["essence_summary"]["source_assets"]["reviewed_count"] == 4
-    assert payload["essence_summary"]["content_alignment"]["needs_review_count"] == 1
-    assert payload["essence_summary"]["medical_ad_risks"]["risk_count"] == 2
+    assert payload["essence_summary"]["approved_philosophy_exists"] is True
+    assert payload["essence_summary"]["philosophy_version"] == 3
+    assert payload["essence_summary"]["source_count"] == 4
+    assert payload["essence_summary"]["processed_source_count"] == 4
+    assert payload["essence_summary"]["aligned_content_count"] == 7
+    assert payload["essence_summary"]["needs_review_content_count"] == 1
+    assert payload["essence_summary"]["missing_philosophy_content_count"] == 0
+    assert payload["essence_summary"]["medical_risk_findings"] == [{"content_id": "demo", "risk": "과장 표현"}]
+    assert payload["essence_summary"]["recommended_actions"] == ["재검토 필요 콘텐츠 1건을 수정하세요."]

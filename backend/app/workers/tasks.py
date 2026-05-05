@@ -1,7 +1,7 @@
 """
 Celery 태스크 전체
 - trigger_v0_report: 프로파일 완료 시 V0 분석 트리거
-- build_aeo_site: AI 노출 웹블로그 상태 준비
+- build_aeo_site: 콘텐츠 허브 공개 노출 상태 준비 (legacy task name)
 - nightly_content_generation: 매일 밤 내일 콘텐츠 생성
 - morning_content_notification: 매일 아침 오늘 콘텐츠 Slack
 - run_sov_for_hospital: 단일 병원 AI 답변 언급률 측정
@@ -157,7 +157,7 @@ def trigger_v0_report(self, hospital_id: str):
             # Slack 알림
             _run_async(notifier.notify_v0_report_ready(hospital.name, sov_pct, pdf_path))
 
-            # AI 노출 웹블로그 준비 태스크 큐잉
+            # 콘텐츠 허브 공개 노출 상태 준비 태스크 큐잉
             build_aeo_site.apply_async(args=[hospital_id], queue="default")
 
     except Exception as exc:
@@ -166,11 +166,11 @@ def trigger_v0_report(self, hospital_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════
-# AI 노출 웹블로그 준비
+# 콘텐츠 허브 공개 노출 상태 준비
 # ══════════════════════════════════════════════════════════════════
 @celery_app.task(name="app.workers.tasks.build_aeo_site", bind=True)
 def build_aeo_site(self, hospital_id: str):
-    """AI 노출 웹블로그 상태 전환 + Slack 알림 (실제 공개 화면은 Next.js /site 담당)"""
+    """콘텐츠 허브 노출 상태 전환 + Slack 알림 (legacy task name; 실제 공개 화면은 Next.js /site 담당)"""
     with SyncSessionLocal() as db:
         hospital = db.get(Hospital, uuid.UUID(hospital_id))
         if not hospital:

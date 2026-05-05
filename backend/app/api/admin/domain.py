@@ -1,6 +1,6 @@
 """
-Admin API — 도메인 검증
-POST /admin/hospitals/{id}/domain/verify — CNAME 검증 + ACTIVE 전환
+Admin API — 공개 도메인 상태 검증
+POST /admin/hospitals/{id}/domain/verify — CNAME 확인 + ACTIVE 전환
 """
 import socket
 import uuid
@@ -27,7 +27,7 @@ class DomainVerifyResponse(BaseModel):
 @router.post("/{hospital_id}/domain/verify", response_model=DomainVerifyResponse)
 async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """
-    병원 aeo_domain의 CNAME을 DNS 조회로 검증한다.
+    병원 공개 도메인의 CNAME을 DNS 조회로 검증한다.
     검증 성공 시 hospital.site_live = True, status = ACTIVE 전환.
     """
     hospital = await _get_hospital_or_404(db, hospital_id)
@@ -45,7 +45,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             hospital.status = HospitalStatus.ACTIVE
         # else: leave status as-is, don't regress to PENDING_DOMAIN
         await db.commit()
-        message = f"도메인 연결이 확인되었습니다. ({domain} → {cname_value})"
+        message = f"공개 도메인 상태가 확인되었습니다. ({domain} → {cname_value})"
     else:
         message = (
             f"CNAME 검증 실패. DNS에 CNAME 레코드를 추가해 주세요: "

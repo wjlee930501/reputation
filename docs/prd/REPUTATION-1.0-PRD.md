@@ -60,7 +60,7 @@ AI 노출 가능성 =
 - 병원 프로파일 입력 및 검증
 - Google Business Profile/Maps/기존 홈페이지/블로그/카카오 채널 등 외부 엔티티 자산 관리
 - V0 AI Search 진단 리포트
-- AEO 공개 사이트 생성 및 도메인 연결
+- AI가 참고할 병원 정보·콘텐츠 허브 공개 노출 관리
 - OpenAI/Google crawler 친화적 robots, sitemap, canonical, JSON-LD, llms.txt
 - 월간 콘텐츠 캘린더 생성
 - 의료광고 금지표현 및 품질 검수
@@ -122,13 +122,14 @@ AI 노출 가능성 =
    - ChatGPT Search 대상 질의 세트
    - Gemini/Google Maps 대상 질의 세트
    - 경쟁 병원 멘션 비교
-7. AEO 공개 사이트 준비
+7. 콘텐츠 허브 공개 노출 준비
    - 공개 프로파일
    - 원장/진료항목
    - FAQ/질환/치료 콘텐츠
    - JSON-LD
    - robots/sitemap/llms.txt
-8. 도메인 연결 및 검증
+   - Next.js /site 기반 동적 노출
+8. 공개 도메인/노출 상태 확인
 9. 콘텐츠 스케줄 생성
 10. 콘텐츠 자동 생성
 11. AE 검수 및 발행
@@ -179,9 +180,9 @@ AI 노출 가능성 =
 - 핵심 프로파일 완성
 - 외부 엔티티 자산 입력
 - Google Maps/Profile 입력
-- AEO 도메인 입력
-- 사이트 빌드 완료
-- 사이트 LIVE 상태
+- 공개 도메인/URL 입력
+- 콘텐츠 허브 노출 준비 완료
+- 공개 노출 상태 확인
 - 스케줄 설정
 - 발행 콘텐츠 존재
 - SoV 측정 데이터 존재
@@ -265,20 +266,20 @@ AI 노출 가능성 =
 - 쿼리별 멘션율과 실패율이 표시된다.
 - 경쟁 병원 언급이 같은 응답에서 파싱된다.
 
-### F6. 도메인 연결
+### F6. 공개 도메인/노출 상태 확인
 
 필수:
 
-- AEO 도메인 저장
+- 공개 도메인 저장
 - CNAME target 안내
 - DNS CNAME 검증
-- LIVE 전환
+- 공개 노출 가능 상태 전환
 - 실제 public page fetch 확인
 
 수용 기준:
 
 - 잘못된 CNAME이면 구체적 실패 메시지를 보여준다.
-- 올바른 CNAME이면 `site_live=True`가 된다.
+- 올바른 CNAME이면 `site_live=True`가 된다. (`site_live`는 legacy 필드명이며 의미는 공개 노출 상태 확인이다.)
 - 스케줄 설정까지 완료된 병원만 `ACTIVE`가 된다.
 
 ### F7. 리포트
@@ -443,7 +444,7 @@ Should pass:
 
 권장 문구:
 
-> Re:putation은 병원의 AI 검색 노출 가능성을 높이기 위해 병원 정보, Google 로컬 신호, 공개 AEO 사이트, 환자 질문형 콘텐츠, ChatGPT/Gemini 측정 리포트를 한 번에 운영하는 관리형 서비스입니다.
+> Re:putation은 병원의 전문성과 근거 자료를 정리해 ChatGPT·Gemini 같은 AI와 환자가 병원을 더 잘 이해하도록 돕는 AI 노출 컨설팅·콘텐츠 운영 서비스입니다. 승인된 병원 정보, 근거 기반 콘텐츠, AI 언급률 측정, 원장님이 바로 이해할 수 있는 리포트를 함께 운영합니다.
 
 금지 문구:
 

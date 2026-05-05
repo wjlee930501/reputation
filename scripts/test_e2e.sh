@@ -6,12 +6,12 @@
 #   STEP 1.  시스템 상태 확인
 #   STEP 2.  병원 프로파일 입력 (완전한 정보)
 #   STEP 3.  V0 리포트 자동 생성 (profile_complete → SoV → PDF → Slack)
-#   STEP 4.  AEO 홈페이지 빌드 (V0 완료 후 자동 트리거)
-#   STEP 5.  도메인 연결 시뮬레이션
+#   STEP 4.  콘텐츠 허브 공개 노출 준비 (V0 완료 후 자동 트리거)
+#   STEP 5.  공개 도메인 상태 시뮬레이션
 #   STEP 6.  콘텐츠 스케줄 설정 (PLAN_16, 화·금 발행)
 #   STEP 7.  콘텐츠 자동 생성 (Claude Sonnet)
 #   STEP 8.  콘텐츠 발행 + 반려 (BUG-01 검증)
-#   STEP 9.  Public API 확인 (AEO 사이트 데이터)
+#   STEP 9.  Public API 확인 (콘텐츠 허브 공개 데이터)
 #   STEP 10. SoV 측정 태스크 (ChatGPT + Gemini)
 #   STEP 11. 월간 리포트 생성 (PDF)
 #   STEP 12. 테스트 데이터 정리
@@ -282,23 +282,23 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════
-header "4" "AEO 홈페이지 빌드 (V0 완료 후 자동 트리거 또는 직접 실행)"
+header "4" "콘텐츠 허브 공개 노출 준비 (V0 완료 후 자동 트리거 또는 직접 실행)"
 # ══════════════════════════════════════════════════════════════════
 
 SITE_BUILT=$(psql_q "SELECT site_built FROM hospitals WHERE id='$HID'")
 
 if [[ "$SITE_BUILT" == "t" || "$SITE_BUILT" == "true" ]]; then
-  ok "AEO 사이트 이미 빌드됨 (V0 후 자동 실행)"
+  ok "콘텐츠 허브 공개 노출 이미 준비됨 (V0 후 자동 실행)"
 else
-  info "빌드 직접 실행..."
+  info "공개 노출 준비 직접 실행..."
   SYNC_BUILD=$(run_task_sync "
 from app.workers.tasks import build_aeo_site
 build_aeo_site('$HID')
 print('done')
 " 2>/dev/null | tail -1 | tr -d '\r\n')
   [[ "$SYNC_BUILD" == "done" ]] \
-    && ok "AEO 사이트 빌드 완료 (동기)" \
-    || fail "사이트 빌드 실패: $SYNC_BUILD"
+    && ok "콘텐츠 허브 공개 노출 준비 완료 (동기)" \
+    || fail "공개 노출 준비 실패: $SYNC_BUILD"
 fi
 
 SITE_BUILT2=$(psql_q "SELECT site_built FROM hospitals WHERE id='$HID'")
@@ -307,7 +307,7 @@ SITE_BUILT2=$(psql_q "SELECT site_built FROM hospitals WHERE id='$HID'")
   || fail "site_built 미설정"
 
 SITE_PATH=$(psql_q "SELECT aeo_site_path FROM hospitals WHERE id='$HID'")
-info "사이트 경로: $SITE_PATH"
+info "공개 표면 경로: $SITE_PATH"
 
 if [[ -n "$SITE_PATH" ]]; then
   docker exec "$API_CONTAINER" test -f "$SITE_PATH/index.html" 2>/dev/null \
@@ -324,7 +324,7 @@ if [[ -n "$SITE_PATH" ]]; then
 fi
 
 # ══════════════════════════════════════════════════════════════════
-header "5" "도메인 연결 시뮬레이션"
+header "5" "공개 도메인 상태 시뮬레이션"
 # ══════════════════════════════════════════════════════════════════
 
 DOMAIN_RES=$(api_patch "/api/v1/admin/hospitals/$HID/domain" \
@@ -334,7 +334,7 @@ DOMAIN_OK=$(echo "$DOMAIN_RES" | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print('ok' if d.get('site_live') or d.get('aeo_domain') else 'fail')" 2>/dev/null || echo "fail")
 
 if [[ "$DOMAIN_OK" == "ok" ]]; then
-  ok "도메인 연결 (jangpyeonhan.motionlabs.io)"
+  ok "공개 도메인 확인 (jangpyeonhan.motionlabs.io)"
   SITE_LIVE=$(psql_q "SELECT site_live FROM hospitals WHERE id='$HID'")
   [[ "$SITE_LIVE" == "t" || "$SITE_LIVE" == "true" ]] \
     && ok "site_live = true 전환 확인" \
@@ -342,7 +342,7 @@ if [[ "$DOMAIN_OK" == "ok" ]]; then
 else
   docker exec "$DB_CONTAINER" psql -U reputation -d reputation -c \
     "UPDATE hospitals SET aeo_domain='jangpyeonhan.motionlabs.io', site_live=true, status='ACTIVE' WHERE id='$HID'" >/dev/null 2>&1
-  ok "도메인 + ACTIVE 전환 (DB 직접)"
+  ok "공개 도메인 + ACTIVE 전환 (DB 직접)"
 fi
 
 # ACTIVE 보장
@@ -524,7 +524,7 @@ if [[ -n "$REJ_ITEM" ]]; then
 fi
 
 # ══════════════════════════════════════════════════════════════════
-header "9" "Public API 확인 (AEO 사이트 데이터)"
+header "9" "Public API 확인 (콘텐츠 허브 공개 데이터)"
 # ══════════════════════════════════════════════════════════════════
 
 docker exec "$DB_CONTAINER" psql -U reputation -d reputation -c \

@@ -6,7 +6,7 @@
 
 ## 제품 개요
 
-**Re:putation**은 병원이 ChatGPT·Gemini 답변에서 더 잘 이해되고 언급되도록 돕는 병원 콘텐츠·웹블로그 운영 서비스다.
+**Re:putation**은 병원이 ChatGPT·Gemini 답변에서 더 잘 이해되고 언급되도록 돕는 AI 노출 컨설팅·콘텐츠 운영 서비스다.
 운영사: **MotionLabs Inc.**
 
 핵심 가치: 병원이 이미 보유한 정보를 AI가 읽기 쉬운 구조로 정리하고,
@@ -30,16 +30,16 @@
     • Slack → AE: "장편한외과의원 V0 리포트 생성 완료 — 원장 보고 전 확인 요망"
     • AE가 직접 원장에게 보고 (시스템이 보내지 않음)
     ↓
-[STEP 4] AI 노출 웹블로그 자동 준비 (시스템 — 프로파일 기반)
-    • 프로파일 정보로 AI가 읽기 쉬운 병원 정보 허브 HTML/CSS 자동 생성
-    • Schema.org MedicalClinic 마크업 자동 적용
-    • FAQ 구조, 원장 소개, 진료 안내 페이지 포함
-    • 빌드 완료 시 Slack → AE: "빌드 완료 — Admin에서 도메인 연결 필요"
+[STEP 4] AI 노출 콘텐츠 허브 노출 준비 (시스템 — 프로파일 기반)
+    • Next.js /site 공개 표면이 승인된 병원 정보와 콘텐츠를 읽어 노출할 수 있게 상태를 준비
+    • Schema.org MedicalClinic 마크업, FAQ/진료 안내, 콘텐츠 목록은 /site가 동적으로 제공
+    • 별도 홈페이지/HTML 납품물이 아니라 AI와 검색엔진이 참고할 병원 정보·콘텐츠 허브 운영 상태를 만든다
+    • 준비 완료 시 Slack → AE: "콘텐츠 허브 노출 준비 완료 — Admin에서 공개 정보와 도메인 상태 확인 필요"
     ↓
-[STEP 5] 도메인 연결 (사람 — Admin에서 AE가)
-    • Admin에서 도메인 입력
-    • DNS 연결 가이드 자동 제공
-    • 연결 확인 후 LIVE 상태로 변경
+[STEP 5] 공개 노출 상태 확인 (사람 — Admin에서 AE가)
+    • Admin에서 병원 도메인/공개 URL 정보를 입력
+    • DNS/도메인 상태를 확인하되, 제품 가치는 도메인 납품이 아니라 콘텐츠 허브 운영에 둔다
+    • 프로파일·V0·콘텐츠 스케줄·공개 상태가 준비되면 ACTIVE로 전환
     ↓
 [STEP 6] 콘텐츠 스케줄 설정 (사람 — Admin에서 AE가)
     • 요금제 선택: 16편/12편/8편 (월간)
@@ -55,7 +55,7 @@
         → Slack → AE: "장편한외과의원 16편 중 1번째 콘텐츠 초안 저장 완료"
         → AE가 Admin에서 콘텐츠 확인
         → [발행] 버튼 클릭
-        → AI 노출 웹블로그에 즉시 게재 (status: PUBLISHED)
+        → AI가 참고할 콘텐츠 허브에 즉시 게재 (status: PUBLISHED)
     ↓
 [STEP 8] 월말 AI 답변 언급 리포트 (시스템 — 매월 마지막 날)
     • 월간 AI 답변 언급률 집계 → PDF 자동 생성
@@ -107,7 +107,7 @@
 
 ### Frontend
 - **Admin** (`/admin`): Next.js 14 App Router — AE 운영 도구
-- **Site** (`/site`): Next.js 14 SSG — 병원별 AI 노출 웹블로그
+- **Site** (`/site`): Next.js 14 SSG — 병원별 정보·콘텐츠 허브 공개 표면
 
 ### Infrastructure
 - **Docker Compose** — 로컬 개발
@@ -147,12 +147,12 @@ reputation/
 │       │   │   ├── content.py     ← 콘텐츠 검토·발행
 │       │   │   ├── schedule.py    ← 스케줄 설정
 │       │   │   └── reports.py     ← 리포트 조회
-│       │   └── public/            ← AI 노출 웹블로그용
+│       │   └── public/            ← 정보·콘텐츠 허브 공개 표면용
 │       │       └── site.py        ← 병원 데이터 제공
 │       ├── services/
 │       │   ├── content_engine.py  ← Claude Sonnet 콘텐츠 생성
 │       │   ├── image_engine.py    ← Google Imagen 3
-│       │   ├── site_builder.py    ← AI 노출 웹블로그 상태 준비
+│       │   ├── site_builder.py    ← 콘텐츠 허브 노출 상태 준비
 │       │   ├── sov_engine.py      ← 환자 질문 발송·파싱·AI 답변 언급률 계산
 │       │   ├── report_engine.py   ← PDF 리포트
 │       │   └── notifier.py        ← Slack 알림
@@ -172,7 +172,7 @@ reputation/
 │   │   └── layout.tsx
 │   └── package.json
 │
-└── site/                          ← Next.js AI 노출 웹블로그
+└── site/                          ← Next.js 정보·콘텐츠 허브 공개 표면
     ├── app/
     │   └── [hospital-slug]/       ← 병원별 동적 라우팅
     └── package.json
@@ -197,8 +197,8 @@ URL: website_url, blog_url, kakao_channel_url, aeo_domain (연결된 도메인)
 상태 플래그:
   profile_complete: bool  (프로파일 입력 완료)
   v0_report_done: bool    (V0 리포트 발송 완료)
-  site_built: bool        (AI 노출 웹블로그 준비 완료)
-  site_live: bool         (도메인 연결 완료)
+  site_built: bool        (콘텐츠 허브 노출 준비 완료 — legacy 필드명)
+  site_live: bool         (공개 도메인/노출 상태 확인 완료 — legacy 필드명)
   schedule_set: bool      (콘텐츠 스케줄 설정 완료)
 ```
 
@@ -292,8 +292,8 @@ NOTICE: "Modern Korean hospital interior, clean white and blue, professional med
 V0 리포트 완료:
 "🔍 [V0 리포트] *{병원명}* AI 답변 노출 진단 리포트 생성 완료\n현재 ChatGPT 답변 내 병원 언급률: {sov}%\n원장 보고 전 확인 후 전달해 주세요."
 
-사이트 빌드 완료:
-"🏗️ [AI 노출 웹블로그] *{병원명}* 병원 정보 허브 준비 완료\nAdmin에서 도메인을 연결해 주세요."
+콘텐츠 허브 노출 준비 완료:
+"🏗️ [AI 노출 콘텐츠 허브] *{병원명}* 병원 정보와 콘텐츠 허브 노출 준비 완료\nAdmin에서 공개 정보와 도메인 상태를 확인해 주세요."
 
 콘텐츠 초안 완료 (당일 08:00):
 "📝 [콘텐츠] *{병원명}* {total}편 중 {seq}번째 콘텐츠 초안 저장 완료\n유형: {type} | 발행 예정일: {date}\nAdmin에서 검토 후 발행해 주세요."
@@ -369,7 +369,7 @@ Week 1-2:
   ✅ V0 리포트 생성 + Slack 알림
 
 Week 3-4:
-  ✅ AEO 사이트 빌더 (HTML 자동 생성)
+  ✅ 병원 정보·콘텐츠 허브 공개 표면 준비
   ✅ 콘텐츠 스케줄 설정 API
   ✅ Claude Sonnet 콘텐츠 생성 엔진
   ✅ Imagen 3 이미지 생성 엔진
