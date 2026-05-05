@@ -274,7 +274,7 @@ export default function QueryTargetsPage() {
             </div>
             <Textarea label="지역어" value={form.region_terms} onChange={(value) => setFormValue(setForm, 'region_terms', value)} placeholder="강남\n서초" />
             <Textarea label="선택 기준" value={form.decision_criteria} onChange={(value) => setFormValue(setForm, 'decision_criteria', value)} placeholder="통증 부담\n회복 기간\n전문의 경험" />
-            <Textarea label="측정 대상 AI" value={form.platforms} onChange={(value) => setFormValue(setForm, 'platforms', value)} placeholder="CHATGPT\nGEMINI" />
+            <Textarea label="확인할 AI 서비스" value={form.platforms} onChange={(value) => setFormValue(setForm, 'platforms', value)} placeholder="CHATGPT\nGEMINI" />
             <Textarea label="경쟁 병원" value={form.competitor_names} onChange={(value) => setFormValue(setForm, 'competitor_names', value)} placeholder="경쟁 병원명을 줄바꿈으로 입력" />
             <Textarea label="초기 환자 질문 문구" value={form.variants} onChange={(value) => setFormValue(setForm, 'variants', value)} placeholder="강남 치질 병원 추천\n치질 수술 어디가 좋아" />
             <Input label="언어" value={form.patient_language} onChange={(value) => setFormValue(setForm, 'patient_language', value)} placeholder="ko" />
@@ -353,7 +353,7 @@ function TargetCard({
 
       <div className="mt-4 grid gap-3 md:grid-cols-4">
         <InfoBlock label="지역" value={target.region_terms.join(', ') || '미지정'} />
-        <InfoBlock label="측정 대상 AI" value={target.platforms.join(', ') || '미지정'} />
+        <InfoBlock label="확인할 AI 서비스" value={target.platforms.join(', ') || '미지정'} />
         <InfoBlock label="경쟁 병원" value={target.competitor_names.join(', ') || '미지정'} />
         <InfoBlock label="환자 질문 문구" value={`${target.summary.active_variant_count}/${target.summary.variant_count}개 운영`} />
       </div>

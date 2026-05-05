@@ -52,6 +52,7 @@ BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("질문 변형", re.compile(r"질문\s*변형")),
     ("AI Exposure Strategy", re.compile(r"AI\s+Exposure\s+Strategy", re.I)),
     ("측정 매트릭스", re.compile(r"측정\s*매트릭스")),
+    ("측정 대상 AI", re.compile(r"측정\s*대상\s*AI", re.I)),
     ("baseline", re.compile(r"(?<!-)\bbaseline\b(?!-)", re.I)),
     ("Google Business Profile", re.compile(r"Google\s+Business\s+Profile", re.I)),
     ("출처 신호", re.compile(r"출처\s*신호")),
