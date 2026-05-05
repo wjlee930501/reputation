@@ -114,6 +114,33 @@ class ReadinessCheck:
     next_action: str
 
 
+READINESS_STATUS_LABELS = {
+    "READY": "운영 준비 완료",
+    "NEEDS_WORK": "보완 필요",
+}
+READINESS_CHECK_STATE_LABELS = {
+    True: "완료",
+    False: "필요",
+}
+
+
+def _readiness_status_label(status_value: str) -> str:
+    return READINESS_STATUS_LABELS.get(status_value, status_value)
+
+
+def _serialize_readiness_check(check: ReadinessCheck) -> dict:
+    return {
+        "key": check.key,
+        "label": check.label,
+        "passed": check.passed,
+        "weight": check.weight,
+        "next_action": check.next_action,
+        "display": {
+            "state_label": READINESS_CHECK_STATE_LABELS[check.passed],
+        },
+    }
+
+
 # ── 엔드포인트 ────────────────────────────────────────────────────
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=HospitalDetail)
 async def create_hospital(body: HospitalCreate, db: AsyncSession = Depends(get_db)):
@@ -446,14 +473,19 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     earned = sum(c.weight for c in checks if c.passed)
     score = round(earned / total_weight * 100)
 
+    readiness_status = (
+        "READY"
+        if score >= 80 and h.site_live and approved_philosophy is not None and essence_fresh
+        else "NEEDS_WORK"
+    )
+
     return {
         "hospital_id": str(h.id),
         "score": score,
-        "status": (
-            "READY"
-            if score >= 80 and h.site_live and approved_philosophy is not None and essence_fresh
-            else "NEEDS_WORK"
-        ),
+        "status": readiness_status,
+        "display": {
+            "status_label": _readiness_status_label(readiness_status),
+        },
         "published_content_count": published_count,
         "sov_record_count": sov_count,
         "report_count": report_count,
@@ -464,16 +496,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "source_stale": bool(approved_philosophy and not essence_fresh),
             "blocked_content_count": essence_blocked_content_count,
         },
-        "checks": [
-            {
-                "key": c.key,
-                "label": c.label,
-                "passed": c.passed,
-                "weight": c.weight,
-                "next_action": c.next_action,
-            }
-            for c in checks
-        ],
+        "checks": [_serialize_readiness_check(c) for c in checks],
     }
 
 

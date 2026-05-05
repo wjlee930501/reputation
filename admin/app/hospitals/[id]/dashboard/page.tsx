@@ -53,11 +53,17 @@ interface ReadinessCheck {
   passed: boolean
   weight: number
   next_action: string
+  display?: {
+    state_label?: string | null
+  }
 }
 
 interface Readiness {
   score: number
   status: string
+  display?: {
+    status_label?: string | null
+  }
   published_content_count: number
   sov_record_count: number
   report_count: number
@@ -98,6 +104,15 @@ function formatRunStatus(status: string) {
   }
 
   return labels[status] ?? status
+}
+
+function getReadinessStatusLabel(readiness: Readiness | null): string {
+  if (!readiness) return '측정 후 산출'
+  return readiness.display?.status_label ?? (readiness.status === 'READY' ? '운영 준비 완료' : '보완 필요')
+}
+
+function getReadinessCheckStateLabel(check: ReadinessCheck): string {
+  return check.display?.state_label ?? (check.passed ? '완료' : '필요')
 }
 
 function getExposureActionTypeLabel(actionType: string) {
@@ -263,7 +278,7 @@ export default function DashboardPage() {
             <HeroStat
               label="AI 노출 준비도"
               value={readiness ? String(readiness.score) : '-'}
-              hint={readiness ? '/ 100' : '측정 후 산출'}
+              hint={readiness ? getReadinessStatusLabel(readiness) : '측정 후 산출'}
             />
           </div>
         </div>
@@ -602,7 +617,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="text-right">
                   <p className="text-3xl font-bold text-slate-900">{readiness.score}</p>
-                  <p className="text-xs text-slate-400">/ 100</p>
+                  <p className="text-xs text-slate-400">{getReadinessStatusLabel(readiness)}</p>
                 </div>
               </div>
               <div className="mt-5 grid gap-3 md:grid-cols-3">
@@ -620,7 +635,7 @@ export default function DashboardPage() {
                         check.passed ? 'text-emerald-800' : 'text-slate-800'
                       }`}
                     >
-                      {check.passed ? '완료' : '필요'} · {check.label}
+                      {getReadinessCheckStateLabel(check)} · {check.label}
                     </p>
                     {!check.passed && (
                       <p className="mt-1 text-xs leading-relaxed text-slate-500">
