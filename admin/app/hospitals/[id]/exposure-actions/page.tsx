@@ -400,8 +400,8 @@ export default function ExposureActionsPage() {
                       <InfoBlock label="담당자" value={action.owner ?? '미지정'} muted={!action.owner} />
                       <InfoBlock
                         label="진단 근거"
-                        value={summarizeEvidence(action.evidence)}
-                        muted={!hasEvidence(action.evidence)}
+                        value={summarizeEvidence(action)}
+                        muted={!hasEvidence(action)}
                       />
                     </div>
                   </li>
@@ -577,7 +577,7 @@ function DetailPanel({
 
       <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
         <h4 className="text-sm font-semibold text-slate-700">진단 근거</h4>
-        <EvidenceList evidence={action.evidence} />
+        <EvidenceList action={action} />
       </div>
 
       <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -666,19 +666,27 @@ function BriefResultPanel({ result }: { result: BriefResultState }) {
   )
 }
 
-function EvidenceList({ evidence }: { evidence: Record<string, unknown> }) {
-  const entries = Object.entries(evidence ?? {}).filter(([, value]) => !isEmptyEvidenceValue(value))
-  if (entries.length === 0) {
+function EvidenceList({ action }: { action: ExposureAction }) {
+  const displayItems = action.display?.evidence_items?.filter((item) => item.label && item.value) ?? []
+  const fallbackEntries = Object.entries(action.evidence ?? {}).filter(([, value]) => !isEmptyEvidenceValue(value))
+  if (displayItems.length === 0 && fallbackEntries.length === 0) {
     return <p className="mt-2 text-sm text-slate-500">기록된 근거가 없습니다.</p>
   }
   return (
     <dl className="mt-2 grid grid-cols-1 gap-x-3 gap-y-1 text-xs text-slate-600">
-      {entries.map(([key, value]) => (
-        <div key={key} className="flex gap-2">
-          <dt className="shrink-0 font-medium text-slate-500">{formatEvidenceKey(key)}</dt>
-          <dd className="text-slate-700 break-words">{formatEvidenceValue(value, key)}</dd>
-        </div>
-      ))}
+      {displayItems.length > 0
+        ? displayItems.map((item) => (
+            <div key={item.key} className="flex gap-2">
+              <dt className="shrink-0 font-medium text-slate-500">{item.label}</dt>
+              <dd className="text-slate-700 break-words">{item.value}</dd>
+            </div>
+          ))
+        : fallbackEntries.map(([key, value]) => (
+            <div key={key} className="flex gap-2">
+              <dt className="shrink-0 font-medium text-slate-500">{formatEvidenceKey(key)}</dt>
+              <dd className="text-slate-700 break-words">{formatEvidenceValue(value, key)}</dd>
+            </div>
+          ))}
     </dl>
   )
 }
@@ -716,7 +724,9 @@ function InfoBlock({ label, value, muted }: { label: string; value: string; mute
   )
 }
 
-function hasEvidence(evidence: Record<string, unknown> | null | undefined): boolean {
+function hasEvidence(action: ExposureAction): boolean {
+  if (action.display?.evidence_items && action.display.evidence_items.length > 0) return true
+  const evidence = action.evidence
   if (!evidence) return false
   return Object.values(evidence).some((value) => !isEmptyEvidenceValue(value))
 }
@@ -769,7 +779,9 @@ function formatLinkedContent(content: ExposureActionContentSummary | null | unde
   return `${typeLabel} ${content.sequence_no}/${content.total_count} · ${content.scheduled_date} · ${title}`
 }
 
-function summarizeEvidence(evidence: Record<string, unknown> | null | undefined): string {
+function summarizeEvidence(action: ExposureAction): string {
+  if (action.display?.evidence_summary) return action.display.evidence_summary
+  const evidence = action.evidence
   if (!evidence) return '근거 없음'
   const entries = Object.entries(evidence).filter(([, value]) => !isEmptyEvidenceValue(value))
   if (entries.length === 0) return '근거 없음'

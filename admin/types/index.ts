@@ -230,6 +230,8 @@ export interface ExposureAction {
     status_label?: string | null
     gap_type_label?: string | null
     severity_label?: string | null
+    evidence_summary?: string | null
+    evidence_items?: Array<{ key: string; label: string; value: string }> | null
   }
   title: string
   description: string

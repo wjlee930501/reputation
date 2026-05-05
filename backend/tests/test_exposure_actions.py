@@ -253,6 +253,10 @@ async def test_exposure_actions_endpoint_shape(monkeypatch):
                 "status_label": "대기",
                 "gap_type_label": "병원 미언급",
                 "severity_label": "높음",
+                "evidence_summary": "AI 언급률: 0%",
+                "evidence_items": [
+                    {"key": "mention_rate", "label": "AI 언급률", "value": "0%"},
+                ],
             },
             "title": "환자 질문과 연결된 근거 콘텐츠 보강",
             "description": (

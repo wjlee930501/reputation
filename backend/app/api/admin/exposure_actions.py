@@ -548,6 +548,93 @@ SEVERITY_DISPLAY_LABELS = {
     "LOW": "낮음",
 }
 
+EVIDENCE_KEY_DISPLAY_LABELS = {
+    "share_of_voice": "AI 언급률",
+    "sov": "AI 언급률",
+    "sov_pct": "AI 언급률",
+    "sov_percent": "AI 언급률",
+    "mention_rate": "AI 언급률",
+    "mentioned_rate": "AI 언급률",
+    "mentioned_count": "언급 횟수",
+    "mention_count": "언급 횟수",
+    "successful_count": "성공 측정 수",
+    "success_count": "성공 측정 수",
+    "failed_count": "실패 측정 수",
+    "total_count": "전체 측정 수",
+    "total_queries": "전체 질문 수",
+    "query_count": "질문 수",
+    "measured_count": "측정 수",
+    "total_measurements": "전체 측정 수",
+    "successful_measurements": "성공 측정 수",
+    "failed_measurements": "실패 측정 수",
+    "source_missing_count": "근거 URL 부족 수",
+    "competitor_mention_count": "경쟁 병원 언급 수",
+    "competitor_names": "경쟁 병원",
+    "competitors": "경쟁 병원",
+    "competitor": "경쟁 병원",
+    "competitor_share": "경쟁 점유율",
+    "competitor_mentions": "경쟁 병원 언급",
+    "competitor_mention_rate": "경쟁 병원 언급률",
+    "missing_topics": "누락 토픽",
+    "topics": "토픽",
+    "keyword": "키워드",
+    "keywords": "키워드",
+    "query": "환자 질문",
+    "query_text": "환자 질문",
+    "query_name": "환자 질문",
+    "query_target": "환자 질문",
+    "query_target_name": "환자 질문",
+    "target_priority": "질문 우선순위",
+    "rule": "진단 규칙",
+    "ai_platform": "AI 답변 서비스",
+    "platform": "AI 답변 서비스",
+    "platforms": "AI 답변 서비스",
+    "source_count": "참고 자료 수",
+    "source_total": "참고 자료 수",
+    "sources": "참고 자료",
+    "source_urls": "참고 URL",
+    "source_types": "참고 자료 유형",
+    "authority_score": "권위 점수",
+    "freshness_days": "경과 일수",
+    "last_published_at": "최근 발행",
+    "last_measured_at": "최근 측정",
+    "latest_measured_at": "최근 측정",
+    "measured_at": "측정 시각",
+    "observed_at": "관측 시각",
+    "severity": "심각도",
+    "threshold": "기준값",
+    "gap_id": "진단 ID",
+    "reason": "사유",
+    "note": "메모",
+    "notes": "메모",
+    "message": "메시지",
+}
+
+EVIDENCE_VALUE_DISPLAY_LABELS = {
+    "chatgpt": "ChatGPT",
+    "gemini": "Gemini",
+    "claude": "Claude",
+    "positive": "긍정",
+    "neutral": "중립",
+    "negative": "부정",
+    "no_successful_measurements": "성공 측정 없음",
+    "missing_mention": "병원 미언급",
+    "competitor_visibility": "경쟁 병원이 더 많이 노출",
+    "source_signal_gap": "AI가 참고할 근거 자료 부족",
+    "zero_hospital_mentions": "병원 미언급",
+    "mention_rate_below_threshold": "AI 언급률 기준 미달",
+    "competitor_mentions_match_or_exceed_hospital_mentions": "경쟁 병원 언급 우세",
+    "source_urls_missing_for_majority_of_successful_measurements": "참고 URL 부족",
+    "HIGH": "높음",
+    "NORMAL": "보통",
+    "LOW": "낮음",
+    "high": "높음",
+    "normal": "보통",
+    "low": "낮음",
+}
+
+PERCENT_EVIDENCE_KEY_PARTS = ("rate", "share_of_voice", "sov", "percent", "pct")
+
 
 def _wash_stale_operator_copy(value: str | None) -> str | None:
     if value is None:
@@ -588,17 +675,84 @@ def _serialize_action(action: ExposureAction) -> dict[str, Any]:
     }
 
 
-def _serialize_action_display(action: ExposureAction, gap: Any) -> dict[str, str | None]:
+def _serialize_action_display(action: ExposureAction, gap: Any) -> dict[str, Any]:
     action_type = str(_enum_value(action.action_type)) if action.action_type else None
     status = str(_enum_value(action.status)) if action.status else None
     gap_type = str(getattr(gap, "gap_type", "")) or None
     severity = str(getattr(gap, "severity", "")) or None
+    evidence_items = _serialize_evidence_items(getattr(gap, "evidence", None) or {})
     return {
         "action_type_label": ACTION_TYPE_DISPLAY_LABELS.get(action_type or "", action_type),
         "status_label": ACTION_STATUS_DISPLAY_LABELS.get(status or "", status),
         "gap_type_label": GAP_TYPE_DISPLAY_LABELS.get(gap_type or "", gap_type),
         "severity_label": SEVERITY_DISPLAY_LABELS.get(severity or "", severity),
+        "evidence_summary": _summarize_evidence_items(evidence_items),
+        "evidence_items": evidence_items,
     }
+
+
+def _serialize_evidence_items(evidence: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {"key": str(key), "label": _format_evidence_key(str(key)), "value": _format_evidence_value(value, str(key))}
+        for key, value in evidence.items()
+        if not _is_empty_evidence_value(value)
+    ]
+
+
+def _summarize_evidence_items(items: list[dict[str, str]]) -> str:
+    if not items:
+        return "근거 없음"
+    return " · ".join(f"{item['label']}: {item['value']}" for item in items[:2])
+
+
+def _format_evidence_key(key: str) -> str:
+    return EVIDENCE_KEY_DISPLAY_LABELS.get(key) or EVIDENCE_KEY_DISPLAY_LABELS.get(key.lower()) or key.replace("_", " ")
+
+
+def _format_evidence_value(value: Any, key: str | None = None) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, bool):
+        return "예" if value else "아니오"
+    if isinstance(value, (int, float)):
+        return _format_evidence_number(value, key)
+    if isinstance(value, datetime):
+        return _iso_or_none(value) or "-"
+    if isinstance(value, str):
+        return EVIDENCE_VALUE_DISPLAY_LABELS.get(value) or EVIDENCE_VALUE_DISPLAY_LABELS.get(value.lower()) or value
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "-"
+        items = [_format_evidence_value(item, key) for item in value[:5]]
+        more = f" 외 {len(value) - len(items)}건" if len(value) > len(items) else ""
+        return f"{', '.join(items)}{more}"
+    if isinstance(value, dict):
+        entries = [(k, v) for k, v in value.items() if not _is_empty_evidence_value(v)]
+        if not entries:
+            return "-"
+        return ", ".join(
+            f"{_format_evidence_key(str(k))}: {_format_evidence_value(v, str(k))}"
+            for k, v in entries[:4]
+        )
+    return str(value)
+
+
+def _format_evidence_number(value: int | float, key: str | None = None) -> str:
+    if key and any(part in key.lower() for part in PERCENT_EVIDENCE_KEY_PARTS):
+        pct = value * 100 if 0 < value <= 1 else value
+        rounded = round(pct, 1)
+        return f"{rounded:g}%"
+    if isinstance(value, int) or float(value).is_integer():
+        return str(int(value))
+    return f"{round(float(value), 2):g}"
+
+
+def _is_empty_evidence_value(value: Any) -> bool:
+    if value is None or value == "":
+        return True
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) == 0
+    return False
 
 
 def _serialize_content_summary(item: ContentItem) -> dict[str, Any]:
