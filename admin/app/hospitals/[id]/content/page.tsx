@@ -87,23 +87,43 @@ interface ReviewState {
 }
 
 function getReviewState(item: ContentItem): ReviewState {
+  const displayReview = item.display?.review
+  const displayLabel = displayReview?.label ?? undefined
+  const displayReason = displayReview?.reason ?? undefined
   if (item.status === 'PUBLISHED') {
-    return { key: 'published', label: '발행 완료', badge: 'bg-blue-100 text-blue-700', publishable: false }
+    return { key: 'published', label: displayLabel ?? '발행 완료', badge: 'bg-blue-100 text-blue-700', publishable: false }
   }
   if (item.status === 'REJECTED') {
-    return { key: 'rejected', label: '반려됨', badge: 'bg-red-100 text-red-700', reason: '야간 재생성 대기', publishable: false }
+    return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
   }
   if (!item.title || !item.body) {
-    return { key: 'notGenerated', label: '생성 전', badge: 'bg-gray-100 text-gray-500', reason: '야간 자동 생성 대기', publishable: false }
+    return { key: 'notGenerated', label: displayLabel ?? '생성 전', badge: 'bg-gray-100 text-gray-500', reason: displayReason ?? '야간 자동 생성 대기', publishable: false }
   }
   if (item.essence_status !== 'ALIGNED') {
-    const reason =
+    const reason = displayReason ?? (
       item.essence_status === 'NEEDS_ESSENCE_REVIEW' ? '운영 기준 재검토 필요' :
       item.essence_status === 'MISSING_APPROVED_PHILOSOPHY' ? '승인된 운영 기준 없음' :
       '운영 기준 미검수'
-    return { key: 'needsReview', label: '검토 필요', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
+    )
+    return { key: 'needsReview', label: displayLabel ?? '검토 필요', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
   }
-  return { key: 'publishable', label: '발행 가능', badge: 'bg-green-100 text-green-700', publishable: true }
+  return { key: 'publishable', label: displayLabel ?? '발행 가능', badge: 'bg-green-100 text-green-700', publishable: true }
+}
+
+function getContentTypeLabel(item: ContentItem): string {
+  return item.display?.content_type_label ?? TYPE_LABELS[item.content_type] ?? item.content_type
+}
+
+function getEssenceLabel(item: ContentItem): { label: string; color: string } {
+  if (!item.essence_status) return ESSENCE_FALLBACK
+  const fallback = ESSENCE_LABELS[item.essence_status] ?? { label: item.essence_status, color: 'bg-gray-100 text-gray-700' }
+  return { ...fallback, label: item.display?.essence_status_label ?? fallback.label }
+}
+
+function getBriefLabel(item: ContentItem): { label: string; color: string } {
+  if (!item.brief_status) return BRIEF_FALLBACK
+  const fallback = BRIEF_LABELS[item.brief_status] ?? { label: item.brief_status, color: 'bg-gray-100 text-gray-700' }
+  return { ...fallback, label: item.display?.brief_status_label ?? fallback.label }
 }
 
 export default function ContentPage() {
@@ -528,12 +548,8 @@ export default function ContentPage() {
               )}
               {items.map((item) => {
                 const review = reviewByItem.get(item.id) ?? getReviewState(item)
-                const essence = item.essence_status
-                  ? ESSENCE_LABELS[item.essence_status] ?? { label: item.essence_status, color: 'bg-gray-100 text-gray-700' }
-                  : ESSENCE_FALLBACK
-                const brief = item.brief_status
-                  ? BRIEF_LABELS[item.brief_status] ?? { label: item.brief_status, color: 'bg-gray-100 text-gray-700' }
-                  : BRIEF_FALLBACK
+                const essence = getEssenceLabel(item)
+                const brief = getBriefLabel(item)
                 const isSelectable = review.publishable
                 return (
                   <tr key={item.id} className="hover:bg-gray-50 transition-colors">
@@ -547,7 +563,7 @@ export default function ContentPage() {
                       />
                     </td>
                     <td className="px-6 py-4 text-gray-600">{item.scheduled_date}</td>
-                    <td className="px-6 py-4 text-gray-600">{TYPE_LABELS[item.content_type] ?? item.content_type}</td>
+                    <td className="px-6 py-4 text-gray-600">{getContentTypeLabel(item)}</td>
                     <td className="px-6 py-4">
                       <button onClick={() => openDetail(item)} className="text-blue-600 hover:underline text-left">
                         {item.title ?? <span className="text-gray-400 italic">생성 전</span>}
@@ -615,7 +631,7 @@ export default function ContentPage() {
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
               <div>
                 <span className="text-xs font-medium text-gray-500 uppercase">
-                  {TYPE_LABELS[selected.content_type] ?? selected.content_type}
+                  {getContentTypeLabel(selected)}
                 </span>
                 {!editMode && (
                   <h3 className="text-lg font-bold text-gray-900 mt-0.5">{selected.title ?? '생성 전 슬롯'}</h3>
@@ -828,11 +844,9 @@ export default function ContentPage() {
                   <div className="p-4 space-y-3 text-sm">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        selected.brief_status
-                          ? BRIEF_LABELS[selected.brief_status]?.color ?? 'bg-gray-100 text-gray-700'
-                          : BRIEF_FALLBACK.color
+                        getBriefLabel(selected).color
                       }`}>
-                        {selected.brief_status ? BRIEF_LABELS[selected.brief_status]?.label ?? selected.brief_status : BRIEF_FALLBACK.label}
+                        {getBriefLabel(selected).label}
                       </span>
                       {selected.brief_approved_at && (
                         <span className="text-xs text-gray-500">
@@ -864,7 +878,7 @@ export default function ContentPage() {
                       label="콘텐츠 운영 기준"
                       value={
                         selected.essence_status
-                          ? ESSENCE_LABELS[selected.essence_status]?.label ?? selected.essence_status
+                          ? getEssenceLabel(selected).label
                           : '미검수'
                       }
                       tone={selected.essence_status === 'ALIGNED' ? 'ok' : 'warn'}

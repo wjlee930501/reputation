@@ -44,6 +44,35 @@ router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Content"])
 
 BRIEF_CAPABLE_ACTION_TYPES = {"CONTENT", "WEBBLOG_IA", "SOURCE"}
 
+CONTENT_TYPE_DISPLAY_LABELS = {
+    "FAQ": "자주 묻는 질문",
+    "DISEASE": "질환 가이드",
+    "TREATMENT": "시술 안내",
+    "COLUMN": "원장 칼럼",
+    "HEALTH": "건강 정보",
+    "LOCAL": "지역 특화",
+    "NOTICE": "공지",
+}
+
+CONTENT_STATUS_DISPLAY_LABELS = {
+    "DRAFT": "초안",
+    "READY": "발행 준비",
+    "PUBLISHED": "발행 완료",
+    "REJECTED": "반려",
+}
+
+BRIEF_STATUS_DISPLAY_LABELS = {
+    "DRAFT": "콘텐츠 가이드 작성중",
+    "APPROVED": "콘텐츠 가이드 승인",
+    "NEEDS_REVIEW": "콘텐츠 가이드 재검토",
+}
+
+ESSENCE_STATUS_DISPLAY_LABELS = {
+    "ALIGNED": "운영 기준 통과",
+    "NEEDS_ESSENCE_REVIEW": "운영 기준 재검토",
+    "MISSING_APPROVED_PHILOSOPHY": "운영 기준 없음",
+}
+
 
 class ScheduleCreate(BaseModel):
     plan: str = Field(pattern=r"^PLAN_(16|12|8)$")  # PLAN_16 | PLAN_12 | PLAN_8
@@ -515,17 +544,57 @@ def _enum_value(value):
     return value.value if hasattr(value, "value") else value
 
 
+def _display_label(labels: dict[str, str], value) -> str | None:
+    normalized = _enum_value(value)
+    if normalized is None:
+        return None
+    text = str(normalized)
+    return labels.get(text, text)
+
+
+def _content_review_display(item: ContentItem, status_value: str | None) -> dict[str, str | bool | None]:
+    if status_value == ContentStatus.PUBLISHED.value:
+        return {"label": "발행 완료", "reason": None, "publishable": False}
+    if status_value == ContentStatus.REJECTED.value:
+        return {"label": "반려됨", "reason": "야간 재생성 대기", "publishable": False}
+    if not item.title or not item.body:
+        return {"label": "생성 전", "reason": "야간 자동 생성 대기", "publishable": False}
+    if item.essence_status != ESSENCE_STATUS_ALIGNED:
+        reason = (
+            "운영 기준 재검토 필요"
+            if item.essence_status == "NEEDS_ESSENCE_REVIEW"
+            else "승인된 운영 기준 없음"
+            if item.essence_status == "MISSING_APPROVED_PHILOSOPHY"
+            else "운영 기준 미검수"
+        )
+        return {"label": "검토 필요", "reason": reason, "publishable": False}
+    return {"label": "발행 가능", "reason": None, "publishable": True}
+
+
+def _serialize_item_display(item: ContentItem, content_type: str | None, status_value: str | None) -> dict:
+    return {
+        "content_type_label": _display_label(CONTENT_TYPE_DISPLAY_LABELS, content_type),
+        "status_label": _display_label(CONTENT_STATUS_DISPLAY_LABELS, status_value),
+        "brief_status_label": _display_label(BRIEF_STATUS_DISPLAY_LABELS, item.brief_status),
+        "essence_status_label": _display_label(ESSENCE_STATUS_DISPLAY_LABELS, item.essence_status),
+        "review": _content_review_display(item, status_value),
+    }
+
+
 def _serialize_item(item: ContentItem, full: bool = False) -> dict:
+    content_type = _enum_value(item.content_type)
+    status_value = _enum_value(item.status)
     d = {
         "id": str(item.id),
-        "content_type": item.content_type,
+        "content_type": content_type,
         "sequence_no": item.sequence_no,
         "total_count": item.total_count,
         "title": item.title,
         "meta_description": item.meta_description,
         "image_url": get_signed_url(item.image_url) if item.image_url else None,
         "scheduled_date": str(item.scheduled_date),
-        "status": item.status,
+        "status": status_value,
+        "display": _serialize_item_display(item, content_type, status_value),
         "generated_at": item.generated_at.isoformat() if item.generated_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "published_by": item.published_by,

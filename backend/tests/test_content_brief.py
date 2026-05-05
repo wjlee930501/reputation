@@ -159,6 +159,15 @@ def test_serialize_item_includes_brief_and_query_links():
     assert serialized["exposure_action_id"] == str(action_id)
     assert serialized["content_brief"]["target_query"] == "강남 치질 수술 회복 기간은?"
     assert serialized["brief_status"] == "APPROVED"
+    assert serialized["display"]["content_type_label"] == "자주 묻는 질문"
+    assert serialized["display"]["status_label"] == "초안"
+    assert serialized["display"]["brief_status_label"] == "콘텐츠 가이드 승인"
+    assert serialized["display"]["essence_status_label"] is None
+    assert serialized["display"]["review"] == {
+        "label": "생성 전",
+        "reason": "야간 자동 생성 대기",
+        "publishable": False,
+    }
     assert serialized["brief_approved_at"] == approved_at.isoformat()
     assert serialized["brief_approved_by"] == "Ops"
 

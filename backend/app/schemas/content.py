@@ -16,6 +16,7 @@ class ContentItemResponse(BaseModel):
     image_url: Optional[str]
     scheduled_date: str
     status: str
+    display: Optional[dict[str, Any]] = None
     generated_at: Optional[str]
     published_at: Optional[str]
     published_by: Optional[str]

@@ -42,6 +42,17 @@ export interface ContentItem {
   image_url: string | null
   scheduled_date: string
   status: 'DRAFT' | 'READY' | 'PUBLISHED' | 'REJECTED'
+  display?: {
+    content_type_label?: string | null
+    status_label?: string | null
+    brief_status_label?: string | null
+    essence_status_label?: string | null
+    review?: {
+      label?: string | null
+      reason?: string | null
+      publishable?: boolean | null
+    } | null
+  }
   generated_at: string | null
   published_at: string | null
   published_by: string | null
