@@ -1,214 +1,393 @@
-const diagnosisRows = [
-  { label: '환자 질문', value: '“강남에서 탈장 수술 잘하는 병원 알려줘”' },
-  { label: '현재 AI 답변', value: '주변 병원은 언급되지만 우리 병원 설명은 부족함' },
-  { label: '빠진 이유', value: '수술 강점·원장 설명·근거 콘텐츠가 한 흐름으로 정리되지 않음' },
-  { label: '다음 보완', value: '환자 질문 기준 콘텐츠 4개와 병원 정보 정리' },
-]
+import Image from "next/image";
 
-const proofPoints = [
-  'ChatGPT·Gemini 기준 환자 질문 확인',
-  '진료 강점과 근거 자료 정리',
-  '의료광고 리스크 검토',
-  '원장님용 월간 보고서 제공',
-]
+const proofItems = [
+  {
+    title: "ChatGPT·Gemini 확인",
+    body: "환자 질문별 AI 답변에서 병원이 어떤 맥락으로 보이는지 점검합니다.",
+  },
+  {
+    title: "의료광고법 리스크 고려",
+    body: "표현을 키우기보다 과장·비교·보장 표현 가능성을 함께 확인합니다.",
+  },
+  {
+    title: "진료과별 환자 질문 설계",
+    body: "지역, 증상, 치료 선택처럼 실제 상담 전 질문을 기준으로 진단합니다.",
+  },
+  {
+    title: "월간 원장님용 리포트",
+    body: "답변 변화, 빠진 정보, 다음 보완 항목을 원장님 보고용으로 정리합니다.",
+  },
+];
+
+const comparisonItems = [
+  {
+    label: "기존 방식",
+    title: "홈페이지·블로그를 만들고 기다립니다.",
+    points: [
+      "검색 노출 지표만 보고 AI 답변 안의 맥락은 확인하기 어렵습니다.",
+      "병원 강점이 환자 질문 문장과 연결되지 않은 채 흩어져 있습니다.",
+      "콘텐츠 발행 후 어떤 정보가 부족한지 다음 운영 기준이 모호합니다.",
+    ],
+  },
+  {
+    label: "Re:putation 방식",
+    title: "AI 답변을 먼저 진단하고 운영 순서를 정합니다.",
+    points: [
+      "ChatGPT·Gemini 답변에서 병원명, 설명, 누락 정보를 확인합니다.",
+      "진료 강점, 의료진 설명, 근거 자료를 환자 질문 기준으로 재정리합니다.",
+      "매달 확인 질문과 보완 콘텐츠를 보고서로 남겨 다음 운영에 연결합니다.",
+    ],
+  },
+];
 
 const processSteps = [
   {
-    title: '질문을 정합니다',
-    body: '지역, 증상, 치료 선택처럼 환자가 AI에게 실제로 물어볼 질문을 진료과별로 정리합니다.',
+    title: "질문 설정",
+    body: "원장님이 잡고 싶은 진료 영역과 실제 환자 문의를 바탕으로 AI 확인 질문을 구성합니다.",
   },
   {
-    title: '현재 답변을 확인합니다',
-    body: 'AI 답변 안에서 우리 병원이 언급되는지, 어떤 설명이 빠져 있는지 확인합니다.',
+    title: "AI 답변 확인",
+    body: "ChatGPT·Gemini가 어떤 병원을 언급하고 어떤 기준으로 설명하는지 확인합니다.",
   },
   {
-    title: '빠진 이유를 찾습니다',
-    body: '병원 정보, 진료 강점, 근거 콘텐츠가 AI가 이해할 수 있게 연결되어 있는지 점검합니다.',
+    title: "빠진 정보 진단",
+    body: "진료 강점, 의료진 이력, 장비·검사·시술 설명, 근거 콘텐츠의 빈틈을 찾습니다.",
   },
   {
-    title: '매달 보완합니다',
-    body: '필요한 콘텐츠와 병원 정보를 보강하고, 다음 달 다시 AI 답변 변화를 확인합니다.',
+    title: "보완 콘텐츠 운영",
+    body: "광고성 문구보다 환자 질문에 답하는 정보와 출처 기반 콘텐츠를 우선 정리합니다.",
   },
-]
+  {
+    title: "월간 리포트",
+    body: "이번 달 변화와 다음 달 운영 항목을 원장님이 바로 볼 수 있는 형태로 제공합니다.",
+  },
+];
 
-const clinicTypes = [
-  '정형외과·통증의학과',
-  '내과·검진센터',
-  '산부인과',
-  '가정의학과·로컬 의원',
-]
+const specialtyCards = [
+  {
+    tag: "정형외과·통증",
+    question: "어깨 통증 비수술 치료는 어느 병원에서 상담해야 할까?",
+    focus: "증상·검사·비수술 치료 설명과 원장님 진료 관점을 연결합니다.",
+  },
+  {
+    tag: "내과·검진",
+    question: "위내시경과 대장내시경을 같이 받을 병원은 어디가 좋을까?",
+    focus: "검진 프로세스, 장비, 준비 안내, 사후 관리 콘텐츠를 점검합니다.",
+  },
+  {
+    tag: "산부인과",
+    question: "생리불순이나 여성검진은 어떤 기준으로 병원을 골라야 할까?",
+    focus: "민감한 진료의 상담 흐름과 신뢰 자료가 충분히 설명되는지 봅니다.",
+  },
+  {
+    tag: "가정의학과/로컬 의원",
+    question: "동네에서 지속적으로 관리받을 만한 의원을 찾고 싶어.",
+    focus: "지역성, 만성질환 관리, 예방접종·수액·검사 안내의 누락을 확인합니다.",
+  },
+];
+
+const trustItems = [
+  {
+    title: "개인정보 최소화",
+    body: "진단에는 공개 정보와 사용자가 제공한 확인 질문을 중심으로 사용합니다.",
+  },
+  {
+    title: "의료광고 리스크 검토",
+    body: "순위 보장, 치료 결과 보장, 과도한 비교 표현을 전제로 운영하지 않습니다.",
+  },
+  {
+    title: "근거 자료 중심",
+    body: "AI가 이해할 수 있는 공개 자료, 병원 안내, 진료 설명의 연결성을 봅니다.",
+  },
+  {
+    title: "원장 보고용 리포트",
+    body: "실무 체크리스트가 아니라 의사결정에 필요한 요약과 다음 액션을 제공합니다.",
+  },
+];
 
 export default function Home() {
   return (
     <main className="landing-shell">
-      <header className="top-bar">
-        <a className="brand" href="#top" aria-label="Re:putation 홈">
-          <span aria-hidden />
-          <strong>Re:putation</strong>
-          <small>병원 AI 노출 진단</small>
+      <header className="site-header">
+        <a className="brand-lockup" href="#top" aria-label="MotionLabs Re:putation 홈">
+          <span className="brand-mark" aria-hidden="true">R</span>
+          <span>
+            <strong>Re:putation</strong>
+            <small>by MotionLabs</small>
+          </span>
         </a>
-        <nav className="nav-links" aria-label="페이지 섹션">
-          <a href="#diagnosis">진단 항목</a>
-          <a href="#process">월간 운영</a>
-          <a href="#lead">무료 진단</a>
+
+        <nav className="header-nav" aria-label="랜딩 페이지 섹션">
+          <a href="#diagnosis">진단 방식</a>
+          <a href="#operation">월간 운영</a>
+          <a href="#specialty">진료과</a>
+          <a href="#lead">상담 신청</a>
         </nav>
-        <a className="nav-button" href="#lead">AI 노출 진단받기</a>
+
+        <a className="header-cta" href="#lead">무료 진단 요청</a>
       </header>
 
       <section id="top" className="hero-section">
         <div className="hero-copy">
-          <p className="eyebrow">로컬 병원을 위한 AI 노출 진단</p>
+          <p className="section-eyebrow">AI EXPOSURE DIAGNOSIS FOR CLINICS</p>
           <h1>
-            환자는 이제 AI에게 병원을 묻습니다.
-            <span>우리 병원은 그 답변 안에 제대로 보이고 있을까요?</span>
+            환자는 이제 AI에게
+            <span>병원을 묻습니다.</span>
+            <em>우리 병원은 그 답변 안에 제대로 보이고 있을까요?</em>
           </h1>
           <p className="hero-subcopy">
-            Re:putation은 ChatGPT·Gemini가 환자 질문에 답할 때 우리 병원이 언급되는지,
-            어떤 설명으로 보이는지 확인하고 다음 보완 주제를 정리합니다.
+            Re:putation은 홈페이지 제작이나 일반 블로그 대행이 아닙니다. ChatGPT·Gemini가
+            환자 질문에 답할 때 우리 병원이 어떻게 보이는지 진단하고, 빠진 정보와 근거
+            콘텐츠 운영 순서를 정리합니다.
           </p>
-          <div className="hero-actions">
-            <a className="button primary" href="#lead">우리 병원 AI 노출 진단받기</a>
-            <a className="button secondary" href="#diagnosis">AI 노출 진단 샘플 보기</a>
+          <div className="hero-actions" aria-label="주요 행동">
+            <a className="btn btn-primary" href="#lead">우리 병원 AI 노출 진단받기</a>
+            <a className="btn btn-secondary" href="#diagnosis">진단 방식 보기</a>
           </div>
-          <div className="trust-strip" aria-label="서비스 신뢰 요소">
-            {proofPoints.map((point) => (
-              <span key={point}>{point === '의료광고 리스크 검토' ? '의료광고법 리스크를 고려해 점검' : point}</span>
-            ))}
+          <div className="hero-note">
+            <strong>순위 보장 대신</strong>
+            <span>AI가 참고할 수 있는 정보의 빈틈을 확인하고 매달 보완합니다.</span>
           </div>
         </div>
 
-        <aside className="diagnosis-card" aria-label="AI 노출 진단 리포트 예시">
-          <div className="card-topline">
-            <div>
-              <p>AI 노출 1차 진단</p>
-              <h2>우리 병원 AI 답변 진단 예시</h2>
+        <div className="product-visual" aria-label="Re:putation AI 노출 진단 화면 예시">
+          <div className="visual-frame">
+            <Image
+              src="/landing/reputation-clinic-ai-dashboard.png"
+              alt="병원 AI 노출 진단 대시보드와 진료 콘텐츠 운영 화면 예시"
+              width={1536}
+              height={1024}
+              priority
+              sizes="(max-width: 960px) 100vw, 48vw"
+            />
+            <div className="visual-chip visual-chip-left">
+              <span>누락 정보</span>
+              <strong>의료진 설명 · 검사 흐름</strong>
             </div>
-            <div className="card-badges" aria-label="확인 기준">
-              <strong>ChatGPT</strong>
-              <strong>Gemini</strong>
+            <div className="visual-chip visual-chip-right">
+              <span>답변 표면</span>
+              <strong>ChatGPT · Gemini</strong>
             </div>
-          </div>
-          <div className="question-box">
-            <span>확인 질문</span>
-            <strong>“우리 지역에서 이 증상으로 어느 병원을 가야 할까?”</strong>
-          </div>
-          <dl className="diagnosis-list">
-            {diagnosisRows.map((row) => (
-              <div key={row.label}>
-                <dt>{row.label}</dt>
-                <dd>{row.value}</dd>
+            <div className="diagnosis-overlay" aria-label="AI 노출 진단 리포트 예시">
+              <div className="overlay-head">
+                <span>AI 답변 노출 진단서</span>
+                <strong>월간 리포트</strong>
               </div>
-            ))}
-          </dl>
-          <div className="card-note">
-            과장된 약속 대신, AI가 병원을 이해할 수 있는 정보와 근거를 매달 점검합니다.
+              <dl>
+                <div>
+                  <dt>확인 질문</dt>
+                  <dd>압구정 어깨 통증 비수술 치료 병원</dd>
+                </div>
+                <div>
+                  <dt>현재 답변</dt>
+                  <dd>주변 병원은 언급되지만 우리 병원 설명은 부족</dd>
+                </div>
+                <div>
+                  <dt>다음 보완</dt>
+                  <dd>진료 철학, 검사 흐름, 치료 기준 콘텐츠 정리</dd>
+                </div>
+              </dl>
+            </div>
           </div>
-        </aside>
+        </div>
       </section>
 
-      <section id="diagnosis" className="section diagnosis-section">
+      <section className="proof-strip" aria-label="Re:putation 핵심 확인 항목">
+        {proofItems.map((item) => (
+          <article key={item.title}>
+            <h2>{item.title}</h2>
+            <p>{item.body}</p>
+          </article>
+        ))}
+      </section>
+
+      <section id="diagnosis" className="section comparison-section">
         <div className="section-heading">
-          <p className="eyebrow">WHAT WE CHECK</p>
-          <h2>좋은 병원인데 AI 답변에서 빠지는 이유를 찾습니다.</h2>
+          <p className="section-eyebrow">DIAGNOSIS MODEL</p>
+          <h2>콘텐츠를 더 쓰기 전에, AI 답변에서 빠지는 이유부터 봅니다.</h2>
           <p>
-            AI는 광고 문구보다 공개된 병원 정보, 환자 질문에 맞는 설명, 근거가 연결된 콘텐츠를 바탕으로 답합니다.
+            병원 홍보 문구를 늘리는 방식으로는 AI 답변의 빈틈을 확인하기 어렵습니다.
+            Re:putation은 환자 질문을 기준으로 현재 답변과 부족한 근거를 먼저 진단합니다.
           </p>
         </div>
-        <div className="check-grid">
-          <article>
-            <span>01</span>
-            <h3>환자 질문 기준</h3>
-            <p>원장님이 하고 싶은 말이 아니라 환자가 실제로 묻는 문장부터 정리합니다.</p>
-          </article>
-          <article>
-            <span>02</span>
-            <h3>현재 AI 답변</h3>
-            <p>우리 병원이 언급되는지, 어떤 병원과 함께 설명되는지 확인합니다.</p>
-          </article>
-          <article>
-            <span>03</span>
-            <h3>근거와 설명의 빈틈</h3>
-            <p>진료 강점, 원장님 설명, 병원 자료가 한 흐름으로 연결되어 있는지 봅니다.</p>
-          </article>
+
+        <div className="comparison-grid">
+          {comparisonItems.map((item) => (
+            <article key={item.label} className={item.label === "Re:putation 방식" ? "is-reputation" : ""}>
+              <span>{item.label}</span>
+              <h3>{item.title}</h3>
+              <ul>
+                {item.points.map((point) => (
+                  <li key={point}>{point}</li>
+                ))}
+              </ul>
+            </article>
+          ))}
+        </div>
+
+        <div className="photo-insight-card">
+          <div className="photo-copy">
+            <p className="section-eyebrow">REPORT-LED OPERATION</p>
+            <h3>병원 공간보다 중요한 건, AI가 참고할 수 있는 진료 정보의 구조입니다.</h3>
+            <p>
+              진단 리포트, 질문별 답변 변화, 보완 콘텐츠 체크리스트를 한 화면에서 보며
+              다음 달 운영 우선순위를 정합니다.
+            </p>
+          </div>
+          <div className="photo-frame">
+            <Image
+              src="/landing/reputation-product-report-devices.png"
+              alt="사람 없는 병원 SaaS 리포트 대시보드 기기 실사 이미지"
+              width={1536}
+              height={1024}
+              sizes="(max-width: 960px) 100vw, 44vw"
+            />
+            <div className="photo-badge">
+              <strong>월간 리포트</strong>
+              <span>답변 변화 · 누락 정보 · 다음 액션</span>
+            </div>
+          </div>
         </div>
       </section>
 
-      <section id="process" className="section process-section">
-        <div className="section-heading compact">
-          <p className="eyebrow">MONTHLY OPERATION</p>
-          <h2>진단으로 끝내지 않고, 매달 보완합니다.</h2>
+      <section id="operation" className="operation-section">
+        <div className="section-heading">
+          <p className="section-eyebrow">MONTHLY OPERATION</p>
+          <h2>AI 노출 진단은 한 번의 점검이 아니라 월간 운영 기준입니다.</h2>
+          <p>
+            질문 설정부터 리포트까지 같은 흐름으로 반복해 우리 병원의 정보가 환자 질문에
+            더 잘 대응하도록 정리합니다.
+          </p>
         </div>
-        <div className="process-list">
+
+        <div className="process-grid">
           {processSteps.map((step, index) => (
             <article key={step.title}>
-              <span>{String(index + 1).padStart(2, '0')}</span>
-              <div>
-                <h3>{step.title}</h3>
-                <p>{step.body}</p>
-              </div>
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              <h3>{step.title}</h3>
+              <p>{step.body}</p>
             </article>
           ))}
         </div>
       </section>
 
-      <section className="section fit-section">
-        <div>
-          <p className="eyebrow">CLINIC FIT</p>
-          <h2>이런 병원부터 먼저 점검해볼 만합니다.</h2>
-          <p>이미 진료 경쟁력은 있지만, 환자 질문 기준으로 강점과 근거가 정리되어 있지 않은 로컬 병원에 적합합니다.</p>
+      <section id="specialty" className="section specialty-section">
+        <div className="section-heading">
+          <p className="section-eyebrow">SPECIALTY QUESTION SET</p>
+          <h2>진료과마다 환자가 AI에게 묻는 문장이 다릅니다.</h2>
+          <p>
+            정형외과, 내과, 산부인과, 로컬 의원은 같은 “좋은 병원”이라도 AI가 참고해야 할
+            정보 구조가 다릅니다.
+          </p>
         </div>
-        <ul>
-          {clinicTypes.map((clinic) => (
-            <li key={clinic}>{clinic}</li>
+
+        <div className="specialty-tabs" aria-label="진료과 탭 예시">
+          {specialtyCards.map((card) => (
+            <span key={card.tag}>{card.tag}</span>
           ))}
-        </ul>
+        </div>
+
+        <div className="specialty-grid">
+          {specialtyCards.map((card) => (
+            <article key={card.tag}>
+              <span>{card.tag}</span>
+              <h3>{card.question}</h3>
+              <p>{card.focus}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="trust-section">
+        <div className="trust-copy">
+          <p className="section-eyebrow">TRUST & RISK CHECK</p>
+          <h2>의료 서비스답게, 보이는 것보다 지켜야 할 기준을 먼저 봅니다.</h2>
+          <p>
+            Re:putation은 AI 답변 노출을 진단하지만 노출 순위나 환자 유입을 보장하지
+            않습니다. 공개 정보의 정합성, 의료광고 리스크, 원장님 보고에 필요한 판단
+            자료를 차분하게 정리합니다.
+          </p>
+          <div className="trust-photo">
+            <Image
+              src="/landing/reputation-clinic-trust-interior.png"
+              alt="사람 없는 프리미엄 병원 리셉션과 데이터 리포트 화면 실사 이미지"
+              width={1536}
+              height={1024}
+              sizes="(max-width: 960px) 100vw, 36vw"
+            />
+            <div className="photo-badge trust-badge">
+              <strong>리스크 체크</strong>
+              <span>공개 정보 · 표현 기준 · 보고 자료</span>
+            </div>
+          </div>
+        </div>
+        <div className="trust-grid">
+          {trustItems.map((item) => (
+            <article key={item.title}>
+              <h3>{item.title}</h3>
+              <p>{item.body}</p>
+            </article>
+          ))}
+        </div>
       </section>
 
       <section id="lead" className="lead-section">
-        <div className="lead-copy">
-          <p className="eyebrow">FREE DIAGNOSIS REQUEST</p>
-          <h2>우리 병원이 AI 답변에서 어떻게 보이는지 먼저 확인해보세요.</h2>
-          <p>
-            병원명과 확인하고 싶은 환자 질문을 남겨주시면 1차 진단 범위를 정리해 연락드립니다.
-            진단은 무료이며, 입력하신 정보는 상담 안내와 진단 범위 확인에만 사용됩니다.
-          </p>
+        <div className="lead-panel">
+          <div className="lead-copy">
+            <p className="section-eyebrow">FREE DIAGNOSIS REQUEST</p>
+            <h2>우리 병원이 AI 답변에서 어떻게 보이는지 먼저 확인해보세요.</h2>
+            <p>
+              병원명과 확인하고 싶은 환자 질문을 남겨주시면 1차 진단 범위를 정리해
+              연락드립니다. 입력하신 정보는 진단 범위 확인과 상담 안내 목적으로만 사용됩니다.
+            </p>
+          </div>
+
+          <form className="lead-form" action="#" method="post">
+            <div className="form-row">
+              <label>
+                병원명
+                <input name="clinicName" placeholder="예: 장편한외과의원" required />
+              </label>
+              <label>
+                진료과/지역
+                <input name="clinicType" placeholder="예: 강남 정형외과" required />
+              </label>
+            </div>
+            <label>
+              연락처
+              <input name="contact" placeholder="이메일 또는 휴대폰" required />
+            </label>
+            <label>
+              확인하고 싶은 환자 질문
+              <textarea
+                name="question"
+                placeholder="예: 강남에서 어깨 통증 비수술 치료 잘 보는 병원 알려줘"
+                required
+              />
+            </label>
+            <label className="privacy-check">
+              <input name="privacy" type="checkbox" required />
+              <span>
+                개인정보 수집 및 이용에 동의합니다. 입력하신 정보는 AI 노출 진단 범위 확인과
+                상담 안내 목적으로만 사용됩니다.
+              </span>
+            </label>
+            <button className="btn btn-submit" type="submit">무료 진단 요청하기</button>
+          </form>
         </div>
-        <form className="lead-form" action="#" method="post">
-          <label>
-            병원명
-            <input placeholder="예: 장편한외과의원" required />
-          </label>
-          <label>
-            진료과/지역
-            <input placeholder="예: 강남 외과" required />
-          </label>
-          <label>
-            연락처
-            <input placeholder="이메일 또는 휴대폰" required />
-          </label>
-          <label>
-            확인하고 싶은 환자 질문
-            <textarea placeholder="예: 강남에서 탈장 수술 잘하는 병원 알려줘" required />
-          </label>
-          <label className="privacy-check">
-            <input type="checkbox" required />
-            <span>개인정보 수집 및 이용에 동의합니다. 입력하신 정보는 AI 노출 진단 및 상담 안내 목적으로만 사용됩니다.</span>
-          </label>
-          <button className="button primary submit-button" type="submit">무료 진단 요청하기</button>
-        </form>
       </section>
 
       <footer className="site-footer">
         <div>
           <strong>Re:putation</strong>
-          <p>AI 노출 진단 및 병원 콘텐츠 운영 컨설팅</p>
+          <p>AI 노출 진단 및 병원 콘텐츠 운영 서비스</p>
         </div>
-        <div>
+        <div className="footer-links">
           <span>MotionLabs Inc.</span>
           <a href="mailto:contact@motionlabs.kr">contact@motionlabs.kr</a>
-          <a href="#lead">개인정보처리방침</a>
+          <a href="#lead">문의하기</a>
         </div>
       </footer>
     </main>
-  )
+  );
 }
