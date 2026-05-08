@@ -39,7 +39,9 @@ async function handler(
   };
 
   if (req.method !== "GET" && req.method !== "HEAD") {
-    fetchOptions.body = await req.text();
+    // multipart/form-data 등 binary body를 보존하기 위해 arrayBuffer로 그대로 전달.
+    // text() 사용 시 multipart boundary가 깨져 backend에서 파싱 실패.
+    fetchOptions.body = await req.arrayBuffer();
   }
 
   const res = await fetch(url.toString(), fetchOptions);
