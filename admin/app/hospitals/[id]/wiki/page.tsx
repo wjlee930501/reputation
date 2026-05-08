@@ -146,8 +146,16 @@ export default function WikiPage() {
   }, [notesByGroup])
 
   const photos = sources.filter((s) => PHOTO_TYPES.has(s.source_type))
+  const [toggleErrors, setToggleErrors] = useState<Record<string, string>>({})
+  const [pendingToggleId, setPendingToggleId] = useState<string | null>(null)
 
   async function togglePublic(photoId: string, next: boolean) {
+    setPendingToggleId(photoId)
+    setToggleErrors((prev) => {
+      const copy = { ...prev }
+      delete copy[photoId]
+      return copy
+    })
     try {
       await fetchAPI(`/admin/hospitals/${id}/essence/sources/${photoId}/public`, {
         method: 'PATCH',
@@ -155,7 +163,10 @@ export default function WikiPage() {
       })
       await refresh()
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : '토글 실패')
+      const message = e instanceof Error ? e.message : '토글 실패'
+      setToggleErrors((prev) => ({ ...prev, [photoId]: message }))
+    } finally {
+      setPendingToggleId(null)
     }
   }
 
@@ -228,11 +239,23 @@ export default function WikiPage() {
                         <input
                           type="checkbox"
                           checked={p.is_public}
+                          disabled={pendingToggleId === p.id}
                           onChange={(e) => togglePublic(p.id, e.target.checked)}
                           className="rounded border-slate-300"
                         />
-                        <span>{p.is_public ? '/site에 공개' : '비공개'}</span>
+                        <span>
+                          {pendingToggleId === p.id
+                            ? '저장 중…'
+                            : p.is_public
+                              ? '/site에 공개'
+                              : '비공개'}
+                        </span>
                       </label>
+                      {toggleErrors[p.id] && (
+                        <p className="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700">
+                          {toggleErrors[p.id]}
+                        </p>
+                      )}
                     </div>
                   </div>
                 )
