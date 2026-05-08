@@ -92,6 +92,10 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   reject_content: '콘텐츠 반려',
   approve_philosophy: '운영 기준 승인',
   update_exposure_action: 'AI 노출 작업 변경',
+  upload_source_asset: '자료 업로드',
+  crawl_source_url: 'URL 자동 크롤',
+  exclude_source_asset: '자료 제외',
+  toggle_source_public: '사진 공개 토글',
 }
 
 function formatDateTime(value: string | null) {
@@ -319,6 +323,28 @@ export default function DashboardPage() {
     }
     if (action === 'approve_philosophy' && typeof detail.version !== 'undefined') {
       return `버전 ${detail.version} 승인 (근거 검토 확인)`
+    }
+    if (action === 'upload_source_asset') {
+      const sizeBytes = typeof detail.size_bytes === 'number' ? detail.size_bytes : null
+      const extractor = typeof detail.extractor === 'string' ? detail.extractor : null
+      const sourceType = typeof detail.source_type === 'string' ? detail.source_type : null
+      const parts = [sourceType, extractor, sizeBytes ? `${(sizeBytes / 1024).toFixed(0)}KB` : null]
+      return parts.filter(Boolean).join(' · ')
+    }
+    if (action === 'crawl_source_url') {
+      const url = typeof detail.url === 'string' ? detail.url : null
+      const chars = typeof detail.extracted_chars === 'number' ? `${detail.extracted_chars}자` : null
+      return [url, chars].filter(Boolean).join(' · ')
+    }
+    if (action === 'exclude_source_asset') {
+      const fromStatus = typeof detail.from_status === 'string' ? detail.from_status : null
+      const sourceType = typeof detail.source_type === 'string' ? detail.source_type : null
+      return [sourceType, fromStatus ? `이전 상태: ${fromStatus}` : null].filter(Boolean).join(' · ')
+    }
+    if (action === 'toggle_source_public') {
+      if (detail.from === false && detail.to === true) return '비공개 → 공개'
+      if (detail.from === true && detail.to === false) return '공개 → 비공개'
+      return ''
     }
     return ''
   }
