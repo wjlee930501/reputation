@@ -359,7 +359,7 @@ function SourcesStepBody({
     <div className="space-y-5">
       <CrawlForm hospitalId={hospitalId} onCreated={onChanged} />
       <UploadForm hospitalId={hospitalId} onCreated={onChanged} />
-      <SourcesList sources={sources} loading={loading} />
+      <SourcesList hospitalId={hospitalId} sources={sources} loading={loading} onChanged={onChanged} />
     </div>
   )
 }
@@ -523,7 +523,41 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
   )
 }
 
-function SourcesList({ sources, loading }: { sources: Source[]; loading: boolean }) {
+function SourcesList({
+  hospitalId,
+  sources,
+  loading,
+  onChanged,
+}: {
+  hospitalId: string
+  sources: Source[]
+  loading: boolean
+  onChanged: () => void
+}) {
+  const [excludingId, setExcludingId] = useState<string | null>(null)
+  const [excludeErrors, setExcludeErrors] = useState<Record<string, string>>({})
+
+  async function exclude(sourceId: string) {
+    if (!confirm('이 자료를 제외하시겠습니까? 운영 기준 초안과 /site 노출에서 빠집니다.')) return
+    setExcludingId(sourceId)
+    setExcludeErrors((prev) => {
+      const next = { ...prev }
+      delete next[sourceId]
+      return next
+    })
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${sourceId}/exclude`, {
+        method: 'POST',
+      })
+      onChanged()
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : '제외 실패'
+      setExcludeErrors((prev) => ({ ...prev, [sourceId]: message }))
+    } finally {
+      setExcludingId(null)
+    }
+  }
+
   if (loading && sources.length === 0) {
     return <p className="text-sm text-slate-500">자료 목록을 불러오는 중…</p>
   }
@@ -543,46 +577,62 @@ function SourcesList({ sources, loading }: { sources: Source[]; loading: boolean
         {sources.map((s) => (
           <li
             key={s.id}
-            className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 text-sm"
+            className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm"
           >
-            <div className="min-w-0">
-              <p className="flex items-center gap-2 font-medium text-slate-900">
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
-                  {s.display?.source_type_label ?? s.source_type}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 font-medium text-slate-900">
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
+                    {s.display?.source_type_label ?? s.source_type}
+                  </span>
+                  <span className="truncate">{s.title}</span>
+                </p>
+                <p className="mt-1 text-xs text-slate-500 truncate">
+                  {s.url ? (
+                    <a href={s.url} target="_blank" rel="noopener" className="underline">{s.url}</a>
+                  ) : s.file_url ? (
+                    <a
+                      href={s.file_url.startsWith('/') ? `http://localhost:8000${s.file_url}` : s.file_url}
+                      target="_blank"
+                      rel="noopener"
+                      className="underline"
+                    >
+                      파일 보기 ({s.mime_type ?? 'binary'})
+                    </a>
+                  ) : (
+                    '본문 직접 입력'
+                  )}
+                  {s.evidence_note_count > 0 && ` · 근거 노트 ${s.evidence_note_count}개`}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                    s.status === 'PROCESSED'
+                      ? 'bg-green-100 text-green-700'
+                      : s.status === 'ERROR'
+                        ? 'bg-red-100 text-red-700'
+                        : s.status === 'EXCLUDED'
+                          ? 'bg-slate-100 text-slate-500'
+                          : 'bg-yellow-100 text-yellow-800'
+                  }`}
+                >
+                  {s.display?.status_label ?? s.status}
                 </span>
-                <span className="truncate">{s.title}</span>
-              </p>
-              <p className="mt-1 text-xs text-slate-500 truncate">
-                {s.url ? (
-                  <a href={s.url} target="_blank" rel="noopener" className="underline">{s.url}</a>
-                ) : s.file_url ? (
-                  <a
-                    href={s.file_url.startsWith('/') ? `http://localhost:8000${s.file_url}` : s.file_url}
-                    target="_blank"
-                    rel="noopener"
-                    className="underline"
+                {s.status !== 'EXCLUDED' && (
+                  <button
+                    onClick={() => exclude(s.id)}
+                    disabled={excludingId === s.id}
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                   >
-                    파일 보기 ({s.mime_type ?? 'binary'})
-                  </a>
-                ) : (
-                  '본문 직접 입력'
+                    {excludingId === s.id ? '제외 중…' : '제외'}
+                  </button>
                 )}
-                {s.evidence_note_count > 0 && ` · 근거 노트 ${s.evidence_note_count}개`}
-              </p>
+              </div>
             </div>
-            <span
-              className={`shrink-0 rounded-full px-2 py-1 text-xs font-semibold ${
-                s.status === 'PROCESSED'
-                  ? 'bg-green-100 text-green-700'
-                  : s.status === 'ERROR'
-                    ? 'bg-red-100 text-red-700'
-                    : s.status === 'EXCLUDED'
-                      ? 'bg-slate-100 text-slate-500'
-                      : 'bg-yellow-100 text-yellow-800'
-              }`}
-            >
-              {s.display?.status_label ?? s.status}
-            </span>
+            {excludeErrors[s.id] && (
+              <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{excludeErrors[s.id]}</p>
+            )}
           </li>
         ))}
       </ul>

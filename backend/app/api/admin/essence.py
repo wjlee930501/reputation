@@ -257,7 +257,17 @@ async def exclude_source(
     db: AsyncSession = Depends(get_db),
 ):
     source = await _get_source_or_404(db, hospital_id, source_id)
+    previous_status = source.status
     source.status = SourceStatus.EXCLUDED
+    await write_audit_log(
+        db,
+        action="exclude_source_asset",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="source_asset",
+        target_id=source.id,
+        detail={"from_status": str(previous_status), "source_type": str(source.source_type)},
+    )
     await db.commit()
     await db.refresh(source)
     notes = await _get_notes_for_source(db, source.id)
