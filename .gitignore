@@ -34,9 +34,18 @@ backend/celerybeat-schedule
 
 # OMC state
 .omc/
+.claude/
 
 # Secrets
 *.pem
 *.key
 service-account.json
 google-credentials.json
+*.bak
+
+# Local artifacts (sales decks, drafts, agent prompts, scratch scripts)
+*.docx
+*.pdf
+AGENTS.md
+generate-report.js
+docs/superpowers/

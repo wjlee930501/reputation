@@ -26,9 +26,18 @@ from app.services.essence_engine import (
     screen_content_against_philosophy,
     synthesize_philosophy,
 )
+from app.services.asset_storage import store_asset_bytes
 from app.services.report_engine import generate_pdf_report
 
 DEMO_SLUG = "jangpyeonhan-surgery-demo"
+
+# 1x1 투명 PNG. 데모 seed가 실제 사진 파일을 강제로 묶어 들이지 않으면서도
+# /site 갤러리 + DoctorIntro 자동 매핑 흐름을 시각적으로 보여주려는 용도.
+_TRANSPARENT_PIXEL_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 def seed_demo() -> dict[str, str]:
@@ -85,6 +94,7 @@ def seed_demo() -> dict[str, str]:
         db.flush()
 
         philosophy = _seed_essence_chain(db, hospital)
+        _seed_demo_photos(db, hospital)
 
         schedule = ContentSchedule(
             hospital_id=hospital.id,
@@ -279,6 +289,51 @@ def _seed_essence_chain(db, hospital: Hospital) -> HospitalContentPhilosophy | N
     db.add(philosophy)
     db.flush()
     return philosophy
+
+
+def _seed_demo_photos(db, hospital: Hospital) -> None:
+    """Seed 사진 자료 2장(원장 + 병원 내부) — 둘 다 is_public=True로 즉시 /site 노출.
+
+    실제 파일은 store_asset_bytes에 위임 — dev면 /tmp/asset_uploads, prod면 GCS.
+    """
+    photo_specs = [
+        {
+            "source_type": SourceType.PHOTO_DOCTOR,
+            "title": "박장편 원장 (데모 placeholder)",
+            "filename": "doctor_demo.png",
+        },
+        {
+            "source_type": SourceType.PHOTO_CLINIC_INTERIOR,
+            "title": "병원 내부 (데모 placeholder)",
+            "filename": "interior_demo.png",
+        },
+    ]
+    for spec in photo_specs:
+        file_url = store_asset_bytes(
+            hospital_id=hospital.id,
+            filename=spec["filename"],
+            data=_TRANSPARENT_PIXEL_PNG,
+            mime_type="image/png",
+        )
+        db.add(
+            HospitalSourceAsset(
+                hospital_id=hospital.id,
+                source_type=spec["source_type"],
+                title=spec["title"],
+                url=None,
+                raw_text=None,
+                operator_note=None,
+                source_metadata={"channel": "demo"},
+                file_url=file_url,
+                mime_type="image/png",
+                file_size_bytes=len(_TRANSPARENT_PIXEL_PNG),
+                is_public=True,
+                content_hash=compute_source_content_hash(spec["title"], None, None, None),
+                status=SourceStatus.PENDING,
+                created_by="Demo AE",
+            )
+        )
+    db.flush()
 
 
 if __name__ == "__main__":

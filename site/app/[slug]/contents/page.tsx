@@ -57,7 +57,7 @@ export default async function ContentsLibraryPage({ params }: Props) {
   }
   const orderedTypes = [
     ...PRIORITY_TYPES.filter((type) => grouped.has(type)),
-    ...[...grouped.keys()].filter((type) => !PRIORITY_TYPES.includes(type)),
+    ...Array.from(grouped.keys()).filter((type) => !PRIORITY_TYPES.includes(type)),
   ]
 
   const breadcrumbItems = [
