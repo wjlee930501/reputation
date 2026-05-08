@@ -1,6 +1,6 @@
 """
 Public API — 병원 정보·콘텐츠 허브 공개 표면용
-GET /api/v1/public/hospitals/{slug}                      — 병원 기본정보
+GET /api/v1/public/hospitals/{slug}                      — 병원 기본정보 + 공개 사진
 GET /api/v1/public/hospitals/{slug}/contents             — 발행된 콘텐츠 목록
 GET /api/v1/public/hospitals/{slug}/contents/{content_id} — 콘텐츠 상세
 """
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentStatus
+from app.models.essence import HospitalSourceAsset, PHOTO_SOURCE_TYPES, SourceType
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.gcs_utils import get_signed_url
@@ -37,12 +38,26 @@ async def list_hospitals(db: AsyncSession = Depends(get_db)):
 
 @router.get("/{slug}")
 async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
-    """병원 기본정보 (ACTIVE 상태 병원만 공개)"""
+    """병원 기본정보 (ACTIVE 상태 병원만 공개) + AE가 검수해 공개로 표시한 사진."""
     result = await db.execute(select(Hospital).where(Hospital.slug == slug))
     h = result.scalar_one_or_none()
     if not h or h.status != HospitalStatus.ACTIVE:
         raise HTTPException(status_code=404, detail="Hospital not found")
-    return _serialize_hospital(h)
+
+    # is_public=True 사진만 노출. 의료광고법 우려가 큰 카테고리는 enum에 포함되지 않으므로
+    # PHOTO_SOURCE_TYPES 자체가 안전 게이트 역할.
+    photos_result = await db.execute(
+        select(HospitalSourceAsset)
+        .where(
+            HospitalSourceAsset.hospital_id == h.id,
+            HospitalSourceAsset.is_public.is_(True),
+            HospitalSourceAsset.source_type.in_(list(PHOTO_SOURCE_TYPES)),
+            HospitalSourceAsset.file_url.is_not(None),
+        )
+        .order_by(HospitalSourceAsset.updated_at.desc())
+    )
+    photos = photos_result.scalars().all()
+    return _serialize_hospital(h, photos)
 
 
 @router.get("/{slug}/contents")
@@ -88,7 +103,29 @@ async def _get_active_hospital(db: AsyncSession, slug: str) -> Hospital:
     return h
 
 
-def _serialize_hospital(h: Hospital) -> dict:
+def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = None) -> dict:
+    photo_records: list[HospitalSourceAsset] = list(photos or [])
+
+    # 카테고리별 첫 사진 — 컴포넌트 fallback용 단축 필드.
+    by_type: dict[SourceType, HospitalSourceAsset] = {}
+    for asset in photo_records:
+        if asset.source_type not in by_type:
+            by_type[asset.source_type] = asset
+
+    director_photo = h.director_photo_url
+    if not director_photo and SourceType.PHOTO_DOCTOR in by_type:
+        director_photo = by_type[SourceType.PHOTO_DOCTOR].file_url
+
+    serialized_photos = [
+        {
+            "id": str(asset.id),
+            "source_type": asset.source_type.value if hasattr(asset.source_type, "value") else asset.source_type,
+            "title": asset.title,
+            "url": asset.file_url,
+        }
+        for asset in photo_records
+    ]
+
     return {
         "id": str(h.id),
         "name": h.name,
@@ -115,8 +152,9 @@ def _serialize_hospital(h: Hospital) -> dict:
         # clinic writing standards must come from an approved, source-backed review
         # flow rather than the free-text profile field.
         "director_philosophy": None,
-        "director_photo_url": h.director_photo_url,
+        "director_photo_url": director_photo,
         "treatments": h.treatments,
+        "photos": serialized_photos,
     }
 
 

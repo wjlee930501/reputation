@@ -5,6 +5,7 @@ import { fetchHospital, fetchContents } from '@/lib/api'
 
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
 import { ClinicFooter } from './_components/ClinicFooter'
+import { ClinicGallery } from './_components/ClinicGallery'
 import { ClinicHeader } from './_components/ClinicHeader'
 import { ClinicHero } from './_components/ClinicHero'
 import { ContactCard } from './_components/ContactCard'
@@ -164,6 +165,8 @@ export default async function HospitalHubPage({ params }: Props) {
           />
 
           <TreatmentGrid treatments={hospital.treatments} />
+
+          <ClinicGallery photos={hospital.photos ?? []} />
 
           <ContactCard
             address={hospital.address}

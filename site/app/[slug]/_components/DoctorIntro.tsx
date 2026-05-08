@@ -1,5 +1,7 @@
 import Image from 'next/image'
 
+import { resolveAssetUrl } from '@/lib/api'
+
 import { StethoscopeIcon } from './MedicalIcons'
 
 interface Props {
@@ -19,6 +21,7 @@ export function DoctorIntro({
   region,
   contentCount,
 }: Props) {
+  const resolvedPhoto = resolveAssetUrl(directorPhotoUrl)
   return (
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
@@ -32,14 +35,15 @@ export function DoctorIntro({
         </header>
 
         <div className="clinic-curator">
-          {directorPhotoUrl ? (
+          {resolvedPhoto ? (
             <div className="clinic-curator-portrait">
               <Image
-                src={directorPhotoUrl}
+                src={resolvedPhoto}
                 alt={`${directorName} 원장 사진`}
                 fill
                 sizes="(max-width: 720px) 180px, 240px"
                 style={{ objectFit: 'cover' }}
+                unoptimized={resolvedPhoto.startsWith('http://localhost')}
               />
             </div>
           ) : (

@@ -25,6 +25,32 @@ export interface Hospital {
   director_photo_url: string | null
   treatments: Array<{ name: string; description: string }>
   aeo_domain: string | null
+  photos: HospitalPhoto[]
+}
+
+export type HospitalPhotoType =
+  | 'PHOTO_DOCTOR'
+  | 'PHOTO_CLINIC_EXTERIOR'
+  | 'PHOTO_CLINIC_INTERIOR'
+  | 'PHOTO_TREATMENT_ROOM'
+
+export interface HospitalPhoto {
+  id: string
+  source_type: HospitalPhotoType
+  title: string
+  url: string
+}
+
+const ASSETS_BACKEND_BASE =
+  process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || 'http://localhost:8000'
+
+// 백엔드가 GCS 미설정 환경에서 file_url을 "/assets/..."로 반환. 절대 URL로 전환해
+// /site(다른 호스트)에서도 이미지 로드 가능하게 한다.
+export function resolveAssetUrl(url: string | null | undefined): string | null {
+  if (!url) return null
+  if (url.startsWith('http://') || url.startsWith('https://')) return url
+  if (url.startsWith('/')) return `${ASSETS_BACKEND_BASE}${url}`
+  return url
 }
 
 export interface ContentReference {

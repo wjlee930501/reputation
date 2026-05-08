@@ -3773,3 +3773,51 @@ textarea:focus-visible {
 .legal-shell {
   padding-bottom: env(safe-area-inset-bottom);
 }
+
+/* ── Clinic gallery (외관/내부/시술실 검수 사진) ──────────────── */
+.clinic-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.clinic-gallery-item {
+  position: relative;
+  margin: 0;
+  border-radius: 18px;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  background: var(--color-revisit-coolgrey-90);
+}
+
+.clinic-gallery-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, transparent 0%, rgba(33, 45, 59, 0.7) 100%);
+  color: var(--color-revisit-greyscale-100);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.clinic-gallery-caption-type {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.clinic-gallery-caption-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+@media (max-width: 480px) {
+  .clinic-gallery-grid {
+    grid-template-columns: 1fr;
+  }
+}
