@@ -2,12 +2,14 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.essence import (
+    PHOTO_SOURCE_TYPES,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
@@ -25,7 +27,15 @@ from app.schemas.essence import (
     SourceAssetCreate,
     SourceAssetPatch,
     SourceAssetResponse,
+    SourcePublicToggle,
 )
+from app.services.asset_extractor import (
+    detect_extractor_for,
+    extract_docx_text,
+    extract_pdf_text,
+    fetch_url_text,
+)
+from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
@@ -34,6 +44,16 @@ from app.services.essence_engine import (
     validate_philosophy_grounding,
     validate_source_excerpt,
 )
+
+MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
+
+
+class SourceCrawlRequest(BaseModel):
+    source_type: SourceType
+    title: str = Field(min_length=1, max_length=300)
+    url: str = Field(min_length=10, max_length=1000)
+    operator_note: str | None = None
+    created_by: str | None = Field(default=None, max_length=100)
 
 router = APIRouter(prefix="/admin/hospitals/{hospital_id}/essence", tags=["Admin — Essence"])
 
@@ -45,6 +65,10 @@ SOURCE_TYPE_DISPLAY_LABELS = {
     SourceType.LANDING_PAGE: "랜딩 페이지",
     SourceType.BROCHURE: "브로슈어",
     SourceType.INTERNAL_NOTE: "내부 메모",
+    SourceType.PHOTO_DOCTOR: "사진 — 원장",
+    SourceType.PHOTO_CLINIC_EXTERIOR: "사진 — 병원 외관",
+    SourceType.PHOTO_CLINIC_INTERIOR: "사진 — 병원 내부",
+    SourceType.PHOTO_TREATMENT_ROOM: "사진 — 진료/시술실",
     SourceType.OTHER: "기타 자료",
 }
 SOURCE_STATUS_DISPLAY_LABELS = {
@@ -234,6 +258,149 @@ async def exclude_source(
 ):
     source = await _get_source_or_404(db, hospital_id, source_id)
     source.status = SourceStatus.EXCLUDED
+    await db.commit()
+    await db.refresh(source)
+    notes = await _get_notes_for_source(db, source.id)
+    return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
+
+
+@router.post("/sources/upload", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse)
+async def upload_source_file(
+    hospital_id: uuid.UUID,
+    source_type: SourceType = Form(...),
+    title: str = Form(..., min_length=1, max_length=300),
+    file: UploadFile = File(...),
+    operator_note: str | None = Form(default=None),
+    created_by: str | None = Form(default=None, max_length=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """이미지/PDF/DOCX 업로드. 사진은 file_url만 저장, 텍스트형 자료는 raw_text 자동 추출."""
+    await _get_hospital_or_404(db, hospital_id)
+
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"파일 크기는 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 이하여야 합니다.")
+    if not data:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+
+    mime_type = file.content_type or ""
+    extractor_kind = detect_extractor_for(mime_type, file.filename or "")
+    is_photo_type = source_type in PHOTO_SOURCE_TYPES
+
+    if is_photo_type and extractor_kind != "IMAGE":
+        raise HTTPException(status_code=400, detail="사진 카테고리에는 이미지 파일만 업로드할 수 있습니다.")
+    if not is_photo_type and extractor_kind == "IMAGE":
+        raise HTTPException(status_code=400, detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요.")
+
+    file_url = store_asset_bytes(
+        hospital_id=hospital_id,
+        filename=file.filename or "asset",
+        data=data,
+        mime_type=mime_type or "application/octet-stream",
+    )
+
+    raw_text: str | None = None
+    if extractor_kind == "PDF":
+        raw_text = extract_pdf_text(data) or None
+    elif extractor_kind == "DOCX":
+        raw_text = extract_docx_text(data) or None
+
+    source = HospitalSourceAsset(
+        hospital_id=hospital_id,
+        source_type=source_type,
+        title=title.strip(),
+        url=None,
+        raw_text=raw_text,
+        operator_note=_clean_optional(operator_note),
+        source_metadata={"original_filename": file.filename or ""},
+        file_url=file_url,
+        mime_type=mime_type or None,
+        file_size_bytes=len(data),
+        is_public=False,
+        content_hash=compute_source_content_hash(title, None, raw_text, operator_note),
+        status=SourceStatus.PENDING,
+        created_by=created_by,
+    )
+    db.add(source)
+    await write_audit_log(
+        db,
+        action="upload_source_asset",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="source_asset",
+        target_id=source.id,
+        detail={"source_type": source_type.value, "extractor": extractor_kind, "size_bytes": len(data)},
+    )
+    await db.commit()
+    await db.refresh(source)
+    return _serialize_source(source)
+
+
+@router.post("/sources/crawl", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse)
+async def crawl_source_url(
+    hospital_id: uuid.UUID,
+    body: SourceCrawlRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """URL을 자동 fetch + html2text → raw_text 채움 후 source 생성."""
+    await _get_hospital_or_404(db, hospital_id)
+
+    if body.source_type in PHOTO_SOURCE_TYPES:
+        raise HTTPException(status_code=400, detail="사진 카테고리는 URL 크롤링을 지원하지 않습니다. 업로드를 사용해 주세요.")
+
+    text, error = await fetch_url_text(body.url)
+    if error:
+        raise HTTPException(status_code=400, detail=f"URL 크롤링 실패: {error}")
+
+    source = HospitalSourceAsset(
+        hospital_id=hospital_id,
+        source_type=body.source_type,
+        title=body.title.strip(),
+        url=body.url.strip(),
+        raw_text=text or None,
+        operator_note=_clean_optional(body.operator_note),
+        source_metadata={"crawled_at": datetime.now(timezone.utc).isoformat()},
+        content_hash=compute_source_content_hash(body.title, body.url, text, body.operator_note),
+        status=SourceStatus.PENDING,
+        created_by=body.created_by,
+    )
+    db.add(source)
+    await write_audit_log(
+        db,
+        action="crawl_source_url",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="source_asset",
+        target_id=source.id,
+        detail={"source_type": body.source_type.value, "url": body.url, "extracted_chars": len(text)},
+    )
+    await db.commit()
+    await db.refresh(source)
+    return _serialize_source(source)
+
+
+@router.patch("/sources/{source_id}/public", response_model=SourceAssetResponse)
+async def toggle_source_public(
+    hospital_id: uuid.UUID,
+    source_id: uuid.UUID,
+    body: SourcePublicToggle,
+    db: AsyncSession = Depends(get_db),
+):
+    """사진 자료의 /site 공개 노출 플래그 토글. 사진이 아닌 자료는 거부."""
+    source = await _get_source_or_404(db, hospital_id, source_id)
+    if source.source_type not in PHOTO_SOURCE_TYPES:
+        raise HTTPException(status_code=400, detail="공개 토글은 사진 자료(PHOTO_*)에만 적용됩니다.")
+    previous = bool(source.is_public)
+    source.is_public = bool(body.is_public)
+    await write_audit_log(
+        db,
+        action="toggle_source_public",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="source_asset",
+        target_id=source.id,
+        detail={"from": previous, "to": bool(body.is_public), "source_type": source.source_type.value},
+    )
     await db.commit()
     await db.refresh(source)
     notes = await _get_notes_for_source(db, source.id)
@@ -519,6 +686,10 @@ def _serialize_source(
         "updated_by": source.updated_by,
         "created_at": source.created_at.isoformat() if source.created_at else None,
         "updated_at": source.updated_at.isoformat() if source.updated_at else None,
+        "file_url": source.file_url,
+        "mime_type": source.mime_type,
+        "file_size_bytes": source.file_size_bytes,
+        "is_public": bool(source.is_public),
         "evidence_note_count": evidence_note_count,
         "evidence_notes": [_serialize_note(note) for note in evidence_notes] if evidence_notes is not None else None,
     }

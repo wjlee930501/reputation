@@ -63,8 +63,16 @@ class SourceAssetResponse(BaseModel):
     updated_by: str | None
     created_at: str | None
     updated_at: str | None
+    file_url: str | None = None
+    mime_type: str | None = None
+    file_size_bytes: int | None = None
+    is_public: bool = False
     evidence_note_count: int = 0
     evidence_notes: list[EvidenceNoteResponse] | None = None
+
+
+class SourcePublicToggle(BaseModel):
+    is_public: bool
 
 
 class PhilosophyDraftCreate(BaseModel):

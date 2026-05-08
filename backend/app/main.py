@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -83,6 +84,13 @@ app.include_router(admin_leads.router, prefix="/api/v1", dependencies=admin_deps
 # Public 라우터: 인증 불필요 (의도적)
 app.include_router(public_site.router, prefix="/api/v1")
 app.include_router(public_leads.router, prefix="/api/v1")
+
+
+# Dev 환경에서 업로드된 자산 서빙 (GCS 미설정 시 fallback). prod는 GCS public URL 사용.
+from app.services.asset_storage import LOCAL_UPLOAD_DIR, is_gcs_configured  # noqa: E402
+
+if not is_gcs_configured():
+    app.mount("/assets", StaticFiles(directory=str(LOCAL_UPLOAD_DIR)), name="assets")
 
 
 @app.get("/health")

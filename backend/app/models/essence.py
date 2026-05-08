@@ -19,6 +19,7 @@ def _jsonb_type():
 
 
 class SourceType(str, enum.Enum):
+    # 텍스트 자료 (URL or raw text)
     NAVER_BLOG = "NAVER_BLOG"
     YOUTUBE = "YOUTUBE"
     HOMEPAGE = "HOMEPAGE"
@@ -26,7 +27,23 @@ class SourceType(str, enum.Enum):
     LANDING_PAGE = "LANDING_PAGE"
     BROCHURE = "BROCHURE"
     INTERNAL_NOTE = "INTERNAL_NOTE"
+    # 이미지 자료 — file_url 사용. is_public=true 시 /site 공개 표면에 자동 노출.
+    # 의료광고법 우려가 큰 환자 후기/Before-After는 의도적으로 enum에 포함하지 않음.
+    PHOTO_DOCTOR = "PHOTO_DOCTOR"
+    PHOTO_CLINIC_EXTERIOR = "PHOTO_CLINIC_EXTERIOR"
+    PHOTO_CLINIC_INTERIOR = "PHOTO_CLINIC_INTERIOR"
+    PHOTO_TREATMENT_ROOM = "PHOTO_TREATMENT_ROOM"
     OTHER = "OTHER"
+
+
+PHOTO_SOURCE_TYPES = frozenset(
+    {
+        SourceType.PHOTO_DOCTOR,
+        SourceType.PHOTO_CLINIC_EXTERIOR,
+        SourceType.PHOTO_CLINIC_INTERIOR,
+        SourceType.PHOTO_TREATMENT_ROOM,
+    }
+)
 
 
 class SourceStatus(str, enum.Enum):
@@ -72,6 +89,14 @@ class HospitalSourceAsset(Base):
     operator_note: Mapped[str | None] = mapped_column(Text)
     source_metadata: Mapped[dict] = mapped_column(_jsonb_type(), default=dict, nullable=False)
     content_hash: Mapped[str | None] = mapped_column(String(64))
+
+    # 파일 업로드 자산 (이미지/PDF/DOCX). PHOTO_* 타입은 file_url 필수.
+    file_url: Mapped[str | None] = mapped_column(String(500))
+    mime_type: Mapped[str | None] = mapped_column(String(100))
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer)
+
+    # AE가 검수한 사진을 /site 공개 표면에 노출할지. PHOTO_* 타입에만 의미 있음.
+    is_public: Mapped[bool] = mapped_column(default=False, nullable=False, server_default=text("false"))
 
     status: Mapped[SourceStatus] = mapped_column(
         Enum(SourceStatus, name="hospital_source_status"),

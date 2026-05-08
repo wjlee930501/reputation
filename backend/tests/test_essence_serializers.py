@@ -27,6 +27,10 @@ def test_serialize_source_exposes_display_labels():
         updated_by=None,
         created_at=timestamp,
         updated_at=timestamp,
+        file_url=None,
+        mime_type=None,
+        file_size_bytes=None,
+        is_public=False,
     )
 
     serialized = _serialize_source(source, evidence_note_count=2)
