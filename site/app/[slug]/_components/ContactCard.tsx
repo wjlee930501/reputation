@@ -1,4 +1,4 @@
-import { ExternalIcon } from './icons'
+import { ExternalIcon, GlobeIcon, MessageIcon } from './icons'
 
 const DAY_LABELS: Record<string, string> = {
   mon: '월',
@@ -12,7 +12,7 @@ const DAY_LABELS: Record<string, string> = {
 
 const DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
 
-interface ExternalLink {
+interface ChannelLink {
   url: string | null
   label: string
 }
@@ -21,14 +21,15 @@ interface Props {
   address: string
   phone: string
   businessHours: Record<string, string> | null | undefined
-  links: ExternalLink[]
+  links: ChannelLink[]
   googleMapsUrl: string | null
+  hospitalName: string
+  websiteUrl: string | null
 }
 
 function orderedHours(hours: Record<string, string> | null | undefined): Array<[string, string]> {
   if (!hours) return []
-  const entries = Object.entries(hours)
-  return entries.sort(([a], [b]) => {
+  return Object.entries(hours).sort(([a], [b]) => {
     const ai = DAY_ORDER.indexOf(a.toLowerCase())
     const bi = DAY_ORDER.indexOf(b.toLowerCase())
     if (ai === -1 && bi === -1) return a.localeCompare(b)
@@ -38,7 +39,29 @@ function orderedHours(hours: Record<string, string> | null | undefined): Array<[
   })
 }
 
-export function ContactCard({ address, phone, businessHours, links, googleMapsUrl }: Props) {
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
+function pickIcon(label: string): JSX.Element {
+  if (label.includes('카카오') || label.includes('kakao')) return <MessageIcon />
+  if (label.includes('홈페이지') || label.includes('웹사이트')) return <GlobeIcon />
+  return <ExternalIcon />
+}
+
+export function ContactCard({
+  address,
+  phone,
+  businessHours,
+  links,
+  googleMapsUrl,
+  hospitalName,
+  websiteUrl,
+}: Props) {
   const hours = orderedHours(businessHours)
   const visibleLinks = links.filter((link) => Boolean(link.url))
 
@@ -46,8 +69,11 @@ export function ContactCard({ address, phone, businessHours, links, googleMapsUr
     <section id="contact" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">Visit</span>
-          <h2 className="clinic-section-heading">진료 안내</h2>
+          <span className="clinic-section-eyebrow">Visit / Channels</span>
+          <h2 className="clinic-section-heading">{hospitalName} 진료 안내</h2>
+          <p className="clinic-section-lede">
+            이곳은 의료 콘텐츠 허브입니다. 진료 예약·상담은 아래 병원 공식 채널을 이용해 주세요.
+          </p>
         </header>
 
         <div className="clinic-contact-grid">
@@ -90,21 +116,55 @@ export function ContactCard({ address, phone, businessHours, links, googleMapsUr
           )}
         </div>
 
-        {visibleLinks.length > 0 && (
-          <div className="clinic-contact-links" aria-label="외부 채널">
-            {visibleLinks.map((link) => (
-              <a
-                key={link.url ?? link.label}
-                href={link.url ?? '#'}
-                target="_blank"
-                rel="noopener"
-                className="clinic-contact-link"
+        {(visibleLinks.length > 0 || websiteUrl) && (
+          <>
+            <div style={{ height: 32 }} />
+            <header className="clinic-section-header" style={{ marginBottom: 18 }}>
+              <span className="clinic-section-eyebrow">Official Channels</span>
+              <h3
+                style={{
+                  margin: 0,
+                  fontSize: 18,
+                  fontWeight: 700,
+                  color: 'var(--color-revisit-text-title)',
+                }}
               >
-                {link.label}
-                <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
-              </a>
-            ))}
-          </div>
+                {hospitalName} 공식 채널
+              </h3>
+            </header>
+            <div className="clinic-channels" aria-label="병원 공식 외부 채널">
+              {websiteUrl && (
+                <a
+                  href={websiteUrl}
+                  target="_blank"
+                  rel="noopener"
+                  className="clinic-channel-card"
+                  aria-label="공식 홈페이지로 이동"
+                >
+                  <span className="clinic-channel-card-icon"><GlobeIcon /></span>
+                  <span className="clinic-channel-card-meta">
+                    <span className="clinic-channel-card-label">병원 공식 홈페이지</span>
+                    <span className="clinic-channel-card-host">{hostOf(websiteUrl)}</span>
+                  </span>
+                </a>
+              )}
+              {visibleLinks.map((link) => (
+                <a
+                  key={link.url ?? link.label}
+                  href={link.url ?? '#'}
+                  target="_blank"
+                  rel="noopener"
+                  className="clinic-channel-card"
+                >
+                  <span className="clinic-channel-card-icon">{pickIcon(link.label)}</span>
+                  <span className="clinic-channel-card-meta">
+                    <span className="clinic-channel-card-label">{link.label}</span>
+                    <span className="clinic-channel-card-host">{hostOf(link.url ?? '')}</span>
+                  </span>
+                </a>
+              ))}
+            </div>
+          </>
         )}
       </div>
     </section>

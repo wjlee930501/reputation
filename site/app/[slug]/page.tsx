@@ -3,13 +3,13 @@ import { notFound } from 'next/navigation'
 
 import { fetchHospital, fetchContents } from '@/lib/api'
 
-import { Breadcrumb, buildBreadcrumbJsonLd } from './_components/Breadcrumb'
+import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
 import { ClinicFooter } from './_components/ClinicFooter'
 import { ClinicHeader } from './_components/ClinicHeader'
 import { ClinicHero } from './_components/ClinicHero'
 import { ContactCard } from './_components/ContactCard'
-import { ContentTypeShowcase } from './_components/ContentTypeShowcase'
 import { DoctorIntro } from './_components/DoctorIntro'
+import { FeaturedContent } from './_components/FeaturedContent'
 import { JsonLd } from './_components/JsonLd'
 import { TreatmentGrid } from './_components/TreatmentGrid'
 
@@ -32,24 +32,24 @@ const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.name}의 진료 정보, 원장 소개, 검수된 의료 콘텐츠. 환자 질문에 답하는 구조화된 데이터.`
+    const description = `${hospital.name} 의료 콘텐츠 허브 — 환자가 자주 묻는 질문, 질환 가이드, 시술 안내를 검수된 자료로 정리합니다.`
     return {
-      title: `${hospital.name} | 진료 정보 · 의료 콘텐츠`,
+      title: `${hospital.name} 의료 콘텐츠 허브`,
       description,
       alternates: { canonical: `/${params.slug}` },
       openGraph: {
-        title: `${hospital.name} | 진료 정보 · 의료 콘텐츠`,
+        title: `${hospital.name} 의료 콘텐츠 허브`,
         description,
         url: `/${params.slug}`,
         type: 'website',
       },
     }
   } catch {
-    return { title: '병원 정보' }
+    return { title: '의료 콘텐츠 허브' }
   }
 }
 
-export default async function HospitalPage({ params }: Props) {
+export default async function HospitalHubPage({ params }: Props) {
   let hospital
   let contents
   try {
@@ -104,7 +104,6 @@ export default async function HospitalPage({ params }: Props) {
       description: hospital.director_career,
       image: hospital.director_photo_url ?? undefined,
     },
-    // 진료 항목은 검수되지 않은 자유 입력의 description을 노출하지 않는다.
     availableService: (hospital.treatments || []).map((treatment) => ({
       '@type': 'MedicalProcedure',
       name: treatment.name,
@@ -112,14 +111,11 @@ export default async function HospitalPage({ params }: Props) {
   }
 
   const breadcrumbJsonLd = buildBreadcrumbJsonLd(
-    [
-      { label: '홈', href: `/${params.slug}` },
-    ],
+    [{ label: '홈', href: `/${params.slug}` }],
     SITE_URL,
   )
 
-  const externalLinks = [
-    { url: hospital.website_url, label: '공식 홈페이지' },
+  const externalChannels = [
     { url: hospital.blog_url, label: '병원 블로그' },
     { url: hospital.kakao_channel_url, label: '카카오톡 상담' },
     { url: hospital.naver_place_url, label: '네이버 플레이스' },
@@ -136,6 +132,7 @@ export default async function HospitalPage({ params }: Props) {
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
+          websiteUrl={hospital.website_url}
         />
         <main>
           <ClinicHero
@@ -144,35 +141,45 @@ export default async function HospitalPage({ params }: Props) {
             region={hospital.region}
             specialties={hospital.specialties}
             phone={hospital.phone}
+            directorName={hospital.director_name}
+            directorPhotoUrl={hospital.director_photo_url}
+            contentCount={contents.length}
+            treatmentCount={(hospital.treatments || []).length}
+          />
+
+          <FeaturedContent
+            contents={contents}
+            hospitalSlug={params.slug}
+            hospitalName={hospital.name}
+            directorName={hospital.director_name}
           />
 
           <DoctorIntro
             directorName={hospital.director_name}
             directorCareer={hospital.director_career}
             directorPhotoUrl={hospital.director_photo_url}
-            specialty={hospital.specialties[0] ?? null}
+            specialties={hospital.specialties}
+            region={hospital.region}
+            contentCount={contents.length}
           />
 
           <TreatmentGrid treatments={hospital.treatments} />
-
-          <ContentTypeShowcase
-            contents={contents}
-            hospitalSlug={params.slug}
-            hospitalName={hospital.name}
-          />
 
           <ContactCard
             address={hospital.address}
             phone={hospital.phone}
             businessHours={hospital.business_hours}
             googleMapsUrl={hospital.google_maps_url}
-            links={externalLinks}
+            links={externalChannels}
+            hospitalName={hospital.name}
+            websiteUrl={hospital.website_url}
           />
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
           address={hospital.address}
           phone={hospital.phone}
+          websiteUrl={hospital.website_url}
         />
       </div>
     </>

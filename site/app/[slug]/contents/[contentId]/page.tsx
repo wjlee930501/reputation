@@ -127,6 +127,7 @@ export default async function ContentDetailPage({ params }: Props) {
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
+          websiteUrl={hospital.website_url}
         />
         <main>
           <div className="clinic-article-shell">
@@ -148,9 +149,12 @@ export default async function ContentDetailPage({ params }: Props) {
                 <span className="clinic-article-type">{typeLabel}</span>
                 <h1 className="clinic-article-title">{content.title}</h1>
                 <p className="clinic-article-byline">
+                  <span style={{ color: 'var(--color-revisit-text-caption)', fontWeight: 600 }}>큐레이터</span>
                   <strong>{hospital.director_name} 원장</strong>
-                  <span>·</span>
+                  <span aria-hidden="true">·</span>
                   <span>{dateLabel}</span>
+                  <span aria-hidden="true">·</span>
+                  <span style={{ color: 'var(--color-revisit-green-30)', fontWeight: 600 }}>발행 시점 검수 완료</span>
                 </p>
               </div>
               <div className="clinic-article-body">
@@ -180,10 +184,21 @@ export default async function ContentDetailPage({ params }: Props) {
                 <Link
                   href={`/${params.slug}`}
                   className="clinic-btn clinic-btn-secondary"
-                  style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14 }}
+                  style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14, marginBottom: 8 }}
                 >
-                  병원 페이지 보기
+                  콘텐츠 허브 홈으로
                 </Link>
+                {hospital.website_url && (
+                  <a
+                    href={hospital.website_url}
+                    target="_blank"
+                    rel="noopener"
+                    className="clinic-btn clinic-btn-primary"
+                    style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14 }}
+                  >
+                    공식 홈페이지로 이동
+                  </a>
+                )}
               </div>
 
               {related.length > 0 && (
@@ -226,6 +241,7 @@ export default async function ContentDetailPage({ params }: Props) {
           hospitalName={hospital.name}
           address={hospital.address}
           phone={hospital.phone}
+          websiteUrl={hospital.website_url}
         />
       </div>
     </>

@@ -20,24 +20,24 @@ const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCA
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.name}의 발행된 의료 콘텐츠 모음 — 자주 묻는 질문, 질환 가이드, 치료 안내, 원장 칼럼.`
+    const description = `${hospital.name} 의료 콘텐츠 허브 라이브러리 — 자주 묻는 질문, 질환 가이드, 시술 안내, 원장 칼럼.`
     return {
-      title: `${hospital.name} 의료 정보 모음`,
+      title: `${hospital.name} 의료 콘텐츠 라이브러리`,
       description,
       alternates: { canonical: `/${params.slug}/contents` },
       openGraph: {
-        title: `${hospital.name} 의료 정보 모음`,
+        title: `${hospital.name} 의료 콘텐츠 라이브러리`,
         description,
         url: `/${params.slug}/contents`,
         type: 'website',
       },
     }
   } catch {
-    return { title: '의료 정보' }
+    return { title: '의료 콘텐츠 라이브러리' }
   }
 }
 
-export default async function ContentsListPage({ params }: Props) {
+export default async function ContentsLibraryPage({ params }: Props) {
   let hospital
   let contents
   try {
@@ -62,13 +62,13 @@ export default async function ContentsListPage({ params }: Props) {
 
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
-    { label: '의료 정보' },
+    { label: '의료 콘텐츠 라이브러리' },
   ]
 
   const collectionJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
-    name: `${hospital.name} 의료 정보 모음`,
+    name: `${hospital.name} 의료 콘텐츠 라이브러리`,
     about: hospital.specialties,
     isPartOf: {
       '@type': 'WebSite',
@@ -93,21 +93,35 @@ export default async function ContentsListPage({ params }: Props) {
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
+          websiteUrl={hospital.website_url}
         />
         <main>
+          <section className="clinic-library-hero">
+            <div className="clinic-library-hero-inner">
+              <Breadcrumb items={breadcrumbItems} />
+              <span className="clinic-section-eyebrow">Medical Content Library</span>
+              <h1 className="clinic-library-hero-title">{hospital.name} 의료 콘텐츠 라이브러리</h1>
+              <p className="clinic-library-hero-meta">
+                <strong>{contents.length}편</strong>
+                <span className="clinic-library-divider-dot" aria-hidden="true" />
+                <span>{hospital.specialties.join(' · ')}</span>
+                <span className="clinic-library-divider-dot" aria-hidden="true" />
+                <span>{hospital.region.join(' ')}</span>
+                <span className="clinic-library-divider-dot" aria-hidden="true" />
+                <strong>{hospital.director_name} 원장 큐레이션</strong>
+              </p>
+              <p
+                className="clinic-section-lede"
+                style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
+              >
+                환자가 자주 묻는 질문에 답하는 의료 콘텐츠를 유형별로 모았습니다. 모든 글은 발행 전
+                의료광고 표현 검토를 거치며, AI 답변 서비스(ChatGPT·Gemini)가 인용할 수 있도록 구조화 데이터로 제공됩니다.
+              </p>
+            </div>
+          </section>
+
           <section className="clinic-section">
             <div className="clinic-section-inner">
-              <Breadcrumb items={breadcrumbItems} />
-
-              <header className="clinic-section-header">
-                <span className="clinic-section-eyebrow">Medical Library</span>
-                <h1 className="clinic-section-heading">{hospital.name} 의료 정보</h1>
-                <p className="clinic-section-lede">
-                  발행된 의료 콘텐츠를 유형별로 모았습니다. {hospital.region.join(' ')}{' '}
-                  {hospital.specialties.join(' · ')} 환자가 자주 검색하는 주제를 우선 정리했습니다.
-                </p>
-              </header>
-
               {contents.length === 0 ? (
                 <div className="clinic-empty">
                   <span className="clinic-empty-title">아직 발행된 콘텐츠가 없습니다</span>
@@ -147,6 +161,7 @@ export default async function ContentsListPage({ params }: Props) {
           hospitalName={hospital.name}
           address={hospital.address}
           phone={hospital.phone}
+          websiteUrl={hospital.website_url}
         />
       </div>
     </>
