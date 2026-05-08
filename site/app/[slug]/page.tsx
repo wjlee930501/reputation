@@ -1,23 +1,24 @@
 import { Metadata } from 'next'
-import Image from 'next/image'
-import Link from 'next/link'
-import { fetchHospital, fetchContents, TYPE_LABELS } from '@/lib/api'
 import { notFound } from 'next/navigation'
+
+import { fetchHospital, fetchContents } from '@/lib/api'
+
+import { Breadcrumb, buildBreadcrumbJsonLd } from './_components/Breadcrumb'
+import { ClinicFooter } from './_components/ClinicFooter'
+import { ClinicHeader } from './_components/ClinicHeader'
+import { ClinicHero } from './_components/ClinicHero'
+import { ContactCard } from './_components/ContactCard'
+import { ContentTypeShowcase } from './_components/ContentTypeShowcase'
+import { DoctorIntro } from './_components/DoctorIntro'
+import { JsonLd } from './_components/JsonLd'
+import { TreatmentGrid } from './_components/TreatmentGrid'
 
 interface Props {
   params: { slug: string }
 }
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
-const DAY_LABELS: Record<string, string> = {
-  mon: '월',
-  tue: '화',
-  wed: '수',
-  thu: '목',
-  fri: '금',
-  sat: '토',
-  sun: '일',
-}
+
 const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
   mon: 'Monday',
   tue: 'Tuesday',
@@ -31,22 +32,20 @@ const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.name}의 진료정보, 원장 소개, 의료 콘텐츠`
+    const description = `${hospital.name}의 진료 정보, 원장 소개, 검수된 의료 콘텐츠. 환자 질문에 답하는 구조화된 데이터.`
     return {
-      title: `${hospital.name} | AI가 읽기 쉬운 병원 의료정보`,
+      title: `${hospital.name} | 진료 정보 · 의료 콘텐츠`,
       description,
-      alternates: {
-        canonical: `/${params.slug}`,
-      },
+      alternates: { canonical: `/${params.slug}` },
       openGraph: {
-        title: `${hospital.name} | AI가 읽기 쉬운 병원 의료정보`,
+        title: `${hospital.name} | 진료 정보 · 의료 콘텐츠`,
         description,
         url: `/${params.slug}`,
         type: 'website',
       },
     }
   } catch {
-    return { title: 'AI가 읽기 쉬운 병원 의료정보' }
+    return { title: '병원 정보' }
   }
 }
 
@@ -56,13 +55,12 @@ export default async function HospitalPage({ params }: Props) {
   try {
     ;[hospital, contents] = await Promise.all([
       fetchHospital(params.slug),
-      fetchContents(params.slug),
+      fetchContents(params.slug, 60),
     ])
   } catch {
     notFound()
   }
 
-  const recentContents = contents.slice(0, 3)
   const sameAs = [
     hospital.website_url,
     hospital.blog_url,
@@ -70,13 +68,14 @@ export default async function HospitalPage({ params }: Props) {
     hospital.google_business_profile_url,
     hospital.google_maps_url,
     hospital.naver_place_url,
-  ].filter(Boolean)
+  ].filter((value): value is string => Boolean(value))
 
-  const jsonLd = {
+  const clinicJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
     name: hospital.name,
     url: `${SITE_URL}/${params.slug}`,
+    image: hospital.director_photo_url ?? undefined,
     sameAs,
     address: {
       '@type': 'PostalAddress',
@@ -91,155 +90,91 @@ export default async function HospitalPage({ params }: Props) {
       description: String(hours),
     })),
     hasMap: hospital.google_maps_url || undefined,
-    geo: hospital.latitude && hospital.longitude
-      ? {
-          '@type': 'GeoCoordinates',
-          latitude: hospital.latitude,
-          longitude: hospital.longitude,
-        }
-      : undefined,
+    geo:
+      hospital.latitude && hospital.longitude
+        ? {
+            '@type': 'GeoCoordinates',
+            latitude: hospital.latitude,
+            longitude: hospital.longitude,
+          }
+        : undefined,
     physician: {
       '@type': 'Physician',
       name: hospital.director_name,
       description: hospital.director_career,
+      image: hospital.director_photo_url ?? undefined,
     },
+    // 진료 항목은 검수되지 않은 자유 입력의 description을 노출하지 않는다.
     availableService: (hospital.treatments || []).map((treatment) => ({
       '@type': 'MedicalProcedure',
       name: treatment.name,
-      description: treatment.description,
     })),
   }
 
+  const breadcrumbJsonLd = buildBreadcrumbJsonLd(
+    [
+      { label: '홈', href: `/${params.slug}` },
+    ],
+    SITE_URL,
+  )
+
+  const externalLinks = [
+    { url: hospital.website_url, label: '공식 홈페이지' },
+    { url: hospital.blog_url, label: '병원 블로그' },
+    { url: hospital.kakao_channel_url, label: '카카오톡 상담' },
+    { url: hospital.naver_place_url, label: '네이버 플레이스' },
+    { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
+  ]
+
   return (
     <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, '\\u003c') }}
-      />
+      <JsonLd data={[clinicJsonLd, breadcrumbJsonLd]} />
+      <div className="clinic-shell">
+        <ClinicHeader
+          hospitalName={hospital.name}
+          hospitalSlug={params.slug}
+          region={hospital.region}
+          specialties={hospital.specialties}
+          phone={hospital.phone}
+        />
+        <main>
+          <ClinicHero
+            hospitalName={hospital.name}
+            hospitalSlug={params.slug}
+            region={hospital.region}
+            specialties={hospital.specialties}
+            phone={hospital.phone}
+          />
 
-      {/* Hero */}
-      <section className="bg-blue-600 text-white py-20 px-6">
-        <div className="max-w-4xl mx-auto text-center">
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">{hospital.name}</h1>
-          <p className="text-xl text-blue-100">
-            {hospital.region.join(' ')} {hospital.specialties.join(' · ')} 전문 클리닉
-          </p>
-        </div>
-      </section>
+          <DoctorIntro
+            directorName={hospital.director_name}
+            directorCareer={hospital.director_career}
+            directorPhotoUrl={hospital.director_photo_url}
+            specialty={hospital.specialties[0] ?? null}
+          />
 
-      {/* 원장 소개 */}
-      <section className="bg-white py-16 px-6">
-        <div className="max-w-4xl mx-auto">
-          <h2 className="text-2xl font-bold text-gray-800 mb-8 text-center">원장 소개</h2>
-          <div className="bg-blue-50 rounded-2xl p-8">
-            <h3 className="text-xl font-semibold text-blue-800 mb-2">{hospital.director_name} 원장</h3>
-            <p className="text-gray-600 mb-4 whitespace-pre-line">{hospital.director_career}</p>
-          </div>
-        </div>
-      </section>
+          <TreatmentGrid treatments={hospital.treatments} />
 
-      {/* 진료 항목 */}
-      {hospital.treatments && hospital.treatments.length > 0 && (
-        <section className="bg-gray-50 py-16 px-6">
-          <div className="max-w-4xl mx-auto">
-            <h2 className="text-2xl font-bold text-gray-800 mb-8 text-center">진료 항목</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              {hospital.treatments.map((treatment, idx) => (
-                <div
-                  key={idx}
-                  className="bg-white rounded-xl p-4 text-center shadow-sm border border-blue-100 hover:border-blue-300 transition-colors"
-                >
-                  <span className="text-gray-700 font-medium">{treatment.name}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
+          <ContentTypeShowcase
+            contents={contents}
+            hospitalSlug={params.slug}
+            hospitalName={hospital.name}
+          />
 
-      {/* 진료 안내 */}
-      <section className="bg-white py-16 px-6">
-        <div className="max-w-4xl mx-auto">
-          <h2 className="text-2xl font-bold text-gray-800 mb-8 text-center">진료 안내</h2>
-          <div className="grid md:grid-cols-3 gap-6">
-            <div className="text-center">
-              <div className="text-blue-600 text-3xl mb-2">📍</div>
-              <h3 className="font-semibold text-gray-800 mb-1">주소</h3>
-              <p className="text-gray-600 text-sm">{hospital.address}</p>
-            </div>
-            <div className="text-center">
-              <div className="text-blue-600 text-3xl mb-2">📞</div>
-              <h3 className="font-semibold text-gray-800 mb-1">전화</h3>
-              <a href={`tel:${hospital.phone}`} className="text-blue-600 font-medium">
-                {hospital.phone}
-              </a>
-            </div>
-            <div className="text-center">
-              <div className="text-blue-600 text-3xl mb-2">🕐</div>
-              <h3 className="font-semibold text-gray-800 mb-1">진료시간</h3>
-              {Object.entries(hospital.business_hours || {}).map(([day, hours]) => (
-                <p key={day} className="text-gray-600 text-sm">
-                  {DAY_LABELS[day] || day}: {hours}
-                </p>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* 최근 콘텐츠 */}
-      {recentContents.length > 0 && (
-        <section className="bg-gray-50 py-16 px-6">
-          <div className="max-w-4xl mx-auto">
-            <div className="flex justify-between items-center mb-8">
-              <h2 className="text-2xl font-bold text-gray-800">최근 의료 정보</h2>
-              <Link
-                href={`/${params.slug}/contents`}
-                className="text-blue-600 hover:underline text-sm font-medium"
-              >
-                전체 보기 →
-              </Link>
-            </div>
-            <div className="grid md:grid-cols-3 gap-6">
-              {recentContents.map((content) => (
-                <Link
-                  key={content.id}
-                  href={`/${params.slug}/contents/${content.id}`}
-                  className="bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow"
-                >
-                  {content.image_url && (
-                    <div className="relative h-40">
-                      <Image
-                        src={content.image_url}
-                        alt={content.title}
-                        fill
-                        className="object-cover"
-                      />
-                    </div>
-                  )}
-                  <div className="p-4">
-                    <span className="inline-block bg-blue-100 text-blue-700 text-xs font-medium px-2 py-1 rounded mb-2">
-                      {TYPE_LABELS[content.content_type] || content.content_type}
-                    </span>
-                    <h3 className="font-semibold text-gray-800 text-sm line-clamp-2">{content.title}</h3>
-                    <p className="text-gray-400 text-xs mt-2">
-                      {content.published_at
-                        ? new Date(content.published_at).toLocaleDateString('ko-KR')
-                        : ''}
-                    </p>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Footer */}
-      <footer className="bg-gray-800 text-gray-400 py-8 px-6 text-center text-sm">
-        <p>{hospital.name} · {hospital.address} · {hospital.phone}</p>
-        <p className="mt-2">© {new Date().getFullYear()} {hospital.name}. All rights reserved.</p>
-      </footer>
+          <ContactCard
+            address={hospital.address}
+            phone={hospital.phone}
+            businessHours={hospital.business_hours}
+            googleMapsUrl={hospital.google_maps_url}
+            links={externalLinks}
+          />
+        </main>
+        <ClinicFooter
+          hospitalName={hospital.name}
+          address={hospital.address}
+          phone={hospital.phone}
+        />
+      </div>
     </>
   )
 }

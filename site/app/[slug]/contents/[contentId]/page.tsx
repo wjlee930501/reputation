@@ -2,11 +2,26 @@ import { Metadata } from 'next'
 import Image from 'next/image'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { fetchHospital, fetchContents, fetchContent, TYPE_LABELS } from '@/lib/api'
 import ReactMarkdown from 'react-markdown'
+
+import { fetchContent, fetchContents, fetchHospital, TYPE_LABELS } from '@/lib/api'
+
+import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
+import { ClinicFooter } from '../../_components/ClinicFooter'
+import { ClinicHeader } from '../../_components/ClinicHeader'
+import { JsonLd } from '../../_components/JsonLd'
 
 interface Props {
   params: { slug: string; contentId: string }
+}
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
+
+function formatDate(value: string | null | undefined, fallback: string) {
+  if (!value) return fallback
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return fallback
+  return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -16,14 +31,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       fetchContent(params.slug, params.contentId),
     ])
     const description =
-      (content as { meta_description?: string | null }).meta_description ||
-      `${hospital.name}의 ${TYPE_LABELS[content.content_type] || ''} 콘텐츠`
+      content.meta_description ?? `${hospital.name}의 ${TYPE_LABELS[content.content_type] ?? '의료'} 콘텐츠`
     return {
       title: `${content.title} | ${hospital.name}`,
       description,
-      alternates: {
-        canonical: `/${params.slug}/contents/${params.contentId}`,
-      },
+      alternates: { canonical: `/${params.slug}/contents/${params.contentId}` },
       openGraph: {
         title: `${content.title} | ${hospital.name}`,
         description,
@@ -33,27 +45,38 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       },
     }
   } catch {
-    return { title: 'AI가 읽기 쉬운 병원 의료정보' }
+    return { title: '의료 정보' }
   }
 }
 
 export default async function ContentDetailPage({ params }: Props) {
-  let hospital, content, allContents
+  let hospital
+  let content
+  let allContents
   try {
     ;[hospital, content, allContents] = await Promise.all([
       fetchHospital(params.slug),
       fetchContent(params.slug, params.contentId),
-      fetchContents(params.slug),
+      fetchContents(params.slug, 60),
     ])
   } catch {
     notFound()
   }
 
+  const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
+  const dateLabel = formatDate(content.published_at, content.scheduled_date)
   const related = allContents
-    .filter(c => c.id !== content.id && c.content_type === content.content_type)
+    .filter((c) => c.id !== content.id && c.content_type === content.content_type)
     .slice(0, 3)
 
-  const jsonLd = {
+  const breadcrumbItems = [
+    { label: '홈', href: `/${params.slug}` },
+    { label: '의료 정보', href: `/${params.slug}/contents` },
+    { label: typeLabel },
+    { label: content.title },
+  ]
+
+  const articleJsonLd: Record<string, unknown> = {
     '@context': 'https://schema.org',
     '@type': 'Article',
     headline: content.title,
@@ -68,108 +91,142 @@ export default async function ContentDetailPage({ params }: Props) {
     },
     datePublished: content.published_at || content.scheduled_date,
     dateModified: content.published_at || content.scheduled_date,
-    mainEntityOfPage: `/${params.slug}/contents/${params.contentId}`,
-    image: content.image_url,
+    mainEntityOfPage: `${SITE_URL}/${params.slug}/contents/${params.contentId}`,
+    image: content.image_url ?? undefined,
   }
+
+  // FAQ 콘텐츠는 FAQPage 구조화 데이터를 함께 노출 — ChatGPT/Gemini 인용 신호.
+  const faqJsonLd =
+    content.content_type === 'FAQ'
+      ? {
+          '@context': 'https://schema.org',
+          '@type': 'FAQPage',
+          mainEntity: [
+            {
+              '@type': 'Question',
+              name: content.title,
+              acceptedAnswer: {
+                '@type': 'Answer',
+                text: content.body,
+              },
+            },
+          ],
+        }
+      : null
+
+  const jsonLd = [articleJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]
+  if (faqJsonLd) jsonLd.push(faqJsonLd)
 
   return (
     <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, '\\u003c') }}
-      />
-
-      <div className="min-h-screen bg-gray-50">
-        {/* Header */}
-        <div className="bg-blue-600 text-white py-8 px-6">
-          <div className="max-w-5xl mx-auto">
-            <Link href={`/${params.slug}/contents`} className="text-blue-200 hover:text-white text-sm mb-2 inline-block">
-              ← 목록으로
-            </Link>
-            <span className="inline-block bg-blue-500 text-white text-xs font-medium px-3 py-1 rounded-full mt-2">
-              {TYPE_LABELS[content.content_type] || content.content_type}
-            </span>
-          </div>
-        </div>
-
-        <div className="max-w-5xl mx-auto px-6 py-8 flex flex-col lg:flex-row gap-8">
-          {/* Main content */}
-          <article className="flex-1 bg-white rounded-2xl overflow-hidden shadow-sm">
-            {content.image_url && (
-              <div className="relative h-64 w-full">
-                <Image
-                  src={content.image_url}
-                  alt={content.title}
-                  fill
-                  className="object-cover"
-                />
+      <JsonLd data={jsonLd} />
+      <div className="clinic-shell">
+        <ClinicHeader
+          hospitalName={hospital.name}
+          hospitalSlug={params.slug}
+          region={hospital.region}
+          specialties={hospital.specialties}
+          phone={hospital.phone}
+        />
+        <main>
+          <div className="clinic-article-shell">
+            <article className="clinic-article">
+              {content.image_url && (
+                <div className="clinic-article-cover">
+                  <Image
+                    src={content.image_url}
+                    alt={content.title}
+                    fill
+                    sizes="(max-width: 960px) 100vw, 720px"
+                    style={{ objectFit: 'cover' }}
+                    priority
+                  />
+                </div>
+              )}
+              <div className="clinic-article-header">
+                <Breadcrumb items={breadcrumbItems} />
+                <span className="clinic-article-type">{typeLabel}</span>
+                <h1 className="clinic-article-title">{content.title}</h1>
+                <p className="clinic-article-byline">
+                  <strong>{hospital.director_name} 원장</strong>
+                  <span>·</span>
+                  <span>{dateLabel}</span>
+                </p>
               </div>
-            )}
-            <div className="p-8">
-              <h1 className="text-2xl font-bold text-gray-900 mb-2">{content.title}</h1>
-              <div className="flex items-center gap-3 text-gray-400 text-sm mb-8 pb-6 border-b">
-                <span>{hospital.director_name} 원장</span>
-                <span>·</span>
-                <span>
-                  {content.published_at
-                    ? new Date(content.published_at).toLocaleDateString('ko-KR')
-                    : content.scheduled_date}
-                </span>
-              </div>
-              <div className="prose prose-blue max-w-none text-gray-700">
+              <div className="clinic-article-body">
                 <ReactMarkdown>{content.body}</ReactMarkdown>
               </div>
-            </div>
-          </article>
+            </article>
 
-          {/* Sidebar */}
-          <aside className="w-full lg:w-72 shrink-0">
-            {/* Hospital info */}
-            <div className="bg-white rounded-2xl p-6 shadow-sm mb-6">
-              <h2 className="font-bold text-gray-800 mb-4">{hospital.name}</h2>
-              <p className="text-sm text-gray-600 mb-1">📍 {hospital.address}</p>
-              <a href={`tel:${hospital.phone}`} className="text-sm text-blue-600 font-medium block mb-4">
-                📞 {hospital.phone}
-              </a>
-              <Link
-                href={`/${params.slug}`}
-                className="block w-full bg-blue-600 text-white text-center py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-              >
-                병원 홈페이지
-              </Link>
-            </div>
-
-            {/* Related contents */}
-            {related.length > 0 && (
-              <div className="bg-white rounded-2xl p-6 shadow-sm">
-                <h2 className="font-bold text-gray-800 mb-4">관련 콘텐츠</h2>
-                <div className="space-y-4">
-                  {related.map(r => (
-                    <Link
-                      key={r.id}
-                      href={`/${params.slug}/contents/${r.id}`}
-                      className="flex gap-3 hover:bg-gray-50 rounded-lg p-2 -mx-2 transition-colors"
+            <aside className="clinic-aside" aria-label="병원 정보 및 관련 콘텐츠">
+              <div className="clinic-aside-card">
+                <span className="clinic-aside-card-eyebrow">Clinic</span>
+                <h2 className="clinic-aside-card-title">{hospital.name}</h2>
+                <ul className="clinic-aside-meta">
+                  <li>
+                    <span className="clinic-aside-meta-label">주소</span>
+                    <span>{hospital.address}</span>
+                  </li>
+                  <li>
+                    <span className="clinic-aside-meta-label">전화</span>
+                    <a
+                      href={`tel:${hospital.phone}`}
+                      style={{ color: 'var(--color-revisit-primary-40)', fontWeight: 600 }}
                     >
-                      {r.image_url && (
-                        <div className="relative w-16 h-16 shrink-0 rounded-lg overflow-hidden">
-                          <Image src={r.image_url} alt={r.title} fill className="object-cover" />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-800 line-clamp-2">{r.title}</p>
-                        <p className="text-xs text-gray-400 mt-1">
-                          {r.published_at
-                            ? new Date(r.published_at).toLocaleDateString('ko-KR')
-                            : r.scheduled_date}
-                        </p>
-                      </div>
-                    </Link>
-                  ))}
-                </div>
+                      {hospital.phone}
+                    </a>
+                  </li>
+                </ul>
+                <Link
+                  href={`/${params.slug}`}
+                  className="clinic-btn clinic-btn-secondary"
+                  style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14 }}
+                >
+                  병원 페이지 보기
+                </Link>
               </div>
-            )}
-          </aside>
-        </div>
+
+              {related.length > 0 && (
+                <div className="clinic-aside-card">
+                  <span className="clinic-aside-card-eyebrow">Related</span>
+                  <h2 className="clinic-aside-card-title">관련 {typeLabel}</h2>
+                  <ul className="clinic-related-list">
+                    {related.map((r) => (
+                      <li key={r.id}>
+                        <Link href={`/${params.slug}/contents/${r.id}`} className="clinic-related-item">
+                          {r.image_url ? (
+                            <span className="clinic-related-thumb">
+                              <Image
+                                src={r.image_url}
+                                alt={r.title}
+                                fill
+                                sizes="56px"
+                                style={{ objectFit: 'cover' }}
+                              />
+                            </span>
+                          ) : (
+                            <span className="clinic-related-thumb" aria-hidden="true" />
+                          )}
+                          <span className="clinic-related-meta">
+                            <span className="clinic-related-title">{r.title}</span>
+                            <span className="clinic-related-date">
+                              {formatDate(r.published_at, r.scheduled_date)}
+                            </span>
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </aside>
+          </div>
+        </main>
+        <ClinicFooter
+          hospitalName={hospital.name}
+          address={hospital.address}
+          phone={hospital.phone}
+        />
       </div>
     </>
   )

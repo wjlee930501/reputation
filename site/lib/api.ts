@@ -22,6 +22,7 @@ export interface Hospital {
   director_name: string
   director_career: string
   director_philosophy: string | null
+  director_photo_url: string | null
   treatments: Array<{ name: string; description: string }>
   aeo_domain: string | null
 }
