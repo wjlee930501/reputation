@@ -6,6 +6,20 @@
 
 ---
 
+## 0.1 첫 셋업에서 자주 막히던 표면 (2026-05-08 패치 완료)
+
+운영자가 `cp .env.example .env` 직후 `make setup`했을 때 그대로 통과하도록 코드에서 사전 보강.
+
+| 표면 | 증상 | 패치 |
+|---|---|---|
+| `GOOGLE_APPLICATION_CREDENTIALS` placeholder | docker mount 실패로 api 컨테이너 부팅 거부 | `.env.example`에 빈 값으로 두면 docker-compose의 `${VAR:-/dev/null}` fallback이 활성. 실제 이미지 생성 사용 시에만 절대 경로 지정. |
+| `ALLOWED_ORIGINS` comma-separated 파싱 실패 | pydantic-settings v2가 JSON 배열만 받아 SettingsError | `config.py`에 `field_validator(mode="before")` 추가 — comma-separated와 JSON 배열 모두 허용. |
+| `alembic_version.version_num VARCHAR(32)` | 41자 revision id (예: `0012_add_exposure_content_link_uniqueness`) UPDATE 시 truncation 에러 | `alembic/env.py`의 `do_run_migrations`에서 `_ensure_version_table()`로 VARCHAR(255)로 사전 생성. |
+
+위 3건은 첫 dev 환경 셋업 시 구체적 충돌이 확인된 표면. CI에서 `cp .env.example .env && make setup` 시나리오 1회 통과를 출시 게이트로 권장.
+
+---
+
 ## 0. 출시 직전 체크리스트 (10분, 필수)
 
 | 게이트 | 검증 방법 | 차단 |

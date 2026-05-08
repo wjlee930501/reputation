@@ -1,4 +1,8 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+from typing import Annotated
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -6,7 +10,25 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "production"
     ADMIN_SECRET_KEY: str
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
+    # NoDecode: pydantic-settings의 env-source 자동 JSON 디코드를 끄고 raw 문자열을 검증자에 전달.
+    # .env에서 comma-separated 표기를 허용하기 위함.
+    ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def _parse_allowed_origins(cls, value: object) -> object:
+        # .env에서 두 가지 표기 모두 허용:
+        #   ALLOWED_ORIGINS=https://a.com,https://b.com   (comma-separated)
+        #   ALLOWED_ORIGINS=["https://a.com","https://b.com"]  (JSON array)
+        # pydantic-settings 기본은 JSON만 받아 운영자 첫 셋업에서 막히던 표면을 보강.
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                return json.loads(stripped)
+            return [origin.strip() for origin in stripped.split(",") if origin.strip()]
+        return value
 
     # DB
     DATABASE_URL: str
