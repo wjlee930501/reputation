@@ -278,6 +278,20 @@ export default function ContentPage() {
     }
   }
 
+  async function handleRegenerate(itemId: string) {
+    if (!confirm('이 콘텐츠를 즉시 재생성 큐에 등록하시겠습니까?')) return
+    setActionLoading(true)
+    try {
+      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/regenerate`, { method: 'POST' })
+      load()
+      setSelected(null)
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : '재생성 요청에 실패했습니다.')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   async function openDetail(item: ContentItem) {
     setEditMode(false)
     setBriefEditMode(false)
@@ -908,6 +922,16 @@ export default function ContentPage() {
                       }
                       tone={selectedReview.publishable || selectedReview.key === 'published' ? 'ok' : selectedReview.key === 'rejected' ? 'bad' : 'warn'}
                     />
+                    {selected.compliance?.blockers && selected.compliance.blockers.length > 0 && (
+                      <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2">
+                        <p className="text-xs font-semibold text-orange-800">발행 차단 사유</p>
+                        <ul className="mt-1 list-disc list-inside text-xs text-orange-700">
+                          {selected.compliance.blockers.map((blocker, idx) => (
+                            <li key={`${blocker}-${idx}`}>{blocker}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     {!selectedReview.publishable && selected.essence_status && selected.essence_status !== 'ALIGNED' && (
                       <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded px-2 py-1.5">
                         콘텐츠 운영 기준 검토 후 발행 가능합니다.
@@ -929,7 +953,7 @@ export default function ContentPage() {
               </div>
             )}
 
-            {!editMode && !briefEditMode && selected.status === 'DRAFT' && selected.title && (
+            {!editMode && !briefEditMode && selected.status !== 'PUBLISHED' && (
               <div className="p-6 border-t border-gray-200">
                 {!selectedReview.publishable && (
                   <p className="text-xs text-gray-500 mb-2">
@@ -939,7 +963,7 @@ export default function ContentPage() {
                 <div className="flex gap-3">
                   <button
                     onClick={() => handlePublish(selected.id)}
-                    disabled={actionLoading || !selectedReview.publishable}
+                    disabled={actionLoading || !selectedReview.publishable || !selected.title}
                     className="flex-1 py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     발행하기
@@ -950,6 +974,13 @@ export default function ContentPage() {
                     className="flex-1 py-2.5 bg-red-100 text-red-700 text-sm font-medium rounded-lg hover:bg-red-200 disabled:opacity-50"
                   >
                     반려
+                  </button>
+                  <button
+                    onClick={() => handleRegenerate(selected.id)}
+                    disabled={actionLoading}
+                    className="flex-1 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    즉시 재생성
                   </button>
                 </div>
               </div>

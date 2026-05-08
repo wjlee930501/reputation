@@ -28,6 +28,8 @@ export async function GET(_req: Request, { params }: Props) {
       `## 원장 소개`,
       `- 원장명: ${hospital.director_name}`,
       hospital.director_career ? `- 약력: ${hospital.director_career}` : '',
+      // 진료 철학은 검수되지 않은 자유 입력이므로 AI 크롤러용 표면에는 노출하지 않습니다.
+      // 검수된 콘텐츠 운영 기준은 별도 발행 콘텐츠를 통해서만 노출합니다.
       '',
     ]
 

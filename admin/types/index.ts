@@ -65,6 +65,14 @@ export interface ContentItem {
   brief_approved_by?: string | null
   essence_status?: 'ALIGNED' | 'NEEDS_ESSENCE_REVIEW' | 'MISSING_APPROVED_PHILOSOPHY' | null
   essence_check_summary?: Record<string, unknown> | null
+  compliance?: {
+    status: 'PASS' | 'BLOCKED'
+    publishable: boolean
+    blockers: string[]
+    forbidden_violations: string[]
+    essence_status?: string | null
+    essence_check_summary?: Record<string, unknown> | null
+  } | null
   body?: string | null
   image_prompt?: string | null
 }
@@ -233,6 +241,27 @@ export interface MeasurementRun {
   error_summary: Record<string, unknown> | null
   created_at: string | null
   updated_at: string | null
+}
+
+export interface OperationResponse {
+  detail?: string
+  hospital_id?: string
+  content_id?: string
+  domain?: string
+  verified?: boolean
+  cname_value?: string | null
+  expected_cname?: string
+}
+
+export interface SalesLead {
+  id: string
+  clinic_name: string
+  clinic_type: string
+  contact: string
+  question: string
+  privacy: boolean
+  source_path: string | null
+  created_at: string | null
 }
 
 export type ExposureActionType = 'MEASUREMENT' | 'CONTENT' | 'SOURCE' | 'WEBBLOG_IA'

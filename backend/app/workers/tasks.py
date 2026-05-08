@@ -279,6 +279,98 @@ def nightly_content_generation():
                 db.expire_all()  # expire stale ORM state after rollback
 
 
+@celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)
+def regenerate_content_item(self, content_id: str):
+    """Generate a single unpublished content item on operator request."""
+    try:
+        with SyncSessionLocal() as db:
+            item = db.get(ContentItem, uuid.UUID(content_id))
+            if not item:
+                return
+            if item.status == ContentStatus.PUBLISHED:
+                logger.warning("Skipping regeneration for published content item %s", content_id)
+                return
+
+            hospital = db.get(Hospital, item.hospital_id)
+            if not hospital:
+                return
+
+            item.title = None
+            item.body = None
+            item.meta_description = None
+            item.image_url = None
+            item.image_prompt = None
+            item.generated_at = None
+            item.published_at = None
+            item.published_by = None
+            item.status = ContentStatus.DRAFT
+            db.commit()
+
+            _generate_single_content_item(db, item, hospital)
+    except Exception as exc:
+        logger.error("regenerate_content_item failed for %s: %s", content_id, exc)
+        raise self.retry(exc=exc, countdown=120)
+
+
+def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> None:
+    existing = db.execute(
+        select(ContentItem.title).where(
+            ContentItem.hospital_id == hospital.id,
+            ContentItem.id != item.id,
+            ContentItem.title.isnot(None),
+        )
+    )
+    existing_titles = [row[0] for row in existing.all()]
+
+    philosophy = db.execute(
+        select(HospitalContentPhilosophy).where(
+            HospitalContentPhilosophy.hospital_id == hospital.id,
+            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+        )
+    ).scalar_one_or_none()
+    if not philosophy:
+        item.content_philosophy_id = None
+        item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
+        item.essence_check_summary = {
+            "blocking": True,
+            "findings": ["승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."],
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        db.commit()
+        return
+
+    approved_brief = item.content_brief if item.brief_status == BRIEF_STATUS_APPROVED else None
+    content_data = _run_async(
+        generate_content(
+            hospital,
+            item.content_type,
+            existing_titles,
+            philosophy,
+            approved_brief,
+        )
+    )
+    item.title = content_data["title"]
+    item.body = content_data["body"]
+    item.meta_description = content_data.get("meta_description")
+    item.generated_at = datetime.now(timezone.utc)
+    item.status = ContentStatus.DRAFT
+    item.content_philosophy_id = philosophy.id
+    screening = screen_content_against_philosophy(item, philosophy)
+    item.essence_status = screening.status
+    item.essence_check_summary = screening.summary
+    db.commit()
+
+    try:
+        image_url, image_prompt = _run_async(generate_image(item.content_type, hospital.slug))
+        item.image_url = image_url
+        item.image_prompt = image_prompt
+        db.commit()
+    except Exception as img_e:
+        logger.warning("Image generation failed for %s (text saved): %s", item.id, img_e)
+        db.rollback()
+        db.refresh(item)
+
+
 # ══════════════════════════════════════════════════════════════════
 # 아침 Slack 알림 (매일 08:00)
 # ══════════════════════════════════════════════════════════════════
@@ -773,3 +865,38 @@ def run_monthly_reports():
             except Exception as e:
                 logger.error(f"Monthly report failed for {h.name}: {e}")
                 db.rollback()
+
+
+# ══════════════════════════════════════════════════════════════════
+# Lead PII 보관기간 자동 파기 — 개인정보보호법 제21조
+# ══════════════════════════════════════════════════════════════════
+@celery_app.task(name="app.workers.tasks.purge_expired_leads")
+def purge_expired_leads():
+    """retain_until 도달 lead의 PII를 익명화하고 purged_at을 기록한다.
+
+    Soft-delete: 통계용 메타(clinic_type, source_path, consent_version)는 유지하되
+    개인 식별 가능 필드(clinic_name, contact, question, consent_ip)는 즉시 폐기한다.
+    이미 처리된 row는 skip.
+    """
+    from app.models.lead import SalesLead
+
+    now = datetime.now(timezone.utc)
+    purged = 0
+    with SyncSessionLocal() as db:
+        stmt = select(SalesLead).where(
+            SalesLead.purged_at.is_(None),
+            SalesLead.retain_until.is_not(None),
+            SalesLead.retain_until <= now,
+        )
+        for lead in db.execute(stmt).scalars().all():
+            lead.clinic_name = "[purged]"
+            lead.contact = "[purged]"
+            lead.question = "[purged]"
+            lead.consent_ip = None
+            lead.purged_at = now
+            purged += 1
+        if purged:
+            db.commit()
+    if purged:
+        logger.info(f"purge_expired_leads: anonymized {purged} expired leads")
+    return {"purged": purged}

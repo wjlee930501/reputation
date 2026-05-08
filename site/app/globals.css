@@ -906,6 +906,27 @@ textarea:focus-visible {
   box-shadow: var(--shadow-soft);
 }
 
+.lead-message {
+  margin: 0;
+  border-radius: 14px;
+  padding: 12px 14px;
+  font-size: var(--text-s);
+  font-weight: var(--weight-bold);
+  line-height: 1.5;
+}
+
+.lead-message.is-success {
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.lead-message.is-error {
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
 .form-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1217,4 +1238,128 @@ textarea:focus-visible {
   .footer-links {
     justify-content: flex-start;
   }
+}
+
+/* — Footer biz info — */
+.footer-biz {
+  margin-top: 8px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* — Consent disclosure (lead form) — */
+.consent-details {
+  margin: 6px 0 -6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #334155;
+}
+
+.consent-details summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.consent-details dl {
+  margin: 10px 0 6px;
+  display: grid;
+  gap: 8px;
+}
+
+.consent-details dl > div {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 10px;
+}
+
+.consent-details dt {
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.consent-details dd {
+  margin: 0;
+}
+
+.consent-details a,
+.privacy-check a {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Honeypot — visually hidden, not rendered to assistive tech */
+.hp-field {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+/* — Legal pages (privacy / terms) — */
+.legal-shell {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 56px 24px 96px;
+  color: #0f172a;
+  line-height: 1.7;
+}
+
+.legal-header {
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 24px;
+  margin-bottom: 28px;
+}
+
+.legal-header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 12px 0 4px;
+}
+
+.legal-header p {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.legal-back {
+  font-size: 13px;
+  color: #2563eb;
+  text-decoration: none;
+}
+
+.legal-back:hover {
+  text-decoration: underline;
+}
+
+.legal-body section {
+  margin-bottom: 28px;
+}
+
+.legal-body h2 {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0 0 10px;
+  color: #0f172a;
+}
+
+.legal-body p {
+  color: #334155;
+  margin: 6px 0;
+  font-size: 14px;
+}
+
+.legal-effective {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 13px;
 }

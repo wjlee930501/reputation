@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const ADMIN_KEY = process.env.ADMIN_SECRET_KEY || "";
 
-const ALLOWED_PREFIXES = ["hospitals", "content", "reports", "sov", "domain", "essence"];
+const ALLOWED_PREFIXES = ["hospitals", "content", "reports", "sov", "domain", "essence", "leads"];
 
 async function handler(
   req: NextRequest,

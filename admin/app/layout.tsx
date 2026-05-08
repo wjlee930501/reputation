@@ -49,6 +49,13 @@ export default function RootLayout({
                 <span aria-hidden>＋</span>
                 신규 병원 온보딩
               </Link>
+              <Link
+                href="/leads"
+                className="flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+              >
+                <span aria-hidden>☎</span>
+                상담 리드
+              </Link>
 
               <p className="mt-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
                 도움말

@@ -130,12 +130,18 @@ def _content_item(*, hospital_id, content_id=None, target_id=None, action_id=Non
 class _MutatingDB:
     committed = False
     refreshed = []
+    added: list = []
 
     async def commit(self):
         self.committed = True
 
     async def refresh(self, item):
         self.refreshed.append(item)
+
+    def add(self, item):
+        # update_exposure_action 가 audit row를 추가한다. 본 테스트에서는 audit
+        # 동작이 아닌 PATCH 결과 자체를 검증하므로 단순 수집한다.
+        self.added.append(item)
 
 
 def test_builds_measurement_action_when_target_has_no_successful_measurements():
@@ -747,6 +753,79 @@ async def test_resolve_brief_slot_reuses_existing_linked_content(monkeypatch):
 
     assert resolved is existing_item
     assert looked_up_content_ids == [existing_item_id]
+
+
+async def test_resolve_brief_slot_filters_available_slots_by_requested_content_type(monkeypatch):
+    hospital_id = uuid.uuid4()
+    action = _action(hospital_id=hospital_id)
+    requested_type = exposure_actions_api.ContentType.TREATMENT
+    schedule = SimpleNamespace(id=uuid.uuid4(), plan="PLAN_8")
+    created_item = _content_item(hospital_id=hospital_id)
+    seen_content_type = None
+
+    async def fake_find_slot(db, requested_hospital_id, period_start, period_end, content_type):
+        nonlocal seen_content_type
+        assert requested_hospital_id == hospital_id
+        seen_content_type = content_type
+        return None
+
+    async def fake_get_schedule(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return schedule
+
+    async def fake_create_slot(db, requested_hospital_id, requested_schedule, period_start, period_end, body):
+        assert requested_hospital_id == hospital_id
+        assert requested_schedule is schedule
+        assert body.content_type == requested_type
+        return created_item
+
+    monkeypatch.setattr(exposure_actions_api, "_find_available_content_slot", fake_find_slot)
+    monkeypatch.setattr(exposure_actions_api, "_get_active_content_schedule", fake_get_schedule)
+    monkeypatch.setattr(exposure_actions_api, "_create_content_slot", fake_create_slot)
+
+    resolved = await exposure_actions_api._resolve_content_slot_for_brief(
+        _MutatingDB(),
+        hospital_id,
+        action,
+        exposure_actions_api.CreateBriefBody(content_type=requested_type),
+    )
+
+    assert seen_content_type == requested_type
+    assert resolved is created_item
+
+
+async def test_resolve_brief_slot_rejects_explicit_content_type_mismatch(monkeypatch):
+    hospital_id = uuid.uuid4()
+    action = _action(hospital_id=hospital_id)
+    content_id = uuid.uuid4()
+    item = _content_item(
+        hospital_id=hospital_id,
+        content_id=content_id,
+    )
+    item.content_type = exposure_actions_api.ContentType.DISEASE
+
+    async def fake_get_content(db, requested_hospital_id, requested_content_id):
+        assert requested_hospital_id == hospital_id
+        assert requested_content_id == content_id
+        return item
+
+    monkeypatch.setattr(exposure_actions_api, "_get_content_item_or_404", fake_get_content)
+
+    try:
+        await exposure_actions_api._resolve_content_slot_for_brief(
+            _MutatingDB(),
+            hospital_id,
+            action,
+            exposure_actions_api.CreateBriefBody(
+                content_id=content_id,
+                content_type=exposure_actions_api.ContentType.TREATMENT,
+            ),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert "content_type" in exc.detail
+    else:
+        raise AssertionError("Expected explicit content_id type mismatch to be rejected")
 
 
 async def test_complete_action_status_sets_and_clears_completed_at(monkeypatch):

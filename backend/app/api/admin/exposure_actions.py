@@ -21,7 +21,13 @@ from app.models.content import ContentItem, ContentSchedule, ContentStatus, Cont
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction
+from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_brief import BRIEF_STATUS_DRAFT, build_content_brief
+from app.services.exposure_content_linker import (
+    ensure_brief_capable_action,
+    link_content_to_exposure_action,
+    unlink_content_from_exposure_action,
+)
 from app.services.exposure_action_engine import (
     ensure_hospital_exposure_actions,
     list_top_exposure_actions,
@@ -30,7 +36,6 @@ from app.services.exposure_action_engine import (
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Exposure Work Queue"])
 
 ACTION_STATUSES = {"OPEN", "IN_PROGRESS", "BLOCKED", "COMPLETED", "CANCELLED", "ARCHIVED"}
-BRIEF_CAPABLE_ACTION_TYPES = {"CONTENT", "WEBBLOG_IA", "SOURCE"}
 
 
 class ExposureActionPatch(BaseModel):
@@ -88,9 +93,19 @@ async def update_exposure_action(
     action = await _get_action_or_404(db, hospital_id, action_id)
     fields = body.model_fields_set
 
+    before = {
+        "status": action.status,
+        "owner": action.owner,
+        "due_month": action.due_month,
+        "linked_content_id": str(action.linked_content_id) if action.linked_content_id else None,
+    }
+    changes: dict[str, dict[str, Any]] = {}
+
     if "status" in fields:
         if body.status is None or body.status not in ACTION_STATUSES:
             raise HTTPException(status_code=400, detail="Invalid AI exposure work status")
+        if action.status != body.status:
+            changes["status"] = {"from": before["status"], "to": body.status}
         action.status = body.status
         if body.status == "COMPLETED":
             if action.completed_at is None:
@@ -98,16 +113,33 @@ async def update_exposure_action(
         else:
             action.completed_at = None
 
-    if "owner" in fields:
+    if "owner" in fields and action.owner != body.owner:
+        changes["owner"] = {"from": before["owner"], "to": body.owner}
         action.owner = body.owner
 
     if "due_month" in fields:
         if body.due_month is not None:
             _validate_due_month(body.due_month)
+        if action.due_month != body.due_month:
+            changes["due_month"] = {"from": before["due_month"], "to": body.due_month}
         action.due_month = body.due_month
 
     if "linked_content_id" in fields:
         await _apply_linked_content_update(db, hospital_id, action, body.linked_content_id)
+        new_linked = str(action.linked_content_id) if action.linked_content_id else None
+        if before["linked_content_id"] != new_linked:
+            changes["linked_content_id"] = {"from": before["linked_content_id"], "to": new_linked}
+
+    if changes:
+        await write_audit_log(
+            db,
+            action="update_exposure_action",
+            hospital_id=hospital_id,
+            actor=default_actor(),
+            target_type="exposure_action",
+            target_id=action_id,
+            detail={"changes": changes},
+        )
 
     await db.commit()
     action = await _get_action_or_404(db, hospital_id, action_id)
@@ -126,7 +158,7 @@ async def create_exposure_action_brief(
     hospital = await _get_hospital_or_404(db, hospital_id)
     await _lock_action_for_update(db, hospital_id, action_id)
     action = await _get_action_or_404(db, hospital_id, action_id)
-    _ensure_brief_capable_action(action)
+    ensure_brief_capable_action(action)
 
     item = await _resolve_content_slot_for_brief(db, hospital_id, action, body)
     if item is None:
@@ -149,9 +181,7 @@ async def create_exposure_action_brief(
 
     has_existing_linked_brief = _has_existing_linked_brief(action, item)
 
-    await _clear_previous_content_link(db, action, item.id)
-    item.query_target_id = action.query_target_id
-    item.exposure_action_id = action.id
+    await link_content_to_exposure_action(db, action=action, item=item)
     if has_existing_linked_brief:
         if item.brief_status is None:
             item.brief_status = BRIEF_STATUS_DRAFT
@@ -168,9 +198,6 @@ async def create_exposure_action_brief(
         item.brief_status = BRIEF_STATUS_DRAFT
         item.brief_approved_at = None
         item.brief_approved_by = None
-    action.linked_content_id = item.id
-    action.linked_content = item
-
     await db.commit()
     await db.refresh(item)
     action = await _get_action_or_404(db, hospital_id, action_id)
@@ -270,43 +297,13 @@ async def _apply_linked_content_update(
     linked_content_id: uuid.UUID | None,
 ) -> None:
     if linked_content_id is None:
-        await _clear_previous_content_link(db, action)
-        action.linked_content_id = None
-        action.linked_content = None
+        await unlink_content_from_exposure_action(db, action)
         return
 
-    _ensure_brief_capable_action(action)
+    ensure_brief_capable_action(action)
     await _lock_content_item_for_update(db, hospital_id, linked_content_id)
     item = await _get_content_item_or_404(db, hospital_id, linked_content_id)
-    if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot link a published content item to an AI exposure work item",
-        )
-    if _uuid_or_none(item.exposure_action_id) not in {None, action.id}:
-        raise HTTPException(
-            status_code=409,
-            detail="Content item is already linked to another AI exposure work item",
-        )
-
-    await _clear_previous_content_link(db, action, item.id)
-    item.exposure_action_id = action.id
-    if action.query_target_id:
-        item.query_target_id = action.query_target_id
-    action.linked_content_id = item.id
-    action.linked_content = item
-
-
-async def _clear_previous_content_link(
-    db: AsyncSession,
-    action: ExposureAction,
-    replacement_content_id: uuid.UUID | None = None,
-) -> None:
-    if not action.linked_content_id or action.linked_content_id == replacement_content_id:
-        return
-    previous = await db.get(ContentItem, action.linked_content_id)
-    if previous and previous.exposure_action_id == action.id:
-        previous.exposure_action_id = None
+    await link_content_to_exposure_action(db, action=action, item=item)
 
 
 def _has_existing_linked_brief(action: ExposureAction, item: ContentItem) -> bool:
@@ -333,6 +330,11 @@ async def _resolve_content_slot_for_brief(
                 status_code=409,
                 detail="Cannot create a draft content guide on published content",
             )
+        if _enum_value(item.content_type) != body.content_type.value:
+            raise HTTPException(
+                status_code=409,
+                detail="content_type must match the selected content item",
+            )
         return item
 
     if action.linked_content_id:
@@ -346,7 +348,13 @@ async def _resolve_content_slot_for_brief(
         return item
 
     period_start, period_end = _action_month_bounds(action.due_month)
-    item = await _find_available_content_slot(db, hospital_id, period_start, period_end)
+    item = await _find_available_content_slot(
+        db,
+        hospital_id,
+        period_start,
+        period_end,
+        body.content_type,
+    )
     if item:
         return item
 
@@ -362,6 +370,7 @@ async def _find_available_content_slot(
     hospital_id: uuid.UUID,
     period_start: date,
     period_end: date,
+    content_type: ContentType,
 ) -> ContentItem | None:
     result = await db.execute(
         select(ContentItem)
@@ -369,6 +378,7 @@ async def _find_available_content_slot(
             ContentItem.hospital_id == hospital_id,
             ContentItem.scheduled_date >= period_start,
             ContentItem.scheduled_date <= period_end,
+            ContentItem.content_type == content_type,
             ContentItem.status != ContentStatus.PUBLISHED,
             ContentItem.exposure_action_id.is_(None),
         )
@@ -480,19 +490,6 @@ def _validate_due_month(due_month: str) -> date:
         return arrow.Arrow(year, month, 1).date()
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid AI exposure work due_month")
-
-
-def _ensure_brief_capable_action(action: ExposureAction) -> None:
-    action_type = str(_enum_value(action.action_type)).upper()
-    if action_type not in BRIEF_CAPABLE_ACTION_TYPES:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Content guide creation is only available for content-producing AI exposure "
-                "work items (CONTENT, WEBBLOG_IA, SOURCE). Measurement work should be "
-                "handled by running the first AI mention-rate measurement."
-            ),
-        )
 
 
 def _plan_total(plan: str | None) -> int:

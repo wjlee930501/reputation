@@ -26,6 +26,7 @@ from app.schemas.essence import (
     SourceAssetPatch,
     SourceAssetResponse,
 )
+from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
     process_source_asset,
@@ -357,6 +358,21 @@ async def approve_philosophy(
     philosophy.reviewed_by = body.reviewed_by
     philosophy.approval_note = body.approval_note
     philosophy.approved_at = datetime.now(timezone.utc)
+    await write_audit_log(
+        db,
+        action="approve_philosophy",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="philosophy",
+        target_id=philosophy.id,
+        detail={
+            "version": philosophy.version,
+            "claimed_reviewer": body.reviewed_by,
+            "evidence_reviewed_confirmed": True,
+            "approval_note": body.approval_note,
+            "source_asset_count": len(philosophy.source_asset_ids or []),
+        },
+    )
     await db.commit()
     await db.refresh(philosophy)
     return _serialize_philosophy(philosophy)

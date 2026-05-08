@@ -23,6 +23,7 @@ celery_app.conf.update(
     enable_utc=True,
     task_routes={
         "app.workers.tasks.nightly_content_generation": {"queue": "content"},
+        "app.workers.tasks.regenerate_content_item": {"queue": "content"},
         "app.workers.tasks.morning_content_notification": {"queue": "content"},
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
@@ -56,6 +57,11 @@ celery_app.conf.update(
         "monthly-slot-generation": {
             "task": "app.workers.tasks.monthly_slot_generation",
             "schedule": crontab(hour=0, minute=0, day_of_month=25),
+        },
+        # 매일 04:00 — 보관기간 만료 리드 자동 파기 (개인정보보호법 제21조)
+        "purge-expired-leads": {
+            "task": "app.workers.tasks.purge_expired_leads",
+            "schedule": crontab(hour=4, minute=0),
         },
     },
 )

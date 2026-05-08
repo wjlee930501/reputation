@@ -168,8 +168,25 @@ def test_serialize_item_includes_brief_and_query_links():
         "reason": "야간 자동 생성 대기",
         "publishable": False,
     }
+    assert serialized["compliance"]["status"] == "BLOCKED"
+    assert "본문 생성이 필요합니다." in serialized["compliance"]["blockers"]
     assert serialized["brief_approved_at"] == approved_at.isoformat()
     assert serialized["brief_approved_by"] == "Ops"
+
+
+def test_serialize_item_exposes_forbidden_expression_compliance_blocker():
+    item = _content_item(
+        title="최고 진료 안내",
+        body="환자 상태에 따라 설명합니다.",
+        meta_description="",
+        essence_status="ALIGNED",
+    )
+
+    serialized = content_api._serialize_item(item, full=True)
+
+    assert serialized["compliance"]["status"] == "BLOCKED"
+    assert serialized["compliance"]["forbidden_violations"] == ["최고"]
+    assert "의료광고 금지 표현이 포함되어 있습니다." in serialized["compliance"]["blockers"]
 
 
 async def test_update_content_brief_links_action_infers_target_and_approves(monkeypatch):

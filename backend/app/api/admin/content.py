@@ -27,6 +27,7 @@ from app.models.hospital import Hospital, HospitalStatus
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import notifier
+from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
@@ -35,14 +36,17 @@ from app.services.content_brief import (
 )
 from app.services.content_calendar import generate_monthly_slots
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
+from app.services.exposure_content_linker import (
+    ensure_brief_capable_action,
+    link_content_to_exposure_action,
+    unlink_content_from_exposure_action,
+)
 from app.services.gcs_utils import get_signed_url
 from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Content"])
-
-BRIEF_CAPABLE_ACTION_TYPES = {"CONTENT", "WEBBLOG_IA", "SOURCE"}
 
 CONTENT_TYPE_DISPLAY_LABELS = {
     "FAQ": "자주 묻는 질문",
@@ -323,6 +327,21 @@ async def publish_content(
     item.status = ContentStatus.PUBLISHED
     item.published_at = datetime.now(timezone.utc)
     item.published_by = body.published_by
+    await write_audit_log(
+        db,
+        action="publish_content",
+        hospital_id=hospital.id,
+        actor=default_actor(),
+        target_type="content_item",
+        target_id=item.id,
+        detail={
+            "title": item.title,
+            "content_type": _enum_value(item.content_type),
+            "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
+            "claimed_by": body.published_by,
+            "essence_status": item.essence_status,
+        },
+    )
     await db.commit()
 
     # Slack 알림
@@ -339,10 +358,25 @@ async def reject_content(
 ):
     """반려 — 야간 재생성 큐에 다시 들어감"""
     item = await _get_content(db, content_id, hospital_id)
+    previous_title = item.title
+    previous_status = _enum_value(item.status)
     item.status = ContentStatus.REJECTED
     item.body = None   # 초기화 → 야간 생성 태스크가 다시 처리
     item.title = None
     item.image_url = None
+    await write_audit_log(
+        db,
+        action="reject_content",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="content_item",
+        target_id=content_id,
+        detail={
+            "previous_title": previous_title,
+            "previous_status": previous_status,
+            "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
+        },
+    )
     await db.commit()
     return {"detail": "Rejected. Will be regenerated tonight."}
 
@@ -441,22 +475,28 @@ async def _apply_content_brief_update(
                 hospital.id,
                 body.exposure_action_id,
             )
-            _ensure_brief_capable_exposure_action(exposure_action)
-            await _clear_replaced_action_content_link(db, exposure_action, item.id)
-            item.exposure_action_id = exposure_action.id
-            exposure_action.linked_content_id = item.id
-            if "query_target_id" not in fields and exposure_action.query_target_id:
-                item.query_target_id = exposure_action.query_target_id
-        else:
-            item.exposure_action_id = None
-        if previous_exposure_action_id and previous_exposure_action_id != body.exposure_action_id:
-            previous_action = await _get_exposure_action_or_404(
+            previous_action = None
+            if previous_exposure_action_id and previous_exposure_action_id != exposure_action.id:
+                previous_action = await _get_exposure_action_or_404(
+                    db,
+                    hospital.id,
+                    previous_exposure_action_id,
+                )
+            await link_content_to_exposure_action(
                 db,
-                hospital.id,
-                previous_exposure_action_id,
+                action=exposure_action,
+                item=item,
+                previous_action=previous_action,
             )
-            if previous_action.linked_content_id == item.id:
-                previous_action.linked_content_id = None
+        else:
+            if previous_exposure_action_id:
+                previous_action = await _get_exposure_action_or_404(
+                    db,
+                    hospital.id,
+                    previous_exposure_action_id,
+                )
+                await unlink_content_from_exposure_action(db, previous_action, content_id=item.id)
+            item.exposure_action_id = None
     elif item.exposure_action_id:
         exposure_action = await _get_exposure_action_or_404(db, hospital.id, item.exposure_action_id)
 
@@ -515,29 +555,8 @@ async def _apply_content_brief_update(
         item.brief_approved_by = body.brief_approved_by
 
 
-async def _clear_replaced_action_content_link(
-    db: AsyncSession,
-    exposure_action: ExposureAction,
-    replacement_content_id: uuid.UUID,
-) -> None:
-    if not exposure_action.linked_content_id or exposure_action.linked_content_id == replacement_content_id:
-        return
-    previous = await db.get(ContentItem, exposure_action.linked_content_id)
-    if previous and previous.exposure_action_id == exposure_action.id:
-        previous.exposure_action_id = None
-
-
 def _ensure_brief_capable_exposure_action(exposure_action: ExposureAction) -> None:
-    action_type = str(_enum_value(exposure_action.action_type)).upper()
-    if action_type not in BRIEF_CAPABLE_ACTION_TYPES:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Content guide links are only available for content-producing AI exposure "
-                "work items (CONTENT, WEBBLOG_IA, SOURCE). Measurement work should be "
-                "handled by running the first AI mention-rate measurement."
-            ),
-        )
+    ensure_brief_capable_action(exposure_action)
 
 
 def _enum_value(value):
@@ -581,6 +600,29 @@ def _serialize_item_display(item: ContentItem, content_type: str | None, status_
     }
 
 
+def _build_compliance_summary(item: ContentItem, status_value: str | None) -> dict:
+    full_text = " ".join(part for part in [item.title, item.body, item.meta_description] if part)
+    forbidden_violations = list(dict.fromkeys(check_forbidden(full_text))) if full_text else []
+    blockers: list[str] = []
+    if status_value == ContentStatus.PUBLISHED.value:
+        blockers.append("이미 발행된 콘텐츠입니다.")
+    if not item.title or not item.body:
+        blockers.append("본문 생성이 필요합니다.")
+    if forbidden_violations:
+        blockers.append("의료광고 금지 표현이 포함되어 있습니다.")
+    if item.essence_status != ESSENCE_STATUS_ALIGNED:
+        blockers.append("승인된 콘텐츠 운영 기준 검수를 통과해야 합니다.")
+
+    return {
+        "status": "PASS" if not blockers else "BLOCKED",
+        "publishable": not blockers,
+        "blockers": blockers,
+        "forbidden_violations": forbidden_violations,
+        "essence_status": item.essence_status,
+        "essence_check_summary": item.essence_check_summary,
+    }
+
+
 def _serialize_item(item: ContentItem, full: bool = False) -> dict:
     content_type = _enum_value(item.content_type)
     status_value = _enum_value(item.status)
@@ -607,6 +649,7 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "brief_approved_by": item.brief_approved_by,
         "essence_status": item.essence_status,
         "essence_check_summary": item.essence_check_summary,
+        "compliance": _build_compliance_summary(item, status_value),
     }
     if full:
         d["body"] = item.body

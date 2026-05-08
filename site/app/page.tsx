@@ -1,4 +1,14 @@
 import Image from "next/image";
+import Link from "next/link";
+
+const CONSENT_VERSION = "v1.2026-05";
+
+const CONSENT_DETAILS = [
+  { label: "수집 목적", value: "AI 노출 진단 범위 확인 및 진단 상담 안내" },
+  { label: "수집 항목", value: "병원명, 진료과/지역, 연락처(이메일 또는 전화), 확인하고 싶은 환자 질문" },
+  { label: "보유 기간", value: "수집일로부터 180일 이내 자동 파기. 상담 종료 시 즉시 파기 가능" },
+  { label: "거부 권리", value: "동의를 거부할 수 있으며, 거부 시 무료 진단 상담만 진행되지 않고 다른 불이익은 없습니다" },
+];
 
 const proofItems = [
   {
@@ -105,7 +115,21 @@ const trustItems = [
   },
 ];
 
-export default function Home() {
+export default function Home({
+  searchParams,
+}: {
+  searchParams?: { lead?: string };
+}) {
+  const leadStatus = searchParams?.lead;
+  const leadMessage =
+    leadStatus === "success"
+      ? "무료 진단 요청이 접수되었습니다. 담당자가 진단 범위를 확인한 뒤 연락드립니다."
+      : leadStatus === "invalid"
+        ? "필수 항목과 개인정보 동의를 확인해 주세요."
+        : leadStatus === "error"
+          ? "요청 접수 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요."
+          : null;
+
   return (
     <main className="landing-shell">
       <header className="site-header">
@@ -342,34 +366,62 @@ export default function Home() {
             </p>
           </div>
 
-          <form className="lead-form" action="#" method="post">
+          <form className="lead-form" action="/api/leads" method="post">
+            {leadMessage && (
+              <p className={`lead-message ${leadStatus === "success" ? "is-success" : "is-error"}`}>
+                {leadMessage}
+              </p>
+            )}
             <div className="form-row">
               <label>
                 병원명
-                <input name="clinicName" placeholder="예: 장편한외과의원" required />
+                <input name="clinicName" placeholder="예: 장편한외과의원" maxLength={200} required />
               </label>
               <label>
                 진료과/지역
-                <input name="clinicType" placeholder="예: 강남 정형외과" required />
+                <input name="clinicType" placeholder="예: 강남 정형외과" maxLength={200} required />
               </label>
             </div>
             <label>
               연락처
-              <input name="contact" placeholder="이메일 또는 휴대폰" required />
+              <input name="contact" placeholder="이메일 또는 휴대폰" maxLength={200} required />
             </label>
             <label>
               확인하고 싶은 환자 질문
               <textarea
                 name="question"
                 placeholder="예: 강남에서 어깨 통증 비수술 치료 잘 보는 병원 알려줘"
+                maxLength={1000}
                 required
               />
             </label>
+            {/* Honeypot — 정상 사용자에겐 보이지 않음. 봇이 채우면 백엔드가 silently 200. */}
+            <label className="hp-field" aria-hidden="true">
+              <span>웹사이트 (입력하지 마세요)</span>
+              <input name="website" tabIndex={-1} autoComplete="off" />
+            </label>
+            <input type="hidden" name="consent_version" value={CONSENT_VERSION} />
+
+            <details className="consent-details">
+              <summary>개인정보 수집·이용 동의 안내 (필수 4가지 항목)</summary>
+              <dl>
+                {CONSENT_DETAILS.map((item) => (
+                  <div key={item.label}>
+                    <dt>{item.label}</dt>
+                    <dd>{item.value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p>
+                상세는 <Link href="/privacy">개인정보 처리방침</Link>에서 확인하실 수 있습니다. 처리방침 버전 {CONSENT_VERSION}.
+              </p>
+            </details>
+
             <label className="privacy-check">
               <input name="privacy" type="checkbox" required />
               <span>
-                개인정보 수집 및 이용에 동의합니다. 입력하신 정보는 AI 노출 진단 범위 확인과
-                상담 안내 목적으로만 사용됩니다.
+                위 4가지 항목(목적·항목·보유기간·거부권)을 확인했고, 무료 진단 상담을 위한
+                개인정보 수집 및 이용에 동의합니다. <Link href="/privacy">처리방침 전문 보기</Link>
               </span>
             </label>
             <button className="btn btn-submit" type="submit">무료 진단 요청하기</button>
@@ -381,10 +433,16 @@ export default function Home() {
         <div>
           <strong>Re:putation</strong>
           <p>AI 노출 진단 및 병원 콘텐츠 운영 서비스</p>
+          <p className="footer-biz">
+            운영사: 주식회사 모션랩스(MotionLabs Inc.) · 대표 이우진
+            <br />
+            서울특별시 강남구 테헤란로 · 사업자등록번호 등록 예정
+          </p>
         </div>
         <div className="footer-links">
-          <span>MotionLabs Inc.</span>
           <a href="mailto:contact@motionlabs.kr">contact@motionlabs.kr</a>
+          <Link href="/privacy">개인정보 처리방침</Link>
+          <Link href="/terms">이용약관</Link>
           <a href="#lead">문의하기</a>
         </div>
       </footer>

@@ -53,6 +53,17 @@ class Settings(BaseSettings):
 
     # Admin
     ADMIN_BASE_URL: str = "http://localhost:3000"  # 🔴 CRITICAL: 환경변수로 분리 (.env에서 프로덕션 URL 설정)
+    ADMIN_ACTOR_NAME: str = "AE"  # 단일 운영자 이름 (감사 로그 actor) — 다중 사용자 도입 시 NextAuth로 전환
+
+    # Site (public)
+    SITE_BASE_URL: str = "https://reputation.co.kr"  # llms.txt absolute URL 등에 사용
+
+    # Lead retention (개인정보보호법 제21조 — 보유기간)
+    LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수
+    LEAD_CONSENT_VERSION: str = "v1.2026-05"  # 처리방침 버전 — 변경 시 재동의 필요
+
+    # Public 폼 rate-limit
+    PUBLIC_LEAD_RATE_LIMIT: str = "5/minute;30/hour;100/day"
 
 
 settings = Settings()

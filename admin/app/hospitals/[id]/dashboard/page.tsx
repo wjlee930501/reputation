@@ -10,6 +10,7 @@ import {
   type AIQueryTarget,
   type ExposureAction,
   type MeasurementRun,
+  type OperationResponse,
 } from '@/types'
 import {
   LineChart,
@@ -68,6 +69,29 @@ interface Readiness {
   sov_record_count: number
   report_count: number
   checks: ReadinessCheck[]
+}
+
+interface AuditLogRow {
+  id: string
+  hospital_id: string | null
+  actor: string
+  action: string
+  target_type: string | null
+  target_id: string | null
+  detail: Record<string, unknown> | null
+  created_at: string | null
+}
+
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  trigger_v0_report: 'V0 리포트 재실행',
+  run_sov: 'AI 언급률 측정',
+  rebuild_site: '사이트 재빌드',
+  verify_domain: 'DNS 확인',
+  regenerate_content: '콘텐츠 재생성',
+  publish_content: '콘텐츠 발행',
+  reject_content: '콘텐츠 반려',
+  approve_philosophy: '운영 기준 승인',
+  update_exposure_action: 'AI 노출 작업 변경',
 }
 
 function formatDateTime(value: string | null) {
@@ -141,6 +165,18 @@ export default function DashboardPage() {
   const [queryTargets, setQueryTargets] = useState<AIQueryTarget[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [operationLoading, setOperationLoading] = useState<string | null>(null)
+  const [operationMessage, setOperationMessage] = useState<string | null>(null)
+  const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([])
+
+  const refreshAuditLogs = async () => {
+    try {
+      const rows = await fetchAPI(`/admin/hospitals/${id}/operations/audit-logs?limit=20`) as AuditLogRow[]
+      setAuditLogs(Array.isArray(rows) ? rows : [])
+    } catch {
+      // Audit log 조회 실패는 운영 화면을 깨뜨리지 않도록 silent fail.
+    }
+  }
 
   useEffect(() => {
     setLoading(true)
@@ -151,15 +187,17 @@ export default function DashboardPage() {
       fetchAPI(`/admin/hospitals/${id}/sov/measurement-runs`).catch(() => [] as MeasurementRun[]),
       fetchAPI(`/admin/hospitals/${id}/exposure-actions?limit=5`).catch(() => [] as ExposureAction[]),
       fetchAPI(`/admin/hospitals/${id}/query-targets`).catch(() => [] as AIQueryTarget[]),
+      fetchAPI(`/admin/hospitals/${id}/operations/audit-logs?limit=20`).catch(() => [] as AuditLogRow[]),
     ])
       .then((
-        [trend, qs, readinessData, runs, actions, targets]: [
+        [trend, qs, readinessData, runs, actions, targets, audit]: [
           TrendPoint[],
           QueryRow[],
           Readiness | null,
           MeasurementRun[],
           ExposureAction[],
           AIQueryTarget[],
+          AuditLogRow[],
         ],
       ) => {
         setTrendData(Array.isArray(trend) ? trend : [])
@@ -168,6 +206,7 @@ export default function DashboardPage() {
         setMeasurementRuns(Array.isArray(runs) ? runs : [])
         setExposureActions(Array.isArray(actions) ? actions : [])
         setQueryTargets(Array.isArray(targets) ? targets : [])
+        setAuditLogs(Array.isArray(audit) ? audit : [])
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
@@ -200,6 +239,7 @@ export default function DashboardPage() {
   const hasBrief = (readiness?.published_content_count ?? 0) > 0
 
   const queryTargetsHref = `/hospitals/${id}/query-targets`
+  const exposureActionsHref = `/hospitals/${id}/exposure-actions`
   const contentHref = `/hospitals/${id}/content`
   const reportsHref = `/hospitals/${id}/reports`
 
@@ -219,7 +259,7 @@ export default function DashboardPage() {
       : !hasExposureActions
         ? {
             label: 'AI 노출 진단·보완 작업 검토',
-            href: queryTargetsHref,
+            href: exposureActionsHref,
             hint: '측정 결과에서 부족한 부분을 진단하고, AI에 더 잘 노출되도록 보완할 작업을 정리합니다.',
           }
         : !hasBrief
@@ -235,6 +275,53 @@ export default function DashboardPage() {
             }
 
   const isAnalyticsEmpty = !loading && !error && trendData.length === 0
+
+  async function runOperation(key: string, path: string) {
+    setOperationLoading(key)
+    setOperationMessage(null)
+    try {
+      const result = await fetchAPI(`/admin/hospitals/${id}/operations/${path}`, {
+        method: 'POST',
+      }) as OperationResponse
+      if (path === 'verify-domain') {
+        setOperationMessage(result.verified ? '도메인 DNS 확인 완료' : 'DNS CNAME 확인이 아직 되지 않았습니다.')
+      } else {
+        setOperationMessage(result.detail ?? '작업이 큐에 등록되었습니다.')
+      }
+      await refreshAuditLogs()
+    } catch (e: unknown) {
+      setOperationMessage(e instanceof Error ? e.message : '작업 실행에 실패했습니다.')
+    } finally {
+      setOperationLoading(null)
+    }
+  }
+
+  function formatAuditAction(action: string): string {
+    return AUDIT_ACTION_LABELS[action] ?? action
+  }
+
+  function formatAuditDetail(action: string, detail: Record<string, unknown> | null): string {
+    if (!detail) return ''
+    if (action === 'verify_domain') {
+      const verified = detail.verified === true
+      const cname = typeof detail.cname_value === 'string' ? detail.cname_value : '-'
+      return verified ? `CNAME 확인됨 (${cname})` : `CNAME 미일치 (현재 ${cname})`
+    }
+    if (action === 'update_exposure_action' && detail.changes && typeof detail.changes === 'object') {
+      const changes = Object.keys(detail.changes as Record<string, unknown>)
+      return `변경 필드: ${changes.join(', ') || '-'}`
+    }
+    if (action === 'publish_content' && typeof detail.title === 'string') {
+      return `발행: ${detail.title}`
+    }
+    if (action === 'reject_content' && typeof detail.previous_title === 'string') {
+      return `반려: ${detail.previous_title}`
+    }
+    if (action === 'approve_philosophy' && typeof detail.version !== 'undefined') {
+      return `버전 ${detail.version} 승인 (근거 검토 확인)`
+    }
+    return ''
+  }
 
   return (
     <main className="p-8 space-y-6 bg-slate-50 min-h-full">
@@ -371,6 +458,84 @@ export default function DashboardPage() {
         </section>
       )}
 
+      {!loading && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">v1.0 운영 제어</p>
+              <h3 className="mt-1 text-base font-semibold text-slate-900">수동 재실행·상태 확인</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                고객 보고 전 필요한 분석, 사이트 갱신, DNS 확인을 이 화면에서 다시 실행합니다. 모든 실행은 감사 로그에 남습니다.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <OperationButton
+                label="V0 리포트 재실행"
+                loading={operationLoading === 'v0'}
+                onClick={() => runOperation('v0', 'trigger-v0-report')}
+              />
+              <OperationButton
+                label="AI 언급률 측정"
+                loading={operationLoading === 'sov'}
+                onClick={() => runOperation('sov', 'run-sov')}
+              />
+              <OperationButton
+                label="사이트 재빌드"
+                loading={operationLoading === 'site'}
+                onClick={() => runOperation('site', 'rebuild-site')}
+              />
+              <OperationButton
+                label="DNS 확인"
+                loading={operationLoading === 'dns'}
+                onClick={() => runOperation('dns', 'verify-domain')}
+              />
+            </div>
+          </div>
+          {operationMessage && (
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              {operationMessage}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Audit log — Admin actions trail */}
+      {!loading && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">감사 로그</p>
+              <h3 className="mt-1 text-base font-semibold text-slate-900">최근 운영 액션 기록</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                고객 영향이 있는 모든 운영 액션은 이 로그에 남습니다. 실행자(actor)는 환경 변수 ADMIN_ACTOR_NAME 기준입니다.
+              </p>
+            </div>
+          </div>
+          {auditLogs.length === 0 ? (
+            <p className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+              아직 기록된 운영 액션이 없습니다.
+            </p>
+          ) : (
+            <ol className="mt-4 divide-y divide-slate-100">
+              {auditLogs.map((log) => (
+                <li key={log.id} className="grid gap-1 py-3 md:grid-cols-[160px_1fr_180px] md:items-center">
+                  <span className="text-xs text-slate-500">{formatDateTime(log.created_at)}</span>
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{formatAuditAction(log.action)}</p>
+                    {formatAuditDetail(log.action, log.detail) && (
+                      <p className="mt-0.5 text-xs text-slate-500">{formatAuditDetail(log.action, log.detail)}</p>
+                    )}
+                  </div>
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600 md:justify-self-end">
+                    {log.actor}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
+      )}
+
       {/* Workflow strip */}
       {!loading && (
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -425,7 +590,7 @@ export default function DashboardPage() {
                     }`
                   : '진단 결과가 아직 없습니다.'
               }
-              href={queryTargetsHref}
+              href={exposureActionsHref}
               cta={hasExposureActions ? '검토' : '진단 시작'}
               disabled={!hasMeasurement}
             />
@@ -523,11 +688,11 @@ export default function DashboardPage() {
             <div>
               <h3 className="text-base font-semibold text-slate-900">이번 달 AI 노출 개선 TOP 3</h3>
               <p className="mt-1 text-sm text-slate-500">
-                환자 질문별 AI 언급률 진단에서 우선순위가 높은 보완 작업을 표시합니다. 상세 편집은 환자 질문 화면에서 진행합니다.
+                환자 질문별 AI 언급률 진단에서 우선순위가 높은 보완 작업을 표시합니다. 상세 편집은 AI 노출 개선 작업 화면에서 진행합니다.
               </p>
             </div>
             <Link
-              href={queryTargetsHref}
+              href={exposureActionsHref}
               className="self-start rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
             >
               작업 전체 보기 →
@@ -547,7 +712,7 @@ export default function DashboardPage() {
                   : '첫 측정 후 환자 질문별로 AI에 부족한 부분이 진단되고, 보완 작업이 자동으로 제안됩니다.'
               }
               ctaLabel={hasMeasurement ? '진단·보완 작업 검토' : '첫 측정으로 이동'}
-              ctaHref={queryTargetsHref}
+              ctaHref={hasMeasurement ? exposureActionsHref : queryTargetsHref}
             />
           ) : (
             <div className="mt-4 grid gap-3">
@@ -774,6 +939,27 @@ function PlatformBreakdown({ value }: { value?: Record<string, QueryPlatformBrea
         </span>
       ))}
     </div>
+  )
+}
+
+function OperationButton({
+  label,
+  loading,
+  onClick,
+}: {
+  label: string
+  loading: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={loading}
+      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {loading ? '실행 중...' : label}
+    </button>
   )
 }
 

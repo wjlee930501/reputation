@@ -1,11 +1,33 @@
 """Slack 알림 — 모든 주요 이벤트 규격화"""
 import logging
+import re
 
 import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def mask_contact(contact: str) -> str:
+    """Mask phone/email PII before sending to Slack.
+
+    개인정보보호법 + 국외이전(Slack=US) 측면에서 평문 PII 송출 금지.
+    상세는 Admin UI(권한 있는 운영자만)에서 확인.
+    """
+    if not contact:
+        return "***"
+    text = contact.strip()
+    if "@" in text:
+        local, _, domain = text.partition("@")
+        if not domain:
+            return "***"
+        head = local[:2] if len(local) >= 2 else local
+        return f"{head}***@{domain}"
+    digits = re.sub(r"\D", "", text)
+    if len(digits) >= 7:
+        return f"{digits[:3]}-****-{digits[-4:]}"
+    return "***"
 
 
 async def _send(text: str, blocks: list | None = None) -> bool:
@@ -86,6 +108,34 @@ async def notify_content_draft_ready(
 async def notify_content_published(hospital_name: str, title: str) -> bool:
     """콘텐츠 발행 완료"""
     return await _send(text=f"✅ [{hospital_name}] 발행 완료: {title}")
+
+
+async def notify_lead_created(
+    *,
+    clinic_name: str,
+    clinic_type: str,
+    contact: str,
+    admin_url: str | None = None,
+) -> bool:
+    """무료 진단 요청 접수 → AE에게.
+
+    PII 보호: 연락처는 마스킹, 환자 질문 본문은 Slack 채널로 송출하지 않음.
+    상세 확인은 Admin UI deep-link에서.
+    """
+    masked = mask_contact(contact)
+    link_line = f"<{admin_url}|Admin에서 상세 확인>" if admin_url else "Admin에서 상세 확인"
+    return await _send(
+        text=f"📩 [무료 진단 요청] {clinic_name}",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"📩 *[무료 진단 요청]* *{clinic_name}*\n"
+                f"진료과/지역: {clinic_type}\n"
+                f"연락처: `{masked}`\n\n"
+                f"{link_line} 후 진단 범위를 확정해 주세요."
+            )},
+        }],
+    )
 
 
 async def notify_monthly_report_ready(

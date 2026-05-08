@@ -1,9 +1,8 @@
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
@@ -16,19 +15,17 @@ from app.api.admin import query_targets as admin_query_targets
 from app.api.admin import domain as admin_domain
 from app.api.admin import essence as admin_essence
 from app.api.admin import exposure_actions as admin_exposure_actions
+from app.api.admin import leads as admin_leads
+from app.api.admin import operations as admin_operations
 from app.api.public import site as public_site
+from app.api.public import leads as public_leads
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.core.security import verify_admin_key
 
 if settings.SENTRY_DSN:
     import sentry_sdk
     sentry_sdk.init(dsn=settings.SENTRY_DSN, traces_sample_rate=0.1)
-
-limiter = Limiter(
-    key_func=get_remote_address,
-    storage_uri=settings.REDIS_URL,
-    default_limits=["60/minute"],
-)
 
 
 @asynccontextmanager
@@ -80,9 +77,12 @@ app.include_router(admin_query_targets.router, prefix="/api/v1", dependencies=ad
 app.include_router(admin_domain.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_essence.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_exposure_actions.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_operations.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_leads.router, prefix="/api/v1", dependencies=admin_deps)
 
 # Public 라우터: 인증 불필요 (의도적)
 app.include_router(public_site.router, prefix="/api/v1")
+app.include_router(public_leads.router, prefix="/api/v1")
 
 
 @app.get("/health")

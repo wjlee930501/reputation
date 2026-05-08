@@ -328,26 +328,18 @@ header "5" "공개 도메인 상태 시뮬레이션"
 # ══════════════════════════════════════════════════════════════════
 
 DOMAIN_RES=$(api_patch "/api/v1/admin/hospitals/$HID/domain" \
-  '{"aeo_domain": "jangpyeonhan.motionlabs.io"}')
+  '{"domain": "jangpyeonhan.motionlabs.io"}')
 
 DOMAIN_OK=$(echo "$DOMAIN_RES" | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print('ok' if d.get('site_live') or d.get('aeo_domain') else 'fail')" 2>/dev/null || echo "fail")
+  "import sys,json; d=json.load(sys.stdin); print('ok' if 'jangpyeonhan.motionlabs.io' in d.get('detail','') else 'fail')" 2>/dev/null || echo "fail")
 
 if [[ "$DOMAIN_OK" == "ok" ]]; then
-  ok "공개 도메인 확인 (jangpyeonhan.motionlabs.io)"
-  SITE_LIVE=$(psql_q "SELECT site_live FROM hospitals WHERE id='$HID'")
-  [[ "$SITE_LIVE" == "t" || "$SITE_LIVE" == "true" ]] \
-    && ok "site_live = true 전환 확인" \
-    || info "site_live 상태: $SITE_LIVE"
+  ok "공개 도메인 저장 API 확인 (jangpyeonhan.motionlabs.io)"
 else
-  docker exec "$DB_CONTAINER" psql -U reputation -d reputation -c \
-    "UPDATE hospitals SET aeo_domain='jangpyeonhan.motionlabs.io', site_live=true, status='ACTIVE' WHERE id='$HID'" >/dev/null 2>&1
-  ok "공개 도메인 + ACTIVE 전환 (DB 직접)"
+  fail "공개 도메인 저장 API 실패: $(echo "$DOMAIN_RES" | head -c 200)"
+  echo -e "\n${RED}도메인 저장 실패로 테스트를 중단합니다.${RESET}"
+  exit 1
 fi
-
-# ACTIVE 보장
-docker exec "$DB_CONTAINER" psql -U reputation -d reputation -c \
-  "UPDATE hospitals SET status='ACTIVE' WHERE id='$HID'" >/dev/null 2>&1
 
 # ══════════════════════════════════════════════════════════════════
 header "6" "콘텐츠 스케줄 설정 (PLAN_16, 화·금 발행)"
