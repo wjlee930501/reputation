@@ -877,26 +877,38 @@ def purge_expired_leads():
     Soft-delete: 통계용 메타(clinic_type, source_path, consent_version)는 유지하되
     개인 식별 가능 필드(clinic_name, contact, question, consent_ip)는 즉시 폐기한다.
     이미 처리된 row는 skip.
+
+    매일 결과는 Slack에 notify — 0건이라도 송출하여 cron이 살아 있음을 운영자가 매일 확인.
     """
     from app.models.lead import SalesLead
 
     now = datetime.now(timezone.utc)
     purged = 0
-    with SyncSessionLocal() as db:
-        stmt = select(SalesLead).where(
-            SalesLead.purged_at.is_(None),
-            SalesLead.retain_until.is_not(None),
-            SalesLead.retain_until <= now,
-        )
-        for lead in db.execute(stmt).scalars().all():
-            lead.clinic_name = "[purged]"
-            lead.contact = "[purged]"
-            lead.question = "[purged]"
-            lead.consent_ip = None
-            lead.purged_at = now
-            purged += 1
-        if purged:
-            db.commit()
-    if purged:
+    error_msg: str | None = None
+    try:
+        with SyncSessionLocal() as db:
+            stmt = select(SalesLead).where(
+                SalesLead.purged_at.is_(None),
+                SalesLead.retain_until.is_not(None),
+                SalesLead.retain_until <= now,
+            )
+            for lead in db.execute(stmt).scalars().all():
+                lead.clinic_name = "[purged]"
+                lead.contact = "[purged]"
+                lead.question = "[purged]"
+                lead.consent_ip = None
+                lead.purged_at = now
+                purged += 1
+            if purged:
+                db.commit()
         logger.info(f"purge_expired_leads: anonymized {purged} expired leads")
-    return {"purged": purged}
+    except Exception as exc:
+        error_msg = str(exc)
+        logger.exception("purge_expired_leads failed")
+
+    try:
+        _run_async(notifier.notify_lead_purge_result(purged=purged, error=error_msg))
+    except Exception:
+        logger.exception("purge_expired_leads slack notify failed (non-fatal)")
+
+    return {"purged": purged, "error": error_msg}

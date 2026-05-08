@@ -159,3 +159,34 @@ async def notify_monthly_report_ready(
 
 async def notify_monitoring_done(total: int, success: int) -> bool:
     return await _send(text=f"📊 주간 AI 답변 언급 모니터링 완료 ({success}/{total}개 병원)")
+
+
+async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str | None = None) -> bool:
+    """매일 04:00 KST 보관기간 만료 lead 자동 파기 결과.
+
+    개인정보보호법 제21조 자동 파기 의무 이행 trail. 0건이라도 매일 송출하여
+    "purge cron이 살아 있음"을 운영자가 매일 확인할 수 있게 한다.
+    """
+    if error:
+        return await _send(
+            text=f"🟥 [PII 자동 파기 실패] {error[:200]}",
+            blocks=[{
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": (
+                    f"🟥 *[PII 자동 파기 실패]*\n"
+                    f"오류: `{error[:300]}`\n\n"
+                    f"개인정보보호법 제21조 의무 이행 차질. 즉시 확인 필요."
+                )},
+            }],
+        )
+    return await _send(
+        text=f"🧹 [PII 자동 파기] 만료 리드 {purged}건 익명화 완료" + (f" (스킵 {skipped})" if skipped else ""),
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"🧹 *[PII 자동 파기]* 만료 lead {purged}건 익명화 완료"
+                + (f" · 이미 처리된 {skipped}건 스킵" if skipped else "")
+                + "\n개인정보보호법 제21조 자동 파기 cron 정상 동작 중."
+            )},
+        }],
+    )

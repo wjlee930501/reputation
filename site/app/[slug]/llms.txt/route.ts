@@ -36,7 +36,10 @@ export async function GET(_req: Request, { params }: Props) {
     if (hospital.treatments && hospital.treatments.length > 0) {
       lines.push('## 진료 항목')
       for (const t of hospital.treatments) {
-        lines.push(`- ${t.name}${t.description ? ': ' + t.description : ''}`)
+        // description은 자유 입력 필드로 의료광고 검수를 거치지 않으므로
+        // AI 크롤러용 표면에는 진료 항목명만 노출한다. 검수된 설명은 발행
+        // 콘텐츠(./contents/{id})를 통해서만 인용된다.
+        lines.push(`- ${t.name}`)
       }
       lines.push('')
     }

@@ -24,6 +24,7 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
+from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
@@ -200,9 +201,12 @@ async def update_profile(
     }
     update_data = body.model_dump(exclude_none=True)
     was_complete = h.profile_complete
+    changed_fields: list[str] = []
     for field, value in update_data.items():
         if field not in PROFILE_FIELDS:
             continue
+        if getattr(h, field, None) != value:
+            changed_fields.append(field)
         setattr(h, field, value)
 
     # 프로파일 완료 시 필수 필드 검증
@@ -223,6 +227,20 @@ async def update_profile(
                 status_code=400,
                 detail=f"프로파일 완료에 필요한 필드 누락: {', '.join(required_missing)}",
             )
+
+    if changed_fields:
+        await write_audit_log(
+            db,
+            action="update_profile",
+            hospital_id=hospital_id,
+            actor=default_actor(),
+            target_type="hospital",
+            target_id=hospital_id,
+            detail={
+                "changed_fields": changed_fields,
+                "profile_complete_transition": (not was_complete) and bool(h.profile_complete),
+            },
+        )
 
     await db.commit()
     await db.refresh(h)
@@ -248,6 +266,8 @@ async def connect_domain(
     """공개 도메인 정보 저장 + 콘텐츠 허브 노출 상태 갱신"""
     h = await _get_or_404(db, hospital_id)
     previous_domain = h.aeo_domain
+    previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
+    previous_site_live = bool(h.site_live)
     domain_changed = _normalize_dns_name(previous_domain) != _normalize_dns_name(body.domain)
     h.aeo_domain = body.domain
 
@@ -258,6 +278,22 @@ async def connect_domain(
         if h.status == HospitalStatus.ACTIVE:
             h.status = HospitalStatus.PENDING_DOMAIN
 
+    await write_audit_log(
+        db,
+        action="connect_domain",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="domain",
+        target_id=body.domain,
+        detail={
+            "previous_domain": previous_domain,
+            "new_domain": body.domain,
+            "domain_changed": domain_changed,
+            "previous_status": previous_status,
+            "previous_site_live": previous_site_live,
+            "new_status": h.status.value if hasattr(h.status, "value") else str(h.status),
+        },
+    )
     await db.commit()
 
     # 콘텐츠 허브 노출 상태 갱신 (legacy task name)
@@ -302,8 +338,23 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
             ),
         )
 
+    previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
     h.status = HospitalStatus.ACTIVE
     h.site_live = True
+    await write_audit_log(
+        db,
+        action="activate_hospital",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="hospital",
+        target_id=hospital_id,
+        detail={
+            "previous_status": previous_status,
+            "new_status": HospitalStatus.ACTIVE.value,
+            "aeo_domain": h.aeo_domain,
+            "cname_value": cname_value,
+        },
+    )
     await db.commit()
     return {"detail": f"{h.name} activated"}
 

@@ -199,9 +199,10 @@ export default function Home({
               <strong>ChatGPT · Gemini</strong>
             </div>
             <div className="diagnosis-overlay" aria-label="AI 노출 진단 리포트 예시">
+              <span className="overlay-watermark" aria-hidden="true">예시 데이터</span>
               <div className="overlay-head">
                 <span>AI 답변 노출 진단서</span>
-                <strong>월간 리포트</strong>
+                <strong>샘플</strong>
               </div>
               <dl>
                 <div>
@@ -445,7 +446,7 @@ export default function Home({
           <p className="footer-biz">
             운영사: 주식회사 모션랩스(MotionLabs Inc.) · 대표 이우진
             <br />
-            서울특별시 강남구 테헤란로 · 사업자등록번호 등록 예정
+            서울특별시 강남구 · 사업자 정보는 <a href="https://motionlabs.kr" target="_blank" rel="noopener">motionlabs.kr</a>에서 확인하실 수 있습니다.
           </p>
         </div>
         <div className="footer-links">
