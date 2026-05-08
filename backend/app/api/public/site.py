@@ -135,6 +135,8 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
         "references": item.references_list or [],
+        "faq_question": item.faq_question,
+        "faq_answer_summary": item.faq_answer_summary,
     }
     if full:
         d["body"] = item.body

@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     OPENAI_MODEL_QUERY: str = "gpt-4o"
     OPENAI_MODEL_PARSE: str = "gpt-4o-mini"
+    # 기본은 web_search 미사용 (chat.completions = 모델 recall). True 시 Responses API +
+    # web_search tool 사용. 약속한 "ChatGPT Search 답변 노출률" 측정에 정합하려면 True.
+    OPENAI_CHATGPT_USE_WEB_SEARCH: bool = False
 
     # Gemini — SoV
     GEMINI_API_KEY: str = ""
@@ -86,6 +89,10 @@ class Settings(BaseSettings):
 
     # Public 폼 rate-limit
     PUBLIC_LEAD_RATE_LIMIT: str = "5/minute;30/hour;100/day"
+
+    # 발행 시 site(Vercel) sitemap·페이지 캐시 무효화. 빈 값이면 호출 생략.
+    SITE_REVALIDATE_URL: str = ""
+    SITE_REVALIDATE_SECRET: str = ""
 
 
 settings = Settings()

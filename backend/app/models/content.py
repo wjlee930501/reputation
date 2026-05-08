@@ -135,6 +135,11 @@ class ContentItem(Base):
     # list of {"title": str, "url": str}
     references_list: Mapped[list | None] = mapped_column(_jsonb_type())
 
+    # FAQ 전용: FAQPage schema의 Question/Answer로 직접 매핑되는 짧은 형태.
+    # 본문(body)에서 분리해 Google FAQ rich result 가이드라인 준수.
+    faq_question: Mapped[str | None] = mapped_column(String(300))
+    faq_answer_summary: Mapped[str | None] = mapped_column(String(600))
+
     # 타임스탬프
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

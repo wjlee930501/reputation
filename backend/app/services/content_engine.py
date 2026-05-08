@@ -52,26 +52,42 @@ SYSTEM_PROMPT = """\
   "references": [
     {"title": "출처 제목", "url": "https://..."},
     {"title": "출처 제목", "url": "https://..."}
-  ]
+  ],
+  "faq_question": "FAQ 유형일 때만 채움 — 환자가 실제로 묻는 짧은 질문 한 문장(120자 이내). 다른 유형은 null.",
+  "faq_answer_summary": "FAQ 유형일 때만 채움 — 짧고 직접적인 답변 1~2문장(180자 이내). FAQPage rich result에 들어감. 다른 유형은 null."
 }
 """
 
 # ── 유형별 사용자 프롬프트 ────────────────────────────────────────
 TYPE_PROMPTS = {
     ContentType.FAQ: """\
-[콘텐츠 유형: FAQ]
+[콘텐츠 유형: FAQ — Google FAQPage rich result 매핑]
 환자가 ChatGPT에 실제로 물어볼 만한 질문 1개를 선정하고 답변을 작성하세요.
-질문 형식: "H1 제목으로 질문 → H2 소제목으로 핵심 답변 → 상세 설명"
+출력 필드 매핑:
+- faq_question: 환자가 실제로 묻는 짧은 질문 한 문장 (120자 이내).
+- faq_answer_summary: 짧고 직접적인 답변 1~2문장 (180자 이내). FAQPage Answer로 그대로 들어감.
+- title: faq_question을 검색 친화 형태로 다듬은 제목 (50자 이내).
+- body: 짧은 답변에 대한 상세 설명 (H2 2~3개 + 본문 600~900자).
 진료 키워드: {keywords}
 """,
     ContentType.DISEASE: """\
-[콘텐츠 유형: 질환 가이드]
-아래 질환 중 하나를 선택하여 원인·증상·진단·치료법을 환자 관점에서 설명하세요.
+[콘텐츠 유형: 질환 가이드 — Schema.org MedicalCondition 매핑]
+아래 질환 중 하나를 선택하여 다음 H2 구조로 작성하세요:
+- H2 "## 증상" — 환자가 인지할 수 있는 주요 증상 3~5개.
+- H2 "## 원인" — 일반적인 원인·위험 요인.
+- H2 "## 진단" — 병원에서 어떤 검사·진료가 이루어지는지.
+- H2 "## 치료" — 일반적 치료 방향. 효과 보장 표현 금지.
+첫 단락은 환자 질문 한 줄에 대한 핵심 답변으로 시작.
 진료 키워드: {keywords}
 """,
     ContentType.TREATMENT: """\
-[콘텐츠 유형: 시술·치료 안내]
-아래 시술 중 하나의 과정·회복 기간·주의사항을 안심할 수 있는 톤으로 설명하세요.
+[콘텐츠 유형: 시술·치료 안내 — Schema.org MedicalProcedure + HowTo 매핑]
+아래 시술 중 하나의 과정을 단계형 마크다운으로 작성하세요:
+- 첫 단락에 시술 개요 1~2문장 (안심 톤).
+- H2 "## 진행 단계" 아래 "### 1단계 ...", "### 2단계 ...", "### 3단계 ..." 형식으로
+  3~4단계를 명확히 구분 (HowTo schema 자동 추출용).
+- H2 "## 회복과 주의사항" 으로 마무리.
+효과 보장·통증 없음·100% 같은 단정 금지.
 진료 키워드: {keywords}
 """,
     ContentType.COLUMN: """\
@@ -259,7 +275,20 @@ async def generate_content(
     # 참고 자료 정규화 — Claude가 형식을 살짝 흔들어도 list[{title,url}] 형태로 통일.
     result["references"] = _normalize_references(result.get("references"))
 
+    # FAQ 분리 필드 정규화 — 다른 type일 때는 None.
+    result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
+    result["faq_answer_summary"] = _trim_or_none(result.get("faq_answer_summary"), 600)
+
     return result
+
+
+def _trim_or_none(value: object, max_length: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    return cleaned[:max_length]
 
 
 def _normalize_references(raw: object) -> list[dict]:

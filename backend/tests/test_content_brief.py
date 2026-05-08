@@ -46,6 +46,10 @@ def _content_item(**overrides):
         brief_approved_by=None,
         essence_status=None,
         essence_check_summary=None,
+        body_updated_at=None,
+        references_list=None,
+        faq_question=None,
+        faq_answer_summary=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

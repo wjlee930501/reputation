@@ -35,6 +35,34 @@ function calculateReadingMinutes(body: string | null | undefined): number {
   return Math.max(1, Math.round(stripped.length / KOREAN_READING_SPEED_CHARS_PER_MIN))
 }
 
+interface HowToStep {
+  name: string
+  text: string
+}
+
+// HowTo schema용 단계 추출. content_engine TREATMENT 프롬프트가 "### 1단계 ...",
+// "### 2단계 ..." 형식으로 작성하도록 유도하므로 H3을 step으로 매핑.
+function extractHowToSteps(body: string | null | undefined): HowToStep[] {
+  if (!body) return []
+  const lines = body.split('\n')
+  const steps: HowToStep[] = []
+  let current: HowToStep | null = null
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    const match = line.match(/^###\s+(.+)/)
+    if (match) {
+      if (current) steps.push(current)
+      current = { name: match[1].trim(), text: '' }
+      continue
+    }
+    if (current && line && !line.startsWith('#')) {
+      current.text = current.text ? `${current.text} ${line}` : line
+    }
+  }
+  if (current) steps.push(current)
+  return steps.filter((s) => s.text.length > 0)
+}
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const [hospital, content] = await Promise.all([
@@ -97,6 +125,11 @@ export default async function ContentDetailPage({ params }: Props) {
     { label: content.title },
   ]
 
+  const articleUrl = `${SITE_URL}/${params.slug}/contents/${params.contentId}`
+  const datePublished = content.published_at || content.scheduled_date
+  const dateModified = content.body_updated_at || content.published_at || content.scheduled_date
+
+  // 모든 article 공통 base. type별 추가 schema는 jsonLd 배열에 별도로 push.
   const articleJsonLd: Record<string, unknown> = {
     '@context': 'https://schema.org',
     '@type': 'Article',
@@ -110,40 +143,94 @@ export default async function ContentDetailPage({ params }: Props) {
       '@type': 'MedicalClinic',
       name: hospital.name,
     },
-    datePublished: content.published_at || content.scheduled_date,
-    dateModified: content.body_updated_at || content.published_at || content.scheduled_date,
-    mainEntityOfPage: `${SITE_URL}/${params.slug}/contents/${params.contentId}`,
+    datePublished,
+    dateModified,
+    mainEntityOfPage: articleUrl,
     image: content.image_url ?? undefined,
-    citation: referenceList.length > 0
-      ? referenceList.map((ref) => ({
-          '@type': 'CreativeWork',
-          name: ref.title,
-          url: ref.url,
-        }))
-      : undefined,
+    citation:
+      referenceList.length > 0
+        ? referenceList.map((ref) => ({ '@type': 'CreativeWork', name: ref.title, url: ref.url }))
+        : undefined,
+    // Speakable: 음성 어시스턴트가 발췌해 읽을 수 있는 구간.
+    speakable: {
+      '@type': 'SpeakableSpecification',
+      cssSelector: ['.clinic-article-title', '.clinic-article-tldr p'],
+    },
   }
 
-  // FAQ 콘텐츠는 FAQPage schema 노출. AI 답변 인용 신호.
-  const faqJsonLd =
-    content.content_type === 'FAQ'
-      ? {
-          '@context': 'https://schema.org',
-          '@type': 'FAQPage',
-          mainEntity: [
-            {
-              '@type': 'Question',
-              name: content.title,
-              acceptedAnswer: {
-                '@type': 'Answer',
-                text: content.meta_description ?? content.body,
-              },
-            },
-          ],
-        }
-      : null
+  const jsonLd: Record<string, unknown>[] = [
+    articleJsonLd,
+    buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL),
+  ]
 
-  const jsonLd = [articleJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]
-  if (faqJsonLd) jsonLd.push(faqJsonLd)
+  // ── FAQ → FAQPage (Question/Answer는 분리 필드 사용. 미존재 시 fallback) ───
+  if (content.content_type === 'FAQ') {
+    const question = content.faq_question || content.title
+    const answer = content.faq_answer_summary || content.meta_description || ''
+    if (answer) {
+      jsonLd.push({
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        mainEntity: [
+          {
+            '@type': 'Question',
+            name: question,
+            acceptedAnswer: { '@type': 'Answer', text: answer },
+          },
+        ],
+      })
+    }
+  }
+
+  // ── TREATMENT → MedicalProcedure + (단계 추출 시) HowTo ──────────────────
+  if (content.content_type === 'TREATMENT') {
+    jsonLd.push({
+      '@context': 'https://schema.org',
+      '@type': 'MedicalProcedure',
+      name: content.title,
+      description: content.meta_description,
+      url: articleUrl,
+      performer: {
+        '@type': 'Physician',
+        name: hospital.director_name,
+      },
+    })
+    const steps = extractHowToSteps(content.body)
+    if (steps.length >= 2) {
+      jsonLd.push({
+        '@context': 'https://schema.org',
+        '@type': 'HowTo',
+        name: content.title,
+        description: content.meta_description,
+        step: steps.map((step, idx) => ({
+          '@type': 'HowToStep',
+          position: idx + 1,
+          name: step.name,
+          text: step.text,
+        })),
+      })
+    }
+  }
+
+  // ── DISEASE → MedicalCondition + MedicalWebPage ────────────────────────
+  if (content.content_type === 'DISEASE') {
+    jsonLd.push({
+      '@context': 'https://schema.org',
+      '@type': 'MedicalWebPage',
+      url: articleUrl,
+      about: {
+        '@type': 'MedicalCondition',
+        name: content.title,
+        description: content.meta_description,
+      },
+      audience: { '@type': 'MedicalAudience', audienceType: 'Patient' },
+      lastReviewed: dateModified,
+      reviewedBy: {
+        '@type': 'Physician',
+        name: hospital.director_name,
+      },
+    })
+  }
 
   return (
     <>

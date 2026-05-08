@@ -28,6 +28,7 @@ from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.site_revalidate import trigger_site_revalidate
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
@@ -352,6 +353,17 @@ async def publish_content(
     # Slack 알림
     await notifier.notify_content_published(hospital.name, item.title or "")
 
+    # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library에 즉시 반영되도록.
+    await trigger_site_revalidate(
+        paths=[
+            "/sitemap.xml",
+            f"/{hospital.slug}",
+            f"/{hospital.slug}/contents",
+            f"/{hospital.slug}/contents/{item.id}",
+            f"/{hospital.slug}/llms.txt",
+        ]
+    )
+
     return {"detail": "Published", "published_at": item.published_at.isoformat()}
 
 
@@ -647,6 +659,8 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "published_by": item.published_by,
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
         "references": item.references_list or [],
+        "faq_question": item.faq_question,
+        "faq_answer_summary": item.faq_answer_summary,
         "content_philosophy_id": str(item.content_philosophy_id) if item.content_philosophy_id else None,
         "query_target_id": str(item.query_target_id) if item.query_target_id else None,
         "exposure_action_id": str(item.exposure_action_id) if item.exposure_action_id else None,

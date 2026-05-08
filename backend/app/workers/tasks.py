@@ -253,6 +253,8 @@ def nightly_content_generation():
                 item.body = content_data["body"]
                 item.meta_description = content_data.get("meta_description")
                 item.references_list = content_data.get("references") or []
+                item.faq_question = content_data.get("faq_question")
+                item.faq_answer_summary = content_data.get("faq_answer_summary")
                 item.generated_at = now
                 item.body_updated_at = now
                 item.status = ContentStatus.DRAFT
@@ -357,6 +359,8 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
     item.body = content_data["body"]
     item.meta_description = content_data.get("meta_description")
     item.references_list = content_data.get("references") or []
+    item.faq_question = content_data.get("faq_question")
+    item.faq_answer_summary = content_data.get("faq_answer_summary")
     item.generated_at = now
     item.body_updated_at = now
     item.status = ContentStatus.DRAFT
@@ -513,18 +517,30 @@ def run_sov_for_hospital(self, hospital_id: str):
 
 def _start_measurement_run(db, hospital: Hospital, *, run_label: str, config: dict) -> MeasurementRun:
     now = datetime.now(timezone.utc)
+    # 실제 호출 모드를 라벨에 정확히 반영. UI/리포트가 "ChatGPT 답변 노출률"이라고 잘못
+    # 표기하던 컴플라이언스 이슈를 코드 수준에서 차단.
+    chatgpt_method = (
+        "OPENAI_RESPONSES_WEB_SEARCH"
+        if settings.OPENAI_CHATGPT_USE_WEB_SEARCH
+        else "OPENAI_CHAT_COMPLETIONS"
+    )
+    chatgpt_search_mode = "web" if settings.OPENAI_CHATGPT_USE_WEB_SEARCH else "model"
     run = MeasurementRun(
         hospital_id=hospital.id,
         run_label=run_label,
-        measurement_method="OPENAI_RESPONSE",
+        measurement_method=chatgpt_method,
         status="RUNNING",
         query_count=0,
         success_count=0,
         failure_count=0,
         started_at=now,
         model_name=settings.OPENAI_MODEL_QUERY,
-        search_mode="web" if settings.GEMINI_API_KEY else "model",
-        config=config,
+        search_mode=chatgpt_search_mode,
+        config={
+            **config,
+            "openai_use_web_search": settings.OPENAI_CHATGPT_USE_WEB_SEARCH,
+            "gemini_grounded": bool(settings.GEMINI_API_KEY),
+        },
     )
     db.add(run)
     db.flush()
@@ -816,7 +832,12 @@ def run_monthly_reports():
                 )
                 sov_result = db.execute(sov_stmt)
                 sov_records = sov_result.scalars().all()
-                sov_pct = calculate_sov([{"is_mentioned": r.is_mentioned} for r in sov_records])
+                sov_pct = calculate_sov(
+                    [
+                        {"is_mentioned": r.is_mentioned, "measurement_status": r.measurement_status}
+                        for r in sov_records
+                    ]
+                )
 
                 # 전월 AI 답변 언급률
                 prev_start = now.shift(months=-1).floor("month").datetime
@@ -828,7 +849,16 @@ def run_monthly_reports():
                 )
                 prev_result = db.execute(prev_stmt)
                 prev_records = prev_result.scalars().all()
-                prev_sov = calculate_sov([{"is_mentioned": r.is_mentioned} for r in prev_records]) if prev_records else None
+                prev_sov = (
+                    calculate_sov(
+                        [
+                            {"is_mentioned": r.is_mentioned, "measurement_status": r.measurement_status}
+                            for r in prev_records
+                        ]
+                    )
+                    if prev_records
+                    else None
+                )
                 change_pct = round(sov_pct - prev_sov, 1) if prev_sov is not None else None
 
                 # 이번 달 발행 콘텐츠 집계

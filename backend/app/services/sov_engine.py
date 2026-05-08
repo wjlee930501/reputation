@@ -114,18 +114,55 @@ def generate_query_matrix(region: list[str], specialties: list[str], keywords: l
     return list(queries)
 
 
+SYSTEM_PROMPT_CHATGPT = (
+    "지역 병원 정보를 잘 아는 의료 정보 도우미입니다. 구체적인 병원 이름을 포함해 답변하세요."
+)
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
 async def _query_chatgpt(query: str) -> str:
+    """ChatGPT 호출. 환경변수 OPENAI_CHATGPT_USE_WEB_SEARCH=true 시 Responses API +
+    web_search tool로 ChatGPT Search 답변을 측정. False 시 chat.completions로 모델
+    recall만 측정 (실제 ChatGPT 사용자 답변과 다를 수 있음 — 이 점은 측정 라벨에서 명시)."""
+    if settings.OPENAI_CHATGPT_USE_WEB_SEARCH:
+        return await _query_chatgpt_with_search(query)
     response = await openai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_QUERY,
         messages=[
-            {"role": "system", "content": "지역 병원 정보를 잘 아는 의료 정보 도우미입니다. 구체적인 병원 이름을 포함해 답변하세요."},
+            {"role": "system", "content": SYSTEM_PROMPT_CHATGPT},
             {"role": "user", "content": query},
         ],
         temperature=0.7,
         max_tokens=800,
     )
     return response.choices[0].message.content or ""
+
+
+async def _query_chatgpt_with_search(query: str) -> str:
+    """OpenAI Responses API + web_search tool. 실제 ChatGPT Search 사용자 답변에 더 가깝다.
+    SDK가 지원하지 않거나 빈 응답이면 빈 문자열 반환 (호출자가 FAILED로 처리)."""
+    try:
+        response = await openai_client.responses.create(
+            model=settings.OPENAI_MODEL_QUERY,
+            tools=[{"type": "web_search"}],
+            input=f"{SYSTEM_PROMPT_CHATGPT}\n\n질문: {query}",
+        )
+    except AttributeError:
+        # SDK 버전이 responses API를 지원하지 않으면 chat.completions로 폴백
+        # 운영자가 OPENAI_CHATGPT_USE_WEB_SEARCH=true로 켰지만 SDK 미지원이라 빈 결과로
+        # 분리되는 게 맞으므로 — 빈 문자열 반환해 FAILED 라벨로 흐르게 함.
+        logger.warning("openai SDK has no .responses; falling through to FAILED.")
+        return ""
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str):
+        return output_text
+    # 일부 SDK는 output_text가 없고 output 리스트 — 가장 첫 텍스트 블록 추출
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            text = getattr(content, "text", None)
+            if isinstance(text, str) and text.strip():
+                return text
+    return ""
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
@@ -218,6 +255,20 @@ async def run_single_query(
 
 
 def calculate_sov(results: list[dict]) -> float:
-    if not results:
+    """AI 답변 언급률(%) — 측정 실패는 분모에서 제외.
+
+    - measurement_status == "FAILED" → 분모 제외 (실패가 SoV를 인공적으로 낮추는 것을 방지)
+    - measurement_status 미존재 + raw_response 비어있음 → 분모 제외 (네트워크 실패 추정)
+    - 그 외는 SUCCESS로 간주
+    """
+    successful: list[dict] = []
+    for r in results:
+        status = r.get("measurement_status")
+        if status == "FAILED":
+            continue
+        if status is None and "raw_response" in r and not (r.get("raw_response") or "").strip():
+            continue
+        successful.append(r)
+    if not successful:
         return 0.0
-    return round(sum(1 for r in results if r.get("is_mentioned")) / len(results) * 100, 2)
+    return round(sum(1 for r in successful if r.get("is_mentioned")) / len(successful) * 100, 2)

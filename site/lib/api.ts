@@ -48,6 +48,8 @@ export interface ContentItem {
   published_at: string | null
   body_updated_at: string | null
   references: ContentReference[]
+  faq_question: string | null
+  faq_answer_summary: string | null
 }
 
 export async function fetchHospital(slug: string): Promise<Hospital> {

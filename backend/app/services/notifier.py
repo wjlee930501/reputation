@@ -49,13 +49,19 @@ async def _send(text: str, blocks: list | None = None) -> bool:
 
 async def notify_v0_report_ready(hospital_name: str, sov_pct: float, pdf_path: str) -> bool:
     """V0 리포트 생성 완료 → AE에게"""
+    measurement_label = (
+        "OpenAI Responses API + 웹검색 / Gemini 그라운디드"
+        if settings.OPENAI_CHATGPT_USE_WEB_SEARCH
+        else "OpenAI gpt-4o 응답(웹검색 미적용) / Gemini 그라운디드"
+    )
     return await _send(
-        text=f"🔍 [V0 리포트] {hospital_name} AI 답변 노출 진단 완료",
+        text=f"🔍 [V0 리포트] {hospital_name} AI 답변 인용 진단 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"🔍 *[V0 리포트]* *{hospital_name}* AI 답변 노출 진단 리포트 생성 완료\n"
-                f"현재 ChatGPT+Gemini 답변 내 병원 언급률: *{sov_pct:.1f}%*\n"
+                f"🔍 *[V0 리포트]* *{hospital_name}* AI 답변 인용 진단 리포트 생성 완료\n"
+                f"AI 답변 내 병원 언급률: *{sov_pct:.1f}%*\n"
+                f"측정 방식: {measurement_label}\n"
                 f"파일: `{pdf_path}`\n\n"
                 f"원장 보고 전 내용 확인 후 전달해 주세요."
             )},
@@ -143,13 +149,19 @@ async def notify_monthly_report_ready(
 ) -> bool:
     """월간 리포트 생성 완료 → AE에게"""
     change_text = f" | 전월 대비: *{change_pct:+.1f}%p*" if change_pct is not None else ""
+    measurement_label = (
+        "OpenAI Responses + 웹검색 / Gemini 그라운디드"
+        if settings.OPENAI_CHATGPT_USE_WEB_SEARCH
+        else "OpenAI gpt-4o 응답(웹검색 미적용) / Gemini 그라운디드"
+    )
     return await _send(
-        text=f"📊 [월간 리포트] {hospital_name} {year}년 {month}월 AI 답변 언급 리포트 완료",
+        text=f"📊 [월간 리포트] {hospital_name} {year}년 {month}월 AI 답변 인용 리포트 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"📊 *[월간 리포트]* *{hospital_name}* {year}년 {month}월 AI 답변 언급 리포트 생성 완료\n"
+                f"📊 *[월간 리포트]* *{hospital_name}* {year}년 {month}월 AI 답변 인용 리포트 생성 완료\n"
                 f"AI 답변 내 병원 언급률: *{sov_pct:.1f}%*{change_text}\n"
+                f"측정 방식: {measurement_label} · 측정 실패는 분모에서 제외\n"
                 f"파일: `{pdf_path}`\n\n"
                 f"원장 보고 자료를 확인해 주세요."
             )},
