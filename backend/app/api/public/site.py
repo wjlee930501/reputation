@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentStatus
-from app.models.essence import HospitalSourceAsset, PHOTO_SOURCE_TYPES, SourceType
+from app.models.essence import HospitalSourceAsset, PHOTO_SOURCE_TYPES, SourceStatus, SourceType
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.gcs_utils import get_signed_url
@@ -46,11 +46,13 @@ async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
 
     # is_public=True 사진만 노출. 의료광고법 우려가 큰 카테고리는 enum에 포함되지 않으므로
     # PHOTO_SOURCE_TYPES 자체가 안전 게이트 역할.
+    # AE가 자료를 EXCLUDED로 전환했을 때 /site에 잔존하지 않도록 status로 한 번 더 차단.
     photos_result = await db.execute(
         select(HospitalSourceAsset)
         .where(
             HospitalSourceAsset.hospital_id == h.id,
             HospitalSourceAsset.is_public.is_(True),
+            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
             HospitalSourceAsset.source_type.in_(list(PHOTO_SOURCE_TYPES)),
             HospitalSourceAsset.file_url.is_not(None),
         )
