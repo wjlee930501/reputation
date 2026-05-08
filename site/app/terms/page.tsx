@@ -67,8 +67,11 @@ export default function TermsPage() {
     <main className="legal-shell">
       <header className="legal-header">
         <Link href="/" className="legal-back">← Re:putation 홈으로</Link>
-        <h1>이용약관</h1>
-        <p>시행일 {EFFECTIVE_DATE}</p>
+        <span className="motionlabs-chip" style={{ marginTop: 12 }}>
+          <strong>MotionLabs</strong> Research Preview
+        </span>
+        <h1 className="heading1" style={{ marginTop: 12 }}>이용약관</h1>
+        <p className="body4">시행일 {EFFECTIVE_DATE}</p>
       </header>
       <article className="legal-body">
         {SECTIONS.map((section) => (

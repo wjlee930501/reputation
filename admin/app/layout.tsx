@@ -3,8 +3,8 @@ import Link from 'next/link'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Re:putation Ops',
-  description: 'MotionLabs 내부 운영 콘솔 — 병원 AI 노출 운영',
+  title: 'Re:putation Ops · MotionLabs Research Preview',
+  description: 'MotionLabs Research Preview · 병원 AI 노출 운영 내부 콘솔',
 }
 
 export default function RootLayout({
@@ -25,6 +25,10 @@ export default function RootLayout({
                   <span className="text-[11px] font-semibold text-blue-300 tracking-wider">운영</span>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-0.5">MotionLabs 내부 운영 콘솔</p>
+                <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-200">
+                  <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-400" />
+                  Research Preview
+                </span>
               </Link>
             </div>
 
@@ -66,8 +70,16 @@ export default function RootLayout({
             </nav>
 
             <div className="px-4 py-3 border-t border-slate-800 space-y-1">
-              <p className="text-[11px] text-slate-300 font-medium">MotionLabs</p>
-              <p className="text-[10px] text-slate-500">내부 운영 콘솔</p>
+              <p className="text-[11px] text-slate-300 font-medium">MotionLabs Inc.</p>
+              <p className="text-[10px] text-slate-500">v1.0 Research Preview · 내부 운영 콘솔</p>
+              <a
+                href="https://motionlabs.kr"
+                target="_blank"
+                rel="noopener"
+                className="text-[10px] text-blue-300 hover:text-blue-200 transition-colors"
+              >
+                motionlabs.kr ↗
+              </a>
             </div>
           </aside>
 

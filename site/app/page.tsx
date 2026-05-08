@@ -137,7 +137,7 @@ export default function Home({
           <span className="brand-mark" aria-hidden="true">R</span>
           <span>
             <strong>Re:putation</strong>
-            <small>by MotionLabs</small>
+            <small>by MotionLabs · Research Preview</small>
           </span>
         </a>
 
@@ -145,6 +145,7 @@ export default function Home({
           <a href="#diagnosis">진단 방식</a>
           <a href="#operation">월간 운영</a>
           <a href="#specialty">진료과</a>
+          <a href="https://motionlabs.kr" target="_blank" rel="noopener">MotionLabs ↗</a>
           <a href="#lead">상담 신청</a>
         </nav>
 
@@ -153,19 +154,24 @@ export default function Home({
 
       <section id="top" className="hero-section">
         <div className="hero-copy">
-          <p className="section-eyebrow">AI EXPOSURE DIAGNOSIS FOR CLINICS</p>
+          <span className="research-preview-pill" aria-label="Research Preview by MotionLabs">
+            Research Preview
+            <span className="by">by MotionLabs</span>
+          </span>
+          <p className="section-eyebrow">AI Exposure Diagnosis · For Clinics</p>
           <h1>
-            환자는 이제 AI에게
-            <span>병원을 묻습니다.</span>
+            환자는 이제 검색이 아니라
+            <span>AI에게 병원을 묻습니다.</span>
             <em>우리 병원은 그 답변 안에 제대로 보이고 있을까요?</em>
           </h1>
           <p className="hero-subcopy">
             Re:putation은 홈페이지 제작이나 일반 블로그 대행이 아닙니다. ChatGPT·Gemini가
             환자 질문에 답할 때 우리 병원이 어떻게 보이는지 진단하고, 빠진 정보와 근거
-            콘텐츠 운영 순서를 정리합니다.
+            콘텐츠 운영 순서를 정리합니다. <strong>모션랩스가 운영하는 의료 SaaS의 첫 Research
+            Preview</strong>로, 베타 단계의 진단 결과를 함께 다듬어 갈 병원을 우선 모십니다.
           </p>
           <div className="hero-actions" aria-label="주요 행동">
-            <a className="btn btn-primary" href="#lead">우리 병원 AI 노출 진단받기</a>
+            <a className="btn btn-primary" href="#lead">우리 병원 AI 노출 무료 진단</a>
             <a className="btn btn-secondary" href="#diagnosis">진단 방식 보기</a>
           </div>
           <div className="hero-note">
@@ -431,8 +437,11 @@ export default function Home({
 
       <footer className="site-footer">
         <div>
+          <span className="motionlabs-chip">
+            <strong>MotionLabs</strong> Research Preview
+          </span>
           <strong>Re:putation</strong>
-          <p>AI 노출 진단 및 병원 콘텐츠 운영 서비스</p>
+          <p>AI 노출 진단 및 병원 콘텐츠 운영 서비스 · 베타 단계 결과는 사전 동의된 진단 범위 안에서만 활용합니다.</p>
           <p className="footer-biz">
             운영사: 주식회사 모션랩스(MotionLabs Inc.) · 대표 이우진
             <br />
@@ -440,6 +449,7 @@ export default function Home({
           </p>
         </div>
         <div className="footer-links">
+          <a href="https://motionlabs.kr" target="_blank" rel="noopener">motionlabs.kr ↗</a>
           <a href="mailto:contact@motionlabs.kr">contact@motionlabs.kr</a>
           <Link href="/privacy">개인정보 처리방침</Link>
           <Link href="/terms">이용약관</Link>

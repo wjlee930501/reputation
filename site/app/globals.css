@@ -5,26 +5,81 @@
 @tailwind utilities;
 
 :root {
-  --ink: #111827;
-  --body: #3f4b5f;
-  --muted: #667085;
-  --faint: #f4f7fb;
-  --paper: #f8fafc;
-  --snow: #ffffff;
-  --line: #d8e1ee;
-  --navy: #102846;
-  --navy-deep: #071a2f;
-  --blue: #1f6feb;
-  --blue-dark: #1558c6;
-  --mint: #12b8a6;
-  --mint-soft: #dff8f4;
-  --mint-pale: #f0fbf8;
-  --sky-soft: #eaf3ff;
+  /* ─── MotionLabs Re:visit Design Tokens (motionz-ui) ─── */
+  /* Primary (Blue) */
+  --color-revisit-primary-95: #eef5fc;
+  --color-revisit-primary-90: #dbedff;
+  --color-revisit-primary-80: #c0e1ff;
+  --color-revisit-primary-70: #81c2ff;
+  --color-revisit-primary-50: #4b9afd;
+  --color-revisit-primary-40: #0671e0;
+  --color-revisit-primary-30: #0063c7;
+  --color-revisit-primary-20: #0053ad;
+  --color-revisit-primary-10: #003e80;
+  /* Greyscale */
+  --color-revisit-greyscale-100: #ffffff;
+  --color-revisit-greyscale-95: #f9f9f9;
+  --color-revisit-greyscale-90: #f1f2f3;
+  --color-revisit-greyscale-80: #e4e7e7;
+  --color-revisit-greyscale-70: #d3d6d8;
+  --color-revisit-greyscale-60: #aeb4b7;
+  --color-revisit-greyscale-50: #959a9d;
+  --color-revisit-greyscale-40: #6f7476;
+  --color-revisit-greyscale-30: #575b5c;
+  --color-revisit-greyscale-20: #3e4041;
+  --color-revisit-greyscale-10: #202020;
+  /* Cool Grey */
+  --color-revisit-coolgrey-95: #f9fbfe;
+  --color-revisit-coolgrey-90: #f5f9fd;
+  --color-revisit-coolgrey-85: #eff3f6;
+  --color-revisit-coolgrey-80: #e8ecf2;
+  --color-revisit-coolgrey-70: #cdd2dc;
+  --color-revisit-coolgrey-60: #b9bfc6;
+  --color-revisit-coolgrey-50: #929ba4;
+  --color-revisit-coolgrey-40: #576375;
+  --color-revisit-coolgrey-30: #3f4c5f;
+  --color-revisit-coolgrey-20: #303a48;
+  --color-revisit-coolgrey-10: #21203b;
+  /* Status */
+  --color-revisit-red-50: #ff5a4f;
+  --color-revisit-yellow-50: #ffc670;
+  --color-revisit-green-50: #32c997;
+  --color-revisit-purple-50: #927bff;
+  /* Semantic aliases */
+  --color-revisit-text-title: var(--color-revisit-coolgrey-20);
+  --color-revisit-text-body: var(--color-revisit-greyscale-10);
+  --color-revisit-text-subbody: var(--color-revisit-coolgrey-20);
+  --color-revisit-text-helper: var(--color-revisit-coolgrey-40);
+  --color-revisit-text-caption: var(--color-revisit-coolgrey-50);
+  --color-revisit-background-user: var(--color-revisit-coolgrey-95);
+  --color-revisit-background-container: var(--color-revisit-greyscale-100);
+  --color-revisit-background-layer: var(--color-revisit-coolgrey-80);
+  --color-revisit-line-border: var(--color-revisit-coolgrey-70);
+  --color-revisit-line-container: var(--color-revisit-greyscale-80);
+  --color-revisit-nav: #212d3b;
+
+  /* ─── Re:putation aliases — bridge to MotionLabs tokens ─── */
+  --ink: var(--color-revisit-text-title);
+  --body: var(--color-revisit-text-body);
+  --muted: var(--color-revisit-text-helper);
+  --faint: var(--color-revisit-coolgrey-90);
+  --paper: var(--color-revisit-background-user);
+  --snow: var(--color-revisit-background-container);
+  --line: var(--color-revisit-line-container);
+  --navy: var(--color-revisit-coolgrey-20);
+  --navy-deep: var(--color-revisit-coolgrey-10);
+  --blue: var(--color-revisit-primary-40);
+  --blue-dark: var(--color-revisit-primary-30);
+  --blue-soft: var(--color-revisit-primary-95);
+  --mint: var(--color-revisit-green-50);
+  --mint-soft: var(--color-revisit-green-90);
+  --mint-pale: var(--color-revisit-green-95);
+  --sky-soft: var(--color-revisit-primary-90);
   --max: 1180px;
   --radius-lg: 28px;
   --radius-md: 18px;
-  --shadow-soft: 0 18px 50px rgba(16, 40, 70, 0.12);
-  --shadow-card: 0 10px 26px rgba(16, 40, 70, 0.08);
+  --shadow-soft: 0 18px 50px rgba(33, 45, 59, 0.12);
+  --shadow-card: 0 10px 26px rgba(33, 45, 59, 0.08);
   --weight-regular: 400;
   --weight-medium: 500;
   --weight-semibold: 600;
@@ -39,6 +94,20 @@
   --text-m: var(--text-body);
   --text-s: var(--text-caption);
 }
+
+/* ─── MotionLabs typography classes (motionz-ui parity) ─── */
+.heading1 { font-size: 28px; font-weight: 700; line-height: 36px; }
+.heading2 { font-size: 24px; font-weight: 700; line-height: 32px; }
+.heading3 { font-size: 20px; font-weight: 700; line-height: 28px; }
+.title1 { font-size: 18px; font-weight: 700; line-height: 26px; }
+.title2 { font-size: 18px; font-weight: 500; line-height: 26px; }
+.title3 { font-size: 16px; font-weight: 700; line-height: 24px; }
+.body1 { font-size: 16px; font-weight: 500; line-height: 24px; }
+.body2 { font-size: 16px; font-weight: 400; line-height: 24px; }
+.body3 { font-size: 14px; font-weight: 500; line-height: 20px; }
+.body4 { font-size: 14px; font-weight: 400; line-height: 20px; }
+.details1 { font-size: 13px; font-weight: 500; line-height: 18px; }
+.details2 { font-size: 12px; font-weight: 500; line-height: 16px; }
 
 * {
   box-sizing: border-box;
@@ -228,10 +297,12 @@ textarea:focus-visible {
 
 .section-eyebrow {
   margin: 0;
-  color: var(--blue);
-  font-size: var(--text-s);
+  color: var(--color-revisit-primary-40);
+  font-size: 12px;
   font-weight: var(--weight-bold);
+  letter-spacing: 0.18em;
   line-height: 1.45;
+  text-transform: uppercase;
 }
 
 .hero-copy h1 {
@@ -296,13 +367,13 @@ textarea:focus-visible {
 }
 
 .btn-primary {
-  background: var(--blue);
-  color: white;
-  box-shadow: 0 16px 28px rgba(31, 111, 235, 0.25);
+  background: var(--color-revisit-primary-40);
+  color: var(--color-revisit-greyscale-100);
+  box-shadow: 0 16px 28px rgba(6, 113, 224, 0.22);
 }
 
 .btn-primary:hover {
-  background: var(--blue-dark);
+  background: var(--color-revisit-primary-30);
 }
 
 .btn-secondary {
@@ -1359,7 +1430,57 @@ textarea:focus-visible {
 .legal-effective {
   margin-top: 32px;
   padding-top: 16px;
-  border-top: 1px solid #e2e8f0;
-  color: #64748b;
+  border-top: 1px solid var(--color-revisit-line-container);
+  color: var(--color-revisit-text-helper);
   font-size: 13px;
+}
+
+/* — MotionLabs Research Preview ribbon — */
+.research-preview-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 6px 12px 6px 8px;
+  border-radius: 999px;
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-primary-30);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.research-preview-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-revisit-primary-40);
+  box-shadow: 0 0 0 4px var(--color-revisit-primary-90);
+}
+
+.research-preview-pill .by {
+  margin-left: 4px;
+  color: var(--color-revisit-text-helper);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* MotionLabs lockup chip — used in legal pages and footer */
+.motionlabs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-revisit-line-container);
+  border-radius: 999px;
+  background: var(--color-revisit-greyscale-100);
+  color: var(--color-revisit-text-helper);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.motionlabs-chip strong {
+  color: var(--color-revisit-primary-40);
+  font-weight: 700;
 }

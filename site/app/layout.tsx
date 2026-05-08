@@ -3,9 +3,17 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || "https://reputation.co.kr"),
-  title: "Re:putation — 환자들이 AI로 병원을 찾는 시대",
+  title: "Re:putation — AI 답변에 우리 병원이 보이는지 진단합니다 · MotionLabs Research Preview",
   description:
-    "환자가 AI로 병원을 찾는 시대에 우리 병원이 대비되어 있는지 진단하고, 진료 강점과 근거 기반 콘텐츠 운영을 연결하는 Re:putation 리드 페이지",
+    "MotionLabs가 운영하는 Re:putation Research Preview. ChatGPT·Gemini가 환자 질문에 답할 때 우리 병원이 어떻게 보이는지 진단하고, 빠진 정보와 근거 콘텐츠 운영 순서를 정리합니다.",
+  openGraph: {
+    title: "Re:putation — MotionLabs Research Preview",
+    description:
+      "환자는 이제 AI에게 병원을 묻습니다. 우리 병원은 그 답변 안에 제대로 보이고 있을까요?",
+    siteName: "Re:putation by MotionLabs",
+    locale: "ko_KR",
+    type: "website",
+  },
 };
 
 export default function RootLayout({
