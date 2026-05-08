@@ -353,13 +353,16 @@ async def publish_content(
     # Slack 알림
     await notifier.notify_content_published(hospital.name, item.title or "")
 
-    # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library에 즉시 반영되도록.
+    # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library/관련 풀페이지에 즉시 반영되도록.
     await trigger_site_revalidate(
         paths=[
             "/sitemap.xml",
             f"/{hospital.slug}",
             f"/{hospital.slug}/contents",
             f"/{hospital.slug}/contents/{item.id}",
+            f"/{hospital.slug}/doctor",
+            f"/{hospital.slug}/treatments",
+            f"/{hospital.slug}/visit",
             f"/{hospital.slug}/llms.txt",
         ]
     )

@@ -1,0 +1,172 @@
+import { Metadata } from 'next'
+import { notFound } from 'next/navigation'
+
+import { fetchHospital } from '@/lib/api'
+
+import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
+import { ClinicFooter } from '../_components/ClinicFooter'
+import { ClinicHeader } from '../_components/ClinicHeader'
+import { ContactCard } from '../_components/ContactCard'
+import { JsonLd } from '../_components/JsonLd'
+
+interface Props {
+  params: { slug: string }
+}
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
+
+const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
+  mon: 'Monday',
+  tue: 'Tuesday',
+  wed: 'Wednesday',
+  thu: 'Thursday',
+  fri: 'Friday',
+  sat: 'Saturday',
+  sun: 'Sunday',
+}
+
+function buildOpeningHoursSpec(hours: Record<string, string> | null | undefined) {
+  if (!hours) return []
+  return Object.entries(hours).map(([day, value]) => {
+    const opensCloses = String(value).match(/(\d{1,2}:\d{2}).*?(\d{1,2}:\d{2})/)
+    const base: Record<string, unknown> = {
+      '@type': 'OpeningHoursSpecification',
+      dayOfWeek: SCHEMA_DAY_OF_WEEK[day.toLowerCase()] || day,
+      description: String(value),
+    }
+    if (opensCloses) {
+      base.opens = opensCloses[1]
+      base.closes = opensCloses[2]
+    }
+    return base
+  })
+}
+
+export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  try {
+    const hospital = await fetchHospital(params.slug)
+    const description = `${hospital.name} 진료 안내 — 주소, 전화, 진료시간, 공식 채널. 진료 예약·상담은 병원 공식 채널로 연결됩니다.`
+    return {
+      title: `진료 안내 | ${hospital.name}`,
+      description,
+      alternates: { canonical: `/${params.slug}/visit` },
+      openGraph: {
+        title: `진료 안내 | ${hospital.name}`,
+        description,
+        url: `/${params.slug}/visit`,
+        type: 'website',
+      },
+    }
+  } catch {
+    return { title: '진료 안내' }
+  }
+}
+
+export default async function VisitPage({ params }: Props) {
+  let hospital
+  try {
+    hospital = await fetchHospital(params.slug)
+  } catch {
+    notFound()
+  }
+
+  const breadcrumbItems = [
+    { label: '홈', href: `/${params.slug}` },
+    { label: '진료 안내' },
+  ]
+
+  const sameAs = [
+    hospital.website_url,
+    hospital.blog_url,
+    hospital.kakao_channel_url,
+    hospital.google_business_profile_url,
+    hospital.google_maps_url,
+    hospital.naver_place_url,
+  ].filter((value): value is string => Boolean(value))
+
+  const visitJsonLd = {
+    '@context': 'https://schema.org',
+    '@type': ['MedicalClinic', 'LocalBusiness'],
+    name: hospital.name,
+    url: `${SITE_URL}/${params.slug}/visit`,
+    address: {
+      '@type': 'PostalAddress',
+      streetAddress: hospital.address,
+      addressCountry: 'KR',
+    },
+    telephone: hospital.phone,
+    medicalSpecialty: hospital.specialties,
+    openingHoursSpecification: buildOpeningHoursSpec(hospital.business_hours),
+    hasMap: hospital.google_maps_url || undefined,
+    geo:
+      hospital.latitude && hospital.longitude
+        ? { '@type': 'GeoCoordinates', latitude: hospital.latitude, longitude: hospital.longitude }
+        : undefined,
+    sameAs: sameAs.length > 0 ? sameAs : undefined,
+  }
+
+  const externalChannels = [
+    { url: hospital.blog_url, label: '병원 블로그' },
+    { url: hospital.kakao_channel_url, label: '카카오톡 상담' },
+    { url: hospital.naver_place_url, label: '네이버 플레이스' },
+    { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
+  ]
+
+  return (
+    <>
+      <JsonLd data={[visitJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]} />
+      <div className="clinic-shell">
+        <ClinicHeader
+          hospitalName={hospital.name}
+          hospitalSlug={params.slug}
+          region={hospital.region}
+          specialties={hospital.specialties}
+          phone={hospital.phone}
+          websiteUrl={hospital.website_url}
+        />
+        <main>
+          <section className="clinic-library-hero">
+            <div className="clinic-library-hero-inner">
+              <Breadcrumb items={breadcrumbItems} />
+              <span className="clinic-section-eyebrow">Visit · Channels</span>
+              <h1 className="clinic-library-hero-title">{hospital.name} 진료 안내</h1>
+              <p className="clinic-library-hero-meta">
+                <strong>{hospital.address}</strong>
+                <span className="clinic-library-divider-dot" aria-hidden="true" />
+                <a
+                  href={`tel:${hospital.phone}`}
+                  style={{ color: 'var(--color-revisit-primary-40)', fontWeight: 700 }}
+                >
+                  {hospital.phone}
+                </a>
+              </p>
+              <p
+                className="clinic-section-lede"
+                style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
+              >
+                이곳은 의료 콘텐츠 허브입니다. 진료 예약·상담은 아래 병원 공식 채널을 통해 직접
+                연결해 주세요.
+              </p>
+            </div>
+          </section>
+
+          <ContactCard
+            address={hospital.address}
+            phone={hospital.phone}
+            businessHours={hospital.business_hours}
+            googleMapsUrl={hospital.google_maps_url}
+            links={externalChannels}
+            hospitalName={hospital.name}
+            websiteUrl={hospital.website_url}
+          />
+        </main>
+        <ClinicFooter
+          hospitalName={hospital.name}
+          address={hospital.address}
+          phone={hospital.phone}
+          websiteUrl={hospital.website_url}
+        />
+      </div>
+    </>
+  )
+}

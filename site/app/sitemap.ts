@@ -67,6 +67,24 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       priority: 0.7,
     })
     entries.push({
+      url: `${SITE_URL}/${hospital.slug}/doctor`,
+      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      changeFrequency: 'monthly',
+      priority: 0.6,
+    })
+    entries.push({
+      url: `${SITE_URL}/${hospital.slug}/treatments`,
+      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      changeFrequency: 'monthly',
+      priority: 0.6,
+    })
+    entries.push({
+      url: `${SITE_URL}/${hospital.slug}/visit`,
+      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      changeFrequency: 'monthly',
+      priority: 0.6,
+    })
+    entries.push({
       url: `${SITE_URL}/${hospital.slug}/llms.txt`,
       lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
       changeFrequency: 'daily',

@@ -31,9 +31,9 @@ export function ClinicHeader({
 
       <nav className="clinic-header-nav" aria-label="콘텐츠 허브 섹션">
         <Link href={`/${hospitalSlug}/contents`}>의료 콘텐츠</Link>
-        <a href="#curator">의료진</a>
-        <a href="#treatments">진료 영역</a>
-        <a href="#contact">진료 안내</a>
+        <Link href={`/${hospitalSlug}/doctor`}>의료진</Link>
+        <Link href={`/${hospitalSlug}/treatments`}>진료 영역</Link>
+        <Link href={`/${hospitalSlug}/visit`}>진료 안내</Link>
         {websiteUrl && (
           <a href={websiteUrl} target="_blank" rel="noopener" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             공식 홈페이지
