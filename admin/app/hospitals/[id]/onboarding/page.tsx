@@ -27,6 +27,7 @@ interface Source {
   file_size_bytes: number | null
   is_public: boolean
   raw_text: string | null
+  process_error: string | null
   evidence_note_count: number
   display: { source_type_label: string; status_label: string } | null
   created_at: string | null
@@ -602,16 +603,23 @@ function ProcessingStepBody({
   const processed = sources.filter((s) => s.status === 'PROCESSED')
   const errored = sources.filter((s) => s.status === 'ERROR')
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [errors, setErrors] = useState<Record<string, string>>({})
 
   async function process(sourceId: string) {
     setBusyId(sourceId)
+    setErrors((prev) => {
+      const next = { ...prev }
+      delete next[sourceId]
+      return next
+    })
     try {
       await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${sourceId}/process`, {
         method: 'POST',
       })
       onChanged()
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : '처리 실패')
+      const message = e instanceof Error ? e.message : '처리 실패'
+      setErrors((prev) => ({ ...prev, [sourceId]: message }))
     } finally {
       setBusyId(null)
     }
@@ -631,16 +639,21 @@ function ProcessingStepBody({
           {pending.map((s) => (
             <li
               key={s.id}
-              className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 text-sm"
+              className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm"
             >
-              <span className="truncate">{s.title}</span>
-              <button
-                onClick={() => process(s.id)}
-                disabled={busyId === s.id}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                {busyId === s.id ? '처리 중…' : '처리'}
-              </button>
+              <div className="flex items-center justify-between gap-3">
+                <span className="truncate">{s.title}</span>
+                <button
+                  onClick={() => process(s.id)}
+                  disabled={busyId === s.id}
+                  className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {busyId === s.id ? '처리 중…' : '처리'}
+                </button>
+              </div>
+              {errors[s.id] && (
+                <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{errors[s.id]}</p>
+              )}
             </li>
           ))}
         </ul>
@@ -651,9 +664,28 @@ function ProcessingStepBody({
         </p>
       )}
       {errored.length > 0 && (
-        <p className="text-xs text-red-600">
-          오류 자료는 essence 화면에서 처리 결과를 확인하고 수정 후 재시도해 주세요.
-        </p>
+        <div className="space-y-2 rounded-lg border border-red-200 bg-red-50 p-3">
+          <p className="text-xs font-semibold text-red-800">처리 중 오류가 발생한 자료 — 재시도 가능</p>
+          <ul className="space-y-2">
+            {errored.map((s) => (
+              <li key={s.id} className="flex flex-col gap-1 rounded bg-white p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-medium text-slate-900">{s.title}</span>
+                  <button
+                    onClick={() => process(s.id)}
+                    disabled={busyId === s.id}
+                    className="rounded bg-red-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {busyId === s.id ? '재시도 중…' : '다시 처리'}
+                  </button>
+                </div>
+                {(errors[s.id] || s.process_error) && (
+                  <p className="text-red-700">{errors[s.id] || s.process_error}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   )
