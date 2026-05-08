@@ -114,11 +114,22 @@ def seed_demo() -> dict[str, str]:
                 "수술 필요 여부, 회복 기간, 일상 복귀 계획을 진료 과정에서 확인하세요."
             ),
             meta_description="강남에서 탈장 수술 병원을 선택할 때 확인할 진료 경험, 설명, 회복 관리 기준을 정리했습니다.",
+            references_list=[
+                {
+                    "title": "대한외과학회 — 복벽탈장 진료 지침",
+                    "url": "https://www.surgery.or.kr/",
+                },
+                {
+                    "title": "질병관리청 국가건강정보포털 — 탈장",
+                    "url": "https://health.kdca.go.kr/",
+                },
+            ],
             scheduled_date=date.today(),
             status=ContentStatus.PUBLISHED,
             generated_at=datetime.now(timezone.utc),
             published_at=datetime.now(timezone.utc),
             published_by="Demo AE",
+            body_updated_at=datetime.now(timezone.utc),
         )
         if philosophy is not None:
             content.content_philosophy_id = philosophy.id

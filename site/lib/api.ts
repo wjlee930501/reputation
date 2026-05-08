@@ -27,6 +27,11 @@ export interface Hospital {
   aeo_domain: string | null
 }
 
+export interface ContentReference {
+  title: string
+  url: string
+}
+
 export interface ContentItem {
   id: number
   hospital_id: number
@@ -41,6 +46,8 @@ export interface ContentItem {
   status: string
   generated_at: string
   published_at: string | null
+  body_updated_at: string | null
+  references: ContentReference[]
 }
 
 export async function fetchHospital(slug: string): Promise<Hospital> {

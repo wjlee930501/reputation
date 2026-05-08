@@ -239,12 +239,17 @@ async def update_content(
             detail={"message": "의료광고 금지 표현이 포함되어 있습니다.", "violations": violations},
         )
 
+    body_changed = False
     if body.title is not None:
         item.title = body.title
-    if body.body is not None:
+    if body.body is not None and body.body != item.body:
         item.body = body.body
+        body_changed = True
     if body.meta_description is not None:
         item.meta_description = body.meta_description
+
+    if body_changed:
+        item.body_updated_at = datetime.now(timezone.utc)
 
     philosophy = await _get_approved_philosophy(db, hospital_id)
     screening = screen_content_against_philosophy(item, philosophy)
@@ -640,6 +645,8 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "generated_at": item.generated_at.isoformat() if item.generated_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "published_by": item.published_by,
+        "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
+        "references": item.references_list or [],
         "content_philosophy_id": str(item.content_philosophy_id) if item.content_philosophy_id else None,
         "query_target_id": str(item.query_target_id) if item.query_target_id else None,
         "exposure_action_id": str(item.exposure_action_id) if item.exposure_action_id else None,

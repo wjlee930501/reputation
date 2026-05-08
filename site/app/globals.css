@@ -3171,3 +3171,266 @@ textarea:focus-visible {
   border-radius: 999px;
   background: var(--color-revisit-coolgrey-60);
 }
+
+/* ══════════════════════════════════════════════════════════════════
+ * Article — Phase 1: TL;DR / 읽기 시간 / 참고 자료 / PAA / 본문 타이포 강화
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* Byline 강화 */
+.clinic-article-byline-label {
+  color: var(--color-revisit-text-caption);
+  font-weight: 600;
+}
+
+.clinic-article-byline-dot {
+  color: var(--color-revisit-coolgrey-60);
+}
+
+.clinic-article-byline-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--color-revisit-green-95);
+  color: var(--color-revisit-green-30);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.clinic-article-byline-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-revisit-green-50);
+}
+
+/* TL;DR 박스 — 본문 위 핵심 답변 */
+.clinic-article-tldr {
+  margin: 0 36px 8px;
+  padding: 20px 22px;
+  border: 1px solid var(--color-revisit-primary-90);
+  border-left: 4px solid var(--color-revisit-primary-40);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-greyscale-100) 100%);
+}
+
+.clinic-article-tldr-eyebrow {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--color-revisit-primary-40);
+  color: var(--color-revisit-greyscale-100);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.clinic-article-tldr p {
+  margin: 0;
+  color: var(--color-revisit-text-title);
+  font-size: 15px;
+  line-height: 1.7;
+  font-weight: 500;
+}
+
+@media (max-width: 720px) {
+  .clinic-article-tldr {
+    margin: 0 24px 8px;
+  }
+}
+
+/* 본문 타이포그래피 강화 */
+.clinic-article-body blockquote {
+  margin: 18px 0;
+  padding: 14px 20px;
+  border-left: 3px solid var(--color-revisit-primary-50);
+  border-radius: 0 12px 12px 0;
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-text-subbody);
+  font-style: normal;
+}
+
+.clinic-article-body blockquote p {
+  margin: 0;
+}
+
+.clinic-article-body code {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--color-revisit-coolgrey-90);
+  color: var(--color-revisit-coolgrey-20);
+  font-size: 14px;
+  font-family: 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+
+.clinic-article-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 18px 0;
+  font-size: 14px;
+}
+
+.clinic-article-body th,
+.clinic-article-body td {
+  padding: 10px 14px;
+  border: 1px solid var(--color-revisit-line-container);
+  text-align: left;
+}
+
+.clinic-article-body th {
+  background: var(--color-revisit-coolgrey-90);
+  font-weight: 700;
+  color: var(--color-revisit-text-title);
+}
+
+.clinic-article-body hr {
+  margin: 28px 0;
+  border: 0;
+  border-top: 1px solid var(--color-revisit-line-container);
+}
+
+.clinic-article-body dl {
+  margin: 18px 0;
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px 16px;
+}
+
+.clinic-article-body dt {
+  font-weight: 700;
+  color: var(--color-revisit-text-title);
+}
+
+.clinic-article-body dd {
+  margin: 0;
+  color: var(--color-revisit-text-body);
+}
+
+/* Callout 박스 (markdown에서 사용 시) */
+.clinic-callout {
+  margin: 18px 0;
+  padding: 14px 18px 14px 22px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.clinic-callout--info {
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-primary-20);
+  border-left: 3px solid var(--color-revisit-primary-50);
+}
+
+.clinic-callout--warning {
+  background: var(--color-revisit-yellow-95);
+  color: #8a4d00;
+  border-left: 3px solid var(--color-revisit-yellow-40);
+}
+
+.clinic-callout--danger {
+  background: var(--color-revisit-red-95);
+  color: var(--color-revisit-red-20);
+  border-left: 3px solid var(--color-revisit-red-50);
+}
+
+/* 참고 자료 섹션 */
+.clinic-article-references {
+  margin: 0 36px;
+  padding: 28px 0 8px;
+  border-top: 1px solid var(--color-revisit-line-container);
+}
+
+.clinic-article-references-title {
+  margin: 0 0 14px;
+  color: var(--color-revisit-text-title);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.clinic-article-references ol {
+  margin: 0 0 16px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.clinic-article-references li {
+  color: var(--color-revisit-text-body);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.clinic-article-references a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-revisit-primary-40);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.clinic-article-references a:hover {
+  color: var(--color-revisit-primary-30);
+}
+
+.clinic-article-references-note {
+  margin: 12px 0 0;
+  color: var(--color-revisit-text-caption);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+@media (max-width: 720px) {
+  .clinic-article-references {
+    margin: 0 24px;
+  }
+}
+
+/* PAA — 환자가 함께 묻는 질문 */
+.clinic-aside-card--paa {
+  background:
+    linear-gradient(180deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-greyscale-100) 60%);
+  border-color: var(--color-revisit-primary-90);
+}
+
+.clinic-paa-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.clinic-paa-link {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-revisit-greyscale-100);
+  border: 1px solid var(--color-revisit-line-container);
+  color: var(--color-revisit-text-subbody);
+  font-size: 13px;
+  line-height: 1.55;
+  font-weight: 500;
+  transition: border-color 150ms ease, color 150ms ease;
+}
+
+.clinic-paa-link:hover {
+  border-color: var(--color-revisit-primary-50);
+  color: var(--color-revisit-text-title);
+}
+
+.clinic-paa-q {
+  flex-shrink: 0;
+  color: var(--color-revisit-primary-40);
+  font-weight: 800;
+}

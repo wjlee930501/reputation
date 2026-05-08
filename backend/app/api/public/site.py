@@ -133,6 +133,8 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "image_url": get_signed_url(item.image_url) if item.image_url else None,
         "scheduled_date": str(item.scheduled_date),
         "published_at": item.published_at.isoformat() if item.published_at else None,
+        "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
+        "references": item.references_list or [],
     }
     if full:
         d["body"] = item.body

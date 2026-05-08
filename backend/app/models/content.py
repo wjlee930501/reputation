@@ -131,10 +131,15 @@ class ContentItem(Base):
     essence_status: Mapped[str | None] = mapped_column(String(50))
     essence_check_summary: Mapped[dict | None] = mapped_column(_jsonb_type())
 
+    # 본문 근거 자료 (GEO 신호 — AI 인용 가능성 ↑)
+    # list of {"title": str, "url": str}
+    references_list: Mapped[list | None] = mapped_column(_jsonb_type())
+
     # 타임스탬프
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름
+    body_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

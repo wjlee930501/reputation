@@ -9,6 +9,7 @@ import { fetchContent, fetchContents, fetchHospital, TYPE_LABELS } from '@/lib/a
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
 import { ClinicFooter } from '../../_components/ClinicFooter'
 import { ClinicHeader } from '../../_components/ClinicHeader'
+import { ExternalIcon } from '../../_components/icons'
 import { JsonLd } from '../../_components/JsonLd'
 
 interface Props {
@@ -17,11 +18,21 @@ interface Props {
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
+// 한국어 평균 읽기 속도 약 600자/분.
+const KOREAN_READING_SPEED_CHARS_PER_MIN = 600
+
 function formatDate(value: string | null | undefined, fallback: string) {
   if (!value) return fallback
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return fallback
   return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
+}
+
+function calculateReadingMinutes(body: string | null | undefined): number {
+  if (!body) return 1
+  // 마크다운 기호·URL 노이즈 차감 후 글자수 추정.
+  const stripped = body.replace(/[#*_\[\]\(\)`>!\-]/g, '').replace(/https?:\/\/\S+/g, '')
+  return Math.max(1, Math.round(stripped.length / KOREAN_READING_SPEED_CHARS_PER_MIN))
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -64,10 +75,20 @@ export default async function ContentDetailPage({ params }: Props) {
   }
 
   const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
-  const dateLabel = formatDate(content.published_at, content.scheduled_date)
-  const related = allContents
-    .filter((c) => c.id !== content.id && c.content_type === content.content_type)
+  const publishedLabel = formatDate(content.published_at, content.scheduled_date)
+  const reviewedLabel = content.body_updated_at
+    ? formatDate(content.body_updated_at, '')
+    : publishedLabel
+  const readingMinutes = calculateReadingMinutes(content.body)
+
+  const otherContents = allContents.filter((c) => c.id !== content.id)
+  const sameTypeRelated = otherContents
+    .filter((c) => c.content_type === content.content_type)
     .slice(0, 3)
+  const paaQuestions = otherContents
+    .filter((c) => c.content_type === 'FAQ' && !sameTypeRelated.some((s) => s.id === c.id))
+    .slice(0, 3)
+  const referenceList = Array.isArray(content.references) ? content.references : []
 
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
@@ -90,12 +111,19 @@ export default async function ContentDetailPage({ params }: Props) {
       name: hospital.name,
     },
     datePublished: content.published_at || content.scheduled_date,
-    dateModified: content.published_at || content.scheduled_date,
+    dateModified: content.body_updated_at || content.published_at || content.scheduled_date,
     mainEntityOfPage: `${SITE_URL}/${params.slug}/contents/${params.contentId}`,
     image: content.image_url ?? undefined,
+    citation: referenceList.length > 0
+      ? referenceList.map((ref) => ({
+          '@type': 'CreativeWork',
+          name: ref.title,
+          url: ref.url,
+        }))
+      : undefined,
   }
 
-  // FAQ 콘텐츠는 FAQPage 구조화 데이터를 함께 노출 — ChatGPT/Gemini 인용 신호.
+  // FAQ 콘텐츠는 FAQPage schema 노출. AI 답변 인용 신호.
   const faqJsonLd =
     content.content_type === 'FAQ'
       ? {
@@ -107,7 +135,7 @@ export default async function ContentDetailPage({ params }: Props) {
               name: content.title,
               acceptedAnswer: {
                 '@type': 'Answer',
-                text: content.body,
+                text: content.meta_description ?? content.body,
               },
             },
           ],
@@ -149,17 +177,51 @@ export default async function ContentDetailPage({ params }: Props) {
                 <span className="clinic-article-type">{typeLabel}</span>
                 <h1 className="clinic-article-title">{content.title}</h1>
                 <p className="clinic-article-byline">
-                  <span style={{ color: 'var(--color-revisit-text-caption)', fontWeight: 600 }}>큐레이터</span>
+                  <span className="clinic-article-byline-label">큐레이터</span>
                   <strong>{hospital.director_name} 원장</strong>
-                  <span aria-hidden="true">·</span>
-                  <span>{dateLabel}</span>
-                  <span aria-hidden="true">·</span>
-                  <span style={{ color: 'var(--color-revisit-green-30)', fontWeight: 600 }}>발행 시점 검수 완료</span>
+                  <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
+                  <span>{readingMinutes}분 읽기</span>
+                  <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
+                  <span>발행 {publishedLabel}</span>
+                  {reviewedLabel && reviewedLabel !== publishedLabel && (
+                    <>
+                      <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
+                      <span>최근 검수 {reviewedLabel}</span>
+                    </>
+                  )}
+                  <span className="clinic-article-byline-chip">발행 시점 검수 완료</span>
                 </p>
               </div>
+
+              {content.meta_description && (
+                <aside className="clinic-article-tldr" aria-label="핵심 답변 요약">
+                  <span className="clinic-article-tldr-eyebrow">핵심 답변</span>
+                  <p>{content.meta_description}</p>
+                </aside>
+              )}
+
               <div className="clinic-article-body">
                 <ReactMarkdown>{content.body}</ReactMarkdown>
               </div>
+
+              {referenceList.length > 0 && (
+                <section className="clinic-article-references" aria-label="참고 자료">
+                  <h2 className="clinic-article-references-title">참고 자료</h2>
+                  <ol>
+                    {referenceList.map((ref, idx) => (
+                      <li key={`${ref.url}-${idx}`}>
+                        <a href={ref.url} target="_blank" rel="noopener nofollow">
+                          {ref.title}
+                          <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+                        </a>
+                      </li>
+                    ))}
+                  </ol>
+                  <p className="clinic-article-references-note">
+                    위 자료는 본 콘텐츠 작성 시 인용한 공개 자료입니다. 진료 결정은 의료진 상담이 우선합니다.
+                  </p>
+                </section>
+              )}
             </article>
 
             <aside className="clinic-aside" aria-label="병원 정보 및 관련 콘텐츠">
@@ -201,12 +263,29 @@ export default async function ContentDetailPage({ params }: Props) {
                 )}
               </div>
 
-              {related.length > 0 && (
+              {paaQuestions.length > 0 && (
+                <div className="clinic-aside-card clinic-aside-card--paa">
+                  <span className="clinic-aside-card-eyebrow">People Also Ask</span>
+                  <h2 className="clinic-aside-card-title">환자가 함께 묻는 질문</h2>
+                  <ul className="clinic-paa-list">
+                    {paaQuestions.map((q) => (
+                      <li key={q.id}>
+                        <Link href={`/${params.slug}/contents/${q.id}`} className="clinic-paa-link">
+                          <span className="clinic-paa-q">Q.</span>
+                          <span>{q.title}</span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {sameTypeRelated.length > 0 && (
                 <div className="clinic-aside-card">
                   <span className="clinic-aside-card-eyebrow">Related</span>
                   <h2 className="clinic-aside-card-title">관련 {typeLabel}</h2>
                   <ul className="clinic-related-list">
-                    {related.map((r) => (
+                    {sameTypeRelated.map((r) => (
                       <li key={r.id}>
                         <Link href={`/${params.slug}/contents/${r.id}`} className="clinic-related-item">
                           {r.image_url ? (

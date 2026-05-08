@@ -21,24 +21,38 @@ logger = logging.getLogger(__name__)
 client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
 # ── 시스템 프롬프트 ───────────────────────────────────────────────
+# GEO/AEO 신호 강화:
+# - 첫 단락에 200자 이내 직접 답변 (AEO featured snippet / ChatGPT 인용 친화)
+# - 본문 마지막에 참고 자료 1~2개 (GEO 도메인 권위 / 인용 신뢰 신호)
+# - meta_description은 TL;DR 박스로도 노출되므로 핵심 답변 1~2문장으로 작성
 SYSTEM_PROMPT = """\
 당신은 병원 의료 콘텐츠 전문 작가입니다.
-아래 병원 정보를 바탕으로 ChatGPT·Gemini가 병원을 잘 이해할 수 있는 의료 콘텐츠를 작성합니다.
+아래 병원 정보를 바탕으로 ChatGPT·Gemini가 병원을 잘 이해하고 답변에 인용할 수 있는 의료 콘텐츠를 작성합니다.
 
 작성 규칙:
-1. 첫 문단에서 환자 질문에 대한 답을 먼저 제시합니다. ChatGPT·Gemini가 그대로 이해해도 어색하지 않아야 합니다.
-2. 환자의 실제 언어로 작성 — 의학 용어 최소화, 쉽고 친근하게
-3. 지역명·병원명·원장명을 자연스럽게 포함
-4. 분량: 600~900자 (한국어 기준)
-5. 마크다운 형식: H2 소제목 2~3개 활용
+1. 첫 단락(약 150~200자)에 환자 질문에 대한 직접 답변을 먼저 제시합니다.
+   AI가 이 단락만 발췌해도 답이 완성되도록, 핵심 결론을 첫 1~2문장에 두세요.
+2. 환자의 실제 언어로 작성 — 의학 용어 최소화, 쉽고 친근하게.
+3. 지역명·병원명·원장명을 자연스럽게 포함 (브랜드/엔티티 신호).
+4. 분량: 본문 600~900자 (한국어 기준, 참고 자료 제외).
+5. 마크다운 형식: H2 소제목 2~3개 + 필요 시 목록·짧은 인용.
 6. 의료광고법 준수 — 아래 표현 절대 사용 금지:
-   1등, 최고, 최우수, 유일, 완치, 100%, 성공률, 부작용 없는, 가장 잘하는, 국내 최초
+   1등, 최고, 최우수, 유일, 완치, 100%, 성공률, 부작용 없는, 가장 잘하는, 국내 최초.
+7. meta_description은 환자가 검색·AI 답변에서 처음 보는 1~2문장 요약.
+   첫 단락의 직접 답변과 같은 결론을 100~150자로 압축하세요.
+8. 본문 끝에 신뢰할 수 있는 참고 자료 1~2개를 references 필드로 명시합니다.
+   대한의학회 / 질병관리청 / 식품의약품안전처 / 학회 가이드라인 / 대형 병원의
+   공개 의학 자료 등 1차 자료를 우선합니다. 임의의 블로그/카페/광고성 페이지 금지.
 
 출력 형식 (JSON):
 {
   "title": "콘텐츠 제목 (50자 이내)",
-  "body": "본문 마크다운",
-  "meta_description": "검색 결과·AI 답변용 요약 (150자 이내)"
+  "body": "본문 마크다운 (참고 자료 섹션은 포함하지 않음)",
+  "meta_description": "TL;DR — 1~2문장 직접 답변 (100~150자)",
+  "references": [
+    {"title": "출처 제목", "url": "https://..."},
+    {"title": "출처 제목", "url": "https://..."}
+  ]
 }
 """
 
@@ -242,4 +256,24 @@ async def generate_content(
         logger.warning(f"Forbidden expressions found: {violations} — retrying")
         raise ValueError(f"Forbidden medical expressions: {violations}")
 
+    # 참고 자료 정규화 — Claude가 형식을 살짝 흔들어도 list[{title,url}] 형태로 통일.
+    result["references"] = _normalize_references(result.get("references"))
+
     return result
+
+
+def _normalize_references(raw: object) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[dict] = []
+    for item in raw[:5]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if not (title and url):
+            continue
+        if not (url.startswith("https://") or url.startswith("http://")):
+            continue
+        cleaned.append({"title": title[:200], "url": url[:500]})
+    return cleaned

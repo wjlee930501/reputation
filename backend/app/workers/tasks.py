@@ -248,10 +248,13 @@ def nightly_content_generation():
                         approved_brief,
                     )
                 )
+                now = datetime.now(timezone.utc)
                 item.title = content_data["title"]
                 item.body = content_data["body"]
                 item.meta_description = content_data.get("meta_description")
-                item.generated_at = datetime.now(timezone.utc)
+                item.references_list = content_data.get("references") or []
+                item.generated_at = now
+                item.body_updated_at = now
                 item.status = ContentStatus.DRAFT
                 item.content_philosophy_id = philosophy.id
                 screening = screen_content_against_philosophy(item, philosophy)
@@ -349,10 +352,13 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
             approved_brief,
         )
     )
+    now = datetime.now(timezone.utc)
     item.title = content_data["title"]
     item.body = content_data["body"]
     item.meta_description = content_data.get("meta_description")
-    item.generated_at = datetime.now(timezone.utc)
+    item.references_list = content_data.get("references") or []
+    item.generated_at = now
+    item.body_updated_at = now
     item.status = ContentStatus.DRAFT
     item.content_philosophy_id = philosophy.id
     screening = screen_content_against_philosophy(item, philosophy)
