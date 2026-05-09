@@ -1591,7 +1591,10 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 24px;
   width: 100%;
-  max-width: 1080px;
+  /* 1080(body content) + 48(L/R padding 24*2) = 1128: border-box 박스 모델에서
+     max-width는 padding을 포함하므로 1128로 두면 패딩 안쪽 컨텐츠 엣지가
+     .clinic-section-inner(1080 max-width, padding 0)와 정확히 일치한다. */
+  max-width: 1128px;
   margin: 0 auto;
   padding: 14px 24px;
 }
