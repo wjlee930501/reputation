@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 
 import { fetchContent, fetchContents, fetchHospital, TYPE_LABELS } from '@/lib/api'
+import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
 import { ClinicFooter } from '../../_components/ClinicFooter'
@@ -256,6 +257,7 @@ export default async function ContentDetailPage({ params }: Props) {
                     sizes="(max-width: 960px) 100vw, 720px"
                     style={{ objectFit: 'cover' }}
                     priority
+                    unoptimized={shouldBypassNextImageOptimization(content.image_url)}
                   />
                 </div>
               )}

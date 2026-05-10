@@ -1,4 +1,5 @@
 import { getApiBase } from '@/lib/config'
+import { publicFetchInit } from '@/lib/fetch-policy'
 
 export interface Hospital {
   id: number
@@ -59,8 +60,8 @@ export interface ContentReference {
 }
 
 export interface ContentItem {
-  id: number
-  hospital_id: number
+  id: string
+  hospital_id: string
   content_type: string
   sequence_no: number
   total_count: number
@@ -79,7 +80,7 @@ export interface ContentItem {
 }
 
 export async function fetchHospital(slug: string): Promise<Hospital> {
-  const res = await fetch(`${getApiBase()}/hospitals/${slug}`, { next: { revalidate: 3600 } })
+  const res = await fetch(`${getApiBase()}/hospitals/${slug}`, publicFetchInit(3600))
   if (!res.ok) throw new Error(`Hospital not found: ${slug}`)
   return res.json()
 }
@@ -89,13 +90,13 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
   const url = limit
     ? `${base}/hospitals/${slug}/contents?limit=${limit}`
     : `${base}/hospitals/${slug}/contents`
-  const res = await fetch(url, { next: { revalidate: 1800 } })
+  const res = await fetch(url, publicFetchInit(1800))
   if (!res.ok) return []
   return res.json()
 }
 
 export async function fetchContent(slug: string, contentId: string): Promise<ContentItem> {
-  const res = await fetch(`${getApiBase()}/hospitals/${slug}/contents/${contentId}`, { next: { revalidate: 1800 } })
+  const res = await fetch(`${getApiBase()}/hospitals/${slug}/contents/${contentId}`, publicFetchInit(1800))
   if (!res.ok) throw new Error(`Content not found: ${contentId}`)
   return res.json()
 }

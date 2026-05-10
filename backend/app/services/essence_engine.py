@@ -260,7 +260,8 @@ def synthesize_philosophy(
         violations = (note.note_metadata or {}).get("violations") or []
         if violations:
             medical_ad_risk_rules.append(
-                f"{', '.join(violations)} 표현은 근거와 별도 심의 없이 사용하지 않습니다."
+                f"{', '.join(violations)} 표현은 근거와 별도 심의 없이 사용하지 않습니다: "
+                f"{_short(note.source_excerpt, 120)}"
             )
         else:
             medical_ad_risk_rules.append(f"리스크 표현 검수: {_short(note.source_excerpt, 120)}")

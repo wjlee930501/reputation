@@ -50,6 +50,27 @@ def test_synthesize_philosophy_requires_evidence_map_for_non_empty_fields():
     assert validate_philosophy_grounding(payload, [note]) == []
 
 
+def test_synthesize_philosophy_keeps_medical_risk_rules_source_backed():
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash=compute_source_content_hash("인터뷰", None, "검증된 치료라고 표현하지 않습니다."),
+        status=SourceStatus.PROCESSED,
+        processed_at=datetime.now(timezone.utc),
+    )
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.RISK_SIGNAL,
+        source_excerpt="검증된 치료라고 표현하지 않습니다.",
+        note_metadata={"violations": ["검증된"]},
+    )
+
+    payload = synthesize_philosophy(SimpleNamespace(name="테스트병원"), [source], [note])
+
+    assert payload["medical_ad_risk_rules"]
+    assert "검증된 치료라고 표현하지 않습니다." in payload["medical_ad_risk_rules"][0]
+    assert validate_philosophy_grounding(payload, [note], require_text_support=True) == []
+
+
 def test_grounding_validation_rejects_text_not_supported_by_mapped_evidence():
     note = SimpleNamespace(
         id=uuid.uuid4(),

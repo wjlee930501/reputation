@@ -1,6 +1,7 @@
 import Image from 'next/image'
 
 import { resolveAssetUrl } from '@/lib/api'
+import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 import { StethoscopeIcon } from './MedicalIcons'
 
@@ -43,7 +44,7 @@ export function DoctorIntro({
                 fill
                 sizes="(max-width: 720px) 180px, 240px"
                 style={{ objectFit: 'cover' }}
-                unoptimized={resolvedPhoto.startsWith('http://localhost')}
+                unoptimized={shouldBypassNextImageOptimization(resolvedPhoto)}
               />
             </div>
           ) : (

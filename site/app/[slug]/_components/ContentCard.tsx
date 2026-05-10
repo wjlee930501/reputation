@@ -2,6 +2,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 
 import { TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 interface Props {
   content: ContentItem
@@ -89,6 +90,7 @@ export function ContentCard({ content, hospitalSlug }: Props) {
             fill
             sizes="(max-width: 720px) 100vw, 360px"
             style={{ objectFit: 'cover' }}
+            unoptimized={shouldBypassNextImageOptimization(content.image_url)}
           />
         </div>
       ) : (

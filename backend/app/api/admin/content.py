@@ -16,7 +16,7 @@ from typing import Optional
 import arrow
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -126,8 +126,21 @@ async def set_schedule(
         ContentSchedule.is_active,
     )
     old_result = await db.execute(old_stmt)
-    for old in old_result.scalars().all():
+    old_schedules = old_result.scalars().all()
+    old_schedule_ids = [old.id for old in old_schedules]
+    for old in old_schedules:
         old.is_active = False
+    if old_schedule_ids:
+        await db.execute(
+            delete(ContentItem).where(
+                ContentItem.schedule_id.in_(old_schedule_ids),
+                ContentItem.status == ContentStatus.DRAFT,
+                ContentItem.title.is_(None),
+                ContentItem.body.is_(None),
+                ContentItem.generated_at.is_(None),
+                ContentItem.published_at.is_(None),
+            )
+        )
 
     schedule = ContentSchedule(
         hospital_id=hospital_id,
@@ -140,7 +153,15 @@ async def set_schedule(
 
     # 이번 달 콘텐츠 슬롯 자동 생성
     target_month = arrow.get(body.active_from).floor("month")
-    slots = generate_monthly_slots(body.plan, body.publish_days, target_month)
+    try:
+        slots = generate_monthly_slots(
+            body.plan,
+            body.publish_days,
+            target_month,
+            start_date=body.active_from,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     for slot_date, ctype, seq_no, total in slots:
         db.add(ContentItem(

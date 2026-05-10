@@ -1,6 +1,9 @@
 import Image from 'next/image'
 import Link from 'next/link'
 
+import { resolveAssetUrl } from '@/lib/api'
+import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
+
 import { ChevronRightIcon, PhoneIcon } from './icons'
 
 interface Props {
@@ -27,19 +30,20 @@ export function ClinicHero({
   treatmentCount,
 }: Props) {
   const eyebrowLabel = `${region.join(' ')} ${specialties.join(' · ')}`.trim() || '의료 콘텐츠 허브'
+  const resolvedDirectorPhoto = resolveAssetUrl(directorPhotoUrl)
 
   return (
     <section className="clinic-hero clinic-hero--hub" id="top">
       <div className="clinic-hero-inner">
         <span className="clinic-hero-eyebrow">{eyebrowLabel} · Content Hub</span>
         <h1 className="clinic-hero-title">
-          {hospitalName}이<br />
           AI 답변에 인용되는<br />
-          <span style={{ color: 'var(--color-revisit-primary-40)' }}>검증된 진료 정보</span>
+          {hospitalName}의<br />
+          <span style={{ color: 'var(--color-revisit-primary-40)' }}>의료진 검수 진료 정보</span>
         </h1>
         <p className="clinic-hero-meta">
           홈페이지가 아닌 <strong>의료 콘텐츠 허브</strong>입니다. 환자가 자주 묻는 질문, 질환 가이드,
-          시술 안내를 검증된 자료로 정리해 ChatGPT·Gemini가 답할 때 참고할 수 있도록 운영합니다.
+          시술 안내를 의료진 검수 자료로 정리해 ChatGPT·Gemini가 답할 때 참고할 수 있도록 운영합니다.
         </p>
 
         <div className="clinic-hero-actions">
@@ -55,8 +59,15 @@ export function ClinicHero({
 
         <div className="clinic-hero-curator-line" aria-label="콘텐츠 큐레이터">
           <span className="clinic-hero-curator-avatar">
-            {directorPhotoUrl ? (
-              <Image src={directorPhotoUrl} alt={`${directorName} 원장`} fill sizes="24px" style={{ objectFit: 'cover' }} />
+            {resolvedDirectorPhoto ? (
+              <Image
+                src={resolvedDirectorPhoto}
+                alt={`${directorName} 원장`}
+                fill
+                sizes="24px"
+                style={{ objectFit: 'cover' }}
+                unoptimized={shouldBypassNextImageOptimization(resolvedDirectorPhoto)}
+              />
             ) : (
               <span style={{ display: 'block', width: '100%', height: '100%' }} aria-hidden="true" />
             )}

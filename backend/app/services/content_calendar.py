@@ -13,6 +13,7 @@ def generate_monthly_slots(
     plan: str,
     publish_days: list[int],
     target_month: arrow.Arrow,
+    start_date: date | None = None,
 ) -> list[tuple[date, ContentType, int, int]]:
     """
     해당 월의 발행 날짜·유형·순번·총편수 목록 생성.
@@ -28,8 +29,9 @@ def generate_monthly_slots(
     day = target_month.floor("month")
     end = target_month.ceil("month")
     while day <= end:
-        if day.weekday() in publish_days:
-            dates.append(day.date())
+        day_date = day.date()
+        if day.weekday() in publish_days and (start_date is None or day_date >= start_date):
+            dates.append(day_date)
         day = day.shift(days=1)
 
     if len(dates) < total:

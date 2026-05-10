@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { buildProxyResponse } from "@/lib/proxy-response";
+
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const ADMIN_KEY = process.env.ADMIN_SECRET_KEY || "";
 
@@ -45,14 +47,7 @@ async function handler(
   }
 
   const res = await fetch(url.toString(), fetchOptions);
-
-  const responseBody = await res.text();
-  return new NextResponse(responseBody, {
-    status: res.status,
-    headers: {
-      "content-type": res.headers.get("content-type") || "application/json",
-    },
-  });
+  return buildProxyResponse(res);
 }
 
 export const GET = handler;

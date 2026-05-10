@@ -3,15 +3,19 @@
 import { useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
-
-const DAYS = ['월', '화', '수', '목', '금', '토', '일']
+import {
+  DAYS,
+  DEFAULT_PUBLISH_DAYS_BY_PLAN,
+  firstDayOfNextMonthInputValue,
+  validateScheduleCapacity,
+} from '@/lib/schedule'
 
 export default function SchedulePage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const [plan, setPlan] = useState('PLAN_16')
-  const [selectedDays, setSelectedDays] = useState<number[]>([1, 4]) // 화, 금
-  const [activeFrom, setActiveFrom] = useState(new Date().toISOString().split('T')[0])
+  const [selectedDays, setSelectedDays] = useState<number[]>(DEFAULT_PUBLISH_DAYS_BY_PLAN.PLAN_16)
+  const [activeFrom, setActiveFrom] = useState(firstDayOfNextMonthInputValue())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<{ slots_created: number; first_publish_date: string } | null>(null)
@@ -26,6 +30,11 @@ export default function SchedulePage() {
     e.preventDefault()
     if (selectedDays.length === 0) {
       setError('발행 요일을 하나 이상 선택해 주세요.')
+      return
+    }
+    const capacityError = validateScheduleCapacity(plan, selectedDays, activeFrom)
+    if (capacityError) {
+      setError(capacityError)
       return
     }
     setLoading(true)
@@ -75,7 +84,13 @@ export default function SchedulePage() {
             <label className="block text-sm font-medium text-gray-700 mb-2">월간 운영량</label>
             <select
               value={plan}
-              onChange={(e) => setPlan(e.target.value)}
+              onChange={(e) => {
+                const nextPlan = e.target.value
+                setPlan(nextPlan)
+                setSelectedDays(DEFAULT_PUBLISH_DAYS_BY_PLAN[nextPlan] ?? [])
+                setResult(null)
+                setError(null)
+              }}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             >
               <option value="PLAN_16">월 16편 집중 운영</option>

@@ -9,6 +9,7 @@ interface Props {
 
 export function ClinicFooter({ hospitalName, address, phone, websiteUrl }: Props) {
   const year = new Date().getFullYear()
+  const disclaimer = `이 페이지는 ${hospitalName}의 진료 정보를 환자 검색·AI 답변용으로 정리한 의료 콘텐츠 허브입니다.`
   return (
     <footer className="clinic-footer">
       <div className="clinic-footer-inner">
@@ -52,8 +53,7 @@ export function ClinicFooter({ hospitalName, address, phone, websiteUrl }: Props
         </div>
 
         <p className="clinic-footer-meta">
-          이 페이지는 {hospitalName}의 진료 정보를 환자 검색·AI 답변용으로 정리한 의료 콘텐츠 허브입니다.
-          진료 결정은 의료진과의 상담이 우선합니다. 본 페이지의 모든 콘텐츠는 발행 시점 검수를 거친 자료입니다.
+          {disclaimer} 진료 결정은 의료진과의 상담이 우선합니다. 본 페이지의 모든 콘텐츠는 발행 시점 검수를 거친 자료입니다.
           © {year} {hospitalName}.
         </p>
       </div>

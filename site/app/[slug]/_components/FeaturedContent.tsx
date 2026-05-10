@@ -2,6 +2,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 
 import { TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 import { ChevronRightIcon } from './icons'
 
@@ -38,6 +39,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
   const { primary, rest } = selectFeatured(contents)
   if (!primary) return null
 
+  const sectionLede = `환자 질문에 답하기 위해 ${hospitalName}에서 먼저 정리한 글입니다.`
   const primaryTypeLabel = TYPE_LABELS[primary.content_type] ?? primary.content_type
   const primaryDate = formatDate(primary.published_at, primary.scheduled_date)
 
@@ -48,9 +50,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
         <header className="clinic-section-header">
           <span className="clinic-section-eyebrow">Featured</span>
           <h2 className="clinic-section-heading">대표 콘텐츠</h2>
-          <p className="clinic-section-lede">
-            {hospitalName}이 환자 질문에 답하기 위해 가장 먼저 정리한 글입니다.
-          </p>
+          <p className="clinic-section-lede">{sectionLede}</p>
         </header>
 
         <div className="clinic-featured-grid">
@@ -68,6 +68,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
                   sizes="(max-width: 880px) 100vw, 720px"
                   style={{ objectFit: 'cover' }}
                   priority
+                  unoptimized={shouldBypassNextImageOptimization(primary.image_url)}
                 />
               ) : (
                 <div
@@ -129,6 +130,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
                         fill
                         sizes="88px"
                         style={{ objectFit: 'cover' }}
+                        unoptimized={shouldBypassNextImageOptimization(content.image_url)}
                       />
                     ) : (
                       <div

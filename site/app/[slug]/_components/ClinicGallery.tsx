@@ -1,6 +1,7 @@
 import Image from 'next/image'
 
 import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
+import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 interface Props {
   photos: HospitalPhoto[]
@@ -48,7 +49,7 @@ export function ClinicGallery({ photos }: Props) {
                   fill
                   sizes="(max-width: 720px) 100vw, (max-width: 1080px) 50vw, 360px"
                   style={{ objectFit: 'cover' }}
-                  unoptimized={url.startsWith('http://localhost')}
+                  unoptimized={shouldBypassNextImageOptimization(url)}
                 />
                 <figcaption className="clinic-gallery-caption">
                   <span className="clinic-gallery-caption-type">{TYPE_LABELS[photo.source_type]}</span>

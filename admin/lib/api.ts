@@ -18,10 +18,35 @@ export async function fetchAPI(path: string, options?: RequestInit) {
 
   if (!res.ok) {
     const error = await res.text()
-    throw new Error(error || `API error: ${res.status}`)
+    throw new Error(readErrorMessage(error) || `API error: ${res.status}`)
   }
 
   if (res.status === 204) return null
   const text = await res.text()
   return text ? JSON.parse(text) : null
+}
+
+function readErrorMessage(body: string): string {
+  if (!body) return ''
+  try {
+    const parsed = JSON.parse(body) as unknown
+    if (parsed && typeof parsed === 'object' && 'detail' in parsed) {
+      const detail = (parsed as { detail?: unknown }).detail
+      if (typeof detail === 'string') return detail
+      if (Array.isArray(detail)) {
+        return detail
+          .map((entry) => {
+            if (entry && typeof entry === 'object' && 'msg' in entry) {
+              return String((entry as { msg: unknown }).msg)
+            }
+            return String(entry)
+          })
+          .join('\n')
+      }
+      if (detail != null) return JSON.stringify(detail)
+    }
+  } catch {
+    // Fall through to the raw text body.
+  }
+  return body
 }
