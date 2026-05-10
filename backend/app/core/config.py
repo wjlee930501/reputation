@@ -13,13 +13,14 @@ class Settings(BaseSettings):
     # NoDecode: pydantic-settings의 env-source 자동 JSON 디코드를 끄고 raw 문자열을 검증자에 전달.
     # .env에서 comma-separated 표기를 허용하기 위함.
     ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
+    TRUSTED_PROXY_IPS: Annotated[list[str], NoDecode] = ["127.0.0.1", "::1"]
 
-    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @field_validator("ALLOWED_ORIGINS", "TRUSTED_PROXY_IPS", mode="before")
     @classmethod
-    def _parse_allowed_origins(cls, value: object) -> object:
+    def _parse_list_setting(cls, value: object) -> object:
         # .env에서 두 가지 표기 모두 허용:
-        #   ALLOWED_ORIGINS=https://a.com,https://b.com   (comma-separated)
-        #   ALLOWED_ORIGINS=["https://a.com","https://b.com"]  (JSON array)
+        #   SETTING=https://a.com,https://b.com   (comma-separated)
+        #   SETTING=["https://a.com","https://b.com"]  (JSON array)
         # pydantic-settings 기본은 JSON만 받아 운영자 첫 셋업에서 막히던 표면을 보강.
         if isinstance(value, str):
             stripped = value.strip()

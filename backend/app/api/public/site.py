@@ -5,8 +5,10 @@ GET /api/v1/public/hospitals/{slug}/contents             — 발행된 콘텐츠
 GET /api/v1/public/hospitals/{slug}/contents/{content_id} — 콘텐츠 상세
 """
 import uuid
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,7 @@ from app.core.database import get_db
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalSourceAsset, PHOTO_SOURCE_TYPES, SourceStatus, SourceType
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.asset_storage import resolve_legacy_asset_path, resolve_local_asset_path
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.gcs_utils import get_signed_url
 
@@ -23,7 +26,7 @@ router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
 @router.get("")
 async def list_hospitals(db: AsyncSession = Depends(get_db)):
     """Public list of active hospitals for sitemap generation."""
-    stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
+    stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE, Hospital.site_live.is_(True))
     result = await db.execute(stmt)
     hospitals = result.scalars().all()
     return [
@@ -41,7 +44,7 @@ async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
     """병원 기본정보 (ACTIVE 상태 병원만 공개) + AE가 검수해 공개로 표시한 사진."""
     result = await db.execute(select(Hospital).where(Hospital.slug == slug))
     h = result.scalar_one_or_none()
-    if not h or h.status != HospitalStatus.ACTIVE:
+    if not h or h.status != HospitalStatus.ACTIVE or not h.site_live:
         raise HTTPException(status_code=404, detail="Hospital not found")
 
     # is_public=True 사진만 노출. 의료광고법 우려가 큰 카테고리는 enum에 포함되지 않으므로
@@ -60,6 +63,30 @@ async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
     )
     photos = photos_result.scalars().all()
     return _serialize_hospital(h, photos)
+
+
+@router.get("/{slug}/assets/{source_id}")
+async def get_public_hospital_asset(
+    slug: str,
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve only photos explicitly approved for public site exposure."""
+    h = await _get_active_hospital(db, slug)
+    result = await db.execute(
+        select(HospitalSourceAsset).where(
+            HospitalSourceAsset.id == source_id,
+            HospitalSourceAsset.hospital_id == h.id,
+            HospitalSourceAsset.is_public.is_(True),
+            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+            HospitalSourceAsset.source_type.in_(list(PHOTO_SOURCE_TYPES)),
+            HospitalSourceAsset.file_url.is_not(None),
+        )
+    )
+    asset = result.scalar_one_or_none()
+    if not asset or not asset.file_url:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return _asset_response(asset.file_url, hospital_id=h.id, media_type=asset.mime_type)
 
 
 @router.get("/{slug}/contents")
@@ -100,7 +127,7 @@ async def get_content_public(slug: str, content_id: uuid.UUID, db: AsyncSession 
 async def _get_active_hospital(db: AsyncSession, slug: str) -> Hospital:
     result = await db.execute(select(Hospital).where(Hospital.slug == slug))
     h = result.scalar_one_or_none()
-    if not h or h.status != HospitalStatus.ACTIVE:
+    if not h or h.status != HospitalStatus.ACTIVE or not h.site_live:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return h
 
@@ -116,14 +143,16 @@ def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = 
 
     director_photo = h.director_photo_url
     if not director_photo and SourceType.PHOTO_DOCTOR in by_type:
-        director_photo = by_type[SourceType.PHOTO_DOCTOR].file_url
+        director_photo = _public_asset_url(h.slug, by_type[SourceType.PHOTO_DOCTOR])
+    else:
+        director_photo = _safe_external_url(director_photo)
 
     serialized_photos = [
         {
             "id": str(asset.id),
             "source_type": asset.source_type.value if hasattr(asset.source_type, "value") else asset.source_type,
             "title": asset.title,
-            "url": asset.file_url,
+            "url": _public_asset_url(h.slug, asset),
         }
         for asset in photo_records
     ]
@@ -136,12 +165,12 @@ def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = 
         "address": h.address,
         "phone": h.phone,
         "business_hours": h.business_hours,
-        "website_url": h.website_url,
-        "blog_url": h.blog_url,
-        "kakao_channel_url": h.kakao_channel_url,
-        "google_business_profile_url": h.google_business_profile_url,
-        "google_maps_url": h.google_maps_url,
-        "naver_place_url": h.naver_place_url,
+        "website_url": _safe_external_url(h.website_url),
+        "blog_url": _safe_external_url(h.blog_url),
+        "kakao_channel_url": _safe_external_url(h.kakao_channel_url),
+        "google_business_profile_url": _safe_external_url(h.google_business_profile_url),
+        "google_maps_url": _safe_external_url(h.google_maps_url),
+        "naver_place_url": _safe_external_url(h.naver_place_url),
         "aeo_domain": h.aeo_domain,
         "latitude": h.latitude,
         "longitude": h.longitude,
@@ -162,6 +191,40 @@ def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = 
 
 def _is_public_safe_content(item: ContentItem) -> bool:
     return item.status == ContentStatus.PUBLISHED and item.essence_status == ESSENCE_STATUS_ALIGNED
+
+
+def _public_asset_url(slug: str, asset: HospitalSourceAsset) -> str:
+    return f"/api/v1/public/hospitals/{slug}/assets/{asset.id}"
+
+
+def _safe_external_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return value.strip()
+
+
+def _asset_response(asset_ref: str, *, hospital_id: uuid.UUID, media_type: str | None):
+    if asset_ref.startswith("local://"):
+        path = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
+        if not path or not path.exists():
+            raise HTTPException(status_code=404, detail="Asset not found")
+        return FileResponse(path, media_type=media_type)
+    if asset_ref.startswith("gs://"):
+        signed_url = get_signed_url(asset_ref)
+        if not signed_url or signed_url == asset_ref:
+            raise HTTPException(status_code=503, detail="Could not create signed asset URL")
+        return RedirectResponse(url=signed_url, status_code=302)
+    if asset_ref.startswith("/assets/"):
+        path = resolve_legacy_asset_path(asset_ref, expected_hospital_id=hospital_id)
+        if path and path.exists():
+            return FileResponse(path, media_type=media_type)
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if asset_ref.startswith("http://") or asset_ref.startswith("https://"):
+        return RedirectResponse(url=asset_ref, status_code=302)
+    raise HTTPException(status_code=404, detail="Asset not found")
 
 
 def _serialize_item(item: ContentItem, full: bool = False) -> dict:

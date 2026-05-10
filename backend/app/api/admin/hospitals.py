@@ -10,6 +10,7 @@ PATCH  /admin/hospitals/{id}/activate   — ACTIVE 전환
 import re
 import uuid
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
@@ -33,6 +34,7 @@ from app.services.essence_engine import (
 from app.workers.tasks import trigger_v0_report, build_aeo_site
 from app.api.admin.domain import _normalize_dns_name, _resolve_cname
 from app.core.config import settings
+from app.services.site_revalidate import ensure_site_revalidate_configured, trigger_hospital_site_revalidate
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
 
@@ -94,6 +96,26 @@ class HospitalProfileUpdate(BaseModel):
     # 완료 플래그 (프로파일 다 입력됐으면 True로)
     profile_complete: bool | None = None
 
+    @field_validator(
+        "website_url",
+        "blog_url",
+        "kakao_channel_url",
+        "google_business_profile_url",
+        "google_maps_url",
+        "naver_place_url",
+    )
+    @classmethod
+    def validate_public_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("URL must be absolute http(s)")
+        return cleaned
+
 
 class DomainConnect(BaseModel):
     domain: str = Field(min_length=4, max_length=253)  # 예: "info.jangpyeon.com"
@@ -122,6 +144,26 @@ READINESS_STATUS_LABELS = {
 READINESS_CHECK_STATE_LABELS = {
     True: "완료",
     False: "필요",
+}
+PUBLIC_PROFILE_FIELDS = {
+    "address",
+    "phone",
+    "business_hours",
+    "website_url",
+    "blog_url",
+    "kakao_channel_url",
+    "google_business_profile_url",
+    "google_maps_url",
+    "naver_place_url",
+    "latitude",
+    "longitude",
+    "region",
+    "specialties",
+    "keywords",
+    "director_name",
+    "director_career",
+    "director_philosophy",
+    "treatments",
 }
 
 
@@ -242,6 +284,10 @@ async def update_profile(
             },
         )
 
+    needs_site_revalidate = _has_public_site(h) and any(field in PUBLIC_PROFILE_FIELDS for field in changed_fields)
+    if needs_site_revalidate:
+        ensure_site_revalidate_configured()
+
     await db.commit()
     await db.refresh(h)
 
@@ -252,6 +298,8 @@ async def update_profile(
             args=[str(hospital_id)],
             queue="reports",
         )
+    if needs_site_revalidate:
+        await trigger_hospital_site_revalidate(h.slug)
 
     return _serialize(h)
 
@@ -277,6 +325,8 @@ async def connect_domain(
         h.site_live = False
         if h.status == HospitalStatus.ACTIVE:
             h.status = HospitalStatus.PENDING_DOMAIN
+    if previous_site_live:
+        ensure_site_revalidate_configured()
 
     await write_audit_log(
         db,
@@ -295,6 +345,8 @@ async def connect_domain(
         },
     )
     await db.commit()
+    if previous_site_live:
+        await trigger_hospital_site_revalidate(h.slug)
 
     # 콘텐츠 허브 노출 상태 갱신 (legacy task name)
     background_tasks.add_task(
@@ -339,6 +391,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
         )
 
     previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
+    ensure_site_revalidate_configured()
     h.status = HospitalStatus.ACTIVE
     h.site_live = True
     await write_audit_log(
@@ -356,6 +409,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
         },
     )
     await db.commit()
+    await trigger_hospital_site_revalidate(h.slug)
     return {"detail": f"{h.name} activated"}
 
 
@@ -562,6 +616,10 @@ async def _get_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:
 async def _count(db: AsyncSession, stmt) -> int:
     result = await db.execute(stmt)
     return int(result.scalar_one() or 0)
+
+
+def _has_public_site(h: Hospital) -> bool:
+    return h.status == HospitalStatus.ACTIVE and bool(h.site_live)
 
 
 def _serialize(h: Hospital) -> dict:

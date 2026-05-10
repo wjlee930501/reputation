@@ -28,7 +28,10 @@ from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.site_revalidate import trigger_site_revalidate
+from app.services.site_revalidate import (
+    ensure_site_revalidate_configured,
+    trigger_content_site_revalidate,
+)
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
@@ -220,6 +223,11 @@ async def update_content(
     저장 시 의료광고 금지표현 검사 → 위반 시 400 + 위반 목록 반환.
     """
     item = await _get_content(db, content_id, hospital_id)
+    hospital = await _get_hospital(db, hospital_id)
+    was_published = item.status == ContentStatus.PUBLISHED
+    should_revalidate = was_published and _has_public_site(hospital)
+    if should_revalidate:
+        ensure_site_revalidate_configured()
 
     # 금지 표현 검사 (수정 대상 필드만)
     violations: list[str] = []
@@ -260,6 +268,8 @@ async def update_content(
 
     await db.commit()
     await db.refresh(item)
+    if should_revalidate:
+        await trigger_content_site_revalidate(hospital.slug, item.id)
     return _serialize_item(item, full=True)
 
 
@@ -298,6 +308,9 @@ async def publish_content(
         raise HTTPException(status_code=400, detail="Already published")
     if not item.body:
         raise HTTPException(status_code=400, detail="Content not generated yet")
+    should_revalidate = _has_public_site(hospital)
+    if should_revalidate:
+        ensure_site_revalidate_configured()
 
     full_text = " ".join(part for part in [item.title, item.body, item.meta_description] if part)
     violations = check_forbidden(full_text)
@@ -354,18 +367,8 @@ async def publish_content(
     await notifier.notify_content_published(hospital.name, item.title or "")
 
     # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library/관련 풀페이지에 즉시 반영되도록.
-    await trigger_site_revalidate(
-        paths=[
-            "/sitemap.xml",
-            f"/{hospital.slug}",
-            f"/{hospital.slug}/contents",
-            f"/{hospital.slug}/contents/{item.id}",
-            f"/{hospital.slug}/doctor",
-            f"/{hospital.slug}/treatments",
-            f"/{hospital.slug}/visit",
-            f"/{hospital.slug}/llms.txt",
-        ]
-    )
+    if should_revalidate:
+        await trigger_content_site_revalidate(hospital.slug, item.id)
 
     return {"detail": "Published", "published_at": item.published_at.isoformat()}
 
@@ -378,8 +381,12 @@ async def reject_content(
 ):
     """반려 — 야간 재생성 큐에 다시 들어감"""
     item = await _get_content(db, content_id, hospital_id)
+    hospital = await _get_hospital(db, hospital_id)
     previous_title = item.title
     previous_status = _enum_value(item.status)
+    should_revalidate = previous_status == ContentStatus.PUBLISHED.value and _has_public_site(hospital)
+    if should_revalidate:
+        ensure_site_revalidate_configured()
     item.status = ContentStatus.REJECTED
     item.body = None   # 초기화 → 야간 생성 태스크가 다시 처리
     item.title = None
@@ -398,6 +405,8 @@ async def reject_content(
         },
     )
     await db.commit()
+    if should_revalidate:
+        await trigger_content_site_revalidate(hospital.slug, item.id)
     return {"detail": "Rejected. Will be regenerated tonight."}
 
 
@@ -407,6 +416,10 @@ async def _get_hospital(db, hospital_id) -> Hospital:
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return h
+
+
+def _has_public_site(hospital: Hospital) -> bool:
+    return hospital.status == HospitalStatus.ACTIVE and bool(hospital.site_live)
 
 
 async def _get_content(db, content_id, hospital_id) -> ContentItem:

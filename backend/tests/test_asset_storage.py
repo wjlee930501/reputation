@@ -1,8 +1,7 @@
 import uuid
-from pathlib import Path
 
 from app.services import asset_storage
-from app.services.asset_storage import is_gcs_configured, store_asset_bytes
+from app.services.asset_storage import is_gcs_configured, resolve_local_asset_path, store_asset_bytes
 
 
 def test_is_gcs_configured_false_without_project_or_bucket(monkeypatch):
@@ -43,23 +42,23 @@ def test_is_gcs_configured_true_with_full_setup(monkeypatch, tmp_path):
     assert is_gcs_configured() is True
 
 
-def test_store_asset_bytes_local_writes_file_and_returns_assets_url(monkeypatch, tmp_path):
+def test_store_asset_bytes_local_writes_file_and_returns_private_ref(monkeypatch, tmp_path):
     monkeypatch.setattr(asset_storage, "LOCAL_UPLOAD_DIR", tmp_path)
     monkeypatch.setattr(asset_storage.settings, "GCP_PROJECT_ID", "")
     monkeypatch.setattr(asset_storage.settings, "GCP_STORAGE_BUCKET", "")
 
     hospital_id = uuid.uuid4()
     payload = b"\x89PNG\r\n\x1a\n-fake-pixel"
-    url = store_asset_bytes(
+    asset_ref = store_asset_bytes(
         hospital_id=hospital_id,
         filename="doctor portrait.png",
         data=payload,
         mime_type="image/png",
     )
 
-    assert url.startswith(f"/assets/{hospital_id}/")
-    relative = url[len("/assets/") :]
-    saved = tmp_path / relative
+    assert asset_ref.startswith(f"local://{hospital_id}/")
+    saved = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
+    assert saved is not None
     assert saved.read_bytes() == payload
     # 파일명 sanitization: 공백은 _ 로 치환되어야 한다.
     assert " " not in saved.name
@@ -71,15 +70,30 @@ def test_store_asset_bytes_sanitizes_path_traversal_filename(monkeypatch, tmp_pa
     monkeypatch.setattr(asset_storage.settings, "GCP_STORAGE_BUCKET", "")
 
     hospital_id = uuid.uuid4()
-    url = store_asset_bytes(
+    asset_ref = store_asset_bytes(
         hospital_id=hospital_id,
         filename="../../etc/passwd",
         data=b"x",
         mime_type="text/plain",
     )
 
-    relative = url[len("/assets/") :]
-    saved_path = tmp_path / relative
+    saved_path = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
+    assert saved_path is not None
     # path traversal 방지: 결과 경로가 hospital 디렉토리 내부에 있어야 한다.
     assert tmp_path / str(hospital_id) in saved_path.parents
     assert ".." not in saved_path.name
+
+
+def test_resolve_local_asset_path_blocks_cross_hospital_access(monkeypatch, tmp_path):
+    monkeypatch.setattr(asset_storage, "LOCAL_UPLOAD_DIR", tmp_path)
+    hospital_id = uuid.uuid4()
+    other_hospital_id = uuid.uuid4()
+
+    asset_ref = store_asset_bytes(
+        hospital_id=hospital_id,
+        filename="doctor.png",
+        data=b"x",
+        mime_type="image/png",
+    )
+
+    assert resolve_local_asset_path(asset_ref, expected_hospital_id=other_hospital_id) is None

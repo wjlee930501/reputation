@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,7 @@ from app.models.essence import (
     SourceStatus,
     SourceType,
 )
-from app.models.hospital import Hospital
+from app.models.hospital import Hospital, HospitalStatus
 from app.schemas.essence import (
     ApprovedPhilosophyResponse,
     PhilosophyApprove,
@@ -35,7 +36,7 @@ from app.services.asset_extractor import (
     extract_pdf_text,
     fetch_url_text,
 )
-from app.services.asset_storage import store_asset_bytes
+from app.services.asset_storage import resolve_legacy_asset_path, resolve_local_asset_path, store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
@@ -44,6 +45,8 @@ from app.services.essence_engine import (
     validate_philosophy_grounding,
     validate_source_excerpt,
 )
+from app.services.gcs_utils import get_signed_url
+from app.services.site_revalidate import ensure_site_revalidate_configured, trigger_hospital_site_revalidate
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 
@@ -258,7 +261,12 @@ async def exclude_source(
 ):
     source = await _get_source_or_404(db, hospital_id, source_id)
     previous_status = source.status
+    was_public_photo = source.source_type in PHOTO_SOURCE_TYPES and bool(source.is_public)
+    hospital = await _get_hospital_or_404(db, hospital_id) if was_public_photo else None
+    if hospital and _has_public_site(hospital):
+        ensure_site_revalidate_configured()
     source.status = SourceStatus.EXCLUDED
+    source.is_public = False
     await write_audit_log(
         db,
         action="exclude_source_asset",
@@ -270,6 +278,8 @@ async def exclude_source(
     )
     await db.commit()
     await db.refresh(source)
+    if hospital and _has_public_site(hospital):
+        await trigger_hospital_site_revalidate(hospital.slug)
     notes = await _get_notes_for_source(db, source.id)
     return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
 
@@ -400,7 +410,15 @@ async def toggle_source_public(
     source = await _get_source_or_404(db, hospital_id, source_id)
     if source.source_type not in PHOTO_SOURCE_TYPES:
         raise HTTPException(status_code=400, detail="공개 토글은 사진 자료(PHOTO_*)에만 적용됩니다.")
+    if body.is_public and source.status == SourceStatus.EXCLUDED:
+        raise HTTPException(status_code=400, detail="제외 처리된 사진은 공개할 수 없습니다.")
+    if body.is_public and not source.file_url:
+        raise HTTPException(status_code=400, detail="파일이 없는 사진은 공개할 수 없습니다.")
     previous = bool(source.is_public)
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    will_change_public_photo = previous != bool(body.is_public)
+    if will_change_public_photo and _has_public_site(hospital):
+        ensure_site_revalidate_configured()
     source.is_public = bool(body.is_public)
     await write_audit_log(
         db,
@@ -413,8 +431,23 @@ async def toggle_source_public(
     )
     await db.commit()
     await db.refresh(source)
+    if will_change_public_photo and _has_public_site(hospital):
+        await trigger_hospital_site_revalidate(hospital.slug)
     notes = await _get_notes_for_source(db, source.id)
     return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
+
+
+@router.get("/sources/{source_id}/file")
+async def get_source_file(
+    hospital_id: uuid.UUID,
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only source file access. Public access goes through the public asset gate."""
+    source = await _get_source_or_404(db, hospital_id, source_id)
+    if not source.file_url:
+        raise HTTPException(status_code=404, detail="Source file not found")
+    return _asset_response(source.file_url, hospital_id=hospital_id, media_type=source.mime_type)
 
 
 @router.get("/philosophies", response_model=list[PhilosophyResponse])
@@ -562,6 +595,10 @@ async def _get_hospital_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hosp
     return hospital
 
 
+def _has_public_site(hospital: Hospital) -> bool:
+    return hospital.status == HospitalStatus.ACTIVE and bool(hospital.site_live)
+
+
 async def _get_source_or_404(
     db: AsyncSession,
     hospital_id: uuid.UUID,
@@ -696,13 +733,43 @@ def _serialize_source(
         "updated_by": source.updated_by,
         "created_at": source.created_at.isoformat() if source.created_at else None,
         "updated_at": source.updated_at.isoformat() if source.updated_at else None,
-        "file_url": source.file_url,
+        "file_url": source.file_url if _is_legacy_public_url(source.file_url) else None,
+        "file_access_url": _source_file_access_url(source) if source.file_url else None,
         "mime_type": source.mime_type,
         "file_size_bytes": source.file_size_bytes,
         "is_public": bool(source.is_public),
         "evidence_note_count": evidence_note_count,
         "evidence_notes": [_serialize_note(note) for note in evidence_notes] if evidence_notes is not None else None,
     }
+
+
+def _source_file_access_url(source: HospitalSourceAsset) -> str:
+    return f"/api/admin/hospitals/{source.hospital_id}/essence/sources/{source.id}/file"
+
+
+def _is_legacy_public_url(value: str | None) -> bool:
+    return bool(value and (value.startswith("http://") or value.startswith("https://") or value.startswith("/assets/")))
+
+
+def _asset_response(asset_ref: str, *, hospital_id: uuid.UUID, media_type: str | None):
+    if asset_ref.startswith("local://"):
+        path = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
+        if not path or not path.exists():
+            raise HTTPException(status_code=404, detail="Source file not found")
+        return FileResponse(path, media_type=media_type)
+    if asset_ref.startswith("gs://"):
+        signed_url = get_signed_url(asset_ref)
+        if not signed_url or signed_url == asset_ref:
+            raise HTTPException(status_code=503, detail="Could not create signed asset URL")
+        return RedirectResponse(url=signed_url, status_code=302)
+    if asset_ref.startswith("/assets/"):
+        path = resolve_legacy_asset_path(asset_ref, expected_hospital_id=hospital_id)
+        if path and path.exists():
+            return FileResponse(path, media_type=media_type)
+        raise HTTPException(status_code=404, detail="Source file not found")
+    if asset_ref.startswith("http://") or asset_ref.startswith("https://"):
+        return RedirectResponse(url=asset_ref, status_code=302)
+    raise HTTPException(status_code=404, detail="Source file not found")
 
 
 def _serialize_source_display(source: HospitalSourceAsset) -> dict:

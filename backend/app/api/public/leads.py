@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.rate_limit import limiter
+from app.core.rate_limit import get_request_ip, limiter
 from app.models.lead import SalesLead
 from app.services import notifier
 
@@ -48,15 +48,6 @@ class LeadCreate(BaseModel):
         return value
 
 
-def _client_ip(request: Request) -> str | None:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip() or None
-    if request.client:
-        return request.client.host
-    return None
-
-
 @router.post("")
 @limiter.limit(settings.PUBLIC_LEAD_RATE_LIMIT)
 async def create_lead(
@@ -77,7 +68,7 @@ async def create_lead(
     if not body.privacy:
         raise HTTPException(status_code=400, detail="privacy consent is required")
 
-    consent_ip = _client_ip(request)
+    consent_ip = get_request_ip(request)
     # consent_version은 클라이언트 입력을 신뢰하지 않고 항상 서버 ENV에서 가져온다.
     # 처리방침이 갱신되면 서버 배포 시점에 ENV가 바뀌어 추적 무결성이 보장된다.
     consent_version = settings.LEAD_CONSENT_VERSION.strip()[:40]

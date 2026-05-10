@@ -64,6 +64,7 @@ class SourceAssetResponse(BaseModel):
     created_at: str | None
     updated_at: str | None
     file_url: str | None = None
+    file_access_url: str | None = None
     mime_type: str | None = None
     file_size_bytes: int | None = None
     is_public: bool = False

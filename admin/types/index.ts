@@ -126,6 +126,11 @@ export interface SourceAsset {
   updated_at: string | null
   evidence_note_count: number
   evidence_notes?: EvidenceNote[] | null
+  file_url: string | null
+  file_access_url: string | null
+  mime_type: string | null
+  file_size_bytes: number | null
+  is_public: boolean
 }
 
 export interface ContentPhilosophy {

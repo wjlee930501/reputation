@@ -26,6 +26,16 @@ NEW_PHOTO_VALUES = (
     "PHOTO_CLINIC_INTERIOR",
     "PHOTO_TREATMENT_ROOM",
 )
+ORIGINAL_SOURCE_VALUES = (
+    "NAVER_BLOG",
+    "YOUTUBE",
+    "HOMEPAGE",
+    "INTERVIEW",
+    "LANDING_PAGE",
+    "BROCHURE",
+    "INTERNAL_NOTE",
+    "OTHER",
+)
 
 
 def _has_table(table_name: str) -> bool:
@@ -83,8 +93,28 @@ def upgrade() -> None:
 def downgrade() -> None:
     if not _has_table("hospital_source_assets"):
         return
+    bind = op.get_bind()
+    is_postgres = bind.dialect.name == "postgresql"
+    if is_postgres:
+        photo_values_sql = ", ".join(f"'{value}'" for value in NEW_PHOTO_VALUES)
+        bind.execute(
+            sa.text(
+                "UPDATE hospital_source_assets SET source_type = 'OTHER' "
+                f"WHERE source_type::text IN ({photo_values_sql})"
+            )
+        )
     for column in ("is_public", "file_size_bytes", "mime_type", "file_url"):
         if _has_column("hospital_source_assets", column):
             op.drop_column("hospital_source_assets", column)
-    # 새 enum 값은 안전하게 되돌리기 어려워 downgrade에서는 유지 (Postgres ALTER TYPE
-    # DROP VALUE는 미지원).
+    if is_postgres:
+        original_values_sql = ", ".join(f"'{value}'" for value in ORIGINAL_SOURCE_VALUES)
+        bind.execute(sa.text("ALTER TYPE hospital_source_type RENAME TO hospital_source_type_with_photos"))
+        bind.execute(sa.text(f"CREATE TYPE hospital_source_type AS ENUM ({original_values_sql})"))
+        bind.execute(
+            sa.text(
+                "ALTER TABLE hospital_source_assets "
+                "ALTER COLUMN source_type TYPE hospital_source_type "
+                "USING source_type::text::hospital_source_type"
+            )
+        )
+        bind.execute(sa.text("DROP TYPE hospital_source_type_with_photos"))

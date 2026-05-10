@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, type ContentItem } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'

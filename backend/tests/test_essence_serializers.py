@@ -72,7 +72,7 @@ def test_serialize_source_includes_photo_asset_fields():
         updated_by=None,
         created_at=timestamp,
         updated_at=timestamp,
-        file_url="/assets/abc/doctor.png",
+        file_url=f"local://{hospital_id}/doctor.png",
         mime_type="image/png",
         file_size_bytes=12_345,
         is_public=True,
@@ -82,7 +82,8 @@ def test_serialize_source_includes_photo_asset_fields():
 
     assert serialized["source_type"] == SourceType.PHOTO_DOCTOR
     assert serialized["display"]["source_type_label"] == "사진 — 원장"
-    assert serialized["file_url"] == "/assets/abc/doctor.png"
+    assert serialized["file_url"] is None
+    assert serialized["file_access_url"] == f"/api/admin/hospitals/{hospital_id}/essence/sources/{source_id}/file"
     assert serialized["mime_type"] == "image/png"
     assert serialized["file_size_bytes"] == 12_345
     assert serialized["is_public"] is True

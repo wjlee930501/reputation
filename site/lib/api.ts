@@ -44,8 +44,8 @@ export interface HospitalPhoto {
 const ASSETS_BACKEND_BASE =
   process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || 'http://localhost:8000'
 
-// 백엔드가 GCS 미설정 환경에서 file_url을 "/assets/..."로 반환. 절대 URL로 전환해
-// /site(다른 호스트)에서도 이미지 로드 가능하게 한다.
+// 백엔드는 공개 승인된 사진만 API 경로로 반환한다. 상대 경로는 site와 다른 API 호스트에서도
+// 로드되도록 절대 URL로 전환한다.
 export function resolveAssetUrl(url: string | null | undefined): string | null {
   if (!url) return null
   if (url.startsWith('http://') || url.startsWith('https://')) return url

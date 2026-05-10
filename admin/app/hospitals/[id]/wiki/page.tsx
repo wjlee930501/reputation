@@ -14,6 +14,7 @@ interface Source {
   status: string
   url: string | null
   file_url: string | null
+  file_access_url: string | null
   mime_type: string | null
   is_public: boolean
   raw_text: string | null
@@ -218,7 +219,7 @@ export default function WikiPage() {
           ) : (
             <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
               {photos.map((p) => {
-                const resolved = resolveAssetUrl(p.file_url)
+                const resolved = resolveAssetUrl(p.file_access_url ?? p.file_url)
                 return (
                   <div key={p.id} className="rounded-xl border border-slate-200 bg-white overflow-hidden">
                     <div className="relative aspect-[4/3] bg-slate-100">

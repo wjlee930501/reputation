@@ -10,8 +10,6 @@ Create Date: 2026-05-08
 - retain_until: 자동 파기 기한. 도달 시 purge_expired_leads cron이 정리.
 - purged_at: 파기 완료 시각 (soft-delete 후 hard-delete 전환 가능).
 """
-from datetime import timedelta
-
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
