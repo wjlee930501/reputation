@@ -1,3 +1,4 @@
+from app.utils.authority_sources import infer_source_type, is_whitelisted_url
 from app.utils.medical_filter import check_forbidden
 
 
@@ -32,3 +33,20 @@ def test_check_forbidden_allows_neutral_medical_text():
     violations = check_forbidden(text)
 
     assert violations == []
+
+
+def test_infer_source_type_maps_korean_and_global_authority_domains():
+    assert infer_source_type("https://www.hira.or.kr/foo") == "GOV_KR"
+    assert infer_source_type("https://kams.or.kr/policy") == "ACADEMIC_KR"
+    assert infer_source_type("https://www.nih.gov/article") == "GOV_GLOBAL"
+    assert infer_source_type("https://www.mayoclinic.org/diseases/x") == "CLINIC_REFERENCE"
+    assert infer_source_type("https://ko.wikipedia.org/wiki/X") == "ENCYCLOPEDIA"
+    assert infer_source_type("https://random-blog.com/x") is None
+    assert infer_source_type("") is None
+
+
+def test_is_whitelisted_url_blocks_non_authority_domains():
+    assert is_whitelisted_url("https://www.kdca.go.kr/x") is True
+    assert is_whitelisted_url("https://pubmed.ncbi.nlm.nih.gov/12345") is True
+    assert is_whitelisted_url("https://ad-blog.example.com/promo") is False
+    assert is_whitelisted_url("") is False

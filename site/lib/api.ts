@@ -66,9 +66,25 @@ export function resolveAssetUrl(url: string | null | undefined): string | null {
   return url
 }
 
+export type ContentReferenceSourceType =
+  | 'GOV_KR'
+  | 'ACADEMIC_KR'
+  | 'GOV_GLOBAL'
+  | 'CLINIC_REFERENCE'
+  | 'ENCYCLOPEDIA'
+
 export interface ContentReference {
   title: string
   url: string
+  source_type?: ContentReferenceSourceType | null
+}
+
+export const SOURCE_TYPE_LABELS: Record<ContentReferenceSourceType, string> = {
+  GOV_KR: '한국 공공',
+  ACADEMIC_KR: '한국 학술',
+  GOV_GLOBAL: '국제 기관',
+  CLINIC_REFERENCE: '임상 자료',
+  ENCYCLOPEDIA: '백과',
 }
 
 export interface ContentItem {

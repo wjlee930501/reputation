@@ -14,7 +14,11 @@ from app.core.config import settings
 from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
-from app.utils.authority_sources import is_whitelisted_url, render_source_hint_block
+from app.utils.authority_sources import (
+    infer_source_type,
+    is_whitelisted_url,
+    render_source_hint_block,
+)
 from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
@@ -332,5 +336,9 @@ def _normalize_references(raw: object) -> list[dict]:
             # 화이트리스트 외 도메인은 광고 유인성 시비 + AI 권위 신호 약함 → 제거.
             logger.info("Dropping non-whitelisted reference: %s", url)
             continue
-        cleaned.append({"title": title[:200], "url": url[:500]})
+        entry: dict = {"title": title[:200], "url": url[:500]}
+        source_type = infer_source_type(url)
+        if source_type:
+            entry["source_type"] = source_type
+        cleaned.append(entry)
     return cleaned

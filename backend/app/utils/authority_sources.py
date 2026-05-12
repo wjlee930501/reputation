@@ -51,6 +51,38 @@ WHITELIST_DOMAINS: frozenset[str] = frozenset(
     for item in group
 )
 
+# Schema.org / 운영 통계용 카테고리 식별자. 콘텐츠 references[].source_type 값으로 사용.
+SOURCE_TYPE_GOV_KR = "GOV_KR"           # 한국 정부·공공
+SOURCE_TYPE_ACADEMIC_KR = "ACADEMIC_KR" # 한국 학회·학술
+SOURCE_TYPE_GOV_GLOBAL = "GOV_GLOBAL"   # 국제 정부·기관 (NIH/CDC/WHO 등)
+SOURCE_TYPE_CLINIC = "CLINIC_REFERENCE" # Mayo/Cleveland/Healthline 등 임상 정보
+SOURCE_TYPE_ENCYCLOPEDIA = "ENCYCLOPEDIA"
+
+_DOMAIN_TO_SOURCE_TYPE: dict[str, str] = {}
+for item in KR_PUBLIC_SOURCES:
+    _DOMAIN_TO_SOURCE_TYPE[item["domain"]] = SOURCE_TYPE_GOV_KR
+for item in KR_ACADEMIC_SOURCES:
+    _DOMAIN_TO_SOURCE_TYPE[item["domain"]] = SOURCE_TYPE_ACADEMIC_KR
+for item in US_GLOBAL_SOURCES:
+    domain = item["domain"]
+    if domain in {"nih.gov", "cdc.gov", "medlineplus.gov", "who.int", "pubmed.ncbi.nlm.nih.gov"}:
+        _DOMAIN_TO_SOURCE_TYPE[domain] = SOURCE_TYPE_GOV_GLOBAL
+    else:
+        _DOMAIN_TO_SOURCE_TYPE[domain] = SOURCE_TYPE_CLINIC
+for item in ENCYCLOPEDIA_SOURCES:
+    _DOMAIN_TO_SOURCE_TYPE[item["domain"]] = SOURCE_TYPE_ENCYCLOPEDIA
+
+
+def infer_source_type(url: str) -> str | None:
+    """URL이 화이트리스트의 어떤 카테고리에 속하는지 반환. 매칭 실패 시 None."""
+    if not url:
+        return None
+    lowered = url.lower()
+    for domain, source_type in _DOMAIN_TO_SOURCE_TYPE.items():
+        if f"//{domain}" in lowered or f".{domain}" in lowered:
+            return source_type
+    return None
+
 
 def is_whitelisted_url(url: str) -> bool:
     """URL이 권위 출처 화이트리스트에 속하는지 검사. 서브도메인 매칭 포함."""
