@@ -128,7 +128,7 @@ export default async function VisitPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">Visit · Channels</span>
+              <span className="clinic-section-eyebrow">진료 안내</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 진료 안내</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{hospital.address}</strong>
@@ -144,8 +144,7 @@ export default async function VisitPage({ params }: Props) {
                 className="clinic-section-lede"
                 style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
               >
-                이곳은 의료 콘텐츠 허브입니다. 진료 예약·상담은 아래 병원 공식 채널을 통해 직접
-                연결해 주세요.
+                진료 예약·상담은 아래 병원 공식 채널을 통해 직접 연결해 주세요.
               </p>
             </div>
           </section>

@@ -9,12 +9,11 @@ interface Props {
 
 export function ClinicFooter({ hospitalName, address, phone, websiteUrl }: Props) {
   const year = new Date().getFullYear()
-  const disclaimer = `이 페이지는 ${hospitalName}의 진료 정보를 환자 검색·AI 답변용으로 정리한 의료 콘텐츠 허브입니다.`
   return (
     <footer className="clinic-footer">
       <div className="clinic-footer-inner">
         <div>
-          <p className="clinic-footer-name">{hospitalName} 의료 콘텐츠 허브</p>
+          <p className="clinic-footer-name">{hospitalName}</p>
           <p className="clinic-footer-meta">
             {address} · <a href={`tel:${phone}`}>{phone}</a>
           </p>
@@ -43,17 +42,13 @@ export function ClinicFooter({ hospitalName, address, phone, websiteUrl }: Props
         <div className="clinic-footer-rule" aria-hidden="true" />
 
         <div className="clinic-footer-disclaimer">
-          <span className="clinic-footer-disclaimer-chip">
-            <strong>MotionLabs</strong> Research Preview
-          </span>
           <span>
-            의료 콘텐츠 허브 운영: 주식회사 모션랩스 ·{' '}
-            <a href="https://motionlabs.kr" target="_blank" rel="noopener">motionlabs.kr</a>
+            이 블로그의 글은 {hospitalName}의 진료 정보를 바탕으로 정리한 일반 건강 정보입니다.
           </span>
         </div>
 
         <p className="clinic-footer-meta">
-          {disclaimer} 진료 결정은 의료진과의 상담이 우선합니다. 본 페이지의 모든 콘텐츠는 발행 시점 검수를 거친 자료입니다.
+          개인의 증상과 치료 방법은 진료를 통해 달라질 수 있습니다. 진료 결정은 의료진과의 상담이 우선합니다.
           © {year} {hospitalName}.
         </p>
       </div>

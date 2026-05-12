@@ -29,26 +29,26 @@ export function ClinicHero({
   contentCount,
   treatmentCount,
 }: Props) {
-  const eyebrowLabel = `${region.join(' ')} ${specialties.join(' · ')}`.trim() || '의료 콘텐츠 허브'
+  const eyebrowLabel = `${region.join(' ')} ${specialties.join(' · ')}`.trim() || hospitalName
   const resolvedDirectorPhoto = resolveAssetUrl(directorPhotoUrl)
 
   return (
     <section className="clinic-hero clinic-hero--hub" id="top">
       <div className="clinic-hero-inner">
-        <span className="clinic-hero-eyebrow">{eyebrowLabel} · Content Hub</span>
+        <span className="clinic-hero-eyebrow">{eyebrowLabel}</span>
         <h1 className="clinic-hero-title">
-          AI 답변에 인용되는<br />
           {hospitalName}의<br />
-          <span style={{ color: 'var(--color-revisit-primary-40)' }}>의료진 검수 진료 정보</span>
+          <span style={{ color: 'var(--color-revisit-primary-40)' }}>진료 이야기와 건강 정보</span>
         </h1>
         <p className="clinic-hero-meta">
-          홈페이지가 아닌 <strong>의료 콘텐츠 허브</strong>입니다. 환자가 자주 묻는 질문, 질환 가이드,
-          시술 안내를 의료진 검수 자료로 정리해 ChatGPT·Gemini가 답할 때 참고할 수 있도록 운영합니다.
+          {directorName} 원장이 진료실에서 자주 듣는 질문과 진료 안내를 환자가 이해하기 쉬운 글로
+          정리합니다. 증상과 치료 선택에 대한 기본 정보를 확인하고, 자세한 판단은 진료 상담에서
+          이어가 주세요.
         </p>
 
         <div className="clinic-hero-actions">
           <Link className="clinic-btn clinic-btn-primary" href={`/${hospitalSlug}/contents`}>
-            의료 콘텐츠 전체 보기
+            블로그 글 전체 보기
             <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
           </Link>
           <a className="clinic-btn clinic-btn-secondary" href={`tel:${phone}`}>
@@ -57,7 +57,7 @@ export function ClinicHero({
           </a>
         </div>
 
-        <div className="clinic-hero-curator-line" aria-label="콘텐츠 큐레이터">
+        <div className="clinic-hero-curator-line" aria-label="대표 의료진">
           <span className="clinic-hero-curator-avatar">
             {resolvedDirectorPhoto ? (
               <Image
@@ -73,22 +73,22 @@ export function ClinicHero({
             )}
           </span>
           <span>
-            큐레이터 <strong>{directorName}</strong> 원장
+            <strong>{directorName}</strong> 원장
           </span>
         </div>
 
         <div className="clinic-hero-stat-row">
           <div className="clinic-hero-stat">
             <span className="clinic-hero-stat-value">{contentCount}편</span>
-            <span className="clinic-hero-stat-label">발행 콘텐츠</span>
+            <span className="clinic-hero-stat-label">블로그 글</span>
           </div>
           <div className="clinic-hero-stat">
             <span className="clinic-hero-stat-value">{treatmentCount}개</span>
             <span className="clinic-hero-stat-label">진료 영역</span>
           </div>
           <div className="clinic-hero-stat">
-            <span className="clinic-hero-stat-value">월 단위</span>
-            <span className="clinic-hero-stat-label">정기 업데이트</span>
+            <span className="clinic-hero-stat-value">원장 검수</span>
+            <span className="clinic-hero-stat-label">의료 정보</span>
           </div>
         </div>
       </div>

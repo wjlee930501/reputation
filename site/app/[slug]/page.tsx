@@ -33,20 +33,20 @@ const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.name} 의료 콘텐츠 허브 — 환자가 자주 묻는 질문, 질환 가이드, 시술 안내를 검수된 자료로 정리합니다.`
+    const description = `${hospital.name} 진료 블로그 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 의료진이 알기 쉽게 정리합니다.`
     return {
-      title: `${hospital.name} 의료 콘텐츠 허브`,
+      title: `${hospital.name} 진료 블로그`,
       description,
       alternates: { canonical: `/${params.slug}` },
       openGraph: {
-        title: `${hospital.name} 의료 콘텐츠 허브`,
+        title: `${hospital.name} 진료 블로그`,
         description,
         url: `/${params.slug}`,
         type: 'website',
       },
     }
   } catch {
-    return { title: '의료 콘텐츠 허브' }
+    return { title: '진료 블로그' }
   }
 }
 

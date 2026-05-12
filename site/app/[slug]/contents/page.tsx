@@ -20,20 +20,20 @@ const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCA
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.name} 의료 콘텐츠 허브 라이브러리 — 자주 묻는 질문, 질환 가이드, 시술 안내, 원장 칼럼.`
+    const description = `${hospital.name} 진료 블로그 — 자주 묻는 질문, 질환 정보, 치료 안내, 원장 칼럼.`
     return {
-      title: `${hospital.name} 의료 콘텐츠 라이브러리`,
+      title: `${hospital.name} 진료 블로그`,
       description,
       alternates: { canonical: `/${params.slug}/contents` },
       openGraph: {
-        title: `${hospital.name} 의료 콘텐츠 라이브러리`,
+        title: `${hospital.name} 진료 블로그`,
         description,
         url: `/${params.slug}/contents`,
         type: 'website',
       },
     }
   } catch {
-    return { title: '의료 콘텐츠 라이브러리' }
+    return { title: '진료 블로그' }
   }
 }
 
@@ -62,13 +62,13 @@ export default async function ContentsLibraryPage({ params }: Props) {
 
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
-    { label: '의료 콘텐츠 라이브러리' },
+    { label: '블로그' },
   ]
 
   const collectionJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
-    name: `${hospital.name} 의료 콘텐츠 라이브러리`,
+    name: `${hospital.name} 진료 블로그`,
     about: hospital.specialties,
     isPartOf: {
       '@type': 'WebSite',
@@ -99,23 +99,21 @@ export default async function ContentsLibraryPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">Medical Content Library</span>
-              <h1 className="clinic-library-hero-title">{hospital.name} 의료 콘텐츠 라이브러리</h1>
+              <span className="clinic-section-eyebrow">진료 블로그</span>
+              <h1 className="clinic-library-hero-title">{hospital.name} 진료 블로그</h1>
               <p className="clinic-library-hero-meta">
-                <strong>{contents.length}편</strong>
-                <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <span>{hospital.specialties.join(' · ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <span>{hospital.region.join(' ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
-                <strong>{hospital.director_name} 원장 큐레이션</strong>
+                <strong>{hospital.director_name} 원장</strong>
               </p>
               <p
                 className="clinic-section-lede"
                 style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
               >
-                환자가 자주 묻는 질문에 답하는 의료 콘텐츠를 유형별로 모았습니다. 모든 글은 발행 전
-                의료광고 표현 검토를 거치며, AI 답변 서비스(ChatGPT·Gemini)가 인용할 수 있도록 구조화 데이터로 제공됩니다.
+                진료실에서 자주 나오는 질문과 치료 전 확인하면 좋은 내용을 유형별로 모았습니다.
+                개인의 상태에 따라 판단이 달라질 수 있으니 자세한 내용은 진료 상담에서 확인해 주세요.
               </p>
             </div>
           </section>
@@ -125,7 +123,7 @@ export default async function ContentsLibraryPage({ params }: Props) {
               {contents.length === 0 ? (
                 <div className="clinic-empty">
                   <span className="clinic-empty-title">아직 발행된 콘텐츠가 없습니다</span>
-                  <p>운영 일정에 따라 정기적으로 의료 콘텐츠가 추가됩니다.</p>
+                  <p>진료 안내와 건강 정보 글을 준비하고 있습니다.</p>
                 </div>
               ) : (
                 <div>

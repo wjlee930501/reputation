@@ -69,10 +69,10 @@ export function ContactCard({
     <section id="contact" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">Visit / Channels</span>
+          <span className="clinic-section-eyebrow">진료 안내</span>
           <h2 className="clinic-section-heading">{hospitalName} 진료 안내</h2>
           <p className="clinic-section-lede">
-            이곳은 의료 콘텐츠 허브입니다. 진료 예약·상담은 아래 병원 공식 채널을 이용해 주세요.
+            진료 예약·상담은 아래 병원 공식 채널을 이용해 주세요.
           </p>
         </header>
 
@@ -120,7 +120,7 @@ export function ContactCard({
           <>
             <div style={{ height: 32 }} />
             <header className="clinic-section-header" style={{ marginBottom: 18 }}>
-              <span className="clinic-section-eyebrow">Official Channels</span>
+              <span className="clinic-section-eyebrow">공식 채널</span>
               <h3
                 style={{
                   margin: 0,

@@ -44,12 +44,12 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
   const primaryDate = formatDate(primary.published_at, primary.scheduled_date)
 
   return (
-    <section className="clinic-featured" aria-label="대표 의료 콘텐츠">
+    <section className="clinic-featured" aria-label="대표 블로그 글">
       <div className="clinic-featured-inner">
         <span className="clinic-divider" aria-hidden="true" />
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">Featured</span>
-          <h2 className="clinic-section-heading">대표 콘텐츠</h2>
+          <span className="clinic-section-eyebrow">대표 글</span>
+          <h2 className="clinic-section-heading">대표 블로그 글</h2>
           <p className="clinic-section-lede">{sectionLede}</p>
         </header>
 
@@ -155,9 +155,9 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
             >
               <div className="clinic-featured-secondary-meta">
                 <h4 className="clinic-featured-secondary-title" style={{ marginBottom: 2 }}>
-                  의료 콘텐츠 전체 보기
+                  블로그 글 전체 보기
                 </h4>
-                <p className="clinic-featured-secondary-date">{contents.length}편 모음</p>
+                <p className="clinic-featured-secondary-date">진료 안내와 건강 정보</p>
               </div>
               <ChevronRightIcon className="clinic-icon" />
             </Link>

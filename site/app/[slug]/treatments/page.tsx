@@ -32,7 +32,7 @@ function findRelatedContents(treatmentName: string, contents: ContentItem[]): Co
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.name}의 진료 영역 — ${(hospital.treatments || []).map((t) => t.name).join(', ')}. 각 영역별 검수된 의료 콘텐츠를 함께 제공합니다.`
+    const description = `${hospital.name}의 진료 영역 — ${(hospital.treatments || []).map((t) => t.name).join(', ')}. 환자가 확인하면 좋은 진료 안내를 함께 제공합니다.`
     return {
       title: `진료 영역 | ${hospital.name}`,
       description,
@@ -104,7 +104,7 @@ export default async function TreatmentsPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">Treatment Areas</span>
+              <span className="clinic-section-eyebrow">진료 영역</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 진료 영역</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{treatments.length}개 진료 영역</strong>
@@ -117,8 +117,8 @@ export default async function TreatmentsPage({ params }: Props) {
                 className="clinic-section-lede"
                 style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
               >
-                각 진료 영역에서 정기적으로 진료하는 항목과, 환자 질문에 답하는 검수된 의료 콘텐츠를
-                함께 정리했습니다. 자세한 진단·치료 안내는 발행 콘텐츠를 통해서만 제공합니다.
+                각 진료 영역에서 다루는 항목과 환자가 자주 묻는 내용을 함께 정리했습니다.
+                정확한 진단과 치료 계획은 진료 상담을 통해 확인해 주세요.
               </p>
             </div>
           </section>
@@ -128,7 +128,7 @@ export default async function TreatmentsPage({ params }: Props) {
               <div className="clinic-section-inner">
                 <div className="clinic-empty">
                   <span className="clinic-empty-title">아직 등록된 진료 영역이 없습니다</span>
-                  <p>병원 프로파일에서 진료 영역을 추가하면 이 페이지에 자동으로 노출됩니다.</p>
+                  <p>진료 영역 정보를 준비하고 있습니다.</p>
                 </div>
               </div>
             </section>
@@ -156,10 +156,10 @@ export default async function TreatmentsPage({ params }: Props) {
             <section className="clinic-section clinic-section--alt">
               <div className="clinic-section-inner">
                 <header className="clinic-section-header">
-                  <span className="clinic-section-eyebrow">Related Content</span>
-                  <h2 className="clinic-section-heading">진료 영역별 의료 콘텐츠</h2>
+                  <span className="clinic-section-eyebrow">관련 글</span>
+                  <h2 className="clinic-section-heading">진료 영역별 블로그 글</h2>
                   <p className="clinic-section-lede">
-                    환자 질문에 답하는 검수된 자료를 진료 영역별로 모았습니다.
+                    진료 전 궁금해할 만한 질문과 안내를 진료 영역별로 모았습니다.
                   </p>
                 </header>
 
@@ -206,7 +206,7 @@ export default async function TreatmentsPage({ params }: Props) {
                     href={`/${params.slug}/contents`}
                     className="clinic-btn clinic-btn-secondary"
                   >
-                    전체 의료 정보 보기 ({contents.length}편)
+                    블로그 글 전체 보기
                   </Link>
                 </div>
               </div>

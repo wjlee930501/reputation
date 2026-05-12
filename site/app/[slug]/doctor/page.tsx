@@ -27,7 +27,7 @@ function sortByCuratorRelevance(a: ContentItem, b: ContentItem): number {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.director_name} 원장 — ${hospital.name}의 의료 콘텐츠 큐레이터. 진료 분야와 약력, 검수한 의료 정보 모음.`
+    const description = `${hospital.director_name} 원장 — ${hospital.name}의 진료 분야, 약력, 환자 안내 글 모음.`
     return {
       title: `${hospital.director_name} 원장 | ${hospital.name}`,
       description,
@@ -98,7 +98,7 @@ export default async function DoctorPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">Medical Staff · Content Curator</span>
+              <span className="clinic-section-eyebrow">의료진</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 의료진</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{hospital.director_name} 원장</strong>
@@ -111,8 +111,7 @@ export default async function DoctorPage({ params }: Props) {
                 className="clinic-section-lede"
                 style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
               >
-                이 콘텐츠 허브의 모든 의료 정보는 {hospital.director_name} 원장의 검수를 거친 자료입니다.
-                약력과 진료 영역, 그리고 직접 큐레이션한 콘텐츠를 모았습니다.
+                {hospital.director_name} 원장의 약력과 진료 영역, 환자 안내 글을 모았습니다.
               </p>
             </div>
           </section>
@@ -130,10 +129,10 @@ export default async function DoctorPage({ params }: Props) {
             <section className="clinic-section">
               <div className="clinic-section-inner">
                 <header className="clinic-section-header">
-                  <span className="clinic-section-eyebrow">Curated Content</span>
-                  <h2 className="clinic-section-heading">큐레이터가 검수한 콘텐츠</h2>
+                  <span className="clinic-section-eyebrow">원장 노트</span>
+                  <h2 className="clinic-section-heading">원장이 전하는 진료 이야기</h2>
                   <p className="clinic-section-lede">
-                    원장 칼럼·자주 묻는 질문·질환 가이드를 우선 정렬했습니다.
+                    원장 칼럼·자주 묻는 질문·질환 정보를 우선 모았습니다.
                   </p>
                 </header>
                 <div className="clinic-content-grid">
@@ -152,7 +151,7 @@ export default async function DoctorPage({ params }: Props) {
                       href={`/${params.slug}/contents`}
                       className="clinic-btn clinic-btn-secondary"
                     >
-                      전체 콘텐츠 {contents.length}편 보기
+                      블로그 글 전체 보기
                     </Link>
                   </div>
                 )}

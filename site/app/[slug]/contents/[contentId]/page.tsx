@@ -121,7 +121,7 @@ export default async function ContentDetailPage({ params }: Props) {
 
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
-    { label: '의료 정보', href: `/${params.slug}/contents` },
+    { label: '블로그', href: `/${params.slug}/contents` },
     { label: typeLabel },
     { label: content.title },
   ]
@@ -266,7 +266,7 @@ export default async function ContentDetailPage({ params }: Props) {
                 <span className="clinic-article-type">{typeLabel}</span>
                 <h1 className="clinic-article-title">{content.title}</h1>
                 <p className="clinic-article-byline">
-                  <span className="clinic-article-byline-label">큐레이터</span>
+                  <span className="clinic-article-byline-label">작성·검수</span>
                   <strong>{hospital.director_name} 원장</strong>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                   <span>{readingMinutes}분 읽기</span>
@@ -315,7 +315,7 @@ export default async function ContentDetailPage({ params }: Props) {
 
             <aside className="clinic-aside" aria-label="병원 정보 및 관련 콘텐츠">
               <div className="clinic-aside-card">
-                <span className="clinic-aside-card-eyebrow">Clinic</span>
+                <span className="clinic-aside-card-eyebrow">병원 정보</span>
                 <h2 className="clinic-aside-card-title">{hospital.name}</h2>
                 <ul className="clinic-aside-meta">
                   <li>
@@ -337,7 +337,7 @@ export default async function ContentDetailPage({ params }: Props) {
                   className="clinic-btn clinic-btn-secondary"
                   style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14, marginBottom: 8 }}
                 >
-                  콘텐츠 허브 홈으로
+                  병원 블로그 홈으로
                 </Link>
                 {hospital.website_url && (
                   <a
@@ -354,7 +354,7 @@ export default async function ContentDetailPage({ params }: Props) {
 
               {paaQuestions.length > 0 && (
                 <div className="clinic-aside-card clinic-aside-card--paa">
-                  <span className="clinic-aside-card-eyebrow">People Also Ask</span>
+                  <span className="clinic-aside-card-eyebrow">함께 보는 질문</span>
                   <h2 className="clinic-aside-card-title">환자가 함께 묻는 질문</h2>
                   <ul className="clinic-paa-list">
                     {paaQuestions.map((q) => (
@@ -371,7 +371,7 @@ export default async function ContentDetailPage({ params }: Props) {
 
               {sameTypeRelated.length > 0 && (
                 <div className="clinic-aside-card">
-                  <span className="clinic-aside-card-eyebrow">Related</span>
+                  <span className="clinic-aside-card-eyebrow">관련 글</span>
                   <h2 className="clinic-aside-card-title">관련 {typeLabel}</h2>
                   <ul className="clinic-related-list">
                     {sameTypeRelated.map((r) => (

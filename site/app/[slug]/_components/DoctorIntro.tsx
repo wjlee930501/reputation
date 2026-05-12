@@ -27,11 +27,10 @@ export function DoctorIntro({
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">Content Curator</span>
-          <h2 className="clinic-section-heading">콘텐츠를 큐레이팅하는 의료진</h2>
+          <span className="clinic-section-eyebrow">의료진</span>
+          <h2 className="clinic-section-heading">진료를 담당하는 의료진</h2>
           <p className="clinic-section-lede">
-            이 콘텐츠 허브의 모든 글은 의료진이 검수한 자료를 근거로 작성되며, 발행 전 의료광고 표현
-            및 운영 기준 검토를 거칩니다.
+            진료 경험과 환자 상담에서 반복되는 질문을 바탕으로, 필요한 의료 정보를 차분히 정리합니다.
           </p>
         </header>
 
@@ -58,7 +57,7 @@ export function DoctorIntro({
           )}
 
           <div>
-            <span className="clinic-curator-eyebrow">큐레이터 · Lead Reviewer</span>
+            <span className="clinic-curator-eyebrow">대표원장</span>
             <h3 className="clinic-curator-name">
               {directorName}
               <small>원장</small>
@@ -84,7 +83,7 @@ export function DoctorIntro({
 
             <div className="clinic-curator-meta">
               <div className="clinic-curator-meta-cell">
-                <span className="clinic-curator-meta-label">검수 콘텐츠</span>
+                <span className="clinic-curator-meta-label">블로그 글</span>
                 <span className="clinic-curator-meta-value">{contentCount}편</span>
               </div>
               <div className="clinic-curator-meta-cell">

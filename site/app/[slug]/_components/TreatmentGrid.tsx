@@ -18,11 +18,11 @@ export function TreatmentGrid({ treatments }: Props) {
     <section id="treatments" className="clinic-section">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">Treatment Areas</span>
-          <h2 className="clinic-section-heading">이 콘텐츠가 다루는 진료 영역</h2>
+          <span className="clinic-section-eyebrow">진료 영역</span>
+          <h2 className="clinic-section-heading">진료 영역</h2>
           <p className="clinic-section-lede">
-            이 의료 콘텐츠 허브는 아래 진료 영역의 환자 질문에 집중합니다. 자세한 진단·치료
-            안내는 검수된 발행 콘텐츠를 통해서만 제공합니다.
+            병원에서 주로 진료하는 영역입니다. 증상과 치료 방법은 개인마다 다를 수 있으니
+            자세한 내용은 진료 상담에서 확인해 주세요.
           </p>
         </header>
 
