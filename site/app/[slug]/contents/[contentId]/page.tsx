@@ -24,6 +24,28 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 // 한국어 평균 읽기 속도 약 600자/분.
 const KOREAN_READING_SPEED_CHARS_PER_MIN = 600
 
+// WCAG/Section508 권장: alt 최대 약 125자, 짧고 묘사적이며 "image of" 군더더기 금지.
+// Imagen 3로 자동 생성된 일러스트라는 사실은 본문 하단 캡션으로 별도 고지한다.
+const ALT_MAX_LENGTH = 125
+
+function buildImageAlt(args: {
+  contentTitle: string
+  typeLabel: string
+  hospitalName: string
+  region: string[]
+  directorName: string
+}): string {
+  const regionLabel = args.region?.join(' ') ?? ''
+  const parts = [
+    `${args.typeLabel}: ${args.contentTitle}`,
+    args.hospitalName,
+    regionLabel,
+    args.directorName ? `${args.directorName} 원장 검수` : '',
+  ].filter(Boolean)
+  const joined = parts.join(' — ')
+  return joined.length > ALT_MAX_LENGTH ? `${joined.slice(0, ALT_MAX_LENGTH - 1)}…` : joined
+}
+
 function formatDate(value: string | null | undefined, fallback: string) {
   if (!value) return fallback
   const parsed = new Date(value)
@@ -165,10 +187,40 @@ export default async function ContentDetailPage({ params }: Props) {
     },
   }
 
+  const imageAlt = content.image_url
+    ? buildImageAlt({
+        contentTitle: content.title,
+        typeLabel,
+        hospitalName: hospital.name,
+        region: hospital.region,
+        directorName: hospital.director_name,
+      })
+    : ''
+
   const jsonLd: Record<string, unknown>[] = [
     articleJsonLd,
     buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL),
   ]
+
+  if (content.image_url) {
+    jsonLd.push({
+      '@context': 'https://schema.org',
+      '@type': 'ImageObject',
+      contentUrl: content.image_url,
+      url: content.image_url,
+      name: content.title,
+      caption: imageAlt,
+      description: content.meta_description ?? imageAlt,
+      creator: {
+        '@type': 'MedicalClinic',
+        '@id': clinicId,
+        name: hospital.name,
+      },
+      representativeOfPage: true,
+      datePublished,
+      license: `${SITE_URL}/terms`,
+    })
+  }
 
   // ── FAQ → FAQPage (Question/Answer는 분리 필드 사용. 미존재 시 fallback) ───
   if (content.content_type === 'FAQ') {
@@ -257,17 +309,23 @@ export default async function ContentDetailPage({ params }: Props) {
           <div className="clinic-article-shell">
             <article className="clinic-article">
               {content.image_url && (
-                <div className="clinic-article-cover">
-                  <Image
-                    src={content.image_url}
-                    alt={content.title}
-                    fill
-                    sizes="(max-width: 960px) 100vw, 720px"
-                    style={{ objectFit: 'cover' }}
-                    priority
-                    unoptimized={shouldBypassNextImageOptimization(content.image_url)}
-                  />
-                </div>
+                <figure className="clinic-article-cover-figure">
+                  <div className="clinic-article-cover">
+                    <Image
+                      src={content.image_url}
+                      alt={imageAlt}
+                      fill
+                      sizes="(max-width: 960px) 100vw, 720px"
+                      style={{ objectFit: 'cover' }}
+                      priority
+                      unoptimized={shouldBypassNextImageOptimization(content.image_url)}
+                    />
+                  </div>
+                  <figcaption className="clinic-article-cover-caption">
+                    본 이미지는 일반적인 의학 정보를 설명하기 위한 AI 생성 일러스트입니다.
+                    실제 시술·진단 결과나 환자 사례를 의미하지 않습니다.
+                  </figcaption>
+                </figure>
               )}
               <div className="clinic-article-header">
                 <Breadcrumb items={breadcrumbItems} />
