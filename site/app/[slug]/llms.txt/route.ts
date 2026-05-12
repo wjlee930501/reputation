@@ -38,11 +38,30 @@ export async function GET(_req: Request, { params }: Props) {
       hospital.google_maps_url ? `- google_maps: ${hospital.google_maps_url}` : '',
       `- specialties: ${hospital.specialties?.join(', ') || ''}`,
       `- region: ${hospital.region?.join(', ') || ''}`,
+      hospital.wikidata_qid
+        ? `- wikidata: https://www.wikidata.org/wiki/${hospital.wikidata_qid}`
+        : '',
+      hospital.naver_place_id
+        ? `- naver_place: https://map.naver.com/p/entry/place/${hospital.naver_place_id}`
+        : '',
+      hospital.kakao_place_id
+        ? `- kakao_place: https://place.map.kakao.com/${hospital.kakao_place_id}`
+        : '',
+      hospital.hira_org_id ? `- hira_org_id: ${hospital.hira_org_id}` : '',
       '',
       `## 원장`,
       `- director_name: ${hospital.director_name}`,
       hospital.director_career ? `- director_career: ${hospital.director_career}` : '',
-      // 진료 철학은 검수되지 않은 자유 입력이므로 AI 크롤러용 표면에는 노출하지 않습니다.
+      hospital.director_credentials?.medical_school
+        ? `- medical_school: ${hospital.director_credentials.medical_school}`
+        : '',
+      hospital.director_credentials?.board_certifications?.length
+        ? `- board_certifications: ${hospital.director_credentials.board_certifications.join(', ')}`
+        : '',
+      hospital.director_credentials?.society_memberships?.length
+        ? `- society_memberships: ${hospital.director_credentials.society_memberships.join(', ')}`
+        : '',
+      // 진료 철학·면허번호는 자유 입력 / 민감 정보이므로 AI 크롤러용 표면에는 노출하지 않습니다.
       '',
     ]
 

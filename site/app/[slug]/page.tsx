@@ -104,6 +104,9 @@ export default async function HospitalHubPage({ params }: Props) {
     hospital.google_business_profile_url,
     hospital.google_maps_url,
     hospital.naver_place_url,
+    hospital.wikidata_qid ? `https://www.wikidata.org/wiki/${hospital.wikidata_qid}` : null,
+    hospital.naver_place_id ? `https://map.naver.com/p/entry/place/${hospital.naver_place_id}` : null,
+    hospital.kakao_place_id ? `https://place.map.kakao.com/${hospital.kakao_place_id}` : null,
   ].filter((value): value is string => Boolean(value))
 
   const clinicJsonLd = {

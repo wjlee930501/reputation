@@ -30,6 +30,11 @@ class HospitalDetail(HospitalListItem):
     aeo_domain: Optional[str]
     latitude: Optional[float]
     longitude: Optional[float]
+    wikidata_qid: Optional[str] = None
+    gbp_place_id: Optional[str] = None
+    naver_place_id: Optional[str] = None
+    kakao_place_id: Optional[str] = None
+    hira_org_id: Optional[str] = None
     region: list
     specialties: list
     keywords: list
@@ -37,4 +42,5 @@ class HospitalDetail(HospitalListItem):
     director_name: Optional[str]
     director_career: Optional[str]
     director_philosophy: Optional[str]
+    director_credentials: Optional[Any] = None
     treatments: list

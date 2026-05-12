@@ -58,6 +58,15 @@ class TreatmentItem(BaseModel):
     description: str | None = Field(None, max_length=500)
 
 
+class DirectorCredentials(BaseModel):
+    """Physician.hasCredential / alumniOf / memberOf 매핑용."""
+
+    medical_school: str | None = Field(None, max_length=200)
+    board_certifications: list[str] | None = None
+    society_memberships: list[str] | None = None
+    license_number: str | None = Field(None, max_length=50)  # 공개 노출 X, 내부 보관
+
+
 class HospitalCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     plan: Plan
@@ -79,6 +88,13 @@ class HospitalProfileUpdate(BaseModel):
     latitude: float | None = Field(None, ge=-90, le=90)
     longitude: float | None = Field(None, ge=-180, le=180)
 
+    # 엔티티 식별자 (sameAs 그래프)
+    wikidata_qid: str | None = Field(None, max_length=50)
+    gbp_place_id: str | None = Field(None, max_length=255)
+    naver_place_id: str | None = Field(None, max_length=100)
+    kakao_place_id: str | None = Field(None, max_length=100)
+    hira_org_id: str | None = Field(None, max_length=50)
+
     # 타겟
     region: list[str] | None = None
     specialties: list[str] | None = None
@@ -89,12 +105,25 @@ class HospitalProfileUpdate(BaseModel):
     director_name: str | None = Field(None, max_length=100)
     director_career: str | None = Field(None, max_length=2000)
     director_philosophy: str | None = Field(None, max_length=1000)
+    director_credentials: DirectorCredentials | None = None
 
     # 진료 항목
     treatments: list[TreatmentItem] | None = None
 
     # 완료 플래그 (프로파일 다 입력됐으면 True로)
     profile_complete: bool | None = None
+
+    @field_validator("wikidata_qid")
+    @classmethod
+    def validate_wikidata_qid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().upper()
+        if not cleaned:
+            return None
+        if not re.fullmatch(r"Q\d{1,12}", cleaned):
+            raise ValueError("Wikidata Q-ID must look like Q12345")
+        return cleaned
 
     @field_validator(
         "website_url",
@@ -237,8 +266,11 @@ async def update_profile(
     PROFILE_FIELDS = {
         "address", "phone", "business_hours", "website_url", "blog_url",
         "kakao_channel_url", "google_business_profile_url", "google_maps_url",
-        "naver_place_url", "latitude", "longitude", "region", "specialties", "keywords", "competitors",
-        "director_name", "director_career", "director_philosophy", "treatments",
+        "naver_place_url", "latitude", "longitude",
+        "wikidata_qid", "gbp_place_id", "naver_place_id", "kakao_place_id", "hira_org_id",
+        "region", "specialties", "keywords", "competitors",
+        "director_name", "director_career", "director_philosophy", "director_credentials",
+        "treatments",
         "profile_complete",
     }
     update_data = body.model_dump(exclude_none=True)
@@ -641,6 +673,11 @@ def _serialize(h: Hospital) -> dict:
         "aeo_domain": h.aeo_domain,
         "latitude": h.latitude,
         "longitude": h.longitude,
+        "wikidata_qid": h.wikidata_qid,
+        "gbp_place_id": h.gbp_place_id,
+        "naver_place_id": h.naver_place_id,
+        "kakao_place_id": h.kakao_place_id,
+        "hira_org_id": h.hira_org_id,
         "region": h.region,
         "specialties": h.specialties,
         "keywords": h.keywords,
@@ -648,6 +685,7 @@ def _serialize(h: Hospital) -> dict:
         "director_name": h.director_name,
         "director_career": h.director_career,
         "director_philosophy": h.director_philosophy,
+        "director_credentials": h.director_credentials,
         "treatments": h.treatments,
         "profile_complete": h.profile_complete,
         "v0_report_done": h.v0_report_done,

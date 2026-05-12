@@ -24,6 +24,11 @@ def test_serialize_hospital_includes_public_profile_fields():
         aeo_domain="info.example.com",
         latitude=37.5,
         longitude=127.0,
+        wikidata_qid="Q123456",
+        gbp_place_id="ChIJxxxxxxxxxxxx",
+        naver_place_id="38758880",
+        kakao_place_id="26678017",
+        hira_org_id="11000000",
         region=["서울", "강남"],
         specialties=["피부과"],
         keywords=["여드름", "리프팅"],
@@ -31,6 +36,12 @@ def test_serialize_hospital_includes_public_profile_fields():
         director_career="전문의",
         director_philosophy="근거 중심 진료",
         director_photo_url=None,
+        director_credentials={
+            "medical_school": "서울대학교 의과대학",
+            "board_certifications": ["피부과 전문의"],
+            "society_memberships": ["대한피부과학회"],
+            "license_number": "12345",
+        },
         treatments=[{"name": "리프팅", "description": "안면 리프팅"}],
     )
 
@@ -42,6 +53,11 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["director_philosophy"] is None
     assert serialized["google_maps_url"] == "https://maps.google.com/?cid=123"
     assert serialized["latitude"] == 37.5
+    assert serialized["wikidata_qid"] == "Q123456"
+    assert serialized["naver_place_id"] == "38758880"
+    # license_number는 내부 보관 전용 — 공개 응답에서 제거됨.
+    assert "license_number" not in serialized["director_credentials"]
+    assert serialized["director_credentials"]["medical_school"] == "서울대학교 의과대학"
 
 
 def test_legacy_site_builder_does_not_publish_director_philosophy(tmp_path, monkeypatch):

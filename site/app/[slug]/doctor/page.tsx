@@ -69,6 +69,26 @@ export default async function DoctorPage({ params }: Props) {
   const treatmentNames = (hospital.treatments || []).map((t) => t.name).filter(Boolean)
   const knowsAbout = Array.from(new Set([...(hospital.specialties || []), ...treatmentNames]))
 
+  const credentials = hospital.director_credentials
+  const boardCerts = credentials?.board_certifications ?? []
+  const societies = credentials?.society_memberships ?? []
+  const hasCredential = boardCerts.map((name) => ({
+    '@type': 'EducationalOccupationalCredential',
+    credentialCategory: 'medical specialty board certification',
+    name,
+  }))
+  const memberOf = societies.map((name) => ({
+    '@type': 'MedicalOrganization',
+    name,
+  }))
+  const alumniOf = credentials?.medical_school
+    ? { '@type': 'EducationalOrganization', name: credentials.medical_school }
+    : undefined
+
+  const physicianSameAs = [
+    hospital.wikidata_qid ? `https://www.wikidata.org/wiki/${hospital.wikidata_qid}` : null,
+  ].filter((value): value is string => Boolean(value))
+
   const physicianJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Physician',
@@ -79,6 +99,10 @@ export default async function DoctorPage({ params }: Props) {
     image: hospital.director_photo_url || undefined,
     medicalSpecialty: hospital.specialties,
     knowsAbout: knowsAbout.length > 0 ? knowsAbout : undefined,
+    hasCredential: hasCredential.length > 0 ? hasCredential : undefined,
+    memberOf: memberOf.length > 0 ? memberOf : undefined,
+    alumniOf,
+    sameAs: physicianSameAs.length > 0 ? physicianSameAs : undefined,
     worksFor: {
       '@type': 'MedicalClinic',
       '@id': `${SITE_URL}/${params.slug}#clinic`,

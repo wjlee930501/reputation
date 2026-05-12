@@ -174,6 +174,11 @@ def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = 
         "aeo_domain": h.aeo_domain,
         "latitude": h.latitude,
         "longitude": h.longitude,
+        "wikidata_qid": getattr(h, "wikidata_qid", None),
+        "gbp_place_id": getattr(h, "gbp_place_id", None),
+        "naver_place_id": getattr(h, "naver_place_id", None),
+        "kakao_place_id": getattr(h, "kakao_place_id", None),
+        "hira_org_id": getattr(h, "hira_org_id", None),
         "region": h.region,
         "specialties": h.specialties,
         "keywords": h.keywords,
@@ -184,8 +189,20 @@ def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = 
         # flow rather than the free-text profile field.
         "director_philosophy": None,
         "director_photo_url": director_photo,
+        "director_credentials": _safe_credentials(getattr(h, "director_credentials", None)),
         "treatments": h.treatments,
         "photos": serialized_photos,
+    }
+
+
+def _safe_credentials(credentials: dict | None) -> dict | None:
+    """공개 표면에는 license_number를 노출하지 않는다(내부 보관 전용)."""
+    if not isinstance(credentials, dict):
+        return None
+    return {
+        key: value
+        for key, value in credentials.items()
+        if key != "license_number" and value not in (None, "", [], {})
     }
 
 
