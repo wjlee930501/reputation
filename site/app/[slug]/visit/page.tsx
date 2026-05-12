@@ -13,6 +13,8 @@ interface Props {
   params: { slug: string }
 }
 
+export const revalidate = 3600
+
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
@@ -25,21 +27,62 @@ const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
   sun: 'Sunday',
 }
 
+const CLOSED_KEYWORDS = ['휴진', '휴무', 'closed']
+
+function isClosedLabel(value: string): boolean {
+  const lowered = value.toLowerCase()
+  return CLOSED_KEYWORDS.some((kw) => lowered.includes(kw))
+}
+
+function extractTimeRanges(value: string): Array<{ opens: string; closes: string }> {
+  const ranges: Array<{ opens: string; closes: string }> = []
+  for (const segment of value.split(/[,/]|·|및|그리고/)) {
+    const trimmed = segment.trim()
+    if (!trimmed || isClosedLabel(trimmed)) continue
+    const matches = trimmed.match(/\d{1,2}:\d{2}/g)
+    if (matches && matches.length >= 2) {
+      ranges.push({ opens: matches[0], closes: matches[matches.length - 1] })
+    }
+  }
+  return ranges
+}
+
 function buildOpeningHoursSpec(hours: Record<string, string> | null | undefined) {
   if (!hours) return []
-  return Object.entries(hours).map(([day, value]) => {
-    const opensCloses = String(value).match(/(\d{1,2}:\d{2}).*?(\d{1,2}:\d{2})/)
-    const base: Record<string, unknown> = {
-      '@type': 'OpeningHoursSpecification',
-      dayOfWeek: SCHEMA_DAY_OF_WEEK[day.toLowerCase()] || day,
-      description: String(value),
+  const specs: Array<Record<string, unknown>> = []
+  for (const [day, rawValue] of Object.entries(hours)) {
+    const value = String(rawValue ?? '')
+    const dayOfWeek = SCHEMA_DAY_OF_WEEK[day.toLowerCase()] || day
+    if (isClosedLabel(value)) {
+      specs.push({
+        '@type': 'OpeningHoursSpecification',
+        dayOfWeek,
+        description: value,
+        opens: '00:00',
+        closes: '00:00',
+      })
+      continue
     }
-    if (opensCloses) {
-      base.opens = opensCloses[1]
-      base.closes = opensCloses[2]
+    const ranges = extractTimeRanges(value)
+    if (ranges.length === 0) {
+      specs.push({
+        '@type': 'OpeningHoursSpecification',
+        dayOfWeek,
+        description: value,
+      })
+      continue
     }
-    return base
-  })
+    for (const range of ranges) {
+      specs.push({
+        '@type': 'OpeningHoursSpecification',
+        dayOfWeek,
+        description: value,
+        opens: range.opens,
+        closes: range.closes,
+      })
+    }
+  }
+  return specs
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {

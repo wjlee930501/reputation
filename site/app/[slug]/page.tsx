@@ -2,6 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { fetchHospital, fetchContents } from '@/lib/api'
+import { getApiBase } from '@/lib/config'
 
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
 import { ClinicFooter } from './_components/ClinicFooter'
@@ -30,10 +31,35 @@ const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
   sun: 'Sunday',
 }
 
+export const revalidate = 3600
+
+export async function generateStaticParams() {
+  try {
+    const apiBase = getApiBase(false)
+    if (!apiBase) return []
+    const res = await fetch(`${apiBase}/hospitals`, { next: { revalidate: 3600 } })
+    if (!res.ok) return []
+    const hospitals = (await res.json()) as Array<{ slug: string }>
+    return hospitals.map((h) => ({ slug: h.slug }))
+  } catch {
+    return []
+  }
+}
+
+function buildHospitalDescription(hospital: Awaited<ReturnType<typeof fetchHospital>>): string {
+  const region = hospital.region?.join(' ') || ''
+  const specialties = hospital.specialties?.join(', ') || ''
+  const locality = [region, specialties].filter(Boolean).join(' · ')
+  return locality
+    ? `${hospital.name} (${locality}) 진료 블로그 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 의료진이 알기 쉽게 정리합니다.`
+    : `${hospital.name} 진료 블로그 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 의료진이 알기 쉽게 정리합니다.`
+}
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.name} 진료 블로그 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 의료진이 알기 쉽게 정리합니다.`
+    const description = buildHospitalDescription(hospital)
+    const ogImage = hospital.director_photo_url ?? undefined
     return {
       title: `${hospital.name} 진료 블로그`,
       description,
@@ -43,6 +69,15 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
         description,
         url: `/${params.slug}`,
         type: 'website',
+        images: ogImage
+          ? [{ url: ogImage, alt: `${hospital.director_name || hospital.name} 원장` }]
+          : undefined,
+      },
+      twitter: {
+        card: 'summary_large_image',
+        title: `${hospital.name} 진료 블로그`,
+        description,
+        images: ogImage ? [ogImage] : undefined,
       },
     }
   } catch {
@@ -74,6 +109,7 @@ export default async function HospitalHubPage({ params }: Props) {
   const clinicJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
+    '@id': `${SITE_URL}/${params.slug}#clinic`,
     name: hospital.name,
     url: `${SITE_URL}/${params.slug}`,
     image: hospital.director_photo_url ?? undefined,
@@ -101,9 +137,12 @@ export default async function HospitalHubPage({ params }: Props) {
         : undefined,
     physician: {
       '@type': 'Physician',
+      '@id': `${SITE_URL}/${params.slug}/doctor#physician`,
       name: hospital.director_name,
+      jobTitle: '원장',
       description: hospital.director_career,
       image: hospital.director_photo_url ?? undefined,
+      url: `${SITE_URL}/${params.slug}/doctor`,
     },
     availableService: (hospital.treatments || []).map((treatment) => ({
       '@type': 'MedicalProcedure',
