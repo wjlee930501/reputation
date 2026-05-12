@@ -4,7 +4,13 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 
-import { fetchContent, fetchContents, fetchHospital, TYPE_LABELS } from '@/lib/api'
+import {
+  fetchContent,
+  fetchContents,
+  fetchHospital,
+  SOURCE_TYPE_LABELS,
+  TYPE_LABELS,
+} from '@/lib/api'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
@@ -376,14 +382,27 @@ export default async function ContentDetailPage({ params }: Props) {
                 <section className="clinic-article-references" aria-label="참고 자료">
                   <h2 className="clinic-article-references-title">참고 자료</h2>
                   <ol>
-                    {referenceList.map((ref, idx) => (
-                      <li key={`${ref.url}-${idx}`}>
-                        <a href={ref.url} target="_blank" rel="noopener nofollow">
-                          {ref.title}
-                          <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
-                        </a>
-                      </li>
-                    ))}
+                    {referenceList.map((ref, idx) => {
+                      const sourceLabel = ref.source_type
+                        ? SOURCE_TYPE_LABELS[ref.source_type]
+                        : null
+                      return (
+                        <li key={`${ref.url}-${idx}`}>
+                          <a href={ref.url} target="_blank" rel="noopener nofollow">
+                            {sourceLabel && (
+                              <span className="clinic-article-references-source" aria-label="출처 분류">
+                                {sourceLabel}
+                              </span>
+                            )}
+                            {ref.title}
+                            <ExternalIcon
+                              className="clinic-icon clinic-icon--sm"
+                              style={{ color: 'currentColor' }}
+                            />
+                          </a>
+                        </li>
+                      )
+                    })}
                   </ol>
                   <p className="clinic-article-references-note">
                     위 자료는 본 콘텐츠 작성 시 인용한 공개 자료입니다. 진료 결정은 의료진 상담이 우선합니다.

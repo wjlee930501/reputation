@@ -71,6 +71,16 @@ class Hospital(Base):
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
 
+    # ── 엔티티 식별자 (sameAs / entity grounding) ────────────────────
+    # AI 답변 인용은 엔티티 합의에서 시작 — 백링크 0.10 vs 브랜드 멘션 0.66 상관.
+    # Wikidata Q-ID는 LLM Knowledge Graph의 안정 식별자이며, GBP/Naver/Kakao는
+    # 한국 환자가 실제로 보는 로컬 anchor. HIRA는 한국 의료기관 준공식 권위 데이터.
+    wikidata_qid: Mapped[str | None] = mapped_column(String(50))      # 예: "Q12345678"
+    gbp_place_id: Mapped[str | None] = mapped_column(String(255))     # Google Place ID
+    naver_place_id: Mapped[str | None] = mapped_column(String(100))   # Naver Place ID (숫자)
+    kakao_place_id: Mapped[str | None] = mapped_column(String(100))   # Kakao Place ID
+    hira_org_id: Mapped[str | None] = mapped_column(String(50))       # HIRA 요양기관 기호
+
     # ── 타겟 파라미터 ────────────────────────────────────────────────
     region: Mapped[list] = mapped_column(JSON, default=list)         # ["수원시", "영통구"]
     specialties: Mapped[list] = mapped_column(JSON, default=list)    # ["대장항문외과"]
@@ -82,6 +92,14 @@ class Hospital(Base):
     director_career: Mapped[str | None] = mapped_column(Text)       # 약력 (마크다운)
     director_philosophy: Mapped[str | None] = mapped_column(Text)   # 진료 철학
     director_photo_url: Mapped[str | None] = mapped_column(String(500))
+    # Physician schema의 hasCredential / alumniOf / memberOf 매핑용 구조화 자격 정보.
+    # 형식: {
+    #   "medical_school": "서울대학교 의과대학",
+    #   "board_certifications": ["대장항문외과 전문의"],
+    #   "society_memberships": ["대한대장항문학회"],
+    #   "license_number": "12345"  # 의사면허번호 (선택, 공개 노출 X)
+    # }
+    director_credentials: Mapped[dict | None] = mapped_column(JSON)
 
     # ── 진료 항목 ────────────────────────────────────────────────────
     treatments: Mapped[list] = mapped_column(JSON, default=list)

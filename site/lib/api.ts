@@ -1,6 +1,12 @@
 import { getApiBase } from '@/lib/config'
 import { publicFetchInit } from '@/lib/fetch-policy'
 
+export interface DirectorCredentials {
+  medical_school?: string | null
+  board_certifications?: string[] | null
+  society_memberships?: string[] | null
+}
+
 export interface Hospital {
   id: number
   name: string
@@ -17,6 +23,11 @@ export interface Hospital {
   naver_place_url: string | null
   latitude: number | null
   longitude: number | null
+  wikidata_qid: string | null
+  gbp_place_id: string | null
+  naver_place_id: string | null
+  kakao_place_id: string | null
+  hira_org_id: string | null
   region: string[]
   specialties: string[]
   keywords: string[]
@@ -24,6 +35,7 @@ export interface Hospital {
   director_career: string
   director_philosophy: string | null
   director_photo_url: string | null
+  director_credentials: DirectorCredentials | null
   treatments: Array<{ name: string; description: string }>
   aeo_domain: string | null
   photos: HospitalPhoto[]
@@ -54,9 +66,25 @@ export function resolveAssetUrl(url: string | null | undefined): string | null {
   return url
 }
 
+export type ContentReferenceSourceType =
+  | 'GOV_KR'
+  | 'ACADEMIC_KR'
+  | 'GOV_GLOBAL'
+  | 'CLINIC_REFERENCE'
+  | 'ENCYCLOPEDIA'
+
 export interface ContentReference {
   title: string
   url: string
+  source_type?: ContentReferenceSourceType | null
+}
+
+export const SOURCE_TYPE_LABELS: Record<ContentReferenceSourceType, string> = {
+  GOV_KR: '한국 공공',
+  ACADEMIC_KR: '한국 학술',
+  GOV_GLOBAL: '국제 기관',
+  CLINIC_REFERENCE: '임상 자료',
+  ENCYCLOPEDIA: '백과',
 }
 
 export interface ContentItem {
