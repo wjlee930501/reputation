@@ -17,6 +17,8 @@ interface Props {
   params: { slug: string; contentId: string }
 }
 
+export const revalidate = 3600
+
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 // 한국어 평균 읽기 속도 약 600자/분.
@@ -131,6 +133,8 @@ export default async function ContentDetailPage({ params }: Props) {
   const dateModified = content.body_updated_at || content.published_at || content.scheduled_date
 
   // 모든 article 공통 base. type별 추가 schema는 jsonLd 배열에 별도로 push.
+  const physicianId = `${SITE_URL}/${params.slug}/doctor#physician`
+  const clinicId = `${SITE_URL}/${params.slug}#clinic`
   const articleJsonLd: Record<string, unknown> = {
     '@context': 'https://schema.org',
     '@type': 'Article',
@@ -138,10 +142,12 @@ export default async function ContentDetailPage({ params }: Props) {
     description: content.meta_description,
     author: {
       '@type': 'Physician',
+      '@id': physicianId,
       name: hospital.director_name,
     },
     publisher: {
       '@type': 'MedicalClinic',
+      '@id': clinicId,
       name: hospital.name,
     },
     datePublished,
@@ -193,6 +199,7 @@ export default async function ContentDetailPage({ params }: Props) {
       url: articleUrl,
       performer: {
         '@type': 'Physician',
+        '@id': physicianId,
         name: hospital.director_name,
       },
     })
@@ -228,6 +235,7 @@ export default async function ContentDetailPage({ params }: Props) {
       lastReviewed: dateModified,
       reviewedBy: {
         '@type': 'Physician',
+        '@id': physicianId,
         name: hospital.director_name,
       },
     })
@@ -271,11 +279,17 @@ export default async function ContentDetailPage({ params }: Props) {
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                   <span>{readingMinutes}분 읽기</span>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
-                  <span>발행 {publishedLabel}</span>
+                  <span>
+                    발행{' '}
+                    <time dateTime={datePublished}>{publishedLabel}</time>
+                  </span>
                   {reviewedLabel && reviewedLabel !== publishedLabel && (
                     <>
                       <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
-                      <span>최근 검수 {reviewedLabel}</span>
+                      <span>
+                        최근 검수{' '}
+                        <time dateTime={dateModified}>{reviewedLabel}</time>
+                      </span>
                     </>
                   )}
                   <span className="clinic-article-byline-chip">발행 시점 검수 완료</span>
@@ -287,6 +301,13 @@ export default async function ContentDetailPage({ params }: Props) {
                   <span className="clinic-article-tldr-eyebrow">핵심 답변</span>
                   <p>{content.meta_description}</p>
                 </aside>
+              )}
+
+              {content.content_type === 'FAQ' && content.faq_question && (
+                <dl className="clinic-article-faq" aria-label="자주 묻는 질문">
+                  <dt>{content.faq_question}</dt>
+                  {content.faq_answer_summary && <dd>{content.faq_answer_summary}</dd>}
+                </dl>
               )}
 
               <div className="clinic-article-body">
@@ -317,12 +338,12 @@ export default async function ContentDetailPage({ params }: Props) {
               <div className="clinic-aside-card">
                 <span className="clinic-aside-card-eyebrow">병원 정보</span>
                 <h2 className="clinic-aside-card-title">{hospital.name}</h2>
-                <ul className="clinic-aside-meta">
-                  <li>
+                <address className="clinic-aside-meta clinic-aside-address">
+                  <span>
                     <span className="clinic-aside-meta-label">주소</span>
                     <span>{hospital.address}</span>
-                  </li>
-                  <li>
+                  </span>
+                  <span>
                     <span className="clinic-aside-meta-label">전화</span>
                     <a
                       href={`tel:${hospital.phone}`}
@@ -330,8 +351,8 @@ export default async function ContentDetailPage({ params }: Props) {
                     >
                       {hospital.phone}
                     </a>
-                  </li>
-                </ul>
+                  </span>
+                </address>
                 <Link
                   href={`/${params.slug}`}
                   className="clinic-btn clinic-btn-secondary"

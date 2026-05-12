@@ -13,6 +13,8 @@ interface Props {
   params: { slug: string }
 }
 
+export const revalidate = 3600
+
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 const SCHEMA_DAY_OF_WEEK: Record<string, string> = {

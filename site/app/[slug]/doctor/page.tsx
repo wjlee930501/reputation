@@ -15,6 +15,8 @@ interface Props {
   params: { slug: string }
 }
 
+export const revalidate = 3600
+
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 const COLUMN_FIRST = ['COLUMN', 'FAQ', 'DISEASE', 'TREATMENT', 'HEALTH', 'LOCAL', 'NOTICE']
 
@@ -64,22 +66,29 @@ export default async function DoctorPage({ params }: Props) {
 
   const curatedContents = [...contents].sort(sortByCuratorRelevance).slice(0, 6)
 
+  const treatmentNames = (hospital.treatments || []).map((t) => t.name).filter(Boolean)
+  const knowsAbout = Array.from(new Set([...(hospital.specialties || []), ...treatmentNames]))
+
   const physicianJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Physician',
-    '@id': `${SITE_URL}/${params.slug}/doctor`,
+    '@id': `${SITE_URL}/${params.slug}/doctor#physician`,
     name: hospital.director_name,
+    jobTitle: '원장',
     description: hospital.director_career || undefined,
     image: hospital.director_photo_url || undefined,
     medicalSpecialty: hospital.specialties,
+    knowsAbout: knowsAbout.length > 0 ? knowsAbout : undefined,
     worksFor: {
       '@type': 'MedicalClinic',
+      '@id': `${SITE_URL}/${params.slug}#clinic`,
       name: hospital.name,
       url: `${SITE_URL}/${params.slug}`,
       address: { '@type': 'PostalAddress', streetAddress: hospital.address, addressCountry: 'KR' },
       telephone: hospital.phone,
     },
     url: `${SITE_URL}/${params.slug}/doctor`,
+    mainEntityOfPage: `${SITE_URL}/${params.slug}/doctor`,
   }
 
   return (

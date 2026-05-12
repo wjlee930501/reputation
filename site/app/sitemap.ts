@@ -53,40 +53,41 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   }
 
   for (const hospital of hospitals) {
-    // Hospital main page
+    const hospitalLastModified = hospital.updated_at ? new Date(hospital.updated_at) : new Date()
+
     entries.push({
       url: `${SITE_URL}/${hospital.slug}`,
-      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      lastModified: hospitalLastModified,
       changeFrequency: 'weekly',
       priority: 0.8,
     })
     entries.push({
       url: `${SITE_URL}/${hospital.slug}/contents`,
-      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      lastModified: hospitalLastModified,
       changeFrequency: 'weekly',
       priority: 0.7,
     })
     entries.push({
       url: `${SITE_URL}/${hospital.slug}/doctor`,
-      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      lastModified: hospitalLastModified,
       changeFrequency: 'monthly',
       priority: 0.6,
     })
     entries.push({
       url: `${SITE_URL}/${hospital.slug}/treatments`,
-      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      lastModified: hospitalLastModified,
       changeFrequency: 'monthly',
       priority: 0.6,
     })
     entries.push({
       url: `${SITE_URL}/${hospital.slug}/visit`,
-      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      lastModified: hospitalLastModified,
       changeFrequency: 'monthly',
       priority: 0.6,
     })
     entries.push({
       url: `${SITE_URL}/${hospital.slug}/llms.txt`,
-      lastModified: hospital.updated_at ? new Date(hospital.updated_at) : new Date(),
+      lastModified: hospitalLastModified,
       changeFrequency: 'daily',
       priority: 0.5,
     })

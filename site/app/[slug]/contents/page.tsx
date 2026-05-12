@@ -13,6 +13,8 @@ interface Props {
   params: { slug: string }
 }
 
+export const revalidate = 3600
+
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCAL', 'NOTICE']

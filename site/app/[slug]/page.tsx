@@ -109,6 +109,7 @@ export default async function HospitalHubPage({ params }: Props) {
   const clinicJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
+    '@id': `${SITE_URL}/${params.slug}#clinic`,
     name: hospital.name,
     url: `${SITE_URL}/${params.slug}`,
     image: hospital.director_photo_url ?? undefined,
@@ -136,9 +137,12 @@ export default async function HospitalHubPage({ params }: Props) {
         : undefined,
     physician: {
       '@type': 'Physician',
+      '@id': `${SITE_URL}/${params.slug}/doctor#physician`,
       name: hospital.director_name,
+      jobTitle: '원장',
       description: hospital.director_career,
       image: hospital.director_photo_url ?? undefined,
+      url: `${SITE_URL}/${params.slug}/doctor`,
     },
     availableService: (hospital.treatments || []).map((treatment) => ({
       '@type': 'MedicalProcedure',
