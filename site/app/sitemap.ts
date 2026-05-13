@@ -1,6 +1,7 @@
 import { MetadataRoute } from 'next'
 
 import { getApiBase } from '@/lib/config'
+import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
@@ -8,6 +9,7 @@ interface HospitalEntry {
   slug: string
   aeo_domain?: string | null
   updated_at?: string
+  treatments?: Array<{ name: string }>
 }
 
 interface ContentEntry {
@@ -91,6 +93,34 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       changeFrequency: 'daily',
       priority: 0.5,
     })
+
+    // Treatment pillar pages (cluster hubs).
+    // List endpoint returns minimal projection; pillar slugs need treatments[].
+    // We fetch hospital detail only when the list response omits treatments.
+    let treatments = hospital.treatments
+    if (!treatments) {
+      try {
+        const detailRes = await fetch(`${apiBase}/hospitals/${hospital.slug}`, {
+          next: { revalidate: 3600 },
+        })
+        if (detailRes.ok) {
+          const detail = await detailRes.json()
+          treatments = detail.treatments ?? []
+        }
+      } catch {
+        treatments = []
+      }
+    }
+    for (const treatment of treatments ?? []) {
+      const treatmentSlug = buildTreatmentSlug(treatment.name)
+      if (!treatmentSlug) continue
+      entries.push({
+        url: `${SITE_URL}/${hospital.slug}/treatments/${treatmentSlug}`,
+        lastModified: hospitalLastModified,
+        changeFrequency: 'weekly',
+        priority: 0.7,
+      })
+    }
 
     // Hospital contents — fetch all published content (up to 500)
     try {

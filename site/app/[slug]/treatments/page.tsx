@@ -4,6 +4,8 @@ import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, type ContentItem } from '@/lib/api'
 
+import { buildTreatmentSlug } from '@/lib/treatment-slug'
+
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
 import { ClinicHeader } from '../_components/ClinicHeader'
@@ -140,12 +142,30 @@ export default async function TreatmentsPage({ params }: Props) {
                 <ul className="clinic-treatment-grid" aria-label="진료 영역 목록">
                   {treatmentsWithRelated.map(({ treatment, visual }) => {
                     const { Icon, hue } = visual
-                    return (
-                      <li key={treatment.name} className="clinic-treatment-card">
+                    const treatmentSlug = buildTreatmentSlug(treatment.name)
+                    const href = treatmentSlug
+                      ? `/${params.slug}/treatments/${treatmentSlug}`
+                      : null
+                    const inner = (
+                      <>
                         <span className={`clinic-treatment-card-icon hue-${hue}`} aria-hidden="true">
                           <Icon />
                         </span>
                         <span className="clinic-treatment-card-name">{treatment.name}</span>
+                      </>
+                    )
+                    return (
+                      <li key={treatment.name} className="clinic-treatment-card">
+                        {href ? (
+                          <Link
+                            href={href}
+                            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'inherit', textDecoration: 'none' }}
+                          >
+                            {inner}
+                          </Link>
+                        ) : (
+                          inner
+                        )}
                       </li>
                     )
                   })}
