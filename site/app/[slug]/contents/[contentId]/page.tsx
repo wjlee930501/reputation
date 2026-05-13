@@ -12,6 +12,7 @@ import {
   TYPE_LABELS,
 } from '@/lib/api'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
+import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
 import { ClinicFooter } from '../../_components/ClinicFooter'
@@ -149,6 +150,11 @@ export default async function ContentDetailPage({ params }: Props) {
     .slice(0, 3)
   const referenceList = Array.isArray(content.references) ? content.references : []
 
+  const pillarTreatment = inferPillarTreatment(hospital.treatments || [], content)
+  const pillarSlug = pillarTreatment ? buildTreatmentSlug(pillarTreatment.name) : ''
+  const pillarHref = pillarSlug ? `/${params.slug}/treatments/${pillarSlug}` : null
+  const pillarUrl = pillarSlug ? `${SITE_URL}/${params.slug}/treatments/${pillarSlug}` : null
+
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
     { label: '블로그', href: `/${params.slug}/contents` },
@@ -178,6 +184,14 @@ export default async function ContentDetailPage({ params }: Props) {
       '@id': clinicId,
       name: hospital.name,
     },
+    isPartOf: pillarUrl
+      ? {
+          '@type': 'CollectionPage',
+          '@id': pillarUrl,
+          name: pillarTreatment?.name,
+          url: pillarUrl,
+        }
+      : undefined,
     datePublished,
     dateModified,
     mainEntityOfPage: articleUrl,
@@ -336,6 +350,12 @@ export default async function ContentDetailPage({ params }: Props) {
               <div className="clinic-article-header">
                 <Breadcrumb items={breadcrumbItems} />
                 <span className="clinic-article-type">{typeLabel}</span>
+                {pillarHref && pillarTreatment && (
+                  <p className="clinic-article-pillar-link">
+                    <span className="clinic-article-pillar-label">속한 진료 영역</span>
+                    <Link href={pillarHref}>{pillarTreatment.name} 안내 모음 보기 →</Link>
+                  </p>
+                )}
                 <h1 className="clinic-article-title">{content.title}</h1>
                 <p className="clinic-article-byline">
                   <span className="clinic-article-byline-label">작성·검수</span>

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { fetchHospital, fetchContents, TYPE_LABELS } from '@/lib/api'
+import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
 interface Props {
   params: { slug: string }
@@ -68,8 +69,12 @@ export async function GET(_req: Request, { params }: Props) {
     if (hospital.treatments && hospital.treatments.length > 0) {
       lines.push('## 진료 영역')
       for (const t of hospital.treatments) {
+        const treatmentSlug = buildTreatmentSlug(t.name)
+        const pillarUrl = treatmentSlug
+          ? `${SITE_URL}/${params.slug}/treatments/${treatmentSlug}`
+          : ''
         // description은 자유 입력 필드로 의료광고 검수를 거치지 않으므로 노출 안 함.
-        lines.push(`- ${t.name}`)
+        lines.push(pillarUrl ? `- ${t.name} — ${pillarUrl}` : `- ${t.name}`)
       }
       lines.push('')
     }
