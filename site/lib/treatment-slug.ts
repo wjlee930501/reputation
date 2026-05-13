@@ -25,12 +25,40 @@ export interface TreatmentLike {
   description?: string
 }
 
+/**
+ * Next.js App Router는 dynamic route segment의 non-ASCII 문자를 URL-decoded
+ * 형태로 전달하지 않는다(`params.treatmentSlug`이 `%ED%83%88%EC%9E%A5-...`).
+ * 양쪽 형태 모두 매칭되도록 decoded 비교도 시도한다.
+ */
 export function findTreatmentBySlug<T extends TreatmentLike>(
   treatments: T[],
   slug: string,
 ): T | undefined {
   if (!slug) return undefined
-  return treatments.find((t) => buildTreatmentSlug(t.name) === slug)
+  let decoded = slug
+  try {
+    decoded = decodeURIComponent(slug)
+  } catch {
+    // malformed percent-encoding — raw slug로 fallback
+  }
+  return treatments.find((t) => {
+    const built = buildTreatmentSlug(t.name)
+    return built === slug || built === decoded
+  })
+}
+
+/**
+ * params.treatmentSlug를 사람이 읽을 수 있는 (디코딩된) 형태로 정규화.
+ * canonical URL, sitemap, JSON-LD에서 percent-encoded와 decoded 형태가
+ * 섞이지 않도록 페이지 안에서 한 번에 통일하는 용도.
+ */
+export function normalizeTreatmentSlug(slug: string): string {
+  if (!slug) return ''
+  try {
+    return decodeURIComponent(slug)
+  } catch {
+    return slug
+  }
 }
 
 /**

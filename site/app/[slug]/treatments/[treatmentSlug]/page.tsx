@@ -4,7 +4,12 @@ import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, type ContentItem } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
-import { buildTreatmentSlug, findTreatmentBySlug, inferPillarTreatment } from '@/lib/treatment-slug'
+import {
+  buildTreatmentSlug,
+  findTreatmentBySlug,
+  inferPillarTreatment,
+  normalizeTreatmentSlug,
+} from '@/lib/treatment-slug'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
 import { ClinicFooter } from '../../_components/ClinicFooter'
@@ -52,18 +57,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     const hospital = await fetchHospital(params.slug)
     const treatment = findTreatmentBySlug(hospital.treatments || [], params.treatmentSlug)
     if (!treatment) return { title: '진료 영역' }
+    const treatmentSlug = normalizeTreatmentSlug(params.treatmentSlug)
     const region = hospital.region?.join(' ') ?? ''
     const description = `${hospital.name} ${treatment.name} 진료 안내 — 환자가 자주 묻는 질문과 진료 단계, 회복 정보를 ${region} 의료진이 정리합니다.`
     return {
       title: `${treatment.name} | ${hospital.name}`,
       description,
       alternates: {
-        canonical: `/${params.slug}/treatments/${params.treatmentSlug}`,
+        canonical: `/${params.slug}/treatments/${treatmentSlug}`,
       },
       openGraph: {
         title: `${treatment.name} | ${hospital.name}`,
         description,
-        url: `/${params.slug}/treatments/${params.treatmentSlug}`,
+        url: `/${params.slug}/treatments/${treatmentSlug}`,
         type: 'website',
         images: hospital.director_photo_url ? [{ url: hospital.director_photo_url }] : undefined,
       },
@@ -95,11 +101,12 @@ export default async function TreatmentPillarPage({ params }: Props) {
   const treatment = findTreatmentBySlug(treatments, params.treatmentSlug)
   if (!treatment) notFound()
 
+  const canonicalTreatmentSlug = buildTreatmentSlug(treatment.name)
   const treatmentName = treatment.name
   const lowerName = treatmentName.toLowerCase()
   const relatedContents = contents.filter((content) => {
     const inferred = inferPillarTreatment(treatments, content)
-    if (inferred && buildTreatmentSlug(inferred.name) === params.treatmentSlug) return true
+    if (inferred && buildTreatmentSlug(inferred.name) === canonicalTreatmentSlug) return true
     const haystack = `${content.title ?? ''} ${content.meta_description ?? ''} ${content.faq_question ?? ''}`.toLowerCase()
     return haystack.includes(lowerName)
   })
@@ -110,7 +117,7 @@ export default async function TreatmentPillarPage({ params }: Props) {
     { label: treatmentName },
   ]
 
-  const pageUrl = `${SITE_URL}/${params.slug}/treatments/${params.treatmentSlug}`
+  const pageUrl = `${SITE_URL}/${params.slug}/treatments/${canonicalTreatmentSlug}`
 
   const collectionJsonLd = {
     '@context': 'https://schema.org',
