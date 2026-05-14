@@ -8,7 +8,6 @@ import { ChevronRightIcon, PhoneIcon } from './icons'
 
 interface Props {
   hospitalName: string
-  hospitalSlug: string
   region: string[]
   specialties: string[]
   phone: string
@@ -20,7 +19,6 @@ interface Props {
 
 export function ClinicHero({
   hospitalName,
-  hospitalSlug,
   region,
   specialties,
   phone,
@@ -37,23 +35,25 @@ export function ClinicHero({
       <div className="clinic-hero-inner">
         <span className="clinic-hero-eyebrow">{eyebrowLabel}</span>
         <h1 className="clinic-hero-title">
-          {hospitalName}의<br />
-          <span style={{ color: 'var(--color-revisit-primary-40)' }}>진료 이야기와 건강 정보</span>
+          {hospitalName}<br />
+          <span>AI가 읽기 쉬운 진료 정보 허브</span>
         </h1>
         <p className="clinic-hero-meta">
-          {directorName} 원장이 진료실에서 자주 듣는 질문과 진료 안내를 환자가 이해하기 쉬운 글로
-          정리합니다. 증상과 치료 선택에 대한 기본 정보를 확인하고, 자세한 판단은 진료 상담에서
-          이어가 주세요.
+          {directorName} 원장이 검수하는 환자 질문 중심 건강 정보입니다. 병원 핵심 정보, 진료 영역,
+          공식 채널, 대표 질문을 같은 구조로 정리해 환자와 검색 시스템이 동일한 병원 정보를 확인할 수 있게 합니다.
         </p>
 
         <div className="clinic-hero-actions">
-          <Link className="clinic-btn clinic-btn-primary" href={`/${hospitalSlug}/contents`}>
-            블로그 글 전체 보기
+          <Link className="clinic-btn clinic-btn-primary" href="#answer-clusters">
+            대표 질문 보기
             <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+          </Link>
+          <Link className="clinic-btn clinic-btn-secondary" href="#hospital-facts">
+            병원 핵심 정보
           </Link>
           <a className="clinic-btn clinic-btn-secondary" href={`tel:${phone}`}>
             <PhoneIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
-            병원 전화 · {phone}
+            {phone}
           </a>
         </div>
 
@@ -80,7 +80,7 @@ export function ClinicHero({
         <div className="clinic-hero-stat-row">
           <div className="clinic-hero-stat">
             <span className="clinic-hero-stat-value">{contentCount}편</span>
-            <span className="clinic-hero-stat-label">블로그 글</span>
+            <span className="clinic-hero-stat-label">AI 참고 콘텐츠</span>
           </div>
           <div className="clinic-hero-stat">
             <span className="clinic-hero-stat-value">{treatmentCount}개</span>

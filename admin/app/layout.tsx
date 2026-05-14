@@ -8,8 +8,8 @@ export const viewport: Viewport = {
 }
 
 export const metadata: Metadata = {
-  title: 'Re:putation Ops · MotionLabs Research Preview',
-  description: 'MotionLabs Research Preview · 병원 AI 노출 운영 내부 콘솔',
+  title: 'Re:putation Ops · MotionLabs',
+  description: 'MotionLabs 병원 AI 노출 운영 내부 콘솔',
 }
 
 export default function RootLayout({
@@ -19,69 +19,73 @@ export default function RootLayout({
 }) {
   return (
     <html lang="ko">
-      <body className="bg-slate-50 text-slate-900 min-h-screen antialiased">
+      <body className="admin-shell min-h-screen antialiased">
         <div className="flex h-screen">
           {/* Sidebar */}
-          <aside className="w-60 bg-slate-900 text-slate-100 flex flex-col flex-shrink-0">
-            <div className="px-5 py-5 border-b border-slate-800">
+          <aside className="admin-sidebar flex w-60 flex-shrink-0 flex-col">
+            <div className="border-b border-white/10 px-5 py-5">
               <Link href="/hospitals" className="block">
                 <div className="flex items-baseline gap-1.5">
-                  <span className="text-lg font-bold tracking-tight text-white">Re:putation</span>
-                  <span className="text-[11px] font-semibold text-blue-300 tracking-wider">운영</span>
+                  <span className="title1 text-white">Re:putation</span>
+                  <span className="details2 text-[var(--color-revisit-primary-80)]">운영</span>
                 </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">MotionLabs 내부 운영 콘솔</p>
-                <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-200">
-                  <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-400" />
-                  Research Preview
+                <p className="details2 mt-0.5 text-[var(--color-revisit-coolgrey-70)]">
+                  MotionLabs 내부 운영 콘솔
+                </p>
+                <span className="details3 mt-2 inline-flex items-center gap-1 rounded-full border border-white/15 px-2 py-0.5 text-[var(--color-revisit-primary-80)]">
+                  <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-[var(--color-revisit-primary-80)]" />
+                  Operations
                 </span>
               </Link>
             </div>
 
-            <nav className="flex-1 px-3 py-4 space-y-0.5">
-              <p className="px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
+            <nav className="flex-1 space-y-0.5 px-3 py-4">
+              <p className="details3 mb-2 px-3 uppercase text-[var(--color-revisit-coolgrey-60)]">
                 운영 메뉴
               </p>
               <Link
                 href="/hospitals"
-                className="flex items-center justify-between gap-2 px-3 py-2 rounded-md text-sm text-slate-200 hover:bg-slate-800 hover:text-white transition-colors group"
+                className="admin-sidebar-link justify-between group"
               >
                 <span className="flex items-center gap-2.5">
-                  <span aria-hidden>🏥</span>
+                  <span className="admin-nav-glyph" aria-hidden>H</span>
                   병원 목록
                 </span>
-                <span className="text-[11px] text-slate-500 group-hover:text-slate-300">관리</span>
+                <span className="details3 text-[var(--color-revisit-coolgrey-60)] group-hover:text-[var(--color-revisit-coolgrey-80)]">
+                  관리
+                </span>
               </Link>
               <Link
                 href="/hospitals/new"
-                className="flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+                className="admin-sidebar-link"
               >
-                <span aria-hidden>＋</span>
+                <span className="admin-nav-glyph" aria-hidden>+</span>
                 신규 병원 온보딩
               </Link>
               <Link
                 href="/leads"
-                className="flex items-center gap-2.5 px-3 py-2 rounded-md text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+                className="admin-sidebar-link"
               >
-                <span aria-hidden>☎</span>
+                <span className="admin-nav-glyph" aria-hidden>L</span>
                 상담 리드
               </Link>
 
-              <p className="mt-6 px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
+              <p className="details3 mb-2 mt-6 px-3 uppercase text-[var(--color-revisit-coolgrey-60)]">
                 도움말
               </p>
-              <div className="px-3 py-2 text-[11px] text-slate-400 leading-relaxed">
+              <div className="details2 px-3 py-2 text-[var(--color-revisit-coolgrey-70)]">
                 병원 자료 → 콘텐츠 운영 기준 승인 → 콘텐츠 가이드 작성 → 발행 검수 → 월간 리포트 순서로 진행합니다.
               </div>
             </nav>
 
-            <div className="px-4 py-3 border-t border-slate-800 space-y-1">
-              <p className="text-[11px] text-slate-300 font-medium">MotionLabs Inc.</p>
-              <p className="text-[10px] text-slate-500">v1.0 Research Preview · 내부 운영 콘솔</p>
+            <div className="space-y-1 border-t border-white/10 px-4 py-3">
+              <p className="details2 text-[var(--color-revisit-coolgrey-80)]">MotionLabs Inc.</p>
+              <p className="details3 text-[var(--color-revisit-coolgrey-60)]">v1.0 · 내부 운영 콘솔</p>
               <a
                 href="https://motionlabs.kr"
                 target="_blank"
                 rel="noopener"
-                className="text-[10px] text-blue-300 hover:text-blue-200 transition-colors"
+                className="details3 text-[var(--color-revisit-primary-80)] hover:text-white"
               >
                 motionlabs.kr ↗
               </a>
@@ -89,7 +93,7 @@ export default function RootLayout({
           </aside>
 
           {/* Main Content */}
-          <main className="flex-1 overflow-auto bg-slate-50">
+          <main className="admin-surface flex-1 overflow-auto">
             {children}
           </main>
         </div>

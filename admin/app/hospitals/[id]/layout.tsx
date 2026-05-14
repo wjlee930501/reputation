@@ -42,19 +42,19 @@ export default function HospitalLayout({
   const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full flex-col">
       {/* Hospital header */}
-      <header className="bg-white border-b border-slate-200 px-8 pt-5 pb-0">
+      <header className="border-b border-[var(--color-revisit-line-container)] bg-[var(--color-revisit-background-container)] px-8 pt-5 pb-0">
         <div className="flex items-start justify-between gap-6 mb-4">
           <div className="min-w-0">
             <Link
               href="/hospitals"
-              className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 transition-colors"
+              className="details2 inline-flex items-center gap-1 text-[var(--color-revisit-text-helper)] transition-colors hover:text-[var(--color-revisit-text-title)]"
             >
               ← 병원 목록
             </Link>
             <div className="flex items-center gap-3 mt-2 flex-wrap">
-              <h1 className="text-xl font-bold text-slate-900 truncate">
+              <h1 className="heading3 truncate text-[var(--color-revisit-text-title)]">
                 {hospital?.name ?? '불러오는 중...'}
               </h1>
               {statusInfo && (
@@ -63,19 +63,19 @@ export default function HospitalLayout({
                 </span>
               )}
               {planLabel && (
-                <span className="inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                <span className="details2 inline-flex rounded-full bg-[var(--color-revisit-coolgrey-90)] px-2.5 py-0.5 text-[var(--color-revisit-text-helper)]">
                   {planLabel}
                 </span>
               )}
             </div>
             {hospital && (
-              <div className="mt-1.5 flex items-center gap-3 text-xs text-slate-500">
+              <div className="details2 mt-1.5 flex items-center gap-3 text-[var(--color-revisit-text-helper)]">
                 <span className="font-mono text-slate-400">{hospital.slug}</span>
                 {hospital.aeo_domain && (
                   <>
                     <span aria-hidden className="text-slate-300">·</span>
                     <span>
-                      병원 정보 허브 도메인 <span className="text-slate-600">{hospital.aeo_domain}</span>
+                      병원 정보 허브 도메인 <span className="text-[var(--color-revisit-text-title)]">{hospital.aeo_domain}</span>
                     </span>
                   </>
                 )}
@@ -90,7 +90,7 @@ export default function HospitalLayout({
           </div>
 
           {hospital && (
-            <div className="hidden md:flex items-center gap-4 text-[11px] text-slate-500 shrink-0">
+            <div className="details3 hidden shrink-0 items-center gap-4 text-[var(--color-revisit-text-helper)] md:flex">
               <ProgressDot label="프로파일 완료" done={hospital.profile_complete} />
               <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
               <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
@@ -110,8 +110,8 @@ export default function HospitalLayout({
                 href={href}
                 className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                   isActive
-                    ? 'border-blue-600 text-blue-700'
-                    : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-200'
+                    ? 'border-[var(--color-revisit-primary-40)] text-[var(--color-revisit-primary-30)]'
+                    : 'border-transparent text-[var(--color-revisit-text-helper)] hover:border-[var(--color-revisit-line-container)] hover:text-[var(--color-revisit-text-title)]'
                 }`}
                 title={tab.hint}
               >
@@ -123,7 +123,7 @@ export default function HospitalLayout({
       </header>
 
       {/* Page content */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto bg-[var(--color-revisit-background-user)]">
         {children}
       </div>
     </div>
@@ -134,10 +134,10 @@ function ProgressDot({ label, done }: { label: string; done: boolean | undefined
   return (
     <span className="inline-flex items-center gap-1.5">
       <span
-        className={`w-2 h-2 rounded-full ${done ? 'bg-emerald-500' : 'bg-slate-300'}`}
+        className={`h-2 w-2 rounded-full ${done ? 'bg-[var(--color-revisit-green-50)]' : 'bg-[var(--color-revisit-coolgrey-70)]'}`}
         aria-hidden
       />
-      <span className={done ? 'text-slate-700' : 'text-slate-400'}>{label}</span>
+      <span className={done ? 'text-[var(--color-revisit-text-title)]' : 'text-[var(--color-revisit-text-caption)]'}>{label}</span>
     </span>
   )
 }
