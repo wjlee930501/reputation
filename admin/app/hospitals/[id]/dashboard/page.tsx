@@ -117,6 +117,8 @@ function formatMeasurementMethod(method: string) {
     OPENAI_RESPONSE: 'OpenAI 응답 측정',
     OPENAI_SEARCH: 'OpenAI Search',
     CHATGPT_SEARCH: 'ChatGPT Search',
+    OPENAI_CHAT_COMPLETIONS: 'OpenAI 모델 응답 측정',
+    OPENAI_RESPONSES_WEB_SEARCH: 'ChatGPT Search 유사 측정',
   }
 
   return labels[method] ?? method
@@ -686,6 +688,9 @@ export default function DashboardPage() {
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
                       측정 방식: {run.display?.measurement_method_label ?? formatMeasurementMethod(run.measurement_method)}
+                      {run.search_mode === 'model' && (
+                        <span className="ml-1 text-amber-600">(웹 검색 미사용)</span>
+                      )}
                     </p>
                   </div>
                   <div className="text-sm text-slate-700">

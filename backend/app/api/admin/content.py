@@ -329,6 +329,14 @@ async def publish_content(
         raise HTTPException(status_code=400, detail="Already published")
     if not item.body:
         raise HTTPException(status_code=400, detail="Content not generated yet")
+    if not _has_required_references(item):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "권위 있는 참고 자료가 1개 이상 필요합니다.",
+                "missing": "references",
+            },
+        )
     should_revalidate = _has_public_site(hospital)
     if should_revalidate:
         ensure_site_revalidate_configured()
@@ -441,6 +449,14 @@ async def _get_hospital(db, hospital_id) -> Hospital:
 
 def _has_public_site(hospital: Hospital) -> bool:
     return hospital.status == HospitalStatus.ACTIVE and bool(hospital.site_live)
+
+
+def _has_required_references(item: ContentItem) -> bool:
+    references = item.references_list or []
+    return any(
+        isinstance(ref, dict) and ref.get("title") and ref.get("url")
+        for ref in references
+    )
 
 
 async def _get_content(db, content_id, hospital_id) -> ContentItem:
@@ -664,6 +680,8 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
         blockers.append("본문 생성이 필요합니다.")
     if forbidden_violations:
         blockers.append("의료광고 금지 표현이 포함되어 있습니다.")
+    if item.title and item.body and not _has_required_references(item):
+        blockers.append("권위 있는 참고 자료가 1개 이상 필요합니다.")
     if item.essence_status != ESSENCE_STATUS_ALIGNED:
         blockers.append("승인된 콘텐츠 운영 기준 검수를 통과해야 합니다.")
 
@@ -672,6 +690,7 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
         "publishable": not blockers,
         "blockers": blockers,
         "forbidden_violations": forbidden_violations,
+        "references_count": len(item.references_list or []),
         "essence_status": item.essence_status,
         "essence_check_summary": item.essence_check_summary,
     }

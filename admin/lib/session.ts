@@ -28,24 +28,39 @@ async function importSessionKey(secret: string): Promise<CryptoKey> {
   )
 }
 
-export async function generateSessionToken(secret: string): Promise<string> {
+const DEFAULT_SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
+
+export async function generateSessionToken(
+  secret: string,
+  maxAgeSeconds = DEFAULT_SESSION_MAX_AGE_SECONDS,
+): Promise<string> {
   const nonceBytes = new Uint8Array(16)
   crypto.getRandomValues(nonceBytes)
 
   const nonce = bytesToHex(nonceBytes)
+  const expiresAt = String(Date.now() + maxAgeSeconds * 1000)
   const key = await importSessionKey(secret)
-  const signature = await crypto.subtle.sign('HMAC', key, toArrayBuffer(new TextEncoder().encode(nonce)))
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    toArrayBuffer(new TextEncoder().encode(`${nonce}.${expiresAt}`)),
+  )
 
-  return `${nonce}.${bytesToHex(new Uint8Array(signature))}`
+  return `${nonce}.${expiresAt}.${bytesToHex(new Uint8Array(signature))}`
 }
 
 export async function verifySessionToken(token: string, secret: string): Promise<boolean> {
   const parts = token.split('.')
-  if (parts.length !== 2) {
+  if (parts.length !== 3) {
     return false
   }
 
-  const [nonce, signatureHex] = parts
+  const [nonce, expiresAt, signatureHex] = parts
+  const expiresAtMs = Number.parseInt(expiresAt, 10)
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    return false
+  }
+
   const signature = hexToBytes(signatureHex)
   if (!signature) {
     return false
@@ -56,6 +71,6 @@ export async function verifySessionToken(token: string, secret: string): Promise
     'HMAC',
     key,
     toArrayBuffer(signature),
-    toArrayBuffer(new TextEncoder().encode(nonce)),
+    toArrayBuffer(new TextEncoder().encode(`${nonce}.${expiresAt}`)),
   )
 }

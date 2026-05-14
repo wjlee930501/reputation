@@ -189,6 +189,58 @@ async def test_measurement_runs_endpoint_404s_unknown_hospital():
     assert exc_info.value.status_code == 404
 
 
+async def test_measurement_runs_labels_current_openai_modes():
+    hospital_id = uuid.uuid4()
+    timestamp = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+    runs = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            hospital_id=hospital_id,
+            run_label="model",
+            measurement_method="OPENAI_CHAT_COMPLETIONS",
+            status="COMPLETED",
+            query_count=1,
+            success_count=1,
+            failure_count=0,
+            started_at=timestamp,
+            completed_at=timestamp,
+            model_name="gpt-4o",
+            search_mode="model",
+            config={},
+            error_summary=None,
+            created_at=timestamp,
+            updated_at=timestamp,
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            hospital_id=hospital_id,
+            run_label="web",
+            measurement_method="OPENAI_RESPONSES_WEB_SEARCH",
+            status="COMPLETED",
+            query_count=1,
+            success_count=1,
+            failure_count=0,
+            started_at=timestamp,
+            completed_at=timestamp,
+            model_name="gpt-4o",
+            search_mode="web",
+            config={},
+            error_summary=None,
+            created_at=timestamp,
+            updated_at=timestamp,
+        ),
+    ]
+    db = _FakeDB(
+        hospital=SimpleNamespace(id=hospital_id),
+        execute_results=[_ScalarResult(runs)],
+    )
+
+    response = await get_sov_measurement_runs(hospital_id, db)
+
+    assert response[0]["display"]["measurement_method_label"] == "OpenAI 모델 응답 측정"
+    assert response[1]["display"]["measurement_method_label"] == "ChatGPT Search 유사 측정"
+
+
 def test_measurement_status_treats_empty_raw_response_as_failed():
     assert _measurement_status_for_result({"raw_response": "답변", "is_mentioned": False}) == ("SUCCESS", None)
     assert _measurement_status_for_result({"raw_response": "", "is_mentioned": False}) == (
