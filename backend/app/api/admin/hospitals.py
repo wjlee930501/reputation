@@ -69,7 +69,8 @@ class DirectorCredentials(BaseModel):
 
 class HospitalCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    plan: Plan
+    plan: Plan = Plan.PLAN_8
+    onboarding_note: str | None = Field(default=None, max_length=2000)
 
 
 class HospitalProfileUpdate(BaseModel):
@@ -223,7 +224,12 @@ async def create_hospital(body: HospitalCreate, db: AsyncSession = Depends(get_d
     if existing.scalar_one_or_none():
         slug = f"{slug}-{uuid.uuid4().hex[:4]}"
 
-    hospital = Hospital(name=body.name, slug=slug, plan=body.plan)
+    hospital = Hospital(
+        name=body.name,
+        slug=slug,
+        plan=body.plan,
+        onboarding_note=body.onboarding_note or "Created from admin hospital registration.",
+    )
     db.add(hospital)
     await db.commit()
     await db.refresh(hospital)
@@ -661,6 +667,8 @@ def _serialize(h: Hospital) -> dict:
         "slug": h.slug,
         "status": h.status,
         "plan": h.plan,
+        "source_lead_id": str(h.source_lead_id) if h.source_lead_id else None,
+        "onboarding_note": h.onboarding_note,
         "address": h.address,
         "phone": h.phone,
         "business_hours": h.business_hours,
@@ -703,6 +711,7 @@ def _serialize_list(h: Hospital) -> dict:
         "slug": h.slug,
         "status": h.status,
         "plan": h.plan,
+        "source_lead_id": str(h.source_lead_id) if h.source_lead_id else None,
         "profile_complete": h.profile_complete,
         "v0_report_done": h.v0_report_done,
         "site_built": h.site_built,

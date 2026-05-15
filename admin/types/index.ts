@@ -266,6 +266,12 @@ export interface SalesLead {
   question: string
   privacy: boolean
   source_path: string | null
+  status?: 'NEW' | 'CONTACTED' | 'CONVERTED' | 'DISMISSED' | string
+  converted_hospital_id?: string | null
+  converted_at?: string | null
+  conversion_note?: string | null
+  notification_status?: 'SENT' | 'FAILED' | string | null
+  notification_error?: string | null
   created_at: string | null
 }
 

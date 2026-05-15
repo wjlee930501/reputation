@@ -75,6 +75,28 @@ async def test_create_lead_persists_with_retention_and_consent(monkeypatch):
     # Notifier receives the raw contact and masks it internally before sending to Slack.
     # The Slack-masking guarantee is asserted separately via test_mask_contact_*.
     assert notified[0]["contact"] == "010-0000-0000"
+    assert lead.notification_status == "SENT"
+    assert lead.notification_error is None
+
+
+async def test_create_lead_records_notification_failure(monkeypatch):
+    async def fake_notify(**payload):
+        return False
+
+    monkeypatch.setattr(notifier, "notify_lead_created", fake_notify)
+
+    db = FakeDB()
+    body = leads_api.LeadCreate(
+        clinic_name="장편한외과의원",
+        clinic_type="강남 대장항문외과",
+        contact="010-0000-0000",
+        question="치질 수술 회복 기간은?",
+        privacy=True,
+    )
+    await _create_lead(request=FakeRequest(), body=body, db=db)
+
+    assert db.added[0].notification_status == "FAILED"
+    assert "Slack/webhook" in db.added[0].notification_error
 
 
 async def test_create_lead_ignores_forwarded_ip_from_untrusted_remote(monkeypatch):

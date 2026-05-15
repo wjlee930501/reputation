@@ -14,6 +14,12 @@ interface Hospital {
   v0_report_done: boolean
   schedule_set: boolean
   status: string
+  website_url?: string | null
+  blog_url?: string | null
+  kakao_channel_url?: string | null
+  google_business_profile_url?: string | null
+  google_maps_url?: string | null
+  naver_place_url?: string | null
 }
 
 interface Source {
@@ -39,6 +45,23 @@ interface Philosophy {
   version: number
   status: string
   positioning_statement: string | null
+}
+
+interface OnboardingSummary {
+  stateLabel: string
+  stateClassName: string
+  headline: string
+  detail: string
+  nextActionLabel: string
+  nextActionHref: string
+  blockedReason: string | null
+}
+
+interface UrlCandidate {
+  key: string
+  title: string
+  sourceType: string
+  url: string
 }
 
 const SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string; group: 'TEXT' | 'PHOTO' }> = [
@@ -131,6 +154,207 @@ function deriveSteps(
   ]
 }
 
+function hasProcessableText(source: Source): boolean {
+  return (source.raw_text?.trim() ?? '').length > 0
+}
+
+function getProcessingBlockReason(source: Source): string | null {
+  if (source.status === 'EXCLUDED' || source.status === 'PROCESSED') return null
+  if (hasProcessableText(source)) return null
+
+  if (source.source_type.startsWith('PHOTO_')) {
+    return '사진 자료는 공개 자산으로만 사용되며 본문 근거 추출 대상이 아닙니다.'
+  }
+  if (source.url) {
+    return '이 자료는 본문이 없어 근거 추출할 수 없습니다. 자동 크롤을 다시 시도하거나 본문이 있는 문서/메모를 추가해 주세요.'
+  }
+  if (source.file_url || source.file_access_url) {
+    return '업로드 파일에서 추출된 본문이 없습니다. 텍스트가 포함된 PDF/DOCX인지 확인하거나 인터뷰 메모를 추가해 주세요.'
+  }
+  return '본문이 없어 근거 추출할 수 없습니다. 본문 직접 입력 자료를 추가해 주세요.'
+}
+
+function normalizeUrl(value: string | null | undefined): string | null {
+  const cleaned = value?.trim()
+  if (!cleaned) return null
+  return cleaned.replace(/\/+$/, '').toLowerCase()
+}
+
+function getProfileUrlCandidates(hospital: Hospital | null, sources: Source[]): UrlCandidate[] {
+  if (!hospital) return []
+  const existingUrls = new Set(
+    sources
+      .map((source) => normalizeUrl(source.url))
+      .filter((url): url is string => Boolean(url)),
+  )
+  const candidates: UrlCandidate[] = [
+    {
+      key: 'website_url',
+      title: '병원 공식 홈페이지',
+      sourceType: 'HOMEPAGE',
+      url: hospital.website_url ?? '',
+    },
+    {
+      key: 'blog_url',
+      title: '공식 블로그',
+      sourceType: 'NAVER_BLOG',
+      url: hospital.blog_url ?? '',
+    },
+    {
+      key: 'naver_place_url',
+      title: '네이버 플레이스',
+      sourceType: 'OTHER',
+      url: hospital.naver_place_url ?? '',
+    },
+    {
+      key: 'google_business_profile_url',
+      title: '구글 비즈니스 프로필',
+      sourceType: 'OTHER',
+      url: hospital.google_business_profile_url ?? '',
+    },
+    {
+      key: 'google_maps_url',
+      title: '구글 지도',
+      sourceType: 'OTHER',
+      url: hospital.google_maps_url ?? '',
+    },
+    {
+      key: 'kakao_channel_url',
+      title: '카카오 채널',
+      sourceType: 'OTHER',
+      url: hospital.kakao_channel_url ?? '',
+    },
+  ]
+
+  return candidates.filter((candidate) => {
+    const normalized = normalizeUrl(candidate.url)
+    return normalized !== null && !existingUrls.has(normalized)
+  })
+}
+
+function deriveOnboardingSummary(
+  steps: StepDef[],
+  hospital: Hospital | null,
+  sources: Source[],
+  philosophies: Philosophy[],
+  hospitalId: string,
+): OnboardingSummary {
+  const allDone = steps.every((s) => s.status === 'completed')
+  const current = steps.find((s) => s.status === 'current')
+  const processablePendingCount = sources.filter((s) => s.status === 'PENDING' && hasProcessableText(s)).length
+  const blockedSourceCount = sources.filter((s) => !!getProcessingBlockReason(s)).length
+  const erroredCount = sources.filter((s) => s.status === 'ERROR').length
+  const approved = philosophies.find((p) => p.status === 'APPROVED')
+
+  if (allDone) {
+    return {
+      stateLabel: '핵심 완료',
+      stateClassName: 'bg-green-100 text-green-800',
+      headline: '온보딩 핵심 단계가 완료됐습니다.',
+      detail: hospital?.schedule_set
+        ? '프로파일, 자료 처리, 운영 기준 승인이 끝났고 콘텐츠 스케줄도 설정되어 운영을 시작할 수 있습니다.'
+        : '프로파일, 자료 처리, 운영 기준 승인이 끝났습니다. 콘텐츠 스케줄을 확인하면 초기 운영을 시작할 수 있습니다.',
+      nextActionLabel: hospital?.schedule_set ? '콘텐츠 운영 확인' : '콘텐츠 스케줄 설정',
+      nextActionHref: hospital?.schedule_set ? `/hospitals/${hospitalId}/content` : `/hospitals/${hospitalId}/schedule`,
+      blockedReason: null,
+    }
+  }
+
+  if (current?.key === 'processing' && processablePendingCount === 0 && blockedSourceCount > 0) {
+    return {
+      stateLabel: '차단됨',
+      stateClassName: 'bg-red-100 text-red-800',
+      headline: '처리 가능한 본문 자료가 없습니다.',
+      detail: '본문 없는 URL/사진/파일은 근거 추출 대상에서 제외됩니다. 차단 사유를 확인하고 본문 자료를 추가하거나 제외 처리해 주세요.',
+      nextActionLabel: '차단 자료 확인',
+      nextActionHref: '#step-2',
+      blockedReason: `본문 없는 자료 ${blockedSourceCount}개`,
+    }
+  }
+
+  if (erroredCount > 0) {
+    return {
+      stateLabel: '확인 필요',
+      stateClassName: 'bg-yellow-100 text-yellow-900',
+      headline: '처리 실패 자료를 확인해야 합니다.',
+      detail: '실패 사유를 확인한 뒤 재시도하거나 온보딩 범위에서 제외해 주세요.',
+      nextActionLabel: '실패 자료 확인',
+      nextActionHref: '#step-2',
+      blockedReason: `처리 실패 ${erroredCount}개`,
+    }
+  }
+
+  if (current?.key === 'profile') {
+    return {
+      stateLabel: '다음 작업',
+      stateClassName: 'bg-blue-100 text-blue-800',
+      headline: '프로파일 필수 정보를 먼저 채워 주세요.',
+      detail: '프로파일이 완료되어야 공식 자료 인입, V0 리포트, 운영 기준 검토가 자연스럽게 이어집니다.',
+      nextActionLabel: '프로파일 입력',
+      nextActionHref: `/hospitals/${hospitalId}/profile`,
+      blockedReason: null,
+    }
+  }
+
+  if (current?.key === 'sources') {
+    return {
+      stateLabel: '다음 작업',
+      stateClassName: 'bg-blue-100 text-blue-800',
+      headline: '공식 채널 또는 병원 소개 자료를 추가해 주세요.',
+      detail: '홈페이지 URL, 블로그, 인터뷰 문서, 공개 가능 사진을 인입하면 근거 처리 단계로 넘어갈 수 있습니다.',
+      nextActionLabel: '자료 추가',
+      nextActionHref: '#step-1',
+      blockedReason: null,
+    }
+  }
+
+  if (current?.key === 'processing') {
+    return {
+      stateLabel: '다음 작업',
+      stateClassName: 'bg-blue-100 text-blue-800',
+      headline: '처리 가능한 자료에서 근거 노트를 추출해 주세요.',
+      detail: `처리 가능한 자료 ${processablePendingCount}개가 대기 중입니다. 본문 없는 자료는 아래에 사유가 표시됩니다.`,
+      nextActionLabel: '근거 추출',
+      nextActionHref: '#step-2',
+      blockedReason: null,
+    }
+  }
+
+  if (current?.key === 'philosophy_draft') {
+    return {
+      stateLabel: '다음 작업',
+      stateClassName: 'bg-blue-100 text-blue-800',
+      headline: '처리된 근거로 운영 기준 초안을 생성해 주세요.',
+      detail: '초안은 essence 화면에서 생성하고 근거 기반으로 검토합니다.',
+      nextActionLabel: '초안 생성',
+      nextActionHref: `/hospitals/${hospitalId}/essence`,
+      blockedReason: null,
+    }
+  }
+
+  if (current?.key === 'philosophy_approved' || approved) {
+    return {
+      stateLabel: '다음 작업',
+      stateClassName: 'bg-blue-100 text-blue-800',
+      headline: '운영 기준을 승인하고 콘텐츠 운영을 시작해 주세요.',
+      detail: '승인된 운영 기준이 있어야 초기 콘텐츠와 스케줄을 안정적으로 운영할 수 있습니다.',
+      nextActionLabel: '운영 기준 승인',
+      nextActionHref: `/hospitals/${hospitalId}/essence`,
+      blockedReason: null,
+    }
+  }
+
+  return {
+    stateLabel: '대기',
+    stateClassName: 'bg-slate-100 text-slate-700',
+    headline: '온보딩 상태를 불러오는 중입니다.',
+    detail: '새로 고침 후에도 상태가 비어 있으면 프로파일과 자료 상태를 확인해 주세요.',
+    nextActionLabel: '새로 고침',
+    nextActionHref: '#',
+    blockedReason: null,
+  }
+}
+
 export default function OnboardingPage() {
   const { id } = useParams<{ id: string }>()
   const [hospital, setHospital] = useState<Hospital | null>(null)
@@ -166,6 +390,10 @@ export default function OnboardingPage() {
     () => deriveSteps(hospital, sources, philosophies, id),
     [hospital, sources, philosophies, id],
   )
+  const summary = useMemo(
+    () => deriveOnboardingSummary(steps, hospital, sources, philosophies, id),
+    [steps, hospital, sources, philosophies, id],
+  )
   const completedCount = steps.filter((s) => s.status === 'completed').length
 
   return (
@@ -177,9 +405,12 @@ export default function OnboardingPage() {
           AE가 한 화면에서 프로파일 → 자산 인입 → 처리 → 운영 기준 승인까지 진행합니다. 단계 완료 시
           자동으로 다음 단계가 활성화됩니다.
         </p>
-        <div className="mt-4 flex items-center gap-3">
+        <div className="mt-4 flex flex-wrap items-center gap-3">
           <span className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white">
             진행 {completedCount}/{steps.length} 단계
+          </span>
+          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${summary.stateClassName}`}>
+            {summary.stateLabel}
           </span>
           <button
             onClick={refresh}
@@ -187,6 +418,24 @@ export default function OnboardingPage() {
           >
             새로 고침
           </button>
+        </div>
+        <div className="mt-5 rounded-xl border border-white/15 bg-white/10 p-4">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-100">현재 상태</p>
+              <p className="mt-1 text-lg font-bold text-white">{summary.headline}</p>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-blue-50/90">{summary.detail}</p>
+              {summary.blockedReason && (
+                <p className="mt-2 text-sm font-semibold text-red-100">차단 사유: {summary.blockedReason}</p>
+              )}
+            </div>
+            <a
+              href={summary.nextActionHref}
+              className="inline-flex shrink-0 items-center justify-center rounded-lg bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-blue-50"
+            >
+              다음 작업: {summary.nextActionLabel}
+            </a>
+          </div>
         </div>
       </header>
 
@@ -289,7 +538,13 @@ function StepCard({
           <ProfileStepBody hospital={hospital} hospitalId={hospitalId} />
         )}
         {step.key === 'sources' && (
-          <SourcesStepBody hospitalId={hospitalId} sources={sources} onChanged={onChanged} loading={loading} />
+          <SourcesStepBody
+            hospital={hospital}
+            hospitalId={hospitalId}
+            sources={sources}
+            onChanged={onChanged}
+            loading={loading}
+          />
         )}
         {step.key === 'processing' && (
           <ProcessingStepBody hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
@@ -346,11 +601,13 @@ function ProfileStepBody({ hospital, hospitalId }: { hospital: Hospital | null; 
 }
 
 function SourcesStepBody({
+  hospital,
   hospitalId,
   sources,
   onChanged,
   loading,
 }: {
+  hospital: Hospital | null
   hospitalId: string
   sources: Source[]
   onChanged: () => void
@@ -358,9 +615,88 @@ function SourcesStepBody({
 }) {
   return (
     <div className="space-y-5">
+      <ProfileUrlCandidates hospital={hospital} hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
       <CrawlForm hospitalId={hospitalId} onCreated={onChanged} />
       <UploadForm hospitalId={hospitalId} onCreated={onChanged} />
       <SourcesList hospitalId={hospitalId} sources={sources} loading={loading} onChanged={onChanged} />
+    </div>
+  )
+}
+
+function ProfileUrlCandidates({
+  hospital,
+  hospitalId,
+  sources,
+  onChanged,
+}: {
+  hospital: Hospital | null
+  hospitalId: string
+  sources: Source[]
+  onChanged: () => void
+}) {
+  const [addingKey, setAddingKey] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<string | null>(null)
+  const candidates = getProfileUrlCandidates(hospital, sources)
+
+  async function addCandidate(candidate: UrlCandidate) {
+    setAddingKey(candidate.key)
+    setFeedback(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources`, {
+        method: 'POST',
+        body: JSON.stringify({
+          source_type: candidate.sourceType,
+          title: candidate.title,
+          url: candidate.url,
+        }),
+      })
+      setFeedback(`${candidate.title} 자료를 추가했습니다.`)
+      onChanged()
+    } catch (e: unknown) {
+      setFeedback(e instanceof Error ? e.message : '자료 추가에 실패했습니다.')
+    } finally {
+      setAddingKey(null)
+    }
+  }
+
+  if (candidates.length === 0) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+        프로파일에 새로 추가할 공식 URL 후보가 없습니다.
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+      <div className="flex flex-col gap-1">
+        <h3 className="text-sm font-bold text-blue-950">프로파일 URL 자료 후보</h3>
+        <p className="text-xs text-blue-700">
+          프로파일에 입력된 공식 채널을 다시 입력하지 않고 자료 인입으로 보낼 수 있습니다.
+        </p>
+      </div>
+      <ul className="mt-3 space-y-2">
+        {candidates.map((candidate) => (
+          <li
+            key={candidate.key}
+            className="flex flex-col gap-2 rounded-lg border border-blue-100 bg-white p-3 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900">{candidate.title}</p>
+              <p className="truncate text-xs text-slate-500">{candidate.url}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => addCandidate(candidate)}
+              disabled={addingKey === candidate.key}
+              className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {addingKey === candidate.key ? '추가 중...' : '자료로 추가'}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {feedback && <p className="mt-2 text-xs text-blue-800">{feedback}</p>}
     </div>
   )
 }
@@ -655,7 +991,8 @@ function ProcessingStepBody({
 }) {
   const pending = sources.filter((s) => s.status === 'PENDING' && (s.raw_text?.trim() ?? '').length > 0)
   const processed = sources.filter((s) => s.status === 'PROCESSED')
-  const errored = sources.filter((s) => s.status === 'ERROR')
+  const errored = sources.filter((s) => s.status === 'ERROR' && hasProcessableText(s))
+  const blocked = sources.filter((s) => !!getProcessingBlockReason(s))
   const [busyId, setBusyId] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
 
@@ -686,8 +1023,13 @@ function ProcessingStepBody({
     <div className="space-y-3">
       <p className="text-sm text-slate-700">
         처리 가능: <strong>{pending.length}</strong>개 · 완료: <strong>{processed.length}</strong>개 ·
-        오류: <strong>{errored.length}</strong>개
+        오류: <strong>{errored.length}</strong>개 · 차단: <strong>{blocked.length}</strong>개
       </p>
+      {processed.length > 0 && pending.length === 0 && errored.length === 0 && blocked.length === 0 && (
+        <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+          근거 추출이 완료됐습니다. 운영 기준 초안 생성 단계로 진행할 수 있습니다.
+        </div>
+      )}
       {pending.length > 0 && (
         <ul className="space-y-2">
           {pending.map((s) => (
@@ -716,6 +1058,29 @@ function ProcessingStepBody({
         <p className="text-xs text-slate-500">
           이미 처리된 자료는 운영 기준 초안에 자동으로 반영됩니다.
         </p>
+      )}
+      {blocked.length > 0 && (
+        <div className="space-y-2 rounded-lg border border-yellow-200 bg-yellow-50 p-3">
+          <p className="text-xs font-semibold text-yellow-900">근거 추출할 수 없는 자료</p>
+          <ul className="space-y-2">
+            {blocked.map((s) => (
+              <li key={s.id} className="flex flex-col gap-2 rounded bg-white p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate font-medium text-slate-900">{s.title}</span>
+                  <button
+                    type="button"
+                    disabled
+                    title={getProcessingBlockReason(s) ?? undefined}
+                    className="rounded bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-400"
+                  >
+                    근거 추출 불가
+                  </button>
+                </div>
+                <p className="text-yellow-900">{getProcessingBlockReason(s)}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {errored.length > 0 && (
         <div className="space-y-2 rounded-lg border border-red-200 bg-red-50 p-3">

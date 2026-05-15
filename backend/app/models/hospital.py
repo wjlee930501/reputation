@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,6 +52,12 @@ class Hospital(Base):
         Enum(HospitalStatus), default=HospitalStatus.ONBOARDING
     )
     plan: Mapped[Plan | None] = mapped_column(Enum(Plan))
+    source_lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sales_leads.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    onboarding_note: Mapped[str | None] = mapped_column(Text)
 
     # ── 연락처 ──────────────────────────────────────────────────────
     address: Mapped[str | None] = mapped_column(String(500))

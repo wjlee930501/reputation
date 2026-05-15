@@ -28,4 +28,11 @@ class SalesLead(Base):
     retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="NEW", server_default="NEW")
+    converted_hospital_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    converted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    conversion_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notification_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    notification_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
