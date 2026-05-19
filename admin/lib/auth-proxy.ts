@@ -1,8 +1,20 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server.js'
+import type { NextRequest } from 'next/server.js'
 
-import { verifySessionToken } from '@/lib/session'
+import { verifySessionToken } from './session.ts'
 
-export const config = {
+type AuthProxyRequest = {
+  nextUrl: {
+    pathname: string
+    search: string
+    clone(): URL
+  }
+  cookies: {
+    get(name: string): { value: string } | undefined
+  }
+}
+
+export const adminAuthProxyConfig = {
   matcher: ['/((?!_next/|favicon\\.ico$|robots\\.txt$|sitemap\\.xml$).*)'],
 }
 
@@ -14,7 +26,7 @@ function isPublicPath(pathname: string): boolean {
   return PUBLIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))
 }
 
-function buildLoginRedirect(req: NextRequest): NextResponse {
+function buildLoginRedirect(req: AuthProxyRequest): NextResponse {
   const url = req.nextUrl.clone()
   const target = `${req.nextUrl.pathname}${req.nextUrl.search}`
   url.pathname = '/login'
@@ -28,9 +40,9 @@ function buildUnauthorizedJson(): NextResponse {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 }
 
-export async function middleware(req: NextRequest) {
+export async function buildAdminAuthProxyResponse(req: AuthProxyRequest): Promise<NextResponse | undefined> {
   const { pathname } = req.nextUrl
-  if (isPublicPath(pathname)) return NextResponse.next()
+  if (isPublicPath(pathname)) return undefined
 
   const sessionSecret = process.env.ADMIN_SESSION_SECRET
   if (!sessionSecret) {
@@ -40,7 +52,7 @@ export async function middleware(req: NextRequest) {
   const token = req.cookies.get('admin_session')?.value
   const isValid = token ? await verifySessionToken(token, sessionSecret) : false
 
-  if (isValid) return NextResponse.next()
+  if (isValid) return undefined
 
   if (pathname.startsWith('/api/')) {
     return buildUnauthorizedJson()

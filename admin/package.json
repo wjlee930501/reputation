@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "test": "node --no-warnings --experimental-strip-types --test lib/*.test.ts",
     "start": "next start",
     "lint": "eslint ."
   },
