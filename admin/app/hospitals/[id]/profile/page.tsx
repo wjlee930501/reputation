@@ -87,6 +87,7 @@ function TagInput({
             <button
               type="button"
               onClick={() => removeTag(v)}
+              aria-label={`${v} 제거`}
               className="hover:text-blue-900 font-bold"
             >
               ×
@@ -668,6 +669,7 @@ export default function ProfilePage() {
               <button
                 type="button"
                 onClick={() => removeTreatment(i)}
+                aria-label={`${t.name || '진료 항목'} 제거`}
                 className="mt-2 text-gray-400 hover:text-red-500 transition-colors text-lg leading-none"
               >
                 ×

@@ -51,8 +51,8 @@ function buildHospitalDescription(hospital: Awaited<ReturnType<typeof fetchHospi
   const specialties = hospital.specialties?.join(', ') || ''
   const locality = [region, specialties].filter(Boolean).join(' · ')
   return locality
-    ? `${hospital.name} (${locality}) 진료 블로그 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 의료진이 알기 쉽게 정리합니다.`
-    : `${hospital.name} 진료 블로그 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 의료진이 알기 쉽게 정리합니다.`
+    ? `${hospital.name} (${locality}) 진료 정보 허브 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 한곳에서 확인할 수 있습니다.`
+    : `${hospital.name} 진료 정보 허브 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 한곳에서 확인할 수 있습니다.`
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -61,11 +61,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     const description = buildHospitalDescription(hospital)
     const ogImage = hospital.director_photo_url ?? undefined
     return {
-      title: `${hospital.name} 진료 블로그`,
+      title: `${hospital.name} 진료 정보 허브`,
       description,
       alternates: { canonical: `/${params.slug}` },
       openGraph: {
-        title: `${hospital.name} 진료 블로그`,
+        title: `${hospital.name} 진료 정보 허브`,
         description,
         url: `/${params.slug}`,
         type: 'website',
@@ -75,13 +75,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       },
       twitter: {
         card: 'summary_large_image',
-        title: `${hospital.name} 진료 블로그`,
+        title: `${hospital.name} 진료 정보 허브`,
         description,
         images: ogImage ? [ogImage] : undefined,
       },
     }
   } catch {
-    return { title: '진료 블로그' }
+    return { title: '진료 정보 허브' }
   }
 }
 
@@ -190,13 +190,6 @@ export default async function HospitalHubPage({ params }: Props) {
             treatmentCount={(hospital.treatments || []).length}
           />
 
-          <FeaturedContent
-            contents={contents}
-            hospitalSlug={params.slug}
-            hospitalName={hospital.name}
-            directorName={hospital.director_name}
-          />
-
           <DoctorIntro
             directorName={hospital.director_name}
             directorCareer={hospital.director_career}
@@ -207,6 +200,13 @@ export default async function HospitalHubPage({ params }: Props) {
           />
 
           <TreatmentGrid treatments={hospital.treatments} />
+
+          <FeaturedContent
+            contents={contents}
+            hospitalSlug={params.slug}
+            hospitalName={hospital.name}
+            directorName={hospital.director_name}
+          />
 
           <ClinicGallery photos={hospital.photos ?? []} />
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
@@ -24,6 +24,7 @@ const BRIEF_LABELS: Record<BriefStatus, { label: string; color: string }> = {
 }
 
 const BRIEF_FALLBACK = { label: '콘텐츠 가이드 없음', color: 'bg-gray-50 text-gray-400 border border-gray-200' }
+const PUBLISHER_STORAGE_KEY = 'reputation.publisherName'
 
 // 프론트엔드 미리보기용 금지 표현 목록 (단순 포함 검사)
 // 정식 정의는 backend/app/utils/medical_filter.py의 FORBIDDEN_EXPRESSIONS를 따름
@@ -142,6 +143,7 @@ export default function ContentPage() {
 
   // Detail / edit modal
   const [selected, setSelected] = useState<ContentItem | null>(null)
+  const dialogCloseRef = useRef<HTMLButtonElement>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const [briefEditMode, setBriefEditMode] = useState(false)
   const [briefQueryTargetId, setBriefQueryTargetId] = useState('')
@@ -165,6 +167,8 @@ export default function ContentPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkProgress, setBulkProgress] = useState<string | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
+  const [publisherName, setPublisherName] = useState('')
+  const [publisherError, setPublisherError] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -175,7 +179,31 @@ export default function ContentPage() {
       .finally(() => setLoading(false))
   }, [id, month, year])
 
+  const closeDetail = useCallback(() => {
+    setSelected(null)
+    setEditMode(false)
+    setBriefEditMode(false)
+  }, [])
+
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    setPublisherName(window.localStorage.getItem(PUBLISHER_STORAGE_KEY) ?? '')
+  }, [])
+
+  useEffect(() => {
+    if (!selected) return
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeDetail()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    window.setTimeout(() => dialogCloseRef.current?.focus(), 0)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      previousFocus?.focus()
+    }
+  }, [closeDetail, selected])
 
   useEffect(() => {
     Promise.all([
@@ -225,9 +253,26 @@ export default function ContentPage() {
     }
   }
 
+  function handlePublisherChange(value: string) {
+    setPublisherName(value)
+    setPublisherError(null)
+    window.localStorage.setItem(PUBLISHER_STORAGE_KEY, value)
+  }
+
+  function getPublisherForSubmit(): string | null {
+    const trimmed = publisherName.trim()
+    if (!trimmed) {
+      setPublisherError('발행 담당자 이름을 입력해 주세요.')
+      return null
+    }
+    return trimmed
+  }
+
   async function handleBulkPublish() {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) return
+    const publishedBy = getPublisherForSubmit()
+    if (!publishedBy) return
     setBulkError(null)
     setBulkProgress(`0/${ids.length} 발행 완료...`)
     let done = 0
@@ -235,7 +280,7 @@ export default function ContentPage() {
       try {
         await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
           method: 'POST',
-          body: JSON.stringify({ published_by: 'AE' }),
+          body: JSON.stringify({ published_by: publishedBy }),
         })
         done++
         setBulkProgress(`${done}/${ids.length} 발행 완료...`)
@@ -249,14 +294,16 @@ export default function ContentPage() {
   }
 
   async function handlePublish(itemId: string) {
+    const publishedBy = getPublisherForSubmit()
+    if (!publishedBy) return
     setActionLoading(true)
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
         method: 'POST',
-        body: JSON.stringify({ published_by: 'AE' }),
+        body: JSON.stringify({ published_by: publishedBy }),
       })
       load()
-      setSelected(null)
+      closeDetail()
     } catch (e: unknown) {
       setEditError(e instanceof Error ? e.message : '발행에 실패했습니다.')
     } finally {
@@ -450,7 +497,7 @@ export default function ContentPage() {
     : null
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       {/* Hero / summary header */}
       <div className="mb-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
@@ -463,7 +510,7 @@ export default function ContentPage() {
 
           {/* Bulk action bar */}
           {selectedIds.size > 0 && (
-            <div className="flex items-center gap-3 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+            <div className="flex flex-wrap items-center gap-3 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
               {bulkProgress && (
                 <span className="text-sm text-blue-600 font-medium">{bulkProgress}</span>
               )}
@@ -494,7 +541,8 @@ export default function ContentPage() {
       </div>
 
       {/* Month filter */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-wrap items-center gap-3">
         <select
           value={year}
           onChange={(e) => setYear(Number(e.target.value))}
@@ -516,6 +564,23 @@ export default function ContentPage() {
         <span className="text-xs text-gray-500 ml-1">
           콘텐츠 운영 기준을 통과한 초안만 일괄 선택할 수 있습니다.
         </span>
+        </div>
+        <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
+          <label htmlFor="publisher-name" className="block text-xs font-semibold text-slate-700">
+            발행 담당자
+          </label>
+          <input
+            id="publisher-name"
+            type="text"
+            value={publisherName}
+            onChange={(event) => handlePublisherChange(event.target.value)}
+            placeholder="예: 김민지 AE"
+            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className={`mt-1 text-xs ${publisherError ? 'text-red-600' : 'text-slate-500'}`}>
+            {publisherError ?? '발행자 이름은 콘텐츠와 감사 기록에 함께 저장됩니다.'}
+          </p>
+        </div>
       </div>
 
       {loading && <div className="text-center py-16 text-gray-500">불러오는 중...</div>}
@@ -525,13 +590,15 @@ export default function ContentPage() {
       )}
 
       {!loading && !error && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+          <table className="min-w-[980px] w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="px-4 py-3 w-10">
                   <input
                     type="checkbox"
+                    aria-label="발행 가능한 콘텐츠 전체 선택"
                     checked={selectableIds.length > 0 && selectedIds.size === selectableIds.length}
                     onChange={toggleSelectAll}
                     disabled={selectableIds.length === 0}
@@ -570,6 +637,7 @@ export default function ContentPage() {
                     <td className="px-4 py-4">
                       <input
                         type="checkbox"
+                        aria-label={`${item.title ?? '생성 전 슬롯'} 선택`}
                         checked={selectedIds.has(item.id)}
                         onChange={() => toggleSelect(item.id)}
                         disabled={!isSelectable}
@@ -606,7 +674,7 @@ export default function ContentPage() {
                         <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => handlePublish(item.id)}
-                            disabled={actionLoading}
+                            disabled={actionLoading || !publisherName.trim()}
                             className="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-50"
                           >
                             발행
@@ -635,21 +703,36 @@ export default function ContentPage() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
       {/* Detail / Edit Modal */}
       {selected && selectedReview && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className={`bg-white rounded-xl shadow-xl w-full max-h-[90vh] overflow-auto ${editMode || briefEditMode ? 'max-w-5xl' : 'max-w-2xl'}`}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDetail()
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="content-dialog-title"
+            className={`max-h-[90vh] w-full overflow-auto rounded-xl bg-white shadow-xl ${editMode || briefEditMode ? 'max-w-5xl' : 'max-w-2xl'}`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
               <div>
                 <span className="text-xs font-medium text-gray-500 uppercase">
                   {getContentTypeLabel(selected)}
                 </span>
-                {!editMode && (
-                  <h3 className="text-lg font-bold text-gray-900 mt-0.5">{selected.title ?? '생성 전 슬롯'}</h3>
+                {!editMode && !briefEditMode && (
+                  <h3 id="content-dialog-title" className="text-lg font-bold text-gray-900 mt-0.5">{selected.title ?? '생성 전 슬롯'}</h3>
                 )}
+                {editMode && <h3 id="content-dialog-title" className="text-lg font-bold text-gray-900 mt-0.5">콘텐츠 편집</h3>}
+                {briefEditMode && <h3 id="content-dialog-title" className="text-lg font-bold text-gray-900 mt-0.5">콘텐츠 가이드 편집</h3>}
               </div>
               <div className="flex items-center gap-2">
                 {!editMode && !briefEditMode && (
@@ -669,8 +752,10 @@ export default function ContentPage() {
                   </button>
                 )}
                 <button
-                  onClick={() => { setSelected(null); setEditMode(false); setBriefEditMode(false) }}
-                  className="text-gray-400 hover:text-gray-600 text-xl"
+                  ref={dialogCloseRef}
+                  onClick={closeDetail}
+                  aria-label="콘텐츠 상세 닫기"
+                  className="rounded-md px-2 py-1 text-xl text-gray-400 hover:bg-gray-100 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   ✕
                 </button>
@@ -960,10 +1045,15 @@ export default function ContentPage() {
                     {selectedReview.reason ?? '발행 불가 상태입니다.'} — 발행 버튼이 비활성화되어 있습니다.
                   </p>
                 )}
+                {!publisherName.trim() && selectedReview.publishable && (
+                  <p className="mb-2 text-xs text-red-600">
+                    발행 담당자 이름을 입력해야 발행할 수 있습니다.
+                  </p>
+                )}
                 <div className="flex gap-3">
                   <button
                     onClick={() => handlePublish(selected.id)}
-                    disabled={actionLoading || !selectedReview.publishable || !selected.title}
+                    disabled={actionLoading || !selectedReview.publishable || !selected.title || !publisherName.trim()}
                     className="flex-1 py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     발행하기

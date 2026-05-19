@@ -97,9 +97,22 @@ async def verify_domain_operation(
     previous_status = hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
     previous_site_live = bool(hospital.site_live)
     if verified:
+        missing_prerequisites = [
+            label
+            for label, ready in (
+                ("V0 리포트", hospital.v0_report_done),
+                ("병원 정보 허브 빌드", hospital.site_built),
+                ("콘텐츠 스케줄", hospital.schedule_set),
+            )
+            if not ready
+        ]
+        if missing_prerequisites:
+            raise HTTPException(
+                status_code=409,
+                detail=f"도메인 DNS는 확인됐지만 LIVE 전환 전 단계가 남아 있습니다: {', '.join(missing_prerequisites)}",
+            )
         hospital.site_live = True
-        if hospital.schedule_set:
-            hospital.status = HospitalStatus.ACTIVE
+        hospital.status = HospitalStatus.ACTIVE
 
     await write_audit_log(
         db,

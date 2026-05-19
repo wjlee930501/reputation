@@ -42,10 +42,10 @@ export default function HospitalLayout({
   const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex min-h-full flex-col">
       {/* Hospital header */}
-      <header className="bg-white border-b border-slate-200 px-8 pt-5 pb-0">
-        <div className="flex items-start justify-between gap-6 mb-4">
+      <header className="border-b border-slate-200 bg-white px-4 pt-4 pb-0 sm:px-6 lg:px-8 lg:pt-5">
+        <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-6">
           <div className="min-w-0">
             <Link
               href="/hospitals"
@@ -69,7 +69,7 @@ export default function HospitalLayout({
               )}
             </div>
             {hospital && (
-              <div className="mt-1.5 flex items-center gap-3 text-xs text-slate-500">
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 sm:gap-3">
                 <span className="font-mono text-slate-400">{hospital.slug}</span>
                 {hospital.aeo_domain && (
                   <>
@@ -90,7 +90,7 @@ export default function HospitalLayout({
           </div>
 
           {hospital && (
-            <div className="hidden md:flex items-center gap-4 text-[11px] text-slate-500 shrink-0">
+            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 lg:shrink-0">
               <ProgressDot label="프로파일 완료" done={hospital.profile_complete} />
               <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
               <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
@@ -100,7 +100,7 @@ export default function HospitalLayout({
         </div>
 
         {/* Tab navigation */}
-        <nav className="flex items-end gap-1 -mb-px overflow-x-auto" aria-label="병원 작업 탭">
+        <nav className="-mb-px flex items-stretch gap-1 overflow-x-auto pb-px" aria-label="병원 작업 탭">
           {TABS.map((tab) => {
             const href = `/hospitals/${hospitalId}/${tab.path}`
             const isActive = pathname.startsWith(href)
@@ -108,14 +108,18 @@ export default function HospitalLayout({
               <Link
                 key={tab.path}
                 href={href}
-                className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                aria-current={isActive ? 'page' : undefined}
+                aria-label={`${tab.label}: ${tab.hint}`}
+                className={`group min-w-[8.5rem] border-b-2 px-3 py-2.5 text-left text-sm font-medium transition-colors sm:min-w-fit sm:px-4 ${
                   isActive
                     ? 'border-blue-600 text-blue-700'
                     : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-200'
                 }`}
-                title={tab.hint}
               >
-                {tab.label}
+                <span className="block whitespace-nowrap">{tab.label}</span>
+                <span className="mt-0.5 hidden max-w-[10rem] truncate text-[11px] font-normal text-slate-400 lg:block">
+                  {tab.hint}
+                </span>
               </Link>
             )
           })}
@@ -123,7 +127,7 @@ export default function HospitalLayout({
       </header>
 
       {/* Page content */}
-      <div className="flex-1 overflow-auto">
+      <div className="min-w-0 flex-1 overflow-auto">
         {children}
       </div>
     </div>

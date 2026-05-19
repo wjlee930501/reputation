@@ -47,7 +47,7 @@ function buildImageAlt(args: {
     `${args.typeLabel}: ${args.contentTitle}`,
     args.hospitalName,
     regionLabel,
-    args.directorName ? `${args.directorName} 원장 검수` : '',
+    args.directorName ? `${args.directorName} 원장 진료 분야` : '',
   ].filter(Boolean)
   const joined = parts.join(' — ')
   return joined.length > ALT_MAX_LENGTH ? `${joined.slice(0, ALT_MAX_LENGTH - 1)}…` : joined
@@ -136,7 +136,7 @@ export default async function ContentDetailPage({ params }: Props) {
 
   const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
   const publishedLabel = formatDate(content.published_at, content.scheduled_date)
-  const reviewedLabel = content.body_updated_at
+  const updatedLabel = content.body_updated_at
     ? formatDate(content.body_updated_at, '')
     : publishedLabel
   const readingMinutes = calculateReadingMinutes(content.body)
@@ -175,9 +175,9 @@ export default async function ContentDetailPage({ params }: Props) {
     headline: content.title,
     description: content.meta_description,
     author: {
-      '@type': 'Physician',
-      '@id': physicianId,
-      name: hospital.director_name,
+      '@type': 'MedicalClinic',
+      '@id': clinicId,
+      name: hospital.name,
     },
     publisher: {
       '@type': 'MedicalClinic',
@@ -304,12 +304,7 @@ export default async function ContentDetailPage({ params }: Props) {
         description: content.meta_description,
       },
       audience: { '@type': 'MedicalAudience', audienceType: 'Patient' },
-      lastReviewed: dateModified,
-      reviewedBy: {
-        '@type': 'Physician',
-        '@id': physicianId,
-        name: hospital.director_name,
-      },
+      dateModified,
     })
   }
 
@@ -358,8 +353,10 @@ export default async function ContentDetailPage({ params }: Props) {
                 )}
                 <h1 className="clinic-article-title">{content.title}</h1>
                 <p className="clinic-article-byline">
-                  <span className="clinic-article-byline-label">작성·검수</span>
-                  <strong>{hospital.director_name} 원장</strong>
+                  <span className="clinic-article-byline-label">의료 정보 안내</span>
+                  <strong>{hospital.name}</strong>
+                  <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
+                  <span>{hospital.director_name} 원장 진료 분야 기준</span>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                   <span>{readingMinutes}분 읽기</span>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
@@ -367,16 +364,16 @@ export default async function ContentDetailPage({ params }: Props) {
                     발행{' '}
                     <time dateTime={datePublished}>{publishedLabel}</time>
                   </span>
-                  {reviewedLabel && reviewedLabel !== publishedLabel && (
+                  {updatedLabel && updatedLabel !== publishedLabel && (
                     <>
                       <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                       <span>
-                        최근 검수{' '}
-                        <time dateTime={dateModified}>{reviewedLabel}</time>
+                        최근 업데이트{' '}
+                        <time dateTime={dateModified}>{updatedLabel}</time>
                       </span>
                     </>
                   )}
-                  <span className="clinic-article-byline-chip">발행 시점 검수 완료</span>
+                  <span className="clinic-article-byline-chip">개인별 판단은 진료 상담 필요</span>
                 </p>
               </div>
 
