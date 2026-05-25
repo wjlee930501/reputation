@@ -1695,6 +1695,8 @@ textarea:focus-visible {
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
     border-top: 1px solid var(--color-revisit-line-container);
+    -webkit-mask-image: linear-gradient(to right, black calc(100% - 32px), transparent 100%);
+    mask-image: linear-gradient(to right, black calc(100% - 32px), transparent 100%);
   }
 
   .clinic-header-nav-mobile::-webkit-scrollbar {
@@ -1831,6 +1833,24 @@ textarea:focus-visible {
   border-color: var(--color-revisit-primary-50);
   background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-30);
+}
+
+.clinic-btn-cta {
+  background: var(--color-revisit-green-50);
+  color: #ffffff;
+  box-shadow: 0 2px 12px rgba(50, 201, 151, 0.35);
+  animation: clinic-cta-pulse 2.5s ease-in-out infinite;
+}
+
+.clinic-btn-cta:hover {
+  background: #28b885;
+  box-shadow: 0 4px 18px rgba(50, 201, 151, 0.45);
+  animation: none;
+}
+
+@keyframes clinic-cta-pulse {
+  0%, 100% { box-shadow: 0 2px 12px rgba(50, 201, 151, 0.35); }
+  50% { box-shadow: 0 2px 24px rgba(50, 201, 151, 0.55); }
 }
 
 /* ── Doctor intro ─────────────────────────────────────────────── */

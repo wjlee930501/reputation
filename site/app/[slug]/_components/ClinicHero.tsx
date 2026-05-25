@@ -46,14 +46,14 @@ export function ClinicHero({
         </p>
 
         <div className="clinic-hero-actions">
+          <a className="clinic-btn clinic-btn-cta" href={`tel:${phone}`}>
+            <PhoneIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+            지금 전화 상담 · {phone}
+          </a>
           <Link className="clinic-btn clinic-btn-primary" href={`/${hospitalSlug}/treatments`}>
             진료 안내 보기
             <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
           </Link>
-          <a className="clinic-btn clinic-btn-secondary" href={`tel:${phone}`}>
-            <PhoneIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
-            병원 전화 · {phone}
-          </a>
         </div>
 
         <div className="clinic-hero-curator-line" aria-label="대표 의료진">

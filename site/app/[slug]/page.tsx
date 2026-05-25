@@ -59,7 +59,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
     const description = buildHospitalDescription(hospital)
-    const ogImage = hospital.director_photo_url ?? undefined
+    const ogImage = hospital.director_photo_url ?? '/landing/default-hospital-og.png'
     return {
       title: `${hospital.name} 진료 정보 허브`,
       description,
