@@ -1,4 +1,4 @@
-.PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard
+.PHONY: setup up down logs migrate revision test test-local test-backend-local test-frontend build-frontend demo-seed essence-backfill copy-guard
 
 setup:
 	cp .env.example .env
@@ -30,6 +30,20 @@ revision:
 
 test:
 	docker compose exec api pytest -v
+
+test-local: test-backend-local test-frontend copy-guard
+
+test-backend-local:
+	backend/.venv/bin/python -m ruff check backend
+	backend/.venv/bin/python -m pytest
+
+test-frontend:
+	cd site && npm test
+	cd admin && npm test
+
+build-frontend:
+	cd site && npm run build
+	cd admin && npm run build
 
 demo-seed:
 	docker compose exec api python -m app.utils.demo_seed

@@ -89,7 +89,7 @@ export default function WikiPage() {
     try {
       const list = (await fetchAPI(`/admin/hospitals/${id}/essence/sources`)) as Source[]
       setSources(Array.isArray(list) ? list : [])
-      // 처리 완료 자료의 evidence note 상세 fetch
+      // 처리 완료 자료의 근거 노트 상세 조회
       const processed = (Array.isArray(list) ? list : []).filter((s) => s.evidence_note_count > 0)
       const detailEntries = await Promise.all(
         processed.map((s) =>
