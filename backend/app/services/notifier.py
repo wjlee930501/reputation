@@ -191,6 +191,17 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
                 )},
         }],
     )
+    return await _send(
+        text=f"🧹 [PII 자동 파기] 만료 리드 {purged}건 익명화 완료" + (f" (스킵 {skipped})" if skipped else ""),
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"🧹 *[PII 자동 파기]* 만료 lead {purged}건 익명화 완료"
+                + (f" · 이미 처리된 {skipped}건 스킵" if skipped else "")
+                + "\n개인정보보호법 제21조 자동 파기 cron 정상 동작 중."
+            )},
+        }],
+    )
 
 
 async def notify_content_generation_failed(
@@ -211,14 +222,24 @@ async def notify_content_generation_failed(
             )},
         }],
     )
+
+
+async def notify_content_batch_summary(
+    hospital_name: str, generated: int, failed: int, scheduled_date: str
+) -> bool:
+    if generated == 0 and failed == 0:
+        return False
+    status_emoji = "✅" if failed == 0 else "⚠️"
+    summary = f"{generated}건 생성 완료" + (f", {failed}건 실패" if failed > 0 else "")
     return await _send(
-        text=f"🧹 [PII 자동 파기] 만료 리드 {purged}건 익명화 완료" + (f" (스킵 {skipped})" if skipped else ""),
+        text=f"{status_emoji} [콘텐츠 배치] {hospital_name} {scheduled_date} — {summary}",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"🧹 *[PII 자동 파기]* 만료 lead {purged}건 익명화 완료"
-                + (f" · 이미 처리된 {skipped}건 스킵" if skipped else "")
-                + "\n개인정보보호법 제21조 자동 파기 cron 정상 동작 중."
+                f"{status_emoji} *[콘텐츠 배치 완료]* *{hospital_name}*\n"
+                f"발행 예정일: {scheduled_date}\n"
+                f"결과: {summary}\n\n"
+                f"실패 항목은 Admin 콘텐츠 화면에서 직접 재생성해 주세요."
             )},
         }],
     )
