@@ -70,12 +70,20 @@ export default function SchedulePage() {
               첫 발행 예정일: <strong>{result.first_publish_date}</strong>
             </p>
           )}
-          <button
-            onClick={() => router.push(`/hospitals/${id}/content`)}
-            className="mt-4 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
-          >
-            콘텐츠 목록 보기
-          </button>
+          <div className="flex gap-3 mt-4">
+            <button
+              onClick={() => router.push(`/hospitals/${id}/content`)}
+              className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition-colors"
+            >
+              콘텐츠 확인하기
+            </button>
+            <button
+              onClick={() => router.push(`/hospitals/${id}/dashboard`)}
+              className="px-4 py-2 border border-green-300 text-green-800 text-sm font-medium rounded-lg hover:bg-green-100 transition-colors"
+            >
+              대시보드로 돌아가기
+            </button>
+          </div>
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-6">

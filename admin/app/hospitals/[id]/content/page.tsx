@@ -26,15 +26,33 @@ const BRIEF_LABELS: Record<BriefStatus, { label: string; color: string }> = {
 const BRIEF_FALLBACK = { label: '콘텐츠 가이드 없음', color: 'bg-slate-50 text-slate-400 border border-slate-200' }
 const PUBLISHER_STORAGE_KEY = 'reputation.publisherName'
 
-// 프론트엔드 미리보기용 금지 표현 목록 (단순 포함 검사)
-// 정식 정의는 backend/app/utils/medical_filter.py의 FORBIDDEN_EXPRESSIONS를 따름
-// 변형(예: "최고의", "유일한")은 백엔드 저장 시 정규식으로 최종 검증됨
-const FORBIDDEN = [
-  '1등', '최고', '최우수', '유일', '완치', '100%',
-  '성공률', '부작용 없는', '검증된', '가장 잘하는',
-  '국내 최초', '세계 최초', '특허', '독보적',
-  '노하우', '효과 보장', '전국 유일', '최첨단',
-  '안전한 시술', '통증 없는', '흉터 없는',
+// 프론트엔드 미리보기용 금지 표현 목록 — backend/app/utils/medical_filter.py의
+// FORBIDDEN_PATTERNS와 정규식이 동기화됨. 단순 포함 검사 대신 정규식으로 변형까지 포착.
+interface ForbiddenRule {
+  label: string
+  pattern: RegExp
+}
+
+const FORBIDDEN_RULES: ForbiddenRule[] = [
+  { label: '1등', pattern: /1등|일등|1위|일위/ },
+  { label: '최고', pattern: /최고[의]?|최상[의]?|으뜸[인]?/ },
+  { label: '최우수', pattern: /최우수|가장\s*우수|제일\s*우수|탁월[한]?/ },
+  { label: '유일', pattern: /유일[한]?|유일무이|전국\s*유일|오직\s*이곳/ },
+  { label: '완치', pattern: /완치[율]?|완전\s*치료|완전\s*회복/ },
+  { label: '100%', pattern: /100\s*%|백\s*퍼센트|100퍼/ },
+  { label: '성공률', pattern: /성공률|성공\s*확률|성공\s*보장/ },
+  { label: '부작용 없는', pattern: /부작용\s*(없|zero|제로|걱정\s*없)/ },
+  { label: '검증된', pattern: /검증[된]?|입증[된]?|확인[된]\s*효과/ },
+  { label: '가장 잘하는', pattern: /가장\s*(잘|뛰어|훌륭)|제일\s*(잘|뛰어)/ },
+  { label: '국내 최초', pattern: /(국내|세계|아시아|전국)\s*최초/ },
+  { label: '특허', pattern: /특허[를]?\s*(보유|획득|취득|출원|등록)/ },
+  { label: '독보적', pattern: /독보적[인]?|비교\s*불가/ },
+  { label: '노하우', pattern: /(저희|우리|병원|원장)[\w가-힣]*\s*만[의]?\s*노하우|차별화된\s*노하우/ },
+  { label: '효과 보장', pattern: /효과[를]?\s*(보장|확실|약속)|보장[된]?\s*효과/ },
+  { label: '최첨단', pattern: /최첨단|첨단[의]?\s*(기술|장비|시술)/ },
+  { label: '안전한 시술', pattern: /안전[한]?\s*(시술|수술|치료)[이가]?\s*보장|100%\s*안전/ },
+  { label: '통증 없는', pattern: /통증\s*없[는이]|무통[증]?[의]?\s*(시술|수술|치료)|아프지\s*않[은는]/ },
+  { label: '흉터 없는', pattern: /흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)/ },
 ]
 
 function tryParseApiError(message: string): { message?: string; violations?: string[] } | null {
@@ -50,14 +68,21 @@ function tryParseApiError(message: string): { message?: string; violations?: str
 }
 
 function checkForbidden(text: string): string[] {
-  return FORBIDDEN.filter((expr) => text.includes(expr))
+  if (!text) return []
+  return FORBIDDEN_RULES.filter((rule) => rule.pattern.test(text)).map((rule) => rule.label)
 }
 
 function highlightForbidden(text: string, violations: string[]): string {
   if (violations.length === 0) return text
   let result = text
-  for (const v of violations) {
-    result = result.split(v).join(`【${v}】`)
+  for (const label of violations) {
+    const rule = FORBIDDEN_RULES.find((r) => r.label === label)
+    if (rule) {
+      result = result.replace(rule.pattern, (match) => `【${match}】`)
+    } else {
+      // fallback: label 자체가 본문에 포함되어 있으면 하이라이트
+      result = result.split(label).join(`【${label}】`)
+    }
   }
   return result
 }
@@ -183,6 +208,9 @@ export default function ContentPage() {
   const [bulkError, setBulkError] = useState<string | null>(null)
   const [publisherName, setPublisherName] = useState('')
   const [publisherError, setPublisherError] = useState<string | null>(null)
+  const [aeoDomain, setAeoDomain] = useState<string | null>(null)
+  const [hospitalSlug, setHospitalSlug] = useState<string | null>(null)
+  const [publishSuccessId, setPublishSuccessId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -197,9 +225,18 @@ export default function ContentPage() {
     setSelected(null)
     setEditMode(false)
     setBriefEditMode(false)
+    setPublishSuccessId(null)
   }, [])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    fetchAPI(`/admin/hospitals/${id}`)
+      .then((h) => {
+        setAeoDomain(h.aeo_domain ?? null)
+        setHospitalSlug(h.slug ?? null)
+      })
+      .catch(() => {})
+  }, [id])
 
   useEffect(() => {
     setPublisherName(window.localStorage.getItem(PUBLISHER_STORAGE_KEY) ?? '')
@@ -304,6 +341,7 @@ export default function ContentPage() {
       }
     }
     setBulkProgress(null)
+    if (done > 0) setPublishSuccessId(ids[0])
     load()
   }
 
@@ -316,8 +354,8 @@ export default function ContentPage() {
         method: 'POST',
         body: JSON.stringify({ published_by: publishedBy }),
       })
+      setPublishSuccessId(itemId)
       load()
-      closeDetail()
     } catch (e: unknown) {
       if (e instanceof Error) {
         const parsed = tryParseApiError(e.message)
@@ -789,6 +827,20 @@ export default function ContentPage() {
                 </button>
               </div>
             </div>
+
+            {publishSuccessId && aeoDomain && hospitalSlug && (
+              <div className="mx-6 mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
+                <p className="text-sm font-medium text-green-800">발행 완료 — 콘텐츠가 공개 사이트에 게시되었습니다.</p>
+                <a
+                  href={`https://${aeoDomain}/${hospitalSlug}/contents/${publishSuccessId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-green-700 underline underline-offset-2 hover:text-green-800"
+                >
+                  사이트에서 보기 ↗
+                </a>
+              </div>
+            )}
 
             {editError && (
               <div className="mx-6 mt-4 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">

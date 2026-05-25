@@ -17,6 +17,11 @@ export async function fetchAPI(path: string, options?: RequestInit) {
   })
 
   if (!res.ok) {
+    if (res.status === 401) {
+      const currentPath = window.location.pathname + window.location.search
+      window.location.href = `/login?redirect=${encodeURIComponent(currentPath)}`
+      throw new Error('인증이 만료되었습니다. 로그인 페이지로 이동합니다.')
+    }
     const error = await res.text()
     const detail = readErrorMessage(error)
     throw new Error(detail || statusMessage(res.status) || `서버 오류 (${res.status})`)
