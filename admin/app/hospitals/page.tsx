@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
 import { Hospital, STATUS_LABELS, PLAN_LABELS } from '@/types'
+import { SkeletonTable } from '@/app/components/Skeleton'
 
 export default function HospitalsPage() {
   const [hospitals, setHospitals] = useState<Hospital[]>([])
@@ -64,11 +65,7 @@ export default function HospitalsPage() {
         )}
       </div>
 
-      {loading && (
-        <div className="bg-white border border-slate-200 rounded-xl py-16 text-center text-slate-500">
-          불러오는 중...
-        </div>
-      )}
+      {loading && <SkeletonTable rows={6} />}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">

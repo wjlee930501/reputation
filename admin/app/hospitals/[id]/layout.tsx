@@ -6,18 +6,23 @@ import { useEffect, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 import { Hospital, PLAN_LABELS, STATUS_LABELS } from '@/types'
 
-const TABS: Array<{ label: string; path: string; hint: string }> = [
+const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '대시보드', path: 'dashboard', hint: 'AI 언급률과 운영 준비 상태 한눈에 보기' },
   { label: '온보딩', path: 'onboarding', hint: '신규 병원 자료 인입 + 운영 기준 승인까지 한 화면에서' },
-  { label: 'Wiki', path: 'wiki', hint: '검증된 근거 노트 + 사진 공개 토글' },
   { label: '프로파일', path: 'profile', hint: '병원 기본 정보' },
-  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준(진료 철학·말투·금기 표현) 승인' },
-  { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini 같은 AI 답변 서비스에 노출시킬 환자 질문 정의' },
-  { label: '노출 보완 작업', path: 'exposure-actions', hint: 'AI에 더 잘 노출되도록 보완할 작업과 콘텐츠 가이드 연결' },
   { label: '콘텐츠', path: 'content', hint: '초안 검수·발행' },
   { label: '스케줄', path: 'schedule', hint: '발행 캘린더' },
   { label: '리포트', path: 'reports', hint: '월간 리포트' },
 ]
+
+const CONFIG_TABS: Array<{ label: string; path: string; hint: string }> = [
+  { label: 'Wiki', path: 'wiki', hint: '검증된 근거 노트 + 사진 공개 토글' },
+  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준(진료 철학·말투·금기 표현) 승인' },
+  { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini 같은 AI 답변 서비스에 노출시킬 환자 질문 정의' },
+  { label: '노출 보완', path: 'exposure-actions', hint: 'AI에 더 잘 노출되도록 보완할 작업과 콘텐츠 가이드 연결' },
+]
+
+const ALL_TABS = [...MAIN_TABS, ...CONFIG_TABS]
 
 export default function HospitalLayout({
   children,
@@ -101,26 +106,41 @@ export default function HospitalLayout({
 
         {/* Tab navigation */}
         <nav className="-mb-px flex items-stretch gap-1 overflow-x-auto pb-px" aria-label="병원 작업 탭">
-          {TABS.map((tab) => {
+          {ALL_TABS.map((tab, idx) => {
             const href = `/hospitals/${hospitalId}/${tab.path}`
             const isActive = pathname.startsWith(href)
+            const isConfig = idx >= MAIN_TABS.length
             return (
-              <Link
-                key={tab.path}
-                href={href}
-                aria-current={isActive ? 'page' : undefined}
-                aria-label={`${tab.label}: ${tab.hint}`}
-                className={`group min-w-[8.5rem] border-b-2 px-3 py-2.5 text-left text-sm font-medium transition-colors sm:min-w-fit sm:px-4 ${
-                  isActive
-                    ? 'border-blue-600 text-blue-700'
-                    : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-200'
-                }`}
-              >
-                <span className="block whitespace-nowrap">{tab.label}</span>
-                <span className="mt-0.5 hidden max-w-[10rem] truncate text-[11px] font-normal text-slate-400 lg:block">
-                  {tab.hint}
-                </span>
-              </Link>
+              <span key={tab.path} className="contents">
+                {idx === MAIN_TABS.length && (
+                  <span
+                    aria-hidden
+                    className="mx-1 self-center text-xs font-medium text-slate-300 select-none"
+                    title="설정"
+                  >
+                    ⚙
+                  </span>
+                )}
+                <Link
+                  href={href}
+                  aria-current={isActive ? 'page' : undefined}
+                  aria-label={`${tab.label}: ${tab.hint}`}
+                  className={`group min-w-[8.5rem] border-b-2 px-3 py-2.5 text-left text-sm font-medium transition-colors sm:min-w-fit sm:px-4 ${
+                    isConfig
+                      ? isActive
+                        ? 'border-purple-500 text-purple-700'
+                        : 'border-transparent text-slate-400 hover:text-slate-600 hover:border-slate-200'
+                      : isActive
+                        ? 'border-blue-600 text-blue-700'
+                        : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-200'
+                  }`}
+                >
+                  <span className="block whitespace-nowrap">{tab.label}</span>
+                  <span className="mt-0.5 hidden max-w-[18rem] truncate text-[11px] font-normal text-slate-400 sm:block">
+                    {tab.hint}
+                  </span>
+                </Link>
+              </span>
             )
           })}
         </nav>

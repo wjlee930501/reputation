@@ -4,9 +4,37 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
 const NAV_ITEMS = [
-  { href: '/hospitals', label: '병원 목록', meta: '관리', mark: 'H' },
-  { href: '/hospitals/new', label: '신규 병원 온보딩', mark: '+' },
-  { href: '/leads', label: '상담 리드', mark: 'L' },
+  {
+    href: '/hospitals',
+    label: '병원 목록',
+    meta: '관리',
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M3 7v10a1 1 0 0 0 1 1h4V13h4v5h4a1 1 0 0 0 1-1V7l-7-4z" />
+        <path d="M8 3v4" />
+        <path d="M12 3v4" />
+        <path d="M3 7h14" />
+      </svg>
+    ),
+  },
+  {
+    href: '/hospitals/new',
+    label: '신규 병원 온보딩',
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M10 4v12M4 10h12" />
+      </svg>
+    ),
+  },
+  {
+    href: '/leads',
+    label: '상담 리드',
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M3 5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H7l-4 4V5z" />
+      </svg>
+    ),
+  },
 ]
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
@@ -57,9 +85,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 <span className="flex items-center gap-2.5">
                   <span
                     aria-hidden
-                    className="inline-flex h-5 w-5 items-center justify-center rounded border border-slate-700 text-[10px] font-semibold text-slate-300"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded border border-slate-700 text-slate-300"
                   >
-                    {item.mark}
+                    {item.icon}
                   </span>
                   {item.label}
                 </span>

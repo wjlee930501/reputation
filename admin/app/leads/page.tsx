@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
+import { SkeletonTable } from '@/app/components/Skeleton'
 import type { SalesLead } from '@/types'
 
 export default function LeadsPage() {
@@ -32,11 +33,7 @@ export default function LeadsPage() {
         </div>
       </div>
 
-      {loading && (
-        <div className="rounded-xl border border-slate-200 bg-white py-16 text-center text-sm text-slate-500">
-          리드를 불러오는 중입니다.
-        </div>
-      )}
+      {loading && <SkeletonTable rows={5} />}
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
