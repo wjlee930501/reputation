@@ -1,8 +1,11 @@
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI
+import uuid
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
@@ -21,7 +24,7 @@ from app.api.public import site as public_site
 from app.api.public import leads as public_leads
 from app.core.config import settings
 from app.core.rate_limit import limiter
-from app.core.security import verify_admin_key
+from app.core.security import verify_admin_key, verify_admin_rate_limit
 
 if settings.SENTRY_DSN:
     import sentry_sdk
@@ -59,6 +62,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(SecurityHeadersMiddleware)
 
+
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+
+app.add_middleware(RequestIdMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -67,8 +82,8 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-Admin-Key", "Authorization"],
 )
 
-# Admin 라우터: X-Admin-Key 인증 필수
-admin_deps = [Depends(verify_admin_key)]
+# Admin 라우터: X-Admin-Key 인증 + rate limit 필수
+admin_deps = [Depends(verify_admin_key), Depends(verify_admin_rate_limit)]
 app.include_router(admin_hospitals.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_content.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_reports.router, prefix="/api/v1", dependencies=admin_deps)
@@ -87,4 +102,24 @@ app.include_router(public_leads.router, prefix="/api/v1")
 
 @app.get("/health")
 async def health():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def readiness():
+    """Cloud Run readiness probe — DB 연결 확인 포함."""
+    from app.core.database import get_async_sessionmaker
+
+    try:
+        sessionmaker = get_async_sessionmaker()
+        async with sessionmaker() as session:
+            await session.execute(text("SELECT 1"))
+        return {"status": "ok", "database": "connected"}
+    except Exception as e:
+        return {"status": "error", "database": str(e)}
+
+
+@app.get("/health/live")
+async def liveness():
+    """Cloud Run liveness probe — 기본 응답."""
     return {"status": "ok"}

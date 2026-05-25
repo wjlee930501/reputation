@@ -49,3 +49,10 @@ google-credentials.json
 AGENTS.md
 generate-report.js
 docs/superpowers/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/.terraform.lock.hcl

@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentItem } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -55,8 +55,9 @@ export default async function DoctorPage({ params }: Props) {
       fetchHospital(params.slug),
       fetchContents(params.slug, 60),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const breadcrumbItems = [

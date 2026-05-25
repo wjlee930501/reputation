@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentItem } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 import {
   buildTreatmentSlug,
@@ -93,8 +93,9 @@ export default async function TreatmentPillarPage({ params }: Props) {
       fetchHospital(params.slug),
       fetchContents(params.slug, 500),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const treatments = hospital.treatments || []

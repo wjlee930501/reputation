@@ -1,19 +1,51 @@
 import json
+import os
 from typing import Annotated
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
+def _resolve_secret(name: str, default: str = "") -> str:
+    """Resolve a setting from GCP Secret Manager if available, otherwise from env.
+
+    In production (Cloud Run), the service account has secretAccessor permission
+    and Application Default Credentials are available. Falls back to env var
+    for local development where Secret Manager may not be accessible.
+    """
+    env_value = os.getenv(name, default)
+    if not env_value and os.getenv("APP_ENV") == "production":
+        try:
+            from google.cloud import secretmanager
+
+            project = os.getenv("GCP_PROJECT_ID", "")
+            if project:
+                client = secretmanager.SecretManagerServiceClient()
+                secret_path = client.secret_version_path(project, name, "latest")
+                response = client.access_secret_version(request={"name": secret_path})
+                env_value = response.payload.data.decode("UTF-8")
+        except Exception:
+            pass
+    return env_value
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     APP_ENV: str = "production"
-    ADMIN_SECRET_KEY: str
+    ADMIN_SECRET_KEY: str = ""
     # NoDecode: pydantic-settings의 env-source 자동 JSON 디코드를 끄고 raw 문자열을 검증자에 전달.
-    # .env에서 comma-separated 표기를 허용하기 위함.
     ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
     TRUSTED_PROXY_IPS: Annotated[list[str], NoDecode] = ["127.0.0.1", "::1"]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if self.APP_ENV == "production":
+            self.ADMIN_SECRET_KEY = _resolve_secret("ADMIN_SECRET_KEY", self.ADMIN_SECRET_KEY)
+            self.ANTHROPIC_API_KEY = _resolve_secret("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY)
+            self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
+            self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)
+            self.SLACK_WEBHOOK_URL = _resolve_secret("SLACK_WEBHOOK_URL", self.SLACK_WEBHOOK_URL)
 
     @field_validator("ALLOWED_ORIGINS", "TRUSTED_PROXY_IPS", mode="before")
     @classmethod
@@ -34,12 +66,17 @@ class Settings(BaseSettings):
     # DB
     DATABASE_URL: str
     SYNC_DATABASE_URL: str
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_TIMEOUT: int = 30  # seconds to wait for a connection
+    DB_CONNECT_TIMEOUT: int = 10  # seconds to establish TCP connection
+    DB_COMMAND_TIMEOUT: int = 30  # seconds for a single SQL statement (0=disabled)
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # Anthropic — 콘텐츠 생성
-    ANTHROPIC_API_KEY: str
+    ANTHROPIC_API_KEY: str = ""
     CLAUDE_MODEL: str = "claude-sonnet-4-5"
     CLAUDE_MODEL_FAST: str = "claude-haiku-4-5-20251001"
 
@@ -49,7 +86,7 @@ class Settings(BaseSettings):
     GCP_STORAGE_BUCKET: str = "reputation-images"
 
     # OpenAI — SoV
-    OPENAI_API_KEY: str
+    OPENAI_API_KEY: str = ""
     OPENAI_MODEL_QUERY: str = "gpt-4o"
     OPENAI_MODEL_PARSE: str = "gpt-4o-mini"
     # 기본은 web_search 미사용 (chat.completions = 모델 recall). True 시 Responses API +

@@ -133,7 +133,7 @@ export default function HospitalsPage() {
                 )}
                 {filtered.map((h) => {
                   const status =
-                    STATUS_LABELS[h.status] ?? { label: h.status, color: 'bg-gray-100 text-gray-700' }
+                    STATUS_LABELS[h.status] ?? { label: h.status, color: 'bg-slate-100 text-slate-700' }
                   return (
                     <tr key={h.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-6 py-4">

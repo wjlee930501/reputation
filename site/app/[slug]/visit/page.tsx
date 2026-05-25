@@ -1,7 +1,7 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchHospital } from '@/lib/api'
+import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -109,8 +109,9 @@ export default async function VisitPage({ params }: Props) {
   let hospital
   try {
     hospital = await fetchHospital(params.slug)
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const breadcrumbItems = [

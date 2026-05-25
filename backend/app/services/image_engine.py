@@ -14,6 +14,16 @@ from app.models.content import ContentType
 
 logger = logging.getLogger(__name__)
 
+_vertexai_initialized = False
+
+
+def _ensure_vertexai_initialized():
+    global _vertexai_initialized
+    if not _vertexai_initialized and settings.GCP_PROJECT_ID:
+        import vertexai
+        vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
+        _vertexai_initialized = True
+
 # ── 유형별 이미지 프롬프트 ────────────────────────────────────────
 IMAGE_PROMPTS = {
     ContentType.FAQ: (
@@ -76,7 +86,7 @@ def _generate_and_upload(prompt: str, hospital_name: str) -> str:
 
         from app.services.gcs_utils import _get_gcs_client
 
-        vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
+        _ensure_vertexai_initialized()
         model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
 
         images = model.generate_images(

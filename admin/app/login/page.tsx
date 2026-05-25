@@ -32,15 +32,15 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
       <form onSubmit={handleSubmit} className="bg-white p-8 rounded-xl shadow-sm w-full max-w-sm">
-        <h1 className="text-xl font-bold text-gray-800 mb-6 text-center">Re:putation Admin</h1>
+        <h1 className="text-xl font-bold text-slate-800 mb-6 text-center">Re:putation Admin</h1>
         <input
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="관리자 비밀번호"
-          className="w-full border border-gray-300 rounded-lg px-4 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full border border-slate-300 rounded-lg px-4 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
           autoFocus
         />
         {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
@@ -58,7 +58,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-gray-50" />}>
+    <Suspense fallback={<div className="min-h-screen bg-slate-50" />}>
       <LoginForm />
     </Suspense>
   )

@@ -2,20 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
+import { formatDateTime } from '@/lib/format'
 import type { SalesLead } from '@/types'
-
-function formatDateTime(value: string | null) {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '-'
-  return date.toLocaleString('ko-KR', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
 
 export default function LeadsPage() {
   const [leads, setLeads] = useState<SalesLead[]>([])

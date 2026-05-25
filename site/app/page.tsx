@@ -145,7 +145,7 @@ export default function Home({
           <a href="#diagnosis">진단 방식</a>
           <a href="#operation">월간 운영</a>
           <a href="#specialty">진료과</a>
-          <a href="https://motionlabs.kr" target="_blank" rel="noopener">MotionLabs ↗</a>
+          <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">MotionLabs ↗</a>
           <a href="#lead">상담 신청</a>
         </nav>
 
@@ -446,11 +446,11 @@ export default function Home({
           <p className="footer-biz">
             운영사: 주식회사 모션랩스(MotionLabs Inc.) · 대표 이우진
             <br />
-            서울특별시 강남구 · 사업자 정보는 <a href="https://motionlabs.kr" target="_blank" rel="noopener">motionlabs.kr</a>에서 확인하실 수 있습니다.
+            서울특별시 강남구 · 사업자 정보는 <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">motionlabs.kr</a>에서 확인하실 수 있습니다.
           </p>
         </div>
         <div className="footer-links">
-          <a href="https://motionlabs.kr" target="_blank" rel="noopener">motionlabs.kr ↗</a>
+          <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">motionlabs.kr ↗</a>
           <a href="mailto:contact@motionlabs.kr">contact@motionlabs.kr</a>
           <Link href="/privacy">개인정보 처리방침</Link>
           <Link href="/terms">이용약관</Link>

@@ -23,7 +23,11 @@ from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+client = anthropic.Anthropic(
+    api_key=settings.ANTHROPIC_API_KEY,
+    timeout=90.0,
+    max_retries=0,  # tenacity handles retries with backoff
+)
 
 # ── 시스템 프롬프트 ───────────────────────────────────────────────
 # GEO 강화 (Princeton·GT KDD 2024 + Ahrefs 1.4M prompts + SE Ranking YMYL 2025):
@@ -293,12 +297,16 @@ async def generate_content(
         logger.error(f"Content JSON parse failed: {raw[:200]}")
         raise ValueError(f"Claude returned invalid JSON: {raw[:100]}")
 
-    # 금지 표현 검사
+    # 금지 표현 검사 — 1차 시도 실패 시 자동 정제 (재시도보다 안정적)
     full_text = result.get("title", "") + result.get("body", "") + result.get("meta_description", "")
     violations = check_forbidden(full_text)
     if violations:
-        logger.warning(f"Forbidden expressions found: {violations} — retrying")
-        raise ValueError(f"Forbidden medical expressions: {violations}")
+        logger.warning(f"Forbidden expressions found: {violations} — auto-sanitizing")
+        result = _sanitize_forbidden(result, violations)
+        full_text = result.get("title", "") + result.get("body", "") + result.get("meta_description", "")
+        remaining = check_forbidden(full_text)
+        if remaining:
+            raise ValueError(f"Cannot sanitize forbidden medical expressions: {remaining}")
 
     # 참고 자료 정규화 — Claude가 형식을 살짝 흔들어도 list[{title,url}] 형태로 통일.
     result["references"] = _normalize_references(result.get("references"))
@@ -317,6 +325,27 @@ def _trim_or_none(value: object, max_length: int) -> str | None:
     if not cleaned:
         return None
     return cleaned[:max_length]
+
+
+def _sanitize_forbidden(result: dict, violations: list[str]) -> dict:
+    """Remove forbidden medical expressions from generated text as a safety net.
+
+    Operates on title, body, and meta_description fields. Only used as a fallback
+    when Claude generates text containing banned terms despite prompt instructions.
+    """
+    from app.utils.medical_filter import FORBIDDEN_PATTERNS
+
+    sanitized = dict(result)
+    for field in ("title", "body", "meta_description"):
+        text = sanitized.get(field)
+        if not isinstance(text, str):
+            continue
+        for label in violations:
+            pattern = FORBIDDEN_PATTERNS.get(label)
+            if pattern:
+                text = pattern.sub("", text)
+        sanitized[field] = text
+    return sanitized
 
 
 def _normalize_references(raw: object) -> list[dict]:

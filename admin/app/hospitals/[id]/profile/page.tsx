@@ -14,7 +14,7 @@ interface BusinessHours {
 }
 
 interface HospitalProfile {
-  id: number
+  id: string
   name: string
   plan: string
   status: string
@@ -76,7 +76,7 @@ function TagInput({
 
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
+      <label className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
       <div className="flex flex-wrap gap-1.5 mb-2">
         {values.map((v) => (
           <span
@@ -107,7 +107,7 @@ function TagInput({
         }}
         onBlur={() => { if (input.trim()) addTag(input) }}
         placeholder="입력 후 Enter 또는 쉼표로 추가"
-        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
       />
     </div>
   )
@@ -245,7 +245,7 @@ const STATUS_CHIP: Record<ChecklistStatus, { label: string; cls: string }> = {
   },
   recommended: {
     label: '권장',
-    cls: 'bg-gray-50 text-gray-600 border-gray-200',
+    cls: 'bg-slate-50 text-slate-600 border-slate-200',
   },
 }
 
@@ -331,7 +331,7 @@ export default function ProfilePage() {
   }
 
   if (loading) {
-    return <div className="p-8 text-gray-500">불러오는 중...</div>
+    return <div className="p-8 text-slate-500">불러오는 중...</div>
   }
 
   const checklist = buildChecklist(profile)
@@ -347,8 +347,8 @@ export default function ProfilePage() {
     <form onSubmit={handleSave} className="p-8 max-w-3xl space-y-8">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold text-gray-900">프로파일 온보딩</h2>
-          <p className="text-sm text-gray-600 mt-1">
+          <h2 className="text-xl font-bold text-slate-900">프로파일 온보딩</h2>
+          <p className="text-sm text-slate-600 mt-1">
             원장 인터뷰, 병원 기본정보, 외부 채널, 진료 항목, 도메인까지 누락 없이 세팅합니다.
           </p>
         </div>
@@ -373,42 +373,42 @@ export default function ProfilePage() {
       )}
 
       {/* 온보딩 체크리스트 */}
-      <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-br from-blue-50 via-indigo-50 to-white">
+      <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-br from-blue-50 via-indigo-50 to-white">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-base font-semibold text-gray-900">온보딩 체크리스트</h3>
-              <p className="text-xs text-gray-600 mt-1">
+              <h3 className="text-base font-semibold text-slate-900">온보딩 체크리스트</h3>
+              <p className="text-xs text-slate-600 mt-1">
                 {nextActionLabel
-                  ? <>다음 작업: <span className="font-medium text-gray-800">{nextActionLabel}</span></>
+                  ? <>다음 작업: <span className="font-medium text-slate-800">{nextActionLabel}</span></>
                   : '모든 항목이 채워졌습니다. 하단의 온보딩 완료 카드에서 초기 진단 리포트와 병원 정보 허브 준비를 시작하세요.'}
               </p>
             </div>
             <div className="text-right shrink-0">
-              <div className="text-sm font-semibold text-gray-900">{doneCount}/{totalCount} 완료</div>
-              <div className="text-[11px] text-gray-500 mt-0.5">{progressPercent}%</div>
+              <div className="text-sm font-semibold text-slate-900">{doneCount}/{totalCount} 완료</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">{progressPercent}%</div>
             </div>
           </div>
-          <div className="mt-3 h-1.5 w-full rounded-full bg-gray-200 overflow-hidden">
+          <div className="mt-3 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
             <div
               className={`h-full ${requiredReady ? 'bg-emerald-500' : 'bg-blue-500'}`}
               style={{ width: `${progressPercent}%` }}
             />
           </div>
         </div>
-        <ul className="divide-y divide-gray-100">
+        <ul className="divide-y divide-slate-100">
           {checklist.map((item) => {
             const chip = STATUS_CHIP[item.status]
             return (
               <li key={item.key} className="flex items-start justify-between gap-3 px-6 py-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-gray-800">{item.label}</span>
+                    <span className="text-sm font-medium text-slate-800">{item.label}</span>
                     {!item.required && (
-                      <span className="text-[10px] text-gray-400 uppercase tracking-wide">선택</span>
+                      <span className="text-[10px] text-slate-400 uppercase tracking-wide">선택</span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-500 mt-0.5">{item.hint}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{item.hint}</p>
                 </div>
                 <span
                   className={`shrink-0 inline-flex items-center px-2 py-0.5 text-[11px] font-medium rounded-full border ${chip.cls}`}
@@ -422,81 +422,81 @@ export default function ProfilePage() {
       </section>
 
       {/* 원장 정보 */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
         <div>
-          <h3 className="text-base font-semibold text-gray-800">원장 정보</h3>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <h3 className="text-base font-semibold text-slate-800">원장 정보</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
             인터뷰·기고문·소개자료에서 확인한 내용을 근거로 입력합니다. 진료 철학은 출처가 분명한 문장으로 정리해 주세요.
           </p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">원장명</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">원장명</label>
           <input
             type="text"
             value={profile.director_name ?? ''}
             onChange={(e) => updateField('director_name', e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">약력</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">약력</label>
           <textarea
             value={profile.director_career ?? ''}
             onChange={(e) => updateField('director_career', e.target.value)}
             rows={3}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">진료 철학</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">진료 철학</label>
           <textarea
             value={profile.director_philosophy ?? ''}
             onChange={(e) => updateField('director_philosophy', e.target.value)}
             rows={3}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
           />
         </div>
       </section>
 
       {/* 병원 연락처 */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
         <div>
-          <h3 className="text-base font-semibold text-gray-800">병원 연락처</h3>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <h3 className="text-base font-semibold text-slate-800">병원 연락처</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
             병원 정보 허브와 AI 답변 노출에 그대로 사용되는 공개 정보입니다. 실제 영업 정보와 일치하는지 확인해 주세요.
           </p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">주소</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">주소</label>
           <input
             type="text"
             value={profile.address ?? ''}
             onChange={(e) => updateField('address', e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">전화번호</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">전화번호</label>
           <input
             type="text"
             value={profile.phone ?? ''}
             onChange={(e) => updateField('phone', e.target.value)}
             placeholder="02-1234-5678"
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">진료시간</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">진료시간</label>
           <div className="space-y-2">
             {DAYS.map((day, i) => (
               <div key={DAY_KEYS[i]} className="flex items-center gap-3">
-                <span className="w-6 text-sm text-gray-600 font-medium">{day}</span>
+                <span className="w-6 text-sm text-slate-600 font-medium">{day}</span>
                 <input
                   type="text"
                   value={profile.business_hours?.[DAY_KEYS[i]] ?? ''}
                   onChange={(e) => updateHours(DAY_KEYS[i], e.target.value)}
                   placeholder="09:00 ~ 18:00 / 휴진"
-                  className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="flex-1 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
             ))}
@@ -504,107 +504,107 @@ export default function ProfilePage() {
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">홈페이지 URL</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">홈페이지 URL</label>
             <input
               type="url"
               value={profile.website_url ?? ''}
               onChange={(e) => updateField('website_url', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">블로그 URL</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">블로그 URL</label>
             <input
               type="url"
               value={profile.blog_url ?? ''}
               onChange={(e) => updateField('blog_url', e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
         </div>
       </section>
 
       {/* AI가 참고할 외부 채널 */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
         <div>
-          <h3 className="text-base font-semibold text-gray-800">AI가 참고할 외부 채널</h3>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <h3 className="text-base font-semibold text-slate-800">AI가 참고할 외부 채널</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
             네이버 플레이스·구글 지도/병원 정보 URL과 좌표는 AI 답변과 로컬 검색에서 우리 병원을 인식시키는 기본 자료입니다.
           </p>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">구글 병원 정보 URL</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL</label>
             <input
               type="url"
               value={profile.google_business_profile_url ?? ''}
               onChange={(e) => updateField('google_business_profile_url', e.target.value)}
               placeholder="https://business.google.com/..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">구글 지도 URL</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">구글 지도 URL</label>
             <input
               type="url"
               value={profile.google_maps_url ?? ''}
               onChange={(e) => updateField('google_maps_url', e.target.value)}
               placeholder="https://maps.google.com/..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">네이버 플레이스 URL</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">네이버 플레이스 URL</label>
             <input
               type="url"
               value={profile.naver_place_url ?? ''}
               onChange={(e) => updateField('naver_place_url', e.target.value)}
               placeholder="https://naver.me/..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">카카오 채널 URL</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">카카오 채널 URL</label>
             <input
               type="url"
               value={profile.kakao_channel_url ?? ''}
               onChange={(e) => updateField('kakao_channel_url', e.target.value)}
               placeholder="https://pf.kakao.com/..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">위도</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">위도</label>
             <input
               type="number"
               step="0.000001"
               value={profile.latitude ?? ''}
               onChange={(e) => updateField('latitude', e.target.value === '' ? null : Number(e.target.value))}
               placeholder="37.497942"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">경도</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">경도</label>
             <input
               type="number"
               step="0.000001"
               value={profile.longitude ?? ''}
               onChange={(e) => updateField('longitude', e.target.value === '' ? null : Number(e.target.value))}
               placeholder="127.027621"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
         </div>
       </section>
 
       {/* 운영 기준 정보 */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
         <div>
-          <h3 className="text-base font-semibold text-gray-800">운영 기준 정보</h3>
-          <p className="text-xs text-gray-500 mt-0.5">
+          <h3 className="text-base font-semibold text-slate-800">운영 기준 정보</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
             지역·전문과목·키워드는 콘텐츠 운영 주제와 AI 언급률 측정 질문을 정리하는 기준으로 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
           </p>
         </div>
@@ -631,11 +631,11 @@ export default function ProfilePage() {
       </section>
 
       {/* 진료 항목 */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-base font-semibold text-gray-800">진료 항목</h3>
-            <p className="text-xs text-gray-500 mt-0.5">
+            <h3 className="text-base font-semibold text-slate-800">진료 항목</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
               시술·치료 안내와 질환 가이드 콘텐츠 자동 생성의 기준이 됩니다. 실제 진료하는 항목만 입력해 주세요.
             </p>
           </div>
@@ -656,28 +656,28 @@ export default function ProfilePage() {
                   value={t.name}
                   onChange={(e) => updateTreatment(i, 'name', e.target.value)}
                   placeholder="항목명 (예: 하지정맥류)"
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
                 <input
                   type="text"
                   value={t.description}
                   onChange={(e) => updateTreatment(i, 'description', e.target.value)}
                   placeholder="설명"
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
               <button
                 type="button"
                 onClick={() => removeTreatment(i)}
                 aria-label={`${t.name || '진료 항목'} 제거`}
-                className="mt-2 text-gray-400 hover:text-red-500 transition-colors text-lg leading-none"
+                className="mt-2 text-slate-400 hover:text-red-500 transition-colors text-lg leading-none"
               >
                 ×
               </button>
             </div>
           ))}
           {(profile.treatments ?? []).length === 0 && (
-            <p className="text-sm text-gray-400">진료 항목을 추가해 주세요.</p>
+            <p className="text-sm text-slate-400">진료 항목을 추가해 주세요.</p>
           )}
         </div>
       </section>
@@ -698,7 +698,7 @@ export default function ProfilePage() {
           live:    { label: '병원 정보 허브 운영중', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
           waiting: { label: '검증 대기',             cls: 'bg-amber-50 text-amber-700 border-amber-200' },
           unsaved: { label: '저장 필요',             cls: 'bg-blue-50 text-blue-700 border-blue-200' },
-          empty:   { label: '도메인 미설정',         cls: 'bg-gray-50 text-gray-600 border-gray-200' },
+          empty:   { label: '도메인 미설정',         cls: 'bg-slate-50 text-slate-600 border-slate-200' },
         }[status]
 
         async function handleSaveDomain() {
@@ -761,16 +761,16 @@ export default function ProfilePage() {
         }
 
         return (
-          <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
             {/* Hero */}
-            <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-white px-6 py-5 border-b border-gray-100">
+            <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-white px-6 py-5 border-b border-slate-100">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-base font-semibold text-gray-900">병원 소유 도메인 연결</h3>
-                  <p className="text-sm text-gray-700 mt-1">
+                  <h3 className="text-base font-semibold text-slate-900">병원 소유 도메인 연결</h3>
+                  <p className="text-sm text-slate-700 mt-1">
                     원장님 소유 도메인으로 병원 정보 허브를 운영합니다.
                   </p>
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="text-xs text-slate-500 mt-1">
                     계정·콘텐츠가 플랫폼에 묶이지 않고 병원 브랜드 자산으로 남습니다.
                   </p>
                 </div>
@@ -787,10 +787,10 @@ export default function ProfilePage() {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">1</span>
-                  <label className="text-sm font-semibold text-gray-800">원장님 소유 도메인</label>
+                  <label className="text-sm font-semibold text-slate-800">원장님 소유 도메인</label>
                 </div>
-                <p className="text-xs text-gray-500 mb-2">
-                  서브도메인 사용을 권장합니다 (예: <code className="px-1 bg-gray-100 rounded">www.clinicname.co.kr</code> 또는 <code className="px-1 bg-gray-100 rounded">ai.clinicname.co.kr</code>).
+                <p className="text-xs text-slate-500 mb-2">
+                  서브도메인 사용을 권장합니다 (예: <code className="px-1 bg-slate-100 rounded">www.clinicname.co.kr</code> 또는 <code className="px-1 bg-slate-100 rounded">ai.clinicname.co.kr</code>).
                   병원이 이미 보유한 도메인을 입력하거나, 신규 도메인을 등록업체에서 발급받아 주세요.
                 </p>
                 <div className="flex gap-2">
@@ -799,7 +799,7 @@ export default function ProfilePage() {
                     value={profile.aeo_domain ?? ''}
                     onChange={(e) => updateField('aeo_domain', e.target.value)}
                     placeholder="ai.clinicname.co.kr"
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                   <button
                     type="button"
@@ -816,36 +816,36 @@ export default function ProfilePage() {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">2</span>
-                  <label className="text-sm font-semibold text-gray-800">DNS 설정 안내</label>
+                  <label className="text-sm font-semibold text-slate-800">DNS 설정 안내</label>
                 </div>
-                <p className="text-xs text-gray-500 mb-2">
+                <p className="text-xs text-slate-500 mb-2">
                   도메인 등록업체(가비아·카페24·후이즈 등)의 DNS 관리 페이지에서 아래 CNAME 레코드를 추가해 주세요.
                 </p>
-                <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
                   <table className="w-full text-xs">
-                    <tbody className="divide-y divide-gray-200">
+                    <tbody className="divide-y divide-slate-200">
                       <tr>
-                        <td className="px-3 py-2 w-32 text-gray-500 font-medium">레코드 종류</td>
-                        <td className="px-3 py-2 font-mono text-gray-800">CNAME</td>
+                        <td className="px-3 py-2 w-32 text-slate-500 font-medium">레코드 종류</td>
+                        <td className="px-3 py-2 font-mono text-slate-800">CNAME</td>
                       </tr>
                       <tr>
-                        <td className="px-3 py-2 text-gray-500 font-medium">도메인 이름</td>
-                        <td className="px-3 py-2 font-mono text-gray-800">
-                          {currentDomain || <span className="text-gray-400">입력한 도메인</span>}
+                        <td className="px-3 py-2 text-slate-500 font-medium">도메인 이름</td>
+                        <td className="px-3 py-2 font-mono text-slate-800">
+                          {currentDomain || <span className="text-slate-400">입력한 도메인</span>}
                         </td>
                       </tr>
                       <tr>
-                        <td className="px-3 py-2 text-gray-500 font-medium">연결 대상값</td>
-                        <td className="px-3 py-2 font-mono text-gray-800">{domainExpectedCname}</td>
+                        <td className="px-3 py-2 text-slate-500 font-medium">연결 대상값</td>
+                        <td className="px-3 py-2 font-mono text-slate-800">{domainExpectedCname}</td>
                       </tr>
                       <tr>
-                        <td className="px-3 py-2 text-gray-500 font-medium">TTL</td>
-                        <td className="px-3 py-2 font-mono text-gray-800">300 (5분)</td>
+                        <td className="px-3 py-2 text-slate-500 font-medium">TTL</td>
+                        <td className="px-3 py-2 font-mono text-slate-800">300 (5분)</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
-                <p className="text-[11px] text-gray-400 mt-1.5">
+                <p className="text-[11px] text-slate-400 mt-1.5">
                   환경별 대상값은 검증 결과 메시지를 기준으로 확인됩니다. DNS 전파에는 최대 24시간이 소요될 수 있습니다.
                 </p>
               </div>
@@ -854,7 +854,7 @@ export default function ProfilePage() {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">3</span>
-                  <label className="text-sm font-semibold text-gray-800">연결 검증 및 병원 정보 허브 운영 시작</label>
+                  <label className="text-sm font-semibold text-slate-800">연결 검증 및 병원 정보 허브 운영 시작</label>
                 </div>
                 {profile.site_live && !hasUnsavedChange ? (
                   <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
@@ -923,11 +923,11 @@ export default function ProfilePage() {
             : 'border-amber-200 bg-gradient-to-br from-amber-50 via-white to-white'
         }`}
       >
-        <div className="px-6 py-5 border-b border-gray-100/80">
+        <div className="px-6 py-5 border-b border-slate-100/80">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-base font-semibold text-gray-900">온보딩 완료 및 초기 진단 리포트·병원 정보 허브 준비 시작</h3>
-              <p className="text-xs text-gray-600 mt-1">
+              <h3 className="text-base font-semibold text-slate-900">온보딩 완료 및 초기 진단 리포트·병원 정보 허브 준비 시작</h3>
+              <p className="text-xs text-slate-600 mt-1">
                 체크 후 저장하면 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다.
                 필수 항목을 모두 채운 뒤 진행하세요.
               </p>
@@ -977,16 +977,16 @@ export default function ProfilePage() {
             </div>
           )}
 
-          <label className="flex items-start gap-3 cursor-pointer rounded-lg border border-gray-200 bg-white px-4 py-3 hover:border-gray-300 transition-colors">
+          <label className="flex items-start gap-3 cursor-pointer rounded-lg border border-slate-200 bg-white px-4 py-3 hover:border-slate-300 transition-colors">
             <input
               type="checkbox"
               checked={profile.profile_complete ?? false}
               onChange={(e) => updateField('profile_complete', e.target.checked)}
-              className="mt-0.5 w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
             />
             <div>
-              <span className="text-sm font-medium text-gray-800">프로파일 완료로 표시</span>
-              <p className="text-xs text-gray-500 mt-0.5">
+              <span className="text-sm font-medium text-slate-800">프로파일 완료로 표시</span>
+              <p className="text-xs text-slate-500 mt-0.5">
                 저장 시점에 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다. 운영 알림으로 결과를 확인합니다.
               </p>
               {!requiredReady && (profile.profile_complete ?? false) && (

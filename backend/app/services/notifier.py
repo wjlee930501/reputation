@@ -189,8 +189,28 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
                     f"오류: `{error[:300]}`\n\n"
                     f"개인정보보호법 제21조 의무 이행 차질. 즉시 확인 필요."
                 )},
-            }],
-        )
+        }],
+    )
+
+
+async def notify_content_generation_failed(
+    hospital_name: str, content_type: str, scheduled_date: str, error: str
+) -> bool:
+    """콘텐츠 생성 실패 → AE에게. 수동 재생성을 유도."""
+    error_snippet = error[:200]
+    return await _send(
+        text=f"⚠️ [콘텐츠 생성 실패] {hospital_name} {content_type} 생성 실패",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"⚠️ *[콘텐츠 생성 실패]*\n"
+                f"병원: *{hospital_name}*\n"
+                f"유형: {content_type} | 발행 예정일: {scheduled_date}\n\n"
+                f"오류: `{error_snippet}`\n\n"
+                f"Admin 콘텐츠 화면에서 수동 재생성해 주세요."
+            )},
+        }],
+    )
     return await _send(
         text=f"🧹 [PII 자동 파기] 만료 리드 {purged}건 익명화 완료" + (f" (스킵 {skipped})" if skipped else ""),
         blocks=[{

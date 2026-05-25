@@ -1,0 +1,33 @@
+# ═══════════════════════════════════════════════════════════════════
+# Re:putation — Terraform 변수 값
+#
+# cp terraform.tfvars.example terraform.tfvars
+# 실제 값으로 채운 후 terraform apply 실행.
+# ═══════════════════════════════════════════════════════════════════
+
+project_id          = "reputation-prod"
+region              = "us-central1"
+zone                = "us-central1-a"
+
+# ── Domain ─────────────────────────────────────────────────────────
+domain              = "reputation.co.kr"
+admin_subdomain     = "admin.reputation.co.kr"
+dns_zone_name       = ""  # Cloud DNS managed zone (선택)
+
+# ── Database ───────────────────────────────────────────────────────
+db_instance_tier    = "db-custom-1-3840"
+db_password         = "CHANGE_ME_USE_STRONG_PASSWORD"
+
+# ── API Keys (Secret Manager에 저장됨) ──────────────────────────────
+anthropic_api_key   = "sk-ant-..."
+openai_api_key      = "sk-..."
+gemini_api_key      = "AIza..."
+slack_webhook_url   = "https://hooks.slack.com/services/..."
+
+# ── Admin Auth ─────────────────────────────────────────────────────
+admin_secret_key    = "CHANGE_ME_RANDOM_STRING"
+admin_login_password = "CHANGE_ME"
+admin_session_secret = "CHANGE_ME"  # python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# ── Site ───────────────────────────────────────────────────────────
+site_revalidate_secret = "CHANGE_ME"

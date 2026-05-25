@@ -1,7 +1,7 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS, type ContentItem } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -47,8 +47,9 @@ export default async function ContentsLibraryPage({ params }: Props) {
       fetchHospital(params.slug),
       fetchContents(params.slug, 500),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const grouped = new Map<string, ContentItem[]>()

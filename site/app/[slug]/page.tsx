@@ -1,7 +1,7 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchHospital, fetchContents } from '@/lib/api'
+import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
@@ -93,8 +93,9 @@ export default async function HospitalHubPage({ params }: Props) {
       fetchHospital(params.slug),
       fetchContents(params.slug, 60),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const sameAs = [
@@ -177,7 +178,7 @@ export default async function HospitalHubPage({ params }: Props) {
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <ClinicHero
             hospitalName={hospital.name}
             hospitalSlug={params.slug}

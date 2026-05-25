@@ -84,7 +84,7 @@ export function ContactCard({
               <a
                 href={googleMapsUrl}
                 target="_blank"
-                rel="noopener"
+                rel="noopener noreferrer"
                 className="clinic-contact-link"
                 style={{ marginTop: 12 }}
               >
@@ -137,7 +137,7 @@ export function ContactCard({
                 <a
                   href={websiteUrl}
                   target="_blank"
-                  rel="noopener"
+                  rel="noopener noreferrer"
                   className="clinic-channel-card"
                   aria-label="공식 홈페이지로 이동"
                 >
@@ -153,7 +153,7 @@ export function ContactCard({
                   key={link.url ?? link.label}
                   href={link.url ?? '#'}
                   target="_blank"
-                  rel="noopener"
+                  rel="noopener noreferrer"
                   className="clinic-channel-card"
                 >
                   <span className="clinic-channel-card-icon">{pickIcon(link.label)}</span>

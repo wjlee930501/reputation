@@ -1,0 +1,196 @@
+# ═══════════════════════════════════════════════════════════════════
+# Re:putation — HTTPS Load Balancer
+#
+# 아키텍처:
+#   User → HTTPS LB (managed SSL cert)
+#       → Serverless NEG → Cloud Run API
+#       → URL Map: /api/* → API, 나머지 → Vercel (site/admin)
+#
+# 참고: site/admin은 Vercel에서 서빙되므로 LB의 백엔드는
+# Cloud Run API용 Serverless NEG가 메인.
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Serverless NEG (Cloud Run 연결) ────────────────────────────────
+resource "google_compute_region_network_endpoint_group" "api_neg" {
+  name                  = "${var.app_name}-api-neg"
+  project               = var.project_id
+  region                = var.region
+  network_endpoint_type = "SERVERLESS"
+  cloud_run {
+    service = google_cloud_run_v2_service.api.name
+  }
+}
+
+# ── Managed SSL Certificate ────────────────────────────────────────
+resource "google_compute_managed_ssl_certificate" "main" {
+  name    = "${var.app_name}-cert"
+  project = var.project_id
+
+  managed {
+    domains = [var.domain]
+  }
+}
+
+# ── Reserved Global IP ─────────────────────────────────────────────
+resource "google_compute_global_address" "lb_ip" {
+  name    = "${var.app_name}-lb-ip"
+  project = var.project_id
+}
+
+# ── Backend Service ────────────────────────────────────────────────
+resource "google_compute_backend_service" "api" {
+  name      = "${var.app_name}-api-backend"
+  project   = var.project_id
+  protocol  = "HTTP"
+  port_name = "http"
+
+  backend {
+    group = google_compute_region_network_endpoint_group.api_neg.id
+  }
+
+  enable_cdn = true
+
+  cdn_policy {
+    cache_mode                   = "CACHE_ALL_STATIC"
+    default_ttl                  = 3600
+    client_ttl                   = 3600
+    max_ttl                      = 86400
+    serve_while_stale            = 86400
+    negative_caching             = true
+    negative_caching_policy {
+      code = 404
+      ttl  = 300
+    }
+  }
+
+  log_config {
+    enable      = true
+    sample_rate = 0.1
+  }
+}
+
+# ── URL Map ────────────────────────────────────────────────────────
+resource "google_compute_url_map" "main" {
+  name            = "${var.app_name}-url-map"
+  project         = var.project_id
+  default_service = google_compute_backend_service.api.id
+}
+
+# ── HTTP → HTTPS Redirect ──────────────────────────────────────────
+resource "google_compute_url_map" "http_redirect" {
+  name    = "${var.app_name}-http-redirect"
+  project = var.project_id
+
+  default_url_redirect {
+    https_redirect         = true
+    redirect_response_code = "MOVED_PERMANENTLY_DEFAULT"
+    strip_query            = false
+  }
+}
+
+resource "google_compute_target_http_proxy" "http_redirect" {
+  name    = "${var.app_name}-http-redirect-proxy"
+  project = var.project_id
+  url_map = google_compute_url_map.http_redirect.id
+}
+
+resource "google_compute_global_forwarding_rule" "http_redirect" {
+  name       = "${var.app_name}-http-redirect-rule"
+  project    = var.project_id
+  target     = google_compute_target_http_proxy.http_redirect.id
+  ip_address = google_compute_global_address.lb_ip.address
+  port_range = "80"
+}
+
+# ── HTTPS Proxy + Forwarding Rule ──────────────────────────────────
+resource "google_compute_target_https_proxy" "main" {
+  name    = "${var.app_name}-https-proxy"
+  project = var.project_id
+  url_map = google_compute_url_map.main.id
+
+  ssl_certificates = [google_compute_managed_ssl_certificate.main.id]
+}
+
+resource "google_compute_global_forwarding_rule" "https" {
+  name       = "${var.app_name}-https-rule"
+  project    = var.project_id
+  target     = google_compute_target_https_proxy.main.id
+  ip_address = google_compute_global_address.lb_ip.address
+  port_range = "443"
+}
+
+# ── DNS Record (optional — Cloud DNS) ──────────────────────────────
+resource "google_dns_record_set" "a" {
+  count        = var.dns_zone_name != "" ? 1 : 0
+  name         = "${var.domain}."
+  type         = "A"
+  ttl          = 300
+  managed_zone = var.dns_zone_name
+  project      = var.project_id
+  rrdatas      = [google_compute_global_address.lb_ip.address]
+}
+
+resource "google_dns_record_set" "www" {
+  count        = var.dns_zone_name != "" ? 1 : 0
+  name         = "www.${var.domain}."
+  type         = "CNAME"
+  ttl          = 300
+  managed_zone = var.dns_zone_name
+  project      = var.project_id
+  rrdatas      = ["${var.domain}."]
+}
+
+# ── Cloud Armor (WAF) — 기본 보안 정책 ─────────────────────────────
+resource "google_compute_security_policy" "main" {
+  name    = "${var.app_name}-security-policy"
+  project = var.project_id
+
+  rule {
+    action   = "allow"
+    priority = 2147483647
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+    description = "Default allow"
+  }
+}
+
+resource "google_compute_backend_service" "api_with_armor" {
+  name      = "${var.app_name}-api-backend-armor"
+  project   = var.project_id
+  protocol  = "HTTP"
+  port_name = "http"
+
+  backend {
+    group = google_compute_region_network_endpoint_group.api_neg.id
+  }
+
+  enable_cdn = true
+
+  cdn_policy {
+    cache_mode        = "CACHE_ALL_STATIC"
+    default_ttl       = 3600
+    client_ttl        = 3600
+    max_ttl           = 86400
+    serve_while_stale = 86400
+  }
+
+  security_policy = google_compute_security_policy.main.name
+
+  log_config {
+    enable      = true
+    sample_rate = 0.1
+  }
+}
+
+# Output the LB IP for DNS setup
+output "load_balancer_ip" {
+  value = google_compute_global_address.lb_ip.address
+}
+
+output "api_url" {
+  value = google_cloud_run_v2_service.api.uri
+}

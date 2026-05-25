@@ -8,6 +8,7 @@ import {
   fetchContent,
   fetchContents,
   fetchHospital,
+  HospitalNotFoundError,
   SOURCE_TYPE_LABELS,
   TYPE_LABELS,
 } from '@/lib/api'
@@ -130,8 +131,9 @@ export default async function ContentDetailPage({ params }: Props) {
       fetchContent(params.slug, params.contentId),
       fetchContents(params.slug, 60),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
@@ -405,7 +407,7 @@ export default async function ContentDetailPage({ params }: Props) {
                         : null
                       return (
                         <li key={`${ref.url}-${idx}`}>
-                          <a href={ref.url} target="_blank" rel="noopener nofollow">
+                          <a href={ref.url} target="_blank" rel="noopener noreferrer nofollow">
                             {sourceLabel && (
                               <span className="clinic-article-references-source" aria-label="출처 분류">
                                 {sourceLabel}
@@ -458,7 +460,7 @@ export default async function ContentDetailPage({ params }: Props) {
                   <a
                     href={hospital.website_url}
                     target="_blank"
-                    rel="noopener"
+                    rel="noopener noreferrer"
                     className="clinic-btn clinic-btn-primary"
                     style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14 }}
                   >

@@ -279,9 +279,15 @@ def nightly_content_generation():
                     db.refresh(item)  # re-sync after rollback
 
             except Exception as e:
-                logger.error(f"Content generation failed for {item.id}: {e}")
+                logger.error(f"Content generation failed for item {item.id} ({hospital.name}): {e}")
                 db.rollback()
-                db.expire_all()  # expire stale ORM state after rollback
+                db.expire_all()
+                _run_async(notifier.notify_content_generation_failed(
+                    hospital_name=hospital.name,
+                    content_type=item.content_type.value if item.content_type else "UNKNOWN",
+                    scheduled_date=str(item.scheduled_date),
+                    error=str(e),
+                ))
 
 
 @celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)

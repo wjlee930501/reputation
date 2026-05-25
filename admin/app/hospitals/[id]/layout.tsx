@@ -36,7 +36,7 @@ export default function HospitalLayout({
   }, [hospitalId])
 
   const statusInfo = hospital
-    ? STATUS_LABELS[hospital.status] ?? { label: hospital.status, color: 'bg-gray-100 text-gray-700' }
+    ? STATUS_LABELS[hospital.status] ?? { label: hospital.status, color: 'bg-slate-100 text-slate-700' }
     : null
 
   const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
