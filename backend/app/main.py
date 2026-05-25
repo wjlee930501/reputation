@@ -74,6 +74,30 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(RequestIdMiddleware)
 
+
+class PublicApiCacheMiddleware(BaseHTTPMiddleware):
+    """CDN-friendly cache headers for public API responses.
+
+    Hospital data changes infrequently; content list changes when AE publishes.
+    ISR at the Next.js layer handles staleness; these headers help CDN/browser caches.
+    """
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        if not request.url.path.startswith("/api/v1/public/"):
+            return response
+        if request.method != "GET":
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        if "/contents" in request.url.path:
+            response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=3600"
+        else:
+            response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
+        return response
+
+
+app.add_middleware(PublicApiCacheMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
