@@ -159,7 +159,7 @@ export default async function ContentDetailPage({ params }: Props) {
 
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
-    { label: '블로그', href: `/${params.slug}/contents` },
+    { label: '의료 정보', href: `/${params.slug}/contents` },
     { label: typeLabel },
     { label: content.title },
   ]
@@ -454,7 +454,7 @@ export default async function ContentDetailPage({ params }: Props) {
                   className="clinic-btn clinic-btn-secondary"
                   style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14, marginBottom: 8 }}
                 >
-                  병원 블로그 홈으로
+                  병원 의료 정보 홈으로
                 </Link>
                 {hospital.website_url && (
                   <a

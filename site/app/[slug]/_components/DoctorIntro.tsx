@@ -83,7 +83,7 @@ export function DoctorIntro({
 
             <div className="clinic-curator-meta">
               <div className="clinic-curator-meta-cell">
-                <span className="clinic-curator-meta-label">블로그 글</span>
+                <span className="clinic-curator-meta-label">의료 정보 글</span>
                 <span className="clinic-curator-meta-value">{contentCount}편</span>
               </div>
               <div className="clinic-curator-meta-cell">

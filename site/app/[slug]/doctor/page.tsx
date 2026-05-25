@@ -185,7 +185,7 @@ export default async function DoctorPage({ params }: Props) {
                       href={`/${params.slug}/contents`}
                       className="clinic-btn clinic-btn-secondary"
                     >
-                      블로그 글 전체 보기
+                      의료 정보 전체 보기
                     </Link>
                   </div>
                 )}

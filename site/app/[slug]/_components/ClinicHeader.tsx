@@ -22,7 +22,7 @@ export function ClinicHeader({
   const subline = `${region.join(' ')} ${specialties.join(' · ')}`.trim()
   const navItems = (
     <>
-      <Link href={`/${hospitalSlug}/contents`}>블로그</Link>
+      <Link href={`/${hospitalSlug}/contents`}>의료 정보</Link>
       <Link href={`/${hospitalSlug}/doctor`}>의료진</Link>
       <Link href={`/${hospitalSlug}/treatments`}>진료 영역</Link>
       <Link href={`/${hospitalSlug}/visit`}>진료 안내</Link>
@@ -38,14 +38,14 @@ export function ClinicHeader({
   return (
     <header className="clinic-header">
       <div className="clinic-header-row">
-        <Link href={`/${hospitalSlug}`} className="clinic-header-brand" aria-label={`${hospitalName} 블로그 홈으로`}>
+        <Link href={`/${hospitalSlug}`} className="clinic-header-brand" aria-label={`${hospitalName} 의료 정보 홈으로`}>
           <span className="clinic-header-brand-name">{hospitalName}</span>
           <span className="clinic-header-brand-meta">
-            진료 블로그{subline && ` · ${subline}`}
+            의료 정보{subline && ` · ${subline}`}
           </span>
         </Link>
 
-        <nav className="clinic-header-nav" aria-label="병원 블로그 섹션">
+        <nav className="clinic-header-nav" aria-label="병원 섹션">
           {navItems}
         </nav>
 
@@ -56,7 +56,7 @@ export function ClinicHeader({
       </div>
 
       {/* 모바일 전용 가로 스크롤 nav. desktop에선 숨김. */}
-      <nav className="clinic-header-nav-mobile" aria-label="병원 블로그 섹션 (모바일)">
+      <nav className="clinic-header-nav-mobile" aria-label="병원 섹션 (모바일)">
         {navItems}
       </nav>
     </header>

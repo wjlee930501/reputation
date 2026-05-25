@@ -200,14 +200,14 @@ export default async function TreatmentPillarPage({ params }: Props) {
             <div className="clinic-section-inner">
               {relatedContents.length === 0 ? (
                 <div className="clinic-empty">
-                  <span className="clinic-empty-title">관련 블로그 글이 준비 중입니다</span>
+                  <span className="clinic-empty-title">관련 의료 정보가 준비 중입니다</span>
                   <p>{treatmentName}에 대한 환자 안내 글이 곧 발행됩니다.</p>
                   <Link
                     href={`/${params.slug}/contents`}
                     className="clinic-btn clinic-btn-secondary"
                     style={{ marginTop: 16 }}
                   >
-                    전체 블로그 글 보기
+                    전체 의료 정보 보기
                   </Link>
                 </div>
               ) : (
@@ -234,7 +234,7 @@ export default async function TreatmentPillarPage({ params }: Props) {
                       href={`/${params.slug}/contents`}
                       className="clinic-btn clinic-btn-secondary"
                     >
-                      블로그 글 전체 보기
+                      의료 정보 전체 보기
                     </Link>
                   </div>
                 </>

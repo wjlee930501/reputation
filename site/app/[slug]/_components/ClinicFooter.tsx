@@ -43,7 +43,7 @@ export function ClinicFooter({ hospitalName, address, phone, websiteUrl }: Props
 
         <div className="clinic-footer-disclaimer">
           <span>
-            이 블로그의 글은 {hospitalName}의 진료 정보를 바탕으로 정리한 일반 건강 정보입니다.
+            이 페이지의 글은 {hospitalName}의 진료 정보를 바탕으로 정리한 일반 건강 정보입니다.
           </span>
         </div>
 

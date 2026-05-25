@@ -180,7 +180,7 @@ export default async function TreatmentsPage({ params }: Props) {
               <div className="clinic-section-inner">
                 <header className="clinic-section-header">
                   <span className="clinic-section-eyebrow">관련 글</span>
-                  <h2 className="clinic-section-heading">진료 영역별 블로그 글</h2>
+                  <h2 className="clinic-section-heading">진료 영역별 의료 정보</h2>
                   <p className="clinic-section-lede">
                     진료 전 궁금해할 만한 질문과 안내를 진료 영역별로 모았습니다.
                   </p>
@@ -229,7 +229,7 @@ export default async function TreatmentsPage({ params }: Props) {
                     href={`/${params.slug}/contents`}
                     className="clinic-btn clinic-btn-secondary"
                   >
-                    블로그 글 전체 보기
+                    의료 정보 전체 보기
                   </Link>
                 </div>
               </div>
