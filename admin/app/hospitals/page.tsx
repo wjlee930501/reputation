@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
 import { Hospital, STATUS_LABELS, PLAN_LABELS } from '@/types'
+import { SkeletonTable } from '@/app/components/Skeleton'
 
 export default function HospitalsPage() {
   const [hospitals, setHospitals] = useState<Hospital[]>([])
@@ -35,10 +36,10 @@ export default function HospitalsPage() {
   }, [hospitals])
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       {/* Page header */}
       <div className="mb-6">
-        <div className="flex items-start justify-between gap-4 mb-2">
+        <div className="flex flex-col gap-4 mb-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">병원 목록</h1>
             <p className="text-sm text-slate-500 mt-1">
@@ -64,11 +65,7 @@ export default function HospitalsPage() {
         )}
       </div>
 
-      {loading && (
-        <div className="bg-white border border-slate-200 rounded-xl py-16 text-center text-slate-500">
-          불러오는 중...
-        </div>
-      )}
+      {loading && <SkeletonTable rows={6} />}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">
@@ -94,13 +91,13 @@ export default function HospitalsPage() {
       {!loading && !error && hospitals.length > 0 && (
         <>
           {/* Search */}
-          <div className="mb-3 flex items-center gap-3">
+          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
             <input
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="병원명 또는 slug 검색"
-              className="w-72 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 sm:w-72"
             />
             {query && (
               <span className="text-xs text-slate-500">
@@ -109,8 +106,9 @@ export default function HospitalsPage() {
             )}
           </div>
 
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <table className="w-full text-sm">
+          <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="overflow-x-auto">
+            <table className="min-w-[820px] w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">병원</th>
@@ -132,7 +130,7 @@ export default function HospitalsPage() {
                 )}
                 {filtered.map((h) => {
                   const status =
-                    STATUS_LABELS[h.status] ?? { label: h.status, color: 'bg-gray-100 text-gray-700' }
+                    STATUS_LABELS[h.status] ?? { label: h.status, color: 'bg-slate-100 text-slate-700' }
                   return (
                     <tr key={h.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-6 py-4">
@@ -180,6 +178,7 @@ export default function HospitalsPage() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         </>
       )}

@@ -1,4 +1,5 @@
-.PHONY: setup up down logs migrate revision test test-local test-backend-local test-frontend build-frontend demo-seed essence-backfill copy-guard
+.PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard
+.PHONY: deploy-api deploy-worker deploy-beat deploy-all deploy-migrate setup-gcp build-image
 
 setup:
 	cp .env.example .env
@@ -72,3 +73,27 @@ gen-content-now:
 monthly-report:
 	docker compose exec worker celery -A app.core.celery_app call \
 		app.workers.tasks.run_monthly_reports
+
+# ── GCP 배포 ───────────────────────────────────────────────────────
+setup-gcp:
+	bash scripts/setup-gcp.sh
+
+build-image:
+	docker build --platform linux/amd64 \
+		-t "$(GCP_REGION:-us-central1)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(GCP_ARTIFACT_REPO:-reputation)/reputation:$(shell date +%Y%m%d-%H%M%S)" \
+		-f backend/Dockerfile backend
+
+deploy-api:
+	bash scripts/deploy.sh api
+
+deploy-worker:
+	bash scripts/deploy.sh worker
+
+deploy-beat:
+	bash scripts/deploy.sh beat
+
+deploy-all:
+	bash scripts/deploy.sh all
+
+deploy-migrate:
+	bash scripts/deploy.sh migrate

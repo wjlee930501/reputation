@@ -185,6 +185,7 @@ export default function DashboardPage() {
   }
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     Promise.all([
       fetchAPI(`/admin/hospitals/${id}/sov/trend`).catch(() => [] as TrendPoint[]),
@@ -206,6 +207,7 @@ export default function DashboardPage() {
           AuditLogRow[],
         ],
       ) => {
+        if (cancelled) return
         setTrendData(Array.isArray(trend) ? trend : [])
         setQueries(Array.isArray(qs) ? qs : [])
         setReadiness(readinessData)
@@ -214,8 +216,9 @@ export default function DashboardPage() {
         setQueryTargets(Array.isArray(targets) ? targets : [])
         setAuditLogs(Array.isArray(audit) ? audit : [])
       })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false))
+      .catch((e: Error) => { if (!cancelled) setError(e.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [id])
 
   const lastPoint = trendData.length > 0 ? trendData[trendData.length - 1] : null

@@ -73,59 +73,12 @@ export default function NewHospitalPage() {
         <Link href="/hospitals" className="text-sm text-slate-500 hover:text-slate-700">
           ← 목록으로
         </Link>
-        <h1 className="mt-2 text-2xl font-bold text-slate-900">신규 병원 온보딩</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          병원 워크스페이스를 만든 뒤 온보딩 허브에서 프로파일, 자료 인입, 운영 기준을 이어서 진행합니다.
-        </p>
+        <h1 className="text-2xl font-bold text-slate-900 mt-2">신규 병원 등록</h1>
       </div>
 
-      {leadContext && (
-        <div className="mb-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold text-blue-950">상담 리드에서 시작됨</p>
-              <p className="mt-1 text-xs text-blue-700">
-                리드 정보를 병원명 초안으로 불러왔습니다. 생성 후 온보딩 허브에서 세부 정보를 보완하세요.
-              </p>
-            </div>
-            {leadContext.id && (
-              <span className="rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-blue-700">
-                Lead {leadContext.id.slice(0, 8)}
-              </span>
-            )}
-          </div>
-          <dl className="mt-3 grid gap-3 text-xs text-blue-900 sm:grid-cols-2">
-            {leadContext.type && (
-              <div>
-                <dt className="font-medium text-blue-700">진료과/지역</dt>
-                <dd className="mt-0.5">{leadContext.type}</dd>
-              </div>
-            )}
-            {leadContext.contact && (
-              <div>
-                <dt className="font-medium text-blue-700">연락처</dt>
-                <dd className="mt-0.5">{leadContext.contact}</dd>
-              </div>
-            )}
-            {leadContext.source && (
-              <div>
-                <dt className="font-medium text-blue-700">유입</dt>
-                <dd className="mt-0.5">{leadContext.source}</dd>
-              </div>
-            )}
-            {leadContext.question && (
-              <div className="sm:col-span-2">
-                <dt className="font-medium text-blue-700">문의 내용</dt>
-                <dd className="mt-0.5">{leadContext.question}</dd>
-              </div>
-            )}
-          </dl>
-        </div>
-      )}
-
-      <form onSubmit={handleSubmit} className="space-y-5 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+      <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-5">
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">
             병원명 <span className="text-red-500">*</span>
           </label>
           <input
@@ -134,18 +87,18 @@ export default function NewHospitalPage() {
             onChange={(e) => setName(e.target.value)}
             placeholder="예: 장편한외과의원"
             required
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
 
         <div>
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">
             월간 운영량 <span className="text-red-500">*</span>
           </label>
           <select
             value={plan}
             onChange={(e) => setPlan(e.target.value)}
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
           >
             <option value="PLAN_16">월 16편 집중 운영</option>
             <option value="PLAN_12">월 12편 표준 운영</option>

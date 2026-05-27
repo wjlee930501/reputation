@@ -126,14 +126,14 @@ function renderSummaryValue(key: string, value: unknown): string {
 function SummaryGrid({ data }: { data: Record<string, unknown> }) {
   const entries = Object.entries(data).filter(([, v]) => v !== null && v !== undefined)
   if (entries.length === 0) {
-    return <p className="text-sm text-gray-400">표시할 항목이 없습니다.</p>
+    return <p className="text-sm text-slate-400">표시할 항목이 없습니다.</p>
   }
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-2">
       {entries.map(([k, v]) => (
         <div key={k} className="flex justify-between gap-2 text-sm">
-          <span className="text-gray-600">{humanizeKey(k)}</span>
-          <span className="font-medium text-gray-900">{renderSummaryValue(k, v)}</span>
+          <span className="text-slate-600">{humanizeKey(k)}</span>
+          <span className="font-medium text-slate-900">{renderSummaryValue(k, v)}</span>
         </div>
       ))}
     </div>
@@ -151,8 +151,8 @@ function ChecklistRow({ ok, label, hint }: { ok: boolean; label: string; hint?: 
         {ok ? '✓' : '!'}
       </span>
       <div className="flex-1">
-        <div className={ok ? 'text-gray-800' : 'text-amber-800 font-medium'}>{label}</div>
-        {hint && <div className="text-xs text-gray-500 mt-0.5">{hint}</div>}
+        <div className={ok ? 'text-slate-800' : 'text-amber-800 font-medium'}>{label}</div>
+        {hint && <div className="text-xs text-slate-500 mt-0.5">{hint}</div>}
       </div>
     </div>
   )
@@ -209,8 +209,8 @@ export default function ReportsPage() {
   return (
     <div className="p-8">
       <div className="mb-6">
-        <h2 className="text-xl font-bold text-gray-900">리포트 검수</h2>
-        <p className="mt-1 text-sm text-gray-600">
+        <h2 className="text-xl font-bold text-slate-900">리포트 검수</h2>
+        <p className="mt-1 text-sm text-slate-600">
           PDF를 내려받기 전에 AI 답변 노출, 콘텐츠 성과, 운영 기준 검수 결과를 먼저 확인합니다.
         </p>
       </div>
@@ -224,7 +224,7 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {loading && <div className="text-center py-16 text-gray-500">불러오는 중...</div>}
+      {loading && <div className="text-center py-16 text-slate-500">불러오는 중...</div>}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">오류: {error}</div>
@@ -237,19 +237,19 @@ export default function ReportsPage() {
       )}
 
       {!loading && !error && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
+            <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="text-left px-6 py-3 text-gray-600 font-medium">기간</th>
-                <th className="text-left px-6 py-3 text-gray-600 font-medium">리포트 유형</th>
-                <th className="text-left px-6 py-3 text-gray-600 font-medium">검수 상태</th>
-                <th className="text-center px-6 py-3 text-gray-600 font-medium">PDF</th>
-                <th className="text-left px-6 py-3 text-gray-600 font-medium">생성일</th>
-                <th className="text-right px-6 py-3 text-gray-600 font-medium">액션</th>
+                <th className="text-left px-6 py-3 text-slate-600 font-medium">기간</th>
+                <th className="text-left px-6 py-3 text-slate-600 font-medium">리포트 유형</th>
+                <th className="text-left px-6 py-3 text-slate-600 font-medium">검수 상태</th>
+                <th className="text-center px-6 py-3 text-slate-600 font-medium">PDF</th>
+                <th className="text-left px-6 py-3 text-slate-600 font-medium">생성일</th>
+                <th className="text-right px-6 py-3 text-slate-600 font-medium">액션</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-slate-100">
               {reports.length === 0 && (
                 <tr>
                   <td colSpan={6} className="px-6 py-10">
@@ -261,11 +261,11 @@ export default function ReportsPage() {
                 const status = getScreeningStatus(r)
                 const meta = getScreeningMeta(r)
                 return (
-                  <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 text-gray-900 font-medium">
+                  <tr key={r.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-6 py-4 text-slate-900 font-medium">
                       {r.period_year}년 {r.period_month}월
                     </td>
-                    <td className="px-6 py-4 text-gray-600">
+                    <td className="px-6 py-4 text-slate-600">
                       {getReportTypeLabel(r)}
                     </td>
                     <td className="px-6 py-4">
@@ -286,10 +286,10 @@ export default function ReportsPage() {
                       ) : r.has_pdf ? (
                         <span className="text-blue-600 text-xs">{getPdfStatusLabel(r)}</span>
                       ) : (
-                        <span className="text-gray-400 text-xs">{getPdfStatusLabel(r)}</span>
+                        <span className="text-slate-400 text-xs">{getPdfStatusLabel(r)}</span>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-gray-600">
+                    <td className="px-6 py-4 text-slate-600">
                       <div>{formatDate(r.created_at)}</div>
                       {r.sent_at && <div className="text-xs text-green-700 mt-0.5">전달 {formatDate(r.sent_at)}</div>}
                     </td>
@@ -297,7 +297,7 @@ export default function ReportsPage() {
                       <button
                         onClick={() => openDetail(r)}
                         disabled={detailLoadingId === r.id}
-                        className="px-3 py-1 bg-gray-900 text-white text-xs rounded hover:bg-gray-700 disabled:opacity-60"
+                        className="px-3 py-1 bg-slate-900 text-white text-xs rounded hover:bg-slate-700 disabled:opacity-60"
                       >
                         {detailLoadingId === r.id ? '불러오는 중' : status === 'DELIVERED' ? '보기' : '검수하기'}
                       </button>
@@ -330,7 +330,7 @@ function SummaryCard({
     blue: 'border-blue-200 bg-blue-50 text-blue-900',
     green: 'border-green-200 bg-green-50 text-green-900',
     indigo: 'border-indigo-200 bg-indigo-50 text-indigo-900',
-    gray: 'border-gray-200 bg-gray-50 text-gray-900',
+    gray: 'border-slate-200 bg-slate-50 text-slate-900',
   }
   return (
     <div className={`rounded-xl border p-4 ${toneCls[tone]}`}>
@@ -342,15 +342,15 @@ function SummaryCard({
 
 function EmptyReportState() {
   return (
-    <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-6 py-8 text-center">
-      <p className="text-sm font-semibold text-gray-800">아직 검수할 리포트가 없습니다.</p>
-      <p className="mt-2 text-sm leading-6 text-gray-500">
+    <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center">
+      <p className="text-sm font-semibold text-slate-800">아직 검수할 리포트가 없습니다.</p>
+      <p className="mt-2 text-sm leading-6 text-slate-500">
         병원 자료와 콘텐츠 운영 기준을 검토한 뒤 AI 언급률 측정과 콘텐츠 성과가 쌓이면 리포트가 생성됩니다.
       </p>
-      <div className="mt-4 grid gap-2 text-left text-xs text-gray-600 md:grid-cols-3">
-        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-gray-200">1. 운영 기준 승인 확인</span>
-        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-gray-200">2. AI 언급률 측정 실행</span>
-        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-gray-200">3. 발행 콘텐츠 성과 확인</span>
+      <div className="mt-4 grid gap-2 text-left text-xs text-slate-600 md:grid-cols-3">
+        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200">1. 운영 기준 승인 확인</span>
+        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200">2. AI 언급률 측정 실행</span>
+        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200">3. 발행 콘텐츠 성과 확인</span>
       </div>
     </div>
   )
@@ -431,10 +431,10 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
   return (
     <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
       <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full my-8">
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
+        <div className="flex items-center justify-between p-6 border-b border-slate-200">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-lg font-bold text-gray-900">
+              <h3 className="text-lg font-bold text-slate-900">
                 {getReportTypeLabel(report)} — {report.period_year}년 {report.period_month}월
               </h3>
               <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
@@ -451,19 +451,19 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
                 </a>
               )}
             </div>
-            <div className="mt-1 text-xs text-gray-500">
+            <div className="mt-1 text-xs text-slate-500">
               생성 {formatDate(report.created_at)}
               {report.sent_at ? ` · 전달 ${formatDate(report.sent_at)}` : ''}
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl" aria-label="닫기">
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl" aria-label="닫기">
             ✕
           </button>
         </div>
 
         <div className="p-6 space-y-6">
-          <section className="rounded-lg border border-gray-200 p-4">
-            <h4 className="text-sm font-semibold text-gray-900 mb-3">원장 보고 전 체크</h4>
+          <section className="rounded-lg border border-slate-200 p-4">
+            <h4 className="text-sm font-semibold text-slate-900 mb-3">원장 보고 전 체크</h4>
             <div className="space-y-3">
               <ReportGuidance
                 missingItems={missingItems}
@@ -511,23 +511,23 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
           </section>
 
           <section>
-            <h4 className="text-sm font-semibold text-gray-900 mb-3">이번 달 핵심 변화</h4>
+            <h4 className="text-sm font-semibold text-slate-900 mb-3">이번 달 핵심 변화</h4>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-lg bg-blue-50 border border-blue-100 p-4">
                 <p className="text-xs font-semibold text-blue-700 mb-2">AI 답변 언급률</p>
-                {sov ? <SummaryGrid data={sov} /> : <p className="text-sm text-gray-400">데이터 없음</p>}
+                {sov ? <SummaryGrid data={sov} /> : <p className="text-sm text-slate-400">데이터 없음</p>}
               </div>
-              <div className="rounded-lg bg-gray-50 border border-gray-200 p-4">
-                <p className="text-xs font-semibold text-gray-700 mb-2">콘텐츠 성과</p>
-                {content ? <SummaryGrid data={content} /> : <p className="text-sm text-gray-400">데이터 없음</p>}
+              <div className="rounded-lg bg-slate-50 border border-slate-200 p-4">
+                <p className="text-xs font-semibold text-slate-700 mb-2">콘텐츠 성과</p>
+                {content ? <SummaryGrid data={content} /> : <p className="text-sm text-slate-400">데이터 없음</p>}
               </div>
             </div>
           </section>
 
           {essence ? (
             <section>
-              <h4 className="text-sm font-semibold text-gray-900 mb-3">콘텐츠 운영 기준</h4>
-              <div className="rounded-lg border border-gray-200 p-4 space-y-3">
+              <h4 className="text-sm font-semibold text-slate-900 mb-3">콘텐츠 운영 기준</h4>
+              <div className="rounded-lg border border-slate-200 p-4 space-y-3">
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                   <EssenceRow
                     label="승인된 운영 기준"
@@ -595,7 +595,7 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
             </section>
           ) : (
             <section>
-              <h4 className="text-sm font-semibold text-gray-900 mb-3">콘텐츠 운영 기준</h4>
+              <h4 className="text-sm font-semibold text-slate-900 mb-3">콘텐츠 운영 기준</h4>
               <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                 운영 기준 요약이 아직 리포트에 포함되지 않았습니다. 원장님께 전달하기 전 병원 자료 검토와 승인된 운영 기준 상태를 먼저 확인하세요.
               </div>
@@ -603,7 +603,7 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
           )}
 
           <section>
-            <h4 className="text-sm font-semibold text-gray-900 mb-3">원장 보고 자료</h4>
+            <h4 className="text-sm font-semibold text-slate-900 mb-3">원장 보고 자료</h4>
             {report.download_url ? (
               <div className="space-y-2">
                 <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900">
@@ -619,7 +619,7 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
                 </a>
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 py-4 text-center text-sm text-gray-500">
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-4 text-center text-sm text-slate-500">
                 {report.has_pdf ? getPdfStatusLabel(report) : `${getPdfStatusLabel(report)} — 잠시 후 다시 확인해 주세요.`}
               </div>
             )}
@@ -639,10 +639,10 @@ function EssenceRow({
   value: string
   tone: 'ok' | 'warn'
 }) {
-  const cls = tone === 'warn' ? 'text-amber-800 font-medium' : 'text-gray-900 font-medium'
+  const cls = tone === 'warn' ? 'text-amber-800 font-medium' : 'text-slate-900 font-medium'
   return (
     <div className="flex justify-between gap-2">
-      <span className="text-gray-600">{label}</span>
+      <span className="text-slate-600">{label}</span>
       <span className={cls}>{value}</span>
     </div>
   )

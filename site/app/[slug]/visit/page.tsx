@@ -1,7 +1,7 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchHospital } from '@/lib/api'
+import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -109,8 +109,9 @@ export default async function VisitPage({ params }: Props) {
   let hospital
   try {
     hospital = await fetchHospital(params.slug)
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const breadcrumbItems = [
@@ -171,7 +172,7 @@ export default async function VisitPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">진료 안내</span>
+              <span className="clinic-section-label">진료 안내</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 진료 안내</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{hospital.address}</strong>

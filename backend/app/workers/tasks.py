@@ -206,8 +206,17 @@ def nightly_content_generation():
             logger.info(f"No content to generate for {tomorrow}")
             return
 
+        # 병원별 생성 성공/실패 추적 → 배치 완료 후 요약 Slack
+        hospital_stats: dict[str, dict] = {}
+
         for item in items:
             hospital = item.hospital
+            hospital_key = str(hospital.id)
+
+            if hospital_key not in hospital_stats:
+                hospital_stats[hospital_key] = {
+                    "name": hospital.name, "generated": 0, "failed": 0
+                }
 
             try:
                 # 기존 제목 목록 (중복 방지)
@@ -278,10 +287,29 @@ def nightly_content_generation():
                     db.rollback()
                     db.refresh(item)  # re-sync after rollback
 
+                hospital_stats[hospital_key]["generated"] += 1
+
             except Exception as e:
-                logger.error(f"Content generation failed for {item.id}: {e}")
+                logger.error(f"Content generation failed for item {item.id} ({hospital.name}): {e}")
                 db.rollback()
-                db.expire_all()  # expire stale ORM state after rollback
+                db.expire_all()
+                hospital_stats[hospital_key]["failed"] += 1
+                _run_async(notifier.notify_content_generation_failed(
+                    hospital_name=hospital.name,
+                    content_type=item.content_type.value if item.content_type else "UNKNOWN",
+                    scheduled_date=str(item.scheduled_date),
+                    error=str(e),
+                ))
+
+        # 배치 완료 후 병원별 요약 Slack 발송
+        for stat in hospital_stats.values():
+            if stat["generated"] > 0 or stat["failed"] > 0:
+                _run_async(notifier.notify_content_batch_summary(
+                    hospital_name=stat["name"],
+                    generated=stat["generated"],
+                    failed=stat["failed"],
+                    scheduled_date=str(tomorrow),
+                ))
 
 
 @celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)

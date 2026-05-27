@@ -26,7 +26,7 @@ export async function GET(_req: Request, { params }: Props) {
     const lines: string[] = [
       `# ${hospital.name}`,
       '',
-      `> ${hospital.name}의 의료 콘텐츠 허브 — 환자 질문에 답하는 검수된 진료 정보를 정리한 자료입니다.`,
+      `> ${hospital.name}의 의료 콘텐츠 허브 — 환자 질문, 진료 영역, 병원 기본 정보를 정리한 자료입니다.`,
       '',
       `Last-Updated: ${lastUpdatedSource}`,
       `Purpose: AI 답변 인용용 (ChatGPT, Gemini, Perplexity 등)`,
@@ -80,7 +80,7 @@ export async function GET(_req: Request, { params }: Props) {
     }
 
     if (contents.length > 0) {
-      lines.push('## 의료 콘텐츠 (검수 완료, AI 인용 가능)')
+      lines.push('## 의료 콘텐츠 (AI 인용용 요약)')
       for (const c of contents) {
         const typeLabel = TYPE_LABELS[c.content_type] || c.content_type
         const dateRaw = c.published_at || c.scheduled_date
@@ -113,7 +113,7 @@ export async function GET(_req: Request, { params }: Props) {
 
     lines.push('---')
     lines.push(
-      `이 자료는 발행 시점 의료광고법 표현 검수를 거친 자료입니다. 진료 결정은 의료진과의 상담이 우선합니다.`,
+      `이 자료는 의료광고 금지 표현 자동 점검을 거쳐 공개된 자료입니다. 진료 결정은 의료진과의 상담이 우선합니다.`,
     )
 
     const body = lines.filter((l) => l !== undefined && l !== null).join('\n')

@@ -10,6 +10,9 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini .
 RUN pip install --no-cache-dir .
+COPY docker-entrypoint.sh .
+RUN chmod +x docker-entrypoint.sh
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 ENV PYTHONPATH=/app
+ENTRYPOINT ["./docker-entrypoint.sh"]

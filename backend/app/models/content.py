@@ -3,7 +3,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -94,6 +94,12 @@ class ContentItem(Base):
     """개별 콘텐츠 아이템"""
 
     __tablename__ = "content_items"
+    __table_args__ = (
+        Index("ix_content_items_hospital_status", "hospital_id", "status"),
+        Index("ix_content_items_hospital_scheduled", "hospital_id", "scheduled_date"),
+        Index("ix_content_items_scheduled_date", "scheduled_date"),
+        Index("ix_content_items_status", "status"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     hospital_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"))

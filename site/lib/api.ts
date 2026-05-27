@@ -107,9 +107,17 @@ export interface ContentItem {
   faq_answer_summary: string | null
 }
 
+export class HospitalNotFoundError extends Error {
+  constructor(slug: string) {
+    super(`Hospital not found: ${slug}`)
+    this.name = 'HospitalNotFoundError'
+  }
+}
+
 export async function fetchHospital(slug: string): Promise<Hospital> {
   const res = await fetch(`${getApiBase()}/hospitals/${slug}`, publicFetchInit(3600))
-  if (!res.ok) throw new Error(`Hospital not found: ${slug}`)
+  if (res.status === 404) throw new HospitalNotFoundError(slug)
+  if (!res.ok) throw new Error(`Server error (${res.status}) when fetching hospital`)  
   return res.json()
 }
 

@@ -40,7 +40,10 @@ _gemini_client: google_genai.Client | None = None
 def _get_gemini_client() -> google_genai.Client | None:
     global _gemini_client
     if settings.GEMINI_API_KEY and _gemini_client is None:
-        _gemini_client = google_genai.Client(api_key=settings.GEMINI_API_KEY)
+        _gemini_client = google_genai.Client(
+            api_key=settings.GEMINI_API_KEY,
+            http_options={"timeout": 30000},  # 30s in milliseconds
+        )
     return _gemini_client
 
 QUERY_TEMPLATES = [

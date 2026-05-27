@@ -69,7 +69,7 @@ export function ContactCard({
     <section id="contact" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">진료 안내</span>
+          <span className="clinic-section-label">오시는 길</span>
           <h2 className="clinic-section-heading">{hospitalName} 진료 안내</h2>
           <p className="clinic-section-lede">
             진료 예약·상담은 아래 병원 공식 채널을 이용해 주세요.
@@ -84,9 +84,8 @@ export function ContactCard({
               <a
                 href={googleMapsUrl}
                 target="_blank"
-                rel="noopener"
+                rel="noopener noreferrer"
                 className="clinic-contact-link"
-                style={{ marginTop: 12 }}
               >
                 지도에서 보기
                 <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
@@ -120,7 +119,7 @@ export function ContactCard({
           <>
             <div style={{ height: 32 }} />
             <header className="clinic-section-header" style={{ marginBottom: 18 }}>
-              <span className="clinic-section-eyebrow">공식 채널</span>
+              <span className="clinic-section-label">공식 채널</span>
               <h3
                 style={{
                   margin: 0,
@@ -137,7 +136,7 @@ export function ContactCard({
                 <a
                   href={websiteUrl}
                   target="_blank"
-                  rel="noopener"
+                  rel="noopener noreferrer"
                   className="clinic-channel-card"
                   aria-label="공식 홈페이지로 이동"
                 >
@@ -153,7 +152,7 @@ export function ContactCard({
                   key={link.url ?? link.label}
                   href={link.url ?? '#'}
                   target="_blank"
-                  rel="noopener"
+                  rel="noopener noreferrer"
                   className="clinic-channel-card"
                 >
                   <span className="clinic-channel-card-icon">{pickIcon(link.label)}</span>

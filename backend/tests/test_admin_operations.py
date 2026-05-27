@@ -59,6 +59,8 @@ def _hospital(**overrides):
         id=uuid.uuid4(),
         status=HospitalStatus.PENDING_DOMAIN,
         aeo_domain="clinic.example.com",
+        v0_report_done=True,
+        site_built=True,
         schedule_set=True,
         site_live=False,
     )
@@ -148,6 +150,22 @@ async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch)
     assert detail["new_status"] == HospitalStatus.ACTIVE.value
     assert detail["previous_status"] == HospitalStatus.PENDING_DOMAIN.value
     assert detail["previous_site_live"] is False
+
+
+async def test_verify_domain_operation_blocks_live_without_readiness(monkeypatch):
+    hospital = _hospital(v0_report_done=False, site_built=True, schedule_set=True)
+    db = FakeDB(hospital=hospital)
+    monkeypatch.setattr(operations_api.settings, "CNAME_TARGET", "target.motionlabs.io")
+    monkeypatch.setattr(operations_api, "_resolve_cname", lambda domain: "target.motionlabs.io")
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.verify_domain_operation(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert hospital.site_live is False
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert db.added == []
+    assert db.committed is False
 
 
 async def test_actor_uses_admin_actor_name_setting(monkeypatch):

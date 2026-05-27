@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
@@ -13,36 +13,76 @@ const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
   MISSING_APPROVED_PHILOSOPHY: { label: '운영 기준 없음', color: 'bg-red-100 text-red-700' },
 }
 
-const ESSENCE_FALLBACK = { label: '미검수', color: 'bg-gray-100 text-gray-500' }
+const ESSENCE_FALLBACK = { label: '미검수', color: 'bg-slate-100 text-slate-500' }
 
 type BriefStatus = 'DRAFT' | 'APPROVED' | 'NEEDS_REVIEW'
 
 const BRIEF_LABELS: Record<BriefStatus, { label: string; color: string }> = {
-  DRAFT: { label: '콘텐츠 가이드 작성중', color: 'bg-gray-100 text-gray-600' },
+  DRAFT: { label: '콘텐츠 가이드 작성중', color: 'bg-slate-100 text-slate-600' },
   APPROVED: { label: '콘텐츠 가이드 승인', color: 'bg-green-100 text-green-700' },
   NEEDS_REVIEW: { label: '콘텐츠 가이드 재검토', color: 'bg-orange-100 text-orange-700' },
 }
 
-const BRIEF_FALLBACK = { label: '콘텐츠 가이드 없음', color: 'bg-gray-50 text-gray-400 border border-gray-200' }
+const BRIEF_FALLBACK = { label: '콘텐츠 가이드 없음', color: 'bg-slate-50 text-slate-400 border border-slate-200' }
+const PUBLISHER_STORAGE_KEY = 'reputation.publisherName'
 
-// 프론트엔드 미리보기용 금지 표현 목록 (단순 포함 검사)
-// 정식 정의는 backend/app/utils/medical_filter.py의 FORBIDDEN_EXPRESSIONS를 따름
-// 변형(예: "최고의", "유일한")은 백엔드 저장 시 정규식으로 최종 검증됨
-const FORBIDDEN = [
-  '1등', '최고', '최우수', '유일', '완치', '100%',
-  '성공률', '부작용 없는', '검증된', '가장 잘하는',
-  '국내 최초', '세계 최초', '특허', '독보적',
+// 프론트엔드 미리보기용 금지 표현 목록 — backend/app/utils/medical_filter.py의
+// FORBIDDEN_PATTERNS와 정규식이 동기화됨. 단순 포함 검사 대신 정규식으로 변형까지 포착.
+interface ForbiddenRule {
+  label: string
+  pattern: RegExp
+}
+
+const FORBIDDEN_RULES: ForbiddenRule[] = [
+  { label: '1등', pattern: /1등|일등|1위|일위/ },
+  { label: '최고', pattern: /최고[의]?|최상[의]?|으뜸[인]?/ },
+  { label: '최우수', pattern: /최우수|가장\s*우수|제일\s*우수|탁월[한]?/ },
+  { label: '유일', pattern: /유일[한]?|유일무이|전국\s*유일|오직\s*이곳/ },
+  { label: '완치', pattern: /완치[율]?|완전\s*치료|완전\s*회복/ },
+  { label: '100%', pattern: /100\s*%|백\s*퍼센트|100퍼/ },
+  { label: '성공률', pattern: /성공률|성공\s*확률|성공\s*보장/ },
+  { label: '부작용 없는', pattern: /부작용\s*(없|zero|제로|걱정\s*없)/ },
+  { label: '검증된', pattern: /검증[된]?|입증[된]?|확인[된]\s*효과/ },
+  { label: '가장 잘하는', pattern: /가장\s*(잘|뛰어|훌륭)|제일\s*(잘|뛰어)/ },
+  { label: '국내 최초', pattern: /(국내|세계|아시아|전국)\s*최초/ },
+  { label: '특허', pattern: /특허[를]?\s*(보유|획득|취득|출원|등록)/ },
+  { label: '독보적', pattern: /독보적[인]?|비교\s*불가/ },
+  { label: '노하우', pattern: /(저희|우리|병원|원장)[\w가-힣]*\s*만[의]?\s*노하우|차별화된\s*노하우/ },
+  { label: '효과 보장', pattern: /효과[를]?\s*(보장|확실|약속)|보장[된]?\s*효과/ },
+  { label: '최첨단', pattern: /최첨단|첨단[의]?\s*(기술|장비|시술)/ },
+  { label: '안전한 시술', pattern: /안전[한]?\s*(시술|수술|치료)[이가]?\s*보장|100%\s*안전/ },
+  { label: '통증 없는', pattern: /통증\s*없[는이]|무통[증]?[의]?\s*(시술|수술|치료)|아프지\s*않[은는]/ },
+  { label: '흉터 없는', pattern: /흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)/ },
 ]
 
+function tryParseApiError(message: string): { message?: string; violations?: string[] } | null {
+  try {
+    const parsed = JSON.parse(message)
+    if (parsed && typeof parsed === 'object') {
+      return parsed as { message?: string; violations?: string[] }
+    }
+  } catch {
+    // Not JSON — raw error string
+  }
+  return null
+}
+
 function checkForbidden(text: string): string[] {
-  return FORBIDDEN.filter((expr) => text.includes(expr))
+  if (!text) return []
+  return FORBIDDEN_RULES.filter((rule) => rule.pattern.test(text)).map((rule) => rule.label)
 }
 
 function highlightForbidden(text: string, violations: string[]): string {
   if (violations.length === 0) return text
   let result = text
-  for (const v of violations) {
-    result = result.split(v).join(`【${v}】`)
+  for (const label of violations) {
+    const rule = FORBIDDEN_RULES.find((r) => r.label === label)
+    if (rule) {
+      result = result.replace(rule.pattern, (match) => `【${match}】`)
+    } else {
+      // fallback: label 자체가 본문에 포함되어 있으면 하이라이트
+      result = result.split(label).join(`【${label}】`)
+    }
   }
   return result
 }
@@ -97,7 +137,7 @@ function getReviewState(item: ContentItem): ReviewState {
     return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
   }
   if (!item.title || !item.body) {
-    return { key: 'notGenerated', label: displayLabel ?? '생성 전', badge: 'bg-gray-100 text-gray-500', reason: displayReason ?? '야간 자동 생성 대기', publishable: false }
+    return { key: 'notGenerated', label: displayLabel ?? '생성 전', badge: 'bg-slate-100 text-slate-500', reason: displayReason ?? '야간 자동 생성 대기', publishable: false }
   }
   if (item.essence_status !== 'ALIGNED') {
     const reason = displayReason ?? (
@@ -116,13 +156,13 @@ function getContentTypeLabel(item: ContentItem): string {
 
 function getEssenceLabel(item: ContentItem): { label: string; color: string } {
   if (!item.essence_status) return ESSENCE_FALLBACK
-  const fallback = ESSENCE_LABELS[item.essence_status] ?? { label: item.essence_status, color: 'bg-gray-100 text-gray-700' }
+  const fallback = ESSENCE_LABELS[item.essence_status] ?? { label: item.essence_status, color: 'bg-slate-100 text-slate-700' }
   return { ...fallback, label: item.display?.essence_status_label ?? fallback.label }
 }
 
 function getBriefLabel(item: ContentItem): { label: string; color: string } {
   if (!item.brief_status) return BRIEF_FALLBACK
-  const fallback = BRIEF_LABELS[item.brief_status] ?? { label: item.brief_status, color: 'bg-gray-100 text-gray-700' }
+  const fallback = BRIEF_LABELS[item.brief_status] ?? { label: item.brief_status, color: 'bg-slate-100 text-slate-700' }
   return { ...fallback, label: item.display?.brief_status_label ?? fallback.label }
 }
 
@@ -142,6 +182,7 @@ export default function ContentPage() {
 
   // Detail / edit modal
   const [selected, setSelected] = useState<ContentItem | null>(null)
+  const dialogCloseRef = useRef<HTMLButtonElement>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const [briefEditMode, setBriefEditMode] = useState(false)
   const [briefQueryTargetId, setBriefQueryTargetId] = useState('')
@@ -165,6 +206,11 @@ export default function ContentPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkProgress, setBulkProgress] = useState<string | null>(null)
   const [bulkError, setBulkError] = useState<string | null>(null)
+  const [publisherName, setPublisherName] = useState('')
+  const [publisherError, setPublisherError] = useState<string | null>(null)
+  const [aeoDomain, setAeoDomain] = useState<string | null>(null)
+  const [hospitalSlug, setHospitalSlug] = useState<string | null>(null)
+  const [publishSuccessId, setPublishSuccessId] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -175,7 +221,40 @@ export default function ContentPage() {
       .finally(() => setLoading(false))
   }, [id, month, year])
 
+  const closeDetail = useCallback(() => {
+    setSelected(null)
+    setEditMode(false)
+    setBriefEditMode(false)
+    setPublishSuccessId(null)
+  }, [])
+
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    fetchAPI(`/admin/hospitals/${id}`)
+      .then((h) => {
+        setAeoDomain(h.aeo_domain ?? null)
+        setHospitalSlug(h.slug ?? null)
+      })
+      .catch(() => {})
+  }, [id])
+
+  useEffect(() => {
+    setPublisherName(window.localStorage.getItem(PUBLISHER_STORAGE_KEY) ?? '')
+  }, [])
+
+  useEffect(() => {
+    if (!selected) return
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeDetail()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    window.setTimeout(() => dialogCloseRef.current?.focus(), 0)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      previousFocus?.focus()
+    }
+  }, [closeDetail, selected])
 
   useEffect(() => {
     Promise.all([
@@ -225,9 +304,26 @@ export default function ContentPage() {
     }
   }
 
+  function handlePublisherChange(value: string) {
+    setPublisherName(value)
+    setPublisherError(null)
+    window.localStorage.setItem(PUBLISHER_STORAGE_KEY, value)
+  }
+
+  function getPublisherForSubmit(): string | null {
+    const trimmed = publisherName.trim()
+    if (!trimmed) {
+      setPublisherError('발행 담당자 이름을 입력해 주세요.')
+      return null
+    }
+    return trimmed
+  }
+
   async function handleBulkPublish() {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) return
+    const publishedBy = getPublisherForSubmit()
+    if (!publishedBy) return
     setBulkError(null)
     setBulkProgress(`0/${ids.length} 발행 완료...`)
     let done = 0
@@ -235,7 +331,7 @@ export default function ContentPage() {
       try {
         await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
           method: 'POST',
-          body: JSON.stringify({ published_by: 'AE' }),
+          body: JSON.stringify({ published_by: publishedBy }),
         })
         done++
         setBulkProgress(`${done}/${ids.length} 발행 완료...`)
@@ -245,20 +341,37 @@ export default function ContentPage() {
       }
     }
     setBulkProgress(null)
+    if (done > 0) setPublishSuccessId(ids[0])
     load()
   }
 
-  async function handlePublish(itemId: string) {
+   async function handlePublish(itemId: string) {
+    const publishedBy = getPublisherForSubmit()
+    if (!publishedBy) return
     setActionLoading(true)
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
         method: 'POST',
-        body: JSON.stringify({ published_by: 'AE' }),
+        body: JSON.stringify({ published_by: publishedBy }),
       })
+      setPublishSuccessId(itemId)
       load()
-      setSelected(null)
     } catch (e: unknown) {
-      setEditError(e instanceof Error ? e.message : '발행에 실패했습니다.')
+      if (e instanceof Error) {
+        const parsed = tryParseApiError(e.message)
+        if (parsed?.violations && Array.isArray(parsed.violations)) {
+          setViolations(parsed.violations)
+          setEditError(`의료광고 금지 표현이 발견되어 발행할 수 없습니다: ${parsed.violations.join(', ')}`)
+          setEditMode(true)
+          setEditTitle(selected?.title ?? '')
+          setEditBody(selected?.body ?? '')
+          setEditMeta(selected?.meta_description ?? '')
+        } else {
+          setEditError(parsed?.message ?? e.message)
+        }
+      } else {
+        setEditError('발행에 실패했습니다.')
+      }
     } finally {
       setActionLoading(false)
     }
@@ -450,27 +563,27 @@ export default function ContentPage() {
     : null
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       {/* Hero / summary header */}
       <div className="mb-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-gray-900">콘텐츠 검수 · 발행</h2>
-            <p className="text-sm text-gray-500 mt-1">
+            <h2 className="text-2xl font-bold text-slate-900">콘텐츠 검수 · 발행</h2>
+            <p className="text-sm text-slate-500 mt-1">
               콘텐츠 운영 기준 통과 여부와 의료광고 리스크를 확인한 뒤 발행합니다.
             </p>
           </div>
 
           {/* Bulk action bar */}
           {selectedIds.size > 0 && (
-            <div className="flex items-center gap-3 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
+            <div className="flex flex-wrap items-center gap-3 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
               {bulkProgress && (
                 <span className="text-sm text-blue-600 font-medium">{bulkProgress}</span>
               )}
               {bulkError && (
                 <span className="text-sm text-red-600">{bulkError}</span>
               )}
-              <span className="text-sm text-gray-700">
+              <span className="text-sm text-slate-700">
                 <span className="font-semibold">{selectedIds.size}개</span> 발행 대기 선택됨
               </span>
               <button
@@ -494,11 +607,12 @@ export default function ContentPage() {
       </div>
 
       {/* Month filter */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="flex flex-wrap items-center gap-3">
         <select
           value={year}
           onChange={(e) => setYear(Number(e.target.value))}
-          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           {yearOptions.map((y) => (
             <option key={y} value={y}>{y}년</option>
@@ -507,54 +621,73 @@ export default function ContentPage() {
         <select
           value={month}
           onChange={(e) => setMonth(Number(e.target.value))}
-          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           {monthOptions.map((m) => (
             <option key={m} value={m}>{m}월</option>
           ))}
         </select>
-        <span className="text-xs text-gray-500 ml-1">
+        <span className="text-xs text-slate-500 ml-1">
           콘텐츠 운영 기준을 통과한 초안만 일괄 선택할 수 있습니다.
         </span>
+        </div>
+        <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
+          <label htmlFor="publisher-name" className="block text-xs font-semibold text-slate-700">
+            발행 담당자
+          </label>
+          <input
+            id="publisher-name"
+            type="text"
+            value={publisherName}
+            onChange={(event) => handlePublisherChange(event.target.value)}
+            placeholder="예: 김민지 AE"
+            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className={`mt-1 text-xs ${publisherError ? 'text-red-600' : 'text-slate-500'}`}>
+            {publisherError ?? '발행자 이름은 콘텐츠와 감사 기록에 함께 저장됩니다.'}
+          </p>
+        </div>
       </div>
 
-      {loading && <div className="text-center py-16 text-gray-500">불러오는 중...</div>}
+      {loading && <div className="text-center py-16 text-slate-500">불러오는 중...</div>}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">오류: {error}</div>
       )}
 
       {!loading && !error && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+          <table className="min-w-[980px] w-full text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
                 <th className="px-4 py-3 w-10">
                   <input
                     type="checkbox"
+                    aria-label="발행 가능한 콘텐츠 전체 선택"
                     checked={selectableIds.length > 0 && selectedIds.size === selectableIds.length}
                     onChange={toggleSelectAll}
                     disabled={selectableIds.length === 0}
-                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                   />
                 </th>
-                <th className="text-left px-6 py-3 text-gray-600 font-medium">발행예정일</th>
-                <th className="text-left px-6 py-3 text-gray-600 font-medium">유형</th>
-                <th className="text-left px-6 py-3 text-gray-600 font-medium">제목</th>
-                <th className="text-center px-6 py-3 text-gray-600 font-medium">순번</th>
-                <th className="text-center px-6 py-3 text-gray-600 font-medium">검수 상태</th>
-                <th className="text-center px-6 py-3 text-gray-600 font-medium">운영 기준</th>
-                <th className="text-center px-6 py-3 text-gray-600 font-medium">콘텐츠 가이드</th>
-                <th className="text-right px-6 py-3 text-gray-600 font-medium">액션</th>
+                <th className="text-left px-6 py-3 text-slate-600 font-medium">발행예정일</th>
+                <th className="text-left px-6 py-3 text-slate-600 font-medium">유형</th>
+                <th className="text-left px-6 py-3 text-slate-600 font-medium">제목</th>
+                <th className="text-center px-6 py-3 text-slate-600 font-medium">순번</th>
+                <th className="text-center px-6 py-3 text-slate-600 font-medium">검수 상태</th>
+                <th className="text-center px-6 py-3 text-slate-600 font-medium">운영 기준</th>
+                <th className="text-center px-6 py-3 text-slate-600 font-medium">콘텐츠 가이드</th>
+                <th className="text-right px-6 py-3 text-slate-600 font-medium">액션</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-slate-100">
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="text-center py-12 text-gray-400 text-sm">
+                  <td colSpan={9} className="text-center py-12 text-slate-400 text-sm">
                     이번 달 콘텐츠가 아직 없습니다.
                     <br />
-                    <span className="text-gray-500">
+                    <span className="text-slate-500">
                       스케줄 탭에서 월간 슬롯을 만들거나 야간 생성 결과를 기다려 주세요.
                     </span>
                   </td>
@@ -566,24 +699,25 @@ export default function ContentPage() {
                 const brief = getBriefLabel(item)
                 const isSelectable = review.publishable
                 return (
-                  <tr key={item.id} className="hover:bg-gray-50 transition-colors">
+                  <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-4 py-4">
                       <input
                         type="checkbox"
+                        aria-label={`${item.title ?? '생성 전 슬롯'} 선택`}
                         checked={selectedIds.has(item.id)}
                         onChange={() => toggleSelect(item.id)}
                         disabled={!isSelectable}
-                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
+                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
                       />
                     </td>
-                    <td className="px-6 py-4 text-gray-600">{item.scheduled_date}</td>
-                    <td className="px-6 py-4 text-gray-600">{getContentTypeLabel(item)}</td>
+                    <td className="px-6 py-4 text-slate-600">{item.scheduled_date}</td>
+                    <td className="px-6 py-4 text-slate-600">{getContentTypeLabel(item)}</td>
                     <td className="px-6 py-4">
                       <button onClick={() => openDetail(item)} className="text-blue-600 hover:underline text-left">
-                        {item.title ?? <span className="text-gray-400 italic">생성 전</span>}
+                        {item.title ?? <span className="text-slate-400 italic">생성 전</span>}
                       </button>
                     </td>
-                    <td className="px-6 py-4 text-center text-gray-500">
+                    <td className="px-6 py-4 text-center text-slate-500">
                       {item.sequence_no}/{item.total_count}
                     </td>
                     <td className="px-6 py-4 text-center">
@@ -606,7 +740,7 @@ export default function ContentPage() {
                         <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => handlePublish(item.id)}
-                            disabled={actionLoading}
+                            disabled={actionLoading || !publisherName.trim()}
                             className="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-50"
                           >
                             발행
@@ -627,7 +761,7 @@ export default function ContentPage() {
                           {review.reason ?? '검토 필요'} · 열기
                         </button>
                       ) : (
-                        <span className="text-xs text-gray-400">{review.reason ?? '—'}</span>
+                        <span className="text-xs text-slate-400">{review.reason ?? '—'}</span>
                       )}
                     </td>
                   </tr>
@@ -635,21 +769,36 @@ export default function ContentPage() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
       {/* Detail / Edit Modal */}
       {selected && selectedReview && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className={`bg-white rounded-xl shadow-xl w-full max-h-[90vh] overflow-auto ${editMode || briefEditMode ? 'max-w-5xl' : 'max-w-2xl'}`}>
-            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDetail()
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="content-dialog-title"
+            className={`max-h-[90vh] w-full overflow-auto rounded-xl bg-white shadow-xl ${editMode || briefEditMode ? 'max-w-5xl' : 'max-w-2xl'}`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-6 border-b border-slate-200">
               <div>
-                <span className="text-xs font-medium text-gray-500 uppercase">
+                <span className="text-xs font-medium text-slate-500 uppercase">
                   {getContentTypeLabel(selected)}
                 </span>
-                {!editMode && (
-                  <h3 className="text-lg font-bold text-gray-900 mt-0.5">{selected.title ?? '생성 전 슬롯'}</h3>
+                {!editMode && !briefEditMode && (
+                  <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">{selected.title ?? '생성 전 슬롯'}</h3>
                 )}
+                {editMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 편집</h3>}
+                {briefEditMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 가이드 편집</h3>}
               </div>
               <div className="flex items-center gap-2">
                 {!editMode && !briefEditMode && (
@@ -669,13 +818,29 @@ export default function ContentPage() {
                   </button>
                 )}
                 <button
-                  onClick={() => { setSelected(null); setEditMode(false); setBriefEditMode(false) }}
-                  className="text-gray-400 hover:text-gray-600 text-xl"
+                  ref={dialogCloseRef}
+                  onClick={closeDetail}
+                  aria-label="콘텐츠 상세 닫기"
+                  className="rounded-md px-2 py-1 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   ✕
                 </button>
               </div>
             </div>
+
+            {publishSuccessId && aeoDomain && hospitalSlug && (
+              <div className="mx-6 mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
+                <p className="text-sm font-medium text-green-800">발행 완료 — 콘텐츠가 공개 사이트에 게시되었습니다.</p>
+                <a
+                  href={`https://${aeoDomain}/${hospitalSlug}/contents/${publishSuccessId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-green-700 underline underline-offset-2 hover:text-green-800"
+                >
+                  사이트에서 보기 ↗
+                </a>
+              </div>
+            )}
 
             {editError && (
               <div className="mx-6 mt-4 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
@@ -697,11 +862,11 @@ export default function ContentPage() {
               <div className="p-6 space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">연결할 환자 질문</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">연결할 환자 질문</label>
                     <select
                       value={briefQueryTargetId}
                       onChange={(e) => setBriefQueryTargetId(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="">연결 안 함</option>
                       {queryTargets.map((target) => (
@@ -712,11 +877,11 @@ export default function ContentPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">연결할 노출 보완 작업</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">연결할 노출 보완 작업</label>
                     <select
                       value={briefExposureActionId}
                       onChange={(e) => setBriefExposureActionId(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="">연결 안 함</option>
                       {exposureActions.map((action) => (
@@ -727,11 +892,11 @@ export default function ContentPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">콘텐츠 가이드 상태</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">콘텐츠 가이드 상태</label>
                     <select
                       value={briefStatus}
                       onChange={(e) => setBriefStatus(e.target.value as BriefStatus)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     >
                       <option value="DRAFT">작성중</option>
                       <option value="APPROVED">승인</option>
@@ -739,21 +904,21 @@ export default function ContentPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">승인자</label>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">승인자</label>
                     <input
                       type="text"
                       value={briefApprovedBy}
                       onChange={(e) => setBriefApprovedBy(e.target.value)}
                       disabled={briefStatus !== 'APPROVED'}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
                     />
                   </div>
                 </div>
-                <details className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-                  <summary className="cursor-pointer text-sm font-medium text-gray-700">
+                <details className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <summary className="cursor-pointer text-sm font-medium text-slate-700">
                     콘텐츠 가이드 고급 편집 열기
                   </summary>
-                  <p className="mt-2 text-xs text-gray-500">
+                  <p className="mt-2 text-xs text-slate-500">
                     보통은 위의 환자 질문·노출 보완 작업 연결만 조정하면 됩니다. 원본 구조를 직접 수정해야 할 때만 펼쳐서 사용하세요.
                   </p>
                   <textarea
@@ -761,7 +926,7 @@ export default function ContentPage() {
                     onChange={(e) => setBriefJson(e.target.value)}
                     rows={18}
                     placeholder="비워두면 연결한 환자 질문과 노출 보완 작업을 기준으로 콘텐츠 가이드 초안이 자동 생성됩니다."
-                    className="mt-3 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none bg-white"
+                    className="mt-3 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none bg-white"
                   />
                 </details>
                 <div className="flex gap-3">
@@ -774,7 +939,7 @@ export default function ContentPage() {
                   </button>
                   <button
                     onClick={() => { setBriefEditMode(false); setBriefError(null) }}
-                    className="px-5 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200"
+                    className="px-5 py-2.5 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200"
                   >
                     취소
                   </button>
@@ -784,35 +949,35 @@ export default function ContentPage() {
               /* Edit split view */
               <div className="p-6">
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">제목</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">제목</label>
                   <input
                     type="text"
                     value={editTitle}
                     onChange={(e) => handleEditTitleChange(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">검색 미리보기 설명</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">검색 미리보기 설명</label>
                   <input
                     type="text"
                     value={editMeta}
                     onChange={(e) => handleEditMetaChange(e.target.value)}
                     maxLength={300}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
-                  <p className="text-[11px] text-gray-400 mt-1 text-right">{editMeta.length}/300</p>
+                  <p className="text-[11px] text-slate-400 mt-1 text-right">{editMeta.length}/300</p>
                 </div>
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">본문 (마크다운)</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">본문 (마크다운)</label>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <p className="text-xs text-gray-400 mb-1">편집</p>
+                      <p className="text-xs text-slate-400 mb-1">편집</p>
                       <textarea
                         value={editBody}
                         onChange={(e) => handleEditBodyChange(e.target.value)}
                         rows={18}
-                        className={`w-full px-3 py-2 border rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none ${violations.length > 0 ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                        className={`w-full px-3 py-2 border rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none ${violations.length > 0 ? 'border-red-400 bg-red-50' : 'border-slate-300'}`}
                       />
                       {violations.length > 0 && (
                         <p className="text-xs text-red-600 mt-1">
@@ -821,9 +986,9 @@ export default function ContentPage() {
                       )}
                     </div>
                     <div>
-                      <p className="text-xs text-gray-400 mb-1">미리보기</p>
-                      <div className="h-full border border-gray-200 rounded-lg p-3 overflow-auto bg-gray-50">
-                        <div className="prose prose-sm max-w-none text-gray-700">
+                      <p className="text-xs text-slate-400 mb-1">미리보기</p>
+                      <div className="h-full border border-slate-200 rounded-lg p-3 overflow-auto bg-slate-50">
+                        <div className="prose prose-sm max-w-none text-slate-700">
                           <ReactMarkdown>
                             {violations.length > 0 ? highlightForbidden(editBody, violations) : editBody}
                           </ReactMarkdown>
@@ -842,7 +1007,7 @@ export default function ContentPage() {
                   </button>
                   <button
                     onClick={() => { setEditMode(false); setViolations([]); setEditError(null) }}
-                    className="px-5 py-2.5 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200"
+                    className="px-5 py-2.5 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200"
                   >
                     취소
                   </button>
@@ -851,8 +1016,8 @@ export default function ContentPage() {
             ) : (
               /* Read mode */
               <div className="p-6">
-                <div className="mb-5 border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-600 uppercase tracking-wide">
+                <div className="mb-5 border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 uppercase tracking-wide">
                     AI 노출 콘텐츠 가이드
                   </div>
                   <div className="p-4 space-y-3 text-sm">
@@ -863,7 +1028,7 @@ export default function ContentPage() {
                         {getBriefLabel(selected).label}
                       </span>
                       {selected.brief_approved_at && (
-                        <span className="text-xs text-gray-500">
+                        <span className="text-xs text-slate-500">
                           {selected.brief_approved_by ?? 'AE'} · {selected.brief_approved_at}
                         </span>
                       )}
@@ -883,8 +1048,8 @@ export default function ContentPage() {
                 </div>
 
                 {/* 검수 체크 panel */}
-                <div className="mb-5 border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="px-4 py-2 bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-600 uppercase tracking-wide">
+                <div className="mb-5 border border-slate-200 rounded-lg overflow-hidden">
+                  <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 uppercase tracking-wide">
                     검수 체크
                   </div>
                   <div className="p-4 space-y-3 text-sm">
@@ -898,7 +1063,7 @@ export default function ContentPage() {
                       tone={selected.essence_status === 'ALIGNED' ? 'ok' : 'warn'}
                     />
                     {selectedFindings.length > 0 && (
-                      <ul className="list-disc list-inside text-xs text-gray-600 pl-2">
+                      <ul className="list-disc list-inside text-xs text-slate-600 pl-2">
                         {selectedFindings.map((finding, idx) => (
                           <li key={`${finding}-${idx}`}>{finding}</li>
                         ))}
@@ -946,7 +1111,7 @@ export default function ContentPage() {
                   </div>
                 )}
                 {selected.body && (
-                  <div className="prose prose-sm max-w-none text-gray-700">
+                  <div className="prose prose-sm max-w-none text-slate-700">
                     <ReactMarkdown>{selected.body}</ReactMarkdown>
                   </div>
                 )}
@@ -954,16 +1119,21 @@ export default function ContentPage() {
             )}
 
             {!editMode && !briefEditMode && selected.status !== 'PUBLISHED' && (
-              <div className="p-6 border-t border-gray-200">
+              <div className="p-6 border-t border-slate-200">
                 {!selectedReview.publishable && (
-                  <p className="text-xs text-gray-500 mb-2">
+                  <p className="text-xs text-slate-500 mb-2">
                     {selectedReview.reason ?? '발행 불가 상태입니다.'} — 발행 버튼이 비활성화되어 있습니다.
+                  </p>
+                )}
+                {!publisherName.trim() && selectedReview.publishable && (
+                  <p className="mb-2 text-xs text-red-600">
+                    발행 담당자 이름을 입력해야 발행할 수 있습니다.
                   </p>
                 )}
                 <div className="flex gap-3">
                   <button
                     onClick={() => handlePublish(selected.id)}
-                    disabled={actionLoading || !selectedReview.publishable || !selected.title}
+                    disabled={actionLoading || !selectedReview.publishable || !selected.title || !publisherName.trim()}
                     className="flex-1 py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     발행하기
@@ -1006,20 +1176,20 @@ function SummaryCard({
   const tones: Record<string, string> = {
     green: 'border-green-200 bg-green-50',
     orange: 'border-orange-200 bg-orange-50',
-    gray: 'border-gray-200 bg-gray-50',
+    gray: 'border-slate-200 bg-slate-50',
     blue: 'border-blue-200 bg-blue-50',
   }
   const numTones: Record<string, string> = {
     green: 'text-green-700',
     orange: 'text-orange-700',
-    gray: 'text-gray-700',
+    gray: 'text-slate-700',
     blue: 'text-blue-700',
   }
   return (
     <div className={`rounded-xl border ${tones[tone]} px-4 py-3`}>
-      <p className="text-xs font-medium text-gray-600">{label}</p>
+      <p className="text-xs font-medium text-slate-600">{label}</p>
       <p className={`text-2xl font-bold mt-1 ${numTones[tone]}`}>{value}</p>
-      <p className="text-[11px] text-gray-500 mt-0.5">{hint}</p>
+      <p className="text-[11px] text-slate-500 mt-0.5">{hint}</p>
     </div>
   )
 }
@@ -1027,8 +1197,8 @@ function SummaryCard({
 function BriefField({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="mt-0.5 text-sm text-gray-800 break-words">{value}</div>
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="mt-0.5 text-sm text-slate-800 break-words">{value}</div>
     </div>
   )
 }
@@ -1037,15 +1207,15 @@ function BriefList({ label, values }: { label: string; values: unknown }) {
   const items = Array.isArray(values) ? values.map((value) => formatBriefValue(value)).filter(Boolean) : []
   return (
     <div>
-      <div className="text-xs text-gray-500">{label}</div>
+      <div className="text-xs text-slate-500">{label}</div>
       {items.length > 0 ? (
-        <ul className="mt-0.5 list-disc list-inside text-sm text-gray-800 space-y-0.5">
+        <ul className="mt-0.5 list-disc list-inside text-sm text-slate-800 space-y-0.5">
           {items.map((item, idx) => (
             <li key={`${label}-${idx}`}>{item}</li>
           ))}
         </ul>
       ) : (
-        <div className="mt-0.5 text-sm text-gray-400">미작성</div>
+        <div className="mt-0.5 text-sm text-slate-400">미작성</div>
       )}
     </div>
   )
@@ -1066,7 +1236,7 @@ function CheckRow({
     <div className="flex items-start gap-3">
       <span className={`mt-1.5 inline-block w-2 h-2 rounded-full ${dot}`} />
       <div className="flex-1">
-        <div className="text-xs text-gray-500">{label}</div>
+        <div className="text-xs text-slate-500">{label}</div>
         <div className={`text-sm font-medium ${text}`}>{value}</div>
       </div>
     </div>

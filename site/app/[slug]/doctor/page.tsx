@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentItem } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -55,8 +55,9 @@ export default async function DoctorPage({ params }: Props) {
       fetchHospital(params.slug),
       fetchContents(params.slug, 60),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const breadcrumbItems = [
@@ -131,7 +132,7 @@ export default async function DoctorPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">의료진</span>
+              <span className="clinic-section-label">의료진</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 의료진</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{hospital.director_name} 원장</strong>
@@ -162,7 +163,7 @@ export default async function DoctorPage({ params }: Props) {
             <section className="clinic-section">
               <div className="clinic-section-inner">
                 <header className="clinic-section-header">
-                  <span className="clinic-section-eyebrow">원장 노트</span>
+                  <span className="clinic-section-label">원장 노트</span>
                   <h2 className="clinic-section-heading">원장이 전하는 진료 이야기</h2>
                   <p className="clinic-section-lede">
                     원장 칼럼·자주 묻는 질문·질환 정보를 우선 모았습니다.
@@ -184,7 +185,7 @@ export default async function DoctorPage({ params }: Props) {
                       href={`/${params.slug}/contents`}
                       className="clinic-btn clinic-btn-secondary"
                     >
-                      블로그 글 전체 보기
+                      의료 정보 전체 보기
                     </Link>
                   </div>
                 )}

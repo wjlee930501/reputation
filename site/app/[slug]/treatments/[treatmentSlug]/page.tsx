@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentItem } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 import {
   buildTreatmentSlug,
@@ -93,8 +93,9 @@ export default async function TreatmentPillarPage({ params }: Props) {
       fetchHospital(params.slug),
       fetchContents(params.slug, 500),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const treatments = hospital.treatments || []
@@ -169,7 +170,7 @@ export default async function TreatmentPillarPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">진료 영역</span>
+              <span className="clinic-section-label">진료 영역</span>
               <h1 className="clinic-library-hero-title">
                 <span
                   className={`clinic-treatment-card-icon hue-${hue}`}
@@ -199,20 +200,20 @@ export default async function TreatmentPillarPage({ params }: Props) {
             <div className="clinic-section-inner">
               {relatedContents.length === 0 ? (
                 <div className="clinic-empty">
-                  <span className="clinic-empty-title">관련 블로그 글이 준비 중입니다</span>
+                  <span className="clinic-empty-title">관련 의료 정보가 준비 중입니다</span>
                   <p>{treatmentName}에 대한 환자 안내 글이 곧 발행됩니다.</p>
                   <Link
                     href={`/${params.slug}/contents`}
                     className="clinic-btn clinic-btn-secondary"
                     style={{ marginTop: 16 }}
                   >
-                    전체 블로그 글 보기
+                    전체 의료 정보 보기
                   </Link>
                 </div>
               ) : (
                 <>
                   <header className="clinic-section-header">
-                    <span className="clinic-section-eyebrow">관련 콘텐츠 {relatedContents.length}편</span>
+                    <span className="clinic-section-label">관련 콘텐츠 {relatedContents.length}편</span>
                     <h2 className="clinic-section-heading">{treatmentName} 진료 안내 글 모음</h2>
                     <p className="clinic-section-lede">
                       {treatmentName}와 관련해 환자가 자주 묻는 질문, 질환 정보, 진료 단계를 모았습니다.
@@ -233,7 +234,7 @@ export default async function TreatmentPillarPage({ params }: Props) {
                       href={`/${params.slug}/contents`}
                       className="clinic-btn clinic-btn-secondary"
                     >
-                      블로그 글 전체 보기
+                      의료 정보 전체 보기
                     </Link>
                   </div>
                 </>

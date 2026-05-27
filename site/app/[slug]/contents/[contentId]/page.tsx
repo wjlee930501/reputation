@@ -8,6 +8,7 @@ import {
   fetchContent,
   fetchContents,
   fetchHospital,
+  HospitalNotFoundError,
   SOURCE_TYPE_LABELS,
   TYPE_LABELS,
 } from '@/lib/api'
@@ -47,7 +48,7 @@ function buildImageAlt(args: {
     `${args.typeLabel}: ${args.contentTitle}`,
     args.hospitalName,
     regionLabel,
-    args.directorName ? `${args.directorName} 원장 검수` : '',
+    args.directorName ? `${args.directorName} 원장 진료 분야` : '',
   ].filter(Boolean)
   const joined = parts.join(' — ')
   return joined.length > ALT_MAX_LENGTH ? `${joined.slice(0, ALT_MAX_LENGTH - 1)}…` : joined
@@ -130,13 +131,14 @@ export default async function ContentDetailPage({ params }: Props) {
       fetchContent(params.slug, params.contentId),
       fetchContents(params.slug, 60),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
   const publishedLabel = formatDate(content.published_at, content.scheduled_date)
-  const reviewedLabel = content.body_updated_at
+  const updatedLabel = content.body_updated_at
     ? formatDate(content.body_updated_at, '')
     : publishedLabel
   const readingMinutes = calculateReadingMinutes(content.body)
@@ -157,7 +159,7 @@ export default async function ContentDetailPage({ params }: Props) {
 
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
-    { label: '블로그', href: `/${params.slug}/contents` },
+    { label: '의료 정보', href: `/${params.slug}/contents` },
     { label: typeLabel },
     { label: content.title },
   ]
@@ -175,9 +177,9 @@ export default async function ContentDetailPage({ params }: Props) {
     headline: content.title,
     description: content.meta_description,
     author: {
-      '@type': 'Physician',
-      '@id': physicianId,
-      name: hospital.director_name,
+      '@type': 'MedicalClinic',
+      '@id': clinicId,
+      name: hospital.name,
     },
     publisher: {
       '@type': 'MedicalClinic',
@@ -304,12 +306,7 @@ export default async function ContentDetailPage({ params }: Props) {
         description: content.meta_description,
       },
       audience: { '@type': 'MedicalAudience', audienceType: 'Patient' },
-      lastReviewed: dateModified,
-      reviewedBy: {
-        '@type': 'Physician',
-        '@id': physicianId,
-        name: hospital.director_name,
-      },
+      dateModified,
     })
   }
 
@@ -358,8 +355,10 @@ export default async function ContentDetailPage({ params }: Props) {
                 )}
                 <h1 className="clinic-article-title">{content.title}</h1>
                 <p className="clinic-article-byline">
-                  <span className="clinic-article-byline-label">작성·검수</span>
-                  <strong>{hospital.director_name} 원장</strong>
+                  <span className="clinic-article-byline-label">의료 정보 안내</span>
+                  <strong>{hospital.name}</strong>
+                  <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
+                  <span>{hospital.director_name} 원장 진료 분야 기준</span>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                   <span>{readingMinutes}분 읽기</span>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
@@ -367,16 +366,16 @@ export default async function ContentDetailPage({ params }: Props) {
                     발행{' '}
                     <time dateTime={datePublished}>{publishedLabel}</time>
                   </span>
-                  {reviewedLabel && reviewedLabel !== publishedLabel && (
+                  {updatedLabel && updatedLabel !== publishedLabel && (
                     <>
                       <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                       <span>
-                        최근 검수{' '}
-                        <time dateTime={dateModified}>{reviewedLabel}</time>
+                        최근 업데이트{' '}
+                        <time dateTime={dateModified}>{updatedLabel}</time>
                       </span>
                     </>
                   )}
-                  <span className="clinic-article-byline-chip">발행 시점 검수 완료</span>
+                  <span className="clinic-article-byline-chip">개인별 판단은 진료 상담 필요</span>
                 </p>
               </div>
 
@@ -408,7 +407,7 @@ export default async function ContentDetailPage({ params }: Props) {
                         : null
                       return (
                         <li key={`${ref.url}-${idx}`}>
-                          <a href={ref.url} target="_blank" rel="noopener nofollow">
+                          <a href={ref.url} target="_blank" rel="noopener noreferrer nofollow">
                             {sourceLabel && (
                               <span className="clinic-article-references-source" aria-label="출처 분류">
                                 {sourceLabel}
@@ -455,13 +454,13 @@ export default async function ContentDetailPage({ params }: Props) {
                   className="clinic-btn clinic-btn-secondary"
                   style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14, marginBottom: 8 }}
                 >
-                  병원 블로그 홈으로
+                  병원 의료 정보 홈으로
                 </Link>
                 {hospital.website_url && (
                   <a
                     href={hospital.website_url}
                     target="_blank"
-                    rel="noopener"
+                    rel="noopener noreferrer"
                     className="clinic-btn clinic-btn-primary"
                     style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14 }}
                   >

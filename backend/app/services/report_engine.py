@@ -82,6 +82,7 @@ def _upload_to_gcs(local_path: Path, slug: str, filename: str) -> str:
         logger.info(f"PDF uploaded to GCS: {gcs_path}")
         return gcs_path
     except Exception as e:
-        logger.error(f"GCS upload failed, falling back to local path: {e}")
-        # GCS 실패 시 로컬 경로 반환 (개발 환경 호환)
+        logger.error(f"GCS upload failed: {e}")
+        if settings.APP_ENV == "production":
+            raise RuntimeError(f"GCS upload failed in production: {e}") from e
         return str(local_path)

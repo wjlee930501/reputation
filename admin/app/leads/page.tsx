@@ -4,20 +4,9 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
+import { formatDateTime } from '@/lib/format'
+import { SkeletonTable } from '@/app/components/Skeleton'
 import type { SalesLead } from '@/types'
-
-function formatDateTime(value: string | null) {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '-'
-  return date.toLocaleString('ko-KR', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
 
 function getOnboardingHref(lead: SalesLead) {
   const params = new URLSearchParams({
@@ -76,8 +65,8 @@ export default function LeadsPage() {
   }
 
   return (
-    <div className="p-8">
-      <div className="mb-6 flex items-end justify-between gap-4">
+    <div className="p-4 sm:p-6 lg:p-8">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">상담 리드</h1>
           <p className="mt-1 text-sm text-slate-500">
@@ -90,11 +79,7 @@ export default function LeadsPage() {
         </div>
       </div>
 
-      {loading && (
-        <div className="rounded-xl border border-slate-200 bg-white py-16 text-center text-sm text-slate-500">
-          리드를 불러오는 중입니다.
-        </div>
-      )}
+      {loading && <SkeletonTable rows={5} />}
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -112,8 +97,9 @@ export default function LeadsPage() {
       )}
 
       {!loading && !error && leads.length > 0 && (
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <table className="w-full text-sm">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+          <table className="min-w-[860px] w-full text-sm">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">접수 시각</th>
@@ -193,6 +179,7 @@ export default function LeadsPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>

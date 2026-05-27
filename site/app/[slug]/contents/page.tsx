@@ -1,7 +1,7 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS, type ContentItem } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -22,20 +22,20 @@ const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCA
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   try {
     const hospital = await fetchHospital(params.slug)
-    const description = `${hospital.name} 진료 블로그 — 자주 묻는 질문, 질환 정보, 치료 안내, 원장 칼럼.`
+    const description = `${hospital.name} 의료 정보 — 자주 묻는 질문, 질환 정보, 치료 안내, 원장 칼럼.`
     return {
-      title: `${hospital.name} 진료 블로그`,
+      title: `${hospital.name} 의료 정보`,
       description,
       alternates: { canonical: `/${params.slug}/contents` },
       openGraph: {
-        title: `${hospital.name} 진료 블로그`,
+        title: `${hospital.name} 의료 정보`,
         description,
         url: `/${params.slug}/contents`,
         type: 'website',
       },
     }
   } catch {
-    return { title: '진료 블로그' }
+    return { title: '의료 정보' }
   }
 }
 
@@ -47,8 +47,9 @@ export default async function ContentsLibraryPage({ params }: Props) {
       fetchHospital(params.slug),
       fetchContents(params.slug, 500),
     ])
-  } catch {
-    notFound()
+  } catch (e) {
+    if (e instanceof HospitalNotFoundError) notFound()
+    throw e
   }
 
   const grouped = new Map<string, ContentItem[]>()
@@ -64,13 +65,13 @@ export default async function ContentsLibraryPage({ params }: Props) {
 
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
-    { label: '블로그' },
+    { label: '의료 정보' },
   ]
 
   const collectionJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
-    name: `${hospital.name} 진료 블로그`,
+    name: `${hospital.name} 의료 정보`,
     about: hospital.specialties,
     isPartOf: {
       '@type': 'WebSite',
@@ -101,8 +102,8 @@ export default async function ContentsLibraryPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">진료 블로그</span>
-              <h1 className="clinic-library-hero-title">{hospital.name} 진료 블로그</h1>
+              <span className="clinic-section-label">의료 정보</span>
+              <h1 className="clinic-library-hero-title">{hospital.name} 의료 정보</h1>
               <p className="clinic-library-hero-meta">
                 <span>{hospital.specialties.join(' · ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
