@@ -102,7 +102,7 @@ export default async function ContentsLibraryPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">의료 정보</span>
+              <span className="clinic-section-label">의료 정보</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 의료 정보</h1>
               <p className="clinic-library-hero-meta">
                 <span>{hospital.specialties.join(' · ')}</span>

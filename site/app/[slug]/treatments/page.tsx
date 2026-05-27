@@ -109,7 +109,7 @@ export default async function TreatmentsPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">진료 영역</span>
+              <span className="clinic-section-label">진료 영역</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 진료 영역</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{treatments.length}개 진료 영역</strong>
@@ -179,7 +179,7 @@ export default async function TreatmentsPage({ params }: Props) {
             <section className="clinic-section clinic-section--alt">
               <div className="clinic-section-inner">
                 <header className="clinic-section-header">
-                  <span className="clinic-section-eyebrow">관련 글</span>
+                  <span className="clinic-section-label">관련 글</span>
                   <h2 className="clinic-section-heading">진료 영역별 의료 정보</h2>
                   <p className="clinic-section-lede">
                     진료 전 궁금해할 만한 질문과 안내를 진료 영역별로 모았습니다.

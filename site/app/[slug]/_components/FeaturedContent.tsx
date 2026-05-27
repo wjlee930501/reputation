@@ -42,18 +42,20 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
   const sectionLede = `환자 질문에 답하기 위해 ${hospitalName}에서 먼저 정리한 글입니다.`
   const primaryTypeLabel = TYPE_LABELS[primary.content_type] ?? primary.content_type
   const primaryDate = formatDate(primary.published_at, primary.scheduled_date)
+  // rest가 비면(콘텐츠가 희소하면) 2열 그리드가 텅 비어 보이므로 단일 컬럼으로 collapse.
+  const isSparse = rest.length === 0
 
   return (
     <section className="clinic-featured" aria-label="대표 의료 정보">
       <div className="clinic-featured-inner">
         <span className="clinic-divider" aria-hidden="true" />
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">대표 글</span>
-          <h2 className="clinic-section-heading">대표 의료 정보</h2>
+          <span className="clinic-section-label">대표 의료 정보</span>
+          <h2 className="clinic-section-heading">먼저 정리한 글</h2>
           <p className="clinic-section-lede">{sectionLede}</p>
         </header>
 
-        <div className="clinic-featured-grid">
+        <div className={`clinic-featured-grid${isSparse ? ' clinic-featured-grid--solo' : ''}`}>
           <Link
             href={`/${hospitalSlug}/contents/${primary.id}`}
             className="clinic-featured-primary"
@@ -111,58 +113,61 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
             </div>
           </Link>
 
-          <div className="clinic-featured-secondary">
-            {rest.map((content) => {
-              const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
-              const date = formatDate(content.published_at, content.scheduled_date)
-              return (
-                <Link
-                  key={content.id}
-                  href={`/${hospitalSlug}/contents/${content.id}`}
-                  className="clinic-featured-secondary-card"
-                  aria-label={`${typeLabel} — ${content.title}`}
-                >
-                  <div className="clinic-featured-secondary-thumb">
-                    {content.image_url ? (
-                      <Image
-                        src={content.image_url}
-                        alt={content.title}
-                        fill
-                        sizes="88px"
-                        style={{ objectFit: 'cover' }}
-                        unoptimized={shouldBypassNextImageOptimization(content.image_url)}
-                      />
-                    ) : (
-                      <div
-                        className={`clinic-content-card-image--placeholder is-${content.content_type.toLowerCase()}`}
-                        style={{ width: '100%', height: '100%' }}
-                        aria-hidden="true"
-                      />
-                    )}
-                  </div>
-                  <div className="clinic-featured-secondary-meta">
-                    <span className="clinic-featured-secondary-eyebrow">{typeLabel}</span>
-                    <h4 className="clinic-featured-secondary-title">{content.title}</h4>
-                    <p className="clinic-featured-secondary-date">{date}</p>
-                  </div>
-                </Link>
-              )
-            })}
-            <Link
-              href={`/${hospitalSlug}/contents`}
-              className="clinic-featured-secondary-card"
-              style={{ alignItems: 'center', justifyContent: 'space-between', borderStyle: 'dashed' }}
-            >
-              <div className="clinic-featured-secondary-meta">
-                <h4 className="clinic-featured-secondary-title" style={{ marginBottom: 2 }}>
-                  의료 정보 전체 보기
-                </h4>
-                <p className="clinic-featured-secondary-date">진료 안내와 건강 정보</p>
-              </div>
-              <ChevronRightIcon className="clinic-icon" />
-            </Link>
-          </div>
+          {!isSparse && (
+            <div className="clinic-featured-secondary">
+              {rest.map((content) => {
+                const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
+                const date = formatDate(content.published_at, content.scheduled_date)
+                return (
+                  <Link
+                    key={content.id}
+                    href={`/${hospitalSlug}/contents/${content.id}`}
+                    className="clinic-featured-secondary-card"
+                    aria-label={`${typeLabel} — ${content.title}`}
+                  >
+                    <div className="clinic-featured-secondary-thumb">
+                      {content.image_url ? (
+                        <Image
+                          src={content.image_url}
+                          alt={content.title}
+                          fill
+                          sizes="88px"
+                          style={{ objectFit: 'cover' }}
+                          unoptimized={shouldBypassNextImageOptimization(content.image_url)}
+                        />
+                      ) : (
+                        <div
+                          className={`clinic-content-card-image--placeholder is-${content.content_type.toLowerCase()}`}
+                          style={{ width: '100%', height: '100%' }}
+                          aria-hidden="true"
+                        />
+                      )}
+                    </div>
+                    <div className="clinic-featured-secondary-meta">
+                      <span className="clinic-featured-secondary-eyebrow">{typeLabel}</span>
+                      <h4 className="clinic-featured-secondary-title">{content.title}</h4>
+                      <p className="clinic-featured-secondary-date">{date}</p>
+                    </div>
+                  </Link>
+                )
+              })}
+              <Link href={`/${hospitalSlug}/contents`} className="clinic-featured-allcard">
+                <span className="clinic-featured-allcard-meta">
+                  <span className="clinic-featured-allcard-title">의료 정보 전체 보기</span>
+                  <span className="clinic-featured-allcard-sub">진료 안내와 건강 정보</span>
+                </span>
+                <ChevronRightIcon className="clinic-icon" />
+              </Link>
+            </div>
+          )}
         </div>
+
+        {isSparse && (
+          <Link href={`/${hospitalSlug}/contents`} className="clinic-featured-more">
+            의료 정보 전체 보기
+            <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+          </Link>
+        )}
       </div>
     </section>
   )

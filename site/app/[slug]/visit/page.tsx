@@ -172,7 +172,7 @@ export default async function VisitPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">진료 안내</span>
+              <span className="clinic-section-label">진료 안내</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 진료 안내</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{hospital.address}</strong>

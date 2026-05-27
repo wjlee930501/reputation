@@ -170,7 +170,7 @@ export default async function TreatmentPillarPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">진료 영역</span>
+              <span className="clinic-section-label">진료 영역</span>
               <h1 className="clinic-library-hero-title">
                 <span
                   className={`clinic-treatment-card-icon hue-${hue}`}
@@ -213,7 +213,7 @@ export default async function TreatmentPillarPage({ params }: Props) {
               ) : (
                 <>
                   <header className="clinic-section-header">
-                    <span className="clinic-section-eyebrow">관련 콘텐츠 {relatedContents.length}편</span>
+                    <span className="clinic-section-label">관련 콘텐츠 {relatedContents.length}편</span>
                     <h2 className="clinic-section-heading">{treatmentName} 진료 안내 글 모음</h2>
                     <p className="clinic-section-lede">
                       {treatmentName}와 관련해 환자가 자주 묻는 질문, 질환 정보, 진료 단계를 모았습니다.

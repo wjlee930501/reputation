@@ -189,6 +189,9 @@ export default async function HospitalHubPage({ params }: Props) {
             directorPhotoUrl={hospital.director_photo_url}
             contentCount={contents.length}
             treatmentCount={(hospital.treatments || []).length}
+            address={hospital.address}
+            businessHours={hospital.business_hours}
+            treatments={hospital.treatments || []}
           />
 
           <DoctorIntro

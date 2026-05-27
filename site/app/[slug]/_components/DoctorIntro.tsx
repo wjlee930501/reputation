@@ -1,9 +1,6 @@
-import Image from 'next/image'
-
 import { resolveAssetUrl } from '@/lib/api'
-import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
-import { StethoscopeIcon } from './MedicalIcons'
+import { ClinicAvatar } from './ClinicAvatar'
 
 interface Props {
   directorName: string
@@ -23,11 +20,12 @@ export function DoctorIntro({
   contentCount,
 }: Props) {
   const resolvedPhoto = resolveAssetUrl(directorPhotoUrl)
+  const initial = (directorName || '').trim().slice(0, 1) || '醫'
   return (
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">의료진</span>
+          <span className="clinic-section-label">의료진 소개</span>
           <h2 className="clinic-section-heading">진료를 담당하는 의료진</h2>
           <p className="clinic-section-lede">
             진료 경험과 환자 상담에서 반복되는 질문을 바탕으로, 필요한 의료 정보를 차분히 정리합니다.
@@ -35,26 +33,18 @@ export function DoctorIntro({
         </header>
 
         <div className="clinic-curator">
-          {resolvedPhoto ? (
-            <div className="clinic-curator-portrait">
-              <Image
-                src={resolvedPhoto}
-                alt={`${directorName} 원장 사진`}
-                fill
-                sizes="(max-width: 720px) 180px, 240px"
-                style={{ objectFit: 'cover' }}
-                unoptimized={shouldBypassNextImageOptimization(resolvedPhoto)}
-              />
-            </div>
-          ) : (
-            <div
-              className="clinic-curator-portrait clinic-curator-portrait--placeholder"
-              aria-hidden="true"
-            >
-              <StethoscopeIcon style={{ color: 'var(--color-revisit-coolgrey-50)' }} />
-              <span>원장 사진 준비중</span>
-            </div>
-          )}
+          <ClinicAvatar
+            src={resolvedPhoto}
+            alt={`${directorName} 원장`}
+            wrapperClassName="clinic-curator-portrait"
+            fallbackClassName="clinic-curator-portrait--monogram"
+            fallback={
+              <>
+                <span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>
+                <span className="clinic-curator-monogram-name" aria-hidden="true">{directorName} 원장</span>
+              </>
+            }
+          />
 
           <div>
             <span className="clinic-curator-eyebrow">대표원장</span>

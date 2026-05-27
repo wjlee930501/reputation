@@ -1487,21 +1487,44 @@ textarea:focus-visible {
   text-transform: uppercase;
 }
 
+/* 차분한 에디토리얼 라벨 — 대문자 태그 대신 얇은 액센트 룰 + 문장형 라벨.
+   각 섹션마다 외치는 듯한 uppercase eyebrow를 대체한다. */
+.clinic-section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 14px;
+  color: var(--color-revisit-text-helper);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.4;
+}
+
+.clinic-section-label::before {
+  content: "";
+  width: 22px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--color-revisit-primary-40);
+  flex-shrink: 0;
+}
+
 .clinic-section-heading {
   margin: 0;
   color: var(--color-revisit-text-title);
-  font-size: 26px;
+  font-size: 30px;
   font-weight: 700;
-  line-height: 1.3;
-  letter-spacing: -0.02em;
+  line-height: 1.28;
+  letter-spacing: -0.025em;
 }
 
 .clinic-section-lede {
-  margin: 12px 0 0;
-  max-width: 680px;
+  margin: 14px 0 0;
+  max-width: 62ch;
   color: var(--color-revisit-text-helper);
-  font-size: 15px;
-  line-height: 1.7;
+  font-size: 15.5px;
+  line-height: 1.72;
 }
 
 /* ── Header ────────────────────────────────────────────────────── */
@@ -1669,40 +1692,45 @@ textarea:focus-visible {
 .clinic-hero-eyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 20px;
-  color: var(--color-revisit-primary-40);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  gap: 9px;
+  margin-bottom: 18px;
+  color: var(--color-revisit-text-helper);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .clinic-hero-eyebrow::before {
   content: "";
-  width: 20px;
-  height: 1px;
+  width: 22px;
+  height: 1.5px;
+  border-radius: 2px;
   background: var(--color-revisit-primary-40);
   flex-shrink: 0;
 }
 
 .clinic-hero-title {
-  margin: 0 0 16px;
+  margin: 0 0 18px;
   color: var(--color-revisit-text-title);
-  font-size: 42px;
+  font-size: 44px;
   font-weight: 800;
-  line-height: 1.18;
-  letter-spacing: -0.025em;
-  max-width: 680px;
+  line-height: 1.14;
+  letter-spacing: -0.03em;
+}
+
+.clinic-hero-title-sub {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-revisit-primary-40);
 }
 
 .clinic-hero-meta {
   margin: 0 0 28px;
-  max-width: 60ch;
+  max-width: 48ch;
   color: var(--color-revisit-coolgrey-40);
   font-size: 16px;
   font-weight: 400;
-  line-height: 1.75;
+  line-height: 1.78;
 }
 
 .clinic-hero-meta strong {
@@ -1746,12 +1774,10 @@ textarea:focus-visible {
 .clinic-btn-primary {
   background: var(--color-revisit-primary-40);
   color: #ffffff;
-  box-shadow: 0 2px 8px rgba(6, 113, 224, 0.20);
 }
 
 .clinic-btn-primary:hover {
   background: var(--color-revisit-primary-30);
-  box-shadow: 0 4px 14px rgba(6, 113, 224, 0.26);
 }
 
 .clinic-btn-secondary {
@@ -1766,22 +1792,14 @@ textarea:focus-visible {
   color: var(--color-revisit-primary-30);
 }
 
+/* 차분한 전화 CTA — 펄스/글로우 제거. 단일 블루 액센트, 조용한 hover. */
 .clinic-btn-cta {
-  background: var(--color-revisit-green-50);
+  background: var(--color-revisit-primary-40);
   color: #ffffff;
-  box-shadow: 0 2px 12px rgba(50, 201, 151, 0.35);
-  animation: clinic-cta-pulse 2.5s ease-in-out infinite;
 }
 
 .clinic-btn-cta:hover {
-  background: #28b885;
-  box-shadow: 0 4px 18px rgba(50, 201, 151, 0.45);
-  animation: none;
-}
-
-@keyframes clinic-cta-pulse {
-  0%, 100% { box-shadow: 0 2px 12px rgba(50, 201, 151, 0.35); }
-  50% { box-shadow: 0 2px 24px rgba(50, 201, 151, 0.55); }
+  background: var(--color-revisit-primary-30);
 }
 
 /* ── Doctor intro ─────────────────────────────────────────────── */
@@ -1878,10 +1896,7 @@ textarea:focus-visible {
 }
 
 .clinic-treatment-card:hover {
-  border-color: var(--color-revisit-coolgrey-60);
-  box-shadow:
-    0 1px 2px rgba(33, 40, 72, 0.06),
-    0 8px 24px rgba(33, 40, 72, 0.04);
+  border-color: var(--color-revisit-primary-50);
 }
 
 .clinic-treatment-card-name {
@@ -1915,13 +1930,11 @@ textarea:focus-visible {
   border-radius: 12px;
   overflow: hidden;
   background: var(--color-revisit-greyscale-100);
-  box-shadow: 0 1px 2px rgba(33, 40, 72, 0.05);
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+  transition: border-color 160ms ease;
 }
 
 .clinic-content-card:hover {
-  border-color: var(--color-revisit-coolgrey-60);
-  box-shadow: 0 2px 4px rgba(33, 40, 72, 0.07), 0 10px 20px rgba(33, 40, 72, 0.06);
+  border-color: var(--color-revisit-primary-50);
 }
 
 .clinic-content-card-image {
@@ -1950,15 +1963,20 @@ textarea:focus-visible {
   display: inline-flex;
   align-self: flex-start;
   align-items: center;
-  margin-bottom: 10px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-40);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  gap: 7px;
+  margin-bottom: 11px;
+  color: var(--color-revisit-text-helper);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.clinic-content-card-type::before {
+  content: "";
+  width: 16px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--color-revisit-primary-50);
 }
 
 .clinic-content-card-title {
@@ -1999,8 +2017,11 @@ textarea:focus-visible {
 }
 
 .clinic-content-card--faq .clinic-content-card-type {
-  background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-30);
+}
+
+.clinic-content-card--faq .clinic-content-card-type::before {
+  background: var(--color-revisit-primary-40);
 }
 
 .clinic-content-card--faq .clinic-content-card-title::before {
@@ -2099,8 +2120,7 @@ textarea:focus-visible {
 .clinic-article {
   background: var(--color-revisit-greyscale-100);
   border: 1px solid var(--color-revisit-line-container);
-  border-top: 2px solid var(--color-revisit-primary-40);
-  border-radius: 12px;
+  border-radius: 16px;
   overflow: hidden;
 }
 
@@ -2117,16 +2137,21 @@ textarea:focus-visible {
 
 .clinic-article-type {
   display: inline-flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 18px;
-  padding: 4px 10px;
-  border-radius: 4px;
-  background: transparent;
-  border: 1px solid var(--color-revisit-coolgrey-70);
   color: var(--color-revisit-text-helper);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  letter-spacing: -0.005em;
+}
+
+.clinic-article-type::before {
+  content: "";
+  width: 18px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--color-revisit-primary-40);
 }
 
 .clinic-article-pillar-link {
@@ -2162,12 +2187,13 @@ textarea:focus-visible {
 }
 
 .clinic-article-title {
-  margin: 0 0 18px;
+  margin: 0 0 20px;
   color: var(--color-revisit-text-title);
-  font-size: 34px;
-  font-weight: 700;
+  font-size: 36px;
+  font-weight: 800;
   line-height: 1.2;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
+  max-width: 26ch;
 }
 
 .clinic-article-byline {
@@ -2188,15 +2214,16 @@ textarea:focus-visible {
 }
 
 .clinic-article-body {
-  padding: 32px 44px 56px;
+  padding: 36px 44px 56px;
+  max-width: 70ch;
   color: var(--color-revisit-text-body);
-  font-size: 16.5px;
-  line-height: 1.8;
+  font-size: 17px;
+  line-height: 1.82;
   letter-spacing: -0.005em;
 }
 
 .clinic-article-body > p:first-of-type {
-  font-size: 18px;
+  font-size: 18.5px;
   line-height: 1.75;
   color: var(--color-revisit-text-title);
   font-weight: 500;
@@ -2206,23 +2233,25 @@ textarea:focus-visible {
 .clinic-article-body h2,
 .clinic-article-body h3 {
   color: var(--color-revisit-text-title);
-  margin-top: 32px;
-  margin-bottom: 12px;
-  letter-spacing: -0.01em;
+  margin-top: 40px;
+  margin-bottom: 14px;
+  letter-spacing: -0.02em;
+  scroll-margin-top: 88px;
 }
 
 .clinic-article-body h2 {
-  font-size: 22px;
+  font-size: 23px;
   font-weight: 700;
+  padding-top: 4px;
 }
 
 .clinic-article-body h3 {
-  font-size: 18px;
+  font-size: 18.5px;
   font-weight: 700;
 }
 
 .clinic-article-body p {
-  margin: 0 0 14px;
+  margin: 0 0 16px;
 }
 
 .clinic-article-body ul,
@@ -2277,13 +2306,22 @@ textarea:focus-visible {
 }
 
 .clinic-aside-card-eyebrow {
-  display: block;
-  margin-bottom: 8px;
-  color: var(--color-revisit-text-caption);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--color-revisit-text-helper);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.clinic-aside-card-eyebrow::before {
+  content: "";
+  width: 14px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--color-revisit-primary-50);
 }
 
 .clinic-aside-card-title {
@@ -2340,8 +2378,11 @@ textarea:focus-visible {
   height: 56px;
   border-radius: 10px;
   overflow: hidden;
-  background: var(--color-revisit-coolgrey-90);
   flex-shrink: 0;
+  background:
+    radial-gradient(circle at 1px 1px, var(--color-revisit-coolgrey-80) 1px, transparent 0) 0 0 / 10px 10px,
+    linear-gradient(160deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-coolgrey-95) 100%);
+  border: 1px solid var(--color-revisit-line-container);
 }
 
 .clinic-related-meta {
@@ -2371,24 +2412,35 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 16px;
+  align-items: stretch;
 }
 
 .clinic-contact-item {
+  display: flex;
+  flex-direction: column;
   padding: 22px 24px;
   border: 1px solid var(--color-revisit-line-container);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--color-revisit-greyscale-100);
-  box-shadow: 0 1px 2px rgba(33, 40, 72, 0.04);
 }
 
 .clinic-contact-item-label {
-  display: block;
-  margin-bottom: 4px;
-  color: var(--color-revisit-text-caption);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--color-revisit-text-helper);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.clinic-contact-item-label::before {
+  content: "";
+  width: 16px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--color-revisit-primary-50);
 }
 
 .clinic-contact-item-value {
@@ -2397,6 +2449,10 @@ textarea:focus-visible {
   font-size: 15px;
   font-weight: 600;
   line-height: 1.55;
+}
+
+.clinic-contact-item .clinic-contact-link {
+  margin-top: auto;
 }
 
 .clinic-contact-item-value a {
@@ -2554,21 +2610,23 @@ textarea:focus-visible {
 
 /* ── Empty state ──────────────────────────────────────────────── */
 .clinic-empty {
-  padding: 64px 32px;
-  border: 1px dashed var(--color-revisit-line-border);
-  border-radius: 8px;
-  background: var(--color-revisit-greyscale-100);
+  padding: 56px 32px;
+  border: 1px solid var(--color-revisit-line-container);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 1px 1px, var(--color-revisit-coolgrey-85) 1px, transparent 0) 0 0 / 18px 18px,
+    var(--color-revisit-coolgrey-95);
   text-align: center;
   color: var(--color-revisit-text-helper);
 }
 
 .clinic-empty-title {
   display: block;
-  margin-bottom: 6px;
-  color: var(--color-revisit-text-subbody);
-  font-size: 15px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+  color: var(--color-revisit-text-title);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
 }
 
 /* ── Icons (inline SVG; sized via .clinic-icon) ───────────────── */
@@ -2590,107 +2648,266 @@ textarea:focus-visible {
  * 진료 카테고리 아이콘.
  * ══════════════════════════════════════════════════════════════════ */
 
-/* ── Hero pattern (콘텐츠 허브 정체성) ─────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════
+ * Hero masthead — 2-column editorial layout
+ * 좌: eyebrow/title/lede/CTA/byline · 우: 병원 스냅샷 패널
+ * 희소 데이터에서도 균형있게 보이도록 설계.
+ * ══════════════════════════════════════════════════════════════════ */
 .clinic-hero--hub {
   position: relative;
-  padding: 112px 24px 72px;
+  padding: 104px 24px 80px;
   background: var(--color-revisit-greyscale-100);
   border-bottom: 1px solid var(--color-revisit-line-container);
   overflow: hidden;
 }
 
+/* 상단 그라데이션 룰 제거 — 단일 hairline 하단 보더만 유지(에디토리얼). */
 .clinic-hero--hub::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, var(--color-revisit-primary-40) 0%, var(--color-revisit-primary-80) 60%, transparent 100%);
-  pointer-events: none;
+  content: none;
 }
 
 .clinic-hero--hub .clinic-hero-inner {
   position: relative;
   z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.85fr);
+  gap: 56px;
+  align-items: start;
 }
 
-.clinic-hero-curator-line {
-  display: inline-flex;
+.clinic-hero-lead {
+  min-width: 0;
+  padding-top: 4px;
+}
+
+/* ── Byline (큐레이터 라인 대체) — pill 제거, 하이라인 위 차분한 줄 ── */
+.clinic-hero-byline {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 18px;
-  padding: 6px 12px 6px 6px;
-  border-radius: 999px;
-  background: var(--color-revisit-greyscale-100);
-  border: 1px solid var(--color-revisit-line-container);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-revisit-text-subbody);
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 34px;
+  padding-top: 22px;
+  border-top: 1px solid var(--color-revisit-line-container);
+  color: var(--color-revisit-text-helper);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
-.clinic-hero-curator-line strong {
-  color: var(--color-revisit-text-title);
-  font-weight: 700;
-}
-
-.clinic-hero-curator-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  background: var(--color-revisit-coolgrey-85);
+.clinic-hero-byline-avatar {
   position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
   overflow: hidden;
+  flex-shrink: 0;
+  background: var(--color-revisit-primary-95);
+  border: 1px solid var(--color-revisit-line-container);
 }
 
-.clinic-hero-curator-avatar img {
+.clinic-hero-byline-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.clinic-hero-stat-row {
+.clinic-hero-byline-monogram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--color-revisit-primary-30);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.clinic-hero-byline-text strong {
+  color: var(--color-revisit-text-title);
+  font-weight: 700;
+}
+
+.clinic-hero-byline-count {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid var(--color-revisit-line-container);
+  border-radius: 999px;
+  color: var(--color-revisit-text-subbody);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── Snapshot panel (우측 실용 정보) ─────────────────────────────── */
+.clinic-hero-snapshot {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  padding: 26px 26px 8px;
+  border: 1px solid var(--color-revisit-line-container);
+  border-radius: 16px;
+  background: var(--color-revisit-coolgrey-95);
+}
+
+.clinic-hero-snapshot-label {
+  display: block;
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-revisit-line-container);
+  color: var(--color-revisit-text-helper);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+}
+
+.clinic-hero-snapshot-block {
+  margin-bottom: 20px;
+}
+
+.clinic-hero-snapshot-key {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--color-revisit-text-caption);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.clinic-hero-snapshot-chips {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 0;
-  margin-top: 40px;
-  padding-top: 28px;
+  gap: 6px;
+}
+
+.clinic-hero-snapshot-chip {
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--color-revisit-greyscale-100);
+  border: 1px solid var(--color-revisit-line-container);
+  color: var(--color-revisit-text-subbody);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.clinic-hero-snapshot-chip--more {
+  color: var(--color-revisit-text-caption);
+  font-weight: 700;
+}
+
+.clinic-hero-snapshot-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.clinic-hero-snapshot-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 13px 0;
   border-top: 1px solid var(--color-revisit-line-container);
 }
 
-.clinic-hero-stat {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding-right: 24px;
-  margin-right: 24px;
-  border-right: 1px solid var(--color-revisit-line-container);
+.clinic-hero-snapshot-row:first-child {
+  border-top: none;
 }
 
-.clinic-hero-stat:last-child {
-  border-right: none;
-  padding-right: 0;
-  margin-right: 0;
+.clinic-hero-snapshot-row dt {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  width: 78px;
+  color: var(--color-revisit-text-helper);
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.clinic-hero-stat-value {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
+.clinic-hero-snapshot-row dt .clinic-icon {
+  color: var(--color-revisit-coolgrey-50);
+}
+
+.clinic-hero-snapshot-row dd {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
   color: var(--color-revisit-text-title);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
 }
 
-.clinic-hero-stat-label {
+.clinic-hero-snapshot-today {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  margin-right: 4px;
+  border-radius: 6px;
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-primary-30);
   font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  color: var(--color-revisit-text-caption);
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.clinic-hero-snapshot-tel {
+  color: var(--color-revisit-primary-40);
+  font-weight: 700;
+}
+
+.clinic-hero-snapshot-tel:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.clinic-hero-snapshot-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding: 16px 0 18px;
+  border-top: 1px solid var(--color-revisit-line-container);
+  color: var(--color-revisit-text-subbody);
+  font-size: 13px;
+  font-weight: 600;
+  transition: color 150ms ease;
+}
+
+.clinic-hero-snapshot-foot:hover {
+  color: var(--color-revisit-primary-40);
+}
+
+.clinic-hero-snapshot-foot .clinic-icon {
+  color: var(--color-revisit-coolgrey-50);
+  transition: transform 150ms ease, color 150ms ease;
+}
+
+.clinic-hero-snapshot-foot:hover .clinic-icon {
+  color: var(--color-revisit-primary-40);
+  transform: translateX(2px);
+}
+
+@media (max-width: 920px) {
+  .clinic-hero--hub .clinic-hero-inner {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+
+  .clinic-hero-snapshot {
+    align-self: start;
+  }
 }
 
 @media (max-width: 720px) {
   .clinic-hero--hub {
     padding: 72px 20px 48px;
+  }
+
+  .clinic-hero-byline-count {
+    margin-left: 0;
   }
 }
 
@@ -2716,6 +2933,32 @@ textarea:focus-visible {
   }
 }
 
+.clinic-featured-grid--solo {
+  grid-template-columns: minmax(0, 880px);
+  justify-content: start;
+}
+
+@media (min-width: 881px) {
+  /* solo일 때 primary 카드를 가로형(이미지+본문)으로 — 텅 빈 우측 제거 */
+  .clinic-featured-grid--solo .clinic-featured-primary {
+    flex-direction: row;
+    align-items: stretch;
+  }
+  .clinic-featured-grid--solo .clinic-featured-primary-image {
+    width: 46%;
+    flex-shrink: 0;
+    aspect-ratio: auto;
+    border-bottom: none;
+    border-right: 1px solid var(--color-revisit-line-container);
+  }
+  .clinic-featured-grid--solo .clinic-featured-primary-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+}
+
 .clinic-featured-primary {
   position: relative;
   display: flex;
@@ -2724,13 +2967,11 @@ textarea:focus-visible {
   overflow: hidden;
   background: var(--color-revisit-greyscale-100);
   border: 1px solid var(--color-revisit-line-container);
-  border-top: 2px solid var(--color-revisit-primary-40);
-  box-shadow: 0 1px 2px rgba(33, 40, 72, 0.06), 0 8px 24px rgba(33, 40, 72, 0.04);
-  transition: box-shadow 200ms ease;
+  transition: border-color 160ms ease;
 }
 
 .clinic-featured-primary:hover {
-  box-shadow: 0 2px 4px rgba(33, 40, 72, 0.08), 0 16px 36px rgba(33, 40, 72, 0.08);
+  border-color: var(--color-revisit-primary-50);
 }
 
 .clinic-featured-primary-image {
@@ -2747,22 +2988,29 @@ textarea:focus-visible {
 .clinic-featured-primary-eyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-  color: var(--color-revisit-primary-40);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: var(--color-revisit-text-helper);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.clinic-featured-primary-eyebrow::before {
+  content: "";
+  width: 16px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--color-revisit-primary-50);
 }
 
 .clinic-featured-primary-title {
   margin: 0 0 12px;
   color: var(--color-revisit-text-title);
-  font-size: 26px;
+  font-size: 27px;
   font-weight: 800;
-  line-height: 1.3;
-  letter-spacing: -0.01em;
+  line-height: 1.28;
+  letter-spacing: -0.022em;
 }
 
 .clinic-featured-primary-summary {
@@ -2793,16 +3041,76 @@ textarea:focus-visible {
 
 .clinic-featured-secondary-card {
   display: flex;
-  gap: 12px;
-  padding: 16px;
-  border-radius: 16px;
+  gap: 13px;
+  padding: 14px;
+  border-radius: 12px;
   background: var(--color-revisit-greyscale-100);
   border: 1px solid var(--color-revisit-line-container);
-  transition: border-color 150ms ease;
+  transition: border-color 160ms ease;
 }
 
 .clinic-featured-secondary-card:hover {
   border-color: var(--color-revisit-primary-50);
+}
+
+/* 목록 전체 보기 카드 — 점선 대신 차분한 액센트 풋터 */
+.clinic-featured-allcard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--color-revisit-line-container);
+  background: var(--color-revisit-coolgrey-95);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.clinic-featured-allcard:hover {
+  border-color: var(--color-revisit-primary-50);
+  background: var(--color-revisit-primary-95);
+}
+
+.clinic-featured-allcard-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.clinic-featured-allcard-title {
+  color: var(--color-revisit-text-title);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.clinic-featured-allcard-sub {
+  color: var(--color-revisit-text-caption);
+  font-size: 12px;
+}
+
+.clinic-featured-allcard .clinic-icon {
+  color: var(--color-revisit-coolgrey-50);
+}
+
+/* solo(희소) 레이아웃의 인라인 더보기 링크 */
+.clinic-featured-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 20px;
+  color: var(--color-revisit-primary-40);
+  font-size: 14px;
+  font-weight: 600;
+  transition: gap 150ms ease;
+}
+
+.clinic-featured-more:hover {
+  gap: 10px;
+}
+
+.clinic-featured-more .clinic-icon {
+  color: currentColor;
 }
 
 .clinic-featured-secondary-thumb {
@@ -2823,13 +3131,10 @@ textarea:focus-visible {
 .clinic-featured-secondary-eyebrow {
   display: inline-block;
   margin-bottom: 6px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-text-subbody);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  color: var(--color-revisit-text-helper);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
 }
 
 .clinic-featured-secondary-title {
@@ -2849,49 +3154,30 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
-/* ── Content card image — 유형별 neutral placeholder ─────────── */
+/* ── Content card image — subtle branded placeholder ──────────────
+   플랫 그레이 사각형 대신 은은한 블루 틴트 + 도트 그리드 위 글리프 칩.
+   이미지가 없어도 "준비된" 느낌이 나도록. */
 .clinic-content-card-image--placeholder {
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-50);
+  position: relative;
+  flex-direction: column;
+  gap: 10px;
+  background:
+    radial-gradient(circle at 1px 1px, var(--color-revisit-coolgrey-80) 1px, transparent 0) 0 0 / 16px 16px,
+    linear-gradient(160deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-coolgrey-95) 100%);
+  color: var(--color-revisit-primary-30);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: -0.005em;
   text-align: center;
   padding: 24px;
 }
 
-.clinic-content-card-image--placeholder.is-faq {
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-50);
-}
-
-.clinic-content-card-image--placeholder.is-disease {
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-50);
-}
-
-.clinic-content-card-image--placeholder.is-treatment {
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-50);
-}
-
-.clinic-content-card-image--placeholder.is-column {
-  background: var(--color-revisit-coolgrey-85);
-  color: var(--color-revisit-coolgrey-50);
-}
-
-.clinic-content-card-image--placeholder.is-health {
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-50);
-}
-
-.clinic-content-card-image--placeholder.is-local {
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-50);
-}
-
+.clinic-content-card-image--placeholder.is-column,
 .clinic-content-card-image--placeholder.is-notice {
-  background: var(--color-revisit-coolgrey-85);
-  color: var(--color-revisit-coolgrey-50);
+  background:
+    radial-gradient(circle at 1px 1px, var(--color-revisit-coolgrey-80) 1px, transparent 0) 0 0 / 16px 16px,
+    linear-gradient(160deg, var(--color-revisit-coolgrey-90) 0%, var(--color-revisit-coolgrey-95) 100%);
+  color: var(--color-revisit-coolgrey-30);
 }
 
 .clinic-content-card-image-glyph {
@@ -2901,9 +3187,10 @@ textarea:focus-visible {
   width: 52px;
   height: 52px;
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.7);
-  backdrop-filter: blur(6px);
-  margin-bottom: 10px;
+  background: var(--color-revisit-greyscale-100);
+  border: 1px solid var(--color-revisit-line-container);
+  color: inherit;
+  margin-bottom: 2px;
 }
 
 .clinic-content-card-image-glyph svg {
@@ -2976,11 +3263,10 @@ textarea:focus-visible {
   position: relative;
   width: 240px;
   aspect-ratio: 4 / 5;
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
-  background: var(--color-revisit-coolgrey-85);
-  border: 1px solid var(--color-revisit-coolgrey-70);
-  box-shadow: 0 1px 2px rgba(33, 40, 72, 0.08), 0 8px 24px rgba(33, 40, 72, 0.04);
+  background: var(--color-revisit-coolgrey-90);
+  border: 1px solid var(--color-revisit-line-container);
 }
 
 .clinic-curator-portrait::after {
@@ -2993,27 +3279,38 @@ textarea:focus-visible {
   object-fit: cover;
 }
 
-.clinic-curator-portrait--placeholder {
+/* 원장 사진 없을 때 — 빈 회색 박스 대신 품위 있는 모노그램 타일 */
+.clinic-curator-portrait--monogram {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-50);
+  gap: 12px;
+  background:
+    linear-gradient(160deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-coolgrey-95) 100%);
+  border-color: var(--color-revisit-primary-90);
 }
 
-.clinic-curator-portrait--placeholder svg {
-  width: 40px;
-  height: 40px;
-  opacity: 0.45;
+.clinic-curator-monogram-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 999px;
+  background: var(--color-revisit-greyscale-100);
+  border: 1px solid var(--color-revisit-primary-90);
+  color: var(--color-revisit-primary-30);
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
-.clinic-curator-portrait--placeholder span {
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  color: var(--color-revisit-coolgrey-50);
+.clinic-curator-monogram-name {
+  color: var(--color-revisit-primary-20);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
 }
 
 .clinic-curator-eyebrow {
@@ -3135,15 +3432,14 @@ textarea:focus-visible {
   gap: 12px;
   padding: 16px 18px;
   border: 1px solid var(--color-revisit-line-container);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--color-revisit-greyscale-100);
   color: var(--color-revisit-text-subbody);
-  transition: border-color 150ms ease, transform 150ms ease;
+  transition: border-color 160ms ease;
 }
 
 .clinic-channel-card:hover {
   border-color: var(--color-revisit-primary-50);
-  transform: translateY(-1px);
 }
 
 .clinic-channel-card-icon {
@@ -3192,18 +3488,7 @@ textarea:focus-visible {
 }
 
 .clinic-library-hero::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(
-    90deg,
-    var(--color-revisit-primary-40) 0%,
-    var(--color-revisit-primary-80) 60%,
-    transparent 100%
-  );
+  content: none;
 }
 
 .clinic-library-hero-inner {
@@ -3212,12 +3497,12 @@ textarea:focus-visible {
 }
 
 .clinic-library-hero-title {
-  margin: 8px 0 14px;
+  margin: 6px 0 16px;
   color: var(--color-revisit-text-title);
-  font-size: 32px;
-  font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: -0.025em;
+  font-size: 36px;
+  font-weight: 800;
+  line-height: 1.16;
+  letter-spacing: -0.03em;
 }
 
 .clinic-library-hero-meta {
@@ -3260,22 +3545,14 @@ textarea:focus-visible {
   align-items: center;
   gap: 6px;
   margin-left: auto;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid var(--color-revisit-coolgrey-70);
-  background: transparent;
-  color: var(--color-revisit-text-subbody);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-}
-
-.clinic-article-byline-chip::before {
-  content: "";
-  width: 5px;
-  height: 5px;
+  padding: 4px 10px;
   border-radius: 999px;
-  background: var(--color-revisit-green-50);
+  border: 1px solid var(--color-revisit-line-container);
+  background: var(--color-revisit-coolgrey-95);
+  color: var(--color-revisit-text-subbody);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
 }
 
 /* TL;DR 박스 — 본문 위 핵심 답변 */
@@ -3289,15 +3566,24 @@ textarea:focus-visible {
 }
 
 .clinic-article-tldr-eyebrow {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
   padding: 0;
   background: transparent;
-  color: var(--color-revisit-primary-40);
-  font-size: 11px;
+  color: var(--color-revisit-primary-30);
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  letter-spacing: -0.005em;
+}
+
+.clinic-article-tldr-eyebrow::before {
+  content: "";
+  width: 16px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--color-revisit-primary-40);
 }
 
 .clinic-article-tldr p {
@@ -3465,9 +3751,8 @@ textarea:focus-visible {
 
 /* PAA — 환자가 함께 묻는 질문 */
 .clinic-aside-card--paa {
-  background:
-    linear-gradient(180deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-greyscale-100) 60%);
-  border-color: var(--color-revisit-primary-90);
+  background: var(--color-revisit-coolgrey-95);
+  border-color: var(--color-revisit-line-container);
 }
 
 .clinic-paa-list {
@@ -3623,22 +3908,8 @@ textarea:focus-visible {
   .clinic-hero-meta {
     font-size: 14px;
   }
-  .clinic-hero-stat-row {
-    gap: 0;
-    margin-top: 24px;
-    padding-top: 20px;
-    flex-wrap: wrap;
-    row-gap: 12px;
-  }
-  .clinic-hero-stat {
-    padding-right: 16px;
-    margin-right: 16px;
-  }
-  .clinic-hero-stat-value {
-    font-size: 17px;
-  }
-  .clinic-hero-stat-label {
-    font-size: 11px;
+  .clinic-hero-snapshot {
+    padding: 22px 20px 6px;
   }
 
   /* 버튼 — 터치 타겟 최소 44px 보장 */
@@ -3693,12 +3964,6 @@ textarea:focus-visible {
     width: 140px;
     height: 168px;
   }
-
-  /* hero curator pill 줄바꿈 */
-  .clinic-hero-curator-line {
-    width: 100%;
-    justify-content: flex-start;
-  }
 }
 
 /* 큰 데스크탑(≥1280) — 라이브러리 hero / 섹션 패딩 여유 */
@@ -3745,10 +4010,9 @@ textarea:focus-visible {
     min-height: 96px;
   }
 
-  /* hero-curator-line 모바일 가독 */
-  .clinic-hero-curator-line {
-    font-size: 12px;
-    padding: 5px 10px 5px 5px;
+  /* hero byline 모바일 가독 */
+  .clinic-hero-byline {
+    font-size: 13px;
   }
 
   /* 콘텐츠 카드 cover aspect ratio 압축 */
@@ -3790,15 +4054,20 @@ textarea:focus-visible {
   gap: 16px;
 }
 
+/* 사진 1~2장일 때 — 한 장이 행을 가로지르며 비어 보이지 않게 폭 제한 */
+.clinic-gallery-grid--sparse {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: 720px;
+}
+
 .clinic-gallery-item {
   position: relative;
   margin: 0;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   aspect-ratio: 4 / 3;
   background: var(--color-revisit-coolgrey-90);
-  border: 1px solid var(--color-revisit-coolgrey-70);
-  box-shadow: 0 1px 2px rgba(33, 40, 72, 0.06), 0 4px 12px rgba(33, 40, 72, 0.04);
+  border: 1px solid var(--color-revisit-line-container);
 }
 
 .clinic-gallery-caption {
@@ -3834,8 +4103,10 @@ textarea:focus-visible {
   color: rgba(255,255,255,0.92);
 }
 
-@media (max-width: 480px) {
-  .clinic-gallery-grid {
+@media (max-width: 600px) {
+  .clinic-gallery-grid,
+  .clinic-gallery-grid--sparse {
     grid-template-columns: 1fr;
+    max-width: 420px;
   }
 }

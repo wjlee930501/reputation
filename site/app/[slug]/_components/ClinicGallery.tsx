@@ -29,14 +29,14 @@ export function ClinicGallery({ photos }: Props) {
     <section className="clinic-section">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">병원 둘러보기</span>
+          <span className="clinic-section-label">병원 둘러보기</span>
           <h2 className="clinic-section-heading">병원 공간</h2>
           <p className="clinic-section-lede">
             진료를 받기 전에 병원 외관과 진료 공간을 미리 확인할 수 있습니다.
           </p>
         </header>
 
-        <div className="clinic-gallery-grid">
+        <div className={`clinic-gallery-grid${visible.length < 3 ? ' clinic-gallery-grid--sparse' : ''}`}>
           {visible.map((photo) => {
             const url = resolveAssetUrl(photo.url)
             if (!url) return null

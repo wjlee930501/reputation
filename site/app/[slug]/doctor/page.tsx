@@ -132,7 +132,7 @@ export default async function DoctorPage({ params }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-eyebrow">의료진</span>
+              <span className="clinic-section-label">의료진</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 의료진</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{hospital.director_name} 원장</strong>
@@ -163,7 +163,7 @@ export default async function DoctorPage({ params }: Props) {
             <section className="clinic-section">
               <div className="clinic-section-inner">
                 <header className="clinic-section-header">
-                  <span className="clinic-section-eyebrow">원장 노트</span>
+                  <span className="clinic-section-label">원장 노트</span>
                   <h2 className="clinic-section-heading">원장이 전하는 진료 이야기</h2>
                   <p className="clinic-section-lede">
                     원장 칼럼·자주 묻는 질문·질환 정보를 우선 모았습니다.
