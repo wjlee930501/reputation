@@ -1,0 +1,1011 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Re:Putation — 원장님, 우리 병원은 AI에 검색되고 있나요? · MotionLabs</title>
+<meta name="description" content="환자들은 이제 ChatGPT와 Gemini에 병원을 물어봅니다. 데이터와 AI로 환자 경험을 설계해온 모션랩스가, 우리 병원의 AI 평판을 매달 운영합니다." />
+<style>
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
+
+:root{
+  --ink:#0F1419;
+  --muted-strong:#4A5568;
+  --muted:#6B7280;
+  --paper:#FFFFFF;
+  --paper-soft:#F7F8FA;
+  --border:#E5E7EB;
+  --accent:#2563EB;
+  --accent-dark:#1D4FD7;
+  --accent-soft:#DBEAFE;
+  --max:1320px;
+  --ease:cubic-bezier(.22,.61,.36,1);
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:"Pretendard",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  word-break:keep-all;
+  line-height:1.5;
+}
+a{color:inherit;text-decoration:none}
+button{font:inherit;cursor:pointer}
+img,svg{display:block}
+::selection{background:var(--accent-soft);color:var(--ink)}
+
+.container{max-width:var(--max);margin:0 auto;padding:0 24px}
+section{padding:104px 0}
+
+/* ── typography ── */
+.kicker{
+  margin:0 0 16px;
+  font-size:13px;font-weight:600;
+  letter-spacing:0.08em;text-transform:uppercase;
+  color:var(--accent);
+}
+.h2{
+  margin:0;
+  font-size:clamp(28px,2.4vw + 14px,38px);
+  font-weight:700;letter-spacing:-0.02em;line-height:1.28;
+  color:var(--ink);
+}
+.subhead{
+  margin:18px 0 0;
+  max-width:62ch;
+  font-size:clamp(17px,0.6vw + 15px,19px);
+  font-weight:400;line-height:1.65;
+  color:var(--muted-strong);
+}
+.section-heading{margin-bottom:clamp(40px,5vh,56px)}
+.section-heading--center{text-align:center}
+.section-heading--center .subhead{margin-left:auto;margin-right:auto}
+
+/* ── buttons ── */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  font-size:16px;font-weight:600;line-height:1;letter-spacing:-0.01em;
+  border:1px solid transparent;border-radius:8px;
+  transition:background .16s var(--ease),color .16s var(--ease),border-color .16s var(--ease);
+}
+.btn-primary{background:var(--accent);color:#fff;padding:15px 26px}
+.btn-primary:hover{background:var(--accent-dark)}
+.btn-text{color:var(--accent);padding:14px 2px;gap:6px}
+.btn-text span{transition:transform .16s var(--ease)}
+.btn-text:hover{text-decoration:underline;text-underline-offset:3px}
+.btn-text:hover span{transform:translateX(3px)}
+
+/* ── header ── */
+.site-header{
+  position:sticky;top:0;z-index:50;
+  background:rgba(255,255,255,.85);
+  backdrop-filter:saturate(180%) blur(12px);
+  border-bottom:1px solid var(--border);
+}
+.site-header .container{
+  display:flex;align-items:center;justify-content:space-between;
+  height:64px;gap:24px;
+}
+.brand-lockup{display:inline-flex;align-items:baseline;gap:8px;white-space:nowrap}
+.brand-lockup strong{font-size:22px;font-weight:700;letter-spacing:-0.02em;color:var(--ink)}
+.brand-lockup small{font-size:9px;font-weight:500;color:var(--muted)}
+.header-nav{display:flex;align-items:center;gap:28px;font-size:15px;font-weight:500;color:var(--muted-strong)}
+.header-nav a:hover{color:var(--ink)}
+.header-cta{background:var(--accent);color:#fff;padding:9px 18px;border-radius:8px;font-size:14px;font-weight:600}
+.header-cta:hover{background:var(--accent-dark)}
+
+/* ── hero ── */
+.hero{padding:clamp(56px,8vh,96px) 0 clamp(48px,6vh,72px)}
+.hero .container{
+  display:grid;grid-template-columns:minmax(0,0.82fr) minmax(0,1.05fr);
+  gap:clamp(36px,4vw,64px);align-items:center;
+}
+.hero-copy{max-width:30em}
+.hero-eyebrow{
+  margin:0 0 20px;font-size:13px;font-weight:600;letter-spacing:0.01em;color:var(--accent);
+}
+.hero h1{
+  margin:0;font-weight:700;letter-spacing:-0.025em;
+  font-size:clamp(32px,1.6vw + 22px,46px);
+  line-height:1.25;color:var(--ink);
+}
+.hero h1 .l1,.hero h1 .l2{display:block}
+.hero-visual .ai-panel{box-shadow:0 22px 55px rgba(15,20,25,.10),0 2px 6px rgba(15,20,25,.05)}
+.hero-subcopy{
+  margin:26px 0 0;max-width:46ch;
+  font-size:17px;line-height:1.7;color:var(--muted-strong);
+}
+.hero-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px 22px;margin-top:34px}
+.hero-logos{
+  display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;
+  margin-top:34px;padding-top:26px;border-top:1px solid var(--border);
+}
+.hero-logos-label{font-size:13px;font-weight:600;color:var(--muted)}
+.ai-logo{display:inline-flex;align-items:center;gap:9px;font-size:17px;font-weight:700;color:var(--ink)}
+.ai-logo-mark{width:28px;height:28px;color:var(--ink)}
+
+/* ── AI answer panel (shared) ── */
+.ai-panel{
+  position:relative;border:1px solid var(--border);border-radius:14px;background:#fff;
+  padding:18px;box-shadow:0 1px 2px rgba(15,20,25,.04);
+}
+.ai-panel-watermark{
+  position:absolute;top:16px;right:16px;
+  font-size:11px;font-weight:700;letter-spacing:.06em;color:var(--muted);
+  border:1px solid var(--border);border-radius:999px;padding:3px 8px;background:var(--paper-soft);
+}
+.ai-panel-head{display:flex;align-items:center;gap:7px;padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--border)}
+.ai-panel-dot{width:9px;height:9px;border-radius:999px;background:#D8DCE2}
+.ai-panel-dot:nth-child(1){background:#FF5F57}.ai-panel-dot:nth-child(2){background:#FEBC2E}.ai-panel-dot:nth-child(3){background:#28C840}
+.ai-panel-engines{margin-left:4px;display:inline-flex;align-items:center;gap:7px}
+.ai-panel-engine{width:15px;height:15px;color:var(--muted)}
+.ai-panel-head strong{margin-left:6px;font-size:13px;font-weight:600;color:var(--muted)}
+.ai-turn{display:grid;gap:7px;margin-bottom:14px}
+.ai-turn:last-child{margin-bottom:0}
+.ai-turn-role{display:inline-flex;align-self:flex-start;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.02em}
+.ai-turn-user .ai-turn-role{background:#EEF1F4;color:var(--muted-strong)}
+.ai-turn-assistant .ai-turn-role{background:var(--accent-soft);color:var(--accent-dark)}
+.ai-turn-user p{margin:0;align-self:flex-start;max-width:94%;padding:11px 14px;border-radius:14px 14px 14px 4px;background:var(--paper-soft);color:var(--ink);font-size:14px;font-weight:600;line-height:1.5}
+.ai-answer{display:grid;gap:18px;padding:16px;border:1px solid var(--border);border-radius:14px 14px 4px 14px;background:#fff}
+.ai-answer-plain{color:var(--muted-strong);font-weight:500}
+.ai-answer>p{margin:0;color:var(--ink);font-size:14px;font-weight:500;line-height:1.66}
+.ai-answer-clinic{display:grid;gap:12px;padding:18px;border:1px solid rgba(37,99,235,.28);border-left:3px solid var(--accent);border-radius:10px;background:var(--accent-soft)}
+.ai-answer-clinic strong{color:var(--accent-dark);font-size:15px;font-weight:700}
+.ai-answer-clinic p{margin:0;color:var(--muted-strong);font-size:13.5px;line-height:1.62}
+.ai-answer-sources{display:flex;flex-wrap:wrap;gap:7px;margin:6px 0 0;padding:0;list-style:none}
+.ai-answer-sources li{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border:1px solid rgba(37,99,235,.28);border-radius:999px;background:#fff;color:var(--accent-dark);font-size:11px;font-weight:600}
+.ai-answer-sources li::before{content:"";width:5px;height:5px;border-radius:999px;background:var(--accent)}
+.ai-panel-disclaimer{margin:14px 0 0;font-size:11.5px;line-height:1.5;color:var(--muted)}
+.ai-answer-typing{display:flex;align-items:center;gap:11px;min-height:120px}
+.ai-typing-dots{display:inline-flex;gap:5px}
+.ai-typing-dots i{width:7px;height:7px;border-radius:999px;background:#C2C8D0;animation:blink 1s infinite ease-in-out}
+.ai-typing-dots i:nth-child(2){animation-delay:.16s}.ai-typing-dots i:nth-child(3){animation-delay:.32s}
+.ai-typing-label{color:var(--muted);font-size:14px;font-weight:600}
+@keyframes blink{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+.ai-rise{animation:rise .46s var(--ease) both;animation-delay:var(--rise-delay,0ms)}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.ai-caret{display:inline-block;width:2px;height:1.05em;margin-left:1px;background:var(--accent);vertical-align:-0.15em;animation:caretblink .9s steps(1) infinite}
+@keyframes caretblink{50%{opacity:0}}
+.ai-answer-points{list-style:none;margin:2px 0 0;padding:0;display:grid;gap:10px}
+.ai-answer-points li{position:relative;padding-left:18px;font-size:13px;line-height:1.55;color:var(--muted-strong)}
+.ai-answer-points li::before{content:"";position:absolute;left:0;top:7px;width:6px;height:6px;border-radius:2px;background:var(--accent)}
+.ai-answer-outro{margin:8px 0 0;font-size:13.5px;line-height:1.6;color:var(--muted-strong)}
+/* 목업 창 높이 고정 — 내부 내용만 생성되고 전체 height는 움직이지 않게 */
+.ai-panel-body{min-height:512px}
+/* 부드러운 등장(블럭이 서서히 자연스럽게) */
+.ai-soft{animation:soft .9s cubic-bezier(.16,.7,.3,1) both;animation-delay:var(--bd,0ms)}
+@keyframes soft{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.ai-caret{animation:none;display:none}.ai-soft{animation:none}.ai-panel-body{min-height:0}}
+
+/* answer tabs */
+.answer-tabs{display:flex;flex-wrap:wrap;gap:6px 32px;margin-bottom:16px;border-bottom:1px solid var(--border)}
+.answer-tabs button{position:relative;background:none;border:0;padding:0 0 11px;font-size:14px;font-weight:600;color:var(--muted);transition:color .2s ease}
+.answer-tabs button:hover{color:var(--ink)}
+.answer-tabs button.is-active{color:var(--accent)}
+.answer-tabs .tab-bar{position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px;background:var(--accent);transform:scaleX(0);transform-origin:left}
+.answer-tabs button.is-active .tab-bar{transform:scaleX(1)}
+.answer-tabs button.is-rolling .tab-bar{transform:scaleX(0);animation:tabfill var(--roll-dur,4200ms) linear forwards}
+@keyframes tabfill{to{transform:scaleX(1)}}
+
+/* before/after toggle */
+.ba-toggle{display:inline-flex;padding:4px;background:var(--paper-soft);border:1px solid var(--border);border-radius:10px;margin-bottom:18px}
+.ba-toggle button{background:none;border:0;padding:8px 18px;border-radius:7px;font-size:14px;font-weight:600;color:var(--muted-strong)}
+.ba-toggle button.is-active{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(15,20,25,.08)}
+
+/* ── trust band ── */
+.trust-band{background:var(--paper-soft);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:0}
+.trust-band .container{display:grid;grid-template-columns:repeat(3,1fr);padding-top:32px;padding-bottom:32px}
+.trust-cell{padding:6px 24px;border-left:1px solid var(--border);display:flex;align-items:center;justify-content:center;text-align:center}
+.trust-cell:first-child{border-left:0}
+.trust-statement{font-size:clamp(20px,1.4vw + 12px,24px);font-weight:700;letter-spacing:-0.02em;line-height:1.35;color:var(--ink)}
+
+/* ── cards (generic) ── */
+.card-grid{display:grid;gap:24px}
+.card-grid--3{grid-template-columns:repeat(3,1fr)}
+.card-grid--2x2{grid-template-columns:repeat(2,1fr)}
+.card-grid--4{grid-template-columns:repeat(4,1fr)}
+.card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:32px;transition:box-shadow .18s var(--ease),transform .18s var(--ease)}
+.card:hover{box-shadow:0 8px 28px rgba(15,20,25,.07);transform:translateY(-2px)}
+.card-num{font-size:15px;font-weight:700;color:var(--accent);letter-spacing:.02em}
+.card-icon{width:26px;height:26px;color:var(--accent);margin-bottom:16px}
+.card h3{margin:14px 0 0;font-size:22px;font-weight:700;letter-spacing:-0.015em;line-height:1.35;color:var(--ink)}
+.card p{margin:12px 0 0;font-size:16px;line-height:1.62;color:var(--muted-strong)}
+.card p b{color:var(--ink);font-weight:700}
+
+/* section 2 — split layout + soft bg */
+/* 비교 섹션 — 회색 배경 (위로 이동) */
+#compare{background:var(--paper-soft);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+/* 모션랩스 섹션 — 메인 블루 띠 (낮은 높이 · 흰 폰트) */
+.s-why{background:var(--accent);color:#fff;padding-top:clamp(40px,5.5vh,56px);padding-bottom:clamp(40px,5.5vh,56px)}
+.s-why .container{display:block}
+.s-why .section-heading{max-width:none;margin-bottom:clamp(26px,3.5vh,36px);display:flex;align-items:center;justify-content:space-between;gap:20px 32px;flex-wrap:wrap}
+.s-why .h2{color:#fff}
+.s-why-cta{flex-shrink:0;display:inline-flex;align-items:center;gap:7px;padding:11px 20px;border:1px solid rgba(255,255,255,.55);border-radius:9px;color:#fff;font-size:15px;font-weight:600;transition:background .16s var(--ease),border-color .16s var(--ease)}
+.s-why-cta:hover{background:rgba(255,255,255,.14);border-color:#fff}
+.s-why-cta span{transition:transform .16s var(--ease)}
+.s-why-cta:hover span{transform:translateX(3px)}
+.s-why .card{background:transparent;border:0;padding:0;box-shadow:none}
+.s-why .card:hover{box-shadow:none;transform:none}
+.s-why .card-icon{color:#fff}
+.s-why .card h3{color:#fff;margin-top:12px;font-size:18px}
+.s-why .card p{color:rgba(255,255,255,.85);font-size:14px}
+/* 왜 지금인가 — 누적/선점 섹션 */
+.s-timing .timing-grid{display:grid;grid-template-columns:minmax(0,0.92fr) minmax(0,1.08fr);gap:clamp(36px,4vw,64px);align-items:center}
+.timing-points{list-style:none;margin:28px 0 0;padding:0;display:grid;gap:16px}
+.timing-points li{display:grid;gap:3px}
+.timing-points strong{font-size:16px;font-weight:700;color:var(--ink)}
+.timing-points span{font-size:14px;line-height:1.55;color:var(--muted-strong)}
+.timing-chart-card{border:1px solid var(--border);border-radius:14px;background:#fff;padding:24px;box-shadow:0 1px 2px rgba(15,20,25,.04)}
+.timing-chart-card svg{width:100%;height:auto;display:block}
+/* AEO & GEO 용어 섹션 — 연한 파란 배경 */
+#aeo-geo{background:#EEF3FE;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.term-grid{max-width:940px;margin:0 auto}
+.term-tag{display:inline-flex;align-items:center;padding:5px 13px;border-radius:8px;background:var(--accent-soft);color:var(--accent-dark);font-size:13px;font-weight:700;letter-spacing:.06em}
+.term-card h3{margin-top:16px;display:flex;flex-direction:column;gap:5px}
+.term-card h3 small{font-size:13px;font-weight:600;color:var(--muted);letter-spacing:0}
+
+/* ── comparison ── */
+.cmp{border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.cmp-row{display:grid;grid-template-columns:1.1fr 1.4fr 1.4fr;border-top:1px solid var(--border)}
+.cmp-row:first-child{border-top:0}
+.cmp-cell{padding:18px 22px;font-size:15.5px;line-height:1.5;display:flex;align-items:center}
+.cmp-axis{font-weight:600;color:var(--muted-strong);background:var(--paper-soft)}
+.cmp-generic{color:var(--muted)}
+.cmp-rep{color:var(--ink);font-weight:600;background:rgba(37,99,235,.05);border-left:1px solid var(--border)}
+.cmp-head .cmp-cell{font-weight:700;font-size:14px;background:var(--paper-soft);color:var(--muted-strong)}
+.cmp-head .cmp-rep{color:var(--accent-dark);background:var(--accent-soft)}
+.cmp-rep-tag{display:inline-flex;align-items:center;gap:6px}
+.cmp-closing{margin:48px auto 0;max-width:none;text-align:center;font-size:clamp(20px,1.6vw,28px);font-weight:700;letter-spacing:-0.02em;line-height:1.4;color:var(--ink)}
+.cmp-cards{display:none}
+
+/* ── section 4 demo layout ── */
+.s-demo .container{display:grid;grid-template-columns:minmax(0,0.95fr) minmax(0,1.05fr);gap:clamp(36px,4vw,64px);align-items:start}
+
+/* ── process ── */
+/* 운영 섹션 — 연하늘색 배경(강조) */
+#operation{background:#EEF3FE;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+/* 운영 주체 — 깔끔한 역할 배지 */
+.op-actors{display:inline-flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:24px}
+.op-actor{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border:1px solid var(--border);border-radius:10px;background:#fff;font-size:14px;font-weight:600;color:var(--ink);box-shadow:0 1px 2px rgba(15,20,25,.04)}
+.op-actor svg{width:17px;height:17px;color:var(--accent);flex-shrink:0}
+.op-plus{color:var(--muted);font-weight:600;font-size:15px}
+.process-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:0;list-style:none;margin:0;padding:0}
+.process-grid li{padding:0 22px}
+.process-grid li:first-child{padding-left:0}
+.process-grid li + li{border-left:1px solid var(--border)}
+.process-num{display:block;font-size:32px;font-weight:700;letter-spacing:-0.03em;color:var(--accent)}
+.process-grid h3{margin:16px 0 0;font-size:17px;font-weight:700;letter-spacing:-0.01em;color:var(--ink)}
+.process-grid p{margin:10px 0 0;font-size:14.5px;line-height:1.6;color:var(--muted-strong)}
+
+/* ── trust & compliance ── */
+.s-trust{background:var(--paper-soft)}
+
+/* ── pricing ── */
+.pricing-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;align-items:start}
+.price-card{position:relative;background:#fff;border:1px solid var(--border);border-radius:12px;padding:32px;display:flex;flex-direction:column;transition:box-shadow .18s var(--ease),transform .18s var(--ease)}
+.price-card.is-featured{border:2px solid var(--accent);transform:translateY(-8px);box-shadow:0 18px 44px rgba(37,99,235,.14)}
+.price-badge{position:absolute;top:-13px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:12px;font-weight:700;letter-spacing:.01em;padding:5px 14px;border-radius:999px;white-space:nowrap}
+.price-name{font-size:15px;font-weight:700;letter-spacing:.02em;color:var(--accent);text-transform:uppercase}
+.price-amount{margin:14px 0 0;font-size:clamp(36px,2.4vw,44px);font-weight:700;letter-spacing:-0.02em;line-height:1;color:var(--ink)}
+.price-tax{margin:8px 0 0;font-size:12px;font-weight:500;color:var(--muted)}
+.price-icp{margin:18px 0 0;padding:14px 0 0;border-top:1px solid var(--border);font-size:14.5px;line-height:1.55;color:var(--muted-strong)}
+.price-includes{list-style:none;margin:20px 0 0;padding:0;display:grid;gap:11px}
+.price-includes li{display:grid;grid-template-columns:18px 1fr;gap:10px;align-items:start;font-size:14.5px;line-height:1.5;color:var(--ink)}
+.price-check{width:18px;height:18px;color:var(--accent);margin-top:1px}
+.price-cta{margin-top:26px;width:100%}
+.pricing-notes{display:grid;grid-template-columns:1.6fr 1fr;gap:24px;margin-top:32px}
+.pricing-note-box{background:var(--paper-soft);border:1px solid var(--border);border-radius:12px;padding:24px 26px}
+.pricing-note-box h4{margin:0 0 10px;font-size:15px;font-weight:700;color:var(--ink)}
+.pricing-note-box p{margin:0;font-size:14px;line-height:1.7;color:var(--muted-strong)}
+.pricing-note-box .note-list{list-style:none;margin:0;padding:0;display:grid;gap:9px}
+.pricing-note-box .note-list li{position:relative;padding-left:15px;font-size:14px;line-height:1.5;color:var(--muted-strong)}
+.pricing-note-box .note-list li::before{content:"";position:absolute;left:0;top:8px;width:5px;height:5px;border-radius:999px;background:var(--accent)}
+.pricing-note-box .btn-text{margin-top:14px;padding:0}
+.footer-copy{margin:14px 0 0 !important;font-size:12px;color:var(--muted)}
+
+/* ── lead form ── */
+.s-lead .container{display:grid;grid-template-columns:minmax(0,0.9fr) minmax(0,1.1fr);gap:clamp(36px,4vw,64px);align-items:start}
+.lead-form{display:grid;gap:14px;background:#fff;border:1px solid var(--border);border-radius:14px;padding:28px}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.lead-form label{display:grid;gap:8px;font-size:14px;font-weight:600;color:var(--ink)}
+.lead-form input,.lead-form textarea,.lead-form select{width:100%;border:1px solid var(--border);border-radius:10px;background:#fff;color:var(--ink);font-size:16px;line-height:1.5;padding:13px 14px;outline:none;transition:border-color .15s,box-shadow .15s}
+.lead-form textarea{min-height:104px;resize:vertical}
+.lead-form input::placeholder,.lead-form textarea::placeholder{color:#9AA1AC}
+.lead-form input:focus,.lead-form textarea:focus,.lead-form select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.consent-details{border:1px solid var(--border);border-radius:10px;padding:13px 15px;background:var(--paper-soft);font-size:13px;line-height:1.6;color:var(--muted-strong)}
+.consent-details summary{cursor:pointer;font-weight:600;color:var(--ink)}
+.consent-details dl{margin:12px 0 0;display:grid;gap:8px}
+.consent-details dl>div{display:grid;grid-template-columns:88px 1fr;gap:10px}
+.consent-details dt{color:var(--accent);font-weight:600}
+.consent-details dd{margin:0}
+.privacy-check{display:grid !important;grid-template-columns:20px 1fr;align-items:start;gap:10px;font-size:13.5px;font-weight:500 !important;line-height:1.55;color:var(--muted-strong)}
+.privacy-check input{width:18px;height:18px;margin:2px 0 0;accent-color:var(--accent)}
+.btn-submit{width:100%;margin-top:2px}
+
+/* ── footer ── */
+.site-footer{border-top:1px solid var(--border);padding:48px 0}
+.site-footer .container{display:flex;justify-content:space-between;gap:32px;flex-wrap:wrap}
+.footer-brand strong{display:block;font-size:17px;font-weight:700;color:var(--ink);margin-bottom:8px}
+.footer-brand p{margin:0;font-size:14px;line-height:1.6;color:var(--muted)}
+.footer-biz{margin-top:10px !important;font-size:12.5px}
+.footer-links{display:flex;flex-direction:column;gap:10px;font-size:14px;color:var(--muted-strong)}
+.footer-links a:hover{color:var(--ink)}
+
+/* ── scroll reveal ── */
+.reveal-ready [data-reveal]{opacity:0;transform:translateY(14px);transition:opacity .6s var(--ease),transform .6s var(--ease);transition-delay:var(--reveal-delay,0ms)}
+.reveal-ready [data-reveal].in-view{opacity:1;transform:none}
+.card-grid>[data-reveal]:nth-child(2){--reveal-delay:70ms}
+.card-grid>[data-reveal]:nth-child(3){--reveal-delay:140ms}
+.card-grid>[data-reveal]:nth-child(4){--reveal-delay:210ms}
+.pricing-grid>[data-reveal]:nth-child(2){--reveal-delay:70ms}
+.pricing-grid>[data-reveal]:nth-child(3){--reveal-delay:140ms}
+.process-grid>[data-reveal]:nth-child(2){--reveal-delay:70ms}
+.process-grid>[data-reveal]:nth-child(3){--reveal-delay:140ms}
+.process-grid>[data-reveal]:nth-child(4){--reveal-delay:210ms}
+.process-grid>[data-reveal]:nth-child(5){--reveal-delay:280ms}
+
+/* ── responsive ── */
+@media (max-width:920px){
+  .hero .container,.s-lead .container,.s-timing .timing-grid{grid-template-columns:1fr}
+  .s-why .section-heading{margin-bottom:32px}
+  .card-grid--3,.card-grid--4{grid-template-columns:1fr 1fr}
+  .pricing-grid{grid-template-columns:1fr}
+  .price-card.is-featured{transform:none;order:-1}
+  .pricing-notes{grid-template-columns:1fr}
+  .process-grid{grid-template-columns:1fr 1fr;gap:28px 0}
+  .process-grid li,.process-grid li:first-child{padding:0 0 0 20px;border-left:1px solid var(--border)}
+}
+@media (max-width:680px){
+  section{padding:72px 0}
+  .header-nav{display:none}
+  .trust-band .container{grid-template-columns:1fr;gap:20px 0}
+  .trust-cell{padding:6px 0;border-left:0}
+  .card-grid--3,.card-grid--2x2,.card-grid--4{grid-template-columns:1fr}
+  .form-row{grid-template-columns:1fr}
+  .process-grid{grid-template-columns:1fr}
+  /* comparison: table → cards */
+  .cmp{display:none}
+  .cmp-cards{display:grid;gap:16px}
+  .cmp-card{border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .cmp-card.is-rep{border-color:var(--accent)}
+  .cmp-card-head{padding:14px 18px;font-size:14px;font-weight:700;background:var(--paper-soft);color:var(--muted-strong)}
+  .cmp-card.is-rep .cmp-card-head{background:var(--accent-soft);color:var(--accent-dark)}
+  .cmp-card dl{margin:0;padding:6px 18px 14px}
+  .cmp-card dl>div{padding:10px 0;border-top:1px solid var(--border)}
+  .cmp-card dt{font-size:12px;font-weight:600;color:var(--muted)}
+  .cmp-card dd{margin:4px 0 0;font-size:15px;color:var(--ink)}
+  .cmp-card.is-rep dd{font-weight:600}
+  .site-footer .container{flex-direction:column}
+}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{transition-duration:.01ms !important;animation-duration:.01ms !important;animation-iteration-count:1 !important}
+  .reveal-ready [data-reveal]{opacity:1 !important;transform:none !important}
+}
+</style>
+</head>
+<body>
+
+<!-- Section 1. Header -->
+<header class="site-header">
+  <div class="container">
+    <a class="brand-lockup" href="#top" aria-label="MotionLabs Re:Putation 홈">
+      <strong>Re:Putation</strong><small>by MotionLabs</small>
+    </a>
+    <nav class="header-nav" aria-label="페이지 섹션">
+      <a href="#compare">평판 관리</a>
+      <a href="#operation">운영 방식</a>
+      <a href="#pricing">요금제</a>
+      <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">회사 소개</a>
+    </nav>
+    <a class="header-cta" href="#lead">무료 진단</a>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- Section 2. Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-copy">
+        <p class="hero-eyebrow">500개+ 병의원이 리비짓을 선택한 모션랩스가 만들었습니다</p>
+        <h1>
+          <span class="l1">원장님, 우리 병원은</span>
+          <span class="l2">AI에 검색되고 있나요?</span>
+        </h1>
+        <p class="hero-subcopy">환자들은 이제 ChatGPT와 Gemini에 병원을 물어봅니다. 우리 병원이 그 답변에 검색되고 추천되는 것 — 이것이 AI 시대 평판 관리의 새로운 표준입니다. 데이터와 AI로 환자 경험을 설계해온 모션랩스가, 이번엔 우리 병원의 AI 평판을 매달 운영합니다.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#lead">우리 병원 AI 노출도 확인하기</a>
+          <a class="btn btn-text" href="#operation">운영 방식 자세히 보기 <span aria-hidden="true">→</span></a>
+        </div>
+        <div class="hero-logos" aria-label="진단·운영 대상 AI">
+          <span class="hero-logos-label">진단 대상</span>
+          <span class="ai-logo"><svg class="ai-logo-mark" viewBox="0 0 24 24" fill="currentColor" aria-label="ChatGPT"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>ChatGPT</span>
+          <span class="ai-logo"><svg class="ai-logo-mark" viewBox="0 0 24 24" fill="currentColor" aria-label="Gemini"><path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/></svg>Gemini</span>
+        </div>
+      </div>
+      <div class="hero-visual">
+        <div class="answer-explorer" data-demo="hero">
+          <div class="answer-tabs" role="tablist" aria-label="진료과별 AI 답변 예시"></div>
+          <div class="ai-panel">
+            <span class="ai-panel-watermark">예시</span>
+            <div class="ai-panel-head">
+              <span class="ai-panel-dot"></span><span class="ai-panel-dot"></span><span class="ai-panel-dot"></span>
+              <span class="ai-panel-engines">
+                <svg class="ai-panel-engine" viewBox="0 0 24 24" fill="currentColor" aria-label="ChatGPT"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>
+                <svg class="ai-panel-engine" viewBox="0 0 24 24" fill="currentColor" aria-label="Gemini"><path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/></svg>
+                <strong>AI 답변</strong>
+              </span>
+            </div>
+            <div class="ai-panel-body"></div>
+            <p class="ai-panel-disclaimer">예시 답변이며 실제 AI 노출과 결과는 보장되지 않습니다.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 3. Trust Band -->
+  <section class="trust-band" aria-label="모션랩스 운영 특성">
+    <div class="container">
+      <div class="trust-cell"><div class="trust-statement">500개+ 병의원이 선택한 모션랩스</div></div>
+      <div class="trust-cell"><div class="trust-statement">월 1회 AI 평판 레포트 발행</div></div>
+      <div class="trust-cell"><div class="trust-statement">담당 컨설턴트 배정</div></div>
+    </div>
+  </section>
+
+  <!-- Section 3.5. AEO & GEO 란? -->
+  <section id="aeo-geo">
+    <div class="container">
+      <div class="section-heading section-heading--center" data-reveal>
+        <p class="kicker">용어 안내</p>
+        <h2 class="h2">AEO & GEO란 무엇인가요?</h2>
+        <p class="subhead">AI 평판 관리에서 자주 나오는 두 개념입니다. 둘 다 “환자가 AI에게 물었을 때, 그 답변에 우리 병원이 보이게 만드는 일”을 가리킵니다.</p>
+      </div>
+      <div class="card-grid card-grid--2x2 term-grid">
+        <article class="card term-card" data-reveal>
+          <span class="term-tag">AEO</span>
+          <h3>답변 엔진 최적화<small>Answer Engine Optimization</small></h3>
+          <p>ChatGPT처럼 질문에 답을 만들어 주는 AI가, 환자 질문에 답할 때 우리 병원을 포함하도록 병원 정보를 구조화하는 일입니다. 환자가 “어떤 병원이 좋아?”라고 물으면 그 답변에 등장하게 만듭니다.</p>
+        </article>
+        <article class="card term-card" data-reveal>
+          <span class="term-tag">GEO</span>
+          <h3>생성형 엔진 최적화<small>Generative Engine Optimization</small></h3>
+          <p>생성형 AI가 답변을 만들 때 우리 병원의 정보를 근거(출처)로 인용하도록, 신뢰할 수 있는 콘텐츠를 꾸준히 운영하는 일입니다. 한 번 올리고 끝이 아니라 매달 업데이트가 필요합니다.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 4. Section 1 — 평판 관리의 새로운 표준 -->
+  <section id="standard">
+    <div class="container">
+      <div class="section-heading section-heading--center" data-reveal>
+        <p class="kicker">평판 관리의 새로운 표준</p>
+        <h2 class="h2">AI의 시대, 환자분들의 인식을 바꾸는 건 이제 AI 입니다.</h2>
+        <p class="subhead">환자가 우리 병원을 찾는 첫 접점이 변화하고 있습니다. 이제 ChatGPT와 Gemini 등 AI 검색에 언급되는 것 자체가 우리 병원의 평판을 결정합니다.</p>
+      </div>
+      <div class="card-grid card-grid--3">
+        <article class="card" data-reveal>
+          <span class="card-num">01</span>
+          <h3>환자는 이제 AI에게 먼저 묻습니다</h3>
+          <p>"강남 어깨 통증 잘 보는 병원 알려줘" — 검색창 대신 ChatGPT에 묻는 환자가 빠르게 늘고 있습니다. 우리 병원이 그 답변 안에 없으면, 환자의 후보군에서도 사라집니다.</p>
+        </article>
+        <article class="card" data-reveal>
+          <span class="card-num">02</span>
+          <h3>AI는 평판을 자동으로 요약합니다</h3>
+          <p>ChatGPT는 우리 병원에 대한 정보를 직접 수집하고 정리해서 환자에게 한 줄로 전달합니다. 그 한 줄이 곧 우리 병원의 평판입니다. 우리가 관여하지 않아도 만들어지고 있는 평판.</p>
+        </article>
+        <article class="card" data-reveal>
+          <span class="card-num">03</span>
+          <h3>매달 운영해야 답변에 남습니다</h3>
+          <p>네이버 리뷰가 그렇듯 AI 답변도 한 번 만들어두면 끝이 아닙니다. 환자가 묻는 질문도, AI가 참고하는 출처도 계속 바뀝니다. 매달 점검하고 다시 정리해야 답변에서 사라지지 않습니다.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 5. Section 3 — 일반 마케팅 대행사와 무엇이 다른가 (위로 이동) -->
+  <section id="compare">
+    <div class="container">
+      <div class="section-heading section-heading--center" data-reveal>
+        <p class="kicker">비교해보세요</p>
+        <h2 class="h2">같은 단어를 쓰지만, 같은 일을 하는 것은 아닙니다.</h2>
+        <p class="subhead">요즘 많은 곳이 "AI 검색 노출", "AEO", "GEO"를 말합니다. 그런데 작업의 깊이와 책임 범위는 회사마다 크게 다릅니다.</p>
+      </div>
+
+      <div class="cmp" data-reveal role="table" aria-label="일반 마케팅 대행사와 Re:Putation 비교">
+        <div class="cmp-row cmp-head">
+          <div class="cmp-cell cmp-axis">비교 축</div>
+          <div class="cmp-cell cmp-generic">일반 마케팅 대행사</div>
+          <div class="cmp-cell cmp-rep"><span class="cmp-rep-tag">Re:Putation</span></div>
+        </div>
+        <div class="cmp-row"><div class="cmp-cell cmp-axis">작업 단위</div><div class="cmp-cell cmp-generic">콘텐츠 한 번 발행</div><div class="cmp-cell cmp-rep">매달 평판 운영</div></div>
+        <div class="cmp-row"><div class="cmp-cell cmp-axis">도메인과 인프라</div><div class="cmp-cell cmp-generic">병원이 직접 관리</div><div class="cmp-cell cmp-rep">두 번째 홈페이지 구축까지 포함</div></div>
+        <div class="cmp-row"><div class="cmp-cell cmp-axis">AI 답변 점검</div><div class="cmp-cell cmp-generic">점검 없거나 분기 한 번</div><div class="cmp-cell cmp-rep">주 1회 자동 측정</div></div>
+        <div class="cmp-row"><div class="cmp-cell cmp-axis">리포트</div><div class="cmp-cell cmp-generic">발송한 콘텐츠 목록</div><div class="cmp-cell cmp-rep">답변 변화와 다음 액션</div></div>
+        <div class="cmp-row"><div class="cmp-cell cmp-axis">운영 인력</div><div class="cmp-cell cmp-generic">글쓰기 외주</div><div class="cmp-cell cmp-rep">담당 AE와 자동화 Agent</div></div>
+        <div class="cmp-row"><div class="cmp-cell cmp-axis">의료법 검토</div><div class="cmp-cell cmp-generic">병원이 직접</div><div class="cmp-cell cmp-rep">제품 안에 포함</div></div>
+      </div>
+
+      <div class="cmp-cards" data-reveal aria-hidden="false">
+        <div class="cmp-card">
+          <div class="cmp-card-head">일반 마케팅 대행사</div>
+          <dl>
+            <div><dt>작업 단위</dt><dd>콘텐츠 한 번 발행</dd></div>
+            <div><dt>도메인과 인프라</dt><dd>병원이 직접 관리</dd></div>
+            <div><dt>AI 답변 점검</dt><dd>점검 없거나 분기 한 번</dd></div>
+            <div><dt>리포트</dt><dd>발송한 콘텐츠 목록</dd></div>
+            <div><dt>운영 인력</dt><dd>글쓰기 외주</dd></div>
+            <div><dt>의료법 검토</dt><dd>병원이 직접</dd></div>
+          </dl>
+        </div>
+        <div class="cmp-card is-rep">
+          <div class="cmp-card-head">Re:Putation</div>
+          <dl>
+            <div><dt>작업 단위</dt><dd>매달 평판 운영</dd></div>
+            <div><dt>도메인과 인프라</dt><dd>두 번째 홈페이지 구축까지 포함</dd></div>
+            <div><dt>AI 답변 점검</dt><dd>주 1회 자동 측정</dd></div>
+            <div><dt>리포트</dt><dd>답변 변화와 다음 액션</dd></div>
+            <div><dt>운영 인력</dt><dd>담당 AE와 자동화 Agent</dd></div>
+            <div><dt>의료법 검토</dt><dd>제품 안에 포함</dd></div>
+          </dl>
+        </div>
+      </div>
+
+      <p class="cmp-closing" data-reveal>평판은 한 번 만들어지는 것이 아니라, 매달 운영되는 것입니다.</p>
+    </div>
+  </section>
+
+  <!-- Section 6. Section 2 — 모션랩스가 만들었습니다 (압축 · 낮은 높이) -->
+  <section class="s-why">
+    <div class="container">
+      <div class="section-heading" data-reveal>
+        <h2 class="h2">모션랩스가 하면 다릅니다.</h2>
+        <a class="s-why-cta" href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">모션랩스 더 알아보기 <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="card-grid card-grid--3">
+        <article class="card" data-reveal>
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>
+          <h3>환자 경험을 운영해온 회사</h3>
+          <p>카카오톡 기반 환자 경험 관리 리비짓을 500개+ 병의원과 운영하며, 환자가 어떤 정보에 반응하는지 매일 들여다봅니다.</p>
+        </article>
+        <article class="card" data-reveal>
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+          <h3>의료법은 제품에 들어가 있습니다</h3>
+          <p>의료광고법·개인정보보호법 검토를 추가 옵션이 아니라 제품 설계 단계부터 포함합니다.</p>
+        </article>
+        <article class="card" data-reveal>
+          <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2v2"/><path d="M5 2v2"/><path d="M5 3H4a2 2 0 0 0-2 2v4a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-1"/><path d="M8 15a6 6 0 0 0 12 0v-3"/><circle cx="20" cy="10" r="2"/></svg>
+          <h3>의사가 직접 검증한 솔루션</h3>
+          <p>자문 전문의들과 함께 설계·검증해, 의료 현장의 맥락을 아는 사람들이 만듭니다.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 7. 왜 지금인가 — 누적 · 선점 (FOMO) -->
+  <section id="timing" class="s-timing">
+    <div class="container">
+      <div class="timing-grid">
+        <div class="section-heading" data-reveal>
+          <p class="kicker">왜 지금이어야 하나</p>
+          <h2 class="h2">AI 평판은 쌓입니다.<br/>먼저 시작한 병원이 앞서갑니다.</h2>
+          <p class="subhead">AI가 인용하는 정보는 하루아침에 만들어지지 않습니다. 꾸준히 운영한 시간만큼 누적되고, 그 격차는 뒤늦게 따라잡기 어렵습니다. 같은 지역, 같은 진료과에서 먼저 자리잡는 것이 중요합니다.</p>
+          <ul class="timing-points">
+            <li><strong>AI는 누적된 정보를 신뢰합니다</strong><span>오래, 일관되게 운영된 정보일수록 답변에 더 자주 인용됩니다.</span></li>
+            <li><strong>답변에 노출되는 자리는 한정적입니다</strong><span>같은 지역·진료과에서 먼저 자리잡은 병원이 유리합니다.</span></li>
+            <li><strong>지금 시작할수록 유리합니다</strong><span>지금 쌓기 시작한 정보는, 나중에 들어올 병원이 따라잡기 어려운 격차가 됩니다.</span></li>
+          </ul>
+        </div>
+        <div class="timing-visual" data-reveal>
+          <div class="timing-chart-card">
+            <svg viewBox="0 0 520 340" role="img" aria-label="운영 기간에 따른 AI 평판 누적 격차 그래프">
+              <defs>
+                <linearGradient id="earlyfill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#2563EB" stop-opacity="0.16"/>
+                  <stop offset="1" stop-color="#2563EB" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <line x1="40" y1="292" x2="496" y2="292" stroke="#E5E7EB" stroke-width="1"/>
+              <path d="M58,292 C 210,286 330,150 488,56 L488,292 L58,292 Z" fill="url(#earlyfill)"/>
+              <path d="M232,292 C 322,288 410,252 488,198" fill="none" stroke="#9AA1AC" stroke-width="2.5" stroke-linecap="round"/>
+              <path d="M58,292 C 210,286 330,150 488,56" fill="none" stroke="#2563EB" stroke-width="3" stroke-linecap="round"/>
+              <line x1="488" y1="56" x2="488" y2="198" stroke="#2563EB" stroke-width="1.4" stroke-dasharray="4 4" opacity="0.65"/>
+              <circle cx="488" cy="56" r="4.5" fill="#2563EB"/>
+              <circle cx="58" cy="292" r="5.5" fill="#2563EB"/>
+              <text x="58" y="314" text-anchor="middle" font-size="12.5" font-weight="700" fill="#2563EB">지금 시작</text>
+              <circle cx="232" cy="292" r="4.5" fill="#9AA1AC"/>
+              <text x="232" y="314" text-anchor="middle" font-size="12" font-weight="600" fill="#6B7280">늦게 시작</text>
+              <text x="240" y="118" font-size="13.5" font-weight="700" fill="#2563EB">지금 시작한 우리 병원</text>
+              <text x="300" y="222" font-size="13" font-weight="600" fill="#6B7280">늦게 시작한 병원</text>
+              <text x="480" y="130" text-anchor="end" font-size="11.5" font-weight="700" fill="#2563EB">앞서가는 격차</text>
+              <text x="268" y="334" text-anchor="middle" font-size="11" fill="#9AA1AC">운영 기간 →</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 8. 어떻게 운영되는가 -->
+  <section id="operation">
+    <div class="container">
+      <div class="section-heading" data-reveal>
+        <p class="kicker">운영 방식</p>
+        <h2 class="h2">원장님은 진료에 집중하세요.<br/>평판은 모션랩스가 밀착 관리합니다.</h2>
+        <p class="subhead">원장님께서 진료에 집중하시는 동안, 모션랩스 컨설턴트와 AI Agent가 우리 병원의 평판을 매달 밀접하게 관리합니다. 발행·점검·리포트까지 자동으로 돌아가고, 원장님은 월 1회 리포트만 확인하시면 됩니다.</p>
+        <div class="op-actors" aria-label="운영 주체">
+          <span class="op-actor"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a7 7 0 0 1 13 0"/></svg>모션랩스 컨설턴트</span>
+          <span class="op-plus" aria-hidden="true">+</span>
+          <span class="op-actor"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.1 6.1L20.4 10l-6.3 1.9L12 18l-2.1-6.1L3.6 10l6.3-1.9z"/></svg>AI Agent</span>
+        </div>
+      </div>
+      <ol class="process-grid">
+        <li data-reveal><span class="process-num">01</span><h3>병원 정보 정리</h3><p>약력, 진료 항목, 지역 정보를 운영 가능한 구조로 정리합니다.</p></li>
+        <li data-reveal><span class="process-num">02</span><h3>두 번째 홈페이지 구축</h3><p>AI가 크롤링하기 쉬운 AEO 페이지를 만들어 운영합니다.</p></li>
+        <li data-reveal><span class="process-num">03</span><h3>매월 콘텐츠 운영</h3><p>요금제에 맞춰 매달 콘텐츠를 발행합니다.</p></li>
+        <li data-reveal><span class="process-num">04</span><h3>주 1회 AI 답변 점검</h3><p>환자 질문에서 우리 병원이 어떻게 보이는지 자동 측정합니다.</p></li>
+        <li data-reveal><span class="process-num">05</span><h3>월간 리포트</h3><p>변화와 다음 액션을 원장님께 정리해 드립니다.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- Section 10. Section 7 — Pricing -->
+  <section id="pricing">
+    <div class="container">
+      <div class="section-heading section-heading--center" data-reveal>
+        <p class="kicker">요금제</p>
+        <h2 class="h2">병원 규모에 맞게, AI 평판을 매달 운영합니다.</h2>
+        <p class="subhead">콘텐츠 발행 건수와 운영 범위에 따라 세 가지 요금제로 운영합니다. 모든 요금제에 두 번째 홈페이지 구축, AI 답변 점검, 월간 리포트가 포함됩니다.</p>
+      </div>
+      <div class="pricing-grid">
+        <article class="price-card" data-reveal>
+          <div class="price-name">Light</div>
+          <div class="price-amount">월 60만원</div>
+          <p class="price-tax">부가세 별도</p>
+          <p class="price-icp">단독 원장 의원, 1개 진료과 중심</p>
+          <ul class="price-includes">
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>두 번째 홈페이지(AEO) 구축 · Schema.org 마크업</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>매월 AI 노출 최적화 콘텐츠 6편 발행</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>월 1회 ChatGPT·Gemini 노출 점검</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>월간 AI 노출 진단 리포트</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>담당 컨설턴트 + AI Agent 운영</span></li>
+          </ul>
+          <a class="btn btn-primary price-cta" href="#lead" data-plan="Light">이 요금제로 상담받기</a>
+        </article>
+        <article class="price-card is-featured" data-reveal>
+          <span class="price-badge">모션랩스 추천</span>
+          <div class="price-name">Standard</div>
+          <div class="price-amount">월 120만원</div>
+          <p class="price-tax">부가세 별도</p>
+          <p class="price-icp">다진료과 의원, 환자 유입 채널 다변화가 필요한 곳</p>
+          <ul class="price-includes">
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>Light 항목 전체</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>매월 AI 노출 최적화 콘텐츠 12편 발행</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>주 1회 SoV(노출 점유율) 자동 측정</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>진료과별 환자 질문셋 설계·확장</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>AI 대표 이미지 자동 생성</span></li>
+          </ul>
+          <a class="btn btn-primary price-cta" href="#lead" data-plan="Standard">이 요금제로 상담받기</a>
+        </article>
+        <article class="price-card" data-reveal>
+          <div class="price-name">Premium</div>
+          <div class="price-amount">월 200만원</div>
+          <p class="price-tax">부가세 별도</p>
+          <p class="price-icp">의료법인, 다지점 의원, 브랜드 자산 구축이 필요한 곳</p>
+          <ul class="price-includes">
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>Standard 항목 전체</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>매월 AI 노출 최적화 콘텐츠 20편 발행</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>7유형 풀콘텐츠 운영(FAQ·질환·치료·칼럼 등)</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>경쟁 병원 SoV 비교 분석</span></li>
+            <li><svg class="price-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span>의료광고법 자동 검수 + 우선 대응</span></li>
+          </ul>
+          <a class="btn btn-primary price-cta" href="#lead" data-plan="Premium">이 요금제로 상담받기</a>
+        </article>
+      </div>
+      <div class="pricing-notes">
+        <div class="pricing-note-box" data-reveal>
+          <h4>공통 안내</h4>
+          <ul class="note-list">
+            <li>모든 금액은 부가세 별도</li>
+            <li>도메인 구입비 별도 (연 2~5만원 수준)</li>
+            <li>셋업 비용 50만원 (1회)</li>
+            <li>약정 3개월 기본 · 6개월 약정 시 셋업 비용 면제</li>
+            <li>12개월 약정 시 월 10% 할인</li>
+          </ul>
+        </div>
+        <div class="pricing-note-box" data-reveal>
+          <h4>별도 견적</h4>
+          <p>의료법인, 다지점·분원 통합 운영이 필요하신가요?<br/>규모에 맞춰 별도로 견적을 안내드립니다.</p>
+          <a class="btn btn-text price-cta" href="#lead" data-plan="별도 견적 필요" style="width:auto">별도 견적 문의 <span aria-hidden="true">→</span></a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 11. Section 8 — Lead Form -->
+  <section id="lead" class="s-lead">
+    <div class="container">
+      <div class="lead-copy" data-reveal>
+        <h2 class="h2">우리 병원이 지금 AI 답변에 어떻게 보이는지, 진단부터 시작하세요.</h2>
+        <p class="subhead">병원명과 진료과, 그리고 환자가 자주 할 만한 질문 하나만 남겨주세요. 담당 AE가 진단해서 연락드립니다. 진단 비용은 없습니다.</p>
+      </div>
+      <form class="lead-form" data-reveal onsubmit="return false;">
+        <div class="form-row">
+          <label>병원명<input name="clinicName" placeholder="예: ○○외과의원" maxlength="200" required /></label>
+          <label>진료과/지역<input name="clinicType" placeholder="예: 강남 정형외과" maxlength="200" required /></label>
+        </div>
+        <label>연락처<input name="contact" placeholder="이메일 또는 휴대폰" maxlength="200" required /></label>
+        <label>확인하고 싶은 환자 질문<textarea name="question" placeholder="예: 강남에서 어깨 통증 비수술 치료 잘 보는 병원 알려줘" maxlength="1000" required></textarea></label>
+        <label>관심 요금제 (선택)
+          <select name="plan">
+            <option value="" selected>아직 모르겠음</option>
+            <option value="Light">Light</option>
+            <option value="Standard">Standard</option>
+            <option value="Premium">Premium</option>
+            <option value="별도 견적 필요">별도 견적 필요</option>
+          </select>
+        </label>
+        <details class="consent-details">
+          <summary>개인정보 수집·이용 동의 안내 (필수 4가지 항목)</summary>
+          <dl>
+            <div><dt>수집 목적</dt><dd>AI 노출 진단 범위 확인 및 진단 상담 안내</dd></div>
+            <div><dt>수집 항목</dt><dd>병원명, 진료과/지역, 연락처(이메일 또는 전화), 확인하고 싶은 환자 질문</dd></div>
+            <div><dt>보유 기간</dt><dd>수집일로부터 180일 이내 자동 파기. 상담 종료 시 즉시 파기 가능</dd></div>
+            <div><dt>거부 권리</dt><dd>동의를 거부할 수 있으며, 거부 시 무료 진단 상담만 진행되지 않고 다른 불이익은 없습니다</dd></div>
+          </dl>
+        </details>
+        <label class="privacy-check">
+          <input type="checkbox" required />
+          <span>위 4가지 항목(목적·항목·보유기간·거부권)을 확인했고, 무료 진단 상담을 위한 개인정보 수집 및 이용에 동의합니다.</span>
+        </label>
+        <button class="btn btn-primary btn-submit" type="submit">무료 진단 요청하기</button>
+      </form>
+    </div>
+  </section>
+
+</main>
+
+<!-- Section 12. Footer -->
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-brand">
+      <strong>Re:Putation</strong>
+      <p>AI가 읽을 수 있는 병원의 두 번째 홈페이지 구축 및 평판 운영 서비스.</p>
+      <p class="footer-biz">주식회사 모션랩스 (MotionLabs Inc.) · 대표 이우진<br/>사업자등록번호 466-88-01551<br/>서울시 성동구 아차산로 38, 406호 (성수동1가, 개풍빌딩)<br/>support@motionlabs.kr · 070-8671-0100</p>
+      <p class="footer-copy">Copyright ⓒ 2026 Motionlabs. All Rights Reserved.</p>
+    </div>
+    <div class="footer-links">
+      <a href="terms.html">이용약관</a>
+      <a href="privacy.html">개인정보처리방침</a>
+      <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">motionlabs.kr ↗</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+
+  // ── 진료과 답변 데이터 (의료광고법: 예시 · ○○ 플레이스홀더 · 미보장) ──
+  var data = [
+    { tag:"정형외과·통증", q:"강남에서 어깨 통증 비수술 치료 잘 보는 병원 알려줘",
+      before:"강남에는 정형외과가 여러 곳 있습니다. 일반적으로 어깨 통증은 정형외과에서 진료를 받을 수 있으며, 비수술적 치료 옵션도 다양합니다. 구체적인 병원 추천은 어렵습니다.",
+      intro:"강남에서 어깨 통증을 비수술적으로 진료하는 병원을 찾고 계시는군요. 어깨 통증은 원인에 따라 치료 방향이 달라질 수 있어서, 비수술 치료 정보가 정리된 곳을 살펴보면 도움이 됩니다.",
+      clinic:"○○정형외과의원",
+      clinicDesc:"비수술 통증 치료를 중심으로 어깨 질환을 진료하며, 진료 안내와 의료진 이력이 환자 질문에 맞춰 정리되어 있습니다.",
+      points:["어깨 질환별 비수술 치료 안내","의료진 이력과 진료 분야","자주 묻는 질문(FAQ) 정리"],
+      outro:"방문 전에 진료 시간과 검사 가능 항목을 함께 확인해 보세요.",
+      sources:["병원 진료 안내","의료진 소개","어깨 통증 FAQ"] },
+    { tag:"내과·검진", q:"위내시경이랑 대장내시경 같이 받을 수 있는 병원 추천해줘",
+      before:"위·대장내시경을 함께 받을 수 있는 병원은 여러 곳이 있습니다. 검진 프로세스나 장비, 사전 준비 안내가 정리된 곳을 선택하시는 것을 권장합니다.",
+      intro:"위·대장내시경을 한 번에 받을 수 있는 병원을 찾고 계시는군요. 검진은 사전 준비와 장비, 사후 안내가 중요해서, 검진 과정이 잘 정리된 곳을 확인해 보면 좋습니다.",
+      clinic:"○○내과의원",
+      clinicDesc:"위·대장내시경 검진을 함께 진행하며, 검진 프로세스와 장비, 사전 준비 안내가 정리되어 있습니다.",
+      points:["수면 내시경 진행 절차 안내","검진 장비와 검사 항목","검사 전 준비 사항 FAQ"],
+      outro:"예약 전에 검사 가능 시간과 준비 방법을 미리 확인해 보세요.",
+      sources:["검진 안내","내시경 장비 소개","검사 전 준비 FAQ"] },
+    { tag:"산부인과", q:"생리불순 때문에 여성 검진 받을 산부인과 어디가 좋아?",
+      before:"생리불순 상담과 여성 검진을 함께 보는 산부인과는 여러 곳이 있으며, 진료 흐름과 검진 항목, 첫 방문 안내가 잘 정리된 곳을 선택하시는 것을 권장합니다.",
+      intro:"생리불순으로 여성 검진을 함께 보실 산부인과를 찾고 계시는군요. 증상에 따라 필요한 검사가 달라질 수 있어, 진료 흐름이 정리된 곳을 살펴보면 도움이 됩니다.",
+      clinic:"○○여성의원",
+      clinicDesc:"생리불순 상담과 여성 검진을 함께 진행하며, 진료 흐름과 검진 항목, 첫 방문 안내가 정리되어 있습니다.",
+      points:["생리불순 진료 흐름 안내","여성 검진 항목 정리","첫 방문 시 준비 안내"],
+      outro:"방문 전에 검진 항목과 상담 가능 시간을 확인해 보세요.",
+      sources:["진료 안내","여성 검진 항목","생리불순 FAQ"] },
+    { tag:"가정의학과", q:"동네에서 만성질환 꾸준히 관리받을 만한 의원 알려줘",
+      before:"거주 지역에서 만성질환을 지속적으로 관리할 수 있는 의원은 다수 존재합니다. 만성질환 관리, 예방접종, 검사 안내가 정리된 의원을 선택하시는 것을 권장합니다.",
+      intro:"동네에서 만성질환을 꾸준히 관리받을 의원을 찾고 계시는군요. 만성질환은 지속적인 관리가 중요해서, 관리 항목이 정리된 가까운 의원을 확인해 보면 좋습니다.",
+      clinic:"○○가정의학과의원",
+      clinicDesc:"만성질환을 지속적으로 관리하며, 예방접종과 검사 안내까지 환자 상황에 맞춰 정리되어 있습니다.",
+      points:["고혈압·당뇨 등 만성질환 관리","예방접종 일정 안내","정기 검사·검진 항목"],
+      outro:"방문 전에 진료 시간과 관리 가능한 항목을 확인해 보세요.",
+      sources:["진료 안내","만성질환 관리","예방접종 안내"] }
+  ];
+
+  function userTurn(ex){ return '<div class="ai-turn ai-turn-user"><span class="ai-turn-role">환자</span><p>'+esc(ex.q)+'</p></div>'; }
+  function chipsHtml(ex){ return ex.sources.map(function(s){return "<li>"+esc(s)+"</li>";}).join(""); }
+  function pointsHtml(ex){ return ex.points.map(function(p){return "<li>"+esc(p)+"</li>";}).join(""); }
+  function clinicCard(ex){
+    return '<div class="ai-answer-clinic"><strong>'+esc(ex.clinic)+'</strong><p>'+esc(ex.clinicDesc)+'</p>'
+      + '<ul class="ai-answer-points">'+pointsHtml(ex)+'</ul>'
+      + '<ul class="ai-answer-sources">'+chipsHtml(ex)+'</ul></div>';
+  }
+  // reduced-motion / 폴백: 스트리밍 없이 전체 표시
+  function staticAfter(ex){
+    return '<div class="ai-turn ai-turn-assistant"><span class="ai-turn-role">AI</span><div class="ai-answer">'
+      + '<p>'+esc(ex.intro)+'</p>'+clinicCard(ex)+'<p class="ai-answer-outro">'+esc(ex.outro)+'</p></div></div>';
+  }
+  function staticBefore(ex){
+    return '<div class="ai-turn ai-turn-assistant"><span class="ai-turn-role">AI</span><div class="ai-answer">'
+      + '<p class="ai-answer-plain">'+esc(ex.before)+'</p></div></div>';
+  }
+  function typing(ex){
+    return userTurn(ex)+'<div class="ai-turn ai-turn-assistant"><span class="ai-turn-role">AI</span>'
+      + '<div class="ai-answer ai-answer-typing" aria-hidden="true"><span class="ai-typing-dots"><i></i><i></i><i></i></span>'
+      + '<span class="ai-typing-label">답변을 작성하고 있습니다</span></div></div>';
+  }
+
+  function setupDemo(root, mode){
+    var tabsEl = root.querySelector(".answer-tabs");
+    var bodyEl = root.querySelector(".ai-panel-body");
+    var active = 0, baState = "after", timer = null, seen = false, rollTimer = null;
+    var ROLL_MS = 5000;
+    var autoRoll = (mode === "hero") && !reduce;
+    var renderToken = 0;
+
+    // 단어 단위 스트리밍(실제 AI 답변이 흘러나오듯). renderToken으로 취소.
+    function streamWords(target, text, per, myToken, done){
+      var words = text.split(" "), i = 0;
+      (function step(){
+        if(myToken !== renderToken) return;
+        if(i >= words.length){ if(done) done(); return; }
+        target.textContent += (i ? " " : "") + words[i];
+        i++;
+        setTimeout(step, per);
+      })();
+    }
+
+    function streamAfter(ex, myToken){
+      bodyEl.innerHTML = userTurn(ex)
+        + '<div class="ai-turn ai-turn-assistant"><span class="ai-turn-role">AI</span><div class="ai-answer">'
+        + '<p><span class="stream-text"></span><span class="ai-caret" aria-hidden="true"></span></p>'
+        + '<div class="ai-after-rest" hidden>' + clinicCard(ex) + '<p class="ai-answer-outro">' + esc(ex.outro) + '</p></div>'
+        + '</div></div>';
+      var st = bodyEl.querySelector(".stream-text"),
+          caret = bodyEl.querySelector(".ai-caret"),
+          rest = bodyEl.querySelector(".ai-after-rest");
+      streamWords(st, ex.intro, 58, myToken, function(){
+        if(myToken !== renderToken) return;
+        if(caret) caret.remove();
+        rest.hidden = false;
+        // 카드는 부드럽게 페이드 → 항목·출처·마무리가 순차로 채워지듯 등장
+        var c = rest.querySelector(".ai-answer-clinic");
+        c.classList.add("ai-soft"); c.style.setProperty("--bd","0ms");
+        Array.prototype.forEach.call(rest.querySelectorAll(".ai-answer-points li"), function(li, i){
+          li.classList.add("ai-soft"); li.style.setProperty("--bd", (300 + i*160) + "ms");
+        });
+        var src = rest.querySelector(".ai-answer-sources");
+        if(src){ src.classList.add("ai-soft"); src.style.setProperty("--bd","760ms"); }
+        var o = rest.querySelector(".ai-answer-outro");
+        o.classList.add("ai-soft"); o.style.setProperty("--bd","920ms");
+      });
+    }
+
+    function streamBefore(ex, myToken){
+      bodyEl.innerHTML = userTurn(ex)
+        + '<div class="ai-turn ai-turn-assistant"><span class="ai-turn-role">AI</span><div class="ai-answer">'
+        + '<p class="ai-answer-plain"><span class="stream-text"></span><span class="ai-caret" aria-hidden="true"></span></p>'
+        + '</div></div>';
+      var st = bodyEl.querySelector(".stream-text"), caret = bodyEl.querySelector(".ai-caret");
+      streamWords(st, ex.before, 52, myToken, function(){ if(caret && myToken === renderToken) caret.remove(); });
+    }
+
+    function render(){
+      renderToken++;
+      var myToken = renderToken, ex = data[active];
+      var isBefore = (mode === "ba" && baState === "before");
+      if(timer) clearTimeout(timer);
+      if(reduce){ bodyEl.innerHTML = userTurn(ex) + (isBefore ? staticBefore(ex) : staticAfter(ex)); return; }
+      bodyEl.innerHTML = typing(ex);   // "작성 중" 점 → 잠시 후 스트리밍
+      timer = setTimeout(function(){
+        if(myToken !== renderToken) return;
+        if(isBefore) streamBefore(ex, myToken); else streamAfter(ex, myToken);
+      }, 500);
+    }
+
+    function setActive(i, rolling){
+      active = i;
+      Array.prototype.forEach.call(tabsEl.children, function(c, ci){
+        var on = ci === i;
+        c.classList.toggle("is-active", on);
+        c.classList.remove("is-rolling");
+        c.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      if(rolling){
+        var el = tabsEl.children[i];
+        el.style.setProperty("--roll-dur", ROLL_MS + "ms");  // 게이지 시간 = 표시 시간
+        void el.offsetWidth;          // reflow → 게이지 애니메이션 재시작
+        el.classList.add("is-rolling");
+      }
+      render();
+    }
+
+    function scheduleRoll(){
+      if(!autoRoll) return;
+      if(rollTimer) clearTimeout(rollTimer);
+      rollTimer = setTimeout(function(){
+        setActive((active + 1) % data.length, true);
+        scheduleRoll();
+      }, ROLL_MS);
+    }
+
+    data.forEach(function(ex,i){
+      var b=document.createElement("button");
+      b.type="button"; b.setAttribute("role","tab");
+      b.innerHTML = '<span class="tab-label"></span><span class="tab-bar" aria-hidden="true"></span>';
+      b.querySelector(".tab-label").textContent = ex.tag;
+      if(i===0){ b.className="is-active"; b.setAttribute("aria-selected","true"); }
+      else b.setAttribute("aria-selected","false");
+      b.addEventListener("click",function(){
+        setActive(i, autoRoll);   // 클릭 시 해당 탭부터 게이지 재시작
+        scheduleRoll();           // 자동 롤 타이머 리셋
+      });
+      tabsEl.appendChild(b);
+    });
+
+    if(mode==="ba"){
+      var seg = root.closest("section").querySelectorAll(".ba-toggle button");
+      Array.prototype.forEach.call(seg,function(btn){
+        btn.addEventListener("click",function(){
+          baState=btn.getAttribute("data-ba");
+          Array.prototype.forEach.call(seg,function(s){s.className=(s===btn)?"is-active":"";});
+          render();
+        });
+      });
+    }
+
+    function start(){
+      if(autoRoll){ setActive(0, true); scheduleRoll(); }
+      else { render(); }
+    }
+
+    if(reduce || !("IntersectionObserver" in window)){ start(); }
+    else{
+      var io=new IntersectionObserver(function(e){if(e[0]&&e[0].isIntersecting&&!seen){seen=true;start();io.disconnect();}},{threshold:0.3});
+      io.observe(root.querySelector(".ai-panel"));
+    }
+  }
+
+  document.querySelectorAll(".answer-explorer").forEach(function(root){
+    setupDemo(root, root.getAttribute("data-demo")==="ba" ? "ba" : "hero");
+  });
+
+  // ── pricing CTA → lead form plan select ──
+  var planSelect = document.querySelector('.lead-form select[name="plan"]');
+  document.querySelectorAll("[data-plan]").forEach(function(btn){
+    btn.addEventListener("click",function(){
+      if(planSelect){ planSelect.value = btn.getAttribute("data-plan"); }
+    });
+  });
+
+  // ── scroll reveal (한 번만) ──
+  var targets=document.querySelectorAll("[data-reveal]");
+  if(reduce || !("IntersectionObserver" in window)){
+    Array.prototype.forEach.call(targets,function(el){el.classList.add("in-view");});
+  }else{
+    document.documentElement.classList.add("reveal-ready");
+    var ro=new IntersectionObserver(function(es,obs){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add("in-view");obs.unobserve(e.target);}});},{rootMargin:"0px 0px -10% 0px",threshold:0.12});
+    Array.prototype.forEach.call(targets,function(el){ro.observe(el);});
+  }
+})();
+</script>
+</body>
+</html>
