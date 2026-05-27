@@ -5,7 +5,6 @@ import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
-import { AnswerClusters } from './_components/AnswerClusters'
 import { CarePrinciples } from './_components/CarePrinciples'
 import { ClinicFooter } from './_components/ClinicFooter'
 import { ClinicGallery } from './_components/ClinicGallery'
@@ -14,7 +13,6 @@ import { ClinicHero } from './_components/ClinicHero'
 import { ContactCard } from './_components/ContactCard'
 import { DoctorIntro } from './_components/DoctorIntro'
 import { FeaturedContent } from './_components/FeaturedContent'
-import { HospitalFacts } from './_components/HospitalFacts'
 import { JsonLd } from './_components/JsonLd'
 import { TreatmentGrid } from './_components/TreatmentGrid'
 
@@ -167,14 +165,6 @@ export default async function HospitalHubPage({ params }: Props) {
     { url: hospital.kakao_channel_url, label: '카카오톡 상담' },
     { url: hospital.naver_place_url, label: '네이버 플레이스' },
     { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
-  ]
-
-  const officialFactLinks = [
-    { url: hospital.website_url, label: '공식 홈페이지' },
-    { url: hospital.google_maps_url, label: 'Google 지도' },
-    { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
-    { url: hospital.naver_place_url, label: '네이버 플레이스' },
-    { url: hospital.blog_url, label: '공식 블로그' },
   ]
 
   return (
