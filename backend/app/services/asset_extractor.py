@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import io
 import ipaddress
 import logging
@@ -24,6 +25,14 @@ DEFAULT_FETCH_TIMEOUT = 12.0
 MAX_HTML_BYTES = 4 * 1024 * 1024  # 4MB
 MAX_RAW_TEXT_LENGTH = 60_000
 MAX_REDIRECTS = 4
+
+
+@dataclass(frozen=True)
+class FetchTarget:
+    url: str
+    hostname: str
+    port: int
+    allowed_ips: frozenset[str]
 
 
 def extract_pdf_text(data: bytes) -> str:
@@ -68,25 +77,28 @@ async def fetch_url_text(url: str) -> tuple[str, str | None]:
 
     실패 시 (빈 문자열, 사유) 반환. 성공 시 (text, None).
     """
-    validation_error = _validate_fetch_url(url)
-    if validation_error:
+    target, validation_error = _validate_fetch_target(url)
+    if validation_error or target is None:
         return "", validation_error
     try:
-        current_url = url
+        current_target = target
         async with httpx.AsyncClient(timeout=DEFAULT_FETCH_TIMEOUT, follow_redirects=False) as client:
             response: httpx.Response | None = None
             for _ in range(MAX_REDIRECTS + 1):
-                response = await client.get(current_url, headers=_browser_headers())
+                response = await client.get(current_target.url, headers=_browser_headers())
+                peer_error = _validate_response_peer(response, current_target)
+                if peer_error:
+                    return "", peer_error
                 if response.status_code not in {301, 302, 303, 307, 308}:
                     break
                 location = response.headers.get("location")
                 if not location:
                     break
-                next_url = urljoin(current_url, location)
-                validation_error = _validate_fetch_url(next_url)
-                if validation_error:
+                next_url = urljoin(current_target.url, location)
+                next_target, validation_error = _validate_fetch_target(next_url)
+                if validation_error or next_target is None:
                     return "", f"리다이렉트 대상 차단: {validation_error}"
-                current_url = next_url
+                current_target = next_target
             if response is None:
                 return "", "URL 접근 실패."
             if response.status_code in {301, 302, 303, 307, 308}:
@@ -125,33 +137,60 @@ def _browser_headers() -> dict[str, str]:
 
 
 def _validate_fetch_url(url: str) -> str | None:
+    _, error = _validate_fetch_target(url)
+    return error
+
+
+def _validate_fetch_target(url: str) -> tuple[FetchTarget | None, str | None]:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
-        return "지원하지 않는 URL scheme입니다 (http/https만 허용)."
+        return None, "지원하지 않는 URL scheme입니다 (http/https만 허용)."
     if not parsed.hostname:
-        return "호스트가 없는 URL입니다."
+        return None, "호스트가 없는 URL입니다."
     if parsed.username or parsed.password:
-        return "인증 정보를 포함한 URL은 허용하지 않습니다."
+        return None, "인증 정보를 포함한 URL은 허용하지 않습니다."
+    hostname = parsed.hostname.rstrip(".")
+    if not hostname:
+        return None, "호스트가 없는 URL입니다."
     try:
-        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror:
-        return "호스트 DNS 조회에 실패했습니다."
+        return None, "호스트 DNS 조회에 실패했습니다."
+    except ValueError:
+        return None, "URL 포트가 올바르지 않습니다."
+    allowed_ips: set[str] = set()
     for result in addresses:
         ip = ipaddress.ip_address(result[4][0])
         if _is_blocked_ip(ip):
-            return "사설망/로컬망 주소는 크롤링할 수 없습니다."
+            return None, "사설망/로컬망 주소는 크롤링할 수 없습니다."
+        allowed_ips.add(str(ip))
+    if not allowed_ips:
+        return None, "호스트 DNS 조회에 실패했습니다."
+    return FetchTarget(url=url, hostname=hostname, port=port, allowed_ips=frozenset(allowed_ips)), None
+
+
+def _validate_response_peer(response: httpx.Response, target: FetchTarget) -> str | None:
+    stream = response.extensions.get("network_stream")
+    if stream is None:
+        return "URL 연결 정보를 확인할 수 없어 크롤링을 중단했습니다."
+    try:
+        peername = stream.get_extra_info("peername")
+    except Exception:
+        return "URL 연결 정보를 확인할 수 없어 크롤링을 중단했습니다."
+    if not peername:
+        return "URL 연결 정보를 확인할 수 없어 크롤링을 중단했습니다."
+    try:
+        peer_ip = ipaddress.ip_address(peername[0])
+    except (IndexError, TypeError, ValueError):
+        return "URL 연결 정보를 확인할 수 없어 크롤링을 중단했습니다."
+    if _is_blocked_ip(peer_ip) or str(peer_ip) not in target.allowed_ips:
+        return "DNS 변경 또는 사설망 연결이 감지되어 크롤링을 중단했습니다."
     return None
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return any([
-        ip.is_private,
-        ip.is_loopback,
-        ip.is_link_local,
-        ip.is_multicast,
-        ip.is_reserved,
-        ip.is_unspecified,
-    ])
+    return not ip.is_global or any([ip.is_loopback, ip.is_link_local, ip.is_multicast, ip.is_unspecified])
 
 
 def detect_extractor_for(mime_type: str | None, filename: str) -> str:

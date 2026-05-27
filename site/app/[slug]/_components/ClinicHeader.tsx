@@ -22,10 +22,10 @@ export function ClinicHeader({
   const subline = `${region.join(' ')} ${specialties.join(' · ')}`.trim()
   const navItems = (
     <>
-      <Link href={`/${hospitalSlug}/contents`}>의료 정보</Link>
+      <Link href={`/${hospitalSlug}/treatments`}>전문 진료</Link>
+      <Link href={`/${hospitalSlug}/visit`}>진료시간·오시는 길</Link>
       <Link href={`/${hospitalSlug}/doctor`}>의료진</Link>
-      <Link href={`/${hospitalSlug}/treatments`}>진료 영역</Link>
-      <Link href={`/${hospitalSlug}/visit`}>진료 안내</Link>
+      <Link href={`/${hospitalSlug}/contents`}>건강 정보</Link>
       {websiteUrl && (
         <a href={websiteUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           공식 홈페이지
@@ -38,10 +38,10 @@ export function ClinicHeader({
   return (
     <header className="clinic-header">
       <div className="clinic-header-row">
-        <Link href={`/${hospitalSlug}`} className="clinic-header-brand" aria-label={`${hospitalName} 의료 정보 홈으로`}>
+        <Link href={`/${hospitalSlug}`} className="clinic-header-brand" aria-label={`${hospitalName} 진료 안내 홈으로`}>
           <span className="clinic-header-brand-name">{hospitalName}</span>
           <span className="clinic-header-brand-meta">
-            의료 정보{subline && ` · ${subline}`}
+            정형외과 전문 진료{subline && ` · ${subline}`}
           </span>
         </Link>
 

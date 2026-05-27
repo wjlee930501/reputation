@@ -7,7 +7,7 @@ resource "google_cloud_run_v2_service" "api" {
   name     = "${var.app_name}-api"
   location = var.region
   project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  ingress  = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
   template {
     service_account = google_service_account.app.email
@@ -28,12 +28,16 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.project_id
       }
       env {
-        name = "DATABASE_URL"
-        value = "postgresql+asyncpg://${var.db_user}:${coalesce(var.db_password, random_password.db.result)}@/reputation?host=/cloudsql/${google_sql_database_instance.main.connection_name}"
+        name  = "DB_USER"
+        value = var.db_user
       }
       env {
-        name = "SYNC_DATABASE_URL"
-        value = "postgresql://${var.db_user}:${coalesce(var.db_password, random_password.db.result)}@/reputation?host=/cloudsql/${google_sql_database_instance.main.connection_name}"
+        name  = "DB_NAME"
+        value = var.db_name
+      }
+      env {
+        name  = "CLOUD_SQL_CONNECTION_NAME"
+        value = google_sql_database_instance.main.connection_name
       }
       env {
         name  = "REDIS_URL"
@@ -46,6 +50,22 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "GCS_REPORTS_BUCKET"
         value = google_storage_bucket.reports.name
+      }
+      env {
+        name  = "SITE_REVALIDATE_URL"
+        value = var.site_revalidate_url != "" ? var.site_revalidate_url : "https://${var.domain}/api/revalidate"
+      }
+      dynamic "env" {
+        for_each = local.app_secret_env
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
+          }
+        }
       }
 
       resources {
@@ -105,7 +125,7 @@ resource "google_cloud_run_v2_service" "api" {
 
   depends_on = [
     google_project_service.services,
-    google_secret_manager_secret_version.anthropic_api_key,
+    google_secret_manager_secret_iam_binding.app_access,
   ]
 }
 
@@ -143,12 +163,16 @@ resource "google_cloud_run_v2_service" "worker" {
         value = "50"
       }
       env {
-        name = "DATABASE_URL"
-        value = "postgresql+asyncpg://${var.db_user}:${coalesce(var.db_password, random_password.db.result)}@/reputation?host=/cloudsql/${google_sql_database_instance.main.connection_name}"
+        name  = "DB_USER"
+        value = var.db_user
       }
       env {
-        name = "SYNC_DATABASE_URL"
-        value = "postgresql://${var.db_user}:${coalesce(var.db_password, random_password.db.result)}@/reputation?host=/cloudsql/${google_sql_database_instance.main.connection_name}"
+        name  = "DB_NAME"
+        value = var.db_name
+      }
+      env {
+        name  = "CLOUD_SQL_CONNECTION_NAME"
+        value = google_sql_database_instance.main.connection_name
       }
       env {
         name  = "REDIS_URL"
@@ -161,6 +185,22 @@ resource "google_cloud_run_v2_service" "worker" {
       env {
         name  = "GCS_REPORTS_BUCKET"
         value = google_storage_bucket.reports.name
+      }
+      env {
+        name  = "SITE_REVALIDATE_URL"
+        value = var.site_revalidate_url != "" ? var.site_revalidate_url : "https://${var.domain}/api/revalidate"
+      }
+      dynamic "env" {
+        for_each = local.app_secret_env
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
+          }
+        }
       }
 
       resources {
@@ -197,6 +237,7 @@ resource "google_cloud_run_v2_service" "worker" {
 
   depends_on = [
     google_project_service.services,
+    google_secret_manager_secret_iam_binding.app_access,
   ]
 }
 
@@ -226,16 +267,32 @@ resource "google_cloud_run_v2_service" "beat" {
         value = var.project_id
       }
       env {
-        name = "DATABASE_URL"
-        value = "postgresql+asyncpg://${var.db_user}:${coalesce(var.db_password, random_password.db.result)}@/reputation?host=/cloudsql/${google_sql_database_instance.main.connection_name}"
+        name  = "DB_USER"
+        value = var.db_user
       }
       env {
-        name = "SYNC_DATABASE_URL"
-        value = "postgresql://${var.db_user}:${coalesce(var.db_password, random_password.db.result)}@/reputation?host=/cloudsql/${google_sql_database_instance.main.connection_name}"
+        name  = "DB_NAME"
+        value = var.db_name
+      }
+      env {
+        name  = "CLOUD_SQL_CONNECTION_NAME"
+        value = google_sql_database_instance.main.connection_name
       }
       env {
         name  = "REDIS_URL"
         value = "redis://${google_redis_instance.main.host}:6379/0"
+      }
+      dynamic "env" {
+        for_each = local.app_secret_env
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
+          }
+        }
       }
 
       resources {
@@ -260,8 +317,8 @@ resource "google_cloud_run_v2_service" "beat" {
     }
 
     scaling {
-      min_instance_count = 0
-      max_instance_count = 1
+      min_instance_count = var.beat_min_instances
+      max_instance_count = var.beat_max_instances
     }
 
     vpc_access {
@@ -272,5 +329,6 @@ resource "google_cloud_run_v2_service" "beat" {
 
   depends_on = [
     google_project_service.services,
+    google_secret_manager_secret_iam_binding.app_access,
   ]
 }

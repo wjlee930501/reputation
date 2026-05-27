@@ -1,3 +1,5 @@
+import Link from 'next/link'
+
 import { ExternalIcon } from './icons'
 
 interface Props {
@@ -53,12 +55,12 @@ export function ClinicFooter({ hospitalName, address, phone, websiteUrl }: Props
         </p>
 
         <nav className="clinic-footer-meta" style={{ marginTop: 12, display: 'flex', gap: 16 }} aria-label="법적 고지">
-          <a href="/privacy" style={{ textDecoration: 'underline', textUnderlineOffset: 3 }}>
+          <Link href="/privacy" style={{ textDecoration: 'underline', textUnderlineOffset: 3 }}>
             개인정보 처리방침
-          </a>
-          <a href="/terms" style={{ textDecoration: 'underline', textUnderlineOffset: 3 }}>
+          </Link>
+          <Link href="/terms" style={{ textDecoration: 'underline', textUnderlineOffset: 3 }}>
             이용약관
-          </a>
+          </Link>
         </nav>
       </div>
     </footer>

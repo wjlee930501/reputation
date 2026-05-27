@@ -1,7 +1,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 
-import { TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { resolveAssetUrl, TYPE_LABELS, type ContentItem } from '@/lib/api'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 interface Props {
@@ -75,6 +75,7 @@ export function ContentCard({ content, hospitalSlug }: Props) {
   const typeKey = content.content_type.toLowerCase()
   const dateLabel = formatDate(content.published_at, content.scheduled_date)
   const glyph = TYPE_GLYPHS[content.content_type]
+  const imageUrl = resolveAssetUrl(content.image_url)
 
   return (
     <Link
@@ -82,15 +83,15 @@ export function ContentCard({ content, hospitalSlug }: Props) {
       className={`clinic-content-card ${variant}`.trim()}
       aria-label={`${typeLabel} 콘텐츠 — ${content.title}`}
     >
-      {content.image_url ? (
+      {imageUrl ? (
         <div className="clinic-content-card-image">
           <Image
-            src={content.image_url}
+            src={imageUrl}
             alt={content.title}
             fill
             sizes="(max-width: 720px) 100vw, 360px"
             style={{ objectFit: 'cover' }}
-            unoptimized={shouldBypassNextImageOptimization(content.image_url)}
+            unoptimized={shouldBypassNextImageOptimization(imageUrl)}
           />
         </div>
       ) : (

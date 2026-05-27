@@ -34,7 +34,12 @@ export function TreatmentGrid({ treatments }: Props) {
                 <span className={`clinic-treatment-card-icon hue-${hue}`} aria-hidden="true">
                   <Icon />
                 </span>
-                <span className="clinic-treatment-card-name">{treatment.name}</span>
+                <span className="clinic-treatment-card-copy">
+                  <span className="clinic-treatment-card-name">{treatment.name}</span>
+                  {treatment.description && (
+                    <span className="clinic-treatment-card-desc">{treatment.description}</span>
+                  )}
+                </span>
               </li>
             )
           })}

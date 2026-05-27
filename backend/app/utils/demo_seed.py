@@ -1,13 +1,21 @@
-"""Deterministic local demo seed for browser E2E."""
+"""Sales-ready fictional orthopedic demo seed.
+
+The seed builds the same inputs the production workflow uses: hospital profile,
+source-backed Essence notes, approved writing standard, AI query targets,
+content slots, and approved content briefs. Use ``--generate --publish`` to run
+the existing generation pipeline over those slots and publish aligned drafts.
+"""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+import argparse
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import arrow
 from sqlalchemy import select
 
 from app.core.database import SyncSessionLocal
-from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
+from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
@@ -18,234 +26,171 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import MonthlyReport
-from app.models.sov import QueryMatrix, SovRecord
+from app.models.sov import AIQueryTarget, AIQueryVariant, QueryMatrix, SovRecord
+from app.services.asset_storage import store_asset_bytes
+from app.services.content_brief import BRIEF_STATUS_APPROVED, build_content_brief
+from app.services.content_calendar import generate_monthly_slots
 from app.services.essence_engine import (
+    ESSENCE_STATUS_ALIGNED,
     build_monthly_essence_summary,
     compute_source_content_hash,
     process_source_asset,
-    screen_content_against_philosophy,
     synthesize_philosophy,
 )
-from app.services.asset_storage import store_asset_bytes
 from app.services.report_engine import generate_pdf_report
 
-DEMO_SLUG = "jangpyeonhan-surgery-demo"
-
-# 1x1 투명 PNG. 데모 seed가 실제 사진 파일을 강제로 묶어 들이지 않으면서도
-# /site 갤러리 + DoctorIntro 자동 매핑 흐름을 시각적으로 보여주려는 용도.
-_TRANSPARENT_PIXEL_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\x00\x01"
-    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+DEMO_SLUG = "motionlabs-orthopedics-demo"
+DEMO_NAME = "모션랩스정형외과의원"
+DEMO_CONTENT_COUNT = 16
+DEMO_MIN_GENERATED_COUNT = 10
+_ASSET_DIR = Path(__file__).resolve().parents[1] / "demo_assets"
 
 
-def seed_demo() -> dict[str, str]:
+def seed_demo(*, generate: bool = False, publish: bool = False) -> dict[str, str | int]:
+    """Reset and seed the fictional orthopedic sales demo."""
     with SyncSessionLocal() as db:
         existing = db.execute(select(Hospital).where(Hospital.slug == DEMO_SLUG)).scalar_one_or_none()
         if existing:
             db.delete(existing)
             db.commit()
 
-        hospital = Hospital(
-            name="장편한외과의원 데모",
-            slug=DEMO_SLUG,
-            status=HospitalStatus.ACTIVE,
-            plan=Plan.PLAN_16,
-            address="서울시 강남구 논현로 147길 12",
-            phone="02-555-7890",
-            business_hours={
-                "mon": "09:00-18:00",
-                "tue": "09:00-18:00",
-                "wed": "09:00-18:00",
-                "thu": "09:00-18:00",
-                "fri": "09:00-18:00",
-                "sat": "09:00-13:00",
-                "sun": "휴진",
-            },
-            website_url="https://jangpyeonhan.example.com",
-            blog_url="https://blog.naver.com/jangpyeonhan-demo",
-            kakao_channel_url="https://pf.kakao.com/_demo",
-            google_business_profile_url="https://business.google.com/example/jangpyeonhan",
-            google_maps_url="https://maps.google.com/?cid=1234567890",
-            naver_place_url="https://naver.me/demo",
-            aeo_domain="ai.jangpyeonhan.co.kr",
-            latitude=37.517236,
-            longitude=127.047325,
-            region=["강남구", "서초구"],
-            specialties=["외과", "대장항문외과"],
-            keywords=["탈장", "항문질환", "대장내시경", "치질", "치루"],
-            competitors=["강남항외과", "서초든든외과"],
-            director_name="박장편",
-            director_career="외과 전문의. 대장항문질환과 탈장 수술을 중심으로 진료합니다.",
-            director_philosophy="환자의 일상 회복을 우선으로 설명이 충분한 진료를 지향합니다.",
-            treatments=[
-                {"name": "탈장 수술", "description": "복강경 기반 탈장 교정 상담 및 수술"},
-                {"name": "치질 치료", "description": "증상 단계에 따른 보존 치료와 수술 상담"},
-                {"name": "대장내시경", "description": "대장내시경 검사와 용종 상담"},
-            ],
-            profile_complete=True,
-            v0_report_done=True,
-            site_built=True,
-            site_live=True,
-            schedule_set=True,
-        )
+        hospital = _create_hospital()
         db.add(hospital)
         db.flush()
 
         philosophy = _seed_essence_chain(db, hospital)
-        _seed_demo_photos(db, hospital)
-
-        schedule = ContentSchedule(
-            hospital_id=hospital.id,
-            plan="PLAN_16",
-            publish_days=[1, 4],
-            active_from=date.today().replace(day=1),
-            is_active=True,
-        )
-        db.add(schedule)
-        db.flush()
-
-        content = ContentItem(
-            hospital_id=hospital.id,
-            schedule_id=schedule.id,
-            content_type=ContentType.FAQ,
-            sequence_no=1,
-            total_count=16,
-            title="강남 탈장 수술 병원은 어떻게 선택해야 할까요?",
-            body=(
-                "강남에서 탈장 수술 병원을 찾을 때는 진료 경험, 수술 전 설명, "
-                "회복 관리 계획을 함께 확인하는 것이 좋습니다.\n\n"
-                "## 탈장은 왜 진료가 필요할까요\n"
-                "탈장은 복벽의 약한 부위로 장기나 조직이 밀려나오는 상태입니다. "
-                "통증, 돌출, 불편감이 반복된다면 외과 진료를 통해 현재 상태를 확인해야 합니다.\n\n"
-                "## 병원 선택 시 볼 점\n"
-                "장편한외과의원 데모는 강남구에서 탈장, 항문질환, 대장내시경 관련 상담을 제공합니다. "
-                "수술 필요 여부, 회복 기간, 일상 복귀 계획을 진료 과정에서 확인하세요."
-            ),
-            meta_description="강남에서 탈장 수술 병원을 선택할 때 확인할 진료 경험, 설명, 회복 관리 기준을 정리했습니다.",
-            faq_question="강남 탈장 수술 병원은 어떻게 선택하나요?",
-            faq_answer_summary="진료 경험, 수술 전 설명, 회복 관리 계획을 함께 확인하세요. 통증·돌출이 반복되면 외과 진료로 현재 상태를 점검한 뒤 수술 필요 여부를 결정합니다.",
-            references_list=[
-                {
-                    "title": "대한외과학회 — 복벽탈장 진료 지침",
-                    "url": "https://www.surgery.or.kr/",
-                },
-                {
-                    "title": "질병관리청 국가건강정보포털 — 탈장",
-                    "url": "https://health.kdca.go.kr/",
-                },
-            ],
-            scheduled_date=date.today(),
-            status=ContentStatus.PUBLISHED,
-            generated_at=datetime.now(timezone.utc),
-            published_at=datetime.now(timezone.utc),
-            published_by="Demo AE",
-            body_updated_at=datetime.now(timezone.utc),
-        )
-        if philosophy is not None:
-            content.content_philosophy_id = philosophy.id
-            screening = screen_content_against_philosophy(content, philosophy)
-            content.essence_status = screening.status
-            content.essence_check_summary = screening.summary
-        db.add(content)
-
-        query = QueryMatrix(
-            hospital_id=hospital.id,
-            query_text="강남 탈장 수술 병원 추천해줘",
-            priority="HIGH",
-        )
-        db.add(query)
-        db.flush()
-
-        db.add_all([
-            SovRecord(
-                hospital_id=hospital.id,
-                query_id=query.id,
-                ai_platform="chatgpt",
-                is_mentioned=True,
-                mention_rank=2,
-                mention_sentiment="neutral",
-                mention_context="장편한외과의원 데모는 강남 지역 외과 진료 정보를 제공합니다.",
-                raw_response="강남 지역 탈장 수술 상담 후보로 장편한외과의원 데모를 확인할 수 있습니다.",
-                competitor_mentions=[{"name": "강남항외과", "is_mentioned": True, "mention_rank": 1}],
-            ),
-            SovRecord(
-                hospital_id=hospital.id,
-                query_id=query.id,
-                ai_platform="gemini",
-                is_mentioned=True,
-                mention_rank=3,
-                mention_sentiment="neutral",
-                mention_context="Google Maps 기반 지역 병원 정보와 함께 언급됩니다.",
-                raw_response="강남구 외과 후보 중 장편한외과의원 데모가 지역 정보와 함께 표시됩니다.",
-                competitor_mentions=[{"name": "서초든든외과", "is_mentioned": True, "mention_rank": 2}],
-            ),
-        ])
-        db.flush()
-
-        now = arrow.now("Asia/Seoul")
-        pdf_path = None
-        try:
-            pdf_path = generate_pdf_report(
-                db=db,
-                hospital=hospital,
-                period_start=now.floor("month").datetime,
-                period_end=now.ceil("month").datetime,
-                report_type="V0",
-                sov_pct=100.0,
-                published_count=1,
-            )
-        except Exception:
-            pdf_path = None
-
-        db.add(MonthlyReport(
-            hospital_id=hospital.id,
-            period_year=now.year,
-            period_month=now.month,
-            report_type="V0",
-            pdf_path=pdf_path,
-            sov_summary={"chatgpt": 100.0, "gemini": 100.0, "overall": 100.0},
-            content_summary={"published_count": 1},
-            essence_summary=build_monthly_essence_summary(
-                db,
-                hospital,
-                now.floor("month").datetime,
-                now.ceil("month").datetime,
-            ),
-        ))
+        public_assets = _seed_demo_photos(db, hospital)
+        content_image_url = _content_image_url(hospital.slug, public_assets)
+        query_targets = _seed_query_targets(db, hospital)
+        content_items = _seed_content_slots(db, hospital, philosophy, query_targets, content_image_url)
+        _seed_sov_snapshot(db, hospital, query_targets)
+        _seed_report(db, hospital)
         db.commit()
 
-        return {"hospital_id": str(hospital.id), "slug": hospital.slug}
+        generated_count = 0
+        published_count = 0
+        if generate:
+            generated_count, published_count = _run_generation_pipeline(
+                db,
+                hospital_id=hospital.id,
+                publish=publish,
+                fallback_image_url=content_image_url,
+            )
+
+        return {
+            "hospital_id": str(hospital.id),
+            "slug": hospital.slug,
+            "slots": len(content_items),
+            "generated": generated_count,
+            "published": published_count,
+        }
+
+
+def _create_hospital() -> Hospital:
+    return Hospital(
+        name=DEMO_NAME,
+        slug=DEMO_SLUG,
+        status=HospitalStatus.ACTIVE,
+        plan=Plan.PLAN_16,
+        address="서울시 성동구 아차산로 38 개풍빌딩 4층",
+        phone="02-6203-3811",
+        business_hours={
+            "mon": "09:00-19:00",
+            "tue": "09:00-19:00",
+            "wed": "09:00-20:30",
+            "thu": "09:00-19:00",
+            "fri": "09:00-19:00",
+            "sat": "09:00-14:00",
+            "sun": "휴진",
+        },
+        website_url="https://motionlabs-orthopedics.example.com",
+        blog_url="https://blog.naver.com/motionlabs-ortho-demo",
+        kakao_channel_url="https://pf.kakao.com/_motionlabs_demo",
+        google_business_profile_url="https://business.google.com/example/motionlabs-orthopedics",
+        google_maps_url="https://maps.google.com/?q=서울시+성동구+아차산로+38",
+        naver_place_url="https://naver.me/motionlabs-demo",
+        aeo_domain="motionlabs-orthopedics-demo.reputation.co.kr",
+        latitude=37.544638,
+        longitude=127.055914,
+        region=["서울", "성동구", "성수동"],
+        specialties=["정형외과", "스포츠손상", "재활의학 협진"],
+        keywords=["무릎 통증", "어깨 통증", "허리 통증", "스포츠 손상", "도수재활", "관절 주사"],
+        competitors=["성수바른정형외과", "서울숲튼튼정형외과", "건대입구재활의학과"],
+        director_name="김모션",
+        director_career=(
+            "정형외과 전문의. 어깨·무릎·척추 통증, 스포츠 손상, 비수술 치료와 "
+            "운동 재활 계획을 중심으로 진료합니다."
+        ),
+        director_philosophy=(
+            "영상 검사 결과만 보지 않고 통증이 생긴 생활 맥락, 직업, 운동 습관을 함께 확인해 "
+            "환자가 납득할 수 있는 단계별 치료 계획을 세웁니다."
+        ),
+        director_credentials={
+            "board_certifications": ["정형외과 전문의"],
+            "society_memberships": ["대한정형외과학회", "대한스포츠의학회"],
+        },
+        treatments=[
+            {
+                "name": "무릎 통증 진료",
+                "description": "퇴행성 변화, 반월상연골 손상, 러닝 후 통증을 구분해 단계별 치료를 안내합니다.",
+            },
+            {
+                "name": "어깨 통증 진료",
+                "description": "회전근개 질환, 오십견, 충돌증후군 가능성을 진찰과 영상으로 확인합니다.",
+            },
+            {
+                "name": "허리·목 통증 진료",
+                "description": "디스크성 통증, 자세성 통증, 신경 증상을 나누어 생활 관리와 치료 방향을 정리합니다.",
+            },
+            {
+                "name": "스포츠 손상",
+                "description": "운동 복귀 시점과 재손상 예방을 고려해 치료와 재활 계획을 세웁니다.",
+            },
+            {
+                "name": "도수재활",
+                "description": "진단 후 필요한 범위에서 관절 가동성, 근력, 움직임 패턴 회복을 돕습니다.",
+            },
+            {
+                "name": "관절 주사 상담",
+                "description": "주사 치료가 필요한 상황과 기대 범위, 이후 관리 계획을 함께 설명합니다.",
+            },
+        ],
+        profile_complete=True,
+        v0_report_done=True,
+        site_built=True,
+        site_live=True,
+        schedule_set=True,
+    )
 
 
 def _seed_essence_chain(db, hospital: Hospital) -> HospitalContentPhilosophy | None:
-    """Create source -> evidence notes -> approved philosophy v1 for the demo.
-
-    Idempotent within a single seed run because callers always wipe and rebuild
-    the demo hospital first. Returns the approved philosophy (or None if no
-    evidence note could be extracted, which would make a draft ungrounded).
-    """
+    """Create source -> evidence notes -> approved philosophy v1 for the demo."""
     raw_text = (
-        "원장님은 환자에게 진료 흐름을 충분히 설명하는 진료 원칙을 중요하게 생각합니다. "
-        "탈장 수술은 환자의 상태에 따라 상담 후 결정합니다. "
-        "치질 치료는 증상 단계에 따라 보존 치료부터 천천히 안내합니다. "
-        "강남구에서 일상 복귀 계획까지 함께 살피는 진료를 지향합니다."
+        "모션랩스정형외과의원은 서울 성동구 성수동에서 직장인, 러너, 생활 스포츠 환자가 "
+        "자주 겪는 무릎 통증, 어깨 통증, 허리 통증, 스포츠 손상을 진료하는 가상 정형외과입니다. "
+        "김모션 대표원장은 정형외과 전문의로, 첫 진료에서 통증 시작 시점, 악화 동작, 운동 습관, "
+        "업무 자세를 함께 확인합니다. 영상 검사 결과만으로 치료를 정하지 않고 진찰 소견과 환자의 "
+        "생활 목표를 함께 설명합니다. 치료는 운동 조절과 약물, 물리치료, 도수재활, 주사 상담을 "
+        "단계적으로 검토하며, 수술 가능성이 의심되는 경우에는 필요한 기준과 의뢰 방향을 분명히 안내합니다. "
+        "콘텐츠는 환자가 AI 검색에서 '성수동 무릎 통증', '어깨가 안 올라갈 때', '러닝 후 무릎 통증'처럼 "
+        "묻는 상황에 답하도록 작성합니다."
     )
     operator_note = (
-        "최고/완치 등 단정적 표현은 사용하지 않고, 환자가 안심할 수 있도록 차분하게 설명합니다."
+        "완치, 최고, 1등, 통증 없는 치료처럼 보장·비교 표현은 쓰지 않는다. "
+        "비수술을 무조건 강조하지 말고, 진단 후 단계적으로 결정한다는 톤을 유지한다. "
+        "성수동 직장인과 생활 스포츠 환자 맥락을 자연스럽게 반영한다."
     )
 
     source = HospitalSourceAsset(
         hospital_id=hospital.id,
         source_type=SourceType.INTERVIEW,
-        title="원장 인터뷰 데모",
+        title="김모션 대표원장 온보딩 인터뷰",
         url=None,
         raw_text=raw_text,
         operator_note=operator_note,
-        source_metadata={"channel": "demo"},
+        source_metadata={"channel": "sales_demo", "specialty": "orthopedics"},
         content_hash=compute_source_content_hash(
-            "원장 인터뷰 데모", None, raw_text, operator_note
+            "김모션 대표원장 온보딩 인터뷰", None, raw_text, operator_note
         ),
         status=SourceStatus.PROCESSED,
         processed_at=datetime.now(timezone.utc),
@@ -282,7 +227,7 @@ def _seed_essence_chain(db, hospital: Hospital) -> HospitalContentPhilosophy | N
         status=PhilosophyStatus.APPROVED,
         created_by="Demo AE",
         reviewed_by="Demo AE",
-        approval_note="Demo seed: auto-approved for sales demo.",
+        approval_note="Sales demo: source-backed orthopedic writing standard.",
         approved_at=datetime.now(timezone.utc),
         **payload,
     )
@@ -291,51 +236,351 @@ def _seed_essence_chain(db, hospital: Hospital) -> HospitalContentPhilosophy | N
     return philosophy
 
 
-def _seed_demo_photos(db, hospital: Hospital) -> None:
-    """Seed 사진 자료 2장(원장 + 병원 내부) — 둘 다 is_public=True로 즉시 /site 노출.
-
-    실제 파일은 store_asset_bytes에 위임 — dev면 /tmp/asset_uploads, prod면 GCS.
-    """
-    photo_specs = [
-        {
-            "source_type": SourceType.PHOTO_DOCTOR,
-            "title": "박장편 원장 (데모 placeholder)",
-            "filename": "doctor_demo.png",
-        },
+def _seed_demo_photos(db, hospital: Hospital) -> list[HospitalSourceAsset]:
+    specs = [
         {
             "source_type": SourceType.PHOTO_CLINIC_INTERIOR,
-            "title": "병원 내부 (데모 placeholder)",
-            "filename": "interior_demo.png",
+            "title": "모션랩스정형외과의원 접수·대기 공간",
+            "filename": "motionlabs-orthopedics-hero.png",
+            "asset_filename": "motionlabs-orthopedics-hero.png",
+        },
+        {
+            "source_type": SourceType.PHOTO_DOCTOR,
+            "title": "김모션 대표원장",
+            "filename": "motionlabs-orthopedics-doctor.png",
+            "asset_filename": "motionlabs-orthopedics-doctor.png",
+        },
+        {
+            "source_type": SourceType.PHOTO_TREATMENT_ROOM,
+            "title": "정형외과 상담·재활 안내 공간",
+            "filename": "motionlabs-orthopedics-content.png",
+            "asset_filename": "motionlabs-orthopedics-content.png",
         },
     ]
-    for spec in photo_specs:
+
+    assets: list[HospitalSourceAsset] = []
+    for spec in specs:
+        asset_path = _ASSET_DIR / spec["asset_filename"]
+        image_bytes = asset_path.read_bytes()
         file_url = store_asset_bytes(
             hospital_id=hospital.id,
             filename=spec["filename"],
-            data=_TRANSPARENT_PIXEL_PNG,
+            data=image_bytes,
             mime_type="image/png",
         )
+        asset = HospitalSourceAsset(
+            hospital_id=hospital.id,
+            source_type=spec["source_type"],
+            title=spec["title"],
+            url=None,
+            raw_text=None,
+            operator_note="GPT image 2 generated fictional demo asset; no real clinic/person likeness.",
+            source_metadata={"channel": "gpt_image_2_demo", "fictional": True},
+            file_url=file_url,
+            mime_type="image/png",
+            file_size_bytes=len(image_bytes),
+            is_public=True,
+            content_hash=compute_source_content_hash(spec["title"], None, None, None),
+            status=SourceStatus.PROCESSED,
+            processed_at=datetime.now(timezone.utc),
+            created_by="Demo AE",
+        )
+        db.add(asset)
+        assets.append(asset)
+    db.flush()
+    return assets
+
+
+def _content_image_url(slug: str, assets: list[HospitalSourceAsset]) -> str | None:
+    for asset in assets:
+        if asset.source_type == SourceType.PHOTO_TREATMENT_ROOM:
+            return f"/api/v1/public/hospitals/{slug}/assets/{asset.id}"
+    return None
+
+
+def _seed_query_targets(db, hospital: Hospital) -> list[AIQueryTarget]:
+    now_month = arrow.now("Asia/Seoul").format("YYYY-MM")
+    specs = [
+        ("성수동 무릎 통증", "증상 탐색", "무릎 통증", "무릎 통증 진료", ["통증 위치", "운동 복귀", "검사 필요성"]),
+        ("러닝 후 무릎 통증", "운동 손상", "러닝 후 무릎 통증", "스포츠 손상", ["휴식 기준", "재활", "재손상 예방"]),
+        ("어깨가 안 올라갈 때", "증상 탐색", "어깨 통증", "어깨 통증 진료", ["오십견", "회전근개", "진료 시점"]),
+        ("성수동 어깨 통증 정형외과", "지역 탐색", "어깨 통증", "어깨 통증 진료", ["접근성", "검사", "치료 선택"]),
+        ("허리 통증 다리 저림", "증상 탐색", "허리 통증", "허리·목 통증 진료", ["신경 증상", "MRI 기준", "생활 관리"]),
+        ("목 통증 팔 저림", "증상 탐색", "목 통증", "허리·목 통증 진료", ["신경 증상", "자세", "진료 시점"]),
+        ("스포츠 손상 운동 복귀", "치료 결정", "스포츠 손상", "스포츠 손상", ["복귀 기준", "재활 단계", "재손상 예방"]),
+        ("도수재활 언제 필요할까", "치료 결정", "근골격계 통증", "도수재활", ["적응증", "횟수", "자가운동"]),
+        ("관절 주사 맞아도 될까", "치료 결정", "관절 통증", "관절 주사 상담", ["기대 범위", "주의사항", "대안"]),
+        ("성수동 직장인 손목 통증", "지역 탐색", "손목 통증", "정형외과 진료", ["업무 자세", "보조기", "검사"]),
+        ("계단 내려갈 때 무릎 통증", "증상 탐색", "무릎 통증", "무릎 통증 진료", ["연골", "근력", "진료 시점"]),
+        ("오십견과 회전근개 차이", "질환 비교", "어깨 통증", "어깨 통증 진료", ["감별", "영상검사", "운동 범위"]),
+    ]
+
+    targets: list[AIQueryTarget] = []
+    for name, intent, symptom, treatment, criteria in specs:
+        query = QueryMatrix(hospital_id=hospital.id, query_text=name, priority="HIGH")
+        db.add(query)
+        db.flush()
+        target = AIQueryTarget(
+            hospital_id=hospital.id,
+            name=name,
+            target_intent=intent,
+            region_terms=["성동구", "성수동"],
+            specialty="정형외과",
+            condition_or_symptom=symptom,
+            treatment=treatment,
+            decision_criteria=criteria,
+            platforms=["CHATGPT", "GEMINI", "PERPLEXITY"],
+            competitor_names=hospital.competitors,
+            priority="HIGH",
+            status="ACTIVE",
+            target_month=now_month,
+            created_by="Demo AE",
+            updated_by="Demo AE",
+        )
+        db.add(target)
+        db.flush()
         db.add(
-            HospitalSourceAsset(
+            AIQueryVariant(
+                query_target_id=target.id,
+                query_text=f"{name} 병원 선택 기준을 알려줘",
+                platform="CHATGPT",
+                language="ko",
+                is_active=True,
+                query_matrix_id=query.id,
+            )
+        )
+        targets.append(target)
+    db.flush()
+    return targets
+
+
+def _seed_content_slots(
+    db,
+    hospital: Hospital,
+    philosophy: HospitalContentPhilosophy | None,
+    query_targets: list[AIQueryTarget],
+    content_image_url: str | None,
+) -> list[ContentItem]:
+    target_month = arrow.now("Asia/Seoul").shift(months=1).floor("month")
+    slots = generate_monthly_slots(
+        plan=Plan.PLAN_16.value,
+        publish_days=[0, 1, 2, 3, 4],
+        target_month=target_month,
+    )[:DEMO_CONTENT_COUNT]
+    schedule = ContentSchedule(
+        hospital_id=hospital.id,
+        plan=Plan.PLAN_16.value,
+        publish_days=[0, 1, 2, 3, 4],
+        active_from=target_month.date(),
+        is_active=True,
+    )
+    db.add(schedule)
+    db.flush()
+
+    items: list[ContentItem] = []
+    for index, (scheduled_date, content_type, sequence_no, total_count) in enumerate(slots):
+        query_target = query_targets[index % len(query_targets)]
+        item = ContentItem(
+            hospital_id=hospital.id,
+            schedule_id=schedule.id,
+            content_type=content_type,
+            sequence_no=sequence_no,
+            total_count=total_count,
+            scheduled_date=scheduled_date,
+            status=ContentStatus.DRAFT,
+            query_target_id=query_target.id,
+            image_url=content_image_url,
+            image_prompt="GPT image 2 orthopedic clinic educational thumbnail for sales demo.",
+        )
+        db.add(item)
+        db.flush()
+        item.content_brief = build_content_brief(
+            hospital=hospital,
+            content_item=item,
+            query_target=query_target,
+            philosophy=philosophy,
+        )
+        item.brief_status = BRIEF_STATUS_APPROVED
+        item.brief_approved_at = datetime.now(timezone.utc)
+        item.brief_approved_by = "Demo AE"
+        items.append(item)
+    db.flush()
+    return items
+
+
+def _seed_sov_snapshot(db, hospital: Hospital, query_targets: list[AIQueryTarget]) -> None:
+    matrix_rows = db.execute(
+        select(QueryMatrix).where(QueryMatrix.hospital_id == hospital.id).limit(5)
+    ).scalars().all()
+    for index, query in enumerate(matrix_rows):
+        db.add(
+            SovRecord(
                 hospital_id=hospital.id,
-                source_type=spec["source_type"],
-                title=spec["title"],
-                url=None,
-                raw_text=None,
-                operator_note=None,
-                source_metadata={"channel": "demo"},
-                file_url=file_url,
-                mime_type="image/png",
-                file_size_bytes=len(_TRANSPARENT_PIXEL_PNG),
-                is_public=True,
-                content_hash=compute_source_content_hash(spec["title"], None, None, None),
-                status=SourceStatus.PENDING,
-                created_by="Demo AE",
+                query_id=query.id,
+                ai_query_target_id=query_targets[index].id if index < len(query_targets) else None,
+                ai_platform="chatgpt",
+                is_mentioned=index < 3,
+                mention_rank=index + 2 if index < 3 else None,
+                mention_sentiment="neutral",
+                mention_context=(
+                    "성수동 정형외과 선택지 중 모션랩스정형외과의원이 진료 정보 허브와 함께 언급됩니다."
+                    if index < 3
+                    else "경쟁 병원 중심으로 답변되어 보완 콘텐츠가 필요한 상태입니다."
+                ),
+                raw_response=(
+                    "성수동에서 무릎·어깨 통증을 상담할 정형외과 후보로 "
+                    "모션랩스정형외과의원의 진료 정보 허브를 확인할 수 있습니다."
+                ),
+                competitor_mentions=[{"name": "성수바른정형외과", "is_mentioned": True, "mention_rank": 1}],
             )
         )
     db.flush()
 
 
+def _seed_report(db, hospital: Hospital) -> None:
+    now = arrow.now("Asia/Seoul")
+    pdf_path = None
+    try:
+        pdf_path = generate_pdf_report(
+            db=db,
+            hospital=hospital,
+            period_start=now.floor("month").datetime,
+            period_end=now.ceil("month").datetime,
+            report_type="V0",
+            sov_pct=60.0,
+            published_count=0,
+        )
+    except Exception:
+        pdf_path = None
+
+    db.add(
+        MonthlyReport(
+            hospital_id=hospital.id,
+            period_year=now.year,
+            period_month=now.month,
+            report_type="V0",
+            pdf_path=pdf_path,
+            sov_summary={"chatgpt": 60.0, "gemini": 40.0, "overall": 50.0},
+            content_summary={"published_count": 0, "planned_count": DEMO_CONTENT_COUNT},
+            essence_summary=build_monthly_essence_summary(
+                db,
+                hospital,
+                now.floor("month").datetime,
+                now.ceil("month").datetime,
+            ),
+        )
+    )
+
+
+def _run_generation_pipeline(
+    db,
+    *,
+    hospital_id,
+    publish: bool,
+    fallback_image_url: str | None,
+) -> tuple[int, int]:
+    """Run the existing single-item generation pipeline over seeded slots."""
+    from app.workers.tasks import _generate_single_content_item
+
+    hospital = db.get(Hospital, hospital_id)
+    if not hospital:
+        return 0, 0
+
+    items = db.execute(
+        select(ContentItem)
+        .where(ContentItem.hospital_id == hospital.id)
+        .order_by(ContentItem.sequence_no)
+        .limit(DEMO_CONTENT_COUNT)
+    ).scalars().all()
+
+    generated_count = 0
+    published_count = 0
+    failures: list[str] = []
+    for item in items:
+        try:
+            _generate_single_content_item(db, item, hospital)
+        except Exception as exc:
+            failures.append(f"#{item.sequence_no}: {exc}")
+            continue
+        db.refresh(item)
+        if not item.image_url and fallback_image_url:
+            item.image_url = fallback_image_url
+            item.image_prompt = "GPT image 2 orthopedic clinic educational thumbnail for sales demo."
+            db.commit()
+
+        if item.body:
+            generated_count += 1
+
+        if publish and item.body and item.essence_status == ESSENCE_STATUS_ALIGNED:
+            item.status = ContentStatus.PUBLISHED
+            item.published_at = datetime.now(timezone.utc) - timedelta(minutes=item.sequence_no)
+            item.published_by = "Demo AE"
+            item.body_updated_at = item.body_updated_at or datetime.now(timezone.utc)
+            published_count += 1
+            db.commit()
+
+    _refresh_report_summary(db, hospital)
+    if generated_count < DEMO_MIN_GENERATED_COUNT:
+        failure_summary = "; ".join(failures[:3]) if failures else "no generated bodies"
+        raise RuntimeError(
+            "Demo generation did not produce enough pipeline content "
+            f"({generated_count}/{DEMO_MIN_GENERATED_COUNT} generated). {failure_summary}"
+        )
+    if publish and published_count < DEMO_MIN_GENERATED_COUNT:
+        raise RuntimeError(
+            "Demo publishing did not expose enough aligned content "
+            f"({published_count}/{DEMO_MIN_GENERATED_COUNT} published)."
+        )
+    return generated_count, published_count
+
+
+def _refresh_report_summary(db, hospital: Hospital) -> None:
+    published_items = db.execute(
+        select(ContentItem).where(
+            ContentItem.hospital_id == hospital.id,
+            ContentItem.status == ContentStatus.PUBLISHED,
+        )
+    ).scalars().all()
+    report = db.execute(
+        select(MonthlyReport).where(MonthlyReport.hospital_id == hospital.id)
+    ).scalar_one_or_none()
+    if report:
+        now = arrow.now("Asia/Seoul")
+        report.content_summary = {
+            "published_count": len(published_items),
+            "planned_count": DEMO_CONTENT_COUNT,
+        }
+        report.essence_summary = build_monthly_essence_summary(
+            db,
+            hospital,
+            now.floor("month").datetime,
+            now.ceil("month").datetime,
+        )
+        db.commit()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Seed the MotionLabs Orthopedics sales demo.")
+    parser.add_argument(
+        "--generate",
+        action="store_true",
+        help="Run the actual content generation pipeline for the seeded slots.",
+    )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Publish generated content that passes the approved Essence screening.",
+    )
+    args = parser.parse_args()
+
+    result = seed_demo(generate=args.generate, publish=args.publish)
+    print(
+        "seeded demo hospital: "
+        f"{result['hospital_id']} / {result['slug']} "
+        f"(slots={result['slots']}, generated={result['generated']}, published={result['published']})"
+    )
+    return 0
+
+
 if __name__ == "__main__":
-    result = seed_demo()
-    print(f"seeded demo hospital: {result['hospital_id']} / {result['slug']}")
+    raise SystemExit(main())

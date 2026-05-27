@@ -12,7 +12,9 @@ COPY alembic.ini .
 RUN pip install --no-cache-dir .
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
-RUN useradd -m appuser && chown -R appuser:appuser /app
+RUN useradd -m appuser \
+    && mkdir -p /tmp/private_asset_uploads /tmp/sites /tmp/reports \
+    && chown -R appuser:appuser /app /tmp/private_asset_uploads /tmp/sites /tmp/reports
 USER appuser
 ENV PYTHONPATH=/app
 ENTRYPOINT ["./docker-entrypoint.sh"]

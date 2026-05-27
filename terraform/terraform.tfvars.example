@@ -15,19 +15,14 @@ admin_subdomain     = "admin.reputation.co.kr"
 dns_zone_name       = ""  # Cloud DNS managed zone (선택)
 
 # ── Database ───────────────────────────────────────────────────────
-db_instance_tier    = "db-custom-1-3840"
-db_password         = "CHANGE_ME_USE_STRONG_PASSWORD"
+db_instance_tier = "db-custom-1-3840"
+# Create the Cloud SQL app user and DB_PASSWORD Secret Manager version out-of-band
+# so the database password never enters Terraform state.
 
-# ── API Keys (Secret Manager에 저장됨) ──────────────────────────────
-anthropic_api_key   = "sk-ant-..."
-openai_api_key      = "sk-..."
-gemini_api_key      = "AIza..."
-slack_webhook_url   = "https://hooks.slack.com/services/..."
-
-# ── Admin Auth ─────────────────────────────────────────────────────
-admin_secret_key    = "CHANGE_ME_RANDOM_STRING"
-admin_login_password = "CHANGE_ME"
-admin_session_secret = "CHANGE_ME"  # python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# ── Secrets ────────────────────────────────────────────────────────
+# Terraform creates Secret Manager containers only. Add secret versions out-of-band
+# before deploying Cloud Run, for example:
+# gcloud secrets versions add ADMIN_SECRET_KEY --data-file=-
 
 # ── Site ───────────────────────────────────────────────────────────
-site_revalidate_secret = "CHANGE_ME"
+site_revalidate_url    = "https://reputation.co.kr/api/revalidate"

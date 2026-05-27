@@ -11,8 +11,8 @@ output "region" {
 }
 
 output "api_service_url" {
-  description = "Cloud Run API service URL"
-  value       = google_cloud_run_v2_service.api.uri
+  description = "Public API entrypoint through the HTTPS load balancer"
+  value       = "https://${var.domain}"
 }
 
 output "worker_service_name" {

@@ -26,7 +26,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_URL = os.environ.get("REPUTATION_BASE_URL", "http://localhost:8000").rstrip("/")
-DEMO_SLUG = os.environ.get("REPUTATION_DEMO_SLUG", "jangpyeonhan-surgery-demo")
+DEMO_SLUG = os.environ.get("REPUTATION_DEMO_SLUG", "motionlabs-orthopedics-demo")
+MIN_PUBLIC_CONTENTS = 10
 
 
 class SmokeFailure(RuntimeError):
@@ -89,7 +90,18 @@ def main() -> int:
     health = request_json("/health")
     require(health == {"status": "ok"}, "backend health OK")
 
-    seed_output = run(["docker", "compose", "exec", "-T", "api", "python", "-m", "app.utils.demo_seed"])
+    seed_output = run([
+        "docker",
+        "compose",
+        "exec",
+        "-T",
+        "api",
+        "python",
+        "-m",
+        "app.utils.demo_seed",
+        "--generate",
+        "--publish",
+    ])
     require(DEMO_SLUG in seed_output, "demo seed completed")
 
     hospitals = request_json("/api/v1/admin/hospitals", admin=True)
@@ -106,12 +118,15 @@ def main() -> int:
     require(isinstance(philosophies, list) and any(p.get("status") == "APPROVED" for p in philosophies), "approved operating standard exists")
 
     contents = request_json(f"/api/v1/admin/hospitals/{hospital_id}/content", admin=True)
-    require(isinstance(contents, list) and len(contents) >= 1, "admin content exists")
+    require(isinstance(contents, list) and len(contents) >= 16, "admin content slots exist")
     aligned_published = [
         c for c in contents
         if c.get("status") == "PUBLISHED" and c.get("essence_status") == "ALIGNED" and c.get("content_philosophy_id")
     ]
-    require(len(aligned_published) >= 1, "published content is aligned to approved operating standard")
+    require(
+        len(aligned_published) >= MIN_PUBLIC_CONTENTS,
+        f"at least {MIN_PUBLIC_CONTENTS} published contents are aligned to approved operating standard",
+    )
 
     reports = request_json(f"/api/v1/admin/hospitals/{hospital_id}/reports", admin=True)
     require(isinstance(reports, list) and len(reports) >= 1, "admin report exists")
@@ -120,16 +135,26 @@ def main() -> int:
     essence_summary = report_detail.get("essence_summary") or {}
     require(bool(essence_summary.get("approved_philosophy_exists")), "report includes approved operating-standard summary")
     require((essence_summary.get("source_count") or 0) >= 1, "report includes reviewed source count")
-    require((essence_summary.get("aligned_content_count") or 0) >= 1, "report includes aligned content count")
+    require(
+        (essence_summary.get("aligned_content_count") or 0) >= MIN_PUBLIC_CONTENTS,
+        f"report includes at least {MIN_PUBLIC_CONTENTS} aligned contents",
+    )
 
     public_hospital = request_json(f"/api/v1/public/hospitals/{DEMO_SLUG}")
     require(public_hospital.get("director_philosophy") is None, "public profile does not expose legacy director philosophy")
 
     public_contents = request_json(f"/api/v1/public/hospitals/{DEMO_SLUG}/contents")
-    require(isinstance(public_contents, list) and len(public_contents) == len(aligned_published), "public contents expose only aligned published items")
+    require(
+        isinstance(public_contents, list) and len(public_contents) == len(aligned_published),
+        "public contents expose only aligned published items",
+    )
+    require(
+        len(public_contents) >= MIN_PUBLIC_CONTENTS,
+        f"public site exposes at least {MIN_PUBLIC_CONTENTS} demo content cases",
+    )
     content_id = public_contents[0]["id"]
     public_detail = request_json(f"/api/v1/public/hospitals/{DEMO_SLUG}/contents/{content_id}")
-    require("body" in public_detail and "장편한외과의원 데모" in public_detail["body"], "public content detail is readable")
+    require("body" in public_detail and "모션랩스정형외과의원" in public_detail["body"], "public content detail is readable")
 
     print("\nDemo seed runtime smoke passed.")
     return 0

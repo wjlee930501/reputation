@@ -6,6 +6,13 @@ import { unstable_doesMiddlewareMatch } from 'next/experimental/testing/server.j
 import { buildAdminAuthProxyResponse, adminAuthProxyConfig } from './auth-proxy.ts'
 import { generateSessionToken } from './session.ts'
 
+const sessionPayload = {
+  accountId: '0f0a41a9-bf2c-4f7b-b182-b85dc729b6e4',
+  email: 'owner@example.com',
+  name: 'Owner',
+  role: 'OWNER',
+}
+
 function requestFor(path: string, cookie?: string) {
   const url = new URL(path, 'https://admin.example.test')
   const nextUrl = Object.assign(url, {
@@ -98,7 +105,7 @@ test('admin auth proxy redirects pages to login with the original path and clear
 
 test('admin auth proxy allows requests with a valid session token', async () => {
   process.env.ADMIN_SESSION_SECRET = 'test-secret'
-  const token = await generateSessionToken('test-secret')
+  const token = await generateSessionToken('test-secret', 60, sessionPayload)
 
   const res = await buildAdminAuthProxyResponse(requestFor('/hospitals', `admin_session=${token}`))
 

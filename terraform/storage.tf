@@ -24,10 +24,3 @@ resource "google_storage_bucket" "reports" {
 
   uniform_bucket_level_access = true
 }
-
-# Public access for images (CDN/caching via LB)
-resource "google_storage_bucket_iam_member" "images_public" {
-  bucket = google_storage_bucket.images.name
-  role   = "roles/storage.objectViewer"
-  member = "allUsers"
-}

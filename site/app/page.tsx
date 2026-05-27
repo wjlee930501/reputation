@@ -23,12 +23,13 @@ const CONSENT_DETAILS = [
   { label: "거부 권리", value: "동의를 거부할 수 있으며, 거부 시 무료 진단 상담만 진행되지 않고 다른 불이익은 없습니다" },
 ];
 
-export default function Home({
+export default async function Home({
   searchParams,
 }: {
-  searchParams?: { lead?: string };
+  searchParams?: Promise<{ lead?: string }>;
 }) {
-  const leadStatus = searchParams?.lead;
+  const resolvedSearchParams = await searchParams;
+  const leadStatus = resolvedSearchParams?.lead;
   const leadMessage =
     leadStatus === "success"
       ? "무료 진단 요청이 접수되었습니다. 담당자가 진단 범위를 확인한 뒤 연락드립니다."

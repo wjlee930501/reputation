@@ -80,6 +80,18 @@ variable "beat_cpu" {
   default = 1
 }
 
+variable "beat_min_instances" {
+  description = "Beat scheduler minimum instances. Keep at least one scheduler running."
+  type        = number
+  default     = 1
+}
+
+variable "beat_max_instances" {
+  description = "Beat scheduler maximum instances. Keep exactly one scheduler by default."
+  type        = number
+  default     = 1
+}
+
 # ── Cloud SQL ─────────────────────────────────────────────────────
 variable "db_instance_tier" {
   description = "Cloud SQL machine tier"
@@ -95,12 +107,6 @@ variable "db_name" {
 variable "db_user" {
   type    = string
   default = "reputation"
-}
-
-variable "db_password" {
-  description = "Cloud SQL password (use terraform.tfvars or TF_VAR_db_password)"
-  type        = string
-  sensitive   = true
 }
 
 # ── Redis (Memorystore) ───────────────────────────────────────────
@@ -144,52 +150,8 @@ variable "reports_bucket_location" {
   default = "US"
 }
 
-# ── API Keys (stored in Secret Manager) ───────────────────────────
-variable "anthropic_api_key" {
-  description = "Anthropic API key"
+variable "site_revalidate_url" {
+  description = "Site revalidation webhook URL. Defaults to https://<domain>/api/revalidate."
   type        = string
-  sensitive   = true
-}
-
-variable "openai_api_key" {
-  description = "OpenAI API key"
-  type        = string
-  sensitive   = true
-}
-
-variable "gemini_api_key" {
-  description = "Gemini API key"
-  type        = string
-  sensitive   = true
-}
-
-variable "slack_webhook_url" {
-  description = "Slack webhook URL"
-  type        = string
-  sensitive   = true
-}
-
-variable "admin_secret_key" {
-  description = "Admin API key"
-  type        = string
-  sensitive   = true
-}
-
-variable "admin_login_password" {
-  description = "Admin login password"
-  type        = string
-  sensitive   = true
-}
-
-variable "admin_session_secret" {
-  description = "Admin session signing key"
-  type        = string
-  sensitive   = true
-}
-
-variable "site_revalidate_secret" {
-  description = "Site revalidation webhook secret"
-  type        = string
-  sensitive   = true
   default     = ""
 }

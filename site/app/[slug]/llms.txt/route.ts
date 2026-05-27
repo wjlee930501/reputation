@@ -3,12 +3,13 @@ import { fetchHospital, fetchContents, TYPE_LABELS } from '@/lib/api'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
 interface Props {
-  params: { slug: string }
+  params: Promise<{ slug: string }>
 }
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
-export async function GET(_req: Request, { params }: Props) {
+export async function GET(_req: Request, { params: paramsPromise }: Props) {
+  const params = await paramsPromise
   try {
     const [hospital, contents] = await Promise.all([
       fetchHospital(params.slug),

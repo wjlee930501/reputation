@@ -42,8 +42,8 @@ async def _send(text: str, blocks: list | None = None) -> bool:
             )
             r.raise_for_status()
             return True
-    except Exception as e:
-        logger.error(f"Slack failed: {e}")
+    except Exception as exc:
+        logger.error("Slack delivery failed: %s", exc.__class__.__name__)
         return False
 
 

@@ -1,10 +1,10 @@
 """Admin audit log writer.
 
-Single-actor model (1.0): actor is the configured `ADMIN_ACTOR_NAME` setting,
-not a user-supplied header. Multi-user / NextAuth integration is post-1.0; the
-shape allows passing an explicit actor (e.g. body.published_by) but we never
-trust untrusted client headers.
+The Admin Next.js server verifies the operator session and forwards the account
+email as request-local actor context for backend audit rows. Direct callers fall
+back to `ADMIN_ACTOR_NAME`.
 """
+from contextvars import ContextVar, Token
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,8 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.audit import AdminAuditLog
 
+_request_actor: ContextVar[str | None] = ContextVar("admin_request_actor", default=None)
+
+
+def set_request_actor(actor: str | None) -> Token[str | None]:
+    return _request_actor.set(_normalize(actor))
+
+
+def reset_request_actor(token: Token[str | None]) -> None:
+    _request_actor.reset(token)
+
 
 def default_actor() -> str:
+    actor = _request_actor.get()
+    if actor:
+        return actor
     return _normalize(settings.ADMIN_ACTOR_NAME)
 
 

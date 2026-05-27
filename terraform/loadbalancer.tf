@@ -48,20 +48,8 @@ resource "google_compute_backend_service" "api" {
     group = google_compute_region_network_endpoint_group.api_neg.id
   }
 
-  enable_cdn = true
-
-  cdn_policy {
-    cache_mode                   = "CACHE_ALL_STATIC"
-    default_ttl                  = 3600
-    client_ttl                   = 3600
-    max_ttl                      = 86400
-    serve_while_stale            = 86400
-    negative_caching             = true
-    negative_caching_policy {
-      code = 404
-      ttl  = 300
-    }
-  }
+  enable_cdn      = false
+  security_policy = google_compute_security_policy.main.self_link
 
   log_config {
     enable      = true
@@ -158,39 +146,12 @@ resource "google_compute_security_policy" "main" {
   }
 }
 
-resource "google_compute_backend_service" "api_with_armor" {
-  name      = "${var.app_name}-api-backend-armor"
-  project   = var.project_id
-  protocol  = "HTTP"
-  port_name = "http"
-
-  backend {
-    group = google_compute_region_network_endpoint_group.api_neg.id
-  }
-
-  enable_cdn = true
-
-  cdn_policy {
-    cache_mode        = "CACHE_ALL_STATIC"
-    default_ttl       = 3600
-    client_ttl        = 3600
-    max_ttl           = 86400
-    serve_while_stale = 86400
-  }
-
-  security_policy = google_compute_security_policy.main.name
-
-  log_config {
-    enable      = true
-    sample_rate = 0.1
-  }
-}
-
 # Output the LB IP for DNS setup
 output "load_balancer_ip" {
   value = google_compute_global_address.lb_ip.address
 }
 
 output "api_url" {
-  value = google_cloud_run_v2_service.api.uri
+  description = "Public API entrypoint through the HTTPS load balancer"
+  value       = "https://${var.domain}"
 }

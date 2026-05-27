@@ -12,7 +12,7 @@ import { DoctorIntro } from '../_components/DoctorIntro'
 import { JsonLd } from '../_components/JsonLd'
 
 interface Props {
-  params: { slug: string }
+  params: Promise<{ slug: string }>
 }
 
 export const revalidate = 3600
@@ -26,7 +26,8 @@ function sortByCuratorRelevance(a: ContentItem, b: ContentItem): number {
   return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
+  const params = await paramsPromise
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.director_name} 원장 — ${hospital.name}의 진료 분야, 약력, 환자 안내 글 모음.`
@@ -47,7 +48,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-export default async function DoctorPage({ params }: Props) {
+export default async function DoctorPage({ params: paramsPromise }: Props) {
+  const params = await paramsPromise
   let hospital
   let contents
   try {

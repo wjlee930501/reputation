@@ -1,9 +1,12 @@
 import json
 import os
 from typing import Annotated
+from urllib.parse import quote
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+_CRITICAL_PRODUCTION_SECRETS = ("ADMIN_SECRET_KEY",)
 
 
 def _resolve_secret(name: str, default: str = "") -> str:
@@ -46,6 +49,36 @@ class Settings(BaseSettings):
             self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
             self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)
             self.SLACK_WEBHOOK_URL = _resolve_secret("SLACK_WEBHOOK_URL", self.SLACK_WEBHOOK_URL)
+            self.DB_PASSWORD = _resolve_secret("DB_PASSWORD", self.DB_PASSWORD)
+            self._build_database_urls_from_secret_parts()
+            self.SITE_REVALIDATE_SECRET = _resolve_secret(
+                "SITE_REVALIDATE_SECRET", self.SITE_REVALIDATE_SECRET
+            )
+            self._fail_if_critical_production_secrets_empty()
+
+    def _fail_if_critical_production_secrets_empty(self) -> None:
+        missing = [
+            secret_name
+            for secret_name in _CRITICAL_PRODUCTION_SECRETS
+            if not str(getattr(self, secret_name, "")).strip()
+        ]
+        if missing:
+            names = ", ".join(missing)
+            raise ValueError(f"Production critical admin secret(s) must be set: {names}")
+
+    def _build_database_urls_from_secret_parts(self) -> None:
+        if self.DATABASE_URL and self.SYNC_DATABASE_URL:
+            return
+        if not (self.DB_USER and self.DB_PASSWORD and self.DB_NAME and self.CLOUD_SQL_CONNECTION_NAME):
+            return
+        user = quote(self.DB_USER, safe="")
+        password = quote(self.DB_PASSWORD, safe="")
+        database = quote(self.DB_NAME, safe="")
+        host = f"/cloudsql/{self.CLOUD_SQL_CONNECTION_NAME}"
+        if not self.DATABASE_URL:
+            self.DATABASE_URL = f"postgresql+asyncpg://{user}:{password}@/{database}?host={host}"
+        if not self.SYNC_DATABASE_URL:
+            self.SYNC_DATABASE_URL = f"postgresql://{user}:{password}@/{database}?host={host}"
 
     @field_validator("ALLOWED_ORIGINS", "TRUSTED_PROXY_IPS", mode="before")
     @classmethod
@@ -64,8 +97,12 @@ class Settings(BaseSettings):
         return value
 
     # DB
-    DATABASE_URL: str
-    SYNC_DATABASE_URL: str
+    DATABASE_URL: str = ""
+    SYNC_DATABASE_URL: str = ""
+    DB_NAME: str = "reputation"
+    DB_USER: str = "reputation"
+    DB_PASSWORD: str = ""
+    CLOUD_SQL_CONNECTION_NAME: str = ""
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_POOL_TIMEOUT: int = 30  # seconds to wait for a connection
@@ -117,7 +154,7 @@ class Settings(BaseSettings):
 
     # Admin
     ADMIN_BASE_URL: str = "http://localhost:3000"  # 🔴 CRITICAL: 환경변수로 분리 (.env에서 프로덕션 URL 설정)
-    ADMIN_ACTOR_NAME: str = "AE"  # 단일 운영자 이름 (감사 로그 actor) — 다중 사용자 도입 시 NextAuth로 전환
+    ADMIN_ACTOR_NAME: str = "AE"  # 세션 actor가 없을 때 쓰는 감사 로그 fallback
 
     # Site (public)
     SITE_BASE_URL: str = "https://reputation.co.kr"  # llms.txt absolute URL 등에 사용

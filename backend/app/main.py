@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 import uuid
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -11,6 +11,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
 
 from app.api.admin import hospitals as admin_hospitals
+from app.api.admin import auth as admin_auth
 from app.api.admin import content as admin_content
 from app.api.admin import reports as admin_reports
 from app.api.admin import sov as admin_sov
@@ -24,7 +25,7 @@ from app.api.public import site as public_site
 from app.api.public import leads as public_leads
 from app.core.config import settings
 from app.core.rate_limit import limiter
-from app.core.security import verify_admin_key, verify_admin_rate_limit
+from app.core.security import capture_admin_actor, verify_admin_key, verify_admin_rate_limit
 
 if settings.SENTRY_DSN:
     import sentry_sdk
@@ -106,9 +107,14 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-Admin-Key", "Authorization"],
 )
 
-# Admin 라우터: X-Admin-Key 인증 + rate limit 필수
-admin_deps = [Depends(verify_admin_key), Depends(verify_admin_rate_limit)]
+# Admin 라우터: rate limit first, then X-Admin-Key auth.
+admin_deps = [
+    Depends(verify_admin_rate_limit),
+    Depends(verify_admin_key),
+    Depends(capture_admin_actor),
+]
 app.include_router(admin_hospitals.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_auth.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_content.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_reports.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_sov.router, prefix="/api/v1", dependencies=admin_deps)
@@ -140,7 +146,10 @@ async def readiness():
             await session.execute(text("SELECT 1"))
         return {"status": "ok", "database": "connected"}
     except Exception as e:
-        return {"status": "error", "database": str(e)}
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "database": "unavailable"},
+        ) from e
 
 
 @app.get("/health/live")

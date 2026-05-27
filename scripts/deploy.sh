@@ -32,6 +32,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="${PROJECT_ROOT}/.env.production"
+NON_SECRET_ENV_FILE=""
 
 PROJECT_ID="${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || echo '')}"
 REGION="${GCP_REGION:-us-central1}"
@@ -40,6 +41,7 @@ IMAGE_TAG="$(date +%Y%m%d-%H%M%S)"
 IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/reputation"
 
 SERVICE_ACCOUNT="${GCP_SERVICE_ACCOUNT:-reputation-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
+ALLOW_PLAINTEXT_ENV_SECRETS="${ALLOW_PLAINTEXT_ENV_SECRETS:-0}"
 
 # Cloud Run 서비스 설정
 API_MEMORY="${API_MEMORY:-512Mi}"
@@ -56,8 +58,29 @@ WORKER_CONCURRENCY="${WORKER_CONCURRENCY:-1}"  # Celery worker는 1 concurrency 
 
 BEAT_MEMORY="${BEAT_MEMORY:-256Mi}"
 BEAT_CPU="${BEAT_CPU:-1}"
-BEAT_MIN="${BEAT_MIN:-0}"     # beat는 항상 1개만
+BEAT_MIN="${BEAT_MIN:-1}"     # beat는 항상 1개만
 BEAT_MAX="${BEAT_MAX:-1}"
+
+REQUIRED_SECRET_NAMES=(
+  "ANTHROPIC_API_KEY"
+  "OPENAI_API_KEY"
+  "GEMINI_API_KEY"
+  "SLACK_WEBHOOK_URL"
+  "ADMIN_SECRET_KEY"
+  "ADMIN_SESSION_SECRET"
+  "DB_PASSWORD"
+)
+
+OPTIONAL_SECRET_NAMES=(
+  "SITE_REVALIDATE_SECRET"
+)
+
+cleanup() {
+  if [[ -n "$NON_SECRET_ENV_FILE" && -f "$NON_SECRET_ENV_FILE" ]]; then
+    rm -f "$NON_SECRET_ENV_FILE"
+  fi
+}
+trap cleanup EXIT
 
 # ─── 사전 검증 ─────────────────────────────────────────────────────
 info "사전 검증 중..."
@@ -69,13 +92,76 @@ if [[ -z "$PROJECT_ID" ]]; then
   fail "GCP_PROJECT_ID 환경변수 또는 gcloud config를 설정해 주세요."
 fi
 
-if [[ "$TARGET" != "migrate" ]]; then
-  if [[ ! -f "$ENV_FILE" ]]; then
-    fail ".env.production 파일이 없습니다. .env.example을 복사해서 작성해 주세요."
-  fi
+if [[ ! -f "$ENV_FILE" ]]; then
+  fail ".env.production 파일이 없습니다. .env.example을 복사해서 작성해 주세요."
 fi
 
 ok "사전 검증 통과 (프로젝트: ${PROJECT_ID}, 리전: ${REGION})"
+
+is_managed_secret() {
+  local key="$1"
+  local name
+  for name in "${REQUIRED_SECRET_NAMES[@]}" "${OPTIONAL_SECRET_NAMES[@]}"; do
+    [[ "$key" == "$name" ]] && return 0
+  done
+  return 1
+}
+
+prepare_non_secret_env_file() {
+  NON_SECRET_ENV_FILE="$(mktemp)"
+  local unsafe_keys=()
+  local line key
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    line="${line#export }"
+    key="${line%%=*}"
+
+    if is_managed_secret "$key"; then
+      continue
+    fi
+
+    if [[ "$key" =~ (SECRET|PASSWORD|TOKEN|PRIVATE_KEY|API_KEY|WEBHOOK) ]]; then
+      unsafe_keys+=("$key")
+      continue
+    fi
+
+    printf '%s\n' "$line" >> "$NON_SECRET_ENV_FILE"
+  done < "$ENV_FILE"
+
+  if (( ${#unsafe_keys[@]} > 0 )) && [[ "$ALLOW_PLAINTEXT_ENV_SECRETS" != "1" ]]; then
+    fail "Unsafe plaintext env secrets in .env.production: ${unsafe_keys[*]}. Store them in Secret Manager or set ALLOW_PLAINTEXT_ENV_SECRETS=1 to accept Cloud Run plaintext env storage."
+  fi
+
+  if (( ${#unsafe_keys[@]} > 0 )); then
+    info "ALLOW_PLAINTEXT_ENV_SECRETS=1 set; passing unsafe plaintext env keys: ${unsafe_keys[*]}"
+    local unsafe_key
+    for unsafe_key in "${unsafe_keys[@]}"; do
+      grep -E "^(export )?${unsafe_key}=" "$ENV_FILE" | sed 's/export //' >> "$NON_SECRET_ENV_FILE"
+    done
+  fi
+}
+
+build_secret_args() {
+  SECRET_ARGS=()
+  local name
+
+  for name in "${REQUIRED_SECRET_NAMES[@]}"; do
+    if ! gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
+      fail "Secret Manager secret ${name} is missing. Create it before deploying so secrets are not passed as plaintext env vars."
+    fi
+    SECRET_ARGS+=("--set-secrets=${name}=${name}:latest")
+  done
+
+  for name in "${OPTIONAL_SECRET_NAMES[@]}"; do
+    if gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
+      SECRET_ARGS+=("--set-secrets=${name}=${name}:latest")
+    fi
+  done
+}
+
+prepare_non_secret_env_file
+build_secret_args
 
 # ─── Docker 빌드 & 푸시 ────────────────────────────────────────────
 build_and_push() {
@@ -109,9 +195,11 @@ deploy_api() {
     --min-instances="$API_MIN" \
     --max-instances="$API_MAX" \
     --concurrency="$API_CONCURRENCY" \
+    --ingress=internal-and-cloud-load-balancing \
     --allow-unauthenticated \
     --set-env-vars="SERVICE=api,APP_ENV=production" \
-    --env-vars-file=<(grep -v '^#' "$ENV_FILE" | grep -v '^$' | sed 's/export //') \
+    --env-vars-file="$NON_SECRET_ENV_FILE" \
+    "${SECRET_ARGS[@]}" \
     --port=8000 \
     --timeout=300 \
     --no-cpu-throttling \
@@ -135,9 +223,11 @@ deploy_worker() {
     --min-instances="$WORKER_MIN" \
     --max-instances="$WORKER_MAX" \
     --concurrency="$WORKER_CONCURRENCY" \
+    --ingress=internal \
     --no-allow-unauthenticated \
     --set-env-vars="SERVICE=worker,APP_ENV=production" \
-    --env-vars-file=<(grep -v '^#' "$ENV_FILE" | grep -v '^$' | sed 's/export //') \
+    --env-vars-file="$NON_SECRET_ENV_FILE" \
+    "${SECRET_ARGS[@]}" \
     --timeout=900 \
     --no-cpu-throttling
 
@@ -158,9 +248,11 @@ deploy_beat() {
     --min-instances="$BEAT_MIN" \
     --max-instances="$BEAT_MAX" \
     --concurrency=1 \
+    --ingress=internal \
     --no-allow-unauthenticated \
     --set-env-vars="SERVICE=beat,APP_ENV=production" \
-    --env-vars-file=<(grep -v '^#' "$ENV_FILE" | grep -v '^$' | sed 's/export //') \
+    --env-vars-file="$NON_SECRET_ENV_FILE" \
+    "${SECRET_ARGS[@]}" \
     --timeout=86400 \
     --no-cpu-throttling
 
@@ -175,14 +267,16 @@ run_migration() {
     --region="$REGION" \
     --service-account="$SERVICE_ACCOUNT" \
     --set-env-vars="SERVICE=migrate,APP_ENV=production" \
-    --env-vars-file=<(grep -v '^#' "$ENV_FILE" | grep -v '^$' | sed 's/export //') \
+    --env-vars-file="$NON_SECRET_ENV_FILE" \
+    "${SECRET_ARGS[@]}" \
     --task-timeout=300 \
     --max-retries=1 \
     2>/dev/null || gcloud run jobs update reputation-migrate \
     --image="${IMAGE_BASE}:${IMAGE_TAG}" \
     --region="$REGION" \
     --set-env-vars="SERVICE=migrate,APP_ENV=production" \
-    --env-vars-file=<(grep -v '^#' "$ENV_FILE" | grep -v '^$' | sed 's/export //')
+    --env-vars-file="$NON_SECRET_ENV_FILE" \
+    "${SECRET_ARGS[@]}"
 
   gcloud run jobs execute reputation-migrate --region="$REGION" --wait
 
@@ -212,4 +306,4 @@ esac
 
 echo ""
 echo -e "${GREEN}${BOLD}✅ 배포 완료${RESET}"
-echo "   API URL: $(gcloud run services describe reputation-api --region="$REGION" --format='value(status.url)' 2>/dev/null || echo '확인 중...')"
+echo "   API ingress: internal-and-cloud-load-balancing (direct Cloud Run URL is not the public entrypoint)"

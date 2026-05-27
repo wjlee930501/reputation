@@ -11,11 +11,7 @@ resource "google_service_account" "app" {
 # Wait for APIs before assigning roles
 resource "google_project_iam_member" "roles" {
   for_each = toset([
-    "roles/run.invoker",
     "roles/cloudsql.client",
-    "roles/redis.editor",
-    "roles/secretmanager.secretAccessor",
-    "roles/storage.objectAdmin",
     "roles/aiplatform.user",
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter",
@@ -28,4 +24,16 @@ resource "google_project_iam_member" "roles" {
   member  = "serviceAccount:${google_service_account.app.email}"
 
   depends_on = [google_project_service.services]
+}
+
+resource "google_storage_bucket_iam_member" "app_images_admin" {
+  bucket = google_storage_bucket.images.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.app.email}"
+}
+
+resource "google_storage_bucket_iam_member" "app_reports_admin" {
+  bucket = google_storage_bucket.reports.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.app.email}"
 }

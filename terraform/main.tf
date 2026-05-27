@@ -10,10 +10,6 @@ terraform {
       source  = "hashicorp/google"
       version = ">= 5.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = ">= 3.0"
-    }
   }
 
   backend "gcs" {
@@ -26,8 +22,6 @@ provider "google" {
   project = var.project_id
   region  = var.region
 }
-
-provider "random" {}
 
 # Enable required APIs
 resource "google_project_service" "services" {
@@ -44,8 +38,8 @@ resource "google_project_service" "services" {
     "iamcredentials.googleapis.com",
     "dns.googleapis.com",
   ])
-  project = var.project_id
-  service = each.key
+  project            = var.project_id
+  service            = each.key
   disable_on_destroy = false
 }
 

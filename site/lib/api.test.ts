@@ -1,28 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { publicFetchInit } from './fetch-policy.ts'
+import { resolveAssetUrl } from './api.ts'
 
-const mutableEnv = process.env as Record<string, string | undefined>
-
-test('publicFetchInit disables stale data caching in development', () => {
-  const originalNodeEnv = process.env.NODE_ENV
-  mutableEnv.NODE_ENV = 'development'
-
-  try {
-    assert.deepEqual(publicFetchInit(1800), { cache: 'no-store' })
-  } finally {
-    mutableEnv.NODE_ENV = originalNodeEnv
-  }
+test('resolveAssetUrl returns absolute http URLs unchanged', () => {
+  assert.equal(resolveAssetUrl('https://cdn.example.com/image.png'), 'https://cdn.example.com/image.png')
+  assert.equal(resolveAssetUrl('http://localhost:8000/assets/demo.png'), 'http://localhost:8000/assets/demo.png')
 })
 
-test('publicFetchInit keeps ISR revalidation outside development', () => {
-  const originalNodeEnv = process.env.NODE_ENV
-  mutableEnv.NODE_ENV = 'production'
+test('resolveAssetUrl resolves public API paths against the backend base', () => {
+  assert.equal(
+    resolveAssetUrl('/api/v1/public/hospitals/demo/assets/asset-id'),
+    'http://localhost:8000/api/v1/public/hospitals/demo/assets/asset-id',
+  )
+})
 
-  try {
-    assert.deepEqual(publicFetchInit(1800), { next: { revalidate: 1800 } })
-  } finally {
-    mutableEnv.NODE_ENV = originalNodeEnv
-  }
+test('resolveAssetUrl rejects internal storage paths and unsupported relative keys', () => {
+  assert.equal(resolveAssetUrl('gs://bucket/private-image.png'), null)
+  assert.equal(resolveAssetUrl('assets/private-image.png'), null)
+  assert.equal(resolveAssetUrl('javascript:alert(1)'), null)
+  assert.equal(resolveAssetUrl('   '), null)
 })

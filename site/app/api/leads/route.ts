@@ -19,15 +19,6 @@ function readField(formData: FormData, field: string, max: number) {
   return value.trim().slice(0, max)
 }
 
-function getClientIp(request: Request): string | null {
-  const forwarded = request.headers.get('x-forwarded-for')
-  if (forwarded) {
-    const first = forwarded.split(',')[0]?.trim()
-    return first || null
-  }
-  return request.headers.get('x-real-ip') || null
-}
-
 export async function POST(request: Request) {
   const wantsJson = request.headers.get('accept')?.includes('application/json') ?? false
 
@@ -83,7 +74,6 @@ export async function POST(request: Request) {
   }
 
   const apiBase = getApiBase(true)
-  const clientIp = getClientIp(request)
 
   let response: Response
   try {
@@ -91,7 +81,6 @@ export async function POST(request: Request) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(clientIp ? { 'X-Forwarded-For': clientIp } : {}),
       },
       body: JSON.stringify(payload),
       cache: 'no-store',

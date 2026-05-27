@@ -10,7 +10,7 @@ import { ContactCard } from '../_components/ContactCard'
 import { JsonLd } from '../_components/JsonLd'
 
 interface Props {
-  params: { slug: string }
+  params: Promise<{ slug: string }>
 }
 
 export const revalidate = 3600
@@ -85,7 +85,8 @@ function buildOpeningHoursSpec(hours: Record<string, string> | null | undefined)
   return specs
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
+  const params = await paramsPromise
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name} 진료 안내 — 주소, 전화, 진료시간, 공식 채널. 진료 예약·상담은 병원 공식 채널로 연결됩니다.`
@@ -105,7 +106,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-export default async function VisitPage({ params }: Props) {
+export default async function VisitPage({ params: paramsPromise }: Props) {
+  const params = await paramsPromise
   let hospital
   try {
     hospital = await fetchHospital(params.slug)

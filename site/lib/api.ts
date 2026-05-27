@@ -1,5 +1,5 @@
-import { getApiBase } from '@/lib/config'
-import { publicFetchInit } from '@/lib/fetch-policy'
+import { getApiBase } from './config.ts'
+import { publicFetchInit } from './fetch-policy.ts'
 
 export interface DirectorCredentials {
   medical_school?: string | null
@@ -61,9 +61,11 @@ const ASSETS_BACKEND_BASE =
 // 로드되도록 절대 URL로 전환한다.
 export function resolveAssetUrl(url: string | null | undefined): string | null {
   if (!url) return null
-  if (url.startsWith('http://') || url.startsWith('https://')) return url
-  if (url.startsWith('/')) return `${ASSETS_BACKEND_BASE}${url}`
-  return url
+  const trimmed = url.trim()
+  if (!trimmed) return null
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed
+  if (trimmed.startsWith('/')) return `${ASSETS_BACKEND_BASE}${trimmed}`
+  return null
 }
 
 export type ContentReferenceSourceType =

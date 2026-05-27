@@ -70,11 +70,7 @@ fi
 info "IAM 권한 부여 중..."
 
 ROLES=(
-  "roles/run.invoker"
   "roles/cloudsql.client"
-  "roles/redis.editor"
-  "roles/secretmanager.secretAccessor"
-  "roles/storage.objectAdmin"
   "roles/aiplatform.user"
   "roles/logging.logWriter"
   "roles/monitoring.metricWriter"
@@ -100,8 +96,8 @@ declare -A SECRETS=(
   ["GEMINI_API_KEY"]="Gemini API 키"
   ["ADMIN_SECRET_KEY"]="Admin API 인증 키"
   ["SLACK_WEBHOOK_URL"]="Slack 웹훅 URL"
-  ["ADMIN_LOGIN_PASSWORD"]="Admin 로그인 비밀번호"
   ["ADMIN_SESSION_SECRET"]="Admin 세션 서명키"
+  ["DB_PASSWORD"]="Cloud SQL 앱 사용자 비밀번호"
 )
 
 for secret_name in "${!SECRETS[@]}"; do
@@ -121,6 +117,7 @@ for secret_name in "${!SECRETS[@]}"; do
     --project="$PROJECT_ID" \
     --quiet 2>/dev/null || true
 done
+
 ok "Secret Manager 설정 완료"
 
 # ─── 6. GCS 버킷 생성 (이미지 + 리포트) ────────────────────────────
@@ -136,6 +133,12 @@ for bucket in "reputation-images" "reputation-reports"; do
       --project="$PROJECT_ID"
     ok "  버킷 생성 완료: ${bucket_name}"
   fi
+
+  gcloud storage buckets add-iam-policy-binding "gs://${bucket_name}" \
+    --member="serviceAccount:${SA_EMAIL}" \
+    --role="roles/storage.objectAdmin" \
+    --project="$PROJECT_ID" \
+    --quiet 2>/dev/null || true
 done
 
 echo ""
@@ -157,7 +160,7 @@ echo "     → Redis 7, 리전: ${REGION}"
 echo ""
 echo "  4. .env.production 파일 작성:"
 echo "     cp .env.example .env.production"
-echo "     # DATABASE_URL, REDIS_URL, GCP_PROJECT_ID 등 채우기"
+echo "     # DB_USER, DB_NAME, REDIS_URL, GCP_PROJECT_ID 등 채우기"
 echo ""
 echo "  5. 배포 실행:"
 echo "     bash scripts/deploy.sh all"

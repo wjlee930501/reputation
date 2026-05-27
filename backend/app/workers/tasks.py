@@ -398,15 +398,16 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
     item.essence_check_summary = screening.summary
     db.commit()
 
-    try:
-        image_url, image_prompt = _run_async(generate_image(item.content_type, hospital.slug))
-        item.image_url = image_url
-        item.image_prompt = image_prompt
-        db.commit()
-    except Exception as img_e:
-        logger.warning("Image generation failed for %s (text saved): %s", item.id, img_e)
-        db.rollback()
-        db.refresh(item)
+    if not item.image_url:
+        try:
+            image_url, image_prompt = _run_async(generate_image(item.content_type, hospital.slug))
+            item.image_url = image_url
+            item.image_prompt = image_prompt
+            db.commit()
+        except Exception as img_e:
+            logger.warning("Image generation failed for %s (text saved): %s", item.id, img_e)
+            db.rollback()
+            db.refresh(item)
 
 
 # ══════════════════════════════════════════════════════════════════

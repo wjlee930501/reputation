@@ -2,12 +2,11 @@ import Link from 'next/link'
 
 interface Props {
   hospitalSlug: string
-  hospitalName: string
   directorName: string
   specialties: string[]
 }
 
-export function CarePrinciples({ hospitalSlug, hospitalName, directorName, specialties }: Props) {
+export function CarePrinciples({ hospitalSlug, directorName, specialties }: Props) {
   const specialtyText = specialties.length > 0 ? specialties.join(', ') : '진료 영역'
 
   return (
@@ -15,28 +14,29 @@ export function CarePrinciples({ hospitalSlug, hospitalName, directorName, speci
       <div className="clinic-section-inner">
         <div className="clinic-principles-layout">
           <header className="clinic-section-header">
-            <span className="clinic-section-eyebrow">브랜드 구조</span>
-            <h2 className="clinic-section-heading">{hospitalName}의 정보 제공 방식</h2>
+            <span className="clinic-section-eyebrow">진료 정보 기준</span>
+            <h2 className="clinic-section-heading">수술부터 결정하지 않습니다</h2>
             <p className="clinic-section-lede">
-              공개된 병원 정보와 발행 콘텐츠를 기준으로, 환자와 AI가 같은 맥락에서 병원을 이해하도록 구성합니다.
+              통증은 같은 부위라도 원인이 다를 수 있습니다. 진찰과 검사 소견을 함께 확인한 뒤
+              비수술 치료, 재활, 추가 검사 필요성을 단계적으로 상담합니다.
             </p>
           </header>
 
           <div className="clinic-principles-list">
             <Principle
               index="01"
-              title="환자 질문을 먼저 둡니다"
-              body={`${specialtyText} 정보를 질환명이나 시술명만 나열하지 않고, 환자가 실제로 묻는 질문과 연결합니다.`}
+              title="정확한 진단"
+              body={`${specialtyText} 진료에서는 통증 위치, 움직임 제한, 근력, 보행과 생활 습관을 함께 확인합니다.`}
             />
             <Principle
               index="02"
-              title="검수 주체를 분명히 합니다"
-              body={`${directorName} 원장과 병원 공식 채널을 함께 노출해 콘텐츠의 출처와 책임 소재를 확인할 수 있게 합니다.`}
+              title="영상검사 확인"
+              body="필요한 경우 X-ray, 초음파 등 검사 소견과 실제 증상이 일치하는지 확인합니다."
             />
             <Principle
               index="03"
-              title="공식 정보의 일관성을 유지합니다"
-              body="주소, 전화, 진료시간, 지도, 외부 채널을 한 화면에서 반복 노출해 검색 시스템이 같은 값을 참조하도록 합니다."
+              title="단계적 치료와 재활"
+              body={`${directorName} 원장 진료 분야를 기준으로 약물·주사·물리치료·도수재활 등 선택지를 설명합니다.`}
             />
           </div>
         </div>

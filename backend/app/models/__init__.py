@@ -1,4 +1,5 @@
 from app.models.audit import AdminAuditLog
+from app.models.admin_user import AdminUser
 from app.models.hospital import Hospital, Plan, HospitalStatus
 from app.models.content import ContentSchedule, ContentItem, ContentType, ContentStatus, PLAN_DISTRIBUTION
 from app.models.essence import (
@@ -24,7 +25,7 @@ from app.models.lead import SalesLead
 
 __all__ = [
     "Hospital", "Plan", "HospitalStatus",
-    "AdminAuditLog",
+    "AdminAuditLog", "AdminUser",
     "ContentSchedule", "ContentItem", "ContentType", "ContentStatus", "PLAN_DISTRIBUTION",
     "HospitalSourceAsset", "HospitalSourceEvidenceNote", "HospitalContentPhilosophy",
     "SourceType", "SourceStatus", "EvidenceNoteType", "PhilosophyStatus",

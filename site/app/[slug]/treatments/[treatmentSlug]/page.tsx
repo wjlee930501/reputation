@@ -19,7 +19,7 @@ import { JsonLd } from '../../_components/JsonLd'
 import { pickIconForTreatment } from '../../_components/MedicalIcons'
 
 interface Props {
-  params: { slug: string; treatmentSlug: string }
+  params: Promise<{ slug: string; treatmentSlug: string }>
 }
 
 export const revalidate = 3600
@@ -52,7 +52,8 @@ export async function generateStaticParams() {
   }
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
+  const params = await paramsPromise
   try {
     const hospital = await fetchHospital(params.slug)
     const treatment = findTreatmentBySlug(hospital.treatments || [], params.treatmentSlug)
@@ -85,7 +86,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-export default async function TreatmentPillarPage({ params }: Props) {
+export default async function TreatmentPillarPage({ params: paramsPromise }: Props) {
+  const params = await paramsPromise
   let hospital
   let contents: ContentItem[]
   try {

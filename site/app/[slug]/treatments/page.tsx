@@ -14,7 +14,7 @@ import { JsonLd } from '../_components/JsonLd'
 import { pickIconForTreatment } from '../_components/MedicalIcons'
 
 interface Props {
-  params: { slug: string }
+  params: Promise<{ slug: string }>
 }
 
 export const revalidate = 3600
@@ -33,7 +33,8 @@ function findRelatedContents(treatmentName: string, contents: ContentItem[]): Co
     .slice(0, 3)
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
+  const params = await paramsPromise
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name}의 진료 영역 — ${(hospital.treatments || []).map((t) => t.name).join(', ')}. 환자가 확인하면 좋은 진료 안내를 함께 제공합니다.`
@@ -53,7 +54,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-export default async function TreatmentsPage({ params }: Props) {
+export default async function TreatmentsPage({ params: paramsPromise }: Props) {
+  const params = await paramsPromise
   let hospital
   let contents
   try {

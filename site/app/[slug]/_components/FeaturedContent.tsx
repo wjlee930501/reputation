@@ -1,7 +1,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 
-import { TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { resolveAssetUrl, TYPE_LABELS, type ContentItem } from '@/lib/api'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 import { ChevronRightIcon } from './icons'
@@ -42,6 +42,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
   const sectionLede = `환자 질문에 답하기 위해 ${hospitalName}에서 먼저 정리한 글입니다.`
   const primaryTypeLabel = TYPE_LABELS[primary.content_type] ?? primary.content_type
   const primaryDate = formatDate(primary.published_at, primary.scheduled_date)
+  const primaryImageUrl = resolveAssetUrl(primary.image_url)
   // rest가 비면(콘텐츠가 희소하면) 2열 그리드가 텅 비어 보이므로 단일 컬럼으로 collapse.
   const isSparse = rest.length === 0
 
@@ -62,15 +63,15 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
             aria-label={`대표 콘텐츠 — ${primary.title}`}
           >
             <div className="clinic-featured-primary-image">
-              {primary.image_url ? (
+              {primaryImageUrl ? (
                 <Image
-                  src={primary.image_url}
+                  src={primaryImageUrl}
                   alt={primary.title}
                   fill
                   sizes="(max-width: 880px) 100vw, 720px"
                   style={{ objectFit: 'cover' }}
                   priority
-                  unoptimized={shouldBypassNextImageOptimization(primary.image_url)}
+                  unoptimized={shouldBypassNextImageOptimization(primaryImageUrl)}
                 />
               ) : (
                 <div
@@ -118,6 +119,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
               {rest.map((content) => {
                 const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
                 const date = formatDate(content.published_at, content.scheduled_date)
+                const imageUrl = resolveAssetUrl(content.image_url)
                 return (
                   <Link
                     key={content.id}
@@ -126,14 +128,14 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
                     aria-label={`${typeLabel} — ${content.title}`}
                   >
                     <div className="clinic-featured-secondary-thumb">
-                      {content.image_url ? (
+                      {imageUrl ? (
                         <Image
-                          src={content.image_url}
+                          src={imageUrl}
                           alt={content.title}
                           fill
                           sizes="88px"
                           style={{ objectFit: 'cover' }}
-                          unoptimized={shouldBypassNextImageOptimization(content.image_url)}
+                          unoptimized={shouldBypassNextImageOptimization(imageUrl)}
                         />
                       ) : (
                         <div

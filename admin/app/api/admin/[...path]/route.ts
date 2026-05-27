@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { buildProxyResponse } from "@/lib/proxy-response";
+import { buildSafeAdminProxyPath, hasValidSameOrigin } from "@/lib/security";
+import { readSessionToken } from "@/lib/session";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const ADMIN_KEY = process.env.ADMIN_SECRET_KEY || "";
@@ -12,14 +14,29 @@ async function handler(
   { params }: { params: Promise<{ path: string[] }> }
 ) {
   const { path: pathSegments } = await params;
-  const path = pathSegments.join("/");
   if (!ADMIN_KEY) {
     return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
   }
-  const firstSegment = path.split("/")[0];
-  if (!ALLOWED_PREFIXES.includes(firstSegment)) {
+  const sessionSecret = process.env.ADMIN_SESSION_SECRET;
+  if (!sessionSecret) {
+    return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+  }
+
+  if (!hasValidSameOrigin(req)) {
     return new NextResponse("Forbidden", { status: 403 });
   }
+
+  const sessionToken = req.cookies.get("admin_session")?.value;
+  const session = sessionToken ? await readSessionToken(sessionToken, sessionSecret) : null;
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const path = buildSafeAdminProxyPath(pathSegments, ALLOWED_PREFIXES);
+  if (!path) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
   const url = new URL(`/api/v1/admin/${path}`, BACKEND_URL);
 
   req.nextUrl.searchParams.forEach((value, key) => {
@@ -28,6 +45,7 @@ async function handler(
 
   const headers: Record<string, string> = {
     "X-Admin-Key": ADMIN_KEY,
+    "X-Admin-Actor": session.email,
   };
 
   const contentType = req.headers.get("content-type");

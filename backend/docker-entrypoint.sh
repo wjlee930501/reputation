@@ -5,7 +5,7 @@ SERVICE="${SERVICE:-api}"
 
 case "$SERVICE" in
   api)
-    exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips="*"
+    exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
     ;;
   worker)
     exec celery -A app.core.celery_app worker \

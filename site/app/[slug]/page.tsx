@@ -5,6 +5,7 @@ import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
+import { CareFlow } from './_components/CareFlow'
 import { CarePrinciples } from './_components/CarePrinciples'
 import { ClinicFooter } from './_components/ClinicFooter'
 import { ClinicGallery } from './_components/ClinicGallery'
@@ -17,7 +18,7 @@ import { JsonLd } from './_components/JsonLd'
 import { TreatmentGrid } from './_components/TreatmentGrid'
 
 interface Props {
-  params: { slug: string }
+  params: Promise<{ slug: string }>
 }
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
@@ -52,21 +53,22 @@ function buildHospitalDescription(hospital: Awaited<ReturnType<typeof fetchHospi
   const specialties = hospital.specialties?.join(', ') || ''
   const locality = [region, specialties].filter(Boolean).join(' · ')
   return locality
-    ? `${hospital.name} (${locality}) 진료 정보 허브 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 한곳에서 확인할 수 있습니다.`
-    : `${hospital.name} 진료 정보 허브 — 환자가 자주 묻는 질문, 질환 정보, 치료 안내를 한곳에서 확인할 수 있습니다.`
+    ? `${hospital.name} (${locality}) 정형외과 전문 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 건강 정보를 확인할 수 있습니다.`
+    : `${hospital.name} 정형외과 전문 진료 안내 — 의료진, 진료 영역, 진료시간, 오시는 길과 건강 정보를 확인할 수 있습니다.`
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
+  const params = await paramsPromise
   try {
     const hospital = await fetchHospital(params.slug)
     const description = buildHospitalDescription(hospital)
     const ogImage = hospital.director_photo_url ?? '/landing/default-hospital-og.png'
     return {
-      title: `${hospital.name} 진료 정보 허브`,
+      title: `${hospital.name} 정형외과 전문 진료`,
       description,
       alternates: { canonical: `/${params.slug}` },
       openGraph: {
-        title: `${hospital.name} 진료 정보 허브`,
+        title: `${hospital.name} 정형외과 전문 진료`,
         description,
         url: `/${params.slug}`,
         type: 'website',
@@ -76,17 +78,18 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       },
       twitter: {
         card: 'summary_large_image',
-        title: `${hospital.name} 진료 정보 허브`,
+        title: `${hospital.name} 정형외과 전문 진료`,
         description,
         images: ogImage ? [ogImage] : undefined,
       },
     }
   } catch {
-    return { title: '진료 정보 허브' }
+    return { title: '정형외과 전문 진료' }
   }
 }
 
-export default async function HospitalHubPage({ params }: Props) {
+export default async function HospitalHubPage({ params: paramsPromise }: Props) {
+  const params = await paramsPromise
   let hospital
   let contents
   try {
@@ -193,14 +196,18 @@ export default async function HospitalHubPage({ params }: Props) {
             address={hospital.address}
             businessHours={hospital.business_hours}
             treatments={hospital.treatments || []}
+            photos={hospital.photos ?? []}
           />
 
           <CarePrinciples
             hospitalSlug={params.slug}
-            hospitalName={hospital.name}
             directorName={hospital.director_name}
             specialties={hospital.specialties}
           />
+
+          <TreatmentGrid treatments={hospital.treatments} />
+
+          <CareFlow hospitalSlug={params.slug} hospitalName={hospital.name} />
 
           <DoctorIntro
             directorName={hospital.director_name}
@@ -209,15 +216,6 @@ export default async function HospitalHubPage({ params }: Props) {
             specialties={hospital.specialties}
             region={hospital.region}
             contentCount={contents.length}
-          />
-
-          <TreatmentGrid treatments={hospital.treatments} />
-
-          <FeaturedContent
-            contents={contents}
-            hospitalSlug={params.slug}
-            hospitalName={hospital.name}
-            directorName={hospital.director_name}
           />
 
           <ClinicGallery photos={hospital.photos ?? []} />
@@ -230,6 +228,13 @@ export default async function HospitalHubPage({ params }: Props) {
             links={externalChannels}
             hospitalName={hospital.name}
             websiteUrl={hospital.website_url}
+          />
+
+          <FeaturedContent
+            contents={contents}
+            hospitalSlug={params.slug}
+            hospitalName={hospital.name}
+            directorName={hospital.director_name}
           />
         </main>
         <ClinicFooter

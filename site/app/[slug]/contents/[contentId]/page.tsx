@@ -3,16 +3,19 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 import {
   fetchContent,
   fetchContents,
   fetchHospital,
   HospitalNotFoundError,
+  resolveAssetUrl,
   SOURCE_TYPE_LABELS,
   TYPE_LABELS,
 } from '@/lib/api'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
+import { safeExternalHref } from '@/lib/safe-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
@@ -22,7 +25,7 @@ import { ExternalIcon } from '../../_components/icons'
 import { JsonLd } from '../../_components/JsonLd'
 
 interface Props {
-  params: { slug: string; contentId: string }
+  params: Promise<{ slug: string; contentId: string }>
 }
 
 export const revalidate = 3600
@@ -96,12 +99,14 @@ function extractHowToSteps(body: string | null | undefined): HowToStep[] {
   return steps.filter((s) => s.text.length > 0)
 }
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
+  const params = await paramsPromise
   try {
     const [hospital, content] = await Promise.all([
       fetchHospital(params.slug),
       fetchContent(params.slug, params.contentId),
     ])
+    const imageUrl = resolveAssetUrl(content.image_url)
     const description =
       content.meta_description ?? `${hospital.name}의 ${TYPE_LABELS[content.content_type] ?? '의료'} 콘텐츠`
     return {
@@ -113,7 +118,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
         description,
         url: `/${params.slug}/contents/${params.contentId}`,
         type: 'article',
-        images: content.image_url ? [{ url: content.image_url }] : [],
+        images: imageUrl ? [{ url: imageUrl }] : [],
       },
     }
   } catch {
@@ -121,7 +126,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-export default async function ContentDetailPage({ params }: Props) {
+export default async function ContentDetailPage({ params: paramsPromise }: Props) {
+  const params = await paramsPromise
   let hospital
   let content
   let allContents
@@ -151,6 +157,8 @@ export default async function ContentDetailPage({ params }: Props) {
     .filter((c) => c.content_type === 'FAQ' && !sameTypeRelated.some((s) => s.id === c.id))
     .slice(0, 3)
   const referenceList = Array.isArray(content.references) ? content.references : []
+  const referenceCountLabel =
+    referenceList.length > 0 ? `참고자료 ${referenceList.length}건` : '참고자료 확인 중'
 
   const pillarTreatment = inferPillarTreatment(hospital.treatments || [], content)
   const pillarSlug = pillarTreatment ? buildTreatmentSlug(pillarTreatment.name) : ''
@@ -171,6 +179,7 @@ export default async function ContentDetailPage({ params }: Props) {
   // 모든 article 공통 base. type별 추가 schema는 jsonLd 배열에 별도로 push.
   const physicianId = `${SITE_URL}/${params.slug}/doctor#physician`
   const clinicId = `${SITE_URL}/${params.slug}#clinic`
+  const articleImageUrl = resolveAssetUrl(content.image_url)
   const articleJsonLd: Record<string, unknown> = {
     '@context': 'https://schema.org',
     '@type': 'Article',
@@ -197,7 +206,7 @@ export default async function ContentDetailPage({ params }: Props) {
     datePublished,
     dateModified,
     mainEntityOfPage: articleUrl,
-    image: content.image_url ?? undefined,
+    image: articleImageUrl ?? undefined,
     citation:
       referenceList.length > 0
         ? referenceList.map((ref) => ({ '@type': 'CreativeWork', name: ref.title, url: ref.url }))
@@ -224,12 +233,12 @@ export default async function ContentDetailPage({ params }: Props) {
     buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL),
   ]
 
-  if (content.image_url) {
+  if (articleImageUrl) {
     jsonLd.push({
       '@context': 'https://schema.org',
       '@type': 'ImageObject',
-      contentUrl: content.image_url,
-      url: content.image_url,
+      contentUrl: articleImageUrl,
+      url: articleImageUrl,
       name: content.title,
       caption: imageAlt,
       description: content.meta_description ?? imageAlt,
@@ -325,23 +334,19 @@ export default async function ContentDetailPage({ params }: Props) {
         <main>
           <div className="clinic-article-shell">
             <article className="clinic-article">
-              {content.image_url && (
+              {articleImageUrl && (
                 <figure className="clinic-article-cover-figure">
                   <div className="clinic-article-cover">
                     <Image
-                      src={content.image_url}
+                      src={articleImageUrl}
                       alt={imageAlt}
                       fill
                       sizes="(max-width: 960px) 100vw, 720px"
                       style={{ objectFit: 'cover' }}
                       priority
-                      unoptimized={shouldBypassNextImageOptimization(content.image_url)}
+                      unoptimized={shouldBypassNextImageOptimization(articleImageUrl)}
                     />
                   </div>
-                  <figcaption className="clinic-article-cover-caption">
-                    본 이미지는 일반적인 의학 정보를 설명하기 위한 AI 생성 일러스트입니다.
-                    실제 시술·진단 결과나 환자 사례를 의미하지 않습니다.
-                  </figcaption>
                 </figure>
               )}
               <div className="clinic-article-header">
@@ -377,6 +382,31 @@ export default async function ContentDetailPage({ params }: Props) {
                   )}
                   <span className="clinic-article-byline-chip">개인별 판단은 진료 상담 필요</span>
                 </p>
+                <dl className="clinic-article-trustbar" aria-label="콘텐츠 신뢰 정보">
+                  <div>
+                    <dt>작성 기준</dt>
+                    <dd>{hospital.director_name} 원장 진료 분야</dd>
+                  </div>
+                  <div>
+                    <dt>업데이트</dt>
+                    <dd>
+                      <time dateTime={dateModified}>{updatedLabel || publishedLabel}</time>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>출처</dt>
+                    <dd>{referenceCountLabel}</dd>
+                  </div>
+                  <div>
+                    <dt>고지</dt>
+                    <dd>진료 상담 대체 아님</dd>
+                  </div>
+                </dl>
+                {articleImageUrl && (
+                  <p className="clinic-article-media-note">
+                    대표 이미지는 이해를 돕기 위한 의료 일러스트이며 실제 진단 결과나 환자 사례가 아닙니다.
+                  </p>
+                )}
               </div>
 
               {content.meta_description && (
@@ -394,7 +424,21 @@ export default async function ContentDetailPage({ params }: Props) {
               )}
 
               <div className="clinic-article-body">
-                <ReactMarkdown>{content.body}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    table: ({ children, node, ...props }) => {
+                      void node
+                      return (
+                        <div className="clinic-markdown-table" role="region" aria-label="표">
+                          <table {...props}>{children}</table>
+                        </div>
+                      )
+                    },
+                  }}
+                >
+                  {content.body}
+                </ReactMarkdown>
               </div>
 
               {referenceList.length > 0 && (
@@ -405,20 +449,32 @@ export default async function ContentDetailPage({ params }: Props) {
                       const sourceLabel = ref.source_type
                         ? SOURCE_TYPE_LABELS[ref.source_type]
                         : null
+                      const safeHref = safeExternalHref(ref.url)
                       return (
                         <li key={`${ref.url}-${idx}`}>
-                          <a href={ref.url} target="_blank" rel="noopener noreferrer nofollow">
-                            {sourceLabel && (
-                              <span className="clinic-article-references-source" aria-label="출처 분류">
-                                {sourceLabel}
-                              </span>
-                            )}
-                            {ref.title}
-                            <ExternalIcon
-                              className="clinic-icon clinic-icon--sm"
-                              style={{ color: 'currentColor' }}
-                            />
-                          </a>
+                          {safeHref ? (
+                            <a href={safeHref} target="_blank" rel="noopener noreferrer nofollow">
+                              {sourceLabel && (
+                                <span className="clinic-article-references-source" aria-label="출처 분류">
+                                  {sourceLabel}
+                                </span>
+                              )}
+                              {ref.title}
+                              <ExternalIcon
+                                className="clinic-icon clinic-icon--sm"
+                                style={{ color: 'currentColor' }}
+                              />
+                            </a>
+                          ) : (
+                            <span>
+                              {sourceLabel && (
+                                <span className="clinic-article-references-source" aria-label="출처 분류">
+                                  {sourceLabel}
+                                </span>
+                              )}
+                              {ref.title}
+                            </span>
+                          )}
                         </li>
                       )
                     })}
@@ -491,31 +547,35 @@ export default async function ContentDetailPage({ params }: Props) {
                   <span className="clinic-aside-card-eyebrow">관련 글</span>
                   <h2 className="clinic-aside-card-title">관련 {typeLabel}</h2>
                   <ul className="clinic-related-list">
-                    {sameTypeRelated.map((r) => (
-                      <li key={r.id}>
-                        <Link href={`/${params.slug}/contents/${r.id}`} className="clinic-related-item">
-                          {r.image_url ? (
-                            <span className="clinic-related-thumb">
-                              <Image
-                                src={r.image_url}
-                                alt={r.title}
-                                fill
-                                sizes="56px"
-                                style={{ objectFit: 'cover' }}
-                              />
+                    {sameTypeRelated.map((r) => {
+                      const relatedImageUrl = resolveAssetUrl(r.image_url)
+                      return (
+                        <li key={r.id}>
+                          <Link href={`/${params.slug}/contents/${r.id}`} className="clinic-related-item">
+                            {relatedImageUrl ? (
+                              <span className="clinic-related-thumb">
+                                <Image
+                                  src={relatedImageUrl}
+                                  alt={r.title}
+                                  fill
+                                  sizes="56px"
+                                  style={{ objectFit: 'cover' }}
+                                  unoptimized={shouldBypassNextImageOptimization(relatedImageUrl)}
+                                />
+                              </span>
+                            ) : (
+                              <span className="clinic-related-thumb" aria-hidden="true" />
+                            )}
+                            <span className="clinic-related-meta">
+                              <span className="clinic-related-title">{r.title}</span>
+                              <span className="clinic-related-date">
+                                {formatDate(r.published_at, r.scheduled_date)}
+                              </span>
                             </span>
-                          ) : (
-                            <span className="clinic-related-thumb" aria-hidden="true" />
-                          )}
-                          <span className="clinic-related-meta">
-                            <span className="clinic-related-title">{r.title}</span>
-                            <span className="clinic-related-date">
-                              {formatDate(r.published_at, r.scheduled_date)}
-                            </span>
-                          </span>
-                        </Link>
-                      </li>
-                    ))}
+                          </Link>
+                        </li>
+                      )
+                    })}
                   </ul>
                 </div>
               )}

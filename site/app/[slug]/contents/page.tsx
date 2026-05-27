@@ -10,7 +10,7 @@ import { ContentCard } from '../_components/ContentCard'
 import { JsonLd } from '../_components/JsonLd'
 
 interface Props {
-  params: { slug: string }
+  params: Promise<{ slug: string }>
 }
 
 export const revalidate = 3600
@@ -19,7 +19,8 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCAL', 'NOTICE']
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
+export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
+  const params = await paramsPromise
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name} 의료 정보 — 자주 묻는 질문, 질환 정보, 치료 안내, 원장 칼럼.`
@@ -39,7 +40,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 }
 
-export default async function ContentsLibraryPage({ params }: Props) {
+export default async function ContentsLibraryPage({ params: paramsPromise }: Props) {
+  const params = await paramsPromise
   let hospital
   let contents
   try {
