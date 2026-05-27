@@ -81,7 +81,6 @@ def _generate_and_upload(prompt: str, hospital_name: str) -> str:
     동기 함수 — Vertex AI 이미지 생성 + GCS 업로드
     """
     try:
-        import vertexai
         from vertexai.preview.vision_models import ImageGenerationModel
 
         from app.services.gcs_utils import _get_gcs_client
