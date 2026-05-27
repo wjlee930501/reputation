@@ -7,6 +7,7 @@ export const runtime = 'nodejs'
 
 const MAX_LOGIN_ATTEMPTS = 5
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
 
 type LoginAttempt = {
   count: number
@@ -67,7 +68,7 @@ export async function POST(req: NextRequest) {
   }
 
   clearFailedAttempts(clientKey)
-  const token = await generateSessionToken(sessionSecret)
+  const token = await generateSessionToken(sessionSecret, SESSION_MAX_AGE_SECONDS)
 
   const res = NextResponse.json({ ok: true })
   res.cookies.set('admin_session', token, {
@@ -75,7 +76,7 @@ export async function POST(req: NextRequest) {
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
-    maxAge: 60 * 60 * 24 * 7, // 7 days
+    maxAge: SESSION_MAX_AGE_SECONDS,
   })
   return res
 }

@@ -117,6 +117,8 @@ function formatMeasurementMethod(method: string) {
     OPENAI_RESPONSE: 'OpenAI 응답 측정',
     OPENAI_SEARCH: 'OpenAI Search',
     CHATGPT_SEARCH: 'ChatGPT Search',
+    OPENAI_CHAT_COMPLETIONS: 'OpenAI 모델 응답 측정',
+    OPENAI_RESPONSES_WEB_SEARCH: 'ChatGPT Search 유사 측정',
   }
 
   return labels[method] ?? method
@@ -353,16 +355,16 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="p-8 space-y-6 bg-slate-50 min-h-full">
+    <main className="space-y-6 bg-[var(--color-revisit-background-user)] p-8 min-h-full">
       {/* Hero */}
-      <section className="rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 p-7 text-white shadow-sm">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">
+      <section className="rounded-2xl border border-[var(--color-revisit-coolgrey-20)] bg-[var(--color-revisit-nav)] p-7 text-white">
+        <p className="details2 font-semibold uppercase text-[var(--color-revisit-primary-80)]">
           AI 노출 운영
         </p>
         <div className="mt-2 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
-            <h2 className="text-2xl font-bold">AI 노출 운영 보드</h2>
-            <p className="mt-2 text-sm leading-6 text-blue-50/90">
+            <h2 className="heading2">AI 노출 운영 보드</h2>
+            <p className="body4 mt-2 text-[var(--color-revisit-coolgrey-85)]">
               환자 질문 정의 → AI 언급률 측정 → 부족한 부분 진단·보완 작업 → 환자 질문에 맞춘 콘텐츠 가이드 작성을
               한 화면에서 운영합니다. AI가 우리 병원을 정확히 이해하고 추천 후보에 올리도록 정보 구조를 다듬는
               내부 콘솔이며, 노출을 보장하는 게 아니라 개선과 재측정을 반복하는 흐름을 관리합니다.
@@ -402,15 +404,15 @@ export default function DashboardPage() {
         </div>
 
         <div className="mt-5 flex flex-wrap items-center gap-3">
-          <span className="text-xs uppercase tracking-[0.18em] text-blue-200">다음 단계</span>
+          <span className="details2 uppercase text-[var(--color-revisit-primary-80)]">다음 단계</span>
           <Link
             href={nextStep.href}
-            className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-xs font-semibold text-slate-900 shadow-sm transition-colors hover:bg-blue-50"
+            className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-white bg-white px-4 py-1.5 text-xs font-semibold text-[var(--color-revisit-nav)] transition-colors hover:bg-[var(--color-revisit-primary-95)]"
           >
             {nextStep.label}
             <span aria-hidden>→</span>
           </Link>
-          <span className="text-xs text-blue-100/80">{nextStep.hint}</span>
+          <span className="details2 text-[var(--color-revisit-coolgrey-80)]">{nextStep.hint}</span>
         </div>
       </section>
 
@@ -428,12 +430,12 @@ export default function DashboardPage() {
 
       {!loading && (
         <section className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="admin-panel p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">원장 보고 요약</p>
-                <h3 className="mt-1 text-lg font-bold text-slate-900">이번 달 먼저 볼 운영 요약</h3>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="admin-eyebrow">원장 보고 요약</p>
+                <h3 className="title1 mt-1 text-[var(--color-revisit-text-title)]">이번 달 먼저 볼 운영 요약</h3>
+                <p className="body4 admin-muted mt-1">
                   세부 측정 로그보다 원장님께 설명할 변화와 다음 조치를 먼저 확인합니다.
                 </p>
               </div>
@@ -464,9 +466,9 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h3 className="text-base font-semibold text-slate-900">확인 필요한 항목</h3>
-            <p className="mt-1 text-sm text-slate-500">
+          <div className="admin-panel p-6">
+            <h3 className="title3 text-[var(--color-revisit-text-title)]">확인 필요한 항목</h3>
+            <p className="body4 admin-muted mt-1">
               운영자가 오늘 처리해야 할 위험 신호만 추려 보여줍니다.
             </p>
             <div className="mt-4 space-y-3">
@@ -488,12 +490,12 @@ export default function DashboardPage() {
       )}
 
       {!loading && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="admin-panel p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">v1.0 운영 제어</p>
-              <h3 className="mt-1 text-base font-semibold text-slate-900">수동 재실행·상태 확인</h3>
-              <p className="mt-1 text-sm text-slate-500">
+              <p className="admin-eyebrow">v1.0 운영 제어</p>
+              <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">수동 재실행·상태 확인</h3>
+              <p className="body4 admin-muted mt-1">
                 고객 보고 전 필요한 분석, 사이트 갱신, DNS 확인을 이 화면에서 다시 실행합니다. 모든 실행은 감사 로그에 남습니다.
               </p>
             </div>
@@ -530,12 +532,12 @@ export default function DashboardPage() {
 
       {/* Audit log — Admin actions trail */}
       {!loading && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="admin-panel p-5">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-600">감사 로그</p>
-              <h3 className="mt-1 text-base font-semibold text-slate-900">최근 운영 액션 기록</h3>
-              <p className="mt-1 text-sm text-slate-500">
+              <p className="admin-eyebrow">감사 로그</p>
+              <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">최근 운영 액션 기록</h3>
+              <p className="body4 admin-muted mt-1">
                 고객 영향이 있는 모든 운영 액션은 이 로그에 남습니다. 실행자(actor)는 환경 변수 ADMIN_ACTOR_NAME 기준입니다.
               </p>
             </div>
@@ -567,7 +569,7 @@ export default function DashboardPage() {
 
       {/* Workflow strip */}
       {!loading && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="admin-panel p-5">
           <div className="flex items-end justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold text-slate-900">운영 흐름</h3>
@@ -689,6 +691,9 @@ export default function DashboardPage() {
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
                       측정 방식: {run.display?.measurement_method_label ?? formatMeasurementMethod(run.measurement_method)}
+                      {run.search_mode === 'model' && (
+                        <span className="ml-1 text-amber-600">(웹 검색 미사용)</span>
+                      )}
                     </p>
                   </div>
                   <div className="text-sm text-slate-700">
@@ -985,7 +990,7 @@ function OperationButton({
       type="button"
       onClick={onClick}
       disabled={loading}
-      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+      className="admin-button px-3 py-2 disabled:cursor-not-allowed disabled:opacity-60"
     >
       {loading ? '실행 중...' : label}
     </button>
@@ -1015,13 +1020,13 @@ function HeroStat({
 }) {
   const toneClass =
     tone === 'up'
-      ? 'text-emerald-200'
+      ? 'text-[var(--color-revisit-green-50)]'
       : tone === 'down'
-        ? 'text-rose-200'
-        : 'text-blue-100/80'
+        ? 'text-[var(--color-revisit-red-50)]'
+        : 'text-[var(--color-revisit-coolgrey-80)]'
   return (
-    <div className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur">
-      <p className="text-[11px] font-medium tracking-wide text-blue-100/70">{label}</p>
+    <div className="rounded-xl border border-[rgba(255,255,255,0.18)] bg-[rgba(255,255,255,0.06)] px-4 py-3">
+      <p className="details3 text-[var(--color-revisit-coolgrey-80)]">{label}</p>
       <p className="mt-1 text-xl font-bold text-white">{value}</p>
       {hint && <p className={`mt-1 text-[11px] ${toneClass}`}>{hint}</p>}
     </div>

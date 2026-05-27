@@ -7,6 +7,7 @@
     "build": "next build",
     "test": "node --no-warnings --experimental-strip-types --test lib/*.test.ts",
     "start": "next start",
+    "test": "node --test lib/*.test.ts",
     "lint": "eslint ."
   },
   "dependencies": {

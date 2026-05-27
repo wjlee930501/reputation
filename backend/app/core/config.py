@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     GCP_PROJECT_ID: str = ""
     GCP_LOCATION: str = "us-central1"
     GCP_STORAGE_BUCKET: str = "reputation-images"
+    ASSET_LOCAL_UPLOAD_DIR: str = "/tmp/private_asset_uploads"
 
     # OpenAI — SoV
     OPENAI_API_KEY: str = ""

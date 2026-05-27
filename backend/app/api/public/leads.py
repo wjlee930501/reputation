@@ -90,12 +90,15 @@ async def create_lead(
     await db.refresh(lead)
 
     admin_url = f"{settings.ADMIN_BASE_URL.rstrip('/')}/leads"
-    await notifier.notify_lead_created(
+    notified = await notifier.notify_lead_created(
         clinic_name=body.clinic_name,
         clinic_type=body.clinic_type,
         contact=body.contact,
         admin_url=admin_url,
     )
+    lead.notification_status = "SENT" if notified else "FAILED"
+    lead.notification_error = None if notified else "Slack/webhook delivery failed or is not configured."
+    await db.commit()
 
     return {
         "ok": True,

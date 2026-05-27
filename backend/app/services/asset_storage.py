@@ -15,7 +15,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-LOCAL_UPLOAD_DIR = Path("/tmp/private_asset_uploads")
+LOCAL_UPLOAD_DIR = Path(settings.ASSET_LOCAL_UPLOAD_DIR)
 LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 

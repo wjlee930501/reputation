@@ -31,6 +31,7 @@ services:
       - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp-key.json:ro
       - ./reports:/tmp/reports
       - sites_data:/tmp/sites
+      - private_asset_uploads:/tmp/private_asset_uploads
     env_file: .env
     environment:
       GOOGLE_APPLICATION_CREDENTIALS: /gcp-key.json
@@ -48,6 +49,7 @@ services:
       - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp-key.json:ro
       - ./reports:/tmp/reports
       - sites_data:/tmp/sites
+      - private_asset_uploads:/tmp/private_asset_uploads
     env_file: .env
     environment:
       GOOGLE_APPLICATION_CREDENTIALS: /gcp-key.json
@@ -81,3 +83,4 @@ services:
 volumes:
   postgres_data:
   sites_data:
+  private_asset_uploads:

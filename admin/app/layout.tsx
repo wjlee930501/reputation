@@ -8,8 +8,8 @@ export const viewport: Viewport = {
 }
 
 export const metadata: Metadata = {
-  title: 'Re:putation Ops · MotionLabs Research Preview',
-  description: 'MotionLabs Research Preview · 병원 AI 노출 운영 내부 콘솔',
+  title: 'Re:putation Ops · MotionLabs',
+  description: 'MotionLabs 병원 AI 노출 운영 내부 콘솔',
 }
 
 export default function RootLayout({

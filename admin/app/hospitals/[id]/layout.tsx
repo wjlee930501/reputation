@@ -54,12 +54,12 @@ export default function HospitalLayout({
           <div className="min-w-0">
             <Link
               href="/hospitals"
-              className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700 transition-colors"
+              className="details2 inline-flex items-center gap-1 text-[var(--color-revisit-text-helper)] transition-colors hover:text-[var(--color-revisit-text-title)]"
             >
               ← 병원 목록
             </Link>
             <div className="flex items-center gap-3 mt-2 flex-wrap">
-              <h1 className="text-xl font-bold text-slate-900 truncate">
+              <h1 className="heading3 truncate text-[var(--color-revisit-text-title)]">
                 {hospital?.name ?? '불러오는 중...'}
               </h1>
               {statusInfo && (
@@ -68,7 +68,7 @@ export default function HospitalLayout({
                 </span>
               )}
               {planLabel && (
-                <span className="inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                <span className="details2 inline-flex rounded-full bg-[var(--color-revisit-coolgrey-90)] px-2.5 py-0.5 text-[var(--color-revisit-text-helper)]">
                   {planLabel}
                 </span>
               )}
@@ -80,7 +80,7 @@ export default function HospitalLayout({
                   <>
                     <span aria-hidden className="text-slate-300">·</span>
                     <span>
-                      병원 정보 허브 도메인 <span className="text-slate-600">{hospital.aeo_domain}</span>
+                      병원 정보 허브 도메인 <span className="text-[var(--color-revisit-text-title)]">{hospital.aeo_domain}</span>
                     </span>
                   </>
                 )}
@@ -158,10 +158,10 @@ function ProgressDot({ label, done }: { label: string; done: boolean | undefined
   return (
     <span className="inline-flex items-center gap-1.5">
       <span
-        className={`w-2 h-2 rounded-full ${done ? 'bg-emerald-500' : 'bg-slate-300'}`}
+        className={`h-2 w-2 rounded-full ${done ? 'bg-[var(--color-revisit-green-50)]' : 'bg-[var(--color-revisit-coolgrey-70)]'}`}
         aria-hidden
       />
-      <span className={done ? 'text-slate-700' : 'text-slate-400'}>{label}</span>
+      <span className={done ? 'text-[var(--color-revisit-text-title)]' : 'text-[var(--color-revisit-text-caption)]'}>{label}</span>
     </span>
   )
 }

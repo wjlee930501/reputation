@@ -9,6 +9,7 @@ class HospitalListItem(BaseModel):
     slug: str
     status: str
     plan: Optional[str]
+    source_lead_id: Optional[str] = None
     profile_complete: bool
     v0_report_done: bool
     site_built: bool
@@ -18,6 +19,7 @@ class HospitalListItem(BaseModel):
 
 
 class HospitalDetail(HospitalListItem):
+    onboarding_note: Optional[str] = None
     address: Optional[str]
     phone: Optional[str]
     business_hours: Optional[Any]
