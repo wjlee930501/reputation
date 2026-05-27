@@ -11,6 +11,7 @@ interface Treatment {
 
 interface Props {
   hospitalName: string
+  hospitalSlug: string
   region: string[]
   specialties: string[]
   phone: string
@@ -55,6 +56,7 @@ function monogram(name: string): string {
 
 export function ClinicHero({
   hospitalName,
+  hospitalSlug,
   region,
   specialties,
   phone,

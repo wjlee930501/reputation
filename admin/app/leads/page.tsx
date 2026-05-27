@@ -8,6 +8,20 @@ import { formatDateTime } from '@/lib/format'
 import { SkeletonTable } from '@/app/components/Skeleton'
 import type { SalesLead } from '@/types'
 
+function getOnboardingHref(lead: SalesLead) {
+  const params = new URLSearchParams({
+    leadId: lead.id,
+    name: lead.clinic_name,
+    type: lead.clinic_type,
+    contact: lead.contact,
+  })
+
+  if (lead.question) params.set('question', lead.question)
+  if (lead.source_path) params.set('source', lead.source_path)
+
+  return `/hospitals/new?${params.toString()}`
+}
+
 export default function LeadsPage() {
   const router = useRouter()
   const [leads, setLeads] = useState<SalesLead[]>([])

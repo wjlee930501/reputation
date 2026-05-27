@@ -192,6 +192,7 @@ export default async function HospitalHubPage({ params }: Props) {
         <main id="main-content">
           <ClinicHero
             hospitalName={hospital.name}
+            hospitalSlug={params.slug}
             region={hospital.region}
             specialties={hospital.specialties}
             phone={hospital.phone}
