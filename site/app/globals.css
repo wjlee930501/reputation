@@ -1,5 +1,3 @@
-@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -129,7 +127,7 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font-family: "Pretendard", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: var(--font-pretendard, "Pretendard"), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   font-synthesis: none;
   word-break: keep-all;
   text-rendering: optimizeLegibility;
@@ -139,7 +137,7 @@ body,
 button,
 input,
 textarea {
-  font-family: "Pretendard", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: var(--font-pretendard, "Pretendard"), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 
 a {
@@ -1456,6 +1454,8 @@ textarea:focus-visible {
 
 .clinic-section {
   padding: 80px 24px;
+  /* 섹션 간 명확한 위계 — 그림자 대신 hairline 구분선(PRD §11.5). */
+  border-top: 1px solid var(--color-revisit-line-container);
 }
 
 .clinic-section--tight {
@@ -1480,7 +1480,7 @@ textarea:focus-visible {
 }
 
 .clinic-section-header {
-  margin-bottom: 40px;
+  margin-bottom: 48px;
 }
 
 .clinic-section-eyebrow {
@@ -1520,18 +1520,18 @@ textarea:focus-visible {
 .clinic-section-heading {
   margin: 0;
   color: var(--color-revisit-text-title);
-  font-size: 30px;
-  font-weight: 700;
-  line-height: 1.28;
-  letter-spacing: -0.025em;
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1.22;
+  letter-spacing: -0.035em;
 }
 
 .clinic-section-lede {
-  margin: 14px 0 0;
-  max-width: 62ch;
+  margin: 16px 0 0;
+  max-width: 60ch;
   color: var(--color-revisit-text-helper);
-  font-size: 15.5px;
-  line-height: 1.72;
+  font-size: 17px;
+  line-height: 1.75;
 }
 
 /* ── Header ────────────────────────────────────────────────────── */
@@ -1542,8 +1542,8 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   border-bottom: 1px solid var(--color-revisit-line-container);
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(12px);
+  /* PRD §11.5 — glassmorphism(blur) 금지. solid surface + hairline border로 구분. */
+  background: var(--color-revisit-greyscale-100);
 }
 
 .clinic-header-row {
@@ -1613,13 +1613,11 @@ textarea:focus-visible {
   color: #ffffff;
   font-size: 13px;
   font-weight: 600;
-  transition: background 150ms ease, box-shadow 150ms ease;
-  box-shadow: 0 1px 4px rgba(6, 113, 224, 0.20);
+  transition: background 150ms ease;
 }
 
 .clinic-header-cta:hover {
   background: var(--color-revisit-primary-30);
-  box-shadow: 0 2px 8px rgba(6, 113, 224, 0.28);
 }
 
 /* ── Mobile nav (가로 스크롤 pill 행) ─────────────────────────── */
@@ -1688,7 +1686,6 @@ textarea:focus-visible {
 .clinic-hero {
   padding: 96px 24px 64px;
   background: var(--color-revisit-greyscale-100);
-  border-bottom: 1px solid var(--color-revisit-line-container);
 }
 
 .clinic-hero-inner {
@@ -1717,12 +1714,12 @@ textarea:focus-visible {
 }
 
 .clinic-hero-title {
-  margin: 0 0 18px;
+  margin: 0 0 20px;
   color: var(--color-revisit-text-title);
-  font-size: 44px;
+  font-size: 52px;
   font-weight: 800;
-  line-height: 1.14;
-  letter-spacing: -0.03em;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
 }
 
 .clinic-hero-title-sub {
@@ -1736,7 +1733,7 @@ textarea:focus-visible {
   max-width: 54ch;
   color: var(--color-revisit-text-title);
   font-size: 19px;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1.55;
   word-break: keep-all;
 }
@@ -2789,10 +2786,9 @@ textarea:focus-visible {
  * ══════════════════════════════════════════════════════════════════ */
 .clinic-hero--hub {
   position: relative;
-  padding: 76px 24px 74px;
-  background:
-    linear-gradient(120deg, #f3f9fc 0%, #f7fbff 46%, #ffffff 100%);
-  border-bottom: 1px solid var(--color-revisit-line-container);
+  padding: 88px 24px 84px;
+  /* PRD §11.4 — 장식 그라데이션 제거, solid surface로 브랜드 톤 유지. */
+  background: var(--color-revisit-greyscale-100);
   overflow: hidden;
 }
 
@@ -2812,7 +2808,7 @@ textarea:focus-visible {
 
 .clinic-hero-lead {
   min-width: 0;
-  padding-top: 58px;
+  padding-top: 6px;
 }
 
 /* ── Byline (큐레이터 라인 대체) — pill 제거, 하이라인 위 차분한 줄 ── */
@@ -2879,10 +2875,10 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   padding: 16px 16px 8px;
+  /* PRD §11.5 — 신뢰는 그림자가 아니라 border·실제 사진·정보로 표현. */
   border: 1px solid var(--color-revisit-line-container);
   border-radius: 24px;
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 24px 70px rgba(18, 52, 77, 0.10);
+  background: var(--color-revisit-greyscale-100);
 }
 
 .clinic-hero-snapshot-media {
@@ -3155,6 +3151,7 @@ textarea:focus-visible {
 /* ── Featured content (hero 다음 큰 카드) ─────────────────────── */
 .clinic-featured {
   padding: 72px 24px 32px;
+  border-top: 1px solid var(--color-revisit-line-container);
 }
 
 .clinic-featured-inner {
@@ -3396,15 +3393,13 @@ textarea:focus-visible {
 }
 
 /* ── Content card image — subtle branded placeholder ──────────────
-   플랫 그레이 사각형 대신 은은한 블루 틴트 + 도트 그리드 위 글리프 칩.
-   이미지가 없어도 "준비된" 느낌이 나도록. */
+   PRD §11.4 — 장식 그라데이션/도트 매시 금지. 은은한 solid 틴트 + 글리프 칩으로
+   "준비된" 느낌을 만든다. */
 .clinic-content-card-image--placeholder {
   position: relative;
   flex-direction: column;
   gap: 10px;
-  background:
-    radial-gradient(circle at 1px 1px, var(--color-revisit-coolgrey-80) 1px, transparent 0) 0 0 / 16px 16px,
-    linear-gradient(160deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-coolgrey-95) 100%);
+  background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-30);
   font-size: 12px;
   font-weight: 700;
@@ -3415,9 +3410,7 @@ textarea:focus-visible {
 
 .clinic-content-card-image--placeholder.is-column,
 .clinic-content-card-image--placeholder.is-notice {
-  background:
-    radial-gradient(circle at 1px 1px, var(--color-revisit-coolgrey-80) 1px, transparent 0) 0 0 / 16px 16px,
-    linear-gradient(160deg, var(--color-revisit-coolgrey-90) 0%, var(--color-revisit-coolgrey-95) 100%);
+  background: var(--color-revisit-coolgrey-90);
   color: var(--color-revisit-coolgrey-30);
 }
 
@@ -3527,8 +3520,7 @@ textarea:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background:
-    linear-gradient(160deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-coolgrey-95) 100%);
+  background: var(--color-revisit-primary-95);
   border-color: var(--color-revisit-primary-90);
 }
 
@@ -4186,10 +4178,9 @@ textarea:focus-visible {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--color-revisit-line-container);
-    background: rgba(255, 255, 255, 0.96);
-    backdrop-filter: blur(12px);
-    box-shadow: 0 -12px 30px rgba(18, 52, 77, 0.10);
+    /* PRD §11.5 — blur/그림자 대신 solid surface + 상단 hairline으로 구분. */
+    border-top: 1px solid var(--color-revisit-line-border);
+    background: var(--color-revisit-greyscale-100);
   }
 
   .clinic-mobile-actionbar a {
@@ -4412,7 +4403,12 @@ textarea:focus-visible {
   }
 }
 
-/* ── PRD v1: AI-readable hospital webblog structure ───────────── */
+/* ── PRD §17 Anti-Slop normalization (release gate) ───────────────
+   병원 웹블로그 공개 표면의 canonical anti-slop 보호막.
+   소스에서 slop을 제거하는 것이 1차 원칙이며(헤더·스냅샷·플레이스홀더 등),
+   이 레이어는 회귀 방지용 최종 가드다: 그림자·blur·장식 그라데이션이
+   어떤 컴포넌트에도 재유입되지 않도록 한다. 실제 z-축 overlay가 필요한
+   modal/dropdown/popover에만 예외적으로 그림자를 허용한다(현재 표면에는 없음). */
 .clinic-shell * {
   letter-spacing: 0;
 }
@@ -4421,7 +4417,10 @@ textarea:focus-visible {
   .clinic-btn,
   .clinic-site-header,
   .clinic-header,
+  .clinic-header-cta,
+  .clinic-hero-snapshot,
   .clinic-hero-curator-line,
+  .clinic-mobile-actionbar,
   .clinic-featured-primary,
   .clinic-featured-secondary-card,
   .clinic-contact-item,
@@ -4440,6 +4439,7 @@ textarea:focus-visible {
   .clinic-gallery-caption,
   .clinic-section--alt,
   .clinic-content-card-image--placeholder,
+  .clinic-curator-portrait--monogram,
   .clinic-featured-primary
 ) {
   background-image: none !important;
@@ -4461,10 +4461,15 @@ textarea:focus-visible {
   background: rgba(20, 28, 42, 0.82);
 }
 
-.clinic-section--facts,
 .clinic-section--answers,
 .clinic-section--principles {
   background: var(--color-revisit-greyscale-100);
+}
+
+/* AI-readable 엔티티 데이터 시트 — 흰 fact 카드가 돋보이도록 은은한 밴드.
+   화면 상단 hero(흰색)와 명확히 구분된다. */
+.clinic-section--facts {
+  background: var(--color-revisit-coolgrey-90);
 }
 
 .clinic-facts-grid {
@@ -4760,5 +4765,151 @@ textarea:focus-visible {
   .clinic-flow-step {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Editorial content-hub refresh
+ * 레퍼런스: 토스 테크 / 강남언니 블로그 / 당근 팀블로그.
+ * 병원 "웹블로그"가 의료정보 사이트가 아니라 스타트업 콘텐츠 허브처럼 읽히도록
+ * 카테고리 컬러 태그 + 매거진 카드 + 자신감 있는 타이포/여백으로 재정의.
+ * (anti-slop 원칙 유지 — 그림자/그라데이션/blur 없음)
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* ── Category tag — 유형별 컬러 칩 ───────────────────────────────── */
+.clinic-tag {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 5px 11px;
+  border-radius: 8px;
+  background: var(--color-revisit-coolgrey-90);
+  color: var(--color-revisit-coolgrey-20);
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+.clinic-tag--sm {
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+
+.clinic-tag--faq        { background: var(--color-revisit-primary-95);  color: var(--color-revisit-primary-30); }
+.clinic-tag--disease    { background: var(--color-revisit-purple-95);   color: #5942c8; }
+.clinic-tag--treatment  { background: var(--color-revisit-green-95);    color: var(--color-revisit-green-40); }
+.clinic-tag--column     { background: var(--color-revisit-coolgrey-90); color: var(--color-revisit-coolgrey-20); }
+.clinic-tag--health     { background: var(--color-revisit-yellow-95);   color: #b65f00; }
+.clinic-tag--local      { background: var(--color-revisit-red-95);      color: var(--color-revisit-red-40); }
+.clinic-tag--notice     { background: var(--color-revisit-greyscale-90); color: var(--color-revisit-coolgrey-30); }
+
+/* ── Section header — 큰 에디토리얼 위계 ─────────────────────────── */
+@media (min-width: 721px) {
+  .clinic-section {
+    padding: 96px 24px;
+  }
+  .clinic-featured {
+    padding: 88px 24px 40px;
+  }
+}
+
+/* ── 매거진형 콘텐츠 카드 ────────────────────────────────────────── */
+.clinic-content-card {
+  border-radius: 16px;
+}
+
+.clinic-content-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px 20px 22px;
+}
+
+.clinic-content-card-title {
+  margin: 0;
+  color: var(--color-revisit-text-title);
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.clinic-content-card-summary {
+  margin: 0;
+  color: var(--color-revisit-text-helper);
+  font-size: 14.5px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.clinic-content-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+  color: var(--color-revisit-text-caption);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.clinic-content-card-meta-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--color-revisit-coolgrey-60);
+  flex-shrink: 0;
+}
+
+/* 이미지 placeholder 글리프 크기/색을 유형 태그와 정렬 */
+.clinic-content-card-image--placeholder {
+  gap: 12px;
+}
+
+/* ── Featured lead 카드 — 더 큰 제목/여백 ────────────────────────── */
+.clinic-featured-primary-title {
+  font-size: 30px;
+  letter-spacing: -0.03em;
+  line-height: 1.24;
+}
+
+.clinic-featured-primary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 32px 32px 34px;
+}
+
+.clinic-featured-primary-summary {
+  margin: 0;
+  font-size: 15.5px;
+  line-height: 1.68;
+}
+
+.clinic-featured-primary-meta {
+  margin: 4px 0 0;
+}
+
+.clinic-featured-secondary-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+@media (max-width: 720px) {
+  .clinic-featured-primary-title {
+    font-size: 24px;
+  }
+  .clinic-featured-primary-body {
+    padding: 24px 22px 26px;
   }
 }

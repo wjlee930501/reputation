@@ -2,6 +2,7 @@ import Image from 'next/image'
 import Link from 'next/link'
 
 import { resolveAssetUrl, TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { categoryTagClass, readingMinutes } from '@/lib/content-meta'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 import { ChevronRightIcon } from './icons'
@@ -97,19 +98,17 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
               )}
             </div>
             <div className="clinic-featured-primary-body">
-              <span className="clinic-featured-primary-eyebrow">{primaryTypeLabel}</span>
+              <span className={`clinic-tag ${categoryTagClass(primary.content_type)}`}>{primaryTypeLabel}</span>
               <h3 className="clinic-featured-primary-title">{primary.title}</h3>
               {primary.meta_description && (
                 <p className="clinic-featured-primary-summary">{primary.meta_description}</p>
               )}
               <p className="clinic-featured-primary-meta">
                 <strong>{directorName} 원장</strong>
-                <span>·</span>
+                <span className="clinic-content-card-meta-dot" aria-hidden="true" />
                 <span>{primaryDate}</span>
-                <span>·</span>
-                <span style={{ color: 'var(--color-revisit-primary-40)', fontWeight: 600 }}>
-                  자세히 보기 →
-                </span>
+                <span className="clinic-content-card-meta-dot" aria-hidden="true" />
+                <span>{readingMinutes(primary.body)}분 분량</span>
               </p>
             </div>
           </Link>
@@ -146,9 +145,9 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
                       )}
                     </div>
                     <div className="clinic-featured-secondary-meta">
-                      <span className="clinic-featured-secondary-eyebrow">{typeLabel}</span>
+                      <span className={`clinic-tag clinic-tag--sm ${categoryTagClass(content.content_type)}`}>{typeLabel}</span>
                       <h4 className="clinic-featured-secondary-title">{content.title}</h4>
-                      <p className="clinic-featured-secondary-date">{date}</p>
+                      <p className="clinic-featured-secondary-date">{date} · {readingMinutes(content.body)}분</p>
                     </div>
                   </Link>
                 )

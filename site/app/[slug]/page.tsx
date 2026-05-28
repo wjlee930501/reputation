@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 
+import { AnswerClusters } from './_components/AnswerClusters'
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
 import { CareFlow } from './_components/CareFlow'
 import { CarePrinciples } from './_components/CarePrinciples'
@@ -14,6 +15,7 @@ import { ClinicHero } from './_components/ClinicHero'
 import { ContactCard } from './_components/ContactCard'
 import { DoctorIntro } from './_components/DoctorIntro'
 import { FeaturedContent } from './_components/FeaturedContent'
+import { HospitalFacts } from './_components/HospitalFacts'
 import { JsonLd } from './_components/JsonLd'
 import { TreatmentGrid } from './_components/TreatmentGrid'
 
@@ -170,6 +172,14 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
   ]
 
+  // AI-readable Hospital Facts 패널용 공식 엔티티 채널 — schema/llms.txt와 동일한 값.
+  const factLinks = [
+    { url: hospital.website_url, label: '공식 홈페이지' },
+    { url: hospital.naver_place_url, label: '네이버 플레이스' },
+    { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
+    { url: hospital.kakao_channel_url, label: '카카오톡 채널' },
+  ]
+
   return (
     <>
       <JsonLd data={[clinicJsonLd, breadcrumbJsonLd]} />
@@ -183,6 +193,10 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           websiteUrl={hospital.website_url}
         />
         <main id="main-content">
+          {/* PRD §7.2 Public Webblog IA 순서:
+              Hero → Hospital Facts → Answer Clusters → Featured →
+              Care Principles → Treatments → Care Flow → Doctor → Gallery → Contact.
+              병원 엔티티 사실과 대표 질문을 최신글 피드보다 먼저 노출한다. */}
           <ClinicHero
             hospitalName={hospital.name}
             hospitalSlug={params.slug}
@@ -197,6 +211,33 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             businessHours={hospital.business_hours}
             treatments={hospital.treatments || []}
             photos={hospital.photos ?? []}
+          />
+
+          <HospitalFacts
+            hospitalName={hospital.name}
+            address={hospital.address}
+            phone={hospital.phone}
+            businessHours={hospital.business_hours}
+            region={hospital.region}
+            specialties={hospital.specialties}
+            directorName={hospital.director_name}
+            hiraOrgId={hospital.hira_org_id}
+            links={factLinks}
+          />
+
+          <AnswerClusters
+            contents={contents}
+            hospitalSlug={params.slug}
+            treatments={hospital.treatments || []}
+            region={hospital.region}
+            specialties={hospital.specialties}
+          />
+
+          <FeaturedContent
+            contents={contents}
+            hospitalSlug={params.slug}
+            hospitalName={hospital.name}
+            directorName={hospital.director_name}
           />
 
           <CarePrinciples
@@ -228,13 +269,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             links={externalChannels}
             hospitalName={hospital.name}
             websiteUrl={hospital.website_url}
-          />
-
-          <FeaturedContent
-            contents={contents}
-            hospitalSlug={params.slug}
-            hospitalName={hospital.name}
-            directorName={hospital.director_name}
           />
         </main>
         <ClinicFooter

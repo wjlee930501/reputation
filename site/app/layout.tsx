@@ -1,5 +1,15 @@
 import type { Metadata, Viewport } from "next";
+import localFont from "next/font/local";
 import "./globals.css";
+
+// Pretendard를 로컬 자체호스팅(가변 폰트)으로 통일 — CDN @import 의존성/폰트 폴백 흔들림 제거.
+const pretendard = localFont({
+  src: "./fonts/PretendardVariable.woff2",
+  display: "swap",
+  weight: "45 920",
+  variable: "--font-pretendard",
+  fallback: ["-apple-system", "BlinkMacSystemFont", "system-ui", "sans-serif"],
+});
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -46,7 +56,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ko">
+    <html lang="ko" className={pretendard.variable}>
       <body>
         <a
           href="#main-content"
