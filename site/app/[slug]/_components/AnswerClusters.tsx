@@ -45,10 +45,10 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
     <section id="answer-clusters" className="clinic-section clinic-section--answers">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">질문 클러스터</span>
-          <h2 className="clinic-section-heading">AI 검색에 걸리기 쉬운 대표 질문 구조</h2>
+          <span className="clinic-section-eyebrow">자주 찾는 질문</span>
+          <h2 className="clinic-section-heading">진료 전에 자주 확인하는 질문</h2>
           <p className="clinic-section-lede">
-            {regionText}에서 {specialtyText} 정보를 찾는 환자 질문을 유형별로 묶어, 검색 결과와 AI 답변이 병원 정보를 더 쉽게 연결하도록 구성합니다.
+            {regionText}에서 {specialtyText} 진료를 찾을 때 환자분들이 자주 묻는 내용을 주제별로 모았습니다.
           </p>
         </header>
 

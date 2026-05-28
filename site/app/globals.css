@@ -2786,10 +2786,9 @@ textarea:focus-visible {
  * ══════════════════════════════════════════════════════════════════ */
 .clinic-hero--hub {
   position: relative;
-  padding: 76px 24px 74px;
-  background:
-    linear-gradient(120deg, #f3f9fc 0%, #f7fbff 46%, #ffffff 100%);
-  border-bottom: 1px solid var(--color-revisit-line-container);
+  padding: 88px 24px 84px;
+  /* PRD §11.4 — 장식 그라데이션 제거, solid surface로 브랜드 톤 유지. */
+  background: var(--color-revisit-greyscale-100);
   overflow: hidden;
 }
 
@@ -2809,7 +2808,7 @@ textarea:focus-visible {
 
 .clinic-hero-lead {
   min-width: 0;
-  padding-top: 58px;
+  padding-top: 6px;
 }
 
 /* ── Byline (큐레이터 라인 대체) — pill 제거, 하이라인 위 차분한 줄 ── */

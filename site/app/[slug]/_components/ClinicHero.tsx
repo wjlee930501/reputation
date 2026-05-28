@@ -66,7 +66,6 @@ export function ClinicHero({
   directorName,
   directorPhotoUrl,
   contentCount,
-  treatmentCount,
   address,
   businessHours,
   treatments,
@@ -77,10 +76,7 @@ export function ClinicHero({
     .join('  ·  ')
   const resolvedDirectorPhoto = resolveAssetUrl(directorPhotoUrl)
   const today = todayHours(businessHours)
-  const chipTreatments = treatments.slice(0, 4)
-  const remainingTreatments = Math.max(0, treatmentCount - chipTreatments.length)
   const primarySpecialty = specialties[0] || '진료'
-  const compactAddress = address.split(' ').slice(0, 4).join(' ') || address
   const heroTreatments = treatments.slice(0, 6)
   const facilityPhoto =
     photos.find((photo) => photo.source_type === 'PHOTO_TREATMENT_ROOM') ||
@@ -119,29 +115,6 @@ export function ClinicHero({
               ))}
             </div>
           )}
-
-          <dl className="clinic-hero-facts" aria-label="병원 핵심 정보">
-            <div>
-              <dt>담당 의료진</dt>
-              <dd>{directorName} 원장</dd>
-            </div>
-            <div>
-              <dt>진료 범위</dt>
-              <dd>비수술·재활 상담</dd>
-            </div>
-            {today && (
-              <div>
-                <dt>오늘 진료</dt>
-                <dd>{today.label} {today.time}</dd>
-              </div>
-            )}
-            {compactAddress && (
-              <div>
-                <dt>위치</dt>
-                <dd>{compactAddress}</dd>
-              </div>
-            )}
-          </dl>
 
           <div className="clinic-hero-actions">
             <a className="clinic-btn clinic-btn-cta" href={`tel:${phone}`}>
@@ -204,22 +177,6 @@ export function ClinicHero({
               <span>{primarySpecialty} 전문의</span>
             </div>
           </div>
-
-          {chipTreatments.length > 0 && (
-            <div className="clinic-hero-snapshot-block">
-              <span className="clinic-hero-snapshot-key">진료 영역</span>
-              <div className="clinic-hero-snapshot-chips">
-                {chipTreatments.map((t) => (
-                  <span key={t.name} className="clinic-hero-snapshot-chip">{t.name}</span>
-                ))}
-                {remainingTreatments > 0 && (
-                  <span className="clinic-hero-snapshot-chip clinic-hero-snapshot-chip--more">
-                    +{remainingTreatments}
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
 
           <dl className="clinic-hero-snapshot-list">
             {today && (

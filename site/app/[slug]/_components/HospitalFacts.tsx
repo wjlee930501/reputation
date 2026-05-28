@@ -61,10 +61,10 @@ export function HospitalFacts({
     <section id="hospital-facts" className="clinic-section clinic-section--facts">
       <div className="clinic-section-inner">
         <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">병원 핵심 정보</span>
-          <h2 className="clinic-section-heading">AI가 참고하기 쉬운 {hospitalName} 기본 정보</h2>
+          <span className="clinic-section-eyebrow">병원 안내</span>
+          <h2 className="clinic-section-heading">{hospitalName} 기본 정보</h2>
           <p className="clinic-section-lede">
-            병원명, 위치, 의료진, 공식 채널을 한곳에 정리해 검색 엔진과 AI 답변 시스템이 같은 정보를 반복해서 확인할 수 있게 합니다.
+            위치, 전화, 진료시간, 의료진과 공식 채널을 한곳에 정리했습니다. 방문 전에 필요한 정보를 빠르게 확인하세요.
           </p>
         </header>
 
