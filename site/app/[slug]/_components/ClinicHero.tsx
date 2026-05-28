@@ -78,16 +78,20 @@ export function ClinicHero({
   const today = todayHours(businessHours)
   const primarySpecialty = specialties[0] || '진료'
   const heroTreatments = treatments.slice(0, 6)
+  // 우측 hero 미디어는 가로형(16:9) 밴드 — 세로 원장 사진은 얼굴이 잘리므로
+  // 원내 전경(내부·외관·진료실) 사진을 우선 사용한다. 원장 사진은 아래 요약부의
+  // 원형 아바타로 노출하므로 큰 미디어에서는 마지막 폴백으로만 쓴다.
   const facilityPhoto =
-    photos.find((photo) => photo.source_type === 'PHOTO_TREATMENT_ROOM') ||
     photos.find((photo) => photo.source_type === 'PHOTO_CLINIC_INTERIOR') ||
     photos.find((photo) => photo.source_type === 'PHOTO_CLINIC_EXTERIOR') ||
-    photos[0]
-  const heroPhotoUrl = resolvedDirectorPhoto || resolveAssetUrl(facilityPhoto?.url)
-  const isDoctorHero = Boolean(resolvedDirectorPhoto)
-  const heroPhotoLabel = isDoctorHero
-    ? `${directorName} 대표원장`
-    : facilityPhoto?.title || `${hospitalName} 진료 공간`
+    photos.find((photo) => photo.source_type === 'PHOTO_TREATMENT_ROOM') ||
+    photos.find((photo) => photo.source_type !== 'PHOTO_DOCTOR')
+  const facilityPhotoUrl = resolveAssetUrl(facilityPhoto?.url)
+  const heroPhotoUrl = facilityPhotoUrl || resolvedDirectorPhoto
+  const heroShowsFacility = Boolean(facilityPhotoUrl)
+  const heroPhotoLabel = heroShowsFacility
+    ? facilityPhoto?.title || `${hospitalName} 진료 공간`
+    : `${directorName} 대표원장`
 
   return (
     <section className="clinic-hero clinic-hero--hub" id="top">
@@ -155,7 +159,7 @@ export function ClinicHero({
                 alt={heroPhotoLabel}
                 fill
                 sizes="(max-width: 920px) 100vw, 420px"
-                style={{ objectFit: 'cover', objectPosition: isDoctorHero ? 'center top' : 'center center' }}
+                style={{ objectFit: 'cover', objectPosition: heroShowsFacility ? 'center center' : 'center top' }}
                 priority
                 unoptimized={shouldBypassNextImageOptimization(heroPhotoUrl)}
               />
