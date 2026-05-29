@@ -3392,13 +3392,14 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
-/* ── Content card image — subtle branded placeholder ──────────────
-   PRD §11.4 — 장식 그라데이션/도트 매시 금지. 은은한 solid 틴트 + 글리프 칩으로
-   "준비된" 느낌을 만든다. */
+/* ── Content card image — per-type branded placeholder ────────────
+   PRD §11.4 — 장식 그라데이션/도트 매시 금지. 유형별 색+아이콘으로
+   카드마다 시각적으로 다른 인상. 같은 그림 반복 제거(P0-2). */
 .clinic-content-card-image--placeholder {
   position: relative;
   flex-direction: column;
   gap: 10px;
+  /* base: FAQ */
   background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-30);
   font-size: 12px;
@@ -3408,7 +3409,27 @@ textarea:focus-visible {
   padding: 24px;
 }
 
-.clinic-content-card-image--placeholder.is-column,
+/* 유형별 색 분기 */
+.clinic-content-card-image--placeholder.is-disease {
+  background: var(--color-revisit-purple-95);
+  color: #5942c8;
+}
+.clinic-content-card-image--placeholder.is-treatment {
+  background: var(--color-revisit-green-95);
+  color: var(--color-revisit-green-40);
+}
+.clinic-content-card-image--placeholder.is-column {
+  background: var(--color-revisit-coolgrey-90);
+  color: var(--color-revisit-coolgrey-30);
+}
+.clinic-content-card-image--placeholder.is-health {
+  background: var(--color-revisit-yellow-95);
+  color: #b65f00;
+}
+.clinic-content-card-image--placeholder.is-local {
+  background: var(--color-revisit-red-95);
+  color: var(--color-revisit-red-40);
+}
 .clinic-content-card-image--placeholder.is-notice {
   background: var(--color-revisit-coolgrey-90);
   color: var(--color-revisit-coolgrey-30);
@@ -4911,5 +4932,341 @@ textarea:focus-visible {
   }
   .clinic-featured-primary-body {
     padding: 24px 22px 26px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Re:putation v2 refinements
+ * P0-1  CarePrinciples belief grid / CareFlow horizontal timeline
+ * P0-3  Gallery ≥3 photos only (component-level)
+ * P1-1  max-width narrowed to 1120px
+ * P1-2  색 3층화 — deep navy CTA / cool-paper section rhythm
+ * P1-3  Hero panel phone dedup
+ * P1-4  Mobile hero photo band
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* ── P1-1: max-width 1240 → 1120 ─────────────────────────────────
+   landing-shell은 별도 토큰을 쓰므로 영향 없음. clinic-shell만 좁힘. */
+.clinic-shell {
+  --shell-max: 1120px;
+}
+
+/* clinic-section-inner는 shell-max 대신 명시적 1080px이라 영향 없으나,
+   Facts 4열 → 3열 변경으로 editorial density ↑ */
+.clinic-shell .clinic-facts-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.clinic-shell .clinic-fact-card--wide {
+  grid-column: span 1;
+}
+@media (max-width: 800px) {
+  .clinic-shell .clinic-facts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 480px) {
+  .clinic-shell .clinic-facts-grid {
+    grid-template-columns: 1fr;
+  }
+  .clinic-shell .clinic-fact-card--wide {
+    grid-column: span 1;
+  }
+}
+
+/* ── P1-2: 색 3층화 ───────────────────────────────────────────────
+   (a) Primary action CTA → deep navy (#003e80) / blue CTA (#0671e0)는 유지
+   (b) 섹션 배경 리듬: cool-paper 교차 */
+
+/* --color-revisit-primary-10 = #003e80 이미 존재. CTA 버튼에 적용 */
+.clinic-btn-cta {
+  background: var(--color-revisit-primary-10);
+}
+.clinic-btn-cta:hover {
+  background: #002d60;
+}
+
+/* snapshot call 버튼도 deep navy 통일 */
+.clinic-hero-snapshot-call {
+  background: var(--color-revisit-primary-10);
+}
+.clinic-hero-snapshot-call:hover {
+  background: #002d60;
+}
+
+/* Cool-paper 배경 리듬: 흰색→cool-paper→흰색→cool-paper 교차.
+   section--facts(coolrey-90) 유지. section--flow → cool-paper. */
+.clinic-section--flow {
+  background: var(--color-revisit-coolgrey-95);
+}
+/* CarePrinciples(section--principles) → 흰색 유지 */
+.clinic-section--principles {
+  background: var(--color-revisit-greyscale-100);
+}
+
+/* section-header 중앙 정렬 variant (철학/흐름 섹션용) */
+.clinic-section-header--center {
+  text-align: center;
+}
+.clinic-section-header--center .clinic-section-lede {
+  margin-left: auto;
+  margin-right: auto;
+}
+.clinic-section-header--center .clinic-section-label {
+  justify-content: center;
+}
+
+/* ── P0-1: CarePrinciples — belief card grid (아이콘 + 신념 문장) ─ */
+.clinic-belief-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.clinic-belief-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 28px 24px 26px;
+  border: 1px solid var(--color-revisit-coolgrey-80);
+  border-radius: 14px;
+  background: var(--color-revisit-greyscale-100);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.clinic-belief-card:hover {
+  border-color: var(--color-revisit-primary-70);
+  box-shadow: 0 4px 18px rgba(6, 113, 224, 0.07);
+}
+
+.clinic-belief-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-primary-30);
+  flex-shrink: 0;
+}
+.clinic-belief-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.clinic-belief-title {
+  margin: 0;
+  color: var(--color-revisit-text-title);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+.clinic-belief-body {
+  margin: 0;
+  color: var(--color-revisit-text-helper);
+  font-size: 14.5px;
+  line-height: 1.7;
+  word-break: keep-all;
+}
+
+@media (max-width: 800px) {
+  .clinic-belief-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  .clinic-belief-card {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 18px;
+    padding: 22px 20px;
+  }
+  .clinic-belief-icon {
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+}
+
+/* ── P0-1: CareFlow — horizontal timeline ──────────────────────── */
+
+/* 기존 .clinic-flow-list (세로 스택) 대신 새 타임라인 사용.
+   기존 클래스는 코드에서 더 이상 쓰지 않지만 CSS는 남겨둠(다른 곳 참조 가능) */
+.clinic-flow-timeline {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  margin: 0 0 36px;
+  padding: 0;
+  list-style: none;
+  position: relative;
+}
+
+.clinic-flow-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0 20px 0 0;
+}
+
+/* 노드 사이 가로 연결선 */
+.clinic-flow-connector {
+  position: absolute;
+  top: 20px; /* badge 중심과 맞춤 (badge height 40px / 2 = 20px) */
+  right: 0;
+  width: calc(100% - 40px - 16px); /* node 너비 - badge 너비 - 좌여백 */
+  height: 1.5px;
+  background: linear-gradient(90deg, var(--color-revisit-primary-50) 0%, var(--color-revisit-coolgrey-70) 100%);
+  transform: translateX(100%) translateX(-20px);
+  pointer-events: none;
+}
+
+.clinic-flow-node-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--color-revisit-primary-10);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+.clinic-flow-node-body {
+  flex: 1;
+}
+
+.clinic-flow-node-title {
+  margin: 0 0 8px;
+  color: var(--color-revisit-text-title);
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.35;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+.clinic-flow-node-desc {
+  margin: 0;
+  color: var(--color-revisit-text-helper);
+  font-size: 14px;
+  line-height: 1.65;
+  word-break: keep-all;
+}
+
+.clinic-flow-footer {
+  display: flex;
+  justify-content: center;
+}
+
+/* Tablet: 2열 */
+@media (max-width: 860px) {
+  .clinic-flow-timeline {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px 0;
+  }
+  .clinic-flow-node {
+    padding: 0 16px 0 0;
+  }
+  /* 짝수 노드(인덱스 1, 3)에서 연결선 숨김 — 줄바꿈 지점 */
+  .clinic-flow-node:nth-child(2) .clinic-flow-connector,
+  .clinic-flow-node:nth-child(4) .clinic-flow-connector {
+    display: none;
+  }
+}
+
+/* Mobile: 1열 — 세로로 배치, 연결선 세로 */
+@media (max-width: 540px) {
+  .clinic-flow-timeline {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .clinic-flow-node {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    column-gap: 20px;
+    row-gap: 0;
+    padding: 0 0 28px;
+  }
+  .clinic-flow-connector {
+    /* 세로 연결선 */
+    top: 40px;
+    right: auto;
+    left: 19px; /* badge 중심 */
+    width: 1.5px;
+    height: calc(100% - 40px);
+    background: linear-gradient(180deg, var(--color-revisit-primary-50) 0%, var(--color-revisit-coolgrey-70) 100%);
+    transform: none;
+  }
+  .clinic-flow-node-badge {
+    grid-column: 1;
+    grid-row: 1;
+    margin-bottom: 0;
+  }
+  .clinic-flow-node-body {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    padding-top: 8px;
+  }
+  /* 모바일에서는 모든 연결선 다시 표시 */
+  .clinic-flow-node:nth-child(2) .clinic-flow-connector,
+  .clinic-flow-node:nth-child(4) .clinic-flow-connector {
+    display: block;
+  }
+}
+
+/* ── P1-3: Hero — phone dedup / 우측 패널 전화 중복 제거 ───────────
+   전화 dl 행(snapshot-row)에서 전화 번호를 숨김.
+   전화는 좌측 CTA 1회 + 모바일 하단바로 충분. */
+.clinic-hero-snapshot-row--phone {
+  display: none;
+}
+
+/* ── P1-4: Mobile hero 사진 밴드 ─────────────────────────────────
+   480px 이하에서 clinic-hero-doctor-panel이 display:none으로 숨겨짐.
+   대신 hero 상단에 사진을 먼저 보여주는 밴드를 추가. */
+.clinic-hero-mobile-photo {
+  display: none;
+}
+
+@media (max-width: 480px) {
+  .clinic-hero-mobile-photo {
+    display: block;
+    position: relative;
+    width: calc(100% + 40px); /* hero padding 20px*2 상쇄 */
+    margin: -64px -20px 28px; /* hero 상단 패딩 상쇄 후 사진 먼저 */
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    background: var(--color-revisit-coolgrey-85);
+  }
+  .clinic-hero-mobile-photo img,
+  .clinic-hero-mobile-photo > span {
+    /* next/image fill span */
+    border-radius: 0 !important;
+  }
+  /* 사진 아래 약한 그라데이션 오버레이로 텍스트 전환 자연스럽게 */
+  .clinic-hero-mobile-photo::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0;
+    height: 40%;
+    background: linear-gradient(180deg, transparent 0%, rgba(15, 23, 42, 0.35) 100%);
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 920px) {
+  /* 태블릿에서는 doctor panel이 보이므로 mobile photo 숨김 유지 */
+  .clinic-hero-mobile-photo {
+    display: none;
   }
 }
