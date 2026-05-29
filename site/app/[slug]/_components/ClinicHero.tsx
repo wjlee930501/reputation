@@ -95,6 +95,20 @@ export function ClinicHero({
 
   return (
     <section className="clinic-hero clinic-hero--hub" id="top">
+      {/* P1-4: 모바일(≤480px)에서 우측 패널이 display:none되므로 hero 최상단에 시설 사진 밴드 노출 */}
+      {heroPhotoUrl && (
+        <div className="clinic-hero-mobile-photo" aria-hidden="true">
+          <Image
+            src={heroPhotoUrl}
+            alt=""
+            fill
+            sizes="100vw"
+            style={{ objectFit: 'cover', objectPosition: heroShowsFacility ? 'center center' : 'center top' }}
+            priority
+            unoptimized={shouldBypassNextImageOptimization(heroPhotoUrl)}
+          />
+        </div>
+      )}
       <div className="clinic-hero-inner">
         <div className="clinic-hero-lead">
           {eyebrowLabel && <span className="clinic-hero-eyebrow">{eyebrowLabel}</span>}
@@ -182,6 +196,7 @@ export function ClinicHero({
             </div>
           </div>
 
+          {/* P1-3: 오늘진료·위치만 표시. 전화는 좌측 CTA + 모바일 하단바로 충분하므로 제거. */}
           <dl className="clinic-hero-snapshot-list">
             {today && (
               <div className="clinic-hero-snapshot-row">
@@ -203,15 +218,6 @@ export function ClinicHero({
                 <dd>{address}</dd>
               </div>
             )}
-            <div className="clinic-hero-snapshot-row">
-              <dt>
-                <PhoneIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
-                전화
-              </dt>
-              <dd>
-                <a href={`tel:${phone}`} className="clinic-hero-snapshot-tel">{phone}</a>
-              </dd>
-            </div>
           </dl>
 
           <Link href={`/${hospitalSlug}/visit`} className="clinic-hero-snapshot-foot">

@@ -23,7 +23,8 @@ const NON_DOCTOR_TYPES: Array<HospitalPhoto['source_type']> = [
 export function ClinicGallery({ photos }: Props) {
   // 원장 사진은 DoctorIntro에서 노출하므로 갤러리에선 제외.
   const visible = photos.filter((p) => NON_DOCTOR_TYPES.includes(p.source_type))
-  if (visible.length === 0) return null
+  // P0-3: 사진이 3장 미만이면 갤러리 섹션 자체를 숨긴다. 1~2장 grid는 휑해서 "미완성" 인상을 준다.
+  if (visible.length < 3) return null
 
   return (
     <section className="clinic-section">
@@ -36,7 +37,7 @@ export function ClinicGallery({ photos }: Props) {
           </p>
         </header>
 
-        <div className={`clinic-gallery-grid${visible.length < 3 ? ' clinic-gallery-grid--sparse' : ''}`}>
+        <div className="clinic-gallery-grid">
           {visible.map((photo) => {
             const url = resolveAssetUrl(photo.url)
             if (!url) return null
