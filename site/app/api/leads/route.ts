@@ -75,10 +75,12 @@ export async function POST(request: Request) {
 
   const apiBase = getApiBase(true)
 
-  // 실제 방문자 IP를 백엔드로 전달한다. 누락 시 rate-limit이 단일 egress IP 버킷으로
-  // 무너지고 PIPA 동의 IP(consent_ip)가 데이터센터 IP로 잘못 저장된다.
-  // 플랫폼이 설정하는 신뢰 헤더(x-vercel-forwarded-for / x-real-ip)를 우선한다. 클라이언트가
-  // 임의로 채울 수 있는 x-forwarded-for의 leftmost는 최후 수단(admin/lib/security.ts와 동일 정책).
+  // 실제 방문자 IP를 백엔드로 전달한다. 플랫폼이 설정하는 신뢰 헤더(x-vercel-forwarded-for /
+  // x-real-ip)를 우선하고, 클라이언트가 임의로 채울 수 있는 x-forwarded-for leftmost는 최후
+  // 수단으로만 쓴다(admin/lib/security.ts와 동일 정책).
+  // NOTE: 백엔드 get_request_ip는 XFF를 right-to-left로 파싱하므로, 이 값이 실제로 채택되려면
+  // 중간 hop(Vercel egress)도 TRUSTED_PROXY_IPS에 포함돼야 한다. 그렇지 않으면 backend는
+  // Vercel egress IP를 client로 본다(스푸핑은 불가하나 per-visitor 정밀도는 떨어짐 — 백로그 참조).
   const outboundHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
   }

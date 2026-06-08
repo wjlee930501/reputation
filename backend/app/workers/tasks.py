@@ -490,9 +490,10 @@ def morning_content_notification():
         result = db.execute(stmt)
         items = result.scalars().all()
 
+        all_sent = True
         for item in items:
             admin_url = f"{settings.ADMIN_BASE_URL}/hospitals/{item.hospital_id}/content/{item.id}"
-            _run_async(notifier.notify_content_draft_ready(
+            sent = _run_async(notifier.notify_content_draft_ready(
                 hospital_name=item.hospital.name,
                 sequence_no=item.sequence_no,
                 total_count=item.total_count,
@@ -500,8 +501,13 @@ def morning_content_notification():
                 scheduled_date=str(item.scheduled_date),
                 admin_url=admin_url,
             ))
+            if not sent:
+                all_sent = False
 
-    _mark_done(done_key)
+    # Only mark the day done if every notification actually delivered — otherwise a
+    # Slack misconfig/outage would suppress the day's alerts (re-trigger retries).
+    if all_sent:
+        _mark_done(done_key)
 
 
 # ══════════════════════════════════════════════════════════════════
