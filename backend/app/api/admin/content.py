@@ -311,6 +311,31 @@ async def update_content_brief(
     return _serialize_item(item, full=True)
 
 
+async def _lock_content_status(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    fallback: ContentStatus,
+) -> ContentStatus:
+    """Row-lock the content item and return its authoritative status (API-1).
+
+    Serializes concurrent publish attempts so the not-PUBLISHED check is decided
+    under the lock, not on a stale read. No-op (returns the in-memory status) for
+    unit-test fakes that don't implement ``execute``.
+    """
+    if not hasattr(db, "execute"):
+        return fallback
+    result = await db.execute(
+        select(ContentItem.status)
+        .where(ContentItem.id == content_id, ContentItem.hospital_id == hospital_id)
+        .with_for_update()
+    )
+    locked = result.scalar_one_or_none()
+    if locked is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    return locked
+
+
 @router.post("/{hospital_id}/content/{content_id}/publish")
 async def publish_content(
     hospital_id: uuid.UUID,
@@ -325,7 +350,9 @@ async def publish_content(
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
 
-    if item.status == ContentStatus.PUBLISHED:
+    # 동시 발행 경합 차단: 행 잠금 후 권위 있는 상태로 재확인.
+    current_status = await _lock_content_status(db, hospital_id, content_id, item.status)
+    if current_status == ContentStatus.PUBLISHED:
         raise HTTPException(status_code=400, detail="Already published")
     if not item.body:
         raise HTTPException(status_code=400, detail="Content not generated yet")

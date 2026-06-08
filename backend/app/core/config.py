@@ -55,6 +55,7 @@ class Settings(BaseSettings):
                 "SITE_REVALIDATE_SECRET", self.SITE_REVALIDATE_SECRET
             )
             self._fail_if_critical_production_secrets_empty()
+            self._validate_production_config()
 
     def _fail_if_critical_production_secrets_empty(self) -> None:
         missing = [
@@ -65,6 +66,38 @@ class Settings(BaseSettings):
         if missing:
             names = ", ".join(missing)
             raise ValueError(f"Production critical admin secret(s) must be set: {names}")
+
+    def _validate_production_config(self) -> None:
+        """Fail fast on insecure production config (AUTH-1/AUTH-5/INFRA-3/OBS-5).
+
+        These are env-driven values that must be set per-deployment. Crashing loudly
+        at boot is preferable to silently mis-securing the public/admin surface.
+        """
+        errors: list[str] = []
+
+        origins = [o.strip() for o in self.ALLOWED_ORIGINS if o.strip()]
+        if not origins:
+            errors.append("ALLOWED_ORIGINS must be set (CORS with credentials cannot use a wildcard).")
+        for origin in origins:
+            if origin == "*":
+                errors.append("ALLOWED_ORIGINS must not contain '*' while credentials are allowed.")
+            elif not origin.startswith("https://"):
+                errors.append(f"ALLOWED_ORIGINS entry must be https://: {origin}")
+            elif "localhost" in origin or "127.0.0.1" in origin:
+                errors.append(f"ALLOWED_ORIGINS must not contain localhost in production: {origin}")
+
+        proxies = [p.strip() for p in self.TRUSTED_PROXY_IPS if p.strip()]
+        if not proxies or set(proxies) <= {"127.0.0.1", "::1"}:
+            errors.append(
+                "TRUSTED_PROXY_IPS must include the load-balancer/proxy hop in production "
+                "(localhost-only defaults make X-Forwarded-For untrusted → rate-limit/consent_ip break)."
+            )
+
+        if not (self.DATABASE_URL and self.SYNC_DATABASE_URL):
+            errors.append("DATABASE_URL/SYNC_DATABASE_URL (or DB_* secret parts) must resolve in production.")
+
+        if errors:
+            raise ValueError("Insecure production config:\n  - " + "\n  - ".join(errors))
 
     def _build_database_urls_from_secret_parts(self) -> None:
         if self.DATABASE_URL and self.SYNC_DATABASE_URL:
@@ -137,6 +170,8 @@ class Settings(BaseSettings):
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""
+    # webhook SSRF 방어 — 허용 호스트(쉼표 구분). 기본은 Slack 공식 호스트만(V-013).
+    SLACK_WEBHOOK_ALLOWED_HOSTS: str = "hooks.slack.com"
 
     # Report
     REPORT_OUTPUT_DIR: str = "/tmp/reports"
@@ -144,6 +179,10 @@ class Settings(BaseSettings):
 
     # Sentry
     SENTRY_DSN: str = ""
+
+    # Logging (OBS-1) — JSON for Cloud Logging in prod, readable text in dev.
+    LOG_LEVEL: str = "INFO"
+    LOG_JSON: bool = True
 
     # SoV
     SOV_REPEAT_COUNT: int = 10
@@ -165,6 +204,9 @@ class Settings(BaseSettings):
 
     # Public 폼 rate-limit
     PUBLIC_LEAD_RATE_LIMIT: str = "5/minute;30/hour;100/day"
+    # Public 콘텐츠 허브 읽기 API rate-limit (병원/콘텐츠 조회 — 미인증 표면 보호, AUTH-2).
+    # ISR 서버(단일 egress IP)와 브라우저(자산 직접 요청) 모두 수용하도록 넉넉히 설정.
+    PUBLIC_SITE_RATE_LIMIT: str = "300/minute;6000/hour"
 
     # 발행 시 site(Vercel) sitemap·페이지 캐시 무효화. 빈 값이면 호출 생략.
     SITE_REVALIDATE_URL: str = ""

@@ -249,6 +249,51 @@ async def test_publish_content_rejects_generated_content_without_references(monk
     assert exc_info.value.detail["missing"] == "references"
 
 
+async def test_publish_content_blocks_concurrent_publish_under_lock(monkeypatch):
+    # 동시 발행 경합: in-memory 읽기는 DRAFT지만 행 잠금 후 권위 상태가 PUBLISHED이면 차단 (API-1).
+    from app.models.content import ContentStatus
+
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    hospital = _hospital(hospital_id)
+    hospital.status = "ACTIVE"
+    hospital.site_live = False
+    item = _content_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        title="치질 수술 전 확인할 점",
+        body="환자 상태에 따라 진료 방향을 설명합니다.",
+        meta_description="진료 전 확인할 점.",
+        essence_status="ALIGNED",
+        status="DRAFT",
+    )
+
+    async def fake_get_content(db, rid, rhid):
+        return item
+
+    async def fake_get_hospital(db, rhid):
+        return hospital
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+
+    class _LockResult:
+        def scalar_one_or_none(self):
+            return ContentStatus.PUBLISHED
+
+    class _LockingDB:
+        async def execute(self, statement):
+            return _LockResult()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await content_api.publish_content(
+            hospital_id, item_id, content_api.PublishBody(published_by="AE"), db=_LockingDB()
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Already published"
+
+
 async def test_update_content_brief_links_action_infers_target_and_approves(monkeypatch):
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()
