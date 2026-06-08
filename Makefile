@@ -1,4 +1,4 @@
-.PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard
+.PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard admin-create-owner
 .PHONY: deploy-api deploy-worker deploy-beat deploy-all deploy-migrate setup-gcp build-image
 
 setup:
@@ -51,6 +51,14 @@ demo-seed:
 
 essence-backfill:
 	docker compose exec api python -m app.utils.essence_backfill
+
+# Admin 콘솔 첫 운영자(OWNER) 계정 생성/회전 — admin_users가 0명이면 프로덕션 로그인 불가(AUTH-4).
+admin-create-owner:
+	@read -p "Admin email: " email; \
+	read -s -p "Password (min 14 chars): " pw; echo; \
+	read -p "Name [Owner]: " name; \
+	docker compose exec -e ADMIN_EMAIL="$$email" -e ADMIN_PASSWORD="$$pw" -e ADMIN_NAME="$${name:-Owner}" \
+		api python -m app.utils.admin_user create-owner
 
 copy-guard:
 	python3 scripts/check_user_facing_terms.py

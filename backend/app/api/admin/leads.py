@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.hospital import Hospital, Plan
 from app.models.lead import SalesLead
+from app.services.audit_log import default_actor, write_audit_log
+from app.services.lead_privacy import anonymize_lead
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
 
@@ -106,6 +108,31 @@ async def convert_sales_lead(
     }
 
 
+@router.post("/{lead_id}/erase")
+async def erase_lead_pii(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """정보주체 파기 요청 즉시 이행 (PII-2 / 처리방침 '즉시 파기' 약속).
+
+    보유기간 만료를 기다리지 않고 개인 식별 필드를 즉시 익명화한다. 통계용 메타는 유지.
+    """
+    lead = await db.get(SalesLead, lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    changed = anonymize_lead(lead, datetime.now(timezone.utc))
+    if changed:
+        await write_audit_log(
+            db,
+            action="erase_lead_pii",
+            hospital_id=lead.converted_hospital_id,
+            actor=default_actor(),
+            target_type="sales_lead",
+            target_id=str(lead.id),
+            detail={"reason": "data subject erasure request"},
+        )
+        await db.commit()
+    return {"detail": "erased" if changed else "already_purged", "lead_id": str(lead.id)}
+
+
 def _serialize_lead(lead: SalesLead) -> dict:
     return {
         "id": str(lead.id),
@@ -170,11 +197,11 @@ def _phone_contact_or_none(contact: str | None) -> str | None:
 
 
 def _build_onboarding_note(lead: SalesLead, operator_note: str | None) -> str:
+    # PII-3: 연락처/문의 원문은 onboarding_note(병원 레코드)나 conversion_note에 영구 저장하지
+    # 않는다 — 보유기간 자동 파기를 우회하기 때문. 원문은 보유기간이 관리되는 lead row에서만 확인.
     lines = [
         f"Source lead: {lead.id}",
         f"Clinic type / region: {lead.clinic_type}",
-        f"Contact: {lead.contact}",
-        f"Question: {lead.question}",
     ]
     if lead.source_path:
         lines.append(f"Source path: {lead.source_path}")

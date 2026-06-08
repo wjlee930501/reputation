@@ -1005,6 +1005,7 @@ def purge_expired_leads():
     매일 결과는 Slack에 notify — 0건이라도 송출하여 cron이 살아 있음을 운영자가 매일 확인.
     """
     from app.models.lead import SalesLead
+    from app.services.lead_privacy import anonymize_lead
 
     now = datetime.now(timezone.utc)
     purged = 0
@@ -1017,12 +1018,8 @@ def purge_expired_leads():
                 SalesLead.retain_until <= now,
             )
             for lead in db.execute(stmt).scalars().all():
-                lead.clinic_name = "[purged]"
-                lead.contact = "[purged]"
-                lead.question = "[purged]"
-                lead.consent_ip = None
-                lead.purged_at = now
-                purged += 1
+                if anonymize_lead(lead, now):
+                    purged += 1
             if purged:
                 db.commit()
         logger.info(f"purge_expired_leads: anonymized {purged} expired leads")

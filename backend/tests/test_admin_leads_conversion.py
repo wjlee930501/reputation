@@ -75,16 +75,18 @@ def _lead(**overrides):
     return SimpleNamespace(**base)
 
 
-def test_build_onboarding_note_copies_lead_context():
+def test_build_onboarding_note_excludes_raw_pii():
+    # PII-3: 연락처/문의 원문은 onboarding_note에 영구 저장하지 않는다(보유기간 우회 방지).
     lead = _lead()
 
     note = leads_api._build_onboarding_note(lead, "call before noon")
 
     assert f"Source lead: {lead.id}" in note
     assert "Clinic type / region: 강남 치과" in note
-    assert "Contact: 010-1111-2222" in note
-    assert "Question: 임플란트 상담 문의" in note
     assert "Operator note: call before noon" in note
+    # 원문 PII는 포함되지 않아야 한다.
+    assert "010-1111-2222" not in note
+    assert "임플란트 상담 문의" not in note
 
 
 async def test_convert_sales_lead_creates_draft_hospital_from_lead():
