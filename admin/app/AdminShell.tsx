@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 
 const NAV_ITEMS = [
   {
@@ -39,7 +39,13 @@ const NAV_ITEMS = [
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
+  const router = useRouter()
   const isLogin = pathname === '/login'
+
+  async function handleLogout() {
+    await fetch('/api/auth/logout', { method: 'POST' })
+    router.push('/login')
+  }
 
   if (isLogin) {
     return <div className="min-h-screen bg-slate-50">{children}</div>
@@ -104,6 +110,26 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             병원 자료, 운영 기준 승인, 콘텐츠 검토, 월간 리포트 순서로 진행합니다.
           </div>
         </nav>
+
+        <div className="border-t border-slate-800 px-3 py-3 lg:px-4">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
+          >
+            <span
+              aria-hidden
+              className="inline-flex h-5 w-5 items-center justify-center rounded border border-slate-700 text-slate-300"
+            >
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+                <path d="M8 17H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h3" />
+                <path d="M13 14l4-4-4-4" />
+                <path d="M17 10H8" />
+              </svg>
+            </span>
+            로그아웃
+          </button>
+        </div>
 
         <div className="hidden space-y-1 border-t border-slate-800 px-4 py-3 lg:block">
           <p className="text-[11px] font-medium text-slate-300">MotionLabs Inc.</p>

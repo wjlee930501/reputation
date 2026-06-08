@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import {
+  ContentNotFoundError,
   fetchContent,
   fetchContents,
   fetchHospital,
@@ -138,7 +139,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
       fetchContents(params.slug, 60),
     ])
   } catch (e) {
-    if (e instanceof HospitalNotFoundError) notFound()
+    if (e instanceof HospitalNotFoundError || e instanceof ContentNotFoundError) notFound()
     throw e
   }
 

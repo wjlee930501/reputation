@@ -9,10 +9,17 @@ const ADMIN_KEY = process.env.ADMIN_SECRET_KEY || "";
 
 const ALLOWED_PREFIXES = ["hospitals", "content", "reports", "sov", "domain", "essence", "leads"];
 
+// Restrict forwarded verbs to the set the backend admin router actually supports.
+const ALLOWED_METHODS = new Set(["GET", "POST", "PATCH", "DELETE"]);
+
 async function handler(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> }
 ) {
+  if (!ALLOWED_METHODS.has(req.method)) {
+    return new NextResponse("Method Not Allowed", { status: 405 });
+  }
+
   const { path: pathSegments } = await params;
   if (!ADMIN_KEY) {
     return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
@@ -71,5 +78,4 @@ async function handler(
 export const GET = handler;
 export const POST = handler;
 export const PATCH = handler;
-export const PUT = handler;
 export const DELETE = handler;

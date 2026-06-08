@@ -116,6 +116,13 @@ export class HospitalNotFoundError extends Error {
   }
 }
 
+export class ContentNotFoundError extends Error {
+  constructor(contentId: string) {
+    super(`Content not found: ${contentId}`)
+    this.name = 'ContentNotFoundError'
+  }
+}
+
 export async function fetchHospital(slug: string): Promise<Hospital> {
   const res = await fetch(`${getApiBase()}/hospitals/${slug}`, publicFetchInit(3600))
   if (res.status === 404) throw new HospitalNotFoundError(slug)
@@ -135,7 +142,8 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
 
 export async function fetchContent(slug: string, contentId: string): Promise<ContentItem> {
   const res = await fetch(`${getApiBase()}/hospitals/${slug}/contents/${contentId}`, publicFetchInit(1800))
-  if (!res.ok) throw new Error(`Content not found: ${contentId}`)
+  if (res.status === 404) throw new ContentNotFoundError(contentId)
+  if (!res.ok) throw new Error(`Server error (${res.status}) when fetching content`)
   return res.json()
 }
 

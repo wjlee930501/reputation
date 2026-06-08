@@ -75,13 +75,24 @@ export async function POST(request: Request) {
 
   const apiBase = getApiBase(true)
 
+  // 실제 방문자 IP를 백엔드로 전달한다. 누락 시 rate-limit이 단일 egress IP 버킷으로
+  // 무너지고 PIPA 동의 IP(consent_ip)가 데이터센터 IP로 잘못 저장된다.
+  const outboundHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  const forwardedFor = request.headers.get('x-forwarded-for')
+  const realIp = request.headers.get('x-real-ip')
+  const clientIp = (forwardedFor?.split(',')[0] || realIp || '').trim()
+  if (clientIp) {
+    outboundHeaders['X-Forwarded-For'] = clientIp
+    outboundHeaders['X-Real-IP'] = clientIp
+  }
+
   let response: Response
   try {
     response = await fetch(`${apiBase}/leads`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: outboundHeaders,
       body: JSON.stringify(payload),
       cache: 'no-store',
     })

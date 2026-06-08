@@ -19,22 +19,26 @@ function req(method: string, origin?: string) {
   }
 }
 
-test('login rate-limit key ignores spoofable forwarding headers', () => {
+test('login rate-limit key prefers the trusted edge header over x-forwarded-for', () => {
   const headers = new Headers({
+    'x-vercel-forwarded-for': '203.0.113.2',
     'x-forwarded-for': '203.0.113.1',
-    'x-real-ip': '203.0.113.2',
   })
 
-  assert.equal(getLoginRateLimitKey({ headers }), 'global')
+  assert.equal(getLoginRateLimitKey({ headers }), 'ip:203.0.113.2')
 })
 
-test('login rate-limit key uses runtime IP when the platform provides one', () => {
-  const request = {
-    headers: new Headers({ 'x-forwarded-for': '203.0.113.1' }),
-    ip: '198.51.100.10',
-  }
+test('login rate-limit key falls back to the leftmost x-forwarded-for entry', () => {
+  const headers = new Headers({
+    'x-forwarded-for': '198.51.100.10, 10.0.0.1, 10.0.0.2',
+  })
 
-  assert.equal(getLoginRateLimitKey(request), 'ip:198.51.100.10')
+  assert.equal(getLoginRateLimitKey({ headers }), 'ip:198.51.100.10')
+})
+
+test('login rate-limit key fails open (null) when no valid IP header is present', () => {
+  assert.equal(getLoginRateLimitKey({ headers: new Headers() }), null)
+  assert.equal(getLoginRateLimitKey({ headers: new Headers({ 'x-forwarded-for': 'not-an-ip' }) }), null)
 })
 
 test('admin proxy path builder rejects dot segments and path separators', () => {
