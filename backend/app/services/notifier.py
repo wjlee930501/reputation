@@ -1,12 +1,29 @@
 """Slack 알림 — 모든 주요 이벤트 규격화"""
 import logging
 import re
+from urllib.parse import urlsplit
 
 import httpx
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _is_allowed_webhook(url: str) -> bool:
+    """SSRF/exfil 방어 — webhook은 https + 허용 호스트만(V-013).
+
+    SLACK_WEBHOOK_URL이 잘못 설정되거나 변조되어 내부 메타데이터 주소
+    (169.254.169.254 등)나 임의 호스트로 PII가 빠져나가는 것을 차단한다.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme != "https" or not parts.hostname:
+        return False
+    allowed = {h.strip().lower() for h in settings.SLACK_WEBHOOK_ALLOWED_HOSTS.split(",") if h.strip()}
+    return parts.hostname.lower() in allowed
 
 
 def mask_contact(contact: str) -> str:
@@ -33,6 +50,9 @@ def mask_contact(contact: str) -> str:
 async def _send(text: str, blocks: list | None = None) -> bool:
     if not settings.SLACK_WEBHOOK_URL:
         logger.warning("Slack webhook not configured")
+        return False
+    if not _is_allowed_webhook(settings.SLACK_WEBHOOK_URL):
+        logger.error("Slack webhook URL rejected: host not in allowlist (SSRF guard)")
         return False
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -222,6 +242,37 @@ async def notify_content_generation_failed(
             )},
         }],
     )
+
+
+async def notify_task_failure(*, task_name: str, task_id: str, error: str) -> bool:
+    """백그라운드 태스크 미처리 실패 알림 (CELERY-3).
+
+    beat 스케줄 태스크가 조용히 죽어 야간 생성/월간 리포트/파기가 누락되는 것을 운영자가
+    감지할 수 있게 한다. 본문은 PII가 섞일 수 있으므로 마스킹 후 200자 제한.
+    """
+    safe_error = mask_contact_free(error)[:200]
+    return await _send(
+        text=f"🟥 [태스크 실패] {task_name}",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"🟥 *[백그라운드 태스크 실패]*\n"
+                f"태스크: `{task_name}`\n"
+                f"task_id: `{task_id}`\n"
+                f"오류: `{safe_error}`\n\n"
+                f"재시도 소진 후에도 실패. Flower/로그에서 원인 확인이 필요합니다."
+            )},
+        }],
+    )
+
+
+def mask_contact_free(text: str) -> str:
+    """자유 텍스트 안의 이메일/전화 PII를 마스킹(로그·알림 송출 안전)."""
+    if not text:
+        return ""
+    text = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "[email]", text)
+    text = re.sub(r"0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}", "[phone]", text)
+    return text
 
 
 async def notify_content_batch_summary(

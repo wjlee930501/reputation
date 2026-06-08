@@ -62,12 +62,12 @@ export async function POST(req: NextRequest) {
 
   const clientKey = getLoginRateLimitKey(req)
   const now = Date.now()
-  if (isRateLimited(clientKey, now)) {
+  if (clientKey && isRateLimited(clientKey, now)) {
     return NextResponse.json({ error: 'Too many login attempts' }, { status: 429 })
   }
 
   if (!email || !password) {
-    recordFailedAttempt(clientKey, now)
+    if (clientKey) recordFailedAttempt(clientKey, now)
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
   }
 
@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
     })
 
     if (!authResponse.ok) {
-      recordFailedAttempt(clientKey, now)
+      if (clientKey) recordFailedAttempt(clientKey, now)
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
     }
 
@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 })
   }
 
-  clearFailedAttempts(clientKey)
+  if (clientKey) clearFailedAttempts(clientKey)
   const token = await generateSessionToken(sessionSecret, SESSION_MAX_AGE_SECONDS, {
     accountId: account.id,
     email: account.email,

@@ -2,6 +2,22 @@
 # Re:putation — Cloud Run Services
 # ═══════════════════════════════════════════════════════════════════
 
+locals {
+  # INFRA-2: Pin the deployed image. Prefer an immutable digest passed via
+  # var.api_image (set by CI/CD). Fall back to a registry tag only if unset.
+  # NOTE: the fallback uses a tag — set var.api_image to an @sha256:... digest
+  # in production for reproducible deploys/rollbacks.
+  app_image = var.api_image != "" ? var.api_image : "us-central1-docker.pkg.dev/${var.project_id}/reputation/reputation:latest"
+
+  # AUTH-5: Effective browser CORS allowlist. If the operator does not override
+  # var.allowed_origins, derive HTTPS origins from the configured domains.
+  default_allowed_origins = compact([
+    "https://${var.domain}",
+    var.admin_subdomain != "" ? "https://${var.admin_subdomain}" : "",
+  ])
+  effective_allowed_origins = length(var.allowed_origins) > 0 ? var.allowed_origins : local.default_allowed_origins
+}
+
 # ── API Service ────────────────────────────────────────────────────
 resource "google_cloud_run_v2_service" "api" {
   name     = "${var.app_name}-api"
@@ -13,7 +29,7 @@ resource "google_cloud_run_v2_service" "api" {
     service_account = google_service_account.app.email
 
     containers {
-      image = "us-central1-docker.pkg.dev/${var.project_id}/reputation/reputation:latest"
+      image = local.app_image
 
       env {
         name  = "SERVICE"
@@ -54,6 +70,31 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "SITE_REVALIDATE_URL"
         value = var.site_revalidate_url != "" ? var.site_revalidate_url : "https://${var.domain}/api/revalidate"
+      }
+      # AUTH-1: Trust the load-balancer hop so rate limits / consent IPs key on
+      # the real client (X-Forwarded-For) instead of the Google front-end IP.
+      env {
+        name  = "TRUSTED_PROXY_IPS"
+        value = join(",", var.trusted_proxy_ips)
+      }
+      # AUTH-5: Browser CORS allowlist (credentials are allowed → no wildcard,
+      # no localhost in production). Backend boot fails if this is misconfigured.
+      env {
+        name  = "ALLOWED_ORIGINS"
+        value = join(",", local.effective_allowed_origins)
+      }
+      # OBS-1: Structured JSON logging at INFO so Cloud Logging can parse severity.
+      env {
+        name  = "LOG_LEVEL"
+        value = "INFO"
+      }
+      env {
+        name  = "LOG_JSON"
+        value = "true"
+      }
+      env {
+        name  = "PUBLIC_SITE_RATE_LIMIT"
+        value = var.public_site_rate_limit
       }
       dynamic "env" {
         for_each = local.app_secret_env
@@ -140,7 +181,7 @@ resource "google_cloud_run_v2_service" "worker" {
     service_account = google_service_account.app.email
 
     containers {
-      image = "us-central1-docker.pkg.dev/${var.project_id}/reputation/reputation:latest"
+      image = local.app_image
 
       env {
         name  = "SERVICE"
@@ -252,7 +293,7 @@ resource "google_cloud_run_v2_service" "beat" {
     service_account = google_service_account.app.email
 
     containers {
-      image = "us-central1-docker.pkg.dev/${var.project_id}/reputation/reputation:latest"
+      image = local.app_image
 
       env {
         name  = "SERVICE"

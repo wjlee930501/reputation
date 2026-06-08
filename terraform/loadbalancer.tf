@@ -128,11 +128,70 @@ resource "google_dns_record_set" "www" {
   rrdatas      = ["${var.domain}."]
 }
 
-# ── Cloud Armor (WAF) — 기본 보안 정책 ─────────────────────────────
+# ── Cloud Armor (WAF) — 엣지 보안 정책 ─────────────────────────────
+# INFRA-1: Was a no-op default-allow. Now enforces:
+#   1) per-IP rate-based ban for abuse/bot flood protection (edge defense),
+#   2) preconfigured OWASP SQLi/XSS WAF rules in PREVIEW (observe first; flip
+#      preview=false to enforce once logs confirm no false positives),
+#   3) a lowest-priority default allow so legitimate traffic still passes.
 resource "google_compute_security_policy" "main" {
   name    = "${var.app_name}-security-policy"
   project = var.project_id
 
+  # 1) Rate-based ban: throttle then ban a single IP that floods the edge.
+  rule {
+    action   = "rate_based_ban"
+    priority = 1000
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+    rate_limit_options {
+      conform_action = "allow"
+      exceed_action  = "deny(429)"
+      enforce_on_key = "IP"
+      rate_limit_threshold {
+        count        = 600
+        interval_sec = 60
+      }
+      ban_duration_sec = 600
+      ban_threshold {
+        count        = 1200
+        interval_sec = 60
+      }
+    }
+    description = "Per-IP rate-based ban (>600 req/min throttled, >1200 req/min banned 10m)"
+  }
+
+  # 2) Preconfigured OWASP WAF rules — PREVIEW mode (log-only) to start.
+  #    Flip preview=false after reviewing Cloud Armor logs for false positives.
+  rule {
+    action   = "deny(403)"
+    priority = 1100
+    match {
+      expr {
+        expression = "evaluatePreconfiguredWaf('sqli-v33-stable')"
+      }
+    }
+    preview     = true
+    description = "OWASP SQLi protection (preview — observe before enforcing)"
+  }
+
+  rule {
+    action   = "deny(403)"
+    priority = 1200
+    match {
+      expr {
+        expression = "evaluatePreconfiguredWaf('xss-v33-stable')"
+      }
+    }
+    preview     = true
+    description = "OWASP XSS protection (preview — observe before enforcing)"
+  }
+
+  # 3) Default allow — lowest priority fallback.
   rule {
     action   = "allow"
     priority = 2147483647

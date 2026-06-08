@@ -4,6 +4,13 @@
 대한의사협회 의료광고심의회 2025.01 신규 심사 사례.
 """
 import re
+import unicodedata
+
+# Zero-width / 비표시 문자 — 금지 표현 사이에 끼워 넣어 정규식을 회피하는 우회를 차단.
+# U+200B ZERO WIDTH SPACE, U+200C ZWNJ, U+200D ZWJ, U+2060 WORD JOINER, U+FEFF BOM, U+00AD SOFT HYPHEN.
+_ZERO_WIDTH = dict.fromkeys(
+    [0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF, 0x00AD], None
+)
 
 # 기본 금지 표현 (표시용)
 FORBIDDEN_EXPRESSIONS = [
@@ -40,12 +47,25 @@ FORBIDDEN_PATTERNS: dict[str, re.Pattern] = {
 }
 
 
+def normalize_for_check(text: str) -> str:
+    """금지 표현 매칭 전 정규화.
+
+    NFKC로 전각 숫자·기호(１００％, １등)를 ASCII로 접고, zero-width 삽입 우회를
+    제거한다. 정규화하지 않으면 `100%`/`1등` 패턴이 전각/비표시 변형을 놓친다(MED-1).
+    """
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKC", text)
+    return normalized.translate(_ZERO_WIDTH)
+
+
 def check_forbidden(text: str) -> list[str]:
     """텍스트에서 의료광고 금지 표현을 찾아 매칭된 기본 표현 목록을 반환."""
     if not text:
         return []
+    normalized = normalize_for_check(text)
     found = []
     for label, pattern in FORBIDDEN_PATTERNS.items():
-        if pattern.search(text):
+        if pattern.search(normalized):
             found.append(label)
     return found

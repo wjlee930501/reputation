@@ -3,9 +3,11 @@ import uuid
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
@@ -24,12 +26,21 @@ from app.api.admin import operations as admin_operations
 from app.api.public import site as public_site
 from app.api.public import leads as public_leads
 from app.core.config import settings
+from app.core.observability import configure_logging, sentry_before_send, set_request_id
 from app.core.rate_limit import limiter
 from app.core.security import capture_admin_actor, verify_admin_key, verify_admin_rate_limit
 
+# Configure logging before anything emits (OBS-1).
+configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
+
 if settings.SENTRY_DSN:
     import sentry_sdk
-    sentry_sdk.init(dsn=settings.SENTRY_DSN, traces_sample_rate=0.1)
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        traces_sample_rate=0.1,
+        send_default_pii=False,
+        before_send=sentry_before_send,
+    )
 
 
 @asynccontextmanager
@@ -50,6 +61,21 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+async def _integrity_error_handler(request: StarletteRequest, exc: IntegrityError) -> JSONResponse:
+    """Translate DB unique/constraint races to 409 instead of an opaque 500 (API-2).
+
+    The request-scoped session is rolled back by the get_db dependency before this
+    handler runs, so we only shape the response. Details are not leaked to clients.
+    """
+    import logging
+
+    logging.getLogger("app.integrity").warning("IntegrityError on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=409, content={"detail": "Resource conflict"})
+
+
+app.add_exception_handler(IntegrityError, _integrity_error_handler)
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next):
         response: Response = await call_next(request)
@@ -68,6 +94,11 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next):
         request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         request.state.request_id = request_id
+        set_request_id(request_id)
+        if settings.SENTRY_DSN:
+            import sentry_sdk
+
+            sentry_sdk.set_tag("request_id", request_id)
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         return response

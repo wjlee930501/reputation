@@ -7,12 +7,14 @@ GET /api/v1/public/hospitals/{slug}/contents/{content_id} — 콘텐츠 상세
 import uuid
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
+from app.core.rate_limit import limiter
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalSourceAsset, PHOTO_SOURCE_TYPES, SourceStatus, SourceType
 from app.models.hospital import Hospital, HospitalStatus
@@ -24,7 +26,8 @@ router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
 
 
 @router.get("")
-async def list_hospitals(db: AsyncSession = Depends(get_db)):
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def list_hospitals(request: Request, db: AsyncSession = Depends(get_db)):
     """Public list of active hospitals for sitemap generation."""
     stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE, Hospital.site_live.is_(True))
     result = await db.execute(stmt)
@@ -40,7 +43,8 @@ async def list_hospitals(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{slug}")
-async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_hospital_public(request: Request, slug: str, db: AsyncSession = Depends(get_db)):
     """병원 기본정보 (ACTIVE 상태 병원만 공개) + AE가 검수해 공개로 표시한 사진."""
     result = await db.execute(select(Hospital).where(Hospital.slug == slug))
     h = result.scalar_one_or_none()
@@ -66,7 +70,9 @@ async def get_hospital_public(slug: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{slug}/assets/{source_id}")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def get_public_hospital_asset(
+    request: Request,
     slug: str,
     source_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -90,7 +96,9 @@ async def get_public_hospital_asset(
 
 
 @router.get("/{slug}/contents")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def list_published_contents(
+    request: Request,
     slug: str,
     limit: int = Query(default=20, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
@@ -113,7 +121,10 @@ async def list_published_contents(
 
 
 @router.get("/{slug}/contents/{content_id}")
-async def get_content_public(slug: str, content_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_content_public(
+    request: Request, slug: str, content_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
     """콘텐츠 상세"""
     h = await _get_active_hospital(db, slug)
 

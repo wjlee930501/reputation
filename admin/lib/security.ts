@@ -12,13 +12,34 @@ type RequestLike = {
   }
 }
 
-export function getLoginRateLimitKey(req: RequestLike): string {
-  const runtimeIp = (req as { ip?: unknown }).ip
-  if (typeof runtimeIp === 'string' && runtimeIp.trim()) {
-    return `ip:${runtimeIp.trim()}`
+function isLikelyIp(value: string): boolean {
+  // IPv4 dotted-quad or IPv6 (loose check — enough to reject junk before keying).
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(value)) return true
+  return value.includes(':') && /^[0-9a-fA-F:.]+$/.test(value)
+}
+
+export function getLoginRateLimitKey(req: RequestLike): string | null {
+  // NextRequest has no `.ip` in Next 16, so derive the client IP from trusted
+  // edge headers. On Vercel x-vercel-forwarded-for / x-real-ip are set by the
+  // platform; x-forwarded-for is client-controllable, so only its leftmost
+  // entry is used as a last resort.
+  const candidates = [
+    req.headers.get('x-vercel-forwarded-for'),
+    req.headers.get('x-real-ip'),
+    req.headers.get('x-forwarded-for')?.split(',')[0],
+  ]
+
+  for (const candidate of candidates) {
+    const ip = candidate?.trim()
+    if (ip && isLikelyIp(ip)) {
+      return `ip:${ip}`
+    }
   }
 
-  return 'global'
+  // Fail open per-request rather than a shared 'global' bucket: returning null
+  // means this request is not counted against any shared counter, so one client
+  // can never lock out every admin.
+  return null
 }
 
 export function isStateChangingMethod(method: string): boolean {

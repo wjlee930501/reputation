@@ -1,6 +1,8 @@
 import { revalidatePath } from 'next/cache'
 import { NextResponse } from 'next/server'
 
+import { constantTimeEqual } from '@/lib/constant-time'
+
 export const runtime = 'nodejs'
 
 const SECRET = process.env.SITE_REVALIDATE_SECRET || ''
@@ -15,7 +17,7 @@ export async function POST(request: Request) {
   }
 
   const provided = request.headers.get('x-revalidate-secret') || ''
-  if (provided !== SECRET) {
+  if (!constantTimeEqual(provided, SECRET)) {
     return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
   }
 

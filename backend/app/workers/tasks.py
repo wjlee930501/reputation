@@ -61,16 +61,49 @@ def _run_async(coro):
     return loop.run_until_complete(coro)
 
 
+_redis_client = None
+
+
+def _claim_once(key: str, ttl_seconds: int = 82_800) -> bool:
+    """Idempotency day-lock via the Redis broker (CELERY-4).
+
+    Returns True if THIS call won the claim, False if it was already claimed within
+    the TTL (~23h default). Fail-open: if Redis is unreachable we return True so a
+    transient broker hiccup never silently drops a scheduled run.
+    """
+    global _redis_client
+    try:
+        if _redis_client is None:
+            import redis
+
+            _redis_client = redis.from_url(settings.REDIS_URL)
+        return bool(_redis_client.set(key, "1", nx=True, ex=ttl_seconds))
+    except Exception:
+        logger.warning("Redis idempotency claim unavailable for %s; proceeding (fail-open)", key)
+        return True
+
+
 # ══════════════════════════════════════════════════════════════════
 # V0 리포트
 # ══════════════════════════════════════════════════════════════════
-@celery_app.task(name="app.workers.tasks.trigger_v0_report", bind=True, max_retries=2)
+@celery_app.task(
+    name="app.workers.tasks.trigger_v0_report",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=1800,
+    time_limit=2100,
+)
 def trigger_v0_report(self, hospital_id: str):
     """프로파일 완료 후 V0 분석 즉시 실행"""
     try:
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, uuid.UUID(hospital_id))
             if not hospital:
+                return
+
+            # Idempotency: 이미 V0가 완료된 병원은 재트리거/재배달 시 중복 리포트를 만들지 않는다.
+            if hospital.v0_report_done:
+                logger.info("V0 report already done for %s; skipping re-trigger", hospital.name)
                 return
 
             hospital.status = HospitalStatus.ANALYZING
@@ -187,7 +220,14 @@ def build_aeo_site(self, hospital_id: str):
 # ══════════════════════════════════════════════════════════════════
 # 야간 콘텐츠 자동 생성 (매일 밤 23:00)
 # ══════════════════════════════════════════════════════════════════
-@celery_app.task(name="app.workers.tasks.nightly_content_generation")
+@celery_app.task(
+    name="app.workers.tasks.nightly_content_generation",
+    # 50개 슬롯 × (Claude+Imagen) 배치는 전역 900s를 초과하므로 상향. 멱등(body-null 필터)
+    # 하므로 acks_late로 워커 크래시 시 안전하게 재배달.
+    soft_time_limit=3000,
+    time_limit=3300,
+    acks_late=True,
+)
 def nightly_content_generation():
     """내일 발행 예정인 콘텐츠를 오늘 밤에 생성"""
     tomorrow = arrow.now("Asia/Seoul").shift(days=1).date()
@@ -418,6 +458,11 @@ def morning_content_notification():
     """오늘 발행 예정 콘텐츠 초안 완료 알림"""
     today = arrow.now("Asia/Seoul").date()
 
+    # 같은 날 재배달/수동 재트리거 시 Slack 중복 송출 방지 (CELERY-4).
+    if not _claim_once(f"morning_content_notification:{today}"):
+        logger.info("morning_content_notification already ran for %s; skipping", today)
+        return
+
     with SyncSessionLocal() as db:
         stmt = select(ContentItem).where(
             ContentItem.scheduled_date == today,
@@ -442,7 +487,13 @@ def morning_content_notification():
 # ══════════════════════════════════════════════════════════════════
 # AI 답변 언급률 측정
 # ══════════════════════════════════════════════════════════════════
-@celery_app.task(name="app.workers.tasks.run_sov_for_hospital", bind=True, max_retries=1)
+@celery_app.task(
+    name="app.workers.tasks.run_sov_for_hospital",
+    bind=True,
+    max_retries=1,
+    soft_time_limit=1800,
+    time_limit=2100,
+)
 def run_sov_for_hospital(self, hospital_id: str):
     try:
         with SyncSessionLocal() as db:
@@ -703,7 +754,11 @@ def _normalize_platform(platform: str) -> str:
 # ══════════════════════════════════════════════════════════════════
 # 다음 달 콘텐츠 슬롯 자동 생성 (매월 25일 00:00)
 # ══════════════════════════════════════════════════════════════════
-@celery_app.task(name="app.workers.tasks.monthly_slot_generation")
+@celery_app.task(
+    name="app.workers.tasks.monthly_slot_generation",
+    soft_time_limit=1200,
+    time_limit=1500,
+)
 def monthly_slot_generation():
     """매월 25일: 다음 달 콘텐츠 슬롯을 미리 생성"""
     today = arrow.now("Asia/Seoul")
@@ -820,7 +875,11 @@ def adjust_query_priorities():
 # ══════════════════════════════════════════════════════════════════
 # 월간 리포트 (매월 마지막 날 23:00)
 # ══════════════════════════════════════════════════════════════════
-@celery_app.task(name="app.workers.tasks.run_monthly_reports")
+@celery_app.task(
+    name="app.workers.tasks.run_monthly_reports",
+    soft_time_limit=2400,
+    time_limit=2700,
+)
 def run_monthly_reports():
     now = arrow.now("Asia/Seoul")
     # beat은 28~31일에 매일 실행 — 실제 마지막 날인지 확인
@@ -946,6 +1005,7 @@ def purge_expired_leads():
     매일 결과는 Slack에 notify — 0건이라도 송출하여 cron이 살아 있음을 운영자가 매일 확인.
     """
     from app.models.lead import SalesLead
+    from app.services.lead_privacy import anonymize_lead
 
     now = datetime.now(timezone.utc)
     purged = 0
@@ -958,12 +1018,8 @@ def purge_expired_leads():
                 SalesLead.retain_until <= now,
             )
             for lead in db.execute(stmt).scalars().all():
-                lead.clinic_name = "[purged]"
-                lead.contact = "[purged]"
-                lead.question = "[purged]"
-                lead.consent_ip = None
-                lead.purged_at = now
-                purged += 1
+                if anonymize_lead(lead, now):
+                    purged += 1
             if purged:
                 db.commit()
         logger.info(f"purge_expired_leads: anonymized {purged} expired leads")

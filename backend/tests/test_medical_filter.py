@@ -27,6 +27,19 @@ def test_check_forbidden_catches_2025_review_patterns():
         assert expected in violations, f"missed `{expected}` for {text!r}: {violations}"
 
 
+def test_check_forbidden_catches_fullwidth_and_zero_width_evasion():
+    # 전각 숫자/기호 + zero-width 삽입으로 정규식을 회피하려는 우회 (MED-1).
+    cases = [
+        ("성공 확률 １００％ 달성", "100%"),  # full-width digits + percent
+        ("１등 진료", "1등"),  # full-width digit
+        ("완​치 가능", "완치"),  # zero-width space inside 완치
+        ("부작용‍ 제로", "부작용 없는"),  # ZWJ
+    ]
+    for text, expected in cases:
+        violations = check_forbidden(text)
+        assert expected in violations, f"missed `{expected}` for {text!r}: {violations}"
+
+
 def test_check_forbidden_allows_neutral_medical_text():
     text = "수술 후 회복기에는 무리한 운동을 피하는 것이 좋습니다."
 

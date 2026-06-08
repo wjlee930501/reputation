@@ -13,6 +13,28 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # Real Postgres so the integration suite (constraints, audit append-only
+    # trigger, FK indexes — TEST-1) actually runs instead of skipping.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reputation_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      APP_ENV: test
+      ADMIN_SECRET_KEY: test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/reputation_test
+      SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test
+      INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reputation_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,8 +52,11 @@ jobs:
       - name: Ruff
         run: python -m ruff check .
 
-      - name: Pytest
-        run: python -m pytest
+      - name: Migrate test database
+        run: python -m alembic upgrade head
+
+      - name: Pytest (unit + integration, coverage gate)
+        run: python -m pytest --cov=app --cov-report=term --cov-fail-under=60
 
   frontend:
     name: Frontend tests and builds
@@ -67,3 +92,51 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # INFRA-4: Security scanning gate.
+  #   - Dependency audits are non-blocking (continue-on-error) so they surface
+  #     findings without halting delivery on transitive-dep noise.
+  #   - The secret scan is BLOCKING: a committed credential should fail CI.
+  security:
+    name: Security scans (deps + secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks needs full history to scan commits
+
+      # ── Backend dependency vulnerability scan (warn) ──────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Backend pip-audit
+        continue-on-error: true
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit .
+
+      # ── Frontend dependency vulnerability scan (warn) ─────────────
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Site npm audit
+        continue-on-error: true
+        working-directory: site
+        run: npm audit --audit-level=high
+
+      - name: Admin npm audit
+        continue-on-error: true
+        working-directory: admin
+        run: npm audit --audit-level=high
+
+      # ── Secret scanning (blocking) ────────────────────────────────
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

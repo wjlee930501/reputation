@@ -66,8 +66,9 @@ const PHOTO_TYPES = new Set([
   'PHOTO_TREATMENT_ROOM',
 ])
 
-const ASSETS_BACKEND_BASE =
-  process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || 'http://localhost:8000'
+// Client-bundle code: only NEXT_PUBLIC_* env vars are inlined at build time.
+// When unset, keep the path relative rather than shipping a localhost fallback.
+const ASSETS_BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || ''
 
 function resolveAssetUrl(url: string | null): string | null {
   if (!url) return null

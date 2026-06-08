@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, String, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -88,10 +88,11 @@ class Hospital(Base):
     hira_org_id: Mapped[str | None] = mapped_column(String(50))       # HIRA 요양기관 기호
 
     # ── 타겟 파라미터 ────────────────────────────────────────────────
-    region: Mapped[list] = mapped_column(JSON, default=list)         # ["수원시", "영통구"]
-    specialties: Mapped[list] = mapped_column(JSON, default=list)    # ["대장항문외과"]
-    keywords: Mapped[list] = mapped_column(JSON, default=list)       # ["치질", "치루", "치열"]
-    competitors: Mapped[list] = mapped_column(JSON, default=list)    # ["경쟁병원명"]
+    # NOT NULL + server_default '[]' — 공개 /site 렌더가 NULL을 가정하지 않도록(DATA-2).
+    region: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"), nullable=False)
+    specialties: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"), nullable=False)
+    keywords: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"), nullable=False)
+    competitors: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"), nullable=False)
 
     # ── 원장 정보 ────────────────────────────────────────────────────
     director_name: Mapped[str | None] = mapped_column(String(100))
@@ -108,7 +109,7 @@ class Hospital(Base):
     director_credentials: Mapped[dict | None] = mapped_column(JSON)
 
     # ── 진료 항목 ────────────────────────────────────────────────────
-    treatments: Mapped[list] = mapped_column(JSON, default=list)
+    treatments: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"), nullable=False)
     # 예: [{"name": "치질 수술", "description": "..."}]
 
     # ── 진행 상태 플래그 ─────────────────────────────────────────────
