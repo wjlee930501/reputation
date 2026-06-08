@@ -186,14 +186,16 @@ variable "allowed_origins" {
 
 variable "trusted_proxy_ips" {
   description = <<-EOT
-    CIDR ranges of trusted reverse-proxy hops (TRUSTED_PROXY_IPS) the backend
-    will honor X-Forwarded-For / X-Real-IP from when keying rate limits and
-    recording consent IPs. Because Cloud Run ingress is restricted to the
-    internal load balancer, the immediate TCP peer is always the Google LB, so
-    the default trusts the full range. Comma-joined into the env var.
+    CIDR ranges of trusted reverse-proxy hops (TRUSTED_PROXY_IPS). The backend
+    parses X-Forwarded-For RIGHT-TO-LEFT and returns the first entry NOT in these
+    ranges as the real client IP (for rate-limit keying + PIPA consent_ip). These
+    MUST be the actual proxy/LB ranges that front Cloud Run, NOT 0.0.0.0/0 — a
+    catch-all would mark every hop trusted and make the client IP spoofable
+    (backend boot now rejects 0.0.0.0/0 in production). Default is the GCP global
+    external Application Load Balancer / GFE range; verify for your setup.
   EOT
   type        = list(string)
-  default     = ["0.0.0.0/0", "::/0"]
+  default     = ["130.211.0.0/22", "35.191.0.0/16"]
 }
 
 variable "public_site_rate_limit" {

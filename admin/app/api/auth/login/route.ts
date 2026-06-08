@@ -60,14 +60,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 })
   }
 
+  // Throttle by BOTH client IP and target email. The email key cannot be rotated
+  // away, so it bounds brute-force even when the IP is unavailable (null key) or
+  // spoofed via forwarding headers.
   const clientKey = getLoginRateLimitKey(req)
+  const emailKey = email ? `email:${email}` : null
+  const throttleKeys = [clientKey, emailKey].filter((k): k is string => Boolean(k))
   const now = Date.now()
-  if (clientKey && isRateLimited(clientKey, now)) {
+  if (throttleKeys.some((key) => isRateLimited(key, now))) {
     return NextResponse.json({ error: 'Too many login attempts' }, { status: 429 })
   }
 
   if (!email || !password) {
-    if (clientKey) recordFailedAttempt(clientKey, now)
+    throttleKeys.forEach((key) => recordFailedAttempt(key, now))
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
   }
 
@@ -84,7 +89,7 @@ export async function POST(req: NextRequest) {
     })
 
     if (!authResponse.ok) {
-      if (clientKey) recordFailedAttempt(clientKey, now)
+      throttleKeys.forEach((key) => recordFailedAttempt(key, now))
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
     }
 
@@ -93,7 +98,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 })
   }
 
-  if (clientKey) clearFailedAttempts(clientKey)
+  throttleKeys.forEach((key) => clearFailedAttempts(key))
   const token = await generateSessionToken(sessionSecret, SESSION_MAX_AGE_SECONDS, {
     accountId: account.id,
     email: account.email,

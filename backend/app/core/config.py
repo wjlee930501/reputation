@@ -92,6 +92,12 @@ class Settings(BaseSettings):
                 "TRUSTED_PROXY_IPS must include the load-balancer/proxy hop in production "
                 "(localhost-only defaults make X-Forwarded-For untrusted → rate-limit/consent_ip break)."
             )
+        if any(p in {"0.0.0.0/0", "::/0"} for p in proxies):
+            errors.append(
+                "TRUSTED_PROXY_IPS must not be 0.0.0.0/0 or ::/0 — that trusts every hop, so the "
+                "rightmost-untrusted X-Forwarded-For parse is bypassed and the client IP becomes "
+                "spoofable. Set the actual LB/proxy CIDR ranges (e.g. GCP 130.211.0.0/22, 35.191.0.0/16)."
+            )
 
         if not (self.DATABASE_URL and self.SYNC_DATABASE_URL):
             errors.append("DATABASE_URL/SYNC_DATABASE_URL (or DB_* secret parts) must resolve in production.")

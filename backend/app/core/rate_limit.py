@@ -12,19 +12,26 @@ from app.core.config import settings
 
 
 def get_request_ip(request: Request) -> str | None:
-    """Return the client IP, honoring proxy headers only from trusted hops."""
+    """Return the real client IP, honoring proxy headers only from trusted hops.
+
+    Walks X-Forwarded-For RIGHT-TO-LEFT and returns the first entry that is NOT a
+    trusted proxy. The LEFTMOST entry is client-supplied and therefore spoofable —
+    using it (as before) lets a caller forge their IP to evade rate limits or write
+    an arbitrary consent_ip. The rightmost-untrusted entry is the one the nearest
+    trusted proxy (the LB) actually observed, which a client cannot control.
+
+    Requires TRUSTED_PROXY_IPS to list the real proxy/LB ranges. A 0.0.0.0/0 value
+    would mark every hop trusted and skip the whole chain (rejected in prod config).
+    """
     remote = request.client.host if request.client else None
     if not _is_trusted_proxy(remote):
         return remote
 
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        candidate = forwarded.split(",", 1)[0].strip()
-        if _is_valid_ip(candidate):
-            return candidate
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if _is_valid_ip(real_ip):
-        return real_ip
+        for candidate in reversed([part.strip() for part in forwarded.split(",")]):
+            if _is_valid_ip(candidate) and not _is_trusted_proxy(candidate):
+                return candidate
     return remote
 
 
