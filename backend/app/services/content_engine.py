@@ -378,13 +378,17 @@ def _sanitize_forbidden(result: dict, violations: list[str]) -> dict:
     Operates on title, body, and meta_description fields. Only used as a fallback
     when Claude generates text containing banned terms despite prompt instructions.
     """
-    from app.utils.medical_filter import FORBIDDEN_PATTERNS
+    from app.utils.medical_filter import FORBIDDEN_PATTERNS, normalize_for_check
 
     sanitized = dict(result)
     for field in ("title", "body", "meta_description"):
         text = sanitized.get(field)
         if not isinstance(text, str):
             continue
+        # 탐지(check_forbidden)는 NFKC 정규화된 문자열에서 매칭하므로, 제거도 동일하게
+        # 정규화 후 수행해야 전각(１００％)·zero-width 변형이 실제로 지워진다. 정규화 없이
+        # raw에 sub하면 탐지는 되지만 제거가 안 돼 재검사에서 hard-fail한다(리뷰 회귀).
+        text = normalize_for_check(text)
         for label in violations:
             pattern = FORBIDDEN_PATTERNS.get(label)
             if pattern:

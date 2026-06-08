@@ -18,7 +18,10 @@ class QueryMatrix(Base):
     __tablename__ = "query_matrix"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    hospital_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"))
+    hospital_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("hospitals.id", ondelete="CASCADE"),
+        index=True,  # ix_query_matrix_hospital_id (migration 0023)
+    )
     query_text: Mapped[str] = mapped_column(String(500), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[str] = mapped_column(String(20), default="NORMAL")  # HIGH, NORMAL, LOW
@@ -272,6 +275,7 @@ class ExposureAction(Base):
     )
     linked_report_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("monthly_reports.id", ondelete="SET NULL"),
+        index=True,  # ix_exposure_actions_linked_report_id (migration 0023)
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

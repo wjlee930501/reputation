@@ -63,9 +63,16 @@ def test_audit_log_update_and_delete_are_blocked(pg_conn):
         with pg_conn.begin_nested():
             pg_conn.execute(text("DELETE FROM admin_audit_logs WHERE id=:id"), {"id": aid})
 
+    # Even nulling only hospital_id (orphaning the row) must be blocked — there is
+    # no FK cascade carve-out anymore, so the table is fully immutable.
+    with pytest.raises(DBAPIError):
+        with pg_conn.begin_nested():
+            pg_conn.execute(text("UPDATE admin_audit_logs SET hospital_id=NULL WHERE id=:id"), {"id": aid})
 
-def test_hospital_delete_cascades_audit_hospital_id_to_null(pg_conn):
-    # The append-only trigger must still permit the FK ON DELETE SET NULL cascade.
+
+def test_hospital_delete_keeps_audit_row_immutable(pg_conn):
+    # With the FK dropped, deleting a hospital does NOT mutate audit rows; the
+    # hospital_id is retained as a historical record.
     hid = _insert_hospital(pg_conn, slug=f"itest-{uuid.uuid4().hex[:8]}")
     aid = uuid.uuid4()
     pg_conn.execute(
@@ -79,7 +86,7 @@ def test_hospital_delete_cascades_audit_hospital_id_to_null(pg_conn):
     row = pg_conn.execute(
         text("SELECT hospital_id, actor FROM admin_audit_logs WHERE id=:id"), {"id": aid}
     ).first()
-    assert row is not None and row[0] is None and row[1] == "AE"
+    assert row is not None and str(row[0]) == str(hid) and row[1] == "AE"
 
 
 def test_fk_covering_indexes_exist(pg_conn):

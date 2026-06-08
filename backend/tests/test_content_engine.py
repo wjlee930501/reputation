@@ -9,7 +9,12 @@ os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 import pytest  # noqa: E402
 
-from app.services.content_engine import _parse_json_response, _validate_body_length  # noqa: E402
+from app.services.content_engine import (  # noqa: E402
+    _parse_json_response,
+    _sanitize_forbidden,
+    _validate_body_length,
+)
+from app.utils.medical_filter import check_forbidden  # noqa: E402
 
 
 def test_parse_json_response_accepts_fenced_json():
@@ -43,3 +48,23 @@ def test_validate_body_length_rejects_short_body():
 def test_validate_body_length_rejects_runaway_body():
     with pytest.raises(ValueError, match="too long"):
         _validate_body_length("긴 본문입니다. " * 900)
+
+
+def test_sanitize_forbidden_removes_obfuscated_terms():
+    # 회귀 가드: NFKC 탐지와 raw 제거가 어긋나 전각/zero-width 위반이 제거되지 않으면
+    # generate_content가 hard-fail한다. 정규화 후 제거로 실제로 사라져야 한다.
+    result = {
+        "title": "１등 진료",          # full-width digit
+        "body": "성공 확률 １００％ 달성, 부작용 제로",  # full-width 100%
+        "meta_description": "완​치 가능",  # zero-width space in 완치
+    }
+    violations = check_forbidden(
+        result["title"] + result["body"] + result["meta_description"]
+    )
+    assert violations  # detected
+
+    sanitized = _sanitize_forbidden(result, violations)
+    remaining = check_forbidden(
+        sanitized["title"] + sanitized["body"] + sanitized["meta_description"]
+    )
+    assert remaining == [], f"sanitizer left obfuscated violations: {remaining}"

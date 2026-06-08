@@ -77,12 +77,17 @@ export async function POST(request: Request) {
 
   // 실제 방문자 IP를 백엔드로 전달한다. 누락 시 rate-limit이 단일 egress IP 버킷으로
   // 무너지고 PIPA 동의 IP(consent_ip)가 데이터센터 IP로 잘못 저장된다.
+  // 플랫폼이 설정하는 신뢰 헤더(x-vercel-forwarded-for / x-real-ip)를 우선한다. 클라이언트가
+  // 임의로 채울 수 있는 x-forwarded-for의 leftmost는 최후 수단(admin/lib/security.ts와 동일 정책).
   const outboundHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
   }
-  const forwardedFor = request.headers.get('x-forwarded-for')
-  const realIp = request.headers.get('x-real-ip')
-  const clientIp = (forwardedFor?.split(',')[0] || realIp || '').trim()
+  const clientIp = (
+    request.headers.get('x-vercel-forwarded-for') ||
+    request.headers.get('x-real-ip') ||
+    request.headers.get('x-forwarded-for')?.split(',')[0] ||
+    ''
+  ).trim()
   if (clientIp) {
     outboundHeaders['X-Forwarded-For'] = clientIp
     outboundHeaders['X-Real-IP'] = clientIp

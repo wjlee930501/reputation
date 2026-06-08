@@ -74,7 +74,10 @@ class ContentSchedule(Base):
     __tablename__ = "content_schedules"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    hospital_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"))
+    hospital_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("hospitals.id", ondelete="CASCADE"),
+        index=True,  # ix_content_schedules_hospital_id (migration 0023)
+    )
 
     plan: Mapped[str] = mapped_column(String(20), nullable=False)  # PLAN_16 | PLAN_12 | PLAN_8
     publish_days: Mapped[list] = mapped_column(JSON, nullable=False)
@@ -103,7 +106,10 @@ class ContentItem(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     hospital_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("hospitals.id", ondelete="CASCADE"))
-    schedule_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("content_schedules.id", ondelete="CASCADE"))
+    schedule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("content_schedules.id", ondelete="CASCADE"),
+        index=True,  # ix_content_items_schedule_id (migration 0023)
+    )
 
     content_type: Mapped[ContentType] = mapped_column(Enum(ContentType), nullable=False)
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)   # 이번 달 N번째

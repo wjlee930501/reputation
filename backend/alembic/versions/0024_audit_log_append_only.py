@@ -1,13 +1,17 @@
 """make admin_audit_logs append-only (tamper-evident)
 
 DATA-1/AUTH-7: the application role can currently UPDATE/DELETE audit rows, so the
-trail is not tamper-evident. Install a trigger that blocks all DELETEs and all
-content-mutating UPDATEs, while still permitting the FK ``ON DELETE SET NULL``
-cascade (hospital_id -> NULL, everything else unchanged) so hospital deletion keeps
-working. TRUNCATE is blocked at the statement level.
+trail is not tamper-evident. Make the table fully immutable:
 
-Note: the DB role is currently a superuser; a superuser can still bypass triggers by
-setting session_replication_role. Reducing that grant is a Cloud SQL ops follow-up.
+  1. Drop the hospital_id FK (was ON DELETE SET NULL). Without it, deleting a
+     hospital no longer mutates audit rows — they keep the original hospital_id as
+     a historical record. This removes the ONLY legitimate reason to allow an
+     UPDATE, so the trigger can block ALL mutations with no exception (an earlier
+     hospital_id->NULL carve-out would have let a caller orphan/hide rows).
+  2. Trigger blocks every UPDATE/DELETE (row-level) and TRUNCATE (statement-level).
+
+Note: the DB role is currently a superuser; a superuser can still bypass triggers
+via session_replication_role. Reducing that grant is a Cloud SQL ops follow-up.
 
 Revision ID: 0024_audit_log_append_only
 Revises: 0023_harden_hospital_json_and_fk_indexes
@@ -23,27 +27,14 @@ depends_on = None
 _FUNCTION = """
 CREATE OR REPLACE FUNCTION reject_audit_log_mutation() RETURNS trigger AS $$
 BEGIN
-    IF TG_OP IN ('DELETE', 'TRUNCATE') THEN
-        RAISE EXCEPTION 'admin_audit_logs is append-only (tamper-evident audit trail)';
-    END IF;
-    -- UPDATE: allow ONLY the FK ON DELETE SET NULL cascade (hospital_id -> NULL).
-    IF NEW.id IS DISTINCT FROM OLD.id
-        OR NEW.actor IS DISTINCT FROM OLD.actor
-        OR NEW.action IS DISTINCT FROM OLD.action
-        OR NEW.target_type IS DISTINCT FROM OLD.target_type
-        OR NEW.target_id IS DISTINCT FROM OLD.target_id
-        OR NEW.detail::text IS DISTINCT FROM OLD.detail::text
-        OR NEW.created_at IS DISTINCT FROM OLD.created_at
-        OR NEW.hospital_id IS NOT NULL THEN
-        RAISE EXCEPTION 'admin_audit_logs is append-only (tamper-evident audit trail)';
-    END IF;
-    RETURN NEW;
+    RAISE EXCEPTION 'admin_audit_logs is append-only (tamper-evident audit trail)';
 END;
 $$ LANGUAGE plpgsql;
 """
 
 
 def upgrade() -> None:
+    op.execute("ALTER TABLE admin_audit_logs DROP CONSTRAINT IF EXISTS admin_audit_logs_hospital_id_fkey")
     op.execute(_FUNCTION)
     op.execute(
         "CREATE TRIGGER admin_audit_logs_block_mutation "
@@ -61,3 +52,7 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS admin_audit_logs_block_truncate ON admin_audit_logs")
     op.execute("DROP TRIGGER IF EXISTS admin_audit_logs_block_mutation ON admin_audit_logs")
     op.execute("DROP FUNCTION IF EXISTS reject_audit_log_mutation()")
+    op.execute(
+        "ALTER TABLE admin_audit_logs ADD CONSTRAINT admin_audit_logs_hospital_id_fkey "
+        "FOREIGN KEY (hospital_id) REFERENCES hospitals(id) ON DELETE SET NULL"
+    )
