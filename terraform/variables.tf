@@ -27,6 +27,21 @@ variable "app_name" {
 }
 
 # ── Cloud Run ─────────────────────────────────────────────────────
+variable "api_image" {
+  description = <<-EOT
+    Container image for the api/worker/beat Cloud Run services. Prefer an
+    immutable digest reference (e.g.
+    "us-central1-docker.pkg.dev/<project>/reputation/reputation@sha256:<digest>")
+    so deploys and rollbacks are reproducible. The CI/CD pipeline should set
+    this to the digest it just pushed. A floating tag is allowed as a fallback
+    but is discouraged because :latest is mutable. The default leaves the value
+    empty so the project-derived default below is used; set explicitly to a
+    digest in production.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "api_memory" {
   description = "API service memory"
   type        = string
@@ -154,4 +169,60 @@ variable "site_revalidate_url" {
   description = "Site revalidation webhook URL. Defaults to https://<domain>/api/revalidate."
   type        = string
   default     = ""
+}
+
+# ── Backend runtime / security env ─────────────────────────────────
+variable "allowed_origins" {
+  description = <<-EOT
+    Browser-facing CORS allowlist for the API (ALLOWED_ORIGINS). Comma-separated
+    HTTPS origins for the production admin and site domains. CORS runs with
+    credentials, so this must never be "*" and must not contain localhost in
+    production. Defaults to the public site + admin origins derived from
+    var.domain / var.admin_subdomain; override if those differ.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "trusted_proxy_ips" {
+  description = <<-EOT
+    CIDR ranges of trusted reverse-proxy hops (TRUSTED_PROXY_IPS) the backend
+    will honor X-Forwarded-For / X-Real-IP from when keying rate limits and
+    recording consent IPs. Because Cloud Run ingress is restricted to the
+    internal load balancer, the immediate TCP peer is always the Google LB, so
+    the default trusts the full range. Comma-joined into the env var.
+  EOT
+  type        = list(string)
+  default     = ["0.0.0.0/0", "::/0"]
+}
+
+variable "public_site_rate_limit" {
+  description = "PUBLIC_SITE_RATE_LIMIT for unauthenticated public site read endpoints."
+  type        = string
+  default     = "300/minute;6000/hour"
+}
+
+# ── Redis hardening (INFRA-5) ─────────────────────────────────────
+variable "redis_auth_enabled" {
+  description = <<-EOT
+    Enable Memorystore AUTH + TLS (SERVER_AUTHENTICATION). OFF by default because
+    it is a coordinated change: the plaintext redis:// REDIS_URL in cloudrun.tf
+    must switch to rediss://:<auth>@host:6379/0 (with broker TLS CA config) in the
+    same apply or the Celery broker stops connecting. Redis is already VPC-private,
+    so default-off does not expose the broker. See redis.tf rollout note.
+  EOT
+  type        = bool
+  default     = false
+}
+
+# ── IAM (least privilege) ─────────────────────────────────────────
+variable "aiplatform_role" {
+  description = <<-EOT
+    Vertex AI role granted to the app service account (INFRA-7). The app only
+    needs Imagen 3 prediction. Defaults to the broad predefined roles/aiplatform.user;
+    override with a custom role (e.g. "projects/<project>/roles/imagenPredictor"
+    carrying only aiplatform.endpoints.predict) to follow least-privilege.
+  EOT
+  type        = string
+  default     = "roles/aiplatform.user"
 }

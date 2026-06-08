@@ -26,3 +26,22 @@ db_instance_tier = "db-custom-1-3840"
 
 # ── Site ───────────────────────────────────────────────────────────
 site_revalidate_url    = "https://reputation.co.kr/api/revalidate"
+
+# ── Container image (INFRA-2) ──────────────────────────────────────
+# Prefer an immutable digest so deploys/rollbacks are reproducible. CI/CD
+# should set this to the digest it just pushed. Leave empty to fall back to the
+# (mutable) :latest tag.
+# api_image = "us-central1-docker.pkg.dev/reputation-prod/reputation/reputation@sha256:<digest>"
+
+# ── Backend security env (AUTH-1 / AUTH-5) ─────────────────────────
+# CORS allowlist (browser-facing, credentials enabled → HTTPS only, no '*').
+# Defaults to https://<domain> and https://<admin_subdomain>; override if needed.
+# allowed_origins   = ["https://reputation.co.kr", "https://admin.reputation.co.kr"]
+# Trusted proxy hops for X-Forwarded-For. Default trusts all because ingress is
+# internal-LB-only (the immediate hop is always the Google LB).
+# trusted_proxy_ips = ["0.0.0.0/0", "::/0"]
+
+# ── Redis AUTH/TLS follow-up (INFRA-5) ─────────────────────────────
+# After apply, Redis requires AUTH + TLS. Retrieve the AUTH string with:
+#   terraform output -raw redis_auth_string
+# then set REDIS_URL to rediss://:<auth>@<host>:6379/0 (ideally via Secret Manager).

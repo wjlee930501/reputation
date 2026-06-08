@@ -45,6 +45,12 @@ output "redis_port" {
   value       = google_redis_instance.main.port
 }
 
+output "redis_auth_string" {
+  description = "Memorystore Redis AUTH string (INFRA-5). Use in REDIS_URL as rediss://:<auth>@<host>:<port>/0."
+  value       = google_redis_instance.main.auth_string
+  sensitive   = true
+}
+
 output "images_bucket" {
   value = google_storage_bucket.images.name
 }
