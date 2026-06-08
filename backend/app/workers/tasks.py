@@ -64,23 +64,39 @@ def _run_async(coro):
 _redis_client = None
 
 
-def _claim_once(key: str, ttl_seconds: int = 82_800) -> bool:
-    """Idempotency day-lock via the Redis broker (CELERY-4).
-
-    Returns True if THIS call won the claim, False if it was already claimed within
-    the TTL (~23h default). Fail-open: if Redis is unreachable we return True so a
-    transient broker hiccup never silently drops a scheduled run.
-    """
+def _get_redis():
     global _redis_client
-    try:
-        if _redis_client is None:
-            import redis
+    if _redis_client is None:
+        import redis
 
-            _redis_client = redis.from_url(settings.REDIS_URL)
-        return bool(_redis_client.set(key, "1", nx=True, ex=ttl_seconds))
+        _redis_client = redis.from_url(settings.REDIS_URL)
+    return _redis_client
+
+
+def _already_done(key: str) -> bool:
+    """Idempotency READ — True if this daily run was already marked done (CELERY-4).
+
+    Fail-open: returns False on a Redis error so a transient broker hiccup never
+    silently drops a scheduled run (better to risk a duplicate than to lose it).
+    """
+    try:
+        return _get_redis().get(key) is not None
     except Exception:
-        logger.warning("Redis idempotency claim unavailable for %s; proceeding (fail-open)", key)
-        return True
+        logger.warning("Redis idempotency read unavailable for %s; proceeding", key)
+        return False
+
+
+def _mark_done(key: str, ttl_seconds: int = 82_800) -> None:
+    """Mark a daily run done AFTER its side effects succeeded (claim-after-success).
+
+    Claiming before the work would forfeit the entire day's notification on a
+    mid-task crash, since the beat fires only once/day and the key would block any
+    re-trigger for ~23h.
+    """
+    try:
+        _get_redis().set(key, "1", ex=ttl_seconds)
+    except Exception:
+        logger.warning("Redis idempotency mark unavailable for %s", key)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -458,8 +474,10 @@ def morning_content_notification():
     """오늘 발행 예정 콘텐츠 초안 완료 알림"""
     today = arrow.now("Asia/Seoul").date()
 
-    # 같은 날 재배달/수동 재트리거 시 Slack 중복 송출 방지 (CELERY-4).
-    if not _claim_once(f"morning_content_notification:{today}"):
+    # 같은 날 재트리거 시 Slack 중복 송출 방지 (CELERY-4). 단, 작업 완료 후에 표시해
+    # 중간 크래시 시 알림이 통째로 유실되지 않게 한다(claim-after-success).
+    done_key = f"morning_content_notification:{today}"
+    if _already_done(done_key):
         logger.info("morning_content_notification already ran for %s; skipping", today)
         return
 
@@ -482,6 +500,8 @@ def morning_content_notification():
                 scheduled_date=str(item.scheduled_date),
                 admin_url=admin_url,
             ))
+
+    _mark_done(done_key)
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -99,7 +99,8 @@ async def test_convert_sales_lead_creates_draft_hospital_from_lead():
     hospital = db.added[0]
     assert db.committed is True
     assert hospital.name == lead.clinic_name
-    assert hospital.phone == lead.contact
+    # PII-2: lead.contact must NOT be copied into the public hospital.phone.
+    assert getattr(hospital, "phone", None) is None
     assert hospital.source_lead_id == lead.id
     assert "priority onboarding" in hospital.onboarding_note
     assert hospital.specialties == [lead.clinic_type]

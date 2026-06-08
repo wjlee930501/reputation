@@ -85,7 +85,9 @@ async def convert_sales_lead(
             name=hospital_name,
             slug=slug,
             plan=request_body.plan,
-            phone=_phone_contact_or_none(lead.contact),
+            # PII-2: lead.contact(개인 식별 가능)을 공개 hospital.phone로 복사하지 않는다 —
+            # 복사 시 보유기간 파기/정보주체 파기를 우회해 공개 /site에 잔존한다. 병원 공식
+            # 전화번호는 AE가 프로파일 단계에서 검증해 직접 입력한다.
             source_lead_id=lead.id,
             onboarding_note=_build_onboarding_note(lead, request_body.conversion_note),
             specialties=[lead.clinic_type] if lead.clinic_type else [],
