@@ -31,7 +31,9 @@ jobs:
           --health-retries 5
     env:
       APP_ENV: test
-      ADMIN_SECRET_KEY: test
+      # tests/conftest.py가 test-admin-key로 강제 설정한다 — 여기 값과 어긋나도 무방하지만
+      # 혼동을 줄이기 위해 동일 값 사용.
+      ADMIN_SECRET_KEY: test-admin-key
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/reputation_test
       SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test
       INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reputation_test
