@@ -122,8 +122,18 @@ cert ACTIVE 확인: `gcloud compute ssl-certificates list`.
 
 ```bash
 bash scripts/deploy.sh migrate      # alembic upgrade head (Cloud Run Job)
-# admin_users 시드 (AUTH-4) — 이전 런북 §4와 동일
+
+# admin_users 시드 (AUTH-4) — backend 이미지의 SERVICE=seed-admin 사용:
+gcloud run jobs create reputation-seed-admin \
+  --image=${BASE}/reputation:${TAG} --region=${REGION} \
+  --service-account=reputation-sa@${PROJECT}.iam.gserviceaccount.com \
+  --vpc-connector=reputation-vpc-connector \
+  --set-cloudsql-instances=$(terraform -chdir=terraform output -raw database_connection_name) \
+  --set-env-vars="SERVICE=seed-admin,APP_ENV=production,ADMIN_EMAIL=ae@motionlabs.kr,ADMIN_NAME=AE,GCP_PROJECT_ID=${PROJECT},DB_USER=reputation,DB_NAME=reputation,CLOUD_SQL_CONNECTION_NAME=$(terraform -chdir=terraform output -raw database_connection_name)" \
+  --set-secrets="ADMIN_PASSWORD=ADMIN_OWNER_PASSWORD:latest,DB_PASSWORD=DB_PASSWORD:latest"
+gcloud run jobs execute reputation-seed-admin --region=${REGION} --wait
 ```
+(`ADMIN_OWNER_PASSWORD` secret을 미리 생성. 비밀번호는 14자 이상.)
 
 ## 5. 배포 검증 체크리스트
 
@@ -142,6 +152,21 @@ bash scripts/deploy.sh migrate      # alembic upgrade head (Cloud Run Job)
 
 이미지 digest 고정 배포이므로 직전 digest로 `terraform apply` 또는
 `gcloud run services update-traffic <svc> --to-revisions=<prev>=100`.
+
+## 운영 준비 패스 3에서 해결된 런타임 블로커 (참고)
+
+배포 전 리뷰에서 발견·수정된 항목 — 코드/terraform에 이미 반영돼 있어 추가 조치 불필요:
+- **worker/beat가 $PORT 미리슨 → revision ready 실패**: entrypoint가
+  `app/workers/health_server.py`를 사이드 프로세스로 기동 + terraform TCP probe.
+- **signed URL 서명 실패**: Cloud Run ADC에는 개인키가 없어 IAM signBlob 경유 —
+  SA self `roles/iam.serviceAccountTokenCreator`(terraform) + 코드 폴백.
+- **자산이 휘발성 로컬 디스크로 저장**: `is_gcs_configured()`가 키 파일만 검사 →
+  `K_SERVICE`(Cloud Run) ADC 인식 추가.
+- **admin 전 요청 403**: Next standalone의 `nextUrl.origin`이 `localhost:<PORT>`로
+  치환돼 same-origin CSRF 체크가 항상 실패 → forwarded 헤더(Host/X-Forwarded-Proto)
+  기반 비교로 교체 (standalone 실서버에서 양/음성 케이스 검증).
+- **모니터링**: `terraform apply -var alert_email=ops@...` 설정 시 API/site 업타임
+  체크(/api/v1/health/live, /) + 이메일 알림 생성.
 
 ## 운영 메모
 

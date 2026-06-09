@@ -270,6 +270,21 @@ resource "google_cloud_run_v2_service" "worker" {
         cpu_idle = false
       }
 
+      # entrypoint가 $PORT에 헬스 서버를 띄운다 (Cloud Run 서비스 필수 요건).
+      ports {
+        container_port = 8080
+      }
+
+      startup_probe {
+        initial_delay_seconds = 5
+        timeout_seconds       = 5
+        period_seconds        = 5
+        failure_threshold     = 6
+        tcp_socket {
+          port = 8080
+        }
+      }
+
       volume_mounts {
         name       = "cloudsql"
         mount_path = "/cloudsql"
@@ -360,6 +375,21 @@ resource "google_cloud_run_v2_service" "beat" {
           memory = var.beat_memory
         }
         cpu_idle = false
+      }
+
+      # entrypoint가 $PORT에 헬스 서버를 띄운다 (Cloud Run 서비스 필수 요건).
+      ports {
+        container_port = 8080
+      }
+
+      startup_probe {
+        initial_delay_seconds = 5
+        timeout_seconds       = 5
+        period_seconds        = 5
+        failure_threshold     = 6
+        tcp_socket {
+          port = 8080
+        }
       }
 
       volume_mounts {

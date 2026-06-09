@@ -66,12 +66,23 @@ export function isStateChangingMethod(method: string): boolean {
 export function hasValidSameOrigin(req: RequestLike): boolean {
   if (!isStateChangingMethod(req.method ?? 'GET')) return true
 
-  const expectedOrigin = req.nextUrl?.origin
   const origin = req.headers.get('origin')
-  if (!expectedOrigin || !origin) return false
+  if (!origin) return false
+
+  // nextUrl.origin은 쓰지 않는다 — Next standalone(Cloud Run)에서 host가
+  // localhost:<PORT>로 치환돼 모든 비교가 실패한다(전 요청 403). 대신 프록시/LB가
+  // 설정하는 forwarded 헤더(없으면 Host)로 기대 origin을 구성한다. CSRF 방어
+  // 목적상 비교 대상은 "브라우저가 보낸 Origin == 요청이 도착한 host"면 충분하다.
+  const expectedHost = (req.headers.get('x-forwarded-host') || req.headers.get('host') || '')
+    .split(',')[0]
+    .trim()
+  if (!expectedHost) return false
+  const forwardedProto = (req.headers.get('x-forwarded-proto') || '').split(',')[0].trim()
+  const expectedProto = forwardedProto || req.nextUrl?.origin?.split(':')[0] || 'https'
 
   try {
-    return new URL(origin).origin === expectedOrigin
+    const parsed = new URL(origin)
+    return parsed.host === expectedHost && parsed.protocol === `${expectedProto}:`
   } catch {
     return false
   }

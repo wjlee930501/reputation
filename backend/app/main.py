@@ -166,6 +166,18 @@ async def health():
     return {"status": "ok"}
 
 
+# /api/v1 별칭: LB URL map은 /api/v1/* 만 API로 라우팅하므로, 외부 업타임 체크가
+# LB를 통해 API 헬스에 도달하려면 이 경로가 필요하다 (/health/*는 site로 간다).
+@app.get("/api/v1/health/live")
+async def liveness_via_lb():
+    return {"status": "ok"}
+
+
+@app.get("/api/v1/health/ready")
+async def readiness_via_lb():
+    return await readiness()
+
+
 @app.get("/health/ready")
 async def readiness():
     """Cloud Run readiness probe — DB 연결 확인 포함."""

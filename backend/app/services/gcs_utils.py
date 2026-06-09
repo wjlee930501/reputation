@@ -30,7 +30,23 @@ def get_signed_url(gcs_path: str, expiration_hours: int = 1) -> str:
         client = _get_gcs_client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
-        return blob.generate_signed_url(expiration=timedelta(hours=expiration_hours))
+        expiration = timedelta(hours=expiration_hours)
+        try:
+            return blob.generate_signed_url(expiration=expiration)
+        except Exception:
+            # Cloud Run/GCE: ADC에 개인키가 없어 로컬 서명이 불가 — IAM signBlob API로
+            # 서명한다. SA에 roles/iam.serviceAccountTokenCreator(자기 자신) 필요
+            # (terraform serviceaccount.tf app_self_token_creator).
+            import google.auth
+            from google.auth.transport import requests as gauth_requests
+
+            credentials, _ = google.auth.default()
+            credentials.refresh(gauth_requests.Request())
+            return blob.generate_signed_url(
+                expiration=expiration,
+                service_account_email=credentials.service_account_email,
+                access_token=credentials.token,
+            )
     except ImportError:
         logger.warning("google-cloud-storage not installed — returning gcs_path as-is")
         return gcs_path
