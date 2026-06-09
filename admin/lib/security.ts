@@ -18,22 +18,39 @@ function isLikelyIp(value: string): boolean {
   return value.includes(':') && /^[0-9a-fA-F:.]+$/.test(value)
 }
 
-export function getLoginRateLimitKey(req: RequestLike): string | null {
-  // NextRequest has no `.ip` in Next 16, so derive the client IP from trusted
-  // edge headers. On Vercel x-vercel-forwarded-for / x-real-ip are set by the
-  // platform; x-forwarded-for is client-controllable, so only its leftmost
-  // entry is used as a last resort.
-  const candidates = [
-    req.headers.get('x-vercel-forwarded-for'),
-    req.headers.get('x-real-ip'),
-    req.headers.get('x-forwarded-for')?.split(',')[0],
-  ]
+export function clientIpFromForwardedHeaders(headers: HeaderLike): string | null {
+  // NextRequest has no `.ip` in Next 16, so derive the client IP from proxy
+  // headers, preferring platform-controlled values over client-controllable ones:
+  // 1. x-vercel-forwarded-for / x-real-ip — set by the platform when on Vercel.
+  // 2. X-Forwarded-For behind the GCP external Application LB: the LB appends
+  //    "<client-ip>, <lb-ip>" to whatever the client supplied, so the real
+  //    client is the SECOND-FROM-RIGHT entry. Leftmost entries are spoofable.
+  //    (Cloud Run ingress is INTERNAL_LOAD_BALANCER, so traffic always passes
+  //    the LB in production; a direct single-entry XFF only happens in dev.)
+  const platformIp = (
+    headers.get('x-vercel-forwarded-for') ||
+    headers.get('x-real-ip') ||
+    ''
+  ).trim()
+  if (platformIp && isLikelyIp(platformIp)) {
+    return platformIp
+  }
 
-  for (const candidate of candidates) {
-    const ip = candidate?.trim()
-    if (ip && isLikelyIp(ip)) {
-      return `ip:${ip}`
+  const forwarded = headers.get('x-forwarded-for')
+  if (forwarded) {
+    const entries = forwarded.split(',').map((entry) => entry.trim()).filter(Boolean)
+    const candidate = entries.length >= 2 ? entries[entries.length - 2] : entries[0]
+    if (candidate && isLikelyIp(candidate)) {
+      return candidate
     }
+  }
+  return null
+}
+
+export function getLoginRateLimitKey(req: RequestLike): string | null {
+  const ip = clientIpFromForwardedHeaders(req.headers)
+  if (ip) {
+    return `ip:${ip}`
   }
 
   // Fail open per-request rather than a shared 'global' bucket: returning null

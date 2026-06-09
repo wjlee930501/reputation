@@ -6,8 +6,14 @@
 #   bash scripts/deploy.sh api          # API 서비스만 배포
 #   bash scripts/deploy.sh worker       # Worker 서비스만 배포
 #   bash scripts/deploy.sh beat         # Beat 서비스만 배포
-#   bash scripts/deploy.sh all          # 전체 서비스 배포
+#   bash scripts/deploy.sh site         # 공개 site (Next.js) 배포
+#   bash scripts/deploy.sh admin       # admin 콘솔 (Next.js) 배포
+#   bash scripts/deploy.sh all          # 전체 서비스 배포 (backend 3 + site + admin)
 #   bash scripts/deploy.sh migrate      # DB 마이그레이션 실행
+#
+# site/admin 배포에는 도메인 env가 필요하다 (NEXT_PUBLIC_* 빌드 인라인용):
+#   PUBLIC_DOMAIN=reputation.co.kr ADMIN_DOMAIN=admin.reputation.co.kr \
+#     bash scripts/deploy.sh site
 #
 # 사전 준비:
 #   1. gcloud CLI 설치 + 로그인 (gcloud auth login)
@@ -60,6 +66,19 @@ BEAT_MEMORY="${BEAT_MEMORY:-256Mi}"
 BEAT_CPU="${BEAT_CPU:-1}"
 BEAT_MIN="${BEAT_MIN:-1}"     # beat는 항상 1개만
 BEAT_MAX="${BEAT_MAX:-1}"
+
+# Frontend (Next.js) — terraform/cloudrun_frontend.tf 기본값과 동일하게 유지
+FRONTEND_SERVICE_ACCOUNT="${FRONTEND_SERVICE_ACCOUNT:-reputation-frontend-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
+PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-}"   # 예: reputation.co.kr
+ADMIN_DOMAIN="${ADMIN_DOMAIN:-}"     # 예: admin.reputation.co.kr
+SITE_MEMORY="${SITE_MEMORY:-512Mi}"
+SITE_MIN="${SITE_MIN:-0}"
+# site max=1 기본: on-demand ISR revalidate가 단일 인스턴스 캐시만 비우기 때문
+# (terraform variables.tf site_max_instances 설명 참조).
+SITE_MAX="${SITE_MAX:-1}"
+ADMIN_MEMORY="${ADMIN_MEMORY:-512Mi}"
+ADMIN_MIN="${ADMIN_MIN:-0}"
+ADMIN_MAX="${ADMIN_MAX:-2}"
 
 REQUIRED_SECRET_NAMES=(
   "ANTHROPIC_API_KEY"
@@ -259,6 +278,93 @@ deploy_beat() {
   ok "Beat 배포 완료"
 }
 
+require_public_domain() {
+  if [[ -z "$PUBLIC_DOMAIN" ]]; then
+    fail "PUBLIC_DOMAIN 환경변수가 필요합니다 (예: PUBLIC_DOMAIN=reputation.co.kr). NEXT_PUBLIC_* 값이 빌드 시점에 번들로 인라인되기 때문입니다."
+  fi
+}
+
+build_and_push_site() {
+  require_public_domain
+  local image_url="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/site:${IMAGE_TAG}"
+  info "Site 이미지 빌드 중 (NEXT_PUBLIC_* 인라인: https://${PUBLIC_DOMAIN})..."
+  docker build \
+    --platform linux/amd64 \
+    --build-arg "NEXT_PUBLIC_API_URL=https://${PUBLIC_DOMAIN}/api/v1/public" \
+    --build-arg "NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN}" \
+    --build-arg "NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
+    -t "$image_url" \
+    -f "${PROJECT_ROOT}/site/Dockerfile" \
+    "${PROJECT_ROOT}/site"
+  docker push "$image_url"
+  ok "Site 이미지 푸시 완료: ${image_url}"
+  echo "$image_url"
+}
+
+build_and_push_admin() {
+  require_public_domain
+  local image_url="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/admin:${IMAGE_TAG}"
+  info "Admin 이미지 빌드 중..."
+  docker build \
+    --platform linux/amd64 \
+    --build-arg "NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
+    -t "$image_url" \
+    -f "${PROJECT_ROOT}/admin/Dockerfile" \
+    "${PROJECT_ROOT}/admin"
+  docker push "$image_url"
+  ok "Admin 이미지 푸시 완료: ${image_url}"
+  echo "$image_url"
+}
+
+deploy_site() {
+  local image_url="$1"
+  info "Site 서비스 배포 중..."
+
+  gcloud run deploy reputation-site \
+    --image="$image_url" \
+    --region="$REGION" \
+    --platform=managed \
+    --service-account="$FRONTEND_SERVICE_ACCOUNT" \
+    --memory="$SITE_MEMORY" \
+    --min-instances="$SITE_MIN" \
+    --max-instances="$SITE_MAX" \
+    --ingress=internal-and-cloud-load-balancing \
+    --allow-unauthenticated \
+    --set-env-vars="NEXT_PUBLIC_API_URL=https://${PUBLIC_DOMAIN}/api/v1/public,NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN},BACKEND_URL=https://${PUBLIC_DOMAIN}" \
+    --set-secrets="SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest" \
+    --port=8080 \
+    --timeout=60 \
+    --cpu-boost
+
+  ok "Site 배포 완료"
+}
+
+deploy_admin() {
+  local image_url="$1"
+  if [[ -z "$ADMIN_DOMAIN" ]]; then
+    info "ADMIN_DOMAIN 미설정 — admin은 LB 호스트 라우팅 없이 배포됩니다."
+  fi
+  info "Admin 서비스 배포 중..."
+
+  gcloud run deploy reputation-admin \
+    --image="$image_url" \
+    --region="$REGION" \
+    --platform=managed \
+    --service-account="$FRONTEND_SERVICE_ACCOUNT" \
+    --memory="$ADMIN_MEMORY" \
+    --min-instances="$ADMIN_MIN" \
+    --max-instances="$ADMIN_MAX" \
+    --ingress=internal-and-cloud-load-balancing \
+    --allow-unauthenticated \
+    --set-env-vars="BACKEND_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
+    --set-secrets="ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,ADMIN_SECRET_KEY=ADMIN_SECRET_KEY:latest" \
+    --port=8080 \
+    --timeout=60 \
+    --cpu-boost
+
+  ok "Admin 배포 완료"
+}
+
 run_migration() {
   info "DB 마이그레이션 실행 중..."
 
@@ -289,18 +395,30 @@ case "$TARGET" in
     IMAGE_URL=$(build_and_push)
     "deploy_${TARGET}" "$IMAGE_URL"
     ;;
+  site)
+    SITE_IMAGE_URL=$(build_and_push_site)
+    deploy_site "$SITE_IMAGE_URL"
+    ;;
+  admin)
+    ADMIN_IMAGE_URL=$(build_and_push_admin)
+    deploy_admin "$ADMIN_IMAGE_URL"
+    ;;
   all)
     IMAGE_URL=$(build_and_push)
     deploy_api "$IMAGE_URL"
     deploy_worker "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
+    SITE_IMAGE_URL=$(build_and_push_site)
+    deploy_site "$SITE_IMAGE_URL"
+    ADMIN_IMAGE_URL=$(build_and_push_admin)
+    deploy_admin "$ADMIN_IMAGE_URL"
     ;;
   migrate)
     IMAGE_URL=$(build_and_push)
     run_migration
     ;;
   *)
-    fail "알 수 없는 대상: $TARGET (api, worker, beat, all, migrate 중 하나)"
+    fail "알 수 없는 대상: $TARGET (api, worker, beat, site, admin, all, migrate 중 하나)"
     ;;
 esac
 

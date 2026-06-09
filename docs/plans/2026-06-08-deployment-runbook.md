@@ -1,5 +1,9 @@
 # Re:putation — Deployment Runbook (post-hardening)
 
+> ⚠️ **SUPERSEDED (2026-06-09):** 배포 대상이 전체 GCP로 변경됐다 (site/admin도
+> Cloud Run). 현행 런북은 `2026-06-09-gcp-full-deployment-runbook.md` — 이 문서의
+> §5(Vercel)는 더 이상 적용되지 않으며, 백엔드 절차(§0~§4)는 참조용으로 유효하다.
+
 > For deploying the production-hardening change set (main @ `01c5636`). Nothing is
 > deployed yet. Follow in order. ⛔ = hard blocker that crash-loops / locks out if skipped.
 
