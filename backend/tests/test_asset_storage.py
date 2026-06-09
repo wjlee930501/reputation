@@ -21,6 +21,7 @@ def test_is_gcs_configured_false_when_credentials_missing(monkeypatch, tmp_path)
     monkeypatch.setattr(asset_storage.settings, "GCP_PROJECT_ID", "real-project")
     monkeypatch.setattr(asset_storage.settings, "GCP_STORAGE_BUCKET", "real-bucket")
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.delenv("K_SERVICE", raising=False)
     assert is_gcs_configured() is False
 
 
@@ -30,7 +31,17 @@ def test_is_gcs_configured_false_when_credentials_path_missing(monkeypatch, tmp_
     monkeypatch.setenv(
         "GOOGLE_APPLICATION_CREDENTIALS", str(tmp_path / "missing-credentials.json")
     )
+    monkeypatch.delenv("K_SERVICE", raising=False)
     assert is_gcs_configured() is False
+
+
+def test_is_gcs_configured_true_on_cloud_run_metadata_adc(monkeypatch):
+    # Cloud Run: 키 파일 없이 메타데이터 서버 ADC — K_SERVICE env가 신호.
+    monkeypatch.setattr(asset_storage.settings, "GCP_PROJECT_ID", "real-project")
+    monkeypatch.setattr(asset_storage.settings, "GCP_STORAGE_BUCKET", "real-bucket")
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setenv("K_SERVICE", "reputation-api")
+    assert is_gcs_configured() is True
 
 
 def test_is_gcs_configured_true_with_full_setup(monkeypatch, tmp_path):

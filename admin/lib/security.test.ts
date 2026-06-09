@@ -12,11 +12,16 @@ const allowedPrefixes = ['hospitals', 'content', 'reports']
 
 function req(method: string, origin?: string) {
   const headers = new Headers()
+  // LB 뒤 실제 수신 형태: Host는 라우팅된 호스트, proto는 LB가 설정.
+  headers.set('host', 'admin.example.test')
+  headers.set('x-forwarded-proto', 'https')
   if (origin) headers.set('origin', origin)
   return {
     method,
     headers,
-    nextUrl: { origin: 'https://admin.example.test' },
+    // Next standalone에서 nextUrl.origin은 localhost:<PORT>로 치환된다 —
+    // 구현이 이 값에 의존하면 안 된다는 회귀 조건을 그대로 재현.
+    nextUrl: { origin: 'http://localhost:8080' },
   }
 }
 

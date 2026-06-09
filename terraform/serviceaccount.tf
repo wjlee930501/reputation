@@ -41,6 +41,15 @@ resource "google_project_iam_member" "roles" {
   depends_on = [google_project_service.services]
 }
 
+# Signed URL 생성: Cloud Run에는 SA 키 파일이 없어 generate_signed_url이
+# IAM signBlob API로 서명한다 — SA가 자기 자신을 서명자로 쓸 권한이 필요하다.
+# 없으면 공개 콘텐츠 이미지/자산 서빙(302 signed URL)과 리포트 다운로드가 전부 실패.
+resource "google_service_account_iam_member" "app_self_token_creator" {
+  service_account_id = google_service_account.app.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "serviceAccount:${google_service_account.app.email}"
+}
+
 resource "google_storage_bucket_iam_member" "app_images_admin" {
   bucket = google_storage_bucket.images.name
   role   = "roles/storage.objectAdmin"

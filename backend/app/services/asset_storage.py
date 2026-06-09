@@ -22,17 +22,22 @@ LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 def is_gcs_configured() -> bool:
     """GCS 사용 가능 여부.
 
-    PROJECT_ID + BUCKET이 셋팅되어 있고, GOOGLE_APPLICATION_CREDENTIALS가 실제 파일을
-    가리킬 때만 True. placeholder("REPLACE_ME") 또는 /dev/null fallback일 때는 False.
+    PROJECT_ID + BUCKET이 셋팅되어 있고 인증이 가능할 때 True:
+    - GOOGLE_APPLICATION_CREDENTIALS가 실제 키 파일을 가리키거나 (로컬 개발),
+    - Cloud Run 위에서 메타데이터 서버 ADC가 동작하거나 (K_SERVICE — 키 파일 없음).
+    키 파일만 검사하면 프로덕션(Cloud Run)에서 False가 되어 자산이 휘발성 로컬
+    디스크에 저장되고 인스턴스 재활용 시 유실된다.
+    placeholder("REPLACE_ME") 또는 /dev/null fallback일 때는 False.
     """
     if not (settings.GCP_PROJECT_ID and settings.GCP_STORAGE_BUCKET):
         return False
     if settings.GCP_PROJECT_ID.upper() == "REPLACE_ME":
         return False
     cred = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
-    if not cred or cred == "/dev/null" or not Path(cred).exists():
-        return False
-    return True
+    if cred and cred != "/dev/null" and Path(cred).exists():
+        return True
+    # Cloud Run이 주입하는 서비스명 env — 메타데이터 서버 ADC 사용 가능.
+    return bool(os.environ.get("K_SERVICE"))
 
 
 def store_asset_bytes(*, hospital_id: uuid.UUID, filename: str, data: bytes, mime_type: str) -> str:
