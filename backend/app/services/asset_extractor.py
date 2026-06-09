@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import io
 import ipaddress
 import logging
@@ -77,7 +78,9 @@ async def fetch_url_text(url: str) -> tuple[str, str | None]:
 
     실패 시 (빈 문자열, 사유) 반환. 성공 시 (text, None).
     """
-    target, validation_error = _validate_fetch_target(url)
+    # getaddrinfo는 블로킹 DNS 호출 — async 요청 핸들러에서 이벤트 루프를 멈추지 않도록
+    # 워커 스레드에서 실행 (리다이렉트 검증 포함 최대 1+MAX_REDIRECTS회 호출됨).
+    target, validation_error = await asyncio.to_thread(_validate_fetch_target, url)
     if validation_error or target is None:
         return "", validation_error
     try:
@@ -95,7 +98,9 @@ async def fetch_url_text(url: str) -> tuple[str, str | None]:
                 if not location:
                     break
                 next_url = urljoin(current_target.url, location)
-                next_target, validation_error = _validate_fetch_target(next_url)
+                next_target, validation_error = await asyncio.to_thread(
+                    _validate_fetch_target, next_url
+                )
                 if validation_error or next_target is None:
                     return "", f"리다이렉트 대상 차단: {validation_error}"
                 current_target = next_target

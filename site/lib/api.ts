@@ -124,24 +124,27 @@ export class ContentNotFoundError extends Error {
 }
 
 export async function fetchHospital(slug: string): Promise<Hospital> {
-  const res = await fetch(`${getApiBase()}/hospitals/${slug}`, publicFetchInit(3600))
+  // 경로 세그먼트는 항상 인코딩 — 라우트 파라미터는 URL 디코드된 값이라 ?/#/%2F 류가
+  // 백엔드 요청의 쿼리·경로로 주입될 수 있다 (admin BFF buildSafeAdminProxyPath와 동일 정책).
+  const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, publicFetchInit(3600))
   if (res.status === 404) throw new HospitalNotFoundError(slug)
-  if (!res.ok) throw new Error(`Server error (${res.status}) when fetching hospital`)  
+  if (!res.ok) throw new Error(`Server error (${res.status}) when fetching hospital`)
   return res.json()
 }
 
 export async function fetchContents(slug: string, limit?: number): Promise<ContentItem[]> {
-  const base = getApiBase()
-  const url = limit
-    ? `${base}/hospitals/${slug}/contents?limit=${limit}`
-    : `${base}/hospitals/${slug}/contents`
+  const base = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents`
+  const url = limit ? `${base}?limit=${limit}` : base
   const res = await fetch(url, publicFetchInit(1800))
   if (!res.ok) return []
   return res.json()
 }
 
 export async function fetchContent(slug: string, contentId: string): Promise<ContentItem> {
-  const res = await fetch(`${getApiBase()}/hospitals/${slug}/contents/${contentId}`, publicFetchInit(1800))
+  const res = await fetch(
+    `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents/${encodeURIComponent(contentId)}`,
+    publicFetchInit(1800),
+  )
   if (res.status === 404) throw new ContentNotFoundError(contentId)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching content`)
   return res.json()

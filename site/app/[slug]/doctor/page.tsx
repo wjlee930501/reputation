@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentItem } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -40,7 +40,10 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         description,
         url: `/${params.slug}/doctor`,
         type: 'profile',
-        images: hospital.director_photo_url ? [{ url: hospital.director_photo_url }] : [],
+        images: (() => {
+          const photo = resolveAssetUrl(hospital.director_photo_url)
+          return photo ? [{ url: photo }] : []
+        })(),
       },
     }
   } catch {
@@ -99,7 +102,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
     name: hospital.director_name,
     jobTitle: '원장',
     description: hospital.director_career || undefined,
-    image: hospital.director_photo_url || undefined,
+    image: resolveAssetUrl(hospital.director_photo_url) || undefined,
     medicalSpecialty: hospital.specialties,
     knowsAbout: knowsAbout.length > 0 ? knowsAbout : undefined,
     hasCredential: hasCredential.length > 0 ? hasCredential : undefined,

@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentItem } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 import {
   buildTreatmentSlug,
@@ -72,13 +72,19 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         description,
         url: `/${params.slug}/treatments/${treatmentSlug}`,
         type: 'website',
-        images: hospital.director_photo_url ? [{ url: hospital.director_photo_url }] : undefined,
+        images: (() => {
+          const photo = resolveAssetUrl(hospital.director_photo_url)
+          return photo ? [{ url: photo }] : undefined
+        })(),
       },
       twitter: {
         card: 'summary_large_image',
         title: `${treatment.name} | ${hospital.name}`,
         description,
-        images: hospital.director_photo_url ? [hospital.director_photo_url] : undefined,
+        images: (() => {
+          const photo = resolveAssetUrl(hospital.director_photo_url)
+          return photo ? [photo] : undefined
+        })(),
       },
     }
   } catch {
