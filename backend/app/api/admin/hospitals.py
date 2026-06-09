@@ -279,11 +279,22 @@ async def update_profile(
         "treatments",
         "profile_complete",
     }
-    update_data = body.model_dump(exclude_none=True)
+    # exclude_unset: 보내지 않은 필드는 유지하되, 명시적 null/빈 문자열은 '비우기'로
+    # 처리한다. exclude_none이었을 때는 잘못 입력된 URL/식별자를 지울 API 경로가 없었다.
+    # 비우기는 nullable 선택 필드에만 허용 — 필수·NOT NULL 필드의 null은 기존처럼 무시.
+    CLEARABLE_FIELDS = {
+        "website_url", "blog_url", "kakao_channel_url", "google_business_profile_url",
+        "google_maps_url", "naver_place_url", "latitude", "longitude",
+        "wikidata_qid", "gbp_place_id", "naver_place_id", "kakao_place_id", "hira_org_id",
+        "director_career", "director_philosophy", "director_credentials",
+    }
+    update_data = body.model_dump(exclude_unset=True)
     was_complete = h.profile_complete
     changed_fields: list[str] = []
     for field, value in update_data.items():
         if field not in PROFILE_FIELDS:
+            continue
+        if value is None and field not in CLEARABLE_FIELDS:
             continue
         if getattr(h, field, None) != value:
             changed_fields.append(field)
@@ -386,13 +397,16 @@ async def connect_domain(
     if previous_site_live:
         await trigger_hospital_site_revalidate(h.slug)
 
-    # 콘텐츠 허브 노출 상태 갱신 (legacy task name)
-    background_tasks.add_task(
-        build_aeo_site.apply_async,
-        args=[str(hospital_id)],
-        queue="default",
-    )
-    return {"detail": f"Domain {body.domain} set. Content hub exposure refresh triggered."}
+    # 콘텐츠 허브 노출 상태 갱신 (legacy task name) — 도메인이 실제로 바뀌었거나 최초 준비가
+    # 안 된 경우에만. 동일 도메인 재저장 시 불필요한 상태 전환·Slack 알림을 만들지 않는다.
+    if domain_changed or not h.site_built:
+        background_tasks.add_task(
+            build_aeo_site.apply_async,
+            args=[str(hospital_id)],
+            queue="default",
+        )
+        return {"detail": f"Domain {body.domain} set. Content hub exposure refresh triggered."}
+    return {"detail": f"Domain {body.domain} unchanged. No exposure refresh needed."}
 
 
 @router.patch("/{hospital_id}/activate")
@@ -418,7 +432,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     if not h.aeo_domain:
         raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다. 먼저 도메인을 입력해 주세요.")
 
-    cname_value = _resolve_cname(h.aeo_domain)
+    cname_value = await _resolve_cname(h.aeo_domain)
     if _normalize_dns_name(cname_value) != _normalize_dns_name(settings.CNAME_TARGET):
         raise HTTPException(
             status_code=400,

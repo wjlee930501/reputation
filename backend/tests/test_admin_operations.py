@@ -137,7 +137,10 @@ async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch)
     hospital = _hospital(schedule_set=True)
     db = FakeDB(hospital=hospital)
     monkeypatch.setattr(operations_api.settings, "CNAME_TARGET", "target.motionlabs.io")
-    monkeypatch.setattr(operations_api, "_resolve_cname", lambda domain: "target.motionlabs.io")
+    async def _fake_resolve_cname(domain):
+        return "target.motionlabs.io"
+
+    monkeypatch.setattr(operations_api, "_resolve_cname", _fake_resolve_cname)
 
     response = await operations_api.verify_domain_operation(hospital.id, db=db)
 
@@ -156,7 +159,10 @@ async def test_verify_domain_operation_blocks_live_without_readiness(monkeypatch
     hospital = _hospital(v0_report_done=False, site_built=True, schedule_set=True)
     db = FakeDB(hospital=hospital)
     monkeypatch.setattr(operations_api.settings, "CNAME_TARGET", "target.motionlabs.io")
-    monkeypatch.setattr(operations_api, "_resolve_cname", lambda domain: "target.motionlabs.io")
+    async def _fake_resolve_cname(domain):
+        return "target.motionlabs.io"
+
+    monkeypatch.setattr(operations_api, "_resolve_cname", _fake_resolve_cname)
 
     with pytest.raises(HTTPException) as exc:
         await operations_api.verify_domain_operation(hospital.id, db=db)

@@ -101,7 +101,8 @@ class ScheduleCreate(BaseModel):
 class ContentPatch(BaseModel):
     title: str | None = Field(default=None, max_length=300)
     body: str | None = None
-    meta_description: str | None = Field(default=None, max_length=500)
+    # DB 컬럼이 VARCHAR(300) — 더 길게 허용하면 검증을 통과한 뒤 commit에서 DataError 500.
+    meta_description: str | None = Field(default=None, max_length=300)
 
 
 class PublishBody(BaseModel):
@@ -447,6 +448,16 @@ async def reject_content(
     item.body = None   # 초기화 → 야간 생성 태스크가 다시 처리
     item.title = None
     item.image_url = None
+    # 발행됐던 아이템을 반려하면 발행 메타도 초기화 — 재생성·재발행 시 이전 발행 기록이
+    # 새 본문에 잘못 남는 것 방지.
+    item.published_at = None
+    item.published_by = None
+    item.generated_at = None
+    # 야간 생성은 scheduled_date == 내일 인 슬롯만 집는다. 발행일 당일(또는 그 후) 반려된
+    # 아이템은 그대로 두면 영원히 재생성되지 않으므로 내일로 재스케줄한다.
+    today_seoul = arrow.now("Asia/Seoul").date()
+    if item.scheduled_date and item.scheduled_date <= today_seoul:
+        item.scheduled_date = arrow.now("Asia/Seoul").shift(days=1).date()
     await write_audit_log(
         db,
         action="reject_content",

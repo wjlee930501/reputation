@@ -2,6 +2,7 @@
 Admin API — 공개 도메인 상태 검증
 POST /admin/hospitals/{id}/domain/verify — CNAME 확인 + ACTIVE 전환
 """
+import asyncio
 import socket
 import uuid
 
@@ -36,7 +37,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다. 먼저 도메인을 입력해 주세요.")
 
     domain = hospital.aeo_domain
-    cname_value = _resolve_cname(domain)
+    cname_value = await _resolve_cname(domain)
     verified = _normalize_dns_name(cname_value) == _normalize_dns_name(settings.CNAME_TARGET)
 
     if verified:
@@ -62,14 +63,22 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
-def _resolve_cname(domain: str) -> str | None:
-    """DNS CNAME 조회. 실패 시 None 반환."""
+async def _resolve_cname(domain: str) -> str | None:
+    """DNS CNAME 조회. 실패 시 None 반환.
+
+    동기 DNS 해석은 응답 없는 네임서버에서 수 초를 블로킹한다 — 단일 uvicorn 프로세스의
+    이벤트 루프가 멈추면 공개 표면 요청까지 함께 지연되므로 워커 스레드에서 실행한다.
+    """
+    return await asyncio.to_thread(_resolve_cname_blocking, domain)
+
+
+def _resolve_cname_blocking(domain: str) -> str | None:
     try:
-        # socket.getaddrinfo로 실제 해석된 호스트명 확인
         # 더 정확한 CNAME 조회를 위해 dnspython이 있으면 사용, 없으면 socket fallback
         try:
             import dns.resolver
-            answers = dns.resolver.resolve(domain, "CNAME")
+
+            answers = dns.resolver.resolve(domain, "CNAME", lifetime=5.0)
             return str(answers[0].target).rstrip(".")
         except ImportError:
             pass

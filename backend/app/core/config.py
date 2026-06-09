@@ -54,6 +54,7 @@ class Settings(BaseSettings):
             self.SITE_REVALIDATE_SECRET = _resolve_secret(
                 "SITE_REVALIDATE_SECRET", self.SITE_REVALIDATE_SECRET
             )
+            self.SITE_BFF_SECRET = _resolve_secret("SITE_BFF_SECRET", self.SITE_BFF_SECRET)
             self._fail_if_critical_production_secrets_empty()
             self._validate_production_config()
 
@@ -217,6 +218,11 @@ class Settings(BaseSettings):
     # 발행 시 site(Vercel) sitemap·페이지 캐시 무효화. 빈 값이면 호출 생략.
     SITE_REVALIDATE_URL: str = ""
     SITE_REVALIDATE_SECRET: str = ""
+
+    # Site BFF → backend 방문자 IP 전달 인증 (CDX-M1). site의 /api/leads BFF가 이 secret으로
+    # 자신을 증명하면 X-Visitor-IP 헤더를 실제 클라이언트 IP로 채택한다(XFF 체인은 Vercel
+    # egress hop에서 끊기므로). 빈 값이면 헤더 무시 — 기존 XFF right-to-left 파싱만 사용.
+    SITE_BFF_SECRET: str = ""
 
 
 settings = Settings()

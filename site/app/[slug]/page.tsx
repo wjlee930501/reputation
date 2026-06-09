@@ -1,7 +1,7 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
+import { fetchHospital, fetchContents, resolveAssetUrl, HospitalNotFoundError } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 
 import { AnswerClusters } from './_components/AnswerClusters'
@@ -64,7 +64,9 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
   try {
     const hospital = await fetchHospital(params.slug)
     const description = buildHospitalDescription(hospital)
-    const ogImage = hospital.director_photo_url ?? '/landing/default-hospital-og.png'
+    // 백엔드 자산 경로는 상대 URL일 수 있다 — 크롤러는 site origin 기준으로 잘못 해석하므로
+    // 절대 URL로 변환해야 OG/구조화 데이터 이미지가 깨지지 않는다.
+    const ogImage = resolveAssetUrl(hospital.director_photo_url) ?? '/landing/default-hospital-og.png'
     return {
       title: `${hospital.name} 정형외과 전문 진료`,
       description,
@@ -122,7 +124,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     '@id': `${SITE_URL}/${params.slug}#clinic`,
     name: hospital.name,
     url: `${SITE_URL}/${params.slug}`,
-    image: hospital.director_photo_url ?? undefined,
+    image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
     sameAs,
     address: {
       '@type': 'PostalAddress',
@@ -151,7 +153,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
       name: hospital.director_name,
       jobTitle: '원장',
       description: hospital.director_career,
-      image: hospital.director_photo_url ?? undefined,
+      image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
       url: `${SITE_URL}/${params.slug}/doctor`,
     },
     availableService: (hospital.treatments || []).map((treatment) => ({

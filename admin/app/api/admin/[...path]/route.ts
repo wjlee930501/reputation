@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { getBackendUrl } from "@/lib/backend";
 import { buildProxyResponse } from "@/lib/proxy-response";
 import { buildSafeAdminProxyPath, hasValidSameOrigin } from "@/lib/security";
 import { readSessionToken } from "@/lib/session";
 
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
 const ADMIN_KEY = process.env.ADMIN_SECRET_KEY || "";
 
 const ALLOWED_PREFIXES = ["hospitals", "content", "reports", "sov", "domain", "essence", "leads"];
@@ -44,7 +44,13 @@ async function handler(
     return new NextResponse("Forbidden", { status: 403 });
   }
 
-  const url = new URL(`/api/v1/admin/${path}`, BACKEND_URL);
+  let backendUrl: string;
+  try {
+    backendUrl = getBackendUrl();
+  } catch {
+    return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+  }
+  const url = new URL(`/api/v1/admin/${path}`, backendUrl);
 
   req.nextUrl.searchParams.forEach((value, key) => {
     url.searchParams.set(key, value);

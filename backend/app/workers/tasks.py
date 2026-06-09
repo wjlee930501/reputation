@@ -16,7 +16,7 @@ import uuid
 from datetime import date, datetime, timezone, timedelta
 
 import arrow
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
@@ -125,11 +125,27 @@ def trigger_v0_report(self, hospital_id: str):
             hospital.status = HospitalStatus.ANALYZING
             db.commit()
 
-            # 쿼리 매트릭스 생성
-            queries = generate_query_matrix(hospital.region, hospital.specialties, hospital.keywords)
-            for q_text in queries:
-                db.add(QueryMatrix(hospital_id=hospital.id, query_text=q_text))
-            db.flush()
+            # 쿼리 매트릭스 생성 — 멱등: 측정/PDF 단계 실패 후 재시도 시(v0_report_done은
+            # 아직 False) 이미 커밋된 매트릭스를 통째로 중복 생성하지 않는다. 중복되면
+            # 주간 SoV 측정 볼륨·API 비용이 영구히 부풀려진다.
+            existing_count = db.execute(
+                select(func.count()).select_from(QueryMatrix).where(
+                    QueryMatrix.hospital_id == hospital.id
+                )
+            ).scalar_one()
+            if existing_count == 0:
+                queries = generate_query_matrix(
+                    hospital.region, hospital.specialties, hospital.keywords
+                )
+                for q_text in queries:
+                    db.add(QueryMatrix(hospital_id=hospital.id, query_text=q_text))
+                db.flush()
+            else:
+                logger.info(
+                    "Query matrix already exists for %s (%d rows); reusing on retry",
+                    hospital.name,
+                    existing_count,
+                )
 
             # AI 답변 언급률 측정 (V0: 쿼리 수 최대 5개로 제한, 빠른 실행)
             run = _start_measurement_run(
@@ -226,7 +242,12 @@ def build_aeo_site(self, hospital_id: str):
             return
 
         hospital.site_built = True
-        hospital.status = HospitalStatus.PENDING_DOMAIN
+        # ACTIVE/PAUSED 병원을 강등하지 않는다 — admin의 "허브 재준비"나 도메인 재저장이
+        # 라이브 공개 허브를 PENDING_DOMAIN으로 떨어뜨려 공개 표면 전체가 404 되는 것 방지.
+        # (공개 엔드포인트는 status==ACTIVE && site_live 필수.) 도메인이 실제로 바뀐 경우의
+        # 강등은 connect_domain이 검증 무효화와 함께 명시적으로 수행한다.
+        if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PAUSED):
+            hospital.status = HospitalStatus.PENDING_DOMAIN
         db.commit()
 
         preview_url = f"https://preview.motionlabs.io/{hospital.slug}/"
@@ -1030,8 +1051,9 @@ def purge_expired_leads():
 
     매일 결과는 Slack에 notify — 0건이라도 송출하여 cron이 살아 있음을 운영자가 매일 확인.
     """
+    from app.models.hospital import Hospital
     from app.models.lead import SalesLead
-    from app.services.lead_privacy import anonymize_lead
+    from app.services.lead_privacy import anonymize_lead, scrub_onboarding_note
 
     now = datetime.now(timezone.utc)
     purged = 0
@@ -1046,6 +1068,14 @@ def purge_expired_leads():
             for lead in db.execute(stmt).scalars().all():
                 if anonymize_lead(lead, now):
                     purged += 1
+                    # CDX-M2: 전환된 병원의 onboarding_note에 복사된 운영자 자유 텍스트도
+                    # 함께 파기 (lead row만 익명화하면 파기 라이프사이클을 우회).
+                    if lead.converted_hospital_id:
+                        hospital = db.get(Hospital, lead.converted_hospital_id)
+                        if hospital and hospital.onboarding_note:
+                            hospital.onboarding_note = scrub_onboarding_note(
+                                hospital.onboarding_note, lead.id
+                            )
             if purged:
                 db.commit()
         logger.info(f"purge_expired_leads: anonymized {purged} expired leads")

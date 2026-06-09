@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+import { getBackendUrl } from '@/lib/backend'
 import { getLoginRateLimitKey, hasValidSameOrigin } from '@/lib/security'
 import { generateSessionToken } from '@/lib/session'
 
@@ -8,7 +9,6 @@ export const runtime = 'nodejs'
 const MAX_LOGIN_ATTEMPTS = 5
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7
-const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:8000'
 
 type AdminAccountResponse = {
   id: string
@@ -76,9 +76,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
   }
 
+  let backendUrl: string
+  try {
+    backendUrl = getBackendUrl()
+  } catch {
+    return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 })
+  }
+
   let account: AdminAccountResponse
   try {
-    const authResponse = await fetch(new URL('/api/v1/admin/auth/login', BACKEND_URL), {
+    const authResponse = await fetch(new URL('/api/v1/admin/auth/login', backendUrl), {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -89,6 +96,11 @@ export async function POST(req: NextRequest) {
     })
 
     if (!authResponse.ok) {
+      // CDX-M3: 전역(인스턴스 무관) 스로틀은 backend가 Redis로 수행한다 — 429는 그대로 전달.
+      // 아래 Map 카운터는 인스턴스-로컬 보조 방어로 유지.
+      if (authResponse.status === 429) {
+        return NextResponse.json({ error: 'Too many login attempts' }, { status: 429 })
+      }
       throttleKeys.forEach((key) => recordFailedAttempt(key, now))
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
     }

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -49,6 +49,10 @@ async def ensure_hospital_exposure_actions(
     max_create: int = 12,
 ) -> None:
     """Create missing open gaps/actions for current deterministic recommendations."""
+    # select-then-insert 패턴이라 동시 호출(대시보드 이중 로드/프리페치)이 둘 다 존재
+    # 검사를 통과해 OPEN gap/action을 중복 생성할 수 있다 — 병원 단위 advisory lock으로
+    # 트랜잭션을 직렬화한다 (gap/action 테이블에는 부분 유니크 제약이 없음).
+    await _acquire_hospital_advisory_lock(db, hospital_id)
     targets = await _load_targets(db, hospital_id)
     if not targets:
         return
@@ -93,6 +97,25 @@ async def ensure_hospital_exposure_actions(
 
     if changed:
         await db.commit()
+
+
+async def _acquire_hospital_advisory_lock(db: AsyncSession, hospital_id: uuid.UUID) -> None:
+    """Postgres pg_advisory_xact_lock — 트랜잭션 종료(commit/rollback) 시 자동 해제.
+
+    Postgres가 아닌 바인딩(단위 테스트의 fake/SQLite)에서는 no-op.
+    """
+    try:
+        bind = db.get_bind()
+        dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    except Exception:
+        return
+    if dialect_name != "postgresql":
+        return
+    # uuid 128bit → signed 64bit 키로 축약 (충돌해도 과잉 직렬화일 뿐 정합성엔 무해).
+    lock_key = (hospital_id.int ^ (hospital_id.int >> 64)) & 0xFFFFFFFFFFFFFFFF
+    if lock_key >= 2**63:
+        lock_key -= 2**64
+    await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
 
 
 async def list_top_exposure_actions(

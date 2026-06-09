@@ -12,7 +12,7 @@ from app.core.database import get_db
 from app.models.hospital import Hospital, Plan
 from app.models.lead import SalesLead
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.lead_privacy import anonymize_lead
+from app.services.lead_privacy import anonymize_lead, scrub_onboarding_note
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
 
@@ -122,6 +122,14 @@ async def erase_lead_pii(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 
     changed = anonymize_lead(lead, datetime.now(timezone.utc))
     if changed:
+        # CDX-M2: 전환 시 hospital.onboarding_note로 복사된 운영자 자유 텍스트도 함께 파기 —
+        # lead row만 익명화하면 노트가 파기 라이프사이클을 우회한다.
+        if lead.converted_hospital_id:
+            hospital = await db.get(Hospital, lead.converted_hospital_id)
+            if hospital and hospital.onboarding_note:
+                hospital.onboarding_note = scrub_onboarding_note(
+                    hospital.onboarding_note, lead.id
+                )
         await write_audit_log(
             db,
             action="erase_lead_pii",

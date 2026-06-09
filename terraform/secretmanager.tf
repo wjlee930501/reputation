@@ -66,6 +66,16 @@ resource "google_secret_manager_secret" "site_revalidate_secret" {
   }
 }
 
+# CDX-M1: site(Vercel) BFF가 방문자 IP를 backend에 인증 전달할 때 쓰는 공유 secret.
+# Vercel 프로젝트 환경변수 SITE_BFF_SECRET에 동일 값을 설정해야 한다.
+resource "google_secret_manager_secret" "site_bff_secret" {
+  secret_id = "SITE_BFF_SECRET"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
 # Secret Manager IAM — service account access
 locals {
   app_secret_env = {
@@ -77,6 +87,7 @@ locals {
     ADMIN_SESSION_SECRET   = google_secret_manager_secret.admin_session_secret.secret_id
     DB_PASSWORD            = google_secret_manager_secret.db_password.secret_id
     SITE_REVALIDATE_SECRET = google_secret_manager_secret.site_revalidate_secret.secret_id
+    SITE_BFF_SECRET        = google_secret_manager_secret.site_bff_secret.secret_id
   }
 }
 

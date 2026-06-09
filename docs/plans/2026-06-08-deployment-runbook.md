@@ -30,7 +30,8 @@ restarts forever with `ValueError: Insecure production config`.
 - [ ] **Secret Manager** has all 7 required secrets (deploy aborts if any missing):
       `ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY SLACK_WEBHOOK_URL ADMIN_SECRET_KEY ADMIN_SESSION_SECRET DB_PASSWORD`
       `for s in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY SLACK_WEBHOOK_URL ADMIN_SECRET_KEY ADMIN_SESSION_SECRET DB_PASSWORD; do gcloud secrets describe $s >/dev/null 2>&1 && echo "✓ $s" || echo "✗ MISSING $s"; done`
-      (optional: `SITE_REVALIDATE_SECRET`)
+      (optional: `SITE_REVALIDATE_SECRET`, `SITE_BFF_SECRET` — CDX-M1 방문자 IP 전달용.
+      설정 시 Vercel **site** 프로젝트 env `SITE_BFF_SECRET`에 동일 값 필요)
 - [ ] `SLACK_WEBHOOK_URL` secret host is `hooks.slack.com` (new allowlist rejects other hosts).
 - [ ] Decide the deploy path (§2) — **terraform and deploy.sh both define the Cloud Run
       services and will fight if mixed.** Pick one as the source of truth.
@@ -118,8 +119,10 @@ admin-create-owner` target is local-docker only; in prod run the module against 
 If Vercel is connected to the GitHub repo, the push to `main` may have **already
 triggered** site + admin deploys — check the Vercel dashboard. The new public-site CSP
 ships in `site/next.config.mjs` (build-time).
-- [ ] Verify Vercel env: **admin** → `ADMIN_SESSION_SECRET`, `ADMIN_SECRET_KEY`, `BACKEND_URL`;
-      **site** → `SITE_REVALIDATE_SECRET`, the public API base, optional `NEXT_PUBLIC_*`.
+- [ ] Verify Vercel env: **admin** → `ADMIN_SESSION_SECRET`, `ADMIN_SECRET_KEY`, `BACKEND_URL`
+      (이제 미설정 시 localhost 폴백 대신 명시적 500 — 누락이 바로 드러난다);
+      **site** → `SITE_REVALIDATE_SECRET`, `SITE_BFF_SECRET`(백엔드와 동일 값),
+      the public API base, optional `NEXT_PUBLIC_*`.
 - [ ] After deploy, load a clinic page and confirm it renders (no CSP console errors —
       fonts/images/JSON-LD). Submit a test lead end-to-end.
 

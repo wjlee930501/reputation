@@ -92,7 +92,7 @@ async def verify_domain_operation(
     if not hospital.aeo_domain:
         raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다.")
 
-    cname_value = _resolve_cname(hospital.aeo_domain)
+    cname_value = await _resolve_cname(hospital.aeo_domain)
     verified = _normalize_dns_name(cname_value) == _normalize_dns_name(settings.CNAME_TARGET)
     previous_status = hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
     previous_site_live = bool(hospital.site_live)

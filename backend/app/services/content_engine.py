@@ -315,6 +315,9 @@ async def generate_content(
     # FAQ 분리 필드 정규화 — 다른 type일 때는 None.
     result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
     result["faq_answer_summary"] = _trim_or_none(result.get("faq_answer_summary"), 600)
+    # meta_description 컬럼은 VARCHAR(300) — 프롬프트는 100~150자를 요구하지만 모델 출력은
+    # 보장이 없고, 300자 초과 시 야간 배치의 per-item 커밋이 DataError로 실패한다.
+    result["meta_description"] = _trim_or_none(result.get("meta_description"), 300)
 
     return result
 

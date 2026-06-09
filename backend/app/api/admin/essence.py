@@ -1,4 +1,5 @@
 """Admin API — hospital source-backed content operating standard."""
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -312,7 +313,10 @@ async def upload_source_file(
     if not is_photo_type and extractor_kind == "IMAGE":
         raise HTTPException(status_code=400, detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요.")
 
-    file_url = store_asset_bytes(
+    # 동기 GCS 업로드(최대 12MB)와 PDF/DOCX 파싱은 이벤트 루프를 수 초 블로킹할 수 있다 —
+    # 워커 스레드에서 실행해 공개 표면 요청이 함께 멈추지 않게 한다.
+    file_url = await asyncio.to_thread(
+        store_asset_bytes,
         hospital_id=hospital_id,
         filename=file.filename or "asset",
         data=data,
@@ -321,9 +325,9 @@ async def upload_source_file(
 
     raw_text: str | None = None
     if extractor_kind == "PDF":
-        raw_text = extract_pdf_text(data) or None
+        raw_text = await asyncio.to_thread(extract_pdf_text, data) or None
     elif extractor_kind == "DOCX":
-        raw_text = extract_docx_text(data) or None
+        raw_text = await asyncio.to_thread(extract_docx_text, data) or None
 
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
