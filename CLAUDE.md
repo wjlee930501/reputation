@@ -113,7 +113,7 @@
 - **Docker Compose** — 로컬 개발
 - **GCP Cloud Run** — API + Worker 프로덕션
 - **GCP Cloud Storage** — 생성 이미지 저장
-- **Vercel** — Admin + Site 배포
+- **GCP Cloud Run** — Admin + Site (Next.js standalone 컨테이너, LB 호스트 라우팅)
 
 ---
 

@@ -68,3 +68,28 @@ output "vpc_connector_id" {
   description = "Serverless VPC Access connector (for Cloud Run config)"
   value       = google_vpc_access_connector.connector.id
 }
+
+output "site_service_name" {
+  description = "Cloud Run public site (Next.js) service name"
+  value       = google_cloud_run_v2_service.site.name
+}
+
+output "admin_service_name" {
+  description = "Cloud Run admin console (Next.js) service name"
+  value       = google_cloud_run_v2_service.admin.name
+}
+
+output "site_url" {
+  description = "Public site entrypoint through the HTTPS load balancer"
+  value       = "https://${var.domain}"
+}
+
+output "admin_url" {
+  description = "Admin console entrypoint (empty if admin_subdomain unset)"
+  value       = var.admin_subdomain != "" ? "https://${var.admin_subdomain}" : ""
+}
+
+output "frontend_service_account_email" {
+  description = "Frontend (Next.js) service account email"
+  value       = google_service_account.frontend.email
+}

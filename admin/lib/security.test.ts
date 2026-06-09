@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   buildSafeAdminProxyPath,
+  clientIpFromForwardedHeaders,
   getLoginRateLimitKey,
   hasValidSameOrigin,
 } from './security.ts'
@@ -28,12 +29,34 @@ test('login rate-limit key prefers the trusted edge header over x-forwarded-for'
   assert.equal(getLoginRateLimitKey({ headers }), 'ip:203.0.113.2')
 })
 
-test('login rate-limit key falls back to the leftmost x-forwarded-for entry', () => {
+test('login rate-limit key uses the GCP LB client entry (second-from-right XFF)', () => {
+  // GCP 외부 ALB 뒤: XFF = "<client-supplied>, <client>, <lb>" — 클라이언트가
+  // 임의 항목을 prepend해도 second-from-right(실제 client)가 선택돼야 한다.
   const headers = new Headers({
-    'x-forwarded-for': '198.51.100.10, 10.0.0.1, 10.0.0.2',
+    'x-forwarded-for': '6.6.6.6, 198.51.100.10, 130.211.0.5',
   })
 
   assert.equal(getLoginRateLimitKey({ headers }), 'ip:198.51.100.10')
+})
+
+test('client IP helper handles minimal LB chain and dev single entry', () => {
+  // LB만 거친 정상 체인: "client, lb"
+  assert.equal(
+    clientIpFromForwardedHeaders(new Headers({ 'x-forwarded-for': '198.51.100.10, 130.211.0.5' })),
+    '198.51.100.10',
+  )
+  // 로컬 dev: 단일 항목
+  assert.equal(
+    clientIpFromForwardedHeaders(new Headers({ 'x-forwarded-for': '127.0.0.1' })),
+    '127.0.0.1',
+  )
+  // Vercel 호환: 플랫폼 헤더가 우선
+  assert.equal(
+    clientIpFromForwardedHeaders(
+      new Headers({ 'x-vercel-forwarded-for': '203.0.113.2', 'x-forwarded-for': '6.6.6.6, 1.1.1.1' }),
+    ),
+    '203.0.113.2',
+  )
 })
 
 test('login rate-limit key fails open (null) when no valid IP header is present', () => {

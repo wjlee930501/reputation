@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { clientIpFromForwardedHeaders } from '@/lib/client-ip'
 import { getApiBase } from '@/lib/config'
 
 export const runtime = 'nodejs'
@@ -75,22 +76,16 @@ export async function POST(request: Request) {
 
   const apiBase = getApiBase(true)
 
-  // 실제 방문자 IP를 백엔드로 전달한다. 플랫폼이 설정하는 신뢰 헤더(x-vercel-forwarded-for /
-  // x-real-ip)를 우선하고, 클라이언트가 임의로 채울 수 있는 x-forwarded-for leftmost는 최후
-  // 수단으로만 쓴다(admin/lib/security.ts와 동일 정책).
+  // 실제 방문자 IP를 백엔드로 전달한다. GCP LB 뒤에서는 XFF second-from-right가 실제
+  // 방문자다 (lib/client-ip.ts — admin/lib/security.ts와 동일 정책).
   // CDX-M1: SITE_BFF_SECRET이 설정되면 X-BFF-Auth + X-Visitor-IP로 인증 전달 — 백엔드
   // get_request_ip가 XFF 체인보다 우선 채택한다(rate-limit key·consent_ip가 실제 방문자 기준).
-  // secret 미설정 시 기존 XFF 전달로 동작하며, 백엔드는 Vercel egress IP를 client로 본다
+  // secret 미설정 시 기존 XFF 전달로 동작하며, 백엔드는 BFF egress IP를 client로 본다
   // (스푸핑은 불가하나 per-visitor 정밀도는 떨어짐 — 백로그 CDX-M1 참조).
   const outboundHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
   }
-  const clientIp = (
-    request.headers.get('x-vercel-forwarded-for') ||
-    request.headers.get('x-real-ip') ||
-    request.headers.get('x-forwarded-for')?.split(',')[0] ||
-    ''
-  ).trim()
+  const clientIp = clientIpFromForwardedHeaders(request.headers) ?? ''
   if (clientIp) {
     outboundHeaders['X-Forwarded-For'] = clientIp
     outboundHeaders['X-Real-IP'] = clientIp

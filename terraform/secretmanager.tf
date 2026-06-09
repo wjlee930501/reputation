@@ -89,12 +89,33 @@ locals {
     SITE_REVALIDATE_SECRET = google_secret_manager_secret.site_revalidate_secret.secret_id
     SITE_BFF_SECRET        = google_secret_manager_secret.site_bff_secret.secret_id
   }
+
+  # 프론트엔드(Next.js) 서비스가 마운트하는 secret — admin BFF 세션/키, site
+  # revalidate/BFF 인증. 백엔드 전용 secret(API 키·DB 비밀번호)에는 접근 불가.
+  admin_secret_env = {
+    ADMIN_SECRET_KEY     = google_secret_manager_secret.admin_secret_key.secret_id
+    ADMIN_SESSION_SECRET = google_secret_manager_secret.admin_session_secret.secret_id
+  }
+  site_secret_env = {
+    SITE_REVALIDATE_SECRET = google_secret_manager_secret.site_revalidate_secret.secret_id
+    SITE_BFF_SECRET        = google_secret_manager_secret.site_bff_secret.secret_id
+  }
 }
 
-resource "google_secret_manager_secret_iam_binding" "app_access" {
+# iam_member(비배타적)를 사용 — 같은 secret/role에 app SA와 frontend SA가 공존한다.
+# (iam_binding은 role 단위 authoritative라 두 SA를 한 리소스에서 관리해야 해서 부적합.)
+resource "google_secret_manager_secret_iam_member" "app_access" {
   for_each  = local.app_secret_env
   project   = var.project_id
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
-  members   = ["serviceAccount:${google_service_account.app.email}"]
+  member    = "serviceAccount:${google_service_account.app.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "frontend_access" {
+  for_each  = merge(local.admin_secret_env, local.site_secret_env)
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.frontend.email}"
 }

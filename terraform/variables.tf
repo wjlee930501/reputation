@@ -65,6 +65,71 @@ variable "api_max_instances" {
   default = 10
 }
 
+# ── Frontend (Next.js on Cloud Run) ───────────────────────────────
+variable "site_image" {
+  description = <<-EOT
+    Container image for the public site (Next.js) Cloud Run service. Prefer an
+    immutable digest. NOTE: NEXT_PUBLIC_* values are inlined at image BUILD time
+    (see site/Dockerfile build args) — rebuild the image when the domain changes.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "admin_image" {
+  description = "Container image for the admin console (Next.js) Cloud Run service. Prefer an immutable digest."
+  type        = string
+  default     = ""
+}
+
+variable "site_memory" {
+  type    = string
+  default = "512Mi"
+}
+
+variable "site_cpu" {
+  type    = number
+  default = 1
+}
+
+variable "site_min_instances" {
+  type    = number
+  default = 0
+}
+
+variable "site_max_instances" {
+  description = <<-EOT
+    Public site max instances. DEFAULT 1 ON PURPOSE: Next.js on-demand ISR
+    revalidation (POST /api/revalidate, fired on content publish) only clears the
+    cache of the instance that receives it — with N>1 instances, other instances
+    serve stale pages until the time-based revalidate (3600s) expires. Raise this
+    only if you accept up-to-1h staleness after publish, or move the ISR cache to
+    a shared backend (custom cacheHandler) first.
+  EOT
+  type        = number
+  default     = 1
+}
+
+variable "admin_memory" {
+  type    = string
+  default = "512Mi"
+}
+
+variable "admin_cpu" {
+  type    = number
+  default = 1
+}
+
+variable "admin_min_instances" {
+  type    = number
+  default = 0
+}
+
+variable "admin_max_instances" {
+  type    = number
+  default = 2
+}
+
 variable "worker_memory" {
   type    = string
   default = "1Gi"

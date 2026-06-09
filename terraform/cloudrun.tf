@@ -71,6 +71,16 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "SITE_REVALIDATE_URL"
         value = var.site_revalidate_url != "" ? var.site_revalidate_url : "https://${var.domain}/api/revalidate"
       }
+      # Slack 알림의 admin 링크 / llms.txt 절대 URL — 미설정 시 localhost 기본값이
+      # 운영 알림에 새어 나간다.
+      env {
+        name  = "ADMIN_BASE_URL"
+        value = var.admin_subdomain != "" ? "https://${var.admin_subdomain}" : "https://${var.domain}"
+      }
+      env {
+        name  = "SITE_BASE_URL"
+        value = "https://${var.domain}"
+      }
       # AUTH-1: Trust the load-balancer hop so rate limits / consent IPs key on
       # the real client (X-Forwarded-For) instead of the Google front-end IP.
       env {
@@ -166,7 +176,7 @@ resource "google_cloud_run_v2_service" "api" {
 
   depends_on = [
     google_project_service.services,
-    google_secret_manager_secret_iam_binding.app_access,
+    google_secret_manager_secret_iam_member.app_access,
   ]
 }
 
@@ -231,6 +241,14 @@ resource "google_cloud_run_v2_service" "worker" {
         name  = "SITE_REVALIDATE_URL"
         value = var.site_revalidate_url != "" ? var.site_revalidate_url : "https://${var.domain}/api/revalidate"
       }
+      env {
+        name  = "ADMIN_BASE_URL"
+        value = var.admin_subdomain != "" ? "https://${var.admin_subdomain}" : "https://${var.domain}"
+      }
+      env {
+        name  = "SITE_BASE_URL"
+        value = "https://${var.domain}"
+      }
       dynamic "env" {
         for_each = local.app_secret_env
         content {
@@ -278,7 +296,7 @@ resource "google_cloud_run_v2_service" "worker" {
 
   depends_on = [
     google_project_service.services,
-    google_secret_manager_secret_iam_binding.app_access,
+    google_secret_manager_secret_iam_member.app_access,
   ]
 }
 
@@ -370,6 +388,6 @@ resource "google_cloud_run_v2_service" "beat" {
 
   depends_on = [
     google_project_service.services,
-    google_secret_manager_secret_iam_binding.app_access,
+    google_secret_manager_secret_iam_member.app_access,
   ]
 }
