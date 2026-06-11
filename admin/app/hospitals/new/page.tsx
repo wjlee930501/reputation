@@ -44,7 +44,7 @@ export default function NewHospitalPage() {
     setError(null)
     try {
       const hospital = leadContext?.id
-        ? await fetchAPI(`/admin/leads/${leadContext.id}/convert`, {
+        ? await fetchAPI<{ hospital?: { id: string } | null }>(`/admin/leads/${leadContext.id}/convert`, {
             method: 'POST',
             body: JSON.stringify({
               hospital_name: name.trim(),
@@ -52,7 +52,7 @@ export default function NewHospitalPage() {
               conversion_note: '상담 리드 수동 등록 화면에서 온보딩 시작',
             }),
           }).then((result) => result?.hospital)
-        : await fetchAPI('/admin/hospitals', {
+        : await fetchAPI<{ id: string }>('/admin/hospitals', {
             method: 'POST',
             body: JSON.stringify({ name: name.trim(), plan }),
           })

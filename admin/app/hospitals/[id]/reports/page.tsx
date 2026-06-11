@@ -158,6 +158,15 @@ function ChecklistRow({ ok, label, hint }: { ok: boolean; label: string; hint?: 
   )
 }
 
+// 백엔드 계약(추가 예정): POST /admin/hospitals/{id}/reports/{report_id}/mark-sent
+// → MonthlyReport.sent_at이 기록된 갱신 리포트를 반환.
+// 실제 경로/메서드가 달라지면 이 함수 한 곳만 수정하면 된다.
+function requestMarkSent(hospitalId: string, reportId: string): Promise<Report> {
+  return fetchAPI<Report>(`/admin/hospitals/${hospitalId}/reports/${reportId}/mark-sent`, {
+    method: 'POST',
+  })
+}
+
 export default function ReportsPage() {
   const { id } = useParams<{ id: string }>()
   const [reports, setReports] = useState<Report[]>([])
@@ -166,9 +175,11 @@ export default function ReportsPage() {
   const [selected, setSelected] = useState<Report | null>(null)
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
+  const [markingSent, setMarkingSent] = useState(false)
+  const [markSentError, setMarkSentError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchAPI(`/admin/hospitals/${id}/reports`)
+    fetchAPI<Report[]>(`/admin/hospitals/${id}/reports`)
       .then(setReports)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
@@ -176,15 +187,42 @@ export default function ReportsPage() {
 
   async function openDetail(report: Report) {
     setDetailError(null)
+    setMarkSentError(null)
     setDetailLoadingId(report.id)
     try {
-      const full = await fetchAPI(`/admin/hospitals/${id}/reports/${report.id}`)
+      const full = await fetchAPI<Report>(`/admin/hospitals/${id}/reports/${report.id}`)
       setSelected(full)
     } catch (e: unknown) {
       setDetailError(e instanceof Error ? e.message : '리포트 상세 정보를 불러오지 못했습니다.')
       setSelected(null)
     } finally {
       setDetailLoadingId(null)
+    }
+  }
+
+  async function handleMarkSent(report: Report) {
+    if (markingSent || report.sent_at) return
+    setMarkSentError(null)
+    setMarkingSent(true)
+    // 낙관적 갱신 — 실패 시 원래 값으로 되돌린다.
+    const previousSentAt = report.sent_at
+    const optimisticSentAt = new Date().toISOString()
+    const applySentAt = (value: string | null) => {
+      setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, sent_at: value } : r)))
+      setSelected((prev) => (prev && prev.id === report.id ? { ...prev, sent_at: value } : prev))
+    }
+    applySentAt(optimisticSentAt)
+    try {
+      const updated = await requestMarkSent(id, report.id)
+      if (updated) {
+        setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, ...updated } : r)))
+        setSelected((prev) => (prev && prev.id === report.id ? { ...prev, ...updated } : prev))
+      }
+    } catch (e: unknown) {
+      applySentAt(previousSentAt)
+      setMarkSentError(e instanceof Error ? e.message : '전달 완료 처리에 실패했습니다.')
+    } finally {
+      setMarkingSent(false)
     }
   }
 
@@ -311,7 +349,13 @@ export default function ReportsPage() {
       )}
 
       {selected && (
-        <DetailDrawer report={selected} onClose={() => setSelected(null)} />
+        <DetailDrawer
+          report={selected}
+          onClose={() => setSelected(null)}
+          onMarkSent={() => handleMarkSent(selected)}
+          markingSent={markingSent}
+          markSentError={markSentError}
+        />
       )}
     </div>
   )
@@ -401,7 +445,19 @@ function ReportGuidance({
   )
 }
 
-function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void }) {
+function DetailDrawer({
+  report,
+  onClose,
+  onMarkSent,
+  markingSent,
+  markSentError,
+}: {
+  report: Report
+  onClose: () => void
+  onMarkSent: () => void
+  markingSent: boolean
+  markSentError: string | null
+}) {
   const meta = getScreeningMeta(report)
   const sov = isPlainObject(report.sov_summary) ? report.sov_summary : null
   const content = isPlainObject(report.content_summary) ? report.content_summary : null
@@ -622,6 +678,26 @@ function DetailDrawer({ report, onClose }: { report: Report; onClose: () => void
               <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-4 text-center text-sm text-slate-500">
                 {report.has_pdf ? getPdfStatusLabel(report) : `${getPdfStatusLabel(report)} — 잠시 후 다시 확인해 주세요.`}
               </div>
+            )}
+
+            {markSentError && (
+              <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {markSentError}
+              </p>
+            )}
+            {report.sent_at ? (
+              <p className="mt-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+                원장 보고 완료 — 전달일 {formatDate(report.sent_at)}
+              </p>
+            ) : (
+              <button
+                type="button"
+                onClick={onMarkSent}
+                disabled={markingSent}
+                className="mt-2 block w-full rounded-lg border border-green-300 bg-white py-2.5 text-center text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50"
+              >
+                {markingSent ? '처리 중...' : '원장 보고 완료로 표시'}
+              </button>
             )}
           </section>
         </div>

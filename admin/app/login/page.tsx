@@ -16,20 +16,27 @@ function LoginForm() {
     setLoading(true)
     setError('')
 
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    })
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
 
-    if (res.ok) {
-      const raw = searchParams.get('redirect')
-      const redirect = raw?.startsWith('/') && !raw.startsWith('//') ? raw : '/hospitals'
-      router.push(redirect)
-    } else {
-      setError('인증에 실패했습니다.')
+      if (res.ok) {
+        const raw = searchParams.get('redirect')
+        const redirect = raw?.startsWith('/') && !raw.startsWith('//') ? raw : '/hospitals'
+        router.push(redirect)
+      } else if (res.status === 429) {
+        setError('로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.')
+      } else {
+        setError('인증에 실패했습니다.')
+      }
+    } catch {
+      setError('네트워크 오류가 발생했습니다.')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   return (

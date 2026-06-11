@@ -2,9 +2,10 @@
 
 import Link from 'next/link'
 import { useParams, usePathname } from 'next/navigation'
-import { useEffect, useState } from 'react'
-import { fetchAPI } from '@/lib/api'
+import { useCallback, useEffect, useState } from 'react'
+import { ApiError, fetchAPI } from '@/lib/api'
 import { Hospital, PLAN_LABELS, STATUS_LABELS } from '@/types'
+import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '대시보드', path: 'dashboard', hint: 'AI 언급률과 운영 준비 상태 한눈에 보기' },
@@ -33,12 +34,47 @@ export default function HospitalLayout({
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
   const [hospital, setHospital] = useState<Hospital | null>(null)
+  const [notFound, setNotFound] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  const refetch = useCallback(async () => {
+    try {
+      const data = await fetchAPI<Hospital>(`/admin/hospitals/${hospitalId}`)
+      setHospital(data)
+      setNotFound(false)
+      setLoadError(null)
+    } catch (e: unknown) {
+      if (e instanceof ApiError && e.status === 404) {
+        setNotFound(true)
+        setLoadError(null)
+      } else {
+        setLoadError(e instanceof Error ? e.message : '병원 정보를 불러오지 못했습니다.')
+      }
+    }
+  }, [hospitalId])
 
   useEffect(() => {
-    fetchAPI(`/admin/hospitals/${hospitalId}`)
-      .then(setHospital)
-      .catch(() => null)
-  }, [hospitalId])
+    void refetch()
+  }, [refetch])
+
+  if (notFound) {
+    return (
+      <div className="flex min-h-full items-center justify-center p-8">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <p className="text-lg font-bold text-slate-900">병원을 찾을 수 없습니다.</p>
+          <p className="mt-2 text-sm text-slate-500">
+            삭제되었거나 주소가 잘못된 병원입니다. 병원 목록에서 다시 선택해 주세요.
+          </p>
+          <Link
+            href="/hospitals"
+            className="mt-5 inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            ← 병원 목록으로 돌아가기
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   const statusInfo = hospital
     ? STATUS_LABELS[hospital.status] ?? { label: hospital.status, color: 'bg-slate-100 text-slate-700' }
@@ -47,6 +83,7 @@ export default function HospitalLayout({
   const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
 
   return (
+    <HospitalHeaderContext.Provider value={{ hospital, refetch }}>
     <div className="flex min-h-full flex-col">
       {/* Hospital header */}
       <header className="border-b border-slate-200 bg-white px-4 pt-4 pb-0 sm:px-6 lg:px-8 lg:pt-5">
@@ -146,11 +183,25 @@ export default function HospitalLayout({
         </nav>
       </header>
 
+      {loadError && (
+        <div className="mx-4 mt-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 sm:mx-6 lg:mx-8">
+          <span>병원 정보를 불러오지 못했습니다. ({loadError})</span>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="shrink-0 rounded-md border border-amber-300 bg-white px-3 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100"
+          >
+            다시 시도
+          </button>
+        </div>
+      )}
+
       {/* Page content */}
       <div className="min-w-0 flex-1 overflow-auto">
         {children}
       </div>
     </div>
+    </HospitalHeaderContext.Provider>
   )
 }
 

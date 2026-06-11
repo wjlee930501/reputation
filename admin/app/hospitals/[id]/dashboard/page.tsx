@@ -187,36 +187,46 @@ export default function DashboardPage() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    Promise.all([
-      fetchAPI(`/admin/hospitals/${id}/sov/trend`).catch(() => [] as TrendPoint[]),
-      fetchAPI(`/admin/hospitals/${id}/sov/queries`).catch(() => [] as QueryRow[]),
-      fetchAPI(`/admin/hospitals/${id}/readiness`).catch(() => null as Readiness | null),
-      fetchAPI(`/admin/hospitals/${id}/sov/measurement-runs`).catch(() => [] as MeasurementRun[]),
-      fetchAPI(`/admin/hospitals/${id}/exposure-actions?limit=5`).catch(() => [] as ExposureAction[]),
-      fetchAPI(`/admin/hospitals/${id}/query-targets`).catch(() => [] as AIQueryTarget[]),
-      fetchAPI(`/admin/hospitals/${id}/operations/audit-logs?limit=20`).catch(() => [] as AuditLogRow[]),
+    setError(null)
+    // 개별 호출 실패를 삼키지 않고 집계한다 — 성공한 데이터는 그대로 렌더링하되,
+    // 하나라도 실패하면 상단에 부분 실패 배너를 보여준다.
+    Promise.allSettled([
+      fetchAPI<TrendPoint[]>(`/admin/hospitals/${id}/sov/trend`),
+      fetchAPI<QueryRow[]>(`/admin/hospitals/${id}/sov/queries`),
+      fetchAPI<Readiness | null>(`/admin/hospitals/${id}/readiness`),
+      fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`),
+      fetchAPI<ExposureAction[]>(`/admin/hospitals/${id}/exposure-actions?limit=5`),
+      fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${id}/query-targets`),
+      fetchAPI<AuditLogRow[]>(`/admin/hospitals/${id}/operations/audit-logs?limit=20`),
     ])
-      .then((
-        [trend, qs, readinessData, runs, actions, targets, audit]: [
-          TrendPoint[],
-          QueryRow[],
-          Readiness | null,
-          MeasurementRun[],
-          ExposureAction[],
-          AIQueryTarget[],
-          AuditLogRow[],
-        ],
-      ) => {
+      .then(([trend, qs, readinessData, runs, actions, targets, audit]) => {
         if (cancelled) return
-        setTrendData(Array.isArray(trend) ? trend : [])
-        setQueries(Array.isArray(qs) ? qs : [])
-        setReadiness(readinessData)
-        setMeasurementRuns(Array.isArray(runs) ? runs : [])
-        setExposureActions(Array.isArray(actions) ? actions : [])
-        setQueryTargets(Array.isArray(targets) ? targets : [])
-        setAuditLogs(Array.isArray(audit) ? audit : [])
+        let failedCount = 0
+        function unwrap<T>(result: PromiseSettledResult<T>, fallback: T): T {
+          if (result.status === 'fulfilled') return result.value
+          failedCount += 1
+          return fallback
+        }
+        const trendValue = unwrap(trend, [] as TrendPoint[])
+        const queriesValue = unwrap(qs, [] as QueryRow[])
+        const readinessValue = unwrap(readinessData, null)
+        const runsValue = unwrap(runs, [] as MeasurementRun[])
+        const actionsValue = unwrap(actions, [] as ExposureAction[])
+        const targetsValue = unwrap(targets, [] as AIQueryTarget[])
+        const auditValue = unwrap(audit, [] as AuditLogRow[])
+
+        setTrendData(Array.isArray(trendValue) ? trendValue : [])
+        setQueries(Array.isArray(queriesValue) ? queriesValue : [])
+        setReadiness(readinessValue)
+        setMeasurementRuns(Array.isArray(runsValue) ? runsValue : [])
+        setExposureActions(Array.isArray(actionsValue) ? actionsValue : [])
+        setQueryTargets(Array.isArray(targetsValue) ? targetsValue : [])
+        setAuditLogs(Array.isArray(auditValue) ? auditValue : [])
+
+        if (failedCount > 0) {
+          setError('일부 데이터를 불러오지 못했습니다. 표시된 수치가 불완전할 수 있으니 새로고침 후 다시 확인해 주세요.')
+        }
       })
-      .catch((e: Error) => { if (!cancelled) setError(e.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [id])

@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
-import { fetchAPI } from '@/lib/api'
-import { AIQueryTarget, ContentItem, ExposureAction, TYPE_LABELS } from '@/types'
+import { ApiError, fetchAPI } from '@/lib/api'
+import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, Hospital, TYPE_LABELS } from '@/types'
+import { useHospitalHeader } from '../hospital-context'
 
 const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
   ALIGNED: { label: '운영 기준 통과', color: 'bg-green-100 text-green-700' },
@@ -55,16 +56,14 @@ const FORBIDDEN_RULES: ForbiddenRule[] = [
   { label: '흉터 없는', pattern: /흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)/ },
 ]
 
-function tryParseApiError(message: string): { message?: string; violations?: string[] } | null {
-  try {
-    const parsed = JSON.parse(message)
-    if (parsed && typeof parsed === 'object') {
-      return parsed as { message?: string; violations?: string[] }
-    }
-  } catch {
-    // Not JSON — raw error string
+function readViolationsFromError(error: unknown): string[] {
+  if (!(error instanceof ApiError)) return []
+  const detail = error.detail
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const violations = (detail as { violations?: unknown }).violations
+    if (Array.isArray(violations)) return violations.map((v) => String(v))
   }
-  return null
+  return []
 }
 
 function checkForbidden(text: string): string[] {
@@ -139,6 +138,15 @@ function getReviewState(item: ContentItem): ReviewState {
   if (!item.title || !item.body) {
     return { key: 'notGenerated', label: displayLabel ?? '생성 전', badge: 'bg-slate-100 text-slate-500', reason: displayReason ?? '야간 자동 생성 대기', publishable: false }
   }
+  // 발행 가능 여부는 백엔드 compliance 요약이 권위 있는 기준이다.
+  // (display.review와 달리 참고 자료·금지 표현까지 발행 게이트 전체를 반영한다.)
+  if (item.compliance) {
+    if (!item.compliance.publishable) {
+      const reason = item.compliance.blockers.length > 0 ? item.compliance.blockers.join(' · ') : displayReason ?? '발행 차단 사유 확인 필요'
+      return { key: 'needsReview', label: '검토 필요', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
+    }
+    return { key: 'publishable', label: '발행 가능', badge: 'bg-green-100 text-green-700', publishable: true }
+  }
   if (item.essence_status !== 'ALIGNED') {
     const reason = displayReason ?? (
       item.essence_status === 'NEEDS_ESSENCE_REVIEW' ? '운영 기준 재검토 필요' :
@@ -168,6 +176,7 @@ function getBriefLabel(item: ContentItem): { label: string; color: string } {
 
 export default function ContentPage() {
   const { id } = useParams<{ id: string }>()
+  const { refetch: refetchHeader } = useHospitalHeader()
 
   // Month filter
   const [year, setYear] = useState(new Date().getFullYear())
@@ -183,6 +192,7 @@ export default function ContentPage() {
   // Detail / edit modal
   const [selected, setSelected] = useState<ContentItem | null>(null)
   const dialogCloseRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
   const [actionLoading, setActionLoading] = useState(false)
   const [briefEditMode, setBriefEditMode] = useState(false)
   const [briefQueryTargetId, setBriefQueryTargetId] = useState('')
@@ -198,6 +208,7 @@ export default function ContentPage() {
   const [editTitle, setEditTitle] = useState('')
   const [editBody, setEditBody] = useState('')
   const [editMeta, setEditMeta] = useState('')
+  const [editReferences, setEditReferences] = useState<ContentReference[]>([])
   const [violations, setViolations] = useState<string[]>([])
   const [editError, setEditError] = useState<string | null>(null)
   const [editSaving, setEditSaving] = useState(false)
@@ -212,10 +223,14 @@ export default function ContentPage() {
   const [hospitalSlug, setHospitalSlug] = useState<string | null>(null)
   const [publishSuccessId, setPublishSuccessId] = useState<string | null>(null)
 
-  const load = useCallback(() => {
+  // 페이지 단위 액션 피드백 — 모달이 닫혀 있어도 행 단위 발행/반려 결과를 보여준다.
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null)
+
+  const load = useCallback((options?: { keepSelection?: boolean }) => {
     setLoading(true)
-    setSelectedIds(new Set())
-    fetchAPI(`/admin/hospitals/${id}/content?year=${year}&month=${month}`)
+    if (!options?.keepSelection) setSelectedIds(new Set())
+    fetchAPI<ContentItem[]>(`/admin/hospitals/${id}/content?year=${year}&month=${month}`)
       .then(setItems)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
@@ -230,7 +245,7 @@ export default function ContentPage() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    fetchAPI(`/admin/hospitals/${id}`)
+    fetchAPI<Hospital>(`/admin/hospitals/${id}`)
       .then((h) => {
         setAeoDomain(h.aeo_domain ?? null)
         setHospitalSlug(h.slug ?? null)
@@ -246,7 +261,32 @@ export default function ContentPage() {
     if (!selected) return
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeDetail()
+      if (event.key === 'Escape') {
+        closeDetail()
+        return
+      }
+      // 의존성 없는 기본 Tab 포커스 트랩 — 포커스가 모달 밖으로 빠져나가지 않게 한다.
+      if (event.key !== 'Tab') return
+      const dialog = dialogRef.current
+      if (!dialog) return
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => el.offsetParent !== null)
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (event.shiftKey) {
+        if (active === first || !dialog.contains(active)) {
+          event.preventDefault()
+          last.focus()
+        }
+      } else if (active === last || !dialog.contains(active)) {
+        event.preventDefault()
+        first.focus()
+      }
     }
     document.addEventListener('keydown', handleKeyDown)
     window.setTimeout(() => dialogCloseRef.current?.focus(), 0)
@@ -258,8 +298,8 @@ export default function ContentPage() {
 
   useEffect(() => {
     Promise.all([
-      fetchAPI(`/admin/hospitals/${id}/query-targets`).catch(() => []),
-      fetchAPI(`/admin/hospitals/${id}/exposure-actions?limit=20`).catch(() => []),
+      fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${id}/query-targets`).catch(() => [] as AIQueryTarget[]),
+      fetchAPI<ExposureAction[]>(`/admin/hospitals/${id}/exposure-actions?limit=20`).catch(() => [] as ExposureAction[]),
     ]).then(([targets, actions]) => {
       setQueryTargets(targets)
       setExposureActions(actions)
@@ -319,14 +359,22 @@ export default function ContentPage() {
     return trimmed
   }
 
+  function clearActionFeedback() {
+    setActionError(null)
+    setActionSuccess(null)
+  }
+
   async function handleBulkPublish() {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) return
     const publishedBy = getPublisherForSubmit()
     if (!publishedBy) return
     setBulkError(null)
+    clearActionFeedback()
     setBulkProgress(`0/${ids.length} 발행 완료...`)
     let done = 0
+    const failedIds: string[] = []
+    let firstFailureMessage: string | null = null
     for (const itemId of ids) {
       try {
         await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
@@ -335,42 +383,61 @@ export default function ContentPage() {
         })
         done++
         setBulkProgress(`${done}/${ids.length} 발행 완료...`)
-      } catch {
-        setBulkError(`일부 콘텐츠 발행에 실패했습니다. (${done}/${ids.length} 완료)`)
-        break
+      } catch (e: unknown) {
+        failedIds.push(itemId)
+        if (!firstFailureMessage && e instanceof Error) firstFailureMessage = e.message
       }
     }
     setBulkProgress(null)
-    if (done > 0) setPublishSuccessId(ids[0])
-    load()
+    if (failedIds.length > 0) {
+      setBulkError(
+        `${ids.length}건 중 ${failedIds.length}건 발행에 실패했습니다.` +
+          (firstFailureMessage ? ` 사유: ${firstFailureMessage}` : '') +
+          ' 실패한 콘텐츠는 선택 상태로 남겨두었습니다.',
+      )
+    } else {
+      setActionSuccess(`선택한 콘텐츠 ${done}건을 모두 발행했습니다.`)
+    }
+    if (done > 0) {
+      setPublishSuccessId(ids.find((itemId) => !failedIds.includes(itemId)) ?? null)
+      void refetchHeader()
+    }
+    load({ keepSelection: true })
+    setSelectedIds(new Set(failedIds))
   }
 
-   async function handlePublish(itemId: string) {
+  async function handlePublish(itemId: string) {
     const publishedBy = getPublisherForSubmit()
     if (!publishedBy) return
     setActionLoading(true)
+    clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
         method: 'POST',
         body: JSON.stringify({ published_by: publishedBy }),
       })
       setPublishSuccessId(itemId)
+      setActionSuccess('콘텐츠 1건을 발행했습니다.')
+      void refetchHeader()
       load()
     } catch (e: unknown) {
-      if (e instanceof Error) {
-        const parsed = tryParseApiError(e.message)
-        if (parsed?.violations && Array.isArray(parsed.violations)) {
-          setViolations(parsed.violations)
-          setEditError(`의료광고 금지 표현이 발견되어 발행할 수 없습니다: ${parsed.violations.join(', ')}`)
+      const message = e instanceof Error ? e.message : '발행에 실패했습니다.'
+      const violationList = readViolationsFromError(e)
+      // 편집 모드 전환은 해당 콘텐츠가 모달에 열려 있을 때만 — 닫힌 모달의 상태를 건드리지 않는다.
+      if (selected && selected.id === itemId) {
+        if (violationList.length > 0) {
+          setViolations(violationList)
+          setEditError(`의료광고 금지 표현이 발견되어 발행할 수 없습니다: ${violationList.join(', ')}`)
           setEditMode(true)
-          setEditTitle(selected?.title ?? '')
-          setEditBody(selected?.body ?? '')
-          setEditMeta(selected?.meta_description ?? '')
+          setEditTitle(selected.title ?? '')
+          setEditBody(selected.body ?? '')
+          setEditMeta(selected.meta_description ?? '')
+          setEditReferences(selected.references ?? [])
         } else {
-          setEditError(parsed?.message ?? e.message)
+          setEditError(message)
         }
       } else {
-        setEditError('발행에 실패했습니다.')
+        setActionError(message)
       }
     } finally {
       setActionLoading(false)
@@ -380,12 +447,16 @@ export default function ContentPage() {
   async function handleReject(itemId: string) {
     if (!confirm('이 콘텐츠를 반려하시겠습니까? 야간에 재생성됩니다.')) return
     setActionLoading(true)
+    clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/reject`, { method: 'POST' })
+      setActionSuccess('콘텐츠를 반려했습니다. 야간에 재생성됩니다.')
       load()
       setSelected(null)
     } catch (e: unknown) {
-      setEditError(e instanceof Error ? e.message : '반려에 실패했습니다.')
+      const message = e instanceof Error ? e.message : '반려에 실패했습니다.'
+      if (selected && selected.id === itemId) setEditError(message)
+      else setActionError(message)
     } finally {
       setActionLoading(false)
     }
@@ -394,12 +465,16 @@ export default function ContentPage() {
   async function handleRegenerate(itemId: string) {
     if (!confirm('이 콘텐츠를 즉시 재생성 큐에 등록하시겠습니까?')) return
     setActionLoading(true)
+    clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/regenerate`, { method: 'POST' })
+      setActionSuccess('재생성 요청을 등록했습니다. 잠시 후 초안이 갱신됩니다.')
       load()
       setSelected(null)
     } catch (e: unknown) {
-      setEditError(e instanceof Error ? e.message : '재생성 요청에 실패했습니다.')
+      const message = e instanceof Error ? e.message : '재생성 요청에 실패했습니다.'
+      if (selected && selected.id === itemId) setEditError(message)
+      else setActionError(message)
     } finally {
       setActionLoading(false)
     }
@@ -412,7 +487,7 @@ export default function ContentPage() {
     setBriefError(null)
     setViolations([])
     try {
-      const full = await fetchAPI(`/admin/hospitals/${id}/content/${item.id}`)
+      const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${item.id}`)
       setSelected(full)
     } catch {
       setSelected(item)
@@ -424,9 +499,22 @@ export default function ContentPage() {
     setEditTitle(selected.title ?? '')
     setEditBody(selected.body ?? '')
     setEditMeta(selected.meta_description ?? '')
+    setEditReferences((selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })))
     setViolations([])
     setEditError(null)
     setEditMode(true)
+  }
+
+  function updateReference(index: number, key: 'title' | 'url', value: string) {
+    setEditReferences((prev) => prev.map((ref, i) => (i === index ? { ...ref, [key]: value } : ref)))
+  }
+
+  function addReferenceRow() {
+    setEditReferences((prev) => [...prev, { title: '', url: '' }])
+  }
+
+  function removeReferenceRow(index: number) {
+    setEditReferences((prev) => prev.filter((_, i) => i !== index))
   }
 
   function enterBriefEditMode() {
@@ -467,36 +555,35 @@ export default function ContentPage() {
       setEditError(`금지 표현이 포함되어 있습니다: ${found.join(', ')}`)
       return
     }
+    const cleanedReferences = editReferences
+      .map((ref) => ({ title: ref.title.trim(), url: ref.url.trim() }))
+      .filter((ref) => ref.title || ref.url)
+    if (cleanedReferences.some((ref) => !ref.title || !ref.url)) {
+      setEditError('참고 자료는 제목과 URL을 모두 입력해 주세요.')
+      return
+    }
     setEditSaving(true)
     setEditError(null)
     try {
-      const updated = await fetchAPI(`/admin/hospitals/${id}/content/${selected.id}`, {
+      const updated = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${selected.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
           title: editTitle,
           body: editBody,
           meta_description: editMeta,
+          references: cleanedReferences,
         }),
       })
       setSelected(updated)
       setEditMode(false)
       load()
     } catch (e: unknown) {
-      if (e instanceof Error) {
-        try {
-          const parsed = JSON.parse(e.message)
-          const detail = parsed.detail || parsed
-          if (detail.violations) {
-            setViolations(detail.violations)
-            setEditError(`금지 표현: ${detail.violations.join(', ')}`)
-          } else {
-            setEditError(e.message)
-          }
-        } catch {
-          setEditError(e.message)
-        }
+      const violationList = readViolationsFromError(e)
+      if (violationList.length > 0) {
+        setViolations(violationList)
+        setEditError(`금지 표현: ${violationList.join(', ')}`)
       } else {
-        setEditError('저장에 실패했습니다.')
+        setEditError(e instanceof Error ? e.message : '저장에 실패했습니다.')
       }
     } finally {
       setEditSaving(false)
@@ -524,7 +611,7 @@ export default function ContentPage() {
     setBriefSaving(true)
     setBriefError(null)
     try {
-      const updated = await fetchAPI(`/admin/hospitals/${id}/content/${selected.id}/brief`, {
+      const updated = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${selected.id}/brief`, {
         method: 'PATCH',
         body: JSON.stringify({
           query_target_id: briefQueryTargetId || null,
@@ -577,12 +664,6 @@ export default function ContentPage() {
           {/* Bulk action bar */}
           {selectedIds.size > 0 && (
             <div className="flex flex-wrap items-center gap-3 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
-              {bulkProgress && (
-                <span className="text-sm text-blue-600 font-medium">{bulkProgress}</span>
-              )}
-              {bulkError && (
-                <span className="text-sm text-red-600">{bulkError}</span>
-              )}
               <span className="text-sm text-slate-700">
                 <span className="font-semibold">{selectedIds.size}개</span> 발행 대기 선택됨
               </span>
@@ -597,10 +678,56 @@ export default function ContentPage() {
           )}
         </div>
 
+        {/* 액션 결과 배너 — 선택이 해제되어도 진행/오류/성공 메시지가 유지된다 */}
+        {bulkProgress && (
+          <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-medium text-blue-700">
+            {bulkProgress}
+          </div>
+        )}
+        {bulkError && (
+          <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
+            <span>{bulkError}</span>
+            <button
+              type="button"
+              onClick={() => setBulkError(null)}
+              aria-label="일괄 발행 오류 메시지 닫기"
+              className="shrink-0 font-bold text-red-400 hover:text-red-600"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        {actionError && (
+          <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
+            <span>{actionError}</span>
+            <button
+              type="button"
+              onClick={() => setActionError(null)}
+              aria-label="오류 메시지 닫기"
+              className="shrink-0 font-bold text-red-400 hover:text-red-600"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        {actionSuccess && (
+          <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-700">
+            <span>{actionSuccess}</span>
+            <button
+              type="button"
+              onClick={() => setActionSuccess(null)}
+              aria-label="완료 메시지 닫기"
+              className="shrink-0 font-bold text-green-500 hover:text-green-700"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Summary cards */}
         <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3">
           <SummaryCard label="발행 가능" value={summary.publishable} tone="green" hint="콘텐츠 운영 기준 통과 · 본문 완성" />
-          <SummaryCard label="검토 필요" value={summary.needsReview} tone="orange" hint="콘텐츠 운영 기준 재검토 필요" />
+          <SummaryCard label="검토 필요" value={summary.needsReview} tone="orange" hint="발행 차단 사유 확인 필요" />
           <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" />
           <SummaryCard label="발행 완료" value={summary.published} tone="blue" hint="이번 달 누적" />
         </div>
@@ -628,7 +755,7 @@ export default function ContentPage() {
           ))}
         </select>
         <span className="text-xs text-slate-500 ml-1">
-          콘텐츠 운영 기준을 통과한 초안만 일괄 선택할 수 있습니다.
+          발행 조건(운영 기준·참고 자료·금지 표현)을 모두 통과한 초안만 일괄 선택할 수 있습니다.
         </span>
         </div>
         <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
@@ -783,6 +910,7 @@ export default function ContentPage() {
           }}
         >
           <div
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="content-dialog-title"
@@ -997,6 +1125,57 @@ export default function ContentPage() {
                     </div>
                   </div>
                 </div>
+                {/* 참고 자료 편집 — 발행 게이트: 권위 있는 참고 자료 1개 이상 필요 */}
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-sm font-medium text-slate-700">참고 자료</label>
+                    <button
+                      type="button"
+                      onClick={addReferenceRow}
+                      className="px-2.5 py-1 text-xs font-medium text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50"
+                    >
+                      + 참고 자료 추가
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500 mb-2">
+                    발행하려면 권위 있는 참고 자료(학회·공공기관 등)가 1개 이상 필요합니다.
+                  </p>
+                  {editReferences.length === 0 && (
+                    <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
+                      등록된 참고 자료가 없습니다. 위의 버튼으로 추가해 주세요.
+                    </p>
+                  )}
+                  <div className="space-y-2">
+                    {editReferences.map((ref, idx) => (
+                      <div key={idx} className="flex items-start gap-2">
+                        <input
+                          type="text"
+                          value={ref.title}
+                          onChange={(e) => updateReference(idx, 'title', e.target.value)}
+                          placeholder="자료 제목 (예: 대한대장항문학회 진료지침)"
+                          aria-label={`참고 자료 ${idx + 1} 제목`}
+                          className="w-2/5 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <input
+                          type="url"
+                          value={ref.url}
+                          onChange={(e) => updateReference(idx, 'url', e.target.value)}
+                          placeholder="https://..."
+                          aria-label={`참고 자료 ${idx + 1} URL`}
+                          className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeReferenceRow(idx)}
+                          aria-label={`참고 자료 ${idx + 1} 제거`}
+                          className="mt-2 text-slate-400 hover:text-red-500 text-lg leading-none"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
                 <div className="flex gap-3">
                   <button
                     onClick={handleSaveEdit}
@@ -1078,6 +1257,31 @@ export default function ContentPage() {
                       }
                       tone={selectedTextViolations.length === 0 ? 'ok' : 'bad'}
                     />
+                    <CheckRow
+                      label="참고 자료"
+                      value={
+                        (selected.references?.length ?? 0) > 0
+                          ? `${selected.references!.length}건 등록됨`
+                          : '없음 — 발행하려면 1개 이상 필요'
+                      }
+                      tone={(selected.references?.length ?? 0) > 0 ? 'ok' : 'warn'}
+                    />
+                    {(selected.references?.length ?? 0) > 0 && (
+                      <ul className="list-disc list-inside text-xs text-slate-600 pl-2 space-y-0.5">
+                        {selected.references!.map((ref, idx) => (
+                          <li key={`${ref.url}-${idx}`}>
+                            <a
+                              href={ref.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline"
+                            >
+                              {ref.title || ref.url}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     <CheckRow
                       label={selectedReview.key === 'published' || selectedReview.key === 'rejected' ? '발행 상태' : '발행 가능 여부'}
                       value={

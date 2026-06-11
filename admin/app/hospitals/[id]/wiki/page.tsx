@@ -73,6 +73,11 @@ const ASSETS_BACKEND_BASE = process.env.NEXT_PUBLIC_BACKEND_URL || ''
 function resolveAssetUrl(url: string | null): string | null {
   if (!url) return null
   if (url.startsWith('http://') || url.startsWith('https://')) return url
+  // 백엔드 file_access_url은 Admin 세션 프록시 경로(/api/admin/...)를 돌려준다.
+  // 이 경로는 same-origin으로 그대로 써야 하며, 백엔드 도메인을 붙이면
+  // 존재하지 않는 라우트 + CSP 차단으로 미리보기가 깨진다.
+  if (url.startsWith('/api/admin/')) return url
+  // 순수 백엔드 상대 경로(/assets/... 등)만 백엔드 베이스를 붙인다.
   if (url.startsWith('/')) return `${ASSETS_BACKEND_BASE}${url}`
   return url
 }

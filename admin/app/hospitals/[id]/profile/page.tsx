@@ -1,8 +1,9 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
+import { useHospitalHeader } from '../hospital-context'
 
 interface Treatment {
   name: string
@@ -56,6 +57,7 @@ function TagInput({
   onChange: (v: string[]) => void
 }) {
   const [input, setInput] = useState('')
+  const inputId = useId()
 
   function addTag(raw: string) {
     const tags = raw
@@ -76,7 +78,7 @@ function TagInput({
 
   return (
     <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
+      <label htmlFor={inputId} className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
       <div className="flex flex-wrap gap-1.5 mb-2">
         {values.map((v) => (
           <span
@@ -96,6 +98,7 @@ function TagInput({
         ))}
       </div>
       <input
+        id={inputId}
         type="text"
         value={input}
         onChange={(e) => setInput(e.target.value)}
@@ -252,6 +255,7 @@ const STATUS_CHIP: Record<ChecklistStatus, { label: string; cls: string }> = {
 export default function ProfilePage() {
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
+  const { refetch: refetchHeader } = useHospitalHeader()
   const [profile, setProfile] = useState<Partial<HospitalProfile>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -264,7 +268,7 @@ export default function ProfilePage() {
   const [domainSavedValue, setDomainSavedValue] = useState<string>('')
 
   useEffect(() => {
-    fetchAPI(`/admin/hospitals/${hospitalId}`)
+    fetchAPI<HospitalProfile>(`/admin/hospitals/${hospitalId}`)
       .then((data) => {
         setProfile({
           ...data,
@@ -322,6 +326,7 @@ export default function ProfilePage() {
         body: JSON.stringify(profile),
       })
       setSuccess(true)
+      void refetchHeader() // 프로파일 완료 플래그 등 헤더 진행 점 갱신
       setTimeout(() => setSuccess(false), 3000)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '저장에 실패했습니다.')
@@ -430,17 +435,19 @@ export default function ProfilePage() {
           </p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">원장명</label>
+          <label htmlFor="profile-director-name" className="block text-sm font-medium text-slate-700 mb-1.5">원장명</label>
           <input
             type="text"
+            id="profile-director-name"
             value={profile.director_name ?? ''}
             onChange={(e) => updateField('director_name', e.target.value)}
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">약력</label>
+          <label htmlFor="profile-director-career" className="block text-sm font-medium text-slate-700 mb-1.5">약력</label>
           <textarea
+            id="profile-director-career"
             value={profile.director_career ?? ''}
             onChange={(e) => updateField('director_career', e.target.value)}
             rows={3}
@@ -448,8 +455,9 @@ export default function ProfilePage() {
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">진료 철학</label>
+          <label htmlFor="profile-director-philosophy" className="block text-sm font-medium text-slate-700 mb-1.5">진료 철학</label>
           <textarea
+            id="profile-director-philosophy"
             value={profile.director_philosophy ?? ''}
             onChange={(e) => updateField('director_philosophy', e.target.value)}
             rows={3}
@@ -467,18 +475,20 @@ export default function ProfilePage() {
           </p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">주소</label>
+          <label htmlFor="profile-address" className="block text-sm font-medium text-slate-700 mb-1.5">주소</label>
           <input
             type="text"
+            id="profile-address"
             value={profile.address ?? ''}
             onChange={(e) => updateField('address', e.target.value)}
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">전화번호</label>
+          <label htmlFor="profile-phone" className="block text-sm font-medium text-slate-700 mb-1.5">전화번호</label>
           <input
             type="text"
+            id="profile-phone"
             value={profile.phone ?? ''}
             onChange={(e) => updateField('phone', e.target.value)}
             placeholder="02-1234-5678"
@@ -493,6 +503,7 @@ export default function ProfilePage() {
                 <span className="w-6 text-sm text-slate-600 font-medium">{day}</span>
                 <input
                   type="text"
+                  aria-label={`${day}요일 진료시간`}
                   value={profile.business_hours?.[DAY_KEYS[i]] ?? ''}
                   onChange={(e) => updateHours(DAY_KEYS[i], e.target.value)}
                   placeholder="09:00 ~ 18:00 / 휴진"
@@ -504,18 +515,20 @@ export default function ProfilePage() {
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">홈페이지 URL</label>
+            <label htmlFor="profile-website-url" className="block text-sm font-medium text-slate-700 mb-1.5">홈페이지 URL</label>
             <input
               type="url"
+              id="profile-website-url"
               value={profile.website_url ?? ''}
               onChange={(e) => updateField('website_url', e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">블로그 URL</label>
+            <label htmlFor="profile-blog-url" className="block text-sm font-medium text-slate-700 mb-1.5">블로그 URL</label>
             <input
               type="url"
+              id="profile-blog-url"
               value={profile.blog_url ?? ''}
               onChange={(e) => updateField('blog_url', e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -534,9 +547,10 @@ export default function ProfilePage() {
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL</label>
+            <label htmlFor="profile-google-business-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL</label>
             <input
               type="url"
+              id="profile-google-business-url"
               value={profile.google_business_profile_url ?? ''}
               onChange={(e) => updateField('google_business_profile_url', e.target.value)}
               placeholder="https://business.google.com/..."
@@ -544,9 +558,10 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">구글 지도 URL</label>
+            <label htmlFor="profile-google-maps-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 지도 URL</label>
             <input
               type="url"
+              id="profile-google-maps-url"
               value={profile.google_maps_url ?? ''}
               onChange={(e) => updateField('google_maps_url', e.target.value)}
               placeholder="https://maps.google.com/..."
@@ -554,9 +569,10 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">네이버 플레이스 URL</label>
+            <label htmlFor="profile-naver-place-url" className="block text-sm font-medium text-slate-700 mb-1.5">네이버 플레이스 URL</label>
             <input
               type="url"
+              id="profile-naver-place-url"
               value={profile.naver_place_url ?? ''}
               onChange={(e) => updateField('naver_place_url', e.target.value)}
               placeholder="https://naver.me/..."
@@ -564,9 +580,10 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">카카오 채널 URL</label>
+            <label htmlFor="profile-kakao-channel-url" className="block text-sm font-medium text-slate-700 mb-1.5">카카오 채널 URL</label>
             <input
               type="url"
+              id="profile-kakao-channel-url"
               value={profile.kakao_channel_url ?? ''}
               onChange={(e) => updateField('kakao_channel_url', e.target.value)}
               placeholder="https://pf.kakao.com/..."
@@ -576,10 +593,11 @@ export default function ProfilePage() {
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">위도</label>
+            <label htmlFor="profile-latitude" className="block text-sm font-medium text-slate-700 mb-1.5">위도</label>
             <input
               type="number"
               step="0.000001"
+              id="profile-latitude"
               value={profile.latitude ?? ''}
               onChange={(e) => updateField('latitude', e.target.value === '' ? null : Number(e.target.value))}
               placeholder="37.497942"
@@ -587,10 +605,11 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">경도</label>
+            <label htmlFor="profile-longitude" className="block text-sm font-medium text-slate-700 mb-1.5">경도</label>
             <input
               type="number"
               step="0.000001"
+              id="profile-longitude"
               value={profile.longitude ?? ''}
               onChange={(e) => updateField('longitude', e.target.value === '' ? null : Number(e.target.value))}
               placeholder="127.027621"
@@ -716,6 +735,7 @@ export default function ProfilePage() {
             })
             setDomainSavedValue(domain)
             setProfile((prev) => ({ ...prev, aeo_domain: domain, site_live: false }))
+            void refetchHeader()
             setDomainFeedback({
               tone: 'success',
               message: '도메인이 저장되었습니다. DNS 전파 후 [DNS 확인하고 병원 정보 허브 운영 시작]을 눌러주세요.',
@@ -734,12 +754,14 @@ export default function ProfilePage() {
           setDomainVerifying(true)
           setDomainFeedback(null)
           try {
-            const result = await fetchAPI(`/admin/hospitals/${hospitalId}/domain/verify`, {
-              method: 'POST',
-            })
+            const result = await fetchAPI<{ verified?: boolean; expected_cname?: string; message?: string }>(
+              `/admin/hospitals/${hospitalId}/domain/verify`,
+              { method: 'POST' },
+            )
             if (result?.expected_cname) setDomainExpectedCname(result.expected_cname)
             if (result?.verified) {
               setProfile((prev) => ({ ...prev, site_live: true }))
+              void refetchHeader() // 운영 상태 점·배지 즉시 갱신
               setDomainFeedback({
                 tone: 'success',
                 message: result.message ?? '도메인 연결이 확인되어 병원 정보 허브가 운영 상태로 전환되었습니다.',
@@ -787,7 +809,7 @@ export default function ProfilePage() {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">1</span>
-                  <label className="text-sm font-semibold text-slate-800">원장님 소유 도메인</label>
+                  <label htmlFor="profile-aeo-domain" className="text-sm font-semibold text-slate-800">원장님 소유 도메인</label>
                 </div>
                 <p className="text-xs text-slate-500 mb-2">
                   서브도메인 사용을 권장합니다 (예: <code className="px-1 bg-slate-100 rounded">www.clinicname.co.kr</code> 또는 <code className="px-1 bg-slate-100 rounded">ai.clinicname.co.kr</code>).
@@ -796,6 +818,7 @@ export default function ProfilePage() {
                 <div className="flex gap-2">
                   <input
                     type="text"
+                    id="profile-aeo-domain"
                     value={profile.aeo_domain ?? ''}
                     onChange={(e) => updateField('aeo_domain', e.target.value)}
                     placeholder="ai.clinicname.co.kr"
@@ -816,7 +839,7 @@ export default function ProfilePage() {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">2</span>
-                  <label className="text-sm font-semibold text-slate-800">DNS 설정 안내</label>
+                  <span className="text-sm font-semibold text-slate-800">DNS 설정 안내</span>
                 </div>
                 <p className="text-xs text-slate-500 mb-2">
                   도메인 등록업체(가비아·카페24·후이즈 등)의 DNS 관리 페이지에서 아래 CNAME 레코드를 추가해 주세요.
@@ -854,7 +877,7 @@ export default function ProfilePage() {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">3</span>
-                  <label className="text-sm font-semibold text-slate-800">연결 검증 및 병원 정보 허브 운영 시작</label>
+                  <span className="text-sm font-semibold text-slate-800">연결 검증 및 병원 정보 허브 운영 시작</span>
                 </div>
                 {profile.site_live && !hasUnsavedChange ? (
                   <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">

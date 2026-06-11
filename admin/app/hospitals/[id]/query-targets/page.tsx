@@ -9,7 +9,12 @@ import {
   AIQueryTargetStatus,
   QUERY_TARGET_PRIORITY_LABELS,
   QUERY_TARGET_STATUS_LABELS,
+  STATUS_LABELS,
 } from '@/types'
+import { useHospitalHeader } from '../hospital-context'
+
+// backend/app/api/admin/operations.py run-sov: ACTIVE | PENDING_DOMAIN 외에는 409
+const MEASURABLE_STATUSES = new Set(['ACTIVE', 'PENDING_DOMAIN'])
 
 type FormState = {
   name: string
@@ -48,6 +53,7 @@ const DEFAULT_FORM: FormState = {
 export default function QueryTargetsPage() {
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
+  const { hospital } = useHospitalHeader()
   const [targets, setTargets] = useState<AIQueryTarget[]>([])
   const [form, setForm] = useState<FormState>(DEFAULT_FORM)
   const [variantDrafts, setVariantDrafts] = useState<Record<string, string>>({})
@@ -55,9 +61,41 @@ export default function QueryTargetsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [measuring, setMeasuring] = useState(false)
+  const [measureFeedback, setMeasureFeedback] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
 
   const activeTargets = useMemo(() => targets.filter((target) => target.status !== 'ARCHIVED'), [targets])
   const archivedTargets = useMemo(() => targets.filter((target) => target.status === 'ARCHIVED'), [targets])
+
+  const canMeasure = hospital != null && MEASURABLE_STATUSES.has(hospital.status)
+  const measureDisabledReason = hospital == null
+    ? '병원 상태를 확인하는 중입니다.'
+    : !canMeasure
+      ? `현재 병원 상태(${STATUS_LABELS[hospital.status]?.label ?? hospital.status})에서는 측정을 실행할 수 없습니다. 운영중 또는 도메인대기 상태에서 실행할 수 있습니다.`
+      : null
+
+  async function runMeasurement() {
+    if (measuring || !canMeasure) return
+    setMeasuring(true)
+    setMeasureFeedback(null)
+    try {
+      const result = await fetchAPI<{ detail?: string }>(
+        `/admin/hospitals/${hospitalId}/operations/run-sov`,
+        { method: 'POST' },
+      )
+      setMeasureFeedback({
+        tone: 'success',
+        text: result?.detail ?? 'AI 언급률 측정이 큐에 등록되었습니다. 결과는 대시보드에서 확인할 수 있습니다.',
+      })
+    } catch (err) {
+      setMeasureFeedback({
+        tone: 'error',
+        text: err instanceof Error ? err.message : '측정 실행에 실패했습니다.',
+      })
+    } finally {
+      setMeasuring(false)
+    }
+  }
 
   useEffect(() => {
     loadTargets()
@@ -68,7 +106,7 @@ export default function QueryTargetsPage() {
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchAPI(`/admin/hospitals/${hospitalId}/query-targets?include_archived=true`)
+      const data = await fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${hospitalId}/query-targets?include_archived=true`)
       setTargets(data ?? [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AI 노출용 환자 질문 전략을 불러오지 못했습니다.')
@@ -188,6 +226,39 @@ export default function QueryTargetsPage() {
             <SummaryPill label="보관" value={String(archivedTargets.length)} />
           </div>
         </div>
+
+        {/* AI 언급률 측정 실행 */}
+        <div className="mt-5 flex flex-col gap-2 rounded-xl bg-white/10 p-4 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-white">AI 언급률 측정</p>
+            <p className="mt-0.5 text-xs text-blue-100">
+              등록된 환자 질문 문구로 ChatGPT·Gemini 답변에서 우리 병원 언급 여부를 확인합니다. 측정은 백그라운드에서
+              진행되며 결과는 대시보드에 누적됩니다.
+            </p>
+            {measureDisabledReason && (
+              <p className="mt-1 text-xs font-medium text-amber-200">{measureDisabledReason}</p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={runMeasurement}
+            disabled={measuring || !canMeasure}
+            className="shrink-0 rounded-lg bg-white px-4 py-2.5 text-sm font-semibold text-slate-900 shadow-sm hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {measuring ? '측정 시작 중...' : '측정 실행'}
+          </button>
+        </div>
+        {measureFeedback && (
+          <div
+            className={`mt-3 rounded-xl px-4 py-3 text-sm ${
+              measureFeedback.tone === 'success'
+                ? 'bg-emerald-500/15 text-emerald-100 border border-emerald-300/40'
+                : 'bg-red-500/15 text-red-100 border border-red-300/40'
+            }`}
+          >
+            {measureFeedback.text}
+          </div>
+        )}
       </section>
 
       {error && (
