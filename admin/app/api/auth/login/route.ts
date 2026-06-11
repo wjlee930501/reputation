@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { getBackendUrl } from '@/lib/backend'
-import { getLoginRateLimitKey, hasValidSameOrigin } from '@/lib/security'
+import { clientIpFromForwardedHeaders, getLoginRateLimitKey, hasValidSameOrigin } from '@/lib/security'
 import { generateSessionToken } from '@/lib/session'
 
 export const runtime = 'nodejs'
@@ -83,14 +83,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 })
   }
 
+  // 백엔드 per-IP 로그인 스로틀은 요청 IP를 키로 쓴다 — BFF 경유 로그인은 admin 서버
+  // egress IP로 합쳐져 AE 한 명의 실패가 전원을 잠근다. SITE_BFF_SECRET이 설정되면
+  // X-BFF-Auth + X-Visitor-IP 쌍으로 실제 방문자 IP를 인증 전달한다
+  // (backend get_request_ip가 우선 채택 — site/app/api/leads/route.ts와 동일 패턴).
+  const upstreamHeaders: Record<string, string> = {
+    'content-type': 'application/json',
+    'X-Admin-Key': adminKey,
+  }
+  const bffSecret = (process.env.SITE_BFF_SECRET || '').trim()
+  const visitorIp = clientIpFromForwardedHeaders(req.headers)
+  if (bffSecret && visitorIp) {
+    upstreamHeaders['X-BFF-Auth'] = bffSecret
+    upstreamHeaders['X-Visitor-IP'] = visitorIp
+  }
+
   let account: AdminAccountResponse
   try {
     const authResponse = await fetch(new URL('/api/v1/admin/auth/login', backendUrl), {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'X-Admin-Key': adminKey,
-      },
+      headers: upstreamHeaders,
       body: JSON.stringify({ email, password }),
       cache: 'no-store',
     })

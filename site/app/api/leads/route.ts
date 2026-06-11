@@ -112,6 +112,16 @@ export async function POST(request: Request) {
   }
 
   if (!response.ok) {
+    // 업스트림 429(공개 리드 rate limit)는 입력 문제가 아니다 — 재시도 안내로 구분한다.
+    // 입력 오류로 안내하면 사용자가 같은 내용을 계속 다시 제출하게 된다.
+    if (response.status === 429) {
+      const error = '요청이 많아 잠시 접수가 어렵습니다. 잠시 후 다시 시도해 주세요.'
+      if (wantsJson) {
+        return NextResponse.json({ ok: false, error, upstreamStatus: 429 }, { status: 429 })
+      }
+      return NextResponse.redirect(new URL('/?lead=busy#lead', request.url), 303)
+    }
+
     // 업스트림 4xx(422 검증 실패 등)는 서버 장애가 아니라 입력 문제 — 입력 오류로 안내한다.
     const isValidationError = response.status >= 400 && response.status < 500
     if (isValidationError) {

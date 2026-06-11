@@ -25,13 +25,16 @@ function req(method: string, origin?: string) {
   }
 }
 
-test('login rate-limit key prefers the trusted edge header over x-forwarded-for', () => {
+test('login rate-limit key ignores forged x-real-ip headers when XFF is present', () => {
+  // GCLB는 인바운드 x-real-ip / x-vercel-forwarded-for를 제거하지 않는다 —
+  // 공격자가 임의 설정해도 LB가 붙인 XFF 체인(second-from-right)이 항상 이긴다.
   const headers = new Headers({
-    'x-vercel-forwarded-for': '203.0.113.2',
-    'x-forwarded-for': '203.0.113.1',
+    'x-real-ip': '6.6.6.6',
+    'x-vercel-forwarded-for': '6.6.6.6',
+    'x-forwarded-for': '203.0.113.1, 130.211.0.5',
   })
 
-  assert.equal(getLoginRateLimitKey({ headers }), 'ip:203.0.113.2')
+  assert.equal(getLoginRateLimitKey({ headers }), 'ip:203.0.113.1')
 })
 
 test('login rate-limit key uses the GCP LB client entry (second-from-right XFF)', () => {
@@ -55,12 +58,19 @@ test('client IP helper handles minimal LB chain and dev single entry', () => {
     clientIpFromForwardedHeaders(new Headers({ 'x-forwarded-for': '127.0.0.1' })),
     '127.0.0.1',
   )
-  // Vercel 호환: 플랫폼 헤더가 우선
+  // x-real-ip / x-vercel-forwarded-for는 XFF가 아예 없을 때만 최후 fallback
   assert.equal(
-    clientIpFromForwardedHeaders(
-      new Headers({ 'x-vercel-forwarded-for': '203.0.113.2', 'x-forwarded-for': '6.6.6.6, 1.1.1.1' }),
-    ),
+    clientIpFromForwardedHeaders(new Headers({ 'x-real-ip': '203.0.113.3' })),
+    '203.0.113.3',
+  )
+  assert.equal(
+    clientIpFromForwardedHeaders(new Headers({ 'x-vercel-forwarded-for': '203.0.113.2' })),
     '203.0.113.2',
+  )
+  // XFF가 있는데 파싱이 불가능해도 위조 가능한 헤더로 내려가지 않는다
+  assert.equal(
+    clientIpFromForwardedHeaders(new Headers({ 'x-real-ip': '6.6.6.6', 'x-forwarded-for': 'junk' })),
+    null,
   )
 })
 

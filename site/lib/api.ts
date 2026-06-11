@@ -1,4 +1,4 @@
-import { getApiBase } from './config.ts'
+import { getApiBase, resolveBaseUrl } from './config.ts'
 import { publicFetchInit } from './fetch-policy.ts'
 
 export interface DirectorCredentials {
@@ -55,24 +55,14 @@ export interface HospitalPhoto {
 
 const DEV_ASSETS_BACKEND_BASE = 'http://localhost:8000'
 
-// getApiBase()와 동일한 fail-closed 정책: 프로덕션에서 env 미설정/localhost면 throw.
-// 빌드(SSG) 시점에 호출되므로 잘못된 배포 구성이 localhost URL로 조용히 새는 대신 즉시 드러난다.
+// getApiBase()와 동일한 fail-closed 정책(config.ts resolveBaseUrl 공유): 프로덕션에서
+// env 미설정/localhost면 throw. 빌드(SSG) 시점에 호출되므로 잘못된 배포 구성이
+// localhost URL로 조용히 새는 대신 즉시 드러난다.
 function getAssetsBackendBase(): string {
-  const value = (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || '').trim()
-  if (value) {
-    const normalized = value.replace(/\/$/, '')
-    if (
-      process.env.NODE_ENV === 'production' &&
-      /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(normalized)
-    ) {
-      throw new Error('NEXT_PUBLIC_BACKEND_URL cannot point to localhost in production')
-    }
-    return normalized
-  }
-  if (process.env.NODE_ENV !== 'production') {
-    return DEV_ASSETS_BACKEND_BASE
-  }
-  throw new Error('NEXT_PUBLIC_BACKEND_URL (or BACKEND_URL) is required in production')
+  return resolveBaseUrl(process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL, {
+    envName: 'NEXT_PUBLIC_BACKEND_URL (or BACKEND_URL)',
+    devDefault: DEV_ASSETS_BACKEND_BASE,
+  })
 }
 
 // 백엔드는 공개 승인된 사진만 API 경로로 반환한다. 상대 경로는 site와 다른 API 호스트에서도

@@ -10,6 +10,8 @@ import { PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
 
 // backend GET /admin/leads — limit 파라미터만 지원 (기본 50, 최대 200).
 // offset이 없어 "더 보기"는 limit을 키워 다시 조회하는 방식으로 동작한다.
+// TODO(backend follow-up): offset/skip 파라미터가 추가되면 append 페이지네이션으로 전환
+// — 현재는 최신 200건 이전 리드(파기 워크플로 대상 포함)에 UI로 접근할 수 없다.
 const PAGE_SIZE = 50
 const MAX_LIMIT = 200
 
@@ -88,6 +90,8 @@ export default function LeadsPage() {
   }, [loadLeads])
 
   const hasMore = leads.length >= requestedLimit && requestedLimit < MAX_LIMIT
+  // 최신 200건 한도에 도달 — 더 이전 리드는 현재 화면에서 불러올 수 없으므로 명시적으로 안내한다.
+  const reachedCap = requestedLimit >= MAX_LIMIT && leads.length >= MAX_LIMIT
 
   async function openConvertModal(lead: SalesLead) {
     if (lead.converted_hospital_id) {
@@ -295,6 +299,12 @@ export default function LeadsPage() {
                 {loadingMore ? '불러오는 중...' : '더 보기'}
               </button>
             </div>
+          )}
+          {reachedCap && (
+            <p className="border-t border-slate-100 px-6 py-3 text-center text-xs text-slate-500">
+              최신 200건까지만 표시됩니다. 더 이전 리드(개인정보 파기 요청 처리 포함)는 백엔드에서 직접
+              확인해 주세요.
+            </p>
           )}
         </div>
       )}

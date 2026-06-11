@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { ApiError, fetchAPI } from '@/lib/api'
-import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, Hospital, TYPE_LABELS } from '@/types'
+import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
 const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
@@ -135,27 +135,16 @@ function getReviewState(item: ContentItem): ReviewState {
   if (item.status === 'REJECTED') {
     return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
   }
-  if (!item.title || !item.body) {
+  if (!item.title) {
     return { key: 'notGenerated', label: displayLabel ?? '생성 전', badge: 'bg-slate-100 text-slate-500', reason: displayReason ?? '야간 자동 생성 대기', publishable: false }
   }
-  // 발행 가능 여부는 백엔드 compliance 요약이 권위 있는 기준이다.
+  // 발행 가능 여부는 백엔드 compliance 요약이 단일 기준이다.
   // (display.review와 달리 참고 자료·금지 표현까지 발행 게이트 전체를 반영한다.)
-  if (item.compliance) {
-    if (!item.compliance.publishable) {
-      const reason = item.compliance.blockers.length > 0 ? item.compliance.blockers.join(' · ') : displayReason ?? '발행 차단 사유 확인 필요'
-      return { key: 'needsReview', label: '검토 필요', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
-    }
-    return { key: 'publishable', label: '발행 가능', badge: 'bg-green-100 text-green-700', publishable: true }
+  if (!item.compliance.publishable) {
+    const reason = item.compliance.blockers.length > 0 ? item.compliance.blockers.join(' · ') : displayReason ?? '발행 차단 사유 확인 필요'
+    return { key: 'needsReview', label: '검토 필요', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
   }
-  if (item.essence_status !== 'ALIGNED') {
-    const reason = displayReason ?? (
-      item.essence_status === 'NEEDS_ESSENCE_REVIEW' ? '운영 기준 재검토 필요' :
-      item.essence_status === 'MISSING_APPROVED_PHILOSOPHY' ? '승인된 운영 기준 없음' :
-      '운영 기준 미검수'
-    )
-    return { key: 'needsReview', label: displayLabel ?? '검토 필요', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
-  }
-  return { key: 'publishable', label: displayLabel ?? '발행 가능', badge: 'bg-green-100 text-green-700', publishable: true }
+  return { key: 'publishable', label: '발행 가능', badge: 'bg-green-100 text-green-700', publishable: true }
 }
 
 function getContentTypeLabel(item: ContentItem): string {
@@ -176,7 +165,10 @@ function getBriefLabel(item: ContentItem): { label: string; color: string } {
 
 export default function ContentPage() {
   const { id } = useParams<{ id: string }>()
-  const { refetch: refetchHeader } = useHospitalHeader()
+  // 레이아웃이 이미 병원 정보를 들고 있다 — 발행 완료 링크(aeo_domain/slug)도 여기서 읽는다.
+  const { hospital, refetch: refetchHeader } = useHospitalHeader()
+  const aeoDomain = hospital?.aeo_domain ?? null
+  const hospitalSlug = hospital?.slug ?? null
 
   // Month filter
   const [year, setYear] = useState(new Date().getFullYear())
@@ -219,17 +211,15 @@ export default function ContentPage() {
   const [bulkError, setBulkError] = useState<string | null>(null)
   const [publisherName, setPublisherName] = useState('')
   const [publisherError, setPublisherError] = useState<string | null>(null)
-  const [aeoDomain, setAeoDomain] = useState<string | null>(null)
-  const [hospitalSlug, setHospitalSlug] = useState<string | null>(null)
   const [publishSuccessId, setPublishSuccessId] = useState<string | null>(null)
 
   // 페이지 단위 액션 피드백 — 모달이 닫혀 있어도 행 단위 발행/반려 결과를 보여준다.
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
 
-  const load = useCallback((options?: { keepSelection?: boolean }) => {
+  const load = useCallback(() => {
     setLoading(true)
-    if (!options?.keepSelection) setSelectedIds(new Set())
+    setSelectedIds(new Set())
     fetchAPI<ContentItem[]>(`/admin/hospitals/${id}/content?year=${year}&month=${month}`)
       .then(setItems)
       .catch((e: Error) => setError(e.message))
@@ -244,14 +234,6 @@ export default function ContentPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => {
-    fetchAPI<Hospital>(`/admin/hospitals/${id}`)
-      .then((h) => {
-        setAeoDomain(h.aeo_domain ?? null)
-        setHospitalSlug(h.slug ?? null)
-      })
-      .catch(() => {})
-  }, [id])
 
   useEffect(() => {
     setPublisherName(window.localStorage.getItem(PUBLISHER_STORAGE_KEY) ?? '')
@@ -402,7 +384,8 @@ export default function ContentPage() {
       setPublishSuccessId(ids.find((itemId) => !failedIds.includes(itemId)) ?? null)
       void refetchHeader()
     }
-    load({ keepSelection: true })
+    // load()가 선택을 비우지만 같은 continuation에서 실패분으로 덮어쓴다 (React 자동 배칭).
+    load()
     setSelectedIds(new Set(failedIds))
   }
 
@@ -451,6 +434,7 @@ export default function ContentPage() {
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/reject`, { method: 'POST' })
       setActionSuccess('콘텐츠를 반려했습니다. 야간에 재생성됩니다.')
+      void refetchHeader()
       load()
       setSelected(null)
     } catch (e: unknown) {
@@ -469,6 +453,7 @@ export default function ContentPage() {
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/regenerate`, { method: 'POST' })
       setActionSuccess('재생성 요청을 등록했습니다. 잠시 후 초안이 갱신됩니다.')
+      void refetchHeader()
       load()
       setSelected(null)
     } catch (e: unknown) {
@@ -636,9 +621,9 @@ export default function ContentPage() {
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1)
 
   const selectedReview = selected ? getReviewState(selected) : null
-  const selectedTextViolations = selected
-    ? checkForbidden(`${selected.title ?? ''} ${selected.body ?? ''} ${selected.meta_description ?? ''}`)
-    : []
+  // 금지 표현 검출도 backend compliance가 단일 기준 (FAQ 분리 필드까지 포함해 검사한다).
+  // FORBIDDEN_RULES는 편집 모드의 실시간 힌트 용도로만 유지.
+  const selectedTextViolations = selected?.compliance.forbidden_violations ?? []
   const selectedFindings: string[] = Array.isArray(selected?.essence_check_summary?.findings)
     ? (selected!.essence_check_summary!.findings as unknown[]).map((f) => String(f))
     : []
@@ -685,43 +670,13 @@ export default function ContentPage() {
           </div>
         )}
         {bulkError && (
-          <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
-            <span>{bulkError}</span>
-            <button
-              type="button"
-              onClick={() => setBulkError(null)}
-              aria-label="일괄 발행 오류 메시지 닫기"
-              className="shrink-0 font-bold text-red-400 hover:text-red-600"
-            >
-              ✕
-            </button>
-          </div>
+          <DismissibleBanner tone="error" message={bulkError} dismissLabel="일괄 발행 오류 메시지 닫기" onClose={() => setBulkError(null)} />
         )}
         {actionError && (
-          <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
-            <span>{actionError}</span>
-            <button
-              type="button"
-              onClick={() => setActionError(null)}
-              aria-label="오류 메시지 닫기"
-              className="shrink-0 font-bold text-red-400 hover:text-red-600"
-            >
-              ✕
-            </button>
-          </div>
+          <DismissibleBanner tone="error" message={actionError} dismissLabel="오류 메시지 닫기" onClose={() => setActionError(null)} />
         )}
         {actionSuccess && (
-          <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-700">
-            <span>{actionSuccess}</span>
-            <button
-              type="button"
-              onClick={() => setActionSuccess(null)}
-              aria-label="완료 메시지 닫기"
-              className="shrink-0 font-bold text-green-500 hover:text-green-700"
-            >
-              ✕
-            </button>
-          </div>
+          <DismissibleBanner tone="success" message={actionSuccess} dismissLabel="완료 메시지 닫기" onClose={() => setActionSuccess(null)} />
         )}
 
         {/* Summary cards */}
@@ -1291,7 +1246,7 @@ export default function ContentPage() {
                       }
                       tone={selectedReview.publishable || selectedReview.key === 'published' ? 'ok' : selectedReview.key === 'rejected' ? 'bad' : 'warn'}
                     />
-                    {selected.compliance?.blockers && selected.compliance.blockers.length > 0 && (
+                    {selected.compliance.blockers.length > 0 && (
                       <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2">
                         <p className="text-xs font-semibold text-orange-800">발행 차단 사유</p>
                         <ul className="mt-1 list-disc list-inside text-xs text-orange-700">
@@ -1362,6 +1317,39 @@ export default function ContentPage() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function DismissibleBanner({
+  tone,
+  message,
+  dismissLabel,
+  onClose,
+}: {
+  tone: 'error' | 'success'
+  message: string
+  dismissLabel?: string
+  onClose: () => void
+}) {
+  const styles =
+    tone === 'error'
+      ? { box: 'border-red-200 bg-red-50 text-red-700', close: 'text-red-400 hover:text-red-600' }
+      : { box: 'border-green-200 bg-green-50 text-green-700', close: 'text-green-500 hover:text-green-700' }
+  return (
+    <div
+      role="alert"
+      className={`mt-4 flex items-start justify-between gap-3 rounded-lg border px-4 py-2.5 text-sm ${styles.box}`}
+    >
+      <span>{message}</span>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label={dismissLabel ?? '메시지 닫기'}
+        className={`shrink-0 font-bold ${styles.close}`}
+      >
+        ✕
+      </button>
     </div>
   )
 }

@@ -98,10 +98,22 @@ function formatDetailEntry(entry: unknown): string {
   return typeof entry === 'number' || typeof entry === 'boolean' ? String(entry) : ''
 }
 
+/** 알 수 없는 구조의 detail을 진단용으로 덧붙일 때 쓰는 압축 JSON (최대 200자). */
+function compactJson(value: unknown): string | null {
+  let raw: string | undefined
+  try {
+    raw = JSON.stringify(value)
+  } catch {
+    return null
+  }
+  if (!raw || raw === '{}' || raw === 'null') return null
+  return raw.length > 200 ? `${raw.slice(0, 200)}…` : raw
+}
+
 /**
  * 구조화된 detail 객체를 AE가 읽을 수 있는 한국어 메시지로 변환한다.
  * 알려진 형태(grounding_errors, violations, FastAPI validation 배열)를 우선 처리하고,
- * 모르는 형태는 raw JSON 대신 상태 코드 기반 일반 메시지로 대체한다.
+ * 모르는 형태는 상태 코드 기반 일반 메시지 뒤에 압축 JSON을 덧붙여 원인을 숨기지 않는다.
  */
 function readError(body: string, status: number): { message: string; detail: unknown } {
   if (!body) return { message: fallbackMessage(status), detail: null }
@@ -115,6 +127,17 @@ function readError(body: string, status: number): { message: string; detail: unk
   }
 
   if (!isRecord(parsed) || !('detail' in parsed)) {
+    // detail은 없지만 error/message 문자열이 있으면 그대로 노출 —
+    // admin 프록시 자체 오류({"error":"Server misconfigured"}) 등이 여기에 해당한다.
+    if (isRecord(parsed)) {
+      const direct =
+        typeof parsed.error === 'string' && parsed.error
+          ? parsed.error
+          : typeof parsed.message === 'string' && parsed.message
+            ? parsed.message
+            : null
+      if (direct) return { message: direct, detail: parsed }
+    }
     return { message: fallbackMessage(status), detail: parsed ?? null }
   }
 
@@ -147,6 +170,13 @@ function readError(body: string, status: number): { message: string; detail: unk
         message: violations.length > 0 ? `${detail.message} (${violations.join(', ')})` : detail.message,
         detail,
       }
+    }
+
+    // 모르는 객체 형태 — 일반 메시지로 뭉개면 원인이 보이지 않으므로 압축 JSON을 덧붙인다.
+    const raw = compactJson(detail)
+    return {
+      message: raw ? `${fallbackMessage(status)} (상세: ${raw})` : fallbackMessage(status),
+      detail,
     }
   }
 

@@ -20,29 +20,32 @@ function isLikelyIp(value: string): boolean {
 
 export function clientIpFromForwardedHeaders(headers: HeaderLike): string | null {
   // NextRequest has no `.ip` in Next 16, so derive the client IP from proxy
-  // headers, preferring platform-controlled values over client-controllable ones:
-  // 1. x-vercel-forwarded-for / x-real-ip — set by the platform when on Vercel.
-  // 2. X-Forwarded-For behind the GCP external Application LB: the LB appends
-  //    "<client-ip>, <lb-ip>" to whatever the client supplied, so the real
-  //    client is the SECOND-FROM-RIGHT entry. Leftmost entries are spoofable.
-  //    (Cloud Run ingress is INTERNAL_LOAD_BALANCER, so traffic always passes
-  //    the LB in production; a direct single-entry XFF only happens in dev.)
-  const platformIp = (
-    headers.get('x-vercel-forwarded-for') ||
-    headers.get('x-real-ip') ||
-    ''
-  ).trim()
-  if (platformIp && isLikelyIp(platformIp)) {
-    return platformIp
-  }
-
+  // headers. Deployment is GCP Cloud Run behind the external Application LB only:
+  // 1. X-Forwarded-For is the primary source: the LB appends "<client-ip>, <lb-ip>"
+  //    to whatever the client supplied, so the real client is the SECOND-FROM-RIGHT
+  //    entry. Leftmost entries are spoofable. (Cloud Run ingress is
+  //    INTERNAL_LOAD_BALANCER, so traffic always passes the LB in production;
+  //    a direct single-entry XFF only happens in dev.)
+  // 2. x-real-ip / x-vercel-forwarded-for are last-resort fallbacks used ONLY when
+  //    no XFF header exists at all — GCLB does not strip inbound x-real-ip, so a
+  //    client can forge it per request. Preferring it would let an attacker pick
+  //    the rate-limit key. Same policy as site/lib/client-ip.ts.
   const forwarded = headers.get('x-forwarded-for')
   if (forwarded) {
     const entries = forwarded.split(',').map((entry) => entry.trim()).filter(Boolean)
     const candidate = entries.length >= 2 ? entries[entries.length - 2] : entries[0]
-    if (candidate && isLikelyIp(candidate)) {
-      return candidate
-    }
+    // When XFF is present, only its result is trusted — never fall through to the
+    // forgeable x-real-ip on a parse failure.
+    return candidate && isLikelyIp(candidate) ? candidate : null
+  }
+
+  const fallbackIp = (
+    headers.get('x-real-ip') ||
+    headers.get('x-vercel-forwarded-for') ||
+    ''
+  ).trim()
+  if (fallbackIp && isLikelyIp(fallbackIp)) {
+    return fallbackIp
   }
   return null
 }

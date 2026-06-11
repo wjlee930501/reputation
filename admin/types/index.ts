@@ -75,7 +75,8 @@ export interface ContentItem {
   brief_approved_by?: string | null
   essence_status?: 'ALIGNED' | 'NEEDS_ESSENCE_REVIEW' | 'MISSING_APPROVED_PHILOSOPHY' | null
   essence_check_summary?: Record<string, unknown> | null
-  compliance?: {
+  // 발행 가능 여부의 단일 기준 — backend _serialize_item이 목록/상세 모두 항상 직렬화한다.
+  compliance: {
     status: 'PASS' | 'BLOCKED'
     publishable: boolean
     blockers: string[]
@@ -83,7 +84,7 @@ export interface ContentItem {
     references_count?: number
     essence_status?: string | null
     essence_check_summary?: Record<string, unknown> | null
-  } | null
+  }
   body?: string | null
   image_prompt?: string | null
 }

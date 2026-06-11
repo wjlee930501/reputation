@@ -95,7 +95,7 @@ test('fetchAPI keeps structured detail on ApiError for screens that need violati
   }
 })
 
-test('fetchAPI replaces unknown structured detail with a generic Korean message', async () => {
+test('fetchAPI appends compact JSON for unknown structured detail (cause stays visible)', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ detail: { some_internal: { nested: 1 } } }), { status: 400 })) as typeof fetch
@@ -105,7 +105,63 @@ test('fetchAPI replaces unknown structured detail with a generic Korean message'
       () => fetchAPI('/admin/hospitals/demo', { method: 'POST' }),
       (err: unknown) => {
         assert.ok(err instanceof ApiError)
-        assert.equal(err.message, '입력값이 올바르지 않습니다.')
+        assert.match(err.message, /^입력값이 올바르지 않습니다\./)
+        assert.match(err.message, /"some_internal":\{"nested":1\}/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchAPI truncates very long unknown detail JSON to ~200 chars', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ detail: { dump: 'x'.repeat(500) } }), { status: 500 })) as typeof fetch
+
+  try {
+    await assert.rejects(
+      () => fetchAPI('/admin/hospitals/demo', { method: 'POST' }),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError)
+        assert.match(err.message, /^서버 오류가 발생했습니다\./)
+        assert.ok(err.message.length < 300)
+        assert.match(err.message, /…/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchAPI surfaces top-level error/message strings when detail is absent', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ error: 'Server misconfigured' }), { status: 500 })) as typeof fetch
+
+  try {
+    await assert.rejects(
+      () => fetchAPI('/admin/hospitals/demo', { method: 'POST' }),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError)
+        assert.equal(err.message, 'Server misconfigured')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ message: '점검 중입니다' }), { status: 503 })) as typeof fetch
+  try {
+    await assert.rejects(
+      () => fetchAPI('/admin/hospitals/demo', { method: 'POST' }),
+      (err: unknown) => {
+        assert.ok(err instanceof ApiError)
+        assert.equal(err.message, '점검 중입니다')
         return true
       },
     )
