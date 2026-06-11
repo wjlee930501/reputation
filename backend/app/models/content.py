@@ -152,6 +152,12 @@ class ContentItem(Base):
     faq_question: Mapped[str | None] = mapped_column(String(300))
     faq_answer_summary: Mapped[str | None] = mapped_column(String(600))
 
+    # 전월 이월 추적 (월말 반려 carry-over): 반려 재스케줄이 원래 발행 예정일과 다른
+    # 달로 넘어간 경우 원래 scheduled_date를 기록한다. 야간 생성이 이월분을 최우선
+    # 처리하고, 아침 Slack에 "(전월 이월 — 우선 검토)"를 붙이는 근거. 내부 운영 데이터 —
+    # 공개(/site) 직렬화에는 포함하지 않는다.
+    carried_over_from: Mapped[date | None] = mapped_column(Date)
+
     # 타임스탬프
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

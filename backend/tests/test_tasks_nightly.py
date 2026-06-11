@@ -25,6 +25,17 @@ def test_generation_catchup_window_is_seven_days():
     assert tasks.GENERATION_CATCHUP_DAYS == 7
 
 
+def test_nightly_generation_orders_carried_over_items_first():
+    """전월 이월(carried_over_from) 슬롯이 cap 안에서 가장 먼저 생성돼야 한다."""
+    stmt = tasks._nightly_generation_stmt(date(2026, 7, 1), date(2026, 7, 2))
+    sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+
+    order_clause = sql.split("ORDER BY", 1)[1]
+    assert "carried_over_from IS NOT NULL DESC" in order_clause
+    # 이월 우선 정렬이 발행 예정일 정렬보다 앞선다.
+    assert order_clause.index("carried_over_from") < order_clause.index("scheduled_date")
+
+
 def test_morning_missed_stmt_bounds_and_filters():
     """R1 — 누락 경보는 catch-up 윈도우 내, ACTIVE 병원, 승인된 운영 기준 보유만 본다."""
     today = date(2026, 6, 10)
@@ -133,6 +144,7 @@ def _draft_item():
         total_count=8,
         content_type=SimpleNamespace(value="FAQ"),
         scheduled_date=date(2026, 6, 10),
+        carried_over_from=None,
     )
 
 

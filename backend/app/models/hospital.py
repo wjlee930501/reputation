@@ -72,7 +72,9 @@ class Hospital(Base):
     google_business_profile_url: Mapped[str | None] = mapped_column(String(500))
     google_maps_url: Mapped[str | None] = mapped_column(String(500))
     naver_place_url: Mapped[str | None] = mapped_column(String(500))
-    aeo_domain: Mapped[str | None] = mapped_column(String(200))  # 연결된 AEO 도메인
+    # 연결된 AEO 도메인 — 공개 /site 미들웨어가 요청 호스트로 병원을 역조회하므로
+    # 인덱스 필수 (ix_hospitals_aeo_domain, migration 0025). 저장 시 정규화(소문자).
+    aeo_domain: Mapped[str | None] = mapped_column(String(200), index=True)
     aeo_site_path: Mapped[str | None] = mapped_column(String(500))  # 빌드된 사이트 경로
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)

@@ -489,7 +489,13 @@ def _nightly_generation_stmt(window_start, window_end):
             ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
             ContentItem.body.is_(None),
         )
-        .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
+        # 전월 이월(carried_over_from IS NOT NULL) 슬롯을 최우선 생성한다 — cap 절단이
+        # 발생해도 이월분이 가장 먼저 해소되도록 (월말 반려 carry-over).
+        .order_by(
+            ContentItem.carried_over_from.is_not(None).desc(),
+            ContentItem.scheduled_date,
+            ContentItem.sequence_no,
+        )
         .options(joinedload(ContentItem.hospital))
         # cap+1로 읽어 절단 발생 여부를 감지한다 — 조용한 드롭 금지 (P1-3).
         .limit(NIGHTLY_GENERATION_CAP + 1)
@@ -646,6 +652,8 @@ def morning_content_notification():
                 content_type=item.content_type.value,
                 scheduled_date=str(item.scheduled_date),
                 admin_url=admin_url,
+                # 전월 이월분은 우선 검토 표시 (월말 반려 carry-over)
+                carried_over=bool(item.carried_over_from),
             ))
             if not sent:
                 drafts_all_sent = False

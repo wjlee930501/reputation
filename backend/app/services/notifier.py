@@ -111,20 +111,25 @@ async def notify_content_draft_ready(
     content_type: str,
     scheduled_date: str,
     admin_url: str,
+    carried_over: bool = False,
 ) -> bool:
-    """콘텐츠 초안 완료 → 당일 아침 08:00 AE에게"""
+    """콘텐츠 초안 완료 → 당일 아침 08:00 AE에게.
+
+    carried_over=True면 전월 이월분(월말 반려 carry-over) — 우선 검토 표시를 붙인다.
+    """
     type_labels = {
         "FAQ": "FAQ", "DISEASE": "질환 가이드", "TREATMENT": "시술·치료 안내",
         "COLUMN": "원장 칼럼", "HEALTH": "건강 정보", "LOCAL": "지역 특화", "NOTICE": "병원 공지",
     }
     type_label = type_labels.get(content_type, content_type)
+    carry_note = " (전월 이월 — 우선 검토)" if carried_over else ""
     return await _send(
-        text=f"📝 [콘텐츠] {hospital_name} {total_count}편 중 {sequence_no}번째 초안 완료",
+        text=f"📝 [콘텐츠] {hospital_name} {total_count}편 중 {sequence_no}번째 초안 완료{carry_note}",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
                 f"📝 *[콘텐츠]* *{hospital_name}* {total_count}편 중 {sequence_no}번째 콘텐츠 초안 저장 완료\n"
-                f"유형: {type_label} | 발행 예정일: {scheduled_date}\n\n"
+                f"유형: {type_label} | 발행 예정일: {scheduled_date}{carry_note}\n\n"
                 f"<{admin_url}|Admin에서 검토 후 발행해 주세요.>"
             )},
         }],

@@ -15,6 +15,9 @@ class ContentItemResponse(BaseModel):
     meta_description: Optional[str]
     image_url: Optional[str]
     scheduled_date: str
+    # 전월 이월 기준일 (월말 반려 carry-over) — 원래 발행 예정일. 내부 운영 데이터로
+    # Admin 응답에만 포함하고 공개(/site) 직렬화에는 노출하지 않는다.
+    carried_over_from: Optional[str] = None
     status: str
     display: Optional[dict[str, Any]] = None
     generated_at: Optional[str]

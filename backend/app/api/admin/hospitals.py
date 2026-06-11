@@ -38,11 +38,9 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
+from app.utils.domain import is_valid_hostname, normalize_domain
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
-
-# 도메인 검증 정규식 (예: info.jangpyeon.com)
-_DOMAIN_RE = re.compile(r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$")
 
 
 # ── Pydantic 스키마 ───────────────────────────────────────────────
@@ -151,14 +149,59 @@ class HospitalProfileUpdate(BaseModel):
 
 
 class DomainConnect(BaseModel):
-    domain: str = Field(min_length=4, max_length=253)  # 예: "info.jangpyeon.com"
+    # 원본 입력은 스킴/경로가 붙어 올 수 있어 길이만 느슨하게 받고,
+    # 정규화·형식 검증은 엔드포인트에서 한국어 422로 처리한다.
+    domain: str = Field(min_length=1, max_length=500)  # 예: "info.jangpyeon.com"
 
-    @field_validator("domain")
-    @classmethod
-    def validate_domain(cls, v: str) -> str:
-        if not _DOMAIN_RE.match(v):
-            raise ValueError("Invalid domain format")
-        return v.lower()
+
+def _normalize_and_validate_domain(raw: str) -> str:
+    """저장용 도메인 정규화 + 검증. 실패 시 한국어 422.
+
+    - 소문자/공백·스킴·경로·포트·끝 점 제거 (조회 측 by-domain lookup과 동일 규칙)
+    - 호스트명 형식 검증
+    - 플랫폼 자체 도메인(CNAME_TARGET 및 그 하위 호스트) 거부
+    """
+    normalized = normalize_domain(raw)
+    if not normalized or not is_valid_hostname(normalized):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "유효한 도메인 형식이 아닙니다. "
+                "스킴(https://)이나 경로 없이 호스트명만 입력해 주세요. 예: info.jangpyeon.com"
+            ),
+        )
+    platform_domain = normalize_domain(settings.CNAME_TARGET)
+    if platform_domain and (
+        normalized == platform_domain or normalized.endswith(f".{platform_domain}")
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"플랫폼 기본 도메인({settings.CNAME_TARGET})은 병원 도메인으로 사용할 수 없습니다. "
+                "병원이 보유한 별도 도메인을 입력해 주세요."
+            ),
+        )
+    return normalized
+
+
+async def _ensure_domain_not_taken(
+    db: AsyncSession, hospital_id: uuid.UUID, normalized_domain: str
+) -> None:
+    """다른 병원이 이미 사용 중인 도메인이면 409. 같은 병원의 재저장은 허용."""
+    result = await db.execute(
+        select(Hospital)
+        .where(
+            func.lower(Hospital.aeo_domain) == normalized_domain,
+            Hospital.id != hospital_id,
+        )
+        .limit(1)
+    )
+    other = result.scalars().first()
+    if other:
+        raise HTTPException(
+            status_code=409,
+            detail=f"이미 다른 병원({other.name})에 연결된 도메인입니다. 도메인을 확인해 주세요.",
+        )
 
 
 @dataclass(frozen=True)
@@ -376,11 +419,14 @@ async def connect_domain(
 ):
     """공개 도메인 정보 저장 + 콘텐츠 허브 노출 상태 갱신"""
     h = await _get_or_404(db, hospital_id)
+    # 정규화 + 형식/플랫폼 도메인 검증 (422), 타 병원 중복 검사 (409).
+    domain = _normalize_and_validate_domain(body.domain)
+    await _ensure_domain_not_taken(db, hospital_id, domain)
     previous_domain = h.aeo_domain
     previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
     previous_site_live = bool(h.site_live)
-    domain_changed = _normalize_dns_name(previous_domain) != _normalize_dns_name(body.domain)
-    h.aeo_domain = body.domain
+    domain_changed = _normalize_dns_name(previous_domain) != _normalize_dns_name(domain)
+    h.aeo_domain = domain
 
     # 도메인이 바뀌면 기존 DNS 검증은 더 이상 유효하지 않다.
     # 이미 라이브였던 병원이 새 미검증 도메인으로도 라이브처럼 보이는 것을 막는다.
@@ -397,10 +443,10 @@ async def connect_domain(
         hospital_id=hospital_id,
         actor=default_actor(),
         target_type="domain",
-        target_id=body.domain,
+        target_id=domain,
         detail={
             "previous_domain": previous_domain,
-            "new_domain": body.domain,
+            "new_domain": domain,
             "domain_changed": domain_changed,
             "previous_status": previous_status,
             "previous_site_live": previous_site_live,
@@ -420,8 +466,8 @@ async def connect_domain(
             args=[str(hospital_id)],
             queue="default",
         )
-        return {"detail": f"Domain {body.domain} set. Content hub exposure refresh triggered."}
-    return {"detail": f"Domain {body.domain} unchanged. No exposure refresh needed."}
+        return {"detail": f"Domain {domain} set. Content hub exposure refresh triggered."}
+    return {"detail": f"Domain {domain} unchanged. No exposure refresh needed."}
 
 
 @router.patch("/{hospital_id}/activate")

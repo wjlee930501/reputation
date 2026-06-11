@@ -580,8 +580,18 @@ async def reject_content(
     # 야간 생성은 scheduled_date == 내일 인 슬롯만 집는다. 발행일 당일(또는 그 후) 반려된
     # 아이템은 그대로 두면 영원히 재생성되지 않으므로 내일로 재스케줄한다.
     today_seoul = arrow.now("Asia/Seoul").date()
+    original_scheduled_date = item.scheduled_date
     if item.scheduled_date and item.scheduled_date <= today_seoul:
         item.scheduled_date = arrow.now("Asia/Seoul").shift(days=1).date()
+        # 월말 반려 carry-over: 재스케줄이 원래 발행 예정일과 다른 달로 넘어가면
+        # 원래 날짜를 기록한다 — 야간 생성 우선 처리 + 아침 Slack '전월 이월' 표시 근거.
+        # 재반려 시 최초 이월 기준일을 덮어쓰지 않는다.
+        crossed_month = (item.scheduled_date.year, item.scheduled_date.month) != (
+            original_scheduled_date.year,
+            original_scheduled_date.month,
+        )
+        if crossed_month and item.carried_over_from is None:
+            item.carried_over_from = original_scheduled_date
     await write_audit_log(
         db,
         action="reject_content",
@@ -593,6 +603,7 @@ async def reject_content(
             "previous_title": previous_title,
             "previous_status": previous_status,
             "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
+            "carried_over_from": str(item.carried_over_from) if item.carried_over_from else None,
         },
     )
     await db.commit()
@@ -879,6 +890,10 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "meta_description": item.meta_description,
         "image_url": get_signed_url(item.image_url) if item.image_url else None,
         "scheduled_date": str(item.scheduled_date),
+        # 전월 이월 기준일 (내부 운영 데이터 — 공개 /site 직렬화에는 미포함)
+        "carried_over_from": (
+            str(item.carried_over_from) if getattr(item, "carried_over_from", None) else None
+        ),
         "status": status_value,
         "display": _serialize_item_display(item, content_type, status_value),
         "generated_at": item.generated_at.isoformat() if item.generated_at else None,

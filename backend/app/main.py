@@ -158,6 +158,7 @@ app.include_router(admin_leads.router, prefix="/api/v1", dependencies=admin_deps
 
 # Public 라우터: 인증 불필요 (의도적)
 app.include_router(public_site.router, prefix="/api/v1")
+app.include_router(public_site.domain_router, prefix="/api/v1")
 app.include_router(public_leads.router, prefix="/api/v1")
 
 
