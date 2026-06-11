@@ -4,10 +4,12 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
+import { countUnpublishedCarriedOver } from '@/lib/content'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
   EXPOSURE_ACTION_TYPE_LABELS,
   type AIQueryTarget,
+  type ContentItem,
   type ExposureAction,
   type MeasurementRun,
   type OperationResponse,
@@ -174,6 +176,8 @@ export default function DashboardPage() {
   const [operationLoading, setOperationLoading] = useState<string | null>(null)
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
   const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([])
+  // 이번 달 전월 이월 콘텐츠 중 아직 발행되지 않은 슬롯 수 — 우선 발행 알림용
+  const [carriedOverCount, setCarriedOverCount] = useState(0)
 
   const refreshAuditLogs = async () => {
     try {
@@ -228,6 +232,16 @@ export default function DashboardPage() {
         }
       })
       .finally(() => { if (!cancelled) setLoading(false) })
+
+    // 이월 알림은 보조 정보 — 가벼운 단건 조회로 가져오고, 실패해도 보드를 깨뜨리지 않는다.
+    const now = new Date()
+    fetchAPI<ContentItem[]>(`/admin/hospitals/${id}/content?year=${now.getFullYear()}&month=${now.getMonth() + 1}`)
+      .then((contentItems) => {
+        if (cancelled) return
+        setCarriedOverCount(countUnpublishedCarriedOver(Array.isArray(contentItems) ? contentItems : []))
+      })
+      .catch(() => { /* silent — 이월 알림 없이 보드는 정상 동작 */ })
+
     return () => { cancelled = true }
   }, [id])
 
@@ -482,6 +496,15 @@ export default function DashboardPage() {
               운영자가 오늘 처리해야 할 위험 신호만 추려 보여줍니다.
             </p>
             <div className="mt-4 space-y-3">
+              {carriedOverCount > 0 && (
+                <Link href={contentHref} className="block">
+                  <AlertLine
+                    tone="warn"
+                    label={`전월 이월 콘텐츠 ${carriedOverCount}건 — 우선 발행 필요`}
+                    hint="반려로 다음 달로 넘어온 콘텐츠입니다. 콘텐츠 탭에서 가장 먼저 검토·발행해 주세요."
+                  />
+                </Link>
+              )}
               {blockedActionCount > 0 && (
                 <AlertLine tone="warn" label={`막힌 보완 작업 ${blockedActionCount}건`} hint="담당자 확인 또는 자료 보강이 필요합니다." />
               )}
@@ -491,7 +514,7 @@ export default function DashboardPage() {
               {pendingChecks.map((check) => (
                 <AlertLine key={check.key} tone="neutral" label={check.label} hint={check.next_action} />
               ))}
-              {blockedActionCount === 0 && failedMeasurementCount === 0 && pendingChecks.length === 0 && (
+              {carriedOverCount === 0 && blockedActionCount === 0 && failedMeasurementCount === 0 && pendingChecks.length === 0 && (
                 <AlertLine tone="good" label="큰 확인 항목 없음" hint="현재는 다음 액션 중심으로 운영을 이어가면 됩니다." />
               )}
             </div>

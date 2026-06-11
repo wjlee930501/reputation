@@ -48,6 +48,8 @@ export interface ContentItem {
   image_url: string | null
   scheduled_date: string
   status: 'DRAFT' | 'READY' | 'PUBLISHED' | 'REJECTED'
+  // 반려 슬롯이 월 경계를 넘어 이월된 경우의 원래 예정일 — 다음 달 최우선 처리 대상
+  carried_over_from?: string | null
   references?: ContentReference[]
   faq_question?: string | null
   faq_answer_summary?: string | null

@@ -5,6 +5,8 @@ import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { countCarriedOver, sortCarriedOverFirst } from '@/lib/content'
+import { formatDate } from '@/lib/format'
 import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
@@ -287,6 +289,10 @@ export default function ContentPage() {
       setExposureActions(actions)
     })
   }, [id])
+
+  // 전월 이월 슬롯은 이번 달 최우선 처리 대상 — 목록 맨 위로 끌어올린다 (나머지는 기존 순서 유지).
+  const sortedItems = useMemo(() => sortCarriedOverFirst(items), [items])
+  const carriedCount = useMemo(() => countCarriedOver(items), [items])
 
   // Per-item review state, computed once per render
   const reviewByItem = useMemo(() => {
@@ -680,7 +686,10 @@ export default function ContentPage() {
         )}
 
         {/* Summary cards */}
-        <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className={`mt-5 grid grid-cols-2 gap-3 ${carriedCount > 0 ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
+          {carriedCount > 0 && (
+            <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨 · 우선 처리" />
+          )}
           <SummaryCard label="발행 가능" value={summary.publishable} tone="green" hint="콘텐츠 운영 기준 통과 · 본문 완성" />
           <SummaryCard label="검토 필요" value={summary.needsReview} tone="orange" hint="발행 차단 사유 확인 필요" />
           <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" />
@@ -775,7 +784,7 @@ export default function ContentPage() {
                   </td>
                 </tr>
               )}
-              {items.map((item) => {
+              {sortedItems.map((item) => {
                 const review = reviewByItem.get(item.id) ?? getReviewState(item)
                 const essence = getEssenceLabel(item)
                 const brief = getBriefLabel(item)
@@ -792,7 +801,17 @@ export default function ContentPage() {
                         className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
                       />
                     </td>
-                    <td className="px-6 py-4 text-slate-600">{item.scheduled_date}</td>
+                    <td className="px-6 py-4 text-slate-600">
+                      <div>{item.scheduled_date}</div>
+                      {item.carried_over_from && (
+                        <span
+                          title={`원래 예정일: ${formatDate(item.carried_over_from)}`}
+                          className="mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200"
+                        >
+                          전월 이월 — 우선 처리
+                        </span>
+                      )}
+                    </td>
                     <td className="px-6 py-4 text-slate-600">{getContentTypeLabel(item)}</td>
                     <td className="px-6 py-4">
                       <button onClick={() => openDetail(item)} className="text-blue-600 hover:underline text-left">
@@ -877,6 +896,14 @@ export default function ContentPage() {
                 <span className="text-xs font-medium text-slate-500 uppercase">
                   {getContentTypeLabel(selected)}
                 </span>
+                {selected.carried_over_from && (
+                  <span
+                    title={`원래 예정일: ${formatDate(selected.carried_over_from)}`}
+                    className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200"
+                  >
+                    전월 이월 — 우선 처리
+                  </span>
+                )}
                 {!editMode && !briefEditMode && (
                   <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">{selected.title ?? '생성 전 슬롯'}</h3>
                 )}
@@ -1362,7 +1389,7 @@ function SummaryCard({
 }: {
   label: string
   value: number
-  tone: 'green' | 'orange' | 'gray' | 'blue'
+  tone: 'green' | 'orange' | 'gray' | 'blue' | 'amber'
   hint: string
 }) {
   const tones: Record<string, string> = {
@@ -1370,12 +1397,14 @@ function SummaryCard({
     orange: 'border-orange-200 bg-orange-50',
     gray: 'border-slate-200 bg-slate-50',
     blue: 'border-blue-200 bg-blue-50',
+    amber: 'border-amber-200 bg-amber-50',
   }
   const numTones: Record<string, string> = {
     green: 'text-green-700',
     orange: 'text-orange-700',
     gray: 'text-slate-700',
     blue: 'text-blue-700',
+    amber: 'text-amber-700',
   }
   return (
     <div className={`rounded-xl border ${tones[tone]} px-4 py-3`}>
