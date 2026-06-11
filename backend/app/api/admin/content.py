@@ -31,7 +31,6 @@ from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_engine import _normalize_references
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
-    trigger_content_site_revalidate,
     trigger_content_site_revalidate_safe,
 )
 from app.services.content_brief import (
@@ -378,7 +377,9 @@ async def update_content(
     await db.commit()
     await db.refresh(item)
     if should_revalidate:
-        await trigger_content_site_revalidate(hospital.slug, item.id, hospital.treatments)
+        await trigger_content_site_revalidate_safe(
+            hospital.slug, item.id, hospital_name=hospital.name, treatments=hospital.treatments
+        )
     return _serialize_item(item, full=True)
 
 
@@ -567,7 +568,9 @@ async def reject_content(
     )
     await db.commit()
     if should_revalidate:
-        await trigger_content_site_revalidate(hospital.slug, item.id, hospital.treatments)
+        await trigger_content_site_revalidate_safe(
+            hospital.slug, item.id, hospital_name=hospital.name, treatments=hospital.treatments
+        )
     return {"detail": "Rejected. Will be regenerated tonight."}
 
 

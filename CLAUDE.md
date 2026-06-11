@@ -106,8 +106,8 @@
 - **Jinja2** — HTML 템플릿
 
 ### Frontend
-- **Admin** (`/admin`): Next.js 14 App Router — AE 운영 도구
-- **Site** (`/site`): Next.js 14 SSG — 병원별 정보·콘텐츠 허브 공개 표면
+- **Admin** (`/admin`): Next.js 16 App Router — AE 운영 도구
+- **Site** (`/site`): Next.js 15 SSG/ISR — 병원별 정보·콘텐츠 허브 공개 표면
 
 ### Infrastructure
 - **Docker Compose** — 로컬 개발
