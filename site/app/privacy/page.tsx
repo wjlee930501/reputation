@@ -47,7 +47,7 @@ const SECTIONS = [
       "Re:putation은 수집한 개인정보를 제3자에게 제공하지 않습니다.",
       "서비스 운영을 위해 다음과 같이 처리를 위탁하며, 일부는 국외(미국)로 이전됩니다.",
       "- 클라우드 인프라(데이터 저장·처리): Google Cloud Platform — 미국 (us-central1 리전)",
-      "- 프론트엔드 호스팅: Vercel Inc. — 미국",
+      "- 프론트엔드 호스팅: Google Cloud Platform (Google LLC) — 미국 (us-central1 리전)",
       "- 사내 협업 알림: Slack (Salesforce) — 미국 (PII는 마스킹 후에만 송출됨)",
       "- 이메일 발송: 미사용 (현재 모든 상담은 위 연락처를 통해 직접 회신)",
       "국외 이전 고지 — 이전 항목: 상담 신청 정보(병원명·연락처·문의 내용), 이전 국가: 미국, " +
@@ -91,7 +91,7 @@ const SECTIONS = [
 
 export default function PrivacyPage() {
   return (
-    <main className="legal-shell">
+    <main id="main-content" className="legal-shell">
       <header className="legal-header">
         <Link href="/" className="legal-back">← Re:putation 홈으로</Link>
         <span className="motionlabs-chip" style={{ marginTop: 12 }}>

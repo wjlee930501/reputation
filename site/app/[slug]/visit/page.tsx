@@ -2,6 +2,8 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
+import { buildOpeningHoursSpec } from '@/lib/business-hours'
+import { canonicalBase } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -15,89 +17,20 @@ interface Props {
 
 export const revalidate = 3600
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
-
-const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
-  mon: 'Monday',
-  tue: 'Tuesday',
-  wed: 'Wednesday',
-  thu: 'Thursday',
-  fri: 'Friday',
-  sat: 'Saturday',
-  sun: 'Sunday',
-}
-
-const CLOSED_KEYWORDS = ['휴진', '휴무', 'closed']
-
-function isClosedLabel(value: string): boolean {
-  const lowered = value.toLowerCase()
-  return CLOSED_KEYWORDS.some((kw) => lowered.includes(kw))
-}
-
-function extractTimeRanges(value: string): Array<{ opens: string; closes: string }> {
-  const ranges: Array<{ opens: string; closes: string }> = []
-  for (const segment of value.split(/[,/]|·|및|그리고/)) {
-    const trimmed = segment.trim()
-    if (!trimmed || isClosedLabel(trimmed)) continue
-    const matches = trimmed.match(/\d{1,2}:\d{2}/g)
-    if (matches && matches.length >= 2) {
-      ranges.push({ opens: matches[0], closes: matches[matches.length - 1] })
-    }
-  }
-  return ranges
-}
-
-function buildOpeningHoursSpec(hours: Record<string, string> | null | undefined) {
-  if (!hours) return []
-  const specs: Array<Record<string, unknown>> = []
-  for (const [day, rawValue] of Object.entries(hours)) {
-    const value = String(rawValue ?? '')
-    const dayOfWeek = SCHEMA_DAY_OF_WEEK[day.toLowerCase()] || day
-    if (isClosedLabel(value)) {
-      specs.push({
-        '@type': 'OpeningHoursSpecification',
-        dayOfWeek,
-        description: value,
-        opens: '00:00',
-        closes: '00:00',
-      })
-      continue
-    }
-    const ranges = extractTimeRanges(value)
-    if (ranges.length === 0) {
-      specs.push({
-        '@type': 'OpeningHoursSpecification',
-        dayOfWeek,
-        description: value,
-      })
-      continue
-    }
-    for (const range of ranges) {
-      specs.push({
-        '@type': 'OpeningHoursSpecification',
-        dayOfWeek,
-        description: value,
-        opens: range.opens,
-        closes: range.closes,
-      })
-    }
-  }
-  return specs
-}
-
 export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
   const params = await paramsPromise
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name} 진료 안내 — 주소, 전화, 진료시간, 공식 채널. 진료 예약·상담은 병원 공식 채널로 연결됩니다.`
+    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/visit`
     return {
       title: `진료 안내 | ${hospital.name}`,
       description,
-      alternates: { canonical: `/${params.slug}/visit` },
+      alternates: { canonical: canonicalUrl },
       openGraph: {
         title: `진료 안내 | ${hospital.name}`,
         description,
-        url: `/${params.slug}/visit`,
+        url: canonicalUrl,
         type: 'website',
       },
     }
@@ -130,11 +63,15 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
     hospital.naver_place_url,
   ].filter((value): value is string => Boolean(value))
 
+  const base = canonicalBase(hospital)
+
   const visitJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
+    // 허브 페이지와 동일한 @id — 검색엔진이 같은 병원 엔티티로 병합하도록 한다.
+    '@id': `${base}/${params.slug}#clinic`,
     name: hospital.name,
-    url: `${SITE_URL}/${params.slug}/visit`,
+    url: `${base}/${params.slug}/visit`,
     address: {
       '@type': 'PostalAddress',
       streetAddress: hospital.address,
@@ -160,7 +97,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
 
   return (
     <>
-      <JsonLd data={[visitJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]} />
+      <JsonLd data={[visitJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
@@ -170,7 +107,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
@@ -207,6 +144,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
+          directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}

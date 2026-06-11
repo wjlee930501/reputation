@@ -106,6 +106,14 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "PUBLIC_SITE_RATE_LIMIT"
         value = var.public_site_rate_limit
       }
+      # Optional Sentry error tracking — env only rendered when var.sentry_dsn set.
+      dynamic "env" {
+        for_each = var.sentry_dsn != "" ? [var.sentry_dsn] : []
+        content {
+          name  = "SENTRY_DSN"
+          value = env.value
+        }
+      }
       dynamic "env" {
         for_each = local.app_secret_env
         content {
@@ -172,6 +180,17 @@ resource "google_cloud_run_v2_service" "api" {
       connector = google_vpc_access_connector.connector.id
       egress    = "PRIVATE_RANGES_ONLY"
     }
+  }
+
+  # Ownership split: terraform manages the infra shape (env, scaling, probes,
+  # Cloud SQL volume, SA), while scripts/deploy.sh owns image rollouts via
+  # `gcloud run deploy`. Without this, a later `terraform apply` would revert
+  # the running revision to var.api_image (or the :latest fallback nothing
+  # pushes). var.api_image is still used for INITIAL creation.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+    ]
   }
 
   depends_on = [
@@ -249,6 +268,14 @@ resource "google_cloud_run_v2_service" "worker" {
         name  = "SITE_BASE_URL"
         value = "https://${var.domain}"
       }
+      # Optional Sentry error tracking — env only rendered when var.sentry_dsn set.
+      dynamic "env" {
+        for_each = var.sentry_dsn != "" ? [var.sentry_dsn] : []
+        content {
+          name  = "SENTRY_DSN"
+          value = env.value
+        }
+      }
       dynamic "env" {
         for_each = local.app_secret_env
         content {
@@ -309,6 +336,13 @@ resource "google_cloud_run_v2_service" "worker" {
     }
   }
 
+  # deploy.sh owns image rollouts (see api service comment above).
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+    ]
+  }
+
   depends_on = [
     google_project_service.services,
     google_secret_manager_secret_iam_member.app_access,
@@ -355,6 +389,14 @@ resource "google_cloud_run_v2_service" "beat" {
       env {
         name  = "REDIS_URL"
         value = "redis://${google_redis_instance.main.host}:6379/0"
+      }
+      # Optional Sentry error tracking — env only rendered when var.sentry_dsn set.
+      dynamic "env" {
+        for_each = var.sentry_dsn != "" ? [var.sentry_dsn] : []
+        content {
+          name  = "SENTRY_DSN"
+          value = env.value
+        }
       }
       dynamic "env" {
         for_each = local.app_secret_env
@@ -414,6 +456,126 @@ resource "google_cloud_run_v2_service" "beat" {
       connector = google_vpc_access_connector.connector.id
       egress    = "PRIVATE_RANGES_ONLY"
     }
+  }
+
+  # deploy.sh owns image rollouts (see api service comment above).
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+    ]
+  }
+
+  depends_on = [
+    google_project_service.services,
+    google_secret_manager_secret_iam_member.app_access,
+  ]
+}
+
+# ── Migration Job (alembic upgrade head) ──────────────────────────
+# Cloud Run Job mirror of the api service: same SA, secrets, env, and — critically —
+# the Cloud SQL volume/instance attachment. Production DATABASE_URL is built from
+# DB_* parts as a /cloudsql/<connection_name> unix socket (config.py), so without
+# the cloud_sql_instance attachment the migration cannot reach the database.
+# deploy.sh `migrate`/`all` executes (and image-updates) this job before rolling
+# out api/worker/beat.
+resource "google_cloud_run_v2_job" "migrate" {
+  name     = "${var.app_name}-migrate"
+  location = var.region
+  project  = var.project_id
+
+  template {
+    template {
+      service_account = google_service_account.app.email
+
+      containers {
+        image = local.app_image
+
+        env {
+          name  = "SERVICE"
+          value = "migrate"
+        }
+        env {
+          name  = "APP_ENV"
+          value = "production"
+        }
+        env {
+          name  = "GCP_PROJECT_ID"
+          value = var.project_id
+        }
+        env {
+          name  = "DB_USER"
+          value = var.db_user
+        }
+        env {
+          name  = "DB_NAME"
+          value = var.db_name
+        }
+        env {
+          name  = "CLOUD_SQL_CONNECTION_NAME"
+          value = google_sql_database_instance.main.connection_name
+        }
+        env {
+          name  = "REDIS_URL"
+          value = "redis://${google_redis_instance.main.host}:6379/0"
+        }
+        # config.py validates these at boot in production (AUTH-1/AUTH-5) — the
+        # migration container imports settings, so they must be present here too.
+        env {
+          name  = "TRUSTED_PROXY_IPS"
+          value = join(",", var.trusted_proxy_ips)
+        }
+        env {
+          name  = "ALLOWED_ORIGINS"
+          value = join(",", local.effective_allowed_origins)
+        }
+        dynamic "env" {
+          for_each = local.app_secret_env
+          content {
+            name = env.key
+            value_source {
+              secret_key_ref {
+                secret  = env.value
+                version = "latest"
+              }
+            }
+          }
+        }
+
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "512Mi"
+          }
+        }
+
+        volume_mounts {
+          name       = "cloudsql"
+          mount_path = "/cloudsql"
+        }
+      }
+
+      volumes {
+        name = "cloudsql"
+        cloud_sql_instance {
+          instances = [google_sql_database_instance.main.connection_name]
+        }
+      }
+
+      timeout     = "300s"
+      max_retries = 1
+
+      vpc_access {
+        connector = google_vpc_access_connector.connector.id
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
+    }
+  }
+
+  # deploy.sh owns image rollouts (see api service comment above).
+  lifecycle {
+    ignore_changes = [
+      template[0].template[0].containers[0].image,
+    ]
   }
 
   depends_on = [

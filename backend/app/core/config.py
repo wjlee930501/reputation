@@ -143,8 +143,13 @@ class Settings(BaseSettings):
     DB_USER: str = "reputation"
     DB_PASSWORD: str = ""
     CLOUD_SQL_CONNECTION_NAME: str = ""
-    DB_POOL_SIZE: int = 10
-    DB_MAX_OVERFLOW: int = 20
+    # 연결 예산: Cloud SQL max_connections=100 (terraform/cloudsql.tf).
+    # 인스턴스당 최대 pool+overflow 연결 × Cloud Run max instances 합이
+    # max_connections를 넘으면 안 된다 (api 10 × (5+5) = 100 worst case —
+    # worker/beat/migrate 여유분을 위해 인스턴스/풀 상향 시 pgbouncer 또는
+    # max_connections 상향 선행). terraform/variables.tf api_max_instances 참조.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 5
     DB_POOL_TIMEOUT: int = 30  # seconds to wait for a connection
     DB_CONNECT_TIMEOUT: int = 10  # seconds to establish TCP connection
     DB_COMMAND_TIMEOUT: int = 30  # seconds for a single SQL statement (0=disabled)

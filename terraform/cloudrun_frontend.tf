@@ -112,6 +112,15 @@ resource "google_cloud_run_v2_service" "site" {
     }
   }
 
+  # scripts/deploy.sh owns image rollouts (gcloud run deploy); terraform manages
+  # the rest of the service shape. Prevents `terraform apply` reverting the
+  # running revision to var.site_image / the :latest fallback nothing pushes.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+    ]
+  }
+
   depends_on = [
     google_project_service.services,
     google_secret_manager_secret_iam_member.frontend_access,
@@ -181,6 +190,13 @@ resource "google_cloud_run_v2_service" "admin" {
       min_instance_count = var.admin_min_instances
       max_instance_count = var.admin_max_instances
     }
+  }
+
+  # scripts/deploy.sh owns image rollouts (see site service comment above).
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+    ]
   }
 
   depends_on = [

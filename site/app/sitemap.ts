@@ -1,9 +1,10 @@
 import { MetadataRoute } from 'next'
 
 import { getApiBase } from '@/lib/config'
+import { canonicalBase, platformSiteUrl } from '@/lib/site-url'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
+const SITE_URL = platformSiteUrl()
 
 interface HospitalEntry {
   slug: string
@@ -56,39 +57,41 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   for (const hospital of hospitals) {
     const hospitalLastModified = hospital.updated_at ? new Date(hospital.updated_at) : new Date()
+    // 커스텀 도메인이 연결된 병원은 canonical인 그 도메인 URL을 sitemap에 싣는다.
+    const base = canonicalBase(hospital)
 
     entries.push({
-      url: `${SITE_URL}/${hospital.slug}`,
+      url: `${base}/${hospital.slug}`,
       lastModified: hospitalLastModified,
       changeFrequency: 'weekly',
       priority: 0.8,
     })
     entries.push({
-      url: `${SITE_URL}/${hospital.slug}/contents`,
+      url: `${base}/${hospital.slug}/contents`,
       lastModified: hospitalLastModified,
       changeFrequency: 'weekly',
       priority: 0.7,
     })
     entries.push({
-      url: `${SITE_URL}/${hospital.slug}/doctor`,
+      url: `${base}/${hospital.slug}/doctor`,
       lastModified: hospitalLastModified,
       changeFrequency: 'monthly',
       priority: 0.6,
     })
     entries.push({
-      url: `${SITE_URL}/${hospital.slug}/treatments`,
+      url: `${base}/${hospital.slug}/treatments`,
       lastModified: hospitalLastModified,
       changeFrequency: 'monthly',
       priority: 0.6,
     })
     entries.push({
-      url: `${SITE_URL}/${hospital.slug}/visit`,
+      url: `${base}/${hospital.slug}/visit`,
       lastModified: hospitalLastModified,
       changeFrequency: 'monthly',
       priority: 0.6,
     })
     entries.push({
-      url: `${SITE_URL}/${hospital.slug}/llms.txt`,
+      url: `${base}/${hospital.slug}/llms.txt`,
       lastModified: hospitalLastModified,
       changeFrequency: 'daily',
       priority: 0.5,
@@ -115,7 +118,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       const treatmentSlug = buildTreatmentSlug(treatment.name)
       if (!treatmentSlug) continue
       entries.push({
-        url: `${SITE_URL}/${hospital.slug}/treatments/${treatmentSlug}`,
+        url: `${base}/${hospital.slug}/treatments/${treatmentSlug}`,
         lastModified: hospitalLastModified,
         changeFrequency: 'weekly',
         priority: 0.7,
@@ -131,7 +134,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
         const contents: ContentEntry[] = await cRes.json()
         for (const content of contents) {
           entries.push({
-            url: `${SITE_URL}/${hospital.slug}/contents/${content.id}`,
+            url: `${base}/${hospital.slug}/contents/${content.id}`,
             lastModified: content.published_at
               ? new Date(content.published_at)
               : new Date(content.scheduled_date),

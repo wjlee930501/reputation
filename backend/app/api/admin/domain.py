@@ -25,11 +25,27 @@ class DomainVerifyResponse(BaseModel):
     message: str
 
 
+def missing_live_prerequisites(hospital: Hospital) -> list[str]:
+    """LIVE(site_live/ACTIVE) 전환 전 충족돼야 하는 단계 — operations verify-domain과 공유.
+
+    DNS만 맞으면 곧바로 라이브가 되어 V0/허브 빌드/스케줄을 건너뛰는 우회 경로를 막는다 (P1-6).
+    """
+    return [
+        label
+        for label, ready in (
+            ("V0 리포트", hospital.v0_report_done),
+            ("병원 정보 허브 빌드", hospital.site_built),
+            ("콘텐츠 스케줄", hospital.schedule_set),
+        )
+        if not ready
+    ]
+
+
 @router.post("/{hospital_id}/domain/verify", response_model=DomainVerifyResponse)
 async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """
     병원 공개 도메인의 CNAME을 DNS 조회로 검증한다.
-    검증 성공 시 hospital.site_live = True, status = ACTIVE 전환.
+    검증 성공 + 사전 단계(V0/허브 빌드/스케줄) 충족 시 site_live = True, ACTIVE 전환.
     """
     hospital = await _get_hospital_or_404(db, hospital_id)
 
@@ -41,10 +57,15 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     verified = _normalize_dns_name(cname_value) == _normalize_dns_name(settings.CNAME_TARGET)
 
     if verified:
+        # operations.py verify-domain / hospitals.py activate와 동일한 게이트 (P1-6).
+        missing = missing_live_prerequisites(hospital)
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"도메인 DNS는 확인됐지만 LIVE 전환 전 단계가 남아 있습니다: {', '.join(missing)}",
+            )
         hospital.site_live = True
-        if hospital.schedule_set:
-            hospital.status = HospitalStatus.ACTIVE
-        # else: leave status as-is, don't regress to PENDING_DOMAIN
+        hospital.status = HospitalStatus.ACTIVE
         await db.commit()
         message = f"공개 도메인 상태가 확인되었습니다. ({domain} → {cname_value})"
     else:

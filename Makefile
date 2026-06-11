@@ -86,9 +86,11 @@ monthly-report:
 setup-gcp:
 	bash scripts/setup-gcp.sh
 
+# 주의: $(VAR:-default)는 쉘 문법이라 Make 변수 안에서는 빈 값으로 풀린다 —
+# Make 기본값은 $(or $(VAR),default) 를 사용한다.
 build-image:
 	docker build --platform linux/amd64 \
-		-t "$(GCP_REGION:-us-central1)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(GCP_ARTIFACT_REPO:-reputation)/reputation:$(shell date +%Y%m%d-%H%M%S)" \
+		-t "$(or $(GCP_REGION),us-central1)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(or $(GCP_ARTIFACT_REPO),reputation)/reputation:$(shell date +%Y%m%d-%H%M%S)" \
 		-f backend/Dockerfile backend
 
 deploy-api:

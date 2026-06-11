@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.sov import AIQueryTarget, ExposureAction, ExposureGap, SovRecord
+from app.utils.db_locks import acquire_hospital_advisory_lock
 
 ACTIVE_TARGET_STATUSES = {"ACTIVE"}
 ACTIVE_GAP_STATUSES = {"OPEN", "WATCHING"}
@@ -100,22 +101,8 @@ async def ensure_hospital_exposure_actions(
 
 
 async def _acquire_hospital_advisory_lock(db: AsyncSession, hospital_id: uuid.UUID) -> None:
-    """Postgres pg_advisory_xact_lock — 트랜잭션 종료(commit/rollback) 시 자동 해제.
-
-    Postgres가 아닌 바인딩(단위 테스트의 fake/SQLite)에서는 no-op.
-    """
-    try:
-        bind = db.get_bind()
-        dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
-    except Exception:
-        return
-    if dialect_name != "postgresql":
-        return
-    # uuid 128bit → signed 64bit 키로 축약 (충돌해도 과잉 직렬화일 뿐 정합성엔 무해).
-    lock_key = (hospital_id.int ^ (hospital_id.int >> 64)) & 0xFFFFFFFFFFFFFFFF
-    if lock_key >= 2**63:
-        lock_key -= 2**64
-    await db.execute(select(func.pg_advisory_xact_lock(lock_key)))
+    """Postgres pg_advisory_xact_lock — 키 유도는 app.utils.db_locks에 단일화 (R5)."""
+    await acquire_hospital_advisory_lock(db, hospital_id)
 
 
 async def list_top_exposure_actions(

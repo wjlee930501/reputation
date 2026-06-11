@@ -57,9 +57,15 @@ def _login_rate_limit_strategy(request: Request | None):
     return limiter.limiter
 
 
+def _login_email_throttle_key(email: str) -> str:
+    return f"admin-login:email:{email}"
+
+
 def _login_throttle_keys(request: Request, email: str) -> list[str]:
     # 이메일 키는 IP 로테이션으로 우회할 수 없고, IP 키는 다수 계정 스프레이를 막는다.
-    keys = [f"admin-login:email:{email}"]
+    # IP는 get_request_ip 기준 — admin BFF가 SITE_BFF_SECRET으로 인증한 X-Visitor-IP를
+    # 보내면 실제 AE 방문자 IP가, 아니면 신뢰 프록시 체인 기준 IP가 잡힌다.
+    keys = [_login_email_throttle_key(email)]
     ip = get_request_ip(request)
     if ip:
         keys.append(f"admin-login:ip:{ip}")
@@ -91,8 +97,10 @@ async def login_admin(
         raise HTTPException(status_code=401, detail="Invalid admin credentials")
 
     if strategy:
-        for key in throttle_keys:
-            strategy.clear(_LOGIN_RATE_LIMIT, key)
+        # 성공 시 이메일 키만 해제한다 (R7). IP 키까지 지우면 공격자가 자기 계정으로
+        # 한 번 로그인할 때마다 IP 카운터가 리셋돼 단일 IP에서 다계정 password spraying이
+        # 가능해진다. IP 키는 윈도우(15분) 만료로 자연 소멸한다.
+        strategy.clear(_LOGIN_RATE_LIMIT, _login_email_throttle_key(body.email))
 
     user.last_login_at = datetime.now(UTC)
     await db.commit()

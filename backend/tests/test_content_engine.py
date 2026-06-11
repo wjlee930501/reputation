@@ -13,6 +13,7 @@ from app.services.content_engine import (  # noqa: E402
     _parse_json_response,
     _sanitize_forbidden,
     _validate_body_length,
+    forbidden_check_text,
 )
 from app.utils.medical_filter import check_forbidden  # noqa: E402
 
@@ -48,6 +49,48 @@ def test_validate_body_length_rejects_short_body():
 def test_validate_body_length_rejects_runaway_body():
     with pytest.raises(ValueError, match="too long"):
         _validate_body_length("긴 본문입니다. " * 900)
+
+
+def test_forbidden_check_text_includes_faq_fields():
+    # P1-2 회귀 가드: FAQPage rich result로 그대로 노출되는 faq_question/faq_answer_summary가
+    # 금지 표현 검사 텍스트에서 빠지면 의료광고법 필터를 통째로 우회한다.
+    result = {
+        "title": "어깨 통증 진료 안내",
+        "body": "환자 상태에 따라 진료 방향을 설명합니다.",
+        "meta_description": "어깨 통증 진료 안내입니다.",
+        "faq_question": "어깨 통증 완치 가능한가요?",
+        "faq_answer_summary": "성공률이 높은 치료를 안내합니다.",
+    }
+
+    violations = check_forbidden(forbidden_check_text(result))
+
+    assert "완치" in violations
+    assert "성공률" in violations
+
+
+def test_forbidden_check_text_ignores_missing_faq_fields():
+    result = {"title": "제목", "body": "본문", "meta_description": None}
+
+    text = forbidden_check_text(result)
+
+    assert "제목" in text and "본문" in text
+
+
+def test_sanitize_forbidden_cleans_faq_fields():
+    # 정제 경로도 FAQ 필드를 포함해야 재검사에서 hard-fail하지 않는다 (P1-2).
+    result = {
+        "title": "어깨 통증 진료",
+        "body": "환자 상태에 따라 설명합니다.",
+        "meta_description": "진료 안내",
+        "faq_question": "완치 보장되나요?",
+        "faq_answer_summary": "1등 병원에서 안내합니다.",
+    }
+    violations = check_forbidden(forbidden_check_text(result))
+    assert violations
+
+    sanitized = _sanitize_forbidden(result, violations)
+
+    assert check_forbidden(forbidden_check_text(sanitized)) == []
 
 
 def test_sanitize_forbidden_removes_obfuscated_terms():

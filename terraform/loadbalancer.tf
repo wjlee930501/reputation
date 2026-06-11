@@ -65,6 +65,24 @@ resource "google_compute_managed_ssl_certificate" "main" {
   }
 }
 
+# 병원 커스텀 도메인 — 도메인별 cert 1개씩 발급한다.
+# 한 cert에 여러 고객 도메인을 묶으면 한 병원의 DNS 누락이 같은 cert의
+# 다른 병원(과 재발급 시 메인 도메인) 서빙까지 막는다 — 장애 격리를 위해 분리.
+# cert는 도메인이 LB IP로 해석될 때(고객 CNAME 적용 후)만 ACTIVE가 된다.
+resource "google_compute_managed_ssl_certificate" "customer" {
+  for_each = toset(var.customer_domains)
+  name     = "${var.app_name}-cust-${substr(md5(each.value), 0, 12)}"
+  project  = var.project_id
+
+  managed {
+    domains = [each.value]
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
 # ── Reserved Global IP ─────────────────────────────────────────────
 resource "google_compute_global_address" "lb_ip" {
   name    = "${var.app_name}-lb-ip"
@@ -204,7 +222,12 @@ resource "google_compute_target_https_proxy" "main" {
   project = var.project_id
   url_map = google_compute_url_map.main.id
 
-  ssl_certificates = [google_compute_managed_ssl_certificate.main.id]
+  # 커스텀 도메인 요청은 URL map의 default_service(site)로 흘러가고,
+  # site 미들웨어가 Host 헤더로 병원 slug를 해석한다 — host_rule 추가 불필요.
+  ssl_certificates = concat(
+    [google_compute_managed_ssl_certificate.main.id],
+    [for cert in google_compute_managed_ssl_certificate.customer : cert.id],
+  )
 }
 
 resource "google_compute_global_forwarding_rule" "https" {

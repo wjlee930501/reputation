@@ -1,14 +1,14 @@
 import Image from 'next/image'
 import Link from 'next/link'
 
-import { resolveAssetUrl, TYPE_LABELS, type ContentItem } from '@/lib/api'
-import { categoryTagClass, readingMinutes } from '@/lib/content-meta'
+import { resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { categoryTagClass } from '@/lib/content-meta'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 import { ChevronRightIcon } from './icons'
 
 interface Props {
-  contents: ContentItem[]
+  contents: ContentSummary[]
   hospitalSlug: string
   hospitalName: string
   directorName: string
@@ -23,7 +23,7 @@ function formatDate(value: string | null | undefined, fallback: string) {
   return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
-function selectFeatured(contents: ContentItem[]): { primary: ContentItem | null; rest: ContentItem[] } {
+function selectFeatured(contents: ContentSummary[]): { primary: ContentSummary | null; rest: ContentSummary[] } {
   if (contents.length === 0) return { primary: null, rest: [] }
   // 우선순위 유형이 있으면 그 첫 항목을 primary로.
   for (const type of PRIORITY_TYPES) {
@@ -108,7 +108,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
                 <span className="clinic-content-card-meta-dot" aria-hidden="true" />
                 <span>{primaryDate}</span>
                 <span className="clinic-content-card-meta-dot" aria-hidden="true" />
-                <span>{readingMinutes(primary.body)}분 분량</span>
+                <span>{primary.reading_minutes ?? 1}분 분량</span>
               </p>
             </div>
           </Link>
@@ -147,7 +147,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
                     <div className="clinic-featured-secondary-meta">
                       <span className={`clinic-tag clinic-tag--sm ${categoryTagClass(content.content_type)}`}>{typeLabel}</span>
                       <h4 className="clinic-featured-secondary-title">{content.title}</h4>
-                      <p className="clinic-featured-secondary-date">{date} · {readingMinutes(content.body)}분</p>
+                      <p className="clinic-featured-secondary-date">{date} · {content.reading_minutes ?? 1}분</p>
                     </div>
                   </Link>
                 )

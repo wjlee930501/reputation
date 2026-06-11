@@ -1,23 +1,42 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
 import { Hospital, STATUS_LABELS, PLAN_LABELS } from '@/types'
 import { SkeletonTable } from '@/app/components/Skeleton'
 
+// backend GET /admin/hospitals — skip/limit 파라미터 (기본 50, 최대 200)
+const PAGE_SIZE = 50
+
 export default function HospitalsPage() {
   const [hospitals, setHospitals] = useState<Hospital[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
 
-  useEffect(() => {
-    fetchAPI('/admin/hospitals')
-      .then(setHospitals)
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
+  const loadPage = useCallback(async (skip: number) => {
+    if (skip === 0) setLoading(true)
+    else setLoadingMore(true)
+    setError(null)
+    try {
+      const data = await fetchAPI<Hospital[]>(`/admin/hospitals?skip=${skip}&limit=${PAGE_SIZE}`)
+      const page = Array.isArray(data) ? data : []
+      setHospitals((prev) => (skip === 0 ? page : [...prev, ...page]))
+      setHasMore(page.length === PAGE_SIZE)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '병원 목록을 불러오지 못했습니다.')
+    } finally {
+      setLoading(false)
+      setLoadingMore(false)
+    }
   }, [])
+
+  useEffect(() => {
+    void loadPage(0)
+  }, [loadPage])
 
   const filtered = useMemo(() => {
     if (!query.trim()) return hospitals
@@ -179,6 +198,23 @@ export default function HospitalsPage() {
               </tbody>
             </table>
             </div>
+            {hasMore && (
+              <div className="border-t border-slate-100 px-6 py-3 text-center">
+                <button
+                  type="button"
+                  onClick={() => loadPage(hospitals.length)}
+                  disabled={loadingMore}
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {loadingMore ? '불러오는 중...' : '더 보기'}
+                </button>
+                {query && (
+                  <p className="mt-1.5 text-[11px] text-slate-400">
+                    검색은 불러온 {hospitals.length}개 병원에서만 동작합니다. 전체에서 찾으려면 더 보기로 목록을 불러오세요.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </>
       )}

@@ -788,14 +788,11 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       fd.append('source_type', type)
       fd.append('title', title)
       fd.append('file', file)
-      const res = await fetch(`/api/admin/hospitals/${hospitalId}/essence/sources/upload`, {
+      // fetchAPI 사용: 401 시 로그인 리다이렉트, 오류 메시지 한국어 변환 공통 처리
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/upload`, {
         method: 'POST',
         body: fd,
       })
-      if (!res.ok) {
-        const errorText = await res.text()
-        throw new Error(errorText || `HTTP ${res.status}`)
-      }
       setTitle('')
       setFile(null)
       // reset file input

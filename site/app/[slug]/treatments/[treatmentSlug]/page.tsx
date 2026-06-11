@@ -2,8 +2,9 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
+import { canonicalBase } from '@/lib/site-url'
 import {
   buildTreatmentSlug,
   findTreatmentBySlug,
@@ -23,8 +24,6 @@ interface Props {
 }
 
 export const revalidate = 3600
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 export async function generateStaticParams() {
   try {
@@ -61,16 +60,17 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const treatmentSlug = normalizeTreatmentSlug(params.treatmentSlug)
     const region = hospital.region?.join(' ') ?? ''
     const description = `${hospital.name} ${treatment.name} 진료 안내 — 환자가 자주 묻는 질문과 진료 단계, 회복 정보를 ${region} 의료진이 정리합니다.`
+    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/treatments/${treatmentSlug}`
     return {
       title: `${treatment.name} | ${hospital.name}`,
       description,
       alternates: {
-        canonical: `/${params.slug}/treatments/${treatmentSlug}`,
+        canonical: canonicalUrl,
       },
       openGraph: {
         title: `${treatment.name} | ${hospital.name}`,
         description,
-        url: `/${params.slug}/treatments/${treatmentSlug}`,
+        url: canonicalUrl,
         type: 'website',
         images: (() => {
           const photo = resolveAssetUrl(hospital.director_photo_url)
@@ -95,7 +95,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
 export default async function TreatmentPillarPage({ params: paramsPromise }: Props) {
   const params = await paramsPromise
   let hospital
-  let contents: ContentItem[]
+  let contents: ContentSummary[]
   try {
     ;[hospital, contents] = await Promise.all([
       fetchHospital(params.slug),
@@ -126,7 +126,8 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
     { label: treatmentName },
   ]
 
-  const pageUrl = `${SITE_URL}/${params.slug}/treatments/${canonicalTreatmentSlug}`
+  const base = canonicalBase(hospital)
+  const pageUrl = `${base}/${params.slug}/treatments/${canonicalTreatmentSlug}`
 
   const collectionJsonLd = {
     '@context': 'https://schema.org',
@@ -135,9 +136,9 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
     url: pageUrl,
     isPartOf: {
       '@type': 'MedicalClinic',
-      '@id': `${SITE_URL}/${params.slug}#clinic`,
+      '@id': `${base}/${params.slug}#clinic`,
       name: hospital.name,
-      url: `${SITE_URL}/${params.slug}`,
+      url: `${base}/${params.slug}`,
     },
     about: {
       '@type': 'MedicalProcedure',
@@ -145,7 +146,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
       description: treatment.description || undefined,
       performer: {
         '@type': 'MedicalClinic',
-        '@id': `${SITE_URL}/${params.slug}#clinic`,
+        '@id': `${base}/${params.slug}#clinic`,
         name: hospital.name,
       },
     },
@@ -154,7 +155,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
       itemListElement: relatedContents.map((content, idx) => ({
         '@type': 'ListItem',
         position: idx + 1,
-        url: `${SITE_URL}/${params.slug}/contents/${content.id}`,
+        url: `${base}/${params.slug}/contents/${content.id}`,
         name: content.title,
       })),
     },
@@ -164,7 +165,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
 
   return (
     <>
-      <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]} />
+      <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
@@ -174,7 +175,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
@@ -252,6 +253,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
+          directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}

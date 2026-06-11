@@ -14,6 +14,11 @@ domain              = "reputation.co.kr"
 admin_subdomain     = "admin.reputation.co.kr"
 dns_zone_name       = ""  # Cloud DNS managed zone (선택)
 
+# 병원 커스텀 도메인 (병원이 CNAME → CNAME_TARGET 설정을 마친 뒤에 추가할 것 —
+# CNAME 없이 apply하면 해당 도메인 cert가 PROVISIONING에 머문다).
+# 운영 절차: docs/plans/2026-06-11-custom-domain-runbook.md
+# customer_domains = ["jangclinic.co.kr"]
+
 # ── Database ───────────────────────────────────────────────────────
 db_instance_tier = "db-custom-1-3840"
 # Create the Cloud SQL app user and DB_PASSWORD Secret Manager version out-of-band
@@ -37,11 +42,25 @@ site_revalidate_url    = "https://reputation.co.kr/api/revalidate"
 # CORS allowlist (browser-facing, credentials enabled → HTTPS only, no '*').
 # Defaults to https://<domain> and https://<admin_subdomain>; override if needed.
 # allowed_origins   = ["https://reputation.co.kr", "https://admin.reputation.co.kr"]
-# Trusted proxy hops for X-Forwarded-For. Default trusts all because ingress is
-# internal-LB-only (the immediate hop is always the Google LB).
-# trusted_proxy_ips = ["0.0.0.0/0", "::/0"]
+# Trusted proxy hops for X-Forwarded-For (rate-limit keying / consent IP).
+# Default is the GCP global external LB / GFE source ranges — usually correct
+# as-is. NEVER set 0.0.0.0/0 or ::/0: the backend hard-rejects catch-all ranges
+# in production (boot crash) because trusting every hop makes the client IP
+# spoofable. Override only if a different proxy fronts Cloud Run:
+# trusted_proxy_ips = ["130.211.0.0/22", "35.191.0.0/16"]
 
-# ── Redis AUTH/TLS follow-up (INFRA-5) ─────────────────────────────
-# After apply, Redis requires AUTH + TLS. Retrieve the AUTH string with:
-#   terraform output -raw redis_auth_string
-# then set REDIS_URL to rediss://:<auth>@<host>:6379/0 (ideally via Secret Manager).
+# ── Redis AUTH/TLS (INFRA-5, opt-in) ───────────────────────────────
+# redis_auth_enabled defaults to false: Redis is VPC-private and the plaintext
+# redis:// REDIS_URL in cloudrun.tf works out of the box. Enabling AUTH + TLS
+# is a COORDINATED change (REDIS_URL must switch to rediss://:<auth>@host:6379/0
+# in the same apply or the Celery broker stops connecting) — see redis.tf.
+# redis_auth_enabled = true
+
+# ── Sentry (optional) ──────────────────────────────────────────────
+# Backend error tracking. Leave unset to disable.
+# sentry_dsn = "https://<key>@<org>.ingest.sentry.io/<project>"
+
+# ── Monitoring (optional) ──────────────────────────────────────────
+# Email for uptime alerts; channel IDs for the worker/beat ERROR-log alert.
+# alert_email           = "ops@motionlabs.kr"
+# notification_channels = ["projects/reputation-prod/notificationChannels/123456"]

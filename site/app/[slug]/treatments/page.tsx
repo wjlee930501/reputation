@@ -2,7 +2,8 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
+import { canonicalBase } from '@/lib/site-url'
 
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
@@ -19,9 +20,7 @@ interface Props {
 
 export const revalidate = 3600
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
-
-function findRelatedContents(treatmentName: string, contents: ContentItem[]): ContentItem[] {
+function findRelatedContents(treatmentName: string, contents: ContentSummary[]): ContentSummary[] {
   const stem = treatmentName.replace(/[수술치료시술검사진료]/g, '').trim()
   if (!stem) return []
   const lowerStem = stem.toLowerCase()
@@ -38,14 +37,15 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name}의 진료 영역 — ${(hospital.treatments || []).map((t) => t.name).join(', ')}. 환자가 확인하면 좋은 진료 안내를 함께 제공합니다.`
+    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/treatments`
     return {
       title: `진료 영역 | ${hospital.name}`,
       description,
-      alternates: { canonical: `/${params.slug}/treatments` },
+      alternates: { canonical: canonicalUrl },
       openGraph: {
         title: `진료 영역 | ${hospital.name}`,
         description,
-        url: `/${params.slug}/treatments`,
+        url: canonicalUrl,
         type: 'website',
       },
     }
@@ -97,7 +97,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
 
   return (
     <>
-      <JsonLd data={[itemListJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]} />
+      <JsonLd data={[itemListJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, canonicalBase(hospital))]} />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
@@ -107,7 +107,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
@@ -240,6 +240,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
+          directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}

@@ -25,29 +25,39 @@ interface Props {
   businessHours: Record<string, string> | null | undefined
   treatments: Treatment[]
   photos?: HospitalPhoto[]
+  // AE가 검수해 입력한 구조화 자격 정보(예: "정형외과 전문의"). 자유 입력 specialty로
+  // "전문의"를 만들어내면 법적 보호 명칭 오용이 되므로 이 필드가 있을 때만 노출한다.
+  boardCertifications?: string[] | null
 }
 
-const DAY_LABELS: Record<string, string> = {
-  mon: '월',
-  tue: '화',
-  wed: '수',
-  thu: '목',
-  fri: '금',
-  sat: '토',
-  sun: '일',
+const DAY_FULL_LABELS: Record<string, string> = {
+  mon: '월요일',
+  tue: '화요일',
+  wed: '수요일',
+  thu: '목요일',
+  fri: '금요일',
+  sat: '토요일',
+  sun: '일요일',
 }
 
-const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+// 서버(UTC)가 아닌 한국 시간 기준의 요일 키. ISR 렌더 시점에 UTC 요일을 쓰면
+// KST 00:00~09:00 사이에 전날 요일이 표시된다.
+function seoulDayKey(): string {
+  return new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'Asia/Seoul' })
+    .format(new Date())
+    .toLowerCase()
+}
 
 function todayHours(hours: Record<string, string> | null | undefined): {
   label: string
   time: string
 } | null {
   if (!hours) return null
-  const key = DAY_KEYS[new Date().getDay()]
+  const key = seoulDayKey()
   const time = hours[key]
   if (!time) return null
-  return { label: DAY_LABELS[key], time }
+  // "오늘" 대신 실제 요일명을 라벨로 사용 — ISR 캐시가 하루를 넘겨도 거짓이 되지 않는다.
+  return { label: DAY_FULL_LABELS[key] ?? key, time }
 }
 
 function monogram(name: string): string {
@@ -70,14 +80,25 @@ export function ClinicHero({
   businessHours,
   treatments,
   photos = [],
+  boardCertifications = null,
 }: Props) {
   const eyebrowLabel = [region.join(' '), specialties.join(' · ')]
     .filter(Boolean)
     .join('  ·  ')
   const resolvedDirectorPhoto = resolveAssetUrl(directorPhotoUrl)
   const today = todayHours(businessHours)
-  const primarySpecialty = specialties[0] || '진료'
+  // 모든 진료 문구는 프로파일 데이터(specialties·treatments)에서만 파생한다.
+  const specialtyLabel = specialties.filter(Boolean).join('·')
+  const heroTitleSub = specialtyLabel ? `${specialtyLabel} 진료` : '진료 안내'
+  // 검수된 전문의 자격이 있을 때만 "전문의" 표기. 없으면 "대표원장"만 사용.
+  const doctorRoleLabel = boardCertifications?.find(Boolean) ?? '대표원장'
   const heroTreatments = treatments.slice(0, 6)
+  const treatmentNames = treatments.map((t) => t.name).filter(Boolean)
+  const careScopeLabel =
+    treatmentNames.slice(0, 4).join('·') || specialtyLabel || ''
+  const heroMeta = careScopeLabel
+    ? `${careScopeLabel} 등 진료 항목을 진찰 소견과 함께 확인하고, 환자 상태에 맞는 치료 방향을 안내합니다.`
+    : null
   // 우측 hero 미디어는 가로형(16:9) 밴드 — 세로 원장 사진은 얼굴이 잘리므로
   // 원내 전경(내부·외관·진료실) 사진을 우선 사용한다. 원장 사진은 아래 요약부의
   // 원형 아바타로 노출하므로 큰 미디어에서는 마지막 폴백으로만 쓴다.
@@ -114,15 +135,12 @@ export function ClinicHero({
           {eyebrowLabel && <span className="clinic-hero-eyebrow">{eyebrowLabel}</span>}
           <h1 className="clinic-hero-title">
             {hospitalName}
-            <span className="clinic-hero-title-sub">{primarySpecialty} 전문 진료</span>
+            <span className="clinic-hero-title-sub">{heroTitleSub}</span>
           </h1>
           <p className="clinic-hero-statement">
-            통증의 원인을 확인하고, 비수술 치료부터 재활까지 단계적으로 상담합니다.
+            증상의 원인을 먼저 확인하고, 환자 상태에 맞는 치료 방향을 상담합니다.
           </p>
-          <p className="clinic-hero-meta">
-            무릎·어깨·허리 통증, 스포츠 손상, 도수재활까지 진찰과 영상검사 소견을
-            함께 보고 환자 상태에 맞는 치료 방향을 안내합니다.
-          </p>
+          {heroMeta && <p className="clinic-hero-meta">{heroMeta}</p>}
 
           {heroTreatments.length > 0 && (
             <div className="clinic-hero-treatment-strip" aria-label="주요 진료 영역">
@@ -192,7 +210,7 @@ export function ClinicHero({
             <div>
               <span className="clinic-hero-snapshot-label">대표원장</span>
               <strong>{directorName} 원장</strong>
-              <span>{primarySpecialty} 전문의</span>
+              <span>{doctorRoleLabel}</span>
             </div>
           </div>
 
@@ -202,11 +220,9 @@ export function ClinicHero({
               <div className="clinic-hero-snapshot-row">
                 <dt>
                   <ClockIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
-                  오늘 진료
+                  <span className="clinic-hero-snapshot-today">{today.label}</span> 진료
                 </dt>
-                <dd>
-                  <span className="clinic-hero-snapshot-today">{today.label}</span> {today.time}
-                </dd>
+                <dd>{today.time}</dd>
               </div>
             )}
             {address && (

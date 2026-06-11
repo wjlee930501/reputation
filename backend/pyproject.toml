@@ -16,6 +16,7 @@ dependencies = [
 
     # Task Queue
     "celery[redis]>=5.4.0",
+    "celery-redbeat>=2.2.0",  # beat 스케줄을 Redis에 보존 + 분산 락 (롤아웃 중 이중 dispatch 방지)
     "redis>=5.2.0",
     "flower>=2.0.0",
 

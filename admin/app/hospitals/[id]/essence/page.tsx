@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
 import {
@@ -136,9 +136,9 @@ export default function EssencePage() {
     setError(null)
     try {
       const [sourceData, philosophyData, approvedData] = await Promise.all([
-        fetchAPI(`/admin/hospitals/${id}/essence/sources`),
-        fetchAPI(`/admin/hospitals/${id}/essence/philosophies`),
-        fetchAPI(`/admin/hospitals/${id}/essence/philosophy/approved`),
+        fetchAPI<SourceAsset[]>(`/admin/hospitals/${id}/essence/sources`),
+        fetchAPI<ContentPhilosophy[]>(`/admin/hospitals/${id}/essence/philosophies`),
+        fetchAPI<{ approved: ContentPhilosophy | null } | null>(`/admin/hospitals/${id}/essence/philosophy/approved`),
       ])
       setSources(Array.isArray(sourceData) ? sourceData : [])
       setPhilosophies(Array.isArray(philosophyData) ? philosophyData : [])
@@ -239,7 +239,7 @@ export default function EssencePage() {
     setError(null)
     setNotice(null)
     try {
-      const detail = await fetchAPI(`/admin/hospitals/${id}/essence/sources/${sourceId}/process`, {
+      const detail = await fetchAPI<SourceAsset>(`/admin/hospitals/${id}/essence/sources/${sourceId}/process`, {
         method: 'POST',
       })
       setSelectedSource(detail)
@@ -256,7 +256,7 @@ export default function EssencePage() {
     setActionLoading(`open-${sourceId}`)
     setError(null)
     try {
-      const detail = await fetchAPI(`/admin/hospitals/${id}/essence/sources/${sourceId}`)
+      const detail = await fetchAPI<SourceAsset>(`/admin/hospitals/${id}/essence/sources/${sourceId}`)
       setSelectedSource(detail)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '자료 상세를 불러오지 못했습니다.')
@@ -287,7 +287,7 @@ export default function EssencePage() {
     setError(null)
     setNotice(null)
     try {
-      const draft = await fetchAPI(`/admin/hospitals/${id}/essence/philosophy/draft`, {
+      const draft = await fetchAPI<ContentPhilosophy>(`/admin/hospitals/${id}/essence/philosophy/draft`, {
         method: 'POST',
         body: JSON.stringify({
           source_asset_ids: sourceIds,
@@ -311,7 +311,7 @@ export default function EssencePage() {
     setError(null)
     setNotice(null)
     try {
-      const updated = await fetchAPI(`/admin/hospitals/${id}/essence/philosophy/${selectedDraft.id}`, {
+      const updated = await fetchAPI<ContentPhilosophy>(`/admin/hospitals/${id}/essence/philosophy/${selectedDraft.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
           positioning_statement: draftPositioning || null,
@@ -464,8 +464,9 @@ export default function EssencePage() {
             </p>
           </header>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">자료 유형</label>
+            <label htmlFor="essence-source-type" className="block text-sm font-medium text-slate-700 mb-1.5">자료 유형</label>
             <select
+              id="essence-source-type"
               value={sourceType}
               onChange={(e) => setSourceType(e.target.value as SourceType)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -476,8 +477,9 @@ export default function EssencePage() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">제목</label>
+            <label htmlFor="essence-source-title" className="block text-sm font-medium text-slate-700 mb-1.5">제목</label>
             <input
+              id="essence-source-title"
               value={sourceTitle}
               onChange={(e) => setSourceTitle(e.target.value)}
               required
@@ -486,8 +488,9 @@ export default function EssencePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">URL <span className="text-slate-400 text-xs font-normal">(선택)</span></label>
+            <label htmlFor="essence-source-url" className="block text-sm font-medium text-slate-700 mb-1.5">URL <span className="text-slate-400 text-xs font-normal">(선택)</span></label>
             <input
+              id="essence-source-url"
               value={sourceUrl}
               onChange={(e) => setSourceUrl(e.target.value)}
               placeholder="https://..."
@@ -495,10 +498,11 @@ export default function EssencePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+            <label htmlFor="essence-source-raw-text" className="block text-sm font-medium text-slate-700 mb-1.5">
               원문 <span className="text-slate-400 text-xs font-normal">(처리에 필수)</span>
             </label>
             <textarea
+              id="essence-source-raw-text"
               value={sourceRawText}
               onChange={(e) => setSourceRawText(e.target.value)}
               rows={8}
@@ -507,8 +511,9 @@ export default function EssencePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">운영자 메모 <span className="text-slate-400 text-xs font-normal">(선택)</span></label>
+            <label htmlFor="essence-source-operator-note" className="block text-sm font-medium text-slate-700 mb-1.5">운영자 메모 <span className="text-slate-400 text-xs font-normal">(선택)</span></label>
             <textarea
+              id="essence-source-operator-note"
               value={sourceOperatorNote}
               onChange={(e) => setSourceOperatorNote(e.target.value)}
               rows={3}
@@ -517,8 +522,9 @@ export default function EssencePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">작성자</label>
+            <label htmlFor="essence-source-created-by" className="block text-sm font-medium text-slate-700 mb-1.5">작성자</label>
             <input
+              id="essence-source-created-by"
               value={sourceCreatedBy}
               onChange={(e) => setSourceCreatedBy(e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -772,16 +778,18 @@ export default function EssencePage() {
                     승인 전 체크: ① 항목별 근거 연결이 실제 근거 노트와 맞는지 ② 반드시 담을 메시지 / 피해야 할 표현이 의료광고 금지 표현과 충돌하지 않는지 ③ 근거가 부족한 항목을 운영 기준에서 허용해도 되는지.
                   </p>
                   <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">검토자</label>
+                    <label htmlFor="essence-reviewed-by" className="block text-xs font-medium text-slate-600 mb-1">검토자</label>
                     <input
+                      id="essence-reviewed-by"
                       value={reviewedBy}
                       onChange={(e) => setReviewedBy(e.target.value)}
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">승인 메모</label>
+                    <label htmlFor="essence-approval-note" className="block text-xs font-medium text-slate-600 mb-1">승인 메모</label>
                     <textarea
+                      id="essence-approval-note"
                       value={approvalNote}
                       onChange={(e) => setApprovalNote(e.target.value)}
                       rows={3}
@@ -865,13 +873,15 @@ function TextArea({
   rows: number
   hint?: string
 }) {
+  const textareaId = useId()
   return (
     <div>
       <div className="flex items-baseline justify-between mb-1.5">
-        <label className="block text-sm font-medium text-slate-700">{label}</label>
+        <label htmlFor={textareaId} className="block text-sm font-medium text-slate-700">{label}</label>
         {hint && <span className="text-[11px] text-slate-400">{hint}</span>}
       </div>
       <textarea
+        id={textareaId}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}

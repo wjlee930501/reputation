@@ -15,11 +15,20 @@ class ContentItemResponse(BaseModel):
     meta_description: Optional[str]
     image_url: Optional[str]
     scheduled_date: str
+    # 전월 이월 기준일 (월말 반려 carry-over) — 원래 발행 예정일. 내부 운영 데이터로
+    # Admin 응답에만 포함하고 공개(/site) 직렬화에는 노출하지 않는다.
+    carried_over_from: Optional[str] = None
     status: str
     display: Optional[dict[str, Any]] = None
     generated_at: Optional[str]
     published_at: Optional[str]
     published_by: Optional[str]
+    body_updated_at: Optional[str] = None
+    # 참고 자료/FAQ 분리 필드 — Admin 검수·보정(A1)과 컴플라이언스 패널이 사용.
+    references: list[dict[str, Any]] = []
+    faq_question: Optional[str] = None
+    faq_answer_summary: Optional[str] = None
+    compliance: Optional[dict[str, Any]] = None
     content_philosophy_id: Optional[str] = None
     query_target_id: Optional[str] = None
     exposure_action_id: Optional[str] = None

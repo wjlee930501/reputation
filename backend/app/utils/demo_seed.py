@@ -442,7 +442,6 @@ def _seed_report(db, hospital: Hospital) -> None:
     pdf_path = None
     try:
         pdf_path = generate_pdf_report(
-            db=db,
             hospital=hospital,
             period_start=now.floor("month").datetime,
             period_end=now.ceil("month").datetime,

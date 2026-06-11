@@ -21,6 +21,9 @@ REGION="${GCP_REGION:-us-central1}"
 REPO="${GCP_ARTIFACT_REPO:-reputation}"
 SA_NAME="${GCP_SERVICE_ACCOUNT_NAME:-reputation-sa}"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+# 프론트엔드(Next.js site/admin) 전용 SA — deploy.sh가 참조한다 (terraform과 동일 명명).
+FRONTEND_SA_NAME="${GCP_FRONTEND_SERVICE_ACCOUNT_NAME:-reputation-frontend-sa}"
+FRONTEND_SA_EMAIL="${FRONTEND_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
 if [[ -z "$PROJECT_ID" ]]; then
   fail "GCP_PROJECT_ID 환경변수 또는 gcloud config set project를 설정해 주세요."
@@ -39,6 +42,7 @@ gcloud services enable \
   secretmanager.googleapis.com \
   cloudresourcemanager.googleapis.com \
   iamcredentials.googleapis.com \
+  aiplatform.googleapis.com \
   --project="$PROJECT_ID"
 ok "API 활성화 완료"
 
@@ -66,6 +70,17 @@ else
   ok "서비스 계정 생성 완료: ${SA_EMAIL}"
 fi
 
+# 프론트엔드 SA — site/admin Cloud Run 서비스용 (deploy.sh FRONTEND_SERVICE_ACCOUNT,
+# terraform cloudrun_frontend.tf와 동일). 백엔드 secret(API 키·DB 비밀번호) 접근 없음.
+if gcloud iam service-accounts describe "$FRONTEND_SA_EMAIL" --project="$PROJECT_ID" &>/dev/null; then
+  ok "프론트엔드 서비스 계정 이미 존재: ${FRONTEND_SA_EMAIL}"
+else
+  gcloud iam service-accounts create "$FRONTEND_SA_NAME" \
+    --display-name="Re:putation Frontend (Next.js) Service Account" \
+    --project="$PROJECT_ID"
+  ok "프론트엔드 서비스 계정 생성 완료: ${FRONTEND_SA_EMAIL}"
+fi
+
 # ─── 4. IAM 권한 부여 ──────────────────────────────────────────────
 info "IAM 권한 부여 중..."
 
@@ -85,6 +100,19 @@ for role in "${ROLES[@]}"; do
     --condition=None \
     --quiet
 done
+
+# 프론트엔드 SA — 로그/메트릭 기록만 (terraform cloudrun_frontend.tf와 동일).
+FRONTEND_ROLES=(
+  "roles/logging.logWriter"
+  "roles/monitoring.metricWriter"
+)
+for role in "${FRONTEND_ROLES[@]}"; do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${FRONTEND_SA_EMAIL}" \
+    --role="$role" \
+    --condition=None \
+    --quiet
+done
 ok "IAM 권한 부여 완료"
 
 # ─── 5. Secret Manager 시크릿 생성 (API 키) ───────────────────────
@@ -98,7 +126,25 @@ declare -A SECRETS=(
   ["SLACK_WEBHOOK_URL"]="Slack 웹훅 URL"
   ["ADMIN_SESSION_SECRET"]="Admin 세션 서명키"
   ["DB_PASSWORD"]="Cloud SQL 앱 사용자 비밀번호"
+  ["SITE_REVALIDATE_SECRET"]="Site on-demand revalidate 인증 secret"
+  ["SITE_BFF_SECRET"]="Site BFF → backend 방문자 IP 전달 인증 secret"
 )
+
+# 프론트엔드 SA가 접근해야 하는 secret (terraform secretmanager.tf frontend_access와 동일).
+FRONTEND_SECRET_NAMES=(
+  "ADMIN_SECRET_KEY"
+  "ADMIN_SESSION_SECRET"
+  "SITE_REVALIDATE_SECRET"
+  "SITE_BFF_SECRET"
+)
+
+is_frontend_secret() {
+  local name
+  for name in "${FRONTEND_SECRET_NAMES[@]}"; do
+    [[ "$1" == "$name" ]] && return 0
+  done
+  return 1
+}
 
 for secret_name in "${!SECRETS[@]}"; do
   if gcloud secrets describe "$secret_name" --project="$PROJECT_ID" &>/dev/null; then
@@ -116,6 +162,14 @@ for secret_name in "${!SECRETS[@]}"; do
     --role="roles/secretmanager.secretAccessor" \
     --project="$PROJECT_ID" \
     --quiet 2>/dev/null || true
+
+  if is_frontend_secret "$secret_name"; then
+    gcloud secrets add-iam-policy-binding "$secret_name" \
+      --member="serviceAccount:${FRONTEND_SA_EMAIL}" \
+      --role="roles/secretmanager.secretAccessor" \
+      --project="$PROJECT_ID" \
+      --quiet 2>/dev/null || true
+  fi
 done
 
 ok "Secret Manager 설정 완료"

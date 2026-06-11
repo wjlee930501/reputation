@@ -1,8 +1,10 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useEffect, useState } from 'react'
-import { fetchAPI } from '@/lib/api'
+import { useEffect, useId, useState } from 'react'
+import { ApiError, fetchAPI } from '@/lib/api'
+import { parseStepsFromMessage, readDomainError } from '@/lib/domain'
+import { useHospitalHeader } from '../hospital-context'
 
 interface Treatment {
   name: string
@@ -56,6 +58,7 @@ function TagInput({
   onChange: (v: string[]) => void
 }) {
   const [input, setInput] = useState('')
+  const inputId = useId()
 
   function addTag(raw: string) {
     const tags = raw
@@ -76,7 +79,7 @@ function TagInput({
 
   return (
     <div>
-      <label className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
+      <label htmlFor={inputId} className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
       <div className="flex flex-wrap gap-1.5 mb-2">
         {values.map((v) => (
           <span
@@ -96,6 +99,7 @@ function TagInput({
         ))}
       </div>
       <input
+        id={inputId}
         type="text"
         value={input}
         onChange={(e) => setInput(e.target.value)}
@@ -115,7 +119,13 @@ function TagInput({
 
 const DEFAULT_CNAME_TARGET = 'aeo.motionlabs.io'
 
-type DomainFeedback = { tone: 'success' | 'error' | 'info'; message: string } | null
+type DomainFeedback = {
+  tone: 'success' | 'error' | 'info'
+  title?: string
+  message: string
+  /** 검증 409 — DNS는 정상이나 운영 시작 전 완료해야 할 단계 목록 (체크리스트로 표시) */
+  steps?: string[]
+} | null
 
 type ChecklistStatus = 'done' | 'required' | 'recommended'
 
@@ -223,10 +233,10 @@ function buildChecklist(profile: Partial<HospitalProfile>): ChecklistItem[] {
   const hasDomain = trimmed(profile.aeo_domain).length > 0
   items.push({
     key: 'domain',
-    label: '병원 소유 도메인',
+    label: '커스텀 도메인',
     hint: profile.site_built
-      ? '발급된 도메인을 입력하고 DNS 검증까지 완료합니다.'
-      : '병원 정보 허브 준비가 끝난 뒤 도메인 카드에서 연결합니다. (지금은 사전 입력만 가능)',
+      ? '병원이 구입한 도메인을 입력하고 DNS 검증까지 완료합니다.'
+      : '병원 정보 허브 준비가 끝난 뒤 커스텀 도메인 연결 카드에서 연결합니다. (지금은 사전 입력만 가능)',
     required: false,
     status: hasDomain ? 'done' : 'recommended',
   })
@@ -252,6 +262,7 @@ const STATUS_CHIP: Record<ChecklistStatus, { label: string; cls: string }> = {
 export default function ProfilePage() {
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
+  const { refetch: refetchHeader } = useHospitalHeader()
   const [profile, setProfile] = useState<Partial<HospitalProfile>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -262,9 +273,10 @@ export default function ProfilePage() {
   const [domainFeedback, setDomainFeedback] = useState<DomainFeedback>(null)
   const [domainExpectedCname, setDomainExpectedCname] = useState<string>(DEFAULT_CNAME_TARGET)
   const [domainSavedValue, setDomainSavedValue] = useState<string>('')
+  const [cnameCopied, setCnameCopied] = useState(false)
 
   useEffect(() => {
-    fetchAPI(`/admin/hospitals/${hospitalId}`)
+    fetchAPI<HospitalProfile>(`/admin/hospitals/${hospitalId}`)
       .then((data) => {
         setProfile({
           ...data,
@@ -322,6 +334,7 @@ export default function ProfilePage() {
         body: JSON.stringify(profile),
       })
       setSuccess(true)
+      void refetchHeader() // 프로파일 완료 플래그 등 헤더 진행 점 갱신
       setTimeout(() => setSuccess(false), 3000)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '저장에 실패했습니다.')
@@ -430,17 +443,19 @@ export default function ProfilePage() {
           </p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">원장명</label>
+          <label htmlFor="profile-director-name" className="block text-sm font-medium text-slate-700 mb-1.5">원장명</label>
           <input
             type="text"
+            id="profile-director-name"
             value={profile.director_name ?? ''}
             onChange={(e) => updateField('director_name', e.target.value)}
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">약력</label>
+          <label htmlFor="profile-director-career" className="block text-sm font-medium text-slate-700 mb-1.5">약력</label>
           <textarea
+            id="profile-director-career"
             value={profile.director_career ?? ''}
             onChange={(e) => updateField('director_career', e.target.value)}
             rows={3}
@@ -448,8 +463,9 @@ export default function ProfilePage() {
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">진료 철학</label>
+          <label htmlFor="profile-director-philosophy" className="block text-sm font-medium text-slate-700 mb-1.5">진료 철학</label>
           <textarea
+            id="profile-director-philosophy"
             value={profile.director_philosophy ?? ''}
             onChange={(e) => updateField('director_philosophy', e.target.value)}
             rows={3}
@@ -467,18 +483,20 @@ export default function ProfilePage() {
           </p>
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">주소</label>
+          <label htmlFor="profile-address" className="block text-sm font-medium text-slate-700 mb-1.5">주소</label>
           <input
             type="text"
+            id="profile-address"
             value={profile.address ?? ''}
             onChange={(e) => updateField('address', e.target.value)}
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1.5">전화번호</label>
+          <label htmlFor="profile-phone" className="block text-sm font-medium text-slate-700 mb-1.5">전화번호</label>
           <input
             type="text"
+            id="profile-phone"
             value={profile.phone ?? ''}
             onChange={(e) => updateField('phone', e.target.value)}
             placeholder="02-1234-5678"
@@ -493,6 +511,7 @@ export default function ProfilePage() {
                 <span className="w-6 text-sm text-slate-600 font-medium">{day}</span>
                 <input
                   type="text"
+                  aria-label={`${day}요일 진료시간`}
                   value={profile.business_hours?.[DAY_KEYS[i]] ?? ''}
                   onChange={(e) => updateHours(DAY_KEYS[i], e.target.value)}
                   placeholder="09:00 ~ 18:00 / 휴진"
@@ -504,18 +523,20 @@ export default function ProfilePage() {
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">홈페이지 URL</label>
+            <label htmlFor="profile-website-url" className="block text-sm font-medium text-slate-700 mb-1.5">홈페이지 URL</label>
             <input
               type="url"
+              id="profile-website-url"
               value={profile.website_url ?? ''}
               onChange={(e) => updateField('website_url', e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">블로그 URL</label>
+            <label htmlFor="profile-blog-url" className="block text-sm font-medium text-slate-700 mb-1.5">블로그 URL</label>
             <input
               type="url"
+              id="profile-blog-url"
               value={profile.blog_url ?? ''}
               onChange={(e) => updateField('blog_url', e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -534,9 +555,10 @@ export default function ProfilePage() {
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL</label>
+            <label htmlFor="profile-google-business-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL</label>
             <input
               type="url"
+              id="profile-google-business-url"
               value={profile.google_business_profile_url ?? ''}
               onChange={(e) => updateField('google_business_profile_url', e.target.value)}
               placeholder="https://business.google.com/..."
@@ -544,9 +566,10 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">구글 지도 URL</label>
+            <label htmlFor="profile-google-maps-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 지도 URL</label>
             <input
               type="url"
+              id="profile-google-maps-url"
               value={profile.google_maps_url ?? ''}
               onChange={(e) => updateField('google_maps_url', e.target.value)}
               placeholder="https://maps.google.com/..."
@@ -554,9 +577,10 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">네이버 플레이스 URL</label>
+            <label htmlFor="profile-naver-place-url" className="block text-sm font-medium text-slate-700 mb-1.5">네이버 플레이스 URL</label>
             <input
               type="url"
+              id="profile-naver-place-url"
               value={profile.naver_place_url ?? ''}
               onChange={(e) => updateField('naver_place_url', e.target.value)}
               placeholder="https://naver.me/..."
@@ -564,9 +588,10 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">카카오 채널 URL</label>
+            <label htmlFor="profile-kakao-channel-url" className="block text-sm font-medium text-slate-700 mb-1.5">카카오 채널 URL</label>
             <input
               type="url"
+              id="profile-kakao-channel-url"
               value={profile.kakao_channel_url ?? ''}
               onChange={(e) => updateField('kakao_channel_url', e.target.value)}
               placeholder="https://pf.kakao.com/..."
@@ -576,10 +601,11 @@ export default function ProfilePage() {
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">위도</label>
+            <label htmlFor="profile-latitude" className="block text-sm font-medium text-slate-700 mb-1.5">위도</label>
             <input
               type="number"
               step="0.000001"
+              id="profile-latitude"
               value={profile.latitude ?? ''}
               onChange={(e) => updateField('latitude', e.target.value === '' ? null : Number(e.target.value))}
               placeholder="37.497942"
@@ -587,10 +613,11 @@ export default function ProfilePage() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">경도</label>
+            <label htmlFor="profile-longitude" className="block text-sm font-medium text-slate-700 mb-1.5">경도</label>
             <input
               type="number"
               step="0.000001"
+              id="profile-longitude"
               value={profile.longitude ?? ''}
               onChange={(e) => updateField('longitude', e.target.value === '' ? null : Number(e.target.value))}
               placeholder="127.027621"
@@ -695,11 +722,21 @@ export default function ProfilePage() {
               : 'waiting'
 
         const statusBadge = {
-          live:    { label: '병원 정보 허브 운영중', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-          waiting: { label: '검증 대기',             cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+          live:    { label: '연결 완료',             cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+          waiting: { label: '저장됨 · DNS 미확인',   cls: 'bg-amber-50 text-amber-700 border-amber-200' },
           unsaved: { label: '저장 필요',             cls: 'bg-blue-50 text-blue-700 border-blue-200' },
-          empty:   { label: '도메인 미설정',         cls: 'bg-slate-50 text-slate-600 border-slate-200' },
+          empty:   { label: '미설정',                cls: 'bg-slate-50 text-slate-600 border-slate-200' },
         }[status]
+
+        async function handleCopyCname() {
+          try {
+            await navigator.clipboard.writeText(domainExpectedCname)
+            setCnameCopied(true)
+            window.setTimeout(() => setCnameCopied(false), 2000)
+          } catch {
+            // 클립보드 권한이 없으면 조용히 무시 — 값은 화면에 그대로 보인다.
+          }
+        }
 
         async function handleSaveDomain() {
           const domain = (profile.aeo_domain ?? '').trim()
@@ -716,14 +753,25 @@ export default function ProfilePage() {
             })
             setDomainSavedValue(domain)
             setProfile((prev) => ({ ...prev, aeo_domain: domain, site_live: false }))
+            void refetchHeader()
             setDomainFeedback({
               tone: 'success',
               message: '도메인이 저장되었습니다. DNS 전파 후 [DNS 확인하고 병원 정보 허브 운영 시작]을 눌러주세요.',
             })
           } catch (e: unknown) {
+            const info = readDomainError(e, '도메인 저장에 실패했습니다.')
             setDomainFeedback({
               tone: 'error',
-              message: e instanceof Error ? e.message : '도메인 저장에 실패했습니다.',
+              title:
+                info.kind === 'invalid'
+                  ? '도메인 형식 오류'
+                  : info.kind === 'conflict'
+                    ? '이미 사용 중인 도메인'
+                    : undefined,
+              message:
+                info.kind === 'conflict'
+                  ? `${info.message} 다른 도메인을 입력하거나, 해당 병원의 연결을 먼저 해제해 주세요.`
+                  : info.message,
             })
           } finally {
             setDomainSaving(false)
@@ -734,12 +782,14 @@ export default function ProfilePage() {
           setDomainVerifying(true)
           setDomainFeedback(null)
           try {
-            const result = await fetchAPI(`/admin/hospitals/${hospitalId}/domain/verify`, {
-              method: 'POST',
-            })
+            const result = await fetchAPI<{ verified?: boolean; expected_cname?: string; message?: string }>(
+              `/admin/hospitals/${hospitalId}/domain/verify`,
+              { method: 'POST' },
+            )
             if (result?.expected_cname) setDomainExpectedCname(result.expected_cname)
             if (result?.verified) {
               setProfile((prev) => ({ ...prev, site_live: true }))
+              void refetchHeader() // 운영 상태 점·배지 즉시 갱신
               setDomainFeedback({
                 tone: 'success',
                 message: result.message ?? '도메인 연결이 확인되어 병원 정보 허브가 운영 상태로 전환되었습니다.',
@@ -751,10 +801,20 @@ export default function ProfilePage() {
               })
             }
           } catch (e: unknown) {
-            setDomainFeedback({
-              tone: 'error',
-              message: e instanceof Error ? e.message : '도메인 검증에 실패했습니다.',
-            })
+            const info = readDomainError(e, '도메인 검증에 실패했습니다.')
+            // verify 409 = DNS는 정상이나 운영 시작 전 선행 단계 미완료.
+            // detail이 구조화 목록이면 그대로, 문자열 한 줄이면 콜론 뒤 항목을 분해해 체크리스트로 보여준다.
+            if (info.kind === 'prerequisite' || (e instanceof ApiError && e.status === 409)) {
+              const steps = info.missingSteps.length > 0 ? info.missingSteps : parseStepsFromMessage(info.message)
+              setDomainFeedback({
+                tone: 'info',
+                title: 'DNS는 확인됐지만, 운영 시작 전 완료할 단계가 남아 있습니다',
+                message: info.message,
+                steps,
+              })
+            } else {
+              setDomainFeedback({ tone: 'error', message: info.message })
+            }
           } finally {
             setDomainVerifying(false)
           }
@@ -766,9 +826,9 @@ export default function ProfilePage() {
             <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-white px-6 py-5 border-b border-slate-100">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-base font-semibold text-slate-900">병원 소유 도메인 연결</h3>
+                  <h3 className="text-base font-semibold text-slate-900">커스텀 도메인 연결</h3>
                   <p className="text-sm text-slate-700 mt-1">
-                    원장님 소유 도메인으로 병원 정보 허브를 운영합니다.
+                    병원이 별도로 구입한 도메인을 콘텐츠 허브에 연결합니다.
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
                     계정·콘텐츠가 플랫폼에 묶이지 않고 병원 브랜드 자산으로 남습니다.
@@ -787,7 +847,7 @@ export default function ProfilePage() {
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">1</span>
-                  <label className="text-sm font-semibold text-slate-800">원장님 소유 도메인</label>
+                  <label htmlFor="profile-aeo-domain" className="text-sm font-semibold text-slate-800">원장님 소유 도메인</label>
                 </div>
                 <p className="text-xs text-slate-500 mb-2">
                   서브도메인 사용을 권장합니다 (예: <code className="px-1 bg-slate-100 rounded">www.clinicname.co.kr</code> 또는 <code className="px-1 bg-slate-100 rounded">ai.clinicname.co.kr</code>).
@@ -796,6 +856,7 @@ export default function ProfilePage() {
                 <div className="flex gap-2">
                   <input
                     type="text"
+                    id="profile-aeo-domain"
                     value={profile.aeo_domain ?? ''}
                     onChange={(e) => updateField('aeo_domain', e.target.value)}
                     placeholder="ai.clinicname.co.kr"
@@ -812,50 +873,72 @@ export default function ProfilePage() {
                 </div>
               </div>
 
-              {/* STEP 2 — DNS 안내 */}
+              {/* STEP 2 — DNS 안내 (도메인 저장 후 표시) */}
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">2</span>
-                  <label className="text-sm font-semibold text-slate-800">DNS 설정 안내</label>
+                  <span className="text-sm font-semibold text-slate-800">DNS 설정 안내</span>
                 </div>
-                <p className="text-xs text-slate-500 mb-2">
-                  도메인 등록업체(가비아·카페24·후이즈 등)의 DNS 관리 페이지에서 아래 CNAME 레코드를 추가해 주세요.
-                </p>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                  <table className="w-full text-xs">
-                    <tbody className="divide-y divide-slate-200">
-                      <tr>
-                        <td className="px-3 py-2 w-32 text-slate-500 font-medium">레코드 종류</td>
-                        <td className="px-3 py-2 font-mono text-slate-800">CNAME</td>
-                      </tr>
-                      <tr>
-                        <td className="px-3 py-2 text-slate-500 font-medium">도메인 이름</td>
-                        <td className="px-3 py-2 font-mono text-slate-800">
-                          {currentDomain || <span className="text-slate-400">입력한 도메인</span>}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="px-3 py-2 text-slate-500 font-medium">연결 대상값</td>
-                        <td className="px-3 py-2 font-mono text-slate-800">{domainExpectedCname}</td>
-                      </tr>
-                      <tr>
-                        <td className="px-3 py-2 text-slate-500 font-medium">TTL</td>
-                        <td className="px-3 py-2 font-mono text-slate-800">300 (5분)</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                <p className="text-[11px] text-slate-400 mt-1.5">
-                  환경별 대상값은 검증 결과 메시지를 기준으로 확인됩니다. DNS 전파에는 최대 24시간이 소요될 수 있습니다.
-                </p>
+                {domainSavedValue ? (
+                  <>
+                    <p className="text-xs text-slate-500 mb-2">
+                      도메인 등록기관(가비아·후이즈·카페24 등)의 DNS 관리 페이지에서 아래 CNAME 레코드를 추가해 주세요:{' '}
+                      <code className="px-1 bg-slate-100 rounded">{domainSavedValue}</code> →{' '}
+                      <code className="px-1 bg-slate-100 rounded">{domainExpectedCname}</code>
+                    </p>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+                      <table className="w-full text-xs">
+                        <tbody className="divide-y divide-slate-200">
+                          <tr>
+                            <td className="px-3 py-2 w-32 text-slate-500 font-medium">레코드 종류</td>
+                            <td className="px-3 py-2 font-mono text-slate-800">CNAME</td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2 text-slate-500 font-medium">도메인 이름</td>
+                            <td className="px-3 py-2 font-mono text-slate-800">{domainSavedValue}</td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2 text-slate-500 font-medium">연결 대상값</td>
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-slate-800">{domainExpectedCname}</span>
+                                <button
+                                  type="button"
+                                  onClick={handleCopyCname}
+                                  className="shrink-0 px-2 py-0.5 text-[11px] font-medium text-blue-600 border border-blue-300 rounded hover:bg-blue-50 transition-colors"
+                                >
+                                  {cnameCopied ? '복사됨 ✓' : '복사'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2 text-slate-500 font-medium">TTL</td>
+                            <td className="px-3 py-2 font-mono text-slate-800">300 (5분)</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1.5">
+                      환경별 대상값은 검증 결과 메시지를 기준으로 확인됩니다. DNS 전파에는 최대 24시간이 소요될 수 있습니다.
+                    </p>
+                  </>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
+                    도메인을 저장하면 등록기관에 추가할 CNAME 레코드 안내가 여기에 표시됩니다.
+                  </p>
+                )}
               </div>
 
               {/* STEP 3 — 검증 및 운영 시작 */}
               <div>
                 <div className="flex items-center gap-2 mb-2">
                   <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">3</span>
-                  <label className="text-sm font-semibold text-slate-800">연결 검증 및 병원 정보 허브 운영 시작</label>
+                  <span className="text-sm font-semibold text-slate-800">연결 검증 및 병원 정보 허브 운영 시작</span>
                 </div>
+                <p className="text-xs text-slate-500 mb-2">
+                  DNS 전파 후 [DNS 확인]을 클릭하세요. 확인이 완료되면 콘텐츠 허브가 이 도메인을 대표 주소(canonical)로 사용합니다.
+                </p>
                 {profile.site_live && !hasUnsavedChange ? (
                   <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
                     <div>
@@ -894,9 +977,12 @@ export default function ProfilePage() {
                           : 'DNS 확인하고 병원 정보 허브 운영 시작'}
                   </button>
                 )}
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  HTTPS 인증서는 연결 확인 후 자동 발급되며 최대 24시간 걸릴 수 있습니다.
+                </p>
               </div>
 
-              {/* 인라인 피드백 */}
+              {/* 인라인 피드백 — 형식 오류 / 사용 중 충돌 / 선행 단계 미완료를 구분해 보여준다 */}
               {domainFeedback && (
                 <div
                   className={`rounded-lg px-3 py-2 text-sm border ${
@@ -907,7 +993,23 @@ export default function ProfilePage() {
                         : 'bg-blue-50 border-blue-200 text-blue-700'
                   }`}
                 >
-                  {domainFeedback.message}
+                  {domainFeedback.title && (
+                    <p className="font-semibold">{domainFeedback.title}</p>
+                  )}
+                  <p className={domainFeedback.title ? 'mt-0.5 text-xs' : ''}>{domainFeedback.message}</p>
+                  {(domainFeedback.steps?.length ?? 0) > 0 && (
+                    <ul className="mt-2 space-y-1.5">
+                      {domainFeedback.steps!.map((step) => (
+                        <li key={step} className="flex items-start gap-2 text-xs">
+                          <span
+                            aria-hidden
+                            className="mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded border border-current bg-white/60"
+                          />
+                          {step}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               )}
             </div>

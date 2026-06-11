@@ -1,7 +1,15 @@
+from datetime import date, datetime
 from types import SimpleNamespace
 
-from app.api.public.site import _is_public_safe_content, _serialize_hospital
+from app.api.public.site import (
+    _is_public_safe_content,
+    _reading_minutes,
+    _serialize_hospital,
+    _serialize_hospital_summary,
+    _serialize_item,
+)
 from app.models.content import ContentStatus
+from app.models.essence import SourceType
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, ESSENCE_STATUS_NEEDS_REVIEW
 from app.services.site_builder import build_site
 
@@ -47,7 +55,8 @@ def test_serialize_hospital_includes_public_profile_fields():
 
     serialized = _serialize_hospital(hospital)
 
-    assert serialized["plan"] == "PLAN_16"
+    # 요금제는 내부 계약 정보 — 공개 응답에 포함하지 않는다.
+    assert "plan" not in serialized
     assert serialized["keywords"] == ["여드름", "리프팅"]
     assert serialized["director_career"] == "전문의"
     assert serialized["director_philosophy"] is None
@@ -97,3 +106,158 @@ def test_public_content_policy_requires_published_and_essence_aligned():
     assert _is_public_safe_content(draft) is False
     assert _is_public_safe_content(needs_review) is False
     assert _is_public_safe_content(legacy_without_screening) is False
+
+
+def test_serialize_hospital_summary_exposes_llms_index_fields_only():
+    hospital = SimpleNamespace(
+        slug="test-hospital",
+        name="테스트병원",
+        aeo_domain="info.example.com",
+        region=["서울", "강남"],
+        specialties=["피부과"],
+        director_name="홍길동",
+        address="서울시 강남구",
+        phone="02-123-4567",
+        website_url="https://example.com",
+        plan="PLAN_16",
+        director_philosophy="비공개 메모",
+        updated_at=datetime(2026, 6, 1, 12, 0, 0),
+        created_at=datetime(2026, 5, 1, 12, 0, 0),
+    )
+
+    summary = _serialize_hospital_summary(hospital)
+
+    assert summary["slug"] == "test-hospital"
+    assert summary["name"] == "테스트병원"
+    assert summary["region"] == ["서울", "강남"]
+    assert summary["specialties"] == ["피부과"]
+    assert summary["director_name"] == "홍길동"
+    assert summary["address"] == "서울시 강남구"
+    assert summary["phone"] == "02-123-4567"
+    assert summary["website_url"] == "https://example.com"
+    assert summary["updated_at"] == "2026-06-01T12:00:00"
+    # 내부 전용 필드는 목록에도 노출하지 않는다.
+    assert "plan" not in summary
+    assert "director_philosophy" not in summary
+
+
+def test_serialize_hospital_summary_sanitizes_website_url():
+    hospital = SimpleNamespace(
+        slug="test-hospital",
+        name="테스트병원",
+        aeo_domain=None,
+        region=[],
+        specialties=[],
+        director_name=None,
+        address=None,
+        phone=None,
+        website_url="javascript:alert(1)",
+        updated_at=None,
+        created_at=None,
+    )
+
+    summary = _serialize_hospital_summary(hospital)
+
+    assert summary["website_url"] is None
+    assert summary["updated_at"] is None
+
+
+def _hospital_with_photo(director_photo_url):
+    return SimpleNamespace(
+        id="hospital-id",
+        name="테스트병원",
+        slug="test-hospital",
+        address=None,
+        phone=None,
+        business_hours=None,
+        website_url=None,
+        blog_url=None,
+        kakao_channel_url=None,
+        google_business_profile_url=None,
+        google_maps_url=None,
+        naver_place_url=None,
+        aeo_domain=None,
+        latitude=None,
+        longitude=None,
+        wikidata_qid=None,
+        gbp_place_id=None,
+        naver_place_id=None,
+        kakao_place_id=None,
+        hira_org_id=None,
+        region=[],
+        specialties=[],
+        keywords=[],
+        director_name="홍길동",
+        director_career=None,
+        director_philosophy=None,
+        director_photo_url=director_photo_url,
+        director_credentials=None,
+        treatments=[],
+    )
+
+
+def _doctor_photo_asset():
+    return SimpleNamespace(
+        id="asset-id",
+        source_type=SourceType.PHOTO_DOCTOR,
+        title="원장 사진",
+        file_url="gs://bucket/doctor.png",
+    )
+
+
+def test_serialize_hospital_invalid_director_photo_falls_back_to_approved_asset():
+    """비 http(s) director_photo_url은 sanitize되고, 승인된 PHOTO_DOCTOR 자산으로 폴백한다."""
+    serialized = _serialize_hospital(
+        _hospital_with_photo("local://internal/path.png"), [_doctor_photo_asset()]
+    )
+
+    assert serialized["director_photo_url"] == (
+        "/api/v1/public/hospitals/test-hospital/assets/asset-id"
+    )
+
+
+def test_serialize_hospital_invalid_director_photo_without_asset_is_null():
+    serialized = _serialize_hospital(_hospital_with_photo("javascript:alert(1)"), [])
+
+    assert serialized["director_photo_url"] is None
+
+
+def test_serialize_hospital_valid_director_photo_takes_priority_over_asset():
+    serialized = _serialize_hospital(
+        _hospital_with_photo("https://cdn.example.com/doctor.png"), [_doctor_photo_asset()]
+    )
+
+    assert serialized["director_photo_url"] == "https://cdn.example.com/doctor.png"
+
+
+def test_serialize_item_list_response_includes_reading_minutes_without_body():
+    item = SimpleNamespace(
+        id="content-id",
+        content_type="FAQ",
+        title="무릎이 아플 때",
+        meta_description="요약",
+        image_url=None,
+        scheduled_date=date(2026, 6, 1),
+        published_at=datetime(2026, 6, 1, 8, 0, 0),
+        body_updated_at=None,
+        references_list=[],
+        faq_question=None,
+        faq_answer_summary=None,
+        body="가" * 1200,
+    )
+
+    serialized = _serialize_item(item)
+
+    assert serialized["reading_minutes"] == 2
+    assert "body" not in serialized
+
+    full = _serialize_item(item, full=True)
+    assert full["body"] == "가" * 1200
+    assert full["reading_minutes"] == 2
+
+
+def test_reading_minutes_handles_empty_and_markdown_noise():
+    assert _reading_minutes(None) == 1
+    assert _reading_minutes("") == 1
+    assert _reading_minutes("## 제목\n- 항목\nhttps://example.com/path") == 1
+    assert _reading_minutes("가" * 1800) == 3

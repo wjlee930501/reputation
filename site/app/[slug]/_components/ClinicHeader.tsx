@@ -19,10 +19,15 @@ export function ClinicHeader({
   phone,
   websiteUrl,
 }: Props) {
-  const subline = `${region.join(' ')} ${specialties.join(' · ')}`.trim()
+  // 진료과 표기는 프로파일의 specialties[]에서만 파생 — 하드코딩 금지.
+  const specialtyLabel = specialties.filter(Boolean).join('·')
+  const subline = region.join(' ').trim()
+  const brandMeta = [specialtyLabel ? `${specialtyLabel} 진료` : '진료 안내', subline]
+    .filter(Boolean)
+    .join(' · ')
   const navItems = (
     <>
-      <Link href={`/${hospitalSlug}/treatments`}>전문 진료</Link>
+      <Link href={`/${hospitalSlug}/treatments`}>진료 영역</Link>
       <Link href={`/${hospitalSlug}/visit`}>진료시간·오시는 길</Link>
       <Link href={`/${hospitalSlug}/doctor`}>의료진</Link>
       <Link href={`/${hospitalSlug}/contents`}>건강 정보</Link>
@@ -40,9 +45,7 @@ export function ClinicHeader({
       <div className="clinic-header-row">
         <Link href={`/${hospitalSlug}`} className="clinic-header-brand" aria-label={`${hospitalName} 진료 안내 홈으로`}>
           <span className="clinic-header-brand-name">{hospitalName}</span>
-          <span className="clinic-header-brand-meta">
-            정형외과 전문 진료{subline && ` · ${subline}`}
-          </span>
+          <span className="clinic-header-brand-meta">{brandMeta}</span>
         </Link>
 
         <nav className="clinic-header-nav" aria-label="병원 섹션">

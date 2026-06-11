@@ -3,9 +3,15 @@
 # ═══════════════════════════════════════════════════════════════════
 
 resource "google_redis_instance" "main" {
-  name           = "${var.app_name}-redis"
-  project        = var.project_id
-  region         = var.region
+  name    = "${var.app_name}-redis"
+  project = var.project_id
+  region  = var.region
+  # DELIBERATE single-AZ for launch: BASIC tier has no replica/failover, at
+  # roughly half the cost of STANDARD_HA. Accepted risk: a zone outage or
+  # maintenance restart drops the Celery broker until the instance recovers —
+  # in-flight tasks are protected by task_acks_late, and beat schedule state
+  # survives via RedBeat re-syncing from celery_app.conf. For HA later, change
+  # tier = "STANDARD_HA" (recreates the instance — plan a maintenance window).
   tier           = "BASIC"
   memory_size_gb = var.redis_memory_size_gb
 

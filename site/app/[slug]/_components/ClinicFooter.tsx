@@ -1,21 +1,27 @@
-import Link from 'next/link'
-
 import { ExternalIcon } from './icons'
 
 interface Props {
   hospitalName: string
+  directorName: string
   address: string
   phone: string
   websiteUrl: string | null
 }
 
-export function ClinicFooter({ hospitalName, address, phone, websiteUrl }: Props) {
+// 병원 허브의 푸터는 병원 명의로만 구성한다 — 플랫폼(MotionLabs) 약관/개인정보 링크는
+// B2B 랜딩 전용이므로 병원 페이지에 노출하지 않는다.
+export function ClinicFooter({ hospitalName, directorName, address, phone, websiteUrl }: Props) {
   const year = new Date().getFullYear()
   return (
     <footer className="clinic-footer">
       <div className="clinic-footer-inner">
         <div>
           <p className="clinic-footer-name">{hospitalName}</p>
+          {directorName && (
+            <p className="clinic-footer-meta">
+              {hospitalName} · 대표자 {directorName}
+            </p>
+          )}
           <p className="clinic-footer-meta">
             {address} · <a href={`tel:${phone}`}>{phone}</a>
           </p>
@@ -53,15 +59,6 @@ export function ClinicFooter({ hospitalName, address, phone, websiteUrl }: Props
           개인의 증상과 치료 방법은 진료를 통해 달라질 수 있습니다. 진료 결정은 의료진과의 상담이 우선합니다.
           © {year} {hospitalName}.
         </p>
-
-        <nav className="clinic-footer-meta" style={{ marginTop: 12, display: 'flex', gap: 16 }} aria-label="법적 고지">
-          <Link href="/privacy" style={{ textDecoration: 'underline', textUnderlineOffset: 3 }}>
-            개인정보 처리방침
-          </Link>
-          <Link href="/terms" style={{ textDecoration: 'underline', textUnderlineOffset: 3 }}>
-            이용약관
-          </Link>
-        </nav>
       </div>
     </footer>
   )

@@ -32,6 +32,12 @@ export interface Hospital {
   treatments?: Array<{ name: string; description: string }>
 }
 
+export interface ContentReference {
+  title: string
+  url: string
+  publisher?: string | null
+}
+
 export interface ContentItem {
   id: string
   content_type: 'FAQ' | 'DISEASE' | 'TREATMENT' | 'COLUMN' | 'HEALTH' | 'LOCAL' | 'NOTICE'
@@ -42,6 +48,12 @@ export interface ContentItem {
   image_url: string | null
   scheduled_date: string
   status: 'DRAFT' | 'READY' | 'PUBLISHED' | 'REJECTED'
+  // 반려 슬롯이 월 경계를 넘어 이월된 경우의 원래 예정일 — 다음 달 최우선 처리 대상
+  carried_over_from?: string | null
+  references?: ContentReference[]
+  faq_question?: string | null
+  faq_answer_summary?: string | null
+  body_updated_at?: string | null
   display?: {
     content_type_label?: string | null
     status_label?: string | null
@@ -65,18 +77,21 @@ export interface ContentItem {
   brief_approved_by?: string | null
   essence_status?: 'ALIGNED' | 'NEEDS_ESSENCE_REVIEW' | 'MISSING_APPROVED_PHILOSOPHY' | null
   essence_check_summary?: Record<string, unknown> | null
-  compliance?: {
+  // 발행 가능 여부의 단일 기준 — backend _serialize_item이 목록/상세 모두 항상 직렬화한다.
+  compliance: {
     status: 'PASS' | 'BLOCKED'
     publishable: boolean
     blockers: string[]
     forbidden_violations: string[]
+    references_count?: number
     essence_status?: string | null
     essence_check_summary?: Record<string, unknown> | null
-  } | null
+  }
   body?: string | null
   image_prompt?: string | null
 }
 
+// backend/app/api/admin/essence.py SOURCE_TYPE_DISPLAY_LABELS와 동기화
 export type SourceType =
   | 'NAVER_BLOG'
   | 'YOUTUBE'
@@ -85,6 +100,10 @@ export type SourceType =
   | 'LANDING_PAGE'
   | 'BROCHURE'
   | 'INTERNAL_NOTE'
+  | 'PHOTO_DOCTOR'
+  | 'PHOTO_CLINIC_EXTERIOR'
+  | 'PHOTO_CLINIC_INTERIOR'
+  | 'PHOTO_TREATMENT_ROOM'
   | 'OTHER'
 
 export type SourceStatus = 'PENDING' | 'PROCESSED' | 'EXCLUDED' | 'ERROR'
@@ -345,6 +364,14 @@ export interface ExposureActionCreateBriefResponse {
     has_approved_philosophy: boolean
     message: string | null
   }
+}
+
+// GET /admin/hospitals/{id}/schedule — 활성 스케줄 (없으면 404)
+export interface ScheduleInfo {
+  plan: 'PLAN_16' | 'PLAN_12' | 'PLAN_8'
+  publish_days: number[]
+  active_from: string
+  is_active: boolean
 }
 
 export interface Report {

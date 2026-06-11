@@ -365,11 +365,15 @@ def screen_content_against_philosophy(
             },
         )
 
+    # FAQ 분리 필드도 공개 표면(FAQPage rich result)에 그대로 노출되므로
+    # 운영 기준/금지 표현 검수 텍스트에 반드시 포함한다 (P1-2).
     text = " ".join(
         part for part in [
             getattr(content_item, "title", None),
             getattr(content_item, "body", None),
             getattr(content_item, "meta_description", None),
+            getattr(content_item, "faq_question", None),
+            getattr(content_item, "faq_answer_summary", None),
         ]
         if part
     )
@@ -433,7 +437,19 @@ def build_monthly_essence_summary(db, hospital: Hospital, period_start: datetime
 
     medical_risk_findings = []
     for item in generated_items:
-        violations = check_forbidden(" ".join(part for part in [item.title, item.body, item.meta_description] if part))
+        violations = check_forbidden(
+            " ".join(
+                part
+                for part in [
+                    item.title,
+                    item.body,
+                    item.meta_description,
+                    item.faq_question,
+                    item.faq_answer_summary,
+                ]
+                if part
+            )
+        )
         if violations:
             medical_risk_findings.append({
                 "content_id": str(item.id),

@@ -2,7 +2,8 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
+import { canonicalBase } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -17,10 +18,9 @@ interface Props {
 
 export const revalidate = 3600
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 const COLUMN_FIRST = ['COLUMN', 'FAQ', 'DISEASE', 'TREATMENT', 'HEALTH', 'LOCAL', 'NOTICE']
 
-function sortByCuratorRelevance(a: ContentItem, b: ContentItem): number {
+function sortByCuratorRelevance(a: ContentSummary, b: ContentSummary): number {
   const ai = COLUMN_FIRST.indexOf(a.content_type)
   const bi = COLUMN_FIRST.indexOf(b.content_type)
   return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
@@ -31,14 +31,15 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.director_name} 원장 — ${hospital.name}의 진료 분야, 약력, 환자 안내 글 모음.`
+    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/doctor`
     return {
       title: `${hospital.director_name} 원장 | ${hospital.name}`,
       description,
-      alternates: { canonical: `/${params.slug}/doctor` },
+      alternates: { canonical: canonicalUrl },
       openGraph: {
         title: `${hospital.director_name} 원장 | ${hospital.name}`,
         description,
-        url: `/${params.slug}/doctor`,
+        url: canonicalUrl,
         type: 'profile',
         images: (() => {
           const photo = resolveAssetUrl(hospital.director_photo_url)
@@ -91,6 +92,8 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
     ? { '@type': 'EducationalOrganization', name: credentials.medical_school }
     : undefined
 
+  const base = canonicalBase(hospital)
+
   const physicianSameAs = [
     hospital.wikidata_qid ? `https://www.wikidata.org/wiki/${hospital.wikidata_qid}` : null,
   ].filter((value): value is string => Boolean(value))
@@ -98,7 +101,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
   const physicianJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Physician',
-    '@id': `${SITE_URL}/${params.slug}/doctor#physician`,
+    '@id': `${base}/${params.slug}/doctor#physician`,
     name: hospital.director_name,
     jobTitle: '원장',
     description: hospital.director_career || undefined,
@@ -111,19 +114,19 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
     sameAs: physicianSameAs.length > 0 ? physicianSameAs : undefined,
     worksFor: {
       '@type': 'MedicalClinic',
-      '@id': `${SITE_URL}/${params.slug}#clinic`,
+      '@id': `${base}/${params.slug}#clinic`,
       name: hospital.name,
-      url: `${SITE_URL}/${params.slug}`,
+      url: `${base}/${params.slug}`,
       address: { '@type': 'PostalAddress', streetAddress: hospital.address, addressCountry: 'KR' },
       telephone: hospital.phone,
     },
-    url: `${SITE_URL}/${params.slug}/doctor`,
-    mainEntityOfPage: `${SITE_URL}/${params.slug}/doctor`,
+    url: `${base}/${params.slug}/doctor`,
+    mainEntityOfPage: `${base}/${params.slug}/doctor`,
   }
 
   return (
     <>
-      <JsonLd data={[physicianJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]} />
+      <JsonLd data={[physicianJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
@@ -133,7 +136,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
@@ -200,6 +203,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
+          directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}

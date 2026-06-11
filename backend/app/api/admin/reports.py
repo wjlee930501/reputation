@@ -1,10 +1,12 @@
 """
 Admin API — 리포트 조회
-GET /admin/hospitals/{hospital_id}/reports              — 리포트 목록 (최신순)
-GET /admin/hospitals/{hospital_id}/reports/{report_id}  — 리포트 상세
-GET /admin/hospitals/{hospital_id}/reports/{report_id}/download — PDF signed URL
+GET  /admin/hospitals/{hospital_id}/reports              — 리포트 목록 (최신순)
+GET  /admin/hospitals/{hospital_id}/reports/{report_id}  — 리포트 상세
+GET  /admin/hospitals/{hospital_id}/reports/{report_id}/download — PDF signed URL
+POST /admin/hospitals/{hospital_id}/reports/{report_id}/mark-sent — 원장 전달 완료 기록
 """
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,6 +18,7 @@ from app.core.database import get_db
 from app.models.hospital import Hospital
 from app.models.report import MonthlyReport
 from app.schemas.report import ReportResponse
+from app.services.audit_log import default_actor, write_audit_log
 from app.services.gcs_utils import get_signed_url
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Reports"])
@@ -124,6 +127,44 @@ async def download_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: Asyn
         )
 
     return RedirectResponse(url=signed_url, status_code=302)
+
+
+@router.post("/{hospital_id}/reports/{report_id}/mark-sent", response_model=ReportResponse)
+async def mark_report_sent(
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """원장 보고 완료 기록 (A4) — sent_at=now 설정, 멱등.
+
+    이미 전달 완료된 리포트에 다시 호출하면 기존 sent_at을 유지한 채 200을 반환한다.
+    """
+    await _get_hospital_or_404(db, hospital_id)
+
+    r = await db.get(MonthlyReport, report_id)
+    if not r or r.hospital_id != hospital_id:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    if r.sent_at is None:
+        r.sent_at = datetime.now(timezone.utc)
+        await write_audit_log(
+            db,
+            action="mark_report_sent",
+            hospital_id=hospital_id,
+            actor=default_actor(),
+            target_type="monthly_report",
+            target_id=report_id,
+            detail={
+                "report_type": r.report_type,
+                "period_year": r.period_year,
+                "period_month": r.period_month,
+                "sent_at": r.sent_at.isoformat(),
+            },
+        )
+        await db.commit()
+        await db.refresh(r)
+
+    return _serialize(r, full=True)
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────

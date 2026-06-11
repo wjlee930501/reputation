@@ -10,10 +10,9 @@ resource "google_storage_bucket" "images" {
 
   uniform_bucket_level_access = true
 
-  lifecycle_rule {
-    condition { age = 365 }
-    action { type = "Delete" }
-  }
+  # NO age-based delete rule here: published content images are referenced
+  # forever by live hub pages (ContentItem.image_url) — expiring them would
+  # 404 every article older than the cutoff.
 }
 
 resource "google_storage_bucket" "reports" {

@@ -107,3 +107,21 @@ async def test_convert_sales_lead_creates_draft_hospital_from_lead():
     assert lead.status == "CONVERTED"
     assert lead.converted_hospital_id == hospital.id
     assert response["onboarding_url"] == f"/hospitals/{hospital.id}/onboarding"
+
+
+class _CaptureDB(FakeDB):
+    def __init__(self):
+        super().__init__()
+        self.stmt = None
+
+    async def execute(self, stmt):
+        self.stmt = stmt
+        return EmptyResult()
+
+
+async def test_list_sales_leads_applies_offset_and_limit():
+    db = _CaptureDB()
+    await leads_api.list_sales_leads(db=db, limit=50, offset=100)
+    compiled = str(db.stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "LIMIT 50" in compiled
+    assert "OFFSET 100" in compiled

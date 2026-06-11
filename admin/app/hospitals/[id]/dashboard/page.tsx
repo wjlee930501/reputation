@@ -4,10 +4,12 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
+import { countUnpublishedCarriedOver } from '@/lib/content'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
   EXPOSURE_ACTION_TYPE_LABELS,
   type AIQueryTarget,
+  type ContentItem,
   type ExposureAction,
   type MeasurementRun,
   type OperationResponse,
@@ -174,6 +176,8 @@ export default function DashboardPage() {
   const [operationLoading, setOperationLoading] = useState<string | null>(null)
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
   const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([])
+  // 이번 달 전월 이월 콘텐츠 중 아직 발행되지 않은 슬롯 수 — 우선 발행 알림용
+  const [carriedOverCount, setCarriedOverCount] = useState(0)
 
   const refreshAuditLogs = async () => {
     try {
@@ -187,37 +191,57 @@ export default function DashboardPage() {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    Promise.all([
-      fetchAPI(`/admin/hospitals/${id}/sov/trend`).catch(() => [] as TrendPoint[]),
-      fetchAPI(`/admin/hospitals/${id}/sov/queries`).catch(() => [] as QueryRow[]),
-      fetchAPI(`/admin/hospitals/${id}/readiness`).catch(() => null as Readiness | null),
-      fetchAPI(`/admin/hospitals/${id}/sov/measurement-runs`).catch(() => [] as MeasurementRun[]),
-      fetchAPI(`/admin/hospitals/${id}/exposure-actions?limit=5`).catch(() => [] as ExposureAction[]),
-      fetchAPI(`/admin/hospitals/${id}/query-targets`).catch(() => [] as AIQueryTarget[]),
-      fetchAPI(`/admin/hospitals/${id}/operations/audit-logs?limit=20`).catch(() => [] as AuditLogRow[]),
+    setError(null)
+    // 개별 호출 실패를 삼키지 않고 집계한다 — 성공한 데이터는 그대로 렌더링하되,
+    // 하나라도 실패하면 상단에 부분 실패 배너를 보여준다.
+    Promise.allSettled([
+      fetchAPI<TrendPoint[]>(`/admin/hospitals/${id}/sov/trend`),
+      fetchAPI<QueryRow[]>(`/admin/hospitals/${id}/sov/queries`),
+      fetchAPI<Readiness | null>(`/admin/hospitals/${id}/readiness`),
+      fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`),
+      fetchAPI<ExposureAction[]>(`/admin/hospitals/${id}/exposure-actions?limit=5`),
+      fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${id}/query-targets`),
+      fetchAPI<AuditLogRow[]>(`/admin/hospitals/${id}/operations/audit-logs?limit=20`),
     ])
-      .then((
-        [trend, qs, readinessData, runs, actions, targets, audit]: [
-          TrendPoint[],
-          QueryRow[],
-          Readiness | null,
-          MeasurementRun[],
-          ExposureAction[],
-          AIQueryTarget[],
-          AuditLogRow[],
-        ],
-      ) => {
+      .then(([trend, qs, readinessData, runs, actions, targets, audit]) => {
         if (cancelled) return
-        setTrendData(Array.isArray(trend) ? trend : [])
-        setQueries(Array.isArray(qs) ? qs : [])
-        setReadiness(readinessData)
-        setMeasurementRuns(Array.isArray(runs) ? runs : [])
-        setExposureActions(Array.isArray(actions) ? actions : [])
-        setQueryTargets(Array.isArray(targets) ? targets : [])
-        setAuditLogs(Array.isArray(audit) ? audit : [])
+        let failedCount = 0
+        function unwrap<T>(result: PromiseSettledResult<T>, fallback: T): T {
+          if (result.status === 'fulfilled') return result.value
+          failedCount += 1
+          return fallback
+        }
+        const trendValue = unwrap(trend, [] as TrendPoint[])
+        const queriesValue = unwrap(qs, [] as QueryRow[])
+        const readinessValue = unwrap(readinessData, null)
+        const runsValue = unwrap(runs, [] as MeasurementRun[])
+        const actionsValue = unwrap(actions, [] as ExposureAction[])
+        const targetsValue = unwrap(targets, [] as AIQueryTarget[])
+        const auditValue = unwrap(audit, [] as AuditLogRow[])
+
+        setTrendData(Array.isArray(trendValue) ? trendValue : [])
+        setQueries(Array.isArray(queriesValue) ? queriesValue : [])
+        setReadiness(readinessValue)
+        setMeasurementRuns(Array.isArray(runsValue) ? runsValue : [])
+        setExposureActions(Array.isArray(actionsValue) ? actionsValue : [])
+        setQueryTargets(Array.isArray(targetsValue) ? targetsValue : [])
+        setAuditLogs(Array.isArray(auditValue) ? auditValue : [])
+
+        if (failedCount > 0) {
+          setError('일부 데이터를 불러오지 못했습니다. 표시된 수치가 불완전할 수 있으니 새로고침 후 다시 확인해 주세요.')
+        }
       })
-      .catch((e: Error) => { if (!cancelled) setError(e.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
+
+    // 이월 알림은 보조 정보 — 가벼운 단건 조회로 가져오고, 실패해도 보드를 깨뜨리지 않는다.
+    const now = new Date()
+    fetchAPI<ContentItem[]>(`/admin/hospitals/${id}/content?year=${now.getFullYear()}&month=${now.getMonth() + 1}`)
+      .then((contentItems) => {
+        if (cancelled) return
+        setCarriedOverCount(countUnpublishedCarriedOver(Array.isArray(contentItems) ? contentItems : []))
+      })
+      .catch(() => { /* silent — 이월 알림 없이 보드는 정상 동작 */ })
+
     return () => { cancelled = true }
   }, [id])
 
@@ -472,6 +496,15 @@ export default function DashboardPage() {
               운영자가 오늘 처리해야 할 위험 신호만 추려 보여줍니다.
             </p>
             <div className="mt-4 space-y-3">
+              {carriedOverCount > 0 && (
+                <Link href={contentHref} className="block">
+                  <AlertLine
+                    tone="warn"
+                    label={`전월 이월 콘텐츠 ${carriedOverCount}건 — 우선 발행 필요`}
+                    hint="반려로 다음 달로 넘어온 콘텐츠입니다. 콘텐츠 탭에서 가장 먼저 검토·발행해 주세요."
+                  />
+                </Link>
+              )}
               {blockedActionCount > 0 && (
                 <AlertLine tone="warn" label={`막힌 보완 작업 ${blockedActionCount}건`} hint="담당자 확인 또는 자료 보강이 필요합니다." />
               )}
@@ -481,7 +514,7 @@ export default function DashboardPage() {
               {pendingChecks.map((check) => (
                 <AlertLine key={check.key} tone="neutral" label={check.label} hint={check.next_action} />
               ))}
-              {blockedActionCount === 0 && failedMeasurementCount === 0 && pendingChecks.length === 0 && (
+              {carriedOverCount === 0 && blockedActionCount === 0 && failedMeasurementCount === 0 && pendingChecks.length === 0 && (
                 <AlertLine tone="good" label="큰 확인 항목 없음" hint="현재는 다음 액션 중심으로 운영을 이어가면 됩니다." />
               )}
             </div>

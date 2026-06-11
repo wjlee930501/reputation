@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *.pyo
 .env
+# .env.production 등 모든 dotenv 변형 차단 (deploy.sh가 리포 루트에 작성 지시) —
+# 템플릿(.example)만 추적 허용.
+.env.*
+!.env.example
+!.env.*.example
 .venv
 venv/
 *.egg-info/
