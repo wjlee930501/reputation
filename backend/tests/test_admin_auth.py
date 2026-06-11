@@ -136,7 +136,8 @@ async def test_login_failures_hit_email_and_ip_keys_then_429():
 
 
 @pytest.mark.asyncio
-async def test_login_success_clears_throttle_keys():
+async def test_login_success_clears_only_email_key_keeps_ip_counter():
+    """R7 — 성공 시 IP 키까지 지우면 단일 IP에서 다계정 password spraying이 가능해진다."""
     strategy = FakeStrategy()
     db = FakeDB(build_admin_user())
     request = build_throttled_request(strategy)
@@ -148,6 +149,7 @@ async def test_login_success_clears_throttle_keys():
             request=request,
         )
     assert strategy.hits["admin-login:email:owner@example.com"] == 1
+    assert strategy.hits["admin-login:ip:203.0.113.9"] == 1
 
     response = await login_admin(
         AdminLoginRequest(email="owner@example.com", password="correct horse battery staple"),
@@ -157,6 +159,9 @@ async def test_login_success_clears_throttle_keys():
     assert response.email == "owner@example.com"
     assert "admin-login:email:owner@example.com" in strategy.cleared
     assert "admin-login:email:owner@example.com" not in strategy.hits
+    # IP 카운터는 그대로 — 윈도우 만료로만 소멸한다.
+    assert "admin-login:ip:203.0.113.9" not in strategy.cleared
+    assert strategy.hits["admin-login:ip:203.0.113.9"] == 1
 
 
 @pytest.mark.asyncio

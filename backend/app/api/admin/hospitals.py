@@ -34,7 +34,10 @@ from app.services.essence_engine import (
 from app.workers.tasks import trigger_v0_report, build_aeo_site
 from app.api.admin.domain import _normalize_dns_name, _resolve_cname
 from app.core.config import settings
-from app.services.site_revalidate import ensure_site_revalidate_configured, trigger_hospital_site_revalidate
+from app.services.site_revalidate import (
+    ensure_site_revalidate_configured,
+    trigger_hospital_site_revalidate_safe,
+)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
 
@@ -358,7 +361,8 @@ async def update_profile(
             queue="reports",
         )
     if needs_site_revalidate:
-        await trigger_hospital_site_revalidate(h.slug, h.treatments)
+        # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 저장은 이미 성공했다.
+        await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
     return _serialize(h)
 
@@ -405,7 +409,8 @@ async def connect_domain(
     )
     await db.commit()
     if previous_site_live:
-        await trigger_hospital_site_revalidate(h.slug, h.treatments)
+        # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
+        await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
     # 콘텐츠 허브 노출 상태 갱신 (legacy task name) — 도메인이 실제로 바뀌었거나 최초 준비가
     # 안 된 경우에만. 동일 도메인 재저장 시 불필요한 상태 전환·Slack 알림을 만들지 않는다.
@@ -471,7 +476,8 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
         },
     )
     await db.commit()
-    await trigger_hospital_site_revalidate(h.slug, h.treatments)
+    # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 활성화는 이미 성공했다.
+    await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
     return {"detail": f"{h.name} activated"}
 
 

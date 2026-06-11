@@ -8,12 +8,11 @@ import { formatDateTime } from '@/lib/format'
 import { SkeletonTable } from '@/app/components/Skeleton'
 import { PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
 
-// backend GET /admin/leads — limit 파라미터만 지원 (기본 50, 최대 200).
-// offset이 없어 "더 보기"는 limit을 키워 다시 조회하는 방식으로 동작한다.
-// TODO(backend follow-up): offset/skip 파라미터가 추가되면 append 페이지네이션으로 전환
-// — 현재는 최신 200건 이전 리드(파기 워크플로 대상 포함)에 UI로 접근할 수 없다.
+// backend GET /admin/leads — limit(기본 50, 최대 200) + offset 지원.
+// "더 보기"는 offset append 방식이라 오래된 리드(파기 워크플로 대상 포함)까지 도달 가능.
 const PAGE_SIZE = 50
-const MAX_LIMIT = 200
+// 파기 후 전체 재조회 시 백엔드 limit 상한.
+const RELOAD_MAX = 200
 
 interface HospitalCandidate {
   id: string
@@ -53,7 +52,7 @@ export default function LeadsPage() {
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [requestedLimit, setRequestedLimit] = useState(PAGE_SIZE)
+  const [hasMore, setHasMore] = useState(false)
 
   // 전환 모달
   const [convertLead, setConvertLead] = useState<SalesLead | null>(null)
@@ -69,29 +68,30 @@ export default function LeadsPage() {
   const [erasingLeadId, setErasingLeadId] = useState<string | null>(null)
   const [eraseError, setEraseError] = useState<string | null>(null)
 
-  const loadLeads = useCallback(async (limit: number, options?: { append?: boolean }) => {
-    if (options?.append) setLoadingMore(true)
-    else setLoading(true)
-    setError(null)
-    try {
-      const data = await fetchAPI<SalesLead[]>(`/admin/leads?limit=${limit}`)
-      setLeads(Array.isArray(data) ? data : [])
-      setRequestedLimit(limit)
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '리드 목록을 불러오지 못했습니다.')
-    } finally {
-      setLoading(false)
-      setLoadingMore(false)
-    }
-  }, [])
+  const loadLeads = useCallback(
+    async (offset: number, options?: { append?: boolean; limit?: number }) => {
+      if (options?.append) setLoadingMore(true)
+      else setLoading(true)
+      setError(null)
+      const limit = options?.limit ?? PAGE_SIZE
+      try {
+        const data = await fetchAPI<SalesLead[]>(`/admin/leads?limit=${limit}&offset=${offset}`)
+        const page = Array.isArray(data) ? data : []
+        setLeads((prev) => (options?.append ? [...prev, ...page] : page))
+        setHasMore(page.length === limit)
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : '리드 목록을 불러오지 못했습니다.')
+      } finally {
+        setLoading(false)
+        setLoadingMore(false)
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
-    void loadLeads(PAGE_SIZE)
+    void loadLeads(0)
   }, [loadLeads])
-
-  const hasMore = leads.length >= requestedLimit && requestedLimit < MAX_LIMIT
-  // 최신 200건 한도에 도달 — 더 이전 리드는 현재 화면에서 불러올 수 없으므로 명시적으로 안내한다.
-  const reachedCap = requestedLimit >= MAX_LIMIT && leads.length >= MAX_LIMIT
 
   async function openConvertModal(lead: SalesLead) {
     if (lead.converted_hospital_id) {
@@ -149,7 +149,8 @@ export default function LeadsPage() {
     setEraseError(null)
     try {
       await fetchAPI(`/admin/leads/${lead.id}/erase`, { method: 'POST' })
-      await loadLeads(requestedLimit)
+      // 현재 로드된 창 전체를 다시 읽어 파기 결과를 반영한다 (백엔드 limit 상한 내).
+      await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
     } catch (e: unknown) {
       setEraseError(e instanceof Error ? e.message : '개인정보 파기에 실패했습니다.')
     } finally {
@@ -292,19 +293,13 @@ export default function LeadsPage() {
             <div className="border-t border-slate-100 px-6 py-3 text-center">
               <button
                 type="button"
-                onClick={() => loadLeads(Math.min(requestedLimit + PAGE_SIZE, MAX_LIMIT), { append: true })}
+                onClick={() => loadLeads(leads.length, { append: true })}
                 disabled={loadingMore}
                 className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 {loadingMore ? '불러오는 중...' : '더 보기'}
               </button>
             </div>
-          )}
-          {reachedCap && (
-            <p className="border-t border-slate-100 px-6 py-3 text-center text-xs text-slate-500">
-              최신 200건까지만 표시됩니다. 더 이전 리드(개인정보 파기 요청 처리 포함)는 백엔드에서 직접
-              확인해 주세요.
-            </p>
           )}
         </div>
       )}

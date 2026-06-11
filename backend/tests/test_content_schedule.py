@@ -71,9 +71,10 @@ def test_generate_monthly_slots_respects_active_from_date():
         )
 
 
-async def test_set_schedule_returns_validation_error_for_capacity_shortfall():
+async def test_set_schedule_returns_validation_error_for_capacity_shortfall(monkeypatch):
     hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False)
     db = _FakeDB(hospital)
+    _freeze_arrow(monkeypatch, "2026-05-01T12:00:00+09:00")  # active_from은 미래여야 한다 (R2)
     body = content_api.ScheduleCreate(plan="PLAN_16", publish_days=[1, 4], active_from=date(2026, 5, 10))
 
     with pytest.raises(HTTPException) as exc:
@@ -142,6 +143,59 @@ async def test_set_schedule_does_not_queue_future_only_slots(monkeypatch):
     await content_api.set_schedule(hospital.id, body, db=db)
 
     assert queued == []
+
+
+async def test_set_schedule_rejects_past_active_from(monkeypatch):
+    """R2 — 과거 active_from은 과거 슬롯 무더기 + 즉시 생성 폭주를 만들므로 422."""
+    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
+    db = _FakeDB(hospital)
+    _freeze_arrow(monkeypatch)  # today=2026-06-10
+
+    body = content_api.ScheduleCreate(
+        plan="PLAN_8",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 6, 9),
+    )
+    with pytest.raises(HTTPException) as exc:
+        await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert exc.value.status_code == 422
+    assert "과거 날짜" in exc.value.detail
+    assert db.committed is False
+    assert db.added == []
+
+
+async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
+    """R2 — 커밋 이후 브로커 장애로 큐잉이 실패해도 저장은 성공 응답 + 운영 알림."""
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="테스트의원", site_live=False, schedule_set=False, plan=None
+    )
+    db = _FakeDB(hospital)
+    alerts = []
+
+    def _broker_down(*, args, queue):
+        raise ConnectionError("redis broker unreachable")
+
+    async def _fake_ops_alert(*, title, message):
+        alerts.append({"title": title, "message": message})
+        return True
+
+    monkeypatch.setattr(content_api.regenerate_content_item, "apply_async", _broker_down)
+    monkeypatch.setattr(content_api.notifier, "notify_ops_alert", _fake_ops_alert)
+    _freeze_arrow(monkeypatch)  # today=2026-06-10, tomorrow=2026-06-11
+
+    body = content_api.ScheduleCreate(
+        plan="PLAN_8",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 6, 11),  # 내일 슬롯 → 즉시 큐잉 시도
+    )
+    response = await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert response["slots_created"] == 8
+    assert db.committed is True
+    assert len(alerts) == 1
+    assert "큐잉 실패" in alerts[0]["title"]
+    assert "테스트의원" in alerts[0]["message"]
 
 
 async def test_get_schedule_returns_active_schedule():

@@ -141,13 +141,14 @@ is_managed_secret() {
   return 1
 }
 
-# 이름이 unsafe 패턴(WEBHOOK 등)에 걸리지만 실제로는 비밀이 아닌 설정 키.
-SAFE_ENV_KEYS=("SLACK_WEBHOOK_ALLOWED_HOSTS")
-is_safe_env_key() {
-  local key="$1" name
-  for name in "${SAFE_ENV_KEYS[@]}"; do
-    [[ "$key" == "$name" ]] && return 0
-  done
+# unsafe(평문 비밀 의심) 키 판정 — 접미사 앵커 기준 (R10). 느슨한 부분 문자열 매칭은
+# SLACK_WEBHOOK_ALLOWED_HOSTS 같은 비-비밀 설정 키까지 잡아 일회성 safelist를 강요했다.
+# *_ALLOWED_HOSTS / *_TIMEOUT 류는 자연 통과하고, 진짜 비밀 접미사만 잡는다.
+# DATABASE_URL/SYNC_DATABASE_URL은 접속 비밀번호를 포함하므로 명시적으로 포함.
+is_unsafe_secret_key() {
+  local key="$1"
+  [[ "$key" =~ (_SECRET|_SECRET_KEY|_PASSWORD|_TOKEN|_PRIVATE_KEY|_API_KEY|_WEBHOOK_URL)$ ]] && return 0
+  [[ "$key" =~ ^(SYNC_)?DATABASE_URL$ ]] && return 0
   return 1
 }
 
@@ -195,7 +196,7 @@ prepare_non_secret_env_file() {
       continue
     fi
 
-    if [[ "$key" =~ (SECRET|PASSWORD|TOKEN|PRIVATE_KEY|API_KEY|WEBHOOK) ]] && ! is_safe_env_key "$key"; then
+    if is_unsafe_secret_key "$key"; then
       unsafe_keys+=("$key")
       unsafe_values+=("$value")
       continue
@@ -425,7 +426,7 @@ deploy_admin() {
     --ingress=internal-and-cloud-load-balancing \
     --allow-unauthenticated \
     --set-env-vars="BACKEND_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
-    --set-secrets="ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,ADMIN_SECRET_KEY=ADMIN_SECRET_KEY:latest" \
+    --set-secrets="ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,ADMIN_SECRET_KEY=ADMIN_SECRET_KEY:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest" \
     --port=8080 \
     --timeout=60 \
     --cpu-boost
@@ -433,15 +434,19 @@ deploy_admin() {
   ok "Admin 배포 완료"
 }
 
-run_migration() {
-  local image_url="$1"
-  info "DB 마이그레이션 실행 중..."
-
+require_cloudsql_connection() {
   # 프로덕션 DATABASE_URL은 /cloudsql/<connection_name> unix socket을 쓰므로
   # Cloud SQL 연결을 Job에 붙이지 않으면 마이그레이션이 DB에 접근할 수 없다.
   if [[ -z "$CLOUDSQL_CONNECTION" ]]; then
     fail "CLOUD_SQL_CONNECTION_NAME이 필요합니다 (.env.production 또는 환경변수). 예: my-project:us-central1:reputation-db"
   fi
+}
+
+run_migration() {
+  local image_url="$1"
+  info "DB 마이그레이션 실행 중..."
+
+  require_cloudsql_connection
 
   make_service_env_file "migrate"
 
@@ -481,6 +486,11 @@ case "$TARGET" in
     deploy_admin "$ADMIN_IMAGE_URL"
     ;;
   all)
+    # 모든 필수 요건을 어떤 변경(마이그레이션 포함)보다 먼저 검증한다 (R10) —
+    # PUBLIC_DOMAIN 누락이 site 빌드 단계에서야 터지면 새 backend + 옛 frontend의
+    # 반쪽 롤아웃 상태로 중단된다.
+    require_public_domain
+    require_cloudsql_connection
     IMAGE_URL=$(build_and_push)
     # 마이그레이션을 새 코드 배포보다 먼저 실행 — 새 리비전이 옛 스키마 위에서
     # 기동하는 시간을 없앤다 (additive migration 전제).

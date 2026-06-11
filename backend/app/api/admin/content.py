@@ -28,7 +28,11 @@ from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.content_engine import _normalize_references
+from app.services.content_engine import (
+    FORBIDDEN_CHECK_FIELDS,
+    _normalize_references,
+    forbidden_check_text,
+)
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
@@ -135,6 +139,15 @@ async def set_schedule(
     """
     hospital = await _get_hospital(db, hospital_id)
 
+    # active_from이 과거면 첫날부터 야간 배치가 이미 지나간 슬롯이 무더기로 생기고,
+    # 아래 즉시 생성 큐잉이 상한 없이 폭주한다 (R2). 과거 시작일은 운영상 의미도 없다.
+    today_kst = arrow.now("Asia/Seoul").date()
+    if body.active_from < today_kst:
+        raise HTTPException(
+            status_code=422,
+            detail=f"시작일(active_from)은 오늘({today_kst}) 이후여야 합니다. 과거 날짜로는 스케줄을 시작할 수 없습니다.",
+        )
+
     # 기존 스케줄 비활성화
     old_stmt = select(ContentSchedule).where(
         ContentSchedule.hospital_id == hospital_id,
@@ -201,12 +214,32 @@ async def set_schedule(
     await db.commit()
     await db.refresh(schedule)
 
-    # 야간 배치는 '오늘~내일' 슬롯만 집는다 — active_from이 오늘/내일인 스케줄의 첫 슬롯이
-    # 어젯밤 배치를 이미 놓쳐 고아가 되지 않도록 즉시 생성 태스크를 큐잉한다 (P2-9).
+    # active_from이 오늘/내일인 스케줄의 첫 슬롯은 어젯밤 야간 배치를 이미 놓쳤으므로
+    # 즉시 생성 태스크를 큐잉한다 (P2-9). 대상은 [오늘, 내일]로 한정한다 (R2 —
+    # active_from 검증과 함께 과거 슬롯 무제한 큐잉 방지).
+    # 큐잉 실패(브로커 장애 등)는 raise하지 않는다: 스케줄 저장은 이미 커밋됐고,
+    # 해당 슬롯은 야간 catch-up 윈도우가 어차피 다시 집는다. 로그 + Slack 운영 알림으로 강등.
     tomorrow_kst = arrow.now("Asia/Seoul").shift(days=1).date()
-    for item in created_items:
-        if item.scheduled_date <= tomorrow_kst:
-            regenerate_content_item.apply_async(args=[str(item.id)], queue="content")
+    try:
+        for item in created_items:
+            if today_kst <= item.scheduled_date <= tomorrow_kst:
+                regenerate_content_item.apply_async(args=[str(item.id)], queue="content")
+    except Exception as exc:
+        logger.warning(
+            "immediate content generation enqueue failed for hospital %s: %s", hospital_id, exc
+        )
+        try:
+            await notifier.notify_ops_alert(
+                title="콘텐츠 즉시 생성 큐잉 실패",
+                message=(
+                    f"병원: {hospital.name}\n"
+                    f"스케줄 저장은 완료됐지만 오늘/내일 슬롯의 즉시 생성 태스크 큐잉에 실패했습니다.\n"
+                    f"오류: `{str(exc)[:200]}`\n"
+                    f"해당 슬롯은 오늘 밤 자동 생성에서 재시도됩니다. 급한 경우 Admin에서 수동 재생성해 주세요."
+                ),
+            )
+        except Exception:
+            logger.exception("enqueue-failure ops alert delivery failed (non-fatal)")
 
     return {
         "schedule_id": str(schedule.id),
@@ -310,22 +343,18 @@ async def update_content(
     if should_revalidate:
         ensure_site_revalidate_configured()
 
-    # 금지 표현 검사 (수정 결과로 남게 될 전체 텍스트 필드 — FAQ 분리 필드 포함, P1-2)
-    violations: list[str] = []
-    new_title = body.title if body.title is not None else item.title
-    new_body = body.body if body.body is not None else item.body
-    new_meta = body.meta_description if body.meta_description is not None else item.meta_description
-    new_faq_question = body.faq_question if body.faq_question is not None else item.faq_question
-    new_faq_answer = (
-        body.faq_answer_summary if body.faq_answer_summary is not None else item.faq_answer_summary
-    )
-
-    for field_value in [new_title, new_body, new_meta, new_faq_question, new_faq_answer]:
-        if field_value:
-            violations.extend(check_forbidden(field_value))
-
-    # 중복 제거
-    violations = list(dict.fromkeys(violations))
+    # 금지 표현 검사 — 수정 결과로 남게 될 전체 공개 텍스트 필드. 필드 목록은 생성
+    # 엔진의 FORBIDDEN_CHECK_FIELDS를 그대로 재사용한다 (R3): 공개 텍스트 필드가 추가될
+    # 때 생성 경로와 수정 경로가 어긋나는 P1-2류 회귀를 차단.
+    effective_values = {
+        field: (
+            getattr(body, field)
+            if getattr(body, field, None) is not None
+            else getattr(item, field, None)
+        )
+        for field in FORBIDDEN_CHECK_FIELDS
+    }
+    violations = list(dict.fromkeys(check_forbidden(forbidden_check_text(effective_values))))
 
     if violations:
         raise HTTPException(
@@ -806,17 +835,9 @@ def _serialize_item_display(item: ContentItem, content_type: str | None, status_
 
 
 def _forbidden_check_text(item: ContentItem) -> str:
-    """발행/검수 게이트용 금지 표현 검사 텍스트 — FAQ 분리 필드 포함 (P1-2)."""
-    return " ".join(
-        part
-        for part in [
-            item.title,
-            item.body,
-            item.meta_description,
-            item.faq_question,
-            item.faq_answer_summary,
-        ]
-        if part
+    """발행/검수 게이트용 금지 표현 검사 텍스트 — 필드 목록은 생성 엔진과 단일 진실 (R3)."""
+    return forbidden_check_text(
+        {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
     )
 
 

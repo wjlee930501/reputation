@@ -28,9 +28,12 @@ class LeadConvertRequest(BaseModel):
 async def list_sales_leads(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ):
+    # offset 없이는 limit 상한(200) 이전의 오래된 리드에 UI가 닿을 수 없다 —
+    # 개인정보 파기 요청 처리 대상은 주로 오래된 리드라 도달 가능성이 필수.
     result = await db.execute(
-        select(SalesLead).order_by(SalesLead.created_at.desc()).limit(limit)
+        select(SalesLead).order_by(SalesLead.created_at.desc()).offset(offset).limit(limit)
     )
     return [_serialize_lead(lead) for lead in result.scalars().all()]
 
@@ -121,15 +124,22 @@ async def erase_lead_pii(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db))
         raise HTTPException(status_code=404, detail="Lead not found")
 
     changed = anonymize_lead(lead, datetime.now(timezone.utc))
-    if changed:
-        # CDX-M2: 전환 시 hospital.onboarding_note로 복사된 운영자 자유 텍스트도 함께 파기 —
-        # lead row만 익명화하면 노트가 파기 라이프사이클을 우회한다.
-        if lead.converted_hospital_id:
-            hospital = await db.get(Hospital, lead.converted_hospital_id)
-            if hospital and hospital.onboarding_note:
-                hospital.onboarding_note = scrub_onboarding_note(
-                    hospital.onboarding_note, lead.id
-                )
+
+    # CDX-M2: 전환 시 hospital.onboarding_note로 복사된 운영자 자유 텍스트도 함께 파기 —
+    # lead row만 익명화하면 노트가 파기 라이프사이클을 우회한다.
+    # lead가 이미 파기됐어도(changed=False) 노트는 별개로 남아 있을 수 있다 (R6):
+    # 보관기간 cron이 노트 scrub 도입 전에 lead만 파기한 경우, 명시적 파기 요청에서
+    # 노트가 영구 잔존하면 안 된다. converted_hospital_id가 있으면 항상 scrub한다.
+    note_scrubbed = False
+    if lead.converted_hospital_id:
+        hospital = await db.get(Hospital, lead.converted_hospital_id)
+        if hospital and hospital.onboarding_note:
+            scrubbed_note = scrub_onboarding_note(hospital.onboarding_note, lead.id)
+            if scrubbed_note != hospital.onboarding_note:
+                hospital.onboarding_note = scrubbed_note
+                note_scrubbed = True
+
+    if changed or note_scrubbed:
         await write_audit_log(
             db,
             action="erase_lead_pii",
@@ -137,10 +147,17 @@ async def erase_lead_pii(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db))
             actor=default_actor(),
             target_type="sales_lead",
             target_id=str(lead.id),
-            detail={"reason": "data subject erasure request"},
+            detail={
+                "reason": "data subject erasure request",
+                "lead_already_purged": not changed,
+                "onboarding_note_scrubbed": note_scrubbed,
+            },
         )
         await db.commit()
-    return {"detail": "erased" if changed else "already_purged", "lead_id": str(lead.id)}
+    return {
+        "detail": "erased" if (changed or note_scrubbed) else "already_purged",
+        "lead_id": str(lead.id),
+    }
 
 
 def _serialize_lead(lead: SalesLead) -> dict:

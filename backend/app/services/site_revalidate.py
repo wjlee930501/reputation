@@ -79,10 +79,36 @@ async def trigger_hospital_site_revalidate(slug: str, treatments: list | None = 
     return await trigger_site_revalidate(paths=hospital_site_paths(slug, treatments))
 
 
-async def trigger_content_site_revalidate(
-    slug: str, content_id: object, treatments: list | None = None
+async def trigger_hospital_site_revalidate_safe(
+    slug: str,
+    treatments: list | None = None,
+    *,
+    hospital_name: str | None = None,
 ) -> bool:
-    return await trigger_site_revalidate(paths=content_site_paths(slug, content_id, treatments))
+    """커밋 이후 호출용 — 실패해도 절대 raise하지 않는다 (R4, content _safe와 동일 패턴).
+
+    프로파일/도메인/활성화/자료 공개 토글은 이미 커밋된 뒤이므로, revalidate 실패로
+    500을 돌려주면 저장이 실패한 것처럼 보인다. 경고 로그 + Slack 운영 알림으로 강등.
+    """
+    from app.services import notifier
+
+    try:
+        return await trigger_site_revalidate(paths=hospital_site_paths(slug, treatments))
+    except Exception as exc:
+        logger.warning("post-commit hospital site revalidate failed for %s: %s", slug, exc)
+        try:
+            await notifier.notify_ops_alert(
+                title="공개 페이지 캐시 무효화 실패",
+                message=(
+                    f"병원: {hospital_name or slug}\n"
+                    f"변경 사항은 정상 저장되었지만 공개 페이지 캐시 갱신에 실패했습니다.\n"
+                    f"오류: `{str(exc)[:200]}`\n"
+                    f"공개 페이지가 잠시 이전 상태로 보일 수 있습니다. 필요 시 수동 재검증해 주세요."
+                ),
+            )
+        except Exception:
+            logger.exception("revalidate failure ops alert delivery failed (non-fatal)")
+        return False
 
 
 async def trigger_content_site_revalidate_safe(

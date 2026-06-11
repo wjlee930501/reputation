@@ -163,3 +163,56 @@ async def test_erase_lead_pii_scrubs_converted_hospital_note():
     assert result["detail"] == "erased"
     assert "010-9999-8888" not in hospital.onboarding_note
     assert "Operator note: [purged]" in hospital.onboarding_note
+
+
+async def test_erase_lead_pii_scrubs_note_even_when_lead_already_purged():
+    """R6 — 보관기간 cron이 (노트 scrub 도입 전에) lead만 파기한 경우에도, 명시적 파기
+    요청은 전환된 병원의 onboarding_note 운영자 텍스트를 반드시 파기해야 한다."""
+    hospital_id = uuid.uuid4()
+    lead = _lead(
+        purged_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        converted_hospital_id=hospital_id,
+    )
+    hospital = SimpleNamespace(id=hospital_id, onboarding_note=_note_block(lead.id))
+
+    class _DB(_FakeDB):
+        async def get(self, model, object_id):
+            if object_id == hospital_id:
+                return hospital
+            return await super().get(model, object_id)
+
+    db = _DB(lead)
+    result = await leads_api.erase_lead_pii(lead.id, db=db)
+
+    assert result["detail"] == "erased"
+    assert "010-9999-8888" not in hospital.onboarding_note
+    assert "Operator note: [purged]" in hospital.onboarding_note
+    assert db.committed is True
+    assert any(getattr(a, "action", None) == "erase_lead_pii" for a in db.added)
+
+
+async def test_erase_lead_pii_already_purged_and_note_clean_is_noop():
+    """lead도 파기됐고 노트도 이미 scrub됐으면 커밋 없이 already_purged."""
+    hospital_id = uuid.uuid4()
+    lead = _lead(
+        purged_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        converted_hospital_id=hospital_id,
+    )
+    hospital = SimpleNamespace(
+        id=hospital_id,
+        onboarding_note=(
+            f"Source lead: {lead.id}\nClinic type / region: 강남 치과\nOperator note: [purged]"
+        ),
+    )
+
+    class _DB(_FakeDB):
+        async def get(self, model, object_id):
+            if object_id == hospital_id:
+                return hospital
+            return await super().get(model, object_id)
+
+    db = _DB(lead)
+    result = await leads_api.erase_lead_pii(lead.id, db=db)
+
+    assert result["detail"] == "already_purged"
+    assert db.committed is False

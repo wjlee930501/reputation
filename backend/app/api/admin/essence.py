@@ -47,7 +47,10 @@ from app.services.essence_engine import (
     validate_source_excerpt,
 )
 from app.services.gcs_utils import get_signed_url
-from app.services.site_revalidate import ensure_site_revalidate_configured, trigger_hospital_site_revalidate
+from app.services.site_revalidate import (
+    ensure_site_revalidate_configured,
+    trigger_hospital_site_revalidate_safe,
+)
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 
@@ -280,7 +283,8 @@ async def exclude_source(
     await db.commit()
     await db.refresh(source)
     if hospital and _has_public_site(hospital):
-        await trigger_hospital_site_revalidate(hospital.slug)
+        # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
+        await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
     notes = await _get_notes_for_source(db, source.id)
     return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
 
@@ -436,7 +440,8 @@ async def toggle_source_public(
     await db.commit()
     await db.refresh(source)
     if will_change_public_photo and _has_public_site(hospital):
-        await trigger_hospital_site_revalidate(hospital.slug)
+        # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
+        await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
     notes = await _get_notes_for_source(db, source.id)
     return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
 
