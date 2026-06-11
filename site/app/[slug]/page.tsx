@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 import { fetchHospital, fetchContents, resolveAssetUrl, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec } from '@/lib/business-hours'
 import { getApiBase } from '@/lib/config'
+import { canonicalBase } from '@/lib/site-url'
 
 import { AnswerClusters } from './_components/AnswerClusters'
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
@@ -23,8 +24,6 @@ import { TreatmentGrid } from './_components/TreatmentGrid'
 interface Props {
   params: Promise<{ slug: string }>
 }
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 export const revalidate = 3600
 
@@ -73,14 +72,16 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     // 절대 URL로 변환해야 OG/구조화 데이터 이미지가 깨지지 않는다.
     const ogImage =
       resolveAssetUrl(hospital.director_photo_url) ?? '/landing/reputation-clinic-trust-interior.png'
+    // 커스텀 도메인이 연결된 병원은 해당 도메인이 canonical origin이 된다 (site-url.ts 정책).
+    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}`
     return {
       title,
       description,
-      alternates: { canonical: `/${params.slug}` },
+      alternates: { canonical: canonicalUrl },
       openGraph: {
         title,
         description,
-        url: `/${params.slug}`,
+        url: canonicalUrl,
         type: 'website',
         images: ogImage
           ? [
@@ -129,12 +130,14 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     hospital.kakao_place_id ? `https://place.map.kakao.com/${hospital.kakao_place_id}` : null,
   ].filter((value): value is string => Boolean(value))
 
+  const base = canonicalBase(hospital)
+
   const clinicJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
-    '@id': `${SITE_URL}/${params.slug}#clinic`,
+    '@id': `${base}/${params.slug}#clinic`,
     name: hospital.name,
-    url: `${SITE_URL}/${params.slug}`,
+    url: `${base}/${params.slug}`,
     image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
     sameAs,
     address: {
@@ -156,12 +159,12 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
         : undefined,
     physician: {
       '@type': 'Physician',
-      '@id': `${SITE_URL}/${params.slug}/doctor#physician`,
+      '@id': `${base}/${params.slug}/doctor#physician`,
       name: hospital.director_name,
       jobTitle: '원장',
       description: hospital.director_career,
       image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
-      url: `${SITE_URL}/${params.slug}/doctor`,
+      url: `${base}/${params.slug}/doctor`,
     },
     availableService: (hospital.treatments || []).map((treatment) => ({
       '@type': 'MedicalProcedure',
@@ -171,7 +174,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
   const breadcrumbJsonLd = buildBreadcrumbJsonLd(
     [{ label: '홈', href: `/${params.slug}` }],
-    SITE_URL,
+    base,
   )
 
   const externalChannels = [
@@ -279,6 +282,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
+          directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}

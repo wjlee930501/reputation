@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server'
 
 import { getApiBase } from '@/lib/config'
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
+import { canonicalBase } from '@/lib/site-url'
 
 interface HospitalEntry {
   slug: string
   name: string
+  aeo_domain?: string | null
   region?: string[] | null
   specialties?: string[] | null
   director_name?: string | null
@@ -65,9 +65,11 @@ export async function GET() {
   const validHospitals = hospitals.filter((hospital) => Boolean(hospital?.slug))
   const lines: string[] = [...header, `## 병원 목록 (전체 ${validHospitals.length}개)`, '']
   for (const hospital of validHospitals) {
+    // 커스텀 도메인 연결 병원은 그 도메인이 canonical — 링크도 그쪽으로 안내한다.
+    const base = canonicalBase(hospital)
     lines.push(`### ${hospital.name || hospital.slug}`)
-    lines.push(`- url: ${SITE_URL}/${hospital.slug}`)
-    lines.push(`- llms: ${SITE_URL}/${hospital.slug}/llms.txt`)
+    lines.push(`- url: ${base}/${hospital.slug}`)
+    lines.push(`- llms: ${base}/${hospital.slug}/llms.txt`)
     if (hospital.region?.length) lines.push(`- region: ${formatList(hospital.region)}`)
     if (hospital.specialties?.length) lines.push(`- specialties: ${formatList(hospital.specialties)}`)
     if (hospital.director_name) lines.push(`- director: ${hospital.director_name}`)

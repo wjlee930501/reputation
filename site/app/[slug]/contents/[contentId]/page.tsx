@@ -17,6 +17,7 @@ import {
 } from '@/lib/api'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 import { safeExternalHref } from '@/lib/safe-url'
+import { canonicalBase } from '@/lib/site-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
@@ -30,8 +31,6 @@ interface Props {
 }
 
 export const revalidate = 3600
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
 // 한국어 평균 읽기 속도 약 600자/분.
 const KOREAN_READING_SPEED_CHARS_PER_MIN = 600
@@ -110,14 +109,15 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const imageUrl = resolveAssetUrl(content.image_url)
     const description =
       content.meta_description ?? `${hospital.name}의 ${TYPE_LABELS[content.content_type] ?? '의료'} 콘텐츠`
+    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/contents/${params.contentId}`
     return {
       title: `${content.title} | ${hospital.name}`,
       description,
-      alternates: { canonical: `/${params.slug}/contents/${params.contentId}` },
+      alternates: { canonical: canonicalUrl },
       openGraph: {
         title: `${content.title} | ${hospital.name}`,
         description,
-        url: `/${params.slug}/contents/${params.contentId}`,
+        url: canonicalUrl,
         type: 'article',
         images: imageUrl ? [{ url: imageUrl }] : [],
       },
@@ -161,10 +161,12 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   const referenceCountLabel =
     referenceList.length > 0 ? `참고자료 ${referenceList.length}건` : '참고자료 확인 중'
 
+  const base = canonicalBase(hospital)
+
   const pillarTreatment = inferPillarTreatment(hospital.treatments || [], content)
   const pillarSlug = pillarTreatment ? buildTreatmentSlug(pillarTreatment.name) : ''
   const pillarHref = pillarSlug ? `/${params.slug}/treatments/${pillarSlug}` : null
-  const pillarUrl = pillarSlug ? `${SITE_URL}/${params.slug}/treatments/${pillarSlug}` : null
+  const pillarUrl = pillarSlug ? `${base}/${params.slug}/treatments/${pillarSlug}` : null
 
   const breadcrumbItems = [
     { label: '홈', href: `/${params.slug}` },
@@ -173,13 +175,13 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
     { label: content.title },
   ]
 
-  const articleUrl = `${SITE_URL}/${params.slug}/contents/${params.contentId}`
+  const articleUrl = `${base}/${params.slug}/contents/${params.contentId}`
   const datePublished = content.published_at || content.scheduled_date
   const dateModified = content.body_updated_at || content.published_at || content.scheduled_date
 
   // 모든 article 공통 base. type별 추가 schema는 jsonLd 배열에 별도로 push.
-  const physicianId = `${SITE_URL}/${params.slug}/doctor#physician`
-  const clinicId = `${SITE_URL}/${params.slug}#clinic`
+  const physicianId = `${base}/${params.slug}/doctor#physician`
+  const clinicId = `${base}/${params.slug}#clinic`
   const articleImageUrl = resolveAssetUrl(content.image_url)
   const articleJsonLd: Record<string, unknown> = {
     '@context': 'https://schema.org',
@@ -232,7 +234,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
 
   const jsonLd: Record<string, unknown>[] = [
     articleJsonLd,
-    buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL),
+    buildBreadcrumbJsonLd(breadcrumbItems, base),
   ]
 
   if (articleImageUrl) {
@@ -251,7 +253,8 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
       },
       representativeOfPage: true,
       datePublished,
-      license: `${SITE_URL}/terms`,
+      // license는 플랫폼(MotionLabs) 약관을 가리키고 있어 제거 — 병원 페이지의
+      // 구조화 데이터가 B2B 법적 문서를 참조하면 안 된다.
     })
   }
 
@@ -586,6 +589,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
+          directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}

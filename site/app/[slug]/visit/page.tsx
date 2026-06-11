@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec } from '@/lib/business-hours'
+import { canonicalBase } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -16,21 +17,20 @@ interface Props {
 
 export const revalidate = 3600
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
-
 export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
   const params = await paramsPromise
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name} 진료 안내 — 주소, 전화, 진료시간, 공식 채널. 진료 예약·상담은 병원 공식 채널로 연결됩니다.`
+    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/visit`
     return {
       title: `진료 안내 | ${hospital.name}`,
       description,
-      alternates: { canonical: `/${params.slug}/visit` },
+      alternates: { canonical: canonicalUrl },
       openGraph: {
         title: `진료 안내 | ${hospital.name}`,
         description,
-        url: `/${params.slug}/visit`,
+        url: canonicalUrl,
         type: 'website',
       },
     }
@@ -63,13 +63,15 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
     hospital.naver_place_url,
   ].filter((value): value is string => Boolean(value))
 
+  const base = canonicalBase(hospital)
+
   const visitJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
     // 허브 페이지와 동일한 @id — 검색엔진이 같은 병원 엔티티로 병합하도록 한다.
-    '@id': `${SITE_URL}/${params.slug}#clinic`,
+    '@id': `${base}/${params.slug}#clinic`,
     name: hospital.name,
-    url: `${SITE_URL}/${params.slug}/visit`,
+    url: `${base}/${params.slug}/visit`,
     address: {
       '@type': 'PostalAddress',
       streetAddress: hospital.address,
@@ -95,7 +97,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
 
   return (
     <>
-      <JsonLd data={[visitJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]} />
+      <JsonLd data={[visitJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
@@ -142,6 +144,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
+          directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}

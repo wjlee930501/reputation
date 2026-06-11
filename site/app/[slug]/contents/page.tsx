@@ -2,6 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { canonicalBase } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -15,8 +16,6 @@ interface Props {
 
 export const revalidate = 3600
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
-
 const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCAL', 'NOTICE']
 
 export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
@@ -24,14 +23,15 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name} 의료 정보 — 자주 묻는 질문, 질환 정보, 치료 안내, 원장 칼럼.`
+    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/contents`
     return {
       title: `${hospital.name} 의료 정보`,
       description,
-      alternates: { canonical: `/${params.slug}/contents` },
+      alternates: { canonical: canonicalUrl },
       openGraph: {
         title: `${hospital.name} 의료 정보`,
         description,
-        url: `/${params.slug}/contents`,
+        url: canonicalUrl,
         type: 'website',
       },
     }
@@ -70,6 +70,8 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
     { label: '의료 정보' },
   ]
 
+  const base = canonicalBase(hospital)
+
   const collectionJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
@@ -78,19 +80,19 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
     isPartOf: {
       '@type': 'WebSite',
       name: hospital.name,
-      url: `${SITE_URL}/${params.slug}`,
+      url: `${base}/${params.slug}`,
     },
     hasPart: contents.map((content) => ({
       '@type': 'Article',
       headline: content.title,
-      url: `${SITE_URL}/${params.slug}/contents/${content.id}`,
+      url: `${base}/${params.slug}/contents/${content.id}`,
       datePublished: content.published_at || content.scheduled_date,
     })),
   }
 
   return (
     <>
-      <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, SITE_URL)]} />
+      <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
@@ -162,6 +164,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
+          directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
