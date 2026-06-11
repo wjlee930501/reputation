@@ -20,6 +20,12 @@ class ContentItemResponse(BaseModel):
     generated_at: Optional[str]
     published_at: Optional[str]
     published_by: Optional[str]
+    body_updated_at: Optional[str] = None
+    # 참고 자료/FAQ 분리 필드 — Admin 검수·보정(A1)과 컴플라이언스 패널이 사용.
+    references: list[dict[str, Any]] = []
+    faq_question: Optional[str] = None
+    faq_answer_summary: Optional[str] = None
+    compliance: Optional[dict[str, Any]] = None
     content_philosophy_id: Optional[str] = None
     query_target_id: Optional[str] = None
     exposure_action_id: Optional[str] = None

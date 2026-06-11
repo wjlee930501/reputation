@@ -189,8 +189,79 @@ async def notify_monthly_report_ready(
     )
 
 
-async def notify_monitoring_done(total: int, success: int) -> bool:
-    return await _send(text=f"📊 주간 AI 답변 언급 모니터링 완료 ({success}/{total}개 병원)")
+async def notify_monitoring_queued(queued: int) -> bool:
+    """주간 AI 답변 언급 측정 큐 적재 알림.
+
+    측정 태스크는 비동기로 실행되므로 '완료'가 아니라 '시작(큐 적재)'을 정직하게
+    알린다 (P2-14). 병원별 측정 결과는 Admin 측정 이력에서 확인.
+    """
+    return await _send(
+        text=f"📊 주간 AI 답변 언급 측정 시작 — {queued}개 병원 큐 적재",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"📊 *[주간 측정 시작]* AI 답변 언급 측정 태스크 큐 적재 완료\n"
+                f"대상: *{queued}개 병원*\n\n"
+                f"측정은 병원별로 순차 실행됩니다. 결과는 Admin 측정 이력에서 확인해 주세요."
+            )},
+        }],
+    )
+
+
+async def notify_ops_alert(*, title: str, message: str) -> bool:
+    """운영자 대상 일반 운영 알림 — 데이터는 안전하지만 후속 확인이 필요한 이벤트용."""
+    return await _send(
+        text=f"🟧 [운영 알림] {title}",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"🟧 *[운영 알림]* {title}\n{message}"
+            )},
+        }],
+    )
+
+
+async def notify_generation_blocked_no_philosophy(
+    hospital_name: str, blocked_count: int, scheduled_date: str
+) -> bool:
+    """승인된 콘텐츠 운영 기준이 없어 야간 생성이 차단됨 → AE에게 (P1-7).
+
+    이 알림이 없으면 한 달 내내 콘텐츠가 생성되지 않아도 Slack 신호가 0건이 된다.
+    """
+    return await _send(
+        text=f"🚫 [콘텐츠 생성 차단] {hospital_name} 운영 기준 미승인",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"🚫 *[콘텐츠 생성 차단]* *{hospital_name}* 운영 기준 미승인으로 콘텐츠 생성 차단\n"
+                f"차단된 슬롯: {blocked_count}건 | 발행 예정일: {scheduled_date}\n\n"
+                f"Admin 운영 기준 탭에서 콘텐츠 운영 기준을 승인해 주세요. "
+                f"승인 전까지 자동 생성이 계속 차단됩니다."
+            )},
+        }],
+    )
+
+
+async def notify_content_generation_missed(
+    hospital_name: str, missed_count: int, dates: list[str]
+) -> bool:
+    """발행 예정일이 지났는데 본문이 생성되지 않은 슬롯 알림 → AE에게 (P1-3).
+
+    야간 생성이 누락돼도 아침 알림이 침묵하지 않도록 '생성 누락'을 명시적으로 알린다.
+    """
+    dates_text = ", ".join(dates[:5]) + (" 외" if len(dates) > 5 else "")
+    return await _send(
+        text=f"⏰ [생성 누락] {hospital_name} 콘텐츠 {missed_count}건 미생성",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"⏰ *[생성 누락]* *{hospital_name}* 발행 예정 콘텐츠 {missed_count}건이 아직 생성되지 않았습니다.\n"
+                f"발행 예정일: {dates_text}\n\n"
+                f"오늘 밤 자동 생성에서 재시도됩니다. 급한 경우 Admin 콘텐츠 화면에서 "
+                f"수동 재생성해 주세요."
+            )},
+        }],
+    )
 
 
 async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str | None = None) -> bool:
@@ -276,12 +347,16 @@ def mask_contact_free(text: str) -> str:
 
 
 async def notify_content_batch_summary(
-    hospital_name: str, generated: int, failed: int, scheduled_date: str
+    hospital_name: str, generated: int, failed: int, scheduled_date: str, skipped: int = 0
 ) -> bool:
-    if generated == 0 and failed == 0:
+    if generated == 0 and failed == 0 and skipped == 0:
         return False
-    status_emoji = "✅" if failed == 0 else "⚠️"
-    summary = f"{generated}건 생성 완료" + (f", {failed}건 실패" if failed > 0 else "")
+    status_emoji = "✅" if failed == 0 and skipped == 0 else "⚠️"
+    summary = (
+        f"{generated}건 생성 완료"
+        + (f", {failed}건 실패" if failed > 0 else "")
+        + (f", {skipped}건 차단(운영 기준 미승인)" if skipped > 0 else "")
+    )
     return await _send(
         text=f"{status_emoji} [콘텐츠 배치] {hospital_name} {scheduled_date} — {summary}",
         blocks=[{

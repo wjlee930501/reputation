@@ -23,14 +23,16 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
-from app.models.hospital import Hospital, HospitalStatus
+from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.content_engine import _normalize_references
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate,
+    trigger_content_site_revalidate_safe,
 )
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
@@ -47,6 +49,7 @@ from app.services.exposure_content_linker import (
 )
 from app.services.gcs_utils import get_signed_url
 from app.utils.medical_filter import check_forbidden
+from app.workers.tasks import regenerate_content_item
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +101,23 @@ class ScheduleCreate(BaseModel):
         return list(set(v))  # 중복 제거
 
 
+class ReferencePatchItem(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    url: str = Field(min_length=1, max_length=500)
+
+
 class ContentPatch(BaseModel):
     title: str | None = Field(default=None, max_length=300)
     body: str | None = None
     # DB 컬럼이 VARCHAR(300) — 더 길게 허용하면 검증을 통과한 뒤 commit에서 DataError 500.
     meta_description: str | None = Field(default=None, max_length=300)
+    # FAQ 분리 필드 — 공개 표면(FAQPage rich result)에 노출되므로 본문과 동일하게
+    # 금지 표현 검사를 거친다. 위반 시 AE가 직접 수정할 수 있는 유일한 경로 (P1-2).
+    faq_question: str | None = Field(default=None, max_length=300)
+    faq_answer_summary: str | None = Field(default=None, max_length=600)
+    # 참고 자료 — 발행 게이트가 유효 references ≥1을 요구하므로, 생성 단계에서 전부
+    # 탈락한 아이템의 발행 차단을 풀 수 있는 보정 경로 (A1).
+    references: list[ReferencePatchItem] | None = None
 
 
 class PublishBody(BaseModel):
@@ -164,8 +179,9 @@ async def set_schedule(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    created_items: list[ContentItem] = []
     for slot_date, ctype, seq_no, total in slots:
-        db.add(ContentItem(
+        item = ContentItem(
             hospital_id=hospital_id,
             schedule_id=schedule.id,
             content_type=ctype,
@@ -173,14 +189,25 @@ async def set_schedule(
             total_count=total,
             scheduled_date=slot_date,
             status=ContentStatus.DRAFT,
-        ))
+        )
+        db.add(item)
+        created_items.append(item)
 
     hospital.schedule_set = True
+    # 병원 헤더/목록의 plan이 실제 운영 스케줄과 어긋나지 않도록 동기화 (A3).
+    hospital.plan = Plan(body.plan)
     if hospital.site_live:
         hospital.status = HospitalStatus.ACTIVE
 
     await db.commit()
     await db.refresh(schedule)
+
+    # 야간 배치는 '오늘~내일' 슬롯만 집는다 — active_from이 오늘/내일인 스케줄의 첫 슬롯이
+    # 어젯밤 배치를 이미 놓쳐 고아가 되지 않도록 즉시 생성 태스크를 큐잉한다 (P2-9).
+    tomorrow_kst = arrow.now("Asia/Seoul").shift(days=1).date()
+    for item in created_items:
+        if item.scheduled_date <= tomorrow_kst:
+            regenerate_content_item.apply_async(args=[str(item.id)], queue="content")
 
     return {
         "schedule_id": str(schedule.id),
@@ -191,11 +218,44 @@ async def set_schedule(
     }
 
 
+@router.get("/{hospital_id}/schedule")
+async def get_schedule(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """현재 활성 콘텐츠 스케줄 조회 — 없으면 404 (A2)."""
+    await _get_hospital(db, hospital_id)
+
+    result = await db.execute(
+        select(ContentSchedule)
+        .where(
+            ContentSchedule.hospital_id == hospital_id,
+            ContentSchedule.is_active,
+        )
+        .order_by(ContentSchedule.created_at.desc())
+        .limit(1)
+    )
+    schedule = result.scalars().first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="활성 콘텐츠 스케줄이 없습니다.")
+
+    return {
+        "schedule_id": str(schedule.id),
+        "hospital_id": str(schedule.hospital_id),
+        "plan": _enum_value(schedule.plan),
+        "publish_days": schedule.publish_days,
+        "active_from": str(schedule.active_from),
+        "is_active": bool(schedule.is_active),
+        "created_at": schedule.created_at.isoformat() if schedule.created_at else None,
+    }
+
+
 @router.get("/{hospital_id}/content", response_model=list[ContentItemResponse])
 async def list_content(
     hospital_id: uuid.UUID,
-    year: int = Query(default=None),
-    month: int = Query(default=None),
+    # month=13 같은 값이 arrow.Arrow까지 내려가면 ValueError → 500 (P2-11). 경계는 여기서.
+    year: Optional[int] = Query(default=None, ge=2000, le=2100),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
     status_filter: Optional[ContentStatus] = Query(default=None, alias="status"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -241,7 +301,7 @@ async def update_content(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    제목/본문/meta 수정.
+    제목/본문/meta/FAQ/참고자료 수정.
     저장 시 의료광고 금지표현 검사 → 위반 시 400 + 위반 목록 반환.
     """
     item = await _get_content(db, content_id, hospital_id)
@@ -251,13 +311,17 @@ async def update_content(
     if should_revalidate:
         ensure_site_revalidate_configured()
 
-    # 금지 표현 검사 (수정 대상 필드만)
+    # 금지 표현 검사 (수정 결과로 남게 될 전체 텍스트 필드 — FAQ 분리 필드 포함, P1-2)
     violations: list[str] = []
     new_title = body.title if body.title is not None else item.title
     new_body = body.body if body.body is not None else item.body
     new_meta = body.meta_description if body.meta_description is not None else item.meta_description
+    new_faq_question = body.faq_question if body.faq_question is not None else item.faq_question
+    new_faq_answer = (
+        body.faq_answer_summary if body.faq_answer_summary is not None else item.faq_answer_summary
+    )
 
-    for field_value in [new_title, new_body, new_meta]:
+    for field_value in [new_title, new_body, new_meta, new_faq_question, new_faq_answer]:
         if field_value:
             violations.extend(check_forbidden(field_value))
 
@@ -270,6 +334,25 @@ async def update_content(
             detail={"message": "의료광고 금지 표현이 포함되어 있습니다.", "violations": violations},
         )
 
+    # 참고 자료 (A1) — 생성 경로와 동일한 정규화/화이트리스트 검증을 거친다.
+    # 일부가 탈락하면 운영자가 모르는 채 저장되는 것보다 명시적으로 거절하는 편이 안전.
+    if body.references is not None:
+        raw_refs = [ref.model_dump() for ref in body.references]
+        normalized_refs = _normalize_references(raw_refs)
+        if len(normalized_refs) < len(raw_refs):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": (
+                        "참고 자료 중 사용할 수 없는 항목이 있습니다. "
+                        "허용된 공신력 있는 출처의 http(s) URL과 제목을 입력해 주세요. (최대 5개)"
+                    ),
+                    "accepted_count": len(normalized_refs),
+                    "submitted_count": len(raw_refs),
+                },
+            )
+        item.references_list = normalized_refs
+
     body_changed = False
     if body.title is not None:
         item.title = body.title
@@ -278,6 +361,10 @@ async def update_content(
         body_changed = True
     if body.meta_description is not None:
         item.meta_description = body.meta_description
+    if body.faq_question is not None:
+        item.faq_question = body.faq_question
+    if body.faq_answer_summary is not None:
+        item.faq_answer_summary = body.faq_answer_summary
 
     if body_changed:
         item.body_updated_at = datetime.now(timezone.utc)
@@ -291,7 +378,7 @@ async def update_content(
     await db.commit()
     await db.refresh(item)
     if should_revalidate:
-        await trigger_content_site_revalidate(hospital.slug, item.id)
+        await trigger_content_site_revalidate(hospital.slug, item.id, hospital.treatments)
     return _serialize_item(item, full=True)
 
 
@@ -369,7 +456,7 @@ async def publish_content(
     if should_revalidate:
         ensure_site_revalidate_configured()
 
-    full_text = " ".join(part for part in [item.title, item.body, item.meta_description] if part)
+    full_text = _forbidden_check_text(item)
     violations = check_forbidden(full_text)
     if violations:
         item.essence_status = "NEEDS_ESSENCE_REVIEW"
@@ -424,8 +511,15 @@ async def publish_content(
     await notifier.notify_content_published(hospital.name, item.title or "")
 
     # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library/관련 풀페이지에 즉시 반영되도록.
+    # 커밋 이후이므로 실패해도 raise하지 않는다 (P2-9b): 발행은 이미 성공했는데 500을
+    # 돌려주면 AE가 재시도하다 "Already published"를 만난다. 경고 로그 + Slack 운영 알림.
     if should_revalidate:
-        await trigger_content_site_revalidate(hospital.slug, item.id)
+        await trigger_content_site_revalidate_safe(
+            hospital.slug,
+            item.id,
+            hospital_name=hospital.name,
+            treatments=hospital.treatments,
+        )
 
     return {"detail": "Published", "published_at": item.published_at.isoformat()}
 
@@ -473,7 +567,7 @@ async def reject_content(
     )
     await db.commit()
     if should_revalidate:
-        await trigger_content_site_revalidate(hospital.slug, item.id)
+        await trigger_content_site_revalidate(hospital.slug, item.id, hospital.treatments)
     return {"detail": "Rejected. Will be regenerated tonight."}
 
 
@@ -708,8 +802,23 @@ def _serialize_item_display(item: ContentItem, content_type: str | None, status_
     }
 
 
+def _forbidden_check_text(item: ContentItem) -> str:
+    """발행/검수 게이트용 금지 표현 검사 텍스트 — FAQ 분리 필드 포함 (P1-2)."""
+    return " ".join(
+        part
+        for part in [
+            item.title,
+            item.body,
+            item.meta_description,
+            item.faq_question,
+            item.faq_answer_summary,
+        ]
+        if part
+    )
+
+
 def _build_compliance_summary(item: ContentItem, status_value: str | None) -> dict:
-    full_text = " ".join(part for part in [item.title, item.body, item.meta_description] if part)
+    full_text = _forbidden_check_text(item)
     forbidden_violations = list(dict.fromkeys(check_forbidden(full_text))) if full_text else []
     blockers: list[str] = []
     if status_value == ContentStatus.PUBLISHED.value:

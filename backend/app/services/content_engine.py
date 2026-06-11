@@ -298,28 +298,48 @@ async def generate_content(
 
     _validate_body_length(result.get("body"))
 
+    # FAQ 분리 필드 정규화 — 다른 type일 때는 None. 금지 표현 검사 전에 정규화해
+    # faq_question/faq_answer_summary도 동일한 필터 경로를 타게 한다 (P1-2).
+    result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
+    result["faq_answer_summary"] = _trim_or_none(result.get("faq_answer_summary"), 600)
+
     # 금지 표현 검사 — 1차 시도 실패 시 자동 정제 (재시도보다 안정적)
-    full_text = result.get("title", "") + result.get("body", "") + result.get("meta_description", "")
-    violations = check_forbidden(full_text)
+    violations = check_forbidden(forbidden_check_text(result))
     if violations:
         logger.warning(f"Forbidden expressions found: {violations} — auto-sanitizing")
         result = _sanitize_forbidden(result, violations)
-        full_text = result.get("title", "") + result.get("body", "") + result.get("meta_description", "")
-        remaining = check_forbidden(full_text)
+        remaining = check_forbidden(forbidden_check_text(result))
         if remaining:
             raise ValueError(f"Cannot sanitize forbidden medical expressions: {remaining}")
 
     # 참고 자료 정규화 — Claude가 형식을 살짝 흔들어도 list[{title,url}] 형태로 통일.
     result["references"] = _normalize_references(result.get("references"))
 
-    # FAQ 분리 필드 정규화 — 다른 type일 때는 None.
-    result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
-    result["faq_answer_summary"] = _trim_or_none(result.get("faq_answer_summary"), 600)
     # meta_description 컬럼은 VARCHAR(300) — 프롬프트는 100~150자를 요구하지만 모델 출력은
     # 보장이 없고, 300자 초과 시 야간 배치의 per-item 커밋이 DataError로 실패한다.
     result["meta_description"] = _trim_or_none(result.get("meta_description"), 300)
 
     return result
+
+
+# 의료광고 금지 표현 검사 대상 필드 — 공개 표면(FAQPage rich result 포함)에 노출되는
+# 모든 텍스트 필드를 빠짐없이 포함해야 한다 (P1-2: FAQ 필드 누락 회귀 방지).
+FORBIDDEN_CHECK_FIELDS = (
+    "title",
+    "body",
+    "meta_description",
+    "faq_question",
+    "faq_answer_summary",
+)
+
+
+def forbidden_check_text(result: dict) -> str:
+    """생성 결과에서 금지 표현 검사 대상 텍스트를 하나로 합친다."""
+    return " ".join(
+        value
+        for value in (result.get(field) for field in FORBIDDEN_CHECK_FIELDS)
+        if isinstance(value, str) and value
+    )
 
 
 def _parse_json_response(raw: str, *, json_module) -> dict:
@@ -378,13 +398,14 @@ def _validate_body_length(value: object) -> None:
 def _sanitize_forbidden(result: dict, violations: list[str]) -> dict:
     """Remove forbidden medical expressions from generated text as a safety net.
 
-    Operates on title, body, and meta_description fields. Only used as a fallback
-    when Claude generates text containing banned terms despite prompt instructions.
+    Operates on every public-surface text field (title/body/meta + FAQ fields).
+    Only used as a fallback when Claude generates text containing banned terms
+    despite prompt instructions.
     """
     from app.utils.medical_filter import FORBIDDEN_PATTERNS, normalize_for_check
 
     sanitized = dict(result)
-    for field in ("title", "body", "meta_description"):
+    for field in FORBIDDEN_CHECK_FIELDS:
         text = sanitized.get(field)
         if not isinstance(text, str):
             continue

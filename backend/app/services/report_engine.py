@@ -14,7 +14,6 @@ TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 
 
 def generate_pdf_report(
-    db,
     hospital: Hospital,
     period_start: datetime,
     period_end: datetime,

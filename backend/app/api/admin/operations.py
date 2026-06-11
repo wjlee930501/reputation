@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.admin.domain import _normalize_dns_name, _resolve_cname
+from app.api.admin.domain import _normalize_dns_name, _resolve_cname, missing_live_prerequisites
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.audit import AdminAuditLog
@@ -97,15 +97,7 @@ async def verify_domain_operation(
     previous_status = hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
     previous_site_live = bool(hospital.site_live)
     if verified:
-        missing_prerequisites = [
-            label
-            for label, ready in (
-                ("V0 리포트", hospital.v0_report_done),
-                ("병원 정보 허브 빌드", hospital.site_built),
-                ("콘텐츠 스케줄", hospital.schedule_set),
-            )
-            if not ready
-        ]
+        missing_prerequisites = missing_live_prerequisites(hospital)
         if missing_prerequisites:
             raise HTTPException(
                 status_code=409,

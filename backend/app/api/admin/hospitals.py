@@ -300,8 +300,10 @@ async def update_profile(
             changed_fields.append(field)
         setattr(h, field, value)
 
-    # 프로파일 완료 시 필수 필드 검증
-    if h.profile_complete and not was_complete:
+    # 필수 필드 검증 — 완료 전환 시점뿐 아니라, 이미 완료된 프로파일이 PATCH로 필수
+    # 필드를 빈 값([]/"")으로 비우는 것도 차단한다 (P2-10). 완료 플래그가 True로
+    # 유지되는 한 V0/콘텐츠 생성 파이프라인이 이 필드들에 의존한다.
+    if h.profile_complete:
         required_missing = []
         if not h.region:
             required_missing.append("region")
@@ -314,6 +316,14 @@ async def update_profile(
         if not h.address:
             required_missing.append("address")
         if required_missing:
+            if was_complete:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"프로파일 완료 상태에서는 필수 항목을 비울 수 없습니다: "
+                        f"{', '.join(required_missing)}. 값을 입력하거나 profile_complete를 해제해 주세요."
+                    ),
+                )
             raise HTTPException(
                 status_code=400,
                 detail=f"프로파일 완료에 필요한 필드 누락: {', '.join(required_missing)}",
@@ -348,7 +358,7 @@ async def update_profile(
             queue="reports",
         )
     if needs_site_revalidate:
-        await trigger_hospital_site_revalidate(h.slug)
+        await trigger_hospital_site_revalidate(h.slug, h.treatments)
 
     return _serialize(h)
 
@@ -395,7 +405,7 @@ async def connect_domain(
     )
     await db.commit()
     if previous_site_live:
-        await trigger_hospital_site_revalidate(h.slug)
+        await trigger_hospital_site_revalidate(h.slug, h.treatments)
 
     # 콘텐츠 허브 노출 상태 갱신 (legacy task name) — 도메인이 실제로 바뀌었거나 최초 준비가
     # 안 된 경우에만. 동일 도메인 재저장 시 불필요한 상태 전환·Slack 알림을 만들지 않는다.
@@ -461,7 +471,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
         },
     )
     await db.commit()
-    await trigger_hospital_site_revalidate(h.slug)
+    await trigger_hospital_site_revalidate(h.slug, h.treatments)
     return {"detail": f"{h.name} activated"}
 
 

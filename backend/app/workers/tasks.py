@@ -13,7 +13,7 @@ import asyncio
 import logging
 import threading
 import uuid
-from datetime import date, datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 
 import arrow
 from sqlalchemy import func, select
@@ -41,8 +41,10 @@ from app.services.sov_engine import generate_query_matrix, run_single_query, cal
 
 logger = logging.getLogger(__name__)
 
-ADMIN_BASE_URL = settings.ADMIN_BASE_URL
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)      # 주간 측정용
+
+# 야간 배치 1회 실행당 생성 상한 — 초과분은 절단되므로 반드시 로그+Slack으로 알린다 (P1-3).
+NIGHTLY_GENERATION_CAP = 50
 
 _tls = threading.local()
 
@@ -99,6 +101,44 @@ def _mark_done(key: str, ttl_seconds: int = 82_800) -> None:
         logger.warning("Redis idempotency mark unavailable for %s", key)
 
 
+def _acquire_hospital_advisory_lock_sync(db, hospital_id: uuid.UUID) -> None:
+    """Postgres pg_advisory_xact_lock — 트랜잭션 종료(commit/rollback) 시 자동 해제.
+
+    exposure_action_engine과 동일한 패턴. Postgres가 아닌 바인딩(단위 테스트의
+    fake/SQLite)에서는 no-op.
+    """
+    try:
+        bind = db.get_bind()
+        dialect_name = getattr(getattr(bind, "dialect", None), "name", "")
+    except Exception:
+        return
+    if dialect_name != "postgresql":
+        return
+    # uuid 128bit → signed 64bit 키로 축약 (충돌해도 과잉 직렬화일 뿐 정합성엔 무해).
+    lock_key = (hospital_id.int ^ (hospital_id.int >> 64)) & 0xFFFFFFFFFFFFFFFF
+    if lock_key >= 2**63:
+        lock_key -= 2**64
+    db.execute(select(func.pg_advisory_xact_lock(lock_key)))
+
+
+def _reset_v0_analyzing_status(hospital_id: str, prior_status: str | None) -> None:
+    """V0 실패 시 ANALYZING 상태를 이전 상태로 되돌린다 (P2-15).
+
+    되돌리지 않으면 재시도/수동 재트리거가 in-progress 가드에 걸려 병원이 영원히
+    ANALYZING에 갇힌다.
+    """
+    if not prior_status:
+        return
+    try:
+        with SyncSessionLocal() as db:
+            hospital = db.get(Hospital, uuid.UUID(hospital_id))
+            if hospital and hospital.status == HospitalStatus.ANALYZING:
+                hospital.status = HospitalStatus(prior_status)
+                db.commit()
+    except Exception:
+        logger.exception("Failed to reset ANALYZING status for hospital %s", hospital_id)
+
+
 # ══════════════════════════════════════════════════════════════════
 # V0 리포트
 # ══════════════════════════════════════════════════════════════════
@@ -111,9 +151,15 @@ def _mark_done(key: str, ttl_seconds: int = 82_800) -> None:
 )
 def trigger_v0_report(self, hospital_id: str):
     """프로파일 완료 후 V0 분석 즉시 실행"""
+    prior_status: str | None = None  # ANALYZING 전환 전 상태 — 실패 시 복원용 (P2-15)
     try:
         with SyncSessionLocal() as db:
-            hospital = db.get(Hospital, uuid.UUID(hospital_id))
+            hospital_uuid = uuid.UUID(hospital_id)
+            # check-and-set 직렬화 (P2-15): 프로파일 저장 트리거와 수동 재트리거가 동시에
+            # 들어와도 v0_report_done/ANALYZING 검사를 둘 다 통과해 매트릭스·측정 비용이
+            # 중복 발생하지 않게 병원 단위 advisory lock으로 묶는다.
+            _acquire_hospital_advisory_lock_sync(db, hospital_uuid)
+            hospital = db.get(Hospital, hospital_uuid)
             if not hospital:
                 return
 
@@ -122,6 +168,16 @@ def trigger_v0_report(self, hospital_id: str):
                 logger.info("V0 report already done for %s; skipping re-trigger", hospital.name)
                 return
 
+            # in-progress 가드: 다른 실행이 이미 ANALYZING으로 클레임했다면 중복 측정 금지.
+            # 실패한 실행은 _reset_v0_analyzing_status로 상태를 복원하므로 여기 걸리는 것은
+            # 진행 중인 실행뿐이다.
+            if hospital.status == HospitalStatus.ANALYZING:
+                logger.info("V0 report already in progress for %s; skipping duplicate", hospital.name)
+                return
+
+            prior_status = (
+                hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+            )
             hospital.status = HospitalStatus.ANALYZING
             db.commit()
 
@@ -197,7 +253,6 @@ def trigger_v0_report(self, hospital_id: str):
             # PDF 리포트 생성
             now = arrow.now("Asia/Seoul")
             pdf_path = generate_pdf_report(
-                db=db,
                 hospital=hospital,
                 period_start=now.shift(days=-7).datetime,
                 period_end=now.datetime,
@@ -227,6 +282,25 @@ def trigger_v0_report(self, hospital_id: str):
 
     except Exception as exc:
         logger.error(f"trigger_v0_report failed: {exc}")
+        # 이 실행이 ANALYZING을 클레임했다면 복원 — 그래야 재시도/수동 재트리거가
+        # in-progress 가드를 통과한다 (P2-15).
+        _reset_v0_analyzing_status(hospital_id, prior_status)
+        if self.request.retries >= self.max_retries:
+            # 재시도 소진 — 병원이 ANALYZING에 갇히지 않게 복원했음을 운영자에게 알린다.
+            try:
+                _run_async(notifier.notify_ops_alert(
+                    title="V0 리포트 생성 최종 실패",
+                    message=(
+                        f"병원 ID: `{hospital_id}`\n"
+                        f"재시도 {self.max_retries}회 모두 실패했습니다. "
+                        f"병원 상태는 이전 상태({prior_status or '유지'})로 복원했습니다.\n"
+                        f"오류: `{str(exc)[:200]}`\n"
+                        f"원인 확인 후 Admin에서 V0 리포트를 수동 재실행해 주세요."
+                    ),
+                ))
+            except Exception:
+                logger.exception("V0 final-failure ops alert delivery failed (non-fatal)")
+            raise exc
         raise self.retry(exc=exc, countdown=120)
 
 
@@ -266,24 +340,41 @@ def build_aeo_site(self, hospital_id: str):
     acks_late=True,
 )
 def nightly_content_generation():
-    """내일 발행 예정인 콘텐츠를 오늘 밤에 생성"""
-    tomorrow = arrow.now("Asia/Seoul").shift(days=1).date()
+    """내일 발행 예정인 콘텐츠를 오늘 밤에 생성.
+
+    catch-up window (P1-3): 전날 밤 배치가 누락(워커 다운 등)돼도 슬롯이 영구 고아가
+    되지 않도록 '오늘~내일' 범위의 미생성 슬롯을 함께 집어 재시도한다.
+    """
+    now_kst = arrow.now("Asia/Seoul")
+    today = now_kst.date()
+    tomorrow = now_kst.shift(days=1).date()
 
     with SyncSessionLocal() as db:
-        # 내일 발행 예정이고 아직 생성 안 된 콘텐츠 조회
-        stmt = select(ContentItem).where(
-            ContentItem.scheduled_date == tomorrow,
-            ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
-            ContentItem.body.is_(None),
-        ).options(joinedload(ContentItem.hospital)).limit(50)
-        result = db.execute(stmt)
-        items = result.scalars().all()
+        items, truncated_count = _load_nightly_generation_batch(db, today, tomorrow)
+
+        if truncated_count:
+            # 상한 절단은 조용히 슬롯을 버리는 것과 같다 — 반드시 로그 + Slack (P1-3).
+            logger.warning(
+                "nightly_content_generation cap reached: %d items deferred beyond cap %d",
+                truncated_count,
+                NIGHTLY_GENERATION_CAP,
+            )
+            _run_async(notifier.notify_ops_alert(
+                title="야간 콘텐츠 생성 상한 초과",
+                message=(
+                    f"생성 대기 슬롯이 배치 상한({NIGHTLY_GENERATION_CAP}건)을 초과해 "
+                    f"{truncated_count}건이 이번 실행에서 처리되지 못했습니다.\n"
+                    f"대상 기간: {today} ~ {tomorrow}\n"
+                    f"미처리분은 다음 야간 배치에서 재시도됩니다. 누적이 계속되면 "
+                    f"워커 증설 또는 수동 재생성이 필요합니다."
+                ),
+            ))
 
         if not items:
-            logger.info(f"No content to generate for {tomorrow}")
+            logger.info(f"No content to generate for {today}~{tomorrow}")
             return
 
-        # 병원별 생성 성공/실패 추적 → 배치 완료 후 요약 Slack
+        # 병원별 생성 성공/실패/차단 추적 → 배치 완료 후 요약 Slack
         hospital_stats: dict[str, dict] = {}
 
         for item in items:
@@ -292,7 +383,7 @@ def nightly_content_generation():
 
             if hospital_key not in hospital_stats:
                 hospital_stats[hospital_key] = {
-                    "name": hospital.name, "generated": 0, "failed": 0
+                    "name": hospital.name, "generated": 0, "failed": 0, "skipped": 0
                 }
 
             try:
@@ -321,6 +412,7 @@ def nightly_content_generation():
                     }
                     db.commit()
                     logger.warning(f"Skipping content generation without approved clinic writing standard: {hospital.name}")
+                    hospital_stats[hospital_key]["skipped"] += 1
                     continue
 
                 # Claude Sonnet 콘텐츠 생성
@@ -380,13 +472,57 @@ def nightly_content_generation():
 
         # 배치 완료 후 병원별 요약 Slack 발송
         for stat in hospital_stats.values():
-            if stat["generated"] > 0 or stat["failed"] > 0:
+            # 운영 기준 미승인 차단은 병원당 1회 전용 알림 — 한 달 내내 생성이 막혀도
+            # Slack 신호가 0건이던 문제 해소 (P1-7).
+            if stat["skipped"] > 0:
+                _run_async(notifier.notify_generation_blocked_no_philosophy(
+                    hospital_name=stat["name"],
+                    blocked_count=stat["skipped"],
+                    scheduled_date=str(tomorrow),
+                ))
+            if stat["generated"] > 0 or stat["failed"] > 0 or stat["skipped"] > 0:
                 _run_async(notifier.notify_content_batch_summary(
                     hospital_name=stat["name"],
                     generated=stat["generated"],
                     failed=stat["failed"],
                     scheduled_date=str(tomorrow),
+                    skipped=stat["skipped"],
                 ))
+
+
+def _nightly_generation_stmt(today, tomorrow):
+    """catch-up window 조회 statement (P1-3) — 테스트에서 window 경계를 검증한다."""
+    return (
+        select(ContentItem)
+        .where(
+            ContentItem.scheduled_date >= today,
+            ContentItem.scheduled_date <= tomorrow,
+            ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
+            ContentItem.body.is_(None),
+        )
+        .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
+        .options(joinedload(ContentItem.hospital))
+        # cap+1로 읽어 절단 발생 여부를 감지한다 — 조용한 드롭 금지 (P1-3).
+        .limit(NIGHTLY_GENERATION_CAP + 1)
+    )
+
+
+def _load_nightly_generation_batch(db, today, tomorrow) -> tuple[list, int]:
+    """생성 대상 슬롯을 cap까지 적재하고, 절단된 잔여 건수(0 또는 1 이상)를 반환."""
+    result = db.execute(_nightly_generation_stmt(today, tomorrow))
+    items = list(result.scalars().all())
+    if len(items) > NIGHTLY_GENERATION_CAP:
+        # cap+1개가 읽혔다 = 절단 발생. 정확한 잔여 건수는 count 쿼리로 다시 계산해 보고.
+        overflow = db.execute(
+            select(func.count()).select_from(ContentItem).where(
+                ContentItem.scheduled_date >= today,
+                ContentItem.scheduled_date <= tomorrow,
+                ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
+                ContentItem.body.is_(None),
+            )
+        ).scalar_one()
+        return items[:NIGHTLY_GENERATION_CAP], max(int(overflow) - NIGHTLY_GENERATION_CAP, 1)
+    return items, 0
 
 
 @celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)
@@ -525,6 +661,33 @@ def morning_content_notification():
             if not sent:
                 all_sent = False
 
+        # 생성 누락 감지 (P1-3): 발행 예정일이 오늘이거나 이미 지났는데 body가 비어 있는
+        # 슬롯은 위의 '초안 완료' 알림 필터(body IS NOT NULL)에 절대 걸리지 않는다.
+        # 침묵하는 대신 병원별 "생성 누락" 알림을 보낸다.
+        missed_stmt = select(ContentItem).where(
+            ContentItem.scheduled_date <= today,
+            ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
+            ContentItem.body.is_(None),
+        ).options(joinedload(ContentItem.hospital)).order_by(ContentItem.scheduled_date)
+        missed_items = db.execute(missed_stmt).scalars().all()
+
+        missed_by_hospital: dict[str, dict] = {}
+        for item in missed_items:
+            entry = missed_by_hospital.setdefault(
+                str(item.hospital_id),
+                {"name": item.hospital.name, "dates": []},
+            )
+            entry["dates"].append(str(item.scheduled_date))
+
+        for entry in missed_by_hospital.values():
+            sent = _run_async(notifier.notify_content_generation_missed(
+                hospital_name=entry["name"],
+                missed_count=len(entry["dates"]),
+                dates=entry["dates"],
+            ))
+            if not sent:
+                all_sent = False
+
     # Only mark the day done if every notification actually delivered — otherwise a
     # Slack misconfig/outage would suppress the day's alerts (re-trigger retries).
     if all_sent:
@@ -548,10 +711,12 @@ def run_sov_for_hospital(self, hospital_id: str):
             if not hospital or hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
                 return
 
-            # priority 기반 쿼리 필터링
-            current_week = date.today().isocalendar()[1]
+            # priority 기반 쿼리 필터링 — beat은 월요일 02:00 KST(=일요일 UTC)에 발화하므로
+            # UTC date.today()를 쓰면 ISO 주차 짝/홀이 뒤집히고 월초 판정도 어긋난다 (P1-5).
+            today_kst = arrow.now("Asia/Seoul").date()
+            current_week = today_kst.isocalendar()[1]
             is_even_week = (current_week % 2 == 0)
-            current_month_day = date.today().day
+            current_month_day = today_kst.day
             is_month_start = (current_month_day <= 7)  # 월초 첫째 주
 
             stmt = select(QueryMatrix).where(
@@ -596,7 +761,7 @@ def run_sov_for_hospital(self, hospital_id: str):
             run = _start_measurement_run(
                 db,
                 hospital,
-                run_label=f"weekly_sov_{date.today().isoformat()}",
+                run_label=f"weekly_sov_{today_kst.isoformat()}",
                 config={
                     "source": "run_sov_for_hospital",
                     "repeat_count": SOV_REPEAT_WEEKLY,
@@ -661,12 +826,18 @@ def _start_measurement_run(db, hospital: Hospital, *, run_label: str, config: di
         success_count=0,
         failure_count=0,
         started_at=now,
+        # model_name 단일 컬럼은 ChatGPT 측정 모델 기준 — Gemini 레코드까지 OpenAI 모델로
+        # 기록되던 문제를 막기 위해 플랫폼별 모델은 config.model_names에 정확히 남긴다 (P2-17).
         model_name=settings.OPENAI_MODEL_QUERY,
         search_mode=chatgpt_search_mode,
         config={
             **config,
             "openai_use_web_search": settings.OPENAI_CHATGPT_USE_WEB_SEARCH,
             "gemini_grounded": bool(settings.GEMINI_API_KEY),
+            "model_names": {
+                "chatgpt": settings.OPENAI_MODEL_QUERY,
+                **({"gemini": settings.GEMINI_MODEL} if settings.GEMINI_API_KEY else {}),
+            },
         },
     )
     db.add(run)
@@ -876,7 +1047,16 @@ def run_weekly_monitoring():
         for h in hospitals:
             run_sov_for_hospital.apply_async(args=[str(h.id)], queue="sov")
 
-        _run_async(notifier.notify_monitoring_done(len(hospitals), len(hospitals)))
+        # 측정은 이제 막 큐에 적재됐을 뿐이다 — '완료'가 아니라 '시작'을 알린다 (P2-14).
+        _run_async(notifier.notify_monitoring_queued(len(hospitals)))
+
+        # 측정 결과 기반 질문 우선순위 조정 (P1-4) — 같은 "sov" 큐 뒤에 적재되므로 단일
+        # sov 워커(FIFO) 기준으로는 병원별 측정 태스크가 모두 끝난 뒤 실행된다.
+        # 한계: sov 워커가 여러 개거나 측정 태스크가 재시도로 길어지면 일부 병원의 이번 주
+        # 측정 결과가 반영되기 전에 실행될 수 있다 — 우선순위 조정은 최근 4주 누적 기준이라
+        # 다음 주 실행에서 따라잡는다. countdown은 측정 큐 소화 시간의 보수적 버퍼.
+        if hospitals:
+            adjust_query_priorities.apply_async(queue="sov", countdown=1800)
 
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
@@ -924,10 +1104,16 @@ def adjust_query_priorities():
 # ══════════════════════════════════════════════════════════════════
 @celery_app.task(
     name="app.workers.tasks.run_monthly_reports",
+    bind=True,
+    # 일시 장애(DB/Slack/GCS)로 월 1회 리포트가 통째로 누락되지 않도록 자동 재시도 (P2-13).
+    # 병원별 dedupe(existing_check)가 있어 재실행해도 중복 리포트는 생기지 않는다.
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=3,
     soft_time_limit=2400,
     time_limit=2700,
 )
-def run_monthly_reports():
+def run_monthly_reports(self):
     now = arrow.now("Asia/Seoul")
     # beat은 28~31일에 매일 실행 — 실제 마지막 날인지 확인
     if now.date() != now.ceil("month").date():
@@ -1007,7 +1193,6 @@ def run_monthly_reports():
                 published_contents = content_result.scalars().all()
 
                 pdf_path = generate_pdf_report(
-                    db=db,
                     hospital=h,
                     period_start=period_start,
                     period_end=period_end,
