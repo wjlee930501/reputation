@@ -223,6 +223,33 @@ variable "admin_subdomain" {
   default     = ""
 }
 
+# 병원이 별도 구입해 연결하는 커스텀 도메인 목록.
+# 흐름: Admin에서 도메인 저장 → 병원이 CNAME({domain} → CNAME_TARGET) 추가
+#       → 이 목록에 추가 후 terraform apply (도메인별 managed cert 발급)
+#       → Admin [DNS 확인] → site_live/ACTIVE.
+# 주의: CNAME이 살아 있는 상태에서 apply해야 cert가 ACTIVE로 전환된다.
+# 도메인별 cert 1개씩 발급 — HTTPS proxy의 cert 한도(15) 때문에 최대 13개.
+# 그 이상은 Certificate Manager certificate map으로 이전 필요
+# (docs/plans/2026-06-11-custom-domain-runbook.md 참고).
+variable "customer_domains" {
+  description = "Hospital-owned custom domains served by the site (per-domain managed SSL cert)"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(var.customer_domains) <= 13
+    error_message = "HTTPS proxy supports 15 certs (1 main + 13 customer + headroom). Migrate to Certificate Manager beyond 13 customer domains."
+  }
+
+  validation {
+    condition = alltrue([
+      for d in var.customer_domains :
+      can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", d))
+    ])
+    error_message = "customer_domains must be lowercase hostnames without scheme/path/port."
+  }
+}
+
 # ── DNS (optional) ────────────────────────────────────────────────
 variable "dns_zone_name" {
   description = "Cloud DNS managed zone name (skip if using external DNS)"
