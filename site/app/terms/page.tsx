@@ -64,7 +64,7 @@ const SECTIONS = [
 
 export default function TermsPage() {
   return (
-    <main className="legal-shell">
+    <main id="main-content" className="legal-shell">
       <header className="legal-header">
         <Link href="/" className="legal-back">← Re:putation 홈으로</Link>
         <span className="motionlabs-chip" style={{ marginTop: 12 }}>

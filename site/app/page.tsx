@@ -34,13 +34,13 @@ export default async function Home({
     leadStatus === "success"
       ? "무료 진단 요청이 접수되었습니다. 담당자가 진단 범위를 확인한 뒤 연락드립니다."
       : leadStatus === "invalid"
-        ? "필수 항목과 개인정보 동의를 확인해 주세요."
+        ? "입력하신 내용을 다시 확인해 주세요. 필수 항목(병원명·진료과/지역·연락처·환자 질문)과 개인정보 동의가 필요합니다."
         : leadStatus === "error"
           ? "요청 접수 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요."
           : null;
 
   return (
-    <main className="landing-shell">
+    <main id="main-content" className="landing-shell">
       <ScrollReveal />
 
       <header className="site-header">

@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 import {
   buildTreatmentSlug,
@@ -95,7 +95,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
 export default async function TreatmentPillarPage({ params: paramsPromise }: Props) {
   const params = await paramsPromise
   let hospital
-  let contents: ContentItem[]
+  let contents: ContentSummary[]
   try {
     ;[hospital, contents] = await Promise.all([
       fetchHospital(params.slug),
@@ -174,7 +174,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />

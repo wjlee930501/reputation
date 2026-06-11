@@ -1,7 +1,7 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS, type ContentSummary } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -54,7 +54,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
     throw e
   }
 
-  const grouped = new Map<string, ContentItem[]>()
+  const grouped = new Map<string, ContentSummary[]>()
   for (const content of contents) {
     const list = grouped.get(content.content_type) ?? []
     list.push(content)
@@ -100,7 +100,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />

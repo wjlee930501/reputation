@@ -2,12 +2,19 @@ import Link from 'next/link'
 
 interface Props {
   hospitalSlug: string
-  directorName: string
   specialties: string[]
 }
 
-/* 진료 철학 아이콘 — 인라인 SVG, 장식용이므로 aria-hidden */
-function IconDiagnose() {
+/* 진료 원칙 아이콘 — 인라인 SVG, 장식용이므로 aria-hidden */
+function IconExplain() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <path d="M8 9h8M8 13h5" />
+    </svg>
+  )
+}
+function IconAccountable() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="11" cy="11" r="8" />
@@ -16,15 +23,7 @@ function IconDiagnose() {
     </svg>
   )
 }
-function IconNoSurgery() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z" />
-      <path d="M9 12h6" />
-    </svg>
-  )
-}
-function IconCare() {
+function IconTogether() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 2 4 6v6c0 5 3 9 8 10 5-1 8-5 8-10V6z" />
@@ -33,35 +32,39 @@ function IconCare() {
   )
 }
 
-export function CarePrinciples({ hospitalSlug, directorName, specialties }: Props) {
-  const specialtyText = specialties.length > 0 ? specialties.join(', ') : '진료 영역'
+/* 임상적 주장(치료 순서·수술 여부 등)을 만들어 원장 발언처럼 노출하지 않는다.
+   여기서는 안내·설명·상담 방식에 대한 비임상 운영 원칙만 다룬다. */
+export function CarePrinciples({ hospitalSlug, specialties }: Props) {
+  const specialtyText = specialties.filter(Boolean).join(', ')
 
   return (
     <section className="clinic-section clinic-section--principles">
       <div className="clinic-section-inner">
         <header className="clinic-section-header clinic-section-header--center">
-          <span className="clinic-section-label">진료 철학</span>
-          <h2 className="clinic-section-heading">환자 상태를 먼저 확인합니다</h2>
+          <span className="clinic-section-label">진료 안내 원칙</span>
+          <h2 className="clinic-section-heading">설명과 상담을 우선합니다</h2>
           <p className="clinic-section-lede">
-            {directorName} 원장은 {specialtyText} 진료에서 치료보다 정확한 원인 파악을 먼저 합니다.
+            {specialtyText
+              ? `${specialtyText} 진료 안내에서 지키는 기본 원칙입니다.`
+              : '진료 안내에서 지키는 기본 원칙입니다.'}
           </p>
         </header>
 
         <div className="clinic-belief-grid">
           <BeliefCard
-            Icon={IconDiagnose}
-            title="원인부터 파악합니다"
-            body="같은 부위 통증이라도 원인이 다릅니다. 진찰·문진·영상검사를 종합해 실제 문제를 확인합니다."
+            Icon={IconExplain}
+            title="충분히 설명합니다"
+            body="검사와 진료 과정을 환자가 이해할 수 있는 언어로 설명하고, 궁금한 점을 확인한 뒤 진행합니다."
           />
           <BeliefCard
-            Icon={IconNoSurgery}
-            title="수술은 마지막 선택입니다"
-            body="비수술 치료로 충분히 호전되는 경우가 많습니다. 약물·주사·물리치료·도수재활 순으로 상담합니다."
+            Icon={IconAccountable}
+            title="확인된 정보만 안내합니다"
+            body="이 페이지의 진료 안내와 의료 정보는 출처와 업데이트 일자를 함께 표기하며, 과장된 표현을 사용하지 않습니다."
           />
           <BeliefCard
-            Icon={IconCare}
-            title="재발 없는 회복을 목표합니다"
-            body="통증 감소뿐 아니라 재발을 줄이는 운동 복귀 기준과 생활 관리 방법을 함께 안내합니다."
+            Icon={IconTogether}
+            title="진료 상담으로 함께 결정합니다"
+            body="치료 방향은 글이 아니라 진료실에서의 상담과 개인별 상태 확인을 거쳐 결정됩니다."
           />
         </div>
 

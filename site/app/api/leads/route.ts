@@ -112,6 +112,37 @@ export async function POST(request: Request) {
   }
 
   if (!response.ok) {
+    // 업스트림 4xx(422 검증 실패 등)는 서버 장애가 아니라 입력 문제 — 입력 오류로 안내한다.
+    const isValidationError = response.status >= 400 && response.status < 500
+    if (isValidationError) {
+      let detail: string | null = null
+      try {
+        const data = (await response.json()) as { detail?: unknown }
+        // FastAPI는 detail이 문자열(HTTPException) 또는 배열(422 ValidationError)일 수 있다.
+        if (typeof data?.detail === 'string') {
+          detail = data.detail
+        } else if (Array.isArray(data?.detail)) {
+          detail = data.detail
+            .map((item) => (typeof (item as { msg?: unknown })?.msg === 'string' ? (item as { msg: string }).msg : null))
+            .filter((msg): msg is string => Boolean(msg))
+            .join(' / ') || null
+        }
+      } catch {
+        // 본문 파싱 실패 시 일반 입력 오류 안내로 충분.
+      }
+      if (wantsJson) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: detail || '입력하신 내용을 다시 확인해 주세요.',
+            upstreamStatus: response.status,
+          },
+          { status: 400 },
+        )
+      }
+      return NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)
+    }
+
     const error = '무료 진단 요청을 접수하지 못했습니다. 잠시 후 다시 시도해 주세요.'
     if (wantsJson) {
       return NextResponse.json({ ok: false, error, upstreamStatus: response.status }, { status: 502 })

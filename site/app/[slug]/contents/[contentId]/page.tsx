@@ -185,7 +185,8 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
     '@context': 'https://schema.org',
     '@type': 'Article',
     headline: content.title,
-    description: content.meta_description,
+    // meta_description이 없으면 null 대신 키 자체를 생략한다 (JSON.stringify가 undefined 키 제거).
+    description: content.meta_description ?? undefined,
     author: {
       '@type': 'MedicalClinic',
       '@id': clinicId,
@@ -279,7 +280,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
       '@context': 'https://schema.org',
       '@type': 'MedicalProcedure',
       name: content.title,
-      description: content.meta_description,
+      description: content.meta_description ?? undefined,
       url: articleUrl,
       performer: {
         '@type': 'Physician',
@@ -293,7 +294,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
         '@context': 'https://schema.org',
         '@type': 'HowTo',
         name: content.title,
-        description: content.meta_description,
+        description: content.meta_description ?? undefined,
         step: steps.map((step, idx) => ({
           '@type': 'HowToStep',
           position: idx + 1,
@@ -313,7 +314,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
       about: {
         '@type': 'MedicalCondition',
         name: content.title,
-        description: content.meta_description,
+        description: content.meta_description ?? undefined,
       },
       audience: { '@type': 'MedicalAudience', audienceType: 'Patient' },
       dateModified,
@@ -332,7 +333,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <div className="clinic-article-shell">
             <article className="clinic-article">
               {articleImageUrl && (

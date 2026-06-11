@@ -60,9 +60,12 @@ export async function GET() {
     })
   }
 
-  const lines: string[] = [...header, `## 병원 목록 (전체 ${hospitals.length}개)`, '']
-  for (const hospital of hospitals) {
-    lines.push(`### ${hospital.name}`)
+  // 백엔드 목록 응답이 일부 필드를 생략해도 "### undefined" 같은 깨진 항목을
+  // 내보내지 않도록 방어적으로 렌더링한다.
+  const validHospitals = hospitals.filter((hospital) => Boolean(hospital?.slug))
+  const lines: string[] = [...header, `## 병원 목록 (전체 ${validHospitals.length}개)`, '']
+  for (const hospital of validHospitals) {
+    lines.push(`### ${hospital.name || hospital.slug}`)
     lines.push(`- url: ${SITE_URL}/${hospital.slug}`)
     lines.push(`- llms: ${SITE_URL}/${hospital.slug}/llms.txt`)
     if (hospital.region?.length) lines.push(`- region: ${formatList(hospital.region)}`)

@@ -8,10 +8,9 @@ export interface DirectorCredentials {
 }
 
 export interface Hospital {
-  id: number
+  id: string
   name: string
   slug: string
-  plan: string
   address: string
   phone: string
   business_hours: Record<string, string>
@@ -54,8 +53,27 @@ export interface HospitalPhoto {
   url: string
 }
 
-const ASSETS_BACKEND_BASE =
-  process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || 'http://localhost:8000'
+const DEV_ASSETS_BACKEND_BASE = 'http://localhost:8000'
+
+// getApiBase()와 동일한 fail-closed 정책: 프로덕션에서 env 미설정/localhost면 throw.
+// 빌드(SSG) 시점에 호출되므로 잘못된 배포 구성이 localhost URL로 조용히 새는 대신 즉시 드러난다.
+function getAssetsBackendBase(): string {
+  const value = (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || '').trim()
+  if (value) {
+    const normalized = value.replace(/\/$/, '')
+    if (
+      process.env.NODE_ENV === 'production' &&
+      /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(normalized)
+    ) {
+      throw new Error('NEXT_PUBLIC_BACKEND_URL cannot point to localhost in production')
+    }
+    return normalized
+  }
+  if (process.env.NODE_ENV !== 'production') {
+    return DEV_ASSETS_BACKEND_BASE
+  }
+  throw new Error('NEXT_PUBLIC_BACKEND_URL (or BACKEND_URL) is required in production')
+}
 
 // 백엔드는 공개 승인된 사진만 API 경로로 반환한다. 상대 경로는 site와 다른 API 호스트에서도
 // 로드되도록 절대 URL로 전환한다.
@@ -64,7 +82,7 @@ export function resolveAssetUrl(url: string | null | undefined): string | null {
   const trimmed = url.trim()
   if (!trimmed) return null
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed
-  if (trimmed.startsWith('/')) return `${ASSETS_BACKEND_BASE}${trimmed}`
+  if (trimmed.startsWith('/')) return `${getAssetsBackendBase()}${trimmed}`
   return null
 }
 
@@ -89,24 +107,26 @@ export const SOURCE_TYPE_LABELS: Record<ContentReferenceSourceType, string> = {
   ENCYCLOPEDIA: '백과',
 }
 
-export interface ContentItem {
+// 목록 엔드포인트(/hospitals/{slug}/contents)가 실제로 반환하는 필드만 선언한다.
+// body는 상세 엔드포인트에서만 내려오므로 ContentDetail로 분리.
+export interface ContentSummary {
   id: string
-  hospital_id: string
   content_type: string
-  sequence_no: number
-  total_count: number
   title: string
-  body: string
   meta_description: string | null
   image_url: string | null
   scheduled_date: string
-  status: string
-  generated_at: string
   published_at: string | null
   body_updated_at: string | null
   references: ContentReference[]
   faq_question: string | null
   faq_answer_summary: string | null
+  // 서버에서 본문 길이로 계산해 내려주는 읽기 시간(분). 구버전 응답 캐시 대비 optional.
+  reading_minutes?: number
+}
+
+export interface ContentDetail extends ContentSummary {
+  body: string
 }
 
 export class HospitalNotFoundError extends Error {
@@ -132,7 +152,7 @@ export async function fetchHospital(slug: string): Promise<Hospital> {
   return res.json()
 }
 
-export async function fetchContents(slug: string, limit?: number): Promise<ContentItem[]> {
+export async function fetchContents(slug: string, limit?: number): Promise<ContentSummary[]> {
   const base = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents`
   const url = limit ? `${base}?limit=${limit}` : base
   const res = await fetch(url, publicFetchInit(1800))
@@ -140,7 +160,7 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
   return res.json()
 }
 
-export async function fetchContent(slug: string, contentId: string): Promise<ContentItem> {
+export async function fetchContent(slug: string, contentId: string): Promise<ContentDetail> {
   const res = await fetch(
     `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents/${encodeURIComponent(contentId)}`,
     publicFetchInit(1800),

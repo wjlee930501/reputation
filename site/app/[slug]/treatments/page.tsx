@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
@@ -21,7 +21,7 @@ export const revalidate = 3600
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 
-function findRelatedContents(treatmentName: string, contents: ContentItem[]): ContentItem[] {
+function findRelatedContents(treatmentName: string, contents: ContentSummary[]): ContentSummary[] {
   const stem = treatmentName.replace(/[수술치료시술검사진료]/g, '').trim()
   if (!stem) return []
   const lowerStem = stem.toLowerCase()
@@ -107,7 +107,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />

@@ -4,6 +4,7 @@ GET /api/v1/public/hospitals/{slug}                      — 병원 기본정보
 GET /api/v1/public/hospitals/{slug}/contents             — 발행된 콘텐츠 목록
 GET /api/v1/public/hospitals/{slug}/contents/{content_id} — 콘텐츠 상세
 """
+import re
 import uuid
 from urllib.parse import urlparse
 
@@ -32,14 +33,27 @@ async def list_hospitals(request: Request, db: AsyncSession = Depends(get_db)):
     stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE, Hospital.site_live.is_(True))
     result = await db.execute(stmt)
     hospitals = result.scalars().all()
-    return [
-        {
-            "slug": h.slug,
-            "aeo_domain": h.aeo_domain,
-            "updated_at": h.updated_at.isoformat() if h.updated_at else h.created_at.isoformat() if h.created_at else None,
-        }
-        for h in hospitals
-    ]
+    return [_serialize_hospital_summary(h) for h in hospitals]
+
+
+def _serialize_hospital_summary(h: Hospital) -> dict:
+    """병원 목록용 공개-안전 요약 (plan/license_number/director_philosophy 제외).
+
+    /llms.txt 루트 인덱스가 name·region·specialties 등을 직접 출력하므로
+    목록 응답에도 포함해야 한다.
+    """
+    return {
+        "slug": h.slug,
+        "name": h.name,
+        "aeo_domain": h.aeo_domain,
+        "region": h.region,
+        "specialties": h.specialties,
+        "director_name": h.director_name,
+        "address": h.address,
+        "phone": h.phone,
+        "website_url": _safe_external_url(h.website_url),
+        "updated_at": h.updated_at.isoformat() if h.updated_at else h.created_at.isoformat() if h.created_at else None,
+    }
 
 
 @router.get("/{slug}")
@@ -152,11 +166,12 @@ def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = 
         if asset.source_type not in by_type:
             by_type[asset.source_type] = asset
 
-    director_photo = h.director_photo_url
+    # 먼저 sanitize — 비 http(s) URL은 버린다. 무효/누락이면 AE가 공개 승인한
+    # PHOTO_DOCTOR 자산으로 폴백한다 (sanitize가 else 분기에만 있으면 무효 URL이
+    # null이 되면서 승인된 자산 폴백까지 건너뛰는 버그가 있었다).
+    director_photo = _safe_external_url(h.director_photo_url)
     if not director_photo and SourceType.PHOTO_DOCTOR in by_type:
         director_photo = _public_asset_url(h.slug, by_type[SourceType.PHOTO_DOCTOR])
-    else:
-        director_photo = _safe_external_url(director_photo)
 
     serialized_photos = [
         {
@@ -172,7 +187,6 @@ def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = 
         "id": str(h.id),
         "name": h.name,
         "slug": h.slug,
-        "plan": h.plan,
         "address": h.address,
         "phone": h.phone,
         "business_hours": h.business_hours,
@@ -255,6 +269,19 @@ def _asset_response(asset_ref: str, *, hospital_id: uuid.UUID, media_type: str |
     raise HTTPException(status_code=404, detail="Asset not found")
 
 
+# 한국어 평균 읽기 속도 약 600자/분 — site 상세 페이지 calculateReadingMinutes와 동일 기준.
+_KOREAN_READING_SPEED_CHARS_PER_MIN = 600
+
+
+def _reading_minutes(body: str | None) -> int:
+    """본문 길이 기반 읽기 시간(분). 목록 응답은 body를 생략하므로 서버에서 계산해 내려준다."""
+    if not body:
+        return 1
+    stripped = re.sub(r"https?://\S+", "", body)
+    stripped = re.sub(r"[#*_\[\]()`>!\-\s]", "", stripped)
+    return max(1, round(len(stripped) / _KOREAN_READING_SPEED_CHARS_PER_MIN))
+
+
 def _serialize_item(item: ContentItem, full: bool = False) -> dict:
     d = {
         "id": str(item.id),
@@ -268,6 +295,7 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "references": item.references_list or [],
         "faq_question": item.faq_question,
         "faq_answer_summary": item.faq_answer_summary,
+        "reading_minutes": _reading_minutes(item.body),
     }
     if full:
         d["body"] = item.body

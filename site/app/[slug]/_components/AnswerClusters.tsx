@@ -1,9 +1,9 @@
 import Link from 'next/link'
 
-import { TYPE_LABELS, type ContentItem } from '@/lib/api'
+import { TYPE_LABELS, type ContentSummary } from '@/lib/api'
 
 interface Props {
-  contents: ContentItem[]
+  contents: ContentSummary[]
   hospitalSlug: string
   treatments: Array<{ name: string; description: string }>
   region: string[]

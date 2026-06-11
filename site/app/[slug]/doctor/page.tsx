@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentItem } from '@/lib/api'
+import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -20,7 +20,7 @@ export const revalidate = 3600
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'
 const COLUMN_FIRST = ['COLUMN', 'FAQ', 'DISEASE', 'TREATMENT', 'HEALTH', 'LOCAL', 'NOTICE']
 
-function sortByCuratorRelevance(a: ContentItem, b: ContentItem): number {
+function sortByCuratorRelevance(a: ContentSummary, b: ContentSummary): number {
   const ai = COLUMN_FIRST.indexOf(a.content_type)
   const bi = COLUMN_FIRST.indexOf(b.content_type)
   return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
@@ -133,7 +133,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />
-        <main>
+        <main id="main-content">
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />

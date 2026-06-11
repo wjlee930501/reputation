@@ -1,12 +1,12 @@
 import Image from 'next/image'
 import Link from 'next/link'
 
-import { resolveAssetUrl, TYPE_LABELS, type ContentItem } from '@/lib/api'
-import { categoryTagClass, readingMinutes } from '@/lib/content-meta'
+import { resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { categoryTagClass } from '@/lib/content-meta'
 import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 
 interface Props {
-  content: ContentItem
+  content: ContentSummary
   hospitalSlug: string
   hospitalName: string
 }
@@ -119,7 +119,8 @@ export function ContentCard({ content, hospitalSlug }: Props) {
         <p className="clinic-content-card-meta">
           <span>{dateLabel}</span>
           <span className="clinic-content-card-meta-dot" aria-hidden="true" />
-          <span>{readingMinutes(content.body)}분 분량</span>
+          {/* 목록 응답은 body를 생략하므로 서버 계산값(reading_minutes)을 사용한다. */}
+          <span>{content.reading_minutes ?? 1}분 분량</span>
         </p>
       </div>
     </Link>

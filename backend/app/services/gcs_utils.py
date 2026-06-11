@@ -15,8 +15,12 @@ def _get_gcs_client():
     return _gcs_client
 
 
-def get_signed_url(gcs_path: str, expiration_hours: int = 1) -> str:
-    """gs://bucket/path → signed URL 변환. 레거시 URL 또는 빈 값은 그대로 통과."""
+def get_signed_url(gcs_path: str, expiration_hours: int = 24) -> str:
+    """gs://bucket/path → signed URL 변환. 레거시 URL 또는 빈 값은 그대로 통과.
+
+    기본 TTL 24h — /site ISR 캐시(페이지 revalidate 3600s + fetch 캐시 1800s)보다
+    충분히 길어야 캐시된 페이지가 만료된 이미지 URL을 서빙하지 않는다.
+    """
     if not gcs_path or not gcs_path.startswith("gs://"):
         return gcs_path or ""
 
