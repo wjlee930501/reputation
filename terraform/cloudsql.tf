@@ -9,7 +9,12 @@ resource "google_sql_database_instance" "main" {
   database_version = "POSTGRES_16"
 
   settings {
-    tier                  = var.db_instance_tier
+    tier = var.db_instance_tier
+    # DELIBERATE single-AZ for launch: ZONAL halves Cloud SQL cost vs REGIONAL.
+    # Accepted risk: a zone outage takes the DB down until Google restores it
+    # (backups + PITR below still protect against data loss). To move to HA
+    # later, change to availability_type = "REGIONAL" — an in-place change that
+    # triggers a brief restart, no data migration needed.
     availability_type     = "ZONAL"
     disk_size             = 10
     disk_type             = "PD_SSD"

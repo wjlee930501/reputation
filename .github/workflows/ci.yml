@@ -6,6 +6,15 @@ on:
     branches:
       - main
 
+# 최소 권한 — 어떤 잡도 리포 쓰기/패키지 권한이 필요 없다.
+permissions:
+  contents: read
+
+# 같은 ref에 새 푸시가 오면 진행 중인 이전 실행을 취소 (CI 자원 절약).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     name: Backend lint and tests
@@ -94,6 +103,52 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  terraform:
+    name: Terraform fmt and validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (no backend)
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: backend
+            dockerfile: backend/Dockerfile
+          - name: site
+            context: site
+            dockerfile: site/Dockerfile
+          - name: admin
+            context: admin
+            dockerfile: admin/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 빌드만 검증 — 푸시 없음 (이미지 롤아웃은 scripts/deploy.sh 담당).
+      - name: Build ${{ matrix.name }} image
+        run: docker build -f "${{ matrix.dockerfile }}" -t "ci-${{ matrix.name }}:${{ github.sha }}" "${{ matrix.context }}"
 
   # INFRA-4: Security scanning gate.
   #   - Dependency audits are non-blocking (continue-on-error) so they surface

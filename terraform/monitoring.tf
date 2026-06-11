@@ -11,6 +11,16 @@ variable "alert_email" {
   default     = ""
 }
 
+variable "notification_channels" {
+  description = <<-EOT
+    Monitoring notification channel IDs (full resource names, e.g.
+    "projects/<project>/notificationChannels/<id>") for the worker/beat
+    ERROR-log alert. Empty (default) skips creating that alert policy.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 resource "google_monitoring_notification_channel" "email" {
   count        = var.alert_email != "" ? 1 : 0
   project      = var.project_id
@@ -115,5 +125,38 @@ resource "google_monitoring_alert_policy" "uptime" {
 
   documentation {
     content = "Re:putation 공개 표면 업타임 실패. 런북: docs/plans/2026-06-09-gcp-full-deployment-runbook.md"
+  }
+}
+
+# ── Worker/Beat ERROR-log alert (log-based) ────────────────────────
+# Celery worker/beat 컨테이너의 ERROR 이상 로그를 알림으로 승격한다 —
+# 콘텐츠 생성·SoV 측정·리포트 태스크 실패는 사용자에게 즉시 보이지 않으므로
+# 로그 기반 알림이 없으면 조용히 누적된다. var.notification_channels가
+# 비어 있으면 생성하지 않는다.
+resource "google_monitoring_alert_policy" "worker_beat_errors" {
+  count        = length(var.notification_channels) > 0 ? 1 : 0
+  project      = var.project_id
+  display_name = "${var.app_name} worker/beat ERROR logs"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "ERROR log entries from worker/beat"
+    condition_matched_log {
+      filter = "resource.type=\"cloud_run_revision\" AND severity>=ERROR AND (resource.labels.service_name=\"${var.app_name}-worker\" OR resource.labels.service_name=\"${var.app_name}-beat\")"
+    }
+  }
+
+  # condition_matched_log 정책은 notification_rate_limit이 필수.
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+    auto_close = "86400s"
+  }
+
+  notification_channels = var.notification_channels
+
+  documentation {
+    content = "Re:putation worker/beat에서 ERROR 로그 발생. Cloud Logging에서 해당 서비스 로그를 확인할 것."
   }
 }

@@ -67,6 +67,21 @@ celery_app.conf.update(
     # hard → 자식 프로세스 강제 종료. 긴 배치(nightly)는 태스크 데코레이터에서 상향.
     task_soft_time_limit=600,
     task_time_limit=900,
+    # 배포/scale-in 시 태스크 유실 방지: ack를 실행 완료 후로 미루고(acks_late),
+    # 프리페치를 1로 줄여 미실행 태스크가 종료되는 워커에 잡혀 있지 않게 하며,
+    # 워커 프로세스가 죽으면 태스크를 큐로 되돌린다(reject_on_worker_lost).
+    # 재실행될 수 있으므로 태스크 멱등성 가드가 전제다 (이미 적용됨).
+    task_acks_late=True,
+    worker_prefetch_multiplier=1,
+    task_reject_on_worker_lost=True,
+    # Beat 신뢰성 (Cloud Run 롤아웃 중 구/신 beat가 잠시 공존):
+    # RedBeat은 Redis 분산 락으로 단일 dispatcher를 보장하고, 스케줄 상태를
+    # Redis에 보존해 재시작 후에도 last-run 정보가 유지된다(중복/누락 방지).
+    beat_scheduler="redbeat.RedBeatScheduler",
+    redbeat_redis_url=settings.REDIS_URL,
+    # 락 TTL: beat가 죽으면 이 시간 후 새 beat가 인계. 롤아웃 중 이중 dispatch를
+    # 막을 만큼 길고, 장애 시 스케줄 공백이 과하지 않을 만큼 짧게.
+    redbeat_lock_timeout=300,
     # 워커가 루트 로거를 가로채지 않도록 — configure_logging 설정을 유지.
     worker_hijack_root_logger=False,
     task_routes={
@@ -79,6 +94,11 @@ celery_app.conf.update(
         "app.workers.tasks.trigger_v0_report": {"queue": "reports"},
         "app.workers.tasks.build_aeo_site": {"queue": "default"},
         "app.workers.tasks.monthly_slot_generation": {"queue": "default"},
+        # 라우팅 누락 시 기본 "celery" 큐로 떨어지는데, 워커는 -Q default,content,sov,reports만
+        # 소비하므로 영원히 실행되지 않는다 — beat 태스크는 반드시 여기 등록할 것
+        # (tests/test_celery_routing.py가 회귀를 막는다).
+        "app.workers.tasks.purge_expired_leads": {"queue": "default"},
+        "app.workers.tasks.adjust_query_priorities": {"queue": "sov"},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성

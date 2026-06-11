@@ -61,8 +61,19 @@ variable "api_min_instances" {
 }
 
 variable "api_max_instances" {
-  type    = number
-  default = 10
+  description = <<-EOT
+    API maximum instances. DB CONNECTION BUDGET: Cloud SQL max_connections is 100
+    (cloudsql.tf). Each backend instance may hold up to DB_POOL_SIZE +
+    DB_MAX_OVERFLOW connections (5 + 5 = 10 by default, config.py), so
+    instances x (pool + overflow) summed across api/worker/beat/migrate must stay
+    under max_connections with headroom for superuser/maintenance sessions.
+    Default budget: api 10x10=100 worst case alone — in practice API instances at
+    max concurrently saturating their pools is rare, but if you raise this (or the
+    pool sizes), raise max_connections or add pgbouncer first.
+    Worker (5 instances) + beat (1) + migrate job also draw from the same budget.
+  EOT
+  type        = number
+  default     = 10
 }
 
 # ── Frontend (Next.js on Cloud Run) ───────────────────────────────
@@ -267,6 +278,16 @@ variable "public_site_rate_limit" {
   description = "PUBLIC_SITE_RATE_LIMIT for unauthenticated public site read endpoints."
   type        = string
   default     = "300/minute;6000/hour"
+}
+
+variable "sentry_dsn" {
+  description = <<-EOT
+    Optional Sentry DSN for backend error tracking (SENTRY_DSN). When empty
+    (default), no SENTRY_DSN env is set on the Cloud Run services and the app
+    skips Sentry initialization entirely.
+  EOT
+  type        = string
+  default     = ""
 }
 
 # ── Redis hardening (INFRA-5) ─────────────────────────────────────
