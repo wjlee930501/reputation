@@ -341,7 +341,7 @@ deploy_beat() {
     --no-allow-unauthenticated \
     --env-vars-file="$SERVICE_ENV_FILE" \
     "${SECRET_ARGS[@]}" \
-    --timeout=86400 \
+    --timeout=3600 \
     --no-cpu-throttling
 
   ok "Beat 배포 완료"
