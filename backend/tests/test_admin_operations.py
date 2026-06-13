@@ -11,8 +11,9 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import operations as operations_api
+from app.services import audit_log
 from app.models.content import ContentStatus
-from app.models.hospital import HospitalStatus
+from app.models.hospital import DomainDnsStrategy, HospitalStatus
 
 
 class FakeTask:
@@ -59,6 +60,7 @@ def _hospital(**overrides):
         id=uuid.uuid4(),
         status=HospitalStatus.PENDING_DOMAIN,
         aeo_domain="clinic.example.com",
+        domain_dns_strategy=DomainDnsStrategy.CNAME,
         v0_report_done=True,
         site_built=True,
         schedule_set=True,
@@ -94,7 +96,7 @@ async def test_run_sov_operation_queues_task_after_audit_commit(monkeypatch):
         task.apply_async(args=args, queue=queue)
 
     monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", record_apply)
-    monkeypatch.setattr(operations_api.settings, "ADMIN_ACTOR_NAME", "AE-test")
+    monkeypatch.setattr(audit_log.settings, "ADMIN_ACTOR_NAME", "AE-test")
 
     response = await operations_api.run_sov_operation(hospital.id, db=db)
 
@@ -136,11 +138,19 @@ async def test_regenerate_content_operation_blocks_published(monkeypatch):
 async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch):
     hospital = _hospital(schedule_set=True)
     db = FakeDB(hospital=hospital)
-    monkeypatch.setattr(operations_api.settings, "CNAME_TARGET", "target.motionlabs.io")
-    async def _fake_resolve_cname(domain):
-        return "target.motionlabs.io"
 
-    monkeypatch.setattr(operations_api, "_resolve_cname", _fake_resolve_cname)
+    async def _fake_check_domain_dns(domain, strategy=DomainDnsStrategy.CNAME):
+        assert strategy == DomainDnsStrategy.CNAME
+        return SimpleNamespace(
+            verified=True,
+            cname_value="target.motionlabs.io",
+            address_values=[],
+            expected_cname="target.motionlabs.io",
+            expected_addresses=[],
+            verification_method="cname",
+        )
+
+    monkeypatch.setattr(operations_api, "check_domain_dns", _fake_check_domain_dns)
 
     response = await operations_api.verify_domain_operation(hospital.id, db=db)
 
@@ -158,11 +168,19 @@ async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch)
 async def test_verify_domain_operation_blocks_live_without_readiness(monkeypatch):
     hospital = _hospital(v0_report_done=False, site_built=True, schedule_set=True)
     db = FakeDB(hospital=hospital)
-    monkeypatch.setattr(operations_api.settings, "CNAME_TARGET", "target.motionlabs.io")
-    async def _fake_resolve_cname(domain):
-        return "target.motionlabs.io"
 
-    monkeypatch.setattr(operations_api, "_resolve_cname", _fake_resolve_cname)
+    async def _fake_check_domain_dns(domain, strategy=DomainDnsStrategy.CNAME):
+        assert strategy == DomainDnsStrategy.CNAME
+        return SimpleNamespace(
+            verified=True,
+            cname_value="target.motionlabs.io",
+            address_values=[],
+            expected_cname="target.motionlabs.io",
+            expected_addresses=[],
+            verification_method="cname",
+        )
+
+    monkeypatch.setattr(operations_api, "check_domain_dns", _fake_check_domain_dns)
 
     with pytest.raises(HTTPException) as exc:
         await operations_api.verify_domain_operation(hospital.id, db=db)
@@ -174,9 +192,77 @@ async def test_verify_domain_operation_blocks_live_without_readiness(monkeypatch
     assert db.committed is False
 
 
+async def test_verify_domain_operation_rejects_apex_when_cname_exists_even_if_address_matches(monkeypatch):
+    hospital = _hospital(
+        aeo_domain="jangclinic.co.kr",
+        domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS,
+        status=HospitalStatus.PENDING_DOMAIN,
+        site_live=False,
+    )
+    db = FakeDB(hospital=hospital)
+
+    async def _fake_check_domain_dns(domain, strategy=DomainDnsStrategy.CNAME):
+        assert domain == "jangclinic.co.kr"
+        assert strategy == DomainDnsStrategy.APEX_ADDRESS
+        return SimpleNamespace(
+            verified=False,
+            cname_value="target.motionlabs.io",
+            address_values=["34.117.10.20"],
+            expected_cname="target.motionlabs.io",
+            expected_addresses=["34.117.10.20"],
+            verification_method=None,
+        )
+
+    monkeypatch.setattr(operations_api, "check_domain_dns", _fake_check_domain_dns)
+
+    response = await operations_api.verify_domain_operation(hospital.id, db=db)
+
+    assert response["verified"] is False
+    assert response["verification_method"] is None
+    assert hospital.site_live is False
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert db.committed is True
+    detail = db.added[0].detail
+    assert detail["verified"] is False
+    assert detail["new_status"] == HospitalStatus.PENDING_DOMAIN.value
+    assert detail["new_site_live"] is False
+
+
+async def test_verify_domain_operation_accepts_apex_address_strategy(monkeypatch):
+    hospital = _hospital(
+        aeo_domain="jangclinic.co.kr",
+        domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS,
+        status=HospitalStatus.PENDING_DOMAIN,
+        site_live=False,
+    )
+    db = FakeDB(hospital=hospital)
+
+    async def _fake_check_domain_dns(domain, strategy=DomainDnsStrategy.CNAME):
+        assert domain == "jangclinic.co.kr"
+        assert strategy == DomainDnsStrategy.APEX_ADDRESS
+        return SimpleNamespace(
+            verified=True,
+            cname_value=None,
+            address_values=["34.117.10.20"],
+            expected_cname="target.motionlabs.io",
+            expected_addresses=["34.117.10.20"],
+            verification_method="address",
+        )
+
+    monkeypatch.setattr(operations_api, "check_domain_dns", _fake_check_domain_dns)
+
+    response = await operations_api.verify_domain_operation(hospital.id, db=db)
+
+    assert response["verified"] is True
+    assert response["verification_method"] == "address"
+    assert hospital.site_live is True
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert db.committed is True
+
+
 async def test_actor_uses_admin_actor_name_setting(monkeypatch):
     """X-Admin-Actor 헤더는 무시되고 ENV ADMIN_ACTOR_NAME만 신뢰됨."""
-    monkeypatch.setattr(operations_api.settings, "ADMIN_ACTOR_NAME", "Operator-A")
+    monkeypatch.setattr(audit_log.settings, "ADMIN_ACTOR_NAME", "Operator-A")
     hospital = _hospital(status=HospitalStatus.ACTIVE)
     db = FakeDB(hospital=hospital)
     monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", lambda **_: None)

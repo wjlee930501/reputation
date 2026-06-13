@@ -19,6 +19,8 @@ from app.api.admin import reports as admin_reports
 from app.api.admin import sov as admin_sov
 from app.api.admin import query_targets as admin_query_targets
 from app.api.admin import domain as admin_domain
+from app.api.admin import domain_connect as admin_domain_connect
+from app.api.admin import domain_setup as admin_domain_setup
 from app.api.admin import essence as admin_essence
 from app.api.admin import exposure_actions as admin_exposure_actions
 from app.api.admin import leads as admin_leads
@@ -150,6 +152,8 @@ app.include_router(admin_content.router, prefix="/api/v1", dependencies=admin_de
 app.include_router(admin_reports.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_sov.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_query_targets.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_domain_connect.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_domain_setup.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_domain.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_essence.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_exposure_actions.router, prefix="/api/v1", dependencies=admin_deps)
@@ -188,12 +192,32 @@ async def readiness():
         sessionmaker = get_async_sessionmaker()
         async with sessionmaker() as session:
             await session.execute(text("SELECT 1"))
-        return {"status": "ok", "database": "connected"}
     except Exception as e:
         raise HTTPException(
             status_code=503,
             detail={"status": "error", "database": "unavailable"},
         ) from e
+
+    try:
+        import redis.asyncio as redis_async
+        from redis.exceptions import RedisError
+
+        redis_client = redis_async.from_url(
+            settings.REDIS_URL,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        try:
+            await redis_client.ping()
+        finally:
+            await redis_client.aclose()
+    except (OSError, RedisError, RuntimeError, TimeoutError) as e:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "redis": "unavailable"},
+        ) from e
+
+    return {"status": "ok", "database": "connected", "redis": "connected"}
 
 
 @app.get("/health/live")

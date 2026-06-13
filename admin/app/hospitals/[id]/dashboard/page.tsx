@@ -317,7 +317,7 @@ export default function DashboardPage() {
         method: 'POST',
       }) as OperationResponse
       if (path === 'verify-domain') {
-        setOperationMessage(result.verified ? '도메인 DNS 확인 완료' : 'DNS CNAME 확인이 아직 되지 않았습니다.')
+        setOperationMessage(result.verified ? '도메인 DNS 확인 완료' : '도메인 DNS 확인이 아직 되지 않았습니다.')
       } else {
         setOperationMessage(result.detail ?? '작업이 큐에 등록되었습니다.')
       }
@@ -338,7 +338,9 @@ export default function DashboardPage() {
     if (action === 'verify_domain') {
       const verified = detail.verified === true
       const cname = typeof detail.cname_value === 'string' ? detail.cname_value : '-'
-      return verified ? `CNAME 확인됨 (${cname})` : `CNAME 미일치 (현재 ${cname})`
+      const addresses = Array.isArray(detail.address_values) ? detail.address_values.join(', ') : ''
+      const current = cname !== '-' ? cname : addresses || '-'
+      return verified ? `DNS 확인됨 (${current})` : `DNS 미일치 (현재 ${current})`
     }
     if (action === 'update_exposure_action' && detail.changes && typeof detail.changes === 'object') {
       const changes = Object.keys(detail.changes as Record<string, unknown>)

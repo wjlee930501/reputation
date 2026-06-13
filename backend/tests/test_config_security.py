@@ -26,6 +26,8 @@ def _valid_prod_kwargs(**overrides):
         SYNC_DATABASE_URL="postgresql+psycopg2://postgres:postgres@db/reputation",
         ALLOWED_ORIGINS="https://admin.example.com,https://reputation.co.kr",
         TRUSTED_PROXY_IPS="130.211.0.0/22,35.191.0.0/16",
+        ADMIN_BASE_URL="https://admin.example.com",
+        SITE_BASE_URL="https://reputation.co.kr",
     )
     base.update(overrides)
     return base
@@ -46,6 +48,8 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         CLOUD_SQL_CONNECTION_NAME="project:region:instance",
         ALLOWED_ORIGINS="https://admin.example.com",
         TRUSTED_PROXY_IPS="130.211.0.0/22,35.191.0.0/16",
+        ADMIN_BASE_URL="https://admin.example.com",
+        SITE_BASE_URL="https://reputation.co.kr",
     )
 
     assert settings.DATABASE_URL == (
@@ -83,7 +87,21 @@ def test_production_rejects_catch_all_trusted_proxies(monkeypatch):
         Settings(**_valid_prod_kwargs(TRUSTED_PROXY_IPS="0.0.0.0/0,::/0"))
 
 
+def test_production_rejects_localhost_admin_base_url(monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    with pytest.raises(ValueError, match="ADMIN_BASE_URL"):
+        Settings(**_valid_prod_kwargs(ADMIN_BASE_URL="http://localhost:3000"))
+
+
+def test_production_rejects_non_https_site_base_url(monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    with pytest.raises(ValueError, match="SITE_BASE_URL"):
+        Settings(**_valid_prod_kwargs(SITE_BASE_URL="http://reputation.co.kr"))
+
+
 def test_production_accepts_valid_secure_config(monkeypatch):
     monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
     settings = Settings(**_valid_prod_kwargs())
     assert settings.ALLOWED_ORIGINS == ["https://admin.example.com", "https://reputation.co.kr"]
+    assert settings.ADMIN_BASE_URL == "https://admin.example.com"
+    assert settings.SITE_BASE_URL == "https://reputation.co.kr"

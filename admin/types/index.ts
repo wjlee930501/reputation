@@ -22,6 +22,11 @@ export interface Hospital {
   latitude?: number | null
   longitude?: number | null
   aeo_domain?: string
+  domain_management_mode?: 'HOSPITAL_MANAGED' | 'MOTIONLABS_MANAGED'
+  domain_dns_strategy?: 'CNAME' | 'APEX_ADDRESS'
+  domain_registrar?: string | null
+  domain_dns_provider?: string | null
+  domain_purchase_note?: string | null
   region?: string[]
   specialties?: string[]
   keywords?: string[]

@@ -9,8 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.admin.domain import _normalize_dns_name, _resolve_cname, missing_live_prerequisites
-from app.core.config import settings
+from app.api.admin.domain import check_domain_dns, domain_dns_strategy_for_hospital, missing_live_prerequisites
 from app.core.database import get_db
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
@@ -92,11 +91,10 @@ async def verify_domain_operation(
     if not hospital.aeo_domain:
         raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다.")
 
-    cname_value = await _resolve_cname(hospital.aeo_domain)
-    verified = _normalize_dns_name(cname_value) == _normalize_dns_name(settings.CNAME_TARGET)
+    dns_check = await check_domain_dns(hospital.aeo_domain, domain_dns_strategy_for_hospital(hospital))
     previous_status = hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
     previous_site_live = bool(hospital.site_live)
-    if verified:
+    if dns_check.verified:
         missing_prerequisites = missing_live_prerequisites(hospital)
         if missing_prerequisites:
             raise HTTPException(
@@ -114,9 +112,12 @@ async def verify_domain_operation(
         target_type="domain",
         target_id=hospital.aeo_domain,
         detail={
-            "verified": verified,
-            "cname_value": cname_value,
-            "expected_cname": settings.CNAME_TARGET,
+            "verified": dns_check.verified,
+            "cname_value": dns_check.cname_value,
+            "address_values": dns_check.address_values,
+            "expected_cname": dns_check.expected_cname,
+            "expected_addresses": dns_check.expected_addresses,
+            "verification_method": dns_check.verification_method,
             "previous_status": previous_status,
             "previous_site_live": previous_site_live,
             "new_status": hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status),
@@ -126,9 +127,12 @@ async def verify_domain_operation(
     await db.commit()
     return {
         "domain": hospital.aeo_domain,
-        "verified": verified,
-        "cname_value": cname_value,
-        "expected_cname": settings.CNAME_TARGET,
+        "verified": dns_check.verified,
+        "cname_value": dns_check.cname_value,
+        "address_values": dns_check.address_values,
+        "expected_cname": dns_check.expected_cname,
+        "expected_addresses": dns_check.expected_addresses,
+        "verification_method": dns_check.verification_method,
     }
 
 

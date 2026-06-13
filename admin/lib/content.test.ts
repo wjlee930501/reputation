@@ -31,7 +31,10 @@ test('sortCarriedOverFirst moves carried items to the top, preserving order in b
 })
 
 test('sortCarriedOverFirst keeps order untouched when nothing is carried over', () => {
-  const items = [{ id: 'a' }, { id: 'b' }]
+  const items = [
+    { id: 'a', carried_over_from: null },
+    { id: 'b', carried_over_from: null },
+  ]
 
   assert.deepEqual(
     sortCarriedOverFirst(items).map((item) => item.id),

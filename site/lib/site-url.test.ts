@@ -3,16 +3,67 @@ import test from 'node:test'
 
 import { canonicalBase, normalizeCustomDomain, platformSiteUrl } from './site-url.ts'
 
+function setEnv(name: 'NEXT_PUBLIC_SITE_URL' | 'NODE_ENV', value: string | undefined): void {
+  if (value === undefined) {
+    Reflect.deleteProperty(process.env, name)
+    return
+  }
+  Object.defineProperty(process.env, name, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  })
+}
+
 test('platformSiteUrl falls back to default and strips trailing slash', () => {
   const original = process.env.NEXT_PUBLIC_SITE_URL
+  const originalNodeEnv = process.env.NODE_ENV
   try {
-    delete process.env.NEXT_PUBLIC_SITE_URL
-    assert.equal(platformSiteUrl(), 'https://reputation.co.kr')
-    process.env.NEXT_PUBLIC_SITE_URL = 'https://example.com/'
+    setEnv('NODE_ENV', 'test')
+    setEnv('NEXT_PUBLIC_SITE_URL', undefined)
+    assert.equal(platformSiteUrl(), 'https://reputation.motionlabs.kr')
+    setEnv('NEXT_PUBLIC_SITE_URL', 'https://example.com/')
     assert.equal(platformSiteUrl(), 'https://example.com')
   } finally {
-    if (original === undefined) delete process.env.NEXT_PUBLIC_SITE_URL
-    else process.env.NEXT_PUBLIC_SITE_URL = original
+    setEnv('NEXT_PUBLIC_SITE_URL', original)
+    setEnv('NODE_ENV', originalNodeEnv)
+  }
+})
+
+test('platformSiteUrl fails closed when production env is missing', () => {
+  const original = process.env.NEXT_PUBLIC_SITE_URL
+  const originalNodeEnv = process.env.NODE_ENV
+  try {
+    setEnv('NODE_ENV', 'production')
+    setEnv('NEXT_PUBLIC_SITE_URL', undefined)
+    assert.throws(() => platformSiteUrl(), /NEXT_PUBLIC_SITE_URL/)
+  } finally {
+    setEnv('NEXT_PUBLIC_SITE_URL', original)
+    setEnv('NODE_ENV', originalNodeEnv)
+  }
+})
+
+test('platformSiteUrl rejects unsafe production origins', () => {
+  const original = process.env.NEXT_PUBLIC_SITE_URL
+  const originalNodeEnv = process.env.NODE_ENV
+  try {
+    setEnv('NODE_ENV', 'production')
+
+    setEnv('NEXT_PUBLIC_SITE_URL', 'http://localhost:3000')
+    assert.throws(() => platformSiteUrl(), /https/)
+
+    setEnv('NEXT_PUBLIC_SITE_URL', 'https://127.0.0.1')
+    assert.throws(() => platformSiteUrl(), /public hostname/)
+
+    setEnv('NEXT_PUBLIC_SITE_URL', 'https://[::1]')
+    assert.throws(() => platformSiteUrl(), /public hostname/)
+
+    setEnv('NEXT_PUBLIC_SITE_URL', 'https://admin.localhost')
+    assert.throws(() => platformSiteUrl(), /public hostname/)
+  } finally {
+    setEnv('NEXT_PUBLIC_SITE_URL', original)
+    setEnv('NODE_ENV', originalNodeEnv)
   }
 })
 

@@ -6,13 +6,15 @@
 # ═══════════════════════════════════════════════════════════════════
 
 project_id          = "reputation-prod"
-region              = "us-central1"
-zone                = "us-central1-a"
+region              = "asia-northeast3"
+zone                = "asia-northeast3-a"
 
 # ── Domain ─────────────────────────────────────────────────────────
-domain              = "reputation.co.kr"
-admin_subdomain     = "admin.reputation.co.kr"
+domain              = "reputation.motionlabs.kr"
+admin_subdomain     = "admin.reputation.motionlabs.kr"
 dns_zone_name       = ""  # Cloud DNS managed zone (선택)
+cname_target        = "cname.reputation.motionlabs.kr"
+enable_http_redirect = true
 
 # 병원 커스텀 도메인 (병원이 CNAME → CNAME_TARGET 설정을 마친 뒤에 추가할 것 —
 # CNAME 없이 apply하면 해당 도메인 cert가 PROVISIONING에 머문다).
@@ -20,6 +22,7 @@ dns_zone_name       = ""  # Cloud DNS managed zone (선택)
 # customer_domains = ["jangclinic.co.kr"]
 
 # ── Database ───────────────────────────────────────────────────────
+db_edition       = "ENTERPRISE"
 db_instance_tier = "db-custom-1-3840"
 # Create the Cloud SQL app user and DB_PASSWORD Secret Manager version out-of-band
 # so the database password never enters Terraform state.
@@ -30,18 +33,18 @@ db_instance_tier = "db-custom-1-3840"
 # gcloud secrets versions add ADMIN_SECRET_KEY --data-file=-
 
 # ── Site ───────────────────────────────────────────────────────────
-site_revalidate_url    = "https://reputation.co.kr/api/revalidate"
+site_revalidate_url    = "https://reputation.motionlabs.kr/api/revalidate"
 
 # ── Container image (INFRA-2) ──────────────────────────────────────
 # Prefer an immutable digest so deploys/rollbacks are reproducible. CI/CD
 # should set this to the digest it just pushed. Leave empty to fall back to the
 # (mutable) :latest tag.
-# api_image = "us-central1-docker.pkg.dev/reputation-prod/reputation/reputation@sha256:<digest>"
+# api_image = "asia-northeast3-docker.pkg.dev/reputation-prod/reputation/reputation@sha256:<digest>"
 
 # ── Backend security env (AUTH-1 / AUTH-5) ─────────────────────────
 # CORS allowlist (browser-facing, credentials enabled → HTTPS only, no '*').
 # Defaults to https://<domain> and https://<admin_subdomain>; override if needed.
-# allowed_origins   = ["https://reputation.co.kr", "https://admin.reputation.co.kr"]
+# allowed_origins   = ["https://reputation.motionlabs.kr", "https://admin.reputation.motionlabs.kr"]
 # Trusted proxy hops for X-Forwarded-For (rate-limit keying / consent IP).
 # Default is the GCP global external LB / GFE source ranges — usually correct
 # as-is. NEVER set 0.0.0.0/0 or ::/0: the backend hard-rejects catch-all ranges

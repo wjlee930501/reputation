@@ -57,10 +57,10 @@ User
 NEXT_PUBLIC_* 값은 **빌드 시점에 번들로 인라인**되므로 도메인이 정해진 뒤 빌드한다.
 
 ```bash
-REGION=us-central1; PROJECT=$(gcloud config get-value project)
+REGION=asia-northeast3; PROJECT=$(gcloud config get-value project)
 BASE=${REGION}-docker.pkg.dev/${PROJECT}/reputation
 TAG=$(date +%Y%m%d-%H%M%S)
-DOMAIN=reputation.co.kr            # 실제 도메인으로
+DOMAIN=reputation.motionlabs.kr    # 플랫폼/API 기준 도메인
 
 # backend
 docker build --platform linux/amd64 -t ${BASE}/reputation:${TAG} -f backend/Dockerfile backend
@@ -93,7 +93,8 @@ terraform init -backend-config="bucket=${PROJECT}-tfstate"
 terraform apply \
   -var project_id=${PROJECT} \
   -var domain=${DOMAIN} \
-  -var admin_subdomain=admin.${DOMAIN} \
+  -var admin_subdomain=admin.reputation.motionlabs.kr \
+  -var cname_target=cname.reputation.motionlabs.kr \
   -var api_image=${BASE}/reputation@sha256:... \
   -var site_image=${BASE}/site@sha256:... \
   -var admin_image=${BASE}/admin@sha256:...

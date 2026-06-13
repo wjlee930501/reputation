@@ -109,7 +109,7 @@ def _create_hospital() -> Hospital:
         google_business_profile_url="https://business.google.com/example/motionlabs-orthopedics",
         google_maps_url="https://maps.google.com/?q=서울시+성동구+아차산로+38",
         naver_place_url="https://naver.me/motionlabs-demo",
-        aeo_domain="motionlabs-orthopedics-demo.reputation.co.kr",
+        aeo_domain="motionlabs-orthopedics-demo.reputation.motionlabs.kr",
         latitude=37.544638,
         longitude=127.055914,
         region=["서울", "성동구", "성수동"],

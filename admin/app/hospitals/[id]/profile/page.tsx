@@ -2,9 +2,10 @@
 
 import { useParams } from 'next/navigation'
 import { useEffect, useId, useState } from 'react'
-import { ApiError, fetchAPI } from '@/lib/api'
-import { parseStepsFromMessage, readDomainError } from '@/lib/domain'
+import { fetchAPI } from '@/lib/api'
 import { useHospitalHeader } from '../hospital-context'
+import { DomainSetupPanel } from '../DomainSetupPanel'
+import type { DomainProfile } from '../DomainSetupTypes'
 
 interface Treatment {
   name: string
@@ -43,6 +44,11 @@ interface HospitalProfile {
   site_built?: boolean
   site_live?: boolean
   aeo_domain?: string
+  domain_management_mode?: DomainProfile['domain_management_mode']
+  domain_dns_strategy?: DomainProfile['domain_dns_strategy']
+  domain_registrar?: string | null
+  domain_dns_provider?: string | null
+  domain_purchase_note?: string | null
 }
 
 const DAYS = ['월', '화', '수', '목', '금', '토', '일']
@@ -116,16 +122,6 @@ function TagInput({
     </div>
   )
 }
-
-const DEFAULT_CNAME_TARGET = 'aeo.motionlabs.io'
-
-type DomainFeedback = {
-  tone: 'success' | 'error' | 'info'
-  title?: string
-  message: string
-  /** 검증 409 — DNS는 정상이나 운영 시작 전 완료해야 할 단계 목록 (체크리스트로 표시) */
-  steps?: string[]
-} | null
 
 type ChecklistStatus = 'done' | 'required' | 'recommended'
 
@@ -268,12 +264,6 @@ export default function ProfilePage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
-  const [domainSaving, setDomainSaving] = useState(false)
-  const [domainVerifying, setDomainVerifying] = useState(false)
-  const [domainFeedback, setDomainFeedback] = useState<DomainFeedback>(null)
-  const [domainExpectedCname, setDomainExpectedCname] = useState<string>(DEFAULT_CNAME_TARGET)
-  const [domainSavedValue, setDomainSavedValue] = useState<string>('')
-  const [cnameCopied, setCnameCopied] = useState(false)
 
   useEffect(() => {
     fetchAPI<HospitalProfile>(`/admin/hospitals/${hospitalId}`)
@@ -289,7 +279,6 @@ export default function ProfilePage() {
           latitude: data.latitude ?? null,
           longitude: data.longitude ?? null,
         })
-        setDomainSavedValue(data.aeo_domain ?? '')
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
@@ -709,313 +698,14 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      {/* 도메인 연결 — 원장 소유 도메인 자산 */}
-      {profile.site_built && (() => {
-        const currentDomain = (profile.aeo_domain ?? '').trim()
-        const hasUnsavedChange = currentDomain !== (domainSavedValue ?? '').trim()
-        const status: 'live' | 'waiting' | 'unsaved' | 'empty' = hasUnsavedChange
-          ? 'unsaved'
-          : profile.site_live
-            ? 'live'
-            : !domainSavedValue
-              ? 'empty'
-              : 'waiting'
-
-        const statusBadge = {
-          live:    { label: '연결 완료',             cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-          waiting: { label: '저장됨 · DNS 미확인',   cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-          unsaved: { label: '저장 필요',             cls: 'bg-blue-50 text-blue-700 border-blue-200' },
-          empty:   { label: '미설정',                cls: 'bg-slate-50 text-slate-600 border-slate-200' },
-        }[status]
-
-        async function handleCopyCname() {
-          try {
-            await navigator.clipboard.writeText(domainExpectedCname)
-            setCnameCopied(true)
-            window.setTimeout(() => setCnameCopied(false), 2000)
-          } catch {
-            // 클립보드 권한이 없으면 조용히 무시 — 값은 화면에 그대로 보인다.
-          }
-        }
-
-        async function handleSaveDomain() {
-          const domain = (profile.aeo_domain ?? '').trim()
-          if (!domain) {
-            setDomainFeedback({ tone: 'error', message: '도메인을 입력해 주세요.' })
-            return
-          }
-          setDomainSaving(true)
-          setDomainFeedback(null)
-          try {
-            await fetchAPI(`/admin/hospitals/${hospitalId}/domain`, {
-              method: 'PATCH',
-              body: JSON.stringify({ domain }),
-            })
-            setDomainSavedValue(domain)
-            setProfile((prev) => ({ ...prev, aeo_domain: domain, site_live: false }))
-            void refetchHeader()
-            setDomainFeedback({
-              tone: 'success',
-              message: '도메인이 저장되었습니다. DNS 전파 후 [DNS 확인하고 병원 정보 허브 운영 시작]을 눌러주세요.',
-            })
-          } catch (e: unknown) {
-            const info = readDomainError(e, '도메인 저장에 실패했습니다.')
-            setDomainFeedback({
-              tone: 'error',
-              title:
-                info.kind === 'invalid'
-                  ? '도메인 형식 오류'
-                  : info.kind === 'conflict'
-                    ? '이미 사용 중인 도메인'
-                    : undefined,
-              message:
-                info.kind === 'conflict'
-                  ? `${info.message} 다른 도메인을 입력하거나, 해당 병원의 연결을 먼저 해제해 주세요.`
-                  : info.message,
-            })
-          } finally {
-            setDomainSaving(false)
-          }
-        }
-
-        async function handleVerifyDomain() {
-          setDomainVerifying(true)
-          setDomainFeedback(null)
-          try {
-            const result = await fetchAPI<{ verified?: boolean; expected_cname?: string; message?: string }>(
-              `/admin/hospitals/${hospitalId}/domain/verify`,
-              { method: 'POST' },
-            )
-            if (result?.expected_cname) setDomainExpectedCname(result.expected_cname)
-            if (result?.verified) {
-              setProfile((prev) => ({ ...prev, site_live: true }))
-              void refetchHeader() // 운영 상태 점·배지 즉시 갱신
-              setDomainFeedback({
-                tone: 'success',
-                message: result.message ?? '도메인 연결이 확인되어 병원 정보 허브가 운영 상태로 전환되었습니다.',
-              })
-            } else {
-              setDomainFeedback({
-                tone: 'error',
-                message: result?.message ?? 'CNAME 설정이 아직 확인되지 않았습니다. DNS 전파에는 최대 24시간이 걸릴 수 있습니다.',
-              })
-            }
-          } catch (e: unknown) {
-            const info = readDomainError(e, '도메인 검증에 실패했습니다.')
-            // verify 409 = DNS는 정상이나 운영 시작 전 선행 단계 미완료.
-            // detail이 구조화 목록이면 그대로, 문자열 한 줄이면 콜론 뒤 항목을 분해해 체크리스트로 보여준다.
-            if (info.kind === 'prerequisite' || (e instanceof ApiError && e.status === 409)) {
-              const steps = info.missingSteps.length > 0 ? info.missingSteps : parseStepsFromMessage(info.message)
-              setDomainFeedback({
-                tone: 'info',
-                title: 'DNS는 확인됐지만, 운영 시작 전 완료할 단계가 남아 있습니다',
-                message: info.message,
-                steps,
-              })
-            } else {
-              setDomainFeedback({ tone: 'error', message: info.message })
-            }
-          } finally {
-            setDomainVerifying(false)
-          }
-        }
-
-        return (
-          <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            {/* Hero */}
-            <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-white px-6 py-5 border-b border-slate-100">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-base font-semibold text-slate-900">커스텀 도메인 연결</h3>
-                  <p className="text-sm text-slate-700 mt-1">
-                    병원이 별도로 구입한 도메인을 콘텐츠 허브에 연결합니다.
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    계정·콘텐츠가 플랫폼에 묶이지 않고 병원 브랜드 자산으로 남습니다.
-                  </p>
-                </div>
-                <span
-                  className={`shrink-0 inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full border ${statusBadge.cls}`}
-                >
-                  {statusBadge.label}
-                </span>
-              </div>
-            </div>
-
-            <div className="px-6 py-5 space-y-5">
-              {/* STEP 1 — 도메인 입력 */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">1</span>
-                  <label htmlFor="profile-aeo-domain" className="text-sm font-semibold text-slate-800">원장님 소유 도메인</label>
-                </div>
-                <p className="text-xs text-slate-500 mb-2">
-                  서브도메인 사용을 권장합니다 (예: <code className="px-1 bg-slate-100 rounded">www.clinicname.co.kr</code> 또는 <code className="px-1 bg-slate-100 rounded">ai.clinicname.co.kr</code>).
-                  병원이 이미 보유한 도메인을 입력하거나, 신규 도메인을 등록업체에서 발급받아 주세요.
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    id="profile-aeo-domain"
-                    value={profile.aeo_domain ?? ''}
-                    onChange={(e) => updateField('aeo_domain', e.target.value)}
-                    placeholder="ai.clinicname.co.kr"
-                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSaveDomain}
-                    disabled={domainSaving || !currentDomain || !hasUnsavedChange}
-                    className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {domainSaving ? '저장 중...' : '도메인 저장'}
-                  </button>
-                </div>
-              </div>
-
-              {/* STEP 2 — DNS 안내 (도메인 저장 후 표시) */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">2</span>
-                  <span className="text-sm font-semibold text-slate-800">DNS 설정 안내</span>
-                </div>
-                {domainSavedValue ? (
-                  <>
-                    <p className="text-xs text-slate-500 mb-2">
-                      도메인 등록기관(가비아·후이즈·카페24 등)의 DNS 관리 페이지에서 아래 CNAME 레코드를 추가해 주세요:{' '}
-                      <code className="px-1 bg-slate-100 rounded">{domainSavedValue}</code> →{' '}
-                      <code className="px-1 bg-slate-100 rounded">{domainExpectedCname}</code>
-                    </p>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
-                      <table className="w-full text-xs">
-                        <tbody className="divide-y divide-slate-200">
-                          <tr>
-                            <td className="px-3 py-2 w-32 text-slate-500 font-medium">레코드 종류</td>
-                            <td className="px-3 py-2 font-mono text-slate-800">CNAME</td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2 text-slate-500 font-medium">도메인 이름</td>
-                            <td className="px-3 py-2 font-mono text-slate-800">{domainSavedValue}</td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2 text-slate-500 font-medium">연결 대상값</td>
-                            <td className="px-3 py-2">
-                              <div className="flex items-center gap-2">
-                                <span className="font-mono text-slate-800">{domainExpectedCname}</span>
-                                <button
-                                  type="button"
-                                  onClick={handleCopyCname}
-                                  className="shrink-0 px-2 py-0.5 text-[11px] font-medium text-blue-600 border border-blue-300 rounded hover:bg-blue-50 transition-colors"
-                                >
-                                  {cnameCopied ? '복사됨 ✓' : '복사'}
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2 text-slate-500 font-medium">TTL</td>
-                            <td className="px-3 py-2 font-mono text-slate-800">300 (5분)</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                    <p className="text-[11px] text-slate-400 mt-1.5">
-                      환경별 대상값은 검증 결과 메시지를 기준으로 확인됩니다. DNS 전파에는 최대 24시간이 소요될 수 있습니다.
-                    </p>
-                  </>
-                ) : (
-                  <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
-                    도메인을 저장하면 등록기관에 추가할 CNAME 레코드 안내가 여기에 표시됩니다.
-                  </p>
-                )}
-              </div>
-
-              {/* STEP 3 — 검증 및 운영 시작 */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[11px] font-semibold">3</span>
-                  <span className="text-sm font-semibold text-slate-800">연결 검증 및 병원 정보 허브 운영 시작</span>
-                </div>
-                <p className="text-xs text-slate-500 mb-2">
-                  DNS 전파 후 [DNS 확인]을 클릭하세요. 확인이 완료되면 콘텐츠 허브가 이 도메인을 대표 주소(canonical)로 사용합니다.
-                </p>
-                {profile.site_live && !hasUnsavedChange ? (
-                  <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
-                        <span className="text-sm font-semibold text-emerald-800">병원 정보 허브 운영중</span>
-                      </div>
-                      <p className="text-xs text-emerald-700 mt-0.5">
-                        원장님 소유 도메인으로 병원 정보 허브가 정상 운영되고 있습니다.
-                      </p>
-                    </div>
-                    {currentDomain && (
-                      <a
-                        href={`https://${currentDomain}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs font-mono text-emerald-700 underline hover:text-emerald-900"
-                      >
-                        {currentDomain} ↗
-                      </a>
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleVerifyDomain}
-                    disabled={domainVerifying || !domainSavedValue || hasUnsavedChange}
-                    className="w-full py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {domainVerifying
-                      ? 'DNS 확인 중...'
-                      : hasUnsavedChange
-                        ? '변경한 도메인을 먼저 저장해 주세요'
-                        : !domainSavedValue
-                          ? '도메인을 먼저 저장해 주세요'
-                          : 'DNS 확인하고 병원 정보 허브 운영 시작'}
-                  </button>
-                )}
-                <p className="text-[11px] text-slate-400 mt-1.5">
-                  HTTPS 인증서는 연결 확인 후 자동 발급되며 최대 24시간 걸릴 수 있습니다.
-                </p>
-              </div>
-
-              {/* 인라인 피드백 — 형식 오류 / 사용 중 충돌 / 선행 단계 미완료를 구분해 보여준다 */}
-              {domainFeedback && (
-                <div
-                  className={`rounded-lg px-3 py-2 text-sm border ${
-                    domainFeedback.tone === 'success'
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                      : domainFeedback.tone === 'error'
-                        ? 'bg-red-50 border-red-200 text-red-700'
-                        : 'bg-blue-50 border-blue-200 text-blue-700'
-                  }`}
-                >
-                  {domainFeedback.title && (
-                    <p className="font-semibold">{domainFeedback.title}</p>
-                  )}
-                  <p className={domainFeedback.title ? 'mt-0.5 text-xs' : ''}>{domainFeedback.message}</p>
-                  {(domainFeedback.steps?.length ?? 0) > 0 && (
-                    <ul className="mt-2 space-y-1.5">
-                      {domainFeedback.steps!.map((step) => (
-                        <li key={step} className="flex items-start gap-2 text-xs">
-                          <span
-                            aria-hidden
-                            className="mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded border border-current bg-white/60"
-                          />
-                          {step}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
-        )
-      })()}
+      {profile.site_built && (
+        <DomainSetupPanel
+          hospitalId={hospitalId}
+          profile={profile}
+          onProfileChange={(patch) => setProfile((prev) => ({ ...prev, ...patch }))}
+          onHeaderRefresh={() => { void refetchHeader() }}
+        />
+      )}
 
       {/* 온보딩 완료 및 초기 리포트/콘텐츠 허브 노출 준비 시작 */}
       <section

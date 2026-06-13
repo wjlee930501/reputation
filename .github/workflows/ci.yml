@@ -102,6 +102,11 @@ jobs:
         run: npm run lint
 
       - name: Build
+        env:
+          NEXT_PUBLIC_SITE_URL: https://reputation.co.kr
+          NEXT_PUBLIC_API_URL: https://reputation.co.kr/api/v1/public
+          NEXT_PUBLIC_BACKEND_URL: https://reputation.co.kr
+          BACKEND_URL: https://reputation.co.kr
         run: npm run build
 
   terraform:

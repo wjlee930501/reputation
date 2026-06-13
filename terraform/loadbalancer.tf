@@ -192,6 +192,7 @@ resource "google_compute_url_map" "main" {
 
 # ── HTTP → HTTPS Redirect ──────────────────────────────────────────
 resource "google_compute_url_map" "http_redirect" {
+  count   = var.enable_http_redirect ? 1 : 0
   name    = "${var.app_name}-http-redirect"
   project = var.project_id
 
@@ -203,15 +204,17 @@ resource "google_compute_url_map" "http_redirect" {
 }
 
 resource "google_compute_target_http_proxy" "http_redirect" {
+  count   = var.enable_http_redirect ? 1 : 0
   name    = "${var.app_name}-http-redirect-proxy"
   project = var.project_id
-  url_map = google_compute_url_map.http_redirect.id
+  url_map = google_compute_url_map.http_redirect[0].id
 }
 
 resource "google_compute_global_forwarding_rule" "http_redirect" {
+  count      = var.enable_http_redirect ? 1 : 0
   name       = "${var.app_name}-http-redirect-rule"
   project    = var.project_id
-  target     = google_compute_target_http_proxy.http_redirect.id
+  target     = google_compute_target_http_proxy.http_redirect[0].id
   ip_address = google_compute_global_address.lb_ip.address
   port_range = "80"
 }

@@ -12,7 +12,7 @@
 #   bash scripts/deploy.sh migrate      # DB 마이그레이션 실행
 #
 # site/admin 배포에는 도메인 env가 필요하다 (NEXT_PUBLIC_* 빌드 인라인용):
-#   PUBLIC_DOMAIN=reputation.co.kr ADMIN_DOMAIN=admin.reputation.co.kr \
+#   PUBLIC_DOMAIN=reputation.motionlabs.kr ADMIN_DOMAIN=admin.reputation.motionlabs.kr \
 #     bash scripts/deploy.sh site
 #
 # 사전 준비:
@@ -45,7 +45,7 @@ SERVICE_ENV_FILE=""
 TEMP_ENV_FILES=()
 
 PROJECT_ID="${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || echo '')}"
-REGION="${GCP_REGION:-us-central1}"
+REGION="${GCP_REGION:-asia-northeast3}"
 REPO="${GCP_ARTIFACT_REPO:-reputation}"
 IMAGE_TAG="$(date +%Y%m%d-%H%M%S)"
 IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/reputation"
@@ -73,8 +73,8 @@ BEAT_MAX="${BEAT_MAX:-1}"
 
 # Frontend (Next.js) — terraform/cloudrun_frontend.tf 기본값과 동일하게 유지
 FRONTEND_SERVICE_ACCOUNT="${FRONTEND_SERVICE_ACCOUNT:-reputation-frontend-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
-PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-}"   # 예: reputation.co.kr
-ADMIN_DOMAIN="${ADMIN_DOMAIN:-}"     # 예: admin.reputation.co.kr
+PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-}"   # 예: reputation.motionlabs.kr
+ADMIN_DOMAIN="${ADMIN_DOMAIN:-}"     # 예: admin.reputation.motionlabs.kr
 SITE_MEMORY="${SITE_MEMORY:-512Mi}"
 SITE_MIN="${SITE_MIN:-0}"
 # site max=1 기본: on-demand ISR revalidate가 단일 인스턴스 캐시만 비우기 때문
@@ -349,12 +349,28 @@ deploy_beat() {
 
 require_public_domain() {
   if [[ -z "$PUBLIC_DOMAIN" ]]; then
-    fail "PUBLIC_DOMAIN 환경변수가 필요합니다 (예: PUBLIC_DOMAIN=reputation.co.kr). NEXT_PUBLIC_* 값이 빌드 시점에 번들로 인라인되기 때문입니다."
+    fail "PUBLIC_DOMAIN 환경변수가 필요합니다 (예: PUBLIC_DOMAIN=reputation.motionlabs.kr). NEXT_PUBLIC_* 값이 빌드 시점에 번들로 인라인되기 때문입니다."
   fi
+}
+
+require_public_dns() {
+  if [[ "${SKIP_PUBLIC_DNS_PREFLIGHT:-0}" == "1" ]]; then
+    info "SKIP_PUBLIC_DNS_PREFLIGHT=1 — 공개 DNS preflight를 건너뜁니다."
+    return
+  fi
+
+  local domains=("$PUBLIC_DOMAIN")
+  if [[ -n "$ADMIN_DOMAIN" ]]; then
+    domains+=("$ADMIN_DOMAIN")
+  fi
+
+  python3 "${PROJECT_ROOT}/scripts/check_public_dns.py" "${domains[@]}" \
+    || fail "공개 도메인 DNS가 고객 제공 가능한 주소를 가리키지 않습니다. DNS를 먼저 수정하거나, 초기 인프라 부트스트랩이면 SKIP_PUBLIC_DNS_PREFLIGHT=1로 명시적으로 우회하세요."
 }
 
 build_and_push_site() {
   require_public_domain
+  require_public_dns
   local image_url="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/site:${IMAGE_TAG}"
   info "Site 이미지 빌드 중 (NEXT_PUBLIC_* 인라인: https://${PUBLIC_DOMAIN})..."
   docker build \
@@ -372,6 +388,7 @@ build_and_push_site() {
 
 build_and_push_admin() {
   require_public_domain
+  require_public_dns
   local image_url="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/admin:${IMAGE_TAG}"
   info "Admin 이미지 빌드 중..."
   docker build \
@@ -438,7 +455,7 @@ require_cloudsql_connection() {
   # 프로덕션 DATABASE_URL은 /cloudsql/<connection_name> unix socket을 쓰므로
   # Cloud SQL 연결을 Job에 붙이지 않으면 마이그레이션이 DB에 접근할 수 없다.
   if [[ -z "$CLOUDSQL_CONNECTION" ]]; then
-    fail "CLOUD_SQL_CONNECTION_NAME이 필요합니다 (.env.production 또는 환경변수). 예: my-project:us-central1:reputation-db"
+    fail "CLOUD_SQL_CONNECTION_NAME이 필요합니다 (.env.production 또는 환경변수). 예: my-project:asia-northeast3:reputation-db"
   fi
 }
 
@@ -490,6 +507,7 @@ case "$TARGET" in
     # PUBLIC_DOMAIN 누락이 site 빌드 단계에서야 터지면 새 backend + 옛 frontend의
     # 반쪽 롤아웃 상태로 중단된다.
     require_public_domain
+    require_public_dns
     require_cloudsql_connection
     IMAGE_URL=$(build_and_push)
     # 마이그레이션을 새 코드 배포보다 먼저 실행 — 새 리비전이 옛 스키마 위에서

@@ -7,7 +7,7 @@ locals {
   # var.api_image (set by CI/CD). Fall back to a registry tag only if unset.
   # NOTE: the fallback uses a tag — set var.api_image to an @sha256:... digest
   # in production for reproducible deploys/rollbacks.
-  app_image = var.api_image != "" ? var.api_image : "us-central1-docker.pkg.dev/${var.project_id}/reputation/reputation:latest"
+  app_image = var.api_image != "" ? var.api_image : "${var.region}-docker.pkg.dev/${var.project_id}/reputation/reputation:latest"
 
   # AUTH-5: Effective browser CORS allowlist. If the operator does not override
   # var.allowed_origins, derive HTTPS origins from the configured domains.
@@ -80,6 +80,14 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "SITE_BASE_URL"
         value = "https://${var.domain}"
+      }
+      env {
+        name  = "CNAME_TARGET"
+        value = var.cname_target
+      }
+      env {
+        name  = "CUSTOM_DOMAIN_IP_TARGETS"
+        value = google_compute_global_address.lb_ip.address
       }
       # AUTH-1: Trust the load-balancer hop so rate limits / consent IPs key on
       # the real client (X-Forwarded-For) instead of the Google front-end IP.
@@ -268,6 +276,30 @@ resource "google_cloud_run_v2_service" "worker" {
         name  = "SITE_BASE_URL"
         value = "https://${var.domain}"
       }
+      env {
+        name  = "CNAME_TARGET"
+        value = var.cname_target
+      }
+      env {
+        name  = "CUSTOM_DOMAIN_IP_TARGETS"
+        value = google_compute_global_address.lb_ip.address
+      }
+      env {
+        name  = "TRUSTED_PROXY_IPS"
+        value = join(",", var.trusted_proxy_ips)
+      }
+      env {
+        name  = "ALLOWED_ORIGINS"
+        value = join(",", local.effective_allowed_origins)
+      }
+      env {
+        name  = "LOG_LEVEL"
+        value = "INFO"
+      }
+      env {
+        name  = "LOG_JSON"
+        value = "true"
+      }
       # Optional Sentry error tracking — env only rendered when var.sentry_dsn set.
       dynamic "env" {
         for_each = var.sentry_dsn != "" ? [var.sentry_dsn] : []
@@ -389,6 +421,38 @@ resource "google_cloud_run_v2_service" "beat" {
       env {
         name  = "REDIS_URL"
         value = "redis://${google_redis_instance.main.host}:6379/0"
+      }
+      env {
+        name  = "CNAME_TARGET"
+        value = var.cname_target
+      }
+      env {
+        name  = "CUSTOM_DOMAIN_IP_TARGETS"
+        value = google_compute_global_address.lb_ip.address
+      }
+      env {
+        name  = "ADMIN_BASE_URL"
+        value = var.admin_subdomain != "" ? "https://${var.admin_subdomain}" : "https://${var.domain}"
+      }
+      env {
+        name  = "SITE_BASE_URL"
+        value = "https://${var.domain}"
+      }
+      env {
+        name  = "TRUSTED_PROXY_IPS"
+        value = join(",", var.trusted_proxy_ips)
+      }
+      env {
+        name  = "ALLOWED_ORIGINS"
+        value = join(",", local.effective_allowed_origins)
+      }
+      env {
+        name  = "LOG_LEVEL"
+        value = "INFO"
+      }
+      env {
+        name  = "LOG_JSON"
+        value = "true"
       }
       # Optional Sentry error tracking — env only rendered when var.sentry_dsn set.
       dynamic "env" {
@@ -518,8 +582,24 @@ resource "google_cloud_run_v2_job" "migrate" {
           name  = "REDIS_URL"
           value = "redis://${google_redis_instance.main.host}:6379/0"
         }
+        env {
+          name  = "CNAME_TARGET"
+          value = var.cname_target
+        }
+        env {
+          name  = "CUSTOM_DOMAIN_IP_TARGETS"
+          value = google_compute_global_address.lb_ip.address
+        }
         # config.py validates these at boot in production (AUTH-1/AUTH-5) — the
         # migration container imports settings, so they must be present here too.
+        env {
+          name  = "ADMIN_BASE_URL"
+          value = var.admin_subdomain != "" ? "https://${var.admin_subdomain}" : "https://${var.domain}"
+        }
+        env {
+          name  = "SITE_BASE_URL"
+          value = "https://${var.domain}"
+        }
         env {
           name  = "TRUSTED_PROXY_IPS"
           value = join(",", var.trusted_proxy_ips)

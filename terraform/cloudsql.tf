@@ -15,6 +15,7 @@ resource "google_sql_database_instance" "main" {
     # (backups + PITR below still protect against data loss). To move to HA
     # later, change to availability_type = "REGIONAL" — an in-place change that
     # triggers a brief restart, no data migration needed.
+    edition               = var.db_edition
     availability_type     = "ZONAL"
     disk_size             = 10
     disk_type             = "PD_SSD"

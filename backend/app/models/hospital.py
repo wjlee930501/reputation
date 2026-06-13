@@ -42,6 +42,16 @@ class HospitalStatus(str, enum.Enum):
     PAUSED = "PAUSED"             # 일시 정지
 
 
+class DomainManagementMode(str, enum.Enum):
+    HOSPITAL_MANAGED = "HOSPITAL_MANAGED"
+    MOTIONLABS_MANAGED = "MOTIONLABS_MANAGED"
+
+
+class DomainDnsStrategy(str, enum.Enum):
+    CNAME = "CNAME"
+    APEX_ADDRESS = "APEX_ADDRESS"
+
+
 class Hospital(Base):
     __tablename__ = "hospitals"
 
@@ -75,6 +85,21 @@ class Hospital(Base):
     # 연결된 AEO 도메인 — 공개 /site 미들웨어가 요청 호스트로 병원을 역조회하므로
     # 인덱스 필수 (ix_hospitals_aeo_domain, migration 0025). 저장 시 정규화(소문자).
     aeo_domain: Mapped[str | None] = mapped_column(String(200), index=True)
+    domain_management_mode: Mapped[DomainManagementMode] = mapped_column(
+        Enum(DomainManagementMode),
+        default=DomainManagementMode.HOSPITAL_MANAGED,
+        server_default=DomainManagementMode.HOSPITAL_MANAGED.value,
+        nullable=False,
+    )
+    domain_dns_strategy: Mapped[DomainDnsStrategy] = mapped_column(
+        Enum(DomainDnsStrategy),
+        default=DomainDnsStrategy.CNAME,
+        server_default=DomainDnsStrategy.CNAME.value,
+        nullable=False,
+    )
+    domain_registrar: Mapped[str | None] = mapped_column(String(200))
+    domain_dns_provider: Mapped[str | None] = mapped_column(String(200))
+    domain_purchase_note: Mapped[str | None] = mapped_column(Text)
     aeo_site_path: Mapped[str | None] = mapped_column(String(500))  # 빌드된 사이트 경로
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)

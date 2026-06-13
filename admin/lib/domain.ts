@@ -5,11 +5,109 @@
 import { ApiError } from './api.ts'
 
 export type DomainErrorKind = 'invalid' | 'conflict' | 'prerequisite' | 'generic'
+export type DomainManagementMode = 'HOSPITAL_MANAGED' | 'MOTIONLABS_MANAGED'
+export type DomainDnsStrategy = 'CNAME' | 'APEX_ADDRESS'
+
+export interface DomainSetupRecord {
+  type: 'CNAME' | 'A' | 'AAAA'
+  name: string
+  value: string
+  ttl: string
+  purpose: string
+}
+
+export interface DomainSetupChecklistItem {
+  key: string
+  label: string
+  description: string
+  status: 'DONE' | 'PENDING' | 'BLOCKED'
+}
+
+export interface DomainSetupPlan {
+  domain: string | null
+  management_mode: DomainManagementMode
+  dns_strategy: DomainDnsStrategy
+  registrar: string | null
+  dns_provider: string | null
+  purchase_note: string | null
+  expected_cname: string
+  expected_addresses: string[]
+  records: DomainSetupRecord[]
+  checklist: DomainSetupChecklistItem[]
+  warnings: string[]
+}
 
 export interface DomainErrorInfo {
   kind: DomainErrorKind
   message: string
   missingSteps: string[]
+}
+
+export function domainManagementModeLabel(mode: DomainManagementMode): string {
+  switch (mode) {
+    case 'HOSPITAL_MANAGED':
+      return '병원 직접 관리'
+    case 'MOTIONLABS_MANAGED':
+      return 'MotionLabs 구매·관리'
+  }
+}
+
+export function domainStrategyLabel(strategy: DomainDnsStrategy): string {
+  switch (strategy) {
+    case 'CNAME':
+      return '서브도메인 CNAME'
+    case 'APEX_ADDRESS':
+      return '루트 도메인 A 레코드'
+  }
+}
+
+export function buildFallbackDomainSetupPlan(domain: string, expectedCname: string): DomainSetupPlan {
+  return {
+    domain,
+    management_mode: 'HOSPITAL_MANAGED',
+    dns_strategy: 'CNAME',
+    registrar: null,
+    dns_provider: null,
+    purchase_note: null,
+    expected_cname: expectedCname,
+    expected_addresses: [],
+    records: [
+      {
+        type: 'CNAME',
+        name: domain,
+        value: expectedCname,
+        ttl: '300',
+        purpose: '병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결',
+      },
+    ],
+    checklist: [
+      {
+        key: 'domain_saved',
+        label: '도메인 저장',
+        description: '병원 계정에 연결할 도메인을 저장합니다.',
+        status: domain ? 'DONE' : 'PENDING',
+      },
+      {
+        key: 'dns_record',
+        label: 'DNS 레코드 등록',
+        description: '등록기관 DNS 관리 화면에 안내된 레코드를 추가합니다.',
+        status: 'PENDING',
+      },
+      {
+        key: 'dns_verified',
+        label: 'DNS 검증',
+        description: 'DNS 전파 후 연결 검증을 실행합니다.',
+        status: 'PENDING',
+      },
+      {
+        key: 'certificate_ready',
+        label: 'HTTPS 인증서',
+        description: '인증서가 발급되면 병원 정보 허브가 HTTPS로 제공됩니다.',
+        status: 'PENDING',
+      },
+    ],
+    warnings: [],
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

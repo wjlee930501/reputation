@@ -11,8 +11,8 @@
 # ═══════════════════════════════════════════════════════════════════
 
 locals {
-  site_image  = var.site_image != "" ? var.site_image : "us-central1-docker.pkg.dev/${var.project_id}/reputation/site:latest"
-  admin_image = var.admin_image != "" ? var.admin_image : "us-central1-docker.pkg.dev/${var.project_id}/reputation/admin:latest"
+  site_image  = var.site_image != "" ? var.site_image : "${var.region}-docker.pkg.dev/${var.project_id}/reputation/site:latest"
+  admin_image = var.admin_image != "" ? var.admin_image : "${var.region}-docker.pkg.dev/${var.project_id}/reputation/admin:latest"
 
   public_origin = "https://${var.domain}"
 }

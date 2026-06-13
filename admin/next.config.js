@@ -32,6 +32,7 @@ if (process.env.NODE_ENV === 'production') {
 const nextConfig = {
   // Cloud Run 컨테이너 배포용 — .next/standalone에 self-contained 서버 번들 생성.
   output: 'standalone',
+  outputFileTracingRoot: path.resolve(__dirname),
   turbopack: {
     root: path.resolve(__dirname),
   },

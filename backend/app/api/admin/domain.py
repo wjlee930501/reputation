@@ -1,18 +1,16 @@
-"""
-Admin API — 공개 도메인 상태 검증
-POST /admin/hospitals/{id}/domain/verify — CNAME 확인 + ACTIVE 전환
-"""
 import asyncio
+import ipaddress
 import socket
 import uuid
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.hospital import Hospital, HospitalStatus
+from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Domain"])
 
@@ -22,7 +20,20 @@ class DomainVerifyResponse(BaseModel):
     verified: bool
     cname_value: str | None
     expected_cname: str
+    address_values: list[str] = Field(default_factory=list)
+    expected_addresses: list[str] = Field(default_factory=list)
+    verification_method: str | None = None
     message: str
+
+
+@dataclass(frozen=True)
+class DomainDnsCheck:
+    cname_value: str | None
+    address_values: list[str]
+    expected_cname: str
+    expected_addresses: list[str]
+    verified: bool
+    verification_method: str | None
 
 
 def missing_live_prerequisites(hospital: Hospital) -> list[str]:
@@ -43,20 +54,16 @@ def missing_live_prerequisites(hospital: Hospital) -> list[str]:
 
 @router.post("/{hospital_id}/domain/verify", response_model=DomainVerifyResponse)
 async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """
-    병원 공개 도메인의 CNAME을 DNS 조회로 검증한다.
-    검증 성공 + 사전 단계(V0/허브 빌드/스케줄) 충족 시 site_live = True, ACTIVE 전환.
-    """
     hospital = await _get_hospital_or_404(db, hospital_id)
 
     if not hospital.aeo_domain:
         raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다. 먼저 도메인을 입력해 주세요.")
 
     domain = hospital.aeo_domain
-    cname_value = await _resolve_cname(domain)
-    verified = _normalize_dns_name(cname_value) == _normalize_dns_name(settings.CNAME_TARGET)
+    dns_strategy = domain_dns_strategy_for_hospital(hospital)
+    dns_check = await check_domain_dns(domain, dns_strategy)
 
-    if verified:
+    if dns_check.verified:
         # operations.py verify-domain / hospitals.py activate와 동일한 게이트 (P1-6).
         missing = missing_live_prerequisites(hospital)
         if missing:
@@ -67,29 +74,25 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         hospital.site_live = True
         hospital.status = HospitalStatus.ACTIVE
         await db.commit()
-        message = f"공개 도메인 상태가 확인되었습니다. ({domain} → {cname_value})"
+        resolved_value = dns_check.cname_value or ", ".join(dns_check.address_values)
+        message = f"공개 도메인 상태가 확인되었습니다. ({domain} → {resolved_value})"
     else:
-        message = (
-            f"CNAME 검증 실패. DNS에 CNAME 레코드를 추가해 주세요: "
-            f"{domain} → {settings.CNAME_TARGET}"
-        )
+        message = _failure_message(domain, dns_strategy, dns_check)
 
     return DomainVerifyResponse(
         domain=domain,
-        verified=verified,
-        cname_value=cname_value,
-        expected_cname=settings.CNAME_TARGET,
+        verified=dns_check.verified,
+        cname_value=dns_check.cname_value,
+        expected_cname=dns_check.expected_cname,
+        address_values=dns_check.address_values,
+        expected_addresses=dns_check.expected_addresses,
+        verification_method=dns_check.verification_method,
         message=message,
     )
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
 async def _resolve_cname(domain: str) -> str | None:
-    """DNS CNAME 조회. 실패 시 None 반환.
-
-    동기 DNS 해석은 응답 없는 네임서버에서 수 초를 블로킹한다 — 단일 uvicorn 프로세스의
-    이벤트 루프가 멈추면 공개 표면 요청까지 함께 지연되므로 워커 스레드에서 실행한다.
-    """
     return await asyncio.to_thread(_resolve_cname_blocking, domain)
 
 
@@ -111,10 +114,95 @@ def _resolve_cname_blocking(domain: str) -> str | None:
         return None
 
 
+async def _resolve_addresses(domain: str) -> list[str]:
+    return await asyncio.to_thread(_resolve_addresses_blocking, domain)
+
+
+def _resolve_addresses_blocking(domain: str) -> list[str]:
+    try:
+        try:
+            import dns.resolver
+
+            values: list[str] = []
+            for record_type in ("A", "AAAA"):
+                try:
+                    answers = dns.resolver.resolve(domain, record_type, lifetime=5.0)
+                except Exception:
+                    continue
+                values.extend(str(answer).rstrip(".") for answer in answers)
+            return sorted(set(values))
+        except ImportError:
+            pass
+
+        infos = socket.getaddrinfo(domain, None, proto=socket.IPPROTO_TCP)
+        return sorted({info[4][0] for info in infos})
+    except Exception:
+        return []
+
+
 def _normalize_dns_name(value: str | None) -> str | None:
     if not value:
         return None
     return value.strip().rstrip(".").lower()
+
+
+def _configured_custom_domain_ips() -> list[str]:
+    values = []
+    for raw in settings.CUSTOM_DOMAIN_IP_TARGETS.split(","):
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        ipaddress.ip_address(candidate)
+        values.append(candidate)
+    return sorted(set(values))
+
+
+async def check_domain_dns(
+    domain: str,
+    strategy: DomainDnsStrategy = DomainDnsStrategy.CNAME,
+) -> DomainDnsCheck:
+    cname_value, address_values = await asyncio.gather(
+        _resolve_cname(domain),
+        _resolve_addresses(domain),
+    )
+    expected_cname = settings.CNAME_TARGET
+    expected_addresses = _configured_custom_domain_ips()
+    cname_matches = _normalize_dns_name(cname_value) == _normalize_dns_name(expected_cname)
+    address_matches = bool(set(address_values) & set(expected_addresses))
+    match strategy:
+        case DomainDnsStrategy.CNAME:
+            verified = cname_matches
+            verification_method = "cname" if cname_matches else None
+        case DomainDnsStrategy.APEX_ADDRESS:
+            verified = address_matches and cname_value is None
+            verification_method = "address" if verified else None
+    return DomainDnsCheck(
+        cname_value=cname_value,
+        address_values=address_values,
+        expected_cname=expected_cname,
+        expected_addresses=expected_addresses,
+        verified=verified,
+        verification_method=verification_method,
+    )
+
+
+def domain_dns_strategy_for_hospital(hospital: Hospital) -> DomainDnsStrategy:
+    value = getattr(hospital, "domain_dns_strategy", DomainDnsStrategy.CNAME)
+    if isinstance(value, str):
+        try:
+            return DomainDnsStrategy(value)
+        except ValueError:
+            return DomainDnsStrategy.CNAME
+    return value
+
+
+def _failure_message(domain: str, strategy: DomainDnsStrategy, dns_check: DomainDnsCheck) -> str:
+    match strategy:
+        case DomainDnsStrategy.CNAME:
+            return f"DNS 검증 실패. CNAME 레코드를 추가해 주세요: {domain} → {settings.CNAME_TARGET}"
+        case DomainDnsStrategy.APEX_ADDRESS:
+            target = ", ".join(dns_check.expected_addresses) or "운영자가 설정한 글로벌 로드밸런서 IP"
+            return f"DNS 검증 실패. A/AAAA 레코드를 설정해 주세요: {domain} → {target}"
 
 
 async def _get_hospital_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:

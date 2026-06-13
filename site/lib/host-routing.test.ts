@@ -9,7 +9,7 @@ import {
   normalizeHostname,
 } from './host-routing.ts'
 
-const PRIMARY = getPrimaryHostnames('https://reputation.co.kr')
+const PRIMARY = getPrimaryHostnames('https://reputation.motionlabs.kr')
 
 test('normalizeHostname strips port, lowercases, and handles IPv6', () => {
   assert.equal(normalizeHostname('Clinic.Example.com'), 'clinic.example.com')
@@ -20,7 +20,7 @@ test('normalizeHostname strips port, lowercases, and handles IPv6', () => {
 })
 
 test('getPrimaryHostnames includes site host and local hosts, tolerates bad URL', () => {
-  assert.ok(PRIMARY.includes('reputation.co.kr'))
+  assert.ok(PRIMARY.includes('reputation.motionlabs.kr'))
   assert.ok(PRIMARY.includes('localhost'))
   assert.ok(PRIMARY.includes('127.0.0.1'))
   // 잘못된 SITE_URL이어도 throw 없이 로컬 호스트만 반환
@@ -29,7 +29,7 @@ test('getPrimaryHostnames includes site host and local hosts, tolerates bad URL'
 })
 
 test('isPrimaryHost: platform, localhost with port, 127.0.0.1, run.app pass through', () => {
-  assert.equal(isPrimaryHost('reputation.co.kr', PRIMARY), true)
+  assert.equal(isPrimaryHost('reputation.motionlabs.kr', PRIMARY), true)
   assert.equal(isPrimaryHost('localhost:3000', PRIMARY), true)
   assert.equal(isPrimaryHost('127.0.0.1:3000', PRIMARY), true)
   assert.equal(isPrimaryHost('site-abc123-du.a.run.app', PRIMARY), true)
@@ -60,7 +60,7 @@ test('isReservedPath: hub paths and /llms.txt are rewritable', () => {
 })
 
 test('decideRewrite: primary host never rewrites', () => {
-  assert.equal(decideRewrite('reputation.co.kr', '/', 'jang-clinic', PRIMARY), null)
+  assert.equal(decideRewrite('reputation.motionlabs.kr', '/', 'jang-clinic', PRIMARY), null)
   assert.equal(decideRewrite('localhost:3000', '/contents', 'jang-clinic', PRIMARY), null)
   assert.equal(decideRewrite('x.a.run.app', '/', 'jang-clinic', PRIMARY), null)
 })

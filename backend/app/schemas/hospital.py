@@ -30,6 +30,11 @@ class HospitalDetail(HospitalListItem):
     google_maps_url: Optional[str]
     naver_place_url: Optional[str]
     aeo_domain: Optional[str]
+    domain_management_mode: str = "HOSPITAL_MANAGED"
+    domain_dns_strategy: str = "CNAME"
+    domain_registrar: Optional[str] = None
+    domain_dns_provider: Optional[str] = None
+    domain_purchase_note: Optional[str] = None
     latitude: Optional[float]
     longitude: Optional[float]
     wikidata_qid: Optional[str] = None

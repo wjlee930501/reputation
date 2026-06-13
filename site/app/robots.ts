@@ -1,4 +1,5 @@
 import { MetadataRoute } from 'next'
+import { platformSiteUrl } from '@/lib/site-url'
 
 const DISALLOWED_PATHS = ['/api/', '/_next/', '/.well-known/']
 
@@ -26,6 +27,6 @@ export default function robots(): MetadataRoute.Robots {
         disallow: DISALLOWED_PATHS,
       },
     ],
-    sitemap: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://reputation.co.kr'}/sitemap.xml`,
+    sitemap: `${platformSiteUrl()}/sitemap.xml`,
   }
 }

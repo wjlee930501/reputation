@@ -8,7 +8,7 @@
 
 ```
 환자 브라우저 ── https://jangclinic.co.kr
-   │   (DNS: jangclinic.co.kr CNAME → aeo.motionlabs.io → LB IP)
+   │   (DNS: jangclinic.co.kr CNAME/A/ALIAS → cname.reputation.motionlabs.kr or LB IP)
    ▼
 HTTPS LB ── 도메인별 managed SSL cert (terraform customer_domains)
    │   미매칭 호스트 → default_service = site
@@ -29,10 +29,10 @@ site (Next.js) middleware
 
 ## 사전 조건 (1회)
 
-`CNAME_TARGET`(backend config, 기본 `aeo.motionlabs.io`)이 LB IP의 A 레코드로 존재해야 한다:
+`CNAME_TARGET`(backend config, 기본 `cname.reputation.motionlabs.kr`)이 LB IP의 A/ALIAS 레코드로 존재해야 한다:
 
 ```
-aeo.motionlabs.io.  A  <terraform output load_balancer_ip>
+cname.reputation.motionlabs.kr.  A/ALIAS  <terraform output load_balancer_ip>
 ```
 
 ## 도메인 1개 연결 절차
@@ -40,17 +40,20 @@ aeo.motionlabs.io.  A  <terraform output load_balancer_ip>
 | # | 누가 | 작업 |
 |---|------|------|
 | 1 | AE | Admin → 병원 프로파일 → "커스텀 도메인 연결" 카드에 도메인 저장 |
-| 2 | 병원(또는 AE 대행) | 도메인 등록기관에서 CNAME 추가: `{domain} → aeo.motionlabs.io` |
-| 3 | 운영자 | CNAME 전파 확인(`dig {domain} CNAME`) 후 `terraform.tfvars`의 `customer_domains`에 도메인 추가 → `terraform apply` |
+| 2 | 병원(또는 AE 대행) | 도메인 등록기관에서 DNS 추가: 서브도메인은 CNAME `{domain} → cname.reputation.motionlabs.kr`, 루트 도메인은 A/ALIAS `{domain} → <LB IP>` |
+| 3 | 운영자 | DNS 전파 확인 후 `terraform.tfvars`의 `customer_domains`에 도메인 추가 → `terraform apply` |
 | 4 | 운영자 | cert 상태 확인: `gcloud compute ssl-certificates list --filter="name~cust"` → ACTIVE 대기 (보통 15–60분, 최대 24h) |
 | 5 | AE | Admin에서 [DNS 확인] 클릭 → 사전 단계(V0/허브 빌드/스케줄) 충족 시 site_live/ACTIVE 전환 |
 | 6 | AE | `https://{domain}` 접속 확인 — 허브 홈으로 rewrite되는지, 인증서 정상인지 |
 
 ## 주의사항
 
-- **순서가 중요**: CNAME(2)이 살아 있어야 cert(3-4)가 ACTIVE가 된다. CNAME 전에 apply하면
+- **순서가 중요**: 고객 DNS(2)가 살아 있어야 cert(3-4)가 ACTIVE가 된다. DNS 전에 apply하면
   해당 도메인 cert만 PROVISIONING에 머문다(다른 도메인·메인 도메인에는 영향 없음 — cert가
   도메인별로 분리된 이유).
+- **별도 앱 배포는 아님**: 병원 도메인은 같은 HTTPS LB와 같은 `reputation-site`
+  서비스로 들어온다. 다만 현재 Terraform 구조에서는 TLS 인증서 연결 때문에
+  `customer_domains` 변경 및 apply가 필요하다.
 - **도메인 해지/이탈 시**: `customer_domains`에서 제거 후 apply, Admin에서 도메인 비우기.
 - **한도**: 도메인별 cert 방식은 HTTPS proxy cert 한도(15) 때문에 **커스텀 도메인 13개까지**.
   그 이상은 Certificate Manager certificate map으로 이전(map entry 방식, 수백 개 규모 지원,

@@ -10,13 +10,13 @@ variable "project_id" {
 variable "region" {
   description = "GCP Region"
   type        = string
-  default     = "us-central1"
+  default     = "asia-northeast3"
 }
 
 variable "zone" {
   description = "GCP Zone for zonal resources"
   type        = string
-  default     = "us-central1-a"
+  default     = "asia-northeast3-a"
 }
 
 # ── Naming ────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ variable "api_image" {
   description = <<-EOT
     Container image for the api/worker/beat Cloud Run services. Prefer an
     immutable digest reference (e.g.
-    "us-central1-docker.pkg.dev/<project>/reputation/reputation@sha256:<digest>")
+    "<region>-docker.pkg.dev/<project>/reputation/reputation@sha256:<digest>")
     so deploys and rollbacks are reproducible. The CI/CD pipeline should set
     this to the digest it just pushed. A floating tag is allowed as a fallback
     but is discouraged because :latest is mutable. The default leaves the value
@@ -163,7 +163,7 @@ variable "worker_max_instances" {
 
 variable "beat_memory" {
   type    = string
-  default = "256Mi"
+  default = "512Mi"
 }
 
 variable "beat_cpu" {
@@ -190,6 +190,17 @@ variable "db_instance_tier" {
   default     = "db-custom-1-3840"
 }
 
+variable "db_edition" {
+  description = "Cloud SQL edition. Keep ENTERPRISE with db-custom-* tiers; ENTERPRISE_PLUS requires db-perf-optimized-* tiers."
+  type        = string
+  default     = "ENTERPRISE"
+
+  validation {
+    condition     = contains(["ENTERPRISE", "ENTERPRISE_PLUS"], var.db_edition)
+    error_message = "db_edition must be ENTERPRISE or ENTERPRISE_PLUS."
+  }
+}
+
 variable "db_name" {
   type    = string
   default = "reputation"
@@ -213,21 +224,33 @@ variable "redis_version" {
 
 # ── Load Balancer ─────────────────────────────────────────────────
 variable "domain" {
-  description = "Primary domain for HTTPS LB (e.g., reputation.co.kr)"
+  description = "Primary platform/API domain for HTTPS LB (e.g., reputation.motionlabs.kr)"
   type        = string
 }
 
 variable "admin_subdomain" {
-  description = "Admin subdomain (e.g., admin.reputation.co.kr)"
+  description = "Admin subdomain (e.g., admin.reputation.motionlabs.kr)"
   type        = string
   default     = ""
 }
 
+variable "cname_target" {
+  description = "Stable DNS target shown to hospitals for custom domain CNAME records."
+  type        = string
+  default     = "cname.reputation.motionlabs.kr"
+}
+
+variable "enable_http_redirect" {
+  description = "Create the port 80 forwarding rule that redirects HTTP to HTTPS. Disable temporarily if the project global forwarding-rule quota is exhausted."
+  type        = bool
+  default     = true
+}
+
 # 병원이 별도 구입해 연결하는 커스텀 도메인 목록.
-# 흐름: Admin에서 도메인 저장 → 병원이 CNAME({domain} → CNAME_TARGET) 추가
+# 흐름: Admin에서 도메인 저장 → 병원이 DNS(CNAME 또는 A/ALIAS) 추가
 #       → 이 목록에 추가 후 terraform apply (도메인별 managed cert 발급)
 #       → Admin [DNS 확인] → site_live/ACTIVE.
-# 주의: CNAME이 살아 있는 상태에서 apply해야 cert가 ACTIVE로 전환된다.
+# 주의: 고객 DNS가 살아 있는 상태에서 apply해야 cert가 ACTIVE로 전환된다.
 # 도메인별 cert 1개씩 발급 — HTTPS proxy의 cert 한도(15) 때문에 최대 13개.
 # 그 이상은 Certificate Manager certificate map으로 이전 필요
 # (docs/plans/2026-06-11-custom-domain-runbook.md 참고).

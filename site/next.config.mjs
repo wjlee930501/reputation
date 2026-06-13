@@ -1,3 +1,8 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const appDir = path.dirname(fileURLToPath(import.meta.url))
+
 function remotePatternFromEnv(value) {
   if (!value) return null
   try {
@@ -60,6 +65,7 @@ if (process.env.NODE_ENV === 'production') {
 const nextConfig = {
   // Cloud Run 컨테이너 배포용 — .next/standalone에 self-contained 서버 번들 생성.
   output: 'standalone',
+  outputFileTracingRoot: appDir,
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: 'storage.googleapis.com' },

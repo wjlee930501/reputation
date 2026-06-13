@@ -31,14 +31,13 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
     compute_sources_snapshot_hash,
 )
-from app.workers.tasks import trigger_v0_report, build_aeo_site
-from app.api.admin.domain import _normalize_dns_name, _resolve_cname
+from app.workers.tasks import trigger_v0_report
+from app.api.admin.domain import check_domain_dns, domain_dns_strategy_for_hospital
 from app.core.config import settings
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
-from app.utils.domain import is_valid_hostname, normalize_domain
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
 
@@ -146,62 +145,6 @@ class HospitalProfileUpdate(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("URL must be absolute http(s)")
         return cleaned
-
-
-class DomainConnect(BaseModel):
-    # 원본 입력은 스킴/경로가 붙어 올 수 있어 길이만 느슨하게 받고,
-    # 정규화·형식 검증은 엔드포인트에서 한국어 422로 처리한다.
-    domain: str = Field(min_length=1, max_length=500)  # 예: "info.jangpyeon.com"
-
-
-def _normalize_and_validate_domain(raw: str) -> str:
-    """저장용 도메인 정규화 + 검증. 실패 시 한국어 422.
-
-    - 소문자/공백·스킴·경로·포트·끝 점 제거 (조회 측 by-domain lookup과 동일 규칙)
-    - 호스트명 형식 검증
-    - 플랫폼 자체 도메인(CNAME_TARGET 및 그 하위 호스트) 거부
-    """
-    normalized = normalize_domain(raw)
-    if not normalized or not is_valid_hostname(normalized):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "유효한 도메인 형식이 아닙니다. "
-                "스킴(https://)이나 경로 없이 호스트명만 입력해 주세요. 예: info.jangpyeon.com"
-            ),
-        )
-    platform_domain = normalize_domain(settings.CNAME_TARGET)
-    if platform_domain and (
-        normalized == platform_domain or normalized.endswith(f".{platform_domain}")
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"플랫폼 기본 도메인({settings.CNAME_TARGET})은 병원 도메인으로 사용할 수 없습니다. "
-                "병원이 보유한 별도 도메인을 입력해 주세요."
-            ),
-        )
-    return normalized
-
-
-async def _ensure_domain_not_taken(
-    db: AsyncSession, hospital_id: uuid.UUID, normalized_domain: str
-) -> None:
-    """다른 병원이 이미 사용 중인 도메인이면 409. 같은 병원의 재저장은 허용."""
-    result = await db.execute(
-        select(Hospital)
-        .where(
-            func.lower(Hospital.aeo_domain) == normalized_domain,
-            Hospital.id != hospital_id,
-        )
-        .limit(1)
-    )
-    other = result.scalars().first()
-    if other:
-        raise HTTPException(
-            status_code=409,
-            detail=f"이미 다른 병원({other.name})에 연결된 도메인입니다. 도메인을 확인해 주세요.",
-        )
 
 
 @dataclass(frozen=True)
@@ -410,66 +353,6 @@ async def update_profile(
     return _serialize(h)
 
 
-@router.patch("/{hospital_id}/domain")
-async def connect_domain(
-    hospital_id: uuid.UUID,
-    body: DomainConnect,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-):
-    """공개 도메인 정보 저장 + 콘텐츠 허브 노출 상태 갱신"""
-    h = await _get_or_404(db, hospital_id)
-    # 정규화 + 형식/플랫폼 도메인 검증 (422), 타 병원 중복 검사 (409).
-    domain = _normalize_and_validate_domain(body.domain)
-    await _ensure_domain_not_taken(db, hospital_id, domain)
-    previous_domain = h.aeo_domain
-    previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
-    previous_site_live = bool(h.site_live)
-    domain_changed = _normalize_dns_name(previous_domain) != _normalize_dns_name(domain)
-    h.aeo_domain = domain
-
-    # 도메인이 바뀌면 기존 DNS 검증은 더 이상 유효하지 않다.
-    # 이미 라이브였던 병원이 새 미검증 도메인으로도 라이브처럼 보이는 것을 막는다.
-    if domain_changed:
-        h.site_live = False
-        if h.status == HospitalStatus.ACTIVE:
-            h.status = HospitalStatus.PENDING_DOMAIN
-    if previous_site_live:
-        ensure_site_revalidate_configured()
-
-    await write_audit_log(
-        db,
-        action="connect_domain",
-        hospital_id=hospital_id,
-        actor=default_actor(),
-        target_type="domain",
-        target_id=domain,
-        detail={
-            "previous_domain": previous_domain,
-            "new_domain": domain,
-            "domain_changed": domain_changed,
-            "previous_status": previous_status,
-            "previous_site_live": previous_site_live,
-            "new_status": h.status.value if hasattr(h.status, "value") else str(h.status),
-        },
-    )
-    await db.commit()
-    if previous_site_live:
-        # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
-        await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
-
-    # 콘텐츠 허브 노출 상태 갱신 (legacy task name) — 도메인이 실제로 바뀌었거나 최초 준비가
-    # 안 된 경우에만. 동일 도메인 재저장 시 불필요한 상태 전환·Slack 알림을 만들지 않는다.
-    if domain_changed or not h.site_built:
-        background_tasks.add_task(
-            build_aeo_site.apply_async,
-            args=[str(hospital_id)],
-            queue="default",
-        )
-        return {"detail": f"Domain {domain} set. Content hub exposure refresh triggered."}
-    return {"detail": f"Domain {domain} unchanged. No exposure refresh needed."}
-
-
 @router.patch("/{hospital_id}/activate")
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """ACTIVE 상태로 전환 (공개 도메인/노출 상태 + 스케줄 설정 완료 후)"""
@@ -493,13 +376,18 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     if not h.aeo_domain:
         raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다. 먼저 도메인을 입력해 주세요.")
 
-    cname_value = await _resolve_cname(h.aeo_domain)
-    if _normalize_dns_name(cname_value) != _normalize_dns_name(settings.CNAME_TARGET):
+    dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
+    if not dns_check.verified:
+        address_hint = (
+            f" 또는 A/AAAA {', '.join(dns_check.expected_addresses)}"
+            if dns_check.expected_addresses
+            else ""
+        )
         raise HTTPException(
             status_code=400,
             detail=(
-                f"CNAME 설정이 확인되지 않았습니다. "
-                f"{h.aeo_domain} → {settings.CNAME_TARGET} 로 설정해 주세요."
+                f"DNS 설정이 확인되지 않았습니다. "
+                f"{h.aeo_domain} → {settings.CNAME_TARGET}{address_hint} 로 설정해 주세요."
             ),
         )
 
@@ -518,7 +406,9 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
             "previous_status": previous_status,
             "new_status": HospitalStatus.ACTIVE.value,
             "aeo_domain": h.aeo_domain,
-            "cname_value": cname_value,
+            "cname_value": dns_check.cname_value,
+            "address_values": dns_check.address_values,
+            "verification_method": dns_check.verification_method,
         },
     )
     await db.commit()
@@ -755,6 +645,11 @@ def _serialize(h: Hospital) -> dict:
         "google_maps_url": h.google_maps_url,
         "naver_place_url": h.naver_place_url,
         "aeo_domain": h.aeo_domain,
+        "domain_management_mode": _enum_value(getattr(h, "domain_management_mode", None), "HOSPITAL_MANAGED"),
+        "domain_dns_strategy": _enum_value(getattr(h, "domain_dns_strategy", None), "CNAME"),
+        "domain_registrar": getattr(h, "domain_registrar", None),
+        "domain_dns_provider": getattr(h, "domain_dns_provider", None),
+        "domain_purchase_note": getattr(h, "domain_purchase_note", None),
         "latitude": h.latitude,
         "longitude": h.longitude,
         "wikidata_qid": h.wikidata_qid,
@@ -778,6 +673,14 @@ def _serialize(h: Hospital) -> dict:
         "schedule_set": h.schedule_set,
         "created_at": h.created_at.isoformat() if h.created_at else None,
     }
+
+
+def _enum_value(value: object, default: str) -> str:
+    if value is None:
+        return default
+    if hasattr(value, "value"):
+        return str(value.value)
+    return str(value)
 
 
 def _serialize_list(h: Hospital) -> dict:

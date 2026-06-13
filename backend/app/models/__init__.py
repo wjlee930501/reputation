@@ -1,6 +1,6 @@
 from app.models.audit import AdminAuditLog
 from app.models.admin_user import AdminUser
-from app.models.hospital import Hospital, Plan, HospitalStatus
+from app.models.hospital import DomainDnsStrategy, DomainManagementMode, Hospital, HospitalStatus, Plan
 from app.models.content import ContentSchedule, ContentItem, ContentType, ContentStatus, PLAN_DISTRIBUTION
 from app.models.essence import (
     EvidenceNoteType,
@@ -24,7 +24,7 @@ from app.models.report import MonthlyReport
 from app.models.lead import SalesLead
 
 __all__ = [
-    "Hospital", "Plan", "HospitalStatus",
+    "Hospital", "Plan", "HospitalStatus", "DomainManagementMode", "DomainDnsStrategy",
     "AdminAuditLog", "AdminUser",
     "ContentSchedule", "ContentItem", "ContentType", "ContentStatus", "PLAN_DISTRIBUTION",
     "HospitalSourceAsset", "HospitalSourceEvidenceNote", "HospitalContentPhilosophy",

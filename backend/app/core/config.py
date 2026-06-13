@@ -1,7 +1,7 @@
 import json
 import os
 from typing import Annotated
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -103,8 +103,27 @@ class Settings(BaseSettings):
         if not (self.DATABASE_URL and self.SYNC_DATABASE_URL):
             errors.append("DATABASE_URL/SYNC_DATABASE_URL (or DB_* secret parts) must resolve in production.")
 
+        self._validate_external_https_url("ADMIN_BASE_URL", self.ADMIN_BASE_URL, errors)
+        self._validate_external_https_url("SITE_BASE_URL", self.SITE_BASE_URL, errors)
+
         if errors:
             raise ValueError("Insecure production config:\n  - " + "\n  - ".join(errors))
+
+    @staticmethod
+    def _validate_external_https_url(name: str, value: str, errors: list[str]) -> None:
+        stripped = value.strip()
+        if not stripped:
+            errors.append(f"{name} must be set in production.")
+            return
+
+        parsed = urlparse(stripped)
+        if parsed.scheme != "https" or not parsed.netloc:
+            errors.append(f"{name} must be an absolute https:// URL in production: {stripped}")
+            return
+
+        hostname = (parsed.hostname or "").lower()
+        if hostname in {"localhost", "127.0.0.1", "::1"} or hostname.endswith(".localhost"):
+            errors.append(f"{name} must not point to localhost in production: {stripped}")
 
     def _build_database_urls_from_secret_parts(self) -> None:
         if self.DATABASE_URL and self.SYNC_DATABASE_URL:
@@ -201,14 +220,15 @@ class Settings(BaseSettings):
     SOV_REPEAT_COUNT_WEEKLY: int = 5
 
     # Domain
-    CNAME_TARGET: str = "aeo.motionlabs.io"
+    CNAME_TARGET: str = "cname.reputation.motionlabs.kr"
+    CUSTOM_DOMAIN_IP_TARGETS: str = ""
 
     # Admin
     ADMIN_BASE_URL: str = "http://localhost:3000"  # 🔴 CRITICAL: 환경변수로 분리 (.env에서 프로덕션 URL 설정)
     ADMIN_ACTOR_NAME: str = "AE"  # 세션 actor가 없을 때 쓰는 감사 로그 fallback
 
     # Site (public)
-    SITE_BASE_URL: str = "https://reputation.co.kr"  # llms.txt absolute URL 등에 사용
+    SITE_BASE_URL: str = "https://reputation.motionlabs.kr"  # llms.txt absolute URL 등에 사용
 
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수

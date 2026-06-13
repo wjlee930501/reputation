@@ -5,12 +5,35 @@
 // 커스텀 도메인 요청을 /{slug}{path}로 rewrite하므로 두 표면이 같은 경로 구조를 공유).
 // aeo_domain이 없으면 기존 플랫폼 SITE_URL 동작이 그대로 유지된다.
 
-const DEFAULT_SITE_URL = 'https://reputation.co.kr'
+const DEFAULT_SITE_URL = 'https://reputation.motionlabs.kr'
+const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1'])
 
 /** 플랫폼 공개 표면의 base URL (env 미설정 시 기본 도메인). */
 export function platformSiteUrl(): string {
   const value = process.env.NEXT_PUBLIC_SITE_URL?.trim()
-  return value ? value.replace(/\/$/, '') : DEFAULT_SITE_URL
+  if (value) return normalizePlatformSiteUrl(value)
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('NEXT_PUBLIC_SITE_URL must be set in production')
+  }
+  return DEFAULT_SITE_URL
+}
+
+function normalizePlatformSiteUrl(value: string): string {
+  const url = new URL(value)
+  if (process.env.NODE_ENV === 'production') {
+    if (url.protocol !== 'https:') {
+      throw new Error('NEXT_PUBLIC_SITE_URL must use https in production')
+    }
+    if (isLocalHostname(url.hostname)) {
+      throw new Error('NEXT_PUBLIC_SITE_URL must use a public hostname in production')
+    }
+  }
+  return url.origin
+}
+
+function isLocalHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1')
+  return LOCAL_HOSTNAMES.has(normalized) || normalized.endsWith('.localhost')
 }
 
 // 도메인으로 허용하는 형태: 영숫자/하이픈 라벨을 점으로 연결한 hostname.

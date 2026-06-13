@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import domain as domain_api
-from app.models.hospital import HospitalStatus
+from app.models.hospital import DomainDnsStrategy, HospitalStatus
 
 
 class FakeDB:
@@ -39,11 +39,17 @@ def _hospital(**overrides):
 
 def _patch_dns(monkeypatch, cname="target.motionlabs.io"):
     monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "target.motionlabs.io")
+    monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "")
 
     async def _fake_resolve(domain):
         return cname
 
     monkeypatch.setattr(domain_api, "_resolve_cname", _fake_resolve)
+
+    async def _fake_resolve_addresses(domain):
+        return []
+
+    monkeypatch.setattr(domain_api, "_resolve_addresses", _fake_resolve_addresses)
 
 
 async def test_verify_domain_activates_when_all_prerequisites_met(monkeypatch):
@@ -94,7 +100,79 @@ async def test_verify_domain_keeps_response_shape_on_cname_mismatch(monkeypatch)
     response = await domain_api.verify_domain(hospital.id, db=db)
 
     assert response.verified is False
-    assert "CNAME 검증 실패" in response.message
+    assert "DNS 검증 실패" in response.message
+    assert hospital.site_live is False
+    assert db.committed is False
+
+
+async def test_verify_domain_accepts_lb_address_for_apex_domain(monkeypatch):
+    hospital = _hospital(aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS)
+    db = FakeDB(hospital)
+    monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "target.motionlabs.io")
+    monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20")
+
+    async def _fake_resolve_cname(domain):
+        return None
+
+    async def _fake_resolve_addresses(domain):
+        return ["34.117.10.20"]
+
+    monkeypatch.setattr(domain_api, "_resolve_cname", _fake_resolve_cname)
+    monkeypatch.setattr(domain_api, "_resolve_addresses", _fake_resolve_addresses)
+
+    response = await domain_api.verify_domain(hospital.id, db=db)
+
+    assert response.verified is True
+    assert response.verification_method == "address"
+    assert response.address_values == ["34.117.10.20"]
+    assert hospital.site_live is True
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert db.committed is True
+
+
+async def test_verify_domain_uses_selected_apex_strategy_even_when_cname_matches(monkeypatch):
+    hospital = _hospital(aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS)
+    db = FakeDB(hospital)
+    monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "target.motionlabs.io")
+    monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20")
+
+    async def _fake_resolve_cname(domain):
+        return "target.motionlabs.io"
+
+    async def _fake_resolve_addresses(domain):
+        return []
+
+    monkeypatch.setattr(domain_api, "_resolve_cname", _fake_resolve_cname)
+    monkeypatch.setattr(domain_api, "_resolve_addresses", _fake_resolve_addresses)
+
+    response = await domain_api.verify_domain(hospital.id, db=db)
+
+    assert response.verified is False
+    assert response.verification_method is None
+    assert "A/AAAA" in response.message
+    assert hospital.site_live is False
+    assert db.committed is False
+
+
+async def test_verify_domain_rejects_apex_when_cname_exists_even_if_address_matches(monkeypatch):
+    hospital = _hospital(aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS)
+    db = FakeDB(hospital)
+    monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "target.motionlabs.io")
+    monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20")
+
+    async def _fake_resolve_cname(domain):
+        return "target.motionlabs.io"
+
+    async def _fake_resolve_addresses(domain):
+        return ["34.117.10.20"]
+
+    monkeypatch.setattr(domain_api, "_resolve_cname", _fake_resolve_cname)
+    monkeypatch.setattr(domain_api, "_resolve_addresses", _fake_resolve_addresses)
+
+    response = await domain_api.verify_domain(hospital.id, db=db)
+
+    assert response.verified is False
+    assert response.verification_method is None
     assert hospital.site_live is False
     assert db.committed is False
 
