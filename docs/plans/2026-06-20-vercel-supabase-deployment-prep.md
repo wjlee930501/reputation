@@ -65,11 +65,17 @@ DATABASE_URL=postgresql+asyncpg://SUPABASE_SESSION_POOLER_URL
 SYNC_DATABASE_URL=postgresql+psycopg2://SUPABASE_SESSION_POOLER_URL
 ```
 
-Run Alembic from the `backend` directory against the private production `SYNC_DATABASE_URL` before routing traffic:
+Run migrations through the Cloud Run migration target after production secrets are configured:
+
+```bash
+bash scripts/deploy.sh migrate
+```
+
+For direct Alembic execution from the `backend` directory, provide both database URLs because Alembic's online path creates the async engine from `DATABASE_URL`, while offline configuration reads `SYNC_DATABASE_URL`.
 
 ```bash
 cd backend
-APP_ENV=production SYNC_DATABASE_URL="$SYNC_DATABASE_URL" uv run alembic upgrade head
+APP_ENV=production DATABASE_URL="$DATABASE_URL" SYNC_DATABASE_URL="$SYNC_DATABASE_URL" uv run alembic upgrade head
 ```
 
 Do not commit Supabase credentials. `.env.vercel-supabase.example` is only a key/shape template.
@@ -90,7 +96,14 @@ python3 scripts/check_vercel_supabase_deploy.py --json
 python3 -m pytest scripts/test_vercel_supabase_preflight.py scripts/test_deploy_preflight.py scripts/test_deploy_runtime.py
 ```
 
-The preflight passes only when the two Vercel project roots, Cloud Run backend services, Supabase session-pooler URL shape, Secret Manager database-url mode, and landing exclusion note are present. It emits explicit warnings for Cloud Run worker/beat, Redis, and GCS because those are intentional launch prerequisites, not hidden Vercel/Supabase features.
+This preflight is a deployment-preparation gate, not live deployment proof. It passes only when the two Vercel project roots, Cloud Run backend services, Supabase session-pooler URL shape, Secret Manager database-url mode, and landing exclusion note are present. It emits explicit warnings for Cloud Run worker/beat, Redis, GCS, and missing live deployment proof because those are intentional launch prerequisites, not hidden Vercel/Supabase features.
+
+Before same-day onboarding cutover, collect the live proof separately:
+
+- Vercel deployment URLs for `reputation-admin` and `reputation-site`.
+- `gcloud run services describe` output for `reputation-api`, `reputation-worker`, and `reputation-beat`.
+- Production `curl -i` responses for Admin, hospital site, and backend health endpoints.
+- Production migration job or Alembic receipt against the Supabase database.
 
 ## Future GCP Migration Path
 

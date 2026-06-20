@@ -18,6 +18,13 @@ VERCEL_PROJECT_ROOTS = {
     "reputation-site": "site",
 }
 GCP_BACKEND_SERVICES = ("reputation-api", "reputation-worker", "reputation-beat")
+PREFLIGHT_SCOPE = "repository_deploy_preparation_only"
+DEPLOYMENT_PROOF_REQUIRED = [
+    "vercel deployment URLs for reputation-admin and reputation-site",
+    "gcloud run services describe output for reputation-api, reputation-worker, and reputation-beat",
+    "production curl -i responses for admin, hospital site, and backend health endpoints",
+    "production migration job or alembic upgrade receipt against the Supabase database",
+]
 
 REQUIRED_ENV = {
     "admin": [
@@ -152,9 +159,11 @@ def _runbook_checks(runbook_text: str) -> list[dict[str, str]]:
     landing_note = "No marketing landing project/domain is part of this launch" in runbook_text
     pooler_note = "Supabase session pooler" in runbook_text
     backend_target_note = "bash scripts/deploy.sh backend" in runbook_text and "Do not use `bash scripts/deploy.sh all`" in runbook_text
+    preflight_scope_note = "This preflight is a deployment-preparation gate, not live deployment proof" in runbook_text
     checks.append(_finding("landing.exclusion_note", "pass" if landing_note else "fail", str(landing_note)))
     checks.append(_finding("supabase.pooler_note", "pass" if pooler_note else "fail", str(pooler_note)))
     checks.append(_finding("gcp.backend_target_note", "pass" if backend_target_note else "fail", str(backend_target_note)))
+    checks.append(_finding("preflight.scope_note", "pass" if preflight_scope_note else "fail", str(preflight_scope_note)))
     for project, rel_root in VERCEL_PROJECT_ROOTS.items():
         present = project in runbook_text and f"Root directory: `{rel_root}`" in runbook_text
         checks.append(_finding(f"{project}.runbook", "pass" if present else "fail", f"root={rel_root}"))
@@ -180,6 +189,11 @@ def _runtime_warnings() -> list[dict[str, str]]:
             "warn",
             "GCS/Vertex asset and report flows remain in use for same-day onboarding.",
         ),
+        _finding(
+            "runtime.live_deployment_not_verified",
+            "warn",
+            "This dry run does not prove Vercel/Cloud Run resources are deployed or reachable.",
+        ),
     ]
 
 
@@ -198,6 +212,9 @@ def build_report() -> dict:
     status = "pass" if all(check["status"] == "pass" for check in checks) else "fail"
     return {
         "status": status,
+        "scope": PREFLIGHT_SCOPE,
+        "live_deployment_verified": False,
+        "deployment_proof_required": DEPLOYMENT_PROOF_REQUIRED,
         "selected_architecture": "vercel_frontends_gcp_backend_supabase_postgres",
         "vercel_project_roots": VERCEL_PROJECT_ROOTS,
         "gcp_backend_services": list(GCP_BACKEND_SERVICES),
@@ -209,6 +226,8 @@ def build_report() -> dict:
 
 def _print_text(report: dict) -> None:
     print(f"status: {report['status']}")
+    print(f"scope: {report['scope']}")
+    print(f"live_deployment_verified: {report['live_deployment_verified']}")
     print(f"selected_architecture: {report['selected_architecture']}")
     print("checks:")
     for check in report["checks"]:

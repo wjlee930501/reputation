@@ -15,8 +15,7 @@ export function normalizeHostname(hostHeader: string | null | undefined): string
 
 /**
  * 플랫폼 자체 호스트 목록 — 여기 해당하면 middleware는 손대지 않는다.
- * NEXT_PUBLIC_SITE_URL의 host + 로컬 개발 호스트. (*.run.app은 isPrimaryHost에서
- * suffix 매칭으로 처리 — Cloud Run 직접 접근/헬스체크용.)
+ * NEXT_PUBLIC_SITE_URL의 host + 로컬 개발 호스트.
  */
 export function getPrimaryHostnames(siteUrl: string | null | undefined): string[] {
   const hosts = ['localhost', '127.0.0.1', '::1']
@@ -30,14 +29,16 @@ export function getPrimaryHostnames(siteUrl: string | null | undefined): string[
   return hosts
 }
 
+const PLATFORM_HOSTNAMES = new Set(['run.app', 'vercel.app'])
+const PLATFORM_HOST_SUFFIXES = ['.run.app', '.vercel.app'] as const
+
 /** 플랫폼 호스트 여부. host가 비어 있으면 안전하게 primary 취급(rewrite 안 함). */
 export function isPrimaryHost(hostHeader: string | null | undefined, primaryHostnames: string[]): boolean {
   const hostname = normalizeHostname(hostHeader)
   if (!hostname) return true
   if (primaryHostnames.includes(hostname)) return true
-  // Cloud Run 기본 도메인 (헬스체크·직접 접근) — 항상 플랫폼 표면.
-  if (hostname === 'run.app' || hostname.endsWith('.run.app')) return true
-  return false
+  if (PLATFORM_HOSTNAMES.has(hostname)) return true
+  return PLATFORM_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
 }
 
 // 커스텀 도메인에서도 플랫폼 그대로 서빙해야 하는 예약 경로.
@@ -70,7 +71,7 @@ const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
  *
  * | 조건                                        | 결과                  |
  * |---------------------------------------------|-----------------------|
- * | primary host (플랫폼/로컬/run.app)           | null                  |
+ * | primary host (플랫폼/로컬/run.app/vercel.app) | null                  |
  * | slug 미해석 (404·백엔드 다운)                | null (middleware 404) |
  * | 예약 경로 (_next/api/landing/legal/정적파일) | null                  |
  * | `/`                                          | `/{slug}`             |

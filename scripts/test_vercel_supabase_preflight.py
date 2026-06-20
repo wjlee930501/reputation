@@ -34,7 +34,15 @@ def test_hybrid_preflight_is_machine_readable_and_warns_runtime_prerequisites() 
     assert "backend.supabase_secret_mode" in check_names
     assert "supabase.session_pooler_urls" in check_names
     assert "landing.exclusion_note" in check_names
-    assert {"runtime.cloud_run_worker_beat", "runtime.redis_required", "runtime.gcs_storage_required"} <= warning_names
+    assert {
+        "runtime.cloud_run_worker_beat",
+        "runtime.redis_required",
+        "runtime.gcs_storage_required",
+        "runtime.live_deployment_not_verified",
+    } <= warning_names
+    assert payload["scope"] == "repository_deploy_preparation_only"
+    assert payload["live_deployment_verified"] is False
+    assert "vercel deployment URLs for reputation-admin and reputation-site" in payload["deployment_proof_required"]
 
 
 def test_hybrid_preflight_runbook_and_env_template_are_complete() -> None:
@@ -50,4 +58,7 @@ def test_hybrid_preflight_runbook_and_env_template_are_complete() -> None:
 
     assert "No marketing landing project/domain is part of this launch" in runbook_text
     assert "Supabase session pooler" in runbook_text
+    assert 'DATABASE_URL="$DATABASE_URL"' in runbook_text
+    assert 'SYNC_DATABASE_URL="$SYNC_DATABASE_URL"' in runbook_text
+    assert "This preflight is a deployment-preparation gate, not live deployment proof" in runbook_text
     assert payload["selected_architecture"] == "vercel_frontends_gcp_backend_supabase_postgres"

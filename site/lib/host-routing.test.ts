@@ -29,15 +29,17 @@ test('getPrimaryHostnames includes site host and local hosts, tolerates bad URL'
   assert.ok(getPrimaryHostnames(undefined).includes('localhost'))
 })
 
-test('isPrimaryHost: platform, localhost with port, 127.0.0.1, run.app pass through', () => {
+test('isPrimaryHost: platform, localhost with port, 127.0.0.1, run.app, vercel.app pass through', () => {
   assert.equal(isPrimaryHost('reputation.motionlabs.kr', PRIMARY), true)
   assert.equal(isPrimaryHost('localhost:3000', PRIMARY), true)
   assert.equal(isPrimaryHost('127.0.0.1:3000', PRIMARY), true)
   assert.equal(isPrimaryHost('site-abc123-du.a.run.app', PRIMARY), true)
+  assert.equal(isPrimaryHost('reputation-site.vercel.app', PRIMARY), true)
+  assert.equal(isPrimaryHost('reputation-site-git-main-motionlabs.vercel.app', PRIMARY), true)
   assert.equal(isPrimaryHost(null, PRIMARY), true)
   assert.equal(isPrimaryHost('clinic.example.com', PRIMARY), false)
-  // run.app suffix는 서브도메인 경계까지만 — 사칭 도메인은 primary 아님
   assert.equal(isPrimaryHost('evilrun.app.example.com', PRIMARY), false)
+  assert.equal(isPrimaryHost('evilvercel.app.example.com', PRIMARY), false)
 })
 
 test('isReservedPath: platform-owned paths and static files are reserved', () => {
@@ -64,6 +66,7 @@ test('decideRewrite: primary host never rewrites', () => {
   assert.equal(decideRewrite('reputation.motionlabs.kr', '/', 'jang-clinic', PRIMARY), null)
   assert.equal(decideRewrite('localhost:3000', '/contents', 'jang-clinic', PRIMARY), null)
   assert.equal(decideRewrite('x.a.run.app', '/', 'jang-clinic', PRIMARY), null)
+  assert.equal(decideRewrite('reputation-site.vercel.app', '/', 'jang-clinic', PRIMARY), null)
 })
 
 test('custom hosts fail closed when domain resolution is unavailable', () => {
