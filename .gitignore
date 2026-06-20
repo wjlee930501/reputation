@@ -43,6 +43,7 @@ backend/celerybeat-schedule
 
 # OMC state
 .omc/
+.omo/
 .sisyphus/
 .claude/
 

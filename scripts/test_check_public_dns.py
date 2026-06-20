@@ -27,3 +27,14 @@ def test_public_dns_rejects_empty_resolution():
 def test_public_dns_rejects_invalid_ip_literals():
     with pytest.raises(ValueError, match="not-an-ip"):
         check_domain_addresses("reputation.co.kr", ("not-an-ip",))
+
+
+def test_public_dns_rejects_addresses_that_do_not_match_expected_target():
+    result = check_domain_addresses(
+        "reputation.co.kr",
+        ("8.8.8.8",),
+        expected_addresses=("203.0.113.10",),
+    )
+
+    assert not result.ok
+    assert "expected" in result.message

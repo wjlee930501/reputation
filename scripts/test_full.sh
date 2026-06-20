@@ -358,10 +358,11 @@ echo -e "  ${RED}실패${RESET}: $FAIL"
 echo -e "  ${YELLOW}스킵${RESET}: $SKIP (API 키 필요)"
 echo ""
 
-if [[ $FAIL -eq 0 ]]; then
-  echo -e "  ${GREEN}${BOLD}✅ 모든 테스트 통과!${RESET}"
-else
+if [[ $FAIL -gt 0 ]]; then
   echo -e "  ${RED}${BOLD}❌ 실패 항목을 확인해주세요.${RESET}"
+  exit 1
+else
+  echo -e "  ${GREEN}${BOLD}✅ 모든 테스트 통과!${RESET}"
 fi
 
 if [[ $SKIP -gt 0 ]]; then

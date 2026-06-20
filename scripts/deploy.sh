@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# allow: SIZE_OK — single release deployment orchestrator; split after launch to avoid changing operator entrypoints today.
 # ═══════════════════════════════════════════════════════════════════
 # Re:putation — GCP Cloud Run 로컬 빌드 & 배포
 #
@@ -33,7 +34,7 @@ fail()  { echo -e "${RED}✗${RESET} $1" >&2; exit 1; }
 # ─── 설정 ─────────────────────────────────────────────────────────
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
-  echo "Usage: bash scripts/deploy.sh [api|worker|beat|site|admin|all|migrate]"
+  echo "Usage: bash scripts/deploy.sh [backend|api|worker|beat|site|admin|all|migrate]"
   exit 1
 fi
 
@@ -52,6 +53,8 @@ IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/reputation"
 
 SERVICE_ACCOUNT="${GCP_SERVICE_ACCOUNT:-reputation-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
 ALLOW_PLAINTEXT_ENV_SECRETS="${ALLOW_PLAINTEXT_ENV_SECRETS:-0}"
+VPC_CONNECTOR="${VPC_CONNECTOR:-${SERVERLESS_VPC_CONNECTOR:-reputation-vpc-connector}}"
+VPC_EGRESS="${VPC_EGRESS:-private-ranges-only}"
 
 # Cloud Run 서비스 설정
 API_MEMORY="${API_MEMORY:-512Mi}"
@@ -84,15 +87,18 @@ ADMIN_MEMORY="${ADMIN_MEMORY:-512Mi}"
 ADMIN_MIN="${ADMIN_MIN:-0}"
 ADMIN_MAX="${ADMIN_MAX:-2}"
 
-REQUIRED_SECRET_NAMES=(
+BASE_REQUIRED_SECRET_NAMES=(
   "ANTHROPIC_API_KEY"
   "OPENAI_API_KEY"
   "GEMINI_API_KEY"
   "SLACK_WEBHOOK_URL"
   "ADMIN_SECRET_KEY"
   "ADMIN_SESSION_SECRET"
-  "DB_PASSWORD"
+  "SITE_BFF_SECRET"
+  "REDIS_URL"
 )
+
+REQUIRED_SECRET_NAMES=("${BASE_REQUIRED_SECRET_NAMES[@]}")
 
 OPTIONAL_SECRET_NAMES=(
   "SITE_REVALIDATE_SECRET"
@@ -131,6 +137,41 @@ read_env_file_value() {
     | sed -e 's/^export //' -e "s/^${key}=//" -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'\$//"
 }
 CLOUDSQL_CONNECTION="${CLOUD_SQL_CONNECTION_NAME:-$(read_env_file_value CLOUD_SQL_CONNECTION_NAME || true)}"
+DB_USER_NAME="${DB_USER:-$(read_env_file_value DB_USER || true)}"
+DB_USER_NAME="${DB_USER_NAME:-reputation}"
+ASSET_GCS_BUCKET="${NEXT_PUBLIC_GCP_STORAGE_BUCKET:-${GCP_STORAGE_BUCKET:-$(read_env_file_value GCP_STORAGE_BUCKET || true)}}"
+DB_CONNECTION_MODE="${DB_CONNECTION_MODE:-$(read_env_file_value DB_CONNECTION_MODE || true)}"
+if [[ -z "$DB_CONNECTION_MODE" ]]; then
+  if [[ -n "$CLOUDSQL_CONNECTION" ]]; then
+    DB_CONNECTION_MODE="cloudsql"
+  else
+    DB_CONNECTION_MODE="supabase"
+  fi
+fi
+GCP_ATTACH_VPC_CONNECTOR="${GCP_ATTACH_VPC_CONNECTOR:-$(read_env_file_value GCP_ATTACH_VPC_CONNECTOR || true)}"
+GCP_ATTACH_VPC_CONNECTOR="${GCP_ATTACH_VPC_CONNECTOR:-1}"
+
+case "$DB_CONNECTION_MODE" in
+  cloudsql)
+    REQUIRED_SECRET_NAMES+=("DB_PASSWORD")
+    ;;
+  supabase|external)
+    REQUIRED_SECRET_NAMES+=("DATABASE_URL" "SYNC_DATABASE_URL")
+    ;;
+  *)
+    fail "DB_CONNECTION_MODE은 cloudsql, supabase, external 중 하나여야 합니다: ${DB_CONNECTION_MODE}"
+    ;;
+esac
+
+BACKEND_RUNTIME_ARGS=()
+
+is_cloudsql_mode() {
+  [[ "$DB_CONNECTION_MODE" == "cloudsql" ]]
+}
+
+should_attach_vpc_connector() {
+  [[ "$GCP_ATTACH_VPC_CONNECTOR" != "0" && "$GCP_ATTACH_VPC_CONNECTOR" != "false" ]]
+}
 
 is_managed_secret() {
   local key="$1"
@@ -231,17 +272,25 @@ make_service_env_file() {
 
 build_secret_args() {
   SECRET_ARGS=()
-  local name
+  local name status
 
   for name in "${REQUIRED_SECRET_NAMES[@]}"; do
     if ! gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
       fail "Secret Manager secret ${name} is missing. Create it before deploying so secrets are not passed as plaintext env vars."
+    fi
+    status="$(gcloud secrets versions describe latest --secret="$name" --project="$PROJECT_ID" --format='value(state)' 2>/dev/null || true)"
+    if [[ "$status" != "ENABLED" ]]; then
+      fail "Secret Manager secret ${name} latest version must be ENABLED before deploy."
     fi
     SECRET_ARGS+=("--set-secrets=${name}=${name}:latest")
   done
 
   for name in "${OPTIONAL_SECRET_NAMES[@]}"; do
     if gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
+      status="$(gcloud secrets versions describe latest --secret="$name" --project="$PROJECT_ID" --format='value(state)' 2>/dev/null || true)"
+      if [[ "$status" != "ENABLED" ]]; then
+        fail "Secret Manager secret ${name} latest version must be ENABLED before deploy."
+      fi
       SECRET_ARGS+=("--set-secrets=${name}=${name}:latest")
     fi
   done
@@ -272,8 +321,11 @@ build_and_push() {
 deploy_api() {
   local image_url="$1"
   info "API 서비스 배포 중..."
+  require_backend_runtime_shape
+  build_backend_runtime_args
   make_service_env_file "api"
 
+  set +u
   gcloud run deploy reputation-api \
     --image="$image_url" \
     --region="$REGION" \
@@ -288,11 +340,13 @@ deploy_api() {
     --allow-unauthenticated \
     --env-vars-file="$SERVICE_ENV_FILE" \
     "${SECRET_ARGS[@]}" \
+    "${BACKEND_RUNTIME_ARGS[@]}" \
     --port=8000 \
     --timeout=300 \
     --no-cpu-throttling \
     --cpu-boost \
     --execution-environment=gen2
+  set -u
 
   ok "API 배포 완료"
 }
@@ -300,8 +354,11 @@ deploy_api() {
 deploy_worker() {
   local image_url="$1"
   info "Worker 서비스 배포 중..."
+  require_backend_runtime_shape
+  build_backend_runtime_args
   make_service_env_file "worker"
 
+  set +u
   gcloud run deploy reputation-worker \
     --image="$image_url" \
     --region="$REGION" \
@@ -316,8 +373,10 @@ deploy_worker() {
     --no-allow-unauthenticated \
     --env-vars-file="$SERVICE_ENV_FILE" \
     "${SECRET_ARGS[@]}" \
+    "${BACKEND_RUNTIME_ARGS[@]}" \
     --timeout=900 \
     --no-cpu-throttling
+  set -u
 
   ok "Worker 배포 완료"
 }
@@ -325,8 +384,11 @@ deploy_worker() {
 deploy_beat() {
   local image_url="$1"
   info "Beat 서비스 배포 중..."
+  require_backend_runtime_shape
+  build_backend_runtime_args
   make_service_env_file "beat"
 
+  set +u
   gcloud run deploy reputation-beat \
     --image="$image_url" \
     --region="$REGION" \
@@ -341,8 +403,10 @@ deploy_beat() {
     --no-allow-unauthenticated \
     --env-vars-file="$SERVICE_ENV_FILE" \
     "${SECRET_ARGS[@]}" \
+    "${BACKEND_RUNTIME_ARGS[@]}" \
     --timeout=3600 \
     --no-cpu-throttling
+  set -u
 
   ok "Beat 배포 완료"
 }
@@ -364,7 +428,18 @@ require_public_dns() {
     domains+=("$ADMIN_DOMAIN")
   fi
 
-  python3 "${PROJECT_ROOT}/scripts/check_public_dns.py" "${domains[@]}" \
+  local expected_addresses="${PUBLIC_DNS_EXPECTED_ADDRESSES:-${CUSTOM_DOMAIN_IP_TARGETS:-}}"
+  if [[ -z "$expected_addresses" ]]; then
+    expected_addresses="$(read_env_file_value CUSTOM_DOMAIN_IP_TARGETS || true)"
+  fi
+
+  local dns_check=(python3 "${PROJECT_ROOT}/scripts/check_public_dns.py")
+  if [[ -n "$expected_addresses" ]]; then
+    dns_check+=("--expected-addresses" "$expected_addresses")
+  fi
+  dns_check+=("${domains[@]}")
+
+  "${dns_check[@]}" \
     || fail "공개 도메인 DNS가 고객 제공 가능한 주소를 가리키지 않습니다. DNS를 먼저 수정하거나, 초기 인프라 부트스트랩이면 SKIP_PUBLIC_DNS_PREFLIGHT=1로 명시적으로 우회하세요."
 }
 
@@ -378,6 +453,7 @@ build_and_push_site() {
     --build-arg "NEXT_PUBLIC_API_URL=https://${PUBLIC_DOMAIN}/api/v1/public" \
     --build-arg "NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN}" \
     --build-arg "NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
+    --build-arg "NEXT_PUBLIC_GCP_STORAGE_BUCKET=${ASSET_GCS_BUCKET}" \
     -t "$image_url" \
     -f "${PROJECT_ROOT}/site/Dockerfile" \
     "${PROJECT_ROOT}/site" >&2
@@ -416,7 +492,7 @@ deploy_site() {
     --max-instances="$SITE_MAX" \
     --ingress=internal-and-cloud-load-balancing \
     --allow-unauthenticated \
-    --set-env-vars="NEXT_PUBLIC_API_URL=https://${PUBLIC_DOMAIN}/api/v1/public,NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN},BACKEND_URL=https://${PUBLIC_DOMAIN}" \
+    --set-env-vars="NEXT_PUBLIC_API_URL=https://${PUBLIC_DOMAIN}/api/v1/public,NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_GCP_STORAGE_BUCKET=${ASSET_GCS_BUCKET},BACKEND_URL=https://${PUBLIC_DOMAIN}" \
     --set-secrets="SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest" \
     --port=8080 \
     --timeout=60 \
@@ -459,21 +535,64 @@ require_cloudsql_connection() {
   fi
 }
 
+cloudsql_instance_name() {
+  local instance="${CLOUDSQL_CONNECTION##*:}"
+  [[ -n "$instance" && "$instance" != "$CLOUDSQL_CONNECTION" ]] || fail "CLOUD_SQL_CONNECTION_NAME은 project:region:instance 형식이어야 합니다."
+  echo "$instance"
+}
+
+require_cloudsql_app_user() {
+  require_cloudsql_connection
+  [[ -n "$DB_USER_NAME" ]] || fail "DB_USER가 필요합니다 (.env.production 또는 환경변수)."
+  local instance
+  instance="$(cloudsql_instance_name)"
+  gcloud sql users list \
+    --instance="$instance" \
+    --project="$PROJECT_ID" \
+    --format='value(name)' \
+    | grep -Fx "$DB_USER_NAME" >/dev/null \
+    || fail "Cloud SQL 사용자 ${DB_USER_NAME}가 ${instance}에 없습니다. 먼저 앱 DB user를 생성하고 DB_PASSWORD secret과 일치시켜 주세요."
+}
+
+require_backend_runtime_shape() {
+  if is_cloudsql_mode; then
+    require_cloudsql_connection
+  fi
+  if should_attach_vpc_connector; then
+    [[ -n "$VPC_CONNECTOR" ]] || fail "VPC_CONNECTOR 또는 SERVERLESS_VPC_CONNECTOR가 필요합니다."
+  fi
+}
+
+build_backend_runtime_args() {
+  BACKEND_RUNTIME_ARGS=()
+  if is_cloudsql_mode; then
+    BACKEND_RUNTIME_ARGS+=("--set-cloudsql-instances=$CLOUDSQL_CONNECTION")
+  fi
+  if should_attach_vpc_connector; then
+    BACKEND_RUNTIME_ARGS+=("--vpc-connector=$VPC_CONNECTOR" "--vpc-egress=$VPC_EGRESS")
+  fi
+}
+
 run_migration() {
   local image_url="$1"
   info "DB 마이그레이션 실행 중..."
 
-  require_cloudsql_connection
+  require_backend_runtime_shape
+  if is_cloudsql_mode; then
+    require_cloudsql_app_user
+  fi
+  build_backend_runtime_args
 
   make_service_env_file "migrate"
 
+  set +u
   gcloud run jobs create reputation-migrate \
     --image="$image_url" \
     --region="$REGION" \
     --service-account="$SERVICE_ACCOUNT" \
     --env-vars-file="$SERVICE_ENV_FILE" \
     "${SECRET_ARGS[@]}" \
-    --set-cloudsql-instances="$CLOUDSQL_CONNECTION" \
+    "${BACKEND_RUNTIME_ARGS[@]}" \
     --task-timeout=300 \
     --max-retries=1 \
     2>/dev/null || gcloud run jobs update reputation-migrate \
@@ -481,7 +600,8 @@ run_migration() {
     --region="$REGION" \
     --env-vars-file="$SERVICE_ENV_FILE" \
     "${SECRET_ARGS[@]}" \
-    --set-cloudsql-instances="$CLOUDSQL_CONNECTION"
+    "${BACKEND_RUNTIME_ARGS[@]}"
+  set -u
 
   gcloud run jobs execute reputation-migrate --region="$REGION" --wait
 
@@ -490,7 +610,22 @@ run_migration() {
 
 # ─── 메인 ──────────────────────────────────────────────────────────
 case "$TARGET" in
+  backend)
+    require_backend_runtime_shape
+    if is_cloudsql_mode; then
+      require_cloudsql_app_user
+    fi
+    IMAGE_URL=$(build_and_push)
+    run_migration "$IMAGE_URL"
+    deploy_api "$IMAGE_URL"
+    deploy_worker "$IMAGE_URL"
+    deploy_beat "$IMAGE_URL"
+    ;;
   api|worker|beat)
+    require_backend_runtime_shape
+    if is_cloudsql_mode; then
+      require_cloudsql_app_user
+    fi
     IMAGE_URL=$(build_and_push)
     "deploy_${TARGET}" "$IMAGE_URL"
     ;;
@@ -508,7 +643,10 @@ case "$TARGET" in
     # 반쪽 롤아웃 상태로 중단된다.
     require_public_domain
     require_public_dns
-    require_cloudsql_connection
+    require_backend_runtime_shape
+    if is_cloudsql_mode; then
+      require_cloudsql_app_user
+    fi
     IMAGE_URL=$(build_and_push)
     # 마이그레이션을 새 코드 배포보다 먼저 실행 — 새 리비전이 옛 스키마 위에서
     # 기동하는 시간을 없앤다 (additive migration 전제).
@@ -522,11 +660,15 @@ case "$TARGET" in
     deploy_admin "$ADMIN_IMAGE_URL"
     ;;
   migrate)
+    require_backend_runtime_shape
+    if is_cloudsql_mode; then
+      require_cloudsql_app_user
+    fi
     IMAGE_URL=$(build_and_push)
     run_migration "$IMAGE_URL"
     ;;
   *)
-    fail "알 수 없는 대상: $TARGET (api, worker, beat, site, admin, all, migrate 중 하나)"
+    fail "알 수 없는 대상: $TARGET (backend, api, worker, beat, site, admin, all, migrate 중 하나)"
     ;;
 esac
 

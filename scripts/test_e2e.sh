@@ -717,11 +717,12 @@ printf "${BOLD}║${RESET}  ${GREEN}통과${RESET}: %-3s   ${RED}실패${RESET}:
 echo -e "${BOLD}╚═══════════════════════════════════════════════════╝${RESET}"
 echo ""
 
-if [[ $FAIL -eq 0 ]]; then
+if [[ $FAIL -gt 0 ]]; then
+  echo -e "  ${RED}${BOLD}❌ ${FAIL}개 항목 실패 — 위 로그 확인${RESET}"
+  exit 1
+else
   echo -e "  ${GREEN}${BOLD}✅ 전체 E2E 플로우 테스트 완료!${RESET}"
   echo -e "     장편한외과의원 신규 계약 → 월간 리포트 전 과정 검증 완료"
-else
-  echo -e "  ${RED}${BOLD}❌ ${FAIL}개 항목 실패 — 위 로그 확인${RESET}"
 fi
 
 [[ $SKIP -gt 0 ]] && \
