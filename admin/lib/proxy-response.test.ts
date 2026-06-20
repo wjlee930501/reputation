@@ -20,3 +20,18 @@ test('buildProxyResponse preserves binary upstream bodies', async () => {
   assert.equal(forwarded.headers.get('content-disposition'), 'inline; filename="doctor.png"')
   assert.deepEqual(new Uint8Array(await forwarded.arrayBuffer()), bytes)
 })
+
+test('buildProxyResponse forces private no-store for admin responses', async () => {
+  const upstream = new Response('secret', {
+    status: 200,
+    headers: {
+      'cache-control': 'public, max-age=3600',
+      etag: '"upstream-cache-token"',
+    },
+  })
+
+  const forwarded = buildProxyResponse(upstream)
+
+  assert.equal(forwarded.headers.get('cache-control'), 'no-store, private')
+  assert.equal(forwarded.headers.get('etag'), null)
+})

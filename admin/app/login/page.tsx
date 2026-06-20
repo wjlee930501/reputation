@@ -60,7 +60,11 @@ function LoginForm() {
           className="w-full border border-slate-300 rounded-lg px-4 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
           autoComplete="current-password"
         />
-        {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
+        {error && (
+          <p role="alert" aria-live="polite" className="text-red-500 text-sm mb-4">
+            {error}
+          </p>
+        )}
         <button
           type="submit"
           disabled={loading}

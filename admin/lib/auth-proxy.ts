@@ -32,12 +32,19 @@ function buildLoginRedirect(req: AuthProxyRequest): NextResponse {
   url.pathname = '/login'
   url.search = target && target !== '/' ? `?redirect=${encodeURIComponent(target)}` : ''
   const res = NextResponse.redirect(url)
+  res.headers.set('cache-control', 'no-store, private')
   res.cookies.delete('admin_session')
   return res
 }
 
+function jsonNoStore(body: Record<string, string>, init: ResponseInit): NextResponse {
+  const res = NextResponse.json(body, init)
+  res.headers.set('cache-control', 'no-store, private')
+  return res
+}
+
 function buildUnauthorizedJson(): NextResponse {
-  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  return jsonNoStore({ error: 'Unauthorized' }, { status: 401 })
 }
 
 export async function buildAdminAuthProxyResponse(req: AuthProxyRequest): Promise<NextResponse | undefined> {
@@ -46,7 +53,7 @@ export async function buildAdminAuthProxyResponse(req: AuthProxyRequest): Promis
 
   const sessionSecret = process.env.ADMIN_SESSION_SECRET
   if (!sessionSecret) {
-    return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 })
+    return jsonNoStore({ error: 'Server misconfigured' }, { status: 500 })
   }
 
   const token = req.cookies.get('admin_session')?.value

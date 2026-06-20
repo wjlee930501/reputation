@@ -4,16 +4,19 @@ import { hasValidSameOrigin } from '@/lib/security'
 
 export const runtime = 'nodejs'
 
+function noStoreResponse(body: BodyInit, init: ResponseInit): NextResponse {
+  const res = new NextResponse(body, init)
+  res.headers.set('cache-control', 'no-store, private')
+  return res
+}
+
 export async function POST(req: NextRequest) {
-  // CSRF guard: only accept same-origin POSTs so a cross-site form cannot force logout.
   if (!hasValidSameOrigin(req)) {
-    return new NextResponse('Forbidden', { status: 403 })
+    return noStoreResponse('Forbidden', { status: 403 })
   }
 
-  // Clears the admin_session cookie. Full token-version revocation (invalidating
-  // outstanding HMAC tokens server-side) depends on the admin_users wiring landing
-  // in a later wave — this only clears the cookie for now.
   const res = NextResponse.json({ ok: true })
+  res.headers.set('cache-control', 'no-store, private')
   res.cookies.set('admin_session', '', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',

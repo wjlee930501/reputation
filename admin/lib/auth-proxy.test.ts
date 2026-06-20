@@ -85,7 +85,27 @@ test('admin auth proxy returns JSON 401 for unauthenticated API routes', async (
   const res = await buildAdminAuthProxyResponse(requestFor('/api/admin/hospitals'))
 
   assert.equal(res?.status, 401)
+  assert.equal(res?.headers.get('cache-control'), 'no-store, private')
   assert.deepEqual(await res?.json(), { error: 'Unauthorized' })
+})
+
+test('admin auth proxy marks misconfiguration API errors as no-store', async () => {
+  const originalSecret = process.env.ADMIN_SESSION_SECRET
+  delete process.env.ADMIN_SESSION_SECRET
+
+  try {
+    const res = await buildAdminAuthProxyResponse(requestFor('/api/admin/hospitals'))
+
+    assert.equal(res?.status, 500)
+    assert.equal(res?.headers.get('cache-control'), 'no-store, private')
+    assert.deepEqual(await res?.json(), { error: 'Server misconfigured' })
+  } finally {
+    if (originalSecret === undefined) {
+      delete process.env.ADMIN_SESSION_SECRET
+    } else {
+      process.env.ADMIN_SESSION_SECRET = originalSecret
+    }
+  }
 })
 
 test('admin auth proxy redirects pages to login with the original path and clears stale sessions', async () => {
@@ -96,6 +116,7 @@ test('admin auth proxy redirects pages to login with the original path and clear
   )
 
   assert.equal(res?.status, 307)
+  assert.equal(res?.headers.get('cache-control'), 'no-store, private')
   assert.equal(
     res?.headers.get('location'),
     'https://admin.example.test/login?redirect=%2Fhospitals%2Fdemo%2Fcontent%3Fstatus%3DDRAFT',
