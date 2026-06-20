@@ -165,6 +165,37 @@ def test_lead_contact_format_validator():
         )
 
 
+def test_lead_question_rejects_patient_sensitive_free_text():
+    blocked_questions = [
+        "환자 홍길동 900101-1234567 수술 기록을 상담하고 싶습니다.",
+        "환자 홍길동 9001011234567 수술 기록을 상담하고 싶습니다.",
+        "환자 홍길동 900101 1234567 진료 기록을 상담하고 싶습니다.",
+        "환자 홍길동 수술 기록 상담",
+        "어제 검사 결과와 처방 내역 확인 부탁드립니다.",
+    ]
+
+    for question in blocked_questions:
+        with pytest.raises(ValueError, match="환자 개인정보"):
+            leads_api.LeadCreate(
+                clinic_name="장편한외과의원",
+                clinic_type="강남 대장항문외과",
+                contact="010-0000-0000",
+                question=question,
+                privacy=True,
+            )
+
+
+def test_lead_question_allows_business_patient_acquisition_phrasing():
+    body = leads_api.LeadCreate(
+        clinic_name="장편한외과의원",
+        clinic_type="강남 대장항문외과",
+        contact="010-0000-0000",
+        question="환자 유입 상담을 받고 싶습니다.",
+        privacy=True,
+    )
+    assert body.question == "환자 유입 상담을 받고 싶습니다."
+
+
 def test_mask_contact_phone():
     masked = notifier.mask_contact("010-1234-5678")
     assert "010" in masked and "5678" in masked and "1234" not in masked

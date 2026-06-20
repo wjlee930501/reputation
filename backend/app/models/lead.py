@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import INET, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,7 +29,12 @@ class SalesLead(Base):
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="NEW", server_default="NEW")
-    converted_hospital_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    converted_hospital_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("hospitals.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     converted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     conversion_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     notification_status: Mapped[str | None] = mapped_column(String(40), nullable=True)

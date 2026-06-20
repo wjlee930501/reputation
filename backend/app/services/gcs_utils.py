@@ -72,7 +72,7 @@ def _signed_url_cache_put(key: tuple[str, int], url: str, ttl_seconds: float) ->
         _signed_url_cache[key] = (time.monotonic() + ttl_seconds, url)
 
 
-def get_signed_url(gcs_path: str, expiration_hours: int = 24) -> str:
+def get_signed_url(gcs_path: str | None, expiration_hours: int = 24) -> str | None:
     """gs://bucket/path → signed URL 변환. 레거시 URL 또는 빈 값은 그대로 통과.
 
     기본 TTL 24h — /site ISR 캐시(페이지 revalidate 3600s + fetch 캐시 1800s)보다
@@ -90,7 +90,7 @@ def get_signed_url(gcs_path: str, expiration_hours: int = 24) -> str:
         parts = gcs_path.replace("gs://", "").split("/", 1)
         if len(parts) != 2:
             logger.warning(f"Invalid GCS path format: {gcs_path}")
-            return gcs_path
+            return None
 
         bucket_name, blob_name = parts[0], parts[1]
         client = _get_gcs_client()
@@ -115,8 +115,8 @@ def get_signed_url(gcs_path: str, expiration_hours: int = 24) -> str:
         _signed_url_cache_put(cache_key, signed_url, ttl)
         return signed_url
     except ImportError:
-        logger.warning("google-cloud-storage not installed — returning gcs_path as-is")
-        return gcs_path
+        logger.warning("google-cloud-storage not installed — cannot sign GCS path")
+        return None
     except Exception as e:
         logger.error(f"Failed to generate signed URL for {gcs_path}: {e}")
-        return gcs_path
+        return None

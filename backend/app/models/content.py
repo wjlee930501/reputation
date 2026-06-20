@@ -98,6 +98,13 @@ class ContentItem(Base):
 
     __tablename__ = "content_items"
     __table_args__ = (
+        Index(
+            "uq_content_items_schedule_slot",
+            "schedule_id",
+            "scheduled_date",
+            "sequence_no",
+            unique=True,
+        ),
         Index("ix_content_items_hospital_status", "hospital_id", "status"),
         Index("ix_content_items_hospital_scheduled", "hospital_id", "scheduled_date"),
         Index("ix_content_items_scheduled_date", "scheduled_date"),
@@ -163,6 +170,7 @@ class ContentItem(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름
     body_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    generation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

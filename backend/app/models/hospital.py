@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, String, Text, func, text
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -192,3 +192,11 @@ class Hospital(Base):
 
     def __repr__(self) -> str:
         return f"<Hospital {self.name} [{self.status}]>"
+
+
+Index(
+    "uq_hospitals_aeo_domain_lower",
+    func.lower(Hospital.aeo_domain),
+    unique=True,
+    postgresql_where=Hospital.aeo_domain.isnot(None),
+)

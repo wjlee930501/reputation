@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.hospital import Hospital
 from app.models.report import MonthlyReport
@@ -56,9 +57,26 @@ def _screening_status(r: MonthlyReport) -> str:
 def _pdf_status(r: MonthlyReport) -> str:
     if not r.pdf_path:
         return "GENERATING"
-    if str(r.pdf_path).startswith("gs://") or Path(str(r.pdf_path)).exists():
+    if str(r.pdf_path).startswith("gs://") or _safe_local_report_path(str(r.pdf_path)) is not None:
         return "READY"
     return "LINK_PENDING"
+
+
+def _safe_local_report_path(pdf_path: str) -> Path | None:
+    try:
+        report_root = Path(settings.REPORT_OUTPUT_DIR).resolve(strict=False)
+        candidate = Path(pdf_path).resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+    try:
+        candidate.relative_to(report_root)
+    except ValueError:
+        return None
+
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _serialize_display(r: MonthlyReport) -> dict:
@@ -110,23 +128,27 @@ async def download_report(hospital_id: uuid.UUID, report_id: uuid.UUID, db: Asyn
     if not r.pdf_path:
         raise HTTPException(status_code=404, detail="PDF 경로가 없습니다.")
 
-    if not r.pdf_path.startswith("gs://"):
-        local_path = Path(r.pdf_path)
-        if local_path.exists() and local_path.is_file():
-            return FileResponse(
-                path=str(local_path),
-                filename=local_path.name,
-                media_type="application/pdf",
+    if r.pdf_path.startswith("gs://"):
+        signed_url = get_signed_url(r.pdf_path)
+        if not signed_url:
+            raise HTTPException(
+                status_code=503,
+                detail="PDF URL 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.",
             )
+        return RedirectResponse(url=signed_url, status_code=302)
 
-    signed_url = get_signed_url(r.pdf_path)
-    if not signed_url:
+    local_path = _safe_local_report_path(r.pdf_path)
+    if not local_path:
         raise HTTPException(
-            status_code=503,
-            detail="PDF URL 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+            status_code=404,
+            detail="PDF 파일을 찾을 수 없습니다.",
         )
 
-    return RedirectResponse(url=signed_url, status_code=302)
+    return FileResponse(
+        path=str(local_path),
+        filename=local_path.name,
+        media_type="application/pdf",
+    )
 
 
 @router.post("/{hospital_id}/reports/{report_id}/mark-sent", response_model=ReportResponse)

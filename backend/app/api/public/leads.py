@@ -17,6 +17,33 @@ router = APIRouter(prefix="/public/leads", tags=["Public — Leads"])
 _PHONE_PATTERN = re.compile(r"\d[\d\-\s]{6,}")
 _EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 _HONEYPOT_FIELDS = {"website", "url"}
+_RESIDENT_REGISTRATION_NUMBER = re.compile(r"\b\d{6}[-\s]?[1-4]\d{6}\b")
+_PATIENT_RECORD_CONTEXT = re.compile(
+    r"(수술\s*기록|진료\s*기록|진료\s*내역|의무\s*기록|검사\s*결과|처방\s*내역|처방전|차트)"
+)
+_PATIENT_RECORD_WITH_PERSON_CONTEXT = re.compile(
+    r"(환자|보호자).{0,30}"
+    r"(주민등록|진료\s*기록|진료\s*내역|수술\s*기록|의무\s*기록|검사\s*결과|처방\s*내역|처방전|차트)"
+)
+_NATIONAL_ID_CONTEXT = re.compile(r"주민등록(?:번호)?")
+_PERSONAL_IDENTIFIER_CONTEXT = re.compile(r"(연락처|전화번호|휴대폰|생년월일|환자\s*번호)")
+_FOUR_OR_MORE_DIGITS = re.compile(r"\d{4,}")
+
+
+def contains_patient_sensitive_text(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", value.strip())
+    if not normalized:
+        return False
+    return (
+        _RESIDENT_REGISTRATION_NUMBER.search(normalized) is not None
+        or _PATIENT_RECORD_CONTEXT.search(normalized) is not None
+        or _PATIENT_RECORD_WITH_PERSON_CONTEXT.search(normalized) is not None
+        or _NATIONAL_ID_CONTEXT.search(normalized) is not None
+        or (
+            _PERSONAL_IDENTIFIER_CONTEXT.search(normalized) is not None
+            and _FOUR_OR_MORE_DIGITS.search(normalized) is not None
+        )
+    )
 
 
 class LeadCreate(BaseModel):
@@ -45,6 +72,13 @@ class LeadCreate(BaseModel):
     def validate_contact_format(cls, value: str) -> str:
         if not (_PHONE_PATTERN.search(value) or _EMAIL_PATTERN.search(value)):
             raise ValueError("이메일 또는 전화번호 형식으로 입력해 주세요.")
+        return value
+
+    @field_validator("question")
+    @classmethod
+    def reject_patient_sensitive_question(cls, value: str) -> str:
+        if contains_patient_sensitive_text(value):
+            raise ValueError("환자 개인정보나 진료기록은 이 문의 양식에 입력하지 마세요.")
         return value
 
 

@@ -2,6 +2,13 @@
 from datetime import date
 from types import SimpleNamespace
 
+import arrow
+import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
+
+from app.models.content import ContentItem
+from app.models.hospital import HospitalStatus
 from app.workers import tasks
 
 
@@ -34,6 +41,115 @@ def test_nightly_generation_orders_carried_over_items_first():
     assert "carried_over_from IS NOT NULL DESC" in order_clause
     # 이월 우선 정렬이 발행 예정일 정렬보다 앞선다.
     assert order_clause.index("carried_over_from") < order_clause.index("scheduled_date")
+
+
+def test_nightly_generation_stmt_uses_row_level_claiming():
+    stmt = tasks._nightly_generation_stmt(date(2026, 7, 1), date(2026, 7, 2))
+    sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "FOR UPDATE" in sql
+    assert "SKIP LOCKED" in sql
+    assert "generation_claimed_at IS NULL" in sql
+
+
+def test_content_item_schedule_slots_have_db_uniqueness():
+    indexes = {index.name: index for index in ContentItem.__table__.indexes}
+    slot_index = indexes.get("uq_content_items_schedule_slot")
+
+    assert slot_index is not None
+    assert slot_index.unique is True
+
+
+def test_v0_report_requires_at_least_one_successful_measurement():
+    with pytest.raises(RuntimeError, match="zero successful"):
+        tasks._ensure_v0_has_successful_measurements(success_count=0, failure_count=5)
+
+
+def test_monthly_report_failures_are_raised_for_celery_autoretry():
+    with pytest.raises(RuntimeError, match="월간 리포트 실패"):
+        tasks._raise_if_monthly_report_failures([("장편한외과의원", RuntimeError("pdf boom"))])
+
+
+class _NestedSlotTransaction:
+    def __init__(self, db):
+        self._db = db
+
+    def __enter__(self):
+        self._db._staged = []
+        return self
+
+    def __exit__(self, exc_type, *_exc):
+        if exc_type is None:
+            self._db.persisted.extend(self._db._staged)
+        self._db._staged = None
+        return False
+
+
+class _MonthlySlotDB:
+    def __init__(self, schedules):
+        self._results = [_Result(items=schedules), _Result(scalar=None), _Result(scalar=None)]
+        self.execute_calls = 0
+        self.flush_calls = 0
+        self.commit_calls = 0
+        self.rollback_calls = 0
+        self.persisted = []
+        self._staged = None
+
+    def execute(self, _stmt):
+        result = self._results[self.execute_calls]
+        self.execute_calls += 1
+        return result
+
+    def begin_nested(self):
+        return _NestedSlotTransaction(self)
+
+    def add(self, item):
+        assert self._staged is not None
+        self._staged.append(item)
+
+    def flush(self):
+        self.flush_calls += 1
+        if self.flush_calls == 2:
+            raise IntegrityError("insert", {}, Exception("duplicate slot"))
+
+    def commit(self):
+        self.commit_calls += 1
+
+    def rollback(self):
+        self.rollback_calls += 1
+        self.persisted.clear()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflicts(monkeypatch):
+    hospitals = [
+        SimpleNamespace(id="h1", name="첫번째의원", status=HospitalStatus.ACTIVE),
+        SimpleNamespace(id="h2", name="두번째의원", status=HospitalStatus.ACTIVE),
+    ]
+    schedules = [
+        SimpleNamespace(id="s1", hospital=hospitals[0], plan="PLAN_4", publish_days=[0]),
+        SimpleNamespace(id="s2", hospital=hospitals[1], plan="PLAN_4", publish_days=[0]),
+    ]
+    db = _MonthlySlotDB(schedules)
+
+    monkeypatch.setattr(tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(2026, 6, 25, tzinfo="Asia/Seoul"))
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(
+        "app.workers.monthly_slots.generate_monthly_slots",
+        lambda *_args, **_kwargs: [(date(2026, 7, 1), "FAQ", 1, 1)],
+    )
+
+    tasks.monthly_slot_generation()
+
+    assert db.rollback_calls == 0
+    assert db.commit_calls == 1
+    assert len(db.persisted) == 1
+    assert db.persisted[0].hospital_id == "h1"
 
 
 def test_morning_missed_stmt_bounds_and_filters():
@@ -73,6 +189,9 @@ class _Result:
     def scalar_one(self):
         return self._scalar
 
+    def scalar(self):
+        return self._scalar
+
 
 class _FakeSyncDB:
     """첫 execute는 batch 조회, 두 번째 execute는 overflow count 조회."""
@@ -80,11 +199,15 @@ class _FakeSyncDB:
     def __init__(self, items, total_count):
         self._results = [_Result(items=items), _Result(scalar=total_count)]
         self.execute_calls = 0
+        self.commit_calls = 0
 
     def execute(self, _stmt):
         result = self._results[self.execute_calls]
         self.execute_calls += 1
         return result
+
+    def commit(self):
+        self.commit_calls += 1
 
 
 def _items(n):
@@ -99,6 +222,8 @@ def test_load_nightly_generation_batch_without_truncation():
     assert len(items) == 3
     assert truncated == 0
     assert db.execute_calls == 1  # overflow count 조회 불필요
+    assert db.commit_calls == 1
+    assert all(item.generation_claimed_at is not None for item in items)
 
 
 def test_load_nightly_generation_batch_detects_cap_truncation():
@@ -110,6 +235,8 @@ def test_load_nightly_generation_batch_detects_cap_truncation():
     assert len(items) == cap
     assert truncated == 7  # 정확한 잔여 건수 보고
     assert db.execute_calls == 2
+    assert db.commit_calls == 1
+    assert all(item.generation_claimed_at is not None for item in items)
 
 
 # ── R1c — 아침 알림 done-key: 누락 경보 실패가 초안 알림 dedupe를 막지 않는다 ──

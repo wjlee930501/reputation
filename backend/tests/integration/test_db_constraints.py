@@ -95,6 +95,10 @@ def test_fk_covering_indexes_exist(pg_conn):
         "ix_content_items_schedule_id",
         "ix_query_matrix_hospital_id",
         "ix_exposure_actions_linked_report_id",
+        "ix_sales_leads_converted_hospital_id",
+        "ix_content_items_generation_claimed_at",
+        "uq_content_items_schedule_slot",
+        "uq_hospitals_aeo_domain_lower",
     }
     present = {
         r[0]
@@ -104,3 +108,14 @@ def test_fk_covering_indexes_exist(pg_conn):
         ).all()
     }
     assert expected <= present
+
+
+def test_sales_lead_conversion_fk_exists(pg_conn):
+    row = pg_conn.execute(
+        text(
+            "SELECT 1 FROM pg_constraint "
+            "WHERE conname = 'fk_sales_leads_converted_hospital_id_hospitals' "
+            "AND conrelid = 'sales_leads'::regclass"
+        )
+    ).first()
+    assert row is not None

@@ -131,6 +131,19 @@ async def test_mark_report_sent_404_for_foreign_report():
     assert exc.value.status_code == 404
 
 
+async def test_download_report_rejects_local_path_outside_report_output_dir(tmp_path):
+    hospital = _hospital()
+    outside_pdf = tmp_path / "outside.pdf"
+    outside_pdf.write_bytes(b"%PDF-1.4\n% not a real report\n")
+    report = _report(hospital_id=hospital.id, pdf_path=str(outside_pdf))
+    db = _FakeDB(hospital, report)
+
+    with pytest.raises(HTTPException) as exc:
+        await reports_api.download_report(hospital.id, report.id, db=db)
+
+    assert exc.value.status_code == 404
+
+
 def test_report_detail_serializes_essence_summary_for_pre_pdf_review():
     report = _report()
 

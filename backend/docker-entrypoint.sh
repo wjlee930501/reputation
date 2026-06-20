@@ -21,6 +21,11 @@ case "$SERVICE" in
     python -m app.workers.health_server &
     exec celery -A app.core.celery_app beat --loglevel=info
     ;;
+  flower)
+    exec celery -A app.core.celery_app flower \
+      --port="${PORT:-5555}" \
+      --basic-auth="${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-changeme}"
+    ;;
   migrate)
     exec alembic upgrade head
     ;;
@@ -33,7 +38,7 @@ case "$SERVICE" in
     ;;
   *)
     echo "Unknown SERVICE: $SERVICE"
-    echo "Valid values: api, worker, beat, migrate, seed-admin"
+    echo "Valid values: api, worker, beat, flower, migrate, seed-admin"
     exit 1
     ;;
 esac

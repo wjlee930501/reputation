@@ -1,3 +1,4 @@
+# noqa: SIZE_OK -- Celery task registry keeps legacy task import names; release-critical helpers are split by task family.
 """
 Celery 태스크 전체
 - trigger_v0_report: 프로파일 완료 시 V0 분석 트리거
@@ -39,20 +40,17 @@ from app.services.image_engine import generate_image
 from app.services.report_engine import generate_pdf_report
 from app.services.sov_engine import generate_query_matrix, run_single_query, calculate_sov
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
+from app.workers.monthly_slots import create_next_month_slots_for_schedule
+from app.workers.nightly_generation_batch import (
+    GENERATION_CATCHUP_DAYS,
+    NIGHTLY_GENERATION_CAP,
+    _load_nightly_generation_batch,
+    _nightly_generation_stmt,
+)
 
 logger = logging.getLogger(__name__)
 
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)      # 주간 측정용
-
-# 야간 배치 1회 실행당 생성 상한 — 초과분은 절단되므로 반드시 로그+Slack으로 알린다 (P1-3).
-NIGHTLY_GENERATION_CAP = 50
-
-# 생성 catch-up 윈도우 (R1): 야간 배치가 며칠 연속 누락(워커 장애 등)돼도 슬롯이 영구
-# 고아가 되지 않도록, 야간 생성은 '오늘-7일 ~ 내일' 범위의 미생성 슬롯을 집는다.
-# 아침 '생성 누락' 경보도 같은 윈도우만 보므로 경보 문구("오늘 밤 자동 생성에서
-# 재시도됩니다")가 윈도우 안에서는 항상 참이다. 윈도우를 벗어난 슬롯은 7일간 매일
-# 경보를 받은 뒤에도 방치된 것이므로 수동 재생성 대상이다.
-GENERATION_CATCHUP_DAYS = 7
 
 _tls = threading.local()
 
@@ -125,6 +123,21 @@ def _reset_v0_analyzing_status(hospital_id: str, prior_status: str | None) -> No
                 db.commit()
     except Exception:
         logger.exception("Failed to reset ANALYZING status for hospital %s", hospital_id)
+
+
+def _ensure_v0_has_successful_measurements(success_count: int, failure_count: int) -> None:
+    if success_count <= 0:
+        raise RuntimeError(
+            f"zero successful SoV measurements for V0 report (failures={failure_count})"
+        )
+
+
+def _raise_if_monthly_report_failures(failures: list[tuple[str, Exception]]) -> None:
+    if not failures:
+        return
+    names = ", ".join(name for name, _exc in failures[:5])
+    suffix = "" if len(failures) <= 5 else f" 외 {len(failures) - 5}건"
+    raise RuntimeError(f"월간 리포트 실패: {names}{suffix}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -234,6 +247,7 @@ def trigger_v0_report(self, hospital_id: str):
 
             _finish_measurement_run(run, success_count, failure_count)
             db.commit()
+            _ensure_v0_has_successful_measurements(success_count, failure_count)
 
             # AI 답변 언급률 계산
             sov_pct = calculate_sov(all_records)
@@ -477,47 +491,6 @@ def nightly_content_generation():
                     scheduled_date=str(tomorrow),
                     skipped=stat["skipped"],
                 ))
-
-
-def _nightly_generation_stmt(window_start, window_end):
-    """catch-up window 조회 statement (P1-3/R1) — 테스트에서 window 경계를 검증한다."""
-    return (
-        select(ContentItem)
-        .where(
-            ContentItem.scheduled_date >= window_start,
-            ContentItem.scheduled_date <= window_end,
-            ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
-            ContentItem.body.is_(None),
-        )
-        # 전월 이월(carried_over_from IS NOT NULL) 슬롯을 최우선 생성한다 — cap 절단이
-        # 발생해도 이월분이 가장 먼저 해소되도록 (월말 반려 carry-over).
-        .order_by(
-            ContentItem.carried_over_from.is_not(None).desc(),
-            ContentItem.scheduled_date,
-            ContentItem.sequence_no,
-        )
-        .options(joinedload(ContentItem.hospital))
-        # cap+1로 읽어 절단 발생 여부를 감지한다 — 조용한 드롭 금지 (P1-3).
-        .limit(NIGHTLY_GENERATION_CAP + 1)
-    )
-
-
-def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, int]:
-    """생성 대상 슬롯을 cap까지 적재하고, 절단된 잔여 건수(0 또는 1 이상)를 반환."""
-    result = db.execute(_nightly_generation_stmt(window_start, window_end))
-    items = list(result.scalars().all())
-    if len(items) > NIGHTLY_GENERATION_CAP:
-        # cap+1개가 읽혔다 = 절단 발생. 정확한 잔여 건수는 count 쿼리로 다시 계산해 보고.
-        overflow = db.execute(
-            select(func.count()).select_from(ContentItem).where(
-                ContentItem.scheduled_date >= window_start,
-                ContentItem.scheduled_date <= window_end,
-                ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
-                ContentItem.body.is_(None),
-            )
-        ).scalar_one()
-        return items[:NIGHTLY_GENERATION_CAP], max(int(overflow) - NIGHTLY_GENERATION_CAP, 1)
-    return items, 0
 
 
 @celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)
@@ -1024,39 +997,14 @@ def monthly_slot_generation():
 
         created_count = 0
         for schedule in schedules:
-            hospital = schedule.hospital
-            if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
-                continue
-
-            # 이미 다음 달 슬롯이 있으면 스킵
-            existing = db.execute(
-                select(ContentItem.id).where(
-                    ContentItem.hospital_id == hospital.id,
-                    ContentItem.scheduled_date >= next_month_start,
-                    ContentItem.scheduled_date <= next_month_end,
-                ).limit(1)
-            )
-            if existing.scalar():
-                continue
-
-            # 슬롯 생성 (content_calendar 모듈 사용)
-            from app.services.content_calendar import generate_monthly_slots
-            slots = generate_monthly_slots(schedule.plan, schedule.publish_days, next_month)
-            for slot_date, ctype, seq_no, total in slots:
-                db.add(ContentItem(
-                    hospital_id=hospital.id,
-                    schedule_id=schedule.id,
-                    content_type=ctype,
-                    sequence_no=seq_no,
-                    total_count=total,
-                    scheduled_date=slot_date,
-                    status=ContentStatus.DRAFT,
-                ))
-            created_count += 1
-            logger.info(
-                f"Next month slots created: {hospital.name} "
-                f"{next_month.format('YYYY-MM')} ({len(slots)} slots)"
-            )
+            if create_next_month_slots_for_schedule(
+                db,
+                schedule,
+                next_month,
+                next_month_start,
+                next_month_end,
+            ):
+                created_count += 1
 
         db.commit()
         logger.info(f"monthly_slot_generation done: {created_count} hospitals processed")
@@ -1151,6 +1099,7 @@ def run_monthly_reports(self):
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         hospitals = result.scalars().all()
+        failures: list[tuple[str, Exception]] = []
 
         for h in hospitals:
             try:
@@ -1246,6 +1195,9 @@ def run_monthly_reports(self):
             except Exception as e:
                 logger.error(f"Monthly report failed for {h.name}: {e}")
                 db.rollback()
+                failures.append((h.name, e))
+
+        _raise_if_monthly_report_failures(failures)
 
 
 # ══════════════════════════════════════════════════════════════════
