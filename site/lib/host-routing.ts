@@ -71,7 +71,7 @@ const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
  * | 조건                                        | 결과                  |
  * |---------------------------------------------|-----------------------|
  * | primary host (플랫폼/로컬/run.app)           | null                  |
- * | slug 미해석 (404·백엔드 다운)                | null (fail open)      |
+ * | slug 미해석 (404·백엔드 다운)                | null (middleware 404) |
  * | 예약 경로 (_next/api/landing/legal/정적파일) | null                  |
  * | `/`                                          | `/{slug}`             |
  * | 이미 `/{slug}` 또는 `/{slug}/...`             | null                  |
@@ -91,4 +91,15 @@ export function decideRewrite(
   if (pathname === '/' || pathname === '') return `/${slug}`
   if (pathname === `/${slug}` || pathname.startsWith(`/${slug}/`)) return null
   return `/${slug}${pathname}`
+}
+
+export function shouldFailClosedCustomHost(
+  host: string | null | undefined,
+  pathname: string,
+  slugOrNull: string | null,
+  primaryHostnames: string[],
+): boolean {
+  if (isPrimaryHost(host, primaryHostnames)) return false
+  if (isReservedPath(pathname)) return false
+  return !slugOrNull || !SLUG_PATTERN.test(slugOrNull)
 }

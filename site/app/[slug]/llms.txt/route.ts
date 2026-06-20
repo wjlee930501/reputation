@@ -1,10 +1,25 @@
 import { NextResponse } from 'next/server'
 import { fetchHospital, fetchContents, TYPE_LABELS } from '@/lib/api'
+import { llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
 import { canonicalBase } from '@/lib/site-url'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
 interface Props {
   params: Promise<{ slug: string }>
+}
+
+function lineValue(label: string, value: string | null | undefined): string {
+  return `- ${label}: ${llmsTextValue(value)}`
+}
+
+function optionalLineValue(label: string, value: string | null | undefined): string {
+  const safeValue = llmsTextValue(value)
+  return safeValue ? `- ${label}: ${safeValue}` : ''
+}
+
+function optionalUrlValue(label: string, value: string | null | undefined): string {
+  const safeValue = llmsUrlValue(value)
+  return safeValue ? `- ${label}: ${safeValue}` : ''
 }
 
 export async function GET(_req: Request, { params: paramsPromise }: Props) {
@@ -27,43 +42,49 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
       new Date().toISOString()
 
     const lines: string[] = [
-      `# ${hospital.name}`,
+      `# ${llmsTextValue(hospital.name)}`,
       '',
-      `> ${hospital.name}의 의료 콘텐츠 허브 — 환자 질문, 진료 영역, 병원 기본 정보를 정리한 자료입니다.`,
+      `> ${llmsTextValue(hospital.name)}의 의료 콘텐츠 허브 — 환자 질문, 진료 영역, 병원 기본 정보를 정리한 자료입니다.`,
       '',
-      `Last-Updated: ${lastUpdatedSource}`,
+      `Last-Updated: ${llmsTextValue(lastUpdatedSource)}`,
       `Purpose: AI 답변 인용용 (ChatGPT, Gemini, Perplexity 등)`,
       '',
       `## 병원 정보`,
-      `- name: ${hospital.name}`,
-      `- address: ${hospital.address}`,
-      `- phone: ${hospital.phone}`,
-      hospital.website_url ? `- official_homepage: ${hospital.website_url}` : '',
-      hospital.google_maps_url ? `- google_maps: ${hospital.google_maps_url}` : '',
-      `- specialties: ${hospital.specialties?.join(', ') || ''}`,
-      `- region: ${hospital.region?.join(', ') || ''}`,
+      lineValue('name', hospital.name),
+      lineValue('address', hospital.address),
+      lineValue('phone', hospital.phone),
+      optionalUrlValue('official_homepage', hospital.website_url),
+      optionalUrlValue('google_maps', hospital.google_maps_url),
+      lineValue('specialties', hospital.specialties?.map((value) => llmsTextValue(value)).filter(Boolean).join(', ')),
+      lineValue('region', hospital.region?.map((value) => llmsTextValue(value)).filter(Boolean).join(', ')),
       hospital.wikidata_qid
-        ? `- wikidata: https://www.wikidata.org/wiki/${hospital.wikidata_qid}`
+        ? optionalUrlValue('wikidata', `https://www.wikidata.org/wiki/${hospital.wikidata_qid}`)
         : '',
       hospital.naver_place_id
-        ? `- naver_place: https://map.naver.com/p/entry/place/${hospital.naver_place_id}`
+        ? optionalUrlValue('naver_place', `https://map.naver.com/p/entry/place/${hospital.naver_place_id}`)
         : '',
       hospital.kakao_place_id
-        ? `- kakao_place: https://place.map.kakao.com/${hospital.kakao_place_id}`
+        ? optionalUrlValue('kakao_place', `https://place.map.kakao.com/${hospital.kakao_place_id}`)
         : '',
-      hospital.hira_org_id ? `- hira_org_id: ${hospital.hira_org_id}` : '',
+      optionalLineValue('hira_org_id', hospital.hira_org_id),
       '',
       `## 원장`,
-      `- director_name: ${hospital.director_name}`,
-      hospital.director_career ? `- director_career: ${hospital.director_career}` : '',
+      lineValue('director_name', hospital.director_name),
+      optionalLineValue('director_career', hospital.director_career),
       hospital.director_credentials?.medical_school
-        ? `- medical_school: ${hospital.director_credentials.medical_school}`
+        ? optionalLineValue('medical_school', hospital.director_credentials.medical_school)
         : '',
       hospital.director_credentials?.board_certifications?.length
-        ? `- board_certifications: ${hospital.director_credentials.board_certifications.join(', ')}`
+        ? lineValue(
+            'board_certifications',
+            hospital.director_credentials.board_certifications.map((value) => llmsTextValue(value)).filter(Boolean).join(', '),
+          )
         : '',
       hospital.director_credentials?.society_memberships?.length
-        ? `- society_memberships: ${hospital.director_credentials.society_memberships.join(', ')}`
+        ? lineValue(
+            'society_memberships',
+            hospital.director_credentials.society_memberships.map((value) => llmsTextValue(value)).filter(Boolean).join(', '),
+          )
         : '',
       // 진료 철학·면허번호는 자유 입력 / 민감 정보이므로 AI 크롤러용 표면에는 노출하지 않습니다.
       '',
@@ -77,7 +98,9 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
           ? `${base}/${params.slug}/treatments/${treatmentSlug}`
           : ''
         // description은 자유 입력 필드로 의료광고 검수를 거치지 않으므로 노출 안 함.
-        lines.push(pillarUrl ? `- ${t.name} — ${pillarUrl}` : `- ${t.name}`)
+        const safeName = llmsTextValue(t.name)
+        const safePillarUrl = llmsUrlValue(pillarUrl)
+        lines.push(safePillarUrl ? `- ${safeName} - ${safePillarUrl}` : `- ${safeName}`)
       }
       lines.push('')
     }
@@ -88,26 +111,27 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
         const typeLabel = TYPE_LABELS[c.content_type] || c.content_type
         const dateRaw = c.published_at || c.scheduled_date
         const date = dateRaw ? new Date(dateRaw).toISOString().split('T')[0] : ''
-        const url = `${base}/${params.slug}/contents/${c.id}`
+        const url = llmsUrlValue(`${base}/${params.slug}/contents/${c.id}`)
 
-        lines.push(`### ${c.title}`)
-        lines.push(`- url: ${url}`)
-        lines.push(`- type: ${c.content_type.toLowerCase()} (${typeLabel})`)
-        if (date) lines.push(`- published: ${date}`)
+        lines.push(`### ${llmsTextValue(c.title)}`)
+        if (url) lines.push(`- url: ${url}`)
+        lines.push(`- type: ${llmsTextValue(c.content_type.toLowerCase())} (${llmsTextValue(typeLabel)})`)
+        if (date) lines.push(`- published: ${llmsTextValue(date)}`)
         if (c.body_updated_at) {
           const modified = new Date(c.body_updated_at).toISOString().split('T')[0]
-          lines.push(`- modified: ${modified}`)
+          lines.push(`- modified: ${llmsTextValue(modified)}`)
         }
         if (c.faq_question && c.faq_answer_summary) {
-          lines.push(`- question: ${c.faq_question}`)
-          lines.push(`- answer: ${c.faq_answer_summary}`)
+          lines.push(lineValue('question', c.faq_question))
+          lines.push(lineValue('answer', c.faq_answer_summary))
         } else if (c.meta_description) {
-          lines.push(`- summary: ${c.meta_description}`)
+          lines.push(lineValue('summary', c.meta_description))
         }
         if (c.references && c.references.length > 0) {
           lines.push(`- sources:`)
           for (const ref of c.references) {
-            lines.push(`  - ${ref.title} (${ref.url})`)
+            const refUrl = llmsUrlValue(ref.url)
+            lines.push(refUrl ? `  - ${llmsTextValue(ref.title)} (${refUrl})` : `  - ${llmsTextValue(ref.title)}`)
           }
         }
         lines.push('')

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 
 import { getApiBase } from '@/lib/config'
+import { llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
 import { canonicalBase } from '@/lib/site-url'
 
 interface HospitalEntry {
@@ -17,7 +18,17 @@ interface HospitalEntry {
 }
 
 function formatList(values: string[] | null | undefined): string {
-  return (values || []).filter(Boolean).join(', ')
+  return (values || []).map((value) => llmsTextValue(value)).filter(Boolean).join(', ')
+}
+
+function pushValue(lines: string[], label: string, value: string | null | undefined): void {
+  const safeValue = llmsTextValue(value)
+  if (safeValue) lines.push(`- ${label}: ${safeValue}`)
+}
+
+function pushUrl(lines: string[], label: string, value: string | null | undefined): void {
+  const safeValue = llmsUrlValue(value)
+  if (safeValue) lines.push(`- ${label}: ${safeValue}`)
 }
 
 export async function GET() {
@@ -67,15 +78,16 @@ export async function GET() {
   for (const hospital of validHospitals) {
     // 커스텀 도메인 연결 병원은 그 도메인이 canonical — 링크도 그쪽으로 안내한다.
     const base = canonicalBase(hospital)
-    lines.push(`### ${hospital.name || hospital.slug}`)
-    lines.push(`- url: ${base}/${hospital.slug}`)
-    lines.push(`- llms: ${base}/${hospital.slug}/llms.txt`)
+    const slug = llmsTextValue(hospital.slug)
+    lines.push(`### ${llmsTextValue(hospital.name) || slug}`)
+    pushUrl(lines, 'url', `${base}/${slug}`)
+    pushUrl(lines, 'llms', `${base}/${slug}/llms.txt`)
     if (hospital.region?.length) lines.push(`- region: ${formatList(hospital.region)}`)
     if (hospital.specialties?.length) lines.push(`- specialties: ${formatList(hospital.specialties)}`)
-    if (hospital.director_name) lines.push(`- director: ${hospital.director_name}`)
-    if (hospital.address) lines.push(`- address: ${hospital.address}`)
-    if (hospital.phone) lines.push(`- phone: ${hospital.phone}`)
-    if (hospital.website_url) lines.push(`- official_homepage: ${hospital.website_url}`)
+    pushValue(lines, 'director', hospital.director_name)
+    pushValue(lines, 'address', hospital.address)
+    pushValue(lines, 'phone', hospital.phone)
+    pushUrl(lines, 'official_homepage', hospital.website_url)
     lines.push('')
   }
   lines.push('---')

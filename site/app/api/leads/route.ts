@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { clientIpFromForwardedHeaders } from '@/lib/client-ip'
 import { getApiBase } from '@/lib/config'
+import { containsPatientSensitiveLeadText, leadSafetyError } from '@/lib/lead-safety'
 
 export const runtime = 'nodejs'
 
@@ -58,6 +59,15 @@ export async function POST(request: Request) {
     return NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)
   }
 
+  const question = readField(formData, 'question', FIELD_MAX.question)
+  if (containsPatientSensitiveLeadText(question)) {
+    const error = leadSafetyError()
+    if (wantsJson) {
+      return NextResponse.json({ ok: false, error }, { status: 400 })
+    }
+    return NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)
+  }
+
   const consentVersion = readField(formData, 'consent_version', FIELD_MAX.consent_version) || 'v1.2026-05'
   const sourcePath = (() => {
     const value = formData.get('source_path')
@@ -68,7 +78,7 @@ export async function POST(request: Request) {
     clinic_name: readField(formData, 'clinicName', FIELD_MAX.clinicName),
     clinic_type: readField(formData, 'clinicType', FIELD_MAX.clinicType),
     contact: readField(formData, 'contact', FIELD_MAX.contact),
-    question: readField(formData, 'question', FIELD_MAX.question),
+    question,
     privacy: privacyAccepted,
     consent_version: consentVersion,
     source_path: sourcePath,

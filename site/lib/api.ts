@@ -1,80 +1,8 @@
-import { getApiBase, resolveBaseUrl } from './config.ts'
+import { getApiBase } from './config.ts'
 import { publicFetchInit } from './fetch-policy.ts'
-
-export interface DirectorCredentials {
-  medical_school?: string | null
-  board_certifications?: string[] | null
-  society_memberships?: string[] | null
-}
-
-export interface Hospital {
-  id: string
-  name: string
-  slug: string
-  address: string
-  phone: string
-  business_hours: Record<string, string>
-  website_url: string | null
-  blog_url: string | null
-  kakao_channel_url: string | null
-  google_business_profile_url: string | null
-  google_maps_url: string | null
-  naver_place_url: string | null
-  latitude: number | null
-  longitude: number | null
-  wikidata_qid: string | null
-  gbp_place_id: string | null
-  naver_place_id: string | null
-  kakao_place_id: string | null
-  hira_org_id: string | null
-  region: string[]
-  specialties: string[]
-  keywords: string[]
-  director_name: string
-  director_career: string
-  director_philosophy: string | null
-  director_photo_url: string | null
-  director_credentials: DirectorCredentials | null
-  treatments: Array<{ name: string; description: string }>
-  aeo_domain: string | null
-  photos: HospitalPhoto[]
-}
-
-export type HospitalPhotoType =
-  | 'PHOTO_DOCTOR'
-  | 'PHOTO_CLINIC_EXTERIOR'
-  | 'PHOTO_CLINIC_INTERIOR'
-  | 'PHOTO_TREATMENT_ROOM'
-
-export interface HospitalPhoto {
-  id: string
-  source_type: HospitalPhotoType
-  title: string
-  url: string
-}
-
-const DEV_ASSETS_BACKEND_BASE = 'http://localhost:8000'
-
-// getApiBase()와 동일한 fail-closed 정책(config.ts resolveBaseUrl 공유): 프로덕션에서
-// env 미설정/localhost면 throw. 빌드(SSG) 시점에 호출되므로 잘못된 배포 구성이
-// localhost URL로 조용히 새는 대신 즉시 드러난다.
-function getAssetsBackendBase(): string {
-  return resolveBaseUrl(process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL, {
-    envName: 'NEXT_PUBLIC_BACKEND_URL (or BACKEND_URL)',
-    devDefault: DEV_ASSETS_BACKEND_BASE,
-  })
-}
-
-// 백엔드는 공개 승인된 사진만 API 경로로 반환한다. 상대 경로는 site와 다른 API 호스트에서도
-// 로드되도록 절대 URL로 전환한다.
-export function resolveAssetUrl(url: string | null | undefined): string | null {
-  if (!url) return null
-  const trimmed = url.trim()
-  if (!trimmed) return null
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed
-  if (trimmed.startsWith('/')) return `${getAssetsBackendBase()}${trimmed}`
-  return null
-}
+import { parseHospitalPayload, type Hospital } from './hospital-payload.ts'
+export { resolveAssetUrl } from './hospital-payload.ts'
+export type { DirectorCredentials, Hospital, HospitalPhoto, HospitalPhotoType } from './hospital-payload.ts'
 
 export type ContentReferenceSourceType =
   | 'GOV_KR'
@@ -139,7 +67,51 @@ export async function fetchHospital(slug: string): Promise<Hospital> {
   const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, publicFetchInit(3600))
   if (res.status === 404) throw new HospitalNotFoundError(slug)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching hospital`)
-  return res.json()
+  const hospital = parseHospitalPayload(await res.json())
+  if (!hospital) {
+    throw new Error('Invalid hospital payload')
+  }
+  return hospital
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string'
+}
+
+function isContentReferencePayload(value: unknown): value is ContentReference {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.title === 'string' &&
+    typeof value.url === 'string' &&
+    (value.source_type === undefined || value.source_type === null || typeof value.source_type === 'string')
+  )
+}
+
+function isContentSummaryPayload(value: unknown): value is ContentSummary {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.id === 'string' &&
+    typeof value.content_type === 'string' &&
+    typeof value.title === 'string' &&
+    isNullableString(value.meta_description) &&
+    isNullableString(value.image_url) &&
+    typeof value.scheduled_date === 'string' &&
+    isNullableString(value.published_at) &&
+    isNullableString(value.body_updated_at) &&
+    Array.isArray(value.references) &&
+    value.references.every(isContentReferencePayload) &&
+    isNullableString(value.faq_question) &&
+    isNullableString(value.faq_answer_summary) &&
+    (value.reading_minutes === undefined || typeof value.reading_minutes === 'number')
+  )
+}
+
+function isContentDetailPayload(value: unknown): value is ContentDetail {
+  return isRecord(value) && isContentSummaryPayload(value) && typeof value.body === 'string'
 }
 
 export async function fetchContents(slug: string, limit?: number): Promise<ContentSummary[]> {
@@ -147,7 +119,11 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
   const url = limit ? `${base}?limit=${limit}` : base
   const res = await fetch(url, publicFetchInit(1800))
   if (!res.ok) return []
-  return res.json()
+  const contents = await res.json()
+  if (!Array.isArray(contents) || !contents.every(isContentSummaryPayload)) {
+    throw new Error('Invalid contents payload')
+  }
+  return contents
 }
 
 export async function fetchContent(slug: string, contentId: string): Promise<ContentDetail> {
@@ -157,7 +133,11 @@ export async function fetchContent(slug: string, contentId: string): Promise<Con
   )
   if (res.status === 404) throw new ContentNotFoundError(contentId)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching content`)
-  return res.json()
+  const content = await res.json()
+  if (!isContentDetailPayload(content)) {
+    throw new Error('Invalid content payload')
+  }
+  return content
 }
 
 export const TYPE_LABELS: Record<string, string> = {

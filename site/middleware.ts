@@ -7,6 +7,7 @@ import {
   isPrimaryHost,
   isReservedPath,
   normalizeHostname,
+  shouldFailClosedCustomHost,
 } from '@/lib/host-routing'
 
 // 병원 커스텀 도메인(CNAME → 플랫폼 LB) 요청을 /{slug} 허브로 rewrite하는 어댑터.
@@ -29,7 +30,6 @@ async function resolveSlugForDomain(hostname: string): Promise<string | null> {
   const cached = domainSlugCache.get(hostname)
   if (cached && cached.expiresAt > Date.now()) return cached.slug
 
-  // 프로덕션에서 env 미설정이면 null — throw 대신 통과(랜딩)로 fail open.
   const apiBase = getApiBase(false)
   if (!apiBase) return null
 
@@ -43,7 +43,6 @@ async function resolveSlugForDomain(hostname: string): Promise<string | null> {
       return null
     }
     if (!res.ok) {
-      // 백엔드 오류는 캐시하지 않고 통과 — 복구 즉시 정상 해석되도록.
       return null
     }
     const data = (await res.json()) as { slug?: unknown }
@@ -54,8 +53,6 @@ async function resolveSlugForDomain(hostname: string): Promise<string | null> {
     })
     return slug
   } catch {
-    // 네트워크 실패/타임아웃: fail open — 커스텀 도메인이 잠시 랜딩으로 보이는 쪽이
-    // 5xx로 죽는 것보다 낫다. 캐시하지 않는다.
     return null
   }
 }
@@ -73,6 +70,10 @@ export async function middleware(request: NextRequest) {
   if (!hostname) return NextResponse.next()
 
   const slug = await resolveSlugForDomain(hostname)
+  if (shouldFailClosedCustomHost(host, pathname, slug, primaryHostnames)) {
+    return new NextResponse('Not found', { status: 404 })
+  }
+
   const rewritePath = decideRewrite(host, pathname, slug, primaryHostnames)
   if (!rewritePath) return NextResponse.next()
 

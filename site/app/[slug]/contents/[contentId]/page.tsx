@@ -143,6 +143,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
     throw e
   }
 
+  const hospitalWebsiteUrl = safeExternalHref(hospital.website_url)
   const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
   const publishedLabel = formatDate(content.published_at, content.scheduled_date)
   const updatedLabel = content.body_updated_at
@@ -334,7 +335,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
-          websiteUrl={hospital.website_url}
+          websiteUrl={hospitalWebsiteUrl}
         />
         <main id="main-content">
           <div className="clinic-article-shell">
@@ -517,9 +518,9 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                 >
                   병원 의료 정보 홈으로
                 </Link>
-                {hospital.website_url && (
+                {hospitalWebsiteUrl && (
                   <a
-                    href={hospital.website_url}
+                    href={hospitalWebsiteUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="clinic-btn clinic-btn-primary"
@@ -592,7 +593,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
           directorName={hospital.director_name}
           address={hospital.address}
           phone={hospital.phone}
-          websiteUrl={hospital.website_url}
+          websiteUrl={hospitalWebsiteUrl}
         />
       </div>
     </>

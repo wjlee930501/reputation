@@ -7,6 +7,7 @@ import {
   isPrimaryHost,
   isReservedPath,
   normalizeHostname,
+  shouldFailClosedCustomHost,
 } from './host-routing.ts'
 
 const PRIMARY = getPrimaryHostnames('https://reputation.motionlabs.kr')
@@ -65,9 +66,13 @@ test('decideRewrite: primary host never rewrites', () => {
   assert.equal(decideRewrite('x.a.run.app', '/', 'jang-clinic', PRIMARY), null)
 })
 
-test('decideRewrite: unknown host (slug null) fails open', () => {
+test('custom hosts fail closed when domain resolution is unavailable', () => {
   assert.equal(decideRewrite('unknown.example.com', '/', null, PRIMARY), null)
   assert.equal(decideRewrite('unknown.example.com', '/contents', null, PRIMARY), null)
+  assert.equal(shouldFailClosedCustomHost('unknown.example.com', '/', null, PRIMARY), true)
+  assert.equal(shouldFailClosedCustomHost('unknown.example.com', '/contents', null, PRIMARY), true)
+  assert.equal(shouldFailClosedCustomHost('unknown.example.com', '/api/leads', null, PRIMARY), false)
+  assert.equal(shouldFailClosedCustomHost('reputation.motionlabs.kr', '/', null, PRIMARY), false)
 })
 
 test('decideRewrite: custom domain root rewrites to /{slug}', () => {
