@@ -71,6 +71,15 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
                       </li>
                     ))}
                   </ul>
+                ) : cluster.key === 'local' ? (
+                  <ul className="clinic-answer-list">
+                    <li>
+                      <Link href={`/${hospitalSlug}/visit`}>
+                        <span>방문 안내</span>
+                        <strong>오시는 길과 진료시간 확인하기</strong>
+                      </Link>
+                    </li>
+                  </ul>
                 ) : (
                   <p className="clinic-answer-empty">{cluster.fallback}</p>
                 )}

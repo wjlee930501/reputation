@@ -5293,3 +5293,74 @@ textarea:focus-visible {
     display: none;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────
+   인터랙션 & 깊이감 폴리시 — 절제된 마이크로 인터랙션(슬롭 방지, 토큰 기반).
+   평평하던 카드에 미묘한 그림자 + hover lift/블루 보더를 부여해
+   고급스럽고 인터랙티브한 밀도감을 준다. prefers-reduced-motion 대응.
+   ────────────────────────────────────────────────────────────── */
+.clinic-fact-card,
+.clinic-answer-card,
+.clinic-treatment-card {
+  box-shadow: 0 1px 2px rgba(33, 51, 79, 0.05);
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.clinic-fact-card:hover,
+.clinic-answer-card:hover,
+.clinic-treatment-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--color-revisit-primary-50);
+  box-shadow: 0 14px 28px -16px rgba(6, 113, 224, 0.26);
+}
+
+.clinic-content-card {
+  box-shadow: 0 1px 2px rgba(33, 51, 79, 0.05);
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 160ms ease;
+}
+
+.clinic-content-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 32px -18px rgba(6, 113, 224, 0.28);
+}
+
+/* 답변 클러스터 링크 — 호버 시 블루 강조 + 살짝 이동 */
+.clinic-answer-list a {
+  transition: color 140ms ease, transform 140ms ease;
+}
+
+.clinic-answer-list a:hover {
+  transform: translateX(2px);
+}
+
+.clinic-answer-list a:hover strong {
+  color: var(--color-revisit-primary-30);
+}
+
+/* 진료영역 칩 스트립 — 호버 시 블루 아웃라인 */
+.clinic-answer-treatment-strip a {
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.clinic-answer-treatment-strip a:hover {
+  border-color: var(--color-revisit-primary-50);
+  color: var(--color-revisit-primary-30);
+  background: var(--color-revisit-primary-95);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clinic-fact-card,
+  .clinic-answer-card,
+  .clinic-treatment-card,
+  .clinic-content-card,
+  .clinic-answer-list a {
+    transition: none;
+  }
+  .clinic-fact-card:hover,
+  .clinic-answer-card:hover,
+  .clinic-treatment-card:hover,
+  .clinic-content-card:hover,
+  .clinic-answer-list a:hover {
+    transform: none;
+  }
+}
