@@ -612,7 +612,18 @@ export default function ProfilePage() {
   }
 
   return (
-    <form onSubmit={handleSave} className="p-8 max-w-3xl space-y-8">
+    <>
+      {autofillOpen && (
+        <AutofillModal
+          hospitalName={profile.name ?? ''}
+          websiteUrl={profile.website_url ?? ''}
+          blogUrl={profile.blog_url ?? ''}
+          loading={autofillLoading}
+          onClose={() => { if (!autofillLoading) setAutofillOpen(false) }}
+          onSubmit={handleAutofill}
+        />
+      )}
+      <form onSubmit={handleSave} className="p-8 max-w-3xl space-y-8">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold text-slate-900">프로파일 온보딩</h2>
@@ -641,17 +652,6 @@ export default function ProfilePage() {
           </button>
         </div>
       </div>
-
-      {autofillOpen && (
-        <AutofillModal
-          hospitalName={profile.name ?? ''}
-          websiteUrl={profile.website_url ?? ''}
-          blogUrl={profile.blog_url ?? ''}
-          loading={autofillLoading}
-          onClose={() => { if (!autofillLoading) setAutofillOpen(false) }}
-          onSubmit={handleAutofill}
-        />
-      )}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
@@ -1150,5 +1150,6 @@ export default function ProfilePage() {
         </div>
       </section>
     </form>
+    </>
   )
 }
