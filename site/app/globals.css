@@ -5421,13 +5421,15 @@ textarea:focus-visible {
   .clinic-answer-card {
     min-height: 0;
   }
-  /* 진료영역 10개 카드가 1열로 길게 늘어지지 않도록 2열 + 여백 압축 */
+  /* 진료영역 카드가 1열로 길게 늘어지지 않도록 2열 + 여백 압축.
+     minmax(0,1fr)이어야 긴 카드명/설명이 열을 뷰포트 밖으로 밀지 않는다(가로 스크롤 방지). */
   .clinic-treatment-grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
   }
   .clinic-treatment-card {
     min-height: 0;
+    min-width: 0;
     padding: 16px;
     border-radius: 12px;
   }
