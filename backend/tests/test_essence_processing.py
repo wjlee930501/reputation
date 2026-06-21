@@ -8,7 +8,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.essence import EvidenceNoteType
+from app.services import essence_engine
 from app.services.essence_engine import process_source_asset
+
+
+@pytest.fixture(autouse=True)
+def _force_deterministic(monkeypatch):
+    """규칙 기반 분류기 회귀 테스트 — LLM 키를 비워 deterministic 경로만 검증한다."""
+    monkeypatch.setattr(essence_engine.settings, "ANTHROPIC_API_KEY", "")
 
 
 def _make_asset(raw_text: str, operator_note: str | None = None) -> SimpleNamespace:

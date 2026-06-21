@@ -86,9 +86,18 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
             hospital.director_credentials.society_memberships.map((value) => llmsTextValue(value)).filter(Boolean).join(', '),
           )
         : '',
-      // 진료 철학·면허번호는 자유 입력 / 민감 정보이므로 AI 크롤러용 표면에는 노출하지 않습니다.
+      // 자유 입력 director_philosophy·면허번호는 미검수/민감 정보이므로 노출하지 않습니다.
+      // 단, 승인·의료광고 검수를 통과한 public_about 서사는 아래 별도 블록으로 노출합니다.
       '',
     ]
+
+    // 승인된 운영 기준에서 검수를 통과한 진료 철학 서사가 있을 때만 블록 추가.
+    const publicAbout = llmsTextValue(hospital.public_about)
+    if (publicAbout) {
+      lines.push('## 진료 철학')
+      lines.push(`- summary: ${publicAbout}`)
+      lines.push('')
+    }
 
     if (hospital.treatments && hospital.treatments.length > 0) {
       lines.push('## 진료 영역')

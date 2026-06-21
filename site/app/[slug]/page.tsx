@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 
 import { fetchHospital, fetchContents, resolveAssetUrl, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec } from '@/lib/business-hours'
+import { buildAddressRegionFields, buildFaqPageJsonLd } from '@/lib/clinic-schema'
 import { getApiBase } from '@/lib/config'
 import { canonicalBase } from '@/lib/site-url'
 
@@ -132,6 +133,12 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
   const base = canonicalBase(hospital)
 
+  // 승인된 운영 기준에서 의료광고 검수를 통과한 about 서사 (없으면 null) — description/slogan에 사용.
+  const publicAbout = hospital.public_about?.trim() || null
+
+  // region([시/도, 구/시])을 PostalAddress·areaServed로 보강. 자유 입력 좌표는 fabricate하지 않는다.
+  const areaServed = (hospital.region || []).map((r) => (r || '').trim()).filter(Boolean)
+
   const clinicJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
@@ -139,12 +146,16 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     name: hospital.name,
     url: `${base}/${params.slug}`,
     image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
+    description: publicAbout ?? undefined,
+    slogan: publicAbout ?? undefined,
     sameAs,
     address: {
       '@type': 'PostalAddress',
       streetAddress: hospital.address,
       addressCountry: 'KR',
+      ...buildAddressRegionFields(hospital.region),
     },
+    areaServed: areaServed.length > 0 ? areaServed : undefined,
     telephone: hospital.phone,
     medicalSpecialty: hospital.specialties,
     openingHoursSpecification: buildOpeningHoursSpec(hospital.business_hours),
@@ -172,6 +183,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     })),
   }
 
+  const faqPageJsonLd = buildFaqPageJsonLd(contents)
+
   const breadcrumbJsonLd = buildBreadcrumbJsonLd(
     [{ label: '홈', href: `/${params.slug}` }],
     base,
@@ -194,7 +207,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
   return (
     <>
-      <JsonLd data={[clinicJsonLd, breadcrumbJsonLd]} />
+      <JsonLd data={[clinicJsonLd, breadcrumbJsonLd, ...(faqPageJsonLd ? [faqPageJsonLd] : [])]} />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
@@ -237,6 +250,21 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             hiraOrgId={hospital.hira_org_id}
             links={factLinks}
           />
+
+          {/* 승인·검수된 운영 기준이 있을 때만 진료 철학 서사를 노출 (없으면 섹션 자체 생략). */}
+          {publicAbout && (
+            <section className="clinic-section">
+              <div className="clinic-section-inner">
+                <header className="clinic-section-header">
+                  <span className="clinic-section-label">진료 철학</span>
+                  <h2 className="clinic-section-heading">{hospital.name}의 진료 철학</h2>
+                </header>
+                <p className="clinic-section-lede" style={{ maxWidth: 720 }}>
+                  {publicAbout}
+                </p>
+              </div>
+            </section>
+          )}
 
           <AnswerClusters
             contents={contents}

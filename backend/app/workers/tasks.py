@@ -1,4 +1,4 @@
-# noqa: SIZE_OK -- Celery task registry keeps legacy task import names; release-critical helpers are split by task family.
+# Celery task registry keeps legacy task import names; release-critical helpers are split by task family.
 """
 Celery 태스크 전체
 - trigger_v0_report: 프로파일 완료 시 V0 분석 트리거
@@ -45,7 +45,7 @@ from app.workers.nightly_generation_batch import (
     GENERATION_CATCHUP_DAYS,
     NIGHTLY_GENERATION_CAP,
     _load_nightly_generation_batch,
-    _nightly_generation_stmt,
+    _nightly_generation_stmt,  # noqa: F401  # re-exported for test access via tasks._nightly_generation_stmt
 )
 
 logger = logging.getLogger(__name__)
@@ -278,6 +278,11 @@ def trigger_v0_report(self, hospital_id: str):
 
             # Slack 알림
             _run_async(notifier.notify_v0_report_ready(hospital.name, sov_pct, pdf_path))
+
+            # V0 QueryMatrix → AIQueryTarget 자동 시드 (노출 보완 탭 즉시 활성화)
+            # V0 리포트·Slack이 이미 커밋·발송 완료된 뒤 실행하므로, 시드 실패는
+            # V0 결과를 롤백하지 않고 로그만 남긴다 (post-commit side effect 격리).
+            _seed_query_targets_from_matrix_sync(hospital.id)
 
             # 콘텐츠 허브 공개 노출 상태 준비 태스크 큐잉
             build_aeo_site.apply_async(args=[hospital_id], queue="default")
@@ -958,6 +963,36 @@ def _ensure_variant_query_matrix(db, hospital: Hospital, variant: AIQueryVariant
     db.flush()
     variant.query_matrix_id = query.id
     return query
+
+
+def _seed_query_targets_from_matrix_sync(hospital_id: uuid.UUID) -> None:
+    """V0 완료 후 QueryMatrix → AIQueryTarget 시드 + 노출 보완 큐 생성.
+
+    V0 리포트가 이미 커밋된 뒤에 실행되는 post-commit 사이드 이펙트다.
+    실패해도 V0 결과를 건드리지 않고 로그만 남긴다.
+
+    exposure_action_engine은 AsyncSession만 지원하므로 별도 async 루프로 실행한다.
+    """
+    try:
+        from app.api.admin.query_targets import seed_query_targets_from_matrix
+        from app.services.exposure_action_engine import ensure_hospital_exposure_actions
+        from app.core.database import get_async_sessionmaker
+
+        async def _run(h_id: uuid.UUID) -> None:
+            async with get_async_sessionmaker()() as async_db:
+                await seed_query_targets_from_matrix(async_db, h_id)
+                await ensure_hospital_exposure_actions(async_db, h_id)
+
+        _run_async(_run(hospital_id))
+        logger.info(
+            "V0 post-seed: query_targets seeded and exposure_actions populated for hospital=%s",
+            hospital_id,
+        )
+    except Exception:
+        logger.exception(
+            "V0 post-seed failed (non-fatal, V0 report already committed): hospital=%s",
+            hospital_id,
+        )
 
 
 def _normalize_platform(platform: str) -> str:

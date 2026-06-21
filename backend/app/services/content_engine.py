@@ -26,6 +26,23 @@ logger = logging.getLogger(__name__)
 CONTENT_BODY_MIN_CHARS = 1800
 CONTENT_BODY_MAX_CHARS = 5200
 
+# ── SEO/GEO 검증 상수 ─────────────────────────────────────────────────────────
+# HARD-FAIL (tenacity 재시도 트리거) 기준 — 최소한으로만 유지해 정상 출력이 리젝되지 않도록.
+SEO_H2_MIN = 2           # ## 헤딩이 이것보다 적으면 chunk 구조 붕괴 → hard-fail
+# references가 필수인 콘텐츠 유형 — DISEASE/TREATMENT/LOCAL은 프롬프트에서 학회 출처 1개+ 의무화
+_SEO_REFS_REQUIRED_TYPES: frozenset = frozenset(
+    {ContentType.DISEASE, ContentType.TREATMENT, ContentType.LOCAL}
+)
+
+# SOFT-FINDING 기준 — 위반해도 생성 결과는 살리고 AE 화면에 점수로만 표시
+SEO_TITLE_MAX_CHARS = 60         # Google title truncation 기준 (권고)
+SEO_META_MIN_CHARS = 70          # meta_description 권고 최솟값
+SEO_META_MAX_CHARS = 160         # meta_description 권고 최댓값
+SEO_STAT_PATTERN = re.compile(   # 통계/수치 proxy — 숫자+단위 패턴
+    r"(\d+[\.,]?\d*)\s*(%|명|건|개|회|주|일|개월|년|배|kg|cm|mm)",
+    re.UNICODE,
+)
+
 client = anthropic.Anthropic(
     api_key=settings.ANTHROPIC_API_KEY,
     timeout=90.0,
@@ -298,6 +315,22 @@ async def generate_content(
 
     _validate_body_length(result.get("body"))
 
+    # ── SEO/GEO 검증 ──────────────────────────────────────────────
+    # references 정규화 전에 호출 — raw 출력 기준으로 검증 (정규화 후엔 화이트리스트 외 URL이 제거됨)
+    seo_findings = _validate_seo(result, hospital, content_brief, content_type)
+    geo_findings = _validate_geo(result, hospital, content_type)
+
+    # 두 검증에서 나온 SOFT 결과를 result에 첨부 — AE 화면이 참조할 수 있도록
+    all_findings = seo_findings + geo_findings
+    result["seo_geo_findings"] = all_findings
+    result["seo_geo_score"] = max(0, 100 - len(all_findings) * 10)
+    if all_findings:
+        logger.info(
+            "SEO/GEO soft findings (%d): %s",
+            len(all_findings),
+            "; ".join(all_findings),
+        )
+
     # FAQ 분리 필드 정규화 — 다른 type일 때는 None. 금지 표현 검사 전에 정규화해
     # faq_question/faq_answer_summary도 동일한 필터 경로를 타게 한다 (P1-2).
     result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
@@ -393,6 +426,136 @@ def _validate_body_length(value: object) -> None:
             f"Generated content body is too long "
             f"({body_length} > {CONTENT_BODY_MAX_CHARS})"
         )
+
+
+def _validate_seo(
+    result: dict, hospital: Hospital, content_brief: dict | None, content_type: ContentType
+) -> list[str]:
+    """SEO 구조 검증 — HARD-FAIL은 ValueError를 발생시키고 SOFT 결과는 list[str]로 반환.
+
+    HARD (ValueError → tenacity 재시도):
+      • 본문에 ## H2 헤딩이 SEO_H2_MIN(2)개 미만 — 단, NOTICE/FAQ는 짧은 단문이 정상이라 제외(soft)
+
+    SOFT (반환 리스트에 추가, 생성 결과는 살림):
+      • primary keyword가 본문에 정확히 일치하지 않을 때 (한국어 형태 변화로 오탐 위험 → soft)
+      • title 길이 > SEO_TITLE_MAX_CHARS
+      • meta_description 길이가 SEO_META_MIN~MAX 범위 밖
+      • 본문에 markdown table(|) 또는 번호/불릿 목록이 없을 때
+      • primary keyword가 title 또는 첫 H2에 없을 때
+    """
+    body: str = result.get("body") or ""
+    title: str = result.get("title") or ""
+    meta: str = result.get("meta_description") or ""
+    findings: list[str] = []
+
+    # ── H2 헤딩 개수 — NOTICE/FAQ는 구조 자유라 hard-fail 제외(soft) ──
+    h2_matches = re.findall(r"^##\s+\S", body, flags=re.MULTILINE)
+    if len(h2_matches) < SEO_H2_MIN:
+        if content_type in (ContentType.NOTICE, ContentType.FAQ):
+            findings.append(f"H2 {len(h2_matches)}개 (NOTICE/FAQ는 구조 자유 — 참고용)")
+        else:
+            raise ValueError(
+                f"SEO hard-fail: body has {len(h2_matches)} H2 heading(s), "
+                f"minimum is {SEO_H2_MIN}"
+            )
+
+    # ── primary keyword 결정 ────────────────────────────────────────
+    # content_brief.target_query 우선, 없으면 hospital.keywords 첫 항목 첫 토큰
+    primary_kw: str = ""
+    if content_brief:
+        tq = (content_brief.get("target_query") or "").strip()
+        if tq:
+            primary_kw = tq.split()[0]
+    if not primary_kw and hospital.keywords:
+        primary_kw = (hospital.keywords[0] or "").split()[0]
+
+    # ── SOFT: primary keyword 본문 부재 (한국어 형태 변화로 exact-substring 오탐 위험) ──
+    if primary_kw and primary_kw not in body:
+        findings.append(
+            f"primary keyword '{primary_kw}' 본문에서 정확히 일치하지 않음 (형태 변화 가능)"
+        )
+
+    # ── SOFT: keyword in title or first H2 ──────────────────────────
+    if primary_kw:
+        first_h2_match = re.search(r"^##\s+(.+)$", body, flags=re.MULTILINE)
+        first_h2_text = first_h2_match.group(1) if first_h2_match else ""
+        if primary_kw not in title and primary_kw not in first_h2_text:
+            findings.append(
+                f"keyword '{primary_kw}' not in title or first H2 (낮은 prominence)"
+            )
+
+    # ── SOFT: title 길이 ────────────────────────────────────────────
+    if len(title) > SEO_TITLE_MAX_CHARS:
+        findings.append(
+            f"title {len(title)}자 > {SEO_TITLE_MAX_CHARS}자 (Google 절단 위험)"
+        )
+
+    # ── SOFT: meta_description 길이 ─────────────────────────────────
+    meta_len = len(meta)
+    if meta_len and not (SEO_META_MIN_CHARS <= meta_len <= SEO_META_MAX_CHARS):
+        findings.append(
+            f"meta_description {meta_len}자 (권고 {SEO_META_MIN_CHARS}~{SEO_META_MAX_CHARS}자)"
+        )
+
+    # ── SOFT: listicle/표 존재 여부 ──────────────────────────────────
+    has_table = bool(re.search(r"^\|.+\|", body, flags=re.MULTILINE))
+    has_list = bool(re.search(r"^(\d+\.|[-*])\s+\S", body, flags=re.MULTILINE))
+    if not (has_table or has_list):
+        findings.append("listicle/표 없음 — AI 인용률 저하 가능 (프롬프트 규칙 5 위반)")
+
+    return findings
+
+
+def _validate_geo(
+    result: dict,
+    hospital: Hospital,
+    content_type: ContentType,
+) -> list[str]:
+    """GEO 엔티티 공출현 + 증거 신호 검증.
+
+    HARD (ValueError → tenacity 재시도):
+      • references가 빈 리스트인데 content_type이 DISEASE/TREATMENT/LOCAL일 때
+        (프롬프트에서 학회/KDCA 출처 1개 이상 의무화한 유형)
+
+    SOFT (반환 리스트에 추가):
+      • hospital.name이 body에 없을 때
+      • hospital.director_name이 body에 없을 때
+      • hospital.region 토큰 중 어느 것도 body에 없을 때
+      • 숫자/통계 패턴(SEO_STAT_PATTERN)이 body에 없을 때
+    """
+    body: str = result.get("body") or ""
+    refs: list = result.get("references") or []
+    findings: list[str] = []
+
+    # ── HARD: 필수 references 빈 리스트 ─────────────────────────────
+    if content_type in _SEO_REFS_REQUIRED_TYPES and not refs:
+        raise ValueError(
+            f"GEO hard-fail: references is empty for {content_type.value} "
+            "— 학회/KDCA 출처 1개 이상 필수"
+        )
+
+    # ── SOFT: 병원명 공출현 ──────────────────────────────────────────
+    hospital_name = (hospital.name or "").strip()
+    if hospital_name and hospital_name not in body:
+        findings.append(f"병원명 '{hospital_name}' body 미포함 (엔티티 신호 약화)")
+
+    # ── SOFT: 원장명 공출현 ──────────────────────────────────────────
+    director = (hospital.director_name or "").strip()
+    if director and director not in body:
+        findings.append(f"원장명 '{director}' body 미포함 (엔티티 신호 약화)")
+
+    # ── SOFT: 지역명 공출현 (region 중 하나라도 있으면 통과) ──────────
+    regions = [r for r in (hospital.region or []) if r]
+    if regions and not any(r in body for r in regions):
+        findings.append(
+            f"지역 엔티티 {regions} 중 어느 것도 body에 없음 (로컬 GEO 신호 약화)"
+        )
+
+    # ── SOFT: 통계/수치 proxy ────────────────────────────────────────
+    if not SEO_STAT_PATTERN.search(body):
+        findings.append("숫자/통계 패턴 없음 — claim-evidence 부족 (프롬프트 규칙 3 위반)")
+
+    return findings
 
 
 def _sanitize_forbidden(result: dict, violations: list[str]) -> dict:

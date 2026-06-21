@@ -199,7 +199,8 @@ def _seed_essence_chain(db, hospital: Hospital) -> HospitalContentPhilosophy | N
     db.add(source)
     db.flush()
 
-    payloads = process_source_asset(source)
+    # 시드는 결정적이어야 하고 빌링되는 LLM 호출을 피한다 (M1) — deterministic 경로 강제.
+    payloads = process_source_asset(source, use_llm=False)
     if not payloads:
         return None
 
@@ -220,7 +221,7 @@ def _seed_essence_chain(db, hospital: Hospital) -> HospitalContentPhilosophy | N
     db.add_all(notes)
     db.flush()
 
-    payload = synthesize_philosophy(hospital, [source], notes, operator_note=None)
+    payload = synthesize_philosophy(hospital, [source], notes, operator_note=None, use_llm=False)
     philosophy = HospitalContentPhilosophy(
         hospital_id=hospital.id,
         version=1,

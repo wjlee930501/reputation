@@ -1,9 +1,14 @@
 import { MetadataRoute } from 'next'
-import { platformSiteUrl } from '@/lib/site-url'
+import { headers } from 'next/headers'
+
+import { resolveSitemapUrl } from '@/lib/robots-host'
 
 const DISALLOWED_PATHS = ['/api/', '/_next/', '/.well-known/']
 
-export default function robots(): MetadataRoute.Robots {
+export default async function robots(): Promise<MetadataRoute.Robots> {
+  // 커스텀 도메인에서 robots.txt가 응답될 때 sitemap 포인터를 요청 origin으로 맞춘다.
+  const headerList = await headers()
+  const sitemap = resolveSitemapUrl(headerList.get('host'), headerList.get('x-forwarded-proto'))
   return {
     rules: [
       {
@@ -27,6 +32,6 @@ export default function robots(): MetadataRoute.Robots {
         disallow: DISALLOWED_PATHS,
       },
     ],
-    sitemap: `${platformSiteUrl()}/sitemap.xml`,
+    sitemap,
   }
 }

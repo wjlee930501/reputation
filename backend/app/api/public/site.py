@@ -18,12 +18,20 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import limiter
 from app.models.content import ContentItem, ContentStatus
-from app.models.essence import HospitalSourceAsset, PHOTO_SOURCE_TYPES, SourceStatus, SourceType
+from app.models.essence import (
+    HospitalContentPhilosophy,
+    HospitalSourceAsset,
+    PHOTO_SOURCE_TYPES,
+    PhilosophyStatus,
+    SourceStatus,
+    SourceType,
+)
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.asset_storage import resolve_legacy_asset_path, resolve_local_asset_path
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.gcs_utils import get_signed_url
 from app.utils.domain import normalize_domain
+from app.utils.medical_filter import check_forbidden
 
 router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
 
@@ -115,7 +123,17 @@ async def get_hospital_public(request: Request, slug: str, db: AsyncSession = De
         .order_by(HospitalSourceAsset.updated_at.desc())
     )
     photos = photos_result.scalars().all()
-    return _serialize_hospital(h, photos)
+
+    # 승인된 콘텐츠 운영 기준(positioning/promise)만 공개 about 서사로 노출한다.
+    # 자유 입력 director_philosophy와 달리 근거 기반 검수를 거친 필드다.
+    philosophy_result = await db.execute(
+        select(HospitalContentPhilosophy).where(
+            HospitalContentPhilosophy.hospital_id == h.id,
+            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+        )
+    )
+    philosophy = philosophy_result.scalars().first()
+    return _serialize_hospital(h, photos, philosophy)
 
 
 @router.get("/{slug}/assets/{source_id}")
@@ -192,7 +210,36 @@ async def _get_active_hospital(db: AsyncSession, slug: str) -> Hospital:
     return h
 
 
-def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = None) -> dict:
+def _vetted_public_about(philosophy: HospitalContentPhilosophy | None) -> str | None:
+    """승인된 운영 기준에서 의료광고 검수를 통과한 공개 about 서사를 만든다.
+
+    승인된 HospitalContentPhilosophy의 positioning_statement + patient_promise만 사용하고
+    (자유 입력 director_philosophy는 절대 사용 안 함), 의료광고 금지 표현이 하나라도 섞인
+    문장은 통째로 버린다. 남는 문장이 없으면 None을 돌려 호출부가 필드를 생략하게 한다.
+    """
+    if philosophy is None:
+        return None
+    status = getattr(philosophy, "status", None)
+    status_value = status.value if hasattr(status, "value") else status
+    if status_value != PhilosophyStatus.APPROVED.value:
+        return None
+
+    sentences: list[str] = []
+    for raw in (philosophy.positioning_statement, philosophy.patient_promise):
+        text = (raw or "").strip()
+        # 금지 표현이 섞인 문장은 노출하지 않는다 (보수적으로 전체 단편 폐기).
+        if text and not check_forbidden(text):
+            sentences.append(text)
+    if not sentences:
+        return None
+    return " ".join(sentences)
+
+
+def _serialize_hospital(
+    h: Hospital,
+    photos: list[HospitalSourceAsset] | None = None,
+    philosophy: HospitalContentPhilosophy | None = None,
+) -> dict:
     photo_records: list[HospitalSourceAsset] = list(photos or [])
 
     # 카테고리별 첫 사진 — 컴포넌트 fallback용 단축 필드.
@@ -248,6 +295,8 @@ def _serialize_hospital(h: Hospital, photos: list[HospitalSourceAsset] | None = 
         # clinic writing standards must come from an approved, source-backed review
         # flow rather than the free-text profile field.
         "director_philosophy": None,
+        # 승인된 운영 기준에서 의료광고 검수를 통과한 공개 about 서사. 승인 기준이 없으면 None.
+        "public_about": _vetted_public_about(philosophy),
         "director_photo_url": director_photo,
         "director_credentials": _safe_credentials(getattr(h, "director_credentials", None)),
         "treatments": h.treatments,

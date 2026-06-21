@@ -2,7 +2,10 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.models.essence import EvidenceNoteType, PhilosophyStatus, SourceStatus
+from app.services import essence_engine
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -13,6 +16,12 @@ from app.services.essence_engine import (
     synthesize_philosophy,
     validate_philosophy_grounding,
 )
+
+
+@pytest.fixture(autouse=True)
+def _force_deterministic(monkeypatch):
+    """이 파일의 테스트는 deterministic 폴백 경로를 검증한다 — LLM 키를 비워 네트워크 호출을 막는다."""
+    monkeypatch.setattr(essence_engine.settings, "ANTHROPIC_API_KEY", "")
 
 
 def test_process_source_asset_extracts_only_source_backed_notes():
@@ -71,7 +80,25 @@ def test_synthesize_philosophy_keeps_medical_risk_rules_source_backed():
     assert validate_philosophy_grounding(payload, [note], require_text_support=True) == []
 
 
-def test_grounding_validation_rejects_text_not_supported_by_mapped_evidence():
+def test_grounding_accepts_synthesized_descriptor_derived_from_real_notes():
+    """합성된 descriptor는 verbatim 인용이 아니어도, 실제 노트를 가리키면 grounded로 본다."""
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.TONE_SIGNAL,
+        source_excerpt="치료 전 충분한 설명을 드립니다.",
+        note_metadata={},
+    )
+    payload = {
+        # verbatim 인용이 아니라 도출된 문체 descriptor.
+        "doctor_voice": "단정적 홍보를 피하고 과정을 차분히 설명하는 1인칭 설명형 문체",
+        "evidence_map": {"doctor_voice": [str(note.id)]},
+    }
+
+    # 매핑된 노트가 실제로 존재하므로 grounded — verbatim 포함을 더는 요구하지 않는다.
+    assert validate_philosophy_grounding(payload, [note], require_text_support=True) == []
+
+
+def test_grounding_rejects_field_referencing_unknown_note():
     note = SimpleNamespace(
         id=uuid.uuid4(),
         note_type=EvidenceNoteType.KEY_MESSAGE,
@@ -79,8 +106,8 @@ def test_grounding_validation_rejects_text_not_supported_by_mapped_evidence():
         note_metadata={},
     )
     payload = {
-        "positioning_statement": "자료와 무관한 새로운 마케팅 문구입니다.",
-        "evidence_map": {"positioning_statement": [str(note.id)]},
+        "positioning_statement": "도출된 포지셔닝 문구입니다.",
+        "evidence_map": {"positioning_statement": [str(uuid.uuid4())]},  # 존재하지 않는 노트 id
     }
 
     errors = validate_philosophy_grounding(payload, [note], require_text_support=True)

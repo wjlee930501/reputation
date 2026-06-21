@@ -33,6 +33,8 @@ export interface Hospital {
   director_name: string
   director_career: string
   director_philosophy: string | null
+  // 승인된 운영 기준에서 의료광고 검수를 통과한 공개 about 서사 (없으면 null).
+  public_about: string | null
   director_photo_url: string | null
   director_credentials: DirectorCredentials | null
   treatments: Array<{ name: string; description: string }>
@@ -197,6 +199,8 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
     isNullableString(value.director_name) &&
     isNullableString(value.director_career) &&
     isNullableString(value.director_philosophy) &&
+    // public_about은 신규 필드 — 구버전 ISR 캐시 응답에 없을 수 있어 undefined도 허용.
+    (value.public_about === undefined || isNullableString(value.public_about)) &&
     isNullableString(value.director_photo_url) &&
     isDirectorCredentials(value.director_credentials) &&
     Array.isArray(value.treatments) &&
@@ -217,6 +221,8 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
     business_hours: hospital.business_hours ?? {},
     director_name: hospital.director_name ?? '',
     director_career: hospital.director_career ?? '',
+    // 구버전 응답에 필드가 없으면 null로 정규화 (다운스트림은 string | null만 본다).
+    public_about: hospital.public_about ?? null,
   }
   for (const field of HOSPITAL_EXTERNAL_URL_FIELDS) {
     normalized[field] = safeExternalHref(hospital[field])

@@ -37,6 +37,8 @@ class QueryMatrix(Base):
 class AIQueryTarget(Base):
     __tablename__ = "ai_query_targets"
     __table_args__ = (
+        # 동일 병원에 같은 질문(name)이 중복 시드되는 동시성 레이스를 DB 레벨에서 차단 (H1).
+        UniqueConstraint("hospital_id", "name", name="uq_ai_query_targets_hospital_name"),
         Index("ix_ai_query_targets_hospital_id", "hospital_id"),
         Index(
             "ix_ai_query_targets_hospital_status_priority_month",

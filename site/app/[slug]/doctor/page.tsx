@@ -98,13 +98,18 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
     hospital.wikidata_qid ? `https://www.wikidata.org/wiki/${hospital.wikidata_qid}` : null,
   ].filter((value): value is string => Boolean(value))
 
+  // 약력(director_career)에 승인·검수된 진료 철학 서사를 덧붙여 Physician description을 보강한다.
+  const publicAbout = hospital.public_about?.trim() || null
+  const physicianDescription =
+    [hospital.director_career?.trim() || null, publicAbout].filter(Boolean).join(' ') || undefined
+
   const physicianJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Physician',
     '@id': `${base}/${params.slug}/doctor#physician`,
     name: hospital.director_name,
     jobTitle: '원장',
-    description: hospital.director_career || undefined,
+    description: physicianDescription,
     image: resolveAssetUrl(hospital.director_photo_url) || undefined,
     medicalSpecialty: hospital.specialties,
     knowsAbout: knowsAbout.length > 0 ? knowsAbout : undefined,

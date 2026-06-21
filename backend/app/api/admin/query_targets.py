@@ -8,7 +8,9 @@ DELETE /admin/hospitals/{id}/query-targets/{target_id}
 POST   /admin/hospitals/{id}/query-targets/{target_id}/variants
 PATCH  /admin/hospitals/{id}/query-targets/{target_id}/variants/{variant_id}
 DELETE /admin/hospitals/{id}/query-targets/{target_id}/variants/{variant_id}
+POST   /admin/hospitals/{id}/query-targets/seed-from-matrix
 """
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -28,6 +30,8 @@ from app.schemas.query_target import (
     AIQueryVariantResponse,
     AIQueryVariantUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Patient Questions"])
 
@@ -164,6 +168,136 @@ async def archive_query_target(
     await db.commit()
     target = await _get_target_or_404(db, hospital_id, target_id)
     return _serialize_target(target)
+
+
+@router.post(
+    "/{hospital_id}/query-targets/seed-from-matrix",
+    status_code=status.HTTP_200_OK,
+)
+async def seed_query_targets_from_matrix_endpoint(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """V0 QueryMatrix에서 AIQueryTarget을 멱등 시드 (AE 수동 재시드용).
+
+    이미 존재하는 query_text는 건너뛰고, SoV 갭(미언급 우선)에 따라 priority를 부여한다.
+    V0 리포트 완료 후 노출 보완 탭이 비어 있을 때 재실행하면 된다.
+    """
+    await _get_hospital_or_404(db, hospital_id)
+    result = await seed_query_targets_from_matrix(db, hospital_id)
+    return result
+
+
+async def seed_query_targets_from_matrix(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+) -> dict:
+    """QueryMatrix 행에서 AIQueryTarget을 멱등 upsert하는 공유 헬퍼.
+
+    - 멱등 키: (hospital_id, query_text) — 동일 query_text의 기존 target은 건너뜀.
+    - 우선순위: 해당 query_matrix 행의 SoV 결과에서 미언급(is_mentioned=False)인 행을
+      먼저 HIGH로 생성하고, 나머지는 NORMAL로 생성해 노출 갭이 큰 질문부터 집중한다.
+    - 생성된 target마다 CHATGPT variant를 자동 추가하고 query_matrix_id를 연결한다.
+
+    반환: {"created": int, "skipped": int}
+    """
+    import arrow
+
+    # 기존 target의 name(=query_text) 집합 — 멱등 체크용
+    existing_names_result = await db.execute(
+        select(AIQueryTarget.name).where(AIQueryTarget.hospital_id == hospital_id)
+    )
+    existing_names: set[str] = {row[0] for row in existing_names_result.all()}
+
+    # 전체 QueryMatrix 행 조회 (is_active 필터 없음 — 시드 시점엔 모두 포함)
+    matrix_result = await db.execute(
+        select(QueryMatrix).where(QueryMatrix.hospital_id == hospital_id)
+    )
+    matrix_rows: list[QueryMatrix] = list(matrix_result.scalars().all())
+
+    if not matrix_rows:
+        return {"created": 0, "skipped": 0}
+
+    # query_matrix_id별 최근 SoV 언급 여부 집계 — 미언급 질문을 HIGH priority로 올린다
+    from app.models.sov import SovRecord
+
+    sov_result = await db.execute(
+        select(SovRecord.query_id, SovRecord.is_mentioned).where(
+            SovRecord.hospital_id == hospital_id
+        )
+    )
+    # query_id → 언급된 적 있는지 여부
+    mentioned_by_query: dict[str, bool] = {}
+    for row in sov_result.all():
+        qid = str(row.query_id)
+        if row.is_mentioned:
+            mentioned_by_query[qid] = True
+        elif qid not in mentioned_by_query:
+            mentioned_by_query[qid] = False
+
+    # 미언급(노출 갭이 큰) 질문을 먼저 생성해 created_at 순서가 우선순위를 반영하도록 정렬한다.
+    # mentioned_by_query: True=언급됨 → 뒤로, False/None=미언급/미측정 → 앞으로.
+    matrix_rows.sort(key=lambda q: mentioned_by_query.get(str(q.id)) is True)
+
+    now_month = arrow.now("Asia/Seoul").format("YYYY-MM")
+
+    created = 0
+    skipped = 0
+    for q in matrix_rows:
+        # 멱등 체크: 동일 query_text의 target이 이미 있으면 건너뜀
+        if q.query_text in existing_names:
+            skipped += 1
+            continue
+
+        # SoV 갭 우선순위: 측정 결과 없거나 미언급 → HIGH, 언급된 적 있음 → NORMAL
+        is_mentioned = mentioned_by_query.get(str(q.id))
+        priority = "NORMAL" if is_mentioned else "HIGH"
+
+        target = AIQueryTarget(
+            hospital_id=hospital_id,
+            name=q.query_text,
+            target_intent="증상 탐색",      # V0 기본값; AE가 추후 편집
+            region_terms=[],
+            specialty=None,
+            condition_or_symptom=None,
+            treatment=None,
+            decision_criteria=[],
+            platforms=["CHATGPT"],
+            competitor_names=[],
+            priority=priority,
+            status="ACTIVE",
+            target_month=now_month,
+            created_by="V0 자동 시드",
+            updated_by=None,
+        )
+        db.add(target)
+        await db.flush()  # target.id 확정
+
+        # 기본 CHATGPT variant — query_matrix와 연결
+        db.add(
+            AIQueryVariant(
+                query_target_id=target.id,
+                query_text=q.query_text,
+                platform="CHATGPT",
+                language="ko",
+                is_active=True,
+                query_matrix_id=q.id,
+            )
+        )
+
+        existing_names.add(q.query_text)  # 같은 배치 내 중복 방지
+        created += 1
+
+    if created:
+        await db.commit()
+
+    logger.info(
+        "seed_query_targets_from_matrix: hospital=%s created=%d skipped=%d",
+        hospital_id,
+        created,
+        skipped,
+    )
+    return {"created": created, "skipped": skipped}
 
 
 @router.post(

@@ -7,9 +7,10 @@ from app.api.public.site import (
     _serialize_hospital,
     _serialize_hospital_summary,
     _serialize_item,
+    _vetted_public_about,
 )
 from app.models.content import ContentStatus
-from app.models.essence import SourceType
+from app.models.essence import PhilosophyStatus, SourceType
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, ESSENCE_STATUS_NEEDS_REVIEW
 from app.services.site_builder import build_site
 
@@ -261,3 +262,67 @@ def test_reading_minutes_handles_empty_and_markdown_noise():
     assert _reading_minutes("") == 1
     assert _reading_minutes("## 제목\n- 항목\nhttps://example.com/path") == 1
     assert _reading_minutes("가" * 1800) == 3
+
+
+def _approved_philosophy(positioning_statement, patient_promise=None):
+    return SimpleNamespace(
+        status=PhilosophyStatus.APPROVED,
+        positioning_statement=positioning_statement,
+        patient_promise=patient_promise,
+    )
+
+
+def test_vetted_public_about_none_without_philosophy():
+    assert _vetted_public_about(None) is None
+
+
+def test_vetted_public_about_ignores_non_approved_status():
+    draft = SimpleNamespace(
+        status=PhilosophyStatus.DRAFT,
+        positioning_statement="근거 중심으로 충분히 설명하는 진료를 지향합니다.",
+        patient_promise=None,
+    )
+    assert _vetted_public_about(draft) is None
+
+
+def test_vetted_public_about_joins_positioning_and_promise():
+    philosophy = _approved_philosophy(
+        "근거 중심으로 충분히 설명하는 진료를 지향합니다.",
+        "확인된 정보만 환자에게 안내합니다.",
+    )
+    assert _vetted_public_about(philosophy) == (
+        "근거 중심으로 충분히 설명하는 진료를 지향합니다. 확인된 정보만 환자에게 안내합니다."
+    )
+
+
+def test_vetted_public_about_drops_medical_ad_violating_sentence():
+    # positioning_statement에 금지 표현("완치")이 섞이면 그 단편은 통째로 폐기되고,
+    # 검수를 통과한 patient_promise만 남는다.
+    philosophy = _approved_philosophy(
+        "저희는 100% 완치를 보장하는 국내 유일의 병원입니다.",
+        "확인된 정보만 환자에게 안내합니다.",
+    )
+    assert _vetted_public_about(philosophy) == "확인된 정보만 환자에게 안내합니다."
+
+
+def test_vetted_public_about_none_when_all_sentences_violate():
+    philosophy = _approved_philosophy("국내 최초이자 유일한 완치 보장 병원", "부작용 없는 시술")
+    assert _vetted_public_about(philosophy) is None
+
+
+def test_serialize_hospital_exposes_public_about_only_when_approved_and_filtered():
+    hospital = _hospital_with_photo(None)
+
+    # 승인된 운영 기준이 없으면 public_about는 None (필드는 존재하되 값 없음).
+    no_philosophy = _serialize_hospital(hospital, [])
+    assert no_philosophy["public_about"] is None
+    # 자유 입력 director_philosophy는 여전히 비공개.
+    assert no_philosophy["director_philosophy"] is None
+
+    # 승인 + 검수 통과 시에만 값이 채워진다.
+    approved = _serialize_hospital(
+        hospital,
+        [],
+        _approved_philosophy("근거 중심으로 충분히 설명하는 진료를 지향합니다."),
+    )
+    assert approved["public_about"] == "근거 중심으로 충분히 설명하는 진료를 지향합니다."

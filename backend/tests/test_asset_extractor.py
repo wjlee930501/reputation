@@ -1,15 +1,100 @@
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from app.services.asset_extractor import (
     FetchTarget,
+    _assess_fetch_quality,
+    _normalize_naver_blog_url,
+    _scope_to_content_container,
     _validate_fetch_url,
     _validate_response_peer,
     detect_extractor_for,
     extract_docx_text,
     extract_pdf_text,
 )
+
+
+@pytest.mark.parametrize(
+    "raw_url, expected",
+    [
+        # 데스크탑 blogId/logNo → 모바일 본문 form
+        (
+            "https://blog.naver.com/jangpyeonhan/223456789012",
+            "https://m.blog.naver.com/jangpyeonhan/223456789012",
+        ),
+        # 끝 슬래시 허용
+        (
+            "https://blog.naver.com/jangpyeonhan/223456789012/",
+            "https://m.blog.naver.com/jangpyeonhan/223456789012",
+        ),
+        # PostView.naver?blogId=&logNo= 쿼리 form
+        (
+            "https://blog.naver.com/PostView.naver?blogId=jangpyeonhan&logNo=223456789012",
+            "https://m.blog.naver.com/jangpyeonhan/223456789012",
+        ),
+        # 쿼리 파라미터 순서가 달라도 동작
+        (
+            "https://blog.naver.com/PostView.naver?logNo=223456789012&blogId=jangpyeonhan&redirect=Dlog",
+            "https://m.blog.naver.com/jangpyeonhan/223456789012",
+        ),
+        # bare blogId
+        (
+            "https://blog.naver.com/jangpyeonhan",
+            "https://m.blog.naver.com/jangpyeonhan",
+        ),
+        # 이미 모바일 form인 데스크탑-아닌 호스트는 그대로
+        (
+            "https://m.blog.naver.com/jangpyeonhan/223456789012",
+            "https://m.blog.naver.com/jangpyeonhan/223456789012",
+        ),
+        # 네이버가 아닌 호스트는 변형하지 않음
+        (
+            "https://example.com/jangpyeonhan/223456789012",
+            "https://example.com/jangpyeonhan/223456789012",
+        ),
+    ],
+)
+def test_normalize_naver_blog_url(raw_url, expected):
+    assert _normalize_naver_blog_url(raw_url) == expected
+
+
+def test_assess_fetch_quality_flags_frameset_shell():
+    # 네이버 데스크탑 응답의 전형 — mainFrame iframe만 있는 프레임셋 셸.
+    shell_html = (
+        '<html><frameset><frame id="mainFrame" '
+        'src="/jangpyeonhan/PostView.naver?blogId=x&logNo=1"></frameset></html>'
+    )
+    shell_text = "[mainFrame](/jangpyeonhan/PostView.naver)"
+    quality = _assess_fetch_quality(shell_html, shell_text)
+    assert quality.has_shell_markers is True
+    assert quality.looks_like_shell is True
+
+
+def test_assess_fetch_quality_accepts_real_body():
+    body_text = "원장 인사말입니다. " * 60  # 충분히 긴 본문
+    quality = _assess_fetch_quality("<div>본문</div>", body_text)
+    assert quality.looks_like_shell is False
+
+
+def test_scope_to_content_container_extracts_se_main_container():
+    html = (
+        "<html><body>"
+        "<nav>상단 네비</nav>"
+        '<div class="se-main-container"><p>원장 인사말 본문</p></div>'
+        "<footer>하단</footer>"
+        "</body></html>"
+    )
+    scoped = _scope_to_content_container(html)
+    assert "원장 인사말 본문" in scoped
+    assert "상단 네비" not in scoped
+    assert "하단" not in scoped
+
+
+def test_scope_to_content_container_falls_back_to_full_html():
+    html = "<html><body><article>컨테이너 없는 일반 페이지</article></body></html>"
+    assert _scope_to_content_container(html) == html
 
 
 def test_detect_extractor_for_image_by_mime():

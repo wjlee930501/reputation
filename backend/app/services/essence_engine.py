@@ -1,19 +1,28 @@
 """Source-backed content operating standard engine.
 
-MVP behavior is intentionally deterministic. It extracts short evidence notes
-from operator-provided source text and synthesizes only fields that can point
-back to saved evidence note IDs.
+원장의 톤/문체·핵심 의료 지식·가치(essence)를 자료에서 추출한다.
+
+- ANTHROPIC_API_KEY가 있으면 Claude로 근거 노트 추출 + 철학 합성 (heart path).
+- 키가 없으면(오프라인/CI) deterministic regex 폴백으로 동작해 테스트가 항상 통과한다.
+
+어느 경로든 모든 evidence note의 source_excerpt는 raw_text/operator_note의 verbatim
+부분문자열이어야 하며, 그렇지 않은 노트는 버린다.
 """
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+import anthropic
 from sqlalchemy import select
+from tenacity import retry, stop_after_attempt, wait_exponential
 
+from app.core.config import settings
 from app.models.content import ContentItem
 from app.models.essence import (
     EvidenceNoteType,
@@ -26,9 +35,31 @@ from app.models.essence import (
 from app.models.hospital import Hospital
 from app.utils.medical_filter import check_forbidden
 
+logger = logging.getLogger(__name__)
+
 ESSENCE_STATUS_ALIGNED = "ALIGNED"
 ESSENCE_STATUS_NEEDS_REVIEW = "NEEDS_ESSENCE_REVIEW"
 ESSENCE_STATUS_MISSING_APPROVED = "MISSING_APPROVED_PHILOSOPHY"
+
+# content_engine.py와 동일한 sync Anthropic 클라이언트 패턴 — tenacity가 재시도를 관리하므로
+# SDK 내부 재시도는 끈다. 키가 없으면 lazy하게 None을 유지해 deterministic 폴백으로 떨어진다.
+_RAW_TEXT_FOR_LLM_LIMIT = 24_000
+_VALID_NOTE_TYPES = {note_type.value for note_type in EvidenceNoteType}
+
+
+def _anthropic_client() -> anthropic.Anthropic | None:
+    if not settings.ANTHROPIC_API_KEY:
+        return None
+    return anthropic.Anthropic(
+        api_key=settings.ANTHROPIC_API_KEY,
+        timeout=60.0,
+        max_retries=0,
+    )
+
+
+def llm_enabled() -> bool:
+    """LLM 경로 사용 가능 여부 — 키가 있으면 True, 없으면 deterministic 폴백."""
+    return bool(settings.ANTHROPIC_API_KEY)
 
 
 @dataclass(frozen=True)
@@ -94,11 +125,146 @@ def validate_source_excerpt(asset: HospitalSourceAsset, excerpt: str) -> bool:
     return start is not None and end is not None
 
 
-def process_source_asset(asset: HospitalSourceAsset) -> list[EvidenceNotePayload]:
-    """Extract source-backed evidence notes from pasted raw text/operator notes."""
+def process_source_asset(
+    asset: HospitalSourceAsset, *, use_llm: bool = True
+) -> list[EvidenceNotePayload]:
+    """자료 원문에서 근거 노트를 추출한다.
+
+    ANTHROPIC_API_KEY가 있으면 Claude로 추출하고, 없으면 deterministic 폴백을 쓴다.
+    LLM 호출이 실패하면 deterministic 폴백으로 안전하게 떨어진다.
+    어느 경로든 source_excerpt는 원문 verbatim이어야 한다.
+    """
     if not asset.raw_text or not asset.raw_text.strip():
         raise ValueError("원문 텍스트가 없는 자료는 처리할 수 없습니다.")
 
+    if use_llm and llm_enabled():
+        try:
+            payloads = _process_source_asset_llm(asset)
+            if payloads:
+                return payloads
+            logger.info("essence LLM source-processing returned no notes; using deterministic fallback")
+        except Exception as exc:  # noqa: BLE001 — LLM 실패 시 폴백으로 계속
+            logger.warning("essence LLM source-processing failed (%s); using deterministic fallback", exc)
+
+    return _process_source_asset_deterministic(asset)
+
+
+# ── LLM source-processing ────────────────────────────────────────────────
+# 계약: raw_text를 주면 evidence_notes[] 배열을 돌려준다. 각 노트는
+#   {note_type, claim, source_excerpt, confidence, note_metadata}
+# 이며 source_excerpt는 반드시 raw_text의 verbatim 부분문자열이어야 한다.
+# 9개 note_type enum 값만 허용한다. 외부 지식·창작은 금지하고, 발췌가 원문에 없으면 버린다.
+_SOURCE_PROCESSING_SYSTEM = """\
+당신은 병원 온보딩 자료에서 콘텐츠 운영 근거를 색인하는 분석가입니다.
+주어진 원문(raw_text)에서만 근거를 뽑습니다. 외부 지식·추정·창작은 절대 금지합니다.
+
+추출 규칙:
+1. 각 근거는 원문에 실제로 존재하는 짧은 발췌(source_excerpt)에 묶입니다.
+   source_excerpt는 raw_text의 글자 그대로의 부분문자열이어야 합니다(요약·수정 금지).
+2. note_type은 다음 9개 중 하나만 사용합니다:
+   KEY_MESSAGE(반복되는 핵심 메시지),
+   TONE_SIGNAL(문체/톤 — 차분, 친절, 자세히 설명 등),
+   TREATMENT_SIGNAL(진료/시술 설명 — note_metadata.treatment에 진료 라벨),
+   RISK_SIGNAL(의료광고·과장 리스크 표현),
+   PATIENT_PROMISE(환자에게 하는 약속),
+   DOCTOR_PHILOSOPHY(원장의 진료 철학·원칙),
+   LOCAL_CONTEXT(지역 맥락),
+   PROOF_POINT(검증 가능한 근거·실적),
+   CONFLICT(상충하는 서술).
+3. claim은 그 발췌가 뒷받침하는 짧은 명제(한국어 한 문장)입니다.
+4. confidence는 0~1 사이 숫자입니다.
+5. 의료광고 금지 표현(1등/최고/유일/완치/100%/성공률/부작용 없는 등)이 보이면
+   RISK_SIGNAL로 분류하고 note_metadata.violations에 해당 표현 배열을 넣습니다.
+
+출력은 JSON 객체 하나만, 코드블록/설명 없이:
+{
+  "evidence_notes": [
+    {
+      "note_type": "DOCTOR_PHILOSOPHY",
+      "claim": "원장은 충분한 설명을 중요하게 여긴다.",
+      "source_excerpt": "치료 전 충분한 설명을 드리는 것을 중요하게 생각합니다",
+      "confidence": 0.86,
+      "note_metadata": {"treatment": null, "patient_language": ["충분한 설명"]}
+    }
+  ]
+}
+"""
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+def _call_anthropic_json(system: str, user_message: str, *, max_tokens: int) -> dict[str, Any]:
+    """비용을 아끼기 위해 fast 모델로 essence 추출/합성을 호출하고 JSON으로 파싱한다."""
+    client = _anthropic_client()
+    if client is None:  # pragma: no cover — llm_enabled() 가드 이후에만 호출됨
+        raise RuntimeError("ANTHROPIC_API_KEY가 설정되어 있지 않습니다.")
+    response = client.messages.create(
+        model=settings.CLAUDE_MODEL_FAST,
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    raw = response.content[0].text
+    return _parse_json_object(raw)
+
+
+def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePayload]:
+    """Claude로 근거 노트를 추출하고, 원문 verbatim 가드를 통과한 노트만 남긴다."""
+    raw_text = (asset.raw_text or "")[:_RAW_TEXT_FOR_LLM_LIMIT]
+    operator_note = (asset.operator_note or "").strip()
+    user_message = (
+        f"[원문 raw_text]\n{raw_text}\n\n"
+        + (f"[운영자 메모 operator_note]\n{operator_note}\n\n" if operator_note else "")
+        + "위 원문에서만 근거 노트를 추출해 JSON으로 출력하세요."
+    )
+    data = _call_anthropic_json(_SOURCE_PROCESSING_SYSTEM, user_message, max_tokens=3000)
+
+    payloads: list[EvidenceNotePayload] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_note in _as_list(data.get("evidence_notes")):
+        if not isinstance(raw_note, dict):
+            continue
+        note_type = _coerce_note_type(raw_note.get("note_type"))
+        excerpt = raw_note.get("source_excerpt")
+        if not isinstance(excerpt, str) or not excerpt.strip():
+            continue
+        excerpt = excerpt.strip()
+        # CRITICAL: 원문 verbatim이 아닌 발췌는 버린다.
+        start, end = find_excerpt_bounds(asset, excerpt)
+        if start is None or end is None:
+            continue
+
+        metadata = raw_note.get("note_metadata")
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        violations = check_forbidden(excerpt)
+        if violations:
+            note_type = EvidenceNoteType.RISK_SIGNAL
+            metadata.setdefault("violations", violations)
+
+        key = (note_type.value, excerpt)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        claim = raw_note.get("claim")
+        claim = claim.strip() if isinstance(claim, str) and claim.strip() else _claim_from_excerpt(note_type, excerpt)
+        payloads.append(
+            EvidenceNotePayload(
+                note_type=note_type,
+                claim=claim,
+                source_excerpt=excerpt,
+                excerpt_start=start,
+                excerpt_end=end,
+                confidence=_coerce_confidence(raw_note.get("confidence")),
+                note_metadata=metadata,
+            )
+        )
+        if len(payloads) >= 20:
+            break
+    return payloads
+
+
+def _process_source_asset_deterministic(asset: HospitalSourceAsset) -> list[EvidenceNotePayload]:
+    """규칙 기반 근거 노트 추출 — LLM 키가 없는 오프라인/CI 폴백."""
     snippets = _candidate_excerpts(asset)
     payloads: list[EvidenceNotePayload] = []
     seen: set[tuple[str, str]] = set()
@@ -159,8 +325,304 @@ def synthesize_philosophy(
     sources: list[HospitalSourceAsset],
     notes: list[HospitalSourceEvidenceNote],
     operator_note: str | None = None,
+    *,
+    use_llm: bool = True,
 ) -> dict[str, Any]:
-    """Create a draft philosophy from saved evidence notes only."""
+    """저장된 근거 노트만으로 콘텐츠 철학 초안을 만든다.
+
+    ANTHROPIC_API_KEY가 있으면 Claude로 합성하고, 없으면 deterministic 폴백을 쓴다.
+    LLM 합성이 실패하거나 grounding 검증을 통과하지 못하면 deterministic 폴백으로 떨어진다.
+    """
+    if use_llm and llm_enabled() and notes:
+        try:
+            payload = _synthesize_philosophy_llm(hospital, sources, notes, operator_note)
+            if (
+                payload is not None
+                and payload.get("evidence_map")  # grounded 필드가 최소 1개는 있어야 함
+                and not validate_philosophy_grounding(payload, notes)
+            ):
+                return payload
+            logger.info("essence LLM synthesis ungrounded or empty; using deterministic fallback")
+        except Exception as exc:  # noqa: BLE001 — LLM 실패 시 폴백으로 계속
+            logger.warning("essence LLM synthesis failed (%s); using deterministic fallback", exc)
+
+    return _synthesize_philosophy_deterministic(hospital, sources, notes, operator_note)
+
+
+# ── LLM philosophy synthesis ─────────────────────────────────────────────
+# 계약: 근거 노트들을 주면 각 철학 필드를 {text, evidence_note_ids}로 돌려준다.
+# doctor_voice는 실제 문체 descriptor(verbatim 인용이 아닌 재서술)이어야 하고,
+# treatment_narratives는 {treatment, patient_language[], cautions[], evidence_note_ids[]}로
+# 근거 노트에 묶인 실제 서술이어야 한다. 모든 비어있지 않은 필드는 evidence_note_ids를 갖는다.
+_SYNTHESIS_SYSTEM = """\
+당신은 병원 콘텐츠 운영 기준(철학)을 근거 기반으로 정리하는 편집자입니다.
+입력으로 받은 근거 노트(각 노트는 id와 source_excerpt를 가짐)에서만 도출합니다.
+근거 없는 자격·수상·효과·비교 우위·환자 결과를 창작하지 않습니다.
+
+작성 규칙:
+1. 각 출력 필드는 그 내용을 뒷받침하는 evidence_note_ids(입력 노트의 id 배열)를 가져야 합니다.
+   근거 노트가 없으면 그 필드는 비워두고 unsupported_gaps에 사유를 남깁니다.
+2. doctor_voice.text는 verbatim 인용이 아니라 원장의 실제 문체를 묘사하는 문장입니다.
+   예: "단정적 홍보를 피하고 과정을 차분히 설명하는 1인칭 설명형 문체".
+3. treatment_narratives는 각 항목이
+   {treatment, patient_language[], cautions[], evidence_note_ids[]} 형태이며,
+   근거 노트에서 도출된 실제 환자 언어와 주의사항을 담습니다(상수 문구 금지).
+4. 의료광고 금지 표현(1등/최고/유일/완치/100%/성공률/부작용 없는 등)은 출력에 쓰지 않습니다.
+   환자에게 결과를 보장하는 약속도 만들지 않습니다.
+5. 상충하는 근거는 conflict_notes에 남기고 임의로 결론내리지 않습니다.
+
+출력은 JSON 객체 하나만, 코드블록/설명 없이. 모든 텍스트 필드는 {text, evidence_note_ids} 형태:
+{
+  "positioning_statement": {"text": "...", "evidence_note_ids": ["..."]},
+  "doctor_voice": {"text": "...", "evidence_note_ids": ["..."]},
+  "patient_promise": {"text": "...", "evidence_note_ids": ["..."]},
+  "content_principles": [{"text": "...", "evidence_note_ids": ["..."]}],
+  "tone_guidelines": [{"text": "...", "evidence_note_ids": ["..."]}],
+  "must_use_messages": [{"text": "...", "evidence_note_ids": ["..."]}],
+  "avoid_messages": [{"text": "...", "evidence_note_ids": ["..."]}],
+  "treatment_narratives": [
+    {"treatment": "...", "patient_language": ["..."], "cautions": ["..."], "evidence_note_ids": ["..."]}
+  ],
+  "local_context": {"region_terms": [], "local_patient_context": ["..."], "evidence_note_ids": ["..."]},
+  "medical_ad_risk_rules": [{"text": "...", "evidence_note_ids": ["..."]}],
+  "unsupported_gaps": [{"field": "...", "reason": "..."}],
+  "conflict_notes": [{"text": "...", "evidence_note_ids": ["..."]}],
+  "synthesis_notes": "근거 기반 요약. 외부 지식 사용 없음."
+}
+"""
+
+# 텍스트 + evidence_note_ids 쌍을 받는 단일/리스트 필드.
+_TEXT_FIELDS_SINGLE = ("positioning_statement", "doctor_voice", "patient_promise")
+_TEXT_FIELDS_LIST = (
+    "content_principles",
+    "tone_guidelines",
+    "must_use_messages",
+    "avoid_messages",
+    "medical_ad_risk_rules",
+)
+
+
+def _synthesize_philosophy_llm(
+    hospital: Hospital,
+    sources: list[HospitalSourceAsset],
+    notes: list[HospitalSourceEvidenceNote],
+    operator_note: str | None,
+) -> dict[str, Any] | None:
+    """Claude로 철학을 합성하고, 저장 가능한 dict 페이로드로 정규화한다.
+
+    LLM이 참조한 evidence_note_ids는 입력 노트 id 집합으로 필터링되어 환각 참조를 막는다.
+    """
+    valid_ids = {_note_id(note): note for note in notes}
+    notes_block = "\n".join(
+        f"- id={_note_id(note)} | type={_note_type_value(note)} | "
+        f"excerpt={_short(note.source_excerpt, 160)}"
+        for note in notes
+    )
+    operator_block = f"\n[운영자 작성 방향 operator_note]\n{operator_note.strip()}\n" if operator_note else ""
+    user_message = (
+        f"[병원]\n{getattr(hospital, 'name', '') or ''}\n"
+        f"{operator_block}\n"
+        f"[근거 노트]\n{notes_block}\n\n"
+        "위 근거 노트만 사용해 콘텐츠 운영 기준을 JSON으로 합성하세요. "
+        "각 필드의 evidence_note_ids는 위 id 목록 안에서만 고릅니다."
+    )
+    data = _call_anthropic_json(_SYNTHESIS_SYSTEM, user_message, max_tokens=4000)
+
+    evidence_map: dict[str, list[str]] = {}
+    payload: dict[str, Any] = {}
+
+    for field_name in _TEXT_FIELDS_SINGLE:
+        text, ids = _extract_text_and_ids(data.get(field_name), valid_ids)
+        payload[field_name] = text if (text and ids) else None
+        if text and ids:
+            evidence_map[field_name] = ids
+
+    for field_name in _TEXT_FIELDS_LIST:
+        items = _extract_text_list(data.get(field_name), valid_ids)
+        payload[field_name] = [text for text, _ in items]
+        ids = _unique_ids(_id for _, _id_list in items for _id in _id_list)
+        if ids:
+            evidence_map[field_name] = ids
+
+    treatment_narratives, treatment_ids = _extract_treatment_narratives(
+        data.get("treatment_narratives"), valid_ids
+    )
+    payload["treatment_narratives"] = treatment_narratives
+    if treatment_ids:
+        evidence_map["treatment_narratives"] = treatment_ids
+
+    local_context, local_ids = _extract_local_context(data.get("local_context"), valid_ids)
+    payload["local_context"] = local_context
+    if local_ids:
+        evidence_map["local_context"] = local_ids
+
+    payload["evidence_map"] = evidence_map
+    payload["source_asset_ids"] = [str(source.id) for source in sources]
+    payload["unsupported_gaps"] = _sanitize_gaps(data.get("unsupported_gaps"))
+    payload["conflict_notes"] = _extract_text_list_payload(data.get("conflict_notes"), valid_ids)
+    synthesis_notes = data.get("synthesis_notes")
+    payload["synthesis_notes"] = (
+        synthesis_notes.strip() if isinstance(synthesis_notes, str) and synthesis_notes.strip()
+        else "Claude 합성. 근거 노트 기반, 외부 지식 사용 없음."
+    )
+    payload["source_snapshot_hash"] = compute_sources_snapshot_hash(sources)
+    return payload
+
+
+def _extract_text_and_ids(
+    value: Any, valid_ids: dict[str, HospitalSourceEvidenceNote]
+) -> tuple[str | None, list[str]]:
+    """{text, evidence_note_ids} 단일 필드를 (text, 유효 id 목록)으로 정규화한다."""
+    if isinstance(value, str):
+        return (value.strip() or None), []
+    if not isinstance(value, dict):
+        return None, []
+    text = value.get("text")
+    text = text.strip() if isinstance(text, str) and text.strip() else None
+    ids = [str(i) for i in _as_list(value.get("evidence_note_ids")) if str(i) in valid_ids]
+    return text, ids
+
+
+def _extract_text_list(
+    value: Any, valid_ids: dict[str, HospitalSourceEvidenceNote]
+) -> list[tuple[str, list[str]]]:
+    """{text, evidence_note_ids} 항목 리스트를 (text, 유효 id 목록) 튜플 리스트로 정규화한다."""
+    items: list[tuple[str, list[str]]] = []
+    for entry in _as_list(value):
+        text, ids = _extract_text_and_ids(entry, valid_ids)
+        if text and ids:
+            items.append((text, ids))
+    return items
+
+
+def _extract_text_list_payload(
+    value: Any, valid_ids: dict[str, HospitalSourceEvidenceNote]
+) -> list[dict[str, Any]]:
+    """conflict_notes 등 — {text, evidence_note_ids} 저장 형태로 정규화."""
+    return [
+        {"text": text, "evidence_note_ids": ids}
+        for text, ids in _extract_text_list(value, valid_ids)
+    ]
+
+
+def _extract_treatment_narratives(
+    value: Any, valid_ids: dict[str, HospitalSourceEvidenceNote]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """treatment_narratives를 저장 형태로 정규화하고, 참조 id를 모은다."""
+    narratives: list[dict[str, Any]] = []
+    all_ids: list[str] = []
+    for entry in _as_list(value):
+        if not isinstance(entry, dict):
+            continue
+        ids = [str(i) for i in _as_list(entry.get("evidence_note_ids")) if str(i) in valid_ids]
+        if not ids:
+            continue
+        treatment = entry.get("treatment")
+        narratives.append(
+            {
+                "treatment": treatment.strip() if isinstance(treatment, str) and treatment.strip()
+                else "자료 기반 진료 항목",
+                "patient_language": _string_list(entry.get("patient_language")),
+                "cautions": _string_list(entry.get("cautions"))
+                or ["효과, 완치, 성공률을 보장하지 않습니다."],
+                "evidence_note_ids": ids,
+            }
+        )
+        all_ids.extend(ids)
+    return narratives, _unique_ids(all_ids)
+
+
+def _extract_local_context(
+    value: Any, valid_ids: dict[str, HospitalSourceEvidenceNote]
+) -> tuple[dict[str, Any], list[str]]:
+    base: dict[str, Any] = {"region_terms": [], "local_patient_context": [], "avoid_region_stuffing": True}
+    if not isinstance(value, dict):
+        return base, []
+    ids = [str(i) for i in _as_list(value.get("evidence_note_ids")) if str(i) in valid_ids]
+    base["region_terms"] = _string_list(value.get("region_terms"))
+    base["local_patient_context"] = _string_list(value.get("local_patient_context"))
+    if ids and (base["region_terms"] or base["local_patient_context"]):
+        base["evidence_note_ids"] = ids
+        return base, ids
+    return base, []
+
+
+def _sanitize_gaps(value: Any) -> list[dict[str, str]]:
+    gaps: list[dict[str, str]] = []
+    for entry in _as_list(value):
+        if isinstance(entry, dict):
+            field_name = str(entry.get("field") or "")
+            reason = str(entry.get("reason") or "")
+            if field_name or reason:
+                gaps.append({"field": field_name, "reason": reason})
+    return gaps
+
+
+def _coerce_note_type(value: Any) -> EvidenceNoteType:
+    if isinstance(value, str) and value.strip().upper() in _VALID_NOTE_TYPES:
+        return EvidenceNoteType(value.strip().upper())
+    return EvidenceNoteType.KEY_MESSAGE
+
+
+def _coerce_confidence(value: Any) -> float:
+    try:
+        conf = float(value)
+    except (TypeError, ValueError):
+        return 0.75
+    return min(max(conf, 0.0), 1.0)
+
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    """Claude JSON 응답을 dict로 파싱 — 마크다운 fence/주변 텍스트를 관용적으로 제거."""
+    clean = (raw or "").strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", clean, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        clean = fenced.group(1).strip()
+    else:
+        start = clean.find("{")
+        end = clean.rfind("}")
+        if start >= 0 and end > start:
+            clean = clean[start:end + 1]
+    parsed = json.loads(clean)
+    if not isinstance(parsed, dict):
+        raise ValueError("essence LLM이 객체가 아닌 JSON을 반환했습니다.")
+    return parsed
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _string_list(value: Any) -> list[str]:
+    return [item.strip() for item in _as_list(value) if isinstance(item, str) and item.strip()]
+
+
+def _unique_ids(ids: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for note_id in ids:
+        if note_id not in seen:
+            seen.add(note_id)
+            result.append(note_id)
+    return result
+
+
+def _note_type_value(note: HospitalSourceEvidenceNote) -> str:
+    note_type = getattr(note, "note_type", None)
+    return note_type.value if hasattr(note_type, "value") else str(note_type)
+
+
+def _synthesize_philosophy_deterministic(
+    hospital: Hospital,
+    sources: list[HospitalSourceAsset],
+    notes: list[HospitalSourceEvidenceNote],
+    operator_note: str | None = None,
+) -> dict[str, Any]:
+    """근거 노트에서 규칙 기반으로 철학 초안을 합성 — LLM 키가 없는 폴백."""
     grouped = _group_notes(notes)
 
     key_notes = _pick_notes(
@@ -314,7 +776,16 @@ def validate_philosophy_grounding(
     *,
     require_text_support: bool = False,
 ) -> list[str]:
-    """Ensure non-empty philosophy fields point to existing evidence notes."""
+    """비어있지 않은 철학 필드가 실제 근거 노트를 가리키는지 검증한다.
+
+    합성된 voice/narrative descriptor는 원문 verbatim 인용이 아니라 노트에서 도출된
+    재서술이므로, "verbatim 부분문자열 포함"을 요구하지 않는다. 대신 각 필드의 mapped
+    evidence_note_ids가 실제로 존재하고 해당 병원의 노트를 참조하는지(derived-from)만
+    요구한다. 노트 자체가 원문 verbatim임은 별도(validate_source_excerpt)로 보장된다.
+
+    `require_text_support`는 호환을 위해 남겨두되, edit/approve 경로에서도 verbatim 포함을
+    강제하지 않는다 — 진짜 합성된 doctor_voice가 가능해야 하기 때문이다.
+    """
     notes_by_id = {_note_id(note): note for note in notes}
     valid_note_ids = set(notes_by_id)
     evidence_map = _payload_get(payload, "evidence_map") or {}
@@ -345,8 +816,6 @@ def validate_philosophy_grounding(
         if unknown:
             errors.append(f"{field_name} 필드가 존재하지 않는 근거 노트를 참조합니다: {', '.join(unknown)}")
             continue
-        if require_text_support and not _value_contains_mapped_evidence(value, mapped_ids, notes_by_id):
-            errors.append(f"{field_name} 필드가 매핑된 근거 노트 발췌를 포함하지 않습니다.")
 
     return errors
 
@@ -596,40 +1065,6 @@ def _flatten_ids(value: Any) -> list[str]:
             result.extend(_flatten_ids(item))
         return result
     return [str(value)]
-
-
-def _value_contains_mapped_evidence(
-    value: Any,
-    mapped_ids: list[str],
-    notes_by_id: dict[str, HospitalSourceEvidenceNote],
-) -> bool:
-    text = _flatten_text(value)
-    if not text.strip():
-        return True
-    normalized_text = _normalize_for_grounding(text)
-    for note_id in mapped_ids:
-        note = notes_by_id.get(note_id)
-        excerpt = getattr(note, "source_excerpt", "") if note else ""
-        normalized_excerpt = _normalize_for_grounding(excerpt)
-        if normalized_excerpt and normalized_excerpt in normalized_text:
-            return True
-    return False
-
-
-def _flatten_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return " ".join(_flatten_text(item) for item in value)
-    if isinstance(value, dict):
-        return " ".join(_flatten_text(item) for item in value.values())
-    return str(value)
-
-
-def _normalize_for_grounding(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip()
 
 
 def _string_items(values: Iterable[Any]) -> list[str]:

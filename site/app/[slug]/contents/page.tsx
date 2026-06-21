@@ -2,6 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { buildFaqPageJsonLd } from '@/lib/clinic-schema'
 import { canonicalBase } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
@@ -90,9 +91,17 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
     })),
   }
 
+  const faqPageJsonLd = buildFaqPageJsonLd(contents)
+
   return (
     <>
-      <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
+      <JsonLd
+        data={[
+          collectionJsonLd,
+          buildBreadcrumbJsonLd(breadcrumbItems, base),
+          ...(faqPageJsonLd ? [faqPageJsonLd] : []),
+        ]}
+      />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}

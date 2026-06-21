@@ -376,9 +376,20 @@ async def crawl_source_url(
     if body.source_type in PHOTO_SOURCE_TYPES:
         raise HTTPException(status_code=400, detail="사진 카테고리는 URL 크롤링을 지원하지 않습니다. 업로드를 사용해 주세요.")
 
-    text, error = await fetch_url_text(body.url)
+    text, error, quality = await fetch_url_text(body.url)
     if error:
         raise HTTPException(status_code=400, detail=f"URL 크롤링 실패: {error}")
+    # 네이버 등에서 본문 대신 빈 프레임셋 셸만 받아온 경우 — junk 저장 대신 명확히 거부한다.
+    if quality is not None and quality.looks_like_shell:
+        if body.source_type == SourceType.NAVER_BLOG:
+            raise HTTPException(
+                status_code=400,
+                detail="네이버 블로그 본문을 가져오지 못했습니다 — 본문을 직접 붙여넣어 주세요.",
+            )
+        raise HTTPException(
+            status_code=400,
+            detail="페이지 본문을 충분히 가져오지 못했습니다 — 본문을 직접 붙여넣어 주세요.",
+        )
 
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
