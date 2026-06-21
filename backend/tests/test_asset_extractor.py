@@ -282,3 +282,54 @@ async def test_fetch_naver_blog_post_urls_rejects_non_naver_ref(monkeypatch):
     urls, error = await ax.fetch_naver_blog_post_urls("https://example.com/blog", max_posts=5)
     assert urls == []
     assert error is not None
+
+
+def test_validate_response_peer_reads_server_addr_when_peername_none():
+    # 실제 httpx/httpcore 동작 재현: peername=None, server_addr=(ip,port).
+    # 이 키를 읽지 못하면 모든 URL 크롤링이 막혔었다(회귀 방지).
+    target = FetchTarget(
+        url="https://example.com/source",
+        hostname="example.com",
+        port=443,
+        allowed_ips=frozenset({"93.184.216.34"}),
+    )
+    extras = {"server_addr": ("93.184.216.34", 443), "peername": None}
+    response = httpx.Response(
+        200,
+        extensions={"network_stream": SimpleNamespace(get_extra_info=lambda key: extras.get(key))},
+    )
+    # 허용 IP와 일치하는 server_addr → 통과(None)
+    assert _validate_response_peer(response, target) is None
+
+
+def test_validate_response_peer_blocks_rebinding_via_server_addr():
+    target = FetchTarget(
+        url="https://example.com/source",
+        hostname="example.com",
+        port=443,
+        allowed_ips=frozenset({"93.184.216.34"}),
+    )
+    extras = {"server_addr": ("127.0.0.1", 443), "peername": None}
+    response = httpx.Response(
+        200,
+        extensions={"network_stream": SimpleNamespace(get_extra_info=lambda key: extras.get(key))},
+    )
+    assert _validate_response_peer(response, target) == (
+        "DNS 변경 또는 사설망 연결이 감지되어 크롤링을 중단했습니다."
+    )
+
+
+def test_validate_response_peer_falls_back_to_socket_getpeername():
+    target = FetchTarget(
+        url="https://example.com/source",
+        hostname="example.com",
+        port=443,
+        allowed_ips=frozenset({"93.184.216.34"}),
+    )
+    sock = SimpleNamespace(getpeername=lambda: ("93.184.216.34", 443))
+    extras = {"server_addr": None, "peername": None, "socket": sock}
+    response = httpx.Response(
+        200,
+        extensions={"network_stream": SimpleNamespace(get_extra_info=lambda key: extras.get(key))},
+    )
+    assert _validate_response_peer(response, target) is None

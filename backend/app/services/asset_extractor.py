@@ -375,14 +375,34 @@ def _validate_fetch_target(url: str) -> tuple[FetchTarget | None, str | None]:
     return FetchTarget(url=url, hostname=hostname, port=port, allowed_ips=frozenset(allowed_ips)), None
 
 
+def _peer_address_from_stream(stream) -> tuple | None:
+    """httpx network_stream에서 원격(peer) 주소를 얻는다.
+
+    httpcore async 스트림은 원격 주소를 'server_addr'로 노출한다('peername'은 None을
+    돌려줘 항상 검증 실패 → 모든 URL 크롤링이 막혔다). 버전 차이를 흡수하기 위해
+    server_addr → peername → socket.getpeername() 순으로 시도한다.
+    """
+    for key in ("server_addr", "peername"):
+        try:
+            info = stream.get_extra_info(key)
+        except Exception:
+            info = None
+        if info:
+            return info
+    try:
+        sock = stream.get_extra_info("socket")
+        if sock is not None:
+            return sock.getpeername()
+    except Exception:
+        pass
+    return None
+
+
 def _validate_response_peer(response: httpx.Response, target: FetchTarget) -> str | None:
     stream = response.extensions.get("network_stream")
     if stream is None:
         return "URL 연결 정보를 확인할 수 없어 크롤링을 중단했습니다."
-    try:
-        peername = stream.get_extra_info("peername")
-    except Exception:
-        return "URL 연결 정보를 확인할 수 없어 크롤링을 중단했습니다."
+    peername = _peer_address_from_stream(stream)
     if not peername:
         return "URL 연결 정보를 확인할 수 없어 크롤링을 중단했습니다."
     try:
