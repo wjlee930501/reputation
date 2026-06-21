@@ -35,6 +35,8 @@ WORKDIR /app
 
 # Runtime-only shared libraries:
 #   - WeasyPrint: libpango / libpangoft2 / libharfbuzz / libjpeg / libopenjp2
+#   - fonts-nanum: Korean (CJK) glyphs so the V0/monthly PDF reports render
+#     Hangul instead of tofu boxes (the slim base ships only Latin fonts).
 #   - cffi: libffi8        - curl: HEALTHCHECK probe
 # psycopg2-binary bundles its own libpq, so no system libpq is needed.
 # No compilers or -dev headers here (those stayed in the builder).
@@ -43,6 +45,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjpeg62-turbo libopenjp2-7 \
     libffi8 \
     curl \
+    fonts-nanum \
+    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
 # Bring in the prebuilt virtualenv and the application code.

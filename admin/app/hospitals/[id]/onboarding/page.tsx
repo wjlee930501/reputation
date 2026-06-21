@@ -774,7 +774,7 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
 
 function NaverBlogBulkForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: () => void }) {
   const [url, setUrl] = useState('')
-  const [maxPosts, setMaxPosts] = useState(10)
+  const [maxPosts, setMaxPosts] = useState(5)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
 

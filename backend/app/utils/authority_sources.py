@@ -13,6 +13,7 @@ SE Ranking YMYL Health Study(2025) 등에서 AI 답변(ChatGPT/Gemini/Perplexity
 KR_PUBLIC_SOURCES: list[dict[str, str]] = [
     {"name": "질병관리청 국가건강정보포털", "domain": "health.kdca.go.kr"},
     {"name": "질병관리청 KDCA", "domain": "kdca.go.kr"},
+    {"name": "국가암정보센터", "domain": "cancer.go.kr"},
     {"name": "건강보험심사평가원 HIRA", "domain": "hira.or.kr"},
     {"name": "보건복지부", "domain": "mohw.go.kr"},
     {"name": "식품의약품안전처 MFDS", "domain": "mfds.go.kr"},
@@ -25,6 +26,11 @@ KR_ACADEMIC_SOURCES: list[dict[str, str]] = [
     {"name": "KMbase 의과학연구정보센터", "domain": "kmbase.medric.or.kr"},
     {"name": "KoreaMed", "domain": "koreamed.org"},
     {"name": "한국학술지인용색인 KCI", "domain": "kci.go.kr"},
+    # 진료지침/질환백과로 콘텐츠 프롬프트가 직접 인용을 지시하는 학회·병원 권위 출처.
+    # 누락 시 모델이 실제로 인용해도 _normalize_references가 조용히 떨궈 발행이 막힌다.
+    {"name": "대한대장항문학회", "domain": "colon.or.kr"},
+    {"name": "대한외과학회", "domain": "surgery.or.kr"},
+    {"name": "서울아산병원 질환백과", "domain": "amc.seoul.kr"},
 ]
 
 US_GLOBAL_SOURCES: list[dict[str, str]] = [

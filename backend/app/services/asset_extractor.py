@@ -33,8 +33,10 @@ MAX_RAW_TEXT_LENGTH = 60_000
 MAX_REDIRECTS = 4
 
 # fetch 품질 게이트 — 셸/프레임셋만 받아오면 본문이 비었으므로 거부 판단에 쓴다.
+# 'PostView.naver'는 정상 m.blog 본문(링크/스크립트)에도 흔히 등장해 짧은 정상 글을
+# 오탐 스킵시켰으므로 제외한다. 데스크탑 프레임셋 셸은 mainFrame/frameset로 충분히 잡힌다.
 MIN_FETCH_TEXT_LENGTH = 200
-SHELL_MARKER_PATTERN = re.compile(r"mainFrame|frameset|PostView\.naver|//내용", re.IGNORECASE)
+SHELL_MARKER_PATTERN = re.compile(r"mainFrame|frameset", re.IGNORECASE)
 
 # 네이버 블로그 호스트 — 데스크탑/PostView/축약 form 모두 모바일 본문 URL로 정규화한다.
 _NAVER_BLOG_HOSTS = frozenset({"blog.naver.com", "m.blog.naver.com"})

@@ -233,7 +233,9 @@ async def process_source(
         raise HTTPException(status_code=400, detail="자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다.")
 
     try:
-        payloads = process_source_asset(source)
+        # 동기 LLM 호출을 워커 스레드로 — 단일 uvicorn worker의 이벤트 루프 블로킹 방지
+        # (이 파일의 PDF/DOCX 추출도 동일하게 to_thread 사용).
+        payloads = await asyncio.to_thread(process_source_asset, source)
         for payload in payloads:
             if not validate_source_excerpt(source, payload.source_excerpt):
                 raise ValueError(f"source_excerpt가 원문에 존재하지 않습니다: {payload.source_excerpt[:80]}")

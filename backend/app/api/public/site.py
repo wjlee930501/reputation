@@ -299,9 +299,30 @@ def _serialize_hospital(
         "public_about": _vetted_public_about(philosophy),
         "director_photo_url": director_photo,
         "director_credentials": _safe_credentials(getattr(h, "director_credentials", None)),
-        "treatments": h.treatments,
+        "treatments": _safe_treatments(h.treatments),
         "photos": serialized_photos,
     }
+
+
+def _safe_treatments(treatments) -> list:
+    """AE 자유 입력 진료 항목 중 의료광고 금지 표현이 든 항목은 공개 표면에서 제외한다.
+
+    public_about과 동일한 보수적 게이트를 진료 항목에도 적용한다(JSON-LD·llms.txt·UI로
+    검수 없이 새어 나가지 않도록). 항목 형태(str/dict)와 무관하게 전체 텍스트로 검사한다.
+    """
+    if not isinstance(treatments, list):
+        return []
+    safe: list = []
+    for item in treatments:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            text = " ".join(str(v) for v in item.values())
+        else:
+            text = str(item)
+        if text.strip() and not check_forbidden(text):
+            safe.append(item)
+    return safe
 
 
 def _safe_credentials(credentials: dict | None) -> dict | None:

@@ -247,12 +247,19 @@ async def run_single_query(
         async with _get_semaphore():
             try:
                 raw = await query_fn(query_text)
+            except Exception as e:
+                # 쿼리 자체 실패 → raw="" 로 FAILED 처리.
+                logger.error(f"Query failed: {e}")
+                return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None, "raw_response": "", "competitor_mentions": None}
+            try:
                 parsed = await _parse_mention(hospital_name, raw)
                 comp_mentions = await _parse_competitors(competitors or [], raw) if competitors else []
                 return {**parsed, "raw_response": raw, "competitor_mentions": comp_mentions or None}
             except Exception as e:
-                logger.error(f"Query failed: {e}")
-                return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None, "raw_response": "", "competitor_mentions": None}
+                # 쿼리는 성공했으나 파싱만 실패 — 측정을 FAILED로 만들지 말고 raw를 보존하고
+                # 기본값(미언급)으로 처리한다 (raw_response 비어있지 않으면 SUCCESS로 집계됨).
+                logger.warning(f"Parse failed (query ok): {e}")
+                return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None, "raw_response": raw, "competitor_mentions": None}
 
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))
 
