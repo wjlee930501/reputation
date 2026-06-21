@@ -26,6 +26,7 @@ from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.hospital_profile_autofill import autofill_profile
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
@@ -136,6 +137,27 @@ class HospitalProfileUpdate(BaseModel):
     )
     @classmethod
     def validate_public_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("URL must be absolute http(s)")
+        return cleaned
+
+
+class ProfileAutofillRequest(BaseModel):
+    """자동 채우기 입력 — name 미입력 시 병원 등록명을 사용한다."""
+
+    name: str | None = Field(None, max_length=200)
+    website_url: str | None = Field(None, max_length=500)
+    blog_url: str | None = Field(None, max_length=500)
+
+    @field_validator("website_url", "blog_url")
+    @classmethod
+    def _validate_url(cls, value: str | None) -> str | None:
         if value is None:
             return None
         cleaned = value.strip()
@@ -351,6 +373,54 @@ async def update_profile(
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
     return _serialize(h)
+
+
+@router.post("/{hospital_id}/profile/autofill")
+async def autofill_hospital_profile(
+    hospital_id: uuid.UUID,
+    body: ProfileAutofillRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """병원명 + URL로 온라인 정보(홈페이지·블로그·네이버 플레이스)를 스크랩해 프로파일 초안 생성.
+
+    **저장하지 않는다.** 초안(draft) + 필드별 출처/신뢰도(field_meta) + 의료광고 위반(violations)
+    + 소스 상태(sources)를 반환하고, AE가 검수 후 PATCH /profile 로 저장한다. best-effort —
+    일부 소스가 막혀도 가능한 필드만 채운다.
+    """
+    h = await _get_or_404(db, hospital_id)
+    name = (body.name or h.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="병원명이 필요합니다.")
+    website_url = body.website_url or h.website_url
+    blog_url = body.blog_url or h.blog_url
+
+    result = await autofill_profile(name, website_url=website_url, blog_url=blog_url)
+
+    await write_audit_log(
+        db,
+        action="autofill_profile",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="hospital",
+        target_id=hospital_id,
+        detail={
+            "name": name,
+            "filled_fields": sorted(result.draft.keys()),
+            "violation_fields": [v["field"] for v in result.violations],
+            "sources": [{"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources],
+        },
+    )
+    await db.commit()
+
+    return {
+        "draft": result.draft,
+        "field_meta": result.field_meta,
+        "violations": result.violations,
+        "naver_place_id": result.naver_place_id,
+        "sources": [
+            {"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources
+        ],
+    }
 
 
 @router.patch("/{hospital_id}/activate")

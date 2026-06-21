@@ -48,6 +48,7 @@ class Settings(BaseSettings):
             self.ANTHROPIC_API_KEY = _resolve_secret("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY)
             self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
             self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)
+            self.JINA_API_KEY = _resolve_secret("JINA_API_KEY", self.JINA_API_KEY)
             self.SLACK_WEBHOOK_URL = _resolve_secret("SLACK_WEBHOOK_URL", self.SLACK_WEBHOOK_URL)
             self.DB_PASSWORD = _resolve_secret("DB_PASSWORD", self.DB_PASSWORD)
             self._build_database_urls_from_secret_parts()
@@ -180,6 +181,10 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     CLAUDE_MODEL: str = "claude-sonnet-4-5"
     CLAUDE_MODEL_FAST: str = "claude-haiku-4-5-20251001"
+
+    # Jina Reader — 프로파일 자동 채우기 시 네이버 플레이스 등 봇 차단 사이트 우회 읽기.
+    # 선택값: 비어 있어도 무인증 free tier로 동작(분당 제한 빡빡). 키가 있으면 상향.
+    JINA_API_KEY: str = ""
 
     # Google Cloud — Imagen 3
     GCP_PROJECT_ID: str = ""
