@@ -617,6 +617,7 @@ function SourcesStepBody({
     <div className="space-y-5">
       <ProfileUrlCandidates hospital={hospital} hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
       <CrawlForm hospitalId={hospitalId} onCreated={onChanged} />
+      <NaverBlogBulkForm hospitalId={hospitalId} onCreated={onChanged} />
       <UploadForm hospitalId={hospitalId} onCreated={onChanged} />
       <SourcesList hospitalId={hospitalId} sources={sources} loading={loading} onChanged={onChanged} />
     </div>
@@ -764,6 +765,77 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
         >
           {busy ? '크롤 중…' : 'URL 자동 크롤'}
+        </button>
+        {feedback && <span className="text-xs text-slate-600">{feedback}</span>}
+      </div>
+    </form>
+  )
+}
+
+function NaverBlogBulkForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: () => void }) {
+  const [url, setUrl] = useState('')
+  const [maxPosts, setMaxPosts] = useState(10)
+  const [busy, setBusy] = useState(false)
+  const [feedback, setFeedback] = useState<string | null>(null)
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    setFeedback(null)
+    try {
+      const res = (await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/crawl-blog`, {
+        method: 'POST',
+        body: JSON.stringify({ url, max_posts: maxPosts }),
+      })) as {
+        created: number
+        skipped_duplicate: number
+        skipped_empty: number
+        failed: { url: string; reason: string }[]
+      }
+      setUrl('')
+      setFeedback(
+        `${res.created}개 글 추가 · 중복 ${res.skipped_duplicate} · 본문없음 ${res.skipped_empty}` +
+          (res.failed?.length ? ` · 실패 ${res.failed.length}` : ''),
+      )
+      onCreated()
+    } catch (e: unknown) {
+      setFeedback(e instanceof Error ? e.message : '실패')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+      <h3 className="text-sm font-bold text-slate-900">네이버 블로그 일괄 가져오기 (RSS)</h3>
+      <p className="text-xs text-slate-500">
+        블로그 주소 또는 blogId를 입력하면 최근 글 본문을 한 번에 수집합니다 (모바일 본문 기준, 중복 자동 제외).
+      </p>
+      <div className="grid gap-2 md:grid-cols-[1fr_120px]">
+        <input
+          required
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="https://blog.naver.com/병원아이디 또는 병원아이디"
+          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+        />
+        <select
+          value={maxPosts}
+          onChange={(e) => setMaxPosts(Number(e.target.value))}
+          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+        >
+          {[5, 10, 15].map((n) => (
+            <option key={n} value={n}>최근 {n}개</option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          type="submit"
+          disabled={busy}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {busy ? '가져오는 중…' : '블로그 일괄 가져오기'}
         </button>
         {feedback && <span className="text-xs text-slate-600">{feedback}</span>}
       </div>

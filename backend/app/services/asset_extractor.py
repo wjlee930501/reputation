@@ -40,6 +40,8 @@ SHELL_MARKER_PATTERN = re.compile(r"mainFrame|frameset|PostView\.naver|//내용"
 _NAVER_BLOG_HOSTS = frozenset({"blog.naver.com", "m.blog.naver.com"})
 _NAVER_ID_LOG_RE = re.compile(r"^/([A-Za-z0-9_-]+)/(\d+)/?$")
 _NAVER_ID_ONLY_RE = re.compile(r"^/([A-Za-z0-9_-]+)/?$")
+# blogId 형식 — 영숫자로 시작, 영숫자/언더스코어/하이픈 2~50자.
+_NAVER_BLOG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,49}$")
 # 네이버 SmartEditor ONE / 레거시 본문 컨테이너 — nav/chrome 제거용.
 # cssselect 패키지가 없으므로 lxml 내장 XPath로 매칭한다 (SmartEditor ONE → 레거시 순).
 _NAVER_CONTENT_XPATHS = (
@@ -163,6 +165,85 @@ async def fetch_url_text(url: str) -> tuple[str, str | None, FetchQuality | None
     except Exception as exc:
         logger.warning("URL fetch failed for %s: %s", url, exc)
         return "", f"URL 접근 중 오류 — {exc}", None
+
+
+def naver_blog_id_from(value: str) -> str | None:
+    """네이버 블로그 URL 또는 blogId 문자열에서 blogId만 추출한다.
+
+    허용 입력: ``https://blog.naver.com/{blogId}[/{logNo}]``, ``m.blog.naver.com/...``,
+    ``...PostView.naver?blogId=...``, 또는 순수 blogId. 네이버 호스트가 아니면 None.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if "/" in raw or "." in raw or ":" in raw:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if host not in _NAVER_BLOG_HOSTS:
+            return None
+        first_seg = parsed.path.strip("/").split("/", 1)[0]
+        if first_seg.lower() == "postview.naver":
+            candidate = (parse_qs(parsed.query).get("blogId") or [""])[0]
+        else:
+            candidate = first_seg
+    else:
+        candidate = raw
+    candidate = candidate.strip()
+    return candidate if _NAVER_BLOG_ID_RE.match(candidate) else None
+
+
+async def fetch_naver_blog_post_urls(
+    blog_ref: str, max_posts: int = 10
+) -> tuple[list[str], str | None]:
+    """네이버 블로그 RSS에서 최근 글 URL 목록을 가져온다 (최대 max_posts개, 중복 제거).
+
+    RSS(``https://rss.blog.naver.com/{blogId}.xml``)는 서버 렌더 XML이라 프레임셋 셸
+    문제가 없다. 반환 URL은 ``blog.naver.com/{blogId}/{logNo}`` 형태이고, fetch_url_text가
+    다시 모바일 본문 URL로 정규화한다. 실패 시 ([], 사유)를 반환한다.
+    """
+    blog_id = naver_blog_id_from(blog_ref)
+    if not blog_id:
+        return [], "네이버 블로그 주소 또는 blogId를 인식하지 못했습니다."
+    rss_url = f"https://rss.blog.naver.com/{blog_id}.xml"
+    target, validation_error = await asyncio.to_thread(_validate_fetch_target, rss_url)
+    if validation_error or target is None:
+        return [], validation_error or "RSS 주소 검증에 실패했습니다."
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_FETCH_TIMEOUT, follow_redirects=False) as client:
+            response = await client.get(target.url, headers=_browser_headers())
+            peer_error = _validate_response_peer(response, target)
+            if peer_error:
+                return [], peer_error
+            response.raise_for_status()
+            xml_bytes = response.content[:MAX_HTML_BYTES]
+    except httpx.HTTPStatusError as exc:
+        return [], f"RSS HTTP {exc.response.status_code} — 블로그를 찾을 수 없습니다."
+    except Exception as exc:  # noqa: BLE001 — 네트워크 실패는 사유 문자열로 반환
+        logger.warning("naver rss fetch failed for %s: %s", blog_id, exc)
+        return [], f"RSS 가져오기 실패 — {exc}"
+
+    try:
+        from lxml import etree  # noqa: WPS433
+
+        root = etree.fromstring(xml_bytes)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("naver rss parse failed for %s: %s", blog_id, exc)
+        return [], "RSS 응답을 해석하지 못했습니다."
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for link_el in root.iter("link"):
+        href = (link_el.text or "").strip()
+        if not href or href in seen:
+            continue
+        if _NAVER_ID_LOG_RE.match(urlparse(href).path or ""):
+            seen.add(href)
+            urls.append(href)
+            if len(urls) >= max_posts:
+                break
+    if not urls:
+        return [], "RSS에서 글 목록을 찾지 못했습니다."
+    return urls, None
 
 
 def _normalize_naver_blog_url(url: str) -> str:

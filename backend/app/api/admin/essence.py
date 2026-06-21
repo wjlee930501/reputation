@@ -35,7 +35,9 @@ from app.services.asset_extractor import (
     detect_extractor_for,
     extract_docx_text,
     extract_pdf_text,
+    fetch_naver_blog_post_urls,
     fetch_url_text,
+    naver_blog_id_from,
 )
 from app.services.asset_storage import resolve_legacy_asset_path, resolve_local_asset_path, store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
@@ -61,6 +63,24 @@ class SourceCrawlRequest(BaseModel):
     url: str = Field(min_length=10, max_length=1000)
     operator_note: str | None = None
     created_by: str | None = Field(default=None, max_length=100)
+
+
+class BlogCrawlRequest(BaseModel):
+    url: str = Field(min_length=2, max_length=1000)  # 블로그 URL 또는 blogId
+    max_posts: int = Field(default=10, ge=1, le=15)
+    operator_note: str | None = None
+    created_by: str | None = Field(default=None, max_length=100)
+
+
+class BlogCrawlResult(BaseModel):
+    blog_id: str | None
+    requested: int
+    created: int
+    skipped_duplicate: int
+    skipped_empty: int
+    failed: list[dict[str, str]]
+    source_ids: list[str]
+
 
 router = APIRouter(prefix="/admin/hospitals/{hospital_id}/essence", tags=["Admin — Essence"])
 
@@ -416,6 +436,105 @@ async def crawl_source_url(
     await db.commit()
     await db.refresh(source)
     return _serialize_source(source)
+
+
+@router.post("/sources/crawl-blog", status_code=status.HTTP_200_OK, response_model=BlogCrawlResult)
+async def crawl_naver_blog(
+    hospital_id: uuid.UUID,
+    body: BlogCrawlRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """네이버 블로그 RSS로 최근 글을 일괄 수집해 source로 저장한다.
+
+    각 글은 모바일 본문 URL로 정규화되어 fetch되고, 빈 셸·중복(url/content_hash)은 건너뛴다.
+    동기 처리라 max_posts는 요청 타임아웃을 고려해 15개로 제한한다.
+    """
+    await _get_hospital_or_404(db, hospital_id)
+
+    post_urls, enum_error = await fetch_naver_blog_post_urls(body.url, body.max_posts)
+    if enum_error:
+        raise HTTPException(status_code=400, detail=f"네이버 블로그 글 목록을 가져오지 못했습니다: {enum_error}")
+
+    blog_id = naver_blog_id_from(body.url)
+
+    existing_rows = await db.execute(
+        select(HospitalSourceAsset.url, HospitalSourceAsset.content_hash).where(
+            HospitalSourceAsset.hospital_id == hospital_id
+        )
+    )
+    existing_urls: set[str] = set()
+    existing_hashes: set[str] = set()
+    for row_url, row_hash in existing_rows.all():
+        if row_url:
+            existing_urls.add(row_url)
+        if row_hash:
+            existing_hashes.add(row_hash)
+
+    created = 0
+    skipped_duplicate = 0
+    skipped_empty = 0
+    failed: list[dict[str, str]] = []
+    source_ids: list[str] = []
+
+    for index, post_url in enumerate(post_urls, start=1):
+        if post_url in existing_urls:
+            skipped_duplicate += 1
+            continue
+        text, error, quality = await fetch_url_text(post_url)
+        if error:
+            failed.append({"url": post_url, "reason": error})
+            continue
+        if (quality is not None and quality.looks_like_shell) or not (text and text.strip()):
+            skipped_empty += 1
+            continue
+        title = f"네이버 블로그 {blog_id} #{index}"
+        content_hash = compute_source_content_hash(title, post_url, text, body.operator_note)
+        if content_hash in existing_hashes:
+            skipped_duplicate += 1
+            continue
+        source = HospitalSourceAsset(
+            hospital_id=hospital_id,
+            source_type=SourceType.NAVER_BLOG,
+            title=title,
+            url=post_url,
+            raw_text=text,
+            operator_note=_clean_optional(body.operator_note),
+            source_metadata={
+                "crawled_at": datetime.now(timezone.utc).isoformat(),
+                "bulk_blog_id": blog_id,
+            },
+            content_hash=content_hash,
+            status=SourceStatus.PENDING,
+            created_by=body.created_by,
+        )
+        db.add(source)
+        await db.flush()
+        existing_urls.add(post_url)
+        existing_hashes.add(content_hash)
+        source_ids.append(str(source.id))
+        created += 1
+
+    if created:
+        await write_audit_log(
+            db,
+            action="crawl_naver_blog",
+            hospital_id=hospital_id,
+            actor=default_actor(),
+            target_type="hospital",
+            target_id=hospital_id,
+            detail={"blog_id": blog_id, "created": created, "requested": len(post_urls)},
+        )
+        await db.commit()
+
+    return BlogCrawlResult(
+        blog_id=blog_id,
+        requested=len(post_urls),
+        created=created,
+        skipped_duplicate=skipped_duplicate,
+        skipped_empty=skipped_empty,
+        failed=failed,
+        source_ids=source_ids,
+    )
 
 
 @router.patch("/sources/{source_id}/public", response_model=SourceAssetResponse)

@@ -13,6 +13,7 @@ from app.services.asset_extractor import (
     detect_extractor_for,
     extract_docx_text,
     extract_pdf_text,
+    naver_blog_id_from,
 )
 
 
@@ -186,3 +187,98 @@ def test_validate_response_peer_blocks_unpinned_public_ip():
     assert _validate_response_peer(response, target) == (
         "DNS 변경 또는 사설망 연결이 감지되어 크롤링을 중단했습니다."
     )
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("https://blog.naver.com/jangpyeonhan/223456789012", "jangpyeonhan"),
+        ("https://m.blog.naver.com/jangpyeonhan", "jangpyeonhan"),
+        ("https://blog.naver.com/PostView.naver?blogId=jangpyeonhan&logNo=1", "jangpyeonhan"),
+        ("blog.naver.com/jangpyeonhan/1", "jangpyeonhan"),
+        ("jangpyeonhan", "jangpyeonhan"),
+        # 네이버가 아닌 호스트 / 빈 값 / blogId 없음 → None
+        ("https://example.com/jangpyeonhan", None),
+        ("", None),
+        ("https://blog.naver.com/", None),
+    ],
+)
+def test_naver_blog_id_from(value, expected):
+    assert naver_blog_id_from(value) == expected
+
+
+_SAMPLE_RSS = (
+    b'<?xml version="1.0" encoding="UTF-8"?>'
+    b'<rss version="2.0"><channel>'
+    b"<link>https://blog.naver.com/jangpyeonhan</link>"  # 블로그 홈 — 글 아님, 제외
+    b"<item><link>https://blog.naver.com/jangpyeonhan/100</link></item>"
+    b"<item><link>https://blog.naver.com/jangpyeonhan/100</link></item>"  # 중복
+    b"<item><link>https://blog.naver.com/jangpyeonhan/200</link></item>"
+    b"<item><link>https://blog.naver.com/jangpyeonhan/300</link></item>"
+    b"</channel></rss>"
+)
+
+
+def _patch_rss(monkeypatch, rss_bytes: bytes):
+    from app.services import asset_extractor as ax
+
+    target = ax.FetchTarget(
+        url="https://rss.blog.naver.com/jangpyeonhan.xml",
+        hostname="rss.blog.naver.com",
+        port=443,
+        allowed_ips=frozenset({"1.2.3.4"}),
+    )
+    monkeypatch.setattr(ax, "_validate_fetch_target", lambda _url: (target, None))
+    monkeypatch.setattr(ax, "_validate_response_peer", lambda _resp, _tgt: None)
+
+    class _Resp:
+        content = rss_bytes
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return _Resp()
+
+    monkeypatch.setattr(ax.httpx, "AsyncClient", _Client)
+    return ax
+
+
+@pytest.mark.asyncio
+async def test_fetch_naver_blog_post_urls_parses_dedups_excludes_home(monkeypatch):
+    ax = _patch_rss(monkeypatch, _SAMPLE_RSS)
+    urls, error = await ax.fetch_naver_blog_post_urls("https://blog.naver.com/jangpyeonhan", max_posts=10)
+    assert error is None
+    # 홈 링크 제외 + /100 중복 제거, 문서 순서 유지
+    assert urls == [
+        "https://blog.naver.com/jangpyeonhan/100",
+        "https://blog.naver.com/jangpyeonhan/200",
+        "https://blog.naver.com/jangpyeonhan/300",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_naver_blog_post_urls_respects_max_posts(monkeypatch):
+    ax = _patch_rss(monkeypatch, _SAMPLE_RSS)
+    urls, error = await ax.fetch_naver_blog_post_urls("jangpyeonhan", max_posts=2)
+    assert error is None
+    assert len(urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_naver_blog_post_urls_rejects_non_naver_ref(monkeypatch):
+    from app.services import asset_extractor as ax
+
+    urls, error = await ax.fetch_naver_blog_post_urls("https://example.com/blog", max_posts=5)
+    assert urls == []
+    assert error is not None
