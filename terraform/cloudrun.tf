@@ -43,6 +43,14 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
+      # Vertex AI Imagen / GCS region — pin to the deploy region so terraform-owned
+      # env matches scripts/deploy.sh (.env.production GCP_LOCATION). Without this,
+      # config.py's us-central1 default would drift the worker cross-region from the
+      # asia-northeast3 images bucket on a terraform apply.
+      env {
+        name  = "GCP_LOCATION"
+        value = var.region
+      }
       env {
         name  = "DB_USER"
         value = var.db_user
@@ -232,6 +240,14 @@ resource "google_cloud_run_v2_service" "worker" {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
+      # Vertex AI Imagen / GCS region — pin to the deploy region so terraform-owned
+      # env matches scripts/deploy.sh (.env.production GCP_LOCATION). Without this,
+      # config.py's us-central1 default would drift the worker cross-region from the
+      # asia-northeast3 images bucket on a terraform apply.
+      env {
+        name  = "GCP_LOCATION"
+        value = var.region
+      }
       env {
         name  = "CELERY_CONCURRENCY"
         value = "2"
@@ -406,6 +422,14 @@ resource "google_cloud_run_v2_service" "beat" {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
+      # Vertex AI Imagen / GCS region — pin to the deploy region so terraform-owned
+      # env matches scripts/deploy.sh (.env.production GCP_LOCATION). Without this,
+      # config.py's us-central1 default would drift the worker cross-region from the
+      # asia-northeast3 images bucket on a terraform apply.
+      env {
+        name  = "GCP_LOCATION"
+        value = var.region
+      }
       env {
         name  = "DB_USER"
         value = var.db_user
@@ -565,6 +589,10 @@ resource "google_cloud_run_v2_job" "migrate" {
         env {
           name  = "GCP_PROJECT_ID"
           value = var.project_id
+        }
+        env {
+          name  = "GCP_LOCATION"
+          value = var.region
         }
         env {
           name  = "DB_USER"
