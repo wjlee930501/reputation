@@ -35,9 +35,11 @@ db_edition           = "ENTERPRISE"
 db_instance_tier     = "db-custom-1-3840"
 redis_memory_size_gb = 1
 
-# The project is currently at the global forwarding-rule quota after the
-# existing services plus Re:putation HTTPS. Keep HTTPS first; re-enable this
-# after quota is raised or an old global LB is retired.
+# Deferred: project is at the global IN_USE_ADDRESSES quota (8/8 as of 2026-06-21).
+# Every global forwarding rule consumes one address slot even when it reuses the
+# LB IP, so the port-80 redirect rule has no slot. Keep HTTPS (443) first; re-enable
+# after raising the IN_USE_ADDRESSES quota (not the forwarding-rule quota, which has
+# headroom) or retiring an unused global LB. Not a launch blocker — HTTPS serves directly.
 enable_http_redirect = false
 
 # Keep generated assets and reports in the same metro as the runtime to avoid
