@@ -152,9 +152,14 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   const readingMinutes = calculateReadingMinutes(content.body)
 
   const otherContents = allContents.filter((c) => c.id !== content.id)
-  const sameTypeRelated = otherContents
-    .filter((c) => c.content_type === content.content_type)
-    .slice(0, 3)
+  const sameTypeItems = otherContents.filter((c) => c.content_type === content.content_type)
+  // 같은 유형이 3개 미만이면 다른 유형(FAQ 제외 — FAQ는 아래 PAA 블록으로 별도 노출)으로
+  // 채워 "관련 글" 섹션이 1개만 덩그러니 남지 않게 한다.
+  const relatedBackfill = otherContents.filter(
+    (c) => c.content_type !== content.content_type && c.content_type !== 'FAQ',
+  )
+  const sameTypeRelated = [...sameTypeItems, ...relatedBackfill].slice(0, 3)
+  const relatedAllSameType = sameTypeRelated.every((c) => c.content_type === content.content_type)
   const paaQuestions = otherContents
     .filter((c) => c.content_type === 'FAQ' && !sameTypeRelated.some((s) => s.id === c.id))
     .slice(0, 3)
@@ -553,7 +558,9 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
               {sameTypeRelated.length > 0 && (
                 <div className="clinic-aside-card">
                   <span className="clinic-aside-card-eyebrow">관련 글</span>
-                  <h2 className="clinic-aside-card-title">관련 {typeLabel}</h2>
+                  <h2 className="clinic-aside-card-title">
+                    {relatedAllSameType ? `관련 ${typeLabel}` : '함께 읽어보면 좋은 글'}
+                  </h2>
                   <ul className="clinic-related-list">
                     {sameTypeRelated.map((r) => {
                       const relatedImageUrl = resolveAssetUrl(r.image_url)

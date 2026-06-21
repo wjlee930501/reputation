@@ -9,6 +9,8 @@ interface Props {
   specialties: string[]
   region: string[]
   contentCount: number
+  boardCertifications?: string[] | null
+  societyMemberships?: string[] | null
 }
 
 export function DoctorIntro({
@@ -18,7 +20,11 @@ export function DoctorIntro({
   specialties,
   region,
   contentCount,
+  boardCertifications,
+  societyMemberships,
 }: Props) {
+  const boardCerts = (boardCertifications ?? []).filter(Boolean)
+  const societies = (societyMemberships ?? []).filter(Boolean)
   const resolvedPhoto = resolveAssetUrl(directorPhotoUrl)
   const initial = (directorName || '').trim().slice(0, 1) || '醫'
   return (
@@ -68,6 +74,31 @@ export function DoctorIntro({
                 약력 정보를 준비하고 있습니다.
               </p>
             )}
+
+            {boardCerts.length > 0 || societies.length > 0 ? (
+              <div className="clinic-curator-credentials">
+                {boardCerts.length > 0 ? (
+                  <div className="clinic-curator-cred-group">
+                    <span className="clinic-curator-cred-label">전문 자격</span>
+                    <div className="clinic-curator-cred-chips">
+                      {boardCerts.map((cert) => (
+                        <span key={cert} className="clinic-curator-cred-chip">{cert}</span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {societies.length > 0 ? (
+                  <div className="clinic-curator-cred-group">
+                    <span className="clinic-curator-cred-label">학회 활동</span>
+                    <ul className="clinic-curator-cred-list">
+                      {societies.map((society) => (
+                        <li key={society}>{society}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <span className="clinic-curator-rule" aria-hidden="true" />
 

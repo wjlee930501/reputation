@@ -2349,7 +2349,8 @@ textarea:focus-visible {
   max-width: 70ch;
   color: var(--color-revisit-text-body);
   font-size: 17.5px;
-  line-height: 1.88;
+  /* 1.88은 헐렁한 데다 첫 문단(1.75)과 달라 줄 간격이 들쭉날쭉 보였다 → 본문 전체 1.75로 통일. */
+  line-height: 1.75;
   letter-spacing: 0;
 }
 
@@ -2371,7 +2372,7 @@ textarea:focus-visible {
   margin: 6px 0 0;
   color: var(--color-revisit-text-body);
   font-size: 17.5px;
-  line-height: 1.85;
+  line-height: 1.75;
 }
 
 .clinic-article-body > p:first-of-type {
@@ -2436,7 +2437,9 @@ textarea:focus-visible {
   }
 
   .clinic-article-body > p:first-of-type {
-    font-size: 16.5px;
+    /* 본문(17.5px)보다 작으면 리드 문단 줄 박스가 더 좁아 줄 간격이 들쭉날쭉 보인다 →
+       본문과 동일 크기로 맞춰 행간 리듬을 통일(강조는 weight 500·title 색으로 유지). */
+    font-size: 17.5px;
   }
 
   .clinic-article-title {
@@ -3638,6 +3641,72 @@ textarea:focus-visible {
   line-height: 1.8;
 }
 
+/* 원장 자격·학회 — 신뢰를 주는 사실 정보. 칩/리스트로 절제되게 노출(슬롭 금지). */
+.clinic-curator-credentials {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.clinic-curator-cred-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.clinic-curator-cred-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--color-revisit-text-caption);
+  text-transform: uppercase;
+}
+
+.clinic-curator-cred-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.clinic-curator-cred-chip {
+  padding: 5px 11px;
+  border-radius: 6px;
+  background: var(--color-revisit-coolgrey-95);
+  color: var(--color-revisit-text-subbody);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.clinic-curator-cred-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.clinic-curator-cred-list li {
+  position: relative;
+  padding-left: 15px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-revisit-text-body);
+}
+
+.clinic-curator-cred-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--color-revisit-coolgrey-70);
+}
+
 .clinic-curator-rule {
   height: 1px;
   background: var(--color-revisit-line-container);
@@ -4378,7 +4447,9 @@ textarea:focus-visible {
 }
 
 @media (max-width: 480px) {
-  .clinic-shell {
+  /* 하단 여백은 모바일 고정 액션바(ClinicHero에만 렌더)가 있는 페이지에만 — 콘텐츠 상세 등
+     액션바 없는 페이지에선 푸터 아래 빈 띠가 생기던 버그 수정(:has로 스코핑). */
+  .clinic-shell:has(.clinic-mobile-actionbar) {
     padding-bottom: calc(74px + env(safe-area-inset-bottom));
   }
 }

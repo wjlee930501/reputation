@@ -266,6 +266,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             specialties={hospital.specialties}
             region={hospital.region}
             contentCount={contents.length}
+            boardCertifications={hospital.director_credentials?.board_certifications ?? null}
+            societyMemberships={hospital.director_credentials?.society_memberships ?? null}
           />
 
           <ClinicGallery photos={hospital.photos ?? []} />
