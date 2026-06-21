@@ -220,7 +220,7 @@ export function ClinicHero({
               <div className="clinic-hero-snapshot-row">
                 <dt>
                   <ClockIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
-                  <span className="clinic-hero-snapshot-today">{today.label}</span> 진료
+                  <span className="clinic-hero-snapshot-today">오늘</span> 진료
                 </dt>
                 <dd>{today.time}</dd>
               </div>

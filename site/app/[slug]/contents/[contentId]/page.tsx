@@ -431,7 +431,9 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
 
               <div className="clinic-article-body">
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
+                  // singleTilde:false — "5~30%", "10~15%" 같은 범위 표기의 단일 물결표를
+                  // 취소선(~strike~)으로 오인해 본문이 줄줄이 취소선 처리되던 버그 방지.
+                  remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
                   components={{
                     table: ({ children, node, ...props }) => {
                       void node
