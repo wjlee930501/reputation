@@ -439,7 +439,9 @@ require_public_dns() {
   fi
   dns_check+=("${domains[@]}")
 
-  "${dns_check[@]}" \
+  # stdout은 build_and_push_site의 command substitution으로 캡처되므로(이미지 URL 전용),
+  # DNS 체크 출력은 stderr로 보내 캡처된 이미지 URL을 오염시키지 않게 한다.
+  "${dns_check[@]}" >&2 \
     || fail "공개 도메인 DNS가 고객 제공 가능한 주소를 가리키지 않습니다. DNS를 먼저 수정하거나, 초기 인프라 부트스트랩이면 SKIP_PUBLIC_DNS_PREFLIGHT=1로 명시적으로 우회하세요."
 }
 
