@@ -4988,11 +4988,12 @@ textarea:focus-visible {
   }
 }
 @media (max-width: 480px) {
+  /* 기본정보 카드는 ≤480px에서도 2열 유지 — 1열은 정보 밀도가 떨어져 휑하다. */
   .clinic-shell .clinic-facts-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 1fr;
   }
   .clinic-shell .clinic-fact-card--wide {
-    grid-column: span 1;
+    grid-column: span 2;
   }
 }
 
@@ -5295,42 +5296,27 @@ textarea:focus-visible {
 }
 
 /* ──────────────────────────────────────────────────────────────
-   인터랙션 & 깊이감 폴리시 — 절제된 마이크로 인터랙션(슬롭 방지, 토큰 기반).
-   평평하던 카드에 미묘한 그림자 + hover lift/블루 보더를 부여해
-   고급스럽고 인터랙티브한 밀도감을 준다. prefers-reduced-motion 대응.
+   인터랙션 폴리시 — 플랫·절제(코드베이스 결 유지: 그림자/그라데이션/blur 없음).
+   호버 시 블루 보더 + 미묘한 배경 틴트로만 인터랙션을 준다(슬롭 금지).
    ────────────────────────────────────────────────────────────── */
 .clinic-fact-card,
 .clinic-answer-card,
-.clinic-treatment-card {
-  box-shadow: 0 1px 2px rgba(33, 51, 79, 0.05);
-  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+.clinic-treatment-card,
+.clinic-content-card {
+  transition: border-color 160ms ease, background-color 160ms ease;
 }
 
 .clinic-fact-card:hover,
 .clinic-answer-card:hover,
-.clinic-treatment-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--color-revisit-primary-50);
-  box-shadow: 0 14px 28px -16px rgba(6, 113, 224, 0.26);
-}
-
-.clinic-content-card {
-  box-shadow: 0 1px 2px rgba(33, 51, 79, 0.05);
-  transition: transform 180ms ease, box-shadow 180ms ease, border-color 160ms ease;
-}
-
+.clinic-treatment-card:hover,
 .clinic-content-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 16px 32px -18px rgba(6, 113, 224, 0.28);
+  border-color: var(--color-revisit-primary-50);
+  background: var(--color-revisit-coolgrey-95);
 }
 
-/* 답변 클러스터 링크 — 호버 시 블루 강조 + 살짝 이동 */
+/* 답변 클러스터 링크 — 호버 시 블루 강조 */
 .clinic-answer-list a {
-  transition: color 140ms ease, transform 140ms ease;
-}
-
-.clinic-answer-list a:hover {
-  transform: translateX(2px);
+  transition: color 140ms ease;
 }
 
 .clinic-answer-list a:hover strong {
@@ -5348,19 +5334,34 @@ textarea:focus-visible {
   background: var(--color-revisit-primary-95);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .clinic-fact-card,
-  .clinic-answer-card,
-  .clinic-treatment-card,
-  .clinic-content-card,
-  .clinic-answer-list a {
-    transition: none;
+/* ── 모바일 정보 밀도 — ≤640px: 기본정보·진료영역 2열, 카드/섹션 여백 압축 ── */
+@media (max-width: 640px) {
+  .clinic-facts-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
   }
-  .clinic-fact-card:hover,
-  .clinic-answer-card:hover,
-  .clinic-treatment-card:hover,
-  .clinic-content-card:hover,
-  .clinic-answer-list a:hover {
-    transform: none;
+  .clinic-fact-card {
+    min-height: 0;
+    padding: 14px;
+  }
+  .clinic-fact-card--wide {
+    grid-column: span 2;
+  }
+  .clinic-answer-card {
+    min-height: 0;
+  }
+  /* 진료영역 10개 카드가 1열로 길게 늘어지지 않도록 2열 + 여백 압축 */
+  .clinic-treatment-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .clinic-treatment-card {
+    min-height: 0;
+    padding: 16px;
+    border-radius: 12px;
+  }
+  /* 섹션 간 세로 여백 축소로 스크롤·휑함 감소 */
+  .clinic-section {
+    padding: 44px 20px;
   }
 }
