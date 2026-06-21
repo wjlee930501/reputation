@@ -1,4 +1,4 @@
-# noqa: SIZE_OK -- Celery task registry keeps legacy task import names; release-critical helpers are split by task family.
+# allow: SIZE_OK -- Celery task registry keeps legacy task import names; release-critical helpers are split by task family.
 """
 Celery 태스크 전체
 - trigger_v0_report: 프로파일 완료 시 V0 분석 트리거
@@ -45,7 +45,7 @@ from app.workers.nightly_generation_batch import (
     GENERATION_CATCHUP_DAYS,
     NIGHTLY_GENERATION_CAP,
     _load_nightly_generation_batch,
-    _nightly_generation_stmt,
+    _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
 )
 
 logger = logging.getLogger(__name__)
