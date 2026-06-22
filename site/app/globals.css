@@ -1300,7 +1300,7 @@ textarea:focus-visible {
 }
 
 .consent-details dt {
-  color: #2563eb;
+  color: var(--color-revisit-primary-40);
   font-weight: 600;
 }
 
@@ -1310,7 +1310,7 @@ textarea:focus-visible {
 
 .consent-details a,
 .privacy-check a {
-  color: #2563eb;
+  color: var(--color-revisit-primary-40);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -1352,7 +1352,7 @@ textarea:focus-visible {
 
 .legal-back {
   font-size: 13px;
-  color: #2563eb;
+  color: var(--color-revisit-primary-40);
   text-decoration: none;
 }
 
@@ -1499,22 +1499,12 @@ textarea:focus-visible {
 .clinic-section-label {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
   margin: 0 0 14px;
   color: var(--color-revisit-text-helper);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
   line-height: 1.4;
-}
-
-.clinic-section-label::before {
-  content: "";
-  width: 22px;
-  height: 1.5px;
-  border-radius: 2px;
-  background: var(--color-revisit-primary-40);
-  flex-shrink: 0;
 }
 
 .clinic-section-heading {
@@ -1696,21 +1686,11 @@ textarea:focus-visible {
 .clinic-hero-eyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
   margin-bottom: 18px;
   color: var(--color-revisit-text-helper);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.01em;
-}
-
-.clinic-hero-eyebrow::before {
-  content: "";
-  width: 22px;
-  height: 1.5px;
-  border-radius: 2px;
-  background: var(--color-revisit-primary-40);
-  flex-shrink: 0;
 }
 
 .clinic-hero-title {
@@ -2036,20 +2016,11 @@ textarea:focus-visible {
   display: inline-flex;
   align-self: flex-start;
   align-items: center;
-  gap: 7px;
   margin-bottom: 11px;
   color: var(--color-revisit-text-helper);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.005em;
-}
-
-.clinic-content-card-type::before {
-  content: "";
-  width: 16px;
-  height: 1.5px;
-  border-radius: 2px;
-  background: var(--color-revisit-primary-50);
 }
 
 .clinic-content-card-title {
@@ -2091,16 +2062,6 @@ textarea:focus-visible {
 
 .clinic-content-card--faq .clinic-content-card-type {
   color: var(--color-revisit-primary-30);
-}
-
-.clinic-content-card--faq .clinic-content-card-type::before {
-  background: var(--color-revisit-primary-40);
-}
-
-.clinic-content-card--faq .clinic-content-card-title::before {
-  content: "Q. ";
-  color: var(--color-revisit-primary-40);
-  font-weight: 800;
 }
 
 /* COLUMN variant — 원장 칼럼 강조 */
@@ -2224,20 +2185,11 @@ textarea:focus-visible {
 .clinic-article-type {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
   margin-bottom: 18px;
   color: var(--color-revisit-text-helper);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.005em;
-}
-
-.clinic-article-type::before {
-  content: "";
-  width: 18px;
-  height: 1.5px;
-  border-radius: 2px;
-  background: var(--color-revisit-primary-40);
 }
 
 .clinic-article-pillar-link {
@@ -2464,20 +2416,11 @@ textarea:focus-visible {
 .clinic-aside-card-eyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
   margin-bottom: 10px;
   color: var(--color-revisit-text-helper);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.005em;
-}
-
-.clinic-aside-card-eyebrow::before {
-  content: "";
-  width: 14px;
-  height: 1.5px;
-  border-radius: 2px;
-  background: var(--color-revisit-primary-50);
 }
 
 .clinic-aside-card-title {
@@ -2535,9 +2478,7 @@ textarea:focus-visible {
   border-radius: 10px;
   overflow: hidden;
   flex-shrink: 0;
-  background:
-    radial-gradient(circle at 1px 1px, var(--color-revisit-coolgrey-80) 1px, transparent 0) 0 0 / 10px 10px,
-    linear-gradient(160deg, var(--color-revisit-primary-95) 0%, var(--color-revisit-coolgrey-95) 100%);
+  background: var(--color-revisit-coolgrey-95);
   border: 1px solid var(--color-revisit-line-container);
 }
 
@@ -2583,20 +2524,11 @@ textarea:focus-visible {
 .clinic-contact-item-label {
   display: flex;
   align-items: center;
-  gap: 8px;
   margin-bottom: 8px;
   color: var(--color-revisit-text-helper);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.005em;
-}
-
-.clinic-contact-item-label::before {
-  content: "";
-  width: 16px;
-  height: 1.5px;
-  border-radius: 2px;
-  background: var(--color-revisit-primary-50);
 }
 
 .clinic-contact-item-value {
@@ -2769,9 +2701,7 @@ textarea:focus-visible {
   padding: 56px 32px;
   border: 1px solid var(--color-revisit-line-container);
   border-radius: 14px;
-  background:
-    radial-gradient(circle at 1px 1px, var(--color-revisit-coolgrey-85) 1px, transparent 0) 0 0 / 18px 18px,
-    var(--color-revisit-coolgrey-95);
+  background: var(--color-revisit-coolgrey-95);
   text-align: center;
   color: var(--color-revisit-text-helper);
 }
@@ -3251,20 +3181,11 @@ textarea:focus-visible {
 .clinic-featured-primary-eyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
   margin-bottom: 14px;
   color: var(--color-revisit-text-helper);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.005em;
-}
-
-.clinic-featured-primary-eyebrow::before {
-  content: "";
-  width: 16px;
-  height: 1.5px;
-  border-radius: 2px;
-  background: var(--color-revisit-primary-50);
 }
 
 .clinic-featured-primary-title {
@@ -3460,24 +3381,6 @@ textarea:focus-visible {
   color: var(--color-revisit-coolgrey-30);
 }
 
-.clinic-content-card-image-glyph {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 14px;
-  background: var(--color-revisit-greyscale-100);
-  border: 1px solid var(--color-revisit-line-container);
-  color: inherit;
-  margin-bottom: 2px;
-}
-
-.clinic-content-card-image-glyph svg {
-  width: 26px;
-  height: 26px;
-}
-
 /* ── Treatment card — 순수 텍스트 (아이콘·좌측 액센트 모두 제거) ────────
    fallback 청진기 아이콘도, 좌측 컬러 바도 두지 않는다 — 둘 다 의미 없는
    장식(AI slop). 카드는 base 규칙의 1px 보더 + 둥근 모서리 + 타이포만으로
@@ -3659,16 +3562,11 @@ textarea:focus-visible {
   background: var(--color-revisit-coolgrey-70);
 }
 
-.clinic-curator-rule {
-  height: 1px;
-  background: var(--color-revisit-line-container);
-  margin: 24px 0;
-}
-
 .clinic-curator-meta {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 20px;
+  margin-top: 24px;
 }
 
 .clinic-curator-meta-cell {
@@ -3707,15 +3605,6 @@ textarea:focus-visible {
   }
 }
 
-/* ── Section divider (subtle hairline) ───────────────────────── */
-.clinic-divider {
-  display: block;
-  width: 100%;
-  height: 1px;
-  background: var(--color-revisit-line-container);
-  margin: 0 0 40px;
-}
-
 /* ── Channel grid (clinic 외부 링크 강조) ─────────────────────── */
 .clinic-channels {
   display: grid;
@@ -3745,8 +3634,6 @@ textarea:focus-visible {
   justify-content: center;
   width: 36px;
   height: 36px;
-  border-radius: 10px;
-  background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-40);
   flex-shrink: 0;
 }
@@ -3865,7 +3752,6 @@ textarea:focus-visible {
 .clinic-article-tldr-eyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
   margin-bottom: 10px;
   padding: 0;
   background: transparent;
@@ -3873,14 +3759,6 @@ textarea:focus-visible {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: -0.005em;
-}
-
-.clinic-article-tldr-eyebrow::before {
-  content: "";
-  width: 16px;
-  height: 1.5px;
-  border-radius: 2px;
-  background: var(--color-revisit-primary-40);
 }
 
 .clinic-article-tldr p {
@@ -5079,27 +4957,10 @@ textarea:focus-visible {
   border: 1px solid var(--color-revisit-coolgrey-80);
   border-radius: 14px;
   background: var(--color-revisit-greyscale-100);
-  transition: border-color 150ms ease, box-shadow 150ms ease;
+  transition: border-color 150ms ease;
 }
 .clinic-belief-card:hover {
   border-color: var(--color-revisit-primary-70);
-  box-shadow: 0 4px 18px rgba(6, 113, 224, 0.07);
-}
-
-.clinic-belief-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
-  background: var(--color-revisit-primary-95);
-  color: var(--color-revisit-primary-30);
-  flex-shrink: 0;
-}
-.clinic-belief-icon svg {
-  width: 24px;
-  height: 24px;
 }
 
 .clinic-belief-title {
@@ -5131,10 +4992,6 @@ textarea:focus-visible {
     gap: 18px;
     padding: 22px 20px;
   }
-  .clinic-belief-icon {
-    margin-top: 2px;
-    flex-shrink: 0;
-  }
 }
 
 /* ── P0-1: CareFlow — horizontal timeline ──────────────────────── */
@@ -5157,18 +5014,6 @@ textarea:focus-visible {
   flex-direction: column;
   align-items: flex-start;
   padding: 0 20px 0 0;
-}
-
-/* 노드 사이 가로 연결선 */
-.clinic-flow-connector {
-  position: absolute;
-  top: 20px; /* badge 중심과 맞춤 (badge height 40px / 2 = 20px) */
-  right: 0;
-  width: calc(100% - 40px - 16px); /* node 너비 - badge 너비 - 좌여백 */
-  height: 1.5px;
-  background: linear-gradient(90deg, var(--color-revisit-primary-50) 0%, var(--color-revisit-coolgrey-70) 100%);
-  transform: translateX(100%) translateX(-20px);
-  pointer-events: none;
 }
 
 .clinic-flow-node-badge {
@@ -5223,11 +5068,6 @@ textarea:focus-visible {
   .clinic-flow-node {
     padding: 0 16px 0 0;
   }
-  /* 짝수 노드(인덱스 1, 3)에서 연결선 숨김 — 줄바꿈 지점 */
-  .clinic-flow-node:nth-child(2) .clinic-flow-connector,
-  .clinic-flow-node:nth-child(4) .clinic-flow-connector {
-    display: none;
-  }
 }
 
 /* Mobile: 1열 — 세로로 배치, 연결선 세로 */
@@ -5244,16 +5084,6 @@ textarea:focus-visible {
     row-gap: 0;
     padding: 0 0 28px;
   }
-  .clinic-flow-connector {
-    /* 세로 연결선 */
-    top: 40px;
-    right: auto;
-    left: 19px; /* badge 중심 */
-    width: 1.5px;
-    height: calc(100% - 40px);
-    background: linear-gradient(180deg, var(--color-revisit-primary-50) 0%, var(--color-revisit-coolgrey-70) 100%);
-    transform: none;
-  }
   .clinic-flow-node-badge {
     grid-column: 1;
     grid-row: 1;
@@ -5263,11 +5093,6 @@ textarea:focus-visible {
     grid-column: 2;
     grid-row: 1 / 3;
     padding-top: 8px;
-  }
-  /* 모바일에서는 모든 연결선 다시 표시 */
-  .clinic-flow-node:nth-child(2) .clinic-flow-connector,
-  .clinic-flow-node:nth-child(4) .clinic-flow-connector {
-    display: block;
   }
 }
 

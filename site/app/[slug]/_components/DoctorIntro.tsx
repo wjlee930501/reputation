@@ -100,8 +100,6 @@ export function DoctorIntro({
               </div>
             ) : null}
 
-            <span className="clinic-curator-rule" aria-hidden="true" />
-
             <div className="clinic-curator-meta">
               <div className="clinic-curator-meta-cell">
                 <span className="clinic-curator-meta-label">의료 정보 글</span>
