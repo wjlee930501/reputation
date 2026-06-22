@@ -166,7 +166,7 @@ async def list_published_contents(
         .limit(limit)
     )
     items = result.scalars().all()
-    return [_serialize_item(item) for item in items]
+    return [_serialize_item(item, h.slug) for item in items]
 
 
 @router.get("/{slug}/contents/{content_id}")
@@ -180,7 +180,25 @@ async def get_content_public(
     item = await db.get(ContentItem, content_id)
     if not item or item.hospital_id != h.id or not _is_public_safe_content(item):
         raise HTTPException(status_code=404, detail="Content not found")
-    return _serialize_item(item, full=True)
+    return _serialize_item(item, h.slug, full=True)
+
+
+@router.get("/{slug}/contents/{content_id}/image")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_public_content_image(
+    request: Request, slug: str, content_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302)."""
+    h = await _get_active_hospital(db, slug)
+    item = await db.get(ContentItem, content_id)
+    if (
+        not item
+        or item.hospital_id != h.id
+        or not _is_public_safe_content(item)
+        or not item.image_url
+    ):
+        raise HTTPException(status_code=404, detail="Content image not found")
+    return _asset_response(item.image_url, hospital_id=h.id, media_type="image/png")
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
@@ -274,6 +292,13 @@ def _public_asset_url(slug: str, asset: HospitalSourceAsset) -> str:
     return f"/api/v1/public/hospitals/{slug}/assets/{asset.id}"
 
 
+def _content_image_url(slug: str, item: ContentItem) -> str:
+    # 안정 URL — 콘텐츠 대표 이미지를 만료되는 signed GCS URL 대신 프록시 경로로 노출한다.
+    # 요청마다 backend가 fresh signed URL로 302하므로, SSG/CDN 캐시 HTML이 만료된 URL을
+    # 박아 이미지가 403으로 깨지는 일을 막는다 (원장 사진 /assets 프록시와 동일 패턴).
+    return f"/api/v1/public/hospitals/{slug}/contents/{item.id}/image"
+
+
 def _safe_external_url(value: str | None) -> str | None:
     if not value:
         return None
@@ -317,13 +342,13 @@ def _reading_minutes(body: str | None) -> int:
     return max(1, round(len(stripped) / _KOREAN_READING_SPEED_CHARS_PER_MIN))
 
 
-def _serialize_item(item: ContentItem, full: bool = False) -> dict:
+def _serialize_item(item: ContentItem, slug: str, full: bool = False) -> dict:
     d = {
         "id": str(item.id),
         "content_type": item.content_type,
         "title": item.title,
         "meta_description": item.meta_description,
-        "image_url": get_signed_url(item.image_url) if item.image_url else None,
+        "image_url": _content_image_url(slug, item) if item.image_url else None,
         "scheduled_date": str(item.scheduled_date),
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,

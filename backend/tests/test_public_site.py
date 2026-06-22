@@ -246,14 +246,39 @@ def test_serialize_item_list_response_includes_reading_minutes_without_body():
         body="가" * 1200,
     )
 
-    serialized = _serialize_item(item)
+    serialized = _serialize_item(item, "test-slug")
 
     assert serialized["reading_minutes"] == 2
     assert "body" not in serialized
 
-    full = _serialize_item(item, full=True)
+    full = _serialize_item(item, "test-slug", full=True)
     assert full["body"] == "가" * 1200
     assert full["reading_minutes"] == 2
+
+
+def test_serialize_item_uses_stable_content_image_proxy_url():
+    # 콘텐츠 대표 이미지는 만료되는 signed GCS URL이 아니라 안정 프록시 경로로 노출해야
+    # SSG/CDN 캐시 HTML이 만료 URL을 박아 이미지가 깨지는 일을 막는다.
+    item = SimpleNamespace(
+        id="abc-123",
+        content_type="FAQ",
+        title="t",
+        meta_description="m",
+        image_url="gs://reputation-images/content/x/y.png",
+        scheduled_date=date(2026, 6, 1),
+        published_at=datetime(2026, 6, 1, 8, 0, 0),
+        body_updated_at=None,
+        references_list=[],
+        faq_question=None,
+        faq_answer_summary=None,
+        body="가" * 100,
+    )
+    serialized = _serialize_item(item, "jangpyeonhanoegwayiweon")
+    assert (
+        serialized["image_url"]
+        == "/api/v1/public/hospitals/jangpyeonhanoegwayiweon/contents/abc-123/image"
+    )
+    assert "storage.googleapis.com" not in (serialized["image_url"] or "")
 
 
 def test_reading_minutes_handles_empty_and_markdown_noise():
