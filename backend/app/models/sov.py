@@ -37,6 +37,8 @@ class QueryMatrix(Base):
 class AIQueryTarget(Base):
     __tablename__ = "ai_query_targets"
     __table_args__ = (
+        # 병원별 쿼리 타깃 중복 방지 (마이그레이션 0030 복구분과 일치).
+        UniqueConstraint("hospital_id", "name", name="uq_ai_query_targets_hospital_name"),
         Index("ix_ai_query_targets_hospital_id", "hospital_id"),
         Index(
             "ix_ai_query_targets_hospital_status_priority_month",

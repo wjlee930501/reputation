@@ -53,9 +53,13 @@ case "$SERVICE" in
     # 원장 프로파일의 비존재 자격('대장내시경 세부전문의') 제거 — Cloud Run Job.
     exec python -m app.utils.fix_director_credential
     ;;
+  inspect-schema)
+    # prod DB 스키마 점검(읽기 전용) — 유실된 마이그레이션 정의 역확인 — Cloud Run Job.
+    exec python -m app.utils.inspect_schema
+    ;;
   *)
     echo "Unknown SERVICE: $SERVICE"
-    echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images, seed-colon-cluster, unpublish-flagged, fix-director-credential"
+    echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images, seed-colon-cluster, unpublish-flagged, fix-director-credential, inspect-schema"
     exit 1
     ;;
 esac
