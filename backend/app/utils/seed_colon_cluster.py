@@ -12,7 +12,7 @@ DRAFT로 남은 seed_tag 항목은 시작 시 정리하고 재생성한다.
 import logging
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
@@ -123,20 +123,24 @@ def main() -> None:
             logger.error("No active schedule for %s — cannot seed.", HOSPITAL_SLUG)
             return
 
-        # 실패해서 DRAFT로 남은 seed_tag 항목 정리 (재시도 깨끗하게).
+        # 정리: (a) 실패해 DRAFT로 남은 seed_tag 항목, (b) seed_item 키가 없는 1차 run
+        # 레거시(현재 per-target 멱등 키와 안 맞아 중복 발행된 것) — 둘 다 제거.
         stale = (
             db.execute(
                 select(ContentItem).where(
                     ContentItem.hospital_id == hospital.id,
                     ContentItem.content_brief.op("->>")("seed_tag") == SEED_TAG,
-                    ContentItem.status != ContentStatus.PUBLISHED,
+                    or_(
+                        ContentItem.status != ContentStatus.PUBLISHED,
+                        ContentItem.content_brief.op("->>")("seed_item").is_(None),
+                    ),
                 )
             )
             .scalars()
             .all()
         )
         for d in stale:
-            logger.info("cleanup stale DRAFT seed item: %s (%s)", d.id, d.content_type)
+            logger.info("cleanup stale/legacy seed item: %s (%s) status=%s", d.id, d.content_type, d.status)
             db.delete(d)
         if stale:
             db.commit()
