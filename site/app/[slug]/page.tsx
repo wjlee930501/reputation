@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 import { fetchHospital, fetchContents, resolveAssetUrl, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec } from '@/lib/business-hours'
 import { getApiBase } from '@/lib/config'
+import { buildFaqPageJsonLd, buildPhysicianCredentials } from '@/lib/schema'
 import { canonicalBase } from '@/lib/site-url'
 
 import { AnswerClusters } from './_components/AnswerClusters'
@@ -165,6 +166,9 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
       description: hospital.director_career,
       image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
       url: `${base}/${params.slug}/doctor`,
+      // 자격·학회·전문영역 신뢰축을 최우선순위 URL(랜딩)에도 실어 /doctor에만
+      // 의존하지 않게 한다.
+      ...buildPhysicianCredentials(hospital),
     },
     availableService: (hospital.treatments || []).map((treatment) => ({
       '@type': 'MedicalProcedure',
@@ -176,6 +180,10 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     [{ label: '홈', href: `/${params.slug}` }],
     base,
   )
+
+  // 발행된 FAQ를 병원 단위 FAQPage로 집계 (개별 FAQ 페이지의 FAQPage와 별개).
+  const faqJsonLd = buildFaqPageJsonLd(contents, base, params.slug)
+  const pageJsonLd = [clinicJsonLd, breadcrumbJsonLd, ...(faqJsonLd ? [faqJsonLd] : [])]
 
   const externalChannels = [
     { url: hospital.blog_url, label: '병원 블로그' },
@@ -194,7 +202,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
   return (
     <>
-      <JsonLd data={[clinicJsonLd, breadcrumbJsonLd]} />
+      <JsonLd data={pageJsonLd} />
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
