@@ -18,7 +18,6 @@ from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital
 from app.services.content_brief import BRIEF_STATUS_APPROVED
-from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.workers.tasks import _generate_single_content_item
 
 logger = logging.getLogger(__name__)
@@ -198,24 +197,20 @@ def main() -> None:
             logger.info(
                 "generated %s essence=%s title=%s", seed_item, item.essence_status, (item.title or "")[:48]
             )
-            if item.body and item.essence_status == ESSENCE_STATUS_ALIGNED:
-                item.status = ContentStatus.PUBLISHED
-                item.published_at = datetime.now(timezone.utc) - timedelta(minutes=idx)
-                item.published_by = "MotionLabs (cluster seed)"
-                item.body_updated_at = item.body_updated_at or datetime.now(timezone.utc)
+            # DRAFT 전용 — essence만으로 발행하지 않는다. essence는 날조 통계·과장/최상급·
+            # 의학 오류를 못 잡으므로(하네스+codex 감사에서 입증), 생성물은 DRAFT로 두고
+            # 하네스+codex 감사 통과 후 사람(AE)이 발행한다. (auto-publish 금지)
+            if item.body:
                 published += 1
-                db.commit()
-                logger.info("PUBLISHED %s — %s", seed_item, (item.title or "")[:48])
-            else:
-                db.commit()
-                logger.warning(
-                    "KEPT DRAFT %s — essence=%s summary=%s",
-                    seed_item,
-                    item.essence_status,
-                    item.essence_check_summary,
-                )
+            db.commit()
+            logger.info(
+                "DRAFT %s — essence=%s body=%s (auto-publish 금지: 감사 후 수동 발행)",
+                seed_item,
+                item.essence_status,
+                bool(item.body),
+            )
 
-        logger.info("Colon cluster seed complete: %d newly published.", published)
+        logger.info("Colon cluster seed complete: %d generated as DRAFT (none auto-published).", published)
 
 
 if __name__ == "__main__":

@@ -49,9 +49,13 @@ case "$SERVICE" in
     # 품질 하네스 confirmed 위반 콘텐츠를 라이브에서 내림(→DRAFT) — Cloud Run Job.
     exec python -m app.utils.unpublish_items
     ;;
+  fix-director-credential)
+    # 원장 프로파일의 비존재 자격('대장내시경 세부전문의') 제거 — Cloud Run Job.
+    exec python -m app.utils.fix_director_credential
+    ;;
   *)
     echo "Unknown SERVICE: $SERVICE"
-    echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images, seed-colon-cluster"
+    echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images, seed-colon-cluster, unpublish-flagged, fix-director-credential"
     exit 1
     ;;
 esac
