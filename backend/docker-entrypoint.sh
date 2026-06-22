@@ -45,6 +45,10 @@ case "$SERVICE" in
     # 대장내시경 deep-format 콘텐츠 클러스터 seed (장편한외과) — Cloud Run Job.
     exec python -m app.utils.seed_colon_cluster
     ;;
+  unpublish-flagged)
+    # 품질 하네스 confirmed 위반 콘텐츠를 라이브에서 내림(→DRAFT) — Cloud Run Job.
+    exec python -m app.utils.unpublish_items
+    ;;
   *)
     echo "Unknown SERVICE: $SERVICE"
     echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images, seed-colon-cluster"
