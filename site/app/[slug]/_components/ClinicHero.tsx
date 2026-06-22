@@ -124,7 +124,10 @@ export function ClinicHero({
             alt=""
             fill
             sizes="100vw"
-            style={{ objectFit: 'cover', objectPosition: heroShowsFacility ? 'center center' : 'center top' }}
+            style={{
+              objectFit: heroShowsFacility ? 'cover' : 'contain',
+              objectPosition: 'center',
+            }}
             priority
             unoptimized={shouldBypassNextImageOptimization(heroPhotoUrl)}
           />
@@ -191,7 +194,10 @@ export function ClinicHero({
                 alt={heroPhotoLabel}
                 fill
                 sizes="(max-width: 920px) 100vw, 420px"
-                style={{ objectFit: 'cover', objectPosition: heroShowsFacility ? 'center center' : 'center top' }}
+                style={{
+                  objectFit: heroShowsFacility ? 'cover' : 'contain',
+                  objectPosition: 'center',
+                }}
                 priority
                 unoptimized={shouldBypassNextImageOptimization(heroPhotoUrl)}
               />
