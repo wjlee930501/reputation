@@ -448,9 +448,11 @@ def nightly_content_generation():
                 db.commit()
                 logger.info(f"Content generated: {hospital.name} — {item.title}")
 
-                # Imagen 3 이미지 생성 (실패해도 텍스트는 유지)
+                # 대표 이미지 생성 (gpt-image-2, 제목 주제 주입 — 실패해도 텍스트는 유지)
                 try:
-                    image_url, image_prompt = _run_async(generate_image(item.content_type, hospital.slug))
+                    image_url, image_prompt = _run_async(
+                        generate_image(item.content_type, hospital.slug, topic=item.title)
+                    )
                     item.image_url = image_url
                     item.image_prompt = image_prompt
                     db.commit()
@@ -581,7 +583,9 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
 
     if not item.image_url:
         try:
-            image_url, image_prompt = _run_async(generate_image(item.content_type, hospital.slug))
+            image_url, image_prompt = _run_async(
+                generate_image(item.content_type, hospital.slug, topic=item.title)
+            )
             item.image_url = image_url
             item.image_prompt = image_prompt
             db.commit()
