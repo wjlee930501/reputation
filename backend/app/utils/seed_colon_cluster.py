@@ -98,11 +98,13 @@ def main() -> None:
             return
 
         # 멱등 — 이미 seed된 클러스터가 있으면 중단.
+        # content_brief는 generic JSON 매핑이라 .astext가 없다 → portable한 ->> 연산자로
+        # seed_tag 텍스트를 추출해 비교 (postgres JSON/JSONB 모두 동작).
         existing = (
             db.execute(
                 select(ContentItem).where(
                     ContentItem.hospital_id == hospital.id,
-                    ContentItem.content_brief["seed_tag"].astext == SEED_TAG,
+                    ContentItem.content_brief.op("->>")("seed_tag") == SEED_TAG,
                 )
             )
             .scalars()
