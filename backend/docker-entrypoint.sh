@@ -36,9 +36,14 @@ case "$SERVICE" in
     #     --set-secrets=ADMIN_PASSWORD=...,DB_PASSWORD=DB_PASSWORD:latest ...
     exec python -m app.utils.admin_user create-owner
     ;;
+  backfill-images)
+    # 이미지 없이 seed된 발행 콘텐츠(image_url IS NULL)에 Imagen 대표 이미지 backfill —
+    # Cloud Run Job으로 실행 (migrate Job에 --update-env-vars SERVICE=backfill-images).
+    exec python -m app.utils.backfill_content_images
+    ;;
   *)
     echo "Unknown SERVICE: $SERVICE"
-    echo "Valid values: api, worker, beat, flower, migrate, seed-admin"
+    echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images"
     exit 1
     ;;
 esac
