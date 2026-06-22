@@ -41,9 +41,13 @@ case "$SERVICE" in
     # Cloud Run Job으로 실행 (migrate Job에 --update-env-vars SERVICE=backfill-images).
     exec python -m app.utils.backfill_content_images
     ;;
+  seed-colon-cluster)
+    # 대장내시경 deep-format 콘텐츠 클러스터 seed (장편한외과) — Cloud Run Job.
+    exec python -m app.utils.seed_colon_cluster
+    ;;
   *)
     echo "Unknown SERVICE: $SERVICE"
-    echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images"
+    echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images, seed-colon-cluster"
     exit 1
     ;;
 esac
