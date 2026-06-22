@@ -3,10 +3,10 @@
 AEO 감사 #1 권고 — 병원 최대 권위 영역(대장내시경, 블로그 315편)에 deep-format
 (DISEASE/TREATMENT/COLUMN) 콘텐츠가 0이라 보강한다. 제품의 실제 생성 파이프라인
 (_generate_single_content_item: generate_content + 의료광고법 forbidden screen +
-essence 정렬 screen + Imagen)을 그대로 사용 — 승인된 philosophy에 ALIGNED인 것만 발행,
-나머지는 DRAFT로 남긴다(안전).
+essence 정렬 screen + Imagen)을 그대로 사용 — 승인된 philosophy에 ALIGNED인 것만 발행.
 
-멱등: content_brief.seed_tag='colon-cluster-v1' 마커로 재실행 시 중복 생성 방지.
+멱등/재시도: content_brief.seed_item(타겟별 키)로 이미 PUBLISHED면 skip, 실패해서
+DRAFT로 남은 seed_tag 항목은 시작 시 정리하고 재생성한다.
 실행(prod): backend 이미지로 Cloud Run Job SERVICE=seed-colon-cluster.
 """
 import logging
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 SEED_TAG = "colon-cluster-v1"
 HOSPITAL_SLUG = "jangpyeonhanoegwayiweon"
 
-# content_brief가 생성 주제를 조향한다 (_build_content_brief_context 필드).
 TARGETS = [
     {
         "content_type": ContentType.DISEASE,
@@ -40,6 +39,7 @@ TARGETS = [
                 "국가암정보센터·대한대장항문학회·질병관리청 등 공개 가이드 인용",
             ],
             "seed_tag": SEED_TAG,
+            "seed_item": "colon-polyp",
         },
     },
     {
@@ -54,6 +54,7 @@ TARGETS = [
                 "공개 진료지침 인용, 개인별 판단은 진료 상담 필요 고지",
             ],
             "seed_tag": SEED_TAG,
+            "seed_item": "colon-scope",
         },
     },
     {
@@ -68,20 +69,29 @@ TARGETS = [
                 "이성근 원장 대장암센터 배경 자연스럽게",
             ],
             "seed_tag": SEED_TAG,
+            "seed_item": "colon-cancer-screening",
         },
     },
     {
         "content_type": ContentType.COLUMN,
         "brief": {
-            "target_query": "대장내시경 언제 받아야 조기발견",
-            "patient_intent": "대장내시경을 언제 처음 받아야 하는지, 왜 중요한지 원장 관점에서 듣고 싶다",
-            "treatment_narrative": "원장이 진료 현장에서 강조하는 대장내시경 조기 검진의 가치와 환자에게 전하고 싶은 메시지",
+            "target_query": "대장내시경 정기검진 중요성 조기발견",
+            "patient_intent": "대장내시경 정기검진이 왜 중요한지, 일반적으로 어떤 가치가 있는지 알고 싶다",
+            "treatment_narrative": "대장내시경 정기검진과 대장암 조기발견의 일반적 의학적 가치를 진료 현장 관점에서 차분히 전달",
+            # essence avoid_message 충돌 방지 — 칼럼이 홍보/비교우위/단정 톤으로 흘러
+            # avoid 문구를 substring으로 포함하면 NEEDS_REVIEW로 막힌다. 정보 제공 톤만.
+            "avoid_messages": [
+                "최고", "1등", "유일", "가장", "완치", "보장", "확실히", "무조건",
+                "타 병원보다", "다른 병원과 달리", "추천합니다", "내원하세요",
+            ],
             "operator_notes": [
-                "원장 칼럼 — 이성근 원장명+전문성 co-occurrence, 1인칭 진료 관점",
-                "국립암센터 대장암센터 전임의 배경 자연스럽게",
-                "과장 없이 조기검진의 실제 가치 중심",
+                "원장 칼럼 — 이성근 원장명+전문성 co-occurrence, 차분한 1인칭 진료 관점",
+                "국립암센터 대장암센터 전임의 배경은 사실로만 1회 언급",
+                "절대 홍보·비교우위·단정·권유 표현 금지. 특정 병원 우월성 주장 금지.",
+                "일반적 의학 사실과 정기검진의 보편적 가치만, 정보 제공 톤(광고 아님).",
             ],
             "seed_tag": SEED_TAG,
+            "seed_item": "colon-column",
         },
     },
 ]
@@ -95,23 +105,6 @@ def main() -> None:
         ).scalar_one_or_none()
         if hospital is None:
             logger.error("Hospital not found: %s", HOSPITAL_SLUG)
-            return
-
-        # 멱등 — 이미 seed된 클러스터가 있으면 중단.
-        # content_brief는 generic JSON 매핑이라 .astext가 없다 → portable한 ->> 연산자로
-        # seed_tag 텍스트를 추출해 비교 (postgres JSON/JSONB 모두 동작).
-        existing = (
-            db.execute(
-                select(ContentItem).where(
-                    ContentItem.hospital_id == hospital.id,
-                    ContentItem.content_brief.op("->>")("seed_tag") == SEED_TAG,
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if existing:
-            logger.info("Cluster already seeded (%d items) — skipping.", len(existing))
             return
 
         schedule = (
@@ -130,7 +123,24 @@ def main() -> None:
             logger.error("No active schedule for %s — cannot seed.", HOSPITAL_SLUG)
             return
 
-        # 슬롯 충돌 방지 — 기존 max sequence_no 위 + distinct 과거 날짜.
+        # 실패해서 DRAFT로 남은 seed_tag 항목 정리 (재시도 깨끗하게).
+        stale = (
+            db.execute(
+                select(ContentItem).where(
+                    ContentItem.hospital_id == hospital.id,
+                    ContentItem.content_brief.op("->>")("seed_tag") == SEED_TAG,
+                    ContentItem.status != ContentStatus.PUBLISHED,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for d in stale:
+            logger.info("cleanup stale DRAFT seed item: %s (%s)", d.id, d.content_type)
+            db.delete(d)
+        if stale:
+            db.commit()
+
         max_seq = (
             db.execute(
                 select(ContentItem.sequence_no)
@@ -146,6 +156,19 @@ def main() -> None:
 
         published = 0
         for idx, target in enumerate(TARGETS):
+            seed_item = target["brief"]["seed_item"]
+            # 이미 발행된 타겟이면 skip (멱등).
+            done = db.execute(
+                select(ContentItem).where(
+                    ContentItem.hospital_id == hospital.id,
+                    ContentItem.content_brief.op("->>")("seed_item") == seed_item,
+                    ContentItem.status == ContentStatus.PUBLISHED,
+                )
+            ).scalars().first()
+            if done:
+                logger.info("skip %s — already published.", seed_item)
+                continue
+
             item = ContentItem(
                 hospital_id=hospital.id,
                 schedule_id=schedule.id,
@@ -162,19 +185,14 @@ def main() -> None:
             db.add(item)
             db.flush()
             try:
-                # 제품 실제 파이프라인 — generate_content + forbidden + essence + Imagen.
                 _generate_single_content_item(db, item, hospital)
-            except Exception as e:  # noqa: BLE001 — 한 건 실패가 전체를 막지 않도록
-                logger.error("GEN FAIL #%d (%s): %s", idx, target["content_type"], e)
+            except Exception as e:  # noqa: BLE001
+                logger.error("GEN FAIL %s (%s): %s", seed_item, target["content_type"], e)
                 db.rollback()
                 continue
             db.refresh(item)
             logger.info(
-                "generated #%d type=%s essence=%s title=%s",
-                idx,
-                item.content_type,
-                item.essence_status,
-                (item.title or "")[:48],
+                "generated %s essence=%s title=%s", seed_item, item.essence_status, (item.title or "")[:48]
             )
             if item.body and item.essence_status == ESSENCE_STATUS_ALIGNED:
                 item.status = ContentStatus.PUBLISHED
@@ -183,17 +201,17 @@ def main() -> None:
                 item.body_updated_at = item.body_updated_at or datetime.now(timezone.utc)
                 published += 1
                 db.commit()
-                logger.info("PUBLISHED #%d — %s", idx, (item.title or "")[:48])
+                logger.info("PUBLISHED %s — %s", seed_item, (item.title or "")[:48])
             else:
-                db.commit()  # essence 미정렬/본문 없음 → DRAFT 유지 (발행 안 함).
+                db.commit()
                 logger.warning(
-                    "KEPT DRAFT #%d — essence=%s body=%s",
-                    idx,
+                    "KEPT DRAFT %s — essence=%s summary=%s",
+                    seed_item,
                     item.essence_status,
-                    bool(item.body),
+                    item.essence_check_summary,
                 )
 
-        logger.info("Colon cluster seed complete: %d/%d published.", published, len(TARGETS))
+        logger.info("Colon cluster seed complete: %d newly published.", published)
 
 
 if __name__ == "__main__":

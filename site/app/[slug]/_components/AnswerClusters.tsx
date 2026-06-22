@@ -11,30 +11,10 @@ interface Props {
 }
 
 const CLUSTERS = [
-  {
-    key: 'faq',
-    label: '자주 묻는 질문',
-    types: ['FAQ'],
-    fallback: '환자가 진료 전 가장 먼저 확인하는 질문을 정리합니다.',
-  },
-  {
-    key: 'symptom',
-    label: '증상과 질환',
-    types: ['DISEASE', 'HEALTH'],
-    fallback: '증상, 질환, 생활 관리 정보를 의료진 검수 콘텐츠로 연결합니다.',
-  },
-  {
-    key: 'treatment',
-    label: '치료와 시술',
-    types: ['TREATMENT'],
-    fallback: '치료 선택 전 확인할 진료 영역별 기본 정보를 안내합니다.',
-  },
-  {
-    key: 'local',
-    label: '지역과 방문',
-    types: ['LOCAL', 'NOTICE'],
-    fallback: '지역, 예약, 내원 전 확인 정보를 같은 맥락에서 제공합니다.',
-  },
+  { key: 'faq', label: '자주 묻는 질문', types: ['FAQ'] },
+  { key: 'symptom', label: '증상과 질환', types: ['DISEASE', 'HEALTH'] },
+  { key: 'treatment', label: '치료와 시술', types: ['TREATMENT'] },
+  { key: 'local', label: '지역과 방문', types: ['LOCAL', 'NOTICE'] },
 ]
 
 export function AnswerClusters({ contents, hospitalSlug, treatments, region, specialties }: Props) {
@@ -57,6 +37,9 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
             const matches = contents
               .filter((content) => cluster.types.includes(content.content_type))
               .slice(0, 3)
+            // 빈 비-local 클러스터는 내용 없는 fallback 카피 대신 렌더하지 않는다(slop 제거).
+            // local은 콘텐츠가 없어도 방문 안내 링크라는 실질 정보를 제공하므로 유지.
+            if (matches.length === 0 && cluster.key !== 'local') return null
             return (
               <article key={cluster.key} className="clinic-answer-card">
                 <span className="clinic-answer-label">{cluster.label}</span>
@@ -71,7 +54,7 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
                       </li>
                     ))}
                   </ul>
-                ) : cluster.key === 'local' ? (
+                ) : (
                   <ul className="clinic-answer-list">
                     <li>
                       <Link href={`/${hospitalSlug}/visit`}>
@@ -80,8 +63,6 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
                       </Link>
                     </li>
                   </ul>
-                ) : (
-                  <p className="clinic-answer-empty">{cluster.fallback}</p>
                 )}
               </article>
             )
