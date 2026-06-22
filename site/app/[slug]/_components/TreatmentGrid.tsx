@@ -1,5 +1,3 @@
-import { pickIconForTreatment } from './MedicalIcons'
-
 interface Treatment {
   name: string
   description: string
@@ -27,22 +25,16 @@ export function TreatmentGrid({ treatments }: Props) {
         </header>
 
         <ul className="clinic-treatment-grid" aria-label="진료 영역 목록">
-          {treatments.map((treatment) => {
-            const { Icon, hue } = pickIconForTreatment(treatment.name)
-            return (
-              <li key={treatment.name} className="clinic-treatment-card">
-                <span className={`clinic-treatment-card-icon hue-${hue}`} aria-hidden="true">
-                  <Icon />
-                </span>
-                <span className="clinic-treatment-card-copy">
-                  <span className="clinic-treatment-card-name">{treatment.name}</span>
-                  {treatment.description && (
-                    <span className="clinic-treatment-card-desc">{treatment.description}</span>
-                  )}
-                </span>
-              </li>
-            )
-          })}
+          {treatments.map((treatment) => (
+            <li key={treatment.name} className="clinic-treatment-card">
+              <span className="clinic-treatment-card-copy">
+                <span className="clinic-treatment-card-name">{treatment.name}</span>
+                {treatment.description && (
+                  <span className="clinic-treatment-card-desc">{treatment.description}</span>
+                )}
+              </span>
+            </li>
+          ))}
         </ul>
       </div>
     </section>

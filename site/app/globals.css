@@ -3478,58 +3478,10 @@ textarea:focus-visible {
   height: 26px;
 }
 
-/* ── Treatment card icon (hue-based) ──────────────────────────── */
-.clinic-treatment-card {
-  display: flex;
-  gap: 14px;
-  align-items: flex-start;
-  padding: 22px;
-}
-
-.clinic-treatment-card-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 8px;
-  flex-shrink: 0;
-}
-
-.clinic-treatment-card-icon svg {
-  width: 22px;
-  height: 22px;
-}
-
-.clinic-treatment-card-icon.hue-blue {
-  background: var(--color-revisit-primary-95);
-  color: var(--color-revisit-primary-40);
-}
-
-.clinic-treatment-card-icon.hue-green {
-  background: var(--color-revisit-green-95);
-  color: var(--color-revisit-green-40);
-}
-
-.clinic-treatment-card-icon.hue-purple {
-  background: var(--color-revisit-purple-95);
-  color: #5942c8;
-}
-
-.clinic-treatment-card-icon.hue-yellow {
-  background: var(--color-revisit-yellow-95);
-  color: #b65f00;
-}
-
-.clinic-treatment-card-icon.hue-red {
-  background: var(--color-revisit-red-95);
-  color: var(--color-revisit-red-40);
-}
-
-.clinic-treatment-card-icon.hue-cool {
-  background: var(--color-revisit-coolgrey-90);
-  color: var(--color-revisit-coolgrey-30);
-}
+/* ── Treatment card — 순수 텍스트 (아이콘·좌측 액센트 모두 제거) ────────
+   fallback 청진기 아이콘도, 좌측 컬러 바도 두지 않는다 — 둘 다 의미 없는
+   장식(AI slop). 카드는 base 규칙의 1px 보더 + 둥근 모서리 + 타이포만으로
+   구성한다. 여기서 장식 요소를 다시 추가하지 말 것. */
 
 /* ── Curator (DoctorIntro 후속) ───────────────────────────────── */
 .clinic-curator {
