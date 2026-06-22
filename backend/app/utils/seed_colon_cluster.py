@@ -3,10 +3,11 @@
 AEO 감사 #1 권고 — 병원 최대 권위 영역(대장내시경, 블로그 315편)에 deep-format
 (DISEASE/TREATMENT/COLUMN) 콘텐츠가 0이라 보강한다. 제품의 실제 생성 파이프라인
 (_generate_single_content_item: generate_content + 의료광고법 forbidden screen +
-essence 정렬 screen + Imagen)을 그대로 사용 — 승인된 philosophy에 ALIGNED인 것만 발행.
+essence 정렬 screen + Imagen)을 그대로 사용. **생성물은 DRAFT로만 둔다(auto-publish 금지)** —
+essence는 날조/과장/의학오류를 못 잡으므로 하네스+codex 감사 통과 후 사람(AE)이 발행한다.
 
-멱등/재시도: content_brief.seed_item(타겟별 키)로 이미 PUBLISHED면 skip, 실패해서
-DRAFT로 남은 seed_tag 항목은 시작 시 정리하고 재생성한다.
+멱등/재시도: content_brief.seed_item(타겟별 키)로 이미 본문이 생성된 항목은 상태 무관 skip(보존).
+seed_item 없는 1차 레거시 + 본문 없는 실패 placeholder만 시작 시 정리한다(정상 DRAFT는 보존).
 실행(prod): backend 이미지로 Cloud Run Job SERVICE=seed-colon-cluster.
 """
 import logging
@@ -122,16 +123,18 @@ def main() -> None:
             logger.error("No active schedule for %s — cannot seed.", HOSPITAL_SLUG)
             return
 
-        # 정리: (a) 실패해 DRAFT로 남은 seed_tag 항목, (b) seed_item 키가 없는 1차 run
-        # 레거시(현재 per-target 멱등 키와 안 맞아 중복 발행된 것) — 둘 다 제거.
+        # 정리는 보수적으로: 비발행(non-published) 중 (a) seed_item 키 없는 1차 레거시,
+        # (b) 본문 없는 실패 placeholder만 삭제. **정상 생성된 DRAFT(본문 있음)는 AE 검수
+        # 대상이므로 재실행에서 절대 삭제하지 않는다.**(DRAFT-only 전환 후 데이터 손실 방지)
         stale = (
             db.execute(
                 select(ContentItem).where(
                     ContentItem.hospital_id == hospital.id,
                     ContentItem.content_brief.op("->>")("seed_tag") == SEED_TAG,
+                    ContentItem.status != ContentStatus.PUBLISHED,
                     or_(
-                        ContentItem.status != ContentStatus.PUBLISHED,
                         ContentItem.content_brief.op("->>")("seed_item").is_(None),
+                        ContentItem.body.is_(None),
                     ),
                 )
             )
@@ -139,7 +142,7 @@ def main() -> None:
             .all()
         )
         for d in stale:
-            logger.info("cleanup stale/legacy seed item: %s (%s) status=%s", d.id, d.content_type, d.status)
+            logger.info("cleanup legacy/failed seed item: %s (%s) status=%s", d.id, d.content_type, d.status)
             db.delete(d)
         if stale:
             db.commit()
@@ -160,16 +163,17 @@ def main() -> None:
         published = 0
         for idx, target in enumerate(TARGETS):
             seed_item = target["brief"]["seed_item"]
-            # 이미 발행된 타겟이면 skip (멱등).
+            # 이미 본문이 생성된 타겟이면 상태(PUBLISHED/DRAFT) 무관하게 skip — 재생성으로
+            # AE 검수/수정 중인 DRAFT나 발행본을 덮어쓰지 않는다(멱등).
             done = db.execute(
                 select(ContentItem).where(
                     ContentItem.hospital_id == hospital.id,
                     ContentItem.content_brief.op("->>")("seed_item") == seed_item,
-                    ContentItem.status == ContentStatus.PUBLISHED,
+                    ContentItem.body.is_not(None),
                 )
             ).scalars().first()
             if done:
-                logger.info("skip %s — already published.", seed_item)
+                logger.info("skip %s — already generated (status=%s, 보존).", seed_item, done.status)
                 continue
 
             item = ContentItem(

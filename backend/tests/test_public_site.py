@@ -281,6 +281,23 @@ def test_serialize_item_uses_stable_content_image_proxy_url():
     assert "storage.googleapis.com" not in (serialized["image_url"] or "")
 
 
+def test_serialize_item_passes_through_non_gcs_image_url():
+    # gs:// 가 아닌 이미 사용 가능한 URL(레거시 상대 public asset 경로/http)은 /contents/{id}/image
+    # 프록시로 감싸면 _asset_response가 처리 못 해 404 → 그대로 통과시켜야 한다.
+    def _item(image_url):
+        return SimpleNamespace(
+            id="abc-123", content_type="DISEASE", title="t", meta_description="m",
+            image_url=image_url, scheduled_date=date(2026, 6, 1),
+            published_at=datetime(2026, 6, 1, 8, 0, 0), body_updated_at=None,
+            references_list=[], faq_question=None, faq_answer_summary=None, body="가" * 50,
+        )
+    legacy = "/api/v1/public/hospitals/jangpyeonhanoegwayiweon/assets/asset-1"
+    assert _serialize_item(_item(legacy), "jangpyeonhanoegwayiweon")["image_url"] == legacy
+    absolute = "https://cdn.example.com/x.png"
+    assert _serialize_item(_item(absolute), "jangpyeonhanoegwayiweon")["image_url"] == absolute
+    assert _serialize_item(_item(None), "jangpyeonhanoegwayiweon")["image_url"] is None
+
+
 def test_reading_minutes_handles_empty_and_markdown_noise():
     assert _reading_minutes(None) == 1
     assert _reading_minutes("") == 1

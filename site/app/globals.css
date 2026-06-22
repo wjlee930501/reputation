@@ -4544,13 +4544,6 @@ textarea:focus-visible {
   word-break: keep-all;
 }
 
-.clinic-answer-empty {
-  margin: 14px 0 0;
-  color: var(--color-revisit-text-helper);
-  font-size: 14px;
-  line-height: 22px;
-}
-
 .clinic-answer-treatment-strip {
   display: flex;
   flex-wrap: wrap;

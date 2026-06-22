@@ -293,10 +293,14 @@ def _public_asset_url(slug: str, asset: HospitalSourceAsset) -> str:
 
 
 def _content_image_url(slug: str, item: ContentItem) -> str:
-    # 안정 URL — 콘텐츠 대표 이미지를 만료되는 signed GCS URL 대신 프록시 경로로 노출한다.
-    # 요청마다 backend가 fresh signed URL로 302하므로, SSG/CDN 캐시 HTML이 만료된 URL을
-    # 박아 이미지가 403으로 깨지는 일을 막는다 (원장 사진 /assets 프록시와 동일 패턴).
-    return f"/api/v1/public/hospitals/{slug}/contents/{item.id}/image"
+    # gs:// 저장본만 안정 프록시 경로로 노출한다 — 요청마다 backend가 fresh signed URL로
+    # 302하므로 SSG/CDN 캐시 HTML이 만료 URL을 박아 403으로 깨지는 일을 막는다.
+    # 이미 사용 가능한 URL(레거시 상대 public asset 경로 "/api/.../assets/..." 또는 http(s))은
+    # 프록시로 감싸면 _asset_response가 처리 못 해 404가 나므로 그대로 통과시킨다.
+    ref = item.image_url or ""
+    if ref.startswith("gs://"):
+        return f"/api/v1/public/hospitals/{slug}/contents/{item.id}/image"
+    return ref
 
 
 def _safe_external_url(value: str | None) -> str | None:
