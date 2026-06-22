@@ -14,12 +14,26 @@ import logging
 import uuid
 from io import BytesIO
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.models.content import ContentType
 
 logger = logging.getLogger(__name__)
+
+
+def _is_transient_openai_error(exc: BaseException) -> bool:
+    """결정적 4xx(예: moderation_blocked)는 재시도해도 항상 실패하므로 재시도 금지 —
+    바로 폴백(Imagen)으로 넘겨 시간/비용 낭비와 Job 타임아웃을 막는다. 5xx/네트워크만 재시도."""
+    try:
+        from openai import APIStatusError
+
+        if isinstance(exc, APIStatusError):
+            status = getattr(exc, "status_code", 500) or 500
+            return status >= 500
+    except Exception:  # noqa: BLE001 — openai 미설치 등은 재시도 대상으로 둔다
+        pass
+    return True
 
 _vertexai_initialized = False
 
@@ -38,7 +52,8 @@ _OPENAI_TYPE_SUBJECT = {
         "Concept: a clear, reassuring visual metaphor that answers a common patient health question."
     ),
     ContentType.DISEASE: (
-        "Concept: a clean, educational anatomical or conceptual illustration that explains a medical condition."
+        "Concept: a clean, conceptual editorial illustration that explains a medical condition "
+        "through abstract metaphor and tasteful iconography (not explicit anatomy)."
     ),
     ContentType.TREATMENT: (
         "Concept: a calm, conceptual illustration of a medical examination or treatment process "
@@ -70,6 +85,10 @@ def _build_openai_image_prompt(content_type: ContentType, topic: str | None) -> 
         "restrained accent color, gentle even lighting, and balanced composition. "
         "Tasteful and strictly non-graphic: no blood, no surgical gore, no needles in flesh, "
         "no distressing or clinical-procedure imagery. "
+        "Keep it strictly non-explicit and family-friendly: do NOT depict bare skin, buttocks, "
+        "genitalia, the anal or perianal region, underwear, or any nudity; for sensitive or "
+        "proctological topics use a fully clothed, abstract wellness or lifestyle metaphor instead "
+        "of body anatomy. "
         "Absolutely NO text, letters, numbers, words, captions, labels, logos, or watermarks anywhere. "
         "Do NOT depict real, identifiable, or named people and do NOT show recognizable faces. "
         "This is an original illustration — not a photograph of a real clinic or a real person. "
@@ -164,9 +183,14 @@ def _upload_png_to_gcs(image_bytes: bytes, hospital_name: str) -> str:
     return gcs_path
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=15))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=2, max=15),
+    retry=retry_if_exception(_is_transient_openai_error),
+)
 def _openai_generate_and_upload(prompt: str, hospital_name: str) -> str:
-    """동기 — gpt-image-2 이미지 생성 + GCS 업로드 (실패 시 raise → 호출부에서 폴백)."""
+    """동기 — gpt-image-2 이미지 생성 + GCS 업로드 (실패 시 raise → 호출부에서 폴백).
+    moderation_blocked 등 결정적 4xx 는 재시도하지 않고 즉시 raise → Imagen 폴백."""
     try:
         from openai import OpenAI
 
