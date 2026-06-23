@@ -32,24 +32,62 @@ router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
 domain_router = APIRouter(prefix="/public/site/hospitals", tags=["Public — Site"])
 
 
+# 플랫폼 서브도메인({slug}.{platform host})에서 hospital slug가 아닌 예약 라벨.
+# 와일드카드 cert가 이들도 커버하므로 slug로 오인하지 않도록 명시 차단.
+_RESERVED_PLATFORM_LABELS = frozenset({"www", "admin", "api", "cname", "static", "assets"})
+
+
+def _platform_site_host() -> str:
+    """공개 표면의 기본 호스트 (예: reputation.motionlabs.kr). SITE_BASE_URL에서 파생."""
+    return (urlparse(settings.SITE_BASE_URL).hostname or "").lower()
+
+
+def _platform_subdomain_slug(host: str) -> str | None:
+    """host가 {slug}.{platform host} 형태면 단일 라벨 slug를 반환, 아니면 None.
+
+    하이브리드 도메인의 '기본' 경로: 병원은 자기 도메인 없이도 {slug}.{platform host}로
+    서빙된다(와일드카드 cert + A 레코드가 커버). host는 정규화된 소문자여야 한다.
+    """
+    base = _platform_site_host()
+    if not base:
+        return None
+    suffix = f".{base}"
+    if not host.endswith(suffix):
+        return None
+    label = host[: -len(suffix)]
+    if not label or "." in label:  # 단일 라벨만 (다중 라벨 서브도메인 제외)
+        return None
+    if label in _RESERVED_PLATFORM_LABELS:
+        return None
+    return label
+
+
 @domain_router.get("/by-domain/{domain}")
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession = Depends(get_db)):
-    """커스텀 도메인(aeo_domain) → 병원 식별 정보.
+    """요청 호스트 → 병원 식별 정보.
 
-    /site 호스트 라우팅 미들웨어 전용 계약: ACTIVE + site_live 병원의 aeo_domain과
-    대소문자 무시(정규화) 일치 시 200 {"slug", "name", "aeo_domain"}, 아니면 404.
+    /site 호스트 라우팅 미들웨어 전용 계약: ACTIVE + site_live 병원에 한해
+    200 {"slug", "name", "aeo_domain"}, 아니면 404. 두 경로를 해석한다:
+      1. 기본 서브도메인 {slug}.{platform host} → slug로 직접 조회 (자기 도메인 불필요).
+      2. 병원 자기 도메인 → aeo_domain 정규화 일치.
     경로 파라미터는 포트/끝 점/스킴 잔재까지 정규화한다 (저장 측도 동일 규칙으로 정규화됨).
     """
     normalized = normalize_domain(domain)
     if not normalized:
         raise HTTPException(status_code=404, detail="Hospital not found")
 
+    subdomain_slug = _platform_subdomain_slug(normalized)
+    if subdomain_slug is not None:
+        match_clause = Hospital.slug == subdomain_slug
+    else:
+        # 저장 경로(connect_domain)·migration 0025가 소문자로 정규화하지만, 혹시 모를
+        # 레거시 대문자 행까지 흡수하도록 비교는 lower()로 한 번 더 방어한다.
+        match_clause = func.lower(Hospital.aeo_domain) == normalized
+
     result = await db.execute(
         select(Hospital).where(
-            # 저장 경로(connect_domain)·migration 0025가 소문자로 정규화하지만, 혹시 모를
-            # 레거시 대문자 행까지 흡수하도록 비교는 lower()로 한 번 더 방어한다.
-            func.lower(Hospital.aeo_domain) == normalized,
+            match_clause,
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
         )

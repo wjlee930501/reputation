@@ -20,6 +20,7 @@ interface BusinessHours {
 interface HospitalProfile {
   id: string
   name: string
+  slug: string
   plan: string
   status: string
   director_name: string

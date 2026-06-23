@@ -246,23 +246,18 @@ variable "enable_http_redirect" {
   default     = true
 }
 
-# 병원이 별도 구입해 연결하는 커스텀 도메인 목록.
+# 병원이 별도 구입해 연결하는 커스텀 도메인(자기 도메인) 목록.
 # 흐름: Admin에서 도메인 저장 → 병원이 DNS(CNAME 또는 A/ALIAS) 추가
-#       → 이 목록에 추가 후 terraform apply (도메인별 managed cert 발급)
+#       → 이 목록에 추가 후 terraform apply (Certificate Manager cert + map entry 발급)
 #       → Admin [DNS 확인] → site_live/ACTIVE.
-# 주의: 고객 DNS가 살아 있는 상태에서 apply해야 cert가 ACTIVE로 전환된다.
-# 도메인별 cert 1개씩 발급 — HTTPS proxy의 cert 한도(15) 때문에 최대 13개.
-# 그 이상은 Certificate Manager certificate map으로 이전 필요
-# (docs/plans/2026-06-11-custom-domain-runbook.md 참고).
+# 주의: 고객 DNS가 LB로 향한 상태에서 apply해야 cert가 LB authorization으로 발급된다.
+# cert 평면은 Certificate Manager certificate map(certmanager.tf)이라 proxy cert 한도(15)와
+# 무관하며 수백~수천 도메인까지 확장된다.
+# (설계: docs/plans/2026-06-23-certificate-manager-hybrid-domains.md)
 variable "customer_domains" {
-  description = "Hospital-owned custom domains served by the site (per-domain managed SSL cert)"
+  description = "Hospital-owned custom domains served by the site (Certificate Manager managed cert + map entry)"
   type        = list(string)
   default     = []
-
-  validation {
-    condition     = length(var.customer_domains) <= 13
-    error_message = "HTTPS proxy supports 15 certs (1 main + 13 customer + headroom). Migrate to Certificate Manager beyond 13 customer domains."
-  }
 
   validation {
     condition = alltrue([
@@ -271,6 +266,17 @@ variable "customer_domains" {
     ])
     error_message = "customer_domains must be lowercase hostnames without scheme/path/port."
   }
+}
+
+# HTTPS proxy의 cert 부착 방식 전환 플래그 (무중단 컷오버용).
+#   false → 레거시 ssl_certificates(google_compute_managed_ssl_certificate) 나열.
+#   true  → Certificate Manager certificate_map(certmanager.tf) 부착.
+# 컷오버: 먼저 false로 apply해 cert map·와일드카드 cert를 깔고(DNS auth CNAME 추가 후
+# 와일드카드 cert ACTIVE 대기) → true로 flip해 apply하면 메인 도메인 무중단 전환.
+variable "use_certificate_map" {
+  description = "Attach Certificate Manager certificate_map to the HTTPS proxy instead of legacy ssl_certificates"
+  type        = bool
+  default     = false
 }
 
 # ── DNS (optional) ────────────────────────────────────────────────
