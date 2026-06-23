@@ -1,4 +1,4 @@
-# noqa: SIZE_OK -- Celery task registry keeps legacy task import names; release-critical helpers are split by task family.
+# allow: SIZE_OK -- Celery task registry keeps legacy task import names; release-critical helpers are split by task family.
 """
 Celery 태스크 전체
 - trigger_v0_report: 프로파일 완료 시 V0 분석 트리거
@@ -45,7 +45,7 @@ from app.workers.nightly_generation_batch import (
     GENERATION_CATCHUP_DAYS,
     NIGHTLY_GENERATION_CAP,
     _load_nightly_generation_batch,
-    _nightly_generation_stmt,
+    _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
 )
 
 logger = logging.getLogger(__name__)
@@ -448,9 +448,11 @@ def nightly_content_generation():
                 db.commit()
                 logger.info(f"Content generated: {hospital.name} — {item.title}")
 
-                # Imagen 3 이미지 생성 (실패해도 텍스트는 유지)
+                # 대표 이미지 생성 (gpt-image-2, 제목 주제 주입 — 실패해도 텍스트는 유지)
                 try:
-                    image_url, image_prompt = _run_async(generate_image(item.content_type, hospital.slug))
+                    image_url, image_prompt = _run_async(
+                        generate_image(item.content_type, hospital.slug, topic=item.title)
+                    )
                     item.image_url = image_url
                     item.image_prompt = image_prompt
                     db.commit()
@@ -581,7 +583,9 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
 
     if not item.image_url:
         try:
-            image_url, image_prompt = _run_async(generate_image(item.content_type, hospital.slug))
+            image_url, image_prompt = _run_async(
+                generate_image(item.content_type, hospital.slug, topic=item.title)
+            )
             item.image_url = image_url
             item.image_prompt = image_prompt
             db.commit()

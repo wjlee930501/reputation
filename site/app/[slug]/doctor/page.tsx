@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
+import { buildPhysicianCredentials } from '@/lib/schema'
 import { canonicalBase } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
@@ -73,24 +74,8 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
 
   const curatedContents = [...contents].sort(sortByCuratorRelevance).slice(0, 6)
 
-  const treatmentNames = (hospital.treatments || []).map((t) => t.name).filter(Boolean)
-  const knowsAbout = Array.from(new Set([...(hospital.specialties || []), ...treatmentNames]))
-
-  const credentials = hospital.director_credentials
-  const boardCerts = credentials?.board_certifications ?? []
-  const societies = credentials?.society_memberships ?? []
-  const hasCredential = boardCerts.map((name) => ({
-    '@type': 'EducationalOccupationalCredential',
-    credentialCategory: 'medical specialty board certification',
-    name,
-  }))
-  const memberOf = societies.map((name) => ({
-    '@type': 'MedicalOrganization',
-    name,
-  }))
-  const alumniOf = credentials?.medical_school
-    ? { '@type': 'EducationalOrganization', name: credentials.medical_school }
-    : undefined
+  // 자격·학회·전문영역 신뢰축은 랜딩 중첩 Physician과 동일 빌더를 공유한다.
+  const physicianCredentials = buildPhysicianCredentials(hospital)
 
   const base = canonicalBase(hospital)
 
@@ -106,11 +91,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
     jobTitle: '원장',
     description: hospital.director_career || undefined,
     image: resolveAssetUrl(hospital.director_photo_url) || undefined,
-    medicalSpecialty: hospital.specialties,
-    knowsAbout: knowsAbout.length > 0 ? knowsAbout : undefined,
-    hasCredential: hasCredential.length > 0 ? hasCredential : undefined,
-    memberOf: memberOf.length > 0 ? memberOf : undefined,
-    alumniOf,
+    ...physicianCredentials,
     sameAs: physicianSameAs.length > 0 ? physicianSameAs : undefined,
     worksFor: {
       '@type': 'MedicalClinic',

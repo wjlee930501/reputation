@@ -32,24 +32,62 @@ router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
 domain_router = APIRouter(prefix="/public/site/hospitals", tags=["Public — Site"])
 
 
+# 플랫폼 서브도메인({slug}.{platform host})에서 hospital slug가 아닌 예약 라벨.
+# 와일드카드 cert가 이들도 커버하므로 slug로 오인하지 않도록 명시 차단.
+_RESERVED_PLATFORM_LABELS = frozenset({"www", "admin", "api", "cname", "static", "assets"})
+
+
+def _platform_site_host() -> str:
+    """공개 표면의 기본 호스트 (예: reputation.motionlabs.kr). SITE_BASE_URL에서 파생."""
+    return (urlparse(settings.SITE_BASE_URL).hostname or "").lower()
+
+
+def _platform_subdomain_slug(host: str) -> str | None:
+    """host가 {slug}.{platform host} 형태면 단일 라벨 slug를 반환, 아니면 None.
+
+    하이브리드 도메인의 '기본' 경로: 병원은 자기 도메인 없이도 {slug}.{platform host}로
+    서빙된다(와일드카드 cert + A 레코드가 커버). host는 정규화된 소문자여야 한다.
+    """
+    base = _platform_site_host()
+    if not base:
+        return None
+    suffix = f".{base}"
+    if not host.endswith(suffix):
+        return None
+    label = host[: -len(suffix)]
+    if not label or "." in label:  # 단일 라벨만 (다중 라벨 서브도메인 제외)
+        return None
+    if label in _RESERVED_PLATFORM_LABELS:
+        return None
+    return label
+
+
 @domain_router.get("/by-domain/{domain}")
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession = Depends(get_db)):
-    """커스텀 도메인(aeo_domain) → 병원 식별 정보.
+    """요청 호스트 → 병원 식별 정보.
 
-    /site 호스트 라우팅 미들웨어 전용 계약: ACTIVE + site_live 병원의 aeo_domain과
-    대소문자 무시(정규화) 일치 시 200 {"slug", "name", "aeo_domain"}, 아니면 404.
+    /site 호스트 라우팅 미들웨어 전용 계약: ACTIVE + site_live 병원에 한해
+    200 {"slug", "name", "aeo_domain"}, 아니면 404. 두 경로를 해석한다:
+      1. 기본 서브도메인 {slug}.{platform host} → slug로 직접 조회 (자기 도메인 불필요).
+      2. 병원 자기 도메인 → aeo_domain 정규화 일치.
     경로 파라미터는 포트/끝 점/스킴 잔재까지 정규화한다 (저장 측도 동일 규칙으로 정규화됨).
     """
     normalized = normalize_domain(domain)
     if not normalized:
         raise HTTPException(status_code=404, detail="Hospital not found")
 
+    subdomain_slug = _platform_subdomain_slug(normalized)
+    if subdomain_slug is not None:
+        match_clause = Hospital.slug == subdomain_slug
+    else:
+        # 저장 경로(connect_domain)·migration 0025가 소문자로 정규화하지만, 혹시 모를
+        # 레거시 대문자 행까지 흡수하도록 비교는 lower()로 한 번 더 방어한다.
+        match_clause = func.lower(Hospital.aeo_domain) == normalized
+
     result = await db.execute(
         select(Hospital).where(
-            # 저장 경로(connect_domain)·migration 0025가 소문자로 정규화하지만, 혹시 모를
-            # 레거시 대문자 행까지 흡수하도록 비교는 lower()로 한 번 더 방어한다.
-            func.lower(Hospital.aeo_domain) == normalized,
+            match_clause,
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
         )
@@ -166,7 +204,7 @@ async def list_published_contents(
         .limit(limit)
     )
     items = result.scalars().all()
-    return [_serialize_item(item) for item in items]
+    return [_serialize_item(item, h.slug) for item in items]
 
 
 @router.get("/{slug}/contents/{content_id}")
@@ -180,7 +218,25 @@ async def get_content_public(
     item = await db.get(ContentItem, content_id)
     if not item or item.hospital_id != h.id or not _is_public_safe_content(item):
         raise HTTPException(status_code=404, detail="Content not found")
-    return _serialize_item(item, full=True)
+    return _serialize_item(item, h.slug, full=True)
+
+
+@router.get("/{slug}/contents/{content_id}/image")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_public_content_image(
+    request: Request, slug: str, content_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+):
+    """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302)."""
+    h = await _get_active_hospital(db, slug)
+    item = await db.get(ContentItem, content_id)
+    if (
+        not item
+        or item.hospital_id != h.id
+        or not _is_public_safe_content(item)
+        or not item.image_url
+    ):
+        raise HTTPException(status_code=404, detail="Content image not found")
+    return _asset_response(item.image_url, hospital_id=h.id, media_type="image/png")
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
@@ -274,6 +330,17 @@ def _public_asset_url(slug: str, asset: HospitalSourceAsset) -> str:
     return f"/api/v1/public/hospitals/{slug}/assets/{asset.id}"
 
 
+def _content_image_url(slug: str, item: ContentItem) -> str:
+    # gs:// 저장본만 안정 프록시 경로로 노출한다 — 요청마다 backend가 fresh signed URL로
+    # 302하므로 SSG/CDN 캐시 HTML이 만료 URL을 박아 403으로 깨지는 일을 막는다.
+    # 이미 사용 가능한 URL(레거시 상대 public asset 경로 "/api/.../assets/..." 또는 http(s))은
+    # 프록시로 감싸면 _asset_response가 처리 못 해 404가 나므로 그대로 통과시킨다.
+    ref = item.image_url or ""
+    if ref.startswith("gs://"):
+        return f"/api/v1/public/hospitals/{slug}/contents/{item.id}/image"
+    return ref
+
+
 def _safe_external_url(value: str | None) -> str | None:
     if not value:
         return None
@@ -317,13 +384,13 @@ def _reading_minutes(body: str | None) -> int:
     return max(1, round(len(stripped) / _KOREAN_READING_SPEED_CHARS_PER_MIN))
 
 
-def _serialize_item(item: ContentItem, full: bool = False) -> dict:
+def _serialize_item(item: ContentItem, slug: str, full: bool = False) -> dict:
     d = {
         "id": str(item.id),
         "content_type": item.content_type,
         "title": item.title,
         "meta_description": item.meta_description,
-        "image_url": get_signed_url(item.image_url) if item.image_url else None,
+        "image_url": _content_image_url(slug, item) if item.image_url else None,
         "scheduled_date": str(item.scheduled_date),
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,

@@ -65,12 +65,12 @@ resource "google_compute_managed_ssl_certificate" "main" {
   }
 }
 
-# 병원 커스텀 도메인 — 도메인별 cert 1개씩 발급한다.
-# 한 cert에 여러 고객 도메인을 묶으면 한 병원의 DNS 누락이 같은 cert의
-# 다른 병원(과 재발급 시 메인 도메인) 서빙까지 막는다 — 장애 격리를 위해 분리.
+# 병원 커스텀 도메인 — 레거시 per-domain managed cert(use_certificate_map=false 동안만).
+# Certificate Manager로 전환(true) 후에는 certmanager.tf의 cert + map entry가 대체하므로
+# 여기서는 비활성화한다. 도메인별 cert 1개씩 발급해 장애를 격리한다.
 # cert는 도메인이 LB IP로 해석될 때(고객 CNAME 적용 후)만 ACTIVE가 된다.
 resource "google_compute_managed_ssl_certificate" "customer" {
-  for_each = toset(var.customer_domains)
+  for_each = var.use_certificate_map ? toset([]) : toset(var.customer_domains)
   name     = "${var.app_name}-cust-${substr(md5(each.value), 0, 12)}"
   project  = var.project_id
 
@@ -227,10 +227,17 @@ resource "google_compute_target_https_proxy" "main" {
 
   # 커스텀 도메인 요청은 URL map의 default_service(site)로 흘러가고,
   # site 미들웨어가 Host 헤더로 병원 slug를 해석한다 — host_rule 추가 불필요.
-  ssl_certificates = concat(
+  #
+  # cert 부착: use_certificate_map 으로 무중단 전환(둘은 동시 설정 불가, 한쪽은 null).
+  #   false → 레거시 ssl_certificates 나열(메인 + per-domain customer).
+  #   true  → Certificate Manager certificate_map(certmanager.tf) — 와일드카드 PRIMARY가
+  #           메인/admin/모든 서브도메인 커버, 자기 도메인은 hostname 엔트리.
+  ssl_certificates = var.use_certificate_map ? null : concat(
     [google_compute_managed_ssl_certificate.main.id],
     [for cert in google_compute_managed_ssl_certificate.customer : cert.id],
   )
+
+  certificate_map = var.use_certificate_map ? "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.main.id}" : null
 }
 
 resource "google_compute_global_forwarding_rule" "https" {

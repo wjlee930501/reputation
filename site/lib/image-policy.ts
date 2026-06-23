@@ -1,8 +1,13 @@
 export function isPublicApiAssetUrl(src: string | null | undefined): boolean {
   if (!src) return false
   try {
-    const parsed = new URL(src, 'http://localhost')
-    return /^\/api\/v1\/public\/hospitals\/[^/]+\/assets\/[^/]+/.test(parsed.pathname)
+    const p = new URL(src, 'http://localhost').pathname
+    // /assets/{id} (원장·병원 사진) 와 /contents/{id}/image (콘텐츠 대표 이미지) 모두
+    // backend 프록시(요청마다 302 signed)라 next/image 최적화를 우회해 직접 src로 렌더한다.
+    return (
+      /^\/api\/v1\/public\/hospitals\/[^/]+\/assets\/[^/]+/.test(p) ||
+      /^\/api\/v1\/public\/hospitals\/[^/]+\/contents\/[^/]+\/image/.test(p)
+    )
   } catch {
     return false
   }

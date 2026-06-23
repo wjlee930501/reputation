@@ -36,9 +36,30 @@ case "$SERVICE" in
     #     --set-secrets=ADMIN_PASSWORD=...,DB_PASSWORD=DB_PASSWORD:latest ...
     exec python -m app.utils.admin_user create-owner
     ;;
+  backfill-images)
+    # 이미지 없이 seed된 발행 콘텐츠(image_url IS NULL)에 Imagen 대표 이미지 backfill —
+    # Cloud Run Job으로 실행 (migrate Job에 --update-env-vars SERVICE=backfill-images).
+    exec python -m app.utils.backfill_content_images
+    ;;
+  seed-colon-cluster)
+    # 대장내시경 deep-format 콘텐츠 클러스터 seed (장편한외과) — Cloud Run Job.
+    exec python -m app.utils.seed_colon_cluster
+    ;;
+  unpublish-flagged)
+    # 품질 하네스 confirmed 위반 콘텐츠를 라이브에서 내림(→DRAFT) — Cloud Run Job.
+    exec python -m app.utils.unpublish_items
+    ;;
+  fix-director-credential)
+    # 원장 프로파일의 비존재 자격('대장내시경 세부전문의') 제거 — Cloud Run Job.
+    exec python -m app.utils.fix_director_credential
+    ;;
+  inspect-schema)
+    # prod DB 스키마 점검(읽기 전용) — 유실된 마이그레이션 정의 역확인 — Cloud Run Job.
+    exec python -m app.utils.inspect_schema
+    ;;
   *)
     echo "Unknown SERVICE: $SERVICE"
-    echo "Valid values: api, worker, beat, flower, migrate, seed-admin"
+    echo "Valid values: api, worker, beat, flower, migrate, seed-admin, backfill-images, seed-colon-cluster, unpublish-flagged, fix-director-credential, inspect-schema"
     exit 1
     ;;
 esac

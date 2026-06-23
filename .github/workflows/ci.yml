@@ -141,19 +141,29 @@ jobs:
           - name: backend
             context: backend
             dockerfile: backend/Dockerfile
+            build_args: ""
+          # site/admin은 NEXT_PUBLIC_* 가 빌드 시점에 번들로 인라인되며, site 설정은
+          # 프로덕션 빌드에서 NEXT_PUBLIC_SITE_URL 누락 시 명시적으로 실패한다. CI는
+          # 빌드 검증만 하므로 placeholder https URL을 주입한다(실제 값은 deploy.sh가 주입).
           - name: site
             context: site
             dockerfile: site/Dockerfile
+            build_args: >-
+              --build-arg NEXT_PUBLIC_SITE_URL=https://reputation.co.kr
+              --build-arg NEXT_PUBLIC_API_URL=https://reputation.co.kr/api/v1/public
+              --build-arg NEXT_PUBLIC_BACKEND_URL=https://reputation.co.kr
           - name: admin
             context: admin
             dockerfile: admin/Dockerfile
+            build_args: >-
+              --build-arg NEXT_PUBLIC_BACKEND_URL=https://reputation.co.kr
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       # 빌드만 검증 — 푸시 없음 (이미지 롤아웃은 scripts/deploy.sh 담당).
       - name: Build ${{ matrix.name }} image
-        run: docker build -f "${{ matrix.dockerfile }}" -t "ci-${{ matrix.name }}:${{ github.sha }}" "${{ matrix.context }}"
+        run: docker build ${{ matrix.build_args }} -f "${{ matrix.dockerfile }}" -t "ci-${{ matrix.name }}:${{ github.sha }}" "${{ matrix.context }}"
 
   # INFRA-4: Security scanning gate.
   #   - Dependency audits are non-blocking (continue-on-error) so they surface

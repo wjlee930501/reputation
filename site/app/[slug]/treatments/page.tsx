@@ -12,7 +12,6 @@ import { ClinicFooter } from '../_components/ClinicFooter'
 import { ClinicHeader } from '../_components/ClinicHeader'
 import { ContentCard } from '../_components/ContentCard'
 import { JsonLd } from '../_components/JsonLd'
-import { pickIconForTreatment } from '../_components/MedicalIcons'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -77,7 +76,6 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
   const treatmentsWithRelated = treatments.map((t) => ({
     treatment: t,
     related: findRelatedContents(t.name, contents),
-    visual: pickIconForTreatment(t.name),
   }))
 
   const itemListJsonLd = {
@@ -143,31 +141,23 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
             <section className="clinic-section">
               <div className="clinic-section-inner">
                 <ul className="clinic-treatment-grid" aria-label="진료 영역 목록">
-                  {treatmentsWithRelated.map(({ treatment, visual }) => {
-                    const { Icon, hue } = visual
+                  {treatmentsWithRelated.map(({ treatment }) => {
                     const treatmentSlug = buildTreatmentSlug(treatment.name)
                     const href = treatmentSlug
                       ? `/${params.slug}/treatments/${treatmentSlug}`
                       : null
-                    const inner = (
-                      <>
-                        <span className={`clinic-treatment-card-icon hue-${hue}`} aria-hidden="true">
-                          <Icon />
-                        </span>
-                        <span className="clinic-treatment-card-name">{treatment.name}</span>
-                      </>
-                    )
+                    const name = <span className="clinic-treatment-card-name">{treatment.name}</span>
                     return (
                       <li key={treatment.name} className="clinic-treatment-card">
                         {href ? (
                           <Link
                             href={href}
-                            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'inherit', textDecoration: 'none' }}
+                            style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}
                           >
-                            {inner}
+                            {name}
                           </Link>
                         ) : (
-                          inner
+                          name
                         )}
                       </li>
                     )
@@ -191,22 +181,11 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 48 }}>
                   {treatmentsWithRelated
                     .filter((t) => t.related.length > 0)
-                    .map(({ treatment, related, visual }) => {
-                      const { Icon, hue } = visual
+                    .map(({ treatment, related }) => {
                       return (
                         <div key={`group-${treatment.name}`}>
                           <div className="clinic-content-group-header">
-                            <h3
-                              className="clinic-content-group-heading"
-                              style={{ display: 'flex', alignItems: 'center', gap: 12 }}
-                            >
-                              <span
-                                className={`clinic-treatment-card-icon hue-${hue}`}
-                                style={{ width: 36, height: 36 }}
-                                aria-hidden="true"
-                              >
-                                <Icon />
-                              </span>
+                            <h3 className="clinic-content-group-heading">
                               {treatment.name}
                             </h3>
                             <span className="clinic-content-group-count">{related.length}편</span>

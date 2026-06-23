@@ -123,6 +123,12 @@ class PublicApiCacheMiddleware(BaseHTTPMiddleware):
         if request.method != "GET":
             response.headers["Cache-Control"] = "no-store"
             return response
+        # 에러(4xx/5xx)는 절대 캐시하지 않는다. public+stale-while-revalidate로 캐시되면
+        # 일시적 실패나 삭제된 항목의 404(특히 이미지 프록시 302 실패)가 브라우저에
+        # 최대 1시간 남아 이미지가 깨진 채로 고착된다.
+        if response.status_code >= 400:
+            response.headers["Cache-Control"] = "no-store"
+            return response
         if "/contents" in request.url.path:
             response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=3600"
         else:

@@ -44,12 +44,8 @@ export function CareFlow({ hospitalSlug, hospitalName }: Props) {
         </header>
 
         <ol className="clinic-flow-timeline" aria-label="진료 4단계 흐름">
-          {CARE_STEPS.map((step, idx) => (
+          {CARE_STEPS.map((step) => (
             <li key={step.label} className="clinic-flow-node">
-              {/* 연결선: 마지막 항목 제외 */}
-              {idx < CARE_STEPS.length - 1 && (
-                <span className="clinic-flow-connector" aria-hidden="true" />
-              )}
               <span className="clinic-flow-node-badge" aria-hidden="true">{step.label}</span>
               <div className="clinic-flow-node-body">
                 <h3 className="clinic-flow-node-title">{step.title}</h3>

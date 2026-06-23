@@ -17,7 +17,6 @@ import { ClinicFooter } from '../../_components/ClinicFooter'
 import { ClinicHeader } from '../../_components/ClinicHeader'
 import { ContentCard } from '../../_components/ContentCard'
 import { JsonLd } from '../../_components/JsonLd'
-import { pickIconForTreatment } from '../../_components/MedicalIcons'
 
 interface Props {
   params: Promise<{ slug: string; treatmentSlug: string }>
@@ -161,8 +160,6 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
     },
   }
 
-  const { Icon, hue } = pickIconForTreatment(treatmentName)
-
   return (
     <>
       <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
@@ -180,16 +177,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
               <span className="clinic-section-label">진료 영역</span>
-              <h1 className="clinic-library-hero-title">
-                <span
-                  className={`clinic-treatment-card-icon hue-${hue}`}
-                  style={{ width: 36, height: 36, marginRight: 12, verticalAlign: 'middle' }}
-                  aria-hidden="true"
-                >
-                  <Icon />
-                </span>
-                {treatmentName}
-              </h1>
+              <h1 className="clinic-library-hero-title">{treatmentName}</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{hospital.name}</strong>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />

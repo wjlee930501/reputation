@@ -9,7 +9,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 
-@dataclass(frozen=True, slots=True)
+# slots=True는 Python 3.10+ 전용 — 로컬 배포 환경의 py3.9에서 deploy preflight가
+# 깨지므로 사용하지 않는다 (frozen만으로 충분).
+@dataclass(frozen=True)
 class DomainCheckResult:
     domain: str
     addresses: tuple[str, ...]

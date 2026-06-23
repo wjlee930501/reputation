@@ -124,7 +124,10 @@ export function ClinicHero({
             alt=""
             fill
             sizes="100vw"
-            style={{ objectFit: 'cover', objectPosition: heroShowsFacility ? 'center center' : 'center top' }}
+            style={{
+              objectFit: heroShowsFacility ? 'cover' : 'contain',
+              objectPosition: 'center',
+            }}
             priority
             unoptimized={shouldBypassNextImageOptimization(heroPhotoUrl)}
           />
@@ -191,7 +194,10 @@ export function ClinicHero({
                 alt={heroPhotoLabel}
                 fill
                 sizes="(max-width: 920px) 100vw, 420px"
-                style={{ objectFit: 'cover', objectPosition: heroShowsFacility ? 'center center' : 'center top' }}
+                style={{
+                  objectFit: heroShowsFacility ? 'cover' : 'contain',
+                  objectPosition: 'center',
+                }}
                 priority
                 unoptimized={shouldBypassNextImageOptimization(heroPhotoUrl)}
               />
@@ -220,7 +226,7 @@ export function ClinicHero({
               <div className="clinic-hero-snapshot-row">
                 <dt>
                   <ClockIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
-                  <span className="clinic-hero-snapshot-today">{today.label}</span> 진료
+                  <span className="clinic-hero-snapshot-today">오늘</span> 진료
                 </dt>
                 <dd>{today.time}</dd>
               </div>

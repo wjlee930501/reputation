@@ -50,7 +50,6 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
   return (
     <section className="clinic-featured" aria-label="대표 의료 정보">
       <div className="clinic-featured-inner">
-        <span className="clinic-divider" aria-hidden="true" />
         <header className="clinic-section-header">
           <span className="clinic-section-label">대표 의료 정보</span>
           <h2 className="clinic-section-heading">먼저 정리한 글</h2>
@@ -80,19 +79,6 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
                   aria-hidden="true"
                   style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}
                 >
-                  <span className="clinic-content-card-image-glyph" aria-hidden="true">
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={1.6}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      style={{ width: '100%', height: '100%' }}
-                    >
-                      <path d="M9 11h6m-6 4h4M6 4h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
-                    </svg>
-                  </span>
                   {primaryTypeLabel}
                 </div>
               )}

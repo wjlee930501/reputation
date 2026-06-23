@@ -1,5 +1,37 @@
 const BASE = '/api/admin'
 
+// --- Autofill types ---
+
+export interface AutofillFieldMeta {
+  source: string
+  confidence: number
+}
+
+export interface AutofillViolation {
+  field: string
+  expressions: string[]
+}
+
+export interface AutofillSource {
+  name: string
+  ok: boolean
+  reason: string | null
+}
+
+export interface AutofillResponse {
+  draft: Record<string, unknown>
+  field_meta: Record<string, AutofillFieldMeta>
+  violations: AutofillViolation[]
+  naver_place_id: string | null
+  sources: AutofillSource[]
+}
+
+export interface AutofillRequest {
+  name?: string
+  website_url?: string
+  blog_url?: string
+}
+
 function normalizePath(path: string): string {
   if (path.startsWith('/api/admin/')) return path.slice('/api/admin'.length)
   if (path.startsWith('/admin/')) return path.slice('/admin'.length)
@@ -181,4 +213,19 @@ function readError(body: string, status: number): { message: string; detail: unk
   }
 
   return { message: fallbackMessage(status), detail: detail ?? null }
+}
+
+export async function autofillProfile(
+  hospitalId: string,
+  body: AutofillRequest,
+): Promise<AutofillResponse> {
+  return fetchAPI<AutofillResponse>(
+    `/admin/hospitals/${hospitalId}/profile/autofill`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      // Allow up to 60s for the slow scraping call
+      signal: AbortSignal.timeout(60_000),
+    },
+  )
 }
