@@ -327,3 +327,37 @@ async def test_activate_hospital_accepts_apex_address_strategy(monkeypatch):
     detail = db.added[0].detail
     assert detail["aeo_domain"] == "jangclinic.co.kr"
     assert detail["verification_method"] == "address"
+
+
+async def test_activate_hospital_subdomain_default_without_custom_domain(monkeypatch):
+    """자기 도메인 미연결 시 DNS 검증 없이 기본 서브도메인으로 라이브한다 (하이브리드)."""
+    hospital = _hospital(
+        aeo_domain=None,
+        profile_complete=True,
+        v0_report_done=True,
+        site_built=True,
+        schedule_set=True,
+        status=HospitalStatus.PENDING_DOMAIN,
+        site_live=False,
+    )
+    db = FakeDB(hospital)
+
+    async def _must_not_call(*args, **kwargs):
+        raise AssertionError("자기 도메인이 없으면 check_domain_dns를 호출하면 안 된다")
+
+    async def _fake_revalidate(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _must_not_call)
+    monkeypatch.setattr(hospitals_api, "ensure_site_revalidate_configured", lambda: None)
+    monkeypatch.setattr(hospitals_api, "trigger_hospital_site_revalidate_safe", _fake_revalidate)
+
+    result = await hospitals_api.activate_hospital(hospital.id, db=db)
+
+    assert result == {"detail": "장편한외과의원 activated"}
+    assert hospital.site_live is True
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert db.committed is True
+    detail = db.added[0].detail
+    assert detail["aeo_domain"] is None
+    assert detail["verification_method"] == "platform_subdomain"

@@ -32,6 +32,7 @@ resource "google_project_service" "services" {
     "redis.googleapis.com",
     "secretmanager.googleapis.com",
     "compute.googleapis.com",
+    "certificatemanager.googleapis.com", # 하이브리드 도메인 cert 평면 (certmanager.tf)
     "servicenetworking.googleapis.com",
     "vpcaccess.googleapis.com",
     "cloudresourcemanager.googleapis.com",

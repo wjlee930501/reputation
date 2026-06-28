@@ -26,6 +26,7 @@ from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.hospital_profile_autofill import autofill_profile
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
@@ -136,6 +137,27 @@ class HospitalProfileUpdate(BaseModel):
     )
     @classmethod
     def validate_public_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("URL must be absolute http(s)")
+        return cleaned
+
+
+class ProfileAutofillRequest(BaseModel):
+    """자동 채우기 입력 — name 미입력 시 병원 등록명을 사용한다."""
+
+    name: str | None = Field(None, max_length=200)
+    website_url: str | None = Field(None, max_length=500)
+    blog_url: str | None = Field(None, max_length=500)
+
+    @field_validator("website_url", "blog_url")
+    @classmethod
+    def _validate_url(cls, value: str | None) -> str | None:
         if value is None:
             return None
         cleaned = value.strip()
@@ -353,6 +375,54 @@ async def update_profile(
     return _serialize(h)
 
 
+@router.post("/{hospital_id}/profile/autofill")
+async def autofill_hospital_profile(
+    hospital_id: uuid.UUID,
+    body: ProfileAutofillRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """병원명 + URL로 온라인 정보(홈페이지·블로그·네이버 플레이스)를 스크랩해 프로파일 초안 생성.
+
+    **저장하지 않는다.** 초안(draft) + 필드별 출처/신뢰도(field_meta) + 의료광고 위반(violations)
+    + 소스 상태(sources)를 반환하고, AE가 검수 후 PATCH /profile 로 저장한다. best-effort —
+    일부 소스가 막혀도 가능한 필드만 채운다.
+    """
+    h = await _get_or_404(db, hospital_id)
+    name = (body.name or h.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="병원명이 필요합니다.")
+    website_url = body.website_url or h.website_url
+    blog_url = body.blog_url or h.blog_url
+
+    result = await autofill_profile(name, website_url=website_url, blog_url=blog_url)
+
+    await write_audit_log(
+        db,
+        action="autofill_profile",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="hospital",
+        target_id=hospital_id,
+        detail={
+            "name": name,
+            "filled_fields": sorted(result.draft.keys()),
+            "violation_fields": [v["field"] for v in result.violations],
+            "sources": [{"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources],
+        },
+    )
+    await db.commit()
+
+    return {
+        "draft": result.draft,
+        "field_meta": result.field_meta,
+        "violations": result.violations,
+        "naver_place_id": result.naver_place_id,
+        "sources": [
+            {"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources
+        ],
+    }
+
+
 @router.patch("/{hospital_id}/activate")
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """ACTIVE 상태로 전환 (공개 도메인/노출 상태 + 스케줄 설정 완료 후)"""
@@ -373,23 +443,25 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
             detail=f"활성화 사전 조건 미충족: {', '.join(missing)}",
         )
 
-    if not h.aeo_domain:
-        raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다. 먼저 도메인을 입력해 주세요.")
-
-    dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
-    if not dns_check.verified:
-        address_hint = (
-            f" 또는 A/AAAA {', '.join(dns_check.expected_addresses)}"
-            if dns_check.expected_addresses
-            else ""
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"DNS 설정이 확인되지 않았습니다. "
-                f"{h.aeo_domain} → {settings.CNAME_TARGET}{address_hint} 로 설정해 주세요."
-            ),
-        )
+    # 하이브리드 도메인: 자기 도메인이 연결돼 있으면 그 DNS를 검증하고, 없으면
+    # 기본 서브도메인({slug}.{platform host}, 와일드카드 cert+A로 커버)으로 라이브한다.
+    # 자기 도메인 검증 실패는 라이브를 막지만(운영자가 명시 연결한 경우), 미연결은 막지 않는다.
+    dns_check = None
+    if h.aeo_domain:
+        dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
+        if not dns_check.verified:
+            address_hint = (
+                f" 또는 A/AAAA {', '.join(dns_check.expected_addresses)}"
+                if dns_check.expected_addresses
+                else ""
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"DNS 설정이 확인되지 않았습니다. "
+                    f"{h.aeo_domain} → {settings.CNAME_TARGET}{address_hint} 로 설정해 주세요."
+                ),
+            )
 
     previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
     ensure_site_revalidate_configured()
@@ -406,9 +478,9 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
             "previous_status": previous_status,
             "new_status": HospitalStatus.ACTIVE.value,
             "aeo_domain": h.aeo_domain,
-            "cname_value": dns_check.cname_value,
-            "address_values": dns_check.address_values,
-            "verification_method": dns_check.verification_method,
+            "cname_value": dns_check.cname_value if dns_check else None,
+            "address_values": dns_check.address_values if dns_check else [],
+            "verification_method": dns_check.verification_method if dns_check else "platform_subdomain",
         },
     )
     await db.commit()

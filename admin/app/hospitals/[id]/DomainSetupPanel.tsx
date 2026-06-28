@@ -19,7 +19,7 @@ import {
   ManagedDomainFields,
   type DomainFeedback,
 } from './DomainSetupPrimitives'
-import { DEFAULT_CNAME_TARGET, statusBadge, trimmed } from './DomainSetupState'
+import { DEFAULT_CNAME_TARGET, platformSubdomainUrl, statusBadge, trimmed } from './DomainSetupState'
 
 export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeaderRefresh }: DomainSetupPanelProps) {
   const [domainSavedValue, setDomainSavedValue] = useState('')
@@ -72,6 +72,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     }
   }, [domainSavedValue, fetchSetupPlan])
 
+  const subdomainUrl = platformSubdomainUrl(profile.slug)
   const currentDomain = trimmed(profile.aeo_domain)
   const savedManagementMode = profile.domain_management_mode ?? 'HOSPITAL_MANAGED'
   const savedDnsStrategy = profile.domain_dns_strategy ?? 'CNAME'
@@ -188,8 +189,8 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-white px-6 py-5 border-b border-slate-100">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-base font-semibold text-slate-900">커스텀 도메인 연결</h3>
-            <p className="text-sm text-slate-700 mt-1">구매·DNS·검증 상태를 병원별로 관리합니다.</p>
+            <h3 className="text-base font-semibold text-slate-900">자기 도메인 연결 <span className="text-slate-400 font-normal">(선택)</span></h3>
+            <p className="text-sm text-slate-700 mt-1">기본은 아래 플랫폼 주소로 자동 공개되며, 병원 자기 도메인 연결은 선택입니다.</p>
           </div>
           <span className={`shrink-0 inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full border ${badge.cls}`}>
             {badge.label}
@@ -198,6 +199,23 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       </div>
 
       <div className="px-6 py-5 space-y-5">
+        {subdomainUrl && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+            <p className="text-sm font-semibold text-emerald-800">기본 주소 · 자동 공개</p>
+            <a
+              href={subdomainUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-0.5 block font-mono text-sm text-emerald-700 underline break-all"
+            >
+              {subdomainUrl}
+            </a>
+            <p className="mt-1 text-xs text-emerald-700/80">
+              운영 시작 시 별도 DNS·인증서 설정 없이 이 주소로 공개됩니다. 아래 자기 도메인 연결은 선택입니다.
+            </p>
+          </div>
+        )}
+
         <DomainModeSelectors
           managementMode={managementMode}
           dnsStrategy={dnsStrategy}

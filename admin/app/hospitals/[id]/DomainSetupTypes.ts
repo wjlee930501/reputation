@@ -2,6 +2,7 @@ import type { DomainDnsStrategy, DomainManagementMode } from '@/lib/domain'
 
 export interface DomainProfile {
   id?: string
+  slug?: string
   aeo_domain?: string
   site_live?: boolean
   domain_management_mode?: DomainManagementMode

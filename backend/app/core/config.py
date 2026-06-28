@@ -48,6 +48,7 @@ class Settings(BaseSettings):
             self.ANTHROPIC_API_KEY = _resolve_secret("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY)
             self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
             self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)
+            self.JINA_API_KEY = _resolve_secret("JINA_API_KEY", self.JINA_API_KEY)
             self.SLACK_WEBHOOK_URL = _resolve_secret("SLACK_WEBHOOK_URL", self.SLACK_WEBHOOK_URL)
             self.DB_PASSWORD = _resolve_secret("DB_PASSWORD", self.DB_PASSWORD)
             self._build_database_urls_from_secret_parts()
@@ -181,11 +182,23 @@ class Settings(BaseSettings):
     CLAUDE_MODEL: str = "claude-sonnet-4-5"
     CLAUDE_MODEL_FAST: str = "claude-haiku-4-5-20251001"
 
-    # Google Cloud — Imagen 3
+    # Jina Reader — 프로파일 자동 채우기 시 네이버 플레이스 등 봇 차단 사이트 우회 읽기.
+    # 선택값: 비어 있어도 무인증 free tier로 동작(분당 제한 빡빡). 키가 있으면 상향.
+    JINA_API_KEY: str = ""
+
+    # Google Cloud — Imagen 3 (이미지 폴백)
     GCP_PROJECT_ID: str = ""
     GCP_LOCATION: str = "us-central1"
     GCP_STORAGE_BUCKET: str = "reputation-images"
     ASSET_LOCAL_UPLOAD_DIR: str = "/tmp/private_asset_uploads"
+
+    # 콘텐츠 대표 이미지 생성기
+    #   "openai" → gpt-image-2 (기본, editorial 일러스트·항목별 다양성)
+    #   "imagen" → Vertex AI Imagen 3 폴백
+    IMAGE_PROVIDER: str = "openai"
+    OPENAI_IMAGE_MODEL: str = "gpt-image-2"
+    OPENAI_IMAGE_SIZE: str = "1536x864"  # 16:9 (16의 배수, 비율≤3:1) — 카드 레이아웃 일치
+    OPENAI_IMAGE_QUALITY: str = "high"   # low|medium|high
 
     # OpenAI — SoV
     OPENAI_API_KEY: str = ""
