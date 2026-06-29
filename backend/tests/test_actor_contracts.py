@@ -24,8 +24,16 @@ def test_philosophy_approval_actor_and_evidence_confirmation_are_required():
 
 
 def test_publish_actor_cannot_be_blank():
-    assert PublishBody().published_by == "AE"
-
     with pytest.raises(ValidationError) as missing_actor:
-        PublishBody(published_by="")
+        PublishBody()
     assert "published_by" in str(missing_actor.value)
+
+    with pytest.raises(ValidationError) as blank_actor:
+        PublishBody(published_by="")
+    assert "published_by" in str(blank_actor.value)
+
+    with pytest.raises(ValidationError) as whitespace_actor:
+        PublishBody(published_by="   ")
+    assert "published_by" in str(whitespace_actor.value)
+
+    assert PublishBody(published_by="  김민지 AE  ").published_by == "김민지 AE"

@@ -1,6 +1,11 @@
 from datetime import date, datetime
 from types import SimpleNamespace
+import uuid
 
+import pytest
+from fastapi import HTTPException
+
+from app.api.public.assets import public_asset_response
 from app.api.public.site import (
     _is_public_safe_content,
     _reading_minutes,
@@ -106,6 +111,17 @@ def test_public_content_policy_requires_published_and_essence_aligned():
     assert _is_public_safe_content(draft) is False
     assert _is_public_safe_content(needs_review) is False
     assert _is_public_safe_content(legacy_without_screening) is False
+
+
+def test_public_asset_response_rejects_external_redirects():
+    with pytest.raises(HTTPException) as exc_info:
+        public_asset_response(
+            "https://attacker.example/redirect.png",
+            hospital_id=uuid.UUID("00000000-0000-0000-0000-000000000000"),
+            media_type="image/png",
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 404
 
 
 def test_serialize_hospital_summary_exposes_llms_index_fields_only():

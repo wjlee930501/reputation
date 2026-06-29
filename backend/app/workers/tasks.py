@@ -128,7 +128,7 @@ def _reset_v0_analyzing_status(hospital_id: str, prior_status: str | None) -> No
 def _ensure_v0_has_successful_measurements(success_count: int, failure_count: int) -> None:
     if success_count <= 0:
         raise RuntimeError(
-            f"zero successful SoV measurements for V0 report (failures={failure_count})"
+            f"V0 리포트를 만들 수 있는 성공 측정 결과가 없습니다 (실패 {failure_count}건)"
         )
 
 

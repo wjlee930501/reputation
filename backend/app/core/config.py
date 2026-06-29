@@ -103,6 +103,7 @@ class Settings(BaseSettings):
 
         if not (self.DATABASE_URL and self.SYNC_DATABASE_URL):
             errors.append("DATABASE_URL/SYNC_DATABASE_URL (or DB_* secret parts) must resolve in production.")
+        self._validate_production_redis_url(errors)
 
         self._validate_external_https_url("ADMIN_BASE_URL", self.ADMIN_BASE_URL, errors)
         self._validate_external_https_url("SITE_BASE_URL", self.SITE_BASE_URL, errors)
@@ -125,6 +126,21 @@ class Settings(BaseSettings):
         hostname = (parsed.hostname or "").lower()
         if hostname in {"localhost", "127.0.0.1", "::1"} or hostname.endswith(".localhost"):
             errors.append(f"{name} must not point to localhost in production: {stripped}")
+
+    def _validate_production_redis_url(self, errors: list[str]) -> None:
+        stripped = self.REDIS_URL.strip()
+        if not stripped:
+            errors.append("REDIS_URL must be set in production.")
+            return
+
+        parsed = urlparse(stripped)
+        if parsed.scheme not in {"redis", "rediss"} or not parsed.netloc:
+            errors.append(f"REDIS_URL must be an absolute redis:// or rediss:// URL in production: {stripped}")
+            return
+
+        hostname = (parsed.hostname or "").lower()
+        if hostname in {"localhost", "127.0.0.1", "::1"} or hostname.endswith(".localhost"):
+            errors.append(f"REDIS_URL must not point to localhost in production: {stripped}")
 
     def _build_database_urls_from_secret_parts(self) -> None:
         if self.DATABASE_URL and self.SYNC_DATABASE_URL:

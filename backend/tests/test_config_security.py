@@ -24,6 +24,7 @@ def _valid_prod_kwargs(**overrides):
         ADMIN_SECRET_KEY="admin-secret",
         DATABASE_URL="postgresql+asyncpg://postgres:postgres@db/reputation",
         SYNC_DATABASE_URL="postgresql+psycopg2://postgres:postgres@db/reputation",
+        REDIS_URL="redis://redis.internal:6379/0",
         ALLOWED_ORIGINS="https://admin.example.com,https://reputation.co.kr",
         TRUSTED_PROXY_IPS="130.211.0.0/22,35.191.0.0/16",
         ADMIN_BASE_URL="https://admin.example.com",
@@ -46,6 +47,7 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         DB_PASSWORD="p@ss word",
         DB_NAME="reputation",
         CLOUD_SQL_CONNECTION_NAME="project:region:instance",
+        REDIS_URL="redis://redis.internal:6379/0",
         ALLOWED_ORIGINS="https://admin.example.com",
         TRUSTED_PROXY_IPS="130.211.0.0/22,35.191.0.0/16",
         ADMIN_BASE_URL="https://admin.example.com",
@@ -97,6 +99,12 @@ def test_production_rejects_non_https_site_base_url(monkeypatch):
     monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
     with pytest.raises(ValueError, match="SITE_BASE_URL"):
         Settings(**_valid_prod_kwargs(SITE_BASE_URL="http://reputation.co.kr"))
+
+
+def test_production_rejects_localhost_redis_url(monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    with pytest.raises(ValueError, match="REDIS_URL"):
+        Settings(**_valid_prod_kwargs(REDIS_URL="redis://localhost:6379/0"))
 
 
 def test_production_accepts_valid_secure_config(monkeypatch):

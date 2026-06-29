@@ -135,8 +135,9 @@ async def test_by_domain_unnormalizable_input_is_404_without_db_hit():
 # ── 하이브리드 기본 서브도메인({slug}.{platform host}) ────────────────
 
 
-async def test_by_domain_resolves_platform_subdomain_by_slug():
+async def test_by_domain_resolves_platform_subdomain_by_slug(monkeypatch):
     """{slug}.{platform host} 는 자기 도메인 없이 slug로 직접 해석된다 (하이브리드 기본)."""
+    monkeypatch.setattr(site_api.settings, "SITE_BASE_URL", "https://reputation.motionlabs.kr")
     db = FakeDB(_hospital())
 
     response = await _get_by_domain(_request(), "jang-clinic.reputation.motionlabs.kr", db=db)
@@ -147,8 +148,9 @@ async def test_by_domain_resolves_platform_subdomain_by_slug():
     assert HospitalStatus.ACTIVE in params.values()  # ACTIVE + site_live 게이트 유지
 
 
-async def test_by_domain_reserved_platform_label_uses_aeo_domain_path():
+async def test_by_domain_reserved_platform_label_uses_aeo_domain_path(monkeypatch):
     """admin/www 등 예약 라벨은 slug로 오인하지 않고 aeo_domain 경로로 빠진다."""
+    monkeypatch.setattr(site_api.settings, "SITE_BASE_URL", "https://reputation.motionlabs.kr")
     db = FakeDB(None)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -160,8 +162,9 @@ async def test_by_domain_reserved_platform_label_uses_aeo_domain_path():
     assert "admin.reputation.motionlabs.kr" in params.values()
 
 
-async def test_by_domain_multi_label_subdomain_uses_aeo_domain_path():
+async def test_by_domain_multi_label_subdomain_uses_aeo_domain_path(monkeypatch):
     """{a}.{b}.{platform host} 같은 다중 라벨은 slug 경로가 아니다 (단일 라벨만 기본)."""
+    monkeypatch.setattr(site_api.settings, "SITE_BASE_URL", "https://reputation.motionlabs.kr")
     db = FakeDB(None)
 
     with pytest.raises(HTTPException) as exc_info:

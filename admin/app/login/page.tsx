@@ -10,6 +10,7 @@ function LoginForm() {
   const [loading, setLoading] = useState(false)
   const router = useRouter()
   const searchParams = useSearchParams()
+  const hasError = Boolean(error)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -40,28 +41,38 @@ function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+    <main id="main-content" tabIndex={-1} className="min-h-screen flex items-center justify-center bg-slate-50">
       <form onSubmit={handleSubmit} className="bg-white p-8 rounded-xl shadow-sm w-full max-w-sm">
         <h1 className="text-xl font-bold text-slate-800 mb-6 text-center">Re:putation Admin</h1>
+        <label htmlFor="admin-email" className="sr-only">관리자 이메일</label>
         <input
+          id="admin-email"
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="관리자 이메일"
           className="w-full border border-slate-300 rounded-lg px-4 py-2 mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
           autoComplete="email"
+          aria-invalid={hasError}
+          aria-describedby={hasError ? 'login-error' : undefined}
+          required
           autoFocus
         />
+        <label htmlFor="admin-password" className="sr-only">관리자 비밀번호</label>
         <input
+          id="admin-password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="관리자 비밀번호"
           className="w-full border border-slate-300 rounded-lg px-4 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
           autoComplete="current-password"
+          aria-invalid={hasError}
+          aria-describedby={hasError ? 'login-error' : undefined}
+          required
         />
         {error && (
-          <p role="alert" aria-live="polite" className="text-red-500 text-sm mb-4">
+          <p id="login-error" role="alert" aria-live="polite" className="text-red-500 text-sm mb-4">
             {error}
           </p>
         )}
@@ -73,7 +84,7 @@ function LoginForm() {
           {loading ? '로그인 중...' : '로그인'}
         </button>
       </form>
-    </div>
+    </main>
   )
 }
 

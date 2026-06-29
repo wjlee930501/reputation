@@ -417,6 +417,12 @@ require_public_domain() {
   fi
 }
 
+require_admin_domain() {
+  if [[ -z "$ADMIN_DOMAIN" ]]; then
+    fail "ADMIN_DOMAIN 환경변수가 필요합니다 (예: ADMIN_DOMAIN=admin.reputation.motionlabs.kr). Admin Cloud Run 서비스는 LB 호스트 라우팅 뒤에서만 고객 제공 상태로 간주합니다."
+  fi
+}
+
 require_public_dns() {
   if [[ "${SKIP_PUBLIC_DNS_PREFLIGHT:-0}" == "1" ]]; then
     info "SKIP_PUBLIC_DNS_PREFLIGHT=1 — 공개 DNS preflight를 건너뜁니다."
@@ -506,9 +512,7 @@ deploy_site() {
 
 deploy_admin() {
   local image_url="$1"
-  if [[ -z "$ADMIN_DOMAIN" ]]; then
-    info "ADMIN_DOMAIN 미설정 — admin은 LB 호스트 라우팅 없이 배포됩니다."
-  fi
+  require_admin_domain
   info "Admin 서비스 배포 중..."
 
   gcloud run deploy reputation-admin \
@@ -637,6 +641,7 @@ case "$TARGET" in
     deploy_site "$SITE_IMAGE_URL"
     ;;
   admin)
+    require_admin_domain
     ADMIN_IMAGE_URL=$(build_and_push_admin)
     deploy_admin "$ADMIN_IMAGE_URL"
     ;;
@@ -645,6 +650,7 @@ case "$TARGET" in
     # PUBLIC_DOMAIN 누락이 site 빌드 단계에서야 터지면 새 backend + 옛 frontend의
     # 반쪽 롤아웃 상태로 중단된다.
     require_public_domain
+    require_admin_domain
     require_public_dns
     require_backend_runtime_shape
     if is_cloudsql_mode; then

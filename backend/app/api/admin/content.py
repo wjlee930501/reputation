@@ -124,7 +124,17 @@ class ContentPatch(BaseModel):
 
 
 class PublishBody(BaseModel):
-    published_by: str = Field(default="AE", min_length=1, max_length=100)  # AE 이름
+    published_by: str = Field(min_length=1, max_length=100)
+
+    @field_validator("published_by", mode="before")
+    @classmethod
+    def normalize_published_by(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("published_by is required")
+        return cleaned
 
 
 @router.post("/{hospital_id}/schedule", status_code=status.HTTP_201_CREATED)

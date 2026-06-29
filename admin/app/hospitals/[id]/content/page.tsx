@@ -7,6 +7,7 @@ import ReactMarkdown from 'react-markdown'
 import { ApiError, fetchAPI } from '@/lib/api'
 import { countCarriedOver, sortCarriedOverFirst } from '@/lib/content'
 import { formatDate } from '@/lib/format'
+import { buildManualPublishPayload } from '@/lib/publishing'
 import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
@@ -338,13 +339,13 @@ export default function ContentPage() {
     window.localStorage.setItem(PUBLISHER_STORAGE_KEY, value)
   }
 
-  function getPublisherForSubmit(): string | null {
-    const trimmed = publisherName.trim()
-    if (!trimmed) {
+  function getPublishPayloadForSubmit(): ReturnType<typeof buildManualPublishPayload> {
+    const payload = buildManualPublishPayload(publisherName)
+    if (!payload) {
       setPublisherError('발행 담당자 이름을 입력해 주세요.')
       return null
     }
-    return trimmed
+    return payload
   }
 
   function clearActionFeedback() {
@@ -355,8 +356,8 @@ export default function ContentPage() {
   async function handleBulkPublish() {
     const ids = Array.from(selectedIds)
     if (ids.length === 0) return
-    const publishedBy = getPublisherForSubmit()
-    if (!publishedBy) return
+    const publishPayload = getPublishPayloadForSubmit()
+    if (!publishPayload) return
     setBulkError(null)
     clearActionFeedback()
     setBulkProgress(`0/${ids.length} 발행 완료...`)
@@ -367,7 +368,7 @@ export default function ContentPage() {
       try {
         await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
           method: 'POST',
-          body: JSON.stringify({ published_by: publishedBy }),
+          body: JSON.stringify(publishPayload),
         })
         done++
         setBulkProgress(`${done}/${ids.length} 발행 완료...`)
@@ -396,14 +397,14 @@ export default function ContentPage() {
   }
 
   async function handlePublish(itemId: string) {
-    const publishedBy = getPublisherForSubmit()
-    if (!publishedBy) return
+    const publishPayload = getPublishPayloadForSubmit()
+    if (!publishPayload) return
     setActionLoading(true)
     clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
         method: 'POST',
-        body: JSON.stringify({ published_by: publishedBy }),
+        body: JSON.stringify(publishPayload),
       })
       setPublishSuccessId(itemId)
       setActionSuccess('콘텐츠 1건을 발행했습니다.')
