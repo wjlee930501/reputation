@@ -13,6 +13,11 @@ from app.core.database import get_db
 from app.core.rate_limit import get_request_ip
 from app.models.admin_user import AdminUser
 from app.services.admin_passwords import hash_admin_password, verify_admin_password
+from app.services.admin_session_revocation import (
+    AdminSessionRevocationUnavailable,
+    is_admin_session_hash_revoked,
+    revoke_admin_session_hash,
+)
 
 router = APIRouter(prefix="/admin/auth", tags=["Admin — Auth"])
 
@@ -40,6 +45,15 @@ class AdminAccountResponse(BaseModel):
     email: str
     name: str
     role: str
+
+
+class AdminSessionRevocationRequest(BaseModel):
+    token_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expires_at: datetime
+
+
+class AdminSessionRevocationResponse(BaseModel):
+    revoked: bool
 
 
 @lru_cache(maxsize=1)
@@ -105,3 +119,31 @@ async def login_admin(
     user.last_login_at = datetime.now(UTC)
     await db.commit()
     return AdminAccountResponse(id=user.id, email=user.email, name=user.name, role=user.role)
+
+
+@router.post("/sessions/revoke", response_model=AdminSessionRevocationResponse)
+async def revoke_admin_session(body: AdminSessionRevocationRequest):
+    try:
+        await revoke_admin_session_hash(body.token_hash, expires_at=body.expires_at)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid admin session token hash") from exc
+    except AdminSessionRevocationUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin session revocation state unavailable",
+        ) from exc
+    return AdminSessionRevocationResponse(revoked=True)
+
+
+@router.get("/sessions/{token_hash}/revocation", response_model=AdminSessionRevocationResponse)
+async def get_admin_session_revocation(token_hash: str):
+    try:
+        revoked = await is_admin_session_hash_revoked(token_hash)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid admin session token hash") from exc
+    except AdminSessionRevocationUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin session revocation state unavailable",
+        ) from exc
+    return AdminSessionRevocationResponse(revoked=revoked)

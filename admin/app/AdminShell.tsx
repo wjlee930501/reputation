@@ -2,6 +2,9 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
+import { useState } from 'react'
+
+import { buildAdminCsrfHeaders } from '@/lib/csrf'
 
 const NAV_ITEMS = [
   {
@@ -40,10 +43,16 @@ const NAV_ITEMS = [
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
+  const [logoutError, setLogoutError] = useState(false)
   const isLogin = pathname === '/login'
 
   async function handleLogout() {
-    await fetch('/api/auth/logout', { method: 'POST' })
+    setLogoutError(false)
+    const res = await fetch('/api/auth/logout', { method: 'POST', headers: buildAdminCsrfHeaders('POST') })
+    if (!res.ok) {
+      setLogoutError(true)
+      return
+    }
     router.push('/login')
   }
 
@@ -129,6 +138,11 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             </span>
             로그아웃
           </button>
+          {logoutError ? (
+            <p role="alert" className="mt-2 px-3 text-xs leading-relaxed text-red-300">
+              로그아웃에 실패했습니다. 잠시 후 다시 시도해 주세요.
+            </p>
+          ) : null}
         </div>
 
         <div className="hidden space-y-1 border-t border-slate-800 px-4 py-3 lg:block">

@@ -29,17 +29,18 @@ variable "app_name" {
 # ── Cloud Run ─────────────────────────────────────────────────────
 variable "api_image" {
   description = <<-EOT
-    Container image for the api/worker/beat Cloud Run services. Prefer an
-    immutable digest reference (e.g.
-    "<region>-docker.pkg.dev/<project>/reputation/reputation@sha256:<digest>")
-    so deploys and rollbacks are reproducible. The CI/CD pipeline should set
-    this to the digest it just pushed. A floating tag is allowed as a fallback
-    but is discouraged because :latest is mutable. The default leaves the value
-    empty so the project-derived default below is used; set explicitly to a
-    digest in production.
+    Required immutable digest image for the api/worker/beat Cloud Run services
+    (for example
+    "<region>-docker.pkg.dev/<project>/reputation/reputation@sha256:<digest>").
+    CI/CD should set this to the digest it just pushed so applies and rollbacks
+    are reproducible.
   EOT
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.api_image))
+    error_message = "api_image must be an immutable @sha256 digest image reference."
+  }
 }
 
 variable "api_memory" {
@@ -79,18 +80,26 @@ variable "api_max_instances" {
 # ── Frontend (Next.js on Cloud Run) ───────────────────────────────
 variable "site_image" {
   description = <<-EOT
-    Container image for the public site (Next.js) Cloud Run service. Prefer an
-    immutable digest. NOTE: NEXT_PUBLIC_* values are inlined at image BUILD time
-    (see site/Dockerfile build args) — rebuild the image when the domain changes.
+    Required immutable digest image for the public site (Next.js) Cloud Run
+    service. NOTE: NEXT_PUBLIC_* values are inlined at image BUILD time (see
+    site/Dockerfile build args) — rebuild the image when the domain changes.
   EOT
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.site_image))
+    error_message = "site_image must be an immutable @sha256 digest image reference."
+  }
 }
 
 variable "admin_image" {
-  description = "Container image for the admin console (Next.js) Cloud Run service. Prefer an immutable digest."
+  description = "Required immutable digest image for the admin console (Next.js) Cloud Run service."
   type        = string
-  default     = ""
+
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.admin_image))
+    error_message = "admin_image must be an immutable @sha256 digest image reference."
+  }
 }
 
 variable "site_memory" {

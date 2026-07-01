@@ -3,6 +3,21 @@ import test from 'node:test'
 
 import { ApiError, fetchAPI } from './api.ts'
 
+function withDocumentCookie(cookie: string, callback: () => Promise<void>): Promise<void> {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { cookie },
+  })
+  return callback().finally(() => {
+    if (descriptor) {
+      Object.defineProperty(globalThis, 'document', descriptor)
+    } else {
+      Reflect.deleteProperty(globalThis, 'document')
+    }
+  })
+}
+
 test('fetchAPI surfaces FastAPI detail messages instead of raw JSON', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () =>
@@ -172,10 +187,10 @@ test('fetchAPI surfaces top-level error/message strings when detail is absent', 
 
 test('fetchAPI sends FormData bodies without forcing a JSON content type', async () => {
   const originalFetch = globalThis.fetch
-  let capturedHeaders: Record<string, string> | undefined
+  let capturedHeaders: HeadersInit | undefined
   let capturedBody: unknown
   globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
-    capturedHeaders = init?.headers as Record<string, string>
+    capturedHeaders = init?.headers
     capturedBody = init?.body
     return new Response(JSON.stringify({ ok: true }), { status: 200 })
   }) as typeof fetch
@@ -189,7 +204,25 @@ test('fetchAPI sends FormData bodies without forcing a JSON content type', async
     })
     assert.equal(result.ok, true)
     assert.ok(capturedBody instanceof FormData)
-    assert.equal(capturedHeaders?.['Content-Type'], undefined)
+    assert.equal(new Headers(capturedHeaders).has('Content-Type'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchAPI sends the admin CSRF cookie as a header on state-changing requests', async () => {
+  const originalFetch = globalThis.fetch
+  let capturedHeaders: HeadersInit | undefined
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    capturedHeaders = init?.headers
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }) as typeof fetch
+
+  try {
+    await withDocumentCookie('admin_csrf=csrf-token-from-cookie', async () => {
+      await fetchAPI<{ ok: boolean }>('/admin/hospitals/demo', { method: 'PATCH', body: '{}' })
+    })
+    assert.equal(new Headers(capturedHeaders).get('X-Admin-CSRF-Token'), 'csrf-token-from-cookie')
   } finally {
     globalThis.fetch = originalFetch
   }

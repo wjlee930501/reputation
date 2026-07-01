@@ -88,6 +88,17 @@ def test_all_target_requires_admin_domain_before_backend_mutation() -> None:
     assert admin_domain_preflight < first_backend_mutation
 
 
+def test_all_target_builds_all_images_before_backend_mutation() -> None:
+    text = DEPLOY_SCRIPT.read_text()
+    all_case_start = text.index("  all)")
+    first_backend_mutation = text.index("run_migration \"$IMAGE_URL\"", all_case_start)
+    site_image_build = text.index("SITE_IMAGE_URL=$(build_and_push_site)", all_case_start)
+    admin_image_build = text.index("ADMIN_IMAGE_URL=$(build_and_push_admin)", all_case_start)
+
+    assert site_image_build < first_backend_mutation
+    assert admin_image_build < first_backend_mutation
+
+
 def test_admin_target_requires_admin_domain_before_build() -> None:
     text = DEPLOY_SCRIPT.read_text()
     admin_case_start = text.index("  admin)")

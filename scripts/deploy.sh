@@ -657,15 +657,15 @@ case "$TARGET" in
       require_cloudsql_app_user
     fi
     IMAGE_URL=$(build_and_push)
+    SITE_IMAGE_URL=$(build_and_push_site)
+    ADMIN_IMAGE_URL=$(build_and_push_admin)
     # 마이그레이션을 새 코드 배포보다 먼저 실행 — 새 리비전이 옛 스키마 위에서
     # 기동하는 시간을 없앤다 (additive migration 전제).
     run_migration "$IMAGE_URL"
     deploy_api "$IMAGE_URL"
     deploy_worker "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
-    SITE_IMAGE_URL=$(build_and_push_site)
     deploy_site "$SITE_IMAGE_URL"
-    ADMIN_IMAGE_URL=$(build_and_push_admin)
     deploy_admin "$ADMIN_IMAGE_URL"
     ;;
   migrate)

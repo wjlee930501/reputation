@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { getBackendUrl } from '@/lib/backend'
+import { ADMIN_CSRF_COOKIE_NAME } from '@/lib/csrf'
 import { buildLoginFetchInit, mapLoginFetchError } from '@/lib/login-proxy'
 import { clientIpFromForwardedHeaders, hasValidSameOrigin } from '@/lib/security'
-import { generateSessionToken } from '@/lib/session'
+import { generateCsrfToken, generateSessionToken } from '@/lib/session'
 
 export const runtime = 'nodejs'
 
@@ -20,6 +21,15 @@ function jsonNoStore(body: unknown, init?: ResponseInit): NextResponse {
   const res = NextResponse.json(body, init)
   res.headers.set('Cache-Control', 'no-store, private')
   return res
+}
+
+function backendUrlOrNull(): string | null {
+  try {
+    return getBackendUrl()
+  } catch (error) {
+    if (error instanceof Error) return null
+    throw error
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -44,10 +54,8 @@ export async function POST(req: NextRequest) {
     return jsonNoStore({ error: 'Invalid credentials' }, { status: 401 })
   }
 
-  let backendUrl: string
-  try {
-    backendUrl = getBackendUrl()
-  } catch {
+  const backendUrl = backendUrlOrNull()
+  if (!backendUrl) {
     return jsonNoStore({ error: 'Server misconfigured' }, { status: 500 })
   }
 
@@ -90,11 +98,13 @@ export async function POST(req: NextRequest) {
     return jsonNoStore({ error: mapped.error }, { status: mapped.status })
   }
 
+  const csrfToken = generateCsrfToken()
   const token = await generateSessionToken(sessionSecret, SESSION_MAX_AGE_SECONDS, {
     accountId: account.id,
     email: account.email,
     name: account.name,
     role: account.role,
+    csrfToken,
   })
 
   const res = NextResponse.json({
@@ -104,6 +114,13 @@ export async function POST(req: NextRequest) {
   res.headers.set('Cache-Control', 'no-store, private')
   res.cookies.set('admin_session', token, {
     httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: SESSION_MAX_AGE_SECONDS,
+  })
+  res.cookies.set(ADMIN_CSRF_COOKIE_NAME, csrfToken, {
+    httpOnly: false,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',

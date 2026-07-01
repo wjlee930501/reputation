@@ -35,6 +35,7 @@ export type AdminSession = {
   email: string
   name: string
   role: string
+  csrfToken?: string
   expiresAt: number
 }
 
@@ -55,6 +56,7 @@ function decodePayload(value: string): AdminSessionPayload | null {
       typeof parsed.email !== 'string' ||
       typeof parsed.name !== 'string' ||
       typeof parsed.role !== 'string' ||
+      (parsed.csrfToken !== undefined && typeof parsed.csrfToken !== 'string') ||
       !parsed.accountId ||
       !parsed.email ||
       !parsed.name ||
@@ -67,10 +69,22 @@ function decodePayload(value: string): AdminSessionPayload | null {
       email: parsed.email,
       name: parsed.name,
       role: parsed.role,
+      csrfToken: parsed.csrfToken,
     }
   } catch {
     return null
   }
+}
+
+export function generateCsrfToken(): string {
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  return bytesToHex(bytes)
+}
+
+export async function hashSessionToken(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', toArrayBuffer(new TextEncoder().encode(token)))
+  return bytesToHex(new Uint8Array(digest))
 }
 
 export async function generateSessionToken(

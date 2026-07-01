@@ -5,6 +5,7 @@ import {
   buildSafeAdminProxyPath,
   clientIpFromForwardedHeaders,
   getLoginRateLimitKey,
+  hasValidAdminCsrfToken,
   hasValidSameOrigin,
 } from './security.ts'
 
@@ -99,4 +100,26 @@ test('same-origin protection applies to state-changing requests', () => {
   assert.equal(hasValidSameOrigin(req('POST', 'https://admin.example.test')), true)
   assert.equal(hasValidSameOrigin(req('PATCH', 'https://evil.example.test')), false)
   assert.equal(hasValidSameOrigin(req('DELETE')), false)
+})
+
+test('admin CSRF protection requires the session nonce on state-changing requests', () => {
+  const request = req('POST', 'https://admin.example.test')
+  request.headers.set('x-admin-csrf-token', 'csrf-token-from-session')
+
+  const session = {
+    accountId: '0f0a41a9-bf2c-4f7b-b182-b85dc729b6e4',
+    email: 'owner@example.com',
+    name: 'Owner',
+    role: 'OWNER',
+    expiresAt: Date.now() + 60_000,
+    csrfToken: 'csrf-token-from-session',
+  }
+
+  assert.equal(hasValidAdminCsrfToken(req('GET'), session), true)
+  assert.equal(hasValidAdminCsrfToken(request, session), true)
+  assert.equal(hasValidAdminCsrfToken(req('POST', 'https://admin.example.test'), session), false)
+  assert.equal(
+    hasValidAdminCsrfToken(request, { ...session, csrfToken: 'different-token' }),
+    false,
+  )
 })

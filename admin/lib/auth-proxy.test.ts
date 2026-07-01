@@ -11,6 +11,7 @@ const sessionPayload = {
   email: 'owner@example.com',
   name: 'Owner',
   role: 'OWNER',
+  csrfToken: 'csrf-token-from-login',
 }
 
 function requestFor(path: string, cookie?: string) {
@@ -131,4 +132,22 @@ test('admin auth proxy allows requests with a valid session token', async () => 
   const res = await buildAdminAuthProxyResponse(requestFor('/hospitals', `admin_session=${token}`))
 
   assert.equal(res, undefined)
+})
+
+test('admin auth proxy redirects legacy pre-CSRF sessions to login and clears cookies', async () => {
+  process.env.ADMIN_SESSION_SECRET = 'test-secret'
+  const legacyPayload = {
+    accountId: sessionPayload.accountId,
+    email: sessionPayload.email,
+    name: sessionPayload.name,
+    role: sessionPayload.role,
+  }
+  const token = await generateSessionToken('test-secret', 60, legacyPayload)
+
+  const res = await buildAdminAuthProxyResponse(requestFor('/hospitals', `admin_session=${token}`))
+
+  assert.equal(res?.status, 307)
+  assert.equal(res?.headers.get('cache-control'), 'no-store, private')
+  assert.match(res?.headers.get('set-cookie') ?? '', /admin_session=;/)
+  assert.match(res?.headers.get('set-cookie') ?? '', /admin_csrf=;/)
 })

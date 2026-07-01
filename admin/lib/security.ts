@@ -1,4 +1,7 @@
-const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+import type { AdminSession } from './session.ts'
+import { ADMIN_CSRF_HEADER_NAME, isStateChangingMethod } from './csrf.ts'
+
+export { isStateChangingMethod } from './csrf.ts'
 
 type HeaderLike = {
   get(name: string): string | null
@@ -62,10 +65,6 @@ export function getLoginRateLimitKey(req: RequestLike): string | null {
   return null
 }
 
-export function isStateChangingMethod(method: string): boolean {
-  return !SAFE_METHODS.has(method.toUpperCase())
-}
-
 export function hasValidSameOrigin(req: RequestLike): boolean {
   if (!isStateChangingMethod(req.method ?? 'GET')) return true
 
@@ -86,9 +85,18 @@ export function hasValidSameOrigin(req: RequestLike): boolean {
   try {
     const parsed = new URL(origin)
     return parsed.host === expectedHost && parsed.protocol === `${expectedProto}:`
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error
     return false
   }
+}
+
+export function hasValidAdminCsrfToken(req: RequestLike, session: AdminSession): boolean {
+  if (!isStateChangingMethod(req.method ?? 'GET')) return true
+
+  const expected = session.csrfToken
+  const actual = req.headers.get(ADMIN_CSRF_HEADER_NAME)
+  return Boolean(expected && actual && actual === expected)
 }
 
 export function buildSafeAdminProxyPath(pathSegments: string[], allowedPrefixes: readonly string[]): string | null {

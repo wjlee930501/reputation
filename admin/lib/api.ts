@@ -1,3 +1,5 @@
+import { buildAdminCsrfHeaders } from './csrf.ts'
+
 const BASE = '/api/admin'
 
 // --- Autofill types ---
@@ -38,6 +40,13 @@ function normalizePath(path: string): string {
   return path.startsWith('/') ? path : `/${path}`
 }
 
+function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+  if (!headers) return {}
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries())
+  if (Array.isArray(headers)) return Object.fromEntries(headers)
+  return headers
+}
+
 /**
  * 백엔드 API 오류. message는 AE에게 보여줄 수 있는 읽기 좋은 한국어 문장이고,
  * detail에는 원본 구조화 응답(detail 필드)이 그대로 들어 있어
@@ -64,7 +73,8 @@ export async function fetchAPI<T = unknown>(path: string, options?: RequestInit)
     ...rest,
     headers: {
       ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-      ...customHeaders,
+      ...headersToRecord(customHeaders),
+      ...buildAdminCsrfHeaders(rest.method),
     },
   })
 
@@ -135,7 +145,8 @@ function compactJson(value: unknown): string | null {
   let raw: string | undefined
   try {
     raw = JSON.stringify(value)
-  } catch {
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error
     return null
   }
   if (!raw || raw === '{}' || raw === 'null') return null
@@ -153,7 +164,8 @@ function readError(body: string, status: number): { message: string; detail: unk
   let parsed: unknown
   try {
     parsed = JSON.parse(body)
-  } catch {
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error
     // JSON이 아니면 텍스트 그대로 노출 (백엔드가 평문을 보낸 경우)
     return { message: body, detail: null }
   }

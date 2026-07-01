@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server.js'
 import type { NextRequest } from 'next/server.js'
 
-import { verifySessionToken } from './session.ts'
+import { ADMIN_CSRF_COOKIE_NAME } from './csrf.ts'
+import { readSessionToken } from './session.ts'
 
 type AuthProxyRequest = {
   nextUrl: {
@@ -34,6 +35,7 @@ function buildLoginRedirect(req: AuthProxyRequest): NextResponse {
   const res = NextResponse.redirect(url)
   res.headers.set('cache-control', 'no-store, private')
   res.cookies.delete('admin_session')
+  res.cookies.delete(ADMIN_CSRF_COOKIE_NAME)
   return res
 }
 
@@ -57,9 +59,9 @@ export async function buildAdminAuthProxyResponse(req: AuthProxyRequest): Promis
   }
 
   const token = req.cookies.get('admin_session')?.value
-  const isValid = token ? await verifySessionToken(token, sessionSecret) : false
+  const session = token ? await readSessionToken(token, sessionSecret) : null
 
-  if (isValid) return undefined
+  if (session?.csrfToken) return undefined
 
   if (pathname.startsWith('/api/')) {
     return buildUnauthorizedJson()

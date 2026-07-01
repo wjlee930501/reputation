@@ -124,6 +124,8 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
 
     commands = command_log.read_text()
     assert commands.index("gcloud sql users list") < commands.index("docker build")
+    assert commands.index("/site/Dockerfile") < commands.index("gcloud run jobs create reputation-migrate")
+    assert commands.index("/admin/Dockerfile") < commands.index("gcloud run jobs create reputation-migrate")
     assert commands.index("gcloud run jobs create reputation-migrate") < commands.index(
         "gcloud run deploy reputation-api"
     )

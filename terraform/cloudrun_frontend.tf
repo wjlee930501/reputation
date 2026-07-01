@@ -11,8 +11,8 @@
 # ═══════════════════════════════════════════════════════════════════
 
 locals {
-  site_image  = var.site_image != "" ? var.site_image : "${var.region}-docker.pkg.dev/${var.project_id}/reputation/site:latest"
-  admin_image = var.admin_image != "" ? var.admin_image : "${var.region}-docker.pkg.dev/${var.project_id}/reputation/admin:latest"
+  site_image  = var.site_image
+  admin_image = var.admin_image
 
   public_origin = "https://${var.domain}"
 }
@@ -114,7 +114,7 @@ resource "google_cloud_run_v2_service" "site" {
 
   # scripts/deploy.sh owns image rollouts (gcloud run deploy); terraform manages
   # the rest of the service shape. Prevents `terraform apply` reverting the
-  # running revision to var.site_image / the :latest fallback nothing pushes.
+  # running revision to var.site_image.
   lifecycle {
     ignore_changes = [
       template[0].containers[0].image,

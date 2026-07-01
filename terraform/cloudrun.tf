@@ -3,11 +3,9 @@
 # ═══════════════════════════════════════════════════════════════════
 
 locals {
-  # INFRA-2: Pin the deployed image. Prefer an immutable digest passed via
-  # var.api_image (set by CI/CD). Fall back to a registry tag only if unset.
-  # NOTE: the fallback uses a tag — set var.api_image to an @sha256:... digest
-  # in production for reproducible deploys/rollbacks.
-  app_image = var.api_image != "" ? var.api_image : "${var.region}-docker.pkg.dev/${var.project_id}/reputation/reputation:latest"
+  # INFRA-2: Terraform service creation uses the immutable digest passed by
+  # CI/CD. Rollout scripts still own subsequent image changes.
+  app_image = var.api_image
 
   # AUTH-5: Effective browser CORS allowlist. If the operator does not override
   # var.allowed_origins, derive HTTPS origins from the configured domains.
@@ -201,8 +199,8 @@ resource "google_cloud_run_v2_service" "api" {
   # Ownership split: terraform manages the infra shape (env, scaling, probes,
   # Cloud SQL volume, SA), while scripts/deploy.sh owns image rollouts via
   # `gcloud run deploy`. Without this, a later `terraform apply` would revert
-  # the running revision to var.api_image (or the :latest fallback nothing
-  # pushes). var.api_image is still used for INITIAL creation.
+  # the running revision to var.api_image. var.api_image is still used for
+  # INITIAL creation.
   lifecycle {
     ignore_changes = [
       template[0].containers[0].image,

@@ -36,10 +36,11 @@ db_instance_tier = "db-custom-1-3840"
 site_revalidate_url    = "https://reputation.motionlabs.kr/api/revalidate"
 
 # ── Container image (INFRA-2) ──────────────────────────────────────
-# Prefer an immutable digest so deploys/rollbacks are reproducible. CI/CD
-# should set this to the digest it just pushed. Leave empty to fall back to the
-# (mutable) :latest tag.
+# Required immutable digest images so deploys/rollbacks are reproducible. CI/CD
+# should set these to the digests it just pushed before terraform apply.
 # api_image = "asia-northeast3-docker.pkg.dev/reputation-prod/reputation/reputation@sha256:<digest>"
+# site_image = "asia-northeast3-docker.pkg.dev/reputation-prod/reputation/site@sha256:<digest>"
+# admin_image = "asia-northeast3-docker.pkg.dev/reputation-prod/reputation/admin@sha256:<digest>"
 
 # ── Backend security env (AUTH-1 / AUTH-5) ─────────────────────────
 # CORS allowlist (browser-facing, credentials enabled → HTTPS only, no '*').

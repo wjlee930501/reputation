@@ -7,7 +7,8 @@ import {
 } from './admin-proxy.ts'
 import { getBackendUrl } from './backend.ts'
 import { buildProxyResponse } from './proxy-response.ts'
-import { buildSafeAdminProxyPath, hasValidSameOrigin } from './security.ts'
+import { buildSafeAdminProxyPath, hasValidAdminCsrfToken, hasValidSameOrigin } from './security.ts'
+import { checkAdminSessionRevocation } from './session-revocation.ts'
 import { readSessionToken } from './session.ts'
 
 const ALLOWED_PREFIXES = ['hospitals', 'content', 'reports', 'sov', 'domain', 'essence', 'leads']
@@ -27,6 +28,15 @@ function textNoStore(body: string, init?: ResponseInit): NextResponse {
   const res = new NextResponse(body, init)
   res.headers.set('Cache-Control', 'no-store, private')
   return res
+}
+
+function backendUrlOrNull(): string | null {
+  try {
+    return getBackendUrl()
+  } catch (error) {
+    if (error instanceof Error) return null
+    throw error
+  }
 }
 
 export async function handleAdminApiProxy(
@@ -52,9 +62,16 @@ export async function handleAdminApiProxy(
   }
 
   const sessionToken = req.cookies.get('admin_session')?.value
-  const session = sessionToken ? await readSessionToken(sessionToken, sessionSecret) : null
+  if (!sessionToken) {
+    return jsonNoStore({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const session = await readSessionToken(sessionToken, sessionSecret)
   if (!session) {
     return jsonNoStore({ error: 'Unauthorized' }, { status: 401 })
+  }
+  if (!hasValidAdminCsrfToken(req, session)) {
+    return textNoStore('Forbidden', { status: 403 })
   }
 
   const path = buildSafeAdminProxyPath(pathSegments, ALLOWED_PREFIXES)
@@ -62,12 +79,23 @@ export async function handleAdminApiProxy(
     return textNoStore('Forbidden', { status: 403 })
   }
 
-  let backendUrl: string
-  try {
-    backendUrl = getBackendUrl()
-  } catch {
+  const backendUrl = backendUrlOrNull()
+  if (!backendUrl) {
     return jsonNoStore({ error: 'Server misconfigured' }, { status: 500 })
   }
+
+  const revocationStatus = await checkAdminSessionRevocation({
+    backendUrl,
+    adminKey,
+    sessionToken,
+  })
+  if (revocationStatus === 'unavailable') {
+    return jsonNoStore({ error: 'Admin session state unavailable' }, { status: 503 })
+  }
+  if (revocationStatus === 'revoked') {
+    return jsonNoStore({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   const url = new URL(`/api/v1/admin/${path}`, backendUrl)
 
   req.nextUrl.searchParams.forEach((value, key) => {
