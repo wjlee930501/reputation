@@ -1,22 +1,15 @@
-"""
-Public API — 병원 정보·콘텐츠 허브 공개 표면용
-GET /api/v1/public/hospitals/{slug}                      — 병원 기본정보 + 공개 사진
-GET /api/v1/public/hospitals/{slug}/contents             — 발행된 콘텐츠 목록
-GET /api/v1/public/hospitals/{slug}/contents/{content_id} — 콘텐츠 상세
-GET /api/v1/public/site/hospitals/by-domain/{domain}      — 커스텀 도메인 → 병원 역조회
-"""
 import re
 import uuid
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import limiter
+from app.api.public.assets import public_asset_response, public_asset_url
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import (
     HospitalContentPhilosophy,
@@ -27,9 +20,7 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
-from app.services.asset_storage import resolve_legacy_asset_path, resolve_local_asset_path
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
-from app.services.gcs_utils import get_signed_url
 from app.utils.domain import normalize_domain
 from app.utils.medical_filter import check_forbidden
 
@@ -197,7 +188,7 @@ async def get_public_hospital_asset(
     asset = result.scalar_one_or_none()
     if not asset or not asset.file_url:
         raise HTTPException(status_code=404, detail="Asset not found")
-    return _asset_response(asset.file_url, hospital_id=h.id, media_type=asset.mime_type)
+    return public_asset_response(asset.file_url, hospital_id=h.id, media_type=asset.mime_type)
 
 
 @router.get("/{slug}/contents")
@@ -254,7 +245,7 @@ async def get_public_content_image(
         or not item.image_url
     ):
         raise HTTPException(status_code=404, detail="Content image not found")
-    return _asset_response(item.image_url, hospital_id=h.id, media_type="image/png")
+    return public_asset_response(item.image_url, hospital_id=h.id, media_type="image/png")
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
@@ -309,14 +300,14 @@ def _serialize_hospital(
     # null이 되면서 승인된 자산 폴백까지 건너뛰는 버그가 있었다).
     director_photo = _safe_external_url(h.director_photo_url)
     if not director_photo and SourceType.PHOTO_DOCTOR in by_type:
-        director_photo = _public_asset_url(h.slug, by_type[SourceType.PHOTO_DOCTOR])
+        director_photo = public_asset_url(h.slug, by_type[SourceType.PHOTO_DOCTOR].id)
 
     serialized_photos = [
         {
             "id": str(asset.id),
             "source_type": asset.source_type.value if hasattr(asset.source_type, "value") else asset.source_type,
             "title": asset.title,
-            "url": _public_asset_url(h.slug, asset),
+            "url": public_asset_url(h.slug, asset.id),
         }
         for asset in photo_records
     ]
@@ -418,28 +409,6 @@ def _safe_external_url(value: str | None) -> str | None:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     return value.strip()
-
-
-def _asset_response(asset_ref: str, *, hospital_id: uuid.UUID, media_type: str | None):
-    if asset_ref.startswith("local://"):
-        path = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
-        if not path or not path.exists():
-            raise HTTPException(status_code=404, detail="Asset not found")
-        return FileResponse(path, media_type=media_type)
-    if asset_ref.startswith("gs://"):
-        signed_url = get_signed_url(asset_ref)
-        if not signed_url or signed_url == asset_ref:
-            raise HTTPException(status_code=503, detail="Could not create signed asset URL")
-        return RedirectResponse(url=signed_url, status_code=302)
-    if asset_ref.startswith("/assets/"):
-        path = resolve_legacy_asset_path(asset_ref, expected_hospital_id=hospital_id)
-        if path and path.exists():
-            return FileResponse(path, media_type=media_type)
-        raise HTTPException(status_code=404, detail="Asset not found")
-    if asset_ref.startswith("http://") or asset_ref.startswith("https://"):
-        return RedirectResponse(url=asset_ref, status_code=302)
-    raise HTTPException(status_code=404, detail="Asset not found")
-
 
 # 한국어 평균 읽기 속도 약 600자/분 — site 상세 페이지 calculateReadingMinutes와 동일 기준.
 _KOREAN_READING_SPEED_CHARS_PER_MIN = 600

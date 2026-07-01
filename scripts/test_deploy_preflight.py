@@ -77,3 +77,21 @@ def test_docker_compose_worker_beat_flower_select_non_api_services() -> None:
     assert "SERVICE: beat" in text
     assert "SERVICE: flower" in text
     assert 'CELERY_CONCURRENCY: "4"' in text
+
+
+def test_all_target_requires_admin_domain_before_backend_mutation() -> None:
+    text = DEPLOY_SCRIPT.read_text()
+    all_case_start = text.index("  all)")
+    first_backend_mutation = text.index("IMAGE_URL=$(build_and_push)", all_case_start)
+    admin_domain_preflight = text.index("require_admin_domain", all_case_start)
+
+    assert admin_domain_preflight < first_backend_mutation
+
+
+def test_admin_target_requires_admin_domain_before_build() -> None:
+    text = DEPLOY_SCRIPT.read_text()
+    admin_case_start = text.index("  admin)")
+    first_admin_build = text.index("ADMIN_IMAGE_URL=$(build_and_push_admin)", admin_case_start)
+    admin_domain_preflight = text.index("require_admin_domain", admin_case_start)
+
+    assert admin_domain_preflight < first_admin_build

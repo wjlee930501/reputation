@@ -294,6 +294,95 @@ async def test_publish_content_blocks_concurrent_publish_under_lock(monkeypatch)
     assert exc_info.value.detail == "Already published"
 
 
+async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    hospital = _hospital(hospital_id)
+    hospital.status = "ACTIVE"
+    hospital.site_live = False
+    item = _content_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        title="치질 수술 전 확인할 점",
+        body="환자 상태에 따라 진료 방향을 설명합니다.",
+        meta_description="진료 전 확인할 점.",
+        essence_status="ALIGNED",
+        references_list=[{"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}],
+        status="DRAFT",
+    )
+    audit_calls = []
+    published_notifications = []
+
+    class FakeDB:
+        commit_calls = 0
+
+        async def commit(self):
+            self.commit_calls += 1
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        assert requested_item_id == item_id
+        assert requested_hospital_id == hospital_id
+        return item
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return hospital
+
+    async def fake_get_philosophy(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return _philosophy()
+
+    async def fake_write_audit_log(*args, **kwargs):
+        audit_calls.append(kwargs)
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def fake_notify_content_published(hospital_name, title):
+        published_notifications.append((hospital_name, title))
+        return True
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
+    monkeypatch.setattr(
+        content_api,
+        "screen_content_against_philosophy",
+        lambda _item, philosophy: SimpleNamespace(status=content_api.ESSENCE_STATUS_ALIGNED, summary={"ok": True}),
+    )
+    monkeypatch.setattr(content_api, "write_audit_log", fake_write_audit_log)
+    monkeypatch.setattr(content_api.notifier, "notify_content_published", fake_notify_content_published)
+
+    db = FakeDB()
+    result = await content_api.publish_content(
+        hospital_id,
+        item_id,
+        content_api.PublishBody(published_by="  김민지 AE  "),
+        db=db,
+    )
+
+    assert result["detail"] == "Published"
+    assert item.status == content_api.ContentStatus.PUBLISHED
+    assert item.published_at is not None
+    assert item.published_by == "김민지 AE"
+    assert db.commit_calls == 1
+    assert audit_calls == [
+        {
+            "action": "publish_content",
+            "hospital_id": hospital.id,
+            "actor": content_api.default_actor(),
+            "target_type": "content_item",
+            "target_id": item.id,
+            "detail": {
+                "title": item.title,
+                "content_type": "FAQ",
+                "scheduled_date": str(item.scheduled_date),
+                "claimed_by": "김민지 AE",
+                "essence_status": content_api.ESSENCE_STATUS_ALIGNED,
+            },
+        }
+    ]
+    assert published_notifications == [(hospital.name, item.title)]
+
+
 async def test_update_content_brief_links_action_infers_target_and_approves(monkeypatch):
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { useDomainProfileReset } from './DomainSetupHooks'
 import {
   buildFallbackDomainSetupPlan,
   parseStepsFromMessage,
@@ -39,14 +40,16 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     [hospitalId],
   )
 
-  useEffect(() => {
-    setDomainSavedValue(profile.aeo_domain ?? '')
-    setManagementMode(profile.domain_management_mode ?? 'HOSPITAL_MANAGED')
-    setDnsStrategy(profile.domain_dns_strategy ?? 'CNAME')
-    setRegistrar(profile.domain_registrar ?? '')
-    setDnsProvider(profile.domain_dns_provider ?? '')
-    setPurchaseNote(profile.domain_purchase_note ?? '')
-  }, [profile.id])
+  useDomainProfileReset({
+    hospitalId,
+    profile,
+    setDomainSavedValue,
+    setManagementMode,
+    setDnsStrategy,
+    setRegistrar,
+    setDnsProvider,
+    setPurchaseNote,
+  })
 
   useEffect(() => {
     let cancelled = false

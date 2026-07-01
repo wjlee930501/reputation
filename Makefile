@@ -40,7 +40,11 @@ test-backend-local:
 
 test-frontend:
 	cd site && npm test
+	cd site && npm run lint
+	cd site && npm run typecheck
 	cd admin && npm test
+	cd admin && npm run lint
+	cd admin && npm run typecheck
 
 build-frontend:
 	cd site && npm run build

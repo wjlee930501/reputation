@@ -156,7 +156,7 @@ def test_get_iam_signing_credentials_refreshes_when_expired(monkeypatch):
     assert creds.valid is True
 
 
-def test_failure_returns_no_url_and_is_not_cached(monkeypatch):
+def test_failure_suppresses_unsigned_gcs_path_and_is_not_cached(monkeypatch):
     class _BoomBlob:
         def generate_signed_url(self, expiration=None, **kwargs):
             raise RuntimeError("permanently broken")
@@ -166,7 +166,7 @@ def test_failure_returns_no_url_and_is_not_cached(monkeypatch):
         gcs_utils, "_get_iam_signing_credentials", lambda: (_ for _ in ()).throw(RuntimeError("no adc"))
     )
 
-    assert gcs_utils.get_signed_url("gs://bucket/a.png") is None
+    assert gcs_utils.get_signed_url("gs://bucket/a.png") == ""
     assert gcs_utils._signed_url_cache == {}
 
 

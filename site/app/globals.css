@@ -5129,7 +5129,7 @@ textarea:focus-visible {
   }
 }
 
-@media (max-width: 920px) {
+@media (min-width: 481px) and (max-width: 920px) {
   /* 태블릿에서는 doctor panel이 보이므로 mobile photo 숨김 유지 */
   .clinic-hero-mobile-photo {
     display: none;

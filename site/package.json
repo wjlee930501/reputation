@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "test": "node --no-warnings --experimental-strip-types --test lib/*.test.ts",
-    "lint": "next lint"
+    "lint": "eslint --ext .js,.jsx,.ts,.tsx app lib middleware.ts --ignore-pattern next-env.d.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "next": "^15.5.18",

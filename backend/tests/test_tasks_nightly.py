@@ -52,6 +52,80 @@ def test_nightly_generation_stmt_uses_row_level_claiming():
     assert "generation_claimed_at IS NULL" in sql
 
 
+def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypatch):
+    item = SimpleNamespace(
+        id="content-1",
+        hospital_id="hospital-1",
+        content_type=SimpleNamespace(value="FAQ"),
+        title=None,
+        body=None,
+        meta_description=None,
+        image_url="gs://bucket/existing.png",
+        image_prompt=None,
+        generated_at=None,
+        body_updated_at=None,
+        status=None,
+        published_at=None,
+        published_by=None,
+        content_philosophy_id=None,
+        brief_status=None,
+        content_brief=None,
+        essence_status=None,
+        essence_check_summary=None,
+        references_list=None,
+        faq_question=None,
+        faq_answer_summary=None,
+    )
+    hospital = SimpleNamespace(id="hospital-1", slug="test-clinic")
+    philosophy = SimpleNamespace(id="philosophy-1")
+
+    class _ExistingTitles:
+        def all(self):
+            return []
+
+    class _ApprovedPhilosophy:
+        def scalar_one_or_none(self):
+            return philosophy
+
+    class _GenerationDB:
+        def __init__(self):
+            self._results = [_ExistingTitles(), _ApprovedPhilosophy()]
+            self.commit_calls = 0
+
+        def execute(self, _stmt):
+            return self._results.pop(0)
+
+        def commit(self):
+            self.commit_calls += 1
+
+    async def fake_generate_content(*_args, **_kwargs):
+        return {
+            "title": "치질 수술 전 확인할 점",
+            "body": "환자 상태에 따라 진료 방향을 설명합니다.",
+            "meta_description": "진료 전 확인할 점.",
+            "references": [{"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}],
+            "faq_question": "치질 수술 전 무엇을 확인하나요?",
+            "faq_answer_summary": "증상 단계와 회복 계획을 함께 확인합니다.",
+        }
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda _item, _philosophy: SimpleNamespace(status="ALIGNED", summary={"ok": True}),
+    )
+
+    db = _GenerationDB()
+    tasks._generate_single_content_item(db, item, hospital)
+
+    assert item.status == tasks.ContentStatus.DRAFT
+    assert item.published_at is None
+    assert item.published_by is None
+    assert item.generated_at is not None
+    assert item.content_philosophy_id == philosophy.id
+    assert db.commit_calls == 1
+
+
 def test_content_item_schedule_slots_have_db_uniqueness():
     indexes = {index.name: index for index in ContentItem.__table__.indexes}
     slot_index = indexes.get("uq_content_items_schedule_slot")
@@ -61,7 +135,7 @@ def test_content_item_schedule_slots_have_db_uniqueness():
 
 
 def test_v0_report_requires_at_least_one_successful_measurement():
-    with pytest.raises(RuntimeError, match="zero successful"):
+    with pytest.raises(RuntimeError, match="성공 측정 결과가 없습니다"):
         tasks._ensure_v0_has_successful_measurements(success_count=0, failure_count=5)
 
 
