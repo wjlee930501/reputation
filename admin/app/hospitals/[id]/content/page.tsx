@@ -5,9 +5,19 @@ import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { runChunkedBulkPublish } from '@/lib/bulk-publish'
 import { countCarriedOver, sortCarriedOverFirst } from '@/lib/content'
-import { formatDate } from '@/lib/format'
+import {
+  ContentDraftSnapshot,
+  clearDraftSnapshot,
+  draftDiffersFromCurrent,
+  editFieldsDiffer,
+  readDraftSnapshot,
+  saveDraftSnapshot,
+} from '@/lib/edit-draft-snapshot'
+import { formatDate, formatDateTime } from '@/lib/format'
 import { buildManualPublishPayload } from '@/lib/publishing'
+import { readPublisherIdentity, storePublisherNameOverride } from '@/lib/publisher-identity'
 import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
@@ -28,7 +38,6 @@ const BRIEF_LABELS: Record<BriefStatus, { label: string; color: string }> = {
 }
 
 const BRIEF_FALLBACK = { label: '콘텐츠 가이드 없음', color: 'bg-slate-50 text-slate-400 border border-slate-200' }
-const PUBLISHER_STORAGE_KEY = 'reputation.publisherName'
 
 // 프론트엔드 미리보기용 금지 표현 목록 — backend/app/utils/medical_filter.py의
 // FORBIDDEN_PATTERNS와 정규식이 동기화됨. 단순 포함 검사 대신 정규식으로 변형까지 포착.
@@ -207,6 +216,9 @@ export default function ContentPage() {
   const [violations, setViolations] = useState<string[]>([])
   const [editError, setEditError] = useState<string | null>(null)
   const [editSaving, setEditSaving] = useState(false)
+  // 세션 만료(401) 재로그인 후에도 편집 중이던 내용을 복구할 수 있게 남겨두는 스냅샷 —
+  // 복구 가능한 초안이 있을 때만 편집 화면 상단에 배너로 안내한다.
+  const [recoverableDraft, setRecoverableDraft] = useState<ContentDraftSnapshot | null>(null)
 
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -234,13 +246,37 @@ export default function ContentPage() {
     setEditMode(false)
     setBriefEditMode(false)
     setPublishSuccessId(null)
+    setRecoverableDraft(null)
   }, [])
 
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    setPublisherName(window.localStorage.getItem(PUBLISHER_STORAGE_KEY) ?? '')
+    setPublisherName(readPublisherIdentity())
   }, [])
+
+  // 편집 중 세션이 만료돼 401 리다이렉트가 발생해도 내용을 잃지 않도록 필드가
+  // 바뀔 때마다 병원id+콘텐츠id 키로 스냅샷을 남긴다. 저장 성공 시에만 지운다.
+  // 단, 편집 진입 직후(사용자가 아직 아무것도 바꾸지 않은 원본 상태)에는 저장하지
+  // 않는다 — 그렇지 않으면 세션 만료 전 남겨둔 복구용 스냅샷을 미편집 원본으로 즉시
+  // 덮어써 이중 401/새로고침 시 복구가 불가능해진다 (dirty 가드).
+  useEffect(() => {
+    if (!editMode || !selected) return
+    const current = {
+      title: editTitle,
+      body: editBody,
+      meta_description: editMeta,
+      references: editReferences,
+    }
+    const original = {
+      title: selected.title ?? '',
+      body: selected.body ?? '',
+      meta_description: selected.meta_description ?? '',
+      references: (selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })),
+    }
+    if (!editFieldsDiffer(current, original)) return
+    saveDraftSnapshot(id, selected.id, current)
+  }, [editMode, selected, id, editTitle, editBody, editMeta, editReferences])
 
   useEffect(() => {
     if (!selected) return
@@ -336,7 +372,7 @@ export default function ContentPage() {
   function handlePublisherChange(value: string) {
     setPublisherName(value)
     setPublisherError(null)
-    window.localStorage.setItem(PUBLISHER_STORAGE_KEY, value)
+    storePublisherNameOverride(value)
   }
 
   function getPublishPayloadForSubmit(): ReturnType<typeof buildManualPublishPayload> {
@@ -361,34 +397,29 @@ export default function ContentPage() {
     setBulkError(null)
     clearActionFeedback()
     setBulkProgress(`0/${ids.length} 발행 완료...`)
-    let done = 0
-    const failedIds: string[] = []
-    let firstFailureMessage: string | null = null
-    for (const itemId of ids) {
-      try {
+    // 완전 직렬 발행은 건수가 많을수록 느려지므로 3~5개 청크로 나눠 동시 처리한다.
+    const { succeededIds, failedIds, firstFailureMessage } = await runChunkedBulkPublish(
+      ids,
+      async (itemId) => {
         await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
           method: 'POST',
           body: JSON.stringify(publishPayload),
         })
-        done++
-        setBulkProgress(`${done}/${ids.length} 발행 완료...`)
-      } catch (e: unknown) {
-        failedIds.push(itemId)
-        if (!firstFailureMessage && e instanceof Error) firstFailureMessage = e.message
-      }
-    }
+      },
+      { onProgress: (done, total) => setBulkProgress(`${done}/${total} 발행 완료...`) },
+    )
     setBulkProgress(null)
     if (failedIds.length > 0) {
       setBulkError(
         `${ids.length}건 중 ${failedIds.length}건 발행에 실패했습니다.` +
           (firstFailureMessage ? ` 사유: ${firstFailureMessage}` : '') +
-          ' 실패한 콘텐츠는 선택 상태로 남겨두었습니다.',
+          ` 실패한 콘텐츠(${failedIds.length}건)는 선택 상태로 남겨두었습니다.`,
       )
     } else {
-      setActionSuccess(`선택한 콘텐츠 ${done}건을 모두 발행했습니다.`)
+      setActionSuccess(`선택한 콘텐츠 ${succeededIds.length}건을 모두 발행했습니다.`)
     }
-    if (done > 0) {
-      setPublishSuccessId(ids.find((itemId) => !failedIds.includes(itemId)) ?? null)
+    if (succeededIds.length > 0) {
+      setPublishSuccessId(succeededIds[0])
       void refetchHeader()
     }
     // load()가 선택을 비우지만 같은 continuation에서 실패분으로 덮어쓴다 (React 자동 배칭).
@@ -495,6 +526,35 @@ export default function ContentPage() {
     setViolations([])
     setEditError(null)
     setEditMode(true)
+
+    // 세션 만료로 저장하지 못한 채 남아 있는 스냅샷이 있으면 복구 배너로 안내한다.
+    const draft = readDraftSnapshot(id, selected.id)
+    if (draft && draftDiffersFromCurrent(draft, {
+      title: selected.title ?? '',
+      body: selected.body ?? '',
+      meta_description: selected.meta_description ?? '',
+    })) {
+      setRecoverableDraft(draft)
+    } else {
+      if (draft) clearDraftSnapshot(id, selected.id)
+      setRecoverableDraft(null)
+    }
+  }
+
+  function restoreDraft() {
+    if (!recoverableDraft) return
+    setEditTitle(recoverableDraft.title)
+    setEditBody(recoverableDraft.body)
+    setEditMeta(recoverableDraft.meta_description)
+    setEditReferences(recoverableDraft.references)
+    setViolations(checkForbidden(`${recoverableDraft.title} ${recoverableDraft.body} ${recoverableDraft.meta_description}`))
+    setRecoverableDraft(null)
+  }
+
+  function discardDraft() {
+    if (!selected) return
+    clearDraftSnapshot(id, selected.id)
+    setRecoverableDraft(null)
   }
 
   function updateReference(index: number, key: 'title' | 'url', value: string) {
@@ -566,6 +626,8 @@ export default function ContentPage() {
           references: cleanedReferences,
         }),
       })
+      clearDraftSnapshot(id, selected.id)
+      setRecoverableDraft(null)
       setSelected(updated)
       setEditMode(false)
       load()
@@ -1059,6 +1121,30 @@ export default function ContentPage() {
             ) : editMode ? (
               /* Edit split view */
               <div className="p-6">
+                {recoverableDraft && (
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                    <span>
+                      세션이 만료되기 전 편집하던 내용이 남아 있습니다 ({formatDateTime(new Date(recoverableDraft.savedAt).toISOString())} 저장).
+                      복구하시겠습니까?
+                    </span>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        type="button"
+                        onClick={restoreDraft}
+                        className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                      >
+                        복구
+                      </button>
+                      <button
+                        type="button"
+                        onClick={discardDraft}
+                        className="rounded-md border border-blue-300 bg-white px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                      >
+                        무시
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">제목</label>
                   <input
@@ -1168,7 +1254,15 @@ export default function ContentPage() {
                     {editSaving ? '저장 중...' : '저장'}
                   </button>
                   <button
-                    onClick={() => { setEditMode(false); setViolations([]); setEditError(null) }}
+                    onClick={() => {
+                      // 취소 = 편집 폐기. 남아 있는 스냅샷을 지우지 않으면 다음 편집
+                      // 진입 시 허위 '세션 만료 복구' 배너가 뜬다.
+                      if (selected) clearDraftSnapshot(id, selected.id)
+                      setEditMode(false)
+                      setViolations([])
+                      setEditError(null)
+                      setRecoverableDraft(null)
+                    }}
                     className="px-5 py-2.5 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200"
                   >
                     취소

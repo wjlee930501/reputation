@@ -8,7 +8,10 @@ import {
 import { getBackendUrl } from './backend.ts'
 import { buildProxyResponse } from './proxy-response.ts'
 import { buildSafeAdminProxyPath, hasValidAdminCsrfToken, hasValidSameOrigin } from './security.ts'
-import { checkAdminSessionRevocation } from './session-revocation.ts'
+import {
+  checkAdminSessionRevocation,
+  checkAdminSessionRevocationCached,
+} from './session-revocation.ts'
 import { readSessionToken } from './session.ts'
 
 const ALLOWED_PREFIXES = ['hospitals', 'content', 'reports', 'sov', 'domain', 'essence', 'leads']
@@ -84,7 +87,14 @@ export async function handleAdminApiProxy(
     return jsonNoStore({ error: 'Server misconfigured' }, { status: 500 })
   }
 
-  const revocationStatus = await checkAdminSessionRevocation({
+  // 읽기(GET/HEAD)만 짧은 TTL 폐기 캐시를 사용해 대시보드의 병렬 호출 왕복을 줄인다.
+  // 상태 변경 요청(POST/PATCH/DELETE)은 캐시를 신뢰하지 않고 매번 백엔드로 폐기 여부를
+  // 재확인한다 — 로그아웃/강제 폐기 직후에도 쓰기가 캐시된 'active'로 통과하지 않도록.
+  const isReadMethod = req.method === 'GET' || req.method === 'HEAD'
+  const checkRevocation = isReadMethod
+    ? checkAdminSessionRevocationCached
+    : checkAdminSessionRevocation
+  const revocationStatus = await checkRevocation({
     backendUrl,
     adminKey,
     sessionToken,

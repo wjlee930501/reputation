@@ -343,11 +343,11 @@ export default function QueryTargetsPage() {
               <Input label="증상/질환" value={form.condition_or_symptom} onChange={(value) => setFormValue(setForm, 'condition_or_symptom', value)} placeholder="치질" />
               <Input label="치료/시술" value={form.treatment} onChange={(value) => setFormValue(setForm, 'treatment', value)} placeholder="치질 수술" />
             </div>
-            <Textarea label="지역어" value={form.region_terms} onChange={(value) => setFormValue(setForm, 'region_terms', value)} placeholder="강남\n서초" />
-            <Textarea label="선택 기준" value={form.decision_criteria} onChange={(value) => setFormValue(setForm, 'decision_criteria', value)} placeholder="통증 부담\n회복 기간\n전문의 경험" />
-            <Textarea label="확인할 AI 서비스" value={form.platforms} onChange={(value) => setFormValue(setForm, 'platforms', value)} placeholder="CHATGPT\nGEMINI" />
+            <Textarea label="지역어" value={form.region_terms} onChange={(value) => setFormValue(setForm, 'region_terms', value)} placeholder={`강남\n서초`} />
+            <Textarea label="선택 기준" value={form.decision_criteria} onChange={(value) => setFormValue(setForm, 'decision_criteria', value)} placeholder={`통증 부담\n회복 기간\n전문의 경험`} />
+            <Textarea label="확인할 AI 서비스" value={form.platforms} onChange={(value) => setFormValue(setForm, 'platforms', value)} placeholder={`CHATGPT\nGEMINI`} />
             <Textarea label="경쟁 병원" value={form.competitor_names} onChange={(value) => setFormValue(setForm, 'competitor_names', value)} placeholder="경쟁 병원명을 줄바꿈으로 입력" />
-            <Textarea label="초기 환자 질문 문구" value={form.variants} onChange={(value) => setFormValue(setForm, 'variants', value)} placeholder="강남 치질 병원 추천\n치질 수술 어디가 좋아" />
+            <Textarea label="초기 환자 질문 문구" value={form.variants} onChange={(value) => setFormValue(setForm, 'variants', value)} placeholder={`강남 치질 병원 추천\n치질 수술 어디가 좋아`} />
             <Input label="언어" value={form.patient_language} onChange={(value) => setFormValue(setForm, 'patient_language', value)} placeholder="ko" />
 
             <button

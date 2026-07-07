@@ -4,6 +4,11 @@ import Link from 'next/link'
 import { useParams, usePathname } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError, fetchAPI } from '@/lib/api'
+import {
+  getHospitalLifecycleAction,
+  hospitalLifecycleActionPath,
+  hospitalLifecycleConfirmMessage,
+} from '@/lib/hospital-lifecycle'
 import { Hospital, PLAN_LABELS, STATUS_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
@@ -36,6 +41,8 @@ export default function HospitalLayout({
   const [hospital, setHospital] = useState<Hospital | null>(null)
   const [notFound, setNotFound] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [lifecycleLoading, setLifecycleLoading] = useState(false)
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null)
 
   const refetch = useCallback(async () => {
     try {
@@ -81,6 +88,24 @@ export default function HospitalLayout({
     : null
 
   const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
+  const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
+
+  async function handleLifecycleAction() {
+    if (!hospital || !lifecycleAction) return
+    if (!confirm(hospitalLifecycleConfirmMessage(lifecycleAction))) return
+    setLifecycleLoading(true)
+    setLifecycleError(null)
+    try {
+      const updated = await fetchAPI<Hospital>(hospitalLifecycleActionPath(hospitalId, lifecycleAction), {
+        method: 'POST',
+      })
+      setHospital(updated)
+    } catch (e: unknown) {
+      setLifecycleError(e instanceof Error ? e.message : '병원 상태 변경에 실패했습니다.')
+    } finally {
+      setLifecycleLoading(false)
+    }
+  }
 
   return (
     <HospitalHeaderContext.Provider value={{ hospital, refetch }}>
@@ -108,6 +133,20 @@ export default function HospitalLayout({
                 <span className="details2 inline-flex rounded-full bg-[var(--color-revisit-coolgrey-90)] px-2.5 py-0.5 text-[var(--color-revisit-text-helper)]">
                   {planLabel}
                 </span>
+              )}
+              {lifecycleAction && (
+                <button
+                  type="button"
+                  onClick={() => void handleLifecycleAction()}
+                  disabled={lifecycleLoading}
+                  className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                    lifecycleAction === 'pause'
+                      ? 'border-red-200 text-red-700 hover:bg-red-50'
+                      : 'border-green-200 text-green-700 hover:bg-green-50'
+                  }`}
+                >
+                  {lifecycleLoading ? '처리 중...' : lifecycleAction === 'pause' ? '일시정지' : '재개'}
+                </button>
               )}
             </div>
             {hospital && (
@@ -192,6 +231,19 @@ export default function HospitalLayout({
             className="shrink-0 rounded-md border border-amber-300 bg-white px-3 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100"
           >
             다시 시도
+          </button>
+        </div>
+      )}
+
+      {lifecycleError && (
+        <div className="mx-4 mt-4 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700 sm:mx-6 lg:mx-8">
+          <span>{lifecycleError}</span>
+          <button
+            type="button"
+            onClick={() => setLifecycleError(null)}
+            className="shrink-0 rounded-md border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+          >
+            닫기
           </button>
         </div>
       )}

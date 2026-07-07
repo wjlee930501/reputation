@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useState } from 'react'
 
 import { buildAdminCsrfHeaders } from '@/lib/csrf'
+import { clearPublisherIdentity } from '@/lib/publisher-identity'
 
 const NAV_ITEMS = [
   {
@@ -53,6 +54,8 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       setLogoutError(true)
       return
     }
+    // 공용 PC에서 다음 로그인 전까지 이전 AE의 발행 담당자 이름이 남지 않게 한다.
+    clearPublisherIdentity()
     router.push('/login')
   }
 

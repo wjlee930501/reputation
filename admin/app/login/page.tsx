@@ -2,6 +2,7 @@
 
 import { Suspense, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { storeCurrentAccountName } from '@/lib/publisher-identity'
 
 function LoginForm() {
   const [email, setEmail] = useState('')
@@ -25,6 +26,11 @@ function LoginForm() {
       })
 
       if (res.ok) {
+        // 발행 담당자 이름 기본값을 로그인 계정과 연동한다 — 공용 PC에서 이전 AE
+        // 이름이 남지 않도록 세션 범위(sessionStorage)로만 저장한다.
+        const body = await res.json().catch(() => null) as { account?: { name?: string } } | null
+        if (body?.account?.name) storeCurrentAccountName(body.account.name)
+
         const raw = searchParams.get('redirect')
         const redirect = raw?.startsWith('/') && !raw.startsWith('//') ? raw : '/hospitals'
         router.push(redirect)
