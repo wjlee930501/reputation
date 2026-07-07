@@ -40,3 +40,19 @@ def test_cloud_run_image_variables_are_required_inputs() -> None:
         assert "default" not in block
         assert "validation" in block
         assert SHA256_DIGEST_PATTERN.search(block)
+
+
+def test_certificate_map_cutover_requires_legacy_domains_in_map_entries() -> None:
+    certmanager = (PROJECT_ROOT / "terraform" / "certmanager.tf").read_text()
+    loadbalancer = (PROJECT_ROOT / "terraform" / "loadbalancer.tf").read_text()
+
+    assert re.search(r"legacy_customer_domain_set\s*=\s*toset\(var\.customer_domains\)", certmanager)
+    assert re.search(
+        r"certificate_map_customer_domain_set\s*=\s*toset\(var\.certificate_map_customer_domains\)",
+        certmanager,
+    )
+    assert "certificate_map_missing_legacy_domains = setsubtract(" in certmanager
+    assert (
+        "!var.use_certificate_map || length(local.certificate_map_missing_legacy_domains) == 0"
+        in loadbalancer
+    )

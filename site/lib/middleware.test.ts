@@ -63,19 +63,35 @@ test('custom domain lookup outage without cache returns no-store 503', async () 
   assert.equal(res.headers.get('retry-after'), '30')
 })
 
-test('custom domain lookup outage uses stale cached slug for the same hostname only', async () => {
+test('custom domain lookup outage uses fresh cached slug for the same hostname only', async () => {
   resetEnvAndCache()
   __setDomainSlugCacheEntryForTest('clinic.example.com', {
     slug: 'jang-clinic',
+    expiresAt: Date.now() + 60_000,
+  })
+  const fetchMock: typeof fetch = async () => new Response('upstream unavailable', { status: 500 })
+  globalThis.fetch = fetchMock
+
+  const cachedRes = await middleware(requestFor('clinic.example.com', '/contents'))
+  const otherHostRes = await middleware(requestFor('other-clinic.example.com', '/contents'))
+
+  assert.equal(cachedRes.status, 200)
+  assert.match(cachedRes.headers.get('x-middleware-rewrite') ?? '', /\/jang-clinic\/contents$/)
+  assert.equal(otherHostRes.status, 503)
+})
+
+test('custom domain lookup outage ignores expired cached slug and fails closed', async () => {
+  resetEnvAndCache()
+  __setDomainSlugCacheEntryForTest('clinic.example.com', {
+    slug: 'old-clinic',
     expiresAt: Date.now() - 1,
   })
   const fetchMock: typeof fetch = async () => new Response('upstream unavailable', { status: 500 })
   globalThis.fetch = fetchMock
 
-  const staleRes = await middleware(requestFor('clinic.example.com', '/contents'))
-  const otherHostRes = await middleware(requestFor('other-clinic.example.com', '/contents'))
+  const res = await middleware(requestFor('clinic.example.com', '/contents'))
 
-  assert.equal(staleRes.status, 200)
-  assert.match(staleRes.headers.get('x-middleware-rewrite') ?? '', /\/jang-clinic\/contents$/)
-  assert.equal(otherHostRes.status, 503)
+  assert.equal(res.status, 503)
+  assert.equal(res.headers.get('cache-control'), 'no-store')
+  assert.equal(res.headers.get('retry-after'), '30')
 })

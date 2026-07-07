@@ -1059,12 +1059,14 @@ export default function ProfilePage() {
       </section>
 
       {profile.site_built && (
-        <DomainSetupPanel
-          hospitalId={hospitalId}
-          profile={profile}
-          onProfileChange={(patch) => setProfile((prev) => ({ ...prev, ...patch }))}
-          onHeaderRefresh={() => { void refetchHeader() }}
-        />
+        <div id="domain-setup" className="scroll-mt-24">
+          <DomainSetupPanel
+            hospitalId={hospitalId}
+            profile={profile}
+            onProfileChange={(patch) => setProfile((prev) => ({ ...prev, ...patch }))}
+            onHeaderRefresh={() => { void refetchHeader() }}
+          />
+        </div>
       )}
 
       {/* 온보딩 완료 및 초기 리포트/콘텐츠 허브 노출 준비 시작 */}

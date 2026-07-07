@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   decideRewrite,
+  getEffectiveHost,
   getPrimaryHostnames,
   isPrimaryHost,
   isReservedPath,
@@ -67,6 +68,26 @@ test('decideRewrite: primary host never rewrites', () => {
   assert.equal(decideRewrite('localhost:3000', '/contents', 'jang-clinic', PRIMARY), null)
   assert.equal(decideRewrite('x.a.run.app', '/', 'jang-clinic', PRIMARY), null)
   assert.equal(decideRewrite('reputation-site.vercel.app', '/', 'jang-clinic', PRIMARY), null)
+})
+
+test('getEffectiveHost uses forwarded custom host only behind a platform host', () => {
+  assert.equal(
+    getEffectiveHost('reputation.motionlabs.kr', 'clinic-a.example.com', PRIMARY),
+    'reputation.motionlabs.kr',
+  )
+  assert.equal(
+    getEffectiveHost('site-abc123-du.a.run.app', 'clinic-b.example.com, proxy.internal', PRIMARY),
+    'clinic-b.example.com',
+  )
+  assert.equal(
+    getEffectiveHost('clinic-a.example.com', 'clinic-b.example.com', PRIMARY),
+    'clinic-a.example.com',
+  )
+  assert.equal(
+    getEffectiveHost('reputation.motionlabs.kr', 'reputation.motionlabs.kr', PRIMARY),
+    'reputation.motionlabs.kr',
+  )
+  assert.equal(getEffectiveHost(null, 'clinic-a.example.com', PRIMARY), null)
 })
 
 test('custom hosts fail closed when domain resolution is unavailable', () => {

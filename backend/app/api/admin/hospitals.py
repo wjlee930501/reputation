@@ -768,5 +768,6 @@ def _serialize_list(h: Hospital) -> dict:
         "site_built": h.site_built,
         "site_live": h.site_live,
         "schedule_set": h.schedule_set,
+        "aeo_domain": h.aeo_domain,
         "created_at": h.created_at.isoformat() if h.created_at else None,
     }

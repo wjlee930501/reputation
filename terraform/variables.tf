@@ -255,16 +255,13 @@ variable "enable_http_redirect" {
   default     = true
 }
 
-# 병원이 별도 구입해 연결하는 커스텀 도메인(자기 도메인) 목록.
-# 흐름: Admin에서 도메인 저장 → 병원이 DNS(CNAME 또는 A/ALIAS) 추가
-#       → 이 목록에 추가 후 terraform apply (Certificate Manager cert + map entry 발급)
-#       → Admin [DNS 확인] → site_live/ACTIVE.
-# 주의: 고객 DNS가 LB로 향한 상태에서 apply해야 cert가 LB authorization으로 발급된다.
-# cert 평면은 Certificate Manager certificate map(certmanager.tf)이라 proxy cert 한도(15)와
-# 무관하며 수백~수천 도메인까지 확장된다.
-# (설계: docs/plans/2026-06-23-certificate-manager-hybrid-domains.md)
+# 병원이 별도 구입해 연결한 기존 커스텀 도메인(자기 도메인) 목록.
+# 현재 이 목록은 legacy google_compute_managed_ssl_certificate를 HTTPS proxy에
+# 직접 붙이는 경로다. Certificate Manager map이 붙으면 map이 이 direct cert보다
+# 우선하므로, 기존 라이브 도메인을 map entry로 옮기기 전에는 이 목록만으로는
+# map cutover가 안전하지 않다.
 variable "customer_domains" {
-  description = "Hospital-owned custom domains served by the site (Certificate Manager managed cert + map entry)"
+  description = "Legacy hospital-owned custom domains served by direct managed SSL certs"
   type        = list(string)
   default     = []
 
@@ -277,11 +274,30 @@ variable "customer_domains" {
   }
 }
 
+# Certificate Manager certificate map으로 실제 서빙할 고객 도메인.
+# 신규 고객 도메인은 고객 DNS가 LB로 향하고 발급 대기 중인 짧은 구간을 허용할 때만
+# 여기에 넣는다. 이미 classic cert로 라이브 중인 도메인은 별도 DNS authorization이나
+# 유지보수 창 없이 여기에 넣으면 TLS가 일시적으로 깨질 수 있다.
+variable "certificate_map_customer_domains" {
+  description = "Hospital-owned custom domains that should receive Certificate Manager map entries"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for d in var.certificate_map_customer_domains :
+      can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", d))
+    ])
+    error_message = "certificate_map_customer_domains must be lowercase hostnames without scheme/path/port."
+  }
+}
+
 # HTTPS proxy의 cert 부착 방식 전환 플래그 (무중단 컷오버용).
 #   false → 레거시 ssl_certificates(google_compute_managed_ssl_certificate) 나열.
 #   true  → Certificate Manager certificate_map(certmanager.tf) 부착.
 # 컷오버: 먼저 false로 apply해 cert map·와일드카드 cert를 깔고(DNS auth CNAME 추가 후
-# 와일드카드 cert ACTIVE 대기) → true로 flip해 apply하면 메인 도메인 무중단 전환.
+# 와일드카드 cert ACTIVE 대기) → 모든 라이브 hostname이 ACTIVE map entry로 커버될 때만
+# true로 flip한다.
 variable "use_certificate_map" {
   description = "Attach Certificate Manager certificate_map to the HTTPS proxy instead of legacy ssl_certificates"
   type        = bool

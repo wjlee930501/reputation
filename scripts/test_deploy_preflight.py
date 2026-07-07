@@ -106,3 +106,26 @@ def test_admin_target_requires_admin_domain_before_build() -> None:
     admin_domain_preflight = text.index("require_admin_domain", admin_case_start)
 
     assert admin_domain_preflight < first_admin_build
+
+
+def test_public_dns_preflight_checks_custom_domain_targets() -> None:
+    text = DEPLOY_SCRIPT.read_text()
+    setup_start = text.index("read_env_file_value()")
+    preflight_start = text.index("require_public_dns()")
+    preflight_end = text.index("build_and_push_site()", preflight_start)
+    setup_block = text[setup_start:preflight_start]
+    preflight_block = text[preflight_start:preflight_end]
+
+    assert 'CNAME_TARGET="${CNAME_TARGET:-$(read_env_file_value CNAME_TARGET || true)}"' in setup_block
+    assert 'WILDCARD_PUBLIC_DOMAIN_CHECK="${WILDCARD_PUBLIC_DOMAIN_CHECK:-}"' in setup_block
+    assert 'domains+=("$CNAME_TARGET")' in preflight_block
+    assert 'domains+=("$WILDCARD_PUBLIC_DOMAIN_CHECK")' in preflight_block
+    assert 'WILDCARD_PUBLIC_DOMAIN_CHECK="dns-preflight.${PUBLIC_DOMAIN}"' in preflight_block
+
+
+def test_mso_platform_tfvars_preserves_current_customer_domains_on_certificate_map() -> None:
+    text = (PROJECT_ROOT / "terraform" / "terraform.mso-platform.example.tfvars").read_text()
+
+    assert 'customer_domains = ["jangclinic.kr"]' in text
+    assert 'certificate_map_customer_domains = ["jangclinic.kr"]' in text
+    assert "use_certificate_map = true" in text

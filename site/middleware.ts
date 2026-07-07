@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from 'next/server.js'
 import { getApiBase } from './lib/config.ts'
 import {
   decideRewrite,
+  getEffectiveHost,
   getPrimaryHostnames,
   isPrimaryHost,
   isReservedPath,
@@ -13,9 +14,9 @@ import {
 // 병원 커스텀 도메인(CNAME → 플랫폼 LB) 요청을 /{slug} 허브로 rewrite하는 어댑터.
 // 판정 로직은 lib/host-routing.ts(순수 함수)에 있고 여기서는 호스트 해석만 한다.
 //
-// 캐시는 인스턴스(모듈)별 in-memory Map — Cloud Run 다중 인스턴스 간 공유되지 않지만
-// 도메인→slug 매핑은 변경이 드물고 TTL이 짧아 인스턴스별 캐싱으로 충분하다.
-const POSITIVE_TTL_MS = 5 * 60 * 1000 // 매핑 존재: 5분
+// 캐시는 인스턴스(모듈)별 in-memory Map — Cloud Run 다중 인스턴스 간 공유되지 않는다.
+// 도메인 변경 직후 admin revalidate가 이 Map을 직접 무효화할 수 없으므로 positive TTL도 짧게 둔다.
+const POSITIVE_TTL_MS = 60 * 1000 // 매핑 존재: 60초
 const NEGATIVE_TTL_MS = 60 * 1000 // 미등록 도메인(404): 60초 — 신규 연결이 금방 반영되도록 짧게
 const RESOLVE_TIMEOUT_MS = 2000
 
@@ -33,7 +34,8 @@ type DomainResolveResult =
 
 function stalePositiveSlug(hostname: string): string | null {
   const cached = domainSlugCache.get(hostname)
-  return cached?.slug ?? null
+  if (!cached || cached.expiresAt <= Date.now()) return null
+  return cached.slug
 }
 
 function unavailableResult(hostname: string): DomainResolveResult {
@@ -92,13 +94,18 @@ export function __setDomainSlugCacheEntryForTest(hostname: string, entry: CacheE
 export async function middleware(request: NextRequest) {
   const host = request.headers.get('host')
   const primaryHostnames = getPrimaryHostnames(process.env.NEXT_PUBLIC_SITE_URL)
-  if (isPrimaryHost(host, primaryHostnames)) return NextResponse.next()
+  const effectiveHost = getEffectiveHost(
+    host,
+    request.headers.get('x-forwarded-host'),
+    primaryHostnames,
+  )
+  if (isPrimaryHost(effectiveHost, primaryHostnames)) return NextResponse.next()
 
   const pathname = request.nextUrl.pathname
   // 예약 경로는 백엔드 조회 없이 즉시 통과.
   if (isReservedPath(pathname)) return NextResponse.next()
 
-  const hostname = normalizeHostname(host)
+  const hostname = normalizeHostname(effectiveHost)
   if (!hostname) return NextResponse.next()
 
   const resolution = await resolveSlugForDomain(hostname)
@@ -116,13 +123,13 @@ export async function middleware(request: NextRequest) {
         ? resolution.staleSlug
         : null
 
-  if (shouldFailClosedCustomHost(host, pathname, slug, primaryHostnames)) {
+  if (shouldFailClosedCustomHost(effectiveHost, pathname, slug, primaryHostnames)) {
     const res = new NextResponse('Not found', { status: 404 })
     res.headers.set('cache-control', 'no-store')
     return res
   }
 
-  const rewritePath = decideRewrite(host, pathname, slug, primaryHostnames)
+  const rewritePath = decideRewrite(effectiveHost, pathname, slug, primaryHostnames)
   if (!rewritePath) return NextResponse.next()
 
   const url = request.nextUrl.clone()

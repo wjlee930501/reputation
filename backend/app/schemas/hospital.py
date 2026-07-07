@@ -15,6 +15,7 @@ class HospitalListItem(BaseModel):
     site_built: bool
     site_live: bool
     schedule_set: bool
+    aeo_domain: Optional[str] = None
     created_at: Optional[str]
 
 
@@ -29,7 +30,6 @@ class HospitalDetail(HospitalListItem):
     google_business_profile_url: Optional[str]
     google_maps_url: Optional[str]
     naver_place_url: Optional[str]
-    aeo_domain: Optional[str]
     domain_management_mode: str = "HOSPITAL_MANAGED"
     domain_dns_strategy: str = "CNAME"
     domain_registrar: Optional[str] = None

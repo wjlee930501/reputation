@@ -228,16 +228,23 @@ resource "google_compute_target_https_proxy" "main" {
   # 커스텀 도메인 요청은 URL map의 default_service(site)로 흘러가고,
   # site 미들웨어가 Host 헤더로 병원 slug를 해석한다 — host_rule 추가 불필요.
   #
-  # cert 부착: use_certificate_map 으로 무중단 전환(둘은 동시 설정 불가, 한쪽은 null).
+  # cert 부착: use_certificate_map 으로 Certificate Manager map 전환.
   #   false → 레거시 ssl_certificates 나열(메인 + per-domain customer).
-  #   true  → Certificate Manager certificate_map(certmanager.tf) — 와일드카드 PRIMARY가
-  #           메인/admin/모든 서브도메인 커버, 자기 도메인은 hostname 엔트리.
+  #   true  → Certificate Manager certificate_map(certmanager.tf).
+  #           모든 라이브 hostname이 ACTIVE map entry로 커버될 때만 전환한다.
   ssl_certificates = var.use_certificate_map ? null : concat(
     [google_compute_managed_ssl_certificate.main.id],
     [for cert in google_compute_managed_ssl_certificate.customer : cert.id],
   )
 
   certificate_map = var.use_certificate_map ? "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.main.id}" : null
+
+  lifecycle {
+    precondition {
+      condition     = !var.use_certificate_map || length(local.certificate_map_missing_legacy_domains) == 0
+      error_message = "When use_certificate_map is true, every customer_domains entry must also be listed in certificate_map_customer_domains so existing live custom domains remain covered by certificate map entries."
+    }
+  }
 }
 
 resource "google_compute_global_forwarding_rule" "https" {

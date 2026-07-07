@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { fetchAPI } from '@/lib/api'
+import { readHospitalDomainStatus } from '@/lib/hospital-domain-status'
 
 interface Hospital {
   id: string
@@ -13,7 +14,10 @@ interface Hospital {
   profile_complete: boolean
   v0_report_done: boolean
   schedule_set: boolean
+  site_built?: boolean
+  site_live?: boolean
   status: string
+  aeo_domain?: string | null
   website_url?: string | null
   blog_url?: string | null
   kakao_channel_url?: string | null
@@ -583,19 +587,33 @@ function StepStatusChip({ status }: { status: StepDef['status'] }) {
 }
 
 function ProfileStepBody({ hospital, hospitalId }: { hospital: Hospital | null; hospitalId: string }) {
+  const domainStatus = readHospitalDomainStatus(hospital ?? {})
+  const domainHref = hospital?.site_built
+    ? `/hospitals/${hospitalId}/profile#domain-setup`
+    : `/hospitals/${hospitalId}/profile`
+
   return (
     <div className="space-y-3">
       <ul className="text-sm text-slate-700 space-y-1">
         <li>· 프로파일 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
         <li>· V0 리포트: {hospital?.v0_report_done ? '✓' : '미생성'}</li>
         <li>· 콘텐츠 스케줄: {hospital?.schedule_set ? '✓' : '미설정'}</li>
+        <li>· 커스텀 도메인: {domainStatus.label} · {domainStatus.detail}</li>
       </ul>
-      <Link
-        href={`/hospitals/${hospitalId}/profile`}
-        className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-      >
-        프로파일 화면으로 →
-      </Link>
+      <div className="flex flex-wrap gap-2">
+        <Link
+          href={`/hospitals/${hospitalId}/profile`}
+          className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+        >
+          프로파일 화면으로 →
+        </Link>
+        <Link
+          href={domainHref}
+          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-blue-200 hover:text-blue-700"
+        >
+          도메인 설정으로 →
+        </Link>
+      </div>
     </div>
   )
 }

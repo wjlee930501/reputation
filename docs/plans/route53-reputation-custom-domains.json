@@ -1,0 +1,44 @@
+{
+  "Comment": "Reputation multi-hospital custom domain bootstrap",
+  "Changes": [
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "_acme-challenge.reputation.motionlabs.kr.",
+        "Type": "CNAME",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "180d7b95-8202-451d-8505-3fcc2ea5615a.11.authorize.certificatemanager.goog."
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "*.reputation.motionlabs.kr.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "34.117.192.90"
+          }
+        ]
+      }
+    },
+    {
+      "Action": "UPSERT",
+      "ResourceRecordSet": {
+        "Name": "cname.reputation.motionlabs.kr.",
+        "Type": "A",
+        "TTL": 300,
+        "ResourceRecords": [
+          {
+            "Value": "34.117.192.90"
+          }
+        ]
+      }
+    }
+  ]
+}

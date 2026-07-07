@@ -2,11 +2,11 @@
 # Re:putation — Certificate Manager (하이브리드 도메인 cert 평면)
 #
 #   [기본] {slug}.reputation.motionlabs.kr  → 와일드카드 cert 1장(DNS auth)
-#   [옵션] 병원 자기 도메인                  → 도메인별 cert(LB auth) + map entry
+#   [옵션] 병원 자기 도메인                  → 도메인별 cert(LB auth) + opt-in map entry
 #
 #   HTTPS proxy는 cert를 N개 나열(ssl_certificates)하는 대신 certificate_map 1개를
-#   붙인다(loadbalancer.tf, var.use_certificate_map). PRIMARY 엔트리(와일드카드)가
-#   SNI 미매칭(메인·admin·모든 서브도메인)을 커버하고, 자기 도메인만 hostname 엔트리.
+#   붙인다(loadbalancer.tf, var.use_certificate_map). 플랫폼 apex와 와일드카드는
+#   명시 hostname 엔트리로 매칭하고, 자기 도메인은 준비된 도메인만 hostname 엔트리.
 #
 #   설계: docs/plans/2026-06-23-certificate-manager-hybrid-domains.md
 # ═══════════════════════════════════════════════════════════════════
@@ -35,15 +35,36 @@ resource "google_certificate_manager_certificate" "wildcard" {
 }
 
 # ── 자기 도메인 cert (병원 보유 도메인) ────────────────────────────
-# dns_authorizations 미지정 → load balancer authorization. 도메인이 LB(certificate_map
-# 부착된 프록시)로 향하면 Google이 LB 경유로 검증·발급한다. proxy 한도(15)와 무관.
+# 기존 라이브 도메인은 프록시 cutover 전에 ACTIVE가 되어야 하므로 DNS authorization을 쓴다.
+# 신규 opt-in 도메인도 같은 경로를 써서 map entry 추가 전 인증서를 먼저 발급한다.
+locals {
+  legacy_customer_domain_set          = toset(var.customer_domains)
+  certificate_map_customer_domain_set = toset(var.certificate_map_customer_domains)
+  certificate_manager_customer_domains = setunion(
+    local.legacy_customer_domain_set,
+    local.certificate_map_customer_domain_set,
+  )
+  certificate_map_missing_legacy_domains = setsubtract(
+    local.legacy_customer_domain_set,
+    local.certificate_map_customer_domain_set,
+  )
+}
+
+resource "google_certificate_manager_dns_authorization" "customer" {
+  for_each = local.certificate_manager_customer_domains
+  name     = "${var.app_name}-dnsauth-cust-${substr(md5(each.value), 0, 12)}"
+  project  = var.project_id
+  domain   = each.value
+}
+
 resource "google_certificate_manager_certificate" "customer" {
-  for_each = toset(var.customer_domains)
+  for_each = local.certificate_manager_customer_domains
   name     = "${var.app_name}-cust-${substr(md5(each.value), 0, 12)}"
   project  = var.project_id
 
   managed {
-    domains = [each.value]
+    domains            = [each.value]
+    dns_authorizations = [google_certificate_manager_dns_authorization.customer[each.value].id]
   }
 }
 
@@ -53,7 +74,7 @@ resource "google_certificate_manager_certificate_map" "main" {
   project = var.project_id
 }
 
-# PRIMARY = SNI 미매칭 시 기본 cert. 와일드카드가 메인/admin/서브도메인 전원 커버.
+# PRIMARY = SNI 미매칭 시 기본 cert. 실제 플랫폼 hostnames는 아래 명시 엔트리가 커버.
 resource "google_certificate_manager_certificate_map_entry" "primary" {
   name         = "${var.app_name}-entry-primary"
   project      = var.project_id
@@ -62,8 +83,24 @@ resource "google_certificate_manager_certificate_map_entry" "primary" {
   matcher      = "PRIMARY"
 }
 
+resource "google_certificate_manager_certificate_map_entry" "platform" {
+  name         = "${var.app_name}-entry-platform"
+  project      = var.project_id
+  map          = google_certificate_manager_certificate_map.main.name
+  certificates = [google_certificate_manager_certificate.wildcard.id]
+  hostname     = var.domain
+}
+
+resource "google_certificate_manager_certificate_map_entry" "wildcard" {
+  name         = "${var.app_name}-entry-wildcard"
+  project      = var.project_id
+  map          = google_certificate_manager_certificate_map.main.name
+  certificates = [google_certificate_manager_certificate.wildcard.id]
+  hostname     = "*.${var.domain}"
+}
+
 resource "google_certificate_manager_certificate_map_entry" "customer" {
-  for_each     = toset(var.customer_domains)
+  for_each     = local.certificate_map_customer_domain_set
   name         = "${var.app_name}-entry-${substr(md5(each.value), 0, 12)}"
   project      = var.project_id
   map          = google_certificate_manager_certificate_map.main.name
@@ -82,4 +119,12 @@ output "platform_dns_authorization_record" {
 output "certificate_map_id" {
   description = "Attach to the HTTPS proxy via var.use_certificate_map (see loadbalancer.tf)"
   value       = google_certificate_manager_certificate_map.main.id
+}
+
+output "customer_dns_authorization_records" {
+  description = "Add these CNAME records to each customer domain DNS zone before serving it from the certificate map"
+  value = {
+    for domain, auth in google_certificate_manager_dns_authorization.customer :
+    domain => auth.dns_resource_record
+  }
 }

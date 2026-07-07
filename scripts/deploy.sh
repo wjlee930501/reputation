@@ -141,6 +141,8 @@ DB_USER_NAME="${DB_USER:-$(read_env_file_value DB_USER || true)}"
 DB_USER_NAME="${DB_USER_NAME:-reputation}"
 ASSET_GCS_BUCKET="${NEXT_PUBLIC_GCP_STORAGE_BUCKET:-${GCP_STORAGE_BUCKET:-$(read_env_file_value GCP_STORAGE_BUCKET || true)}}"
 DB_CONNECTION_MODE="${DB_CONNECTION_MODE:-$(read_env_file_value DB_CONNECTION_MODE || true)}"
+CNAME_TARGET="${CNAME_TARGET:-$(read_env_file_value CNAME_TARGET || true)}"
+WILDCARD_PUBLIC_DOMAIN_CHECK="${WILDCARD_PUBLIC_DOMAIN_CHECK:-}"
 if [[ -z "$DB_CONNECTION_MODE" ]]; then
   if [[ -n "$CLOUDSQL_CONNECTION" ]]; then
     DB_CONNECTION_MODE="cloudsql"
@@ -432,6 +434,15 @@ require_public_dns() {
   local domains=("$PUBLIC_DOMAIN")
   if [[ -n "$ADMIN_DOMAIN" ]]; then
     domains+=("$ADMIN_DOMAIN")
+  fi
+  if [[ -n "$CNAME_TARGET" ]]; then
+    domains+=("$CNAME_TARGET")
+  fi
+  if [[ -z "$WILDCARD_PUBLIC_DOMAIN_CHECK" && -n "$PUBLIC_DOMAIN" ]]; then
+    WILDCARD_PUBLIC_DOMAIN_CHECK="dns-preflight.${PUBLIC_DOMAIN}"
+  fi
+  if [[ -n "$WILDCARD_PUBLIC_DOMAIN_CHECK" ]]; then
+    domains+=("$WILDCARD_PUBLIC_DOMAIN_CHECK")
   fi
 
   local expected_addresses="${PUBLIC_DNS_EXPECTED_ADDRESSES:-${CUSTOM_DOMAIN_IP_TARGETS:-}}"

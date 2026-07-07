@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
+import { domainSearchText, readHospitalDomainStatus } from '@/lib/hospital-domain-status'
 import { Hospital, STATUS_LABELS, PLAN_LABELS } from '@/types'
 import { SkeletonTable } from '@/app/components/Skeleton'
 
@@ -41,9 +42,7 @@ export default function HospitalsPage() {
   const filtered = useMemo(() => {
     if (!query.trim()) return hospitals
     const q = query.trim().toLowerCase()
-    return hospitals.filter(
-      (h) => h.name.toLowerCase().includes(q) || h.slug.toLowerCase().includes(q),
-    )
+    return hospitals.filter((h) => domainSearchText(h).includes(q))
   }, [hospitals, query])
 
   const stats = useMemo(() => {
@@ -115,7 +114,7 @@ export default function HospitalsPage() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="병원명 또는 slug 검색"
+              placeholder="병원명, slug, 도메인 검색"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 sm:w-72"
             />
             {query && (
@@ -127,11 +126,12 @@ export default function HospitalsPage() {
 
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="overflow-x-auto">
-            <table className="min-w-[820px] w-full text-sm">
+            <table className="min-w-[980px] w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">병원</th>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">상태</th>
+                  <th className="text-left px-6 py-3 text-slate-600 font-medium">도메인</th>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">월간 운영량</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">프로파일</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">병원 정보 허브</th>
@@ -142,7 +142,7 @@ export default function HospitalsPage() {
               <tbody className="divide-y divide-slate-100">
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="text-center py-12 text-slate-400">
+                    <td colSpan={8} className="text-center py-12 text-slate-400">
                       검색 결과가 없습니다.
                     </td>
                   </tr>
@@ -150,6 +150,10 @@ export default function HospitalsPage() {
                 {filtered.map((h) => {
                   const status =
                     STATUS_LABELS[h.status] ?? { label: h.status, color: 'bg-slate-100 text-slate-700' }
+                  const domainStatus = readHospitalDomainStatus(h)
+                  const domainHref = h.site_built
+                    ? `/hospitals/${h.id}/profile#domain-setup`
+                    : `/hospitals/${h.id}/profile`
                   return (
                     <tr key={h.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-6 py-4">
@@ -171,6 +175,23 @@ export default function HospitalsPage() {
                         >
                           {status.label}
                         </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <Link
+                          href={domainHref}
+                          className="group inline-flex max-w-[240px] flex-col"
+                        >
+                          <span
+                            className={`inline-flex w-fit rounded-full px-2.5 py-0.5 text-xs font-medium ${domainToneClass(
+                              domainStatus.tone,
+                            )}`}
+                          >
+                            {domainStatus.label}
+                          </span>
+                          <span className="mt-1 truncate text-xs text-slate-500 group-hover:text-blue-700">
+                            {domainStatus.detail}
+                          </span>
+                        </Link>
                       </td>
                       <td className="px-6 py-4 text-slate-600">
                         {h.plan ? PLAN_LABELS[h.plan] ?? h.plan : '-'}
@@ -220,6 +241,19 @@ export default function HospitalsPage() {
       )}
     </div>
   )
+}
+
+function domainToneClass(tone: 'live' | 'waiting' | 'default' | 'empty'): string {
+  switch (tone) {
+    case 'live':
+      return 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+    case 'waiting':
+      return 'bg-amber-50 text-amber-700 border border-amber-200'
+    case 'default':
+      return 'bg-sky-50 text-sky-700 border border-sky-200'
+    case 'empty':
+      return 'bg-slate-50 text-slate-600 border border-slate-200'
+  }
 }
 
 function StatPill({

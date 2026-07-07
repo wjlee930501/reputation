@@ -33,8 +33,14 @@ def _hospital(**overrides):
         name="테스트의원",
         slug="test-clinic",
         status="ONBOARDING",
+        plan=None,
+        source_lead_id=None,
         site_live=False,
+        site_built=False,
         profile_complete=True,
+        v0_report_done=False,
+        schedule_set=False,
+        created_at=None,
         region=["성동구"],
         specialties=["외과"],
         keywords=["치질"],
@@ -102,3 +108,11 @@ async def test_completion_transition_with_missing_fields_keeps_400():
     assert exc.value.status_code == 400
     assert "keywords" in exc.value.detail
     assert db.committed is False
+
+
+def test_list_serializer_includes_custom_domain_for_admin_search():
+    hospital = _hospital(aeo_domain="jangclinic.kr", site_built=True, site_live=True)
+
+    payload = hospitals_api._serialize_list(hospital)
+
+    assert payload["aeo_domain"] == "jangclinic.kr"

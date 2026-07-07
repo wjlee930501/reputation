@@ -15,6 +15,20 @@ admin_subdomain = "admin.reputation.motionlabs.kr"
 dns_zone_name   = ""
 cname_target    = "cname.reputation.motionlabs.kr"
 
+# Current hospital-owned custom domains known to production. When
+# use_certificate_map=true, this list is informational for legacy direct certs;
+# Certificate Manager serving is driven by certificate_map_customer_domains.
+customer_domains = ["jangclinic.kr"]
+
+# Customer-owned domains that should receive Certificate Manager map entries.
+# Add a domain only after its DNS authorization CNAME exists and its
+# Certificate Manager cert can become ACTIVE.
+certificate_map_customer_domains = ["jangclinic.kr"]
+
+# Production HTTPS proxy now serves through Certificate Manager certificate map.
+# Keep this true unless rolling back deliberately.
+use_certificate_map = true
+
 # Keep launch scale deliberately bounded. Raise after DB connection metrics and
 # request latency justify it.
 api_min_instances    = 0

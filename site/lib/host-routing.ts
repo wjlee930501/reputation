@@ -32,13 +32,37 @@ export function getPrimaryHostnames(siteUrl: string | null | undefined): string[
 const PLATFORM_HOSTNAMES = new Set(['run.app', 'vercel.app'])
 const PLATFORM_HOST_SUFFIXES = ['.run.app', '.vercel.app'] as const
 
+function isPlatformRuntimeHost(hostname: string): boolean {
+  if (PLATFORM_HOSTNAMES.has(hostname)) return true
+  return PLATFORM_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
+}
+
 /** 플랫폼 호스트 여부. host가 비어 있으면 안전하게 primary 취급(rewrite 안 함). */
 export function isPrimaryHost(hostHeader: string | null | undefined, primaryHostnames: string[]): boolean {
   const hostname = normalizeHostname(hostHeader)
   if (!hostname) return true
   if (primaryHostnames.includes(hostname)) return true
-  if (PLATFORM_HOSTNAMES.has(hostname)) return true
-  return PLATFORM_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
+  return isPlatformRuntimeHost(hostname)
+}
+
+function firstForwardedHost(forwardedHostHeader: string | null | undefined): string | null {
+  const raw = forwardedHostHeader?.split(',', 1)[0]?.trim()
+  return normalizeHostname(raw)
+}
+
+export function getEffectiveHost(
+  hostHeader: string | null | undefined,
+  forwardedHostHeader: string | null | undefined,
+  primaryHostnames: string[],
+): string | null {
+  const hostname = normalizeHostname(hostHeader)
+  if (!hostname) return null
+  if (!isPrimaryHost(hostname, primaryHostnames)) return hostname
+  if (!isPlatformRuntimeHost(hostname)) return hostname
+
+  const forwardedHostname = firstForwardedHost(forwardedHostHeader)
+  if (!forwardedHostname || isPrimaryHost(forwardedHostname, primaryHostnames)) return hostname
+  return forwardedHostname
 }
 
 // 커스텀 도메인에서도 플랫폼 그대로 서빙해야 하는 예약 경로.
