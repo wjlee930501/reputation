@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-05-27
+- Last refreshed: 2026-07-08
 - Primary product surfaces: public hospital second-homepage, medical content list, medical content detail, treatment/doctor/visit pages.
 - Evidence reviewed: `site/app/[slug]/page.tsx`, `site/app/[slug]/_components/*`, `site/app/[slug]/contents/[contentId]/page.tsx`, `site/app/globals.css`, Playwright screenshots under `/private/tmp/motionlabs-*`, reference screenshots `/private/tmp/ref-goys.png`, `/private/tmp/ref-newstandard.png`, `/private/tmp/ref-newstandard-mobile.png`.
 
@@ -32,18 +32,22 @@
 - Prefer editorial density over card sprawl: use sections, tables, flows, and profile panels before repeated generic cards.
 
 ## Visual Language
-- Color: white, cool grey, clinical blue, and a restrained deep navy for primary medical CTAs.
-- Typography: large confident Korean headings, readable body at 16px+ on mobile and 17px+ in articles.
-- Spacing/layout rhythm: first viewport should be compact enough to hint at the next section; desktop max width around 1120px.
-- Shape/radius/elevation: small to medium radius, minimal shadows, borders used for clinical structure.
-- Motion: subtle hover/focus only.
-- Imagery/iconography: real doctor/clinic images first; generated medical illustrations are acceptable only as explanatory article visuals with caveat.
+- Color: white paper on a faintly blue-grey neutral (`--clinic-paper` #fafbfd, hairlines `--clinic-hair` #e7ebf1). A single unified clinical deep blue (`--color-revisit-primary-40` scoped to `#0b53b8`, hover `#083f8c`) carries every accent — links, CTAs, category chips, active states. No secondary navy CTA, no Tailwind bright blue, no purple. Point colour is restrained.
+- Typography (Pretendard only; weight contrast 400/600/800): editorial hierarchy is built from scale + weight, not new fonts. Hero display `.clinic-hero-title` 44px desktop / 30px mobile with the specialty declared in accent blue (`.clinic-hero-title-sub`). Section titles `.clinic-section-title` 30px / 24px. Article title 40px / 27px. Article body 17px / line-height 1.8, measure ~680px. Body/notes ≥16px, mobile included.
+- Rhythm — editorial density over card sprawl: each section carries a distinct rhythm rather than a repeated card grid. FAQ = numbered typographic question index (`.clinic-qa-list`). Treatments = definition list with an emphasised lead row (`.clinic-tx-deflist`). Featured / content list = a large typographic lead + compact hairline rows (`.clinic-lead`, `.clinic-feed-*`). Structure is expressed with hairline dividers + whitespace, not bordered boxes.
+- Section headers are lightweight: title (and an optional one-line note) only. Mechanical eyebrow+title+description triplets are removed — the title carries the message.
+- Shape/radius/elevation: 8–18px radii, no shadows anywhere on the clinic surface (regression-guarded), no gradients, no glassmorphism.
+- Motion: hover/focus only, 150ms — link/arrow nudge + accent-colour shift.
+- Imagery: the surface is typography-first and must be beautiful with zero images. Hero has no image band. Content cards/feeds and the article top carry no cover image; a large empty grey box is never rendered. Doctor/avatar slots degrade to a monogram tile that is always the underlay — a real photo fades in over it only once it genuinely loads (`ClinicAvatar`).
 
 ## Components
-- Existing components to reuse: `ClinicHeader`, `ClinicHero`, `CarePrinciples`, `TreatmentGrid`, `DoctorIntro`, `FeaturedContent`, `ClinicGallery`, `ContactCard`.
-- New/changed components: `CareFlow`, `MobileActionBar`, expanded treatment cards, center-style hero panel.
-- Variants and states: missing doctor photo must degrade to monogram; unsupported image URLs must render no image rather than crash.
-- Token/component ownership: keep global CSS tokens; avoid introducing a new design-system dependency.
+- Header/footer/gallery reused as-is: `ClinicHeader`, `ClinicFooter`, `ClinicGallery`, `HospitalFacts`.
+- Typography-first rebuilds (v3): `ClinicHero` (no image band; left = specialty declaration + statement + CTA + byline, right = refined quick-facts/contact card with today-status dot, phone, location, call CTA), `AnswerClusters` (numbered question index), `TreatmentGrid` + `/treatments` (emphasised-lead definition list), `FeaturedContent` (typographic lead + compact rows), `ContentCard` (chip + title + excerpt + date, no image), `/contents` (category filter chips via query param, featured + unified chronological feed), article page (no cover, inline meta row, refined core-answer callout, H2 accent-rule anchors, footnote-card references, thumbnail-free related list).
+- Section chrome: light `.clinic-section-head` / `.clinic-section-title` / `.clinic-section-note` replaces the eyebrow+heading+lede triplet; `CareFlow` keeps numbered nodes with a connecting hairline; `DoctorIntro` is an editorial monogram/photo profile + credential chips + fact table.
+- `ClinicAvatar`: monogram is a permanent underlay; the real image overlays and fades in only on confirmed load (blank/errored/pending → monogram, never a grey box).
+- Category colour: 7 content types get low-saturation chips (`.clinic-tag--faq/disease/treatment/column/health/local/notice`), distinguished by lightness/depth within the unified clinical blue system (plus the existing green/yellow/red/grey status accents) — purple is never used, per the Visual Language "no purple" rule.
+- Variants and states: missing doctor photo → monogram; unsupported/slow/absent image URLs render no image (never crash, never empty box); sparse content feeds collapse to a single-column lead.
+- Token/component ownership: keep global CSS tokens; clinical blue + neutral tuning is scoped under `.clinic-shell` (no new design-system dependency).
 
 ## Accessibility
 - Target standard: WCAG AA-oriented contrast and keyboard semantics.

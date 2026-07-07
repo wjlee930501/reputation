@@ -8,6 +8,7 @@ import { canonicalBase } from '@/lib/site-url'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
+import { ChevronRightIcon } from '../_components/icons'
 import { ClinicFooter } from '../_components/ClinicFooter'
 import { ClinicHeader } from '../_components/ClinicHeader'
 import { ContentCard } from '../_components/ContentCard'
@@ -109,7 +110,6 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
           <section className="clinic-library-hero">
             <div className="clinic-library-hero-inner">
               <Breadcrumb items={breadcrumbItems} />
-              <span className="clinic-section-label">진료 영역</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 진료 영역</h1>
               <p className="clinic-library-hero-meta">
                 <strong>{treatments.length}개 진료 영역</strong>
@@ -138,26 +138,37 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
               </div>
             </section>
           ) : (
-            <section className="clinic-section">
+            <section className="clinic-section clinic-section--tight">
               <div className="clinic-section-inner">
-                <ul className="clinic-treatment-grid" aria-label="진료 영역 목록">
-                  {treatmentsWithRelated.map(({ treatment }) => {
+                <ul className="clinic-tx-deflist" aria-label="진료 영역 목록">
+                  {treatmentsWithRelated.map(({ treatment }, idx) => {
                     const treatmentSlug = buildTreatmentSlug(treatment.name)
                     const href = treatmentSlug
                       ? `/${params.slug}/treatments/${treatmentSlug}`
                       : null
-                    const name = <span className="clinic-treatment-card-name">{treatment.name}</span>
+                    const className = `clinic-tx-row${idx === 0 ? ' clinic-tx-row--lead' : ''}`
+                    const inner = (
+                      <>
+                        <span className="clinic-tx-term">{treatment.name}</span>
+                        <span className="clinic-tx-desc">
+                          {treatment.description || '진료 상담에서 자세한 내용을 확인해 주세요.'}
+                        </span>
+                        {href && (
+                          <ChevronRightIcon
+                            className="clinic-icon clinic-icon--sm clinic-tx-arrow"
+                            aria-hidden="true"
+                          />
+                        )}
+                      </>
+                    )
                     return (
-                      <li key={treatment.name} className="clinic-treatment-card">
+                      <li key={treatment.name} className="clinic-tx-item">
                         {href ? (
-                          <Link
-                            href={href}
-                            style={{ display: 'block', color: 'inherit', textDecoration: 'none' }}
-                          >
-                            {name}
+                          <Link href={href} className={className}>
+                            {inner}
                           </Link>
                         ) : (
-                          name
+                          <div className={className}>{inner}</div>
                         )}
                       </li>
                     )

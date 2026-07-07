@@ -31,15 +31,14 @@ const CARE_STEPS = [
   },
 ]
 
-export function CareFlow({ hospitalSlug, hospitalName }: Props) {
+export function CareFlow({ hospitalSlug }: Props) {
   return (
     <section className="clinic-section clinic-section--flow">
       <div className="clinic-section-inner">
-        <header className="clinic-section-header clinic-section-header--center">
-          <span className="clinic-section-label">진료 흐름</span>
-          <h2 className="clinic-section-heading">{hospitalName} 진료 4단계</h2>
-          <p className="clinic-section-lede">
-            첫 방문부터 경과 관리까지 — 상담과 진료 확인을 바탕으로 단계적으로 진행합니다.
+        <header className="clinic-section-head clinic-section-head--center">
+          <h2 className="clinic-section-title">첫 방문부터 경과 관리까지, 진료 4단계</h2>
+          <p className="clinic-section-note">
+            상담과 진료 확인을 바탕으로 단계적으로 진행합니다.
           </p>
         </header>
 

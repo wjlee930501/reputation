@@ -13,10 +13,9 @@ export function CarePrinciples({ hospitalSlug, specialties }: Props) {
   return (
     <section className="clinic-section clinic-section--principles">
       <div className="clinic-section-inner">
-        <header className="clinic-section-header clinic-section-header--center">
-          <span className="clinic-section-label">진료 안내 원칙</span>
-          <h2 className="clinic-section-heading">설명과 상담을 우선합니다</h2>
-          <p className="clinic-section-lede">
+        <header className="clinic-section-head clinic-section-head--center">
+          <h2 className="clinic-section-title">설명과 상담을 우선합니다</h2>
+          <p className="clinic-section-note">
             {specialtyText
               ? `${specialtyText} 진료 안내에서 지키는 기본 원칙입니다.`
               : '진료 안내에서 지키는 기본 원칙입니다.'}

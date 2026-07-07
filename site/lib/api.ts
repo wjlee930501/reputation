@@ -118,7 +118,13 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
   const base = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents`
   const url = limit ? `${base}?limit=${limit}` : base
   const res = await fetch(url, publicFetchInit(1800))
-  if (!res.ok) return []
+  // 404는 "콘텐츠 0건"이 아니라 병원 자체가 없거나 비활성 상태라는 뜻이다(콘텐츠가 0건이면
+  // 백엔드가 200 []를 내려준다) — fetchHospital과 동일한 타입으로 던져 페이지의 notFound()
+  // 분기와 맞물리게 한다. 그 외 !res.ok(5xx/429 등)를 조용히 []로 삼키면 ISR
+  // (revalidate 1800~3600초) 캐시가 "콘텐츠 없음" 화면으로 고착되므로 던져서 Next.js가
+  // 이전 캐시를 유지하게 한다.
+  if (res.status === 404) throw new HospitalNotFoundError(slug)
+  if (!res.ok) throw new Error(`Server error (${res.status}) when fetching contents`)
   const contents = await res.json()
   if (!Array.isArray(contents) || !contents.every(isContentSummaryPayload)) {
     throw new Error('Invalid contents payload')

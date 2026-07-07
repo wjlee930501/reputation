@@ -1,5 +1,4 @@
 import { Metadata } from 'next'
-import Image from 'next/image'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
@@ -15,7 +14,6 @@ import {
   SOURCE_TYPE_LABELS,
   TYPE_LABELS,
 } from '@/lib/api'
-import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
 import { safeExternalHref } from '@/lib/safe-url'
 import { canonicalBase } from '@/lib/site-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
@@ -345,21 +343,6 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
         <main id="main-content">
           <div className="clinic-article-shell">
             <article className="clinic-article">
-              {articleImageUrl && (
-                <figure className="clinic-article-cover-figure">
-                  <div className="clinic-article-cover">
-                    <Image
-                      src={articleImageUrl}
-                      alt={imageAlt}
-                      fill
-                      sizes="(max-width: 960px) 100vw, 720px"
-                      style={{ objectFit: 'cover' }}
-                      priority
-                      unoptimized={shouldBypassNextImageOptimization(articleImageUrl)}
-                    />
-                  </div>
-                </figure>
-              )}
               <div className="clinic-article-header">
                 <Breadcrumb items={breadcrumbItems} />
                 <span className="clinic-article-type">{typeLabel}</span>
@@ -413,11 +396,6 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                     <dd>진료 상담 대체 아님</dd>
                   </div>
                 </dl>
-                {articleImageUrl && (
-                  <p className="clinic-article-media-note">
-                    대표 이미지는 이해를 돕기 위한 의료 일러스트이며 실제 진단 결과나 환자 사례가 아닙니다.
-                  </p>
-                )}
               </div>
 
               {content.meta_description && (
@@ -562,35 +540,19 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                     {relatedAllSameType ? `관련 ${typeLabel}` : '함께 읽어보면 좋은 글'}
                   </h2>
                   <ul className="clinic-related-list">
-                    {sameTypeRelated.map((r) => {
-                      const relatedImageUrl = resolveAssetUrl(r.image_url)
-                      return (
-                        <li key={r.id}>
-                          <Link href={`/${params.slug}/contents/${r.id}`} className="clinic-related-item">
-                            {relatedImageUrl ? (
-                              <span className="clinic-related-thumb">
-                                <Image
-                                  src={relatedImageUrl}
-                                  alt={r.title}
-                                  fill
-                                  sizes="56px"
-                                  style={{ objectFit: 'cover' }}
-                                  unoptimized={shouldBypassNextImageOptimization(relatedImageUrl)}
-                                />
-                              </span>
-                            ) : (
-                              <span className="clinic-related-thumb" aria-hidden="true" />
-                            )}
-                            <span className="clinic-related-meta">
-                              <span className="clinic-related-title">{r.title}</span>
-                              <span className="clinic-related-date">
-                                {formatDate(r.published_at, r.scheduled_date)}
-                              </span>
-                            </span>
-                          </Link>
-                        </li>
-                      )
-                    })}
+                    {sameTypeRelated.map((r) => (
+                      <li key={r.id}>
+                        <Link href={`/${params.slug}/contents/${r.id}`} className="clinic-related-item">
+                          <span className="clinic-related-type">
+                            {TYPE_LABELS[r.content_type] ?? r.content_type}
+                          </span>
+                          <span className="clinic-related-title">{r.faq_question || r.title}</span>
+                          <span className="clinic-related-date">
+                            {formatDate(r.published_at, r.scheduled_date)}
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
                   </ul>
                 </div>
               )}

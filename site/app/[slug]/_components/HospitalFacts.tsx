@@ -60,11 +60,10 @@ export function HospitalFacts({
   return (
     <section id="hospital-facts" className="clinic-section clinic-section--facts">
       <div className="clinic-section-inner">
-        <header className="clinic-section-header">
-          <span className="clinic-section-eyebrow">병원 안내</span>
-          <h2 className="clinic-section-heading">{hospitalName} 기본 정보</h2>
-          <p className="clinic-section-lede">
-            위치, 전화, 진료시간, 의료진과 공식 채널을 한곳에 정리했습니다. 방문 전에 필요한 정보를 빠르게 확인하세요.
+        <header className="clinic-section-head">
+          <h2 className="clinic-section-title">{hospitalName} 기본 정보</h2>
+          <p className="clinic-section-note">
+            위치, 전화, 진료시간, 의료진과 공식 채널을 한곳에 정리했습니다.
           </p>
         </header>
 

@@ -1,11 +1,9 @@
-import Image from 'next/image'
 import Link from 'next/link'
 
-import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
-import { shouldBypassNextImageOptimization } from '@/lib/image-policy'
+import { resolveAssetUrl } from '@/lib/api'
 
 import { ClinicAvatar } from './ClinicAvatar'
-import { ChevronRightIcon, ClockIcon, ExternalIcon, MapPinIcon, PhoneIcon } from './icons'
+import { ChevronRightIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
 
 interface Treatment {
   name: string
@@ -24,7 +22,6 @@ interface Props {
   address: string
   businessHours: Record<string, string> | null | undefined
   treatments: Treatment[]
-  photos?: HospitalPhoto[]
   // AE가 검수해 입력한 구조화 자격 정보(예: "정형외과 전문의"). 자유 입력 specialty로
   // "전문의"를 만들어내면 법적 보호 명칭 오용이 되므로 이 필드가 있을 때만 노출한다.
   boardCertifications?: string[] | null
@@ -51,13 +48,14 @@ function seoulDayKey(): string {
 function todayHours(hours: Record<string, string> | null | undefined): {
   label: string
   time: string
+  closed: boolean
 } | null {
   if (!hours) return null
   const key = seoulDayKey()
   const time = hours[key]
   if (!time) return null
-  // "오늘" 대신 실제 요일명을 라벨로 사용 — ISR 캐시가 하루를 넘겨도 거짓이 되지 않는다.
-  return { label: DAY_FULL_LABELS[key] ?? key, time }
+  const closed = /휴진|휴무|closed/i.test(time)
+  return { label: DAY_FULL_LABELS[key] ?? key, time, closed }
 }
 
 function monogram(name: string): string {
@@ -79,63 +77,27 @@ export function ClinicHero({
   address,
   businessHours,
   treatments,
-  photos = [],
   boardCertifications = null,
 }: Props) {
-  const eyebrowLabel = [region.join(' '), specialties.join(' · ')]
-    .filter(Boolean)
-    .join('  ·  ')
+  const kicker = [region.join(' '), specialties.join(' · ')].filter(Boolean).join('  ·  ')
   const resolvedDirectorPhoto = resolveAssetUrl(directorPhotoUrl)
   const today = todayHours(businessHours)
   // 모든 진료 문구는 프로파일 데이터(specialties·treatments)에서만 파생한다.
   const specialtyLabel = specialties.filter(Boolean).join('·')
-  const heroTitleSub = specialtyLabel ? `${specialtyLabel} 진료` : '진료 안내'
+  const heroTitleSub = specialtyLabel ? `${specialtyLabel} 협진 진료` : '진료 안내'
   // 검수된 전문의 자격이 있을 때만 "전문의" 표기. 없으면 "대표원장"만 사용.
   const doctorRoleLabel = boardCertifications?.find(Boolean) ?? '대표원장'
-  const heroTreatments = treatments.slice(0, 6)
   const treatmentNames = treatments.map((t) => t.name).filter(Boolean)
-  const careScopeLabel =
-    treatmentNames.slice(0, 4).join('·') || specialtyLabel || ''
+  const careScopeLabel = treatmentNames.slice(0, 4).join(' · ') || specialtyLabel || ''
   const heroMeta = careScopeLabel
     ? `${careScopeLabel} 등 진료 항목을 진찰 소견과 함께 확인하고, 환자 상태에 맞는 치료 방향을 안내합니다.`
     : null
-  // 우측 hero 미디어는 가로형(16:9) 밴드 — 세로 원장 사진은 얼굴이 잘리므로
-  // 원내 전경(내부·외관·진료실) 사진을 우선 사용한다. 원장 사진은 아래 요약부의
-  // 원형 아바타로 노출하므로 큰 미디어에서는 마지막 폴백으로만 쓴다.
-  const facilityPhoto =
-    photos.find((photo) => photo.source_type === 'PHOTO_CLINIC_INTERIOR') ||
-    photos.find((photo) => photo.source_type === 'PHOTO_CLINIC_EXTERIOR') ||
-    photos.find((photo) => photo.source_type === 'PHOTO_TREATMENT_ROOM') ||
-    photos.find((photo) => photo.source_type !== 'PHOTO_DOCTOR')
-  const facilityPhotoUrl = resolveAssetUrl(facilityPhoto?.url)
-  const heroPhotoUrl = facilityPhotoUrl || resolvedDirectorPhoto
-  const heroShowsFacility = Boolean(facilityPhotoUrl)
-  const heroPhotoLabel = heroShowsFacility
-    ? facilityPhoto?.title || `${hospitalName} 진료 공간`
-    : `${directorName} 대표원장`
 
   return (
     <section className="clinic-hero clinic-hero--hub" id="top">
-      {/* P1-4: 모바일(≤480px)에서 우측 패널이 display:none되므로 hero 최상단에 시설 사진 밴드 노출 */}
-      {heroPhotoUrl && (
-        <div className="clinic-hero-mobile-photo" aria-hidden="true">
-          <Image
-            src={heroPhotoUrl}
-            alt=""
-            fill
-            sizes="100vw"
-            style={{
-              objectFit: heroShowsFacility ? 'cover' : 'contain',
-              objectPosition: 'center',
-            }}
-            priority
-            unoptimized={shouldBypassNextImageOptimization(heroPhotoUrl)}
-          />
-        </div>
-      )}
       <div className="clinic-hero-inner">
         <div className="clinic-hero-lead">
-          {eyebrowLabel && <span className="clinic-hero-eyebrow">{eyebrowLabel}</span>}
+          {kicker && <span className="clinic-hero-kicker">{kicker}</span>}
           <h1 className="clinic-hero-title">
             {hospitalName}
             <span className="clinic-hero-title-sub">{heroTitleSub}</span>
@@ -145,28 +107,14 @@ export function ClinicHero({
           </p>
           {heroMeta && <p className="clinic-hero-meta">{heroMeta}</p>}
 
-          {heroTreatments.length > 0 && (
-            <div className="clinic-hero-treatment-strip" aria-label="주요 진료 영역">
-              {heroTreatments.map((treatment) => (
-                <Link key={treatment.name} href={`/${hospitalSlug}/treatments`}>
-                  {treatment.name}
-                </Link>
-              ))}
-            </div>
-          )}
-
           <div className="clinic-hero-actions">
             <a className="clinic-btn clinic-btn-cta" href={`tel:${phone}`}>
               <PhoneIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
               전화 상담 · {phone}
             </a>
-            <Link className="clinic-btn clinic-btn-primary" href={`/${hospitalSlug}/visit`}>
+            <Link className="clinic-btn clinic-btn-secondary" href={`/${hospitalSlug}/visit`}>
               <MapPinIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
               오시는 길·진료시간
-            </Link>
-            <Link className="clinic-btn clinic-btn-secondary" href={`/${hospitalSlug}/treatments`}>
-              진료 안내 보기
-              <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
             </Link>
           </div>
 
@@ -186,53 +134,50 @@ export function ClinicHero({
           </div>
         </div>
 
-        <aside className="clinic-hero-snapshot clinic-hero-doctor-panel" aria-label="대표 의료진 및 병원 안내">
-          {heroPhotoUrl && (
-            <div className="clinic-hero-snapshot-media">
-              <Image
-                src={heroPhotoUrl}
-                alt={heroPhotoLabel}
-                fill
-                sizes="(max-width: 920px) 100vw, 420px"
-                style={{
-                  objectFit: heroShowsFacility ? 'cover' : 'contain',
-                  objectPosition: 'center',
-                }}
-                priority
-                unoptimized={shouldBypassNextImageOptimization(heroPhotoUrl)}
-              />
-              <span className="clinic-hero-snapshot-media-label">
-                {heroPhotoLabel}
-              </span>
-            </div>
-          )}
-          <div className="clinic-hero-doctor-summary">
+        <aside className="clinic-hero-card" aria-label="대표 의료진 및 병원 안내">
+          <div className="clinic-hero-card-doctor">
             <ClinicAvatar
               src={resolvedDirectorPhoto}
               alt={`${directorName} 원장`}
-              wrapperClassName="clinic-hero-doctor-avatar"
+              wrapperClassName="clinic-hero-card-avatar"
               fallback={<span className="clinic-hero-byline-monogram">{monogram(directorName)}</span>}
             />
-            <div>
-              <span className="clinic-hero-snapshot-label">대표원장</span>
+            <div className="clinic-hero-card-doctor-meta">
+              <span className="clinic-hero-card-eyebrow">대표원장</span>
               <strong>{directorName} 원장</strong>
-              <span>{doctorRoleLabel}</span>
+              <span className="clinic-hero-card-role">{doctorRoleLabel}</span>
             </div>
           </div>
 
-          {/* P1-3: 오늘진료·위치만 표시. 전화는 좌측 CTA + 모바일 하단바로 충분하므로 제거. */}
-          <dl className="clinic-hero-snapshot-list">
+          <dl className="clinic-hero-card-facts">
             {today && (
-              <div className="clinic-hero-snapshot-row">
+              <div className="clinic-hero-card-fact">
                 <dt>
                   <ClockIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
-                  <span className="clinic-hero-snapshot-today">오늘</span> 진료
+                  오늘 진료
                 </dt>
-                <dd>{today.time}</dd>
+                <dd>
+                  <span
+                    className={`clinic-status-dot${today.closed ? ' is-closed' : ''}`}
+                    aria-hidden="true"
+                  />
+                  {today.closed ? '오늘 휴진' : today.time}
+                </dd>
               </div>
             )}
+            <div className="clinic-hero-card-fact">
+              <dt>
+                <PhoneIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
+                전화
+              </dt>
+              <dd>
+                <a href={`tel:${phone}`} className="clinic-hero-card-tel">
+                  {phone}
+                </a>
+              </dd>
+            </div>
             {address && (
-              <div className="clinic-hero-snapshot-row">
+              <div className="clinic-hero-card-fact">
                 <dt>
                   <MapPinIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
                   위치
@@ -242,19 +187,17 @@ export function ClinicHero({
             )}
           </dl>
 
-          <Link href={`/${hospitalSlug}/visit`} className="clinic-hero-snapshot-foot">
-            진료 시간 · 오시는 길 자세히
-            <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
-          </Link>
-          <a
-            href={`tel:${phone}`}
-            className="clinic-hero-snapshot-call"
-          >
+          <a href={`tel:${phone}`} className="clinic-hero-card-call">
             <PhoneIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
             지금 전화 상담
           </a>
+          <Link href={`/${hospitalSlug}/visit`} className="clinic-hero-card-foot">
+            진료 시간 · 오시는 길 자세히
+            <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+          </Link>
         </aside>
       </div>
+
       <nav className="clinic-mobile-actionbar" aria-label="빠른 병원 문의">
         <a href={`tel:${phone}`}>
           <PhoneIcon className="clinic-icon" />
@@ -265,7 +208,7 @@ export function ClinicHero({
           진료시간
         </Link>
         <Link href={`/${hospitalSlug}/treatments`}>
-          <ExternalIcon className="clinic-icon" />
+          <ChevronRightIcon className="clinic-icon" />
           진료안내
         </Link>
         <Link href={`/${hospitalSlug}/visit`}>

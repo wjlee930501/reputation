@@ -241,7 +241,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             address={hospital.address}
             businessHours={hospital.business_hours}
             treatments={hospital.treatments || []}
-            photos={hospital.photos ?? []}
             boardCertifications={hospital.director_credentials?.board_certifications ?? null}
           />
 
@@ -289,7 +288,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
           <CarePrinciples hospitalSlug={params.slug} specialties={hospital.specialties} />
 
-          <TreatmentGrid treatments={hospital.treatments} />
+          <TreatmentGrid treatments={hospital.treatments} hospitalSlug={params.slug} />
 
           <CareFlow hospitalSlug={params.slug} hospitalName={hospital.name} />
 

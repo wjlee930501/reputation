@@ -30,10 +30,9 @@ export function DoctorIntro({
   return (
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
-        <header className="clinic-section-header">
-          <span className="clinic-section-label">의료진 소개</span>
-          <h2 className="clinic-section-heading">진료를 담당하는 의료진</h2>
-          <p className="clinic-section-lede">
+        <header className="clinic-section-head">
+          <h2 className="clinic-section-title">진료를 담당하는 의료진</h2>
+          <p className="clinic-section-note">
             진료 경험과 환자 상담에서 반복되는 질문을 바탕으로, 필요한 의료 정보를 차분히 정리합니다.
           </p>
         </header>

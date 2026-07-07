@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ContentNotFoundError, fetchContent, fetchContents, fetchHospital, resolveAssetUrl } from './api.ts'
+import {
+  ContentNotFoundError,
+  fetchContent,
+  fetchContents,
+  fetchHospital,
+  HospitalNotFoundError,
+  resolveAssetUrl,
+} from './api.ts'
 
 function setEnv(name: 'NODE_ENV' | 'GCP_STORAGE_BUCKET', value: string | undefined): void {
   if (value === undefined) {
@@ -190,6 +197,34 @@ test('fetchContents rejects malformed backend payloads at runtime', async () => 
     await assert.rejects(() => fetchContents('demo-clinic'), /Invalid contents payload/)
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchContents throws HospitalNotFoundError on a 404 (hospital missing/inactive, not "no content")', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response('not found', { status: 404 })) as typeof fetch
+  try {
+    await assert.rejects(
+      () => fetchContents('demo-clinic'),
+      (err) => err instanceof HospitalNotFoundError,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchContents throws on 5xx/429 instead of silently returning [] (so ISR keeps the prior cache)', async () => {
+  const originalFetch = globalThis.fetch
+  for (const status of [500, 503, 429]) {
+    globalThis.fetch = (async () => new Response('boom', { status })) as typeof fetch
+    try {
+      await assert.rejects(
+        () => fetchContents('demo-clinic'),
+        (err) => err instanceof Error && !(err instanceof HospitalNotFoundError),
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   }
 })
 
