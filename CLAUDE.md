@@ -36,18 +36,28 @@
     • 별도 홈페이지/HTML 납품물이 아니라 AI와 검색엔진이 참고할 병원 정보·콘텐츠 허브 운영 상태를 만든다
     • 준비 완료 시 Slack → AE: "콘텐츠 허브 노출 준비 완료 — Admin에서 공개 정보와 도메인 상태 확인 필요"
     ↓
-[STEP 5] 공개 노출 상태 확인 (사람 — Admin에서 AE가)
-    • Admin에서 병원 도메인/공개 URL 정보를 입력
-    • DNS/도메인 상태를 확인하되, 제품 가치는 도메인 납품이 아니라 콘텐츠 허브 운영에 둔다
-    • 프로파일·V0·콘텐츠 스케줄·공개 상태가 준비되면 ACTIVE로 전환
+[STEP 5] 콘텐츠 운영 기준(essence/philosophy) 승인 (사람 — Admin에서 AE가)
+    • Admin에서 병원 근거 자료(홈페이지·블로그·인터뷰·브로슈어 등)를 업로드/크롤링
+    • 근거 자료로부터 원장 톤·핵심 의료 지식·가치(essence)를 담은 콘텐츠 운영 기준 초안을 생성 후 승인(APPROVED)
+    • STEP8 콘텐츠 자동 생성의 필수 게이트 — 승인된 운영 기준이 없으면 야간 배치가 해당 병원 생성을 건너뛰고
+      Slack으로 "운영 기준 미승인" 알림을 발송한다 (발행 게이트로도 재사용됨)
     ↓
 [STEP 6] 콘텐츠 스케줄 설정 (사람 — Admin에서 AE가)
     • 요금제 선택: 16편/12편/8편 (월간)
     • 발행 요일 설정 (예: 화·목 or 월·수·금 등)
     • 저장 시 첫 달 콘텐츠 캘린더 자동 생성
+    • ACTIVE 전환(STEP7)의 필수 사전 조건 중 하나 — STEP7보다 먼저 완료되어 있어야 한다
+    • 예외: 이미 ACTIVE(공개 노출 중)인 병원의 스케줄을 재설정하는 경우, 저장 즉시 자동으로 ACTIVE 상태를 유지한다
     ↓
-[STEP 7] 콘텐츠 자동 생성 사이클 (시스템 — 이후 지속)
+[STEP 7] 공개 노출 상태 확인 및 ACTIVE 전환 (사람 — Admin에서 AE가)
+    • Admin에서 병원 도메인/공개 URL 정보를 입력
+    • 활성화 게이트: profile_complete·v0_report_done·site_built·schedule_set(STEP6) 네 가지가 모두 충족되어야 하며,
+      자기 도메인을 연결한 경우 DNS 확인도 통과해야 한다
+    • 게이트 통과 시 공개 노출 상태(site_live)를 켜고 병원 상태를 ACTIVE로 전환
+    ↓
+[STEP 8] 콘텐츠 자동 생성 사이클 (시스템 — 이후 지속)
     발행일 전날 밤 23:00
+        → 병원별 승인된 콘텐츠 운영 기준(STEP5) 확인 — 없으면 생성을 건너뛰고 Slack 알림
         → Claude Sonnet으로 본문 자동 생성
         → Google Imagen 3으로 대표 이미지 자동 생성
         → DB에 초안 저장 (status: DRAFT)
@@ -57,7 +67,7 @@
         → [발행] 버튼 클릭
         → AI가 참고할 콘텐츠 허브에 즉시 게재 (status: PUBLISHED)
     ↓
-[STEP 8] 월말 AI 답변 언급 리포트 (시스템 — 매월 마지막 날)
+[STEP 9] 월말 AI 답변 언급 리포트 (시스템 — 매월 마지막 날)
     • 월간 AI 답변 언급률 집계 → PDF 자동 생성
     • Slack → AE: "장편한외과의원 월간 리포트 생성 완료"
     • AE가 원장에게 보고 (시스템이 보내지 않음)
@@ -152,7 +162,6 @@ reputation/
 │       ├── services/
 │       │   ├── content_engine.py  ← Claude Sonnet 콘텐츠 생성
 │       │   ├── image_engine.py    ← Google Imagen 3
-│       │   ├── site_builder.py    ← 콘텐츠 허브 노출 상태 준비
 │       │   ├── sov_engine.py      ← 환자 질문 발송·파싱·AI 답변 언급률 계산
 │       │   ├── report_engine.py   ← PDF 리포트
 │       │   └── notifier.py        ← Slack 알림
