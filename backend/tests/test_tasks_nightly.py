@@ -32,6 +32,134 @@ def test_generation_catchup_window_is_seven_days():
     assert tasks.GENERATION_CATCHUP_DAYS == 7
 
 
+def test_nightly_generation_stmt_filters_hospital_status():
+    """야간 생성은 ACTIVE/PENDING_DOMAIN 병원만 대상 — PAUSED 등에 생성 비용 발생 방지 (결함 8)."""
+    stmt = tasks._nightly_generation_stmt(date(2026, 6, 3), date(2026, 6, 11))
+    sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+
+    assert "JOIN hospitals" in sql
+    assert "'ACTIVE'" in sql
+    assert "'PENDING_DOMAIN'" in sql
+    # PAUSED/ONBOARDING 은 IN 목록에 없어야 한다.
+    assert "'PAUSED'" not in sql
+
+
+# ── 결함 5: 콘텐츠 허브 공개 URL — 존재하지 않던 하드코딩 preview 도메인 제거 ──
+
+
+def test_build_aeo_site_has_autoretry(monkeypatch):
+    """STEP4 허브 준비 태스크는 일시 장애 시 재시도돼야 한다 (결함 10)."""
+    assert tasks.build_aeo_site.max_retries == 3
+    assert Exception in tasks.build_aeo_site.autoretry_for
+
+
+def test_public_site_url_prefers_aeo_domain():
+    assert tasks._public_site_url("clinic.example.com", "jangpyeonhan") == "https://clinic.example.com/"
+
+
+def test_public_site_url_falls_back_to_platform_subdomain(monkeypatch):
+    monkeypatch.setattr(tasks.settings, "SITE_BASE_URL", "https://reputation.motionlabs.kr")
+    assert (
+        tasks._public_site_url(None, "jangpyeonhan")
+        == "https://jangpyeonhan.reputation.motionlabs.kr/"
+    )
+    assert "preview.motionlabs.io" not in tasks._public_site_url(None, "jangpyeonhan")
+
+
+# ── 결함 7: priority 게이팅 + HIGH 상한 ──
+
+
+def test_priority_included_gating_rules():
+    # HIGH: 항상 / NORMAL: 짝수주만 / LOW: 월초만
+    assert tasks._priority_included("HIGH", is_even_week=False, is_month_start=False) is True
+    assert tasks._priority_included("NORMAL", is_even_week=True, is_month_start=False) is True
+    assert tasks._priority_included("NORMAL", is_even_week=False, is_month_start=False) is False
+    assert tasks._priority_included("LOW", is_even_week=False, is_month_start=True) is True
+    assert tasks._priority_included("LOW", is_even_week=False, is_month_start=False) is False
+
+
+def test_apply_high_priority_cap_trims_excess_high_specs():
+    specs = [{"priority": "HIGH", "n": i} for i in range(5)] + [{"priority": "NORMAL", "n": 99}]
+    kept, dropped = tasks._apply_high_priority_cap(specs, cap=3)
+
+    assert dropped == 2
+    high_kept = [s for s in kept if s["priority"] == "HIGH"]
+    assert len(high_kept) == 3
+    # 결정론적: 앞에서부터 유지
+    assert [s["n"] for s in high_kept] == [0, 1, 2]
+    # NORMAL은 상한과 무관하게 유지
+    assert any(s["priority"] == "NORMAL" for s in kept)
+
+
+class _SpecDB:
+    def __init__(self, query_matrices):
+        self._qm = {qm.id: qm for qm in query_matrices}
+
+    def get(self, _model, obj_id):
+        return self._qm.get(obj_id)
+
+
+def _variant(vid, qm_id, platform="CHATGPT"):
+    return SimpleNamespace(
+        id=vid, query_matrix_id=qm_id, platform=platform, query_text=f"Q-{vid}", is_active=True
+    )
+
+
+def _qm(qm_id):
+    return SimpleNamespace(id=qm_id, hospital_id="h1")
+
+
+def test_build_measurement_specs_gates_target_priority(monkeypatch):
+    """target/variant 유래 spec도 target.priority 기준으로 주간 게이팅돼야 한다 (결함 7)."""
+    hospital = SimpleNamespace(id="h1")
+    qm_high, qm_normal = _qm("qm-high"), _qm("qm-normal")
+    target_high = SimpleNamespace(id="t-high", priority="HIGH", variants=[_variant("v-high", "qm-high")])
+    target_normal = SimpleNamespace(
+        id="t-normal", priority="NORMAL", variants=[_variant("v-normal", "qm-normal")]
+    )
+    db = _SpecDB([qm_high, qm_normal])
+    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+
+    # 홀수 주차(is_even_week=False), 월초 아님 → NORMAL target 제외, HIGH만 포함
+    specs, trimmed = tasks._build_measurement_specs(
+        db=db,
+        hospital=hospital,
+        query_targets=[target_high, target_normal],
+        fallback_queries=[],
+        is_even_week=False,
+        is_month_start=False,
+        high_priority_cap=30,
+    )
+
+    assert trimmed == 0
+    target_ids = {s["target_id"] for s in specs}
+    assert target_ids == {"t-high"}
+
+
+def test_build_measurement_specs_applies_high_cap(monkeypatch):
+    hospital = SimpleNamespace(id="h1")
+    qms = [_qm(f"qm-{i}") for i in range(5)]
+    targets = [
+        SimpleNamespace(id=f"t-{i}", priority="HIGH", variants=[_variant(f"v-{i}", f"qm-{i}")])
+        for i in range(5)
+    ]
+    db = _SpecDB(qms)
+    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+
+    specs, trimmed = tasks._build_measurement_specs(
+        db=db,
+        hospital=hospital,
+        query_targets=targets,
+        fallback_queries=[],
+        is_even_week=True,
+        is_month_start=True,
+        high_priority_cap=2,
+    )
+
+    assert trimmed == 3
+    assert len(specs) == 2
+
+
 def test_nightly_generation_orders_carried_over_items_first():
     """전월 이월(carried_over_from) 슬롯이 cap 안에서 가장 먼저 생성돼야 한다."""
     stmt = tasks._nightly_generation_stmt(date(2026, 7, 1), date(2026, 7, 2))
@@ -198,6 +326,51 @@ class _MonthlySlotDB:
 
     def __exit__(self, *_exc):
         return False
+
+
+def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch):
+    """발행요일이 적은 스케줄이 generate_monthly_slots ValueError를 내도 이전 병원 슬롯은
+    유지되고, 이후 병원 처리도 계속되며, ops Slack 알림에 실패 병원명이 담긴다 (결함 1)."""
+    hospitals = [
+        SimpleNamespace(id="h1", name="첫번째의원", status=HospitalStatus.ACTIVE),
+        SimpleNamespace(id="h2", name="문제의원", status=HospitalStatus.ACTIVE),
+    ]
+    schedules = [
+        SimpleNamespace(id="s1", hospital=hospitals[0], plan="PLAN_8", publish_days=[0, 2]),
+        SimpleNamespace(id="s2", hospital=hospitals[1], plan="PLAN_8", publish_days=[1]),
+    ]
+    db = _MonthlySlotDB(schedules)
+
+    calls = {"n": 0}
+
+    def fake_generate(plan, publish_days, next_month):
+        calls["n"] += 1
+        if publish_days == [1]:
+            raise ValueError("발행요일 대비 편수가 과다")
+        return [(date(2026, 3, 2), "FAQ", 1, 1)]
+
+    alerts: list[dict] = []
+
+    async def fake_ops_alert(**kwargs):
+        alerts.append(kwargs)
+        return True
+
+    # 2월(28일) 다음 달 슬롯 생성 상황 — 25일 트리거.
+    monkeypatch.setattr(tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 2, 25, tzinfo="Asia/Seoul"))
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks.notifier, "notify_ops_alert", fake_ops_alert)
+    monkeypatch.setattr("app.workers.monthly_slots.generate_monthly_slots", fake_generate)
+
+    tasks.monthly_slot_generation()
+
+    # h1은 커밋됐고, h2 실패는 루프를 죽이지 않았다.
+    assert calls["n"] == 2
+    assert db.commit_calls == 1
+    assert len(db.persisted) == 1
+    assert db.persisted[0].hospital_id == "h1"
+    # ops 알림에 실패 병원명 포함
+    assert len(alerts) == 1
+    assert "문제의원" in alerts[0]["message"]
 
 
 def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflicts(monkeypatch):
@@ -388,4 +561,26 @@ def test_morning_marks_done_even_when_missed_alert_fails(monkeypatch):
 def test_morning_does_not_mark_done_when_draft_alert_fails(monkeypatch):
     """초안 알림 자체가 실패하면 claim-after-success 유지 — 재트리거가 다시 시도해야 한다."""
     marked = _run_morning(monkeypatch, draft_sent=False, missed_sent=True)
+    assert marked == []
+
+
+def test_morning_does_not_mark_done_when_no_drafts_to_send(monkeypatch):
+    """발송 대상 초안이 0건이면 done-key를 박지 않는다 — 이후 초안 생성 시 첫 알림 유실 방지 (결함 14)."""
+    db = _MorningDB([], [])
+    marked: list[str] = []
+
+    async def fake_draft_ready(**_kw):  # pragma: no cover - 호출되지 않아야 함
+        raise AssertionError("no drafts → notify should not be called")
+
+    async def fake_generation_missed(**_kw):
+        return True
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "_already_done", lambda _key: False)
+    monkeypatch.setattr(tasks, "_mark_done", lambda key, **_kw: marked.append(key))
+    monkeypatch.setattr(tasks.notifier, "notify_content_draft_ready", fake_draft_ready)
+    monkeypatch.setattr(tasks.notifier, "notify_content_generation_missed", fake_generation_missed)
+
+    tasks.morning_content_notification()
+
     assert marked == []

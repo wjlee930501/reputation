@@ -4,6 +4,8 @@ import threading
 import time
 from datetime import timedelta
 
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 logger = logging.getLogger(__name__)
 
 _gcs_client = None
@@ -72,6 +74,28 @@ def _signed_url_cache_put(key: tuple[str, int], url: str, ttl_seconds: float) ->
         _signed_url_cache[key] = (time.monotonic() + ttl_seconds, url)
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+def _sign_blob_url(blob, expiration: timedelta) -> str:
+    """Blob 서명 실행 — 네트워크/일시 오류 시 최대 3회 재시도(CLAUDE.md 규칙 4).
+
+    Cloud Run/GCE(keyless ADC)에서는 로컬 서명이 항상 실패해 IAM signBlob API로
+    폴백하는 것이 정상 경로다. 이 폴백 자체는 재시도 대상이 아니며, 재시도는
+    signBlob 네트워크 호출의 일시적 실패에만 적용된다. 재시도 소진 시 예외는
+    그대로 전파한다.
+    """
+    try:
+        return blob.generate_signed_url(expiration=expiration)
+    except Exception:
+        # SA에 roles/iam.serviceAccountTokenCreator(자기 자신) 필요
+        # (terraform serviceaccount.tf app_self_token_creator).
+        credentials = _get_iam_signing_credentials()
+        return blob.generate_signed_url(
+            expiration=expiration,
+            service_account_email=credentials.service_account_email,
+            access_token=credentials.token,
+        )
+
+
 def get_signed_url(gcs_path: str | None, expiration_hours: int = 24) -> str:
     """gs://bucket/path → signed URL 변환. 레거시 URL 또는 빈 값은 그대로 통과.
 
@@ -97,18 +121,7 @@ def get_signed_url(gcs_path: str | None, expiration_hours: int = 24) -> str:
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
         expiration = timedelta(hours=expiration_hours)
-        try:
-            signed_url = blob.generate_signed_url(expiration=expiration)
-        except Exception:
-            # Cloud Run/GCE: ADC에 개인키가 없어 로컬 서명이 불가 — IAM signBlob API로
-            # 서명한다. SA에 roles/iam.serviceAccountTokenCreator(자기 자신) 필요
-            # (terraform serviceaccount.tf app_self_token_creator).
-            credentials = _get_iam_signing_credentials()
-            signed_url = blob.generate_signed_url(
-                expiration=expiration,
-                service_account_email=credentials.service_account_email,
-                access_token=credentials.token,
-            )
+        signed_url = _sign_blob_url(blob, expiration)
         # 캐시 TTL은 서명 수명의 절반을 넘지 않게 — 짧은 expiration_hours 호출이
         # 만료된 URL을 캐시에서 서빙하는 일이 없도록 한다.
         ttl = min(SIGNED_URL_CACHE_TTL_SECONDS, expiration_hours * 3600 / 2)

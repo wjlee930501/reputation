@@ -63,8 +63,9 @@ reports_bucket_location = "ASIA-NORTHEAST3"
 
 site_revalidate_url = "https://reputation.motionlabs.kr/api/revalidate"
 
-# Optional after a real ops mailbox/channel is confirmed.
-# alert_email = "ops@motionlabs.kr"
+# alert_email은 필수다 (monitoring.tf validation, 무알림 배포 방지) — 실제 운영
+# 메일박스로 반드시 채운다. notification_channels는 선택(worker/beat ERROR-log 알림용).
+alert_email = "ops@motionlabs.kr"
 # notification_channels = [
 #   "projects/mso-platform-481505/notificationChannels/<channel-id>"
 # ]

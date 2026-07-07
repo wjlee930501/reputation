@@ -88,7 +88,7 @@ def _fake_claude_response(fields: dict):
 
 async def test_autofill_profile_happy_path(monkeypatch):
     async def fake_fetch_url_text(url: str):
-        return "", "직접 fetch 실패"  # Jina 폴백 강제
+        return "", "직접 fetch 실패", None  # Jina 폴백 강제 (3-튜플: text, error, quality)
 
     async def fake_jina(url: str):
         return f"content for {url}", None
@@ -125,7 +125,7 @@ async def test_autofill_profile_happy_path(monkeypatch):
 
 async def test_autofill_profile_all_sources_fail_returns_empty(monkeypatch):
     async def fail_fetch(url: str):
-        return "", "fail"
+        return "", "fail", None
 
     async def fail_jina(url: str):
         return "", "fail"
@@ -155,7 +155,7 @@ async def test_autofill_profile_all_sources_fail_returns_empty(monkeypatch):
 
 async def test_autofill_profile_skips_llm_when_no_sources(monkeypatch):
     async def fail_fetch(url: str):
-        return "", "fail"
+        return "", "fail", None
 
     async def fail_jina(url: str):
         return "", "fail"
@@ -170,3 +170,83 @@ async def test_autofill_profile_skips_llm_when_no_sources(monkeypatch):
     res = await af.autofill_profile("x", None, None)
     assert res.draft == {}
     assert res.naver_place_id is None
+
+
+async def test_autofill_profile_direct_fetch_unpacks_three_tuple(monkeypatch):
+    """fetch_url_text의 실제 반환(text, error, quality) 3-튜플을 그대로 언패킹해야 한다.
+
+    회귀 방지: 과거 2-튜플로 언패킹해 website_url/blog_url 입력 시 항상 ValueError → 500이었음.
+    Jina 폴백을 타지 않고 직접 fetch가 성공하는 경로를 강제한다.
+    """
+    async def ok_fetch(url: str):
+        return f"홈페이지 본문 for {url}", None, None  # 실제 시그니처: (text, error, quality)
+
+    async def _should_not_jina(url: str):
+        raise AssertionError("직접 fetch 성공 시 Jina 폴백을 타면 안 된다")
+
+    async def fake_naver(name: str):
+        return naver_place.NaverPlaceResult(None, "", "찾지 못함")
+
+    monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
+    monkeypatch.setattr(af.naver_place, "fetch_via_jina", _should_not_jina)
+    monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
+
+    fields = {"director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9}}
+    monkeypatch.setattr(
+        af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields)
+    )
+
+    res = await af.autofill_profile("장편한외과의원", "http://hp", "http://blog")
+
+    assert res.draft["director_name"] == "김원장"
+    # 홈페이지·블로그 소스는 직접 fetch로 ok, 네이버만 실패
+    assert [s.ok for s in res.sources] == [True, True, False]
+
+
+async def test_autofill_endpoint_end_to_end_with_real_signature(monkeypatch):
+    """엔드포인트가 실제 fetch_url_text 시그니처로 저장 없이 초안을 반환한다."""
+    from app.api.admin import hospitals as hospitals_api
+
+    class _FakeDB:
+        def __init__(self, hospital):
+            self.hospital = hospital
+            self.added = []
+            self.committed = False
+
+        async def get(self, model, object_id):
+            return self.hospital if self.hospital.id == object_id else None
+
+        def add(self, item):
+            self.added.append(item)
+
+        async def commit(self):
+            self.committed = True
+
+    async def ok_fetch(url: str):
+        return f"본문 {url}", None, None
+
+    async def fake_naver(name: str):
+        return naver_place.NaverPlaceResult(None, "", "찾지 못함")
+
+    monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
+    monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
+    fields = {"director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9}}
+    monkeypatch.setattr(
+        af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields)
+    )
+
+    import uuid as _uuid
+    from types import SimpleNamespace
+
+    hospital = SimpleNamespace(
+        id=_uuid.uuid4(), name="장편한외과의원", website_url="http://hp", blog_url=None
+    )
+    db = _FakeDB(hospital)
+    body = hospitals_api.ProfileAutofillRequest(name=None, website_url=None, blog_url=None)
+
+    response = await hospitals_api.autofill_hospital_profile(hospital.id, body, db=db)
+
+    assert response["draft"]["director_name"] == "김원장"
+    # autofill 감사 로그가 기록되고 커밋됐다.
+    assert db.committed is True
+    assert db.added and db.added[0].action == "autofill_profile"

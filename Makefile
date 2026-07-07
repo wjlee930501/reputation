@@ -1,4 +1,4 @@
-.PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard admin-create-owner
+.PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard admin-create-owner db-budget-guard
 .PHONY: deploy-api deploy-worker deploy-beat deploy-all deploy-migrate setup-gcp build-image
 
 setup:
@@ -34,9 +34,14 @@ test:
 
 test-local: test-backend-local test-frontend copy-guard
 
-test-backend-local:
+test-backend-local: db-budget-guard
 	backend/.venv/bin/python -m ruff check backend
 	backend/.venv/bin/python -m pytest
+
+# Cloud SQL 연결 예산 불변식 가드 (config.py 풀 × terraform 인스턴스/CELERY_CONCURRENCY
+# 합계 ≤ max_connections × 0.9). 어느 한쪽만 상향하면 여기서 배포 전에 잡힌다.
+db-budget-guard:
+	python3 scripts/check_db_connection_budget.py
 
 test-frontend:
 	cd site && npm test

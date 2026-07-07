@@ -106,6 +106,7 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             "DB_USER": "reputation",
             "GCP_STORAGE_BUCKET": "reputation-assets",
             "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
+            "SKIP_ASSET_BUCKET_PREFLIGHT": "1",
         }
     )
 
@@ -226,6 +227,7 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(t
             "PUBLIC_DOMAIN": "reputation.example.test",
             "ADMIN_DOMAIN": "admin.reputation.example.test",
             "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
+            "SKIP_ASSET_BUCKET_PREFLIGHT": "1",
         }
     )
 

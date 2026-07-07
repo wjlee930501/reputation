@@ -185,6 +185,50 @@ def test_builds_content_webblog_and_source_actions_from_missing_mentions():
     assert recommendations[2].gap_type == "SOURCE_SIGNAL_GAP"
 
 
+def test_competitor_mention_count_is_per_record_binary():
+    """레코드당 여러 경쟁사가 언급돼도 1로만 계산 (mention_count와 동일 0/1 스케일)."""
+    from app.services.exposure_action_engine import _competitor_mention_count
+
+    records = [
+        SimpleNamespace(
+            competitor_mentions=[
+                {"name": "경쟁A", "is_mentioned": True},
+                {"name": "경쟁B", "is_mentioned": True},
+                {"name": "경쟁C", "is_mentioned": True},
+            ]
+        ),
+        SimpleNamespace(competitor_mentions=[{"name": "경쟁A", "is_mentioned": False}]),
+    ]
+
+    # 예전엔 3(첫 레코드의 경쟁사 합산)이었으나 이제 레코드당 최대 1 → 총 1
+    assert _competitor_mention_count(records) == 1
+
+
+def test_competitor_gap_not_triggered_by_many_competitors_in_single_record():
+    """등록 경쟁사가 많아도 병원이 언급된 레코드가 더 많으면 COMPETITOR_VISIBILITY 미발생."""
+    target = _target(priority="HIGH")
+    records = [
+        # 병원 언급 + 경쟁사 3곳 동시 언급 (같은 레코드)
+        _record(
+            target.id,
+            is_mentioned=True,
+            competitors=[
+                {"name": "경쟁A", "is_mentioned": True},
+                {"name": "경쟁B", "is_mentioned": True},
+                {"name": "경쟁C", "is_mentioned": True},
+            ],
+            source_urls=["https://example.com"],
+        ),
+        _record(target.id, is_mentioned=True, source_urls=["https://example.com"]),
+    ]
+
+    recommendations = build_exposure_recommendations([target], records, today=date(2026, 5, 3))
+    gap_types = {r.gap_type for r in recommendations}
+
+    # competitor_count(레코드당 0/1) = 1, mention_count = 2 → 1 >= max(2,1) 거짓 → 갭 없음
+    assert "COMPETITOR_VISIBILITY" not in gap_types
+
+
 async def test_exposure_actions_endpoint_shape(monkeypatch):
     hospital_id = uuid.uuid4()
     target_id = uuid.uuid4()

@@ -1,14 +1,22 @@
 # ═══════════════════════════════════════════════════════════════════
 # Re:putation — Uptime Monitoring + Alerting
 #
-# var.alert_email이 설정된 경우에만 생성. 외부 업타임 체크가 LB를 통해
-# API(/api/v1/health/live)와 site(/)를 감시하고, 실패 시 이메일 알림.
+# 외부 업타임 체크가 LB를 통해 API(/api/v1/health/live)와 site(/)를 감시하고,
+# 실패 시 이메일로 알림한다. var.alert_email은 필수(빈 값 거부) — 운영 의도상
+# "무알림 배포"를 방지하기 위해 알림 채널 없이 인프라가 뜨는 것을 막는다.
 # ═══════════════════════════════════════════════════════════════════
 
 variable "alert_email" {
-  description = "Uptime/장애 알림을 받을 이메일. 빈 값이면 모니터링 리소스를 만들지 않는다."
-  type        = string
-  default     = ""
+  description = <<-EOT
+    Uptime/장애 알림을 받을 이메일 (필수). 운영 의도상 알림 없는 배포를 막기 위해
+    빈 값을 거부한다 — 이 값이 있어야 uptime 체크/알림 정책이 항상 생성된다.
+  EOT
+  type = string
+
+  validation {
+    condition     = length(trimspace(var.alert_email)) > 0 && can(regex("@", var.alert_email))
+    error_message = "alert_email은 필수입니다 (무알림 배포 방지). 유효한 이메일 주소를 설정하세요."
+  }
 }
 
 variable "notification_channels" {

@@ -18,6 +18,20 @@ def _async_connect_args():
     return args
 
 
+def _sync_connect_args():
+    """Return psycopg2 connect_args: TCP connect timeout + server statement timeout.
+
+    psycopg2에는 asyncpg의 command_timeout 대응이 없으므로, 서버측 statement_timeout(ms)을
+    연결 옵션으로 건다. DB_COMMAND_TIMEOUT=0이면(비활성) 옵션을 붙이지 않는다.
+    """
+    args = {}
+    if settings.DB_CONNECT_TIMEOUT > 0:
+        args["connect_timeout"] = settings.DB_CONNECT_TIMEOUT
+    if settings.DB_COMMAND_TIMEOUT > 0:
+        args["options"] = f"-c statement_timeout={settings.DB_COMMAND_TIMEOUT * 1000}"
+    return args
+
+
 def get_async_sessionmaker():
     global engine, AsyncSessionLocal
     if AsyncSessionLocal is None:
@@ -42,14 +56,16 @@ _sync_sessionmaker = None
 def _get_sync_sessionmaker():
     global _sync_engine, _sync_sessionmaker
     if _sync_sessionmaker is None:
+        # 워커 전용 풀 크기 — sync 엔진은 prefork 자식마다 생성되므로 API(async)보다
+        # 작게 잡아 Cloud SQL max_connections 예산을 지킨다 (config.py 연결 예산 주석 참조).
         _sync_engine = create_engine(
             settings.SYNC_DATABASE_URL,
             echo=settings.APP_ENV == "development",
             pool_pre_ping=True,
-            pool_size=settings.DB_POOL_SIZE,
-            max_overflow=settings.DB_MAX_OVERFLOW,
+            pool_size=settings.DB_WORKER_POOL_SIZE,
+            max_overflow=settings.DB_WORKER_MAX_OVERFLOW,
             pool_timeout=settings.DB_POOL_TIMEOUT,
-            connect_args={"connect_timeout": settings.DB_CONNECT_TIMEOUT} if settings.DB_CONNECT_TIMEOUT > 0 else {},
+            connect_args=_sync_connect_args(),
         )
         _sync_sessionmaker = sessionmaker(bind=_sync_engine, expire_on_commit=False)
     return _sync_sessionmaker

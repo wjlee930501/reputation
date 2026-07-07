@@ -153,6 +153,45 @@ async def test_create_lead_silently_drops_honeypot_filled():
     assert db.added == []
 
 
+async def test_create_lead_silently_drops_url_honeypot_filled():
+    """website 뿐 아니라 url honeypot이 채워져도 silent 200 + 저장 안 함 (#10)."""
+    db = FakeDB()
+    body = leads_api.LeadCreate(
+        clinic_name="bot-clinic",
+        clinic_type="bot-region",
+        contact="bot@example.com",
+        question="bot question",
+        privacy=True,
+        url="http://attacker.example.com",
+    )
+    response = await _create_lead(request=FakeRequest(), body=body, db=db)
+    assert response["ok"] is True
+    assert response["lead_id"] is None
+    assert db.added == []
+
+
+async def test_create_lead_ignores_blank_honeypot(monkeypatch):
+    """공백만 든 honeypot은 정상 제출로 취급한다(정상 사용자 오탐 방지)."""
+    async def fake_notify(**payload):
+        return True
+
+    monkeypatch.setattr(notifier, "notify_lead_created", fake_notify)
+
+    db = FakeDB()
+    body = leads_api.LeadCreate(
+        clinic_name="장편한외과의원",
+        clinic_type="강남 대장항문외과",
+        contact="010-0000-0000",
+        question="치질 수술 회복 기간은?",
+        privacy=True,
+        website="   ",
+        url="",
+    )
+    response = await _create_lead(request=FakeRequest(), body=body, db=db)
+    assert response["lead_id"] is not None
+    assert db.added and db.added[0].clinic_name == "장편한외과의원"
+
+
 def test_lead_contact_format_validator():
     # 이메일 또는 전화번호 형식이 아니면 검증 실패
     with pytest.raises(ValueError):

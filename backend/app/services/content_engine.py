@@ -265,6 +265,35 @@ treatment_narratives:
 """.strip()
 
 
+def _format_treatment_narrative(value: object) -> str:
+    """treatment_narrative를 자연어 문장으로 조립.
+
+    build_content_brief()가 만드는 treatment_narrative는
+    {"source", "treatment", "angle", "details"} 형태의 dict다. f-string에 dict를
+    그대로 넣으면 "{'source': 'approved_philosophy', ...}" 같은 Python dict 문자열이
+    그대로 Claude 프롬프트에 노출돼 지시문으로 읽히지 않는다.
+    """
+    if isinstance(value, dict):
+        treatment = str(value.get("treatment") or "").strip()
+        angle = str(value.get("angle") or "").strip()
+        if treatment and angle:
+            return f"{treatment} — {angle}"
+        return treatment or angle or ""
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _format_internal_link_target(value: object) -> str:
+    """internal_link_target({"type","content_id","path"} dict)을 자연어 안내문으로 변환."""
+    if isinstance(value, dict):
+        path = str(value.get("path") or "").strip()
+        return f"본문에서 자연스러운 위치에 내부 링크로 연결: {path}" if path else ""
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 def _build_content_brief_context(content_brief: dict | None) -> str:
     if not content_brief:
         return ""
@@ -273,14 +302,14 @@ def _build_content_brief_context(content_brief: dict | None) -> str:
 [승인된 콘텐츠 가이드]
 target_query: {content_brief.get('target_query') or ''}
 patient_intent: {content_brief.get('patient_intent') or ''}
-treatment_narrative: {content_brief.get('treatment_narrative') or ''}
+treatment_narrative: {_format_treatment_narrative(content_brief.get('treatment_narrative'))}
 must_use_messages:
 {_bullet_list(content_brief.get('must_use_messages') or [])}
 avoid_messages:
 {_bullet_list(content_brief.get('avoid_messages') or [])}
 medical_risk_rules:
 {_bullet_list(content_brief.get('medical_risk_rules') or [])}
-internal_link_target: {content_brief.get('internal_link_target') or ''}
+internal_link_target: {_format_internal_link_target(content_brief.get('internal_link_target'))}
 operator_notes:
 {_bullet_list(content_brief.get('operator_notes') or [])}
 """.strip()
@@ -340,8 +369,14 @@ async def generate_content(
 
     _validate_body_length(result.get("body"))
 
+    # 참고 자료 정규화를 GEO 검증보다 먼저 수행한다. GEO hard-fail은
+    # "references가 비어있으면 재시도"인데, raw(정규화 전) 리스트로 검사하면
+    # 화이트리스트 밖 URL만 인용된 경우 hard-fail은 통과하고 최종 references는
+    # 빈 배열로 저장돼 근거 없이 발행이 완료된다. 정규화된 리스트로 검사해야
+    # tenacity 재시도가 "화이트리스트 통과 references 1개 이상"을 실제로 강제한다.
+    result["references"] = _normalize_references(result.get("references"))
+
     # ── SEO/GEO 검증 ──────────────────────────────────────────────
-    # references 정규화 전에 호출 — raw 출력 기준으로 검증 (정규화 후엔 화이트리스트 외 URL이 제거됨)
     seo_findings = _validate_seo(result, hospital, content_brief, content_type)
     geo_findings = _validate_geo(result, hospital, content_type)
 
@@ -370,8 +405,7 @@ async def generate_content(
         if remaining:
             raise ValueError(f"Cannot sanitize forbidden medical expressions: {remaining}")
 
-    # 참고 자료 정규화 — Claude가 형식을 살짝 흔들어도 list[{title,url}] 형태로 통일.
-    result["references"] = _normalize_references(result.get("references"))
+    # references는 GEO 검증 전에 이미 정규화됨(list[{title,url,source_type}]) — 중복 정규화 불필요.
 
     # meta_description 컬럼은 VARCHAR(300) — 프롬프트는 100~150자를 요구하지만 모델 출력은
     # 보장이 없고, 300자 초과 시 야간 배치의 per-item 커밋이 DataError로 실패한다.

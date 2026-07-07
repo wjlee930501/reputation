@@ -13,6 +13,7 @@
   .cover .meta { font-size: 9.5pt; color: #B8D0F0; margin-top: 14px; }
 
   h2 { font-size: 14pt; color: #1A4B8C; border-bottom: 2px solid #1A4B8C; padding-bottom: 5px; margin: 22px 0 12px; }
+  h3 { font-size: 11.5pt; color: #1A4B8C; margin: 16px 0 6px; }
 
   .kpi-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 14px 0; }
   .kpi { background: #E8F0FB; border-radius: 6px; padding: 16px; text-align: center; }
@@ -51,7 +52,7 @@
 <h2>📊 AI 검색 노출 현황 (SoV)</h2>
 <div class="kpi-grid">
   <div class="kpi">
-    <div class="val">{{ "%.1f"|format(sov_pct) }}%</div>
+    <div class="val">{% if sov_measured %}{{ "%.1f"|format(sov_pct) }}%{% else %}측정 데이터 없음{% endif %}</div>
     <div class="lbl">통합 SoV</div>
   </div>
   <div class="kpi">
@@ -63,7 +64,13 @@
     <div class="lbl">분석 진료과</div>
   </div>
 </div>
-<p class="note">※ 각 검색 쿼리를 10회 반복 발송하여 통계적으로 측정한 수치입니다.</p>
+<p class="note">
+  {% if sov_measured %}
+  ※ 각 검색 쿼리를 {{ repeat_count }}회 반복 발송하여 통계적으로 측정한 수치입니다.
+  {% else %}
+  ※ 이번 기간에는 성공한 AI 답변 측정 데이터가 없어 언급률을 산출하지 못했습니다.
+  {% endif %}
+</p>
 
 {% if report_type == 'MONTHLY' %}
 <h2>📝 이번 달 콘텐츠 발행 현황</h2>
@@ -79,10 +86,55 @@
 </div>
 {% endif %}
 
+{% if report_type == 'MONTHLY' and attribution %}
+<h2>🔗 콘텐츠 발행과 AI 언급 변화</h2>
+<p class="note">
+  아래는 이번 기간에 발행된 콘텐츠와 같은 기간에 새로 시작된 AI 답변 언급을 나란히 정리한 자료입니다.
+  콘텐츠 발행이 언급의 원인이라고 단정하지 않으며, 같은 기간에 함께 관찰된 상관 데이터로만 제공합니다.
+</p>
+
+<h3>유형별 발행 편수 (전월 대비)</h3>
+{% set type_labels = {'FAQ':'FAQ','DISEASE':'질환 가이드','TREATMENT':'시술·치료 안내','COLUMN':'원장 칼럼','HEALTH':'건강 정보','LOCAL':'지역 특화','NOTICE':'병원 공지'} %}
+<table>
+  <tr><th>콘텐츠 유형</th><th>이번 기간</th><th>전월</th></tr>
+  {% for code, label in type_labels.items() %}
+  <tr><td>{{ label }}</td><td>{{ attribution.content_type_counts[code] }}</td><td>{{ attribution.prev_content_type_counts[code] }}</td></tr>
+  {% endfor %}
+  <tr><td><strong>합계</strong></td><td><strong>{{ attribution.published_count }}</strong></td><td><strong>{{ attribution.prev_published_count }}</strong></td></tr>
+</table>
+<p class="note">
+  같은 기간 통합 SoV:
+  {% if attribution.sov_pct is not none %}{{ "%.1f"|format(attribution.sov_pct) }}%{% else %}측정 데이터 없음{% endif %}
+  {% if attribution.prev_sov_pct is not none %} (전월 {{ "%.1f"|format(attribution.prev_sov_pct) }}%{% if attribution.change_pct is not none %}, {{ "%+.1f"|format(attribution.change_pct) }}%p{% endif %}){% endif %}
+</p>
+
+<h3>이번 기간 신규 언급 시작 쿼리</h3>
+{% if attribution.new_mention_queries %}
+<table>
+  <tr><th>신규 언급 쿼리</th><th>같은 기간 발행된 연관 콘텐츠</th></tr>
+  {% for q in attribution.new_mention_queries %}
+  <tr>
+    <td>{{ q.query_text }}</td>
+    <td>{% if q.related_contents %}{% for t in q.related_contents %}{{ t }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="note">
+  위 쿼리들은 전월에는 AI 답변에서 병원이 언급되지 않았고, 이번 기간에 언급이 시작되었습니다.
+  연관 콘텐츠는 같은 기간에 발행되었고, 같은 기간에 해당 쿼리의 언급이 시작되었습니다.
+  발행과 언급 시작의 인과관계는 단정할 수 없으며, 시점 상관 정보로만 참고해 주세요.
+</p>
+{% else %}
+<p class="note">이번 기간에 새로 언급이 시작된 쿼리는 확인되지 않았습니다.</p>
+{% endif %}
+{% endif %}
+
 <h2>💡 개선 방향</h2>
 <table>
   <tr><th>우선순위</th><th>항목</th><th>기대 효과</th></tr>
-  {% if sov_pct < 20 %}
+  {% if not sov_measured %}
+  <tr><td>🟠 우선</td><td>AI 답변 언급률 측정 재실행</td><td>진단 근거 확보</td></tr>
+  {% elif sov_pct < 20 %}
   <tr><td>🔴 높음</td><td>AEO 콘텐츠 집중 발행 (FAQ·질환 가이드)</td><td>AI 인용 가능성 증가</td></tr>
   <tr><td>🔴 높음</td><td>리뷰 수집 캠페인 실행</td><td>로컬 신뢰도 향상</td></tr>
   {% elif sov_pct < 50 %}

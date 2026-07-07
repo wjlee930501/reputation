@@ -54,8 +54,9 @@ class LeadCreate(BaseModel):
     privacy: bool
     consent_version: str | None = Field(default=None, max_length=40)
     source_path: str | None = Field(default=None, max_length=500)
-    # Honeypot — silently dropped if filled.
+    # Honeypot — silently dropped if filled. 필드명은 _HONEYPOT_FIELDS와 일치해야 한다.
     website: str | None = Field(default=None, max_length=500)
+    url: str | None = Field(default=None, max_length=500)
 
     @field_validator("clinic_name", "clinic_type", "contact", "question", "source_path")
     @classmethod
@@ -96,7 +97,8 @@ async def create_lead(
     Honeypot: silently 200 if `website` is filled.
     """
     # Honeypot — bot가 채워주는 hidden field. 정상 사용자는 비워둠.
-    if body.website:
+    # 어느 honeypot 필드든 채워져 있으면 silent 200으로 응답하고 DB에 저장하지 않는다.
+    if any((getattr(body, field, None) or "").strip() for field in _HONEYPOT_FIELDS):
         return {"ok": True, "lead_id": None, "created_at": None}
 
     if not body.privacy:

@@ -5,6 +5,7 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
+from app.api.public import site as site_api
 from app.api.public.assets import public_asset_response
 from app.api.public.site import (
     _is_public_safe_content,
@@ -16,8 +17,12 @@ from app.api.public.site import (
 )
 from app.models.content import ContentStatus
 from app.models.essence import PhilosophyStatus, SourceType
+from app.models.hospital import HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, ESSENCE_STATUS_NEEDS_REVIEW
-from app.services.site_builder import build_site
+
+# slowapi @limiter.limit 우회 — 단위 테스트는 FastAPI 요청 라이프사이클 밖에서 실행된다
+# (test_public_by_domain.py와 동일 패턴).
+_list_published_contents = site_api.list_published_contents.__wrapped__
 
 
 def test_serialize_hospital_includes_public_profile_fields():
@@ -73,33 +78,6 @@ def test_serialize_hospital_includes_public_profile_fields():
     # license_number는 내부 보관 전용 — 공개 응답에서 제거됨.
     assert "license_number" not in serialized["director_credentials"]
     assert serialized["director_credentials"]["medical_school"] == "서울대학교 의과대학"
-
-
-def test_legacy_site_builder_does_not_publish_director_philosophy(tmp_path, monkeypatch):
-    legacy_note = "레거시 진료 철학은 승인된 콘텐츠 운영 기준이 아닙니다"
-    hospital = SimpleNamespace(
-        id="hospital-id",
-        name="테스트병원",
-        slug="test-hospital",
-        address="서울시 강남구",
-        phone="02-123-4567",
-        business_hours={"mon": "09:00-18:00"},
-        region=["서울", "강남"],
-        specialties=["피부과"],
-        director_name="홍길동",
-        director_career="전문의",
-        director_philosophy=legacy_note,
-        treatments=[{"name": "리프팅", "description": "안면 리프팅"}],
-    )
-
-    monkeypatch.setattr("app.services.site_builder.SITE_BUILD_DIR", tmp_path)
-
-    build_path = build_site(hospital, "info.example.com")
-
-    assert legacy_note not in (tmp_path / "test-hospital" / "index.html").read_text(encoding="utf-8")
-    assert legacy_note not in (tmp_path / "test-hospital" / "director" / "index.html").read_text(encoding="utf-8")
-    assert legacy_note not in (tmp_path / "test-hospital" / "llms.txt").read_text(encoding="utf-8")
-    assert build_path == str(tmp_path / "test-hospital")
 
 
 def test_public_content_policy_requires_published_and_essence_aligned():
@@ -384,3 +362,62 @@ def test_serialize_hospital_exposes_public_about_only_when_approved_and_filtered
         _approved_philosophy("근거 중심으로 충분히 설명하는 진료를 지향합니다."),
     )
     assert approved["public_about"] == "근거 중심으로 충분히 설명하는 진료를 지향합니다."
+
+
+# ── /{slug}/contents offset 페이지네이션 ──────────────────────────────
+
+
+class _FakeScalars:
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return self._items
+
+
+class _FakeResult:
+    def __init__(self, items):
+        self._items = items
+
+    def scalars(self):
+        return _FakeScalars(self._items)
+
+    def scalar_one_or_none(self):
+        return self._items[0] if self._items else None
+
+
+class _SequentialFakeDB:
+    """호출 순서대로 다른 결과를 돌려주는 페이크 DB (_get_active_hospital → 콘텐츠 조회 순)."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.statements = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        return self._results.pop(0)
+
+
+def _active_hospital(slug="test-hospital"):
+    return SimpleNamespace(id="hospital-id", slug=slug, status=HospitalStatus.ACTIVE, site_live=True)
+
+
+async def test_list_published_contents_applies_offset_to_query():
+    """offset 파라미터가 SQL OFFSET 절에 실제로 전달되어야 500건 하드캡을 넘는
+    오래된 콘텐츠도 다음 페이지 호출로 도달할 수 있다."""
+    db = _SequentialFakeDB([_FakeResult([_active_hospital()]), _FakeResult([])])
+
+    await _list_published_contents(SimpleNamespace(), "test-hospital", limit=20, offset=520, db=db)
+
+    contents_stmt = db.statements[1]
+    assert contents_stmt._offset_clause.value == 520
+    assert contents_stmt._limit_clause.value == 20
+
+
+async def test_list_published_contents_defaults_offset_to_zero():
+    db = _SequentialFakeDB([_FakeResult([_active_hospital()]), _FakeResult([])])
+
+    await _list_published_contents(SimpleNamespace(), "test-hospital", limit=20, offset=0, db=db)
+
+    contents_stmt = db.statements[1]
+    assert contents_stmt._offset_clause.value == 0

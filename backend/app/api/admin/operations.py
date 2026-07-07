@@ -14,10 +14,48 @@ from app.core.database import get_db
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.schemas.operations import (
+    CostGuardKillSwitchRequest,
+    CostGuardKillSwitchResponse,
+    CostGuardStatusResponse,
+)
+from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
 from app.workers.tasks import build_aeo_site, regenerate_content_item, run_sov_for_hospital, trigger_v0_report
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Operations"])
+
+# 비용 가드는 병원 단위가 아닌 전역 제어 평면이라 별도 prefix를 쓴다.
+cost_guard_router = APIRouter(prefix="/admin/operations", tags=["Admin — Cost Guard"])
+
+
+@cost_guard_router.get("/cost-guard", response_model=CostGuardStatusResponse)
+async def get_cost_guard_status():
+    """카테고리별 일/월 사용량 + 상한 + 킬스위치 상태 조회."""
+    return await cost_guard.get_usage_snapshot()
+
+
+@cost_guard_router.post("/cost-guard/kill-switch", response_model=CostGuardKillSwitchResponse)
+async def set_cost_guard_kill_switch(
+    payload: CostGuardKillSwitchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """비용 가드 킬스위치 토글. 감사 로그 기록 후 Redis 상태를 변경한다.
+
+    순서 규약(write_audit_log → commit → 외부 부수효과)을 지켜, 감사 row가 durable해진
+    뒤에만 실제 킬스위치를 반영한다.
+    """
+    await write_audit_log(
+        db,
+        action="cost_guard_kill_switch",
+        actor=default_actor(),
+        target_type="cost_guard",
+        target_id="kill_switch",
+        detail={"enabled": payload.enabled},
+    )
+    await db.commit()
+    await cost_guard.set_kill_switch(payload.enabled)
+    return CostGuardKillSwitchResponse(kill_switch_active=payload.enabled)
 
 
 @router.post("/{hospital_id}/operations/trigger-v0-report")

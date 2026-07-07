@@ -4,11 +4,15 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import joinedload
 
 from app.models.content import ContentItem, ContentStatus
+from app.models.hospital import Hospital, HospitalStatus
 
 NIGHTLY_GENERATION_CAP = 50
 NIGHTLY_GENERATION_CLAIM_TTL_HOURS = 2
 
 GENERATION_CATCHUP_DAYS = 7
+
+# 야간 생성 대상 병원 상태 — PAUSED/ONBOARDING 병원은 생성 비용을 발생시키지 않도록 제외.
+NIGHTLY_GENERATION_HOSPITAL_STATUSES = (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN)
 
 
 def _nightly_generation_claim_cutoff() -> datetime:
@@ -26,11 +30,13 @@ def _nightly_generation_stmt(window_start, window_end, claim_cutoff: datetime | 
     claim_cutoff = claim_cutoff or _nightly_generation_claim_cutoff()
     return (
         select(ContentItem)
+        .join(Hospital, ContentItem.hospital_id == Hospital.id)
         .where(
             ContentItem.scheduled_date >= window_start,
             ContentItem.scheduled_date <= window_end,
             ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
             ContentItem.body.is_(None),
+            Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
             _nightly_generation_claim_filter(claim_cutoff),
         )
         .order_by(
@@ -52,11 +58,15 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
     truncated_count = 0
     if len(items) > NIGHTLY_GENERATION_CAP:
         overflow = db.execute(
-            select(func.count()).select_from(ContentItem).where(
+            select(func.count())
+            .select_from(ContentItem)
+            .join(Hospital, ContentItem.hospital_id == Hospital.id)
+            .where(
                 ContentItem.scheduled_date >= window_start,
                 ContentItem.scheduled_date <= window_end,
                 ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
                 ContentItem.body.is_(None),
+                Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
                 _nightly_generation_claim_filter(claim_cutoff),
             )
         ).scalar_one()

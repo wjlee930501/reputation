@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
+from app.services.audit_log import default_actor, write_audit_log
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Domain"])
 
@@ -44,6 +45,7 @@ def missing_live_prerequisites(hospital: Hospital) -> list[str]:
     return [
         label
         for label, ready in (
+            ("프로파일 완료", hospital.profile_complete),
             ("V0 리포트", hospital.v0_report_done),
             ("병원 정보 허브 빌드", hospital.site_built),
             ("콘텐츠 스케줄", hospital.schedule_set),
@@ -71,8 +73,31 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
                 status_code=409,
                 detail=f"도메인 DNS는 확인됐지만 LIVE 전환 전 단계가 남아 있습니다: {', '.join(missing)}",
             )
+        previous_status = hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+        previous_site_live = bool(hospital.site_live)
         hospital.site_live = True
         hospital.status = HospitalStatus.ACTIVE
+        # operations.py verify-domain 경로와 동일하게 LIVE 전환을 감사 로그에 남긴다.
+        await write_audit_log(
+            db,
+            action="verify_domain",
+            hospital_id=hospital.id,
+            actor=default_actor(),
+            target_type="domain",
+            target_id=domain,
+            detail={
+                "verified": True,
+                "cname_value": dns_check.cname_value,
+                "address_values": dns_check.address_values,
+                "expected_cname": dns_check.expected_cname,
+                "expected_addresses": dns_check.expected_addresses,
+                "verification_method": dns_check.verification_method,
+                "previous_status": previous_status,
+                "previous_site_live": previous_site_live,
+                "new_status": HospitalStatus.ACTIVE.value,
+                "new_site_live": True,
+            },
+        )
         await db.commit()
         resolved_value = dns_check.cname_value or ", ".join(dns_check.address_values)
         message = f"공개 도메인 상태가 확인되었습니다. ({domain} → {resolved_value})"

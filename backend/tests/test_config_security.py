@@ -22,6 +22,7 @@ def _valid_prod_kwargs(**overrides):
         _env_file=None,
         APP_ENV="production",
         ADMIN_SECRET_KEY="admin-secret",
+        SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx",
         DATABASE_URL="postgresql+asyncpg://postgres:postgres@db/reputation",
         SYNC_DATABASE_URL="postgresql+psycopg2://postgres:postgres@db/reputation",
         REDIS_URL="redis://redis.internal:6379/0",
@@ -43,6 +44,7 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         _env_file=None,
         APP_ENV="production",
         ADMIN_SECRET_KEY="admin-secret",
+        SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx",
         DB_USER="reputation",
         DB_PASSWORD="p@ss word",
         DB_NAME="reputation",
@@ -113,3 +115,45 @@ def test_production_accepts_valid_secure_config(monkeypatch):
     assert settings.ALLOWED_ORIGINS == ["https://admin.example.com", "https://reputation.co.kr"]
     assert settings.ADMIN_BASE_URL == "https://admin.example.com"
     assert settings.SITE_BASE_URL == "https://reputation.co.kr"
+
+
+def test_production_fails_fast_when_slack_webhook_empty(monkeypatch):
+    # SLACK_WEBHOOK_URL은 critical — 모든 주요 이벤트 알림이 이 웹훅으로 나간다.
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    with pytest.raises(ValueError, match="SLACK_WEBHOOK_URL"):
+        Settings(**_valid_prod_kwargs(SLACK_WEBHOOK_URL=""))
+
+
+def test_production_warns_on_empty_flow_secrets_and_placeholder_buckets(monkeypatch, caplog):
+    import logging
+
+    for var in (
+        "GCP_PROJECT_ID",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GCP_STORAGE_BUCKET",
+        "GCS_REPORTS_BUCKET",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="app.core.config"):
+        Settings(
+            **_valid_prod_kwargs(
+                ANTHROPIC_API_KEY="",
+                OPENAI_API_KEY="",
+                GEMINI_API_KEY="",
+                GCP_STORAGE_BUCKET="reputation-images",
+                GCS_REPORTS_BUCKET="reputation-reports",
+            )
+        )
+
+    text = caplog.text
+    # 핵심 플로우 키 미설정 경고 (부팅은 계속되지만 로그에 영향 범위를 남긴다).
+    assert "ANTHROPIC_API_KEY" in text
+    assert "OPENAI_API_KEY" in text
+    assert "GEMINI_API_KEY" in text
+    # 전역 유일 제약상 placeholder 기본 버킷명 감지 경고.
+    assert "GCP_STORAGE_BUCKET" in text
+    assert "GCS_REPORTS_BUCKET" in text

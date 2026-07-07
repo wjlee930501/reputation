@@ -415,11 +415,17 @@ def _is_successful_measurement(record: Any) -> bool:
 
 
 def _competitor_mention_count(records: Iterable[Any]) -> int:
+    """레코드당 '경쟁사 중 하나라도 언급되면 1'(0/1 스케일).
+
+    mention_count(레코드당 0/1)와 동일 스케일로 맞춰 비교가 왜곡되지 않게 한다 — 레코드마다
+    경쟁사 언급을 모두 합산하면 등록 경쟁사 수가 많을수록 갭이 과대 판정되던 문제 해소.
+    """
     count = 0
     for record in records:
         for competitor in getattr(record, "competitor_mentions", None) or []:
             if isinstance(competitor, dict) and competitor.get("is_mentioned"):
                 count += 1
+                break
     return count
 
 

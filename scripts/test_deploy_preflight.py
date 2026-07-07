@@ -1,8 +1,78 @@
+import re
+import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SCRIPT = PROJECT_ROOT / "scripts" / "deploy.sh"
+SETUP_GCP_SCRIPT = PROJECT_ROOT / "scripts" / "setup-gcp.sh"
+
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+import check_db_connection_budget  # noqa: E402
+
+
+def _bash_array_block(text: str, header: str) -> str:
+    """header 뒤부터 자체 라인의 닫는 ')'까지를 반환 — 주석 안의 ')'에 걸리지 않는다."""
+    start = text.index(header)
+    lines = []
+    for line in text[start:].splitlines()[1:]:
+        if line.strip() == ")":
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _setup_gcp_secret_names() -> set[str]:
+    block = _bash_array_block(SETUP_GCP_SCRIPT.read_text(), "declare -A SECRETS=(")
+    # 주석 라인은 제외하고 실제 배열 항목(["NAME"]=)만 파싱.
+    keys = set()
+    for line in block.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        keys.update(re.findall(r'\["([^"]+)"\]=', line))
+    return keys
+
+
+def _deploy_base_required_secret_names() -> list[str]:
+    block = _bash_array_block(DEPLOY_SCRIPT.read_text(), "BASE_REQUIRED_SECRET_NAMES=(")
+    names = []
+    for line in block.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        names.extend(re.findall(r'"([^"]+)"', line))
+    return names
+
+
+def test_db_connection_budget_within_cloud_sql_limit() -> None:
+    budget = check_db_connection_budget.compute_budget()
+    assert budget["total"] <= budget["limit"], budget
+    # config.py 풀 분리 + terraform 인스턴스 수/CELERY_CONCURRENCY가 실제로 파싱됐는지 확인.
+    assert budget["total"] == budget["api_conns"] + budget["worker_conns"]
+    assert check_db_connection_budget.main() == 0
+
+
+def test_setup_gcp_creates_all_deploy_required_secret_containers() -> None:
+    setup_secrets = _setup_gcp_secret_names()
+    required = _deploy_base_required_secret_names()
+    # REDIS_URL 누락이 표준 순서 첫 배포를 무조건 실패시키던 회귀를 고정.
+    assert "REDIS_URL" in setup_secrets
+    missing = [name for name in required if name not in setup_secrets]
+    assert missing == [], f"setup-gcp.sh SECRETS missing deploy-required containers: {missing}"
+
+
+def test_setup_gcp_and_deploy_share_default_region() -> None:
+    # 리전이 어긋나면 Artifact Registry/버킷/Cloud SQL이 서로 다른 리전에 흩어진다.
+    assert 'REGION="${GCP_REGION:-asia-northeast3}"' in SETUP_GCP_SCRIPT.read_text()
+    assert 'REGION="${GCP_REGION:-asia-northeast3}"' in DEPLOY_SCRIPT.read_text()
+
+
+def test_backend_deploy_paths_run_asset_bucket_preflight() -> None:
+    text = DEPLOY_SCRIPT.read_text()
+    assert "require_asset_bucket()" in text
+    for anchor in ("  backend)", "  api|worker|beat)", "  all)"):
+        start = text.index(anchor)
+        end = text.index(";;", start)
+        assert "require_asset_bucket" in text[start:end], anchor
 
 
 def test_all_target_checks_public_dns_before_backend_mutation() -> None:

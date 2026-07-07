@@ -11,6 +11,8 @@ import os
 import uuid
 from pathlib import Path
 
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,23 @@ def store_asset_bytes(*, hospital_id: uuid.UUID, filename: str, data: bytes, mim
     file_id = f"{uuid.uuid4()}-{safe_filename}"
     if is_gcs_configured():
         return _upload_to_gcs(hospital_id, file_id, data, mime_type)
+    if settings.APP_ENV.lower() == "production":
+        # Cloud Run 로컬 디스크는 휘발성 — 조용히 폴백하면 병원 근거 자산이 재배포/
+        # 오토스케일 시 소리 없이 소실된다(site_revalidate.py의 fail-fast 패턴 준수).
+        logger.error(
+            "GCS is not configured in production — refusing volatile local fallback "
+            "for hospital=%s",
+            hospital_id,
+        )
+        raise RuntimeError(
+            "GCP_PROJECT_ID/GCP_STORAGE_BUCKET (또는 ADC 인증)이 프로덕션에서 "
+            "설정되어야 합니다 — 로컬 디스크 폴백은 자산 유실 위험으로 금지됩니다."
+        )
+    logger.warning(
+        "GCS not configured — falling back to volatile local disk for hospital=%s "
+        "(non-production only)",
+        hospital_id,
+    )
     return _store_local(hospital_id, file_id, data)
 
 
@@ -63,6 +82,7 @@ def _store_local(hospital_id: uuid.UUID, file_id: str, data: bytes) -> str:
     return f"local://{hospital_id}/{file_id}"
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
 def _upload_to_gcs(hospital_id: uuid.UUID, file_id: str, data: bytes, mime_type: str) -> str:
     # google-cloud-storage 클라이언트는 image_engine.py 등에서 이미 사용 중.
     from google.cloud import storage  # noqa: WPS433 — 지연 import (서비스 임포트 사이클 방지)

@@ -24,7 +24,13 @@ router = APIRouter(prefix="/admin/auth", tags=["Admin — Auth"])
 # CDX-M3: 로그인 brute-force 스로틀의 단일 진실 — Redis 공유 저장소(slowapi limiter)에
 # 실패 횟수를 기록하므로 admin BFF의 프로세스-로컬 Map(서버리스 인스턴스별)과 달리
 # 모든 인스턴스에 걸쳐 전역으로 적용된다. 실패만 카운트, 성공 시 해제.
-_LOGIN_RATE_LIMIT = parse("5/15minute")
+#
+# 계층형 스로틀 (#4): IP 키는 촘촘하게(5/15분) 유지해 단일 출처의 무차별 대입을 막고,
+# email 키는 임계값을 크게(20/시간) 둔다. email 키가 IP 무관 전역이라 임계값이 낮으면
+# 이메일만 아는 공격자가 소수의 실패로 정상 사용자를 락아웃시키는 원격 DoS가 가능하기
+# 때문이다. 로그인 성공 시 해당 email 카운터는 즉시 해제한다.
+_LOGIN_IP_RATE_LIMIT = parse("5/15minute")
+_LOGIN_EMAIL_RATE_LIMIT = parse("20/hour")
 
 
 class AdminLoginRequest(BaseModel):
@@ -75,15 +81,18 @@ def _login_email_throttle_key(email: str) -> str:
     return f"admin-login:email:{email}"
 
 
-def _login_throttle_keys(request: Request, email: str) -> list[str]:
+def _login_throttle_limits(request: Request, email: str) -> list[tuple[object, str]]:
     # 이메일 키는 IP 로테이션으로 우회할 수 없고, IP 키는 다수 계정 스프레이를 막는다.
     # IP는 get_request_ip 기준 — admin BFF가 SITE_BFF_SECRET으로 인증한 X-Visitor-IP를
     # 보내면 실제 AE 방문자 IP가, 아니면 신뢰 프록시 체인 기준 IP가 잡힌다.
-    keys = [_login_email_throttle_key(email)]
+    # (limit, key) 쌍으로 반환 — email과 IP에 서로 다른 임계값을 적용한다 (#4).
+    limits: list[tuple[object, str]] = [
+        (_LOGIN_EMAIL_RATE_LIMIT, _login_email_throttle_key(email)),
+    ]
     ip = get_request_ip(request)
     if ip:
-        keys.append(f"admin-login:ip:{ip}")
-    return keys
+        limits.append((_LOGIN_IP_RATE_LIMIT, f"admin-login:ip:{ip}"))
+    return limits
 
 
 @router.post("/login", response_model=AdminAccountResponse)
@@ -93,8 +102,8 @@ async def login_admin(
     request: Request = None,
 ):
     strategy = _login_rate_limit_strategy(request)
-    throttle_keys = _login_throttle_keys(request, body.email) if strategy else []
-    if strategy and not all(strategy.test(_LOGIN_RATE_LIMIT, key) for key in throttle_keys):
+    throttle_limits = _login_throttle_limits(request, body.email) if strategy else []
+    if strategy and not all(strategy.test(limit, key) for limit, key in throttle_limits):
         raise HTTPException(status_code=429, detail="Too many login attempts")
 
     result = await db.execute(select(AdminUser).where(AdminUser.email == body.email))
@@ -106,15 +115,15 @@ async def login_admin(
     valid = await asyncio.to_thread(verify_admin_password, body.password, password_hash)
     if not user or not user.is_active or not valid:
         if strategy:
-            for key in throttle_keys:
-                strategy.hit(_LOGIN_RATE_LIMIT, key)
+            for limit, key in throttle_limits:
+                strategy.hit(limit, key)
         raise HTTPException(status_code=401, detail="Invalid admin credentials")
 
     if strategy:
         # 성공 시 이메일 키만 해제한다 (R7). IP 키까지 지우면 공격자가 자기 계정으로
         # 한 번 로그인할 때마다 IP 카운터가 리셋돼 단일 IP에서 다계정 password spraying이
         # 가능해진다. IP 키는 윈도우(15분) 만료로 자연 소멸한다.
-        strategy.clear(_LOGIN_RATE_LIMIT, _login_email_throttle_key(body.email))
+        strategy.clear(_LOGIN_EMAIL_RATE_LIMIT, _login_email_throttle_key(body.email))
 
     user.last_login_at = datetime.now(UTC)
     await db.commit()

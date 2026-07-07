@@ -116,10 +116,11 @@ celery_app.conf.update(
             "task": "app.workers.tasks.run_weekly_monitoring",
             "schedule": crontab(hour=2, minute=0, day_of_week=1),
         },
-        # 매월 28~31일 23:00 — 월간 SoV 리포트 (태스크 내부에서 마지막 날 체크)
+        # 매월 28~31일 21:00 — 월간 SoV 리포트 (태스크 내부에서 마지막 날 체크).
+        # 야간 콘텐츠 생성(23:00)과 시간대를 분리해 reports/content 워커 슬롯 경합을 피한다.
         "monthly-reports": {
             "task": "app.workers.tasks.run_monthly_reports",
-            "schedule": crontab(hour=23, minute=0, day_of_month="28-31"),
+            "schedule": crontab(hour=21, minute=0, day_of_month="28-31"),
         },
         # 매월 25일 00:00 — 다음 달 콘텐츠 슬롯 자동 생성
         "monthly-slot-generation": {

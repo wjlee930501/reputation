@@ -11,6 +11,9 @@ def _reset_state(monkeypatch):
     monkeypatch.setattr(gcs_utils, "_signed_url_cache", {})
     monkeypatch.setattr(gcs_utils, "_adc_credentials", None)
     monkeypatch.setattr(gcs_utils, "_gcs_client", None)
+    # _sign_blob_url은 tenacity 재시도(최대 3회, 지수 백오프)가 걸려 있다 — 실패 테스트가
+    # 실제로 수 초씩 대기하지 않도록 sleep을 no-op으로 대체한다.
+    monkeypatch.setattr(gcs_utils._sign_blob_url.retry, "sleep", lambda _delay: None)
 
 
 class _FakeBlob:
@@ -168,6 +171,38 @@ def test_failure_suppresses_unsigned_gcs_path_and_is_not_cached(monkeypatch):
 
     assert gcs_utils.get_signed_url("gs://bucket/a.png") == ""
     assert gcs_utils._signed_url_cache == {}
+
+
+def test_sign_blob_url_retries_transient_failure_then_succeeds(monkeypatch):
+    # CLAUDE.md 규칙 4 — 외부 API(signBlob) 호출은 최대 3회 재시도해야 한다.
+    class _FlakyBlob:
+        def __init__(self):
+            self.attempts = 0
+
+        def generate_signed_url(self, expiration=None, **kwargs):
+            self.attempts += 1
+            if self.attempts < 3:
+                raise TimeoutError("transient network error")
+            return "https://signed.example/recovered"
+
+    blob = _FlakyBlob()
+    result = gcs_utils._sign_blob_url(blob, gcs_utils.timedelta(hours=1))
+
+    assert result == "https://signed.example/recovered"
+    assert blob.attempts == 3
+
+
+def test_sign_blob_url_reraises_after_exhausting_retries(monkeypatch):
+    class _AlwaysFailsBlob:
+        def generate_signed_url(self, expiration=None, **kwargs):
+            raise TimeoutError("network unreachable")
+
+    monkeypatch.setattr(
+        gcs_utils, "_get_iam_signing_credentials", lambda: (_ for _ in ()).throw(TimeoutError("no adc"))
+    )
+
+    with pytest.raises(Exception):
+        gcs_utils._sign_blob_url(_AlwaysFailsBlob(), gcs_utils.timedelta(hours=1))
 
 
 def test_cache_size_cap_evicts_oldest_entries(monkeypatch):

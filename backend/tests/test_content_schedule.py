@@ -124,6 +124,30 @@ async def test_set_schedule_syncs_hospital_plan_and_queues_imminent_slots(monkey
     assert queued[0]["queue"] == "content"
 
 
+async def test_set_schedule_writes_audit_log(monkeypatch):
+    """#6 — 스케줄 설정도 감사 로그를 남긴다(순서: audit → commit → apply_async)."""
+    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
+    db = _FakeDB(hospital)
+    monkeypatch.setattr(
+        content_api.regenerate_content_item,
+        "apply_async",
+        lambda *, args, queue: None,
+    )
+    _freeze_arrow(monkeypatch)
+
+    body = content_api.ScheduleCreate(
+        plan="PLAN_8",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 6, 11),
+    )
+    await content_api.set_schedule(hospital.id, body, db=db)
+
+    audit_rows = [a for a in db.added if getattr(a, "action", None) == "set_schedule"]
+    assert len(audit_rows) == 1
+    assert audit_rows[0].detail["plan"] == "PLAN_8"
+    assert audit_rows[0].detail["slots_created"] == 8
+
+
 async def test_set_schedule_does_not_queue_future_only_slots(monkeypatch):
     hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
     db = _FakeDB(hospital)
@@ -196,6 +220,102 @@ async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
     assert len(alerts) == 1
     assert "큐잉 실패" in alerts[0]["title"]
     assert "테스트의원" in alerts[0]["message"]
+
+
+async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):
+    """재설정 시 구 스케줄의 미발행 미래 슬롯(body 유무 무관)을 정리하고 PUBLISHED는 보존한다.
+
+    회귀: 과거엔 title/body/generated_at/published_at가 모두 NULL인 빈 슬롯만 삭제해,
+    이미 본문이 생성된 구 슬롯이 새 슬롯과 같은 날짜에 중복 발행되는 경로가 있었다.
+    """
+    from sqlalchemy import Delete
+
+    from app.models.content import ContentItem, ContentStatus
+
+    old_schedule = SimpleNamespace(id=uuid.uuid4(), is_active=True)
+
+    class _RecordingDB(_FakeDB):
+        def __init__(self, hospital, schedules):
+            super().__init__(hospital, schedules)
+            self.deletes = []
+
+        async def execute(self, statement):
+            if isinstance(statement, Delete):
+                self.deletes.append(statement)
+            return _ExecuteResult(self.schedules)
+
+    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
+    db = _RecordingDB(hospital, [old_schedule])
+    monkeypatch.setattr(
+        content_api.regenerate_content_item,
+        "apply_async",
+        lambda *, args, queue: None,
+    )
+    _freeze_arrow(monkeypatch)  # today=2026-06-10
+
+    body = content_api.ScheduleCreate(
+        plan="PLAN_8",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 6, 11),
+    )
+    await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert old_schedule.is_active is False
+    assert len(db.deletes) == 1
+    compiled = str(db.deletes[0])
+    # 미발행 + 미래 슬롯을 body 조건 없이 삭제한다.
+    assert "status !=" in compiled
+    assert "scheduled_date >=" in compiled
+    assert "body IS NULL" not in compiled
+    # 이월(carried_over_from) 미발행 슬롯은 삭제 대상에서 제외한다.
+    assert "carried_over_from IS NULL" in compiled
+    # 삭제 대상은 ContentItem 테이블.
+    assert ContentItem.__tablename__ in compiled
+    # PUBLISHED가 보존 대상임을 참조 무결성 차원에서 확인(상수 사용).
+    assert ContentStatus.PUBLISHED.value == "PUBLISHED"
+
+
+async def test_set_schedule_preserves_carried_over_unpublished_slots(monkeypatch):
+    """이월(carried_over_from IS NOT NULL) 미발행 슬롯은 스케줄 재설정 정리에서 보존한다.
+
+    회귀: 월말 반려로 다음 달로 이월된 슬롯을 스케줄 재설정만으로 삭제하면 아직 발행하지
+    못한 이월 콘텐츠가 유실됐다. 정리 delete에 carried_over_from IS NULL 조건을 추가해
+    이월 슬롯을 남긴다.
+    """
+    from sqlalchemy import Delete
+
+    old_schedule = SimpleNamespace(id=uuid.uuid4(), is_active=True)
+
+    class _RecordingDB(_FakeDB):
+        def __init__(self, hospital, schedules):
+            super().__init__(hospital, schedules)
+            self.deletes = []
+
+        async def execute(self, statement):
+            if isinstance(statement, Delete):
+                self.deletes.append(statement)
+            return _ExecuteResult(self.schedules)
+
+    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
+    db = _RecordingDB(hospital, [old_schedule])
+    monkeypatch.setattr(
+        content_api.regenerate_content_item,
+        "apply_async",
+        lambda *, args, queue: None,
+    )
+    _freeze_arrow(monkeypatch)  # today=2026-06-10
+
+    body = content_api.ScheduleCreate(
+        plan="PLAN_8",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 6, 11),
+    )
+    await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert len(db.deletes) == 1
+    compiled = str(db.deletes[0])
+    # 이월 슬롯 보존 조건이 정리 delete에 반드시 포함된다.
+    assert "carried_over_from IS NULL" in compiled
 
 
 async def test_get_schedule_returns_active_schedule():

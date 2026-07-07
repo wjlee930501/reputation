@@ -164,6 +164,7 @@ app.include_router(admin_domain.router, prefix="/api/v1", dependencies=admin_dep
 app.include_router(admin_essence.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_exposure_actions.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_operations.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_operations.cost_guard_router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_leads.router, prefix="/api/v1", dependencies=admin_deps)
 
 # Public 라우터: 인증 불필요 (의도적)

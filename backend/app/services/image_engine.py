@@ -141,6 +141,15 @@ async def generate_image(
     """
     import asyncio
 
+    # 비용 가드: 이미지 생성 호출 예산 확인. 차단 시 이미지 없이 진행한다 — 본문은 유지되고,
+    # 호출부는 이미 ("", "") 반환(=이미지 없음)을 정상 처리하므로 기존 실패 경로를 재사용한다.
+    from app.services import cost_guard
+
+    decision = await cost_guard.check_and_increment("image")
+    if not decision.allowed:
+        logger.warning("이미지 생성이 비용 가드로 차단됨 — 이미지 없이 진행: %s", decision.reason)
+        return ("", "")
+
     loop = asyncio.get_running_loop()
     provider = (settings.IMAGE_PROVIDER or "").lower()
 

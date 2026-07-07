@@ -197,9 +197,14 @@ async def list_published_contents(
     request: Request,
     slug: str,
     limit: int = Query(default=20, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    """발행된 콘텐츠 목록 (최신순)"""
+    """발행된 콘텐츠 목록 (최신순).
+
+    limit은 500 하드캡을 유지하되, offset으로 페이지를 넘길 수 있게 해 500편을
+    넘어서는 병원(수년 누적)도 호출부(sitemap 등)가 전체 발행 콘텐츠를 순회할 수 있다.
+    """
     h = await _get_active_hospital(db, slug)
 
     result = await db.execute(
@@ -210,6 +215,7 @@ async def list_published_contents(
             ContentItem.essence_status == ESSENCE_STATUS_ALIGNED,
         )
         .order_by(ContentItem.published_at.desc())
+        .offset(offset)
         .limit(limit)
     )
     items = result.scalars().all()
@@ -385,10 +391,6 @@ def _safe_credentials(credentials: dict | None) -> dict | None:
 
 def _is_public_safe_content(item: ContentItem) -> bool:
     return item.status == ContentStatus.PUBLISHED and item.essence_status == ESSENCE_STATUS_ALIGNED
-
-
-def _public_asset_url(slug: str, asset: HospitalSourceAsset) -> str:
-    return f"/api/v1/public/hospitals/{slug}/assets/{asset.id}"
 
 
 def _content_image_url(slug: str, item: ContentItem) -> str:

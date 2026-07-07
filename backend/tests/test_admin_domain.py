@@ -13,9 +13,13 @@ class FakeDB:
     def __init__(self, hospital):
         self.hospital = hospital
         self.committed = False
+        self.added = []
 
     async def get(self, model, object_id):
         return self.hospital if self.hospital.id == object_id else None
+
+    def add(self, item):
+        self.added.append(item)
 
     async def commit(self):
         self.committed = True
@@ -65,6 +69,30 @@ async def test_verify_domain_activates_when_all_prerequisites_met(monkeypatch):
     assert hospital.site_live is True
     assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
+    # LIVE 전환은 감사 로그에 기록된다 (operations 경로와 정합).
+    assert db.added and db.added[0].action == "verify_domain"
+
+
+@pytest.mark.parametrize(
+    "overrides,expected_label",
+    [
+        ({"profile_complete": False}, "프로파일 완료"),
+    ],
+)
+async def test_verify_domain_blocks_live_without_profile_complete(monkeypatch, overrides, expected_label):
+    """프로파일 미완료면 DNS가 맞아도 LIVE 전환 불가 — 프로파일 게이트 우회 차단."""
+    hospital = _hospital(**overrides)
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await domain_api.verify_domain(hospital.id, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert expected_label in exc_info.value.detail
+    assert hospital.site_live is False
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert db.committed is False
 
 
 @pytest.mark.parametrize(

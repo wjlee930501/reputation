@@ -17,7 +17,9 @@ ok()    { echo -e "${GREEN}✓${RESET} $1"; }
 fail()  { echo -e "${RED}✗${RESET} $1"; exit 1; }
 
 PROJECT_ID="${GCP_PROJECT_ID:-$(gcloud config get-value project 2>/dev/null || echo '')}"
-REGION="${GCP_REGION:-us-central1}"
+# deploy.sh / terraform variables.tf와 동일한 기본 리전(asia-northeast3)을 사용한다 —
+# 리전이 어긋나면 Artifact Registry/버킷/Cloud SQL이 서로 다른 리전에 흩어진다.
+REGION="${GCP_REGION:-asia-northeast3}"
 REPO="${GCP_ARTIFACT_REPO:-reputation}"
 SA_NAME="${GCP_SERVICE_ACCOUNT_NAME:-reputation-sa}"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -126,6 +128,10 @@ declare -A SECRETS=(
   ["SLACK_WEBHOOK_URL"]="Slack 웹훅 URL"
   ["ADMIN_SESSION_SECRET"]="Admin 세션 서명키"
   ["DB_PASSWORD"]="Cloud SQL 앱 사용자 비밀번호"
+  # REDIS_URL은 deploy.sh REQUIRED_SECRET_NAMES에 포함되므로 여기서 반드시 컨테이너를
+  # 만들어 둔다 (누락 시 표준 순서의 첫 배포가 build_secret_args에서 무조건 실패).
+  # Memorystore 프로비저닝 후 실제 값(redis://HOST:6379/0 또는 rediss://...) 입력.
+  ["REDIS_URL"]="Redis(Memorystore) 연결 URL — 예: redis://10.x.x.x:6379/0"
   ["SITE_REVALIDATE_SECRET"]="Site on-demand revalidate 인증 secret"
   ["SITE_BFF_SECRET"]="Site BFF → backend 방문자 IP 전달 인증 secret"
 )
@@ -211,10 +217,19 @@ echo ""
 echo "  3. Memorystore Redis 인스턴스 생성 (수동):"
 echo "     https://console.cloud.google.com/memorystore"
 echo "     → Redis 7, 리전: ${REGION}"
+echo "     생성 후 REDIS_URL secret에 연결 URL 입력:"
+echo "     gcloud secrets versions add REDIS_URL --data-file=- --project=${PROJECT_ID} <<< 'redis://HOST:6379/0'"
 echo ""
-echo "  4. .env.production 파일 작성:"
-echo "     cp .env.example .env.production"
-echo "     # DB_USER, DB_NAME, REDIS_URL, GCP_PROJECT_ID 등 채우기"
+echo "  4. Serverless VPC Access 커넥터 + 네트워크/인프라 (terraform apply):"
+echo "     Cloud Run이 VPC-private한 Cloud SQL/Memorystore에 닿으려면 VPC 커넥터가 필수다."
+echo "     (deploy.sh 기본 VPC_CONNECTOR=reputation-vpc-connector, terraform/vpc.tf가 생성)"
+echo "     cd terraform && terraform init && terraform apply"
+echo "     # vpc.tf(커넥터·private service connection), cloudsql.tf, redis.tf 등을 생성한다."
+echo "     # 이미 콘솔에서 Cloud SQL/Redis를 만들었다면 terraform import 후 apply할 것."
 echo ""
-echo "  5. 배포 실행:"
+echo "  5. .env.production 파일 작성:"
+echo "     cp .env.production.example .env.production"
+echo "     # GCP_PROJECT_ID, CLOUD_SQL_CONNECTION_NAME, GCP_STORAGE_BUCKET(=reputation-images-${PROJECT_ID}) 등 채우기"
+echo ""
+echo "  6. 배포 실행:"
 echo "     bash scripts/deploy.sh all"

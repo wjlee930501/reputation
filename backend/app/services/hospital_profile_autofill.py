@@ -130,7 +130,8 @@ async def _gather_sources(
         clean_url = url.strip()
         # 직접 fetch 우선(빠르고 SSRF 검증 포함) → 실패 시 Jina Reader 폴백
         # (봇 차단/peer 검증 환경 이슈 우회). 둘 다 실패하면 best-effort로 스킵.
-        text, err = await fetch_url_text(clean_url)
+        # fetch_url_text는 (text, error, quality) 3-튜플을 반환한다 — quality는 여기서 미사용.
+        text, err, _quality = await fetch_url_text(clean_url)
         if err or not text:
             text, jina_err = await naver_place.fetch_via_jina(clean_url)
             if jina_err or not text:

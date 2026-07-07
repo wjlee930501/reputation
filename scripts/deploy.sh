@@ -572,6 +572,25 @@ require_cloudsql_app_user() {
     || fail "Cloud SQL 사용자 ${DB_USER_NAME}가 ${instance}에 없습니다. 먼저 앱 DB user를 생성하고 DB_PASSWORD secret과 일치시켜 주세요."
 }
 
+require_asset_bucket() {
+  # 콘텐츠 대표 이미지가 저장/서빙되는 GCS 버킷이 실제로 존재하는지 확인한다.
+  # 버킷명은 전역 유일 제약 때문에 placeholder 기본값('reputation-images')일 수 없다 —
+  # 규칙은 'reputation-images-<GCP_PROJECT_ID>' (terraform storage.tf / setup-gcp.sh).
+  if [[ "${SKIP_ASSET_BUCKET_PREFLIGHT:-0}" == "1" ]]; then
+    info "SKIP_ASSET_BUCKET_PREFLIGHT=1 — GCS 자산 버킷 preflight를 건너뜁니다."
+    return
+  fi
+  [[ -n "$ASSET_GCS_BUCKET" ]] \
+    || fail "GCP_STORAGE_BUCKET(자산 버킷)이 설정되지 않았습니다 (.env.production)."
+  if [[ "$ASSET_GCS_BUCKET" == "reputation-images" || "$ASSET_GCS_BUCKET" == "reputation-reports" ]]; then
+    fail "GCP_STORAGE_BUCKET가 placeholder 기본값 '${ASSET_GCS_BUCKET}'입니다 — 전역 유일 제약상 실제 버킷일 수 없습니다. '${ASSET_GCS_BUCKET}-${PROJECT_ID}' 규칙으로 설정하세요."
+  fi
+  command -v gsutil >/dev/null 2>&1 \
+    || fail "gsutil이 설치되지 않았습니다 (GCS 자산 버킷 preflight에 필요). SKIP_ASSET_BUCKET_PREFLIGHT=1로 우회 가능."
+  gsutil ls -b "gs://${ASSET_GCS_BUCKET}" >/dev/null 2>&1 \
+    || fail "GCS 자산 버킷 gs://${ASSET_GCS_BUCKET}이 존재하지 않습니다. scripts/setup-gcp.sh로 먼저 생성하거나 SKIP_ASSET_BUCKET_PREFLIGHT=1로 우회하세요."
+}
+
 require_backend_runtime_shape() {
   if is_cloudsql_mode; then
     require_cloudsql_connection
@@ -630,6 +649,7 @@ run_migration() {
 case "$TARGET" in
   backend)
     require_backend_runtime_shape
+    require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
@@ -641,6 +661,7 @@ case "$TARGET" in
     ;;
   api|worker|beat)
     require_backend_runtime_shape
+    require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
@@ -664,6 +685,7 @@ case "$TARGET" in
     require_admin_domain
     require_public_dns
     require_backend_runtime_shape
+    require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi

@@ -61,6 +61,7 @@ def _hospital(**overrides):
         status=HospitalStatus.PENDING_DOMAIN,
         aeo_domain="clinic.example.com",
         domain_dns_strategy=DomainDnsStrategy.CNAME,
+        profile_complete=True,
         v0_report_done=True,
         site_built=True,
         schedule_set=True,

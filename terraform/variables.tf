@@ -64,14 +64,23 @@ variable "api_min_instances" {
 variable "api_max_instances" {
   description = <<-EOT
     API maximum instances. DB CONNECTION BUDGET: Cloud SQL max_connections is 100
-    (cloudsql.tf). Each backend instance may hold up to DB_POOL_SIZE +
-    DB_MAX_OVERFLOW connections (5 + 5 = 10 by default, config.py), so
-    instances x (pool + overflow) summed across api/worker/beat/migrate must stay
-    under max_connections with headroom for superuser/maintenance sessions.
-    Default budget: api 10x10=100 worst case alone — in practice API instances at
-    max concurrently saturating their pools is rare, but if you raise this (or the
-    pool sizes), raise max_connections or add pgbouncer first.
-    Worker (5 instances) + beat (1) + migrate job also draw from the same budget.
+    (cloudsql.tf), and the worst-case concurrent total must stay under
+    max_connections x 0.9 = 90 (10% headroom for superuser/maintenance sessions).
+    The budget is split between the async API pool and the sync worker pool
+    (config.py):
+      api    = api_max_instances x (DB_POOL_SIZE + DB_MAX_OVERFLOW)
+             = 10 x (3 + 2) = 50
+      worker = worker_max_instances x CELERY_CONCURRENCY
+               x (DB_WORKER_POOL_SIZE + DB_WORKER_MAX_OVERFLOW)
+             = 5 x 2 x (2 + 2) = 40
+      total  = 50 + 40 = 90 <= 90.
+    The sync worker engine is created lazily per Celery prefork child, so the
+    worker pool multiplies by CELERY_CONCURRENCY (cloudrun.tf), not by instance
+    count alone. beat holds no DB connections; the migrate Job runs one-shot
+    before deploy and does not overlap the traffic peak. If you raise this (or any
+    pool size / worker_max_instances / CELERY_CONCURRENCY), raise max_connections
+    or add pgbouncer first, then re-verify the invariant with
+    scripts/check_db_connection_budget.py (the CI/preflight budget guard).
   EOT
   type        = number
   default     = 10

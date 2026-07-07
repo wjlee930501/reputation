@@ -169,14 +169,18 @@ async def set_schedule(
     for old in old_schedules:
         old.is_active = False
     if old_schedule_ids:
+        # 재설정 시 구 스케줄의 미발행 미래 슬롯을 body 유무와 무관하게 정리한다.
+        # 이미 본문이 생성된(body 있음) 구 슬롯이 남으면 새 스케줄 슬롯과 같은 날짜에
+        # 중복 발행/중복 Slack/중복 생성 비용이 발생한다. PUBLISHED 슬롯은 발행 이력이므로
+        # 절대 삭제하지 않고, 과거 슬롯도 이력 보존을 위해 남긴다 (오늘 이후만 정리).
+        # 이월(carried_over_from IS NOT NULL) 미발행 슬롯도 보존한다: 월말 반려로 이월된
+        # 슬롯을 스케줄 재설정만으로 지우면 아직 발행 못 한 이월 콘텐츠가 유실된다.
         await db.execute(
             delete(ContentItem).where(
                 ContentItem.schedule_id.in_(old_schedule_ids),
-                ContentItem.status == ContentStatus.DRAFT,
-                ContentItem.title.is_(None),
-                ContentItem.body.is_(None),
-                ContentItem.generated_at.is_(None),
-                ContentItem.published_at.is_(None),
+                ContentItem.status != ContentStatus.PUBLISHED,
+                ContentItem.scheduled_date >= today_kst,
+                ContentItem.carried_over_from.is_(None),
             )
         )
 
@@ -220,6 +224,23 @@ async def set_schedule(
     hospital.plan = Plan(body.plan)
     if hospital.site_live:
         hospital.status = HospitalStatus.ACTIVE
+
+    # 순서 규약: write_audit_log → db.commit() → external side-effect(apply_async).
+    await write_audit_log(
+        db,
+        action="set_schedule",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="content_schedule",
+        target_id=schedule.id,
+        detail={
+            "plan": body.plan,
+            "publish_days": body.publish_days,
+            "active_from": str(body.active_from),
+            "slots_created": len(slots),
+            "old_schedule_ids": [str(sid) for sid in old_schedule_ids],
+        },
+    )
 
     await db.commit()
     await db.refresh(schedule)

@@ -71,3 +71,93 @@ async def test_slack_failure_log_does_not_include_webhook_url(monkeypatch, caplo
     assert "ConnectError" in caplog.text
     assert webhook_url not in caplog.text
     assert "super-secret-token" not in caplog.text
+
+
+# ── 측정 방식 라벨: 실제 사용 플랫폼 기준 동적 구성 (GEMINI_API_KEY 미설정 시 Gemini 제외) ──
+
+
+def test_measurement_label_excludes_gemini_when_not_measured(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "OPENAI_CHATGPT_USE_WEB_SEARCH", False)
+    label = notifier._measurement_label(["chatgpt"])
+    assert "Gemini" not in label
+    assert "OpenAI" in label
+
+
+def test_measurement_label_includes_gemini_when_measured(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "OPENAI_CHATGPT_USE_WEB_SEARCH", True)
+    label = notifier._measurement_label(["chatgpt", "gemini"])
+    assert "Gemini 그라운디드" in label
+    assert "웹검색" in label
+
+
+def test_format_sov_distinguishes_none_from_zero():
+    assert notifier._format_sov(None) == "측정 데이터 없음"
+    assert notifier._format_sov(0.0) == "0.0%"
+
+
+def _capture_send(monkeypatch):
+    captured = {}
+
+    async def fake_send(text, blocks=None):
+        captured["text"] = text
+        captured["blocks"] = blocks
+        return True
+
+    monkeypatch.setattr(notifier, "_send", fake_send)
+    return captured
+
+
+async def test_v0_report_label_omits_gemini_when_only_chatgpt(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "OPENAI_CHATGPT_USE_WEB_SEARCH", False)
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_v0_report_ready("장편한외과의원", 12.5, "gs://x.pdf", platforms=["chatgpt"])
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert "Gemini" not in body
+    assert "12.5%" in body
+
+
+async def test_v0_report_shows_no_data_when_sov_none(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_v0_report_ready("장편한외과의원", None, "gs://x.pdf", platforms=["chatgpt"])
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert "측정 데이터 없음" in body
+
+
+async def test_monthly_report_shows_no_data_when_sov_none(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_monthly_report_ready(
+        "장편한외과의원", 2026, 7, None, None, "gs://x.pdf", platforms=["chatgpt", "gemini"]
+    )
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert "측정 데이터 없음" in body
+    assert "Gemini 그라운디드" in body
+
+
+async def test_monthly_report_adds_new_mention_line_when_present(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_monthly_report_ready(
+        "장편한외과의원", 2026, 7, 42.0, 12.0, "gs://x.pdf",
+        platforms=["chatgpt"], new_mention_count=3,
+    )
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert "신규 언급 시작 쿼리: *3건*" in body
+
+
+async def test_monthly_report_omits_new_mention_line_when_zero(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_monthly_report_ready(
+        "장편한외과의원", 2026, 7, 42.0, 12.0, "gs://x.pdf",
+        platforms=["chatgpt"], new_mention_count=0,
+    )
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert "신규 언급 시작 쿼리" not in body

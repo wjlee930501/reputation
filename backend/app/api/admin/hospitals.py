@@ -7,6 +7,7 @@ PATCH  /admin/hospitals/{id}/profile    — 프로파일 수정 + 완료 시 V0 
 PATCH  /admin/hospitals/{id}/domain     — 공개 도메인 상태 확인
 PATCH  /admin/hospitals/{id}/activate   — ACTIVE 전환
 """
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, s
 from pydantic import BaseModel, Field, field_validator
 from slugify import slugify
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -25,6 +27,7 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
+from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_profile_autofill import autofill_profile
 from app.services.essence_engine import (
@@ -40,7 +43,33 @@ from app.services.site_revalidate import (
     trigger_hospital_site_revalidate_safe,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
+
+
+async def _trigger_v0_report_safe(hospital_id_str: str, hospital_name: str) -> None:
+    """V0 리포트 태스크를 큐잉하되, 실패 시 무음으로 사라지지 않도록 운영 알림으로 강등한다.
+
+    BackgroundTasks 안에서 apply_async가 브로커 장애 등으로 예외를 내면 Starlette가
+    조용히 삼켜 AE가 프로파일 완료 후 V0가 트리거되지 않은 것을 알 수 없게 된다 (#8).
+    """
+    try:
+        trigger_v0_report.apply_async(args=[hospital_id_str], queue="reports")
+    except Exception as exc:  # noqa: BLE001 — 큐잉 실패는 요청 흐름에 영향 없이 강등
+        logger.warning("V0 report enqueue failed for hospital %s: %s", hospital_id_str, exc)
+        try:
+            await notifier.notify_ops_alert(
+                title="V0 리포트 큐잉 실패",
+                message=(
+                    f"병원: {hospital_name}\n"
+                    f"프로파일 완료로 V0 리포트를 자동 트리거하려 했지만 큐잉에 실패했습니다.\n"
+                    f"오류: `{str(exc)[:200]}`\n"
+                    f"Admin 운영 탭에서 수동으로 V0 리포트를 실행해 주세요."
+                ),
+            )
+        except Exception:
+            logger.exception("V0 enqueue-failure ops alert delivery failed (non-fatal)")
 
 
 # ── Pydantic 스키마 ───────────────────────────────────────────────
@@ -242,7 +271,30 @@ async def create_hospital(body: HospitalCreate, db: AsyncSession = Depends(get_d
         onboarding_note=body.onboarding_note or "Created from admin hospital registration.",
     )
     db.add(hospital)
-    await db.commit()
+    # 순서 규약: write_audit_log → db.commit(). flush로 hospital.id를 먼저 확보한다.
+    # check-then-insert 경합(같은 slug/도메인 동시 등록)은 500이 아니라 409로 변환한다.
+    try:
+        await db.flush()
+        await write_audit_log(
+            db,
+            action="create_hospital",
+            hospital_id=hospital.id,
+            actor=default_actor(),
+            target_type="hospital",
+            target_id=hospital.id,
+            detail={
+                "name": hospital.name,
+                "slug": slug,
+                "plan": _enum_value(body.plan, Plan.PLAN_8.value),
+            },
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="이미 사용 중인 슬러그 또는 도메인입니다. 병원명을 확인해 주세요.",
+        ) from exc
     await db.refresh(hospital)
     return _serialize(hospital)
 
@@ -361,13 +413,9 @@ async def update_profile(
     await db.commit()
     await db.refresh(h)
 
-    # 프로파일 완료로 변경된 경우 V0 분석 자동 트리거
+    # 프로파일 완료로 변경된 경우 V0 분석 자동 트리거 (큐잉 실패는 운영 알림으로 강등)
     if not was_complete and h.profile_complete:
-        background_tasks.add_task(
-            trigger_v0_report.apply_async,
-            args=[str(hospital_id)],
-            queue="reports",
-        )
+        background_tasks.add_task(_trigger_v0_report_safe, str(hospital_id), h.name)
     if needs_site_revalidate:
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 저장은 이미 성공했다.
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
@@ -487,6 +535,87 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 활성화는 이미 성공했다.
     await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
     return {"detail": f"{h.name} activated"}
+
+
+def _activation_missing(h: Hospital) -> list[str]:
+    """activate 게이트와 동일한 사전 조건 목록 — pause/resume가 재사용한다 (#11)."""
+    missing = []
+    if not h.profile_complete:
+        missing.append("profile_complete")
+    if not h.v0_report_done:
+        missing.append("v0_report_done")
+    if not h.site_built:
+        missing.append("site_built")
+    if not h.schedule_set:
+        missing.append("schedule_set")
+    return missing
+
+
+@router.post("/{hospital_id}/pause", response_model=HospitalDetail)
+async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """병원 운영을 일시 정지 (ACTIVE 또는 PENDING_DOMAIN 상태에서만 허용)."""
+    h = await _get_or_404(db, hospital_id)
+
+    if h.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
+        raise HTTPException(
+            status_code=409,
+            detail="일시 정지는 ACTIVE 또는 PENDING_DOMAIN 상태에서만 가능합니다.",
+        )
+
+    previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
+    h.status = HospitalStatus.PAUSED
+    await write_audit_log(
+        db,
+        action="pause_hospital",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="hospital",
+        target_id=hospital_id,
+        detail={
+            "previous_status": previous_status,
+            "new_status": HospitalStatus.PAUSED.value,
+        },
+    )
+    await db.commit()
+    await db.refresh(h)
+    return _serialize(h)
+
+
+@router.post("/{hospital_id}/resume", response_model=HospitalDetail)
+async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """일시 정지된 병원을 재개 (PAUSED 상태에서만 허용).
+
+    이전 활성 조건(activate 게이트 + site_live)이 여전히 충족되면 ACTIVE로, 아니면
+    PENDING_DOMAIN으로 복귀한다.
+    """
+    h = await _get_or_404(db, hospital_id)
+
+    if h.status != HospitalStatus.PAUSED:
+        raise HTTPException(status_code=409, detail="재개는 PAUSED 상태에서만 가능합니다.")
+
+    missing = _activation_missing(h)
+    if not missing and h.site_live:
+        h.status = HospitalStatus.ACTIVE
+    else:
+        h.status = HospitalStatus.PENDING_DOMAIN
+
+    await write_audit_log(
+        db,
+        action="resume_hospital",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="hospital",
+        target_id=hospital_id,
+        detail={
+            "previous_status": HospitalStatus.PAUSED.value,
+            "new_status": h.status.value,
+            "activation_missing": missing,
+            "site_live": bool(h.site_live),
+        },
+    )
+    await db.commit()
+    await db.refresh(h)
+    return _serialize(h)
 
 
 @router.get("/{hospital_id}/readiness")

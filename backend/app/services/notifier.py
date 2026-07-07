@@ -67,20 +67,47 @@ async def _send(text: str, blocks: list | None = None) -> bool:
         return False
 
 
-async def notify_v0_report_ready(hospital_name: str, sov_pct: float, pdf_path: str) -> bool:
+def _measurement_label(platforms: list[str] | None = None) -> str:
+    """측정 방식 라벨을 실제 사용 플랫폼 기준으로 동적 구성.
+
+    GEMINI_API_KEY 미설정(=Gemini 미측정)인데도 'Gemini 그라운디드'가 항상 붙던 문제 해소.
+    platforms가 None이면 설정 기준(chatgpt 항상, GEMINI_API_KEY 있으면 gemini)으로 유추한다.
+    """
+    if platforms is None:
+        platforms = ["chatgpt"] + (["gemini"] if settings.GEMINI_API_KEY else [])
+    normalized = {str(p).strip().lower() for p in platforms}
+    parts: list[str] = []
+    if "chatgpt" in normalized:
+        parts.append(
+            "OpenAI Responses API + 웹검색"
+            if settings.OPENAI_CHATGPT_USE_WEB_SEARCH
+            else "OpenAI gpt-4o 응답(웹검색 미적용)"
+        )
+    if "gemini" in normalized:
+        parts.append("Gemini 그라운디드")
+    return " / ".join(parts) if parts else "측정 방식 미상"
+
+
+def _format_sov(sov_pct: float | None) -> str:
+    """None(측정 데이터 없음)과 실제 0.0%를 구분해 표기."""
+    return "측정 데이터 없음" if sov_pct is None else f"{sov_pct:.1f}%"
+
+
+async def notify_v0_report_ready(
+    hospital_name: str,
+    sov_pct: float | None,
+    pdf_path: str,
+    platforms: list[str] | None = None,
+) -> bool:
     """V0 리포트 생성 완료 → AE에게"""
-    measurement_label = (
-        "OpenAI Responses API + 웹검색 / Gemini 그라운디드"
-        if settings.OPENAI_CHATGPT_USE_WEB_SEARCH
-        else "OpenAI gpt-4o 응답(웹검색 미적용) / Gemini 그라운디드"
-    )
+    measurement_label = _measurement_label(platforms)
     return await _send(
         text=f"🔍 [V0 리포트] {hospital_name} AI 답변 인용 진단 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
                 f"🔍 *[V0 리포트]* *{hospital_name}* AI 답변 인용 진단 리포트 생성 완료\n"
-                f"AI 답변 내 병원 언급률: *{sov_pct:.1f}%*\n"
+                f"AI 답변 내 병원 언급률: *{_format_sov(sov_pct)}*\n"
                 f"측정 방식: {measurement_label}\n"
                 f"파일: `{pdf_path}`\n\n"
                 f"원장 보고 전 내용 확인 후 전달해 주세요."
@@ -170,22 +197,34 @@ async def notify_lead_created(
 
 
 async def notify_monthly_report_ready(
-    hospital_name: str, year: int, month: int, sov_pct: float, change_pct: float | None, pdf_path: str
+    hospital_name: str,
+    year: int,
+    month: int,
+    sov_pct: float | None,
+    change_pct: float | None,
+    pdf_path: str,
+    platforms: list[str] | None = None,
+    new_mention_count: int | None = None,
 ) -> bool:
-    """월간 리포트 생성 완료 → AE에게"""
+    """월간 리포트 생성 완료 → AE에게.
+
+    new_mention_count: 전월 미언급 → 이번 달 언급 시작된 쿼리 수. 1건 이상일 때만 한 줄 추가.
+    """
     change_text = f" | 전월 대비: *{change_pct:+.1f}%p*" if change_pct is not None else ""
-    measurement_label = (
-        "OpenAI Responses + 웹검색 / Gemini 그라운디드"
-        if settings.OPENAI_CHATGPT_USE_WEB_SEARCH
-        else "OpenAI gpt-4o 응답(웹검색 미적용) / Gemini 그라운디드"
+    new_mention_text = (
+        f"신규 언급 시작 쿼리: *{new_mention_count}건*\n"
+        if new_mention_count is not None and new_mention_count > 0
+        else ""
     )
+    measurement_label = _measurement_label(platforms)
     return await _send(
         text=f"📊 [월간 리포트] {hospital_name} {year}년 {month}월 AI 답변 인용 리포트 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
                 f"📊 *[월간 리포트]* *{hospital_name}* {year}년 {month}월 AI 답변 인용 리포트 생성 완료\n"
-                f"AI 답변 내 병원 언급률: *{sov_pct:.1f}%*{change_text}\n"
+                f"AI 답변 내 병원 언급률: *{_format_sov(sov_pct)}*{change_text}\n"
+                f"{new_mention_text}"
                 f"측정 방식: {measurement_label} · 측정 실패는 분모에서 제외\n"
                 f"파일: `{pdf_path}`\n\n"
                 f"원장 보고 자료를 확인해 주세요."
@@ -352,15 +391,21 @@ def mask_contact_free(text: str) -> str:
 
 
 async def notify_content_batch_summary(
-    hospital_name: str, generated: int, failed: int, scheduled_date: str, skipped: int = 0
+    hospital_name: str,
+    generated: int,
+    failed: int,
+    scheduled_date: str,
+    skipped: int = 0,
+    cost_blocked: int = 0,
 ) -> bool:
-    if generated == 0 and failed == 0 and skipped == 0:
+    if generated == 0 and failed == 0 and skipped == 0 and cost_blocked == 0:
         return False
-    status_emoji = "✅" if failed == 0 and skipped == 0 else "⚠️"
+    status_emoji = "✅" if failed == 0 and skipped == 0 and cost_blocked == 0 else "⚠️"
     summary = (
         f"{generated}건 생성 완료"
         + (f", {failed}건 실패" if failed > 0 else "")
         + (f", {skipped}건 차단(운영 기준 미승인)" if skipped > 0 else "")
+        + (f", {cost_blocked}건 차단(비용 가드로 스킵)" if cost_blocked > 0 else "")
     )
     return await _send(
         text=f"{status_emoji} [콘텐츠 배치] {hospital_name} {scheduled_date} — {summary}",

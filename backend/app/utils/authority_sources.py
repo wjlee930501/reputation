@@ -10,6 +10,8 @@ SE Ranking YMYL Health Study(2025) 등에서 AI 답변(ChatGPT/Gemini/Perplexity
 - _normalize_references 단계에서 white-list domain 외 항목 검출(선택).
 """
 
+from urllib.parse import urlparse
+
 KR_PUBLIC_SOURCES: list[dict[str, str]] = [
     {"name": "질병관리청 국가건강정보포털", "domain": "health.kdca.go.kr"},
     {"name": "질병관리청 KDCA", "domain": "kdca.go.kr"},
@@ -31,6 +33,12 @@ KR_ACADEMIC_SOURCES: list[dict[str, str]] = [
     {"name": "대한대장항문학회", "domain": "colon.or.kr"},
     {"name": "대한외과학회", "domain": "surgery.or.kr"},
     {"name": "서울아산병원 질환백과", "domain": "amc.seoul.kr"},
+    # 주요 진료과 학회 — 도메인 확인됨(WebSearch 2026-07 기준 공식 홈페이지).
+    {"name": "대한정형외과학회", "domain": "koa.or.kr"},
+    {"name": "대한피부과학회", "domain": "derma.or.kr"},
+    {"name": "대한산부인과학회", "domain": "ksog.org"},
+    {"name": "대한비뇨의학회", "domain": "urology.or.kr"},
+    {"name": "대한치과의사협회", "domain": "kda.or.kr"},
 ]
 
 US_GLOBAL_SOURCES: list[dict[str, str]] = [
@@ -79,24 +87,48 @@ for item in ENCYCLOPEDIA_SOURCES:
     _DOMAIN_TO_SOURCE_TYPE[item["domain"]] = SOURCE_TYPE_ENCYCLOPEDIA
 
 
-def infer_source_type(url: str) -> str | None:
-    """URL이 화이트리스트의 어떤 카테고리에 속하는지 반환. 매칭 실패 시 None."""
+def _extract_hostname(url: str) -> str | None:
+    """URL에서 hostname만 안전하게 추출.
+
+    문자열 포함 검사(f".{domain}" in lowered)는 kdca.go.kr.evil.com 같은
+    스푸핑 도메인을 kdca.go.kr로 오매칭한다. urlparse로 실제 hostname을 뽑아
+    호스트명 자체를 비교해야 한다.
+    """
     if not url:
         return None
-    lowered = url.lower()
+    try:
+        hostname = urlparse(url).hostname
+    except ValueError:
+        return None
+    return hostname.lower() if hostname else None
+
+
+def _matches_domain(hostname: str, domain: str) -> bool:
+    return hostname == domain or hostname.endswith(f".{domain}")
+
+
+def infer_source_type(url: str) -> str | None:
+    """URL이 화이트리스트의 어떤 카테고리에 속하는지 반환. 매칭 실패 시 None."""
+    hostname = _extract_hostname(url)
+    if not hostname:
+        return None
     for domain, source_type in _DOMAIN_TO_SOURCE_TYPE.items():
-        if f"//{domain}" in lowered or f".{domain}" in lowered:
+        if _matches_domain(hostname, domain):
             return source_type
     return None
 
 
 def is_whitelisted_url(url: str) -> bool:
-    """URL이 권위 출처 화이트리스트에 속하는지 검사. 서브도메인 매칭 포함."""
-    if not url:
+    """URL이 권위 출처 화이트리스트에 속하는지 검사. 서브도메인 매칭 포함.
+
+    hostname == domain 또는 hostname이 ".domain"으로 끝나는 엄격 비교만 허용한다.
+    (스푸핑 도메인 회귀 방지 — kdca.go.kr.evil.com은 hostname 자체가 다르므로 탈락)
+    """
+    hostname = _extract_hostname(url)
+    if not hostname:
         return False
-    lowered = url.lower()
     for domain in WHITELIST_DOMAINS:
-        if f"//{domain}" in lowered or f".{domain}" in lowered:
+        if _matches_domain(hostname, domain):
             return True
     return False
 

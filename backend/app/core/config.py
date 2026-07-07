@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from typing import Annotated
 from urllib.parse import quote, urlparse
@@ -6,7 +7,12 @@ from urllib.parse import quote, urlparse
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-_CRITICAL_PRODUCTION_SECRETS = ("ADMIN_SECRET_KEY",)
+logger = logging.getLogger(__name__)
+
+# 프로덕션 부팅 시 비어 있으면 즉시 실패(fail-fast)시키는 시크릿.
+# SLACK_WEBHOOK_URL 포함: 모든 주요 이벤트 알림이 Slack로 나가므로(CLAUDE.md), 누락 시
+# V0/콘텐츠/월간 리포트 알림이 조용히 사라진다 → AE가 운영 이벤트를 놓친다.
+_CRITICAL_PRODUCTION_SECRETS = ("ADMIN_SECRET_KEY", "SLACK_WEBHOOK_URL")
 
 
 def _resolve_secret(name: str, default: str = "") -> str:
@@ -27,8 +33,12 @@ def _resolve_secret(name: str, default: str = "") -> str:
                 secret_path = client.secret_version_path(project, name, "latest")
                 response = client.access_secret_version(request={"name": secret_path})
                 env_value = response.payload.data.decode("UTF-8")
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 — 조회 실패해도 env 폴백으로 부팅은 계속.
+            logger.warning(
+                "Secret Manager 조회 실패 — env/기본값으로 폴백: secret=%s error=%s",
+                name,
+                exc,
+            )
     return env_value
 
 
@@ -58,6 +68,36 @@ class Settings(BaseSettings):
             self.SITE_BFF_SECRET = _resolve_secret("SITE_BFF_SECRET", self.SITE_BFF_SECRET)
             self._fail_if_critical_production_secrets_empty()
             self._validate_production_config()
+            self._warn_if_production_flow_config_incomplete()
+
+    def _warn_if_production_flow_config_incomplete(self) -> None:
+        """프로덕션 부팅 시 핵심 플로우 설정이 비어 있거나 placeholder면 경고(중단하지 않음).
+
+        fail-fast 대상은 아니지만(보안 표면과 무관), 비어 있으면 해당 플로우가 조용히
+        실패하므로 부팅 로그에 영향 범위를 남긴다.
+        """
+        flow_impact = {
+            "ANTHROPIC_API_KEY": "콘텐츠 자동 생성(Claude Sonnet) 중단",
+            "OPENAI_API_KEY": "SoV 측정(ChatGPT) + 대표 이미지 생성(gpt-image) 중단",
+            "GEMINI_API_KEY": "SoV 측정(Gemini) 중단",
+        }
+        for name, impact in flow_impact.items():
+            if not str(getattr(self, name, "")).strip():
+                logger.warning("프로덕션 시크릿 %s 미설정 — %s", name, impact)
+
+        # GCS 버킷 placeholder 감지 — 버킷명은 전역 유일 제약 때문에 기본값
+        # 'reputation-images'/'reputation-reports'가 실제 소유 버킷일 수 없다.
+        # 규칙: '<name>-<GCP_PROJECT_ID>' (terraform storage.tf / setup-gcp.sh와 동일).
+        if self.GCP_STORAGE_BUCKET.strip() == "reputation-images":
+            logger.warning(
+                "GCP_STORAGE_BUCKET가 placeholder 기본값 'reputation-images' — 실제 버킷명 "
+                "'reputation-images-<GCP_PROJECT_ID>'로 설정 필요(콘텐츠 이미지 업로드 실패 위험)."
+            )
+        if self.GCS_REPORTS_BUCKET.strip() == "reputation-reports":
+            logger.warning(
+                "GCS_REPORTS_BUCKET가 placeholder 기본값 'reputation-reports' — 실제 버킷명 "
+                "'reputation-reports-<GCP_PROJECT_ID>'로 설정 필요(PDF 리포트 업로드 실패 위험)."
+            )
 
     def _fail_if_critical_production_secrets_empty(self) -> None:
         missing = [
@@ -179,13 +219,24 @@ class Settings(BaseSettings):
     DB_USER: str = "reputation"
     DB_PASSWORD: str = ""
     CLOUD_SQL_CONNECTION_NAME: str = ""
-    # 연결 예산: Cloud SQL max_connections=100 (terraform/cloudsql.tf).
-    # 인스턴스당 최대 pool+overflow 연결 × Cloud Run max instances 합이
-    # max_connections를 넘으면 안 된다 (api 10 × (5+5) = 100 worst case —
-    # worker/beat/migrate 여유분을 위해 인스턴스/풀 상향 시 pgbouncer 또는
-    # max_connections 상향 선행). terraform/variables.tf api_max_instances 참조.
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 5
+    # 연결 예산 (scripts/check_db_connection_budget.py가 CI에서 강제):
+    #   API(async)  : api_max_instances × (DB_POOL_SIZE + DB_MAX_OVERFLOW)
+    #                 = 10 × (3 + 2) = 50
+    #   Worker(sync): worker_max_instances × CELERY_CONCURRENCY
+    #                 × (DB_WORKER_POOL_SIZE + DB_WORKER_MAX_OVERFLOW)
+    #                 = 5 × 2 × (2 + 2) = 40
+    #   합계 90 ≤ Cloud SQL max_connections(100) × 0.9 = 90.
+    #   (beat는 DB 미사용, migrate Job은 배포 전 단발 실행이라 피크와 겹치지 않음.)
+    #   sync 엔진은 Celery prefork 자식마다 lazily 생성된다(database.py) — 그래서
+    #   워커 풀은 인스턴스가 아니라 자식(concurrency) 단위로 곱해진다.
+    #   인스턴스/풀/concurrency 상향 시 pgbouncer나 max_connections 상향을 선행하고
+    #   위 스크립트로 불변식을 재확인할 것.
+    # terraform/variables.tf(api_max_instances, worker_max_instances),
+    # terraform/cloudrun.tf(CELERY_CONCURRENCY), terraform/cloudsql.tf(max_connections) 참조.
+    DB_POOL_SIZE: int = 3          # API(async) 엔진 풀 크기
+    DB_MAX_OVERFLOW: int = 2       # API(async) 오버플로 한도
+    DB_WORKER_POOL_SIZE: int = 2   # Worker(sync) 엔진 풀 — Celery prefork 자식당
+    DB_WORKER_MAX_OVERFLOW: int = 2  # Worker(sync) 오버플로 — Celery prefork 자식당
     DB_POOL_TIMEOUT: int = 30  # seconds to wait for a connection
     DB_CONNECT_TIMEOUT: int = 10  # seconds to establish TCP connection
     DB_COMMAND_TIMEOUT: int = 30  # seconds for a single SQL statement (0=disabled)
@@ -228,6 +279,21 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-flash-latest"
 
+    # Cost Guard — 전역 비용 가드레일 + 킬스위치.
+    # 콘텐츠/이미지/SoV 호출은 병원 수에 비례해 무제한 확장되므로 카테고리별 일/월 호출
+    # 상한과 킬스위치로 지출 폭주를 차단한다. 기본값은 병원 50개 × 요금제 상한 × 재시도
+    # 여유를 감안한 대략치이며, 실제 계약 규모에 맞춰 조정한다.
+    COST_GUARD_ENABLED: bool = True
+    # 월간 상한 (병원50 × 16편 × 재시도 여유 ≈ 2500)
+    COST_GUARD_MONTHLY_CONTENT_CALLS: int = 2500
+    COST_GUARD_MONTHLY_IMAGE_CALLS: int = 2500
+    # SoV: 병원50 × 주간 spec 다수 × 4주 여유 ≈ 20000
+    COST_GUARD_MONTHLY_SOV_QUERIES: int = 20000
+    # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
+    COST_GUARD_DAILY_CONTENT_CALLS: int = 250
+    COST_GUARD_DAILY_IMAGE_CALLS: int = 250
+    COST_GUARD_DAILY_SOV_QUERIES: int = 2000
+
     # Slack
     SLACK_WEBHOOK_URL: str = ""
     # webhook SSRF 방어 — 허용 호스트(쉼표 구분). 기본은 Slack 공식 호스트만(V-013).
@@ -247,6 +313,8 @@ class Settings(BaseSettings):
     # SoV
     SOV_REPEAT_COUNT: int = 10
     SOV_REPEAT_COUNT_WEEKLY: int = 5
+    # 주간 측정에서 HIGH 우선순위 쿼리 상한 — 초과분은 잘라내고 ops 알림 (비용 가드)
+    SOV_HIGH_PRIORITY_CAP: int = 30
 
     # Domain
     CNAME_TARGET: str = "cname.reputation.motionlabs.kr"

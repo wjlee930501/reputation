@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import re
 import threading
 from itertools import product
 
@@ -189,11 +190,22 @@ async def _query_gemini(query: str) -> str:
     return response.text or ""
 
 
+def _normalize_for_prefilter(text: str) -> str:
+    """사전 필터 비교용 정규화 — 공백·특수문자를 제거해 표기 변형(띄어쓰기 등)에 강건하게.
+
+    예: "장편한 외과" ↔ "장편한외과" 가 사전 필터에서 어긋나 실제 언급을 놓치던 문제 완화.
+    """
+    return re.sub(r"[\s\W]+", "", text or "", flags=re.UNICODE)
+
+
 async def _parse_mention(hospital_name: str, response_text: str) -> dict:
     if not response_text.strip():
         return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None}
-    # 빠른 사전 필터
-    if hospital_name[:2] not in response_text:
+    # 빠른 사전 필터 — 병원명·응답 양쪽을 정규화(공백/특수문자 제거) 후 앞 2글자 비교.
+    normalized_name = _normalize_for_prefilter(hospital_name)
+    normalized_response = _normalize_for_prefilter(response_text)
+    if normalized_name[:2] and normalized_name[:2] not in normalized_response:
+        logger.debug("prefilter skip (mention): hospital=%s", hospital_name)
         return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None}
 
     result = await openai_client.chat.completions.create(
@@ -213,8 +225,13 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
 async def _parse_competitors(competitors: list[str], response_text: str) -> list[dict]:
     if not competitors or not response_text.strip():
         return []
-    # 빠른 사전 필터: 어떤 경쟁사의 앞 2글자도 없으면 스킵
-    if not any(c[:2] in response_text for c in competitors):
+    # 빠른 사전 필터: 정규화(공백/특수문자 제거) 후 어떤 경쟁사의 앞 2글자도 없으면 스킵
+    normalized_response = _normalize_for_prefilter(response_text)
+    if not any(
+        (norm := _normalize_for_prefilter(c)[:2]) and norm in normalized_response
+        for c in competitors
+    ):
+        logger.debug("prefilter skip (competitors): count=%d", len(competitors))
         return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
 
     result = await openai_client.chat.completions.create(
@@ -264,12 +281,16 @@ async def run_single_query(
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))
 
 
-def calculate_sov(results: list[dict]) -> float:
+def calculate_sov(results: list[dict]) -> float | None:
     """AI 답변 언급률(%) — 측정 실패는 분모에서 제외.
 
     - measurement_status == "FAILED" → 분모 제외 (실패가 SoV를 인공적으로 낮추는 것을 방지)
     - measurement_status 미존재 + raw_response 비어있음 → 분모 제외 (네트워크 실패 추정)
     - 그 외는 SUCCESS로 간주
+
+    반환 계약: 성공 측정이 1건 이상이면 언급률(float), 성공 레코드가 0건이면 None.
+    None은 '측정 안 됨'을 뜻하며 '실제 0% 언급'(0.0)과 구분된다 — 허위 0%가 PDF/Slack
+    원장 보고에 들어가지 않도록 호출부가 None을 명시적으로 표기해야 한다.
     """
     successful: list[dict] = []
     for r in results:
@@ -280,5 +301,5 @@ def calculate_sov(results: list[dict]) -> float:
             continue
         successful.append(r)
     if not successful:
-        return 0.0
+        return None
     return round(sum(1 for r in successful if r.get("is_mentioned")) / len(successful) * 100, 2)

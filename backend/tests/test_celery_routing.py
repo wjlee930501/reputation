@@ -49,3 +49,12 @@ def test_all_task_routes_target_consumed_queues():
 def test_pii_purge_task_is_routed():
     # 개인정보보호법 제21조 — 매일 04:00 리드 파기는 반드시 실행 가능해야 한다.
     assert _resolved_queue("app.workers.tasks.purge_expired_leads") == "default"
+
+
+def test_monthly_reports_run_at_21_to_avoid_nightly_generation_overlap():
+    """월간 리포트는 21:00 — 야간 콘텐츠 생성(23:00)과 워커 슬롯 경합을 피한다 (결함 11)."""
+    schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
+    assert 21 in schedule.hour
+    assert 23 not in schedule.hour
+    # 28~31일 로직 유지
+    assert schedule.day_of_month == {28, 29, 30, 31}
