@@ -25,6 +25,8 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import html2text
 import httpx
 
+from app.utils.error_page import looks_like_error_page_text
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_FETCH_TIMEOUT = 12.0
@@ -161,6 +163,11 @@ async def fetch_url_text(url: str) -> tuple[str, str | None, FetchQuality | None
             scoped_html = _scope_to_content_container(html)
             text = _html_to_markdown(scoped_html)
             quality = _assess_fetch_quality(html, text)
+            # 200으로 돌아온 차단·오류 페이지(soft 403 등)나 리더 폴백의 "Title: 403 Forbidden"
+            # 잔재는 근거 자료가 아니라 오류로 취급한다 — 근거 파이프라인/공개 표면 오염을 원천 차단.
+            # (본문이 지나치게 짧은 셸/프레임셋은 기존 quality.looks_like_shell 체계가 호출부에서 처리.)
+            if looks_like_error_page_text(text):
+                return "", "차단 또는 오류 페이지로 확인되어 본문을 수집하지 않았습니다.", None
             return text[:MAX_RAW_TEXT_LENGTH], None, quality
     except httpx.HTTPStatusError as exc:
         return "", f"HTTP {exc.response.status_code} — URL 접근 실패.", None

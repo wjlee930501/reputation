@@ -43,6 +43,7 @@ from app.services.asset_storage import resolve_legacy_asset_path, resolve_local_
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
+    find_error_marker_fields,
     process_source_asset,
     synthesize_philosophy,
     validate_philosophy_grounding,
@@ -625,6 +626,19 @@ async def create_philosophy_draft(
         raise HTTPException(status_code=400, detail="운영 기준 초안 생성에 사용할 근거 노트가 없습니다.")
 
     payload = synthesize_philosophy(hospital, sources, notes, operator_note=body.operator_note)
+    # 차단·오류 페이지 잔재가 핵심 필드에 남았으면 초안을 만들지 않고 명확한 사유로 거부한다.
+    marker_fields = find_error_marker_fields(payload)
+    if marker_fields:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_markers": marker_fields,
+                "reason": (
+                    "차단·오류 페이지 잔재가 포함되어 콘텐츠 운영 기준 초안을 생성하지 않았습니다. "
+                    "해당 자료를 제외하거나 본문을 다시 수집한 뒤 시도하세요."
+                ),
+            },
+        )
     grounding_errors = validate_philosophy_grounding(payload, notes)
     if grounding_errors:
         raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})

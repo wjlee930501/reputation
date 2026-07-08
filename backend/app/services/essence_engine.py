@@ -33,6 +33,7 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital
+from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
@@ -228,6 +229,9 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
         if not isinstance(excerpt, str) or not excerpt.strip():
             continue
         excerpt = excerpt.strip()
+        # 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)는 근거 노트로 만들지 않는다.
+        if looks_like_error_page_text(excerpt):
+            continue
         # CRITICAL: 원문 verbatim이 아닌 발췌는 버린다.
         start, end = find_excerpt_bounds(asset, excerpt)
         if start is None or end is None:
@@ -333,6 +337,12 @@ def synthesize_philosophy(
     ANTHROPIC_API_KEY가 있으면 Claude로 합성하고, 없으면 deterministic 폴백을 쓴다.
     LLM 합성이 실패하거나 grounding 검증을 통과하지 못하면 deterministic 폴백으로 떨어진다.
     """
+    # 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)가 든 근거 노트는 철학 조립에서 제외한다.
+    # (기존 오염 노트가 DB에 남아 있어도 positioning/promise 등 핵심 필드로 새지 않게 한다.)
+    notes = [
+        note for note in notes
+        if not looks_like_error_page_text(getattr(note, "source_excerpt", "") or "")
+    ]
     if use_llm and llm_enabled() and notes:
         try:
             payload = _synthesize_philosophy_llm(hospital, sources, notes, operator_note)
@@ -820,6 +830,53 @@ def validate_philosophy_grounding(
     return errors
 
 
+# 오류 마커 스캔 대상 핵심 필드 — 이 중 하나라도 잔재를 담으면 초안을 만들지 않는다.
+_ERROR_MARKER_SCAN_FIELDS = (
+    "positioning_statement",
+    "doctor_voice",
+    "patient_promise",
+    "content_principles",
+    "tone_guidelines",
+    "must_use_messages",
+    "avoid_messages",
+    "medical_ad_risk_rules",
+    "treatment_narratives",
+)
+
+
+def _iter_field_texts(value: Any) -> Iterable[str]:
+    """단일 문자열 / 문자열 리스트 / dict 리스트 필드에서 검사할 텍스트를 순회한다."""
+    if value is None:
+        return
+    if isinstance(value, str):
+        if value.strip():
+            yield value
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_field_texts(item)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _iter_field_texts(item)
+        return
+
+
+def find_error_marker_fields(payload: Any) -> list[str]:
+    """조립된 철학 페이로드에서 차단·오류 페이지 잔재가 남은 핵심 필드명을 찾는다.
+
+    수집(fetch)·note 추출 단계에서 이미 잔재를 걸러내지만, 어떤 경로로든 핵심 필드에
+    잔재가 남으면 초안 생성을 막기 위한 조립 계층의 최종 방어다. 반환 목록이 비어있지
+    않으면 호출부는 초안을 만들지 말고 명확한 실패 사유를 남긴다.
+    """
+    flagged: list[str] = []
+    for field_name in _ERROR_MARKER_SCAN_FIELDS:
+        value = _payload_get(payload, field_name)
+        if any(looks_like_error_page_text(text) for text in _iter_field_texts(value)):
+            flagged.append(field_name)
+    return flagged
+
+
 def screen_content_against_philosophy(
     content_item: ContentItem,
     philosophy: HospitalContentPhilosophy | None,
@@ -968,6 +1025,9 @@ def _candidate_excerpts(asset: HospitalSourceAsset) -> list[str]:
         for match in re.finditer(r"[^.!?\n。！？]+[.!?。！？]?", text):
             excerpt = match.group(0).strip()
             if not excerpt:
+                continue
+            # 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)는 후보 발췌에서 제외한다.
+            if looks_like_error_page_text(excerpt):
                 continue
             if len(excerpt) > 220:
                 excerpt = excerpt[:220].strip()

@@ -22,6 +22,7 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.utils.domain import normalize_domain
+from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden
 
 router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
@@ -280,8 +281,10 @@ def _vetted_public_about(philosophy: HospitalContentPhilosophy | None) -> str | 
     sentences: list[str] = []
     for raw in (philosophy.positioning_statement, philosophy.patient_promise):
         text = (raw or "").strip()
-        # 금지 표현이 섞인 문장은 노출하지 않는다 (보수적으로 전체 단편 폐기).
-        if text and not check_forbidden(text):
+        # 금지 표현 또는 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)가 섞인 문장은
+        # 공개 표면에 노출하지 않는다 (보수적으로 전체 단편 폐기). 이 계층은 배포 즉시
+        # 기존 오염 데이터가 렌더되지 않게 막는 최종 안전망이다.
+        if text and not check_forbidden(text) and not looks_like_error_page_text(text):
             sentences.append(text)
     if not sentences:
         return None

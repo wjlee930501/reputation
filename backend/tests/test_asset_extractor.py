@@ -319,6 +319,73 @@ def test_validate_response_peer_blocks_rebinding_via_server_addr():
     )
 
 
+def _patch_html_fetch(monkeypatch, html: str):
+    """fetch_url_text가 200 + text/html로 주어진 HTML을 받도록 httpx/검증을 스텁한다."""
+    from app.services import asset_extractor as ax
+
+    target = ax.FetchTarget(
+        url="https://example.com/page",
+        hostname="example.com",
+        port=443,
+        allowed_ips=frozenset({"93.184.216.34"}),
+    )
+    monkeypatch.setattr(ax, "_validate_fetch_target", lambda _url: (target, None))
+    monkeypatch.setattr(ax, "_validate_response_peer", lambda _resp, _tgt: None)
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        encoding = "utf-8"
+        content = html.encode("utf-8")
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return _Resp()
+
+    monkeypatch.setattr(ax.httpx, "AsyncClient", _Client)
+    return ax
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_text_rejects_soft_error_page(monkeypatch):
+    # 200으로 돌아온 차단 페이지 잔재("Title: 403 Forbidden")는 성공 텍스트가 아니라
+    # 오류로 반환돼야 근거 파이프라인/공개 표면이 오염되지 않는다.
+    ax = _patch_html_fetch(
+        monkeypatch,
+        "<html><body><p>Title: 403 Forbidden</p><p>Access Denied</p></body></html>",
+    )
+    text, error, quality = await ax.fetch_url_text("https://example.com/page")
+    assert text == ""
+    assert error is not None
+    assert quality is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_text_keeps_normal_body_with_harmless_title(monkeypatch):
+    # 무해한 "Title: 병원 소개" 라인이 섞인 정상 본문은 오탐 없이 성공으로 통과한다.
+    ax = _patch_html_fetch(
+        monkeypatch,
+        "<html><body><p>Title: 병원 소개</p>"
+        "<p>원장님은 치료 전 과정을 충분히 설명하는 진료를 지향합니다.</p></body></html>",
+    )
+    text, error, quality = await ax.fetch_url_text("https://example.com/page")
+    assert error is None
+    assert "병원 소개" in text
+    assert quality is not None
+
+
 def test_validate_response_peer_falls_back_to_socket_getpeername():
     target = FetchTarget(
         url="https://example.com/source",

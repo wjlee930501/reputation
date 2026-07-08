@@ -11,6 +11,7 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
     compute_source_content_hash,
+    find_error_marker_fields,
     process_source_asset,
     screen_content_against_philosophy,
     synthesize_philosophy,
@@ -78,6 +79,82 @@ def test_synthesize_philosophy_keeps_medical_risk_rules_source_backed():
     assert payload["medical_ad_risk_rules"]
     assert "검증된 치료라고 표현하지 않습니다." in payload["medical_ad_risk_rules"][0]
     assert validate_philosophy_grounding(payload, [note], require_text_support=True) == []
+
+
+def test_synthesize_philosophy_excludes_error_marker_notes():
+    # 차단·오류 페이지 잔재("Title: 403 Forbidden") 노트는 철학 조립에서 제외되고,
+    # 정상 노트만 핵심 필드로 반영돼야 한다.
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash=compute_source_content_hash("인터뷰", None, "충분히 설명합니다."),
+        status=SourceStatus.PROCESSED,
+        processed_at=datetime.now(timezone.utc),
+    )
+    error_note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        source_excerpt="Title: 403 Forbidden",
+        note_metadata={},
+    )
+    clean_note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        source_excerpt="충분히 설명합니다.",
+        note_metadata={},
+    )
+
+    payload = synthesize_philosophy(
+        SimpleNamespace(name="테스트병원"), [source], [error_note, clean_note]
+    )
+
+    # 오염 노트는 어떤 핵심 필드에도 남지 않는다.
+    assert find_error_marker_fields(payload) == []
+    assert "403 Forbidden" not in (payload["positioning_statement"] or "")
+    assert "충분히 설명합니다." in (payload["positioning_statement"] or "")
+    assert str(error_note.id) not in payload["evidence_map"].get("positioning_statement", [])
+
+
+def test_synthesize_philosophy_drops_field_when_only_error_marker_note():
+    # 유일한 근거 노트가 오류 잔재면 핵심 필드는 비고, 초안 방어(find_error_marker_fields)는 통과한다.
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash=compute_source_content_hash("인터뷰", None, "Title: 403 Forbidden"),
+        status=SourceStatus.PROCESSED,
+        processed_at=datetime.now(timezone.utc),
+    )
+    error_note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        source_excerpt="Title: 403 Forbidden",
+        note_metadata={},
+    )
+
+    payload = synthesize_philosophy(SimpleNamespace(name="테스트병원"), [source], [error_note])
+
+    assert payload["positioning_statement"] is None
+    assert find_error_marker_fields(payload) == []
+
+
+def test_find_error_marker_fields_flags_polluted_core_fields():
+    # 어떤 경로로든 핵심 필드에 잔재가 남으면 조립 계층 방어가 이를 잡아낸다.
+    payload = {
+        "positioning_statement": "자료에서 확인된 핵심 메시지: Title: 403 Forbidden",
+        "patient_promise": "환자에게 말할 수 있는 약속은 이 근거 범위로 제한: Title: 403 Forbidden",
+        "must_use_messages": ["정상 메시지"],
+    }
+    flagged = find_error_marker_fields(payload)
+    assert "positioning_statement" in flagged
+    assert "patient_promise" in flagged
+    assert "must_use_messages" not in flagged
+
+
+def test_find_error_marker_fields_ignores_clean_payload():
+    payload = {
+        "positioning_statement": "근거 중심으로 충분히 설명하는 진료를 지향합니다.",
+        "patient_promise": "확인된 정보만 환자에게 안내합니다.",
+        "treatment_narratives": [{"treatment": "내시경", "angle": "차분히 설명합니다."}],
+    }
+    assert find_error_marker_fields(payload) == []
 
 
 def test_grounding_accepts_synthesized_descriptor_derived_from_real_notes():

@@ -346,6 +346,24 @@ def test_vetted_public_about_none_when_all_sentences_violate():
     assert _vetted_public_about(philosophy) is None
 
 
+def test_vetted_public_about_demotes_error_page_remnant_to_none():
+    # 실증 버그: 크롤링 오류 페이지 잔재가 철학 필드까지 흘러온 경우 — 공개 표면에서 통째로 폐기.
+    philosophy = _approved_philosophy(
+        "자료에서 확인된 핵심 메시지: Title: 403 Forbidden",
+        "환자에게 말할 수 있는 약속은 이 근거 범위로 제한: Title: 403 Forbidden",
+    )
+    assert _vetted_public_about(philosophy) is None
+
+
+def test_vetted_public_about_drops_only_error_remnant_sentence():
+    # positioning에 오류 잔재가 섞이면 그 단편만 폐기하고, 정상 patient_promise는 남는다.
+    philosophy = _approved_philosophy(
+        "자료에서 확인된 핵심 메시지: Title: 404 Not Found",
+        "확인된 정보만 환자에게 안내합니다.",
+    )
+    assert _vetted_public_about(philosophy) == "확인된 정보만 환자에게 안내합니다."
+
+
 def test_serialize_hospital_exposes_public_about_only_when_approved_and_filtered():
     hospital = _hospital_with_photo(None)
 
