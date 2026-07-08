@@ -1,8 +1,9 @@
 import Link from 'next/link'
 
-import { TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
 import { categoryTagClass } from '@/lib/content-meta'
 
+import { ContentCover } from './ContentCover'
 import { ChevronRightIcon } from './icons'
 
 interface Props {
@@ -57,6 +58,11 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
             className="clinic-lead-primary"
             aria-label={`대표 콘텐츠 — ${primary.title}`}
           >
+            <ContentCover
+              type={primary.content_type}
+              src={resolveAssetUrl(primary.image_url)}
+              variant="featured"
+            />
             <span className="clinic-lead-kicker">가장 먼저 읽어보면 좋은 글</span>
             <span className={`clinic-tag ${categoryTagClass(primary.content_type)}`}>{primaryTypeLabel}</span>
             <h3 className="clinic-lead-title">{primary.title}</h3>

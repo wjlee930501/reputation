@@ -1,4 +1,4 @@
-import { ExternalIcon } from './icons'
+import { CalendarIcon, MapPinIcon, NavigationIcon, PhoneIcon, StethoscopeIcon } from './icons'
 
 const DAY_LABELS: Record<string, string> = {
   mon: '월',
@@ -27,18 +27,18 @@ interface Props {
   directorName: string
   hiraOrgId: string | null
   links: OfficialLink[]
+  googleMapsUrl?: string | null
 }
 
-function orderedHours(hours: Record<string, string> | null | undefined): Array<[string, string]> {
-  if (!hours) return []
-  return Object.entries(hours).sort(([a], [b]) => {
-    const ai = DAY_ORDER.indexOf(a.toLowerCase())
-    const bi = DAY_ORDER.indexOf(b.toLowerCase())
-    if (ai === -1 && bi === -1) return a.localeCompare(b)
-    if (ai === -1) return 1
-    if (bi === -1) return -1
-    return ai - bi
-  })
+// 서버(UTC)가 아닌 한국 시간 기준 요일 키 — KST 00:00~09:00 사이 전날 표기 방지.
+function seoulDayKey(): string {
+  return new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: 'Asia/Seoul' })
+    .format(new Date())
+    .toLowerCase()
+}
+
+function isClosed(time: string): boolean {
+  return /휴진|휴무|closed/i.test(time)
 }
 
 export function HospitalFacts({
@@ -48,14 +48,22 @@ export function HospitalFacts({
   businessHours,
   region,
   specialties,
-  directorName,
   hiraOrgId,
   links,
+  googleMapsUrl,
 }: Props) {
-  const hours = orderedHours(businessHours)
+  const today = seoulDayKey()
+  const week = DAY_ORDER.map((key) => ({
+    key,
+    label: DAY_LABELS[key] ?? key,
+    time: businessHours?.[key] ?? null,
+    isToday: key === today,
+  }))
+  const hasHours = week.some((d) => d.time)
   const visibleLinks = links.filter((link) => Boolean(link.url))
   const location = region.length > 0 ? region.join(' ') : '지역 정보 확인 중'
   const specialtyText = specialties.length > 0 ? specialties.join(', ') : '진료 영역 확인 중'
+  const closedDays = week.filter((d) => d.time && isClosed(d.time)).map((d) => d.label)
 
   return (
     <section id="hospital-facts" className="clinic-section clinic-section--facts">
@@ -63,67 +71,81 @@ export function HospitalFacts({
         <header className="clinic-section-head">
           <h2 className="clinic-section-title">{hospitalName} 기본 정보</h2>
           <p className="clinic-section-note">
-            위치, 전화, 진료시간, 의료진과 공식 채널을 한곳에 정리했습니다.
+            진료시간과 연락처, 위치를 한눈에 확인할 수 있습니다.
           </p>
         </header>
 
-        <div className="clinic-facts-grid" aria-label={`${hospitalName} 핵심 병원 정보`}>
-          <FactItem label="병원명" value={hospitalName} />
-          <FactItem label="대표 의료진" value={`${directorName} 원장`} />
-          <FactItem label="지역" value={location} />
-          <FactItem label="진료 영역" value={specialtyText} />
-          <FactItem label="주소" value={address} />
-          <FactItem label="전화" value={phone} href={`tel:${phone}`} />
-          {hiraOrgId && <FactItem label="공공기관 식별 정보" value={`HIRA ${hiraOrgId}`} />}
-          {hours.length > 0 && (
-            <div className="clinic-fact-card clinic-fact-card--wide">
-              <span className="clinic-fact-label">진료시간</span>
-              <ul className="clinic-fact-hours">
-                {hours.map(([day, time]) => (
-                  <li key={day}>
-                    <span>{DAY_LABELS[day.toLowerCase()] ?? day}</span>
-                    <strong>{time}</strong>
-                  </li>
-                ))}
-              </ul>
+        {hasHours && (
+          <div className="clinic-week" aria-label="주간 진료시간">
+            <div className="clinic-week-head">
+              <CalendarIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
+              <span>주간 진료시간</span>
+              <span className="clinic-week-today-hint">오늘 {DAY_LABELS[today] ?? ''}요일</span>
             </div>
-          )}
+            <ol className="clinic-week-grid">
+              {week.map((day) => {
+                const closed = day.time ? isClosed(day.time) : false
+                return (
+                  <li
+                    key={day.key}
+                    className={`clinic-week-day${day.isToday ? ' is-today' : ''}${closed ? ' is-closed' : ''}`}
+                    aria-current={day.isToday ? 'date' : undefined}
+                  >
+                    <span className="clinic-week-day-label">{day.label}</span>
+                    <span className="clinic-week-day-time">
+                      {day.time ? (closed ? '휴진' : day.time) : '-'}
+                    </span>
+                  </li>
+                )
+              })}
+            </ol>
+            {closedDays.length > 0 && (
+              <p className="clinic-week-notice">
+                <span aria-hidden="true" className="clinic-week-notice-dot" />
+                휴진 안내 — {closedDays.join(', ')}요일은 진료하지 않습니다. 방문 전 전화로 확인해 주세요.
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="clinic-keyfacts" aria-label={`${hospitalName} 핵심 정보`}>
+          <a className="clinic-keyfact clinic-keyfact--action" href={`tel:${phone}`}>
+            <span className="clinic-keyfact-icon"><PhoneIcon aria-hidden="true" /></span>
+            <span className="clinic-keyfact-label">전화 문의</span>
+            <span className="clinic-keyfact-value">{phone}</span>
+          </a>
+
+          <div className="clinic-keyfact">
+            <span className="clinic-keyfact-icon"><MapPinIcon aria-hidden="true" /></span>
+            <span className="clinic-keyfact-label">주소</span>
+            <span className="clinic-keyfact-value">{address || '주소 확인 중'}</span>
+            {googleMapsUrl && (
+              <a className="clinic-keyfact-link" href={googleMapsUrl} target="_blank" rel="noopener noreferrer">
+                <NavigationIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+                길찾기
+              </a>
+            )}
+          </div>
+
+          <div className="clinic-keyfact">
+            <span className="clinic-keyfact-icon"><StethoscopeIcon aria-hidden="true" /></span>
+            <span className="clinic-keyfact-label">진료 영역 · 지역</span>
+            <span className="clinic-keyfact-value">{specialtyText}</span>
+            <span className="clinic-keyfact-sub">{location}</span>
+          </div>
         </div>
 
-        {visibleLinks.length > 0 && (
+        {(visibleLinks.length > 0 || hiraOrgId) && (
           <div className="clinic-official-links" aria-label="병원 공식 채널">
             {visibleLinks.map((link) => (
               <a key={link.url ?? link.label} href={link.url ?? '#'} target="_blank" rel="noopener">
                 <span>{link.label}</span>
-                <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
               </a>
             ))}
+            {hiraOrgId && <span className="clinic-official-hira">공공기관 식별정보 HIRA {hiraOrgId}</span>}
           </div>
         )}
       </div>
     </section>
-  )
-}
-
-function FactItem({
-  label,
-  value,
-  href,
-}: {
-  label: string
-  value: string
-  href?: string
-}) {
-  return (
-    <div className="clinic-fact-card">
-      <span className="clinic-fact-label">{label}</span>
-      {href ? (
-        <a className="clinic-fact-value" href={href}>
-          {value}
-        </a>
-      ) : (
-        <strong className="clinic-fact-value">{value}</strong>
-      )}
-    </div>
   )
 }

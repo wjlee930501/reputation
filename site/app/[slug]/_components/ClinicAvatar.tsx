@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
 /** 실질적으로 비어있는(1x1 placeholder) 이미지인지 판정 */
 function isBlankImage(img: HTMLImageElement): boolean {
@@ -26,18 +26,19 @@ interface Props {
  */
 export function ClinicAvatar({ src, alt, wrapperClassName, fallbackClassName = '', fallback }: Props) {
   const [failed, setFailed] = useState(!src)
-  const [loaded, setLoaded] = useState(false)
+  // 이미지는 클라이언트 마운트 후에만 렌더한다. SSR HTML에 들어간 img가 하이드레이션 전에
+  // 로드 실패하면 onError가 유실되어 "깨진 이미지 아이콘"이 남는데, 마운트 게이팅으로 이를
+  // 원천 차단한다. 모노그램 언더레이는 항상 렌더되므로 빈 박스·레이아웃 시프트가 없다.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
   const decorative = alt === ''
-  const showImage = !failed && Boolean(src)
+  const showImage = mounted && !failed && Boolean(src)
 
-  // 캐시된 이미지는 React가 onLoad를 붙이기 전에 이미 complete 상태일 수 있어
-  // ref 콜백에서 마운트 시점에 한 번 더 검사한다.
+  // 캐시 이미지는 onLoad가 이미 지나갔을 수 있어 ref 마운트 시점에 blank(1x1·404) 여부를
+  // 한 번 더 검사한다.
   const imgRef = useCallback((node: HTMLImageElement | null) => {
     if (!node) return
-    if (node.complete) {
-      if (isBlankImage(node)) setFailed(true)
-      else setLoaded(true)
-    }
+    if (node.complete && isBlankImage(node)) setFailed(true)
   }, [])
 
   // fallback(모노그램)은 언제나 렌더 → 이미지가 로드되면 그 위를 덮는다.
@@ -57,12 +58,10 @@ export function ClinicAvatar({ src, alt, wrapperClassName, fallbackClassName = '
           src={src as string}
           alt=""
           aria-hidden="true"
-          loading="lazy"
           decoding="async"
           onError={() => setFailed(true)}
           onLoad={(e) => {
             if (isBlankImage(e.currentTarget)) setFailed(true)
-            else setLoaded(true)
           }}
           style={{
             position: 'absolute',
@@ -70,9 +69,6 @@ export function ClinicAvatar({ src, alt, wrapperClassName, fallbackClassName = '
             width: '100%',
             height: '100%',
             objectFit: 'cover',
-            // 로드 확인 전까지 투명 → 모노그램 언더레이가 보인다(빈/깨진 박스 방지).
-            opacity: loaded ? 1 : 0,
-            transition: 'opacity 200ms ease',
           }}
         />
       )}

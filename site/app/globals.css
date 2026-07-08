@@ -5636,3 +5636,946 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════
+ * Medical Editorial v4 — 시각 앵커 · 리듬 · 브랜드 SVG (2차 패스)
+ * 목표: 실데이터(빈약 프로파일)에서도 각 섹션이 대표 시각 앵커 1개를 갖고,
+ *       섹션마다 밀도·레이아웃이 다르게 읽히도록 리듬을 만든다.
+ * 규칙: 단일 임상 블루 #0b53b8, 헤어라인, 그림자·그라데이션·이모지 없음.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* ── Hero — 추상 라인아트 시각 앵커 + 진료항목 라인칩 ─────────────── */
+.clinic-shell .clinic-hero--hub {
+  position: relative;
+  overflow: hidden;
+}
+.clinic-hero-artwork {
+  position: absolute;
+  top: -48px;
+  right: -40px;
+  width: 540px;
+  height: 540px;
+  color: var(--color-revisit-primary-40);
+  --brand-ink-2: #c9d6ea;
+  opacity: 0.22;
+  pointer-events: none;
+  z-index: 0;
+}
+.clinic-shell .clinic-hero--hub .clinic-hero-inner {
+  position: relative;
+  z-index: 1;
+}
+.clinic-hero-scope {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 20px 0 28px;
+  padding: 0;
+}
+.clinic-hero-scope li {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 1px solid var(--clinic-hair-strong);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--color-revisit-text-subbody);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.clinic-hero-scope-more a {
+  color: var(--color-revisit-primary-30);
+  font-weight: 700;
+}
+@media (max-width: 920px) {
+  .clinic-hero-artwork {
+    width: 400px;
+    height: 400px;
+    top: -30px;
+    right: -110px;
+    opacity: 0.14;
+  }
+}
+@media (max-width: 640px) {
+  .clinic-hero-artwork {
+    display: none;
+  }
+}
+
+/* ── 기본 정보 — 주간 진료시간 캘린더(오늘 강조) + 핵심 팩트 ───────── */
+.clinic-week {
+  border: 1px solid var(--clinic-hair-strong);
+  border-radius: 16px;
+  background: #ffffff;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.clinic-week-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 15px 20px;
+  border-bottom: 1px solid var(--clinic-hair);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-revisit-text-title);
+}
+.clinic-week-head .clinic-icon {
+  color: var(--color-revisit-primary-40);
+}
+.clinic-week-today-hint {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-revisit-primary-30);
+}
+.clinic-week-grid {
+  list-style: none;
+  margin: 0;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+.clinic-week-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 15px 6px;
+  border: 1px solid var(--clinic-hair);
+  border-radius: 12px;
+  background: var(--clinic-paper);
+  min-width: 0;
+}
+.clinic-week-day-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-revisit-text-helper);
+}
+.clinic-week-day-time {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--color-revisit-text-title);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  line-height: 1.4;
+  word-break: keep-all;
+}
+.clinic-week-day.is-today {
+  border-color: var(--color-revisit-primary-40);
+  border-width: 1.5px;
+  background: var(--color-revisit-primary-95);
+}
+.clinic-week-day.is-today .clinic-week-day-label,
+.clinic-week-day.is-today .clinic-week-day-time {
+  color: var(--color-revisit-primary-30);
+}
+.clinic-week-day.is-closed .clinic-week-day-time {
+  color: var(--color-revisit-text-caption);
+  font-weight: 600;
+}
+.clinic-week-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0;
+  padding: 14px 20px;
+  border-top: 1px solid var(--clinic-hair);
+  background: var(--color-revisit-coolgrey-95);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-revisit-text-helper);
+  word-break: keep-all;
+}
+.clinic-week-notice-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-revisit-coolgrey-60);
+  margin-top: 7px;
+  flex-shrink: 0;
+}
+.clinic-keyfacts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.clinic-keyfact {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 22px;
+  border: 1px solid var(--clinic-hair);
+  border-radius: 14px;
+  background: #ffffff;
+  transition: border-color 150ms ease;
+}
+a.clinic-keyfact:hover {
+  border-color: var(--color-revisit-primary-50);
+}
+.clinic-keyfact-icon {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-primary-40);
+  margin-bottom: 6px;
+}
+.clinic-keyfact-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.clinic-keyfact-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-revisit-text-caption);
+}
+.clinic-keyfact-value {
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--color-revisit-text-title);
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.clinic-keyfact--action .clinic-keyfact-value {
+  color: var(--color-revisit-primary-40);
+}
+.clinic-keyfact-sub {
+  font-size: 13px;
+  color: var(--color-revisit-text-helper);
+}
+.clinic-keyfact-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  align-self: flex-start;
+  color: var(--color-revisit-primary-30);
+  font-size: 13px;
+  font-weight: 700;
+}
+.clinic-official-hira {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 4px;
+  color: var(--color-revisit-text-caption);
+  font-size: 12px;
+  font-weight: 600;
+}
+@media (max-width: 640px) {
+  .clinic-week-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 10px;
+  }
+  .clinic-week-day {
+    flex-direction: row;
+    justify-content: space-between;
+    padding: 12px 16px;
+  }
+  .clinic-keyfacts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 진료 원칙 — 블루그레이 밴드 + 미니 라인 아이콘 ────────────────── */
+.clinic-shell .clinic-section--principles {
+  background: #ffffff;
+}
+.clinic-principles-band {
+  border-radius: 22px;
+  border: 1px solid #dce6f4;
+  background: var(--color-revisit-primary-95);
+  padding: 44px 44px 40px;
+}
+.clinic-principles-lead {
+  max-width: 640px;
+  margin: 0 0 28px;
+}
+.clinic-principles-eyebrow {
+  display: inline-block;
+  margin-bottom: 12px;
+  color: var(--color-revisit-primary-30);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.clinic-principles-statement {
+  margin: 14px 0 0;
+  color: var(--color-revisit-text-subbody);
+  font-size: 16px;
+  line-height: 1.72;
+  word-break: keep-all;
+}
+.clinic-shell .clinic-belief-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.clinic-shell .clinic-belief-card {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px 22px 24px;
+  border: 1px solid #dce6f4;
+  border-radius: 14px;
+  background: #ffffff;
+}
+.clinic-shell .clinic-belief-card:hover {
+  border-color: var(--color-revisit-primary-50);
+}
+.clinic-belief-icon {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-primary-40);
+  --brand-ink-2: #a9bfe0;
+}
+.clinic-belief-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.clinic-belief-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.clinic-shell .clinic-belief-title {
+  font-size: 17px;
+}
+@media (max-width: 860px) {
+  .clinic-shell .clinic-belief-grid {
+    grid-template-columns: 1fr;
+  }
+  .clinic-principles-band {
+    padding: 30px 22px 28px;
+  }
+}
+
+/* ── FAQ — 좌측 안내 레일 + 우측 블루라인 질문 인덱스 ───────────────── */
+.clinic-answers-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.5fr);
+  gap: 48px;
+  align-items: start;
+}
+.clinic-answers-rail {
+  min-width: 0;
+}
+.clinic-answers-eyebrow {
+  display: inline-block;
+  margin-bottom: 14px;
+  color: var(--color-revisit-primary-30);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.clinic-answers-hint {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid #dce6f4;
+  border-radius: 14px;
+  background: var(--color-revisit-primary-95);
+}
+.clinic-answers-hint-icon {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #dce6f4;
+  color: var(--color-revisit-primary-40);
+}
+.clinic-answers-hint-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.clinic-answers-hint strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--color-revisit-text-title);
+}
+.clinic-answers-hint p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-revisit-text-helper);
+  word-break: keep-all;
+}
+.clinic-answers-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 22px;
+  color: var(--color-revisit-primary-40);
+  font-size: 14px;
+  font-weight: 700;
+  transition: gap 150ms ease;
+}
+.clinic-answers-all:hover {
+  gap: 10px;
+}
+.clinic-answers-main {
+  min-width: 0;
+}
+/* 상위 질문 — 블루 라인 인덱스(번호 대신) */
+.clinic-shell .clinic-answers-main .clinic-qa-list {
+  border-top: none;
+}
+.clinic-shell .clinic-answers-main .clinic-qa-item {
+  border-left: 2px solid var(--color-revisit-primary-40);
+  border-bottom: 1px solid var(--clinic-hair);
+}
+.clinic-shell .clinic-answers-main .clinic-qa-link {
+  grid-template-columns: minmax(0, 1fr) 24px;
+  gap: 20px;
+  padding: 22px 4px 22px 20px;
+}
+.clinic-qa-compact {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--clinic-hair-strong);
+}
+.clinic-qa-compact li {
+  border-bottom: 1px solid var(--clinic-hair);
+}
+.clinic-qa-compact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 4px;
+  color: inherit;
+}
+.clinic-qa-compact-q {
+  font-size: 15.5px;
+  font-weight: 600;
+  color: var(--color-revisit-text-subbody);
+  line-height: 1.5;
+  word-break: keep-all;
+  transition: color 150ms ease;
+}
+.clinic-qa-compact-row:hover .clinic-qa-compact-q {
+  color: var(--color-revisit-primary-30);
+}
+.clinic-qa-compact-arrow {
+  color: var(--color-revisit-coolgrey-60);
+  flex-shrink: 0;
+}
+.clinic-section--answers .clinic-answers-main .clinic-answer-treatment-strip {
+  margin-top: 28px;
+}
+@media (max-width: 920px) {
+  .clinic-answers-layout {
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
+}
+
+/* ── 진료 영역 — 대표 4개 큰 카드 + 나머지 2열 컴팩트 인덱스 ────────── */
+.clinic-tx-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.clinic-tx-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 26px 24px;
+  border: 1px solid var(--clinic-hair);
+  border-radius: 16px;
+  background: #ffffff;
+  transition: border-color 150ms ease;
+}
+a.clinic-tx-card:hover {
+  border-color: var(--color-revisit-primary-50);
+}
+.clinic-tx-card-index {
+  color: var(--color-revisit-primary-40);
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+.clinic-tx-card-name {
+  color: var(--color-revisit-text-title);
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+  word-break: keep-all;
+}
+.clinic-tx-card-desc {
+  color: var(--color-revisit-text-helper);
+  font-size: 14.5px;
+  line-height: 1.66;
+  word-break: keep-all;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.clinic-tx-card-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  color: var(--color-revisit-primary-30);
+  font-size: 13px;
+  font-weight: 700;
+}
+.clinic-tx-card-more .clinic-icon {
+  transition: transform 150ms ease;
+}
+a.clinic-tx-card:hover .clinic-tx-card-more .clinic-icon {
+  transform: translateX(2px);
+}
+.clinic-tx-index {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 32px;
+  border-top: 1px solid var(--clinic-hair);
+}
+.clinic-tx-index li {
+  border-bottom: 1px solid var(--clinic-hair);
+}
+.clinic-tx-index-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 2px;
+  color: inherit;
+}
+.clinic-tx-index-name {
+  color: var(--color-revisit-text-title);
+  font-size: 15px;
+  font-weight: 700;
+  word-break: keep-all;
+  transition: color 150ms ease;
+}
+a.clinic-tx-index-row:hover .clinic-tx-index-name {
+  color: var(--color-revisit-primary-30);
+}
+.clinic-tx-index-arrow {
+  color: var(--color-revisit-coolgrey-60);
+  flex-shrink: 0;
+}
+@media (max-width: 640px) {
+  .clinic-tx-cards {
+    grid-template-columns: 1fr;
+  }
+  .clinic-tx-index {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 진료 4단계 — 노드 보조 라벨 ──────────────────────────────────── */
+.clinic-flow-node-aux {
+  display: inline-block;
+  margin-bottom: 6px;
+  color: var(--color-revisit-primary-30);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+/* ── 의료진 — 대형 프로필(실제 일러스트/모노그램) ─────────────────── */
+.clinic-shell .clinic-curator {
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 48px;
+  align-items: start;
+}
+.clinic-curator-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.clinic-shell .clinic-curator-figure .clinic-curator-portrait {
+  width: 100%;
+}
+.clinic-curator-figure-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.clinic-curator-role {
+  color: var(--color-revisit-primary-30);
+  font-size: 14px;
+  font-weight: 700;
+}
+.clinic-curator-body {
+  min-width: 0;
+}
+@media (max-width: 720px) {
+  .clinic-shell .clinic-curator {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .clinic-curator-figure {
+    flex-direction: row;
+    align-items: center;
+    gap: 18px;
+  }
+  .clinic-shell .clinic-curator-figure .clinic-curator-portrait {
+    width: 116px;
+    flex-shrink: 0;
+  }
+}
+
+/* ── 콘텐츠 커버 — 이미지 있으면 이미지, 없으면 유형 모티프(빈 박스 0) ─ */
+.clinic-cover {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid #dce6f4;
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-primary-40);
+  --brand-ink-2: #b6c8e6;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-left: 8%;
+}
+.clinic-cover--featured {
+  height: 208px;
+}
+.clinic-cover--card {
+  height: 150px;
+}
+.clinic-cover--band {
+  height: 100%;
+}
+/* 메인 모티프 — 좌측 정렬, 높이 기준 스케일 */
+.clinic-cover-motif {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 52%;
+  max-height: 116px;
+}
+.clinic-cover-motif svg {
+  height: 100%;
+  width: auto;
+}
+/* 워터마크 에코 — 우하단으로 크게 흘리는 옅은 모티프(빈 패널 방지) */
+.clinic-cover-watermark {
+  position: absolute;
+  right: -34px;
+  bottom: -46px;
+  width: 240px;
+  opacity: 0.28;
+  pointer-events: none;
+  z-index: 0;
+}
+.clinic-cover-watermark svg {
+  width: 100%;
+  height: auto;
+}
+.clinic-cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 2;
+}
+.clinic-cover--card .clinic-cover-motif {
+  max-height: 84px;
+}
+.clinic-cover--card .clinic-cover-watermark {
+  width: 170px;
+  right: -24px;
+  bottom: -34px;
+}
+.clinic-cover--disease { background: #eaf1fb; color: var(--color-revisit-primary-30); --brand-ink-2: #adc3e6; }
+.clinic-cover--treatment { background: var(--color-revisit-green-95); color: var(--color-revisit-green-40); --brand-ink-2: #a9d9c6; }
+.clinic-cover--column { background: var(--color-revisit-coolgrey-90); color: var(--color-revisit-coolgrey-30); --brand-ink-2: #c1c9d4; }
+.clinic-cover--health { background: var(--color-revisit-yellow-95); color: #b65f00; --brand-ink-2: #e6cfa3; }
+.clinic-cover--local { background: var(--color-revisit-red-95); color: var(--color-revisit-red-40); --brand-ink-2: #e6b3ad; }
+.clinic-cover--notice { background: var(--color-revisit-greyscale-90); color: var(--color-revisit-coolgrey-30); --brand-ink-2: #c8ccd0; }
+.clinic-lead-primary .clinic-cover {
+  margin-bottom: 10px;
+}
+
+/* ── 방문 안내 — 행동 3버튼 + 위치 프레임 + 체크리스트 ────────────── */
+.clinic-visit-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.clinic-visit-action {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 20px 22px;
+  border: 1px solid var(--clinic-hair-strong);
+  border-radius: 14px;
+  background: #ffffff;
+  color: var(--color-revisit-text-title);
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.clinic-visit-action svg {
+  width: 22px;
+  height: 22px;
+  color: var(--color-revisit-primary-40);
+  margin-bottom: 8px;
+}
+.clinic-visit-action span {
+  font-size: 16px;
+  font-weight: 700;
+}
+.clinic-visit-action small {
+  font-size: 13px;
+  color: var(--color-revisit-text-helper);
+}
+.clinic-visit-action:hover {
+  border-color: var(--color-revisit-primary-50);
+  background: var(--color-revisit-primary-95);
+}
+.clinic-visit-action--primary {
+  background: var(--color-revisit-primary-40);
+  border-color: var(--color-revisit-primary-40);
+  color: #ffffff;
+}
+.clinic-visit-action--primary svg {
+  color: #ffffff;
+}
+.clinic-visit-action--primary small {
+  color: rgba(255, 255, 255, 0.82);
+}
+.clinic-visit-action--primary:hover {
+  background: var(--color-revisit-primary-30);
+  border-color: var(--color-revisit-primary-30);
+}
+.clinic-visit-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
+  gap: 14px;
+  margin-bottom: 28px;
+}
+.clinic-visit-location {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 26px 24px;
+  border: 1px solid var(--clinic-hair);
+  border-radius: 16px;
+  background: #ffffff;
+}
+.clinic-visit-location-pin {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: var(--color-revisit-primary-95);
+  color: var(--color-revisit-primary-40);
+  margin-bottom: 6px;
+}
+.clinic-visit-location-pin svg {
+  width: 22px;
+  height: 22px;
+}
+.clinic-visit-location-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-revisit-text-caption);
+}
+.clinic-visit-location-region {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-revisit-primary-30);
+}
+.clinic-visit-location-address {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-revisit-text-title);
+  line-height: 1.55;
+  word-break: keep-all;
+}
+.clinic-visit-location-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  color: var(--color-revisit-primary-40);
+  font-size: 13px;
+  font-weight: 700;
+}
+.clinic-visit-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.clinic-visit-check {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 20px 18px 44px;
+  border: 1px solid var(--clinic-hair);
+  border-radius: 12px;
+  background: #ffffff;
+}
+.clinic-visit-check::before {
+  content: '';
+  position: absolute;
+  left: 20px;
+  top: 21px;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  border: 2px solid var(--color-revisit-primary-40);
+}
+.clinic-visit-check-title {
+  font-size: 14.5px;
+  font-weight: 800;
+  color: var(--color-revisit-text-title);
+}
+.clinic-visit-check-body {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--color-revisit-text-helper);
+  word-break: keep-all;
+}
+.clinic-visit-channels-block {
+  border-top: 1px solid var(--clinic-hair);
+  padding-top: 26px;
+}
+.clinic-visit-channels-label {
+  display: block;
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-revisit-text-caption);
+}
+@media (max-width: 760px) {
+  .clinic-visit-actions {
+    grid-template-columns: 1fr;
+  }
+  .clinic-visit-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 푸터 — 상단 CTA 행 + 밀도 정리 ──────────────────────────────── */
+.clinic-footer-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+}
+.clinic-footer-cta-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.clinic-footer-cta-copy strong {
+  color: #ffffff;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.clinic-footer-cta-copy span {
+  color: var(--color-revisit-coolgrey-60);
+  font-size: 13px;
+}
+.clinic-footer-cta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 22px;
+  border-radius: 11px;
+  background: #ffffff;
+  color: var(--color-revisit-coolgrey-20);
+  font-size: 15px;
+  font-weight: 800;
+  transition: background 150ms ease;
+}
+.clinic-footer-cta-btn:hover {
+  background: var(--color-revisit-primary-90);
+}
+.clinic-footer-cols {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 24px;
+}
+.clinic-footer-col-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-revisit-coolgrey-50);
+  letter-spacing: 0.03em;
+}
+.clinic-footer-site {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-revisit-coolgrey-70);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.clinic-footer-fine {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--color-revisit-coolgrey-60);
+  max-width: 72ch;
+}
+.clinic-footer-copy {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-revisit-coolgrey-50);
+}
+@media (max-width: 640px) {
+  .clinic-footer-cols {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+}
+
+/* ── 아티클 헤더 커버(콘텐츠 상세) ────────────────────────────────── */
+.clinic-article-cover {
+  margin: 0 0 4px;
+}
+.clinic-article-cover .clinic-cover {
+  border-radius: 14px;
+}
+

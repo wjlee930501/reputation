@@ -1,4 +1,4 @@
-import { resolveAssetUrl } from '@/lib/api'
+import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
 
 import { ClinicAvatar } from './ClinicAvatar'
 
@@ -11,6 +11,16 @@ interface Props {
   contentCount: number
   boardCertifications?: string[] | null
   societyMemberships?: string[] | null
+  // 병원 공개 API photos[]에 source_type=PHOTO_DOCTOR(원장 실사 기반 일러스트)가 있으면
+  // director_photo_url이 비어도 이 사진을 원장 프로필에 렌더한다. 로드 실패 시 모노그램 폴백.
+  photos?: HospitalPhoto[]
+}
+
+function resolveDoctorPhoto(directorPhotoUrl: string | null, photos: HospitalPhoto[]): string | null {
+  const direct = resolveAssetUrl(directorPhotoUrl)
+  if (direct) return direct
+  const doctorPhoto = photos.find((p) => p.source_type === 'PHOTO_DOCTOR')
+  return resolveAssetUrl(doctorPhoto?.url ?? null)
 }
 
 export function DoctorIntro({
@@ -22,11 +32,14 @@ export function DoctorIntro({
   contentCount,
   boardCertifications,
   societyMemberships,
+  photos = [],
 }: Props) {
   const boardCerts = (boardCertifications ?? []).filter(Boolean)
   const societies = (societyMemberships ?? []).filter(Boolean)
-  const resolvedPhoto = resolveAssetUrl(directorPhotoUrl)
+  const resolvedPhoto = resolveDoctorPhoto(directorPhotoUrl, photos)
   const initial = (directorName || '').trim().slice(0, 1) || '醫'
+  const doctorRole = boardCerts[0] ?? '대표원장'
+
   return (
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
@@ -38,25 +51,30 @@ export function DoctorIntro({
         </header>
 
         <div className="clinic-curator">
-          <ClinicAvatar
-            src={resolvedPhoto}
-            alt={`${directorName} 원장`}
-            wrapperClassName="clinic-curator-portrait"
-            fallbackClassName="clinic-curator-portrait--monogram"
-            fallback={
-              <>
-                <span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>
-                <span className="clinic-curator-monogram-name" aria-hidden="true">{directorName} 원장</span>
-              </>
-            }
-          />
+          <div className="clinic-curator-figure">
+            <ClinicAvatar
+              src={resolvedPhoto}
+              alt={`${directorName} 원장`}
+              wrapperClassName="clinic-curator-portrait"
+              fallbackClassName="clinic-curator-portrait--monogram"
+              fallback={
+                <>
+                  <span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>
+                  <span className="clinic-curator-monogram-name" aria-hidden="true">{directorName} 원장</span>
+                </>
+              }
+            />
+            <div className="clinic-curator-figure-meta">
+              <span className="clinic-curator-eyebrow">대표원장</span>
+              <h3 className="clinic-curator-name">
+                {directorName}
+                <small>원장</small>
+              </h3>
+              <span className="clinic-curator-role">{doctorRole}</span>
+            </div>
+          </div>
 
-          <div>
-            <span className="clinic-curator-eyebrow">대표원장</span>
-            <h3 className="clinic-curator-name">
-              {directorName}
-              <small>원장</small>
-            </h3>
+          <div className="clinic-curator-body">
             <div className="clinic-curator-tag-row">
               {specialties.map((s) => (
                 <span key={s} className="clinic-curator-tag">{s}</span>

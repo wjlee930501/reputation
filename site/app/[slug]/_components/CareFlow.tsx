@@ -11,21 +11,25 @@ interface Props {
 const CARE_STEPS = [
   {
     label: '01',
+    aux: '첫 방문 시',
     title: '상담·문진',
     body: '증상과 불편한 점, 생활 습관과 병력을 충분히 듣고 확인합니다.',
   },
   {
     label: '02',
+    aux: '진찰 후',
     title: '진단·원인 확인',
     body: '진찰 소견을 바탕으로 필요한 검사를 안내하고 증상의 원인을 확인합니다.',
   },
   {
     label: '03',
+    aux: '결과 확인 후',
     title: '치료 계획 상담',
     body: '확인된 결과를 바탕으로 치료 선택지를 설명하고 함께 결정합니다.',
   },
   {
     label: '04',
+    aux: '치료 후',
     title: '경과 확인·생활 관리',
     body: '치료 후 경과를 확인하고 일상에서의 관리 방법을 안내합니다.',
   },
@@ -47,6 +51,7 @@ export function CareFlow({ hospitalSlug }: Props) {
             <li key={step.label} className="clinic-flow-node">
               <span className="clinic-flow-node-badge" aria-hidden="true">{step.label}</span>
               <div className="clinic-flow-node-body">
+                <span className="clinic-flow-node-aux">{step.aux}</span>
                 <h3 className="clinic-flow-node-title">{step.title}</h3>
                 <p className="clinic-flow-node-desc">{step.body}</p>
               </div>

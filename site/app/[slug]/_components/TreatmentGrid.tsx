@@ -19,30 +19,14 @@ export function TreatmentGrid({ treatments, hospitalSlug }: Props) {
     return null
   }
 
-  const renderRow = (treatment: Treatment, isLead = false) => {
-    const treatmentSlug = buildTreatmentSlug(treatment.name)
-    const href = treatmentSlug ? `/${hospitalSlug}/treatments/${treatmentSlug}` : null
-    const className = `clinic-tx-row${isLead ? ' clinic-tx-row--lead' : ''}`
-    const inner = (
-      <>
-        <span className="clinic-tx-term">{treatment.name}</span>
-        <span className="clinic-tx-desc">
-          {treatment.description || '진료 상담에서 자세한 내용을 확인해 주세요.'}
-        </span>
-        {href && <ChevronRightIcon className="clinic-icon clinic-icon--sm clinic-tx-arrow" aria-hidden="true" />}
-      </>
-    )
-    return (
-      <li key={treatment.name} className="clinic-tx-item">
-        {href ? (
-          <Link href={href} className={className}>
-            {inner}
-          </Link>
-        ) : (
-          <div className={className}>{inner}</div>
-        )}
-      </li>
-    )
+  // 대표 4개(배열 앞 4개)는 큰 카드, 나머지는 2열 컴팩트 인덱스 — 병원별 항목 수와 무관하게
+  // 같은 위계 효과를 준다(하드코딩 분류 없이 데이터 독립적).
+  const lead = treatments.slice(0, 4)
+  const rest = treatments.slice(4)
+
+  const hrefFor = (name: string): string | null => {
+    const slug = buildTreatmentSlug(name)
+    return slug ? `/${hospitalSlug}/treatments/${slug}` : null
   }
 
   return (
@@ -56,10 +40,62 @@ export function TreatmentGrid({ treatments, hospitalSlug }: Props) {
           </p>
         </header>
 
-        <ul className="clinic-tx-deflist" aria-label="진료 영역 목록">
-          {renderRow(treatments[0], true)}
-          {treatments.slice(1).map((treatment) => renderRow(treatment))}
-        </ul>
+        <div className="clinic-tx-cards" aria-label="대표 진료 영역">
+          {lead.map((treatment, idx) => {
+            const href = hrefFor(treatment.name)
+            const inner = (
+              <>
+                <span className="clinic-tx-card-index" aria-hidden="true">
+                  {String(idx + 1).padStart(2, '0')}
+                </span>
+                <span className="clinic-tx-card-name">{treatment.name}</span>
+                <span className="clinic-tx-card-desc">
+                  {treatment.description || '진료 상담에서 자세한 내용을 확인해 주세요.'}
+                </span>
+                {href && (
+                  <span className="clinic-tx-card-more">
+                    안내 보기
+                    <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+                  </span>
+                )}
+              </>
+            )
+            return href ? (
+              <Link key={treatment.name} href={href} className="clinic-tx-card">
+                {inner}
+              </Link>
+            ) : (
+              <div key={treatment.name} className="clinic-tx-card clinic-tx-card--static">
+                {inner}
+              </div>
+            )
+          })}
+        </div>
+
+        {rest.length > 0 && (
+          <ul className="clinic-tx-index" aria-label="그 밖의 진료 영역">
+            {rest.map((treatment) => {
+              const href = hrefFor(treatment.name)
+              const inner = (
+                <>
+                  <span className="clinic-tx-index-name">{treatment.name}</span>
+                  {href && <ChevronRightIcon className="clinic-icon clinic-icon--sm clinic-tx-index-arrow" aria-hidden="true" />}
+                </>
+              )
+              return (
+                <li key={treatment.name}>
+                  {href ? (
+                    <Link href={href} className="clinic-tx-index-row">
+                      {inner}
+                    </Link>
+                  ) : (
+                    <div className="clinic-tx-index-row">{inner}</div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </div>
     </section>
   )

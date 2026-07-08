@@ -33,15 +33,26 @@ const backendImageHosts = [
 // - img-src: GCS(이미지), 백엔드 자산, AE가 입력한 외부 원장 사진(https) + next/image data/blob
 // - font-src: 자체 호스팅 Pretendard woff2
 // - connect-src: 백엔드 호출은 모두 서버(SSG/ISR)에서 일어나므로 브라우저는 same-origin만 사용
+const isDev = process.env.NODE_ENV !== 'production'
+
+// dev 전용: 로컬 backend(http://localhost:8000)에서 서빙되는 원장·콘텐츠 자산 이미지를
+// 미리보기·검증할 수 있게 img-src에 로컬 오리진을 더한다. 프로덕션(https/GCS)은 영향 없음.
+const devLocalImgSrc = isDev ? ' http://localhost:8000 http://127.0.0.1:8000' : ''
+
+// dev 전용: Next.js dev 서버(HMR/webpack)는 eval을 사용하므로 script-src에 'unsafe-eval'이
+// 없으면 클라이언트 하이드레이션이 실패한다(모든 client component 무동작). 프로덕션 빌드는
+// eval을 쓰지 않으므로 이 완화는 프로덕션에 영향이 없다.
+const devUnsafeEval = isDev ? " 'unsafe-eval'" : ''
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${devUnsafeEval}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:",
+  `img-src 'self' data: blob: https:${devLocalImgSrc}`,
   "font-src 'self' data:",
   "connect-src 'self'",
 ].join('; ')

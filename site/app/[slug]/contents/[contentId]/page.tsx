@@ -21,6 +21,7 @@ import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
 import { ClinicFooter } from '../../_components/ClinicFooter'
 import { ClinicHeader } from '../../_components/ClinicHeader'
+import { ContentCover } from '../../_components/ContentCover'
 import { ExternalIcon } from '../../_components/icons'
 import { JsonLd } from '../../_components/JsonLd'
 
@@ -345,6 +346,13 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
             <article className="clinic-article">
               <div className="clinic-article-header">
                 <Breadcrumb items={breadcrumbItems} />
+                <div className="clinic-article-cover">
+                  <ContentCover
+                    type={content.content_type}
+                    src={resolveAssetUrl(content.image_url)}
+                    variant="featured"
+                  />
+                </div>
                 <span className="clinic-article-type">{typeLabel}</span>
                 {pillarHref && pillarTreatment && (
                   <p className="clinic-article-pillar-link">

@@ -2,12 +2,13 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
 import { categoryTagClass } from '@/lib/content-meta'
 import { buildFaqPageJsonLd } from '@/lib/schema'
 import { canonicalBase } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
+import { ContentCover } from '../_components/ContentCover'
 import { ChevronRightIcon } from '../_components/icons'
 import { ClinicFooter } from '../_components/ClinicFooter'
 import { ClinicHeader } from '../_components/ClinicHeader'
@@ -191,6 +192,11 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
                       className="clinic-feed-featured"
                       aria-label={`대표 글 — ${featured.title}`}
                     >
+                      <ContentCover
+                        type={featured.content_type}
+                        src={resolveAssetUrl(featured.image_url)}
+                        variant="featured"
+                      />
                       <span className="clinic-feed-featured-kicker">
                         {activeType ? `${TYPE_LABELS[activeType] ?? activeType} · 최신 글` : '가장 최근 글'}
                       </span>

@@ -3,7 +3,8 @@ import Link from 'next/link'
 import { resolveAssetUrl } from '@/lib/api'
 
 import { ClinicAvatar } from './ClinicAvatar'
-import { ChevronRightIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
+import { HeroLineArt } from './brand'
+import { ChevronRightIcon, ClockIcon, MapPinIcon, PhoneIcon, StethoscopeIcon } from './icons'
 
 interface Treatment {
   name: string
@@ -84,17 +85,19 @@ export function ClinicHero({
   const today = todayHours(businessHours)
   // 모든 진료 문구는 프로파일 데이터(specialties·treatments)에서만 파생한다.
   const specialtyLabel = specialties.filter(Boolean).join('·')
-  const heroTitleSub = specialtyLabel ? `${specialtyLabel} 협진 진료` : '진료 안내'
+  // specialty 자유 입력에 이미 "협진"이 포함될 수 있어(예: "재활의학 협진") 중복 표기를 방지한다.
+  const heroTitleSub = specialtyLabel
+    ? `${specialtyLabel}${specialtyLabel.includes('협진') ? '' : ' 협진'} 진료`
+    : '진료 안내'
   // 검수된 전문의 자격이 있을 때만 "전문의" 표기. 없으면 "대표원장"만 사용.
   const doctorRoleLabel = boardCertifications?.find(Boolean) ?? '대표원장'
   const treatmentNames = treatments.map((t) => t.name).filter(Boolean)
-  const careScopeLabel = treatmentNames.slice(0, 4).join(' · ') || specialtyLabel || ''
-  const heroMeta = careScopeLabel
-    ? `${careScopeLabel} 등 진료 항목을 진찰 소견과 함께 확인하고, 환자 상태에 맞는 치료 방향을 안내합니다.`
-    : null
+  // 진료 항목을 얇은 라인 칩으로 노출 — 히어로에 스캔 가능한 텍스처 앵커를 만든다.
+  const chipNames = treatmentNames.slice(0, 5)
 
   return (
     <section className="clinic-hero clinic-hero--hub" id="top">
+      <HeroLineArt className="clinic-hero-artwork" aria-hidden="true" />
       <div className="clinic-hero-inner">
         <div className="clinic-hero-lead">
           {kicker && <span className="clinic-hero-kicker">{kicker}</span>}
@@ -105,7 +108,19 @@ export function ClinicHero({
           <p className="clinic-hero-statement">
             증상의 원인을 먼저 확인하고, 환자 상태에 맞는 치료 방향을 상담합니다.
           </p>
-          {heroMeta && <p className="clinic-hero-meta">{heroMeta}</p>}
+
+          {chipNames.length > 0 && (
+            <ul className="clinic-hero-scope" aria-label="주요 진료 항목">
+              {chipNames.map((name) => (
+                <li key={name}>{name}</li>
+              ))}
+              {treatmentNames.length > chipNames.length && (
+                <li className="clinic-hero-scope-more">
+                  <Link href={`/${hospitalSlug}/treatments`}>+{treatmentNames.length - chipNames.length}</Link>
+                </li>
+              )}
+            </ul>
+          )}
 
           <div className="clinic-hero-actions">
             <a className="clinic-btn clinic-btn-cta" href={`tel:${phone}`}>
@@ -150,6 +165,15 @@ export function ClinicHero({
           </div>
 
           <dl className="clinic-hero-card-facts">
+            {specialtyLabel && (
+              <div className="clinic-hero-card-fact">
+                <dt>
+                  <StethoscopeIcon className="clinic-icon clinic-icon--sm" aria-hidden="true" />
+                  진료과목
+                </dt>
+                <dd>{specialties.filter(Boolean).join(' · ')}</dd>
+              </div>
+            )}
             {today && (
               <div className="clinic-hero-card-fact">
                 <dt>

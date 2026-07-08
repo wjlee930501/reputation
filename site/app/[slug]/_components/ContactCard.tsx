@@ -1,16 +1,6 @@
-import { ExternalIcon, GlobeIcon, MessageIcon } from './icons'
+import Link from 'next/link'
 
-const DAY_LABELS: Record<string, string> = {
-  mon: '월',
-  tue: '화',
-  wed: '수',
-  thu: '목',
-  fri: '금',
-  sat: '토',
-  sun: '일',
-}
-
-const DAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+import { CalendarIcon, ExternalIcon, GlobeIcon, MapPinIcon, MessageIcon, NavigationIcon, PhoneIcon } from './icons'
 
 interface ChannelLink {
   url: string | null
@@ -24,19 +14,9 @@ interface Props {
   links: ChannelLink[]
   googleMapsUrl: string | null
   hospitalName: string
+  hospitalSlug: string
+  region: string[]
   websiteUrl: string | null
-}
-
-function orderedHours(hours: Record<string, string> | null | undefined): Array<[string, string]> {
-  if (!hours) return []
-  return Object.entries(hours).sort(([a], [b]) => {
-    const ai = DAY_ORDER.indexOf(a.toLowerCase())
-    const bi = DAY_ORDER.indexOf(b.toLowerCase())
-    if (ai === -1 && bi === -1) return a.localeCompare(b)
-    if (ai === -1) return 1
-    if (bi === -1) return -1
-    return ai - bi
-  })
 }
 
 function hostOf(url: string): string {
@@ -53,84 +33,89 @@ function pickIcon(label: string): JSX.Element {
   return <ExternalIcon />
 }
 
+// 방문 전 확인용 일반 안내 — 병원별 실제 시설 정보를 단정하지 않는 비임상 체크리스트.
+const VISIT_CHECKS = [
+  { title: '주차 안내', body: '방문 전 주차 가능 여부와 인근 주차장을 전화로 확인해 주세요.' },
+  { title: '대중교통', body: '가까운 지하철역·버스 정류장 하차 후 도보 이동을 권장합니다.' },
+  { title: '초진 준비물', body: '신분증과 복용 중인 약, 이전 검사 자료가 있으면 지참해 주세요.' },
+]
+
 export function ContactCard({
   address,
   phone,
-  businessHours,
   links,
   googleMapsUrl,
   hospitalName,
+  hospitalSlug,
+  region,
   websiteUrl,
 }: Props) {
-  const hours = orderedHours(businessHours)
   const visibleLinks = links.filter((link) => Boolean(link.url))
+  const regionText = region.filter(Boolean).join(' ')
 
   return (
     <section id="contact" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
-        <header className="clinic-section-header">
-          <span className="clinic-section-label">오시는 길</span>
-          <h2 className="clinic-section-heading">{hospitalName} 진료 안내</h2>
-          <p className="clinic-section-lede">
-            진료 예약·상담은 아래 병원 공식 채널을 이용해 주세요.
+        <header className="clinic-section-head">
+          <h2 className="clinic-section-title">오시는 길·방문 안내</h2>
+          <p className="clinic-section-note">
+            진료 예약·상담은 아래 병원 공식 채널을 이용해 주세요. 방문 전 확인하면 좋은 안내를 정리했습니다.
           </p>
         </header>
 
-        <div className="clinic-contact-grid">
-          <div className="clinic-contact-item">
-            <span className="clinic-contact-item-label">주소</span>
-            <span className="clinic-contact-item-value">{address}</span>
+        <div className="clinic-visit-actions" aria-label="방문 행동">
+          <a href={`tel:${phone}`} className="clinic-visit-action clinic-visit-action--primary">
+            <PhoneIcon aria-hidden="true" />
+            <span>전화하기</span>
+            <small>{phone}</small>
+          </a>
+          {googleMapsUrl ? (
+            <a href={googleMapsUrl} target="_blank" rel="noopener noreferrer" className="clinic-visit-action">
+              <NavigationIcon aria-hidden="true" />
+              <span>길찾기</span>
+              <small>지도에서 위치 보기</small>
+            </a>
+          ) : (
+            <Link href={`/${hospitalSlug}/visit`} className="clinic-visit-action">
+              <NavigationIcon aria-hidden="true" />
+              <span>길찾기</span>
+              <small>오시는 길 안내</small>
+            </Link>
+          )}
+          <Link href={`/${hospitalSlug}/visit`} className="clinic-visit-action">
+            <CalendarIcon aria-hidden="true" />
+            <span>진료시간 보기</span>
+            <small>요일별 진료 안내</small>
+          </Link>
+        </div>
+
+        <div className="clinic-visit-body">
+          <div className="clinic-visit-location">
+            <span className="clinic-visit-location-pin" aria-hidden="true"><MapPinIcon /></span>
+            <span className="clinic-visit-location-label">병원 위치</span>
+            {regionText && <span className="clinic-visit-location-region">{regionText}</span>}
+            <span className="clinic-visit-location-address">{address || '주소 확인 중'}</span>
             {googleMapsUrl && (
-              <a
-                href={googleMapsUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="clinic-contact-link"
-              >
+              <a href={googleMapsUrl} target="_blank" rel="noopener noreferrer" className="clinic-visit-location-link">
                 지도에서 보기
                 <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
               </a>
             )}
           </div>
 
-          <div className="clinic-contact-item">
-            <span className="clinic-contact-item-label">전화</span>
-            <span className="clinic-contact-item-value">
-              <a href={`tel:${phone}`}>{phone}</a>
-            </span>
-          </div>
-
-          {hours.length > 0 && (
-            <div className="clinic-contact-item">
-              <span className="clinic-contact-item-label">진료시간</span>
-              <ul className="clinic-contact-hours">
-                {hours.map(([day, time]) => (
-                  <li key={day}>
-                    <span className="clinic-contact-hours-day">{DAY_LABELS[day.toLowerCase()] ?? day}</span>
-                    <span className="clinic-contact-hours-time">{time}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <ul className="clinic-visit-checks" aria-label="방문 전 확인">
+            {VISIT_CHECKS.map((check) => (
+              <li key={check.title} className="clinic-visit-check">
+                <span className="clinic-visit-check-title">{check.title}</span>
+                <span className="clinic-visit-check-body">{check.body}</span>
+              </li>
+            ))}
+          </ul>
         </div>
 
         {(visibleLinks.length > 0 || websiteUrl) && (
-          <>
-            <div style={{ height: 32 }} />
-            <header className="clinic-section-header" style={{ marginBottom: 18 }}>
-              <span className="clinic-section-label">공식 채널</span>
-              <h3
-                style={{
-                  margin: 0,
-                  fontSize: 18,
-                  fontWeight: 700,
-                  color: 'var(--color-revisit-text-title)',
-                }}
-              >
-                {hospitalName} 공식 채널
-              </h3>
-            </header>
+          <div className="clinic-visit-channels-block">
+            <span className="clinic-visit-channels-label">{hospitalName} 공식 채널</span>
             <div className="clinic-channels" aria-label="병원 공식 외부 채널">
               {websiteUrl && (
                 <a
@@ -163,7 +148,7 @@ export function ContactCard({
                 </a>
               ))}
             </div>
-          </>
+          </div>
         )}
       </div>
     </section>

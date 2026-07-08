@@ -76,3 +76,40 @@ export function MessageIcon(props: SVGProps<SVGSVGElement>) {
     </svg>
   )
 }
+
+export function StethoscopeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...withDefaults(props)}>
+      <path d="M4.5 3H3v5a5 5 0 0 0 10 0V3h-1.5" />
+      <path d="M8 13v2a5 5 0 0 0 10 0v-1" />
+      <circle cx="19" cy="11" r="2.5" />
+    </svg>
+  )
+}
+
+export function NavigationIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...withDefaults(props)}>
+      <polygon points="3 11 22 2 13 21 11 13 3 11" />
+    </svg>
+  )
+}
+
+export function CalendarIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...withDefaults(props)}>
+      <rect x="3" y="4" width="18" height="17" rx="2" />
+      <line x1="3" y1="9" x2="21" y2="9" />
+      <line x1="8" y1="2" x2="8" y2="6" />
+      <line x1="16" y1="2" x2="16" y2="6" />
+    </svg>
+  )
+}
+
+export function CheckIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...withDefaults(props)}>
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  )
+}

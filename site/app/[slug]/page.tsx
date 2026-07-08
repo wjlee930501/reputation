@@ -254,22 +254,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             directorName={hospital.director_name}
             hiraOrgId={hospital.hira_org_id}
             links={factLinks}
+            googleMapsUrl={hospital.google_maps_url}
           />
-
-          {/* 승인·검수된 운영 기준이 있을 때만 진료 철학 서사를 노출 (없으면 섹션 자체 생략). */}
-          {publicAbout && (
-            <section className="clinic-section">
-              <div className="clinic-section-inner">
-                <header className="clinic-section-header">
-                  <span className="clinic-section-label">진료 철학</span>
-                  <h2 className="clinic-section-heading">{hospital.name}의 진료 철학</h2>
-                </header>
-                <p className="clinic-section-lede" style={{ maxWidth: 720 }}>
-                  {publicAbout}
-                </p>
-              </div>
-            </section>
-          )}
 
           <AnswerClusters
             contents={contents}
@@ -286,7 +272,13 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             directorName={hospital.director_name}
           />
 
-          <CarePrinciples hospitalSlug={params.slug} specialties={hospital.specialties} />
+          <CarePrinciples
+            hospitalSlug={params.slug}
+            hospitalName={hospital.name}
+            specialties={hospital.specialties}
+            region={hospital.region}
+            publicAbout={publicAbout}
+          />
 
           <TreatmentGrid treatments={hospital.treatments} hospitalSlug={params.slug} />
 
@@ -301,6 +293,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             contentCount={contents.length}
             boardCertifications={hospital.director_credentials?.board_certifications ?? null}
             societyMemberships={hospital.director_credentials?.society_memberships ?? null}
+            photos={hospital.photos ?? []}
           />
 
           <ClinicGallery photos={hospital.photos ?? []} />
@@ -312,6 +305,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             googleMapsUrl={hospital.google_maps_url}
             links={externalChannels}
             hospitalName={hospital.name}
+            hospitalSlug={params.slug}
+            region={hospital.region}
             websiteUrl={hospital.website_url}
           />
         </main>

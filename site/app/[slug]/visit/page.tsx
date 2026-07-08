@@ -139,6 +139,8 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
             googleMapsUrl={hospital.google_maps_url}
             links={externalChannels}
             hospitalName={hospital.name}
+            hospitalSlug={params.slug}
+            region={hospital.region}
             websiteUrl={hospital.website_url}
           />
         </main>
