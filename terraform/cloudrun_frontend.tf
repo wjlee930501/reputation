@@ -112,12 +112,14 @@ resource "google_cloud_run_v2_service" "site" {
     }
   }
 
-  # scripts/deploy.sh owns image rollouts (gcloud run deploy); terraform manages
-  # the rest of the service shape. Prevents `terraform apply` reverting the
-  # running revision to var.site_image.
+  # scripts/deploy.sh owns each revision's image/env and gcloud client metadata;
+  # terraform still supplies bootstrap values and owns the durable service shape.
   lifecycle {
     ignore_changes = [
+      client,
+      client_version,
       template[0].containers[0].image,
+      template[0].containers[0].env,
     ]
   }
 
@@ -192,10 +194,13 @@ resource "google_cloud_run_v2_service" "admin" {
     }
   }
 
-  # scripts/deploy.sh owns image rollouts (see site service comment above).
+  # scripts/deploy.sh owns revision image/env (see site service comment above).
   lifecycle {
     ignore_changes = [
+      client,
+      client_version,
       template[0].containers[0].image,
+      template[0].containers[0].env,
     ]
   }
 

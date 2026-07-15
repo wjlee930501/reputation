@@ -42,6 +42,22 @@ def test_cloud_run_image_variables_are_required_inputs() -> None:
         assert SHA256_DIGEST_PATTERN.search(block)
 
 
+def test_gcloud_revision_fields_are_not_reconciled_away_by_terraform() -> None:
+    backend = (PROJECT_ROOT / "terraform" / "cloudrun.tf").read_text()
+    frontend = (PROJECT_ROOT / "terraform" / "cloudrun_frontend.tf").read_text()
+
+    # deploy.sh passes a complete env-vars file on every gcloud rollout. Terraform
+    # must retain bootstrap env declarations without treating that runtime-owned
+    # env list as drift and deleting production-only settings on a later apply.
+    service_env_ignore = r"(?m)^\s+template\[0\]\.containers\[0\]\.env,$"
+    job_env_ignore = r"(?m)^\s+template\[0\]\.template\[0\]\.containers\[0\]\.env,$"
+    assert len(re.findall(service_env_ignore, backend)) == 3
+    assert len(re.findall(job_env_ignore, backend)) == 1
+    assert len(re.findall(service_env_ignore, frontend)) == 2
+    assert backend.count("client_version,") == 4
+    assert frontend.count("client_version,") == 2
+
+
 def test_certificate_map_cutover_requires_legacy_domains_in_map_entries() -> None:
     certmanager = (PROJECT_ROOT / "terraform" / "certmanager.tf").read_text()
     loadbalancer = (PROJECT_ROOT / "terraform" / "loadbalancer.tf").read_text()
@@ -70,6 +86,11 @@ def test_customer_domains_have_external_uptime_checks_and_default_alert_channel(
     assert 'google_monitoring_alert_policy" "customer_site_uptime"' in monitoring
     assert 'google_monitoring_alert_policy" "site_5xx"' in monitoring
     assert "google_monitoring_notification_channel.email[0].id" in monitoring
+    assert (
+        'for_each     = var.alert_email != "" ? '
+        "local.certificate_map_customer_domain_set : toset([])"
+        in monitoring
+    )
 
 
 def test_certificate_manager_runtime_scaffolding_is_enabled_for_api_and_worker() -> (

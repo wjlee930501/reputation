@@ -163,7 +163,10 @@ resource "google_monitoring_alert_policy" "uptime" {
 }
 
 resource "google_monitoring_alert_policy" "customer_site_uptime" {
-  for_each     = google_monitoring_uptime_check_config.customer_site
+  # Keep instance keys derivable before apply/import. Basing for_each on the
+  # resource map makes every unrelated state import fail while the uptime
+  # checks are not yet present because Terraform cannot know those keys.
+  for_each     = var.alert_email != "" ? local.certificate_map_customer_domain_set : toset([])
   project      = var.project_id
   display_name = "${var.app_name} customer domain failure: ${each.key}"
   combiner     = "OR"
@@ -171,7 +174,7 @@ resource "google_monitoring_alert_policy" "customer_site_uptime" {
   conditions {
     display_name = "Customer site uptime check failing: ${each.key}"
     condition_threshold {
-      filter          = "resource.type = \"uptime_url\" AND metric.type = \"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id = \"${each.value.uptime_check_id}\""
+      filter          = "resource.type = \"uptime_url\" AND metric.type = \"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id = \"${google_monitoring_uptime_check_config.customer_site[each.key].uptime_check_id}\""
       comparison      = "COMPARISON_GT"
       threshold_value = 1
       duration        = "300s"

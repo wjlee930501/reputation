@@ -24,7 +24,8 @@ resource "google_cloud_run_v2_service" "api" {
   ingress  = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
   template {
-    service_account = google_service_account.app.email
+    service_account       = google_service_account.app.email
+    execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
 
     containers {
       image = local.app_image
@@ -208,14 +209,21 @@ resource "google_cloud_run_v2_service" "api" {
     }
   }
 
-  # Ownership split: terraform manages the infra shape (env, scaling, probes,
-  # Cloud SQL volume, SA), while scripts/deploy.sh owns image rollouts via
-  # `gcloud run deploy`. Without this, a later `terraform apply` would revert
-  # the running revision to var.api_image. var.api_image is still used for
-  # INITIAL creation.
+  # Ownership split: terraform bootstraps the service and owns its durable infra
+  # shape, while scripts/deploy.sh owns every revision rollout. `gcloud run
+  # deploy` replaces both image and env and records client metadata; ignoring
+  # only image would let a later terraform apply delete production-only env
+  # loaded from .env.production. The connector spelling also changes between
+  # gcloud (short name) and the provider (canonical path) without changing the
+  # effective attachment. All ignored fields are still set above for INITIAL
+  # creation.
   lifecycle {
     ignore_changes = [
+      client,
+      client_version,
       template[0].containers[0].image,
+      template[0].containers[0].env,
+      template[0].vpc_access[0].connector,
     ]
   }
 
@@ -406,10 +414,14 @@ resource "google_cloud_run_v2_service" "worker" {
     }
   }
 
-  # deploy.sh owns image rollouts (see api service comment above).
+  # deploy.sh owns revision image/env (see api service comment above).
   lifecycle {
     ignore_changes = [
+      client,
+      client_version,
       template[0].containers[0].image,
+      template[0].containers[0].env,
+      template[0].vpc_access[0].connector,
     ]
   }
 
@@ -580,10 +592,14 @@ resource "google_cloud_run_v2_service" "beat" {
     }
   }
 
-  # deploy.sh owns image rollouts (see api service comment above).
+  # deploy.sh owns revision image/env (see api service comment above).
   lifecycle {
     ignore_changes = [
+      client,
+      client_version,
       template[0].containers[0].image,
+      template[0].containers[0].env,
+      template[0].vpc_access[0].connector,
     ]
   }
 
@@ -715,8 +731,10 @@ resource "google_cloud_run_v2_job" "migrate" {
         }
       }
 
-      timeout     = "300s"
-      max_retries = 1
+      timeout = "300s"
+      # deploy.sh uses --max-retries=0 so a failed migration is surfaced once
+      # and the rollout stops without repeatedly executing schema operations.
+      max_retries = 0
 
       vpc_access {
         connector = google_vpc_access_connector.connector.id
@@ -725,10 +743,14 @@ resource "google_cloud_run_v2_job" "migrate" {
     }
   }
 
-  # deploy.sh owns image rollouts (see api service comment above).
+  # deploy.sh owns revision image/env (see api service comment above).
   lifecycle {
     ignore_changes = [
+      client,
+      client_version,
       template[0].template[0].containers[0].image,
+      template[0].template[0].containers[0].env,
+      template[0].template[0].vpc_access[0].connector,
     ]
   }
 

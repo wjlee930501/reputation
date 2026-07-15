@@ -58,7 +58,10 @@ class Settings(BaseSettings):
             self.ANTHROPIC_API_KEY = _resolve_secret("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY)
             self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
             self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)
-            self.JINA_API_KEY = _resolve_secret("JINA_API_KEY", self.JINA_API_KEY)
+            # Jina는 무인증 free tier가 지원되는 선택 기능이고 Terraform도 이
+            # secret을 소유하지 않는다. 존재하지 않는 secret을 런타임 SA로 매번
+            # 조회하면 정상 부팅마다 IAM 403 경고가 남으므로, 키가 필요할 때만
+            # Cloud Run env/secret mount로 명시적으로 주입한다.
             self.SLACK_WEBHOOK_URL = _resolve_secret("SLACK_WEBHOOK_URL", self.SLACK_WEBHOOK_URL)
             self.DB_PASSWORD = _resolve_secret("DB_PASSWORD", self.DB_PASSWORD)
             self._build_database_urls_from_secret_parts()
