@@ -211,6 +211,14 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     { url: hospital.kakao_channel_url, label: '카카오톡 채널' },
   ]
 
+  const clinicMedia =
+    params.slug === 'jangpyeonhanoegwayiweon'
+      ? {
+          hero: '/clinics/jangpyeonhanoegwayiweon/doctor-hero.jpg',
+          profile: '/clinics/jangpyeonhanoegwayiweon/doctor-profile.jpg',
+        }
+      : null
+
   return (
     <>
       <JsonLd data={pageJsonLd} />
@@ -236,13 +244,52 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             phone={hospital.phone}
             directorName={hospital.director_name}
             directorPhotoUrl={hospital.director_photo_url}
-            contentCount={contents.length}
-            treatmentCount={(hospital.treatments || []).length}
+            heroPhotoUrl={clinicMedia?.hero}
             address={hospital.address}
             businessHours={hospital.business_hours}
-            treatments={hospital.treatments || []}
-            boardCertifications={hospital.director_credentials?.board_certifications ?? null}
           />
+
+          <TreatmentGrid treatments={hospital.treatments} hospitalSlug={params.slug} />
+
+          <DoctorIntro
+            directorName={hospital.director_name}
+            directorCareer={hospital.director_career}
+            directorPhotoUrl={hospital.director_photo_url}
+            localPhotoUrl={clinicMedia?.profile}
+            specialties={hospital.specialties}
+            region={hospital.region}
+            contentCount={contents.length}
+            boardCertifications={hospital.director_credentials?.board_certifications ?? null}
+            societyMemberships={hospital.director_credentials?.society_memberships ?? null}
+            photos={hospital.photos ?? []}
+          />
+
+          <CarePrinciples
+            hospitalSlug={params.slug}
+            hospitalName={hospital.name}
+            specialties={hospital.specialties}
+            region={hospital.region}
+            publicAbout={publicAbout}
+          />
+
+          <FeaturedContent
+            contents={contents}
+            hospitalSlug={params.slug}
+            hospitalName={hospital.name}
+            directorName={hospital.director_name}
+          />
+
+          <AnswerClusters
+            contents={contents}
+            hospitalSlug={params.slug}
+            treatments={hospital.treatments || []}
+            region={hospital.region}
+            specialties={hospital.specialties}
+          />
+
+          <CareFlow hospitalSlug={params.slug} hospitalName={hospital.name} />
+
+          <ClinicGallery photos={hospital.photos ?? []} />
 
           <HospitalFacts
             hospitalName={hospital.name}
@@ -256,47 +303,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             links={factLinks}
             googleMapsUrl={hospital.google_maps_url}
           />
-
-          <AnswerClusters
-            contents={contents}
-            hospitalSlug={params.slug}
-            treatments={hospital.treatments || []}
-            region={hospital.region}
-            specialties={hospital.specialties}
-          />
-
-          <FeaturedContent
-            contents={contents}
-            hospitalSlug={params.slug}
-            hospitalName={hospital.name}
-            directorName={hospital.director_name}
-          />
-
-          <CarePrinciples
-            hospitalSlug={params.slug}
-            hospitalName={hospital.name}
-            specialties={hospital.specialties}
-            region={hospital.region}
-            publicAbout={publicAbout}
-          />
-
-          <TreatmentGrid treatments={hospital.treatments} hospitalSlug={params.slug} />
-
-          <CareFlow hospitalSlug={params.slug} hospitalName={hospital.name} />
-
-          <DoctorIntro
-            directorName={hospital.director_name}
-            directorCareer={hospital.director_career}
-            directorPhotoUrl={hospital.director_photo_url}
-            specialties={hospital.specialties}
-            region={hospital.region}
-            contentCount={contents.length}
-            boardCertifications={hospital.director_credentials?.board_certifications ?? null}
-            societyMemberships={hospital.director_credentials?.society_memberships ?? null}
-            photos={hospital.photos ?? []}
-          />
-
-          <ClinicGallery photos={hospital.photos ?? []} />
 
           <ContactCard
             address={hospital.address}

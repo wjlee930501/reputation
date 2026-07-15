@@ -1,3 +1,5 @@
+import Image from 'next/image'
+
 import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
 
 import { ClinicAvatar } from './ClinicAvatar'
@@ -6,6 +8,7 @@ interface Props {
   directorName: string
   directorCareer: string
   directorPhotoUrl: string | null
+  localPhotoUrl?: string | null
   specialties: string[]
   region: string[]
   contentCount: number
@@ -27,6 +30,7 @@ export function DoctorIntro({
   directorName,
   directorCareer,
   directorPhotoUrl,
+  localPhotoUrl = null,
   specialties,
   region,
   contentCount,
@@ -43,7 +47,7 @@ export function DoctorIntro({
   return (
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
-        <header className="clinic-section-head">
+        <header className={localPhotoUrl ? 'sr-only' : 'clinic-section-head'}>
           <h2 className="clinic-section-title">진료를 담당하는 의료진</h2>
           <p className="clinic-section-note">
             진료 경험과 환자 상담에서 반복되는 질문을 바탕으로, 필요한 의료 정보를 차분히 정리합니다.
@@ -52,18 +56,31 @@ export function DoctorIntro({
 
         <div className="clinic-curator">
           <div className="clinic-curator-figure">
-            <ClinicAvatar
-              src={resolvedPhoto}
-              alt={`${directorName} 원장`}
-              wrapperClassName="clinic-curator-portrait"
-              fallbackClassName="clinic-curator-portrait--monogram"
-              fallback={
-                <>
-                  <span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>
-                  <span className="clinic-curator-monogram-name" aria-hidden="true">{directorName} 원장</span>
-                </>
-              }
-            />
+            {localPhotoUrl ? (
+              <div className="clinic-curator-portrait clinic-curator-portrait--local">
+                <Image
+                  src={localPhotoUrl}
+                  alt={`${directorName} 원장`}
+                  fill
+                  quality={84}
+                  sizes="(max-width: 720px) 132px, 360px"
+                  className="clinic-curator-portrait-image"
+                />
+              </div>
+            ) : (
+              <ClinicAvatar
+                src={resolvedPhoto}
+                alt={`${directorName} 원장`}
+                wrapperClassName="clinic-curator-portrait"
+                fallbackClassName="clinic-curator-portrait--monogram"
+                fallback={
+                  <>
+                    <span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>
+                    <span className="clinic-curator-monogram-name" aria-hidden="true">{directorName} 원장</span>
+                  </>
+                }
+              />
+            )}
             <div className="clinic-curator-figure-meta">
               <span className="clinic-curator-eyebrow">대표원장</span>
               <h3 className="clinic-curator-name">

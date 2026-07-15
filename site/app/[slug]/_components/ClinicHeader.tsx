@@ -54,7 +54,8 @@ export function ClinicHeader({
 
         <a className="clinic-header-cta" href={`tel:${phone}`}>
           <PhoneIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
-          전화 문의
+          <span>전화 상담</span>
+          <strong>{phone}</strong>
         </a>
       </div>
 
