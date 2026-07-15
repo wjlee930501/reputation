@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  buildPublicContentUrl,
   countCarriedOver,
   countUnpublishedCarriedOver,
+  getContentOperationsState,
   isCarriedOver,
+  matchesContentOperationsFilter,
   sortCarriedOverFirst,
 } from './content.ts'
 
@@ -61,4 +64,47 @@ test('countUnpublishedCarriedOver excludes published carried items', () => {
   ]
 
   assert.equal(countUnpublishedCarriedOver(items), 2)
+})
+
+test('content operations state distinguishes Slack retry, post-review, and reviewed states', () => {
+  assert.equal(getContentOperationsState({ status: 'PUBLISHED' }), 'notificationPending')
+  assert.equal(
+    getContentOperationsState({ status: 'PUBLISHED', post_publish_notified_at: '2026-07-16T08:00:00Z' }),
+    'postReviewPending',
+  )
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      post_publish_notified_at: '2026-07-16T08:00:00Z',
+      post_publish_reviewed_at: '2026-07-16T09:00:00Z',
+    }),
+    'published',
+  )
+  assert.equal(getContentOperationsState({ status: 'DRAFT', title: null }), 'notGenerated')
+  assert.equal(
+    getContentOperationsState({ status: 'DRAFT', title: 'blocked', compliance: { publishable: false } }),
+    'needsReview',
+  )
+  assert.equal(
+    getContentOperationsState({ status: 'DRAFT', title: 'ready', compliance: { publishable: true } }),
+    'publishable',
+  )
+})
+
+test('content operations filters support actionable summary-card filtering', () => {
+  const item = {
+    status: 'PUBLISHED',
+    carried_over_from: '2026-06-30',
+    post_publish_notified_at: '2026-07-16T08:00:00Z',
+  }
+  assert.equal(matchesContentOperationsFilter(item, 'all'), true)
+  assert.equal(matchesContentOperationsFilter(item, 'carried'), true)
+  assert.equal(matchesContentOperationsFilter(item, 'postReviewPending'), true)
+  assert.equal(matchesContentOperationsFilter(item, 'notificationPending'), false)
+})
+
+test('buildPublicContentUrl normalizes schemes, slashes, and content ids', () => {
+  assert.equal(buildPublicContentUrl('https://jangclinic.kr/', 'content 1'), 'https://jangclinic.kr/contents/content%201')
+  assert.equal(buildPublicContentUrl('jangclinic.kr', 'abc'), 'https://jangclinic.kr/contents/abc')
+  assert.equal(buildPublicContentUrl(null, 'abc'), null)
 })

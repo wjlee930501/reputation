@@ -119,7 +119,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           })}
 
           <div className="hidden px-3 py-2 text-[11px] leading-relaxed text-slate-400 lg:mt-6 lg:block">
-            병원 자료, 운영 기준 승인, 콘텐츠 검토, 월간 리포트 순서로 진행합니다.
+            병원 자료, 운영 기준 승인, 콘텐츠 자동 발행·후행 점검, 월간 리포트 순서로 진행합니다.
           </div>
         </nav>
 

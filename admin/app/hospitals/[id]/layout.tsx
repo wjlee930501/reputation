@@ -16,7 +16,7 @@ const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '대시보드', path: 'dashboard', hint: 'AI 언급률과 운영 준비 상태 한눈에 보기' },
   { label: '온보딩', path: 'onboarding', hint: '신규 병원 자료 인입 + 운영 기준 승인까지 한 화면에서' },
   { label: '프로파일', path: 'profile', hint: '병원 기본 정보' },
-  { label: '콘텐츠', path: 'content', hint: '초안 검수·발행' },
+  { label: '콘텐츠', path: 'content', hint: '자동 발행·후행 점검' },
   { label: '스케줄', path: 'schedule', hint: '발행 캘린더' },
   { label: '리포트', path: 'reports', hint: '월간 리포트' },
 ]
@@ -27,8 +27,6 @@ const CONFIG_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini 같은 AI 답변 서비스에 노출시킬 환자 질문 정의' },
   { label: '노출 보완', path: 'exposure-actions', hint: 'AI에 더 잘 노출되도록 보완할 작업과 콘텐츠 가이드 연결' },
 ]
-
-const ALL_TABS = [...MAIN_TABS, ...CONFIG_TABS]
 
 export default function HospitalLayout({
   children,
@@ -89,6 +87,7 @@ export default function HospitalLayout({
 
   const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
+  const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
 
   async function handleLifecycleAction() {
     if (!hospital || !lifecycleAction) return
@@ -181,45 +180,62 @@ export default function HospitalLayout({
         </div>
 
         {/* Tab navigation */}
-        <nav className="-mb-px flex items-stretch gap-1 overflow-x-auto pb-px" aria-label="병원 작업 탭">
-          {ALL_TABS.map((tab, idx) => {
-            const href = `/hospitals/${hospitalId}/${tab.path}`
-            const isActive = pathname.startsWith(href)
-            const isConfig = idx >= MAIN_TABS.length
-            return (
-              <span key={tab.path} className="contents">
-                {idx === MAIN_TABS.length && (
-                  <span
-                    aria-hidden
-                    className="mx-1 self-center text-xs font-medium text-slate-300 select-none"
-                    title="설정"
-                  >
-                    ⚙
-                  </span>
-                )}
+        <div className="-mb-px flex items-end gap-2">
+          <nav className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto pb-px" aria-label="병원 주요 작업">
+            {MAIN_TABS.map((tab) => {
+              const href = `/hospitals/${hospitalId}/${tab.path}`
+              const isActive = pathname.startsWith(href)
+              return (
                 <Link
+                  key={tab.path}
                   href={href}
                   aria-current={isActive ? 'page' : undefined}
                   aria-label={`${tab.label}: ${tab.hint}`}
-                  className={`group min-w-[8.5rem] border-b-2 px-3 py-2.5 text-left text-sm font-medium transition-colors sm:min-w-fit sm:px-4 ${
-                    isConfig
-                      ? isActive
-                        ? 'border-purple-500 text-purple-700'
-                        : 'border-transparent text-slate-400 hover:text-slate-600 hover:border-slate-200'
-                      : isActive
-                        ? 'border-blue-600 text-blue-700'
-                        : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-200'
+                  title={tab.hint}
+                  className={`inline-flex min-h-11 shrink-0 items-center border-b-2 px-3 text-sm font-medium transition-colors sm:px-4 ${
+                    isActive
+                      ? 'border-blue-600 text-blue-700'
+                      : 'border-transparent text-slate-500 hover:border-slate-200 hover:text-slate-800'
                   }`}
                 >
-                  <span className="block whitespace-nowrap">{tab.label}</span>
-                  <span className="mt-0.5 hidden max-w-[18rem] truncate text-[11px] font-normal text-slate-400 sm:block">
-                    {tab.hint}
-                  </span>
+                  {tab.label}
                 </Link>
-              </span>
-            )
-          })}
-        </nav>
+              )
+            })}
+          </nav>
+          <details className="group relative shrink-0 pb-px">
+            <summary
+              className={`inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 border-b-2 px-3 text-sm font-medium [&::-webkit-details-marker]:hidden ${
+                activeConfigTab
+                  ? 'border-purple-500 text-purple-700'
+                  : 'border-transparent text-slate-500 hover:border-slate-200 hover:text-slate-800'
+              }`}
+            >
+              {activeConfigTab?.label ?? '운영 설정'}
+              <span aria-hidden className="text-[10px] transition-transform group-open:rotate-180">▼</span>
+            </summary>
+            <nav
+              aria-label="병원 운영 설정"
+              className="absolute right-0 top-full z-30 mt-2 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl"
+            >
+              {CONFIG_TABS.map((tab) => {
+                const href = `/hospitals/${hospitalId}/${tab.path}`
+                const isActive = pathname.startsWith(href)
+                return (
+                  <Link
+                    key={tab.path}
+                    href={href}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={`block rounded-lg px-3 py-2.5 ${isActive ? 'bg-purple-50 text-purple-800' : 'text-slate-700 hover:bg-slate-50'}`}
+                  >
+                    <span className="block text-sm font-semibold">{tab.label}</span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">{tab.hint}</span>
+                  </Link>
+                )
+              })}
+            </nav>
+          </details>
+        </div>
       </header>
 
       {loadError && (

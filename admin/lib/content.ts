@@ -7,6 +7,52 @@ export interface CarriedOverItem {
   status?: string
 }
 
+export type ContentOperationsFilter =
+  | 'all'
+  | 'carried'
+  | 'publishable'
+  | 'needsReview'
+  | 'notGenerated'
+  | 'notificationPending'
+  | 'postReviewPending'
+  | 'published'
+  | 'rejected'
+
+export interface ContentOperationsItem extends CarriedOverItem {
+  title?: string | null
+  post_publish_notified_at?: string | null
+  post_publish_reviewed_at?: string | null
+  compliance?: {
+    publishable: boolean
+  }
+}
+
+export function getContentOperationsState(item: ContentOperationsItem): Exclude<ContentOperationsFilter, 'all' | 'carried'> {
+  if (item.status === 'PUBLISHED') {
+    if (item.post_publish_reviewed_at) return 'published'
+    if (!item.post_publish_notified_at) return 'notificationPending'
+    return 'postReviewPending'
+  }
+  if (item.status === 'REJECTED') return 'rejected'
+  if (!item.title) return 'notGenerated'
+  if (!item.compliance?.publishable) return 'needsReview'
+  return 'publishable'
+}
+
+export function matchesContentOperationsFilter(
+  item: ContentOperationsItem,
+  filter: ContentOperationsFilter,
+): boolean {
+  if (filter === 'all') return true
+  if (filter === 'carried') return isCarriedOver(item)
+  return getContentOperationsState(item) === filter
+}
+
+export function buildPublicContentUrl(domain: string | null | undefined, contentId: string): string | null {
+  const normalized = domain?.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')
+  return normalized ? `https://${normalized}/contents/${encodeURIComponent(contentId)}` : null
+}
+
 export function isCarriedOver(item: CarriedOverItem): boolean {
   return Boolean(item.carried_over_from)
 }
