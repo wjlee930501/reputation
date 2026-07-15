@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cloud SQL 연결 예산 불변식 검증기 (배포 preflight / CI 가드).
 
-worst-case 동시 연결 합계가 Cloud SQL max_connections의 90%를 넘지 않는지 확인한다.
+worst-case 동시 연결 합계가 Cloud SQL max_connections의 80%를 넘지 않는지 확인한다.
 config.py 풀 기본값, terraform 인스턴스 수/CELERY_CONCURRENCY, cloudsql.tf max_connections를
 소스에서 직접 파싱하므로, 어느 한쪽만 바꾸면 여기서 잡힌다.
 
@@ -9,10 +9,11 @@ config.py 풀 기본값, terraform 인스턴스 수/CELERY_CONCURRENCY, cloudsql
     api    = api_max_instances × (DB_POOL_SIZE + DB_MAX_OVERFLOW)
     worker = worker_max_instances × CELERY_CONCURRENCY
              × (DB_WORKER_POOL_SIZE + DB_WORKER_MAX_OVERFLOW)
-    api + worker ≤ max_connections × 0.9
+    api + worker ≤ max_connections × 0.8
 
 위반 시 stderr에 상세를 찍고 exit 1.
 """
+
 from __future__ import annotations
 
 import re
@@ -25,8 +26,8 @@ VARIABLES_TF = PROJECT_ROOT / "terraform" / "variables.tf"
 CLOUDSQL_TF = PROJECT_ROOT / "terraform" / "cloudsql.tf"
 CLOUDRUN_TF = PROJECT_ROOT / "terraform" / "cloudrun.tf"
 
-# max_connections 대비 사용할 수 있는 안전 비율 (나머지 10%는 superuser/유지보수 세션 여유).
-BUDGET_HEADROOM_RATIO = 0.9
+# max_connections 대비 사용할 수 있는 안전 비율 (나머지 20%는 운영/롤아웃/유지보수 여유).
+BUDGET_HEADROOM_RATIO = 0.8
 
 
 class BudgetError(Exception):
@@ -35,7 +36,9 @@ class BudgetError(Exception):
 
 def _parse_int_setting(text: str, name: str) -> int:
     """config.py의 `NAME: int = 123` 기본값을 파싱."""
-    match = re.search(rf"^\s*{re.escape(name)}\s*:\s*int\s*=\s*(\d+)", text, re.MULTILINE)
+    match = re.search(
+        rf"^\s*{re.escape(name)}\s*:\s*int\s*=\s*(\d+)", text, re.MULTILINE
+    )
     if not match:
         raise BudgetError(f"config.py에서 {name} 기본값을 찾지 못했습니다.")
     return int(match.group(1))
@@ -46,7 +49,7 @@ def _parse_tf_variable_default(text: str, variable: str) -> int:
     header = f'variable "{variable}"'
     start = text.find(header)
     if start == -1:
-        raise BudgetError(f"variables.tf에서 variable \"{variable}\"를 찾지 못했습니다.")
+        raise BudgetError(f'variables.tf에서 variable "{variable}"를 찾지 못했습니다.')
     brace = text.index("{", start)
     depth = 0
     for index in range(brace, len(text)):
@@ -59,16 +62,16 @@ def _parse_tf_variable_default(text: str, variable: str) -> int:
                 block = text[start : index + 1]
                 match = re.search(r"default\s*=\s*(\d+)", block)
                 if not match:
-                    raise BudgetError(f"variable \"{variable}\"에 default 정수가 없습니다.")
+                    raise BudgetError(
+                        f'variable "{variable}"에 default 정수가 없습니다.'
+                    )
                 return int(match.group(1))
-    raise BudgetError(f"variable \"{variable}\" 블록이 닫히지 않았습니다.")
+    raise BudgetError(f'variable "{variable}" 블록이 닫히지 않았습니다.')
 
 
 def _parse_max_connections(text: str) -> int:
     """cloudsql.tf의 max_connections database_flag 값을 파싱."""
-    match = re.search(
-        r'name\s*=\s*"max_connections"\s*\n\s*value\s*=\s*"(\d+)"', text
-    )
+    match = re.search(r'name\s*=\s*"max_connections"\s*\n\s*value\s*=\s*"(\d+)"', text)
     if not match:
         raise BudgetError("cloudsql.tf에서 max_connections 값을 찾지 못했습니다.")
     return int(match.group(1))
@@ -97,7 +100,9 @@ def compute_budget() -> dict[str, int]:
     worker_overflow = _parse_int_setting(config_text, "DB_WORKER_MAX_OVERFLOW")
 
     api_max_instances = _parse_tf_variable_default(variables_text, "api_max_instances")
-    worker_max_instances = _parse_tf_variable_default(variables_text, "worker_max_instances")
+    worker_max_instances = _parse_tf_variable_default(
+        variables_text, "worker_max_instances"
+    )
     celery_concurrency = _parse_celery_concurrency(cloudrun_text)
     max_connections = _parse_max_connections(cloudsql_text)
 

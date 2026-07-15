@@ -10,7 +10,9 @@ Celery 태스크 전체
 - adjust_query_priorities: AI 답변 언급 결과 기반 질문 우선순위 조정
 - run_monthly_reports: 전체 병원 월간 리포트
 """
+
 import asyncio
+import hashlib
 import logging
 import threading
 import uuid
@@ -18,6 +20,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 
 import arrow
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -37,6 +40,7 @@ from app.services.essence_engine import (
     build_monthly_essence_summary,
     screen_content_against_philosophy,
 )
+from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
 from app.services.report_engine import build_content_attribution_summary, generate_pdf_report
 from app.services.sov_engine import generate_query_matrix, run_single_query, calculate_sov
@@ -51,9 +55,9 @@ from app.workers.nightly_generation_batch import (
 
 logger = logging.getLogger(__name__)
 
-SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)      # 주간 측정용
-V0_REPEAT_COUNT = 5                                                # V0 첫 측정 쿼리당 반복 횟수
-V0_QUERY_SAMPLE_COUNT = 5                                          # V0 첫 측정에 쓰는 쿼리 개수
+SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
+V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
+V0_QUERY_SAMPLE_COUNT = 5  # V0 첫 측정에 쓰는 쿼리 개수
 # 주간 측정에서 HIGH 우선순위 쿼리 spec 상한 — target 자동 시드로 매트릭스가 폭증해도
 # 매주 전량 측정되며 API 비용이 무한정 늘지 않도록 태스크 측에서 잘라낸다.
 SOV_HIGH_PRIORITY_CAP = settings.SOV_HIGH_PRIORITY_CAP
@@ -179,7 +183,9 @@ def trigger_v0_report(self, hospital_id: str):
             # 실패한 실행은 _reset_v0_analyzing_status로 상태를 복원하므로 여기 걸리는 것은
             # 진행 중인 실행뿐이다.
             if hospital.status == HospitalStatus.ANALYZING:
-                logger.info("V0 report already in progress for %s; skipping duplicate", hospital.name)
+                logger.info(
+                    "V0 report already in progress for %s; skipping duplicate", hospital.name
+                )
                 return
 
             prior_status = (
@@ -192,9 +198,9 @@ def trigger_v0_report(self, hospital_id: str):
             # 아직 False) 이미 커밋된 매트릭스를 통째로 중복 생성하지 않는다. 중복되면
             # 주간 SoV 측정 볼륨·API 비용이 영구히 부풀려진다.
             existing_count = db.execute(
-                select(func.count()).select_from(QueryMatrix).where(
-                    QueryMatrix.hospital_id == hospital.id
-                )
+                select(func.count())
+                .select_from(QueryMatrix)
+                .where(QueryMatrix.hospital_id == hospital.id)
             ).scalar_one()
             if existing_count == 0:
                 queries = generate_query_matrix(
@@ -248,15 +254,17 @@ def trigger_v0_report(self, hospital_id: str):
                 if prior_status:
                     hospital.status = HospitalStatus(prior_status)
                     db.commit()
-                _run_async(notifier.notify_ops_alert(
-                    title="V0 리포트 비용 가드 차단",
-                    message=(
-                        f"병원: *{hospital.name}*\n"
-                        f"사유: {v0_decision.reason}\n"
-                        f"V0 진단 측정({v0_units} 호출)이 차단돼 리포트가 생성되지 않았습니다. "
-                        f"상한/킬스위치를 조정한 뒤 Admin에서 V0를 재트리거해 주세요."
-                    ),
-                ))
+                _run_async(
+                    notifier.notify_ops_alert(
+                        title="V0 리포트 비용 가드 차단",
+                        message=(
+                            f"병원: *{hospital.name}*\n"
+                            f"사유: {v0_decision.reason}\n"
+                            f"V0 진단 측정({v0_units} 호출)이 차단돼 리포트가 생성되지 않았습니다. "
+                            f"상한/킬스위치를 조정한 뒤 Admin에서 V0를 재트리거해 주세요."
+                        ),
+                    )
+                )
                 return
 
             for q in sample_queries:
@@ -340,14 +348,16 @@ def trigger_v0_report(self, hospital_id: str):
                     "build_aeo_site enqueue failed post-V0 (STEP4 deferred): %s", hospital_id
                 )
                 try:
-                    _run_async(notifier.notify_ops_alert(
-                        title="콘텐츠 허브 준비 태스크 큐잉 실패",
-                        message=(
-                            f"병원: *{hospital.name}* (`{hospital_id}`)\n"
-                            f"V0 리포트는 정상 생성됐으나 콘텐츠 허브 준비(build_aeo_site) 큐잉에 "
-                            f"실패했습니다. Admin에서 허브 준비를 수동 재실행해 주세요."
-                        ),
-                    ))
+                    _run_async(
+                        notifier.notify_ops_alert(
+                            title="콘텐츠 허브 준비 태스크 큐잉 실패",
+                            message=(
+                                f"병원: *{hospital.name}* (`{hospital_id}`)\n"
+                                f"V0 리포트는 정상 생성됐으나 콘텐츠 허브 준비(build_aeo_site) 큐잉에 "
+                                f"실패했습니다. Admin에서 허브 준비를 수동 재실행해 주세요."
+                            ),
+                        )
+                    )
                 except Exception:
                     logger.exception("build_aeo_site enqueue-failure ops alert delivery failed")
 
@@ -359,16 +369,18 @@ def trigger_v0_report(self, hospital_id: str):
         if self.request.retries >= self.max_retries:
             # 재시도 소진 — 병원이 ANALYZING에 갇히지 않게 복원했음을 운영자에게 알린다.
             try:
-                _run_async(notifier.notify_ops_alert(
-                    title="V0 리포트 생성 최종 실패",
-                    message=(
-                        f"병원 ID: `{hospital_id}`\n"
-                        f"재시도 {self.max_retries}회 모두 실패했습니다. "
-                        f"병원 상태는 이전 상태({prior_status or '유지'})로 복원했습니다.\n"
-                        f"오류: `{str(exc)[:200]}`\n"
-                        f"원인 확인 후 Admin에서 V0 리포트를 수동 재실행해 주세요."
-                    ),
-                ))
+                _run_async(
+                    notifier.notify_ops_alert(
+                        title="V0 리포트 생성 최종 실패",
+                        message=(
+                            f"병원 ID: `{hospital_id}`\n"
+                            f"재시도 {self.max_retries}회 모두 실패했습니다. "
+                            f"병원 상태는 이전 상태({prior_status or '유지'})로 복원했습니다.\n"
+                            f"오류: `{str(exc)[:200]}`\n"
+                            f"원인 확인 후 Admin에서 V0 리포트를 수동 재실행해 주세요."
+                        ),
+                    )
+                )
             except Exception:
                 logger.exception("V0 final-failure ops alert delivery failed (non-fatal)")
             raise exc
@@ -394,6 +406,10 @@ def _public_site_url(aeo_domain: str | None, slug: str | None) -> str:
     return settings.SITE_BASE_URL
 
 
+def _site_build_prerequisites_met(hospital: Hospital) -> bool:
+    return bool(hospital.profile_complete and hospital.v0_report_done)
+
+
 @celery_app.task(
     name="app.workers.tasks.build_aeo_site",
     bind=True,
@@ -409,6 +425,14 @@ def build_aeo_site(self, hospital_id: str):
         hospital = db.get(Hospital, uuid.UUID(hospital_id))
         if not hospital:
             return
+        if not _site_build_prerequisites_met(hospital):
+            logger.warning(
+                "Skipping site build before profile/V0 gates: hospital_id=%s profile_complete=%s v0_report_done=%s",
+                hospital.id,
+                hospital.profile_complete,
+                hospital.v0_report_done,
+            )
+            return
 
         hospital.site_built = True
         # ACTIVE/PAUSED 병원을 강등하지 않는다 — admin의 "허브 재준비"나 도메인 재저장이
@@ -419,8 +443,14 @@ def build_aeo_site(self, hospital_id: str):
             hospital.status = HospitalStatus.PENDING_DOMAIN
         db.commit()
 
-        preview_url = _public_site_url(hospital.aeo_domain, hospital.slug)
-        _run_async(notifier.notify_site_built(hospital.name, preview_url))
+        # PENDING_DOMAIN is intentionally not public, so a public preview URL is a
+        # guaranteed 404. Send the AE to the control plane activation step instead.
+        admin_url = (
+            f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals/{hospital.id}/profile#domain-setup"
+        )
+        notified = _run_async(notifier.notify_site_built(hospital.name, admin_url))
+        if not notified:
+            raise RuntimeError("site build Slack notification was not delivered")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -455,16 +485,18 @@ def nightly_content_generation():
                 truncated_count,
                 NIGHTLY_GENERATION_CAP,
             )
-            _run_async(notifier.notify_ops_alert(
-                title="야간 콘텐츠 생성 상한 초과",
-                message=(
-                    f"생성 대기 슬롯이 배치 상한({NIGHTLY_GENERATION_CAP}건)을 초과해 "
-                    f"{truncated_count}건이 이번 실행에서 처리되지 못했습니다.\n"
-                    f"대상 기간: {window_start} ~ {tomorrow}\n"
-                    f"미처리분은 다음 야간 배치에서 재시도됩니다. 누적이 계속되면 "
-                    f"워커 증설 또는 수동 재생성이 필요합니다."
-                ),
-            ))
+            _run_async(
+                notifier.notify_ops_alert(
+                    title="야간 콘텐츠 생성 상한 초과",
+                    message=(
+                        f"생성 대기 슬롯이 배치 상한({NIGHTLY_GENERATION_CAP}건)을 초과해 "
+                        f"{truncated_count}건이 이번 실행에서 처리되지 못했습니다.\n"
+                        f"대상 기간: {window_start} ~ {tomorrow}\n"
+                        f"미처리분은 다음 야간 배치에서 재시도됩니다. 누적이 계속되면 "
+                        f"워커 증설 또는 수동 재생성이 필요합니다."
+                    ),
+                )
+            )
 
         if not items:
             logger.info(f"No content to generate for {window_start}~{tomorrow}")
@@ -479,7 +511,10 @@ def nightly_content_generation():
 
             if hospital_key not in hospital_stats:
                 hospital_stats[hospital_key] = {
-                    "name": hospital.name, "generated": 0, "failed": 0, "skipped": 0,
+                    "name": hospital.name,
+                    "generated": 0,
+                    "failed": 0,
+                    "skipped": 0,
                     "cost_blocked": 0,
                 }
 
@@ -493,22 +528,21 @@ def nightly_content_generation():
                 )
                 existing_titles = [r[0] for r in existing.all()]
 
-                philosophy = db.execute(
-                    select(HospitalContentPhilosophy).where(
-                        HospitalContentPhilosophy.hospital_id == hospital.id,
-                        HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
-                    )
-                ).scalar_one_or_none()
+                philosophy = get_current_approved_philosophy_sync(db, hospital.id)
                 if not philosophy:
                     item.content_philosophy_id = None
                     item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
                     item.essence_check_summary = {
                         "blocking": True,
-                        "findings": ["승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."],
+                        "findings": [
+                            "승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."
+                        ],
                         "checked_at": datetime.now(timezone.utc).isoformat(),
                     }
                     db.commit()
-                    logger.warning(f"Skipping content generation without approved clinic writing standard: {hospital.name}")
+                    logger.warning(
+                        f"Skipping content generation without approved clinic writing standard: {hospital.name}"
+                    )
                     hospital_stats[hospital_key]["skipped"] += 1
                     continue
 
@@ -517,13 +551,17 @@ def nightly_content_generation():
                 cost_decision = _run_async(cost_guard.check_and_increment("content"))
                 if not cost_decision.allowed:
                     logger.warning(
-                        "콘텐츠 생성이 비용 가드로 차단됨: %s — %s", hospital.name, cost_decision.reason
+                        "콘텐츠 생성이 비용 가드로 차단됨: %s — %s",
+                        hospital.name,
+                        cost_decision.reason,
                     )
                     hospital_stats[hospital_key]["cost_blocked"] += 1
                     continue
 
                 # Claude Sonnet 콘텐츠 생성
-                approved_brief = item.content_brief if item.brief_status == BRIEF_STATUS_APPROVED else None
+                approved_brief = (
+                    item.content_brief if item.brief_status == BRIEF_STATUS_APPROVED else None
+                )
                 content_data = _run_async(
                     generate_content(
                         hospital,
@@ -572,37 +610,43 @@ def nightly_content_generation():
                 db.rollback()
                 db.expire_all()
                 hospital_stats[hospital_key]["failed"] += 1
-                _run_async(notifier.notify_content_generation_failed(
-                    hospital_name=hospital.name,
-                    content_type=item.content_type.value if item.content_type else "UNKNOWN",
-                    scheduled_date=str(item.scheduled_date),
-                    error=str(e),
-                ))
+                _run_async(
+                    notifier.notify_content_generation_failed(
+                        hospital_name=hospital.name,
+                        content_type=item.content_type.value if item.content_type else "UNKNOWN",
+                        scheduled_date=str(item.scheduled_date),
+                        error=str(e),
+                    )
+                )
 
         # 배치 완료 후 병원별 요약 Slack 발송
         for stat in hospital_stats.values():
             # 운영 기준 미승인 차단은 병원당 1회 전용 알림 — 한 달 내내 생성이 막혀도
             # Slack 신호가 0건이던 문제 해소 (P1-7).
             if stat["skipped"] > 0:
-                _run_async(notifier.notify_generation_blocked_no_philosophy(
-                    hospital_name=stat["name"],
-                    blocked_count=stat["skipped"],
-                    scheduled_date=str(tomorrow),
-                ))
+                _run_async(
+                    notifier.notify_generation_blocked_no_philosophy(
+                        hospital_name=stat["name"],
+                        blocked_count=stat["skipped"],
+                        scheduled_date=str(tomorrow),
+                    )
+                )
             if (
                 stat["generated"] > 0
                 or stat["failed"] > 0
                 or stat["skipped"] > 0
                 or stat["cost_blocked"] > 0
             ):
-                _run_async(notifier.notify_content_batch_summary(
-                    hospital_name=stat["name"],
-                    generated=stat["generated"],
-                    failed=stat["failed"],
-                    scheduled_date=str(tomorrow),
-                    skipped=stat["skipped"],
-                    cost_blocked=stat["cost_blocked"],
-                ))
+                _run_async(
+                    notifier.notify_content_batch_summary(
+                        hospital_name=stat["name"],
+                        generated=stat["generated"],
+                        failed=stat["failed"],
+                        scheduled_date=str(tomorrow),
+                        skipped=stat["skipped"],
+                        cost_blocked=stat["cost_blocked"],
+                    )
+                )
 
 
 @celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)
@@ -648,18 +692,15 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
     )
     existing_titles = [row[0] for row in existing.all()]
 
-    philosophy = db.execute(
-        select(HospitalContentPhilosophy).where(
-            HospitalContentPhilosophy.hospital_id == hospital.id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
-        )
-    ).scalar_one_or_none()
+    philosophy = get_current_approved_philosophy_sync(db, hospital.id)
     if not philosophy:
         item.content_philosophy_id = None
         item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
         item.essence_check_summary = {
             "blocking": True,
-            "findings": ["승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."],
+            "findings": [
+                "승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."
+            ],
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
         db.commit()
@@ -730,11 +771,15 @@ def morning_content_notification():
         return
 
     with SyncSessionLocal() as db:
-        stmt = select(ContentItem).where(
-            ContentItem.scheduled_date == today,
-            ContentItem.status == ContentStatus.DRAFT,
-            ContentItem.body.isnot(None),
-        ).options(joinedload(ContentItem.hospital))
+        stmt = (
+            select(ContentItem)
+            .where(
+                ContentItem.scheduled_date == today,
+                ContentItem.status == ContentStatus.DRAFT,
+                ContentItem.body.isnot(None),
+            )
+            .options(joinedload(ContentItem.hospital))
+        )
         result = db.execute(stmt)
         items = result.scalars().all()
 
@@ -742,16 +787,18 @@ def morning_content_notification():
         drafts_sent_count = 0
         for item in items:
             admin_url = f"{settings.ADMIN_BASE_URL}/hospitals/{item.hospital_id}/content/{item.id}"
-            sent = _run_async(notifier.notify_content_draft_ready(
-                hospital_name=item.hospital.name,
-                sequence_no=item.sequence_no,
-                total_count=item.total_count,
-                content_type=item.content_type.value,
-                scheduled_date=str(item.scheduled_date),
-                admin_url=admin_url,
-                # 전월 이월분은 우선 검토 표시 (월말 반려 carry-over)
-                carried_over=bool(item.carried_over_from),
-            ))
+            sent = _run_async(
+                notifier.notify_content_draft_ready(
+                    hospital_name=item.hospital.name,
+                    sequence_no=item.sequence_no,
+                    total_count=item.total_count,
+                    content_type=item.content_type.value,
+                    scheduled_date=str(item.scheduled_date),
+                    admin_url=admin_url,
+                    # 전월 이월분은 우선 검토 표시 (월말 반려 carry-over)
+                    carried_over=bool(item.carried_over_from),
+                )
+            )
             if not sent:
                 drafts_all_sent = False
             else:
@@ -775,11 +822,13 @@ def morning_content_notification():
             entry["dates"].append(str(item.scheduled_date))
 
         for entry in missed_by_hospital.values():
-            sent = _run_async(notifier.notify_content_generation_missed(
-                hospital_name=entry["name"],
-                missed_count=len(entry["dates"]),
-                dates=entry["dates"],
-            ))
+            sent = _run_async(
+                notifier.notify_content_generation_missed(
+                    hospital_name=entry["name"],
+                    missed_count=len(entry["dates"]),
+                    dates=entry["dates"],
+                )
+            )
             if not sent:
                 # 누락 경보 실패는 done-key를 막지 않는다 (R1c): 경보는 어차피 내일 아침
                 # 다시 평가·발송되지만, done-key가 안 박히면 같은 날 재트리거 때 위의
@@ -834,16 +883,19 @@ def run_sov_for_hospital(self, hospital_id: str):
     try:
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, uuid.UUID(hospital_id))
-            if not hospital or hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
+            if not hospital or hospital.status not in (
+                HospitalStatus.ACTIVE,
+                HospitalStatus.PENDING_DOMAIN,
+            ):
                 return
 
             # priority 기반 쿼리 필터링 — beat은 월요일 02:00 KST(=일요일 UTC)에 발화하므로
             # UTC date.today()를 쓰면 ISO 주차 짝/홀이 뒤집히고 월초 판정도 어긋난다 (P1-5).
             today_kst = arrow.now("Asia/Seoul").date()
             current_week = today_kst.isocalendar()[1]
-            is_even_week = (current_week % 2 == 0)
+            is_even_week = current_week % 2 == 0
             current_month_day = today_kst.day
-            is_month_start = (current_month_day <= 7)  # 월초 첫째 주
+            is_month_start = current_month_day <= 7  # 월초 첫째 주
 
             stmt = select(QueryMatrix).where(
                 QueryMatrix.hospital_id == hospital.id,
@@ -864,7 +916,8 @@ def run_sov_for_hospital(self, hospital_id: str):
             # priority 필터 적용 (HIGH 항상 / NORMAL 짝수주 / LOW 월초) — 동일 규칙을
             # target/variant 유래 spec에도 적용하기 위해 _priority_included 헬퍼로 단일화한다.
             queries = [
-                q for q in all_queries
+                q
+                for q in all_queries
                 if _priority_included(q.priority, is_even_week, is_month_start)
             ]
 
@@ -886,18 +939,22 @@ def run_sov_for_hospital(self, hospital_id: str):
                     trimmed_high,
                     SOV_HIGH_PRIORITY_CAP,
                 )
-                _run_async(notifier.notify_ops_alert(
-                    title="주간 측정 HIGH 우선순위 쿼리 상한 초과",
-                    message=(
-                        f"병원: *{hospital.name}*\n"
-                        f"HIGH 우선순위 측정 spec이 상한({SOV_HIGH_PRIORITY_CAP}건)을 초과해 "
-                        f"{trimmed_high}건이 이번 주 측정에서 제외됐습니다.\n"
-                        f"쿼리 타깃/변형이 과도하게 늘었는지 Admin에서 확인해 주세요."
-                    ),
-                ))
+                _run_async(
+                    notifier.notify_ops_alert(
+                        title="주간 측정 HIGH 우선순위 쿼리 상한 초과",
+                        message=(
+                            f"병원: *{hospital.name}*\n"
+                            f"HIGH 우선순위 측정 spec이 상한({SOV_HIGH_PRIORITY_CAP}건)을 초과해 "
+                            f"{trimmed_high}건이 이번 주 측정에서 제외됐습니다.\n"
+                            f"쿼리 타깃/변형이 과도하게 늘었는지 Admin에서 확인해 주세요."
+                        ),
+                    )
+                )
 
             if not measurement_specs:
-                logger.info(f"No queries to run for hospital {hospital_id} this week (priority filter)")
+                logger.info(
+                    f"No queries to run for hospital {hospital_id} this week (priority filter)"
+                )
                 return
 
             # 비용 가드: 측정 spec 개수만큼 예산을 run 단위로 일괄 확인. 차단 시 측정을 건너뛰고
@@ -911,15 +968,17 @@ def run_sov_for_hospital(self, hospital_id: str):
                     hospital.name,
                     sov_decision.reason,
                 )
-                _run_async(notifier.notify_ops_alert(
-                    title="주간 AI 언급률 측정 비용 가드 차단",
-                    message=(
-                        f"병원: *{hospital.name}*\n"
-                        f"사유: {sov_decision.reason}\n"
-                        f"이번 주 측정({len(measurement_specs)} spec)이 건너뛰어졌습니다. "
-                        f"상한/킬스위치를 Admin에서 확인해 주세요."
-                    ),
-                ))
+                _run_async(
+                    notifier.notify_ops_alert(
+                        title="주간 AI 언급률 측정 비용 가드 차단",
+                        message=(
+                            f"병원: *{hospital.name}*\n"
+                            f"사유: {sov_decision.reason}\n"
+                            f"이번 주 측정({len(measurement_specs)} spec)이 건너뛰어졌습니다. "
+                            f"상한/킬스위치를 Admin에서 확인해 주세요."
+                        ),
+                    )
+                )
                 return
 
             competitors = hospital.competitors or []
@@ -972,7 +1031,9 @@ def run_sov_for_hospital(self, hospital_id: str):
         raise self.retry(exc=exc, countdown=300)
 
 
-def _start_measurement_run(db, hospital: Hospital, *, run_label: str, config: dict) -> MeasurementRun:
+def _start_measurement_run(
+    db, hospital: Hospital, *, run_label: str, config: dict
+) -> MeasurementRun:
     now = datetime.now(timezone.utc)
     # 실제 호출 모드를 라벨에 정확히 반영. UI/리포트가 "ChatGPT 답변 노출률"이라고 잘못
     # 표기하던 컴플라이언스 이슈를 코드 수준에서 차단.
@@ -1130,14 +1191,16 @@ def _build_measurement_specs(
             if key in seen:
                 continue
             seen.add(key)
-            specs.append({
-                "query_id": query.id,
-                "query_text": variant.query_text,
-                "platform": platform,
-                "target_id": target.id,
-                "variant_id": variant.id,
-                "priority": target_priority,
-            })
+            specs.append(
+                {
+                    "query_id": query.id,
+                    "query_text": variant.query_text,
+                    "platform": platform,
+                    "target_id": target.id,
+                    "variant_id": variant.id,
+                    "priority": target_priority,
+                }
+            )
 
     if specs:
         return _apply_high_priority_cap(specs, high_priority_cap)
@@ -1147,14 +1210,16 @@ def _build_measurement_specs(
         platforms.append("gemini")
     for query in fallback_queries:
         for platform in platforms:
-            specs.append({
-                "query_id": query.id,
-                "query_text": query.query_text,
-                "platform": platform,
-                "target_id": None,
-                "variant_id": None,
-                "priority": str(getattr(query, "priority", "NORMAL") or "NORMAL").upper(),
-            })
+            specs.append(
+                {
+                    "query_id": query.id,
+                    "query_text": query.query_text,
+                    "platform": platform,
+                    "target_id": None,
+                    "variant_id": None,
+                    "priority": str(getattr(query, "priority", "NORMAL") or "NORMAL").upper(),
+                }
+            )
     return _apply_high_priority_cap(specs, high_priority_cap)
 
 
@@ -1258,9 +1323,7 @@ def monthly_slot_generation():
                     created_count += 1
             except Exception:
                 hospital_name = getattr(getattr(schedule, "hospital", None), "name", "(unknown)")
-                logger.exception(
-                    "monthly slot generation failed for %s; skipping", hospital_name
-                )
+                logger.exception("monthly slot generation failed for %s; skipping", hospital_name)
                 failures.append(hospital_name)
                 continue
 
@@ -1272,14 +1335,16 @@ def monthly_slot_generation():
 
         if failures:
             names = ", ".join(failures[:10]) + (" 외" if len(failures) > 10 else "")
-            _run_async(notifier.notify_ops_alert(
-                title="다음 달 콘텐츠 슬롯 생성 실패",
-                message=(
-                    f"{len(failures)}개 병원의 다음 달 슬롯 생성에 실패했습니다: {names}\n"
-                    f"나머지 병원은 정상 생성됐습니다. 실패 병원의 스케줄(발행요일/요금제)을 "
-                    f"확인 후 Admin에서 재생성해 주세요."
-                ),
-            ))
+            _run_async(
+                notifier.notify_ops_alert(
+                    title="다음 달 콘텐츠 슬롯 생성 실패",
+                    message=(
+                        f"{len(failures)}개 병원의 다음 달 슬롯 생성에 실패했습니다: {names}\n"
+                        f"나머지 병원은 정상 생성됐습니다. 실패 병원의 스케줄(발행요일/요금제)을 "
+                        f"확인 후 Admin에서 재생성해 주세요."
+                    ),
+                )
+            )
 
 
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
@@ -1322,10 +1387,14 @@ def adjust_query_priorities():
             queries = q_result.scalars().all()
 
             for q in queries:
-                rec_stmt = select(SovRecord).where(
-                    SovRecord.query_id == q.id,
-                    SovRecord.measured_at >= four_weeks_ago,
-                ).order_by(SovRecord.measured_at.desc())
+                rec_stmt = (
+                    select(SovRecord)
+                    .where(
+                        SovRecord.query_id == q.id,
+                        SovRecord.measured_at >= four_weeks_ago,
+                    )
+                    .order_by(SovRecord.measured_at.desc())
+                )
                 rec_result = db.execute(rec_stmt)
                 recent_records = rec_result.scalars().all()
 
@@ -1423,7 +1492,10 @@ def run_monthly_reports(self):
                 prev_sov = (
                     calculate_sov(
                         [
-                            {"is_mentioned": r.is_mentioned, "measurement_status": r.measurement_status}
+                            {
+                                "is_mentioned": r.is_mentioned,
+                                "measurement_status": r.measurement_status,
+                            }
                             for r in prev_records
                         ]
                     )
@@ -1480,26 +1552,39 @@ def run_monthly_reports(self):
                 )
                 essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
 
-                db.add(MonthlyReport(
-                    hospital_id=h.id,
-                    period_year=now.year,
-                    period_month=now.month,
-                    report_type="MONTHLY",
-                    pdf_path=pdf_path,
-                    sov_summary={"sov_pct": sov_pct, "prev_sov_pct": prev_sov, "change_pct": change_pct},
-                    content_summary={
-                        "published_count": len(published_contents),
-                        "attribution": attribution,
-                    },
-                    essence_summary=essence_summary,
-                ))
+                db.add(
+                    MonthlyReport(
+                        hospital_id=h.id,
+                        period_year=now.year,
+                        period_month=now.month,
+                        report_type="MONTHLY",
+                        pdf_path=pdf_path,
+                        sov_summary={
+                            "sov_pct": sov_pct,
+                            "prev_sov_pct": prev_sov,
+                            "change_pct": change_pct,
+                        },
+                        content_summary={
+                            "published_count": len(published_contents),
+                            "attribution": attribution,
+                        },
+                        essence_summary=essence_summary,
+                    )
+                )
                 db.commit()
 
-                _run_async(notifier.notify_monthly_report_ready(
-                    h.name, now.year, now.month, sov_pct, change_pct, pdf_path,
-                    platforms=report_platforms,
-                    new_mention_count=attribution["new_mention_count"],
-                ))
+                _run_async(
+                    notifier.notify_monthly_report_ready(
+                        h.name,
+                        now.year,
+                        now.month,
+                        sov_pct,
+                        change_pct,
+                        pdf_path,
+                        platforms=report_platforms,
+                        new_mention_count=attribution["new_mention_count"],
+                    )
+                )
 
             except Exception as e:
                 logger.error(f"Monthly report failed for {h.name}: {e}")
@@ -1507,6 +1592,95 @@ def run_monthly_reports(self):
                 failures.append((h.name, e))
 
         _raise_if_monthly_report_failures(failures)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 신규 런타임 도메인 HTTPS 상태 감시 — Terraform 정적 목록 밖까지 포함
+# ══════════════════════════════════════════════════════════════════
+def _domain_health_incident_key(domain: str) -> str:
+    digest = hashlib.sha256(domain.encode("utf-8")).hexdigest()[:16]
+    return f"reputation:domain-health:incident:{digest}"
+
+
+def _check_custom_domain_https(
+    client: httpx.Client,
+    domain: str,
+) -> tuple[bool, str]:
+    try:
+        response = client.get(f"https://{domain}/")
+    except httpx.TimeoutException:
+        return False, "timeout"
+    except httpx.HTTPError:
+        return False, "tls_or_network_error"
+    if 200 <= response.status_code < 400:
+        return True, f"http_{response.status_code}"
+    return False, f"http_{response.status_code}"
+
+
+@celery_app.task(name="app.workers.tasks.monitor_live_custom_domains")
+def monitor_live_custom_domains():
+    """모든 LIVE 자기 도메인의 실제 TLS/Host routing 응답을 주기적으로 확인한다."""
+    with SyncSessionLocal() as db:
+        hospitals = (
+            db.execute(
+                select(Hospital).where(
+                    Hospital.status == HospitalStatus.ACTIVE,
+                    Hospital.site_live.is_(True),
+                    Hospital.aeo_domain.is_not(None),
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    new_failures: list[tuple[str, str]] = []
+    recoveries: list[str] = []
+    with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+        for hospital in hospitals:
+            domain = (hospital.aeo_domain or "").strip().lower()
+            if not domain:
+                continue
+            healthy, reason = _check_custom_domain_https(client, domain)
+            incident_key = _domain_health_incident_key(domain)
+            try:
+                incident_open = bool(_get_redis().get(incident_key))
+                if healthy:
+                    if incident_open:
+                        _get_redis().delete(incident_key)
+                        recoveries.append(domain)
+                elif not incident_open:
+                    _get_redis().set(incident_key, reason, ex=21_600)
+                    new_failures.append((domain, reason))
+            except Exception:
+                logger.warning("Domain health incident state unavailable: domain=%s", domain)
+                if not healthy:
+                    new_failures.append((domain, reason))
+
+            if not healthy:
+                logger.error(
+                    "Custom domain health check failed: domain=%s reason=%s", domain, reason
+                )
+
+    if new_failures:
+        lines = "\n".join(f"• {domain}: {reason}" for domain, reason in new_failures[:20])
+        _run_async(
+            notifier.notify_ops_alert(
+                title=f"병원 커스텀 도메인 장애 {len(new_failures)}건",
+                message=f"실제 HTTPS/Host routing 확인 실패:\n{lines}",
+            )
+        )
+    if recoveries:
+        _run_async(
+            notifier.notify_ops_alert(
+                title=f"병원 커스텀 도메인 복구 {len(recoveries)}건",
+                message="HTTPS 응답 복구: " + ", ".join(recoveries[:20]),
+            )
+        )
+    return {
+        "checked": len(hospitals),
+        "new_failures": len(new_failures),
+        "recoveries": len(recoveries),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════

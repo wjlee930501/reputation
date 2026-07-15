@@ -7,6 +7,10 @@ import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
 import { useHospitalHeader } from '../hospital-context'
 import { DomainSetupPanel } from '../DomainSetupPanel'
 import type { DomainProfile } from '../DomainSetupTypes'
+import {
+  buildProfileChecklist,
+  type ProfileChecklistStatus,
+} from '@/lib/profile-readiness'
 
 interface Treatment {
   name: string
@@ -43,8 +47,10 @@ interface HospitalProfile {
   competitors: string[]
   treatments: Treatment[]
   profile_complete: boolean
+  v0_report_done?: boolean
   site_built?: boolean
   site_live?: boolean
+  schedule_set?: boolean
   aeo_domain?: string
   domain_management_mode?: DomainProfile['domain_management_mode']
   domain_dns_strategy?: DomainProfile['domain_dns_strategy']
@@ -130,124 +136,7 @@ function TagInput({
   )
 }
 
-type ChecklistStatus = 'done' | 'required' | 'recommended'
-
-interface ChecklistItem {
-  key: string
-  label: string
-  hint: string
-  status: ChecklistStatus
-  required: boolean
-}
-
-function trimmed(value: string | null | undefined): string {
-  return (value ?? '').trim()
-}
-
-function buildChecklist(profile: Partial<HospitalProfile>): ChecklistItem[] {
-  const businessHours = profile.business_hours ?? {}
-  const hasAnyHour = Object.values(businessHours).some((v) => trimmed(v).length > 0)
-  const treatments = profile.treatments ?? []
-  const hasNamedTreatment = treatments.some((t) => trimmed(t.name).length > 0)
-  const hasCoords =
-    typeof profile.latitude === 'number' &&
-    typeof profile.longitude === 'number' &&
-    !Number.isNaN(profile.latitude) &&
-    !Number.isNaN(profile.longitude)
-  const hasGoogleAsset =
-    trimmed(profile.google_maps_url).length > 0 ||
-    trimmed(profile.google_business_profile_url).length > 0
-
-  const required: Array<Omit<ChecklistItem, 'status'>> = [
-    {
-      key: 'director_basic',
-      label: '원장 기본정보',
-      hint: '원장명과 약력을 모두 입력합니다.',
-      required: true,
-    },
-    {
-      key: 'director_philosophy',
-      label: '진료 철학',
-      hint: '원장 인터뷰에서 확인한 진료 철학을 한 단락으로 정리합니다.',
-      required: true,
-    },
-    {
-      key: 'contact',
-      label: '병원 연락처',
-      hint: '주소·전화번호·진료시간(요일 1개 이상)을 모두 채웁니다.',
-      required: true,
-    },
-    {
-      key: 'web_channels',
-      label: '홈페이지/블로그',
-      hint: '병원 홈페이지 또는 블로그 URL 중 하나는 등록합니다.',
-      required: true,
-    },
-    {
-      key: 'ai_channels',
-      label: 'AI가 참고할 외부 채널',
-      hint: '네이버 플레이스와 구글 지도/병원 정보 URL을 등록합니다. AI 답변과 로컬 검색이 우리 병원을 정확히 인식하기 위한 기본 자료입니다.',
-      required: true,
-    },
-    {
-      key: 'geo',
-      label: '좌표/지역 정보',
-      hint: '위·경도 좌표와 지역 태그를 등록합니다.',
-      required: true,
-    },
-    {
-      key: 'targeting',
-      label: '전문과목/키워드',
-      hint: '전문과목과 핵심 키워드를 각 1개 이상 등록합니다.',
-      required: true,
-    },
-    {
-      key: 'treatments',
-      label: '진료 항목',
-      hint: '콘텐츠 생성의 기준이 되는 진료 항목을 1개 이상 등록합니다.',
-      required: true,
-    },
-  ]
-
-  const requiredStatus: Record<string, boolean> = {
-    director_basic: trimmed(profile.director_name).length > 0 && trimmed(profile.director_career).length > 0,
-    director_philosophy: trimmed(profile.director_philosophy).length > 0,
-    contact: trimmed(profile.address).length > 0 && trimmed(profile.phone).length > 0 && hasAnyHour,
-    web_channels: trimmed(profile.website_url).length > 0 || trimmed(profile.blog_url).length > 0,
-    ai_channels: trimmed(profile.naver_place_url).length > 0 && hasGoogleAsset,
-    geo: hasCoords && (profile.region ?? []).length > 0,
-    targeting: (profile.specialties ?? []).length > 0 && (profile.keywords ?? []).length > 0,
-    treatments: hasNamedTreatment,
-  }
-
-  const items: ChecklistItem[] = required.map((r) => ({
-    ...r,
-    status: requiredStatus[r.key] ? 'done' : 'required',
-  }))
-
-  items.push({
-    key: 'competitors',
-    label: '경쟁 병원',
-    hint: 'AI 언급률 비교 대상 병원을 1개 이상 등록하면 리포트 정확도가 올라갑니다.',
-    required: false,
-    status: (profile.competitors ?? []).length > 0 ? 'done' : 'recommended',
-  })
-
-  const hasDomain = trimmed(profile.aeo_domain).length > 0
-  items.push({
-    key: 'domain',
-    label: '커스텀 도메인',
-    hint: profile.site_built
-      ? '병원이 구입한 도메인을 입력하고 DNS 검증까지 완료합니다.'
-      : '병원 정보 허브 준비가 끝난 뒤 커스텀 도메인 연결 카드에서 연결합니다. (지금은 사전 입력만 가능)',
-    required: false,
-    status: hasDomain ? 'done' : 'recommended',
-  })
-
-  return items
-}
-
-const STATUS_CHIP: Record<ChecklistStatus, { label: string; cls: string }> = {
+const STATUS_CHIP: Record<ProfileChecklistStatus, { label: string; cls: string }> = {
   done: {
     label: '완료',
     cls: 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -496,6 +385,12 @@ export default function ProfilePage() {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
+    const missing = buildProfileChecklist(profile).filter((item) => item.required && item.status !== 'done')
+    if (profile.profile_complete && missing.length > 0) {
+      setError(`프로파일 완료 전 필수 항목을 채워 주세요: ${missing.map((item) => item.label).join(', ')}`)
+      document.querySelector('[data-profile-completion]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
     setSaving(true)
     setError(null)
     setSuccess(false)
@@ -589,7 +484,7 @@ export default function ProfilePage() {
     return <div className="p-8 text-slate-500">불러오는 중...</div>
   }
 
-  const checklist = buildChecklist(profile)
+  const checklist = buildProfileChecklist(profile)
   const totalCount = checklist.length
   const doneCount = checklist.filter((c) => c.status === 'done').length
   const requiredItems = checklist.filter((c) => c.required)
@@ -947,6 +842,8 @@ export default function ProfilePage() {
             <input
               type="number"
               step="0.000001"
+              min="-90"
+              max="90"
               id="profile-latitude"
               value={profile.latitude ?? ''}
               onChange={(e) => updateField('latitude', e.target.value === '' ? null : Number(e.target.value))}
@@ -959,6 +856,8 @@ export default function ProfilePage() {
             <input
               type="number"
               step="0.000001"
+              min="-180"
+              max="180"
               id="profile-longitude"
               value={profile.longitude ?? ''}
               onChange={(e) => updateField('longitude', e.target.value === '' ? null : Number(e.target.value))}
@@ -1131,11 +1030,19 @@ export default function ProfilePage() {
             </div>
           )}
 
-          <label className="flex items-start gap-3 cursor-pointer rounded-lg border border-slate-200 bg-white px-4 py-3 hover:border-slate-300 transition-colors">
+          <label
+            data-profile-completion
+            className={`flex items-start gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 transition-colors ${
+              !requiredReady && !profile.profile_complete
+                ? 'cursor-not-allowed opacity-70'
+                : 'cursor-pointer hover:border-slate-300'
+            }`}
+          >
             <input
               type="checkbox"
               checked={profile.profile_complete ?? false}
               onChange={(e) => updateField('profile_complete', e.target.checked)}
+              disabled={!requiredReady && !profile.profile_complete}
               className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
             />
             <div>
@@ -1143,9 +1050,14 @@ export default function ProfilePage() {
               <p className="text-xs text-slate-500 mt-0.5">
                 저장 시점에 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다. 운영 알림으로 결과를 확인합니다.
               </p>
-              {!requiredReady && (profile.profile_complete ?? false) && (
+              {!requiredReady && !(profile.profile_complete ?? false) && (
                 <p className="text-[11px] text-amber-700 mt-1.5">
-                  필수 항목이 비어 있는 상태로 진행하려고 합니다. 가능하면 위 항목을 먼저 채워 주세요.
+                  필수 항목을 모두 채우기 전에는 완료로 표시할 수 없습니다.
+                </p>
+              )}
+              {!requiredReady && (profile.profile_complete ?? false) && (
+                <p className="text-[11px] text-red-700 mt-1.5">
+                  완료 이후 필수 항목이 변경되었습니다. 누락 항목을 채우거나 완료 표시를 해제해야 저장할 수 있습니다.
                 </p>
               )}
             </div>

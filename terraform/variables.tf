@@ -56,24 +56,26 @@ variable "api_cpu" {
 }
 
 variable "api_min_instances" {
-  description = "API minimum instances (0 = scale to zero)"
+  description = "API minimum instances. Keep 1+ so custom-domain middleware never waits on an API cold start."
   type        = number
-  default     = 0
+  default     = 1
 }
 
 variable "api_max_instances" {
   description = <<-EOT
     API maximum instances. DB CONNECTION BUDGET: Cloud SQL max_connections is 100
     (cloudsql.tf), and the worst-case concurrent total must stay under
-    max_connections x 0.9 = 90 (10% headroom for superuser/maintenance sessions).
+    max_connections x 0.8 = 80 (20% reserved for operations and maintenance).
     The budget is split between the async API pool and the sync worker pool
     (config.py):
       api    = api_max_instances x (DB_POOL_SIZE + DB_MAX_OVERFLOW)
-             = 10 x (3 + 2) = 50
+             = 7 x (3 + 2) = 35
       worker = worker_max_instances x CELERY_CONCURRENCY
                x (DB_WORKER_POOL_SIZE + DB_WORKER_MAX_OVERFLOW)
              = 5 x 2 x (2 + 2) = 40
-      total  = 50 + 40 = 90 <= 90.
+      total  = 35 + 40 = 75 <= 80.
+    This deliberately reserves at least 20% of Cloud SQL connections for
+    maintenance, migrations, and brief old/new revision overlap.
     The sync worker engine is created lazily per Celery prefork child, so the
     worker pool multiplies by CELERY_CONCURRENCY (cloudrun.tf), not by instance
     count alone. beat holds no DB connections; the migrate Job runs one-shot
@@ -83,7 +85,7 @@ variable "api_max_instances" {
     scripts/check_db_connection_budget.py (the CI/preflight budget guard).
   EOT
   type        = number
-  default     = 10
+  default     = 7
 }
 
 # ── Frontend (Next.js on Cloud Run) ───────────────────────────────
@@ -122,8 +124,9 @@ variable "site_cpu" {
 }
 
 variable "site_min_instances" {
-  type    = number
-  default = 0
+  description = "Public site minimum instances. Keep 1+ to avoid customer-domain cold-start 5xx."
+  type        = number
+  default     = 1
 }
 
 variable "site_max_instances" {
@@ -403,4 +406,15 @@ variable "aiplatform_role" {
   EOT
   type        = string
   default     = "roles/aiplatform.user"
+}
+
+variable "certificate_manager_role" {
+  description = <<-EOT
+    Role used by the backend/worker for idempotent customer certificate and
+    certificate-map-entry provisioning. Override with a least-privilege custom
+    role once its permissions are established; the predefined editor role is
+    the safe functional default for automated onboarding.
+  EOT
+  type        = string
+  default     = "roles/certificatemanager.editor"
 }

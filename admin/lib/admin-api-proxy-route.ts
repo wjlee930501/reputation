@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server.js'
 
 import {
-  ADMIN_PROXY_SLOW_TIMEOUT_MS,
+  adminProxyTimeoutMsForPath,
   buildAdminProxyFetchInit,
   mapAdminProxyFetchError,
 } from './admin-proxy.ts'
@@ -127,9 +127,7 @@ export async function handleAdminApiProxy(
     body = await req.arrayBuffer()
   }
 
-  // 자동 채우기는 외부 스크랩+LLM으로 오래 걸려 기본 15초로는 504가 난다.
-  const isSlowPath = path.endsWith('/profile/autofill')
-  const timeoutMs = isSlowPath ? ADMIN_PROXY_SLOW_TIMEOUT_MS : undefined
+  const timeoutMs = adminProxyTimeoutMsForPath(path)
 
   try {
     const fetchOptions = buildAdminProxyFetchInit({ method: req.method, headers, body, timeoutMs })

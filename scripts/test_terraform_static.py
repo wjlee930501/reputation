@@ -46,7 +46,9 @@ def test_certificate_map_cutover_requires_legacy_domains_in_map_entries() -> Non
     certmanager = (PROJECT_ROOT / "terraform" / "certmanager.tf").read_text()
     loadbalancer = (PROJECT_ROOT / "terraform" / "loadbalancer.tf").read_text()
 
-    assert re.search(r"legacy_customer_domain_set\s*=\s*toset\(var\.customer_domains\)", certmanager)
+    assert re.search(
+        r"legacy_customer_domain_set\s*=\s*toset\(var\.customer_domains\)", certmanager
+    )
     assert re.search(
         r"certificate_map_customer_domain_set\s*=\s*toset\(var\.certificate_map_customer_domains\)",
         certmanager,
@@ -56,3 +58,28 @@ def test_certificate_map_cutover_requires_legacy_domains_in_map_entries() -> Non
         "!var.use_certificate_map || length(local.certificate_map_missing_legacy_domains) == 0"
         in loadbalancer
     )
+
+
+def test_customer_domains_have_external_uptime_checks_and_default_alert_channel() -> (
+    None
+):
+    monitoring = (PROJECT_ROOT / "terraform" / "monitoring.tf").read_text()
+
+    assert 'google_monitoring_uptime_check_config" "customer_site"' in monitoring
+    assert "local.certificate_map_customer_domain_set" in monitoring
+    assert 'google_monitoring_alert_policy" "customer_site_uptime"' in monitoring
+    assert 'google_monitoring_alert_policy" "site_5xx"' in monitoring
+    assert "google_monitoring_notification_channel.email[0].id" in monitoring
+
+
+def test_certificate_manager_runtime_scaffolding_is_enabled_for_api_and_worker() -> (
+    None
+):
+    cloudrun = (PROJECT_ROOT / "terraform" / "cloudrun.tf").read_text()
+    serviceaccount = (PROJECT_ROOT / "terraform" / "serviceaccount.tf").read_text()
+
+    # API/worker뿐 아니라 같은 production Settings를 import하는 beat/migrate Job도
+    # fail-fast 계약을 만족해야 한다.
+    assert cloudrun.count('name  = "CERTIFICATE_MANAGER_AUTO_PROVISION"') == 4
+    assert cloudrun.count('name  = "CERTIFICATE_MAP_NAME"') == 4
+    assert "var.certificate_manager_role" in serviceaccount

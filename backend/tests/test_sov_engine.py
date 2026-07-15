@@ -117,3 +117,24 @@ async def test_parse_mention_does_not_prefilter_out_spacing_variant(monkeypatch)
     parsed = await sov_engine._parse_mention("장편한외과", "이 지역은 장편한 외과가 유명합니다.")
 
     assert parsed["is_mentioned"] is True
+
+
+class _SearchResponses:
+    def __init__(self):
+        self.kwargs = None
+
+    async def create(self, **kwargs):
+        self.kwargs = kwargs
+        return SimpleNamespace(output_text="검색 기반 답변")
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_web_search_is_required_not_optional(monkeypatch):
+    responses = _SearchResponses()
+    monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
+
+    result = await sov_engine._query_chatgpt_with_search("수원 외과 추천")
+
+    assert result == "검색 기반 답변"
+    assert responses.kwargs["tools"] == [{"type": "web_search"}]
+    assert responses.kwargs["tool_choice"] == "required"

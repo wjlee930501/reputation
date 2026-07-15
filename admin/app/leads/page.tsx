@@ -7,6 +7,7 @@ import { fetchAPI } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
 import { SkeletonTable } from '@/app/components/Skeleton'
 import { PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
+import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
 
 // backend GET /admin/leads — limit(기본 50, 최대 200) + offset 지원.
 // "더 보기"는 offset append 방식이라 오래된 리드(파기 워크플로 대상 포함)까지 도달 가능.
@@ -33,17 +34,7 @@ interface ConvertResponse {
 type PlanOption = 'PLAN_16' | 'PLAN_12' | 'PLAN_8'
 
 function getOnboardingHref(lead: SalesLead) {
-  const params = new URLSearchParams({
-    leadId: lead.id,
-    name: lead.clinic_name,
-    type: lead.clinic_type,
-    contact: lead.contact,
-  })
-
-  if (lead.question) params.set('question', lead.question)
-  if (lead.source_path) params.set('source', lead.source_path)
-
-  return `/hospitals/new?${params.toString()}`
+  return buildLeadOnboardingHref(lead.id)
 }
 
 export default function LeadsPage() {

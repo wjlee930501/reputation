@@ -1,8 +1,10 @@
 """P1-3/R1 — 야간 생성 catch-up window + cap 절단 감지 + 아침 누락 경보 윈도우."""
+
 from datetime import date
 from types import SimpleNamespace
 
 import arrow
+import httpx
 import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
@@ -53,8 +55,44 @@ def test_build_aeo_site_has_autoretry(monkeypatch):
     assert Exception in tasks.build_aeo_site.autoretry_for
 
 
+@pytest.mark.parametrize(
+    ("profile_complete", "v0_report_done", "expected"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+def test_site_build_requires_profile_and_v0(profile_complete, v0_report_done, expected):
+    hospital = SimpleNamespace(
+        profile_complete=profile_complete,
+        v0_report_done=v0_report_done,
+    )
+    assert tasks._site_build_prerequisites_met(hospital) is expected
+
+
+def test_custom_domain_https_health_contract_and_hashed_incident_key():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "healthy.example.com":
+            return httpx.Response(200)
+        return httpx.Response(503)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert tasks._check_custom_domain_https(client, "healthy.example.com") == (
+            True,
+            "http_200",
+        )
+        assert tasks._check_custom_domain_https(client, "broken.example.com") == (
+            False,
+            "http_503",
+        )
+
+    key = tasks._domain_health_incident_key("healthy.example.com")
+    assert key.startswith("reputation:domain-health:incident:")
+    assert "healthy.example.com" not in key
+
+
 def test_public_site_url_prefers_aeo_domain():
-    assert tasks._public_site_url("clinic.example.com", "jangpyeonhan") == "https://clinic.example.com/"
+    assert (
+        tasks._public_site_url("clinic.example.com", "jangpyeonhan")
+        == "https://clinic.example.com/"
+    )
 
 
 def test_public_site_url_falls_back_to_platform_subdomain(monkeypatch):
@@ -113,7 +151,9 @@ def test_build_measurement_specs_gates_target_priority(monkeypatch):
     """target/variant 유래 spec도 target.priority 기준으로 주간 게이팅돼야 한다 (결함 7)."""
     hospital = SimpleNamespace(id="h1")
     qm_high, qm_normal = _qm("qm-high"), _qm("qm-normal")
-    target_high = SimpleNamespace(id="t-high", priority="HIGH", variants=[_variant("v-high", "qm-high")])
+    target_high = SimpleNamespace(
+        id="t-high", priority="HIGH", variants=[_variant("v-high", "qm-high")]
+    )
     target_normal = SimpleNamespace(
         id="t-normal", priority="NORMAL", variants=[_variant("v-normal", "qm-normal")]
     )
@@ -237,6 +277,7 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
         }
 
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(
         tasks,
         "screen_content_against_philosophy",
@@ -356,7 +397,9 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
         return True
 
     # 2월(28일) 다음 달 슬롯 생성 상황 — 25일 트리거.
-    monkeypatch.setattr(tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 2, 25, tzinfo="Asia/Seoul"))
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 2, 25, tzinfo="Asia/Seoul")
+    )
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks.notifier, "notify_ops_alert", fake_ops_alert)
     monkeypatch.setattr("app.workers.monthly_slots.generate_monthly_slots", fake_generate)
@@ -384,7 +427,9 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
     ]
     db = _MonthlySlotDB(schedules)
 
-    monkeypatch.setattr(tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(2026, 6, 25, tzinfo="Asia/Seoul"))
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(2026, 6, 25, tzinfo="Asia/Seoul")
+    )
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
         "app.workers.monthly_slots.generate_monthly_slots",
@@ -464,7 +509,9 @@ def _items(n):
 def test_load_nightly_generation_batch_without_truncation():
     db = _FakeSyncDB(_items(3), total_count=3)
 
-    items, truncated = tasks._load_nightly_generation_batch(db, date(2026, 6, 10), date(2026, 6, 11))
+    items, truncated = tasks._load_nightly_generation_batch(
+        db, date(2026, 6, 10), date(2026, 6, 11)
+    )
 
     assert len(items) == 3
     assert truncated == 0
@@ -477,7 +524,9 @@ def test_load_nightly_generation_batch_detects_cap_truncation():
     cap = tasks.NIGHTLY_GENERATION_CAP
     db = _FakeSyncDB(_items(cap + 1), total_count=cap + 7)
 
-    items, truncated = tasks._load_nightly_generation_batch(db, date(2026, 6, 10), date(2026, 6, 11))
+    items, truncated = tasks._load_nightly_generation_batch(
+        db, date(2026, 6, 10), date(2026, 6, 11)
+    )
 
     assert len(items) == cap
     assert truncated == 7  # 정확한 잔여 건수 보고

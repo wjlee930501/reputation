@@ -70,6 +70,18 @@ resource "google_cloud_run_v2_service" "api" {
         value = google_storage_bucket.images.name
       }
       env {
+        name  = "CERTIFICATE_MANAGER_AUTO_PROVISION"
+        value = "true"
+      }
+      env {
+        name  = "CERTIFICATE_MANAGER_LOCATION"
+        value = "global"
+      }
+      env {
+        name  = "CERTIFICATE_MAP_NAME"
+        value = google_certificate_manager_certificate_map.main.name
+      }
+      env {
         name  = "GCS_REPORTS_BUCKET"
         value = google_storage_bucket.reports.name
       }
@@ -275,6 +287,18 @@ resource "google_cloud_run_v2_service" "worker" {
         value = google_storage_bucket.images.name
       }
       env {
+        name  = "CERTIFICATE_MANAGER_AUTO_PROVISION"
+        value = "true"
+      }
+      env {
+        name  = "CERTIFICATE_MANAGER_LOCATION"
+        value = "global"
+      }
+      env {
+        name  = "CERTIFICATE_MAP_NAME"
+        value = google_certificate_manager_certificate_map.main.name
+      }
+      env {
         name  = "GCS_REPORTS_BUCKET"
         value = google_storage_bucket.reports.name
       }
@@ -427,6 +451,18 @@ resource "google_cloud_run_v2_service" "beat" {
       env {
         name  = "GCP_LOCATION"
         value = var.region
+      }
+      env {
+        name  = "CERTIFICATE_MANAGER_AUTO_PROVISION"
+        value = "true"
+      }
+      env {
+        name  = "CERTIFICATE_MANAGER_LOCATION"
+        value = "global"
+      }
+      env {
+        name  = "CERTIFICATE_MAP_NAME"
+        value = google_certificate_manager_certificate_map.main.name
       }
       env {
         name  = "DB_USER"
@@ -591,6 +627,18 @@ resource "google_cloud_run_v2_job" "migrate" {
         env {
           name  = "GCP_LOCATION"
           value = var.region
+        }
+        env {
+          name  = "CERTIFICATE_MANAGER_AUTO_PROVISION"
+          value = "true"
+        }
+        env {
+          name  = "CERTIFICATE_MANAGER_LOCATION"
+          value = "global"
+        }
+        env {
+          name  = "CERTIFICATE_MAP_NAME"
+          value = google_certificate_manager_certificate_map.main.name
         }
         env {
           name  = "DB_USER"

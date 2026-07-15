@@ -8,6 +8,7 @@
 어느 경로든 모든 evidence note의 source_excerpt는 raw_text/operator_note의 verbatim
 부분문자열이어야 하며, 그렇지 않은 노트는 버린다.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -29,6 +30,7 @@ from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
+    PHOTO_SOURCE_TYPES,
     PhilosophyStatus,
     SourceStatus,
 )
@@ -94,12 +96,14 @@ def compute_sources_snapshot_hash(sources: Iterable[HospitalSourceAsset]) -> str
     parts = []
     for source in sorted(sources, key=lambda item: str(item.id)):
         parts.append(
-            "|".join([
-                str(source.id),
-                source.content_hash or "",
-                source.status.value if hasattr(source.status, "value") else str(source.status),
-                source.processed_at.isoformat() if source.processed_at else "",
-            ])
+            "|".join(
+                [
+                    str(source.id),
+                    source.content_hash or "",
+                    source.status.value if hasattr(source.status, "value") else str(source.status),
+                    source.processed_at.isoformat() if source.processed_at else "",
+                ]
+            )
         )
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
@@ -143,9 +147,13 @@ def process_source_asset(
             payloads = _process_source_asset_llm(asset)
             if payloads:
                 return payloads
-            logger.info("essence LLM source-processing returned no notes; using deterministic fallback")
+            logger.info(
+                "essence LLM source-processing returned no notes; using deterministic fallback"
+            )
         except Exception as exc:  # noqa: BLE001 — LLM 실패 시 폴백으로 계속
-            logger.warning("essence LLM source-processing failed (%s); using deterministic fallback", exc)
+            logger.warning(
+                "essence LLM source-processing failed (%s); using deterministic fallback", exc
+            )
 
     return _process_source_asset_deterministic(asset)
 
@@ -250,7 +258,11 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
         seen.add(key)
 
         claim = raw_note.get("claim")
-        claim = claim.strip() if isinstance(claim, str) and claim.strip() else _claim_from_excerpt(note_type, excerpt)
+        claim = (
+            claim.strip()
+            if isinstance(claim, str) and claim.strip()
+            else _claim_from_excerpt(note_type, excerpt)
+        )
         payloads.append(
             EvidenceNotePayload(
                 note_type=note_type,
@@ -340,7 +352,8 @@ def synthesize_philosophy(
     # 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)가 든 근거 노트는 철학 조립에서 제외한다.
     # (기존 오염 노트가 DB에 남아 있어도 positioning/promise 등 핵심 필드로 새지 않게 한다.)
     notes = [
-        note for note in notes
+        note
+        for note in notes
         if not looks_like_error_page_text(getattr(note, "source_excerpt", "") or "")
     ]
     if use_llm and llm_enabled() and notes:
@@ -428,7 +441,9 @@ def _synthesize_philosophy_llm(
         f"excerpt={_short(note.source_excerpt, 160)}"
         for note in notes
     )
-    operator_block = f"\n[운영자 작성 방향 operator_note]\n{operator_note.strip()}\n" if operator_note else ""
+    operator_block = (
+        f"\n[운영자 작성 방향 operator_note]\n{operator_note.strip()}\n" if operator_note else ""
+    )
     user_message = (
         f"[병원]\n{getattr(hospital, 'name', '') or ''}\n"
         f"{operator_block}\n"
@@ -472,7 +487,8 @@ def _synthesize_philosophy_llm(
     payload["conflict_notes"] = _extract_text_list_payload(data.get("conflict_notes"), valid_ids)
     synthesis_notes = data.get("synthesis_notes")
     payload["synthesis_notes"] = (
-        synthesis_notes.strip() if isinstance(synthesis_notes, str) and synthesis_notes.strip()
+        synthesis_notes.strip()
+        if isinstance(synthesis_notes, str) and synthesis_notes.strip()
         else "Claude 합성. 근거 노트 기반, 외부 지식 사용 없음."
     )
     payload["source_snapshot_hash"] = compute_sources_snapshot_hash(sources)
@@ -530,7 +546,8 @@ def _extract_treatment_narratives(
         treatment = entry.get("treatment")
         narratives.append(
             {
-                "treatment": treatment.strip() if isinstance(treatment, str) and treatment.strip()
+                "treatment": treatment.strip()
+                if isinstance(treatment, str) and treatment.strip()
                 else "자료 기반 진료 항목",
                 "patient_language": _string_list(entry.get("patient_language")),
                 "cautions": _string_list(entry.get("cautions"))
@@ -545,7 +562,11 @@ def _extract_treatment_narratives(
 def _extract_local_context(
     value: Any, valid_ids: dict[str, HospitalSourceEvidenceNote]
 ) -> tuple[dict[str, Any], list[str]]:
-    base: dict[str, Any] = {"region_terms": [], "local_patient_context": [], "avoid_region_stuffing": True}
+    base: dict[str, Any] = {
+        "region_terms": [],
+        "local_patient_context": [],
+        "avoid_region_stuffing": True,
+    }
     if not isinstance(value, dict):
         return base, []
     ids = [str(i) for i in _as_list(value.get("evidence_note_ids")) if str(i) in valid_ids]
@@ -592,7 +613,7 @@ def _parse_json_object(raw: str) -> dict[str, Any]:
         start = clean.find("{")
         end = clean.rfind("}")
         if start >= 0 and end > start:
-            clean = clean[start:end + 1]
+            clean = clean[start : end + 1]
     parsed = json.loads(clean)
     if not isinstance(parsed, dict):
         raise ValueError("essence LLM이 객체가 아닌 JSON을 반환했습니다.")
@@ -661,24 +682,32 @@ def _synthesize_philosophy_deterministic(
 
     positioning_statement = None
     if key_notes:
-        positioning_statement = f"자료에서 확인된 핵심 메시지: {_short(key_notes[0].source_excerpt, 140)}"
+        positioning_statement = (
+            f"자료에서 확인된 핵심 메시지: {_short(key_notes[0].source_excerpt, 140)}"
+        )
         evidence_map["positioning_statement"] = [_note_id(key_notes[0])]
     else:
-        unsupported_gaps.append({"field": "positioning_statement", "reason": "핵심 메시지 근거 note가 없습니다."})
+        unsupported_gaps.append(
+            {"field": "positioning_statement", "reason": "핵심 메시지 근거 note가 없습니다."}
+        )
 
     doctor_voice = None
     if tone_notes:
         doctor_voice = f"자료 표현 기준 문체: {_short(tone_notes[0].source_excerpt, 140)}"
         evidence_map["doctor_voice"] = [_note_id(tone_notes[0])]
     else:
-        unsupported_gaps.append({"field": "doctor_voice", "reason": "문체/톤 근거 note가 없습니다."})
+        unsupported_gaps.append(
+            {"field": "doctor_voice", "reason": "문체/톤 근거 note가 없습니다."}
+        )
 
     patient_promise = None
     if promise_notes:
         patient_promise = f"환자에게 말할 수 있는 약속은 이 근거 범위로 제한: {_short(promise_notes[0].source_excerpt, 140)}"
         evidence_map["patient_promise"] = [_note_id(promise_notes[0])]
     else:
-        unsupported_gaps.append({"field": "patient_promise", "reason": "환자 약속 근거 note가 없습니다."})
+        unsupported_gaps.append(
+            {"field": "patient_promise", "reason": "환자 약속 근거 note가 없습니다."}
+        )
 
     content_principles = [
         f"근거 문장을 벗어나지 않고 설명합니다: {_short(note.source_excerpt, 120)}"
@@ -687,11 +716,12 @@ def _synthesize_philosophy_deterministic(
     if content_principles:
         evidence_map["content_principles"] = [_note_id(note) for note in key_notes[:3]]
     else:
-        unsupported_gaps.append({"field": "content_principles", "reason": "콘텐츠 원칙으로 전환할 근거가 없습니다."})
+        unsupported_gaps.append(
+            {"field": "content_principles", "reason": "콘텐츠 원칙으로 전환할 근거가 없습니다."}
+        )
 
     tone_guidelines = [
-        f"원문 톤을 유지합니다: {_short(note.source_excerpt, 120)}"
-        for note in tone_notes
+        f"원문 톤을 유지합니다: {_short(note.source_excerpt, 120)}" for note in tone_notes
     ]
     if tone_guidelines:
         evidence_map["tone_guidelines"] = [_note_id(note) for note in tone_notes]
@@ -701,29 +731,34 @@ def _synthesize_philosophy_deterministic(
         evidence_map["must_use_messages"] = [_note_id(note) for note in key_notes]
 
     avoid_messages = [
-        f"검수 필요 표현 또는 약속: {_short(note.source_excerpt, 120)}"
-        for note in risk_notes
+        f"검수 필요 표현 또는 약속: {_short(note.source_excerpt, 120)}" for note in risk_notes
     ]
     if avoid_messages:
         evidence_map["avoid_messages"] = [_note_id(note) for note in risk_notes]
 
     treatment_narratives = []
     for note in treatment_notes:
-        treatment_narratives.append({
-            "treatment": (note.note_metadata or {}).get("treatment") or "자료 기반 진료 항목",
-            "angle": _short(note.source_excerpt, 140),
-            "explanation_style": "근거 발췌에 포함된 표현만 사용합니다.",
-            "cautions": ["효과, 완치, 성공률을 보장하지 않습니다."],
-            "evidence_note_ids": [_note_id(note)],
-        })
+        treatment_narratives.append(
+            {
+                "treatment": (note.note_metadata or {}).get("treatment") or "자료 기반 진료 항목",
+                "angle": _short(note.source_excerpt, 140),
+                "explanation_style": "근거 발췌에 포함된 표현만 사용합니다.",
+                "cautions": ["효과, 완치, 성공률을 보장하지 않습니다."],
+                "evidence_note_ids": [_note_id(note)],
+            }
+        )
     if treatment_narratives:
         evidence_map["treatment_narratives"] = [_note_id(note) for note in treatment_notes]
     else:
-        unsupported_gaps.append({"field": "treatment_narratives", "reason": "진료/시술 설명 근거 note가 없습니다."})
+        unsupported_gaps.append(
+            {"field": "treatment_narratives", "reason": "진료/시술 설명 근거 note가 없습니다."}
+        )
 
     local_context = {"region_terms": [], "local_patient_context": [], "avoid_region_stuffing": True}
     if local_notes:
-        local_context["local_patient_context"] = [_short(note.source_excerpt, 120) for note in local_notes]
+        local_context["local_patient_context"] = [
+            _short(note.source_excerpt, 120) for note in local_notes
+        ]
         local_context["evidence_note_ids"] = [_note_id(note) for note in local_notes]
         evidence_map["local_context"] = [_note_id(note) for note in local_notes]
 
@@ -741,10 +776,12 @@ def _synthesize_philosophy_deterministic(
         evidence_map["medical_ad_risk_rules"] = [_note_id(note) for note in risk_notes]
 
     if not risk_notes:
-        unsupported_gaps.append({
-            "field": "medical_ad_risk_rules",
-            "reason": "자료에서 병원별 리스크 표현이 별도로 발견되지 않았습니다.",
-        })
+        unsupported_gaps.append(
+            {
+                "field": "medical_ad_risk_rules",
+                "reason": "자료에서 병원별 리스크 표현이 별도로 발견되지 않았습니다.",
+            }
+        )
 
     conflict_payload = [
         {"text": _short(note.source_excerpt, 160), "evidence_note_ids": [_note_id(note)]}
@@ -752,10 +789,12 @@ def _synthesize_philosophy_deterministic(
     ]
 
     if operator_note:
-        unsupported_gaps.append({
-            "field": "operator_note",
-            "reason": "초안 생성 메모는 참고만 했고, 저장 필드는 근거 노트에 매핑된 값으로 제한했습니다.",
-        })
+        unsupported_gaps.append(
+            {
+                "field": "operator_note",
+                "reason": "초안 생성 메모는 참고만 했고, 저장 필드는 근거 노트에 매핑된 값으로 제한했습니다.",
+            }
+        )
 
     return {
         "positioning_statement": positioning_statement,
@@ -824,7 +863,9 @@ def validate_philosophy_grounding(
             continue
         unknown = [note_id for note_id in mapped_ids if note_id not in valid_note_ids]
         if unknown:
-            errors.append(f"{field_name} 필드가 존재하지 않는 근거 노트를 참조합니다: {', '.join(unknown)}")
+            errors.append(
+                f"{field_name} 필드가 존재하지 않는 근거 노트를 참조합니다: {', '.join(unknown)}"
+            )
             continue
 
     return errors
@@ -881,7 +922,10 @@ def screen_content_against_philosophy(
     content_item: ContentItem,
     philosophy: HospitalContentPhilosophy | None,
 ) -> EssenceScreeningResult:
-    if not philosophy or _status_value(getattr(philosophy, "status", None)) != PhilosophyStatus.APPROVED.value:
+    if (
+        not philosophy
+        or _status_value(getattr(philosophy, "status", None)) != PhilosophyStatus.APPROVED.value
+    ):
         return EssenceScreeningResult(
             status=ESSENCE_STATUS_MISSING_APPROVED,
             summary={
@@ -894,7 +938,8 @@ def screen_content_against_philosophy(
     # FAQ 분리 필드도 공개 표면(FAQPage rich result)에 그대로 노출되므로
     # 운영 기준/금지 표현 검수 텍스트에 반드시 포함한다 (P1-2).
     text = " ".join(
-        part for part in [
+        part
+        for part in [
             getattr(content_item, "title", None),
             getattr(content_item, "body", None),
             getattr(content_item, "meta_description", None),
@@ -936,16 +981,35 @@ def get_approved_philosophy_sync(db, hospital_id: Any) -> HospitalContentPhiloso
     return result.scalar_one_or_none()
 
 
-def build_monthly_essence_summary(db, hospital: Hospital, period_start: datetime, period_end: datetime) -> dict[str, Any]:
+def build_monthly_essence_summary(
+    db, hospital: Hospital, period_start: datetime, period_end: datetime
+) -> dict[str, Any]:
     source_result = db.execute(
         select(HospitalSourceAsset).where(HospitalSourceAsset.hospital_id == hospital.id)
     )
     sources = source_result.scalars().all()
-    processed_sources = [source for source in sources if source.status == SourceStatus.PROCESSED]
+    # 사진은 공개 자산 검수 대상이지 글쓰기 기준의 근거 자료가 아니다. 제외 자료 역시
+    # 현재 기준에서 명시적으로 빠졌으므로 월간 Essence 완결성 분모에 포함하지 않는다.
+    # 이 정의는 services/essence_readiness.py의 실시간 게이트와 반드시 같아야 한다.
+    required_sources = [
+        source
+        for source in sources
+        if source.status != SourceStatus.EXCLUDED and source.source_type not in PHOTO_SOURCE_TYPES
+    ]
+    processed_sources = [
+        source for source in required_sources if source.status == SourceStatus.PROCESSED
+    ]
 
     approved = get_approved_philosophy_sync(db, hospital.id)
     source_snapshot_hash = compute_sources_snapshot_hash(processed_sources)
-    source_stale = bool(approved and approved.source_snapshot_hash != source_snapshot_hash)
+    source_stale = bool(
+        approved
+        and (
+            len(processed_sources) != len(required_sources)
+            or not processed_sources
+            or approved.source_snapshot_hash != source_snapshot_hash
+        )
+    )
 
     content_result = db.execute(
         select(ContentItem).where(
@@ -957,9 +1021,26 @@ def build_monthly_essence_summary(db, hospital: Hospital, period_start: datetime
     items = content_result.scalars().all()
     generated_items = [item for item in items if item.body]
 
-    aligned_count = sum(1 for item in generated_items if item.essence_status == ESSENCE_STATUS_ALIGNED)
-    needs_review_count = sum(1 for item in generated_items if item.essence_status == ESSENCE_STATUS_NEEDS_REVIEW)
-    missing_count = sum(1 for item in generated_items if item.essence_status == ESSENCE_STATUS_MISSING_APPROVED)
+    aligned_count = sum(
+        1
+        for item in generated_items
+        if not source_stale
+        and item.essence_status == ESSENCE_STATUS_ALIGNED
+        and approved is not None
+        and item.content_philosophy_id == approved.id
+    )
+    needs_review_count = sum(
+        1
+        for item in generated_items
+        if item.essence_status == ESSENCE_STATUS_NEEDS_REVIEW
+        or (
+            item.essence_status == ESSENCE_STATUS_ALIGNED
+            and (source_stale or approved is None or item.content_philosophy_id != approved.id)
+        )
+    )
+    missing_count = sum(
+        1 for item in generated_items if item.essence_status == ESSENCE_STATUS_MISSING_APPROVED
+    )
 
     medical_risk_findings = []
     for item in generated_items:
@@ -977,31 +1058,41 @@ def build_monthly_essence_summary(db, hospital: Hospital, period_start: datetime
             )
         )
         if violations:
-            medical_risk_findings.append({
-                "content_id": str(item.id),
-                "title": item.title,
-                "violations": violations,
-            })
+            medical_risk_findings.append(
+                {
+                    "content_id": str(item.id),
+                    "title": item.title,
+                    "violations": violations,
+                }
+            )
 
     recommended_actions = []
     if not approved:
         recommended_actions.append("승인된 콘텐츠 운영 기준을 생성/승인하세요.")
-    if not processed_sources:
+    if not required_sources:
         recommended_actions.append("온보딩 자료를 1개 이상 원문 텍스트 기반으로 처리하세요.")
+    elif len(processed_sources) != len(required_sources):
+        recommended_actions.append("처리되지 않은 온보딩 자료를 처리하거나 제외하세요.")
     if source_stale:
-        recommended_actions.append("처리된 자료가 승인된 운영 기준과 달라졌습니다. 새 초안을 검토하세요.")
+        recommended_actions.append(
+            "처리된 자료가 승인된 운영 기준과 달라졌습니다. 새 초안을 검토하세요."
+        )
     if needs_review_count:
         recommended_actions.append("운영 기준 재검수가 필요한 콘텐츠를 수정하세요.")
     if missing_count:
-        recommended_actions.append("승인된 콘텐츠 운영 기준 없이 생성된 콘텐츠를 재생성하거나 검수하세요.")
+        recommended_actions.append(
+            "승인된 콘텐츠 운영 기준 없이 생성된 콘텐츠를 재생성하거나 검수하세요."
+        )
     if medical_risk_findings:
         recommended_actions.append("의료광고 리스크 표현이 있는 콘텐츠를 발행 전 수정하세요.")
 
     return {
         "approved_philosophy_exists": approved is not None,
         "philosophy_version": approved.version if approved else None,
-        "approved_at": approved.approved_at.isoformat() if approved and approved.approved_at else None,
-        "source_count": len(sources),
+        "approved_at": approved.approved_at.isoformat()
+        if approved and approved.approved_at
+        else None,
+        "source_count": len(required_sources),
         "processed_source_count": len(processed_sources),
         "source_asset_ids": [str(source.id) for source in processed_sources],
         "source_stale": source_stale,
@@ -1039,7 +1130,9 @@ def _candidate_excerpts(asset: HospitalSourceAsset) -> list[str]:
 
 
 def _classify_excerpt(excerpt: str) -> EvidenceNoteType:
-    if check_forbidden(excerpt) or _has_any(excerpt, ["보장", "무조건", "부작용", "완치", "최고", "유일"]):
+    if check_forbidden(excerpt) or _has_any(
+        excerpt, ["보장", "무조건", "부작용", "완치", "최고", "유일"]
+    ):
         return EvidenceNoteType.RISK_SIGNAL
     if _has_any(excerpt, ["철학", "원장", "진료 원칙", "중요하게 생각"]):
         return EvidenceNoteType.DOCTOR_PHILOSOPHY
@@ -1067,13 +1160,17 @@ def _claim_from_excerpt(note_type: EvidenceNoteType, excerpt: str) -> str:
 
 
 def _guess_treatment_label(excerpt: str) -> str | None:
-    match = re.search(r"([가-힣A-Za-z0-9]{2,20})(?:\s*)(치료|수술|시술|검사|내시경|진료|상담)", excerpt)
+    match = re.search(
+        r"([가-힣A-Za-z0-9]{2,20})(?:\s*)(치료|수술|시술|검사|내시경|진료|상담)", excerpt
+    )
     if not match:
         return None
     return "".join(match.groups())
 
 
-def _group_notes(notes: list[HospitalSourceEvidenceNote]) -> dict[EvidenceNoteType, list[HospitalSourceEvidenceNote]]:
+def _group_notes(
+    notes: list[HospitalSourceEvidenceNote],
+) -> dict[EvidenceNoteType, list[HospitalSourceEvidenceNote]]:
     grouped: dict[EvidenceNoteType, list[HospitalSourceEvidenceNote]] = {}
     for note in notes:
         grouped.setdefault(note.note_type, []).append(note)
@@ -1133,7 +1230,9 @@ def _string_items(values: Iterable[Any]) -> list[str]:
         if isinstance(value, str):
             result.append(value)
         elif isinstance(value, dict):
-            result.append(str(value.get("text") or value.get("message") or value.get("angle") or ""))
+            result.append(
+                str(value.get("text") or value.get("message") or value.get("angle") or "")
+            )
         else:
             result.append(str(value))
     return [item for item in result if item]

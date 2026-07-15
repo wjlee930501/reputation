@@ -8,12 +8,19 @@ from celery.signals import task_failure, task_prerun
 from app.core.config import settings
 from app.core.observability import configure_logging, sentry_before_send, set_request_id
 
+
+# Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
+# beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
+# reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
+REDBEAT_SCHEDULE_VERSION = "2026-07-16.2"
+
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
 
 if settings.SENTRY_DSN:
     import sentry_sdk
     from sentry_sdk.integrations.celery import CeleryIntegration
+
     sentry_sdk.init(
         dsn=settings.SENTRY_DSN,
         integrations=[CeleryIntegration()],
@@ -47,7 +54,10 @@ def _alert_on_task_failure(sender=None, task_id=None, exception=None, **_kwargs)
         finally:
             loop.close()
     except Exception:
-        logging.getLogger("app.celery").error("task_failure alert delivery failed for %s", task_name)
+        logging.getLogger("app.celery").error(
+            "task_failure alert delivery failed for %s", task_name
+        )
+
 
 celery_app = Celery(
     "reputation",
@@ -79,6 +89,10 @@ celery_app.conf.update(
     # Redis에 보존해 재시작 후에도 last-run 정보가 유지된다(중복/누락 방지).
     beat_scheduler="redbeat.RedBeatScheduler",
     redbeat_redis_url=settings.REDIS_URL,
+    # RedBeat 기본 max loop interval은 300초다. 기존 락 TTL도 정확히 300초여서
+    # 다음 tick에서 이미 만료된 락을 extend하며 LockNotOwnedError가 발생했다.
+    # 30초마다 갱신해 Redis/Cloud Run 지연이 있어도 TTL 대비 10배 여유를 둔다.
+    beat_max_loop_interval=30,
     # 락 TTL: beat가 죽으면 이 시간 후 새 beat가 인계. 롤아웃 중 이중 dispatch를
     # 막을 만큼 길고, 장애 시 스케줄 공백이 과하지 않을 만큼 짧게.
     redbeat_lock_timeout=300,
@@ -99,6 +113,7 @@ celery_app.conf.update(
         # (tests/test_celery_routing.py가 회귀를 막는다).
         "app.workers.tasks.purge_expired_leads": {"queue": "default"},
         "app.workers.tasks.adjust_query_priorities": {"queue": "sov"},
+        "app.workers.tasks.monitor_live_custom_domains": {"queue": "default"},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성
@@ -131,6 +146,11 @@ celery_app.conf.update(
         "purge-expired-leads": {
             "task": "app.workers.tasks.purge_expired_leads",
             "schedule": crontab(hour=4, minute=0),
+        },
+        # 15분마다 — 런타임으로 추가된 모든 병원 자기 도메인의 실제 TLS/Host 응답 확인.
+        "live-custom-domain-health": {
+            "task": "app.workers.tasks.monitor_live_custom_domains",
+            "schedule": crontab(minute="*/15"),
         },
     },
 )

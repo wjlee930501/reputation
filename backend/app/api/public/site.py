@@ -21,6 +21,7 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
+from app.services.essence_readiness import get_essence_readiness
 from app.utils.domain import normalize_domain
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden
@@ -86,7 +87,8 @@ async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession
         match_clause = func.lower(Hospital.aeo_domain) == normalized
 
     result = await db.execute(
-        select(Hospital).where(
+        select(Hospital)
+        .where(
             match_clause,
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
@@ -103,7 +105,9 @@ async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def list_hospitals(request: Request, db: AsyncSession = Depends(get_db)):
     """Public list of active hospitals for sitemap generation."""
-    stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE, Hospital.site_live.is_(True))
+    stmt = select(Hospital).where(
+        Hospital.status == HospitalStatus.ACTIVE, Hospital.site_live.is_(True)
+    )
     result = await db.execute(stmt)
     hospitals = result.scalars().all()
     return [_serialize_hospital_summary(h) for h in hospitals]
@@ -125,7 +129,11 @@ def _serialize_hospital_summary(h: Hospital) -> dict:
         "address": h.address,
         "phone": h.phone,
         "website_url": _safe_external_url(h.website_url),
-        "updated_at": h.updated_at.isoformat() if h.updated_at else h.created_at.isoformat() if h.created_at else None,
+        "updated_at": h.updated_at.isoformat()
+        if h.updated_at
+        else h.created_at.isoformat()
+        if h.created_at
+        else None,
     }
 
 
@@ -156,14 +164,8 @@ async def get_hospital_public(request: Request, slug: str, db: AsyncSession = De
 
     # 승인된 콘텐츠 운영 기준(positioning/promise)만 공개 about 서사로 노출한다.
     # 자유 입력 director_philosophy와 달리 근거 기반 검수를 거친 필드다.
-    philosophy_result = await db.execute(
-        select(HospitalContentPhilosophy).where(
-            HospitalContentPhilosophy.hospital_id == h.id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
-        )
-    )
-    philosophy = philosophy_result.scalars().first()
-    return _serialize_hospital(h, photos, philosophy)
+    essence = await get_essence_readiness(db, h.id)
+    return _serialize_hospital(h, photos, essence.current)
 
 
 @router.get("/{slug}/assets/{source_id}")
@@ -207,6 +209,9 @@ async def list_published_contents(
     넘어서는 병원(수년 누적)도 호출부(sitemap 등)가 전체 발행 콘텐츠를 순회할 수 있다.
     """
     h = await _get_active_hospital(db, slug)
+    essence = await get_essence_readiness(db, h.id)
+    if essence.current is None:
+        return []
 
     result = await db.execute(
         select(ContentItem)
@@ -214,6 +219,7 @@ async def list_published_contents(
             ContentItem.hospital_id == h.id,
             ContentItem.status == ContentStatus.PUBLISHED,
             ContentItem.essence_status == ESSENCE_STATUS_ALIGNED,
+            ContentItem.content_philosophy_id == essence.current.id,
         )
         .order_by(ContentItem.published_at.desc())
         .offset(offset)
@@ -230,9 +236,14 @@ async def get_content_public(
 ):
     """콘텐츠 상세"""
     h = await _get_active_hospital(db, slug)
+    essence = await get_essence_readiness(db, h.id)
 
     item = await db.get(ContentItem, content_id)
-    if not item or item.hospital_id != h.id or not _is_public_safe_content(item):
+    if (
+        not item
+        or item.hospital_id != h.id
+        or not _is_public_safe_content(item, essence.current.id if essence.current else None)
+    ):
         raise HTTPException(status_code=404, detail="Content not found")
     return _serialize_item(item, h.slug, full=True)
 
@@ -244,11 +255,12 @@ async def get_public_content_image(
 ):
     """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302)."""
     h = await _get_active_hospital(db, slug)
+    essence = await get_essence_readiness(db, h.id)
     item = await db.get(ContentItem, content_id)
     if (
         not item
         or item.hospital_id != h.id
-        or not _is_public_safe_content(item)
+        or not _is_public_safe_content(item, essence.current.id if essence.current else None)
         or not item.image_url
     ):
         raise HTTPException(status_code=404, detail="Content image not found")
@@ -314,7 +326,9 @@ def _serialize_hospital(
     serialized_photos = [
         {
             "id": str(asset.id),
-            "source_type": asset.source_type.value if hasattr(asset.source_type, "value") else asset.source_type,
+            "source_type": asset.source_type.value
+            if hasattr(asset.source_type, "value")
+            else asset.source_type,
             "title": asset.title,
             "url": public_asset_url(h.slug, asset.id),
         }
@@ -392,8 +406,24 @@ def _safe_credentials(credentials: dict | None) -> dict | None:
     }
 
 
-def _is_public_safe_content(item: ContentItem) -> bool:
-    return item.status == ContentStatus.PUBLISHED and item.essence_status == ESSENCE_STATUS_ALIGNED
+_CURRENT_PHILOSOPHY_UNSET = object()
+
+
+def _is_public_safe_content(
+    item: ContentItem,
+    current_philosophy_id: uuid.UUID | None | object = _CURRENT_PHILOSOPHY_UNSET,
+) -> bool:
+    current_matches = (
+        True
+        if current_philosophy_id is _CURRENT_PHILOSOPHY_UNSET
+        else current_philosophy_id is not None
+        and item.content_philosophy_id == current_philosophy_id
+    )
+    return (
+        current_matches
+        and item.status == ContentStatus.PUBLISHED
+        and item.essence_status == ESSENCE_STATUS_ALIGNED
+    )
 
 
 def _content_image_url(slug: str, item: ContentItem) -> str:
@@ -414,6 +444,7 @@ def _safe_external_url(value: str | None) -> str | None:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     return value.strip()
+
 
 # 한국어 평균 읽기 속도 약 600자/분 — site 상세 페이지 calculateReadingMinutes와 동일 기준.
 _KOREAN_READING_SPEED_CHARS_PER_MIN = 600

@@ -1,4 +1,5 @@
 """P2-10 — profile_complete 병원의 필수 필드 비우기 차단."""
+
 import uuid
 from types import SimpleNamespace
 
@@ -46,20 +47,20 @@ def _hospital(**overrides):
         keywords=["치질"],
         competitors=[],
         director_name="김원장",
-        director_career=None,
-        director_philosophy=None,
+        director_career="외과 전문의",
+        director_philosophy="충분히 설명합니다.",
         director_credentials=None,
         address="서울 성동구",
         phone="02-000-0000",
-        business_hours=None,
-        website_url=None,
+        business_hours={"mon": "09:00-18:00"},
+        website_url="https://clinic.example.com",
         blog_url=None,
         kakao_channel_url=None,
         google_business_profile_url=None,
-        google_maps_url=None,
-        naver_place_url=None,
-        latitude=None,
-        longitude=None,
+        google_maps_url="https://maps.google.com/example",
+        naver_place_url="https://naver.me/example",
+        latitude=37.5,
+        longitude=127.0,
         wikidata_qid=None,
         gbp_place_id=None,
         naver_place_id=None,
@@ -72,16 +73,16 @@ def _hospital(**overrides):
 
 
 @pytest.mark.parametrize(
-    "patch_body,field_name",
+    "patch_body,requirement_key",
     [
-        ({"keywords": []}, "keywords"),
-        ({"region": []}, "region"),
-        ({"specialties": []}, "specialties"),
-        ({"address": ""}, "address"),
-        ({"director_name": ""}, "director_name"),
+        ({"keywords": []}, "targeting"),
+        ({"region": []}, "geo"),
+        ({"specialties": []}, "targeting"),
+        ({"address": ""}, "contact"),
+        ({"director_name": ""}, "director_basic"),
     ],
 )
-async def test_patch_cannot_empty_required_field_on_complete_profile(patch_body, field_name):
+async def test_patch_cannot_empty_required_field_on_complete_profile(patch_body, requirement_key):
     """profile_complete=True가 유지되는 한 필수 필드를 빈 값으로 비울 수 없다 (422)."""
     hospital = _hospital()
     db = FakeDB(hospital)
@@ -91,7 +92,7 @@ async def test_patch_cannot_empty_required_field_on_complete_profile(patch_body,
         await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
 
     assert exc.value.status_code == 422
-    assert field_name in exc.value.detail
+    assert requirement_key in exc.value.detail
     assert "비울 수 없습니다" in exc.value.detail
     assert db.committed is False
 
@@ -106,7 +107,7 @@ async def test_completion_transition_with_missing_fields_keeps_400():
         await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
 
     assert exc.value.status_code == 400
-    assert "keywords" in exc.value.detail
+    assert "targeting" in exc.value.detail
     assert db.committed is False
 
 

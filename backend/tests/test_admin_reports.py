@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from app.api.admin import reports as reports_api
 from app.api.admin.reports import _serialize
+from app.services.essence_readiness import EssenceReadiness
 
 
 def _report(**overrides):
@@ -25,12 +26,13 @@ def _report(**overrides):
             "approved_at": "2026-05-05T12:00:00+00:00",
             "source_count": 4,
             "processed_source_count": 4,
+            "source_stale": False,
             "generated_content_count": 8,
-            "aligned_content_count": 7,
-            "needs_review_content_count": 1,
+            "aligned_content_count": 8,
+            "needs_review_content_count": 0,
             "missing_philosophy_content_count": 0,
-            "medical_risk_findings": [{"content_id": "demo", "risk": "과장 표현"}],
-            "recommended_actions": ["재검토 필요 콘텐츠 1건을 수정하세요."],
+            "medical_risk_findings": [],
+            "recommended_actions": [],
         },
         created_at=datetime(2026, 5, 5, 12, 30, tzinfo=timezone.utc),
         sent_at=None,
@@ -54,10 +56,15 @@ def test_report_list_hides_internal_summaries_but_keeps_pdf_contract():
         "pdf_status": "READY",
         "pdf_status_label": "다운로드 가능",
     }
-    assert payload["download_url"] == f"/api/admin/hospitals/{report.hospital_id}/reports/{report.id}/download"
+    assert (
+        payload["download_url"]
+        == f"/api/admin/hospitals/{report.hospital_id}/reports/{report.id}/download"
+    )
     assert payload["sov_summary"] is None
     assert payload["content_summary"] is None
     assert payload["essence_summary"] is None
+    assert payload["delivery_ready"] is True
+    assert payload["delivery_blockers"] == []
 
 
 class _FakeDB:
@@ -89,11 +96,24 @@ def _hospital():
     return SimpleNamespace(id=uuid.uuid4())
 
 
-async def test_mark_report_sent_sets_sent_at_and_audits():
+async def test_mark_report_sent_sets_sent_at_and_audits(monkeypatch):
     """A4 — sent_at 기록 + audit log + 상세 응답 반환."""
     hospital = _hospital()
     report = _report(hospital_id=hospital.id, sent_at=None)
     db = _FakeDB(hospital, report)
+
+    async def _fresh_essence(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(
+            approved=philosophy,
+            current=philosophy,
+            processed_source_count=4,
+            required_source_count=4,
+            current_snapshot_hash="snapshot",
+        )
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh_essence)
 
     payload = await reports_api.mark_report_sent(hospital.id, report.id, db=db)
 
@@ -104,6 +124,32 @@ async def test_mark_report_sent_sets_sent_at_and_audits():
     assert db.committed is True
     assert len(db.added) == 1
     assert db.added[0].action == "mark_report_sent"
+
+
+async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(monkeypatch):
+    hospital = _hospital()
+    report = _report(hospital_id=hospital.id, sent_at=None)
+    db = _FakeDB(hospital, report)
+
+    async def _stale_essence(db, hospital_id):
+        del db, hospital_id
+        return EssenceReadiness(
+            approved=SimpleNamespace(version=3),
+            current=None,
+            processed_source_count=4,
+            required_source_count=5,
+            current_snapshot_hash="new-snapshot",
+        )
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _stale_essence)
+
+    with pytest.raises(HTTPException) as exc:
+        await reports_api.mark_report_sent(hospital.id, report.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert any("현재 병원 자료" in blocker for blocker in exc.value.detail["blockers"])
+    assert any("처리되지 않은 온보딩 자료" in blocker for blocker in exc.value.detail["blockers"])
+    assert report.sent_at is None
 
 
 async def test_mark_report_sent_is_idempotent():
@@ -158,8 +204,56 @@ def test_report_detail_serializes_essence_summary_for_pre_pdf_review():
     assert payload["essence_summary"]["philosophy_version"] == 3
     assert payload["essence_summary"]["source_count"] == 4
     assert payload["essence_summary"]["processed_source_count"] == 4
-    assert payload["essence_summary"]["aligned_content_count"] == 7
-    assert payload["essence_summary"]["needs_review_content_count"] == 1
+    assert payload["essence_summary"]["aligned_content_count"] == 8
+    assert payload["essence_summary"]["needs_review_content_count"] == 0
     assert payload["essence_summary"]["missing_philosophy_content_count"] == 0
-    assert payload["essence_summary"]["medical_risk_findings"] == [{"content_id": "demo", "risk": "과장 표현"}]
-    assert payload["essence_summary"]["recommended_actions"] == ["재검토 필요 콘텐츠 1건을 수정하세요."]
+    assert payload["essence_summary"]["medical_risk_findings"] == []
+    assert payload["essence_summary"]["recommended_actions"] == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"pdf_path": None}, "PDF 다운로드 파일"),
+        ({"sov_summary": None}, "AI 언급률 요약"),
+        ({"content_summary": None}, "월간 콘텐츠 발행 요약"),
+        ({"essence_summary": {"approved_philosophy_exists": False}}, "승인된 콘텐츠 운영 기준"),
+        (
+            {"essence_summary": {"approved_philosophy_exists": True, "source_stale": True}},
+            "현재 자료와 일치하지 않습니다",
+        ),
+    ],
+)
+async def test_mark_report_sent_blocks_incomplete_delivery(overrides, expected):
+    hospital = _hospital()
+    report = _report(hospital_id=hospital.id, sent_at=None, **overrides)
+    db = _FakeDB(hospital, report)
+
+    with pytest.raises(HTTPException) as exc:
+        await reports_api.mark_report_sent(hospital.id, report.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert any(expected in blocker for blocker in exc.value.detail["blockers"])
+    assert report.sent_at is None
+    assert db.committed is False
+
+
+async def test_download_report_uses_one_hour_signed_url(monkeypatch):
+    hospital = _hospital()
+    report = _report(hospital_id=hospital.id)
+    db = _FakeDB(hospital, report)
+    calls = []
+
+    def fake_signed_url(path, expiration_hours=24, response_disposition=None):
+        calls.append((path, expiration_hours, response_disposition))
+        return "https://storage.example/report.pdf"
+
+    monkeypatch.setattr(reports_api, "get_signed_url", fake_signed_url)
+    response = await reports_api.download_report(hospital.id, report.id, db=db)
+
+    assert calls == [
+        (report.pdf_path, 1, 'attachment; filename="report-2026-05.pdf"'),
+    ]
+    assert response.headers["cache-control"] == "no-store, private"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "report-2026-05.pdf" in response.headers["content-disposition"]

@@ -5,7 +5,12 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { fetchAPI } from '@/lib/api'
-import { readHospitalDomainStatus } from '@/lib/hospital-domain-status'
+import {
+  deriveOnboardingSteps,
+  deriveOnboardingSummary,
+  type LifecycleReadiness,
+  type OnboardingStep as StepDef,
+} from '@/lib/onboarding-lifecycle'
 
 interface Hospital {
   id: string
@@ -51,16 +56,6 @@ interface Philosophy {
   positioning_statement: string | null
 }
 
-interface OnboardingSummary {
-  stateLabel: string
-  stateClassName: string
-  headline: string
-  detail: string
-  nextActionLabel: string
-  nextActionHref: string
-  blockedReason: string | null
-}
-
 interface UrlCandidate {
   key: string
   title: string
@@ -82,81 +77,6 @@ const SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string; group: 'TEXT' |
   { value: 'PHOTO_CLINIC_INTERIOR', label: '사진 — 내부', group: 'PHOTO' },
   { value: 'PHOTO_TREATMENT_ROOM', label: '사진 — 진료/시술실', group: 'PHOTO' },
 ]
-
-type StepKey = 'profile' | 'sources' | 'processing' | 'philosophy_draft' | 'philosophy_approved'
-
-interface StepDef {
-  key: StepKey
-  index: number
-  title: string
-  description: string
-  href?: string
-  status: 'completed' | 'current' | 'upcoming'
-}
-
-function deriveSteps(
-  hospital: Hospital | null,
-  sources: Source[],
-  philosophies: Philosophy[],
-  hospitalId: string,
-): StepDef[] {
-  const profileDone = !!hospital?.profile_complete
-  const hasSource = sources.length > 0
-  const anyProcessed = sources.some((s) => s.status === 'PROCESSED')
-  const draftReady = philosophies.some((p) => p.status === 'DRAFT' || p.status === 'APPROVED')
-  const approved = philosophies.some((p) => p.status === 'APPROVED')
-
-  const completed = [profileDone, hasSource, anyProcessed, draftReady, approved]
-  const firstUpcomingIdx = completed.findIndex((c) => !c)
-
-  const status = (idx: number): StepDef['status'] => {
-    if (firstUpcomingIdx === -1) return 'completed'
-    if (idx < firstUpcomingIdx) return 'completed'
-    if (idx === firstUpcomingIdx) return 'current'
-    return 'upcoming'
-  }
-
-  return [
-    {
-      key: 'profile',
-      index: 0,
-      title: '병원 프로파일 입력',
-      description: '병원명·진료과·원장명·진료시간·주소 등 기본 정보. 완료 시 V0 리포트 자동 트리거.',
-      href: `/hospitals/${hospitalId}/profile`,
-      status: status(0),
-    },
-    {
-      key: 'sources',
-      index: 1,
-      title: '병원 자산 인입',
-      description: '홈페이지 URL, 인터뷰 PDF/DOCX, 사진을 업로드합니다.',
-      status: status(1),
-    },
-    {
-      key: 'processing',
-      index: 2,
-      title: '자료 처리',
-      description: '각 자료에서 근거 노트(claim + 출처 발췌)를 추출합니다.',
-      status: status(2),
-    },
-    {
-      key: 'philosophy_draft',
-      index: 3,
-      title: '운영 기준 초안 검토',
-      description: '추출된 근거 노트로 콘텐츠 운영 기준 초안을 생성·검토합니다.',
-      href: `/hospitals/${hospitalId}/essence`,
-      status: status(3),
-    },
-    {
-      key: 'philosophy_approved',
-      index: 4,
-      title: '운영 기준 승인 → 콘텐츠 시작',
-      description: '근거 검토 확인 후 승인 → 콘텐츠 자동 생성 사이클이 시작됩니다.',
-      href: `/hospitals/${hospitalId}/essence`,
-      status: status(4),
-    },
-  ]
-}
 
 function hasProcessableText(source: Source): boolean {
   return (source.raw_text?.trim() ?? '').length > 0
@@ -236,134 +156,12 @@ function getProfileUrlCandidates(hospital: Hospital | null, sources: Source[]): 
   })
 }
 
-function deriveOnboardingSummary(
-  steps: StepDef[],
-  hospital: Hospital | null,
-  sources: Source[],
-  philosophies: Philosophy[],
-  hospitalId: string,
-): OnboardingSummary {
-  const allDone = steps.every((s) => s.status === 'completed')
-  const current = steps.find((s) => s.status === 'current')
-  const processablePendingCount = sources.filter((s) => s.status === 'PENDING' && hasProcessableText(s)).length
-  const blockedSourceCount = sources.filter((s) => !!getProcessingBlockReason(s)).length
-  const erroredCount = sources.filter((s) => s.status === 'ERROR').length
-  const approved = philosophies.find((p) => p.status === 'APPROVED')
-
-  if (allDone) {
-    return {
-      stateLabel: '핵심 완료',
-      stateClassName: 'bg-green-100 text-green-800',
-      headline: '온보딩 핵심 단계가 완료됐습니다.',
-      detail: hospital?.schedule_set
-        ? '프로파일, 자료 처리, 운영 기준 승인이 끝났고 콘텐츠 스케줄도 설정되어 운영을 시작할 수 있습니다.'
-        : '프로파일, 자료 처리, 운영 기준 승인이 끝났습니다. 콘텐츠 스케줄을 확인하면 초기 운영을 시작할 수 있습니다.',
-      nextActionLabel: hospital?.schedule_set ? '콘텐츠 운영 확인' : '콘텐츠 스케줄 설정',
-      nextActionHref: hospital?.schedule_set ? `/hospitals/${hospitalId}/content` : `/hospitals/${hospitalId}/schedule`,
-      blockedReason: null,
-    }
-  }
-
-  if (current?.key === 'processing' && processablePendingCount === 0 && blockedSourceCount > 0) {
-    return {
-      stateLabel: '차단됨',
-      stateClassName: 'bg-red-100 text-red-800',
-      headline: '처리 가능한 본문 자료가 없습니다.',
-      detail: '본문 없는 URL/사진/파일은 근거 추출 대상에서 제외됩니다. 차단 사유를 확인하고 본문 자료를 추가하거나 제외 처리해 주세요.',
-      nextActionLabel: '차단 자료 확인',
-      nextActionHref: '#step-2',
-      blockedReason: `본문 없는 자료 ${blockedSourceCount}개`,
-    }
-  }
-
-  if (erroredCount > 0) {
-    return {
-      stateLabel: '확인 필요',
-      stateClassName: 'bg-yellow-100 text-yellow-900',
-      headline: '처리 실패 자료를 확인해야 합니다.',
-      detail: '실패 사유를 확인한 뒤 재시도하거나 온보딩 범위에서 제외해 주세요.',
-      nextActionLabel: '실패 자료 확인',
-      nextActionHref: '#step-2',
-      blockedReason: `처리 실패 ${erroredCount}개`,
-    }
-  }
-
-  if (current?.key === 'profile') {
-    return {
-      stateLabel: '다음 작업',
-      stateClassName: 'bg-blue-100 text-blue-800',
-      headline: '프로파일 필수 정보를 먼저 채워 주세요.',
-      detail: '프로파일이 완료되어야 공식 자료 인입, V0 리포트, 운영 기준 검토가 자연스럽게 이어집니다.',
-      nextActionLabel: '프로파일 입력',
-      nextActionHref: `/hospitals/${hospitalId}/profile`,
-      blockedReason: null,
-    }
-  }
-
-  if (current?.key === 'sources') {
-    return {
-      stateLabel: '다음 작업',
-      stateClassName: 'bg-blue-100 text-blue-800',
-      headline: '공식 채널 또는 병원 소개 자료를 추가해 주세요.',
-      detail: '홈페이지 URL, 블로그, 인터뷰 문서, 공개 가능 사진을 인입하면 근거 처리 단계로 넘어갈 수 있습니다.',
-      nextActionLabel: '자료 추가',
-      nextActionHref: '#step-1',
-      blockedReason: null,
-    }
-  }
-
-  if (current?.key === 'processing') {
-    return {
-      stateLabel: '다음 작업',
-      stateClassName: 'bg-blue-100 text-blue-800',
-      headline: '처리 가능한 자료에서 근거 노트를 추출해 주세요.',
-      detail: `처리 가능한 자료 ${processablePendingCount}개가 대기 중입니다. 본문 없는 자료는 아래에 사유가 표시됩니다.`,
-      nextActionLabel: '근거 추출',
-      nextActionHref: '#step-2',
-      blockedReason: null,
-    }
-  }
-
-  if (current?.key === 'philosophy_draft') {
-    return {
-      stateLabel: '다음 작업',
-      stateClassName: 'bg-blue-100 text-blue-800',
-      headline: '처리된 근거로 운영 기준 초안을 생성해 주세요.',
-      detail: '초안은 essence 화면에서 생성하고 근거 기반으로 검토합니다.',
-      nextActionLabel: '초안 생성',
-      nextActionHref: `/hospitals/${hospitalId}/essence`,
-      blockedReason: null,
-    }
-  }
-
-  if (current?.key === 'philosophy_approved' || approved) {
-    return {
-      stateLabel: '다음 작업',
-      stateClassName: 'bg-blue-100 text-blue-800',
-      headline: '운영 기준을 승인하고 콘텐츠 운영을 시작해 주세요.',
-      detail: '승인된 운영 기준이 있어야 초기 콘텐츠와 스케줄을 안정적으로 운영할 수 있습니다.',
-      nextActionLabel: '운영 기준 승인',
-      nextActionHref: `/hospitals/${hospitalId}/essence`,
-      blockedReason: null,
-    }
-  }
-
-  return {
-    stateLabel: '대기',
-    stateClassName: 'bg-slate-100 text-slate-700',
-    headline: '온보딩 상태를 불러오는 중입니다.',
-    detail: '새로 고침 후에도 상태가 비어 있으면 프로파일과 자료 상태를 확인해 주세요.',
-    nextActionLabel: '새로 고침',
-    nextActionHref: '#',
-    blockedReason: null,
-  }
-}
-
 export default function OnboardingPage() {
   const { id } = useParams<{ id: string }>()
   const [hospital, setHospital] = useState<Hospital | null>(null)
   const [sources, setSources] = useState<Source[]>([])
   const [philosophies, setPhilosophies] = useState<Philosophy[]>([])
+  const [readiness, setReadiness] = useState<LifecycleReadiness | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -371,14 +169,16 @@ export default function OnboardingPage() {
     setLoading(true)
     setError(null)
     try {
-      const [h, s, p] = await Promise.all([
+      const [h, s, p, r] = await Promise.all([
         fetchAPI(`/admin/hospitals/${id}`),
         fetchAPI(`/admin/hospitals/${id}/essence/sources`),
         fetchAPI(`/admin/hospitals/${id}/essence/philosophies`),
+        fetchAPI<LifecycleReadiness>(`/admin/hospitals/${id}/readiness`),
       ])
       setHospital(h as Hospital)
       setSources(Array.isArray(s) ? (s as Source[]) : [])
       setPhilosophies(Array.isArray(p) ? (p as Philosophy[]) : [])
+      setReadiness(r)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '로딩 실패')
     } finally {
@@ -391,12 +191,12 @@ export default function OnboardingPage() {
   }, [refresh])
 
   const steps = useMemo(
-    () => deriveSteps(hospital, sources, philosophies, id),
-    [hospital, sources, philosophies, id],
+    () => deriveOnboardingSteps(hospital, sources, philosophies, readiness, id),
+    [hospital, sources, philosophies, readiness, id],
   )
   const summary = useMemo(
-    () => deriveOnboardingSummary(steps, hospital, sources, philosophies, id),
-    [steps, hospital, sources, philosophies, id],
+    () => deriveOnboardingSummary(steps, readiness),
+    [steps, readiness],
   )
   const completedCount = steps.filter((s) => s.status === 'completed').length
 
@@ -406,8 +206,7 @@ export default function OnboardingPage() {
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">신규 병원 온보딩</p>
         <h1 className="mt-2 text-2xl font-bold">{hospital?.name ?? '온보딩'}</h1>
         <p className="mt-2 text-sm leading-6 text-blue-50/90 max-w-2xl">
-          AE가 한 화면에서 프로파일 → 자산 인입 → 처리 → 운영 기준 승인까지 진행합니다. 단계 완료 시
-          자동으로 다음 단계가 활성화됩니다.
+          프로파일부터 LIVE, 근거 자료, 운영 기준, 스케줄, 첫 발행, AI 답변 언급률 측정까지 실제 상태로 검증합니다.
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <span className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white">
@@ -529,7 +328,7 @@ function StepCard({
       <header className="flex items-start justify-between gap-3 px-6 py-5 border-b border-slate-100">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-600">
-            STEP {step.index + 1} / {5}
+            STEP {step.index + 1} / {11}
           </p>
           <h2 className="mt-1 text-lg font-bold text-slate-900">{step.title}</h2>
           <p className="mt-1 text-sm text-slate-600 max-w-2xl">{step.description}</p>
@@ -569,8 +368,33 @@ function StepCard({
             mode="approve"
           />
         )}
+        {(['v0', 'site', 'live', 'schedule', 'first_publish', 'sov'] as const).includes(
+          step.key as 'v0' | 'site' | 'live' | 'schedule' | 'first_publish' | 'sov',
+        ) && (
+          <OperationalStepBody step={step} />
+        )}
       </div>
     </article>
+  )
+}
+
+function OperationalStepBody({ step }: { step: StepDef }) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <p className="text-sm text-slate-700">
+        {step.status === 'completed'
+          ? '백엔드 운영 준비도와 실제 저장 데이터에서 완료를 확인했습니다.'
+          : '화면 표시용 추정값이 아니라 백엔드 운영 준비도 검사를 통과해야 완료됩니다.'}
+      </p>
+      {step.href && (
+        <Link
+          href={step.href}
+          className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-blue-200 hover:text-blue-700"
+        >
+          {step.status === 'completed' ? '상태 확인' : '단계 진행'} →
+        </Link>
+      )}
+    </div>
   )
 }
 
@@ -587,33 +411,18 @@ function StepStatusChip({ status }: { status: StepDef['status'] }) {
 }
 
 function ProfileStepBody({ hospital, hospitalId }: { hospital: Hospital | null; hospitalId: string }) {
-  const domainStatus = readHospitalDomainStatus(hospital ?? {})
-  const domainHref = hospital?.site_built
-    ? `/hospitals/${hospitalId}/profile#domain-setup`
-    : `/hospitals/${hospitalId}/profile`
-
   return (
     <div className="space-y-3">
       <ul className="text-sm text-slate-700 space-y-1">
         <li>· 프로파일 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
-        <li>· V0 리포트: {hospital?.v0_report_done ? '✓' : '미생성'}</li>
-        <li>· 콘텐츠 스케줄: {hospital?.schedule_set ? '✓' : '미설정'}</li>
-        <li>· 커스텀 도메인: {domainStatus.label} · {domainStatus.detail}</li>
+        <li>· 필수 프로파일은 화면 체크리스트와 백엔드 검증을 모두 통과해야 합니다.</li>
       </ul>
-      <div className="flex flex-wrap gap-2">
-        <Link
-          href={`/hospitals/${hospitalId}/profile`}
-          className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-        >
-          프로파일 화면으로 →
-        </Link>
-        <Link
-          href={domainHref}
-          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-blue-200 hover:text-blue-700"
-        >
-          도메인 설정으로 →
-        </Link>
-      </div>
+      <Link
+        href={`/hospitals/${hospitalId}/profile`}
+        className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+      >
+        프로파일 화면으로 →
+      </Link>
     </div>
   )
 }

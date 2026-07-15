@@ -18,11 +18,15 @@ import {
 // 도메인 변경 직후 admin revalidate가 이 Map을 직접 무효화할 수 없으므로 positive TTL도 짧게 둔다.
 const POSITIVE_TTL_MS = 60 * 1000 // 매핑 존재: 60초
 const NEGATIVE_TTL_MS = 60 * 1000 // 미등록 도메인(404): 60초 — 신규 연결이 금방 반영되도록 짧게
-const RESOLVE_TIMEOUT_MS = 2000
+// API가 일시 장애여도 마지막으로 검증된 positive 매핑만 24시간 제한으로 사용한다.
+// negative 결과는 stale로 쓰지 않아 다른 병원의 slug가 신규 도메인에 노출될 수 없다.
+const STALE_POSITIVE_TTL_MS = 24 * 60 * 60 * 1000
+const RESOLVE_TIMEOUT_MS = 5000
 
 interface CacheEntry {
   slug: string | null
-  expiresAt: number
+  freshUntil: number
+  staleUntil: number
 }
 
 const domainSlugCache = new Map<string, CacheEntry>()
@@ -34,7 +38,7 @@ type DomainResolveResult =
 
 function stalePositiveSlug(hostname: string): string | null {
   const cached = domainSlugCache.get(hostname)
-  if (!cached || cached.expiresAt <= Date.now()) return null
+  if (!cached?.slug || cached.staleUntil <= Date.now()) return null
   return cached.slug
 }
 
@@ -48,7 +52,7 @@ function isExpectedDomainLookupFailure(error: unknown): boolean {
 
 async function resolveSlugForDomain(hostname: string): Promise<DomainResolveResult> {
   const cached = domainSlugCache.get(hostname)
-  if (cached && cached.expiresAt > Date.now()) {
+  if (cached && cached.freshUntil > Date.now()) {
     return cached.slug ? { status: 'found', slug: cached.slug } : { status: 'not-found' }
   }
 
@@ -61,7 +65,12 @@ async function resolveSlugForDomain(hostname: string): Promise<DomainResolveResu
       { signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS) },
     )
     if (res.status === 404) {
-      domainSlugCache.set(hostname, { slug: null, expiresAt: Date.now() + NEGATIVE_TTL_MS })
+      const expiresAt = Date.now() + NEGATIVE_TTL_MS
+      domainSlugCache.set(hostname, {
+        slug: null,
+        freshUntil: expiresAt,
+        staleUntil: expiresAt,
+      })
       return { status: 'not-found' }
     }
     if (!res.ok) {
@@ -74,7 +83,8 @@ async function resolveSlugForDomain(hostname: string): Promise<DomainResolveResu
     }
     domainSlugCache.set(hostname, {
       slug,
-      expiresAt: Date.now() + POSITIVE_TTL_MS,
+      freshUntil: Date.now() + POSITIVE_TTL_MS,
+      staleUntil: Date.now() + STALE_POSITIVE_TTL_MS,
     })
     return { status: 'found', slug }
   } catch (error) {

@@ -1,4 +1,5 @@
 """Admin API — sales lead intake review."""
+
 from datetime import datetime, timezone
 import uuid
 
@@ -50,6 +51,9 @@ async def list_hospital_candidates(
     candidates = await _find_duplicate_hospitals(db, lead)
     return {
         "lead_id": str(lead.id),
+        # Admin fetches this authenticated payload by identifier so onboarding
+        # URLs never need to duplicate contact/question/source PII.
+        "lead": _serialize_lead(lead),
         "candidates": [_serialize_hospital(candidate) for candidate in candidates],
     }
 
@@ -170,7 +174,9 @@ def _serialize_lead(lead: SalesLead) -> dict:
         "privacy": lead.privacy,
         "source_path": lead.source_path,
         "status": lead.status,
-        "converted_hospital_id": str(lead.converted_hospital_id) if lead.converted_hospital_id else None,
+        "converted_hospital_id": str(lead.converted_hospital_id)
+        if lead.converted_hospital_id
+        else None,
         "converted_at": lead.converted_at.isoformat() if lead.converted_at else None,
         "conversion_note": lead.conversion_note,
         "notification_status": getattr(lead, "notification_status", None),
@@ -200,10 +206,7 @@ async def _find_duplicate_hospitals(db: AsyncSession, lead: SalesLead) -> list[H
         filters.append(Hospital.phone == phone)
 
     result = await db.execute(
-        select(Hospital)
-        .where(or_(*filters))
-        .order_by(Hospital.created_at.desc())
-        .limit(10)
+        select(Hospital).where(or_(*filters)).order_by(Hospital.created_at.desc()).limit(10)
     )
     return list(result.scalars().all())
 

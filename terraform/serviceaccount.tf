@@ -28,6 +28,7 @@ resource "google_project_iam_member" "roles" {
   for_each = toset([
     "roles/cloudsql.client",
     var.aiplatform_role,
+    var.certificate_manager_role,
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter",
     "roles/cloudtrace.agent",

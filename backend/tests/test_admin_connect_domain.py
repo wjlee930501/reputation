@@ -1,6 +1,7 @@
 """PATCH /admin/hospitals/{id}/domain 입력 강화 —
 정규화 저장, 형식/플랫폼 도메인 422(한국어), 타 병원 중복 409(한국어).
 """
+
 import uuid
 from types import SimpleNamespace
 
@@ -149,9 +150,15 @@ async def test_connect_domain_invalid_format_is_korean_422(raw):
     ],
 )
 async def test_connect_domain_rejects_platform_domain(monkeypatch, raw):
-    monkeypatch.setattr(domain_connect_api.settings, "CNAME_TARGET", "cname.reputation.motionlabs.kr")
-    monkeypatch.setattr(domain_connect_api.settings, "SITE_BASE_URL", "https://reputation.motionlabs.kr")
-    monkeypatch.setattr(domain_connect_api.settings, "ADMIN_BASE_URL", "https://admin.reputation.motionlabs.kr")
+    monkeypatch.setattr(
+        domain_connect_api.settings, "CNAME_TARGET", "cname.reputation.motionlabs.kr"
+    )
+    monkeypatch.setattr(
+        domain_connect_api.settings, "SITE_BASE_URL", "https://reputation.motionlabs.kr"
+    )
+    monkeypatch.setattr(
+        domain_connect_api.settings, "ADMIN_BASE_URL", "https://admin.reputation.motionlabs.kr"
+    )
     hospital = _hospital()
     db = FakeDB(hospital)
 
@@ -250,7 +257,9 @@ def test_hospital_detail_serializes_domain_metadata_defaults_for_legacy_rows():
     assert result["domain_purchase_note"] is None
 
 
-async def test_activate_hospital_rejects_apex_when_cname_exists_even_if_address_matches(monkeypatch):
+async def test_activate_hospital_rejects_apex_when_cname_exists_even_if_address_matches(
+    monkeypatch,
+):
     hospital = _hospital(
         aeo_domain="jangclinic.co.kr",
         domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS,
@@ -327,6 +336,54 @@ async def test_activate_hospital_accepts_apex_address_strategy(monkeypatch):
     detail = db.added[0].detail
     assert detail["aeo_domain"] == "jangclinic.co.kr"
     assert detail["verification_method"] == "address"
+
+
+async def test_activate_hospital_cannot_bypass_pending_custom_domain_certificate(monkeypatch):
+    hospital = _hospital(
+        aeo_domain="clinic.example.com",
+        profile_complete=True,
+        v0_report_done=True,
+        site_built=True,
+        status=HospitalStatus.PENDING_DOMAIN,
+        site_live=False,
+    )
+    db = FakeDB(hospital)
+
+    async def _fake_check_domain_dns(domain, strategy=DomainDnsStrategy.CNAME):
+        del domain, strategy
+        return SimpleNamespace(
+            verified=True,
+            cname_value="target.motionlabs.io",
+            address_values=[],
+            expected_cname="target.motionlabs.io",
+            expected_addresses=[],
+            verification_method="cname",
+        )
+
+    async def _pending_certificate(domain):
+        assert domain == "clinic.example.com"
+        return SimpleNamespace(
+            ready=False,
+            phase="PROVISIONING",
+            message="HTTPS 인증서를 준비하고 있습니다.",
+        )
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _fake_check_domain_dns)
+    monkeypatch.setattr(
+        hospitals_api,
+        "ensure_verified_domain_certificate",
+        _pending_certificate,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await hospitals_api.activate_hospital(hospital.id, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "CERTIFICATE_NOT_READY"
+    assert hospital.site_live is False
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert db.committed is True
+    assert db.added[0].action == "provision_domain_certificate"
 
 
 async def test_activate_hospital_subdomain_default_without_custom_domain(monkeypatch):

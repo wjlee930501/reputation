@@ -3,6 +3,7 @@
 Single-actor model: actor is sourced from settings.ADMIN_ACTOR_NAME, not from
 client headers. Transaction order: write_audit_log → commit → apply_async.
 """
+
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -30,7 +31,7 @@ class FakeDB:
     def __init__(self, hospital=None, content=None):
         self.hospital = hospital
         self.content = content
-        self.events = []   # ordered list of "add:<obj>" / "commit"
+        self.events = []  # ordered list of "add:<obj>" / "commit"
 
     async def get(self, model, object_id):
         name = getattr(model, "__name__", "")
@@ -101,15 +102,38 @@ async def test_run_sov_operation_queues_task_after_audit_commit(monkeypatch):
 
     response = await operations_api.run_sov_operation(hospital.id, db=db)
 
-    assert response == {"detail": "AI 언급률 측정이 큐에 등록되었습니다.", "hospital_id": str(hospital.id)}
+    assert response == {
+        "detail": "AI 언급률 측정이 큐에 등록되었습니다.",
+        "hospital_id": str(hospital.id),
+    }
     assert task.calls == [{"args": [str(hospital.id)], "queue": "sov"}]
     # audit-row added, commit ran, then apply_async fired (in that order)
     assert apply_calls_when_invoked, "apply_async should have been called"
     events_at_apply = apply_calls_when_invoked[0][1]
     assert events_at_apply[0][0] == "add"
     assert events_at_apply[1] == ("commit", None)
-    assert db.added[0].action == "run_sov"
+    assert [row.action for row in db.added] == ["run_sov_requested", "run_sov"]
+    assert db.added[0].detail["queued"] is False
+    assert db.added[1].detail["queued"] is True
     assert db.added[0].actor == "AE-test"
+
+
+async def test_queue_failure_never_records_queued_true(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+
+    def fail_dispatch(*, args, queue):
+        raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", fail_dispatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.run_sov_operation(hospital.id, db=db)
+
+    assert exc.value.status_code == 503
+    assert [row.action for row in db.added] == ["run_sov_requested", "run_sov_queue_failed"]
+    assert all(row.detail["queued"] is False for row in db.added)
+    assert db.added[1].detail["error_type"] == "ConnectionError"
 
 
 async def test_run_sov_operation_rejects_onboarding_hospital():
@@ -193,7 +217,9 @@ async def test_verify_domain_operation_blocks_live_without_readiness(monkeypatch
     assert db.committed is False
 
 
-async def test_verify_domain_operation_rejects_apex_when_cname_exists_even_if_address_matches(monkeypatch):
+async def test_verify_domain_operation_rejects_apex_when_cname_exists_even_if_address_matches(
+    monkeypatch,
+):
     hospital = _hospital(
         aeo_domain="jangclinic.co.kr",
         domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS,

@@ -68,13 +68,18 @@ class FakeSeedDb:
     def execute(self, statement):
         entity = statement.column_descriptions[0].get("entity")
         if entity is HospitalSourceAsset:
-            return FakeQueryResult([obj for obj in self.objects if isinstance(obj, HospitalSourceAsset)])
+            return FakeQueryResult(
+                [obj for obj in self.objects if isinstance(obj, HospitalSourceAsset)]
+            )
         if entity is HospitalContentPhilosophy:
-            return FakeQueryResult([
-                obj
-                for obj in self.objects
-                if isinstance(obj, HospitalContentPhilosophy) and obj.status == PhilosophyStatus.APPROVED
-            ])
+            return FakeQueryResult(
+                [
+                    obj
+                    for obj in self.objects
+                    if isinstance(obj, HospitalContentPhilosophy)
+                    and obj.status == PhilosophyStatus.APPROVED
+                ]
+            )
         if entity is ContentItem:
             return FakeQueryResult([obj for obj in self.objects if isinstance(obj, ContentItem)])
         if entity is MonthlyReport:
@@ -161,6 +166,86 @@ def test_demo_seed_monthly_summary_includes_operating_standard_sources_and_conte
     assert summary["recommended_actions"] == []
 
 
+def test_monthly_summary_excludes_photos_but_blocks_on_pending_text_sources():
+    db = FakeSeedDb()
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="모션랩스정형외과의원",
+        region=["성동구"],
+        treatments=[{"name": "무릎 통증 진료"}],
+    )
+    _seed_essence_chain(db, hospital)
+    db.add(
+        HospitalSourceAsset(
+            id=uuid.uuid4(),
+            hospital_id=hospital.id,
+            source_type=SourceType.PHOTO_DOCTOR,
+            title="원장 사진",
+            status=SourceStatus.PROCESSED,
+            file_url="gs://private/doctor.jpg",
+            is_public=True,
+        )
+    )
+    db.add(
+        HospitalSourceAsset(
+            id=uuid.uuid4(),
+            hospital_id=hospital.id,
+            source_type=SourceType.INTERNAL_NOTE,
+            title="신규 인터뷰 메모",
+            raw_text="아직 처리되지 않은 신규 근거",
+            status=SourceStatus.PENDING,
+        )
+    )
+
+    summary = build_monthly_essence_summary(
+        db,
+        hospital,
+        period_start=datetime(2026, 5, 1),
+        period_end=datetime(2026, 5, 31),
+    )
+
+    assert summary["source_count"] == 2
+    assert summary["processed_source_count"] == 1
+    assert summary["source_stale"] is True
+    assert "처리되지 않은 온보딩 자료를 처리하거나 제외하세요." in summary["recommended_actions"]
+
+
+def test_monthly_summary_treats_old_philosophy_content_as_needing_review():
+    db = FakeSeedDb()
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="모션랩스정형외과의원",
+        region=["성동구"],
+        treatments=[{"name": "무릎 통증 진료"}],
+    )
+    _seed_essence_chain(db, hospital)
+    db.add(
+        ContentItem(
+            id=uuid.uuid4(),
+            hospital_id=hospital.id,
+            content_type=ContentType.FAQ,
+            sequence_no=1,
+            total_count=8,
+            title="이전 기준 콘텐츠",
+            body="이전 기준으로 작성된 본문입니다.",
+            scheduled_date=date(2026, 5, 5),
+            status=ContentStatus.PUBLISHED,
+            content_philosophy_id=uuid.uuid4(),
+            essence_status=ESSENCE_STATUS_ALIGNED,
+        )
+    )
+
+    summary = build_monthly_essence_summary(
+        db,
+        hospital,
+        period_start=datetime(2026, 5, 1),
+        period_end=datetime(2026, 5, 31),
+    )
+
+    assert summary["aligned_content_count"] == 0
+    assert summary["needs_review_content_count"] == 1
+
+
 def test_demo_seed_creates_pipeline_ready_slots_and_approved_briefs():
     db = FakeSeedDb()
     hospital = _create_hospital()
@@ -168,7 +253,9 @@ def test_demo_seed_creates_pipeline_ready_slots_and_approved_briefs():
 
     philosophy = _seed_essence_chain(db, hospital)
     query_targets = _seed_query_targets(db, hospital)
-    slots = _seed_content_slots(db, hospital, philosophy, query_targets, "/api/v1/public/demo-asset")
+    slots = _seed_content_slots(
+        db, hospital, philosophy, query_targets, "/api/v1/public/demo-asset"
+    )
 
     query_rows = [obj for obj in db.objects if isinstance(obj, QueryMatrix)]
     query_variants = [obj for obj in db.objects if isinstance(obj, AIQueryVariant)]

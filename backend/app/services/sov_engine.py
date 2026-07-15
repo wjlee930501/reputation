@@ -1,4 +1,5 @@
 """AI 답변 언급률 엔진 — 환자 질문 생성·발송·파싱·계산"""
+
 import asyncio
 import json
 import logging
@@ -46,6 +47,7 @@ def _get_gemini_client() -> google_genai.Client | None:
             http_options={"timeout": 30000},  # 30s in milliseconds
         )
     return _gemini_client
+
 
 QUERY_TEMPLATES = [
     # 추천형
@@ -97,7 +99,9 @@ COMPETITOR_PARSE_PROMPT = """\
 {{"competitors": [{{"name": "병원명", "is_mentioned": true/false, "mention_rank": null 또는 정수}}]}}"""
 
 
-def generate_query_matrix(region: list[str], specialties: list[str], keywords: list[str]) -> list[str]:
+def generate_query_matrix(
+    region: list[str], specialties: list[str], keywords: list[str]
+) -> list[str]:
     # 🔴 CRITICAL fix: empty inputs cause product() to yield zero combinations,
     # returning an empty list. Without this guard, V0 report runs with 0 queries
     # and produces a meaningless 0% AI mention-rate result silently.
@@ -113,7 +117,9 @@ def generate_query_matrix(region: list[str], specialties: list[str], keywords: l
     main_region = region[0] if region else ""
     sub_region = region[1] if len(region) > 1 else main_region
     for template, keyword, specialty in product(QUERY_TEMPLATES, keywords, specialties):
-        q = template.format(region=main_region, sub_region=sub_region, keyword=keyword, specialty=specialty)
+        q = template.format(
+            region=main_region, sub_region=sub_region, keyword=keyword, specialty=specialty
+        )
         queries.add(q)
     return list(queries)
 
@@ -125,9 +131,11 @@ SYSTEM_PROMPT_CHATGPT = (
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
 async def _query_chatgpt(query: str) -> str:
-    """ChatGPT 호출. 환경변수 OPENAI_CHATGPT_USE_WEB_SEARCH=true 시 Responses API +
-    web_search tool로 ChatGPT Search 답변을 측정. False 시 chat.completions로 모델
-    recall만 측정 (실제 ChatGPT 사용자 답변과 다를 수 있음 — 이 점은 측정 라벨에서 명시)."""
+    """ChatGPT 호출.
+
+    프로덕션 설정은 web_search를 강제한다. chat.completions 경로는 기존 측정 호환과
+    로컬 개발만을 위한 것으로, Settings가 production+False 조합을 부팅 단계에서 거부한다.
+    """
     if settings.OPENAI_CHATGPT_USE_WEB_SEARCH:
         return await _query_chatgpt_with_search(query)
     response = await openai_client.chat.completions.create(
@@ -149,6 +157,9 @@ async def _query_chatgpt_with_search(query: str) -> str:
         response = await openai_client.responses.create(
             model=settings.OPENAI_MODEL_QUERY,
             tools=[{"type": "web_search"}],
+            # 도구를 단순 제공만 하면 모델이 검색 없이 답할 수 있다. SoV 계약은 실제
+            # 웹 검색 노출 측정이므로 매 요청에서 web_search 호출을 강제한다.
+            tool_choice="required",
             input=f"{SYSTEM_PROMPT_CHATGPT}\n\n질문: {query}",
         )
     except AttributeError:
@@ -200,26 +211,47 @@ def _normalize_for_prefilter(text: str) -> str:
 
 async def _parse_mention(hospital_name: str, response_text: str) -> dict:
     if not response_text.strip():
-        return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None}
+        return {
+            "is_mentioned": False,
+            "mention_rank": None,
+            "sentiment": None,
+            "mention_context": None,
+        }
     # 빠른 사전 필터 — 병원명·응답 양쪽을 정규화(공백/특수문자 제거) 후 앞 2글자 비교.
     normalized_name = _normalize_for_prefilter(hospital_name)
     normalized_response = _normalize_for_prefilter(response_text)
     if normalized_name[:2] and normalized_name[:2] not in normalized_response:
         logger.debug("prefilter skip (mention): hospital=%s", hospital_name)
-        return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None}
+        return {
+            "is_mentioned": False,
+            "mention_rank": None,
+            "sentiment": None,
+            "mention_context": None,
+        }
 
     result = await openai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_PARSE,
-        messages=[{"role": "user", "content": PARSE_PROMPT.format(
-            response=response_text[:3000], hospital_name=hospital_name
-        )}],
-        temperature=0, max_tokens=200,
+        messages=[
+            {
+                "role": "user",
+                "content": PARSE_PROMPT.format(
+                    response=response_text[:3000], hospital_name=hospital_name
+                ),
+            }
+        ],
+        temperature=0,
+        max_tokens=200,
         response_format={"type": "json_object"},
     )
     try:
         return json.loads(result.choices[0].message.content or "{}")
     except Exception:
-        return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None}
+        return {
+            "is_mentioned": False,
+            "mention_rank": None,
+            "sentiment": None,
+            "mention_context": None,
+        }
 
 
 async def _parse_competitors(competitors: list[str], response_text: str) -> list[dict]:
@@ -236,11 +268,17 @@ async def _parse_competitors(competitors: list[str], response_text: str) -> list
 
     result = await openai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_PARSE,
-        messages=[{"role": "user", "content": COMPETITOR_PARSE_PROMPT.format(
-            response=response_text[:3000],
-            competitor_names="\n".join(f"- {c}" for c in competitors),
-        )}],
-        temperature=0, max_tokens=500,
+        messages=[
+            {
+                "role": "user",
+                "content": COMPETITOR_PARSE_PROMPT.format(
+                    response=response_text[:3000],
+                    competitor_names="\n".join(f"- {c}" for c in competitors),
+                ),
+            }
+        ],
+        temperature=0,
+        max_tokens=500,
         response_format={"type": "json_object"},
     )
     try:
@@ -255,7 +293,10 @@ async def _parse_competitors(competitors: list[str], response_text: str) -> list
 
 
 async def run_single_query(
-    hospital_name: str, query_text: str, platform: str, repeat_count: int,
+    hospital_name: str,
+    query_text: str,
+    platform: str,
+    repeat_count: int,
     competitors: list[str] | None = None,
 ) -> list[dict]:
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini
@@ -267,16 +308,32 @@ async def run_single_query(
             except Exception as e:
                 # 쿼리 자체 실패 → raw="" 로 FAILED 처리.
                 logger.error(f"Query failed: {e}")
-                return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None, "raw_response": "", "competitor_mentions": None}
+                return {
+                    "is_mentioned": False,
+                    "mention_rank": None,
+                    "sentiment": None,
+                    "mention_context": None,
+                    "raw_response": "",
+                    "competitor_mentions": None,
+                }
             try:
                 parsed = await _parse_mention(hospital_name, raw)
-                comp_mentions = await _parse_competitors(competitors or [], raw) if competitors else []
+                comp_mentions = (
+                    await _parse_competitors(competitors or [], raw) if competitors else []
+                )
                 return {**parsed, "raw_response": raw, "competitor_mentions": comp_mentions or None}
             except Exception as e:
                 # 쿼리는 성공했으나 파싱만 실패 — 측정을 FAILED로 만들지 말고 raw를 보존하고
                 # 기본값(미언급)으로 처리한다 (raw_response 비어있지 않으면 SUCCESS로 집계됨).
                 logger.warning(f"Parse failed (query ok): {e}")
-                return {"is_mentioned": False, "mention_rank": None, "sentiment": None, "mention_context": None, "raw_response": raw, "competitor_mentions": None}
+                return {
+                    "is_mentioned": False,
+                    "mention_rank": None,
+                    "sentiment": None,
+                    "mention_context": None,
+                    "raw_response": raw,
+                    "competitor_mentions": None,
+                }
 
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))
 

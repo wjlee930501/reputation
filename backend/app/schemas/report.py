@@ -1,6 +1,6 @@
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ReportResponse(BaseModel):
@@ -15,5 +15,7 @@ class ReportResponse(BaseModel):
     sov_summary: Optional[Any]
     content_summary: Optional[Any]
     essence_summary: Optional[Any] = None
+    delivery_ready: bool = False
+    delivery_blockers: list[str] = Field(default_factory=list)
     created_at: str
     sent_at: Optional[str]

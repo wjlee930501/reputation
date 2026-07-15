@@ -7,6 +7,7 @@ PATCH  /admin/hospitals/{id}/profile    — 프로파일 수정 + 완료 시 V0 
 PATCH  /admin/hospitals/{id}/domain     — 공개 도메인 상태 확인
 PATCH  /admin/hospitals/{id}/activate   — ACTIVE 전환
 """
+
 import logging
 import re
 import uuid
@@ -16,13 +17,12 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from slugify import slugify
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentStatus
-from app.models.essence import HospitalContentPhilosophy, HospitalSourceAsset, PhilosophyStatus, SourceStatus
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
@@ -30,13 +30,21 @@ from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.hospital_lifecycle import (
+    missing_live_prerequisite_keys,
+    missing_profile_requirement_keys,
+)
+from app.services.essence_readiness import get_essence_readiness
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
-    compute_sources_snapshot_hash,
 )
 from app.workers.tasks import trigger_v0_report
-from app.api.admin.domain import check_domain_dns, domain_dns_strategy_for_hospital
+from app.api.admin.domain import (
+    check_domain_dns,
+    domain_dns_strategy_for_hospital,
+    ensure_verified_domain_certificate,
+)
 from app.core.config import settings
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
@@ -333,12 +341,30 @@ async def update_profile(
     h = await _get_or_404(db, hospital_id)
 
     PROFILE_FIELDS = {
-        "address", "phone", "business_hours", "website_url", "blog_url",
-        "kakao_channel_url", "google_business_profile_url", "google_maps_url",
-        "naver_place_url", "latitude", "longitude",
-        "wikidata_qid", "gbp_place_id", "naver_place_id", "kakao_place_id", "hira_org_id",
-        "region", "specialties", "keywords", "competitors",
-        "director_name", "director_career", "director_philosophy", "director_credentials",
+        "address",
+        "phone",
+        "business_hours",
+        "website_url",
+        "blog_url",
+        "kakao_channel_url",
+        "google_business_profile_url",
+        "google_maps_url",
+        "naver_place_url",
+        "latitude",
+        "longitude",
+        "wikidata_qid",
+        "gbp_place_id",
+        "naver_place_id",
+        "kakao_place_id",
+        "hira_org_id",
+        "region",
+        "specialties",
+        "keywords",
+        "competitors",
+        "director_name",
+        "director_career",
+        "director_philosophy",
+        "director_credentials",
         "treatments",
         "profile_complete",
     }
@@ -346,10 +372,22 @@ async def update_profile(
     # 처리한다. exclude_none이었을 때는 잘못 입력된 URL/식별자를 지울 API 경로가 없었다.
     # 비우기는 nullable 선택 필드에만 허용 — 필수·NOT NULL 필드의 null은 기존처럼 무시.
     CLEARABLE_FIELDS = {
-        "website_url", "blog_url", "kakao_channel_url", "google_business_profile_url",
-        "google_maps_url", "naver_place_url", "latitude", "longitude",
-        "wikidata_qid", "gbp_place_id", "naver_place_id", "kakao_place_id", "hira_org_id",
-        "director_career", "director_philosophy", "director_credentials",
+        "website_url",
+        "blog_url",
+        "kakao_channel_url",
+        "google_business_profile_url",
+        "google_maps_url",
+        "naver_place_url",
+        "latitude",
+        "longitude",
+        "wikidata_qid",
+        "gbp_place_id",
+        "naver_place_id",
+        "kakao_place_id",
+        "hira_org_id",
+        "director_career",
+        "director_philosophy",
+        "director_credentials",
     }
     update_data = body.model_dump(exclude_unset=True)
     was_complete = h.profile_complete
@@ -363,21 +401,10 @@ async def update_profile(
             changed_fields.append(field)
         setattr(h, field, value)
 
-    # 필수 필드 검증 — 완료 전환 시점뿐 아니라, 이미 완료된 프로파일이 PATCH로 필수
-    # 필드를 빈 값([]/"")으로 비우는 것도 차단한다 (P2-10). 완료 플래그가 True로
-    # 유지되는 한 V0/콘텐츠 생성 파이프라인이 이 필드들에 의존한다.
+    # Admin UI와 동일한 authoritative checklist를 서버에서 강제한다. 직접 API 호출로
+    # 불완전한 병원을 완료 처리해 V0/사이트 파이프라인에 흘려보낼 수 없어야 한다.
     if h.profile_complete:
-        required_missing = []
-        if not h.region:
-            required_missing.append("region")
-        if not h.specialties:
-            required_missing.append("specialties")
-        if not h.keywords:
-            required_missing.append("keywords")
-        if not h.director_name:
-            required_missing.append("director_name")
-        if not h.address:
-            required_missing.append("address")
+        required_missing = missing_profile_requirement_keys(h)
         if required_missing:
             if was_complete:
                 raise HTTPException(
@@ -406,7 +433,9 @@ async def update_profile(
             },
         )
 
-    needs_site_revalidate = _has_public_site(h) and any(field in PUBLIC_PROFILE_FIELDS for field in changed_fields)
+    needs_site_revalidate = _has_public_site(h) and any(
+        field in PUBLIC_PROFILE_FIELDS for field in changed_fields
+    )
     if needs_site_revalidate:
         ensure_site_revalidate_configured()
 
@@ -465,26 +494,20 @@ async def autofill_hospital_profile(
         "field_meta": result.field_meta,
         "violations": result.violations,
         "naver_place_id": result.naver_place_id,
-        "sources": [
-            {"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources
-        ],
+        "sources": [{"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources],
     }
 
 
 @router.patch("/{hospital_id}/activate")
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """ACTIVE 상태로 전환 (공개 도메인/노출 상태 + 스케줄 설정 완료 후)"""
+    """STEP 5: 프로파일/V0/허브 준비 후 공개 상태로 전환.
+
+    콘텐츠 스케줄과 최신 운영 기준은 STEP 6의 operational gate이며 공개 도메인
+    활성화를 막지 않는다.
+    """
     h = await _get_or_404(db, hospital_id)
 
-    missing = []
-    if not h.profile_complete:
-        missing.append("profile_complete")
-    if not h.v0_report_done:
-        missing.append("v0_report_done")
-    if not h.site_built:
-        missing.append("site_built")
-    if not h.schedule_set:
-        missing.append("schedule_set")
+    missing = missing_live_prerequisite_keys(h)
     if missing:
         raise HTTPException(
             status_code=400,
@@ -495,6 +518,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     # 기본 서브도메인({slug}.{platform host}, 와일드카드 cert+A로 커버)으로 라이브한다.
     # 자기 도메인 검증 실패는 라이브를 막지만(운영자가 명시 연결한 경우), 미연결은 막지 않는다.
     dns_check = None
+    certificate = None
     if h.aeo_domain:
         dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
         if not dns_check.verified:
@@ -509,6 +533,31 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
                     f"DNS 설정이 확인되지 않았습니다. "
                     f"{h.aeo_domain} → {settings.CNAME_TARGET}{address_hint} 로 설정해 주세요."
                 ),
+            )
+        certificate = await ensure_verified_domain_certificate(h.aeo_domain)
+        if certificate is not None and not certificate.ready:
+            await write_audit_log(
+                db,
+                action="provision_domain_certificate",
+                hospital_id=hospital_id,
+                actor=default_actor(),
+                target_type="domain",
+                target_id=h.aeo_domain,
+                detail={
+                    "dns_verified": True,
+                    "certificate_ready": False,
+                    "certificate_phase": certificate.phase,
+                    "certificate_error_code": getattr(certificate, "error_code", None),
+                },
+            )
+            await db.commit()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CERTIFICATE_NOT_READY",
+                    "message": certificate.message,
+                    "certificate_phase": certificate.phase,
+                },
             )
 
     previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
@@ -528,7 +577,11 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
             "aeo_domain": h.aeo_domain,
             "cname_value": dns_check.cname_value if dns_check else None,
             "address_values": dns_check.address_values if dns_check else [],
-            "verification_method": dns_check.verification_method if dns_check else "platform_subdomain",
+            "verification_method": dns_check.verification_method
+            if dns_check
+            else "platform_subdomain",
+            "certificate_phase": certificate.phase if certificate else "PLATFORM_MANAGED",
+            "certificate_ready": True,
         },
     )
     await db.commit()
@@ -539,16 +592,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
 
 def _activation_missing(h: Hospital) -> list[str]:
     """activate 게이트와 동일한 사전 조건 목록 — pause/resume가 재사용한다 (#11)."""
-    missing = []
-    if not h.profile_complete:
-        missing.append("profile_complete")
-    if not h.v0_report_done:
-        missing.append("v0_report_done")
-    if not h.site_built:
-        missing.append("site_built")
-    if not h.schedule_set:
-        missing.append("schedule_set")
-    return missing
+    return missing_live_prerequisite_keys(h)
 
 
 @router.post("/{hospital_id}/pause", response_model=HospitalDetail)
@@ -637,49 +681,35 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         db,
         select(func.count()).select_from(MonthlyReport).where(MonthlyReport.hospital_id == h.id),
     )
-    processed_sources_result = await db.execute(
-        select(HospitalSourceAsset).where(
-            HospitalSourceAsset.hospital_id == h.id,
-            HospitalSourceAsset.status == SourceStatus.PROCESSED,
+    essence = await get_essence_readiness(db, h.id)
+    approved_philosophy = essence.approved
+    essence_fresh = essence.is_fresh
+    blocked_content_condition = ContentItem.essence_status.in_(
+        [
+            ESSENCE_STATUS_MISSING_APPROVED,
+            ESSENCE_STATUS_NEEDS_REVIEW,
+        ]
+    )
+    if essence.current is not None:
+        # 새 Essence를 승인한 뒤에도 이전 버전에 연결된 콘텐츠는 공개 API에서
+        # 의도적으로 숨겨진다. 상태 문자열이 ALIGNED였다는 이유로 준비 완료로
+        # 오판하지 않도록 실제 현재 버전 연결까지 같은 서버 게이트에서 확인한다.
+        blocked_content_condition = or_(
+            blocked_content_condition,
+            ContentItem.content_philosophy_id.is_distinct_from(essence.current.id),
         )
-    )
-    processed_sources = processed_sources_result.scalars().all()
-    approved_result = await db.execute(
-        select(HospitalContentPhilosophy).where(
-            HospitalContentPhilosophy.hospital_id == h.id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
-        )
-    )
-    approved_philosophy = approved_result.scalar_one_or_none()
-    current_snapshot_hash = compute_sources_snapshot_hash(processed_sources)
-    essence_fresh = bool(
-        approved_philosophy
-        and processed_sources
-        and approved_philosophy.source_snapshot_hash == current_snapshot_hash
-    )
     essence_blocked_content_count = await _count(
         db,
         select(func.count())
         .select_from(ContentItem)
         .where(
             ContentItem.hospital_id == h.id,
-            ContentItem.essence_status.in_([
-                ESSENCE_STATUS_MISSING_APPROVED,
-                ESSENCE_STATUS_NEEDS_REVIEW,
-            ]),
+            ContentItem.body.is_not(None),
+            blocked_content_condition,
         ),
     )
 
-    has_core_profile = all([
-        h.name,
-        h.address,
-        h.phone,
-        h.region,
-        h.specialties,
-        h.keywords,
-        h.director_name,
-        h.treatments,
-    ])
+    has_core_profile = not missing_profile_requirement_keys(h)
     has_local_entity = bool(h.google_business_profile_url or h.google_maps_url)
     has_external_profiles = bool(
         h.website_url or h.blog_url or h.kakao_channel_url or h.naver_place_url
@@ -710,7 +740,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ReadinessCheck(
             "essence_sources",
             "콘텐츠 운영 기준 자료",
-            len(processed_sources) > 0,
+            essence.processed_source_count > 0 and not essence.has_unprocessed_sources,
             12,
             "운영 기준 탭에서 병원 자료를 입력하고 근거 추출을 완료하세요.",
         ),
@@ -752,7 +782,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ReadinessCheck(
             "domain",
             "공개 도메인 상태",
-            bool(h.aeo_domain and h.site_live),
+            bool(h.site_live),
             10,
             "병원 정보 허브의 공개 도메인과 노출 상태를 확인하세요.",
         ),
@@ -783,11 +813,9 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     earned = sum(c.weight for c in checks if c.passed)
     score = round(earned / total_weight * 100)
 
-    readiness_status = (
-        "READY"
-        if score >= 80 and h.site_live and approved_philosophy is not None and essence_fresh
-        else "NEEDS_WORK"
-    )
+    # READY is a safety contract, not a weighted marketing score. A high score
+    # must never mask one missing mandatory gate (for example no fresh Essence).
+    readiness_status = "READY" if all(check.passed for check in checks) else "NEEDS_WORK"
 
     return {
         "hospital_id": str(h.id),
@@ -800,7 +828,8 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         "sov_record_count": sov_count,
         "report_count": report_count,
         "essence": {
-            "processed_source_count": len(processed_sources),
+            "processed_source_count": essence.processed_source_count,
+            "required_source_count": essence.required_source_count,
             "approved_philosophy_exists": approved_philosophy is not None,
             "philosophy_version": approved_philosophy.version if approved_philosophy else None,
             "source_stale": bool(approved_philosophy and not essence_fresh),
@@ -846,7 +875,9 @@ def _serialize(h: Hospital) -> dict:
         "google_maps_url": h.google_maps_url,
         "naver_place_url": h.naver_place_url,
         "aeo_domain": h.aeo_domain,
-        "domain_management_mode": _enum_value(getattr(h, "domain_management_mode", None), "HOSPITAL_MANAGED"),
+        "domain_management_mode": _enum_value(
+            getattr(h, "domain_management_mode", None), "HOSPITAL_MANAGED"
+        ),
         "domain_dns_strategy": _enum_value(getattr(h, "domain_dns_strategy", None), "CNAME"),
         "domain_registrar": getattr(h, "domain_registrar", None),
         "domain_dns_provider": getattr(h, "domain_dns_provider", None),

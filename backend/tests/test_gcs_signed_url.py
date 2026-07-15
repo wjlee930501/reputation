@@ -1,4 +1,5 @@
 """R9 — signed URL 생성: ADC credentials 모듈 캐시 + 경로별 TTL 메모."""
+
 import time
 
 import pytest
@@ -63,7 +64,9 @@ def test_non_gcs_paths_pass_through(monkeypatch):
 
     assert gcs_utils.get_signed_url("") == ""
     assert gcs_utils.get_signed_url(None) == ""
-    assert gcs_utils.get_signed_url("https://legacy.example/x.png") == "https://legacy.example/x.png"
+    assert (
+        gcs_utils.get_signed_url("https://legacy.example/x.png") == "https://legacy.example/x.png"
+    )
     assert blob.calls == []
 
 
@@ -98,7 +101,7 @@ def test_expired_cache_entry_is_resigned(monkeypatch):
 
     gcs_utils.get_signed_url("gs://bucket/a.png")
     # 캐시 만료를 강제로 과거로 돌린다
-    key = ("gs://bucket/a.png", 24)
+    key = ("gs://bucket/a.png", 24, None)
     expires_at, url = gcs_utils._signed_url_cache[key]
     gcs_utils._signed_url_cache[key] = (time.monotonic() - 1, url)
 
@@ -113,7 +116,7 @@ def test_short_expiration_caps_cache_ttl_below_half_lifetime(monkeypatch):
 
     gcs_utils.get_signed_url("gs://bucket/a.png", expiration_hours=1)
 
-    expires_at, _url = gcs_utils._signed_url_cache[("gs://bucket/a.png", 1)]
+    expires_at, _url = gcs_utils._signed_url_cache[("gs://bucket/a.png", 1, None)]
     remaining = expires_at - time.monotonic()
     # 1시간짜리 서명은 최대 30분만 캐시 — 만료 임박 URL을 캐시에서 서빙하지 않는다.
     assert remaining <= 1800 + 1
@@ -166,7 +169,9 @@ def test_failure_suppresses_unsigned_gcs_path_and_is_not_cached(monkeypatch):
 
     _install_blob(monkeypatch, _BoomBlob())
     monkeypatch.setattr(
-        gcs_utils, "_get_iam_signing_credentials", lambda: (_ for _ in ()).throw(RuntimeError("no adc"))
+        gcs_utils,
+        "_get_iam_signing_credentials",
+        lambda: (_ for _ in ()).throw(RuntimeError("no adc")),
     )
 
     assert gcs_utils.get_signed_url("gs://bucket/a.png") == ""
@@ -198,7 +203,9 @@ def test_sign_blob_url_reraises_after_exhausting_retries(monkeypatch):
             raise TimeoutError("network unreachable")
 
     monkeypatch.setattr(
-        gcs_utils, "_get_iam_signing_credentials", lambda: (_ for _ in ()).throw(TimeoutError("no adc"))
+        gcs_utils,
+        "_get_iam_signing_credentials",
+        lambda: (_ for _ in ()).throw(TimeoutError("no adc")),
     )
 
     with pytest.raises(Exception):
@@ -215,5 +222,21 @@ def test_cache_size_cap_evicts_oldest_entries(monkeypatch):
 
     assert len(gcs_utils._signed_url_cache) <= 4
     # 가장 오래된 엔트리부터 비워졌다
-    assert ("gs://bucket/0.png", 24) not in gcs_utils._signed_url_cache
-    assert ("gs://bucket/4.png", 24) in gcs_utils._signed_url_cache
+    assert ("gs://bucket/0.png", 24, None) not in gcs_utils._signed_url_cache
+    assert ("gs://bucket/4.png", 24, None) in gcs_utils._signed_url_cache
+
+
+def test_response_disposition_is_signed_and_part_of_cache_key(monkeypatch):
+    blob = _FakeBlob()
+    _install_blob(monkeypatch, blob)
+
+    inline = gcs_utils.get_signed_url("gs://bucket/report.pdf", expiration_hours=1)
+    attachment = gcs_utils.get_signed_url(
+        "gs://bucket/report.pdf",
+        expiration_hours=1,
+        response_disposition='attachment; filename="report.pdf"',
+    )
+
+    assert inline != attachment
+    assert "response_disposition" not in blob.calls[0]
+    assert blob.calls[1]["response_disposition"] == 'attachment; filename="report.pdf"'

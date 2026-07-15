@@ -119,7 +119,9 @@ class Settings(BaseSettings):
 
         origins = [o.strip() for o in self.ALLOWED_ORIGINS if o.strip()]
         if not origins:
-            errors.append("ALLOWED_ORIGINS must be set (CORS with credentials cannot use a wildcard).")
+            errors.append(
+                "ALLOWED_ORIGINS must be set (CORS with credentials cannot use a wildcard)."
+            )
         for origin in origins:
             if origin == "*":
                 errors.append("ALLOWED_ORIGINS must not contain '*' while credentials are allowed.")
@@ -142,8 +144,21 @@ class Settings(BaseSettings):
             )
 
         if not (self.DATABASE_URL and self.SYNC_DATABASE_URL):
-            errors.append("DATABASE_URL/SYNC_DATABASE_URL (or DB_* secret parts) must resolve in production.")
+            errors.append(
+                "DATABASE_URL/SYNC_DATABASE_URL (or DB_* secret parts) must resolve in production."
+            )
         self._validate_production_redis_url(errors)
+
+        if not self.OPENAI_CHATGPT_USE_WEB_SEARCH:
+            errors.append(
+                "OPENAI_CHATGPT_USE_WEB_SEARCH must be true in production — model recall is not "
+                "ChatGPT Search exposure."
+            )
+        if not self.CERTIFICATE_MANAGER_AUTO_PROVISION:
+            errors.append(
+                "CERTIFICATE_MANAGER_AUTO_PROVISION must be true in production — otherwise new "
+                "custom domains require an out-of-band Terraform change."
+            )
 
         self._validate_external_https_url("ADMIN_BASE_URL", self.ADMIN_BASE_URL, errors)
         self._validate_external_https_url("SITE_BASE_URL", self.SITE_BASE_URL, errors)
@@ -175,7 +190,9 @@ class Settings(BaseSettings):
 
         parsed = urlparse(stripped)
         if parsed.scheme not in {"redis", "rediss"} or not parsed.netloc:
-            errors.append(f"REDIS_URL must be an absolute redis:// or rediss:// URL in production: {stripped}")
+            errors.append(
+                f"REDIS_URL must be an absolute redis:// or rediss:// URL in production: {stripped}"
+            )
             return
 
         hostname = (parsed.hostname or "").lower()
@@ -185,7 +202,9 @@ class Settings(BaseSettings):
     def _build_database_urls_from_secret_parts(self) -> None:
         if self.DATABASE_URL and self.SYNC_DATABASE_URL:
             return
-        if not (self.DB_USER and self.DB_PASSWORD and self.DB_NAME and self.CLOUD_SQL_CONNECTION_NAME):
+        if not (
+            self.DB_USER and self.DB_PASSWORD and self.DB_NAME and self.CLOUD_SQL_CONNECTION_NAME
+        ):
             return
         user = quote(self.DB_USER, safe="")
         password = quote(self.DB_PASSWORD, safe="")
@@ -221,11 +240,12 @@ class Settings(BaseSettings):
     CLOUD_SQL_CONNECTION_NAME: str = ""
     # 연결 예산 (scripts/check_db_connection_budget.py가 CI에서 강제):
     #   API(async)  : api_max_instances × (DB_POOL_SIZE + DB_MAX_OVERFLOW)
-    #                 = 10 × (3 + 2) = 50
+    #                 = 7 × (3 + 2) = 35
     #   Worker(sync): worker_max_instances × CELERY_CONCURRENCY
     #                 × (DB_WORKER_POOL_SIZE + DB_WORKER_MAX_OVERFLOW)
     #                 = 5 × 2 × (2 + 2) = 40
-    #   합계 90 ≤ Cloud SQL max_connections(100) × 0.9 = 90.
+    #   합계 75 ≤ Cloud SQL max_connections(100) × 0.8 = 80.
+    #   최소 20개 연결은 운영/마이그레이션/일시적 롤아웃 중첩을 위해 남긴다.
     #   (beat는 DB 미사용, migrate Job은 배포 전 단발 실행이라 피크와 겹치지 않음.)
     #   sync 엔진은 Celery prefork 자식마다 lazily 생성된다(database.py) — 그래서
     #   워커 풀은 인스턴스가 아니라 자식(concurrency) 단위로 곱해진다.
@@ -233,9 +253,9 @@ class Settings(BaseSettings):
     #   위 스크립트로 불변식을 재확인할 것.
     # terraform/variables.tf(api_max_instances, worker_max_instances),
     # terraform/cloudrun.tf(CELERY_CONCURRENCY), terraform/cloudsql.tf(max_connections) 참조.
-    DB_POOL_SIZE: int = 3          # API(async) 엔진 풀 크기
-    DB_MAX_OVERFLOW: int = 2       # API(async) 오버플로 한도
-    DB_WORKER_POOL_SIZE: int = 2   # Worker(sync) 엔진 풀 — Celery prefork 자식당
+    DB_POOL_SIZE: int = 3  # API(async) 엔진 풀 크기
+    DB_MAX_OVERFLOW: int = 2  # API(async) 오버플로 한도
+    DB_WORKER_POOL_SIZE: int = 2  # Worker(sync) 엔진 풀 — Celery prefork 자식당
     DB_WORKER_MAX_OVERFLOW: int = 2  # Worker(sync) 오버플로 — Celery prefork 자식당
     DB_POOL_TIMEOUT: int = 30  # seconds to wait for a connection
     DB_CONNECT_TIMEOUT: int = 10  # seconds to establish TCP connection
@@ -258,6 +278,11 @@ class Settings(BaseSettings):
     GCP_LOCATION: str = "us-central1"
     GCP_STORAGE_BUCKET: str = "reputation-images"
     ASSET_LOCAL_UPLOAD_DIR: str = "/tmp/private_asset_uploads"
+    # Certificate Manager 기반 신규 커스텀 도메인 자동 프로비저닝.
+    # 실제 서비스는 Terraform이 소유한 map 안에 병원별 cert/map entry만 추가한다.
+    CERTIFICATE_MANAGER_AUTO_PROVISION: bool = False
+    CERTIFICATE_MANAGER_LOCATION: str = "global"
+    CERTIFICATE_MAP_NAME: str = "reputation-certmap"
 
     # 콘텐츠 대표 이미지 생성기
     #   "openai" → gpt-image-2 (기본, editorial 일러스트·항목별 다양성)
@@ -265,15 +290,15 @@ class Settings(BaseSettings):
     IMAGE_PROVIDER: str = "openai"
     OPENAI_IMAGE_MODEL: str = "gpt-image-2"
     OPENAI_IMAGE_SIZE: str = "1536x864"  # 16:9 (16의 배수, 비율≤3:1) — 카드 레이아웃 일치
-    OPENAI_IMAGE_QUALITY: str = "high"   # low|medium|high
+    OPENAI_IMAGE_QUALITY: str = "high"  # low|medium|high
 
     # OpenAI — SoV
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL_QUERY: str = "gpt-4o"
     OPENAI_MODEL_PARSE: str = "gpt-4o-mini"
-    # 기본은 web_search 미사용 (chat.completions = 모델 recall). True 시 Responses API +
-    # web_search tool 사용. 약속한 "ChatGPT Search 답변 노출률" 측정에 정합하려면 True.
-    OPENAI_CHATGPT_USE_WEB_SEARCH: bool = False
+    # 프로덕션은 Responses API + web_search tool만 허용한다. False는 모델 recall이므로
+    # _validate_production_config에서 부팅을 차단한다.
+    OPENAI_CHATGPT_USE_WEB_SEARCH: bool = True
 
     # Gemini — SoV
     GEMINI_API_KEY: str = ""
@@ -321,7 +346,9 @@ class Settings(BaseSettings):
     CUSTOM_DOMAIN_IP_TARGETS: str = ""
 
     # Admin
-    ADMIN_BASE_URL: str = "http://localhost:3000"  # 🔴 CRITICAL: 환경변수로 분리 (.env에서 프로덕션 URL 설정)
+    ADMIN_BASE_URL: str = (
+        "http://localhost:3000"  # 🔴 CRITICAL: 환경변수로 분리 (.env에서 프로덕션 URL 설정)
+    )
     ADMIN_ACTOR_NAME: str = "AE"  # 세션 actor가 없을 때 쓰는 감사 로그 fallback
 
     # Site (public)

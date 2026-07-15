@@ -22,12 +22,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV VIRTUAL_ENV=/opt/venv
 RUN python -m venv "$VIRTUAL_ENV"
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+ENV UV_PROJECT_ENVIRONMENT="$VIRTUAL_ENV"
 
-COPY pyproject.toml .
+# Production must resolve the exact dependency graph that passed CI. Installing
+# directly from broad pyproject lower bounds can silently pull breaking major SDK
+# releases even when uv.lock was reviewed and audited.
+RUN pip install --no-cache-dir "uv==0.8.13"
+COPY pyproject.toml uv.lock ./
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini .
-RUN pip install --no-cache-dir .
+RUN uv sync --locked --no-dev --no-editable
 
 # ── Runtime stage ──────────────────────────────────────────────────
 FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS runtime

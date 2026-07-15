@@ -1,4 +1,5 @@
 """P1-6 — POST /domain/verify가 operations verify-domain과 동일한 LIVE 게이트를 갖는지."""
+
 import uuid
 from types import SimpleNamespace
 
@@ -44,6 +45,7 @@ def _hospital(**overrides):
 def _patch_dns(monkeypatch, cname="target.motionlabs.io"):
     monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "target.motionlabs.io")
     monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "")
+    monkeypatch.setattr(domain_api.settings, "CERTIFICATE_MANAGER_AUTO_PROVISION", False)
 
     async def _fake_resolve(domain):
         return cname
@@ -79,7 +81,9 @@ async def test_verify_domain_activates_when_all_prerequisites_met(monkeypatch):
         ({"profile_complete": False}, "프로파일 완료"),
     ],
 )
-async def test_verify_domain_blocks_live_without_profile_complete(monkeypatch, overrides, expected_label):
+async def test_verify_domain_blocks_live_without_profile_complete(
+    monkeypatch, overrides, expected_label
+):
     """프로파일 미완료면 DNS가 맞아도 LIVE 전환 불가 — 프로파일 게이트 우회 차단."""
     hospital = _hospital(**overrides)
     db = FakeDB(hospital)
@@ -100,11 +104,12 @@ async def test_verify_domain_blocks_live_without_profile_complete(monkeypatch, o
     [
         ({"v0_report_done": False}, "V0 리포트"),
         ({"site_built": False}, "병원 정보 허브 빌드"),
-        ({"schedule_set": False}, "콘텐츠 스케줄"),
     ],
 )
-async def test_verify_domain_blocks_live_without_prerequisites(monkeypatch, overrides, expected_label):
-    """DNS가 맞아도 사전 단계 미충족이면 409 — 게이트 우회 경로 차단 (P1-6)."""
+async def test_verify_domain_blocks_live_without_prerequisites(
+    monkeypatch, overrides, expected_label
+):
+    """DNS가 맞아도 STEP 5 사전 단계 미충족이면 409 — 게이트 우회 차단."""
     hospital = _hospital(**overrides)
     db = FakeDB(hospital)
     _patch_dns(monkeypatch)
@@ -133,8 +138,39 @@ async def test_verify_domain_keeps_response_shape_on_cname_mismatch(monkeypatch)
     assert db.committed is False
 
 
+async def test_verify_domain_waits_for_https_certificate_after_dns_is_ready(monkeypatch):
+    hospital = _hospital()
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+    monkeypatch.setattr(domain_api.settings, "CERTIFICATE_MANAGER_AUTO_PROVISION", True)
+
+    async def _pending_certificate(domain):
+        assert domain == "clinic.example.com"
+        return SimpleNamespace(
+            ready=False,
+            phase="PROVISIONING",
+            message="HTTPS 인증서를 준비하고 있습니다.",
+            error_code=None,
+        )
+
+    monkeypatch.setattr(domain_api, "ensure_verified_domain_certificate", _pending_certificate)
+
+    response = await domain_api.verify_domain(hospital.id, db=db)
+
+    assert response.dns_verified is True
+    assert response.verified is False
+    assert response.certificate_ready is False
+    assert response.certificate_phase == "PROVISIONING"
+    assert hospital.site_live is False
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert db.committed is True
+    assert db.added[0].action == "provision_domain_certificate"
+
+
 async def test_verify_domain_accepts_lb_address_for_apex_domain(monkeypatch):
-    hospital = _hospital(aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS)
+    hospital = _hospital(
+        aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS
+    )
     db = FakeDB(hospital)
     monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "target.motionlabs.io")
     monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20")
@@ -159,7 +195,9 @@ async def test_verify_domain_accepts_lb_address_for_apex_domain(monkeypatch):
 
 
 async def test_verify_domain_uses_selected_apex_strategy_even_when_cname_matches(monkeypatch):
-    hospital = _hospital(aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS)
+    hospital = _hospital(
+        aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS
+    )
     db = FakeDB(hospital)
     monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "target.motionlabs.io")
     monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20")
@@ -183,7 +221,9 @@ async def test_verify_domain_uses_selected_apex_strategy_even_when_cname_matches
 
 
 async def test_verify_domain_rejects_apex_when_cname_exists_even_if_address_matches(monkeypatch):
-    hospital = _hospital(aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS)
+    hospital = _hospital(
+        aeo_domain="jangclinic.co.kr", domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS
+    )
     db = FakeDB(hospital)
     monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "target.motionlabs.io")
     monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20")

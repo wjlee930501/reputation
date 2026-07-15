@@ -29,16 +29,16 @@ certificate_map_customer_domains = ["jangclinic.kr"]
 # Keep this true unless rolling back deliberately.
 use_certificate_map = true
 
-# Keep launch scale deliberately bounded. Raise after DB connection metrics and
-# request latency justify it.
-api_min_instances    = 0
-api_max_instances    = 2
-site_min_instances   = 0
+# Match the deploy script's bounded autoscaling envelope. The checked DB budget is
+# API 35 + Worker 40 = 75 connections, below the enforced 80-connection ceiling.
+api_min_instances    = 1
+api_max_instances    = 7
+site_min_instances   = 1
 site_max_instances   = 1
 admin_min_instances  = 0
 admin_max_instances  = 1
 worker_min_instances = 1
-worker_max_instances = 2
+worker_max_instances = 5
 beat_min_instances   = 1
 beat_max_instances   = 1
 beat_memory          = "512Mi"

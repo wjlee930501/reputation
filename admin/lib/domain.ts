@@ -32,6 +32,8 @@ export interface DomainSetupPlan {
   purchase_note: string | null
   expected_cname: string
   expected_addresses: string[]
+  certificate_ready?: boolean
+  certificate_phase?: string | null
   records: DomainSetupRecord[]
   checklist: DomainSetupChecklistItem[]
   warnings: string[]

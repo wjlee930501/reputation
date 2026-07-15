@@ -1,4 +1,5 @@
 """Admin API — hospital source-backed content operating standard."""
+
 import asyncio
 import uuid
 from datetime import datetime, timezone
@@ -39,10 +40,15 @@ from app.services.asset_extractor import (
     fetch_url_text,
     naver_blog_id_from,
 )
-from app.services.asset_storage import resolve_legacy_asset_path, resolve_local_asset_path, store_asset_bytes
+from app.services.asset_storage import (
+    resolve_legacy_asset_path,
+    resolve_local_asset_path,
+    store_asset_bytes,
+)
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
+    compute_sources_snapshot_hash,
     find_error_marker_fields,
     process_source_asset,
     synthesize_philosophy,
@@ -115,7 +121,9 @@ PHILOSOPHY_STATUS_DISPLAY_LABELS = {
 def _display_label(labels: dict, value) -> str | None:
     if value is None:
         return None
-    return labels.get(value) or labels.get(str(value)) or labels.get(str(value).upper()) or str(value)
+    return (
+        labels.get(value) or labels.get(str(value)) or labels.get(str(value).upper()) or str(value)
+    )
 
 
 @router.get("/sources", response_model=list[SourceAssetResponse])
@@ -136,7 +144,10 @@ async def list_sources(
     result = await db.execute(stmt)
     sources = result.scalars().all()
     counts = await _note_counts(db, [source.id for source in sources])
-    return [_serialize_source(source, evidence_note_count=counts.get(source.id, 0)) for source in sources]
+    return [
+        _serialize_source(source, evidence_note_count=counts.get(source.id, 0))
+        for source in sources
+    ]
 
 
 @router.post("/sources", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse)
@@ -189,8 +200,19 @@ async def patch_source(
 ):
     source = await _get_source_or_404(db, hospital_id, source_id)
     update = body.model_dump(exclude_unset=True)
-    material_fields = {"source_type", "title", "url", "raw_text", "operator_note", "source_metadata"}
+    material_fields = {
+        "source_type",
+        "title",
+        "url",
+        "raw_text",
+        "operator_note",
+        "source_metadata",
+    }
     material_changed = bool(material_fields.intersection(update.keys()))
+    hospital = await _get_hospital_or_404(db, hospital_id) if material_changed else None
+    should_revalidate = bool(hospital and _has_public_site(hospital))
+    if should_revalidate:
+        ensure_site_revalidate_configured()
 
     for field_name, value in update.items():
         if field_name in {"url", "raw_text", "operator_note"}:
@@ -218,6 +240,8 @@ async def patch_source(
 
     await db.commit()
     await db.refresh(source)
+    if should_revalidate and hospital:
+        await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
     return _serialize_source(source)
 
 
@@ -228,10 +252,16 @@ async def process_source(
     db: AsyncSession = Depends(get_db),
 ):
     source = await _get_source_or_404(db, hospital_id, source_id)
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    should_revalidate = _has_public_site(hospital)
+    if should_revalidate:
+        ensure_site_revalidate_configured()
     if source.status == SourceStatus.EXCLUDED:
         raise HTTPException(status_code=400, detail="제외 처리된 자료는 처리할 수 없습니다.")
     if not source.raw_text or not source.raw_text.strip():
-        raise HTTPException(status_code=400, detail="자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다.")
+        raise HTTPException(
+            status_code=400, detail="자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다."
+        )
 
     try:
         # 동기 LLM 호출을 워커 스레드로 — 단일 uvicorn worker의 이벤트 루프 블로킹 방지
@@ -239,7 +269,9 @@ async def process_source(
         payloads = await asyncio.to_thread(process_source_asset, source)
         for payload in payloads:
             if not validate_source_excerpt(source, payload.source_excerpt):
-                raise ValueError(f"source_excerpt가 원문에 존재하지 않습니다: {payload.source_excerpt[:80]}")
+                raise ValueError(
+                    f"source_excerpt가 원문에 존재하지 않습니다: {payload.source_excerpt[:80]}"
+                )
 
         await db.execute(
             delete(HospitalSourceEvidenceNote).where(
@@ -272,6 +304,8 @@ async def process_source(
         )
         await db.commit()
         await db.refresh(source)
+        if should_revalidate:
+            await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
         return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
     except ValueError as exc:
         source.status = SourceStatus.ERROR
@@ -288,9 +322,9 @@ async def exclude_source(
 ):
     source = await _get_source_or_404(db, hospital_id, source_id)
     previous_status = source.status
-    was_public_photo = source.source_type in PHOTO_SOURCE_TYPES and bool(source.is_public)
-    hospital = await _get_hospital_or_404(db, hospital_id) if was_public_photo else None
-    if hospital and _has_public_site(hospital):
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    should_revalidate = _has_public_site(hospital)
+    if should_revalidate:
         ensure_site_revalidate_configured()
     source.status = SourceStatus.EXCLUDED
     source.is_public = False
@@ -305,14 +339,16 @@ async def exclude_source(
     )
     await db.commit()
     await db.refresh(source)
-    if hospital and _has_public_site(hospital):
+    if should_revalidate:
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
         await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
     notes = await _get_notes_for_source(db, source.id)
     return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
 
 
-@router.post("/sources/upload", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse)
+@router.post(
+    "/sources/upload", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse
+)
 async def upload_source_file(
     hospital_id: uuid.UUID,
     source_type: SourceType = Form(...),
@@ -327,7 +363,10 @@ async def upload_source_file(
 
     data = await file.read()
     if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"파일 크기는 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 이하여야 합니다.")
+        raise HTTPException(
+            status_code=413,
+            detail=f"파일 크기는 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 이하여야 합니다.",
+        )
     if not data:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
 
@@ -336,9 +375,13 @@ async def upload_source_file(
     is_photo_type = source_type in PHOTO_SOURCE_TYPES
 
     if is_photo_type and extractor_kind != "IMAGE":
-        raise HTTPException(status_code=400, detail="사진 카테고리에는 이미지 파일만 업로드할 수 있습니다.")
+        raise HTTPException(
+            status_code=400, detail="사진 카테고리에는 이미지 파일만 업로드할 수 있습니다."
+        )
     if not is_photo_type and extractor_kind == "IMAGE":
-        raise HTTPException(status_code=400, detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요.")
+        raise HTTPException(
+            status_code=400, detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요."
+        )
 
     # 동기 GCS 업로드(최대 12MB)와 PDF/DOCX 파싱은 이벤트 루프를 수 초 블로킹할 수 있다 —
     # 워커 스레드에서 실행해 공개 표면 요청이 함께 멈추지 않게 한다.
@@ -380,14 +423,20 @@ async def upload_source_file(
         actor=default_actor(),
         target_type="source_asset",
         target_id=source.id,
-        detail={"source_type": source_type.value, "extractor": extractor_kind, "size_bytes": len(data)},
+        detail={
+            "source_type": source_type.value,
+            "extractor": extractor_kind,
+            "size_bytes": len(data),
+        },
     )
     await db.commit()
     await db.refresh(source)
     return _serialize_source(source)
 
 
-@router.post("/sources/crawl", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse)
+@router.post(
+    "/sources/crawl", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse
+)
 async def crawl_source_url(
     hospital_id: uuid.UUID,
     body: SourceCrawlRequest,
@@ -397,7 +446,10 @@ async def crawl_source_url(
     await _get_hospital_or_404(db, hospital_id)
 
     if body.source_type in PHOTO_SOURCE_TYPES:
-        raise HTTPException(status_code=400, detail="사진 카테고리는 URL 크롤링을 지원하지 않습니다. 업로드를 사용해 주세요.")
+        raise HTTPException(
+            status_code=400,
+            detail="사진 카테고리는 URL 크롤링을 지원하지 않습니다. 업로드를 사용해 주세요.",
+        )
 
     text, error, quality = await fetch_url_text(body.url)
     if error:
@@ -434,7 +486,11 @@ async def crawl_source_url(
         actor=default_actor(),
         target_type="source_asset",
         target_id=source.id,
-        detail={"source_type": body.source_type.value, "url": body.url, "extracted_chars": len(text)},
+        detail={
+            "source_type": body.source_type.value,
+            "url": body.url,
+            "extracted_chars": len(text),
+        },
     )
     await db.commit()
     await db.refresh(source)
@@ -456,7 +512,9 @@ async def crawl_naver_blog(
 
     post_urls, enum_error = await fetch_naver_blog_post_urls(body.url, body.max_posts)
     if enum_error:
-        raise HTTPException(status_code=400, detail=f"네이버 블로그 글 목록을 가져오지 못했습니다: {enum_error}")
+        raise HTTPException(
+            status_code=400, detail=f"네이버 블로그 글 목록을 가져오지 못했습니다: {enum_error}"
+        )
 
     blog_id = naver_blog_id_from(body.url)
 
@@ -550,7 +608,9 @@ async def toggle_source_public(
     """사진 자료의 /site 공개 노출 플래그 토글. 사진이 아닌 자료는 거부."""
     source = await _get_source_or_404(db, hospital_id, source_id)
     if source.source_type not in PHOTO_SOURCE_TYPES:
-        raise HTTPException(status_code=400, detail="공개 토글은 사진 자료(PHOTO_*)에만 적용됩니다.")
+        raise HTTPException(
+            status_code=400, detail="공개 토글은 사진 자료(PHOTO_*)에만 적용됩니다."
+        )
     if body.is_public and source.status == SourceStatus.EXCLUDED:
         raise HTTPException(status_code=400, detail="제외 처리된 사진은 공개할 수 없습니다.")
     if body.is_public and not source.file_url:
@@ -568,7 +628,11 @@ async def toggle_source_public(
         actor=default_actor(),
         target_type="source_asset",
         target_id=source.id,
-        detail={"from": previous, "to": bool(body.is_public), "source_type": source.source_type.value},
+        detail={
+            "from": previous,
+            "to": bool(body.is_public),
+            "source_type": source.source_type.value,
+        },
     )
     await db.commit()
     await db.refresh(source)
@@ -610,7 +674,9 @@ async def get_approved_philosophy(hospital_id: uuid.UUID, db: AsyncSession = Dep
     return {"approved": _serialize_philosophy(approved) if approved else None}
 
 
-@router.post("/philosophy/draft", status_code=status.HTTP_201_CREATED, response_model=PhilosophyResponse)
+@router.post(
+    "/philosophy/draft", status_code=status.HTTP_201_CREATED, response_model=PhilosophyResponse
+)
 async def create_philosophy_draft(
     hospital_id: uuid.UUID,
     body: PhilosophyDraftCreate,
@@ -623,7 +689,9 @@ async def create_philosophy_draft(
 
     notes = await _get_notes_for_sources(db, [source.id for source in sources])
     if not notes:
-        raise HTTPException(status_code=400, detail="운영 기준 초안 생성에 사용할 근거 노트가 없습니다.")
+        raise HTTPException(
+            status_code=400, detail="운영 기준 초안 생성에 사용할 근거 노트가 없습니다."
+        )
 
     payload = synthesize_philosophy(hospital, sources, notes, operator_note=body.operator_note)
     # 차단·오류 페이지 잔재가 핵심 필드에 남았으면 초안을 만들지 않고 명확한 사유로 거부한다.
@@ -666,7 +734,9 @@ async def patch_philosophy(
 ):
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
     if philosophy.status != PhilosophyStatus.DRAFT:
-        raise HTTPException(status_code=400, detail="승인 또는 보관된 콘텐츠 운영 기준은 직접 수정할 수 없습니다.")
+        raise HTTPException(
+            status_code=400, detail="승인 또는 보관된 콘텐츠 운영 기준은 직접 수정할 수 없습니다."
+        )
 
     update = body.model_dump(exclude_unset=True)
     for field_name, value in update.items():
@@ -696,7 +766,9 @@ async def approve_philosophy(
 ):
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
     if philosophy.status != PhilosophyStatus.DRAFT:
-        raise HTTPException(status_code=400, detail="초안 상태의 콘텐츠 운영 기준만 승인할 수 있습니다.")
+        raise HTTPException(
+            status_code=400, detail="초안 상태의 콘텐츠 운영 기준만 승인할 수 있습니다."
+        )
     if not body.confirm_evidence_reviewed:
         raise HTTPException(
             status_code=400,
@@ -707,6 +779,36 @@ async def approve_philosophy(
     grounding_errors = validate_philosophy_grounding(philosophy, notes, require_text_support=True)
     if grounding_errors:
         raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
+
+    # A draft may have been created from a selected subset. Approval is only valid
+    # for the complete processed-source snapshot that exists at approval time.
+    required_result = await db.execute(
+        select(HospitalSourceAsset).where(
+            HospitalSourceAsset.hospital_id == hospital_id,
+            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+        )
+    )
+    required_sources = list(required_result.scalars().all())
+    unprocessed = [source for source in required_sources if source.status != SourceStatus.PROCESSED]
+    if unprocessed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"처리되지 않은 병원 자료 {len(unprocessed)}개가 남아 있습니다. "
+                "자료를 처리하거나 제외한 뒤 초안을 다시 생성해 주세요."
+            ),
+        )
+    current_sources = required_sources
+    current_snapshot_hash = compute_sources_snapshot_hash(current_sources)
+    if not current_sources or philosophy.source_snapshot_hash != current_snapshot_hash:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "초안 생성 후 처리된 병원 자료가 변경되었습니다. 현재 전체 자료로 "
+                "콘텐츠 운영 기준 초안을 다시 생성해 주세요."
+            ),
+        )
 
     previous_result = await db.execute(
         select(HospitalContentPhilosophy).where(
@@ -776,7 +878,9 @@ async def _get_philosophy_or_404(
     return philosophy
 
 
-async def _get_approved(db: AsyncSession, hospital_id: uuid.UUID) -> HospitalContentPhilosophy | None:
+async def _get_approved(
+    db: AsyncSession, hospital_id: uuid.UUID
+) -> HospitalContentPhilosophy | None:
     result = await db.execute(
         select(HospitalContentPhilosophy).where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
@@ -849,7 +953,9 @@ async def _select_processed_sources(
         try:
             ids = [uuid.UUID(str(item)) for item in source_asset_ids]
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="선택한 병원 자료 ID 형식이 올바르지 않습니다.") from exc
+            raise HTTPException(
+                status_code=400, detail="선택한 병원 자료 ID 형식이 올바르지 않습니다."
+            ) from exc
         stmt = stmt.where(HospitalSourceAsset.id.in_(ids))
     stmt = stmt.order_by(HospitalSourceAsset.processed_at.desc())
     result = await db.execute(stmt)
@@ -894,7 +1000,9 @@ def _serialize_source(
         "file_size_bytes": source.file_size_bytes,
         "is_public": bool(source.is_public),
         "evidence_note_count": evidence_note_count,
-        "evidence_notes": [_serialize_note(note) for note in evidence_notes] if evidence_notes is not None else None,
+        "evidence_notes": [_serialize_note(note) for note in evidence_notes]
+        if evidence_notes is not None
+        else None,
     }
 
 
@@ -903,7 +1011,14 @@ def _source_file_access_url(source: HospitalSourceAsset) -> str:
 
 
 def _is_legacy_public_url(value: str | None) -> bool:
-    return bool(value and (value.startswith("http://") or value.startswith("https://") or value.startswith("/assets/")))
+    return bool(
+        value
+        and (
+            value.startswith("http://")
+            or value.startswith("https://")
+            or value.startswith("/assets/")
+        )
+    )
 
 
 def _asset_response(asset_ref: str, *, hospital_id: uuid.UUID, media_type: str | None):

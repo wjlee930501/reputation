@@ -1,15 +1,24 @@
 """Admin API — v1.0 operations control plane.
 
-순서 규약: write_audit_log → db.commit() → external side-effect (apply_async).
-이 순서를 어기면 큐는 실행되지만 audit row가 사라지는 정합성 결손이 발생함.
+Queue operations use two append-only audit events: a durable request before
+broker dispatch and a confirmed event only after ``apply_async`` succeeds.
+This keeps the audit trail truthful without pretending that a pre-dispatch
+row proves broker acceptance.
 """
+
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.admin.domain import check_domain_dns, domain_dns_strategy_for_hospital, missing_live_prerequisites
+from app.api.admin.domain import (
+    check_domain_dns,
+    domain_dns_strategy_for_hospital,
+    ensure_verified_domain_certificate,
+    missing_live_prerequisites,
+)
 from app.core.database import get_db
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
@@ -21,12 +30,73 @@ from app.schemas.operations import (
 )
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
-from app.workers.tasks import build_aeo_site, regenerate_content_item, run_sov_for_hospital, trigger_v0_report
+from app.workers.tasks import (
+    build_aeo_site,
+    regenerate_content_item,
+    run_sov_for_hospital,
+    trigger_v0_report,
+)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Operations"])
 
 # 비용 가드는 병원 단위가 아닌 전역 제어 평면이라 별도 prefix를 쓴다.
 cost_guard_router = APIRouter(prefix="/admin/operations", tags=["Admin — Cost Guard"])
+
+
+async def _enqueue_with_truthful_audit(
+    db: AsyncSession,
+    *,
+    action: str,
+    hospital_id: uuid.UUID,
+    target_type: str,
+    target_id: uuid.UUID | str,
+    task: Any,
+    args: list[str],
+    queue: str,
+) -> str | None:
+    """Durably record request, dispatch, then record broker acceptance."""
+    actor = default_actor()
+    await write_audit_log(
+        db,
+        action=f"{action}_requested",
+        hospital_id=hospital_id,
+        actor=actor,
+        target_type=target_type,
+        target_id=target_id,
+        detail={"queued": False, "queue": queue},
+    )
+    await db.commit()
+
+    try:
+        result = task.apply_async(args=args, queue=queue)
+    except Exception as exc:
+        await write_audit_log(
+            db,
+            action=f"{action}_queue_failed",
+            hospital_id=hospital_id,
+            actor=actor,
+            target_type=target_type,
+            target_id=target_id,
+            detail={"queued": False, "queue": queue, "error_type": type(exc).__name__},
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="작업 큐 연결에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+        ) from exc
+
+    task_id = str(result.id) if getattr(result, "id", None) else None
+    await write_audit_log(
+        db,
+        action=action,
+        hospital_id=hospital_id,
+        actor=actor,
+        target_type=target_type,
+        target_id=target_id,
+        detail={"queued": True, "queue": queue, "task_id": task_id},
+    )
+    await db.commit()
+    return task_id
 
 
 @cost_guard_router.get("/cost-guard", response_model=CostGuardStatusResponse)
@@ -64,17 +134,16 @@ async def trigger_v0_report_operation(
     db: AsyncSession = Depends(get_db),
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
-    await write_audit_log(
+    await _enqueue_with_truthful_audit(
         db,
         action="trigger_v0_report",
         hospital_id=hospital.id,
-        actor=default_actor(),
         target_type="hospital",
         target_id=hospital.id,
-        detail={"queued": True},
+        task=trigger_v0_report,
+        args=[str(hospital.id)],
+        queue="reports",
     )
-    await db.commit()
-    trigger_v0_report.apply_async(args=[str(hospital.id)], queue="reports")
     return {"detail": "V0 report queued", "hospital_id": str(hospital.id)}
 
 
@@ -85,18 +154,20 @@ async def run_sov_operation(
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
     if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
-        raise HTTPException(status_code=409, detail="AI 언급률 측정은 ACTIVE 또는 PENDING_DOMAIN 상태에서 실행할 수 있습니다.")
-    await write_audit_log(
+        raise HTTPException(
+            status_code=409,
+            detail="AI 언급률 측정은 ACTIVE 또는 PENDING_DOMAIN 상태에서 실행할 수 있습니다.",
+        )
+    await _enqueue_with_truthful_audit(
         db,
         action="run_sov",
         hospital_id=hospital.id,
-        actor=default_actor(),
         target_type="hospital",
         target_id=hospital.id,
-        detail={"queued": True},
+        task=run_sov_for_hospital,
+        args=[str(hospital.id)],
+        queue="sov",
     )
-    await db.commit()
-    run_sov_for_hospital.apply_async(args=[str(hospital.id)], queue="sov")
     return {"detail": "AI 언급률 측정이 큐에 등록되었습니다.", "hospital_id": str(hospital.id)}
 
 
@@ -106,17 +177,16 @@ async def rebuild_site_operation(
     db: AsyncSession = Depends(get_db),
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
-    await write_audit_log(
+    await _enqueue_with_truthful_audit(
         db,
         action="rebuild_site",
         hospital_id=hospital.id,
-        actor=default_actor(),
         target_type="hospital",
         target_id=hospital.id,
-        detail={"queued": True},
+        task=build_aeo_site,
+        args=[str(hospital.id)],
+        queue="default",
     )
-    await db.commit()
-    build_aeo_site.apply_async(args=[str(hospital.id)], queue="default")
     return {"detail": "Site rebuild queued", "hospital_id": str(hospital.id)}
 
 
@@ -129,8 +199,14 @@ async def verify_domain_operation(
     if not hospital.aeo_domain:
         raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다.")
 
-    dns_check = await check_domain_dns(hospital.aeo_domain, domain_dns_strategy_for_hospital(hospital))
-    previous_status = hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+    dns_check = await check_domain_dns(
+        hospital.aeo_domain, domain_dns_strategy_for_hospital(hospital)
+    )
+    certificate = None
+    serving_ready = False
+    previous_status = (
+        hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+    )
     previous_site_live = bool(hospital.site_live)
     if dns_check.verified:
         missing_prerequisites = missing_live_prerequisites(hospital)
@@ -139,8 +215,11 @@ async def verify_domain_operation(
                 status_code=409,
                 detail=f"도메인 DNS는 확인됐지만 LIVE 전환 전 단계가 남아 있습니다: {', '.join(missing_prerequisites)}",
             )
-        hospital.site_live = True
-        hospital.status = HospitalStatus.ACTIVE
+        certificate = await ensure_verified_domain_certificate(hospital.aeo_domain)
+        serving_ready = certificate is None or certificate.ready
+        if serving_ready:
+            hospital.site_live = True
+            hospital.status = HospitalStatus.ACTIVE
 
     await write_audit_log(
         db,
@@ -150,27 +229,43 @@ async def verify_domain_operation(
         target_type="domain",
         target_id=hospital.aeo_domain,
         detail={
-            "verified": dns_check.verified,
+            "verified": serving_ready,
+            "dns_verified": dns_check.verified,
             "cname_value": dns_check.cname_value,
             "address_values": dns_check.address_values,
             "expected_cname": dns_check.expected_cname,
             "expected_addresses": dns_check.expected_addresses,
             "verification_method": dns_check.verification_method,
+            "certificate_ready": serving_ready,
+            "certificate_phase": certificate.phase if certificate else None,
+            "certificate_error_code": certificate.error_code if certificate else None,
             "previous_status": previous_status,
             "previous_site_live": previous_site_live,
-            "new_status": hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status),
+            "new_status": hospital.status.value
+            if hasattr(hospital.status, "value")
+            else str(hospital.status),
             "new_site_live": bool(hospital.site_live),
         },
     )
     await db.commit()
     return {
         "domain": hospital.aeo_domain,
-        "verified": dns_check.verified,
+        "verified": serving_ready,
+        "dns_verified": dns_check.verified,
         "cname_value": dns_check.cname_value,
         "address_values": dns_check.address_values,
         "expected_cname": dns_check.expected_cname,
         "expected_addresses": dns_check.expected_addresses,
         "verification_method": dns_check.verification_method,
+        "certificate_ready": serving_ready,
+        "certificate_phase": certificate.phase if certificate else None,
+        "message": (
+            "공개 도메인 상태가 확인되었습니다."
+            if serving_ready
+            else certificate.message
+            if certificate is not None
+            else "DNS 설정이 아직 확인되지 않았습니다."
+        ),
     }
 
 
@@ -186,17 +281,16 @@ async def regenerate_content_operation(
         raise HTTPException(status_code=404, detail="Content not found")
     if item.status == ContentStatus.PUBLISHED:
         raise HTTPException(status_code=409, detail="Published content cannot be regenerated")
-    await write_audit_log(
+    await _enqueue_with_truthful_audit(
         db,
         action="regenerate_content",
         hospital_id=hospital.id,
-        actor=default_actor(),
         target_type="content_item",
         target_id=content_id,
-        detail={"queued": True},
+        task=regenerate_content_item,
+        args=[str(content_id)],
+        queue="content",
     )
-    await db.commit()
-    regenerate_content_item.apply_async(args=[str(content_id)], queue="content")
     return {"detail": "Content regeneration queued", "content_id": str(content_id)}
 
 

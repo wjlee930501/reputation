@@ -30,6 +30,7 @@ def _valid_prod_kwargs(**overrides):
         TRUSTED_PROXY_IPS="130.211.0.0/22,35.191.0.0/16",
         ADMIN_BASE_URL="https://admin.example.com",
         SITE_BASE_URL="https://reputation.co.kr",
+        CERTIFICATE_MANAGER_AUTO_PROVISION=True,
     )
     base.update(overrides)
     return base
@@ -54,6 +55,7 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         TRUSTED_PROXY_IPS="130.211.0.0/22,35.191.0.0/16",
         ADMIN_BASE_URL="https://admin.example.com",
         SITE_BASE_URL="https://reputation.co.kr",
+        CERTIFICATE_MANAGER_AUTO_PROVISION=True,
     )
 
     assert settings.DATABASE_URL == (
@@ -61,8 +63,7 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         "?host=/cloudsql/project:region:instance"
     )
     assert settings.SYNC_DATABASE_URL == (
-        "postgresql://reputation:p%40ss%20word@/reputation"
-        "?host=/cloudsql/project:region:instance"
+        "postgresql://reputation:p%40ss%20word@/reputation?host=/cloudsql/project:region:instance"
     )
 
 
@@ -115,6 +116,18 @@ def test_production_accepts_valid_secure_config(monkeypatch):
     assert settings.ALLOWED_ORIGINS == ["https://admin.example.com", "https://reputation.co.kr"]
     assert settings.ADMIN_BASE_URL == "https://admin.example.com"
     assert settings.SITE_BASE_URL == "https://reputation.co.kr"
+
+
+def test_production_requires_chatgpt_web_search(monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    with pytest.raises(ValueError, match="OPENAI_CHATGPT_USE_WEB_SEARCH"):
+        Settings(**_valid_prod_kwargs(OPENAI_CHATGPT_USE_WEB_SEARCH=False))
+
+
+def test_production_requires_automatic_certificate_provisioning(monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    with pytest.raises(ValueError, match="CERTIFICATE_MANAGER_AUTO_PROVISION"):
+        Settings(**_valid_prod_kwargs(CERTIFICATE_MANAGER_AUTO_PROVISION=False))
 
 
 def test_production_fails_fast_when_slack_webhook_empty(monkeypatch):

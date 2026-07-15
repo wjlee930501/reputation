@@ -21,6 +21,7 @@ import {
   type DomainFeedback,
 } from './DomainSetupPrimitives'
 import { DEFAULT_CNAME_TARGET, platformSubdomainUrl, statusBadge, trimmed } from './DomainSetupState'
+import { isPlatformAddressBrowsable, missingActivationPrerequisites } from '@/lib/hospital-activation'
 
 export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeaderRefresh }: DomainSetupPanelProps) {
   const [domainSavedValue, setDomainSavedValue] = useState('')
@@ -32,6 +33,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   const [setupPlan, setSetupPlan] = useState<DomainSetupPlan | null>(null)
   const [domainSaving, setDomainSaving] = useState(false)
   const [domainVerifying, setDomainVerifying] = useState(false)
+  const [platformActivating, setPlatformActivating] = useState(false)
   const [domainFeedback, setDomainFeedback] = useState<DomainFeedback>(null)
   const [cnameCopied, setCnameCopied] = useState(false)
 
@@ -87,8 +89,18 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     trimmed(dnsProvider) !== trimmed(profile.domain_dns_provider) ||
     trimmed(purchaseNote) !== trimmed(profile.domain_purchase_note)
   const hasUnsavedChange = hasDomainChange || hasMetadataChange
-  const status = hasUnsavedChange ? 'unsaved' : profile.site_live ? 'live' : !domainSavedValue ? 'empty' : 'waiting'
+  const activationMissing = missingActivationPrerequisites(profile)
+  const status = hasUnsavedChange
+    ? 'unsaved'
+    : profile.site_live
+      ? 'live'
+      : domainSavedValue
+        ? 'waiting'
+        : activationMissing.length === 0
+          ? 'ready'
+          : 'empty'
   const badge = statusBadge(status)
+  const platformAddressBrowsable = isPlatformAddressBrowsable(profile)
   const displayPlan = useMemo(
     () => setupPlan ?? (domainSavedValue ? buildFallbackDomainSetupPlan(domainSavedValue, DEFAULT_CNAME_TARGET) : null),
     [domainSavedValue, setupPlan],
@@ -163,7 +175,14 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     setDomainVerifying(true)
     setDomainFeedback(null)
     try {
-      const result = await fetchAPI<{ verified?: boolean; expected_cname?: string; message?: string }>(
+      const result = await fetchAPI<{
+        verified?: boolean
+        dns_verified?: boolean
+        certificate_ready?: boolean
+        certificate_phase?: string | null
+        expected_cname?: string
+        message?: string
+      }>(
         `/admin/hospitals/${hospitalId}/domain/verify`,
         { method: 'POST' },
       )
@@ -171,6 +190,12 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         onProfileChange({ site_live: true })
         onHeaderRefresh()
         setDomainFeedback({ tone: 'success', message: result.message ?? '도메인 연결이 확인되어 운영 상태로 전환되었습니다.' })
+      } else if (result?.dns_verified && !result?.certificate_ready) {
+        setDomainFeedback({
+          tone: 'info',
+          title: result.certificate_phase === 'FAILED' ? 'DNS 확인 완료 · 인증서 점검 필요' : 'DNS 확인 완료 · HTTPS 준비 중',
+          message: result?.message ?? '인증서를 준비하고 있습니다. 잠시 후 다시 연결 검증을 실행해 주세요.',
+        })
       } else {
         setDomainFeedback({ tone: 'error', message: result?.message ?? 'DNS 설정이 아직 확인되지 않았습니다.' })
       }
@@ -187,13 +212,32 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     }
   }
 
+  async function handleActivatePlatform() {
+    if (platformActivating || activationMissing.length > 0 || currentDomain || domainSavedValue) return
+    setPlatformActivating(true)
+    setDomainFeedback(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/activate`, { method: 'PATCH' })
+      onProfileChange({ site_live: true, status: 'ACTIVE' })
+      onHeaderRefresh()
+      setDomainFeedback({ tone: 'success', message: '기본 플랫폼 주소로 운영을 시작했습니다.' })
+    } catch (error: unknown) {
+      setDomainFeedback({
+        tone: 'error',
+        message: error instanceof Error ? error.message : '기본 플랫폼 주소 활성화에 실패했습니다.',
+      })
+    } finally {
+      setPlatformActivating(false)
+    }
+  }
+
   return (
     <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
       <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-white px-6 py-5 border-b border-slate-100">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold text-slate-900">자기 도메인 연결 <span className="text-slate-400 font-normal">(선택)</span></h3>
-            <p className="text-sm text-slate-700 mt-1">기본은 아래 플랫폼 주소로 자동 공개되며, 병원 자기 도메인 연결은 선택입니다.</p>
+            <p className="text-sm text-slate-700 mt-1">기본 플랫폼 주소는 선행 단계 완료 후 직접 활성화하며, 병원 자기 도메인 연결은 선택입니다.</p>
           </div>
           <span className={`shrink-0 inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full border ${badge.cls}`}>
             {badge.label}
@@ -204,18 +248,59 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       <div className="px-6 py-5 space-y-5">
         {subdomainUrl && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
-            <p className="text-sm font-semibold text-emerald-800">기본 주소 · 자동 공개</p>
-            <a
-              href={subdomainUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-0.5 block font-mono text-sm text-emerald-700 underline break-all"
-            >
-              {subdomainUrl}
-            </a>
-            <p className="mt-1 text-xs text-emerald-700/80">
-              운영 시작 시 별도 DNS·인증서 설정 없이 이 주소로 공개됩니다. 아래 자기 도메인 연결은 선택입니다.
+            <p className="text-sm font-semibold text-emerald-800">
+              기본 주소 · {profile.site_live ? '운영 중' : '명시적 활성화 필요'}
             </p>
+            {platformAddressBrowsable ? (
+              <a
+                href={subdomainUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-0.5 block break-all font-mono text-sm text-emerald-700 underline"
+              >
+                {subdomainUrl}
+              </a>
+            ) : (
+              <p className="mt-0.5 break-all font-mono text-sm text-emerald-700" aria-label="활성화 전 기본 주소">
+                {subdomainUrl}
+              </p>
+            )}
+            {profile.site_live ? (
+              <p className="mt-1 text-xs text-emerald-700/80">이 주소로 현재 공개 중입니다. 아래 자기 도메인 연결은 선택입니다.</p>
+            ) : (
+              <div className="mt-2 space-y-2">
+                <p className="text-xs text-emerald-700/80">
+                  별도 DNS·인증서 없이 사용할 수 있지만, 운영 전환은 담당자가 직접 실행해야 합니다.
+                </p>
+                {activationMissing.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {activationMissing.map((item) => (
+                      <a
+                        key={item.key}
+                        href={`/hospitals/${hospitalId}/${item.hrefSuffix}`}
+                        className="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-100"
+                      >
+                        필요: {item.label}
+                      </a>
+                    ))}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={handleActivatePlatform}
+                  disabled={platformActivating || activationMissing.length > 0 || Boolean(currentDomain || domainSavedValue)}
+                  className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {platformActivating
+                    ? '운영 전환 중...'
+                    : activationMissing.length > 0
+                      ? '선행 단계를 먼저 완료해 주세요'
+                      : currentDomain || domainSavedValue
+                        ? '커스텀 도메인 설정을 먼저 정리해 주세요'
+                        : '기본 주소로 운영 시작'}
+                </button>
+              </div>
+            )}
           </div>
         )}
 

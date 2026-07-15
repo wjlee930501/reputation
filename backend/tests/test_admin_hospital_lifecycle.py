@@ -1,4 +1,5 @@
 """#6/#9/#11 — create_hospital 감사 로그 + 경합 409, pause/resume 라이프사이클."""
+
 import uuid
 from types import SimpleNamespace
 
@@ -183,7 +184,8 @@ async def test_resume_to_pending_domain_when_not_yet_live():
     assert response["status"] == HospitalStatus.PENDING_DOMAIN
     audit = db.added[0]
     assert audit.action == "resume_hospital"
-    assert "schedule_set" in audit.detail["activation_missing"]
+    # Scheduling is STEP 6 operational readiness, not the STEP 5 public-live gate.
+    assert audit.detail["activation_missing"] == []
 
 
 async def test_resume_rejected_when_not_paused():

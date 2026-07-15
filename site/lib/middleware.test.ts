@@ -67,7 +67,8 @@ test('custom domain lookup outage uses fresh cached slug for the same hostname o
   resetEnvAndCache()
   __setDomainSlugCacheEntryForTest('clinic.example.com', {
     slug: 'jang-clinic',
-    expiresAt: Date.now() + 60_000,
+    freshUntil: Date.now() + 60_000,
+    staleUntil: Date.now() + 86_400_000,
   })
   const fetchMock: typeof fetch = async () => new Response('upstream unavailable', { status: 500 })
   globalThis.fetch = fetchMock
@@ -80,11 +81,28 @@ test('custom domain lookup outage uses fresh cached slug for the same hostname o
   assert.equal(otherHostRes.status, 503)
 })
 
-test('custom domain lookup outage ignores expired cached slug and fails closed', async () => {
+test('custom domain lookup outage uses expired-fresh slug inside the 24h stale window', async () => {
   resetEnvAndCache()
   __setDomainSlugCacheEntryForTest('clinic.example.com', {
     slug: 'old-clinic',
-    expiresAt: Date.now() - 1,
+    freshUntil: Date.now() - 1,
+    staleUntil: Date.now() + 60_000,
+  })
+  const fetchMock: typeof fetch = async () => new Response('upstream unavailable', { status: 500 })
+  globalThis.fetch = fetchMock
+
+  const res = await middleware(requestFor('clinic.example.com', '/contents'))
+
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('x-middleware-rewrite') ?? '', /\/old-clinic\/contents$/)
+})
+
+test('custom domain lookup outage rejects positive slug beyond stale window', async () => {
+  resetEnvAndCache()
+  __setDomainSlugCacheEntryForTest('clinic.example.com', {
+    slug: 'old-clinic',
+    freshUntil: Date.now() - 60_000,
+    staleUntil: Date.now() - 1,
   })
   const fetchMock: typeof fetch = async () => new Response('upstream unavailable', { status: 500 })
   globalThis.fetch = fetchMock

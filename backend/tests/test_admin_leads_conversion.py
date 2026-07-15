@@ -125,3 +125,15 @@ async def test_list_sales_leads_applies_offset_and_limit():
     compiled = str(db.stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "LIMIT 50" in compiled
     assert "OFFSET 100" in compiled
+
+
+async def test_hospital_candidates_returns_lead_context_without_query_string_pii():
+    lead = _lead()
+    db = FakeDB(lead=lead)
+
+    response = await leads_api.list_hospital_candidates(lead.id, db=db)
+
+    assert response["lead_id"] == str(lead.id)
+    assert response["lead"]["clinic_name"] == "온보딩치과"
+    assert response["lead"]["contact"] == "010-1111-2222"
+    assert response["candidates"] == []

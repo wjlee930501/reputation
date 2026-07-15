@@ -65,7 +65,9 @@ async def connect_domain(
     domain_changed = _normalize_dns_name(previous_domain) != _normalize_dns_name(domain)
     h.aeo_domain = domain
     changed_metadata = _apply_domain_metadata(h, body)
-    strategy_changed = "domain_dns_strategy" in changed_metadata and previous_dns_strategy != h.domain_dns_strategy
+    strategy_changed = (
+        "domain_dns_strategy" in changed_metadata and previous_dns_strategy != h.domain_dns_strategy
+    )
 
     if domain_changed or strategy_changed:
         h.site_live = False
@@ -106,13 +108,23 @@ async def connect_domain(
     if previous_site_live:
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
-    if domain_changed or not h.site_built:
+    if (
+        (domain_changed or not h.site_built)
+        and bool(getattr(h, "profile_complete", False))
+        and bool(getattr(h, "v0_report_done", False))
+    ):
         background_tasks.add_task(
             build_aeo_site.apply_async,
             args=[str(hospital_id)],
             queue="default",
         )
         return {"detail": f"Domain {domain} set. Content hub exposure refresh triggered."}
+    if domain_changed or not h.site_built:
+        return {
+            "detail": (
+                f"Domain {domain} set. Content hub refresh will start after profile and V0 gates."
+            )
+        }
     return {"detail": f"Domain {domain} unchanged. No exposure refresh needed."}
 
 

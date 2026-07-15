@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
+import { readReportDeliveryState } from '@/lib/report-delivery'
 
 interface Report {
   id: string
@@ -21,6 +22,8 @@ interface Report {
   download_url: string | null
   created_at: string
   sent_at: string | null
+  delivery_ready?: boolean
+  delivery_blockers?: string[]
   sov_summary?: Record<string, unknown> | null
   content_summary?: Record<string, unknown> | null
   essence_summary?: Record<string, unknown> | null
@@ -202,16 +205,12 @@ export default function ReportsPage() {
 
   async function handleMarkSent(report: Report) {
     if (markingSent || report.sent_at) return
+    if (!readReportDeliveryState(report).ready) {
+      setMarkSentError('백엔드 전달 준비 검사를 통과한 리포트만 완료로 표시할 수 있습니다.')
+      return
+    }
     setMarkSentError(null)
     setMarkingSent(true)
-    // 낙관적 갱신 — 실패 시 원래 값으로 되돌린다.
-    const previousSentAt = report.sent_at
-    const optimisticSentAt = new Date().toISOString()
-    const applySentAt = (value: string | null) => {
-      setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, sent_at: value } : r)))
-      setSelected((prev) => (prev && prev.id === report.id ? { ...prev, sent_at: value } : prev))
-    }
-    applySentAt(optimisticSentAt)
     try {
       const updated = await requestMarkSent(id, report.id)
       if (updated) {
@@ -219,7 +218,6 @@ export default function ReportsPage() {
         setSelected((prev) => (prev && prev.id === report.id ? { ...prev, ...updated } : prev))
       }
     } catch (e: unknown) {
-      applySentAt(previousSentAt)
       setMarkSentError(e instanceof Error ? e.message : '전달 완료 처리에 실패했습니다.')
     } finally {
       setMarkingSent(false)
@@ -310,6 +308,11 @@ export default function ReportsPage() {
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
                         {meta.label}
                       </span>
+                      {!r.sent_at && r.delivery_ready === false && (
+                        <p className="mt-1 text-[11px] font-medium text-amber-700">
+                          전달 차단 {r.delivery_blockers?.length ?? 0}건
+                        </p>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-center">
                       {r.download_url ? (
@@ -474,15 +477,7 @@ function DetailDrawer({
   const alignedContentCount = essence ? asNumber(essence.aligned_content_count) ?? 0 : 0
   const processedSourceCount = essence ? asNumber(essence.processed_source_count) ?? 0 : 0
   const totalSourceCount = essence ? asNumber(essence.source_count) ?? 0 : 0
-  const missingItems = [
-    !report.download_url && !report.has_pdf ? 'PDF 생성이 끝난 뒤 최종 검수할 수 있습니다.' : null,
-    !sov ? 'AI 답변 언급률 요약이 없어 측정 결과를 먼저 확인해야 합니다.' : null,
-    !content ? '콘텐츠 성과 요약이 없어 발행 콘텐츠 상태를 먼저 확인해야 합니다.' : null,
-    !essence ? '운영 기준 요약이 없어 승인된 콘텐츠 운영 기준과 자료 검토 상태를 먼저 확인해야 합니다.' : null,
-    essence && !essence.approved_philosophy_exists ? '승인된 콘텐츠 운영 기준이 없습니다.' : null,
-    essence && totalSourceCount > 0 && processedSourceCount < totalSourceCount ? '검토가 끝나지 않은 병원 자료가 있습니다.' : null,
-    essence && (needsReviewCount + missingStandardCount) > 0 ? '재검토가 필요한 콘텐츠를 먼저 정리해야 합니다.' : null,
-  ].filter(Boolean) as string[]
+  const { ready: deliveryReady, blockers: deliveryBlockers } = readReportDeliveryState(report)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
@@ -522,7 +517,7 @@ function DetailDrawer({
             <h4 className="text-sm font-semibold text-slate-900 mb-3">원장 보고 전 체크</h4>
             <div className="space-y-3">
               <ReportGuidance
-                missingItems={missingItems}
+                missingItems={deliveryBlockers}
                 recommendedActions={recommendedActions}
                 medicalRiskCount={medicalRiskFindings.length}
               />
@@ -533,8 +528,12 @@ function DetailDrawer({
                   hint={report.download_url ? undefined : '생성이 완료되면 다운로드 버튼이 활성화됩니다.'}
                 />
                 <ChecklistRow ok={Boolean(sov)} label="AI 답변 언급률 요약 존재" hint={sov ? undefined : '환자 질문 측정 결과를 먼저 확인하세요.'} />
-                <ChecklistRow ok={Boolean(content)} label="콘텐츠 성과 요약 존재" hint={content ? undefined : '발행 콘텐츠 수와 성과 요약을 먼저 확인하세요.'} />
-                <ChecklistRow ok={Boolean(essence)} label="운영 기준 요약 존재" hint={essence ? undefined : '승인된 운영 기준과 자료 검토 상태를 먼저 확인하세요.'} />
+                {report.report_type === 'MONTHLY' && (
+                  <>
+                    <ChecklistRow ok={Boolean(content)} label="콘텐츠 성과 요약 존재" hint={content ? undefined : '발행 콘텐츠 수와 성과 요약을 먼저 확인하세요.'} />
+                    <ChecklistRow ok={Boolean(essence)} label="운영 기준 요약 존재" hint={essence ? undefined : '승인된 운영 기준과 자료 검토 상태를 먼저 확인하세요.'} />
+                  </>
+                )}
               </div>
               {essence && (
                 <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
@@ -693,10 +692,14 @@ function DetailDrawer({
               <button
                 type="button"
                 onClick={onMarkSent}
-                disabled={markingSent}
+                disabled={markingSent || !deliveryReady}
                 className="mt-2 block w-full rounded-lg border border-green-300 bg-white py-2.5 text-center text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50"
               >
-                {markingSent ? '처리 중...' : '원장 보고 완료로 표시'}
+                {markingSent
+                  ? '처리 중...'
+                  : deliveryReady
+                    ? '원장 보고 완료로 표시'
+                    : '전달 전 차단 항목을 해결해 주세요'}
               </button>
             )}
           </section>

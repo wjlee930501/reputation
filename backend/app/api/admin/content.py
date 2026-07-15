@@ -8,6 +8,7 @@ PATCH  /admin/hospitals/{id}/content/{cid}/brief    — 타깃 질의/액션/bri
 POST   /admin/hospitals/{id}/content/{cid}/publish  — 발행
 POST   /admin/hospitals/{id}/content/{cid}/reject   — 반려
 """
+
 import logging
 import uuid
 from datetime import date, datetime, timezone
@@ -22,7 +23,6 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
-from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
@@ -45,6 +45,7 @@ from app.services.content_brief import (
 )
 from app.services.content_calendar import generate_monthly_slots
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
+from app.services.essence_readiness import get_current_approved_philosophy
 from app.services.exposure_content_linker import (
     ensure_brief_capable_action,
     link_content_to_exposure_action,
@@ -90,7 +91,7 @@ ESSENCE_STATUS_DISPLAY_LABELS = {
 
 class ScheduleCreate(BaseModel):
     plan: str = Field(pattern=r"^PLAN_(16|12|8)$")  # PLAN_16 | PLAN_12 | PLAN_8
-    publish_days: list[int]                           # [1, 4] = 화·금
+    publish_days: list[int]  # [1, 4] = 화·금
     active_from: date
 
     @field_validator("publish_days")
@@ -330,11 +331,15 @@ async def list_content(
     period_start = arrow.Arrow(year, month, 1).date()
     period_end = arrow.Arrow(year, month, 1).ceil("month").date()
 
-    stmt = select(ContentItem).where(
-        ContentItem.hospital_id == hospital_id,
-        ContentItem.scheduled_date >= period_start,
-        ContentItem.scheduled_date <= period_end,
-    ).order_by(ContentItem.scheduled_date)
+    stmt = (
+        select(ContentItem)
+        .where(
+            ContentItem.hospital_id == hospital_id,
+            ContentItem.scheduled_date >= period_start,
+            ContentItem.scheduled_date <= period_end,
+        )
+        .order_by(ContentItem.scheduled_date)
+    )
 
     if status_filter:
         stmt = stmt.where(ContentItem.status == status_filter)
@@ -529,7 +534,10 @@ async def publish_content(
         await db.commit()
         raise HTTPException(
             status_code=400,
-            detail={"message": "의료광고 금지 표현이 포함되어 있어 발행할 수 없습니다.", "violations": violations},
+            detail={
+                "message": "의료광고 금지 표현이 포함되어 있어 발행할 수 없습니다.",
+                "violations": violations,
+            },
         )
 
     philosophy = await _get_approved_philosophy(db, hospital_id)
@@ -596,11 +604,13 @@ async def reject_content(
     hospital = await _get_hospital(db, hospital_id)
     previous_title = item.title
     previous_status = _enum_value(item.status)
-    should_revalidate = previous_status == ContentStatus.PUBLISHED.value and _has_public_site(hospital)
+    should_revalidate = previous_status == ContentStatus.PUBLISHED.value and _has_public_site(
+        hospital
+    )
     if should_revalidate:
         ensure_site_revalidate_configured()
     item.status = ContentStatus.REJECTED
-    item.body = None   # 초기화 → 야간 생성 태스크가 다시 처리
+    item.body = None  # 초기화 → 야간 생성 태스크가 다시 처리
     item.title = None
     item.image_url = None
     # 발행됐던 아이템을 반려하면 발행 메타도 초기화 — 재생성·재발행 시 이전 발행 기록이
@@ -659,10 +669,7 @@ def _has_public_site(hospital: Hospital) -> bool:
 
 def _has_required_references(item: ContentItem) -> bool:
     references = item.references_list or []
-    return any(
-        isinstance(ref, dict) and ref.get("title") and ref.get("url")
-        for ref in references
-    )
+    return any(isinstance(ref, dict) and ref.get("title") and ref.get("url") for ref in references)
 
 
 async def _get_content(db, content_id, hospital_id) -> ContentItem:
@@ -687,7 +694,9 @@ async def _get_query_target_or_404(
     )
     target = result.scalar_one_or_none()
     if not target:
-        raise HTTPException(status_code=400, detail="query_target_id does not belong to this hospital")
+        raise HTTPException(
+            status_code=400, detail="query_target_id does not belong to this hospital"
+        )
     return target
 
 
@@ -706,21 +715,19 @@ async def _get_exposure_action_or_404(
     )
     action = result.scalar_one_or_none()
     if not action:
-        raise HTTPException(status_code=400, detail="exposure_action_id does not belong to this hospital")
+        raise HTTPException(
+            status_code=400, detail="exposure_action_id does not belong to this hospital"
+        )
     return action
 
 
-async def _get_approved_philosophy(
-    db: AsyncSession,
-    hospital_id: uuid.UUID,
-) -> HospitalContentPhilosophy | None:
-    result = await db.execute(
-        select(HospitalContentPhilosophy).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
-        )
-    )
-    return result.scalar_one_or_none()
+async def _get_approved_philosophy(db: AsyncSession, hospital_id: uuid.UUID):
+    """Compatibility seam backed by the current-source resolver.
+
+    Keeping this helper also gives focused API tests a stable monkeypatch target.
+    """
+
+    return await get_current_approved_philosophy(db, hospital_id)
 
 
 async def _apply_content_brief_update(
@@ -774,7 +781,9 @@ async def _apply_content_brief_update(
                 await unlink_content_from_exposure_action(db, previous_action, content_id=item.id)
             item.exposure_action_id = None
     elif item.exposure_action_id:
-        exposure_action = await _get_exposure_action_or_404(db, hospital.id, item.exposure_action_id)
+        exposure_action = await _get_exposure_action_or_404(
+            db, hospital.id, item.exposure_action_id
+        )
 
     if "query_target_id" in fields:
         link_changed = True
@@ -785,7 +794,9 @@ async def _apply_content_brief_update(
         query_target = await _get_query_target_or_404(db, hospital.id, item.query_target_id)
 
     if query_target is None and exposure_action and exposure_action.query_target_id:
-        query_target = await _get_query_target_or_404(db, hospital.id, exposure_action.query_target_id)
+        query_target = await _get_query_target_or_404(
+            db, hospital.id, exposure_action.query_target_id
+        )
         if item.query_target_id is None:
             item.query_target_id = query_target.id
 
@@ -793,7 +804,9 @@ async def _apply_content_brief_update(
         item.content_brief = body.content_brief
 
     should_regenerate = body.regenerate_brief or (
-        link_changed and "content_brief" not in fields and (query_target is not None or exposure_action is not None)
+        link_changed
+        and "content_brief" not in fields
+        and (query_target is not None or exposure_action is not None)
     )
     if should_regenerate:
         philosophy = await _get_approved_philosophy(db, hospital.id)
@@ -847,7 +860,9 @@ def _display_label(labels: dict[str, str], value) -> str | None:
     return labels.get(text, text)
 
 
-def _content_review_display(item: ContentItem, status_value: str | None) -> dict[str, str | bool | None]:
+def _content_review_display(
+    item: ContentItem, status_value: str | None
+) -> dict[str, str | bool | None]:
     if status_value == ContentStatus.PUBLISHED.value:
         return {"label": "발행 완료", "reason": None, "publishable": False}
     if status_value == ContentStatus.REJECTED.value:
@@ -866,7 +881,9 @@ def _content_review_display(item: ContentItem, status_value: str | None) -> dict
     return {"label": "발행 가능", "reason": None, "publishable": True}
 
 
-def _serialize_item_display(item: ContentItem, content_type: str | None, status_value: str | None) -> dict:
+def _serialize_item_display(
+    item: ContentItem, content_type: str | None, status_value: str | None
+) -> dict:
     return {
         "content_type_label": _display_label(CONTENT_TYPE_DISPLAY_LABELS, content_type),
         "status_label": _display_label(CONTENT_STATUS_DISPLAY_LABELS, status_value),
@@ -934,7 +951,9 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "references": item.references_list or [],
         "faq_question": item.faq_question,
         "faq_answer_summary": item.faq_answer_summary,
-        "content_philosophy_id": str(item.content_philosophy_id) if item.content_philosophy_id else None,
+        "content_philosophy_id": str(item.content_philosophy_id)
+        if item.content_philosophy_id
+        else None,
         "query_target_id": str(item.query_target_id) if item.query_target_id else None,
         "exposure_action_id": str(item.exposure_action_id) if item.exposure_action_id else None,
         "content_brief": item.content_brief,

@@ -5,6 +5,7 @@ GET   /admin/hospitals/{id}/exposure-actions/{action_id}
 PATCH /admin/hospitals/{id}/exposure-actions/{action_id}
 POST  /admin/hospitals/{id}/exposure-actions/{action_id}/create-brief
 """
+
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any
@@ -18,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
-from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
+from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.services.audit_log import default_actor, write_audit_log
@@ -32,6 +33,7 @@ from app.services.exposure_action_engine import (
     ensure_hospital_exposure_actions,
     list_top_exposure_actions,
 )
+from app.services.essence_readiness import get_current_approved_philosophy
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Exposure Work Queue"])
 
@@ -466,13 +468,7 @@ async def _get_approved_philosophy(
     db: AsyncSession,
     hospital_id: uuid.UUID,
 ) -> HospitalContentPhilosophy | None:
-    result = await db.execute(
-        select(HospitalContentPhilosophy).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
-        )
-    )
-    return result.scalar_one_or_none()
+    return await get_current_approved_philosophy(db, hospital_id)
 
 
 def _action_month_bounds(due_month: str | None) -> tuple[date, date]:
@@ -707,7 +703,11 @@ def _serialize_action_display(action: ExposureAction, gap: Any) -> dict[str, Any
 
 def _serialize_evidence_items(evidence: dict[str, Any]) -> list[dict[str, str]]:
     return [
-        {"key": str(key), "label": _format_evidence_key(str(key)), "value": _format_evidence_value(value, str(key))}
+        {
+            "key": str(key),
+            "label": _format_evidence_key(str(key)),
+            "value": _format_evidence_value(value, str(key)),
+        }
         for key, value in evidence.items()
         if not _is_empty_evidence_value(value)
     ]
@@ -720,7 +720,11 @@ def _summarize_evidence_items(items: list[dict[str, str]]) -> str:
 
 
 def _format_evidence_key(key: str) -> str:
-    return EVIDENCE_KEY_DISPLAY_LABELS.get(key) or EVIDENCE_KEY_DISPLAY_LABELS.get(key.lower()) or key.replace("_", " ")
+    return (
+        EVIDENCE_KEY_DISPLAY_LABELS.get(key)
+        or EVIDENCE_KEY_DISPLAY_LABELS.get(key.lower())
+        or key.replace("_", " ")
+    )
 
 
 def _format_evidence_value(value: Any, key: str | None = None) -> str:
@@ -733,7 +737,11 @@ def _format_evidence_value(value: Any, key: str | None = None) -> str:
     if isinstance(value, datetime):
         return _iso_or_none(value) or "-"
     if isinstance(value, str):
-        return EVIDENCE_VALUE_DISPLAY_LABELS.get(value) or EVIDENCE_VALUE_DISPLAY_LABELS.get(value.lower()) or value
+        return (
+            EVIDENCE_VALUE_DISPLAY_LABELS.get(value)
+            or EVIDENCE_VALUE_DISPLAY_LABELS.get(value.lower())
+            or value
+        )
     if isinstance(value, (list, tuple)):
         if not value:
             return "-"

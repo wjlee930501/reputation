@@ -49,6 +49,8 @@ def test_db_connection_budget_within_cloud_sql_limit() -> None:
     # config.py 풀 분리 + terraform 인스턴스 수/CELERY_CONCURRENCY가 실제로 파싱됐는지 확인.
     assert budget["total"] == budget["api_conns"] + budget["worker_conns"]
     assert check_db_connection_budget.main() == 0
+    assert budget["total"] < budget["max_connections"]
+    assert budget["max_connections"] - budget["total"] >= 20
 
 
 def test_setup_gcp_creates_all_deploy_required_secret_containers() -> None:
@@ -57,7 +59,9 @@ def test_setup_gcp_creates_all_deploy_required_secret_containers() -> None:
     # REDIS_URL 누락이 표준 순서 첫 배포를 무조건 실패시키던 회귀를 고정.
     assert "REDIS_URL" in setup_secrets
     missing = [name for name in required if name not in setup_secrets]
-    assert missing == [], f"setup-gcp.sh SECRETS missing deploy-required containers: {missing}"
+    assert missing == [], (
+        f"setup-gcp.sh SECRETS missing deploy-required containers: {missing}"
+    )
 
 
 def test_setup_gcp_and_deploy_share_default_region() -> None:
@@ -86,14 +90,20 @@ def test_all_target_checks_public_dns_before_backend_mutation() -> None:
 
 def test_site_bff_secret_is_a_required_managed_secret() -> None:
     text = DEPLOY_SCRIPT.read_text()
-    required_block = text[text.index("REQUIRED_SECRET_NAMES=("):text.index("OPTIONAL_SECRET_NAMES=(")]
+    required_block = text[
+        text.index("REQUIRED_SECRET_NAMES=(") : text.index("OPTIONAL_SECRET_NAMES=(")
+    ]
 
     assert '"SITE_BFF_SECRET"' in required_block
 
 
 def test_secret_preflight_requires_enabled_latest_versions() -> None:
     text = DEPLOY_SCRIPT.read_text()
-    build_secret_args = text[text.index("build_secret_args()"):text.index("prepare_non_secret_env_file", text.index("build_secret_args()"))]
+    build_secret_args = text[
+        text.index("build_secret_args()") : text.index(
+            "prepare_non_secret_env_file", text.index("build_secret_args()")
+        )
+    ]
 
     assert "gcloud secrets versions describe latest" in build_secret_args
     assert "ENABLED" in build_secret_args
@@ -115,9 +125,15 @@ def test_backend_deploys_use_conditional_database_and_network_args() -> None:
         assert '"${BACKEND_RUNTIME_ARGS[@]}"' in block
 
 
-def test_supabase_mode_requires_database_url_secrets_without_cloudsql_user_gate() -> None:
+def test_supabase_mode_requires_database_url_secrets_without_cloudsql_user_gate() -> (
+    None
+):
     text = DEPLOY_SCRIPT.read_text()
-    mode_block = text[text.index('case "$DB_CONNECTION_MODE" in'):text.index("BACKEND_RUNTIME_ARGS=()")]
+    mode_block = text[
+        text.index('case "$DB_CONNECTION_MODE" in') : text.index(
+            "BACKEND_RUNTIME_ARGS=()"
+        )
+    ]
     assert "supabase|external)" in mode_block
     assert '"DATABASE_URL" "SYNC_DATABASE_URL"' in mode_block
 
@@ -140,7 +156,7 @@ def test_shell_e2e_scripts_exit_nonzero_when_fail_count_is_positive() -> None:
 
 def test_docker_compose_worker_beat_flower_select_non_api_services() -> None:
     text = (PROJECT_ROOT / "docker-compose.yml").read_text()
-    api_block = text[text.index("  api:"):text.index("  worker:")]
+    api_block = text[text.index("  api:") : text.index("  worker:")]
 
     assert "SERVICE: worker" not in api_block
     assert "SERVICE: worker" in text
@@ -161,9 +177,13 @@ def test_all_target_requires_admin_domain_before_backend_mutation() -> None:
 def test_all_target_builds_all_images_before_backend_mutation() -> None:
     text = DEPLOY_SCRIPT.read_text()
     all_case_start = text.index("  all)")
-    first_backend_mutation = text.index("run_migration \"$IMAGE_URL\"", all_case_start)
-    site_image_build = text.index("SITE_IMAGE_URL=$(build_and_push_site)", all_case_start)
-    admin_image_build = text.index("ADMIN_IMAGE_URL=$(build_and_push_admin)", all_case_start)
+    first_backend_mutation = text.index('run_migration "$IMAGE_URL"', all_case_start)
+    site_image_build = text.index(
+        "SITE_IMAGE_URL=$(build_and_push_site)", all_case_start
+    )
+    admin_image_build = text.index(
+        "ADMIN_IMAGE_URL=$(build_and_push_admin)", all_case_start
+    )
 
     assert site_image_build < first_backend_mutation
     assert admin_image_build < first_backend_mutation
@@ -172,7 +192,9 @@ def test_all_target_builds_all_images_before_backend_mutation() -> None:
 def test_admin_target_requires_admin_domain_before_build() -> None:
     text = DEPLOY_SCRIPT.read_text()
     admin_case_start = text.index("  admin)")
-    first_admin_build = text.index("ADMIN_IMAGE_URL=$(build_and_push_admin)", admin_case_start)
+    first_admin_build = text.index(
+        "ADMIN_IMAGE_URL=$(build_and_push_admin)", admin_case_start
+    )
     admin_domain_preflight = text.index("require_admin_domain", admin_case_start)
 
     assert admin_domain_preflight < first_admin_build
@@ -186,16 +208,57 @@ def test_public_dns_preflight_checks_custom_domain_targets() -> None:
     setup_block = text[setup_start:preflight_start]
     preflight_block = text[preflight_start:preflight_end]
 
-    assert 'CNAME_TARGET="${CNAME_TARGET:-$(read_env_file_value CNAME_TARGET || true)}"' in setup_block
-    assert 'WILDCARD_PUBLIC_DOMAIN_CHECK="${WILDCARD_PUBLIC_DOMAIN_CHECK:-}"' in setup_block
+    assert (
+        'CNAME_TARGET="${CNAME_TARGET:-$(read_env_file_value CNAME_TARGET || true)}"'
+        in setup_block
+    )
+    assert (
+        'WILDCARD_PUBLIC_DOMAIN_CHECK="${WILDCARD_PUBLIC_DOMAIN_CHECK:-}"'
+        in setup_block
+    )
     assert 'domains+=("$CNAME_TARGET")' in preflight_block
     assert 'domains+=("$WILDCARD_PUBLIC_DOMAIN_CHECK")' in preflight_block
-    assert 'WILDCARD_PUBLIC_DOMAIN_CHECK="dns-preflight.${PUBLIC_DOMAIN}"' in preflight_block
+    assert (
+        'WILDCARD_PUBLIC_DOMAIN_CHECK="dns-preflight.${PUBLIC_DOMAIN}"'
+        in preflight_block
+    )
 
 
-def test_mso_platform_tfvars_preserves_current_customer_domains_on_certificate_map() -> None:
-    text = (PROJECT_ROOT / "terraform" / "terraform.mso-platform.example.tfvars").read_text()
+def test_mso_platform_tfvars_preserves_current_customer_domains_on_certificate_map() -> (
+    None
+):
+    text = (
+        PROJECT_ROOT / "terraform" / "terraform.mso-platform.example.tfvars"
+    ).read_text()
 
     assert 'customer_domains = ["jangclinic.kr"]' in text
     assert 'certificate_map_customer_domains = ["jangclinic.kr"]' in text
     assert "use_certificate_map = true" in text
+    assert "api_min_instances    = 1" in text
+    assert "site_min_instances   = 1" in text
+
+
+def test_backend_deploy_requires_truthful_search_and_domain_automation_flags() -> None:
+    text = DEPLOY_SCRIPT.read_text()
+    assert "require_production_feature_flags()" in text
+    assert 'OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE" == "true"' in text
+    assert 'CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE" == "true"' in text
+
+    for anchor in ("  backend)", "  api|worker|beat)", "  all)", "  migrate)"):
+        start = text.index(anchor)
+        end = text.index(";;", start)
+        assert "require_production_feature_flags" in text[start:end], anchor
+
+
+def test_backend_deploy_reconciles_redbeat_before_new_beat_rollout() -> None:
+    text = DEPLOY_SCRIPT.read_text()
+    assert "run_redbeat_reconcile()" in text
+    assert "app.utils.reconcile_redbeat_schedule,--apply" in text
+
+    for anchor in ("  backend)", "  all)"):
+        start = text.index(anchor)
+        end = text.index(";;", start)
+        block = text[start:end]
+        assert block.index('run_redbeat_reconcile "$IMAGE_URL"') < block.index(
+            'deploy_beat "$IMAGE_URL"'
+        )

@@ -83,7 +83,9 @@ def test_serialize_hospital_includes_public_profile_fields():
 def test_public_content_policy_requires_published_and_essence_aligned():
     aligned = SimpleNamespace(status=ContentStatus.PUBLISHED, essence_status=ESSENCE_STATUS_ALIGNED)
     draft = SimpleNamespace(status=ContentStatus.DRAFT, essence_status=ESSENCE_STATUS_ALIGNED)
-    needs_review = SimpleNamespace(status=ContentStatus.PUBLISHED, essence_status=ESSENCE_STATUS_NEEDS_REVIEW)
+    needs_review = SimpleNamespace(
+        status=ContentStatus.PUBLISHED, essence_status=ESSENCE_STATUS_NEEDS_REVIEW
+    )
     legacy_without_screening = SimpleNamespace(status=ContentStatus.PUBLISHED, essence_status=None)
 
     assert _is_public_safe_content(aligned) is True
@@ -281,11 +283,20 @@ def test_serialize_item_passes_through_non_gcs_image_url():
     # 프록시로 감싸면 _asset_response가 처리 못 해 404 → 그대로 통과시켜야 한다.
     def _item(image_url):
         return SimpleNamespace(
-            id="abc-123", content_type="DISEASE", title="t", meta_description="m",
-            image_url=image_url, scheduled_date=date(2026, 6, 1),
-            published_at=datetime(2026, 6, 1, 8, 0, 0), body_updated_at=None,
-            references_list=[], faq_question=None, faq_answer_summary=None, body="가" * 50,
+            id="abc-123",
+            content_type="DISEASE",
+            title="t",
+            meta_description="m",
+            image_url=image_url,
+            scheduled_date=date(2026, 6, 1),
+            published_at=datetime(2026, 6, 1, 8, 0, 0),
+            body_updated_at=None,
+            references_list=[],
+            faq_question=None,
+            faq_answer_summary=None,
+            body="가" * 50,
         )
+
     legacy = "/api/v1/public/hospitals/jangpyeonhanoegwayiweon/assets/asset-1"
     assert _serialize_item(_item(legacy), "jangpyeonhanoegwayiweon")["image_url"] == legacy
     absolute = "https://cdn.example.com/x.png"
@@ -417,13 +428,21 @@ class _SequentialFakeDB:
 
 
 def _active_hospital(slug="test-hospital"):
-    return SimpleNamespace(id="hospital-id", slug=slug, status=HospitalStatus.ACTIVE, site_live=True)
+    return SimpleNamespace(
+        id="hospital-id", slug=slug, status=HospitalStatus.ACTIVE, site_live=True
+    )
 
 
-async def test_list_published_contents_applies_offset_to_query():
+async def test_list_published_contents_applies_offset_to_query(monkeypatch):
     """offset 파라미터가 SQL OFFSET 절에 실제로 전달되어야 500건 하드캡을 넘는
     오래된 콘텐츠도 다음 페이지 호출로 도달할 수 있다."""
     db = _SequentialFakeDB([_FakeResult([_active_hospital()]), _FakeResult([])])
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+
+    async def _fresh(*_args, **_kwargs):
+        return SimpleNamespace(current=philosophy)
+
+    monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
 
     await _list_published_contents(SimpleNamespace(), "test-hospital", limit=20, offset=520, db=db)
 
@@ -432,8 +451,14 @@ async def test_list_published_contents_applies_offset_to_query():
     assert contents_stmt._limit_clause.value == 20
 
 
-async def test_list_published_contents_defaults_offset_to_zero():
+async def test_list_published_contents_defaults_offset_to_zero(monkeypatch):
     db = _SequentialFakeDB([_FakeResult([_active_hospital()]), _FakeResult([])])
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+
+    async def _fresh(*_args, **_kwargs):
+        return SimpleNamespace(current=philosophy)
+
+    monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
 
     await _list_published_contents(SimpleNamespace(), "test-hospital", limit=20, offset=0, db=db)
 

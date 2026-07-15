@@ -4,13 +4,10 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
+import { readClinicNameFromLeadContext } from '@/lib/lead-onboarding'
 
 interface LeadContext {
   id: string | null
-  type: string | null
-  contact: string | null
-  question: string | null
-  source: string | null
 }
 
 export default function NewHospitalPage() {
@@ -18,22 +15,34 @@ export default function NewHospitalPage() {
   const [name, setName] = useState('')
   const [plan, setPlan] = useState('PLAN_16')
   const [leadContext, setLeadContext] = useState<LeadContext | null>(null)
+  const [leadLoading, setLeadLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     const params = new URLSearchParams(window.location.search)
-    const leadName = params.get('name')
     const context: LeadContext = {
       id: params.get('leadId'),
-      type: params.get('type'),
-      contact: params.get('contact'),
-      question: params.get('question'),
-      source: params.get('source'),
     }
 
-    if (leadName) setName(leadName)
-    if (Object.values(context).some(Boolean)) setLeadContext(context)
+    if (!context.id) return
+    setLeadContext(context)
+    setLeadLoading(true)
+    fetchAPI<unknown>(`/admin/leads/${context.id}/hospital-candidates`)
+      .then((response) => {
+        const clinicName = readClinicNameFromLeadContext(response)
+        if (!cancelled && clinicName) setName(clinicName)
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : '상담 리드 정보를 불러오지 못했습니다.')
+      })
+      .finally(() => {
+        if (!cancelled) setLeadLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   async function handleSubmit(e: React.FormEvent) {
@@ -85,7 +94,7 @@ export default function NewHospitalPage() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="예: 장편한외과의원"
+            placeholder={leadLoading ? '상담 리드에서 병원명을 불러오는 중...' : '예: 장편한외과의원'}
             required
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
@@ -121,10 +130,10 @@ export default function NewHospitalPage() {
 
         <button
           type="submit"
-          disabled={loading || !name.trim()}
+          disabled={loading || leadLoading || !name.trim()}
           className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {loading ? '등록 중...' : '등록 후 온보딩 허브로 이동'}
+          {leadLoading ? '리드 정보 확인 중...' : loading ? '등록 중...' : '등록 후 온보딩 허브로 이동'}
         </button>
       </form>
     </div>

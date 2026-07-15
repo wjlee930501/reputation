@@ -1,3 +1,4 @@
+import asyncio
 import ipaddress
 import uuid
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.hospital import DomainDnsStrategy, DomainManagementMode, Hospital
+from app.services.domain_certificate_manager import inspect_domain_certificate
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Domain Setup"])
 DomainEnumT = TypeVar("DomainEnumT", DomainManagementMode, DomainDnsStrategy)
@@ -45,6 +47,8 @@ class DomainSetupResponse(BaseModel):
     domain_purchase_note: str | None = None
     expected_cname: str
     expected_addresses: list[str] = Field(default_factory=list)
+    certificate_ready: bool = False
+    certificate_phase: str | None = None
     records: list[DomainSetupRecord] = Field(default_factory=list)
     checklist: list[DomainSetupChecklistItem] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -58,6 +62,7 @@ class DomainSetupState:
     registrar: str | None
     dns_provider: str | None
     purchase_note: str | None
+    site_live: bool
 
 
 @router.get("/{hospital_id}/domain/setup", response_model=DomainSetupResponse)
@@ -67,6 +72,9 @@ async def get_domain_setup(hospital_id: uuid.UUID, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=404, detail="Hospital not found")
 
     state = _domain_setup_state(hospital)
+    certificate = None
+    if state.domain and settings.CERTIFICATE_MANAGER_AUTO_PROVISION:
+        certificate = await asyncio.to_thread(inspect_domain_certificate, state.domain)
     addresses = _configured_custom_domain_ips()
     records, warnings = _domain_records(state.domain, state.dns_strategy, addresses)
     return DomainSetupResponse(
@@ -83,8 +91,10 @@ async def get_domain_setup(hospital_id: uuid.UUID, db: AsyncSession = Depends(ge
         domain_purchase_note=state.purchase_note,
         expected_cname=settings.CNAME_TARGET,
         expected_addresses=addresses,
+        certificate_ready=bool(certificate and certificate.ready),
+        certificate_phase=certificate.phase if certificate else None,
         records=records,
-        checklist=_checklist(state),
+        checklist=_checklist(state, certificate_ready=bool(certificate and certificate.ready)),
         warnings=warnings,
     )
 
@@ -103,6 +113,7 @@ def _domain_setup_state(hospital: Hospital) -> DomainSetupState:
         registrar=getattr(hospital, "domain_registrar", None),
         dns_provider=getattr(hospital, "domain_dns_provider", None),
         purchase_note=getattr(hospital, "domain_purchase_note", None),
+        site_live=bool(getattr(hospital, "site_live", False)),
     )
 
 
@@ -124,7 +135,9 @@ def _configured_custom_domain_ips() -> list[str]:
         if not candidate:
             continue
         values.append(ipaddress.ip_address(candidate))
-    return [str(value) for value in sorted(set(values), key=lambda value: (value.version, str(value)))]
+    return [
+        str(value) for value in sorted(set(values), key=lambda value: (value.version, str(value)))
+    ]
 
 
 def _domain_records(
@@ -159,13 +172,21 @@ def _domain_records(
             warnings = (
                 []
                 if records
-                else ["APEX_ADDRESS strategy is selected, but CUSTOM_DOMAIN_IP_TARGETS is not configured."]
+                else [
+                    "APEX_ADDRESS strategy is selected, but CUSTOM_DOMAIN_IP_TARGETS is not configured."
+                ]
             )
             return records, warnings
 
 
-def _checklist(state: DomainSetupState) -> list[DomainSetupChecklistItem]:
-    purchase_done = state.management_mode == DomainManagementMode.HOSPITAL_MANAGED or bool(state.registrar)
+def _checklist(
+    state: DomainSetupState,
+    *,
+    certificate_ready: bool = False,
+) -> list[DomainSetupChecklistItem]:
+    purchase_done = state.management_mode == DomainManagementMode.HOSPITAL_MANAGED or bool(
+        state.registrar
+    )
     return [
         DomainSetupChecklistItem(
             key="domain_saved",
@@ -183,18 +204,18 @@ def _checklist(state: DomainSetupState) -> list[DomainSetupChecklistItem]:
             key="dns_record",
             label="DNS 레코드 등록",
             description="설정표의 DNS 레코드를 등록기관 또는 DNS 제공자에 추가합니다.",
-            status="PENDING",
+            status="DONE" if state.site_live else "PENDING",
         ),
         DomainSetupChecklistItem(
             key="dns_verified",
             label="DNS 검증",
             description="DNS 전파 후 연결 검증을 실행합니다.",
-            status="PENDING",
+            status="DONE" if state.site_live else "PENDING",
         ),
         DomainSetupChecklistItem(
             key="certificate_ready",
             label="HTTPS 인증서",
             description="인증서가 준비되면 병원 도메인으로 허브를 제공합니다.",
-            status="PENDING",
+            status="DONE" if state.site_live or certificate_ready else "PENDING",
         ),
     ]

@@ -59,8 +59,8 @@ VPC_EGRESS="${VPC_EGRESS:-private-ranges-only}"
 # Cloud Run 서비스 설정
 API_MEMORY="${API_MEMORY:-512Mi}"
 API_CPU="${API_CPU:-1}"
-API_MIN="${API_MIN:-0}"
-API_MAX="${API_MAX:-10}"
+API_MIN="${API_MIN:-1}"
+API_MAX="${API_MAX:-7}"
 API_CONCURRENCY="${API_CONCURRENCY:-80}"
 
 WORKER_MEMORY="${WORKER_MEMORY:-1Gi}"
@@ -79,7 +79,7 @@ FRONTEND_SERVICE_ACCOUNT="${FRONTEND_SERVICE_ACCOUNT:-reputation-frontend-sa@${P
 PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-}"   # 예: reputation.motionlabs.kr
 ADMIN_DOMAIN="${ADMIN_DOMAIN:-}"     # 예: admin.reputation.motionlabs.kr
 SITE_MEMORY="${SITE_MEMORY:-512Mi}"
-SITE_MIN="${SITE_MIN:-0}"
+SITE_MIN="${SITE_MIN:-1}"
 # site max=1 기본: on-demand ISR revalidate가 단일 인스턴스 캐시만 비우기 때문
 # (terraform variables.tf site_max_instances 설명 참조).
 SITE_MAX="${SITE_MAX:-1}"
@@ -142,6 +142,8 @@ DB_USER_NAME="${DB_USER_NAME:-reputation}"
 ASSET_GCS_BUCKET="${NEXT_PUBLIC_GCP_STORAGE_BUCKET:-${GCP_STORAGE_BUCKET:-$(read_env_file_value GCP_STORAGE_BUCKET || true)}}"
 DB_CONNECTION_MODE="${DB_CONNECTION_MODE:-$(read_env_file_value DB_CONNECTION_MODE || true)}"
 CNAME_TARGET="${CNAME_TARGET:-$(read_env_file_value CNAME_TARGET || true)}"
+OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE="${OPENAI_CHATGPT_USE_WEB_SEARCH:-$(read_env_file_value OPENAI_CHATGPT_USE_WEB_SEARCH || true)}"
+CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE="${CERTIFICATE_MANAGER_AUTO_PROVISION:-$(read_env_file_value CERTIFICATE_MANAGER_AUTO_PROVISION || true)}"
 WILDCARD_PUBLIC_DOMAIN_CHECK="${WILDCARD_PUBLIC_DOMAIN_CHECK:-}"
 if [[ -z "$DB_CONNECTION_MODE" ]]; then
   if [[ -n "$CLOUDSQL_CONNECTION" ]]; then
@@ -600,6 +602,15 @@ require_backend_runtime_shape() {
   fi
 }
 
+require_production_feature_flags() {
+  # 모델 recall을 'ChatGPT Search'로 잘못 측정하거나, 신규 도메인이 수동 인증서
+  # 단계에서 멈춘 채 backend를 배포하는 반쪽 구성을 mutation 전에 차단한다.
+  [[ "$OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE" == "true" ]] \
+    || fail "OPENAI_CHATGPT_USE_WEB_SEARCH=true가 필요합니다. 프로덕션 SoV는 실제 web_search만 허용합니다."
+  [[ "$CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE" == "true" ]] \
+    || fail "CERTIFICATE_MANAGER_AUTO_PROVISION=true가 필요합니다. 신규 커스텀 도메인 자동 온보딩을 비활성화한 배포는 허용하지 않습니다."
+}
+
 build_backend_runtime_args() {
   BACKEND_RUNTIME_ARGS=()
   if is_cloudsql_mode; then
@@ -645,10 +656,49 @@ run_migration() {
   ok "마이그레이션 완료"
 }
 
+run_redbeat_reconcile() {
+  local image_url="$1"
+  info "RedBeat 저장 스케줄 정합성 복구 중..."
+
+  require_backend_runtime_shape
+  build_backend_runtime_args
+  make_service_env_file "beat"
+
+  # 새 이미지가 선언한 allowlist만 남기고 과거 app.workers.tasks.* 정적/고아
+  # entry를 제거한다. 별도 애플리케이션의 동적 RedBeat entry는 도구가 보존한다.
+  set +u
+  gcloud run jobs create reputation-redbeat-reconcile \
+    --image="$image_url" \
+    --region="$REGION" \
+    --service-account="$SERVICE_ACCOUNT" \
+    --env-vars-file="$SERVICE_ENV_FILE" \
+    "${SECRET_ARGS[@]}" \
+    "${BACKEND_RUNTIME_ARGS[@]}" \
+    --command=python \
+    --args=-m,app.utils.reconcile_redbeat_schedule,--apply \
+    --task-timeout=300 \
+    --max-retries=1 \
+    2>/dev/null || gcloud run jobs update reputation-redbeat-reconcile \
+    --image="$image_url" \
+    --region="$REGION" \
+    --env-vars-file="$SERVICE_ENV_FILE" \
+    "${SECRET_ARGS[@]}" \
+    "${BACKEND_RUNTIME_ARGS[@]}" \
+    --command=python \
+    --args=-m,app.utils.reconcile_redbeat_schedule,--apply \
+    --task-timeout=300 \
+    --max-retries=1
+  set -u
+
+  gcloud run jobs execute reputation-redbeat-reconcile --region="$REGION" --wait
+  ok "RedBeat 저장 스케줄 정합성 복구 완료"
+}
+
 # ─── 메인 ──────────────────────────────────────────────────────────
 case "$TARGET" in
   backend)
     require_backend_runtime_shape
+    require_production_feature_flags
     require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
@@ -657,15 +707,20 @@ case "$TARGET" in
     run_migration "$IMAGE_URL"
     deploy_api "$IMAGE_URL"
     deploy_worker "$IMAGE_URL"
+    run_redbeat_reconcile "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
     ;;
   api|worker|beat)
     require_backend_runtime_shape
+    require_production_feature_flags
     require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
     IMAGE_URL=$(build_and_push)
+    if [[ "$TARGET" == "beat" ]]; then
+      run_redbeat_reconcile "$IMAGE_URL"
+    fi
     "deploy_${TARGET}" "$IMAGE_URL"
     ;;
   site)
@@ -685,6 +740,7 @@ case "$TARGET" in
     require_admin_domain
     require_public_dns
     require_backend_runtime_shape
+    require_production_feature_flags
     require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
@@ -697,12 +753,14 @@ case "$TARGET" in
     run_migration "$IMAGE_URL"
     deploy_api "$IMAGE_URL"
     deploy_worker "$IMAGE_URL"
+    run_redbeat_reconcile "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
     deploy_site "$SITE_IMAGE_URL"
     deploy_admin "$ADMIN_IMAGE_URL"
     ;;
   migrate)
     require_backend_runtime_shape
+    require_production_feature_flags
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi

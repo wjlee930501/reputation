@@ -1,4 +1,5 @@
 """GCS 유틸리티 — Signed URL 생성"""
+
 import logging
 import threading
 import time
@@ -18,7 +19,7 @@ _gcs_client = None
 SIGNED_URL_CACHE_TTL_SECONDS = 12 * 3600
 SIGNED_URL_CACHE_MAX_ENTRIES = 1024
 
-_signed_url_cache: dict[tuple[str, int], tuple[float, str]] = {}
+_signed_url_cache: dict[tuple[str, int, str | None], tuple[float, str]] = {}
 _signed_url_cache_lock = threading.Lock()
 
 # Cloud Run keyless ADC credentials — 모듈 수준 캐시 (R9). 호출마다
@@ -31,6 +32,7 @@ def _get_gcs_client():
     global _gcs_client
     if _gcs_client is None:
         from google.cloud import storage
+
         _gcs_client = storage.Client()
     return _gcs_client
 
@@ -51,7 +53,7 @@ def _get_iam_signing_credentials():
         return _adc_credentials
 
 
-def _signed_url_cache_get(key: tuple[str, int]) -> str | None:
+def _signed_url_cache_get(key: tuple[str, int, str | None]) -> str | None:
     now = time.monotonic()
     with _signed_url_cache_lock:
         entry = _signed_url_cache.get(key)
@@ -64,7 +66,7 @@ def _signed_url_cache_get(key: tuple[str, int]) -> str | None:
         return url
 
 
-def _signed_url_cache_put(key: tuple[str, int], url: str, ttl_seconds: float) -> None:
+def _signed_url_cache_put(key: tuple[str, int, str | None], url: str, ttl_seconds: float) -> None:
     with _signed_url_cache_lock:
         if key not in _signed_url_cache and len(_signed_url_cache) >= SIGNED_URL_CACHE_MAX_ENTRIES:
             # 단순 size cap: 가장 오래 전에 들어온 항목부터 제거 (dict 삽입 순서).
@@ -75,7 +77,11 @@ def _signed_url_cache_put(key: tuple[str, int], url: str, ttl_seconds: float) ->
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
-def _sign_blob_url(blob, expiration: timedelta) -> str:
+def _sign_blob_url(
+    blob,
+    expiration: timedelta,
+    response_disposition: str | None = None,
+) -> str:
     """Blob 서명 실행 — 네트워크/일시 오류 시 최대 3회 재시도(CLAUDE.md 규칙 4).
 
     Cloud Run/GCE(keyless ADC)에서는 로컬 서명이 항상 실패해 IAM signBlob API로
@@ -83,20 +89,28 @@ def _sign_blob_url(blob, expiration: timedelta) -> str:
     signBlob 네트워크 호출의 일시적 실패에만 적용된다. 재시도 소진 시 예외는
     그대로 전파한다.
     """
+    signing_options = (
+        {"response_disposition": response_disposition} if response_disposition is not None else {}
+    )
     try:
-        return blob.generate_signed_url(expiration=expiration)
+        return blob.generate_signed_url(expiration=expiration, **signing_options)
     except Exception:
         # SA에 roles/iam.serviceAccountTokenCreator(자기 자신) 필요
         # (terraform serviceaccount.tf app_self_token_creator).
         credentials = _get_iam_signing_credentials()
         return blob.generate_signed_url(
             expiration=expiration,
+            **signing_options,
             service_account_email=credentials.service_account_email,
             access_token=credentials.token,
         )
 
 
-def get_signed_url(gcs_path: str | None, expiration_hours: int = 24) -> str:
+def get_signed_url(
+    gcs_path: str | None,
+    expiration_hours: int = 24,
+    response_disposition: str | None = None,
+) -> str:
     """gs://bucket/path → signed URL 변환. 레거시 URL 또는 빈 값은 그대로 통과.
 
     기본 TTL 24h — /site ISR 캐시(페이지 revalidate 3600s + fetch 캐시 1800s)보다
@@ -105,7 +119,7 @@ def get_signed_url(gcs_path: str | None, expiration_hours: int = 24) -> str:
     if not gcs_path or not gcs_path.startswith("gs://"):
         return gcs_path or ""
 
-    cache_key = (gcs_path, expiration_hours)
+    cache_key = (gcs_path, expiration_hours, response_disposition)
     cached = _signed_url_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -121,7 +135,7 @@ def get_signed_url(gcs_path: str | None, expiration_hours: int = 24) -> str:
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
         expiration = timedelta(hours=expiration_hours)
-        signed_url = _sign_blob_url(blob, expiration)
+        signed_url = _sign_blob_url(blob, expiration, response_disposition)
         # 캐시 TTL은 서명 수명의 절반을 넘지 않게 — 짧은 expiration_hours 호출이
         # 만료된 URL을 캐시에서 서빙하는 일이 없도록 한다.
         ttl = min(SIGNED_URL_CACHE_TTL_SECONDS, expiration_hours * 3600 / 2)

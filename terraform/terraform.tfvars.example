@@ -34,6 +34,8 @@ db_instance_tier = "db-custom-1-3840"
 
 # ── Site ───────────────────────────────────────────────────────────
 site_revalidate_url    = "https://reputation.motionlabs.kr/api/revalidate"
+api_min_instances      = 1
+site_min_instances     = 1
 
 # ── Container image (INFRA-2) ──────────────────────────────────────
 # Required immutable digest images so deploys/rollbacks are reproducible. CI/CD
