@@ -16,6 +16,21 @@ def test_backend_image_uses_locked_production_dependencies() -> None:
     assert "pip install --no-cache-dir ." not in dockerfile
 
 
+def test_repo_preserves_the_deployed_migration_head() -> None:
+    migration = (
+        PROJECT_ROOT
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0031_add_hospital_visual_theme.py"
+    )
+
+    assert migration.is_file()
+    text = migration.read_text()
+    assert 'revision: str = "0031_add_hospital_visual_theme"' in text
+    assert 'down_revision: Union[str, None] = "0030_unique_ai_query_target_hospital_name"' in text
+
+
 def _write_executable(path: Path, text: str) -> None:
     path.write_text(text)
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
