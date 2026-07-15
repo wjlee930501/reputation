@@ -812,7 +812,7 @@ def morning_content_auto_publish(self):
                     )
                 )
                 if sent:
-                    _mark_done(block_key, ttl_seconds=GENERATION_CATCHUP_DAYS * 86_400)
+                    _mark_done(block_key, GENERATION_CATCHUP_DAYS * 86_400)
                 else:
                     notification_failures += 1
                 continue
