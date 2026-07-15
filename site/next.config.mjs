@@ -78,9 +78,12 @@ const nextConfig = {
   output: 'standalone',
   outputFileTracingRoot: appDir,
   images: {
+    formats: ['image/avif', 'image/webp'],
+    minimumCacheTTL: 86400,
     remotePatterns: [
       { protocol: 'https', hostname: 'storage.googleapis.com' },
       { protocol: 'https', hostname: '*.storage.googleapis.com' },
+      { protocol: 'https', hostname: 'reputation.motionlabs.kr' },
       ...backendImageHosts,
     ],
   },
