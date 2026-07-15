@@ -12,7 +12,7 @@ from app.core.observability import configure_logging, sentry_before_send, set_re
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-07-16.2"
+REDBEAT_SCHEDULE_VERSION = "2026-07-16.3"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -101,7 +101,7 @@ celery_app.conf.update(
     task_routes={
         "app.workers.tasks.nightly_content_generation": {"queue": "content"},
         "app.workers.tasks.regenerate_content_item": {"queue": "content"},
-        "app.workers.tasks.morning_content_notification": {"queue": "content"},
+        "app.workers.tasks.morning_content_auto_publish": {"queue": "content"},
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
         "app.workers.tasks.run_monthly_reports": {"queue": "reports"},
@@ -121,9 +121,9 @@ celery_app.conf.update(
             "task": "app.workers.tasks.nightly_content_generation",
             "schedule": crontab(hour=23, minute=0),
         },
-        # 매일 아침 08:00 — 오늘 발행 예정 콘텐츠 Slack 알림
-        "morning-content-notification": {
-            "task": "app.workers.tasks.morning_content_notification",
+        # 매일 아침 08:00 — 자동 안전검사 후 발행 + Slack 후행 확인 알림
+        "morning-content-auto-publish": {
+            "task": "app.workers.tasks.morning_content_auto_publish",
             "schedule": crontab(hour=8, minute=0),
         },
         # 매주 월요일 02:00 — 전체 병원 AI 답변 언급률 측정

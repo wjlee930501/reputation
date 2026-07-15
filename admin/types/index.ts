@@ -73,6 +73,9 @@ export interface ContentItem {
   generated_at: string | null
   published_at: string | null
   published_by: string | null
+  post_publish_notified_at?: string | null
+  post_publish_reviewed_at?: string | null
+  post_publish_reviewed_by?: string | null
   content_philosophy_id?: string | null
   query_target_id?: string | null
   exposure_action_id?: string | null

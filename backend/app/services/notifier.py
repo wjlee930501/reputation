@@ -131,41 +131,88 @@ async def notify_site_built(hospital_name: str, preview_url: str) -> bool:
     )
 
 
-async def notify_content_draft_ready(
+async def notify_content_published(hospital_name: str, title: str) -> bool:
+    """Legacy/manual recovery publication notification."""
+    return await _send(text=f"✅ [{hospital_name}] 발행 완료: {title}")
+
+
+async def notify_content_auto_published(
+    *,
     hospital_name: str,
+    title: str,
     sequence_no: int,
     total_count: int,
     content_type: str,
     scheduled_date: str,
+    public_url: str,
     admin_url: str,
     carried_over: bool = False,
 ) -> bool:
-    """콘텐츠 초안 완료 → 당일 아침 08:00 AE에게.
+    """Automatic publication succeeded; ask the AE for a non-blocking follow-up check."""
 
-    carried_over=True면 전월 이월분(월말 반려 carry-over) — 우선 검토 표시를 붙인다.
-    """
     type_labels = {
-        "FAQ": "FAQ", "DISEASE": "질환 가이드", "TREATMENT": "시술·치료 안내",
-        "COLUMN": "원장 칼럼", "HEALTH": "건강 정보", "LOCAL": "지역 특화", "NOTICE": "병원 공지",
+        "FAQ": "FAQ",
+        "DISEASE": "질환 가이드",
+        "TREATMENT": "시술·치료 안내",
+        "COLUMN": "원장 칼럼",
+        "HEALTH": "건강 정보",
+        "LOCAL": "지역 특화",
+        "NOTICE": "병원 공지",
     }
     type_label = type_labels.get(content_type, content_type)
-    carry_note = " (전월 이월 — 우선 검토)" if carried_over else ""
+    carry_note = " · 전월 이월" if carried_over else ""
     return await _send(
-        text=f"📝 [콘텐츠] {hospital_name} {total_count}편 중 {sequence_no}번째 초안 완료{carry_note}",
-        blocks=[{
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": (
-                f"📝 *[콘텐츠]* *{hospital_name}* {total_count}편 중 {sequence_no}번째 콘텐츠 초안 저장 완료\n"
-                f"유형: {type_label} | 발행 예정일: {scheduled_date}{carry_note}\n\n"
-                f"<{admin_url}|Admin에서 검토 후 발행해 주세요.>"
-            )},
-        }],
+        text=(
+            f"✅ [자동 발행 완료] {hospital_name} {total_count}편 중 {sequence_no}번째 — "
+            f"후행 확인 필요"
+        ),
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"✅ *[자동 발행 완료]* *{hospital_name}* "
+                        f"{total_count}편 중 {sequence_no}번째 콘텐츠가 공개되었습니다.\n"
+                        f"유형: {type_label} | 발행일: {scheduled_date}{carry_note}\n"
+                        f"제목: *{title}*\n\n"
+                        f"<{public_url}|공개 글 보기> · <{admin_url}|Admin에서 후행 확인>\n"
+                        "사전 승인 없이 자동 발행된 글입니다. 문제가 있으면 Admin에서 즉시 수정하거나 비공개 처리해 주세요."
+                    ),
+                },
+            }
+        ],
     )
 
 
-async def notify_content_published(hospital_name: str, title: str) -> bool:
-    """콘텐츠 발행 완료"""
-    return await _send(text=f"✅ [{hospital_name}] 발행 완료: {title}")
+async def notify_content_auto_publish_blocked(
+    *,
+    hospital_name: str,
+    title: str | None,
+    scheduled_date: str,
+    reason: str,
+    admin_url: str,
+) -> bool:
+    """Automatic safety checks blocked publication; nothing became public."""
+
+    return await _send(
+        text=f"🚫 [자동 발행 차단] {hospital_name} — 공개되지 않음",
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"🚫 *[자동 발행 차단]* *{hospital_name}* 콘텐츠는 공개되지 않았습니다.\n"
+                        f"발행 예정일: {scheduled_date}\n"
+                        f"제목: {title or '생성 전'}\n"
+                        f"차단 사유: *{reason}*\n\n"
+                        f"<{admin_url}|Admin에서 원인 확인 및 수정>"
+                    ),
+                },
+            }
+        ],
+    )
 
 
 async def notify_lead_created(

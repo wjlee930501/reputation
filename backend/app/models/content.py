@@ -30,8 +30,8 @@ class ContentType(str, enum.Enum):
 
 
 class ContentStatus(str, enum.Enum):
-    DRAFT = "DRAFT"           # 초안 생성 완료 (AE 검토 전)
-    READY = "READY"           # AE 검토 완료, 발행 대기 (현재 미사용 — 바로 발행)
+    DRAFT = "DRAFT"           # 생성 완료 또는 자동 발행 안전검사 대기
+    READY = "READY"           # 레거시 호환 상태 (신규 기본 플로우는 DRAFT→PUBLISHED)
     PUBLISHED = "PUBLISHED"   # 발행 완료
     REJECTED = "REJECTED"     # 반려 (재생성 필요)
 
@@ -168,7 +168,13 @@ class ContentItem(Base):
     # 타임스탬프
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름
+    published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름 또는 SYSTEM_AUTO_PUBLISH
+    # 자동 발행과 Slack 후행 확인을 분리한다. 발행 커밋 이후 Slack이 실패해도
+    # post_publish_notified_at이 NULL로 남아 다음 작업 재시도에서 복구된다.
+    post_publish_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 후행 확인은 공개를 막지 않는 비차단 운영 기록이다.
+    post_publish_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    post_publish_reviewed_by: Mapped[str | None] = mapped_column(String(100))
     body_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     generation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

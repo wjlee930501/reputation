@@ -658,9 +658,9 @@ function BriefResultPanel({ result }: { result: BriefResultState }) {
         }`}
       >
         {philosophyGate.has_approved_philosophy
-          ? '승인된 콘텐츠 운영 기준이 적용되었습니다. 콘텐츠 탭에서 검수 후 발행하세요.'
+          ? '승인된 콘텐츠 운영 기준이 적용되었습니다. 예약일 자동 발행 후 콘텐츠 탭에서 후행 확인하세요.'
           : philosophyGate.message ??
-            '발행 전에 승인된 콘텐츠 운영 기준이 필요합니다. 운영 기준 탭에서 승인을 먼저 진행하세요.'}
+            '자동 발행 전에 승인된 콘텐츠 운영 기준이 필요합니다. 운영 기준 탭에서 승인을 먼저 진행하세요.'}
       </div>
     </div>
   )

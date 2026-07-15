@@ -4,7 +4,7 @@ Celery 태스크 전체
 - trigger_v0_report: 프로파일 완료 시 V0 분석 트리거
 - build_aeo_site: 콘텐츠 허브 공개 노출 상태 준비 (legacy task name)
 - nightly_content_generation: 매일 밤 내일 콘텐츠 생성
-- morning_content_notification: 매일 아침 오늘 콘텐츠 Slack
+- morning_content_auto_publish: 매일 아침 오늘 콘텐츠 자동 발행 + 후행 확인 Slack
 - run_sov_for_hospital: 단일 병원 AI 답변 언급률 측정
 - run_weekly_monitoring: 전체 병원 주간 측정
 - adjust_query_priorities: AI 답변 언급 결과 기반 질문 우선순위 조정
@@ -33,8 +33,13 @@ from app.models.hospital import Hospital, HospitalStatus
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
 from app.services import cost_guard, notifier
+from app.services.audit_log import write_audit_log_sync
 from app.services.content_brief import BRIEF_STATUS_APPROVED
 from app.services.content_engine import generate_content
+from app.services.content_publication import (
+    apply_publication_assessment,
+    assess_content_publication,
+)
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     build_monthly_essence_summary,
@@ -43,6 +48,10 @@ from app.services.essence_engine import (
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
 from app.services.report_engine import build_content_attribution_summary, generate_pdf_report
+from app.services.site_revalidate import (
+    ensure_site_revalidate_configured,
+    trigger_content_site_revalidate_safe,
+)
 from app.services.sov_engine import generate_query_matrix, run_single_query, calculate_sov
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
@@ -54,6 +63,8 @@ from app.workers.nightly_generation_batch import (
 )
 
 logger = logging.getLogger(__name__)
+
+AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
 
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
@@ -673,6 +684,9 @@ def regenerate_content_item(self, content_id: str):
             item.generated_at = None
             item.published_at = None
             item.published_by = None
+            item.post_publish_notified_at = None
+            item.post_publish_reviewed_at = None
+            item.post_publish_reviewed_by = None
             item.status = ContentStatus.DRAFT
             db.commit()
 
@@ -756,95 +770,298 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
 
 
 # ══════════════════════════════════════════════════════════════════
-# 아침 Slack 알림 (매일 08:00)
+# 아침 자동 발행 + 후행 확인 Slack (매일 08:00)
 # ══════════════════════════════════════════════════════════════════
-@celery_app.task(name="app.workers.tasks.morning_content_notification")
-def morning_content_notification():
-    """오늘 발행 예정 콘텐츠 초안 완료 알림"""
+@celery_app.task(
+    name="app.workers.tasks.morning_content_auto_publish",
+    bind=True,
+    max_retries=3,
+)
+def morning_content_auto_publish(self):
+    """Publish due content after machine checks, then request a human follow-up check."""
     today = arrow.now("Asia/Seoul").date()
+    notification_failures = 0
 
-    # 같은 날 재트리거 시 Slack 중복 송출 방지 (CELERY-4). 단, 작업 완료 후에 표시해
-    # 중간 크래시 시 알림이 통째로 유실되지 않게 한다(claim-after-success).
-    done_key = f"morning_content_notification:{today}"
-    if _already_done(done_key):
-        logger.info("morning_content_notification already ran for %s; skipping", today)
-        return
+    try:
+        with SyncSessionLocal() as db:
+            due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
 
-    with SyncSessionLocal() as db:
-        stmt = (
-            select(ContentItem)
-            .where(
-                ContentItem.scheduled_date == today,
-                ContentItem.status == ContentStatus.DRAFT,
-                ContentItem.body.isnot(None),
-            )
-            .options(joinedload(ContentItem.hospital))
-        )
-        result = db.execute(stmt)
-        items = result.scalars().all()
+        if due_ids:
+            # Publishing without a working cache invalidation path can leave a successful DB
+            # transaction invisible. Production therefore fails closed before any mutation.
+            ensure_site_revalidate_configured()
 
-        drafts_all_sent = True
-        drafts_sent_count = 0
-        for item in items:
-            admin_url = f"{settings.ADMIN_BASE_URL}/hospitals/{item.hospital_id}/content/{item.id}"
-            sent = _run_async(
-                notifier.notify_content_draft_ready(
-                    hospital_name=item.hospital.name,
-                    sequence_no=item.sequence_no,
-                    total_count=item.total_count,
-                    content_type=item.content_type.value,
-                    scheduled_date=str(item.scheduled_date),
-                    admin_url=admin_url,
-                    # 전월 이월분은 우선 검토 표시 (월말 반려 carry-over)
-                    carried_over=bool(item.carried_over_from),
+        for content_id in due_ids:
+            outcome = _auto_publish_one(content_id)
+            if outcome is None:
+                continue
+            if outcome["kind"] == "blocked":
+                block_key = (
+                    f"auto_publish_blocked:{content_id}:"
+                    f"{outcome['scheduled_date']}:{outcome['code']}"
+                )
+                if _already_done(block_key):
+                    continue
+                sent = _run_async(
+                    notifier.notify_content_auto_publish_blocked(
+                        hospital_name=outcome["hospital_name"],
+                        title=outcome["title"],
+                        scheduled_date=outcome["scheduled_date"],
+                        reason=outcome["reason"],
+                        admin_url=outcome["admin_url"],
+                    )
+                )
+                if sent:
+                    _mark_done(block_key, ttl_seconds=GENERATION_CATCHUP_DAYS * 86_400)
+                else:
+                    notification_failures += 1
+                continue
+
+            revalidated = _run_async(
+                trigger_content_site_revalidate_safe(
+                    outcome["slug"],
+                    content_id,
+                    hospital_name=outcome["hospital_name"],
+                    treatments=outcome["treatments"],
                 )
             )
-            if not sent:
-                drafts_all_sent = False
-            else:
-                drafts_sent_count += 1
+            if not revalidated and settings.APP_ENV.lower() == "production":
+                logger.warning("Auto-published content revalidation failed: %s", content_id)
+            if not _deliver_post_publish_notification(content_id, outcome):
+                notification_failures += 1
 
-        # 생성 누락 감지 (P1-3/R1): 발행 예정일이 오늘이거나 이미 지났는데 body가 비어 있는
-        # 슬롯은 위의 '초안 완료' 알림 필터(body IS NOT NULL)에 절대 걸리지 않는다.
-        # 침묵하는 대신 병원별 "생성 누락" 알림을 보낸다.
-        # 범위는 야간 catch-up 윈도우와 동일하게 묶는다 — 알림 문구("오늘 밤 자동 생성에서
-        # 재시도됩니다")가 참이 되고, 윈도우 밖 슬롯이 영원히 매일 재경보되지 않는다.
-        # ACTIVE 병원만 대상으로 하고, 승인된 운영 기준이 없는 병원은 제외한다 — 그쪽은
-        # 야간 배치의 전용 '생성 차단(운영 기준 미승인)' 알림이 이미 커버한다.
+        # A worker may have committed publication and died before Slack. Recover those rows
+        # without re-publishing or mutating their public timestamp.
+        with SyncSessionLocal() as db:
+            pending_ids = list(
+                db.execute(_post_publish_notification_pending_stmt(today)).scalars().all()
+            )
+        for content_id in pending_ids:
+            outcome = _load_published_notification_payload(content_id)
+            if outcome and not _deliver_post_publish_notification(content_id, outcome):
+                notification_failures += 1
+
+        _notify_missed_content_generation(today)
+    except Exception as exc:
+        logger.exception("morning_content_auto_publish failed")
+        raise self.retry(exc=exc, countdown=300)
+
+    if notification_failures:
+        raise self.retry(
+            exc=RuntimeError(f"자동 발행 Slack 알림 {notification_failures}건 전송 실패"),
+            countdown=300,
+        )
+
+
+def _auto_publish_due_stmt(today):
+    window_start = today - timedelta(days=GENERATION_CATCHUP_DAYS)
+    return (
+        select(ContentItem.id)
+        .join(Hospital, ContentItem.hospital_id == Hospital.id)
+        .where(
+            ContentItem.scheduled_date <= today,
+            ContentItem.scheduled_date >= window_start,
+            ContentItem.status == ContentStatus.DRAFT,
+            ContentItem.body.isnot(None),
+            Hospital.status == HospitalStatus.ACTIVE,
+            Hospital.site_live.is_(True),
+        )
+        .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
+    )
+
+
+def _post_publish_notification_pending_stmt(today):
+    return (
+        select(ContentItem.id)
+        .where(
+            ContentItem.scheduled_date <= today,
+            ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.published_by == AUTO_PUBLISH_ACTOR,
+            ContentItem.post_publish_notified_at.is_(None),
+        )
+        .order_by(ContentItem.published_at)
+    )
+
+
+def _admin_content_url(hospital_id: object, content_id: object) -> str:
+    return (
+        f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals/{hospital_id}/content"
+        f"?content={content_id}"
+    )
+
+
+def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
+    with SyncSessionLocal() as db:
+        item = db.execute(
+            select(ContentItem)
+            .where(ContentItem.id == content_id)
+            .with_for_update(skip_locked=True)
+        ).scalar_one_or_none()
+        if not item or item.status != ContentStatus.DRAFT:
+            return None
+        # 콘텐츠 검사와 동시에 병원이 PAUSED/비공개로 전환되는 경합을 막는다. 병원 행을
+        # 같은 트랜잭션에서 잠근 뒤 ACTIVE/LIVE를 재확인해야 공개 중지 요청 이후 새 글이
+        # 튀어나오는 TOCTOU가 없다.
+        hospital = db.execute(
+            select(Hospital).where(Hospital.id == item.hospital_id).with_for_update()
+        ).scalar_one_or_none()
+        if not hospital:
+            return None
+        if hospital.status != HospitalStatus.ACTIVE or not hospital.site_live:
+            return None
+
+        philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+        assessment = assess_content_publication(item, philosophy)
+        apply_publication_assessment(item, assessment)
+        admin_url = _admin_content_url(hospital.id, item.id)
+        if not assessment.publishable:
+            write_audit_log_sync(
+                db,
+                action="auto_publish_blocked",
+                hospital_id=hospital.id,
+                actor=AUTO_PUBLISH_ACTOR,
+                target_type="content_item",
+                target_id=item.id,
+                detail={
+                    "code": assessment.code,
+                    "reason": assessment.message,
+                    "scheduled_date": str(item.scheduled_date),
+                },
+            )
+            db.commit()
+            return {
+                "kind": "blocked",
+                "code": assessment.code or "UNKNOWN",
+                "reason": assessment.message or "자동 안전검사를 통과하지 못했습니다.",
+                "hospital_name": hospital.name,
+                "title": item.title,
+                "scheduled_date": str(item.scheduled_date),
+                "admin_url": admin_url,
+            }
+
+        published_at = datetime.now(timezone.utc)
+        item.status = ContentStatus.PUBLISHED
+        item.published_at = published_at
+        item.published_by = AUTO_PUBLISH_ACTOR
+        item.post_publish_notified_at = None
+        item.post_publish_reviewed_at = None
+        item.post_publish_reviewed_by = None
+        write_audit_log_sync(
+            db,
+            action="auto_publish_content",
+            hospital_id=hospital.id,
+            actor=AUTO_PUBLISH_ACTOR,
+            target_type="content_item",
+            target_id=item.id,
+            detail={
+                "title": item.title,
+                "content_type": item.content_type.value,
+                "scheduled_date": str(item.scheduled_date),
+                "essence_status": assessment.essence_status,
+            },
+        )
+        payload = _publication_notification_payload(item, hospital)
+        db.commit()
+        return payload
+
+
+def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> dict:
+    public_base = _public_site_url(hospital.aeo_domain, hospital.slug).rstrip("/")
+    return {
+        "kind": "published",
+        "hospital_name": hospital.name,
+        "slug": hospital.slug,
+        "treatments": hospital.treatments,
+        "title": item.title or "",
+        "sequence_no": item.sequence_no,
+        "total_count": item.total_count,
+        "content_type": item.content_type.value,
+        "scheduled_date": str(item.scheduled_date),
+        "public_url": f"{public_base}/contents/{item.id}",
+        "admin_url": _admin_content_url(hospital.id, item.id),
+        "carried_over": bool(item.carried_over_from),
+    }
+
+
+def _load_published_notification_payload(content_id: uuid.UUID) -> dict | None:
+    with SyncSessionLocal() as db:
+        item = db.execute(
+            select(ContentItem)
+            .where(ContentItem.id == content_id)
+            .options(joinedload(ContentItem.hospital))
+        ).scalar_one_or_none()
+        if (
+            not item
+            or item.status != ContentStatus.PUBLISHED
+            or item.published_by != AUTO_PUBLISH_ACTOR
+            or item.post_publish_notified_at is not None
+        ):
+            return None
+        return _publication_notification_payload(item, item.hospital)
+
+
+def _deliver_post_publish_notification(content_id: uuid.UUID, payload: dict) -> bool:
+    sent = _run_async(
+        notifier.notify_content_auto_published(
+            hospital_name=payload["hospital_name"],
+            title=payload["title"],
+            sequence_no=payload["sequence_no"],
+            total_count=payload["total_count"],
+            content_type=payload["content_type"],
+            scheduled_date=payload["scheduled_date"],
+            public_url=payload["public_url"],
+            admin_url=payload["admin_url"],
+            carried_over=payload["carried_over"],
+        )
+    )
+    if not sent:
+        return False
+    with SyncSessionLocal() as db:
+        item = db.execute(
+            select(ContentItem)
+            .where(ContentItem.id == content_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if item and item.post_publish_notified_at is None:
+            item.post_publish_notified_at = datetime.now(timezone.utc)
+            write_audit_log_sync(
+                db,
+                action="post_publish_notification_sent",
+                hospital_id=item.hospital_id,
+                actor=AUTO_PUBLISH_ACTOR,
+                target_type="content_item",
+                target_id=item.id,
+                detail={"channel": "slack"},
+            )
+            db.commit()
+    return True
+
+
+def _notify_missed_content_generation(today) -> None:
+    with SyncSessionLocal() as db:
         missed_items = db.execute(_morning_missed_stmt(today)).scalars().all()
-
         missed_by_hospital: dict[str, dict] = {}
         for item in missed_items:
             entry = missed_by_hospital.setdefault(
-                str(item.hospital_id),
-                {"name": item.hospital.name, "dates": []},
+                str(item.hospital_id), {"name": item.hospital.name, "dates": []}
             )
             entry["dates"].append(str(item.scheduled_date))
 
-        for entry in missed_by_hospital.values():
-            sent = _run_async(
-                notifier.notify_content_generation_missed(
-                    hospital_name=entry["name"],
-                    missed_count=len(entry["dates"]),
-                    dates=entry["dates"],
-                )
+    for hospital_id, entry in missed_by_hospital.items():
+        key = f"content_generation_missed:{today}:{hospital_id}"
+        if _already_done(key):
+            continue
+        sent = _run_async(
+            notifier.notify_content_generation_missed(
+                hospital_name=entry["name"],
+                missed_count=len(entry["dates"]),
+                dates=entry["dates"],
             )
-            if not sent:
-                # 누락 경보 실패는 done-key를 막지 않는다 (R1c): 경보는 어차피 내일 아침
-                # 다시 평가·발송되지만, done-key가 안 박히면 같은 날 재트리거 때 위의
-                # '초안 완료' 알림이 통째로 중복 발송된다.
-                logger.warning(
-                    "generation-missed alert delivery failed for %s (will re-evaluate tomorrow)",
-                    entry["name"],
-                )
-
-    # Only mark the day done if at least one draft-ready notification was actually
-    # delivered AND every one of them delivered — otherwise a Slack misconfig/outage
-    # would suppress the day's alerts (re-trigger retries). 발송 대상이 0건인 날
-    # (초안 없음)은 done-key를 박지 않는다 — 이후 초안이 생겨 재트리거될 때 첫 알림을
-    # 잃지 않게 한다. Claim-after-success applies to the draft alerts only.
-    if drafts_sent_count > 0 and drafts_all_sent:
-        _mark_done(done_key)
+        )
+        if sent:
+            _mark_done(key)
+        else:
+            logger.warning("generation-missed alert delivery failed for %s", entry["name"])
 
 
 def _morning_missed_stmt(today):

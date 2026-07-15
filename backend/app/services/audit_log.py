@@ -8,6 +8,7 @@ from contextvars import ContextVar, Token
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.audit import AdminAuditLog
@@ -56,6 +57,33 @@ async def write_audit_log(
     Convention: write_audit_log → db.commit() → external side-effects (queue, slack, etc).
     Never enqueue a side-effecting task before the audit row is durable.
     """
+    log = AdminAuditLog(
+        hospital_id=hospital_id,
+        actor=normalize_actor(actor),
+        action=action,
+        target_type=target_type,
+        target_id=str(target_id) if target_id is not None else None,
+        detail=detail,
+    )
+    db.add(log)
+    return log
+
+
+def write_audit_log_sync(
+    db: Session,
+    *,
+    action: str,
+    hospital_id: uuid.UUID | None = None,
+    actor: str | None = None,
+    target_type: str | None = None,
+    target_id: str | uuid.UUID | None = None,
+    detail: dict | None = None,
+) -> AdminAuditLog:
+    """Synchronous worker counterpart of :func:`write_audit_log`.
+
+    The caller must commit before Slack, revalidation, or other external effects.
+    """
+
     log = AdminAuditLog(
         hospital_id=hospital_id,
         actor=normalize_actor(actor),

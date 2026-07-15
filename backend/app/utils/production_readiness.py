@@ -26,7 +26,7 @@ from app.core.database import SyncSessionLocal
 
 EXPECTED_BEAT_SCHEDULES = {
     "nightly-content-generation",
-    "morning-content-notification",
+    "morning-content-auto-publish",
     "weekly-sov-monitoring",
     "monthly-reports",
     "monthly-slot-generation",
@@ -38,7 +38,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.build_aeo_site",
     "app.workers.tasks.monitor_live_custom_domains",
     "app.workers.tasks.monthly_slot_generation",
-    "app.workers.tasks.morning_content_notification",
+    "app.workers.tasks.morning_content_auto_publish",
     "app.workers.tasks.nightly_content_generation",
     "app.workers.tasks.purge_expired_leads",
     "app.workers.tasks.run_monthly_reports",

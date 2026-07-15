@@ -44,6 +44,11 @@ from app.services.content_brief import (
     build_content_brief,
 )
 from app.services.content_calendar import generate_monthly_slots
+from app.services.content_publication import (
+    apply_publication_assessment,
+    assess_content_publication,
+    has_required_references,
+)
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
 from app.services.essence_readiness import get_current_approved_philosophy
 from app.services.exposure_content_linker import (
@@ -136,6 +141,10 @@ class PublishBody(BaseModel):
         if not cleaned:
             raise ValueError("published_by is required")
         return cleaned
+
+
+class PostPublishReviewBody(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
 
 
 @router.post("/{hospital_id}/schedule", status_code=status.HTTP_201_CREATED)
@@ -433,6 +442,15 @@ async def update_content(
     if body_changed:
         item.body_updated_at = datetime.now(timezone.utc)
 
+    # 공개 후 확인 기록은 그 당시 본문에 대한 기록이다. 공개 필드가 바뀌면 이전 확인을
+    # 무효화해 Admin 목록에서 다시 후행 확인 대기로 보이게 한다.
+    public_fields_changed = bool(body.model_fields_set & set(FORBIDDEN_CHECK_FIELDS)) or (
+        "references" in body.model_fields_set
+    )
+    if was_published and public_fields_changed:
+        item.post_publish_reviewed_at = None
+        item.post_publish_reviewed_by = None
+
     philosophy = await _get_approved_philosophy(db, hospital_id)
     screening = screen_content_against_philosophy(item, philosophy)
     item.content_philosophy_id = philosophy.id if philosophy else None
@@ -498,8 +516,8 @@ async def publish_content(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    AE가 검토 후 [발행] 클릭.
-    병원 정보·콘텐츠 허브 공개 표면에 즉시 게재.
+    자동 발행 장애 시 사용하는 수동 복구 발행 경로.
+    예약 자동 발행과 동일한 기계적 안전 정책을 적용한다.
     """
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
@@ -508,57 +526,53 @@ async def publish_content(
     current_status = await _lock_content_status(db, hospital_id, content_id, item.status)
     if current_status == ContentStatus.PUBLISHED:
         raise HTTPException(status_code=400, detail="Already published")
-    if not item.body:
-        raise HTTPException(status_code=400, detail="Content not generated yet")
-    if not _has_required_references(item):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "권위 있는 참고 자료가 1개 이상 필요합니다.",
-                "missing": "references",
-            },
-        )
     should_revalidate = _has_public_site(hospital)
     if should_revalidate:
         ensure_site_revalidate_configured()
 
-    full_text = _forbidden_check_text(item)
-    violations = check_forbidden(full_text)
-    if violations:
-        item.essence_status = "NEEDS_ESSENCE_REVIEW"
-        item.essence_check_summary = {
-            "blocking": True,
-            "findings": [f"의료광고 금지 표현: {', '.join(violations)}"],
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-        }
+    # 제목/본문·참고자료·금지 표현은 DB 조회 없이 먼저 차단한다. 안전한 원고만 최신
+    # 승인 운영 기준을 조회해 최종 screening 하므로, 정적 위반이 운영 기준 상태에 가려지지 않는다.
+    assessment = assess_content_publication(item, None)
+    if assessment.code not in {
+        "CONTENT_NOT_GENERATED",
+        "MISSING_REFERENCES",
+        "FORBIDDEN_EXPRESSION",
+    }:
+        philosophy = await _get_approved_philosophy(db, hospital_id)
+        assessment = assess_content_publication(item, philosophy)
+    apply_publication_assessment(item, assessment)
+    if not assessment.publishable:
         await db.commit()
+        if assessment.code == "CONTENT_NOT_GENERATED":
+            raise HTTPException(status_code=400, detail="Content not generated yet")
+        if assessment.code == "MISSING_REFERENCES":
+            raise HTTPException(
+                status_code=400,
+                detail={"message": assessment.message, "missing": "references"},
+            )
+        if assessment.code == "FORBIDDEN_EXPRESSION":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": assessment.message,
+                    "violations": list(assessment.violations),
+                },
+            )
         raise HTTPException(
             status_code=400,
             detail={
-                "message": "의료광고 금지 표현이 포함되어 있어 발행할 수 없습니다.",
-                "violations": violations,
-            },
-        )
-
-    philosophy = await _get_approved_philosophy(db, hospital_id)
-    screening = screen_content_against_philosophy(item, philosophy)
-    item.content_philosophy_id = philosophy.id if philosophy else None
-    item.essence_status = screening.status
-    item.essence_check_summary = screening.summary
-    if screening.status != ESSENCE_STATUS_ALIGNED:
-        await db.commit()
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "병원답게 콘텐츠를 쓰기 위한 기준 검수 상태 때문에 발행할 수 없습니다.",
-                "essence_status": screening.status,
-                "essence_check_summary": screening.summary,
+                "message": assessment.message,
+                "essence_status": assessment.essence_status,
+                "essence_check_summary": assessment.essence_summary,
             },
         )
 
     item.status = ContentStatus.PUBLISHED
     item.published_at = datetime.now(timezone.utc)
     item.published_by = body.published_by
+    item.post_publish_notified_at = None
+    item.post_publish_reviewed_at = None
+    item.post_publish_reviewed_by = None
     await write_audit_log(
         db,
         action="publish_content",
@@ -571,7 +585,8 @@ async def publish_content(
             "content_type": _enum_value(item.content_type),
             "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
             "claimed_by": body.published_by,
-            "essence_status": item.essence_status,
+            "essence_status": assessment.essence_status,
+            "mode": "manual_recovery",
         },
     )
     await db.commit()
@@ -591,6 +606,56 @@ async def publish_content(
         )
 
     return {"detail": "Published", "published_at": item.published_at.isoformat()}
+
+
+@router.post("/{hospital_id}/content/{content_id}/post-publish-review")
+async def complete_post_publish_review(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    body: PostPublishReviewBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """Record a non-blocking human check after the content is already public."""
+
+    item = await _get_content(db, content_id, hospital_id)
+    if hasattr(db, "execute"):
+        result = await db.execute(
+            select(ContentItem)
+            .where(ContentItem.id == content_id, ContentItem.hospital_id == hospital_id)
+            .with_for_update()
+        )
+        locked_item = result.scalar_one_or_none()
+        if locked_item is None:
+            raise HTTPException(status_code=404, detail="Content not found")
+        item = locked_item
+    if item.status != ContentStatus.PUBLISHED:
+        raise HTTPException(status_code=409, detail="Only published content can be post-reviewed")
+    if item.post_publish_reviewed_at:
+        return {
+            "detail": "Already reviewed",
+            "reviewed_at": item.post_publish_reviewed_at.isoformat(),
+            "reviewed_by": item.post_publish_reviewed_by,
+        }
+
+    reviewed_at = datetime.now(timezone.utc)
+    reviewed_by = default_actor()
+    item.post_publish_reviewed_at = reviewed_at
+    item.post_publish_reviewed_by = reviewed_by
+    await write_audit_log(
+        db,
+        action="post_publish_review_completed",
+        hospital_id=hospital_id,
+        actor=reviewed_by,
+        target_type="content_item",
+        target_id=content_id,
+        detail={"title": item.title, "note": body.note},
+    )
+    await db.commit()
+    return {
+        "detail": "Post-publish review completed",
+        "reviewed_at": reviewed_at.isoformat(),
+        "reviewed_by": reviewed_by,
+    }
 
 
 @router.post("/{hospital_id}/content/{content_id}/reject")
@@ -617,6 +682,9 @@ async def reject_content(
     # 새 본문에 잘못 남는 것 방지.
     item.published_at = None
     item.published_by = None
+    item.post_publish_notified_at = None
+    item.post_publish_reviewed_at = None
+    item.post_publish_reviewed_by = None
     item.generated_at = None
     # 야간 생성은 scheduled_date == 내일 인 슬롯만 집는다. 발행일 당일(또는 그 후) 반려된
     # 아이템은 그대로 두면 영원히 재생성되지 않으므로 내일로 재스케줄한다.
@@ -668,8 +736,7 @@ def _has_public_site(hospital: Hospital) -> bool:
 
 
 def _has_required_references(item: ContentItem) -> bool:
-    references = item.references_list or []
-    return any(isinstance(ref, dict) and ref.get("title") and ref.get("url") for ref in references)
+    return has_required_references(item)
 
 
 async def _get_content(db, content_id, hospital_id) -> ContentItem:
@@ -864,7 +931,9 @@ def _content_review_display(
     item: ContentItem, status_value: str | None
 ) -> dict[str, str | bool | None]:
     if status_value == ContentStatus.PUBLISHED.value:
-        return {"label": "발행 완료", "reason": None, "publishable": False}
+        if getattr(item, "post_publish_reviewed_at", None):
+            return {"label": "후행 확인 완료", "reason": None, "publishable": False}
+        return {"label": "후행 확인 대기", "reason": "발행 후 내용 확인 필요", "publishable": False}
     if status_value == ContentStatus.REJECTED.value:
         return {"label": "반려됨", "reason": "야간 재생성 대기", "publishable": False}
     if not item.title or not item.body:
@@ -877,8 +946,8 @@ def _content_review_display(
             if item.essence_status == "MISSING_APPROVED_PHILOSOPHY"
             else "운영 기준 미검수"
         )
-        return {"label": "검토 필요", "reason": reason, "publishable": False}
-    return {"label": "발행 가능", "reason": None, "publishable": True}
+        return {"label": "자동 발행 차단", "reason": reason, "publishable": False}
+    return {"label": "자동 발행 대기", "reason": None, "publishable": True}
 
 
 def _serialize_item_display(
@@ -947,6 +1016,17 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "generated_at": item.generated_at.isoformat() if item.generated_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "published_by": item.published_by,
+        "post_publish_notified_at": (
+            item.post_publish_notified_at.isoformat()
+            if getattr(item, "post_publish_notified_at", None)
+            else None
+        ),
+        "post_publish_reviewed_at": (
+            item.post_publish_reviewed_at.isoformat()
+            if getattr(item, "post_publish_reviewed_at", None)
+            else None
+        ),
+        "post_publish_reviewed_by": getattr(item, "post_publish_reviewed_by", None),
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
         "references": item.references_list or [],
         "faq_question": item.faq_question,

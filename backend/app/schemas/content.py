@@ -23,6 +23,9 @@ class ContentItemResponse(BaseModel):
     generated_at: Optional[str]
     published_at: Optional[str]
     published_by: Optional[str]
+    post_publish_notified_at: Optional[str] = None
+    post_publish_reviewed_at: Optional[str] = None
+    post_publish_reviewed_by: Optional[str] = None
     body_updated_at: Optional[str] = None
     # 참고 자료/FAQ 분리 필드 — Admin 검수·보정(A1)과 컴플라이언스 패널이 사용.
     references: list[dict[str, Any]] = []

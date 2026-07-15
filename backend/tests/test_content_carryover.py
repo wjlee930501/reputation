@@ -1,4 +1,4 @@
-"""월말 반려 carry-over — 직렬화 노출 경계 + 아침 Slack '전월 이월' 표시.
+"""월말 반려 carry-over — 직렬화 노출 경계 + 자동 발행 Slack 표시.
 
 carried_over_from은 내부 운영 데이터: Admin 직렬화에는 포함하고,
 공개(/site) 직렬화에는 절대 포함하지 않는다.
@@ -77,7 +77,7 @@ def test_public_serializer_never_exposes_carried_over_from():
     assert "carried_over_from" not in serialized
 
 
-async def test_draft_ready_notification_marks_carried_over(monkeypatch):
+async def test_auto_publish_notification_marks_carried_over(monkeypatch):
     sent = []
 
     async def fake_send(*, text, blocks=None):
@@ -86,27 +86,31 @@ async def test_draft_ready_notification_marks_carried_over(monkeypatch):
 
     monkeypatch.setattr(notifier, "_send", fake_send)
 
-    await notifier.notify_content_draft_ready(
+    await notifier.notify_content_auto_published(
         hospital_name="장편한외과의원",
+        title="무릎이 아플 때",
         sequence_no=1,
         total_count=16,
         content_type="FAQ",
         scheduled_date="2026-07-01",
         admin_url="https://admin.example.com/x",
+        public_url="https://clinic.example.com/contents/1",
         carried_over=True,
     )
-    await notifier.notify_content_draft_ready(
+    await notifier.notify_content_auto_published(
         hospital_name="장편한외과의원",
+        title="진료 안내",
         sequence_no=2,
         total_count=16,
         content_type="FAQ",
         scheduled_date="2026-07-02",
         admin_url="https://admin.example.com/y",
+        public_url="https://clinic.example.com/contents/2",
     )
 
     carried_text = sent[0]["blocks"][0]["text"]["text"]
-    assert "(전월 이월 — 우선 검토)" in carried_text
-    assert "발행 예정일: 2026-07-01 (전월 이월 — 우선 검토)" in carried_text
+    assert "전월 이월" in carried_text
+    assert "발행일: 2026-07-01 · 전월 이월" in carried_text
 
     normal_text = sent[1]["blocks"][0]["text"]["text"]
     assert "전월 이월" not in normal_text

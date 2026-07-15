@@ -236,13 +236,22 @@ async def test_publish_content_rejects_generated_content_without_references(monk
 
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)
     monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    async def fake_get_philosophy(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return None
+
+    monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
+
+    class FakeDB:
+        async def commit(self):
+            return None
 
     with pytest.raises(HTTPException) as exc_info:
         await content_api.publish_content(
             hospital_id,
             item_id,
             content_api.PublishBody(published_by="AE"),
-            db=SimpleNamespace(),
+            db=FakeDB(),
         )
 
     assert exc_info.value.status_code == 400
@@ -345,8 +354,16 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
     monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
     monkeypatch.setattr(
         content_api,
-        "screen_content_against_philosophy",
-        lambda _item, philosophy: SimpleNamespace(status=content_api.ESSENCE_STATUS_ALIGNED, summary={"ok": True}),
+        "assess_content_publication",
+        lambda _item, philosophy: SimpleNamespace(
+            publishable=True,
+            code=None,
+            message=None,
+            violations=(),
+            essence_status=content_api.ESSENCE_STATUS_ALIGNED,
+            essence_summary={"ok": True},
+            philosophy_id=getattr(philosophy, "id", None),
+        ),
     )
     monkeypatch.setattr(content_api, "write_audit_log", fake_write_audit_log)
     monkeypatch.setattr(content_api.notifier, "notify_content_published", fake_notify_content_published)
@@ -377,10 +394,62 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
                 "scheduled_date": str(item.scheduled_date),
                 "claimed_by": "김민지 AE",
                 "essence_status": content_api.ESSENCE_STATUS_ALIGNED,
+                "mode": "manual_recovery",
             },
         }
     ]
     assert published_notifications == [(hospital.name, item.title)]
+
+
+async def test_post_publish_review_records_authenticated_actor_and_is_idempotent(monkeypatch):
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    item = _content_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        title="공개된 글",
+        status=content_api.ContentStatus.PUBLISHED,
+        post_publish_reviewed_at=None,
+        post_publish_reviewed_by=None,
+    )
+    audits = []
+
+    class FakeDB:
+        commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        return item
+
+    async def fake_audit(*_args, **kwargs):
+        audits.append(kwargs)
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "write_audit_log", fake_audit)
+    monkeypatch.setattr(content_api, "default_actor", lambda: "operator@example.com")
+    db = FakeDB()
+
+    first = await content_api.complete_post_publish_review(
+        hospital_id,
+        item_id,
+        content_api.PostPublishReviewBody(note="공개 페이지 확인"),
+        db=db,
+    )
+    second = await content_api.complete_post_publish_review(
+        hospital_id,
+        item_id,
+        content_api.PostPublishReviewBody(),
+        db=db,
+    )
+
+    assert first["detail"] == "Post-publish review completed"
+    assert second["detail"] == "Already reviewed"
+    assert item.post_publish_reviewed_by == "operator@example.com"
+    assert db.commits == 1
+    assert audits[0]["action"] == "post_publish_review_completed"
+    assert audits[0]["detail"]["note"] == "공개 페이지 확인"
 
 
 async def test_update_content_brief_links_action_infers_target_and_approves(monkeypatch):

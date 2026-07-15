@@ -2,6 +2,7 @@
 
 from datetime import date
 from types import SimpleNamespace
+import uuid
 
 import arrow
 import httpx
@@ -484,6 +485,11 @@ class _Result:
     def scalar(self):
         return self._scalar
 
+    def scalar_one_or_none(self):
+        if self._items is not None:
+            return self._items[0] if self._items else None
+        return self._scalar
+
 
 class _FakeSyncDB:
     """첫 execute는 batch 조회, 두 번째 execute는 overflow count 조회."""
@@ -535,101 +541,165 @@ def test_load_nightly_generation_batch_detects_cap_truncation():
     assert all(item.generation_claimed_at is not None for item in items)
 
 
-# ── R1c — 아침 알림 done-key: 누락 경보 실패가 초안 알림 dedupe를 막지 않는다 ──
+# ── 08:00 자동 발행: due/public 상태와 Slack 복구 대상의 DB 필터 ──
 
 
-class _MorningDB:
-    """첫 execute = 초안 완료 조회, 두 번째 execute = 생성 누락 조회."""
+def test_auto_publish_due_statement_requires_live_active_draft():
+    sql = str(
+        tasks._auto_publish_due_stmt(date(2026, 6, 10)).compile(
+            compile_kwargs={"literal_binds": True}
+        )
+    )
 
-    def __init__(self, draft_items, missed_items):
-        self._results = [_Result(items=draft_items), _Result(items=missed_items)]
-        self.execute_calls = 0
-
-    def execute(self, _stmt):
-        result = self._results[self.execute_calls]
-        self.execute_calls += 1
-        return result
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
+    assert "content_items.status = 'DRAFT'" in sql
+    assert "content_items.body IS NOT NULL" in sql
+    assert "hospitals.status = 'ACTIVE'" in sql
+    assert "hospitals.site_live IS true" in sql
+    assert "content_items.scheduled_date <= '2026-06-10'" in sql
 
 
-def _draft_item():
-    hospital = SimpleNamespace(id="h1", name="테스트의원")
-    return SimpleNamespace(
-        id="c1",
-        hospital_id="h1",
+def test_pending_post_publish_notification_only_targets_system_publications():
+    sql = str(
+        tasks._post_publish_notification_pending_stmt(date(2026, 6, 10)).compile(
+            compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "content_items.status = 'PUBLISHED'" in sql
+    assert "content_items.published_by = 'SYSTEM_AUTO_PUBLISH'" in sql
+    assert "content_items.post_publish_notified_at IS NULL" in sql
+
+
+def test_auto_publish_one_commits_publication_before_external_effects(monkeypatch):
+    content_id = uuid.uuid4()
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="테스트의원",
+        slug="test-clinic",
+        aeo_domain="test.example.com",
+        treatments=[],
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+    )
+    item = SimpleNamespace(
+        id=content_id,
+        hospital_id=hospital.id,
         hospital=hospital,
+        status=tasks.ContentStatus.DRAFT,
+        title="진료 전 확인할 점",
+        body="상태에 따라 진료 방향을 설명합니다.",
         sequence_no=1,
         total_count=8,
         content_type=SimpleNamespace(value="FAQ"),
         scheduled_date=date(2026, 6, 10),
         carried_over_from=None,
+        content_philosophy_id=None,
+        essence_status=None,
+        essence_check_summary=None,
+        published_at=None,
+        published_by=None,
+        post_publish_notified_at=None,
+        post_publish_reviewed_at=None,
+        post_publish_reviewed_by=None,
     )
 
+    class DB:
+        commits = 0
+        execute_calls = 0
 
-def _missed_item():
-    hospital = SimpleNamespace(id="h2", name="누락의원")
-    return SimpleNamespace(
-        id="c2",
-        hospital_id="h2",
-        hospital=hospital,
-        scheduled_date=date(2026, 6, 8),
+        def execute(self, _stmt):
+            results = [_Result(items=[item]), _Result(items=[hospital])]
+            result = results[self.execute_calls]
+            self.execute_calls += 1
+            return result
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    db = DB()
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    assessment = SimpleNamespace(
+        publishable=True,
+        code=None,
+        message=None,
+        violations=(),
+        essence_status="ALIGNED",
+        essence_summary={"blocking": False},
+        philosophy_id=philosophy.id,
     )
-
-
-def _run_morning(monkeypatch, *, draft_sent: bool, missed_sent: bool):
-    db = _MorningDB([_draft_item()], [_missed_item()])
-    marked: list[str] = []
-
-    async def fake_draft_ready(**_kw):
-        return draft_sent
-
-    async def fake_generation_missed(**_kw):
-        return missed_sent
-
+    audits = []
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "_already_done", lambda _key: False)
-    monkeypatch.setattr(tasks, "_mark_done", lambda key, **_kw: marked.append(key))
-    monkeypatch.setattr(tasks.notifier, "notify_content_draft_ready", fake_draft_ready)
-    monkeypatch.setattr(tasks.notifier, "notify_content_generation_missed", fake_generation_missed)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: assessment)
+    monkeypatch.setattr(
+        tasks, "write_audit_log_sync", lambda *_args, **kwargs: audits.append(kwargs)
+    )
 
-    tasks.morning_content_notification()
-    return marked
+    payload = tasks._auto_publish_one(content_id)
 
-
-def test_morning_marks_done_even_when_missed_alert_fails(monkeypatch):
-    """누락 경보 Slack 실패가 done-key를 막으면 같은 날 재트리거 때 초안 알림이 전부 중복된다 (R1c)."""
-    marked = _run_morning(monkeypatch, draft_sent=True, missed_sent=False)
-    assert len(marked) == 1
-
-
-def test_morning_does_not_mark_done_when_draft_alert_fails(monkeypatch):
-    """초안 알림 자체가 실패하면 claim-after-success 유지 — 재트리거가 다시 시도해야 한다."""
-    marked = _run_morning(monkeypatch, draft_sent=False, missed_sent=True)
-    assert marked == []
+    assert db.commits == 1
+    assert item.status == tasks.ContentStatus.PUBLISHED
+    assert item.published_by == tasks.AUTO_PUBLISH_ACTOR
+    assert item.published_at is not None
+    assert payload["public_url"] == f"https://test.example.com/contents/{content_id}"
+    assert audits[0]["action"] == "auto_publish_content"
 
 
-def test_morning_does_not_mark_done_when_no_drafts_to_send(monkeypatch):
-    """발송 대상 초안이 0건이면 done-key를 박지 않는다 — 이후 초안 생성 시 첫 알림 유실 방지 (결함 14)."""
-    db = _MorningDB([], [])
-    marked: list[str] = []
+def test_deliver_post_publish_notification_marks_durable_timestamp(monkeypatch):
+    content_id = uuid.uuid4()
+    item = SimpleNamespace(
+        id=content_id,
+        hospital_id=uuid.uuid4(),
+        post_publish_notified_at=None,
+    )
+    audit_calls = []
 
-    async def fake_draft_ready(**_kw):  # pragma: no cover - 호출되지 않아야 함
-        raise AssertionError("no drafts → notify should not be called")
+    class DB:
+        committed = False
 
-    async def fake_generation_missed(**_kw):
+        def execute(self, _stmt):
+            return _Result(items=[item])
+
+        def commit(self):
+            self.committed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    db = DB()
+
+    async def sent(**_kwargs):
         return True
 
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "_already_done", lambda _key: False)
-    monkeypatch.setattr(tasks, "_mark_done", lambda key, **_kw: marked.append(key))
-    monkeypatch.setattr(tasks.notifier, "notify_content_draft_ready", fake_draft_ready)
-    monkeypatch.setattr(tasks.notifier, "notify_content_generation_missed", fake_generation_missed)
+    monkeypatch.setattr(tasks.notifier, "notify_content_auto_published", sent)
+    monkeypatch.setattr(
+        tasks,
+        "write_audit_log_sync",
+        lambda *_args, **kwargs: audit_calls.append(kwargs),
+    )
+    payload = {
+        "hospital_name": "테스트의원",
+        "title": "공개 글",
+        "sequence_no": 1,
+        "total_count": 8,
+        "content_type": "FAQ",
+        "scheduled_date": "2026-06-10",
+        "public_url": "https://example.com/contents/1",
+        "admin_url": "https://admin.example.com/content?content=1",
+        "carried_over": False,
+    }
 
-    tasks.morning_content_notification()
-
-    assert marked == []
+    assert tasks._deliver_post_publish_notification(content_id, payload) is True
+    assert item.post_publish_notified_at is not None
+    assert db.committed is True
+    assert audit_calls[0]["action"] == "post_publish_notification_sent"

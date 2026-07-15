@@ -23,7 +23,7 @@ docs/      제품 PRD, 배포 런북, 계획 문서
 - **backend**: FastAPI + SQLAlchemy(async) + Alembic + PostgreSQL. Celery + Redis로 야간 콘텐츠 생성,
   SoV(AI 답변 언급률) 측정, 월간 리포트 등을 스케줄링한다. Anthropic Claude(콘텐츠 생성),
   OpenAI(SoV 측정 + 이미지 생성), Gemini(SoV 측정), Google Cloud(Imagen 3 폴백 + GCS)를 사용한다.
-- **admin**: AE가 병원 온보딩·프로파일 편집·콘텐츠 검토/발행·스케줄 설정·리포트 확인을 수행하는 내부 도구.
+- **admin**: AE가 병원 온보딩·프로파일 편집·콘텐츠 자동 발행 후행 점검·스케줄 설정·리포트 확인을 수행하는 내부 도구.
 - **site**: 병원별 슬러그 라우팅으로 공개 콘텐츠·병원 정보·Schema.org 마크업을 서빙하는 AEO 표면. 별도
   홈페이지 납품물이 아니라 AI가 참고하는 콘텐츠 허브 운영 상태 그 자체다.
 

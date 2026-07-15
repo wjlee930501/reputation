@@ -5,7 +5,6 @@ import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { ApiError, fetchAPI } from '@/lib/api'
-import { runChunkedBulkPublish } from '@/lib/bulk-publish'
 import { countCarriedOver, sortCarriedOverFirst } from '@/lib/content'
 import {
   ContentDraftSnapshot,
@@ -16,8 +15,6 @@ import {
   saveDraftSnapshot,
 } from '@/lib/edit-draft-snapshot'
 import { formatDate, formatDateTime } from '@/lib/format'
-import { buildManualPublishPayload } from '@/lib/publishing'
-import { readPublisherIdentity, storePublisherNameOverride } from '@/lib/publisher-identity'
 import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
@@ -142,7 +139,9 @@ function getReviewState(item: ContentItem): ReviewState {
   const displayLabel = displayReview?.label ?? undefined
   const displayReason = displayReview?.reason ?? undefined
   if (item.status === 'PUBLISHED') {
-    return { key: 'published', label: displayLabel ?? '발행 완료', badge: 'bg-blue-100 text-blue-700', publishable: false }
+    return item.post_publish_reviewed_at
+      ? { key: 'published', label: '후행 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
+      : { key: 'published', label: '후행 확인 대기', badge: 'bg-blue-100 text-blue-700', publishable: false }
   }
   if (item.status === 'REJECTED') {
     return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
@@ -154,9 +153,9 @@ function getReviewState(item: ContentItem): ReviewState {
   // (display.review와 달리 참고 자료·금지 표현까지 발행 게이트 전체를 반영한다.)
   if (!item.compliance.publishable) {
     const reason = item.compliance.blockers.length > 0 ? item.compliance.blockers.join(' · ') : displayReason ?? '발행 차단 사유 확인 필요'
-    return { key: 'needsReview', label: '검토 필요', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
+    return { key: 'needsReview', label: '자동 발행 차단', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
   }
-  return { key: 'publishable', label: '발행 가능', badge: 'bg-green-100 text-green-700', publishable: true }
+  return { key: 'publishable', label: '자동 발행 대기', badge: 'bg-green-100 text-green-700', publishable: true }
 }
 
 function getContentTypeLabel(item: ContentItem): string {
@@ -180,7 +179,6 @@ export default function ContentPage() {
   // 레이아웃이 이미 병원 정보를 들고 있다 — 발행 완료 링크(aeo_domain/slug)도 여기서 읽는다.
   const { hospital, refetch: refetchHeader } = useHospitalHeader()
   const aeoDomain = hospital?.aeo_domain ?? null
-  const hospitalSlug = hospital?.slug ?? null
 
   // Month filter
   const [year, setYear] = useState(new Date().getFullYear())
@@ -197,6 +195,7 @@ export default function ContentPage() {
   const [selected, setSelected] = useState<ContentItem | null>(null)
   const dialogCloseRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
+  const deepLinkOpenedRef = useRef(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [briefEditMode, setBriefEditMode] = useState(false)
   const [briefQueryTargetId, setBriefQueryTargetId] = useState('')
@@ -220,12 +219,6 @@ export default function ContentPage() {
   // 복구 가능한 초안이 있을 때만 편집 화면 상단에 배너로 안내한다.
   const [recoverableDraft, setRecoverableDraft] = useState<ContentDraftSnapshot | null>(null)
 
-  // Bulk selection
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [bulkProgress, setBulkProgress] = useState<string | null>(null)
-  const [bulkError, setBulkError] = useState<string | null>(null)
-  const [publisherName, setPublisherName] = useState('')
-  const [publisherError, setPublisherError] = useState<string | null>(null)
   const [publishSuccessId, setPublishSuccessId] = useState<string | null>(null)
 
   // 페이지 단위 액션 피드백 — 모달이 닫혀 있어도 행 단위 발행/반려 결과를 보여준다.
@@ -234,7 +227,6 @@ export default function ContentPage() {
 
   const load = useCallback(() => {
     setLoading(true)
-    setSelectedIds(new Set())
     fetchAPI<ContentItem[]>(`/admin/hospitals/${id}/content?year=${year}&month=${month}`)
       .then(setItems)
       .catch((e: Error) => setError(e.message))
@@ -250,10 +242,6 @@ export default function ContentPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
-
-  useEffect(() => {
-    setPublisherName(readPublisherIdentity())
-  }, [])
 
   // 편집 중 세션이 만료돼 401 리다이렉트가 발생해도 내용을 잃지 않도록 필드가
   // 바뀔 때마다 병원id+콘텐츠id 키로 스냅샷을 남긴다. 저장 성공 시에만 지운다.
@@ -327,6 +315,23 @@ export default function ContentPage() {
     })
   }, [id])
 
+  useEffect(() => {
+    if (deepLinkOpenedRef.current) return
+    const contentId = new URLSearchParams(window.location.search).get('content')
+    if (!contentId) return
+    deepLinkOpenedRef.current = true
+    setEditMode(false)
+    setBriefEditMode(false)
+    setEditError(null)
+    setBriefError(null)
+    setViolations([])
+    void fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${contentId}`)
+      .then(setSelected)
+      .catch((reason: unknown) => {
+        setActionError(reason instanceof Error ? reason.message : '연결된 콘텐츠를 불러오지 못했습니다.')
+      })
+  }, [id])
+
   // 전월 이월 슬롯은 이번 달 최우선 처리 대상 — 목록 맨 위로 끌어올린다 (나머지는 기존 순서 유지).
   const sortedItems = useMemo(() => sortCarriedOverFirst(items), [items])
   const carriedCount = useMemo(() => countCarriedOver(items), [items])
@@ -339,106 +344,41 @@ export default function ContentPage() {
   }, [items])
 
   const summary = useMemo(() => {
-    const totals = { publishable: 0, needsReview: 0, notGenerated: 0, published: 0, rejected: 0 }
+    const totals = {
+      publishable: 0,
+      needsReview: 0,
+      notGenerated: 0,
+      published: 0,
+      rejected: 0,
+      postReviewPending: 0,
+      postReviewDone: 0,
+    }
     for (const item of items) {
       const rs = reviewByItem.get(item.id)
       if (rs) totals[rs.key]++
+      if (item.status === 'PUBLISHED') {
+        if (item.post_publish_reviewed_at) totals.postReviewDone++
+        else totals.postReviewPending++
+      }
     }
     return totals
   }, [items, reviewByItem])
-
-  const selectableIds = useMemo(
-    () => items.filter((item) => reviewByItem.get(item.id)?.publishable).map((item) => item.id),
-    [items, reviewByItem],
-  )
-
-  function toggleSelect(itemId: string) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(itemId)) next.delete(itemId)
-      else next.add(itemId)
-      return next
-    })
-  }
-
-  function toggleSelectAll() {
-    if (selectableIds.length > 0 && selectedIds.size === selectableIds.length) {
-      setSelectedIds(new Set())
-    } else {
-      setSelectedIds(new Set(selectableIds))
-    }
-  }
-
-  function handlePublisherChange(value: string) {
-    setPublisherName(value)
-    setPublisherError(null)
-    storePublisherNameOverride(value)
-  }
-
-  function getPublishPayloadForSubmit(): ReturnType<typeof buildManualPublishPayload> {
-    const payload = buildManualPublishPayload(publisherName)
-    if (!payload) {
-      setPublisherError('발행 담당자 이름을 입력해 주세요.')
-      return null
-    }
-    return payload
-  }
 
   function clearActionFeedback() {
     setActionError(null)
     setActionSuccess(null)
   }
 
-  async function handleBulkPublish() {
-    const ids = Array.from(selectedIds)
-    if (ids.length === 0) return
-    const publishPayload = getPublishPayloadForSubmit()
-    if (!publishPayload) return
-    setBulkError(null)
-    clearActionFeedback()
-    setBulkProgress(`0/${ids.length} 발행 완료...`)
-    // 완전 직렬 발행은 건수가 많을수록 느려지므로 3~5개 청크로 나눠 동시 처리한다.
-    const { succeededIds, failedIds, firstFailureMessage } = await runChunkedBulkPublish(
-      ids,
-      async (itemId) => {
-        await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
-          method: 'POST',
-          body: JSON.stringify(publishPayload),
-        })
-      },
-      { onProgress: (done, total) => setBulkProgress(`${done}/${total} 발행 완료...`) },
-    )
-    setBulkProgress(null)
-    if (failedIds.length > 0) {
-      setBulkError(
-        `${ids.length}건 중 ${failedIds.length}건 발행에 실패했습니다.` +
-          (firstFailureMessage ? ` 사유: ${firstFailureMessage}` : '') +
-          ` 실패한 콘텐츠(${failedIds.length}건)는 선택 상태로 남겨두었습니다.`,
-      )
-    } else {
-      setActionSuccess(`선택한 콘텐츠 ${succeededIds.length}건을 모두 발행했습니다.`)
-    }
-    if (succeededIds.length > 0) {
-      setPublishSuccessId(succeededIds[0])
-      void refetchHeader()
-    }
-    // load()가 선택을 비우지만 같은 continuation에서 실패분으로 덮어쓴다 (React 자동 배칭).
-    load()
-    setSelectedIds(new Set(failedIds))
-  }
-
   async function handlePublish(itemId: string) {
-    const publishPayload = getPublishPayloadForSubmit()
-    if (!publishPayload) return
     setActionLoading(true)
     clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
         method: 'POST',
-        body: JSON.stringify(publishPayload),
+        body: JSON.stringify({ published_by: 'SYSTEM_MANUAL_RECOVERY' }),
       })
       setPublishSuccessId(itemId)
-      setActionSuccess('콘텐츠 1건을 발행했습니다.')
+      setActionSuccess('운영 복구 발행을 완료했습니다.')
       void refetchHeader()
       load()
     } catch (e: unknown) {
@@ -460,6 +400,25 @@ export default function ContentPage() {
       } else {
         setActionError(message)
       }
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function handlePostPublishReview(itemId: string) {
+    setActionLoading(true)
+    clearActionFeedback()
+    try {
+      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/post-publish-review`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      setActionSuccess('후행 확인을 완료로 기록했습니다.')
+      const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}`)
+      setSelected(full)
+      load()
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : '후행 확인 기록에 실패했습니다.')
     } finally {
       setActionLoading(false)
     }
@@ -709,38 +668,13 @@ export default function ContentPage() {
       <div className="mb-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">콘텐츠 검수 · 발행</h2>
+            <h2 className="text-2xl font-bold text-slate-900">자동 발행 · 후행 점검</h2>
             <p className="text-sm text-slate-500 mt-1">
-              콘텐츠 운영 기준 통과 여부와 의료광고 리스크를 확인한 뒤 발행합니다.
+              예약 콘텐츠는 발행일 08시에 자동 공개됩니다. Slack 알림 후 문제 여부만 후행 확인합니다.
             </p>
           </div>
-
-          {/* Bulk action bar */}
-          {selectedIds.size > 0 && (
-            <div className="flex flex-wrap items-center gap-3 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">
-              <span className="text-sm text-slate-700">
-                <span className="font-semibold">{selectedIds.size}개</span> 발행 대기 선택됨
-              </span>
-              <button
-                onClick={handleBulkPublish}
-                disabled={!!bulkProgress}
-                className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50"
-              >
-                선택한 원고 발행
-              </button>
-            </div>
-          )}
         </div>
 
-        {/* 액션 결과 배너 — 선택이 해제되어도 진행/오류/성공 메시지가 유지된다 */}
-        {bulkProgress && (
-          <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-medium text-blue-700">
-            {bulkProgress}
-          </div>
-        )}
-        {bulkError && (
-          <DismissibleBanner tone="error" message={bulkError} dismissLabel="일괄 발행 오류 메시지 닫기" onClose={() => setBulkError(null)} />
-        )}
         {actionError && (
           <DismissibleBanner tone="error" message={actionError} dismissLabel="오류 메시지 닫기" onClose={() => setActionError(null)} />
         )}
@@ -749,14 +683,15 @@ export default function ContentPage() {
         )}
 
         {/* Summary cards */}
-        <div className={`mt-5 grid grid-cols-2 gap-3 ${carriedCount > 0 ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
+        <div className={`mt-5 grid grid-cols-2 gap-3 ${carriedCount > 0 ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
           {carriedCount > 0 && (
             <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨 · 우선 처리" />
           )}
-          <SummaryCard label="발행 가능" value={summary.publishable} tone="green" hint="콘텐츠 운영 기준 통과 · 본문 완성" />
-          <SummaryCard label="검토 필요" value={summary.needsReview} tone="orange" hint="발행 차단 사유 확인 필요" />
+          <SummaryCard label="자동 발행 대기" value={summary.publishable} tone="green" hint="기계 안전검사 통과" />
+          <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단됨" />
           <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" />
-          <SummaryCard label="발행 완료" value={summary.published} tone="blue" hint="이번 달 누적" />
+          <SummaryCard label="후행 확인 대기" value={summary.postReviewPending} tone="blue" hint="Slack 알림 후 확인" />
+          <SummaryCard label="후행 확인 완료" value={summary.postReviewDone} tone="green" hint="사람 확인 기록됨" />
         </div>
       </div>
 
@@ -782,24 +717,8 @@ export default function ContentPage() {
           ))}
         </select>
         <span className="text-xs text-slate-500 ml-1">
-          발행 조건(운영 기준·참고 자료·금지 표현)을 모두 통과한 초안만 일괄 선택할 수 있습니다.
+          운영 기준·참고 자료·의료광고 금지 표현 검사는 자동 발행 직전에 다시 수행됩니다.
         </span>
-        </div>
-        <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
-          <label htmlFor="publisher-name" className="block text-xs font-semibold text-slate-700">
-            발행 담당자
-          </label>
-          <input
-            id="publisher-name"
-            type="text"
-            value={publisherName}
-            onChange={(event) => handlePublisherChange(event.target.value)}
-            placeholder="예: 김민지 AE"
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <p className={`mt-1 text-xs ${publisherError ? 'text-red-600' : 'text-slate-500'}`}>
-            {publisherError ?? '발행자 이름은 콘텐츠와 감사 기록에 함께 저장됩니다.'}
-          </p>
         </div>
       </div>
 
@@ -812,24 +731,14 @@ export default function ContentPage() {
       {!loading && !error && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
-          <table className="min-w-[980px] w-full text-sm">
+          <table className="min-w-[920px] w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 w-10">
-                  <input
-                    type="checkbox"
-                    aria-label="발행 가능한 콘텐츠 전체 선택"
-                    checked={selectableIds.length > 0 && selectedIds.size === selectableIds.length}
-                    onChange={toggleSelectAll}
-                    disabled={selectableIds.length === 0}
-                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                  />
-                </th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">발행예정일</th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">유형</th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">제목</th>
                 <th className="text-center px-6 py-3 text-slate-600 font-medium">순번</th>
-                <th className="text-center px-6 py-3 text-slate-600 font-medium">검수 상태</th>
+                <th className="text-center px-6 py-3 text-slate-600 font-medium">자동 발행 / 후행 확인</th>
                 <th className="text-center px-6 py-3 text-slate-600 font-medium">운영 기준</th>
                 <th className="text-center px-6 py-3 text-slate-600 font-medium">콘텐츠 가이드</th>
                 <th className="text-right px-6 py-3 text-slate-600 font-medium">액션</th>
@@ -838,7 +747,7 @@ export default function ContentPage() {
             <tbody className="divide-y divide-slate-100">
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="text-center py-12 text-slate-400 text-sm">
+                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
                     이번 달 콘텐츠가 아직 없습니다.
                     <br />
                     <span className="text-slate-500">
@@ -851,19 +760,8 @@ export default function ContentPage() {
                 const review = reviewByItem.get(item.id) ?? getReviewState(item)
                 const essence = getEssenceLabel(item)
                 const brief = getBriefLabel(item)
-                const isSelectable = review.publishable
                 return (
                   <tr key={item.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-4">
-                      <input
-                        type="checkbox"
-                        aria-label={`${item.title ?? '생성 전 슬롯'} 선택`}
-                        checked={selectedIds.has(item.id)}
-                        onChange={() => toggleSelect(item.id)}
-                        disabled={!isSelectable}
-                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
-                      />
-                    </td>
                     <td className="px-6 py-4 text-slate-600">
                       <div>{item.scheduled_date}</div>
                       {item.carried_over_from && (
@@ -900,32 +798,26 @@ export default function ContentPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      {review.publishable ? (
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => handlePublish(item.id)}
-                            disabled={actionLoading || !publisherName.trim()}
-                            className="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-50"
-                          >
-                            발행
-                          </button>
-                          <button
-                            onClick={() => handleReject(item.id)}
-                            disabled={actionLoading}
-                            className="px-3 py-1 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200 disabled:opacity-50"
-                          >
-                            반려
-                          </button>
-                        </div>
+                      {item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? (
+                        <button
+                          onClick={() => openDetail(item)}
+                          className="text-xs font-medium text-blue-700 hover:underline"
+                        >
+                          후행 확인
+                        </button>
+                      ) : item.status === 'PUBLISHED' ? (
+                        <span className="text-xs text-green-700">확인 완료</span>
                       ) : review.key === 'needsReview' && item.title ? (
                         <button
                           onClick={() => openDetail(item)}
                           className="text-xs text-orange-700 hover:underline"
                         >
-                          {review.reason ?? '검토 필요'} · 열기
+                          차단 사유 확인
                         </button>
                       ) : (
-                        <span className="text-xs text-slate-400">{review.reason ?? '—'}</span>
+                        <button onClick={() => openDetail(item)} className="text-xs text-slate-500 hover:underline">
+                          상세 확인
+                        </button>
                       )}
                     </td>
                   </tr>
@@ -982,7 +874,7 @@ export default function ContentPage() {
                     콘텐츠 가이드 편집
                   </button>
                 )}
-                {!editMode && !briefEditMode && selected.status === 'DRAFT' && (
+                {!editMode && !briefEditMode && ['DRAFT', 'PUBLISHED'].includes(selected.status) && (
                   <button
                     onClick={enterEditMode}
                     className="px-3 py-1.5 text-sm font-medium text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50"
@@ -1001,11 +893,11 @@ export default function ContentPage() {
               </div>
             </div>
 
-            {publishSuccessId && aeoDomain && hospitalSlug && (
+            {publishSuccessId && aeoDomain && (
               <div className="mx-6 mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
                 <p className="text-sm font-medium text-green-800">발행 완료 — 콘텐츠가 공개 사이트에 게시되었습니다.</p>
                 <a
-                  href={`https://${aeoDomain}/${hospitalSlug}/contents/${publishSuccessId}`}
+                  href={`https://${aeoDomain}/contents/${publishSuccessId}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-green-700 underline underline-offset-2 hover:text-green-800"
@@ -1194,7 +1086,7 @@ export default function ContentPage() {
                     </div>
                   </div>
                 </div>
-                {/* 참고 자료 편집 — 발행 게이트: 권위 있는 참고 자료 1개 이상 필요 */}
+                {/* 참고 자료 편집 — 자동 발행 안전검사: 권위 있는 참고 자료 1개 이상 필요 */}
                 <div className="mb-4">
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="block text-sm font-medium text-slate-700">참고 자료</label>
@@ -1207,7 +1099,7 @@ export default function ContentPage() {
                     </button>
                   </div>
                   <p className="text-xs text-slate-500 mb-2">
-                    발행하려면 권위 있는 참고 자료(학회·공공기관 등)가 1개 이상 필요합니다.
+                    자동 발행하려면 권위 있는 참고 자료(학회·공공기관 등)가 1개 이상 필요합니다.
                   </p>
                   {editReferences.length === 0 && (
                     <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
@@ -1303,10 +1195,10 @@ export default function ContentPage() {
                   </div>
                 </div>
 
-                {/* 검수 체크 panel */}
+                {/* 자동 안전검사 panel */}
                 <div className="mb-5 border border-slate-200 rounded-lg overflow-hidden">
                   <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 uppercase tracking-wide">
-                    검수 체크
+                    자동 안전검사
                   </div>
                   <div className="p-4 space-y-3 text-sm">
                     <CheckRow
@@ -1339,7 +1231,7 @@ export default function ContentPage() {
                       value={
                         (selected.references?.length ?? 0) > 0
                           ? `${selected.references!.length}건 등록됨`
-                          : '없음 — 발행하려면 1개 이상 필요'
+                          : '없음 — 자동 발행하려면 1개 이상 필요'
                       }
                       tone={(selected.references?.length ?? 0) > 0 ? 'ok' : 'warn'}
                     />
@@ -1360,10 +1252,10 @@ export default function ContentPage() {
                       </ul>
                     )}
                     <CheckRow
-                      label={selectedReview.key === 'published' || selectedReview.key === 'rejected' ? '발행 상태' : '발행 가능 여부'}
+                      label={selectedReview.key === 'published' || selectedReview.key === 'rejected' ? '공개 상태' : '자동 발행 상태'}
                       value={
                         selectedReview.publishable
-                          ? '발행 가능'
+                          ? '발행일 08:00 자동 공개 예정'
                           : `${selectedReview.label}${selectedReview.reason ? ` · ${selectedReview.reason}` : ''}`
                       }
                       tone={selectedReview.publishable || selectedReview.key === 'published' ? 'ok' : selectedReview.key === 'rejected' ? 'bad' : 'warn'}
@@ -1380,7 +1272,7 @@ export default function ContentPage() {
                     )}
                     {!selectedReview.publishable && selected.essence_status && selected.essence_status !== 'ALIGNED' && (
                       <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded px-2 py-1.5">
-                        콘텐츠 운영 기준 검토 후 발행 가능합니다.
+                        콘텐츠 운영 기준을 충족하도록 수정되기 전에는 자동 공개되지 않습니다.
                       </p>
                     )}
                   </div>
@@ -1399,41 +1291,60 @@ export default function ContentPage() {
               </div>
             )}
 
-            {!editMode && !briefEditMode && selected.status !== 'PUBLISHED' && (
+            {!editMode && !briefEditMode && (
               <div className="p-6 border-t border-slate-200">
-                {!selectedReview.publishable && (
+                {selected.status !== 'PUBLISHED' && !selectedReview.publishable && (
                   <p className="text-xs text-slate-500 mb-2">
-                    {selectedReview.reason ?? '발행 불가 상태입니다.'} — 발행 버튼이 비활성화되어 있습니다.
+                    {selectedReview.reason ?? '자동 발행 차단 상태입니다.'} 공개되지 않았으며 수정 후 다시 자동 검사됩니다.
                   </p>
                 )}
-                {!publisherName.trim() && selectedReview.publishable && (
-                  <p className="mb-2 text-xs text-red-600">
-                    발행 담당자 이름을 입력해야 발행할 수 있습니다.
+                {selected.status !== 'PUBLISHED' && selectedReview.publishable && (
+                  <p className="mb-2 text-xs text-slate-500">
+                    사전 승인 작업은 필요하지 않습니다. 발행 예정일 08:00에 자동 공개되고 Slack으로 알려드립니다.
                   </p>
                 )}
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => handlePublish(selected.id)}
-                    disabled={actionLoading || !selectedReview.publishable || !selected.title || !publisherName.trim()}
-                    className="flex-1 py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    발행하기
-                  </button>
-                  <button
-                    onClick={() => handleReject(selected.id)}
-                    disabled={actionLoading}
-                    className="flex-1 py-2.5 bg-red-100 text-red-700 text-sm font-medium rounded-lg hover:bg-red-200 disabled:opacity-50"
-                  >
-                    반려
-                  </button>
-                  <button
-                    onClick={() => handleRegenerate(selected.id)}
-                    disabled={actionLoading}
-                    className="flex-1 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
-                  >
-                    즉시 재생성
-                  </button>
-                </div>
+                {selected.status === 'PUBLISHED' ? (
+                  <div className="flex flex-wrap gap-3">
+                    {!selected.post_publish_reviewed_at && (
+                      <button
+                        onClick={() => handlePostPublishReview(selected.id)}
+                        disabled={actionLoading}
+                        className="flex-1 min-w-48 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        후행 확인 완료
+                      </button>
+                    )}
+                    {selected.post_publish_reviewed_at && (
+                      <div className="flex-1 min-w-48 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-center text-sm font-medium text-green-700">
+                        {selected.post_publish_reviewed_by ?? '운영자'} · {formatDateTime(selected.post_publish_reviewed_at)} 확인 완료
+                      </div>
+                    )}
+                    <button
+                      onClick={() => handleReject(selected.id)}
+                      disabled={actionLoading}
+                      className="flex-1 min-w-48 py-2.5 bg-red-100 text-red-700 text-sm font-medium rounded-lg hover:bg-red-200 disabled:opacity-50"
+                    >
+                      문제 발견 · 비공개 후 재생성
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={() => handlePublish(selected.id)}
+                      disabled={actionLoading || !selectedReview.publishable || !selected.title}
+                      className="flex-1 min-w-44 py-2.5 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      지금 발행 (운영 복구)
+                    </button>
+                    <button
+                      onClick={() => handleRegenerate(selected.id)}
+                      disabled={actionLoading}
+                      className="flex-1 min-w-44 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      즉시 재생성
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
