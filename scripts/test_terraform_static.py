@@ -82,9 +82,12 @@ def test_customer_domains_have_external_uptime_checks_and_default_alert_channel(
     monitoring = (PROJECT_ROOT / "terraform" / "monitoring.tf").read_text()
 
     assert 'google_monitoring_uptime_check_config" "customer_site"' in monitoring
+    assert 'google_monitoring_uptime_check_config" "admin"' in monitoring
+    assert 'path         = "/api/v1/health/ready"' in monitoring
     assert "local.certificate_map_customer_domain_set" in monitoring
     assert 'google_monitoring_alert_policy" "customer_site_uptime"' in monitoring
     assert 'google_monitoring_alert_policy" "site_5xx"' in monitoring
+    assert 'google_monitoring_alert_policy" "operator_5xx"' in monitoring
     assert "google_monitoring_notification_channel.email[0].id" in monitoring
     assert (
         'for_each     = var.alert_email != "" ? '

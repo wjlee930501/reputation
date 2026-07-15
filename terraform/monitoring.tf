@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
 # Re:putation — Uptime Monitoring + Alerting
 #
-# 외부 업타임 체크가 LB를 통해 API(/api/v1/health/live)와 site(/)를 감시하고,
+# 외부 업타임 체크가 LB를 통해 API(/api/v1/health/ready), site(/), Admin(/login)을 감시하고,
 # 실패 시 이메일로 알림한다. var.alert_email은 필수(빈 값 거부) — 운영 의도상
 # "무알림 배포"를 방지하기 위해 알림 채널 없이 인프라가 뜨는 것을 막는다.
 # ═══════════════════════════════════════════════════════════════════
@@ -47,7 +47,10 @@ resource "google_monitoring_uptime_check_config" "api" {
   period       = "300s"
 
   http_check {
-    path         = "/api/v1/health/live"
+    # Process-only /live can stay green while DB or Redis is unavailable. The
+    # onboarding and publishing flows require both, so the external check must
+    # exercise the dependency-aware readiness endpoint.
+    path         = "/api/v1/health/ready"
     port         = 443
     use_ssl      = true
     validate_ssl = true
@@ -58,6 +61,29 @@ resource "google_monitoring_uptime_check_config" "api" {
     labels = {
       project_id = var.project_id
       host       = var.domain
+    }
+  }
+}
+
+resource "google_monitoring_uptime_check_config" "admin" {
+  count        = var.alert_email != "" ? 1 : 0
+  project      = var.project_id
+  display_name = "${var.app_name}-admin-uptime"
+  timeout      = "10s"
+  period       = "300s"
+
+  http_check {
+    path         = "/login"
+    port         = 443
+    use_ssl      = true
+    validate_ssl = true
+  }
+
+  monitored_resource {
+    type = "uptime_url"
+    labels = {
+      project_id = var.project_id
+      host       = var.admin_subdomain != "" ? var.admin_subdomain : var.domain
     }
   }
 }
@@ -140,6 +166,25 @@ resource "google_monitoring_alert_policy" "uptime" {
     display_name = "Site uptime check failing"
     condition_threshold {
       filter          = "resource.type = \"uptime_url\" AND metric.type = \"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id = \"${google_monitoring_uptime_check_config.site[0].uptime_check_id}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 1
+      duration        = "600s"
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_NEXT_OLDER"
+        cross_series_reducer = "REDUCE_COUNT_FALSE"
+        group_by_fields      = ["resource.label.host"]
+      }
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  conditions {
+    display_name = "Admin uptime check failing"
+    condition_threshold {
+      filter          = "resource.type = \"uptime_url\" AND metric.type = \"monitoring.googleapis.com/uptime_check/check_passed\" AND metric.labels.check_id = \"${google_monitoring_uptime_check_config.admin[0].uptime_check_id}\""
       comparison      = "COMPARISON_GT"
       threshold_value = 1
       duration        = "600s"
@@ -266,5 +311,38 @@ resource "google_monitoring_alert_policy" "site_5xx" {
 
   documentation {
     content = "Re:putation 공개 Site에서 HTTP 5xx 발생. custom domain lookup/API cold start와 해당 revision 로그를 확인할 것."
+  }
+}
+
+# Admin onboarding and the Admin/API BFF chain can fail while the public static
+# site remains healthy. Promote those request failures independently so AE
+# operations cannot silently stop between five-minute uptime probes.
+resource "google_monitoring_alert_policy" "operator_5xx" {
+  count        = var.alert_email != "" ? 1 : 0
+  project      = var.project_id
+  display_name = "${var.app_name} API/Admin HTTP 5xx logs"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "HTTP 5xx from API or Admin"
+    condition_matched_log {
+      filter = "resource.type=\"cloud_run_revision\" AND httpRequest.status>=500 AND (resource.labels.service_name=\"${var.app_name}-api\" OR resource.labels.service_name=\"${var.app_name}-admin\")"
+    }
+  }
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+    auto_close = "86400s"
+  }
+
+  notification_channels = distinct(concat(
+    [google_monitoring_notification_channel.email[0].id],
+    var.notification_channels,
+  ))
+
+  documentation {
+    content = "Re:putation API/Admin에서 HTTP 5xx 발생. 온보딩 BFF, backend revision, DB/Redis readiness를 확인할 것."
   }
 }
