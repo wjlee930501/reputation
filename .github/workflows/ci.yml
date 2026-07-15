@@ -48,10 +48,10 @@ jobs:
       INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reputation_test
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -83,10 +83,10 @@ jobs:
         working-directory: ${{ matrix.app }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: npm
@@ -120,13 +120,13 @@ jobs:
         working-directory: terraform
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -175,56 +175,52 @@ jobs:
               --build-arg NEXT_PUBLIC_BACKEND_URL=https://reputation.co.kr
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # 빌드만 검증 — 푸시 없음 (이미지 롤아웃은 scripts/deploy.sh 담당).
       - name: Build ${{ matrix.name }} image
         run: docker build ${{ matrix.build_args }} -f "${{ matrix.dockerfile }}" -t "ci-${{ matrix.name }}:${{ github.sha }}" "${{ matrix.context }}"
 
   # INFRA-4: Security scanning gate.
-  #   - Dependency audits are non-blocking (continue-on-error) so they surface
-  #     findings without halting delivery on transitive-dep noise.
-  #   - The secret scan is BLOCKING: a committed credential should fail CI.
+  #   - Dependency and secret audits are blocking release gates. A known high
+  #     severity dependency issue or committed credential must fail CI.
   security:
     name: Security scans (deps + secrets)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0 # gitleaks needs full history to scan commits
 
-      # ── Backend dependency vulnerability scan (warn) ──────────────
+      # ── Backend dependency vulnerability scan (blocking) ──────────
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Backend pip-audit
-        continue-on-error: true
         working-directory: backend
         run: |
           python -m pip install --upgrade pip pip-audit
           pip-audit .
 
-      # ── Frontend dependency vulnerability scan (warn) ─────────────
+      # ── Frontend dependency vulnerability scan (blocking) ─────────
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "24"
 
       - name: Site npm audit
-        continue-on-error: true
         working-directory: site
         run: npm audit --audit-level=high
 
       - name: Admin npm audit
-        continue-on-error: true
         working-directory: admin
         run: npm audit --audit-level=high
 
       # ── Secret scanning (blocking) ────────────────────────────────
       - name: Gitleaks secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
