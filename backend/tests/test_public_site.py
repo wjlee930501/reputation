@@ -440,7 +440,7 @@ async def test_list_published_contents_applies_offset_to_query(monkeypatch):
     philosophy = SimpleNamespace(id=uuid.uuid4())
 
     async def _fresh(*_args, **_kwargs):
-        return SimpleNamespace(current=philosophy)
+        return SimpleNamespace(public_philosophy=philosophy)
 
     monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
 
@@ -456,7 +456,7 @@ async def test_list_published_contents_defaults_offset_to_zero(monkeypatch):
     philosophy = SimpleNamespace(id=uuid.uuid4())
 
     async def _fresh(*_args, **_kwargs):
-        return SimpleNamespace(current=philosophy)
+        return SimpleNamespace(public_philosophy=philosophy)
 
     monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
 

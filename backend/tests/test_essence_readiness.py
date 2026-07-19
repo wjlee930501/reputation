@@ -22,6 +22,7 @@ def test_current_approved_requires_exact_complete_source_snapshot():
     philosophy = SimpleNamespace(source_snapshot_hash=compute_sources_snapshot_hash([source]))
     readiness = resolve_essence_readiness(philosophy, [source])
     assert readiness.current is philosophy
+    assert readiness.public_philosophy is philosophy
     assert readiness.is_fresh is True
 
 
@@ -31,5 +32,18 @@ def test_new_pending_text_source_immediately_makes_approval_stale():
     philosophy = SimpleNamespace(source_snapshot_hash=compute_sources_snapshot_hash([processed]))
     readiness = resolve_essence_readiness(philosophy, [processed, pending])
     assert readiness.current is None
+    assert readiness.public_philosophy is philosophy
     assert readiness.is_stale is True
     assert readiness.has_unprocessed_sources is True
+
+
+def test_changed_processed_snapshot_blocks_writes_and_public_reads():
+    original = _source()
+    philosophy = SimpleNamespace(source_snapshot_hash=compute_sources_snapshot_hash([original]))
+    changed = _source()
+
+    readiness = resolve_essence_readiness(philosophy, [original, changed])
+
+    assert readiness.current is None
+    assert readiness.public_philosophy is None
+    assert readiness.is_stale is True

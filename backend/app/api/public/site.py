@@ -165,7 +165,7 @@ async def get_hospital_public(request: Request, slug: str, db: AsyncSession = De
     # 승인된 콘텐츠 운영 기준(positioning/promise)만 공개 about 서사로 노출한다.
     # 자유 입력 director_philosophy와 달리 근거 기반 검수를 거친 필드다.
     essence = await get_essence_readiness(db, h.id)
-    return _serialize_hospital(h, photos, essence.current)
+    return _serialize_hospital(h, photos, essence.public_philosophy)
 
 
 @router.get("/{slug}/assets/{source_id}")
@@ -210,7 +210,8 @@ async def list_published_contents(
     """
     h = await _get_active_hospital(db, slug)
     essence = await get_essence_readiness(db, h.id)
-    if essence.current is None:
+    public_philosophy = essence.public_philosophy
+    if public_philosophy is None:
         return []
 
     result = await db.execute(
@@ -219,7 +220,7 @@ async def list_published_contents(
             ContentItem.hospital_id == h.id,
             ContentItem.status == ContentStatus.PUBLISHED,
             ContentItem.essence_status == ESSENCE_STATUS_ALIGNED,
-            ContentItem.content_philosophy_id == essence.current.id,
+            ContentItem.content_philosophy_id == public_philosophy.id,
         )
         .order_by(ContentItem.published_at.desc())
         .offset(offset)
@@ -237,12 +238,13 @@ async def get_content_public(
     """콘텐츠 상세"""
     h = await _get_active_hospital(db, slug)
     essence = await get_essence_readiness(db, h.id)
+    public_philosophy = essence.public_philosophy
 
     item = await db.get(ContentItem, content_id)
     if (
         not item
         or item.hospital_id != h.id
-        or not _is_public_safe_content(item, essence.current.id if essence.current else None)
+        or not _is_public_safe_content(item, public_philosophy.id if public_philosophy else None)
     ):
         raise HTTPException(status_code=404, detail="Content not found")
     return _serialize_item(item, h.slug, full=True)
@@ -256,11 +258,12 @@ async def get_public_content_image(
     """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302)."""
     h = await _get_active_hospital(db, slug)
     essence = await get_essence_readiness(db, h.id)
+    public_philosophy = essence.public_philosophy
     item = await db.get(ContentItem, content_id)
     if (
         not item
         or item.hospital_id != h.id
-        or not _is_public_safe_content(item, essence.current.id if essence.current else None)
+        or not _is_public_safe_content(item, public_philosophy.id if public_philosophy else None)
         or not item.image_url
     ):
         raise HTTPException(status_code=404, detail="Content image not found")

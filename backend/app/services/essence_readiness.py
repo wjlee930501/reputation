@@ -1,8 +1,9 @@
-"""Resolve the one approved *and current* clinic writing standard.
+"""Resolve approved clinic writing standards for write and public-read gates.
 
 Approval alone is insufficient: processed sources can change after approval.
-Every generation, publication, and public-read path must use this resolver so
-stale source-backed claims cannot leak through one forgotten query.
+Generation and publication require every source to be processed. Public reads
+may keep serving content from the approved processed-source snapshot while a
+new source is still pending, but must stop if that processed snapshot changes.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ class EssenceReadiness:
     processed_source_count: int
     required_source_count: int
     current_snapshot_hash: str
+    public_philosophy: HospitalContentPhilosophy | None = None
 
     @property
     def is_fresh(self) -> bool:
@@ -53,16 +55,17 @@ def resolve_essence_readiness(
         source for source in required_sources if source.status == SourceStatus.PROCESSED
     ]
     snapshot = compute_sources_snapshot_hash(processed_sources)
-    fresh = bool(
+    processed_snapshot_matches = bool(
         approved
         and processed_sources
-        and len(processed_sources) == len(required_sources)
         and approved.source_snapshot_hash
         and approved.source_snapshot_hash == snapshot
     )
+    fresh = processed_snapshot_matches and len(processed_sources) == len(required_sources)
     return EssenceReadiness(
         approved=approved,
         current=approved if fresh else None,
+        public_philosophy=approved if processed_snapshot_matches else None,
         processed_source_count=len(processed_sources),
         required_source_count=len(required_sources),
         current_snapshot_hash=snapshot,
