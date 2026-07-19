@@ -5,9 +5,8 @@
   - primary keyword body 부재 → soft finding (한국어 형태 변화 오탐 방지)
   - 일반 유형 H2 헤딩 < 2개 → ValueError (hard-fail); NOTICE/FAQ는 soft
   - 구조적으로 정상이지만 소프트 결함 → findings 반환, ValueError 미발생
-  - references 필수 타입(DISEASE/TREATMENT/LOCAL)에서 빈 refs → ValueError
-  - references 필수 아닌 타입(COLUMN)에서 빈 refs → 통과
-  - GEO: 병원명/원장명/지역 없음 → soft findings 추가
+  - 의료 안내 유형에서 빈 refs → ValueError
+  - GEO: 병원명/원장명/지역 없음 → ValueError
   - GEO: 통계 패턴 없음 → soft findings 추가
 """
 import os
@@ -262,43 +261,42 @@ class TestValidateGeo:
         with pytest.raises(ValueError, match="GEO hard-fail.*references"):
             _validate_geo(result, h, ContentType.LOCAL)
 
-    def test_empty_references_column_does_not_raise(self):
-        """COLUMN 유형은 references 없어도 통과 (원장 칼럼은 의무 출처 없음)"""
+    def test_empty_references_column_raises_value_error(self):
+        """의학 주장을 담는 COLUMN도 특정 근거 문서가 필요하다."""
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
-        # hard-fail 없이 통과해야 함
-        findings = _validate_geo(result, h, ContentType.COLUMN)
-        assert isinstance(findings, list)
+        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
+            _validate_geo(result, h, ContentType.COLUMN)
 
-    def test_empty_references_faq_does_not_raise(self):
-        """FAQ 유형도 references 없어도 통과"""
+    def test_empty_references_faq_raises_value_error(self):
+        """FAQ도 자동 발행 전에 특정 근거 문서가 필요하다."""
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
-        findings = _validate_geo(result, h, ContentType.FAQ)
-        assert isinstance(findings, list)
+        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
+            _validate_geo(result, h, ContentType.FAQ)
 
-    def test_missing_hospital_name_is_soft_finding(self):
-        """병원명이 body에 없으면 soft finding"""
+    def test_missing_hospital_name_hard_fails(self):
+        """병원명이 body에 없으면 생성 결과를 저장하지 않는다."""
         h = _hospital(name="다른병원")  # body는 '장편한외과의원' 기준
         result = _good_result()
-        findings = _validate_geo(result, h, ContentType.FAQ)
-        assert any("병원명" in f for f in findings)
+        with pytest.raises(ValueError, match="병원명"):
+            _validate_geo(result, h, ContentType.FAQ)
 
-    def test_missing_director_name_is_soft_finding(self):
-        """원장명이 body에 없으면 soft finding"""
+    def test_missing_director_name_hard_fails(self):
+        """원장명이 body에 없으면 생성 결과를 저장하지 않는다."""
         h = _hospital(director_name="이원장")  # body는 '김장편' 기준
         result = _good_result()
-        findings = _validate_geo(result, h, ContentType.FAQ)
-        assert any("원장명" in f for f in findings)
+        with pytest.raises(ValueError, match="원장명"):
+            _validate_geo(result, h, ContentType.FAQ)
 
-    def test_missing_region_is_soft_finding(self):
-        """지역 엔티티가 body에 없으면 soft finding"""
+    def test_missing_region_hard_fails(self):
+        """지역 엔티티가 body에 없으면 생성 결과를 저장하지 않는다."""
         h = _hospital(region=["제주"])  # body는 '강남' 기준
         result = _good_result()
-        findings = _validate_geo(result, h, ContentType.FAQ)
-        assert any("지역" in f for f in findings)
+        with pytest.raises(ValueError, match="지역 엔티티"):
+            _validate_geo(result, h, ContentType.FAQ)
 
     def test_missing_stat_pattern_is_soft_finding(self):
         """숫자/통계 패턴이 없으면 soft finding"""

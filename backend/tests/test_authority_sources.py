@@ -10,6 +10,7 @@ from app.utils.authority_sources import (  # noqa: E402
     SOURCE_TYPE_GOV_KR,
     infer_source_type,
     is_whitelisted_url,
+    select_curated_authority_sources,
 )
 
 
@@ -46,3 +47,20 @@ def test_infer_source_type_returns_none_for_spoofed_domain():
 
 def test_infer_source_type_returns_expected_type_for_exact_domain():
     assert infer_source_type("https://www.kdca.go.kr/notice") == SOURCE_TYPE_GOV_KR
+
+
+def test_select_curated_authority_sources_returns_topic_specific_document_pages():
+    sources = select_curated_authority_sources(
+        "수원 대장내시경 장정결과 대장용종 절제 안내",
+        limit=3,
+    )
+
+    assert [source["url"] for source in sources] == [
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6531",
+    ]
+    assert all(source["source_type"] == SOURCE_TYPE_GOV_KR for source in sources)
+
+
+def test_select_curated_authority_sources_does_not_guess_for_unknown_topic():
+    assert select_curated_authority_sources("알 수 없는 새 진료 주제") == []

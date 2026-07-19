@@ -133,7 +133,10 @@ def test_raw_non_whitelisted_references_bypass_geo_hard_fail():
     """버그 재현: 화이트리스트 밖 URL만 있는 raw references는 비어있지 않아
     _validate_geo가 hard-fail하지 않는다 (수정 전 동작)."""
     raw_refs = [{"title": "출처", "url": "https://not-a-real-authority.example.com/guide"}]
-    result = {"body": "## 증상\n" + ("본문입니다. " * 100), "references": raw_refs}
+    result = {
+        "body": "## 증상\n테스트병원 김원장 강남 1회 안내입니다.\n" + ("본문입니다. " * 100),
+        "references": raw_refs,
+    }
 
     findings = _validate_geo(result, _geo_hospital(), ContentType.DISEASE)
     assert isinstance(findings, list)  # ValueError 없이 통과 — 버그 상황 재현
@@ -146,7 +149,10 @@ def test_normalized_non_whitelisted_references_trigger_geo_hard_fail():
     normalized = _normalize_references(raw_refs)
     assert normalized == []  # 화이트리스트 밖 URL은 정규화 단계에서 제거됨
 
-    result = {"body": "## 증상\n" + ("본문입니다. " * 100), "references": normalized}
+    result = {
+        "body": "## 증상\n테스트병원 김원장 강남 1회 안내입니다.\n" + ("본문입니다. " * 100),
+        "references": normalized,
+    }
     with pytest.raises(ValueError, match="GEO hard-fail"):
         _validate_geo(result, _geo_hospital(), ContentType.DISEASE)
 

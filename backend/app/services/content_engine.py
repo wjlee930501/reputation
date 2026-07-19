@@ -21,6 +21,7 @@ from app.utils.authority_sources import (
     is_citable_reference_url,
     is_whitelisted_url,
     render_source_hint_block,
+    select_curated_authority_sources,
 )
 from app.utils.medical_filter import check_forbidden
 
@@ -32,9 +33,17 @@ CONTENT_BODY_MAX_CHARS = 5200
 # ── 공개 콘텐츠 품질 검증 상수 ───────────────────────────────────────────────
 # HARD-FAIL (tenacity 재시도 트리거) 기준 — 최소한으로만 유지해 정상 출력이 리젝되지 않도록.
 SEO_H2_MIN = 2           # ## 헤딩이 이것보다 적으면 chunk 구조 붕괴 → hard-fail
-# references가 필수인 콘텐츠 유형 — DISEASE/TREATMENT/LOCAL은 프롬프트에서 학회 출처 1개+ 의무화
+# 의료 안내 유형은 발행 자동화 전에 특정 근거 문서가 반드시 있어야 한다. NOTICE만
+# 순수 운영 공지일 수 있어 예외로 둔다.
 _SEO_REFS_REQUIRED_TYPES: frozenset = frozenset(
-    {ContentType.DISEASE, ContentType.TREATMENT, ContentType.LOCAL}
+    {
+        ContentType.FAQ,
+        ContentType.DISEASE,
+        ContentType.TREATMENT,
+        ContentType.COLUMN,
+        ContentType.HEALTH,
+        ContentType.LOCAL,
+    }
 )
 
 # SOFT-FINDING 기준 — 위반해도 생성 결과는 살리고 AE 화면에 점수로만 표시
@@ -74,7 +83,8 @@ SYSTEM_PROMPT = """\
    - **"Mayo Clinic은 40% 낮춘다" 같은 [기관명+미검증 수치] 조합은 절대 금지.** 차라리 인용을 생략하세요.
 4. **명확한 문장**: 모호한 홍보 문구를 피하고, 의학적 불확실성·개인차는 정확히 표시합니다.
 5. **읽기 쉬운 구조**: H2 소제목을 사용하고, 단계·비교가 실제 이해에 도움이 될 때만 목록이나 표를 씁니다.
-6. **엔티티 정확성**: 지역명·병원명·원장명은 문맥상 필요한 곳에만 자연스럽게 포함합니다. 반복 삽입은 금지합니다.
+6. **엔티티 정확성**: 프로파일의 지역명·병원명·원장명을 표기 그대로 본문에 각각 최소 1회 자연스럽게
+   포함하세요. 누락은 허용되지 않으며 반복 삽입은 금지합니다.
 7. **분량**: 본문 1800~4200자(참고자료 제외), H2 4~6개. 5200자는 넘기지 마세요.
    이미 다른 글에 있는 일반론을 반복하지 말고, 이 질문에 필요한 감별 포인트·진료 흐름·내원 기준을 충분히 풉니다.
 
@@ -372,6 +382,16 @@ async def generate_content(
     # 빈 배열로 저장돼 근거 없이 발행이 완료된다. 정규화된 리스트로 검사해야
     # tenacity 재시도가 "화이트리스트 통과 references 1개 이상"을 실제로 강제한다.
     result["references"] = _normalize_references(result.get("references"))
+    curated_references = select_curated_authority_sources(
+        " ".join(
+            str(result.get(field) or "")
+            for field in ("title", "body", "meta_description", "faq_question")
+        )
+    )
+    if curated_references:
+        # 생성 모델은 브라우징하지 않으므로 존재하는 엉뚱한 문서 ID를 만들어낼 수
+        # 있다. 주제가 매칭되는 검증 카탈로그가 있으면 추측 URL을 전부 대체한다.
+        result["references"] = curated_references
     if settings.APP_ENV == "production" and result["references"]:
         result["references"] = await _drop_definitively_broken_references(result["references"])
 
@@ -572,8 +592,8 @@ def _validate_geo(
     """GEO 엔티티 공출현 + 증거 신호 검증.
 
     HARD (ValueError → tenacity 재시도):
-      • references가 빈 리스트인데 content_type이 DISEASE/TREATMENT/LOCAL일 때
-        (프롬프트에서 학회/KDCA 출처 1개 이상 의무화한 유형)
+      • 의료 안내 유형인데 references가 빈 리스트일 때
+      • 병원명·원장명·지역명 중 프로파일에 있는 값이 본문에서 누락됐을 때
 
     SOFT (반환 리스트에 추가):
       • hospital.name이 body에 없을 때
@@ -592,22 +612,20 @@ def _validate_geo(
             "— 학회/KDCA 출처 1개 이상 필수"
         )
 
-    # ── SOFT: 병원명 공출현 ──────────────────────────────────────────
+    # ── HARD: 승인된 엔티티 정확 표기 ────────────────────────────────
     hospital_name = (hospital.name or "").strip()
     if hospital_name and hospital_name not in body:
-        findings.append(f"병원명 '{hospital_name}' body 미포함 (엔티티 신호 약화)")
+        raise ValueError(f"GEO hard-fail: 병원명 '{hospital_name}' body 미포함")
 
     # ── SOFT: 원장명 공출현 ──────────────────────────────────────────
     director = (hospital.director_name or "").strip()
     if director and director not in body:
-        findings.append(f"원장명 '{director}' body 미포함 (엔티티 신호 약화)")
+        raise ValueError(f"GEO hard-fail: 원장명 '{director}' body 미포함")
 
     # ── SOFT: 지역명 공출현 (region 중 하나라도 있으면 통과) ──────────
     regions = [r for r in (hospital.region or []) if r]
     if regions and not any(r in body for r in regions):
-        findings.append(
-            f"지역 엔티티 {regions} 중 어느 것도 body에 없음 (로컬 GEO 신호 약화)"
-        )
+        raise ValueError(f"GEO hard-fail: 지역 엔티티 {regions} body 미포함")
 
     # ── SOFT: 통계/수치 proxy ────────────────────────────────────────
     if not SEO_STAT_PATTERN.search(body):
