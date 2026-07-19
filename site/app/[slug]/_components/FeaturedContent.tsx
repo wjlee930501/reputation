@@ -8,7 +8,7 @@ import { ChevronRightIcon } from './icons'
 
 interface Props {
   contents: ContentSummary[]
-  hospitalSlug: string
+  hospitalRootUrl: string
   hospitalName: string
   directorName: string
 }
@@ -35,7 +35,7 @@ function selectFeatured(contents: ContentSummary[]): { primary: ContentSummary |
   return { primary: contents[0], rest: contents.slice(1, 5) }
 }
 
-export function FeaturedContent({ contents, hospitalSlug, hospitalName, directorName }: Props) {
+export function FeaturedContent({ contents, hospitalRootUrl, hospitalName, directorName }: Props) {
   const { primary, rest } = selectFeatured(contents)
   if (!primary) return null
 
@@ -54,7 +54,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
 
         <div className={`clinic-lead${rest.length === 0 ? ' clinic-lead--solo' : ''}`}>
           <Link
-            href={`/${hospitalSlug}/contents/${primary.id}`}
+            href={`${hospitalRootUrl}/contents/${primary.id}`}
             className="clinic-lead-primary"
             aria-label={`대표 콘텐츠 — ${primary.title}`}
           >
@@ -86,7 +86,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
                 return (
                   <li key={content.id}>
                     <Link
-                      href={`/${hospitalSlug}/contents/${content.id}`}
+                      href={`${hospitalRootUrl}/contents/${content.id}`}
                       className="clinic-lead-row"
                       aria-label={`${typeLabel} — ${content.title}`}
                     >
@@ -103,7 +103,7 @@ export function FeaturedContent({ contents, hospitalSlug, hospitalName, director
           )}
         </div>
 
-        <Link href={`/${hospitalSlug}/contents`} className="clinic-featured-more">
+        <Link href={`${hospitalRootUrl}/contents`} className="clinic-featured-more">
           의료 정보 전체 보기
           <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
         </Link>

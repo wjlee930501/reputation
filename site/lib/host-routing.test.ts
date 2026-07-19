@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  decideCanonicalRedirect,
   decideRewrite,
   getEffectiveHost,
   getPrimaryHostnames,
@@ -113,6 +114,35 @@ test('decideRewrite: paths already under /{slug} pass through', () => {
   assert.equal(
     decideRewrite('clinic.example.com', '/jang-clinic2', 'jang-clinic', PRIMARY),
     '/jang-clinic/jang-clinic2',
+  )
+})
+
+test('custom domain redirects exposed internal slug paths to clean public paths', () => {
+  assert.equal(
+    decideCanonicalRedirect('clinic.example.com', '/jang-clinic', 'jang-clinic', PRIMARY),
+    '/',
+  )
+  assert.equal(
+    decideCanonicalRedirect(
+      'clinic.example.com',
+      '/jang-clinic/contents/post-1',
+      'jang-clinic',
+      PRIMARY,
+    ),
+    '/contents/post-1',
+  )
+  assert.equal(
+    decideCanonicalRedirect('clinic.example.com', '/contents', 'jang-clinic', PRIMARY),
+    null,
+  )
+  assert.equal(
+    decideCanonicalRedirect(
+      'reputation.motionlabs.kr',
+      '/jang-clinic/contents',
+      'jang-clinic',
+      PRIMARY,
+    ),
+    null,
   )
 })
 

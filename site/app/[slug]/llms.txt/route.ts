@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { fetchHospital, fetchContents, TYPE_LABELS } from '@/lib/api'
 import { llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
-import { canonicalBase } from '@/lib/site-url'
+import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
 interface Props {
@@ -31,7 +31,7 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
     ])
 
     // 커스텀 도메인 연결 병원은 절대 링크를 해당 도메인 기준으로 출력 (canonical 정책 공유).
-    const base = canonicalBase(hospital)
+    const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
 
     const lastUpdatedSource = [
       hospital.updated_at,
@@ -104,7 +104,7 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
       for (const t of hospital.treatments) {
         const treatmentSlug = buildTreatmentSlug(t.name)
         const pillarUrl = treatmentSlug
-          ? `${base}/${params.slug}/treatments/${treatmentSlug}`
+          ? `${hospitalRootUrl}/treatments/${treatmentSlug}`
           : ''
         // description은 자유 입력 필드로 의료광고 검수를 거치지 않으므로 노출 안 함.
         const safeName = llmsTextValue(t.name)
@@ -120,7 +120,7 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
         const typeLabel = TYPE_LABELS[c.content_type] || c.content_type
         const dateRaw = c.published_at || c.scheduled_date
         const date = dateRaw ? new Date(dateRaw).toISOString().split('T')[0] : ''
-        const url = llmsUrlValue(`${base}/${params.slug}/contents/${c.id}`)
+        const url = llmsUrlValue(`${hospitalRootUrl}/contents/${c.id}`)
 
         lines.push(`### ${llmsTextValue(c.title)}`)
         if (url) lines.push(`- url: ${url}`)

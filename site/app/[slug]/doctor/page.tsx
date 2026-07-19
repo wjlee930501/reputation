@@ -9,7 +9,7 @@ import {
   selectClinicDirectorImage,
 } from '@/lib/clinic-theme'
 import { buildPhysicianCredentials } from '@/lib/schema'
-import { canonicalBase } from '@/lib/site-url'
+import { canonicalBase, canonicalHospitalUrl } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
@@ -37,7 +37,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.director_name} 원장 — ${hospital.name}의 진료 분야, 약력, 환자 안내 글 모음.`
-    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/doctor`
+    const canonicalUrl = canonicalHospitalUrl(hospital, params.slug, 'doctor')
     return {
       title: `${hospital.director_name} 원장 | ${hospital.name}`,
       description,
@@ -75,8 +75,9 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
     throw e
   }
 
+  const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
   const breadcrumbItems = [
-    { label: '홈', href: `/${params.slug}` },
+    { label: '홈', href: hospitalRootUrl },
     { label: '의료진' },
   ]
 
@@ -101,7 +102,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
   const physicianJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Physician',
-    '@id': `${base}/${params.slug}/doctor#physician`,
+    '@id': `${hospitalRootUrl}/doctor#physician`,
     name: hospital.director_name,
     jobTitle: '원장',
     description: physicianDescription,
@@ -110,23 +111,23 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
     sameAs: physicianSameAs.length > 0 ? physicianSameAs : undefined,
     worksFor: {
       '@type': 'MedicalClinic',
-      '@id': `${base}/${params.slug}#clinic`,
+      '@id': `${hospitalRootUrl}#clinic`,
       name: hospital.name,
-      url: `${base}/${params.slug}`,
+      url: hospitalRootUrl,
       address: { '@type': 'PostalAddress', streetAddress: hospital.address, addressCountry: 'KR' },
       telephone: hospital.phone,
     },
-    url: `${base}/${params.slug}/doctor`,
-    mainEntityOfPage: `${base}/${params.slug}/doctor`,
+    url: `${hospitalRootUrl}/doctor`,
+    mainEntityOfPage: `${hospitalRootUrl}/doctor`,
   }
 
   return (
     <>
-      <JsonLd data={[physicianJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
+      <JsonLd data={[physicianJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl)]} />
       <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
-          hospitalSlug={params.slug}
+          hospitalRootUrl={hospitalRootUrl}
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
@@ -180,7 +181,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
                     <ContentCard
                       key={c.id}
                       content={c}
-                      hospitalSlug={params.slug}
+                      hospitalRootUrl={hospitalRootUrl}
                       hospitalName={hospital.name}
                     />
                   ))}
@@ -188,7 +189,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
                 {contents.length > curatedContents.length && (
                   <div style={{ marginTop: 24, textAlign: 'right' }}>
                     <Link
-                      href={`/${params.slug}/contents`}
+                      href={`${hospitalRootUrl}/contents`}
                       className="clinic-btn clinic-btn-secondary"
                     >
                       의료 정보 전체 보기

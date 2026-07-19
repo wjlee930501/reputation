@@ -7,7 +7,7 @@ import { ChevronRightIcon, MessageIcon } from './icons'
 
 interface Props {
   contents: ContentSummary[]
-  hospitalSlug: string
+  hospitalRootUrl: string
   treatments: Array<{ name: string; description: string }>
   region: string[]
   specialties: string[]
@@ -26,7 +26,7 @@ function selectQuestions(contents: ContentSummary[], limit: number): ContentSumm
   return byPriority.slice(0, limit)
 }
 
-export function AnswerClusters({ contents, hospitalSlug, treatments, region, specialties }: Props) {
+export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, specialties }: Props) {
   const questions = selectQuestions(contents, 6)
   if (questions.length === 0) return null
 
@@ -54,7 +54,7 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
                 <p>진료 전 확인하면 좋은 질문부터 살펴보세요. 개인별 판단은 진료 상담에서 확인합니다.</p>
               </div>
             </div>
-            <Link href={`/${hospitalSlug}/contents`} className="clinic-answers-all">
+            <Link href={`${hospitalRootUrl}/contents`} className="clinic-answers-all">
               의료 정보 전체 보기
               <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
             </Link>
@@ -67,7 +67,7 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
                 const question = content.faq_question || content.title
                 return (
                   <li key={content.id} className="clinic-qa-item">
-                    <Link href={`/${hospitalSlug}/contents/${content.id}`} className="clinic-qa-link">
+                    <Link href={`${hospitalRootUrl}/contents/${content.id}`} className="clinic-qa-link">
                       <span className="clinic-qa-main">
                         <span className={`clinic-tag clinic-tag--sm ${categoryTagClass(content.content_type)}`}>
                           {typeLabel}
@@ -92,7 +92,7 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
                   const question = content.faq_question || content.title
                   return (
                     <li key={content.id}>
-                      <Link href={`/${hospitalSlug}/contents/${content.id}`} className="clinic-qa-compact-row">
+                      <Link href={`${hospitalRootUrl}/contents/${content.id}`} className="clinic-qa-compact-row">
                         <span className="clinic-qa-compact-q">{question}</span>
                         <ChevronRightIcon className="clinic-icon clinic-icon--sm clinic-qa-compact-arrow" aria-hidden="true" />
                       </Link>
@@ -105,7 +105,7 @@ export function AnswerClusters({ contents, hospitalSlug, treatments, region, spe
             {treatments.length > 0 && (
               <div className="clinic-answer-treatment-strip" aria-label="주요 진료 영역">
                 {treatments.slice(0, 6).map((treatment) => (
-                  <Link key={treatment.name} href={`/${hospitalSlug}/treatments`}>
+                  <Link key={treatment.name} href={`${hospitalRootUrl}/treatments`}>
                     {treatment.name}
                   </Link>
                 ))}

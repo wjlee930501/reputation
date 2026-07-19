@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server.js'
 
 import { getApiBase } from './lib/config.ts'
 import {
+  decideCanonicalRedirect,
   decideRewrite,
   getEffectiveHost,
   getPrimaryHostnames,
@@ -137,6 +138,18 @@ export async function middleware(request: NextRequest) {
     const res = new NextResponse('Not found', { status: 404 })
     res.headers.set('cache-control', 'no-store')
     return res
+  }
+
+  const canonicalRedirectPath = decideCanonicalRedirect(
+    effectiveHost,
+    pathname,
+    slug,
+    primaryHostnames,
+  )
+  if (canonicalRedirectPath) {
+    const url = request.nextUrl.clone()
+    url.pathname = canonicalRedirectPath
+    return NextResponse.redirect(url, 308)
   }
 
   const rewritePath = decideRewrite(effectiveHost, pathname, slug, primaryHostnames)

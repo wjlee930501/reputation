@@ -118,6 +118,21 @@ export function decideRewrite(
   return `/${slug}${pathname}`
 }
 
+/** 커스텀 도메인에 노출된 내부 rewrite 경로를 깨끗한 공개 경로로 영구 이동한다. */
+export function decideCanonicalRedirect(
+  host: string | null | undefined,
+  pathname: string,
+  slugOrNull: string | null,
+  primaryHostnames: string[],
+): string | null {
+  if (isPrimaryHost(host, primaryHostnames)) return null
+  if (!slugOrNull || !SLUG_PATTERN.test(slugOrNull)) return null
+  const slugPrefix = `/${slugOrNull}`
+  if (pathname === slugPrefix) return '/'
+  if (pathname.startsWith(`${slugPrefix}/`)) return pathname.slice(slugPrefix.length) || '/'
+  return null
+}
+
 export function shouldFailClosedCustomHost(
   host: string | null | undefined,
   pathname: string,

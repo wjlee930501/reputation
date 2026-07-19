@@ -37,8 +37,7 @@ export function buildPhysicianCredentials(hospital: Hospital): Record<string, un
 // 병원 단위 Q&A 세트를 한 번에 인지하지 못한다 — 이를 메운다.
 export function buildFaqPageJsonLd(
   contents: ContentSummary[],
-  base: string,
-  slug: string,
+  hospitalRootUrl: string,
 ): Record<string, unknown> | null {
   const faqs = contents.filter(
     (c) =>
@@ -51,11 +50,11 @@ export function buildFaqPageJsonLd(
   return {
     '@context': 'https://schema.org',
     '@type': 'FAQPage',
-    '@id': `${base}/${slug}#faq`,
+    '@id': `${hospitalRootUrl}#faq`,
     mainEntity: faqs.slice(0, FAQ_MAX_ITEMS).map((c) => ({
       '@type': 'Question',
       name: c.faq_question || c.title,
-      url: `${base}/${slug}/contents/${c.id}`,
+      url: `${hospitalRootUrl}/contents/${c.id}`,
       acceptedAnswer: {
         '@type': 'Answer',
         text: c.faq_answer_summary || c.meta_description || '',

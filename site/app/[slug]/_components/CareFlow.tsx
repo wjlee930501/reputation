@@ -1,7 +1,7 @@
 import Link from 'next/link'
 
 interface Props {
-  hospitalSlug: string
+  hospitalRootUrl: string
   hospitalName: string
 }
 
@@ -35,7 +35,7 @@ const CARE_STEPS = [
   },
 ]
 
-export function CareFlow({ hospitalSlug }: Props) {
+export function CareFlow({ hospitalRootUrl }: Props) {
   return (
     <section className="clinic-section clinic-section--flow">
       <div className="clinic-section-inner">
@@ -60,7 +60,7 @@ export function CareFlow({ hospitalSlug }: Props) {
         </ol>
 
         <div className="clinic-flow-footer">
-          <Link href={`/${hospitalSlug}/visit`} className="clinic-flow-cta">
+          <Link href={`${hospitalRootUrl}/visit`} className="clinic-flow-cta">
             진료 시간·오시는 길 확인
           </Link>
         </div>

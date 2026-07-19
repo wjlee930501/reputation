@@ -1,8 +1,8 @@
 // 병원 허브 페이지의 canonical base URL 정책 (단일 출처 — 페이지별 ad-hoc 분기 금지).
 //
 // 병원이 자체 도메인(aeo_domain)을 연결하면 그 도메인이 해당 병원 허브의 canonical
-// origin이 된다. 경로는 플랫폼과 동일하게 /{slug}/... 를 유지한다 (middleware가
-// 커스텀 도메인 요청을 /{slug}{path}로 rewrite하므로 두 표면이 같은 경로 구조를 공유).
+// origin이 된다. 커스텀 도메인의 공개 경로에서는 내부 rewrite용 /{slug}를 노출하지
+// 않는다. 플랫폼 도메인에서만 /{slug}/... 경로를 유지한다.
 // aeo_domain이 없으면 기존 플랫폼 SITE_URL 동작이 그대로 유지된다.
 
 const DEFAULT_SITE_URL = 'https://reputation.motionlabs.kr'
@@ -67,4 +67,16 @@ interface HospitalWithDomain {
 export function canonicalBase(hospital: HospitalWithDomain | null | undefined): string {
   const domain = normalizeCustomDomain(hospital?.aeo_domain)
   return domain ? `https://${domain}` : platformSiteUrl()
+}
+
+/** 병원 홈의 canonical URL. 커스텀 도메인은 `/`, 플랫폼은 `/{slug}`가 홈이다. */
+export function canonicalHospitalUrl(
+  hospital: HospitalWithDomain | null | undefined,
+  slug: string,
+  suffix = '',
+): string {
+  const domain = normalizeCustomDomain(hospital?.aeo_domain)
+  const base = domain ? `https://${domain}` : `${platformSiteUrl()}/${slug}`
+  if (!suffix) return base
+  return `${base}/${suffix.replace(/^\/+/, '')}`
 }

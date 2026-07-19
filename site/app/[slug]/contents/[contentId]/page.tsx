@@ -16,7 +16,7 @@ import {
 } from '@/lib/api'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { safeExternalHref } from '@/lib/safe-url'
-import { canonicalBase } from '@/lib/site-url'
+import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../../_components/Breadcrumb'
@@ -109,7 +109,11 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const imageUrl = resolveAssetUrl(content.image_url)
     const description =
       content.meta_description ?? `${hospital.name}의 ${TYPE_LABELS[content.content_type] ?? '의료'} 콘텐츠`
-    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/contents/${params.contentId}`
+    const canonicalUrl = canonicalHospitalUrl(
+      hospital,
+      params.slug,
+      `contents/${params.contentId}`,
+    )
     return {
       title: `${content.title} | ${hospital.name}`,
       description,
@@ -167,27 +171,27 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   const referenceCountLabel =
     referenceList.length > 0 ? `참고자료 ${referenceList.length}건` : '참고자료 확인 중'
 
-  const base = canonicalBase(hospital)
+  const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
 
   const pillarTreatment = inferPillarTreatment(hospital.treatments || [], content)
   const pillarSlug = pillarTreatment ? buildTreatmentSlug(pillarTreatment.name) : ''
-  const pillarHref = pillarSlug ? `/${params.slug}/treatments/${pillarSlug}` : null
-  const pillarUrl = pillarSlug ? `${base}/${params.slug}/treatments/${pillarSlug}` : null
+  const pillarHref = pillarSlug ? `${hospitalRootUrl}/treatments/${pillarSlug}` : null
+  const pillarUrl = pillarHref
 
   const breadcrumbItems = [
-    { label: '홈', href: `/${params.slug}` },
-    { label: '의료 정보', href: `/${params.slug}/contents` },
+    { label: '홈', href: hospitalRootUrl },
+    { label: '의료 정보', href: `${hospitalRootUrl}/contents` },
     { label: typeLabel },
     { label: content.title },
   ]
 
-  const articleUrl = `${base}/${params.slug}/contents/${params.contentId}`
+  const articleUrl = `${hospitalRootUrl}/contents/${params.contentId}`
   const datePublished = content.published_at || content.scheduled_date
   const dateModified = content.body_updated_at || content.published_at || content.scheduled_date
 
   // 모든 article 공통 base. type별 추가 schema는 jsonLd 배열에 별도로 push.
-  const physicianId = `${base}/${params.slug}/doctor#physician`
-  const clinicId = `${base}/${params.slug}#clinic`
+  const physicianId = `${hospitalRootUrl}/doctor#physician`
+  const clinicId = `${hospitalRootUrl}#clinic`
   const articleImageUrl = resolveAssetUrl(content.image_url)
   const articleJsonLd: Record<string, unknown> = {
     '@context': 'https://schema.org',
@@ -247,7 +251,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
 
   const jsonLd: Record<string, unknown>[] = [
     articleJsonLd,
-    buildBreadcrumbJsonLd(breadcrumbItems, base),
+    buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl),
   ]
 
   if (articleImageUrl) {
@@ -343,7 +347,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
       <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
-          hospitalSlug={params.slug}
+          hospitalRootUrl={hospitalRootUrl}
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
@@ -514,7 +518,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   </span>
                 </address>
                 <Link
-                  href={`/${params.slug}`}
+                  href={hospitalRootUrl}
                   className="clinic-btn clinic-btn-secondary"
                   style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14, marginBottom: 8 }}
                 >
@@ -540,7 +544,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   <ul className="clinic-paa-list">
                     {paaQuestions.map((q) => (
                       <li key={q.id}>
-                        <Link href={`/${params.slug}/contents/${q.id}`} className="clinic-paa-link">
+                        <Link href={`${hospitalRootUrl}/contents/${q.id}`} className="clinic-paa-link">
                           <span className="clinic-paa-q">Q.</span>
                           <span>{q.title}</span>
                         </Link>
@@ -559,7 +563,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   <ul className="clinic-related-list">
                     {sameTypeRelated.map((r) => (
                       <li key={r.id}>
-                        <Link href={`/${params.slug}/contents/${r.id}`} className="clinic-related-item">
+                        <Link href={`${hospitalRootUrl}/contents/${r.id}`} className="clinic-related-item">
                           <span className="clinic-related-type">
                             {TYPE_LABELS[r.content_type] ?? r.content_type}
                           </span>

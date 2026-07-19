@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { canonicalBase, normalizeCustomDomain, platformSiteUrl } from './site-url.ts'
+import {
+  canonicalBase,
+  canonicalHospitalUrl,
+  normalizeCustomDomain,
+  platformSiteUrl,
+} from './site-url.ts'
 
 function setEnv(name: 'NEXT_PUBLIC_SITE_URL' | 'NODE_ENV', value: string | undefined): void {
   if (value === undefined) {
@@ -102,4 +107,22 @@ test('canonicalBase falls back to platform URL when aeo_domain missing or invali
   assert.equal(canonicalBase({}), platformSiteUrl())
   assert.equal(canonicalBase(null), platformSiteUrl())
   assert.equal(canonicalBase({ aeo_domain: 'not a domain' }), platformSiteUrl())
+})
+
+test('canonicalHospitalUrl hides the internal slug on a custom domain', () => {
+  assert.equal(
+    canonicalHospitalUrl({ aeo_domain: 'clinic.example.com' }, 'demo-clinic'),
+    'https://clinic.example.com',
+  )
+  assert.equal(
+    canonicalHospitalUrl({ aeo_domain: 'clinic.example.com' }, 'demo-clinic', '/contents/1'),
+    'https://clinic.example.com/contents/1',
+  )
+})
+
+test('canonicalHospitalUrl keeps the slug on the platform domain', () => {
+  assert.equal(
+    canonicalHospitalUrl({}, 'demo-clinic', 'doctor'),
+    `${platformSiteUrl()}/demo-clinic/doctor`,
+  )
 })

@@ -23,7 +23,6 @@ test('production FAQPage JSON-LD caps mainEntity at 10 entries', () => {
   const result = buildFaqPageJsonLd(
     Array.from({ length: 15 }, (_, i) => faq(i)),
     'https://clinic.example',
-    'demo-clinic',
   )
 
   assert.ok(result)

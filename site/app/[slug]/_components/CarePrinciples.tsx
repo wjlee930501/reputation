@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { IconAftercare, IconExam, IconExplain } from './brand'
 
 interface Props {
-  hospitalSlug: string
+  hospitalRootUrl: string
   hospitalName: string
   specialties: string[]
   region: string[]
@@ -35,7 +35,7 @@ function sanitizePublicAbout(value: string | null | undefined): string | null {
 
 /* 임상적 주장(치료 순서·수술 여부 등)을 만들어 원장 발언처럼 노출하지 않는다.
    여기서는 안내·설명·상담 방식에 대한 비임상 운영 원칙만 다룬다. */
-export function CarePrinciples({ hospitalSlug, hospitalName, specialties, region, publicAbout }: Props) {
+export function CarePrinciples({ hospitalRootUrl, hospitalName, specialties, region, publicAbout }: Props) {
   const specialtyText = specialties.filter(Boolean).join(', ')
   const regionText = region.filter(Boolean).join(' ')
 
@@ -81,9 +81,9 @@ export function CarePrinciples({ hospitalSlug, hospitalName, specialties, region
           </div>
 
           <div className="clinic-principles-actions">
-            <Link href={`/${hospitalSlug}/doctor`}>의료진 보기</Link>
-            <Link href={`/${hospitalSlug}/contents`}>전체 글 보기</Link>
-            <Link href={`/${hospitalSlug}#contact`}>공식 채널 보기</Link>
+            <Link href={`${hospitalRootUrl}/doctor`}>의료진 보기</Link>
+            <Link href={`${hospitalRootUrl}/contents`}>전체 글 보기</Link>
+            <Link href={`${hospitalRootUrl}#contact`}>공식 채널 보기</Link>
           </div>
         </div>
       </div>

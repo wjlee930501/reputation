@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
-import { canonicalBase } from '@/lib/site-url'
+import { canonicalHospitalUrl } from '@/lib/site-url'
 
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
@@ -44,7 +44,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name}의 진료 영역 — ${(hospital.treatments || []).map((t) => t.name).join(', ')}. 환자가 확인하면 좋은 진료 안내를 함께 제공합니다.`
-    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/treatments`
+    const canonicalUrl = canonicalHospitalUrl(hospital, params.slug, 'treatments')
     return {
       title: `진료 영역 | ${hospital.name}`,
       description,
@@ -76,8 +76,9 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
   }
 
   const treatments = hospital.treatments || []
+  const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
   const breadcrumbItems = [
-    { label: '홈', href: `/${params.slug}` },
+    { label: '홈', href: hospitalRootUrl },
     { label: '진료 영역' },
   ]
 
@@ -103,11 +104,11 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
 
   return (
     <>
-      <JsonLd data={[itemListJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, canonicalBase(hospital))]} />
+      <JsonLd data={[itemListJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl)]} />
       <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
-          hospitalSlug={params.slug}
+          hospitalRootUrl={hospitalRootUrl}
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
@@ -152,7 +153,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
                   {treatmentsWithRelated.map(({ treatment }, idx) => {
                     const treatmentSlug = buildTreatmentSlug(treatment.name)
                     const href = treatmentSlug
-                      ? `/${params.slug}/treatments/${treatmentSlug}`
+                      ? `${hospitalRootUrl}/treatments/${treatmentSlug}`
                       : null
                     const className = `clinic-tx-row${idx === 0 ? ' clinic-tx-row--lead' : ''}`
                     const inner = (
@@ -214,7 +215,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
                               <ContentCard
                                 key={content.id}
                                 content={content}
-                                hospitalSlug={params.slug}
+                                hospitalRootUrl={hospitalRootUrl}
                                 hospitalName={hospital.name}
                               />
                             ))}
@@ -226,7 +227,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
 
                 <div style={{ marginTop: 32, textAlign: 'right' }}>
                   <Link
-                    href={`/${params.slug}/contents`}
+                    href={`${hospitalRootUrl}/contents`}
                     className="clinic-btn clinic-btn-secondary"
                   >
                     의료 정보 전체 보기

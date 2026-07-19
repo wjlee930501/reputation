@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 
 import { getApiBase } from '@/lib/config'
 import { llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
-import { canonicalBase } from '@/lib/site-url'
+import { canonicalHospitalUrl } from '@/lib/site-url'
 
 interface HospitalEntry {
   slug: string
@@ -77,11 +77,11 @@ export async function GET() {
   const lines: string[] = [...header, `## 병원 목록 (전체 ${validHospitals.length}개)`, '']
   for (const hospital of validHospitals) {
     // 커스텀 도메인 연결 병원은 그 도메인이 canonical — 링크도 그쪽으로 안내한다.
-    const base = canonicalBase(hospital)
     const slug = llmsTextValue(hospital.slug)
+    const hospitalRootUrl = canonicalHospitalUrl(hospital, slug)
     lines.push(`### ${llmsTextValue(hospital.name) || slug}`)
-    pushUrl(lines, 'url', `${base}/${slug}`)
-    pushUrl(lines, 'llms', `${base}/${slug}/llms.txt`)
+    pushUrl(lines, 'url', hospitalRootUrl)
+    pushUrl(lines, 'llms', `${hospitalRootUrl}/llms.txt`)
     if (hospital.region?.length) lines.push(`- region: ${formatList(hospital.region)}`)
     if (hospital.specialties?.length) lines.push(`- specialties: ${formatList(hospital.specialties)}`)
     pushValue(lines, 'director', hospital.director_name)

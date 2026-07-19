@@ -14,7 +14,7 @@ interface Props {
   links: ChannelLink[]
   googleMapsUrl: string | null
   hospitalName: string
-  hospitalSlug: string
+  hospitalRootUrl: string
   region: string[]
   websiteUrl: string | null
 }
@@ -46,7 +46,7 @@ export function ContactCard({
   links,
   googleMapsUrl,
   hospitalName,
-  hospitalSlug,
+  hospitalRootUrl,
   region,
   websiteUrl,
 }: Props) {
@@ -76,13 +76,13 @@ export function ContactCard({
               <small>지도에서 위치 보기</small>
             </a>
           ) : (
-            <Link href={`/${hospitalSlug}/visit`} className="clinic-visit-action">
+            <Link href={`${hospitalRootUrl}/visit`} className="clinic-visit-action">
               <NavigationIcon aria-hidden="true" />
               <span>길찾기</span>
               <small>오시는 길 안내</small>
             </Link>
           )}
-          <Link href={`/${hospitalSlug}/visit`} className="clinic-visit-action">
+          <Link href={`${hospitalRootUrl}/visit`} className="clinic-visit-action">
             <CalendarIcon aria-hidden="true" />
             <span>진료시간 보기</span>
             <small>요일별 진료 안내</small>

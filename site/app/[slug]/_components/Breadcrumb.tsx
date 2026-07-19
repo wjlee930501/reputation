@@ -38,7 +38,9 @@ export function buildBreadcrumbJsonLd(items: BreadcrumbItem[], baseUrl: string):
       '@type': 'ListItem',
       position: idx + 1,
       name: item.label,
-      ...(item.href ? { item: `${baseUrl}${item.href}` } : {}),
+      ...(item.href
+        ? { item: new URL(item.href, `${baseUrl.replace(/\/$/, '')}/`).toString() }
+        : {}),
     })),
   }
 }

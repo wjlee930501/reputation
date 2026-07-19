@@ -6,7 +6,7 @@ import { fetchContents, fetchHospital, HospitalNotFoundError, resolveAssetUrl, T
 import { categoryTagClass } from '@/lib/content-meta'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { buildFaqPageJsonLd } from '@/lib/schema'
-import { canonicalBase } from '@/lib/site-url'
+import { canonicalHospitalUrl } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ContentCover } from '../_components/ContentCover'
@@ -42,7 +42,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
   try {
     const hospital = await fetchHospital(params.slug)
     const description = `${hospital.name} 의료 정보 — 자주 묻는 질문, 질환 정보, 치료 안내, 원장 칼럼.`
-    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/contents`
+    const canonicalUrl = canonicalHospitalUrl(hospital, params.slug, 'contents')
     return {
       title: `${hospital.name} 의료 정보`,
       description,
@@ -91,12 +91,11 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
   const filtered = activeType ? sorted.filter((c) => c.content_type === activeType) : sorted
   const [featured, ...feedRest] = filtered
 
+  const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
   const breadcrumbItems = [
-    { label: '홈', href: `/${params.slug}` },
+    { label: '홈', href: hospitalRootUrl },
     { label: '의료 정보' },
   ]
-
-  const base = canonicalBase(hospital)
 
   const collectionJsonLd = {
     '@context': 'https://schema.org',
@@ -106,25 +105,25 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
     isPartOf: {
       '@type': 'WebSite',
       name: hospital.name,
-      url: `${base}/${params.slug}`,
+      url: hospitalRootUrl,
     },
     hasPart: contents.map((content) => ({
       '@type': 'Article',
       headline: content.title,
-      url: `${base}/${params.slug}/contents/${content.id}`,
+      url: `${hospitalRootUrl}/contents/${content.id}`,
       datePublished: content.published_at || content.scheduled_date,
     })),
   }
 
-  const faqJsonLd = buildFaqPageJsonLd(contents, base, params.slug)
+  const faqJsonLd = buildFaqPageJsonLd(contents, hospitalRootUrl)
   const pageJsonLd = [
     collectionJsonLd,
-    buildBreadcrumbJsonLd(breadcrumbItems, base),
+    buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl),
     ...(faqJsonLd ? [faqJsonLd] : []),
   ]
 
   const chipHref = (type: string | null) =>
-    type ? `/${params.slug}/contents?type=${type}` : `/${params.slug}/contents`
+    type ? `${hospitalRootUrl}/contents?type=${type}` : `${hospitalRootUrl}/contents`
 
   return (
     <>
@@ -132,7 +131,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
       <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
-          hospitalSlug={params.slug}
+          hospitalRootUrl={hospitalRootUrl}
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
@@ -190,7 +189,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
 
                   {featured && (
                     <Link
-                      href={`/${params.slug}/contents/${featured.id}`}
+                      href={`${hospitalRootUrl}/contents/${featured.id}`}
                       className="clinic-feed-featured"
                       aria-label={`대표 글 — ${featured.title}`}
                     >
@@ -226,7 +225,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
                         return (
                           <li key={content.id}>
                             <Link
-                              href={`/${params.slug}/contents/${content.id}`}
+                              href={`${hospitalRootUrl}/contents/${content.id}`}
                               className="clinic-feed-row"
                               aria-label={`${typeLabel} — ${content.title}`}
                             >

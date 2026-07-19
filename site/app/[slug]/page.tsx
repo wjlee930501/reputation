@@ -6,7 +6,7 @@ import { buildOpeningHoursSpec } from '@/lib/business-hours'
 import { buildAddressRegionFields } from '@/lib/clinic-schema'
 import { getApiBase } from '@/lib/config'
 import { buildFaqPageJsonLd, buildPhysicianCredentials } from '@/lib/schema'
-import { canonicalBase } from '@/lib/site-url'
+import { canonicalHospitalUrl } from '@/lib/site-url'
 
 import { AnswerClusters } from './_components/AnswerClusters'
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
@@ -75,7 +75,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const ogImage =
       resolveAssetUrl(hospital.director_photo_url) ?? '/landing/reputation-clinic-trust-interior.png'
     // 커스텀 도메인이 연결된 병원은 해당 도메인이 canonical origin이 된다 (site-url.ts 정책).
-    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}`
+    const canonicalUrl = canonicalHospitalUrl(hospital, params.slug)
     return {
       title,
       description,
@@ -132,7 +132,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     hospital.kakao_place_id ? `https://place.map.kakao.com/${hospital.kakao_place_id}` : null,
   ].filter((value): value is string => Boolean(value))
 
-  const base = canonicalBase(hospital)
+  const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
 
   // 승인된 운영 기준에서 의료광고 검수를 통과한 about 서사 (없으면 null) — description/slogan에 사용.
   const publicAbout = hospital.public_about?.trim() || null
@@ -143,9 +143,9 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   const clinicJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
-    '@id': `${base}/${params.slug}#clinic`,
+    '@id': `${hospitalRootUrl}#clinic`,
     name: hospital.name,
-    url: `${base}/${params.slug}`,
+    url: hospitalRootUrl,
     image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
     description: publicAbout ?? undefined,
     slogan: publicAbout ?? undefined,
@@ -171,12 +171,12 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
         : undefined,
     physician: {
       '@type': 'Physician',
-      '@id': `${base}/${params.slug}/doctor#physician`,
+      '@id': `${hospitalRootUrl}/doctor#physician`,
       name: hospital.director_name,
       jobTitle: '원장',
       description: hospital.director_career,
       image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
-      url: `${base}/${params.slug}/doctor`,
+      url: `${hospitalRootUrl}/doctor`,
       // 자격·학회·전문영역 신뢰축을 최우선순위 URL(랜딩)에도 실어 /doctor에만
       // 의존하지 않게 한다.
       ...buildPhysicianCredentials(hospital),
@@ -188,12 +188,12 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   }
 
   const breadcrumbJsonLd = buildBreadcrumbJsonLd(
-    [{ label: '홈', href: `/${params.slug}` }],
-    base,
+    [{ label: '홈', href: hospitalRootUrl }],
+    hospitalRootUrl,
   )
 
   // 발행된 FAQ를 병원 단위 FAQPage로 집계 (개별 FAQ 페이지의 FAQPage와 별개).
-  const faqJsonLd = buildFaqPageJsonLd(contents, base, params.slug)
+  const faqJsonLd = buildFaqPageJsonLd(contents, hospitalRootUrl)
   const pageJsonLd = [clinicJsonLd, breadcrumbJsonLd, ...(faqJsonLd ? [faqJsonLd] : [])]
 
   const externalChannels = [
@@ -225,7 +225,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
       <div className="clinic-shell">
         <ClinicHeader
           hospitalName={hospital.name}
-          hospitalSlug={params.slug}
+          hospitalRootUrl={hospitalRootUrl}
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
@@ -239,6 +239,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           <ClinicHero
             hospitalName={hospital.name}
             hospitalSlug={params.slug}
+            hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
             specialties={hospital.specialties}
             phone={hospital.phone}
@@ -249,7 +250,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             businessHours={hospital.business_hours}
           />
 
-          <TreatmentGrid treatments={hospital.treatments} hospitalSlug={params.slug} />
+          <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
 
           <DoctorIntro
             directorName={hospital.director_name}
@@ -265,7 +266,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           />
 
           <CarePrinciples
-            hospitalSlug={params.slug}
+            hospitalRootUrl={hospitalRootUrl}
             hospitalName={hospital.name}
             specialties={hospital.specialties}
             region={hospital.region}
@@ -274,20 +275,20 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
           <FeaturedContent
             contents={contents}
-            hospitalSlug={params.slug}
+            hospitalRootUrl={hospitalRootUrl}
             hospitalName={hospital.name}
             directorName={hospital.director_name}
           />
 
           <AnswerClusters
             contents={contents}
-            hospitalSlug={params.slug}
+            hospitalRootUrl={hospitalRootUrl}
             treatments={hospital.treatments || []}
             region={hospital.region}
             specialties={hospital.specialties}
           />
 
-          <CareFlow hospitalSlug={params.slug} hospitalName={hospital.name} />
+          <CareFlow hospitalRootUrl={hospitalRootUrl} hospitalName={hospital.name} />
 
           <ClinicGallery photos={hospital.photos ?? []} />
 
@@ -311,7 +312,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             googleMapsUrl={hospital.google_maps_url}
             links={externalChannels}
             hospitalName={hospital.name}
-            hospitalSlug={params.slug}
+            hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
             websiteUrl={hospital.website_url}
           />

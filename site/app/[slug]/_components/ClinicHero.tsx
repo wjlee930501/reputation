@@ -9,6 +9,7 @@ import { CalendarIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
 interface Props {
   hospitalName: string
   hospitalSlug: string
+  hospitalRootUrl: string
   region: string[]
   specialties: string[]
   phone: string
@@ -55,6 +56,7 @@ function compactAddress(address: string): string {
 export function ClinicHero({
   hospitalName,
   hospitalSlug,
+  hospitalRootUrl,
   region,
   specialties,
   phone,
@@ -100,7 +102,7 @@ export function ClinicHero({
               <PhoneIcon className="clinic-icon clinic-icon--sm" />
               전화 상담
             </a>
-            <Link className="clinic-btn clinic-btn-secondary" href={`/${hospitalSlug}/visit`}>
+            <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/visit`}>
               <MapPinIcon className="clinic-icon clinic-icon--sm" />
               오시는 길
             </Link>
@@ -165,15 +167,15 @@ export function ClinicHero({
           <PhoneIcon className="clinic-icon" />
           전화
         </a>
-        <Link href={`/${hospitalSlug}/visit`}>
+        <Link href={`${hospitalRootUrl}/visit`}>
           <ClockIcon className="clinic-icon" />
           진료시간
         </Link>
-        <Link href={`/${hospitalSlug}/treatments`}>
+        <Link href={`${hospitalRootUrl}/treatments`}>
           <CalendarIcon className="clinic-icon" />
           진료안내
         </Link>
-        <Link href={`/${hospitalSlug}/visit`}>
+        <Link href={`${hospitalRootUrl}/visit`}>
           <MapPinIcon className="clinic-icon" />
           길찾기
         </Link>

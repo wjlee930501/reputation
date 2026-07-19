@@ -5,7 +5,7 @@ import { notFound } from 'next/navigation'
 import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
-import { canonicalBase } from '@/lib/site-url'
+import { canonicalHospitalUrl } from '@/lib/site-url'
 import {
   buildTreatmentSlug,
   findTreatmentBySlug,
@@ -60,7 +60,11 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const treatmentSlug = normalizeTreatmentSlug(params.treatmentSlug)
     const region = hospital.region?.join(' ') ?? ''
     const description = `${hospital.name} ${treatment.name} 진료 안내 — 환자가 자주 묻는 질문과 진료 단계, 회복 정보를 ${region} 의료진이 정리합니다.`
-    const canonicalUrl = `${canonicalBase(hospital)}/${params.slug}/treatments/${treatmentSlug}`
+    const canonicalUrl = canonicalHospitalUrl(
+      hospital,
+      params.slug,
+      `treatments/${treatmentSlug}`,
+    )
     return {
       title: `${treatment.name} | ${hospital.name}`,
       description,
@@ -120,14 +124,14 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
     return haystack.includes(lowerName)
   })
 
+  const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
   const breadcrumbItems = [
-    { label: '홈', href: `/${params.slug}` },
-    { label: '진료 영역', href: `/${params.slug}/treatments` },
+    { label: '홈', href: hospitalRootUrl },
+    { label: '진료 영역', href: `${hospitalRootUrl}/treatments` },
     { label: treatmentName },
   ]
 
-  const base = canonicalBase(hospital)
-  const pageUrl = `${base}/${params.slug}/treatments/${canonicalTreatmentSlug}`
+  const pageUrl = `${hospitalRootUrl}/treatments/${canonicalTreatmentSlug}`
 
   const collectionJsonLd = {
     '@context': 'https://schema.org',
@@ -136,9 +140,9 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
     url: pageUrl,
     isPartOf: {
       '@type': 'MedicalClinic',
-      '@id': `${base}/${params.slug}#clinic`,
+      '@id': `${hospitalRootUrl}#clinic`,
       name: hospital.name,
-      url: `${base}/${params.slug}`,
+      url: hospitalRootUrl,
     },
     about: {
       '@type': 'MedicalProcedure',
@@ -146,7 +150,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
       description: treatment.description || undefined,
       performer: {
         '@type': 'MedicalClinic',
-        '@id': `${base}/${params.slug}#clinic`,
+        '@id': `${hospitalRootUrl}#clinic`,
         name: hospital.name,
       },
     },
@@ -155,7 +159,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
       itemListElement: relatedContents.map((content, idx) => ({
         '@type': 'ListItem',
         position: idx + 1,
-        url: `${base}/${params.slug}/contents/${content.id}`,
+        url: `${hospitalRootUrl}/contents/${content.id}`,
         name: content.title,
       })),
     },
@@ -163,11 +167,11 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
 
   return (
     <>
-      <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
+      <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl)]} />
       <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
-          hospitalSlug={params.slug}
+          hospitalRootUrl={hospitalRootUrl}
           region={hospital.region}
           specialties={hospital.specialties}
           phone={hospital.phone}
@@ -202,7 +206,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
                   <span className="clinic-empty-title">관련 의료 정보가 준비 중입니다</span>
                   <p>{treatmentName}에 대한 환자 안내 글이 곧 발행됩니다.</p>
                   <Link
-                    href={`/${params.slug}/contents`}
+                    href={`${hospitalRootUrl}/contents`}
                     className="clinic-btn clinic-btn-secondary"
                     style={{ marginTop: 16 }}
                   >
@@ -223,14 +227,14 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
                       <ContentCard
                         key={content.id}
                         content={content}
-                        hospitalSlug={params.slug}
+                        hospitalRootUrl={hospitalRootUrl}
                         hospitalName={hospital.name}
                       />
                     ))}
                   </div>
                   <div style={{ marginTop: 32, textAlign: 'right' }}>
                     <Link
-                      href={`/${params.slug}/contents`}
+                      href={`${hospitalRootUrl}/contents`}
                       className="clinic-btn clinic-btn-secondary"
                     >
                       의료 정보 전체 보기

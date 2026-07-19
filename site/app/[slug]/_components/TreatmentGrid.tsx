@@ -11,10 +11,10 @@ interface Treatment {
 
 interface Props {
   treatments: Treatment[]
-  hospitalSlug: string
+  hospitalRootUrl: string
 }
 
-export function TreatmentGrid({ treatments, hospitalSlug }: Props) {
+export function TreatmentGrid({ treatments, hospitalRootUrl }: Props) {
   if (!treatments || treatments.length === 0) {
     return null
   }
@@ -25,7 +25,7 @@ export function TreatmentGrid({ treatments, hospitalSlug }: Props) {
 
   const hrefFor = (name: string): string | null => {
     const slug = buildTreatmentSlug(name)
-    return slug ? `/${hospitalSlug}/treatments/${slug}` : null
+    return slug ? `${hospitalRootUrl}/treatments/${slug}` : null
   }
 
   return (

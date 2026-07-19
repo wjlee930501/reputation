@@ -5,7 +5,7 @@ import { categoryTagClass } from '@/lib/content-meta'
 
 interface Props {
   content: ContentSummary
-  hospitalSlug: string
+  hospitalRootUrl: string
   hospitalName: string
 }
 
@@ -16,13 +16,13 @@ function formatDate(value: string | null | undefined, fallback: string) {
   return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
-export function ContentCard({ content, hospitalSlug }: Props) {
+export function ContentCard({ content, hospitalRootUrl }: Props) {
   const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
   const dateLabel = formatDate(content.published_at, content.scheduled_date)
 
   return (
     <Link
-      href={`/${hospitalSlug}/contents/${content.id}`}
+      href={`${hospitalRootUrl}/contents/${content.id}`}
       className="clinic-content-card"
       aria-label={`${typeLabel} 콘텐츠 — ${content.title}`}
     >
