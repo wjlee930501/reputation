@@ -71,8 +71,17 @@ export function inferPillarTreatment<T extends TreatmentLike>(
     title?: string | null
     meta_description?: string | null
     faq_question?: string | null
+    query_target_treatment?: string | null
   },
 ): T | undefined {
+  // 운영자가 승인한 query-target linkage가 있으면 제목/요약의 우연한 문자열보다 우선한다.
+  const linkedTreatment = content.query_target_treatment?.trim().toLowerCase()
+  if (linkedTreatment) {
+    return treatments.find(
+      (treatment) => treatment.name?.trim().toLowerCase() === linkedTreatment,
+    )
+  }
+
   const haystack = `${content.title ?? ''} ${content.meta_description ?? ''} ${content.faq_question ?? ''}`
   if (!haystack.trim()) return undefined
   const lowered = haystack.toLowerCase()

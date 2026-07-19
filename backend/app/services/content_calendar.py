@@ -36,6 +36,29 @@ def _interleave_types(distribution: dict, seed: str) -> list:
     return sequence[rotate_by:] + sequence[:rotate_by]
 
 
+def _spread_dates(dates: list[date], total: int) -> list[date]:
+    """월의 앞부분에 콘텐츠가 몰리지 않도록 가능한 날짜 전체에 고르게 배치한다.
+
+    ``publish_days``는 "발행 가능한 요일"이고 실제 월간 편수는 plan이 결정한다.
+    따라서 월~일을 모두 허용한 PLAN_8도 1~8일 연속 발행하지 않고 월초~월말에
+    걸쳐 8번 발행해야 한다. 같은 입력에 항상 같은 결과를 내며, 첫/마지막 가능한
+    날짜를 포함해 월 전체를 활용한다.
+    """
+    if total <= 0:
+        return []
+    if len(dates) < total:
+        raise ValueError("발행 가능한 날짜가 월간 콘텐츠 편수보다 적습니다.")
+    if total == 1:
+        return [dates[len(dates) // 2]]
+    if len(dates) == total:
+        return dates
+
+    last_index = len(dates) - 1
+    # len(dates) >= total이므로 인접 지점 간 간격은 1 이상이고 index가 중복되지 않는다.
+    indexes = [round(i * last_index / (total - 1)) for i in range(total)]
+    return [dates[index] for index in indexes]
+
+
 def generate_monthly_slots(
     plan: str,
     publish_days: list[int],
@@ -71,9 +94,10 @@ def generate_monthly_slots(
             f"({target_month.format('YYYY-MM')})"
         )
 
+    selected_dates = _spread_dates(dates, total)
     result = [
         (pub_date, ctype, i + 1, total)
-        for i, (pub_date, ctype) in enumerate(zip(dates, type_sequence))
+        for i, (pub_date, ctype) in enumerate(zip(selected_dates, type_sequence))
     ]
 
     return result

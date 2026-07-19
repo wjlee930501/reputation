@@ -343,6 +343,8 @@ class Settings(BaseSettings):
     SOV_REPEAT_COUNT_WEEKLY: int = 5
     # 주간 측정에서 HIGH 우선순위 쿼리 상한 — 초과분은 잘라내고 ops 알림 (비용 가드)
     SOV_HIGH_PRIORITY_CAP: int = 30
+    # 우선순위와 무관한 주간 측정 spec 총상한 — NORMAL/LOW 증가에 따른 무제한 비용 방지
+    SOV_TOTAL_SPEC_CAP: int = 100
 
     # Domain
     CNAME_TARGET: str = "cname.reputation.motionlabs.kr"

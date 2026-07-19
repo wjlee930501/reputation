@@ -17,6 +17,7 @@ export type ContentOperationsFilter =
   | 'postReviewPending'
   | 'published'
   | 'rejected'
+  | 'cancelled'
 
 export interface ContentOperationsItem extends CarriedOverItem {
   title?: string | null
@@ -34,6 +35,7 @@ export function getContentOperationsState(item: ContentOperationsItem): Exclude<
     return 'postReviewPending'
   }
   if (item.status === 'REJECTED') return 'rejected'
+  if (item.status === 'CANCELLED') return 'cancelled'
   if (!item.title) return 'notGenerated'
   if (!item.compliance?.publishable) return 'needsReview'
   return 'publishable'
@@ -74,5 +76,7 @@ export function countCarriedOver(items: CarriedOverItem[]): number {
 
 /** 아직 발행되지 않은 이월 슬롯 수 — 대시보드 우선 처리 알림 기준. */
 export function countUnpublishedCarriedOver(items: CarriedOverItem[]): number {
-  return items.filter((item) => isCarriedOver(item) && item.status !== 'PUBLISHED').length
+  return items.filter(
+    (item) => isCarriedOver(item) && !['PUBLISHED', 'CANCELLED'].includes(item.status ?? ''),
+  ).length
 }

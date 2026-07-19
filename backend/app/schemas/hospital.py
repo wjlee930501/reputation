@@ -49,5 +49,9 @@ class HospitalDetail(HospitalListItem):
     director_name: Optional[str]
     director_career: Optional[str]
     director_philosophy: Optional[str]
+    brand_primary_color: Optional[str] = None
+    brand_accent_color: Optional[str] = None
+    logo_url: Optional[str] = None
+    hero_image_url: Optional[str] = None
     director_credentials: Optional[Any] = None
     treatments: list

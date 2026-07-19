@@ -36,6 +36,11 @@ export interface Hospital {
   // 승인된 운영 기준에서 의료광고 검수를 통과한 공개 about 서사 (없으면 null).
   public_about: string | null
   director_photo_url: string | null
+  brand_primary_color: string | null
+  brand_accent_color: string | null
+  logo_url: string | null
+  hero_image_url: string | null
+  updated_at: string | null
   director_credentials: DirectorCredentials | null
   treatments: Array<{ name: string; description: string }>
   aeo_domain: string | null
@@ -202,6 +207,11 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
     // public_about은 신규 필드 — 구버전 ISR 캐시 응답에 없을 수 있어 undefined도 허용.
     (value.public_about === undefined || isNullableString(value.public_about)) &&
     isNullableString(value.director_photo_url) &&
+    (value.brand_primary_color === undefined || isNullableString(value.brand_primary_color)) &&
+    (value.brand_accent_color === undefined || isNullableString(value.brand_accent_color)) &&
+    (value.logo_url === undefined || isNullableString(value.logo_url)) &&
+    (value.hero_image_url === undefined || isNullableString(value.hero_image_url)) &&
+    (value.updated_at === undefined || isNullableString(value.updated_at)) &&
     isDirectorCredentials(value.director_credentials) &&
     Array.isArray(value.treatments) &&
     value.treatments.every(
@@ -223,11 +233,18 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
     director_career: hospital.director_career ?? '',
     // 구버전 응답에 필드가 없으면 null로 정규화 (다운스트림은 string | null만 본다).
     public_about: hospital.public_about ?? null,
+    brand_primary_color: hospital.brand_primary_color ?? null,
+    brand_accent_color: hospital.brand_accent_color ?? null,
+    logo_url: hospital.logo_url ?? null,
+    hero_image_url: hospital.hero_image_url ?? null,
+    updated_at: hospital.updated_at ?? null,
   }
   for (const field of HOSPITAL_EXTERNAL_URL_FIELDS) {
     normalized[field] = safeExternalHref(hospital[field])
   }
   normalized.director_photo_url = resolveAssetUrl(hospital.director_photo_url)
+  normalized.logo_url = resolveAssetUrl(hospital.logo_url)
+  normalized.hero_image_url = resolveAssetUrl(hospital.hero_image_url)
   normalized.photos = hospital.photos
     .map((photo) => ({ ...photo, url: resolveAssetUrl(photo.url) }))
     .filter((photo): photo is HospitalPhoto => Boolean(photo.url))

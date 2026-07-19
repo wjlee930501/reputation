@@ -11,7 +11,7 @@
 import type { MetadataRoute } from 'next'
 
 import type { SitemapScope } from './sitemap-host.ts'
-import { canonicalBase, platformSiteUrl } from './site-url.ts'
+import { platformSiteUrl } from './site-url.ts'
 import { buildTreatmentSlug } from './treatment-slug.ts'
 
 // 백엔드 /contents 목록의 하드캡과 동일 — offset으로 페이지를 넘겨 전체 발행 콘텐츠를 순회한다.
@@ -27,6 +27,7 @@ export interface HospitalEntry {
 interface ContentEntry {
   id: string | number
   published_at: string | null
+  body_updated_at?: string | null
   scheduled_date: string
 }
 
@@ -36,13 +37,11 @@ export function platformBaseEntries(): MetadataRoute.Sitemap {
   return [
     {
       url: siteUrl,
-      lastModified: new Date(),
       changeFrequency: 'daily',
       priority: 1.0,
     },
     {
       url: `${siteUrl}/llms.txt`,
-      lastModified: new Date(),
       changeFrequency: 'daily',
       priority: 0.5,
     },
@@ -83,44 +82,46 @@ export async function appendHospitalEntries(
   entries: MetadataRoute.Sitemap,
   apiBase: string,
   hospital: HospitalEntry,
+  scopeBase: string,
 ): Promise<void> {
-  const hospitalLastModified = hospital.updated_at ? new Date(hospital.updated_at) : new Date()
-  // 커스텀 도메인이 연결된 병원은 canonical인 그 도메인 URL을 sitemap에 싣는다.
-  const base = canonicalBase(hospital)
+  const hospitalLastModified = validDate(hospital.updated_at)
+  // Sitemap 프로토콜의 단일-host 계약: 응답을 제공한 scope의 origin으로만 URL을 만든다.
+  // 페이지 canonical은 별도 신호이며, 플랫폼/커스텀/하이브리드 sitemap 간 origin을 섞지 않는다.
+  const base = scopeBase
 
   entries.push({
     url: `${base}/${hospital.slug}`,
-    lastModified: hospitalLastModified,
+    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'weekly',
     priority: 0.8,
   })
   entries.push({
     url: `${base}/${hospital.slug}/contents`,
-    lastModified: hospitalLastModified,
+    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'weekly',
     priority: 0.7,
   })
   entries.push({
     url: `${base}/${hospital.slug}/doctor`,
-    lastModified: hospitalLastModified,
+    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'monthly',
     priority: 0.6,
   })
   entries.push({
     url: `${base}/${hospital.slug}/treatments`,
-    lastModified: hospitalLastModified,
+    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'monthly',
     priority: 0.6,
   })
   entries.push({
     url: `${base}/${hospital.slug}/visit`,
-    lastModified: hospitalLastModified,
+    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'monthly',
     priority: 0.6,
   })
   entries.push({
     url: `${base}/${hospital.slug}/llms.txt`,
-    lastModified: hospitalLastModified,
+    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'daily',
     priority: 0.5,
   })
@@ -147,7 +148,7 @@ export async function appendHospitalEntries(
     if (!treatmentSlug) continue
     entries.push({
       url: `${base}/${hospital.slug}/treatments/${treatmentSlug}`,
-      lastModified: hospitalLastModified,
+      ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
       changeFrequency: 'weekly',
       priority: 0.7,
     })
@@ -158,13 +159,20 @@ export async function appendHospitalEntries(
   for (const content of contents) {
     entries.push({
       url: `${base}/${hospital.slug}/contents/${content.id}`,
-      lastModified: content.published_at
-        ? new Date(content.published_at)
-        : new Date(content.scheduled_date),
+      lastModified:
+        validDate(content.body_updated_at) ||
+        validDate(content.published_at) ||
+        validDate(content.scheduled_date),
       changeFrequency: 'monthly',
       priority: 0.6,
     })
   }
+}
+
+function validDate(value: string | null | undefined): Date | undefined {
+  if (!value) return undefined
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed
 }
 
 // 커스텀 도메인 host를 병원 slug로 해석한다(미등록/조회 실패 시 null).
@@ -218,10 +226,11 @@ export async function buildSitemap(
     const hospital = await fetchHospitalDetail(apiBase, slug)
     if (!hospital) return entries
 
-    await appendHospitalEntries(entries, apiBase, hospital)
+    await appendHospitalEntries(entries, apiBase, hospital, `https://${scope.hostname}`)
     return entries
   }
 
+  const platformBase = platformSiteUrl()
   const entries = platformBaseEntries()
   let hospitals: HospitalEntry[]
   try {
@@ -237,7 +246,7 @@ export async function buildSitemap(
   }
 
   for (const hospital of hospitals) {
-    await appendHospitalEntries(entries, apiBase, hospital)
+    await appendHospitalEntries(entries, apiBase, hospital, platformBase)
   }
 
   return entries

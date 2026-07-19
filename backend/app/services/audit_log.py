@@ -1,9 +1,3 @@
-"""Admin audit log writer.
-
-The Admin Next.js server verifies the operator session and forwards the account
-email as request-local actor context for backend audit rows. Direct callers fall
-back to `ADMIN_ACTOR_NAME`.
-"""
 from contextvars import ContextVar, Token
 import uuid
 
@@ -17,7 +11,7 @@ _request_actor: ContextVar[str | None] = ContextVar("admin_request_actor", defau
 
 
 def set_request_actor(actor: str | None) -> Token[str | None]:
-    return _request_actor.set(_normalize(actor))
+    return _request_actor.set(_normalize(actor) if actor is not None else None)
 
 
 def reset_request_actor(token: Token[str | None]) -> None:

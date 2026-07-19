@@ -23,6 +23,7 @@ from app.core.database import get_db
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.sov import AIQueryTarget, AIQueryVariant
 from app.schemas.operations import (
     CostGuardKillSwitchRequest,
     CostGuardKillSwitchResponse,
@@ -32,6 +33,7 @@ from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
 from app.workers.tasks import (
     build_aeo_site,
+    generate_content_image,
     regenerate_content_item,
     run_sov_for_hospital,
     trigger_v0_report,
@@ -158,6 +160,11 @@ async def run_sov_operation(
             status_code=409,
             detail="AI 언급률 측정은 ACTIVE 또는 PENDING_DOMAIN 상태에서 실행할 수 있습니다.",
         )
+    if not await _has_active_query_variant(db, hospital.id):
+        raise HTTPException(
+            status_code=409,
+            detail="활성 문구가 있는 환자 질문 타깃이 없어 AI 언급률 측정을 실행할 수 없습니다.",
+        )
     await _enqueue_with_truthful_audit(
         db,
         action="run_sov",
@@ -279,8 +286,11 @@ async def regenerate_content_operation(
     item = await db.get(ContentItem, content_id)
     if not item or item.hospital_id != hospital.id:
         raise HTTPException(status_code=404, detail="Content not found")
-    if item.status == ContentStatus.PUBLISHED:
-        raise HTTPException(status_code=409, detail="Published content cannot be regenerated")
+    if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+        raise HTTPException(
+            status_code=409,
+            detail="Published or cancelled content cannot be regenerated",
+        )
     await _enqueue_with_truthful_audit(
         db,
         action="regenerate_content",
@@ -292,6 +302,34 @@ async def regenerate_content_operation(
         queue="content",
     )
     return {"detail": "Content regeneration queued", "content_id": str(content_id)}
+
+
+@router.post("/{hospital_id}/content/{content_id}/regenerate-image")
+async def regenerate_content_image_operation(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    item = await db.get(ContentItem, content_id)
+    if not item or item.hospital_id != hospital.id:
+        raise HTTPException(status_code=404, detail="Content not found")
+    if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+        raise HTTPException(
+            status_code=409,
+            detail="Published or cancelled content image cannot be regenerated",
+        )
+    await _enqueue_with_truthful_audit(
+        db,
+        action="regenerate_content_image",
+        hospital_id=hospital.id,
+        target_type="content_item",
+        target_id=content_id,
+        task=generate_content_image,
+        args=[str(content_id)],
+        queue="content",
+    )
+    return {"detail": "Content image generation queued", "content_id": str(content_id)}
 
 
 @router.get("/{hospital_id}/operations/audit-logs")
@@ -315,6 +353,24 @@ async def _get_hospital_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hosp
     if not hospital:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return hospital
+
+
+async def _has_active_query_variant(db: AsyncSession, hospital_id: uuid.UUID) -> bool:
+    # 일부 단위 테스트/레거시 어댑터는 get()만 제공한다. 실제 AsyncSession에서는 아래
+    # 존재 확인으로 빈 측정 run·비용 차감을 사전에 막는다.
+    if not hasattr(db, "execute"):
+        return True
+    result = await db.execute(
+        select(AIQueryVariant.id)
+        .join(AIQueryTarget, AIQueryTarget.id == AIQueryVariant.query_target_id)
+        .where(
+            AIQueryTarget.hospital_id == hospital_id,
+            AIQueryTarget.status == "ACTIVE",
+            AIQueryVariant.is_active.is_(True),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
 
 
 def _serialize_audit_log(log: AdminAuditLog) -> dict:

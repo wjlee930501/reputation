@@ -1,4 +1,5 @@
 """Slack 알림 — 모든 주요 이벤트 규격화"""
+import asyncio
 import logging
 import re
 from urllib.parse import urlsplit
@@ -54,17 +55,34 @@ async def _send(text: str, blocks: list | None = None) -> bool:
     if not _is_allowed_webhook(settings.SLACK_WEBHOOK_URL):
         logger.error("Slack webhook URL rejected: host not in allowlist (SSRF guard)")
         return False
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(
-                settings.SLACK_WEBHOOK_URL,
-                json={"text": text, **({"blocks": blocks} if blocks else {})},
-            )
-            r.raise_for_status()
-            return True
-    except Exception as exc:
-        logger.error("Slack delivery failed: %s", exc.__class__.__name__)
-        return False
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(
+                    settings.SLACK_WEBHOOK_URL,
+                    json={"text": text, **({"blocks": blocks} if blocks else {})},
+                )
+                r.raise_for_status()
+                return True
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            retryable = status_code == 429 or status_code >= 500
+            if retryable and attempt < attempts - 1:
+                await asyncio.sleep(0.25 * (2 ** attempt))
+                continue
+            # 응답 본문/웹훅 URL은 시크릿이 섞일 수 있어 기록하지 않는다. 상태 코드는
+            # revoked webhook(404/410), rate limit(429), Slack 장애(5xx)를 구분하는 데 필요하다.
+            logger.error("Slack delivery failed: HTTPStatusError status=%s", status_code)
+            return False
+        except Exception as exc:
+            retryable = isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
+            if retryable and attempt < attempts - 1:
+                await asyncio.sleep(0.25 * (2 ** attempt))
+                continue
+            logger.error("Slack delivery failed: %s", exc.__class__.__name__)
+            return False
+    return False
 
 
 def _measurement_label(platforms: list[str] | None = None) -> str:
@@ -333,6 +351,31 @@ async def notify_generation_blocked_no_philosophy(
     )
 
 
+async def notify_generation_blocked_philosophy(
+    *,
+    hospital_name: str,
+    blocked_count: int,
+    scheduled_date: str,
+    findings: list[str] | None = None,
+) -> bool:
+    """운영 기준 미승인·오염·자료 변경으로 안전한 생성이 불가능할 때 알린다."""
+    issue_lines = findings or ["승인된 콘텐츠 운영 기준이 없습니다."]
+    issue_text = "\n".join(f"• {line}" for line in issue_lines[:5])
+    return await _send(
+        text=f"🚫 [콘텐츠 생성 차단] {hospital_name} 운영 기준 검토 필요",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"🚫 *[콘텐츠 생성 차단]* *{hospital_name}* 콘텐츠 {blocked_count}건\n"
+                f"발행 예정 기준일: {scheduled_date}\n\n"
+                f"{issue_text}\n\n"
+                f"Admin 운영 기준 탭에서 근거 자료를 정리하고 새 버전을 승인해 주세요. "
+                f"검토 전에는 오염되거나 오래된 기준으로 콘텐츠를 만들지 않습니다."
+            )},
+        }],
+    )
+
+
 async def notify_content_generation_missed(
     hospital_name: str, missed_count: int, dates: list[str]
 ) -> bool:
@@ -350,6 +393,65 @@ async def notify_content_generation_missed(
                 f"발행 예정일: {dates_text}\n\n"
                 f"오늘 밤 자동 생성에서 재시도됩니다. 급한 경우 Admin 콘텐츠 화면에서 "
                 f"수동 재생성해 주세요."
+            )},
+        }],
+    )
+
+
+async def notify_naver_assets_synced(
+    *, hospital_name: str, created: int, requested: int, admin_url: str
+) -> bool:
+    """네이버 신규 글 자동 인입 후 근거 검토를 요청한다."""
+    return await _send(
+        text=f"📰 [네이버 자산] {hospital_name} 신규 글 {created}건 수집",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"📰 *[네이버 자산 자동 수집]* *{hospital_name}* 신규 글 {created}건\n"
+                f"최근 확인 범위: {requested}건\n\n"
+                f"원문은 검토 대기 자료로 저장했습니다. 병원 고유 주장·진료 방침을 자동 승인하지 않습니다. "
+                f"<{admin_url}|Admin에서 근거 추출 후 운영 기준 새 버전을 검토해 주세요.>"
+            )},
+        }],
+    )
+
+
+async def notify_philosophy_refresh_required(
+    *, hospital_name: str, findings: list[str], admin_url: str
+) -> bool:
+    """근거 처리가 끝나 승인 운영 기준이 오래되었거나 오염된 상태임을 알린다."""
+    findings_text = "\n".join(f"• {finding}" for finding in findings[:5])
+    return await _send(
+        text=f"🧭 [운영 기준 검토] {hospital_name} 새 버전 필요",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"🧭 *[콘텐츠 운영 기준 검토]* *{hospital_name}*\n"
+                f"{findings_text}\n\n"
+                f"<{admin_url}|새 근거로 운영 기준 초안을 만들고 검토·승인해 주세요.>"
+            )},
+        }],
+    )
+
+
+async def notify_content_review_overdue(
+    *,
+    hospital_name: str,
+    overdue_count: int,
+    dates: list[str],
+    admin_url: str,
+) -> bool:
+    """본문은 생성됐지만 발행 예정일을 넘긴 초안을 병원별로 묶어 재촉한다."""
+    dates_text = ", ".join(dates[:5]) + (" 외" if len(dates) > 5 else "")
+    return await _send(
+        text=f"🚨 [발행 지연] {hospital_name} 검수 대기 {overdue_count}건",
+        blocks=[{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": (
+                f"🚨 *[콘텐츠 발행 지연]* *{hospital_name}* 검수 대기 초안 {overdue_count}건\n"
+                f"발행 예정일: {dates_text}\n\n"
+                f"자동 생성은 완료됐지만 아직 공개되지 않았습니다. "
+                f"<{admin_url}|Admin에서 근거·의료광고 표현을 검토하고 발행해 주세요.>"
             )},
         }],
     )

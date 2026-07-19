@@ -209,6 +209,22 @@ def test_serialize_item_blocks_publish_without_references():
     assert "권위 있는 참고 자료가 1개 이상 필요합니다." in serialized["compliance"]["blockers"]
 
 
+def test_serialize_item_blocks_publish_with_only_non_whitelisted_references():
+    item = _content_item(
+        title="치질 수술 전 확인할 점",
+        body="환자 상태에 따라 진료 방향을 설명합니다.",
+        meta_description="진료 전 확인할 점을 정리합니다.",
+        essence_status="ALIGNED",
+        references_list=[{"title": "광고 블로그", "url": "https://ad-blog.example.com/promo"}],
+    )
+
+    serialized = content_api._serialize_item(item, full=True)
+
+    assert serialized["compliance"]["status"] == "BLOCKED"
+    assert serialized["compliance"]["references_count"] == 0
+    assert "권위 있는 참고 자료가 1개 이상 필요합니다." in serialized["compliance"]["blockers"]
+
+
 async def test_publish_content_rejects_generated_content_without_references(monkeypatch):
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()
@@ -252,6 +268,46 @@ async def test_publish_content_rejects_generated_content_without_references(monk
             item_id,
             content_api.PublishBody(published_by="AE"),
             db=FakeDB(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["missing"] == "references"
+
+
+async def test_publish_content_rejects_non_whitelisted_references(monkeypatch):
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    hospital = _hospital(hospital_id)
+    hospital.status = "ACTIVE"
+    hospital.site_live = False
+    item = _content_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        title="치질 수술 전 확인할 점",
+        body="환자 상태에 따라 진료 방향을 설명합니다.",
+        meta_description="진료 전 확인할 점을 정리합니다.",
+        essence_status="ALIGNED",
+        references_list=[{"title": "광고 블로그", "url": "https://ad-blog.example.com/promo"}],
+    )
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        assert requested_item_id == item_id
+        assert requested_hospital_id == hospital_id
+        return item
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        assert requested_hospital_id == hospital_id
+        return hospital
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await content_api.publish_content(
+            hospital_id,
+            item_id,
+            content_api.PublishBody(published_by="AE"),
+            db=SimpleNamespace(),
         )
 
     assert exc_info.value.status_code == 400

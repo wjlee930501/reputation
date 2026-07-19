@@ -6624,6 +6624,15 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   letter-spacing: -0.03em;
 }
 
+.clinic-header-brand-logo {
+  display: block;
+  width: auto;
+  max-width: 160px;
+  height: 40px;
+  object-fit: contain;
+  object-position: left center;
+}
+
 .clinic-header-brand-meta {
   display: none;
 }

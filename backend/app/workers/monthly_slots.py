@@ -33,7 +33,11 @@ def create_next_month_slots_for_schedule(
     if existing.scalar():
         return False
 
-    slots = generate_monthly_slots(schedule.plan, schedule.publish_days, next_month)
+    slots = generate_monthly_slots(
+        schedule.plan,
+        schedule.publish_days,
+        next_month,
+    )
     try:
         with db.begin_nested():
             for slot_date, ctype, seq_no, total in slots:

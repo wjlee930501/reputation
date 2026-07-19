@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
+import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalBase } from '@/lib/site-url'
 import {
   buildTreatmentSlug,
@@ -163,7 +164,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
   return (
     <>
       <JsonLd data={[collectionJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
-      <div className="clinic-shell">
+      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalSlug={params.slug}
@@ -171,6 +172,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
           specialties={hospital.specialties}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
+          logoUrl={hospital.logo_url}
         />
         <main id="main-content">
           <section className="clinic-library-hero">

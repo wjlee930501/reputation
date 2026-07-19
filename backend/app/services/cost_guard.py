@@ -47,6 +47,27 @@ _CATEGORY_LABELS = {
     "sov": "AI 답변 언급률 측정",
 }
 
+_RESERVE_BUDGET_SCRIPT = """
+local daily = tonumber(redis.call('GET', KEYS[1]) or '0')
+local monthly = tonumber(redis.call('GET', KEYS[2]) or '0')
+local count = tonumber(ARGV[1])
+local daily_limit = tonumber(ARGV[2])
+local monthly_limit = tonumber(ARGV[3])
+
+if monthly_limit > 0 and monthly + count > monthly_limit then
+  return {0, 'monthly', daily, monthly}
+end
+if daily_limit > 0 and daily + count > daily_limit then
+  return {0, 'daily', daily, monthly}
+end
+
+local new_daily = redis.call('INCRBY', KEYS[1], count)
+local new_monthly = redis.call('INCRBY', KEYS[2], count)
+if daily == 0 then redis.call('EXPIRE', KEYS[1], ARGV[4]) end
+if monthly == 0 then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
+return {1, '', new_daily, new_monthly}
+"""
+
 
 @dataclass(frozen=True)
 class CostGuardDecision:
@@ -148,8 +169,12 @@ async def check_and_increment(
     - 하드 상한 도달 시 1회, 소프트 임계(80%) 최초 도달 시 1회 운영자에게 Slack 경고.
     - Redis 장애 시 fail-open(allowed=True) — 비용 보호가 파이프라인 가용성을 해치지 않게.
 
-    count는 한 번에 여러 호출을 예약할 때(예: SoV run 단위 spec 개수) 사용한다.
+    count는 한 번에 여러 호출을 예약할 때(예: AI 언급률 측정의 실제 호출 개수) 사용한다.
     """
+    if count < 0:
+        raise ValueError("cost_guard count must be non-negative")
+    if count == 0:
+        return CostGuardDecision(True, None)
     if not settings.COST_GUARD_ENABLED:
         return CostGuardDecision(True, None)
     if category not in _CATEGORY_LABELS:
@@ -169,28 +194,40 @@ async def check_and_increment(
         daily_key = _daily_key(category, daily_period)
         monthly_key = _monthly_key(category, monthly_period)
 
-        current_daily = int(await client.get(daily_key) or 0)
-        current_monthly = int(await client.get(monthly_key) or 0)
+        reservation = await client.eval(
+            _RESERVE_BUDGET_SCRIPT,
+            2,
+            daily_key,
+            monthly_key,
+            count,
+            daily_limit,
+            monthly_limit,
+            _DAILY_TTL_SECONDS,
+            _MONTHLY_TTL_SECONDS,
+        )
+        allowed = bool(int(reservation[0]))
+        blocked_scope_raw = reservation[1]
+        blocked_scope = (
+            blocked_scope_raw.decode() if isinstance(blocked_scope_raw, bytes) else str(blocked_scope_raw)
+        )
+        new_daily = int(reservation[2])
+        new_monthly = int(reservation[3])
 
-        # 하드 상한 도달 → 차단(증가 금지). 월간을 일간보다 우선 판정한다.
-        if monthly_limit > 0 and current_monthly >= monthly_limit:
+        # 한 Lua 연산 안에서 current + count를 검사하고 두 카운터를 함께 예약한다.
+        if not allowed and blocked_scope == "monthly":
             await _best_effort_alert(
-                client, category, "monthly", monthly_period, current_monthly, monthly_limit, hard=True
+                client, category, "monthly", monthly_period, new_monthly, monthly_limit, hard=True
             )
             return CostGuardDecision(
                 False, f"{label} 월간 호출 상한({monthly_limit}건)에 도달했습니다."
             )
-        if daily_limit > 0 and current_daily >= daily_limit:
+        if not allowed and blocked_scope == "daily":
             await _best_effort_alert(
-                client, category, "daily", daily_period, current_daily, daily_limit, hard=True
+                client, category, "daily", daily_period, new_daily, daily_limit, hard=True
             )
             return CostGuardDecision(
                 False, f"{label} 일일 호출 상한({daily_limit}건)에 도달했습니다."
             )
-
-        # 허용 → 카운터 증가
-        new_daily = await _incr_with_ttl(client, daily_key, count, _DAILY_TTL_SECONDS)
-        new_monthly = await _incr_with_ttl(client, monthly_key, count, _MONTHLY_TTL_SECONDS)
 
         # 알림은 결정에 영향을 주지 않도록 증가 이후 best-effort로만 발송한다.
         await _evaluate_scope_alert(client, category, "monthly", monthly_period, new_monthly, monthly_limit)

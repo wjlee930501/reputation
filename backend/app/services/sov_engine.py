@@ -6,6 +6,8 @@ import logging
 import re
 import threading
 from itertools import product
+from typing import Any
+from urllib.parse import urlparse
 
 from google import genai as google_genai
 from google.genai import types as genai_types
@@ -76,8 +78,8 @@ QUERY_TEMPLATES = [
 
 PARSE_PROMPT = """\
 다음 AI 답변에서 "{hospital_name}"이 언급되었는지 분석하라.
-병원명 축약형·변형도 언급으로 인정한다.
-예: "장편한외과" = "장편한외과의원" = "장편한 외과" = "장편한" 등 — 앞 2~3글자가 일치하면 동일 병원으로 간주한다.
+띄어쓰기·의원/병원 접미사 차이처럼 동일 기관임이 명확한 표기 변형만 인정한다.
+흔한 앞글자 2~3자가 같거나 다른 지역의 동명 기관인 것만으로는 동일 병원으로 간주하지 않는다.
 
 [답변]
 {response}
@@ -130,14 +132,14 @@ SYSTEM_PROMPT_CHATGPT = (
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
-async def _query_chatgpt(query: str) -> str:
+async def _query_chatgpt(query: str) -> dict[str, Any]:
     """ChatGPT 호출.
 
     프로덕션 설정은 web_search를 강제한다. chat.completions 경로는 기존 측정 호환과
     로컬 개발만을 위한 것으로, Settings가 production+False 조합을 부팅 단계에서 거부한다.
     """
     if settings.OPENAI_CHATGPT_USE_WEB_SEARCH:
-        return await _query_chatgpt_with_search(query)
+        return await _query_chatgpt_with_search_result(query)
     response = await openai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_QUERY,
         messages=[
@@ -147,12 +149,20 @@ async def _query_chatgpt(query: str) -> str:
         temperature=0.7,
         max_tokens=800,
     )
-    return response.choices[0].message.content or ""
+    return {
+        "text": response.choices[0].message.content or "",
+        "source_urls": [],
+        "measurement_method": "OPENAI_CHAT_COMPLETIONS",
+    }
 
 
 async def _query_chatgpt_with_search(query: str) -> str:
-    """OpenAI Responses API + web_search tool. 실제 ChatGPT Search 사용자 답변에 더 가깝다.
-    SDK가 지원하지 않거나 빈 응답이면 빈 문자열 반환 (호출자가 FAILED로 처리)."""
+    """진단 코드와 기존 호출부를 위한 text-only 호환 래퍼."""
+    return str((await _query_chatgpt_with_search_result(query))["text"])
+
+
+async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
+    """OpenAI Responses web search의 답변과 실제 인용 URL을 함께 보존한다."""
     try:
         response = await openai_client.responses.create(
             model=settings.OPENAI_MODEL_QUERY,
@@ -167,24 +177,44 @@ async def _query_chatgpt_with_search(query: str) -> str:
         # 운영자가 OPENAI_CHATGPT_USE_WEB_SEARCH=true로 켰지만 SDK 미지원이라 빈 결과로
         # 분리되는 게 맞으므로 — 빈 문자열 반환해 FAILED 라벨로 흐르게 함.
         logger.warning("openai SDK has no .responses; falling through to FAILED.")
-        return ""
+        return {
+            "text": "",
+            "source_urls": [],
+            "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
+        }
     output_text = getattr(response, "output_text", None)
-    if isinstance(output_text, str):
-        return output_text
-    # 일부 SDK는 output_text가 없고 output 리스트 — 가장 첫 텍스트 블록 추출
-    for item in getattr(response, "output", []) or []:
-        for content in getattr(item, "content", []) or []:
-            text = getattr(content, "text", None)
-            if isinstance(text, str) and text.strip():
-                return text
-    return ""
+    text = output_text if isinstance(output_text, str) else ""
+    if not text:
+        for item in _field(response, "output", []) or []:
+            for content in _field(item, "content", []) or []:
+                candidate = _field(content, "text")
+                if isinstance(candidate, str) and candidate.strip():
+                    text = candidate
+                    break
+            if text:
+                break
+    return {
+        "text": text,
+        "source_urls": _extract_openai_source_urls(response),
+        "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
+    }
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
 async def _query_gemini(query: str) -> str:
+    """진단 코드와 기존 호출부를 위한 text-only 호환 래퍼."""
+    return str((await _query_gemini_result(query))["text"])
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+async def _query_gemini_result(query: str) -> dict[str, Any]:
     client = _get_gemini_client()
     if not client:
-        return ""
+        return {
+            "text": "",
+            "source_urls": [],
+            "measurement_method": "GEMINI_GOOGLE_SEARCH",
+        }
     response = await asyncio.wait_for(
         asyncio.to_thread(
             client.models.generate_content,
@@ -198,7 +228,56 @@ async def _query_gemini(query: str) -> str:
         ),
         timeout=30.0,
     )
-    return response.text or ""
+    return {
+        "text": response.text or "",
+        "source_urls": _extract_gemini_source_urls(response),
+        "measurement_method": "GEMINI_GOOGLE_SEARCH",
+    }
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _normalize_source_urls(values: list[Any]) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        url = str(value or "").strip()
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        if url not in normalized:
+            normalized.append(url)
+    return normalized
+
+
+def _extract_openai_source_urls(response: Any) -> list[str]:
+    urls: list[Any] = []
+    for item in _field(response, "output", []) or []:
+        for content in _field(item, "content", []) or []:
+            for annotation in _field(content, "annotations", []) or []:
+                urls.append(_field(annotation, "url"))
+                citation = _field(annotation, "url_citation")
+                if citation:
+                    urls.append(_field(citation, "url"))
+        action = _field(item, "action")
+        for source in _field(action, "sources", []) or []:
+            urls.append(_field(source, "url"))
+    return _normalize_source_urls(urls)
+
+
+def _extract_gemini_source_urls(response: Any) -> list[str]:
+    urls: list[Any] = []
+    for candidate in _field(response, "candidates", []) or []:
+        metadata = _field(candidate, "grounding_metadata")
+        for chunk in _field(metadata, "grounding_chunks", []) or []:
+            urls.append(_field(_field(chunk, "web"), "uri"))
+    return _normalize_source_urls(urls)
 
 
 def _normalize_for_prefilter(text: str) -> str:
@@ -217,10 +296,13 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
             "sentiment": None,
             "mention_context": None,
         }
-    # 빠른 사전 필터 — 병원명·응답 양쪽을 정규화(공백/특수문자 제거) 후 앞 2글자 비교.
+    # 빠른 사전 필터 — 공백/기호만 정규화한 병원명 핵심 3글자를 사용한다.
+    # 2글자 접두사만으로 동명·유사 기관을 같은 병원으로 오인하지 않도록 한다.
     normalized_name = _normalize_for_prefilter(hospital_name)
     normalized_response = _normalize_for_prefilter(response_text)
-    if normalized_name[:2] and normalized_name[:2] not in normalized_response:
+    core_name = re.sub(r"(의원|병원|클리닉)$", "", normalized_name)
+    prefilter_name = core_name if len(core_name) >= 3 else normalized_name
+    if prefilter_name and prefilter_name not in normalized_response:
         logger.debug("prefilter skip (mention): hospital=%s", hospital_name)
         return {
             "is_mentioned": False,
@@ -244,14 +326,12 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
         response_format={"type": "json_object"},
     )
     try:
-        return json.loads(result.choices[0].message.content or "{}")
-    except Exception:
-        return {
-            "is_mentioned": False,
-            "mention_rank": None,
-            "sentiment": None,
-            "mention_context": None,
-        }
+        parsed = json.loads(result.choices[0].message.content or "{}")
+    except Exception as exc:
+        raise ValueError("mention_parse_failed") from exc
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("is_mentioned"), bool):
+        raise ValueError("mention_parse_failed")
+    return parsed
 
 
 async def _parse_competitors(competitors: list[str], response_text: str) -> list[dict]:
@@ -299,12 +379,12 @@ async def run_single_query(
     repeat_count: int,
     competitors: list[str] | None = None,
 ) -> list[dict]:
-    query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini
+    query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
 
     async def single():
         async with _get_semaphore():
             try:
-                raw = await query_fn(query_text)
+                provider_result = await query_fn(query_text)
             except Exception as e:
                 # 쿼리 자체 실패 → raw="" 로 FAILED 처리.
                 logger.error(f"Query failed: {e}")
@@ -315,16 +395,44 @@ async def run_single_query(
                     "mention_context": None,
                     "raw_response": "",
                     "competitor_mentions": None,
+                    "source_urls": [],
+                    "measurement_status": "FAILED",
+                    "failure_reason": f"provider_query_failed:{type(e).__name__}",
+                }
+            if isinstance(provider_result, str):
+                provider_result = {"text": provider_result, "source_urls": []}
+            raw = str(provider_result.get("text") or "")
+            source_urls = _normalize_source_urls(provider_result.get("source_urls") or [])
+            measurement_method = provider_result.get("measurement_method")
+            if not raw.strip():
+                return {
+                    "is_mentioned": False,
+                    "mention_rank": None,
+                    "sentiment": None,
+                    "mention_context": None,
+                    "raw_response": "",
+                    "competitor_mentions": None,
+                    "source_urls": source_urls,
+                    "measurement_method": measurement_method,
+                    "measurement_status": "FAILED",
+                    "failure_reason": "empty_raw_response",
                 }
             try:
                 parsed = await _parse_mention(hospital_name, raw)
                 comp_mentions = (
                     await _parse_competitors(competitors or [], raw) if competitors else []
                 )
-                return {**parsed, "raw_response": raw, "competitor_mentions": comp_mentions or None}
+                return {
+                    **parsed,
+                    "raw_response": raw,
+                    "competitor_mentions": comp_mentions or None,
+                    "source_urls": source_urls,
+                    "measurement_method": measurement_method,
+                    "measurement_status": "SUCCESS",
+                    "failure_reason": None,
+                }
             except Exception as e:
-                # 쿼리는 성공했으나 파싱만 실패 — 측정을 FAILED로 만들지 말고 raw를 보존하고
-                # 기본값(미언급)으로 처리한다 (raw_response 비어있지 않으면 SUCCESS로 집계됨).
+                # 응답 수신과 언급 판정 성공은 별개다. 파싱 실패를 미언급 0%로 넣지 않는다.
                 logger.warning(f"Parse failed (query ok): {e}")
                 return {
                     "is_mentioned": False,
@@ -333,6 +441,10 @@ async def run_single_query(
                     "mention_context": None,
                     "raw_response": raw,
                     "competitor_mentions": None,
+                    "source_urls": source_urls,
+                    "measurement_method": measurement_method,
+                    "measurement_status": "FAILED",
+                    "failure_reason": "mention_parse_failed",
                 }
 
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))

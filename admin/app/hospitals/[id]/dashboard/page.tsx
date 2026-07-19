@@ -5,6 +5,8 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
 import { countUnpublishedCarriedOver } from '@/lib/content'
+import { canRunMeasurement } from '@/lib/operator-safety'
+import { useHospitalHeader } from '../hospital-context'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
   EXPOSURE_ACTION_TYPE_LABELS,
@@ -165,6 +167,7 @@ function getExposureActionStatusLabel(action: ExposureAction) {
 
 export default function DashboardPage() {
   const { id } = useParams<{ id: string }>()
+  const { hospital } = useHospitalHeader()
   const [trendData, setTrendData] = useState<TrendPoint[]>([])
   const [queries, setQueries] = useState<QueryRow[]>([])
   const [readiness, setReadiness] = useState<Readiness | null>(null)
@@ -265,6 +268,12 @@ export default function DashboardPage() {
   const pendingChecks = readiness?.checks.filter((check) => !check.passed).slice(0, 2) ?? []
 
   const hasQueryTargets = activeTargets.length > 0
+  const hasActiveVariant = canRunMeasurement(queryTargets)
+  const canRunSov = Boolean(
+    hospital
+    && (hospital.status === 'ACTIVE' || hospital.status === 'PENDING_DOMAIN')
+    && hasActiveVariant,
+  )
   const hasMeasurement = measurementRuns.some(
     (run) => run.status === 'COMPLETED' || run.status === 'PARTIAL',
   )
@@ -543,6 +552,7 @@ export default function DashboardPage() {
               <OperationButton
                 label="AI 언급률 측정"
                 loading={operationLoading === 'sov'}
+                disabled={!canRunSov}
                 onClick={() => runOperation('sov', 'run-sov')}
               />
               <OperationButton
@@ -557,6 +567,11 @@ export default function DashboardPage() {
               />
             </div>
           </div>
+          {!canRunSov && (
+            <p className="mt-3 text-xs text-amber-700">
+              AI 언급률 측정은 운영중 또는 도메인 대기 상태에서, 활성 환자 질문 문구가 있을 때 실행할 수 있습니다.
+            </p>
+          )}
           {operationMessage && (
             <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
               {operationMessage}
@@ -1014,17 +1029,19 @@ function PlatformBreakdown({ value }: { value?: Record<string, QueryPlatformBrea
 function OperationButton({
   label,
   loading,
+  disabled = false,
   onClick,
 }: {
   label: string
   loading: boolean
+  disabled?: boolean
   onClick: () => void
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={loading}
+      disabled={loading || disabled}
       className="admin-button px-3 py-2 disabled:cursor-not-allowed disabled:opacity-60"
     >
       {loading ? '실행 중...' : label}

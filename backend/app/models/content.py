@@ -34,6 +34,7 @@ class ContentStatus(str, enum.Enum):
     READY = "READY"           # 레거시 호환 상태 (신규 기본 플로우는 DRAFT→PUBLISHED)
     PUBLISHED = "PUBLISHED"   # 발행 완료
     REJECTED = "REJECTED"     # 반려 (재생성 필요)
+    CANCELLED = "CANCELLED"   # 중복·오래된 슬롯 종료 (자동 재생성/발행 제외)
 
 
 # 요금제별 유형·편수 배분

@@ -330,7 +330,7 @@ def _seed_query_targets(db, hospital: Hospital) -> list[AIQueryTarget]:
             condition_or_symptom=symptom,
             treatment=treatment,
             decision_criteria=criteria,
-            platforms=["CHATGPT", "GEMINI", "PERPLEXITY"],
+            platforms=["CHATGPT", "GEMINI"],
             competitor_names=hospital.competitors,
             priority="HIGH",
             status="ACTIVE",
@@ -367,6 +367,7 @@ def _seed_content_slots(
         plan=Plan.PLAN_16.value,
         publish_days=[0, 1, 2, 3, 4],
         target_month=target_month,
+        hospital_id=hospital.id,
     )[:DEMO_CONTENT_COUNT]
     schedule = ContentSchedule(
         hospital_id=hospital.id,

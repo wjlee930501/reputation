@@ -108,12 +108,13 @@ async def test_seed_creates_targets_from_matrix():
 
     assert result["created"] == 2
     assert result["skipped"] == 0
-    # AIQueryTarget 2개 + AIQueryVariant 2개
+    # AIQueryTarget 2개 + 각 ChatGPT/Gemini variant
     from app.models.sov import AIQueryTarget, AIQueryVariant
     targets = [o for o in db.added if isinstance(o, AIQueryTarget)]
     variants = [o for o in db.added if isinstance(o, AIQueryVariant)]
     assert len(targets) == 2
-    assert len(variants) == 2
+    assert len(variants) == 4
+    assert {variant.platform for variant in variants} == {"CHATGPT", "GEMINI"}
     assert db.committed is True
 
 
@@ -233,11 +234,11 @@ async def test_seed_variant_links_to_query_matrix():
 
     from app.models.sov import AIQueryVariant
     variants = [o for o in db.added if isinstance(o, AIQueryVariant)]
-    assert len(variants) == 1
-    assert variants[0].query_matrix_id == row.id
-    assert variants[0].query_text == row.query_text
-    assert variants[0].platform == "CHATGPT"
-    assert variants[0].is_active is True
+    assert len(variants) == 2
+    assert {variant.platform for variant in variants} == {"CHATGPT", "GEMINI"}
+    assert all(variant.query_matrix_id == row.id for variant in variants)
+    assert all(variant.query_text == row.query_text for variant in variants)
+    assert all(variant.is_active is True for variant in variants)
 
 
 # ─────────────────────────────────────────────

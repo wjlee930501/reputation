@@ -34,12 +34,12 @@ from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
 from app.services import cost_guard, notifier
 from app.services.audit_log import write_audit_log_sync
-from app.services.content_brief import BRIEF_STATUS_APPROVED
 from app.services.content_engine import generate_content
 from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
 )
+from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     build_monthly_essence_summary,
@@ -570,8 +570,11 @@ def nightly_content_generation():
                     continue
 
                 # Claude Sonnet 콘텐츠 생성
-                approved_brief = (
-                    item.content_brief if item.brief_status == BRIEF_STATUS_APPROVED else None
+                approved_brief = prepare_automatic_content_brief_sync(
+                    db,
+                    item=item,
+                    hospital=hospital,
+                    philosophy=philosophy,
                 )
                 content_data = _run_async(
                     generate_content(
@@ -668,8 +671,10 @@ def regenerate_content_item(self, content_id: str):
             item = db.get(ContentItem, uuid.UUID(content_id))
             if not item:
                 return
-            if item.status == ContentStatus.PUBLISHED:
-                logger.warning("Skipping regeneration for published content item %s", content_id)
+            if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+                logger.warning(
+                    "Skipping regeneration for published/cancelled content item %s", content_id
+                )
                 return
 
             hospital = db.get(Hospital, item.hospital_id)
@@ -693,6 +698,38 @@ def regenerate_content_item(self, content_id: str):
             _generate_single_content_item(db, item, hospital)
     except Exception as exc:
         logger.error("regenerate_content_item failed for %s: %s", content_id, exc)
+        raise self.retry(exc=exc, countdown=120)
+
+
+@celery_app.task(name="app.workers.tasks.generate_content_image", bind=True, max_retries=1)
+def generate_content_image(self, content_id: str):
+    """Regenerate only the cover image while preserving operator-reviewed text."""
+    try:
+        with SyncSessionLocal() as db:
+            item = db.get(ContentItem, uuid.UUID(content_id))
+            if not item:
+                return
+            if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+                logger.warning(
+                    "Skipping image regeneration for published/cancelled item %s", content_id
+                )
+                return
+            hospital = db.get(Hospital, item.hospital_id)
+            if not hospital:
+                return
+
+            image_url, image_prompt = _run_async(
+                generate_image(
+                    item.content_type,
+                    hospital.slug,
+                    topic=item.title or "병원 의료 정보",
+                )
+            )
+            item.image_url = image_url
+            item.image_prompt = image_prompt
+            db.commit()
+    except Exception as exc:
+        logger.error("generate_content_image failed for %s: %s", content_id, exc)
         raise self.retry(exc=exc, countdown=120)
 
 
@@ -729,7 +766,12 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
         )
         return
 
-    approved_brief = item.content_brief if item.brief_status == BRIEF_STATUS_APPROVED else None
+    approved_brief = prepare_automatic_content_brief_sync(
+        db,
+        item=item,
+        hospital=hospital,
+        philosophy=philosophy,
+    )
     content_data = _run_async(
         generate_content(
             hospital,
@@ -1244,6 +1286,10 @@ def run_sov_for_hospital(self, hospital_id: str):
             _finish_measurement_run(run, success_count, failure_count)
             db.commit()
 
+            # 결과가 생긴 직후 노출 갭/보완 액션을 갱신한다. 대시보드 GET 요청이 우연히
+            # 액션 생성을 일으키는 구조에 의존하지 않고 다음 콘텐츠 생성이 최신 결과를 읽는다.
+            _refresh_exposure_actions_sync(hospital.id)
+
     except Exception as exc:
         raise self.retry(exc=exc, countdown=300)
 
@@ -1308,6 +1354,15 @@ def _finish_measurement_run(run: MeasurementRun, success_count: int, failure_cou
 
 
 def _measurement_status_for_result(result: dict) -> tuple[str, str | None]:
+    explicit = str(result.get("measurement_status") or "").strip().upper()
+    if explicit == "FAILED":
+        return "FAILED", str(result.get("failure_reason") or "measurement_failed")
+    if explicit == "SUCCESS":
+        if (result.get("raw_response") or "").strip():
+            return "SUCCESS", None
+        return "FAILED", "empty_raw_response"
+    if explicit:
+        return "FAILED", "invalid_measurement_status"
     if (result.get("raw_response") or "").strip():
         return "SUCCESS", None
     return "FAILED", "empty_raw_response"
@@ -1337,8 +1392,10 @@ def _build_sov_record_from_result(
         mention_context=result.get("mention_context"),
         raw_response=result.get("raw_response") or "",
         competitor_mentions=result.get("competitor_mentions"),
+        measurement_method=result.get("measurement_method"),
         measurement_status=measurement_status,
         failure_reason=failure_reason,
+        source_urls=result.get("source_urls") or [],
     )
 
 
@@ -1394,11 +1451,28 @@ def _build_measurement_specs(
     """
     specs: list[dict] = []
     seen: set[tuple[uuid.UUID, str]] = set()
-    for target in query_targets:
+    priority_rank = {"HIGH": 0, "NORMAL": 1, "LOW": 2}
+    sorted_targets = sorted(
+        query_targets,
+        key=lambda target: (
+            priority_rank.get(str(getattr(target, "priority", "NORMAL")).upper(), 9),
+            str(getattr(target, "target_month", "") or ""),
+            str(getattr(target, "name", "") or ""),
+            str(getattr(target, "id", "")),
+        ),
+    )
+    for target in sorted_targets:
         target_priority = str(getattr(target, "priority", "NORMAL") or "NORMAL").upper()
         if not _priority_included(target_priority, is_even_week, is_month_start):
             continue
-        active_variants = [variant for variant in target.variants if variant.is_active]
+        active_variants = sorted(
+            [variant for variant in target.variants if variant.is_active],
+            key=lambda variant: (
+                _normalize_platform(variant.platform),
+                str(variant.query_text),
+                str(variant.id),
+            ),
+        )
         for variant in active_variants:
             platform = _normalize_platform(variant.platform)
             if platform == "gemini" and not settings.GEMINI_API_KEY:
@@ -1483,6 +1557,25 @@ def _seed_query_targets_from_matrix_sync(hospital_id: uuid.UUID) -> None:
     except Exception:
         logger.exception(
             "V0 post-seed failed (non-fatal, V0 report already committed): hospital=%s",
+            hospital_id,
+        )
+
+
+def _refresh_exposure_actions_sync(hospital_id: uuid.UUID) -> None:
+    try:
+        from app.core.database import get_async_sessionmaker
+        from app.services.exposure_action_engine import ensure_hospital_exposure_actions
+
+        async def _run(h_id: uuid.UUID) -> None:
+            async with get_async_sessionmaker()() as async_db:
+                await ensure_hospital_exposure_actions(async_db, h_id)
+
+        _run_async(_run(hospital_id))
+    except Exception:
+        # 측정 레코드는 이미 커밋됐다. 파생 작업 실패로 원 측정을 재실행해 비용·중복을
+        # 만들지 않고 다음 주/운영 복구에서 따라잡게 한다.
+        logger.exception(
+            "Exposure action refresh failed after measurement: hospital=%s",
             hospital_id,
         )
 
@@ -1618,14 +1711,26 @@ def adjust_query_priorities():
                 if not recent_records:
                     continue
 
-                has_any_mention = any(r.is_mentioned for r in recent_records)
+                successful_records = [
+                    record
+                    for record in recent_records
+                    if str(record.measurement_status or "SUCCESS").upper() == "SUCCESS"
+                ]
+                if not successful_records:
+                    continue
+                has_any_mention = any(r.is_mentioned for r in successful_records)
 
-                if has_any_mention and q.priority != "HIGH":
-                    q.priority = "HIGH"
-                    logger.info(f"Query {q.id} promoted to HIGH (mention found)")
-                elif not has_any_mention and q.priority == "HIGH":
-                    q.priority = "NORMAL"
-                    logger.info(f"Query {q.id} demoted to NORMAL (no mention in 4 weeks)")
+                # 미언급 질문이 개선 작업의 우선 대상이다. 기존 로직은 반대로 언급된
+                # 질문을 HIGH로 올려 노출이 없는 질문을 측정·콘텐츠 큐에서 밀어냈다.
+                desired = "NORMAL" if has_any_mention else "HIGH"
+                if q.priority != desired:
+                    q.priority = desired
+                    logger.info(
+                        "Query %s priority changed to %s (mentioned=%s)",
+                        q.id,
+                        desired,
+                        has_any_mention,
+                    )
 
         db.commit()
 

@@ -48,6 +48,12 @@ ESSENCE_STATUS_MISSING_APPROVED = "MISSING_APPROVED_PHILOSOPHY"
 # SDK 내부 재시도는 끈다. 키가 없으면 lazy하게 None을 유지해 deterministic 폴백으로 떨어진다.
 _RAW_TEXT_FOR_LLM_LIMIT = 24_000
 _VALID_NOTE_TYPES = {note_type.value for note_type in EvidenceNoteType}
+_LOCAL_CONTEXT_PATTERN = re.compile(
+    r"(?<![가-힣])(?:"
+    r"서울|부산|대구|인천|광주|대전|울산|세종|"
+    r"[가-힣]{1,10}(?:특별시|광역시|특별자치시|특별자치도|도|시|군|구|읍|면|동|리|역)"
+    r")(?![가-힣])"
+)
 
 
 def _anthropic_client() -> anthropic.Anthropic | None:
@@ -918,6 +924,43 @@ def find_error_marker_fields(payload: Any) -> list[str]:
     return flagged
 
 
+def approved_philosophy_issues(
+    philosophy: HospitalContentPhilosophy | None,
+    processed_sources: Iterable[HospitalSourceAsset] | None = None,
+    *,
+    require_fresh: bool = False,
+) -> list[str]:
+    """생성·발행에 사용할 승인 운영 기준의 무결성과 자료 최신성을 검사한다.
+
+    과거에 승인된 레코드는 현재의 초안 생성 게이트를 거치지 않았을 수 있으므로
+    호출 시점에도 오류 페이지 잔재를 차단한다. ``require_fresh``일 때는 현재 처리된
+    자료 snapshot과 승인 당시 snapshot이 다르면 새 버전 검토 전까지 생성/발행을 막는다.
+    """
+    if not philosophy or _status_value(getattr(philosophy, "status", None)) != PhilosophyStatus.APPROVED.value:
+        return ["승인된 콘텐츠 운영 기준이 없습니다."]
+
+    issues: list[str] = []
+    marker_fields = find_error_marker_fields(philosophy)
+    if marker_fields:
+        issues.append(
+            "승인된 콘텐츠 운영 기준에 차단·오류 페이지 잔재가 있습니다: "
+            + ", ".join(marker_fields)
+        )
+
+    if require_fresh:
+        sources = [
+            source
+            for source in (processed_sources or [])
+            if _status_value(getattr(source, "status", None)) == SourceStatus.PROCESSED.value
+        ]
+        current_hash = compute_sources_snapshot_hash(sources)
+        if not sources:
+            issues.append("처리 완료된 병원 근거 자료가 없습니다.")
+        elif philosophy.source_snapshot_hash != current_hash:
+            issues.append("처리된 병원 자료가 승인 이후 변경되어 운영 기준 새 버전 검토가 필요합니다.")
+    return issues
+
+
 def screen_content_against_philosophy(
     content_item: ContentItem,
     philosophy: HospitalContentPhilosophy | None,
@@ -931,6 +974,19 @@ def screen_content_against_philosophy(
             summary={
                 "blocking": True,
                 "findings": ["승인된 콘텐츠 운영 기준이 없습니다."],
+                "checked_at": _now_iso(),
+            },
+        )
+
+    integrity_issues = approved_philosophy_issues(philosophy)
+    if integrity_issues:
+        return EssenceScreeningResult(
+            status=ESSENCE_STATUS_NEEDS_REVIEW,
+            summary={
+                "blocking": True,
+                "philosophy_id": str(philosophy.id),
+                "philosophy_version": philosophy.version,
+                "findings": integrity_issues,
                 "checked_at": _now_iso(),
             },
         )
@@ -1117,6 +1173,11 @@ def _candidate_excerpts(asset: HospitalSourceAsset) -> list[str]:
             excerpt = match.group(0).strip()
             if not excerpt:
                 continue
+            # RSS/Markdown 문서의 짧은 blockquote·bold 제목은 주장이 아니라
+            # 목차/SEO 헤딩인 경우가 많다. 폴백 노트가 "근거 확인: > **제목"처럼
+            # 오염되는 것을 막고 실제 설명 문장을 우선한다.
+            if re.match(r"^>\s*(?:\*\*)?.{1,80}(?:\*\*)?[?!。！？]?$", excerpt):
+                continue
             # 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)는 후보 발췌에서 제외한다.
             if looks_like_error_page_text(excerpt):
                 continue
@@ -1142,7 +1203,10 @@ def _classify_excerpt(excerpt: str) -> EvidenceNoteType:
         return EvidenceNoteType.TREATMENT_SIGNAL
     if _has_any(excerpt, ["약속", "안심", "회복", "일상", "선택지"]):
         return EvidenceNoteType.PATIENT_PROMISE
-    if re.search(r"(구|시|동|읍|면|역|지역)", excerpt):
+    # 규칙 기반 폴백에서는 실제 행정지명과 '지역' 맥락이 함께 있을 때만
+    # LOCAL_CONTEXT로 본다. 한국어 어미(생기면/합니다) 속 '면/시'를 행정구역으로
+    # 오인해 의료 설명을 지역 주장으로 승격시키는 것보다 누락이 안전하다.
+    if "지역" in excerpt and _LOCAL_CONTEXT_PATTERN.search(excerpt):
         return EvidenceNoteType.LOCAL_CONTEXT
     return EvidenceNoteType.KEY_MESSAGE
 

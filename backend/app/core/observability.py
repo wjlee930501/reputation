@@ -73,6 +73,13 @@ def configure_logging(level: str = "INFO", json_logs: bool = True) -> None:
         lg = logging.getLogger(name)
         lg.handlers = [handler]
         lg.propagate = False
+    # httpx INFO records include the complete request URL. That is useful for
+    # ordinary APIs but leaks credential-bearing URLs such as Slack incoming
+    # webhooks and signed asset links into Cloud Logging. Application services
+    # already log sanitized status/error details, so transport success logs are
+    # deliberately suppressed in every API/Celery process.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     _CONFIGURED = True
 
 

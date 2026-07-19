@@ -14,6 +14,7 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
     screen_content_against_philosophy,
 )
+from app.utils.authority_sources import is_citable_reference_url
 from app.utils.medical_filter import check_forbidden
 
 
@@ -29,8 +30,18 @@ class PublicationAssessment:
 
 
 def has_required_references(item: ContentItem) -> bool:
+    return count_citable_references(item) > 0
+
+
+def count_citable_references(item: ContentItem) -> int:
     references = item.references_list or []
-    return any(isinstance(ref, dict) and ref.get("title") and ref.get("url") for ref in references)
+    return sum(
+        1
+        for ref in references
+        if isinstance(ref, dict)
+        and str(ref.get("title") or "").strip()
+        and is_citable_reference_url(str(ref.get("url") or "").strip())
+    )
 
 
 def publication_text(item: ContentItem) -> str:

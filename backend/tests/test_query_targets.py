@@ -5,7 +5,12 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.api.admin.query_targets import _serialize_target, _serialize_variant, _variant_key
+from app.api.admin.query_targets import (
+    _build_target_operational_summaries,
+    _serialize_target,
+    _serialize_variant,
+    _variant_key,
+)
 from app.schemas.query_target import AIQueryTargetCreate, AIQueryTargetUpdate, AIQueryVariantCreate
 
 
@@ -55,6 +60,23 @@ def test_query_target_rejects_invalid_priority_status_and_month():
         AIQueryTargetCreate(name="테스트", target_intent="추천형", target_month="2026-13")
 
 
+def test_query_target_accepts_only_supported_platforms_and_normalizes_case():
+    target = AIQueryTargetCreate(
+        name="테스트",
+        target_intent="추천형",
+        platforms=[" chatgpt ", "GEMINI", "CHATGPT"],
+        variants=[AIQueryVariantCreate(query_text="질문", platform="gemini")],
+    )
+
+    assert target.platforms == ["CHATGPT", "GEMINI"]
+    assert target.variants[0].platform == "GEMINI"
+
+    with pytest.raises(ValidationError):
+        AIQueryTargetCreate(name="테스트", target_intent="추천형", platforms=["PERPLEXITY"])
+    with pytest.raises(ValidationError):
+        AIQueryVariantCreate(query_text="질문", platform="GOOGLE")
+
+
 def test_serialize_target_summarizes_variants_and_next_action():
     target_id = uuid.uuid4()
     hospital_id = uuid.uuid4()
@@ -100,6 +122,41 @@ def test_serialize_target_summarizes_variants_and_next_action():
     assert serialized["variants"][0]["display"] == {"platform_label": "ChatGPT", "status_label": "운영중"}
 
 
+def test_serialize_target_hides_unsupported_legacy_platforms_and_variants():
+    target_id = uuid.uuid4()
+    supported = _variant(query_target_id=target_id, platform="CHATGPT")
+    unsupported = _variant(query_target_id=target_id, platform="PERPLEXITY")
+    target = SimpleNamespace(
+        id=target_id,
+        hospital_id=uuid.uuid4(),
+        name="레거시 질문",
+        target_intent="추천형",
+        region_terms=[],
+        specialty=None,
+        condition_or_symptom=None,
+        treatment=None,
+        decision_criteria=[],
+        patient_language="ko",
+        platforms=["CHATGPT", "PERPLEXITY"],
+        competitor_names=[],
+        priority="NORMAL",
+        status="ACTIVE",
+        target_month=None,
+        created_by=None,
+        updated_by=None,
+        created_at=None,
+        updated_at=None,
+        variants=[supported, unsupported],
+    )
+
+    payload = _serialize_target(target)
+
+    assert payload["platforms"] == ["CHATGPT"]
+    assert payload["display"]["platform_labels"] == ["ChatGPT"]
+    assert [variant["platform"] for variant in payload["variants"]] == ["CHATGPT"]
+    assert payload["summary"]["variant_count"] == 1
+
+
 def test_serialize_variant_redacts_none_query_matrix_id():
     variant = _variant(query_matrix_id=None)
 
@@ -115,3 +172,99 @@ def test_variant_key_normalizes_edges_without_changing_operator_text():
         "CHATGPT",
         "ko",
     )
+
+
+def test_target_operational_summary_uses_latest_measurement_gap_and_action():
+    target_id = uuid.uuid4()
+    query_id = uuid.uuid4()
+    target = SimpleNamespace(
+        id=target_id,
+        variants=[_variant(query_target_id=target_id, query_matrix_id=query_id)],
+    )
+    old_run = uuid.uuid4()
+    latest_run = uuid.uuid4()
+    records = [
+        SimpleNamespace(
+            ai_query_target_id=target_id,
+            query_id=query_id,
+            measurement_run_id=old_run,
+            measurement_status="SUCCESS",
+            is_mentioned=False,
+            raw_response="old",
+            measured_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            ai_query_target_id=target_id,
+            query_id=query_id,
+            measurement_run_id=latest_run,
+            measurement_status="SUCCESS",
+            is_mentioned=True,
+            raw_response="latest 1",
+            measured_at=datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            ai_query_target_id=target_id,
+            query_id=query_id,
+            measurement_run_id=latest_run,
+            measurement_status="SUCCESS",
+            is_mentioned=False,
+            raw_response="latest 2",
+            measured_at=datetime(2026, 7, 2, 9, 1, tzinfo=timezone.utc),
+        ),
+    ]
+    gaps = [SimpleNamespace(query_target_id=target_id, status="OPEN", severity="HIGH")]
+    actions = [
+        SimpleNamespace(
+            query_target_id=target_id,
+            status="IN_PROGRESS",
+            title="환자 질문 연계 콘텐츠 보강",
+            due_month="2026-08",
+            created_at=datetime(2026, 7, 2, tzinfo=timezone.utc),
+            gap=SimpleNamespace(severity="HIGH"),
+            action_type="CONTENT",
+            query_target=SimpleNamespace(priority="HIGH"),
+        )
+    ]
+
+    summaries = _build_target_operational_summaries([target], records, gaps, actions)
+
+    assert summaries[target_id] == {
+        "latest_sov_pct": 50.0,
+        "last_measured_at": "2026-07-02T09:01:00+00:00",
+        "gap_status": "OPEN",
+        "next_action": "환자 질문 연계 콘텐츠 보강",
+    }
+
+
+def test_target_operational_summary_excludes_empty_explicit_success():
+    target_id = uuid.uuid4()
+    query_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    target = SimpleNamespace(
+        id=target_id,
+        variants=[_variant(query_target_id=target_id, query_matrix_id=query_id)],
+    )
+    records = [
+        SimpleNamespace(
+            ai_query_target_id=target_id,
+            query_id=query_id,
+            measurement_run_id=run_id,
+            measurement_status="SUCCESS",
+            is_mentioned=True,
+            raw_response="병원 언급",
+            measured_at=datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            ai_query_target_id=target_id,
+            query_id=query_id,
+            measurement_run_id=run_id,
+            measurement_status="SUCCESS",
+            is_mentioned=False,
+            raw_response="",
+            measured_at=datetime(2026, 7, 2, 9, 1, tzinfo=timezone.utc),
+        ),
+    ]
+
+    summaries = _build_target_operational_summaries([target], records, [], [])
+
+    assert summaries[target_id]["latest_sov_pct"] == 100.0

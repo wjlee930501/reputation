@@ -39,6 +39,9 @@ export interface ContentSummary {
   references: ContentReference[]
   faq_question: string | null
   faq_answer_summary: string | null
+  // 운영자가 연결한 query target의 공개 cluster linkage. 구버전 ISR 응답 호환을 위해 optional.
+  query_target_id?: string | null
+  query_target_treatment?: string | null
   // 서버에서 본문 길이로 계산해 내려주는 읽기 시간(분). 구버전 응답 캐시 대비 optional.
   reading_minutes?: number
 }
@@ -106,6 +109,8 @@ function isContentSummaryPayload(value: unknown): value is ContentSummary {
     value.references.every(isContentReferencePayload) &&
     isNullableString(value.faq_question) &&
     isNullableString(value.faq_answer_summary) &&
+    (value.query_target_id === undefined || isNullableString(value.query_target_id)) &&
+    (value.query_target_treatment === undefined || isNullableString(value.query_target_treatment)) &&
     (value.reading_minutes === undefined || typeof value.reading_minutes === 'number')
   )
 }

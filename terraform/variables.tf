@@ -394,6 +394,11 @@ variable "redis_auth_enabled" {
   EOT
   type        = bool
   default     = false
+
+  validation {
+    condition     = var.redis_auth_enabled == false
+    error_message = "redis_auth_enabled cannot be true until Cloud Run REDIS_URL and Redis client TLS settings are wired in the same change."
+  }
 }
 
 # ── IAM (least privilege) ─────────────────────────────────────────

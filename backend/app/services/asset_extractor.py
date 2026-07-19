@@ -243,11 +243,16 @@ async def fetch_naver_blog_post_urls(
     seen: set[str] = set()
     for link_el in root.iter("link"):
         href = (link_el.text or "").strip()
-        if not href or href in seen:
+        if not href:
             continue
-        if _NAVER_ID_LOG_RE.match(urlparse(href).path or ""):
-            seen.add(href)
-            urls.append(href)
+        parsed = urlparse(href)
+        if _NAVER_ID_LOG_RE.match(parsed.path or ""):
+            # fromRss/trackingCode는 같은 글에도 달라질 수 있으므로 자산 identity에서 제거.
+            canonical = f"https://blog.naver.com{parsed.path.rstrip('/')}"
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            urls.append(canonical)
             if len(urls) >= max_posts:
                 break
     if not urls:
@@ -292,6 +297,16 @@ def _normalize_naver_blog_url(url: str) -> str:
     if host == "blog.naver.com":
         return url.replace("://blog.naver.com", "://m.blog.naver.com", 1)
     return url
+
+
+def naver_blog_post_identity(url: str) -> str:
+    """Return a stable identity for a Naver post across RSS/tracking URL variants.
+
+    Older source assets may still contain ``fromRss`` or desktop/PostView forms.
+    Reusing the fetch normalizer here prevents a weekly sync from importing those
+    same posts again after the canonical RSS representation changes.
+    """
+    return _normalize_naver_blog_url(url).rstrip("/")
 
 
 def _scope_to_content_container(html: str) -> str:

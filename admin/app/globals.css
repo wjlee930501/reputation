@@ -3,6 +3,25 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    /* Shared hospital console palette. Keep these tokens defined globally because
+       the dashboard and hospital shell both consume them through arbitrary values. */
+    --color-revisit-background-user: #f8fafc;
+    --color-revisit-nav: #0f172a;
+    --color-revisit-coolgrey-20: #e2e8f0;
+    --color-revisit-coolgrey-70: #94a3b8;
+    --color-revisit-coolgrey-80: #cbd5e1;
+    --color-revisit-coolgrey-85: #e2e8f0;
+    --color-revisit-coolgrey-90: #f1f5f9;
+    --color-revisit-primary-80: #bfdbfe;
+    --color-revisit-primary-95: #eff6ff;
+    --color-revisit-text-caption: #94a3b8;
+    --color-revisit-text-helper: #64748b;
+    --color-revisit-text-title: #0f172a;
+    --color-revisit-green-50: #10b981;
+    --color-revisit-red-50: #ef4444;
+  }
+
   :focus-visible {
     outline: 2px solid theme('colors.blue.500');
     outline-offset: 2px;

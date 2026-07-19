@@ -294,20 +294,17 @@ fi
 header "8. Slack 알림"
 
 if check_api_key "SLACK_WEBHOOK_URL"; then
-  SLACK_RES=$(curl -sf --max-time 5 -X POST "$BASE/api/v1/admin/hospitals/$TEST_ID/test-slack" \
-    -H "X-Admin-Key: $ADMIN_KEY" 2>/dev/null) || SLACK_RES=""
-  if echo "$SLACK_RES" | grep -q "ok\|sent"; then
-    ok "Slack 알림 전송"
+  # 운영 코드에는 test-slack Admin API가 없다. 존재하지 않는 경로를
+  # 먼저 호출하면 정상 webhook도 404로 오진하므로 공식 Incoming
+  # Webhook 응답(`ok`)을 직접 검증한다.
+  SLACK_URL="${SLACK_WEBHOOK_URL:-$(grep -E '^SLACK_WEBHOOK_URL=' .env 2>/dev/null | cut -d= -f2-)}"
+  SLACK_TEST=$(curl -sf --max-time 5 -X POST "$SLACK_URL" \
+    -H "Content-Type: application/json" \
+    -d '{"text": "🧪 Re:putation 테스트 알림 — 정상 동작 확인"}' 2>/dev/null) || SLACK_TEST=""
+  if [[ "$SLACK_TEST" == "ok" ]]; then
+    ok "Slack webhook 직접 테스트 성공"
   else
-    # 직접 webhook 테스트
-    SLACK_TEST=$(curl -sf --max-time 5 -X POST "$(grep SLACK_WEBHOOK_URL .env | cut -d= -f2-)" \
-      -H "Content-Type: application/json" \
-      -d '{"text": "🧪 Re:putation 테스트 알림 — 정상 동작 확인"}' 2>/dev/null) || SLACK_TEST=""
-    if echo "$SLACK_TEST" | grep -q "ok"; then
-      ok "Slack webhook 직접 테스트 성공"
-    else
-      fail "Slack 알림 실패"
-    fi
+    fail "Slack 알림 실패"
   fi
 else
   skip "Slack 알림 — SLACK_WEBHOOK_URL 미설정"

@@ -1,4 +1,5 @@
 import type { DomainDnsStrategy, DomainManagementMode } from '@/lib/domain'
+import type { Hospital } from '@/types'
 
 export interface DomainProfile {
   id?: string
@@ -20,6 +21,7 @@ export interface DomainProfile {
 export interface DomainSetupPanelProps {
   hospitalId: string
   profile: DomainProfile
+  activationReadiness: Hospital | null
   onProfileChange: (patch: Partial<DomainProfile>) => void
   onHeaderRefresh: () => void
 }

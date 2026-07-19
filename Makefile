@@ -99,7 +99,7 @@ setup-gcp:
 # Make 기본값은 $(or $(VAR),default) 를 사용한다.
 build-image:
 	docker build --platform linux/amd64 \
-		-t "$(or $(GCP_REGION),us-central1)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(or $(GCP_ARTIFACT_REPO),reputation)/reputation:$(shell date +%Y%m%d-%H%M%S)" \
+		-t "$(or $(GCP_REGION),asia-northeast3)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(or $(GCP_ARTIFACT_REPO),reputation)/reputation:$(shell date +%Y%m%d-%H%M%S)" \
 		-f backend/Dockerfile backend
 
 deploy-api:

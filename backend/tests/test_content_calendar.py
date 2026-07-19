@@ -86,3 +86,20 @@ def test_generate_monthly_slots_preserves_dates_and_sequence_numbers():
     assert all(total == 8 for _, _, _, total in slots)
     dates = [d for d, _, _, _ in slots]
     assert dates == sorted(dates)
+    # PLAN_8 + 모든 요일 허용이어도 월초 8일에 몰리지 않고 월 전체에 분산한다.
+    assert dates[0].isoformat() == "2026-07-01"
+    assert dates[-1].isoformat() == "2026-07-31"
+    assert max((right - left).days for left, right in zip(dates, dates[1:])) <= 5
+    assert min((right - left).days for left, right in zip(dates, dates[1:])) >= 4
+
+
+def test_generate_monthly_slots_spreads_across_allowed_weekdays():
+    slots = generate_monthly_slots(
+        "PLAN_8", [1, 4], arrow.get("2026-08-01").floor("month")
+    )
+
+    dates = [d for d, *_rest in slots]
+    assert len(dates) == 8
+    assert all(d.weekday() in {1, 4} for d in dates)
+    assert dates[0].day <= 7
+    assert dates[-1].day >= 25

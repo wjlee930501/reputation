@@ -58,6 +58,25 @@ class FakeRedis:
         self.ttls.pop(key, None)
         return 1
 
+    async def eval(self, _script, _numkeys, daily_key, monthly_key, count, daily_limit,
+                   monthly_limit, daily_ttl, monthly_ttl):
+        await self._guard()
+        daily = int(self.store.get(daily_key, 0))
+        monthly = int(self.store.get(monthly_key, 0))
+        if monthly_limit > 0 and monthly + count > monthly_limit:
+            return [0, "monthly", daily, monthly]
+        if daily_limit > 0 and daily + count > daily_limit:
+            return [0, "daily", daily, monthly]
+        new_daily = daily + count
+        new_monthly = monthly + count
+        self.store[daily_key] = new_daily
+        self.store[monthly_key] = new_monthly
+        if daily == 0:
+            self.ttls[daily_key] = daily_ttl
+        if monthly == 0:
+            self.ttls[monthly_key] = monthly_ttl
+        return [1, "", new_daily, new_monthly]
+
 
 class AlertRecorder:
     def __init__(self):
@@ -205,6 +224,31 @@ async def test_batch_count_increments_by_count(monkeypatch, alerts):
 
     monthly_key = next(k for k in redis.store if ":monthly:" in k)
     assert redis.store[monthly_key] == 5
+
+
+async def test_zero_call_reservation_is_a_noop(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="sov", daily=3, monthly=3)
+    redis = FakeRedis()
+
+    decision = await cost_guard.check_and_increment("sov", count=0, redis_client=redis)
+
+    assert decision.allowed is True
+    assert redis.store == {}
+
+
+async def test_batch_is_rejected_before_it_would_overshoot_hard_cap(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="sov", daily=3, monthly=3)
+    redis = FakeRedis()
+
+    first = await cost_guard.check_and_increment("sov", count=2, redis_client=redis)
+    rejected = await cost_guard.check_and_increment("sov", count=2, redis_client=redis)
+
+    assert first.allowed is True
+    assert rejected.allowed is False
+    daily_key = next(k for k in redis.store if ":daily:" in k)
+    monthly_key = next(k for k in redis.store if ":monthly:" in k)
+    assert redis.store[daily_key] == 2
+    assert redis.store[monthly_key] == 2
 
 
 async def test_unknown_category_raises(monkeypatch):

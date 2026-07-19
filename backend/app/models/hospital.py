@@ -126,6 +126,13 @@ class Hospital(Base):
     director_career: Mapped[str | None] = mapped_column(Text)       # 약력 (마크다운)
     director_philosophy: Mapped[str | None] = mapped_column(Text)   # 진료 철학
     director_photo_url: Mapped[str | None] = mapped_column(String(500))
+
+    # ── 공개 사이트 비주얼 테마 ─────────────────────────────────────
+    # 레이아웃은 모든 병원이 공유하고, 병원별 브랜드 자산만 교체한다.
+    brand_primary_color: Mapped[str | None] = mapped_column(String(7))
+    brand_accent_color: Mapped[str | None] = mapped_column(String(7))
+    logo_url: Mapped[str | None] = mapped_column(String(500))
+    hero_image_url: Mapped[str | None] = mapped_column(String(500))
     # Physician schema의 hasCredential / alumniOf / memberOf 매핑용 구조화 자격 정보.
     # 형식: {
     #   "medical_school": "서울대학교 의과대학",

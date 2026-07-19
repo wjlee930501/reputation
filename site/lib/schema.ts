@@ -1,5 +1,7 @@
 import type { ContentSummary, Hospital } from './api.ts'
 
+const FAQ_MAX_ITEMS = 10
+
 // 원장 Physician 노드의 신뢰축(자격·학회·전문영역) 서브필드.
 // 랜딩(중첩 Physician)과 /doctor(독립 Physician)가 동일 값을 내보내도록 공유한다 —
 // 최우선순위 URL(랜딩 priority 0.8)에서도 약한 Physician이 되지 않게 한다.
@@ -50,7 +52,7 @@ export function buildFaqPageJsonLd(
     '@context': 'https://schema.org',
     '@type': 'FAQPage',
     '@id': `${base}/${slug}#faq`,
-    mainEntity: faqs.map((c) => ({
+    mainEntity: faqs.slice(0, FAQ_MAX_ITEMS).map((c) => ({
       '@type': 'Question',
       name: c.faq_question || c.title,
       url: `${base}/${slug}/contents/${c.id}`,

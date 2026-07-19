@@ -2,7 +2,12 @@ import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
-import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
+import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
+import {
+  absoluteClinicImageUrl,
+  buildClinicThemeStyle,
+  selectClinicDirectorImage,
+} from '@/lib/clinic-theme'
 import { buildPhysicianCredentials } from '@/lib/schema'
 import { canonicalBase } from '@/lib/site-url'
 
@@ -43,7 +48,10 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         url: canonicalUrl,
         type: 'profile',
         images: (() => {
-          const photo = resolveAssetUrl(hospital.director_photo_url)
+          const photo = absoluteClinicImageUrl(
+            selectClinicDirectorImage(hospital),
+            canonicalBase(hospital),
+          )
           return photo ? [{ url: photo }] : []
         })(),
       },
@@ -78,6 +86,8 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
   const physicianCredentials = buildPhysicianCredentials(hospital)
 
   const base = canonicalBase(hospital)
+  const directorImageUrl = selectClinicDirectorImage(hospital)
+  const directorImageAbsoluteUrl = absoluteClinicImageUrl(directorImageUrl, base)
 
   const physicianSameAs = [
     hospital.wikidata_qid ? `https://www.wikidata.org/wiki/${hospital.wikidata_qid}` : null,
@@ -95,7 +105,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
     name: hospital.director_name,
     jobTitle: '원장',
     description: physicianDescription,
-    image: resolveAssetUrl(hospital.director_photo_url) || undefined,
+    image: directorImageAbsoluteUrl || undefined,
     ...physicianCredentials,
     sameAs: physicianSameAs.length > 0 ? physicianSameAs : undefined,
     worksFor: {
@@ -113,7 +123,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
   return (
     <>
       <JsonLd data={[physicianJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
-      <div className="clinic-shell">
+      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalSlug={params.slug}
@@ -121,6 +131,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
           specialties={hospital.specialties}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
+          logoUrl={hospital.logo_url}
         />
         <main id="main-content">
           <section className="clinic-library-hero">
@@ -146,10 +157,13 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
           <DoctorIntro
             directorName={hospital.director_name}
             directorCareer={hospital.director_career}
-            directorPhotoUrl={hospital.director_photo_url}
+            directorPhotoUrl={directorImageUrl}
             specialties={hospital.specialties}
             region={hospital.region}
             contentCount={contents.length}
+            boardCertifications={hospital.director_credentials?.board_certifications ?? null}
+            societyMemberships={hospital.director_credentials?.society_memberships ?? null}
+            photos={hospital.photos ?? []}
           />
 
           {curatedContents.length > 0 && (

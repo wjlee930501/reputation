@@ -91,6 +91,15 @@ class _PatchDB(_NoExecuteDB):
         return _ScalarNone()
 
 
+class _AuditDB(_NoExecuteDB):
+    def __init__(self):
+        super().__init__()
+        self.added = []
+
+    def add(self, value):
+        self.added.append(value)
+
+
 def _wire(monkeypatch, item, hospital):
     async def fake_get_content(db, content_id, hospital_id):
         return item
@@ -206,3 +215,62 @@ async def test_update_content_rejects_non_whitelisted_reference(monkeypatch):
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["accepted_count"] == 0
     assert item.references_list == []
+
+
+async def test_reschedule_content_moves_unpublished_slot_and_audits(monkeypatch):
+    hospital = _hospital()
+    item = _content_item(
+        hospital_id=hospital.id,
+        scheduled_date=date(2026, 7, 4),
+        carried_over_from=None,
+    )
+    _wire(monkeypatch, item, hospital)
+    db = _AuditDB()
+
+    response = await content_api.reschedule_content(
+        hospital.id,
+        item.id,
+        content_api.ContentRescheduleBody(scheduled_date=date(2099, 8, 1)),
+        db=db,
+    )
+
+    assert item.scheduled_date == date(2099, 8, 1)
+    assert item.carried_over_from == date(2026, 7, 4)
+    assert response["scheduled_date"] == "2099-08-01"
+    assert db.committed is True
+    assert db.added[0].action == "reschedule_content"
+
+
+async def test_reschedule_content_rejects_published_item(monkeypatch):
+    hospital = _hospital()
+    item = _content_item(hospital_id=hospital.id, status=content_api.ContentStatus.PUBLISHED)
+    _wire(monkeypatch, item, hospital)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await content_api.reschedule_content(
+            hospital.id,
+            item.id,
+            content_api.ContentRescheduleBody(scheduled_date=date(2099, 8, 1)),
+            db=_AuditDB(),
+        )
+
+    assert exc_info.value.status_code == 409
+
+
+async def test_cancel_content_is_terminal_and_audited(monkeypatch):
+    hospital = _hospital()
+    item = _content_item(
+        hospital_id=hospital.id,
+        generation_claimed_at="in-progress",
+    )
+    _wire(monkeypatch, item, hospital)
+    db = _AuditDB()
+
+    response = await content_api.cancel_content(hospital.id, item.id, db=db)
+
+    assert item.status == content_api.ContentStatus.CANCELLED
+    assert item.generation_claimed_at is None
+    assert response["status"] == "CANCELLED"
+    assert response["compliance"]["publishable"] is False
+    assert db.added[0].action == "cancel_content"
+    assert db.committed is True

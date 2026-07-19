@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 QueryTargetPriority = Literal["HIGH", "NORMAL", "LOW"]
 QueryTargetStatus = Literal["ACTIVE", "PAUSED", "ARCHIVED"]
+SUPPORTED_QUERY_PLATFORMS = frozenset({"CHATGPT", "GEMINI"})
 
 _TARGET_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
@@ -26,6 +27,23 @@ def _clean_optional_string(value: str | None) -> str | None:
     return value or None
 
 
+def _normalize_supported_platform(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized not in SUPPORTED_QUERY_PLATFORMS:
+        supported = ", ".join(sorted(SUPPORTED_QUERY_PLATFORMS))
+        raise ValueError(f"Unsupported platform. Supported platforms: {supported}")
+    return normalized
+
+
+def _normalize_platform_list(value: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for item in value:
+        platform = _normalize_supported_platform(item)
+        if platform not in normalized:
+            normalized.append(platform)
+    return normalized
+
+
 class AIQueryVariantBase(BaseModel):
     query_text: str = Field(min_length=1, max_length=500)
     platform: str = Field(default="CHATGPT", min_length=1, max_length=50)
@@ -33,13 +51,18 @@ class AIQueryVariantBase(BaseModel):
     is_active: bool = True
     query_matrix_id: uuid.UUID | None = None
 
-    @field_validator("query_text", "platform", "language")
+    @field_validator("query_text", "language")
     @classmethod
     def clean_required_string(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("Must not be blank")
         return value
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, value: str) -> str:
+        return _normalize_supported_platform(value)
 
 
 class AIQueryVariantCreate(AIQueryVariantBase):
@@ -53,10 +76,15 @@ class AIQueryVariantUpdate(BaseModel):
     is_active: bool | None = None
     query_matrix_id: uuid.UUID | None = None
 
-    @field_validator("query_text", "platform", "language")
+    @field_validator("query_text", "language")
     @classmethod
     def clean_optional_required_string(cls, value: str | None) -> str | None:
         return _clean_optional_string(value)
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, value: str | None) -> str | None:
+        return _normalize_supported_platform(value) if value is not None else None
 
 
 class AIQueryVariantResponse(BaseModel):
@@ -112,7 +140,7 @@ class AIQueryTargetBase(BaseModel):
     def require_platforms(cls, value: list[str]) -> list[str]:
         if not value:
             raise ValueError("At least one platform is required")
-        return value
+        return _normalize_platform_list(value)
 
     @field_validator("target_month")
     @classmethod
@@ -164,7 +192,7 @@ class AIQueryTargetUpdate(BaseModel):
     def require_platforms(cls, value: list[str] | None) -> list[str] | None:
         if value is not None and not value:
             raise ValueError("At least one platform is required")
-        return value
+        return _normalize_platform_list(value) if value is not None else None
 
     @field_validator("target_month")
     @classmethod

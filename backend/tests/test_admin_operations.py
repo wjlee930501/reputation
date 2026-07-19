@@ -98,6 +98,9 @@ async def test_run_sov_operation_queues_task_after_audit_commit(monkeypatch):
         task.apply_async(args=args, queue=queue)
 
     monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", record_apply)
+    async def active_variant(_db, _hospital_id):
+        return True
+    monkeypatch.setattr(operations_api, "_has_active_query_variant", active_variant)
     monkeypatch.setattr(audit_log.settings, "ADMIN_ACTOR_NAME", "AE-test")
 
     response = await operations_api.run_sov_operation(hospital.id, db=db)
@@ -146,6 +149,26 @@ async def test_run_sov_operation_rejects_onboarding_hospital():
     assert exc.value.status_code == 409
 
 
+async def test_run_sov_operation_rejects_when_no_active_target_variant(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+
+    async def no_active_variant(_db, _hospital_id):
+        return False
+
+    monkeypatch.setattr(operations_api, "_has_active_query_variant", no_active_variant)
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", task.apply_async)
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.run_sov_operation(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert "활성 문구" in exc.value.detail
+    assert task.calls == []
+    assert db.added == []
+
+
 async def test_regenerate_content_operation_blocks_published(monkeypatch):
     hospital = _hospital()
     content = _content(hospital.id, status=ContentStatus.PUBLISHED)
@@ -158,6 +181,35 @@ async def test_regenerate_content_operation_blocks_published(monkeypatch):
 
     assert exc.value.status_code == 409
     assert task.calls == []
+
+
+async def test_regenerate_content_image_operation_queues_without_replacing_text(monkeypatch):
+    hospital = _hospital()
+    content = _content(
+        hospital.id,
+        title="검수 중인 제목",
+        body="검수 중인 본문",
+        image_url=None,
+    )
+    db = FakeDB(hospital=hospital, content=content)
+    task = FakeTask()
+    monkeypatch.setattr(operations_api.generate_content_image, "apply_async", task.apply_async)
+
+    response = await operations_api.regenerate_content_image_operation(
+        hospital.id,
+        content.id,
+        db=db,
+    )
+
+    assert response["detail"] == "Content image generation queued"
+    assert task.calls == [{"args": [str(content.id)], "queue": "content"}]
+    assert db.committed is True
+    assert [row.action for row in db.added] == [
+        "regenerate_content_image_requested",
+        "regenerate_content_image",
+    ]
+    assert content.title == "검수 중인 제목"
+    assert content.body == "검수 중인 본문"
 
 
 async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch):
@@ -293,6 +345,9 @@ async def test_actor_uses_admin_actor_name_setting(monkeypatch):
     hospital = _hospital(status=HospitalStatus.ACTIVE)
     db = FakeDB(hospital=hospital)
     monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", lambda **_: None)
+    async def active_variant(_db, _hospital_id):
+        return True
+    monkeypatch.setattr(operations_api, "_has_active_query_variant", active_variant)
 
     await operations_api.run_sov_operation(hospital.id, db=db)
 

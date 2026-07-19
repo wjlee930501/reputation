@@ -165,6 +165,9 @@ function getReviewState(item: ContentItem): ReviewState {
   if (item.status === 'REJECTED') {
     return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
   }
+  if (item.status === 'CANCELLED') {
+    return { key: 'cancelled', label: displayLabel ?? '종료됨', badge: 'bg-slate-100 text-slate-600', reason: displayReason ?? '중복·노후 슬롯', publishable: false }
+  }
   if (!item.title) {
     return { key: 'notGenerated', label: displayLabel ?? '생성 전', badge: 'bg-slate-100 text-slate-500', reason: displayReason ?? '야간 자동 생성 대기', publishable: false }
   }
@@ -396,6 +399,7 @@ export default function ContentPage() {
       notGenerated: 0,
       published: 0,
       rejected: 0,
+      cancelled: 0,
       notificationPending: 0,
       postReviewPending: 0,
     }
@@ -746,6 +750,9 @@ export default function ContentPage() {
           <SummaryCard label="후행 확인 완료" value={summary.published} tone="green" hint="사람 확인 기록됨" filter="published" activeFilter={activeFilter} onFilter={setActiveFilter} />
           {summary.rejected > 0 && (
             <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={setActiveFilter} />
+          )}
+          {summary.cancelled > 0 && (
+            <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복·노후 슬롯" filter="cancelled" activeFilter={activeFilter} onFilter={setActiveFilter} />
           )}
         </div>
         {activeFilter !== 'all' && (
@@ -1439,7 +1446,7 @@ export default function ContentPage() {
                     </a>
                   )}
                 </div>
-                {selected.status !== 'PUBLISHED' && !selectedReview.publishable && (
+                {!['PUBLISHED', 'CANCELLED'].includes(selected.status) && !selectedReview.publishable && (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2">
                     <p className="text-xs text-orange-800">공개되지 않았습니다. 수정 저장 후 자동 안전검사를 다시 수행합니다.</p>
                     <button
@@ -1451,7 +1458,7 @@ export default function ContentPage() {
                     </button>
                   </div>
                 )}
-                {selected.status !== 'PUBLISHED' && selectedReview.publishable && (
+                {!['PUBLISHED', 'CANCELLED'].includes(selected.status) && selectedReview.publishable && (
                   <p className="mb-3 text-xs text-slate-500">
                     사전 승인 작업은 필요하지 않습니다. 발행 예정일 08:00에 자동 공개되고 Slack으로 알려드립니다.
                   </p>
@@ -1509,6 +1516,10 @@ export default function ContentPage() {
                     >
                       문제 발견 · 비공개 후 재생성
                     </button>
+                  </div>
+                ) : selected.status === 'CANCELLED' ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    이 슬롯은 중복·노후 백로그로 종료되어 자동 생성과 발행에서 제외됩니다.
                   </div>
                 ) : (
                   <div className="flex flex-wrap gap-3">

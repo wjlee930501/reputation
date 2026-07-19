@@ -87,7 +87,7 @@ ADMIN_MEMORY="${ADMIN_MEMORY:-512Mi}"
 ADMIN_MIN="${ADMIN_MIN:-0}"
 ADMIN_MAX="${ADMIN_MAX:-2}"
 
-BASE_REQUIRED_SECRET_NAMES=(
+BACKEND_BASE_REQUIRED_SECRET_NAMES=(
   "ANTHROPIC_API_KEY"
   "OPENAI_API_KEY"
   "GEMINI_API_KEY"
@@ -98,11 +98,35 @@ BASE_REQUIRED_SECRET_NAMES=(
   "REDIS_URL"
 )
 
-REQUIRED_SECRET_NAMES=("${BASE_REQUIRED_SECRET_NAMES[@]}")
-
-OPTIONAL_SECRET_NAMES=(
+BACKEND_OPTIONAL_SECRET_NAMES=(
   "SITE_REVALIDATE_SECRET"
 )
+
+SITE_REQUIRED_SECRET_NAMES=(
+  "SITE_REVALIDATE_SECRET"
+  "SITE_BFF_SECRET"
+)
+
+ADMIN_REQUIRED_SECRET_NAMES=(
+  "ADMIN_SESSION_SECRET"
+  "ADMIN_SECRET_KEY"
+  "SITE_BFF_SECRET"
+)
+
+ALL_MANAGED_SECRET_NAMES=(
+  "${BACKEND_BASE_REQUIRED_SECRET_NAMES[@]}"
+  "${BACKEND_OPTIONAL_SECRET_NAMES[@]}"
+  "${SITE_REQUIRED_SECRET_NAMES[@]}"
+  "${ADMIN_REQUIRED_SECRET_NAMES[@]}"
+  "DB_PASSWORD"
+  "DATABASE_URL"
+  "SYNC_DATABASE_URL"
+)
+
+BACKEND_REQUIRED_SECRET_NAMES=("${BACKEND_BASE_REQUIRED_SECRET_NAMES[@]}")
+REQUIRED_SECRET_NAMES=()
+OPTIONAL_SECRET_NAMES=()
+SECRET_ARGS=()
 
 cleanup() {
   local f
@@ -140,6 +164,8 @@ CLOUDSQL_CONNECTION="${CLOUD_SQL_CONNECTION_NAME:-$(read_env_file_value CLOUD_SQ
 DB_USER_NAME="${DB_USER:-$(read_env_file_value DB_USER || true)}"
 DB_USER_NAME="${DB_USER_NAME:-reputation}"
 ASSET_GCS_BUCKET="${NEXT_PUBLIC_GCP_STORAGE_BUCKET:-${GCP_STORAGE_BUCKET:-$(read_env_file_value GCP_STORAGE_BUCKET || true)}}"
+GOOGLE_SITE_VERIFICATION="${NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION:-$(read_env_file_value NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION || true)}"
+GA_MEASUREMENT_ID="${NEXT_PUBLIC_GA_MEASUREMENT_ID:-$(read_env_file_value NEXT_PUBLIC_GA_MEASUREMENT_ID || true)}"
 DB_CONNECTION_MODE="${DB_CONNECTION_MODE:-$(read_env_file_value DB_CONNECTION_MODE || true)}"
 CNAME_TARGET="${CNAME_TARGET:-$(read_env_file_value CNAME_TARGET || true)}"
 OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE="${OPENAI_CHATGPT_USE_WEB_SEARCH:-$(read_env_file_value OPENAI_CHATGPT_USE_WEB_SEARCH || true)}"
@@ -157,10 +183,10 @@ GCP_ATTACH_VPC_CONNECTOR="${GCP_ATTACH_VPC_CONNECTOR:-1}"
 
 case "$DB_CONNECTION_MODE" in
   cloudsql)
-    REQUIRED_SECRET_NAMES+=("DB_PASSWORD")
+    BACKEND_REQUIRED_SECRET_NAMES+=("DB_PASSWORD")
     ;;
   supabase|external)
-    REQUIRED_SECRET_NAMES+=("DATABASE_URL" "SYNC_DATABASE_URL")
+    BACKEND_REQUIRED_SECRET_NAMES+=("DATABASE_URL" "SYNC_DATABASE_URL")
     ;;
   *)
     fail "DB_CONNECTION_MODE은 cloudsql, supabase, external 중 하나여야 합니다: ${DB_CONNECTION_MODE}"
@@ -180,7 +206,7 @@ should_attach_vpc_connector() {
 is_managed_secret() {
   local key="$1"
   local name
-  for name in "${REQUIRED_SECRET_NAMES[@]}" "${OPTIONAL_SECRET_NAMES[@]}"; do
+  for name in "${ALL_MANAGED_SECRET_NAMES[@]}"; do
     [[ "$key" == "$name" ]] && return 0
   done
   return 1
@@ -274,11 +300,10 @@ make_service_env_file() {
   printf 'SERVICE: "%s"\nAPP_ENV: "production"\n' "$service" >> "$SERVICE_ENV_FILE"
 }
 
-build_secret_args() {
-  SECRET_ARGS=()
+require_secret_versions() {
   local name status
 
-  for name in "${REQUIRED_SECRET_NAMES[@]}"; do
+  for name in "$@"; do
     if ! gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
       fail "Secret Manager secret ${name} is missing. Create it before deploying so secrets are not passed as plaintext env vars."
     fi
@@ -286,6 +311,15 @@ build_secret_args() {
     if [[ "$status" != "ENABLED" ]]; then
       fail "Secret Manager secret ${name} latest version must be ENABLED before deploy."
     fi
+  done
+}
+
+build_secret_args() {
+  SECRET_ARGS=()
+  local name status
+
+  for name in "${REQUIRED_SECRET_NAMES[@]}"; do
+    require_secret_versions "$name"
     SECRET_ARGS+=("--set-secrets=${name}=${name}:latest")
   done
 
@@ -301,7 +335,12 @@ build_secret_args() {
 }
 
 prepare_non_secret_env_file
-build_secret_args
+
+prepare_backend_secret_args() {
+  REQUIRED_SECRET_NAMES=("${BACKEND_REQUIRED_SECRET_NAMES[@]}")
+  OPTIONAL_SECRET_NAMES=("${BACKEND_OPTIONAL_SECRET_NAMES[@]}")
+  build_secret_args
+}
 
 # ─── Docker 빌드 & 푸시 ────────────────────────────────────────────
 # 주의: command substitution으로 호출되므로 stdout에는 이미지 URL만 출력한다.
@@ -476,6 +515,8 @@ build_and_push_site() {
     --build-arg "NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN}" \
     --build-arg "NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
     --build-arg "NEXT_PUBLIC_GCP_STORAGE_BUCKET=${ASSET_GCS_BUCKET}" \
+    --build-arg "NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION=${GOOGLE_SITE_VERIFICATION}" \
+    --build-arg "NEXT_PUBLIC_GA_MEASUREMENT_ID=${GA_MEASUREMENT_ID}" \
     -t "$image_url" \
     -f "${PROJECT_ROOT}/site/Dockerfile" \
     "${PROJECT_ROOT}/site" >&2
@@ -697,6 +738,7 @@ run_redbeat_reconcile() {
 # ─── 메인 ──────────────────────────────────────────────────────────
 case "$TARGET" in
   backend)
+    prepare_backend_secret_args
     require_backend_runtime_shape
     require_production_feature_flags
     require_asset_bucket
@@ -711,6 +753,7 @@ case "$TARGET" in
     deploy_beat "$IMAGE_URL"
     ;;
   api|worker|beat)
+    prepare_backend_secret_args
     require_backend_runtime_shape
     require_production_feature_flags
     require_asset_bucket
@@ -724,10 +767,13 @@ case "$TARGET" in
     "deploy_${TARGET}" "$IMAGE_URL"
     ;;
   site)
+    require_secret_versions "${SITE_REQUIRED_SECRET_NAMES[@]}"
+    require_asset_bucket
     SITE_IMAGE_URL=$(build_and_push_site)
     deploy_site "$SITE_IMAGE_URL"
     ;;
   admin)
+    require_secret_versions "${ADMIN_REQUIRED_SECRET_NAMES[@]}"
     require_admin_domain
     ADMIN_IMAGE_URL=$(build_and_push_admin)
     deploy_admin "$ADMIN_IMAGE_URL"
@@ -745,6 +791,8 @@ case "$TARGET" in
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
+    require_secret_versions "${SITE_REQUIRED_SECRET_NAMES[@]}" "${ADMIN_REQUIRED_SECRET_NAMES[@]}"
+    prepare_backend_secret_args
     IMAGE_URL=$(build_and_push)
     SITE_IMAGE_URL=$(build_and_push_site)
     ADMIN_IMAGE_URL=$(build_and_push_admin)
@@ -759,6 +807,7 @@ case "$TARGET" in
     deploy_admin "$ADMIN_IMAGE_URL"
     ;;
   migrate)
+    prepare_backend_secret_args
     require_backend_runtime_shape
     require_production_feature_flags
     if is_cloudsql_mode; then

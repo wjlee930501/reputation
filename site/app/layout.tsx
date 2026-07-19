@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
+import Script from "next/script";
 import { platformSiteUrl } from "@/lib/site-url";
 import "./globals.css";
 
@@ -20,6 +21,8 @@ export const viewport: Viewport = {
 };
 
 const OG_IMAGE = "/landing/reputation-product-report-devices.png";
+const googleSiteVerification = process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION?.trim();
+const gaMeasurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim();
 
 export const metadata: Metadata = {
   metadataBase: new URL(platformSiteUrl()),
@@ -49,6 +52,9 @@ export const metadata: Metadata = {
       "환자는 이제 AI에게 병원을 묻습니다. 우리 병원은 그 답변 안에 제대로 보이고 있을까요?",
     images: [OG_IMAGE],
   },
+  ...(googleSiteVerification
+    ? { verification: { google: googleSiteVerification } }
+    : {}),
 };
 
 export default function RootLayout({
@@ -66,6 +72,17 @@ export default function RootLayout({
           본문으로 바로가기
         </a>
         {children}
+        {gaMeasurementId && /^G-[A-Z0-9]+$/.test(gaMeasurementId) ? (
+          <>
+            <Script
+              src={`https://www.googletagmanager.com/gtag/js?id=${gaMeasurementId}`}
+              strategy="afterInteractive"
+            />
+            <Script id="google-analytics" strategy="afterInteractive">
+              {`window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${gaMeasurementId}',{anonymize_ip:true});`}
+            </Script>
+          </>
+        ) : null}
       </body>
     </html>
   );

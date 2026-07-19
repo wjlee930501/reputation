@@ -133,6 +133,21 @@ def is_whitelisted_url(url: str) -> bool:
     return False
 
 
+def is_citable_reference_url(url: str) -> bool:
+    """공신력 도메인의 특정 자료 URL인지 확인한다.
+
+    기관 홈페이지 루트는 기관의 권위만 보여줄 뿐 콘텐츠의 개별 주장 근거가 아니다.
+    실제 문서 경로나 문서 식별 query가 있는 URL만 발행 근거로 인정한다.
+    """
+    if not is_whitelisted_url(url):
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.path not in {"", "/"} or bool(parsed.query)
+
+
 def render_source_hint_block() -> str:
     """프롬프트에 주입할 권위 출처 안내 텍스트."""
     lines = ["[참고 출처 화이트리스트 — references는 아래 도메인만 사용]"]

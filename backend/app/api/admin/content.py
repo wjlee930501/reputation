@@ -5,6 +5,8 @@ GET    /admin/hospitals/{id}/content                — 콘텐츠 목록 (월별
 GET    /admin/hospitals/{id}/content/{cid}          — 상세 조회
 PATCH  /admin/hospitals/{id}/content/{cid}          — 제목/본문/meta 수정
 PATCH  /admin/hospitals/{id}/content/{cid}/brief    — 타깃 질의/액션/brief 수정
+POST   /admin/hospitals/{id}/content/{cid}/reschedule — 미발행 콘텐츠 발행일 재배치
+POST   /admin/hospitals/{id}/content/{cid}/cancel    — 중복·노후 슬롯 종료
 POST   /admin/hospitals/{id}/content/{cid}/publish  — 발행
 POST   /admin/hospitals/{id}/content/{cid}/reject   — 반려
 """
@@ -47,6 +49,7 @@ from app.services.content_calendar import generate_monthly_slots
 from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
+    count_citable_references,
     has_required_references,
 )
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
@@ -79,6 +82,7 @@ CONTENT_STATUS_DISPLAY_LABELS = {
     "READY": "발행 준비",
     "PUBLISHED": "발행 완료",
     "REJECTED": "반려",
+    "CANCELLED": "종료",
 }
 
 BRIEF_STATUS_DISPLAY_LABELS = {
@@ -145,6 +149,10 @@ class PublishBody(BaseModel):
 
 class PostPublishReviewBody(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
+
+
+class ContentRescheduleBody(BaseModel):
+    scheduled_date: date
 
 
 @router.post("/{hospital_id}/schedule", status_code=status.HTTP_201_CREATED)
@@ -483,6 +491,105 @@ async def update_content_brief(
     return _serialize_item(item, full=True)
 
 
+@router.post(
+    "/{hospital_id}/content/{content_id}/reschedule",
+    response_model=ContentItemDetail,
+)
+async def reschedule_content(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    body: ContentRescheduleBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """Move an unpublished slot to a future date after an operational backlog.
+
+    This is deliberately separate from the general edit endpoint so publishing dates
+    cannot be changed accidentally while an AE edits copy.  A moved slot remains in
+    its current workflow state; the operator may regenerate it explicitly afterwards.
+    """
+
+    item = await _get_content(db, content_id, hospital_id)
+    if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+        raise HTTPException(
+            status_code=409,
+            detail="Published or cancelled content cannot be rescheduled",
+        )
+
+    today_kst = arrow.now("Asia/Seoul").date()
+    if body.scheduled_date <= today_kst:
+        tomorrow_kst = arrow.now("Asia/Seoul").shift(days=1).date()
+        raise HTTPException(
+            status_code=422,
+            detail=f"발행일은 내일({tomorrow_kst}) 이후로 지정해 주세요.",
+        )
+
+    previous_date = item.scheduled_date
+    item.scheduled_date = body.scheduled_date
+    if (
+        previous_date
+        and (previous_date.year, previous_date.month)
+        != (body.scheduled_date.year, body.scheduled_date.month)
+        and item.carried_over_from is None
+    ):
+        item.carried_over_from = previous_date
+
+    await write_audit_log(
+        db,
+        action="reschedule_content",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="content_item",
+        target_id=content_id,
+        detail={
+            "previous_scheduled_date": str(previous_date) if previous_date else None,
+            "scheduled_date": str(body.scheduled_date),
+            "status": _enum_value(item.status),
+        },
+    )
+    await db.commit()
+    await db.refresh(item)
+    return _serialize_item(item, full=True)
+
+
+@router.post(
+    "/{hospital_id}/content/{content_id}/cancel",
+    response_model=ContentItemDetail,
+)
+async def cancel_content(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Permanently stop an unpublished duplicate or obsolete backlog slot."""
+
+    item = await _get_content(db, content_id, hospital_id)
+    if item.status == ContentStatus.PUBLISHED:
+        raise HTTPException(status_code=409, detail="Published content must be rejected instead")
+    if item.status == ContentStatus.CANCELLED:
+        return _serialize_item(item, full=True)
+
+    previous_status = _enum_value(item.status)
+    item.status = ContentStatus.CANCELLED
+    item.generation_claimed_at = None
+    await write_audit_log(
+        db,
+        action="cancel_content",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="content_item",
+        target_id=content_id,
+        detail={
+            "previous_status": previous_status,
+            "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
+            "title": item.title,
+            "reason": "duplicate_or_obsolete_backlog",
+        },
+    )
+    await db.commit()
+    await db.refresh(item)
+    return _serialize_item(item, full=True)
+
+
 async def _lock_content_status(
     db: AsyncSession,
     hospital_id: uuid.UUID,
@@ -526,6 +633,8 @@ async def publish_content(
     current_status = await _lock_content_status(db, hospital_id, content_id, item.status)
     if current_status == ContentStatus.PUBLISHED:
         raise HTTPException(status_code=400, detail="Already published")
+    if current_status == ContentStatus.CANCELLED:
+        raise HTTPException(status_code=409, detail="Cancelled content cannot be published")
     should_revalidate = _has_public_site(hospital)
     if should_revalidate:
         ensure_site_revalidate_configured()
@@ -542,7 +651,8 @@ async def publish_content(
         assessment = assess_content_publication(item, philosophy)
     apply_publication_assessment(item, assessment)
     if not assessment.publishable:
-        await db.commit()
+        if hasattr(db, "commit"):
+            await db.commit()
         if assessment.code == "CONTENT_NOT_GENERATED":
             raise HTTPException(status_code=400, detail="Content not generated yet")
         if assessment.code == "MISSING_REFERENCES":
@@ -667,6 +777,8 @@ async def reject_content(
     """반려 — 야간 재생성 큐에 다시 들어감"""
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
+    if item.status == ContentStatus.CANCELLED:
+        raise HTTPException(status_code=409, detail="Cancelled content cannot be regenerated")
     previous_title = item.title
     previous_status = _enum_value(item.status)
     should_revalidate = previous_status == ContentStatus.PUBLISHED.value and _has_public_site(
@@ -936,6 +1048,8 @@ def _content_review_display(
         return {"label": "후행 확인 대기", "reason": "발행 후 내용 확인 필요", "publishable": False}
     if status_value == ContentStatus.REJECTED.value:
         return {"label": "반려됨", "reason": "야간 재생성 대기", "publishable": False}
+    if status_value == ContentStatus.CANCELLED.value:
+        return {"label": "종료됨", "reason": "중복·노후 슬롯", "publishable": False}
     if not item.title or not item.body:
         return {"label": "생성 전", "reason": "야간 자동 생성 대기", "publishable": False}
     if item.essence_status != ESSENCE_STATUS_ALIGNED:
@@ -975,6 +1089,8 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
     blockers: list[str] = []
     if status_value == ContentStatus.PUBLISHED.value:
         blockers.append("이미 발행된 콘텐츠입니다.")
+    if status_value == ContentStatus.CANCELLED.value:
+        blockers.append("종료된 콘텐츠 슬롯입니다.")
     if not item.title or not item.body:
         blockers.append("본문 생성이 필요합니다.")
     if forbidden_violations:
@@ -989,7 +1105,7 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
         "publishable": not blockers,
         "blockers": blockers,
         "forbidden_violations": forbidden_violations,
-        "references_count": len(item.references_list or []),
+        "references_count": count_citable_references(item),
         "essence_status": item.essence_status,
         "essence_check_summary": item.essence_check_summary,
     }

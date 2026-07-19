@@ -34,7 +34,7 @@
 <body>
 
 <div class="cover">
-  <div class="badge">{% if report_type == 'V0' %}V0 AI 검색 진단 리포트{% else %}월간 SoV 리포트{% endif %}</div>
+  <div class="badge">{% if report_type == 'V0' %}V0 AI 검색 진단 리포트{% else %}월간 AI 노출 콘텐츠 운영 리포트{% endif %}</div>
   <h1>{{ hospital.name }}</h1>
   <div class="meta">
     분석 기간: {{ period_start.strftime('%Y년 %m월 %d일') }} ~ {{ period_end.strftime('%Y년 %m월 %d일') }}<br>
@@ -129,20 +129,70 @@
 {% endif %}
 {% endif %}
 
-<h2>💡 개선 방향</h2>
+{% if report_type == 'MONTHLY' and strategy %}
+<h2>🎯 환자 질문 목표별 AI 노출 결과</h2>
+{% if strategy.query_targets %}
 <table>
-  <tr><th>우선순위</th><th>항목</th><th>기대 효과</th></tr>
-  {% if not sov_measured %}
-  <tr><td>🟠 우선</td><td>AI 답변 언급률 측정 재실행</td><td>진단 근거 확보</td></tr>
-  {% elif sov_pct < 20 %}
-  <tr><td>🔴 높음</td><td>AEO 콘텐츠 집중 발행 (FAQ·질환 가이드)</td><td>AI 인용 가능성 증가</td></tr>
-  <tr><td>🔴 높음</td><td>리뷰 수집 캠페인 실행</td><td>로컬 신뢰도 향상</td></tr>
-  {% elif sov_pct < 50 %}
-  <tr><td>🟡 중간</td><td>지역 특화 키워드 콘텐츠 강화</td><td>SoV 점진적 개선</td></tr>
-  {% else %}
-  <tr><td>🟢 유지</td><td>콘텐츠 정기 업데이트 유지</td><td>현재 노출 수준 유지</td></tr>
-  {% endif %}
+  <tr><th>환자 질문 목표</th><th>플랫폼별 SoV</th><th>통합 SoV</th><th>경쟁 병원 언급</th><th>출처 확인</th></tr>
+  {% set platform_labels = {'chatgpt':'ChatGPT','gemini':'Gemini'} %}
+  {% for target in strategy.query_targets %}
+  <tr>
+    <td><strong>{{ target.name }}</strong><br><span class="note">{{ target.priority_label or target.priority }}</span></td>
+    <td>
+      {% if target.platform_sov %}
+        {% for platform, value in target.platform_sov.items() %}
+          {{ platform_labels.get(platform, platform) }} {% if value is not none %}{{ "%.1f"|format(value) }}%{% else %}측정 없음{% endif %}{% if not loop.last %}<br>{% endif %}
+        {% endfor %}
+      {% else %}측정 없음{% endif %}
+    </td>
+    <td>{% if target.sov_pct is not none %}{{ "%.1f"|format(target.sov_pct) }}%{% else %}측정 없음{% endif %}</td>
+    <td>
+      {% if target.competitor_outcomes %}
+        {% for competitor in target.competitor_outcomes %}{{ competitor.name }} {{ "%.1f"|format(competitor.mention_pct) }}%{% if not loop.last %}<br>{% endif %}{% endfor %}
+      {% else %}측정 없음{% endif %}
+    </td>
+    <td>{{ target.source_backed_count }}/{{ target.successful_measurement_count }}건</td>
+  </tr>
+  {% endfor %}
 </table>
+{% else %}<p class="note">이번 기간에 연결된 환자 질문 목표 측정 결과가 없습니다.</p>{% endif %}
+
+<h2>🔎 확인된 AI 노출 갭</h2>
+{% if strategy.exposure_gaps %}
+<table>
+  <tr><th>환자 질문 목표</th><th>갭</th><th>심각도</th></tr>
+  {% for gap in strategy.exposure_gaps %}
+  <tr><td>{{ gap.query_target_name or '연결 없음' }}</td><td>{{ gap.gap_type_label or gap.gap_type }}</td><td>{{ gap.severity_label or gap.severity }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="note">현재 열려 있는 AI 노출 갭이 없습니다.</p>{% endif %}
+
+<h2>✅ 이번 달 완료 액션</h2>
+{% if strategy.completed_actions %}
+<table>
+  <tr><th>완료 항목</th><th>환자 질문 목표</th><th>연결 콘텐츠</th></tr>
+  {% for action in strategy.completed_actions %}
+  <tr><td>{{ action.title }}</td><td>{{ action.query_target_name or '연결 없음' }}</td><td>{{ action.linked_content_title or '—' }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}<p class="note">이번 기간에 완료 처리된 노출 개선 액션이 없습니다.</p>{% endif %}
+
+<h2>🚀 {{ strategy.next_month }} Top 3 실행안</h2>
+{% if strategy.next_month_actions %}
+<table>
+  <tr><th>순위</th><th>실행안</th><th>담당 / 기한</th></tr>
+  {% for action in strategy.next_month_actions %}
+  <tr>
+    <td>{{ loop.index }}</td>
+    <td><strong>{{ action.title }}</strong><br><span class="note">{{ action.query_target_name or '환자 질문 목표 연결 없음' }} · {{ action.description }}</span></td>
+    <td>{{ action.owner or '미지정' }}<br>{{ action.due_month or strategy.next_month }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}<p class="note">다음 달로 이어지는 미완료 노출 개선 액션이 없습니다.</p>{% endif %}
+
+<div class="highlight">{{ strategy.compliance_caveat }}</div>
+{% endif %}
 
 <div class="footer">
   본 리포트는 MotionLabs Re:putation 시스템이 자동 생성하였습니다.<br>

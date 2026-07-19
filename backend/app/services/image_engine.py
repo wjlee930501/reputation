@@ -1,13 +1,13 @@
 """
 이미지 생성 엔진
-- 기본: OpenAI **gpt-image-2** (editorial 의료 일러스트, 주제별 프롬프트로 다양성 확보)
+- 기본: OpenAI **gpt-image-2** (프리미엄 의료 에디토리얼 사진, 주제별 프롬프트로 다양성 확보)
 - 폴백: Google Imagen 3 (Vertex AI) — OPENAI 키 미설정/IMAGE_PROVIDER=imagen 일 때
 - 생성물은 GCS에 저장 후 gs:// 경로 반환 (공개 표면은 안정 프록시로 서빙)
 
 설계 메모: 콘텐츠 카드 이미지가 유형별 고정 프롬프트라 "파란 빈 방"이 반복되던 슬롭 문제를
 없애기 위해, 각 항목의 제목(topic)을 프롬프트에 주입해 항목마다 다른 그림이 나오게 한다.
 의료광고법/이미지 정책 준수: 텍스트·로고 금지, 실존/식별 가능한 인물·얼굴 금지, 자극적(피·수술
-장면) 묘사 금지, 실제 병원 사진을 가장하지 않는 '일러스트'임을 명시.
+장면) 묘사 금지, 실존 의료진·실제 병원 사진을 가장하지 않는 비식별 에디토리얼 사진만 허용.
 """
 import base64
 import logging
@@ -52,21 +52,21 @@ _OPENAI_TYPE_SUBJECT = {
         "Concept: a clear, reassuring visual metaphor that answers a common patient health question."
     ),
     ContentType.DISEASE: (
-        "Concept: a clean, conceptual editorial illustration that explains a medical condition "
-        "through abstract metaphor and tasteful iconography (not explicit anatomy)."
+        "Concept: a calm photographic still life or fully clothed anonymous lifestyle scene that "
+        "helps explain a medical condition without explicit anatomy."
     ),
     ContentType.TREATMENT: (
-        "Concept: a calm, conceptual illustration of a medical examination or treatment process "
-        "with abstracted, non-graphic instruments."
+        "Concept: a calm editorial photograph of a medical examination setting or preparation "
+        "with non-graphic instruments and no active procedure."
     ),
     ContentType.COLUMN: (
         "Concept: a warm, thoughtful editorial scene evoking a doctor's clinical perspective and patient care."
     ),
     ContentType.HEALTH: (
-        "Concept: a bright, optimistic illustration about healthy living, daily habits and prevention."
+        "Concept: a bright editorial lifestyle photograph about healthy daily habits and prevention."
     ),
     ContentType.LOCAL: (
-        "Concept: a welcoming illustration of neighborhood healthcare and a local community clinic."
+        "Concept: a welcoming architectural or street-level editorial photograph evoking neighborhood healthcare."
     ),
     ContentType.NOTICE: (
         "Concept: a clean, modern motif for a clinic notice or information update."
@@ -78,11 +78,11 @@ def _build_openai_image_prompt(content_type: ContentType, topic: str | None) -> 
     subject = _OPENAI_TYPE_SUBJECT.get(content_type, _OPENAI_TYPE_SUBJECT[ContentType.FAQ])
     topic_line = f" The specific subject of this illustration is: {topic.strip()}." if topic else ""
     return (
-        "Create a refined, premium editorial illustration for a Korean medical information hub. "
+        "Create a refined, premium editorial photograph for a Korean medical information hub. "
         f"{subject}{topic_line} "
-        "Style: clean modern semi-flat vector with subtle depth, generous negative space, "
-        "a calm and trustworthy palette of soft clinical blues and warm neutrals with a single "
-        "restrained accent color, gentle even lighting, and balanced composition. "
+        "Style: realistic contemporary Korean health-magazine photography with generous negative space, "
+        "natural skin and material texture, soft window light, warm ivory neutrals, subtle navy details, "
+        "and one restrained muted-gold accent. Clean, calm, trustworthy and balanced; never glossy luxury. "
         "Tasteful and strictly non-graphic: no blood, no surgical gore, no needles in flesh, "
         "no distressing or clinical-procedure imagery. "
         "Keep it strictly non-explicit and family-friendly: do NOT depict bare skin, buttocks, "
@@ -90,9 +90,11 @@ def _build_openai_image_prompt(content_type: ContentType, topic: str | None) -> 
         "proctological topics use a fully clothed, abstract wellness or lifestyle metaphor instead "
         "of body anatomy. "
         "Absolutely NO text, letters, numbers, words, captions, labels, logos, or watermarks anywhere. "
-        "Do NOT depict real, identifiable, or named people and do NOT show recognizable faces. "
-        "This is an original illustration — not a photograph of a real clinic or a real person. "
-        "Avoid generic stock-photo clichés and empty blue rooms. 16:9 banner composition."
+        "Do NOT depict real, identifiable, or named people and do NOT show recognizable faces; use anonymous "
+        "hands, back/side crops, objects, food, architecture or equipment when people are not necessary. "
+        "This is an original editorial scene, not documentary evidence of a real clinic or real doctor. "
+        "No vectors, infographics, floating icons, anatomy diagrams, collages, generic stock-photo clichés, "
+        "or empty blue rooms. 16:9 banner composition."
     )
 
 

@@ -62,9 +62,20 @@ async def get_exposure_actions(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=3, ge=1, le=20),
 ):
-    """Return deterministic top exposure actions for a hospital."""
+    """Return deterministic top exposure actions without mutating work state."""
     await _get_hospital_or_404(db, hospital_id)
+    actions = await list_top_exposure_actions(db, hospital_id, limit=limit)
+    return [_serialize_action(action) for action in actions]
 
+
+@router.post("/{hospital_id}/exposure-actions/refresh")
+async def refresh_exposure_actions(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=3, ge=1, le=20),
+):
+    """Explicitly refresh derived gaps/actions, then return the current top queue."""
+    await _get_hospital_or_404(db, hospital_id)
     await ensure_hospital_exposure_actions(db, hospital_id)
     actions = await list_top_exposure_actions(db, hospital_id, limit=limit)
     return [_serialize_action(action) for action in actions]

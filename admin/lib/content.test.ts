@@ -89,6 +89,7 @@ test('content operations state distinguishes Slack retry, post-review, and revie
     getContentOperationsState({ status: 'DRAFT', title: 'ready', compliance: { publishable: true } }),
     'publishable',
   )
+  assert.equal(getContentOperationsState({ status: 'CANCELLED', title: 'old draft' }), 'cancelled')
 })
 
 test('content operations filters support actionable summary-card filtering', () => {

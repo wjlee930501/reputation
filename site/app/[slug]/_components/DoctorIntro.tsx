@@ -20,6 +20,7 @@ interface Props {
 }
 
 function resolveDoctorPhoto(directorPhotoUrl: string | null, photos: HospitalPhoto[]): string | null {
+  if (directorPhotoUrl?.startsWith('/clinic/')) return directorPhotoUrl
   const direct = resolveAssetUrl(directorPhotoUrl)
   if (direct) return direct
   const doctorPhoto = photos.find((p) => p.source_type === 'PHOTO_DOCTOR')

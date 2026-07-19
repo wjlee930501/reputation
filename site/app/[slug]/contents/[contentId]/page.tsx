@@ -14,6 +14,7 @@ import {
   SOURCE_TYPE_LABELS,
   TYPE_LABELS,
 } from '@/lib/api'
+import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { safeExternalHref } from '@/lib/safe-url'
 import { canonicalBase } from '@/lib/site-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
@@ -218,7 +219,14 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
     image: articleImageUrl ?? undefined,
     citation:
       referenceList.length > 0
-        ? referenceList.map((ref) => ({ '@type': 'CreativeWork', name: ref.title, url: ref.url }))
+        ? referenceList.map((ref) => {
+            const safeUrl = safeExternalHref(ref.url)
+            return {
+              '@type': 'CreativeWork',
+              name: ref.title,
+              ...(safeUrl ? { url: safeUrl } : {}),
+            }
+          })
         : undefined,
     // Speakable: 음성 어시스턴트가 발췌해 읽을 수 있는 구간.
     speakable: {
@@ -332,7 +340,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   return (
     <>
       <JsonLd data={jsonLd} />
-      <div className="clinic-shell">
+      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalSlug={params.slug}
@@ -340,6 +348,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
           specialties={hospital.specialties}
           phone={hospital.phone}
           websiteUrl={hospitalWebsiteUrl}
+          logoUrl={hospital.logo_url}
         />
         <main id="main-content">
           <div className="clinic-article-shell">
@@ -365,7 +374,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   <span className="clinic-article-byline-label">의료 정보 안내</span>
                   <strong>{hospital.name}</strong>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
-                  <span>{hospital.director_name} 원장 진료 분야 기준</span>
+                  <span>병원 승인 자료·공공 의료 근거 기반</span>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
                   <span>{readingMinutes}분 읽기</span>
                   <span className="clinic-article-byline-dot" aria-hidden="true">·</span>
@@ -387,7 +396,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                 <dl className="clinic-article-trustbar" aria-label="콘텐츠 신뢰 정보">
                   <div>
                     <dt>작성 기준</dt>
-                    <dd>{hospital.director_name} 원장 진료 분야</dd>
+                    <dd>병원 승인 자료 기반</dd>
                   </div>
                   <div>
                     <dt>업데이트</dt>
@@ -401,7 +410,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   </div>
                   <div>
                     <dt>고지</dt>
-                    <dd>진료 상담 대체 아님</dd>
+                    <dd>의료진 직접 감수 표기 아님</dd>
                   </div>
                 </dl>
               </div>

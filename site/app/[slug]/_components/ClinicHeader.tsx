@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import Image from 'next/image'
 
 import { ExternalIcon, PhoneIcon } from './icons'
 
@@ -9,6 +10,7 @@ interface Props {
   specialties: string[]
   phone: string
   websiteUrl: string | null
+  logoUrl?: string | null
 }
 
 export function ClinicHeader({
@@ -18,6 +20,7 @@ export function ClinicHeader({
   specialties,
   phone,
   websiteUrl,
+  logoUrl,
 }: Props) {
   // 진료과 표기는 프로파일의 specialties[]에서만 파생 — 하드코딩 금지.
   const specialtyLabel = specialties.filter(Boolean).join('·')
@@ -44,7 +47,18 @@ export function ClinicHeader({
     <header className="clinic-header">
       <div className="clinic-header-row">
         <Link href={`/${hospitalSlug}`} className="clinic-header-brand" aria-label={`${hospitalName} 진료 안내 홈으로`}>
-          <span className="clinic-header-brand-name">{hospitalName}</span>
+          {logoUrl ? (
+            <Image
+              src={logoUrl}
+              alt={`${hospitalName} 로고`}
+              width={160}
+              height={48}
+              className="clinic-header-brand-logo"
+              unoptimized
+            />
+          ) : (
+            <span className="clinic-header-brand-name">{hospitalName}</span>
+          )}
           <span className="clinic-header-brand-meta">{brandMeta}</span>
         </Link>
 

@@ -12,15 +12,23 @@ POST   /admin/hospitals/{id}/query-targets/seed-from-matrix
 """
 import logging
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.hospital import Hospital
-from app.models.sov import AIQueryTarget, AIQueryVariant, QueryMatrix
+from app.models.sov import (
+    AIQueryTarget,
+    AIQueryVariant,
+    ExposureAction,
+    ExposureGap,
+    QueryMatrix,
+    SovRecord,
+)
 from app.schemas.query_target import (
     AIQueryTargetCreate,
     AIQueryTargetDetail,
@@ -29,6 +37,7 @@ from app.schemas.query_target import (
     AIQueryVariantCreate,
     AIQueryVariantResponse,
     AIQueryVariantUpdate,
+    SUPPORTED_QUERY_PLATFORMS,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,7 +99,8 @@ async def list_query_targets(
     result = await db.execute(stmt)
     targets = result.scalars().all()
     targets = sorted(targets, key=_target_sort_key)
-    return [_serialize_target(target) for target in targets]
+    summaries = await _load_target_operational_summaries(db, targets)
+    return [_serialize_target(target, summaries.get(target.id)) for target in targets]
 
 
 @router.post(
@@ -125,6 +135,22 @@ async def create_query_target(
             )
         )
 
+    # 플랫폼을 선택했지만 문구를 따로 입력하지 않은 경우 target.name을 기본 질문으로
+    # 사용한다. platforms와 실제 측정 variants가 어긋나 Gemini가 영구 누락되지 않게 한다.
+    present_platforms = {key[1] for key in seen_variants}
+    for platform in body.platforms:
+        if platform in present_platforms:
+            continue
+        db.add(
+            AIQueryVariant(
+                query_target_id=target.id,
+                query_text=body.name,
+                platform=platform,
+                language=body.patient_language,
+                is_active=True,
+            )
+        )
+
     await db.commit()
     target = await _get_target_or_404(db, hospital_id, target.id)
     return _serialize_target(target)
@@ -137,7 +163,8 @@ async def get_query_target(
     db: AsyncSession = Depends(get_db),
 ):
     target = await _get_target_or_404(db, hospital_id, target_id)
-    return _serialize_target(target)
+    summaries = await _load_target_operational_summaries(db, [target])
+    return _serialize_target(target, summaries.get(target.id))
 
 
 @router.patch("/{hospital_id}/query-targets/{target_id}", response_model=AIQueryTargetDetail)
@@ -197,17 +224,27 @@ async def seed_query_targets_from_matrix(
     - 멱등 키: (hospital_id, query_text) — 동일 query_text의 기존 target은 건너뜀.
     - 우선순위: 해당 query_matrix 행의 SoV 결과에서 미언급(is_mentioned=False)인 행을
       먼저 HIGH로 생성하고, 나머지는 NORMAL로 생성해 노출 갭이 큰 질문부터 집중한다.
-    - 생성된 target마다 CHATGPT variant를 자동 추가하고 query_matrix_id를 연결한다.
+    - 생성·기존 target마다 CHATGPT/GEMINI variant를 보장하고 query_matrix_id를 연결한다.
 
     반환: {"created": int, "skipped": int}
     """
     import arrow
 
-    # 기존 target의 name(=query_text) 집합 — 멱등 체크용
-    existing_names_result = await db.execute(
-        select(AIQueryTarget.name).where(AIQueryTarget.hospital_id == hospital_id)
+    # 기존 target도 플랫폼 누락을 고쳐야 하므로 variants까지 읽는다.
+    existing_targets_result = await db.execute(
+        select(AIQueryTarget)
+        .options(selectinload(AIQueryTarget.variants))
+        .where(AIQueryTarget.hospital_id == hospital_id)
     )
-    existing_names: set[str] = {row[0] for row in existing_names_result.all()}
+    existing_by_name: dict[str, AIQueryTarget | None] = {}
+    for target in existing_targets_result.scalars().all():
+        # 레거시 최소 projection(select name) 결과도 멱등 키로는 사용할 수 있다.
+        # 실제 운영 쿼리는 AIQueryTarget 전체 객체라 누락 플랫폼 backfill까지 수행한다.
+        if isinstance(target, tuple):
+            if target:
+                existing_by_name[str(target[0])] = None
+        else:
+            existing_by_name[target.name] = target
 
     # 전체 QueryMatrix 행 조회 (is_active 필터 없음 — 시드 시점엔 모두 포함)
     matrix_result = await db.execute(
@@ -243,9 +280,15 @@ async def seed_query_targets_from_matrix(
 
     created = 0
     skipped = 0
+    backfilled = 0
     for q in matrix_rows:
-        # 멱등 체크: 동일 query_text의 target이 이미 있으면 건너뜀
-        if q.query_text in existing_names:
+        # 멱등 체크: 동일 query_text target은 새로 만들지 않고 이중 플랫폼만 보완한다.
+        if q.query_text in existing_by_name:
+            existing_target = existing_by_name[q.query_text]
+            if existing_target is not None:
+                changed = _ensure_dual_platform_variants(existing_target, q, db)
+                if changed:
+                    backfilled += 1
             skipped += 1
             continue
 
@@ -262,7 +305,7 @@ async def seed_query_targets_from_matrix(
             condition_or_symptom=None,
             treatment=None,
             decision_criteria=[],
-            platforms=["CHATGPT"],
+            platforms=["CHATGPT", "GEMINI"],
             competitor_names=[],
             priority=priority,
             status="ACTIVE",
@@ -273,31 +316,78 @@ async def seed_query_targets_from_matrix(
         db.add(target)
         await db.flush()  # target.id 확정
 
-        # 기본 CHATGPT variant — query_matrix와 연결
-        db.add(
-            AIQueryVariant(
-                query_target_id=target.id,
-                query_text=q.query_text,
-                platform="CHATGPT",
-                language="ko",
-                is_active=True,
-                query_matrix_id=q.id,
+        for platform in ("CHATGPT", "GEMINI"):
+            db.add(
+                AIQueryVariant(
+                    query_target_id=target.id,
+                    query_text=q.query_text,
+                    platform=platform,
+                    language="ko",
+                    is_active=True,
+                    query_matrix_id=q.id,
+                )
             )
-        )
 
-        existing_names.add(q.query_text)  # 같은 배치 내 중복 방지
+        existing_by_name[q.query_text] = target  # 같은 배치 내 중복 방지
         created += 1
 
-    if created:
+    if created or backfilled:
         await db.commit()
 
     logger.info(
-        "seed_query_targets_from_matrix: hospital=%s created=%d skipped=%d",
+        "seed_query_targets_from_matrix: hospital=%s created=%d skipped=%d backfilled=%d",
         hospital_id,
         created,
         skipped,
+        backfilled,
     )
-    return {"created": created, "skipped": skipped}
+    return {"created": created, "skipped": skipped, "backfilled": backfilled}
+
+
+def _ensure_dual_platform_variants(
+    target: AIQueryTarget,
+    query: QueryMatrix,
+    db,
+) -> bool:
+    changed = False
+    platforms = _supported_platforms(target.platforms)
+    for platform in ("CHATGPT", "GEMINI"):
+        if platform not in platforms:
+            platforms.append(platform)
+            changed = True
+
+        matching = next(
+            (
+                variant
+                for variant in (target.variants or [])
+                if str(variant.platform).upper() == platform
+                and variant.query_text.strip() == query.query_text.strip()
+            ),
+            None,
+        )
+        if matching is None:
+            variant = AIQueryVariant(
+                query_target_id=target.id,
+                query_text=query.query_text,
+                platform=platform,
+                language="ko",
+                is_active=True,
+                query_matrix_id=query.id,
+            )
+            db.add(variant)
+            target.variants.append(variant)
+            changed = True
+        else:
+            if not matching.is_active:
+                matching.is_active = True
+                changed = True
+            if matching.query_matrix_id is None:
+                matching.query_matrix_id = query.id
+                changed = True
+    if target.platforms != platforms:
+        target.platforms = platforms
+        changed = True
+    return changed
 
 
 @router.post(
@@ -324,6 +414,9 @@ async def add_query_variant(
 
     variant = AIQueryVariant(query_target_id=target.id, **body.model_dump())
     db.add(variant)
+    platforms = _supported_platforms(target.platforms)
+    if body.platform not in platforms:
+        target.platforms = [*platforms, body.platform]
     await db.commit()
     await db.refresh(variant)
     return _serialize_variant(variant)
@@ -457,9 +550,140 @@ def _apply_target_update(target: AIQueryTarget, update_data: dict) -> None:
         setattr(target, field, value)
 
 
-def _serialize_target(target: AIQueryTarget) -> dict:
+async def _load_target_operational_summaries(
+    db: AsyncSession,
+    targets: list[AIQueryTarget],
+) -> dict[uuid.UUID, dict]:
+    if not targets:
+        return {}
+    hospital_id = targets[0].hospital_id
+    target_ids = [target.id for target in targets]
+    query_ids = [
+        variant.query_matrix_id
+        for target in targets
+        for variant in (target.variants or [])
+        if variant.query_matrix_id is not None
+    ]
+    record_scope = SovRecord.ai_query_target_id.in_(target_ids)
+    if query_ids:
+        record_scope = or_(record_scope, SovRecord.query_id.in_(query_ids))
+    records = (await db.execute(
+        select(SovRecord)
+        .where(SovRecord.hospital_id == hospital_id, record_scope)
+        .order_by(SovRecord.measured_at.desc())
+    )).scalars().all()
+    gaps = (await db.execute(
+        select(ExposureGap).where(ExposureGap.query_target_id.in_(target_ids))
+    )).scalars().all()
+    actions = (await db.execute(
+        select(ExposureAction)
+        .options(
+            selectinload(ExposureAction.query_target),
+            selectinload(ExposureAction.gap),
+        )
+        .where(ExposureAction.query_target_id.in_(target_ids))
+    )).scalars().all()
+    return _build_target_operational_summaries(targets, records, gaps, actions)
+
+
+def _build_target_operational_summaries(
+    targets: list,
+    records: list,
+    gaps: list,
+    actions: list,
+) -> dict[uuid.UUID, dict]:
+    targets_by_key = {str(target.id): target for target in targets}
+    query_to_target = {
+        str(variant.query_matrix_id): str(target.id)
+        for target in targets
+        for variant in (getattr(target, "variants", None) or [])
+        if getattr(variant, "query_matrix_id", None)
+    }
+    records_by_target: dict[str, list] = {key: [] for key in targets_by_key}
+    for record in records:
+        direct_id = getattr(record, "ai_query_target_id", None)
+        target_key = str(direct_id) if direct_id else query_to_target.get(str(record.query_id))
+        if target_key in records_by_target:
+            records_by_target[target_key].append(record)
+
+    severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    active_gaps_by_target: dict[str, list] = {key: [] for key in targets_by_key}
+    for gap in gaps:
+        key = str(getattr(gap, "query_target_id", ""))
+        if key in active_gaps_by_target and str(getattr(gap, "status", "")).upper() in {"OPEN", "WATCHING"}:
+            active_gaps_by_target[key].append(gap)
+
+    active_actions_by_target: dict[str, list] = {key: [] for key in targets_by_key}
+    for action in actions:
+        key = str(getattr(action, "query_target_id", ""))
+        if key in active_actions_by_target and str(getattr(action, "status", "")).upper() in {
+            "OPEN", "IN_PROGRESS", "BLOCKED"
+        }:
+            active_actions_by_target[key].append(action)
+
+    summaries: dict[uuid.UUID, dict] = {}
+    for key, target in targets_by_key.items():
+        target_records = records_by_target[key]
+        latest_record = max(
+            target_records,
+            key=lambda record: getattr(record, "measured_at", datetime.min),
+            default=None,
+        )
+        latest_records: list = []
+        if latest_record is not None:
+            latest_run_id = getattr(latest_record, "measurement_run_id", None)
+            if latest_run_id is not None:
+                latest_records = [
+                    record
+                    for record in target_records
+                    if getattr(record, "measurement_run_id", None) == latest_run_id
+                ]
+            else:
+                latest_records = [latest_record]
+        successful = [record for record in latest_records if _successful_record(record)]
+        latest_sov = (
+            round(sum(1 for record in successful if record.is_mentioned) / len(successful) * 100, 1)
+            if successful
+            else None
+        )
+        target_gaps = sorted(
+            active_gaps_by_target[key],
+            key=lambda gap: severity_rank.get(str(getattr(gap, "severity", "MEDIUM")).upper(), 9),
+        )
+        target_actions = sorted(
+            active_actions_by_target[key],
+            key=lambda action: (
+                str(getattr(action, "due_month", None) or "9999-99"),
+                str(getattr(action, "created_at", "")),
+            ),
+        )
+        summaries[target.id] = {
+            "latest_sov_pct": latest_sov,
+            "last_measured_at": (
+                latest_record.measured_at.isoformat() if latest_record is not None else None
+            ),
+            "gap_status": target_gaps[0].status if target_gaps else None,
+            "next_action": target_actions[0].title if target_actions else None,
+        }
+    return summaries
+
+
+def _successful_record(record) -> bool:
+    status = getattr(record, "measurement_status", None)
+    if str(status or "SUCCESS").upper() == "FAILED":
+        return False
+    if hasattr(record, "raw_response"):
+        return bool(str(getattr(record, "raw_response", "") or "").strip())
+    return True
+
+
+def _serialize_target(target: AIQueryTarget, operational_summary: dict | None = None) -> dict:
     variants = sorted(
-        target.variants or [],
+        [
+            variant
+            for variant in (target.variants or [])
+            if str(variant.platform).strip().upper() in SUPPORTED_QUERY_PLATFORMS
+        ],
         key=lambda item: (not item.is_active, item.created_at.isoformat() if item.created_at else ""),
     )
     active_variant_count = sum(1 for variant in variants if variant.is_active)
@@ -475,7 +699,7 @@ def _serialize_target(target: AIQueryTarget) -> dict:
         "treatment": target.treatment,
         "decision_criteria": target.decision_criteria or [],
         "patient_language": target.patient_language,
-        "platforms": target.platforms or [],
+        "platforms": _supported_platforms(target.platforms),
         "competitor_names": target.competitor_names or [],
         "priority": target.priority,
         "status": target.status,
@@ -490,21 +714,32 @@ def _serialize_target(target: AIQueryTarget) -> dict:
             "variant_count": len(variants),
             "active_variant_count": active_variant_count,
             "linked_query_matrix_count": linked_query_matrix_count,
-            "latest_sov_pct": None,
-            "last_measured_at": None,
-            "gap_status": None,
-            "next_action": "첫 AI 언급률 측정 대기" if active_variant_count > 0 else "질문 문구 추가 필요",
+            "latest_sov_pct": (operational_summary or {}).get("latest_sov_pct"),
+            "last_measured_at": (operational_summary or {}).get("last_measured_at"),
+            "gap_status": (operational_summary or {}).get("gap_status"),
+            "next_action": (operational_summary or {}).get("next_action") or (
+                "첫 AI 언급률 측정 대기" if active_variant_count > 0 else "질문 문구 추가 필요"
+            ),
         },
     }
 
 
 def _serialize_target_display(target: AIQueryTarget) -> dict:
-    platforms = target.platforms or []
+    platforms = _supported_platforms(target.platforms)
     return {
         "priority_label": _display_label(QUERY_TARGET_PRIORITY_DISPLAY_LABELS, target.priority),
         "status_label": _display_label(QUERY_TARGET_STATUS_DISPLAY_LABELS, target.status),
         "platform_labels": [_platform_label(platform) for platform in platforms],
     }
+
+
+def _supported_platforms(platforms: list | None) -> list[str]:
+    result: list[str] = []
+    for platform in platforms or []:
+        normalized = str(platform).strip().upper()
+        if normalized in SUPPORTED_QUERY_PLATFORMS and normalized not in result:
+            result.append(normalized)
+    return result
 
 
 def _serialize_variant_display(variant: AIQueryVariant) -> dict:

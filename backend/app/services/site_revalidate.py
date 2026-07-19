@@ -56,6 +56,11 @@ def _treatment_pillar_paths(slug: str, treatments: list | None) -> list[str]:
 def hospital_site_paths(slug: str, treatments: list | None = None) -> list[str]:
     base = f"/{slug}"
     return [
+        # Custom-domain requests enter at `/` and middleware rewrites them to
+        # `/{slug}`. Next can retain the host-root route cache separately, so
+        # invalidating only the rewritten pathname leaves e.g. jangclinic.kr
+        # showing an old profile/image until ISR expiry.
+        "/",
         "/sitemap.xml",
         "/llms.txt",  # 루트 llms.txt도 병원 목록/요약을 노출하므로 함께 무효화 (P2-9b)
         base,

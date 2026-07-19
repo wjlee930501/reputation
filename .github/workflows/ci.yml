@@ -143,9 +143,9 @@ jobs:
       - name: Terraform validate
         run: terraform validate
 
-      - name: Terraform image policy tests
+      - name: Deployment and Terraform policy tests
         working-directory: .
-        run: python -m pytest scripts/test_terraform_static.py
+        run: python -m pytest scripts
 
   docker:
     name: Docker image builds

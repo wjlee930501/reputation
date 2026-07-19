@@ -4,6 +4,12 @@ import { useParams } from 'next/navigation'
 import { Dispatch, FormEvent, SetStateAction, useEffect, useMemo, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 import {
+  buildPlatformVariants,
+  canRunMeasurement,
+  isSupportedQueryPlatform,
+  SUPPORTED_QUERY_PLATFORMS,
+} from '@/lib/operator-safety'
+import {
   AIQueryTarget,
   AIQueryTargetPriority,
   AIQueryTargetStatus,
@@ -57,6 +63,7 @@ export default function QueryTargetsPage() {
   const [targets, setTargets] = useState<AIQueryTarget[]>([])
   const [form, setForm] = useState<FormState>(DEFAULT_FORM)
   const [variantDrafts, setVariantDrafts] = useState<Record<string, string>>({})
+  const [variantPlatforms, setVariantPlatforms] = useState<Record<string, string>>({})
   const [variantSavingByTarget, setVariantSavingByTarget] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -67,12 +74,16 @@ export default function QueryTargetsPage() {
   const activeTargets = useMemo(() => targets.filter((target) => target.status !== 'ARCHIVED'), [targets])
   const archivedTargets = useMemo(() => targets.filter((target) => target.status === 'ARCHIVED'), [targets])
 
-  const canMeasure = hospital != null && MEASURABLE_STATUSES.has(hospital.status)
+  const canMeasureStatus = hospital != null && MEASURABLE_STATUSES.has(hospital.status)
+  const hasMeasurableVariant = canRunMeasurement(targets)
+  const canMeasure = canMeasureStatus && hasMeasurableVariant
   const measureDisabledReason = hospital == null
     ? '병원 상태를 확인하는 중입니다.'
-    : !canMeasure
+    : !canMeasureStatus
       ? `현재 병원 상태(${STATUS_LABELS[hospital.status]?.label ?? hospital.status})에서는 측정을 실행할 수 없습니다. 운영중 또는 도메인대기 상태에서 실행할 수 있습니다.`
-      : null
+      : !hasMeasurableVariant
+        ? '운영 중인 환자 질문에 활성 문구가 하나 이상 있어야 측정할 수 있습니다.'
+        : null
 
   async function runMeasurement() {
     if (measuring || !canMeasure) return
@@ -138,12 +149,11 @@ export default function QueryTargetsPage() {
           competitor_names: toList(form.competitor_names),
           created_by: 'MotionLabs Ops',
           updated_by: 'MotionLabs Ops',
-          variants: toList(form.variants).map((query_text) => ({
-            query_text,
-            platform: firstPlatform(form.platforms),
-            language: form.patient_language || 'ko',
-            is_active: true,
-          })),
+          variants: buildPlatformVariants(
+            toList(form.variants),
+            toList(form.platforms),
+            form.patient_language || 'ko',
+          ),
         }),
       })
       setForm(DEFAULT_FORM)
@@ -170,9 +180,15 @@ export default function QueryTargetsPage() {
 
   async function addVariant(target: AIQueryTarget) {
     const queryText = (variantDrafts[target.id] ?? '').trim()
+    const supportedPlatforms = target.platforms.filter(isSupportedQueryPlatform)
+    const platform = variantPlatforms[target.id] ?? supportedPlatforms[0]
     if (!queryText || variantSavingByTarget[target.id]) return
+    if (!platform) {
+      setError('이 환자 질문에는 지원 중인 AI 서비스가 없습니다. 새 환자 질문으로 다시 등록해 주세요.')
+      return
+    }
     const alreadyExists = target.variants.some(
-      (variant) => variant.query_text.trim() === queryText && variant.platform === (target.platforms[0] ?? 'CHATGPT'),
+      (variant) => variant.query_text.trim() === queryText && variant.platform === platform,
     )
     if (alreadyExists) {
       setError('이미 등록된 환자 질문 문구입니다.')
@@ -185,7 +201,7 @@ export default function QueryTargetsPage() {
         method: 'POST',
         body: JSON.stringify({
           query_text: queryText,
-          platform: target.platforms[0] ?? 'CHATGPT',
+          platform,
           language: target.patient_language || 'ko',
           is_active: true,
         }),
@@ -196,6 +212,19 @@ export default function QueryTargetsPage() {
       setError(err instanceof Error ? err.message : '환자 질문 문구를 추가하지 못했습니다.')
     } finally {
       setVariantSavingByTarget((prev) => ({ ...prev, [target.id]: false }))
+    }
+  }
+
+  async function setVariantActive(target: AIQueryTarget, variantId: string, isActive: boolean) {
+    setError(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/query-targets/${target.id}/variants/${variantId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: isActive }),
+      })
+      await loadTargets()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '환자 질문 문구 상태를 변경하지 못했습니다.')
     }
   }
 
@@ -302,7 +331,10 @@ export default function QueryTargetsPage() {
                   target={target}
                   variantDraft={variantDrafts[target.id] ?? ''}
                   onVariantDraftChange={(value) => setVariantDrafts((prev) => ({ ...prev, [target.id]: value }))}
+                  variantPlatform={variantPlatforms[target.id] ?? target.platforms.find(isSupportedQueryPlatform) ?? ''}
+                  onVariantPlatformChange={(value) => setVariantPlatforms((prev) => ({ ...prev, [target.id]: value }))}
                   onAddVariant={() => addVariant(target)}
+                  onVariantActiveChange={(variantId, isActive) => setVariantActive(target, variantId, isActive)}
                   isAddingVariant={variantSavingByTarget[target.id] ?? false}
                   onStatusChange={(status) => patchTarget(target, { status })}
                   onPriorityChange={(priority) => patchTarget(target, { priority })}
@@ -345,7 +377,10 @@ export default function QueryTargetsPage() {
             </div>
             <Textarea label="지역어" value={form.region_terms} onChange={(value) => setFormValue(setForm, 'region_terms', value)} placeholder={`강남\n서초`} />
             <Textarea label="선택 기준" value={form.decision_criteria} onChange={(value) => setFormValue(setForm, 'decision_criteria', value)} placeholder={`통증 부담\n회복 기간\n전문의 경험`} />
-            <Textarea label="확인할 AI 서비스" value={form.platforms} onChange={(value) => setFormValue(setForm, 'platforms', value)} placeholder={`CHATGPT\nGEMINI`} />
+            <PlatformPicker
+              value={toList(form.platforms)}
+              onChange={(platforms) => setFormValue(setForm, 'platforms', platforms.join('\n'))}
+            />
             <Textarea label="경쟁 병원" value={form.competitor_names} onChange={(value) => setFormValue(setForm, 'competitor_names', value)} placeholder="경쟁 병원명을 줄바꿈으로 입력" />
             <Textarea label="초기 환자 질문 문구" value={form.variants} onChange={(value) => setFormValue(setForm, 'variants', value)} placeholder={`강남 치질 병원 추천\n치질 수술 어디가 좋아`} />
             <Input label="언어" value={form.patient_language} onChange={(value) => setFormValue(setForm, 'patient_language', value)} placeholder="ko" />
@@ -368,7 +403,10 @@ function TargetCard({
   target,
   variantDraft,
   onVariantDraftChange,
+  variantPlatform,
+  onVariantPlatformChange,
   onAddVariant,
+  onVariantActiveChange,
   isAddingVariant,
   onStatusChange,
   onPriorityChange,
@@ -376,7 +414,10 @@ function TargetCard({
   target: AIQueryTarget
   variantDraft: string
   onVariantDraftChange: (value: string) => void
+  variantPlatform: string
+  onVariantPlatformChange: (value: string) => void
   onAddVariant: () => void
+  onVariantActiveChange: (variantId: string, isActive: boolean) => void
   isAddingVariant: boolean
   onStatusChange: (status: AIQueryTargetStatus) => void
   onPriorityChange: (priority: AIQueryTargetPriority) => void
@@ -384,6 +425,7 @@ function TargetCard({
   const priority = getPriorityLabel(target)
   const status = getStatusLabel(target)
   const platformLabels = target.display?.platform_labels?.filter(Boolean) ?? target.platforms
+  const supportedPlatforms = target.platforms.filter(isSupportedQueryPlatform)
   const visibleVariants = target.variants.slice(0, 20)
   const hiddenVariantCount = Math.max(target.variants.length - visibleVariants.length, 0)
 
@@ -423,12 +465,25 @@ function TargetCard({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 md:grid-cols-4">
+      <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <InfoBlock label="지역" value={target.region_terms.join(', ') || '미지정'} />
         <InfoBlock label="확인할 AI 서비스" value={platformLabels.join(', ') || '미지정'} />
         <InfoBlock label="경쟁 병원" value={target.competitor_names.join(', ') || '미지정'} />
         <InfoBlock label="환자 질문 문구" value={`${target.summary.active_variant_count}/${target.summary.variant_count}개 운영`} />
+        <InfoBlock
+          label="최근 AI 언급률"
+          value={target.summary.latest_sov_pct === null ? '측정 대기' : `${target.summary.latest_sov_pct.toFixed(1)}%`}
+        />
+        <InfoBlock
+          label="갭 / 다음 액션"
+          value={[target.summary.gap_status, target.summary.next_action].filter(Boolean).join(' · ') || '진단 대기'}
+        />
       </div>
+      {target.summary.last_measured_at && (
+        <p className="mt-2 text-right text-xs text-slate-400">
+          최근 측정 {new Date(target.summary.last_measured_at).toLocaleString('ko-KR')}
+        </p>
+      )}
 
       {target.decision_criteria.length > 0 && (
         <div className="mt-4 flex flex-wrap gap-2">
@@ -452,7 +507,16 @@ function TargetCard({
             visibleVariants.map((variant) => (
               <div key={variant.id} className="flex items-center justify-between gap-3 rounded-lg bg-white px-3 py-2 text-sm">
                 <span className={variant.is_active ? 'text-slate-800' : 'text-slate-400 line-through'}>{variant.query_text}</span>
-                <span className="shrink-0 text-xs text-slate-400">{variant.display?.platform_label ?? variant.platform}</span>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-xs text-slate-400">{variant.display?.platform_label ?? variant.platform}</span>
+                  <button
+                    type="button"
+                    onClick={() => onVariantActiveChange(variant.id, !variant.is_active)}
+                    className={`rounded-md px-2 py-1 text-xs font-medium ${variant.is_active ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}
+                  >
+                    {variant.is_active ? '중지' : '활성화'}
+                  </button>
+                </div>
               </div>
             ))
           )}
@@ -463,6 +527,16 @@ function TargetCard({
           )}
         </div>
         <div className="mt-3 flex gap-2">
+          <select
+            aria-label="추가할 질문의 AI 서비스"
+            value={variantPlatform}
+            onChange={(event) => onVariantPlatformChange(event.target.value)}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+          >
+            {supportedPlatforms.map((platform) => (
+              <option key={platform} value={platform}>{platform}</option>
+            ))}
+          </select>
           <input
             value={variantDraft}
             onChange={(event) => onVariantDraftChange(event.target.value)}
@@ -472,7 +546,7 @@ function TargetCard({
           <button
             type="button"
             onClick={onAddVariant}
-            disabled={!variantDraft.trim() || isAddingVariant}
+            disabled={!variantDraft.trim() || isAddingVariant || supportedPlatforms.length === 0}
             className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-300"
           >
             {isAddingVariant ? '추가 중...' : '추가'}
@@ -573,6 +647,39 @@ function Textarea({
   )
 }
 
+function PlatformPicker({
+  value,
+  onChange,
+}: {
+  value: string[]
+  onChange: (value: string[]) => void
+}) {
+  return (
+    <fieldset>
+      <legend className="text-xs font-medium text-slate-600">확인할 AI 서비스</legend>
+      <div className="mt-2 flex gap-3">
+        {SUPPORTED_QUERY_PLATFORMS.map((platform) => (
+          <label
+            key={platform}
+            className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700"
+          >
+            <input
+              type="checkbox"
+              checked={value.includes(platform)}
+              onChange={(event) => onChange(
+                event.target.checked
+                  ? [...value, platform]
+                  : value.filter((item) => item !== platform),
+              )}
+            />
+            {platform === 'CHATGPT' ? 'ChatGPT' : 'Gemini'}
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  )
+}
+
 function Select({
   label,
   value,
@@ -605,10 +712,6 @@ function toList(value: string): string[] {
     .split(/[\n,]/)
     .map((item) => item.trim())
     .filter(Boolean)
-}
-
-function firstPlatform(value: string): string {
-  return toList(value)[0] ?? 'CHATGPT'
 }
 
 function emptyToNull(value: string): string | null {

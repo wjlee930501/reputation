@@ -21,7 +21,13 @@ export function isClosedLabel(value: string): boolean {
 
 export function extractTimeRanges(value: string): Array<{ opens: string; closes: string }> {
   const ranges: Array<{ opens: string; closes: string }> = []
-  for (const segment of value.split(/[,/]|·|및|그리고/)) {
+  // "08:30-18:00 (13:00-14:00 점심)"에서 점심 종료 14:00를 진료 종료로
+  // 오인하지 않는다. 휴게시간 괄호만 제거하고 실제 오전/오후 분할 진료 표기는 유지한다.
+  const withoutBreakNotes = value.replace(
+    /\([^)]*(?:점심|휴게|브레이크|break)[^)]*\)/gi,
+    ' ',
+  )
+  for (const segment of withoutBreakNotes.split(/[,/]|·|및|그리고/)) {
     const trimmed = segment.trim()
     if (!trimmed || isClosedLabel(trimmed)) continue
     const matches = trimmed.match(/\d{1,2}:\d{2}/g)

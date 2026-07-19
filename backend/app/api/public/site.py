@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -216,6 +217,7 @@ async def list_published_contents(
 
     result = await db.execute(
         select(ContentItem)
+        .options(selectinload(ContentItem.query_target))
         .where(
             ContentItem.hospital_id == h.id,
             ContentItem.status == ContentStatus.PUBLISHED,
@@ -240,7 +242,12 @@ async def get_content_public(
     essence = await get_essence_readiness(db, h.id)
     public_philosophy = essence.public_philosophy
 
-    item = await db.get(ContentItem, content_id)
+    item_result = await db.execute(
+        select(ContentItem)
+        .options(selectinload(ContentItem.query_target))
+        .where(ContentItem.id == content_id)
+    )
+    item = item_result.scalar_one_or_none()
     if (
         not item
         or item.hospital_id != h.id
@@ -371,9 +378,18 @@ def _serialize_hospital(
         # 승인된 운영 기준에서 의료광고 검수를 통과한 공개 about 서사. 승인 기준이 없으면 None.
         "public_about": _vetted_public_about(philosophy),
         "director_photo_url": director_photo,
+        "brand_primary_color": getattr(h, "brand_primary_color", None),
+        "brand_accent_color": getattr(h, "brand_accent_color", None),
+        "logo_url": _safe_external_url(getattr(h, "logo_url", None)),
+        "hero_image_url": _safe_external_url(getattr(h, "hero_image_url", None)),
         "director_credentials": _safe_credentials(getattr(h, "director_credentials", None)),
         "treatments": _safe_treatments(h.treatments),
         "photos": serialized_photos,
+        "updated_at": h.updated_at.isoformat()
+        if getattr(h, "updated_at", None)
+        else h.created_at.isoformat()
+        if getattr(h, "created_at", None)
+        else None,
     }
 
 
@@ -463,6 +479,8 @@ def _reading_minutes(body: str | None) -> int:
 
 
 def _serialize_item(item: ContentItem, slug: str, full: bool = False) -> dict:
+    query_target = getattr(item, "__dict__", {}).get("query_target")
+    query_target_id = getattr(item, "query_target_id", None)
     d = {
         "id": str(item.id),
         "content_type": item.content_type,
@@ -475,6 +493,10 @@ def _serialize_item(item: ContentItem, slug: str, full: bool = False) -> dict:
         "references": item.references_list or [],
         "faq_question": item.faq_question,
         "faq_answer_summary": item.faq_answer_summary,
+        "query_target_id": str(query_target_id) if query_target_id else None,
+        "query_target_treatment": getattr(query_target, "treatment", None)
+        if query_target is not None
+        else None,
         "reading_minutes": _reading_minutes(item.body),
     }
     if full:

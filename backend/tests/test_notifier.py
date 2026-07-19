@@ -34,6 +34,20 @@ class _ShouldNotPostClient:
         raise AssertionError("disallowed webhook host should never be POSTed to")
 
 
+class _RejectedWebhookClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def post(self, url, json):
+        return httpx.Response(410, request=httpx.Request("POST", url), text="revoked")
+
+
 async def test_send_rejects_non_allowlisted_webhook_host(monkeypatch, caplog):
     # SSRF/exfil 방어: 허용 호스트가 아니면 POST 자체를 하지 않는다 (EXT-1/V-013).
     monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", "http://169.254.169.254/latest/meta-data")
@@ -71,6 +85,20 @@ async def test_slack_failure_log_does_not_include_webhook_url(monkeypatch, caplo
     assert "ConnectError" in caplog.text
     assert webhook_url not in caplog.text
     assert "super-secret-token" not in caplog.text
+
+
+async def test_slack_http_failure_logs_safe_status_code_only(monkeypatch, caplog):
+    webhook_url = "https://hooks.slack.com/services/T000/B000/super-secret-token"
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", webhook_url)
+    monkeypatch.setattr(notifier.httpx, "AsyncClient", _RejectedWebhookClient)
+
+    with caplog.at_level(logging.ERROR, logger="app.services.notifier"):
+        sent = await notifier._send("hello")
+
+    assert sent is False
+    assert "status=410" in caplog.text
+    assert webhook_url not in caplog.text
+    assert "revoked" not in caplog.text
 
 
 # ── 측정 방식 라벨: 실제 사용 플랫폼 기준 동적 구성 (GEMINI_API_KEY 미설정 시 Gemini 제외) ──

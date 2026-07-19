@@ -3,9 +3,10 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
+import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalBase } from '@/lib/site-url'
 
-import { buildTreatmentSlug } from '@/lib/treatment-slug'
+import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ChevronRightIcon } from '../_components/icons'
@@ -20,12 +21,18 @@ interface Props {
 
 export const revalidate = 3600
 
-function findRelatedContents(treatmentName: string, contents: ContentSummary[]): ContentSummary[] {
+function findRelatedContents(
+  treatmentName: string,
+  treatments: Array<{ name: string; description: string }>,
+  contents: ContentSummary[],
+): ContentSummary[] {
   const stem = treatmentName.replace(/[수술치료시술검사진료]/g, '').trim()
-  if (!stem) return []
   const lowerStem = stem.toLowerCase()
   return contents
     .filter((c) => {
+      const linked = inferPillarTreatment(treatments, c)
+      if (linked) return linked.name === treatmentName
+      if (!lowerStem) return false
       const haystack = `${c.title} ${c.meta_description ?? ''} ${c.faq_question ?? ''}`.toLowerCase()
       return haystack.includes(lowerStem)
     })
@@ -76,7 +83,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
 
   const treatmentsWithRelated = treatments.map((t) => ({
     treatment: t,
-    related: findRelatedContents(t.name, contents),
+    related: findRelatedContents(t.name, treatments, contents),
   }))
 
   const itemListJsonLd = {
@@ -97,7 +104,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
   return (
     <>
       <JsonLd data={[itemListJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, canonicalBase(hospital))]} />
-      <div className="clinic-shell">
+      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalSlug={params.slug}
@@ -105,6 +112,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
           specialties={hospital.specialties}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
+          logoUrl={hospital.logo_url}
         />
         <main id="main-content">
           <section className="clinic-library-hero">

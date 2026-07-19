@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, HospitalNotFoundError, resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
 import { categoryTagClass } from '@/lib/content-meta'
+import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { buildFaqPageJsonLd } from '@/lib/schema'
 import { canonicalBase } from '@/lib/site-url'
 
@@ -128,7 +129,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
   return (
     <>
       <JsonLd data={pageJsonLd} />
-      <div className="clinic-shell">
+      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalSlug={params.slug}
@@ -136,6 +137,7 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
           specialties={hospital.specialties}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
+          logoUrl={hospital.logo_url}
         />
         <main id="main-content">
           <section className="clinic-library-hero">

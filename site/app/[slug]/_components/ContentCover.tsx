@@ -42,12 +42,16 @@ export function ContentCover({ type, src, variant = 'card', className = '' }: Pr
       className={`clinic-cover clinic-cover--${variant} clinic-cover--${(type || 'FAQ').toLowerCase()} ${className}`.trim()}
       aria-hidden="true"
     >
-      <span className="clinic-cover-watermark">
-        <ContentMotif type={type} />
-      </span>
-      <span className="clinic-cover-motif">
-        <ContentMotif type={type} />
-      </span>
+      {!showImage && (
+        <>
+          <span className="clinic-cover-watermark">
+            <ContentMotif type={type} />
+          </span>
+          <span className="clinic-cover-motif">
+            <ContentMotif type={type} />
+          </span>
+        </>
+      )}
       {showImage && (
         // eslint-disable-next-line @next/next/no-img-element
         <img

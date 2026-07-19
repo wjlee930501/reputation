@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.celery_app import celery_app
 from app.core.database import get_db
+from app.models.content import ContentItem
 from app.models.essence import (
     PHOTO_SOURCE_TYPES,
     HospitalContentPhilosophy,
@@ -39,6 +41,7 @@ from app.services.asset_extractor import (
     fetch_naver_blog_post_urls,
     fetch_url_text,
     naver_blog_id_from,
+    naver_blog_post_identity,
 )
 from app.services.asset_storage import (
     resolve_legacy_asset_path,
@@ -51,6 +54,7 @@ from app.services.essence_engine import (
     compute_sources_snapshot_hash,
     find_error_marker_fields,
     process_source_asset,
+    screen_content_against_philosophy,
     synthesize_philosophy,
     validate_philosophy_grounding,
     validate_source_excerpt,
@@ -86,6 +90,11 @@ class BlogCrawlResult(BaseModel):
     skipped_duplicate: int
     skipped_empty: int
     failed: list[dict[str, str]]
+    source_ids: list[str]
+
+
+class BulkSourceProcessResult(BaseModel):
+    queued: int
     source_ids: list[str]
 
 
@@ -314,6 +323,55 @@ async def process_source(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/sources/process-pending", response_model=BulkSourceProcessResult)
+async def process_pending_sources(
+    hospital_id: uuid.UUID,
+    limit: int = Query(default=20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+):
+    """본문이 있는 검토 대기 자료를 워커에 일괄 큐잉한다."""
+    await _get_hospital_or_404(db, hospital_id)
+    result = await db.execute(
+        select(HospitalSourceAsset)
+        .where(
+            HospitalSourceAsset.hospital_id == hospital_id,
+            HospitalSourceAsset.status == SourceStatus.PENDING,
+            HospitalSourceAsset.raw_text.isnot(None),
+        )
+        .order_by(HospitalSourceAsset.created_at.asc())
+        .limit(limit)
+    )
+    sources = [source for source in result.scalars().all() if source.raw_text.strip()]
+    source_ids = [str(source.id) for source in sources]
+    if not source_ids:
+        return BulkSourceProcessResult(queued=0, source_ids=[])
+
+    await write_audit_log(
+        db,
+        action="queue_source_processing_bulk",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="hospital",
+        target_id=hospital_id,
+        detail={"queued": len(source_ids), "source_ids": source_ids},
+    )
+    await db.commit()
+
+    try:
+        for source_id in source_ids:
+            celery_app.send_task(
+                "app.workers.tasks.process_source_asset_task",
+                args=[source_id],
+                queue="default",
+            )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"자료 처리 큐잉에 실패했습니다: {str(exc)[:200]}",
+        ) from exc
+    return BulkSourceProcessResult(queued=len(source_ids), source_ids=source_ids)
+
+
 @router.post("/sources/{source_id}/exclude", response_model=SourceAssetResponse)
 async def exclude_source(
     hospital_id: uuid.UUID,
@@ -527,7 +585,7 @@ async def crawl_naver_blog(
     existing_hashes: set[str] = set()
     for row_url, row_hash in existing_rows.all():
         if row_url:
-            existing_urls.add(row_url)
+            existing_urls.add(naver_blog_post_identity(row_url))
         if row_hash:
             existing_hashes.add(row_hash)
 
@@ -538,7 +596,8 @@ async def crawl_naver_blog(
     source_ids: list[str] = []
 
     for index, post_url in enumerate(post_urls, start=1):
-        if post_url in existing_urls:
+        post_identity = naver_blog_post_identity(post_url)
+        if post_identity in existing_urls:
             skipped_duplicate += 1
             continue
         text, error, quality = await fetch_url_text(post_url)
@@ -570,7 +629,7 @@ async def crawl_naver_blog(
         )
         db.add(source)
         await db.flush()
-        existing_urls.add(post_url)
+        existing_urls.add(post_identity)
         existing_hashes.add(content_hash)
         source_ids.append(str(source.id))
         created += 1
@@ -693,7 +752,16 @@ async def create_philosophy_draft(
             status_code=400, detail="운영 기준 초안 생성에 사용할 근거 노트가 없습니다."
         )
 
-    payload = synthesize_philosophy(hospital, sources, notes, operator_note=body.operator_note)
+    # Claude synthesis is a synchronous SDK call and can take close to its 60s
+    # timeout. Running it on the event loop starves /health/live and Cloud Run
+    # kills the otherwise healthy API instance before the draft can commit.
+    payload = await asyncio.to_thread(
+        synthesize_philosophy,
+        hospital,
+        sources,
+        notes,
+        operator_note=body.operator_note,
+    )
     # 차단·오류 페이지 잔재가 핵심 필드에 남았으면 초안을 만들지 않고 명확한 사유로 거부한다.
     marker_fields = find_error_marker_fields(payload)
     if marker_fields:
@@ -764,6 +832,7 @@ async def approve_philosophy(
     body: PhilosophyApprove,
     db: AsyncSession = Depends(get_db),
 ):
+    hospital = await _get_hospital_or_404(db, hospital_id)
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
     if philosophy.status != PhilosophyStatus.DRAFT:
         raise HTTPException(
@@ -825,6 +894,20 @@ async def approve_philosophy(
     philosophy.reviewed_by = body.reviewed_by
     philosophy.approval_note = body.approval_note
     philosophy.approved_at = datetime.now(timezone.utc)
+
+    # A newly approved standard must immediately become authoritative for
+    # already-generated content as well. Otherwise old v1 items keep their
+    # stale ALIGNED flag (and stay public) even after v2 archives v1.
+    content_result = await db.execute(
+        select(ContentItem).where(
+            ContentItem.hospital_id == hospital_id,
+            ContentItem.body.isnot(None),
+        )
+    )
+    rescreened = _rescreen_content_items(content_result.scalars().all(), philosophy)
+    needs_site_revalidate = _has_public_site(hospital)
+    if needs_site_revalidate:
+        ensure_site_revalidate_configured()
     await write_audit_log(
         db,
         action="approve_philosophy",
@@ -838,11 +921,36 @@ async def approve_philosophy(
             "evidence_reviewed_confirmed": True,
             "approval_note": body.approval_note,
             "source_asset_count": len(philosophy.source_asset_ids or []),
+            "content_rescreened": rescreened,
         },
     )
     await db.commit()
     await db.refresh(philosophy)
+    if needs_site_revalidate:
+        await trigger_hospital_site_revalidate_safe(
+            hospital.slug,
+            hospital.treatments,
+            hospital_name=hospital.name,
+        )
     return _serialize_philosophy(philosophy)
+
+
+def _rescreen_content_items(
+    items: list[ContentItem],
+    philosophy: HospitalContentPhilosophy,
+) -> dict[str, int]:
+    counts = {"total": 0, "aligned": 0, "needs_review": 0}
+    for item in items:
+        screening = screen_content_against_philosophy(item, philosophy)
+        item.content_philosophy_id = philosophy.id
+        item.essence_status = screening.status
+        item.essence_check_summary = screening.summary
+        counts["total"] += 1
+        if screening.status == "ALIGNED":
+            counts["aligned"] += 1
+        else:
+            counts["needs_review"] += 1
+    return counts
 
 
 async def _get_hospital_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:

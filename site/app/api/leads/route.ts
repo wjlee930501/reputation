@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
-import { clientIpFromForwardedHeaders } from '@/lib/client-ip'
 import { getApiBase } from '@/lib/config'
 import { containsPatientSensitiveLeadText, leadSafetyError } from '@/lib/lead-safety'
+import { buildLeadOutboundHeaders, isLeadValidationUpstreamStatus } from '@/lib/leads-proxy'
 
 export const runtime = 'nodejs'
 
@@ -92,19 +92,7 @@ export async function POST(request: Request) {
   // get_request_ip가 XFF 체인보다 우선 채택한다(rate-limit key·consent_ip가 실제 방문자 기준).
   // secret 미설정 시 기존 XFF 전달로 동작하며, 백엔드는 BFF egress IP를 client로 본다
   // (스푸핑은 불가하나 per-visitor 정밀도는 떨어짐 — 백로그 CDX-M1 참조).
-  const outboundHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-  }
-  const clientIp = clientIpFromForwardedHeaders(request.headers) ?? ''
-  if (clientIp) {
-    outboundHeaders['X-Forwarded-For'] = clientIp
-    outboundHeaders['X-Real-IP'] = clientIp
-    const bffSecret = (process.env.SITE_BFF_SECRET || '').trim()
-    if (bffSecret) {
-      outboundHeaders['X-BFF-Auth'] = bffSecret
-      outboundHeaders['X-Visitor-IP'] = clientIp
-    }
-  }
+  const outboundHeaders = buildLeadOutboundHeaders(request.headers)
 
   let response: Response
   try {
@@ -133,7 +121,7 @@ export async function POST(request: Request) {
     }
 
     // 업스트림 4xx(422 검증 실패 등)는 서버 장애가 아니라 입력 문제 — 입력 오류로 안내한다.
-    const isValidationError = response.status >= 400 && response.status < 500
+    const isValidationError = isLeadValidationUpstreamStatus(response.status)
     if (isValidationError) {
       let detail: string | null = null
       try {

@@ -7,6 +7,7 @@ from app.services.asset_extractor import (
     FetchTarget,
     _assess_fetch_quality,
     _normalize_naver_blog_url,
+    naver_blog_post_identity,
     _scope_to_content_container,
     _validate_fetch_url,
     _validate_response_peer,
@@ -59,6 +60,14 @@ from app.services.asset_extractor import (
 )
 def test_normalize_naver_blog_url(raw_url, expected):
     assert _normalize_naver_blog_url(raw_url) == expected
+
+
+def test_naver_blog_post_identity_ignores_tracking_and_url_form():
+    assert naver_blog_post_identity(
+        "https://blog.naver.com/jangpyeonhan/123?fromRss=true"
+    ) == naver_blog_post_identity(
+        "https://m.blog.naver.com/jangpyeonhan/123?trackingCode=rss"
+    )
 
 
 def test_assess_fetch_quality_flags_frameset_shell():
@@ -273,6 +282,19 @@ async def test_fetch_naver_blog_post_urls_respects_max_posts(monkeypatch):
     urls, error = await ax.fetch_naver_blog_post_urls("jangpyeonhan", max_posts=2)
     assert error is None
     assert len(urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_naver_blog_post_urls_strips_tracking_query(monkeypatch):
+    rss = b"""<?xml version='1.0' encoding='UTF-8'?>
+    <rss><channel><item><link>https://blog.naver.com/jangpyeonhan/100?fromRss=true&amp;trackingCode=rss</link></item></channel></rss>
+    """
+    ax = _patch_rss(monkeypatch, rss)
+
+    urls, error = await ax.fetch_naver_blog_post_urls("jangpyeonhan", max_posts=5)
+
+    assert error is None
+    assert urls == ["https://blog.naver.com/jangpyeonhan/100"]
 
 
 @pytest.mark.asyncio

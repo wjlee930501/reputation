@@ -9,6 +9,7 @@ import {
   firstDayOfNextMonthInputValue,
   validateScheduleCapacity,
 } from '@/lib/schedule'
+import { canSubmitSchedule } from '@/lib/operator-safety'
 import { PLAN_LABELS, type ScheduleInfo } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
@@ -66,6 +67,10 @@ export default function SchedulePage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!canSubmitSchedule(existingLoading, existingError)) {
+      setError('기존 스케줄 상태를 확인한 뒤 다시 시도해 주세요.')
+      return
+    }
     if (selectedDays.length === 0) {
       setError('발행 요일을 하나 이상 선택해 주세요.')
       return
@@ -244,7 +249,7 @@ export default function SchedulePage() {
 
           <button
             type="submit"
-            disabled={loading || existingLoading}
+            disabled={loading || !canSubmitSchedule(existingLoading, existingError)}
             className="w-full py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
             {loading ? '저장 중...' : existing ? '스케줄 교체 및 슬롯 재생성' : '스케줄 저장 및 슬롯 생성'}

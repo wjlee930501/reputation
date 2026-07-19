@@ -301,3 +301,95 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
     assert "--set-secrets=SYNC_DATABASE_URL=SYNC_DATABASE_URL:latest" in commands
     assert "gcloud run deploy reputation-site" not in commands
     assert "gcloud run deploy reputation-admin" not in commands
+
+
+def test_site_only_deploy_does_not_require_backend_only_secrets(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    scripts_dir = project / "scripts"
+    fake_bin = tmp_path / "bin"
+    scripts_dir.mkdir(parents=True)
+    fake_bin.mkdir()
+    (project / "backend").mkdir()
+    (project / "site").mkdir()
+    shutil.copy2(PROJECT_ROOT / "scripts" / "deploy.sh", scripts_dir / "deploy.sh")
+    (project / ".env.production").write_text("GCP_STORAGE_BUCKET=reputation-assets\n")
+
+    command_log = tmp_path / "commands.log"
+    _write_executable(
+        fake_bin / "gcloud",
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'echo "gcloud $*" >> "$FAKE_COMMAND_LOG"',
+                'if [[ "$1 $2" == "secrets describe" ]]; then',
+                '  case "$3" in',
+                "    SITE_REVALIDATE_SECRET|SITE_BFF_SECRET) exit 0 ;;",
+                "    *) exit 1 ;;",
+                "  esac",
+                "fi",
+                'if [[ "$1 $2 $3 $4" == "secrets versions describe latest" ]]; then',
+                '  echo "ENABLED"',
+                "  exit 0",
+                "fi",
+                "exit 0",
+                "",
+            ]
+        ),
+    )
+    _write_executable(
+        fake_bin / "docker",
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'echo "docker $*" >> "$FAKE_COMMAND_LOG"',
+                "exit 0",
+                "",
+            ]
+        ),
+    )
+    _write_executable(
+        fake_bin / "gsutil",
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'echo "gsutil $*" >> "$FAKE_COMMAND_LOG"',
+                "exit 0",
+                "",
+            ]
+        ),
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "FAKE_COMMAND_LOG": str(command_log),
+            "GCP_PROJECT_ID": "test-project",
+            "GCP_REGION": "asia-northeast3",
+            "PUBLIC_DOMAIN": "reputation.example.test",
+            "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "site"],
+        cwd=project,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = command_log.read_text()
+    assert "secrets describe SITE_REVALIDATE_SECRET" in commands
+    assert "secrets describe SITE_BFF_SECRET" in commands
+    assert "secrets describe ANTHROPIC_API_KEY" not in commands
+    assert "secrets describe REDIS_URL" not in commands
+    assert "gsutil ls -b gs://reputation-assets" in commands
+    assert commands.index("gsutil ls -b gs://reputation-assets") < commands.index("docker build")
+    assert "gcloud run deploy reputation-site" in commands

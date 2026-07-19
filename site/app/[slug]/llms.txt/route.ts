@@ -33,13 +33,13 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
     // 커스텀 도메인 연결 병원은 절대 링크를 해당 도메인 기준으로 출력 (canonical 정책 공유).
     const base = canonicalBase(hospital)
 
-    const lastUpdatedSource =
-      contents
-        .map((c) => c.body_updated_at || c.published_at)
-        .filter((v): v is string => Boolean(v))
-        .sort()
-        .pop() ||
-      new Date().toISOString()
+    const lastUpdatedSource = [
+      hospital.updated_at,
+      ...contents.map((c) => c.body_updated_at || c.published_at),
+    ]
+      .filter((v): v is string => Boolean(v))
+      .sort()
+      .pop() || 'unknown'
 
     const lines: string[] = [
       `# ${llmsTextValue(hospital.name)}`,

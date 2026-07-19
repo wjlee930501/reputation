@@ -99,6 +99,27 @@ test('host-scope sitemap excludes platform entries and lists only that hospital'
   })
 })
 
+test('hybrid subdomain sitemap emits only URLs on the hybrid request host', async () => {
+  await withPlatform(async () => {
+    const hybridHost = 'jang-clinic.reputation.motionlabs.kr'
+    const restore = installFetchMock({
+      byDomain: () => new Response(JSON.stringify({ slug: 'jang-clinic' }), { status: 200 }),
+      detail: (slug) =>
+        new Response(JSON.stringify({ slug, aeo_domain: null, treatments: [] }), { status: 200 }),
+      contents: new Response(JSON.stringify([]), { status: 200 }),
+    })
+    try {
+      const entries = await buildSitemap({ kind: 'host', hostname: hybridHost }, API_BASE)
+      const urls = entries.map((entry) => entry.url)
+
+      assert.ok(urls.includes(`https://${hybridHost}/jang-clinic`))
+      assert.ok(urls.every((url) => url.startsWith(`https://${hybridHost}/`)))
+    } finally {
+      restore()
+    }
+  })
+})
+
 test('host-scope sitemap returns an empty list when the domain is unregistered (no platform leak)', async () => {
   await withPlatform(async () => {
     const restore = installFetchMock({
@@ -139,6 +160,27 @@ test('all-scope sitemap keeps the platform base entries plus each hospital', asy
       assert.ok(urls.includes(`${PLATFORM}/llms.txt`))
       // aeo_domain 없는 병원은 플랫폼 호스트 경로로 실린다.
       assert.ok(urls.includes(`${PLATFORM}/jang-clinic`))
+    } finally {
+      restore()
+    }
+  })
+})
+
+test('all-scope sitemap keeps custom-domain hospitals on the platform sitemap host', async () => {
+  await withPlatform(async () => {
+    const restore = installFetchMock({
+      hospitals: new Response(
+        JSON.stringify([{ slug: 'custom-clinic', aeo_domain: 'clinic.example.com', treatments: [] }]),
+        { status: 200 },
+      ),
+      contents: new Response(JSON.stringify([]), { status: 200 }),
+    })
+    try {
+      const entries = await buildSitemap({ kind: 'all' }, API_BASE)
+      const urls = entries.map((entry) => entry.url)
+
+      assert.ok(urls.includes(`${PLATFORM}/custom-clinic`))
+      assert.ok(urls.every((url) => url === PLATFORM || url.startsWith(`${PLATFORM}/`)))
     } finally {
       restore()
     }

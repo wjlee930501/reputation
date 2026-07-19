@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
+import { persistThenApprove } from '@/lib/operator-safety'
 import {
   ContentPhilosophy,
   EvidenceNote,
@@ -305,26 +306,34 @@ export default function EssencePage() {
     }
   }
 
+  async function persistVisibleDraft(): Promise<ContentPhilosophy> {
+    if (!selectedDraft || selectedDraft.status !== 'DRAFT') {
+      throw new Error('저장할 초안을 찾을 수 없습니다.')
+    }
+    const updated = await fetchAPI<ContentPhilosophy>(`/admin/hospitals/${id}/essence/philosophy/${selectedDraft.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        positioning_statement: draftPositioning || null,
+        doctor_voice: draftVoice || null,
+        patient_promise: draftPromise || null,
+        content_principles: textToList(draftPrinciples),
+        tone_guidelines: textToList(draftTone),
+        must_use_messages: textToList(draftMustUse),
+        avoid_messages: textToList(draftAvoid),
+        medical_ad_risk_rules: textToList(draftRiskRules),
+      }),
+    })
+    setDraftFields(updated)
+    return updated
+  }
+
   async function saveDraft() {
     if (!selectedDraft || selectedDraft.status !== 'DRAFT') return
     setActionLoading('save-draft')
     setError(null)
     setNotice(null)
     try {
-      const updated = await fetchAPI<ContentPhilosophy>(`/admin/hospitals/${id}/essence/philosophy/${selectedDraft.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          positioning_statement: draftPositioning || null,
-          doctor_voice: draftVoice || null,
-          patient_promise: draftPromise || null,
-          content_principles: textToList(draftPrinciples),
-          tone_guidelines: textToList(draftTone),
-          must_use_messages: textToList(draftMustUse),
-          avoid_messages: textToList(draftAvoid),
-          medical_ad_risk_rules: textToList(draftRiskRules),
-        }),
-      })
-      setDraftFields(updated)
+      await persistVisibleDraft()
       setNotice('초안이 저장되었습니다.')
       await load()
     } catch (e: unknown) {
@@ -340,14 +349,17 @@ export default function EssencePage() {
     setError(null)
     setNotice(null)
     try {
-      await fetchAPI(`/admin/hospitals/${id}/essence/philosophy/${selectedDraft.id}/approve`, {
-        method: 'POST',
-        body: JSON.stringify({
-          reviewed_by: reviewedBy,
-          approval_note: approvalNote || null,
-          confirm_evidence_reviewed: confirmEvidence,
+      await persistThenApprove(
+        persistVisibleDraft,
+        () => fetchAPI(`/admin/hospitals/${id}/essence/philosophy/${selectedDraft.id}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({
+            reviewed_by: reviewedBy,
+            approval_note: approvalNote || null,
+            confirm_evidence_reviewed: confirmEvidence,
+          }),
         }),
-      })
+      )
       setApprovalNote('')
       setConfirmEvidence(false)
       setNotice('콘텐츠 운영 기준이 승인되었습니다. 자동 콘텐츠 생성에 적용됩니다.')

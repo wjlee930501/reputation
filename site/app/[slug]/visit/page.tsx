@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec } from '@/lib/business-hours'
+import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalBase } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
@@ -98,7 +99,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
   return (
     <>
       <JsonLd data={[visitJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, base)]} />
-      <div className="clinic-shell">
+      <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalSlug={params.slug}
@@ -106,6 +107,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
           specialties={hospital.specialties}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
+          logoUrl={hospital.logo_url}
         />
         <main id="main-content">
           <section className="clinic-library-hero">

@@ -20,10 +20,16 @@ os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.models.content import ContentType
-from app.services.content_engine import _validate_geo, _validate_seo
+from app.services.content_engine import (
+    _drop_definitively_broken_references,
+    _normalize_references,
+    _validate_geo,
+    _validate_seo,
+)
 
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────
@@ -229,6 +235,17 @@ class TestValidateGeo:
         with pytest.raises(ValueError, match="GEO hard-fail.*references"):
             _validate_geo(result, h, ContentType.DISEASE)
 
+    def test_non_whitelisted_reference_does_not_satisfy_required_authority_reference(self):
+        h = _hospital()
+        result = _good_result(h)
+        result["references"] = _normalize_references(
+            [{"title": "광고 블로그", "url": "https://ad-blog.example.com/promo"}]
+        )
+
+        assert result["references"] == []
+        with pytest.raises(ValueError, match="GEO hard-fail.*references"):
+            _validate_geo(result, h, ContentType.DISEASE)
+
     def test_empty_references_treatment_raises_value_error(self):
         """TREATMENT 유형에서 references가 비어있으면 ValueError (hard-fail)"""
         h = _hospital()
@@ -321,3 +338,45 @@ class TestValidateGeo:
         }
         findings = _validate_geo(result, h, ContentType.DISEASE)
         assert not findings
+
+
+class _ReferenceClient:
+    def __init__(self, responses, *args, **kwargs):
+        self.responses = responses
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def get(self, url, headers):
+        status, final_url = self.responses[url]
+        return httpx.Response(
+            status,
+            request=httpx.Request("GET", url),
+            headers={"content-type": "text/html"},
+            extensions={},
+        ) if final_url == url else SimpleNamespace(status_code=status, url=httpx.URL(final_url))
+
+
+@pytest.mark.asyncio
+async def test_reference_verification_drops_404_and_external_redirect(monkeypatch):
+    refs = [
+        {"title": "정상", "url": "https://health.kdca.go.kr/good"},
+        {"title": "없음", "url": "https://health.kdca.go.kr/missing"},
+        {"title": "이탈", "url": "https://health.kdca.go.kr/redirect"},
+    ]
+    responses = {
+        refs[0]["url"]: (200, refs[0]["url"]),
+        refs[1]["url"]: (404, refs[1]["url"]),
+        refs[2]["url"]: (200, "https://example.com/landing"),
+    }
+    monkeypatch.setattr(
+        "app.services.content_engine.httpx.AsyncClient",
+        lambda *args, **kwargs: _ReferenceClient(responses, *args, **kwargs),
+    )
+
+    kept = await _drop_definitively_broken_references(refs)
+
+    assert kept == [refs[0]]

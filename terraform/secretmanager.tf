@@ -76,6 +76,14 @@ resource "google_secret_manager_secret" "site_bff_secret" {
   }
 }
 
+resource "google_secret_manager_secret" "redis_url" {
+  secret_id = "REDIS_URL"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
 # Secret Manager IAM — service account access
 locals {
   app_secret_env = {
@@ -121,4 +129,11 @@ resource "google_secret_manager_secret_iam_member" "frontend_access" {
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.frontend.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "redis_url_app_access" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.redis_url.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.app.email}"
 }

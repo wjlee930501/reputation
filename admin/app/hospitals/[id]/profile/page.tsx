@@ -30,6 +30,10 @@ interface HospitalProfile {
   director_name: string
   director_career: string
   director_philosophy: string
+  brand_primary_color: string
+  brand_accent_color: string
+  logo_url: string
+  hero_image_url: string
   address: string
   phone: string
   business_hours: BusinessHours
@@ -323,7 +327,7 @@ function AiBadge({ meta }: AiBadgeProps) {
 export default function ProfilePage() {
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
-  const { refetch: refetchHeader } = useHospitalHeader()
+  const { hospital, refetch: refetchHeader } = useHospitalHeader()
   const [profile, setProfile] = useState<Partial<HospitalProfile>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -647,6 +651,80 @@ export default function ProfilePage() {
         </ul>
       </section>
 
+      {/* 공개 사이트 브랜드 */}
+      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
+        <div>
+          <h3 className="text-base font-semibold text-slate-800">공개 사이트 브랜드</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            레이아웃은 공통으로 유지하고 병원별 키컬러, 로고, 대표 이미지만 교체합니다.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <label className="text-sm font-medium text-slate-700">
+            메인 컬러
+            <span className="mt-1.5 flex items-center gap-2">
+              <input
+                type="color"
+                value={profile.brand_primary_color || '#17365D'}
+                onChange={(e) => updateField('brand_primary_color', e.target.value.toUpperCase())}
+                className="h-10 w-12 rounded border border-slate-300 bg-white p-1"
+                aria-label="메인 컬러 선택"
+              />
+              <input
+                type="text"
+                value={profile.brand_primary_color ?? ''}
+                onChange={(e) => updateField('brand_primary_color', e.target.value)}
+                placeholder="#17365D"
+                pattern="#[0-9A-Fa-f]{6}"
+                className="min-w-0 flex-1 px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </span>
+          </label>
+          <label className="text-sm font-medium text-slate-700">
+            포인트 컬러
+            <span className="mt-1.5 flex items-center gap-2">
+              <input
+                type="color"
+                value={profile.brand_accent_color || '#B79045'}
+                onChange={(e) => updateField('brand_accent_color', e.target.value.toUpperCase())}
+                className="h-10 w-12 rounded border border-slate-300 bg-white p-1"
+                aria-label="포인트 컬러 선택"
+              />
+              <input
+                type="text"
+                value={profile.brand_accent_color ?? ''}
+                onChange={(e) => updateField('brand_accent_color', e.target.value)}
+                placeholder="#B79045"
+                pattern="#[0-9A-Fa-f]{6}"
+                className="min-w-0 flex-1 px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </span>
+          </label>
+        </div>
+        <div>
+          <label htmlFor="profile-logo-url" className="block text-sm font-medium text-slate-700 mb-1.5">로고 이미지 URL</label>
+          <input
+            id="profile-logo-url"
+            type="url"
+            value={profile.logo_url ?? ''}
+            onChange={(e) => updateField('logo_url', e.target.value)}
+            placeholder="https://.../logo.png"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label htmlFor="profile-hero-image-url" className="block text-sm font-medium text-slate-700 mb-1.5">메인 대표 이미지 URL</label>
+          <input
+            id="profile-hero-image-url"
+            type="url"
+            value={profile.hero_image_url ?? ''}
+            onChange={(e) => updateField('hero_image_url', e.target.value)}
+            placeholder="https://.../hero.jpg"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+      </section>
+
       {/* 원장 정보 */}
       <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
         <div>
@@ -962,6 +1040,7 @@ export default function ProfilePage() {
           <DomainSetupPanel
             hospitalId={hospitalId}
             profile={profile}
+            activationReadiness={hospital}
             onProfileChange={(patch) => setProfile((prev) => ({ ...prev, ...patch }))}
             onHeaderRefresh={() => { void refetchHeader() }}
           />

@@ -148,12 +148,12 @@ def _philosophy_reference(philosophy: HospitalContentPhilosophy | None) -> dict[
         return None
     return {
         "id": str(philosophy.id),
-        "version": philosophy.version,
-        "positioning_statement": philosophy.positioning_statement,
-        "doctor_voice": philosophy.doctor_voice,
-        "patient_promise": philosophy.patient_promise,
-        "content_principles": _list(philosophy.content_principles),
-        "tone_guidelines": _list(philosophy.tone_guidelines),
+        "version": getattr(philosophy, "version", None),
+        "positioning_statement": getattr(philosophy, "positioning_statement", None),
+        "doctor_voice": getattr(philosophy, "doctor_voice", None),
+        "patient_promise": getattr(philosophy, "patient_promise", None),
+        "content_principles": _list(getattr(philosophy, "content_principles", None)),
+        "tone_guidelines": _list(getattr(philosophy, "tone_guidelines", None)),
     }
 
 

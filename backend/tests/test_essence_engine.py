@@ -10,7 +10,9 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
+    approved_philosophy_issues,
     compute_source_content_hash,
+    compute_sources_snapshot_hash,
     find_error_marker_fields,
     process_source_asset,
     screen_content_against_philosophy,
@@ -37,6 +39,56 @@ def test_process_source_asset_extracts_only_source_backed_notes():
     assert all(note.source_excerpt in asset.raw_text or note.source_excerpt in asset.operator_note for note in notes)
     assert any(note.note_type == EvidenceNoteType.DOCTOR_PHILOSOPHY for note in notes)
     assert any(note.note_type == EvidenceNoteType.RISK_SIGNAL for note in notes)
+
+
+def test_deterministic_fallback_does_not_misclassify_common_si_syllable_as_local():
+    asset = SimpleNamespace(
+        raw_text="최근 식습관 변화로 대장 건강에 관심을 갖는 분들이 많습니다.",
+        operator_note="",
+    )
+
+    notes = process_source_asset(asset)
+
+    assert notes
+    assert all(note.note_type != EvidenceNoteType.LOCAL_CONTEXT for note in notes)
+
+
+def test_deterministic_fallback_does_not_misclassify_korean_verb_ending_as_local():
+    asset = SimpleNamespace(
+        raw_text="항문 통증이 생기면 증상의 원인을 먼저 확인합니다.",
+        operator_note="",
+    )
+
+    notes = process_source_asset(asset)
+
+    assert notes
+    assert all(note.note_type != EvidenceNoteType.LOCAL_CONTEXT for note in notes)
+
+
+def test_deterministic_fallback_keeps_explicit_administrative_location_context():
+    asset = SimpleNamespace(
+        raw_text="수원시 영통구 지역에서 방문하는 환자분들이 많습니다.",
+        operator_note="",
+    )
+
+    notes = process_source_asset(asset)
+
+    assert any(note.note_type == EvidenceNoteType.LOCAL_CONTEXT for note in notes)
+
+
+def test_deterministic_fallback_skips_short_markdown_seo_heading():
+    asset = SimpleNamespace(
+        raw_text=(
+            "> **평택 치질 수술은 언제 필요할까요?\n"
+            "반복적인 출혈과 탈출로 일상생활이 어렵다면 진찰 후 수술 여부를 판단합니다."
+        ),
+        operator_note="",
+    )
+
+    notes = process_source_asset(asset)
+
+    assert notes
+    assert all(not note.source_excerpt.startswith("> **") for note in notes)
 
 
 def test_synthesize_philosophy_requires_evidence_map_for_non_empty_fields():
@@ -157,6 +209,45 @@ def test_find_error_marker_fields_ignores_clean_payload():
     assert find_error_marker_fields(payload) == []
 
 
+def test_approved_philosophy_issues_blocks_legacy_error_markers_and_stale_sources():
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash="current-hash",
+        status=SourceStatus.PROCESSED,
+        processed_at=datetime.now(timezone.utc),
+    )
+    philosophy = SimpleNamespace(
+        id=uuid.uuid4(),
+        version=1,
+        status=PhilosophyStatus.APPROVED,
+        positioning_statement="Title: 403 Forbidden",
+        source_snapshot_hash="old-snapshot",
+    )
+
+    issues = approved_philosophy_issues(philosophy, [source], require_fresh=True)
+
+    assert any("오류 페이지" in issue for issue in issues)
+    assert any("새 버전" in issue for issue in issues)
+
+
+def test_approved_philosophy_issues_accepts_clean_fresh_snapshot():
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash="current-hash",
+        status=SourceStatus.PROCESSED,
+        processed_at=datetime.now(timezone.utc),
+    )
+    philosophy = SimpleNamespace(
+        id=uuid.uuid4(),
+        version=2,
+        status=PhilosophyStatus.APPROVED,
+        positioning_statement="충분히 설명하는 진료를 지향합니다.",
+        source_snapshot_hash=compute_sources_snapshot_hash([source]),
+    )
+
+    assert approved_philosophy_issues(philosophy, [source], require_fresh=True) == []
+
+
 def test_grounding_accepts_synthesized_descriptor_derived_from_real_notes():
     """합성된 descriptor는 verbatim 인용이 아니어도, 실제 노트를 가리키면 grounded로 본다."""
     note = SimpleNamespace(
@@ -222,3 +313,25 @@ def test_screen_content_blocks_missing_or_risky_essence_statuses():
     aligned = screen_content_against_philosophy(safe_item, philosophy)
     assert aligned.status == ESSENCE_STATUS_ALIGNED
     assert aligned.summary["blocking"] is False
+
+
+def test_screen_content_blocks_polluted_legacy_approved_philosophy():
+    item = SimpleNamespace(
+        title="상담 안내",
+        body="증상을 확인하고 필요한 진료 방향을 설명합니다.",
+        meta_description=None,
+        faq_question=None,
+        faq_answer_summary=None,
+    )
+    philosophy = SimpleNamespace(
+        id=uuid.uuid4(),
+        version=1,
+        status=PhilosophyStatus.APPROVED,
+        positioning_statement="자료: Title: 403 Forbidden",
+    )
+
+    screening = screen_content_against_philosophy(item, philosophy)
+
+    assert screening.status == ESSENCE_STATUS_NEEDS_REVIEW
+    assert screening.summary["blocking"] is True
+    assert "오류 페이지" in screening.summary["findings"][0]

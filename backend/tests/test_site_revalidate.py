@@ -24,6 +24,7 @@ def test_hospital_site_paths_include_root_llms_and_treatment_pillars():
 def test_hospital_site_paths_without_treatments_keeps_legacy_shape():
     paths = site_revalidate.hospital_site_paths("test-clinic")
 
+    assert "/" in paths  # custom-domain root cache
     assert "/test-clinic" in paths
     assert "/sitemap.xml" in paths
     assert not any("/treatments/" in p for p in paths)

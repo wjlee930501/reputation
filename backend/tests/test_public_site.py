@@ -55,6 +55,10 @@ def test_serialize_hospital_includes_public_profile_fields():
         director_career="전문의",
         director_philosophy="근거 중심 진료",
         director_photo_url=None,
+        brand_primary_color="#17365D",
+        brand_accent_color="#B79045",
+        logo_url="https://cdn.example.com/logo.png",
+        hero_image_url="https://cdn.example.com/hero.png",
         director_credentials={
             "medical_school": "서울대학교 의과대학",
             "board_certifications": ["피부과 전문의"],
@@ -75,6 +79,10 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["latitude"] == 37.5
     assert serialized["wikidata_qid"] == "Q123456"
     assert serialized["naver_place_id"] == "38758880"
+    assert serialized["brand_primary_color"] == "#17365D"
+    assert serialized["brand_accent_color"] == "#B79045"
+    assert serialized["logo_url"] == "https://cdn.example.com/logo.png"
+    assert serialized["hero_image_url"] == "https://cdn.example.com/hero.png"
     # license_number는 내부 보관 전용 — 공개 응답에서 제거됨.
     assert "license_number" not in serialized["director_credentials"]
     assert serialized["director_credentials"]["medical_school"] == "서울대학교 의과대학"
@@ -251,6 +259,31 @@ def test_serialize_item_list_response_includes_reading_minutes_without_body():
     full = _serialize_item(item, "test-slug", full=True)
     assert full["body"] == "가" * 1200
     assert full["reading_minutes"] == 2
+
+
+def test_serialize_item_includes_authoritative_query_target_treatment_linkage():
+    target_id = uuid.UUID("00000000-0000-0000-0000-000000000123")
+    item = SimpleNamespace(
+        id="content-id",
+        content_type="DISEASE",
+        title="걸을 때 다리가 저린 이유",
+        meta_description="증상과 진료 시점을 설명합니다.",
+        image_url=None,
+        scheduled_date=date(2026, 6, 1),
+        published_at=datetime(2026, 6, 1, 8, 0, 0),
+        body_updated_at=None,
+        references_list=[],
+        faq_question=None,
+        faq_answer_summary=None,
+        body="본문",
+        query_target_id=target_id,
+        query_target=SimpleNamespace(treatment="척추관협착증"),
+    )
+
+    serialized = _serialize_item(item, "test-slug")
+
+    assert serialized["query_target_id"] == str(target_id)
+    assert serialized["query_target_treatment"] == "척추관협착증"
 
 
 def test_serialize_item_uses_stable_content_image_proxy_url():

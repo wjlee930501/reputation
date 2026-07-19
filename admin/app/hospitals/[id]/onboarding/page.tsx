@@ -890,6 +890,8 @@ function ProcessingStepBody({
   const errored = sources.filter((s) => s.status === 'ERROR' && hasProcessableText(s))
   const blocked = sources.filter((s) => !!getProcessingBlockReason(s))
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkFeedback, setBulkFeedback] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
 
   async function process(sourceId: string) {
@@ -912,6 +914,27 @@ function ProcessingStepBody({
     }
   }
 
+  async function processAllPending() {
+    setBulkBusy(true)
+    setBulkFeedback(null)
+    try {
+      const result = (await fetchAPI(
+        `/admin/hospitals/${hospitalId}/essence/sources/process-pending?limit=50`,
+        { method: 'POST' },
+      )) as { queued: number }
+      setBulkFeedback(
+        result.queued > 0
+          ? `${result.queued}개 자료를 처리 대기열에 넣었습니다. 잠시 뒤 상태를 새로 확인해 주세요.`
+          : '처리할 대기 자료가 없습니다.',
+      )
+      window.setTimeout(onChanged, 2500)
+    } catch (e: unknown) {
+      setBulkFeedback(e instanceof Error ? e.message : '일괄 처리 큐잉 실패')
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
   if (sources.length === 0) {
     return <p className="text-sm text-slate-500">먼저 자료를 인입해 주세요.</p>
   }
@@ -921,6 +944,19 @@ function ProcessingStepBody({
         처리 가능: <strong>{pending.length}</strong>개 · 완료: <strong>{processed.length}</strong>개 ·
         오류: <strong>{errored.length}</strong>개 · 차단: <strong>{blocked.length}</strong>개
       </p>
+      {pending.length > 1 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
+          <button
+            type="button"
+            onClick={processAllPending}
+            disabled={bulkBusy}
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {bulkBusy ? '일괄 처리 요청 중…' : `대기 자료 ${pending.length}개 일괄 처리`}
+          </button>
+          {bulkFeedback && <span className="text-xs text-blue-900">{bulkFeedback}</span>}
+        </div>
+      )}
       {processed.length > 0 && pending.length === 0 && errored.length === 0 && blocked.length === 0 && (
         <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
           근거 추출이 완료됐습니다. 운영 기준 초안 생성 단계로 진행할 수 있습니다.

@@ -139,7 +139,7 @@ export const trustItems = [
   },
   {
     title: "공개 정보 기반",
-    body: "검증된 병원 정보의 연결성만 다룹니다.",
+    body: "공개된 병원 정보의 연결성만 다룹니다.",
   },
   {
     title: "AE 확인 후 발행",

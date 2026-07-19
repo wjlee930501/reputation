@@ -55,3 +55,29 @@ test('every specialty answer example stays a safe placeholder example', () => {
     assert.ok(example.answerSources.length >= 1)
   }
 })
+
+test('landing copy avoids forbidden medical ad certainty wording', () => {
+  const pageText = [
+    landingHero.titleLead,
+    landingHero.titleMain,
+    landingHero.titleSupport,
+    landingHero.body,
+    landingHero.primaryCta,
+    landingHero.secondaryCta,
+    ...proofItems.flatMap((item) => [item.title, item.body]),
+    ...comparisonItems.flatMap((item) => [item.label, item.title, ...item.points]),
+    ...processSteps.flatMap((item) => [item.title, item.body]),
+    ...trustItems.flatMap((item) => [item.title, item.body]),
+    answerDemo.disclaimer,
+    ...answerExamples.flatMap((item) => [
+      item.tag,
+      item.question,
+      item.answerIntro,
+      item.answerClinic,
+      item.answerReason,
+      ...item.answerSources,
+    ]),
+  ].join(' ')
+
+  assert.doesNotMatch(pageText, /검증된/)
+})

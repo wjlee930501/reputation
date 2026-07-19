@@ -249,7 +249,17 @@ def test_measurement_status_treats_empty_raw_response_as_failed():
     )
 
 
-def test_sov_record_builder_persists_platform_and_failure_reason():
+def test_measurement_status_honors_explicit_parse_failure_with_nonempty_raw_response():
+    assert _measurement_status_for_result(
+        {
+            "raw_response": "답변은 정상 수신됨",
+            "measurement_status": "FAILED",
+            "failure_reason": "mention_parse_failed",
+        }
+    ) == ("FAILED", "mention_parse_failed")
+
+
+def test_sov_record_builder_persists_platform_failure_reason_and_source_urls():
     hospital_id = uuid.uuid4()
     query_id = uuid.uuid4()
     run_id = uuid.uuid4()
@@ -263,7 +273,14 @@ def test_sov_record_builder_persists_platform_and_failure_reason():
         platform="gemini",
         target_id=target_id,
         variant_id=variant_id,
-        result={"is_mentioned": True, "raw_response": "", "competitor_mentions": [{"name": "경쟁의원"}]},
+        result={
+            "is_mentioned": True,
+            "raw_response": "답변은 정상 수신됨",
+            "competitor_mentions": [{"name": "경쟁의원"}],
+            "measurement_status": "FAILED",
+            "failure_reason": "competitor_parse_failed",
+            "source_urls": ["https://example.com/source"],
+        },
     )
 
     assert record.hospital_id == hospital_id
@@ -273,7 +290,8 @@ def test_sov_record_builder_persists_platform_and_failure_reason():
     assert record.ai_query_variant_id == variant_id
     assert record.ai_platform == "gemini"
     assert record.is_mentioned is True
-    assert record.raw_response == ""
+    assert record.raw_response == "답변은 정상 수신됨"
     assert record.competitor_mentions == [{"name": "경쟁의원"}]
     assert record.measurement_status == "FAILED"
-    assert record.failure_reason == "empty_raw_response"
+    assert record.failure_reason == "competitor_parse_failed"
+    assert record.source_urls == ["https://example.com/source"]
