@@ -256,8 +256,11 @@ prepare_non_secret_env_file() {
       continue
     fi
 
-    # SERVICE/APP_ENV는 서비스별로 따로 주입한다 (YAML 중복 키 방지).
-    if [[ "$key" == "SERVICE" || "$key" == "APP_ENV" ]]; then
+    # SERVICE/APP_ENV와 배포 시 명시적으로 재정의할 수 있는 운영 필수 플래그는
+    # 서비스별 env 파일에서 한 번만 주입한다 (YAML 중복 키 방지).
+    if [[ "$key" == "SERVICE" || "$key" == "APP_ENV" \
+      || "$key" == "OPENAI_CHATGPT_USE_WEB_SEARCH" \
+      || "$key" == "CERTIFICATE_MANAGER_AUTO_PROVISION" ]]; then
       continue
     fi
 
@@ -297,7 +300,11 @@ make_service_env_file() {
   SERVICE_ENV_FILE="$(mktemp)"
   TEMP_ENV_FILES+=("$SERVICE_ENV_FILE")
   cat "$NON_SECRET_ENV_FILE" > "$SERVICE_ENV_FILE"
-  printf 'SERVICE: "%s"\nAPP_ENV: "production"\n' "$service" >> "$SERVICE_ENV_FILE"
+  printf 'SERVICE: "%s"\nAPP_ENV: "production"\nOPENAI_CHATGPT_USE_WEB_SEARCH: "%s"\nCERTIFICATE_MANAGER_AUTO_PROVISION: "%s"\n' \
+    "$service" \
+    "$OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE" \
+    "$CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE" \
+    >> "$SERVICE_ENV_FILE"
 }
 
 require_secret_versions() {

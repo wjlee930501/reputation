@@ -53,8 +53,8 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
                 "DB_USER=reputation",
                 "GCP_STORAGE_BUCKET=reputation-assets",
                 "CUSTOM_DOMAIN_IP_TARGETS=203.0.113.10",
-                "OPENAI_CHATGPT_USE_WEB_SEARCH=true",
-                "CERTIFICATE_MANAGER_AUTO_PROVISION=true",
+                "OPENAI_CHATGPT_USE_WEB_SEARCH=false",
+                "CERTIFICATE_MANAGER_AUTO_PROVISION=false",
             ]
         )
         + "\n"
@@ -68,6 +68,11 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
                 'echo "gcloud $*" >> "$FAKE_COMMAND_LOG"',
+                'for arg in "$@"; do',
+                '  if [[ "$arg" == --env-vars-file=* ]]; then',
+                '    sed "s/^/env /" "${arg#*=}" >> "$FAKE_COMMAND_LOG"',
+                "  fi",
+                "done",
                 'if [[ "$1 $2" == "secrets describe" ]]; then',
                 "  exit 0",
                 "fi",
@@ -130,6 +135,8 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             "CLOUD_SQL_CONNECTION_NAME": "test-project:asia-northeast3:reputation-db",
             "DB_USER": "reputation",
             "GCP_STORAGE_BUCKET": "reputation-assets",
+            "OPENAI_CHATGPT_USE_WEB_SEARCH": "true",
+            "CERTIFICATE_MANAGER_AUTO_PROVISION": "true",
             "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
             "SKIP_ASSET_BUCKET_PREFLIGHT": "1",
         }
@@ -186,6 +193,10 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
         "--set-secrets=SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest"
         in commands
     )
+    assert 'env OPENAI_CHATGPT_USE_WEB_SEARCH: "true"' in commands
+    assert 'env CERTIFICATE_MANAGER_AUTO_PROVISION: "true"' in commands
+    assert 'env OPENAI_CHATGPT_USE_WEB_SEARCH: "false"' not in commands
+    assert 'env CERTIFICATE_MANAGER_AUTO_PROVISION: "false"' not in commands
 
 
 def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
