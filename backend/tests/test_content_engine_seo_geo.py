@@ -95,6 +95,33 @@ class TestValidateSeo:
         # 구조 정상이므로 hard-fail 없이 통과 — soft findings도 없어야 함
         assert isinstance(findings, list)
 
+    def test_seasonal_title_must_match_planned_publish_date(self):
+        h = _hospital()
+        result = _good_result(h)
+        result["title"] = "봄철 어깨 통증 관리"
+
+        with pytest.raises(ValueError, match="title season '봄'.*2026-07-31"):
+            _validate_seo(
+                result,
+                h,
+                {"planned_publish_date": "2026-07-31"},
+                ContentType.HEALTH,
+            )
+
+    def test_matching_seasonal_title_is_allowed(self):
+        h = _hospital()
+        result = _good_result(h)
+        result["title"] = "봄철 어깨 통증 관리"
+
+        findings = _validate_seo(
+            result,
+            h,
+            {"planned_publish_date": "2026-04-15"},
+            ContentType.HEALTH,
+        )
+
+        assert isinstance(findings, list)
+
     def test_compliant_draft_keyword_in_title(self):
         """keyword가 title에 있으면 prominence soft-finding이 없다"""
         h = _hospital(keywords=["어깨 통증"])

@@ -54,6 +54,12 @@ SEO_STAT_PATTERN = re.compile(   # 통계/수치 proxy — 숫자+단위 패턴
     r"(\d+[\.,]?\d*)\s*(%|명|건|개|회|주|일|개월|년|배|kg|cm|mm)",
     re.UNICODE,
 )
+SEASON_MONTHS = {
+    "봄": {3, 4, 5},
+    "여름": {6, 7, 8},
+    "가을": {9, 10, 11},
+    "겨울": {12, 1, 2},
+}
 
 client = anthropic.Anthropic(
     api_key=settings.ANTHROPIC_API_KEY,
@@ -87,6 +93,8 @@ SYSTEM_PROMPT = """\
    포함하세요. 누락은 허용되지 않으며 반복 삽입은 금지합니다.
 7. **분량**: 본문 1800~4200자(참고자료 제외), H2 4~6개. 5200자는 넘기지 마세요.
    이미 다른 글에 있는 일반론을 반복하지 말고, 이 질문에 필요한 감별 포인트·진료 흐름·내원 기준을 충분히 풉니다.
+8. **발행 시점 일치**: 콘텐츠 가이드에 planned_publish_date가 있으면 그 날짜의 계절과 맞지 않는
+   봄철·여름철·가을철·겨울철 제목이나 도입을 만들지 마세요. 계절성이 필요 없으면 연중형 제목을 사용하세요.
 
 [의료광고법 준수 — 절대 금지 표현]
 1등 · 최고 · 최우수 · 유일/전국 유일 · 완치 · 100% · 성공률 · 부작용 없는 ·
@@ -319,6 +327,7 @@ medical_risk_rules:
 internal_link_target: {_format_internal_link_target(content_brief.get('internal_link_target'))}
 operator_notes:
 {_bullet_list(content_brief.get('operator_notes') or [])}
+planned_publish_date: {content_brief.get('planned_publish_date') or ''}
 """.strip()
 
 
@@ -525,6 +534,19 @@ def _validate_seo(
     title: str = result.get("title") or ""
     meta: str = result.get("meta_description") or ""
     findings: list[str] = []
+
+    planned_date = str((content_brief or {}).get("planned_publish_date") or "")
+    if planned_date:
+        try:
+            planned_month = int(planned_date[5:7])
+        except (ValueError, IndexError):
+            planned_month = 0
+        for season, months in SEASON_MONTHS.items():
+            if season in title and planned_month and planned_month not in months:
+                raise ValueError(
+                    f"SEO hard-fail: title season '{season}' does not match "
+                    f"planned_publish_date {planned_date}"
+                )
 
     # ── H2 헤딩 개수 — NOTICE/FAQ는 구조 자유라 hard-fail 제외(soft) ──
     h2_matches = re.findall(r"^##\s+\S", body, flags=re.MULTILINE)

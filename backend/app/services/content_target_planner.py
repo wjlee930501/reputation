@@ -34,8 +34,13 @@ def prepare_automatic_content_brief_sync(
     which measured patient question the already-scheduled slot should answer; it does
     not invent new hospital facts or bypass publication screening.
     """
+    scheduled_date = getattr(item, "scheduled_date", None)
+    planned_publish_date = scheduled_date.isoformat() if scheduled_date else None
     if item.brief_status == BRIEF_STATUS_APPROVED and isinstance(item.content_brief, dict):
-        return item.content_brief
+        return {
+            **item.content_brief,
+            "planned_publish_date": planned_publish_date,
+        }
 
     # Lightweight stubs and imported legacy rows may not expose the linkage columns.
     # They still receive a philosophy-backed generic brief without attempting DB planning.
@@ -72,6 +77,7 @@ def prepare_automatic_content_brief_sync(
         "mode": "automatic_exposure_plan",
         "planned_at": datetime.now(timezone.utc).isoformat(),
     }
+    brief["planned_publish_date"] = planned_publish_date
     item.content_brief = brief
     item.brief_status = BRIEF_STATUS_APPROVED
     item.brief_approved_at = datetime.now(timezone.utc)
