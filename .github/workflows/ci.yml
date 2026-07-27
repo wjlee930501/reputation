@@ -16,6 +16,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Makefile의 copy-guard / db-budget-guard와 동일한 검사. 두 스크립트 모두 표준
+  # 라이브러리만 쓰므로 의존성 설치나 Postgres 없이 독립 잡으로 빠르게 돈다.
+  guards:
+    name: Copy and DB budget guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Copy guard (no internal terms in user-facing strings)
+        run: python3 scripts/check_user_facing_terms.py
+
+      - name: DB connection budget guard
+        run: python3 scripts/check_db_connection_budget.py
+
   backend:
     name: Backend lint and tests
     runs-on: ubuntu-latest
