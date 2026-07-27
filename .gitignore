@@ -61,6 +61,12 @@ AGENTS.md
 generate-report.js
 docs/superpowers/
 
+# Visual audit output — screenshots stay local, written reports are tracked
+# because DESIGN.md cites them as evidence.
+artifacts/**
+!artifacts/**/
+!artifacts/**/*.md
+
 # Terraform
 terraform/.terraform/
 terraform/*.tfstate
