@@ -35,7 +35,7 @@ export function ClinicHeader({
       <Link href={`${hospitalRootUrl}/doctor`}>의료진</Link>
       <Link href={`${hospitalRootUrl}/contents`}>건강 정보</Link>
       {websiteUrl && (
-        <a href={websiteUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <a className="clinic-header-external-link" href={websiteUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           공식 홈페이지
           <ExternalIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
         </a>

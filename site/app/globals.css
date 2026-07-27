@@ -168,7 +168,8 @@ textarea:focus-visible {
   /* ─── Minimal white system (Stripe / Toss) ─── */
   --ink: #0a0a0a;
   --text: #3f3f46;
-  --muted: #8a8f98;
+  /* 12–13px 보조 문구도 흰 배경에서 WCAG AA 대비를 확보한다. */
+  --muted: #626871;
   --line: #ededed;
   --line-strong: #e0e0e2;
   --accent: #0671e0;
@@ -558,11 +559,11 @@ textarea:focus-visible {
 
 .ai-panel {
   position: relative;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-card);
   background: #ffffff;
   padding: 22px 24px 18px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.07);
   overflow: hidden;
 }
 
@@ -2104,6 +2105,78 @@ textarea:focus-visible {
   background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-30);
   font-weight: 700;
+}
+
+/* 2026-07 visual audit: long hub pages need a compact, visible jump index. */
+.clinic-section-index {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 48px;
+  border-bottom: 1px solid #e5e5e1;
+  background: #ffffff;
+}
+
+.clinic-section-index a {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid #ececea;
+  color: #4f5662;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.clinic-section-index a:first-child {
+  border-left: 1px solid #ececea;
+}
+
+.clinic-section-index a:hover,
+.clinic-section-index a:focus-visible {
+  background: #f7f9fc;
+  color: #1558c8;
+}
+
+.clinic-anchor-target {
+  scroll-margin-top: 88px;
+}
+
+.clinic-article-toc {
+  margin: 24px 48px 0;
+  border: 1px solid var(--color-revisit-line-container);
+  border-radius: 8px;
+  background: var(--color-revisit-coolgrey-95);
+}
+
+.clinic-article-toc summary {
+  min-height: 46px;
+  padding: 13px 16px;
+  cursor: pointer;
+  color: var(--color-revisit-text-title);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.clinic-article-toc nav {
+  padding: 0 16px 14px;
+  border-top: 1px solid var(--color-revisit-line-container);
+}
+
+.clinic-article-toc ol {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 24px;
+  margin: 12px 0 0;
+  padding-left: 20px;
+}
+
+.clinic-article-toc a {
+  color: var(--color-revisit-primary-30);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.5;
 }
 
 /* ── Article (detail page) ────────────────────────────────────── */
@@ -7133,9 +7206,12 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     background: transparent;
     font-size: 13px;
   }
+  .clinic-header-nav-mobile .clinic-header-external-link {
+    display: none !important;
+  }
   .clinic-hero-editorial-copy {
-    min-height: 430px;
-    padding: 54px 22px 48px;
+    min-height: 390px;
+    padding: 44px 22px 40px;
   }
   .clinic-hero-editorial-kicker {
     margin-bottom: 18px;
@@ -7143,7 +7219,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   }
   .clinic-hero-editorial-title {
     gap: 2px;
-    font-size: clamp(32px, 10.2vw, 40px);
+    font-size: clamp(31px, 8.8vw, 36px);
     line-height: 1.14;
   }
   .clinic-hero-editorial-lede {
@@ -7232,5 +7308,61 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   }
   .clinic-curator-meta-cell {
     border-right: 0;
+  }
+
+  .clinic-section-index {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 0 16px;
+  }
+
+  .clinic-section-index a {
+    min-height: 46px;
+    border-bottom: 1px solid #ececea;
+    font-size: 12.5px;
+  }
+
+  .clinic-section-index a:nth-child(4) {
+    grid-column: 1 / 2;
+  }
+
+  .clinic-article-toc {
+    margin-left: 22px;
+    margin-right: 22px;
+  }
+
+  .clinic-article-toc ol {
+    grid-template-columns: 1fr;
+  }
+
+  .clinic-shell .clinic-article-byline {
+    gap: 6px 8px;
+    padding-bottom: 20px;
+  }
+
+  .clinic-shell .clinic-article-trustbar {
+    gap: 2px 18px;
+    padding-top: 12px;
+    margin-top: 14px;
+  }
+}
+
+@media (max-width: 600px) {
+  .landing-shell .hero-section {
+    gap: 28px;
+    padding-top: 32px;
+    padding-bottom: 48px;
+  }
+
+  .landing-shell .hero-copy h1 {
+    font-size: clamp(2rem, 9vw, 2.35rem);
+  }
+
+  .landing-shell .hero-subcopy {
+    margin-top: 18px;
+  }
+
+  .landing-shell .hero-actions,
+  .landing-shell .hero-logos {
+    margin-top: 22px;
   }
 }

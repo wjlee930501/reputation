@@ -1,4 +1,10 @@
+import type { Metadata } from 'next'
 import Link from 'next/link'
+
+export const metadata: Metadata = {
+  title: '페이지를 찾을 수 없습니다',
+  robots: { index: false, follow: false },
+}
 
 // 브랜드된 404 — notFound() 호출 시 Next 기본 화면 대신 노출.
 export default function NotFound() {

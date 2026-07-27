@@ -230,6 +230,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           specialties={hospital.specialties}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
+          logoUrl={hospital.logo_url}
         />
         <main id="main-content">
           {/* PRD §7.2 Public Webblog IA 순서:
@@ -250,8 +251,19 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             businessHours={hospital.business_hours}
           />
 
-          <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
+          <nav className="clinic-section-index" aria-label="이 페이지의 주요 정보">
+            <a href="#treatments">진료 영역</a>
+            <a href="#doctor">의료진</a>
+            <a href="#contents">건강 정보</a>
+            <a href="#facts">병원 정보</a>
+            <a href="#contact">오시는 길</a>
+          </nav>
 
+          <div id="treatments" className="clinic-anchor-target">
+            <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
+          </div>
+
+          <div id="doctor" className="clinic-anchor-target">
           <DoctorIntro
             directorName={hospital.director_name}
             directorCareer={hospital.director_career}
@@ -264,6 +276,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             societyMemberships={hospital.director_credentials?.society_memberships ?? null}
             photos={hospital.photos ?? []}
           />
+          </div>
 
           <CarePrinciples
             hospitalRootUrl={hospitalRootUrl}
@@ -273,12 +286,14 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             publicAbout={publicAbout}
           />
 
+          <div id="contents" className="clinic-anchor-target">
           <FeaturedContent
             contents={contents}
             hospitalRootUrl={hospitalRootUrl}
             hospitalName={hospital.name}
             directorName={hospital.director_name}
           />
+          </div>
 
           <AnswerClusters
             contents={contents}
@@ -292,6 +307,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
           <ClinicGallery photos={hospital.photos ?? []} />
 
+          <div id="facts" className="clinic-anchor-target">
           <HospitalFacts
             hospitalName={hospital.name}
             address={hospital.address}
@@ -304,7 +320,9 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             links={factLinks}
             googleMapsUrl={hospital.google_maps_url}
           />
+          </div>
 
+          <div id="contact" className="clinic-anchor-target">
           <ContactCard
             address={hospital.address}
             phone={hospital.phone}
@@ -316,6 +334,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             region={hospital.region}
             websiteUrl={hospital.website_url}
           />
+          </div>
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
