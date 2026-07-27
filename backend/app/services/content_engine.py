@@ -88,7 +88,8 @@ SYSTEM_PROMPT = """\
      references에 실제 URL과 함께. 확신이 없으면 인용하지 않습니다.
    - **"Mayo Clinic은 40% 낮춘다" 같은 [기관명+미검증 수치] 조합은 절대 금지.** 차라리 인용을 생략하세요.
 4. **명확한 문장**: 모호한 홍보 문구를 피하고, 의학적 불확실성·개인차는 정확히 표시합니다.
-5. **읽기 쉬운 구조**: H2 소제목을 사용하고, 단계·비교가 실제 이해에 도움이 될 때만 목록이나 표를 씁니다.
+5. **읽기 쉬운 구조**: 페이지 제목은 시스템이 별도 H1으로 표시하므로 본문에는 `# H1`을 절대 넣지 말고,
+   `## H2` 소제목부터 사용합니다. 단계·비교가 실제 이해에 도움이 될 때만 목록이나 표를 씁니다.
 6. **엔티티 정확성**: 프로파일의 지역명·병원명·원장명을 표기 그대로 본문에 각각 최소 1회 자연스럽게
    포함하세요. 누락은 허용되지 않으며 반복 삽입은 금지합니다.
 7. **분량**: 본문 1800~4200자(참고자료 제외), H2 4~6개. 5200자는 넘기지 마세요.
@@ -521,6 +522,7 @@ def _validate_seo(
     """SEO 구조 검증 — HARD-FAIL은 ValueError를 발생시키고 SOFT 결과는 list[str]로 반환.
 
     HARD (ValueError → tenacity 재시도):
+      • 본문에 # H1 헤딩이 있음 — 페이지 제목과 중복되어 문서 구조를 깨뜨림
       • 본문에 ## H2 헤딩이 SEO_H2_MIN(2)개 미만 — 단, NOTICE/FAQ는 짧은 단문이 정상이라 제외(soft)
 
     SOFT (반환 리스트에 추가, 생성 결과는 살림):
@@ -547,6 +549,9 @@ def _validate_seo(
                     f"SEO hard-fail: title season '{season}' does not match "
                     f"planned_publish_date {planned_date}"
                 )
+
+    if re.search(r"^#\s+\S", body, flags=re.MULTILINE):
+        raise ValueError("SEO hard-fail: body must not contain an H1 heading")
 
     # ── H2 헤딩 개수 — NOTICE/FAQ는 구조 자유라 hard-fail 제외(soft) ──
     h2_matches = re.findall(r"^##\s+\S", body, flags=re.MULTILINE)

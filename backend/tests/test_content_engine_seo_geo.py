@@ -95,6 +95,14 @@ class TestValidateSeo:
         # 구조 정상이므로 hard-fail 없이 통과 — soft findings도 없어야 함
         assert isinstance(findings, list)
 
+    def test_body_h1_is_rejected_because_page_title_owns_h1(self):
+        h = _hospital()
+        result = _good_result(h)
+        result["body"] = f"# {result['title']}\n\n{result['body']}"
+
+        with pytest.raises(ValueError, match="must not contain an H1"):
+            _validate_seo(result, h, None, ContentType.DISEASE)
+
     def test_seasonal_title_must_match_planned_publish_date(self):
         h = _hospital()
         result = _good_result(h)

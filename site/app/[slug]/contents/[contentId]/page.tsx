@@ -1,6 +1,7 @@
 import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
+import { Children, isValidElement, type ReactElement, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -15,6 +16,11 @@ import {
   TYPE_LABELS,
 } from '@/lib/api'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
+import {
+  articleHeadingId,
+  extractArticleHeadings,
+  stripLeadingMarkdownH1,
+} from '@/lib/article-markdown'
 import { safeExternalHref } from '@/lib/safe-url'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
@@ -38,6 +44,18 @@ const KOREAN_READING_SPEED_CHARS_PER_MIN = 600
 // WCAG/Section508 권장: alt 최대 약 125자, 짧고 묘사적이며 "image of" 군더더기 금지.
 // Imagen 3로 자동 생성된 일러스트라는 사실은 본문 하단 캡션으로 별도 고지한다.
 const ALT_MAX_LENGTH = 125
+
+function headingText(children: ReactNode): string {
+  return Children.toArray(children)
+    .map((child) => {
+      if (typeof child === 'string' || typeof child === 'number') return String(child)
+      if (isValidElement(child)) {
+        return headingText((child as ReactElement<{ children?: ReactNode }>).props.children)
+      }
+      return ''
+    })
+    .join('')
+}
 
 function buildImageAlt(args: {
   contentTitle: string
@@ -153,7 +171,9 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   const updatedLabel = content.body_updated_at
     ? formatDate(content.body_updated_at, '')
     : publishedLabel
-  const readingMinutes = calculateReadingMinutes(content.body)
+  const articleBody = stripLeadingMarkdownH1(content.body)
+  const articleHeadings = extractArticleHeadings(articleBody)
+  const readingMinutes = calculateReadingMinutes(articleBody)
 
   const otherContents = allContents.filter((c) => c.id !== content.id)
   const sameTypeItems = otherContents.filter((c) => c.content_type === content.content_type)
@@ -419,6 +439,21 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                 </dl>
               </div>
 
+              {articleHeadings.length >= 2 && (
+                <details className="clinic-article-toc" open>
+                  <summary>이 글에서 바로 찾기</summary>
+                  <nav aria-label="글 목차">
+                    <ol>
+                      {articleHeadings.map((heading, index) => (
+                        <li key={`${heading.id}-${index}`}>
+                          <a href={`#${heading.id}`}>{heading.label}</a>
+                        </li>
+                      ))}
+                    </ol>
+                  </nav>
+                </details>
+              )}
+
               {content.meta_description && (
                 <aside className="clinic-article-tldr" aria-label="핵심 답변 요약">
                   <span className="clinic-article-tldr-eyebrow">핵심 답변</span>
@@ -439,6 +474,14 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   // 취소선(~strike~)으로 오인해 본문이 줄줄이 취소선 처리되던 버그 방지.
                   remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
                   components={{
+                    h1: ({ children, node, ...props }) => {
+                      void node
+                      return <h2 id={articleHeadingId(headingText(children))} {...props}>{children}</h2>
+                    },
+                    h2: ({ children, node, ...props }) => {
+                      void node
+                      return <h2 id={articleHeadingId(headingText(children))} {...props}>{children}</h2>
+                    },
                     table: ({ children, node, ...props }) => {
                       void node
                       return (
@@ -449,7 +492,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                     },
                   }}
                 >
-                  {content.body}
+                  {articleBody}
                 </ReactMarkdown>
               </div>
 
