@@ -1575,7 +1575,7 @@ def _refresh_exposure_actions_sync(hospital_id: uuid.UUID) -> None:
         # 측정 레코드는 이미 커밋됐다. 파생 작업 실패로 원 측정을 재실행해 비용·중복을
         # 만들지 않고 다음 주/운영 복구에서 따라잡게 한다.
         logger.exception(
-            "Exposure action refresh failed after measurement: hospital=%s",
+            "exposure_actions refresh failed after measurement: hospital=%s",
             hospital_id,
         )
 
