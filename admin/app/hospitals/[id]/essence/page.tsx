@@ -381,11 +381,11 @@ export default function EssencePage() {
   }
 
   if (loading) {
-    return <div className="p-8 text-slate-500">불러오는 중...</div>
+    return <div className="p-4 text-slate-500 sm:p-6 lg:p-8">불러오는 중...</div>
   }
 
   return (
-    <div className="p-8 space-y-6 max-w-[1400px] mx-auto">
+    <div className="mx-auto max-w-[1400px] space-y-6 p-4 sm:p-6 lg:p-8">
       {/* Page header */}
       <div className="flex items-start justify-between gap-6 flex-wrap">
         <div className="min-w-0">
@@ -395,7 +395,7 @@ export default function EssencePage() {
             승인 전에는 자동 콘텐츠가 발행 차단됩니다.
           </p>
         </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 min-w-[480px]">
+        <div className="grid w-full grid-cols-2 gap-3 sm:min-w-[480px] lg:w-auto lg:grid-cols-4">
           <SummaryCard
             label="승인된 운영 기준"
             value={approved ? `v${approved.version} 운영 중` : '미승인'}
@@ -552,7 +552,7 @@ export default function EssencePage() {
         </form>
 
         {/* Step 2 — process & select sources */}
-        <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <section className="admin-responsive-table-wrap bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-4 flex-wrap">
             <div className="min-w-0">
               <StepLabel index={2} label="근거 추출 · 초안 만들기" />
@@ -571,7 +571,7 @@ export default function EssencePage() {
                 : `선택한 ${selectedSourceIds.size}개 자료로 초안 만들기`}
             </button>
           </div>
-          <table className="w-full text-sm">
+          <table className="admin-responsive-table w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
                 <th className="px-4 py-3 w-10"></th>
@@ -593,7 +593,7 @@ export default function EssencePage() {
                 const statusStyle = getSourceStatusStyle(source)
                 return (
                   <tr key={source.id} className="hover:bg-slate-50/70">
-                    <td className="px-4 py-4 align-top">
+                    <td className="px-4 py-4 align-top" data-label="선택">
                       <input
                         type="checkbox"
                         checked={selectedSourceIds.has(source.id)}
@@ -603,7 +603,7 @@ export default function EssencePage() {
                         className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
                       />
                     </td>
-                    <td className="px-4 py-4">
+                    <td className="px-4 py-4" data-primary="true">
                       <p className="font-medium text-slate-900">{source.title}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
                         <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 mr-1.5">
@@ -626,16 +626,16 @@ export default function EssencePage() {
                         <p className="text-xs text-red-600 mt-1">{source.process_error}</p>
                       )}
                     </td>
-                    <td className="px-4 py-4 text-center align-top">
+                    <td className="px-4 py-4 text-center align-top" data-label="상태">
                       <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusStyle.color}`}>
                         {statusStyle.label}
                       </span>
                     </td>
-                    <td className="px-4 py-4 text-center align-top text-slate-700 font-medium">
+                    <td className="px-4 py-4 text-center align-top text-slate-700 font-medium" data-label="근거">
                       {source.evidence_note_count}
                     </td>
-                    <td className="px-4 py-4 align-top">
-                      <div className="flex items-center justify-end gap-1.5">
+                    <td className="px-4 py-4 align-top" data-label="액션">
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
                         <button
                           onClick={() => openSource(source.id)}
                           className="px-2.5 py-1 bg-slate-50 text-slate-700 text-xs rounded hover:bg-slate-100 border border-slate-200"

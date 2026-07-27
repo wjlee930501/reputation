@@ -273,8 +273,8 @@ export default function ExposureActionsPage() {
   }, [actions])
 
   return (
-    <main className="p-8 space-y-6 bg-slate-50 min-h-full">
-      <section className="rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 p-7 text-white shadow-sm">
+    <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
+      <section className="rounded-2xl bg-slate-900 p-5 text-white sm:p-7">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">
           AI 노출 운영 작업 큐
         </p>
@@ -286,7 +286,7 @@ export default function ExposureActionsPage() {
               우선순위 높은 항목부터 담당자·기한을 지정하고, 환자 질문에 맞춘 콘텐츠 가이드를 만들어 이번 달 운영 큐에 연결하세요.
             </p>
           </div>
-          <div className="grid grid-cols-4 gap-2 text-center text-xs lg:min-w-[420px]">
+          <div className="grid w-full grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4 lg:min-w-[420px] lg:w-auto">
             <SummaryPill label="대기" value={String(counts.open)} />
             <SummaryPill label="진행중" value={String(counts.inProgress)} />
             <SummaryPill label="확인필요" value={String(counts.blocked)} />

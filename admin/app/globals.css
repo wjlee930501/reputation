@@ -32,3 +32,148 @@
     outline: none;
   }
 }
+
+@layer components {
+  .admin-disclosure {
+    border: 1px solid #e2e8f0;
+    border-radius: 0.875rem;
+    background: #ffffff;
+  }
+
+  .admin-disclosure > summary {
+    display: flex;
+    min-height: 3rem;
+    cursor: pointer;
+    list-style: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    color: #0f172a;
+    font-size: 0.875rem;
+    font-weight: 700;
+  }
+
+  .admin-disclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .admin-disclosure > summary::after {
+    content: '펼치기';
+    color: #64748b;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .admin-disclosure[open] > summary {
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .admin-disclosure[open] > summary::after {
+    content: '접기';
+  }
+
+  .profile-layout {
+    width: 100%;
+    max-width: 80rem;
+  }
+
+  @media (min-width: 1024px) {
+    .profile-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 1.5rem;
+    }
+
+    .profile-layout > * {
+      min-width: 0;
+      margin-top: 0 !important;
+    }
+
+    .profile-layout > .profile-full {
+      grid-column: 1 / -1;
+    }
+  }
+}
+
+@media (max-width: 639px) {
+  .admin-responsive-table-wrap {
+    overflow: visible !important;
+  }
+
+  .admin-responsive-table {
+    display: block;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .admin-responsive-table thead {
+    display: none;
+  }
+
+  .admin-responsive-table tbody {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .admin-responsive-table tbody tr {
+    display: grid;
+    gap: 0.625rem;
+    min-width: 0;
+    padding: 0.875rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.75rem;
+    background: #ffffff;
+  }
+
+  .admin-responsive-table tbody td {
+    display: flex;
+    min-width: 0;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0 !important;
+    border: 0 !important;
+    text-align: right !important;
+  }
+
+  .admin-responsive-table tbody td::before {
+    content: attr(data-label);
+    flex: 0 0 5.5rem;
+    color: #64748b;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-align: left;
+  }
+
+  .admin-responsive-table tbody td[data-label='']::before,
+  .admin-responsive-table tbody td:not([data-label])::before {
+    display: none;
+  }
+
+  .admin-responsive-table tbody td > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .admin-responsive-table tbody td[data-primary='true'] {
+    display: block;
+    padding-bottom: 0.625rem !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    text-align: left !important;
+  }
+
+  .admin-responsive-table tbody td[data-primary='true']::before {
+    display: none;
+  }
+
+  .admin-responsive-table tbody tr:has(td[colspan]) td {
+    display: block;
+    text-align: center !important;
+  }
+
+  .admin-responsive-table tbody tr:has(td[colspan]) td::before {
+    display: none;
+  }
+}

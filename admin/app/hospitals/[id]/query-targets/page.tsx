@@ -69,6 +69,7 @@ export default function QueryTargetsPage() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [measuring, setMeasuring] = useState(false)
+  const [expandedTargetId, setExpandedTargetId] = useState<string | null>(null)
   const [measureFeedback, setMeasureFeedback] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
 
   const activeTargets = useMemo(() => targets.filter((target) => target.status !== 'ARCHIVED'), [targets])
@@ -229,8 +230,8 @@ export default function QueryTargetsPage() {
   }
 
   return (
-    <main className="p-8 space-y-6 bg-slate-50 min-h-full">
-      <section className="rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 p-7 text-white shadow-sm">
+    <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
+      <section className="rounded-2xl bg-slate-900 p-5 text-white sm:p-7">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">
           AI 답변에 확인할 핵심 질문
         </p>
@@ -338,25 +339,28 @@ export default function QueryTargetsPage() {
                   isAddingVariant={variantSavingByTarget[target.id] ?? false}
                   onStatusChange={(status) => patchTarget(target, { status })}
                   onPriorityChange={(priority) => patchTarget(target, { priority })}
+                  expanded={expandedTargetId === target.id}
+                  onExpandedChange={() => setExpandedTargetId((current) => current === target.id ? null : target.id)}
                 />
               ))}
             </div>
           )}
         </div>
 
-        <aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm h-fit">
-          <h3 className="text-lg font-semibold text-slate-900">새 환자 질문 만들기</h3>
-          <p className="mt-1 text-sm text-slate-500">
-            환자 질문을 먼저 정의하고, 실제 AI에 물어볼 문장을 함께 입력합니다.
-          </p>
+        <details className="admin-disclosure h-fit">
+          <summary>새 환자 질문 만들기</summary>
+          <div className="p-5">
+            <p className="text-sm text-slate-500">
+              환자 질문을 먼저 정의하고, 실제 AI에 물어볼 문장을 함께 입력합니다.
+            </p>
 
           <form onSubmit={handleCreate} className="mt-5 space-y-4">
             <Input label="질문 이름" value={form.name} onChange={(value) => setFormValue(setForm, 'name', value)} placeholder="예: 강남 치질 수술 추천" required />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Input label="의도" value={form.target_intent} onChange={(value) => setFormValue(setForm, 'target_intent', value)} placeholder="추천형" required />
               <Input label="대상 월" value={form.target_month} onChange={(value) => setFormValue(setForm, 'target_month', value)} placeholder="2026-06" />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Select
                 label="우선순위"
                 value={form.priority}
@@ -371,7 +375,7 @@ export default function QueryTargetsPage() {
               />
             </div>
             <Input label="진료과" value={form.specialty} onChange={(value) => setFormValue(setForm, 'specialty', value)} placeholder="대장항문외과" />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Input label="증상/질환" value={form.condition_or_symptom} onChange={(value) => setFormValue(setForm, 'condition_or_symptom', value)} placeholder="치질" />
               <Input label="치료/시술" value={form.treatment} onChange={(value) => setFormValue(setForm, 'treatment', value)} placeholder="치질 수술" />
             </div>
@@ -393,7 +397,8 @@ export default function QueryTargetsPage() {
               {saving ? '저장 중...' : '환자 질문 저장'}
             </button>
           </form>
-        </aside>
+          </div>
+        </details>
       </section>
     </main>
   )
@@ -410,6 +415,8 @@ function TargetCard({
   isAddingVariant,
   onStatusChange,
   onPriorityChange,
+  expanded,
+  onExpandedChange,
 }: {
   target: AIQueryTarget
   variantDraft: string
@@ -421,6 +428,8 @@ function TargetCard({
   isAddingVariant: boolean
   onStatusChange: (status: AIQueryTargetStatus) => void
   onPriorityChange: (priority: AIQueryTargetPriority) => void
+  expanded: boolean
+  onExpandedChange: () => void
 }) {
   const priority = getPriorityLabel(target)
   const status = getStatusLabel(target)
@@ -430,8 +439,14 @@ function TargetCard({
   const hiddenVariantCount = Math.max(target.variants.length - visibleVariants.length, 0)
 
   return (
-    <article className={`rounded-2xl border bg-white p-5 shadow-sm ${target.status === 'ARCHIVED' ? 'border-slate-200 opacity-70' : 'border-slate-200'}`}>
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+    <article className={`overflow-hidden rounded-2xl border bg-white ${target.status === 'ARCHIVED' ? 'border-slate-200 opacity-70' : 'border-slate-200'}`}>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={`query-target-${target.id}`}
+        onClick={onExpandedChange}
+        className="flex min-h-20 w-full items-center justify-between gap-4 p-4 text-left hover:bg-slate-50 sm:p-5"
+      >
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-lg font-semibold text-slate-900">{target.name}</h4>
@@ -442,9 +457,18 @@ function TargetCard({
           <p className="mt-2 text-sm text-slate-600">
             {target.target_intent} · {target.specialty || '진료과 미지정'} · {target.condition_or_symptom || target.treatment || '질환/치료 미지정'}
           </p>
+          <p className="mt-1 text-xs text-slate-500">
+            질문 문구 {target.summary.active_variant_count}/{target.summary.variant_count}개 운영 · 최근 AI 언급률 {target.summary.latest_sov_pct === null ? '측정 대기' : `${target.summary.latest_sov_pct.toFixed(1)}%`}
+          </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <span className="shrink-0 text-xs font-semibold text-blue-700">{expanded ? '접기' : '편집'}</span>
+      </button>
+
+      {expanded && (
+      <div id={`query-target-${target.id}`} className="border-t border-slate-100 p-4 sm:p-5">
+        <div className="flex flex-wrap justify-end gap-2">
           <select
+            aria-label={`${target.name} 우선순위`}
             value={target.priority}
             onChange={(event) => onPriorityChange(event.target.value as AIQueryTargetPriority)}
             className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
@@ -454,6 +478,7 @@ function TargetCard({
             <option value="LOW">낮음</option>
           </select>
           <select
+            aria-label={`${target.name} 상태`}
             value={target.status}
             onChange={(event) => onStatusChange(event.target.value as AIQueryTargetStatus)}
             className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
@@ -463,9 +488,8 @@ function TargetCard({
             <option value="ARCHIVED">보관</option>
           </select>
         </div>
-      </div>
 
-      <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <InfoBlock label="지역" value={target.region_terms.join(', ') || '미지정'} />
         <InfoBlock label="확인할 AI 서비스" value={platformLabels.join(', ') || '미지정'} />
         <InfoBlock label="경쟁 병원" value={target.competitor_names.join(', ') || '미지정'} />
@@ -526,7 +550,7 @@ function TargetCard({
             </p>
           )}
         </div>
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <select
             aria-label="추가할 질문의 AI 서비스"
             value={variantPlatform}
@@ -553,6 +577,8 @@ function TargetCard({
           </button>
         </div>
       </div>
+      </div>
+      )}
     </article>
   )
 }

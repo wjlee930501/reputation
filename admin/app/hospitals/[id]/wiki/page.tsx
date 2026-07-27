@@ -178,17 +178,17 @@ export default function WikiPage() {
   }
 
   return (
-    <main className="p-8 space-y-6 bg-slate-50 min-h-full">
-      <header className="rounded-2xl bg-white border border-slate-200 p-6 shadow-sm">
+    <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
+      <header className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-6">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-600">
           Wiki — 검증된 사실 모음
         </p>
-        <h1 className="mt-2 text-2xl font-bold text-slate-900">병원 자산 Wiki</h1>
+        <h2 className="mt-2 text-2xl font-bold text-slate-900">병원 자산 Wiki</h2>
         <p className="mt-2 text-sm text-slate-600 max-w-2xl">
           AE가 인입한 자료에서 추출된 근거 노트(claim + 출처 발췌)를 카테고리별로 모았습니다.
           사진 자산은 토글로 /site 공개 표면에 노출 여부를 결정합니다.
         </p>
-        <div className="mt-3 flex items-center gap-3 text-xs text-slate-600">
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
           <span>근거 노트 {allNotes.length}개 · 자료 {sources.length}개 · 사진 {photos.length}개</span>
           <button onClick={refresh} className="text-blue-600 hover:underline">새로 고침</button>
           <Link href={`/hospitals/${id}/onboarding`} className="text-blue-600 hover:underline">

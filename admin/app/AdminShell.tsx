@@ -65,22 +65,62 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-slate-50 lg:flex lg:h-screen">
-      <aside className="flex shrink-0 flex-col bg-slate-900 text-slate-100 lg:w-60">
-        <div className="border-b border-slate-800 px-4 py-4 sm:px-5">
-          <Link href="/hospitals" className="block">
+      <aside className="sticky top-0 z-50 flex shrink-0 flex-col bg-slate-900 text-slate-100 lg:static lg:w-60">
+        <div className="flex h-14 items-center border-b border-slate-800 px-4 lg:block lg:h-auto lg:px-5 lg:py-4">
+          <Link href="/hospitals" className="min-w-0 flex-1 lg:block">
             <div className="flex items-baseline gap-1.5">
               <span className="text-lg font-bold tracking-tight text-white">Re:putation</span>
               <span className="text-[11px] font-semibold tracking-wider text-blue-300">운영</span>
             </div>
-            <p className="mt-0.5 text-[11px] text-slate-400">MotionLabs 내부 운영 콘솔</p>
-            <span className="mt-2 inline-flex items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-200">
+            <p className="mt-0.5 hidden text-[11px] text-slate-400 lg:block">MotionLabs 내부 운영 콘솔</p>
+            <span className="mt-2 hidden items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-200 lg:inline-flex">
               <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-400" />
               Research Preview
             </span>
           </Link>
+
+          <details className="group relative ml-auto lg:hidden">
+            <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-lg border border-slate-700 px-3 text-sm font-semibold text-slate-100 [&::-webkit-details-marker]:hidden">
+              메뉴
+              <span aria-hidden className="text-[10px] transition-transform group-open:rotate-180">▼</span>
+            </summary>
+            <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-slate-700 bg-slate-900 p-2 shadow-xl">
+              <nav className="space-y-1" aria-label="모바일 운영 메뉴">
+                {NAV_ITEMS.map((item) => {
+                  const active =
+                    item.href === '/hospitals'
+                      ? pathname === '/hospitals' || (pathname.startsWith('/hospitals/') && !pathname.startsWith('/hospitals/new'))
+                      : pathname === item.href || pathname.startsWith(`${item.href}/`)
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      aria-current={active ? 'page' : undefined}
+                      className={`flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm ${
+                        active ? 'bg-slate-800 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                      }`}
+                    >
+                      <span aria-hidden className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-700">
+                        {item.icon}
+                      </span>
+                      {item.label}
+                    </Link>
+                  )
+                })}
+              </nav>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="mt-2 flex min-h-11 w-full items-center gap-3 border-t border-slate-800 px-3 pt-2 text-sm text-slate-300 hover:text-white"
+              >
+                로그아웃
+              </button>
+              {logoutError ? <p role="alert" className="px-3 py-2 text-xs text-red-300">로그아웃에 실패했습니다.</p> : null}
+            </div>
+          </details>
         </div>
 
-        <nav className="flex gap-1 overflow-x-auto px-3 py-3 lg:flex-1 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:py-4" aria-label="운영 메뉴">
+        <nav className="hidden gap-1 overflow-x-auto px-3 py-3 lg:flex lg:flex-1 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:py-4" aria-label="운영 메뉴">
           <p className="hidden px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500 lg:block">
             운영 메뉴
           </p>
@@ -123,7 +163,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           </div>
         </nav>
 
-        <div className="border-t border-slate-800 px-3 py-3 lg:px-4">
+        <div className="hidden border-t border-slate-800 px-3 py-3 lg:block lg:px-4">
           <button
             type="button"
             onClick={handleLogout}

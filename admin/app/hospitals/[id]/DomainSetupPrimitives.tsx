@@ -121,20 +121,20 @@ export function DomainRecordTable({
 }) {
   return (
     <>
-      <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+      <div className="admin-responsive-table-wrap rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
         {plan ? (
-          <table className="w-full text-xs">
+          <table className="admin-responsive-table w-full text-xs">
             <tbody className="divide-y divide-slate-200">
               {plan.records.map((record) => (
                 <tr key={`${record.type}-${record.name}-${record.value}`}>
-                  <td className="px-3 py-2 w-24 font-mono text-slate-800">{record.type}</td>
-                  <td className="px-3 py-2 font-mono text-slate-800">{record.name}</td>
-                  <td className="px-3 py-2">
-                    <button type="button" onClick={() => onCopy(record.value)} className="font-mono text-blue-700 underline">
+                  <td className="px-3 py-2 w-24 font-mono text-slate-800" data-primary="true">{record.type}</td>
+                  <td className="break-all px-3 py-2 font-mono text-slate-800" data-label="호스트">{record.name}</td>
+                  <td className="px-3 py-2" data-label="대상값">
+                    <button type="button" onClick={() => onCopy(record.value)} className="break-all text-right font-mono text-blue-700 underline">
                       {record.value}
                     </button>
                   </td>
-                  <td className="px-3 py-2 text-slate-500">TTL {record.ttl}</td>
+                  <td className="px-3 py-2 text-slate-500" data-label="TTL">{record.ttl}</td>
                 </tr>
               ))}
             </tbody>

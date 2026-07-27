@@ -13,6 +13,12 @@ import { canSubmitSchedule } from '@/lib/operator-safety'
 import { PLAN_LABELS, type ScheduleInfo } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
+const PLAN_DISTRIBUTION: Record<string, Array<[string, number]>> = {
+  PLAN_16: [['FAQ', 4], ['질환 가이드', 3], ['치료 안내', 3], ['원장 칼럼', 2], ['건강 정보', 2], ['지역 특화', 1], ['공지', 1]],
+  PLAN_12: [['FAQ', 3], ['질환 가이드', 3], ['치료 안내', 2], ['원장 칼럼', 2], ['건강 정보', 1], ['지역 특화', 1]],
+  PLAN_8: [['FAQ', 2], ['질환 가이드', 2], ['치료 안내', 2], ['원장 칼럼', 1], ['건강 정보', 1]],
+}
+
 export default function SchedulePage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
@@ -110,12 +116,14 @@ export default function SchedulePage() {
   }
 
   return (
-    <div className="p-8 max-w-lg">
+    <div className="max-w-5xl p-4 sm:p-6 lg:p-8">
       <h2 className="text-xl font-bold text-slate-900 mb-2">콘텐츠 운영 스케줄</h2>
       <p className="text-sm text-slate-600 mb-6">
         병원 콘텐츠 허브에 발행할 월간 콘텐츠 수와 운영 요일을 설정합니다.
       </p>
 
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="min-w-0">
       {existingLoading && (
         <div className="mb-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
           현재 운영 중인 스케줄을 확인하는 중...
@@ -183,7 +191,7 @@ export default function SchedulePage() {
           </div>
         </div>
       ) : (
-        <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-6">
+        <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-slate-200 p-4 space-y-6 sm:p-6">
           {/* 월간 운영량 */}
           <div>
             <label htmlFor="schedule-plan" className="block text-sm font-medium text-slate-700 mb-2">월간 운영량</label>
@@ -208,7 +216,7 @@ export default function SchedulePage() {
           {/* 발행 요일 */}
           <div>
             <span className="block text-sm font-medium text-slate-700 mb-2">발행 요일</span>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
               {DAYS.map((day, idx) => (
                 <button
                   key={idx}
@@ -216,7 +224,7 @@ export default function SchedulePage() {
                   onClick={() => toggleDay(idx)}
                   aria-pressed={selectedDays.includes(idx)}
                   aria-label={`${day}요일 ${selectedDays.includes(idx) ? '선택됨' : '선택 안 됨'}`}
-                  className={`w-10 h-10 rounded-full text-sm font-medium transition-colors ${
+                  className={`aspect-square min-h-10 w-full rounded-full text-sm font-medium transition-colors ${
                     selectedDays.includes(idx)
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -256,6 +264,42 @@ export default function SchedulePage() {
           </button>
         </form>
       )}
+      </div>
+
+      <aside className="rounded-xl border border-slate-200 bg-slate-50 p-4 lg:sticky lg:top-6 sm:p-5">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">운영 미리보기</p>
+        <h3 className="mt-2 text-base font-semibold text-slate-900">{PLAN_LABELS[plan as keyof typeof PLAN_LABELS] ?? plan}</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          {activeFrom || '시작일 미정'}부터 {selectedDays.length > 0 ? selectedDays.map((day) => `${DAYS[day]}요일`).join(' · ') : '발행 요일 미정'}에 운영합니다.
+        </p>
+
+        <div className="mt-5 grid grid-cols-7 gap-1" aria-label="선택된 발행 요일">
+          {DAYS.map((day, idx) => (
+            <div key={day} className="text-center">
+              <span className={`mx-auto flex h-8 w-8 items-center justify-center rounded-full text-xs font-semibold ${selectedDays.includes(idx) ? 'bg-blue-600 text-white' : 'bg-white text-slate-400'}`}>
+                {day}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-5 border-t border-slate-200 pt-4">
+          <p className="text-sm font-semibold text-slate-800">월간 콘텐츠 구성</p>
+          <dl className="mt-3 space-y-2">
+            {(PLAN_DISTRIBUTION[plan] ?? []).map(([label, count]) => (
+              <div key={label} className="flex items-center justify-between gap-3 text-sm">
+                <dt className="text-slate-600">{label}</dt>
+                <dd className="font-semibold tabular-nums text-slate-900">{count}편</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+
+        <p className="mt-5 rounded-lg bg-white px-3 py-2.5 text-xs leading-5 text-slate-600">
+          저장 시 선택한 시작월의 슬롯이 생성됩니다. 운영 중인 스케줄을 바꾸면 미발행 슬롯만 새 기준으로 재생성됩니다.
+        </p>
+      </aside>
+      </div>
     </div>
   )
 }

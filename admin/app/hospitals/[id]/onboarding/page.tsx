@@ -201,10 +201,10 @@ export default function OnboardingPage() {
   const completedCount = steps.filter((s) => s.status === 'completed').length
 
   return (
-    <main className="p-8 space-y-6 bg-slate-50 min-h-full">
-      <header className="rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-blue-900 p-7 text-white shadow-sm">
+    <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
+      <header className="rounded-2xl bg-slate-900 p-5 text-white sm:p-7">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">신규 병원 온보딩</p>
-        <h1 className="mt-2 text-2xl font-bold">{hospital?.name ?? '온보딩'}</h1>
+        <h2 className="mt-2 text-2xl font-bold">{hospital?.name ?? '온보딩'}</h2>
         <p className="mt-2 text-sm leading-6 text-blue-50/90 max-w-2xl">
           프로파일부터 LIVE, 근거 자료, 운영 기준, 스케줄, 첫 발행, AI 답변 언급률 측정까지 실제 상태로 검증합니다.
         </p>
@@ -248,8 +248,19 @@ export default function OnboardingPage() {
 
       <section className="grid gap-4 lg:grid-cols-[260px_1fr]">
         {/* Sidebar progress */}
-        <aside className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm self-start">
-          <ol className="space-y-1">
+        <aside className="min-w-0 max-w-full self-start rounded-2xl border border-slate-200 bg-white p-4 lg:sticky lg:top-6">
+          <details className="lg:hidden">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-800 [&::-webkit-details-marker]:hidden">
+              전체 단계 보기
+              <span className="text-xs text-slate-500">{completedCount}/{steps.length} 완료</span>
+            </summary>
+            <ol className="mt-2 space-y-1 border-t border-slate-100 pt-2">
+              {steps.map((s) => (
+                <StepBadge key={s.key} step={s} />
+              ))}
+            </ol>
+          </details>
+          <ol className="hidden space-y-1 lg:block">
             {steps.map((s) => (
               <StepBadge key={s.key} step={s} />
             ))}
@@ -287,12 +298,12 @@ function StepBadge({ step }: { step: StepDef }) {
     <li>
       <a
         href={`#step-${step.index}`}
-        className={`flex items-start gap-3 rounded-lg border px-3 py-2 ${tone} transition`}
+        className={`flex min-w-0 items-start gap-3 rounded-lg border px-3 py-2 ${tone} transition`}
       >
         <span className="text-lg leading-none">{mark}</span>
-        <span>
+        <span className="min-w-0">
           <span className="block text-xs font-semibold uppercase tracking-wider">STEP {step.index + 1}</span>
-          <span className="block text-sm font-medium">{step.title}</span>
+          <span className="block break-words text-sm font-medium">{step.title}</span>
         </span>
       </a>
     </li>
@@ -324,8 +335,8 @@ function StepCard({
         : 'border-slate-200'
 
   return (
-    <article id={`step-${step.index}`} className={`rounded-2xl border ${tone} bg-white shadow-sm`}>
-      <header className="flex items-start justify-between gap-3 px-6 py-5 border-b border-slate-100">
+    <details id={`step-${step.index}`} open={step.status === 'current'} className={`overflow-hidden rounded-2xl border ${tone} bg-white`}>
+      <summary className="flex min-h-20 cursor-pointer list-none items-start justify-between gap-3 px-4 py-4 sm:px-6 sm:py-5 [&::-webkit-details-marker]:hidden">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-600">
             STEP {step.index + 1} / {11}
@@ -334,9 +345,9 @@ function StepCard({
           <p className="mt-1 text-sm text-slate-600 max-w-2xl">{step.description}</p>
         </div>
         <StepStatusChip status={step.status} />
-      </header>
+      </summary>
 
-      <div className="px-6 py-5">
+      <div className="border-t border-slate-100 px-4 py-5 sm:px-6">
         {step.key === 'profile' && (
           <ProfileStepBody hospital={hospital} hospitalId={hospitalId} />
         )}
@@ -374,7 +385,7 @@ function StepCard({
           <OperationalStepBody step={step} />
         )}
       </div>
-    </article>
+    </details>
   )
 }
 

@@ -716,6 +716,19 @@ export default function ContentPage() {
   const selectedAction = selected?.exposure_action_id
     ? exposureActions.find((action) => action.id === selected.exposure_action_id) ?? null
     : null
+  const primaryOperation: {
+    label: string
+    value: number
+    tone: 'green' | 'orange' | 'gray' | 'blue' | 'amber' | 'red'
+    hint: string
+    filter: ContentOperationsFilter
+  } = summary.needsReview > 0
+    ? { label: '지금 확인: 자동 발행 차단', value: summary.needsReview, tone: 'orange', hint: '차단 사유를 확인하고 공개 전 조치', filter: 'needsReview' }
+    : summary.notificationPending > 0
+      ? { label: '지금 확인: Slack 알림 재시도', value: summary.notificationPending, tone: 'red', hint: '공개 완료 · 알림 기록 없음', filter: 'notificationPending' }
+      : summary.postReviewPending > 0
+        ? { label: '지금 확인: 후행 검수', value: summary.postReviewPending, tone: 'blue', hint: '공개 글을 확인하고 검수 완료 처리', filter: 'postReviewPending' }
+        : { label: '현재 자동 발행 대기', value: summary.publishable, tone: 'green', hint: '기계 안전검사를 통과한 콘텐츠', filter: 'publishable' }
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -737,24 +750,24 @@ export default function ContentPage() {
           <DismissibleBanner tone="success" message={actionSuccess} dismissLabel="완료 메시지 닫기" onClose={() => setActionSuccess(null)} />
         )}
 
-        {/* Summary cards */}
-        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-          {carriedCount > 0 && (
-            <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨 · 우선 처리" filter="carried" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          )}
+        {/* 현재 할 일에 시각적 우선순위를 주고, 정상/기록 상태는 펼침 안으로 보낸다. */}
+        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <SummaryCard {...primaryOperation} featured activeFilter={activeFilter} onFilter={setActiveFilter} />
           <SummaryCard label="자동 발행 대기" value={summary.publishable} tone="green" hint="기계 안전검사 통과" filter="publishable" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단됨" filter="needsReview" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          <SummaryCard label="Slack 알림 재시도" value={summary.notificationPending} tone="red" hint="공개 완료 · 알림 기록 없음" filter="notificationPending" activeFilter={activeFilter} onFilter={setActiveFilter} />
           <SummaryCard label="후행 확인 대기" value={summary.postReviewPending} tone="blue" hint="Slack 알림 후 확인" filter="postReviewPending" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          <SummaryCard label="후행 확인 완료" value={summary.published} tone="green" hint="사람 확인 기록됨" filter="published" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          {summary.rejected > 0 && (
-            <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          )}
-          {summary.cancelled > 0 && (
-            <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복·노후 슬롯" filter="cancelled" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          )}
         </div>
+        <details className="admin-disclosure mt-3">
+          <summary>전체 파이프라인 상태</summary>
+          <div className="grid grid-cols-2 gap-3 p-3 md:grid-cols-3 xl:grid-cols-6">
+            {carriedCount > 0 && <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨" filter="carried" activeFilter={activeFilter} onFilter={setActiveFilter} />}
+            <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단" filter="needsReview" activeFilter={activeFilter} onFilter={setActiveFilter} />
+            <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={setActiveFilter} />
+            <SummaryCard label="Slack 알림 재시도" value={summary.notificationPending} tone="red" hint="알림 기록 없음" filter="notificationPending" activeFilter={activeFilter} onFilter={setActiveFilter} />
+            <SummaryCard label="후행 확인 완료" value={summary.published} tone="green" hint="사람 확인 기록됨" filter="published" activeFilter={activeFilter} onFilter={setActiveFilter} />
+            <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={setActiveFilter} />
+            <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복·노후 슬롯" filter="cancelled" activeFilter={activeFilter} onFilter={setActiveFilter} />
+          </div>
+        </details>
         {activeFilter !== 'all' && (
           <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
             <span>선택한 상태만 표시 중 · {filteredItems.length}건</span>
@@ -1589,6 +1602,7 @@ function SummaryCard({
   filter,
   activeFilter,
   onFilter,
+  featured = false,
 }: {
   label: string
   value: number
@@ -1597,6 +1611,7 @@ function SummaryCard({
   filter: ContentOperationsFilter
   activeFilter: ContentOperationsFilter
   onFilter: (filter: ContentOperationsFilter) => void
+  featured?: boolean
 }) {
   const tones: Record<string, string> = {
     green: 'border-green-200 bg-green-50',
@@ -1620,7 +1635,7 @@ function SummaryCard({
       type="button"
       aria-pressed={active}
       onClick={() => onFilter(active ? 'all' : filter)}
-      className={`min-h-24 rounded-xl border px-4 py-3 text-left transition-all hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${tones[tone]} ${active ? 'ring-2 ring-blue-600 ring-offset-2' : ''}`}
+      className={`min-h-24 rounded-xl border px-4 py-3 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${featured ? 'sm:col-span-2 lg:min-h-28' : ''} ${tones[tone]} ${active ? 'ring-2 ring-blue-600 ring-offset-2' : ''}`}
     >
       <p className="text-xs font-medium text-slate-600">{label}</p>
       <p className={`text-2xl font-bold mt-1 ${numTones[tone]}`}>{value}</p>

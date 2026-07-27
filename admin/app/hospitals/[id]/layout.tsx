@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useParams, usePathname } from 'next/navigation'
+import { useParams, usePathname, useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError, fetchAPI } from '@/lib/api'
 import {
@@ -34,6 +34,7 @@ export default function HospitalLayout({
   children: React.ReactNode
 }) {
   const pathname = usePathname()
+  const router = useRouter()
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
   const [hospital, setHospital] = useState<Hospital | null>(null)
@@ -88,6 +89,8 @@ export default function HospitalLayout({
   const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
   const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
+  const activeMainTab = MAIN_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
+  const activeTab = activeConfigTab ?? activeMainTab ?? MAIN_TABS[0]
 
   async function handleLifecycleAction() {
     if (!hospital || !lifecycleAction) return
@@ -110,8 +113,59 @@ export default function HospitalLayout({
     <HospitalHeaderContext.Provider value={{ hospital, refetch }}>
     <div className="flex min-h-full flex-col">
       {/* Hospital header */}
-      <header className="border-b border-slate-200 bg-white px-4 pt-4 pb-0 sm:px-6 lg:px-8 lg:pt-5">
-        <div className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between lg:gap-6">
+      <header className="border-b border-slate-200 bg-white px-4 py-3 lg:px-8 lg:pb-0 lg:pt-5">
+        <div className="lg:hidden">
+          <div className="flex min-h-11 items-center gap-3">
+            <Link href="/hospitals" aria-label="병원 목록으로" className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500">
+              ←
+            </Link>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
+                <h1 className="truncate text-base font-bold text-slate-900">{hospital?.name ?? '병원 불러오는 중'}</h1>
+                {statusInfo && (
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusInfo.color}`}>
+                    {statusInfo.label}
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 truncate text-xs text-slate-500">{hospital?.aeo_domain || hospital?.slug || '병원 정보를 확인하고 있습니다.'}</p>
+            </div>
+            {hospital && (
+              <details className="group relative shrink-0">
+                <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-700 [&::-webkit-details-marker]:hidden">
+                  상태 <span aria-hidden className="transition-transform group-open:rotate-180">⌄</span>
+                </summary>
+                <div className="absolute right-0 top-[calc(100%+8px)] z-40 w-[min(21rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
+                  <p className="text-xs font-semibold text-slate-900">운영 준비 상태</p>
+                  <div className="mt-3 grid gap-2 text-xs text-slate-600">
+                    <ProgressDot label="프로파일 완료" done={hospital.profile_complete} />
+                    <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
+                    <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
+                    <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
+                  </div>
+                  {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">운영량 {planLabel}</p>}
+                </div>
+              </details>
+            )}
+          </div>
+          <label className="mt-2 block">
+            <span className="sr-only">현재 병원 작업 화면</span>
+            <select
+              value={activeTab.path}
+              onChange={(event) => router.push(`/hospitals/${hospitalId}/${event.target.value}`)}
+              className="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+            >
+              <optgroup label="주요 작업">
+                {MAIN_TABS.map((tab) => <option key={tab.path} value={tab.path}>{tab.label} — {tab.hint}</option>)}
+              </optgroup>
+              <optgroup label="운영 설정">
+                {CONFIG_TABS.map((tab) => <option key={tab.path} value={tab.path}>{tab.label} — {tab.hint}</option>)}
+              </optgroup>
+            </select>
+          </label>
+        </div>
+
+        <div className="mb-4 hidden flex-col gap-4 lg:flex lg:flex-row lg:items-start lg:justify-between lg:gap-6">
           <div className="min-w-0">
             <Link
               href="/hospitals"
@@ -180,7 +234,7 @@ export default function HospitalLayout({
         </div>
 
         {/* Tab navigation */}
-        <div className="-mb-px flex items-end gap-2">
+        <div className="-mb-px hidden items-end gap-2 lg:flex">
           <nav className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto pb-px" aria-label="병원 주요 작업">
             {MAIN_TABS.map((tab) => {
               const href = `/hospitals/${hospitalId}/${tab.path}`

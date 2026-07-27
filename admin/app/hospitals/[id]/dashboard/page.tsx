@@ -390,7 +390,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <main className="space-y-6 bg-[var(--color-revisit-background-user)] p-8 min-h-full">
+    <main className="min-h-full space-y-6 bg-[var(--color-revisit-background-user)] p-4 sm:p-6 lg:p-8">
       {/* Hero */}
       <section className="rounded-2xl border border-[var(--color-revisit-coolgrey-20)] bg-[var(--color-revisit-nav)] p-7 text-white">
         <p className="details2 font-semibold uppercase text-[var(--color-revisit-primary-80)]">
@@ -582,16 +582,17 @@ export default function DashboardPage() {
 
       {/* Audit log — Admin actions trail */}
       {!loading && (
-        <section className="admin-panel p-5">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+        <details className="admin-disclosure">
+          <summary>
             <div>
               <p className="admin-eyebrow">감사 로그</p>
               <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">최근 운영 액션 기록</h3>
-              <p className="body4 admin-muted mt-1">
-                고객 영향이 있는 모든 운영 액션은 이 로그에 남습니다. 실행자(actor)는 환경 변수 ADMIN_ACTOR_NAME 기준입니다.
-              </p>
             </div>
-          </div>
+          </summary>
+          <div className="p-5 pt-2">
+          <p className="body4 admin-muted">
+            고객 영향이 있는 모든 운영 액션은 이 로그에 남습니다. 실행자(actor)는 환경 변수 ADMIN_ACTOR_NAME 기준입니다.
+          </p>
           {auditLogs.length === 0 ? (
             <p className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
               아직 기록된 운영 액션이 없습니다.
@@ -614,7 +615,8 @@ export default function DashboardPage() {
               ))}
             </ol>
           )}
-        </section>
+          </div>
+        </details>
       )}
 
       {/* Workflow strip */}
@@ -695,15 +697,17 @@ export default function DashboardPage() {
 
       {/* Measurement runs */}
       {!loading && (
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <details className="admin-disclosure">
+          <summary>
             <div>
               <h3 className="text-base font-semibold text-slate-900">측정 실행 로그</h3>
-              <p className="mt-1 text-sm text-slate-500">
-                측정 방식은 실행 단위로 기록되며, 명시되지 않은 실행을 ChatGPT Search로 단정하지
-                않습니다. 성공/실패 집계와 실패율은 측정 안정성 지표로 따로 보고, AI 언급률 계산에는 들어가지 않습니다.
-              </p>
             </div>
+          </summary>
+          <div className="p-5 pt-2">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <p className="text-sm text-slate-500">
+              측정 방식·성공/실패 집계는 측정 안정성 지표로 기록하며 AI 언급률 계산에는 포함하지 않습니다.
+            </p>
             <Link
               href={queryTargetsHref}
               className="self-start rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
@@ -762,7 +766,8 @@ export default function DashboardPage() {
               ))}
             </div>
           )}
-        </section>
+          </div>
+        </details>
       )}
 
       {/* Top AI exposure work queue items */}
@@ -945,14 +950,14 @@ export default function DashboardPage() {
               </div>
 
               {queries.length > 0 && (
-                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="admin-responsive-table-wrap overflow-hidden rounded-2xl border border-slate-200 bg-white">
                   <div className="border-b border-slate-100 px-6 py-4">
                     <h3 className="text-base font-semibold text-slate-900">질문별 AI 언급률</h3>
                     <p className="mt-1 text-xs text-slate-500">
                       환자 질문 문구 단위로 본 AI 언급률입니다. 보완 작업 우선순위를 정하는 보조 지표로 사용합니다.
                     </p>
                   </div>
-                  <table className="w-full text-sm">
+                  <table className="admin-responsive-table w-full text-sm">
                     <thead className="border-b border-slate-200 bg-slate-50">
                       <tr>
                         <th className="px-6 py-3 text-left font-medium text-slate-600">환자 질문</th>
@@ -964,8 +969,8 @@ export default function DashboardPage() {
                     <tbody className="divide-y divide-slate-100">
                       {queries.map((q) => (
                         <tr key={q.query_id} className="transition-colors hover:bg-slate-50">
-                          <td className="px-6 py-3 text-slate-700">{q.query_text}</td>
-                          <td className="px-6 py-3 text-center">
+                          <td className="px-6 py-3 text-slate-700" data-primary="true">{q.query_text}</td>
+                          <td className="px-6 py-3 text-center" data-label="AI 언급률">
                             <span
                               className={`font-medium ${
                                 q.mention_rate >= 50 ? 'text-emerald-600' : 'text-slate-500'
@@ -978,10 +983,10 @@ export default function DashboardPage() {
                               {q.failure_count ? ` · 확인 실패 ${q.failure_count}건` : ''}
                             </p>
                           </td>
-                          <td className="px-6 py-3">
+                          <td className="px-6 py-3" data-label="서비스별">
                             <PlatformBreakdown value={q.platform_breakdown} />
                           </td>
-                          <td className="px-6 py-3 text-center text-xs text-slate-400">
+                          <td className="px-6 py-3 text-center text-xs text-slate-400" data-label="최근 측정">
                             {q.last_measured_at
                               ? new Date(q.last_measured_at).toLocaleDateString('ko-KR')
                               : '-'}

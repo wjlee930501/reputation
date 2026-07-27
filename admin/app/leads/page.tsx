@@ -189,8 +189,8 @@ export default function LeadsPage() {
 
       {!loading && !error && leads.length > 0 && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="overflow-x-auto">
-          <table className="min-w-[860px] w-full text-sm">
+          <div className="admin-responsive-table-wrap overflow-x-auto">
+          <table className="admin-responsive-table min-w-[860px] w-full text-sm">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">접수 시각</th>
@@ -204,8 +204,8 @@ export default function LeadsPage() {
             <tbody className="divide-y divide-slate-100">
               {leads.map((lead) => (
                 <tr key={lead.id} className="transition-colors hover:bg-slate-50">
-                  <td className="px-6 py-4 text-xs text-slate-500">{formatDateTime(lead.created_at)}</td>
-                  <td className="px-6 py-4">
+                  <td className="px-6 py-4 text-xs text-slate-500" data-label="접수 시각">{formatDateTime(lead.created_at)}</td>
+                  <td className="px-6 py-4" data-primary="true">
                     <p className="font-semibold text-slate-900">{lead.clinic_name}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-slate-500">{lead.clinic_type}</span>
@@ -220,8 +220,8 @@ export default function LeadsPage() {
                       </span>
                     </div>
                   </td>
-                  <td className="px-6 py-4 font-medium text-slate-700">{lead.contact}</td>
-                  <td className="px-6 py-4 text-slate-600">
+                  <td className="px-6 py-4 font-medium text-slate-700" data-label="연락처">{lead.contact}</td>
+                  <td className="px-6 py-4 text-slate-600" data-label="문의">
                     <p className="line-clamp-2 max-w-sm">{lead.question}</p>
                     <p className="mt-1 text-[11px] text-slate-400">
                       개인정보 동의 {lead.privacy ? '완료' : '미확인'}
@@ -235,8 +235,8 @@ export default function LeadsPage() {
                       <p className="mt-1 text-[11px] font-medium text-emerald-600">운영 알림 완료</p>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-xs text-slate-500">{lead.source_path ?? '-'}</td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-4 text-xs text-slate-500" data-label="유입">{lead.source_path ?? '-'}</td>
+                  <td className="px-6 py-4 text-right" data-label="다음 액션">
                     {lead.converted_hospital_id ? (
                       <Link
                         href={`/hospitals/${lead.converted_hospital_id}/onboarding`}

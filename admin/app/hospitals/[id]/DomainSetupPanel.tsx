@@ -233,7 +233,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
 
   return (
     <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <div className="bg-gradient-to-br from-indigo-50 via-blue-50 to-white px-6 py-5 border-b border-slate-100">
+      <div className="border-b border-slate-100 bg-blue-50 px-4 py-5 sm:px-6">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold text-slate-900">자기 도메인 연결 <span className="text-slate-400 font-normal">(선택)</span></h3>

@@ -125,8 +125,8 @@ export default function HospitalsPage() {
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="overflow-x-auto">
-            <table className="min-w-[980px] w-full text-sm">
+            <div className="admin-responsive-table-wrap overflow-x-auto">
+            <table className="admin-responsive-table min-w-[980px] w-full text-sm">
               <thead className="bg-slate-50 border-b border-slate-200">
                 <tr>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">병원</th>
@@ -156,7 +156,7 @@ export default function HospitalsPage() {
                     : `/hospitals/${h.id}/profile`
                   return (
                     <tr key={h.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4" data-primary="true">
                         <Link
                           href={`/hospitals/${h.id}/dashboard`}
                           className="block group"
@@ -169,14 +169,14 @@ export default function HospitalsPage() {
                           </div>
                         </Link>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4" data-label="상태">
                         <span
                           className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${status.color}`}
                         >
                           {status.label}
                         </span>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4" data-label="도메인">
                         <Link
                           href={domainHref}
                           className="group inline-flex max-w-[240px] flex-col"
@@ -193,19 +193,19 @@ export default function HospitalsPage() {
                           </span>
                         </Link>
                       </td>
-                      <td className="px-6 py-4 text-slate-600">
+                      <td className="px-6 py-4 text-slate-600" data-label="월간 운영량">
                         {h.plan ? PLAN_LABELS[h.plan] ?? h.plan : '-'}
                       </td>
-                      <td className="px-4 py-4 text-center">
+                      <td className="px-4 py-4 text-center" data-label="프로파일">
                         <CheckCell done={h.profile_complete} />
                       </td>
-                      <td className="px-4 py-4 text-center">
+                      <td className="px-4 py-4 text-center" data-label="정보 허브">
                         <CheckCell done={h.site_live} />
                       </td>
-                      <td className="px-4 py-4 text-center">
+                      <td className="px-4 py-4 text-center" data-label="스케줄">
                         <CheckCell done={h.schedule_set} />
                       </td>
-                      <td className="px-4 py-4 text-right">
+                      <td className="px-4 py-4 text-right" data-label="">
                         <Link
                           href={`/hospitals/${h.id}/dashboard`}
                           className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"

@@ -485,7 +485,7 @@ export default function ProfilePage() {
   }
 
   if (loading) {
-    return <div className="p-8 text-slate-500">불러오는 중...</div>
+    return <div className="p-4 text-slate-500 sm:p-6 lg:p-8">불러오는 중...</div>
   }
 
   const checklist = buildProfileChecklist(profile)
@@ -523,15 +523,15 @@ export default function ProfilePage() {
           onSubmit={handleAutofill}
         />
       )}
-      <form onSubmit={handleSave} className="p-8 max-w-3xl space-y-8">
-      <div className="flex items-start justify-between gap-4">
+      <form onSubmit={handleSave} className="profile-layout space-y-6 p-4 sm:p-6 lg:p-8">
+      <div className="profile-full flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div>
           <h2 className="text-xl font-bold text-slate-900">프로파일 온보딩</h2>
           <p className="text-sm text-slate-600 mt-1">
             원장 인터뷰, 병원 기본정보, 외부 채널, 진료 항목, 도메인까지 누락 없이 세팅합니다.
           </p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex w-full flex-wrap items-center gap-3 sm:w-auto sm:shrink-0">
           {success && (
             <span className="text-sm text-green-600 font-medium">저장되었습니다 ✓</span>
           )}
@@ -539,14 +539,14 @@ export default function ProfilePage() {
             type="button"
             onClick={() => setAutofillOpen(true)}
             disabled={saving || autofillLoading}
-            className="px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors"
+            className="min-h-11 flex-1 px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors sm:flex-none"
           >
             자동 채우기
           </button>
           <button
             type="submit"
             disabled={saving}
-            className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="min-h-11 flex-1 px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors sm:flex-none"
           >
             {saving ? '저장 중...' : '저장'}
           </button>
@@ -554,14 +554,14 @@ export default function ProfilePage() {
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
+        <div className="profile-full bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
           {error}
         </div>
       )}
 
       {/* Autofill result: violations warning */}
       {autofillResult && autofillResult.violations.length > 0 && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-2">
+        <div className="profile-full bg-red-50 border border-red-200 rounded-lg p-4 space-y-2">
           <p className="text-sm font-semibold text-red-800">의료광고 금지 표현이 감지되었습니다</p>
           <p className="text-xs text-red-700">해당 필드를 직접 수정해 주세요. 자동으로 제거되지 않습니다.</p>
           <ul className="space-y-1">
@@ -576,7 +576,7 @@ export default function ProfilePage() {
 
       {/* Autofill result: source status summary */}
       {autofillResult && (
-        <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
+        <div className="profile-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
           {autofillResult.draft && Object.keys(autofillResult.draft).length === 0 ? (
             <p className="text-sm text-slate-600">
               온라인에서 자동으로 채울 정보를 찾지 못했습니다. URL을 확인하거나 직접 입력해 주세요.
@@ -603,8 +603,8 @@ export default function ProfilePage() {
       )}
 
       {/* 온보딩 체크리스트 */}
-      <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 bg-gradient-to-br from-blue-50 via-indigo-50 to-white">
+      <section className="profile-full bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-4 py-4 border-b border-slate-100 bg-blue-50 sm:px-6">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="text-base font-semibold text-slate-900">온보딩 체크리스트</h3>
@@ -652,7 +652,7 @@ export default function ProfilePage() {
       </section>
 
       {/* 공개 사이트 브랜드 */}
-      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
+      <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-5 sm:p-6">
         <div>
           <h3 className="text-base font-semibold text-slate-800">공개 사이트 브랜드</h3>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -726,7 +726,7 @@ export default function ProfilePage() {
       </section>
 
       {/* 원장 정보 */}
-      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-4 sm:p-6">
         <div>
           <h3 className="text-base font-semibold text-slate-800">원장 정보</h3>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -775,7 +775,7 @@ export default function ProfilePage() {
       </section>
 
       {/* 병원 연락처 */}
-      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-4 sm:p-6">
         <div>
           <h3 className="text-base font-semibold text-slate-800">병원 연락처</h3>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -830,7 +830,7 @@ export default function ProfilePage() {
             ))}
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor="profile-website-url" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
               홈페이지 URL
@@ -861,14 +861,14 @@ export default function ProfilePage() {
       </section>
 
       {/* AI가 참고할 외부 채널 */}
-      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-4 sm:p-6">
         <div>
           <h3 className="text-base font-semibold text-slate-800">AI가 참고할 외부 채널</h3>
           <p className="text-xs text-slate-500 mt-0.5">
             네이버 플레이스·구글 지도/병원 정보 URL과 좌표는 AI 답변과 로컬 검색에서 우리 병원을 인식시키는 기본 자료입니다.
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor="profile-google-business-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL</label>
             <input
@@ -914,7 +914,7 @@ export default function ProfilePage() {
             />
           </div>
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label htmlFor="profile-latitude" className="block text-sm font-medium text-slate-700 mb-1.5">위도</label>
             <input
@@ -947,7 +947,7 @@ export default function ProfilePage() {
       </section>
 
       {/* 운영 기준 정보 */}
-      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-4 sm:p-6">
         <div>
           <h3 className="text-base font-semibold text-slate-800">운영 기준 정보</h3>
           <p className="text-xs text-slate-500 mt-0.5">
@@ -981,7 +981,7 @@ export default function ProfilePage() {
       </section>
 
       {/* 진료 항목 */}
-      <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+      <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-4 sm:p-6">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
@@ -1003,7 +1003,7 @@ export default function ProfilePage() {
         <div className="space-y-3">
           {(profile.treatments ?? []).map((t, i) => (
             <div key={i} className="flex gap-3 items-start">
-              <div className="flex-1 grid grid-cols-2 gap-3">
+              <div className="flex-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <input
                   type="text"
                   value={t.name}
@@ -1036,7 +1036,7 @@ export default function ProfilePage() {
       </section>
 
       {profile.site_built && (
-        <div id="domain-setup" className="scroll-mt-24">
+        <div id="domain-setup" className="profile-full scroll-mt-24">
           <DomainSetupPanel
             hospitalId={hospitalId}
             profile={profile}
@@ -1049,10 +1049,10 @@ export default function ProfilePage() {
 
       {/* 온보딩 완료 및 초기 리포트/콘텐츠 허브 노출 준비 시작 */}
       <section
-        className={`rounded-xl border overflow-hidden ${
+        className={`profile-full rounded-xl border overflow-hidden ${
           requiredReady
-            ? 'border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-white'
-            : 'border-amber-200 bg-gradient-to-br from-amber-50 via-white to-white'
+            ? 'border-emerald-200 bg-emerald-50'
+            : 'border-amber-200 bg-amber-50'
         }`}
       >
         <div className="px-6 py-5 border-b border-slate-100/80">

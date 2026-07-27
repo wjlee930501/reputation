@@ -243,7 +243,7 @@ export default function ReportsPage() {
   }, [reports])
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       <div className="mb-6">
         <h2 className="text-xl font-bold text-slate-900">리포트 검수</h2>
         <p className="mt-1 text-sm text-slate-600">
@@ -273,8 +273,8 @@ export default function ReportsPage() {
       )}
 
       {!loading && !error && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="admin-responsive-table-wrap overflow-hidden rounded-xl border border-slate-200 bg-white">
+          <table className="admin-responsive-table w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">기간</th>
@@ -298,13 +298,13 @@ export default function ReportsPage() {
                 const meta = getScreeningMeta(r)
                 return (
                   <tr key={r.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-6 py-4 text-slate-900 font-medium">
+                    <td className="px-6 py-4 text-slate-900 font-medium" data-primary="true">
                       {r.period_year}년 {r.period_month}월
                     </td>
-                    <td className="px-6 py-4 text-slate-600">
+                    <td className="px-6 py-4 text-slate-600" data-label="유형">
                       {getReportTypeLabel(r)}
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-6 py-4" data-label="검수 상태">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
                         {meta.label}
                       </span>
@@ -314,7 +314,7 @@ export default function ReportsPage() {
                         </p>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-6 py-4 text-center" data-label="PDF">
                       {r.download_url ? (
                         <a
                           href={r.download_url}
@@ -330,11 +330,11 @@ export default function ReportsPage() {
                         <span className="text-slate-400 text-xs">{getPdfStatusLabel(r)}</span>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-slate-600">
+                    <td className="px-6 py-4 text-slate-600" data-label="생성일">
                       <div>{formatDate(r.created_at)}</div>
                       {r.sent_at && <div className="text-xs text-green-700 mt-0.5">전달 {formatDate(r.sent_at)}</div>}
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-6 py-4 text-right" data-label="액션">
                       <button
                         onClick={() => openDetail(r)}
                         disabled={detailLoadingId === r.id}
