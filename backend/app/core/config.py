@@ -297,15 +297,27 @@ class Settings(BaseSettings):
 
     # OpenAI — SoV
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL_QUERY: str = "gpt-4o"
-    OPENAI_MODEL_PARSE: str = "gpt-4o-mini"
+    # 두 모델 모두 **날짜 스냅샷으로 고정**한다. 부동 별칭(gpt-5-mini, gpt-4o-mini)은
+    # OpenAI가 갱신하면 측정 기준선이 조용히 이동해, 언급률 변화가 플랫폼 탓인지
+    # 우리 측정 도구 탓인지 구분할 수 없게 된다.
+    #
+    # OPENAI_MODEL_QUERY  = 답변 모델(측정 대상). 소비자가 보는 답변을 재현한다.
+    #   ⚠️ gpt-5-mini-2025-08-07은 2026-12-11 폐기 예정(후속 gpt-5.6-terra).
+    #      재이전 일정은 docs/prd/REPUTATION-AI-DIAGNOSIS-FUNNEL-PRD-2026-07.md §7-1 참조.
+    # OPENAI_MODEL_PARSE  = 판정 모델(측정 도구=자). 답변 모델과 의도적으로 분리하며,
+    #      기준선 유지를 위해 바꾸지 않는다. 폐기 예정 없음.
+    OPENAI_MODEL_QUERY: str = "gpt-5-mini-2025-08-07"
+    OPENAI_MODEL_PARSE: str = "gpt-4o-mini-2024-07-18"
     # 프로덕션은 Responses API + web_search tool만 허용한다. False는 모델 recall이므로
     # _validate_production_config에서 부팅을 차단한다.
     OPENAI_CHATGPT_USE_WEB_SEARCH: bool = True
 
     # Gemini — SoV
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-flash-latest"
+    # 답변 모델이므로 OpenAI와 동일하게 **버전 고정**한다. `gemini-flash-latest`는
+    # 부동 별칭이라 Google이 갱신하면 기준선이 조용히 이동한다(2026-07-29 확인 시
+    # gemini-3.6-flash로 해석됨). 측정 기준선을 고정하는 것이 별칭의 최신성보다 중요하다.
+    GEMINI_MODEL: str = "gemini-3.6-flash"
 
     # Cost Guard — 전역 비용 가드레일 + 킬스위치.
     # 콘텐츠/이미지/SoV 호출은 병원 수에 비례해 무제한 확장되므로 카테고리별 일/월 호출
@@ -358,6 +370,13 @@ class Settings(BaseSettings):
 
     # Site (public)
     SITE_BASE_URL: str = "https://reputation.motionlabs.kr"  # llms.txt absolute URL 등에 사용
+
+    # IndexNow — 발행 즉시 검색 색인에 알린다.
+    # sitemap은 크롤러가 오기를 기다리는 수동 신호라 색인까지 지연·누락이 생긴다.
+    # Bing 인덱스는 OpenAI 웹검색이 참조하므로, 여기 들어가야 AI 답변에 인용될 수 있다.
+    # 키는 site/app/indexnow-key.txt 라우트가 같은 값을 응답해야 한다(호스트 소유 증명).
+    INDEXNOW_ENABLED: bool = True
+    INDEXNOW_KEY: str = ""  # 미설정이면 제출을 건너뛴다(발행은 정상 진행)
 
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수

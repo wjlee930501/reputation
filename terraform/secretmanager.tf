@@ -76,6 +76,18 @@ resource "google_secret_manager_secret" "site_bff_secret" {
   }
 }
 
+# IndexNow 키. 발행 즉시 검색 색인에 알리는 데 쓴다.
+# 값 자체는 /indexnow-key.txt로 공개 서빙되므로 기밀이 아니다 — Secret Manager를 쓰는 이유는
+# backend(제출)와 site(키 파일)에 **동일한 값**이 주입되도록 한 곳에서 관리하기 위해서다.
+# 두 값이 어긋나면 IndexNow가 소유 증명에 실패하고 제출이 조용히 거부된다.
+resource "google_secret_manager_secret" "indexnow_key" {
+  secret_id = "INDEXNOW_KEY"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
 resource "google_secret_manager_secret" "redis_url" {
   secret_id = "REDIS_URL"
   project   = var.project_id
@@ -96,6 +108,7 @@ locals {
     DB_PASSWORD            = google_secret_manager_secret.db_password.secret_id
     SITE_REVALIDATE_SECRET = google_secret_manager_secret.site_revalidate_secret.secret_id
     SITE_BFF_SECRET        = google_secret_manager_secret.site_bff_secret.secret_id
+    INDEXNOW_KEY           = google_secret_manager_secret.indexnow_key.secret_id
   }
 
   # 프론트엔드(Next.js) 서비스가 마운트하는 secret — admin BFF 세션/키, site
@@ -110,6 +123,7 @@ locals {
   site_secret_env = {
     SITE_REVALIDATE_SECRET = google_secret_manager_secret.site_revalidate_secret.secret_id
     SITE_BFF_SECRET        = google_secret_manager_secret.site_bff_secret.secret_id
+    INDEXNOW_KEY           = google_secret_manager_secret.indexnow_key.secret_id
   }
 }
 

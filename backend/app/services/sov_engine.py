@@ -76,29 +76,35 @@ QUERY_TEMPLATES = [
     "{region} {specialty} 비용 어느 정도야?",
 ]
 
-PARSE_PROMPT = """\
-다음 AI 답변에서 "{hospital_name}"이 언급되었는지 분석하라.
+# 자사·경쟁사 판정에 동일하게 들어가는 동일성 기준. 두 프롬프트가 서로 다른 기준을 쓰면
+# "우리 병원 vs 경쟁 병원" 비교가 사과와 오렌지가 된다 — 원장 보고서의 핵심 지표이므로
+# 문구를 한 곳에서 정의해 양쪽에 주입한다.
+_IDENTITY_RULE = """\
 띄어쓰기·의원/병원 접미사 차이처럼 동일 기관임이 명확한 표기 변형만 인정한다.
-흔한 앞글자 2~3자가 같거나 다른 지역의 동명 기관인 것만으로는 동일 병원으로 간주하지 않는다.
+흔한 앞글자 2~3자가 같거나 다른 지역의 동명 기관인 것만으로는 동일 병원으로 간주하지 않는다."""
+
+PARSE_PROMPT = f"""\
+다음 AI 답변에서 "{{hospital_name}}"이 언급되었는지 분석하라.
+{_IDENTITY_RULE}
 
 [답변]
-{response}
+{{response}}
 
 반드시 아래 JSON만 출력:
-{{"is_mentioned": true/false, "mention_rank": null 또는 정수, "sentiment": "positive"/"neutral"/"negative"/null, "mention_context": "언급 문장 또는 null"}}"""
+{{{{"is_mentioned": true/false, "mention_rank": null 또는 정수, "sentiment": "positive"/"neutral"/"negative"/null, "mention_context": "언급 문장 또는 null"}}}}"""
 
-COMPETITOR_PARSE_PROMPT = """\
+COMPETITOR_PARSE_PROMPT = f"""\
 다음 AI 답변에서 아래 병원들이 각각 언급되었는지 분석하라.
-병원명 축약형·변형도 언급으로 인정한다 (앞 2~3글자 일치 시 동일 병원).
+{_IDENTITY_RULE}
 
 [분석 대상 병원 목록]
-{competitor_names}
+{{competitor_names}}
 
 [답변]
-{response}
+{{response}}
 
 반드시 아래 JSON 객체만 출력:
-{{"competitors": [{{"name": "병원명", "is_mentioned": true/false, "mention_rank": null 또는 정수}}]}}"""
+{{{{"competitors": [{{{{"name": "병원명", "is_mentioned": true/false, "mention_rank": null 또는 정수}}}}]}}}}"""
 
 
 def generate_query_matrix(
@@ -288,6 +294,21 @@ def _normalize_for_prefilter(text: str) -> str:
     return re.sub(r"[\s\W]+", "", text or "", flags=re.UNICODE)
 
 
+def prefilter_key(hospital_name: str) -> str:
+    """사전 필터 비교 키 — 자사·경쟁사에 **동일하게** 적용한다.
+
+    접미사(의원/병원/클리닉)를 떼고 남은 핵심을 키로 쓰되, 핵심이 3글자 미만이면
+    접미사를 포함한 원래 이름을 키로 쓴다. 앞 2글자 같은 느슨한 키는 서로 다른 기관을
+    같은 병원으로 오인시키므로 쓰지 않는다.
+
+    자사에만 엄격한 키를, 경쟁사에 느슨한 키를 쓰면 경쟁사 언급이 구조적으로 부풀려져
+    원장 보고서의 "우리 병원 vs 경쟁 병원" 비교가 무효가 된다. 그래서 한 함수로 묶는다.
+    """
+    normalized = _normalize_for_prefilter(hospital_name)
+    core = re.sub(r"(의원|병원|클리닉)$", "", normalized)
+    return core if len(core) >= 3 else normalized
+
+
 async def _parse_mention(hospital_name: str, response_text: str) -> dict:
     if not response_text.strip():
         return {
@@ -296,12 +317,9 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
             "sentiment": None,
             "mention_context": None,
         }
-    # 빠른 사전 필터 — 공백/기호만 정규화한 병원명 핵심 3글자를 사용한다.
-    # 2글자 접두사만으로 동명·유사 기관을 같은 병원으로 오인하지 않도록 한다.
-    normalized_name = _normalize_for_prefilter(hospital_name)
+    # 빠른 사전 필터 — 경쟁사 판정과 동일한 키를 쓴다(prefilter_key).
     normalized_response = _normalize_for_prefilter(response_text)
-    core_name = re.sub(r"(의원|병원|클리닉)$", "", normalized_name)
-    prefilter_name = core_name if len(core_name) >= 3 else normalized_name
+    prefilter_name = prefilter_key(hospital_name)
     if prefilter_name and prefilter_name not in normalized_response:
         logger.debug("prefilter skip (mention): hospital=%s", hospital_name)
         return {
@@ -337,11 +355,11 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
 async def _parse_competitors(competitors: list[str], response_text: str) -> list[dict]:
     if not competitors or not response_text.strip():
         return []
-    # 빠른 사전 필터: 정규화(공백/특수문자 제거) 후 어떤 경쟁사의 앞 2글자도 없으면 스킵
+    # 빠른 사전 필터 — 자사 판정과 **동일한** 키를 쓴다(prefilter_key).
+    # 과거에는 앞 2글자만 맞으면 통과시켜 경쟁사 언급이 구조적으로 부풀려졌다.
     normalized_response = _normalize_for_prefilter(response_text)
     if not any(
-        (norm := _normalize_for_prefilter(c)[:2]) and norm in normalized_response
-        for c in competitors
+        (key := prefilter_key(c)) and key in normalized_response for c in competitors
     ):
         logger.debug("prefilter skip (competitors): count=%d", len(competitors))
         return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
@@ -361,15 +379,24 @@ async def _parse_competitors(competitors: list[str], response_text: str) -> list
         max_tokens=500,
         response_format={"type": "json_object"},
     )
+    # 판정기 장애를 "미언급"으로 삼키지 않는다. 자사 판정(_parse_mention)은 파싱 실패 시
+    # ValueError를 던져 측정이 FAILED로 분모에서 빠지는데, 경쟁사만 조용히 전부 False를
+    # 돌려주면 **같은 장애가 자사는 분모 제외, 경쟁사는 미언급으로 집계**된다. 방향이
+    # 한쪽으로 몰린 편향이므로 자사와 동일하게 실패로 올린다.
+    #
+    # 사전 필터에서 걸러 all-false를 돌려주는 경로(위)는 실패가 아니라 판정 결과다.
     try:
         parsed = json.loads(result.choices[0].message.content or "{}")
-        if isinstance(parsed, dict) and "competitors" in parsed:
-            parsed = parsed["competitors"]
-        if isinstance(parsed, list):
-            return parsed
-        return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
-    except Exception:
-        return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
+    except Exception as exc:
+        raise ValueError("competitor_parse_failed") from exc
+    if isinstance(parsed, dict) and "competitors" in parsed:
+        parsed = parsed["competitors"]
+    if not isinstance(parsed, list):
+        raise ValueError("competitor_parse_failed")
+    for item in parsed:
+        if not isinstance(item, dict) or not isinstance(item.get("is_mentioned"), bool):
+            raise ValueError("competitor_parse_failed")
+    return parsed
 
 
 async def run_single_query(

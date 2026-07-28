@@ -100,11 +100,15 @@ BACKEND_BASE_REQUIRED_SECRET_NAMES=(
 
 BACKEND_OPTIONAL_SECRET_NAMES=(
   "SITE_REVALIDATE_SECRET"
+  # IndexNow 키. backend가 제출하고 site가 같은 값을 키 파일로 응답해야 소유가 증명된다 —
+  # 두 서비스에 반드시 같은 시크릿을 주입할 것. 미설정이면 제출만 건너뛰고 발행은 정상 동작.
+  "INDEXNOW_KEY"
 )
 
 SITE_REQUIRED_SECRET_NAMES=(
   "SITE_REVALIDATE_SECRET"
   "SITE_BFF_SECRET"
+  "INDEXNOW_KEY"
 )
 
 ADMIN_REQUIRED_SECRET_NAMES=(
@@ -563,7 +567,7 @@ deploy_site() {
     --ingress=internal-and-cloud-load-balancing \
     --allow-unauthenticated \
     --set-env-vars="NEXT_PUBLIC_API_URL=https://${PUBLIC_DOMAIN}/api/v1/public,NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_GCP_STORAGE_BUCKET=${ASSET_GCS_BUCKET},BACKEND_URL=https://${PUBLIC_DOMAIN}" \
-    --set-secrets="SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest" \
+    --set-secrets="SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest,INDEXNOW_KEY=INDEXNOW_KEY:latest" \
     --port=8080 \
     --timeout=60 \
     --cpu-boost
