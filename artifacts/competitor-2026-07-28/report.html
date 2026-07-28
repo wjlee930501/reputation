@@ -1,0 +1,1181 @@
+<title>병의원 AI 노출 시장 정찰 보고서 — 2026.07</title>
+
+<style>
+  :root {
+    --paper: #f2f5f5;
+    --card: #ffffff;
+    --ink: #11181b;
+    --ink-2: #3c4a4e;
+    --muted: #6a777c;
+    --rule: #d8e0e0;
+    --rule-2: #e8eeee;
+    --accent: #14615c;
+    --accent-soft: #e3efed;
+    --risk: #9a2b23;
+    --risk-soft: #f7e6e4;
+    --ok: #2b6a4d;
+    --ok-soft: #e2eee8;
+    --warn: #8a5a12;
+    --warn-soft: #f6ecd9;
+
+    --f-sans: -apple-system, BlinkMacSystemFont, "Pretendard Variable", Pretendard,
+              "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", Segoe UI, Roboto, sans-serif;
+    --f-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Mono",
+              "Noto Sans Mono CJK KR", monospace;
+
+    --measure: 70ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0c1214;
+      --card: #131b1e;
+      --ink: #dde5e6;
+      --ink-2: #a8b7ba;
+      --muted: #7f8f93;
+      --rule: #243134;
+      --rule-2: #1b2528;
+      --accent: #57b5ab;
+      --accent-soft: #122a29;
+      --risk: #e08078;
+      --risk-soft: #2c1917;
+      --ok: #6fbf95;
+      --ok-soft: #142621;
+      --warn: #d3a65e;
+      --warn-soft: #2a2113;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0c1214;
+    --card: #131b1e;
+    --ink: #dde5e6;
+    --ink-2: #a8b7ba;
+    --muted: #7f8f93;
+    --rule: #243134;
+    --rule-2: #1b2528;
+    --accent: #57b5ab;
+    --accent-soft: #122a29;
+    --risk: #e08078;
+    --risk-soft: #2c1917;
+    --ok: #6fbf95;
+    --ok-soft: #142621;
+    --warn: #d3a65e;
+    --warn-soft: #2a2113;
+  }
+  :root[data-theme="light"] {
+    --paper: #f2f5f5;
+    --card: #ffffff;
+    --ink: #11181b;
+    --ink-2: #3c4a4e;
+    --muted: #6a777c;
+    --rule: #d8e0e0;
+    --rule-2: #e8eeee;
+    --accent: #14615c;
+    --accent-soft: #e3efed;
+    --risk: #9a2b23;
+    --risk-soft: #f7e6e4;
+    --ok: #2b6a4d;
+    --ok-soft: #e2eee8;
+    --warn: #8a5a12;
+    --warn-soft: #f6ecd9;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-sans);
+    font-size: 16px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    word-break: keep-all;
+    overflow-wrap: break-word;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px 96px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0 56px;
+  }
+  @media (min-width: 1100px) {
+    .wrap { grid-template-columns: minmax(0, 1fr) 210px; }
+    .masthead, .flow { grid-column: 1; }
+    .toc { grid-column: 2; grid-row: 2; }
+  }
+
+  /* ── masthead ─────────────────────────────── */
+  .masthead {
+    padding: 56px 0 32px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .kicker {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-size: clamp(30px, 5.2vw, 50px);
+    line-height: 1.14;
+    letter-spacing: -0.025em;
+    font-weight: 800;
+    margin: 0 0 20px;
+    text-wrap: balance;
+    max-width: 20ch;
+  }
+  .standfirst {
+    font-size: clamp(16px, 2.1vw, 19px);
+    line-height: 1.68;
+    color: var(--ink-2);
+    max-width: var(--measure);
+    margin: 0 0 30px;
+  }
+  .meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .meta-grid div {
+    background: var(--paper);
+    padding: 12px 14px;
+  }
+  .meta-grid dt {
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 4px;
+  }
+  .meta-grid dd {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── toc ──────────────────────────────────── */
+  .toc { padding-top: 44px; }
+  @media (min-width: 1100px) {
+    .toc { position: sticky; top: 24px; align-self: start; max-height: calc(100vh - 48px); overflow-y: auto; }
+  }
+  .toc h2 {
+    font-family: var(--f-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+  .toc ol { list-style: none; margin: 0; padding: 0; counter-reset: toc; }
+  .toc li { counter-increment: toc; border-top: 1px solid var(--rule-2); }
+  .toc a {
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    gap: 6px;
+    padding: 9px 0;
+    color: var(--ink-2);
+    text-decoration: none;
+    font-size: 13.5px;
+    line-height: 1.45;
+  }
+  .toc a::before {
+    content: counter(toc, decimal-leading-zero);
+    font-family: var(--f-mono);
+    font-size: 10px;
+    color: var(--muted);
+    padding-top: 3px;
+  }
+  .toc a:hover { color: var(--accent); }
+
+  /* ── flow ─────────────────────────────────── */
+  .flow { padding-top: 44px; }
+  section { margin: 0 0 68px; scroll-margin-top: 20px; }
+  section > * { max-width: var(--measure); }
+  section > .bleed, section > .matrix-wrap, section > .card-grid, section > .dossier { max-width: none; }
+
+  h2.sec {
+    font-size: clamp(22px, 3vw, 30px);
+    line-height: 1.22;
+    letter-spacing: -0.02em;
+    font-weight: 800;
+    margin: 0 0 8px;
+    text-wrap: balance;
+    max-width: 24ch;
+  }
+  .sec-num {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 10px;
+  }
+  .sec-lede { color: var(--ink-2); margin: 0 0 26px; }
+
+  h3 {
+    font-size: 18px;
+    line-height: 1.4;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 34px 0 10px;
+    text-wrap: balance;
+  }
+  p { margin: 0 0 16px; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, .toc a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+  strong { font-weight: 700; }
+  ul { margin: 0 0 16px; padding-left: 20px; }
+  li { margin-bottom: 7px; }
+
+  /* ── chips ────────────────────────────────── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    padding: 3px 8px;
+    border-radius: 2px;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .chip--direct { background: var(--risk-soft); color: var(--risk); }
+  .chip--partial { background: var(--warn-soft); color: var(--warn); }
+  .chip--ref { background: var(--accent-soft); color: var(--accent); }
+  .chip--ok { background: var(--ok-soft); color: var(--ok); }
+
+  .grade {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    color: var(--muted);
+    display: block;
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px dashed var(--rule);
+  }
+  .grade b { color: var(--ink-2); font-weight: 600; }
+
+  /* ── dossier ──────────────────────────────── */
+  .dossier {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    margin: 0 0 22px;
+  }
+  .entry {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    padding: 18px 18px 16px;
+    display: flex;
+    flex-direction: column;
+  }
+  .entry-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 4px;
+  }
+  .entry-name { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+  .entry-url {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin: 0 0 12px;
+    word-break: break-all;
+  }
+  .entry p { font-size: 14.5px; line-height: 1.62; margin: 0 0 10px; }
+  .entry ul { font-size: 14px; line-height: 1.6; margin-bottom: 10px; }
+  .price {
+    font-family: var(--f-mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    background: var(--accent-soft);
+    color: var(--accent);
+    padding: 7px 10px;
+    margin: 0 0 10px;
+    border-left: 2px solid var(--accent);
+  }
+
+  /* ── tables ───────────────────────────────── */
+  .matrix-wrap { overflow-x: auto; margin: 0 0 14px; border: 1px solid var(--rule); background: var(--card); }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13.5px; }
+  caption {
+    text-align: left;
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 12px 14px 8px;
+  }
+  th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--rule-2); vertical-align: top; line-height: 1.5; }
+  thead th {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.mono { font-family: var(--f-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .yes { color: var(--ok); font-weight: 700; }
+  .no { color: var(--muted); }
+  .part { color: var(--warn); font-weight: 600; }
+
+  /* ── callouts ─────────────────────────────── */
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--card);
+    padding: 16px 18px;
+    margin: 0 0 20px;
+  }
+  .callout.risk { border-left-color: var(--risk); }
+  .callout.ok { border-left-color: var(--ok); }
+  .callout-label {
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 7px;
+    font-weight: 600;
+  }
+  .callout.risk .callout-label { color: var(--risk); }
+  .callout.ok .callout-label { color: var(--ok); }
+  .callout p:last-child { margin-bottom: 0; }
+
+  blockquote {
+    margin: 0 0 18px;
+    padding: 0 0 0 18px;
+    border-left: 2px solid var(--rule);
+    color: var(--ink-2);
+    font-size: 15px;
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+  blockquote cite {
+    display: block;
+    font-family: var(--f-mono);
+    font-size: 11px;
+    color: var(--muted);
+    font-style: normal;
+    margin-top: 7px;
+  }
+
+  /* ── verdict list ─────────────────────────── */
+  .verdicts { list-style: none; margin: 0 0 20px; padding: 0; border-top: 1px solid var(--rule); }
+  .verdicts > li {
+    border-bottom: 1px solid var(--rule);
+    padding: 16px 0;
+    margin: 0;
+    display: grid;
+    gap: 4px 16px;
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 720px) {
+    .verdicts > li { grid-template-columns: 128px 1fr; }
+  }
+  .verdicts .vk {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    padding-top: 4px;
+  }
+  .verdicts .vb { margin: 0; }
+  .verdicts .vb strong { display: block; margin-bottom: 3px; font-size: 15.5px; }
+  .verdicts .vb p { font-size: 14.5px; color: var(--ink-2); margin: 0; line-height: 1.62; }
+
+  /* ── priority ─────────────────────────────── */
+  .prio { counter-reset: prio; list-style: none; margin: 0 0 20px; padding: 0; }
+  .prio > li {
+    counter-increment: prio;
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 14px;
+    padding: 15px 0;
+    border-bottom: 1px solid var(--rule-2);
+    margin: 0;
+  }
+  .prio > li::before {
+    content: counter(prio, decimal-leading-zero);
+    font-family: var(--f-mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    padding-top: 3px;
+  }
+  .prio strong { display: block; font-size: 15.5px; margin-bottom: 3px; }
+  .prio p { font-size: 14.5px; color: var(--ink-2); margin: 0; line-height: 1.62; }
+
+  footer {
+    border-top: 2px solid var(--ink);
+    padding-top: 22px;
+    font-size: 13.5px;
+    color: var(--ink-2);
+  }
+  footer h2 { font-size: 15px; margin: 0 0 10px; }
+  .srcs { font-family: var(--f-mono); font-size: 11.5px; line-height: 1.9; word-break: break-all; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="kicker">Competitive Intelligence · Re:putation</p>
+    <h1>병의원 AI 노출 시장, 이미 붐빈다</h1>
+    <p class="standfirst">
+      한국에서 병원 대상 AI 검색 노출(GEO/AEO) 서비스를 파는 사업자 <strong>40곳 이상</strong>을 확인했다.
+      이 중 다수가 병원을 명시적 타깃으로 삼고 있고, 두 곳은 Re:putation과 파이프라인이 거의 1:1로 겹친다.
+      동시에 이 시장은 사기 제보와 측정 신뢰성 논쟁이 공개적으로 진행 중이라,
+      <em>무엇을 만들 것인가</em>보다 <em>무엇을 증명할 것인가</em>가 더 급한 문제로 보인다.
+    </p>
+    <dl class="meta-grid">
+      <div><dt>조사일</dt><dd>2026.07.28</dd></div>
+      <div><dt>확인 사업자</dt><dd>40+</dd></div>
+      <div><dt>심층 조사</dt><dd>25곳</dd></div>
+      <div><dt>화면 캡처</dt><dd>25장</dd></div>
+    </dl>
+  </header>
+
+  <nav class="toc" aria-label="목차">
+    <h2>목차</h2>
+    <ol>
+      <li><a href="#s1">한 문단 결론</a></li>
+      <li><a href="#s2">조사 방법과 한계</a></li>
+      <li><a href="#s3">시장 지형</a></li>
+      <li><a href="#s4">직접 경쟁사</a></li>
+      <li><a href="#s5">가격 앵커</a></li>
+      <li><a href="#s6">기능 매트릭스</a></li>
+      <li><a href="#s7">해외 기준선</a></li>
+      <li><a href="#s8">우리 위치 — 코드 검증</a></li>
+      <li><a href="#s9">시장 리스크</a></li>
+      <li><a href="#s10">도입 우선순위</a></li>
+      <li><a href="#s11">UX 벤치마크</a></li>
+    </ol>
+  </nav>
+
+  <main class="flow">
+
+    <!-- 1 ────────────────────────────────────── -->
+    <section id="s1">
+      <span class="sec-num">01</span>
+      <h2 class="sec">한 문단 결론</h2>
+      <p>
+        조사한 병원 특화 업체 대부분은 <strong>측정을 못 하거나 안 한다.</strong>
+        원플랜은 사람이 수동으로 확인하고, 마하닥은 "AI 노출 지수"라고 이름만 붙였을 뿐 산출식이 없고,
+        하이랭크는 "특정 AI 답변 포함 여부를 보장하지 않는다"며 측정 자체를 하지 않겠다고 선언했고,
+        메디사이트의 무료 진단은 실제로는 PageSpeed 점검이다.
+        반대로 제대로 측정하는 곳(AIRank·플루랭크·아워마케팅)은 콘텐츠를 만들지 않는다.
+        <strong>측정과 콘텐츠 생산과 의료광고법 자동 검사를 병원 전용으로 셋 다 하는 곳은 사실상 없다</strong> —
+        이게 Re:putation의 자리다.
+        다만 그 자리를 지키려면 지금 없는 것 두 가지, <strong>측정 방법론의 공개</strong>와
+        <strong>증거 보존</strong>이 먼저 필요하다. 이 시장에서 신뢰는 기능이 아니라 검증 가능성으로 결정되고 있다.
+      </p>
+    </section>
+
+    <!-- 2 ────────────────────────────────────── -->
+    <section id="s2">
+      <span class="sec-num">02</span>
+      <h2 class="sec">조사 방법과 한계</h2>
+      <p>
+        구글 기반 검색만으로는 이 시장이 거의 보이지 않는다. 직접 경쟁사인 지오닥터·메디사이트·MEDI-GPTO·온더AI·200PRO는
+        전부 <strong>네이버 검색으로만</strong> 발견됐다. 그래서 네이버 통합·블로그·웹 탭을 직접 크롤링해 사업자 후보를 뽑고,
+        WAF로 막힌 사이트는 TLS 지문 위장과 헤드리스 브라우저로 우회해 본문을 확보했다.
+        SPA로 서버 렌더가 없는 사이트(hospitalgeo.com)는 JS 번들에서 문자열을 복원했다.
+      </p>
+      <div class="callout risk">
+        <p class="callout-label">신뢰도 경고</p>
+        <p>
+          이 보고서에 나오는 <strong>성과 수치는 거의 전부 업체 자기 발표</strong>다.
+          제3자가 검증한 병원 GEO 성과 데이터는 조사 범위 안에서 하나도 찾지 못했다.
+          비교·추천 아티클도 대부분 자사 블로그에 자사를 1위로 올린 자기추천 콘텐츠라, 순위는 신호로 쓰지 않고
+          <strong>업체 이름과 평가 기준 항목만</strong> 추출했다.
+          가격 벤치마크로 널리 인용되는 openlens 자료도 표본 크기와 검증 방법을 공개하지 않으므로 호가 프레임으로만 봐야 한다.
+        </p>
+      </div>
+      <p>
+        확인하지 못한 것도 명시해 둔다. 국내 GEO 시장 규모나 투자 유치 금액을 다룬 보도는 없었고,
+        메디컬월드뉴스·청년의사·메디게이트·데일리팜에서 GEO 자체 취재 기사를 찾지 못했다.
+        의료 전문지 기사 4건 중 3건은 업체 보도자료였다.
+      </p>
+    </section>
+
+    <!-- 3 ────────────────────────────────────── -->
+    <section id="s3">
+      <span class="sec-num">03</span>
+      <h2 class="sec">시장 지형</h2>
+      <p class="sec-lede">
+        업체들은 스스로를 네 유형으로 구분한다. 이 분류가 유용한 이유는, 각 유형이 서로의 약점을 정확히 지적하기 때문이다.
+      </p>
+      <div class="matrix-wrap">
+        <table>
+          <caption>사업자 유형과 자기 규정</caption>
+          <thead>
+            <tr><th>유형</th><th>강점</th><th>구조적 약점</th><th>대표</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>콘텐츠 중심형</strong></td><td>빠른 콘텐츠 생산</td><td>AI 인용 측정 취약</td><td>다수 바이럴 대행사, 200PRO</td></tr>
+            <tr><td><strong>측정 툴형</strong></td><td>지표 시각화</td><td>실행 후속이 없음</td><td>AIRank, 플루랭크, 아워마케팅</td></tr>
+            <tr><td><strong>SEO 확장형</strong></td><td>기존 SEO 자산 활용</td><td>AI 인용 데이터 희박</td><td>넥스트티, 제스트컴퍼니</td></tr>
+            <tr><td><strong>GEO 전문형</strong></td><td>측정→실행 폐쇄 루프</td><td>초기 진단 비용 높음</td><td>지오닥터, 온더AI, 리드젠랩</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Re:putation은 네 번째 유형에 속하되, <strong>병원 전용</strong>이고 <strong>콘텐츠 발행이 자동</strong>이라는 두 축에서
+        더 좁게 서 있다. 이 좁음이 방어선이다.
+      </p>
+
+      <h3>진입이 계속되고 있다</h3>
+      <p>
+        플루랭크(투스텝스어헤드)가 2026년 5월 28일 출시됐고, 같은 시기 <strong>제일기획이 자체 GEO 솔루션을 공개</strong>했다.
+        국내 1위 광고대행사가 ChatGPT·Gemini·Perplexity 3개 엔진에서 브랜드 언급 순위와 비중을 수치화하는 솔루션을
+        직접 만들었다는 뜻이다. 측정 레이어는 이미 경쟁 재화다.
+      </p>
+      <blockquote>
+        <p>AI 검색 시대의 마케팅은 검색 1순위를 만드는 작업이 아니라 AI가 우리 브랜드를 설명할 근거를 만드는 과정</p>
+        <cite>김건희 투스텝스어헤드 대표 · Businesskorea 2026-05-29</cite>
+      </blockquote>
+    </section>
+
+    <!-- 4 ────────────────────────────────────── -->
+    <section id="s4">
+      <span class="sec-num">04</span>
+      <h2 class="sec">직접 경쟁사</h2>
+      <p class="sec-lede">
+        Re:putation의 STEP 3→4→8→9 파이프라인과 겹치는 정도로 등급을 매겼다.
+        <span class="chip chip--direct">직접</span> 전체 파이프라인 중복 ·
+        <span class="chip chip--partial">부분</span> 일부 단계 중복 ·
+        <span class="chip chip--ref">참고</span> 기능 벤치마크 대상
+      </p>
+
+      <div class="dossier">
+
+        <article class="entry">
+          <div class="entry-head">
+            <h3 class="entry-name" style="margin:0">온더AI (OntheAI)</h3>
+            <span class="chip chip--direct">직접</span>
+          </div>
+          <p class="entry-url">onthe.ai · (주)비브라토</p>
+          <p><strong>실전에서 가장 부딪힐 상대.</strong> 이미 돌아가는 SaaS에 실제 대시보드 스크린샷과 병원 사례를 공개하고 있다.</p>
+          <div class="price">월 150만원 / 200개 프롬프트 / <strong>월 36편 자동 발행</strong><br>+ 홈페이지 제작 500만원 별도</div>
+          <ul>
+            <li>주 1회(월요일) 자동 분석 + <strong>주간 리포트</strong></li>
+            <li>SoV = (브랜드 언급 수 / 전체 챗 수) × 100, <strong>30일 롤링 평균</strong></li>
+            <li><strong>Citation Share를 언급률과 분리 정의</strong> — 출처 목록에 자사 도메인이 뜨는 비율</li>
+            <li>커스텀 도메인 연결 지원, 원장 부담 "주 1회 15분"</li>
+            <li>자사 블로그에 4개월간 49편 직접 발행 — 도그푸딩</li>
+          </ul>
+          <span class="grade"><b>근거등급</b> 실측 대시보드 공개 · 단 병원 사례 수치가 랜딩(52%)과 블로그 원문(47.07%)에서 불일치</span>
+        </article>
+
+        <article class="entry">
+          <div class="entry-head">
+            <h3 class="entry-name" style="margin:0">지오닥터 GEODOCTOR</h3>
+            <span class="chip chip--direct">직접</span>
+          </div>
+          <p class="entry-url">geodoctor.net · (주)서울벤처스</p>
+          <p><strong>제품 컨셉이 우리와 거의 동일하다.</strong> 진단 → 허브 구축 → 추적 3단계에 의료광고 자동 필터까지 설계가 겹친다.</p>
+          <div class="price">Starter 셋업 500만 + 월 200만<br>Growth 셋업 1,200만 + 월 450만<br>Global 셋업 2,500만 + 월 800만</div>
+          <ul>
+            <li>4엔진 × 표준질문 12개 → 100점 노출 점수 → 다음날 진단서</li>
+            <li>schema.org + llms.txt + robots + E-E-A-T</li>
+            <li><strong>"의료법 제56조 금지표현을 발행 전 자동 필터"</strong> — 이걸 제품 기능으로 내건 유일한 곳</li>
+          </ul>
+          <span class="grade"><b>근거등급</b> <span style="color:var(--risk)">미검증</span> — 도메인 생성일 2026-06-19(5주 전)인데 "1,200곳 6개월 측정" 주장. 뿌리라는 REGLE는 이커머스 리뷰 솔루션이고 의료 언급 0건. 예시 사이트 3개 전부 S3 403. 측정 엔진 조합이 페이지마다 다름</span>
+        </article>
+
+        <article class="entry">
+          <div class="entry-head">
+            <h3 class="entry-name" style="margin:0">마하닥-GEO</h3>
+            <span class="chip chip--direct">직접</span>
+          </div>
+          <p class="entry-url">hospitalgeo.com · 대표 김익환</p>
+          <p>"대한민국 유일의 병원 특화 GEO 기업". 상품은 <strong>홈페이지 제작 + 월 GEO 관리</strong> 두 가지이고 통합 할인 구조다.</p>
+          <ul>
+            <li>자칭 100+ 파트너 병원, 700+ 의사 커뮤니티, SINCE 2023</li>
+            <li>"시그마 마크업" = MedicalBusiness·Physician JSON-LD 동적 생성</li>
+            <li>무료 진단에 <strong>의사면허번호</strong>를 필수로 받는 게이트</li>
+            <li>기존 홈페이지가 워드프레스가 아니면 적용 불가 — 사실상 자사 제작이 진입 조건</li>
+          </ul>
+          <span class="grade"><b>근거등급</b> <span style="color:var(--risk)">미검증</span> — 사례 4건 전부 익명, 측정 방법·질의 수 비공개. 의료광고법 언급이 사이트 전체에 없는데 자사 카피에는 "한국 1위"·"유일"을 씀</span>
+        </article>
+
+        <article class="entry">
+          <div class="entry-head">
+            <h3 class="entry-name" style="margin:0">하이랭크</h3>
+            <span class="chip chip--partial">부분</span>
+          </div>
+          <p class="entry-url">high-rank.co.kr · 2014년부터 병원마케팅</p>
+          <p><strong>과대주장 톤이 가장 낮고, 의료광고법 대응이 가장 강하다.</strong> 우리가 신뢰 축에서 정면으로 비교당할 상대.</p>
+          <ul>
+            <li><strong>AI 측정을 하지 않겠다고 명시</strong> — "특정 AI 답변 포함 여부를 보장하지 않는다"</li>
+            <li>2026-05-07 Google FAQ 리치결과 종료 등 최신 정책을 정확히 반영</li>
+            <li>의료광고 위험 표현 <strong>14종 유형</strong> + 진료과목별 주의표현 매트릭스</li>
+            <li>공식 출처 15종을 실제 링크로 인용</li>
+            <li>계약 <strong>1개월 단위, 위약금 없음</strong></li>
+            <li>콘텐츠 AI 자동생성을 명시적으로 부인 — 우리와 정반대 포지션</li>
+          </ul>
+          <span class="grade"><b>근거등급</b> 실측확인 — 다만 포트폴리오에 성과 수치가 의도적으로 0건("결과 보장이 아니라 운영 기준을 보는 페이지")</span>
+        </article>
+
+        <article class="entry">
+          <div class="entry-head">
+            <h3 class="entry-name" style="margin:0">AIRank</h3>
+            <span class="chip chip--ref">참고</span>
+          </div>
+          <p class="entry-url">airank.lol · 더뷰미디어</p>
+          <p>순수 모니터링 SaaS. <strong>가격 앵커를 만드는 존재</strong>라 우리 요금 설명에 반드시 영향을 준다.</p>
+          <div class="price">무료 ₩0 · brand_owner <strong>₩99,000/월</strong> · agency ₩990,000/월</div>
+          <ul>
+            <li>5~6엔진(Google AIO·ChatGPT·Gemini·Perplexity·Grok·네이버) <strong>매일 새벽 수집</strong></li>
+            <li><strong>증거 보존: 화면 캡처 + 원본 HTML 캐시 열람</strong></li>
+            <li>"API가 아닌 실제 사용자 UI 화면에 질의"를 차별점으로 주장</li>
+            <li>자체 FAQ에 "홈페이지를 수정하지 않는 추적 도구"라고 명시</li>
+          </ul>
+          <span class="grade"><b>근거등급</b> 실측확인 — 가격은 마케팅 문구가 아니라 <code>/api/plans</code> 응답으로 직접 검증</span>
+        </article>
+
+        <article class="entry">
+          <div class="entry-head">
+            <h3 class="entry-name" style="margin:0">아워마케팅</h3>
+            <span class="chip chip--ref">참고</span>
+          </div>
+          <p class="entry-url">ourmarketing.co.kr · 대표 박승연</p>
+          <p><strong>측정 방법론이 조사 대상 중 가장 구체적이다.</strong> 방법론 경쟁에서 기준선이 되는 곳.</p>
+          <ul>
+            <li><strong>12개국 × 7개 AI 플랫폼</strong> 실측</li>
+            <li>"API 호출이 아닌 <strong>실제 Chrome + 국가별 ISP 프록시 IP</strong>에서 화면 캡처"</li>
+            <li>주간 헬스체크 → 월간 콘텐츠 리뷰 → 분기별 12개국 재측정</li>
+            <li>지표에 <strong>인용 도메인 Top 10</strong> 포함</li>
+          </ul>
+          <span class="grade"><b>근거등급</b> 방법론 실측확인 · 성과는 본인들도 "샘플 예시"로 명시</span>
+        </article>
+
+        <article class="entry">
+          <div class="entry-head">
+            <h3 class="entry-name" style="margin:0">메디사이트</h3>
+            <span class="chip chip--partial">부분</span>
+          </div>
+          <p class="entry-url">메디사이트.kr · 담연스튜디오</p>
+          <p>병원 홈페이지 제작 전업. <strong>llms.txt 구현 품질이 조사 대상 1위</strong>라 벤치마크 가치가 크다.</p>
+          <ul>
+            <li>llms.txt + llms-full.txt, 11,145자 — 회사정보 → AI Quick Facts → FAQ 원문 → 블로그 31편 인덱스 → <strong>"핵심 키워드 → 권장 인용 글 매핑"</strong> → 인용 권장 양식</li>
+            <li>robots.txt에 <strong>AI 크롤러 17종</strong> 명시 허용</li>
+            <li>Schema.org 11종, 소스코드 100% 병원 자산</li>
+            <li>단, 무료 진단은 실제 AI 질의가 아니라 <strong>PageSpeed + 체크리스트</strong> 정적 감사</li>
+          </ul>
+          <span class="grade"><b>근거등급</b> 실측확인 — 단 "웹빌더 안 쓴다"면서 초기 포트폴리오 파일명이 식스샵 캡처</span>
+        </article>
+
+        <article class="entry">
+          <div class="entry-head">
+            <h3 class="entry-name" style="margin:0">인트릭스</h3>
+            <span class="chip chip--ref">참고</span>
+          </div>
+          <p class="entry-url">intrix.kr · 부산</p>
+          <p><strong>방법론 서술이 가장 정직하다.</strong> "측정 불가 항목"을 스스로 명시하는 유일한 곳.</p>
+          <ul>
+            <li>AI 질의를 하지 않고 <strong>봇 로그를 실측</strong> — "최근 30일 검색봇 요청 22,176건"</li>
+            <li>측정 불가 항목 명시: 특정 AI 추천 순위, 인용 시점, 모델 내부 스코어링</li>
+            <li>경고: <strong>"llms.txt 한 파일이나 스키마 한 조각만 설치하고 인용을 보장한다는 설명은 경계해야 한다"</strong></li>
+            <li>"계약 종료 시 원고·측정기록 반출권도 비용의 일부"</li>
+          </ul>
+          <span class="grade"><b>근거등급</b> 실측확인 — 자체 플랫폼 K-DermZIP은 HIRA 공개데이터 기반 피부과 3,285곳</span>
+        </article>
+
+      </div>
+    </section>
+
+    <!-- 5 ────────────────────────────────────── -->
+    <section id="s5">
+      <span class="sec-num">05</span>
+      <h2 class="sec">가격 앵커</h2>
+      <p class="sec-lede">
+        시장은 양극화돼 있고 중간이 비어 있다. 그리고 가격을 공개하는 곳이 압도적 소수라, 공개 자체가 차별점으로 인용된다.
+      </p>
+      <div class="matrix-wrap">
+        <table>
+          <caption>실제 공개된 가격 (VAT 별도)</caption>
+          <thead>
+            <tr><th>사업자</th><th>구분</th><th class="num">금액</th><th>포함</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>AIRank</td><td>모니터링 SaaS</td><td class="mono">₩99,000/월</td><td>1사이트 · 질의 30개 · 리포트</td></tr>
+            <tr><td>GEOcare.ai</td><td>셀프서브 SaaS</td><td class="mono">₩50,000/월 환산</td><td>3개월 15만원 일시납 · 50 URL</td></tr>
+            <tr><td><strong>온더AI</strong></td><td>병원 GEO</td><td class="mono">₩1,500,000/월</td><td><strong>프롬프트 200 + 월 36편 자동발행</strong></td></tr>
+            <tr><td>200PRO</td><td>단일 클리닉</td><td class="mono">₩1,500,000~3,000,000/월</td><td>블로그 8편 + FAQ + Entity</td></tr>
+            <tr><td>지오닥터</td><td>Growth</td><td class="mono">셋업 1,200만 + 450만/월</td><td>풀 GEO 사이트 + 전담 매니저</td></tr>
+            <tr><td>GPTO</td><td>대행</td><td class="mono">₩2,000,000~/월</td><td>최소 6개월 · 주간 SMR 리포트</td></tr>
+            <tr><td>지오랭크</td><td>대행</td><td class="mono">₩5,000,000/월</td><td>약정 없음 · 3개월 미개선 시 50% 환불</td></tr>
+            <tr><td>비즈스프링</td><td>컨설팅</td><td class="mono">₩5,000,000~12,000,000/월</td><td>4~6주 ~ 6개월+</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        <p class="callout-label">시장 앵커</p>
+        <p>
+          병원이 실제로 아는 가격은 <strong>모니터링만 월 10만원, 측정+36편 자동발행 월 150만원</strong>이다.
+          온더AI의 월 150만원/36편이 사실상 앵커를 형성했고, Re:putation의 PLAN_16/12/8은 이 숫자와 직접 비교당한다.
+          참고로 리드젠랩의 병원 채널 단가(블로그 롱폼 건당 40만원)로 환산하면 월 12편은 480만원어치이므로,
+          자동 생성의 원가 우위는 크다. 문제는 <strong>편수가 아니라 편당 신뢰</strong>로 비교당할 때다.
+        </p>
+      </div>
+      <p>
+        계약 기간은 갈린다. 하이랭크는 <strong>1개월 단위·위약금 없음</strong>, 지오랭크는 약정 없음, 지오닥터는 장기약정 없음을 내세우는 반면,
+        GPTO는 최소 6개월, 의료 티어 벤치마크는 표준 12개월을 제시한다.
+        효과 발현이 120~180일이라는 게 시장 통념이므로, <strong>6개월</strong>이 방어 가능하면서 락인으로 읽히지 않는 구간이다.
+      </p>
+    </section>
+
+    <!-- 6 ────────────────────────────────────── -->
+    <section id="s6">
+      <span class="sec-num">06</span>
+      <h2 class="sec">기능 매트릭스</h2>
+      <p class="sec-lede">병원을 타깃으로 하는 사업자만 추렸다. 빈칸이 아니라 색으로 읽으면 공백이 보인다.</p>
+      <div class="matrix-wrap">
+        <table>
+          <caption>병원 타깃 사업자 기능 비교</caption>
+          <thead>
+            <tr>
+              <th>기능</th><th>Re:putation</th><th>온더AI</th><th>지오닥터</th><th>마하닥</th><th>하이랭크</th><th>AIRank</th><th>200PRO</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>AI 답변 자동 측정</td><td class="yes">✓ 2엔진</td><td class="yes">✓ 3~4</td><td class="part">△ 4 주장</td><td class="part">△ 정의없음</td><td class="no">— 명시적 부정</td><td class="yes">✓ 5~6 매일</td><td class="part">△ 분기 1회</td></tr>
+            <tr><td>측정 방법론 공개</td><td class="no">—</td><td class="yes">✓ 공식+롤링</td><td class="part">△ 불일치</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td></tr>
+            <tr><td>증거 보존(캡처·원문)</td><td class="part">△ raw만</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓ 캡처+HTML</td><td class="no">—</td></tr>
+            <tr><td>인용률/언급률 분리</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="part">△</td><td class="no">—</td></tr>
+            <tr><td>경쟁사 비교</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td></tr>
+            <tr><td>감성 분석</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td></tr>
+            <tr><td>콘텐츠 자동 생성·발행</td><td class="yes">✓ 8/12/16편</td><td class="yes">✓ 36편</td><td class="part">△ 주장</td><td class="part">△ 자사블로그</td><td class="no">— 명시적 부정</td><td class="no">—</td><td class="no">— 사람작성</td></tr>
+            <tr><td>의료광고 자동 필터</td><td class="yes">✓ 코드강제</td><td class="part">△ 사람승인</td><td class="yes">✓ 주장</td><td class="no">—</td><td class="part">△ 사람점검</td><td class="no">—</td><td class="part">△ 심의지원</td></tr>
+            <tr><td>병원별 llms.txt 자동생성</td><td class="yes">✓</td><td class="no">—</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">— 깨짐</td></tr>
+            <tr><td>스키마 마크업</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="part">△</td><td class="no">—</td><td class="yes">✓</td></tr>
+            <tr><td>리포트 주기</td><td class="part">월간</td><td class="yes">주간</td><td class="part">월간</td><td class="part">월간</td><td class="part">월간</td><td class="yes">매일수집</td><td class="no">분기</td></tr>
+            <tr><td>AI 경로 유입 실측</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+            <tr><td>봇 접근 로그 실측</td><td class="no">—</td><td class="part">△ 언급</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+            <tr><td>가격 공개</td><td class="part">△ 편수만</td><td class="yes">✓ 전액</td><td class="yes">✓ 전액</td><td class="no">—</td><td class="no">—</td><td class="yes">✓ 전액</td><td class="part">△ 부분</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        <strong>맨 아래 두 줄이 전부 비어 있다.</strong> AI 경로 유입 실측과 봇 접근 로그 실측은 누구도 병원 상품으로 팔지 않는다.
+        그런데 이 둘은 <strong>콘텐츠 허브를 직접 운영하는 쪽만 할 수 있다.</strong> 대행사는 남의 서버 로그에 접근할 수 없기 때문이다.
+        Re:putation은 <code>/site</code>를 소유하므로 구조적으로 유리한 유일한 영역이다.
+      </p>
+    </section>
+
+    <!-- 7 ────────────────────────────────────── -->
+    <section id="s7">
+      <span class="sec-num">07</span>
+      <h2 class="sec">해외 기준선</h2>
+      <p class="sec-lede">
+        Profound·Peec·Otterly·Semrush·Ahrefs를 확인했다. 국내 업체가 "지표"라고 부르는 것들이
+        저기서는 어떻게 정의되는지가 우리 방법론 설계의 기준선이 된다.
+      </p>
+
+      <div class="callout risk">
+        <p class="callout-label">먼저 알아야 할 것</p>
+        <p>
+          <strong>어떤 벤더도 실제 프롬프트 빈도 데이터를 갖고 있지 않다.</strong>
+          Semrush는 프롬프트 문자열과 응답은 클릭스트림으로 실측하지만,
+          <em>"개별 프롬프트는 너무 구체적이고 고유해서 직접 측정이 불가능하다"</em>며
+          볼륨은 머신러닝 추정임을 명시한다. Ahrefs는 더 노골적이다 —
+          <em>"이는 모델링 선택이지 측정된 관계가 아니다. Google 검색량과 AI 도구 내 질문 빈도 사이에
+          검증된 연결이 있다고 주장하지 않는다."</em>
+          우리가 "이 질문을 환자가 월 N회 묻는다"는 수치를 만들 때 같은 정직함을 유지해야 한다.
+        </p>
+      </div>
+
+      <h3>가장 쓸모 있는 발견 — 인용을 3상태로 본다</h3>
+      <p>
+        지금까지 본 모든 제품이 인용을 "됐다 / 안 됐다" 2상태로 다뤘는데, <strong>Ahrefs만 3상태</strong>다.
+        <code>cited</code> / <code>found_but_not_cited</code> / <code>not_found</code>가 API 정식 필드로 있다.
+        가운데 상태의 정의가 핵심이다 — <em>"AI가 응답을 생성하면서 찾았지만 인용하지 않기로 선택한 페이지."</em>
+      </p>
+      <div class="callout ok">
+        <p class="callout-label">우리는 스키마 변경 없이 만들 수 있다</p>
+        <p>
+          "검색은 됐는데 인용은 안 됐다"는 <strong>AI가 우리 페이지에 도달했지만 인용할 가치가 없다고 판단했다</strong>는 뜻이고,
+          이건 "안 나온다"보다 훨씬 실행 가능한 진단이다 — 콘텐츠 품질 문제로 정확히 좁혀진다.
+          우리는 <code>source_urls</code>에 응답이 참조한 URL을 이미 저장하고 <code>is_mentioned</code>도 있으므로,
+          <strong>병원 도메인이 <code>source_urls</code>에 있는데 <code>is_mentioned=False</code>인 케이스</strong>가 정확히 이 상태다.
+          새 컬럼 없이 쿼리만으로 산출된다.
+        </p>
+      </div>
+
+      <h3>지표 정의 비교</h3>
+      <div class="matrix-wrap">
+        <table>
+          <caption>같은 이름, 다른 계산</caption>
+          <thead>
+            <tr><th>지표</th><th>Semrush</th><th>Ahrefs</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Visibility</td><td>0~100 정규화. Topic Coverage × Mention Consistency 합성. 비교군은 상위 경쟁사 언급 중앙값</td><td>없음 (SoV가 대표)</td></tr>
+            <tr><td>Mentions</td><td>브랜드가 포함된 프롬프트 총 수</td><td><strong>응답당 1회 (이진)</strong> — 한 답변에 3번 나와도 1회</td></tr>
+            <tr><td>Citations</td><td>자사 도메인을 출처로 인용한 응답 수</td><td>응답당 1회, <strong>도메인 단위 중복 제거</strong> + found_but_not_cited 별도</td></tr>
+            <tr><td>Share of Voice</td><td>경쟁사 대비 언급 비율 %</td><td>impressions 점유율. 다중 플랫폼은 <strong>가중평균</strong></td></tr>
+            <tr><td>볼륨</td><td>AI Topic Volume — ML 추정, <strong>토픽 단위</strong></td><td>Impressions — Google 검색량 합산 (2026-08-31 산식 변경 예정)</td></tr>
+            <tr><td>감성</td><td>Overall + Key Drivers + 히트맵. <strong>비브랜드 쿼리만</strong></td><td><strong>없음</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Ahrefs가 붙인 경고가 중요하다 — <em>"AI Share of Voice는 비교 지표이며,
+        브랜드와 경쟁 브랜드의 엔티티를 어떻게 설정했느냐에 따라 크게 달라진다."</em>
+        우리도 <code>competitor_names</code> 설정이 SoV를 좌우한다는 걸 리포트에 명시해야 한다.
+      </p>
+
+      <h3>SoV 분모 논쟁을 없애는 방법</h3>
+      <p>
+        Ahrefs Overview API는 응답을 6개 필드로 쪼갠다 — 우리만 언급 / 경쟁사만 언급 / 둘 다 /
+        <strong><code>no_tracked_brands</code>(추적 브랜드가 하나도 없는 응답)</strong> / 합계.
+        마지막 필드가 곧 <strong>미개척 공간</strong>이고, 지역 병원 질의에서 이 값이 클 것이다.
+        우리 <code>calculate_sov</code>의 분모를 무엇으로 잡을지는 정확히 이 필드에 달려 있는데,
+        <strong>둘 다 계산해 나란히 보여주면 논쟁 자체가 사라진다.</strong>
+      </p>
+
+      <h3>봇을 한 덩어리로 세면 안 된다</h3>
+      <p>
+        Ahrefs Bot Analytics는 AI 봇을 셋으로 쪼갠다 — <strong>AI Assistant</strong>(답변 생성을 위해 그 시점에 크롤),
+        <strong>AI Search</strong>(검색엔진 구동), <strong>AI Crawler</strong>(모델 학습·데이터셋 구축).
+        Peec도 같은 발상이다. <strong>답변 시점 검색 히트만이 실제 환자 질문과 상관관계가 있고</strong>,
+        단순 GPTBot 카운트는 학습용이라 노출과 무관할 수 있다.
+        앞 절에서 봇 로그 실측을 권한 것도 이 분류를 포함해야 의미가 있다.
+      </p>
+      <p>
+        그리고 <strong>Ahrefs만 폐쇄 루프를 만든다.</strong> 인용된 페이지 리포트에 <code>Bot visits</code>와
+        <code>AI traffic</code> 컬럼이 붙어 <em>AI가 인용함 → 봇이 크롤함 → 사람이 클릭함</em>을 한 테이블에서 잇는다.
+        우리 <code>/site</code>는 Cloud Run + LB라 <strong>세 데이터를 이미 다 갖고 있다</strong> —
+        LB 로그가 봇, 레퍼러가 AI 유입, <code>source_urls</code>가 인용이다.
+      </p>
+
+      <h3>바로 옮길 만한 화면 패턴</h3>
+      <ul>
+        <li><strong>갭 필터 필 그룹</strong>(Semrush) — 비교 테이블 위에 <code>Missing / Weak / Shared / Strong / Unique</code> 필을 두면 테이블 하나가 작업 큐로 바뀐다. <code>competitor_mentions</code>로 바로 계산된다.</li>
+        <li><strong>필터 레시피</strong>(Ahrefs) — 그중 병원에 그대로 번역되는 것 하나: <em>질문에 병원명이 있는데 답변에 병원명이 없는 경우</em>. "장편한외과의원 어때?"라고 물었는데 AI가 언급조차 안 하는 상황은 원장에게 즉시 와닿는 진단이다.</li>
+        <li><strong>프롬프트 생성 폼</strong>(Ahrefs ✨Generate) — 지역·언어·AI가 제안한 focus area(재생성 가능)·<strong>커스텀 지시문</strong>·개수를 받고, 생성 결과를 한 줄에 하나씩 편집하는 리뷰 화면을 준다. 우리 <code>AIQueryTarget</code>은 focus area 재료를 이미 다 갖고 있어 커스텀 지시문 필드만 붙이면 된다.</li>
+        <li><strong>위젯별 한 줄 인사이트</strong>(Semrush) — 차트마다 2~3단어 헤드라인 + 한 문장 액션(<em>Loved, not seen</em> · <em>Far behind</em>). 생성 비용이 낮고 밀도 높은 대시보드를 스캔 가능하게 만든다.</li>
+        <li><strong>2축 사분면</strong> — 가시성 × 권위(인용). <em>"가시성은 높은데 권위가 낮으면 인용되지 않은 채 회자되는 것이고, 권위는 높은데 가시성이 낮으면 신뢰받는 참조 출처이지만 대화를 지배하지 못하는 것"</em>. 월간 리포트 1페이지 요약 그래프로 적합하다.</li>
+      </ul>
+
+      <h3>확인된 사소한 격차 하나</h3>
+      <p>
+        Semrush의 AI Search Health는 robots.txt가 AI 크롤러 8종을 차단하는지 검사한다.
+        우리 <code>site/app/robots.ts</code>를 대조해 보니
+        <strong><code>Perplexity-User</code>·<code>Claude-User</code>·<code>Claude-SearchBot</code>이 명시 목록에 없다.</strong>
+        와일드카드 규칙으로 허용은 되므로 기능상 막혀 있진 않지만, 감사 도구는 명시 여부를 본다. 한 줄 수정이다.
+        참고로 llms.txt 검사는 Semrush에는 있고 <strong>Ahrefs Site Audit에는 없다</strong> — 우리는 이미 갖고 있는 쪽이다.
+      </p>
+    </section>
+
+    <!-- 8 ────────────────────────────────────── -->
+    <section id="s8">
+      <span class="sec-num">08</span>
+      <h2 class="sec">우리 위치 — 코드로 검증한 것</h2>
+      <p class="sec-lede">
+        조사 결과를 우리 저장소에 대조했다. 추정이 아니라 실제 코드를 확인한 결과다.
+      </p>
+
+      <h3>이미 갖고 있는데 활용을 못 하고 있는 것</h3>
+      <ul class="verdicts">
+        <li>
+          <span class="vk">확인됨</span>
+          <div class="vb"><strong>병원별 llms.txt 자동 생성</strong>
+          <p><code>site/app/[slug]/llms.txt/route.ts</code>가 병원마다 llms.txt를 동적 생성한다. 지오랭크가 이걸 유료 납품 항목으로 파는데, <strong>고객사별 자동 생성은 조사 대상 중 아무도 하지 않는다.</strong> 다만 메디사이트 수준(키워드→권장 인용 글 매핑, AI Quick Facts)까지는 아직 못 간다.</p></div>
+        </li>
+        <li>
+          <span class="vk">확인됨</span>
+          <div class="vb"><strong>V0 리포트의 경쟁사 언급률 비교</strong>
+          <p><code>report_engine.py</code>의 <code>_competitor_outcomes()</code>가 경쟁 병원별 언급률을 계산해 리포트에 표시한다. 지오닥터·원플랜이 무료 진단의 핵심 훅으로 쓰는 기능이 이미 있다.</p></div>
+        </li>
+        <li>
+          <span class="vk">확인됨</span>
+          <div class="vb"><strong>AI 크롤러 명시 허용 + Wikidata QID</strong>
+          <p><code>robots.ts</code>가 GPTBot·OAI-SearchBot·ChatGPT-User·PerplexityBot·ClaudeBot·anthropic-ai·Google-Extended를 명시 허용한다. Hospital 모델에 <code>wikidata_qid</code>가 있어 경쟁사가 "엔티티 구조화"라며 파는 것도 들어가 있다.</p></div>
+        </li>
+        <li>
+          <span class="vk">확인됨</span>
+          <div class="vb"><strong>의료광고 필터가 문서보다 정교함</strong>
+          <p><code>medical_filter.py</code>는 21개 표현에 정규식 변형, NFKC 정규화, zero-width 우회 차단까지 있다. 경쟁사 대부분이 "고려한다"는 수사 수준인 데 반해 <strong>코드로 강제되는 검사</strong>라는 점이 진짜 차별점이다.</p></div>
+        </li>
+        <li>
+          <span class="vk">확인됨</span>
+          <div class="vb"><strong>측정 원재료는 이미 다 모으고 있음</strong>
+          <p><code>SovRecord</code>에 <code>mention_rank</code>·<code>mention_sentiment</code>·<code>competitor_mentions</code>·<code>source_urls</code>·<code>raw_response</code>가 전부 있다. 없는 건 데이터가 아니라 <strong>집계·표시·규약</strong>이다.</p></div>
+        </li>
+      </ul>
+
+      <h3>실제 격차로 확정된 것</h3>
+      <ul class="verdicts">
+        <li>
+          <span class="vk" style="color:var(--risk)">격차</span>
+          <div class="vb"><strong>측정 플랫폼 2개 (ChatGPT·Gemini)</strong>
+          <p><code>sov_engine.py</code>는 두 엔진만 본다. 온더AI 3~4개, AIRank 5~6개, 아워마케팅 7개, MediGPTO 8개를 주장한다. <strong>Perplexity 부재와 네이버 AI 부재</strong>는 비교표가 나오는 순간 바로 감점된다.</p></div>
+        </li>
+        <li>
+          <span class="vk" style="color:var(--risk)">격차</span>
+          <div class="vb"><strong>콘텐츠 품질 점수·유사도 검사 없음</strong>
+          <p><code>content.py</code>에 품질 점수 필드가 없고, <code>content_engine.py</code>에 유사도 검사가 없다. 안전검사가 금지표현 통과/차단 이진 판정뿐이다. <strong>월 16편씩 몇 달 발행하면 자기표절이 필연</strong>인데 이를 잡을 장치가 없다.</p></div>
+        </li>
+        <li>
+          <span class="vk" style="color:var(--risk)">격차</span>
+          <div class="vb"><strong>치료경험담 필터 부재 — 규제상 가장 위험</strong>
+          <p>보건복지부 모니터링에서 적발 1위 유형이 <strong>"자발적 후기를 가장한 치료경험담"(31.7%)</strong>이다. 우리 필터는 단어 매칭이라 이 <em>유형</em>을 못 잡는다. 게다가 STEP5가 병원 홈페이지·블로그를 크롤링해 essence를 만드는데, <code>essence_engine.py</code>에 후기 필터가 없어 <strong>원자료의 환자 후기가 생성 콘텐츠로 흘러들 경로가 열려 있다.</strong></p></div>
+        </li>
+        <li>
+          <span class="vk" style="color:var(--risk)">격차</span>
+          <div class="vb"><strong>리포트 주기가 시장보다 느림</strong>
+          <p>우리는 월간, 시장 표준은 주간이다. 온더AI 주간 리포트, AIRank 매일 수집, 아워마케팅 주간 헬스체크. 월간만으로는 "관리받고 있다"는 체감이 안 난다.</p></div>
+        </li>
+        <li>
+          <span class="vk" style="color:var(--risk)">격차</span>
+          <div class="vb"><strong>지표 이상 알림 없음</strong>
+          <p>Slack 알림이 전부 공정 이벤트(리포트 생성, 발행 완료)다. 언급률 하락·경쟁사 침투 같은 <strong>지표 이상 알림이 하나도 없어</strong> AE가 월말 리포트까지 이상을 모른다. <code>notifier.py</code> 파이프가 이미 있어 한계비용은 거의 0이다.</p></div>
+        </li>
+      </ul>
+    </section>
+
+    <!-- 9 ────────────────────────────────────── -->
+    <section id="s9">
+      <span class="sec-num">09</span>
+      <h2 class="sec">시장 리스크</h2>
+      <p class="sec-lede">
+        우리에게 불리한 내용을 그대로 옮긴다. 이 항목들은 영업 자리에서 먼저 질문으로 들어온다.
+      </p>
+
+      <h3>측정 재현성 — 가장 강한 반증</h3>
+      <p>
+        Citly가 전국 85개 지역·7개 업종·질문 1,378개로 네이버 AI탭을 실측한 결과,
+        같은 질문을 시차를 두고 반복했을 때 <strong>추천 리스트가 완전히 동일한 경우는 6.3%</strong>였고,
+        출처로 등장한 콘텐츠 3,139건 중 <strong>91.5%는 반복 측정에서 딱 1번만 등장</strong>했다.
+        해외에서도 SparkToro×Gumshoe.ai가 2,961회 실행으로 같은 결론에 도달했다.
+      </p>
+      <blockquote>
+        <p>Any tool that gives a "ranking position in AI" is full of baloney.</p>
+        <cite>SparkToro · Rand Fishkin, 2026-01-28</cite>
+      </blockquote>
+      <p>
+        <strong>이건 우리 리포트에도 그대로 적용된다.</strong> 언급률을 % 단일 숫자로 제시하면서
+        반복 샘플링 횟수·측정 기간·신뢰구간을 밝히지 못하면 방어할 수 없다.
+      </p>
+
+      <h3>사기 제보와 언론 보도</h3>
+      <p>
+        아이보스가 GEO 피해 사례를 공개 제보받고 있고, 한국경제가 2026년 7월 7일
+        「"챗GPT에 회사 띄워준다더니"…사기성 AI 마케팅 주의보」를 보도했다.
+        커뮤니티에 정리된 수법 중 <strong>두 가지가 우리 구조와 형태상 겹친다.</strong>
+      </p>
+      <div class="callout risk">
+        <p class="callout-label">우리가 저격당할 수 있는 지점</p>
+        <p>
+          <strong>① 도메인 락인.</strong> "대행사 소유 도메인에 콘텐츠 허브를 만들고, 계약 2년을 못 채우면 콘텐츠가 삭제된다"가
+          이미 사기 유형으로 명명돼 있다. 우리 <code>/site</code>가 정확히 그 형태다.
+          다행히 <code>Hospital.aeo_domain</code>과 DNS 검증 게이트가 이미 있으니,
+          이걸 숨은 옵션이 아니라 <strong>계약서 1번 조항이자 제안서 첫 장</strong>으로 올리면
+          시장 최대 함정을 그대로 우리 차별점으로 뒤집을 수 있다.
+        </p>
+        <p>
+          <strong>② 개인화된 화면 캡처를 월간 보고서로 제출.</strong> 우리가 이와 방법론적으로 어떻게 다른지
+          (세션 격리, 로그인 없는 환경, 반복 질의)를 <strong>먼저 증명</strong>하지 않으면 같은 프레임에 묶인다.
+        </p>
+      </div>
+
+      <h3>"GEO는 결국 SEO다" — 구글 공식 문서</h3>
+      <p>
+        2026년 5월 15일 구글이 생성형 AI 최적화 가이드를 발표한 뒤 커뮤니티 논조가 뒤집혔다.
+        llms.txt 필수·콘텐츠 청킹·AI 전용 콘텐츠 재작성·스키마 필수가 모두 불필요하다는 취지였고,
+        30만 도메인 분석에서 <strong>llms.txt 유무와 AI 인용 빈도 사이에 통계적 상관관계가 없었다</strong>는 데이터도 함께 돌고 있다.
+        이 문서는 이제 원장이 들고 오는 공용 무기다. 부정하는 방식이 아니라
+        "구글도 좋은 콘텐츠라고 했고, 우리가 파는 게 그 콘텐츠 생산 체계"라는 정면 대응이 필요하다.
+      </p>
+
+      <h3>용어 자체가 리스크다</h3>
+      <blockquote>
+        <p>"GEO 최적화", "생성형 검색최적화" 등 업계 용어는 국내 검색량이 사실상 0입니다. 반면 "AI 검색"은 월 약 2,700회 검색됩니다.</p>
+        <cite>아이보스 실측 · 국내 브랜드 370곳 조사</cite>
+      </blockquote>
+      <p>
+        원장이 "GEO"로 검색하는 일은 없다. 게다가 커뮤니티에는
+        <strong>"새 약어를 강하게 밀수록 사기일 확률이 높다"</strong>는 판별 기준이 이미 형성돼 있다.
+        제품 설명에서 GEO/AEO/SoV 같은 약어를 앞세우면 그 자체가 신뢰를 깎는다.
+        참고로 우리 저장소에는 이미 사용자 노출 문구에서 내부 용어를 막는 copy-guard가 있고,
+        이번에 CI에도 연결했다.
+      </p>
+
+      <h3>현장 수요는 아직 GEO가 아니다</h3>
+      <p>
+        2026년 7월 정형외과 개원 예정 원장의 마케팅 질문에 대행사 9곳이 답했는데
+        <strong>8곳이 GEO를 한 번도 언급하지 않았다.</strong> 전부 네이버 플레이스·통합검색·맘카페·엘리베이터 광고였다.
+        아이보스 병의원 게시판 최근 30개 글에도 GEO 관련 글은 0건이다.
+        시장을 만드는 비용을 우리가 일부 부담해야 한다는 뜻이고, 동시에 아직 자리가 비어 있다는 뜻이기도 하다.
+      </p>
+    </section>
+
+    <!-- 10 ───────────────────────────────────── -->
+    <section id="s10">
+      <span class="sec-num">10</span>
+      <h2 class="sec">도입 우선순위</h2>
+      <p class="sec-lede">
+        비용 대비 방어력 순으로 정렬했다. 위 다섯 개는 대부분 이미 쌓이고 있는 데이터를 쓰는 일이라
+        구현 비용이 낮고, 그중 <strong>2·3번은 스키마 변경 없이</strong> 가능하다.
+      </p>
+      <ol class="prio">
+        <li>
+          <div><strong>측정 규약 공개 문서</strong>
+          <p>질의 수·반복 횟수·주기·세션 격리·Top-N 컷오프·롤링 윈도, 그리고 <strong>"측정하지 않는 것"</strong>까지 명문화해 리포트 첫 장에 박는다. 지오랭크가 "4개 LLM × 하루 5회 × 매회 새 세션 × Top5 내만 인용 인정 × 개인화 배제"로 신뢰를 만들고, 인트릭스는 한계를 먼저 밝혀 더 얻고 있다. 데이터는 이미 다 있고 규약만 없다.</p></div>
+        </li>
+        <li>
+          <div><strong>측정 증거 보존</strong>
+          <p><code>SovRecord.raw_response</code>에 캡처·타임스탬프·모델 버전을 더해 Admin에서 열람 가능하게 한다. AIRank가 캡처+원본 HTML 캐시로 하는 것이다. "믿어달라"가 "보여드리겠다"로 바뀌고, 사기 사례 2번과 우리를 구분하는 가장 직접적인 증거가 된다.</p></div>
+        </li>
+        <li>
+          <div><strong>인용률을 언급률과 분리 + "검색됐으나 언급 안 됨" 상태 추가</strong>
+          <p>"답변 본문에 병원명이 나왔다"와 "우리 도메인이 출처로 인용됐다"는 다른 지표다. 후자가 <strong>콘텐츠 허브의 존재 이유를 직접 증명</strong>한다. 여기에 Ahrefs식 3상태를 더하면 — 병원 도메인이 <code>source_urls</code>에 있는데 <code>is_mentioned=False</code>인 경우 — <strong>"AI가 우리 페이지에 도달했는데 인용할 가치가 없다고 판단했다"</strong>는 진단이 나온다. "안 나온다"보다 훨씬 실행 가능하다. <strong>둘 다 스키마 변경 없이 쿼리로 산출된다.</strong></p></div>
+        </li>
+        <li>
+          <div><strong>인용 출처 도메인 집계 화면</strong>
+          <p>확인한 해외 제품 7개가 전부 갖고 있는데 우리만 없다. 어떤 도메인이 AI 답변의 근거로 쓰였는지를 자사·경쟁·학회·언론·UGC로 세그먼트해 보여준다. 아워마케팅 샘플에서 인용 도메인 1~3위가 youtube·blog.naver·instagram이고 <strong>자체 공식 도메인은 0건</strong>이었는데, 그 공백이 정확히 우리 가치 제안이다. 데이터는 이미 쌓이고 UI만 없다.</p></div>
+        </li>
+        <li>
+          <div><strong>콘텐츠 ↔ 추적 질문 귀속</strong>
+          <p>"이 글이 겨냥한 환자 질문 N개"를 콘텐츠 목록에 컬럼으로 붙인다. 조인 하나면 되고, 발행과 노출 사이의 인과를 주장하지 않으면서도 <strong>AE가 다음 달 콘텐츠 배분을 데이터로 정할 수 있게</strong> 된다.</p></div>
+        </li>
+        <li>
+          <div><strong>주간 헬스체크 + 지표 이상 알림</strong>
+          <p>월간 리포트는 유지하되 주 1회 경량 스냅샷과 Slack 요약을 추가한다. 시장 표준이 주간이고, <code>notifier.py</code>가 이미 있어 한계비용이 거의 0이다.</p></div>
+        </li>
+        <li>
+          <div><strong>치료경험담·후기 필터</strong>
+          <p>단속 1위 유형(31.7%)인데 단어 매칭으로는 못 잡는다. <strong>단어 블랙리스트 + LLM 표현유형 판정의 2단 구조</strong>가 필요하다. 특히 STEP5 근거자료 크롤링에 후기 제거를 넣어야 원자료 오염 경로가 닫힌다. 우리는 08:00 무인 자동 발행이라 사람 검토에 기대는 경쟁사보다 리스크가 크다.</p></div>
+        </li>
+        <li>
+          <div><strong>봇 접근 로그 실측 — 단, 답변시점/학습을 구분해서</strong>
+          <p><code>/site</code> 액세스 로그에서 AI 봇 요청을 집계해 리포트에 넣는다. 콘텐츠 발행 후 언급률이 오르기까지의 2~3개월 공백 동안 <strong>AE가 원장에게 보여줄 선행 지표</strong>가 생긴다. 인프라를 소유한 우리만 할 수 있다. 다만 한 덩어리로 세면 안 된다 — Ahrefs·Peec는 <strong>답변 시점 검색(ChatGPT-User·Perplexity-User)과 학습용 크롤(GPTBot)을 분리</strong>하고, <strong>앞의 것만 실제 환자 질문과 상관관계가 있다.</strong></p></div>
+        </li>
+        <li>
+          <div><strong>AI 경로 유입 실측</strong>
+          <p>레퍼러로 chatgpt.com·perplexity.ai·gemini.google.com 유입을 계측한다. 원플랜의 최강 논리가 "언급됐다"가 아니라 "AI 경로 유입 체류시간이 105초로 광고 1초의 105배"다. 대행사는 고객 GA4를 붙여야 하지만 <strong>우리는 서빙 주체라 구조적으로 유리하다.</strong> 매트릭스에서 아무도 채우지 못한 칸이다.</p></div>
+        </li>
+        <li>
+          <div><strong>콘텐츠 품질 채점기</strong>
+          <p>하이랭크 <code>/aeo-check</code>의 100점 10항목을 내재화한다. 첫 문단 답변성(12점), 유사문서 위험(10점), 전문성(12점), 의료광고 리스크(10점)가 특히 우리에게 없는 축이다. 임계점 미달 시 재생성 트리거로 쓰고, Admin 목록에 점수 컬럼을 붙이면 AE 검토 우선순위가 생긴다. <strong>공개 툴로 내보내면 인바운드 리드 채널도 된다.</strong></p></div>
+        </li>
+        <li>
+          <div><strong>Perplexity 추가</strong>
+          <p>API 접근성이 좋아 저비용이고, 플랫폼 수 비교표에서 즉시 진다. 네이버 AI는 별도 과제로 두되 최소한 Perplexity는 채워야 한다.</p></div>
+        </li>
+        <li>
+          <div><strong>도메인·콘텐츠 소유권을 제안서 1번으로</strong>
+          <p>구현이 아니라 문서 작업이다. 병원 명의 도메인 등록을 기본값으로, 계약 종료 시 콘텐츠 전량 이관과 소유권 병원 귀속을 계약서에 명문화한다. 시장 최대 함정을 역으로 차별점으로 전환하는 가장 싼 방법이고, 경쟁사 대부분이 이걸 못 준다.</p></div>
+        </li>
+      </ol>
+    </section>
+
+    <!-- 11 ───────────────────────────────────── -->
+    <section id="s11">
+      <span class="sec-num">11</span>
+      <h2 class="sec">UX 벤치마크 — 화면 설계 결정</h2>
+      <p class="sec-lede">
+        2차 조사(해외 AEO SaaS 7종 화면 흐름 · 검토 워크플로우 도구 10여 종 · 사업주 대시보드 SaaS 15종 · 한국 대행 관행)를 반영한
+        결정 요약. 전체 결정 기록은 <code>docs/prd/REPUTATION-VERSIONUP-DIRECTIVE-2026-07.md</code> §5.
+      </p>
+
+      <h3>다섯 조사 갈래가 수렴한 한 문장</h3>
+      <div class="callout">
+        <p class="callout-label">핵심 판단</p>
+        <p>
+          <strong>사업주는 로그인하지 않는다.</strong> 글로벌 리포팅 SaaS 7종 중 5종이 클라이언트 로그인 역할 자체가 없고,
+          사장님이 실제로 쓰는 앱(Podium, 평점 3.1만 개)은 지표를 하나도 안 보여준다.
+          그래서 원장 포털을 만들지 않고 <strong>카카오톡 → 무로그인 서명 링크(모바일 웹) → PDF 다운로드 버튼</strong> 순서로 간다.
+          한국 대행 표준 관행이 이미 "오픈카톡방 일간 보고 + 월간 문서"라 새 습관을 만들 필요가 없고,
+          직접 경쟁사 온더AI도 카카오톡 공식 지원을 셀링포인트로 쓴다.
+        </p>
+      </div>
+
+      <h3>확정된 설계 원칙</h3>
+      <ul class="verdicts">
+        <li>
+          <span class="vk">검토 큐</span>
+          <div class="vb"><strong>병목은 "발행 전 승인"이 아니라 "공개됐는데 아직 안 본 것"</strong>
+          <p>큐 정렬 = 심각도 × 공개 경과 시간. 공개 24시간 미확인은 별도 상태로 승격(+Slack 에스컬레이션) — Hootsuite `Expired`가 유일한 선례. 자동검사 전항목 통과 건은 본문 미열람 종결이 정상 경로. 실행 취소(`z`)를 단축키보다 먼저. 일괄 비공개·일괄 차단해제는 금지.</p></div>
+        </li>
+        <li>
+          <span class="vk">품질 점수</span>
+          <div class="vb"><strong>점수는 절대 게이트가 아니다</strong>
+          <p>채점 제품 5종(Surfer·Clearscope·MarketMuse·Grammarly·Hemingway) 전부 자문이고 발행을 막지 않는다. Surfer는 자사 점수-순위 상관이 r=0.28뿐이라고 스스로 공개. 법적 게이트(금지표현)는 이진 유지, 점수는 큐 정렬 보조로만. 문자 등급(A/B/C) 금지.</p></div>
+        </li>
+        <li>
+          <span class="vk">재생성</span>
+          <div class="vb"><strong>diff를 만들지 않는다</strong>
+          <p>어떤 AI 라이팅 제품도 문서 수준 diff를 출시하지 않았다(Writer조차 "before/after 뷰"). 좌우 2단 + 기계 계산 델타 요약(`금지표현 2→0건`)으로 대체. 그보다 급한 건 <strong>AE 인라인 수정 + 즉시 재발행 경로</strong> — 현재는 문제 글의 유일한 경로가 비공개→야간 재생성이라 슬롯이 24시간 빈다.</p></div>
+        </li>
+        <li>
+          <span class="vk">자동 생성</span>
+          <div class="vb"><strong>환자 질문·경쟁사 수기 입력은 우리만 한다</strong>
+          <p>해외 7종 전부 자동 생성+제안 수락 UI 제공. Ahrefs ✨Generate 패턴(자동 초안 → 행 단위 편집 리뷰 → 커밋)이 정본. 프로파일에 재료가 이미 다 있어 STEP2→3 사이 AE 인건비 최대 절감 지점.</p></div>
+        </li>
+        <li>
+          <span class="vk">원장 리포트</span>
+          <div class="vb"><strong>퍼센트 대신 분수, 요약은 LLM 자유 서술 금지</strong>
+          <p>헤드라인은 "환자 질문 100번 중 47번" 분수 1개 + 보조 지표 3개까지. 증거 블록(나온 사례 1 + 안 나온 사례 1 + 원문 발췌)을 요약 바로 아래. "3~5개 변동은 정상 범위" 고지 필수. 성과 없어도 매월 발송. 합성 점수("AI 노출 지수 78점")는 산식 없는 마하닥의 실패 방식이므로 금지.</p></div>
+        </li>
+        <li>
+          <span class="vk">선점 지점</span>
+          <div class="vb"><strong>유의성 배지와 알림 설계는 카테고리 전체가 비어 있다</strong>
+          <p>7개 해외 제품 중 인프로덕트 유의성 표시 0개, 알림 트리거·피로 제어를 문서화한 곳 0개. "측정 N회 누적 후 추세 표시" 회색 배지가 우리 측정 규약 공개 전략과 맞물리는 차별화 기회.</p></div>
+        </li>
+      </ul>
+
+      <h3>확인된 우리 강점 (버리지 말 것)</h3>
+      <p>
+        온보딩의 단계별 차단 사유 + 다음 작업 CTA, 금지표현 실시간 하이라이트, essence 근거 매핑은
+        조사한 해외 7종 어디에도 없는 수준이다. 카테고리 전체가 받는 최대 불만이
+        <em>"계기판만 있고 핸들이 없다(A dashboard without an action plan is a speedometer without a steering wheel)"</em>인데,
+        우리는 측정→실행이 묶인 반대 지점에 서 있다.
+      </p>
+    </section>
+
+    <footer>
+      <h2>출처와 자료</h2>
+      <p>
+        화면 캡처 25장과 조사 원본은 <code>artifacts/competitor-2026-07-28/</code>에 있다.
+        아래는 주요 1차 출처다. 모든 성과 수치는 업체 자기 발표이며 제3자 검증을 거치지 않았다.
+      </p>
+      <p class="srcs">
+        geodoctor.net · onthe.ai · blog.onthe.ai · hospitalgeo.com · high-rank.co.kr · airank.lol ·
+        the200pro.com · 메디사이트.kr · medigpto.com · compl.co.kr · medirevive.co · brainmedi.co.kr ·
+        intrix.kr · ourmarketing.co.kr · plurank.com · oneplan.co.kr · blog.ythebeauty.co.kr ·
+        georank.co.kr · gpto.kr · geocare.ai · bizspring.co.kr · lead-gen.team · next-t.co.kr ·
+        i-boss.co.kr · bankerjang.com · hankyung.com/article/202607070182i · donga.com
+      </p>
+    </footer>
+
+  </main>
+</div>
