@@ -362,10 +362,12 @@ build_and_push() {
     --platform linux/amd64 \
     -t "$image_url" \
     -f "${PROJECT_ROOT}/backend/Dockerfile" \
-    "${PROJECT_ROOT}/backend" >&2
+    "${PROJECT_ROOT}/backend" >&2 \
+    || fail "이미지 빌드 실패(backend). Docker 데몬이 떠 있는지 확인하세요."
 
   info "Artifact Registry에 푸시 중..."
-  docker push "$image_url" >&2
+  docker push "$image_url" >&2 \
+    || fail "이미지 푸시 실패: ${image_url}"
 
   ok "이미지 푸시 완료: ${image_url}"
   echo "$image_url"
@@ -530,8 +532,10 @@ build_and_push_site() {
     --build-arg "NEXT_PUBLIC_GA_MEASUREMENT_ID=${GA_MEASUREMENT_ID}" \
     -t "$image_url" \
     -f "${PROJECT_ROOT}/site/Dockerfile" \
-    "${PROJECT_ROOT}/site" >&2
-  docker push "$image_url" >&2
+    "${PROJECT_ROOT}/site" >&2 \
+    || fail "이미지 빌드 실패(site). Docker 데몬이 떠 있는지 확인하세요."
+  docker push "$image_url" >&2 \
+    || fail "이미지 푸시 실패: ${image_url}"
   ok "Site 이미지 푸시 완료: ${image_url}"
   echo "$image_url"
 }
@@ -546,8 +550,10 @@ build_and_push_admin() {
     --build-arg "NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
     -t "$image_url" \
     -f "${PROJECT_ROOT}/admin/Dockerfile" \
-    "${PROJECT_ROOT}/admin" >&2
-  docker push "$image_url" >&2
+    "${PROJECT_ROOT}/admin" >&2 \
+    || fail "이미지 빌드 실패(admin). Docker 데몬이 떠 있는지 확인하세요."
+  docker push "$image_url" >&2 \
+    || fail "이미지 푸시 실패: ${image_url}"
   ok "Admin 이미지 푸시 완료: ${image_url}"
   echo "$image_url"
 }
