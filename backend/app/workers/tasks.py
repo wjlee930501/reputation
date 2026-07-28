@@ -48,6 +48,7 @@ from app.services.essence_engine import (
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
 from app.services.report_engine import build_content_attribution_summary, generate_pdf_report
+from app.services import indexnow
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
@@ -69,6 +70,36 @@ AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
 V0_QUERY_SAMPLE_COUNT = 5  # V0 첫 측정에 쓰는 쿼리 개수
+
+
+def sov_budget_units(*, query_count: int, platform_count: int, repeat_count: int) -> int:
+    """비용 가드에 예약할 SoV 공급자 호출 수.
+
+    run_single_query는 (질의 × 플랫폼) 하나당 repeat_count번 **실제 공급자 호출**을 낸다.
+    예약할 때 반복 횟수를 빼면 가드가 실제 지출의 1/repeat_count만 세고, 상한이 사실상
+    repeat_count배로 열린다. 예약 단위와 실제 호출 단위는 반드시 같아야 한다.
+
+    이 함수가 존재하는 이유는 곱셈이 어려워서가 아니라, 그 불변식에 이름을 붙여
+    테스트로 고정하기 위해서다. 과거 V0·주간 경로 모두 반복 횟수를 빠뜨렸다.
+    """
+    return query_count * platform_count * repeat_count
+
+
+def v0_sample_query_stmt(hospital_id):
+    """V0 표본 질의를 **결정론적으로** 고르는 SELECT.
+
+    tiebreaker가 id면 결정론적이지 않다: 매트릭스는 한 트랜잭션에서 삽입되고
+    created_at의 server_default now()는 트랜잭션 시각이라 모든 행이 동일해진다.
+    그러면 순서를 랜덤 UUID인 id가 정하게 되어 같은 프로파일이라도 병원마다,
+    재시도마다 질의 세트가 달라진다. query_text를 tiebreaker로 써서 삽입 순서와
+    무관하게 고정한다.
+    """
+    return (
+        select(QueryMatrix)
+        .where(QueryMatrix.hospital_id == hospital_id)
+        .order_by(QueryMatrix.created_at, QueryMatrix.query_text)
+        .limit(V0_QUERY_SAMPLE_COUNT)
+    )
 # 주간 측정에서 HIGH 우선순위 쿼리 spec 상한 — target 자동 시드로 매트릭스가 폭증해도
 # 매주 전량 측정되며 API 비용이 무한정 늘지 않도록 태스크 측에서 잘라낸다.
 SOV_HIGH_PRIORITY_CAP = settings.SOV_HIGH_PRIORITY_CAP
@@ -237,16 +268,7 @@ def trigger_v0_report(self, hospital_id: str):
             all_records = []
             success_count = 0
             failure_count = 0
-            # 결정론적 순서로 상위 N개를 샘플링한다 — ORDER BY 없이 limit하면 DB가 임의 행을
-            # 돌려줘 V0 결과가 재현 불가능해진다. 카테고리 컬럼이 없으므로 created_at(동률 시 id)
-            # 기준으로 안정 정렬을 보장한다.
-            stmt = (
-                select(QueryMatrix)
-                .where(QueryMatrix.hospital_id == hospital.id)
-                .order_by(QueryMatrix.created_at, QueryMatrix.id)
-                .limit(V0_QUERY_SAMPLE_COUNT)
-            )
-            result = db.execute(stmt)
+            result = db.execute(v0_sample_query_stmt(hospital.id))
             sample_queries = result.scalars().all()
 
             platforms = ["chatgpt"]
@@ -254,9 +276,16 @@ def trigger_v0_report(self, hospital_id: str):
                 platforms.append("gemini")
             competitors = hospital.competitors or []
 
-            # 비용 가드: V0 측정 예산 확인(쿼리 × 플랫폼 수). V0는 사람이 기다리는 플로우이므로
-            # 차단 시 ANALYZING을 이전 상태로 되돌리고, 명확한 실패 사유를 ops Slack으로 보낸다.
-            v0_units = len(sample_queries) * len(platforms)
+            # 비용 가드: V0 측정 예산 확인(쿼리 × 플랫폼 × **반복 횟수**).
+            # 반복 횟수를 빼면 실제 호출의 1/V0_REPEAT_COUNT만 예약하게 되어 가드가
+            # 5배 적게 센다. run_single_query가 repeat_count만큼 실제 호출을 낸다.
+            # V0는 사람이 기다리는 플로우이므로 차단 시 ANALYZING을 이전 상태로 되돌리고,
+            # 명확한 실패 사유를 ops Slack으로 보낸다.
+            v0_units = sov_budget_units(
+                query_count=len(sample_queries),
+                platform_count=len(platforms),
+                repeat_count=V0_REPEAT_COUNT,
+            )
             v0_decision = _run_async(cost_guard.check_and_increment("sov", count=v0_units))
             if not v0_decision.allowed:
                 logger.warning(
@@ -869,6 +898,19 @@ def morning_content_auto_publish(self):
             )
             if not revalidated and settings.APP_ENV.lower() == "production":
                 logger.warning("Auto-published content revalidation failed: %s", content_id)
+
+            # 색인 신호 — sitemap이 크롤러를 기다리는 동안 발행 사실을 즉시 밀어 넣는다.
+            # 실측(2026-07-29): AI가 병원 허브를 인용한 답변의 93%가 병원을 언급했고,
+            # 인용하지 않은 답변은 4%였다. 읽히지 않으면 언급되지 않으므로 색인 진입이
+            # 콘텐츠 발행만큼 중요하다. 실패해도 발행은 계속한다.
+            _run_async(
+                indexnow.submit_content_published_safe(
+                    slug=outcome["slug"],
+                    content_id=content_id,
+                    aeo_domain=outcome.get("aeo_domain"),
+                    treatments=outcome["treatments"],
+                )
+            )
             if not _deliver_post_publish_notification(content_id, outcome):
                 notification_failures += 1
 
@@ -1013,6 +1055,7 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
         "kind": "published",
         "hospital_name": hospital.name,
         "slug": hospital.slug,
+        "aeo_domain": hospital.aeo_domain,  # IndexNow 제출 호스트 결정용
         "treatments": hospital.treatments,
         "title": item.title or "",
         "sequence_no": item.sequence_no,
@@ -1216,10 +1259,21 @@ def run_sov_for_hospital(self, hospital_id: str):
                 )
                 return
 
-            # 비용 가드: 측정 spec 개수만큼 예산을 run 단위로 일괄 확인. 차단 시 측정을 건너뛰고
-            # ops 알림만 남긴다(예외로 재시도를 유발하지 않는다 — 재시도해도 상한에 다시 걸린다).
+            # 비용 가드: spec 개수 × **반복 횟수**만큼 예산을 run 단위로 일괄 확인.
+            # 각 spec은 run_single_query에서 SOV_REPEAT_WEEKLY번 실제 호출을 낸다.
+            # 반복 횟수를 빼면 가드가 실제 호출의 1/SOV_REPEAT_WEEKLY만 예약한다.
+            # 차단 시 측정을 건너뛰고 ops 알림만 남긴다(예외로 재시도를 유발하지 않는다 —
+            # 재시도해도 상한에 다시 걸린다).
+            # spec은 이미 (질의 × 플랫폼) 조합이므로 platform_count=1로 넘긴다.
             sov_decision = _run_async(
-                cost_guard.check_and_increment("sov", count=len(measurement_specs))
+                cost_guard.check_and_increment(
+                    "sov",
+                    count=sov_budget_units(
+                        query_count=len(measurement_specs),
+                        platform_count=1,
+                        repeat_count=SOV_REPEAT_WEEKLY,
+                    ),
+                )
             )
             if not sov_decision.allowed:
                 logger.warning(
@@ -2056,3 +2110,89 @@ def purge_expired_leads():
         logger.exception("purge_expired_leads slack notify failed (non-fatal)")
 
     return {"purged": purged, "error": error_msg}
+
+
+@celery_app.task(
+    name="app.workers.tasks.backfill_indexnow",
+    bind=True,
+    max_retries=1,
+    soft_time_limit=1800,
+)
+def backfill_indexnow(self, hospital_id: str | None = None, dry_run: bool = False):
+    """이미 발행된 콘텐츠를 IndexNow에 소급 제출한다.
+
+    발행 훅(nightly_content_publish)은 **앞으로 나가는 글**에만 걸린다. 훅을 붙이기 전에
+    이미 발행된 글은 색인 신호를 한 번도 받은 적이 없다. 2026-07-29 측정에서 대장내시경
+    주제 콘텐츠 7편이 질의와 제목이 거의 일치하는데도 85회 측정 중 인용 0회였던 것이
+    이 경우일 수 있어, 한 번 밀어 넣고 재측정해 확인한다.
+
+    멱등이다 — IndexNow는 같은 URL을 다시 받아도 문제 없고, 우리 쪽 상태도 바꾸지 않는다.
+    실패해도 예외를 올리지 않는다(색인 신호는 부가 기능이지 데이터 정합성이 아니다).
+
+    사용:
+        backfill_indexnow.delay()                       # 전체
+        backfill_indexnow.delay(hospital_id="...")      # 특정 병원
+        backfill_indexnow.delay(dry_run=True)           # 제출 없이 대상만 집계
+    """
+    if not indexnow.is_configured():
+        logger.warning("backfill_indexnow: INDEXNOW_KEY 미설정 — 건너뜀")
+        return {"skipped": "not_configured"}
+
+    summary: list[dict] = []
+    with SyncSessionLocal() as db:
+        stmt = select(Hospital)
+        if hospital_id:
+            stmt = stmt.where(Hospital.id == hospital_id)
+        hospitals = db.execute(stmt).scalars().all()
+
+        for hospital in hospitals:
+            # 공개되지 않은 병원의 URL을 색인에 넣으면 미완성 페이지가 노출된다.
+            if not getattr(hospital, "site_live", False):
+                continue
+
+            content_ids = db.execute(
+                select(ContentItem.id)
+                .where(ContentItem.hospital_id == hospital.id)
+                .where(ContentItem.status == ContentStatus.PUBLISHED)
+                .order_by(ContentItem.scheduled_date)
+            ).scalars().all()
+
+            base, urls = indexnow.hospital_all_urls(
+                slug=hospital.slug,
+                aeo_domain=hospital.aeo_domain,
+                treatments=hospital.treatments,
+                content_ids=content_ids,
+            )
+
+            entry = {
+                "hospital": hospital.name,
+                "base_url": base,
+                "contents": len(content_ids),
+                "urls": len(urls),
+            }
+            if dry_run:
+                entry["submitted"] = False
+            else:
+                entry["submitted"] = _run_async(
+                    indexnow.submit_urls(base_url=base, urls=urls)
+                )
+            summary.append(entry)
+            logger.info(
+                "backfill_indexnow: %s (%s) 콘텐츠 %d편 · URL %d개 · 제출=%s",
+                hospital.name,
+                base,
+                len(content_ids),
+                len(urls),
+                entry["submitted"],
+            )
+
+    total_urls = sum(e["urls"] for e in summary)
+    ok = sum(1 for e in summary if e["submitted"])
+    logger.info(
+        "backfill_indexnow 완료: 병원 %d곳 · URL %d개 · 성공 %d곳 (dry_run=%s)",
+        len(summary),
+        total_urls,
+        ok,
+        dry_run,
+    )
+    return {"hospitals": summary, "total_urls": total_urls, "succeeded": ok, "dry_run": dry_run}

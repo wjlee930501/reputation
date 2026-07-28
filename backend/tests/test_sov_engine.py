@@ -138,3 +138,121 @@ async def test_chatgpt_web_search_is_required_not_optional(monkeypatch):
     assert result == "검색 기반 답변"
     assert responses.kwargs["tools"] == [{"type": "web_search"}]
     assert responses.kwargs["tool_choice"] == "required"
+
+
+# ── 자사/경쟁사 판정 대칭성 (PRD F4) ──
+# 과거 자사 판정은 "접미사 제거 후 3글자 이상" 사전 필터 + "앞글자 2~3자만으로는 동일
+# 기관으로 보지 않는다" 프롬프트를 썼는데, 경쟁사 판정은 "앞 2글자" 사전 필터 + "앞 2~3글자
+# 일치 시 동일 병원" 프롬프트를 썼다. 같은 근거가 이름 주인에 따라 반대 판정을 받아
+# 경쟁사 언급이 구조적으로 부풀려졌고, 원장 보고서의 "우리 병원 vs 경쟁 병원" 비교가
+# 성립하지 않았다. 아래 테스트가 그 비대칭의 회귀를 막는다.
+
+
+class _ExplodingCompletions:
+    """사전 필터에서 걸러졌다면 LLM 판정은 호출되지 않아야 한다."""
+
+    async def create(self, **kwargs):
+        raise AssertionError("prefilter가 걸렀어야 하는데 LLM 판정까지 도달했다")
+
+
+def test_prefilter_key_strips_suffix_and_requires_three_chars():
+    assert sov_engine.prefilter_key("장편한외과의원") == "장편한외과"
+    # 접미사를 떼면 3글자 미만 → 접미사를 포함한 원래 이름을 키로 쓴다.
+    assert sov_engine.prefilter_key("서울병원") == "서울병원"
+    assert sov_engine.prefilter_key("연세 클리닉") == "연세클리닉"
+
+
+@pytest.mark.asyncio
+async def test_competitor_prefilter_rejects_two_char_prefix(monkeypatch):
+    # "강남"까지만 겹치는 무관한 답변. 과거에는 앞 2글자 일치로 통과해 LLM까지 갔다.
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _ExplodingCompletions())
+
+    parsed = await sov_engine._parse_competitors(
+        ["강남세브란스병원"], "강남역 인근 병원을 안내합니다."
+    )
+
+    assert parsed == [{"name": "강남세브란스병원", "is_mentioned": False, "mention_rank": None}]
+
+
+@pytest.mark.asyncio
+async def test_self_and_competitor_prefilter_make_the_same_decision(monkeypatch):
+    # 같은 이름·같은 답변이면 자사 경로와 경쟁사 경로가 같은 판단을 내려야 한다.
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _ExplodingCompletions())
+    name, answer = "강남세브란스병원", "강남역 인근 병원을 안내합니다."
+
+    mention = await sov_engine._parse_mention(name, answer)
+    competitors = await sov_engine._parse_competitors([name], answer)
+
+    assert mention["is_mentioned"] is False
+    assert competitors[0]["is_mentioned"] is False
+
+
+def test_both_parse_prompts_share_the_same_identity_rule():
+    assert sov_engine._IDENTITY_RULE in sov_engine.PARSE_PROMPT
+    assert sov_engine._IDENTITY_RULE in sov_engine.COMPETITOR_PARSE_PROMPT
+    # 경쟁사에만 적용되던 느슨한 기준이 남아 있으면 안 된다.
+    assert "앞 2~3글자 일치 시 동일 병원" not in sov_engine.COMPETITOR_PARSE_PROMPT
+
+
+class _MalformedCompletions:
+    """판정기가 JSON을 깨뜨려 돌려주는 상황."""
+
+    async def create(self, **kwargs):
+        return SimpleNamespace(choices=[_FakeChoice("이건 JSON이 아니다")])
+
+
+@pytest.mark.asyncio
+async def test_competitor_parse_failure_raises_like_self_judgment(monkeypatch):
+    # 같은 판정기 장애인데 자사는 FAILED(분모 제외), 경쟁사는 "미언급 SUCCESS"로
+    # 집계되면 경쟁사 언급률이 구조적으로 낮게 나온다. 양쪽 다 실패로 올라와야 한다.
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _MalformedCompletions())
+
+    with pytest.raises(ValueError):
+        await sov_engine._parse_mention("장편한외과의원", "장편한외과의원이 언급되었습니다.")
+    with pytest.raises(ValueError):
+        await sov_engine._parse_competitors(
+            ["장편한외과의원"], "장편한외과의원이 언급되었습니다."
+        )
+
+
+@pytest.mark.asyncio
+async def test_competitor_parse_rejects_wrong_typed_items(monkeypatch):
+    class _WrongType:
+        async def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    _FakeChoice(
+                        json.dumps({"competitors": [{"name": "경쟁병원", "is_mentioned": "yes"}]})
+                    )
+                ]
+            )
+
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _WrongType())
+
+    with pytest.raises(ValueError):
+        await sov_engine._parse_competitors(["경쟁병원"], "경쟁병원이 언급되었습니다.")
+
+
+@pytest.mark.asyncio
+async def test_competitor_prefilter_skip_is_a_verdict_not_a_failure(monkeypatch):
+    """사전 필터로 거른 all-false는 실패가 아니라 판정 결과다 — 예외를 던지면 안 된다."""
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _ExplodingCompletions())
+
+    parsed = await sov_engine._parse_competitors(
+        ["강남세브란스병원"], "강남역 인근 병원을 안내합니다."
+    )
+
+    assert parsed == [{"name": "강남세브란스병원", "is_mentioned": False, "mention_rank": None}]
+
+
+def test_measurement_models_are_pinned_to_dated_snapshots():
+    # 부동 별칭은 OpenAI가 갱신하면 측정 기준선을 조용히 이동시킨다(PRD F3-1).
+    from app.core.config import Settings
+
+    defaults = Settings.model_fields
+    assert defaults["OPENAI_MODEL_QUERY"].default == "gpt-5-mini-2025-08-07"
+    assert defaults["OPENAI_MODEL_PARSE"].default == "gpt-4o-mini-2024-07-18"
+    # Gemini도 답변 모델이므로 동일하게 고정한다. `-latest` 별칭은 기준선을 이동시킨다.
+    assert defaults["GEMINI_MODEL"].default == "gemini-3.6-flash"
+    for field in ("OPENAI_MODEL_QUERY", "OPENAI_MODEL_PARSE", "GEMINI_MODEL"):
+        assert not defaults[field].default.endswith("-latest"), field

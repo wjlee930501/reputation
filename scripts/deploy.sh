@@ -100,11 +100,15 @@ BACKEND_BASE_REQUIRED_SECRET_NAMES=(
 
 BACKEND_OPTIONAL_SECRET_NAMES=(
   "SITE_REVALIDATE_SECRET"
+  # IndexNow 키. backend가 제출하고 site가 같은 값을 키 파일로 응답해야 소유가 증명된다 —
+  # 두 서비스에 반드시 같은 시크릿을 주입할 것. 미설정이면 제출만 건너뛰고 발행은 정상 동작.
+  "INDEXNOW_KEY"
 )
 
 SITE_REQUIRED_SECRET_NAMES=(
   "SITE_REVALIDATE_SECRET"
   "SITE_BFF_SECRET"
+  "INDEXNOW_KEY"
 )
 
 ADMIN_REQUIRED_SECRET_NAMES=(
@@ -358,10 +362,12 @@ build_and_push() {
     --platform linux/amd64 \
     -t "$image_url" \
     -f "${PROJECT_ROOT}/backend/Dockerfile" \
-    "${PROJECT_ROOT}/backend" >&2
+    "${PROJECT_ROOT}/backend" >&2 \
+    || fail "이미지 빌드 실패(backend). Docker 데몬이 떠 있는지 확인하세요."
 
   info "Artifact Registry에 푸시 중..."
-  docker push "$image_url" >&2
+  docker push "$image_url" >&2 \
+    || fail "이미지 푸시 실패: ${image_url}"
 
   ok "이미지 푸시 완료: ${image_url}"
   echo "$image_url"
@@ -526,8 +532,10 @@ build_and_push_site() {
     --build-arg "NEXT_PUBLIC_GA_MEASUREMENT_ID=${GA_MEASUREMENT_ID}" \
     -t "$image_url" \
     -f "${PROJECT_ROOT}/site/Dockerfile" \
-    "${PROJECT_ROOT}/site" >&2
-  docker push "$image_url" >&2
+    "${PROJECT_ROOT}/site" >&2 \
+    || fail "이미지 빌드 실패(site). Docker 데몬이 떠 있는지 확인하세요."
+  docker push "$image_url" >&2 \
+    || fail "이미지 푸시 실패: ${image_url}"
   ok "Site 이미지 푸시 완료: ${image_url}"
   echo "$image_url"
 }
@@ -542,8 +550,10 @@ build_and_push_admin() {
     --build-arg "NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
     -t "$image_url" \
     -f "${PROJECT_ROOT}/admin/Dockerfile" \
-    "${PROJECT_ROOT}/admin" >&2
-  docker push "$image_url" >&2
+    "${PROJECT_ROOT}/admin" >&2 \
+    || fail "이미지 빌드 실패(admin). Docker 데몬이 떠 있는지 확인하세요."
+  docker push "$image_url" >&2 \
+    || fail "이미지 푸시 실패: ${image_url}"
   ok "Admin 이미지 푸시 완료: ${image_url}"
   echo "$image_url"
 }
@@ -563,7 +573,7 @@ deploy_site() {
     --ingress=internal-and-cloud-load-balancing \
     --allow-unauthenticated \
     --set-env-vars="NEXT_PUBLIC_API_URL=https://${PUBLIC_DOMAIN}/api/v1/public,NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_GCP_STORAGE_BUCKET=${ASSET_GCS_BUCKET},BACKEND_URL=https://${PUBLIC_DOMAIN}" \
-    --set-secrets="SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest" \
+    --set-secrets="SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest,INDEXNOW_KEY=INDEXNOW_KEY:latest" \
     --port=8080 \
     --timeout=60 \
     --cpu-boost

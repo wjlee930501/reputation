@@ -61,11 +61,15 @@ AGENTS.md
 generate-report.js
 docs/superpowers/
 
-# Visual audit output — screenshots stay local, written reports are tracked
-# because DESIGN.md cites them as evidence.
+# Research and audit output — screenshots and logs stay local; written reports
+# and the scripts that reproduce a capture are tracked, because DESIGN.md and
+# the competitor review cite them as evidence.
 artifacts/**
 !artifacts/**/
 !artifacts/**/*.md
+!artifacts/**/*.html
+!artifacts/**/*.sh
+!artifacts/**/*.py
 
 # Terraform
 terraform/.terraform/
