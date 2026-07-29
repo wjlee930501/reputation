@@ -2,7 +2,7 @@
 
 > 설계 정본: `docs/plans/2026-07-29-lead-diagnosis-funnel-design.md` (rev3)
 > 명세: `docs/prd/REPUTATION-AI-DIAGNOSIS-FUNNEL-PRD-2026-07.md` (rev7)
-> 브랜치: **`feat/lead-diagnosis-funnel`** (main에 머지 안 됨)
+> 적대적 검토: Codex GPT-5.6 (2026-07-30) — BLOCKER 5 + HIGH 8 + MEDIUM 3건 반영
 
 ---
 
@@ -11,7 +11,8 @@
 무료 AI 노출 진단 퍼널(1단)을 **접수 → 측정 → 리포트 → 발송 → 파기**까지 구현했다.
 남은 것은 **Admin 화면 1개**와 **배포 준비**뿐이다.
 
-커밋 6개, `backend 1007 passed · site 140 · admin 144 · scripts 46`, ruff·tsc·eslint 통과.
+커밋 8개, `backend 1038 passed · site 140 · admin 144 · scripts 46`, ruff·tsc·eslint 통과.
+Codex GPT-5.6 적대적 검토를 돌려 나온 16건도 반영·검증 완료(§4).
 
 ---
 
@@ -47,23 +48,24 @@
 
 ### 2-1. Admin (설계 §11 10번) — **유일한 필수 잔여**
 
-| 화면 | 무엇을 | 왜 |
+| 화면 | 무엇을 | 상태 |
 |---|---|---|
-| 리드 목록에 진단 요약 | 플랫폼별 측정/언급 횟수, 상태 3축 | PRD F7-1 |
-| **잠금 해제** | `POST /api/admin/leads/{id}/release-lock` + 버튼 | **F1-7 — 없으면 F1-6이 리드 차단 장치가 된다** |
-| 실패 목록 (DLQ) | `execution_status=FAILED` · `report_status=BLOCKED` + 재실행 | 별도 DLQ 큐가 없으므로 이 화면이 죽은 편지함이다 |
+| 리드 목록에 진단 요약 | 플랫폼별 측정/언급 횟수, 상태 3축 | 미착수 (PRD F7-1) |
+| **잠금 해제 버튼** | 사유 입력 + `POST /api/admin/leads/{id}/release-lock` 호출 | **API 완료**, UI 미착수 |
+| 실패 목록 (DLQ) | `execution_status=FAILED` · `report_status=BLOCKED` + 재실행 | 미착수 |
 
-**잠금 해제가 가장 중요하다.** 전화번호 잠금은 제3자가 먼저 신청해 원장의 기회를
-소진시킬 수 있고, 그때 푸는 유일한 경로가 이 버튼이다. 백엔드는
-`lock_released_at/by/reason` 컬럼과 부분 유니크 인덱스 조건이 이미 준비돼 있다
-(`tests/integration/test_lead_diagnosis_constraints.py::TestDualLock::test_released_lock_frees_both_keys`가
-동작을 고정하고 있으니 API만 얹으면 된다).
+**잠금 해제 API는 구현·검증 완료다** (`release_diagnosis_lock`, 사유 필수 + 감사 로그,
+`test_lead_diagnosis_review_fixes.py::TestAdminReleaseLock`이 "해제 후 실제로 재신청이
+된다"까지 확인). 남은 것은 Admin UI에서 그 API를 부르는 버튼뿐이다.
+
+전화번호 잠금은 제3자가 먼저 신청해 원장의 기회를 소진시킬 수 있고, 그때 푸는 유일한
+경로가 이것이다 — UI가 없으면 AE가 API를 직접 호출해야 한다.
 
 ### 2-2. 배포 전 필수
 
 | 항목 | 상태 |
 |---|---|
-| 마이그레이션 `0035` 프로덕션 적용 | **미적용** |
+| 마이그레이션 `0035`·`0036` 프로덕션 적용 | **미적용** |
 | `LEAD_LOCK_HASH_PEPPER` · `LEAD_REPORT_TOKEN_SECRET` · `RESEND_API_KEY` Secret Manager 등록 | **미등록** — 없으면 부팅 실패 |
 | 워커 `-Q ...,leadgen` | 코드 반영 완료 (entrypoint·compose) |
 | `REDBEAT_SCHEDULE_VERSION` | `2026-07-30.1`로 상향 완료 |
@@ -98,7 +100,26 @@
 
 ---
 
-## 4. 구현하며 발견한 결함 (전부 수정됨)
+## 4. 적대적 검토에서 나온 것 (전부 수정됨 — 커밋 5d1f591)
+
+Codex GPT-5.6에 브랜치 전체를 던져 19건을 받았고, 그중 실제 결함 16건을 고쳤다.
+**전부 테스트가 통과하는데도 남아 있던 문제다.**
+
+가장 무거운 셋:
+
+1. **캐시 충돌이 측정 결과 18행을 삼켰다** — `store_answer`의 세션 전체 rollback.
+   공유 캐시가 정확히 유도하는 경합이라 발생 확률이 높았다. SAVEPOINT로 격리.
+2. **종결 상태(`PURGED`·`BLOCKED`)가 CHECK에 걸려** 파기 배치 전체를 매일 롤백시켰다.
+   같은 독성 행이 계속 재선택되어 법정 파기 의무가 조용히 멈추는 구조였다.
+3. **`/erase`가 진단 산출물을 전혀 파기하지 않았다** — PDF와 활성 토큰이 남는데
+   `purged_at`만 찍혀, 이후 배치가 그 리드를 영원히 건너뛴다.
+
+미해결로 남긴 것 2건 (설계 판단 필요, §2-5 참조):
+- **공유 캐시가 single-flight가 아니다** — 같은 지역 20건이 동시에 시작하면 전부
+  cache miss를 읽고 각자 유료 호출을 한다. "두 번째 병원 약 5원"은 순차 실행 전제다.
+- **슬롯이 공급자 호출 수의 상한은 아니다** — 재시도 × 실행 재시도로 최악 162콜.
+
+## 5. 그 전에 구현하며 발견한 결함 (전부 수정됨)
 
 1. **`+82 02-123-4567`이 다른 잠금 키가 됐다** — 표기만 바꾼 재신청이 통했다
 2. **진료과 == 키워드면 질의가 2개만 생성** — 측정 수가 흔들리면 원가도 흔들린다
@@ -111,10 +132,10 @@
 
 ---
 
-## 5. 검증 명령
+## 6. 검증 명령
 
 ```bash
-cd backend && .venv/bin/python -m ruff check app tests && .venv/bin/python -m pytest -q   # 1007
+cd backend && .venv/bin/python -m ruff check app tests && .venv/bin/python -m pytest -q   # 1038
 cd .. && backend/.venv/bin/python -m pytest scripts/ -q                                   # 46
 cd site && npm run typecheck && npm run lint && npm test                                  # 140
 cd ../admin && npm run typecheck && npm run lint && npm test                              # 144
@@ -134,7 +155,7 @@ cd backend && APP_ENV=development \
 
 ---
 
-## 6. 새 코드 지도
+## 7. 새 코드 지도
 
 **백엔드**
 
@@ -142,6 +163,8 @@ cd backend && APP_ENV=development \
 |---|---|
 | `models/lead_diagnosis.py` | 6개 테이블 + 상태 3축 enum |
 | `alembic/versions/0035_add_lead_diagnosis.py` | 스키마 (부분 유니크 인덱스는 raw DDL) |
+| `alembic/versions/0036_lead_diagnosis_hardening.py` | 검토 반영 — 자리 카운터·CHECK·발송 UNIQUE |
+| `api/admin/leads.py` | 즉시 파기(오케스트레이터 경유) · **잠금 해제** |
 | `api/public/diagnosis.py` | 접수 · 남은 자리 · 상태 · 리포트 |
 | `services/lead_diagnosis_identity.py` | 전화·이메일 정규화 + 잠금 해시 |
 | `services/query_mapper.py` | 질의 3개 생성 |
@@ -164,7 +187,7 @@ cd backend && APP_ENV=development \
 
 ---
 
-## 7. 테스트를 쓸 때 지킨 규칙
+## 8. 테스트를 쓸 때 지킨 규칙
 
 핸드오프(2026-07-29)의 원칙을 이어받았다 — **자기참조를 피하고 독립적으로 정해지는
 값 사이의 제약을 건다.** 이번에 그 원칙으로 바꾼 기존 테스트 2개:
@@ -172,6 +195,9 @@ cd backend && APP_ENV=development \
 - `test_celery_routing.py` — 큐 목록을 하드코딩하다가 **`docker-entrypoint.sh`에서
   파싱**하도록. 하드코딩이면 두 곳을 같이 고치는 한 통과해 드리프트를 못 잡는다.
 - `test_sov_timing_budget.py` — 소스 텍스트 grep에서 **실제 세마포어 용량 검사**로.
+- `test_lead_diagnosis_constraints.py` — `MAX(slot_no)+1`을 "접수 API가 쓰는 바로 그
+  SQL"이라고 적어놨으나 API는 그것을 쓰지 않았다. 검증한다고 **주장한 것**과 코드가
+  달라서 동시 접수가 무너지는 것을 아무도 못 봤다 — 실제 배정 SQL을 보도록 교체.
 
 새로 건 관계 제약의 예: 메일 재시도 일정 합 < Resend 멱등성 창(24시간).
 상수 하나만 늘려도 실패한다.
