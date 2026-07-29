@@ -32,12 +32,31 @@ def _get_semaphore() -> asyncio.Semaphore:
     if _api_semaphore is None or _semaphore_loop is not current_loop:
         with _sem_lock:
             if _api_semaphore is None or _semaphore_loop is not current_loop:
-                _api_semaphore = asyncio.Semaphore(5)
+                _api_semaphore = asyncio.Semaphore(SOV_PROVIDER_CONCURRENCY)
                 _semaphore_loop = current_loop
     return _api_semaphore
 
 
-openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=30.0)
+# 공급자 호출은 전부 I/O 대기다 — 동시 실행 수가 곧 측정 태스크의 벽시계 시간을 정한다.
+# 주간 측정(질의 spec × 반복 5회)이 Celery task_time_limit 안에 끝나려면 5로는 부족하다.
+# 실측(2026-07-29, 지역 의도 질문 10회): chatgpt p50 24.7s(luna) / 62.8s(mini),
+# gemini p50 7.9s. 5동시로는 주간 300호출이 한도를 넘고, 10이면 들어온다.
+SOV_PROVIDER_CONCURRENCY = 10
+
+# 웹검색을 강제한 추론 모델의 실제 소요 시간에 맞춘다.
+#
+# 30초였을 때 무슨 일이 있었나: 실측 p50이 chatgpt 24.7~62.8초라, 30초 타임아웃은
+# 정상 응답을 대부분 잘라내고 FAILED로 기록했다. calculate_sov가 FAILED를 분모에서
+# 빼므로, 원장에게 보고되는 언급률이 "30초 안에 끝난 소수"만으로 계산됐다.
+# 그 소수는 무작위 표본이 아니다 — 검색을 덜 한 짧은 답변이라 병원 이름이 적게 나온다.
+# 게다가 느린 질의일수록 지역 의도 질의(= 병원이 언급될 자리)라 편향이 한 방향이다.
+#
+# 값 근거: 관측 최대 86.8초(mini) 대비 여유. 재시도 3회와 곱해지므로 무한정 늘리지 않는다.
+OPENAI_TIMEOUT_SECONDS = 120.0
+# Gemini는 실측 p50 7.9s / 최대 10.4s로 훨씬 빠르다. 여유만 두고 과하게 늘리지 않는다.
+GEMINI_TIMEOUT_SECONDS = 60.0
+
+openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_SECONDS)
 _gemini_client: google_genai.Client | None = None
 
 
@@ -46,7 +65,7 @@ def _get_gemini_client() -> google_genai.Client | None:
     if settings.GEMINI_API_KEY and _gemini_client is None:
         _gemini_client = google_genai.Client(
             api_key=settings.GEMINI_API_KEY,
-            http_options={"timeout": 30000},  # 30s in milliseconds
+            http_options={"timeout": int(GEMINI_TIMEOUT_SECONDS * 1000)},  # ms
         )
     return _gemini_client
 
@@ -132,9 +151,26 @@ def generate_query_matrix(
     return list(queries)
 
 
-SYSTEM_PROMPT_CHATGPT = (
+# 두 플랫폼에 **같은 지시문을 같은 위치로** 준다.
+#
+# 2026-07-29 이전에는 ChatGPT에만 이 지시문이 붙고 Gemini는 질문만 받았다. 그래서
+# "ChatGPT 32% vs Gemini 8%" 같은 숫자가 나와도 그건 플랫폼 차이가 아니라 우리가 두
+# 모델을 다르게 대우한 결과였다 — 플랫폼 비교가 성립하지 않았다.
+# 이름을 CHATGPT에서 SOV로 바꾼 것은 "이건 한 플랫폼 전용이 아니다"를 코드에 못 박기 위함이다.
+SYSTEM_PROMPT_SOV = (
     "지역 병원 정보를 잘 아는 의료 정보 도우미입니다. 구체적인 병원 이름을 포함해 답변하세요."
 )
+
+
+def build_sov_prompt(query: str) -> str:
+    """플랫폼 공통 질의문. 양쪽이 반드시 이 함수를 거쳐야 비대칭이 재발하지 않는다."""
+    return f"{SYSTEM_PROMPT_SOV}\n\n질문: {query}"
+
+
+# Gemini에만 출력 상한이 걸려 있으면 답변이 짧게 잘려 병원 이름이 나올 자리가 줄어든다
+# (실측 2026-07-29: Gemini 출력 106토큰 vs OpenAI 1,612~3,051토큰). OpenAI 경로에는
+# 상한이 없으므로, Gemini 상한도 실측 최대치를 넉넉히 웃돌게 두어 '구속 조건'이 되지 않게 한다.
+GEMINI_MAX_OUTPUT_TOKENS = 4096
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
@@ -149,7 +185,7 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
     response = await openai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_QUERY,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT_CHATGPT},
+            {"role": "system", "content": SYSTEM_PROMPT_SOV},
             {"role": "user", "content": query},
         ],
         temperature=0.7,
@@ -176,7 +212,7 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
             # 도구를 단순 제공만 하면 모델이 검색 없이 답할 수 있다. SoV 계약은 실제
             # 웹 검색 노출 측정이므로 매 요청에서 web_search 호출을 강제한다.
             tool_choice="required",
-            input=f"{SYSTEM_PROMPT_CHATGPT}\n\n질문: {query}",
+            input=build_sov_prompt(query),
         )
     except AttributeError:
         # SDK 버전이 responses API를 지원하지 않으면 chat.completions로 폴백
@@ -225,14 +261,14 @@ async def _query_gemini_result(query: str) -> dict[str, Any]:
         asyncio.to_thread(
             client.models.generate_content,
             model=settings.GEMINI_MODEL,
-            contents=query,
+            contents=build_sov_prompt(query),
             config=genai_types.GenerateContentConfig(
                 temperature=1.0,
-                max_output_tokens=800,
+                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
                 tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
             ),
         ),
-        timeout=30.0,
+        timeout=GEMINI_TIMEOUT_SECONDS,
     )
     return {
         "text": response.text or "",

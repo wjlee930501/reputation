@@ -302,11 +302,14 @@ class Settings(BaseSettings):
     # 우리 측정 도구 탓인지 구분할 수 없게 된다.
     #
     # OPENAI_MODEL_QUERY  = 답변 모델(측정 대상). 소비자가 보는 답변을 재현한다.
-    #   ⚠️ gpt-5-mini-2025-08-07은 2026-12-11 폐기 예정(후속 gpt-5.6-terra).
-    #      재이전 일정은 docs/prd/REPUTATION-AI-DIAGNOSIS-FUNNEL-PRD-2026-07.md §7-1 참조.
+    #   mini 티어는 ChatGPT가 환자에게 주는 모델이 아니다 — 역할 정의상 최신 정식 모델을 쓴다.
+    #   2026-07-29 실측(지역 의도 질문 10회, 웹검색 강제):
+    #     gpt-5.6-luna        p50 24.7s / p90 34.8s   ← 채택
+    #     gpt-5-mini-...08-07 p50 62.8s / p90 86.8s   (구세대인데 2.5배 느림)
+    #   비용은 병원당 월 약 $9 증가(측정 호출 기준). 요금제 대비 1% 미만.
     # OPENAI_MODEL_PARSE  = 판정 모델(측정 도구=자). 답변 모델과 의도적으로 분리하며,
     #      기준선 유지를 위해 바꾸지 않는다. 폐기 예정 없음.
-    OPENAI_MODEL_QUERY: str = "gpt-5-mini-2025-08-07"
+    OPENAI_MODEL_QUERY: str = "gpt-5.6-luna"
     OPENAI_MODEL_PARSE: str = "gpt-4o-mini-2024-07-18"
     # 프로덕션은 Responses API + web_search tool만 허용한다. False는 모델 recall이므로
     # _validate_production_config에서 부팅을 차단한다.

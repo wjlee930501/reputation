@@ -1,4 +1,5 @@
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -262,3 +263,40 @@ def test_backend_deploy_reconciles_redbeat_before_new_beat_rollout() -> None:
         assert block.index('run_redbeat_reconcile "$IMAGE_URL"') < block.index(
             'deploy_beat "$IMAGE_URL"'
         )
+
+
+def _model_gate(value: str, key: str = "OPENAI_MODEL_QUERY") -> int:
+    """require_pinned_measurement_models만 떼어내 실행. 0=통과, 1=차단."""
+    text = DEPLOY_SCRIPT.read_text()
+    start = text.index("require_pinned_measurement_models() {")
+    end = text.index("\n}\n", start) + 3
+    harness = (
+        "set -euo pipefail\n"
+        'fail() { echo "$1" >&2; exit 1; }\n'
+        f'OPENAI_MODEL_QUERY_VALUE=""\nOPENAI_MODEL_PARSE_VALUE=""\nGEMINI_MODEL_VALUE=""\n'
+        f'{key}_VALUE={value!r}\n'
+        + text[start:end]
+        + "\nrequire_pinned_measurement_models\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, timeout=30
+    ).returncode
+
+
+def test_model_gate_accepts_the_current_pinned_models() -> None:
+    """회귀 방지: 날짜 접미사가 없는 최신 정식 모델도 통과해야 한다.
+
+    예전 게이트는 `-YYYY-MM-DD`를 요구해 gpt-5.6-luna/sol/terra를 전부 막았다 —
+    측정 무결성을 지키려던 검사가 무결성 개선을 막았다.
+    """
+    for value in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-4o-mini-2024-07-18"):
+        assert _model_gate(value) == 0, f"{value} 가 차단됐다"
+    assert _model_gate("gemini-3.6-flash", "GEMINI_MODEL") == 0
+
+
+def test_model_gate_still_blocks_provider_reinterpreted_names() -> None:
+    """공급자가 새 스냅샷으로 옮기는 형태는 계속 막아야 한다."""
+    for value in ("gpt-5-chat-latest", "gpt-5", "gpt-5-mini", "gpt-4o"):
+        assert _model_gate(value) == 1, f"{value} 가 통과했다 (부동 별칭인데)"
+    for value in ("gemini-flash-latest", "gemini-flash"):
+        assert _model_gate(value, "GEMINI_MODEL") == 1, f"{value} 가 통과했다"

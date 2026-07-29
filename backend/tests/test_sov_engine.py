@@ -250,7 +250,7 @@ def test_measurement_models_are_pinned_to_dated_snapshots():
     from app.core.config import Settings
 
     defaults = Settings.model_fields
-    assert defaults["OPENAI_MODEL_QUERY"].default == "gpt-5-mini-2025-08-07"
+    assert defaults["OPENAI_MODEL_QUERY"].default == "gpt-5.6-luna"
     assert defaults["OPENAI_MODEL_PARSE"].default == "gpt-4o-mini-2024-07-18"
     # Gemini도 답변 모델이므로 동일하게 고정한다. `-latest` 별칭은 기준선을 이동시킨다.
     assert defaults["GEMINI_MODEL"].default == "gemini-3.6-flash"

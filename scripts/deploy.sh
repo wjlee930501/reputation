@@ -741,17 +741,30 @@ require_pinned_measurement_models() {
     # 미설정이면 config.py의 고정 기본값이 쓰인다 — 통과.
     [[ -z "$value" ]] && continue
 
+    # 판정 기준은 "이름 모양"이 아니라 **공급자가 그 ID를 조용히 재해석하는가**다.
+    #
+    # 과거엔 OpenAI에 `-YYYY-MM-DD` 접미사를 요구했는데, 그건 고정 여부를 증명하지 못하면서
+    # (gpt-5-mini-2099-99-99도 통과) 정작 최신 정식 모델은 막았다 — gpt-5.6-luna/sol/terra는
+    # 날짜 접미사가 없어서 이 게이트 때문에 배포가 불가능했다. 무결성을 지키려던 검사가
+    # 무결성 개선을 막은 셈이다.
+    #
+    # 실제로 재해석되는 형태는 두 가지뿐이다:
+    #   (a) `-latest` 계열 — 공급자가 명시적으로 "항상 최신"이라고 선언한 별칭
+    #   (b) 버전/변종 식별자가 없는 맨 계열명(gpt-5, gpt-5-mini, gemini-flash) — 새 스냅샷으로 옮겨간다
+    # 그 둘만 거부하고 나머지는 통과시킨다.
     [[ "$value" == *-latest ]] \
-      && fail "${name}=${value} 는 부동 별칭입니다. 날짜/버전 고정 모델을 쓰세요 (예: gpt-5-mini-2025-08-07, gemini-3.6-flash)."
+      && fail "${name}=${value} 는 부동 별칭입니다. 고정 모델을 쓰세요 (예: gpt-5.6-luna, gpt-4o-mini-2024-07-18, gemini-3.6-flash)."
 
     case "$name" in
       OPENAI_MODEL_*)
-        # OpenAI 스냅샷은 -YYYY-MM-DD로 끝난다.
-        [[ "$value" =~ -[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
-          || fail "${name}=${value} 에 날짜 스냅샷이 없습니다. 예: gpt-5-mini-2025-08-07"
+        # 맨 계열명 거부: gpt-5 / gpt-5-mini / gpt-4o / gpt-4o-mini 처럼
+        # 뒤에 날짜 스냅샷도 변종 이름도 없는 형태.
+        if [[ "$value" =~ ^gpt-[0-9]+(\.[0-9]+)?o?(-(mini|nano|pro|chat|codex))*$ ]]; then
+          fail "${name}=${value} 는 공급자가 새 스냅샷으로 옮기는 계열명입니다. 날짜 스냅샷(gpt-4o-mini-2024-07-18)이나 변종 고정명(gpt-5.6-luna)을 쓰세요."
+        fi
         ;;
       GEMINI_MODEL)
-        # Gemini는 날짜 대신 버전 번호를 쓴다(gemini-3.6-flash). 버전 없는 계열명은 거부.
+        # Gemini는 버전 번호가 고정 식별자다(gemini-3.6-flash). 버전 없는 계열명은 거부.
         [[ "$value" =~ ^gemini-[0-9]+(\.[0-9]+)?- ]] \
           || fail "${name}=${value} 에 버전이 없습니다. 예: gemini-3.6-flash"
         ;;
