@@ -173,6 +173,11 @@ GA_MEASUREMENT_ID="${NEXT_PUBLIC_GA_MEASUREMENT_ID:-$(read_env_file_value NEXT_P
 DB_CONNECTION_MODE="${DB_CONNECTION_MODE:-$(read_env_file_value DB_CONNECTION_MODE || true)}"
 CNAME_TARGET="${CNAME_TARGET:-$(read_env_file_value CNAME_TARGET || true)}"
 OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE="${OPENAI_CHATGPT_USE_WEB_SEARCH:-$(read_env_file_value OPENAI_CHATGPT_USE_WEB_SEARCH || true)}"
+# 측정 모델 3종 — .env.production이 config.py 기본값을 덮어쓴다. 여기 값이 부동 별칭이면
+# 코드에 아무리 고정 스냅샷을 적어도 런타임은 별칭을 쓴다(require_pinned_measurement_models).
+OPENAI_MODEL_QUERY_VALUE="${OPENAI_MODEL_QUERY:-$(read_env_file_value OPENAI_MODEL_QUERY || true)}"
+OPENAI_MODEL_PARSE_VALUE="${OPENAI_MODEL_PARSE:-$(read_env_file_value OPENAI_MODEL_PARSE || true)}"
+GEMINI_MODEL_VALUE="${GEMINI_MODEL:-$(read_env_file_value GEMINI_MODEL || true)}"
 CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE="${CERTIFICATE_MANAGER_AUTO_PROVISION:-$(read_env_file_value CERTIFICATE_MANAGER_AUTO_PROVISION || true)}"
 WILDCARD_PUBLIC_DOMAIN_CHECK="${WILDCARD_PUBLIC_DOMAIN_CHECK:-}"
 if [[ -z "$DB_CONNECTION_MODE" ]]; then
@@ -667,6 +672,46 @@ require_production_feature_flags() {
     || fail "OPENAI_CHATGPT_USE_WEB_SEARCH=true가 필요합니다. 프로덕션 SoV는 실제 web_search만 허용합니다."
   [[ "$CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE" == "true" ]] \
     || fail "CERTIFICATE_MANAGER_AUTO_PROVISION=true가 필요합니다. 신규 커스텀 도메인 자동 온보딩을 비활성화한 배포는 허용하지 않습니다."
+  require_pinned_measurement_models
+}
+
+# AI 언급률 측정 모델은 날짜/버전으로 고정되어야 한다.
+#
+# 부동 별칭(gpt-4o-mini, gemini-flash-latest, chat-latest)은 공급자가 갱신하면 측정
+# 기준선을 조용히 이동시킨다. 그러면 언급률이 떨어졌을 때 플랫폼이 바뀐 탓인지 우리
+# 측정 도구가 바뀐 탓인지 영구히 구분할 수 없다 — 월별 비교를 파는 제품에서 치명적이다.
+#
+# config.py 기본값은 이미 고정돼 있지만 .env.production이 그것을 덮어쓴다. 이 파일은
+# 저장소에 없어 CI가 못 보고 테스트도 기본값만 검사하므로, 배포 시점이 유일한 검문소다.
+# (2026-07-29: 실제로 코드만 고치고 배포했다면 런타임은 gpt-4o 그대로였다.)
+require_pinned_measurement_models() {
+  local name value
+  for name in OPENAI_MODEL_QUERY OPENAI_MODEL_PARSE GEMINI_MODEL; do
+    case "$name" in
+      OPENAI_MODEL_QUERY) value="$OPENAI_MODEL_QUERY_VALUE" ;;
+      OPENAI_MODEL_PARSE) value="$OPENAI_MODEL_PARSE_VALUE" ;;
+      GEMINI_MODEL)       value="$GEMINI_MODEL_VALUE" ;;
+    esac
+
+    # 미설정이면 config.py의 고정 기본값이 쓰인다 — 통과.
+    [[ -z "$value" ]] && continue
+
+    [[ "$value" == *-latest ]] \
+      && fail "${name}=${value} 는 부동 별칭입니다. 날짜/버전 고정 모델을 쓰세요 (예: gpt-5-mini-2025-08-07, gemini-3.6-flash)."
+
+    case "$name" in
+      OPENAI_MODEL_*)
+        # OpenAI 스냅샷은 -YYYY-MM-DD로 끝난다.
+        [[ "$value" =~ -[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+          || fail "${name}=${value} 에 날짜 스냅샷이 없습니다. 예: gpt-5-mini-2025-08-07"
+        ;;
+      GEMINI_MODEL)
+        # Gemini는 날짜 대신 버전 번호를 쓴다(gemini-3.6-flash). 버전 없는 계열명은 거부.
+        [[ "$value" =~ ^gemini-[0-9]+(\.[0-9]+)?- ]] \
+          || fail "${name}=${value} 에 버전이 없습니다. 예: gemini-3.6-flash"
+        ;;
+    esac
+  done
 }
 
 build_backend_runtime_args() {
