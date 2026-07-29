@@ -108,6 +108,14 @@ BACKEND_OPTIONAL_SECRET_NAMES=(
 SITE_REQUIRED_SECRET_NAMES=(
   "SITE_REVALIDATE_SECRET"
   "SITE_BFF_SECRET"
+)
+
+# IndexNow 키는 backend(제출)와 site(키 파일 응답) 양쪽에 같은 값이 있어야 소유가 증명된다.
+# 어느 쪽도 필수는 아니다 — 미설정이면 backend는 is_configured()로 제출을 건너뛰고
+# site는 /indexnow-key.txt에 404를 준다. 즉 부재는 정상 동작이므로 배포를 막지 않는다.
+# (backend의 BACKEND_OPTIONAL_SECRET_NAMES와 같은 취급이어야 하며, 한쪽만 required로
+#  두면 신규 환경이 선택 기능 때문에 배포 자체를 못 한다 — 회귀 방지용 주석.)
+SITE_OPTIONAL_SECRET_NAMES=(
   "INDEXNOW_KEY"
 )
 
@@ -121,6 +129,7 @@ ALL_MANAGED_SECRET_NAMES=(
   "${BACKEND_BASE_REQUIRED_SECRET_NAMES[@]}"
   "${BACKEND_OPTIONAL_SECRET_NAMES[@]}"
   "${SITE_REQUIRED_SECRET_NAMES[@]}"
+  "${SITE_OPTIONAL_SECRET_NAMES[@]}"
   "${ADMIN_REQUIRED_SECRET_NAMES[@]}"
   "DB_PASSWORD"
   "DATABASE_URL"
@@ -330,13 +339,18 @@ require_secret_versions() {
   done
 }
 
+# gcloud의 --set-secrets는 `KEY=VALUE,...` dict 플래그이고 "기존 시크릿을 먼저 전부 제거"한다.
+# 플래그를 여러 번 지정했을 때 누적되는지 마지막 것만 남는지는 문서가 보장하지 않으므로,
+# 반드시 쉼표로 합친 **단일 플래그**로 넘긴다. 나눠서 넘기면 덮어쓰기 의미일 경우
+# 마지막 시크릿 하나만 주입되어 서비스가 부팅에 실패한다.
 build_secret_args() {
   SECRET_ARGS=()
   local name status
+  local pairs=""
 
   for name in "${REQUIRED_SECRET_NAMES[@]}"; do
     require_secret_versions "$name"
-    SECRET_ARGS+=("--set-secrets=${name}=${name}:latest")
+    pairs+="${pairs:+,}${name}=${name}:latest"
   done
 
   for name in "${OPTIONAL_SECRET_NAMES[@]}"; do
@@ -345,9 +359,13 @@ build_secret_args() {
       if [[ "$status" != "ENABLED" ]]; then
         fail "Secret Manager secret ${name} latest version must be ENABLED before deploy."
       fi
-      SECRET_ARGS+=("--set-secrets=${name}=${name}:latest")
+      pairs+="${pairs:+,}${name}=${name}:latest"
     fi
   done
+
+  if [[ -n "$pairs" ]]; then
+    SECRET_ARGS=("--set-secrets=${pairs}")
+  fi
 }
 
 prepare_non_secret_env_file
@@ -355,6 +373,12 @@ prepare_non_secret_env_file
 prepare_backend_secret_args() {
   REQUIRED_SECRET_NAMES=("${BACKEND_REQUIRED_SECRET_NAMES[@]}")
   OPTIONAL_SECRET_NAMES=("${BACKEND_OPTIONAL_SECRET_NAMES[@]}")
+  build_secret_args
+}
+
+prepare_site_secret_args() {
+  REQUIRED_SECRET_NAMES=("${SITE_REQUIRED_SECRET_NAMES[@]}")
+  OPTIONAL_SECRET_NAMES=("${SITE_OPTIONAL_SECRET_NAMES[@]}")
   build_secret_args
 }
 
@@ -567,6 +591,10 @@ deploy_site() {
   local image_url="$1"
   info "Site 서비스 배포 중..."
 
+  # 필수/선택 시크릿을 backend와 동일한 규칙으로 조립한다. 하드코딩된 --set-secrets를
+  # 쓰면 선택 시크릿(INDEXNOW_KEY)이 없는 환경에서 Cloud Run 배포가 실패한다.
+  prepare_site_secret_args
+
   gcloud run deploy reputation-site \
     --image="$image_url" \
     --region="$REGION" \
@@ -578,7 +606,7 @@ deploy_site() {
     --ingress=internal-and-cloud-load-balancing \
     --allow-unauthenticated \
     --set-env-vars="NEXT_PUBLIC_API_URL=https://${PUBLIC_DOMAIN}/api/v1/public,NEXT_PUBLIC_SITE_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_GCP_STORAGE_BUCKET=${ASSET_GCS_BUCKET},BACKEND_URL=https://${PUBLIC_DOMAIN}" \
-    --set-secrets="SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest,INDEXNOW_KEY=INDEXNOW_KEY:latest" \
+    "${SECRET_ARGS[@]}" \
     --port=8080 \
     --timeout=60 \
     --cpu-boost
