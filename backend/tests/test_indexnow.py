@@ -10,16 +10,35 @@ from app.core.config import settings
 from app.services import indexnow
 
 
+class _FakeURL:
+    def __init__(self, host: str):
+        self.host = host
+
+
 class _FakeResponse:
-    def __init__(self, status_code=200, text=""):
+    def __init__(self, status_code=200, text="", host=""):
         self.status_code = status_code
         self.text = text
+        # 소유 증명은 **최종 응답의 호스트**가 제출 호스트와 같은지까지 확인한다.
+        self.url = _FakeURL(host)
 
 
 class _FakeClient:
+    """제출(POST)과 소유 증명 확인(GET)을 함께 흉내낸다.
+
+    제출 전에 `{base}/indexnow-key.txt`가 설정과 같은 키를 주는지 확인하므로,
+    기본값은 '키가 올바르게 서빙되는 site'다. 소유 증명 실패 상황은
+    `_key_text`/`_key_status`로 표현한다.
+    """
+
     def __init__(self, *args, **kwargs):
         self.posts = []
+        self.gets = []
         self._status = kwargs.pop("_status", 200)
+        # 어떤 옵션으로 클라이언트가 만들어졌는지 기록한다 — follow_redirects 회귀를
+        # 테스트로 잡기 위해서다(리다이렉트를 따라가면 소유 증명이 무의미해진다).
+        self.init_kwargs = dict(kwargs)
+        _FakeClient.last_init_kwargs = dict(kwargs)
 
     async def __aenter__(self):
         return self
@@ -27,9 +46,37 @@ class _FakeClient:
     async def __aexit__(self, *exc):
         return False
 
+    async def get(self, url):
+        self.gets.append(url)
+        return _FakeResponse(
+            _FakeClient._key_status,
+            _FakeClient._key_text,
+            host=_FakeClient._key_host,
+        )
+
     async def post(self, url, json=None):
         self.posts.append((url, json))
         return _FakeResponse(self._status)
+
+
+# 클래스 속성으로 둬서 인스턴스가 새로 만들어져도 시나리오가 유지된다.
+_FakeClient._key_status = 200
+_FakeClient._key_text = "testkey123"
+# 기본값은 '제출 호스트가 직접 키를 응답하는' 정상 상태.
+_FakeClient._key_host = "jangclinic.kr"
+_FakeClient.last_init_kwargs = {}
+
+
+@pytest.fixture(autouse=True)
+def _reset_ownership_cache():
+    """호스트별 소유 증명 캐시가 테스트 간에 새지 않게 한다."""
+    indexnow._OWNERSHIP_CACHE.clear()
+    _FakeClient._key_status = 200
+    _FakeClient._key_text = "testkey123"
+    _FakeClient._key_host = "jangclinic.kr"
+    _FakeClient.last_init_kwargs = {}
+    yield
+    indexnow._OWNERSHIP_CACHE.clear()
 
 
 @pytest.fixture
@@ -184,3 +231,97 @@ def test_hospital_all_urls_has_no_duplicates():
         slug="s", aeo_domain="x.kr", content_ids=["a", "a", "b"]
     )
     assert len(urls) == len(set(urls))
+
+
+# ── 소유 증명 ──
+#
+# backend(제출)와 site(키 파일 응답)는 별도 서비스로 배포된다. 키가 한쪽에만 있는
+# 구간이 생기면 IndexNow는 소유를 증명할 수 없는 요청을 받는다. 배포 순서로 풀면
+# out-of-band 배포에서 다시 깨지므로 런타임에서 확인하고, 실패하면 제출을 건너뛴다.
+
+
+@pytest.mark.asyncio
+async def test_does_not_submit_when_the_site_serves_no_key(enabled, monkeypatch):
+    """site에 키가 아직 배포되지 않았으면(404) 제출하지 않는다."""
+    _FakeClient._key_status = 404
+    _FakeClient._key_text = "Not Found"
+    client = _FakeClient()
+    monkeypatch.setattr(indexnow.httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await indexnow.submit_urls(
+        base_url="https://jangclinic.kr", urls=["https://jangclinic.kr/a"]
+    )
+
+    assert ok is False
+    assert client.posts == [], "소유 증명 실패인데 제출했다"
+
+
+@pytest.mark.asyncio
+async def test_does_not_submit_when_the_site_serves_a_different_key(enabled, monkeypatch):
+    """site와 backend의 키가 다르면(서로 다른 배포 세대) 제출하지 않는다."""
+    _FakeClient._key_status = 200
+    _FakeClient._key_text = "some-older-key"
+    client = _FakeClient()
+    monkeypatch.setattr(indexnow.httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await indexnow.submit_urls(
+        base_url="https://jangclinic.kr", urls=["https://jangclinic.kr/a"]
+    )
+
+    assert ok is False
+    assert client.posts == []
+
+
+@pytest.mark.asyncio
+async def test_submits_when_the_site_serves_the_matching_key(enabled, monkeypatch):
+    client = _FakeClient()
+    monkeypatch.setattr(indexnow.httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await indexnow.submit_urls(
+        base_url="https://jangclinic.kr", urls=["https://jangclinic.kr/a"]
+    )
+
+    assert ok is True
+    assert len(client.posts) == 1
+    assert client.gets == ["https://jangclinic.kr/indexnow-key.txt"]
+
+
+@pytest.mark.asyncio
+async def test_ownership_check_does_not_follow_redirects(enabled, monkeypatch):
+    """리다이렉트를 따라가면 소유 증명이 무의미해진다.
+
+    병원 도메인이 외부로 301하면 남의 서버가 준 키로 '증명됨'이 되고(소유 없는 호스트에
+    제출), 목적지가 호스트명 allowlist를 우회하므로 워커가 대신 GET하는 SSRF가 된다.
+    """
+    seen_kwargs: list[dict] = []
+
+    def _factory(*args, **kwargs):
+        seen_kwargs.append(dict(kwargs))
+        return _FakeClient(*args, **kwargs)
+
+    monkeypatch.setattr(indexnow.httpx, "AsyncClient", _factory)
+
+    await indexnow.submit_urls(
+        base_url="https://jangclinic.kr", urls=["https://jangclinic.kr/a"]
+    )
+
+    # 첫 클라이언트가 소유 증명 GET용이다.
+    assert seen_kwargs, "소유 증명 GET이 수행되지 않았다"
+    assert seen_kwargs[0].get("follow_redirects") is False, (
+        "소유 증명 GET이 리다이렉트를 따라가면 안 된다"
+    )
+
+
+@pytest.mark.asyncio
+async def test_does_not_submit_when_the_key_comes_from_a_different_host(enabled, monkeypatch):
+    """다른 호스트가 응답한 키는 제출 호스트의 소유를 증명하지 않는다."""
+    _FakeClient._key_host = "someone-else.example"
+    client = _FakeClient()
+    monkeypatch.setattr(indexnow.httpx, "AsyncClient", lambda *a, **k: client)
+
+    ok = await indexnow.submit_urls(
+        base_url="https://jangclinic.kr", urls=["https://jangclinic.kr/a"]
+    )
+
+    assert ok is False
+    assert client.posts == [], "다른 호스트가 준 키로 소유가 증명됐다"

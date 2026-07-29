@@ -21,6 +21,7 @@ sitemap은 크롤러가 올 때까지 기다리는 수동적 신호다. IndexNow
 from __future__ import annotations
 
 import logging
+from time import monotonic
 from urllib.parse import urlparse
 
 import httpx
@@ -74,6 +75,56 @@ def _absolute(base_url: str, paths: list[str]) -> list[str]:
     return urls
 
 
+# 호스트별 소유 증명 확인 결과 캐시: host -> (verified, 만료 monotonic 시각)
+_OWNERSHIP_CACHE: dict[str, tuple[bool, float]] = {}
+_OWNERSHIP_TTL_SECONDS = 600.0
+_OWNERSHIP_NEGATIVE_TTL_SECONDS = 60.0
+
+
+async def _ownership_verified(base_url: str, host: str) -> bool:
+    """제출 전에 `{base_url}/indexnow-key.txt`가 **설정과 같은 키**를 주는지 확인한다.
+
+    backend와 site는 별도 서비스로 배포되므로 키가 한쪽에만 있는 구간이 생길 수 있다
+    (site 먼저 배포 실패, 시크릿 생성 직후 backend만 배포 등). 그 상태로 제출하면
+    IndexNow가 소유를 증명할 수 없는 요청을 받게 되고, 반복되면 도메인 신뢰도만 깎인다.
+    배포 순서로 이 문제를 풀면 out-of-band 배포에서 다시 깨지므로 런타임에서 확인한다.
+    """
+    cached = _OWNERSHIP_CACHE.get(host)
+    now = monotonic()
+    if cached and cached[1] > now:
+        return cached[0]
+
+    verified = False
+    try:
+        # 리다이렉트를 따라가지 않는다. 키는 **제출하는 호스트가 직접** 응답해야 소유 증명이다.
+        #  - 따라가면: 병원 도메인이 외부로 301하는 순간 남의 서버가 준 키로 "증명됨"이 되어
+        #    소유 없는 호스트에 제출하게 된다(반복되면 도메인 신뢰도만 깎인다).
+        #  - 따라가면: 목적지가 호스트명 allowlist(is_valid_hostname)를 우회하므로,
+        #    병원이 자기 서버에서 내부 주소로 302하면 워커가 대신 GET하는 SSRF가 된다.
+        # 단계별 타임아웃도 조인다 — 발행 루프(08:00) 안에서 호스트마다 1회씩 도는 경로다.
+        timeout = httpx.Timeout(connect=2.0, read=3.0, write=3.0, pool=1.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            res = await client.get(f"{base_url}{KEY_PATH}")
+        verified = (
+            res.status_code == 200
+            and (res.url.host or "").lower() == host
+            and res.text.strip() == (settings.INDEXNOW_KEY or "").strip()
+        )
+        if not verified:
+            logger.warning(
+                "IndexNow 소유 증명 실패 — 제출 건너뜀 (host=%s status=%s). "
+                "site 서비스에 backend와 동일한 INDEXNOW_KEY가 배포됐는지 확인 필요.",
+                host,
+                res.status_code,
+            )
+    except Exception as exc:  # noqa: BLE001 — 확인 실패는 제출을 막을 뿐 발행은 막지 않는다
+        logger.warning("IndexNow 소유 증명 확인 불가 (host=%s): %s", host, exc)
+
+    ttl = _OWNERSHIP_TTL_SECONDS if verified else _OWNERSHIP_NEGATIVE_TTL_SECONDS
+    _OWNERSHIP_CACHE[host] = (verified, now + ttl)
+    return verified
+
+
 async def submit_urls(*, base_url: str, urls: list[str]) -> bool:
     """IndexNow에 URL 목록을 제출한다. 설정이 없으면 조용히 건너뛴다."""
     if not is_configured():
@@ -85,6 +136,9 @@ async def submit_urls(*, base_url: str, urls: list[str]) -> bool:
     host = _host_of(base_url)
     if not host:
         logger.warning("IndexNow: base_url에서 host를 얻지 못함 — %s", base_url)
+        return False
+
+    if not await _ownership_verified(base_url, host):
         return False
 
     # 다른 호스트의 URL이 섞이면 IndexNow가 전체 요청을 422로 거부한다.
