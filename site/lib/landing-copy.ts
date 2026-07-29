@@ -4,7 +4,7 @@ export const landingHero = {
   titleSupport: "전담 AE와 Agent가 매달 대신 운영합니다.",
   body:
     "병원이 가진 정보를 AI가 읽을 수 있는 두 번째 홈페이지로 만들고, MotionLabs가 매달 운영합니다.",
-  primaryCta: "무료 AI 노출 진단",
+  primaryCta: "무료 AI 노출 진단 신청",
   secondaryCta: "운영 방식 보기",
 }
 

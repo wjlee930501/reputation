@@ -995,6 +995,15 @@ textarea:focus-visible {
   color: var(--text);
 }
 
+/* 전달 방식·한계 고지. 본문보다 낮은 위계로 두되 읽히지 않을 만큼 흐리지는 않게 한다
+   — 이 문단이 "자동 진단이 아니라 사람이 회신한다"는 사실을 알리는 유일한 자리다. */
+.lead-copy p.lead-note {
+  margin-top: 12px;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
 .lead-form {
   display: flex;
   flex-direction: column;

@@ -32,7 +32,7 @@ export default async function Home({
   const leadStatus = resolvedSearchParams?.lead;
   const leadMessage =
     leadStatus === "success"
-      ? "무료 진단 요청이 접수되었습니다. 담당자가 진단 범위를 확인한 뒤 연락드립니다."
+      ? "신청이 접수되었습니다. 담당 AE가 직접 측정한 결과를 정리해 연락드립니다."
       : leadStatus === "invalid"
         ? "입력하신 내용을 다시 확인해 주세요. 필수 항목(병원명·진료과/지역·연락처·환자 질문)과 개인정보 동의가 필요합니다."
         : leadStatus === "busy"
@@ -165,7 +165,14 @@ export default async function Home({
       <section id="lead" className="lead-section">
         <div className="lead-copy" data-reveal>
           <h2>우리 병원이 지금 AI 답변에 어떻게 보이는지 확인해보세요.</h2>
-          <p>병원명·진료과·궁금한 환자 질문만 남겨주시면 AE가 정리해 연락드립니다.</p>
+          <p>
+            병원명·진료과·궁금한 환자 질문만 남겨주시면, 담당 AE가 실제로 그 질문을
+            ChatGPT·Gemini에 물어본 결과를 정리해 연락드립니다.
+          </p>
+          <p className="lead-note">
+            자동 발송이 아니라 사람이 확인해 회신하는 방식입니다. 측정에 쓴 질문·모델·반복 횟수를
+            함께 알려드리며, 노출 순위나 결과는 보장하지 않습니다.
+          </p>
         </div>
 
         <form className="lead-form" action="/api/leads" method="post">
