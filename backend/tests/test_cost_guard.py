@@ -276,6 +276,58 @@ async def test_get_usage_snapshot(monkeypatch):
     assert by_cat["image"]["monthly_used"] == 0
 
 
+# ── 예약 대비 실제 공급자 호출 계상 (tenacity 재시도 증폭 관측) ──────────────
+async def test_record_provider_call_counts_separately_from_reservation(monkeypatch, alerts):
+    """예약 1건 뒤 실제 호출 3회(재시도)를 계상해도 예약 카운터는 부풀지 않는다.
+
+    예약만 세면 실제 지출을 1/3로 과소 계상하므로, 괴리를 별도 카운터로 관측한다.
+    """
+    _set_limits(monkeypatch, category="content", daily=100, monthly=200)
+    redis = FakeRedis()
+
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    for _ in range(3):
+        await cost_guard.record_provider_call("content", redis_client=redis)
+
+    snapshot = await cost_guard.get_usage_snapshot(redis_client=redis)
+    content = next(c for c in snapshot["categories"] if c["category"] == "content")
+    assert content["daily_used"] == 1
+    assert content["monthly_used"] == 1
+    assert content["daily_actual"] == 3
+    assert content["monthly_actual"] == 3
+    # 실제 호출 카운터도 기간이 넘어가면 리셋되도록 TTL이 걸려 있어야 한다.
+    actual_daily_key = next(k for k in redis.store if ":actual:daily:" in k)
+    assert redis.ttls[actual_daily_key] == cost_guard._DAILY_TTL_SECONDS
+
+
+async def test_record_provider_call_does_not_block_or_alert(monkeypatch, alerts):
+    """관측용 카운터는 상한을 넘겨도 차단·알림을 하지 않는다 — 이미 발생한 호출이다."""
+    _set_limits(monkeypatch, category="image", daily=1, monthly=1)
+    redis = FakeRedis()
+
+    for _ in range(5):
+        await cost_guard.record_provider_call("image", redis_client=redis)
+
+    assert alerts.calls == []
+    # 예약 예산은 그대로 남아 있다(관측 카운터가 예약 카운터를 소모하지 않는다).
+    assert (await cost_guard.check_and_increment("image", redis_client=redis)).allowed is True
+
+
+async def test_record_provider_call_fails_open_on_redis_failure(monkeypatch):
+    _set_limits(monkeypatch, category="sov", daily=10, monthly=10)
+    redis = FakeRedis()
+    redis.fail = True
+
+    # 예외가 새어 나오면 실제 공급자 호출 경로가 관측 코드 때문에 죽는다.
+    await cost_guard.record_provider_call("sov", redis_client=redis)
+
+
+async def test_record_provider_call_rejects_unknown_category(monkeypatch):
+    monkeypatch.setattr(cost_guard.settings, "COST_GUARD_ENABLED", True)
+    with pytest.raises(ValueError):
+        await cost_guard.record_provider_call("bogus", redis_client=FakeRedis())
+
+
 async def test_snapshot_degrades_gracefully_on_redis_failure(monkeypatch):
     _set_limits(monkeypatch, category="content", daily=100, monthly=200)
     redis = FakeRedis()

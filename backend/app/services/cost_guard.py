@@ -128,6 +128,14 @@ def _monthly_key(category: str, period: str) -> str:
     return f"cost_guard:{category}:monthly:{period}"
 
 
+def _actual_daily_key(category: str, period: str) -> str:
+    return f"cost_guard:{category}:actual:daily:{period}"
+
+
+def _actual_monthly_key(category: str, period: str) -> str:
+    return f"cost_guard:{category}:actual:monthly:{period}"
+
+
 def _ttl_for_scope(scope: str) -> int:
     return _DAILY_TTL_SECONDS if scope == "daily" else _MONTHLY_TTL_SECONDS
 
@@ -245,6 +253,54 @@ async def check_and_increment(
         return CostGuardDecision(True, None)
 
 
+async def record_provider_call(
+    category: str,
+    *,
+    count: int = 1,
+    redis_client: redis_async.Redis | None = None,
+) -> None:
+    """**실제로 발생한** 외부 공급자 호출 수를 예약과 별개로 집계한다(차단하지 않음).
+
+    예약(check_and_increment)은 "논리적 작업 1건" 단위로 태스크 계층에서 한 번 일어나는데,
+    실제 호출은 서비스 계층 tenacity `stop_after_attempt(3)` 안에서 최대 3회(이미지 경로는
+    gpt-image 3회 실패 후 Imagen 폴백 3회까지) 발생한다. 그래서 예약 카운터만 보면
+    실제 지출을 1/3~1/6로 과소 계상하게 되고, 상한이 사실상 그 배수만큼 열린다.
+
+    이 카운터는 그 괴리를 **관측 가능**하게 만드는 용도다. 차단·알림은 하지 않는다 —
+    실제 호출 시점에서 되돌릴 수 있는 것이 없고, 재시도 때문에 파이프라인이 멈추면
+    가용성만 잃는다. 운영자는 get_usage_snapshot의 reserved 대비 actual 값으로
+    재시도 증폭 실태를 보고 상한을 조정한다.
+
+    호출 규약: 실제 공급자 요청 **직전**(재시도마다 1회) 호출한다.
+    """
+    if count <= 0:
+        return
+    if not settings.COST_GUARD_ENABLED:
+        return
+    if category not in _CATEGORY_LABELS:
+        raise ValueError(f"unknown cost_guard category: {category}")
+
+    client = redis_client or _client()
+    now = _now()
+    try:
+        await _incr_with_ttl(
+            client, _actual_daily_key(category, _daily_period(now)), count, _DAILY_TTL_SECONDS
+        )
+        await _incr_with_ttl(
+            client,
+            _actual_monthly_key(category, _monthly_period(now)),
+            count,
+            _MONTHLY_TTL_SECONDS,
+        )
+    except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
+        # 관측용 카운터가 실제 호출을 막으면 안 된다 — 예약 경로와 같은 fail-open.
+        logger.warning(
+            "cost_guard actual-usage record skipped (redis unavailable): category=%s error=%s",
+            category,
+            exc.__class__.__name__,
+        )
+
+
 async def _evaluate_scope_alert(
     client: redis_async.Redis,
     category: str,
@@ -302,8 +358,26 @@ async def _best_effort_alert(
         logger.warning("cost_guard alert delivery failed: category=%s scope=%s", category, scope)
 
 
+def _empty_category_usage(category: str) -> dict:
+    daily_limit, monthly_limit = _limits(category)
+    return {
+        "category": category,
+        "label": _CATEGORY_LABELS[category],
+        "daily_used": 0,
+        "daily_limit": daily_limit,
+        "monthly_used": 0,
+        "monthly_limit": monthly_limit,
+        "daily_actual": 0,
+        "monthly_actual": 0,
+    }
+
+
 async def get_usage_snapshot(*, redis_client: redis_async.Redis | None = None) -> dict:
-    """운영 표면용 — 카테고리별 일일/월간 사용량 + 상한 + 킬스위치 상태."""
+    """운영 표면용 — 카테고리별 일일/월간 사용량 + 상한 + 킬스위치 상태.
+
+    *_used는 예약 단위, *_actual은 재시도를 포함한 실제 공급자 호출 수다. 둘이 벌어지면
+    재시도 증폭 때문에 상한이 실제 지출을 못 막고 있다는 신호다(record_provider_call 참고).
+    """
     client = redis_client or _client()
     now = _now()
     daily_period = _daily_period(now)
@@ -317,6 +391,10 @@ async def get_usage_snapshot(*, redis_client: redis_async.Redis | None = None) -
             daily_limit, monthly_limit = _limits(category)
             daily_used = int(await client.get(_daily_key(category, daily_period)) or 0)
             monthly_used = int(await client.get(_monthly_key(category, monthly_period)) or 0)
+            daily_actual = int(await client.get(_actual_daily_key(category, daily_period)) or 0)
+            monthly_actual = int(
+                await client.get(_actual_monthly_key(category, monthly_period)) or 0
+            )
             categories.append(
                 {
                     "category": category,
@@ -325,24 +403,15 @@ async def get_usage_snapshot(*, redis_client: redis_async.Redis | None = None) -
                     "daily_limit": daily_limit,
                     "monthly_used": monthly_used,
                     "monthly_limit": monthly_limit,
+                    "daily_actual": daily_actual,
+                    "monthly_actual": monthly_actual,
                 }
             )
     except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
         # 대시보드 조회 실패가 500으로 번지지 않게 — 상한만이라도 표기한다(사용량 0 표시).
         logger.warning("cost_guard snapshot degraded (redis unavailable): %s", exc.__class__.__name__)
         if not categories:
-            for category in CATEGORIES:
-                daily_limit, monthly_limit = _limits(category)
-                categories.append(
-                    {
-                        "category": category,
-                        "label": _CATEGORY_LABELS[category],
-                        "daily_used": 0,
-                        "daily_limit": daily_limit,
-                        "monthly_used": 0,
-                        "monthly_limit": monthly_limit,
-                    }
-                )
+            categories = [_empty_category_usage(category) for category in CATEGORIES]
 
     return {
         "enabled": settings.COST_GUARD_ENABLED,

@@ -12,7 +12,7 @@ from app.core.observability import configure_logging, sentry_before_send, set_re
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-07-16.3"
+REDBEAT_SCHEDULE_VERSION = "2026-07-29.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -63,7 +63,7 @@ celery_app = Celery(
     "reputation",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.workers.tasks"],
+    include=["app.workers.tasks", "app.workers.naver_sync"],
 )
 
 celery_app.conf.update(
@@ -114,6 +114,7 @@ celery_app.conf.update(
         "app.workers.tasks.purge_expired_leads": {"queue": "default"},
         "app.workers.tasks.adjust_query_priorities": {"queue": "sov"},
         "app.workers.tasks.monitor_live_custom_domains": {"queue": "default"},
+        "app.workers.naver_sync.weekly_naver_source_sync": {"queue": "default"},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성
@@ -146,6 +147,12 @@ celery_app.conf.update(
         "purge-expired-leads": {
             "task": "app.workers.tasks.purge_expired_leads",
             "schedule": crontab(hour=4, minute=0),
+        },
+        # 매주 화요일 03:00 — 병원 네이버 블로그 신규 글을 검토 대기 자산으로 인입.
+        # 주간 측정(월 02:00)과 겹치지 않게 하루 뒤로 두어 워커 슬롯 경합을 피한다.
+        "weekly-naver-source-sync": {
+            "task": "app.workers.naver_sync.weekly_naver_source_sync",
+            "schedule": crontab(hour=3, minute=0, day_of_week=2),
         },
         # 15분마다 — 런타임으로 추가된 모든 병원 자기 도메인의 실제 TLS/Host 응답 확인.
         "live-custom-domain-health": {
