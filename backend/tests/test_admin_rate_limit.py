@@ -19,8 +19,19 @@ class EmptyResult:
 
 
 class FakeDB:
+    def __init__(self):
+        self.added = []
+
     async def execute(self, _stmt):
         return EmptyResult()
+
+    # /admin/leads 목록은 PII 대량 열람이라 감사 로그를 쓴다 — rate-limit 검증용 스텁도
+    # 그 쓰기 경로를 흉내내야 한다.
+    def add(self, item):
+        self.added.append(item)
+
+    async def commit(self):
+        return None
 
 
 async def override_get_db():

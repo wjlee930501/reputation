@@ -39,6 +39,7 @@ from app.schemas.query_target import (
     AIQueryVariantUpdate,
     SUPPORTED_QUERY_PLATFORMS,
 )
+from app.services.audit_log import default_actor, write_audit_log
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,23 @@ async def create_query_target(
             )
         )
 
+    # 쿼리 타깃은 측정 범위 = 외부 API 비용 = 월간 리포트 언급률의 분모다. 변경 이력이 없으면
+    # 리포트 수치가 왜 달라졌는지 사후에 설명할 수 없다.
+    await write_audit_log(
+        db,
+        action="create_query_target",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="ai_query_target",
+        target_id=target.id,
+        detail={
+            "name": target.name,
+            "priority": target.priority,
+            "status": target.status,
+            "platforms": _supported_platforms(target.platforms),
+            "target_month": target.target_month,
+        },
+    )
     await db.commit()
     target = await _get_target_or_404(db, hospital_id, target.id)
     return _serialize_target(target)
@@ -176,8 +194,23 @@ async def update_query_target(
 ):
     target = await _get_target_or_404(db, hospital_id, target_id)
     update_data = body.model_dump(exclude_unset=True)
+    # status/priority/platforms 변경은 측정 대상 집합을 바꾼다 — 변경 전 값을 함께 남겨야
+    # 분모가 언제 어떻게 좁아졌는지 리포트와 대조할 수 있다.
+    changed_fields = {
+        field: {"from": _audit_value(getattr(target, field, None)), "to": _audit_value(value)}
+        for field, value in update_data.items()
+    }
     _apply_target_update(target, update_data)
 
+    await write_audit_log(
+        db,
+        action="update_query_target",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="ai_query_target",
+        target_id=target_id,
+        detail={"changed_fields": changed_fields},
+    )
     await db.commit()
     target = await _get_target_or_404(db, hospital_id, target_id)
     return _serialize_target(target)
@@ -191,7 +224,18 @@ async def archive_query_target(
 ):
     """Archive instead of hard-deleting so monthly strategy history is preserved."""
     target = await _get_target_or_404(db, hospital_id, target_id)
+    previous_status = target.status
     target.status = ARCHIVED
+    # 아카이브는 해당 질문을 측정에서 빼는 행위 — 언급률 분모가 줄어들므로 기록이 필수다.
+    await write_audit_log(
+        db,
+        action="archive_query_target",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="ai_query_target",
+        target_id=target_id,
+        detail={"from_status": previous_status, "to_status": ARCHIVED, "name": target.name},
+    )
     await db.commit()
     target = await _get_target_or_404(db, hospital_id, target_id)
     return _serialize_target(target)
@@ -212,6 +256,17 @@ async def seed_query_targets_from_matrix_endpoint(
     """
     await _get_hospital_or_404(db, hospital_id)
     result = await seed_query_targets_from_matrix(db, hospital_id)
+    # 감사 로그는 공유 헬퍼가 아니라 이 엔드포인트에만 붙인다 — 헬퍼는 V0 워커도 호출하는데,
+    # 워커 컨텍스트에는 요청 actor가 없어 AE가 수동 재시드한 것처럼 잘못 귀속된다.
+    await write_audit_log(
+        db,
+        action="seed_query_targets_from_matrix",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="ai_query_target",
+        detail=dict(result),
+    )
+    await db.commit()
     return result
 
 
@@ -408,6 +463,16 @@ async def add_query_variant(
     if duplicate:
         if not duplicate.is_active:
             duplicate.is_active = True
+            # 비활성 variant 재활성화도 측정 대상 복원이라 신규 추가와 동일하게 기록한다.
+            await write_audit_log(
+                db,
+                action="reactivate_query_variant",
+                hospital_id=hospital_id,
+                actor=default_actor(),
+                target_type="ai_query_variant",
+                target_id=duplicate.id,
+                detail={"query_target_id": str(target.id), "platform": duplicate.platform},
+            )
             await db.commit()
             await db.refresh(duplicate)
         return _serialize_variant(duplicate)
@@ -417,6 +482,21 @@ async def add_query_variant(
     platforms = _supported_platforms(target.platforms)
     if body.platform not in platforms:
         target.platforms = [*platforms, body.platform]
+    await db.flush()  # variant.id 확정 — 감사 로그가 대상 id를 가리켜야 한다.
+    await write_audit_log(
+        db,
+        action="add_query_variant",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="ai_query_variant",
+        target_id=variant.id,
+        detail={
+            "query_target_id": str(target.id),
+            "platform": variant.platform,
+            "language": variant.language,
+            "query_text": variant.query_text,
+        },
+    )
     await db.commit()
     await db.refresh(variant)
     return _serialize_variant(variant)
@@ -437,9 +517,23 @@ async def update_query_variant(
     update_data = body.model_dump(exclude_unset=True)
     if "query_matrix_id" in update_data:
         await _validate_query_matrix(db, hospital_id, update_data["query_matrix_id"])
+    changed_fields = {
+        field: {"from": _audit_value(getattr(variant, field, None)), "to": _audit_value(value)}
+        for field, value in update_data.items()
+    }
     for field, value in update_data.items():
         setattr(variant, field, value)
 
+    # 문구·플랫폼 수정은 같은 target의 측정 결과 시계열 의미를 바꾼다 — 전후 값을 남긴다.
+    await write_audit_log(
+        db,
+        action="update_query_variant",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="ai_query_variant",
+        target_id=variant_id,
+        detail={"query_target_id": str(target_id), "changed_fields": changed_fields},
+    )
     await db.commit()
     await db.refresh(variant)
     return _serialize_variant(variant)
@@ -458,6 +552,16 @@ async def deactivate_query_variant(
     """Deactivate variant instead of deleting execution history links."""
     variant = await _get_variant_or_404(db, hospital_id, target_id, variant_id)
     variant.is_active = False
+    # 비활성화는 해당 문구를 다음 측정에서 제외한다 — 비용과 분모가 함께 줄어든다.
+    await write_audit_log(
+        db,
+        action="deactivate_query_variant",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="ai_query_variant",
+        target_id=variant_id,
+        detail={"query_target_id": str(target_id), "platform": variant.platform},
+    )
     await db.commit()
     await db.refresh(variant)
     return _serialize_variant(variant)
@@ -543,6 +647,15 @@ async def _find_existing_variant(
 
 def _variant_key(query_text: str, platform: str, language: str) -> tuple[str, str, str]:
     return (query_text.strip(), platform.strip(), language.strip())
+
+
+def _audit_value(value):
+    """감사 detail은 JSON 컬럼이다 — 직렬화 불가 타입 때문에 커밋이 깨지지 않게 좁힌다."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_audit_value(item) for item in value]
+    return str(value)
 
 
 def _apply_target_update(target: AIQueryTarget, update_data: dict) -> None:

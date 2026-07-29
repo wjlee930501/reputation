@@ -224,6 +224,87 @@ def test_lead_question_rejects_patient_sensitive_free_text():
             )
 
 
+def test_lead_clinic_name_and_type_reject_patient_sensitive_free_text():
+    """병원명·진료과 칸도 공개 폼 자유 텍스트다 — question과 동일하게 차단되어야 한다.
+
+    이 검증이 없으면 clinic_name이 검증 없이 Slack 제목/본문으로 평문 송출된다.
+    """
+    sensitive = "홍길동 환자 900101-1234567"
+
+    with pytest.raises(ValueError, match="환자 개인정보"):
+        leads_api.LeadCreate(
+            clinic_name=sensitive,
+            clinic_type="강남 대장항문외과",
+            contact="010-0000-0000",
+            question="치질 수술 회복 기간은?",
+            privacy=True,
+        )
+
+    with pytest.raises(ValueError, match="환자 개인정보"):
+        leads_api.LeadCreate(
+            clinic_name="장편한외과의원",
+            clinic_type=sensitive,
+            contact="010-0000-0000",
+            question="치질 수술 회복 기간은?",
+            privacy=True,
+        )
+
+
+async def test_notify_lead_created_masks_residual_identifiers_in_clinic_name(monkeypatch):
+    """입력 검증을 통과해도 Slack 라벨에는 식별정보가 남지 않는다(2차 방어)."""
+    sent = {}
+
+    async def fake_send(text, blocks=None):
+        sent["text"] = text
+        sent["blocks"] = blocks
+        return True
+
+    monkeypatch.setattr(notifier, "_send", fake_send)
+
+    await notifier.notify_lead_created(
+        clinic_name="장편한외과의원 900101-1234567",
+        clinic_type="강남 대장항문외과 wjlee@motionlabs.kr",
+        contact="010-0000-0000",
+        admin_url="https://admin.example.com/leads",
+    )
+
+    payload = sent["text"] + sent["blocks"][0]["text"]["text"]
+    assert "900101-1234567" not in payload
+    assert "wjlee@motionlabs.kr" not in payload
+    assert "[id]" in payload and "[email]" in payload
+    assert "장편한외과의원" in payload  # 식별에 필요한 병원명 자체는 유지
+
+
+async def test_notify_lead_created_truncates_and_flattens_long_clinic_name(monkeypatch):
+    """긴 자유 텍스트/개행으로 Slack 블록을 밀어내는 스팸을 막는다."""
+    sent = {}
+
+    async def fake_send(text, blocks=None):
+        sent["text"] = text
+        sent["blocks"] = blocks
+        return True
+
+    monkeypatch.setattr(notifier, "_send", fake_send)
+
+    await notifier.notify_lead_created(
+        clinic_name="가" * 200 + "\n연락처: 010-1111-2222",
+        clinic_type="강남",
+        contact="010-0000-0000",
+    )
+
+    assert "\n" not in sent["text"]
+    assert sent["text"].endswith("…")
+    assert len(sent["text"].split("] ", 1)[1]) == notifier._SAFE_LABEL_MAX_CHARS + 1
+
+
+def test_mask_contact_free_masks_resident_registration_number():
+    """전화 패턴이 주민번호 뒷자리를 먼저 먹어 앞 6자리가 남는 일이 없어야 한다."""
+    masked = notifier.mask_contact_free("환자 900101-1234567 문의")
+    assert "900101" not in masked
+    assert "1234567" not in masked
+    assert "[id]" in masked
+
+
 def test_lead_question_allows_business_patient_acquisition_phrasing():
     body = leads_api.LeadCreate(
         clinic_name="장편한외과의원",

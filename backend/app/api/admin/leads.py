@@ -36,7 +36,19 @@ async def list_sales_leads(
     result = await db.execute(
         select(SalesLead).order_by(SalesLead.created_at.desc()).offset(offset).limit(limit)
     )
-    return [_serialize_lead(lead) for lead in result.scalars().all()]
+    leads = list(result.scalars().all())
+    # 한 번에 최대 200건의 이름·연락처·문의내용을 반환하는 대량 PII 열람이다. 누가 언제
+    # 얼마나 조회했는지 남지 않으면 admin_audit_logs가 컴플라이언스 산출물로 성립하지 않는다.
+    # 감사 로그 자체가 PII 사본이 되면 안 되므로 건수·페이지 메타만 남긴다.
+    await write_audit_log(
+        db,
+        action="list_sales_leads",
+        actor=default_actor(),
+        target_type="sales_lead",
+        detail={"returned_count": len(leads), "limit": limit, "offset": offset},
+    )
+    await db.commit()
+    return [_serialize_lead(lead) for lead in leads]
 
 
 @router.get("/{lead_id}/hospital-candidates")
@@ -49,6 +61,17 @@ async def list_hospital_candidates(
         raise HTTPException(status_code=404, detail="Lead not found")
 
     candidates = await _find_duplicate_hospitals(db, lead)
+    # 이 응답은 lead 한 건의 연락처·문의 원문을 그대로 담는다 — 목록 조회와 동일하게
+    # 열람 사실을 남기되, 내용은 남기지 않는다.
+    await write_audit_log(
+        db,
+        action="view_lead_hospital_candidates",
+        actor=default_actor(),
+        target_type="sales_lead",
+        target_id=str(lead.id),
+        detail={"candidate_count": len(candidates)},
+    )
+    await db.commit()
     return {
         "lead_id": str(lead.id),
         # Admin fetches this authenticated payload by identifier so onboarding
@@ -70,6 +93,17 @@ async def convert_sales_lead(
 
     if lead.converted_hospital_id:
         hospital = await db.get(Hospital, lead.converted_hospital_id)
+        # 이미 전환된 리드도 응답에 PII가 실려 나가므로 재열람 사실을 남긴다.
+        await write_audit_log(
+            db,
+            action="convert_sales_lead",
+            hospital_id=lead.converted_hospital_id,
+            actor=default_actor(),
+            target_type="sales_lead",
+            target_id=str(lead.id),
+            detail={"already_converted": True},
+        )
+        await db.commit()
         return {
             "lead": _serialize_lead(lead),
             "hospital": _serialize_hospital(hospital) if hospital else None,
@@ -107,6 +141,21 @@ async def convert_sales_lead(
     lead.converted_at = datetime.now(timezone.utc)
     lead.conversion_note = request_body.conversion_note or _build_onboarding_note(lead, None)
 
+    # 전환은 리드 PII를 병원 레코드(=보유기간이 다른 라이프사이클)로 옮기는 지점이라
+    # 파기 요청 추적의 시작점이 된다. 대상 id만 남기고 이름·연락처는 남기지 않는다.
+    await write_audit_log(
+        db,
+        action="convert_sales_lead",
+        hospital_id=hospital.id,
+        actor=default_actor(),
+        target_type="sales_lead",
+        target_id=str(lead.id),
+        detail={
+            "hospital_id": str(hospital.id),
+            "linked_existing_hospital": request_body.hospital_id is not None,
+            "plan": request_body.plan.value if request_body.plan else None,
+        },
+    )
     await db.commit()
     await db.refresh(lead)
     await db.refresh(hospital)

@@ -66,6 +66,30 @@ from app.services.site_revalidate import (
 )
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
+UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
+
+
+async def _read_upload_within_limit(file: UploadFile) -> bytes:
+    """상한을 넘는 즉시 읽기를 중단하고 413을 던진다.
+
+    `await file.read()`로 전부 읽은 뒤 크기를 검사하면, 상한 검사가 의미를 갖기 전에 이미
+    파일 전체가 메모리에 올라간다 — 상한보다 훨씬 큰 업로드 몇 건으로 워커가 OOM으로
+    죽는다. 청크로 누적하며 초과 시점에 즉시 끊는다.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"파일 크기는 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 이하여야 합니다.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 class SourceCrawlRequest(BaseModel):
@@ -419,12 +443,7 @@ async def upload_source_file(
     """이미지/PDF/DOCX 업로드. 사진은 file_url만 저장, 텍스트형 자료는 raw_text 자동 추출."""
     await _get_hospital_or_404(db, hospital_id)
 
-    data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"파일 크기는 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 이하여야 합니다.",
-        )
+    data = await _read_upload_within_limit(file)
     if not data:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
 

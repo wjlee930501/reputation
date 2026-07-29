@@ -75,9 +75,13 @@ class LeadCreate(BaseModel):
             raise ValueError("이메일 또는 전화번호 형식으로 입력해 주세요.")
         return value
 
-    @field_validator("question")
+    # 자유 텍스트는 question만이 아니다 — clinic_name/clinic_type도 사용자가 임의로 채우는
+    # 필드이고, 접수 즉시 Slack(국외 이전)으로 나가고 Admin 목록에 그대로 노출된다.
+    # question에만 검증이 걸려 있으면 "홍길동 환자 900101-1234567"을 병원명 칸에 넣는 것만으로
+    # 민감정보가 평문 유출되므로, 공개 폼의 모든 자유 텍스트 필드에 동일 검증을 적용한다.
+    @field_validator("clinic_name", "clinic_type", "question")
     @classmethod
-    def reject_patient_sensitive_question(cls, value: str) -> str:
+    def reject_patient_sensitive_free_text(cls, value: str) -> str:
         if contains_patient_sensitive_text(value):
             raise ValueError("환자 개인정보나 진료기록은 이 문의 양식에 입력하지 마세요.")
         return value

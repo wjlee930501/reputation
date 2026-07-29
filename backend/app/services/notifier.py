@@ -48,6 +48,21 @@ def mask_contact(contact: str) -> str:
     return "***"
 
 
+_SAFE_LABEL_MAX_CHARS = 60
+
+
+def _safe_label(value: str | None) -> str:
+    """사용자 입력 자유 텍스트를 Slack 라벨로 쓰기 전에 마스킹·절단한다.
+
+    개행은 Slack 블록 구조를 깨뜨려 다른 필드로 위장할 수 있으므로 공백으로 접는다.
+    """
+    text = mask_contact_free((value or "").strip())
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return "(미입력)"
+    return text if len(text) <= _SAFE_LABEL_MAX_CHARS else f"{text[:_SAFE_LABEL_MAX_CHARS]}…"
+
+
 async def _send(text: str, blocks: list | None = None) -> bool:
     if not settings.SLACK_WEBHOOK_URL:
         logger.warning("Slack webhook not configured")
@@ -244,16 +259,22 @@ async def notify_lead_created(
 
     PII 보호: 연락처는 마스킹, 환자 질문 본문은 Slack 채널로 송출하지 않음.
     상세 확인은 Admin UI deep-link에서.
+
+    clinic_name/clinic_type도 공개 폼의 자유 텍스트라 입력 검증(leads API)을 통과한 뒤에도
+    Slack(국외 이전)으로 그대로 나가면 안 된다 — 검증 패턴이 놓친 식별정보가 남을 수 있고,
+    긴 본문을 병원명 칸에 밀어넣는 채널 스팸도 가능하다. 여기서 한 번 더 마스킹·절단한다.
     """
     masked = mask_contact(contact)
+    safe_clinic_name = _safe_label(clinic_name)
+    safe_clinic_type = _safe_label(clinic_type)
     link_line = f"<{admin_url}|Admin에서 상세 확인>" if admin_url else "Admin에서 상세 확인"
     return await _send(
-        text=f"📩 [무료 진단 요청] {clinic_name}",
+        text=f"📩 [무료 진단 요청] {safe_clinic_name}",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"📩 *[무료 진단 요청]* *{clinic_name}*\n"
-                f"진료과/지역: {clinic_type}\n"
+                f"📩 *[무료 진단 요청]* *{safe_clinic_name}*\n"
+                f"진료과/지역: {safe_clinic_type}\n"
                 f"연락처: `{masked}`\n\n"
                 f"{link_line} 후 진단 범위를 확정해 주세요."
             )},
@@ -531,9 +552,14 @@ async def notify_task_failure(*, task_name: str, task_id: str, error: str) -> bo
 
 
 def mask_contact_free(text: str) -> str:
-    """자유 텍스트 안의 이메일/전화 PII를 마스킹(로그·알림 송출 안전)."""
+    """자유 텍스트 안의 주민등록번호/이메일/전화 PII를 마스킹(로그·알림 송출 안전).
+
+    주민등록번호를 이메일·전화보다 먼저 치환한다 — 전화 패턴이 주민번호 뒷자리를 먼저
+    삼키면 앞 6자리(생년월일)가 평문으로 남는다.
+    """
     if not text:
         return ""
+    text = re.sub(r"\b\d{6}[-\s]?[1-4]\d{6}\b", "[id]", text)
     text = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "[email]", text)
     text = re.sub(r"0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}", "[phone]", text)
     return text

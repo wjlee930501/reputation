@@ -2,6 +2,7 @@ import uuid
 from types import SimpleNamespace
 
 from app.api.admin import leads as leads_api
+from app.models.audit import AdminAuditLog
 from app.models.hospital import Hospital, Plan
 from app.models.lead import SalesLead
 
@@ -137,3 +138,69 @@ async def test_hospital_candidates_returns_lead_context_without_query_string_pii
     assert response["lead"]["clinic_name"] == "온보딩치과"
     assert response["lead"]["contact"] == "010-1111-2222"
     assert response["candidates"] == []
+
+
+def _audit_rows(db) -> list[AdminAuditLog]:
+    return [item for item in db.added if isinstance(item, AdminAuditLog)]
+
+
+async def test_list_sales_leads_audits_bulk_pii_read_with_meta_only():
+    """200건까지의 이름·연락처·문의내용을 반환하는 대량 열람은 감사 로그에 남아야 한다.
+
+    감사 로그 자체가 PII 사본이 되면 안 되므로 건수/페이지 메타만 남긴다.
+    """
+    db = _CaptureDB()
+
+    await leads_api.list_sales_leads(db=db, limit=200, offset=400)
+
+    logs = _audit_rows(db)
+    assert len(logs) == 1
+    assert logs[0].action == "list_sales_leads"
+    assert logs[0].detail == {"returned_count": 0, "limit": 200, "offset": 400}
+    assert db.committed is True
+
+
+async def test_hospital_candidates_audits_single_lead_pii_read():
+    lead = _lead()
+    db = FakeDB(lead=lead)
+
+    await leads_api.list_hospital_candidates(lead.id, db=db)
+
+    logs = _audit_rows(db)
+    assert len(logs) == 1
+    assert logs[0].action == "view_lead_hospital_candidates"
+    assert logs[0].target_id == str(lead.id)
+    assert logs[0].detail == {"candidate_count": 0}
+    # 연락처·문의 원문은 감사 로그로 복사되지 않는다.
+    assert "010-1111-2222" not in str(logs[0].detail)
+
+
+async def test_convert_sales_lead_audits_target_id_without_pii():
+    lead = _lead()
+    db = FakeDB(lead=lead)
+
+    await leads_api.convert_sales_lead(lead.id, body=leads_api.LeadConvertRequest(), db=db)
+
+    logs = _audit_rows(db)
+    assert len(logs) == 1
+    assert logs[0].action == "convert_sales_lead"
+    assert logs[0].target_type == "sales_lead"
+    assert logs[0].target_id == str(lead.id)
+    assert logs[0].detail["linked_existing_hospital"] is False
+    assert logs[0].detail["plan"] == "PLAN_8"
+    serialized = str(logs[0].detail)
+    assert "010-1111-2222" not in serialized and "임플란트 상담 문의" not in serialized
+
+
+async def test_convert_sales_lead_audits_repeat_read_of_already_converted_lead():
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="온보딩치과", slug="x", status=None, plan=None, source_lead_id=None
+    )
+    lead = _lead(status="CONVERTED", converted_hospital_id=hospital.id)
+    db = FakeDB(lead=lead, hospital=hospital)
+
+    await leads_api.convert_sales_lead(lead.id, body=None, db=db)
+
+    logs = _audit_rows(db)
+    assert len(logs) == 1
+    assert logs[0].detail == {"already_converted": True}

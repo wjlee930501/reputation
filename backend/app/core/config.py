@@ -367,6 +367,11 @@ class Settings(BaseSettings):
         "http://localhost:3000"  # 🔴 CRITICAL: 환경변수로 분리 (.env에서 프로덕션 URL 설정)
     )
     ADMIN_ACTOR_NAME: str = "AE"  # 세션 actor가 없을 때 쓰는 감사 로그 fallback
+    # X-Admin-Actor가 활성 AdminUser와 매칭되지 않는데도 쓰기 요청이 들어오면 거부한다.
+    # 기본 False — 헤더를 아예 보내지 않는 배치/시스템 호출(default_actor 폴백)은 이 옵션과
+    # 무관하며, 켜더라도 영향받지 않는다. 운영 중 Admin BFF가 검증된 이메일을 항상 붙이는
+    # 것이 확인된 뒤 켜서, 비활성화된 계정의 쓰기를 백엔드에서 실제로 끊는 용도.
+    ADMIN_REJECT_UNVERIFIED_ACTOR: bool = False
 
     # Site (public)
     SITE_BASE_URL: str = "https://reputation.motionlabs.kr"  # llms.txt absolute URL 등에 사용
