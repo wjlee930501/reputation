@@ -74,6 +74,7 @@ async def get_sov_trend(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     """
     최근 12주 주간 AI 답변 언급률 추이.
     Returns: [{week_start, sov_pct, mention_count, total_count}, ...]
+    sov_pct는 nullable — 성공 측정이 0건인 주는 None(측정 안 됨)이며 0.0(실제 미언급)과 다르다.
     """
     await _get_hospital_or_404(db, hospital_id)
 
@@ -100,7 +101,9 @@ async def get_sov_trend(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         total = len(successful_rows)
         mentioned = sum(1 for r in successful_rows if r.is_mentioned)
         failure_count = sum(1 for r in rows if _is_failed_measurement(r))
-        sov_pct = round(mentioned / total * 100, 1) if total > 0 else 0.0
+        # 성공 측정 0건이면 None — 측정 실패/미측정 주간을 '언급률 0%'로 보고하면
+        # 원장 보고에 허위 수치가 들어간다 (sov_engine.calculate_sov의 반환 계약과 동일).
+        sov_pct = round(mentioned / total * 100, 1) if total > 0 else None
         result.append({
             "week_start": label,
             "sov_pct": sov_pct,
@@ -117,6 +120,7 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     """
     쿼리별 멘션율.
     Returns: [{query_text, mention_rate, mention_count, total_count, last_measured_at}, ...]
+    mention_rate(쿼리별·플랫폼별 모두)는 nullable — 성공 측정 0건이면 None이다.
     """
     await _get_hospital_or_404(db, hospital_id)
 
@@ -145,7 +149,9 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
         total = len(successful_records)
         mentioned = sum(1 for r in successful_records if r.is_mentioned)
         failure_count = sum(1 for r in records if _is_failed_measurement(r))
-        mention_rate = round(mentioned / total * 100, 1) if total > 0 else 0.0
+        # 전부 실패했거나 아직 측정 전인 쿼리는 None — 0%로 표기하면 '언급되지 않았다'는
+        # 사실이 아닌 진단이 되어 보완 작업 우선순위까지 왜곡된다.
+        mention_rate = round(mentioned / total * 100, 1) if total > 0 else None
         last_measured = max((r.measured_at for r in records), default=None)
         result.append({
             "query_id": str(q.id),
@@ -158,7 +164,13 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
             "last_measured_at": last_measured.isoformat() if last_measured else None,
         })
 
-    return sorted(result, key=lambda x: x["mention_rate"], reverse=True)
+    # 미측정(None)은 언급률 순위를 매길 근거가 없으므로 내림차순에서도 항상 맨 뒤로 보낸다.
+    # (None과 float을 그대로 비교하면 TypeError가 난다.)
+    return sorted(
+        result,
+        key=lambda x: (x["mention_rate"] is not None, x["mention_rate"] or 0),
+        reverse=True,
+    )
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
@@ -189,7 +201,7 @@ def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:
                 "mention_count": 0,
                 "total_count": 0,
                 "failure_count": 0,
-                "mention_rate": 0.0,
+                "mention_rate": None,
             },
         )
         if _is_successful_measurement(record):
@@ -201,7 +213,8 @@ def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:
 
     for bucket in breakdown.values():
         total = bucket["total_count"]
-        bucket["mention_rate"] = round(bucket["mention_count"] / total * 100, 1) if total else 0.0
+        # 해당 플랫폼 측정이 전부 실패한 경우 None — 실패를 0% 언급으로 뒤바꾸지 않는다.
+        bucket["mention_rate"] = round(bucket["mention_count"] / total * 100, 1) if total else None
     return dict(sorted(breakdown.items()))
 
 
@@ -222,8 +235,11 @@ def _serialize_measurement_run(run: MeasurementRun) -> dict[str, Any]:
         "query_count": query_count,
         "success_count": success_count,
         "failure_count": failure_count,
-        "success_rate": round(success_count / query_count * 100, 1) if query_count else 0.0,
-        "failure_rate": round(failure_count / query_count * 100, 1) if query_count else 0.0,
+        # 측정 건이 0이면 비율을 만들 수 없다. 0.0으로 채우면 "전부 실패한 실행"이
+        # "실패율 0.0%"로 표시되어 sov_pct/mention_rate에서 없앤 허위 숫자가 그대로 남는다.
+        # (_finish_measurement_run은 측정이 한 건도 안 생기면 query_count=0, status=FAILED로 마감한다.)
+        "success_rate": round(success_count / query_count * 100, 1) if query_count else None,
+        "failure_rate": round(failure_count / query_count * 100, 1) if query_count else None,
         "started_at": _iso_or_none(run.started_at),
         "completed_at": _iso_or_none(run.completed_at),
         "model_name": run.model_name,
