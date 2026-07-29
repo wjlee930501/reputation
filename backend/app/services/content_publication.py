@@ -15,7 +15,7 @@ from app.services.essence_engine import (
     screen_content_against_philosophy,
 )
 from app.utils.authority_sources import is_citable_reference_url
-from app.utils.medical_filter import check_forbidden
+from app.utils.medical_filter import check_forbidden_content_fields
 
 
 @dataclass(frozen=True)
@@ -44,10 +44,12 @@ def count_citable_references(item: ContentItem) -> int:
     )
 
 
+def publication_field_values(item: ContentItem) -> dict:
+    return {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
+
+
 def publication_text(item: ContentItem) -> str:
-    return forbidden_check_text(
-        {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
-    )
+    return forbidden_check_text(publication_field_values(item))
 
 
 def assess_content_publication(
@@ -71,7 +73,12 @@ def assess_content_publication(
             philosophy=philosophy,
         )
 
-    violations = tuple(dict.fromkeys(check_forbidden(publication_text(item))))
+    # 필드별로 올바른 기준을 적용한다 — 본문은 마크다운 렌더 결과 기준, 제목·메타·FAQ는
+    # 평문 기준. 합쳐서 한 번에 검사하면 `최**고**의`가 통과하거나(본문 우회) 제목의
+    # 리터럴 별표가 위반으로 오탐되는 등 양방향으로 틀린다.
+    violations = tuple(
+        check_forbidden_content_fields(publication_field_values(item), FORBIDDEN_CHECK_FIELDS)
+    )
     if violations:
         summary = {
             "blocking": True,

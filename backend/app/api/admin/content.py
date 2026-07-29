@@ -33,7 +33,6 @@ from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     _normalize_references,
-    forbidden_check_text,
 )
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
@@ -51,6 +50,7 @@ from app.services.content_publication import (
     assess_content_publication,
     count_citable_references,
     has_required_references,
+    publication_field_values,
 )
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
 from app.services.essence_readiness import get_current_approved_philosophy
@@ -60,7 +60,7 @@ from app.services.exposure_content_linker import (
     unlink_content_from_exposure_action,
 )
 from app.services.gcs_utils import get_signed_url
-from app.utils.medical_filter import check_forbidden
+from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.tasks import regenerate_content_item
 
 logger = logging.getLogger(__name__)
@@ -407,7 +407,9 @@ async def update_content(
         )
         for field in FORBIDDEN_CHECK_FIELDS
     }
-    violations = list(dict.fromkeys(check_forbidden(forbidden_check_text(effective_values))))
+    # 본문은 마크다운이고 공개 표면이 ReactMarkdown으로 렌더하므로 **렌더 결과 기준**으로
+    # 검사한다. 원문 기준이면 AE가 `최**고**의`로 저장했을 때 통과한 뒤 화면에는 "최고의"로 뜬다.
+    violations = check_forbidden_content_fields(effective_values, FORBIDDEN_CHECK_FIELDS)
 
     if violations:
         raise HTTPException(
@@ -1076,16 +1078,14 @@ def _serialize_item_display(
     }
 
 
-def _forbidden_check_text(item: ContentItem) -> str:
-    """발행/검수 게이트용 금지 표현 검사 텍스트 — 필드 목록은 생성 엔진과 단일 진실 (R3)."""
-    return forbidden_check_text(
-        {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
-    )
-
-
 def _build_compliance_summary(item: ContentItem, status_value: str | None) -> dict:
-    full_text = _forbidden_check_text(item)
-    forbidden_violations = list(dict.fromkeys(check_forbidden(full_text))) if full_text else []
+    # Admin 화면의 "발행 가능 여부"와 "금지 표현" 표시는 이 요약이 단일 기준이다
+    # (admin/app/hospitals/[id]/content/page.tsx). 따라서 발행 게이트와 **같은 기준**으로
+    # 판정해야 한다. 평문 합본으로 검사하면 `최**고**의`가 여기서는 통과해
+    # AE 화면은 초록인데 발행 버튼은 차단되고, 편집기 하이라이트도 문제 구간을 못 짚는다.
+    forbidden_violations = check_forbidden_content_fields(
+        publication_field_values(item), FORBIDDEN_CHECK_FIELDS
+    )
     blockers: list[str] = []
     if status_value == ContentStatus.PUBLISHED.value:
         blockers.append("이미 발행된 콘텐츠입니다.")

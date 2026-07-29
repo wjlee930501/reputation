@@ -23,7 +23,7 @@ from app.utils.authority_sources import (
     render_source_hint_block,
     select_curated_authority_sources,
 )
-from app.utils.medical_filter import check_forbidden
+from app.utils.medical_filter import check_forbidden_content_fields
 
 logger = logging.getLogger(__name__)
 
@@ -426,11 +426,16 @@ async def generate_content(
     result["faq_answer_summary"] = _trim_or_none(result.get("faq_answer_summary"), 600)
 
     # 금지 표현 검사 — 1차 시도 실패 시 자동 정제 (재시도보다 안정적)
-    violations = check_forbidden(forbidden_check_text(result))
+    #
+    # 검사는 **렌더 결과 기준**이다. 본문이 마크다운이고 공개 표면이 ReactMarkdown으로
+    # 렌더하므로, 원문 기준으로 보면 `최**고**의`가 통과한 뒤 화면에는 "최고의"로 뜬다.
+    # 정제기는 원문에 대해 동작하므로 강조가 낀 형태는 정제되지 않고 아래 재검사에서
+    # 걸려 ValueError → tenacity 재생성으로 간다. 훼손된 본문을 발행하는 것보다 낫다.
+    violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
     if violations:
         logger.warning(f"Forbidden expressions found: {violations} — auto-sanitizing")
         result = _sanitize_forbidden(result, violations)
-        remaining = check_forbidden(forbidden_check_text(result))
+        remaining = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
         if remaining:
             raise ValueError(f"Cannot sanitize forbidden medical expressions: {remaining}")
 
