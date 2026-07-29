@@ -35,7 +35,9 @@ CONTENT_BODY_MAX_CHARS = 5200
 SEO_H2_MIN = 2           # ## 헤딩이 이것보다 적으면 chunk 구조 붕괴 → hard-fail
 # 의료 안내 유형은 발행 자동화 전에 특정 근거 문서가 반드시 있어야 한다. NOTICE만
 # 순수 운영 공지일 수 있어 예외로 둔다.
-_SEO_REFS_REQUIRED_TYPES: frozenset = frozenset(
+# 참고 자료가 반드시 필요한 콘텐츠 유형. **생성 검증과 발행 게이트가 같은 값을 써야 한다** —
+# 따로 두면 생성은 통과하고 발행만 막혀 슬롯이 영구히 비는 유형이 생긴다(NOTICE가 그랬다).
+REFERENCES_REQUIRED_TYPES: frozenset = frozenset(
     {
         ContentType.FAQ,
         ContentType.DISEASE,
@@ -646,7 +648,7 @@ def _validate_geo(
     findings: list[str] = []
 
     # ── HARD: 필수 references 빈 리스트 ─────────────────────────────
-    if content_type in _SEO_REFS_REQUIRED_TYPES and not refs:
+    if content_type in REFERENCES_REQUIRED_TYPES and not refs:
         raise ValueError(
             f"GEO hard-fail: references is empty for {content_type.value} "
             "— 학회/KDCA 출처 1개 이상 필수"

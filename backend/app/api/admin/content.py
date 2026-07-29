@@ -241,7 +241,14 @@ async def set_schedule(
     hospital.schedule_set = True
     # 병원 헤더/목록의 plan이 실제 운영 스케줄과 어긋나지 않도록 동기화 (A3).
     hospital.plan = Plan(body.plan)
-    if hospital.site_live:
+    previous_hospital_status = getattr(hospital, "status", None)
+    # 이미 ACTIVE인 병원의 스케줄 재설정은 ACTIVE를 유지한다(CLAUDE.md STEP6 예외).
+    #
+    # 조건을 site_live로 걸면 안 된다 — pause_hospital은 status만 PAUSED로 바꾸고
+    # site_live는 True로 남겨두므로, 일시정지된 병원이 일상적인 스케줄 저장만으로
+    # ACTIVE로 되살아난다. 정식 재개 경로(resume_hospital)는 활성화 게이트를 다시
+    # 확인하는데 이 경로는 그걸 통째로 우회했다.
+    if previous_hospital_status == HospitalStatus.ACTIVE and hospital.site_live:
         hospital.status = HospitalStatus.ACTIVE
 
     # 순서 규약: write_audit_log → db.commit() → external side-effect(apply_async).
@@ -258,6 +265,10 @@ async def set_schedule(
             "active_from": str(body.active_from),
             "slots_created": len(slots),
             "old_schedule_ids": [str(sid) for sid in old_schedule_ids],
+            # 이 엔드포인트가 병원 상태를 바꿀 수 있으므로 변경 전후를 남긴다.
+            # 남기지 않으면 재활성화가 감사 추적에 전혀 드러나지 않는다.
+            "previous_status": _enum_value(previous_hospital_status),
+            "new_status": _enum_value(getattr(hospital, "status", None)),
         },
     )
 
@@ -638,6 +649,12 @@ async def publish_content(
         raise HTTPException(status_code=400, detail="Already published")
     if current_status == ContentStatus.CANCELLED:
         raise HTTPException(status_code=409, detail="Cancelled content cannot be published")
+
+    # 잠금은 status 스칼라만 가져오므로 ORM 객체의 본문·참고자료는 여전히 잠금 이전
+    # 스냅샷이다. 그대로 판정하면 "발행 요청이 로드한 안전한 원고"로 검사해 놓고
+    # "그 사이 편집으로 바뀐 본문"을 발행하게 된다. 잠금 이후의 실제 행으로 재로딩한다.
+    if hasattr(db, "refresh"):
+        await db.refresh(item)
     should_revalidate = _has_public_site(hospital)
     if should_revalidate:
         ensure_site_revalidate_configured()

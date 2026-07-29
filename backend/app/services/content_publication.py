@@ -8,7 +8,11 @@ from typing import Any
 
 from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
-from app.services.content_engine import FORBIDDEN_CHECK_FIELDS, forbidden_check_text
+from app.services.content_engine import (
+    FORBIDDEN_CHECK_FIELDS,
+    REFERENCES_REQUIRED_TYPES,
+    forbidden_check_text,
+)
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_NEEDS_REVIEW,
@@ -29,7 +33,28 @@ class PublicationAssessment:
     philosophy_id: object | None
 
 
+def _type_value(content_type: object) -> str:
+    """ContentType enum / 문자열 / value 속성을 가진 객체를 공통 문자열로 정규화."""
+    return str(getattr(content_type, "value", content_type) or "").upper()
+
+
+# 유형 비교는 값 문자열로 한다 — 호출부가 enum을 넘길 수도, 직렬화된 문자열을 넘길 수도 있다.
+_REFERENCES_REQUIRED_VALUES = frozenset(_type_value(t) for t in REFERENCES_REQUIRED_TYPES)
+
+
 def has_required_references(item: ContentItem) -> bool:
+    """이 항목에 참고 자료가 필수인가.
+
+    생성 검증(content_engine)과 **같은 유형 집합**을 쓴다. NOTICE는 순수 운영 공지라
+    생성 단계에서 참고 자료를 요구하지 않는데, 발행 게이트만 유형 구분 없이 요구하면
+    NOTICE는 생성은 되고 발행은 매일 MISSING_REFERENCES로 막히다가 조회 대상에서
+    빠져 영구 DRAFT로 사망한다.
+    """
+    content_type = getattr(item, "content_type", None)
+    # 유형을 못 읽으면 요구하는 쪽(fail-safe)으로 둔다 — 근거 없는 의료 콘텐츠가
+    # 유형 판정 실패만으로 공개되면 안 된다.
+    if content_type is not None and _type_value(content_type) not in _REFERENCES_REQUIRED_VALUES:
+        return True
     return count_citable_references(item) > 0
 
 

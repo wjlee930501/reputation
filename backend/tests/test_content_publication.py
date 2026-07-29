@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 import uuid
 
+from app.models.content import ContentType
 from app.services import content_publication
 
 
@@ -122,3 +123,25 @@ def test_reference_titles_are_screened_before_publication(monkeypatch):
     assert assessment.publishable is False
     assert assessment.code == "FORBIDDEN_EXPRESSION"
     assert "완치" in assessment.violations
+
+
+def test_notice_does_not_require_references_but_other_types_do(monkeypatch):
+    """참고 자료 요구 유형이 생성 검증과 발행 게이트에서 같아야 한다.
+
+    NOTICE는 순수 운영 공지라 생성 단계에서 참고 자료를 요구하지 않는다. 발행
+    게이트만 유형 구분 없이 요구하면 NOTICE는 생성은 되고 발행은 매일
+    MISSING_REFERENCES로 막히다가 조회 대상에서 빠져 영구 DRAFT로 사망한다.
+    """
+    _aligned(monkeypatch)
+
+    notice = _item(content_type=ContentType.NOTICE, references_list=[])
+    notice_assessment = content_publication.assess_content_publication(notice, _philosophy())
+    assert notice_assessment.publishable is True, (
+        f"NOTICE가 참고 자료 없이 차단됐다: {notice_assessment.code}"
+    )
+
+    # 의료 안내 유형은 여전히 근거를 요구한다.
+    faq = _item(content_type=ContentType.FAQ, references_list=[])
+    faq_assessment = content_publication.assess_content_publication(faq, _philosophy())
+    assert faq_assessment.publishable is False
+    assert faq_assessment.code == "MISSING_REFERENCES"

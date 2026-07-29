@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import content as content_api
-from app.models.hospital import Plan
+from app.models.hospital import HospitalStatus, Plan
 from app.services.content_calendar import generate_monthly_slots
 
 
@@ -398,3 +398,54 @@ def test_list_content_rejects_out_of_range_month():
     assert bad_year.status_code == 422
     assert ok.status_code == 200
     assert ok.json() == []
+
+
+async def test_set_schedule_does_not_resume_a_paused_hospital(monkeypatch):
+    """일시정지된 병원은 스케줄 재저장만으로 ACTIVE가 되면 안 된다.
+
+    pause_hospital은 status만 PAUSED로 바꾸고 site_live는 True로 남긴다. 조건을
+    site_live로 걸면 일상적인 STEP6 저장이 정식 재개 게이트(resume_hospital의
+    활성화 조건 재확인)를 우회해 공개 노출을 되살린다.
+    """
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        site_live=True,  # 일시정지해도 site_live는 남는다
+        schedule_set=True,
+        plan=None,
+        status=HospitalStatus.PAUSED,
+    )
+    db = _FakeDB(hospital)
+    monkeypatch.setattr(
+        content_api.regenerate_content_item, "apply_async", lambda **_kwargs: None
+    )
+    _freeze_arrow(monkeypatch)
+
+    body = content_api.ScheduleCreate(
+        plan="PLAN_8", publish_days=[0, 2, 4], active_from=date(2026, 6, 11)
+    )
+    await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert hospital.status == HospitalStatus.PAUSED, "일시정지가 스케줄 저장으로 해제됐다"
+
+
+async def test_set_schedule_keeps_an_active_hospital_active(monkeypatch):
+    """이미 ACTIVE인 병원의 재설정은 ACTIVE를 유지한다(CLAUDE.md STEP6 예외)."""
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        site_live=True,
+        schedule_set=True,
+        plan=None,
+        status=HospitalStatus.ACTIVE,
+    )
+    db = _FakeDB(hospital)
+    monkeypatch.setattr(
+        content_api.regenerate_content_item, "apply_async", lambda **_kwargs: None
+    )
+    _freeze_arrow(monkeypatch)
+
+    body = content_api.ScheduleCreate(
+        plan="PLAN_8", publish_days=[0, 2, 4], active_from=date(2026, 6, 11)
+    )
+    await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert hospital.status == HospitalStatus.ACTIVE
