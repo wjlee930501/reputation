@@ -61,6 +61,7 @@ from app.workers.nightly_generation_batch import (
     NIGHTLY_GENERATION_CAP,
     _load_nightly_generation_batch,
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
+    write_back_generated_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -554,8 +555,13 @@ def nightly_content_generation():
                     "name": hospital.name,
                     "generated": 0,
                     "failed": 0,
+                    # "skipped"는 **운영 기준 미승인 차단 전용**이다 — 그 값이 그대로
+                    # notify_generation_blocked_no_philosophy의 blocked_count로 나간다.
+                    # 다른 사유의 건너뜀을 여기에 더하면 잘못된 사유로 알림이 발송된다.
                     "skipped": 0,
                     "cost_blocked": 0,
+                    # 생성 도중 운영자가 상태를 바꿔(취소 등) 결과를 버린 건수.
+                    "discarded": 0,
                 }
 
             try:
@@ -605,6 +611,12 @@ def nightly_content_generation():
                     hospital=hospital,
                     philosophy=philosophy,
                 )
+                # 플래너는 추적 객체(item.query_target_id / content_brief / brief_* 등)를
+                # 직접 변경한다. 그대로 두면 아래 조건부 UPDATE의 db.execute()가 autoflush를
+                # 먼저 돌려 **status 술어가 없는 UPDATE**를 emit하고, "추적 객체를 건드리지
+                # 않는다"는 가드의 전제가 깨진다. 여기서 확정해 item을 clean 상태로 만든다.
+                # (기획 메타데이터라 생성이 실패해도 남는 편이 맞고, claim 커밋과 같은 취급이다.)
+                db.commit()
                 content_data = _run_async(
                     generate_content(
                         hospital,
@@ -615,22 +627,57 @@ def nightly_content_generation():
                     )
                 )
                 now = datetime.now(timezone.utc)
-                item.title = content_data["title"]
-                item.body = content_data["body"]
-                item.meta_description = content_data.get("meta_description")
-                item.references_list = content_data.get("references") or []
-                item.faq_question = content_data.get("faq_question")
-                item.faq_answer_summary = content_data.get("faq_answer_summary")
-                item.generated_at = now
-                item.body_updated_at = now
-                item.status = ContentStatus.DRAFT
-                item.content_philosophy_id = philosophy.id
-                screening = screen_content_against_philosophy(item, philosophy)
-                item.essence_status = screening.status
-                item.essence_check_summary = screening.summary
+
+                # 생성 결과는 **추적 객체를 건드리지 않고** 별도 payload에 담는다.
+                #
+                # claim 커밋 시점에 행 잠금이 풀리므로, 생성이 도는 동안(최대 soft_time_limit)
+                # AE가 Admin에서 이 항목을 취소(CANCELLED)할 수 있다. 여기서
+                # `item.status = DRAFT`처럼 추적 객체를 먼저 변경하면 SQLAlchemy가 다음
+                # execute/commit 앞에서 autoflush로 그 값을 먼저 써버려 취소가 되살아난다
+                # (세션은 expire_on_commit=False). 그래서 조건부 UPDATE 한 방으로만 쓰고,
+                # 0행이면 운영자의 취소가 이긴 것으로 보고 결과를 버린다.
+                screening_probe = ContentItem(
+                    title=content_data["title"],
+                    body=content_data["body"],
+                    meta_description=content_data.get("meta_description"),
+                    faq_question=content_data.get("faq_question"),
+                    faq_answer_summary=content_data.get("faq_answer_summary"),
+                )
+                screening = screen_content_against_philosophy(screening_probe, philosophy)
+
+                written = write_back_generated_content(
+                    db,
+                    item_id=item.id,
+                    values={
+                        "title": content_data["title"],
+                        "body": content_data["body"],
+                        "meta_description": content_data.get("meta_description"),
+                        "references_list": content_data.get("references") or [],
+                        "faq_question": content_data.get("faq_question"),
+                        "faq_answer_summary": content_data.get("faq_answer_summary"),
+                        "generated_at": now,
+                        "body_updated_at": now,
+                        "status": ContentStatus.DRAFT,
+                        "content_philosophy_id": philosophy.id,
+                        "essence_status": screening.status,
+                        "essence_check_summary": screening.summary,
+                    },
+                )
+                if written == 0:
+                    # 운영자가 생성 도중 상태를 바꿨다(취소/발행 등). 배치 결과보다
+                    # 운영자 의도가 우선이므로 생성물을 버리고 다음 항목으로 넘어간다.
+                    db.rollback()
+                    db.expire(item)
+                    logger.info(
+                        "Discarding generated content for %s — status changed during generation",
+                        item.id,
+                    )
+                    hospital_stats[hospital_key]["discarded"] += 1
+                    continue
 
                 # 텍스트 콘텐츠 먼저 커밋 (이미지 실패가 텍스트를 롤백하지 않도록)
                 db.commit()
+                db.refresh(item)  # expire_on_commit=False — 조건부 UPDATE 결과를 다시 읽어온다
                 logger.info(f"Content generated: {hospital.name} — {item.title}")
 
                 # 대표 이미지 생성 (gpt-image-2, 제목 주제 주입 — 실패해도 텍스트는 유지)
@@ -638,9 +685,30 @@ def nightly_content_generation():
                     image_url, image_prompt = _run_async(
                         generate_image(item.content_type, hospital.slug, topic=item.title)
                     )
-                    item.image_url = image_url
-                    item.image_prompt = image_prompt
-                    db.commit()
+                    if not image_url:
+                        # generate_image는 실패·비용차단을 ("", "") 센티널로 알린다.
+                        # 그대로 대입하면 기존 이미지를 지우게 되므로 값이 있을 때만 쓴다.
+                        logger.warning(
+                            "Image generation returned no URL for %s (text saved)", item.id
+                        )
+                    else:
+                        image_written = write_back_generated_content(
+                            db,
+                            item_id=item.id,
+                            values={"image_url": image_url, "image_prompt": image_prompt},
+                        )
+                        if image_written == 0:
+                            # 이미지 생성 중 상태가 바뀌어 쓰지 못했다. 성공으로 보고하면
+                            # 이미지 없는 글이 생긴 걸 아무도 모른다.
+                            db.rollback()
+                            logger.warning(
+                                "Image write-back skipped for %s — status changed during "
+                                "image generation",
+                                item.id,
+                            )
+                        else:
+                            db.commit()
+                            db.refresh(item)
                 except Exception as img_e:
                     logger.warning(f"Image generation failed for {item.id} (text saved): {img_e}")
                     db.rollback()
@@ -679,6 +747,7 @@ def nightly_content_generation():
                 or stat["failed"] > 0
                 or stat["skipped"] > 0
                 or stat["cost_blocked"] > 0
+                or stat["discarded"] > 0
             ):
                 _run_async(
                     notifier.notify_content_batch_summary(
@@ -688,6 +757,7 @@ def nightly_content_generation():
                         scheduled_date=str(tomorrow),
                         skipped=stat["skipped"],
                         cost_blocked=stat["cost_blocked"],
+                        discarded=stat["discarded"],
                     )
                 )
 
@@ -710,19 +780,36 @@ def regenerate_content_item(self, content_id: str):
             if not hospital:
                 return
 
-            item.title = None
-            item.body = None
-            item.meta_description = None
-            item.image_url = None
-            item.image_prompt = None
-            item.generated_at = None
-            item.published_at = None
-            item.published_by = None
-            item.post_publish_notified_at = None
-            item.post_publish_reviewed_at = None
-            item.post_publish_reviewed_by = None
-            item.status = ContentStatus.DRAFT
+            # 초기화도 **조건부**여야 한다. 위 상태 확인과 이 쓰기 사이에 AE가 종료(CANCELLED)
+            # 하면, 가드 없는 초기화가 status를 DRAFT로 되돌려 워커 스스로 취소를 되살린다.
+            # 그러면 이후 생성 결과 write-back의 가드도 무의미해진다(이미 DRAFT라 통과한다).
+            reset = write_back_generated_content(
+                db,
+                item_id=item.id,
+                values={
+                    "title": None,
+                    "body": None,
+                    "meta_description": None,
+                    "image_url": None,
+                    "image_prompt": None,
+                    "generated_at": None,
+                    "published_at": None,
+                    "published_by": None,
+                    "post_publish_notified_at": None,
+                    "post_publish_reviewed_at": None,
+                    "post_publish_reviewed_by": None,
+                    "status": ContentStatus.DRAFT,
+                },
+            )
+            if reset == 0:
+                db.rollback()
+                logger.warning(
+                    "Skipping regeneration for %s — status changed after the initial check",
+                    content_id,
+                )
+                return
             db.commit()
+            db.refresh(item)
 
             _generate_single_content_item(db, item, hospital)
     except Exception as exc:
@@ -754,9 +841,27 @@ def generate_content_image(self, content_id: str):
                     topic=item.title or "병원 의료 정보",
                 )
             )
-            item.image_url = image_url
-            item.image_prompt = image_prompt
-            db.commit()
+            if not image_url:
+                # generate_image는 비용 차단·공급자 실패를 ("", "") 센티널로 알린다.
+                # 그대로 대입하면 **기존 이미지를 지운다** — 재생성 실패가 파괴로 이어진다.
+                logger.warning(
+                    "Image regeneration returned no URL for %s — keeping the existing image",
+                    content_id,
+                )
+                return
+            # 위 상태 확인은 생성 호출 몇 분 전의 읽기라 TOCTOU다. 쓰기 시점에 다시 가드한다.
+            if write_back_generated_content(
+                db,
+                item_id=item.id,
+                values={"image_url": image_url, "image_prompt": image_prompt},
+            ):
+                db.commit()
+            else:
+                db.rollback()
+                logger.warning(
+                    "Image write-back skipped for %s — status changed during regeneration",
+                    content_id,
+                )
     except Exception as exc:
         logger.error("generate_content_image failed for %s: %s", content_id, exc)
         raise self.retry(exc=exc, countdown=120)
@@ -801,6 +906,8 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
         hospital=hospital,
         philosophy=philosophy,
     )
+    # 야간 배치와 동일한 이유로, 긴 생성 호출 전에 플래너 변경을 확정해 item을 clean으로 만든다.
+    db.commit()
     content_data = _run_async(
         generate_content(
             hospital,
@@ -811,29 +918,66 @@ def _generate_single_content_item(db, item: ContentItem, hospital: Hospital) -> 
         )
     )
     now = datetime.now(timezone.utc)
-    item.title = content_data["title"]
-    item.body = content_data["body"]
-    item.meta_description = content_data.get("meta_description")
-    item.references_list = content_data.get("references") or []
-    item.faq_question = content_data.get("faq_question")
-    item.faq_answer_summary = content_data.get("faq_answer_summary")
-    item.generated_at = now
-    item.body_updated_at = now
-    item.status = ContentStatus.DRAFT
-    item.content_philosophy_id = philosophy.id
-    screening = screen_content_against_philosophy(item, philosophy)
-    item.essence_status = screening.status
-    item.essence_check_summary = screening.summary
+
+    # 배치 경로와 같은 상태 가드를 쓴다. 재생성이 도는 동안 AE가 이 슬롯을 종료(CANCELLED)할
+    # 수 있고, 가드 없이 쓰면 종료된 슬롯에 미검수 본문이 들어간다(실제 DB에서 재현됨).
+    screening_probe = ContentItem(
+        title=content_data["title"],
+        body=content_data["body"],
+        meta_description=content_data.get("meta_description"),
+        faq_question=content_data.get("faq_question"),
+        faq_answer_summary=content_data.get("faq_answer_summary"),
+    )
+    screening = screen_content_against_philosophy(screening_probe, philosophy)
+
+    written = write_back_generated_content(
+        db,
+        item_id=item.id,
+        values={
+            "title": content_data["title"],
+            "body": content_data["body"],
+            "meta_description": content_data.get("meta_description"),
+            "references_list": content_data.get("references") or [],
+            "faq_question": content_data.get("faq_question"),
+            "faq_answer_summary": content_data.get("faq_answer_summary"),
+            "generated_at": now,
+            "body_updated_at": now,
+            "status": ContentStatus.DRAFT,
+            "content_philosophy_id": philosophy.id,
+            "essence_status": screening.status,
+            "essence_check_summary": screening.summary,
+        },
+    )
+    if written == 0:
+        db.rollback()
+        logger.info(
+            "Discarding regenerated content for %s — status changed during generation", item.id
+        )
+        return
     db.commit()
+    db.refresh(item)
 
     if not item.image_url:
         try:
             image_url, image_prompt = _run_async(
                 generate_image(item.content_type, hospital.slug, topic=item.title)
             )
-            item.image_url = image_url
-            item.image_prompt = image_prompt
-            db.commit()
+            if not image_url:
+                # 실패 센티널("")을 그대로 쓰면 기존 이미지를 지운다.
+                logger.warning("Image generation returned no URL for %s (text saved)", item.id)
+            elif write_back_generated_content(
+                db,
+                item_id=item.id,
+                values={"image_url": image_url, "image_prompt": image_prompt},
+            ):
+                db.commit()
+                db.refresh(item)
+            else:
+                db.rollback()
+                logger.warning(
+                    "Image write-back skipped for %s — status changed during image generation",
+                    item.id,
+                )
         except Exception as img_e:
             logger.warning("Image generation failed for %s (text saved): %s", item.id, img_e)
             db.rollback()

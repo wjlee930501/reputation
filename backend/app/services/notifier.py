@@ -546,15 +546,21 @@ async def notify_content_batch_summary(
     scheduled_date: str,
     skipped: int = 0,
     cost_blocked: int = 0,
+    discarded: int = 0,
 ) -> bool:
-    if generated == 0 and failed == 0 and skipped == 0 and cost_blocked == 0:
+    if generated == 0 and failed == 0 and skipped == 0 and cost_blocked == 0 and discarded == 0:
         return False
-    status_emoji = "✅" if failed == 0 and skipped == 0 and cost_blocked == 0 else "⚠️"
+    status_emoji = (
+        "✅" if failed == 0 and skipped == 0 and cost_blocked == 0 and discarded == 0 else "⚠️"
+    )
     summary = (
         f"{generated}건 생성 완료"
         + (f", {failed}건 실패" if failed > 0 else "")
         + (f", {skipped}건 차단(운영 기준 미승인)" if skipped > 0 else "")
         + (f", {cost_blocked}건 차단(비용 가드로 스킵)" if cost_blocked > 0 else "")
+        # 생성 중 운영자가 종료/발행 등으로 상태를 바꾼 건. 생성 결과는 버려졌고
+        # 운영자 의도가 유지됐다는 뜻이므로 실패와 구분해서 알린다.
+        + (f", {discarded}건 폐기(생성 중 상태 변경)" if discarded > 0 else "")
     )
     return await _send(
         text=f"{status_emoji} [콘텐츠 배치] {hospital_name} {scheduled_date} — {summary}",
