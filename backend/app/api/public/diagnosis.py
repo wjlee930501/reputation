@@ -1,0 +1,314 @@
+"""공개 API — 무료 AI 노출 진단 접수 (1단 리드마그넷).
+
+기존 `/public/leads`(자유 문의)와 **별도 엔드포인트**다. 받는 필드도, 방어 장치도,
+성공의 의미도 다르다. 하나의 라우트에 분기를 넣으면 문의 폼의 검증이 진단 폼에
+잘못 적용되거나 그 반대가 된다.
+
+접수 1건이 하는 일:
+  1. 남용 방어 (허니팟 · 동의 · 환자 민감정보 · 프롬프트 인젝션)
+  2. 선착순 자리 1칸 확보 — **이것이 예산 상한이다**
+  3. 전화번호 + 이메일 이중 잠금
+  4. 질의 3개 생성 (병원명은 절대 넣지 않는다)
+  5. 열람 토큰 발급 → 상태 페이지 주소 반환
+"""
+import logging
+import re
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.public.leads import contains_patient_sensitive_text
+from app.core.config import settings
+from app.core.database import get_db
+from app.core.rate_limit import get_request_ip, limiter
+from app.models.lead import LEAD_SOURCE_AI_DIAGNOSIS, SalesLead
+from app.models.lead_diagnosis import LeadDiagnosis, LeadReportToken
+from app.services import lead_report_token
+from app.services.lead_diagnosis_identity import (
+    InvalidEmail,
+    InvalidPhoneNumber,
+    email_lock_hash,
+    phone_lock_hash,
+)
+from app.services.query_mapper import (
+    QUERY_SLOT_COUNT,
+    QueryMappingError,
+    build_lead_diagnosis_queries,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/public/diagnosis", tags=["Public — AI Diagnosis"])
+
+_KST = ZoneInfo("Asia/Seoul")
+_HONEYPOT_FIELDS = ("website", "url")
+_NON_WORD = re.compile(r"[\s\-_·]+")
+
+# 자리 배정은 동시 삽입 시 UNIQUE(slot_date, slot_no)에 걸린다. 하루 20건 규모에서
+# 경합은 사실상 없지만, 걸렸을 때 조용히 실패하면 신청자가 이유 없이 거부당한다.
+_SLOT_RETRY_LIMIT = 3
+
+
+def _kst_today() -> date:
+    """자리는 KST 자정에 리셋된다 — 운영 캘린더가 KST이므로 경계도 KST여야 한다."""
+    return datetime.now(_KST).date()
+
+
+def _normalized_for_containment(value: str) -> str:
+    return _NON_WORD.sub("", (value or "")).lower()
+
+
+def keyword_contains_hospital_name(hospital_name: str, keywords: list[str]) -> bool:
+    """키워드에 병원명을 실어 언급을 유도하는 프롬프트 인젝션 (PRD F1-4).
+
+    병원명이 질의에 들어가면 언급은 보장되고 측정은 무의미해진다(F1-1).
+    `query_mapper`는 병원명 인자를 받지 않아 구조적으로 막혀 있지만, 키워드 칸으로
+    우회하는 경로가 남으므로 접수에서 끊는다.
+
+    띄어쓰기·하이픈만 바꾼 우회를 막기 위해 정규화 후 비교한다.
+    """
+    needle = _normalized_for_containment(hospital_name)
+    if not needle:
+        return False
+    return any(needle in _normalized_for_containment(keyword) for keyword in keywords)
+
+
+class DiagnosisRequest(BaseModel):
+    # ── 진단 정보
+    clinic_name: str = Field(min_length=2, max_length=200)     # 정식 병원명 (~의원까지)
+    clinic_type: str = Field(min_length=1, max_length=100)     # 진료과
+    region_keyword: str = Field(min_length=1, max_length=100)  # 지하철역·동
+    clinic_phone: str = Field(min_length=1, max_length=40)     # 병원 대표번호
+    core_keywords: list[str] = Field(min_length=1, max_length=4)
+
+    # ── 신청 정보
+    contact_name: str = Field(min_length=1, max_length=100)
+    contact: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
+
+    privacy: bool
+    source_path: str | None = Field(default=None, max_length=500)
+
+    # 허니팟 — 채워져 있으면 조용히 200. 필드명은 _HONEYPOT_FIELDS와 일치해야 한다.
+    website: str | None = Field(default=None, max_length=500)
+    url: str | None = Field(default=None, max_length=500)
+
+    @field_validator(
+        "clinic_name", "clinic_type", "region_keyword", "clinic_phone",
+        "contact_name", "contact", "email", "source_path",
+    )
+    @classmethod
+    def clean_string(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Must not be blank")
+        return cleaned
+
+    @field_validator("core_keywords")
+    @classmethod
+    def clean_keywords(cls, values: list[str]) -> list[str]:
+        cleaned = [v.strip() for v in values if v and v.strip()]
+        if not cleaned:
+            raise ValueError("핵심 키워드를 최소 1개 입력해 주세요.")
+        # 중복 제거 후에도 순서를 유지한다 — 첫 번째 키워드가 질의 슬롯 2를 결정한다.
+        seen: set[str] = set()
+        unique = [k for k in cleaned if not (k in seen or seen.add(k))]
+        if any(len(k) > 50 for k in unique):
+            raise ValueError("핵심 키워드는 50자 이내로 입력해 주세요.")
+        return unique[:4]
+
+    # 공개 폼의 모든 자유 텍스트에 같은 검증을 적용한다 — 한 칸만 열려 있어도
+    # "홍길동 환자 900101-1234567"이 평문으로 Slack(국외 이전)과 Admin에 노출된다.
+    @field_validator("clinic_name", "clinic_type", "region_keyword", "contact_name")
+    @classmethod
+    def reject_patient_sensitive_free_text(cls, value: str) -> str:
+        if contains_patient_sensitive_text(value):
+            raise ValueError("환자 개인정보나 진료기록은 이 양식에 입력하지 마세요.")
+        return value
+
+    @field_validator("core_keywords")
+    @classmethod
+    def reject_patient_sensitive_keywords(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if contains_patient_sensitive_text(value):
+                raise ValueError("환자 개인정보나 진료기록은 이 양식에 입력하지 마세요.")
+        return values
+
+
+def _remaining_slots(used: int) -> int:
+    return max(0, settings.LEADGEN_DAILY_SLOTS - used)
+
+
+@router.get("/slots")
+async def get_slot_availability(db: AsyncSession = Depends(get_db)):
+    """오늘 남은 자리. 랜딩의 "오늘 남은 자리 N / 20"이 이 값을 그대로 쓴다.
+
+    **실제 카운터다.** 희소성을 연출하려고 숫자를 조작하지 않는다 — 방법론을 공개하는
+    것이 이 제품의 차별점인데 카운터를 꾸미면 그 주장이 무너진다.
+    """
+    today = _kst_today()
+    used = await db.scalar(
+        select(func.count()).select_from(LeadDiagnosis).where(LeadDiagnosis.slot_date == today)
+    )
+    used = int(used or 0)
+    return {
+        "date": today.isoformat(),
+        "total": settings.LEADGEN_DAILY_SLOTS,
+        "used": used,
+        "remaining": _remaining_slots(used),
+    }
+
+
+def _violated(exc: IntegrityError, *index_names: str) -> bool:
+    """어느 제약이 걸렸는지. 잠금 위반은 사용자 안내이고 자리 위반은 재시도라 갈라야 한다."""
+    text = f"{exc.orig}"
+    return any(name in text for name in index_names)
+
+
+@router.post("")
+@limiter.limit(settings.PUBLIC_LEAD_RATE_LIMIT)
+async def create_diagnosis(
+    request: Request,
+    body: DiagnosisRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    # 허니팟 — 정상 사용자는 비워둔다. 봇에게는 성공처럼 보이게 하고 저장하지 않는다.
+    if any((getattr(body, field, None) or "").strip() for field in _HONEYPOT_FIELDS):
+        return {"ok": True, "diagnosis_id": None, "status_url": None}
+
+    if not body.privacy:
+        raise HTTPException(status_code=400, detail="개인정보 수집·이용 동의가 필요합니다.")
+
+    if keyword_contains_hospital_name(body.clinic_name, body.core_keywords):
+        raise HTTPException(
+            status_code=400,
+            detail="핵심 키워드에는 병원명을 넣을 수 없습니다. 진료·증상 키워드를 입력해 주세요.",
+        )
+
+    try:
+        email_hash = email_lock_hash(body.email)
+    except InvalidEmail as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        phone_hash = phone_lock_hash(body.clinic_phone)
+    except InvalidPhoneNumber as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        queries = build_lead_diagnosis_queries(
+            region=body.region_keyword,
+            specialty=body.clinic_type,
+            keywords=body.core_keywords,
+        )
+    except QueryMappingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    today = _kst_today()
+    now = datetime.now(timezone.utc)
+    raw_token, token_hash = lead_report_token.generate_report_token()
+
+    for _ in range(_SLOT_RETRY_LIMIT):
+        used = int(
+            await db.scalar(
+                select(func.count())
+                .select_from(LeadDiagnosis)
+                .where(LeadDiagnosis.slot_date == today)
+            )
+            or 0
+        )
+        if used >= settings.LEADGEN_DAILY_SLOTS:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"오늘 진단 {settings.LEADGEN_DAILY_SLOTS}건이 모두 접수되었습니다. "
+                    "내일 다시 신청해 주세요."
+                ),
+            )
+
+        lead = SalesLead(
+            clinic_name=body.clinic_name,
+            clinic_type=body.clinic_type,
+            contact=body.contact,
+            contact_name=body.contact_name,
+            clinic_phone=body.clinic_phone,
+            email=body.email,
+            region_keyword=body.region_keyword,
+            core_keywords=body.core_keywords,
+            question=None,
+            privacy=True,
+            source=LEAD_SOURCE_AI_DIAGNOSIS,
+            source_path=body.source_path,
+            consent_ip=get_request_ip(request),
+            # 클라이언트 입력을 신뢰하지 않고 항상 서버 ENV에서 가져온다.
+            consent_version=settings.LEAD_CONSENT_VERSION.strip()[:40],
+            retain_until=now + timedelta(days=settings.LEAD_RETENTION_DAYS),
+        )
+        diagnosis = LeadDiagnosis(
+            applicant_email_hash=email_hash,
+            subject_phone_hash=phone_hash,
+            subject_hospital_name=body.clinic_name,
+            subject_region=body.region_keyword,
+            slot_date=today,
+            slot_no=used + 1,
+            queries=queries,
+            requested_models={
+                "openai": settings.OPENAI_MODEL_QUERY,
+                "gemini": settings.GEMINI_MODEL,
+                "judge": settings.OPENAI_MODEL_PARSE,
+            },
+            repeat_count=settings.LEADGEN_REPEAT_COUNT,
+        )
+
+        try:
+            # 리드·진단·토큰을 한 트랜잭션에 넣는다. 잠금 위반은 commit이 아니라 이 flush에서
+            # 터지므로, 삽입 전체를 감싸지 않으면 예외가 그대로 500으로 새어 나간다.
+            db.add(lead)
+            await db.flush()
+            diagnosis.lead_id = lead.id
+            db.add(diagnosis)
+            await db.flush()
+            db.add(
+                LeadReportToken(
+                    diagnosis_id=diagnosis.id,
+                    token_hash=token_hash,
+                    expires_at=now + timedelta(days=settings.LEAD_REPORT_TOKEN_TTL_DAYS),
+                )
+            )
+            await db.commit()
+        except IntegrityError as exc:
+            # 리드와 진단을 한 트랜잭션에 넣었으므로 롤백하면 고아 리드가 남지 않는다.
+            await db.rollback()
+            if _violated(exc, "uq_lead_diagnoses_email_lock", "uq_lead_diagnoses_phone_lock"):
+                # **기존 행의 상태 URL을 돌려주지 않는다.** 남의 병원 대표번호를 아는
+                # 사람이 재신청으로 그 병원의 리포트 링크를 얻어가는 경로가 된다.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "이미 진단을 신청한 병원입니다. 한 병원당 한 번만 신청할 수 있습니다. "
+                        "리포트 링크는 신청 시 입력한 이메일로 발송됩니다."
+                    ),
+                ) from exc
+            if _violated(exc, "uq_lead_diagnoses_slot"):
+                continue  # 동시 접수로 자리 번호가 겹쳤다 — 다시 센다.
+            raise
+
+        return {
+            "ok": True,
+            "diagnosis_id": str(diagnosis.id),
+            "status_url": lead_report_token.report_status_url(raw_token),
+            "query_count": QUERY_SLOT_COUNT,
+            "slot_no": diagnosis.slot_no,
+            "remaining_slots": _remaining_slots(diagnosis.slot_no),
+        }
+
+    logger.warning("lead diagnosis slot allocation lost %s races", _SLOT_RETRY_LIMIT)
+    raise HTTPException(
+        status_code=503, detail="접수가 몰리고 있습니다. 잠시 후 다시 시도해 주세요."
+    )

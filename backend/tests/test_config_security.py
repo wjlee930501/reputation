@@ -31,6 +31,8 @@ def _valid_prod_kwargs(**overrides):
         ADMIN_BASE_URL="https://admin.example.com",
         SITE_BASE_URL="https://reputation.co.kr",
         CERTIFICATE_MANAGER_AUTO_PROVISION=True,
+        LEAD_LOCK_HASH_PEPPER="prod-lock-pepper",
+        LEAD_REPORT_TOKEN_SECRET="prod-report-secret",
     )
     base.update(overrides)
     return base
@@ -56,6 +58,8 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         ADMIN_BASE_URL="https://admin.example.com",
         SITE_BASE_URL="https://reputation.co.kr",
         CERTIFICATE_MANAGER_AUTO_PROVISION=True,
+        LEAD_LOCK_HASH_PEPPER="prod-lock-pepper",
+        LEAD_REPORT_TOKEN_SECRET="prod-report-secret",
     )
 
     assert settings.DATABASE_URL == (
@@ -108,6 +112,31 @@ def test_production_rejects_localhost_redis_url(monkeypatch):
     monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
     with pytest.raises(ValueError, match="REDIS_URL"):
         Settings(**_valid_prod_kwargs(REDIS_URL="redis://localhost:6379/0"))
+
+
+@pytest.mark.parametrize(
+    "name", ["LEAD_LOCK_HASH_PEPPER", "LEAD_REPORT_TOKEN_SECRET"]
+)
+def test_production_rejects_lead_diagnosis_dev_secrets(monkeypatch, name):
+    """dev 기본값으로 프로덕션이 뜨면 안 된다.
+
+    pepper가 기본값이면 전화번호(번호 공간이 좁다)가 전수 대입으로 역산되어 잠금 해시가
+    개인정보가 되고, 토큰 시크릿이 기본값이면 누구나 남의 리포트 링크를 위조할 수 있다.
+    """
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    dev_defaults = {
+        "LEAD_LOCK_HASH_PEPPER": "dev-lock-pepper-change-me",
+        "LEAD_REPORT_TOKEN_SECRET": "dev-report-secret-change-me",
+    }
+    with pytest.raises(ValueError, match=name):
+        Settings(**_valid_prod_kwargs(**{name: dev_defaults[name]}))
+
+
+@pytest.mark.parametrize("name", ["LEAD_LOCK_HASH_PEPPER", "LEAD_REPORT_TOKEN_SECRET"])
+def test_production_rejects_empty_lead_diagnosis_secrets(monkeypatch, name):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    with pytest.raises(ValueError, match=name):
+        Settings(**_valid_prod_kwargs(**{name: "   "}))
 
 
 def test_production_accepts_valid_secure_config(monkeypatch):

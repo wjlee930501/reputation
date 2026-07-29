@@ -27,6 +27,7 @@ from app.api.admin import leads as admin_leads
 from app.api.admin import operations as admin_operations
 from app.api.public import site as public_site
 from app.api.public import leads as public_leads
+from app.api.public import diagnosis as public_diagnosis
 from app.core.config import settings
 from app.core.observability import configure_logging, sentry_before_send, set_request_id
 from app.core.rate_limit import limiter
@@ -171,6 +172,7 @@ app.include_router(admin_leads.router, prefix="/api/v1", dependencies=admin_deps
 app.include_router(public_site.router, prefix="/api/v1")
 app.include_router(public_site.domain_router, prefix="/api/v1")
 app.include_router(public_leads.router, prefix="/api/v1")
+app.include_router(public_diagnosis.router, prefix="/api/v1")
 
 
 @app.get("/health")
