@@ -48,6 +48,7 @@ from app.services.content_calendar import generate_monthly_slots
 from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
+    PUBLICATION_CHECK_FIELDS,
     count_citable_references,
     has_required_references,
     publication_field_values,
@@ -1084,7 +1085,7 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
     # 판정해야 한다. 평문 합본으로 검사하면 `최**고**의`가 여기서는 통과해
     # AE 화면은 초록인데 발행 버튼은 차단되고, 편집기 하이라이트도 문제 구간을 못 짚는다.
     forbidden_violations = check_forbidden_content_fields(
-        publication_field_values(item), FORBIDDEN_CHECK_FIELDS
+        publication_field_values(item), PUBLICATION_CHECK_FIELDS
     )
     blockers: list[str] = []
     if status_value == ContentStatus.PUBLISHED.value:

@@ -102,3 +102,23 @@ def test_publication_gate_uses_the_render_aware_check_for_the_body(monkeypatch):
     assert assessment.publishable is False
     assert assessment.code == "FORBIDDEN_EXPRESSION"
     assert "최고" in assessment.violations
+
+
+def test_reference_titles_are_screened_before_publication(monkeypatch):
+    """참고 자료 제목도 공개 표면과 JSON-LD에 그대로 렌더된다.
+
+    URL만 화이트리스트 검증을 거치고 제목은 모델 자유 출력이라, 검사에서 빠지면
+    금지 표현이 "참고 자료" 섹션으로 공개된다.
+    """
+    _aligned(monkeypatch)
+    item = _item(
+        references_list=[
+            {"title": "대장암 완치율 100% 달성 보고", "url": "https://www.kdca.go.kr/example"}
+        ]
+    )
+
+    assessment = content_publication.assess_content_publication(item, _philosophy())
+
+    assert assessment.publishable is False
+    assert assessment.code == "FORBIDDEN_EXPRESSION"
+    assert "완치" in assessment.violations

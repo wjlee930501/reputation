@@ -175,3 +175,16 @@ def test_fields_are_checked_with_the_right_renderer_for_each_field():
     assert "최고" in check_forbidden_content_fields(
         {"title": "정상 제목", "body": "최**고**의 진료"}, fields
     )
+
+
+def test_link_syntax_that_is_not_a_link_stays_visible_and_is_checked():
+    """목적지에 공백이 있으면 CommonMark 링크가 아니다 — 화면에 그대로 보인다.
+
+    링크로 오인해 지우면 금지 표현이 검사를 빠져나가 공개된다(미탐).
+    """
+    assert check_forbidden_markdown("회복 기간[개인차 있음](통증 없는 경우도 있습니다)") == [
+        "통증 없는"
+    ]
+    # 반대로 진짜 링크의 목적지는 화면에 없으므로 검사하지 않는다.
+    assert check_forbidden_markdown("[안내](https://example.test/최고-병원)") == []
+    assert check_forbidden_markdown('[안내](https://example.test/a "최고 자료")') == []

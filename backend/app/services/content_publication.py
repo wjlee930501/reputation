@@ -44,12 +44,28 @@ def count_citable_references(item: ContentItem) -> int:
     )
 
 
+# 참고 자료 제목도 공개 표면에 그대로 렌더되고(콘텐츠 상세의 "참고 자료" 섹션)
+# JSON-LD citation.name으로도 나간다. 제목은 모델 자유 출력인데 URL만 화이트리스트
+# 검증을 거치고 제목은 길이 절단만 됐다 — 금지 표현 검사기가 한 번도 본 적이 없었다.
+# 마크다운이 아니라 리터럴 렌더이므로 평문 기준으로 검사한다.
+REFERENCE_TITLES_FIELD = "reference_titles"
+PUBLICATION_CHECK_FIELDS = (*FORBIDDEN_CHECK_FIELDS, REFERENCE_TITLES_FIELD)
+
+
 def publication_field_values(item: ContentItem) -> dict:
-    return {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
+    values = {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
+    values[REFERENCE_TITLES_FIELD] = " ".join(
+        str(ref.get("title") or "").strip()
+        for ref in (item.references_list or [])
+        if isinstance(ref, dict)
+    ).strip()
+    return values
 
 
 def publication_text(item: ContentItem) -> str:
-    return forbidden_check_text(publication_field_values(item))
+    return forbidden_check_text(
+        {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
+    )
 
 
 def assess_content_publication(
@@ -77,7 +93,7 @@ def assess_content_publication(
     # 평문 기준. 합쳐서 한 번에 검사하면 `최**고**의`가 통과하거나(본문 우회) 제목의
     # 리터럴 별표가 위반으로 오탐되는 등 양방향으로 틀린다.
     violations = tuple(
-        check_forbidden_content_fields(publication_field_values(item), FORBIDDEN_CHECK_FIELDS)
+        check_forbidden_content_fields(publication_field_values(item), PUBLICATION_CHECK_FIELDS)
     )
     if violations:
         summary = {

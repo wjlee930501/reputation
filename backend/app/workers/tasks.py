@@ -562,6 +562,9 @@ def nightly_content_generation():
                     "cost_blocked": 0,
                     # 생성 도중 운영자가 상태를 바꿔(취소 등) 결과를 버린 건수.
                     "discarded": 0,
+                    # 본문은 저장됐지만 대표 이미지가 없는 건수. 생성 성공으로만 집계하면
+                    # 이미지 없는 글이 나간 것을 로그 말고는 알 길이 없다.
+                    "image_missing": 0,
                 }
 
             try:
@@ -688,6 +691,7 @@ def nightly_content_generation():
                     if not image_url:
                         # generate_image는 실패·비용차단을 ("", "") 센티널로 알린다.
                         # 그대로 대입하면 기존 이미지를 지우게 되므로 값이 있을 때만 쓴다.
+                        hospital_stats[hospital_key]["image_missing"] += 1
                         logger.warning(
                             "Image generation returned no URL for %s (text saved)", item.id
                         )
@@ -698,9 +702,11 @@ def nightly_content_generation():
                             values={"image_url": image_url, "image_prompt": image_prompt},
                         )
                         if image_written == 0:
-                            # 이미지 생성 중 상태가 바뀌어 쓰지 못했다. 성공으로 보고하면
-                            # 이미지 없는 글이 생긴 걸 아무도 모른다.
+                            # 이미지 생성 중 상태가 바뀌어 쓰지 못했다. 성공으로만 보고하면
+                            # 이미지 없는 글이 생긴 걸 아무도 모른다 — 요약에 드러낸다.
                             db.rollback()
+                            db.refresh(item)
+                            hospital_stats[hospital_key]["image_missing"] += 1
                             logger.warning(
                                 "Image write-back skipped for %s — status changed during "
                                 "image generation",
@@ -711,6 +717,7 @@ def nightly_content_generation():
                             db.refresh(item)
                 except Exception as img_e:
                     logger.warning(f"Image generation failed for {item.id} (text saved): {img_e}")
+                    hospital_stats[hospital_key]["image_missing"] += 1
                     db.rollback()
                     db.refresh(item)  # re-sync after rollback
 
@@ -748,6 +755,7 @@ def nightly_content_generation():
                 or stat["skipped"] > 0
                 or stat["cost_blocked"] > 0
                 or stat["discarded"] > 0
+                or stat["image_missing"] > 0
             ):
                 _run_async(
                     notifier.notify_content_batch_summary(
@@ -758,6 +766,7 @@ def nightly_content_generation():
                         skipped=stat["skipped"],
                         cost_blocked=stat["cost_blocked"],
                         discarded=stat["discarded"],
+                        image_missing=stat["image_missing"],
                     )
                 )
 

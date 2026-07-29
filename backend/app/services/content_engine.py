@@ -427,16 +427,24 @@ async def generate_content(
 
     # 금지 표현 검사 — 1차 시도 실패 시 자동 정제 (재시도보다 안정적)
     #
-    # 검사는 **렌더 결과 기준**이다. 본문이 마크다운이고 공개 표면이 ReactMarkdown으로
-    # 렌더하므로, 원문 기준으로 보면 `최**고**의`가 통과한 뒤 화면에는 "최고의"로 뜬다.
-    # 정제기는 원문에 대해 동작하므로 강조가 낀 형태는 정제되지 않고 아래 재검사에서
-    # 걸려 ValueError → tenacity 재생성으로 간다. 훼손된 본문을 발행하는 것보다 낫다.
+    # 검사는 **렌더 결과 기준**이고 정제기는 **원문 기준**이다. 이 비대칭은 의도된 것이다:
+    # 정제기를 렌더 텍스트에 돌리면 본문의 링크 목적지까지 사라져 참고자료 링크가 깨진다.
+    # 대신 `최**고**의`처럼 강조가 낀 위반은 정제되지 않고 재검사에서 걸려 재생성으로 간다.
+    #
+    # 그 결과 정제로 못 고치는 위반 클래스가 존재하며, 이는 재시도를 소진해 슬롯을 비울 수
+    # 있다. 빈도를 모른 채 두면 조용히 콘텐츠 기아가 되므로 별도 마커로 남겨 측정 가능하게
+    # 한다("SANITIZE_FAILED"로 집계하면 규칙별 실패율을 볼 수 있다).
     violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
     if violations:
         logger.warning(f"Forbidden expressions found: {violations} — auto-sanitizing")
         result = _sanitize_forbidden(result, violations)
         remaining = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
         if remaining:
+            logger.warning(
+                "SANITIZE_FAILED labels=%s — 정제로 제거되지 않아 재생성한다 "
+                "(마크업이 낀 위반은 원문 기준 정제로 제거할 수 없다)",
+                ",".join(remaining),
+            )
             raise ValueError(f"Cannot sanitize forbidden medical expressions: {remaining}")
 
     # references는 GEO 검증 전에 이미 정규화됨(list[{title,url,source_type}]) — 중복 정규화 불필요.

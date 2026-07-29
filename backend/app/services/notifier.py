@@ -547,8 +547,16 @@ async def notify_content_batch_summary(
     skipped: int = 0,
     cost_blocked: int = 0,
     discarded: int = 0,
+    image_missing: int = 0,
 ) -> bool:
-    if generated == 0 and failed == 0 and skipped == 0 and cost_blocked == 0 and discarded == 0:
+    if (
+        generated == 0
+        and failed == 0
+        and skipped == 0
+        and cost_blocked == 0
+        and discarded == 0
+        and image_missing == 0
+    ):
         return False
     status_emoji = (
         "✅" if failed == 0 and skipped == 0 and cost_blocked == 0 and discarded == 0 else "⚠️"
@@ -561,6 +569,8 @@ async def notify_content_batch_summary(
         # 생성 중 운영자가 종료/발행 등으로 상태를 바꾼 건. 생성 결과는 버려졌고
         # 운영자 의도가 유지됐다는 뜻이므로 실패와 구분해서 알린다.
         + (f", {discarded}건 폐기(생성 중 상태 변경)" if discarded > 0 else "")
+        # 본문은 살아 있으나 대표 이미지가 비었다 — 실패와 구분해 알린다.
+        + (f", {image_missing}건 대표 이미지 없음" if image_missing > 0 else "")
     )
     return await _send(
         text=f"{status_emoji} [콘텐츠 배치] {hospital_name} {scheduled_date} — {summary}",
