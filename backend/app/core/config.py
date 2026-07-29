@@ -354,7 +354,10 @@ class Settings(BaseSettings):
     LOG_JSON: bool = True
 
     # SoV
-    SOV_REPEAT_COUNT: int = 10
+    # 주간 측정 반복 횟수. 월간 리포트는 새로 측정하지 않고 이 기록을 집계하므로
+    # 이 값이 곧 원장 보고 숫자의 표본 크기다.
+    # (SOV_REPEAT_COUNT라는 '월간용' 설정이 있었으나 앱이 한 번도 읽지 않는 죽은 값이라
+    #  제거했다 — 월간 측정이라는 것이 애초에 없다.)
     SOV_REPEAT_COUNT_WEEKLY: int = 5
     # 주간 측정에서 HIGH 우선순위 쿼리 상한 — 초과분은 잘라내고 ops 알림 (비용 가드)
     SOV_HIGH_PRIORITY_CAP: int = 30

@@ -101,10 +101,13 @@ BACKEND_BASE_REQUIRED_SECRET_NAMES=(
   "ADMIN_SESSION_SECRET"
   "SITE_BFF_SECRET"
   "REDIS_URL"
+  # 아침 자동 발행은 캐시 무효화 경로가 없으면 프로덕션에서 배치 전체를 중단한다
+  # (site_revalidate.ensure_site_revalidate_configured). 배포는 선택으로 두고 런타임은
+  # 필수로 요구하면 "배포는 통과하는데 매일 아침 발행만 0건"이 된다 — 필수로 맞춘다.
+  "SITE_REVALIDATE_SECRET"
 )
 
 BACKEND_OPTIONAL_SECRET_NAMES=(
-  "SITE_REVALIDATE_SECRET"
   # IndexNow 키. backend가 제출하고 site가 같은 값을 키 파일로 응답해야 소유가 증명된다 —
   # 두 서비스에 반드시 같은 시크릿을 주입할 것. 미설정이면 제출만 건너뛰고 발행은 정상 동작.
   "INDEXNOW_KEY"

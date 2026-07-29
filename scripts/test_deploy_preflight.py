@@ -300,3 +300,29 @@ def test_model_gate_still_blocks_provider_reinterpreted_names() -> None:
         assert _model_gate(value) == 1, f"{value} 가 통과했다 (부동 별칭인데)"
     for value in ("gemini-flash-latest", "gemini-flash"):
         assert _model_gate(value, "GEMINI_MODEL") == 1, f"{value} 가 통과했다"
+
+
+def test_site_revalidate_secret_is_required_for_backend_not_optional() -> None:
+    """런타임이 필수로 요구하는 시크릿을 배포가 선택으로 두면 안 된다.
+
+    아침 자동 발행(morning_content_auto_publish)은 발행 루프 진입 전에
+    ensure_site_revalidate_configured()로 배치 전체를 중단한다. 배포는 통과하는데
+    매일 아침 발행만 0건이 되는 조합이 성립했다.
+    """
+    text = DEPLOY_SCRIPT.read_text()
+    required = _bash_array_block(text, "BACKEND_BASE_REQUIRED_SECRET_NAMES=(")
+    optional = _bash_array_block(text, "BACKEND_OPTIONAL_SECRET_NAMES=(")
+
+    assert '"SITE_REVALIDATE_SECRET"' in required, "backend 필수 시크릿에 없다"
+    assert '"SITE_REVALIDATE_SECRET"' not in optional, "여전히 선택으로도 남아 있다"
+
+
+def test_runtime_fail_closed_secrets_are_all_required_at_deploy() -> None:
+    """런타임이 프로덕션에서 부재를 이유로 실패시키는 설정은 배포가 보장해야 한다."""
+    revalidate = (
+        PROJECT_ROOT / "backend" / "app" / "services" / "site_revalidate.py"
+    ).read_text()
+    assert "SITE_REVALIDATE_SECRET" in revalidate and "must be configured in production" in revalidate
+
+    required = _bash_array_block(DEPLOY_SCRIPT.read_text(), "BACKEND_BASE_REQUIRED_SECRET_NAMES=(")
+    assert '"SITE_REVALIDATE_SECRET"' in required

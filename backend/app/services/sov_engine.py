@@ -70,30 +70,81 @@ def _get_gemini_client() -> google_genai.Client | None:
     return _gemini_client
 
 
-QUERY_TEMPLATES = [
+# 질문 유형 — 언급률 분모를 가르는 기준.
+#
+# LOCAL: 지역이 들어간 "어느 병원 갈까" 질문. AI가 구체적인 동네 의원 이름을 댄다.
+#        실측(2026-07-29, 성수동/성동구 질문 4종 × 2회): 언급 기관 75곳 중 의원·전문
+#        63곳(84%), 대형병원 12곳(16%). 콘텐츠로 이 자리에 들어갈 수 있다.
+# INFO:  지역이 없는 의학 설명 질문("무릎 통증 초기 증상이 뭔지 알려줘").
+#        AI가 특정 의원 이름을 댈 이유가 없고 실제로 Mayo Clinic·대학병원을 인용한다.
+#        병원이 무엇을 하든 언급률 0으로 고정이다.
+#
+# 왜 나누는가: 전체 324개 질문 중 INFO가 72개(22%)인데 같은 분모에 있었다. 병원이
+# 이길 수 없는 질문이 분모를 부풀려 **우리가 우리 성과를 22% 깎아서 보고**하고 있었다.
+# INFO 질문에서의 성과는 "이름이 불리는 것"이 아니라 "우리 콘텐츠가 출처로 인용되는
+# 것"이라 애초에 다른 지표다 — 하나로 뭉개면 둘 다 못 읽는다.
+QUERY_INTENT_LOCAL = "LOCAL"
+QUERY_INTENT_INFO = "INFO"
+
+# 언급률(원장 보고 헤드라인)의 분모에 들어가는 유형.
+MENTION_RATE_INTENTS = frozenset({QUERY_INTENT_LOCAL})
+
+_TEMPLATE_SPECS: list[tuple[str, str]] = [
     # 추천형
-    "{region} {keyword} 잘 보는 병원 추천해줘",
-    "{region} {specialty} 어디가 좋아",
-    "{sub_region} {keyword} 잘하는 곳",
-    "{region} {specialty} 전문의 추천",
-    "{keyword} 수술 {region} 어느 병원이 좋아?",
-    "{region} {keyword} 치료 잘하는 병원",
+    ("{region} {keyword} 잘 보는 병원 추천해줘", QUERY_INTENT_LOCAL),
+    ("{region} {specialty} 어디가 좋아", QUERY_INTENT_LOCAL),
+    ("{sub_region} {keyword} 잘하는 곳", QUERY_INTENT_LOCAL),
+    ("{region} {specialty} 전문의 추천", QUERY_INTENT_LOCAL),
+    ("{keyword} 수술 {region} 어느 병원이 좋아?", QUERY_INTENT_LOCAL),
+    ("{region} {keyword} 치료 잘하는 병원", QUERY_INTENT_LOCAL),
     # 증상·탐색형
-    "{keyword} 증상 {region}에서 치료 잘하는 곳",
-    "{keyword} 있는데 {region} 어느 병원 가야 해?",
-    "{keyword} 초기 증상이 뭔지 알려줘",
-    "{keyword} 치료하려면 어떤 전문의한테 가야 해?",
-    "{region} {keyword} 빨리 낫는 병원",
+    ("{keyword} 증상 {region}에서 치료 잘하는 곳", QUERY_INTENT_LOCAL),
+    ("{keyword} 있는데 {region} 어느 병원 가야 해?", QUERY_INTENT_LOCAL),
+    ("{keyword} 초기 증상이 뭔지 알려줘", QUERY_INTENT_INFO),
+    ("{keyword} 치료하려면 어떤 전문의한테 가야 해?", QUERY_INTENT_INFO),
+    ("{region} {keyword} 빨리 낫는 병원", QUERY_INTENT_LOCAL),
     # 비교형
-    "{region} {specialty} 병원 어디가 좋은지 비교해줘",
-    "{region} {keyword} 병원 후기 좋은 곳",
-    "{sub_region} {specialty} 잘한다고 소문난 병원",
+    ("{region} {specialty} 병원 어디가 좋은지 비교해줘", QUERY_INTENT_LOCAL),
+    ("{region} {keyword} 병원 후기 좋은 곳", QUERY_INTENT_LOCAL),
+    ("{sub_region} {specialty} 잘한다고 소문난 병원", QUERY_INTENT_LOCAL),
     # 비용·정보형
-    "{keyword} 치료 비용이 얼마나 드는지 알려줘",
-    "{keyword} 수술 후 회복 기간 얼마나 돼?",
-    "{keyword} 비수술 치료 가능한 병원 {region}",
-    "{region} {specialty} 비용 어느 정도야?",
+    ("{keyword} 치료 비용이 얼마나 드는지 알려줘", QUERY_INTENT_INFO),
+    ("{keyword} 수술 후 회복 기간 얼마나 돼?", QUERY_INTENT_INFO),
+    ("{keyword} 비수술 치료 가능한 병원 {region}", QUERY_INTENT_LOCAL),
+    ("{region} {specialty} 비용 어느 정도야?", QUERY_INTENT_LOCAL),
 ]
+
+QUERY_TEMPLATES = [template for template, _ in _TEMPLATE_SPECS]
+
+# 템플릿의 고정부(치환자를 뺀 부분)로 기존 질문 텍스트의 유형을 되찾는다.
+# 마이그레이션 백필과, 템플릿을 거치지 않고 들어온 AIQueryTarget 질문에 쓴다.
+_INFO_TEMPLATE_MARKERS = tuple(
+    sorted(
+        (
+            max(
+                (part for part in template.replace("{keyword}", "\x00").split("\x00")),
+                key=len,
+            ).strip()
+            for template, intent in _TEMPLATE_SPECS
+            if intent == QUERY_INTENT_INFO
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def classify_query_intent(query_text: str) -> str:
+    """질문 텍스트의 유형. 판별 못 하면 LOCAL(분모 포함)로 둔다.
+
+    fail-open인 이유: 잘못 INFO로 빼면 실제 성과가 리포트에서 조용히 사라진다.
+    잘못 LOCAL로 두면 기존과 같은 희석일 뿐이라, 두 오류의 무게가 다르다.
+    """
+    text = (query_text or "").strip()
+    for marker in _INFO_TEMPLATE_MARKERS:
+        if marker and marker in text:
+            return QUERY_INTENT_INFO
+    return QUERY_INTENT_LOCAL
 
 # 자사·경쟁사 판정에 동일하게 들어가는 동일성 기준. 두 프롬프트가 서로 다른 기준을 쓰면
 # "우리 병원 vs 경쟁 병원" 비교가 사과와 오렌지가 된다 — 원장 보고서의 핵심 지표이므로
@@ -140,15 +191,31 @@ def generate_query_matrix(
         )
         return []
 
-    queries = set()
+    return [text for text, _ in generate_query_matrix_specs(region, specialties, keywords)]
+
+
+def generate_query_matrix_specs(
+    region: list[str], specialties: list[str], keywords: list[str]
+) -> list[tuple[str, str]]:
+    """(질문 텍스트, 질문 유형) 목록.
+
+    유형은 텍스트에서 되짚는 게 아니라 **템플릿에서 그대로 들고 온다** — 생성 시점이
+    유형을 가장 확실히 아는 지점이고, 여기서 흘리면 이후로는 추측만 남는다.
+    """
+    if not keywords or not specialties:
+        return []
+
+    seen: dict[str, str] = {}
     main_region = region[0] if region else ""
     sub_region = region[1] if len(region) > 1 else main_region
-    for template, keyword, specialty in product(QUERY_TEMPLATES, keywords, specialties):
+    for (template, intent), keyword, specialty in product(_TEMPLATE_SPECS, keywords, specialties):
         q = template.format(
             region=main_region, sub_region=sub_region, keyword=keyword, specialty=specialty
         )
-        queries.add(q)
-    return list(queries)
+        # 서로 다른 템플릿이 같은 문장을 만들면 더 보수적인 쪽(LOCAL)을 남긴다.
+        if seen.get(q) != QUERY_INTENT_LOCAL:
+            seen[q] = intent
+    return list(seen.items())
 
 
 # 두 플랫폼에 **같은 지시문을 같은 위치로** 준다.
@@ -513,16 +580,33 @@ async def run_single_query(
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))
 
 
-def calculate_sov(results: list[dict]) -> float | None:
-    """AI 답변 언급률(%) — 측정 실패는 분모에서 제외.
+def calculate_sov(
+    results: list[dict], *, intents: frozenset[str] | None = MENTION_RATE_INTENTS
+) -> float | None:
+    """AI 답변 언급률(%) — 측정 실패와 '이길 수 없는 질문'은 분모에서 제외.
 
     - measurement_status == "FAILED" → 분모 제외 (실패가 SoV를 인공적으로 낮추는 것을 방지)
     - measurement_status 미존재 + raw_response 비어있음 → 분모 제외 (네트워크 실패 추정)
+    - query_intent가 INFO → 분모 제외 (지역 없는 의학 설명 질문. AI가 특정 의원 이름을
+      댈 이유가 없어 병원이 무엇을 하든 0으로 고정이다. 전체의 22%를 차지해 우리 성과를
+      그만큼 깎아서 보고하고 있었다.) intents=None을 주면 유형을 가리지 않는다.
     - 그 외는 SUCCESS로 간주
 
     반환 계약: 성공 측정이 1건 이상이면 언급률(float), 성공 레코드가 0건이면 None.
     None은 '측정 안 됨'을 뜻하며 '실제 0% 언급'(0.0)과 구분된다 — 허위 0%가 PDF/Slack
     원장 보고에 들어가지 않도록 호출부가 None을 명시적으로 표기해야 한다.
+    """
+    successful = successful_records(results, intents=intents)
+    if not successful:
+        return None
+    return round(sum(1 for r in successful if r.get("is_mentioned")) / len(successful) * 100, 2)
+
+
+def successful_records(results: list[dict], *, intents: frozenset[str] | None = None) -> list[dict]:
+    """실패를 걸러내고, 요청한 질문 유형만 남긴다.
+
+    intents=None이면 유형을 가리지 않는다(운영 진단·전체 집계용).
+    유형이 없는 레코드는 LOCAL로 본다 — classify_query_intent와 같은 fail-open이다.
     """
     successful: list[dict] = []
     for r in results:
@@ -531,7 +615,30 @@ def calculate_sov(results: list[dict]) -> float | None:
             continue
         if status is None and "raw_response" in r and not (r.get("raw_response") or "").strip():
             continue
+        if intents is not None:
+            intent = r.get("query_intent") or QUERY_INTENT_LOCAL
+            if intent not in intents:
+                continue
         successful.append(r)
-    if not successful:
-        return None
-    return round(sum(1 for r in successful if r.get("is_mentioned")) / len(successful) * 100, 2)
+    return successful
+
+
+def segment_mention_rates(results: list[dict]) -> dict[str, dict]:
+    """유형별 언급률 — 헤드라인 숫자가 어디서 나왔는지 리포트가 보여줄 수 있게 한다.
+
+    INFO 구간의 언급률은 헤드라인에서 빠지지만 사라지면 안 된다. 병원이 이길 수 없는
+    질문이라는 사실 자체가 원장에게 설명되어야 "왜 이 숫자가 올랐나"가 통한다.
+    """
+    out: dict[str, dict] = {}
+    for intent in (QUERY_INTENT_LOCAL, QUERY_INTENT_INFO):
+        rows = successful_records(results, intents=frozenset({intent}))
+        out[intent] = {
+            "measured": len(rows),
+            "mentioned": sum(1 for r in rows if r.get("is_mentioned")),
+            "mention_rate": (
+                round(sum(1 for r in rows if r.get("is_mentioned")) / len(rows) * 100, 2)
+                if rows
+                else None
+            ),
+        }
+    return out

@@ -53,7 +53,14 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
 )
-from app.services.sov_engine import generate_query_matrix, run_single_query, calculate_sov
+from app.services.sov_engine import (
+    MENTION_RATE_INTENTS,
+    calculate_sov,
+    classify_query_intent,
+    generate_query_matrix_specs,
+    run_single_query,
+    segment_mention_rates,
+)
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
 from app.workers.nightly_generation_batch import (
@@ -86,7 +93,12 @@ AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
 
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
-V0_QUERY_SAMPLE_COUNT = 5  # V0 첫 측정에 쓰는 쿼리 개수
+# V0 첫 측정에 쓰는 질문 개수.
+# 5였을 때: 플랫폼당 25개 관측이라 1건 차이로 언급률이 4%p씩 튀었다(±8%p 수준).
+# 원장에게 처음 보여주는 '진단서'의 오차로는 너무 크다. 타임아웃 수정과 luna 전환으로
+# 측정이 빨라져(p50 24.7s) 15개로 늘려도 태스크 예산 안에 들어온다
+# (15 × 5회 × 2플랫폼 = 150호출 ÷ 동시10 × 25s ≈ 375s < soft_time_limit 1800s).
+V0_QUERY_SAMPLE_COUNT = 15
 
 
 def sov_budget_units(*, query_count: int, platform_count: int, repeat_count: int) -> int:
@@ -113,7 +125,12 @@ def v0_sample_query_stmt(hospital_id):
     """
     return (
         select(QueryMatrix)
-        .where(QueryMatrix.hospital_id == hospital_id)
+        .where(
+            QueryMatrix.hospital_id == hospital_id,
+            # INFO 질문은 언급률 분모에서 빠지므로 진단 표본으로 쓰면 호출만 쓰고
+            # 헤드라인에는 기여하지 않는다.
+            QueryMatrix.query_intent.in_(tuple(MENTION_RATE_INTENTS)),
+        )
         .order_by(QueryMatrix.created_at, QueryMatrix.query_text)
         .limit(V0_QUERY_SAMPLE_COUNT)
     )
@@ -300,11 +317,17 @@ def trigger_v0_report(self, hospital_id: str):
                 .where(QueryMatrix.hospital_id == hospital.id)
             ).scalar_one()
             if existing_count == 0:
-                queries = generate_query_matrix(
+                specs = generate_query_matrix_specs(
                     hospital.region, hospital.specialties, hospital.keywords
                 )
-                for q_text in queries:
-                    db.add(QueryMatrix(hospital_id=hospital.id, query_text=q_text))
+                for q_text, q_intent in specs:
+                    db.add(
+                        QueryMatrix(
+                            hospital_id=hospital.id,
+                            query_text=q_text,
+                            query_intent=q_intent,
+                        )
+                    )
                 db.flush()
             else:
                 logger.info(
@@ -387,7 +410,8 @@ def trigger_v0_report(self, hospital_id: str):
                             result=r,
                         )
                         db.add(record)
-                        all_records.append(r)
+                        # 언급률 분모가 유형을 알아야 INFO(이길 수 없는 질문)를 뺄 수 있다.
+                        all_records.append({**r, "query_intent": q.query_intent})
 
             _finish_measurement_run(run, success_count, failure_count)
             db.commit()
@@ -1808,9 +1832,13 @@ def _ensure_variant_query_matrix(db, hospital: Hospital, variant: AIQueryVariant
         if query and query.hospital_id == hospital.id:
             return query
 
+    # variant 질문은 템플릿을 거치지 않고 들어오므로 유형을 텍스트에서 되짚는다.
+    # 여기서 빠뜨리면 AE가 등록한 정보성 질문("무릎 통증 초기 증상")이 LOCAL로 들어가
+    # 언급률 분모를 다시 희석한다 — 분모 분리가 조용히 무력화되는 지점이다.
     query = QueryMatrix(
         hospital_id=hospital.id,
         query_text=variant.query_text,
+        query_intent=classify_query_intent(variant.query_text),
         priority="HIGH",
     )
     db.add(query)
@@ -2071,20 +2099,31 @@ def run_monthly_reports(self):
                     continue
 
                 # 이번 달 AI 답변 언급률 집계
-                sov_stmt = select(SovRecord).where(
-                    SovRecord.hospital_id == h.id,
-                    SovRecord.measured_at >= period_start,
-                    SovRecord.measured_at <= period_end,
+                # QueryMatrix를 조인해 질문 유형을 가져온다 — SovRecord에는 유형이 없고,
+                # 유형 없이는 INFO(지역 없는 의학 설명 질문)를 분모에서 뺄 수 없다.
+                sov_stmt = (
+                    select(SovRecord, QueryMatrix.query_intent)
+                    .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
+                    .where(
+                        SovRecord.hospital_id == h.id,
+                        SovRecord.measured_at >= period_start,
+                        SovRecord.measured_at <= period_end,
+                    )
                 )
-                sov_result = db.execute(sov_stmt)
-                sov_records = sov_result.scalars().all()
+                sov_rows = db.execute(sov_stmt).all()
+                sov_records = [row[0] for row in sov_rows]
+                sov_dicts = [
+                    {
+                        "is_mentioned": row[0].is_mentioned,
+                        "measurement_status": row[0].measurement_status,
+                        "query_intent": row[1],
+                    }
+                    for row in sov_rows
+                ]
                 # None → '측정 데이터 없음' (허위 0%가 원장 보고에 들어가는 것 방지)
-                sov_pct = calculate_sov(
-                    [
-                        {"is_mentioned": r.is_mentioned, "measurement_status": r.measurement_status}
-                        for r in sov_records
-                    ]
-                )
+                # 분모는 LOCAL 질문만 (calculate_sov 기본값).
+                sov_pct = calculate_sov(sov_dicts)
+                sov_segments = segment_mention_rates(sov_dicts)
                 # 실제 측정된 플랫폼만 라벨에 반영 (없으면 None → 설정 기준 유추).
                 measured_platforms = sorted({r.ai_platform for r in sov_records if r.ai_platform})
                 report_platforms = measured_platforms or None
@@ -2092,24 +2131,29 @@ def run_monthly_reports(self):
                 # 전월 AI 답변 언급률
                 prev_start = now.shift(months=-1).floor("month").datetime
                 prev_end = now.floor("month").datetime
-                prev_stmt = select(SovRecord).where(
-                    SovRecord.hospital_id == h.id,
-                    SovRecord.measured_at >= prev_start,
-                    SovRecord.measured_at < prev_end,
+                prev_stmt = (
+                    select(SovRecord, QueryMatrix.query_intent)
+                    .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
+                    .where(
+                        SovRecord.hospital_id == h.id,
+                        SovRecord.measured_at >= prev_start,
+                        SovRecord.measured_at < prev_end,
+                    )
                 )
-                prev_result = db.execute(prev_stmt)
-                prev_records = prev_result.scalars().all()
+                prev_rows = db.execute(prev_stmt).all()
+                prev_records = [row[0] for row in prev_rows]
                 prev_sov = (
                     calculate_sov(
                         [
                             {
-                                "is_mentioned": r.is_mentioned,
-                                "measurement_status": r.measurement_status,
+                                "is_mentioned": row[0].is_mentioned,
+                                "measurement_status": row[0].measurement_status,
+                                "query_intent": row[1],
                             }
-                            for r in prev_records
+                            for row in prev_rows
                         ]
                     )
-                    if prev_records
+                    if prev_rows
                     else None
                 )
                 # 전월대비는 두 달 모두 실측치가 있을 때만 계산 (None-safe).
@@ -2173,6 +2217,9 @@ def run_monthly_reports(self):
                             "sov_pct": sov_pct,
                             "prev_sov_pct": prev_sov,
                             "change_pct": change_pct,
+                            # 헤드라인(sov_pct)은 LOCAL 질문만의 언급률이다. INFO 구간이
+                            # 사라지면 "왜 이 숫자가 올랐나"를 설명할 수 없으므로 함께 남긴다.
+                            "segments": sov_segments,
                         },
                         content_summary={
                             "published_count": len(published_contents),

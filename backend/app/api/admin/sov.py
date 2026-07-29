@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.hospital import Hospital
 from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
+from app.services.sov_engine import MENTION_RATE_INTENTS
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Answer Mention Rate"])
 
@@ -87,10 +88,18 @@ async def get_sov_trend(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     window_start = weeks[0][0]
     window_end = weeks[-1][1]
-    all_rows_stmt = select(SovRecord).where(
-        SovRecord.hospital_id == hospital_id,
-        SovRecord.measured_at >= window_start,
-        SovRecord.measured_at < window_end,
+    # 언급률 분모는 LOCAL(지역 의도) 질문만 쓴다 — 월간 리포트의 calculate_sov와 같은
+    # 기준이어야 Admin 추이와 원장 리포트의 숫자가 갈리지 않는다. INFO(지역 없는 의학
+    # 설명) 질문은 AI가 특정 의원 이름을 댈 이유가 없어 병원이 무엇을 하든 0으로 고정이다.
+    all_rows_stmt = (
+        select(SovRecord)
+        .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
+        .where(
+            SovRecord.hospital_id == hospital_id,
+            SovRecord.measured_at >= window_start,
+            SovRecord.measured_at < window_end,
+            QueryMatrix.query_intent.in_(tuple(MENTION_RATE_INTENTS)),
+        )
     )
     all_rows = (await db.execute(all_rows_stmt)).scalars().all()
 

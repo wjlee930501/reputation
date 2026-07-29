@@ -563,8 +563,8 @@ header "10" "SoV 측정 태스크 (ChatGPT + Gemini)"
 # ══════════════════════════════════════════════════════════════════
 
 if has_key "OPENAI_API_KEY"; then
-  SOV_REPEAT=$(grep SOV_REPEAT_COUNT .env | cut -d= -f2 | tr -d '\r\n')
-  info "SOV_REPEAT_COUNT=$SOV_REPEAT — run_sov_for_hospital 실행 중..."
+  SOV_REPEAT=$(grep SOV_REPEAT_COUNT_WEEKLY .env | cut -d= -f2 | tr -d '\r\n')
+  info "SOV_REPEAT_COUNT_WEEKLY=$SOV_REPEAT — run_sov_for_hospital 실행 중..."
 
   SOV_OUT=$(run_task_sync "
 from app.workers.tasks import run_sov_for_hospital

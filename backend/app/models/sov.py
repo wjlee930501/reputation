@@ -23,6 +23,10 @@ class QueryMatrix(Base):
         index=True,  # ix_query_matrix_hospital_id (migration 0023)
     )
     query_text: Mapped[str] = mapped_column(String(500), nullable=False)
+    # LOCAL(지역 의도) | INFO(지역 없는 의학 설명). 언급률 분모는 LOCAL만 쓴다 —
+    # INFO는 AI가 특정 의원 이름을 댈 이유가 없어 병원이 무엇을 하든 0으로 고정이다.
+    # 생성 시점의 템플릿에서 그대로 들고 온다(sov_engine.generate_query_matrix_specs).
+    query_intent: Mapped[str] = mapped_column(String(20), nullable=False, default="LOCAL")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[str] = mapped_column(String(20), default="NORMAL")  # HIGH, NORMAL, LOW
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
