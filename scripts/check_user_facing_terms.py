@@ -14,7 +14,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCAN_PATHS = [
     ROOT / "admin" / "app",
+    # 화면 문구가 lib의 순수 함수로 빠지는 일이 잦다(예: admin/lib/sov-trend.ts의
+    # "아직 측정 전"). app만 스캔하면 리팩터 한 번으로 가드 사각지대가 생긴다.
+    ROOT / "admin" / "lib",
     ROOT / "site" / "app",
+    ROOT / "site" / "lib",
     ROOT / "backend" / "app" / "api",
     ROOT / "backend" / "app" / "services",
     ROOT / "backend" / "app" / "workers",
