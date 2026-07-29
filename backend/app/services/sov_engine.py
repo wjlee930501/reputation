@@ -18,23 +18,38 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# 동시성 풀 이름. 유료 측정(sov)과 무료 진단(leadgen)이 **다른 풀**을 쓴다.
+#
+# 큐만 분리하면(PRD F6-1) 이 요구가 지켜지지 않는다 — 세마포어가 전역이면 무료 진단이
+# 몰릴 때 유료 고객의 주간 측정이 같은 슬롯을 두고 굶는다. 선착순 마케팅은 오픈 직후
+# 신청을 몰리게 만드는 것이 목적이므로, 그 순간이 정확히 유료 경로가 느려지는 순간이 된다.
+POOL_SOV = "sov"
+POOL_LEADGEN = "leadgen"
+
 _sem_lock = threading.Lock()
-_api_semaphore: asyncio.Semaphore | None = None
+_api_semaphores: dict[str, asyncio.Semaphore] = {}
 _semaphore_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _get_semaphore() -> asyncio.Semaphore:
-    """Lazily create semaphore bound to the current event loop.
+def _pool_limit(pool: str) -> int:
+    if pool == POOL_LEADGEN:
+        return settings.LEADGEN_PROVIDER_CONCURRENCY
+    return SOV_PROVIDER_CONCURRENCY
+
+
+def _get_semaphore(pool: str = POOL_SOV) -> asyncio.Semaphore:
+    """Lazily create a per-pool semaphore bound to the current event loop.
     Thread-safe: uses a lock for creation. Recreates if the loop changed.
     """
-    global _api_semaphore, _semaphore_loop
+    global _semaphore_loop
     current_loop = asyncio.get_running_loop()
-    if _api_semaphore is None or _semaphore_loop is not current_loop:
-        with _sem_lock:
-            if _api_semaphore is None or _semaphore_loop is not current_loop:
-                _api_semaphore = asyncio.Semaphore(SOV_PROVIDER_CONCURRENCY)
-                _semaphore_loop = current_loop
-    return _api_semaphore
+    with _sem_lock:
+        if _semaphore_loop is not current_loop:
+            _api_semaphores.clear()
+            _semaphore_loop = current_loop
+        if pool not in _api_semaphores:
+            _api_semaphores[pool] = asyncio.Semaphore(_pool_limit(pool))
+        return _api_semaphores[pool]
 
 
 # 공급자 호출은 전부 I/O 대기다 — 동시 실행 수가 곧 측정 태스크의 벽시계 시간을 정한다.
@@ -508,11 +523,18 @@ async def run_single_query(
     platform: str,
     repeat_count: int,
     competitors: list[str] | None = None,
+    pool: str = POOL_SOV,
 ) -> list[dict]:
+    """`pool`은 동시성 풀만 고르고 측정 조건은 바꾸지 않는다.
+
+    무료 진단과 유료 측정이 **같은 모델·같은 프롬프트·같은 판정 기준**을 써야
+    무료에서 본 숫자와 첫 유료 리포트가 어긋나지 않는다(PRD §7-4). 여기서 갈리는 것은
+    "동시에 몇 개를 던지느냐"뿐이다.
+    """
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
 
     async def single():
-        async with _get_semaphore():
+        async with _get_semaphore(pool):
             try:
                 provider_result = await query_fn(query_text)
             except Exception as e:
@@ -578,6 +600,57 @@ async def run_single_query(
                 }
 
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))
+
+
+async def fetch_answer(query_text: str, platform: str, *, pool: str = POOL_SOV) -> dict[str, Any]:
+    """공급자 답변만 가져온다 — **판정은 하지 않는다.**
+
+    `run_single_query`는 답변과 판정을 한 덩어리로 묶는데, 질의 단위 공유 캐시는
+    둘을 갈라야 성립한다: 답변은 병원과 무관해 재사용할 수 있지만 판정은 병원마다
+    다시 해야 하기 때문이다(설계 §2-6).
+
+    실패는 예외가 아니라 `measurement_status='FAILED'`인 dict로 돌려준다 — 호출부가
+    측정 1건의 실패와 진단 전체의 실패를 구분해야 한다.
+    """
+    query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
+    async with _get_semaphore(pool):
+        try:
+            provider_result = await query_fn(query_text)
+        except Exception as exc:  # noqa: BLE001 — 측정 1건의 실패는 진단을 멈추지 않는다.
+            logger.error("Query failed (%s): %s", platform, exc)
+            return {
+                "text": "",
+                "source_urls": [],
+                "measurement_status": "FAILED",
+                "failure_reason": f"provider_query_failed:{type(exc).__name__}",
+            }
+
+    if isinstance(provider_result, str):
+        provider_result = {"text": provider_result, "source_urls": []}
+    raw = str(provider_result.get("text") or "")
+    if not raw.strip():
+        return {
+            "text": "",
+            "source_urls": _normalize_source_urls(provider_result.get("source_urls") or []),
+            "measurement_status": "FAILED",
+            "failure_reason": "empty_raw_response",
+        }
+    return {
+        "text": raw,
+        "source_urls": _normalize_source_urls(provider_result.get("source_urls") or []),
+        "answer_model": provider_result.get("answer_model"),
+        "measurement_method": provider_result.get("measurement_method"),
+        "measurement_status": "SUCCESS",
+        "failure_reason": None,
+    }
+
+
+async def judge_mention(hospital_name: str, response_text: str) -> dict:
+    """이 답변이 그 병원을 언급했는가.
+
+    캐시된 답변에도 **반드시 다시 실행한다** — 답변은 병원과 무관하지만 판정은 아니다.
+    """
+    return await _parse_mention(hospital_name, response_text)
 
 
 def calculate_sov(

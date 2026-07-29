@@ -43,7 +43,7 @@ services:
 
   worker:
     build: ./backend
-    command: celery -A app.core.celery_app worker --loglevel=info -Q default,content,sov,reports -c 4
+    command: celery -A app.core.celery_app worker --loglevel=info -Q default,content,sov,reports,leadgen -c 4
     volumes:
       - ./backend:/app
       - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp-key.json:ro

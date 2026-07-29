@@ -99,13 +99,47 @@ def test_measurement_fits_inside_its_celery_soft_time_limit(task_name: str) -> N
     )
 
 
-def test_provider_concurrency_is_actually_used_by_the_semaphore() -> None:
-    """상수만 있고 Semaphore가 옛 상수를 쓰면 동시성 조정이 무의미해진다."""
-    source = (sov_engine.__file__ or "").replace(".pyc", ".py")
-    text = open(source, encoding="utf-8").read()
-    assert "asyncio.Semaphore(SOV_PROVIDER_CONCURRENCY)" in text, (
-        "Semaphore가 SOV_PROVIDER_CONCURRENCY를 쓰지 않는다"
-    )
+@pytest.mark.asyncio
+async def test_provider_concurrency_is_actually_used_by_the_semaphore() -> None:
+    """상수만 있고 Semaphore가 옛 값을 쓰면 동시성 조정이 무의미해진다.
+
+    소스 텍스트가 아니라 **만들어진 세마포어의 실제 용량**을 본다 — 문자열 검사는
+    구현을 조금만 바꿔도 통과하거나 깨지는데, 둘 다 잘못된 신호다.
+    """
+    sov_engine._api_semaphores.clear()
+    semaphore = sov_engine._get_semaphore(sov_engine.POOL_SOV)
+    assert semaphore._value == sov_engine.SOV_PROVIDER_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_leadgen_and_paid_measurement_do_not_share_a_concurrency_pool() -> None:
+    """무료 진단이 유료 측정의 슬롯을 굶기면 안 된다 (PRD F6-1 · 설계 T-13).
+
+    큐만 분리하고 세마포어를 공유하면 이 요구는 코드 수준에서 지켜지지 않는다.
+    선착순 마케팅은 오픈 직후 신청을 몰리게 만드는 것이 목적이라, 그 순간이 정확히
+    유료 고객 측정이 느려지는 순간이 된다.
+    """
+    sov_engine._api_semaphores.clear()
+    paid = sov_engine._get_semaphore(sov_engine.POOL_SOV)
+    free = sov_engine._get_semaphore(sov_engine.POOL_LEADGEN)
+
+    assert paid is not free
+    assert free._value == settings.LEADGEN_PROVIDER_CONCURRENCY
+
+    # 무료 풀을 완전히 소진시켜도 유료 풀의 잔여 슬롯이 줄지 않는다.
+    for _ in range(settings.LEADGEN_PROVIDER_CONCURRENCY):
+        await free.acquire()
+    assert free.locked()
+    assert paid._value == sov_engine.SOV_PROVIDER_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_run_single_query_defaults_to_the_paid_pool() -> None:
+    """기본값이 leadgen이면 기존 유료 경로가 조용히 무료 풀로 옮겨간다."""
+    import inspect
+
+    default = inspect.signature(sov_engine.run_single_query).parameters["pool"].default
+    assert default == sov_engine.POOL_SOV
 
 
 def test_both_platforms_receive_the_identical_prompt() -> None:

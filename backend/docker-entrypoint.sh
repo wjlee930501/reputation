@@ -13,7 +13,7 @@ case "$SERVICE" in
     python -m app.workers.health_server &
     exec celery -A app.core.celery_app worker \
       --loglevel=info \
-      -Q default,content,sov,reports \
+      -Q default,content,sov,reports,leadgen \
       -c "${CELERY_CONCURRENCY:-2}" \
       --max-tasks-per-child="${CELERY_MAX_TASKS_PER_CHILD:-50}"
     ;;
