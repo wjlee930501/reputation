@@ -161,3 +161,41 @@ def test_a_dirty_tracked_object_bypasses_the_guard_via_autoflush(pg_conn, pg_ses
     assert row.status == "CANCELLED"
     assert row.title is None
     assert row.body is None
+
+
+def test_unfinished_claims_are_released_so_a_redelivery_can_pick_them_up(pg_conn, pg_session):
+    """생성 못 한 슬롯의 claim은 배치 종료 시 해제되어야 한다.
+
+    claim은 행 잠금 해제를 위해 커밋으로 내구화되는데 해제 경로가 없었다. 워커가
+    중간에 죽으면 남은 슬롯이 TTL(2시간)까지 잠기고, 재배달된 실행은 claim 필터에
+    걸려 아무것도 못 잡은 채 "생성할 것 없음"으로 성공 종료한다.
+    """
+    from datetime import datetime, timezone
+
+    from app.workers.nightly_generation_batch import release_unfinished_claims
+
+    generated_id = _seed_item(pg_conn, status="DRAFT")
+    unfinished_id = _seed_item(pg_conn, status="DRAFT")
+    now = datetime.now(timezone.utc)
+    pg_conn.execute(
+        text("UPDATE content_items SET generation_claimed_at = :t WHERE id IN (:a, :b)"),
+        {"t": now, "a": generated_id, "b": unfinished_id},
+    )
+    # 하나는 생성에 성공해 본문이 있다.
+    pg_conn.execute(
+        text("UPDATE content_items SET body = '생성된 본문' WHERE id = :id"),
+        {"id": generated_id},
+    )
+
+    released = release_unfinished_claims(pg_session, [generated_id, unfinished_id])
+
+    assert released == 1, "본문 없는 슬롯 1건만 해제되어야 한다"
+    rows = dict(
+        pg_conn.execute(
+            text("SELECT id, generation_claimed_at FROM content_items WHERE id IN (:a, :b)"),
+            {"a": generated_id, "b": unfinished_id},
+        ).all()
+    )
+    assert rows[unfinished_id] is None, "미생성 슬롯의 claim이 남아 다음 실행을 막는다"
+    # 생성에 성공한 슬롯은 claim 이력을 유지한다(중복 생성 방지 신호).
+    assert rows[generated_id] is not None

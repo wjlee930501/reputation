@@ -16,7 +16,7 @@ import hashlib
 import logging
 import threading
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import arrow
@@ -60,9 +60,25 @@ from app.workers.nightly_generation_batch import (
     GENERATION_CATCHUP_DAYS,
     NIGHTLY_GENERATION_CAP,
     _load_nightly_generation_batch,
+    count_stuck_claims,
+    release_unfinished_claims,
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     write_back_generated_content,
 )
+
+# 격주 측정 주차 판정 — **절대 기준 경과 주 수**로 계산한다.
+#
+# `isocalendar()[1] % 2`를 쓰면 ISO 53주 연도 경계에서 패리티 연속성이 깨진다.
+# 2026년이 53주 연도라 52주(짝=측정) → 53주(홀=스킵) → 1주(홀=스킵)로 이어져
+# NORMAL 우선순위 쿼리가 3주 공백을 갖고, 12월/1월 표본이 절반이 되어 전월 대비
+# 변화가 "표본 수 변화"로 오염된다.
+_MEASUREMENT_WEEK_EPOCH = date(2026, 1, 5)  # 2026-W02 월요일 (임의의 고정 기준점)
+
+
+def _is_even_measurement_week(today: date) -> bool:
+    """격주 측정에서 이번 주가 '측정하는 주'인가."""
+    return ((today - _MEASUREMENT_WEEK_EPOCH).days // 7) % 2 == 0
+
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +194,34 @@ def _reset_v0_analyzing_status(hospital_id: str, prior_status: str | None) -> No
         logger.exception("Failed to reset ANALYZING status for hospital %s", hospital_id)
 
 
+# V0 클레임의 최대 생존 시간. 태스크 하드 리밋(time_limit=2100s)보다 넉넉히 잡아,
+# 정상 실행이 진행 중인데 다른 실행이 클레임을 뺏어가는 일이 없게 한다.
+V0_CLAIM_MAX_AGE_SECONDS = 2400
+
+
+def _v0_claim_is_alive(db, hospital_id: uuid.UUID) -> bool:
+    """ANALYZING 클레임이 아직 살아 있는 실행의 것인가.
+
+    측정 실행(MeasurementRun)을 클레임의 하트비트로 쓴다. RUNNING 상태의 최근 실행이
+    있으면 진행 중, 없거나 하드 리밋을 넘겼으면 죽은 클레임으로 본다.
+
+    상태 컬럼만으로는 판단할 수 없다 — 하드 종료된 실행은 상태를 되돌리지 못하고
+    죽으므로, ANALYZING은 "진행 중"과 "죽은 채 방치됨"을 구분하지 못한다.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=V0_CLAIM_MAX_AGE_SECONDS)
+    running = db.execute(
+        select(MeasurementRun.id)
+        .where(
+            MeasurementRun.hospital_id == hospital_id,
+            MeasurementRun.status == "RUNNING",
+            MeasurementRun.started_at.isnot(None),
+            MeasurementRun.started_at >= cutoff,
+        )
+        .limit(1)
+    )
+    return running.scalar() is not None
+
+
 def _ensure_v0_has_successful_measurements(success_count: int, failure_count: int) -> None:
     if success_count <= 0:
         raise RuntimeError(
@@ -223,13 +267,23 @@ def trigger_v0_report(self, hospital_id: str):
                 return
 
             # in-progress 가드: 다른 실행이 이미 ANALYZING으로 클레임했다면 중복 측정 금지.
-            # 실패한 실행은 _reset_v0_analyzing_status로 상태를 복원하므로 여기 걸리는 것은
-            # 진행 중인 실행뿐이다.
+            #
+            # 단, ANALYZING만 보고 판단하면 안 된다. 실패 경로는 _reset_v0_analyzing_status로
+            # 상태를 복원하지만 **하드 종료(SIGKILL·OOM·Cloud Run scale-in)에서는 except가
+            # 실행되지 않는다**. 그러면 재배달된 실행이 ANALYZING을 보고 조용히 return하고,
+            # v0_report_done은 영원히 False로 남아 STEP4까지 함께 멈춘 채 Slack 신호도 없다.
+            # 그래서 클레임의 생존 여부를 측정 실행 기록으로 확인해 만료된 클레임은 탈취한다.
             if hospital.status == HospitalStatus.ANALYZING:
-                logger.info(
-                    "V0 report already in progress for %s; skipping duplicate", hospital.name
+                if _v0_claim_is_alive(db, hospital.id):
+                    logger.info(
+                        "V0 report already in progress for %s; skipping duplicate", hospital.name
+                    )
+                    return
+                logger.warning(
+                    "Reclaiming a stale V0 ANALYZING claim for %s — the previous run died "
+                    "without releasing it",
+                    hospital.name,
                 )
-                return
 
             prior_status = (
                 hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
@@ -540,8 +594,29 @@ def nightly_content_generation():
             )
 
         if not items:
-            logger.info(f"No content to generate for {window_start}~{tomorrow}")
+            # 빈손 종료가 "할 일이 없음"인지 "직전 실행이 죽어 claim이 잠김"인지 구분한다.
+            # 구분하지 않으면 한 달치 유실도 조용히 성공으로 보고된다.
+            stuck = count_stuck_claims(db, window_start, tomorrow)
+            if stuck:
+                logger.warning(
+                    "nightly_content_generation found nothing: %d slots are still locked by "
+                    "a previous run's claim",
+                    stuck,
+                )
+                _run_async(
+                    notifier.notify_ops_alert(
+                        title="야간 콘텐츠 생성이 빈손으로 종료",
+                        message=(
+                            f"{stuck}건이 직전 실행의 claim에 잠겨 이번 배치가 아무것도 "
+                            f"생성하지 못했습니다. 직전 워커가 비정상 종료했을 수 있습니다."
+                        ),
+                    )
+                )
+            else:
+                logger.info(f"No content to generate for {window_start}~{tomorrow}")
             return
+
+        claimed_item_ids = [item.id for item in items]
 
         # 병원별 생성 성공/실패/차단 추적 → 배치 완료 후 요약 Slack
         hospital_stats: dict[str, dict] = {}
@@ -769,6 +844,13 @@ def nightly_content_generation():
                         image_missing=stat["image_missing"],
                     )
                 )
+
+        # 생성되지 않고 남은 claim을 되돌린다. 되돌리지 않으면 TTL(2시간)까지 잠겨,
+        # 그 사이 재배달된 실행이 아무것도 못 잡고 "생성할 것 없음"으로 성공 종료한다.
+        released = release_unfinished_claims(db, claimed_item_ids)
+        if released:
+            db.commit()
+            logger.info("Released %d unfinished generation claims", released)
 
 
 @celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)
@@ -1347,8 +1429,7 @@ def run_sov_for_hospital(self, hospital_id: str):
             # priority 기반 쿼리 필터링 — beat은 월요일 02:00 KST(=일요일 UTC)에 발화하므로
             # UTC date.today()를 쓰면 ISO 주차 짝/홀이 뒤집히고 월초 판정도 어긋난다 (P1-5).
             today_kst = arrow.now("Asia/Seoul").date()
-            current_week = today_kst.isocalendar()[1]
-            is_even_week = current_week % 2 == 0
+            is_even_week = _is_even_measurement_week(today_kst)
             current_month_day = today_kst.day
             is_month_start = current_month_day <= 7  # 월초 첫째 주
 

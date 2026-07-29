@@ -104,3 +104,52 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
     if claimed_items:
         db.commit()
     return claimed_items, truncated_count
+
+
+def release_unfinished_claims(db, item_ids: list) -> int:
+    """생성되지 않은 채 남은 claim을 즉시 해제한다. 반환값은 해제된 건수.
+
+    claim은 커밋으로 내구화되는데(잠금 해제를 위해 필요하다) 실패 시 해제 경로가
+    없었다. 워커가 중간에 죽으면 남은 슬롯이 TTL(2시간)까지 잠기고, 그 사이 재배달된
+    실행은 claim 필터에 걸려 아무것도 못 잡은 채 "생성할 것 없음"으로 **성공 종료**한다.
+    다음 기회는 다음날 밤이라 슬롯이 하루 밀리고, 그 사이 08:00 자동 발행은 body가
+    없어 아무것도 발행하지 못한다. 그래서 끝날 때 반드시 되돌린다.
+    """
+    if not item_ids:
+        return 0
+    result = db.execute(
+        update(ContentItem)
+        .where(
+            ContentItem.id.in_(item_ids),
+            ContentItem.body.is_(None),
+            ContentItem.generation_claimed_at.isnot(None),
+        )
+        .values(generation_claimed_at=None)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount
+
+
+def count_stuck_claims(db, window_start, window_end) -> int:
+    """아직 만료되지 않은 claim 때문에 이번 배치가 건너뛴 슬롯 수.
+
+    배치가 빈손으로 끝났을 때 "정말 할 일이 없는 것"과 "직전 실행이 죽어 claim이
+    잠긴 것"을 구분하기 위한 값이다. 구분하지 않으면 한 달치 유실도 조용히 성공으로 보고된다.
+    """
+    claim_cutoff = _nightly_generation_claim_cutoff()
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(ContentItem)
+            .join(Hospital, ContentItem.hospital_id == Hospital.id)
+            .where(
+                ContentItem.scheduled_date >= window_start,
+                ContentItem.scheduled_date <= window_end,
+                ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
+                ContentItem.body.is_(None),
+                Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
+                ContentItem.generation_claimed_at.isnot(None),
+                ContentItem.generation_claimed_at >= claim_cutoff,
+            )
+        ).scalar_one()
+    )
