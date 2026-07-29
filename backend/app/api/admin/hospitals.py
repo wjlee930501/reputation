@@ -262,11 +262,22 @@ def _serialize_readiness_check(check: ReadinessCheck) -> dict:
     }
 
 
+# site/lib/host-routing.ts의 RESERVED_PREFIXES와 동기 유지해야 한다.
+# 한쪽만 고치면 "등록은 되는데 페이지가 안 열리는 병원"이 조용히 생긴다.
+RESERVED_SITE_SLUGS = frozenset(
+    {"api", "ai-diagnosis", "landing", "privacy", "terms", "robots", "sitemap", "favicon"}
+)
+
+
 # ── 엔드포인트 ────────────────────────────────────────────────────
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=HospitalDetail)
 async def create_hospital(body: HospitalCreate, db: AsyncSession = Depends(get_db)):
     """신규 병원 등록 (계약 완료 후 AE가 첫 번째로 실행)"""
     slug = slugify(body.name, separator="-")
+    # 공개 표면의 예약 경로와 겹치면 그 병원 페이지가 통째로 가려진다.
+    # 예: slug가 'ai-diagnosis'인 병원은 무료 진단 퍼널에 먹혀 영원히 열리지 않는다 (PRD F1-3).
+    if slug in RESERVED_SITE_SLUGS:
+        slug = f"{slug}-{uuid.uuid4().hex[:4]}"
     # slug 중복 방지
     existing = await db.execute(select(Hospital).where(Hospital.slug == slug))
     if existing.scalar_one_or_none():

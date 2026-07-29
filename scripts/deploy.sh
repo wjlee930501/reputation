@@ -105,6 +105,15 @@ BACKEND_BASE_REQUIRED_SECRET_NAMES=(
   # (site_revalidate.ensure_site_revalidate_configured). 배포는 선택으로 두고 런타임은
   # 필수로 요구하면 "배포는 통과하는데 매일 아침 발행만 0건"이 된다 — 필수로 맞춘다.
   "SITE_REVALIDATE_SECRET"
+  # 무료 진단 1회 제한의 해시 pepper. **로테이션 금지** — 값이 바뀌면 기존 잠금이 전부
+  # 풀려 이미 신청한 병원이 다시 신청할 수 있게 된다. config.py가 dev 기본값을 프로덕션에서
+  # 거부하므로 미설정이면 부팅 자체가 실패한다.
+  "LEAD_LOCK_HASH_PEPPER"
+  # 리포트/상태 페이지 열람 토큰의 해시 pepper. 없으면 부팅 실패(같은 게이트).
+  "LEAD_REPORT_TOKEN_SECRET"
+  # 무료 진단 리포트 메일 발송(Resend). 없으면 측정·리포트는 되는데 아무도 못 받는다 —
+  # 리드마그넷의 목적 자체가 전달이므로 선택이 아니라 필수로 둔다.
+  "RESEND_API_KEY"
 )
 
 BACKEND_OPTIONAL_SECRET_NAMES=(

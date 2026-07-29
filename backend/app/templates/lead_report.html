@@ -1,0 +1,134 @@
+{# 무료 진단 블러 리포트 (PRD F5).
+
+   이 템플릿은 `LeadReportPayload`만 받는다. 원자료(raw_response)나 경쟁 병원명을
+   담은 변수는 컨텍스트에 존재하지 않으므로, 실수로 출력할 수 있는 경로가 없다.
+
+   플랫폼 표기는 API·모델명이다(F5-1) — "ChatGPT 9번 중 0번"이라고 쓰면 §2-2에서
+   철회한 "환자가 보는 화면" 주장을 라벨로 되살리는 셈이다.
+#}
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>{{ payload.hospital_name }} AI 노출 진단</title>
+  <style>
+    @page { size: A4; margin: 18mm 16mm; }
+    body { font-family: "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+           color: #1a1d21; font-size: 10.5pt; line-height: 1.6; }
+    h1 { font-size: 18pt; margin: 0 0 4px; }
+    h2 { font-size: 12pt; margin: 22px 0 8px; border-bottom: 1px solid #d8dde3; padding-bottom: 5px; }
+    .sub { color: #5b6672; font-size: 9.5pt; margin-bottom: 18px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+    th, td { border: 1px solid #d8dde3; padding: 7px 9px; text-align: left; font-size: 9.5pt; }
+    th { background: #f4f6f8; font-weight: 600; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .headline { font-size: 13pt; font-weight: 600; }
+    .caveat { color: #5b6672; font-size: 9pt; margin-top: 6px; }
+    .locked { background: #f4f6f8; border: 1px dashed #b9c2cc; border-radius: 6px;
+              padding: 14px 16px; color: #5b6672; font-size: 9.5pt; }
+    .locked strong { color: #1a1d21; }
+    .notice { color: #5b6672; font-size: 8.5pt; margin-top: 4px; }
+    code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 9pt; }
+  </style>
+</head>
+<body>
+
+  <h1>{{ payload.hospital_name }} AI 노출 진단</h1>
+  <div class="sub">
+    지역 «{{ payload.region }}» · 생성 {{ payload.generated_at.strftime('%Y-%m-%d %H:%M') }}
+  </div>
+
+  <h2>측정 결과</h2>
+  {% if payload.segments %}
+    <table>
+      <thead>
+        <tr>
+          <th>측정 경로</th>
+          <th class="num">측정</th>
+          <th class="num">언급</th>
+          <th class="num">실패</th>
+          <th class="num">언급 비율</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for segment in payload.segments %}
+          <tr>
+            <td>{{ segment.label }}</td>
+            <td class="num">{{ segment.measured }}회</td>
+            <td class="num">{{ segment.mentioned }}회</td>
+            <td class="num">{{ segment.failed }}회</td>
+            <td class="num">
+              {%- if segment.mention_rate is none -%}측정 데이터 없음
+              {%- else -%}{{ segment.mention_rate }}%{%- endif -%}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="headline">
+      전체 {{ payload.total_measured }}번의 측정 중 {{ payload.total_mentioned }}번 언급되었습니다.
+    </div>
+  {% else %}
+    <p>측정 데이터가 없습니다.</p>
+  {% endif %}
+  <div class="caveat">{{ sample_caveat }}</div>
+
+  <h2>측정 조건 — 전문 공개</h2>
+  <table>
+    <tbody>
+      <tr><th style="width:28%">반복 횟수</th><td>질문당 {{ payload.repeat_count }}회</td></tr>
+      <tr><th>판정 모델</th><td><code>{{ payload.judge_model }}</code></td></tr>
+      {% for segment in payload.segments %}
+        <tr><th>{{ segment.vendor_label }} 답변 모델</th><td><code>{{ segment.model }}</code></td></tr>
+      {% endfor %}
+      <tr><th>시스템 지시문</th><td>{{ payload.system_prompt }}</td></tr>
+    </tbody>
+  </table>
+  <div class="caveat">
+    답변 모델과 판정 모델을 의도적으로 분리합니다. 같은 모델로 통일하면 자와 대상이 함께
+    움직여 변화를 잴 수 없고, 생성자가 자기 출력을 채점하는 편향도 생깁니다.
+  </div>
+
+  <h2>사용한 질문 전문</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:8%">#</th>
+        <th>질문</th>
+        <th style="width:24%">측정 일시</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for query in payload.queries %}
+        <tr>
+          <td>{{ query.slot }}</td>
+          <td>{{ query.text }}</td>
+          <td>
+            {%- if query.measured_at -%}
+              {{ query.measured_at.strftime('%Y-%m-%d %H:%M') }}
+            {%- else -%}—{%- endif -%}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="caveat">
+    질문에 병원명을 넣지 않습니다. 자기 이름을 물으면 언급은 보장되고 측정은 무의미해집니다.
+  </div>
+
+  <h2>전체 리포트에 포함되는 항목</h2>
+  <div class="locked">
+    <strong>이 진단에서는 제공하지 않습니다.</strong><br>
+    · 함께 언급된 다른 병원 목록<br>
+    · 언급된 답변의 원문 발췌<br>
+    · 노출을 높이기 위한 개선 항목<br>
+    <br>
+    위 항목은 계약 후 월간 리포트에서 제공합니다.
+  </div>
+
+  {% for notice in payload.notices %}
+    <div class="notice">{{ notice }}</div>
+  {% endfor %}
+
+</body>
+</html>

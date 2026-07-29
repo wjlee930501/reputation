@@ -1,15 +1,43 @@
 """Celery 라우팅 회귀 가드.
 
-워커는 docker-entrypoint.sh에서 -Q default,content,sov,reports 로만 큐를 소비한다.
 task_routes에 없는 태스크는 Celery 기본 "celery" 큐로 떨어져 영원히 실행되지 않는다 —
 특히 beat 스케줄 태스크(예: purge_expired_leads = 법적 PII 파기)는 치명적이다.
-beat_schedule의 모든 태스크가 워커가 소비하는 큐로 라우팅되는지 검증한다.
+
+**소비 큐 목록을 여기 적어두지 않고 docker-entrypoint.sh에서 읽는다.** 하드코딩하면
+이 파일이 진실을 *복사*할 뿐이라, 새 큐를 추가하고 워커 인자를 안 고쳐도 두 곳을 같이
+고치는 한 통과한다. 실제 배포 인자에서 파싱해야 둘의 드리프트가 실패로 드러난다.
 """
+import re
+from pathlib import Path
 
 from app.core.celery_app import REDBEAT_SCHEDULE_VERSION, celery_app
 
-# docker-entrypoint.sh `celery worker -Q default,content,sov,reports` 와 동기 유지.
-KNOWN_WORKER_QUEUES = {"default", "content", "sov", "reports"}
+_ENTRYPOINT = Path(__file__).resolve().parents[1] / "docker-entrypoint.sh"
+
+
+def _worker_queues_from_entrypoint() -> set[str]:
+    text = _ENTRYPOINT.read_text(encoding="utf-8")
+    match = re.search(r"-Q\s+([a-z0-9_,\-]+)", text)
+    assert match, f"docker-entrypoint.sh에서 celery worker -Q 인자를 찾지 못했다: {_ENTRYPOINT}"
+    return {queue.strip() for queue in match.group(1).split(",") if queue.strip()}
+
+
+KNOWN_WORKER_QUEUES = _worker_queues_from_entrypoint()
+
+
+def test_worker_queue_list_is_parsed_from_the_real_entrypoint():
+    """파싱이 깨져 빈 집합이 되면 아래 검사들이 조용히 무력해진다."""
+    assert "default" in KNOWN_WORKER_QUEUES
+    assert len(KNOWN_WORKER_QUEUES) >= 4
+
+
+def test_compose_worker_consumes_the_same_queues_as_the_deployed_entrypoint():
+    """로컬(compose)과 배포(entrypoint)가 다른 큐를 소비하면 로컬에서만 되는 태스크가 생긴다."""
+    compose = (_ENTRYPOINT.parents[1] / "docker-compose.yml").read_text(encoding="utf-8")
+    match = re.search(r"celery .*worker.* -Q ([a-z0-9_,\-]+)", compose)
+    assert match, "docker-compose.yml에서 celery worker -Q 인자를 찾지 못했다"
+    compose_queues = {q.strip() for q in match.group(1).split(",") if q.strip()}
+    assert compose_queues == KNOWN_WORKER_QUEUES
 
 
 def _resolved_queue(task_name: str) -> str | None:

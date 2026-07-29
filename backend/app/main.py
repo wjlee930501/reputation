@@ -27,6 +27,7 @@ from app.api.admin import leads as admin_leads
 from app.api.admin import operations as admin_operations
 from app.api.public import site as public_site
 from app.api.public import leads as public_leads
+from app.api.public import diagnosis as public_diagnosis
 from app.core.config import settings
 from app.core.observability import configure_logging, sentry_before_send, set_request_id
 from app.core.rate_limit import limiter
@@ -120,6 +121,14 @@ class PublicApiCacheMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         if not request.url.path.startswith("/api/v1/public/"):
             return response
+        # 무료 진단은 **개인에게 발급된 토큰**으로 열리는 표면이다(PRD F5-4).
+        # 여기에 public 캐시 헤더가 붙으면 CDN이 한 사람의 리포트를 저장했다가
+        # 같은 URL을 요청한 다른 사람에게 그대로 내줄 수 있다.
+        if request.url.path.startswith("/api/v1/public/diagnosis"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Robots-Tag"] = "noindex, nofollow"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
         if request.method != "GET":
             response.headers["Cache-Control"] = "no-store"
             return response
@@ -171,6 +180,7 @@ app.include_router(admin_leads.router, prefix="/api/v1", dependencies=admin_deps
 app.include_router(public_site.router, prefix="/api/v1")
 app.include_router(public_site.domain_router, prefix="/api/v1")
 app.include_router(public_leads.router, prefix="/api/v1")
+app.include_router(public_diagnosis.router, prefix="/api/v1")
 
 
 @app.get("/health")

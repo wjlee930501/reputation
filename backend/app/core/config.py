@@ -166,6 +166,17 @@ class Settings(BaseSettings):
         self._validate_external_https_url("ADMIN_BASE_URL", self.ADMIN_BASE_URL, errors)
         self._validate_external_https_url("SITE_BASE_URL", self.SITE_BASE_URL, errors)
 
+        # 리드 진단 시크릿은 dev 기본값으로 뜨면 안 된다.
+        # LEAD_LOCK_HASH_PEPPER가 기본값이면 전화번호(공간이 좁다)가 무지개표로 역산되고,
+        # LEAD_REPORT_TOKEN_SECRET이 기본값이면 누구나 남의 리포트 링크를 위조할 수 있다.
+        for name, dev_default in (
+            ("LEAD_LOCK_HASH_PEPPER", "dev-lock-pepper-change-me"),
+            ("LEAD_REPORT_TOKEN_SECRET", "dev-report-secret-change-me"),
+        ):
+            value = str(getattr(self, name, "")).strip()
+            if not value or value == dev_default:
+                errors.append(f"{name} must be set to a production secret (dev default detected).")
+
         if errors:
             raise ValueError("Insecure production config:\n  - " + "\n  - ".join(errors))
 
@@ -392,6 +403,32 @@ class Settings(BaseSettings):
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수
     LEAD_CONSENT_VERSION: str = "v1.2026-05"  # 처리방침 버전 — 변경 시 재동의 필요
+
+    # ── 리드마그넷 무료 진단 (1단). 설계: docs/plans/2026-07-29-lead-diagnosis-funnel-design.md
+    # 하루 자리 수. **이 값이 곧 예산 상한이다** — 건당 최악 1,600원이므로 20건이면
+    # 하루 32,000원으로 수학적으로 묶인다. 그래서 cost_guard에 별도 카테고리를 두지 않는다.
+    # 랜딩의 "오늘 남은 자리 N/20"에 그대로 노출되는 마케팅 숫자이기도 하다.
+    LEADGEN_DAILY_SLOTS: int = 20
+    # 질의 3개 고정. 5개는 건당 2,498원으로 상한까지 여유가 4%뿐이라 재시도 몇 번에 넘긴다.
+    LEADGEN_QUERY_COUNT: int = 3
+    LEADGEN_REPEAT_COUNT: int = 3
+    # 무료 진단 전용 공급자 동시성. sov_engine의 전역 세마포어를 그대로 쓰면 유료 측정과
+    # 경합하므로(PRD F6-1) 풀을 분리한다. 실제 값은 출시 전 20건 동시 주입 부하 시험으로 확정.
+    LEADGEN_PROVIDER_CONCURRENCY: int = 15
+    # 질의 단위 공유 캐시 수명. 질의에 병원명이 없어 답변이 병원 무관이므로 공유 가능하다.
+    # 길게 잡을수록 싸지지만 리포트가 오래된 스냅샷이 된다 — 측정 일시는 항상 원본을 표기한다.
+    LEADGEN_QUERY_CACHE_TTL_DAYS: int = 7
+    # 잠금 해시 pepper. 유출된 DB만으로 전화번호를 역산하지 못하게 한다(번호 공간이 좁다).
+    # **바뀌면 기존 잠금이 전부 풀린다** — 로테이션 금지, Secret Manager 고정값.
+    LEAD_LOCK_HASH_PEPPER: str = "dev-lock-pepper-change-me"
+    # 리포트/상태 페이지 서명 키. Admin 세션 HMAC과 audience가 다르다(PRD F5-4).
+    LEAD_REPORT_TOKEN_SECRET: str = "dev-report-secret-change-me"
+    LEAD_REPORT_TOKEN_TTL_DAYS: int = 30
+    # 리포트 발송 (Resend). 비어 있으면 발송을 시도하지 않고 delivery 행에 사유를 남긴다 —
+    # 조용히 성공 처리하면 "발송 완료"인데 아무도 못 받는 상태가 된다.
+    RESEND_API_KEY: str = ""
+    LEAD_MAIL_FROM: str = "Re:putation <noreply@reputation.motionlabs.kr>"
+    LEAD_MAIL_REPLY_TO: str = ""
 
     # Public 폼 rate-limit
     PUBLIC_LEAD_RATE_LIMIT: str = "5/minute;30/hour;100/day"

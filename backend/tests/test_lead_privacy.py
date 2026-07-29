@@ -52,6 +52,16 @@ def test_anonymize_lead_is_idempotent():
     assert anonymize_lead(already, datetime.now(timezone.utc)) is False
 
 
+class _EmptyResult:
+    """진단이 없는 리드(기존 문의 폼 경로)의 조회 결과."""
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
+
 class _FakeDB:
     def __init__(self, lead):
         self._lead = lead
@@ -60,6 +70,11 @@ class _FakeDB:
 
     async def get(self, model, object_id):
         return self._lead if self._lead and self._lead.id == object_id else None
+
+    async def execute(self, statement):
+        # 파기는 이제 진단 산출물까지 함께 지운다. 문의 폼 리드에는 진단이 없으므로
+        # 빈 결과를 돌려준다 — fake가 실제 인터페이스를 흉내내야 이 경로가 검증된다.
+        return _EmptyResult()
 
     def add(self, item):
         self.added.append(item)

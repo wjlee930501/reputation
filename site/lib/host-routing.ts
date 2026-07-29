@@ -83,7 +83,9 @@ export function resolveRequestHost(
 }
 
 // 커스텀 도메인에서도 플랫폼 그대로 서빙해야 하는 예약 경로.
-const RESERVED_PREFIXES = ['/_next', '/api', '/landing', '/privacy', '/terms']
+// '/ai-diagnosis'가 빠지면 커스텀 도메인에서 /{slug}/ai-diagnosis로 rewrite돼
+// 무료 진단 퍼널이 병원 페이지 밑으로 사라진다 (PRD F1-3).
+const RESERVED_PREFIXES = ['/_next', '/api', '/ai-diagnosis', '/landing', '/privacy', '/terms']
 const RESERVED_EXACT = new Set(['/robots.txt', '/sitemap.xml'])
 
 // 확장자가 있는 경로는 정적 자산으로 보고 손대지 않는다 — 단 /llms.txt는

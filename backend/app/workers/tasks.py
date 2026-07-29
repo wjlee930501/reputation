@@ -2355,10 +2355,11 @@ def purge_expired_leads():
     """
     from app.models.hospital import Hospital
     from app.models.lead import SalesLead
-    from app.services.lead_privacy import anonymize_lead, scrub_onboarding_note
+    from app.services.lead_privacy import purge_lead_completely, scrub_onboarding_note
 
     now = datetime.now(timezone.utc)
     purged = 0
+    stuck = 0
     error_msg: str | None = None
     try:
         with SyncSessionLocal() as db:
@@ -2367,20 +2368,34 @@ def purge_expired_leads():
                 SalesLead.retain_until.is_not(None),
                 SalesLead.retain_until <= now,
             )
-            for lead in db.execute(stmt).scalars().all():
-                if anonymize_lead(lead, now):
-                    purged += 1
-                    # CDX-M2: 전환된 병원의 onboarding_note에 복사된 운영자 자유 텍스트도
-                    # 함께 파기 (lead row만 익명화하면 파기 라이프사이클을 우회).
-                    if lead.converted_hospital_id:
-                        hospital = db.get(Hospital, lead.converted_hospital_id)
-                        if hospital and hospital.onboarding_note:
-                            hospital.onboarding_note = scrub_onboarding_note(
-                                hospital.onboarding_note, lead.id
-                            )
-            if purged:
-                db.commit()
-        logger.info(f"purge_expired_leads: anonymized {purged} expired leads")
+            leads = db.execute(stmt).scalars().all()
+            for lead in leads:
+                # **리드별로 커밋한다.** 한 트랜잭션에 묶으면 한 건의 실패(GCS 장애,
+                # 제약 위반)가 그날 파기 대상 **전부**를 롤백시키고, 같은 독성 행이
+                # 다음 날 다시 선택되어 영구 반복된다 — 법정 파기 의무가 조용히 멈춘다.
+                try:
+                    if purge_lead_completely(db, lead, now)["anonymized"]:
+                        purged += 1
+                        # CDX-M2: 전환된 병원의 onboarding_note에 복사된 운영자 자유
+                        # 텍스트도 함께 파기 (lead row만 익명화하면 라이프사이클 우회).
+                        if lead.converted_hospital_id:
+                            hospital = db.get(Hospital, lead.converted_hospital_id)
+                            if hospital and hospital.onboarding_note:
+                                hospital.onboarding_note = scrub_onboarding_note(
+                                    hospital.onboarding_note, lead.id
+                                )
+                        db.commit()
+                    else:
+                        db.rollback()
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    stuck += 1
+                    logger.exception("lead purge failed for %s: %s", lead.id, exc)
+        logger.info(
+            "purge_expired_leads: anonymized %s expired leads (%s stuck)", purged, stuck
+        )
+        if stuck:
+            error_msg = f"{stuck}건이 파기에 실패했습니다 (로그 확인 필요)"
     except Exception as exc:
         error_msg = str(exc)
         logger.exception("purge_expired_leads failed")
@@ -2390,7 +2405,7 @@ def purge_expired_leads():
     except Exception:
         logger.exception("purge_expired_leads slack notify failed (non-fatal)")
 
-    return {"purged": purged, "error": error_msg}
+    return {"purged": purged, "stuck": stuck, "error": error_msg}
 
 
 @celery_app.task(

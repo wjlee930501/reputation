@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.hospital import Hospital, Plan
 from app.models.lead import SalesLead
+from app.models.lead_diagnosis import LeadDiagnosis
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.lead_privacy import anonymize_lead, scrub_onboarding_note
+from app.services.lead_privacy import purge_lead_completely_async, scrub_onboarding_note
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
 
@@ -176,7 +177,11 @@ async def erase_lead_pii(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    changed = anonymize_lead(lead, datetime.now(timezone.utc))
+    # 진단 산출물(리포트 PDF·열람 토큰·AI 답변 원문)까지 함께 파기한다.
+    # 이것을 빼면 purged_at만 찍히고 PDF와 활성 토큰이 남는데, 이후 보관기간
+    # 배치는 purged_at IS NULL만 조회하므로 그 리드를 영원히 건너뛴다.
+    _now = datetime.now(timezone.utc)
+    changed = (await purge_lead_completely_async(db, lead, _now))["anonymized"]
 
     # CDX-M2: 전환 시 hospital.onboarding_note로 복사된 운영자 자유 텍스트도 함께 파기 —
     # lead row만 익명화하면 노트가 파기 라이프사이클을 우회한다.
@@ -297,3 +302,69 @@ def _merge_onboarding_note(hospital: Hospital, lead: SalesLead, operator_note: s
         hospital.onboarding_note = f"{hospital.onboarding_note}\n\n{lead_note}"
     else:
         hospital.onboarding_note = lead_note
+
+
+class ReleaseLockRequest(BaseModel):
+    reason: str = Field(min_length=2, max_length=200)
+
+
+@router.post("/{lead_id}/release-lock")
+async def release_diagnosis_lock(
+    lead_id: uuid.UUID,
+    request_body: ReleaseLockRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """무료 진단 1회 제한 해제 (PRD F1-7).
+
+    **이 엔드포인트가 없으면 F1-6(전화번호+이메일 영구 잠금)은 리드 차단 장치가 된다.**
+    공격자나 대행사가 공개된 병원 대표번호로 먼저 신청하면, 정작 원장은 영구히 거절된다.
+    그 상황을 푸는 **유일한** 경로다.
+
+    사유를 필수로 받고 감사 로그를 남긴다 — 잠금 해제는 그 병원이 무료 진단을 한 번 더
+    받는다는 뜻이므로 누가 왜 풀었는지가 남아야 한다.
+    """
+    lead = await db.get(SalesLead, lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    now = datetime.now(timezone.utc)
+    actor = default_actor()
+    diagnoses = (
+        await db.execute(
+            select(LeadDiagnosis).where(
+                LeadDiagnosis.lead_id == lead_id,
+                LeadDiagnosis.lock_released_at.is_(None),
+            )
+        )
+    ).scalars().all()
+
+    if not diagnoses:
+        # 이미 풀렸거나 진단이 없다. 404가 아니라 명시적 안내 — 운영자가 "무엇이
+        # 잘못됐는지" 알 수 있어야 한다.
+        raise HTTPException(status_code=409, detail="해제할 잠금이 없습니다.")
+
+    for diagnosis in diagnoses:
+        diagnosis.lock_released_at = now
+        diagnosis.lock_released_by = actor
+        diagnosis.lock_release_reason = request_body.reason.strip()[:200]
+
+    await write_audit_log(
+        db,
+        action="release_lead_diagnosis_lock",
+        hospital_id=lead.converted_hospital_id,
+        actor=actor,
+        target_type="sales_lead",
+        target_id=str(lead.id),
+        detail={
+            "released_count": len(diagnoses),
+            "reason": request_body.reason.strip()[:200],
+        },
+    )
+    await db.commit()
+
+    return {
+        "detail": "released",
+        "released_count": len(diagnoses),
+        "released_by": actor,
+        "released_at": now.isoformat(),
+    }

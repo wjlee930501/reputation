@@ -7375,3 +7375,99 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     margin-top: 22px;
   }
 }
+
+/* ── 무료 AI 노출 진단 (리드마그넷 1단) ─────────────────────────────
+   병원 콘텐츠 허브와 다른 표면이다 — 여기는 개인 신청 폼이므로
+   테마 토큰(clinic-theme)을 쓰지 않고 플랫폼 기본 스타일을 쓴다. */
+.dg-page { max-width: 720px; margin: 0 auto; padding: 56px 20px 96px; }
+.dg-eyebrow { font-size: 13px; letter-spacing: .04em; color: #5b6672; margin: 0 0 8px; }
+.dg-header h1 { font-size: 30px; line-height: 1.35; margin: 0 0 14px; }
+.dg-lede { font-size: 16px; line-height: 1.75; color: #384250; margin: 0; }
+
+.dg-how { margin-top: 44px; padding: 24px; background: #f6f7f9; border-radius: 12px; }
+.dg-how h2 { font-size: 16px; margin: 0 0 14px; }
+.dg-how ol { margin: 0; padding-left: 20px; }
+.dg-how li { font-size: 14.5px; line-height: 1.8; color: #384250; }
+.dg-note { margin: 16px 0 0; font-size: 13px; line-height: 1.75; color: #5b6672; }
+
+.dg-form-section { margin-top: 48px; }
+.dg-form-section h2 { font-size: 18px; margin: 0 0 18px; }
+
+.dg-panel { border: 1px solid #e2e6ea; border-radius: 12px; padding: 26px; background: #fff; }
+.dg-slots {
+  margin: 0 0 16px; font-size: 14px; color: #384250;
+  padding: 10px 14px; background: #f2f6ff; border-radius: 8px;
+}
+.dg-slots strong { font-size: 17px; }
+
+/* 이 문구가 억제 장치의 본체다 — 작게 적으면 효과가 없다 (PRD F1-6). */
+.dg-once-notice {
+  margin: 0 0 24px; padding: 14px 16px; font-size: 14px; line-height: 1.75;
+  background: #fff8e6; border: 1px solid #f0dfae; border-radius: 8px; color: #55471f;
+}
+
+.dg-field { margin-bottom: 18px; }
+.dg-field label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.dg-field input[type='text'], .dg-field input[type='email'] {
+  width: 100%; padding: 11px 13px; font-size: 15px;
+  border: 1px solid #d8dde3; border-radius: 8px; background: #fff;
+}
+.dg-field input[aria-invalid='true'] { border-color: #d64545; }
+.dg-field input:disabled { background: #f4f6f8; color: #8a94a0; }
+.dg-hint { margin: 6px 0 0; font-size: 12.5px; color: #5b6672; line-height: 1.6; }
+.dg-hint button {
+  background: none; border: none; padding: 0; font: inherit;
+  color: #1d4ed8; text-decoration: underline; cursor: pointer;
+}
+.dg-error { margin: 6px 0 0; font-size: 12.5px; color: #d64545; line-height: 1.6; }
+.dg-error-block { margin: 0 0 14px; padding: 11px 13px; background: #fdf0f0; border-radius: 8px; }
+
+.dg-consent label { display: flex; gap: 9px; align-items: flex-start; font-weight: 400; }
+.dg-consent input { margin-top: 3px; }
+.dg-consent span { font-size: 13.5px; line-height: 1.6; color: #384250; }
+
+.dg-submit {
+  width: 100%; padding: 14px; font-size: 15px; font-weight: 600;
+  color: #fff; background: #1a1d21; border: none; border-radius: 8px; cursor: pointer;
+}
+.dg-submit:disabled { background: #b9c2cc; cursor: not-allowed; }
+
+.dg-modal-backdrop {
+  position: fixed; inset: 0; background: rgba(16, 20, 26, .55);
+  display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 60;
+}
+.dg-modal {
+  width: 100%; max-width: 440px; max-height: 90vh; overflow-y: auto;
+  background: #fff; border-radius: 12px; padding: 26px;
+}
+.dg-modal h2 { font-size: 18px; margin: 0 0 18px; }
+.dg-modal-rows > div {
+  display: grid; grid-template-columns: 78px 1fr; gap: 12px;
+  padding: 9px 0; border-bottom: 1px solid #f0f2f5;
+}
+.dg-modal-rows dt { font-size: 13px; color: #5b6672; margin: 0; }
+.dg-modal-rows dd { font-size: 14px; margin: 0; word-break: break-all; }
+.dg-modal-warning {
+  margin: 18px 0; padding: 13px 15px; font-size: 13px; line-height: 1.7;
+  background: #fff8e6; border: 1px solid #f0dfae; border-radius: 8px; color: #55471f;
+}
+.dg-modal-actions { display: flex; gap: 10px; }
+.dg-modal-actions button {
+  flex: 1; padding: 12px; font-size: 14px; font-weight: 600;
+  border-radius: 8px; cursor: pointer; border: 1px solid #d8dde3; background: #fff;
+}
+.dg-modal-actions .dg-primary { background: #1a1d21; color: #fff; border-color: #1a1d21; }
+.dg-modal-actions button:disabled { opacity: .6; cursor: not-allowed; }
+
+.dg-done h2 { font-size: 19px; margin: 0 0 12px; }
+.dg-done p { font-size: 14.5px; line-height: 1.75; margin: 0 0 10px; }
+.dg-muted { color: #5b6672; font-size: 13px !important; }
+.dg-status-link {
+  display: block; margin-top: 8px; padding: 12px 14px; font-size: 13px;
+  background: #f6f7f9; border-radius: 8px; word-break: break-all; color: #1d4ed8;
+}
+
+@media (max-width: 520px) {
+  .dg-page { padding: 36px 16px 72px; }
+  .dg-header h1 { font-size: 25px; }
+}

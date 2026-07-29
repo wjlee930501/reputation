@@ -12,7 +12,7 @@ from app.core.observability import configure_logging, sentry_before_send, set_re
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-07-29.1"
+REDBEAT_SCHEDULE_VERSION = "2026-07-30.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -63,7 +63,11 @@ celery_app = Celery(
     "reputation",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.workers.tasks", "app.workers.naver_sync"],
+    include=[
+        "app.workers.tasks",
+        "app.workers.naver_sync",
+        "app.workers.lead_diagnosis_tasks",
+    ],
 )
 
 celery_app.conf.update(
@@ -115,6 +119,13 @@ celery_app.conf.update(
         "app.workers.tasks.adjust_query_priorities": {"queue": "sov"},
         "app.workers.tasks.monitor_live_custom_domains": {"queue": "default"},
         "app.workers.naver_sync.weekly_naver_source_sync": {"queue": "default"},
+        # 리드마그넷(1단) — 전용 큐. 유료 측정(sov)과 워커 슬롯을 나눈다.
+        # 동시성 풀도 따로다(sov_engine.POOL_LEADGEN) — 큐만 나누면 무료 진단이
+        # 몰릴 때 유료 고객 측정이 같은 세마포어에서 굶는다.
+        "app.workers.lead_diagnosis_tasks.run_lead_diagnosis": {"queue": "leadgen"},
+        "app.workers.lead_diagnosis_tasks.build_lead_report": {"queue": "leadgen"},
+        "app.workers.lead_diagnosis_tasks.send_lead_report_email": {"queue": "leadgen"},
+        "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": {"queue": "default"},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성
@@ -153,6 +164,13 @@ celery_app.conf.update(
         "weekly-naver-source-sync": {
             "task": "app.workers.naver_sync.weekly_naver_source_sync",
             "schedule": crontab(hour=3, minute=0, day_of_week=2),
+        },
+        # 1분마다 — 무료 진단 폴러. DB가 큐이므로(outbox 없음) 이 tick이 유일한
+        # 신뢰 경로다: 접수의 celery publish가 실패해도 60초 안에 회수된다.
+        # 좌초 RUNNING 회수·재시도 소진 종결·질의 캐시 만료 삭제도 함께 처리한다.
+        "drain-lead-diagnoses": {
+            "task": "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses",
+            "schedule": crontab(minute="*"),
         },
         # 15분마다 — 런타임으로 추가된 모든 병원 자기 도메인의 실제 TLS/Host 응답 확인.
         "live-custom-domain-health": {
