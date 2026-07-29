@@ -84,6 +84,18 @@ async def deliver_report(db: AsyncSession, diagnosis: LeadDiagnosis) -> dict:
     elif delivery.status == DeliveryStatus.SENT.value:
         return {"skipped": "already_sent"}
     else:
+        # **발송 직전에 창을 다시 본다.** 스윕이 23시간 59분에 retriable로 판정해도
+        # 큐 지연으로 24시간을 넘겨 실행될 수 있고, 그때는 Resend가 키를 잊어
+        # 재시도가 곧 두 번째 메일이 된다.
+        age = datetime.now(timezone.utc) - delivery.created_at
+        if age >= IDEMPOTENCY_WINDOW or (delivery.attempt or 1) >= MAX_ATTEMPTS:
+            delivery.status = DeliveryStatus.FAILED.value
+            delivery.error = (
+                f"{delivery.error or ''}\n멱등성 창 밖 또는 재시도 소진 — 자동 재발송 중단"
+            ).strip()[:2000]
+            diagnosis.delivery_status = DeliveryStatus.FAILED.value
+            await db.commit()
+            return {"skipped": "idempotency_window_expired"}
         delivery.attempt = (delivery.attempt or 1) + 1
         delivery.status = DeliveryStatus.SENDING.value
         await db.commit()

@@ -250,6 +250,10 @@ def delete_report_pdf(storage_uri: str) -> None:
 
     반대 순서로 하면 `purged_at`은 찍혔는데 객체는 살아 있는, 가장 나쁜 상태가 된다
     (파기 기록이 거짓말이 됨). 실패하면 예외를 올려 커밋을 막는다.
+
+    **이미 없는 객체는 성공으로 본다.** 산출물 A는 지웠는데 B에서 실패해 트랜잭션이
+    롤백되면 A의 `purged_at`도 되돌아간다. 재시도가 A에서 `NotFound`로 또 멈추면
+    파기가 영구히 좌초한다 — 부재는 우리가 원한 결과이므로 전진해야 한다.
     """
     if not storage_uri:
         return
@@ -259,9 +263,13 @@ def delete_report_pdf(storage_uri: str) -> None:
             path.unlink()
         return
 
+    from google.api_core import exceptions as gcloud_exceptions
     from google.cloud import storage
 
     _, _, rest = storage_uri.partition("gs://")
     bucket_name, _, blob_name = rest.partition("/")
     client = storage.Client()
-    client.bucket(bucket_name).blob(blob_name).delete()
+    try:
+        client.bucket(bucket_name).blob(blob_name).delete()
+    except gcloud_exceptions.NotFound:
+        logger.info("lead report already absent, treating as purged: %s", storage_uri)

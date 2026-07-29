@@ -34,7 +34,7 @@ class _ProviderSpy:
         self.text = text
         self.fail_platforms = set(fail_platforms)
 
-    async def fetch_answer(self, query_text, platform, *, pool=None):
+    async def fetch_answer(self, query_text, platform, *, pool=None, requested_model=None):
         self.calls.append((platform, query_text))
         if platform in self.fail_platforms:
             return {
@@ -174,7 +174,7 @@ class TestExecutionStatus:
         """반복 일부가 실패해도 두 플랫폼에 데이터가 있으면 리포트를 만들 수 있다."""
         flaky = itertools.count()
 
-        async def fetch(query_text, platform, *, pool=None):
+        async def fetch(query_text, platform, *, pool=None, requested_model=None):
             # 3번째 호출마다 실패 — 두 플랫폼 모두 성공이 남는다.
             if next(flaky) % 3 == 0:
                 return {
@@ -397,3 +397,61 @@ class TestSharedQueryCache:
             await pg_async_session.scalar(select(func.count()).select_from(LeadQueryAnswer))
         )
         assert remaining == 0
+
+
+@pytest.mark.asyncio
+class TestCacheConflictIsolation:
+    """캐시 경합이 **측정 결과를 파괴하지 않아야** 한다.
+
+    캐시 적재는 측정 결과 18행과 같은 트랜잭션에서 일어난다. 충돌 시 세션 전체를
+    rollback하면 그 18행이 통째로 사라진다 — 그리고 이 경합은 드문 사고가 아니라
+    **공유 캐시가 정확히 유도하는 상황**이다. 두 병원이 같은 질의를 동시에 측정하면
+    반드시 한쪽이 진다.
+    """
+
+    async def test_a_cache_collision_does_not_discard_the_measurements(
+        self, pg_async_session, spy, monkeypatch
+    ):
+        first = await _seed_diagnosis(pg_async_session, hospital_name="가나의원")
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, first)
+
+        # 조회는 비었는데 저장은 충돌하는 상태 = 두 진단이 동시에 같은 질의를 측정한 상황.
+        async def empty_cache(*args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(lead_query_cache, "get_cached_answers", empty_cache)
+
+        second = await _seed_diagnosis(pg_async_session, hospital_name="다라의원")
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, second)
+
+        rows = int(
+            await pg_async_session.scalar(
+                select(func.count())
+                .select_from(LeadDiagnosisResult)
+                .where(LeadDiagnosisResult.diagnosis_id == second.id)
+            )
+        )
+        assert rows == 18, "캐시 충돌이 측정 결과를 삼켰다"
+        assert second.execution_status == ExecutionStatus.SUCCEEDED.value
+
+    async def test_the_losing_writer_leaves_exactly_one_cache_row(
+        self, pg_async_session, spy, monkeypatch
+    ):
+        """경합에서 진 쪽이 물러나되, 이긴 쪽의 캐시는 그대로 남아야 한다."""
+        first = await _seed_diagnosis(pg_async_session, hospital_name="가나의원")
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, first)
+        before = int(
+            await pg_async_session.scalar(select(func.count()).select_from(LeadQueryAnswer))
+        )
+
+        async def empty_cache(*args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(lead_query_cache, "get_cached_answers", empty_cache)
+        second = await _seed_diagnosis(pg_async_session, hospital_name="다라의원")
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, second)
+
+        after = int(
+            await pg_async_session.scalar(select(func.count()).select_from(LeadQueryAnswer))
+        )
+        assert after == before, "충돌한 캐시 행이 중복 저장됐다"

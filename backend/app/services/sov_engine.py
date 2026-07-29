@@ -602,8 +602,20 @@ async def run_single_query(
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))
 
 
-async def fetch_answer(query_text: str, platform: str, *, pool: str = POOL_SOV) -> dict[str, Any]:
+async def fetch_answer(
+    query_text: str,
+    platform: str,
+    *,
+    pool: str = POOL_SOV,
+    requested_model: str | None = None,
+) -> dict[str, Any]:
     """공급자 답변만 가져온다 — **판정은 하지 않는다.**
+
+    `requested_model`은 접수 시점에 고정한 모델이다. 넘기지 않으면 실행 시점의 전역
+    설정을 쓰는데, API 배포와 워커 배포 사이에 모델이 바뀌면 **캐시 키·리포트 표기와
+    실제 호출 모델이 어긋난다** — M2 답변이 M1 캐시에 저장되고 리포트는 M1이라고 적힌다.
+    불일치가 감지되면 호출하지 않고 실패로 돌려준다: 잘못된 모델로 잰 숫자를 파느니
+    한 건 실패하는 편이 낫다.
 
     `run_single_query`는 답변과 판정을 한 덩어리로 묶는데, 질의 단위 공유 캐시는
     둘을 갈라야 성립한다: 답변은 병원과 무관해 재사용할 수 있지만 판정은 병원마다
@@ -612,6 +624,20 @@ async def fetch_answer(query_text: str, platform: str, *, pool: str = POOL_SOV) 
     실패는 예외가 아니라 `measurement_status='FAILED'`인 dict로 돌려준다 — 호출부가
     측정 1건의 실패와 진단 전체의 실패를 구분해야 한다.
     """
+    if requested_model:
+        active = settings.OPENAI_MODEL_QUERY if platform == "chatgpt" else settings.GEMINI_MODEL
+        if requested_model != active:
+            logger.error(
+                "pinned model drift: requested=%s active=%s platform=%s",
+                requested_model, active, platform,
+            )
+            return {
+                "text": "",
+                "source_urls": [],
+                "measurement_status": "FAILED",
+                "failure_reason": f"pinned_model_drift:{requested_model}!={active}",
+            }
+
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
     async with _get_semaphore(pool):
         try:

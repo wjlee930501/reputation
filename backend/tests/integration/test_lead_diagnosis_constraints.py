@@ -175,20 +175,39 @@ class TestDailySlots:
             with pg_conn.begin_nested():
                 _insert_diagnosis(pg_conn, lead_id=lead, slot_no=0)
 
-    def test_next_slot_number_comes_from_the_table_itself(self, pg_conn):
-        """배정 쿼리가 실제로 다음 번호를 준다 — 접수 API가 쓰는 바로 그 SQL."""
-        lead = _insert_lead(pg_conn)
-        day = date(2026, 8, 4)
+    def test_the_counter_serializes_allocation_up_to_the_limit(self, pg_conn):
+        """접수 API가 **실제로 쓰는** 원자적 배정 SQL.
+
+        예전 테스트는 `MAX(slot_no)+1`을 "접수 API가 쓰는 바로 그 SQL"이라고 적어놨는데
+        API는 그것을 쓰지 않았다 — 테스트가 검증한다고 주장한 것과 코드가 하는 일이
+        달랐고, 그래서 동시 접수가 무너지는 것을 아무도 못 봤다.
+        """
+        day = date(2026, 8, 5)
+        pg_conn.execute(
+            text("INSERT INTO lead_diagnosis_slot_days (slot_date, used) VALUES (:d, 0)"),
+            {"d": day},
+        )
+        claim = text(
+            "UPDATE lead_diagnosis_slot_days SET used = used + 1 "
+            "WHERE slot_date = :d AND used < :limit RETURNING used"
+        )
         for expected in (1, 2, 3):
-            next_no = pg_conn.execute(
-                text(
-                    "SELECT COALESCE(MAX(slot_no), 0) + 1 FROM lead_diagnoses "
-                    "WHERE slot_date = :slot_date"
-                ),
-                {"slot_date": day},
-            ).scalar_one()
-            assert next_no == expected
-            _insert_diagnosis(pg_conn, lead_id=lead, slot_date=day, slot_no=next_no)
+            assert pg_conn.execute(claim, {"d": day, "limit": 3}).scalar_one() == expected
+        # 한도에 닿으면 더 이상 배정되지 않는다 — 이것이 예산 상한의 전부다.
+        assert pg_conn.execute(claim, {"d": day, "limit": 3}).scalar_one_or_none() is None
+
+    def test_the_counter_cannot_go_negative(self, pg_conn):
+        day = date(2026, 8, 6)
+        pg_conn.execute(
+            text("INSERT INTO lead_diagnosis_slot_days (slot_date, used) VALUES (:d, 0)"),
+            {"d": day},
+        )
+        with pytest.raises(IntegrityError):
+            with pg_conn.begin_nested():
+                pg_conn.execute(
+                    text("UPDATE lead_diagnosis_slot_days SET used = -1 WHERE slot_date = :d"),
+                    {"d": day},
+                )
 
 
 class TestAxisInvariants:
@@ -199,8 +218,9 @@ class TestAxisInvariants:
     """
 
     @pytest.mark.parametrize("execution_status", ["PENDING", "RUNNING", "FAILED"])
-    def test_report_cannot_leave_pending_without_a_usable_execution(
-        self, pg_conn, execution_status
+    @pytest.mark.parametrize("report_status", ["BUILDING", "READY"])
+    def test_a_report_cannot_be_built_without_a_usable_execution(
+        self, pg_conn, execution_status, report_status
     ):
         lead = _insert_lead(pg_conn)
         with pytest.raises(IntegrityError):
@@ -209,8 +229,22 @@ class TestAxisInvariants:
                     pg_conn,
                     lead_id=lead,
                     execution_status=execution_status,
-                    report_status="READY",
+                    report_status=report_status,
                 )
+
+    @pytest.mark.parametrize("report_status", ["BLOCKED", "PURGED"])
+    def test_terminal_report_states_do_not_require_a_usable_execution(
+        self, pg_conn, report_status
+    ):
+        """BLOCKED는 실행 실패 시 도달하는 정상 상태이고, PURGED는 파기의 종결이다.
+
+        이 둘을 막으면 각각 "리포트 차단"과 "파기"가 프로덕션에서 크래시한다 —
+        후자는 그날 만료된 모든 리드의 파기를 함께 롤백시킨다.
+        """
+        lead = _insert_lead(pg_conn)
+        _insert_diagnosis(
+            pg_conn, lead_id=lead, execution_status="FAILED", report_status=report_status
+        )
 
     @pytest.mark.parametrize("execution_status", ["SUCCEEDED", "PARTIAL"])
     def test_report_may_proceed_on_succeeded_or_partial(self, pg_conn, execution_status):

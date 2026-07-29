@@ -106,30 +106,33 @@ async def store_answer(
     key = query_cache_key(
         query_text=query_text, platform=platform, requested_model=requested_model
     )
-    db.add(
-        LeadQueryAnswer(
-            query_hash=key,
-            repeat_no=repeat_no,
-            query_text=query_text[:500],
-            platform=platform,
-            requested_model=requested_model,
-            answer_model=answer_model,
-            prompt_version=prompt_version(),
-            raw_response=raw_response,
-            source_urls=source_urls,
-            search_calls=search_calls,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            measured_at=now,
-            expires_at=now + timedelta(days=settings.LEADGEN_QUERY_CACHE_TTL_DAYS),
-        )
-    )
+    # **SAVEPOINT 안에서 넣는다.** 캐시 적재는 같은 트랜잭션에서 측정 결과 18행과 함께
+    # 진행되는데, 여기서 세션 전체를 rollback하면 그 18행이 통째로 사라진다.
+    # 그리고 이 경합은 드문 사고가 아니라 **공유 캐시가 정확히 유도하는 상황**이다 —
+    # 두 병원이 같은 질의를 동시에 측정하면 반드시 한쪽이 진다.
     try:
-        await db.flush()
+        async with db.begin_nested():
+            db.add(
+                LeadQueryAnswer(
+                    query_hash=key,
+                    repeat_no=repeat_no,
+                    query_text=query_text[:500],
+                    platform=platform,
+                    requested_model=requested_model,
+                    answer_model=answer_model,
+                    prompt_version=prompt_version(),
+                    raw_response=raw_response,
+                    source_urls=source_urls,
+                    search_calls=search_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    measured_at=now,
+                    expires_at=now + timedelta(days=settings.LEADGEN_QUERY_CACHE_TTL_DAYS),
+                )
+            )
     except IntegrityError:
-        # 다른 진단이 같은 질의를 동시에 측정해 먼저 넣었다. 캐시는 최적화이지
-        # 정합성이 아니므로 경합에서 지는 쪽이 조용히 물러난다.
-        await db.rollback()
+        # 다른 진단이 같은 질의를 먼저 넣었다. 캐시는 최적화이지 정합성이 아니므로
+        # 경합에서 지는 쪽이 조용히 물러난다 — **SAVEPOINT만 되돌아간다.**
         logger.debug("lead query answer already cached: %s/%s", key[:12], repeat_no)
 
 

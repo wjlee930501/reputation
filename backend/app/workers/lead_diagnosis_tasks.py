@@ -436,6 +436,20 @@ async def _drain() -> dict:
         except Exception:  # noqa: BLE001
             logger.warning("lead delivery dispatch failed for %s", diagnosis_id)
 
+    for delivery_id in stuck["abandoned"]:
+        try:
+            await notifier.notify_ops_alert(
+                title="무료 진단 리포트 메일 발송 실패",
+                message=(
+                    f"발송 `{delivery_id}`이(가) 재시도 소진 또는 멱등성 창(24시간) 초과로 "
+                    "중단됐습니다.\n"
+                    "**신청자는 리포트를 받지 못했습니다.** 중복 발송 위험이 있어 자동으로 "
+                    "다시 보내지 않습니다 — Admin에서 확인 후 수동 처리해 주세요."
+                ),
+            )
+        except Exception:  # noqa: BLE001 — 알림 실패가 드레인을 멈추지 않는다.
+            logger.warning("lead delivery abandon alert delivery failed")
+
     for diagnosis in exhausted:
         try:
             await notifier.notify_ops_alert(

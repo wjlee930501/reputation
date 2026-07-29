@@ -21,7 +21,9 @@ Resend는 idempotency key를 **24시간만** 보관한다(공식 문서). 그 �
 또 같은 키에 **다른 payload가 오면 409**를 준다. 그래서 본문은 재시도 때 바이트
 동일해야 하고, 입력은 DB에서 오는 값(병원명·리포트 URL)만 쓴다.
 """
+import html
 import logging
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -98,11 +100,21 @@ async def send_email(
     return MailResult(provider_message_id=body.get("id"))
 
 
+# 제목 인젝션 방지 — 헤더에 개행이 들어가면 임의 헤더를 덧붙일 수 있다.
+_HEADER_UNSAFE = re.compile(r"[\r\n\t]+")
+
+
 def build_report_email_html(*, hospital_name: str, report_url: str) -> str:
     """본문은 **결정적이어야 한다** — 같은 키에 다른 payload가 가면 Resend가 409를 준다.
 
     그래서 생성 시각·난수 같은 것을 넣지 않는다. 입력은 DB에서 오는 두 값뿐이다.
+
+    **병원명은 사용자 입력이므로 escape한다.** 그대로 끼워 넣으면 병원명 칸에 HTML을
+    넣고 임의 이메일을 수신자로 제출해, 우리 발신 도메인으로 공격자가 만든 링크가 담긴
+    메일을 보낼 수 있다 — 하루 20건이어도 피싱이자 발신 평판 훼손 경로다.
     """
+    hospital_name = html.escape(hospital_name, quote=True)
+    report_url = html.escape(report_url, quote=True)
     return f"""\
 <!DOCTYPE html>
 <html lang="ko">
@@ -128,4 +140,6 @@ def build_report_email_html(*, hospital_name: str, report_url: str) -> str:
 
 
 def build_report_email_subject(hospital_name: str) -> str:
-    return f"[Re:putation] {hospital_name} AI 노출 진단 결과"
+    """제목의 개행·탭을 제거한다 — 헤더 인젝션 경로."""
+    safe = _HEADER_UNSAFE.sub(" ", hospital_name).strip()
+    return f"[Re:putation] {safe} AI 노출 진단 결과"

@@ -165,6 +165,25 @@ class LeadDiagnosis(Base):
     )
 
 
+class LeadDiagnosisSlotDay(Base):
+    """날짜별 자리 카운터 — **원자적 배정을 위해 존재한다.**
+
+    `COUNT(*)`를 읽고 +1 하는 방식은 동시 접수에서 무너진다. 빈 날에 20건이 동시에
+    들어오면 전부 `count=0`을 읽고 모두 `slot_no=1`을 시도한다. 한 건만 성공하고,
+    재시도해도 같은 값을 다시 계산하므로 3회 만에 소진 — **자리가 17개 남았는데
+    503으로 거절**된다. 선착순 마케팅은 오픈 직후 신청을 몰리게 만드는 것이 목적이라,
+    그 순간이 정확히 이 경로가 무너지는 순간이다.
+
+    `UPDATE ... SET used = used + 1 WHERE used < :limit RETURNING used`는 행 잠금으로
+    직렬화되므로 경합이 있어도 정확히 한도까지 배정된다.
+    """
+
+    __tablename__ = "lead_diagnosis_slot_days"
+
+    slot_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    used: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
 class LeadDiagnosisResult(Base):
     """측정 1회.
 

@@ -81,8 +81,12 @@ def upgrade() -> None:
         sa.CheckConstraint("slot_no >= 1", name="ck_lead_diagnoses_slot_no_positive"),
         # 축 간 진입 조건 (설계 §4-3). "측정 없이 리포트", "리포트 없이 발송"을
         # 스키마 수준에서 불가능하게 만든다.
+        # 리포트를 **만드는 중이거나 만든** 상태만 쓸 만한 측정을 요구한다.
+        # PENDING·BLOCKED·PURGED는 execution과 무관한 상태다 — BLOCKED는 실행 실패 시
+        # 정상적으로 도달하고, PURGED는 파기의 종결 상태다(0036 주석 참고).
         sa.CheckConstraint(
-            "report_status = 'PENDING' OR execution_status IN ('SUCCEEDED', 'PARTIAL')",
+            "report_status NOT IN ('BUILDING', 'READY') "
+            "OR execution_status IN ('SUCCEEDED', 'PARTIAL')",
             name="ck_lead_diagnoses_report_requires_execution",
         ),
         sa.CheckConstraint(

@@ -20,7 +20,8 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +34,7 @@ from app.models.lead_diagnosis import (
     REPORTABLE_EXECUTION_STATUSES,
     ExecutionStatus,
     LeadDiagnosis,
+    LeadDiagnosisSlotDay,
     LeadReportArtifact,
     LeadReportToken,
     ReportStatus,
@@ -57,11 +59,6 @@ router = APIRouter(prefix="/public/diagnosis", tags=["Public — AI Diagnosis"])
 _KST = ZoneInfo("Asia/Seoul")
 _HONEYPOT_FIELDS = ("website", "url")
 _NON_WORD = re.compile(r"[\s\-_·]+")
-
-# 자리 배정은 동시 삽입 시 UNIQUE(slot_date, slot_no)에 걸린다. 하루 20건 규모에서
-# 경합은 사실상 없지만, 걸렸을 때 조용히 실패하면 신청자가 이유 없이 거부당한다.
-_SLOT_RETRY_LIMIT = 3
-
 
 def _kst_today() -> date:
     """자리는 KST 자정에 리셋된다 — 운영 캘린더가 KST이므로 경계도 KST여야 한다."""
@@ -344,10 +341,17 @@ async def create_diagnosis(
     if not body.privacy:
         raise HTTPException(status_code=400, detail="개인정보 수집·이용 동의가 필요합니다.")
 
-    if keyword_contains_hospital_name(body.clinic_name, body.core_keywords):
+    # 질의에 들어가는 **모든** 입력을 검사한다. 키워드만 막으면 진료과나 지역 칸에
+    # 병원명을 넣어 우회할 수 있고, 그러면 언급이 보장되어 측정이 무의미해진다(F1-1).
+    if keyword_contains_hospital_name(
+        body.clinic_name, [*body.core_keywords, body.clinic_type, body.region_keyword]
+    ):
         raise HTTPException(
             status_code=400,
-            detail="핵심 키워드에는 병원명을 넣을 수 없습니다. 진료·증상 키워드를 입력해 주세요.",
+            detail=(
+                "진료과·지역·키워드에는 병원명을 넣을 수 없습니다. "
+                "진료·증상 키워드를 입력해 주세요."
+            ),
         )
 
     try:
@@ -368,106 +372,125 @@ async def create_diagnosis(
     except QueryMappingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # fail-closed 최종 확인 — 위 검사를 우회한 조합이 있어도 병원명이 들어간 질의는
+    # 절대 저장되지 않는다. 측정 무결성의 마지막 방어선이다.
+    if keyword_contains_hospital_name(body.clinic_name, [q["text"] for q in queries]):
+        logger.error("hospital name leaked into generated queries: %s", body.clinic_name)
+        raise HTTPException(
+            status_code=400,
+            detail="입력값에서 병원명을 제외해 주세요. 병원명이 포함되면 측정이 무의미해집니다.",
+        )
+
     today = _kst_today()
     now = datetime.now(timezone.utc)
 
-    for _ in range(_SLOT_RETRY_LIMIT):
-        used = int(
-            await db.scalar(
-                select(func.count())
-                .select_from(LeadDiagnosis)
-                .where(LeadDiagnosis.slot_date == today)
-            )
-            or 0
-        )
-        if used >= settings.LEADGEN_DAILY_SLOTS:
-            raise HTTPException(
-                status_code=429,
-                detail=(
-                    f"오늘 진단 {settings.LEADGEN_DAILY_SLOTS}건이 모두 접수되었습니다. "
-                    "내일 다시 신청해 주세요."
-                ),
-            )
-
-        lead = SalesLead(
-            clinic_name=body.clinic_name,
-            clinic_type=body.clinic_type,
-            contact=body.contact,
-            contact_name=body.contact_name,
-            clinic_phone=body.clinic_phone,
-            email=body.email,
-            region_keyword=body.region_keyword,
-            core_keywords=body.core_keywords,
-            question=None,
-            privacy=True,
-            source=LEAD_SOURCE_AI_DIAGNOSIS,
-            source_path=body.source_path,
-            consent_ip=get_request_ip(request),
-            # 클라이언트 입력을 신뢰하지 않고 항상 서버 ENV에서 가져온다.
-            consent_version=settings.LEAD_CONSENT_VERSION.strip()[:40],
-            retain_until=now + timedelta(days=settings.LEAD_RETENTION_DAYS),
-        )
-        diagnosis = LeadDiagnosis(
-            applicant_email_hash=email_hash,
-            subject_phone_hash=phone_hash,
-            subject_hospital_name=body.clinic_name,
-            subject_region=body.region_keyword,
-            slot_date=today,
-            slot_no=used + 1,
-            queries=queries,
-            requested_models={
-                "openai": settings.OPENAI_MODEL_QUERY,
-                "gemini": settings.GEMINI_MODEL,
-                "judge": settings.OPENAI_MODEL_PARSE,
-            },
-            repeat_count=settings.LEADGEN_REPEAT_COUNT,
-        )
-
-        try:
-            # 리드·진단·토큰을 한 트랜잭션에 넣는다. 잠금 위반은 commit이 아니라 이 flush에서
-            # 터지므로, 삽입 전체를 감싸지 않으면 예외가 그대로 500으로 새어 나간다.
-            db.add(lead)
-            await db.flush()
-            diagnosis.lead_id = lead.id
-            db.add(diagnosis)
-            await db.flush()
-            # 토큰은 진단 id에서 유도한다 — 나중에 리포트 메일이 같은 링크를 실어야 한다.
-            raw_token, token_hash = lead_report_token.issue_report_token(diagnosis.id)
-            db.add(
-                LeadReportToken(
-                    diagnosis_id=diagnosis.id,
-                    token_hash=token_hash,
-                    expires_at=now + timedelta(days=settings.LEAD_REPORT_TOKEN_TTL_DAYS),
-                )
-            )
-            await db.commit()
-        except IntegrityError as exc:
-            # 리드와 진단을 한 트랜잭션에 넣었으므로 롤백하면 고아 리드가 남지 않는다.
-            await db.rollback()
-            if _violated(exc, "uq_lead_diagnoses_email_lock", "uq_lead_diagnoses_phone_lock"):
-                # **기존 행의 상태 URL을 돌려주지 않는다.** 남의 병원 대표번호를 아는
-                # 사람이 재신청으로 그 병원의 리포트 링크를 얻어가는 경로가 된다.
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "이미 진단을 신청한 병원입니다. 한 병원당 한 번만 신청할 수 있습니다. "
-                        "리포트 링크는 신청 시 입력한 이메일로 발송됩니다."
-                    ),
-                ) from exc
-            if _violated(exc, "uq_lead_diagnoses_slot"):
-                continue  # 동시 접수로 자리 번호가 겹쳤다 — 다시 센다.
-            raise
-
-        return {
-            "ok": True,
-            "diagnosis_id": str(diagnosis.id),
-            "status_url": lead_report_token.report_status_url(raw_token),
-            "query_count": QUERY_SLOT_COUNT,
-            "slot_no": diagnosis.slot_no,
-            "remaining_slots": _remaining_slots(diagnosis.slot_no),
-        }
-
-    logger.warning("lead diagnosis slot allocation lost %s races", _SLOT_RETRY_LIMIT)
-    raise HTTPException(
-        status_code=503, detail="접수가 몰리고 있습니다. 잠시 후 다시 시도해 주세요."
+    # ── 자리를 원자적으로 잡는다.
+    # 날짜 행에 대한 조건부 UPDATE는 행 잠금으로 직렬화되므로, 20건이 동시에 들어와도
+    # 정확히 한도까지 배정된다. COUNT를 읽고 +1 하는 방식은 전부 같은 값을 읽어
+    # 한 건만 성공하고 나머지가 재시도 소진으로 503이 됐다 — 자리가 남았는데도.
+    await db.execute(
+        pg_insert(LeadDiagnosisSlotDay)
+        .values(slot_date=today, used=0)
+        .on_conflict_do_nothing(index_elements=["slot_date"])
     )
+    claimed = (
+        await db.execute(
+            update(LeadDiagnosisSlotDay)
+            .where(
+                LeadDiagnosisSlotDay.slot_date == today,
+                LeadDiagnosisSlotDay.used < settings.LEADGEN_DAILY_SLOTS,
+            )
+            .values(used=LeadDiagnosisSlotDay.used + 1)
+            .returning(LeadDiagnosisSlotDay.used)
+        )
+    ).scalar_one_or_none()
+
+    if claimed is None:
+        await db.rollback()
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"오늘 진단 {settings.LEADGEN_DAILY_SLOTS}건이 모두 접수되었습니다. "
+                "내일 다시 신청해 주세요."
+            ),
+        )
+
+    slot_no = int(claimed)
+
+    lead = SalesLead(
+        clinic_name=body.clinic_name,
+        clinic_type=body.clinic_type,
+        contact=body.contact,
+        contact_name=body.contact_name,
+        clinic_phone=body.clinic_phone,
+        email=body.email,
+        region_keyword=body.region_keyword,
+        core_keywords=body.core_keywords,
+        question=None,
+        privacy=True,
+        source=LEAD_SOURCE_AI_DIAGNOSIS,
+        source_path=body.source_path,
+        consent_ip=get_request_ip(request),
+        # 클라이언트 입력을 신뢰하지 않고 항상 서버 ENV에서 가져온다.
+        consent_version=settings.LEAD_CONSENT_VERSION.strip()[:40],
+        retain_until=now + timedelta(days=settings.LEAD_RETENTION_DAYS),
+    )
+    diagnosis = LeadDiagnosis(
+        applicant_email_hash=email_hash,
+        subject_phone_hash=phone_hash,
+        subject_hospital_name=body.clinic_name,
+        subject_region=body.region_keyword,
+        slot_date=today,
+        slot_no=slot_no,
+        queries=queries,
+        requested_models={
+            "openai": settings.OPENAI_MODEL_QUERY,
+            "gemini": settings.GEMINI_MODEL,
+            "judge": settings.OPENAI_MODEL_PARSE,
+        },
+        repeat_count=settings.LEADGEN_REPEAT_COUNT,
+    )
+
+    try:
+        # 리드·진단·토큰을 한 트랜잭션에 넣는다. 잠금 위반은 commit이 아니라 이 flush에서
+        # 터지므로, 삽입 전체를 감싸지 않으면 예외가 그대로 500으로 새어 나간다.
+        db.add(lead)
+        await db.flush()
+        diagnosis.lead_id = lead.id
+        db.add(diagnosis)
+        await db.flush()
+        # 토큰은 진단 id에서 유도한다 — 나중에 리포트 메일이 같은 링크를 실어야 한다.
+        raw_token, token_hash = lead_report_token.issue_report_token(diagnosis.id)
+        db.add(
+            LeadReportToken(
+                diagnosis_id=diagnosis.id,
+                token_hash=token_hash,
+                expires_at=now + timedelta(days=settings.LEAD_REPORT_TOKEN_TTL_DAYS),
+            )
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        # 리드와 진단을 한 트랜잭션에 넣었으므로 롤백하면 고아 리드가 남지 않는다.
+        await db.rollback()
+        if _violated(exc, "uq_lead_diagnoses_email_lock", "uq_lead_diagnoses_phone_lock"):
+            # **기존 행의 상태 URL을 돌려주지 않는다.** 남의 병원 대표번호를 아는
+            # 사람이 재신청으로 그 병원의 리포트 링크를 얻어가는 경로가 된다.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "이미 진단을 신청한 병원입니다. 한 병원당 한 번만 신청할 수 있습니다. "
+                    "리포트 링크는 신청 시 입력한 이메일로 발송됩니다."
+                ),
+            ) from exc
+        raise
+
+    return {
+        "ok": True,
+        "diagnosis_id": str(diagnosis.id),
+        "status_url": lead_report_token.report_status_url(raw_token),
+        "query_count": QUERY_SLOT_COUNT,
+        "slot_no": diagnosis.slot_no,
+        "remaining_slots": _remaining_slots(slot_no),
+    }
+
+

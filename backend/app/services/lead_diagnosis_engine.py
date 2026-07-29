@@ -127,6 +127,9 @@ async def _measure_one(diagnosis: LeadDiagnosis, measurement: _Measurement) -> N
             measurement.query_text,
             measurement.platform,
             pool=sov_engine.POOL_LEADGEN,
+            # 접수 시점에 고정한 모델. 실행 시점 전역 설정과 다르면 호출하지 않는다 —
+            # 캐시 키와 리포트 표기가 실제 호출 모델과 어긋나면 안 된다.
+            requested_model=measurement.requested_model,
         )
         measurement.measured_at = datetime.now(timezone.utc)
         measurement.source_urls = answer.get("source_urls") or []

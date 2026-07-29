@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.api.public import diagnosis as diagnosis_api
 from app.core.config import settings
@@ -254,3 +254,73 @@ class TestAbuseDefenses:
     async def test_patient_sensitive_text_is_rejected(self, pg_async_session):
         with pytest.raises(Exception):
             await _post(pg_async_session, contact_name="환자 홍길동 900101-1234567")
+
+
+@pytest.mark.asyncio
+class TestSlotNumbering:
+    async def test_a_deleted_row_does_not_wedge_the_day(self, pg_async_session):
+        """자리 수(COUNT)와 자리 번호(MAX+1)를 한 값으로 겸하면 그날 접수가 통째로 막힌다.
+
+        lead가 삭제되면(CASCADE) COUNT가 줄어드는데 이미 쓰인 번호는 그대로다.
+        COUNT+1로 번호를 매기면 UNIQUE(slot_date, slot_no)에 걸리고, 재시도해도 같은
+        값을 다시 계산하므로 3회 소진 후 503이 된다.
+        """
+        first = await _post(pg_async_session)
+        await _post(pg_async_session)
+        await _post(pg_async_session)
+
+        # 가운데 신청을 지운다 (파기가 아니라 실제 삭제 — 운영 중 일어날 수 있다).
+        diagnosis = (
+            await pg_async_session.execute(
+                select(LeadDiagnosis).where(LeadDiagnosis.id == uuid.UUID(first["diagnosis_id"]))
+            )
+        ).scalar_one()
+        await pg_async_session.execute(
+            delete(SalesLead).where(SalesLead.id == diagnosis.lead_id)
+        )
+        await pg_async_session.flush()
+
+        # 다음 신청은 여전히 받아야 한다.
+        fourth = await _post(pg_async_session)
+        assert fourth["ok"] is True
+        assert fourth["slot_no"] == 4
+
+    async def test_the_daily_counter_is_monotonic(self, pg_async_session, monkeypatch):
+        """행을 지워도 자리는 돌아오지 않는다 — **이미 쓴 API 비용은 환불되지 않는다.**
+
+        COUNT(*) 기반이면 삭제가 곧 예산 환불이 되어 하루 상한을 우회할 수 있다
+        (신청 → 측정 → 삭제 → 다시 신청). 카운터를 따로 두는 이유가 여기 있다.
+        """
+        monkeypatch.setattr(settings, "LEADGEN_DAILY_SLOTS", 2)
+        first = await _post(pg_async_session)
+        await _post(pg_async_session)
+
+        diagnosis = (
+            await pg_async_session.execute(
+                select(LeadDiagnosis).where(LeadDiagnosis.id == uuid.UUID(first["diagnosis_id"]))
+            )
+        ).scalar_one()
+        await pg_async_session.execute(
+            delete(SalesLead).where(SalesLead.id == diagnosis.lead_id)
+        )
+        await pg_async_session.flush()
+
+        with pytest.raises(HTTPException) as exc:
+            await _post(pg_async_session)
+        assert exc.value.status_code == 429
+
+    async def test_concurrent_applications_all_get_distinct_slots(self, pg_async_session,
+                                                                  monkeypatch):
+        """자리가 남았는데 거절당하면 안 된다.
+
+        COUNT를 읽고 +1 하던 시절에는 동시 접수가 전부 같은 값을 읽어 한 건만 성공하고
+        나머지가 재시도 소진으로 503이 됐다 — 자리가 17개 남았는데도. 선착순 마케팅은
+        오픈 직후 신청을 몰리게 만드는 것이 목적이라 그 순간이 정확히 이 경로다.
+        """
+        monkeypatch.setattr(settings, "LEADGEN_DAILY_SLOTS", 20)
+        results = [await _post(pg_async_session) for _ in range(8)]
+
+        slots = [r["slot_no"] for r in results]
+        assert slots == list(range(1, 9))
+        assert len(set(slots)) == 8
+        assert results[-1]["remaining_slots"] == 12
