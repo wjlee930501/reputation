@@ -14,9 +14,11 @@
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -27,7 +29,14 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import get_request_ip, limiter
 from app.models.lead import LEAD_SOURCE_AI_DIAGNOSIS, SalesLead
-from app.models.lead_diagnosis import LeadDiagnosis, LeadReportToken
+from app.models.lead_diagnosis import (
+    REPORTABLE_EXECUTION_STATUSES,
+    ExecutionStatus,
+    LeadDiagnosis,
+    LeadReportArtifact,
+    LeadReportToken,
+    ReportStatus,
+)
 from app.services import lead_report_token
 from app.services.lead_diagnosis_identity import (
     InvalidEmail,
@@ -164,6 +173,155 @@ async def get_slot_availability(db: AsyncSession = Depends(get_db)):
         "used": used,
         "remaining": _remaining_slots(used),
     }
+
+
+async def _resolve_token(db: AsyncSession, raw_token: str) -> tuple[LeadReportToken, LeadDiagnosis]:
+    """토큰 → (토큰 행, 진단). 실패는 전부 404로 통일한다.
+
+    "만료됨"과 "없음"을 구분해 알려주면 토큰 존재 여부를 확인하는 오라클이 된다.
+    """
+    token_hash = lead_report_token.hash_report_token(raw_token or "")
+    row = (
+        await db.execute(
+            select(LeadReportToken).where(LeadReportToken.token_hash == token_hash)
+        )
+    ).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if row is None or row.revoked_at is not None or row.expires_at <= now:
+        raise HTTPException(status_code=404, detail="유효하지 않은 링크입니다.")
+
+    diagnosis = (
+        await db.execute(select(LeadDiagnosis).where(LeadDiagnosis.id == row.diagnosis_id))
+    ).scalar_one_or_none()
+    if diagnosis is None:  # pragma: no cover - FK CASCADE로 함께 지워진다
+        raise HTTPException(status_code=404, detail="유효하지 않은 링크입니다.")
+
+    row.last_accessed_at = now
+    row.access_count = (row.access_count or 0) + 1
+    await db.commit()
+    return row, diagnosis
+
+
+# 사용자가 보는 진행 단계. 내부 3축 상태를 그대로 노출하지 않는다 —
+# 신청자에게 'PARTIAL'이나 'BUILDING'은 아무 의미가 없고, 내부 모델이 바뀔 때마다
+# 공개 계약이 흔들린다.
+_PHASE_MEASURING = "MEASURING"
+_PHASE_BUILDING = "BUILDING_REPORT"
+_PHASE_READY = "READY"
+_PHASE_FAILED = "FAILED"
+_PHASE_EXPIRED = "EXPIRED"
+
+
+def _public_phase(diagnosis: LeadDiagnosis) -> str:
+    if diagnosis.report_status == ReportStatus.PURGED.value:
+        return _PHASE_EXPIRED
+    if diagnosis.report_status == ReportStatus.READY.value:
+        return _PHASE_READY
+    if (
+        diagnosis.execution_status == ExecutionStatus.FAILED.value
+        or diagnosis.report_status == ReportStatus.BLOCKED.value
+    ):
+        return _PHASE_FAILED
+    if diagnosis.execution_status in REPORTABLE_EXECUTION_STATUSES:
+        return _PHASE_BUILDING
+    return _PHASE_MEASURING
+
+
+@router.get("/{token}/status")
+async def get_diagnosis_status(token: str, db: AsyncSession = Depends(get_db)):
+    """접수 직후 사용자가 보는 화면이 폴링한다 (PRD F6-5).
+
+    이메일 확인 링크를 없앴으므로(F1-4), 이 페이지가 "메일이 안 와도 결과에 도달하는
+    두 번째 경로"를 겸한다.
+    """
+    _, diagnosis = await _resolve_token(db, token)
+    phase = _public_phase(diagnosis)
+    return {
+        "phase": phase,
+        "hospital_name": diagnosis.subject_hospital_name,
+        "submitted_at": diagnosis.created_at.isoformat() if diagnosis.created_at else None,
+        "report_ready": phase == _PHASE_READY,
+        # 실패 사유 원문을 그대로 내보내지 않는다 — 내부 예외 메시지가 공개 표면에 실린다.
+        "message": {
+            _PHASE_MEASURING: "AI 답변을 측정하고 있습니다. 완료되면 이메일로 알려드립니다.",
+            _PHASE_BUILDING: "측정을 마쳤습니다. 리포트를 만들고 있습니다.",
+            _PHASE_READY: "리포트가 준비되었습니다.",
+            _PHASE_FAILED: "측정에 실패했습니다. 담당자가 확인 후 연락드립니다.",
+            _PHASE_EXPIRED: "보관 기간이 지나 리포트가 삭제되었습니다.",
+        }[phase],
+    }
+
+
+@router.get("/{token}")
+async def get_diagnosis_report(token: str, db: AsyncSession = Depends(get_db)):
+    """블러 리포트 PDF.
+
+    파기 후에는 **410 Gone**이다. 404가 아닌 이유는 "있었고 우리가 지웠다"가 사실이기
+    때문이다 — 없었던 것처럼 응답하면 파기 사실 자체가 기록에서 사라진다.
+    """
+    _, diagnosis = await _resolve_token(db, token)
+
+    if diagnosis.report_status == ReportStatus.PURGED.value:
+        raise HTTPException(status_code=410, detail="보관 기간이 지나 삭제된 리포트입니다.")
+    if diagnosis.report_status != ReportStatus.READY.value:
+        raise HTTPException(status_code=409, detail="리포트가 아직 준비되지 않았습니다.")
+
+    artifact = (
+        await db.execute(
+            select(LeadReportArtifact)
+            .where(
+                LeadReportArtifact.diagnosis_id == diagnosis.id,
+                LeadReportArtifact.purged_at.is_(None),
+            )
+            .order_by(LeadReportArtifact.version.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if artifact is None:
+        # READY인데 산출물이 없다 = 업로드와 상태가 어긋난 상태. 조용히 빈 응답을 주지 않는다.
+        logger.error("lead report READY but no artifact: diagnosis=%s", diagnosis.id)
+        raise HTTPException(status_code=409, detail="리포트가 아직 준비되지 않았습니다.")
+
+    data = _read_artifact(artifact.storage_uri)
+    if data is None:
+        logger.error("lead report artifact unreadable: %s", artifact.storage_uri)
+        raise HTTPException(status_code=409, detail="리포트를 불러오지 못했습니다.")
+
+    filename = f"{diagnosis.subject_hospital_name}_AI노출진단.pdf"
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            # 링크가 전달돼도 검색엔진에 잡히거나 referrer로 새어나가지 않게 한다(F5-4).
+            "Content-Disposition": f'inline; filename*=UTF-8\'\'{quote(filename)}',
+            "Cache-Control": "no-store",
+            "X-Robots-Tag": "noindex, nofollow",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
+def _read_artifact(storage_uri: str) -> bytes | None:
+    """산출물을 우리 서버가 읽어 스트리밍한다.
+
+    GCS 서명 URL로 리다이렉트하지 않는 이유: 그 URL은 우리 헤더(no-store·noindex)를
+    벗어나고, 만료 전까지 토큰 폐기와 무관하게 살아 있다.
+    """
+    if not storage_uri:
+        return None
+    if not storage_uri.startswith("gs://"):
+        path = Path(storage_uri)
+        return path.read_bytes() if path.exists() else None
+    try:
+        from google.cloud import storage
+
+        _, _, rest = storage_uri.partition("gs://")
+        bucket_name, _, blob_name = rest.partition("/")
+        client = storage.Client()
+        return client.bucket(bucket_name).blob(blob_name).download_as_bytes()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("lead report artifact download failed: %s", exc)
+        return None
 
 
 def _violated(exc: IntegrityError, *index_names: str) -> bool:

@@ -121,6 +121,14 @@ class PublicApiCacheMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         if not request.url.path.startswith("/api/v1/public/"):
             return response
+        # 무료 진단은 **개인에게 발급된 토큰**으로 열리는 표면이다(PRD F5-4).
+        # 여기에 public 캐시 헤더가 붙으면 CDN이 한 사람의 리포트를 저장했다가
+        # 같은 URL을 요청한 다른 사람에게 그대로 내줄 수 있다.
+        if request.url.path.startswith("/api/v1/public/diagnosis"):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Robots-Tag"] = "noindex, nofollow"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
         if request.method != "GET":
             response.headers["Cache-Control"] = "no-store"
             return response

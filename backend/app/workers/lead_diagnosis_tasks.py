@@ -21,13 +21,20 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
-from app.models.lead_diagnosis import ExecutionStatus, LeadDiagnosis
-from app.services import lead_diagnosis_engine, lead_query_cache, notifier
+from app.models.lead_diagnosis import (
+    REPORTABLE_EXECUTION_STATUSES,
+    ExecutionStatus,
+    LeadDiagnosis,
+    LeadDiagnosisResult,
+    LeadReportArtifact,
+    ReportStatus,
+)
+from app.services import lead_diagnosis_engine, lead_query_cache, lead_report, notifier
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,10 @@ DIAGNOSIS_LEASE_SECONDS = DIAGNOSIS_SOFT_TIME_LIMIT + 300
 
 # 실행 재시도 상한. 넘으면 FAILED로 종결하고 AE에게 넘긴다(= DLQ).
 MAX_EXECUTION_ATTEMPTS = 3
+
+# 리포트 렌더 재시도 상한. 소진하면 BLOCKED — 자동으로 빈 리포트를 보내지 않는다.
+MAX_REPORT_ATTEMPTS = 3
+REPORT_LEASE_SECONDS = 600
 
 # 한 번의 드레인에서 발행할 최대 건수. 하루 20건이므로 여유롭지만, 폴러가 예상치 못한
 # 적체를 만나도 한 tick에 워커를 통째로 점유하지 않게 한다.
@@ -130,6 +141,160 @@ def run_lead_diagnosis(self, diagnosis_id: str):
     return _run_async(_run_lead_diagnosis(diagnosis_id))
 
 
+async def _claim_for_report(session, diagnosis_id) -> bool:
+    """PENDING → BUILDING. 측정이 쓸 만한 상태일 때만 통과한다.
+
+    `REPORTABLE_EXECUTION_STATUSES`가 게이트의 전부인 것은 `ExecutionStatus`의 정의
+    덕분이다 — 어느 한 플랫폼이라도 성공 0이면 `PARTIAL`이 아니라 `FAILED`이므로,
+    분모가 0인 플랫폼 칸을 가진 리포트가 만들어질 수 없다.
+    """
+    result = await session.execute(
+        update(LeadDiagnosis)
+        .where(
+            LeadDiagnosis.id == diagnosis_id,
+            LeadDiagnosis.report_status == ReportStatus.PENDING.value,
+            LeadDiagnosis.execution_status.in_(sorted(REPORTABLE_EXECUTION_STATUSES)),
+            LeadDiagnosis.report_attempts < MAX_REPORT_ATTEMPTS,
+        )
+        .values(
+            report_status=ReportStatus.BUILDING.value,
+            report_attempts=LeadDiagnosis.report_attempts + 1,
+        )
+    )
+    await session.commit()
+    return bool(result.rowcount)
+
+
+async def _build_lead_report(diagnosis_id: str) -> dict:
+    import uuid as _uuid
+
+    sessionmaker_ = get_async_sessionmaker()
+    async with sessionmaker_() as session:
+        pk = _uuid.UUID(str(diagnosis_id))
+        if not await _claim_for_report(session, pk):
+            logger.info("lead report %s not claimable", diagnosis_id)
+            return {"skipped": "not_claimed"}
+
+        diagnosis = (
+            await session.execute(select(LeadDiagnosis).where(LeadDiagnosis.id == pk))
+        ).scalar_one_or_none()
+        if diagnosis is None:  # pragma: no cover
+            return {"skipped": "missing"}
+
+        results = list(
+            (
+                await session.execute(
+                    select(LeadDiagnosisResult).where(
+                        LeadDiagnosisResult.diagnosis_id == pk
+                    )
+                )
+            ).scalars().all()
+        )
+
+        try:
+            payload = lead_report.build_lead_report_payload(
+                diagnosis, results, generated_at=datetime.now(timezone.utc)
+            )
+            pdf_bytes = lead_report.render_lead_report_pdf(payload)
+
+            latest = await session.scalar(
+                select(func.max(LeadReportArtifact.version)).where(
+                    LeadReportArtifact.diagnosis_id == pk
+                )
+            )
+            version = int(latest or 0) + 1
+
+            # 업로드가 먼저다 — 행을 먼저 쓰면 READY인데 파일이 없는 상태가 생긴다.
+            storage_uri = lead_report.store_report_pdf(pk, version, pdf_bytes)
+
+            session.add(
+                LeadReportArtifact(
+                    diagnosis_id=pk,
+                    version=version,
+                    storage_uri=storage_uri,
+                    content_hash=lead_report.content_hash(pdf_bytes),
+                    byte_size=len(pdf_bytes),
+                    template_version=lead_report.TEMPLATE_VERSION,
+                )
+            )
+            diagnosis.report_status = ReportStatus.READY.value
+            await session.commit()
+            return {"version": version, "bytes": len(pdf_bytes)}
+
+        except Exception as exc:
+            await session.rollback()
+            # 시도가 남았으면 PENDING으로 되돌려 폴러가 다시 집게 한다.
+            # 소진했으면 BLOCKED — 사람이 봐야 한다(자동으로 빈 리포트를 보내지 않는다).
+            row = (
+                await session.execute(select(LeadDiagnosis).where(LeadDiagnosis.id == pk))
+            ).scalar_one()
+            exhausted = row.report_attempts >= MAX_REPORT_ATTEMPTS
+            row.report_status = (
+                ReportStatus.BLOCKED.value if exhausted else ReportStatus.PENDING.value
+            )
+            row.error = f"리포트 생성 실패: {type(exc).__name__}: {exc}"[:2000]
+            await session.commit()
+            if exhausted:
+                await _notify_report_blocked(row)
+            raise
+
+
+async def _notify_report_blocked(diagnosis: LeadDiagnosis) -> None:
+    try:
+        await notifier.notify_ops_alert(
+            title="무료 진단 리포트 생성 실패 — 재시도 소진",
+            message=(
+                f"진단 `{diagnosis.id}` ({diagnosis.subject_hospital_name})의 리포트 생성이 "
+                f"{MAX_REPORT_ATTEMPTS}회 모두 실패했습니다.\n"
+                f"사유: {diagnosis.error or '알 수 없음'}\n"
+                "신청자에게 메일이 나가지 않았습니다. Admin에서 확인해 주세요."
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("lead report blocked alert delivery failed")
+
+
+@celery_app.task(
+    name="app.workers.lead_diagnosis_tasks.build_lead_report",
+    bind=True,
+    max_retries=0,  # 재시도는 폴러가 한다 (실행 태스크와 같은 규약).
+    soft_time_limit=300,
+    time_limit=420,
+)
+def build_lead_report(self, diagnosis_id: str):
+    return _run_async(_build_lead_report(diagnosis_id))
+
+
+async def _reports_to_build(session) -> list[str]:
+    rows = (
+        await session.execute(
+            select(LeadDiagnosis.id)
+            .where(
+                LeadDiagnosis.report_status == ReportStatus.PENDING.value,
+                LeadDiagnosis.execution_status.in_(sorted(REPORTABLE_EXECUTION_STATUSES)),
+                LeadDiagnosis.report_attempts < MAX_REPORT_ATTEMPTS,
+            )
+            .order_by(LeadDiagnosis.created_at.asc())
+            .limit(DRAIN_BATCH_SIZE)
+        )
+    ).scalars().all()
+    return [str(row) for row in rows]
+
+
+async def _reclaim_stalled_reports(session) -> int:
+    """BUILDING으로 좌초한 리포트를 되돌린다. 워커가 죽으면 상태가 남는다."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=REPORT_LEASE_SECONDS)
+    result = await session.execute(
+        update(LeadDiagnosis)
+        .where(
+            LeadDiagnosis.report_status == ReportStatus.BUILDING.value,
+            LeadDiagnosis.updated_at < cutoff,
+        )
+        .values(report_status=ReportStatus.PENDING.value)
+    )
+    return int(result.rowcount or 0)
+
+
 async def _reclaim_stalled(session) -> int:
     """워커가 죽어 RUNNING으로 좌초한 행을 PENDING으로 되돌린다.
 
@@ -192,6 +357,7 @@ async def _drain() -> dict:
     sessionmaker_ = get_async_sessionmaker()
     async with sessionmaker_() as session:
         reclaimed = await _reclaim_stalled(session)
+        reclaimed += await _reclaim_stalled_reports(session)
         exhausted = await _exhausted_to_failed(session)
         await session.commit()
 
@@ -199,12 +365,19 @@ async def _drain() -> dict:
         await session.commit()
 
         pending = await _pending_to_dispatch(session)
+        reports = await _reports_to_build(session)
 
     for diagnosis_id in pending:
         try:
             run_lead_diagnosis.delay(diagnosis_id)
         except Exception:  # noqa: BLE001 — 발행 실패는 다음 tick이 회수한다.
             logger.warning("lead diagnosis dispatch failed for %s", diagnosis_id)
+
+    for diagnosis_id in reports:
+        try:
+            build_lead_report.delay(diagnosis_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("lead report dispatch failed for %s", diagnosis_id)
 
     for diagnosis in exhausted:
         try:
@@ -222,6 +395,7 @@ async def _drain() -> dict:
 
     return {
         "dispatched": len(pending),
+        "reports": len(reports),
         "reclaimed": reclaimed,
         "failed": len(exhausted),
         "cache_purged": purged,

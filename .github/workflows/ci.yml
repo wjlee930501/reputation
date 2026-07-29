@@ -66,6 +66,10 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/reputation_test
       SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test
       INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reputation_test
+      # 블러 리포트 검사(F5-3)는 실제 PDF에서 텍스트를 추출해 가림 대상이 0회 등장하는지
+      # 본다. 이 값이 없으면 그 테스트가 조용히 skip되어, 가장 중요한 검사가 어디에서도
+      # 돌지 않게 된다 — CI에서는 네이티브 의존성을 깔고 강제 실행한다.
+      REQUIRE_PDF_RENDER: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -74,6 +78,11 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Install WeasyPrint native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2
 
       - name: Install dependencies
         run: |
