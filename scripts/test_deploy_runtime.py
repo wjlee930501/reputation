@@ -189,10 +189,15 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
         assert "--vpc-egress=private-ranges-only" in deploy
 
     assert "--build-arg NEXT_PUBLIC_GCP_STORAGE_BUCKET=reputation-assets" in commands
-    assert (
-        "--set-secrets=SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest"
-        in commands
+    site_deploy = next(
+        line for line in commands.splitlines() if line.startswith("gcloud run deploy reputation-site")
     )
+    site_secrets = next(
+        part for part in site_deploy.split() if part.startswith("--set-secrets=")
+    )
+    # site 필수 시크릿은 반드시 배선된다. 단일 플래그에 쉼표로 합쳐 전달한다.
+    assert "SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest" in site_secrets
+    assert "SITE_BFF_SECRET=SITE_BFF_SECRET:latest" in site_secrets
     assert 'env OPENAI_CHATGPT_USE_WEB_SEARCH: "true"' in commands
     assert 'env CERTIFICATE_MANAGER_AUTO_PROVISION: "true"' in commands
     assert 'env OPENAI_CHATGPT_USE_WEB_SEARCH: "false"' not in commands
@@ -308,8 +313,10 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
     assert "gcloud sql users list" not in commands
     assert "--set-cloudsql-instances" not in commands
     assert "--vpc-connector" not in commands
-    assert "--set-secrets=DATABASE_URL=DATABASE_URL:latest" in commands
-    assert "--set-secrets=SYNC_DATABASE_URL=SYNC_DATABASE_URL:latest" in commands
+    # 시크릿은 쉼표로 합친 단일 --set-secrets 플래그로 전달된다(분리 전달 시 gcloud가
+    # 덮어쓰기로 해석하면 마지막 하나만 주입되므로). 여기서는 배선 여부만 확인한다.
+    assert "DATABASE_URL=DATABASE_URL:latest" in commands
+    assert "SYNC_DATABASE_URL=SYNC_DATABASE_URL:latest" in commands
     assert "gcloud run deploy reputation-site" not in commands
     assert "gcloud run deploy reputation-admin" not in commands
 
@@ -404,3 +411,95 @@ def test_site_only_deploy_does_not_require_backend_only_secrets(tmp_path: Path) 
     assert "gsutil ls -b gs://reputation-assets" in commands
     assert commands.index("gsutil ls -b gs://reputation-assets") < commands.index("docker build")
     assert "gcloud run deploy reputation-site" in commands
+    # INDEXNOW_KEY가 없는 환경이어도 site 배포는 성공해야 하고, 없는 시크릿을
+    # Cloud Run에 주입하려 들면 안 된다.
+    assert "INDEXNOW_KEY=INDEXNOW_KEY:latest" not in commands
+
+
+def test_site_deploy_wires_indexnow_key_when_the_secret_exists(tmp_path: Path) -> None:
+    """선택 시크릿이라도 존재하면 반드시 배선된다.
+
+    IndexNow는 backend가 제출한 URL과 같은 호스트에서 site가 같은 키를 응답해야
+    소유가 증명된다. 존재하는데 주입되지 않으면 색인 제출이 조용히 무력화된다.
+    """
+    project = tmp_path / "project"
+    scripts_dir = project / "scripts"
+    fake_bin = tmp_path / "bin"
+    scripts_dir.mkdir(parents=True)
+    fake_bin.mkdir()
+    (project / "backend").mkdir()
+    (project / "site").mkdir()
+    shutil.copy2(PROJECT_ROOT / "scripts" / "deploy.sh", scripts_dir / "deploy.sh")
+    (project / ".env.production").write_text("GCP_STORAGE_BUCKET=reputation-assets\n")
+
+    command_log = tmp_path / "commands.log"
+    _write_executable(
+        fake_bin / "gcloud",
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'echo "gcloud $*" >> "$FAKE_COMMAND_LOG"',
+                'if [[ "$1 $2" == "secrets describe" ]]; then',
+                '  case "$3" in',
+                "    SITE_REVALIDATE_SECRET|SITE_BFF_SECRET|INDEXNOW_KEY) exit 0 ;;",
+                "    *) exit 1 ;;",
+                "  esac",
+                "fi",
+                'if [[ "$1 $2 $3 $4" == "secrets versions describe latest" ]]; then',
+                '  echo "ENABLED"',
+                "  exit 0",
+                "fi",
+                "exit 0",
+                "",
+            ]
+        ),
+    )
+    for tool in ("docker", "gsutil"):
+        _write_executable(
+            fake_bin / tool,
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    f'echo "{tool} $*" >> "$FAKE_COMMAND_LOG"',
+                    "exit 0",
+                    "",
+                ]
+            ),
+        )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "FAKE_COMMAND_LOG": str(command_log),
+            "GCP_PROJECT_ID": "test-project",
+            "GCP_REGION": "asia-northeast3",
+            "PUBLIC_DOMAIN": "reputation.example.test",
+            "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "site"],
+        cwd=project,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = command_log.read_text()
+    site_deploy = next(
+        line for line in commands.splitlines() if line.startswith("gcloud run deploy reputation-site")
+    )
+    site_secrets = next(
+        part for part in site_deploy.split() if part.startswith("--set-secrets=")
+    )
+    assert "INDEXNOW_KEY=INDEXNOW_KEY:latest" in site_secrets
+    # 필수 시크릿이 선택 시크릿 때문에 밀려나지 않는다 — 단일 플래그에 모두 들어간다.
+    assert "SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest" in site_secrets
+    assert "SITE_BFF_SECRET=SITE_BFF_SECRET:latest" in site_secrets

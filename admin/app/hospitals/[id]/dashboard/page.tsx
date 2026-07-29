@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
 import { countUnpublishedCarriedOver } from '@/lib/content'
 import { canRunMeasurement } from '@/lib/operator-safety'
+import { summarizeSovTrend } from '@/lib/sov-trend'
 import { useHospitalHeader } from '../hospital-context'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
@@ -26,9 +27,11 @@ import {
   ResponsiveContainer,
 } from 'recharts'
 
+// sov_pct·mention_rate는 nullable — 성공 측정 0건이면 null(측정 안 됨)이고,
+// 0은 '측정했으나 언급되지 않음'이다. 화면에서 이 둘을 같은 숫자로 합치지 않는다.
 interface TrendPoint {
   week_start: string
-  sov_pct: number
+  sov_pct: number | null
   mention_count: number
   total_count: number
 }
@@ -38,13 +41,13 @@ interface QueryPlatformBreakdown {
   mention_count: number
   total_count: number
   failure_count: number
-  mention_rate: number
+  mention_rate: number | null
 }
 
 interface QueryRow {
   query_id: string
   query_text: string
-  mention_rate: number
+  mention_rate: number | null
   mention_count: number
   total_count: number
   failure_count?: number
@@ -248,11 +251,9 @@ export default function DashboardPage() {
     return () => { cancelled = true }
   }, [id])
 
-  const lastPoint = trendData.length > 0 ? trendData[trendData.length - 1] : null
-  const prevPoint = trendData.length > 1 ? trendData[trendData.length - 2] : null
-  const currentSov = lastPoint?.sov_pct ?? null
-  const prevSov = prevPoint?.sov_pct ?? null
-  const change = currentSov !== null && prevSov !== null ? currentSov - prevSov : null
+  const trendSummary = summarizeSovTrend(trendData)
+  const currentSov = trendSummary.current
+  const change = trendSummary.change
   const queryCount = queries.length
   const latestMeasurementRuns = measurementRuns.slice(0, 3)
   const topExposureActions = exposureActions.slice(0, 3)
@@ -316,7 +317,9 @@ export default function DashboardPage() {
               hint: '발행 후 다시 측정한 결과를 다음 달 작업으로 이어 갑니다.',
             }
 
-  const isAnalyticsEmpty = !loading && !error && trendData.length === 0
+  // 추이 창(12주) 안에 성공 측정이 한 건도 없으면 차트 대신 안내를 띄운다.
+  // 측정 전/전부 실패인 구간을 0% 선으로 그리면 '언급이 아예 없다'는 허위 신호가 된다.
+  const isAnalyticsEmpty = !loading && !error && !trendData.some((point) => point.sov_pct !== null)
 
   async function runOperation(key: string, path: string) {
     setOperationLoading(key)
@@ -414,11 +417,7 @@ export default function DashboardPage() {
             <HeroStat
               label="현재 AI 언급률"
               value={currentSov !== null ? `${currentSov.toFixed(1)}%` : '-'}
-              hint={
-                change !== null
-                  ? `전주 대비 ${change > 0 ? '+' : ''}${change.toFixed(1)}%p`
-                  : '첫 측정 전'
-              }
+              hint={trendSummary.hint}
               tone={change === null ? 'neutral' : change >= 0 ? 'up' : 'down'}
             />
             <HeroStat
@@ -482,7 +481,7 @@ export default function DashboardPage() {
               <FocusCard
                 label="현재 AI 언급률"
                 value={currentSov !== null ? `${currentSov.toFixed(1)}%` : '-'}
-                hint={change !== null ? `전주 대비 ${change > 0 ? '+' : ''}${change.toFixed(1)}%p` : '첫 측정 후 표시'}
+                hint={trendSummary.hint}
                 tone={change === null ? 'neutral' : change >= 0 ? 'good' : 'warn'}
               />
               <FocusCard
@@ -755,7 +754,9 @@ export default function DashboardPage() {
                       성공 {run.success_count}/{run.query_count} · 실패 {run.failure_count}
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      실패율 {run.failure_rate.toFixed(1)}% · AI 언급률 계산에서 제외
+                      {run.failure_rate !== null
+                        ? `실패율 ${run.failure_rate.toFixed(1)}% · AI 언급률 계산에서 제외`
+                        : '측정 건이 없어 실패율을 산출할 수 없습니다'}
                     </p>
                   </div>
                   <div className="text-xs text-slate-500 md:text-right">
@@ -914,90 +915,100 @@ export default function DashboardPage() {
               </p>
             </div>
           ) : (
-            <>
-              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-base font-semibold text-slate-900">AI 언급률 주간 추이</h3>
-                  <span className="text-xs text-slate-400">
-                    측정한 환자 질문 {queryCount}개 · 누적 {trendData.length}주
-                  </span>
-                </div>
-                <div className="mt-4">
-                  <ResponsiveContainer width="100%" height={280}>
-                    <LineChart
-                      data={trendData}
-                      margin={{ top: 5, right: 20, left: 0, bottom: 5 }}
-                    >
-                      <XAxis dataKey="week_start" tick={{ fontSize: 12 }} />
-                      <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
-                      <Tooltip
-                        formatter={(value) =>
-                          typeof value === 'number' ? `${value.toFixed(1)}%` : value
-                        }
-                      />
-                      <Legend />
-                      <Line
-                        dataKey="sov_pct"
-                        stroke="#1A4B8C"
-                        strokeWidth={2}
-                        name="AI 언급률"
-                        dot={false}
-                        connectNulls
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-slate-900">AI 언급률 주간 추이</h3>
+                <span className="text-xs text-slate-400">
+                  측정한 환자 질문 {queryCount}개 · 누적 {trendData.length}주
+                </span>
               </div>
+              <div className="mt-4">
+                <ResponsiveContainer width="100%" height={280}>
+                  <LineChart
+                    data={trendData}
+                    margin={{ top: 5, right: 20, left: 0, bottom: 5 }}
+                  >
+                    <XAxis dataKey="week_start" tick={{ fontSize: 12 }} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
+                    <Tooltip
+                      formatter={(value) =>
+                        typeof value === 'number' ? `${value.toFixed(1)}%` : value
+                      }
+                    />
+                    <Legend />
+                    {/*
+                      connectNulls를 쓰면 미측정 주를 선으로 이어 그려 결측이 사라진 것처럼 보인다.
+                      공백은 공백으로 남기고, 앞뒤가 비어 홀로 남은 측정 주도 보이도록 점을 찍는다.
+                    */}
+                    <Line
+                      dataKey="sov_pct"
+                      stroke="#1A4B8C"
+                      strokeWidth={2}
+                      name="AI 언급률"
+                      dot={{ r: 3 }}
+                      connectNulls={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
 
-              {queries.length > 0 && (
-                <div className="admin-responsive-table-wrap overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                  <div className="border-b border-slate-100 px-6 py-4">
-                    <h3 className="text-base font-semibold text-slate-900">질문별 AI 언급률</h3>
-                    <p className="mt-1 text-xs text-slate-500">
-                      환자 질문 문구 단위로 본 AI 언급률입니다. 보완 작업 우선순위를 정하는 보조 지표로 사용합니다.
-                    </p>
-                  </div>
-                  <table className="admin-responsive-table w-full text-sm">
-                    <thead className="border-b border-slate-200 bg-slate-50">
-                      <tr>
-                        <th className="px-6 py-3 text-left font-medium text-slate-600">환자 질문</th>
-                        <th className="px-6 py-3 text-center font-medium text-slate-600">AI 언급률</th>
-                        <th className="px-6 py-3 text-left font-medium text-slate-600">서비스별 확인 결과</th>
-                        <th className="px-6 py-3 text-center font-medium text-slate-600">최근 측정</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {queries.map((q) => (
-                        <tr key={q.query_id} className="transition-colors hover:bg-slate-50">
-                          <td className="px-6 py-3 text-slate-700" data-primary="true">{q.query_text}</td>
-                          <td className="px-6 py-3 text-center" data-label="AI 언급률">
-                            <span
-                              className={`font-medium ${
-                                q.mention_rate >= 50 ? 'text-emerald-600' : 'text-slate-500'
-                              }`}
-                            >
-                              {q.mention_rate.toFixed(0)}%
-                            </span>
-                            <p className="mt-1 text-[11px] text-slate-400">
-                              {q.total_count}회 확인 중 {q.mention_count}회 언급
-                              {q.failure_count ? ` · 확인 실패 ${q.failure_count}건` : ''}
-                            </p>
-                          </td>
-                          <td className="px-6 py-3" data-label="서비스별">
-                            <PlatformBreakdown value={q.platform_breakdown} />
-                          </td>
-                          <td className="px-6 py-3 text-center text-xs text-slate-400" data-label="최근 측정">
-                            {q.last_measured_at
-                              ? new Date(q.last_measured_at).toLocaleDateString('ko-KR')
-                              : '-'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </>
+          {/* 추이가 비어 있어도 질문별 표는 남긴다 — '측정 실패'가 어느 질문에서 났는지 확인해야 한다. */}
+          {queries.length > 0 && (
+            <div className="admin-responsive-table-wrap overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-100 px-6 py-4">
+                <h3 className="text-base font-semibold text-slate-900">질문별 AI 언급률</h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  환자 질문 문구 단위로 본 AI 언급률입니다. 보완 작업 우선순위를 정하는 보조 지표로 사용합니다.
+                </p>
+              </div>
+              <table className="admin-responsive-table w-full text-sm">
+                <thead className="border-b border-slate-200 bg-slate-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">환자 질문</th>
+                    <th className="px-6 py-3 text-center font-medium text-slate-600">AI 언급률</th>
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">서비스별 확인 결과</th>
+                    <th className="px-6 py-3 text-center font-medium text-slate-600">최근 측정</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {queries.map((q) => (
+                    <tr key={q.query_id} className="transition-colors hover:bg-slate-50">
+                      <td className="px-6 py-3 text-slate-700" data-primary="true">{q.query_text}</td>
+                      <td className="px-6 py-3 text-center" data-label="AI 언급률">
+                        {/* null은 측정 자체가 안 된 상태 — 0%로 찍으면 '언급 안 됨'이라는 오진이 된다. */}
+                        <span
+                          className={`font-medium ${
+                            q.mention_rate !== null && q.mention_rate >= 50
+                              ? 'text-emerald-600'
+                              : 'text-slate-500'
+                          }`}
+                        >
+                          {q.mention_rate !== null
+                            ? `${q.mention_rate.toFixed(0)}%`
+                            : q.failure_count
+                              ? '측정 실패'
+                              : '측정 대기'}
+                        </span>
+                        <p className="mt-1 text-[11px] text-slate-400">
+                          {q.total_count}회 확인 중 {q.mention_count}회 언급
+                          {q.failure_count ? ` · 확인 실패 ${q.failure_count}건` : ''}
+                        </p>
+                      </td>
+                      <td className="px-6 py-3" data-label="서비스별">
+                        <PlatformBreakdown value={q.platform_breakdown} />
+                      </td>
+                      <td className="px-6 py-3 text-center text-xs text-slate-400" data-label="최근 측정">
+                        {q.last_measured_at
+                          ? new Date(q.last_measured_at).toLocaleDateString('ko-KR')
+                          : '-'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       )}
@@ -1020,7 +1031,8 @@ function PlatformBreakdown({ value }: { value?: Record<string, QueryPlatformBrea
           className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600"
         >
           <strong className="font-semibold text-slate-700">{row.platform_label ?? formatPlatformLabel(platform)}</strong>
-          <span>{row.mention_rate.toFixed(0)}%</span>
+          {/* 해당 서비스 측정이 전부 실패하면 null — 0%가 아니라 실패로 표기한다. */}
+          <span>{row.mention_rate !== null ? `${row.mention_rate.toFixed(0)}%` : '측정 실패'}</span>
           <span className="text-slate-400">
             ({row.total_count}회 중 {row.mention_count}회)
           </span>

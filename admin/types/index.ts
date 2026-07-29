@@ -263,8 +263,9 @@ export interface MeasurementRun {
   query_count: number
   success_count: number
   failure_count: number
-  success_rate: number
-  failure_rate: number
+  // 측정 건이 0이면 비율을 만들 수 없다 — null은 '산출 불가'이며 0%와 다르다.
+  success_rate: number | null
+  failure_rate: number | null
   started_at: string | null
   completed_at: string | null
   model_name: string | null

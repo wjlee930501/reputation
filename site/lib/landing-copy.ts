@@ -116,7 +116,7 @@ export const processSteps = [
   },
   {
     title: "두 번째 홈페이지",
-    body: "AI가 크롤링하기 쉬운 AEO 페이지를 만듭니다.",
+    body: "AI와 검색엔진이 읽기 쉬운 구조로 병원 정보를 공개합니다.",
   },
   {
     title: "콘텐츠 운영",

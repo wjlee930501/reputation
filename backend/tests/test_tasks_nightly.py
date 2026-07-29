@@ -7,11 +7,13 @@ import uuid
 import arrow
 import httpx
 import pytest
+from sqlalchemy.sql.dml import Update
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 from app.models.content import ContentItem
-from app.models.hospital import HospitalStatus
+from app.models.essence import PhilosophyStatus
+from app.models.hospital import Hospital, HospitalStatus
 from app.workers import tasks
 
 
@@ -256,16 +258,33 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
         def scalar_one_or_none(self):
             return philosophy
 
+    class _WriteBackResult:
+        def __init__(self, rowcount):
+            self.rowcount = rowcount
+
     class _GenerationDB:
+        """조회는 순서대로, 쓰기는 문장 종류로 분기하는 fake.
+
+        생성 결과는 더 이상 추적 객체 변경이 아니라 **조건부 UPDATE**로 쓰인다
+        (생성 중 취소된 슬롯이 되살아나지 않도록). 그래서 이 fake도 UPDATE를 인식해야 한다.
+        """
+
         def __init__(self):
             self._results = [_ExistingTitles(), _ApprovedPhilosophy()]
             self.commit_calls = 0
+            self.written_values = []
 
-        def execute(self, _stmt):
+        def execute(self, stmt):
+            if isinstance(stmt, Update):
+                self.written_values.append(dict(stmt._values or {}))
+                return _WriteBackResult(1)
             return self._results.pop(0)
 
         def commit(self):
             self.commit_calls += 1
+
+        def refresh(self, _obj):
+            pass
 
     async def fake_generate_content(*_args, **_kwargs):
         return {
@@ -288,12 +307,22 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
     db = _GenerationDB()
     tasks._generate_single_content_item(db, item, hospital)
 
-    assert item.status == tasks.ContentStatus.DRAFT
+    # 생성 결과는 조건부 UPDATE로 쓰인다 — 추적 객체를 직접 바꾸지 않는다.
+    assert db.written_values, "생성 결과가 write-back되지 않았다"
+    written = db.written_values[0]
+    # SQLAlchemy는 .values()의 값을 BindParameter로 감싼다 — 실제 값을 꺼낸다.
+    values = {
+        str(getattr(col, "key", col)): getattr(val, "value", val)
+        for col, val in written.items()
+    }
+    assert values["status"] == tasks.ContentStatus.DRAFT
+    assert values["content_philosophy_id"] == philosophy.id
+    assert values["generated_at"] is not None
+    # 재생성은 발행 상태를 만들지 않는다 — 발행은 별도 게이트를 거쳐야 한다.
+    assert "published_at" not in values
+    assert "published_by" not in values
     assert item.published_at is None
     assert item.published_by is None
-    assert item.generated_at is not None
-    assert item.content_philosophy_id == philosophy.id
-    assert db.commit_calls == 1
 
 
 def test_content_item_schedule_slots_have_db_uniqueness():
@@ -703,3 +732,335 @@ def test_deliver_post_publish_notification_marks_durable_timestamp(monkeypatch):
     assert item.post_publish_notified_at is not None
     assert db.committed is True
     assert audit_calls[0]["action"] == "post_publish_notification_sent"
+
+
+# ── 08:00 자동 발행 안전 게이트: **실제** assess_content_publication으로 검증 ──
+#
+# 왜 monkeypatch를 쓰지 않는가: 게이트를 상수 assessment로 대체하면 차단 분기가 한 줄도
+# 실행되지 않아, 게이트를 통째로 삭제해도 테스트가 초록이 된다. 제품 원칙상
+# (docs/prd/REPUTATION-VERSIONUP-DIRECTIVE-2026-07.md §5-1-6) 자동검사 전항목 통과 건은
+# AE가 본문을 열지 않고 종결하는 것이 정상 경로이므로, 이 게이트가 유일한 방어선이다.
+# 따라서 아래 테스트들은 tasks._auto_publish_one → 실제 assess_content_publication →
+# 실제 금지표현/운영기준 검사까지 전 구간을 통과시킨다.
+
+
+def _statement_entity(stmt):
+    descriptions = getattr(stmt, "column_descriptions", None) or []
+    return descriptions[0].get("entity") if descriptions else None
+
+
+class _AutoPublishDB:
+    """statement의 **대상 엔티티**로 분기하는 fake 세션.
+
+    기존 fake들은 execute 호출 순서(인덱스)로 결과를 돌려주는데, _auto_publish_one에
+    조회가 하나만 추가돼도 인덱스가 밀려 엉뚱한 객체가 반환되고 테스트가 조용히
+    의미를 잃는다. 엔티티로 분기하면 조회 순서·개수 변경에 영향을 받지 않는다.
+    """
+
+    def __init__(self, item, hospital):
+        self.item = item
+        self.hospital = hospital
+        self.commits = 0
+        self.added = []
+
+    def execute(self, stmt):
+        entity = _statement_entity(stmt)
+        if entity is ContentItem:
+            return _Result(items=[self.item] if self.item else [])
+        if entity is Hospital:
+            return _Result(items=[self.hospital] if self.hospital else [])
+        raise AssertionError(f"예상하지 못한 조회 대상: {entity}")
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    def commit(self):
+        self.commits += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _publication_hospital():
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        name="테스트의원",
+        slug="test-clinic",
+        aeo_domain="test.example.com",
+        treatments=[],
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+    )
+
+
+def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        hospital=hospital,
+        status=tasks.ContentStatus.DRAFT,
+        title=title,
+        body=body,
+        meta_description="진료 전 확인할 점을 정리했습니다.",
+        faq_question=None,
+        faq_answer_summary=None,
+        # 참고 자료 게이트(MISSING_REFERENCES)는 이 테스트들의 관심사가 아니므로
+        # 화이트리스트 도메인의 실제 문서 URL로 미리 통과시켜 둔다.
+        references_list=[
+            {
+                "title": "질병관리청 국가건강정보포털",
+                "url": "https://health.kdca.go.kr/healthinfo/example",
+            }
+        ],
+        sequence_no=1,
+        total_count=8,
+        content_type=SimpleNamespace(value="FAQ"),
+        scheduled_date=date(2026, 6, 10),
+        carried_over_from=None,
+        content_philosophy_id=None,
+        essence_status=None,
+        essence_check_summary=None,
+        published_at=None,
+        published_by=None,
+        post_publish_notified_at=None,
+        post_publish_reviewed_at=None,
+        post_publish_reviewed_by=None,
+    )
+
+
+def _approved_philosophy():
+    """무결성 검사(오류 페이지 잔재)를 통과하는 최소 승인 운영 기준."""
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        version=3,
+        status=PhilosophyStatus.APPROVED,
+        avoid_messages=[],
+    )
+
+
+def _arm_external_effect_tripwires(monkeypatch) -> dict[str, list]:
+    """차단 판정 뒤 공개 표면·색인·Slack으로 새는 효과가 있는지 감시한다.
+
+    지금은 _auto_publish_one이 이 함수들을 직접 부르지 않지만, 커밋 이전으로 외부
+    효과가 옮겨오는 리팩터가 들어오면 차단된 글이 공개될 수 있다. 그물을 미리 친다.
+    """
+    calls: dict[str, list] = {"revalidate": [], "indexnow": [], "published_slack": []}
+
+    async def fake_revalidate(*args, **kwargs):
+        calls["revalidate"].append((args, kwargs))
+        return True
+
+    async def fake_indexnow(*args, **kwargs):
+        calls["indexnow"].append((args, kwargs))
+        return True
+
+    async def fake_published_slack(**kwargs):
+        calls["published_slack"].append(kwargs)
+        return True
+
+    monkeypatch.setattr(tasks, "trigger_content_site_revalidate_safe", fake_revalidate)
+    monkeypatch.setattr(tasks.indexnow, "submit_content_published_safe", fake_indexnow)
+    monkeypatch.setattr(tasks.notifier, "notify_content_auto_published", fake_published_slack)
+    return calls
+
+
+def test_auto_publish_blocks_content_with_forbidden_expression(monkeypatch):
+    """의료광고 금지 표현이 본문에 남아 있으면 08:00 자동 발행이 차단돼야 한다.
+
+    승인된 운영 기준은 정상 제공한다 — 차단 사유가 '운영 기준 없음'이 아니라
+    '금지 표현'임을 code로 못 박아, 금지표현 분기가 실제로 실행됐음을 증명한다.
+    """
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="이 수술은 완치를 약속드립니다.")
+    db = _AutoPublishDB(item, hospital)
+    effects = _arm_external_effect_tripwires(monkeypatch)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+    )
+
+    payload = tasks._auto_publish_one(item.id)
+
+    assert payload["kind"] == "blocked"
+    assert payload["code"] == "FORBIDDEN_EXPRESSION"
+    assert item.status is tasks.ContentStatus.DRAFT
+    assert item.published_at is None
+    assert item.published_by is None
+    assert [log.action for log in db.added] == ["auto_publish_blocked"]
+    assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
+
+
+def test_auto_publish_blocks_markdown_hidden_forbidden_expression(monkeypatch):
+    """마크다운 강조로 쪼갠 금지 표현(`최**고**의`)도 차단돼야 한다 — 회귀 방지선.
+
+    공개 표면이 ReactMarkdown으로 렌더하므로 환자 화면에는 "최고의"로 보인다.
+    원문 기준(check_forbidden)으로만 검사하면 이 우회가 그대로 통과해 공개된다.
+    """
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="저희는 최**고**의 진료를 제공합니다.")
+    db = _AutoPublishDB(item, hospital)
+    effects = _arm_external_effect_tripwires(monkeypatch)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+    )
+
+    payload = tasks._auto_publish_one(item.id)
+
+    assert payload["kind"] == "blocked"
+    assert payload["code"] == "FORBIDDEN_EXPRESSION"
+    assert item.status is tasks.ContentStatus.DRAFT
+    assert item.published_at is None
+    assert item.published_by is None
+    assert [log.action for log in db.added] == ["auto_publish_blocked"]
+    assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
+
+
+def test_auto_publish_blocks_when_no_approved_philosophy(monkeypatch):
+    """승인된 콘텐츠 운영 기준이 없으면 본문이 깨끗해도 발행하지 않는다 (STEP5 게이트)."""
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="증상 단계에 따라 진료 방향을 설명드립니다.")
+    db = _AutoPublishDB(item, hospital)
+    effects = _arm_external_effect_tripwires(monkeypatch)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+
+    payload = tasks._auto_publish_one(item.id)
+
+    assert payload["kind"] == "blocked"
+    assert payload["code"] == "ESSENCE_NOT_ALIGNED"
+    assert item.status is tasks.ContentStatus.DRAFT
+    assert item.published_at is None
+    assert item.published_by is None
+    # 차단 사유가 DB에도 남아야 Admin에서 AE가 원인을 볼 수 있다.
+    assert item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
+    assert item.essence_check_summary["blocking"] is True
+    assert [log.action for log in db.added] == ["auto_publish_blocked"]
+    assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
+
+
+def test_auto_publish_is_idempotent(monkeypatch):
+    """같은 콘텐츠를 두 번 처리해도 발행·커밋·Slack은 각각 1회여야 한다.
+
+    catch-up 윈도우 재실행이나 Celery 재시도로 morning 태스크가 같은 id를 다시 집는 일은
+    정상이다. DRAFT 가드가 없으면 published_at이 덮어써지고 AE에게 중복 확인 요청이 간다.
+    """
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="증상 단계에 따라 진료 방향을 설명드립니다.")
+    db = _AutoPublishDB(item, hospital)
+    effects = _arm_external_effect_tripwires(monkeypatch)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+    )
+
+    first = tasks._auto_publish_one(item.id)
+    published_at = item.published_at
+    second = tasks._auto_publish_one(item.id)
+
+    assert first["kind"] == "published"
+    assert item.status is tasks.ContentStatus.PUBLISHED
+    assert item.published_by == tasks.AUTO_PUBLISH_ACTOR
+    # 두 번째 호출은 DRAFT 가드에 걸려 아무것도 하지 않는다.
+    assert second is None
+    assert db.commits == 1
+    assert item.published_at == published_at
+    assert [log.action for log in db.added] == ["auto_publish_content"]
+
+    # morning 루프는 payload가 None이 아닐 때만 Slack을 보낸다 → 실제 발송도 1회.
+    for outcome in (first, second):
+        if outcome is not None:
+            tasks._deliver_post_publish_notification(item.id, outcome)
+
+    assert len(effects["published_slack"]) == 1
+
+
+def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatch):
+    """재생성이 도는 동안 AE가 슬롯을 종료하면 생성물은 버려져야 한다.
+
+    가드가 없으면 종료된 슬롯에 미검수 AI 본문이 들어가고, 그 항목이 다시 DRAFT가 되면
+    08:00 자동 발행(`status=DRAFT AND body IS NOT NULL`)이 이를 환자에게 공개한다.
+    """
+    item = SimpleNamespace(
+        id="content-1",
+        hospital_id="hospital-1",
+        content_type=SimpleNamespace(value="FAQ"),
+        title=None,
+        body=None,
+        image_url="gs://bucket/existing.png",
+        published_at=None,
+        published_by=None,
+        brief_status=None,
+        content_brief=None,
+        query_target_id=None,
+        exposure_action_id=None,
+    )
+    hospital = SimpleNamespace(id="hospital-1", slug="test-clinic")
+    philosophy = SimpleNamespace(id="philosophy-1")
+
+    class _ExistingTitles:
+        def all(self):
+            return []
+
+    class _ApprovedPhilosophy:
+        def scalar_one_or_none(self):
+            return philosophy
+
+    class _NoRowsWritten:
+        rowcount = 0  # 운영자가 상태를 바꿔 조건부 UPDATE가 한 행도 못 잡은 상황
+
+    class _CancelledDuringGenerationDB:
+        def __init__(self):
+            self._results = [_ExistingTitles(), _ApprovedPhilosophy()]
+            self.commit_calls = 0
+            self.rollback_calls = 0
+
+        def execute(self, stmt):
+            if isinstance(stmt, Update):
+                return _NoRowsWritten()
+            return self._results.pop(0)
+
+        def commit(self):
+            self.commit_calls += 1
+
+        def rollback(self):
+            self.rollback_calls += 1
+
+        def refresh(self, _obj):
+            pass
+
+    async def fake_generate_content(*_args, **_kwargs):
+        return {
+            "title": "되살아나면 안 되는 제목",
+            "body": "되살아나면 안 되는 본문",
+            "meta_description": None,
+            "references": [{"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}],
+            "faq_question": None,
+            "faq_answer_summary": None,
+        }
+
+    def _boom_image(*_args, **_kwargs):
+        raise AssertionError("결과를 버렸는데 이미지 생성까지 진행했다")
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
+    monkeypatch.setattr(tasks, "generate_image", _boom_image)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    # 이 테스트의 대상은 write-back 가드다 — 브리프 플래너는 범위 밖이라 고정한다.
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", lambda *a, **k: None)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda _item, _philosophy: SimpleNamespace(status="ALIGNED", summary={"ok": True}),
+    )
+
+    db = _CancelledDuringGenerationDB()
+    tasks._generate_single_content_item(db, item, hospital)
+
+    assert db.rollback_calls == 1, "0행이면 롤백하고 결과를 버려야 한다"
+    assert db.commit_calls == 1, "플래너 확정 커밋 외에 본문 커밋이 일어나면 안 된다"
+    # 추적 객체가 오염되지 않아야 다음 반복이 안전하다.
+    assert item.title is None
+    assert item.body is None

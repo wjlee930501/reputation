@@ -125,6 +125,78 @@ async def test_sov_trend_excludes_failed_records_from_denominator():
     assert response[-1]["sov_pct"] == 100.0
 
 
+async def test_sov_queries_report_none_when_every_measurement_failed():
+    """성공 측정 0건은 '언급률 0%'가 아니라 '측정 안 됨'(None)이어야 한다."""
+    hospital_id = uuid.uuid4()
+    query_id = uuid.uuid4()
+    query = SimpleNamespace(id=query_id, query_text="강남 치질 병원 추천")
+    records = [
+        _record(query_id, status="FAILED", is_mentioned=False, ai_platform="chatgpt"),
+        _record(query_id, status="FAILED", is_mentioned=True, ai_platform="gemini"),
+    ]
+    db = _FakeDB(
+        hospital=SimpleNamespace(id=hospital_id),
+        execute_results=[_ScalarResult([query]), _ScalarResult(records)],
+    )
+
+    response = await get_sov_queries(hospital_id, db)
+
+    assert response[0]["mention_rate"] is None
+    assert response[0]["mention_rate"] != 0.0
+    assert response[0]["total_count"] == 0
+    assert response[0]["failure_count"] == 2
+    # 플랫폼별도 동일 계약 — 실패만 쌓인 플랫폼을 0%로 표기하지 않는다.
+    assert response[0]["platform_breakdown"]["CHATGPT"]["mention_rate"] is None
+    assert response[0]["platform_breakdown"]["GEMINI"]["mention_rate"] is None
+
+
+async def test_sov_queries_sort_places_unmeasured_queries_last():
+    """None과 float이 섞여도 정렬이 터지지 않고, 미측정 쿼리가 항상 뒤로 간다."""
+    hospital_id = uuid.uuid4()
+    measured_id = uuid.uuid4()
+    zero_id = uuid.uuid4()
+    unmeasured_id = uuid.uuid4()
+    queries = [
+        SimpleNamespace(id=unmeasured_id, query_text="측정 실패 질문"),
+        SimpleNamespace(id=zero_id, query_text="언급 0% 질문"),
+        SimpleNamespace(id=measured_id, query_text="언급 100% 질문"),
+    ]
+    records = [
+        _record(unmeasured_id, status="FAILED", is_mentioned=False),
+        _record(zero_id, status="SUCCESS", is_mentioned=False),
+        _record(measured_id, status="SUCCESS", is_mentioned=True),
+    ]
+    db = _FakeDB(
+        hospital=SimpleNamespace(id=hospital_id),
+        execute_results=[_ScalarResult(queries), _ScalarResult(records)],
+    )
+
+    response = await get_sov_queries(hospital_id, db)
+
+    assert [row["mention_rate"] for row in response] == [100.0, 0.0, None]
+
+
+async def test_sov_trend_reports_none_for_weeks_without_successful_measurement():
+    """전부 FAILED인 주간은 sov_pct가 None이어야 하며 0.0이면 허위 보고가 된다."""
+    hospital_id = uuid.uuid4()
+    query_id = uuid.uuid4()
+    measured_at = arrow.now("Asia/Seoul").shift(days=-1).datetime
+    records = [_record(query_id, status="FAILED", is_mentioned=True, measured_at=measured_at)]
+    db = _FakeDB(
+        hospital=SimpleNamespace(id=hospital_id),
+        execute_results=[_ScalarResult(records)],
+    )
+
+    response = await get_sov_trend(hospital_id, db)
+
+    assert response[-1]["sov_pct"] is None
+    assert response[-1]["sov_pct"] != 0.0
+    assert response[-1]["total_count"] == 0
+    assert response[-1]["failure_count"] == 1
+    # 측정 자체가 없던 이전 주들도 동일하게 None이다.
+    assert all(week["sov_pct"] is None for week in response[:-1])
+
+
 async def test_measurement_runs_endpoint_shape():
     hospital_id = uuid.uuid4()
     run_id = uuid.uuid4()
