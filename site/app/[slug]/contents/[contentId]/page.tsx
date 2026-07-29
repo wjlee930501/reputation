@@ -482,6 +482,19 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                       void node
                       return <h2 id={articleHeadingId(headingText(children))} {...props}>{children}</h2>
                     },
+                    a: ({ children, node, href, ...props }) => {
+                      void node
+                      // 본문은 LLM 생성물이라 AE 검수를 거친 참고자료보다 링크 신뢰도가 낮다.
+                      // 참고자료와 동일하게 스킴을 검증하고 nofollow/noopener를 강제한다 —
+                      // 검증에 실패한 href는 링크를 만들지 않고 텍스트만 남긴다.
+                      const safeHref = safeExternalHref(href)
+                      if (!safeHref) return <>{children}</>
+                      return (
+                        <a {...props} href={safeHref} target="_blank" rel="noopener noreferrer nofollow">
+                          {children}
+                        </a>
+                      )
+                    },
                     table: ({ children, node, ...props }) => {
                       void node
                       return (

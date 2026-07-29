@@ -6,16 +6,26 @@
 // sitemap에 남의 병원 URL이 함께 노출된다. 플랫폼/로컬/run.app/vercel.app 호스트는
 // 기존처럼 전체 병원을 담는다.
 
-import { getPrimaryHostnames, isPrimaryHost, normalizeHostname } from './host-routing.ts'
+import {
+  getPrimaryHostnames,
+  isPrimaryHost,
+  normalizeHostname,
+  resolveRequestHost,
+} from './host-routing.ts'
 import { platformSiteUrl } from './site-url.ts'
 
 export type SitemapScope = { kind: 'all' } | { kind: 'host'; hostname: string }
 
-export function resolveSitemapScope(hostHeader: string | null | undefined): SitemapScope {
+// 호스트 판정은 middleware·robots.txt와 같은 resolveRequestHost를 쓴다 (단일 정본).
+export function resolveSitemapScope(
+  hostHeader: string | null | undefined,
+  forwardedHostHeader: string | null | undefined,
+): SitemapScope {
   const platformBase = platformSiteUrl()
   const primaryHostnames = getPrimaryHostnames(platformBase)
-  if (isPrimaryHost(hostHeader, primaryHostnames)) return { kind: 'all' }
-  const hostname = normalizeHostname(hostHeader)
+  const requestHost = resolveRequestHost(hostHeader, forwardedHostHeader, primaryHostnames)
+  if (isPrimaryHost(requestHost, primaryHostnames)) return { kind: 'all' }
+  const hostname = normalizeHostname(requestHost)
   // host 미상은 안전하게 전체 취급 — isPrimaryHost가 이미 host 미상을 primary로 처리하므로
   // 이 분기는 사실상 방어적 코드(정상 흐름에서는 도달하지 않는다).
   if (!hostname) return { kind: 'all' }

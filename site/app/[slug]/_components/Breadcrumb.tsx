@@ -1,9 +1,11 @@
 import Link from 'next/link'
 
-export interface BreadcrumbItem {
-  label: string
-  href?: string
-}
+import type { BreadcrumbItem } from '@/lib/breadcrumb'
+
+// JSON-LD 빌더는 lib에 있고(테스트 러너가 lib/*.test.ts만 실행) 여기서는 그대로 재노출한다 —
+// 페이지들이 화면용 Breadcrumb와 같은 자리에서 가져다 쓰던 기존 import 경로를 유지하기 위함.
+export { buildBreadcrumbJsonLd } from '@/lib/breadcrumb'
+export type { BreadcrumbItem } from '@/lib/breadcrumb'
 
 interface Props {
   items: BreadcrumbItem[]
@@ -28,19 +30,4 @@ export function Breadcrumb({ items }: Props) {
       })}
     </nav>
   )
-}
-
-export function buildBreadcrumbJsonLd(items: BreadcrumbItem[], baseUrl: string): Record<string, unknown> {
-  return {
-    '@context': 'https://schema.org',
-    '@type': 'BreadcrumbList',
-    itemListElement: items.map((item, idx) => ({
-      '@type': 'ListItem',
-      position: idx + 1,
-      name: item.label,
-      ...(item.href
-        ? { item: new URL(item.href, `${baseUrl.replace(/\/$/, '')}/`).toString() }
-        : {}),
-    })),
-  }
 }

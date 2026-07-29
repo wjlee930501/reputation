@@ -45,24 +45,41 @@ export function isPrimaryHost(hostHeader: string | null | undefined, primaryHost
   return isPlatformRuntimeHost(hostname)
 }
 
-function firstForwardedHost(forwardedHostHeader: string | null | undefined): string | null {
-  const raw = forwardedHostHeader?.split(',', 1)[0]?.trim()
-  return normalizeHostname(raw)
+// x-forwarded-host를 신뢰해도 되는 런타임 호스트.
+// Vercel 프록시는 클라이언트가 보낸 x-forwarded-* 값을 자기 값으로 덮어쓰지만,
+// GCLB(serverless NEG) → Cloud Run 경로는 원본 Host를 그대로 전달하고 x-forwarded-host는
+// 손대지 않는다. 즉 *.run.app에서 이 헤더를 믿으면 아무나 임의 병원 도메인을 실어
+// 그 병원 테넌트로 위장할 수 있으므로, 신뢰 범위를 프록시가 관리하는 호스트로 좁힌다.
+const FORWARDED_HOST_TRUSTED_HOSTNAMES = new Set(['vercel.app'])
+const FORWARDED_HOST_TRUSTED_SUFFIXES = ['.vercel.app'] as const
+
+function trustsForwardedHost(hostname: string): boolean {
+  if (FORWARDED_HOST_TRUSTED_HOSTNAMES.has(hostname)) return true
+  return FORWARDED_HOST_TRUSTED_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
 }
 
-export function getEffectiveHost(
+/**
+ * 요청이 공개적으로 도달한 Host 값(포트 포함)을 고르는 단일 정본.
+ * middleware(rewrite/redirect), robots.txt(sitemap 포인터), sitemap.xml(scope)이 모두
+ * 이 함수로 호스트를 판정한다 — 세 곳이 서로 다른 호스트를 보면 커스텀 도메인에서
+ * rewrite된 페이지가 플랫폼 sitemap/robots를 받는 식으로 신호가 어긋난다.
+ *
+ * @returns Host 헤더 원문(포트 유지) 또는 신뢰 가능한 x-forwarded-host, 호스트 미상이면 null.
+ */
+export function resolveRequestHost(
   hostHeader: string | null | undefined,
   forwardedHostHeader: string | null | undefined,
   primaryHostnames: string[],
 ): string | null {
-  const hostname = normalizeHostname(hostHeader)
+  const rawHost = hostHeader?.trim() || null
+  const hostname = normalizeHostname(rawHost)
   if (!hostname) return null
-  if (!isPrimaryHost(hostname, primaryHostnames)) return hostname
-  if (!isPlatformRuntimeHost(hostname)) return hostname
+  if (!trustsForwardedHost(hostname)) return rawHost
 
-  const forwardedHostname = firstForwardedHost(forwardedHostHeader)
-  if (!forwardedHostname || isPrimaryHost(forwardedHostname, primaryHostnames)) return hostname
-  return forwardedHostname
+  const forwarded = forwardedHostHeader?.split(',', 1)[0]?.trim() || null
+  const forwardedHostname = normalizeHostname(forwarded)
+  if (!forwardedHostname || isPrimaryHost(forwardedHostname, primaryHostnames)) return rawHost
+  return forwarded
 }
 
 // 커스텀 도메인에서도 플랫폼 그대로 서빙해야 하는 예약 경로.

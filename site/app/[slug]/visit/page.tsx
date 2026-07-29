@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec } from '@/lib/business-hours'
+import { buildAddressRegionFields } from '@/lib/clinic-schema'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 
@@ -71,11 +72,16 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
     // 허브 페이지와 동일한 @id — 검색엔진이 같은 병원 엔티티로 병합하도록 한다.
     '@id': `${hospitalRootUrl}#clinic`,
     name: hospital.name,
-    url: `${hospitalRootUrl}/visit`,
+    // 같은 @id로 병합되는 노드끼리 url/address가 어긋나면 답변 엔진이 병원 공식 URL을
+    // /visit으로, 주소를 지역 정보 없는 축약형으로 해석할 수 있다. 엔티티 필드는 허브
+    // 페이지(app/[slug]/page.tsx)와 동일하게 두고, 이 페이지 URL은 mainEntityOfPage로 분리한다.
+    url: hospitalRootUrl,
+    mainEntityOfPage: `${hospitalRootUrl}/visit`,
     address: {
       '@type': 'PostalAddress',
       streetAddress: hospital.address,
       addressCountry: 'KR',
+      ...buildAddressRegionFields(hospital.region),
     },
     telephone: hospital.phone,
     medicalSpecialty: hospital.specialties,

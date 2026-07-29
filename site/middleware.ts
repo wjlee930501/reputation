@@ -4,11 +4,11 @@ import { getApiBase } from './lib/config.ts'
 import {
   decideCanonicalRedirect,
   decideRewrite,
-  getEffectiveHost,
   getPrimaryHostnames,
   isPrimaryHost,
   isReservedPath,
   normalizeHostname,
+  resolveRequestHost,
   shouldFailClosedCustomHost,
 } from './lib/host-routing.ts'
 
@@ -105,7 +105,7 @@ export function __setDomainSlugCacheEntryForTest(hostname: string, entry: CacheE
 export async function middleware(request: NextRequest) {
   const host = request.headers.get('host')
   const primaryHostnames = getPrimaryHostnames(process.env.NEXT_PUBLIC_SITE_URL)
-  const effectiveHost = getEffectiveHost(
+  const effectiveHost = resolveRequestHost(
     host,
     request.headers.get('x-forwarded-host'),
     primaryHostnames,

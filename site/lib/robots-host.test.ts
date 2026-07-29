@@ -32,7 +32,7 @@ function withPlatform(siteUrl: string, fn: () => void): void {
 test('resolveSitemapUrl keeps platform host pointing at platform sitemap', () => {
   withPlatform('https://reputation.motionlabs.kr', () => {
     assert.equal(
-      resolveSitemapUrl('reputation.motionlabs.kr', 'https'),
+      resolveSitemapUrl('reputation.motionlabs.kr', 'https', null),
       'https://reputation.motionlabs.kr/sitemap.xml',
     )
   })
@@ -40,15 +40,15 @@ test('resolveSitemapUrl keeps platform host pointing at platform sitemap', () =>
 
 test('resolveSitemapUrl falls back to platform sitemap when host is missing', () => {
   withPlatform('https://reputation.motionlabs.kr', () => {
-    assert.equal(resolveSitemapUrl(null, null), 'https://reputation.motionlabs.kr/sitemap.xml')
-    assert.equal(resolveSitemapUrl('', null), 'https://reputation.motionlabs.kr/sitemap.xml')
+    assert.equal(resolveSitemapUrl(null, null, null), 'https://reputation.motionlabs.kr/sitemap.xml')
+    assert.equal(resolveSitemapUrl('', null, null), 'https://reputation.motionlabs.kr/sitemap.xml')
   })
 })
 
 test('resolveSitemapUrl keeps run.app/vercel.app preview hosts on platform sitemap', () => {
   withPlatform('https://reputation.motionlabs.kr', () => {
     assert.equal(
-      resolveSitemapUrl('site-abc123.run.app', 'https'),
+      resolveSitemapUrl('site-abc123.run.app', 'https', null),
       'https://reputation.motionlabs.kr/sitemap.xml',
     )
   })
@@ -57,7 +57,7 @@ test('resolveSitemapUrl keeps run.app/vercel.app preview hosts on platform sitem
 test('resolveSitemapUrl points custom domain at its own origin', () => {
   withPlatform('https://reputation.motionlabs.kr', () => {
     assert.equal(
-      resolveSitemapUrl('clinic.example.com', 'https'),
+      resolveSitemapUrl('clinic.example.com', 'https', null),
       'https://clinic.example.com/sitemap.xml',
     )
   })
@@ -66,18 +66,34 @@ test('resolveSitemapUrl points custom domain at its own origin', () => {
 test('resolveSitemapUrl honours forwarded proto and trims comma-list', () => {
   withPlatform('https://reputation.motionlabs.kr', () => {
     assert.equal(
-      resolveSitemapUrl('clinic.example.com', 'http'),
+      resolveSitemapUrl('clinic.example.com', 'http', null),
       'http://clinic.example.com/sitemap.xml',
     )
     // x-forwarded-proto가 누적된 경우 첫 토큰만 사용한다.
     assert.equal(
-      resolveSitemapUrl('clinic.example.com', 'https,http'),
+      resolveSitemapUrl('clinic.example.com', 'https,http', null),
       'https://clinic.example.com/sitemap.xml',
     )
     // proto 미상이면 https로 안전 기본값.
     assert.equal(
-      resolveSitemapUrl('clinic.example.com', null),
+      resolveSitemapUrl('clinic.example.com', null, null),
       'https://clinic.example.com/sitemap.xml',
+    )
+  })
+})
+
+test('resolveSitemapUrl follows the same forwarded-host policy as middleware', () => {
+  withPlatform('https://reputation.motionlabs.kr', () => {
+    // 프록시(Vercel)가 덮어쓴 x-forwarded-host는 middleware와 동일하게 신뢰한다 —
+    // rewrite된 페이지와 robots.txt가 다른 호스트를 가리키면 안 된다.
+    assert.equal(
+      resolveSitemapUrl('reputation-site.vercel.app', 'https', 'clinic.example.com'),
+      'https://clinic.example.com/sitemap.xml',
+    )
+    // run.app에서는 클라이언트가 보낸 x-forwarded-host를 그대로 받으므로 무시한다(테넌트 위장 차단).
+    assert.equal(
+      resolveSitemapUrl('site-abc123.run.app', 'https', 'clinic.example.com'),
+      'https://reputation.motionlabs.kr/sitemap.xml',
     )
   })
 })
@@ -85,7 +101,7 @@ test('resolveSitemapUrl honours forwarded proto and trims comma-list', () => {
 test('resolveSitemapUrl preserves a port in the custom host origin', () => {
   withPlatform('https://reputation.motionlabs.kr', () => {
     assert.equal(
-      resolveSitemapUrl('clinic.example.com:8443', 'https'),
+      resolveSitemapUrl('clinic.example.com:8443', 'https', null),
       'https://clinic.example.com:8443/sitemap.xml',
     )
   })

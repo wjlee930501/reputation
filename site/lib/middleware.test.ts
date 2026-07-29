@@ -97,6 +97,25 @@ test('custom domain lookup outage uses expired-fresh slug inside the 24h stale w
   assert.match(res.headers.get('x-middleware-rewrite') ?? '', /\/old-clinic\/contents$/)
 })
 
+test('a spoofed x-forwarded-host on the Cloud Run host never impersonates a tenant', async () => {
+  resetEnvAndCache()
+  // GCLB → Cloud Run은 x-forwarded-host를 덮어쓰지 않으므로 이 값은 클라이언트가 보낸 것일 수 있다.
+  const request = new NextRequest('https://site-abc123-du.a.run.app/contents', {
+    headers: {
+      host: 'site-abc123-du.a.run.app',
+      'x-forwarded-host': 'clinic.example.com',
+    },
+  })
+  const fetchMock: typeof fetch = async () =>
+    new Response(JSON.stringify({ slug: 'jang-clinic' }), { status: 200 })
+  globalThis.fetch = fetchMock
+
+  const res = await middleware(request)
+
+  assert.equal(res.status, 200)
+  assert.equal(res.headers.get('x-middleware-rewrite'), null, '병원 허브로 rewrite되면 안 된다')
+})
+
 test('custom domain lookup outage rejects positive slug beyond stale window', async () => {
   resetEnvAndCache()
   __setDomainSlugCacheEntryForTest('clinic.example.com', {

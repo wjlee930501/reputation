@@ -11,7 +11,7 @@
 import type { MetadataRoute } from 'next'
 
 import type { SitemapScope } from './sitemap-host.ts'
-import { platformSiteUrl } from './site-url.ts'
+import { normalizeCustomDomain, platformSiteUrl } from './site-url.ts'
 import { buildTreatmentSlug } from './treatment-slug.ts'
 
 // 백엔드 /contents 목록의 하드캡과 동일 — offset으로 페이지를 넘겨 전체 발행 콘텐츠를 순회한다.
@@ -83,44 +83,50 @@ export async function appendHospitalEntries(
   apiBase: string,
   hospital: HospitalEntry,
   scopeBase: string,
+  hospitalPathPrefix: string,
 ): Promise<void> {
   const hospitalLastModified = validDate(hospital.updated_at)
   // Sitemap 프로토콜의 단일-host 계약: 응답을 제공한 scope의 origin으로만 URL을 만든다.
   // 페이지 canonical은 별도 신호이며, 플랫폼/커스텀/하이브리드 sitemap 간 origin을 섞지 않는다.
-  const base = scopeBase
+  //
+  // 경로 접두어는 scope마다 다르다. 커스텀 도메인/하이브리드 서브도메인에서는 middleware가
+  // `/{slug}` 접두어를 308로 떼어내므로(host-routing.decideCanonicalRedirect), 접두어를 붙이면
+  // 제출한 URL 전부가 리다이렉트되고 페이지 canonical과도 어긋난다. 그래서 host scope는 ''를,
+  // 플랫폼 scope는 `/{slug}`를 쓴다.
+  const base = `${scopeBase}${hospitalPathPrefix}`
 
   entries.push({
-    url: `${base}/${hospital.slug}`,
+    url: base,
     ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'weekly',
     priority: 0.8,
   })
   entries.push({
-    url: `${base}/${hospital.slug}/contents`,
+    url: `${base}/contents`,
     ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'weekly',
     priority: 0.7,
   })
   entries.push({
-    url: `${base}/${hospital.slug}/doctor`,
+    url: `${base}/doctor`,
     ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'monthly',
     priority: 0.6,
   })
   entries.push({
-    url: `${base}/${hospital.slug}/treatments`,
+    url: `${base}/treatments`,
     ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'monthly',
     priority: 0.6,
   })
   entries.push({
-    url: `${base}/${hospital.slug}/visit`,
+    url: `${base}/visit`,
     ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'monthly',
     priority: 0.6,
   })
   entries.push({
-    url: `${base}/${hospital.slug}/llms.txt`,
+    url: `${base}/llms.txt`,
     ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
     changeFrequency: 'daily',
     priority: 0.5,
@@ -147,7 +153,7 @@ export async function appendHospitalEntries(
     const treatmentSlug = buildTreatmentSlug(treatment.name)
     if (!treatmentSlug) continue
     entries.push({
-      url: `${base}/${hospital.slug}/treatments/${treatmentSlug}`,
+      url: `${base}/treatments/${treatmentSlug}`,
       ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
       changeFrequency: 'weekly',
       priority: 0.7,
@@ -158,7 +164,7 @@ export async function appendHospitalEntries(
   const contents = await fetchAllContents(apiBase, hospital.slug)
   for (const content of contents) {
     entries.push({
-      url: `${base}/${hospital.slug}/contents/${content.id}`,
+      url: `${base}/contents/${content.id}`,
       lastModified:
         validDate(content.body_updated_at) ||
         validDate(content.published_at) ||
@@ -226,7 +232,8 @@ export async function buildSitemap(
     const hospital = await fetchHospitalDetail(apiBase, slug)
     if (!hospital) return entries
 
-    await appendHospitalEntries(entries, apiBase, hospital, `https://${scope.hostname}`)
+    // host scope의 공개 경로에는 slug 접두어가 없다 — middleware가 `/{slug}`를 308로 떼어낸다.
+    await appendHospitalEntries(entries, apiBase, hospital, `https://${scope.hostname}`, '')
     return entries
   }
 
@@ -246,7 +253,11 @@ export async function buildSitemap(
   }
 
   for (const hospital of hospitals) {
-    await appendHospitalEntries(entries, apiBase, hospital, platformBase)
+    // 자체 도메인이 연결된 병원은 페이지 canonical이 그 도메인을 가리킨다(site-url.canonicalBase).
+    // 플랫폼 sitemap에 플랫폼 호스트 URL로 실으면 자기 자신을 중복으로 신고하는 꼴이라 제외하고,
+    // 해당 병원은 자기 도메인의 host scope sitemap이 담당한다.
+    if (normalizeCustomDomain(hospital.aeo_domain)) continue
+    await appendHospitalEntries(entries, apiBase, hospital, platformBase, `/${hospital.slug}`)
   }
 
   return entries

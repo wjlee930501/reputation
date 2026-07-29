@@ -4,11 +4,11 @@ import test from 'node:test'
 import {
   decideCanonicalRedirect,
   decideRewrite,
-  getEffectiveHost,
   getPrimaryHostnames,
   isPrimaryHost,
   isReservedPath,
   normalizeHostname,
+  resolveRequestHost,
   shouldFailClosedCustomHost,
 } from './host-routing.ts'
 
@@ -71,24 +71,38 @@ test('decideRewrite: primary host never rewrites', () => {
   assert.equal(decideRewrite('reputation-site.vercel.app', '/', 'jang-clinic', PRIMARY), null)
 })
 
-test('getEffectiveHost uses forwarded custom host only behind a platform host', () => {
+test('resolveRequestHost trusts x-forwarded-host only behind the proxy that overwrites it', () => {
+  // Vercel 프록시는 클라이언트가 보낸 x-forwarded-*를 덮어쓰므로 신뢰한다.
   assert.equal(
-    getEffectiveHost('reputation.motionlabs.kr', 'clinic-a.example.com', PRIMARY),
-    'reputation.motionlabs.kr',
-  )
-  assert.equal(
-    getEffectiveHost('site-abc123-du.a.run.app', 'clinic-b.example.com, proxy.internal', PRIMARY),
+    resolveRequestHost('reputation-site.vercel.app', 'clinic-b.example.com, proxy.internal', PRIMARY),
     'clinic-b.example.com',
   )
+  // GCLB → Cloud Run은 원본 Host를 그대로 넘기고 x-forwarded-host는 손대지 않는다.
+  // run.app에서 이 헤더를 믿으면 아무나 병원 도메인을 실어 테넌트 위장이 가능하므로 무시한다.
   assert.equal(
-    getEffectiveHost('clinic-a.example.com', 'clinic-b.example.com', PRIMARY),
-    'clinic-a.example.com',
+    resolveRequestHost('site-abc123-du.a.run.app', 'clinic-b.example.com', PRIMARY),
+    'site-abc123-du.a.run.app',
   )
+  // 플랫폼/커스텀 호스트로 직접 들어온 요청도 Host 헤더가 정본이다.
   assert.equal(
-    getEffectiveHost('reputation.motionlabs.kr', 'reputation.motionlabs.kr', PRIMARY),
+    resolveRequestHost('reputation.motionlabs.kr', 'clinic-a.example.com', PRIMARY),
     'reputation.motionlabs.kr',
   )
-  assert.equal(getEffectiveHost(null, 'clinic-a.example.com', PRIMARY), null)
+  assert.equal(
+    resolveRequestHost('clinic-a.example.com', 'clinic-b.example.com', PRIMARY),
+    'clinic-a.example.com',
+  )
+  // forwarded 값이 플랫폼 호스트거나 비어 있으면 Host를 그대로 쓴다.
+  assert.equal(
+    resolveRequestHost('reputation-site.vercel.app', 'reputation.motionlabs.kr', PRIMARY),
+    'reputation-site.vercel.app',
+  )
+  assert.equal(resolveRequestHost('reputation-site.vercel.app', null, PRIMARY), 'reputation-site.vercel.app')
+  assert.equal(resolveRequestHost(null, 'clinic-a.example.com', PRIMARY), null)
+})
+
+test('resolveRequestHost keeps the port so callers can rebuild the request origin', () => {
+  assert.equal(resolveRequestHost('clinic.example.com:8443', null, PRIMARY), 'clinic.example.com:8443')
 })
 
 test('custom hosts fail closed when domain resolution is unavailable', () => {

@@ -85,12 +85,18 @@ test('host-scope sitemap excludes platform entries and lists only that hospital'
       // 계약: 커스텀 도메인 sitemap에는 플랫폼 루트/llms.txt를 넣지 않는다.
       assert.ok(!urls.includes(PLATFORM), '플랫폼 루트 URL이 포함되면 안 된다')
       assert.ok(!urls.includes(`${PLATFORM}/llms.txt`), '플랫폼 llms.txt가 포함되면 안 된다')
-      // 병원 canonical(커스텀 도메인) 루트와 병원 llms.txt만 실린다.
-      assert.ok(urls.includes('https://clinic.example.com/jang-clinic'))
-      assert.ok(urls.includes('https://clinic.example.com/jang-clinic/llms.txt'))
+      // 커스텀 도메인의 공개 경로에는 slug 접두어가 없다 — middleware가 `/{slug}`를 308로
+      // 떼어내므로 접두어를 붙이면 제출 URL 전부가 리다이렉트되고 canonical과도 어긋난다.
+      assert.ok(urls.includes('https://clinic.example.com'))
+      assert.ok(urls.includes('https://clinic.example.com/llms.txt'))
+      assert.ok(urls.includes('https://clinic.example.com/contents'))
+      assert.ok(
+        urls.every((u) => !u.includes('/jang-clinic')),
+        'slug 접두어가 붙은 URL은 308 리다이렉트 대상이라 실으면 안 된다',
+      )
       // 다른 병원 도메인은 물론 플랫폼 호스트의 URL도 전혀 없어야 한다.
       assert.ok(
-        urls.every((u) => u.startsWith('https://clinic.example.com/')),
+        urls.every((u) => u === 'https://clinic.example.com' || u.startsWith('https://clinic.example.com/')),
         '모든 URL이 이 병원의 커스텀 도메인이어야 한다',
       )
     } finally {
@@ -112,8 +118,14 @@ test('hybrid subdomain sitemap emits only URLs on the hybrid request host', asyn
       const entries = await buildSitemap({ kind: 'host', hostname: hybridHost }, API_BASE)
       const urls = entries.map((entry) => entry.url)
 
-      assert.ok(urls.includes(`https://${hybridHost}/jang-clinic`))
-      assert.ok(urls.every((url) => url.startsWith(`https://${hybridHost}/`)))
+      // 하이브리드 서브도메인도 커스텀 호스트와 같은 canonical redirect를 받으므로 접두어 없음.
+      assert.ok(urls.includes(`https://${hybridHost}`))
+      assert.ok(urls.includes(`https://${hybridHost}/contents`))
+      // host가 이미 slug를 포함하므로 경로(pathname)만 검사한다.
+      assert.ok(urls.every((url) => !new URL(url).pathname.startsWith('/jang-clinic')))
+      assert.ok(
+        urls.every((url) => url === `https://${hybridHost}` || url.startsWith(`https://${hybridHost}/`)),
+      )
     } finally {
       restore()
     }
@@ -166,11 +178,14 @@ test('all-scope sitemap keeps the platform base entries plus each hospital', asy
   })
 })
 
-test('all-scope sitemap keeps custom-domain hospitals on the platform sitemap host', async () => {
+test('all-scope sitemap drops custom-domain hospitals (their canonical lives on another host)', async () => {
   await withPlatform(async () => {
     const restore = installFetchMock({
       hospitals: new Response(
-        JSON.stringify([{ slug: 'custom-clinic', aeo_domain: 'clinic.example.com', treatments: [] }]),
+        JSON.stringify([
+          { slug: 'custom-clinic', aeo_domain: 'clinic.example.com', treatments: [] },
+          { slug: 'platform-clinic', aeo_domain: null, treatments: [] },
+        ]),
         { status: 200 },
       ),
       contents: new Response(JSON.stringify([]), { status: 200 }),
@@ -179,7 +194,12 @@ test('all-scope sitemap keeps custom-domain hospitals on the platform sitemap ho
       const entries = await buildSitemap({ kind: 'all' }, API_BASE)
       const urls = entries.map((entry) => entry.url)
 
-      assert.ok(urls.includes(`${PLATFORM}/custom-clinic`))
+      // 자체 도메인 병원은 페이지 canonical이 그 도메인이라, 플랫폼 sitemap에 실으면 자기 중복 신고가 된다.
+      assert.ok(
+        urls.every((url) => !url.includes('custom-clinic')),
+        '자체 도메인 병원은 플랫폼 sitemap에서 제외되어야 한다',
+      )
+      assert.ok(urls.includes(`${PLATFORM}/platform-clinic`))
       assert.ok(urls.every((url) => url === PLATFORM || url.startsWith(`${PLATFORM}/`)))
     } finally {
       restore()
