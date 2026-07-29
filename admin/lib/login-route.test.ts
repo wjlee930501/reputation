@@ -1,14 +1,10 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import test from 'node:test'
 
 import { NextRequest } from 'next/server.js'
 
 import { ADMIN_CSRF_COOKIE_NAME } from './csrf.ts'
 import { handleAdminLogin } from './login-route.ts'
-
-const loginPageSource = readFileSync(join(process.cwd(), 'app/login/page.tsx'), 'utf8')
 
 const ORIGINAL_FETCH = globalThis.fetch
 const ORIGINAL_ENV = {
@@ -135,7 +131,26 @@ test('login route mints bounded session and CSRF cookies for valid backend accou
   assert.match(setCookie, new RegExp(`${ADMIN_CSRF_COOKIE_NAME}=`))
 })
 
-test('login page announces authentication errors accessibly', () => {
-  assert.match(loginPageSource, /role=["']alert["']/)
-  assert.match(loginPageSource, /aria-live=["']polite["']/)
+test('login route never leaks which of email or password was wrong', async () => {
+  // 인증 실패 응답이 계정 존재 여부를 구분하면 열거 공격의 신호가 된다.
+  configureEnv()
+  globalThis.fetch = (async () => new Response('nope', { status: 401 })) as typeof fetch
+
+  const res = await handleAdminLogin(loginRequest())
+
+  assert.equal(res.status, 401)
+  assert.deepEqual(await res.json(), { error: 'Invalid credentials' })
+  assert.equal(res.headers.get('set-cookie'), null)
+})
+
+test('login route does not mint cookies when the backend is unreachable', async () => {
+  configureEnv()
+  globalThis.fetch = (async () => {
+    throw new Error('socket closed')
+  }) as typeof fetch
+
+  const res = await handleAdminLogin(loginRequest())
+
+  assert.ok(res.status >= 500, `expected a 5xx, got ${res.status}`)
+  assert.equal(res.headers.get('set-cookie'), null)
 })

@@ -16,24 +16,76 @@ import uuid  # noqa: E402
 from itertools import groupby  # noqa: E402
 
 import arrow  # noqa: E402
+import pytest  # noqa: E402
 
-from app.models.content import PLAN_DISTRIBUTION  # noqa: E402
+from app.models.content import PLAN_DISTRIBUTION, ContentType  # noqa: E402
 from app.services.content_calendar import _interleave_types, generate_monthly_slots  # noqa: E402
+
+# 계약 표 (CLAUDE.md "요금제별 월간 편수 배분")를 테스트가 독립적으로 들고 있는다.
+# PLAN_DISTRIBUTION을 그대로 기대값으로 쓰면 배분이 잘못 바뀌어도 자기참조라 통과한다.
+EXPECTED_DISTRIBUTION = {
+    "PLAN_16": {"FAQ": 4, "DISEASE": 3, "TREATMENT": 3, "COLUMN": 2, "HEALTH": 2, "LOCAL": 1, "NOTICE": 1},
+    "PLAN_12": {"FAQ": 3, "DISEASE": 3, "TREATMENT": 2, "COLUMN": 2, "HEALTH": 1, "LOCAL": 1, "NOTICE": 0},
+    "PLAN_8": {"FAQ": 2, "DISEASE": 2, "TREATMENT": 2, "COLUMN": 1, "HEALTH": 1, "LOCAL": 0, "NOTICE": 0},
+}
+ALL_PLANS = sorted(EXPECTED_DISTRIBUTION)
+
+
+def _expected(plan: str) -> dict:
+    return {ContentType[name]: count for name, count in EXPECTED_DISTRIBUTION[plan].items()}
+
+
+def _monthly_count(plan: str) -> int:
+    return int(plan.removeprefix("PLAN_"))
 
 
 def _max_consecutive_run(sequence: list) -> int:
     return max(len(list(group)) for _, group in groupby(sequence))
 
 
-def test_interleave_types_avoids_long_runs_for_plan_16():
-    sequence = _interleave_types(PLAN_DISTRIBUTION["PLAN_16"], seed="hospital-a:2026-07")
+def test_plan_distribution_matches_the_contracted_plan_table():
+    """요금제 배분 상수 자체가 계약 표와 일치한다 — 총합이 맞아도 유형이 틀리면 실패."""
+    assert {plan: _expected(plan) for plan in ALL_PLANS} == PLAN_DISTRIBUTION
 
-    assert len(sequence) == 16
-    # 버그 재현 방지: 이전 로직은 FAQ가 4연속으로 몰렸다.
+
+@pytest.mark.parametrize("plan", ALL_PLANS)
+def test_plan_distribution_totals_match_the_plans_monthly_volume(plan):
+    assert sum(_expected(plan).values()) == _monthly_count(plan)
+
+
+@pytest.mark.parametrize("plan", ALL_PLANS)
+def test_interleave_types_preserves_every_types_count(plan):
+    """유형별 편수 보존은 모든 요금제에서 성립해야 한다.
+
+    총합만 확인하면 FAQ 하나를 늘리고 NOTICE 하나를 줄이는 배분 오류가 통과한다.
+    """
+    expected = _expected(plan)
+    sequence = _interleave_types(PLAN_DISTRIBUTION[plan], seed=f"hospital-a:2026-07:{plan}")
+
+    assert len(sequence) == _monthly_count(plan)
+    for ctype, count in expected.items():
+        assert sequence.count(ctype) == count, f"{plan}/{ctype} 편수가 계약 표와 다르다"
+
+
+@pytest.mark.parametrize("plan", ALL_PLANS)
+def test_interleave_types_avoids_long_runs(plan):
+    # 버그 재현 방지: 이전 로직은 PLAN_16의 첫 4슬롯이 전부 FAQ로 몰렸다.
+    sequence = _interleave_types(PLAN_DISTRIBUTION[plan], seed=f"hospital-a:2026-07:{plan}")
+
     assert _max_consecutive_run(sequence) <= 2
-    # 카운트 보존 — 재배치일 뿐 유형별 편수는 그대로여야 한다.
-    for ctype, count in PLAN_DISTRIBUTION["PLAN_16"].items():
-        assert sequence.count(ctype) == count
+
+
+@pytest.mark.parametrize("plan", ALL_PLANS)
+def test_generate_monthly_slots_preserves_every_types_count(plan):
+    """캘린더 슬롯 생성까지 통과했을 때도 유형별 편수가 계약 표와 일치해야 한다."""
+    slots = generate_monthly_slots(
+        plan, [0, 1, 2, 3, 4, 5, 6], arrow.get("2026-07-01").floor("month")
+    )
+    types = [ctype for _, ctype, _, _ in slots]
+
+    assert len(types) == _monthly_count(plan)
+    for ctype, count in _expected(plan).items():
+        assert types.count(ctype) == count, f"{plan}/{ctype} 편수가 계약 표와 다르다"
 
 
 def test_interleave_types_is_deterministic_for_same_seed():

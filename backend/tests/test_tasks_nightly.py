@@ -360,7 +360,8 @@ class _NestedSlotTransaction:
 
 class _MonthlySlotDB:
     def __init__(self, schedules):
-        self._results = [_Result(items=schedules), _Result(scalar=None), _Result(scalar=None)]
+        # 2~3번째 execute는 스케줄별 기존 계획 슬롯 순번 조회(scalars().all()) 이다.
+        self._results = [_Result(items=schedules), _Result(items=[]), _Result(items=[])]
         self.execute_calls = 0
         self.flush_calls = 0
         self.commit_calls = 0
@@ -407,14 +408,20 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
         SimpleNamespace(id="h2", name="문제의원", status=HospitalStatus.ACTIVE),
     ]
     schedules = [
-        SimpleNamespace(id="s1", hospital=hospitals[0], plan="PLAN_8", publish_days=[0, 2]),
-        SimpleNamespace(id="s2", hospital=hospitals[1], plan="PLAN_8", publish_days=[1]),
+        SimpleNamespace(
+            id="s1", hospital=hospitals[0], plan="PLAN_8", publish_days=[0, 2],
+            active_from=date(2026, 1, 1),
+        ),
+        SimpleNamespace(
+            id="s2", hospital=hospitals[1], plan="PLAN_8", publish_days=[1],
+            active_from=date(2026, 1, 1),
+        ),
     ]
     db = _MonthlySlotDB(schedules)
 
     calls = {"n": 0}
 
-    def fake_generate(plan, publish_days, next_month):
+    def fake_generate(plan, publish_days, next_month, start_date=None):
         calls["n"] += 1
         if publish_days == [1]:
             raise ValueError("발행요일 대비 편수가 과다")
@@ -452,8 +459,14 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
         SimpleNamespace(id="h2", name="두번째의원", status=HospitalStatus.ACTIVE),
     ]
     schedules = [
-        SimpleNamespace(id="s1", hospital=hospitals[0], plan="PLAN_4", publish_days=[0]),
-        SimpleNamespace(id="s2", hospital=hospitals[1], plan="PLAN_4", publish_days=[0]),
+        SimpleNamespace(
+            id="s1", hospital=hospitals[0], plan="PLAN_4", publish_days=[0],
+            active_from=date(2026, 1, 1),
+        ),
+        SimpleNamespace(
+            id="s2", hospital=hospitals[1], plan="PLAN_4", publish_days=[0],
+            active_from=date(2026, 1, 1),
+        ),
     ]
     db = _MonthlySlotDB(schedules)
 
