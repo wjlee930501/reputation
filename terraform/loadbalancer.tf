@@ -44,8 +44,15 @@ resource "google_compute_region_network_endpoint_group" "admin_neg" {
 
 # ── Managed SSL Certificate ────────────────────────────────────────
 locals {
+  # www 레코드(아래 google_dns_record_set.www)는 Cloud DNS zone이 있을 때만 생성된다.
+  # 인증서 도메인 목록도 정확히 같은 조건으로 www를 포함해야 한다 —
+  #   • zone 있음: www 레코드 존재 → 도메인 검증 통과 → TLS 정상
+  #   • zone 없음: 레코드도 cert 항목도 없음 → 검증 불가 도메인이 cert 전체를
+  #     PROVISIONING에 묶어두는 일이 없다
+  # (Google managed cert는 나열된 도메인 중 하나라도 검증에 실패하면 ACTIVE가 되지 않는다.)
   cert_domains = compact([
     var.domain,
+    var.dns_zone_name != "" ? "www.${var.domain}" : "",
     var.admin_subdomain != "" ? var.admin_subdomain : "",
   ])
 }
@@ -87,6 +94,13 @@ resource "google_compute_managed_ssl_certificate" "customer" {
 resource "google_compute_global_address" "lb_ip" {
   name    = "${var.app_name}-lb-ip"
   project = var.project_id
+
+  # 모든 고객 병원이 자기 DNS에 A 레코드로 박아둔 주소다. 재생성되면 새 IP가 되고
+  # 병원마다 각자 DNS를 고쳐야 복구된다 — 우리가 단독으로 되돌릴 수 없다.
+  # 의도적으로 교체해야 하면 이 블록을 먼저 지우고 고객 DNS 전환 계획과 함께 진행할 것.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ── Backend Services ───────────────────────────────────────────────

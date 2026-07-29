@@ -1,5 +1,5 @@
+# .terraform.lock.hcl은 의도적으로 추적한다 — 루트 .gitignore 주석 참조.
 .terraform/
 *.tfstate
 *.tfstate.*
 terraform.tfvars
-.terraform.lock.hcl

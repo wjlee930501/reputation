@@ -16,10 +16,24 @@ node_modules/
 .git/
 .gitignore
 
-# Local env
+# Local env / secrets — 소스 기반 배포는 여기 남은 파일을 전부 빌드 스테이징
+# 버킷에 업로드한다. 프로덕션 시크릿과 Terraform 입력/상태는 반드시 제외한다.
 .env
-.env.local
+.env.*
 *.bak
+# 템플릿(.env.example, .env.production.example …)은 시크릿이 없으므로 유지한다.
+!.env*.example
+
+# Terraform — tfvars에는 프로젝트/도메인/알림 채널 등 운영 입력이,
+# tfstate에는 생성된 시크릿 값까지 평문으로 들어간다.
+.terraform/
+terraform/.terraform/
+*.tfvars
+!*.tfvars.example
+!*.example.tfvars
+*.tfstate
+*.tfstate.*
+*.tfplan
 
 # IDE
 .vscode/
@@ -35,3 +49,4 @@ node_modules/
 reports/
 tmp/
 celerybeat-schedule
+.deploy-rollback

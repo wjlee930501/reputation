@@ -36,6 +36,260 @@ def _write_executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+# 인자 개수에 상관없이 "$*" 접두사로 분기하는 gcloud 스텁. 배포 경로가 실제로 호출하는
+# 하위 명령만 흉내 내고 나머지는 성공으로 흘린다.
+_FAKE_GCLOUD = "\n".join(
+    [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        'echo "gcloud $*" >> "$FAKE_COMMAND_LOG"',
+        'for arg in "$@"; do',
+        '  if [[ "$arg" == --env-vars-file=* ]]; then',
+        '    sed "s/^/env /" "${arg#*=}" >> "$FAKE_COMMAND_LOG"',
+        "  fi",
+        "done",
+        'case "$*" in',
+        '  "run services describe "*)',
+        '    echo "${FAKE_READY_REVISION:-}"',
+        "    exit 0",
+        "    ;;",
+        '  "secrets versions describe latest"*)',
+        '    echo "ENABLED"',
+        "    exit 0",
+        "    ;;",
+        '  "sql users list"*)',
+        '    echo "reputation"',
+        "    exit 0",
+        "    ;;",
+        '  "run jobs create "*)',
+        '    if [[ "${FAKE_JOBS_CREATE_FAILS:-0}" == "1" ]]; then',
+        "      exit 1",
+        "    fi",
+        "    exit 0",
+        "    ;;",
+        "esac",
+        "exit 0",
+        "",
+    ]
+)
+
+_FAKE_NOOP_TOOL = "\n".join(
+    [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        'echo "TOOL $*" >> "$FAKE_COMMAND_LOG"',
+        "exit 0",
+        "",
+    ]
+)
+
+
+def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """deploy.sh + terraform/cloudrun.tf를 그대로 복사한 임시 프로젝트를 만든다.
+
+    cloudrun.tf를 복사하는 이유: deploy.sh의 Terraform env 드롭 preflight가 그 파일을
+    env 키의 단일 출처로 읽기 때문이다. 복사하지 않으면 검사가 건너뛰어져 회귀를 못 잡는다.
+    """
+    project = tmp_path / "project"
+    fake_bin = tmp_path / "bin"
+    (project / "scripts").mkdir(parents=True)
+    (project / "terraform").mkdir()
+    (project / "backend").mkdir()
+    (project / "site").mkdir()
+    (project / "admin").mkdir()
+    fake_bin.mkdir()
+
+    shutil.copy2(PROJECT_ROOT / "scripts" / "deploy.sh", project / "scripts" / "deploy.sh")
+    shutil.copy2(
+        PROJECT_ROOT / "terraform" / "cloudrun.tf", project / "terraform" / "cloudrun.tf"
+    )
+
+    _write_executable(fake_bin / "gcloud", _FAKE_GCLOUD)
+    for tool in ("docker", "gsutil"):
+        _write_executable(fake_bin / tool, _FAKE_NOOP_TOOL.replace("TOOL", tool))
+
+    return project, fake_bin, tmp_path / "commands.log"
+
+
+def _clean_env(fake_bin: Path, command_log: Path, **extra: str) -> dict[str, str]:
+    """상속된 셸 환경이 검사 대상 값을 대신 채워주지 못하도록 최소 환경만 넘긴다."""
+    env = {
+        "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+        "HOME": os.environ.get("HOME", str(fake_bin)),
+        "FAKE_COMMAND_LOG": str(command_log),
+        "GCP_PROJECT_ID": "test-project",
+        "GCP_REGION": "asia-northeast3",
+    }
+    env.update(extra)
+    return env
+
+
+def test_production_env_template_passes_every_deploy_guard(tmp_path: Path) -> None:
+    """`cp .env.production.example .env.production && deploy.sh all`이 실제로 돈다.
+
+    setup-gcp.sh가 안내하는 정식 경로다. 템플릿이 preflight(기능 플래그·측정 모델 핀·
+    Terraform env 드롭)에서 막히면 신규 환경은 이 저장소만으로 배포를 시작할 수 없다.
+    """
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "all"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            PUBLIC_DOMAIN="reputation.example.test",
+            ADMIN_DOMAIN="admin.reputation.example.test",
+            SKIP_PUBLIC_DNS_PREFLIGHT="1",
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    commands = command_log.read_text()
+    assert "gcloud run deploy reputation-api" in commands
+    assert "gcloud run deploy reputation-site" in commands
+    assert "gcloud run deploy reputation-admin" in commands
+
+    # --env-vars-file YAML에 중복 키가 있으면 gcloud가 파일을 거부한다.
+    env_keys = [
+        line[len("env ") :].split(":", 1)[0]
+        for line in commands.splitlines()
+        if line.startswith("env ")
+    ]
+    first_service_env = env_keys[: len(env_keys) // max(env_keys.count("SERVICE"), 1)]
+    assert len(first_service_env) == len(set(first_service_env)), sorted(first_service_env)
+
+
+def test_deploy_refuses_to_drop_a_terraform_declared_env_key(tmp_path: Path) -> None:
+    """Terraform이 선언한 키가 .env.production에 없으면 mutation 전에 멈춘다.
+
+    `gcloud run deploy --env-vars-file`은 기존 env를 전부 지우고 파일 내용만 적용한다.
+    cloudrun.tf의 ignore_changes가 그 삭제를 drift로 보지 않으므로 terraform apply로도
+    복구되지 않는다 — 배포 시점이 유일한 검문소다.
+    """
+    project, fake_bin, command_log = _make_project(tmp_path)
+    template = (PROJECT_ROOT / ".env.production.example").read_text()
+    stripped = "\n".join(
+        line for line in template.splitlines() if not line.startswith("SENTRY_DSN=")
+    )
+    (project / ".env.production").write_text(stripped + "\n")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "backend"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "SENTRY_DSN" in result.stderr
+    assert not command_log.exists() or "docker build" not in command_log.read_text()
+
+
+def test_migration_job_never_retries_on_create_or_update(tmp_path: Path) -> None:
+    """alembic 재실행은 half-applied 스키마를 만든다 — 두 분기 모두 재시도 0이어야 한다.
+
+    기존 Job이 이미 있으면 create가 실패하고 update 폴백이 돈다. 폴백에 플래그가
+    빠져 있으면 예전에 max-retries=1로 만들어진 Job이 그대로 재시도한다.
+    """
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "migrate"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            FAKE_JOBS_CREATE_FAILS="1",
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = command_log.read_text()
+    update = next(
+        line
+        for line in commands.splitlines()
+        if line.startswith("gcloud run jobs update reputation-migrate")
+    )
+    assert "--max-retries=0" in update
+    assert "--max-retries=1" not in commands
+
+    # Terraform 선언과 어긋나면 어느 쪽이 진실인지 알 수 없게 된다.
+    cloudrun = (PROJECT_ROOT / "terraform" / "cloudrun.tf").read_text()
+    assert "max_retries = 0" in cloudrun
+
+
+def test_deploy_records_rollback_revisions_and_rollback_restores_traffic(
+    tmp_path: Path,
+) -> None:
+    """중간 실패로 서비스 버전이 섞였을 때 되돌릴 좌표가 남아야 한다."""
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    deploy = subprocess.run(
+        ["bash", "scripts/deploy.sh", "backend"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            FAKE_READY_REVISION="reputation-api-00042-abc",
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert deploy.returncode == 0, deploy.stderr
+
+    state = (project / ".deploy-rollback").read_text()
+    for service in ("reputation-api", "reputation-worker", "reputation-beat"):
+        assert f"{service}=reputation-api-00042-abc" in state
+
+    # 좌표 기록은 첫 mutation(이미지 빌드) 이전이어야 한다.
+    commands = command_log.read_text()
+    assert commands.index("run services describe reputation-api") < commands.index(
+        "docker build"
+    )
+
+    rollback_log = tmp_path / "rollback.log"
+    rollback = subprocess.run(
+        ["bash", "scripts/deploy.sh", "rollback"],
+        cwd=project,
+        env=_clean_env(fake_bin, rollback_log),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert rollback.returncode == 0, rollback.stderr
+
+    traffic = [
+        line
+        for line in rollback_log.read_text().splitlines()
+        if line.startswith("gcloud run services update-traffic")
+    ]
+    assert len(traffic) == 3
+    for line in traffic:
+        assert "--to-revisions=reputation-api-00042-abc=100" in line
+
+
 def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -> None:
     project = tmp_path / "project"
     scripts_dir = project / "scripts"

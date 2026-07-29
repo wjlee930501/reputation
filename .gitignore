@@ -71,9 +71,13 @@ artifacts/**
 !artifacts/**/*.sh
 !artifacts/**/*.py
 
+# scripts/deploy.sh가 배포 직전에 남기는 롤백 기준 리비전 (머신 로컬 상태)
+.deploy-rollback
+
 # Terraform
+# .terraform.lock.hcl은 의도적으로 추적한다 — provider 버전이 클론마다 달라지면
+# google_sql_database_instance 등에서 destroy/create 계획이 나올 수 있다.
 terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.*
 terraform/terraform.tfvars
-terraform/.terraform.lock.hcl

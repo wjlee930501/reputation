@@ -7,8 +7,11 @@ terraform {
 
   required_providers {
     google = {
-      source  = "hashicorp/google"
-      version = ">= 5.0"
+      source = "hashicorp/google"
+      # 메이저를 고정한다. 상한 없는 ">= 5.0"이면 새 클론이 다음 메이저를 받아
+      # google_sql_database_instance 등에서 destroy/create 계획을 낼 수 있다.
+      # 실제 버전은 terraform/.terraform.lock.hcl(추적됨)이 고정한다.
+      version = "~> 7.33"
     }
   }
 

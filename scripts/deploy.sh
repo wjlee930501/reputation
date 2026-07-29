@@ -11,6 +11,11 @@
 #   bash scripts/deploy.sh admin       # admin 콘솔 (Next.js) 배포
 #   bash scripts/deploy.sh all          # 마이그레이션 → backend 3 → site → admin
 #   bash scripts/deploy.sh migrate      # DB 마이그레이션 실행
+#   bash scripts/deploy.sh rollback     # 직전 배포 시작 시점의 리비전으로 트래픽 복귀
+#
+# 모든 배포 대상은 첫 mutation 전에 각 서비스의 현재 리비전을 .deploy-rollback에
+# 기록한다. 중간에 실패해 서비스 버전이 섞이면 `rollback`으로 한 번에 되돌린다
+# (트래픽만 되돌린다 — 이미 적용된 DB 마이그레이션은 별도 판단이 필요하다).
 #
 # site/admin 배포에는 도메인 env가 필요하다 (NEXT_PUBLIC_* 빌드 인라인용):
 #   PUBLIC_DOMAIN=reputation.motionlabs.kr ADMIN_DOMAIN=admin.reputation.motionlabs.kr \
@@ -34,7 +39,7 @@ fail()  { echo -e "${RED}✗${RESET} $1" >&2; exit 1; }
 # ─── 설정 ─────────────────────────────────────────────────────────
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
-  echo "Usage: bash scripts/deploy.sh [backend|api|worker|beat|site|admin|all|migrate]"
+  echo "Usage: bash scripts/deploy.sh [backend|api|worker|beat|site|admin|all|migrate|rollback]"
   exit 1
 fi
 
@@ -144,7 +149,12 @@ SECRET_ARGS=()
 cleanup() {
   local f
   for f in "${TEMP_ENV_FILES[@]:-}"; do
-    [[ -n "$f" && -f "$f" ]] && rm -f "$f"
+    # if/then으로 쓴다 — `[[ ... ]] && rm`은 조건이 거짓이면 트랩의 마지막 명령이
+    # 1을 반환하고, 그 값이 스크립트 종료 코드가 된다(임시 파일이 하나도 없는
+    # 경로에서 성공 배포가 실패로 보고된다).
+    if [[ -n "$f" && -f "$f" ]]; then
+      rm -f "$f"
+    fi
   done
 }
 trap cleanup EXIT
@@ -153,14 +163,19 @@ trap cleanup EXIT
 info "사전 검증 중..."
 
 command -v gcloud >/dev/null 2>&1 || fail "gcloud CLI가 설치되지 않았습니다."
-command -v docker >/dev/null 2>&1 || fail "Docker가 설치되지 않았습니다."
+
+# rollback은 장애 복구 경로다. 이미지 빌드도 env 조립도 하지 않으므로 Docker나
+# .env.production을 요구해 복구를 막지 않는다.
+if [[ "$TARGET" != "rollback" ]]; then
+  command -v docker >/dev/null 2>&1 || fail "Docker가 설치되지 않았습니다."
+fi
 
 if [[ -z "$PROJECT_ID" ]]; then
   fail "GCP_PROJECT_ID 환경변수 또는 gcloud config를 설정해 주세요."
 fi
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  fail ".env.production 파일이 없습니다. .env.example을 복사해서 작성해 주세요."
+if [[ "$TARGET" != "rollback" && ! -f "$ENV_FILE" ]]; then
+  fail ".env.production 파일이 없습니다. .env.production.example을 복사해서 작성해 주세요."
 fi
 
 ok "사전 검증 통과 (프로젝트: ${PROJECT_ID}, 리전: ${REGION})"
@@ -368,7 +383,9 @@ build_secret_args() {
   fi
 }
 
-prepare_non_secret_env_file
+if [[ "$TARGET" != "rollback" ]]; then
+  prepare_non_secret_env_file
+fi
 
 prepare_backend_secret_args() {
   REQUIRED_SECRET_NAMES=("${BACKEND_REQUIRED_SECRET_NAMES[@]}")
@@ -742,6 +759,74 @@ require_pinned_measurement_models() {
   done
 }
 
+# Terraform이 선언한 env 키가 배포 때 사라지는 것을 mutation 전에 막는다.
+#
+# `gcloud run deploy --env-vars-file`은 **기존 env를 전부 제거한 뒤** 파일 내용만
+# 적용한다. 그래서 terraform/cloudrun.tf가 심어 둔 키(SENTRY_DSN,
+# CERTIFICATE_MAP_NAME, CELERY_* 등)가 .env.production에 없으면 조용히 사라진다.
+# cloudrun.tf의 lifecycle ignore_changes(...containers[0].env)가 그 상태를 drift로
+# 보지 않으므로 terraform apply로도 되돌아오지 않는다 — 즉 되돌릴 방법이 없다.
+#
+# 규칙: cloudrun.tf가 선언한 env 키는 (a) deploy.sh가 직접 주입하거나,
+# (b) Secret Manager로 주입되거나, (c) .env.production에 `KEY=` 줄이 있어야 한다.
+# 빈 값(`SENTRY_DSN=`)은 "의도적으로 설정 안 함"으로 취급한다 — terraform도 값이
+# 없으면 해당 env를 렌더링하지 않으므로 결과가 일치한다.
+TERRAFORM_ENV_SOURCE="${PROJECT_ROOT}/terraform/cloudrun.tf"
+
+# make_service_env_file이 서비스별로 직접 써 넣는 키 — .env.production에 없어도 된다.
+DEPLOY_INJECTED_ENV_KEYS=(
+  "SERVICE"
+  "APP_ENV"
+  "OPENAI_CHATGPT_USE_WEB_SEARCH"
+  "CERTIFICATE_MANAGER_AUTO_PROVISION"
+)
+
+is_deploy_injected_env_key() {
+  local key="$1"
+  local name
+  for name in "${DEPLOY_INJECTED_ENV_KEYS[@]}"; do
+    [[ "$key" == "$name" ]] && return 0
+  done
+  return 1
+}
+
+env_file_declares_key() {
+  local key="$1"
+  grep -qE "^[[:space:]]*(export )?${key}=" "$ENV_FILE"
+}
+
+require_no_dropped_terraform_env() {
+  if [[ "${SKIP_TERRAFORM_ENV_PREFLIGHT:-0}" == "1" ]]; then
+    info "SKIP_TERRAFORM_ENV_PREFLIGHT=1 — Terraform env 드롭 preflight를 건너뜁니다."
+    return
+  fi
+  if [[ ! -f "$TERRAFORM_ENV_SOURCE" ]]; then
+    info "terraform/cloudrun.tf가 없어 Terraform env 드롭 preflight를 건너뜁니다."
+    return
+  fi
+
+  local missing=()
+  local key
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    if is_managed_secret "$key"; then
+      continue
+    fi
+    if is_deploy_injected_env_key "$key"; then
+      continue
+    fi
+    if env_file_declares_key "$key"; then
+      continue
+    fi
+    missing+=("$key")
+  done < <(grep -oE '^[[:space:]]*name[[:space:]]+= "[A-Z][A-Z0-9_]*"' "$TERRAFORM_ENV_SOURCE" \
+    | grep -oE '"[A-Z][A-Z0-9_]*"' | tr -d '"' | sort -u)
+
+  if (( ${#missing[@]} > 0 )); then
+    fail "Terraform이 선언한 env 키가 .env.production에 없습니다: ${missing[*]}. --env-vars-file 배포는 기존 env를 전부 교체하므로 이 키들이 Cloud Run에서 사라지고, cloudrun.tf의 ignore_changes 때문에 terraform apply로도 복구되지 않습니다. .env.production.example처럼 값을 채우거나(설정하지 않을 키는 'KEY=' 빈 값으로) 명시하세요."
+  fi
+}
+
 build_backend_runtime_args() {
   BACKEND_RUNTIME_ARGS=()
   if is_cloudsql_mode; then
@@ -764,6 +849,10 @@ run_migration() {
 
   make_service_env_file "migrate"
 
+  # --max-retries=0 — alembic 재실행은 half-applied 스키마를 만들 수 있으므로 실패를
+  # 한 번만 표면화하고 롤아웃을 멈춘다. terraform/cloudrun.tf(max_retries = 0)와
+  # 반드시 같은 값이어야 하며, 기존 Job을 갱신하는 update 폴백 분기에도 넣어야 한다
+  # (빠지면 예전에 1로 만들어진 Job이 그대로 재시도한다).
   set +u
   gcloud run jobs create reputation-migrate \
     --image="$image_url" \
@@ -773,13 +862,15 @@ run_migration() {
     "${SECRET_ARGS[@]}" \
     "${BACKEND_RUNTIME_ARGS[@]}" \
     --task-timeout=300 \
-    --max-retries=1 \
+    --max-retries=0 \
     2>/dev/null || gcloud run jobs update reputation-migrate \
     --image="$image_url" \
     --region="$REGION" \
     --env-vars-file="$SERVICE_ENV_FILE" \
     "${SECRET_ARGS[@]}" \
-    "${BACKEND_RUNTIME_ARGS[@]}"
+    "${BACKEND_RUNTIME_ARGS[@]}" \
+    --task-timeout=300 \
+    --max-retries=0
   set -u
 
   gcloud run jobs execute reputation-migrate --region="$REGION" --wait
@@ -808,7 +899,7 @@ run_redbeat_reconcile() {
     --command=python \
     --args=-m,app.utils.reconcile_redbeat_schedule,--apply \
     --task-timeout=300 \
-    --max-retries=1 \
+    --max-retries=0 \
     2>/dev/null || gcloud run jobs update reputation-redbeat-reconcile \
     --image="$image_url" \
     --region="$REGION" \
@@ -818,11 +909,79 @@ run_redbeat_reconcile() {
     --command=python \
     --args=-m,app.utils.reconcile_redbeat_schedule,--apply \
     --task-timeout=300 \
-    --max-retries=1
+    --max-retries=0
   set -u
 
   gcloud run jobs execute reputation-redbeat-reconcile --region="$REGION" --wait
   ok "RedBeat 저장 스케줄 정합성 복구 완료"
+}
+
+# ─── 롤백 좌표 ─────────────────────────────────────────────────────
+# 다중 서비스 배포는 중간에 실패할 수 있다 (예: api/worker는 신버전, beat/site/admin은
+# 구버전, 스키마는 이미 마이그레이션됨). 어떤 리비전으로 되돌려야 하는지는 배포가
+# 시작되기 **전에만** 알 수 있으므로, 첫 mutation 이전에 기록해 둔다.
+ROLLBACK_STATE_FILE="${DEPLOY_ROLLBACK_STATE_FILE:-${PROJECT_ROOT}/.deploy-rollback}"
+
+current_ready_revision() {
+  local service="$1"
+  gcloud run services describe "$service" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --format='value(status.latestReadyRevisionName)' 2>/dev/null || true
+}
+
+capture_rollback_point() {
+  local service revision captured=0
+
+  {
+    printf '# scripts/deploy.sh %s — %s (project=%s region=%s)\n' \
+      "$TARGET" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$PROJECT_ID" "$REGION"
+  } > "$ROLLBACK_STATE_FILE"
+
+  for service in "$@"; do
+    revision="$(current_ready_revision "$service")"
+    if [[ -n "$revision" ]]; then
+      printf '%s=%s\n' "$service" "$revision" >> "$ROLLBACK_STATE_FILE"
+      captured=$((captured + 1))
+    fi
+  done
+
+  if (( captured == 0 )); then
+    info "되돌릴 기존 리비전이 없습니다 (신규 환경). ${ROLLBACK_STATE_FILE}에 기록할 좌표 없음."
+  else
+    ok "롤백 좌표 ${captured}건 기록: ${ROLLBACK_STATE_FILE} (되돌리기: bash scripts/deploy.sh rollback)"
+  fi
+}
+
+run_rollback() {
+  [[ -f "$ROLLBACK_STATE_FILE" ]] \
+    || fail "롤백 좌표 파일이 없습니다: ${ROLLBACK_STATE_FILE}. 배포를 시작한 머신에서 실행하거나 DEPLOY_ROLLBACK_STATE_FILE로 경로를 지정하세요."
+
+  local line service revision rolled=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ -z "$line" || "$line" == \#* || "$line" != *=* ]]; then
+      continue
+    fi
+    service="${line%%=*}"
+    revision="${line#*=}"
+    if [[ -z "$service" || -z "$revision" ]]; then
+      continue
+    fi
+
+    info "${service} → ${revision} 트래픽 100% 복귀 중..."
+    gcloud run services update-traffic "$service" \
+      --region="$REGION" \
+      --project="$PROJECT_ID" \
+      --to-revisions="${revision}=100" \
+      || fail "롤백 실패: ${service} → ${revision}. gcloud run services describe ${service} --region=${REGION}로 상태를 확인하세요."
+    rolled=$((rolled + 1))
+  done < "$ROLLBACK_STATE_FILE"
+
+  (( rolled > 0 )) \
+    || fail "${ROLLBACK_STATE_FILE}에 되돌릴 리비전이 없습니다 (신규 환경 배포였거나 기록 전에 실패)."
+
+  ok "롤백 완료 — ${rolled}개 서비스"
+  info "주의: 트래픽만 되돌립니다. 이미 적용된 DB 마이그레이션은 되돌아가지 않습니다. 신구 스키마가 호환되지 않으면 alembic downgrade를 별도로 판단해 실행하세요."
 }
 
 # ─── 메인 ──────────────────────────────────────────────────────────
@@ -831,10 +990,12 @@ case "$TARGET" in
     prepare_backend_secret_args
     require_backend_runtime_shape
     require_production_feature_flags
+    require_no_dropped_terraform_env
     require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
+    capture_rollback_point reputation-api reputation-worker reputation-beat
     IMAGE_URL=$(build_and_push)
     run_migration "$IMAGE_URL"
     deploy_api "$IMAGE_URL"
@@ -846,10 +1007,12 @@ case "$TARGET" in
     prepare_backend_secret_args
     require_backend_runtime_shape
     require_production_feature_flags
+    require_no_dropped_terraform_env
     require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
+    capture_rollback_point "reputation-${TARGET}"
     IMAGE_URL=$(build_and_push)
     if [[ "$TARGET" == "beat" ]]; then
       run_redbeat_reconcile "$IMAGE_URL"
@@ -859,12 +1022,14 @@ case "$TARGET" in
   site)
     require_secret_versions "${SITE_REQUIRED_SECRET_NAMES[@]}"
     require_asset_bucket
+    capture_rollback_point reputation-site
     SITE_IMAGE_URL=$(build_and_push_site)
     deploy_site "$SITE_IMAGE_URL"
     ;;
   admin)
     require_secret_versions "${ADMIN_REQUIRED_SECRET_NAMES[@]}"
     require_admin_domain
+    capture_rollback_point reputation-admin
     ADMIN_IMAGE_URL=$(build_and_push_admin)
     deploy_admin "$ADMIN_IMAGE_URL"
     ;;
@@ -877,12 +1042,16 @@ case "$TARGET" in
     require_public_dns
     require_backend_runtime_shape
     require_production_feature_flags
+    require_no_dropped_terraform_env
     require_asset_bucket
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
     require_secret_versions "${SITE_REQUIRED_SECRET_NAMES[@]}" "${ADMIN_REQUIRED_SECRET_NAMES[@]}"
     prepare_backend_secret_args
+    capture_rollback_point \
+      reputation-api reputation-worker reputation-beat \
+      reputation-site reputation-admin
     IMAGE_URL=$(build_and_push)
     SITE_IMAGE_URL=$(build_and_push_site)
     ADMIN_IMAGE_URL=$(build_and_push_admin)
@@ -900,17 +1069,25 @@ case "$TARGET" in
     prepare_backend_secret_args
     require_backend_runtime_shape
     require_production_feature_flags
+    require_no_dropped_terraform_env
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
     IMAGE_URL=$(build_and_push)
     run_migration "$IMAGE_URL"
     ;;
+  rollback)
+    run_rollback
+    exit 0
+    ;;
   *)
-    fail "알 수 없는 대상: $TARGET (backend, api, worker, beat, site, admin, all, migrate 중 하나)"
+    fail "알 수 없는 대상: $TARGET (backend, api, worker, beat, site, admin, all, migrate, rollback 중 하나)"
     ;;
 esac
 
 echo ""
 echo -e "${GREEN}${BOLD}✅ 배포 완료${RESET}"
 echo "   API ingress: internal-and-cloud-load-balancing (direct Cloud Run URL is not the public entrypoint)"
+if [[ -f "$ROLLBACK_STATE_FILE" ]]; then
+  echo "   되돌리기: bash scripts/deploy.sh rollback (기준 리비전: ${ROLLBACK_STATE_FILE})"
+fi
