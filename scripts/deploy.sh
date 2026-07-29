@@ -111,6 +111,9 @@ BACKEND_BASE_REQUIRED_SECRET_NAMES=(
   "LEAD_LOCK_HASH_PEPPER"
   # 리포트/상태 페이지 열람 토큰의 해시 pepper. 없으면 부팅 실패(같은 게이트).
   "LEAD_REPORT_TOKEN_SECRET"
+  # 무료 진단 리포트 메일 발송(Resend). 없으면 측정·리포트는 되는데 아무도 못 받는다 —
+  # 리드마그넷의 목적 자체가 전달이므로 선택이 아니라 필수로 둔다.
+  "RESEND_API_KEY"
 )
 
 BACKEND_OPTIONAL_SECRET_NAMES=(

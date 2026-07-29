@@ -424,6 +424,11 @@ class Settings(BaseSettings):
     # 리포트/상태 페이지 서명 키. Admin 세션 HMAC과 audience가 다르다(PRD F5-4).
     LEAD_REPORT_TOKEN_SECRET: str = "dev-report-secret-change-me"
     LEAD_REPORT_TOKEN_TTL_DAYS: int = 30
+    # 리포트 발송 (Resend). 비어 있으면 발송을 시도하지 않고 delivery 행에 사유를 남긴다 —
+    # 조용히 성공 처리하면 "발송 완료"인데 아무도 못 받는 상태가 된다.
+    RESEND_API_KEY: str = ""
+    LEAD_MAIL_FROM: str = "Re:putation <noreply@reputation.motionlabs.kr>"
+    LEAD_MAIL_REPLY_TO: str = ""
 
     # Public 폼 rate-limit
     PUBLIC_LEAD_RATE_LIMIT: str = "5/minute;30/hour;100/day"

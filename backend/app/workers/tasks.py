@@ -2355,7 +2355,11 @@ def purge_expired_leads():
     """
     from app.models.hospital import Hospital
     from app.models.lead import SalesLead
-    from app.services.lead_privacy import anonymize_lead, scrub_onboarding_note
+    from app.services.lead_privacy import (
+        anonymize_lead,
+        purge_lead_diagnosis_artifacts,
+        scrub_onboarding_note,
+    )
 
     now = datetime.now(timezone.utc)
     purged = 0
@@ -2370,6 +2374,9 @@ def purge_expired_leads():
             for lead in db.execute(stmt).scalars().all():
                 if anonymize_lead(lead, now):
                     purged += 1
+                    # 무료 진단 산출물은 sales_leads 밖에 있다 — 함께 지우지 않으면
+                    # 파기가 거짓말이 된다 (GCS 삭제가 커밋보다 먼저다).
+                    purge_lead_diagnosis_artifacts(db, lead.id, now)
                     # CDX-M2: 전환된 병원의 onboarding_note에 복사된 운영자 자유 텍스트도
                     # 함께 파기 (lead row만 익명화하면 파기 라이프사이클을 우회).
                     if lead.converted_hospital_id:

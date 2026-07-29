@@ -64,7 +64,7 @@ async def _seed(
     session.add(diagnosis)
     await session.flush()
 
-    raw, token_hash = lead_report_token.generate_report_token()
+    raw, token_hash = lead_report_token.issue_report_token(diagnosis.id)
     session.add(
         LeadReportToken(
             diagnosis_id=diagnosis.id,

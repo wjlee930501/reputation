@@ -123,6 +123,8 @@ celery_app.conf.update(
         # 동시성 풀도 따로다(sov_engine.POOL_LEADGEN) — 큐만 나누면 무료 진단이
         # 몰릴 때 유료 고객 측정이 같은 세마포어에서 굶는다.
         "app.workers.lead_diagnosis_tasks.run_lead_diagnosis": {"queue": "leadgen"},
+        "app.workers.lead_diagnosis_tasks.build_lead_report": {"queue": "leadgen"},
+        "app.workers.lead_diagnosis_tasks.send_lead_report_email": {"queue": "leadgen"},
         "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": {"queue": "default"},
     },
     beat_schedule={

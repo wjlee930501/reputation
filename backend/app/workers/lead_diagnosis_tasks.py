@@ -28,13 +28,20 @@ from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.lead_diagnosis import (
     REPORTABLE_EXECUTION_STATUSES,
+    DeliveryStatus,
     ExecutionStatus,
     LeadDiagnosis,
     LeadDiagnosisResult,
     LeadReportArtifact,
     ReportStatus,
 )
-from app.services import lead_diagnosis_engine, lead_query_cache, lead_report, notifier
+from app.services import (
+    lead_delivery,
+    lead_diagnosis_engine,
+    lead_query_cache,
+    lead_report,
+    notifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +302,47 @@ async def _reclaim_stalled_reports(session) -> int:
     return int(result.rowcount or 0)
 
 
+async def _send_lead_report_email(diagnosis_id: str) -> dict:
+    import uuid as _uuid
+
+    sessionmaker_ = get_async_sessionmaker()
+    async with sessionmaker_() as session:
+        pk = _uuid.UUID(str(diagnosis_id))
+        diagnosis = (
+            await session.execute(select(LeadDiagnosis).where(LeadDiagnosis.id == pk))
+        ).scalar_one_or_none()
+        if diagnosis is None:  # pragma: no cover
+            return {"skipped": "missing"}
+        return await lead_delivery.deliver_report(session, diagnosis)
+
+
+@celery_app.task(
+    name="app.workers.lead_diagnosis_tasks.send_lead_report_email",
+    bind=True,
+    max_retries=0,  # 재시도는 스윕이 한다 — 같은 키를 유지해야 중복이 안 난다.
+    soft_time_limit=120,
+    time_limit=180,
+)
+def send_lead_report_email(self, diagnosis_id: str):
+    return _run_async(_send_lead_report_email(diagnosis_id))
+
+
+async def _deliveries_to_send(session) -> list[str]:
+    """리포트는 준비됐는데 아직 발송을 시작하지 않은 진단."""
+    rows = (
+        await session.execute(
+            select(LeadDiagnosis.id)
+            .where(
+                LeadDiagnosis.report_status == ReportStatus.READY.value,
+                LeadDiagnosis.delivery_status == DeliveryStatus.PENDING.value,
+            )
+            .order_by(LeadDiagnosis.created_at.asc())
+            .limit(DRAIN_BATCH_SIZE)
+        )
+    ).scalars().all()
+    return [str(row) for row in rows]
+
+
 async def _reclaim_stalled(session) -> int:
     """워커가 죽어 RUNNING으로 좌초한 행을 PENDING으로 되돌린다.
 
@@ -366,6 +414,9 @@ async def _drain() -> dict:
 
         pending = await _pending_to_dispatch(session)
         reports = await _reports_to_build(session)
+        deliveries = await _deliveries_to_send(session)
+        stuck = await lead_delivery.sweep_stuck_deliveries(session)
+        deliveries += [d for d in stuck["retriable"] if d not in deliveries]
 
     for diagnosis_id in pending:
         try:
@@ -378,6 +429,12 @@ async def _drain() -> dict:
             build_lead_report.delay(diagnosis_id)
         except Exception:  # noqa: BLE001
             logger.warning("lead report dispatch failed for %s", diagnosis_id)
+
+    for diagnosis_id in deliveries:
+        try:
+            send_lead_report_email.delay(diagnosis_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("lead delivery dispatch failed for %s", diagnosis_id)
 
     for diagnosis in exhausted:
         try:
@@ -396,6 +453,8 @@ async def _drain() -> dict:
     return {
         "dispatched": len(pending),
         "reports": len(reports),
+        "deliveries": len(deliveries),
+        "abandoned_deliveries": len(stuck["abandoned"]),
         "reclaimed": reclaimed,
         "failed": len(exhausted),
         "cache_purged": purged,

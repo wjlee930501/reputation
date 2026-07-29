@@ -370,7 +370,6 @@ async def create_diagnosis(
 
     today = _kst_today()
     now = datetime.now(timezone.utc)
-    raw_token, token_hash = lead_report_token.generate_report_token()
 
     for _ in range(_SLOT_RETRY_LIMIT):
         used = int(
@@ -432,6 +431,8 @@ async def create_diagnosis(
             diagnosis.lead_id = lead.id
             db.add(diagnosis)
             await db.flush()
+            # 토큰은 진단 id에서 유도한다 — 나중에 리포트 메일이 같은 링크를 실어야 한다.
+            raw_token, token_hash = lead_report_token.issue_report_token(diagnosis.id)
             db.add(
                 LeadReportToken(
                     diagnosis_id=diagnosis.id,

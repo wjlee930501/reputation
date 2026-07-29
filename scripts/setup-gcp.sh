@@ -138,6 +138,7 @@ declare -A SECRETS=(
   # **한 번 정하면 바꾸지 않는다** — 값이 바뀌면 기존 잠금이 전부 풀린다.
   ["LEAD_LOCK_HASH_PEPPER"]="무료 진단 1회 제한 해시 pepper (로테이션 금지)"
   ["LEAD_REPORT_TOKEN_SECRET"]="무료 진단 리포트·상태 페이지 열람 토큰 해시 pepper"
+  ["RESEND_API_KEY"]="Resend API 키 — 무료 진단 리포트 메일 발송"
 )
 
 # 프론트엔드 SA가 접근해야 하는 secret (terraform secretmanager.tf frontend_access와 동일).
