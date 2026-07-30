@@ -165,16 +165,26 @@ textarea:focus-visible {
 }
 
 .landing-shell {
-  /* ─── Minimal white system (Stripe / Toss) ─── */
-  --ink: #0a0a0a;
-  --text: #3f3f46;
+  /* ─── 화이트 + 모션랩스 블루 + 톤다운 블랙 ───────────────────────
+     블랙은 순검정(#0a0a0a)이 아니라 톤을 내린 값이다 — 흰 배경에서 순검정은
+     경계가 날카롭게 튀고, 파랑을 늘렸을 때 둘이 서로를 밀어낸다.
+
+     파랑의 비중은 **면**으로 늘린다: 섹션 배경을 흰색과 파랑틴트로 번갈아 두고
+     마지막 CTA를 딥블루 면으로 닫는다. 텍스트를 파랗게 칠해 늘리면 읽기가 나빠진다. */
+  --ink: #17191d;
+  --text: #454b54;
   /* 12–13px 보조 문구도 흰 배경에서 WCAG AA 대비를 확보한다. */
-  --muted: #626871;
-  --line: #ededed;
-  --line-strong: #e0e0e2;
+  --muted: #646b76;
+  --line: #e9edf2;
+  --line-strong: #dbe2ea;
   --accent: #0671e0;
   --accent-dark: #0058b8;
   --accent-weak: #eef5fc;
+  /* 섹션 배경용 파랑틴트 — 회색 밴드를 대체한다. */
+  --tint: #f3f8ff;
+  --tint-line: #dce9fa;
+  /* 마지막 CTA 면 */
+  --accent-deep: #00437f;
 
   --shell-max: 1240px;
   --prose-max: 640px;
@@ -183,6 +193,10 @@ textarea:focus-visible {
   --radius-input: 12px;
   --radius-btn: 9px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* 등장 전용 감속 곡선(easeOutExpo). 처음 20%에서 거리의 80%를 이동하고 나머지를
+     천천히 정착시킨다 — "샥" 나타난 뒤 부드럽게 멈추는 애플식 움직임이다.
+     hover·press에는 쓰지 않는다: 짧은 시간에 이 곡선을 쓰면 반응이 늘어져 보인다. */
+  --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
 
   background: #ffffff;
   color: var(--text);
@@ -198,16 +212,48 @@ textarea:focus-visible {
 /* ─── Scroll reveal (gentle) ─── */
 .reveal-ready .landing-shell [data-reveal] {
   opacity: 0;
-  transform: translateY(12px);
+  transform: translateY(22px);
   transition:
-    opacity 0.6s var(--ease),
-    transform 0.6s var(--ease);
+    opacity 0.9s var(--ease-enter),
+    transform 0.9s var(--ease-enter);
   will-change: opacity, transform;
 }
 
 .reveal-ready .landing-shell [data-reveal].in-view {
   opacity: 1;
   transform: none;
+}
+
+/* ─── 히어로 등장 (스크롤과 무관하게 로드 시) ─────────────────────
+   ScrollReveal은 [data-reveal]만 다루고 히어로는 이미 화면 안에 있다. CSS 애니메이션으로
+   처리하는 이유는 **JS 없이도 최종 상태로 끝나기** 때문이다(`both`). 순서를 주면
+   알약 → 제목 → 본문 → CTA로 시선이 이동한다. */
+@keyframes landing-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.hero-section > * {
+  animation: landing-rise 0.9s var(--ease-enter) both;
+}
+
+.hero-section > .hero-pill { animation-delay: 0.03s; }
+.hero-section > h1 { animation-delay: 0.12s; }
+.hero-section > .hero-subcopy { animation-delay: 0.24s; }
+.hero-section > .hero-actions { animation-delay: 0.34s; }
+.hero-section > .hero-slots-note { animation-delay: 0.44s; }
+.hero-section > .hero-logos { animation-delay: 0.52s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-section > * {
+    animation: none;
+  }
 }
 
 /* Stagger list items inside revealed containers.
@@ -217,12 +263,18 @@ textarea:focus-visible {
 .reveal-ready .landing-shell .process-grid [data-reveal],
 .reveal-ready .landing-shell .method-list [data-reveal],
 .reveal-ready .landing-shell .limits-grid [data-reveal] {
-  transition-delay: calc(var(--reveal-i, 0) * 70ms);
+  transition-delay: calc(var(--reveal-i, 0) * 85ms);
 }
 
 .landing-shell [data-reveal]:nth-child(2) { --reveal-i: 1; }
 .landing-shell [data-reveal]:nth-child(3) { --reveal-i: 2; }
 .landing-shell [data-reveal]:nth-child(4) { --reveal-i: 3; }
+.landing-shell [data-reveal]:nth-child(5) { --reveal-i: 4; }
+.landing-shell [data-reveal]:nth-child(6) { --reveal-i: 5; }
+.landing-shell [data-reveal]:nth-child(7) { --reveal-i: 6; }
+.landing-shell [data-reveal]:nth-child(8) { --reveal-i: 7; }
+.landing-shell [data-reveal]:nth-child(9) { --reveal-i: 8; }
+.landing-shell [data-reveal]:nth-child(10) { --reveal-i: 9; }
 
 /* ─── Header ─── */
 .site-header {
@@ -731,7 +783,7 @@ textarea:focus-visible {
 
 .dx-scale i {
   transform-origin: bottom;
-  animation: dx-tick 0.32s var(--ease) both;
+  animation: dx-tick 0.5s var(--ease-enter) both;
   animation-delay: calc(var(--i, 0) * 55ms);
 }
 
@@ -799,10 +851,17 @@ textarea:focus-visible {
 }
 
 /* ─── 리포트 미리보기 섹션 (히어로에서 분리) ───────────────────── */
+/* 밴드는 풀블리드다 — 컨테이너 안에서만 칠하면 리듬이 아니라 카드가 된다. */
 .preview-section {
+  background: var(--tint);
+  border-bottom: 1px solid var(--tint-line);
+  padding: clamp(52px, 8vh, 92px) clamp(20px, 5vw, 40px) var(--section-pad);
+}
+
+.preview-section > * {
   max-width: var(--shell-max);
-  margin: 0 auto;
-  padding: clamp(48px, 7vh, 88px) clamp(20px, 5vw, 40px) var(--section-pad);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .preview-section .section-heading {
@@ -820,12 +879,43 @@ textarea:focus-visible {
 }
 
 /* ─── Section label (명사 라벨 — motionlabs 카피 규칙) ─── */
+/* 라벨을 파랑으로 둔다 — 섹션마다 같은 자리에 파랑이 반복돼 리듬의 박자가 된다.
+   본문을 파랗게 칠해 비중을 늘리면 읽기가 나빠지므로, 늘리는 것은 라벨과 면이다. */
 .section-label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   margin: 0 0 14px;
   font-size: 0.8125rem;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: var(--muted);
+  color: var(--accent);
+}
+
+.section-label::before {
+  content: "";
+  width: 18px;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: left;
+}
+
+/* 선이 그려지듯 들어온다. reveal-ready 아래에만 두어 JS 없으면 처음부터 보인다.
+   **[data-reveal] 안쪽으로만 한정한다.** 모든 라벨에 걸면, data-reveal 밖에 놓인 라벨은
+   .in-view를 받을 일이 없어 선이 영원히 scaleX(0)으로 남는다(보이지 않는다). */
+.reveal-ready .landing-shell [data-reveal] .section-label::before {
+  transform: scaleX(0);
+  transition: transform 0.7s var(--ease-enter) 0.16s;
+}
+
+.reveal-ready .landing-shell [data-reveal].in-view .section-label::before {
+  transform: scaleX(1);
+}
+
+/* 중앙 정렬 섹션에서는 라벨도 가운데로. */
+.preview-section .section-label,
+.cta-inner .section-label {
+  justify-content: center;
 }
 
 /* ─── 수치 카드 (외부 조사) ───────────────────────────────────
@@ -845,7 +935,8 @@ textarea:focus-visible {
 }
 
 .figure-card {
-  padding: 0 28px;
+  padding: 22px 28px 0;
+  border-top: 2px solid var(--accent);
 }
 
 .figure-card:first-child {
@@ -854,6 +945,11 @@ textarea:focus-visible {
 
 .figure-card + .figure-card {
   border-left: 1px solid var(--line);
+}
+
+/* 4개 카드의 파랑 선이 한 줄로 이어지지 않게 살짝 떨어뜨린다. */
+.figure-grid {
+  column-gap: 1px;
 }
 
 .figure-grid dt {
@@ -883,9 +979,8 @@ textarea:focus-visible {
 /* ─── 실측 결과 (자체 측정) ───────────────────────────────────
    이 페이지에서 accent를 쓰는 두 곳 중 하나. 우리가 직접 잰 숫자만 파랑이다. */
 .measured-section {
-  background: #fafafa;
+  background: #ffffff;
   border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
 }
 
 .measured-inner {
@@ -931,9 +1026,16 @@ textarea:focus-visible {
 
 /* ─── 운영 방식 ───────────────────────────────────────────── */
 .operation-section {
-  max-width: var(--shell-max);
-  margin: 0 auto;
+  background: var(--tint);
+  border-top: 1px solid var(--tint-line);
+  border-bottom: 1px solid var(--tint-line);
   padding: var(--section-pad) clamp(20px, 5vw, 40px);
+}
+
+.operation-section > * {
+  max-width: var(--shell-max);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .process-grid {
@@ -964,8 +1066,9 @@ textarea:focus-visible {
   font-weight: 700;
   letter-spacing: -0.04em;
   line-height: 1;
-  color: var(--line-strong);
+  color: var(--accent);
   font-variant-numeric: tabular-nums;
+  opacity: 0.9;
 }
 
 .process-label {
@@ -1019,11 +1122,24 @@ textarea:focus-visible {
 }
 
 .method-list dt {
+  position: relative;
+  padding-left: 16px;
   font-size: 1rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.5;
   color: var(--ink);
+}
+
+.method-list dt::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .method-list dd {
@@ -1035,10 +1151,16 @@ textarea:focus-visible {
 
 /* ─── 하지 않는 것 ─────────────────────────────────────────── */
 .limits-section {
-  max-width: var(--shell-max);
-  margin: 0 auto;
+  background: var(--tint);
+  border-top: 1px solid var(--tint-line);
+  border-bottom: 1px solid var(--tint-line);
   padding: var(--section-pad) clamp(20px, 5vw, 40px);
-  border-top: 1px solid var(--line);
+}
+
+.limits-section > * {
+  max-width: var(--shell-max);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .limits-grid {
@@ -1077,8 +1199,9 @@ textarea:focus-visible {
 }
 
 /* ─── 최종 CTA — 페이지에서 유일한 어두운 면 ─────────────────── */
+/* 페이지에서 유일한 진한 면. 근검정이 아니라 딥블루다 — 브랜드 색으로 닫는다. */
 .cta-section {
-  background: var(--ink);
+  background: var(--accent-deep);
   color: #ffffff;
 }
 
@@ -1110,8 +1233,23 @@ textarea:focus-visible {
   color: rgba(255, 255, 255, 0.72);
 }
 
+/* 딥블루 면 위에서는 파랑 버튼이 묻힌다 — 흰 버튼으로 뒤집는다. */
 .cta-inner .btn-primary {
   margin-top: 32px;
+  background: #ffffff;
+  color: var(--accent-deep);
+}
+
+.cta-inner .btn-primary:hover {
+  background: var(--accent-weak);
+}
+
+.cta-inner .section-label {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.cta-inner .section-label::before {
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .cta-notes {
@@ -1180,10 +1318,16 @@ textarea:focus-visible {
 /* ─── 원장님이 하시는 말 (통증) ─────────────────────────────────
    인용문을 크게, 답을 작게. 순서가 뒤집히면 우리 홍보문이 된다. */
 .pain-section {
-  max-width: var(--shell-max);
-  margin: 0 auto;
+  background: var(--tint);
+  border-top: 1px solid var(--tint-line);
+  border-bottom: 1px solid var(--tint-line);
   padding: var(--section-pad) clamp(20px, 5vw, 40px);
-  border-top: 1px solid var(--line);
+}
+
+.pain-section > * {
+  max-width: var(--shell-max);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .pain-list {
@@ -1236,9 +1380,8 @@ textarea:focus-visible {
 /* ─── 측정 범위 + 점유율 차트 ───────────────────────────────────
    측정 대상만 accent로 칠한다 — 칠해진 면적이 곧 84%다. */
 .share-section {
-  background: #fafafa;
+  background: #ffffff;
   border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
 }
 
 .share-inner {
@@ -1299,7 +1442,23 @@ textarea:focus-visible {
   height: 100%;
   background: var(--line-strong);
   border-radius: 3px;
+  transform-origin: left;
 }
+
+/* 막대만 애니메이션한다 — 옆 숫자는 항상 최종값이라 JS 실패와 무관하게 정확하다.
+   reveal-ready 스코프가 없으면 JS가 죽은 화면에서 막대가 영원히 0으로 남는다. */
+.reveal-ready .landing-shell [data-reveal] .share-fill {
+  transform: scaleX(0);
+  transition: transform 1.05s var(--ease-enter);
+}
+
+.reveal-ready .landing-shell [data-reveal].in-view .share-fill {
+  transform: scaleX(1);
+}
+
+.reveal-ready .landing-shell [data-reveal].in-view .share-row:nth-child(2) .share-fill { transition-delay: 0.09s; }
+.reveal-ready .landing-shell [data-reveal].in-view .share-row:nth-child(3) .share-fill { transition-delay: 0.18s; }
+.reveal-ready .landing-shell [data-reveal].in-view .share-row:nth-child(4) .share-fill { transition-delay: 0.27s; }
 
 .share-fill.is-measured {
   background: var(--accent);
@@ -1435,6 +1594,15 @@ textarea:focus-visible {
 
 .faq-list details[open] summary::after {
   transform: rotate(225deg) translateY(-2px);
+  border-color: var(--accent);
+}
+
+.faq-list details[open] summary {
+  color: var(--accent-dark);
+}
+
+.faq-list summary:hover {
+  color: var(--accent-dark);
 }
 
 .faq-list details p {
