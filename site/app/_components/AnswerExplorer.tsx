@@ -4,11 +4,12 @@ import { useState } from "react";
 
 import type { AnswerExample } from "@/lib/landing-copy";
 
-import AiAnswerPanel from "./AiAnswerPanel";
+import DiagnosisPreview from "./DiagnosisPreview";
 
 /**
- * 진료과 탭으로 AI 답변 예시를 전환하는 탐색기.
- * 탭을 바꾸면 AiAnswerPanel이 타이핑 → 답변 시퀀스를 다시 재생한다.
+ * 진료과 탭으로 진단 결과 예시를 전환하는 탐색기.
+ * 탭을 바꾸면 DiagnosisPreview가 눈금을 다시 채운다 — 진료과마다 값이 다르다는 사실이
+ * 그 움직임으로 드러난다.
  */
 export default function AnswerExplorer({
   examples,
@@ -37,7 +38,7 @@ export default function AnswerExplorer({
         ))}
       </div>
 
-      <AiAnswerPanel example={current} disclaimer={disclaimer} />
+      <DiagnosisPreview example={current} disclaimer={disclaimer} />
     </div>
   );
 }
