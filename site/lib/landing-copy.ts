@@ -60,7 +60,7 @@ export const heroScarcity = {
 /** 진단 미리보기 — 히어로에서 분리한 독립 섹션. */
 export const previewSection = {
   label: "리포트 미리보기",
-  heading: "받으시는 것은 이 형태입니다.",
+  heading: "받아보시는 리포트",
   body:
     "질문 하나마다 플랫폼별로 몇 번 등장했는지, 그리고 AI가 병원의 어떤 정보를 인용했는지 적습니다. 진료과를 눌러 다른 예시를 보실 수 있습니다.",
 }
@@ -91,9 +91,9 @@ export const marketFigures: Figure[] = [
 
 export const marketSection = {
   label: "환자의 첫 질문",
-  heading: "환자는 병원 이름을 검색하지 않습니다. 증상을 물어봅니다.",
+  heading: "환자는 병원 이름을 모릅니다",
   body:
-    "그리고 AI는 답변 하나에 병원 몇 곳만 적습니다. 순위표가 아니라 문장이라서, 목록 아래쪽 같은 자리가 없습니다.",
+    "증상을 물으면 AI는 문장으로 답합니다. 그 문장에 들어가는 병원은 서너 곳이고, 목록 2페이지 같은 자리는 없습니다.",
 }
 
 /**
@@ -105,7 +105,7 @@ export const marketSection = {
  */
 export const painSection = {
   label: "원장님들이 하시는 말",
-  heading: "이 중 하나라도 해당되면, 진단부터 받아보세요.",
+  heading: "이런 말씀, 자주 듣습니다",
 }
 
 export const painPoints = [
@@ -137,7 +137,7 @@ export const painPoints = [
  */
 export const platformShareSection = {
   label: "측정 범위",
-  heading: "두 곳만 측정합니다. 나머지를 더해도 도달은 거의 그대로입니다.",
+  heading: "왜 두 곳만 재는가",
   body:
     "국내 AI 사용은 ChatGPT와 Gemini로 몰려 있습니다. 네이버 Cue:와 CLOVA X는 2026년 4월 서비스를 종료했습니다.",
   nudge:
@@ -183,9 +183,9 @@ export const measuredFigures: Figure[] = [
 
 export const measuredSection = {
   label: "실측 결과",
-  heading: "자리는 좁고, 그 자리는 아직 정해지지 않았습니다.",
+  heading: "같은 질문을 세 번 물으면 답이 바뀝니다",
   body:
-    "같은 질문을 세 번 물으면 등장하는 병원이 바뀝니다. 그래서 한 번의 결과가 아니라 반복 측정이 필요하고, 반복해서 등장하려면 AI가 읽을 근거가 병원 쪽에 있어야 합니다.",
+    "그래서 한 번 재고 끝내면 안 됩니다. 저희는 질문마다 세 번씩 물어 등장 횟수를 셉니다. 반복해서 나오려면 AI가 읽을 근거가 병원 쪽에 쌓여 있어야 합니다.",
 }
 
 // ── AI 답변 예시 ────────────────────────────────────────────────────
@@ -266,8 +266,8 @@ export const answerExamples: AnswerExample[] = [
 
 export const operationSection = {
   label: "운영 방식",
-  heading: "원장님이 배울 것은 없습니다. 정보만 주시면 됩니다.",
-  body: "툴을 구독하는 방식이 아니라, 전담 AE와 Agent가 매달 대신 운영하는 방식입니다.",
+  heading: "원장님 몫은 정보를 주시는 것까지",
+  body: "쓰는 법을 익히실 필요가 없습니다. 전담 AE와 Agent가 매달 대신 운영합니다.",
 }
 
 export const operationSteps = [
@@ -293,8 +293,8 @@ export const operationSteps = [
 
 export const methodSection = {
   label: "측정 규약",
-  heading: "무엇을 어떻게 재는지 전부 적어서 드립니다.",
-  body: "재현할 수 없는 숫자는 근거가 아니라 주장입니다. 리포트에는 결과만이 아니라 측정 조건이 함께 들어갑니다.",
+  heading: "측정에 쓴 것을 전부 적어 드립니다",
+  body: "결과만 적힌 리포트는 확인할 방법이 없습니다. 어떤 질문을 어느 모델에 몇 번 물었는지, 언제 쟀는지를 같이 적습니다.",
 }
 
 export const methodItems = [
@@ -320,28 +320,36 @@ export const methodItems = [
 
 export const limitsSection = {
   label: "하지 않는 것",
-  heading: "보장할 수 없는 것은 팔지 않습니다.",
+  heading: "이건 못 합니다",
   body: "아래는 지키지 못할 약속이라 처음부터 하지 않는 항목입니다.",
 }
 
+/**
+ * 제목을 **명사구**로 둔다.
+ *
+ * 처음에는 넷 다 "…하지 않습니다."였다. 같은 종결이 네 번 반복되면 내용이 아니라 리듬이
+ * 먼저 읽히고, 그 리듬이 기계가 쓴 글처럼 보인다. 못 하는 항목의 이름을 제목으로 두고
+ * 이유는 본문에서 말한다.
+ */
 export const limitItems = [
   {
-    title: "노출 순위를 보장하지 않습니다.",
-    body: "AI 답변에 어느 병원이 들어갈지는 플랫폼이 결정합니다. 우리가 하는 일은 읽힐 근거를 갖추는 것까지입니다.",
+    // 제목만 떼어 읽으면 "보장한다"로 오해될 수 있다. 부정은 본문 첫 문장이 진다.
+    title: "노출 순위 보장",
+    body: "약속하지 않습니다. AI 답변에 어느 병원이 들어갈지는 플랫폼이 정하고, 저희가 통제할 수 있는 범위 밖입니다. 하는 일은 읽힐 근거를 갖추는 것까지입니다.",
   },
   {
-    title: "환자 수 증가를 약속하지 않습니다.",
-    body: "AI 답변 노출과 내원은 다른 지표입니다. 측정하지 않은 것을 성과로 적지 않습니다.",
+    title: "환자 수 증가",
+    body: "재지 않은 것을 성과로 적지 않습니다. AI 답변 노출과 실제 내원은 다른 지표입니다.",
   },
   {
-    title: "치료 효과를 표현하지 않습니다.",
+    title: "치료 효과 표현",
     // 금지 표현을 여기서 **나열하지 않는다.** 공개 페이지에 그 단어가 실제로 박히면
     // 문맥과 무관하게 검색·점검에 걸리고, 카피 가드에도 예외를 만들어야 한다.
     body: "의료광고법이 금지하는 단정·과장 표현은 콘텐츠 생성 단계에서 자동으로 걸러냅니다. 통과하지 못한 글은 발행되지 않습니다.",
   },
   {
-    title: "자동 생성물을 그대로 내보내지 않습니다.",
-    body: "발행 전 자동 검사를 통과해야 하고, 발행 후 담당 AE가 다시 확인합니다.",
+    title: "검수 없는 자동 발행",
+    body: "발행 전 자동 검사를 거치고, 발행 후 담당 AE가 다시 봅니다.",
   },
 ]
 
@@ -350,7 +358,7 @@ export const limitItems = [
 
 export const faqSection = {
   label: "자주 받는 질문",
-  heading: "판단에 필요한 것부터 답합니다.",
+  heading: "자주 나오는 질문",
 }
 
 export const faqItems = [
@@ -400,7 +408,7 @@ export const faqItems = [
 
 export const ctaSection = {
   label: "무료 진단",
-  heading: "우리 병원이 지금 AI 답변에 어떻게 보이는지, 15분 안에 확인하세요.",
+  heading: "우리 병원은 지금 몇 번 나올까요?",
   body: "병원명·지역·진료과와 확인하고 싶은 키워드를 남기시면 ChatGPT와 Gemini에 실제로 물어 결과를 정리해 메일로 보냅니다.",
   primaryCta: "무료 진단 신청하기",
   notes: [
