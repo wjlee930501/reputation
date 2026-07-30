@@ -39,12 +39,15 @@ _SOFT_RATIO = 0.8  # 하드 상한의 80% 도달 시 조기 경고
 
 KILL_SWITCH_KEY = "cost_guard:kill_switch"
 
-CATEGORIES: tuple[str, ...] = ("content", "image", "sov")
+CATEGORIES: tuple[str, ...] = ("content", "image", "sov", "leadgen")
 
 _CATEGORY_LABELS = {
     "content": "콘텐츠 생성(Claude)",
     "image": "이미지 생성",
     "sov": "AI 답변 언급률 측정",
+    # 1단(리드마그넷)은 2단 운영 서비스와 예산을 공유하지 않는다(설계 §0). 같은 'sov'
+    # 카테고리에 넣으면 무료 진단 폭주가 계약 병원의 월간 측정을 차단하게 된다.
+    "leadgen": "무료 진단 측정(리드마그넷)",
 }
 
 _RESERVE_BUDGET_SCRIPT = """
@@ -103,6 +106,10 @@ def _limits(category: str) -> tuple[int, int]:
         "sov": (
             settings.COST_GUARD_DAILY_SOV_QUERIES,
             settings.COST_GUARD_MONTHLY_SOV_QUERIES,
+        ),
+        "leadgen": (
+            settings.COST_GUARD_DAILY_LEADGEN_CALLS,
+            settings.COST_GUARD_MONTHLY_LEADGEN_CALLS,
         ),
     }
     return table[category]

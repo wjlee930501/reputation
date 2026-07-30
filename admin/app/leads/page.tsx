@@ -3,11 +3,20 @@
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { fetchAPI } from '@/lib/api'
+import { ApiError, fetchAPI } from '@/lib/api'
 import { formatDateTime } from '@/lib/format'
 import { SkeletonTable } from '@/app/components/Skeleton'
 import { PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
 import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
+import {
+  type LeadDiagnosisSummary,
+  type Tone,
+  canReleaseLock,
+  canRetryDelivery,
+  diagnosisBadges,
+  diagnosisHint,
+  needsAttention,
+} from '@/lib/lead-diagnosis-status'
 
 // backend GET /admin/leads — limit(기본 50, 최대 200) + offset 지원.
 // "더 보기"는 offset append 방식이라 오래된 리드(파기 워크플로 대상 포함)까지 도달 가능.
@@ -33,8 +42,40 @@ interface ConvertResponse {
 
 type PlanOption = 'PLAN_16' | 'PLAN_12' | 'PLAN_8'
 
+type DiagnosisAction = 'retry' | 'release'
+
+interface ActionTarget {
+  lead: SalesLead
+  diagnosis: LeadDiagnosisSummary
+  kind: DiagnosisAction
+}
+
+const TONE_CLASS: Record<Tone, string> = {
+  ok: 'bg-emerald-50 text-emerald-700',
+  progress: 'bg-blue-50 text-blue-700',
+  warn: 'bg-amber-50 text-amber-800',
+  danger: 'bg-red-50 text-red-700',
+  muted: 'bg-slate-100 text-slate-600',
+}
+
 function getOnboardingHref(lead: SalesLead) {
   return buildLeadOnboardingHref(lead.id)
+}
+
+/** 409 본문에 담긴 진단별 거절 사유를 그대로 꺼낸다 — AE가 볼 유일한 설명이다. */
+function readRefusalReasons(error: unknown): string[] {
+  if (!(error instanceof ApiError)) return []
+  const detail = error.detail
+  if (typeof detail !== 'object' || detail === null) return []
+  const rows = (detail as { diagnoses?: unknown }).diagnoses
+  if (!Array.isArray(rows)) return []
+  return rows
+    .map((row) =>
+      typeof row === 'object' && row !== null && typeof (row as { message?: unknown }).message === 'string'
+        ? ((row as { message: string }).message)
+        : '',
+    )
+    .filter(Boolean)
 }
 
 export default function LeadsPage() {
@@ -59,14 +100,25 @@ export default function LeadsPage() {
   const [erasingLeadId, setErasingLeadId] = useState<string | null>(null)
   const [eraseError, setEraseError] = useState<string | null>(null)
 
+  // 무료 진단 — 확인 필요 필터 + 재발송/잠금 해제
+  const [attentionOnly, setAttentionOnly] = useState(false)
+  const [actionTarget, setActionTarget] = useState<ActionTarget | null>(null)
+  const [actionReason, setActionReason] = useState('')
+  const [ackDuplicateRisk, setAckDuplicateRisk] = useState(false)
+  const [actionSubmitting, setActionSubmitting] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionNotice, setActionNotice] = useState<string | null>(null)
+
   const loadLeads = useCallback(
-    async (offset: number, options?: { append?: boolean; limit?: number }) => {
+    async (offset: number, options?: { append?: boolean; limit?: number; attention?: boolean }) => {
       if (options?.append) setLoadingMore(true)
       else setLoading(true)
       setError(null)
       const limit = options?.limit ?? PAGE_SIZE
+      const attention = options?.attention ?? attentionOnly
       try {
-        const data = await fetchAPI<SalesLead[]>(`/admin/leads?limit=${limit}&offset=${offset}`)
+        const query = `limit=${limit}&offset=${offset}${attention ? '&needs_attention=true' : ''}`
+        const data = await fetchAPI<SalesLead[]>(`/admin/leads?${query}`)
         const page = Array.isArray(data) ? data : []
         setLeads((prev) => (options?.append ? [...prev, ...page] : page))
         setHasMore(page.length === limit)
@@ -77,7 +129,7 @@ export default function LeadsPage() {
         setLoadingMore(false)
       }
     },
-    [],
+    [attentionOnly],
   )
 
   useEffect(() => {
@@ -149,20 +201,93 @@ export default function LeadsPage() {
     }
   }
 
+  function openAction(lead: SalesLead, diagnosis: LeadDiagnosisSummary, kind: DiagnosisAction) {
+    setActionTarget({ lead, diagnosis, kind })
+    setActionReason('')
+    setAckDuplicateRisk(false)
+    setActionError(null)
+    setActionNotice(null)
+  }
+
+  async function handleSubmitAction() {
+    if (!actionTarget || actionSubmitting) return
+    const reason = actionReason.trim()
+    if (reason.length < 2) {
+      setActionError('사유를 2자 이상 입력해 주세요. 감사 로그에 남습니다.')
+      return
+    }
+    setActionSubmitting(true)
+    setActionError(null)
+    const { lead, kind } = actionTarget
+    const path =
+      kind === 'retry'
+        ? `/admin/leads/${lead.id}/retry-report-delivery`
+        : `/admin/leads/${lead.id}/release-lock`
+    const body =
+      kind === 'retry'
+        ? { reason, acknowledge_duplicate_risk: ackDuplicateRisk }
+        : { reason }
+    try {
+      await fetchAPI(path, { method: 'POST', body: JSON.stringify(body) })
+      setActionTarget(null)
+      setActionNotice(
+        kind === 'retry'
+          ? '재발송을 예약했습니다. 1분 안에 발송됩니다.'
+          : '무료 진단 1회 제한을 해제했습니다.',
+      )
+      await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
+    } catch (e: unknown) {
+      const reasons = readRefusalReasons(e)
+      setActionError(
+        reasons.length > 0
+          ? reasons.join('\n')
+          : e instanceof Error
+            ? e.message
+            : '처리에 실패했습니다.',
+      )
+    } finally {
+      setActionSubmitting(false)
+    }
+  }
+
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">상담 리드</h1>
           <p className="mt-1 text-sm text-slate-500">
-            공개 페이지에서 접수된 병원 문의를 확인하고 신규 병원 온보딩으로 전환합니다.
+            공개 페이지에서 접수된 병원 문의와 무료 AI 노출 진단 신청을 확인합니다.
           </p>
         </div>
-        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-right shadow-sm">
-          <p className="text-xs font-medium text-slate-500">불러온 리드</p>
-          <p className="mt-0.5 text-2xl font-bold text-slate-900">{leads.length}</p>
+        <div className="flex items-end gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              const next = !attentionOnly
+              setAttentionOnly(next)
+              void loadLeads(0, { attention: next })
+            }}
+            aria-pressed={attentionOnly}
+            className={`rounded-xl border px-4 py-3 text-xs font-semibold shadow-sm transition-colors ${
+              attentionOnly
+                ? 'border-red-300 bg-red-50 text-red-700'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            {attentionOnly ? '확인 필요만 보는 중' : '확인 필요만 보기'}
+          </button>
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-right shadow-sm">
+            <p className="text-xs font-medium text-slate-500">불러온 리드</p>
+            <p className="mt-0.5 text-2xl font-bold text-slate-900">{leads.length}</p>
+          </div>
         </div>
       </div>
+
+      {actionNotice && (
+        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+          {actionNotice}
+        </div>
+      )}
 
       {loading && <SkeletonTable rows={5} />}
 
@@ -198,6 +323,7 @@ export default function LeadsPage() {
                 <th className="px-6 py-3 text-left font-medium text-slate-600">연락처</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">문의</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">유입</th>
+                <th className="px-6 py-3 text-left font-medium text-slate-600">무료 진단</th>
                 <th className="px-6 py-3 text-right font-medium text-slate-600">다음 액션</th>
               </tr>
             </thead>
@@ -236,6 +362,64 @@ export default function LeadsPage() {
                     )}
                   </td>
                   <td className="px-6 py-4 text-xs text-slate-500" data-label="유입">{lead.source_path ?? '-'}</td>
+                  <td className="px-6 py-4" data-label="무료 진단">
+                    {(lead.diagnoses ?? []).length === 0 ? (
+                      <span className="text-xs text-slate-400">해당 없음</span>
+                    ) : (
+                      <div className="space-y-3">
+                        {(lead.diagnoses ?? []).map((diagnosis) => (
+                          <div key={diagnosis.id} className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {diagnosisBadges(diagnosis).map((badge) => (
+                                <span
+                                  key={badge.axis}
+                                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${TONE_CLASS[badge.tone]}`}
+                                >
+                                  {badge.axis} {badge.label}
+                                </span>
+                              ))}
+                            </div>
+                            <p
+                              className={`mt-1 text-[11px] ${
+                                needsAttention(diagnosis)
+                                  ? 'font-semibold text-red-600'
+                                  : 'text-slate-500'
+                              }`}
+                            >
+                              {diagnosisHint(diagnosis)}
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-slate-400">
+                              {diagnosis.slot_date ?? '-'}
+                              {diagnosis.slot_no ? ` · ${diagnosis.slot_no}번째 자리` : ''}
+                              {diagnosis.lock_released_at
+                                ? ` · 잠금 해제됨(${diagnosis.lock_released_by ?? '-'})`
+                                : ''}
+                            </p>
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              {canRetryDelivery(diagnosis) && (
+                                <button
+                                  type="button"
+                                  onClick={() => openAction(lead, diagnosis, 'retry')}
+                                  className="text-[11px] font-semibold text-blue-600 hover:underline"
+                                >
+                                  리포트 재발송
+                                </button>
+                              )}
+                              {canReleaseLock(diagnosis) && (
+                                <button
+                                  type="button"
+                                  onClick={() => openAction(lead, diagnosis, 'release')}
+                                  className="text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:underline"
+                                >
+                                  1회 제한 해제
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-6 py-4 text-right" data-label="다음 액션">
                     {lead.converted_hospital_id ? (
                       <Link
@@ -292,6 +476,103 @@ export default function LeadsPage() {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* 무료 진단 액션 모달 — 재발송 / 1회 제한 해제 */}
+      {actionTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !actionSubmitting) setActionTarget(null)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="diagnosis-action-title"
+            className="w-full max-w-md rounded-xl bg-white shadow-xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="border-b border-slate-200 p-5">
+              <h3 id="diagnosis-action-title" className="text-lg font-bold text-slate-900">
+                {actionTarget.kind === 'retry' ? '리포트 재발송' : '무료 진단 1회 제한 해제'}
+                {' — '}
+                {actionTarget.lead.clinic_name}
+              </h3>
+              <p className="mt-1 text-xs text-slate-500">
+                {actionTarget.kind === 'retry'
+                  ? '준비된 리포트를 같은 주소로 다시 보냅니다. 발송은 1분 안에 폴러가 처리합니다.'
+                  : '이 병원이 무료 진단을 한 번 더 받을 수 있게 됩니다. 제3자가 먼저 신청해 원장의 기회를 소진한 경우에만 사용하세요.'}
+              </p>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <label className="block">
+                <span className="text-sm font-medium text-slate-700">사유 (감사 로그에 기록)</span>
+                <textarea
+                  value={actionReason}
+                  onChange={(event) => setActionReason(event.target.value)}
+                  rows={3}
+                  maxLength={200}
+                  placeholder={
+                    actionTarget.kind === 'retry'
+                      ? '예) 메일 발송 키 오류 수정 후 재발송'
+                      : '예) 대행사가 병원 대표번호로 선점, 원장 본인 확인 완료'
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none"
+                />
+              </label>
+
+              {actionTarget.kind === 'retry' && (
+                <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <input
+                    type="checkbox"
+                    checked={ackDuplicateRisk}
+                    onChange={(event) => setAckDuplicateRisk(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span className="text-xs text-amber-900">
+                    첫 발송으로부터 24시간이 지난 건이라면, 원래 메일이 실제로 나갔는지 확인할 수
+                    없어 신청자가 같은 메일을 두 번 받을 수 있습니다. 확인했고 감수합니다.
+                    <span className="mt-1 block text-amber-700">
+                      24시간이 지나지 않은 건은 이 체크 없이도 중복 없이 재발송됩니다.
+                    </span>
+                  </span>
+                </label>
+              )}
+
+              {actionError && (
+                <p className="whitespace-pre-line rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
+                  {actionError}
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-3 border-t border-slate-200 p-5">
+              <button
+                type="button"
+                onClick={handleSubmitAction}
+                disabled={actionSubmitting}
+                className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {actionSubmitting
+                  ? '처리 중...'
+                  : actionTarget.kind === 'retry'
+                    ? '재발송'
+                    : '제한 해제'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActionTarget(null)}
+                disabled={actionSubmitting}
+                className="rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+              >
+                취소
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

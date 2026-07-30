@@ -10,6 +10,16 @@ from datetime import datetime
 
 from app.models.lead import SalesLead
 
+# 파기된 필드에 남는 표식. **쓰는 쪽과 읽는 쪽이 같은 값을 봐야 한다** —
+# 발송 경로는 이 값을 "보낼 수 없는 수신자"로 판정하므로, 표식이 갈라지면
+# 파기된 리드에 메일을 보내려 시도하게 된다.
+PURGED_MARKER = "[purged]"
+
+
+def is_purged_value(value: str | None) -> bool:
+    """파기 표식이거나 비어 있으면 True — 수신자로 쓸 수 없다는 뜻."""
+    return not value or value.strip() == PURGED_MARKER
+
 
 def anonymize_lead(lead: SalesLead, now: datetime) -> bool:
     """Clear identifiable fields in place. Idempotent — returns False if already purged.
@@ -21,16 +31,16 @@ def anonymize_lead(lead: SalesLead, now: datetime) -> bool:
     """
     if lead.purged_at is not None:
         return False
-    lead.clinic_name = "[purged]"
-    lead.contact = "[purged]"
-    lead.question = "[purged]"
+    lead.clinic_name = PURGED_MARKER
+    lead.contact = PURGED_MARKER
+    lead.question = PURGED_MARKER
     lead.consent_ip = None
     # 무료 진단 폼으로 들어온 신규 개인정보 — 있으면 함께 지운다.
     for field_name in ("email", "contact_name", "clinic_phone"):
         if getattr(lead, field_name, None):
-            setattr(lead, field_name, "[purged]")
+            setattr(lead, field_name, PURGED_MARKER)
     if getattr(lead, "conversion_note", None):
-        lead.conversion_note = "[purged]"
+        lead.conversion_note = PURGED_MARKER
     lead.purged_at = now
     return True
 
@@ -57,12 +67,12 @@ def _apply_diagnosis_purge(diagnosis, artifacts, tokens, results, now: datetime,
     for result in results:
         result.raw_response = ""
         # 질의 원문에는 지역·진료과·키워드가 들어 있다 — 처리방침이 파기를 약속한 항목이다.
-        result.query_text = "[purged]"
+        result.query_text = PURGED_MARKER
 
     # 진단 행 자체의 식별 정보. 처리방침은 병원명·진료과·지역을 수집 항목으로 명시하고
     # 180일 또는 요청 시 파기를 약속한다 — 여기를 비우지 않으면 그 약속이 안 지켜진다.
-    diagnosis.subject_hospital_name = "[purged]"
-    diagnosis.subject_region = "[purged]"
+    diagnosis.subject_hospital_name = PURGED_MARKER
+    diagnosis.subject_region = PURGED_MARKER
     diagnosis.queries = []
     if diagnosis.report_status != ReportStatus.PURGED.value:
         diagnosis.report_status = ReportStatus.PURGED.value
