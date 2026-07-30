@@ -188,7 +188,20 @@ DB 마이그레이션은 별도 판단).
 - ✅ 플랫폼 표기가 `OpenAI API · gpt-5.6-luna` 형식 (F5-1)
 - ✅ 응답 헤더 `no-store` + `noindex`
 
-**메일 실패 — `resend_error_401: API key is invalid`.**
+**메일 — 두 단계로 막혔고 둘 다 해결했다.**
+
+1. `resend_error_401: API key is invalid` — 시크릿 값이 실제 키가 아니라 문자열
+   `PLACEHOLDER`였다(11자, 2026-02-13 생성). 유효한 키를 등록하고 **워커를 재배포**했다.
+   ⚠️ Cloud Run은 `secretKeyRef`를 **인스턴스 시작 시 한 번만** 읽는다 — 새 시크릿 버전을
+   추가해도 돌고 있는 워커는 옛 값을 계속 쓴다. 재배포가 필수다.
+2. `resend_error_403: reputation.motionlabs.kr domain is not verified` — Resend에 발신
+   도메인이 등록되지 않았다. Route53에 DKIM(TXT)·SPF(MX+TXT) 3개를 넣고 Resend에서
+   Verify를 실행해 통과(02:33 UTC). 별도 테스트 발송이 HTTP 200을 받아 확인됐다.
+
+> **401 → 403 → 200의 진행이 발송 로직 자체가 정상임을 증명한다.** 인증을 통과하고
+> Resend까지 요청이 제대로 갔으며, 막힌 것은 매번 우리 쪽 설정이었다.
+
+이전 기록:
 `RESEND_API_KEY`의 값이 실제 키가 아니라 문자열 `PLACEHOLDER`였다(11자, 2026-02-13 생성).
 키가 **존재하는 것**과 **유효한 것**은 다르다 — 존재 여부만 확인하고 넘어갔던 것이 이 릴리스의
 유일한 미검출 결함이었고, E2E 신청 1건이 그것을 잡았다.
@@ -240,6 +253,7 @@ gcloud run services logs read reputation-beat --region=asia-northeast3 --limit=5
 | 2 | **공유 캐시가 single-flight가 아니다.** 같은 지역 20건이 동시에 시작하면 전부 각자 유료 호출을 한다 — "두 번째 병원 5원"은 순차 실행 전제 | 락 설계 |
 | 3 | **자리 20건이 공급자 호출 수의 상한은 아니다.** 재시도가 곱해져 최악 162콜 | 호출 원장(ledger) |
 | 4 | **Admin UI 미착수** — 잠금 해제 API는 있으나 버튼이 없어 AE가 API를 직접 호출해야 한다 | 개발 |
+| 4-1 | **발송 수동 재시도 도구가 없다.** delivery가 `FAILED`로 종결되면 자동 복구 경로가 없고(중복 발송 방지 설계), DB를 직접 손대야 한다. `docker-entrypoint.sh`에 `retry-lead-delivery` 케이스를 추가하는 것이 가장 작은 해결책 | 개발 |
 | 5 | **npm audit 4건(site)** — Next 15.x에 수정판이 없다. `npm audit fix`는 오히려 4→20건으로 악화된다. 그중 rewrites SSRF는 이 사이트가 호스트 기반 rewrite를 쓰므로 직접 해당 | Next 16 마이그레이션 |
 
 ---
