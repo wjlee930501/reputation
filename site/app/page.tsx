@@ -13,9 +13,6 @@ import {
   marketFigures,
   marketSection,
   measuredFigures,
-  measuredSection,
-  methodItems,
-  methodSection,
   operationSection,
   operationSteps,
   painPoints,
@@ -27,8 +24,8 @@ import {
 
 import { fetchTodaySlots, resolveSlotState } from "@/lib/diagnosis-slots";
 
-import { GeminiLogo, OpenAiLogo } from "./_components/AiLogos";
 import AnswerExplorer from "./_components/AnswerExplorer";
+import RollingAiLogo from "./_components/RollingAiLogo";
 import PlatformShareChart from "./_components/PlatformShareChart";
 import ScrollReveal from "./_components/ScrollReveal";
 
@@ -60,9 +57,9 @@ export default async function Home() {
         </a>
 
         <nav className="header-nav" aria-label="랜딩 페이지 섹션">
-          <a href="#measured">실측 결과</a>
+          <a href="#numbers">근거</a>
           <a href="#operation">운영 방식</a>
-          <a href="#method">측정 규약</a>
+          <a href="#faq">자주 묻는 질문</a>
         </nav>
 
         <Link className="header-cta" href={DIAGNOSIS_PATH}>
@@ -81,37 +78,26 @@ export default async function Home() {
           {slotState.text}
         </p>
 
-        {/* 두 줄뿐이고, 무게가 다르다 — 시선은 titleMain(사실)에 앉는다. */}
+        {/* `{ai}` 자리에 굴러가는 AI 로고가 들어간다. 문자열을 미리 쪼개 두지 않고
+            자리표시자를 쓰는 이유는, 조사 위치("…에 병원을")가 곧 문장이기 때문이다.
+            카피와 컴포넌트가 갈라지면 어순이 조용히 깨진다. */}
         <h1>
-          <span className="hero-lead">{landingHero.titleLead}</span>
+          <span className="hero-lead">
+            {landingHero.titleLead.split("{ai}")[0]}
+            <RollingAiLogo />
+            {landingHero.titleLead.split("{ai}")[1]}
+          </span>
           <strong>{landingHero.titleMain}</strong>
         </h1>
-        <p className="hero-subcopy">{landingHero.body}</p>
 
         <div className="hero-actions" aria-label="주요 행동">
           <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
             {landingHero.primaryCta}
           </Link>
-          <a className="btn btn-text" href="#preview">
-            {landingHero.secondaryCta}
-            <span aria-hidden="true">→</span>
-          </a>
         </div>
 
-        {/* 희소성에 이유를 붙인다 — 이유 없는 선착순은 마케팅 장치로만 읽힌다. */}
+        {/* 제목이 두 로고를 이미 품고 있으므로 하단 "진단 대상" 줄은 중복이라 뺐다. */}
         <p className="hero-slots-note">{heroScarcity.note}</p>
-
-        <div className="hero-logos" aria-label="무료 진단으로 확인하는 AI 서비스">
-          <span className="hero-logos-label">진단 대상</span>
-          <span className="ai-logo">
-            <OpenAiLogo className="ai-logo-mark" />
-            ChatGPT
-          </span>
-          <span className="ai-logo">
-            <GeminiLogo className="ai-logo-mark" />
-            Gemini
-          </span>
-        </div>
       </section>
 
       {/* ── ①-b 리포트 미리보기 — 히어로에서 분리한 시각물 ────────── */}
@@ -127,13 +113,16 @@ export default async function Home() {
         </div>
       </section>
 
-      <section className="market-section" aria-labelledby="market-heading">
+      <section id="numbers" className="market-section" aria-labelledby="market-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{marketSection.label}</p>
           <h2 id="market-heading">{marketSection.heading}</h2>
           <p>{marketSection.body}</p>
         </div>
 
+        {/* 외부 조사와 자체 실측을 한 그리드에 둔다. 두 섹션으로 나눠 두면 여섯 개
+            숫자를 두 번에 걸쳐 읽게 되고 어느 것도 남지 않는다.
+            **색이 출처의 구분이다** — 외부는 검정, 우리가 잰 것은 파랑. */}
         <dl className="figure-grid">
           {marketFigures.map((figure) => (
             <div key={figure.value + figure.label} className="figure-card" data-reveal>
@@ -141,6 +130,15 @@ export default async function Home() {
               <dd>
                 {figure.label}
                 {/* 출처를 숫자에서 떼어놓지 않는다 — 떨어지면 검증할 수 없는 주장이 된다. */}
+                <span className="figure-source">{figure.source}</span>
+              </dd>
+            </div>
+          ))}
+          {measuredFigures.map((figure) => (
+            <div key={figure.value} className="figure-card is-measured" data-reveal>
+              <dt>{figure.value}</dt>
+              <dd>
+                {figure.label}
                 <span className="figure-source">{figure.source}</span>
               </dd>
             </div>
@@ -165,29 +163,6 @@ export default async function Home() {
             </li>
           ))}
         </ul>
-      </section>
-
-      {/* ── ② 실측 결과 ──────────────────────────────────────────── */}
-      <section id="measured" className="measured-section" aria-labelledby="measured-heading">
-        <div className="measured-inner">
-          <div className="section-heading" data-reveal>
-            <p className="section-label">{measuredSection.label}</p>
-            <h2 id="measured-heading">{measuredSection.heading}</h2>
-            <p>{measuredSection.body}</p>
-          </div>
-
-          <dl className="measured-figures">
-            {measuredFigures.map((figure) => (
-              <div key={figure.value} data-reveal>
-                <dt>{figure.value}</dt>
-                <dd>
-                  {figure.label}
-                  <span className="figure-source">{figure.source}</span>
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </div>
       </section>
 
       {/* ── ③ 운영 방식 ──────────────────────────────────────────── */}
@@ -230,24 +205,6 @@ export default async function Home() {
         </div>
       </section>
 
-      {/* ── ④ 측정 규약 — 노출 대행과 갈라지는 지점 ───────────────── */}
-      <section id="method" className="method-section" aria-labelledby="method-heading">
-        <div className="section-heading" data-reveal>
-          <p className="section-label">{methodSection.label}</p>
-          <h2 id="method-heading">{methodSection.heading}</h2>
-          <p>{methodSection.body}</p>
-        </div>
-
-        <dl className="method-list">
-          {methodItems.map((item) => (
-            <div key={item.term} data-reveal>
-              <dt>{item.term}</dt>
-              <dd>{item.detail}</dd>
-            </div>
-          ))}
-        </dl>
-      </section>
-
       {/* ── ⑤ 하지 않는 것 ───────────────────────────────────────── */}
       <section className="limits-section" aria-labelledby="limits-heading">
         <div className="section-heading" data-reveal>
@@ -268,7 +225,7 @@ export default async function Home() {
 
       {/* ── ⑤-b 자주 받는 질문 ────────────────────────────────────
           반론을 피하지 않는다. 여기서 답하지 않으면 상담에서 같은 질문을 다시 받는다. */}
-      <section className="faq-section" aria-labelledby="faq-heading">
+      <section id="faq" className="faq-section" aria-labelledby="faq-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{faqSection.label}</p>
           <h2 id="faq-heading">{faqSection.heading}</h2>

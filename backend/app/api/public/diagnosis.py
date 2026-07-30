@@ -60,9 +60,23 @@ _KST = ZoneInfo("Asia/Seoul")
 _HONEYPOT_FIELDS = ("website", "url")
 _NON_WORD = re.compile(r"[\s\-_·]+")
 
-def _kst_today() -> date:
-    """자리는 KST 자정에 리셋된다 — 운영 캘린더가 KST이므로 경계도 KST여야 한다."""
-    return datetime.now(_KST).date()
+# 자리가 리셋되는 시각(KST). 자정이 아니라 아침인 이유는 **병원이 문을 여는 시간에
+# 자리가 열려야** 하기 때문이다. 자정 리셋은 새벽에 자리가 소진되어, 정작 원장님이
+# 출근해서 들어오면 이미 마감돼 있는 상태를 만든다.
+#
+# **랜딩 문구와 같은 값이어야 한다** (site/lib/landing-copy.ts의 heroScarcity.note).
+# 어긋나면 신청자가 안내받은 시각에 와서 마감 화면을 본다.
+SLOT_RESET_HOUR_KST = 8
+
+
+def _slot_day(now: datetime | None = None) -> date:
+    """지금이 속한 '자리 날짜'.
+
+    08:00 이전은 아직 **전날 자리**다. 경계를 시각으로 옮기면 달력 날짜와 자리 날짜가
+    갈라지므로, 자리를 세는 곳과 배정하는 곳이 반드시 같은 함수를 써야 한다.
+    """
+    moment = now or datetime.now(_KST)
+    return (moment - timedelta(hours=SLOT_RESET_HOUR_KST)).date()
 
 
 def _normalized_for_containment(value: str) -> str:
@@ -159,7 +173,7 @@ async def get_slot_availability(db: AsyncSession = Depends(get_db)):
     **실제 카운터다.** 희소성을 연출하려고 숫자를 조작하지 않는다 — 방법론을 공개하는
     것이 이 제품의 차별점인데 카운터를 꾸미면 그 주장이 무너진다.
     """
-    today = _kst_today()
+    today = _slot_day()
     used = await db.scalar(
         select(func.count()).select_from(LeadDiagnosis).where(LeadDiagnosis.slot_date == today)
     )
@@ -381,7 +395,7 @@ async def create_diagnosis(
             detail="입력값에서 병원명을 제외해 주세요. 병원명이 포함되면 측정이 무의미해집니다.",
         )
 
-    today = _kst_today()
+    today = _slot_day()
     now = datetime.now(timezone.utc)
 
     # ── 자리를 원자적으로 잡는다.

@@ -4,6 +4,8 @@
 `assert normalize_phone("02-1") == "021"` 같은 자기참조가 아니라, **서로 다른 입력이
 같은 잠금 키가 되는지**를 본다 — 그것이 실제 제약이기 때문이다.
 """
+from datetime import date, datetime
+
 import pytest
 
 from app.services.lead_diagnosis_identity import (
@@ -92,3 +94,50 @@ class TestLockNamespacing:
         before = phone_lock_hash("021234567")
         monkeypatch.setattr(settings, "LEAD_LOCK_HASH_PEPPER", "a-different-pepper")
         assert phone_lock_hash("021234567") != before
+
+
+class TestSlotDayBoundary:
+    """자리 날짜 경계 — 08:00 KST.
+
+    자정이 아니라 아침인 이유는 병원이 문을 여는 시간에 자리가 열려야 하기 때문이다.
+    자정 리셋은 새벽에 자리가 소진되어, 원장님이 출근해 들어오면 이미 마감된 상태를 만든다.
+    """
+
+    def _at(self, y, m, d, hh, mm=0):
+        from zoneinfo import ZoneInfo
+
+        return datetime(y, m, d, hh, mm, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    def test_just_before_reset_still_belongs_to_yesterday(self):
+        from app.api.public.diagnosis import _slot_day
+
+        assert _slot_day(self._at(2026, 7, 31, 7, 59)) == date(2026, 7, 30)
+
+    def test_at_reset_the_new_day_opens(self):
+        from app.api.public.diagnosis import _slot_day
+
+        assert _slot_day(self._at(2026, 7, 31, 8, 0)) == date(2026, 7, 31)
+
+    def test_midnight_is_no_longer_a_boundary(self):
+        """자정 리셋이던 시절의 회귀 방지 — 00:00은 전날 자리여야 한다."""
+        from app.api.public.diagnosis import _slot_day
+
+        assert _slot_day(self._at(2026, 7, 31, 0, 0)) == date(2026, 7, 30)
+
+    def test_a_full_slot_day_maps_to_one_date(self):
+        """08:00 ~ 다음날 07:59가 하나의 자리 날짜다."""
+        from app.api.public.diagnosis import _slot_day
+
+        start = self._at(2026, 7, 31, 8, 0)
+        end = self._at(2026, 8, 1, 7, 59)
+        assert _slot_day(start) == _slot_day(end) == date(2026, 7, 31)
+
+    def test_the_reset_hour_matches_what_the_landing_promises(self):
+        """랜딩 각주가 안내하는 시각과 코드가 갈라지면 신청자가 마감 화면을 본다.
+
+        문구는 site/lib/landing-copy.ts의 heroScarcity.note에 있고, 그쪽 테스트가
+        '자정' 같은 다른 시각을 쓰지 못하게 막는다. 여기서는 코드 쪽 값을 고정한다.
+        """
+        from app.api.public.diagnosis import SLOT_RESET_HOUR_KST
+
+        assert SLOT_RESET_HOUR_KST == 8

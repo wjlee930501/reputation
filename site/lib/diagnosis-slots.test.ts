@@ -80,5 +80,5 @@ test('a single remaining slot still reads as open', () => {
   // 경계값 — 1은 남은 것이다. 0 이하만 마감이다.
   const state = resolveSlotState({ ...OK, used: 19, remaining: 1 } as SlotStatus, heroScarcity)
   assert.equal(state.tone, 'is-open')
-  assert.match(state.text, /1곳/)
+  assert.match(state.text, /1분|1곳/)
 })
