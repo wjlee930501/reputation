@@ -70,12 +70,16 @@ test('every admin API method Next can route is served by the behavior-tested pro
   }
 })
 
-test('the matcher Next reads is the same object the auth-proxy tests exercise', async () => {
+test('the matcher Next reads equals the matcher the auth-proxy tests exercise', async () => {
   // proxy.ts와 lib/auth-proxy.ts에 matcher가 따로 선언돼 있던 시절에는, 테스트가
   // 검증하는 값과 Next가 실제로 적용하는 값이 갈라져도 아무도 몰랐다.
+  //
+  // 두 값을 하나로 묶고 싶지만 Next가 `config`를 정적 리터럴로만 파싱하므로 re-export가
+  // 안 된다(그 시도가 admin 빌드를 깨뜨렸다). 그래서 **값이 같은지**를 여기서 잡는다 —
+  // 한쪽만 바꾸면 이 테스트가 실패한다.
   const proxyModule = await import(PROXY_MODULE)
 
-  assert.equal(proxyModule.config, adminAuthProxyConfig)
+  assert.deepEqual(proxyModule.config, adminAuthProxyConfig)
   assert.equal(typeof proxyModule.proxy, 'function')
 })
 
