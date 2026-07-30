@@ -597,7 +597,9 @@ def test_site_only_deploy_does_not_require_backend_only_secrets(tmp_path: Path) 
                 'if [[ "$1 $2" == "secrets describe" ]]; then',
                 '  case "$3" in',
                 "    SITE_REVALIDATE_SECRET|SITE_BFF_SECRET) exit 0 ;;",
-                "    *) exit 1 ;;",
+                # 실제 gcloud처럼 stderr에 NOT_FOUND를 남긴다. 조용히 exit 1만 하면
+                # deploy.sh는 (옳게) "부재인지 조회 실패인지 모르겠다"로 판단해 멈춘다.
+                '    *) echo "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [projects/p/secrets/$3] not found." >&2; exit 1 ;;',
                 "  esac",
                 "fi",
                 'if [[ "$1 $2 $3 $4" == "secrets versions describe latest" ]]; then',
@@ -697,7 +699,9 @@ def test_site_deploy_wires_indexnow_key_when_the_secret_exists(tmp_path: Path) -
                 'if [[ "$1 $2" == "secrets describe" ]]; then',
                 '  case "$3" in',
                 "    SITE_REVALIDATE_SECRET|SITE_BFF_SECRET|INDEXNOW_KEY) exit 0 ;;",
-                "    *) exit 1 ;;",
+                # 실제 gcloud처럼 stderr에 NOT_FOUND를 남긴다. 조용히 exit 1만 하면
+                # deploy.sh는 (옳게) "부재인지 조회 실패인지 모르겠다"로 판단해 멈춘다.
+                '    *) echo "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [projects/p/secrets/$3] not found." >&2; exit 1 ;;',
                 "  esac",
                 "fi",
                 'if [[ "$1 $2 $3 $4" == "secrets versions describe latest" ]]; then',
