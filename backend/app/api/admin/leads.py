@@ -12,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.hospital import Hospital, Plan
 from app.models.lead import SalesLead
-from app.models.lead_diagnosis import LeadDiagnosis
+from app.models.lead_diagnosis import (
+    DeliveryStatus,
+    ExecutionStatus,
+    LeadDiagnosis,
+    ReportStatus,
+)
+from app.services import lead_delivery
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.lead_privacy import purge_lead_completely_async, scrub_onboarding_note
 
@@ -31,13 +37,30 @@ async def list_sales_leads(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    needs_attention: bool = Query(
+        default=False,
+        description="측정 FAILED · 리포트 BLOCKED · 발송 FAILED 중 하나인 진단을 가진 리드만",
+    ),
 ):
     # offset 없이는 limit 상한(200) 이전의 오래된 리드에 UI가 닿을 수 없다 —
     # 개인정보 파기 요청 처리 대상은 주로 오래된 리드라 도달 가능성이 필수.
-    result = await db.execute(
-        select(SalesLead).order_by(SalesLead.created_at.desc()).offset(offset).limit(limit)
-    )
+    stmt = select(SalesLead).order_by(SalesLead.created_at.desc())
+    # `is True`인 이유: 기본값이 `Query(default=False)` 객체이므로, FastAPI를 거치지 않고
+    # 이 함수를 직접 부르면(테스트가 그렇게 한다) 기본값이 truthy가 되어 **항상 필터가
+    # 걸린다**. 그러면 목록이 조용히 비어 보인다.
+    if needs_attention is True:
+        # 실패는 Slack으로만 알리면 놓친 뒤에 찾을 방법이 없다 — 목록에서 되짚을 수 있어야 한다.
+        stmt = stmt.where(
+            select(LeadDiagnosis.id)
+            .where(
+                LeadDiagnosis.lead_id == SalesLead.id,
+                _needs_attention_clause(),
+            )
+            .exists()
+        )
+    result = await db.execute(stmt.offset(offset).limit(limit))
     leads = list(result.scalars().all())
+    diagnoses_by_lead = await _diagnoses_by_lead(db, [lead.id for lead in leads])
     # 한 번에 최대 200건의 이름·연락처·문의내용을 반환하는 대량 PII 열람이다. 누가 언제
     # 얼마나 조회했는지 남지 않으면 admin_audit_logs가 컴플라이언스 산출물로 성립하지 않는다.
     # 감사 로그 자체가 PII 사본이 되면 안 되므로 건수·페이지 메타만 남긴다.
@@ -49,7 +72,15 @@ async def list_sales_leads(
         detail={"returned_count": len(leads), "limit": limit, "offset": offset},
     )
     await db.commit()
-    return [_serialize_lead(lead) for lead in leads]
+    return [
+        {
+            **_serialize_lead(lead),
+            "diagnoses": [
+                _serialize_diagnosis(d) for d in diagnoses_by_lead.get(lead.id, [])
+            ],
+        }
+        for lead in leads
+    ]
 
 
 @router.get("/{lead_id}/hospital-candidates")
@@ -218,6 +249,64 @@ async def erase_lead_pii(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     }
 
 
+def _needs_attention_clause():
+    """AE가 손을 써야 하는 진단의 정의 — 세 축 중 하나라도 종결 실패인 경우."""
+    return or_(
+        LeadDiagnosis.execution_status == ExecutionStatus.FAILED.value,
+        LeadDiagnosis.report_status == ReportStatus.BLOCKED.value,
+        LeadDiagnosis.delivery_status == DeliveryStatus.FAILED.value,
+    )
+
+
+async def _diagnoses_by_lead(db: AsyncSession, lead_ids: list[uuid.UUID]) -> dict:
+    """리드 목록의 진단을 한 번에 읽는다 (N+1 방지)."""
+    if not lead_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(LeadDiagnosis)
+            .where(LeadDiagnosis.lead_id.in_(lead_ids))
+            .order_by(LeadDiagnosis.created_at.desc())
+        )
+    ).scalars().all()
+    grouped: dict = {}
+    for row in rows:
+        grouped.setdefault(row.lead_id, []).append(row)
+    return grouped
+
+
+def _serialize_diagnosis(diagnosis: LeadDiagnosis) -> dict:
+    """3축 상태를 그대로 노출한다.
+
+    단일 status로 접어서 보여주면 "측정은 일부 실패했지만 리포트는 나갔다" 같은 상태가
+    사라진다 — 그 구분이 AE가 원장에게 무엇을 말할지 결정하는 정보다(설계 §4).
+
+    **병원명·지역은 담지 않는다.** 이 목록은 이미 대량 PII 열람이라 감사 로그를 남기는
+    표면이고, 진단 요약에 식별정보를 더 얹을 이유가 없다 — 리드 행에 이미 있다.
+    """
+    return {
+        "id": str(diagnosis.id),
+        "execution_status": diagnosis.execution_status,
+        "execution_attempts": diagnosis.execution_attempts,
+        "report_status": diagnosis.report_status,
+        "report_attempts": diagnosis.report_attempts,
+        "delivery_status": diagnosis.delivery_status,
+        "slot_date": diagnosis.slot_date.isoformat() if diagnosis.slot_date else None,
+        "slot_no": diagnosis.slot_no,
+        "lock_released_at": diagnosis.lock_released_at.isoformat()
+        if diagnosis.lock_released_at
+        else None,
+        "lock_released_by": diagnosis.lock_released_by,
+        "needs_attention": (
+            diagnosis.execution_status == ExecutionStatus.FAILED.value
+            or diagnosis.report_status == ReportStatus.BLOCKED.value
+            or diagnosis.delivery_status == DeliveryStatus.FAILED.value
+        ),
+        "error": diagnosis.error,
+        "created_at": diagnosis.created_at.isoformat() if diagnosis.created_at else None,
+    }
+
+
 def _serialize_lead(lead: SalesLead) -> dict:
     return {
         "id": str(lead.id),
@@ -302,6 +391,85 @@ def _merge_onboarding_note(hospital: Hospital, lead: SalesLead, operator_note: s
         hospital.onboarding_note = f"{hospital.onboarding_note}\n\n{lead_note}"
     else:
         hospital.onboarding_note = lead_note
+
+
+class RetryDeliveryRequest(BaseModel):
+    reason: str = Field(min_length=2, max_length=200)
+    # 24시간이 지나 멱등성 키가 잊힌 경우에만 요구된다. 기본 False —
+    # 중복 발송 위험을 기본값으로 감수하게 만들면 안 된다.
+    acknowledge_duplicate_risk: bool = False
+
+
+@router.post("/{lead_id}/retry-report-delivery")
+async def retry_report_delivery(
+    lead_id: uuid.UUID,
+    request_body: RetryDeliveryRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """FAILED로 끝난 리포트 메일을 수동으로 재발송한다.
+
+    **이 엔드포인트가 없으면 발송 실패는 리드 영구 소실이다.** 자동 재시도 4회가 소진되면
+    `delivery_status=FAILED`가 종결이고, 리포트는 만들어져 있는데 보낼 방법이 없다.
+    게다가 전화번호·이메일이 영구 잠금이라(F1-6) 신청자가 다시 신청할 수도 없다.
+
+    실제 상태 판정과 중복 발송 방지는 `lead_delivery.rearm_report_delivery`에 있다 —
+    멱등성 키 수명이라는 근거가 그쪽 도메인이기 때문이다.
+    """
+    lead = await db.get(SalesLead, lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    diagnoses = (
+        await db.execute(
+            select(LeadDiagnosis)
+            .where(LeadDiagnosis.lead_id == lead_id)
+            .order_by(LeadDiagnosis.created_at.desc())
+        )
+    ).scalars().all()
+    if not diagnoses:
+        raise HTTPException(status_code=409, detail="이 리드에는 진단이 없습니다.")
+
+    actor = default_actor()
+    outcomes = []
+    rearmed = []
+    for diagnosis in diagnoses:
+        outcome = await lead_delivery.rearm_report_delivery(
+            db,
+            diagnosis,
+            actor=actor,
+            reason=request_body.reason,
+            acknowledge_duplicate_risk=request_body.acknowledge_duplicate_risk,
+        )
+        outcomes.append({"diagnosis_id": str(diagnosis.id), **outcome})
+        if outcome.get("ok"):
+            rearmed.append(diagnosis)
+
+    if not rearmed:
+        # 되살릴 게 하나도 없으면 왜 안 되는지를 그대로 돌려준다 — 409 본문이
+        # 운영자가 보는 유일한 설명이다.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "재발송할 수 있는 발송 건이 없습니다.", "diagnoses": outcomes},
+        )
+
+    await write_audit_log(
+        db,
+        action="retry_lead_report_delivery",
+        hospital_id=lead.converted_hospital_id,
+        actor=actor,
+        target_type="sales_lead",
+        target_id=str(lead.id),
+        detail={
+            "rearmed_count": len(rearmed),
+            "reason": request_body.reason.strip()[:200],
+            "acknowledged_duplicate_risk": request_body.acknowledge_duplicate_risk,
+            "diagnosis_ids": [str(d.id) for d in rearmed],
+        },
+    )
+    await db.commit()
+
+    return {"detail": "rearmed", "rearmed_count": len(rearmed), "diagnoses": outcomes}
 
 
 class ReleaseLockRequest(BaseModel):

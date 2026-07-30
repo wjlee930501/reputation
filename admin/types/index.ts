@@ -1,3 +1,7 @@
+import type { LeadDiagnosisSummary } from '@/lib/lead-diagnosis-status'
+
+export type { LeadDiagnosisSummary }
+
 export interface Hospital {
   id: string
   name: string
@@ -301,6 +305,8 @@ export interface SalesLead {
   notification_status?: 'SENT' | 'FAILED' | string | null
   notification_error?: string | null
   created_at: string | null
+  /** 무료 진단(1단) 요약 — 리드마그넷으로 들어온 리드에만 있다. */
+  diagnoses?: LeadDiagnosisSummary[]
 }
 
 export type ExposureActionType = 'MEASUREMENT' | 'CONTENT' | 'SOURCE' | 'WEBBLOG_IA'
