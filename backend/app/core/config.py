@@ -347,6 +347,13 @@ class Settings(BaseSettings):
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
     COST_GUARD_DAILY_IMAGE_CALLS: int = 250
     COST_GUARD_DAILY_SOV_QUERIES: int = 2000
+    # 무료 진단(1단) 답변 호출 상한. **선착순 자리 수는 호출 상한이 아니다** —
+    # 자리 20개 × 질의3 × 플랫폼2 × 반복3 = 360건이 정상 상한이고, 측정 재시도(최대 3회)가
+    # 겹치면 그 3배까지 늘어난다. 일일 500은 정상분 360 + 복구 여유이며, 이 선을 넘는
+    # 상황은 수요가 아니라 재시도 폭주이므로 멈추는 것이 맞다.
+    COST_GUARD_DAILY_LEADGEN_CALLS: int = 500
+    # 월간: 정상분 360/일 × 30일 = 10,800 + 여유
+    COST_GUARD_MONTHLY_LEADGEN_CALLS: int = 12000
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""

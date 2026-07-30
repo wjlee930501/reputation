@@ -99,6 +99,7 @@ def _set_limits(monkeypatch, *, category="content", daily, monthly):
         "content": ("COST_GUARD_DAILY_CONTENT_CALLS", "COST_GUARD_MONTHLY_CONTENT_CALLS"),
         "image": ("COST_GUARD_DAILY_IMAGE_CALLS", "COST_GUARD_MONTHLY_IMAGE_CALLS"),
         "sov": ("COST_GUARD_DAILY_SOV_QUERIES", "COST_GUARD_MONTHLY_SOV_QUERIES"),
+        "leadgen": ("COST_GUARD_DAILY_LEADGEN_CALLS", "COST_GUARD_MONTHLY_LEADGEN_CALLS"),
     }[category]
     monkeypatch.setattr(cost_guard.settings, field[0], daily)
     monkeypatch.setattr(cost_guard.settings, field[1], monthly)
@@ -182,7 +183,7 @@ async def test_kill_switch_blocks_all_categories(monkeypatch, alerts):
     redis = FakeRedis()
     await cost_guard.set_kill_switch(True, redis_client=redis)
 
-    for category in ("content", "image", "sov"):
+    for category in cost_guard.CATEGORIES:
         decision = await cost_guard.check_and_increment(category, redis_client=redis)
         assert decision.allowed is False
         assert "킬스위치" in decision.reason
@@ -190,6 +191,36 @@ async def test_kill_switch_blocks_all_categories(monkeypatch, alerts):
     # 킬스위치 해제 후 다시 허용
     await cost_guard.set_kill_switch(False, redis_client=redis)
     assert (await cost_guard.check_and_increment("content", redis_client=redis)).allowed is True
+
+
+async def test_leadgen_budget_is_independent_of_the_operations_sov_budget(monkeypatch, alerts):
+    """1단(무료 진단) 폭주가 2단(계약 병원) 월간 측정을 차단하면 안 된다 — 설계 §0.
+
+    같은 'sov' 카테고리에 얹었다면 이 테스트가 실패한다.
+    """
+    _set_limits(monkeypatch, category="leadgen", daily=2, monthly=1000)
+    _set_limits(monkeypatch, category="sov", daily=100, monthly=1000)
+    redis = FakeRedis()
+
+    assert (await cost_guard.check_and_increment("leadgen", count=2, redis_client=redis)).allowed
+    blocked = await cost_guard.check_and_increment("leadgen", redis_client=redis)
+    assert blocked.allowed is False
+    assert "무료 진단" in blocked.reason
+
+    # 리드젠이 막혀도 운영 측정은 그대로 열려 있어야 한다.
+    assert (await cost_guard.check_and_increment("sov", redis_client=redis)).allowed is True
+
+
+async def test_leadgen_reservation_charges_the_call_count_not_the_diagnosis(monkeypatch, alerts):
+    """예약 단위가 '진단 1건'이면 자리 20개가 호출 360건을 통과시킨다."""
+    _set_limits(monkeypatch, category="leadgen", daily=20, monthly=1000)
+    redis = FakeRedis()
+
+    # 진단 1건 = 답변 호출 18건.
+    assert (await cost_guard.check_and_increment("leadgen", count=18, redis_client=redis)).allowed
+    # 두 번째 진단은 일일 20건 상한에 걸린다 — 18+18 > 20.
+    second = await cost_guard.check_and_increment("leadgen", count=18, redis_client=redis)
+    assert second.allowed is False
 
 
 async def test_redis_failure_fails_open(monkeypatch, alerts):
@@ -269,7 +300,9 @@ async def test_get_usage_snapshot(monkeypatch):
     assert snapshot["enabled"] is True
     assert snapshot["kill_switch_active"] is True
     by_cat = {c["category"]: c for c in snapshot["categories"]}
-    assert set(by_cat) == {"content", "image", "sov"}
+    # 스냅샷은 모든 카테고리를 노출해야 한다 — 목록을 여기 복사해 두면
+    # 카테고리를 추가하고 운영 표면에서 빠뜨려도 테스트가 통과한다.
+    assert set(by_cat) == set(cost_guard.CATEGORIES)
     assert by_cat["content"]["monthly_used"] == 1
     assert by_cat["content"]["monthly_limit"] == 200
     assert by_cat["image"]["monthly_used"] == 0
@@ -336,7 +369,7 @@ async def test_snapshot_degrades_gracefully_on_redis_failure(monkeypatch):
 
     # 500 대신 상한만이라도 반환(사용량 0)
     assert snapshot["kill_switch_active"] is False
-    assert len(snapshot["categories"]) == 3
+    assert len(snapshot["categories"]) == len(cost_guard.CATEGORIES)
 
 
 # ── generation 스킵 경로 (이미지 생성 차단 시 이미지 없이 진행) ──────────────
@@ -386,7 +419,7 @@ async def test_get_cost_guard_status_endpoint(monkeypatch):
     # 엔드포인트는 dict를 반환하고 FastAPI가 response_model로 직렬화한다.
     assert response["enabled"] is True
     assert response["kill_switch_active"] is False
-    assert {c["category"] for c in response["categories"]} == {"content", "image", "sov"}
+    assert {c["category"] for c in response["categories"]} == set(cost_guard.CATEGORIES)
 
 
 async def test_kill_switch_endpoint_audits_then_commits_then_sets(monkeypatch):

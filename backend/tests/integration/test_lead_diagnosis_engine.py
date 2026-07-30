@@ -20,10 +20,20 @@ from app.models.lead_diagnosis import (
     LeadDiagnosisResult,
     LeadQueryAnswer,
 )
-from app.services import lead_diagnosis_engine, lead_query_cache, sov_engine
+from app.services import (
+    cost_guard,
+    lead_diagnosis_engine,
+    lead_query_cache,
+    notifier,
+    sov_engine,
+)
 from app.services.query_mapper import build_lead_diagnosis_queries
 
 _slot_sequence = itertools.count(1)
+
+
+async def _noop_alert(**_kwargs):
+    return None
 
 
 class _ProviderSpy:
@@ -109,6 +119,114 @@ async def _seed_diagnosis(
     session.add(diagnosis)
     await session.flush()
     return diagnosis
+
+
+class _GuardSpy:
+    """비용 가드 예약을 세고 정해진 결정을 돌려준다."""
+
+    def __init__(self, *, allowed=True, reason=None):
+        self.reservations: list[tuple[str, int]] = []
+        self.allowed = allowed
+        self.reason = reason
+
+    async def check_and_increment(self, category, *, count=1, redis_client=None):
+        self.reservations.append((category, count))
+        return cost_guard.CostGuardDecision(self.allowed, self.reason)
+
+    @property
+    def leadgen_count(self):
+        return sum(count for category, count in self.reservations if category == "leadgen")
+
+
+@pytest.mark.asyncio
+class TestCallBudget:
+    """**선착순 자리 수는 호출 상한이 아니다.**
+
+    자리 20개는 접수를 20건으로 묶지만, 측정 재시도까지 겹치면 하루 공급자 호출은
+    1,000건을 넘을 수 있다. 자리 카운터는 그것을 세지 않는다.
+    """
+
+    async def test_reservation_counts_the_provider_calls_not_the_diagnosis(
+        self, pg_async_session, spy, monkeypatch
+    ):
+        guard = _GuardSpy()
+        monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
+
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, diagnosis)
+
+        # 진단 1건이 아니라 답변 호출 18건을 예약해야 한다.
+        assert guard.leadgen_count == 18
+
+    async def test_cache_hits_are_not_charged(self, pg_async_session, spy, monkeypatch):
+        """캐시에서 온 답변은 돈을 쓰지 않는다 — 예산에도 그렇게 반영돼야 한다.
+
+        그러지 않으면 공유 캐시가 원가를 줄여도 상한은 그대로 닫혀, 절감이 자리 수를
+        늘리는 데 전혀 쓰이지 못한다.
+        """
+        first = await _seed_diagnosis(pg_async_session)
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, first)
+
+        guard = _GuardSpy()
+        monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
+        second = await _seed_diagnosis(pg_async_session, hospital_name="같은질의의원")
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, second)
+
+        assert guard.leadgen_count == 0
+
+    async def test_blocked_budget_stops_before_any_provider_call(
+        self, pg_async_session, spy, monkeypatch
+    ):
+        """차단은 호출 **전에** 일어나야 한다 — 후에 막으면 돈은 이미 나갔다."""
+        guard = _GuardSpy(allowed=False, reason="일일 호출 상한(500건)에 도달했습니다.")
+        monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
+        alerts: list[dict] = []
+
+        async def _capture(**kwargs):
+            alerts.append(kwargs)
+
+        monkeypatch.setattr(notifier, "notify_ops_alert", _capture)
+
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        result = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert spy.calls == []
+        assert result["blocked"] == "cost_guard"
+        assert diagnosis.execution_status == ExecutionStatus.FAILED.value
+        assert "예산" in (diagnosis.error or "")
+        # 조용히 실패하면 신청자는 리포트를 못 받고 아무도 이유를 모른다.
+        assert len(alerts) == 1
+        assert "예산" in alerts[0]["title"]
+
+    async def test_blocked_budget_writes_no_measurement_rows(
+        self, pg_async_session, spy, monkeypatch
+    ):
+        """0건 측정을 행으로 남기면 리포트가 분모 0으로 만들어질 여지가 생긴다."""
+        guard = _GuardSpy(allowed=False, reason="상한 도달")
+        monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
+        monkeypatch.setattr(notifier, "notify_ops_alert", _noop_alert)
+
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, diagnosis)
+
+        rows = int(
+            await pg_async_session.scalar(
+                select(func.count())
+                .select_from(LeadDiagnosisResult)
+                .where(LeadDiagnosisResult.diagnosis_id == diagnosis.id)
+            )
+        )
+        assert rows == 0
+
+    async def test_leadgen_budget_is_separate_from_the_operations_sov_budget(self):
+        """1단 폭주가 계약 병원의 월간 측정을 차단하면 안 된다(설계 §0의 두 단 분리)."""
+        assert "leadgen" in cost_guard.CATEGORIES
+        assert "sov" in cost_guard.CATEGORIES
+        leadgen_limits = cost_guard._limits("leadgen")
+        sov_limits = cost_guard._limits("sov")
+        assert leadgen_limits != sov_limits
 
 
 @pytest.mark.asyncio

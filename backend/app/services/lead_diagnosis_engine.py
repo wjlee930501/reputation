@@ -24,7 +24,7 @@ from app.models.lead_diagnosis import (
     LeadDiagnosisResult,
     MentionVerdict,
 )
-from app.services import lead_query_cache, sov_engine
+from app.services import cost_guard, lead_query_cache, notifier, sov_engine
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +186,26 @@ def resolve_execution_status(diagnosis: LeadDiagnosis, planned: list[_Measuremen
     return ExecutionStatus.PARTIAL.value
 
 
+async def _notify_budget_blocked(
+    diagnosis: LeadDiagnosis, live_calls: int, reason: str | None
+) -> None:
+    """예산 차단은 자동 복구 대상이 아니다 — 상한을 올릴지 사과할지는 사람이 정한다."""
+    try:
+        await notifier.notify_ops_alert(
+            title="무료 진단 측정이 호출 예산으로 차단됨",
+            message=(
+                f"진단 `{diagnosis.id}` ({diagnosis.subject_hospital_name})의 측정을 "
+                f"시작하지 못했습니다.\n"
+                f"필요 호출: {live_calls}건\n"
+                f"사유: {reason or '알 수 없음'}\n"
+                "**신청자는 리포트를 받지 못합니다.** 상한을 조정하거나 신청자에게 안내가 "
+                "필요합니다. 상한 조정 후에는 Admin에서 재실행해 주세요."
+            ),
+        )
+    except Exception:  # noqa: BLE001 — 알림 실패가 상태 확정을 되돌리지 않는다.
+        logger.warning("lead diagnosis budget-block alert delivery failed")
+
+
 async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis) -> dict:
     """진단 1건의 측정을 끝내고 `execution_status`를 확정한다.
 
@@ -201,6 +221,32 @@ async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis)
         return {"planned": 0, "succeeded": 0, "cached": 0, "status": diagnosis.execution_status}
 
     await _load_cached(db, diagnosis, planned)
+
+    # ── 호출 예산 예약 (설계 §6).
+    # **선착순 자리 수는 호출 상한이 아니다.** 자리 20개는 접수를 20건으로 묶지만, 측정
+    # 재시도(최대 3회)까지 겹치면 하루 공급자 호출은 1,000건을 넘을 수 있다. 자리 카운터는
+    # 그것을 세지 않는다.
+    #
+    # 예약 단위는 **캐시 미적중분**이다 — 캐시에서 온 답변은 돈을 쓰지 않으므로, 공유 캐시의
+    # 절감이 예산에도 그대로 반영된다. 판정 호출(콜당 0.26원, 답변 모델의 1/370)은 세지 않는다.
+    live_calls = sum(1 for m in planned if not m.raw_response)
+    decision = await cost_guard.check_and_increment("leadgen", count=live_calls)
+    if not decision.allowed:
+        # 예산 소진은 측정 실패가 아니다. 그런데 여기서 조용히 물러나면 신청자는 리포트를
+        # 못 받고 아무도 그 이유를 모른다 — FAILED로 종결하고 사람을 부른다.
+        diagnosis.execution_status = ExecutionStatus.FAILED.value
+        diagnosis.error = f"호출 예산 초과로 측정을 중단했습니다: {decision.reason}"
+        diagnosis.finished_at = datetime.now(timezone.utc)
+        diagnosis.running_since = None
+        await db.commit()
+        await _notify_budget_blocked(diagnosis, live_calls, decision.reason)
+        return {
+            "planned": len(planned),
+            "succeeded": 0,
+            "cached": sum(1 for m in planned if m.answer_source == AnswerSource.CACHED.value),
+            "status": diagnosis.execution_status,
+            "blocked": "cost_guard",
+        }
 
     await asyncio.gather(*(_measure_one(diagnosis, m) for m in planned))
 
