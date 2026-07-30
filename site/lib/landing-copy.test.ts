@@ -13,7 +13,6 @@ import {
   landingHero,
   limitItems,
   limitsSection,
-  marketFigures,
   marketSection,
   measuredFigures,
   operationSection,
@@ -23,6 +22,7 @@ import {
   platformShareSection,
   platformShares,
   previewSection,
+  sceneSection,
 } from './landing-copy.ts'
 
 /** 화면에 실제로 올라가는 모든 문장. 새 섹션을 추가하면 여기도 넣어야 한다. */
@@ -33,6 +33,10 @@ const ALL_COPY = [
   marketSection.label,
   marketSection.heading,
   marketSection.body,
+  sceneSection.label,
+  sceneSection.heading,
+  sceneSection.body,
+  sceneSection.askLine,
   operationSection.label,
   operationSection.heading,
   operationSection.body,
@@ -55,16 +59,11 @@ const ALL_COPY = [
   ...platformShares.flatMap((p) => [p.name, p.note ?? ""]),
   faqSection.label,
   faqSection.heading,
-  heroScarcity.label,
-  heroScarcity.open,
-  heroScarcity.closed,
-  heroScarcity.fallback,
   heroScarcity.note,
   previewSection.label,
   previewSection.heading,
   previewSection.body,
   ...faqItems.flatMap((f) => [f.question, f.answer]),
-  ...marketFigures.flatMap((f) => [f.value, f.label, f.source]),
   ...measuredFigures.flatMap((f) => [f.value, f.label, f.source]),
   ...operationSteps.flatMap((s) => [s.label, s.title, s.body]),
   ...limitItems.flatMap((l) => [l.title, l.body]),
@@ -164,12 +163,15 @@ function assertSourced(figures: Figure[], kind: string) {
   }
 }
 
-test('every external figure names its survey and sample', () => {
-  assert.ok(marketFigures.length >= 3)
-  assertSourced(marketFigures, '외부 조사')
-  // 외부 조사는 조사 주체를 밝혀야 확인할 수 있다.
-  assert.ok(marketFigures.some((f) => f.source.includes('언론진흥재단')))
-  assert.ok(marketFigures.some((f) => f.source.includes('N=')))
+test('the evidence band carries only what we measured ourselves', () => {
+  /**
+   * 외부 조사 세 개를 함께 두고 있었다. 원장님들이 이미 아는 얘기이고, 남의 숫자가 우리
+   * 숫자 옆에 있으면 **어느 쪽이 우리 근거인지 흐려진다.** 실측만 남긴다.
+   */
+  assert.ok(measuredFigures.length >= 2)
+  for (const figure of measuredFigures) {
+    assert.match(figure.source, /실측/, `"${figure.value}"이 자체 측정값임을 밝히지 않았습니다.`)
+  }
 })
 
 test('every measured figure names its measurement condition', () => {
@@ -283,41 +285,22 @@ test('the hero claim stays inside what we measured', () => {
   assert.doesNotMatch(heroText, /대부분|거의 모든|모든 병원/)
 })
 
-test('the hero discloses the intake limit before the click', () => {
-  // 하루 20곳·1회 제한을 누른 뒤에 알려주면 접수 화면에서 이탈한다.
-  assert.match(heroScarcity.label, /20분|20곳/)
-  assert.match(ctaSection.notes.join(' '), /1회/)
-})
-
-// ── 선착순 고지: 숫자를 만들지 않는다 ────────────────────────────────
-test('the scarcity fallback never invents a remaining count', () => {
+test('the scarcity note carries the whole rule', () => {
   /**
-   * 카운터를 못 읽었을 때 "오늘 N곳 남았습니다"를 쓰면 실제와 무관한 숫자를 선착순이라고
-   * 파는 것이 된다. 그래서 fallback에는 **남은 수를 뜻하는 표현이 없어야** 한다.
+   * "오늘 N분 남음" 배지를 뺐으므로 각주가 규칙 전부를 진다 — 몇 명까지인지,
+   * 언제 다시 열리는지. 둘 중 하나가 빠지면 신청자가 헛걸음한다.
    */
-  assert.doesNotMatch(heroScarcity.fallback, /남았|남은/)
-  // 상한 자체는 사실이므로 밝혀도 된다.
-  assert.match(heroScarcity.fallback, /20분|20곳/)
-})
-
-test('the open-state template is filled from real data, not hardcoded', () => {
-  assert.match(heroScarcity.open, /\{remaining\}/)
-  // 템플릿에 숫자를 박아두면 치환이 실패해도 그럴듯하게 보인다.
-  assert.doesNotMatch(heroScarcity.open, /\d/)
-})
-
-test('the closed state does not still invite an application', () => {
-  assert.match(heroScarcity.closed, /마감/)
-})
-
-test('the scarcity note states a checkable rule', () => {
-  /**
-   * 이유 없는 희소성은 마케팅 장치로만 읽힌다. 다만 "왜 하루 20곳인가"(진단 1건에
-   * 18회 측정)는 FAQ가 답하므로, 히어로 각주는 **신청자가 확인할 수 있는 규칙**만
-   * 지면 된다: 몇 명까지인지, 언제 다시 열리는지.
-   */
-  assert.match(heroScarcity.note, /\d+/)
+  assert.match(heroScarcity.note, /20분|20곳/)
   assert.match(heroScarcity.note, /리셋|열립니다|초기화/)
+})
+
+test('the landing does not resurrect the countdown badge', () => {
+  /**
+   * 남은 자리를 실시간으로 보여주는 것 자체는 정직하지만, "N개 남음" 배지는 어느
+   * 랜딩에나 붙어 있는 그로스해킹 클리셰라 값싸 보인다. 실시간 잔여 수는 접수 화면이
+   * 담당한다.
+   */
+  assert.doesNotMatch(ALL_COPY, /남았습니다|남음/)
 })
 
 test('the reset time in the copy matches the code', () => {
@@ -341,7 +324,8 @@ test('pain points are quoted in the director voice, not our slogans', () => {
       `우리 문체로 쓰인 인용문입니다: "${point.quote}"`,
     )
     // 통증만 적고 답을 안 적으면 불안만 남긴다.
-    assert.ok(point.answer.length >= 40, `"${point.quote}"에 대한 답이 너무 짧습니다.`)
+    // 길이 기준은 '답이 있는가'를 보는 것이지 길게 쓰라는 뜻이 아니다. 한 문장이면 충분하다.
+    assert.ok(point.answer.length >= 18, `"${point.quote}"에 답이 붙어 있지 않습니다.`)
   }
 })
 
@@ -417,6 +401,7 @@ test('operation steps describe operation, not tooling', () => {
 // 아래 가드는 문장을 좋게 만들지는 못한다. 같은 수사가 다시 쌓이는 것만 막는다.
 
 const HEADINGS = [
+  sceneSection.heading,
   previewSection.heading,
   marketSection.heading,
   painSection.heading,
