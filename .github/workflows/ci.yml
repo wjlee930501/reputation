@@ -240,13 +240,11 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Site npm audit
-        working-directory: site
-        run: npm audit --audit-level=high
-
-      - name: Admin npm audit
-        working-directory: admin
-        run: npm audit --audit-level=high
+      # 배포되는 코드(--omit=dev)만 본다. dev 전용 린트 툴체인 전이 취약점이 섞이면
+      # 게이트가 항상 빨간불이 되어 아무도 보지 않게 된다. 고칠 수 없는 권고는
+      # scripts/check_npm_audit.py의 ALLOWED에 근거·기한과 함께 명시한다.
+      - name: Frontend npm audit (site, admin)
+        run: python3 scripts/check_npm_audit.py site admin
 
       # ── Secret scanning (blocking) ────────────────────────────────
       - name: Gitleaks secret scan
