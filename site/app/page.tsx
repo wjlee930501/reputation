@@ -10,7 +10,6 @@ import {
   landingHero,
   limitItems,
   limitsSection,
-  marketFigures,
   marketSection,
   measuredFigures,
   operationSection,
@@ -20,12 +19,13 @@ import {
   platformShareSection,
   platformShares,
   previewSection,
+  sceneSection,
 } from "@/lib/landing-copy";
 
-import { fetchTodaySlots, resolveSlotState } from "@/lib/diagnosis-slots";
-
 import AnswerExplorer from "./_components/AnswerExplorer";
+import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
+import SceneSequence from "./_components/SceneSequence";
 import PlatformShareChart from "./_components/PlatformShareChart";
 import ScrollReveal from "./_components/ScrollReveal";
 
@@ -43,9 +43,7 @@ const DIAGNOSIS_PATH = "/ai-diagnosis";
  *
  * ③을 ①② 앞에 두면 기능 소개가 되고, ⑤를 빼면 노출 대행과 구별되지 않는다.
  */
-export default async function Home() {
-  const slotState = resolveSlotState(await fetchTodaySlots(), heroScarcity);
-
+export default function Home() {
   return (
     <main id="main-content" className="landing-shell">
       <ScrollReveal />
@@ -71,13 +69,6 @@ export default async function Home() {
           시각물은 아래 미리보기 섹션으로 분리했다. 히어로에 목업을 붙이면 두 개를
           동시에 읽어야 하고, 정작 팔아야 하는 한 줄이 묻힌다. */}
       <section id="top" className="hero-section">
-        {/* 선착순을 제목보다 먼저 읽히게 둔다 — 리드마그넷의 장치는 희소성이고,
-            CTA 아래 각주로 내려가면 아무도 읽지 않는다. 숫자는 실제 카운터에서 온다. */}
-        <p className={`hero-pill ${slotState.tone}`}>
-          <span className="hero-pill-dot" aria-hidden="true" />
-          {slotState.text}
-        </p>
-
         {/* `{ai}` 자리에 굴러가는 AI 로고가 들어간다. 문자열을 미리 쪼개 두지 않고
             자리표시자를 쓰는 이유는, 조사 위치("…에 병원을")가 곧 문장이기 때문이다.
             카피와 컴포넌트가 갈라지면 어순이 조용히 깨진다. */}
@@ -100,17 +91,20 @@ export default async function Home() {
         <p className="hero-slots-note">{heroScarcity.note}</p>
       </section>
 
-      {/* ── ①-b 리포트 미리보기 — 히어로에서 분리한 시각물 ────────── */}
-      <section id="preview" className="preview-section" aria-labelledby="preview-heading">
+      {/* 환자 질문 띠 — 히어로와 장면 사이. 설명하기 전에 눈으로 읽게 한다. */}
+      <QueryMarquee />
+
+      {/* ── ② 환자가 보는 화면 — 히어로 바로 다음 ─────────────────
+          리포트를 먼저 보여주면 "우리가 파는 것"부터 말하는 셈이다. 먼저 볼 것은
+          환자가 실제로 보는 답변이고, 거기 병원 이름이 서너 개뿐이라는 사실이다. */}
+      <section id="scene" className="preview-section" aria-labelledby="scene-heading">
         <div className="section-heading" data-reveal>
-          <p className="section-label">{previewSection.label}</p>
-          <h2 id="preview-heading">{previewSection.heading}</h2>
-          <p>{previewSection.body}</p>
+          <p className="section-label">{sceneSection.label}</p>
+          <h2 id="scene-heading">{sceneSection.heading}</h2>
+          <p>{sceneSection.body}</p>
         </div>
 
-        <div className="preview-stage" data-reveal>
-          <AnswerExplorer examples={answerExamples} disclaimer={answerDemo.disclaimer} />
-        </div>
+        <SceneSequence example={answerExamples[0]} disclaimer={answerDemo.disclaimer} />
       </section>
 
       <section id="numbers" className="market-section" aria-labelledby="market-heading">
@@ -124,16 +118,6 @@ export default async function Home() {
             숫자를 두 번에 걸쳐 읽게 되고 어느 것도 남지 않는다.
             **색이 출처의 구분이다** — 외부는 검정, 우리가 잰 것은 파랑. */}
         <dl className="figure-grid">
-          {marketFigures.map((figure) => (
-            <div key={figure.value + figure.label} className="figure-card" data-reveal>
-              <dt>{figure.value}</dt>
-              <dd>
-                {figure.label}
-                {/* 출처를 숫자에서 떼어놓지 않는다 — 떨어지면 검증할 수 없는 주장이 된다. */}
-                <span className="figure-source">{figure.source}</span>
-              </dd>
-            </div>
-          ))}
           {measuredFigures.map((figure) => (
             <div key={figure.value} className="figure-card is-measured" data-reveal>
               <dt>{figure.value}</dt>
@@ -144,6 +128,16 @@ export default async function Home() {
             </div>
           ))}
         </dl>
+
+        {/* 차트를 별도 밴드로 두면 "왜 두 곳만"을 위해 섹션 하나를 통째로 쓰게 된다.
+            같은 근거이므로 숫자 옆에 붙인다. 해설은 FAQ가 이미 답한다. */}
+        <div className="share-block" data-reveal>
+          <p className="share-nudge">{platformShareSection.nudge}</p>
+          <PlatformShareChart
+            shares={platformShares}
+            sourceNote={platformShareSection.sourceNote}
+          />
+        </div>
       </section>
 
       {/* ── ①-b 원장님이 하시는 말 ────────────────────────────────
@@ -185,26 +179,6 @@ export default async function Home() {
         </ol>
       </section>
 
-      {/* ── ③-b 측정 범위 — "왜 두 곳만" 에 대한 답 ────────────────
-          커버리지의 한계가 아니라 비용 판단이다. 그래서 차트로 먼저 보여준다. */}
-      <section className="share-section" aria-labelledby="share-heading">
-        <div className="share-inner">
-          <div className="section-heading" data-reveal>
-            <p className="section-label">{platformShareSection.label}</p>
-            <h2 id="share-heading">{platformShareSection.heading}</h2>
-            <p>{platformShareSection.body}</p>
-            <p className="share-nudge">{platformShareSection.nudge}</p>
-          </div>
-
-          <div data-reveal>
-            <PlatformShareChart
-              shares={platformShares}
-              sourceNote={platformShareSection.sourceNote}
-            />
-          </div>
-        </div>
-      </section>
-
       {/* ── ⑤ 하지 않는 것 ───────────────────────────────────────── */}
       <section className="limits-section" aria-labelledby="limits-heading">
         <div className="section-heading" data-reveal>
@@ -238,6 +212,19 @@ export default async function Home() {
               <p>{item.answer}</p>
             </details>
           ))}
+        </div>
+      </section>
+
+      {/* ── 받으시는 것 — 신청 직전에 보여준다 ────────────────────── */}
+      <section id="preview" className="report-section" aria-labelledby="preview-heading">
+        <div className="section-heading" data-reveal>
+          <p className="section-label">{previewSection.label}</p>
+          <h2 id="preview-heading">{previewSection.heading}</h2>
+          <p>{previewSection.body}</p>
+        </div>
+
+        <div className="preview-stage" data-reveal>
+          <AnswerExplorer examples={answerExamples} disclaimer={answerDemo.disclaimer} />
         </div>
       </section>
 
