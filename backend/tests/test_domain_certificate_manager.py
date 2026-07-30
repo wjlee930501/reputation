@@ -11,7 +11,6 @@ from google.cloud import certificate_manager_v1
 
 from app.services import domain_certificate_manager as certificate_service
 
-
 HOSTNAME = "clinic.example.com"
 PROJECT_ID = "certificate-test-project"
 LOCATION = "global"

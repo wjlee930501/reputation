@@ -12,6 +12,7 @@ Create Date: 2026-06-11
 - 내부 운영 데이터 — 공개(/site) 응답에는 노출하지 않는다.
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0026_add_content_carried_over_from"

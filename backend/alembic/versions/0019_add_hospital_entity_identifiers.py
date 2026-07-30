@@ -10,6 +10,7 @@ P2 GEO 후속:
 - director_credentials JSON: Physician.hasCredential / knowsAbout / alumniOf 매핑용. 구조: {medical_school, board_certifications[], society_memberships[], license_number}.
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0019_add_hospital_entity_identifiers"

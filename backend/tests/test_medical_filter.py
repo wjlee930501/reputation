@@ -1,5 +1,5 @@
-from app.utils.authority_sources import infer_source_type, is_whitelisted_url
 from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
+from app.utils.authority_sources import infer_source_type, is_whitelisted_url
 from app.utils.medical_filter import (
     check_forbidden,
     check_forbidden_content_fields,

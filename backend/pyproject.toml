@@ -91,6 +91,21 @@ exclude = ["alembic*", "tests*"]
 line-length = 100
 target-version = "py311"
 
+# **규칙셋을 명시한다.** 비워두면 ruff의 "기본값"을 쓰게 되는데, 그 기본값이 버전마다
+# 넓어진다 — 0.16이 B/UP/DTZ/BLE/C4/RUF를 기본에 넣으면서 CI만 빨간불이 됐다(기존 코드
+# 737건). 로컬은 구버전이라 통과하니 아무도 못 봤고, 그 사이 CI는 계속 실패 상태였다.
+#
+# 여기 적힌 것이 이 코드베이스가 실제로 지켜온 규칙이다. 넓히는 것은 별도 정리 과제이며,
+# 그때는 이 목록에 추가하고 위반을 함께 고친다 — 버전 업그레이드가 대신 결정하게 두지 않는다.
+[tool.ruff.lint]
+select = [
+    "E4",   # import 관련 pycodestyle
+    "E7",
+    "E9",
+    "F",    # pyflakes — 미사용 import/변수, 정의되지 않은 이름
+    "I",    # import 정렬 (autofix 가능)
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]

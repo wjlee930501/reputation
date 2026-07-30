@@ -13,13 +13,13 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 import asyncio
 import io
 import ipaddress
 import logging
 import re
 import socket
+from dataclasses import dataclass
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import html2text

@@ -7,7 +7,6 @@ from app.services.asset_extractor import (
     FetchTarget,
     _assess_fetch_quality,
     _normalize_naver_blog_url,
-    naver_blog_post_identity,
     _scope_to_content_container,
     _validate_fetch_url,
     _validate_response_peer,
@@ -15,6 +14,7 @@ from app.services.asset_extractor import (
     extract_docx_text,
     extract_pdf_text,
     naver_blog_id_from,
+    naver_blog_post_identity,
 )
 
 

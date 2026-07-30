@@ -11,7 +11,6 @@ import pytest
 from app.api.public import leads as leads_api
 from app.services import notifier
 
-
 # slowapi's @limiter.limit uses functools.wraps, so __wrapped__ is always
 # present. Calling __wrapped__ bypasses the per-request rate-limit check that
 # requires a real FastAPI app.state.limiter; rate-limit behavior itself is

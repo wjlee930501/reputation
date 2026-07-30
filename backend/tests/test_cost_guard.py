@@ -10,8 +10,7 @@ from redis.exceptions import RedisError
 from app.api.admin import operations as operations_api
 from app.models.content import ContentType
 from app.schemas.operations import CostGuardKillSwitchRequest
-from app.services import cost_guard
-from app.services import audit_log
+from app.services import audit_log, cost_guard
 
 
 class FakeRedis:

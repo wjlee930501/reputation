@@ -5,6 +5,7 @@ Revises: 0027_add_domain_management_metadata
 Create Date: 2026-06-20
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0028_release_blocker_integrity_constraints"

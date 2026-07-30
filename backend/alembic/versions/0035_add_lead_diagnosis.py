@@ -19,8 +19,9 @@ Revises: 0034_add_query_intent
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "0035_add_lead_diagnosis"
 down_revision: Union[str, None] = "0034_add_query_intent"

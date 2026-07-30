@@ -12,6 +12,7 @@ AE 온보딩 자산 인입 인프라:
 - SourceType 사진 카테고리 4종 추가 — DoctorIntro/ContactCard 자동 매핑용
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0018_add_asset_storage_and_photo_types"

@@ -31,6 +31,7 @@ Revises: 0035_add_lead_diagnosis
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0036_lead_diagnosis_hardening"

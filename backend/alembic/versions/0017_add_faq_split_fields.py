@@ -11,6 +11,7 @@ AEO 신호 보강:
   무효 처리 위험. 분리 후 faq_answer_summary를 Answer로 사용.
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0017_add_faq_split_fields"

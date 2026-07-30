@@ -7,15 +7,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.public.assets import public_asset_response, public_asset_url
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import limiter
-from app.api.public.assets import public_asset_response, public_asset_url
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import (
+    PHOTO_SOURCE_TYPES,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
-    PHOTO_SOURCE_TYPES,
     PhilosophyStatus,
     SourceStatus,
     SourceType,

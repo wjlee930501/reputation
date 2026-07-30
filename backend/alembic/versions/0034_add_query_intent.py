@@ -17,6 +17,7 @@ Revises: 0033_add_cancelled_content_status
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0034_add_query_intent"

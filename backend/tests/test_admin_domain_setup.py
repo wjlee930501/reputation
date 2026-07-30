@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from slowapi import Limiter
 
-from app.core.database import get_db
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.rate_limit import get_request_ip
 from app.main import app
 from app.models.hospital import HospitalStatus

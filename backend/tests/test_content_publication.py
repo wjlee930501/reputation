@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 import uuid
+from types import SimpleNamespace
 
 from app.models.content import ContentType
 from app.services import content_publication

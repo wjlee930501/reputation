@@ -1,6 +1,6 @@
+import uuid
 from datetime import date, datetime
 from types import SimpleNamespace
-import uuid
 
 import pytest
 from fastapi import HTTPException

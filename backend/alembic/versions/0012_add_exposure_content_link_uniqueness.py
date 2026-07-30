@@ -4,6 +4,7 @@ Revision ID: 0012_add_exposure_content_link_uniqueness
 Revises: 0011_add_content_brief_links
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0012_add_exposure_content_link_uniqueness"

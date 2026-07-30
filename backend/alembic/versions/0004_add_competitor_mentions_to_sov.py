@@ -4,6 +4,7 @@ Revision ID: 0004
 Revises: 0003
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0004"

@@ -14,7 +14,6 @@ from app.services.admin_session_revocation import (
     revoke_admin_session_hash,
 )
 
-
 TOKEN_HASH = "a" * 64
 
 

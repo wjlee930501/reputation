@@ -30,14 +30,6 @@ from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.content_engine import (
-    FORBIDDEN_CHECK_FIELDS,
-    _normalize_references,
-)
-from app.services.site_revalidate import (
-    ensure_site_revalidate_configured,
-    trigger_content_site_revalidate_safe,
-)
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
@@ -45,10 +37,14 @@ from app.services.content_brief import (
     build_content_brief,
 )
 from app.services.content_calendar import generate_monthly_slots
+from app.services.content_engine import (
+    FORBIDDEN_CHECK_FIELDS,
+    _normalize_references,
+)
 from app.services.content_publication import (
+    PUBLICATION_CHECK_FIELDS,
     apply_publication_assessment,
     assess_content_publication,
-    PUBLICATION_CHECK_FIELDS,
     count_citable_references,
     has_required_references,
     publication_field_values,
@@ -61,6 +57,10 @@ from app.services.exposure_content_linker import (
     unlink_content_from_exposure_action,
 )
 from app.services.gcs_utils import get_signed_url
+from app.services.site_revalidate import (
+    ensure_site_revalidate_configured,
+    trigger_content_site_revalidate_safe,
+)
 from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.tasks import regenerate_content_item
 

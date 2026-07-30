@@ -4,8 +4,9 @@ Revision ID: 0009_add_measurement_runs
 Revises: 0008_dedupe_ai_query_variants
 """
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0009_add_measurement_runs"
 down_revision = "0008_dedupe_ai_query_variants"

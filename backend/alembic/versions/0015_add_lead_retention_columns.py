@@ -11,8 +11,9 @@ Create Date: 2026-05-08
 - purged_at: 파기 완료 시각 (soft-delete 후 hard-delete 전환 가능).
 """
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0015_add_lead_retention_columns"
 down_revision = "0014_add_admin_audit_logs"

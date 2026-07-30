@@ -3,7 +3,11 @@ import uuid
 import pytest
 
 from app.services import asset_storage
-from app.services.asset_storage import is_gcs_configured, resolve_local_asset_path, store_asset_bytes
+from app.services.asset_storage import (
+    is_gcs_configured,
+    resolve_local_asset_path,
+    store_asset_bytes,
+)
 
 
 def test_is_gcs_configured_false_without_project_or_bucket(monkeypatch):

@@ -8,7 +8,6 @@ from celery.signals import task_failure, task_prerun
 from app.core.config import settings
 from app.core.observability import configure_logging, sentry_before_send, set_request_id
 
-
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.

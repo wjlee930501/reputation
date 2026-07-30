@@ -1,4 +1,5 @@
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0027_add_domain_management_metadata"

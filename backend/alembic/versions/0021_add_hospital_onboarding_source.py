@@ -4,8 +4,9 @@ Revision ID: 0021_add_hospital_onboarding_source
 Revises: 0020_add_sales_lead_conversion
 """
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0021_add_hospital_onboarding_source"
 down_revision = "0020_add_sales_lead_conversion"

@@ -2,9 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 from slowapi import Limiter
 
+from app.core import security
 from app.core.database import get_db
 from app.core.rate_limit import get_request_ip
-from app.core import security
 from app.main import app
 
 

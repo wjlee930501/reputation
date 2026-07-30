@@ -6,9 +6,9 @@ Revises: 0030_unique_ai_query_target_hospital_name
 
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "0031_add_hospital_visual_theme"
 down_revision: Union[str, None] = "0030_unique_ai_query_target_hospital_name"

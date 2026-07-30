@@ -30,6 +30,7 @@ from app.models.sov import (
     SovRecord,
 )
 from app.schemas.query_target import (
+    SUPPORTED_QUERY_PLATFORMS,
     AIQueryTargetCreate,
     AIQueryTargetDetail,
     AIQueryTargetListItem,
@@ -37,7 +38,6 @@ from app.schemas.query_target import (
     AIQueryVariantCreate,
     AIQueryVariantResponse,
     AIQueryVariantUpdate,
-    SUPPORTED_QUERY_PLATFORMS,
 )
 from app.services.audit_log import default_actor, write_audit_log
 

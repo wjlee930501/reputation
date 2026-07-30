@@ -5,7 +5,7 @@ from datetime import date
 
 import arrow
 
-from app.models.content import ContentType, PLAN_DISTRIBUTION
+from app.models.content import PLAN_DISTRIBUTION, ContentType
 
 logger = logging.getLogger(__name__)
 

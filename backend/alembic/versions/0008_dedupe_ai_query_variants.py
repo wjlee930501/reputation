@@ -4,6 +4,7 @@ Revision ID: 0008_dedupe_ai_query_variants
 Revises: 0007
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0008_dedupe_ai_query_variants"

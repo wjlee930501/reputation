@@ -1,15 +1,15 @@
 """P1-3/R1 — 야간 생성 catch-up window + cap 절단 감지 + 아침 누락 경보 윈도우."""
 
+import uuid
 from datetime import date
 from types import SimpleNamespace
-import uuid
 
 import arrow
 import httpx
 import pytest
-from sqlalchemy.sql.dml import Update
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.dml import Update
 
 from app.models.content import ContentItem
 from app.models.essence import PhilosophyStatus

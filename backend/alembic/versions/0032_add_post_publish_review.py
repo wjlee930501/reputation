@@ -7,6 +7,7 @@ Revises: 0031_add_hospital_visual_theme
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0032_add_post_publish_review"

@@ -5,8 +5,9 @@ Revises: 0019_add_hospital_entity_identifiers
 Create Date: 2026-05-15
 """
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0020_add_sales_lead_conversion"
 down_revision = "0019_add_hospital_entity_identifiers"

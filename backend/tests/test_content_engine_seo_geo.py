@@ -30,7 +30,6 @@ from app.services.content_engine import (
     _validate_seo,
 )
 
-
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────
 
 def _hospital(

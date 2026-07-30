@@ -9,7 +9,12 @@ os.environ.setdefault("SYNC_DATABASE_URL", "sqlite:///tmp/reputation-test.db")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
-from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType  # noqa: E402
+from app.models.content import (  # noqa: E402
+    ContentItem,
+    ContentSchedule,
+    ContentStatus,
+    ContentType,
+)
 from app.models.essence import (  # noqa: E402
     HospitalContentPhilosophy,
     HospitalSourceAsset,

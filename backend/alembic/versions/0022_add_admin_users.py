@@ -3,9 +3,10 @@
 Revision ID: 0022_add_admin_users
 Revises: 0021_add_hospital_onboarding_source
 """
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0022_add_admin_users"
 down_revision = "0021_add_hospital_onboarding_source"

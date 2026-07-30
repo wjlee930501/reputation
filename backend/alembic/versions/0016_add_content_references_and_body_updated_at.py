@@ -12,8 +12,9 @@ GEO 신호 보강:
   created_at 순서로 backfill.
 """
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0016_add_content_references_and_body_updated_at"
 down_revision = "0015_add_lead_retention_columns"

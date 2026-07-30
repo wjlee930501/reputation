@@ -6,9 +6,9 @@ Create Date: 2026-06-20 20:05:00.000000
 """
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "0029_add_content_generation_claims"
 down_revision: Union[str, None] = "0028_release_blocker_integrity_constraints"

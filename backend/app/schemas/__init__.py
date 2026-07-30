@@ -1,4 +1,3 @@
-from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.schemas.essence import (
     ApprovedPhilosophyResponse,
@@ -6,7 +5,7 @@ from app.schemas.essence import (
     PhilosophyResponse,
     SourceAssetResponse,
 )
-from app.schemas.report import ReportResponse
+from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.schemas.query_target import (
     AIQueryTargetCreate,
     AIQueryTargetDetail,
@@ -17,6 +16,7 @@ from app.schemas.query_target import (
     AIQueryVariantResponse,
     AIQueryVariantUpdate,
 )
+from app.schemas.report import ReportResponse
 
 __all__ = [
     "HospitalDetail",

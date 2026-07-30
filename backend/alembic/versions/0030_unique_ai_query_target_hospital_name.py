@@ -17,7 +17,6 @@ from typing import Sequence, Union
 
 from alembic import op
 
-
 revision: str = "0030_unique_ai_query_target_hospital_name"
 down_revision: Union[str, None] = "0029_add_content_generation_claims"
 branch_labels: Union[str, Sequence[str], None] = None

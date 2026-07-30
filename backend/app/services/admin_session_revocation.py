@@ -1,13 +1,12 @@
-from datetime import UTC, datetime
 import math
 import re
+from datetime import UTC, datetime
 from typing import Protocol
 
 import redis.asyncio as redis_async
 from redis.exceptions import RedisError
 
 from app.core.config import settings
-
 
 TOKEN_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 KEY_PREFIX = "admin-session-revoked:"

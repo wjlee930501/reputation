@@ -32,7 +32,7 @@ from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
-from app.services import cost_guard, notifier
+from app.services import cost_guard, indexnow, notifier
 from app.services.audit_log import write_audit_log_sync
 from app.services.content_engine import generate_content
 from app.services.content_publication import (
@@ -48,7 +48,6 @@ from app.services.essence_engine import (
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
 from app.services.report_engine import build_content_attribution_summary, generate_pdf_report
-from app.services import indexnow
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
@@ -67,9 +66,9 @@ from app.workers.nightly_generation_batch import (
     GENERATION_CATCHUP_DAYS,
     NIGHTLY_GENERATION_CAP,
     _load_nightly_generation_batch,
+    _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     count_stuck_claims,
     release_unfinished_claims,
-    _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     write_back_generated_content,
 )
 
@@ -1857,8 +1856,8 @@ def _seed_query_targets_from_matrix_sync(hospital_id: uuid.UUID) -> None:
     """
     try:
         from app.api.admin.query_targets import seed_query_targets_from_matrix
-        from app.services.exposure_action_engine import ensure_hospital_exposure_actions
         from app.core.database import get_async_sessionmaker
+        from app.services.exposure_action_engine import ensure_hospital_exposure_actions
 
         async def _run(h_id: uuid.UUID) -> None:
             async with get_async_sessionmaker()() as async_db:

@@ -15,7 +15,6 @@ import pytest
 from app.api.admin.query_targets import seed_query_targets_from_matrix
 from app.workers import tasks
 
-
 # ─────────────────────────────────────────────
 # 공통 픽스처
 # ─────────────────────────────────────────────

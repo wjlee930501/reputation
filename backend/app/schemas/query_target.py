@@ -4,7 +4,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-
 QueryTargetPriority = Literal["HIGH", "NORMAL", "LOW"]
 QueryTargetStatus = Literal["ACTIVE", "PAUSED", "ARCHIVED"]
 SUPPORTED_QUERY_PLATFORMS = frozenset({"CHATGPT", "GEMINI"})

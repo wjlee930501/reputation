@@ -13,6 +13,7 @@ Create Date: 2026-06-11
   있어도 마이그레이션이 실패하지 않도록 DB unique 제약은 걸지 않는다.
 """
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "0025_add_aeo_domain_index"

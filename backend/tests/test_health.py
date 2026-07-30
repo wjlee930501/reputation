@@ -1,5 +1,5 @@
-from fastapi.testclient import TestClient
 import redis.asyncio as redis_async
+from fastapi.testclient import TestClient
 
 from app.core import database
 from app.main import app

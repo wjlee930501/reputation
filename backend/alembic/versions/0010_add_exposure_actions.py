@@ -4,8 +4,9 @@ Revision ID: 0010_add_exposure_actions
 Revises: 0009_add_measurement_runs
 """
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "0010_add_exposure_actions"
 down_revision = "0009_add_measurement_runs"
