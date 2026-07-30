@@ -2,45 +2,220 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  MEASUREMENT_TRIALS,
+  type Figure,
   answerDemo,
   answerExamples,
-  comparisonItems,
+  ctaSection,
+  faqItems,
+  faqSection,
+  heroScarcity,
   landingHero,
-  processSteps,
-  proofItems,
-  trustItems,
+  limitItems,
+  limitsSection,
+  marketFigures,
+  marketSection,
+  measuredFigures,
+  measuredSection,
+  methodItems,
+  methodSection,
+  operationSection,
+  operationSteps,
+  painPoints,
+  painSection,
+  platformShareSection,
+  platformShares,
+  previewSection,
 } from './landing-copy.ts'
 
-test('landing hero leads with the second-homepage positioning', () => {
-  const heroText = [
-    landingHero.titleLead,
-    landingHero.titleMain,
-    landingHero.titleSupport,
-    landingHero.body,
-  ].join(' ')
+/** 화면에 실제로 올라가는 모든 문장. 새 섹션을 추가하면 여기도 넣어야 한다. */
+const ALL_COPY = [
+  landingHero.titleLead,
+  landingHero.titleMain,
+  landingHero.body,
+  landingHero.primaryCta,
+  landingHero.secondaryCta,
+  marketSection.label,
+  marketSection.heading,
+  marketSection.body,
+  measuredSection.label,
+  measuredSection.heading,
+  measuredSection.body,
+  operationSection.label,
+  operationSection.heading,
+  operationSection.body,
+  methodSection.label,
+  methodSection.heading,
+  methodSection.body,
+  limitsSection.label,
+  limitsSection.heading,
+  limitsSection.body,
+  ctaSection.label,
+  ctaSection.heading,
+  ctaSection.body,
+  ctaSection.primaryCta,
+  ...ctaSection.notes,
+  painSection.label,
+  painSection.heading,
+  ...painPoints.flatMap((p) => [p.quote, p.answer]),
+  platformShareSection.label,
+  platformShareSection.heading,
+  platformShareSection.body,
+  platformShareSection.nudge,
+  platformShareSection.sourceNote,
+  ...platformShares.flatMap((p) => [p.name, p.note ?? ""]),
+  faqSection.label,
+  faqSection.heading,
+  heroScarcity.label,
+  heroScarcity.open,
+  heroScarcity.closed,
+  heroScarcity.fallback,
+  heroScarcity.note,
+  previewSection.label,
+  previewSection.heading,
+  previewSection.body,
+  ...faqItems.flatMap((f) => [f.question, f.answer]),
+  ...marketFigures.flatMap((f) => [f.value, f.label, f.source]),
+  ...measuredFigures.flatMap((f) => [f.value, f.label, f.source]),
+  ...operationSteps.flatMap((s) => [s.label, s.title, s.body]),
+  ...methodItems.flatMap((m) => [m.term, m.detail]),
+  ...limitItems.flatMap((l) => [l.title, l.body]),
+  answerDemo.disclaimer,
+  ...answerExamples.flatMap((e) => [
+    e.tag,
+    e.question,
+    e.answerIntro,
+    e.answerClinic,
+    e.answerReason,
+    ...e.answerSources,
+  ]),
+].join(' ')
 
-  assert.match(heroText, /두 번째 홈페이지/)
-  assert.match(heroText, /AE/)
-  assert.match(heroText, /대신 운영/)
+// ── 의료광고 금지 표현 ───────────────────────────────────────────────
+// backend/CLAUDE.md의 FORBIDDEN_EXPRESSIONS와 같은 목록이다. 콘텐츠 생성물은 백엔드가
+// 검사하지만 **랜딩 카피는 사람이 쓰므로 검사 대상이 없었다.** 여기가 그 검사다.
+const FORBIDDEN = [
+  '1등',
+  '최고',
+  '최우수',
+  '유일',
+  '완치',
+  '100%',
+  '성공률',
+  '부작용 없는',
+  '검증된',
+  '가장 잘하는',
+  '국내 최초',
+  '세계 최초',
+  '특허',
+  '독보적',
+]
+
+test('landing copy contains no forbidden medical-ad expression', () => {
+  for (const word of FORBIDDEN) {
+    assert.ok(
+      !ALL_COPY.includes(word),
+      `금지 표현 "${word}"이 랜딩 카피에 있습니다.`,
+    )
+  }
 })
 
-test('landing sections distinguish managed website operation from agent tooling', () => {
-  const pageText = [
-    ...proofItems.map((item) => `${item.title} ${item.body}`),
-    ...comparisonItems.flatMap((item) => [item.label, item.title, ...item.points]),
-    ...processSteps.map((item) => `${item.title} ${item.body}`),
-    ...trustItems.map((item) => `${item.title} ${item.body}`),
-  ].join(' ')
-
-  assert.match(pageText, /AI가 읽을 수 있는/)
-  assert.match(pageText, /툴을 배울 필요/)
-  assert.match(pageText, /월간 리포트/)
+test('landing copy never promises rank or patient volume', () => {
+  /**
+   * **부정문은 허용해야 한다.** "노출 순위를 보장하지 않습니다"는 지켜야 할 문장이고,
+   * 금지 대상은 "보장합니다"뿐이다. 단순 금지 패턴을 쓰면 정직한 문장이 걸린다 —
+   * 실제로 첫 버전이 그렇게 실패했다.
+   *
+   * 그래서 '순위/환자 수 + 약속 동사'가 나오는 문장을 모두 뽑아 **각각 부정형인지**
+   * 확인한다.
+   */
+  const claimSentences = ALL_COPY.split(/(?<=[.!?])\s+/).filter((sentence) =>
+    /(순위|환자 수|내원)/.test(sentence) && /(보장|약속|늘|증가)/.test(sentence),
+  )
+  assert.ok(claimSentences.length > 0, '순위·환자 수를 다루는 문장이 하나도 없습니다.')
+  for (const sentence of claimSentences) {
+    assert.match(
+      sentence,
+      /(않습니다|않고|아닙니다|다른 지표)/,
+      `순위·환자 수를 약속하는 문장입니다: "${sentence.trim()}"`,
+    )
+  }
 })
 
-test('answer demo is framed as an example without guaranteeing results (medical ad law)', () => {
+test('the page states explicitly what it does not do', () => {
+  const limitText = limitItems.map((l) => `${l.title} ${l.body}`).join(' ')
+  assert.match(limitText, /보장하지 않습니다/)
+  assert.match(limitText, /약속하지 않습니다/)
+  assert.ok(limitItems.length >= 3)
+})
+
+// ── 숫자에는 출처가 붙는다 ───────────────────────────────────────────
+// 출처 없는 숫자는 근거가 아니라 광고 문구다. 타입이 필드를 강제하지만, 값이
+// 비어 있거나 "자체 조사" 한마디로 때우는 것은 타입이 막지 못한다.
+function assertSourced(figures: Figure[], kind: string) {
+  for (const figure of figures) {
+    assert.ok(figure.source.length >= 10, `${kind} "${figure.value}"의 출처가 너무 짧습니다.`)
+    assert.match(
+      figure.source,
+      /\d/,
+      `${kind} "${figure.value}"의 출처에 연도나 표본 같은 확인 가능한 값이 없습니다.`,
+    )
+  }
+}
+
+test('every external figure names its survey and sample', () => {
+  assert.ok(marketFigures.length >= 3)
+  assertSourced(marketFigures, '외부 조사')
+  // 외부 조사는 조사 주체를 밝혀야 확인할 수 있다.
+  assert.ok(marketFigures.some((f) => f.source.includes('언론진흥재단')))
+  assert.ok(marketFigures.some((f) => f.source.includes('N=')))
+})
+
+test('every measured figure names its measurement condition', () => {
+  assert.ok(measuredFigures.length >= 2)
+  assertSourced(measuredFigures, '자체 실측')
+  for (const figure of measuredFigures) {
+    assert.match(
+      figure.source,
+      /실측/,
+      `"${figure.value}"이 자체 측정값임을 출처에 밝히지 않았습니다.`,
+    )
+  }
+})
+
+test('measured figures quote only the models we actually run', () => {
+  /**
+   * 실측 표에는 더 유리한 값이 있다 — gpt-5-mini의 잡음률 27%. 하지만 프로덕션은
+   * gpt-5.6-luna와 gemini-3.6-flash를 쓴다. 쓰지 않는 모델의 좋은 숫자를 인용하면
+   * 데이터를 파는 것이 아니라 인상을 파는 것이 된다.
+   *
+   * 프로덕션 모델은 backend/app/core/config.py의 OPENAI_MODEL_QUERY·GEMINI_MODEL이다.
+   */
+  const sources = measuredFigures.map((f) => f.source).join(' ')
+  assert.doesNotMatch(sources, /gpt-5-mini/)
+  assert.doesNotMatch(sources, /gpt-4o/)
+  assert.doesNotMatch(sources, /terra/)
+  // 모델명을 언급하는 출처가 있다면 운영 모델이어야 한다.
+  if (/gpt-|gemini-/.test(sources)) {
+    assert.match(sources, /gpt-5\.6-luna|gemini-3\.6-flash/)
+  }
+})
+
+// ── 측정 규약 공개 ───────────────────────────────────────────────────
+test('the method section discloses how the number is produced', () => {
+  const methodText = methodItems.map((m) => `${m.term} ${m.detail}`).join(' ')
+  // 반복 측정을 밝히지 않으면 한 번의 결과를 사실처럼 파는 것이 된다.
+  assert.match(methodText, /반복/)
+  // 병원명을 질의에 넣지 않는다는 사실은 측정이 성립하는 근거다.
+  assert.match(methodText, /병원 이름은 질(의|문)에 넣지 않/)
+  // 측정 실패와 미언급을 구분한다는 약속.
+  assert.match(methodText, /실패/)
+})
+
+// ── AI 답변 예시 (의료광고법) ────────────────────────────────────────
+test('answer demo is framed as an example without guaranteeing results', () => {
   assert.match(answerDemo.disclaimer, /예시/)
   assert.match(answerDemo.disclaimer, /보장되지 않/)
-  // 답변 예시는 실제 병원명이 아닌 플레이스홀더(○○)를 사용한다.
   assert.match(answerDemo.answerClinic, /○○/)
 })
 
@@ -49,35 +224,156 @@ test('every specialty answer example stays a safe placeholder example', () => {
   for (const example of answerExamples) {
     assert.ok(example.tag.length > 0)
     assert.ok(example.question.length > 0)
-    // 모든 진료과 예시도 실제 상호가 아닌 ○○ 플레이스홀더만 사용한다.
     assert.match(example.answerClinic, /○○/)
-    // 근거 출처가 최소 1개 이상 붙는다.
     assert.ok(example.answerSources.length >= 1)
   }
 })
 
-test('landing copy avoids forbidden medical ad certainty wording', () => {
-  const pageText = [
+// ── 구조 ─────────────────────────────────────────────────────────────
+// ── 히어로 미리보기 카드의 예시 수치 ────────────────────────────────
+test('hero preview counts stay inside the real denominator', () => {
+  // 분모 9는 규약(질의 3개 × 반복 3회)에서 오는 실제 값이다. 넘으면 화면이 거짓말을 한다.
+  for (const example of answerExamples) {
+    assert.ok(
+      example.counts.chatgpt <= MEASUREMENT_TRIALS && example.counts.chatgpt >= 0,
+      `${example.tag}: ChatGPT 등장 횟수가 분모를 벗어났습니다.`,
+    )
+    assert.ok(
+      example.counts.gemini <= MEASUREMENT_TRIALS && example.counts.gemini >= 0,
+      `${example.tag}: Gemini 등장 횟수가 분모를 벗어났습니다.`,
+    )
+  }
+})
+
+test('hero preview counts do not read as a promised outcome', () => {
+  /**
+   * 예시 수치를 전부 높게 잡으면 고지와 무관하게 "이만큼 나온다"는 약속으로 읽힌다.
+   * 절반 이하인 예시가 하나라도 있어야 이것이 측정 결과의 **형태**를 보여주는
+   * 화면임이 유지된다.
+   */
+  const hasModest = answerExamples.some(
+    (e) =>
+      e.counts.chatgpt <= MEASUREMENT_TRIALS / 2 || e.counts.gemini <= MEASUREMENT_TRIALS / 2,
+  )
+  assert.ok(hasModest, '모든 예시가 높은 등장 횟수입니다 — 약속으로 읽힙니다.')
+  const allMaxed = answerExamples.every((e) => e.counts.chatgpt === MEASUREMENT_TRIALS)
+  assert.ok(!allMaxed)
+})
+
+test('the hero states the constraint that makes the service necessary', () => {
+  const heroText = [
     landingHero.titleLead,
     landingHero.titleMain,
-    landingHero.titleSupport,
-    landingHero.body,
-    landingHero.primaryCta,
-    landingHero.secondaryCta,
-    ...proofItems.flatMap((item) => [item.title, item.body]),
-    ...comparisonItems.flatMap((item) => [item.label, item.title, ...item.points]),
-    ...processSteps.flatMap((item) => [item.title, item.body]),
-    ...trustItems.flatMap((item) => [item.title, item.body]),
-    answerDemo.disclaimer,
-    ...answerExamples.flatMap((item) => [
-      item.tag,
-      item.question,
-      item.answerIntro,
-      item.answerClinic,
-      item.answerReason,
-      ...item.answerSources,
-    ]),
   ].join(' ')
+  // "자리가 몇 개인가"가 이 서비스의 전제다. 그것 없이는 기능 소개가 된다.
+  assert.match(heroText, /3~4곳/)
+})
 
-  assert.doesNotMatch(pageText, /검증된/)
+test('the hero discloses the intake limit before the click', () => {
+  // 하루 20곳·1회 제한을 누른 뒤에 알려주면 접수 화면에서 이탈한다.
+  assert.match(heroScarcity.label, /20곳/)
+  assert.match(ctaSection.notes.join(' '), /1회/)
+})
+
+// ── 선착순 고지: 숫자를 만들지 않는다 ────────────────────────────────
+test('the scarcity fallback never invents a remaining count', () => {
+  /**
+   * 카운터를 못 읽었을 때 "오늘 N곳 남았습니다"를 쓰면 실제와 무관한 숫자를 선착순이라고
+   * 파는 것이 된다. 그래서 fallback에는 **남은 수를 뜻하는 표현이 없어야** 한다.
+   */
+  assert.doesNotMatch(heroScarcity.fallback, /남았|남은/)
+  // 상한 자체는 사실이므로 밝혀도 된다.
+  assert.match(heroScarcity.fallback, /20곳/)
+})
+
+test('the open-state template is filled from real data, not hardcoded', () => {
+  assert.match(heroScarcity.open, /\{remaining\}/)
+  // 템플릿에 숫자를 박아두면 치환이 실패해도 그럴듯하게 보인다.
+  assert.doesNotMatch(heroScarcity.open, /\d/)
+})
+
+test('the closed state does not still invite an application', () => {
+  assert.match(heroScarcity.closed, /마감/)
+})
+
+test('the scarcity claim is explained, not just asserted', () => {
+  // 이유 없는 희소성은 마케팅 장치로만 읽힌다. 18회 측정이라는 실제 제약이 근거다.
+  assert.match(heroScarcity.note, /18회|측정/)
+})
+
+// ── 통증은 당사자의 문장으로 ────────────────────────────────────────
+test('pain points are quoted in the director voice, not our slogans', () => {
+  assert.ok(painPoints.length >= 3)
+  for (const point of painPoints) {
+    // 원장님이 실제로 하는 말이어야 한다 — 해요/어요/네요 같은 구어 종결이 그 표식이다.
+    assert.match(
+      point.quote,
+      /(어요|해요|네요|없어요|몰라요|나와요|겠어요)[.?]?$/,
+      `우리 문체로 쓰인 인용문입니다: "${point.quote}"`,
+    )
+    // 통증만 적고 답을 안 적으면 불안만 남긴다.
+    assert.ok(point.answer.length >= 40, `"${point.quote}"에 대한 답이 너무 짧습니다.`)
+  }
+})
+
+test('pain point answers do not promise an outcome', () => {
+  const answers = painPoints.map((p) => p.answer).join(' ')
+  assert.doesNotMatch(answers, /반드시|틀림없이|확실히 (오릅|늘)/)
+})
+
+// ── 점유율 차트 = 비용 판단의 근거 ───────────────────────────────────
+test('platform shares add up to a plausible whole', () => {
+  const total = platformShares.reduce((sum, item) => sum + item.share, 0)
+  assert.ok(Math.abs(total - 100) < 0.5, `점유율 합이 ${total}%입니다.`)
+})
+
+test('exactly the platforms we measure are marked as measured', () => {
+  const measured = platformShares.filter((p) => p.measured).map((p) => p.name)
+  // 프로덕션이 재는 것은 두 곳이다(backend config: OPENAI_MODEL_QUERY, GEMINI_MODEL).
+  assert.deepEqual(measured.sort(), ['ChatGPT', 'Gemini'])
+})
+
+test('the measured platforms actually justify the coverage claim', () => {
+  /**
+   * 넛지가 성립하려면 **칠해진 면적이 실제로 대부분**이어야 한다. 점유율 데이터가
+   * 갱신돼 두 곳 합이 낮아지면 "나머지에 돈 쓸 이유가 없다"는 문장은 근거를 잃는다.
+   * 그때는 문장을 고쳐야 하므로 여기서 막는다.
+   */
+  const measuredTotal = platformShares
+    .filter((p) => p.measured)
+    .reduce((sum, item) => sum + item.share, 0)
+  assert.ok(
+    measuredTotal >= 75,
+    `측정 대상 합이 ${measuredTotal}%로 떨어졌습니다 — 측정 범위 카피를 다시 써야 합니다.`,
+  )
+  // 카피가 말하는 숫자와 데이터가 어긋나면 안 된다.
+  assert.match(platformShareSection.nudge, new RegExp(String(Math.round(measuredTotal))))
+})
+
+test('the coverage nudge is framed as a cost decision, not a limitation', () => {
+  assert.match(platformShareSection.nudge, /비용|예산/)
+})
+
+// ── FAQ ─────────────────────────────────────────────────────────────
+test('the FAQ answers the objections we would otherwise get on a call', () => {
+  const questions = faqItems.map((f) => f.question).join(' ')
+  assert.ok(faqItems.length >= 6)
+  // 경쟁 서비스가 4개 플랫폼을 광고하므로 이 질문은 반드시 온다.
+  assert.match(questions, /Perplexity|Claude/)
+  // 순위 상승 여부는 가장 많이 받는 질문이고, 답이 "아닙니다"여야 한다.
+  const rankItem = faqItems.find((f) => /순위/.test(f.question))
+  assert.ok(rankItem, '순위에 대한 질문이 FAQ에 없습니다.')
+  assert.match(rankItem.answer, /아닙니다|보장하지 않/)
+})
+
+test('every FAQ answer is substantive', () => {
+  for (const item of faqItems) {
+    assert.ok(item.answer.length >= 50, `"${item.question}" 답변이 너무 짧습니다.`)
+  }
+})
+
+test('operation steps describe operation, not tooling', () => {
+  const stepText = operationSteps.map((s) => `${s.label} ${s.title} ${s.body}`).join(' ')
+  assert.ok(operationSteps.length >= 3)
+  assert.match(stepText, /정리합니다|발행합니다|기록합니다/)
 })

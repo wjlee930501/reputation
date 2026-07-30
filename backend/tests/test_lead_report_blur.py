@@ -203,3 +203,64 @@ class TestDescriptiveStatistics:
         for query in payload.queries:
             assert query.measured_at is not None
             assert query.measured_at.date() == datetime(2026, 7, 25).date()
+
+
+class TestReadableDocument:
+    """리포트는 원장님이 그대로 읽는 문서다 — 렌더 결과가 사고처럼 보이면 안 된다."""
+
+    def test_no_guillemets_render_as_encoding_artifacts(self, payload):
+        """지역을 «»로 감싸던 장식이 PDF 폰트에서 ≪ ≫로 나와 인코딩 오류처럼 보였다.
+
+        실제로 원장에게 나간 첫 리포트가 `지역 ≪수서역≫`이었다. 장식용 기호는 쓰지 않는다.
+        """
+        html = lead_report.render_lead_report_html(payload)
+        for artifact in ("«", "»", "≪", "≫"):
+            assert artifact not in html, f"{artifact!r}가 리포트에 있습니다."
+
+    def test_the_region_is_still_shown(self, payload):
+        # 기호만 지우고 값까지 지우면 안 된다.
+        assert payload.region in lead_report.render_lead_report_html(payload)
+
+    def test_zero_mentions_are_explained_not_left_bare(self):
+        """0회는 가장 흔한 결과이고 가장 오해받기 쉽다.
+
+        아무 설명 없이 "0번"만 두면 원장님은 병원 평가로 읽는다. 실제 의미는 AI가 인용할
+        근거가 공개된 곳에 없다는 것이고, 그건 진료의 질과 다른 문제다.
+        """
+        diagnosis = _diagnosis()
+        payload = lead_report.build_lead_report_payload(
+            diagnosis,
+            _results(diagnosis, mentioned_per_platform=0),
+            generated_at=datetime(2026, 7, 30, 10, 0, tzinfo=timezone.utc),
+        )
+        assert payload.total_mentioned == 0
+        html = lead_report.render_lead_report_html(payload)
+        assert "진료의 질에 대한 평가가 아닙니다" in html
+
+    def test_the_zero_explanation_promises_no_improvement(self):
+        """해석은 하되 개선을 약속하지 않는다 — 무료 진단이 파는 것은 측정이다.
+
+        문서 전체에서 "보장"을 찾으면 안 된다. `언급은 보장되고 측정은 무의미해집니다`는
+        질문에 병원명을 넣지 않는 이유를 설명하는 정직한 문장이라 걸리면 곤란하다.
+        그래서 **0회 설명 문단만** 떼어 검사한다.
+        """
+        import re
+
+        diagnosis = _diagnosis()
+        payload = lead_report.build_lead_report_payload(
+            diagnosis,
+            _results(diagnosis, mentioned_per_platform=0),
+            generated_at=datetime(2026, 7, 30, 10, 0, tzinfo=timezone.utc),
+        )
+        html = lead_report.render_lead_report_html(payload)
+        block = re.search(
+            r'<div class="caveat">\s*(0번은[^<]*)</div>', html, re.S
+        )
+        assert block, "0회 설명 문단을 찾지 못했습니다."
+        for promise in ("올려", "높여", "보장", "반드시", "개선해"):
+            assert promise not in block.group(1), f'0회 설명에 약속 표현 "{promise}"이 있습니다.'
+
+    def test_a_nonzero_result_does_not_get_the_zero_explanation(self, payload):
+        # 언급이 있는데 "0번은 평가가 아닙니다"가 붙으면 문서가 자기 숫자를 부정한다.
+        assert payload.total_mentioned > 0
+        assert "진료의 질에 대한 평가가 아닙니다" not in lead_report.render_lead_report_html(payload)

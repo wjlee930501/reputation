@@ -12,20 +12,25 @@
   <meta charset="utf-8">
   <title>{{ payload.hospital_name }} AI 노출 진단</title>
   <style>
-    @page { size: A4; margin: 18mm 16mm; }
+    /* A4 1쪽에 들어가도록 조인 값들이다. 리포트가 2쪽으로 넘어가면 둘째 장이
+       15%만 차서 미완성처럼 보인다 — 여백·행높이를 늘릴 때는 쪽수를 다시 재라. */
+    @page { size: A4; margin: 14mm 15mm; }
     body { font-family: "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
-           color: #1a1d21; font-size: 10.5pt; line-height: 1.6; }
-    h1 { font-size: 18pt; margin: 0 0 4px; }
-    h2 { font-size: 12pt; margin: 22px 0 8px; border-bottom: 1px solid #d8dde3; padding-bottom: 5px; }
-    .sub { color: #5b6672; font-size: 9.5pt; margin-bottom: 18px; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-    th, td { border: 1px solid #d8dde3; padding: 7px 9px; text-align: left; font-size: 9.5pt; }
+           color: #1a1d21; font-size: 10.5pt; line-height: 1.5; }
+    h1 { font-size: 17pt; margin: 0 0 3px; }
+    h2 { font-size: 11.5pt; margin: 15px 0 6px; border-bottom: 1px solid #d8dde3; padding-bottom: 4px; }
+    .sub { color: #5b6672; font-size: 9.5pt; margin-bottom: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 7px; }
+    th, td { border: 1px solid #d8dde3; padding: 5px 8px; text-align: left; font-size: 9.5pt; }
     th { background: #f4f6f8; font-weight: 600; }
     td.num { text-align: right; font-variant-numeric: tabular-nums; }
     .headline { font-size: 13pt; font-weight: 600; }
     .caveat { color: #5b6672; font-size: 9pt; margin-top: 6px; }
     .locked { background: #f4f6f8; border: 1px dashed #b9c2cc; border-radius: 6px;
-              padding: 14px 16px; color: #5b6672; font-size: 9.5pt; }
+              padding: 12px 14px; color: #5b6672; font-size: 9.5pt;
+              page-break-inside: avoid; }
+    table, h2 { page-break-inside: avoid; }
+    h2 { page-break-after: avoid; }
     .locked strong { color: #1a1d21; }
     .notice { color: #5b6672; font-size: 8.5pt; margin-top: 4px; }
     code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 9pt; }
@@ -35,7 +40,8 @@
 
   <h1>{{ payload.hospital_name }} AI 노출 진단</h1>
   <div class="sub">
-    지역 «{{ payload.region }}» · 생성 {{ payload.generated_at.strftime('%Y-%m-%d %H:%M') }}
+    {# 겹화살괄호(«»)를 장식으로 쓰지 않는다. PDF 폰트에서 ≪ ≫로 렌더돼 인코딩 오류처럼 보인다. #}
+    지역 {{ payload.region }} · 생성 {{ payload.generated_at.strftime('%Y-%m-%d %H:%M') }}
   </div>
 
   <h2>측정 결과</h2>
@@ -68,6 +74,19 @@
     <div class="headline">
       전체 {{ payload.total_measured }}번의 측정 중 {{ payload.total_mentioned }}번 언급되었습니다.
     </div>
+    {#
+      0회는 이 리포트에서 가장 흔한 결과이면서 가장 오해받기 쉬운 숫자다. 아무 설명 없이
+      "0번"만 두면 원장님은 병원 평가로 읽는다. 실제 의미는 **AI가 인용할 근거가 공개된 곳에
+      없다**는 것이고, 그건 진료의 질과 다른 문제다.
+
+      개선을 약속하지 않는다 — 무엇이 측정됐는지만 해석한다.
+    #}
+    {% if payload.total_mentioned == 0 %}
+      <div class="caveat">
+        0번은 진료의 질에 대한 평가가 아닙니다. 위 질문에 답할 때 AI가 참고한 자료 중
+        귀 병원의 정보가 없었다는 뜻이며, 대부분의 병원이 같은 상태에서 시작합니다.
+      </div>
+    {% endif %}
   {% else %}
     <p>측정 데이터가 없습니다.</p>
   {% endif %}
