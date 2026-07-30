@@ -51,7 +51,7 @@ export async function POST(request: Request) {
 
   let upstream: Response
   try {
-    upstream = await fetch(`${getApiBase()}/public/diagnosis`, {
+    upstream = await fetch(`${getApiBase()}/diagnosis`, {
       method: 'POST',
       headers: buildLeadOutboundHeaders(request.headers),
       body: JSON.stringify(body),

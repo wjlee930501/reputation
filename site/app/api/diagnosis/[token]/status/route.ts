@@ -10,7 +10,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
   const noStore = { 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' }
   try {
     const upstream = await fetch(
-      `${getApiBase()}/public/diagnosis/${encodeURIComponent(token)}/status`,
+      `${getApiBase()}/diagnosis/${encodeURIComponent(token)}/status`,
       { cache: 'no-store' },
     )
     const payload = await upstream.json().catch(() => ({}))

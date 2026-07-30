@@ -19,7 +19,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
   }
   let upstream: Response
   try {
-    upstream = await fetch(`${getApiBase()}/public/diagnosis/${encodeURIComponent(token)}`, {
+    upstream = await fetch(`${getApiBase()}/diagnosis/${encodeURIComponent(token)}`, {
       cache: 'no-store',
     })
   } catch {

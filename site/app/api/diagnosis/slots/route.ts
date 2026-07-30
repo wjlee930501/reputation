@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
-    const upstream = await fetch(`${getApiBase()}/public/diagnosis/slots`, { cache: 'no-store' })
+    const upstream = await fetch(`${getApiBase()}/diagnosis/slots`, { cache: 'no-store' })
     if (!upstream.ok) {
       return NextResponse.json({ ok: false }, { status: 502, headers: { 'Cache-Control': 'no-store' } })
     }
