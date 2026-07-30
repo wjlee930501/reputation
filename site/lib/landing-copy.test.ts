@@ -16,9 +16,6 @@ import {
   marketFigures,
   marketSection,
   measuredFigures,
-  measuredSection,
-  methodItems,
-  methodSection,
   operationSection,
   operationSteps,
   painPoints,
@@ -32,21 +29,13 @@ import {
 const ALL_COPY = [
   landingHero.titleLead,
   landingHero.titleMain,
-  landingHero.body,
   landingHero.primaryCta,
-  landingHero.secondaryCta,
   marketSection.label,
   marketSection.heading,
   marketSection.body,
-  measuredSection.label,
-  measuredSection.heading,
-  measuredSection.body,
   operationSection.label,
   operationSection.heading,
   operationSection.body,
-  methodSection.label,
-  methodSection.heading,
-  methodSection.body,
   limitsSection.label,
   limitsSection.heading,
   limitsSection.body,
@@ -78,7 +67,6 @@ const ALL_COPY = [
   ...marketFigures.flatMap((f) => [f.value, f.label, f.source]),
   ...measuredFigures.flatMap((f) => [f.value, f.label, f.source]),
   ...operationSteps.flatMap((s) => [s.label, s.title, s.body]),
-  ...methodItems.flatMap((m) => [m.term, m.detail]),
   ...limitItems.flatMap((l) => [l.title, l.body]),
   answerDemo.disclaimer,
   ...answerExamples.flatMap((e) => [
@@ -214,15 +202,15 @@ test('measured figures quote only the models we actually run', () => {
   }
 })
 
-// ── 측정 규약 공개 ───────────────────────────────────────────────────
-test('the method section discloses how the number is produced', () => {
-  const methodText = methodItems.map((m) => `${m.term} ${m.detail}`).join(' ')
+// ── 측정 방식 공개 (측정 규약 섹션 → FAQ로 흡수) ────────────────
+test('the page discloses how the number is produced', () => {
+  const faqText = faqItems.map((f) => `${f.question} ${f.answer}`).join(' ')
   // 반복 측정을 밝히지 않으면 한 번의 결과를 사실처럼 파는 것이 된다.
-  assert.match(methodText, /반복/)
+  assert.match(faqText, /반복 횟수|세 번|아홉 번/)
   // 병원명을 질의에 넣지 않는다는 사실은 측정이 성립하는 근거다.
-  assert.match(methodText, /병원 이름은 질(의|문)에 넣지 않/)
+  assert.match(faqText, /병원 이름을 (넣|물)/)
   // 측정 실패와 미언급을 구분한다는 약속.
-  assert.match(methodText, /실패/)
+  assert.match(faqText, /측정이 안 된 경우|실패/)
 })
 
 // ── AI 답변 예시 (의료광고법) ────────────────────────────────────────
@@ -273,18 +261,31 @@ test('hero preview counts do not read as a promised outcome', () => {
   assert.ok(!allMaxed)
 })
 
-test('the hero states the constraint that makes the service necessary', () => {
-  const heroText = [
-    landingHero.titleLead,
-    landingHero.titleMain,
-  ].join(' ')
-  // "자리가 몇 개인가"가 이 서비스의 전제다. 그것 없이는 기능 소개가 된다.
-  assert.match(heroText, /3~4곳/)
+test('the hero addresses the reader directly', () => {
+  // 3인칭 설명문으로 열면 남 얘기로 읽힌다. 원장님을 직접 부르고 질문으로 넘긴다.
+  const heroText = [landingHero.titleLead, landingHero.titleMain].join(' ')
+  assert.match(heroText, /원장님/)
+  assert.match(landingHero.titleMain, /\?$/)
+})
+
+test('the hero leaves a slot for the rolling AI logo', () => {
+  /**
+   * `{ai}` 자리표시자가 사라지면 로고가 문장 끝에 붙거나 통째로 빠진다. 조사 위치가
+   * 곧 문장이므로("…{ai}에 병원을") 자리표시자와 그 뒤의 조사를 함께 고정한다.
+   */
+  assert.ok(landingHero.titleLead.includes('{ai}'), '{ai} 자리표시자가 없습니다.')
+  assert.match(landingHero.titleLead, /\{ai\}에/)
+})
+
+test('the hero claim stays inside what we measured', () => {
+  // 재지 않은 분포("대부분의 병원이 0번")를 주장하지 않는다.
+  const heroText = [landingHero.titleLead, landingHero.titleMain].join(' ')
+  assert.doesNotMatch(heroText, /대부분|거의 모든|모든 병원/)
 })
 
 test('the hero discloses the intake limit before the click', () => {
   // 하루 20곳·1회 제한을 누른 뒤에 알려주면 접수 화면에서 이탈한다.
-  assert.match(heroScarcity.label, /20곳/)
+  assert.match(heroScarcity.label, /20분|20곳/)
   assert.match(ctaSection.notes.join(' '), /1회/)
 })
 
@@ -296,7 +297,7 @@ test('the scarcity fallback never invents a remaining count', () => {
    */
   assert.doesNotMatch(heroScarcity.fallback, /남았|남은/)
   // 상한 자체는 사실이므로 밝혀도 된다.
-  assert.match(heroScarcity.fallback, /20곳/)
+  assert.match(heroScarcity.fallback, /20분|20곳/)
 })
 
 test('the open-state template is filled from real data, not hardcoded', () => {
@@ -309,9 +310,24 @@ test('the closed state does not still invite an application', () => {
   assert.match(heroScarcity.closed, /마감/)
 })
 
-test('the scarcity claim is explained, not just asserted', () => {
-  // 이유 없는 희소성은 마케팅 장치로만 읽힌다. 18회 측정이라는 실제 제약이 근거다.
-  assert.match(heroScarcity.note, /18회|측정/)
+test('the scarcity note states a checkable rule', () => {
+  /**
+   * 이유 없는 희소성은 마케팅 장치로만 읽힌다. 다만 "왜 하루 20곳인가"(진단 1건에
+   * 18회 측정)는 FAQ가 답하므로, 히어로 각주는 **신청자가 확인할 수 있는 규칙**만
+   * 지면 된다: 몇 명까지인지, 언제 다시 열리는지.
+   */
+  assert.match(heroScarcity.note, /\d+/)
+  assert.match(heroScarcity.note, /리셋|열립니다|초기화/)
+})
+
+test('the reset time in the copy matches the code', () => {
+  /**
+   * 자리 경계는 백엔드의 `SLOT_RESET_HOUR_KST = 8`이 정한다
+   * (backend/app/api/public/diagnosis.py, 그쪽 테스트가 값 8을 고정한다).
+   * 여기서 다른 시각을 적으면 신청자가 안내받은 시각에 와서 마감 화면을 본다.
+   */
+  assert.match(heroScarcity.note, /아침 8시/)
+  assert.doesNotMatch(heroScarcity.note, /자정/)
 })
 
 // ── 통증은 당사자의 문장으로 ────────────────────────────────────────
@@ -404,10 +420,8 @@ const HEADINGS = [
   previewSection.heading,
   marketSection.heading,
   painSection.heading,
-  measuredSection.heading,
   operationSection.heading,
   platformShareSection.heading,
-  methodSection.heading,
   limitsSection.heading,
   faqSection.heading,
   ctaSection.heading,
