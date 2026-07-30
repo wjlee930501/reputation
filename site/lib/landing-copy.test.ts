@@ -143,10 +143,23 @@ test('landing copy never promises rank or patient volume', () => {
 })
 
 test('the page states explicitly what it does not do', () => {
+  /**
+   * 문구를 그대로 검사하지 않는다 — 카피를 다듬을 때마다 테스트가 깨지고, 정작
+   * **무엇을 못 한다고 밝혔는가**는 검사하지 못한다. 항목의 존재와 부정 의미만 본다.
+   */
   const limitText = limitItems.map((l) => `${l.title} ${l.body}`).join(' ')
-  assert.match(limitText, /보장하지 않습니다/)
-  assert.match(limitText, /약속하지 않습니다/)
   assert.ok(limitItems.length >= 3)
+  // 이 둘은 반드시 '못 하는 것'으로 밝혀야 한다.
+  assert.match(limitText, /순위/)
+  assert.match(limitText, /환자 수|내원/)
+  // 각 항목이 실제로 부정·한계를 말하고 있는가.
+  for (const item of limitItems) {
+    assert.match(
+      `${item.title} ${item.body}`,
+      /(않습니다|못|밖입니다|걸러냅니다|다시 봅니다)/,
+      `"${item.title}"이 무엇을 못 하는지 말하지 않습니다.`,
+    )
+  }
 })
 
 // ── 숫자에는 출처가 붙는다 ───────────────────────────────────────────
@@ -376,4 +389,60 @@ test('operation steps describe operation, not tooling', () => {
   const stepText = operationSteps.map((s) => `${s.label} ${s.title} ${s.body}`).join(' ')
   assert.ok(operationSteps.length >= 3)
   assert.match(stepText, /정리합니다|발행합니다|기록합니다/)
+})
+
+
+// ── 카피가 기계처럼 읽히지 않게 ────────────────────────────────────
+//
+// 첫 버전은 헤딩 10개가 전부 완결 서술문에 전부 `~습니다/세요`로 끝났고, "A가 아니라 B"를
+// 다섯 번 썼으며, 화면 문구 101개 중 18개가 부정형이었다. 내용이 아니라 **리듬이 먼저
+// 읽히는** 상태였고 그게 기계가 쓴 글처럼 보이는 이유였다.
+//
+// 아래 가드는 문장을 좋게 만들지는 못한다. 같은 수사가 다시 쌓이는 것만 막는다.
+
+const HEADINGS = [
+  previewSection.heading,
+  marketSection.heading,
+  painSection.heading,
+  measuredSection.heading,
+  operationSection.heading,
+  platformShareSection.heading,
+  methodSection.heading,
+  limitsSection.heading,
+  faqSection.heading,
+  ctaSection.heading,
+]
+
+test('headings do not all share one ending', () => {
+  // 전부 `~습니다`로 끝나면 열 번 같은 박자가 반복된다. 명사형 종결·질문·파편을 섞는다.
+  // `습니다`만 보면 '합니다·답합니다'를 놓친다 — 같은 하십시오체 박자다.
+  const declarative = HEADINGS.filter((h) => /니다[.!?]?$/.test(h))
+  assert.ok(
+    declarative.length <= HEADINGS.length / 2,
+    `헤딩 ${HEADINGS.length}개 중 ${declarative.length}개가 '~습니다'로 끝납니다.`,
+  )
+})
+
+test('at least one heading is a question', () => {
+  // 질문이 하나도 없으면 페이지가 통째로 선언문이 된다.
+  assert.ok(HEADINGS.some((h) => h.includes('?')), '질문형 헤딩이 하나도 없습니다.')
+})
+
+test('the "A가 아니라 B" construction is not a habit', () => {
+  const uses = ALL_COPY.match(/아니라/g) ?? []
+  assert.ok(uses.length <= 2, `'아니라' 구문이 ${uses.length}번 쓰였습니다.`)
+})
+
+test('negation is not the default sentence shape', () => {
+  /**
+   * 부정형 자체는 이 서비스의 정직함이라 지워선 안 된다("보장하지 않습니다").
+   * 다만 그것이 문장의 기본형이 되면 전부 같은 소리로 읽힌다. 비율만 본다.
+   */
+  const sentences = ALL_COPY.split(/(?<=[.!?])\s+/).filter((t) => t.trim().length > 8)
+  const negative = sentences.filter((t) => /(않습니다|없습니다|아닙니다)/.test(t))
+  const ratio = negative.length / sentences.length
+  assert.ok(
+    ratio < 0.3,
+    `문장의 ${Math.round(ratio * 100)}%가 부정형입니다(${negative.length}/${sentences.length}).`,
+  )
 })
