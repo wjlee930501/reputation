@@ -44,7 +44,7 @@ export default function SceneSequence({
   example: AnswerExample;
   disclaimer: string;
 }) {
-  const markers = useRef<(HTMLLIElement | null)[]>([]);
+  const markers = useRef<(HTMLSpanElement | null)[]>([]);
   const [step, setStep] = useState<SceneStep>(0);
   const [sequenced, setSequenced] = useState(false);
 
@@ -60,7 +60,7 @@ export default function SceneSequence({
       (entries) => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
-          const index = markers.current.indexOf(entry.target as HTMLLIElement);
+          const index = markers.current.indexOf(entry.target as HTMLSpanElement);
           if (index >= 0) setStep(STEPS[index].step);
         }
       },
@@ -72,28 +72,46 @@ export default function SceneSequence({
 
   return (
     <div className={sequenced ? "scene-seq is-sequenced" : "scene-seq"}>
-      <div className="scene-seq-stage">
-        <AiAnswerScene
-          example={example}
-          disclaimer={disclaimer}
-          askLine={sceneSection.askLine}
-          step={step}
-        />
-      </div>
-
-      <ol className="scene-seq-steps">
+      {/* 눈금과 문장을 분리한다. 앞 버전은 문장 자체에 높이를 줘서 시퀀스 길이를
+          만들었는데, 그러면 문장 사이가 화면 절반씩 벌어져 **한 번에 하나만 보이고**
+          나머지는 전부 빈 화면이 된다. 길이는 보이지 않는 눈금이 만들고, 문장 셋은
+          카드 옆에 붙어 함께 읽힌다 — 현재 단계만 진해진다. */}
+      {/* **조건부로 그리면 안 된다.** `sequenced`는 아래 effect 안에서 켜지는데,
+          관측기를 붙이는 것도 같은 effect다 — 조건부로 두면 관측 시점에 ref가 전부
+          null이라 시퀀스가 1단계에서 멈춘다. 항상 그리고 CSS로만 숨긴다. */}
+      <div className="scene-seq-markers" aria-hidden="true">
         {STEPS.map((entry, index) => (
-          <li
+          <span
             key={entry.caption}
             ref={(element) => {
               markers.current[index] = element;
             }}
-            className={step === entry.step ? "is-active" : ""}
-          >
-            <span>{entry.caption}</span>
-          </li>
+          />
         ))}
-      </ol>
+      </div>
+
+      <div className="scene-seq-panel">
+        <div className="scene-seq-stage">
+          <AiAnswerScene
+            example={example}
+            disclaimer={disclaimer}
+            askLine={sceneSection.askLine}
+            step={step}
+          />
+        </div>
+
+        <ol className="scene-seq-steps">
+          {STEPS.map((entry) => (
+            <li
+              key={entry.caption}
+              className={step === entry.step ? "is-active" : ""}
+              aria-current={step === entry.step ? "step" : undefined}
+            >
+              <span>{entry.caption}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
     </div>
   );
 }
