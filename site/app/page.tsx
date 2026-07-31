@@ -101,7 +101,6 @@ export default function Home() {
         <div className="section-heading" data-reveal>
           <p className="section-label">{sceneSection.label}</p>
           <h2 id="scene-heading">{sceneSection.heading}</h2>
-          <p>{sceneSection.body}</p>
         </div>
 
         <SceneSequence example={answerExamples[0]} disclaimer={answerDemo.disclaimer} />

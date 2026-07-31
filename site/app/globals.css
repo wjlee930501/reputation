@@ -188,7 +188,10 @@ textarea:focus-visible {
 
   --shell-max: 1240px;
   --prose-max: 640px;
-  --section-pad: clamp(72px, 11vh, 150px);
+  /* 섹션 상하 여백. 1440px 화면에서 세로 길이가 390px 모바일과 같아지는 게 이 값
+     때문이었다 — 섹션 8개 × 상하 = 여백만 1,500px 이상. 넓은 화면일수록 한 화면에
+     더 담아야 하는데 반대로 굴었다. 최대치를 낮춰 큰 모니터에서 먼저 조인다. */
+  --section-pad: clamp(56px, 8vh, 104px);
   --radius-card: 14px;
   --radius-input: 12px;
   --radius-btn: 9px;
@@ -720,10 +723,19 @@ textarea:focus-visible {
    카드는 고정되고 설명이 지나간다. 좁은 화면·모션 최소화에서는 고정하지 않고
    마지막 단계를 그대로 보인다(`is-sequenced`가 붙지 않는다). */
 .scene-seq {
-  display: grid;
-  gap: clamp(28px, 5vw, 64px);
   max-width: 980px;
   margin: 0 auto;
+}
+
+.scene-seq-panel {
+  display: grid;
+  gap: clamp(28px, 5vw, 64px);
+}
+
+/* 눈금은 고정 시퀀스에서만 의미가 있다. 다만 DOM에는 항상 있어야 한다 —
+   관측기가 붙는 시점에 존재하지 않으면 시퀀스가 첫 단계에서 멈춘다. */
+.scene-seq-markers {
+  display: none;
 }
 
 .scene-seq-steps {
@@ -752,45 +764,54 @@ textarea:focus-visible {
   font-weight: 600;
 }
 
-/* 고정이 걸리는 경우에만 세로로 길게 만든다 — 이 높이가 곧 시퀀스의 길이다. */
+/* 시퀀스의 길이는 여기서 나온다. 앞 버전은 **문장 자체에** 74vh씩 높이를 줬고, 그래서
+   이 섹션 혼자 2,351px(화면 2.6개)를 쓰면서 한 번에 문장 하나만 보였다 — 나머지는
+   전부 빈 화면. 이제 길이는 보이지 않는 눈금이 만들고 문장은 카드 옆에 모여 있다. */
 .scene-seq.is-sequenced {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.72fr);
-  align-items: start;
+  position: relative;
+  min-height: 165vh;
 }
 
-.scene-seq.is-sequenced .scene-seq-stage {
+/* 스크롤 눈금 — 세 칸으로 나뉜 보이지 않는 격자. 관측기는 이 칸이 화면 중앙선을
+   지나는 순간만 본다. 보이는 것이 없으므로 스크린리더에서도 제외한다. */
+.scene-seq.is-sequenced .scene-seq-markers {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  /* 마지막 칸이 넓다. 세 칸을 균등하게 두면 3단계가 고정이 풀리기 직전에야 켜져,
+     완성된 답변을 볼 시간 없이 섹션이 끝난다. 3단계를 일찍 켜고 오래 붙잡는다. */
+  grid-template-rows: 1fr 1fr 1.5fr;
+  pointer-events: none;
+}
+
+/* 화면 높이를 통째로 차지하고 그 안에서 가운데를 잡는다. 위쪽에 붙여 두면 카드가
+   짧은 1단계에서 화면 아래 절반이 통째로 비어 보인다. */
+.scene-seq.is-sequenced .scene-seq-panel {
   position: sticky;
-  top: clamp(80px, 16vh, 140px);
+  top: 0;
+  min-height: 100vh;
+  align-content: center;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.72fr);
+  /* 카드는 답이 도착하면 자란다. 가운데 정렬이라야 옆 문장이 따라 흔들리지 않는다. */
+  align-items: center;
 }
 
 .scene-seq.is-sequenced .scene-seq-steps {
-  display: block;
+  gap: 22px;
 }
 
-/* 각 구간이 화면 하나만큼 차지해야 중앙선 관측이 한 번씩 걸린다. */
 .scene-seq.is-sequenced .scene-seq-steps li {
-  display: flex;
-  align-items: center;
-  min-height: 74vh;
-  font-size: clamp(1.125rem, 0.95rem + 0.8vw, 1.5rem);
-  border-left: 0;
-  padding-left: 0;
-}
-
-.scene-seq.is-sequenced .scene-seq-steps li span {
+  font-size: clamp(1.0625rem, 0.95rem + 0.5vw, 1.3125rem);
   padding-left: 20px;
-  border-left: 3px solid var(--line-strong);
-  transition: border-color 0.4s var(--ease-enter);
+  border-left-width: 3px;
 }
 
-.scene-seq.is-sequenced .scene-seq-steps li.is-active span {
-  border-left-color: var(--accent);
-}
-
-/* 카드 안이 단계마다 바뀌므로 높이가 튄다 — 최소 높이로 흔들림을 잡되,
-   가장 큰 단계(목록 + 출처 + 자리 한 줄)에 맞춰 여백이 남지 않게 한다. */
-.scene-seq.is-sequenced .scene {
-  min-height: 23rem;
+/* 예전에는 가장 큰 단계에 맞춰 최소 높이를 박아 두었다. 그러면 1단계에서 점 세 개만
+   뜬 368px짜리 빈 상자가 되고, 그건 기다림이 아니라 고장으로 읽힌다.
+   카드는 고정 열 안에 sticky로 떠 있어 아래 내용을 밀지 않으므로, **답이 도착하면
+   카드가 자라게** 둔다 — 실제 AI 답변이 나타나는 방식이기도 하다. */
+.scene-seq.is-sequenced .scene[data-step="0"] .scene-answer {
+  min-height: 3.5em;
 }
 
 /* ─── 환자가 AI에 묻는 장면 ─────────────────────────────────────
@@ -810,10 +831,6 @@ textarea:focus-visible {
 
 .scene-answer {
   flex: 1;
-}
-
-.scene-disclaimer {
-  margin-top: auto;
 }
 
 .scene-eyebrow {
@@ -941,8 +958,12 @@ textarea:focus-visible {
   color: var(--accent-dark);
 }
 
+/* 위에 있던 `margin-top: auto`는 이 단축 속성에 덮여 죽어 있었다(같은 특정도, 뒤가 이김).
+   카드에 최소 높이가 박혀 있는 동안은 그 여유가 간격을 대신해 줘서 안 보였는데,
+   최소 높이를 걷어내자 목록과 10px까지 붙어 등장 애니메이션 중에 겹쳤다.
+   카드가 내용만큼만 높아지는 지금은 간격을 명시하는 것이 맞다. */
 .scene-disclaimer {
-  margin: 10px 0 0;
+  margin: 22px 0 0;
   font-size: 0.6875rem;
   line-height: 1.5;
   color: var(--muted);
