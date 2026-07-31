@@ -375,6 +375,18 @@ test('the FAQ answers the objections we would otherwise get on a call', () => {
   assert.match(rankItem.answer, /아닙니다|보장하지 않/)
 })
 
+test('the fold label counts the hidden questions instead of hardcoding a number', () => {
+  /**
+   * 랜딩은 앞의 몇 개만 세워 두고 나머지를 접는다. 남은 개수를 문자열에 박아 두면
+   * 질문을 하나 추가한 날 "질문 7개 더 보기"가 조용히 틀린 값이 된다.
+   */
+  assert.ok(
+    faqSection.moreLabel.includes('{n}'),
+    '접힌 질문 수 자리표시자 {n}이 없습니다 — 숫자를 직접 적으면 안 됩니다.',
+  )
+  assert.doesNotMatch(faqSection.moreLabel, /\d/)
+})
+
 test('every FAQ answer is substantive', () => {
   for (const item of faqItems) {
     assert.ok(item.answer.length >= 50, `"${item.question}" 답변이 너무 짧습니다.`)
