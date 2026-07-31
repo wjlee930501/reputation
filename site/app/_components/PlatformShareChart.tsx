@@ -40,8 +40,12 @@ export default function PlatformShareChart({
         ))}
       </div>
 
+      {/* 큰 숫자는 마스크 안에서 밀려 올라온다. 감싸는 요소가 있어야 잘라낼 면이 생긴다 —
+          `<p>`에 직접 overflow를 걸면 옆 설명까지 함께 잘린다. */}
       <p className="share-total">
-        <strong>{measuredTotal.toFixed(1)}%</strong>
+        <span className="figure-mask">
+          <strong className="figure-value">{measuredTotal.toFixed(1)}%</strong>
+        </span>
         <span>Re:putation이 측정하는 두 곳의 합</span>
       </p>
 

@@ -8314,3 +8314,214 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   .dg-page { padding: 36px 16px 72px; }
   .dg-header h1 { font-size: 25px; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   움직임 — "느껴지는" 것들
+   ═══════════════════════════════════════════════════════════════════
+   등장 애니메이션은 이미 있었는데도 화면이 정지 사진처럼 읽혔다. 빠져 있던 건
+   **포인터에 대한 반응**과 **상태의 변화**다. 스크롤해도 헤더가 그대로고, 카드에
+   커서를 올려도 아무 일이 없으면 페이지는 다 만들어지지 않은 것처럼 보인다.
+
+   전부 `prefers-reduced-motion`에서 꺼진다(파일 끝 블록). */
+
+/* ── 헤더: 읽기 시작하면 조여든다 ─────────────────────────────── */
+.site-header {
+  transition:
+    padding 0.35s var(--ease),
+    background-color 0.35s var(--ease),
+    box-shadow 0.35s var(--ease);
+}
+
+.site-header[data-scrolled] {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 0 var(--line-strong), 0 8px 24px -18px rgba(15, 30, 55, 0.5);
+}
+
+.site-header[data-scrolled] .brand-lockup small {
+  opacity: 0;
+  transform: translateX(-4px);
+}
+
+.brand-lockup small {
+  transition:
+    opacity 0.3s var(--ease),
+    transform 0.3s var(--ease);
+}
+
+/* ── 내비게이션: 밑줄이 자란다 ─────────────────────────────────── */
+.header-nav a {
+  position: relative;
+  padding-bottom: 3px;
+}
+
+.header-nav a::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.28s var(--ease);
+}
+
+.header-nav a:hover::after,
+.header-nav a:focus-visible::after {
+  transform: scaleX(1);
+}
+
+/* ── 큰 숫자: 마스크 밖으로 밀려 올라온다 ──────────────────────
+   숫자를 페이드로만 띄우면 "값이 나타났다"가 아니라 "요소가 로드됐다"로 읽힌다.
+   아래에서 올라오면 계기판이 도는 느낌이 난다. */
+.figure-card dt,
+.figure-mask {
+  display: block;
+  overflow: hidden;
+  /* 마스크가 위아래로 딱 붙으면 한글·숫자의 아래 삐침이 잘린다. */
+  padding-bottom: 0.06em;
+}
+
+.figure-mask {
+  display: inline-block;
+  vertical-align: bottom;
+}
+
+.reveal-ready .landing-shell [data-reveal] .figure-value {
+  display: block;
+  transform: translateY(115%);
+  transition: transform 1s var(--ease-enter);
+}
+
+.reveal-ready .landing-shell [data-reveal].in-view .figure-value {
+  transform: none;
+}
+
+/* ── 섹션 제목: 아래에서 드러난다 ──────────────────────────────
+   `clip-path`의 아래쪽을 음수로 열어 둔다. 0으로 두면 받침과 괄호가 잘린다. */
+.reveal-ready .landing-shell .section-heading[data-reveal] h2 {
+  clip-path: inset(0 0 105% 0);
+  transform: translateY(0.12em);
+  transition:
+    clip-path 0.95s var(--ease-enter),
+    transform 0.95s var(--ease-enter);
+  transition-delay: 0.08s;
+}
+
+.reveal-ready .landing-shell .section-heading[data-reveal].in-view h2 {
+  clip-path: inset(0 0 -25% 0);
+  transform: none;
+}
+
+/* ── 카드: 커서에 반응한다 ─────────────────────────────────────── */
+.pain-list li,
+.limits-grid li,
+.process-grid li {
+  transition:
+    transform 0.3s var(--ease),
+    border-color 0.3s var(--ease);
+}
+
+.pain-list li:hover,
+.limits-grid li:hover,
+.process-grid li:hover {
+  transform: translateY(-3px);
+}
+
+.process-num {
+  transition:
+    color 0.3s var(--ease),
+    opacity 0.3s var(--ease);
+}
+
+.process-grid li:hover .process-num {
+  opacity: 1;
+  color: var(--accent-dark);
+}
+
+.limits-grid li:hover h3 {
+  color: var(--accent-dark);
+}
+
+.limits-grid li h3 {
+  transition: color 0.3s var(--ease);
+}
+
+/* ── FAQ: 열고 닫히는 것이 보인다 ──────────────────────────────
+   `::details-content`를 지원하는 브라우저에서만 높이를 전이한다. 지원하지 않으면
+   지금처럼 즉시 열린다 — 기능이 아니라 마감이므로 폴백을 따로 만들지 않는다. */
+.faq-list summary {
+  transition: color 0.2s var(--ease);
+}
+
+.faq-list summary:hover {
+  color: var(--accent-dark);
+}
+
+@supports (interpolate-size: allow-keywords) {
+  :root {
+    interpolate-size: allow-keywords;
+  }
+
+  .faq-list details::details-content {
+    block-size: 0;
+    overflow: hidden;
+    transition:
+      block-size 0.4s var(--ease),
+      content-visibility 0.4s allow-discrete;
+    transition-behavior: allow-discrete;
+  }
+
+  .faq-list details[open]::details-content {
+    block-size: auto;
+  }
+}
+
+/* ── 버튼: 눌리는 감각 ─────────────────────────────────────────── */
+.btn-primary {
+  transition:
+    transform 0.2s var(--ease),
+    box-shadow 0.25s var(--ease),
+    background-color 0.2s var(--ease);
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px -14px rgba(0, 120, 255, 0.85);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site-header,
+  .site-header[data-scrolled],
+  .brand-lockup small,
+  .header-nav a::after,
+  .pain-list li,
+  .limits-grid li,
+  .process-grid li,
+  .btn-primary {
+    transition: none;
+  }
+
+  .pain-list li:hover,
+  .limits-grid li:hover,
+  .process-grid li:hover,
+  .btn-primary:hover {
+    transform: none;
+  }
+
+  .reveal-ready .landing-shell [data-reveal] .figure-value,
+  .reveal-ready .landing-shell .section-heading[data-reveal] h2 {
+    transform: none;
+    clip-path: none;
+    transition: none;
+  }
+}
