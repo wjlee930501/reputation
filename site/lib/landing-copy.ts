@@ -375,6 +375,11 @@ export const limitItems = [
 export const faqSection = {
   label: "자주 받는 질문",
   heading: "미리 답해 둡니다",
+  /**
+   * 접힌 질문을 여는 줄. `{n}`은 실제 남은 개수로 치환된다 — 숫자를 문자열에 박아 두면
+   * 질문을 하나 추가한 날 안내가 조용히 틀린 값이 된다.
+   */
+  moreLabel: "질문 {n}개 더 보기",
 }
 
 export const faqItems = [

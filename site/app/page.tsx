@@ -32,6 +32,9 @@ import ScrollReveal from "./_components/ScrollReveal";
 
 const DIAGNOSIS_PATH = "/ai-diagnosis";
 
+/** 접지 않고 세워 두는 질문 수. 나머지는 "질문 N개 더 보기" 뒤로 들어간다. */
+const FAQ_OPEN_COUNT = 4;
+
 /**
  * 랜딩의 논증 순서 — 이 순서 자체가 이 서비스의 주장이다.
  *
@@ -204,13 +207,33 @@ export default function Home() {
           <h2 id="faq-heading">{faqSection.heading}</h2>
         </div>
 
+        {/* 앞의 넷만 펼쳐 두고 나머지는 한 줄 뒤로 접는다. 열한 개를 한꺼번에 세워 두면
+            읽지도 않을 목록이 화면 하나를 차지한다. 더 알고 싶은 사람만 열면 된다.
+            `<details>` 안에 `<details>`는 유효한 마크업이고, JS 없이도 동작한다. */}
         <div className="faq-list">
-          {faqItems.map((item) => (
+          {faqItems.slice(0, FAQ_OPEN_COUNT).map((item) => (
             <details key={item.question} data-reveal>
               <summary>{item.question}</summary>
               <p>{item.answer}</p>
             </details>
           ))}
+
+          {faqItems.length > FAQ_OPEN_COUNT && (
+            <details className="faq-more" data-reveal>
+              <summary>
+                {faqSection.moreLabel.replace(
+                  "{n}",
+                  String(faqItems.length - FAQ_OPEN_COUNT),
+                )}
+              </summary>
+              {faqItems.slice(FAQ_OPEN_COUNT).map((item) => (
+                <details key={item.question}>
+                  <summary>{item.question}</summary>
+                  <p>{item.answer}</p>
+                </details>
+              ))}
+            </details>
+          )}
         </div>
       </section>
 
