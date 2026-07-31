@@ -32,17 +32,14 @@ const ALL_COPY = [
   landingHero.primaryCta,
   marketSection.label,
   marketSection.heading,
-  marketSection.body,
   sceneSection.label,
   sceneSection.heading,
   sceneSection.askLine,
   ...sceneSection.steps,
   operationSection.label,
   operationSection.heading,
-  operationSection.body,
   limitsSection.label,
   limitsSection.heading,
-  limitsSection.body,
   ctaSection.label,
   ctaSection.heading,
   ctaSection.body,
@@ -62,10 +59,9 @@ const ALL_COPY = [
   heroScarcity.note,
   previewSection.label,
   previewSection.heading,
-  previewSection.body,
   ...faqItems.flatMap((f) => [f.question, f.answer]),
   ...measuredFigures.flatMap((f) => [f.value, f.label, f.source]),
-  ...operationSteps.flatMap((s) => [s.label, s.title, s.body]),
+  ...operationSteps.flatMap((s) => [s.label, s.title]),
   ...limitItems.flatMap((l) => [l.title, l.body]),
   answerDemo.disclaimer,
   ...answerExamples.flatMap((e) => [
@@ -386,7 +382,7 @@ test('every FAQ answer is substantive', () => {
 })
 
 test('operation steps describe operation, not tooling', () => {
-  const stepText = operationSteps.map((s) => `${s.label} ${s.title} ${s.body}`).join(' ')
+  const stepText = operationSteps.map((s) => `${s.label} ${s.title}`).join(' ')
   assert.ok(operationSteps.length >= 3)
   assert.match(stepText, /정리합니다|발행합니다|기록합니다/)
 })

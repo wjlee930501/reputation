@@ -23,6 +23,7 @@ import {
 } from "@/lib/landing-copy";
 
 import AnswerExplorer from "./_components/AnswerExplorer";
+import HeaderScrollState from "./_components/HeaderScrollState";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
 import SceneSequence from "./_components/SceneSequence";
@@ -47,6 +48,7 @@ export default function Home() {
   return (
     <main id="main-content" className="landing-shell">
       <ScrollReveal />
+      <HeaderScrollState />
 
       <header className="site-header">
         <a className="brand-lockup" href="#top" aria-label="MotionLabs Re:putation 홈">
@@ -110,7 +112,6 @@ export default function Home() {
         <div className="section-heading" data-reveal>
           <p className="section-label">{marketSection.label}</p>
           <h2 id="market-heading">{marketSection.heading}</h2>
-          <p>{marketSection.body}</p>
         </div>
 
         {/* 외부 조사와 자체 실측을 한 그리드에 둔다. 두 섹션으로 나눠 두면 여섯 개
@@ -119,7 +120,9 @@ export default function Home() {
         <dl className="figure-grid">
           {measuredFigures.map((figure) => (
             <div key={figure.value} className="figure-card is-measured" data-reveal>
-              <dt>{figure.value}</dt>
+              <dt>
+                <span className="figure-value">{figure.value}</span>
+              </dt>
               <dd>
                 {figure.label}
                 <span className="figure-source">{figure.source}</span>
@@ -163,7 +166,6 @@ export default function Home() {
         <div className="section-heading" data-reveal>
           <p className="section-label">{operationSection.label}</p>
           <h2 id="operation-heading">{operationSection.heading}</h2>
-          <p>{operationSection.body}</p>
         </div>
 
         <ol className="process-grid">
@@ -172,7 +174,6 @@ export default function Home() {
               <span className="process-num">{String(index + 1).padStart(2, "0")}</span>
               <p className="process-label">{step.label}</p>
               <h3>{step.title}</h3>
-              <p>{step.body}</p>
             </li>
           ))}
         </ol>
@@ -183,7 +184,6 @@ export default function Home() {
         <div className="section-heading" data-reveal>
           <p className="section-label">{limitsSection.label}</p>
           <h2 id="limits-heading">{limitsSection.heading}</h2>
-          <p>{limitsSection.body}</p>
         </div>
 
         <ul className="limits-grid">
@@ -219,7 +219,6 @@ export default function Home() {
         <div className="section-heading" data-reveal>
           <p className="section-label">{previewSection.label}</p>
           <h2 id="preview-heading">{previewSection.heading}</h2>
-          <p>{previewSection.body}</p>
         </div>
 
         <div className="preview-stage" data-reveal>

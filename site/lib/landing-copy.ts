@@ -126,7 +126,6 @@ export const sceneSection = {
 export const previewSection = {
   label: "리포트 미리보기",
   heading: "받아보시는 리포트",
-  body: "진료과를 눌러 다른 예시를 보실 수 있습니다.",
 }
 
 
@@ -139,7 +138,6 @@ export const previewSection = {
 export const marketSection = {
   label: "실측",
   heading: "자리는 좁고, 매번 바뀝니다",
-  body: "수서역·내과로 조건을 고정하고 질의 3개를 반복 측정한 결과입니다.",
 }
 
 /**
@@ -319,25 +317,19 @@ export const answerExamples: AnswerExample[] = [
 export const operationSection = {
   label: "운영 방식",
   heading: "원장님 몫은 정보를 주시는 것까지",
-  body: "쓰는 법을 익히실 필요가 없습니다. 담당 매니저가 붙고, 발행은 자동으로 돌아갑니다.",
 }
 
+/**
+ * 운영 3단계 — **한 칸에 한 문장.**
+ *
+ * 앞 버전은 칸마다 제목 한 문장 + 부연 한 문장이었다. 세 칸이면 여섯 문장이고, 그중
+ * 부연 셋은 제목을 다시 설명할 뿐이었다. 잃은 정보(근거 자료 한정·자동 검사·원문 보존)는
+ * FAQ와 "하지 않는 것"이 이미 각각 답한다.
+ */
 export const operationSteps = [
-  {
-    label: "정보 구조화",
-    title: "병원이 가진 정보를 AI가 읽는 형태로 정리합니다.",
-    body: "사람이 읽는 문장과 기계가 읽는 마크업으로 동시에 정리합니다.",
-  },
-  {
-    label: "근거 콘텐츠 발행",
-    title: "환자 질문에 답하는 글을 매달 정해진 편수로 발행합니다.",
-    body: "병원이 주신 근거 자료에서만 씁니다. 발행 전 의료광고 금지 표현을 자동 검사합니다.",
-  },
-  {
-    label: "답변 측정",
-    title: "환자가 쓸 질문을 실제로 AI에 물어 결과를 기록합니다.",
-    body: "질문 원문·모델명·측정 일시를 그대로 남깁니다.",
-  },
+  { label: "정보 구조화", title: "AI가 읽는 형태로 정리합니다." },
+  { label: "근거 콘텐츠 발행", title: "환자 질문에 답하는 글을 매달 발행합니다." },
+  { label: "답변 측정", title: "실제로 AI에 물어 결과를 기록합니다." },
 ]
 
 
@@ -346,7 +338,6 @@ export const operationSteps = [
 export const limitsSection = {
   label: "하지 않는 것",
   heading: "이건 못 합니다",
-  body: "지키지 못할 약속은 처음부터 하지 않습니다.",
 }
 
 /**
@@ -360,21 +351,21 @@ export const limitItems = [
   {
     // 제목만 떼어 읽으면 "보장한다"로 오해될 수 있다. 부정은 본문 첫 문장이 진다.
     title: "노출 순위 보장",
-    body: "약속하지 않습니다. 어느 병원이 들어갈지는 플랫폼이 정합니다.",
+    body: "약속하지 않습니다. 플랫폼이 정합니다.",
   },
   {
     title: "환자 수 증가",
-    body: "노출과 내원은 다른 지표입니다. 재지 않은 것을 성과로 적지 않습니다.",
+    body: "재지 않은 것을 성과로 적지 않습니다.",
   },
   {
     title: "치료 효과 표현",
     // 금지 표현을 여기서 **나열하지 않는다.** 공개 페이지에 그 단어가 실제로 박히면
     // 문맥과 무관하게 검색·점검에 걸리고, 카피 가드에도 예외를 만들어야 한다.
-    body: "의료광고법이 금지하는 표현은 생성 단계에서 걸러냅니다.",
+    body: "생성 단계에서 걸러냅니다.",
   },
   {
     title: "검수 없는 자동 발행",
-    body: "그대로 내보내지 않습니다. 발행 전 자동 검사, 발행 후 담당자 확인을 거칩니다.",
+    body: "그대로 내보내지 않습니다. 발행 전후로 두 번 봅니다.",
   },
 ]
 
@@ -383,7 +374,7 @@ export const limitItems = [
 
 export const faqSection = {
   label: "자주 받는 질문",
-  heading: "자주 나오는 질문",
+  heading: "미리 답해 둡니다",
 }
 
 export const faqItems = [
@@ -449,7 +440,7 @@ export const faqItems = [
 export const ctaSection = {
   label: "무료 진단",
   heading: "우리 병원은 지금 몇 번 나올까요?",
-  body: "병원명·지역·진료과와 확인하고 싶은 키워드를 남기시면 ChatGPT와 Gemini에 실제로 물어 결과를 정리해 메일로 보냅니다.",
+  body: "남겨 주시면 ChatGPT와 Gemini에 실제로 물어 메일로 보내드립니다.",
   primaryCta: "무료 진단 신청하기",
   notes: [
     "하루 20곳까지 선착순으로 받습니다.",
