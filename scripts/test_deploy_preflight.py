@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import sys
@@ -98,16 +99,104 @@ def test_site_bff_secret_is_a_required_managed_secret() -> None:
     assert '"SITE_BFF_SECRET"' in required_block
 
 
-def test_secret_preflight_requires_enabled_latest_versions() -> None:
+def _secret_preflight_block() -> str:
+    """시크릿 사전 검증 함수들만 떼어낸다 — deploy.sh 전체는 source할 수 없다."""
     text = DEPLOY_SCRIPT.read_text()
-    build_secret_args = text[
-        text.index("build_secret_args()") : text.index(
-            "prepare_non_secret_env_file", text.index("build_secret_args()")
-        )
-    ]
+    start = text.index('SECRET_LOOKUP_ERROR=""')
+    # build_secret_args를 닫는 자체 라인 '}'까지 — 그 뒤 최상위 코드가 딸려오면 안 된다.
+    end = text.index("\n}\n", text.index("build_secret_args()")) + len("\n}\n")
+    return text[start:end]
 
-    assert "gcloud secrets versions describe latest" in build_secret_args
-    assert "ENABLED" in build_secret_args
+
+# 이름으로 응답을 고르는 가짜 gcloud. 이름에 AUTH가 들어가면 인증 만료를, MISSING이면
+# 진짜 부재를 흉내낸다 — 실제 gcloud가 두 경우에 내놓는 문구를 그대로 쓴다.
+_FAKE_GCLOUD = """#!/usr/bin/env bash
+args="$*"
+if [[ "$args" == *"versions describe latest"* ]]; then
+  name="${args#*--secret=}"; name="${name%% *}"
+else
+  name="$3"
+fi
+case "$name" in
+  *AUTH*)
+    echo "ERROR: (gcloud.secrets.describe) There was a problem refreshing your current auth tokens: ('invalid_grant: reauth related error (invalid_rapt)',). Please run: \\$ gcloud auth login" >&2
+    exit 1 ;;
+  *MISSING*)
+    echo "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [projects/p/secrets/$name] not found." >&2
+    exit 1 ;;
+  *DISABLED*)
+    if [[ "$args" == *"versions describe"* ]]; then echo DISABLED; fi
+    exit 0 ;;
+  *)
+    if [[ "$args" == *"versions describe"* ]]; then echo ENABLED; fi
+    exit 0 ;;
+esac
+"""
+
+
+def _run_secret_preflight(
+    tmp_path: Path, required: list[str], optional: list[str]
+) -> subprocess.CompletedProcess[str]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True)
+    gcloud = fake_bin / "gcloud"
+    gcloud.write_text(_FAKE_GCLOUD)
+    gcloud.chmod(0o755)
+
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "set -euo pipefail\n"
+        "BOLD=''; RESET=''\n"
+        "PROJECT_ID=test-project\n"
+        'fail() { echo "$1" >&2; exit 1; }\n'
+        + _secret_preflight_block()
+        + "\nREQUIRED_SECRET_NAMES=({})\n".format(" ".join(f'"{n}"' for n in required))
+        + "OPTIONAL_SECRET_NAMES=({})\n".format(" ".join(f'"{n}"' for n in optional))
+        + "build_secret_args\n"
+        + 'echo "SECRET_ARGS=${SECRET_ARGS[*]:-}"\n'
+    )
+
+    env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+    return subprocess.run(
+        ["bash", str(harness)], capture_output=True, text=True, env=env
+    )
+
+
+def test_secret_preflight_requires_enabled_latest_versions(tmp_path: Path) -> None:
+    ok = _run_secret_preflight(tmp_path / "ok", ["OKSECRET"], [])
+    assert ok.returncode == 0, ok.stderr
+    assert "OKSECRET=OKSECRET:latest" in ok.stdout
+
+    disabled = _run_secret_preflight(tmp_path / "dis", ["DISABLEDSECRET"], [])
+    assert disabled.returncode == 1
+    assert "must be ENABLED" in disabled.stderr
+
+
+def test_missing_secret_is_reported_as_missing(tmp_path: Path) -> None:
+    result = _run_secret_preflight(tmp_path, ["MISSINGSECRET"], [])
+    assert result.returncode == 1
+    assert "is missing" in result.stderr
+
+
+def test_lookup_failure_is_not_reported_as_a_missing_secret(tmp_path: Path) -> None:
+    """인증 만료를 '시크릿이 없다'로 안내하면, 안내를 따라간 운영자가 멀쩡히 있는
+    로테이션 금지 시크릿에 새 버전을 덧씌운다. 그 문구가 나오면 안 된다."""
+    result = _run_secret_preflight(tmp_path, ["AUTHSECRET"], [])
+    assert result.returncode == 1
+    assert "is missing" not in result.stderr
+    assert "gcloud auth login" in result.stderr
+    assert "새로 만들지 마세요" in result.stderr
+
+
+def test_optional_secret_is_dropped_only_when_confirmed_absent(tmp_path: Path) -> None:
+    absent = _run_secret_preflight(tmp_path / "absent", ["OKSECRET"], ["MISSINGOPT"])
+    assert absent.returncode == 0, absent.stderr
+    assert "MISSINGOPT" not in absent.stdout
+
+    # 조회 실패까지 부재로 삼키면 시크릿이 조용히 빠진 채 배포가 초록색으로 끝난다.
+    unknown = _run_secret_preflight(tmp_path / "unknown", ["OKSECRET"], ["AUTHOPT"])
+    assert unknown.returncode == 1
+    assert "AUTHOPT" in unknown.stderr
 
 
 def test_backend_deploys_use_conditional_database_and_network_args() -> None:

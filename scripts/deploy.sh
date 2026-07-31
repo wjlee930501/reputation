@@ -352,15 +352,81 @@ make_service_env_file() {
     >> "$SERVICE_ENV_FILE"
 }
 
+# ─── 시크릿 조회: "없다"와 "못 봤다"를 구분한다 ───────────────────────
+# `gcloud secrets describe`는 시크릿이 정말 없을 때도, 인증이 만료됐을 때도, 권한이
+# 없을 때도 똑같이 0이 아닌 코드로 끝난다. 셋을 전부 "시크릿이 없으니 만들어라"로
+# 안내하면 안내를 따라간 운영자가 **멀쩡히 있는 시크릿에 새 버전을 덧씌운다**.
+# LEAD_LOCK_HASH_PEPPER와 LEAD_REPORT_TOKEN_SECRET은 값이 바뀌는 순간 기존 1회 제한
+# 잠금이 전부 풀리고 이미 보낸 리포트 링크가 전부 죽는 로테이션 금지 시크릿이므로,
+# 이 혼동은 되돌릴 수 없는 사고가 된다. 그래서 stderr를 읽어 **부재를 확인했을 때만**
+# 생성을 안내하고, 확인하지 못했으면 원인을 그대로 보여주고 멈춘다.
+SECRET_LOOKUP_ERROR=""
+
+# 0 = 있음 · 1 = 확인된 부재 · 2 = 조회 실패 (원문은 SECRET_LOOKUP_ERROR)
+probe_secret_exists() {
+  local name="$1" err
+  # stdout은 버리고 stderr만 잡는다 — 실패 원인이 거기에만 있다.
+  if err="$(gcloud secrets describe "$name" --project="$PROJECT_ID" 2>&1 >/dev/null)"; then
+    SECRET_LOOKUP_ERROR=""
+    return 0
+  fi
+  SECRET_LOOKUP_ERROR="$err"
+  if [[ "$err" == *NOT_FOUND* || "$err" == *"was not found"* ]]; then
+    return 1
+  fi
+  return 2
+}
+
+# 0 = latest가 ENABLED · 1 = 쓸 수 있는 버전이 없음 · 2 = 조회 실패
+probe_secret_latest_enabled() {
+  local name="$1" out
+  if out="$(gcloud secrets versions describe latest --secret="$name" --project="$PROJECT_ID" --format='value(state)' 2>&1)"; then
+    SECRET_LOOKUP_ERROR=""
+    [[ "${out//[$'\r\n\t ']/}" == "ENABLED" ]] && return 0
+    return 1
+  fi
+  SECRET_LOOKUP_ERROR="$out"
+  # 컨테이너는 있는데 버전이 하나도 없으면 여기서도 NOT_FOUND가 난다 — 부재로 본다.
+  if [[ "$out" == *NOT_FOUND* || "$out" == *"was not found"* ]]; then
+    return 1
+  fi
+  return 2
+}
+
+# 조회 실패는 원인을 그대로 보여준다. 인증 만료가 압도적으로 흔하므로 그때만 처방을 붙인다.
+fail_secret_lookup() {
+  local name="$1" hint="gcloud 출력을 보고 원인을 해결한 뒤 다시 실행하세요."
+  case "$SECRET_LOOKUP_ERROR" in
+    *eauthentication*|*credentials*|*invalid_grant*|*"Please run"*)
+      hint="gcloud 인증이 만료된 것으로 보입니다 — \`gcloud auth login\` 후 다시 실행하세요." ;;
+    *PERMISSION_DENIED*|*"does not have permission"*|*"not have access"*)
+      hint="이 계정에 ${PROJECT_ID}의 secretmanager 조회 권한이 없습니다." ;;
+  esac
+  fail "Secret Manager secret ${name} 조회에 실패했습니다 — 있는지 없는지 확인하지 못했습니다.
+   ${BOLD}새로 만들지 마세요.${RESET} 이미 있는 시크릿에 버전을 덧씌우게 됩니다.
+   ${hint}
+   gcloud: ${SECRET_LOOKUP_ERROR}"
+}
+
 require_secret_versions() {
   local name status
 
   for name in "$@"; do
-    if ! gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
+    status=0
+    probe_secret_exists "$name" || status=$?
+    if [[ "$status" -eq 2 ]]; then
+      fail_secret_lookup "$name"
+    fi
+    if [[ "$status" -eq 1 ]]; then
       fail "Secret Manager secret ${name} is missing. Create it before deploying so secrets are not passed as plaintext env vars."
     fi
-    status="$(gcloud secrets versions describe latest --secret="$name" --project="$PROJECT_ID" --format='value(state)' 2>/dev/null || true)"
-    if [[ "$status" != "ENABLED" ]]; then
+
+    status=0
+    probe_secret_latest_enabled "$name" || status=$?
+    if [[ "$status" -eq 2 ]]; then
+      fail_secret_lookup "$name"
+    fi
+    if [[ "$status" -ne 0 ]]; then
       fail "Secret Manager secret ${name} latest version must be ENABLED before deploy."
     fi
   done
@@ -374,20 +440,38 @@ build_secret_args() {
   SECRET_ARGS=()
   local name status
   local pairs=""
+  # set -u에서 빈 배열 확장은 unbound로 죽는다. 선택 시크릿이 하나도 없는 서비스가
+  # 생겨도 배포가 "unbound variable"로 끝나지 않도록 여기서 흡수한다.
+  local -a required=(${REQUIRED_SECRET_NAMES[@]+"${REQUIRED_SECRET_NAMES[@]}"})
+  local -a optional=(${OPTIONAL_SECRET_NAMES[@]+"${OPTIONAL_SECRET_NAMES[@]}"})
 
-  for name in "${REQUIRED_SECRET_NAMES[@]}"; do
+  for name in ${required[@]+"${required[@]}"}; do
     require_secret_versions "$name"
     pairs+="${pairs:+,}${name}=${name}:latest"
   done
 
-  for name in "${OPTIONAL_SECRET_NAMES[@]}"; do
-    if gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1; then
-      status="$(gcloud secrets versions describe latest --secret="$name" --project="$PROJECT_ID" --format='value(state)' 2>/dev/null || true)"
-      if [[ "$status" != "ENABLED" ]]; then
-        fail "Secret Manager secret ${name} latest version must be ENABLED before deploy."
-      fi
-      pairs+="${pairs:+,}${name}=${name}:latest"
+  # 선택 시크릿은 **부재만** 건너뛴다. 조회 실패까지 부재로 삼키면 인증이 만료된 순간
+  # 시크릿이 조용히 빠진 채로 배포되고(INDEXNOW_KEY가 빠지면 색인 제출만 소리 없이
+  # 멈춘다), 배포는 초록색으로 끝나 아무도 눈치채지 못한다.
+  for name in ${optional[@]+"${optional[@]}"}; do
+    status=0
+    probe_secret_exists "$name" || status=$?
+    if [[ "$status" -eq 2 ]]; then
+      fail_secret_lookup "$name"
     fi
+    if [[ "$status" -eq 1 ]]; then
+      continue
+    fi
+
+    status=0
+    probe_secret_latest_enabled "$name" || status=$?
+    if [[ "$status" -eq 2 ]]; then
+      fail_secret_lookup "$name"
+    fi
+    if [[ "$status" -ne 0 ]]; then
+      fail "Secret Manager secret ${name} latest version must be ENABLED before deploy."
+    fi
+    pairs+="${pairs:+,}${name}=${name}:latest"
   done
 
   if [[ -n "$pairs" ]]; then
