@@ -6,6 +6,14 @@ import { sceneSection, type AnswerExample } from "@/lib/landing-copy";
 
 import AiAnswerScene, { type SceneStep } from "./AiAnswerScene";
 
+/**
+ * 단계별 머무는 시간.
+ *
+ * 마지막 단계가 가장 길다 — 목록에 병원 셋이 적히고 그 아래 "여기 이름이 있어야
+ * 한다"가 나오는 상태가 이 섹션이 하려는 말이다. 앞의 둘은 거기까지 가는 길이다.
+ */
+const HOLD_MS: Record<SceneStep, number> = { 0: 1500, 1: 2600, 2: 5200 };
+
 const STEPS: { step: SceneStep; caption: string }[] = [
   { step: 0, caption: sceneSection.steps[0] },
   { step: 1, caption: sceneSection.steps[1] },
@@ -20,22 +28,27 @@ function prefersReducedMotion() {
 }
 
 /**
- * 스크롤에 묶인 시퀀스 — 카드는 고정되고 설명이 지나간다.
+ * 환자가 묻고 AI가 답하는 장면 — **스스로 넘어간다.**
  *
- * 세 구간을 지나며 카드가 단계적으로 열린다: 질문 → 답변과 병원 목록 → 우리 자리.
- * 한 화면에 전부 보여주면 "자리가 서너 곳"이라는 사실이 다른 정보에 묻힌다. 순서대로
- * 드러내야 목록이 나타나는 순간이 보인다.
+ * ## 스크롤에 묶지 않는다
  *
- * ## 스크롤 위치를 계산하지 않는다
+ * 앞 버전은 145vh짜리 통을 두고 스크롤 위치로 단계를 바꾸는 고정 시퀀스였다.
+ * 그 방식은 **화면 높이마다 다르게 어긋난다** — 카드는 제 높이(약 460px)인데 통은
+ * 화면 높이에 비례하니, 큰 화면일수록 제목과 카드 사이 또는 카드 아래가 크게 빈다.
+ * 실제로 그 간격을 두 번 고쳤고 두 번 다 다른 크기에서 다시 깨졌다.
  *
- * `scroll` 이벤트로 진행률을 재면 매 프레임 레이아웃을 읽게 되고 모바일에서 끊긴다.
- * 대신 구간마다 보이지 않는 표식을 두고 **화면 중앙선을 지나는 순간**만 관측한다
- * (rootMargin -50%/-50%). 관측은 브라우저가 알아서 배칭한다.
+ * 지금은 섹션이 제 내용만큼만 높고, 단계는 시간이 넘긴다. 어느 화면에서도 같은
+ * 모양이고 고칠 변수가 하나 줄었다.
  *
- * ## 좁은 화면과 모션 최소화
+ * ## 보일 때만 돈다
  *
- * 둘 다 고정을 쓰지 않고 마지막 단계를 그대로 보인다. 좁은 화면에서 고정 시퀀스는
- * 스크롤을 빼앗기는 느낌을 주고, 모션을 줄인 사용자에게는 단계 자체가 방해다.
+ * 화면에 들어오면 시작하고 나가면 멈춘다. 그러지 않으면 방문자가 도착하기 전에
+ * 몇 바퀴가 지나가 있고, 보이지도 않는 곳에서 타이머가 계속 돈다.
+ *
+ * ## 모션을 줄인 사용자
+ *
+ * 마지막 단계를 그대로 보여주고 타이머를 걸지 않는다. 이 섹션의 결론이 3단계이므로
+ * 정보 손실이 없다.
  */
 export default function SceneSequence({
   example,
@@ -44,52 +57,60 @@ export default function SceneSequence({
   example: AnswerExample;
   disclaimer: string;
 }) {
-  const markers = useRef<(HTMLSpanElement | null)[]>([]);
+  const hostRef = useRef<HTMLDivElement | null>(null);
   const [step, setStep] = useState<SceneStep>(0);
-  const [sequenced, setSequenced] = useState(false);
 
   useEffect(() => {
-    const narrow = window.matchMedia("(max-width: 900px)").matches;
-    if (narrow || prefersReducedMotion() || !("IntersectionObserver" in window)) {
+    const host = hostRef.current;
+    if (!host) return;
+
+    if (prefersReducedMotion()) {
       setStep(2);
       return;
     }
-    setSequenced(true);
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    // 다음 단계를 예약한다. setInterval을 쓰지 않는 이유는 단계마다 머무는 시간이
+    // 다르기 때문이다 — 균등 간격이면 결론이 지나가는 속도가 도입부와 같아진다.
+    const advance = (from: SceneStep) => {
+      timer = setTimeout(() => {
+        const next = ((from + 1) % STEPS.length) as SceneStep;
+        setStep(next);
+        advance(next);
+      }, HOLD_MS[from]);
+    };
+
+    const stop = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    };
+
+    if (!("IntersectionObserver" in window)) {
+      setStep(2);
+      return;
+    }
 
     const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const index = markers.current.indexOf(entry.target as HTMLSpanElement);
-          if (index >= 0) setStep(STEPS[index].step);
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          if (!timer) advance(0);
+        } else {
+          stop();
         }
       },
-      { rootMargin: "-50% 0px -50% 0px", threshold: 0 },
+      { threshold: 0.35 },
     );
-    markers.current.forEach((element) => element && observer.observe(element));
-    return () => observer.disconnect();
+    observer.observe(host);
+
+    return () => {
+      observer.disconnect();
+      stop();
+    };
   }, []);
 
   return (
-    <div className={sequenced ? "scene-seq is-sequenced" : "scene-seq"}>
-      {/* 눈금과 문장을 분리한다. 앞 버전은 문장 자체에 높이를 줘서 시퀀스 길이를
-          만들었는데, 그러면 문장 사이가 화면 절반씩 벌어져 **한 번에 하나만 보이고**
-          나머지는 전부 빈 화면이 된다. 길이는 보이지 않는 눈금이 만들고, 문장 셋은
-          카드 옆에 붙어 함께 읽힌다 — 현재 단계만 진해진다. */}
-      {/* **조건부로 그리면 안 된다.** `sequenced`는 아래 effect 안에서 켜지는데,
-          관측기를 붙이는 것도 같은 effect다 — 조건부로 두면 관측 시점에 ref가 전부
-          null이라 시퀀스가 1단계에서 멈춘다. 항상 그리고 CSS로만 숨긴다. */}
-      <div className="scene-seq-markers" aria-hidden="true">
-        {STEPS.map((entry, index) => (
-          <span
-            key={entry.caption}
-            ref={(element) => {
-              markers.current[index] = element;
-            }}
-          />
-        ))}
-      </div>
-
+    <div className="scene-seq" ref={hostRef}>
       <div className="scene-seq-panel">
         <div className="scene-seq-stage">
           <AiAnswerScene

@@ -29,7 +29,7 @@ function rule(selector: string): string {
  */
 const FULL_BLEED = ['.preview-section > *', '.pain-section > *', '.operation-section > *', '.limits-section > *']
 
-test('full-bleed sections share the boxed sections baseline width', () => {
+test('full-bleed sections share the boxed sections content width', () => {
   for (const selector of FULL_BLEED) {
     assert.match(
       rule(selector),

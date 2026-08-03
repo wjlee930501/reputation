@@ -727,23 +727,26 @@ textarea:focus-visible {
   }
 }
 
-/* ─── 스크롤 고정 시퀀스 ────────────────────────────────────────
-   카드는 고정되고 설명이 지나간다. 좁은 화면·모션 최소화에서는 고정하지 않고
-   마지막 단계를 그대로 보인다(`is-sequenced`가 붙지 않는다). */
+/* ─── 환자가 묻는 장면 — 스스로 넘어간다 ─────────────────────────
+   앞 버전은 145vh짜리 통을 두고 **스크롤 위치로** 단계를 바꾸는 고정 시퀀스였다.
+   카드는 제 높이(약 460px)인데 통은 화면 높이에 비례하니, 큰 화면일수록 제목과
+   카드 사이 또는 카드 아래가 크게 벌어졌다. 그 간격을 두 번 고쳤고 두 번 다 다른
+   크기에서 다시 깨졌다 — 화면 높이를 변수로 두는 한 계속 그렇다.
+   이제 섹션은 제 내용만큼만 높고 단계는 시간이 넘긴다. */
 .scene-seq {
-  max-width: 980px;
-  margin: 0 auto;
+  margin: 0;
 }
 
 .scene-seq-panel {
   display: grid;
   gap: clamp(28px, 5vw, 64px);
+  align-items: center;
 }
 
-/* 눈금은 고정 시퀀스에서만 의미가 있다. 다만 DOM에는 항상 있어야 한다 —
-   관측기가 붙는 시점에 존재하지 않으면 시퀀스가 첫 단계에서 멈춘다. */
-.scene-seq-markers {
-  display: none;
+@media (min-width: 901px) {
+  .scene-seq-panel {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.72fr);
+  }
 }
 
 .scene-seq-steps {
@@ -751,13 +754,13 @@ textarea:focus-visible {
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 14px;
+  gap: 22px;
 }
 
 .scene-seq-steps li {
-  padding-left: 18px;
-  border-left: 2px solid var(--line-strong);
-  font-size: 1rem;
+  padding-left: 20px;
+  border-left: 3px solid var(--line-strong);
+  font-size: clamp(1rem, 0.94rem + 0.35vw, 1.25rem);
   line-height: 1.5;
   letter-spacing: -0.015em;
   color: var(--muted);
@@ -772,60 +775,21 @@ textarea:focus-visible {
   font-weight: 600;
 }
 
-/* 시퀀스의 길이는 여기서 나온다. 앞 버전은 **문장 자체에** 74vh씩 높이를 줬고, 그래서
-   이 섹션 혼자 2,351px(화면 2.6개)를 쓰면서 한 번에 문장 하나만 보였다 — 나머지는
-   전부 빈 화면. 이제 길이는 보이지 않는 눈금이 만들고 문장은 카드 옆에 모여 있다. */
-.scene-seq.is-sequenced {
-  position: relative;
-  min-height: 145vh;
+/* **카드 높이를 고정한다.** 단계가 저절로 순환하므로, 답이 찼다 비었다 할 때마다
+   카드가 자라고 줄면 옆 문장과 아래 섹션이 계속 들썩인다. 가장 큰 단계(목록 셋 +
+   출처 + 자리 한 줄)에 맞춰 두고 그 안에서 내용만 바뀌게 한다.
+   스크롤로 넘길 때는 카드가 자라는 게 자연스러웠지만, 반복되는 순환에서는 아니다. */
+.scene {
+  /* 실측: 가장 큰 단계가 458px이다. 27.5rem(440px)으로 뒀더니 순환할 때마다 18px씩
+     들썩였다. 넉넉히 잡아 어느 단계에서도 높이가 변하지 않게 한다. */
+  min-height: 29rem;
 }
 
-/* 스크롤 눈금 — 세 칸으로 나뉜 보이지 않는 격자. 관측기는 이 칸이 화면 중앙선을
-   지나는 순간만 본다. 보이는 것이 없으므로 스크린리더에서도 제외한다. */
-.scene-seq.is-sequenced .scene-seq-markers {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  /* 마지막 칸이 넓다. 세 칸을 균등하게 두면 3단계가 고정이 풀리기 직전에야 켜져,
-     완성된 답변을 볼 시간 없이 섹션이 끝난다. 3단계를 일찍 켜고 오래 붙잡는다. */
-  grid-template-rows: 1fr 1fr 1.5fr;
-  pointer-events: none;
-}
-
-/* **화면 높이를 통째로 차지하면 안 된다.** 한 화면 안에서 가운데를 잡으면, 제목이
-   아직 보이는 첫 화면에서 카드가 한 화면 아래로 밀려 제목과 카드 사이가 통째로
-   빈다 — 1440에서 349px, 1920에서 448px, 2000×1140에서 480px. 화면이 클수록 더 벌어진다.
-   패널은 제 높이만 차지하고 붙는 위치만 정한다. 그러면 첫 화면에서 제목 바로 아래
-   놓이고, 스크롤하면 그 자리에 멈춘다. */
-.scene-seq.is-sequenced .scene-seq-panel {
-  position: sticky;
-  /* 응축된 헤더(60px)를 피하면서 위아래 여백이 한쪽으로 쏠리지 않는 높이. */
-  /* 정차 높이는 **첫 화면의 간격과 무관하다** — 고정은 그 지점을 지난 뒤에만 걸리고,
-     처음에는 흐름상 제목 바로 아래에 놓인다. 그래서 이 값은 오직 "멈췄을 때 위아래
-     여백이 한쪽으로 쏠리지 않는가"만 보고 정한다. 큰 화면에서 카드가 위에 붙으면
-     아래가 500px 남는다. */
-  top: clamp(88px, 24vh, 240px);
-  grid-template-columns: minmax(0, 1fr) minmax(0, 0.72fr);
-  /* 카드는 답이 도착하면 자란다. 가운데 정렬이라야 옆 문장이 따라 흔들리지 않는다. */
-  align-items: center;
-}
-
-.scene-seq.is-sequenced .scene-seq-steps {
-  gap: 22px;
-}
-
-.scene-seq.is-sequenced .scene-seq-steps li {
-  font-size: clamp(1.0625rem, 0.95rem + 0.5vw, 1.3125rem);
-  padding-left: 20px;
-  border-left-width: 3px;
-}
-
-/* 예전에는 가장 큰 단계에 맞춰 최소 높이를 박아 두었다. 그러면 1단계에서 점 세 개만
-   뜬 368px짜리 빈 상자가 되고, 그건 기다림이 아니라 고장으로 읽힌다.
-   카드는 고정 열 안에 sticky로 떠 있어 아래 내용을 밀지 않으므로, **답이 도착하면
-   카드가 자라게** 둔다 — 실제 AI 답변이 나타나는 방식이기도 하다. */
-.scene-seq.is-sequenced .scene[data-step="0"] .scene-answer {
-  min-height: 3.5em;
+@media (max-width: 560px) {
+  /* 좁은 화면은 줄바꿈이 늘어 같은 내용도 더 높다. 고정 높이가 오히려 여백을 만든다. */
+  .scene {
+    min-height: 0;
+  }
 }
 
 /* ─── 환자가 AI에 묻는 장면 ─────────────────────────────────────

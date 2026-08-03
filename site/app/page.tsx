@@ -162,6 +162,7 @@ export default function Home() {
               <span className="process-num">{String(index + 1).padStart(2, "0")}</span>
               <p className="process-label">{step.label}</p>
               <h3>{step.title}</h3>
+              <p>{step.body}</p>
             </li>
           ))}
         </ol>
