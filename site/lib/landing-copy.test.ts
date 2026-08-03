@@ -15,6 +15,7 @@ import {
   limitsSection,
   marketSection,
   measuredFigures,
+  measurementSpec,
   operationSection,
   operationSteps,
   painPoints,
@@ -48,9 +49,6 @@ const ALL_COPY = [
   painSection.label,
   painSection.heading,
   ...painPoints.flatMap((p) => [p.quote, p.answer]),
-  platformShareSection.label,
-  platformShareSection.heading,
-  platformShareSection.body,
   platformShareSection.nudge,
   platformShareSection.sourceNote,
   ...platformShares.flatMap((p) => [p.name, p.note ?? ""]),
@@ -375,6 +373,40 @@ test('the FAQ answers the objections we would otherwise get on a call', () => {
   assert.match(rankItem.answer, /아닙니다|보장하지 않/)
 })
 
+test('the hero instrument states the same measurement contract the backend runs', () => {
+  /**
+   * 계기판은 접힘 위에서 "이렇게 잰다"를 약속한다. 백엔드 규약은
+   * `LEADGEN_QUERY_COUNT=3` × `LEADGEN_REPEAT_COUNT=3` × 플랫폼 2 = 18건이고
+   * (`lead_diagnosis_engine.plan_measurements`가 "계획된 18건"을 만든다),
+   * 여기 문자열이 어긋나면 랜딩과 실제 리포트가 다른 말을 하게 된다.
+   *
+   * 문자열을 통째로 고정하지 않고 **곱이 맞는지**만 본다 — 표현을 다듬을 때마다
+   * 테스트가 깨지면 정작 지켜야 할 숫자를 못 지킨다.
+   */
+  const protocolRow = measurementSpec.protocol.find((row) => /규약/.test(row.key))
+  assert.ok(protocolRow, '측정 규약 행이 없습니다.')
+  const factors = (protocolRow.value.match(/\d+/g) ?? []).map(Number)
+  assert.ok(factors.length >= 3, `규약에서 곱할 값을 찾지 못했습니다: "${protocolRow.value}"`)
+  const product = factors.reduce((a, b) => a * b, 1)
+  assert.equal(
+    product,
+    measurementSpec.totalCalls,
+    `규약 ${protocolRow.value}의 곱은 ${product}인데 총 호출 수는 ${measurementSpec.totalCalls}입니다.`,
+  )
+  assert.equal(measurementSpec.totalCalls, 18)
+  // 총 호출 수는 각주에도 같은 숫자로 적혀야 한다.
+  assert.match(protocolRow.note, new RegExp(String(measurementSpec.totalCalls)))
+})
+
+test('the instrument names the platforms we actually measure', () => {
+  const target = measurementSpec.protocol.find((row) => /대상/.test(row.key))
+  assert.ok(target, '측정 대상 행이 없습니다.')
+  assert.match(target.value, /ChatGPT/)
+  assert.match(target.value, /Gemini/)
+  // 쓰지 않는 모델 이름이 각주에 새면 안 된다(실측 출처와 같은 규칙).
+  assert.doesNotMatch(target.note, /gpt-5-mini|gpt-4o|terra/)
+})
+
 test('the fold label counts the hidden questions instead of hardcoding a number', () => {
   /**
    * 랜딩은 앞의 몇 개만 세워 두고 나머지를 접는다. 남은 개수를 문자열에 박아 두면
@@ -414,7 +446,6 @@ const HEADINGS = [
   marketSection.heading,
   painSection.heading,
   operationSection.heading,
-  platformShareSection.heading,
   limitsSection.heading,
   faqSection.heading,
   ctaSection.heading,

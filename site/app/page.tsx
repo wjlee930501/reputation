@@ -11,7 +11,6 @@ import {
   limitItems,
   limitsSection,
   marketSection,
-  measuredFigures,
   operationSection,
   operationSteps,
   painPoints,
@@ -24,6 +23,7 @@ import {
 
 import AnswerExplorer from "./_components/AnswerExplorer";
 import HeaderScrollState from "./_components/HeaderScrollState";
+import HeroInstrument from "./_components/HeroInstrument";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
 import SceneSequence from "./_components/SceneSequence";
@@ -96,6 +96,9 @@ export default function Home() {
         <p className="hero-slots-note">{heroScarcity.note}</p>
       </section>
 
+      {/* 접힘 위에 데이터를 둔다 — 첫 화면이 문장과 버튼뿐이면 카테고리가 안 보인다. */}
+      <HeroInstrument />
+
       {/* 환자 질문 띠 — 히어로와 장면 사이. 설명하기 전에 눈으로 읽게 한다. */}
       <QueryMarquee />
 
@@ -117,25 +120,7 @@ export default function Home() {
           <h2 id="market-heading">{marketSection.heading}</h2>
         </div>
 
-        {/* 외부 조사와 자체 실측을 한 그리드에 둔다. 두 섹션으로 나눠 두면 여섯 개
-            숫자를 두 번에 걸쳐 읽게 되고 어느 것도 남지 않는다.
-            **색이 출처의 구분이다** — 외부는 검정, 우리가 잰 것은 파랑. */}
-        <dl className="figure-grid">
-          {measuredFigures.map((figure) => (
-            <div key={figure.value} className="figure-card is-measured" data-reveal>
-              <dt>
-                <span className="figure-value">{figure.value}</span>
-              </dt>
-              <dd>
-                {figure.label}
-                <span className="figure-source">{figure.source}</span>
-              </dd>
-            </div>
-          ))}
-        </dl>
-
-        {/* 차트를 별도 밴드로 두면 "왜 두 곳만"을 위해 섹션 하나를 통째로 쓰게 된다.
-            같은 근거이므로 숫자 옆에 붙인다. 해설은 FAQ가 이미 답한다. */}
+        {/* 이 섹션은 이제 "왜 두 곳만 재는가"에만 답한다. 차트가 본문이다. */}
         <div className="share-block" data-reveal>
           <p className="share-nudge">{platformShareSection.nudge}</p>
           <PlatformShareChart

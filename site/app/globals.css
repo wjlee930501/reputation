@@ -8603,3 +8603,126 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     max-width: none;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   히어로 아래 계기판
+   ═══════════════════════════════════════════════════════════════════
+   접힘 위가 문장 두 줄과 버튼뿐이면 어느 카테고리 제품인지 보이지 않았다.
+   규약과 최근 측정치를 여기 두면 같은 카피가 'AI 마케팅'이 아니라 '측정 도구'로
+   읽힌다. 계기처럼 보이려면 세 가지가 필요하다 — 자릿수가 흔들리지 않는 숫자,
+   값을 감싸는 격자, 그리고 조건이 값 옆에 붙어 있는 것. */
+.instrument {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: 0 clamp(20px, 5vw, 40px) clamp(40px, 6vh, 64px);
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 0;
+  border-collapse: collapse;
+}
+
+.instrument-protocol,
+.instrument-result {
+  margin: 0;
+  display: grid;
+  align-content: start;
+  border-top: 1px solid var(--line-strong);
+}
+
+/* 규약과 결과 사이의 세로 경계 — 격자가 있어야 표로 읽힌다. */
+.instrument-result {
+  padding-left: clamp(24px, 4vw, 56px);
+  border-left: 1px solid var(--line);
+}
+
+.instrument-protocol > div {
+  display: grid;
+  grid-template-columns: 5.5em minmax(0, 1fr);
+  gap: 0 16px;
+  align-items: baseline;
+  padding: 11px 0;
+}
+
+.instrument-protocol > div + div {
+  border-top: 1px solid var(--line);
+}
+
+.instrument-protocol dt {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.instrument-protocol dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+/* 규약 값은 눈금이다 — 자릿수가 흔들리면 계기가 아니라 문구로 읽힌다. */
+.instrument-value {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.instrument-note {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 결과 두 칸. 파랑은 여기 숫자에만 — 이 페이지에서 파랑은 '우리가 잰 값'이다. */
+.instrument-result {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: clamp(24px, 4vw, 56px);
+  padding-top: 14px;
+}
+
+.instrument-result > div {
+  display: grid;
+  align-content: start;
+}
+
+.instrument-result dt {
+  font-size: clamp(1.75rem, 1.2rem + 1.6vw, 2.5rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.instrument-result dd {
+  margin: 7px 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.instrument-source {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 820px) {
+  /* 좁은 화면에서 두 판을 나란히 두면 규약 값이 줄바꿈으로 부서진다. */
+  .instrument {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .instrument-result {
+    margin-top: 24px;
+    padding-left: 0;
+    border-left: 0;
+  }
+}
