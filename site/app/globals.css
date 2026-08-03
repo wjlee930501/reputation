@@ -187,6 +187,14 @@ textarea:focus-visible {
   --accent-deep: #00437f;
 
   --shell-max: 1240px;
+  /* 섹션 좌우 여백. 지금까지 여섯 군데에 같은 clamp가 손으로 적혀 있었다. */
+  --shell-pad: clamp(20px, 5vw, 40px);
+  /* **모든 섹션이 공유하는 안쪽 기준선의 폭.**
+     박스형 섹션(market·report·faq)은 자기 폭을 1240으로 잡고 안쪽에 --shell-pad를
+     둔다 → 콘텐츠는 1160. 풀블리드 틴트 섹션은 padding 바깥에서 1240을 센터링해
+     콘텐츠가 1240이었다 → 두 계열의 좌측 축이 40px 어긋났고, 1440px에서는 눈에
+     안 띄지만 넓은 화면에서 그대로 남는다. 풀블리드 쪽을 이 값으로 맞춘다. */
+  --shell-inner: calc(var(--shell-max) - var(--shell-pad) * 2);
   --prose-max: 640px;
   /* 섹션 상하 여백. 1440px 화면에서 세로 길이가 390px 모바일과 같아지는 게 이 값
      때문이었다 — 섹션 8개 × 상하 = 여백만 1,500px 이상. 넓은 화면일수록 한 화면에
@@ -1193,13 +1201,20 @@ textarea:focus-visible {
 }
 
 .preview-section > * {
-  max-width: var(--shell-max);
+  max-width: var(--shell-inner);
   margin-left: auto;
   margin-right: auto;
 }
 
-.preview-section .section-heading {
+/* 풀블리드 섹션에서는 **블록을 좁히면 안 된다.** `> *`가 auto margin으로 가운데를
+   잡으므로, 640짜리 블록은 기준선(420)이 아니라 화면 가운데(680)로 간다.
+   블록은 기준선 폭 그대로 두고 글줄만 좁힌다. */
+.preview-section .section-heading h2 {
   max-width: var(--prose-max);
+}
+
+.preview-section .section-heading {
+  max-width: var(--shell-inner);
   margin-bottom: clamp(32px, 5vh, 56px);
 }
 
@@ -1402,7 +1417,7 @@ textarea:focus-visible {
 }
 
 .operation-section > * {
-  max-width: var(--shell-max);
+  max-width: var(--shell-inner);
   margin-left: auto;
   margin-right: auto;
 }
@@ -1411,7 +1426,12 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 0;
-  margin: 0;
+  /* **`margin: 0` 단축 속성을 쓰면 안 된다.** 이 목록은 섹션의 직계 자식이고,
+     `.process > *`가 `margin-left/right: auto`로 가운데를 잡는다. 뒤에 오는 단축
+     속성이 그 auto를 0으로 덮으면 목록만 왼쪽에 고정되고, 제목과 축이 어긋난다 —
+     1440px에서는 60px라 안 보이지만 1920px에서 300px, 2560px에서 620px 벌어진다.
+     세로 여백만 지운다. */
+  margin-block: 0;
   padding: 0;
   list-style: none;
 }
@@ -1527,7 +1547,7 @@ textarea:focus-visible {
 }
 
 .limits-section > * {
-  max-width: var(--shell-max);
+  max-width: var(--shell-inner);
   margin-left: auto;
   margin-right: auto;
 }
@@ -1536,7 +1556,12 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 0;
-  margin: 0;
+  /* **`margin: 0` 단축 속성을 쓰면 안 된다.** 이 목록은 섹션의 직계 자식이고,
+     `.limits > *`가 `margin-left/right: auto`로 가운데를 잡는다. 뒤에 오는 단축
+     속성이 그 auto를 0으로 덮으면 목록만 왼쪽에 고정되고, 제목과 축이 어긋난다 —
+     1440px에서는 60px라 안 보이지만 1920px에서 300px, 2560px에서 620px 벌어진다.
+     세로 여백만 지운다. */
+  margin-block: 0;
   padding: 0;
   list-style: none;
 }
@@ -1690,7 +1715,7 @@ textarea:focus-visible {
 }
 
 .pain-section > * {
-  max-width: var(--shell-max);
+  max-width: var(--shell-inner);
   margin-left: auto;
   margin-right: auto;
 }
@@ -1699,7 +1724,12 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 0;
-  margin: 0;
+  /* **`margin: 0` 단축 속성을 쓰면 안 된다.** 이 목록은 섹션의 직계 자식이고,
+     `.pain > *`가 `margin-left/right: auto`로 가운데를 잡는다. 뒤에 오는 단축
+     속성이 그 auto를 0으로 덮으면 목록만 왼쪽에 고정되고, 제목과 축이 어긋난다 —
+     1440px에서는 60px라 안 보이지만 1920px에서 300px, 2560px에서 620px 벌어진다.
+     세로 여백만 지운다. */
+  margin-block: 0;
   padding: 0;
   list-style: none;
 }
@@ -1751,9 +1781,11 @@ textarea:focus-visible {
   padding-top: clamp(32px, 5vh, 48px);
   border-top: 1px solid var(--line);
   display: grid;
-  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1fr);
+  /* 왼쪽은 한 문장, 오른쪽은 막대 넷 + 합계 + 각주다. 0.85:1로 두면 문장 하나가
+     화면 절반을 차지하고 정작 근거인 차트가 좁아진다. 본문 쪽에 무게를 준다. */
+  grid-template-columns: minmax(0, 0.55fr) minmax(0, 1fr);
   gap: clamp(28px, 5vw, 64px);
-  align-items: center;
+  align-items: start;
 }
 
 .share-nudge {
