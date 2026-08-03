@@ -21,14 +21,20 @@ from urllib.parse import urlparse
 
 import arrow
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
-from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
+from app.models.essence import (
+    HospitalContentPhilosophy,
+    HospitalSourceAsset,
+    HospitalSourceEvidenceNote,
+    PhilosophyStatus,
+    SourceStatus,
+)
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
@@ -43,7 +49,10 @@ from app.services.content_target_planner import prepare_automatic_content_brief_
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     build_monthly_essence_summary,
+    compute_source_content_hash,
+    process_source_asset,
     screen_content_against_philosophy,
+    validate_source_excerpt,
 )
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
@@ -51,6 +60,7 @@ from app.services.report_engine import build_content_attribution_summary, genera
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
+    trigger_hospital_site_revalidate_safe,
 )
 from app.services.sov_engine import (
     MENTION_RATE_INTENTS,
@@ -251,6 +261,124 @@ def _raise_if_monthly_report_failures(failures: list[tuple[str, Exception]]) -> 
     names = ", ".join(name for name, _exc in failures[:5])
     suffix = "" if len(failures) <= 5 else f" 외 {len(failures) - 5}건"
     raise RuntimeError(f"월간 리포트 실패: {names}{suffix}")
+
+
+def _mark_source_processing_error(source_id: uuid.UUID, error: Exception) -> None:
+    """Persist a terminal source-processing error without masking the original failure."""
+    try:
+        with SyncSessionLocal() as db:
+            source = db.get(HospitalSourceAsset, source_id)
+            if source and source.status != SourceStatus.EXCLUDED:
+                source.status = SourceStatus.ERROR
+                source.process_error = str(error)[:2000]
+                db.commit()
+    except Exception:
+        logger.exception("Failed to persist source-processing error for %s", source_id)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 온보딩 근거 자료 비동기 처리
+# ══════════════════════════════════════════════════════════════════
+@celery_app.task(
+    name="app.workers.tasks.process_source_asset_task",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=300,
+    time_limit=330,
+)
+def process_source_asset_task(self, source_id: str) -> dict[str, object]:
+    """Extract evidence notes for one pending onboarding source.
+
+    Admin의 일괄 처리 엔드포인트가 이 태스크 이름을 그대로 큐잉한다. 구현을 워커
+    모듈에 두어야 Celery가 기동 시 등록하고, 중복 전달에도 안전하게 복귀한다.
+    """
+    source_uuid = uuid.UUID(source_id)
+    hospital_slug: str | None = None
+    hospital_name: str | None = None
+    should_revalidate = False
+
+    try:
+        with SyncSessionLocal() as db:
+            source = db.get(HospitalSourceAsset, source_uuid)
+            if not source:
+                logger.warning("Source asset not found; skipping: %s", source_uuid)
+                return {"source_id": source_id, "status": "NOT_FOUND"}
+            if source.status == SourceStatus.EXCLUDED:
+                return {"source_id": source_id, "status": SourceStatus.EXCLUDED.value}
+            if source.status == SourceStatus.PROCESSED:
+                return {"source_id": source_id, "status": SourceStatus.PROCESSED.value}
+            if not source.raw_text or not source.raw_text.strip():
+                raise ValueError("자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다.")
+
+            payloads = process_source_asset(source)
+            for payload in payloads:
+                if not validate_source_excerpt(source, payload.source_excerpt):
+                    raise ValueError(
+                        "source_excerpt가 원문에 존재하지 않습니다: "
+                        f"{payload.source_excerpt[:80]}"
+                    )
+
+            db.execute(
+                delete(HospitalSourceEvidenceNote).where(
+                    HospitalSourceEvidenceNote.source_asset_id == source.id
+                )
+            )
+            notes = [
+                HospitalSourceEvidenceNote(
+                    hospital_id=source.hospital_id,
+                    source_asset_id=source.id,
+                    note_type=payload.note_type,
+                    claim=payload.claim,
+                    source_excerpt=payload.source_excerpt,
+                    excerpt_start=payload.excerpt_start,
+                    excerpt_end=payload.excerpt_end,
+                    confidence=payload.confidence,
+                    note_metadata=payload.note_metadata,
+                )
+                for payload in payloads
+            ]
+            db.add_all(notes)
+            source.status = SourceStatus.PROCESSED
+            source.process_error = None
+            source.processed_at = datetime.now(timezone.utc)
+            source.content_hash = compute_source_content_hash(
+                source.title,
+                source.url,
+                source.raw_text,
+                source.operator_note,
+            )
+
+            hospital = db.get(Hospital, source.hospital_id)
+            if hospital:
+                hospital_slug = hospital.slug
+                hospital_name = hospital.name
+                should_revalidate = hospital.status == HospitalStatus.ACTIVE and bool(
+                    hospital.site_live
+                )
+            db.commit()
+
+        if should_revalidate and hospital_slug:
+            _run_async(
+                trigger_hospital_site_revalidate_safe(
+                    hospital_slug,
+                    hospital_name=hospital_name,
+                )
+            )
+        return {
+            "source_id": source_id,
+            "status": SourceStatus.PROCESSED.value,
+            "evidence_note_count": len(notes),
+        }
+    except ValueError as exc:
+        _mark_source_processing_error(source_uuid, exc)
+        logger.warning("Source processing rejected for %s: %s", source_uuid, exc)
+        return {"source_id": source_id, "status": SourceStatus.ERROR.value, "error": str(exc)}
+    except Exception as exc:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=30 * (self.request.retries + 1))
+        _mark_source_processing_error(source_uuid, exc)
+        logger.exception("Source processing failed after retries: %s", source_uuid)
+        raise
 
 
 # ══════════════════════════════════════════════════════════════════
