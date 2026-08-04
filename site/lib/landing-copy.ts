@@ -714,10 +714,18 @@ export const pricingSection = {
   label: "요금제",
   heading: "월 60만원부터 시작합니다",
   note: "모든 요금제에 매달 측정과 리포트가 포함됩니다.",
+  /**
+   * **편수는 적지 않는다.**
+   *
+   * 편수를 붙이면 원장이 "편당 얼마"로 나눠 계산하고, 그 순간 이 서비스가 블로그 대행과
+   * 같은 저울에 올라간다 — 실제로 그 시장은 포스팅 1건 5,000원짜리부터 있다.
+   * 우리가 파는 것은 발행 건수가 아니라 측정과 운영이므로, 가격만 적고 내역은
+   * 상담에서 맞춘다.
+   */
   plans: [
-    { name: "Starter", price: "60만원", unit: "/월", volume: "콘텐츠 8편" },
-    { name: "Grower", price: "90만원", unit: "/월", volume: "콘텐츠 12편" },
-    { name: "Leader", price: "120만원", unit: "/월", volume: "콘텐츠 16편" },
+    { name: "Starter", price: "60만원", unit: "/월" },
+    { name: "Grower", price: "90만원", unit: "/월" },
+    { name: "Leader", price: "120만원", unit: "/월" },
   ],
 }
 

@@ -375,7 +375,6 @@ export default function Home() {
                 {plan.price}
                 <span>{plan.unit}</span>
               </p>
-              <p className="pricing-volume">{plan.volume}</p>
             </li>
           ))}
         </ul>

@@ -61,7 +61,7 @@ const ALL_COPY = [
   pricingSection.label,
   pricingSection.heading,
   pricingSection.note,
-  ...pricingSection.plans.flatMap((p) => [p.name, p.price, p.volume]),
+  ...pricingSection.plans.flatMap((p) => [p.name, p.price]),
   heroPicker.label,
   heroPicker.askLead,
   heroPicker.consequence,
