@@ -7598,7 +7598,12 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 68px 56px 72px max(48px, calc((100vw - 1344px) / 2));
+  /* 좌측 여백은 **상수**여야 한다. 그리드가 이미 `max-width: 1440px; margin: 0 auto`로
+     가운데 정렬돼 있어서, 여기에 `(100vw - 1344px) / 2`를 더하면 센터링 오프셋을 두 번
+     센다. 컬럼 폭은 634px로 고정인데 여백만 화면을 따라 자라서 1440px을 넘는 순간부터
+     본문이 깎이고 2400px에서 50px(한 글자), 2500px에서 0이 됐다.
+     바로 아래 .clinic-hero-fact-rail이 같은 축에서 쓰는 값과 맞춘다. */
+  padding: 68px 56px 72px 48px;
 }
 
 .clinic-hero-editorial-kicker {
