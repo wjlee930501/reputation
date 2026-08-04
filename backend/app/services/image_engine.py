@@ -131,6 +131,30 @@ IMAGE_PROMPTS = {
 }
 
 
+class _CallCounter:
+    """동기 실행기 안에서 일어나는 재시도 횟수를 밖으로 전달하기 위한 카운터.
+
+    재시도는 tenacity가 워커 스레드에서 처리하므로 async 호출부는 시도 횟수를 볼 수
+    없다. 각 시도가 직접 tick()해 실제 호출 수를 남긴다.
+    """
+
+    __slots__ = ("count",)
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def tick(self) -> None:
+        self.count += 1
+
+
+async def _record_image_calls(counter: _CallCounter) -> None:
+    if counter.count <= 0:
+        return
+    from app.services import cost_guard
+
+    await cost_guard.record_provider_call("image", count=counter.count)
+
+
 async def generate_image(
     content_type: ContentType, hospital_name: str, *, topic: str | None = None
 ) -> tuple[str, str]:
@@ -155,16 +179,23 @@ async def generate_image(
     loop = asyncio.get_running_loop()
     provider = (settings.IMAGE_PROVIDER or "").lower()
 
+    # 이미지 1건은 공급자 호출 1회가 아니다 — OpenAI가 최대 3회 재시도되고, 그게 다
+    # 실패하면 Imagen이 다시 호출된다. 예약은 위에서 1건만 잡았으므로, 실제 호출을
+    # 세어 두지 않으면 상한이 실제 지출의 몇 분의 일만 보고 있게 된다.
+    attempts = _CallCounter()
+
     if provider == "openai" and settings.OPENAI_API_KEY:
         prompt = _build_openai_image_prompt(content_type, topic)
         try:
             url = await loop.run_in_executor(
-                None, lambda: _openai_generate_and_upload(prompt, hospital_name)
+                None, lambda: _openai_generate_and_upload(prompt, hospital_name, counter=attempts)
             )
             if url:
                 return url, prompt
         except Exception as e:  # noqa: BLE001 — gpt-image-2 불가 시 Imagen으로 폴백
             logger.error("gpt-image-2 path failed, falling back to Imagen: %s", e)
+        finally:
+            await _record_image_calls(attempts)
 
     # ── Imagen 3 (명시 선택 또는 폴백) ──
     if not settings.GCP_PROJECT_ID:
@@ -172,12 +203,17 @@ async def generate_image(
         return ("", "")
 
     prompt = IMAGE_PROMPTS.get(content_type, IMAGE_PROMPTS[ContentType.FAQ])
+    fallback_attempts = _CallCounter()
     try:
-        url = await loop.run_in_executor(None, lambda: _generate_and_upload(prompt, hospital_name))
+        url = await loop.run_in_executor(
+            None, lambda: _generate_and_upload(prompt, hospital_name, counter=fallback_attempts)
+        )
         return url, prompt
     except Exception as e:  # noqa: BLE001
         logger.error("Imagen fallback failed: %s", e)
         return ("", "")
+    finally:
+        await _record_image_calls(fallback_attempts)
 
 
 def _upload_png_to_gcs(image_bytes: bytes, hospital_name: str) -> str:
@@ -199,9 +235,14 @@ def _upload_png_to_gcs(image_bytes: bytes, hospital_name: str) -> str:
     wait=wait_exponential(min=2, max=15),
     retry=retry_if_exception(_is_transient_openai_error),
 )
-def _openai_generate_and_upload(prompt: str, hospital_name: str) -> str:
+def _openai_generate_and_upload(
+    prompt: str, hospital_name: str, *, counter: _CallCounter | None = None
+) -> str:
     """동기 — gpt-image-2 이미지 생성 + GCS 업로드 (실패 시 raise → 호출부에서 폴백).
     moderation_blocked 등 결정적 4xx 는 재시도하지 않고 즉시 raise → Imagen 폴백."""
+    # tenacity 재시도마다 본문이 다시 실행된다 — 시도 1회 = 유료 호출 1회.
+    if counter is not None:
+        counter.tick()
     try:
         from openai import OpenAI
 
@@ -231,8 +272,12 @@ def _openai_generate_and_upload(prompt: str, hospital_name: str) -> str:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=15))
-def _generate_and_upload(prompt: str, hospital_name: str) -> str:
+def _generate_and_upload(
+    prompt: str, hospital_name: str, *, counter: _CallCounter | None = None
+) -> str:
     """동기 — Vertex AI Imagen 3 이미지 생성 + GCS 업로드 (폴백)."""
+    if counter is not None:
+        counter.tick()
     try:
         from vertexai.preview.vision_models import ImageGenerationModel
 

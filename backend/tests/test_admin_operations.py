@@ -371,3 +371,42 @@ def test_serialize_audit_log():
 
     assert serialized["action"] == "run_sov"
     assert serialized["created_at"] == created_at.isoformat()
+
+
+async def test_trigger_v0_rejects_a_hospital_that_already_has_one(monkeypatch):
+    """이미 V0가 있으면 태스크가 조용히 return한다 — 큐에 넣으면 화면만 성공한다.
+
+    AE는 '등록했습니다'를 보고 리포트를 기다리는데 아무것도 생기지 않는다.
+    큐에 넣기 전에 거절해 사유를 알려주는 것이 옳다.
+    """
+    hospital = _hospital(v0_report_done=True)
+    db = FakeDB(hospital=hospital)
+    queued = []
+
+    monkeypatch.setattr(
+        operations_api.trigger_v0_report,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.trigger_v0_report_operation(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert queued == [], "거절된 요청은 큐에 들어가면 안 된다"
+    assert not db.committed, "거절된 요청은 감사 로그도 남기지 않는다"
+
+
+async def test_trigger_v0_still_works_for_a_failed_or_pending_report(monkeypatch):
+    """버튼의 본래 용도 — V0가 실패해 v0_report_done이 False로 남은 병원의 복구."""
+    hospital = _hospital(v0_report_done=False)
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+
+    monkeypatch.setattr(operations_api.trigger_v0_report, "apply_async", task.apply_async)
+    monkeypatch.setattr(audit_log.settings, "ADMIN_ACTOR_NAME", "AE-test")
+
+    response = await operations_api.trigger_v0_report_operation(hospital.id, db=db)
+
+    assert response["hospital_id"] == str(hospital.id)
+    assert task.calls == [{"args": [str(hospital.id)], "queue": "reports"}]

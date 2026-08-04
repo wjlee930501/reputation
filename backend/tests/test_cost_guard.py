@@ -465,3 +465,85 @@ async def test_kill_switch_endpoint_disable(monkeypatch):
 
     assert response.kill_switch_active is False
     assert await cost_guard._is_kill_switch_active(redis) is False
+
+
+# ── 일일 상한 임시 상향 ────────────────────────────────────────────────
+# 야간 생성이 일일 상한에 걸렸을 때 개발자 재배포 없이 그날치를 푸는 경로다.
+# 월간 상한은 상향 대상이 아니므로, 이번 달 예산 천장은 어떤 경우에도 유지돼야 한다.
+
+
+async def test_daily_override_raises_todays_limit(monkeypatch, alerts):
+    _set_limits(monkeypatch, daily=2, monthly=1000)
+    redis = FakeRedis()
+
+    assert (await cost_guard.check_and_increment("content", count=2, redis_client=redis)).allowed
+    blocked = await cost_guard.check_and_increment("content", redis_client=redis)
+    assert blocked.allowed is False
+
+    await cost_guard.set_daily_limit_override("content", 5, redis_client=redis)
+
+    assert (await cost_guard.check_and_increment("content", count=3, redis_client=redis)).allowed
+    # 상향된 5건까지만 — 그 위는 다시 막힌다.
+    assert (await cost_guard.check_and_increment("content", redis_client=redis)).allowed is False
+
+
+async def test_daily_override_never_lifts_the_monthly_ceiling(monkeypatch, alerts):
+    _set_limits(monkeypatch, daily=2, monthly=3)
+    redis = FakeRedis()
+    await cost_guard.set_daily_limit_override("content", 6, redis_client=redis)
+
+    assert (await cost_guard.check_and_increment("content", count=3, redis_client=redis)).allowed
+    blocked = await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert blocked.allowed is False
+    assert "월간" in (blocked.reason or "")
+
+
+async def test_daily_override_rejects_values_outside_the_allowed_band(monkeypatch):
+    _set_limits(monkeypatch, daily=10, monthly=1000)
+    redis = FakeRedis()
+
+    with pytest.raises(ValueError):  # 현재 상한 이하로는 내릴 수 없다
+        await cost_guard.set_daily_limit_override("content", 10, redis_client=redis)
+    with pytest.raises(ValueError):  # 배수 한도 초과
+        await cost_guard.set_daily_limit_override(
+            "content", 10 * cost_guard.MAX_DAILY_LIMIT_MULTIPLIER + 1, redis_client=redis
+        )
+    with pytest.raises(ValueError):
+        await cost_guard.set_daily_limit_override("bogus", 20, redis_client=redis)
+
+
+async def test_daily_override_is_reclamped_when_stored_value_exceeds_ceiling(monkeypatch, alerts):
+    """저장 시점 검증을 우회한 값(수동 조작·과거 설정)이 상한을 무력화하면 안 된다."""
+    _set_limits(monkeypatch, daily=2, monthly=1000)
+    redis = FakeRedis()
+    period = cost_guard._daily_period(cost_guard._now())
+    redis.store[cost_guard._daily_override_key("content", period)] = 9_999
+
+    ceiling = 2 * cost_guard.MAX_DAILY_LIMIT_MULTIPLIER
+    assert (
+        await cost_guard.check_and_increment("content", count=ceiling, redis_client=redis)
+    ).allowed
+    assert (await cost_guard.check_and_increment("content", redis_client=redis)).allowed is False
+
+
+async def test_clear_daily_override_restores_configured_limit(monkeypatch, alerts):
+    _set_limits(monkeypatch, daily=2, monthly=1000)
+    redis = FakeRedis()
+    await cost_guard.set_daily_limit_override("content", 5, redis_client=redis)
+    await cost_guard.clear_daily_limit_override("content", redis_client=redis)
+
+    assert (await cost_guard.check_and_increment("content", count=2, redis_client=redis)).allowed
+    assert (await cost_guard.check_and_increment("content", redis_client=redis)).allowed is False
+
+
+async def test_snapshot_separates_effective_and_configured_daily_limit(monkeypatch):
+    _set_limits(monkeypatch, daily=2, monthly=1000)
+    redis = FakeRedis()
+    await cost_guard.set_daily_limit_override("content", 5, redis_client=redis)
+
+    snapshot = await cost_guard.get_usage_snapshot(redis_client=redis)
+    content = next(c for c in snapshot["categories"] if c["category"] == "content")
+
+    assert content["daily_limit"] == 5
+    assert content["daily_limit_default"] == 2

@@ -223,8 +223,9 @@ export default function ContentPage() {
   const destructiveConfirmRef = useRef<HTMLButtonElement>(null)
   const deepLinkOpenedRef = useRef(false)
   const [actionLoading, setActionLoading] = useState(false)
-  const [confirmAction, setConfirmAction] = useState<'reject' | 'regenerate' | null>(null)
-  const confirmActionRef = useRef<'reject' | 'regenerate' | null>(null)
+  const [confirmAction, setConfirmAction] = useState<'reject' | 'regenerate' | 'cancel' | null>(null)
+  const confirmActionRef = useRef<'reject' | 'regenerate' | 'cancel' | null>(null)
+  const [rescheduleDate, setRescheduleDate] = useState('')
   const [briefEditMode, setBriefEditMode] = useState(false)
   const [briefQueryTargetId, setBriefQueryTargetId] = useState('')
   const [briefExposureActionId, setBriefExposureActionId] = useState('')
@@ -500,6 +501,65 @@ export default function ContentPage() {
       setSelected(null)
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : '재생성 요청에 실패했습니다.'
+      if (selected && selected.id === itemId) setEditError(message)
+      else setActionError(message)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  // 아래 셋은 백엔드에 이미 있던 복구 경로인데 화면이 없어 AE가 쓸 수 없었다.
+  // 휴일·장애로 밀린 슬롯 이동, 중복 슬롯 정리, 본문은 멀쩡한데 이미지만 실패한 경우.
+  async function handleReschedule(itemId: string, scheduledDate: string) {
+    setActionLoading(true)
+    clearActionFeedback()
+    try {
+      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/reschedule`, {
+        method: 'POST',
+        body: JSON.stringify({ scheduled_date: scheduledDate }),
+      })
+      setActionSuccess(`발행 예정일을 ${scheduledDate}로 옮겼습니다.`)
+      load()
+      setSelected(null)
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : '발행일 변경에 실패했습니다.'
+      if (selected && selected.id === itemId) setEditError(message)
+      else setActionError(message)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function handleCancelSlot(itemId: string) {
+    setActionLoading(true)
+    setConfirmAction(null)
+    clearActionFeedback()
+    try {
+      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/cancel`, { method: 'POST' })
+      setActionSuccess('슬롯을 종료했습니다. 자동 생성·발행 대상에서 빠집니다.')
+      void refetchHeader()
+      load()
+      setSelected(null)
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : '슬롯 종료에 실패했습니다.'
+      if (selected && selected.id === itemId) setEditError(message)
+      else setActionError(message)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function handleRegenerateImage(itemId: string) {
+    setActionLoading(true)
+    clearActionFeedback()
+    try {
+      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/regenerate-image`, {
+        method: 'POST',
+      })
+      setActionSuccess('이미지 재생성을 요청했습니다. 본문은 그대로 유지됩니다.')
+      load()
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : '이미지 재생성 요청에 실패했습니다.'
       if (selected && selected.id === itemId) setEditError(message)
       else setActionError(message)
     } finally {
@@ -1486,23 +1546,39 @@ export default function ContentPage() {
                 {confirmAction ? (
                   <div role="alertdialog" aria-labelledby="destructive-action-title" className="rounded-lg border border-red-200 bg-red-50 p-3">
                     <p id="destructive-action-title" className="text-sm font-bold text-red-800">
-                      {confirmAction === 'reject' ? '이 콘텐츠를 즉시 비공개할까요?' : '이 콘텐츠를 즉시 재생성할까요?'}
+                      {confirmAction === 'reject'
+                        ? '이 콘텐츠를 즉시 비공개할까요?'
+                        : confirmAction === 'cancel'
+                          ? '이 슬롯을 종료할까요?'
+                          : '이 콘텐츠를 즉시 재생성할까요?'}
                     </p>
                     <p className="mt-1 text-xs leading-relaxed text-red-700">
                       {confirmAction === 'reject'
                         ? '공개 사이트에서 바로 제거되고 반려 상태로 기록됩니다. 새 콘텐츠는 야간 재생성 주기에 만들어집니다.'
-                        : '현재 콘텐츠가 재생성 대기열에 등록되고, 생성이 끝나면 새 초안으로 교체됩니다.'}
+                        : confirmAction === 'cancel'
+                          ? '이 슬롯은 자동 생성·발행 대상에서 영구히 빠집니다. 이번 달 편수에서 한 편이 줄어듭니다.'
+                          : '현재 콘텐츠가 재생성 대기열에 등록되고, 생성이 끝나면 새 초안으로 교체됩니다.'}
                     </p>
                     <div className="mt-3 flex justify-end gap-2">
                       <button type="button" onClick={() => setConfirmAction(null)} className="min-h-10 rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-50">취소</button>
                       <button
                         type="button"
                         ref={destructiveConfirmRef}
-                        onClick={() => confirmAction === 'reject' ? handleReject(selected.id) : handleRegenerate(selected.id)}
+                        onClick={() => {
+                          if (confirmAction === 'reject') handleReject(selected.id)
+                          else if (confirmAction === 'cancel') handleCancelSlot(selected.id)
+                          else handleRegenerate(selected.id)
+                        }}
                         disabled={actionLoading}
                         className="min-h-10 rounded-lg bg-red-700 px-4 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50"
                       >
-                        {actionLoading ? '처리 중...' : confirmAction === 'reject' ? '비공개 후 재생성' : '재생성 요청'}
+                        {actionLoading
+                          ? '처리 중...'
+                          : confirmAction === 'reject'
+                            ? '비공개 후 재생성'
+                            : confirmAction === 'cancel'
+                              ? '슬롯 종료'
+                              : '재생성 요청'}
                       </button>
                     </div>
                   </div>
@@ -1550,6 +1626,46 @@ export default function ContentPage() {
                     >
                       즉시 재생성
                     </button>
+                    <div className="w-full border-t border-slate-200 pt-3">
+                      <p className="text-xs font-medium text-slate-500">운영 복구</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <input
+                          type="date"
+                          value={rescheduleDate}
+                          onChange={(e) => setRescheduleDate(e.target.value)}
+                          aria-label="새 발행 예정일"
+                          className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleReschedule(selected.id, rescheduleDate)}
+                          disabled={actionLoading || !rescheduleDate}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                        >
+                          발행일 옮기기
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRegenerateImage(selected.id)}
+                          disabled={actionLoading}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                        >
+                          이미지만 재생성
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmAction('cancel')}
+                          disabled={actionLoading}
+                          className="rounded-lg border border-red-200 px-3 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-40"
+                        >
+                          슬롯 종료
+                        </button>
+                      </div>
+                      <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                        휴일·장애로 밀렸으면 발행일을 옮기고, 본문은 괜찮은데 이미지만 실패했으면
+                        이미지만 다시 만듭니다. 중복이거나 이미 지난 슬롯은 종료해 자동 생성 대상에서 뺍니다.
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>

@@ -370,6 +370,13 @@ async def generate_content(
         f"{type_prompt}{avoid_titles}{source_hint}"
     )
 
+    # 실제 공급자 호출 계수. 이 함수는 tenacity로 최대 3회 재시도되고 Anthropic 클라이언트는
+    # max_retries=0이라, 본문 1회 실행 = HTTP 요청 1회다. 여기서 세지 않으면 비용 화면의
+    # '예약'과 '실제'가 최대 3배까지 벌어져도 드러나지 않는다.
+    from app.services import cost_guard
+
+    await cost_guard.record_provider_call("content")
+
     # asyncio에서 sync anthropic 클라이언트 호출
     loop = asyncio.get_running_loop()
     response = await loop.run_in_executor(

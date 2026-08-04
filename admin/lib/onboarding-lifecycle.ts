@@ -26,7 +26,8 @@ export interface OnboardingSummary {
   headline: string
   detail: string
   nextActionLabel: string
-  nextActionHref: string
+  /** null이면 이동할 곳이 없다는 뜻 — 화면은 링크 대신 아무것도 그리지 않아야 한다. */
+  nextActionHref: string | null
   blockedReason: string | null
 }
 
@@ -176,6 +177,11 @@ export function deriveOnboardingSummary(
   steps: OnboardingStep[],
   readiness: LifecycleReadiness | null,
 ): OnboardingSummary {
+  // '운영 대시보드 확인' CTA의 목적지. sov 단계가 대시보드를 가리키므로 거기서 얻는다.
+  // 못 찾으면 링크를 만들지 않는다 — href="#"는 눌러도 아무 일이 없어서, AE 입장에서는
+  // 버튼이 고장 난 것과 구분되지 않는다.
+  const dashboardHref = steps.find((step) => step.key === 'sov')?.href ?? null
+
   const allHardGatesDone = steps.every((step) => step.status === 'completed')
   if (allHardGatesDone && readiness?.status === 'READY') {
     return {
@@ -184,7 +190,7 @@ export function deriveOnboardingSummary(
       headline: '신규 병원 온보딩의 모든 하드 게이트가 통과됐습니다.',
       detail: 'LIVE, 최신 운영 기준, 스케줄, 첫 발행, AI 답변 언급률 측정까지 실제 데이터로 확인했습니다.',
       nextActionLabel: '운영 대시보드 확인',
-      nextActionHref: steps.find((step) => step.key === 'sov')?.href ?? '#',
+      nextActionHref: dashboardHref,
       blockedReason: null,
     }
   }
@@ -197,7 +203,7 @@ export function deriveOnboardingSummary(
       headline: '단계는 완료됐지만 백엔드 운영 준비 판정이 남아 있습니다.',
       detail: '운영 준비도 검사에서 실패한 항목을 확인해 주세요.',
       nextActionLabel: '운영 대시보드 확인',
-      nextActionHref: '#',
+      nextActionHref: dashboardHref,
       blockedReason: 'readiness 상태가 READY가 아닙니다.',
     }
   }

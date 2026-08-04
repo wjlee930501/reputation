@@ -15,9 +15,11 @@ import hashlib
 import json
 import logging
 import re
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, AsyncIterator, Iterable
 
 import anthropic
 from sqlalchemy import select
@@ -207,11 +209,51 @@ _SOURCE_PROCESSING_SYSTEM = """\
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+class _LlmCallCounter:
+    __slots__ = ("count",)
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def tick(self) -> None:
+        self.count += 1
+
+
+# 이 모듈의 Anthropic 호출은 전부 _call_anthropic_json 하나를 지난다. 동기 코드라
+# 그 자리에서 await할 수 없으므로, 호출자가 심어 둔 카운터를 올려두고 async 경계에서
+# 기록한다. asyncio.to_thread는 컨텍스트를 복사하므로 스레드 안에서도 같은 객체를 본다.
+_llm_call_counter: ContextVar[_LlmCallCounter | None] = ContextVar(
+    "essence_llm_call_counter", default=None
+)
+
+
+@asynccontextmanager
+async def metered_llm_calls() -> AsyncIterator[_LlmCallCounter]:
+    """블록 안에서 나간 Anthropic 호출을 content 예산의 '실제 호출'로 기록한다.
+
+    운영 기준 처리(근거 추출·철학 합성)는 AE가 버튼으로 돌리는 유료 호출인데 종전에는
+    예약도 계수도 없어 비용 화면에 전혀 잡히지 않았다.
+    """
+    counter = _LlmCallCounter()
+    token = _llm_call_counter.set(counter)
+    try:
+        yield counter
+    finally:
+        _llm_call_counter.reset(token)
+        if counter.count:
+            from app.services import cost_guard
+
+            await cost_guard.record_provider_call("content", count=counter.count)
+
+
 def _call_anthropic_json(system: str, user_message: str, *, max_tokens: int) -> dict[str, Any]:
     """비용을 아끼기 위해 fast 모델로 essence 추출/합성을 호출하고 JSON으로 파싱한다."""
     client = _anthropic_client()
     if client is None:  # pragma: no cover — llm_enabled() 가드 이후에만 호출됨
         raise RuntimeError("ANTHROPIC_API_KEY가 설정되어 있지 않습니다.")
+    counter = _llm_call_counter.get()
+    if counter is not None:
+        counter.tick()
     response = client.messages.create(
         model=settings.CLAUDE_MODEL_FAST,
         max_tokens=max_tokens,

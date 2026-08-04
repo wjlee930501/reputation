@@ -53,6 +53,7 @@ from app.services.essence_engine import (
     compute_source_content_hash,
     compute_sources_snapshot_hash,
     find_error_marker_fields,
+    metered_llm_calls,
     process_source_asset,
     screen_content_against_philosophy,
     synthesize_philosophy,
@@ -299,7 +300,8 @@ async def process_source(
     try:
         # 동기 LLM 호출을 워커 스레드로 — 단일 uvicorn worker의 이벤트 루프 블로킹 방지
         # (이 파일의 PDF/DOCX 추출도 동일하게 to_thread 사용).
-        payloads = await asyncio.to_thread(process_source_asset, source)
+        async with metered_llm_calls():
+            payloads = await asyncio.to_thread(process_source_asset, source)
         for payload in payloads:
             if not validate_source_excerpt(source, payload.source_excerpt):
                 raise ValueError(
@@ -774,13 +776,14 @@ async def create_philosophy_draft(
     # Claude synthesis is a synchronous SDK call and can take close to its 60s
     # timeout. Running it on the event loop starves /health/live and Cloud Run
     # kills the otherwise healthy API instance before the draft can commit.
-    payload = await asyncio.to_thread(
-        synthesize_philosophy,
-        hospital,
-        sources,
-        notes,
-        operator_note=body.operator_note,
-    )
+    async with metered_llm_calls():
+        payload = await asyncio.to_thread(
+            synthesize_philosophy,
+            hospital,
+            sources,
+            notes,
+            operator_note=body.operator_note,
+        )
     # 차단·오류 페이지 잔재가 핵심 필드에 남았으면 초안을 만들지 않고 명확한 사유로 거부한다.
     marker_fields = find_error_marker_fields(payload)
     if marker_fields:

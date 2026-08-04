@@ -232,12 +232,14 @@ export default function OnboardingPage() {
                 <p className="mt-2 text-sm font-semibold text-red-100">차단 사유: {summary.blockedReason}</p>
               )}
             </div>
-            <a
-              href={summary.nextActionHref}
-              className="inline-flex shrink-0 items-center justify-center rounded-lg bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-blue-50"
-            >
-              다음 작업: {summary.nextActionLabel}
-            </a>
+            {summary.nextActionHref && (
+              <a
+                href={summary.nextActionHref}
+                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-blue-50"
+              >
+                다음 작업: {summary.nextActionLabel}
+              </a>
+            )}
           </div>
         </div>
       </header>

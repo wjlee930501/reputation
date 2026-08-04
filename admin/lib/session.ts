@@ -36,6 +36,10 @@ export type AdminSession = {
   name: string
   role: string
   csrfToken?: string
+  // 발급 시각(ms). 백엔드가 계정의 sessions_invalid_before와 비교해, 비밀번호 재설정·
+  // 재활성화 이전에 발급된 세션을 한 번에 끊는다. 이 필드가 없는 구버전 토큰은
+  // 백엔드가 '기준선보다 앞선 것'으로 보아 재로그인시킨다.
+  issuedAt?: number
   expiresAt: number
 }
 
@@ -57,6 +61,7 @@ function decodePayload(value: string): AdminSessionPayload | null {
       typeof parsed.name !== 'string' ||
       typeof parsed.role !== 'string' ||
       (parsed.csrfToken !== undefined && typeof parsed.csrfToken !== 'string') ||
+      (parsed.issuedAt !== undefined && typeof parsed.issuedAt !== 'number') ||
       !parsed.accountId ||
       !parsed.email ||
       !parsed.name ||
@@ -70,6 +75,7 @@ function decodePayload(value: string): AdminSessionPayload | null {
       name: parsed.name,
       role: parsed.role,
       csrfToken: parsed.csrfToken,
+      issuedAt: parsed.issuedAt,
     }
   } catch {
     return null
@@ -96,8 +102,11 @@ export async function generateSessionToken(
   crypto.getRandomValues(nonceBytes)
 
   const nonce = bytesToHex(nonceBytes)
-  const expiresAt = String(Date.now() + maxAgeSeconds * 1000)
-  const encodedPayload = encodePayload(payload)
+  const issuedAtMs = Date.now()
+  const expiresAt = String(issuedAtMs + maxAgeSeconds * 1000)
+  // 발급 시각은 서명 대상 payload 안에 넣는다 — 서명 밖에 두면 위조해 세션 무효화를
+  // 우회할 수 있다.
+  const encodedPayload = encodePayload({ ...payload, issuedAt: payload.issuedAt ?? issuedAtMs })
   const key = await importSessionKey(secret)
   const signature = await crypto.subtle.sign(
     'HMAC',

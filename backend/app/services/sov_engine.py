@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import threading
+from contextvars import ContextVar
 from itertools import product
 from typing import Any
 from urllib.parse import urlparse
@@ -25,6 +26,23 @@ logger = logging.getLogger(__name__)
 # 신청을 몰리게 만드는 것이 목적이므로, 그 순간이 정확히 유료 경로가 느려지는 순간이 된다.
 POOL_SOV = "sov"
 POOL_LEADGEN = "leadgen"
+
+# 실제 공급자 호출을 어느 예산으로 계수할지. 풀 이름이 곧 cost_guard 카테고리라
+# 무료 진단(leadgen)과 유료 측정(sov)의 실제 지출이 섞이지 않는다.
+_provider_cost_category: ContextVar[str] = ContextVar("sov_provider_cost_category", default=POOL_SOV)
+
+
+async def _record_sov_provider_call(count: int = 1) -> None:
+    """실제로 나간 공급자 호출을 기록한다(차단하지 않음).
+
+    예약(check_and_increment)은 호출부가 측정 시작 전에 한 번만 한다. 그런데 이 모듈의
+    질의 함수는 tenacity로 최대 3회 재시도되고 `_query_gemini`는 `_query_gemini_result`를
+    감싸 중첩 재시도까지 있어, 실제 호출이 예약보다 몇 배 많아질 수 있다. 그 차이를
+    기록해 두지 않으면 상한이 실제 지출을 막고 있는지 판단할 근거 자체가 없다.
+    """
+    from app.services import cost_guard
+
+    await cost_guard.record_provider_call(_provider_cost_category.get(), count=count)
 
 _sem_lock = threading.Lock()
 _api_semaphores: dict[str, asyncio.Semaphore] = {}
@@ -264,6 +282,7 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
     """
     if settings.OPENAI_CHATGPT_USE_WEB_SEARCH:
         return await _query_chatgpt_with_search_result(query)
+    await _record_sov_provider_call()
     response = await openai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_QUERY,
         messages=[
@@ -287,6 +306,7 @@ async def _query_chatgpt_with_search(query: str) -> str:
 
 async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
     """OpenAI Responses web search의 답변과 실제 인용 URL을 함께 보존한다."""
+    await _record_sov_provider_call()
     try:
         response = await openai_client.responses.create(
             model=settings.OPENAI_MODEL_QUERY,
@@ -339,6 +359,7 @@ async def _query_gemini_result(query: str) -> dict[str, Any]:
             "source_urls": [],
             "measurement_method": "GEMINI_GOOGLE_SEARCH",
         }
+    await _record_sov_provider_call()
     response = await asyncio.wait_for(
         asyncio.to_thread(
             client.models.generate_content,
@@ -447,6 +468,7 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
             "mention_context": None,
         }
 
+    await _record_sov_provider_call()
     result = await openai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_PARSE,
         messages=[
@@ -482,6 +504,7 @@ async def _parse_competitors(competitors: list[str], response_text: str) -> list
         logger.debug("prefilter skip (competitors): count=%d", len(competitors))
         return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
 
+    await _record_sov_provider_call()
     result = await openai_client.chat.completions.create(
         model=settings.OPENAI_MODEL_PARSE,
         messages=[
@@ -534,6 +557,9 @@ async def run_single_query(
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
 
     async def single():
+        # 이 측정에서 나가는 실제 호출을 어느 예산으로 셀지 고정한다. 무료 진단이
+        # 유료 측정 예산에 섞이면 상한 판단이 무너진다.
+        _provider_cost_category.set(pool)
         async with _get_semaphore(pool):
             try:
                 provider_result = await query_fn(query_text)
@@ -639,6 +665,8 @@ async def fetch_answer(
             }
 
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
+    # 무료 진단 경로 — 실제 호출을 leadgen 예산으로 센다(위 measure 경로와 같은 규약).
+    _provider_cost_category.set(pool)
     async with _get_semaphore(pool):
         try:
             provider_result = await query_fn(query_text)

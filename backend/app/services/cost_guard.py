@@ -39,6 +39,12 @@ _SOFT_RATIO = 0.8  # 하드 상한의 80% 도달 시 조기 경고
 
 KILL_SWITCH_KEY = "cost_guard:kill_switch"
 
+# 일일 상한 임시 상향의 배수 한도. 야간 생성이 일일 상한에 걸렸을 때 개발자 재배포
+# 없이 AE가 그날치를 푸는 것이 목적이라, **월간 상한은 건드리지 않는다** — 월간이
+# 실제 예산 천장이고, 하루치 상향이 그 천장을 넘어 지출을 늘릴 수는 없다.
+# 상향분은 그날 키에만 저장되므로 다음 날 자동으로 원복된다.
+MAX_DAILY_LIMIT_MULTIPLIER = 3
+
 CATEGORIES: tuple[str, ...] = ("content", "image", "sov", "leadgen")
 
 _CATEGORY_LABELS = {
@@ -135,6 +141,78 @@ def _monthly_key(category: str, period: str) -> str:
     return f"cost_guard:{category}:monthly:{period}"
 
 
+def _daily_override_key(category: str, period: str) -> str:
+    return f"cost_guard:{category}:daily_override:{period}"
+
+
+async def _effective_daily_limit(
+    client: redis_async.Redis, category: str, period: str, configured: int
+) -> int:
+    """오늘치 상향이 걸려 있으면 그 값을, 아니면 설정값을 쓴다.
+
+    configured가 0이면 이미 무제한이라 상향 개념이 없다. 상향값은 항상
+    [configured, configured * MAX_DAILY_LIMIT_MULTIPLIER] 범위로 재한정한다 —
+    저장 시점 검증과 별개로, 오래된/조작된 키가 상한을 무력화하지 못하게 한다.
+    """
+    if configured <= 0:
+        return configured
+    raw = await client.get(_daily_override_key(category, period))
+    if raw is None:
+        return configured
+    try:
+        override = int(raw)
+    except (TypeError, ValueError):
+        return configured
+    return max(configured, min(override, configured * MAX_DAILY_LIMIT_MULTIPLIER))
+
+
+def validate_daily_limit_override(category: str, limit: int | None) -> None:
+    """상향 요청이 허용 범위인지 검사한다 (Redis 접근 없음).
+
+    호출자가 감사 로그를 커밋하기 **전에** 검증할 수 있도록 분리했다 — 순서 규약이
+    write_audit_log → commit → 외부 부수효과라, 검증을 부수효과 안에 두면 잘못된 요청에도
+    감사 row가 남는다. limit이 None이면 해제 요청이라 범위 검사가 필요 없다.
+    """
+    if category not in _CATEGORY_LABELS:
+        raise ValueError(f"unknown cost_guard category: {category}")
+    if limit is None:
+        return
+    configured, _monthly = _limits(category)
+    if configured <= 0:
+        raise ValueError("이 항목은 일일 상한이 설정돼 있지 않아 상향할 수 없습니다.")
+    ceiling = configured * MAX_DAILY_LIMIT_MULTIPLIER
+    if limit <= configured:
+        raise ValueError(f"현재 일일 상한({configured}건)보다 큰 값이어야 합니다.")
+    if limit > ceiling:
+        raise ValueError(f"일일 상한은 기본값의 {MAX_DAILY_LIMIT_MULTIPLIER}배({ceiling}건)까지만 올릴 수 있습니다.")
+
+
+async def set_daily_limit_override(
+    category: str,
+    limit: int,
+    *,
+    redis_client: redis_async.Redis | None = None,
+) -> int:
+    """오늘 하루만 적용되는 일일 상한을 설정하고, 실제 적용된 값을 반환한다."""
+    validate_daily_limit_override(category, limit)
+
+    client = redis_client or _client()
+    period = _daily_period(_now())
+    await client.set(_daily_override_key(category, period), limit, ex=_DAILY_TTL_SECONDS)
+    return limit
+
+
+async def clear_daily_limit_override(
+    category: str,
+    *,
+    redis_client: redis_async.Redis | None = None,
+) -> None:
+    if category not in _CATEGORY_LABELS:
+        raise ValueError(f"unknown cost_guard category: {category}")
+    client = redis_client or _client()
+    await client.delete(_daily_override_key(category, _daily_period(_now())))
+
+
 def _actual_daily_key(category: str, period: str) -> str:
     return f"cost_guard:{category}:actual:daily:{period}"
 
@@ -206,6 +284,9 @@ async def check_and_increment(
         daily_period = _daily_period(now)
         monthly_period = _monthly_period(now)
         daily_limit, monthly_limit = _limits(category)
+        # 오늘치 임시 상향이 있으면 그것으로 판정한다. 월간 상한은 상향 대상이 아니라
+        # 하루치를 올려도 이번 달 총지출 천장은 그대로다.
+        daily_limit = await _effective_daily_limit(client, category, daily_period, daily_limit)
         daily_key = _daily_key(category, daily_period)
         monthly_key = _monthly_key(category, monthly_period)
 
@@ -372,6 +453,7 @@ def _empty_category_usage(category: str) -> dict:
         "label": _CATEGORY_LABELS[category],
         "daily_used": 0,
         "daily_limit": daily_limit,
+        "daily_limit_default": daily_limit,
         "monthly_used": 0,
         "monthly_limit": monthly_limit,
         "daily_actual": 0,
@@ -395,7 +477,10 @@ async def get_usage_snapshot(*, redis_client: redis_async.Redis | None = None) -
     try:
         kill_switch_active = await _is_kill_switch_active(client)
         for category in CATEGORIES:
-            daily_limit, monthly_limit = _limits(category)
+            configured_daily, monthly_limit = _limits(category)
+            daily_limit = await _effective_daily_limit(
+                client, category, daily_period, configured_daily
+            )
             daily_used = int(await client.get(_daily_key(category, daily_period)) or 0)
             monthly_used = int(await client.get(_monthly_key(category, monthly_period)) or 0)
             daily_actual = int(await client.get(_actual_daily_key(category, daily_period)) or 0)
@@ -408,6 +493,8 @@ async def get_usage_snapshot(*, redis_client: redis_async.Redis | None = None) -
                     "label": _CATEGORY_LABELS[category],
                     "daily_used": daily_used,
                     "daily_limit": daily_limit,
+                    # 화면이 "기본 X → 오늘만 Y"를 구분해 보여줄 수 있게 설정값을 함께 싣는다.
+                    "daily_limit_default": configured_daily,
                     "monthly_used": monthly_used,
                     "monthly_limit": monthly_limit,
                     "daily_actual": daily_actual,

@@ -487,3 +487,209 @@ def _upload_to_gcs(local_path: Path, slug: str, filename: str) -> str:
         if settings.APP_ENV == "production":
             raise RuntimeError(f"GCS upload failed in production: {e}") from e
         return str(local_path)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 원장용 월간 리포트 뷰 모델
+#
+# AE용 report.html은 운영 판단에 필요한 것을 다 담아 원장에게는 과적합이다
+# (플랫폼별 표, 실행안의 담당·기한 열 등). 같은 데이터를 다른 편집으로 보여준다.
+#
+# 언어 규칙(VERSIONUP §5-3 결정 ⑤): 원장 화면에서 퍼센트·전문 용어를 쓰지 않는다.
+# "100번 물어보면 몇 번"이 비전문가에게 검증된 최선의 설명이고, 합성 점수는 만들지 않는다.
+# ══════════════════════════════════════════════════════════════════
+
+# 원장이 자기 폰으로 확인했을 때 방어할 수 있는 최소 길이. 너무 길면 안 읽는다.
+DOCTOR_EXCERPT_CHARS = 260
+
+# 월간 변동이 이 폭 안이면 "정상 범위"로 안내한다. 안 쓰면 다음 달 하락이 해지 대화가 된다.
+NORMAL_FLUCTUATION = 5
+
+_PLATFORM_LABELS = {"chatgpt": "챗GPT", "gemini": "제미나이"}
+
+
+def _as_hundred(pct: float | None) -> int | None:
+    """언급률(%)을 '100번 중 N번'의 N으로. 퍼센트 표기를 화면에서 없애기 위한 변환."""
+    return None if pct is None else round(pct)
+
+
+def _excerpt_around(text: str, needle: str, *, width: int = DOCTOR_EXCERPT_CHARS) -> str:
+    """답변 원문에서 병원명 주변을 잘라낸다. 못 찾으면 앞부분을 준다."""
+    body = " ".join((text or "").split())
+    if not body:
+        return ""
+    index = body.find(needle) if needle else -1
+    if index < 0:
+        return body[:width] + ("…" if len(body) > width else "")
+    start = max(0, index - width // 3)
+    end = min(len(body), start + width)
+    return ("…" if start > 0 else "") + body[start:end] + ("…" if end < len(body) else "")
+
+
+def _platform_label(value: Any) -> str:
+    return _PLATFORM_LABELS.get(str(value or "").lower(), str(value or ""))
+
+
+def _competitors_named_in(record: Any) -> list[str]:
+    return [
+        str(item.get("name")).strip()
+        for item in (getattr(record, "competitor_mentions", None) or [])
+        if isinstance(item, dict) and item.get("is_mentioned") and str(item.get("name") or "").strip()
+    ]
+
+
+def _pick_evidence(records: list, hospital_name: str) -> dict[str, Any]:
+    """나온 사례 1개와 안 나온 사례 1개.
+
+    이 블록이 리포트의 심장이다 — 원장이 자기 폰으로 물어봤는데 안 나오는 순간이
+    반드시 오고, 그때 방어하는 유일한 자산이 저장된 답변 원문이다.
+    """
+    usable = [r for r in records if _successful_measurement(r)]
+    mentioned = next((r for r in usable if getattr(r, "is_mentioned", False)), None)
+    missing = next((r for r in usable if not getattr(r, "is_mentioned", False)), None)
+
+    def _shape(record: Any, *, found: bool) -> dict[str, Any] | None:
+        if record is None:
+            return None
+        return {
+            "question": _query_text_of(record) or "",
+            "excerpt": _excerpt_around(
+                getattr(record, "raw_response", "") or "",
+                hospital_name if found else "",
+            ),
+            "platform": _platform_label(getattr(record, "ai_platform", None)),
+            "measured_at": getattr(record, "measured_at", None),
+            "competitors": [] if found else _competitors_named_in(record)[:3],
+        }
+
+    return {"found": _shape(mentioned, found=True), "missing": _shape(missing, found=False)}
+
+
+def build_doctor_report_view(
+    *,
+    hospital: Any,
+    sov_pct: float | None,
+    prev_sov_pct: float | None,
+    published_count: int,
+    plan_quota: int | None,
+    attribution: dict[str, Any] | None,
+    records: list,
+    platforms: list[str] | None = None,
+) -> dict[str, Any]:
+    """원장에게 보낼 1페이지의 모든 문구와 숫자를 만든다.
+
+    숫자는 전부 코드 바인딩이다 — 시장 1위 리포팅 툴의 현재 1순위 불만이 AI 요약의
+    숫자 환각이라, 이 함수는 LLM을 쓰지 않는다.
+    """
+    this_count = _as_hundred(sov_pct)
+    prev_count = _as_hundred(prev_sov_pct)
+    measured = this_count is not None
+
+    delta = None if (this_count is None or prev_count is None) else this_count - prev_count
+    if delta is None:
+        delta_sentence = None
+    elif delta > 0:
+        delta_sentence = f"전월 {prev_count}번 → 이번 달 {this_count}번 ({delta}개 늘었습니다)"
+    elif delta < 0:
+        delta_sentence = f"전월 {prev_count}번 → 이번 달 {this_count}번 ({abs(delta)}개 줄었습니다)"
+    else:
+        delta_sentence = f"전월 {prev_count}번 → 이번 달 {this_count}번 (변화 없습니다)"
+
+    new_questions = int((attribution or {}).get("new_mention_count") or 0)
+    ahead_of = _competitor_outcomes(records)
+
+    tiles: list[dict[str, Any]] = [
+        {
+            "label": "이번 달 발행한 글",
+            "value": f"{published_count}편" if plan_quota is None else f"{plan_quota}편 중 {published_count}편",
+            "hint": "약정한 편수 대비 진행률입니다.",
+        },
+        {
+            "label": "새로 나오기 시작한 질문",
+            "value": f"{new_questions}개",
+            "hint": "지난달에는 답변에 없었는데 이번 달부터 병원이 언급된 질문입니다.",
+        },
+    ]
+    if ahead_of:
+        top = ahead_of[0]
+        tiles.append({
+            "label": "가장 많이 언급된 다른 병원",
+            "value": top["name"],
+            "hint": f"같은 질문들에서 {top['mention_count']}번 언급됐습니다.",
+        })
+
+    if measured:
+        summary = (
+            f"이번 달 환자 질문 100번 중 AI가 {hospital.name}을(를) 답변에 넣은 횟수는 "
+            f"{this_count}번입니다."
+        )
+    else:
+        summary = "이번 달은 측정이 충분히 이뤄지지 않아 횟수를 보고드리지 않습니다."
+
+    ours = ["다음 달에도 계획한 글을 예정대로 발행합니다."]
+    if attribution and attribution.get("new_mention_queries"):
+        ours.append("아직 병원이 나오지 않는 질문을 겨냥해 다음 글의 주제를 정합니다.")
+    else:
+        ours.append("아직 병원이 나오지 않는 질문을 추려 다음 글의 주제를 정합니다.")
+
+    platform_names = ", ".join(_platform_label(p) for p in (platforms or [])) or "챗GPT, 제미나이"
+
+    return {
+        "measured": measured,
+        "hospital_name": hospital.name,
+        "headline": {
+            "of_hundred": this_count,
+            "prev_of_hundred": prev_count,
+            "delta": delta,
+            "delta_sentence": delta_sentence,
+        },
+        "summary": summary,
+        "tiles": tiles,
+        "evidence": _pick_evidence(records, getattr(hospital, "name", "") or ""),
+        "next_actions": {
+            "ours": ours,
+            "yours": ["월 1회 30분 통화로 요즘 환자분들이 많이 묻는 것을 알려주세요."],
+        },
+        "footnotes": [
+            f"{platform_names}에 환자들이 실제로 쓰는 표현으로 질문해 답변을 모았습니다.",
+            f"횟수가 {NORMAL_FLUCTUATION}개 안팎으로 오르내리는 것은 정상 범위입니다.",
+            "이 결과는 환자 수 증가를 보장하지 않습니다.",
+        ],
+    }
+
+
+def generate_doctor_pdf_report(
+    hospital: Hospital,
+    period_start: datetime,
+    view: dict[str, Any],
+) -> str:
+    """원장에게 전달할 1페이지 PDF를 만들고 GCS에 올린다.
+
+    AE용(generate_pdf_report)과 파일을 나눈다 — 같은 문서를 두 독자에게 맞추려다
+    양쪽 다 어정쩡해지는 것이 §5-3 결정 ⑥이 지적한 문제다.
+    """
+    from weasyprint import HTML
+
+    output_dir = Path(settings.REPORT_OUTPUT_DIR)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    label = arrow.get(period_start).format("YYYY-MM")
+    filename = f"{hospital.slug}_{label}_doctor.pdf"
+    local_pdf_path = output_dir / filename
+
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATE_DIR)),
+        autoescape=select_autoescape(enabled_extensions=("html",)),
+    )
+    html = env.get_template("doctor_report.html").render(view=view, period_label=label)
+
+    HTML(string=html).write_pdf(str(local_pdf_path))
+    logger.info(f"Doctor PDF generated: {local_pdf_path}")
+
+    gcs_path = _upload_to_gcs(local_pdf_path, hospital.slug, filename)
+    if gcs_path.startswith("gs://"):
+        try:
+            local_pdf_path.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to delete local PDF {local_pdf_path}: {e}")
+    return gcs_path

@@ -14,7 +14,19 @@ import {
 } from './session-revocation.ts'
 import { readSessionToken } from './session.ts'
 
-const ALLOWED_PREFIXES = ['hospitals', 'content', 'reports', 'sov', 'domain', 'essence', 'leads']
+const ALLOWED_PREFIXES = [
+  'hospitals',
+  'content',
+  'reports',
+  'sov',
+  'domain',
+  'essence',
+  'leads',
+  // 전역 제어 평면 — 병원 단위가 아니라 /admin/operations, /admin/accounts로 열린다.
+  // 여기 없으면 백엔드에 라우터가 있어도 프록시가 403으로 끊는다.
+  'operations',
+  'accounts',
+]
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE'])
 
 type AdminApiProxyContext = {
@@ -98,6 +110,8 @@ export async function handleAdminApiProxy(
     backendUrl,
     adminKey,
     sessionToken,
+    accountId: session.accountId,
+    issuedAtMs: session.issuedAt,
   })
   if (revocationStatus === 'unavailable') {
     return jsonNoStore({ error: 'Admin session state unavailable' }, { status: 503 })

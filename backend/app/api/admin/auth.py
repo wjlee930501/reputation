@@ -145,7 +145,21 @@ async def revoke_admin_session(body: AdminSessionRevocationRequest):
 
 
 @router.get("/sessions/{token_hash}/revocation", response_model=AdminSessionRevocationResponse)
-async def get_admin_session_revocation(token_hash: str):
+async def get_admin_session_revocation(
+    token_hash: str,
+    account_id: UUID | None = None,
+    issued_at: datetime | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """세션 폐기 여부. `account_id`가 오면 계정 상태까지 함께 본다.
+
+    비활성화된 계정의 세션 쿠키는 그 자체로는 만료(최대 7일)까지 유효하고, 발급된
+    토큰을 서버가 열거할 수 없어 개별 폐기도 불가능하다. Admin BFF가 이미 요청마다
+    호출하는 이 경로에서 계정 상태를 같이 판정하면, 왕복을 늘리지 않고 비활성화가
+    즉시(쓰기) / 폐기 캐시 TTL 안에(읽기) 반영된다.
+
+    `account_id`가 없으면 종전과 동일하게 해시 폐기 여부만 본다.
+    """
     try:
         revoked = await is_admin_session_hash_revoked(token_hash)
     except ValueError as exc:
@@ -155,4 +169,22 @@ async def get_admin_session_revocation(token_hash: str):
             status_code=503,
             detail="Admin session revocation state unavailable",
         ) from exc
+
+    if not revoked and account_id is not None:
+        result = await db.execute(
+            select(AdminUser.is_active, AdminUser.sessions_invalid_before).where(
+                AdminUser.id == account_id
+            )
+        )
+        row = result.one_or_none()
+        # 계정이 사라졌거나 비활성이면 세션도 더 이상 유효하지 않다.
+        if row is None or not row.is_active:
+            revoked = True
+        elif row.sessions_invalid_before is not None:
+            # 비밀번호 재설정·재활성화로 기준선이 올라가면 그 이전 발급분은 전부 무효.
+            # 발급 시각을 모르는(구버전) 토큰은 기준선보다 앞선다고 볼 수밖에 없다 —
+            # 세션 무효화가 "일부만 적용"되는 것보다 다시 로그인하게 하는 쪽이 안전하다.
+            if issued_at is None or issued_at <= row.sessions_invalid_before:
+                revoked = True
+
     return AdminSessionRevocationResponse(revoked=revoked)

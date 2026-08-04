@@ -27,6 +27,9 @@ class MonthlyReport(Base):
     report_type: Mapped[str] = mapped_column(String(20), default="MONTHLY")  # V0 | MONTHLY
 
     pdf_path: Mapped[str | None] = mapped_column(String(500))
+    # 원장에게 전달하는 1페이지 판본. 같은 데이터를 다른 편집으로 렌더한 별도 파일이라
+    # AE용(pdf_path)과 함께 보관한다 — 하나를 두 독자에게 맞추면 양쪽 다 어정쩡해진다.
+    doctor_pdf_path: Mapped[str | None] = mapped_column(String(500))
     sov_summary: Mapped[dict | None] = mapped_column(JSON)
     content_summary: Mapped[dict | None] = mapped_column(JSON)
     essence_summary: Mapped[dict | None] = mapped_column(_jsonb_type())

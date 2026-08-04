@@ -12,6 +12,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
 
+from app.api.admin import accounts as admin_accounts
 from app.api.admin import auth as admin_auth
 from app.api.admin import content as admin_content
 from app.api.admin import domain as admin_domain
@@ -163,6 +164,7 @@ admin_deps = [
 ]
 app.include_router(admin_hospitals.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_auth.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_accounts.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_content.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_reports.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_sov.router, prefix="/api/v1", dependencies=admin_deps)

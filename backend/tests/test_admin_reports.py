@@ -18,6 +18,7 @@ def _report(**overrides):
         period_month=5,
         report_type="MONTHLY",
         pdf_path="gs://reputation-reports/demo.pdf",
+        doctor_pdf_path="gs://reputation-reports/demo_doctor.pdf",
         sov_summary={"sov_pct": 42.0},
         content_summary={"published_count": 8},
         essence_summary={
@@ -252,8 +253,53 @@ async def test_download_report_uses_one_hour_signed_url(monkeypatch):
     response = await reports_api.download_report(hospital.id, report.id, db=db)
 
     assert calls == [
-        (report.pdf_path, 1, 'attachment; filename="report-2026-05.pdf"'),
+        (report.pdf_path, 1, reports_api._content_disposition(
+            "report-2026-05.pdf", "report-2026-05.pdf")),
     ]
     assert response.headers["cache-control"] == "no-store, private"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert "report-2026-05.pdf" in response.headers["content-disposition"]
+
+
+async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch):
+    """원장용은 같은 데이터를 다른 편집으로 렌더한 별도 파일이다 — 경로도 파일명도 다르다."""
+    hospital = _hospital()
+    report = _report(hospital_id=hospital.id)
+    db = _FakeDB(hospital, report)
+    calls = []
+
+    def fake_signed_url(path, expiration_hours=24, response_disposition=None):
+        calls.append((path, expiration_hours, response_disposition))
+        return "https://storage.example/doctor.pdf"
+
+    monkeypatch.setattr(reports_api, "get_signed_url", fake_signed_url)
+    response = await reports_api.download_report(
+        hospital.id, report.id, audience="doctor", db=db
+    )
+
+    # 헤더는 latin-1만 담을 수 있다 — 한글 이름은 RFC 5987 filename*으로만 나간다.
+    disposition = calls[0][2]
+    assert calls == [(report.doctor_pdf_path, 1, disposition)]
+    assert 'filename="report-2026-05-doctor.pdf"' in disposition
+    assert "filename*=UTF-8''" in disposition
+    assert "원장보고" not in disposition, "한글이 latin-1 헤더에 그대로 들어가면 500이 난다"
+    response.headers["content-disposition"].encode("latin-1")  # 인코딩 가능해야 한다
+
+
+async def test_download_report_explains_a_missing_doctor_edition(monkeypatch):
+    """AE용은 있는데 원장용만 없을 수 있다 — 'PDF 경로 없음'은 그 상황을 설명하지 못한다."""
+    hospital = _hospital()
+    report = _report(hospital_id=hospital.id, doctor_pdf_path=None)
+    db = _FakeDB(hospital, report)
+
+    with pytest.raises(HTTPException) as exc:
+        await reports_api.download_report(hospital.id, report.id, audience="doctor", db=db)
+
+    assert exc.value.status_code == 404
+    assert "원장" in exc.value.detail
+
+
+async def test_report_list_reports_whether_the_doctor_edition_exists():
+    for path, expected in ((None, False), ("gs://reputation-reports/x_doctor.pdf", True)):
+        payload = reports_api._serialize(_report(doctor_pdf_path=path))
+        assert payload["has_doctor_pdf"] is expected
