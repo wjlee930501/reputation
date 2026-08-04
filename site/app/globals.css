@@ -1280,24 +1280,39 @@ textarea:focus-visible {
 }
 
 .rolling-ai-window {
-  /* 한 줄 높이만큼만 열어 두고 나머지는 잘라낸다 — 이 창이 곧 슬롯이다. */
+  /* 한 줄 높이만큼만 열어 두고 나머지는 잘라낸다 — 이 창이 곧 슬롯이다.
+     창 높이·칸 높이·미는 거리가 **반드시 같은 값**이어야 하므로 토큰 하나로 묶는다. */
+  --rolling-line: 1.16em;
   display: inline-block;
   overflow: hidden;
-  height: 1.16em;
+  height: var(--rolling-line);
   vertical-align: -0.2em;
 }
 
+/* 미는 거리는 **한 칸 높이 × 인덱스**다.
+   앞 버전은 `translateY(-100%)`였는데, 세로 플렉스 트랙에서 100%는 트랙 **전체 높이**
+   (칸 수 × 한 칸)라서 칸이 전부 창 위로 빠져나갔다. 그래서 index가 1이 되는 순간
+   슬롯이 통째로 비었고, Gemini는 전환 중에 스쳐 지나갈 뿐 멈춰 서지 못했다. */
 .rolling-ai-track {
   display: flex;
   flex-direction: column;
+  transform: translateY(calc(var(--rolling-i, 0) * -1 * var(--rolling-line)));
   transition: transform 0.62s var(--ease-enter);
+}
+
+/* 마지막 사본 칸에서 첫 칸으로 되감는 한 프레임 — 이때만 애니메이션을 끈다. */
+.rolling-ai-track[data-sliding="off"] {
+  transition: none;
 }
 
 .rolling-ai-item {
   display: inline-flex;
   align-items: center;
   gap: 0.22em;
-  height: 1.16em;
+  /* 세로 플렉스에서 높이를 지정해도 기본 `flex-shrink: 1`이면 줄어든다.
+     칸 높이가 조금이라도 어긋나면 슬롯이 서서히 밀려 어긋난다. */
+  flex: 0 0 auto;
+  height: var(--rolling-line);
   white-space: nowrap;
   color: var(--ink);
   font-weight: 700;
