@@ -185,8 +185,11 @@ textarea:focus-visible {
   --accent: #0671e0;
   --accent-dark: #0058b8;
   --accent-weak: #eef5fc;
-  /* 섹션 배경용 파랑틴트 — 회색 밴드를 대체한다. */
-  --tint: #f3f8ff;
+  /* 섹션 배경용 파랑틴트 — 회색 밴드를 대체한다.
+     **#f3f8ff는 흰색과 사실상 구별되지 않았다.** 1440px 캡처에서 밴드 경계가 보이지
+     않았고, 그 결과 pain·operation·limits 세 섹션이 하나의 연속된 글 덩어리로 읽혔다.
+     띠를 둔 목적 자체가 섹션을 나누는 것이므로, 나뉘어 보이는 값까지 내린다. */
+  --tint: #edf3fb;
   --tint-line: #dce9fa;
   /* 마지막 CTA 면 */
   --accent-deep: #00437f;
@@ -8412,6 +8415,34 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   }
 
   .faq-list {
+    max-width: none;
+  }
+}
+
+/* ── 같은 처방을 리포트 섹션에도 ──────────────────────────────
+   FAQ에서 한 번 진단하고 고친 문제가 다른 섹션에는 전파되지 않았다.
+   리포트 섹션은 그중 손해가 가장 크다: 제목이 --prose-max(640px)를 차지하고
+   `.preview-stage`가 920px로 왼쪽에 서서, 1440px에서 오른쪽 440px가 비어 있었다.
+   페이지에서 유일하게 "받는 것"을 보여주는 카드가 가장 좁게 서 있던 셈이다.
+
+   FAQ(921px)보다 늦게 접히는 이유는 카드 안에 눈금 9칸 + 횟수가 한 줄에 들어가야
+   하기 때문이다 — 사이드 제목에 300px를 떼주고도 카드가 좁아지지 않는 폭에서만 켠다. */
+@media (min-width: 1120px) {
+  .report-section {
+    display: grid;
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+    column-gap: 72px;
+    align-items: start;
+  }
+
+  .report-section .section-heading {
+    margin: 0;
+    max-width: none;
+    position: sticky;
+    top: 96px;
+  }
+
+  .preview-stage {
     max-width: none;
   }
 }
