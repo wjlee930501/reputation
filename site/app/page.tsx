@@ -24,6 +24,7 @@ import {
 import AnswerExplorer from "./_components/AnswerExplorer";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
+import MotionToggle from "./_components/MotionToggle";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
 import SceneSequence from "./_components/SceneSequence";
@@ -65,6 +66,10 @@ export default function Home() {
           <a href="#faq">자주 묻는 질문</a>
         </nav>
 
+        {/* 내비 밖에 둔다 — `.header-nav`는 600px 이하에서 통째로 숨는데, 좁은 화면에서
+            멈춤 수단이 사라지면 이 버튼의 존재 이유가 없어진다. */}
+        <MotionToggle />
+
         <Link className="header-cta" href={DIAGNOSIS_PATH}>
           무료 진단
         </Link>
@@ -105,7 +110,7 @@ export default function Home() {
       {/* ── ② 환자가 보는 화면 — 히어로 바로 다음 ─────────────────
           리포트를 먼저 보여주면 "우리가 파는 것"부터 말하는 셈이다. 먼저 볼 것은
           환자가 실제로 보는 답변이고, 거기 병원 이름이 서너 개뿐이라는 사실이다. */}
-      <section id="scene" className="preview-section" aria-labelledby="scene-heading">
+      <section id="scene" className="scene-section" aria-labelledby="scene-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{sceneSection.label}</p>
           <h2 id="scene-heading">{sceneSection.heading}</h2>
@@ -228,6 +233,9 @@ export default function Home() {
         <div className="section-heading" data-reveal>
           <p className="section-label">{previewSection.label}</p>
           <h2 id="preview-heading">{previewSection.heading}</h2>
+          {/* 계기판의 18회와 아래 리포트의 9회를 잇는 한 줄. 없으면 읽는 사람이
+              두 분모의 관계를 스스로 추론해야 한다. */}
+          <p className="section-note">{previewSection.note}</p>
         </div>
 
         <div className="preview-stage" data-reveal>

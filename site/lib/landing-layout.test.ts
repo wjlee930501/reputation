@@ -21,13 +21,16 @@ function rule(selector: string): string {
  * 랜딩의 좌측 기준선은 두 계열이 공유한다.
  *
  * - 박스형(market·report·faq): 섹션 자신이 1240 + 안쪽 --shell-pad → 콘텐츠 1160
- * - 풀블리드 틴트(preview·pain·operation·limits): 섹션은 화면 전체, `> *`가 폭을 잡는다
+ * - 풀블리드 틴트(scene·pain·operation·limits): 섹션은 화면 전체, `> *`가 폭을 잡는다
+ *
+ * `.scene-section`은 예전 이름이 `.preview-section`이었다 — `#scene`이 쓰는데 이름은
+ * preview였고, 정작 `#preview`는 `.report-section`을 써서 둘이 뒤바뀐 상태였다.
  *
  * 풀블리드 쪽이 1240을 잡으면 padding 바깥에서 센터링돼 **콘텐츠가 40px 왼쪽**에
  * 선다. 1440px에서는 눈에 안 띄지만 넓은 화면에서 그대로 남아 제목과 내용의 축이
  * 갈린다(2000px에서 실제로 그렇게 나갔다). 두 계열을 --shell-inner로 묶는다.
  */
-const FULL_BLEED = ['.preview-section > *', '.pain-section > *', '.operation-section > *', '.limits-section > *']
+const FULL_BLEED = ['.scene-section > *', '.pain-section > *', '.operation-section > *', '.limits-section > *']
 
 test('full-bleed sections share the boxed sections content width', () => {
   for (const selector of FULL_BLEED) {
