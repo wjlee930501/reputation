@@ -8960,3 +8960,186 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
   .funnel-legend { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 }
+
+/* ── 히어로 개인화 픽커 ──────────────────────────────────────────────
+   가운데 정렬 히어로 안이라 폭을 좁게 잡고, 카드로 감싸 "여기는 조작하는 곳"임을
+   알린다. 테두리만 쓰고 그림자는 쓰지 않는다(페이지 규칙). */
+.hero-picker {
+  width: 100%;
+  max-width: 34em;
+  margin: 26px auto 0;
+  padding: 16px 18px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-card);
+  background: #ffffff;
+  text-align: left;
+}
+
+.hero-picker-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.hero-picker-label {
+  flex: 1 1 100%;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.hero-picker-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.hero-picker-field label {
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+/* 네이티브 select를 쓰되 기본 크롬을 지운다 — 모바일 피커는 그대로 살린다. */
+.hero-picker-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 40px;
+  padding: 0 30px 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-btn);
+  background-color: #ffffff;
+  /* 화살표는 인라인 SVG로 그린다 — 이모지·아이콘 패키지를 쓰지 않는다는 규칙. */
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23646b76' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.hero-picker-field select:hover {
+  border-color: var(--accent);
+}
+
+.hero-picker-result {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.hero-picker-lead {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+/* 환자의 말. 이 페이지에서 인용부호를 크게 쓰는 유일한 자리다. */
+.hero-picker-question {
+  margin: 7px 0 0;
+  font-size: clamp(1.0625rem, 0.97rem + 0.42vw, 1.25rem);
+  font-weight: 700;
+  line-height: 1.45;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
+.hero-picker-consequence {
+  margin: 9px 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+/* ── 요금제 ──────────────────────────────────────────────────────────
+   같은 카테고리 국내 16곳 중 가격을 공개하는 곳은 둘뿐이다. 표로 적어 두는 것
+   자체가 차별화이므로 장식 없이 값이 바로 읽히게 둔다. */
+.pricing-section {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--section-pad) clamp(20px, 5vw, 40px);
+  border-top: 1px solid var(--line);
+}
+
+.pricing-plans {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: clamp(28px, 4vh, 44px) 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line-strong);
+}
+
+.pricing-plans li {
+  padding: 26px 24px 28px;
+  border-bottom: 1px solid var(--line);
+}
+
+.pricing-plans li + li {
+  border-left: 1px solid var(--line);
+}
+
+.pricing-name {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--muted);
+}
+
+/* 금액이 이 섹션의 본문이다. 파랑을 쓰지 않는다 — 파랑은 '우리가 잰 값'이고
+   가격은 잰 값이 아니다. */
+.pricing-price {
+  margin: 10px 0 0;
+  font-size: clamp(1.75rem, 1.3rem + 1.4vw, 2.375rem);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.pricing-price span {
+  margin-left: 3px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--muted);
+}
+
+.pricing-volume {
+  margin: 10px 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+@media (max-width: 760px) {
+  .pricing-plans {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pricing-plans li + li {
+    border-left: 0;
+  }
+
+  .pricing-plans li {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: baseline;
+    gap: 2px 16px;
+    padding: 20px 0;
+  }
+
+  .pricing-price {
+    grid-row: 1 / 3;
+    grid-column: 2;
+    align-self: center;
+  }
+}

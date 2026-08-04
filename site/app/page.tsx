@@ -19,6 +19,7 @@ import {
   platformShareSection,
   platformShares,
   previewSection,
+  pricingSection,
   sceneSection,
 } from "@/lib/landing-copy";
 
@@ -37,6 +38,7 @@ import AnswerExplorer from "./_components/AnswerExplorer";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
 import HeroMotion from "./_components/HeroMotion";
+import HeroPicker from "./_components/HeroPicker";
 import MotionToggle from "./_components/MotionToggle";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
@@ -148,6 +150,13 @@ export default function Home() {
               첫 화면은 "AI 마케팅 대행"으로도 "블로그 외주"로도 읽힌다. 톤이 조용할수록
               무엇을 파는지는 분명해야 한다. */}
           <p className="hero-subcopy">{landingHero.subcopy}</p>
+
+          {/* 추상을 "우리 병원"으로 바꾸는 자리. 이 페이지의 예시는 전부 ○○·수서역·
+              평균값이라 원장이 자기를 대입할 지점이 없었다. 진료과·지역을 고르면
+              환자가 실제로 던질 질문이 그 자리에서 만들어진다 — 지어낸 값은 없다. */}
+          {/* CTA를 따로 두지 않는다 — 바로 아래 히어로 버튼이 이 문장을 이어받는다.
+              같은 자리에 버튼이 둘이면 어느 쪽을 눌러야 하는지 묻게 된다. */}
+          <HeroPicker />
 
           <div className="hero-actions" aria-label="주요 행동">
             <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
@@ -344,6 +353,32 @@ export default function Home() {
             </details>
           )}
         </div>
+      </section>
+
+      {/* ── 요금제 ────────────────────────────────────────────────
+          같은 카테고리 국내 16곳 중 가격을 공개하는 곳은 SaaS형 둘뿐이고, 대행 형태는
+          전부 "무료 상담 후 견적"이다. 원장은 가격을 알려면 매번 영업 통화를 해야 하고
+          그 마찰이 비교 자체를 막는다. 표로 적어 두면 혼자 판단할 수 있다 —
+          이 페이지가 내내 하려던 그 일이다. FAQ 앞에 두어 반론보다 먼저 답한다. */}
+      <section id="pricing" className="pricing-section" aria-labelledby="pricing-heading">
+        <div className="section-heading" data-reveal>
+          <p className="section-label">{pricingSection.label}</p>
+          <h2 id="pricing-heading">{pricingSection.heading}</h2>
+          <p className="section-note">{pricingSection.note}</p>
+        </div>
+
+        <ul className="pricing-plans" data-reveal>
+          {pricingSection.plans.map((plan) => (
+            <li key={plan.name}>
+              <p className="pricing-name">{plan.name}</p>
+              <p className="pricing-price">
+                {plan.price}
+                <span>{plan.unit}</span>
+              </p>
+              <p className="pricing-volume">{plan.volume}</p>
+            </li>
+          ))}
+        </ul>
       </section>
 
       {/* ── ⑥ 무료 진단 ──────────────────────────────────────────── */}
