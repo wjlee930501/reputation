@@ -1,17 +1,18 @@
 import type { Metadata, Viewport } from "next";
-import localFont from "next/font/local";
 import Script from "next/script";
 import { platformSiteUrl } from "@/lib/site-url";
+import "./fonts/pretendard-subset.css";
 import "./globals.css";
 
-// Pretendard를 로컬 자체호스팅(가변 폰트)으로 통일 — CDN @import 의존성/폰트 폴백 흔들림 제거.
-const pretendard = localFont({
-  src: "./fonts/PretendardVariable.woff2",
-  display: "swap",
-  weight: "45 920",
-  variable: "--font-pretendard",
-  fallback: ["-apple-system", "BlinkMacSystemFont", "system-ui", "sans-serif"],
-});
+/* Pretendard는 여전히 자체호스팅이다(CDN 의존 없음). 달라진 것은 **한 덩어리로 주지
+   않는다**는 것이다.
+
+   앞 버전은 `next/font/local`로 PretendardVariable.woff2 하나를 통째로 실었고, 그
+   파일이 2,057,688바이트 — 랜딩 1회 로드 전송량의 78%였다. 지금은 빈도 기반 서브셋
+   92개로 쪼개 브라우저가 쓰는 구간만 받는다(랜딩 기준 538,464바이트, 26.2%).
+
+   `--font-pretendard`는 생성된 CSS의 `:root`가 정의하므로 `<html>`에 클래스를 붙이지
+   않는다. 서브셋 생성은 `python3 scripts/build_font_subsets.py`. */
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -63,7 +64,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ko" className={pretendard.variable}>
+    <html lang="ko">
       <body>
         <a
           href="#main-content"

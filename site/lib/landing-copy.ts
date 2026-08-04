@@ -41,6 +41,18 @@ export const landingHero = {
    */
   titleLead: "이제 환자들은 {ai}에 병원을 묻습니다.",
   titleMain: "원장님, 우리 병원은 어떤가요?",
+  /**
+   * 제목과 CTA 사이 한 줄 — **이 페이지에서 유일하게 "무엇을 파는가"를 말하는 문장이다.**
+   *
+   * 앞 버전에는 이 줄이 없었다. 첫 화면이 질문 하나와 버튼뿐이면, 카테고리를 모르는
+   * 원장에게는 AI 마케팅 대행·블로그 외주·측정 도구 셋 중 무엇으로도 읽힌다. 히어로가
+   * 조용한 톤을 유지하려면 모호할 여유가 없다 — 목소리를 낮출수록 문장은 분명해야 한다.
+   *
+   * 카테고리(측정) · 방법(실제로 물어봄) · 산출물(횟수) · 가격(무료)을 한 문장에 담는다.
+   * 숫자 18은 measurementSpec.totalCalls와 같아야 한다.
+   */
+  subcopy:
+    "ChatGPT와 Gemini에 환자 질문을 18회 실제로 물어, 답변에 병원 이름이 몇 번 나오는지 세어 보내드립니다.",
   primaryCta: "지금 무료로 진단받기",
 }
 
@@ -134,6 +146,26 @@ export const sceneSection = {
  */
 export const MEASUREMENT_TRIALS = 9
 
+/**
+ * 리포트 **수치 표**에 쓰는 플랫폼 표기 — 퍼널 PRD F5-1.
+ *
+ * 실제로 발송되는 리포트는 벤더 이름을 쓰지 않는다. `lead_report.py`의 `_VENDOR_LABELS`가
+ * `chatgpt → "OpenAI API"`, `gemini → "Google Gemini API"`로 매핑하고, `lead_report.html`
+ * 주석이 그 이유를 적어 두었다 — "ChatGPT 9번 중 0번"이라고 쓰면 §2-2에서 **철회한**
+ * "환자가 보는 화면" 주장을 라벨로 되살리는 셈이기 때문이다. 우리가 부르는 것은 API이고,
+ * 환자가 앱에서 보는 화면과 같다고 주장하지 않는다.
+ *
+ * 그런데 랜딩의 "리포트 미리보기"만 `ChatGPT 5 / 9회`라고 적고 있었다. 미리보기와 실물이
+ * 다르면, 측정 규율을 파는 페이지에서 첫 번째로 깨지는 것이 그 규율이다.
+ *
+ * 산문에서는 계속 "ChatGPT와 Gemini에 물었습니다"라고 쓸 수 있다(F5-1이 명시적으로 허용).
+ * 제약은 **수치 표 안**에만 걸린다.
+ */
+export const measurementPlatforms = [
+  { key: "chatgpt", vendor: "OpenAI API", model: "gpt-5.6-luna" },
+  { key: "gemini", vendor: "Google Gemini API", model: "gemini-3.6-flash" },
+] as const
+
 export const previewSection = {
   label: "리포트 미리보기(예시)",
   heading: "원장님은 결과만 리포팅 받으실 수 있습니다",
@@ -185,7 +217,11 @@ export const marketSection = {
    * (ChatGPT 66.6 + Gemini 17.3), 앱 MAU로 보면 비율이 다르다. 지표 이름을 바꿔
    * 말하는 순간 이 페이지에서 유일하게 검증 가능한 것이 무너진다.
    */
-  heading: "ChatGPT와 Gemini가 검색 점유율 84%. 집중은 여기입니다",
+  // **83.9이지 84가 아니다.** 바로 아래 차트가 66.6 + 17.3 = 83.9%를 인쇄하는데 제목만
+  // 올려 반올림하면, 같은 화면 안에서 숫자가 어긋난다. 이 페이지는 자기에게 불리한 쪽으로
+  // 반올림하는 규율(쓰지 않는 모델의 좋은 숫자를 버리는 것)로 신뢰를 사고 있다 —
+  // 유일하게 올려 반올림한 곳이 44px 제목이면 그 규율이 장식이 된다.
+  heading: "ChatGPT와 Gemini가 검색 점유율 83.9%. 집중은 여기입니다",
 }
 
 /**

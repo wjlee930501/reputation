@@ -30,6 +30,7 @@ import {
 const ALL_COPY = [
   landingHero.titleLead,
   landingHero.titleMain,
+  landingHero.subcopy,
   landingHero.primaryCta,
   marketSection.label,
   marketSection.heading,
@@ -377,10 +378,20 @@ test('the measured platforms actually justify the coverage claim', () => {
     measuredTotal >= 75,
     `측정 대상 합이 ${measuredTotal}%로 떨어졌습니다 — 측정 범위 카피를 다시 써야 합니다.`,
   )
-  // 카피가 말하는 숫자와 데이터가 어긋나면 안 된다.
-  // 숫자가 제목에 있든 넛지에 있든, **어딘가에는** 데이터와 같은 값이 적혀야 한다.
+  /**
+   * 카피의 숫자는 **차트가 실제로 인쇄하는 문자열과 같아야 한다.**
+   *
+   * 앞 버전은 `Math.round(measuredTotal)`을 찾았고, 그래서 제목의 "84%"가 통과했다.
+   * 그런데 차트는 바로 아래에서 `toFixed(1)`로 "83.9%"를 찍는다 — 같은 화면에 84와
+   * 83.9가 동시에 있었고 테스트가 그 상태를 승인하고 있었다. 자기에게 불리하게
+   * 반올림하는 것으로 신뢰를 사는 페이지에서, 유일하게 올려 반올림한 곳이 제목이면 안 된다.
+   */
+  const rendered = `${measuredTotal.toFixed(1)}%`
   const coverageCopy = `${marketSection.heading} ${platformShareSection.nudge}`
-  assert.match(coverageCopy, new RegExp(String(Math.round(measuredTotal))))
+  assert.ok(
+    coverageCopy.includes(rendered),
+    `커버리지 카피가 차트 값(${rendered})과 다릅니다: ${coverageCopy}`,
+  )
 })
 
 test('the coverage nudge is framed as a cost decision, not a limitation', () => {

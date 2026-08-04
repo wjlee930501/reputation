@@ -91,6 +91,11 @@ export default function Home() {
           <strong>{landingHero.titleMain}</strong>
         </h1>
 
+        {/* 제목이 던진 질문에 답하는 한 줄. 이 줄이 없으면 카테고리를 모르는 원장에게
+            첫 화면은 "AI 마케팅 대행"으로도 "블로그 외주"로도 읽힌다. 톤이 조용할수록
+            무엇을 파는지는 분명해야 한다. */}
+        <p className="hero-subcopy">{landingHero.subcopy}</p>
+
         <div className="hero-actions" aria-label="주요 행동">
           <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
             {landingHero.primaryCta}
@@ -261,6 +266,23 @@ export default function Home() {
           </ul>
         </div>
       </section>
+
+      {/* ── 모바일 고정 CTA ───────────────────────────────────────────
+          모바일 페이지가 8,000px인데 히어로 버튼(y≈300) 다음 전환 지점이 y≈7,200이었다.
+          중간에서 마음이 움직인 원장에게는 신청할 방법이 없었다는 뜻이다.
+
+          엄지 영역(화면 아래)에 두는 이유이자, 좁은 화면에서 헤더 CTA를 접는 이유다 —
+          390px 헤더는 브랜드·내비·정지버튼·CTA를 동시에 담지 못해 CTA가 잘리고 있었다.
+          전환 수단을 헤더에서 빼 여기로 내리면 잘림이 사라지고 누르기도 쉬워진다.
+
+          서버에서 그려 두고 히어로를 지나면 올라온다(`<html data-past-hero>`).
+          JS가 죽으면 올라오지 않지만, 그 경우에도 히어로와 최종 CTA는 그대로 남는다. */}
+      <div className="mobile-cta">
+        <p className="mobile-cta-note">{ctaSection.body}</p>
+        <Link className="btn btn-primary" href={DIAGNOSIS_PATH}>
+          {ctaSection.primaryCta}
+        </Link>
+      </div>
 
       <footer className="site-footer">
         <div className="footer-brand">
