@@ -156,12 +156,34 @@ textarea {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* **포커스 링은 장식이 아니라 대비 요구가 있는 UI 요소다.**
+   앞 값 `rgba(11,83,184,0.35)`는 흰 배경 위에서 합성하면 `#a6c0e5`가 되어
+   인접 배경 대비 **1.79:1**이었다 — WCAG 2.2 비텍스트 대비(1.4.11/2.4.11)는
+   3:1을 요구한다. 실측 20개 탭 스톱 중 11개가 이 값을 쓰고 있었다.
+   불투명 딥블루로 올리면 흰 배경 7.13:1, 틴트 면(#edf3fb) 6.45:1로 통과한다.
+   기본값은 병원 표면의 임상 블루(#0b53b8)다 — `--accent`는 `.landing-shell`
+   안에서만 정의돼 있어 여기서 참조하면 병원 표면에서 해석되지 않는다. */
 a:focus-visible,
 button:focus-visible,
 input:focus-visible,
-textarea:focus-visible {
-  outline: 3px solid rgba(11, 83, 184, 0.35);
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 3px solid #0b53b8;
   outline-offset: 3px;
+}
+
+/* 랜딩은 자기 accent(#0671e0, 흰 배경 4.73:1)로 맞춘다 — 링 색이 그 면의
+   포인트 색과 달라지면 포커스가 남의 UI처럼 보인다. */
+.landing-shell :is(a, button, input, textarea, select, summary):focus-visible {
+  outline-color: var(--accent);
+}
+
+/* 딥블루 면 위에서는 같은 파랑이 2.09:1로 떨어진다 — 유일한 어두운 섹션이므로
+   여기서만 링을 흰색으로 뒤집는다(#00437f 대비 9.9:1). */
+.cta-section a:focus-visible,
+.cta-section button:focus-visible {
+  outline-color: #ffffff;
 }
 
 .landing-shell {
@@ -194,7 +216,18 @@ textarea:focus-visible {
   /* 마지막 CTA 면 */
   --accent-deep: #00437f;
 
-  --shell-max: 1440px;
+  /* **콘텐츠 축. 앞서는 1440(=안쪽 1360)이었고, 그 폭은 쓰이지 않았다.**
+     프로덕션 실측(1920·1440에서 동일 — 축이 고정이라 뷰포트와 무관):
+       · `.footer-brand`  박스 419 / 가장 긴 글줄 407 → 1360 안에서 600px가 빈다
+       · `.faq-list`      박스 988 / 가장 긴 글줄 583 → 목록 안에서 405px가 빈다
+       · `.limits-grid p` 박스 648 / 가장 긴 글줄 641 → 한글 약 40자/줄
+     반면 3열 섹션은 421/410(약 26자)으로 이미 적정이었다. 즉 폭이 모자란 곳은
+     없고 남는 곳만 있었다 — 남은 폭은 전부 죽은 거터와 과도한 측정폭으로 갔다.
+
+     1280(=안쪽 1200)으로 내린다. 1440 화면에서 좌우 여백이 40 → 120px가 되어
+     페이지가 화면 끝에 붙지 않고, limits 2열 셀이 648 → 600(약 35자)으로 들어온다.
+     이보다 더 좁히면 3열 셀이 400 밑으로 떨어져 본문이 20자대로 잘게 접힌다. */
+  --shell-max: 1280px;
   /* 섹션 좌우 여백. 지금까지 여섯 군데에 같은 clamp가 손으로 적혀 있었다. */
   --shell-pad: clamp(20px, 5vw, 40px);
   /* **모든 섹션이 공유하는 안쪽 기준선의 폭.**
@@ -221,6 +254,9 @@ textarea:focus-visible {
   color: var(--text);
   font-feature-settings: "ss01", "cv01";
   -webkit-font-smoothing: antialiased;
+  /* iOS Safari 하단 safe-area. 공용 그룹 규칙에서 이 선택자를 빼고 여기로 옮겼다 —
+     그 규칙이 파일 뒤에 있어 모바일 고정 바용 하단 여백을 매번 0으로 덮었다. */
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 .landing-shell ::selection {
@@ -396,6 +432,21 @@ textarea:focus-visible {
   font-size: 1.0625rem;
   line-height: 1.6;
   color: var(--text);
+}
+
+/* ── 제목 글줄은 어떤 섹션에서도 --prose-max를 넘지 않는다 ─────────────
+   **위 `.section-heading`의 캡은 세 섹션에서 조용히 무효였다.** 풀블리드 섹션은
+   블록을 가운데 잡으려고 `.pain-section > *`처럼 자식 전체에 `--shell-inner`를
+   거는데, 그 선택자는 특이성 0-2-0이라 `.section-heading`(0-1-0)을 이긴다.
+   그래서 pain·operation·limits의 h2는 640이 아니라 1360으로 흘렀고,
+   실측 가장 긴 줄이 1,203px였다 — 30px 글자로 폭 1,200px, 오른쪽은 빈 채로.
+
+   `.scene-section`만 자기 h2에 캡을 다시 걸어 혼자 고쳐져 있었다. 같은 처방을
+   섹션마다 베끼는 대신 여기서 한 번만 선언한다. **블록이 아니라 글줄만 좁힌다** —
+   래퍼는 `--shell-inner`로 둬야 auto margin 가운데 정렬이 기준선과 맞는다.
+   래퍼 자체가 이미 640보다 좁은 사이드 헤딩(report 320 · faq 300)에는 무해하다. */
+.landing-shell .section-heading > :is(h2, p) {
+  max-width: var(--prose-max);
 }
 
 /* ── 히어로 브랜드 라인 아트 ─────────────────────────────────────────
@@ -1282,13 +1333,10 @@ textarea:focus-visible {
   margin-right: auto;
 }
 
-/* 풀블리드 섹션에서는 **블록을 좁히면 안 된다.** `> *`가 auto margin으로 가운데를
-   잡으므로, 640짜리 블록은 기준선(420)이 아니라 화면 가운데(680)로 간다.
-   블록은 기준선 폭 그대로 두고 글줄만 좁힌다. */
-.scene-section .section-heading h2 {
-  max-width: var(--prose-max);
-}
-
+/* 글줄 캡은 `.landing-shell .section-heading > :is(h2, p)`가 전 섹션에 건다 —
+   여기 있던 scene 전용 사본은 지웠다. 풀블리드 섹션에서 **블록을 좁히면 안 된다**는
+   원칙은 그대로다: `> *`가 auto margin으로 가운데를 잡으므로, 640짜리 블록은
+   기준선이 아니라 화면 가운데로 간다. 블록은 기준선 폭, 글줄만 좁힌다. */
 .scene-section .section-heading {
   max-width: var(--shell-inner);
   margin-bottom: clamp(32px, 5vh, 56px);
@@ -1851,10 +1899,39 @@ textarea:focus-visible {
   margin-top: 20px;
 }
 
+/* 실측 높이가 20px이었다 — WCAG 2.5.8(24×24)에도 못 미친다. 글자는 그대로 두고
+   누를 수 있는 상자만 44px로 올린다. `inline-flex`가 필요한 이유는 `summary`가
+   기본 `list-item`이라 min-height가 걸리지 않기 때문이다. */
 .share-table summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
   font-size: 0.8125rem;
   color: var(--muted);
   cursor: pointer;
+  list-style: none;
+}
+
+.share-table summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 표식은 FAQ와 같은 방식으로 그린다 — 문자(▶)를 쓰면 폰트에 따라 모양이 흔들리고,
+   이 페이지는 유니코드 글리프를 아이콘으로 쓰지 않는다. */
+.share-table summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.2s var(--ease);
+}
+
+.share-table[open] > summary::before {
+  transform: rotate(45deg);
 }
 
 .share-table table {
@@ -2148,10 +2225,51 @@ textarea:focus-visible {
     white-space: nowrap;
   }
 
-  /* 고정 바가 푸터 마지막 줄과 최종 CTA를 가리지 않게 바 높이만큼 바닥을 띄운다. */
+  /* 고정 바가 푸터 마지막 줄과 최종 CTA를 가리지 않게 바 높이만큼 바닥을 띄운다.
+     **72px라는 값은 맞았고, 적용이 안 되고 있었다** — 파일 뒤쪽 safe-area 그룹
+     규칙이 같은 특이성으로 이 선언을 0으로 덮고 있었다(위 `.clinic-shell,
+     .legal-shell` 주석 참조). 바의 실제 높이는 10 + 46(버튼) + 10 + 1(경계선)
+     = 67px이므로 72px면 덮이지 않는다. safe-area는 여기서 함께 더한다. */
   .landing-shell {
-    padding-bottom: 72px;
+    padding-bottom: calc(72px + env(safe-area-inset-bottom));
   }
+
+  /* ── 손가락으로 누르는 것은 44px다 ──────────────────────────────
+     실측: 푸터 링크 6개가 높이 21px, 사업자정보 링크 16px, 브랜드 락업 17px,
+     답변 예시 탭 4개가 37px이었다. 전부 44px 미만이고, 링크가 세로로 12px
+     간격으로 붙어 있어 오조작 위험이 실제로 있다. 글자 크기는 그대로 두고
+     누를 수 있는 상자만 키운다 — 폰트를 키우면 푸터가 본문처럼 무거워진다. */
+  .footer-links a,
+  .footer-biz a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .footer-links {
+    gap: 0;
+  }
+
+  .brand-lockup {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .motion-toggle {
+    min-height: 44px;
+  }
+
+  /* 헤더 안쪽 두 요소가 44px가 되면 헤더가 16+44+16=76px로 자란다. 세로 여백을
+     11px로 줄여 67px — 지금과 같은 높이를 유지한다. `scroll-margin-top: 84px`가
+     이 높이를 전제로 잡혀 있어 헤더가 자라면 앵커가 제목을 다시 덮는다. */
+  .site-header {
+    padding-block: 11px;
+  }
+}
+
+/* 답변 예시 탭 — 데스크톱에서도 37px이라 좁은 화면에서만 고칠 문제가 아니다. */
+.landing-shell [id^="answer-tab-"] {
+  min-height: 44px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -4663,9 +4781,14 @@ textarea:focus-visible {
   }
 }
 
-/* iOS Safari notch + bottom safe-area */
+/* iOS Safari notch + bottom safe-area.
+   **`.landing-shell`은 여기서 뺐다.** 이 규칙이 `@media (max-width: 600px)`의
+   `.landing-shell { padding-bottom: 72px }`보다 **파일 뒤에** 있었고, 미디어 쿼리는
+   특이성을 올리지 않으므로 순서로 져서 값이 0으로 덮이고 있었다. 그 결과 고정 CTA
+   바를 피하려고 둔 하단 여백이 한 번도 적용된 적이 없다 — 390×844 최대 스크롤에서
+   푸터 마지막 링크가 바에 8px 덮이는 것이 실측됐다.
+   랜딩의 safe-area는 이제 `.landing-shell` 자기 선언이 직접 포함한다. */
 .clinic-shell,
-.landing-shell,
 .legal-shell {
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -8962,16 +9085,19 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 /* ── 히어로 개인화 픽커 ──────────────────────────────────────────────
-   가운데 정렬 히어로 안이라 폭을 좁게 잡고, 카드로 감싸 "여기는 조작하는 곳"임을
-   알린다. 테두리만 쓰고 그림자는 쓰지 않는다(페이지 규칙). */
+   **카드를 뺐다.** 앞 버전은 테두리·배경·안쪽 여백을 가진 545px짜리 상자였고,
+   가운데 정렬 히어로에서 그 상자가 바로 아래 CTA보다 시각적으로 무거웠다.
+   첫 화면이 "읽어라"와 "조작하라"를 동시에 요구하면 원장은 둘 중 하나를 버린다.
+
+   조작 가능성은 상자가 아니라 `select` 자신의 테두리가 이미 알린다. 상자를 지우고
+   위쪽 헤어라인 하나만 남기면 이 블록은 서브카피의 연장으로 읽히고, 강조는
+   질문 한 줄에만 남는다. 이 페이지가 구조를 표현하는 방식(헤어라인 + 여백)과도 같다. */
 .hero-picker {
   width: 100%;
   max-width: 34em;
-  margin: 26px auto 0;
-  padding: 16px 18px 18px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-card);
-  background: #ffffff;
+  margin: 22px auto 0;
+  padding: 18px 0 0;
+  border-top: 1px solid var(--line);
   text-align: left;
 }
 
@@ -9005,7 +9131,8 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .hero-picker-field select {
   appearance: none;
   -webkit-appearance: none;
-  min-height: 40px;
+  /* 40px이었다 — 첫 화면의 유일한 조작 요소가 손가락 최소 크기(44px)에 못 미쳤다. */
+  min-height: 44px;
   padding: 0 30px 0 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-btn);
@@ -9024,18 +9151,10 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   border-color: var(--accent);
 }
 
+/* 안쪽 구분선도 함께 뺐다 — 바깥 상자를 지운 뒤에도 남겨 두면 블록 하나에
+   경계선이 둘이 되어, 줄인 무게가 그대로 돌아온다. 여백만으로 나눈다. */
 .hero-picker-result {
   margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-}
-
-.hero-picker-lead {
-  margin: 0;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--muted);
 }
 
 /* 환자의 말. 이 페이지에서 인용부호를 크게 쓰는 유일한 자리다. */
@@ -9113,12 +9232,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   color: var(--muted);
 }
 
-.pricing-volume {
-  margin: 10px 0 0;
-  font-size: 0.9375rem;
-  line-height: 1.55;
-  color: var(--text);
-}
 
 @media (max-width: 760px) {
   .pricing-plans {
@@ -9129,17 +9242,16 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     border-left: 0;
   }
 
+  /* 이름과 금액 두 요소뿐이므로 한 줄에 좌우로 세운다. */
   .pricing-plans li {
-    display: grid;
-    grid-template-columns: 1fr auto;
+    display: flex;
     align-items: baseline;
-    gap: 2px 16px;
-    padding: 20px 0;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 0;
   }
 
   .pricing-price {
-    grid-row: 1 / 3;
-    grid-column: 2;
-    align-self: center;
+    margin: 0;
   }
 }

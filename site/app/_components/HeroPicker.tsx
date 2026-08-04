@@ -81,9 +81,16 @@ export default function HeroPicker() {
       </div>
 
       {/* 질문이 바뀌는 것을 스크린리더도 알아야 한다 — 시각적으로는 문장이 갈아끼워지지만
-          보조기술에는 아무 일도 일어나지 않은 것과 같기 때문이다. */}
+          보조기술에는 아무 일도 일어나지 않은 것과 같기 때문이다.
+
+          `askLead`("환자는 이렇게 묻습니다")를 인용문 위에 얹던 줄은 뺐다. 인용부호가
+          이미 같은 말을 하고 있어 한 줄이 두 번 말하는 셈이었고, 첫 화면에서 원장이
+          읽어야 할 줄을 하나 늘렸다. 카피는 화면에서만 빼고 보조기술에는 남긴다 —
+          인용부호는 눈으로 보는 장치라, 낭독될 때는 이 줄이 없으면 문장이 왜 갑자기
+          나오는지 알 수 없다. (`div`에 `aria-label`을 거는 방식은 role이 없어
+          이름이 노출되지 않으므로 쓰지 않는다.) */}
       <div className="hero-picker-result" aria-live="polite">
-        <p className="hero-picker-lead">{heroPicker.askLead}</p>
+        <p className="sr-only">{heroPicker.askLead}</p>
         <p className="hero-picker-question">&ldquo;{question}&rdquo;</p>
         <p className="hero-picker-consequence">{heroPicker.consequence}</p>
       </div>
