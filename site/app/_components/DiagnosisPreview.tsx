@@ -1,4 +1,8 @@
-import { MEASUREMENT_TRIALS, type AnswerContent } from "@/lib/landing-copy";
+import {
+  MEASUREMENT_TRIALS,
+  measurementPlatforms,
+  type AnswerContent,
+} from "@/lib/landing-copy";
 
 import { GeminiLogo, OpenAiLogo } from "./AiLogos";
 
@@ -31,10 +35,20 @@ export default function DiagnosisPreview({
   example: AnswerContent;
   disclaimer: string;
 }) {
-  const rows = [
-    { name: "ChatGPT", Logo: OpenAiLogo, hits: example.counts.chatgpt },
-    { name: "Gemini", Logo: GeminiLogo, hits: example.counts.gemini },
-  ];
+  /**
+   * 행 라벨은 **실제 발송되는 리포트와 같아야 한다**(퍼널 PRD F5-1).
+   *
+   * 앞 버전은 `ChatGPT` · `Gemini`였다. 그런데 리포트는 `OpenAI API` · `Google Gemini API`로
+   * 나간다 — 우리가 부르는 것은 API이고, 환자가 앱에서 보는 화면과 같다는 주장은 §2-2에서
+   * 철회했기 때문이다. "리포트 미리보기"라고 적어 놓고 실물과 다른 라벨을 보여주면,
+   * 이 페이지가 파는 측정 규율이 첫 화면에서부터 깨진다.
+   */
+  const logos = { chatgpt: OpenAiLogo, gemini: GeminiLogo } as const;
+  const rows = measurementPlatforms.map((platform) => ({
+    ...platform,
+    Logo: logos[platform.key],
+    hits: example.counts[platform.key],
+  }));
 
   return (
     <div className="dx-card">
@@ -49,11 +63,14 @@ export default function DiagnosisPreview({
       </div>
 
       <div className="dx-results">
-        {rows.map(({ name, Logo, hits }, rowIndex) => (
-          <div className="dx-row" key={name}>
+        {rows.map(({ key, vendor, model, Logo, hits }, rowIndex) => (
+          <div className="dx-row" key={key}>
             <span className="dx-platform">
               <Logo className="dx-logo" />
-              {name}
+              <span className="dx-platform-name">
+                {vendor}
+                <em>{model}</em>
+              </span>
             </span>
 
             {/* 눈금은 옆 숫자의 시각적 표현이므로 스크린리더에서 감춘다. */}

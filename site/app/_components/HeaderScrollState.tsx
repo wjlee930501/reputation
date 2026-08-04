@@ -27,16 +27,35 @@ export default function HeaderScrollState() {
     const header = document.querySelector<HTMLElement>(".site-header");
     if (!header) return;
 
+    const root = document.documentElement;
+    const hero = document.querySelector<HTMLElement>(".hero-section");
+
     let ticking = false;
     let condensed: boolean | null = null;
+    let pastHero: boolean | null = null;
 
     const apply = () => {
       ticking = false;
-      const next = window.scrollY > CONDENSE_AT;
-      if (next === condensed) return;
-      condensed = next;
-      if (next) header.setAttribute("data-scrolled", "");
-      else header.removeAttribute("data-scrolled");
+      const y = window.scrollY;
+
+      const next = y > CONDENSE_AT;
+      if (next !== condensed) {
+        condensed = next;
+        if (next) header.setAttribute("data-scrolled", "");
+        else header.removeAttribute("data-scrolled");
+      }
+
+      /* 모바일 고정 CTA는 **히어로 버튼이 화면에서 나간 뒤에** 올라온다. 같은 화면에
+         버튼 두 개를 겹쳐 두면 어느 쪽을 눌러야 하는지 묻게 되고, 첫인상도 조급해진다.
+         기준선을 상수로 박지 않고 히어로의 실제 바닥을 쓴다 — 카피가 길어져 히어로가
+         자라도 경계가 따라 움직인다. */
+      const heroBottom = hero ? hero.offsetTop + hero.offsetHeight : CONDENSE_AT;
+      const nextPast = y > heroBottom;
+      if (nextPast !== pastHero) {
+        pastHero = nextPast;
+        if (nextPast) root.setAttribute("data-past-hero", "");
+        else root.removeAttribute("data-past-hero");
+      }
     };
 
     const onScroll = () => {
@@ -47,9 +66,12 @@ export default function HeaderScrollState() {
 
     apply();
     window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
     return () => {
       window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
       header.removeAttribute("data-scrolled");
+      root.removeAttribute("data-past-hero");
     };
   }, []);
 
