@@ -108,6 +108,7 @@ celery_app.conf.update(
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
         "app.workers.tasks.run_monthly_reports": {"queue": "reports"},
+        "app.workers.tasks.generate_monthly_report_for_hospital": {"queue": "reports"},
         "app.workers.tasks.trigger_v0_report": {"queue": "reports"},
         "app.workers.tasks.build_aeo_site": {"queue": "default"},
         "app.workers.tasks.monthly_slot_generation": {"queue": "default"},

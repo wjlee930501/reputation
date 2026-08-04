@@ -169,6 +169,13 @@ async def _extract_with_claude(name: str, aggregated_text: str) -> dict:
         f"[출처 텍스트]\n{aggregated_text}\n\n"
         "위 출처에서만 근거를 찾아 스키마대로 JSON을 출력하세요."
     )
+    # tenacity로 최대 3회 재시도되고 Anthropic 클라이언트는 재시도를 하지 않으므로
+    # 본문 1회 실행 = 유료 호출 1회다. 자동 채우기는 AE가 버튼으로 돌리는 유료 호출인데
+    # 종전에는 비용 화면에 전혀 잡히지 않았다.
+    from app.services import cost_guard
+
+    await cost_guard.record_provider_call("content")
+
     loop = asyncio.get_running_loop()
     response = await loop.run_in_executor(
         None,

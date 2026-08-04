@@ -43,7 +43,7 @@ async function withActiveRevocationThenThrowing(error: unknown, callback: () => 
   const originalFetch = globalThis.fetch
   const fetchMock: typeof fetch = async (input) => {
     const url = String(input)
-    if (url.includes('/api/v1/admin/auth/sessions/') && url.endsWith('/revocation')) {
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
       return new Response(JSON.stringify({ revoked: false }), { status: 200 })
     }
     throw error
@@ -73,7 +73,7 @@ test('admin API route rejects a backend-revoked session before proxying', async 
   let proxied = false
   const fetchMock: typeof fetch = async (input) => {
     const url = String(input)
-    if (url.includes('/api/v1/admin/auth/sessions/') && url.endsWith('/revocation')) {
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
       return new Response(JSON.stringify({ revoked: true }), { status: 200 })
     }
     proxied = true
@@ -156,7 +156,7 @@ test('admin API route bypasses the revocation cache for state-changing requests'
   let revocationCalls = 0
   const fetchMock: typeof fetch = async (input) => {
     const url = String(input)
-    if (url.includes('/api/v1/admin/auth/sessions/') && url.endsWith('/revocation')) {
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
       revocationCalls += 1
       return new Response(JSON.stringify({ revoked: false }), { status: 200 })
     }
@@ -194,7 +194,7 @@ test('admin API route reuses a cached "active" revocation check for repeated req
   let revocationCalls = 0
   const fetchMock: typeof fetch = async (input) => {
     const url = String(input)
-    if (url.includes('/api/v1/admin/auth/sessions/') && url.endsWith('/revocation')) {
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
       revocationCalls += 1
       return new Response(JSON.stringify({ revoked: false }), { status: 200 })
     }
@@ -216,6 +216,72 @@ test('admin API route reuses a cached "active" revocation check for repeated req
     assert.equal(first.status, 200)
     assert.equal(second.status, 200)
     assert.equal(revocationCalls, 1, '같은 세션의 두 번째 요청은 캐시된 폐기 확인 결과를 재사용해야 한다')
+  } finally {
+    globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})
+
+test('admin API route proxies the global control-plane prefixes', async () => {
+  // 백엔드에 /admin/operations(비용 가드)·/admin/accounts(운영자 계정) 라우터가 있어도
+  // 이 허용 목록에 없으면 프록시가 403으로 끊는다 — 화면을 만들어도 동작하지 않는다.
+  const originalFetch = globalThis.fetch
+  const proxiedPaths: string[] = []
+  const fetchMock: typeof fetch = async (input) => {
+    const url = String(input)
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
+      return new Response(JSON.stringify({ revoked: false }), { status: 200 })
+    }
+    proxiedPaths.push(new URL(url).pathname)
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }
+  globalThis.fetch = fetchMock
+
+  try {
+    for (const path of [['operations', 'cost-guard'], ['accounts']]) {
+      const res = await handleAdminApiProxy(await buildAuthorizedRequest('GET'), {
+        params: Promise.resolve({ path }),
+      })
+      assert.equal(res.status, 200, `/${path.join('/')} must be proxied, not blocked`)
+    }
+
+    assert.deepEqual(proxiedPaths, [
+      '/api/v1/admin/operations/cost-guard',
+      '/api/v1/admin/accounts',
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})
+
+test('admin API route asks the backend to judge the session account, not just the token hash', async () => {
+  // 계정을 정지해도 이미 발급된 세션 쿠키는 만료(최대 7일)까지 살아 있다. 폐기 조회에
+  // account_id를 함께 보내야 백엔드가 계정 상태까지 보고 즉시 끊을 수 있다.
+  const originalFetch = globalThis.fetch
+  let revocationUrl = ''
+  const fetchMock: typeof fetch = async (input) => {
+    const url = String(input)
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
+      revocationUrl = url
+      return new Response(JSON.stringify({ revoked: false }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }
+  globalThis.fetch = fetchMock
+
+  try {
+    await handleAdminApiProxy(await buildAuthorizedRequest('POST', sessionPayload.csrfToken), {
+      params: Promise.resolve({ path: ['hospitals'] }),
+    })
+
+    const params = new URL(revocationUrl).searchParams
+    assert.equal(params.get('account_id'), sessionPayload.accountId)
+    // 발급 시각까지 보내야 "비밀번호 재설정 이전 세션만" 끊을 수 있다 —
+    // 없으면 백엔드가 전부 무효로 볼 수밖에 없다.
+    const issuedAt = params.get('issued_at')
+    assert.ok(issuedAt, 'issued_at must be sent')
+    assert.ok(Number.isFinite(Date.parse(issuedAt)), 'issued_at must be an ISO timestamp')
   } finally {
     globalThis.fetch = originalFetch
     clearAdminSessionRevocationCache()

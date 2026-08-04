@@ -27,7 +27,12 @@ from sqlalchemy.orm import joinedload, selectinload
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
-from app.models.content import ContentItem, ContentSchedule, ContentStatus
+from app.models.content import (
+    ContentItem,
+    ContentSchedule,
+    ContentStatus,
+    monthly_quota_for_plan,
+)
 from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
@@ -50,13 +55,19 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     build_monthly_essence_summary,
     compute_source_content_hash,
+    metered_llm_calls,
     process_source_asset,
     screen_content_against_philosophy,
     validate_source_excerpt,
 )
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
-from app.services.report_engine import build_content_attribution_summary, generate_pdf_report
+from app.services.report_engine import (
+    build_content_attribution_summary,
+    build_doctor_report_view,
+    generate_doctor_pdf_report,
+    generate_pdf_report,
+)
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
@@ -279,6 +290,12 @@ def _mark_source_processing_error(source_id: uuid.UUID, error: Exception) -> Non
 # ══════════════════════════════════════════════════════════════════
 # 온보딩 근거 자료 비동기 처리
 # ══════════════════════════════════════════════════════════════════
+async def _metered_process_source_asset(source):
+    """동기 근거 추출을 실제 공급자 호출 계수와 함께 실행한다."""
+    async with metered_llm_calls():
+        return await asyncio.to_thread(process_source_asset, source)
+
+
 @celery_app.task(
     name="app.workers.tasks.process_source_asset_task",
     bind=True,
@@ -310,7 +327,8 @@ def process_source_asset_task(self, source_id: str) -> dict[str, object]:
             if not source.raw_text or not source.raw_text.strip():
                 raise ValueError("자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다.")
 
-            payloads = process_source_asset(source)
+            # 일괄 근거 추출도 Admin 화면 경로와 같은 유료 호출이다 — 같은 예산에 계수한다.
+            payloads = _run_async(_metered_process_source_asset(source))
             for payload in payloads:
                 if not validate_source_excerpt(source, payload.source_excerpt):
                     raise ValueError(
@@ -2181,6 +2199,201 @@ def adjust_query_priorities():
 # ══════════════════════════════════════════════════════════════════
 # 월간 리포트 (매월 마지막 날 21:00)
 # ══════════════════════════════════════════════════════════════════
+def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str:
+    """`now`가 가리키는 달의 월간 리포트 1건을 만든다.
+
+    반환값은 ``"created"`` 또는 이미 있어서 건너뛴 경우 ``"skipped_existing"``이다.
+
+    월말 배치(run_monthly_reports)와 Admin의 병원별 수동 재생성이 이 함수를 공유한다 —
+    두 경로가 서로 다른 코드였다면 배치 실패를 복구한 리포트가 배치본과 다른 내용이 될 수
+    있다. 커밋과 Slack 알림까지 여기서 끝내고, 예외는 호출자가 처리한다.
+    """
+    period_start = now.floor("month").datetime
+    period_end = now.ceil("month").datetime
+
+    # 월간 리포트 중복 생성 방지
+    existing_check = db.execute(
+        select(MonthlyReport).where(
+            MonthlyReport.hospital_id == h.id,
+            MonthlyReport.period_year == now.year,
+            MonthlyReport.period_month == now.month,
+            MonthlyReport.report_type == "MONTHLY",
+        )
+    )
+    if existing_check.scalar_one_or_none():
+        logger.warning(
+            f"Monthly report already exists for {h.name} "
+            f"{now.year}-{now.month:02d}, skipping."
+        )
+        return "skipped_existing"
+
+    # 이번 달 AI 답변 언급률 집계
+    # QueryMatrix를 조인해 질문 유형을 가져온다 — SovRecord에는 유형이 없고,
+    # 유형 없이는 INFO(지역 없는 의학 설명 질문)를 분모에서 뺄 수 없다.
+    sov_stmt = (
+        select(SovRecord, QueryMatrix.query_intent)
+        .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
+        .where(
+            SovRecord.hospital_id == h.id,
+            SovRecord.measured_at >= period_start,
+            SovRecord.measured_at <= period_end,
+        )
+    )
+    sov_rows = db.execute(sov_stmt).all()
+    sov_records = [row[0] for row in sov_rows]
+    sov_dicts = [
+        {
+            "is_mentioned": row[0].is_mentioned,
+            "measurement_status": row[0].measurement_status,
+            "query_intent": row[1],
+        }
+        for row in sov_rows
+    ]
+    # None → '측정 데이터 없음' (허위 0%가 원장 보고에 들어가는 것 방지)
+    # 분모는 LOCAL 질문만 (calculate_sov 기본값).
+    sov_pct = calculate_sov(sov_dicts)
+    sov_segments = segment_mention_rates(sov_dicts)
+    # 실제 측정된 플랫폼만 라벨에 반영 (없으면 None → 설정 기준 유추).
+    measured_platforms = sorted({r.ai_platform for r in sov_records if r.ai_platform})
+    report_platforms = measured_platforms or None
+
+    # 전월 AI 답변 언급률
+    prev_start = now.shift(months=-1).floor("month").datetime
+    prev_end = now.floor("month").datetime
+    prev_stmt = (
+        select(SovRecord, QueryMatrix.query_intent)
+        .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
+        .where(
+            SovRecord.hospital_id == h.id,
+            SovRecord.measured_at >= prev_start,
+            SovRecord.measured_at < prev_end,
+        )
+    )
+    prev_rows = db.execute(prev_stmt).all()
+    prev_records = [row[0] for row in prev_rows]
+    prev_sov = (
+        calculate_sov(
+            [
+                {
+                    "is_mentioned": row[0].is_mentioned,
+                    "measurement_status": row[0].measurement_status,
+                    "query_intent": row[1],
+                }
+                for row in prev_rows
+            ]
+        )
+        if prev_rows
+        else None
+    )
+    # 전월대비는 두 달 모두 실측치가 있을 때만 계산 (None-safe).
+    change_pct = (
+        round(sov_pct - prev_sov, 1)
+        if sov_pct is not None and prev_sov is not None
+        else None
+    )
+
+    # 이번 달 발행 콘텐츠 집계
+    content_stmt = select(ContentItem).where(
+        ContentItem.hospital_id == h.id,
+        ContentItem.status == ContentStatus.PUBLISHED,
+        ContentItem.published_at >= period_start,
+        ContentItem.published_at <= period_end,
+    )
+    content_result = db.execute(content_stmt)
+    published_contents = content_result.scalars().all()
+
+    # 전월 발행 콘텐츠(유형별 발행 누적을 전월과 나란히 비교하기 위함)
+    prev_content_stmt = select(ContentItem).where(
+        ContentItem.hospital_id == h.id,
+        ContentItem.status == ContentStatus.PUBLISHED,
+        ContentItem.published_at >= prev_start,
+        ContentItem.published_at < prev_end,
+    )
+    prev_content_result = db.execute(prev_content_stmt)
+    prev_published_contents = prev_content_result.scalars().all()
+
+    # 콘텐츠 발행-AI 언급 상관 집계(인과 주장 아님, 상관 표기용)
+    attribution = build_content_attribution_summary(
+        published_contents=published_contents,
+        prev_published_contents=prev_published_contents,
+        this_records=sov_records,
+        prev_records=prev_records,
+        sov_pct=sov_pct,
+        prev_sov_pct=prev_sov,
+        change_pct=change_pct,
+    )
+
+    pdf_path = generate_pdf_report(
+        hospital=h,
+        period_start=period_start,
+        period_end=period_end,
+        report_type="MONTHLY",
+        sov_pct=sov_pct,
+        published_count=len(published_contents),
+        repeat_count=SOV_REPEAT_WEEKLY,
+        attribution=attribution,
+    )
+    essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
+
+    # 원장 보고용 1페이지. AE용과 같은 데이터를 다른 편집으로 렌더한다.
+    # 실패해도 월간 리포트 자체를 잃지 않도록 격리한다 — AE는 AE용으로 보고할 수 있다.
+    doctor_pdf_path = None
+    try:
+        doctor_view = build_doctor_report_view(
+            hospital=h,
+            sov_pct=sov_pct,
+            prev_sov_pct=prev_sov,
+            published_count=len(published_contents),
+            plan_quota=monthly_quota_for_plan(h.plan),
+            attribution=attribution,
+            records=sov_records,
+            platforms=report_platforms,
+        )
+        doctor_pdf_path = generate_doctor_pdf_report(h, period_start, doctor_view)
+    except Exception as exc:  # noqa: BLE001 — 원장 판본 실패가 월간 리포트를 막지 않는다.
+        logger.error("Doctor report rendering failed for %s: %s", h.name, exc)
+
+    db.add(
+        MonthlyReport(
+            hospital_id=h.id,
+            period_year=now.year,
+            period_month=now.month,
+            report_type="MONTHLY",
+            pdf_path=pdf_path,
+            doctor_pdf_path=doctor_pdf_path,
+            sov_summary={
+                "sov_pct": sov_pct,
+                "prev_sov_pct": prev_sov,
+                "change_pct": change_pct,
+                # 헤드라인(sov_pct)은 LOCAL 질문만의 언급률이다. INFO 구간이
+                # 사라지면 "왜 이 숫자가 올랐나"를 설명할 수 없으므로 함께 남긴다.
+                "segments": sov_segments,
+            },
+            content_summary={
+                "published_count": len(published_contents),
+                "attribution": attribution,
+            },
+            essence_summary=essence_summary,
+        )
+    )
+    db.commit()
+
+    _run_async(
+        notifier.notify_monthly_report_ready(
+            h.name,
+            now.year,
+            now.month,
+            sov_pct,
+            change_pct,
+            pdf_path,
+            platforms=report_platforms,
+            new_mention_count=attribution["new_mention_count"],
+        )
+    )
+
+    return "created"
+
+
 @celery_app.task(
     name="app.workers.tasks.run_monthly_reports",
     bind=True,
@@ -2198,8 +2411,6 @@ def run_monthly_reports(self):
     if now.date() != now.ceil("month").date():
         logger.info(f"Not last day of month ({now.date()}), skipping monthly reports")
         return
-    period_start = now.floor("month").datetime
-    period_end = now.ceil("month").datetime
 
     with SyncSessionLocal() as db:
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
@@ -2209,173 +2420,79 @@ def run_monthly_reports(self):
 
         for h in hospitals:
             try:
-                # 월간 리포트 중복 생성 방지
-                existing_check = db.execute(
-                    select(MonthlyReport).where(
-                        MonthlyReport.hospital_id == h.id,
-                        MonthlyReport.period_year == now.year,
-                        MonthlyReport.period_month == now.month,
-                        MonthlyReport.report_type == "MONTHLY",
-                    )
-                )
-                if existing_check.scalar_one_or_none():
-                    logger.warning(
-                        f"Monthly report already exists for {h.name} "
-                        f"{now.year}-{now.month:02d}, skipping."
-                    )
-                    continue
-
-                # 이번 달 AI 답변 언급률 집계
-                # QueryMatrix를 조인해 질문 유형을 가져온다 — SovRecord에는 유형이 없고,
-                # 유형 없이는 INFO(지역 없는 의학 설명 질문)를 분모에서 뺄 수 없다.
-                sov_stmt = (
-                    select(SovRecord, QueryMatrix.query_intent)
-                    .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
-                    .where(
-                        SovRecord.hospital_id == h.id,
-                        SovRecord.measured_at >= period_start,
-                        SovRecord.measured_at <= period_end,
-                    )
-                )
-                sov_rows = db.execute(sov_stmt).all()
-                sov_records = [row[0] for row in sov_rows]
-                sov_dicts = [
-                    {
-                        "is_mentioned": row[0].is_mentioned,
-                        "measurement_status": row[0].measurement_status,
-                        "query_intent": row[1],
-                    }
-                    for row in sov_rows
-                ]
-                # None → '측정 데이터 없음' (허위 0%가 원장 보고에 들어가는 것 방지)
-                # 분모는 LOCAL 질문만 (calculate_sov 기본값).
-                sov_pct = calculate_sov(sov_dicts)
-                sov_segments = segment_mention_rates(sov_dicts)
-                # 실제 측정된 플랫폼만 라벨에 반영 (없으면 None → 설정 기준 유추).
-                measured_platforms = sorted({r.ai_platform for r in sov_records if r.ai_platform})
-                report_platforms = measured_platforms or None
-
-                # 전월 AI 답변 언급률
-                prev_start = now.shift(months=-1).floor("month").datetime
-                prev_end = now.floor("month").datetime
-                prev_stmt = (
-                    select(SovRecord, QueryMatrix.query_intent)
-                    .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
-                    .where(
-                        SovRecord.hospital_id == h.id,
-                        SovRecord.measured_at >= prev_start,
-                        SovRecord.measured_at < prev_end,
-                    )
-                )
-                prev_rows = db.execute(prev_stmt).all()
-                prev_records = [row[0] for row in prev_rows]
-                prev_sov = (
-                    calculate_sov(
-                        [
-                            {
-                                "is_mentioned": row[0].is_mentioned,
-                                "measurement_status": row[0].measurement_status,
-                                "query_intent": row[1],
-                            }
-                            for row in prev_rows
-                        ]
-                    )
-                    if prev_rows
-                    else None
-                )
-                # 전월대비는 두 달 모두 실측치가 있을 때만 계산 (None-safe).
-                change_pct = (
-                    round(sov_pct - prev_sov, 1)
-                    if sov_pct is not None and prev_sov is not None
-                    else None
-                )
-
-                # 이번 달 발행 콘텐츠 집계
-                content_stmt = select(ContentItem).where(
-                    ContentItem.hospital_id == h.id,
-                    ContentItem.status == ContentStatus.PUBLISHED,
-                    ContentItem.published_at >= period_start,
-                    ContentItem.published_at <= period_end,
-                )
-                content_result = db.execute(content_stmt)
-                published_contents = content_result.scalars().all()
-
-                # 전월 발행 콘텐츠(유형별 발행 누적을 전월과 나란히 비교하기 위함)
-                prev_content_stmt = select(ContentItem).where(
-                    ContentItem.hospital_id == h.id,
-                    ContentItem.status == ContentStatus.PUBLISHED,
-                    ContentItem.published_at >= prev_start,
-                    ContentItem.published_at < prev_end,
-                )
-                prev_content_result = db.execute(prev_content_stmt)
-                prev_published_contents = prev_content_result.scalars().all()
-
-                # 콘텐츠 발행-AI 언급 상관 집계(인과 주장 아님, 상관 표기용)
-                attribution = build_content_attribution_summary(
-                    published_contents=published_contents,
-                    prev_published_contents=prev_published_contents,
-                    this_records=sov_records,
-                    prev_records=prev_records,
-                    sov_pct=sov_pct,
-                    prev_sov_pct=prev_sov,
-                    change_pct=change_pct,
-                )
-
-                pdf_path = generate_pdf_report(
-                    hospital=h,
-                    period_start=period_start,
-                    period_end=period_end,
-                    report_type="MONTHLY",
-                    sov_pct=sov_pct,
-                    published_count=len(published_contents),
-                    repeat_count=SOV_REPEAT_WEEKLY,
-                    attribution=attribution,
-                )
-                essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
-
-                db.add(
-                    MonthlyReport(
-                        hospital_id=h.id,
-                        period_year=now.year,
-                        period_month=now.month,
-                        report_type="MONTHLY",
-                        pdf_path=pdf_path,
-                        sov_summary={
-                            "sov_pct": sov_pct,
-                            "prev_sov_pct": prev_sov,
-                            "change_pct": change_pct,
-                            # 헤드라인(sov_pct)은 LOCAL 질문만의 언급률이다. INFO 구간이
-                            # 사라지면 "왜 이 숫자가 올랐나"를 설명할 수 없으므로 함께 남긴다.
-                            "segments": sov_segments,
-                        },
-                        content_summary={
-                            "published_count": len(published_contents),
-                            "attribution": attribution,
-                        },
-                        essence_summary=essence_summary,
-                    )
-                )
-                db.commit()
-
-                _run_async(
-                    notifier.notify_monthly_report_ready(
-                        h.name,
-                        now.year,
-                        now.month,
-                        sov_pct,
-                        change_pct,
-                        pdf_path,
-                        platforms=report_platforms,
-                        new_mention_count=attribution["new_mention_count"],
-                    )
-                )
-
+                _build_monthly_report_for_hospital(db, h, now)
             except Exception as e:
                 logger.error(f"Monthly report failed for {h.name}: {e}")
                 db.rollback()
                 failures.append((h.name, e))
 
         _raise_if_monthly_report_failures(failures)
+
+
+@celery_app.task(
+    name="app.workers.tasks.generate_monthly_report_for_hospital",
+    bind=True,
+    # max_retries만 두면 아무 일도 일어나지 않는다 — autoretry_for가 있어야 실제로 재시도한다.
+    # PDF 렌더·GCS 업로드의 일시 장애가 곧바로 최종 실패가 되면 AE가 다시 눌러야 한다.
+    # dedupe(_build_monthly_report_for_hospital)가 있어 재시도해도 중복 리포트는 생기지 않는다.
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=2,
+    soft_time_limit=600,
+    time_limit=900,
+)
+def generate_monthly_report_for_hospital(
+    self, hospital_id: str, year: int | None = None, month: int | None = None
+):
+    """병원 1곳의 월간 리포트를 수동으로 만든다 (Admin '월간 리포트 생성').
+
+    월말 배치가 실패하면 다음 달 마지막 날까지 그 병원 리포트가 비게 되고, 종전에는
+    `make monthly-report`(전체 병원, 마지막 날에만 동작)뿐이라 개발자 손이 필요했다.
+
+    year/month를 주면 그 달을, 없으면 지난달을 만든다 — 배치가 실패했다는 사실은 보통
+    달이 바뀐 뒤에 드러나므로 '지난달'이 기본값으로 맞다. 이미 리포트가 있으면 덮어쓰지
+    않고 건너뛴다(배치와 같은 dedupe).
+    """
+    # 잘못된 요청은 재시도해도 결과가 같다 — autoretry_for에 걸리지 않도록 예외 대신
+    # 상태를 반환한다. API가 먼저 같은 검사를 하므로 여기 걸리는 것은 직접 호출뿐이다.
+    now = arrow.now("Asia/Seoul")
+    if (year is None) != (month is None):
+        logger.error("Monthly report requested with a partial period: year=%s month=%s", year, month)
+        return {"status": "invalid_period"}
+    if year is not None and month is not None:
+        # 이번 달 이후를 만들면 빈 리포트 행이 생기고, 그 행 때문에 월말 배치가 dedupe로
+        # 건너뛰어 진짜 리포트가 영영 생기지 않는다.
+        if (year, month) >= (now.year, now.month):
+            logger.error("Monthly report requested for a non-past period: %s-%s", year, month)
+            return {"status": "invalid_period"}
+        anchor = arrow.Arrow(year, month, 1, tzinfo="Asia/Seoul").ceil("month")
+    else:
+        anchor = now.shift(months=-1).ceil("month")
+
+    with SyncSessionLocal() as db:
+        hospital = db.get(Hospital, uuid.UUID(str(hospital_id)))
+        if hospital is None:
+            logger.error(f"Monthly report requested for unknown hospital {hospital_id}")
+            return {"status": "hospital_not_found"}
+        try:
+            outcome = _build_monthly_report_for_hospital(db, hospital, anchor)
+        except Exception as e:
+            logger.error(f"Manual monthly report failed for {hospital.name}: {e}")
+            db.rollback()
+            # 재시도가 남아 있으면 알리지 않는다 — 일시 장애 한 번에 Slack이 세 번 울리면
+            # AE가 알림을 신뢰하지 않게 된다. 마지막 시도에서만 사람을 부른다.
+            if self.request.retries >= self.max_retries:
+                _run_async(
+                    notifier.notify_ops_alert(
+                        title="월간 리포트 수동 생성 실패",
+                        message=(
+                            f"*{hospital.name}* {anchor.year}년 {anchor.month}월 리포트를 만들지 못했습니다.\n"
+                            f"사유: `{type(e).__name__}`\nAdmin에서 다시 시도해 주세요."
+                        ),
+                    )
+                )
+            raise
+    return {"status": outcome, "year": anchor.year, "month": anchor.month}
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -8,6 +8,11 @@ interface CheckAdminSessionRevocationOptions {
   backendUrl: string
   adminKey: string
   sessionToken: string
+  // 세션이 가리키는 운영자 계정 id. 넘기면 백엔드가 계정 비활성화까지 폐기로 판정해,
+  // 정지·퇴사 처리된 계정의 세션 쿠키가 만료일까지 살아 있는 창을 없앤다.
+  accountId?: string
+  // 세션 발급 시각(ms). 계정의 무효화 기준선(비밀번호 재설정·재활성화)과 비교된다.
+  issuedAtMs?: number
 }
 
 interface RevokeAdminSessionOptions extends CheckAdminSessionRevocationOptions {
@@ -34,10 +39,18 @@ export async function checkAdminSessionRevocation({
   backendUrl,
   adminKey,
   sessionToken,
+  accountId,
+  issuedAtMs,
 }: CheckAdminSessionRevocationOptions): Promise<AdminSessionRevocationStatus> {
   const tokenHash = await hashSessionToken(sessionToken)
+  const params = new URLSearchParams()
+  if (accountId) params.set('account_id', accountId)
+  if (typeof issuedAtMs === 'number' && Number.isFinite(issuedAtMs)) {
+    params.set('issued_at', new Date(issuedAtMs).toISOString())
+  }
+  const query = params.size > 0 ? `?${params.toString()}` : ''
   try {
-    const res = await fetch(adminAuthUrl(backendUrl, `sessions/${tokenHash}/revocation`), {
+    const res = await fetch(adminAuthUrl(backendUrl, `sessions/${tokenHash}/revocation${query}`), {
       headers: { 'X-Admin-Key': adminKey },
       cache: 'no-store',
       signal: buildRevocationSignal(),

@@ -81,6 +81,17 @@ PLAN_DISTRIBUTION = {
 }
 
 
+def monthly_quota_for_plan(plan) -> int | None:
+    """요금제가 약정한 월 편수. 모르는/미설정 요금제는 None.
+
+    원장 리포트가 "16편 중 12편 발행"을 보여주려면 분모가 필요하다 — 요금제가 곧
+    편수 약정이라 이 값이 계약 이행 여부를 그대로 나타낸다.
+    """
+    key = getattr(plan, "value", plan)
+    distribution = PLAN_DISTRIBUTION.get(str(key)) if key else None
+    return sum(distribution.values()) if distribution else None
+
+
 class ContentSchedule(Base):
     """병원별 콘텐츠 발행 스케줄"""
 

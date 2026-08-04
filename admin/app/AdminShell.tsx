@@ -39,6 +39,27 @@ const NAV_ITEMS = [
       </svg>
     ),
   },
+  {
+    href: '/operations',
+    label: '비용 사용량',
+    meta: '설정',
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M3 16V9M8 16V5M13 16v-4M18 16V7" />
+      </svg>
+    ),
+  },
+  {
+    href: '/accounts',
+    label: '운영자 계정',
+    meta: '설정',
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M10 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" />
+        <path d="M4 17a6 6 0 0 1 12 0" />
+      </svg>
+    ),
+  },
 ]
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
@@ -55,6 +76,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       return
     }
     // 공용 PC에서 다음 로그인 전까지 이전 AE의 발행 담당자 이름이 남지 않게 한다.
+    // (신원·역할은 세션 쿠키에서 읽으므로 쿠키 삭제로 함께 사라진다.)
     clearPublisherIdentity()
     router.push('/login')
   }

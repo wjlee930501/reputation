@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
+import { parseMonthValue, previousMonthValue } from '@/lib/report-period'
 import { readReportDeliveryState } from '@/lib/report-delivery'
 
 interface Report {
@@ -19,6 +20,8 @@ interface Report {
     pdf_status_label?: string | null
   }
   has_pdf: boolean
+  /** 원장에게 그대로 전달하는 1페이지 판본이 준비됐는지. */
+  has_doctor_pdf?: boolean
   download_url: string | null
   created_at: string
   sent_at: string | null
@@ -170,6 +173,8 @@ function requestMarkSent(hospitalId: string, reportId: string): Promise<Report> 
   })
 }
 
+const defaultGeneratePeriod = previousMonthValue()
+
 export default function ReportsPage() {
   const { id } = useParams<{ id: string }>()
   const [reports, setReports] = useState<Report[]>([])
@@ -180,6 +185,11 @@ export default function ReportsPage() {
   const [detailError, setDetailError] = useState<string | null>(null)
   const [markingSent, setMarkingSent] = useState(false)
   const [markSentError, setMarkSentError] = useState<string | null>(null)
+  // 기본값은 지난달 — 월말 배치 실패는 대개 달이 바뀐 뒤에 발견된다.
+  const [generatePeriod, setGeneratePeriod] = useState(defaultGeneratePeriod)
+  const [generating, setGenerating] = useState(false)
+  const [generateMessage, setGenerateMessage] = useState<string | null>(null)
+  const [generateError, setGenerateError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchAPI<Report[]>(`/admin/hospitals/${id}/reports`)
@@ -224,6 +234,32 @@ export default function ReportsPage() {
     }
   }
 
+  async function handleGenerateMonthly() {
+    setGenerateMessage(null)
+    setGenerateError(null)
+    const parsed = parseMonthValue(generatePeriod)
+    if (!parsed) {
+      setGenerateError('생성할 월을 선택해 주세요.')
+      return
+    }
+    const { year, month } = parsed
+    setGenerating(true)
+    try {
+      await fetchAPI(
+        `/admin/hospitals/${id}/operations/generate-monthly-report?year=${year}&month=${month}`,
+        { method: 'POST' },
+      )
+      setGenerateMessage(
+        `${year}년 ${month}월 리포트 생성을 요청했습니다. 완료되면 Slack으로 알려드립니다. ` +
+          '이 목록에는 새로고침해야 나타납니다. 이미 있는 달은 새로 만들지 않습니다.',
+      )
+    } catch (e: unknown) {
+      setGenerateError(e instanceof Error ? e.message : '리포트 생성 요청에 실패했습니다.')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
   const stats = useMemo(() => {
     const now = new Date()
     const y = now.getFullYear()
@@ -244,11 +280,43 @@ export default function ReportsPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
-      <div className="mb-6">
-        <h2 className="text-xl font-bold text-slate-900">리포트 검수</h2>
-        <p className="mt-1 text-sm text-slate-600">
-          PDF를 내려받기 전에 AI 답변 노출, 콘텐츠 성과, 운영 기준 검수 결과를 먼저 확인합니다.
-        </p>
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">리포트 검수</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            PDF를 내려받기 전에 AI 답변 노출, 콘텐츠 성과, 운영 기준 검수 결과를 먼저 확인합니다.
+          </p>
+        </div>
+        {/* 월말 배치가 실패하면 그 달 리포트가 통째로 비어 있게 된다 — 그때 AE가
+            개발자 없이 다시 만드는 경로. 이미 있는 달은 덮어쓰지 않는다. */}
+        <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-3">
+          <p className="text-xs font-medium text-slate-700">월간 리포트가 없나요?</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="month"
+              value={generatePeriod}
+              // 이번 달 이후는 백엔드가 거부한다 — 빈 리포트 행이 월말 배치를 막기 때문에.
+              max={defaultGeneratePeriod}
+              onChange={(e) => setGeneratePeriod(e.target.value)}
+              className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+              aria-label="생성할 리포트 월"
+            />
+            <button
+              type="button"
+              onClick={() => void handleGenerateMonthly()}
+              disabled={generating}
+              className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              {generating ? '요청 중...' : '리포트 생성'}
+            </button>
+          </div>
+          {generateMessage && (
+            <p role="status" className="mt-2 max-w-xs text-xs text-emerald-700">{generateMessage}</p>
+          )}
+          {generateError && (
+            <p role="alert" className="mt-2 max-w-xs text-xs text-red-600">{generateError}</p>
+          )}
+        </div>
       </div>
 
       {!loading && !error && (
@@ -498,7 +566,19 @@ function DetailDrawer({
                   rel="noopener noreferrer"
                   className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-600 text-white hover:bg-blue-700"
                 >
-                  PDF 다운로드
+                  내부 검수용 PDF
+                </a>
+              )}
+              {/* 원장에게 그대로 보내는 1페이지 판본. 내부 검수용과 편집이 다르다 —
+                  원장 화면에는 담당·기한·플랫폼별 표가 들어가지 않는다. */}
+              {report.has_doctor_pdf && (
+                <a
+                  href={`/api/admin/hospitals/${report.hospital_id}/reports/${report.id}/download?audience=doctor`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-900 text-white hover:bg-slate-800"
+                >
+                  원장 보고용 PDF
                 </a>
               )}
             </div>

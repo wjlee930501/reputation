@@ -11,6 +11,8 @@ class ReportResponse(BaseModel):
     report_type: str
     display: Optional[dict[str, Any]] = None
     has_pdf: bool
+    # 원장 보고용 1페이지 판본이 준비됐는지. 없으면 화면이 그 버튼을 감춘다.
+    has_doctor_pdf: bool = False
     download_url: Optional[str] = None
     sov_summary: Optional[Any]
     content_summary: Optional[Any]

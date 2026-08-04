@@ -53,3 +53,45 @@ test('completed-looking flags are not reported ready when backend readiness is n
   const summary = deriveOnboardingSummary(steps, needsWork)
   assert.equal(summary.stateLabel, '검증 필요')
 })
+
+test('the next-action CTA always points somewhere real', () => {
+  // href="#"는 눌러도 아무 일이 없어서 AE 입장에서 '고장 난 버튼'과 구분되지 않는다.
+  // 모든 분기에서 실제 경로이거나, 링크를 아예 만들지 않아야 한다.
+  const branches = [
+    // 전부 통과 → '운영 대시보드 확인'
+    deriveOnboardingSummary(
+      deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id'),
+      readiness,
+    ),
+    // 단계는 끝났는데 백엔드 판정이 READY가 아닌 분기 (예전에 href='#'였다)
+    deriveOnboardingSummary(
+      deriveOnboardingSteps(hospital, sources, philosophies, { ...readiness, status: 'NEEDS_WORK' }, 'hospital-id'),
+      { ...readiness, status: 'NEEDS_WORK' },
+    ),
+    // 진행 중인 단계가 있는 분기
+    deriveOnboardingSummary(
+      deriveOnboardingSteps({ ...hospital, schedule_set: false }, sources, philosophies, readiness, 'hospital-id'),
+      readiness,
+    ),
+  ]
+
+  for (const summary of branches) {
+    assert.notEqual(summary.nextActionHref, '#', `${summary.stateLabel}: dead link`)
+    if (summary.nextActionHref !== null) {
+      assert.ok(
+        summary.nextActionHref.startsWith('/hospitals/') || summary.nextActionHref.startsWith('#step-'),
+        `${summary.stateLabel}: unexpected href ${summary.nextActionHref}`,
+      )
+    }
+  }
+})
+
+test('the readiness-mismatch branch links to the dashboard instead of nowhere', () => {
+  const needsWork = { ...readiness, status: 'NEEDS_WORK' }
+  const steps = deriveOnboardingSteps(hospital, sources, philosophies, needsWork, 'hospital-id')
+
+  const summary = deriveOnboardingSummary(steps, needsWork)
+
+  assert.equal(summary.stateLabel, '검증 필요')
+  assert.equal(summary.nextActionHref, '/hospitals/hospital-id/dashboard')
+})

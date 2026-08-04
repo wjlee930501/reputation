@@ -9,8 +9,9 @@ POST /admin/hospitals/{hospital_id}/reports/{report_id}/mark-sent — 원장 전
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -190,26 +191,59 @@ async def get_report(
     return _serialize(r, full=True)
 
 
+def _content_disposition(ascii_name: str, display_name: str) -> str:
+    """Content-Disposition — ASCII 파일명 + RFC 5987 UTF-8 파일명.
+
+    HTTP 헤더 값은 latin-1로 인코딩되므로 한글 파일명을 filename에 그대로 넣으면
+    응답 생성 단계에서 UnicodeEncodeError가 난다. 한글은 filename*로만 보낸다.
+    """
+    quoted = quote(display_name, safe="")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+
+
 @router.get("/{hospital_id}/reports/{report_id}/download")
 async def download_report(
-    hospital_id: uuid.UUID, report_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    audience: str = Query(default="ae", pattern="^(ae|doctor)$"),
+    db: AsyncSession = Depends(get_db),
 ):
-    """PDF 다운로드 — GCS signed URL로 리다이렉트 (1시간 만료)"""
+    """PDF 다운로드 — GCS signed URL로 리다이렉트 (1시간 만료).
+
+    `audience=doctor`는 원장에게 그대로 전달하는 1페이지 판본이다. 같은 데이터를
+    다른 편집으로 렌더한 별도 파일이라 AE용과 경로가 다르다.
+    """
     await _get_hospital_or_404(db, hospital_id)
 
     r = await db.get(MonthlyReport, report_id)
     if not r or r.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    if not r.pdf_path:
-        raise HTTPException(status_code=404, detail="PDF 경로가 없습니다.")
+    is_doctor = audience == "doctor"
+    pdf_path = r.doctor_pdf_path if is_doctor else r.pdf_path
+    if not pdf_path:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "원장 보고용 리포트가 아직 만들어지지 않았습니다."
+                if is_doctor
+                else "PDF 경로가 없습니다."
+            ),
+        )
 
-    if r.pdf_path.startswith("gs://"):
-        download_name = f"report-{r.period_year}-{r.period_month:02d}.pdf"
+    # HTTP 헤더는 latin-1만 담을 수 있어 파일명에 한글을 그대로 넣으면 응답이 500이 된다.
+    # ASCII 이름을 filename에 두고, 한글 이름은 RFC 5987 filename*으로 함께 보낸다.
+    suffix = "-doctor" if is_doctor else ""
+    display_suffix = "-원장보고" if is_doctor else ""
+    stem = f"report-{r.period_year}-{r.period_month:02d}"
+    download_name = f"{stem}{suffix}.pdf"
+    disposition = _content_disposition(download_name, f"{stem}{display_suffix}.pdf")
+
+    if pdf_path.startswith("gs://"):
         signed_url = get_signed_url(
-            r.pdf_path,
+            pdf_path,
             expiration_hours=1,
-            response_disposition=f'attachment; filename="{download_name}"',
+            response_disposition=disposition,
         )
         if not signed_url:
             raise HTTPException(
@@ -222,11 +256,11 @@ async def download_report(
             headers={
                 "Cache-Control": "no-store, private",
                 "Referrer-Policy": "no-referrer",
-                "Content-Disposition": f'attachment; filename="{download_name}"',
+                "Content-Disposition": disposition,
             },
         )
 
-    local_path = _safe_local_report_path(r.pdf_path)
+    local_path = _safe_local_report_path(pdf_path)
     if not local_path:
         raise HTTPException(
             status_code=404,
@@ -235,7 +269,7 @@ async def download_report(
 
     return FileResponse(
         path=str(local_path),
-        filename=f"report-{r.period_year}-{r.period_month:02d}.pdf",
+        filename=download_name,
         media_type="application/pdf",
         headers={"Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer"},
     )
@@ -310,6 +344,7 @@ def _serialize(r: MonthlyReport, full: bool = False) -> dict:
         "report_type": r.report_type,
         "display": _serialize_display(r),
         "has_pdf": r.pdf_path is not None,
+        "has_doctor_pdf": r.doctor_pdf_path is not None,
         "download_url": f"/api/admin/hospitals/{r.hospital_id}/reports/{r.id}/download"
         if r.pdf_path
         else None,

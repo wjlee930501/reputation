@@ -7,12 +7,15 @@ row proves broker acceptance.
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin.accounts import require_owner_account
 from app.api.admin.domain import (
     check_domain_dns,
     domain_dns_strategy_for_hospital,
@@ -20,11 +23,19 @@ from app.api.admin.domain import (
     missing_live_prerequisites,
 )
 from app.core.database import get_db
+from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant
 from app.schemas.operations import (
+    AttentionHospital,
+    AttentionQueueResponse,
+    AttentionReportHospital,
+    AttentionReports,
+    CostGuardDailyLimitRequest,
+    CostGuardDailyLimitResponse,
     CostGuardKillSwitchRequest,
     CostGuardKillSwitchResponse,
     CostGuardStatusResponse,
@@ -34,6 +45,7 @@ from app.services.audit_log import default_actor, write_audit_log
 from app.workers.tasks import (
     build_aeo_site,
     generate_content_image,
+    generate_monthly_report_for_hospital,
     regenerate_content_item,
     run_sov_for_hospital,
     trigger_v0_report,
@@ -44,6 +56,11 @@ router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Operations"])
 # 비용 가드는 병원 단위가 아닌 전역 제어 평면이라 별도 prefix를 쓴다.
 cost_guard_router = APIRouter(prefix="/admin/operations", tags=["Admin — Cost Guard"])
 
+# 공개 후 24시간이 지나도록 사람이 확인하지 않은 콘텐츠를 "밀렸다"고 본다.
+# 08:00 자동 발행 → 그날 업무 시간 안에 후행 확인이 정상 흐름이므로, 하루가 통째로
+# 지났다는 것은 그 흐름에서 빠졌다는 뜻이다.
+POST_PUBLISH_REVIEW_OVERDUE_HOURS = 24
+
 
 async def _enqueue_with_truthful_audit(
     db: AsyncSession,
@@ -53,7 +70,7 @@ async def _enqueue_with_truthful_audit(
     target_type: str,
     target_id: uuid.UUID | str,
     task: Any,
-    args: list[str],
+    args: list[Any],
     queue: str,
 ) -> str | None:
     """Durably record request, dispatch, then record broker acceptance."""
@@ -101,6 +118,118 @@ async def _enqueue_with_truthful_audit(
     return task_id
 
 
+@cost_guard_router.get("/attention", response_model=AttentionQueueResponse)
+async def get_attention_queue(db: AsyncSession = Depends(get_db)):
+    """공개됐지만 아직 사람이 확인하지 않은 콘텐츠를 병원 횡단으로 집계한다.
+
+    08:00 자동 발행은 사람 승인 없이 공개된다. 그래서 운영의 병목은 "발행 전 승인"이
+    아니라 **이미 공개된 것 중 아직 아무도 안 본 것**이고, 그 노출 시간이 곧 위험이다.
+    지금까지 이 상태는 병원 상세 화면에 들어가야만 보여서, 병원이 늘면 AE가 매일
+    전 병원을 순회해야 확인할 수 있었다.
+
+    조건은 순수 컬럼 술어(PUBLISHED · 미확인 · 공개시각 존재)라 집계 1회로 끝난다 —
+    발행 가능 여부 재계산 같은 무거운 판정은 여기서 하지 않는다.
+    """
+    overdue_before = datetime.now(UTC) - timedelta(hours=POST_PUBLISH_REVIEW_OVERDUE_HOURS)
+
+    rows = (
+        await db.execute(
+            select(
+                Hospital.id,
+                Hospital.name,
+                func.count(ContentItem.id).label("unreviewed_count"),
+                func.count(
+                    case((ContentItem.published_at < overdue_before, 1))
+                ).label("overdue_count"),
+                func.min(ContentItem.published_at).label("oldest_published_at"),
+            )
+            .join(ContentItem, ContentItem.hospital_id == Hospital.id)
+            .where(
+                ContentItem.status == ContentStatus.PUBLISHED,
+                ContentItem.post_publish_reviewed_at.is_(None),
+                ContentItem.published_at.is_not(None),
+            )
+            .group_by(Hospital.id, Hospital.name)
+            # 오래 방치된 병원이 위로 — 큐의 정렬 기준은 심각도가 아니라 경과 시간이다.
+            .order_by(func.min(ContentItem.published_at).asc())
+        )
+    ).all()
+
+    hospitals = [
+        AttentionHospital(
+            hospital_id=row.id,
+            hospital_name=row.name,
+            unreviewed_count=row.unreviewed_count,
+            overdue_count=row.overdue_count,
+            oldest_published_at=row.oldest_published_at,
+        )
+        for row in rows
+    ]
+    return AttentionQueueResponse(
+        unreviewed_total=sum(h.unreviewed_count for h in hospitals),
+        overdue_total=sum(h.overdue_count for h in hospitals),
+        overdue_hours=POST_PUBLISH_REVIEW_OVERDUE_HOURS,
+        hospitals=hospitals,
+        reports=await _previous_month_report_gaps(db),
+    )
+
+
+async def _previous_month_report_gaps(db: AsyncSession) -> AttentionReports:
+    """지난달 원장 보고가 빠진 병원.
+
+    월말 배치가 어느 병원에서 실패하면 Slack 한 줄이 전부였고, 그 병원은 다음 달
+    마지막 날까지 리포트가 빈 채로 남았다. 만들어졌더라도 원장에게 전달되지 않으면
+    운영 실패는 마찬가지다 — 두 경우를 같이 본다.
+
+    이번 달이 아니라 **지난달**을 본다. 이번 달 리포트는 월말에 생기므로 그 전에
+    '없음'으로 표시하면 매일 거짓 경보가 된다.
+    """
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    year = now_kst.year if now_kst.month > 1 else now_kst.year - 1
+    month = now_kst.month - 1 if now_kst.month > 1 else 12
+    period_start = datetime(year, month, 1, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    rows = (
+        await db.execute(
+            select(Hospital.id, Hospital.name, MonthlyReport.id, MonthlyReport.sent_at)
+            .outerjoin(
+                MonthlyReport,
+                (MonthlyReport.hospital_id == Hospital.id)
+                & (MonthlyReport.period_year == year)
+                & (MonthlyReport.period_month == month)
+                & (MonthlyReport.report_type == "MONTHLY"),
+            )
+            .where(
+                Hospital.status == HospitalStatus.ACTIVE,
+                # 그 달에 아직 존재하지 않던 병원은 리포트가 없는 게 정상이다.
+                Hospital.created_at < period_start,
+            )
+            .order_by(Hospital.name.asc())
+        )
+    ).all()
+
+    missing: list[AttentionReportHospital] = []
+    undelivered: list[AttentionReportHospital] = []
+    for hospital_id, hospital_name, report_id, sent_at in rows:
+        if report_id is None:
+            missing.append(
+                AttentionReportHospital(hospital_id=hospital_id, hospital_name=hospital_name)
+            )
+        elif sent_at is None:
+            undelivered.append(
+                AttentionReportHospital(
+                    hospital_id=hospital_id, hospital_name=hospital_name, report_id=report_id
+                )
+            )
+
+    return AttentionReports(
+        period_year=year,
+        period_month=month,
+        missing=missing,
+        undelivered=undelivered,
+    )
+
+
 @cost_guard_router.get("/cost-guard", response_model=CostGuardStatusResponse)
 async def get_cost_guard_status():
     """카테고리별 일/월 사용량 + 상한 + 킬스위치 상태 조회."""
@@ -130,12 +259,73 @@ async def set_cost_guard_kill_switch(
     return CostGuardKillSwitchResponse(kill_switch_active=payload.enabled)
 
 
+@cost_guard_router.post("/cost-guard/daily-limit", response_model=CostGuardDailyLimitResponse)
+async def set_cost_guard_daily_limit(
+    payload: CostGuardDailyLimitRequest,
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_owner_account),
+):
+    """오늘 하루치 일일 상한을 올리거나(limit) 원복한다(limit=None).
+
+    야간 생성이 일일 상한에 걸리면 종전에는 환경변수 변경 + 재배포가 유일한 복구
+    경로였다. 지출을 늘리는 조작이므로 소유자만 할 수 있고, 월간 상한은 바꾸지 않아
+    이번 달 예산 천장은 그대로다. 상향은 오늘 키에만 저장돼 다음 날 자동 원복된다.
+    """
+    # 값 검증을 먼저 한다 — 잘못된 요청으로 감사 로그만 남는 것을 피한다.
+    try:
+        cost_guard.validate_daily_limit_override(payload.category, payload.limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # 순서 규약: write_audit_log → commit → 외부 부수효과(Redis).
+    # 뒤집으면 Redis만 바뀌고 감사 커밋이 실패했을 때 "누가 상한을 올렸는지" 기록이 없다.
+    await write_audit_log(
+        db,
+        action="cost_guard_daily_limit",
+        actor=actor.email,
+        target_type="cost_guard",
+        target_id=payload.category,
+        detail={"category": payload.category, "limit": payload.limit},
+    )
+    await db.commit()
+
+    try:
+        if payload.limit is None:
+            await cost_guard.clear_daily_limit_override(payload.category)
+        else:
+            await cost_guard.set_daily_limit_override(payload.category, payload.limit)
+    except ValueError as exc:  # pragma: no cover — 위에서 이미 검증했다
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    snapshot = await cost_guard.get_usage_snapshot()
+    current = next(
+        (c for c in snapshot["categories"] if c["category"] == payload.category),
+        None,
+    )
+    return CostGuardDailyLimitResponse(
+        category=payload.category,
+        daily_limit=int(current["daily_limit"]) if current else 0,
+        daily_limit_default=int(current["daily_limit_default"]) if current else 0,
+    )
+
+
 @router.post("/{hospital_id}/operations/trigger-v0-report")
 async def trigger_v0_report_operation(
     hospital_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
+    # 태스크는 v0_report_done인 병원을 조용히 건너뛴다(중복 리포트·중복 측정 비용 방지).
+    # 그대로 큐에 넣으면 화면은 "등록했습니다"라고 알리는데 아무 일도 일어나지 않아,
+    # AE가 리포트를 기다리다 놓친다. 큐에 넣기 전에 사실대로 거절한다.
+    if hospital.v0_report_done:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "이 병원은 이미 V0 리포트가 생성돼 있어 다시 만들지 않습니다. "
+                "최신 수치가 필요하면 'AI 언급률 측정'을 실행하고 리포트 화면에서 확인해 주세요."
+            ),
+        )
     await _enqueue_with_truthful_audit(
         db,
         action="trigger_v0_report",
@@ -195,6 +385,50 @@ async def rebuild_site_operation(
         queue="default",
     )
     return {"detail": "Site rebuild queued", "hospital_id": str(hospital.id)}
+
+
+@router.post("/{hospital_id}/operations/generate-monthly-report")
+async def generate_monthly_report_operation(
+    hospital_id: uuid.UUID,
+    year: int | None = Query(default=None, ge=2000, le=2200),
+    month: int | None = Query(default=None, ge=1, le=12),
+    db: AsyncSession = Depends(get_db),
+):
+    """월간 리포트를 병원 단위로 다시 만든다.
+
+    월말 배치가 실패하면 그 병원은 다음 달 마지막 날까지 리포트가 비어 있었고, 복구
+    경로가 `make monthly-report`(전체 병원·마지막 날 한정)뿐이었다. year/month를 주지
+    않으면 지난달을 만든다 — 배치 실패는 대개 달이 바뀐 뒤에 발견된다.
+    이미 있는 리포트는 덮어쓰지 않는다.
+    """
+    if (year is None) != (month is None):
+        raise HTTPException(
+            status_code=400, detail="연도와 월은 함께 지정해야 합니다."
+        )
+    if year is not None and month is not None:
+        # 이번 달·다음 달을 미리 만들면 아직 쌓이지 않은 데이터로 빈 리포트가 생기고,
+        # 그 행 때문에 정작 월말 배치가 dedupe로 건너뛰어 진짜 리포트가 영영 생기지 않는다.
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        if (year, month) >= (now_kst.year, now_kst.month):
+            raise HTTPException(
+                status_code=400,
+                detail="이번 달과 그 이후는 만들 수 없습니다. 월말 자동 생성이 끝난 지난달까지만 가능합니다.",
+            )
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    await _enqueue_with_truthful_audit(
+        db,
+        action="generate_monthly_report",
+        hospital_id=hospital.id,
+        target_type="hospital",
+        target_id=hospital.id,
+        task=generate_monthly_report_for_hospital,
+        args=[str(hospital.id), year, month],
+        queue="reports",
+    )
+    return {
+        "detail": "월간 리포트 생성을 요청했습니다. 완료되면 Slack으로 알려드립니다.",
+        "hospital_id": str(hospital.id),
+    }
 
 
 @router.post("/{hospital_id}/operations/verify-domain")

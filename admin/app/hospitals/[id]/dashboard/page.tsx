@@ -275,6 +275,9 @@ export default function DashboardPage() {
     && (hospital.status === 'ACTIVE' || hospital.status === 'PENDING_DOMAIN')
     && hasActiveVariant,
   )
+  // V0는 한 번만 만든다 — 이미 완료된 병원은 백엔드가 재실행을 거절한다(409).
+  // 버튼을 열어두면 눌러본 뒤에야 알게 되므로 미리 잠그고 이유를 보여준다.
+  const v0AlreadyDone = Boolean(hospital?.v0_report_done)
   const hasMeasurement = measurementRuns.some(
     (run) => run.status === 'COMPLETED' || run.status === 'PARTIAL',
   )
@@ -546,6 +549,7 @@ export default function DashboardPage() {
               <OperationButton
                 label="V0 리포트 재실행"
                 loading={operationLoading === 'v0'}
+                disabled={v0AlreadyDone}
                 onClick={() => runOperation('v0', 'trigger-v0-report')}
               />
               <OperationButton
@@ -566,6 +570,12 @@ export default function DashboardPage() {
               />
             </div>
           </div>
+          {v0AlreadyDone && (
+            <p className="mt-3 text-xs text-slate-600">
+              V0 리포트는 이미 생성됐습니다. 초기 진단은 병원당 한 번만 만들며, 이후 수치는
+              &lsquo;AI 언급률 측정&rsquo;과 월간 리포트로 확인합니다.
+            </p>
+          )}
           {!canRunSov && (
             <p className="mt-3 text-xs text-amber-700">
               AI 언급률 측정은 운영중 또는 도메인 대기 상태에서, 활성 환자 질문 문구가 있을 때 실행할 수 있습니다.
