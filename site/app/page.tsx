@@ -26,6 +26,7 @@ import { HeroLineArt } from "@/components/brand";
 import AnswerExplorer from "./_components/AnswerExplorer";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
+import HeroMotion from "./_components/HeroMotion";
 import MotionToggle from "./_components/MotionToggle";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
@@ -95,6 +96,11 @@ export default function Home() {
             가운데 정렬 히어로라 배경으로 깔되, 글자 뒤는 마스크로 비운다 —
             대비를 깎으면서까지 얻을 장식은 없다. `aria-hidden`은 컴포넌트가 갖고 있다. */}
         <HeroLineArt className="hero-artwork" />
+
+        {/* 같은 그림이 움직이는 판. 재생이 실제로 시작된 뒤에만 나타나고 그때 위 SVG를
+            숨긴다 — JS·코덱·네트워크 어디가 실패해도 화면은 지금 상태로 남는다.
+            감속 설정·정지 토글·720px 이하에서는 아예 받지 않는다. */}
+        <HeroMotion />
         {/* `{ai}` 자리에 굴러가는 AI 로고가 들어간다. 문자열을 미리 쪼개 두지 않고
             자리표시자를 쓰는 이유는, 조사 위치("…에 병원을")가 곧 문장이기 때문이다.
             카피와 컴포넌트가 갈라지면 어순이 조용히 깨진다. */}
