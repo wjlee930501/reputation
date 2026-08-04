@@ -101,31 +101,36 @@ export default function Home() {
             숨긴다 — JS·코덱·네트워크 어디가 실패해도 화면은 지금 상태로 남는다.
             감속 설정·정지 토글·720px 이하에서는 아예 받지 않는다. */}
         <HeroMotion />
-        {/* `{ai}` 자리에 굴러가는 AI 로고가 들어간다. 문자열을 미리 쪼개 두지 않고
-            자리표시자를 쓰는 이유는, 조사 위치("…에 병원을")가 곧 문장이기 때문이다.
-            카피와 컴포넌트가 갈라지면 어순이 조용히 깨진다. */}
-        <h1>
-          <span className="hero-lead">
-            {landingHero.titleLead.split("{ai}")[0]}
-            <RollingAiLogo />
-            {landingHero.titleLead.split("{ai}")[1]}
-          </span>
-          <strong>{landingHero.titleMain}</strong>
-        </h1>
 
-        {/* 제목이 던진 질문에 답하는 한 줄. 이 줄이 없으면 카테고리를 모르는 원장에게
-            첫 화면은 "AI 마케팅 대행"으로도 "블로그 외주"로도 읽힌다. 톤이 조용할수록
-            무엇을 파는지는 분명해야 한다. */}
-        <p className="hero-subcopy">{landingHero.subcopy}</p>
+        {/* 아트는 섹션(화면 전체)에 깔리고 글은 이 래퍼가 잡는다.
+            앞 버전은 섹션 자신이 860px이라 배경 아트도 860px에 갇혀, 키우면 잘리기만 했다. */}
+        <div className="hero-inner">
+          {/* `{ai}` 자리에 굴러가는 AI 로고가 들어간다. 문자열을 미리 쪼개 두지 않고
+              자리표시자를 쓰는 이유는, 조사 위치("…에 병원을")가 곧 문장이기 때문이다.
+              카피와 컴포넌트가 갈라지면 어순이 조용히 깨진다. */}
+          <h1>
+            <span className="hero-lead">
+              {landingHero.titleLead.split("{ai}")[0]}
+              <RollingAiLogo />
+              {landingHero.titleLead.split("{ai}")[1]}
+            </span>
+            <strong>{landingHero.titleMain}</strong>
+          </h1>
 
-        <div className="hero-actions" aria-label="주요 행동">
-          <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
-            {landingHero.primaryCta}
-          </Link>
+          {/* 제목이 던진 질문에 답하는 한 줄. 이 줄이 없으면 카테고리를 모르는 원장에게
+              첫 화면은 "AI 마케팅 대행"으로도 "블로그 외주"로도 읽힌다. 톤이 조용할수록
+              무엇을 파는지는 분명해야 한다. */}
+          <p className="hero-subcopy">{landingHero.subcopy}</p>
+
+          <div className="hero-actions" aria-label="주요 행동">
+            <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
+              {landingHero.primaryCta}
+            </Link>
+          </div>
+
+          {/* 제목이 두 로고를 이미 품고 있으므로 하단 "진단 대상" 줄은 중복이라 뺐다. */}
+          <p className="hero-slots-note">{heroScarcity.note}</p>
         </div>
-
-        {/* 제목이 두 로고를 이미 품고 있으므로 하단 "진단 대상" 줄은 중복이라 뺐다. */}
-        <p className="hero-slots-note">{heroScarcity.note}</p>
       </section>
 
       {/* 접힘 위에 데이터를 둔다 — 첫 화면이 문장과 버튼뿐이면 카테고리가 안 보인다. */}
