@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { ContentMotif } from './brand'
+import { ContentMotif } from '@/components/brand'
 
 interface Props {
   type: string
