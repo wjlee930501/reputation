@@ -443,10 +443,49 @@ textarea:focus-visible {
   );
 }
 
+/* 움직이는 판 — `.hero-artwork`와 **같은 자리·같은 마스크**를 쓴다. 두 값이 갈라지면
+   재생이 시작되는 순간 그림이 튄다. 영상의 배경은 ffmpeg으로 순백(#ffffff)에 맞춰
+   두었으므로 흰 히어로 위에서 사각형 경계가 보이지 않는다. */
+.hero-artwork-video {
+  position: absolute;
+  z-index: -1;
+  top: 50%;
+  left: 50%;
+  width: min(680px, 104%);
+  height: auto;
+  transform: translate(-50%, -50%);
+  opacity: 0.38;
+  pointer-events: none;
+  -webkit-mask-image: radial-gradient(
+    ellipse 54% 33% at 50% 40%,
+    transparent 0%,
+    transparent 54%,
+    #000 74%,
+    #000 84%,
+    transparent 99%
+  );
+  mask-image: radial-gradient(
+    ellipse 54% 33% at 50% 40%,
+    transparent 0%,
+    transparent 54%,
+    #000 74%,
+    #000 84%,
+    transparent 99%
+  );
+}
+
+/* 재생이 실제로 시작된 뒤에만 정적 SVG를 숨긴다. 순서가 반대이면(먼저 숨기고 재생)
+   실패했을 때 히어로에 아무것도 남지 않는다. */
+[data-hero-motion="on"] .hero-artwork {
+  visibility: hidden;
+}
+
 /* 좁은 화면에서는 걷어낸다. 390px에서 카피가 히어로 폭을 거의 다 쓰므로 마스크로
-   비울 여백이 남지 않고, 남는 것은 글자 뒤 잡선뿐이다. */
+   비울 여백이 남지 않고, 남는 것은 글자 뒤 잡선뿐이다.
+   영상은 컴포넌트가 아예 렌더하지 않으므로 160KB를 받지도 않는다. */
 @media (max-width: 720px) {
-  .hero-artwork {
+  .hero-artwork,
+  .hero-artwork-video {
     display: none;
   }
 }
