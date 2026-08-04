@@ -21,6 +21,8 @@ import {
   sceneSection,
 } from "@/lib/landing-copy";
 
+import { HeroLineArt } from "@/components/brand";
+
 import AnswerExplorer from "./_components/AnswerExplorer";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
@@ -84,6 +86,15 @@ export default function Home() {
           시각물은 아래 미리보기 섹션으로 분리했다. 히어로에 목업을 붙이면 두 개를
           동시에 읽어야 하고, 정작 팔아야 하는 한 줄이 묻힌다. */}
       <section id="top" className="hero-section">
+        {/* 브랜드 라인 아트 — 병원 표면(`/site/[slug]`)과 같은 시각 언어다.
+            `brand.tsx`는 손으로 그린 인라인 SVG 세트인데, 랜딩은 지금까지 그중 하나도
+            쓰지 않아 남의 로고 두 개가 유일한 벡터였다. 게다가 `HeroLineArt`는
+            **어디에서도 import되지 않은 채** 있었다(DESIGN.md는 ClinicHero가 쓴다고
+            적어 두었지만 코드는 그렇지 않다). 만들어 두고 한 번도 걸지 않은 자산이다.
+
+            가운데 정렬 히어로라 배경으로 깔되, 글자 뒤는 마스크로 비운다 —
+            대비를 깎으면서까지 얻을 장식은 없다. `aria-hidden`은 컴포넌트가 갖고 있다. */}
+        <HeroLineArt className="hero-artwork" />
         {/* `{ai}` 자리에 굴러가는 AI 로고가 들어간다. 문자열을 미리 쪼개 두지 않고
             자리표시자를 쓰는 이유는, 조사 위치("…에 병원을")가 곧 문장이기 때문이다.
             카피와 컴포넌트가 갈라지면 어순이 조용히 깨진다. */}

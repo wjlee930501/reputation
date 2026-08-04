@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 
-import { IconAftercare, IconExam, IconExplain } from './brand'
+import { IconAftercare, IconExam, IconExplain } from '@/components/brand'
 
 interface Props {
   hospitalRootUrl: string
