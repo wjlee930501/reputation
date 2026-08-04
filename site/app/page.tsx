@@ -203,16 +203,21 @@ export default function Home() {
           나오지 않는다. 그래서 "무엇을 받는가"를 먼저 보여주고, 못 하는 것과 FAQ를
           그 뒤에 두어 신청 직전의 신뢰 다지기로 쓴다. */}
       <section id="preview" className="report-section" aria-labelledby="preview-heading">
-        <div className="section-heading" data-reveal>
-          <p className="section-label">{previewSection.label}</p>
-          <h2 id="preview-heading">{previewSection.heading}</h2>
-          {/* 계기판의 18회와 아래 리포트의 9회를 잇는 한 줄. 없으면 읽는 사람이
-              두 분모의 관계를 스스로 추론해야 한다. */}
-          <p className="section-note">{previewSection.note}</p>
-        </div>
+        {/* 섹션이 화면 전체를 덮는 면이 되고(틴트), 폭은 이 안쪽 래퍼가 잡는다.
+            앞 버전은 섹션 자신이 1440으로 묶여 있어 배경을 깔면 넓은 화면에서
+            띠가 1440에서 끊겼다 — 다른 틴트 섹션들은 풀블리드라 혼자만 달라 보인다. */}
+        <div className="report-inner">
+          <div className="section-heading" data-reveal>
+            <p className="section-label">{previewSection.label}</p>
+            <h2 id="preview-heading">{previewSection.heading}</h2>
+            {/* 계기판의 18회와 아래 리포트의 9회를 잇는 한 줄. 없으면 읽는 사람이
+                두 분모의 관계를 스스로 추론해야 한다. */}
+            <p className="section-note">{previewSection.note}</p>
+          </div>
 
-        <div className="preview-stage" data-reveal>
-          <AnswerExplorer examples={answerExamples} disclaimer={answerDemo.disclaimer} />
+          <div className="preview-stage" data-reveal>
+            <AnswerExplorer examples={answerExamples} disclaimer={answerDemo.disclaimer} />
+          </div>
         </div>
       </section>
 
