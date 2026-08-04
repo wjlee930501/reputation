@@ -144,7 +144,9 @@ export const measurementSpec = {
   /** 왼쪽 — 어떻게 재는가. `value`는 계기 눈금처럼 읽히도록 짧게. */
   protocol: [
     { key: "측정 규약", value: "질의 3 × 반복 3 × 모델 2", note: "한 병원당 18회" },
-    { key: "최근 측정", value: "2026-07-29", note: "수서역·내과 고정" },
+    // 날짜를 상수로 박아 두면 갱신 경로가 없어 시간이 갈수록 "측정을 멈춘 회사"로 읽힌다 —
+    // 측정 규율을 파는 페이지에서 그 자체가 반증이 된다. 시간이 지나도 참인 표본 조건을 쓴다.
+    { key: "고정 표본", value: "수서역 · 내과", note: "같은 질문·같은 방식 반복" },
     { key: "측정 대상", value: "ChatGPT · Gemini", note: "gpt-5.6-luna · gemini-3.6-flash" },
   ],
   /** 규약이 곱해 만드는 총 호출 수. 위 문자열과 어긋나지 않게 테스트가 잡는다. */
@@ -176,7 +178,9 @@ export const marketSection = {
  */
 export const painSection = {
   label: "원장님들의 고민을 이해합니다",
-  heading: "결국 신환 유치를 위한 AI 활용 전략이 필요합니다",
+  // "신환 유치"를 목표로 걸면 아래 '하지 않는 것'의 "환자 수 증가는 재지 않습니다"와
+  // 같은 페이지 안에서 충돌한다. 우리가 재는 구간(노출)까지만 말한다.
+  heading: "환자는 이미 AI에게 묻는데, 그 답변에 병원이 있는지는 재본 적이 없습니다",
 }
 
 export const painPoints = [
@@ -342,7 +346,8 @@ export const answerExamples: AnswerExample[] = [
 
 export const operationSection = {
   label: "원장님은 결과만 보시면 됩니다",
-  heading: "실제 전략 수립과 실행은 뉴비짓이 담당합니다",
+  // 사내 팀명(뉴비짓)은 원장에게 설명 없는 제3의 이름으로 읽힌다 — 대외 문구는 운영사명으로 쓴다.
+  heading: "실제 전략 수립과 실행은 모션랩스가 담당합니다",
 }
 
 /**
@@ -375,7 +380,9 @@ export const operationSteps = [
 
 export const limitsSection = {
   label: "근거 없는 약속은 드리지 않습니다",
-  heading: "데이터와 근거, 지속 불가능한 전략을 지양합니다",
+  // 앞 문장은 "데이터와 근거 / 지속 불가능한 전략"이 병렬로 읽혀 **데이터와 근거를
+  // 지양한다**가 됐다. 신뢰를 파는 섹션의 제목이 반대 뜻으로 읽히면 안 된다.
+  heading: "데이터로 확인되지 않는 전략은 쓰지 않습니다",
 }
 
 /**

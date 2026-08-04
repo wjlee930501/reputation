@@ -101,6 +101,27 @@ test('landing copy contains no forbidden medical-ad expression', () => {
   }
 })
 
+/** 성과(순위·환자 유입)를 주장하는 문장인가. 부정형 여부는 호출부가 따로 본다. */
+function isGrowthClaim(sentence: string): boolean {
+  return (
+    /(순위|환자 수|내원|신환|신규 ?환자)/.test(sentence)
+    && /(보장|약속|늘|증가|유치)/.test(sentence)
+  )
+}
+
+test('the growth guard catches the phrasing that already slipped through', () => {
+  // 가드는 "현재 카피가 통과한다"만으로는 증명되지 않는다. 실제로 라이브에 올라갔던
+  // 문장을 직접 먹여, 넓힌 목록이 그것을 잡는지 확인한다.
+  assert.ok(
+    isGrowthClaim('결국 신환 유치를 위한 AI 활용 전략이 필요합니다'),
+    '라이브에 올라갔던 "신환 유치" 문장을 가드가 잡지 못합니다.',
+  )
+  // 정직한 부정문은 여전히 걸러지되(=후보로 잡히되) 부정 검사를 통과해야 한다.
+  assert.ok(isGrowthClaim('환자 수 증가 재지 않은 것을 성과로 적지 않습니다.'))
+  // 성과와 무관한 문장은 애초에 후보가 아니다.
+  assert.ok(!isGrowthClaim('환자가 실제로 묻는 질문을 골라 답을 씁니다.'))
+})
+
 test('landing copy never promises rank or patient volume', () => {
   /**
    * **부정문은 허용해야 한다.** "노출 순위를 보장하지 않습니다"는 지켜야 할 문장이고,
@@ -109,10 +130,13 @@ test('landing copy never promises rank or patient volume', () => {
    *
    * 그래서 '순위/환자 수 + 약속 동사'가 나오는 문장을 모두 뽑아 **각각 부정형인지**
    * 확인한다.
+   *
+   * 주어·동사 목록은 실제 사고를 겪고 넓혔다. "결국 신환 유치를 위한 AI 활용 전략이
+   * 필요합니다"가 라이브에 올라가 있었는데, `신환`이 주어 목록에 없고 `유치`가 동사
+   * 목록에 없어 그대로 통과했다. 같은 페이지 아래에서는 "환자 수 증가는 재지 않습니다"라고
+   * 적고 있었으므로, 이 가드가 막아야 했던 바로 그 자기모순이다.
    */
-  const claimSentences = ALL_COPY.split(/(?<=[.!?])\s+/).filter((sentence) =>
-    /(순위|환자 수|내원)/.test(sentence) && /(보장|약속|늘|증가)/.test(sentence),
-  )
+  const claimSentences = ALL_COPY.split(/(?<=[.!?])\s+/).filter(isGrowthClaim)
   assert.ok(claimSentences.length > 0, '순위·환자 수를 다루는 문장이 하나도 없습니다.')
   for (const sentence of claimSentences) {
     assert.match(
