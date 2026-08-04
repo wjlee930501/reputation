@@ -54,6 +54,19 @@ export default function RollingAiLogo() {
   const [sliding, setSliding] = useState(true);
   const rewinding = useRef(false);
 
+  /**
+   * 창 폭 — **현재 칸의 폭**을 따라간다.
+   *
+   * 창이 `inline-block`이면 폭이 가장 넓은 칸(ChatGPT)에 고정된다. 그러면 짧은
+   * Gemini가 올라왔을 때 그 차이만큼 빈칸이 남아 "…✦ Gemini␣␣␣에 병원을…"이 된다.
+   * 문장 한가운데라 그 공백이 조판 실수처럼 보인다.
+   *
+   * 그래서 칸을 실제로 재서 창 폭을 같이 움직인다. 폰트가 늦게 오면 폭이 달라지므로
+   * `document.fonts.ready` 뒤에 한 번 더 잰다.
+   */
+  const itemRefs = useRef<(HTMLSpanElement | null)[]>([]);
+  const [width, setWidth] = useState<number | null>(null);
+
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -79,6 +92,27 @@ export default function RollingAiLogo() {
       unsubscribe();
     };
   }, []);
+
+  // 현재 칸의 폭을 창에 반영한다. 폰트 로딩 뒤 한 번 더 재는 이유는 폭이 글꼴에
+  // 좌우되기 때문이다 — 폴백 글꼴로 재고 끝내면 Pretendard가 온 뒤 폭이 어긋난다.
+  useEffect(() => {
+    const measure = () => {
+      const item = itemRefs.current[index % PLATFORMS.length];
+      if (item) setWidth(item.getBoundingClientRect().width);
+    };
+
+    measure();
+    let cancelled = false;
+    void document.fonts?.ready.then(() => {
+      if (!cancelled) measure();
+    });
+
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("resize", measure);
+    };
+  }, [index]);
 
   // 사본 칸에 도착하면 미끄러짐이 끝난 뒤 0번으로 되감는다.
   useEffect(() => {
@@ -106,7 +140,12 @@ export default function RollingAiLogo() {
       {/* 스크린리더·크롤러가 읽는 정본. 굴러가는 칸은 여기서 제외된다. */}
       <span className="sr-only">ChatGPT와 Gemini</span>
 
-      <span className="rolling-ai-window" aria-hidden="true">
+      <span
+        className="rolling-ai-window"
+        aria-hidden="true"
+        // 폭을 재기 전(첫 페인트·JS 실패)에는 auto로 둔다 — 0으로 시작하면 슬롯이 사라진다.
+        style={width == null ? undefined : ({ "--rolling-w": `${width}px` } as React.CSSProperties)}
+      >
         <span
           className="rolling-ai-track"
           data-sliding={sliding ? "on" : "off"}
@@ -116,7 +155,13 @@ export default function RollingAiLogo() {
           style={{ "--rolling-i": index } as React.CSSProperties}
         >
           {[...PLATFORMS, PLATFORMS[0]].map(({ name, Logo }, i) => (
-            <span className="rolling-ai-item" key={`${name}-${i}`}>
+            <span
+              className="rolling-ai-item"
+              key={`${name}-${i}`}
+              ref={(el) => {
+                itemRefs.current[i] = el;
+              }}
+            >
               <Logo className="rolling-ai-mark" />
               {name}
             </span>
