@@ -14,10 +14,14 @@ import { patientQueries } from "@/lib/landing-copy";
  *
  * 애니메이션은 CSS이므로 서버 컴포넌트다(번들 0). `prefers-reduced-motion`이면 멈춘 채
  * 목록이 그대로 보인다 — 정지 상태도 읽을 수 있는 내용이라 숨길 이유가 없다.
+ * 헤더의 "움직임 멈추기"도 `<html data-motion="paused">`를 통해 CSS만으로 멈춘다.
+ *
+ * `aria-label`은 역할이 있는 요소에만 붙어야 한다. 앞 버전은 순수 `<div>`에 붙어 있어
+ * 상당수 보조기술이 통째로 무시했다 — 라벨이 있다고 믿었는데 실제로는 없던 셈이다.
  */
 export default function QueryMarquee() {
   return (
-    <div className="marquee" aria-label="환자가 AI에 묻는 질문 예시">
+    <section className="marquee" aria-label="환자가 AI에 묻는 질문 예시">
       <div className="marquee-track">
         {[0, 1].map((lane) => (
           <ul key={lane} aria-hidden={lane === 1 ? "true" : undefined}>
@@ -27,6 +31,6 @@ export default function QueryMarquee() {
           </ul>
         ))}
       </div>
-    </div>
+    </section>
   );
 }
