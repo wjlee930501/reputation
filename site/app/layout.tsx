@@ -21,7 +21,24 @@ export const viewport: Viewport = {
   themeColor: "#0671e0",
 };
 
-const OG_IMAGE = "/landing/reputation-product-report-devices.png";
+/**
+ * 공유 카드 이미지 — **실제 발송되는 리포트 지면**이다.
+ *
+ * 앞 버전(`reputation-product-report-devices.png`)은 AI로 생성한 마케팅 이미지였다.
+ * 노트북 화면의 "대시보드"는 라벨이 생성 낙서였고 차트는 아무것도 인코딩하지 않았으며,
+ * 벽에 걸린 X-ray도 생성 파노라마였다. 존재하지 않는 제품의 스크린샷인 셈이다.
+ * DESIGN.md Non-goals의 "present generated images as real"에 정면으로 걸리고,
+ * 랜딩 카피가 스스로 적어 둔 "인상을 파는 순간 근거가 무너진다"에도 걸린다.
+ *
+ * 이 이미지가 특히 중요한 이유는 **AE가 카톡으로 링크를 보낼 때 원장이 보는 첫 화면**이
+ * 이것이기 때문이다. 의료 이미지를 매일 보는 사람에게 생성 티가 나는 X-ray를 첫인상으로
+ * 내밀 이유가 없다.
+ *
+ * 지금 이미지는 `backend/app/templates/lead_report.html`을 익명 payload로 렌더한
+ * 진짜 지면이다(`scripts/build_og_report_html.py`). 병원명만 ○○ 플레이스홀더이고
+ * 표·라벨·고지 문구·모델명은 프로덕션과 동일하다. 모델이나 규약이 바뀌면 다시 만든다.
+ */
+const OG_IMAGE = "/landing/reputation-diagnosis-report-og.png";
 const googleSiteVerification = process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION?.trim();
 const gaMeasurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim();
 
@@ -42,7 +59,7 @@ export const metadata: Metadata = {
         url: OG_IMAGE,
         width: 1200,
         height: 630,
-        alt: "Re:putation — AI 답변에 우리 병원이 보이는지 진단합니다",
+        alt: "무료 AI 노출 진단 리포트 예시 — OpenAI API·Google Gemini API 측정 횟수와 언급 횟수가 표로 정리되어 있다",
       },
     ],
   },
