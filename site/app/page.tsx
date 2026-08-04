@@ -42,11 +42,16 @@ const FAQ_OPEN_COUNT = 4;
  *   ① 환자가 어디서 묻는가 (외부 조사)
  *   ② 그 답변에 자리가 몇 개인가 (자체 실측)
  *   ③ 그 자리를 만들려면 무엇이 필요한가 (운영 방식)
- *   ④ 그걸 어떻게 검증하는가 (측정 규약 공개)
- *   ⑤ 무엇은 못 하는가 (하지 않는 것)
+ *   ④ 그래서 무엇을 받는가 (리포트 미리보기)
+ *   ⑤ 무엇은 못 하는가 (하지 않는 것 → FAQ)
  *   ⑥ 그래서 지금 확인해보라 (무료 진단)
  *
  * ③을 ①② 앞에 두면 기능 소개가 되고, ⑤를 빼면 노출 대행과 구별되지 않는다.
+ *
+ * ④는 원래 FAQ **뒤**에 있었다("신청 직전에 보여준다"). 그 원칙은 독자가 거기까지
+ * 온다는 전제에 기대는데, 모바일 8,000px에서 리포트 카드가 y≈6,300이었고 그 앞을
+ * FAQ 열한 개가 막고 있었다. 반론(⑤)은 갖고 싶은 마음이 생긴 뒤에 나오므로,
+ * 받는 것을 먼저 보여주고 못 하는 것과 FAQ를 신청 직전 신뢰 다지기로 쓴다.
  */
 export default function Home() {
   return (
@@ -178,6 +183,28 @@ export default function Home() {
         </ol>
       </section>
 
+      {/* ── ④ 받으시는 것 — 운영 방식 바로 뒤 ─────────────────────────
+          앞 버전은 이 섹션이 FAQ 뒤(데스크톱 y≈4,450 · 모바일 y≈6,300)에 있었다.
+          "신청 직전에 보여준다"는 원칙이었지만, 그 원칙은 **독자가 거기까지 온다는
+          전제**에 기댄다 — 모바일 8,000px에 FAQ 열한 개가 보상 바로 앞을 막고 있었다.
+
+          FAQ는 반론 처리다. 반론은 갖고 싶은 마음이 생긴 다음에 나오지, 그 전에
+          나오지 않는다. 그래서 "무엇을 받는가"를 먼저 보여주고, 못 하는 것과 FAQ를
+          그 뒤에 두어 신청 직전의 신뢰 다지기로 쓴다. */}
+      <section id="preview" className="report-section" aria-labelledby="preview-heading">
+        <div className="section-heading" data-reveal>
+          <p className="section-label">{previewSection.label}</p>
+          <h2 id="preview-heading">{previewSection.heading}</h2>
+          {/* 계기판의 18회와 아래 리포트의 9회를 잇는 한 줄. 없으면 읽는 사람이
+              두 분모의 관계를 스스로 추론해야 한다. */}
+          <p className="section-note">{previewSection.note}</p>
+        </div>
+
+        <div className="preview-stage" data-reveal>
+          <AnswerExplorer examples={answerExamples} disclaimer={answerDemo.disclaimer} />
+        </div>
+      </section>
+
       {/* ── ⑤ 하지 않는 것 ───────────────────────────────────────── */}
       <section className="limits-section" aria-labelledby="limits-heading">
         <div className="section-heading" data-reveal>
@@ -230,21 +257,6 @@ export default function Home() {
               ))}
             </details>
           )}
-        </div>
-      </section>
-
-      {/* ── 받으시는 것 — 신청 직전에 보여준다 ────────────────────── */}
-      <section id="preview" className="report-section" aria-labelledby="preview-heading">
-        <div className="section-heading" data-reveal>
-          <p className="section-label">{previewSection.label}</p>
-          <h2 id="preview-heading">{previewSection.heading}</h2>
-          {/* 계기판의 18회와 아래 리포트의 9회를 잇는 한 줄. 없으면 읽는 사람이
-              두 분모의 관계를 스스로 추론해야 한다. */}
-          <p className="section-note">{previewSection.note}</p>
-        </div>
-
-        <div className="preview-stage" data-reveal>
-          <AnswerExplorer examples={answerExamples} disclaimer={answerDemo.disclaimer} />
         </div>
       </section>
 
