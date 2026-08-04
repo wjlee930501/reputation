@@ -9,6 +9,7 @@ import {
   ctaSection,
   faqItems,
   faqSection,
+  funnelSection,
   heroScarcity,
   landingHero,
   limitItems,
@@ -55,11 +56,23 @@ const ALL_COPY = [
   ...platformShares.flatMap((p) => [p.name, p.note ?? ""]),
   faqSection.label,
   faqSection.heading,
+  funnelSection.label,
+  funnelSection.heading,
+  funnelSection.body,
+  funnelSection.oursNote,
+  funnelSection.restNote,
+  funnelSection.caveat,
+  ...funnelSection.stages.map((s) => s.name),
   heroScarcity.note,
   previewSection.label,
   previewSection.heading,
   ...faqItems.flatMap((f) => [f.question, f.answer]),
-  ...measuredFigures.flatMap((f) => [f.value, f.label, f.source]),
+  ...measuredFigures.flatMap((f) => [f.value, f.label, f.meaning, f.source]),
+  measurementSpec.premise,
+  measurementSpec.headline,
+  measurementSpec.spec,
+  measurementSpec.sample,
+  measurementSpec.reproducibility,
   ...operationSteps.flatMap((s) => [s.label, s.title, s.body]),
   ...limitItems.flatMap((l) => [l.title, l.body]),
   answerDemo.disclaimer,
@@ -420,28 +433,64 @@ test('the hero instrument states the same measurement contract the backend runs'
    * 문자열을 통째로 고정하지 않고 **곱이 맞는지**만 본다 — 표현을 다듬을 때마다
    * 테스트가 깨지면 정작 지켜야 할 숫자를 못 지킨다.
    */
-  const protocolRow = measurementSpec.protocol.find((row) => /규약/.test(row.key))
-  assert.ok(protocolRow, '측정 규약 행이 없습니다.')
-  const factors = (protocolRow.value.match(/\d+/g) ?? []).map(Number)
-  assert.ok(factors.length >= 3, `규약에서 곱할 값을 찾지 못했습니다: "${protocolRow.value}"`)
-  const product = factors.reduce((a, b) => a * b, 1)
+  // 각주(spec)에 적힌 인수들의 곱이 총 호출 수와 같아야 한다.
+  const factors = (measurementSpec.spec.match(/\d+/g) ?? []).map(Number)
+  assert.ok(factors.length >= 3, `규약에서 곱할 값을 찾지 못했습니다: "${measurementSpec.spec}"`)
+  // 마지막 숫자(= 18)는 결과이므로 곱에서 제외한다.
+  const product = factors.slice(0, 3).reduce((a, b) => a * b, 1)
   assert.equal(
     product,
     measurementSpec.totalCalls,
-    `규약 ${protocolRow.value}의 곱은 ${product}인데 총 호출 수는 ${measurementSpec.totalCalls}입니다.`,
+    `규약 "${measurementSpec.spec}"의 곱은 ${product}인데 총 호출 수는 ${measurementSpec.totalCalls}입니다.`,
   )
   assert.equal(measurementSpec.totalCalls, 18)
-  // 총 호출 수는 각주에도 같은 숫자로 적혀야 한다.
-  assert.match(protocolRow.note, new RegExp(String(measurementSpec.totalCalls)))
+  assert.match(measurementSpec.spec, new RegExp(String(measurementSpec.totalCalls)))
+  // 플랫폼당 호출 수 × 플랫폼 2 = 총 호출 수.
+  assert.equal(measurementSpec.perPlatform * 2, measurementSpec.totalCalls)
+})
+
+test('the instrument headline carries exactly one number', () => {
+  /**
+   * Consumer Reports의 규칙을 테스트로 고정한다 — "Every refrigerator we test gets wired
+   * up with 15 temperature sensors."처럼 헤드라인 문장에는 숫자가 하나여야 한다.
+   * 둘이면 스펙시트가 되고 영이면 슬로건이 된다.
+   *
+   * 앞 버전(`질의 3 × 반복 3 × 모델 2`)은 한 문장에 숫자가 셋이었다. 카피를 다듬다가
+   * 파라미터가 헤드라인으로 다시 올라오는 것을 막는다.
+   */
+  const numbers = measurementSpec.headline.match(/\d+/g) ?? []
+  assert.equal(
+    numbers.length,
+    1,
+    `헤드라인에 숫자가 ${numbers.length}개입니다(1개여야 함): "${measurementSpec.headline}"`,
+  )
+  // 그 하나는 플랫폼당 호출 수여야 한다 — 다른 숫자가 오면 규약과 어긋난다.
+  assert.equal(Number(numbers[0]), measurementSpec.perPlatform)
+})
+
+test('the instrument states the premise before the number', () => {
+  // 논증 없이 숫자만 던지면 "반복 3회"가 왜 필요한지 설명되지 않는다.
+  assert.ok(measurementSpec.premise.length > 0)
+  assert.doesNotMatch(measurementSpec.premise, /\d/, '전제 문장에는 숫자가 없어야 합니다.')
 })
 
 test('the instrument names the platforms we actually measure', () => {
-  const target = measurementSpec.protocol.find((row) => /대상/.test(row.key))
-  assert.ok(target, '측정 대상 행이 없습니다.')
-  assert.match(target.value, /ChatGPT/)
-  assert.match(target.value, /Gemini/)
-  // 쓰지 않는 모델 이름이 각주에 새면 안 된다(실측 출처와 같은 규칙).
-  assert.doesNotMatch(target.note, /gpt-5-mini|gpt-4o|terra/)
+  assert.match(measurementSpec.headline, /ChatGPT/)
+  assert.match(measurementSpec.headline, /Gemini/)
+  // 쓰지 않는 모델 이름이 새면 안 된다(실측 출처와 같은 규칙).
+  assert.doesNotMatch(measurementSpec.models, /gpt-5-mini|gpt-4o|terra/)
+})
+
+test('every measured figure carries a plain-language meaning', () => {
+  /**
+   * Cochrane 규칙 — 큰 숫자에는 "그래서 이게 큰 거냐"가 붙어야 한다.
+   * `meaning`은 같은 데이터를 다시 말한 것이어야 하고, 새 숫자를 들여오면 안 된다.
+   * 없는 분모를 지어내는 것이 이 페이지에서 가장 위험한 실수다.
+   */
+  for (const figure of measuredFigures) {
+    assert.ok(figure.meaning.length > 0, `${figure.value}에 해석 기준이 없습니다.`)
+    assert.notEqual(figure.meaning, figure.label)
+  }
 })
 
 test('the fold label counts the hidden questions instead of hardcoding a number', () => {

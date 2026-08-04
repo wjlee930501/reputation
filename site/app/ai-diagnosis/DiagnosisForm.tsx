@@ -125,6 +125,13 @@ export default function DiagnosisForm() {
         <p>
           측정을 시작했습니다. 완료되면 <strong>{values.email}</strong> 으로 리포트를 보내드립니다.
         </p>
+        {/* **언제 오는지**가 빠져 있었다. FAQ에는 "신청 후 15분 안에"라고 적어 두고
+            정작 접수 직후 화면에서는 말하지 않아서, 기다리는 사람이 얼마나 기다려야
+            하는지 모른 채로 남았다. 기다림의 길이를 모르면 짧아도 길게 느껴진다. */}
+        <p>
+          <strong>보통 15분 안에 도착합니다.</strong> ChatGPT와 Gemini에 실제로 18번 묻고
+          답변을 세는 동안 이 창을 닫으셔도 됩니다.
+        </p>
         <p className="dg-muted">
           메일이 오지 않아도 아래 주소에서 진행 상황과 결과를 확인하실 수 있습니다.
         </p>
@@ -247,6 +254,9 @@ function ConfirmDialog({
           ⚠ 한 병원당 딱 한 번만 신청할 수 있습니다. 대표번호와 이메일 모두 재신청이 불가능하니
           우리 병원 정보가 맞는지 꼭 확인해 주세요.
         </p>
+        {/* 경고만 있고 보상이 없으면 확인 모달이 마지막 이탈 지점이 된다.
+            "한 번뿐"이라는 부담 옆에 "15분이면 온다"는 기대를 같이 둔다. */}
+        <p className="dg-modal-eta">리포트는 보통 15분 안에 이메일로 도착합니다.</p>
         <div className="dg-modal-actions">
           <button type="button" onClick={onCancel} disabled={sending}>
             수정하기

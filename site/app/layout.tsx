@@ -44,7 +44,11 @@ const gaMeasurementId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID?.trim();
 
 export const metadata: Metadata = {
   metadataBase: new URL(platformSiteUrl()),
-  title: "Re:putation — AI 답변에 우리 병원이 보이는지 진단합니다 · MotionLabs Research Preview",
+  // 68자였다. 15~60자 권장을 넘기면 검색·AI 요약에서 뒤가 잘려 "· MotionLabs Research
+  // Preview"만 사라지는 게 아니라 문장이 끊긴 채로 인용된다.
+  title: "Re:putation — AI 답변에 우리 병원이 나오는지 진단합니다",
+  // 같은 내용이 여러 주소로 흩어지면 AI·검색이 평가를 나눠 본다.
+  alternates: { canonical: "/" },
   description:
     "MotionLabs가 운영하는 Re:putation Research Preview. ChatGPT·Gemini가 환자 질문에 답할 때 우리 병원이 어떻게 보이는지 진단하고, 빠진 정보와 근거 콘텐츠 운영 순서를 정리합니다.",
   openGraph: {

@@ -8264,6 +8264,15 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   margin: 18px 0; padding: 13px 15px; font-size: 13px; line-height: 1.7;
   background: #fff8e6; border: 1px solid #f0dfae; border-radius: 8px; color: #55471f;
 }
+
+/* 경고 바로 아래 한 줄. 경고와 같은 크기로 두되 색을 빼서, 부담 옆에 기대가
+   나란히 서게 한다 — 경고만 있으면 확인 모달이 마지막 이탈 지점이 된다. */
+.dg-modal-eta {
+  margin: -8px 0 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted, #646b76);
+}
 .dg-modal-actions { display: flex; gap: 10px; }
 .dg-modal-actions button {
   flex: 1; padding: 12px; font-size: 14px; font-weight: 600;
@@ -8642,63 +8651,81 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   border-collapse: collapse;
 }
 
-.instrument-protocol,
+.instrument-method,
 .instrument-result {
   margin: 0;
-  display: grid;
   align-content: start;
   border-top: 1px solid var(--line-strong);
 }
 
-/* 규약과 결과 사이의 세로 경계 — 격자가 있어야 표로 읽힌다. */
+/* 방법과 결과 사이의 세로 경계 — 격자가 있어야 한 계기로 읽힌다. */
 .instrument-result {
+  display: grid;
   padding-left: clamp(24px, 4vw, 56px);
   border-left: 1px solid var(--line);
 }
 
-.instrument-protocol > div {
-  display: grid;
-  grid-template-columns: 5.5em minmax(0, 1fr);
-  gap: 0 16px;
-  align-items: baseline;
-  padding: 11px 0;
+.instrument-method {
+  padding-top: 16px;
+  max-width: 34em;
 }
 
-.instrument-protocol > div + div {
-  border-top: 1px solid var(--line);
-}
-
-.instrument-protocol dt {
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+/* 전제 — 이 한 줄이 아래 "9번씩"의 이유다. 작게 두되 회색으로 죽이지 않는다. */
+.instrument-premise {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
   color: var(--muted);
 }
 
-.instrument-protocol dd {
-  margin: 0;
+/* 헤드라인 — 이 블록에서 가장 큰 글자. 숫자는 여기 하나뿐이다. */
+.instrument-headline {
+  margin: 6px 0 0;
+  font-size: clamp(1.0625rem, 0.95rem + 0.5vw, 1.3125rem);
+  font-weight: 700;
+  line-height: 1.45;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
+/* 파라미터 — 사라지지 않되 헤드라인을 차지하지 않는다. */
+.instrument-spec {
+  margin: 14px 0 0;
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 12px;
-}
-
-/* 규약 값은 눈금이다 — 자릿수가 흔들리면 계기가 아니라 문구로 읽힌다. */
-.instrument-value {
-  font-size: 0.9375rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.instrument-note {
+  gap: 4px 14px;
   font-size: 0.8125rem;
+  line-height: 1.6;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
-/* 결과 두 칸. 파랑은 여기 숫자에만 — 이 페이지에서 파랑은 '우리가 잰 값'이다. */
+.instrument-spec span {
+  position: relative;
+  padding-left: 15px;
+}
+
+/* 항목 사이 구분점. 문자를 쓰지 않는 이유는 스크린리더가 읽어 버리기 때문이다. */
+.instrument-spec span::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 0.62em;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+/* 방법론을 공개하는 목적. 파라미터보다 이 문장이 실제로 파는 것이다. */
+.instrument-repro {
+  margin: 10px 0 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
 .instrument-result {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: clamp(24px, 4vw, 56px);
@@ -8726,9 +8753,20 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   color: var(--text);
 }
 
+/* 해석 기준 — 숫자에 "그래서 이게 큰 거냐"를 붙인 줄. 라벨보다 크게,
+   출처보다 진하게 둔다. 이 줄이 숫자를 판단으로 바꾼다. */
+.instrument-meaning {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: var(--ink);
+  text-wrap: pretty;
+}
+
 .instrument-source {
   display: block;
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 0.875rem;
   line-height: 1.5;
   color: var(--muted);
@@ -8739,6 +8777,22 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   /* 좁은 화면에서 두 판을 나란히 두면 규약 값이 줄바꿈으로 부서진다. */
   .instrument {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 각 항목을 제 줄에 세운다. `flex-wrap`으로 두면 폰트가 폴백 → Pretendard로
+     바뀌는 순간 줄 수가 달라지고, 세로 배치인 모바일에서는 그 아래 전체가 밀린다.
+     실제로 이것 때문에 모바일 CLS가 0.011 → 0.060으로 뛰었다. */
+  .instrument-spec {
+    display: grid;
+    gap: 2px;
+  }
+
+  .instrument-spec span {
+    padding-left: 0;
+  }
+
+  .instrument-spec span::before {
+    content: none;
   }
 
   .instrument-result {
@@ -8806,4 +8860,103 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   font-size: 1rem;
   line-height: 1.6;
   color: var(--ink-2);
+}
+
+/* ── 우리가 서 있는 자리 (퍼널) ──────────────────────────────────────
+   대체재가 아니라 상류 보완재임을 그림으로 말한다. 파랑은 한 칸에만 —
+   이 페이지에서 파랑은 "우리가 만들고 재는 것"이고, 나머지 칸은 우리 몫이 아니다.
+   그림 자체가 한계 고백이 되도록 색을 아낀다. */
+.funnel-section {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--section-pad) clamp(20px, 5vw, 40px);
+  border-top: 1px solid var(--line);
+}
+
+.funnel-chart { margin-top: clamp(28px, 4vh, 44px); }
+
+.funnel-stages {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.funnel-stages li {
+  position: relative;
+  padding: 16px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  font-size: 0.9375rem;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  color: var(--muted);
+  background: #ffffff;
+}
+
+/* 우리 칸. 채우되 진하게 하지 않는다 — 이 칸은 퍼널의 끝이 아니라 시작이다. */
+.funnel-stages li[data-ours="yes"] {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+  font-weight: 700;
+  background: var(--accent-weak);
+}
+
+/* 칸 사이 진행 방향. 첫 칸 앞에는 붙지 않는다. */
+.funnel-stages li + li::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-top: 1px solid var(--line-strong);
+  border-right: 1px solid var(--line-strong);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.funnel-legend {
+  display: grid;
+  grid-template-columns: 1fr 4fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.funnel-legend p {
+  margin: 0;
+  padding-top: 9px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  border-top: 1px solid var(--line);
+}
+
+.funnel-legend-ours {
+  color: var(--accent-dark);
+  border-top-color: var(--accent);
+  font-weight: 600;
+}
+
+.funnel-legend-rest { color: var(--muted); }
+
+.funnel-caveat {
+  margin: 18px 0 0;
+  max-width: var(--prose-max);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+@media (max-width: 760px) {
+  /* 다섯 칸을 가로로 두면 글자가 부서진다. 세로로 세우고 화살표를 아래로 돌린다. */
+  .funnel-stages { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+
+  .funnel-stages li + li::before {
+    left: 50%;
+    top: -7px;
+    transform: translateX(-50%) rotate(135deg);
+  }
+
+  .funnel-legend { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 }
