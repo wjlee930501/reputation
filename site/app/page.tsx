@@ -6,6 +6,7 @@ import {
   ctaSection,
   faqItems,
   faqSection,
+  funnelSection,
   heroScarcity,
   landingHero,
   limitItems,
@@ -22,6 +23,15 @@ import {
 } from "@/lib/landing-copy";
 
 import { HeroLineArt } from "@/components/brand";
+import {
+  buildLandingFaqJsonLd,
+  buildOrganizationJsonLd,
+  buildServiceJsonLd,
+  buildWebSiteJsonLd,
+} from "@/lib/landing-schema";
+import { platformSiteUrl } from "@/lib/site-url";
+
+import { JsonLd } from "./[slug]/_components/JsonLd";
 
 import AnswerExplorer from "./_components/AnswerExplorer";
 import HeaderScrollState from "./_components/HeaderScrollState";
@@ -57,8 +67,25 @@ const FAQ_OPEN_COUNT = 4;
  * 받는 것을 먼저 보여주고 못 하는 것과 FAQ를 신청 직전 신뢰 다지기로 쓴다.
  */
 export default function Home() {
+  const siteUrl = platformSiteUrl();
+
   return (
     <main id="main-content" className="landing-shell">
+      {/* 구조화 데이터 — 이 페이지가 파는 것을 이 페이지가 지킨다.
+          앞서는 JSON-LD가 한 줄도 없어서, 경쟁사의 공개 진단 도구에 우리 랜딩을 넣으면
+          "구조화 데이터 없음 0/6 · FAQ 이름표 없음 0/4"가 그대로 찍혔다.
+          FAQ를 11개 렌더링하면서 FAQPage가 없던 것이 특히 그랬다. */}
+      <JsonLd
+        data={[
+          buildOrganizationJsonLd(siteUrl),
+          buildWebSiteJsonLd(siteUrl),
+          buildServiceJsonLd(siteUrl),
+          ...(buildLandingFaqJsonLd(faqItems, siteUrl)
+            ? [buildLandingFaqJsonLd(faqItems, siteUrl)!]
+            : []),
+        ]}
+      />
+
       <ScrollReveal />
       <HeaderScrollState />
 
@@ -184,6 +211,38 @@ export default function Home() {
             </li>
           ))}
         </ul>
+      </section>
+
+      {/* ── ②-b 우리가 서 있는 자리 ───────────────────────────────
+          원장은 이미 블로그·플레이스에 돈을 쓰고 있고, 그 시장은 "노출은 성과가 아니다"라는
+          자기비판을 이미 끝냈다. 그 한가운데에 노출보다 더 상류인 지표를 들고 가면
+          "순위 올려준다던 곳이랑 뭐가 다르냐"로 먼저 읽힌다.
+          대체재가 아니라 상류 보완재라는 것을 그림으로 먼저 못 박는다. */}
+      <section className="funnel-section" aria-labelledby="funnel-heading">
+        <div className="section-heading" data-reveal>
+          <p className="section-label">{funnelSection.label}</p>
+          <h2 id="funnel-heading">{funnelSection.heading}</h2>
+          <p className="section-note">{funnelSection.body}</p>
+        </div>
+
+        <div className="funnel-chart" data-reveal>
+          <ol className="funnel-stages">
+            {funnelSection.stages.map((stage) => (
+              <li key={stage.name} data-ours={stage.ours ? "yes" : "no"}>
+                <span>{stage.name}</span>
+              </li>
+            ))}
+          </ol>
+
+          <div className="funnel-legend" aria-hidden="true">
+            <p className="funnel-legend-ours">{funnelSection.oursNote}</p>
+            <p className="funnel-legend-rest">{funnelSection.restNote}</p>
+          </div>
+
+          {/* 그림이 성과 약속으로 읽히지 않게 잠그는 줄. 빼면 퍼널이 "내원까지
+              만들어 드립니다"로 읽히고, 그건 '하지 않는 것' 섹션과 정면으로 충돌한다. */}
+          <p className="funnel-caveat">{funnelSection.caveat}</p>
+        </div>
       </section>
 
       {/* ── ③ 운영 방식 ──────────────────────────────────────────── */}
@@ -330,14 +389,18 @@ export default function Home() {
             병원 정보를 AI가 읽을 수 있는 형태로 정리하고, 근거 기반 콘텐츠를 매달 발행하는
             AI 노출 컨설팅·콘텐츠 운영 서비스입니다.
           </p>
+          {/* 사업자 정보는 링크로 미루지 않고 여기 적는다. 앞 버전은 "사업자 정보는
+              motionlabs.kr에서 확인하실 수 있습니다"로 넘겼는데, 그러면 사람도 한 번 더
+              눌러야 하고 기계는 아예 못 읽는다(E-E-A-T 신호 누락).
+              주소도 틀려 있었다 — "강남구"로 적혀 있었지만 운영사 등기 주소는 성동구다. */}
           <p className="footer-biz">
             운영사: 주식회사 모션랩스(MotionLabs Inc.) · 대표 이우진
             <br />
-            서울특별시 강남구 · 사업자 정보는{" "}
+            사업자등록번호 466-88-01551 · 서울특별시 성동구 아차산로 38, 406호
+            <br />
             <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">
               motionlabs.kr
             </a>
-            에서 확인하실 수 있습니다.
           </p>
         </div>
         <div className="footer-links">
