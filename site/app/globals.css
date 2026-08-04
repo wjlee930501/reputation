@@ -1320,7 +1320,18 @@ textarea:focus-visible {
   display: inline-block;
   overflow: hidden;
   height: var(--rolling-line);
+  /* 폭도 현재 칸을 따라간다. `auto`면 가장 넓은 칸(ChatGPT)에 고정돼, 짧은 Gemini가
+     올라왔을 때 문장 한가운데 빈칸이 남는다("…✦ Gemini␣␣␣에 병원을…").
+     JS가 재기 전에는 auto — 0으로 시작하면 슬롯이 아예 사라진다. */
+  width: var(--rolling-w, auto);
+  transition: width 0.62s var(--ease-enter);
   vertical-align: -0.2em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rolling-ai-window {
+    transition: none;
+  }
 }
 
 /* 미는 거리는 **한 칸 높이 × 인덱스**다.
@@ -1330,6 +1341,9 @@ textarea:focus-visible {
 .rolling-ai-track {
   display: flex;
   flex-direction: column;
+  /* 세로 플렉스의 기본값 `stretch`는 칸을 **가장 넓은 칸 폭**으로 늘린다. 그러면
+     칸을 재도 전부 같은 값이 나와 창 폭을 따라가게 만들 수 없다. 내용 폭으로 둔다. */
+  align-items: flex-start;
   transform: translateY(calc(var(--rolling-i, 0) * -1 * var(--rolling-line)));
   transition: transform 0.62s var(--ease-enter);
 }
