@@ -23,7 +23,6 @@ import {
   sceneSection,
 } from "@/lib/landing-copy";
 
-import { HeroLineArt } from "@/components/brand";
 import {
   buildLandingFaqJsonLd,
   buildOrganizationJsonLd,
@@ -120,15 +119,6 @@ export default function Home() {
           시각물은 아래 미리보기 섹션으로 분리했다. 히어로에 목업을 붙이면 두 개를
           동시에 읽어야 하고, 정작 팔아야 하는 한 줄이 묻힌다. */}
       <section id="top" className="hero-section">
-        {/* 브랜드 라인 아트 — 병원 표면(`/site/[slug]`)과 같은 시각 언어다.
-            `brand.tsx`는 손으로 그린 인라인 SVG 세트인데, 랜딩은 지금까지 그중 하나도
-            쓰지 않아 남의 로고 두 개가 유일한 벡터였다. 게다가 `HeroLineArt`는
-            **어디에서도 import되지 않은 채** 있었다(DESIGN.md는 ClinicHero가 쓴다고
-            적어 두었지만 코드는 그렇지 않다). 만들어 두고 한 번도 걸지 않은 자산이다.
-
-            가운데 정렬 히어로라 배경으로 깔되, 글자 뒤는 마스크로 비운다 —
-            대비를 깎으면서까지 얻을 장식은 없다. `aria-hidden`은 컴포넌트가 갖고 있다. */}
-        <HeroLineArt className="hero-artwork" />
 
 
         {/* 아트는 섹션(화면 전체)에 깔리고 글은 이 래퍼가 잡는다.
@@ -318,38 +308,40 @@ export default function Home() {
       {/* ── ⑤-b 자주 받는 질문 ────────────────────────────────────
           반론을 피하지 않는다. 여기서 답하지 않으면 상담에서 같은 질문을 다시 받는다. */}
       <section id="faq" className="faq-section" aria-labelledby="faq-heading">
-        <div className="section-heading" data-reveal>
-          <p className="section-label">{faqSection.label}</p>
-          <h2 id="faq-heading">{faqSection.heading}</h2>
-        </div>
+        <div className="faq-inner">
+          <div className="section-heading" data-reveal>
+            <p className="section-label">{faqSection.label}</p>
+            <h2 id="faq-heading">{faqSection.heading}</h2>
+          </div>
 
-        {/* 앞의 넷만 펼쳐 두고 나머지는 한 줄 뒤로 접는다. 열한 개를 한꺼번에 세워 두면
-            읽지도 않을 목록이 화면 하나를 차지한다. 더 알고 싶은 사람만 열면 된다.
-            `<details>` 안에 `<details>`는 유효한 마크업이고, JS 없이도 동작한다. */}
-        <div className="faq-list">
-          {faqItems.slice(0, FAQ_OPEN_COUNT).map((item) => (
-            <details key={item.question} data-reveal>
-              <summary>{item.question}</summary>
-              <p>{item.answer}</p>
-            </details>
-          ))}
+          {/* 앞의 넷만 펼쳐 두고 나머지는 한 줄 뒤로 접는다. 열한 개를 한꺼번에 세워 두면
+              읽지도 않을 목록이 화면 하나를 차지한다. 더 알고 싶은 사람만 열면 된다.
+              `<details>` 안에 `<details>`는 유효한 마크업이고, JS 없이도 동작한다. */}
+          <div className="faq-list">
+            {faqItems.slice(0, FAQ_OPEN_COUNT).map((item) => (
+              <details key={item.question} data-reveal>
+                <summary>{item.question}</summary>
+                <p>{item.answer}</p>
+              </details>
+            ))}
 
-          {faqItems.length > FAQ_OPEN_COUNT && (
-            <details className="faq-more" data-reveal>
-              <summary>
-                {faqSection.moreLabel.replace(
-                  "{n}",
-                  String(faqItems.length - FAQ_OPEN_COUNT),
-                )}
-              </summary>
-              {faqItems.slice(FAQ_OPEN_COUNT).map((item) => (
-                <details key={item.question}>
-                  <summary>{item.question}</summary>
-                  <p>{item.answer}</p>
-                </details>
-              ))}
-            </details>
-          )}
+            {faqItems.length > FAQ_OPEN_COUNT && (
+              <details className="faq-more" data-reveal>
+                <summary>
+                  {faqSection.moreLabel.replace(
+                    "{n}",
+                    String(faqItems.length - FAQ_OPEN_COUNT),
+                  )}
+                </summary>
+                {faqItems.slice(FAQ_OPEN_COUNT).map((item) => (
+                  <details key={item.question}>
+                    <summary>{item.question}</summary>
+                    <p>{item.answer}</p>
+                  </details>
+                ))}
+              </details>
+            )}
+          </div>
         </div>
       </section>
 
