@@ -75,6 +75,8 @@ const ALL_COPY = [
   heroScarcity.note,
   previewSection.label,
   previewSection.heading,
+  previewSection.includesLabel,
+  ...previewSection.includes,
   ...faqItems.flatMap((f) => [f.question, f.answer]),
   ...measuredFigures.flatMap((f) => [f.value, f.label, f.meaning, f.source]),
   measurementSpec.premise,
@@ -553,6 +555,8 @@ test('operation steps describe operation, not tooling', () => {
 const HEADINGS = [
   sceneSection.heading,
   previewSection.heading,
+  previewSection.includesLabel,
+  ...previewSection.includes,
   marketSection.heading,
   painSection.heading,
   operationSection.heading,

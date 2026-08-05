@@ -53,12 +53,17 @@ const FAQ_OPEN_COUNT = 4;
  *
  *   ① 환자가 보는 화면은 이렇다 (장면)
  *   ② 그게 내 얘기다 (원장의 말 — 자기 인식)
- *   ③ 그 답변은 어디서 일어나는가 (점유율 · 비용 판단)
- *   ④ 그래서 언제 시작해야 하는가 (자리는 서너 곳 · 시점)
- *   ⑤ 그 자리를 만들려면 무엇이 필요한가 (운영 방식)
- *   ⑥ 그래서 무엇을 받는가 (리포트 미리보기)
+ *   ③ 그래서 무엇을 받는가 (리포트 실물 + 담기는 것)
+ *   ④ 그 답변은 어디서 일어나는가 (점유율 · 비용 판단)
+ *   ⑤ 그래서 언제 시작해야 하는가 (자리는 서너 곳 · 시점)
+ *   ⑥ 그 자리를 만들려면 무엇이 필요한가 (운영 방식)
  *   ⑦ 무엇은 못 하는가 (하지 않는 것 → FAQ → 요금제)
  *   ⑧ 그래서 지금 확인해보라 (무료 진단)
+ *
+ * **③은 원래 ⑥이었다**(운영 방식 뒤, 문서 한가운데 y≈4,000). "신청 직전에 보여준다"는
+ * 배치였는데, 외부 검토에서 "이름을 세어 숫자만 주는 것 같다"는 말이 나왔다 — 산출물이
+ * 절반을 지나야 나오니 그 전에 판단이 끝난 것이다. 받는 것을 통증 바로 뒤로 올리고,
+ * 신청 직전 신뢰 다지기는 ⑦(하지 않는 것 → FAQ)이 그대로 맡는다.
  *
  * ⑤를 ①②③ 앞에 두면 기능 소개가 되고, ⑦을 빼면 노출 대행과 구별되지 않는다.
  *
@@ -189,6 +194,42 @@ export default function Home() {
         </ul>
       </section>
 
+      {/* ── ④ 받으시는 것 — 운영 방식 바로 뒤 ─────────────────────────
+          앞 버전은 이 섹션이 FAQ 뒤(데스크톱 y≈4,450 · 모바일 y≈6,300)에 있었다.
+          "신청 직전에 보여준다"는 원칙이었지만, 그 원칙은 **독자가 거기까지 온다는
+          전제**에 기댄다 — 모바일 8,000px에 FAQ 열한 개가 보상 바로 앞을 막고 있었다.
+
+          FAQ는 반론 처리다. 반론은 갖고 싶은 마음이 생긴 다음에 나오지, 그 전에
+          나오지 않는다. 그래서 "무엇을 받는가"를 먼저 보여주고, 못 하는 것과 FAQ를
+          그 뒤에 두어 신청 직전의 신뢰 다지기로 쓴다. */}
+      <section id="preview" className="report-section" aria-labelledby="preview-heading">
+        {/* 섹션이 화면 전체를 덮는 면이 되고(틴트), 폭은 이 안쪽 래퍼가 잡는다.
+            앞 버전은 섹션 자신이 1440으로 묶여 있어 배경을 깔면 넓은 화면에서
+            띠가 1440에서 끊겼다 — 다른 틴트 섹션들은 풀블리드라 혼자만 달라 보인다. */}
+        <div className="report-inner">
+          <div className="section-heading" data-reveal>
+            <p className="section-label">{previewSection.label}</p>
+            <h2 id="preview-heading">{previewSection.heading}</h2>
+            {/* 계기판의 18회와 아래 리포트의 9회를 잇는 한 줄. 없으면 읽는 사람이
+                두 분모의 관계를 스스로 추론해야 한다. */}
+            <p className="section-note">{previewSection.note}</p>
+
+            {/* 카드는 한 진료과의 한 화면만 보여준다. 담기는 것 전체는 글로 적는다 —
+                "숫자만 준다"고 읽히던 지점이 정확히 여기 비어 있었다. */}
+            <p className="preview-includes-label">{previewSection.includesLabel}</p>
+            <ul className="preview-includes">
+              {previewSection.includes.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="preview-stage" data-reveal>
+            <AnswerExplorer examples={answerExamples} disclaimer={answerDemo.disclaimer} />
+          </div>
+        </div>
+      </section>
+
       <section id="numbers" className="market-section" aria-labelledby="market-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{marketSection.label}</p>
@@ -261,32 +302,6 @@ export default function Home() {
         </ol>
       </section>
 
-      {/* ── ④ 받으시는 것 — 운영 방식 바로 뒤 ─────────────────────────
-          앞 버전은 이 섹션이 FAQ 뒤(데스크톱 y≈4,450 · 모바일 y≈6,300)에 있었다.
-          "신청 직전에 보여준다"는 원칙이었지만, 그 원칙은 **독자가 거기까지 온다는
-          전제**에 기댄다 — 모바일 8,000px에 FAQ 열한 개가 보상 바로 앞을 막고 있었다.
-
-          FAQ는 반론 처리다. 반론은 갖고 싶은 마음이 생긴 다음에 나오지, 그 전에
-          나오지 않는다. 그래서 "무엇을 받는가"를 먼저 보여주고, 못 하는 것과 FAQ를
-          그 뒤에 두어 신청 직전의 신뢰 다지기로 쓴다. */}
-      <section id="preview" className="report-section" aria-labelledby="preview-heading">
-        {/* 섹션이 화면 전체를 덮는 면이 되고(틴트), 폭은 이 안쪽 래퍼가 잡는다.
-            앞 버전은 섹션 자신이 1440으로 묶여 있어 배경을 깔면 넓은 화면에서
-            띠가 1440에서 끊겼다 — 다른 틴트 섹션들은 풀블리드라 혼자만 달라 보인다. */}
-        <div className="report-inner">
-          <div className="section-heading" data-reveal>
-            <p className="section-label">{previewSection.label}</p>
-            <h2 id="preview-heading">{previewSection.heading}</h2>
-            {/* 계기판의 18회와 아래 리포트의 9회를 잇는 한 줄. 없으면 읽는 사람이
-                두 분모의 관계를 스스로 추론해야 한다. */}
-            <p className="section-note">{previewSection.note}</p>
-          </div>
-
-          <div className="preview-stage" data-reveal>
-            <AnswerExplorer examples={answerExamples} disclaimer={answerDemo.disclaimer} />
-          </div>
-        </div>
-      </section>
 
       {/* ── ⑤ 하지 않는 것 ───────────────────────────────────────── */}
       <section className="limits-section" aria-labelledby="limits-heading">

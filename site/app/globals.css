@@ -1061,6 +1061,45 @@ summary:focus-visible {
   margin-inline: auto;
 }
 
+/* 리포트가 담는 것 — 카드 옆(1120px 이상에서는 sticky 레일 안)에 선다.
+   카드는 한 진료과의 한 화면만 보여주므로, 전체 목록은 글이 맡는다. */
+.preview-includes-label {
+  margin: clamp(20px, 3vh, 28px) 0 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.preview-includes {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.preview-includes li {
+  position: relative;
+  padding-left: 16px;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+/* 표식은 문자가 아니라 도형이다 — 이 페이지는 유니코드 글리프를 아이콘으로 쓰지 않는다. */
+.preview-includes li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 .report-section .section-heading {
   max-width: var(--prose-max);
   margin-bottom: clamp(28px, 4vh, 44px);
