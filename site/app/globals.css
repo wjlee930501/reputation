@@ -863,10 +863,23 @@ summary:focus-visible {
   margin: 0;
 }
 
+/* **틀을 미리 잡아 두고 그 안에서 내용만 바꾼다.**
+   카드는 `.scene`이 29rem으로 고정하지만, 판 전체를 잡아 두지 않으면 오른쪽 단계
+   문장이 좁은 폭에서 한 줄 늘어날 때 판 높이가 따라 움직인다. 시퀀스가 계속 도는
+   블록에서 그 움직임은 "스크롤이 내용을 바꾸는" 느낌으로 읽힌다. 판을 카드 높이에
+   맞춰 두면 어느 단계에서도 바깥 치수가 같다. */
 .scene-seq-panel {
   display: grid;
   gap: clamp(28px, 5vw, 64px);
   align-items: center;
+  min-height: 29rem;
+}
+
+@media (max-width: 560px) {
+  /* 좁은 화면은 카드가 제 높이를 쓰므로(아래 `.scene` 해제와 짝) 판도 풀어 준다. */
+  .scene-seq-panel {
+    min-height: 0;
+  }
 }
 
 @media (min-width: 901px) {
@@ -1359,6 +1372,11 @@ summary:focus-visible {
   display: inline-flex;
   align-items: baseline;
   vertical-align: baseline;
+  /* 로고 양옆 숨쉴 틈. 앞뒤가 한글 조사("환자들은", "에 병원을")라 글자가 로고에
+     바로 붙어 답답하게 읽혔다 — 로고는 워드마크라 자간이 조밀해서 더 그렇다.
+     **창(`.rolling-ai-window`)이 아니라 바깥 래퍼에 준다.** 창 폭은 JS가 현재 칸을
+     재서 `--rolling-w`로 넣으므로, 창에 여백을 주면 그 계산과 어긋나 슬롯이 흔들린다. */
+  margin-inline: 0.22em;
 }
 
 .rolling-ai-window {
@@ -8869,6 +8887,13 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   font-variant-numeric: tabular-nums;
 }
 
+/* **이 페이지에서 파랑은 "우리가 잰 값"이다.** 계기판 오른쪽이 외부 조사로 바뀌면서
+   그 규칙이 깨질 뻔했다 — 남의 숫자가 우리 숫자와 같은 색이면 어느 쪽이 우리 근거인지
+   화면에서 구분되지 않는다. 색이 곧 출처의 구분이므로, 인용값은 잉크로 둔다. */
+.instrument-result > div[data-measured="false"] dt {
+  color: var(--ink);
+}
+
 .instrument-result dd {
   margin: 7px 0 0;
   font-size: 0.8125rem;
@@ -9082,97 +9107,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   }
 
   .funnel-legend { grid-template-columns: minmax(0, 1fr); gap: 6px; }
-}
-
-/* ── 히어로 개인화 픽커 ──────────────────────────────────────────────
-   **카드를 뺐다.** 앞 버전은 테두리·배경·안쪽 여백을 가진 545px짜리 상자였고,
-   가운데 정렬 히어로에서 그 상자가 바로 아래 CTA보다 시각적으로 무거웠다.
-   첫 화면이 "읽어라"와 "조작하라"를 동시에 요구하면 원장은 둘 중 하나를 버린다.
-
-   조작 가능성은 상자가 아니라 `select` 자신의 테두리가 이미 알린다. 상자를 지우고
-   위쪽 헤어라인 하나만 남기면 이 블록은 서브카피의 연장으로 읽히고, 강조는
-   질문 한 줄에만 남는다. 이 페이지가 구조를 표현하는 방식(헤어라인 + 여백)과도 같다. */
-.hero-picker {
-  width: 100%;
-  max-width: 34em;
-  margin: 22px auto 0;
-  padding: 18px 0 0;
-  border-top: 1px solid var(--line);
-  text-align: left;
-}
-
-.hero-picker-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 12px;
-}
-
-.hero-picker-label {
-  flex: 1 1 100%;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-}
-
-.hero-picker-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.hero-picker-field label {
-  font-size: 0.8125rem;
-  color: var(--muted);
-}
-
-/* 네이티브 select를 쓰되 기본 크롬을 지운다 — 모바일 피커는 그대로 살린다. */
-.hero-picker-field select {
-  appearance: none;
-  -webkit-appearance: none;
-  /* 40px이었다 — 첫 화면의 유일한 조작 요소가 손가락 최소 크기(44px)에 못 미쳤다. */
-  min-height: 44px;
-  padding: 0 30px 0 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-btn);
-  background-color: #ffffff;
-  /* 화살표는 인라인 SVG로 그린다 — 이모지·아이콘 패키지를 쓰지 않는다는 규칙. */
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23646b76' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 11px center;
-  font-size: 0.9375rem;
-  font-weight: 600;
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.hero-picker-field select:hover {
-  border-color: var(--accent);
-}
-
-/* 안쪽 구분선도 함께 뺐다 — 바깥 상자를 지운 뒤에도 남겨 두면 블록 하나에
-   경계선이 둘이 되어, 줄인 무게가 그대로 돌아온다. 여백만으로 나눈다. */
-.hero-picker-result {
-  margin-top: 14px;
-}
-
-/* 환자의 말. 이 페이지에서 인용부호를 크게 쓰는 유일한 자리다. */
-.hero-picker-question {
-  margin: 7px 0 0;
-  font-size: clamp(1.0625rem, 0.97rem + 0.42vw, 1.25rem);
-  font-weight: 700;
-  line-height: 1.45;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-  text-wrap: balance;
-}
-
-.hero-picker-consequence {
-  margin: 9px 0 0;
-  font-size: 0.9375rem;
-  line-height: 1.55;
-  color: var(--text);
 }
 
 /* ── 요금제 ──────────────────────────────────────────────────────────

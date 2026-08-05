@@ -45,7 +45,8 @@ export default function HeroInstrument() {
 
       <dl className="instrument-result">
         {measuredFigures.map((figure) => (
-          <div key={figure.value}>
+          // 색이 곧 출처의 구분이다 — 인용값(`measured: false`)은 파랑을 쓰지 않는다.
+          <div key={figure.value} data-measured={figure.measured ? "true" : "false"}>
             <dt>
               <span className="figure-value">{figure.value}</span>
             </dt>

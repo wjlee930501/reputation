@@ -38,7 +38,6 @@ import AnswerExplorer from "./_components/AnswerExplorer";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
 import HeroMotion from "./_components/HeroMotion";
-import HeroPicker from "./_components/HeroPicker";
 import MotionToggle from "./_components/MotionToggle";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
@@ -54,14 +53,20 @@ const FAQ_OPEN_COUNT = 4;
 /**
  * 랜딩의 논증 순서 — 이 순서 자체가 이 서비스의 주장이다.
  *
- *   ① 환자가 어디서 묻는가 (외부 조사)
- *   ② 그 답변에 자리가 몇 개인가 (자체 실측)
- *   ③ 그 자리를 만들려면 무엇이 필요한가 (운영 방식)
- *   ④ 그래서 무엇을 받는가 (리포트 미리보기)
- *   ⑤ 무엇은 못 하는가 (하지 않는 것 → FAQ)
- *   ⑥ 그래서 지금 확인해보라 (무료 진단)
+ *   ① 환자가 보는 화면은 이렇다 (장면)
+ *   ② 그게 내 얘기다 (원장의 말 — 자기 인식)
+ *   ③ 그 답변은 어디서 일어나는가 (점유율 · 비용 판단)
+ *   ④ 그래서 언제 시작해야 하는가 (자리는 서너 곳 · 시점)
+ *   ⑤ 그 자리를 만들려면 무엇이 필요한가 (운영 방식)
+ *   ⑥ 그래서 무엇을 받는가 (리포트 미리보기)
+ *   ⑦ 무엇은 못 하는가 (하지 않는 것 → FAQ → 요금제)
+ *   ⑧ 그래서 지금 확인해보라 (무료 진단)
  *
- * ③을 ①② 앞에 두면 기능 소개가 되고, ⑤를 빼면 노출 대행과 구별되지 않는다.
+ * ⑤를 ①②③ 앞에 두면 기능 소개가 되고, ⑦을 빼면 노출 대행과 구별되지 않는다.
+ *
+ * **②는 원래 ③ 뒤에 있었다.** 근거(점유율)를 먼저 깔고 통증을 나중에 꺼내는 순서였는데,
+ * 그러면 원장이 자기 문제로 인식하기 전에 남의 숫자부터 읽게 된다. 장면을 본 직후가
+ * "이거 우리 얘기네"가 가장 크게 울리는 자리이므로, 자기 인식을 근거 앞으로 올린다.
  *
  * ④는 원래 FAQ **뒤**에 있었다("신청 직전에 보여준다"). 그 원칙은 독자가 거기까지
  * 온다는 전제에 기대는데, 모바일 8,000px에서 리포트 카드가 y≈6,300이었고 그 앞을
@@ -151,13 +156,6 @@ export default function Home() {
               무엇을 파는지는 분명해야 한다. */}
           <p className="hero-subcopy">{landingHero.subcopy}</p>
 
-          {/* 추상을 "우리 병원"으로 바꾸는 자리. 이 페이지의 예시는 전부 ○○·수서역·
-              평균값이라 원장이 자기를 대입할 지점이 없었다. 진료과·지역을 고르면
-              환자가 실제로 던질 질문이 그 자리에서 만들어진다 — 지어낸 값은 없다. */}
-          {/* CTA를 따로 두지 않는다 — 바로 아래 히어로 버튼이 이 문장을 이어받는다.
-              같은 자리에 버튼이 둘이면 어느 쪽을 눌러야 하는지 묻게 된다. */}
-          <HeroPicker />
-
           <div className="hero-actions" aria-label="주요 행동">
             <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
               {landingHero.primaryCta}
@@ -187,25 +185,9 @@ export default function Home() {
         <SceneSequence example={answerExamples[0]} disclaimer={answerDemo.disclaimer} />
       </section>
 
-      <section id="numbers" className="market-section" aria-labelledby="market-heading">
-        <div className="section-heading" data-reveal>
-          <p className="section-label">{marketSection.label}</p>
-          <h2 id="market-heading">{marketSection.heading}</h2>
-        </div>
-
-        {/* 이 섹션은 이제 "왜 두 곳만 재는가"에만 답한다. 차트가 본문이다. */}
-        <div className="share-block" data-reveal>
-          <p className="share-nudge">{platformShareSection.nudge}</p>
-          <PlatformShareChart
-            shares={platformShares}
-            sourceNote={platformShareSection.sourceNote}
-          />
-        </div>
-      </section>
-
-      {/* ── ①-b 원장님이 하시는 말 ────────────────────────────────
+      {/* ── ② 원장님이 하시는 말 — 장면 바로 뒤 ────────────────────
           3인칭 선언문만으로는 읽는 사람이 자기 문제로 인식하지 않는다.
-          통증은 당사자의 문장으로 적는다. */}
+          통증은 당사자의 문장으로 적고, 장면을 본 직후에 둔다. */}
       <section className="pain-section" aria-labelledby="pain-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{painSection.label}</p>
@@ -220,6 +202,22 @@ export default function Home() {
             </li>
           ))}
         </ul>
+      </section>
+
+      <section id="numbers" className="market-section" aria-labelledby="market-heading">
+        <div className="section-heading" data-reveal>
+          <p className="section-label">{marketSection.label}</p>
+          <h2 id="market-heading">{marketSection.heading}</h2>
+        </div>
+
+        {/* 이 섹션은 이제 "왜 두 곳만 재는가"에만 답한다. 차트가 본문이다. */}
+        <div className="share-block" data-reveal>
+          <p className="share-nudge">{platformShareSection.nudge}</p>
+          <PlatformShareChart
+            shares={platformShares}
+            sourceNote={platformShareSection.sourceNote}
+          />
+        </div>
       </section>
 
       {/* ── ②-b 우리가 서 있는 자리 ───────────────────────────────

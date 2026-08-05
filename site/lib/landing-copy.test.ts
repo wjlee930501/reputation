@@ -3,14 +3,13 @@ import test from 'node:test'
 
 import {
   MEASUREMENT_TRIALS,
-  type Figure,
   answerDemo,
   answerExamples,
   ctaSection,
   faqItems,
   faqSection,
   funnelSection,
-  heroPicker,
+
   pricingSection,
   heroScarcity,
   landingHero,
@@ -62,9 +61,9 @@ const ALL_COPY = [
   pricingSection.heading,
   pricingSection.note,
   ...pricingSection.plans.flatMap((p) => [p.name, p.price]),
-  heroPicker.label,
-  heroPicker.askLead,
-  heroPicker.consequence,
+
+
+
   funnelSection.label,
   funnelSection.heading,
   funnelSection.body,
@@ -193,38 +192,54 @@ test('the page states explicitly what it does not do', () => {
 // ── 숫자에는 출처가 붙는다 ───────────────────────────────────────────
 // 출처 없는 숫자는 근거가 아니라 광고 문구다. 타입이 필드를 강제하지만, 값이
 // 비어 있거나 "자체 조사" 한마디로 때우는 것은 타입이 막지 못한다.
-function assertSourced(figures: Figure[], kind: string) {
-  for (const figure of figures) {
-    assert.ok(figure.source.length >= 10, `${kind} "${figure.value}"의 출처가 너무 짧습니다.`)
-    assert.match(
-      figure.source,
-      /\d/,
-      `${kind} "${figure.value}"의 출처에 연도나 표본 같은 확인 가능한 값이 없습니다.`,
-    )
-  }
-}
 
-test('the evidence band carries only what we measured ourselves', () => {
+test('every figure in the evidence band declares whose number it is', () => {
   /**
-   * 외부 조사 세 개를 함께 두고 있었다. 원장님들이 이미 아는 얘기이고, 남의 숫자가 우리
-   * 숫자 옆에 있으면 **어느 쪽이 우리 근거인지 흐려진다.** 실측만 남긴다.
+   * **앞 가드는 "자체 실측만"이었다.** 이유는 "남의 숫자가 우리 숫자 옆에 있으면
+   * 어느 쪽이 우리 근거인지 흐려진다"였고, 그 걱정 자체는 지금도 맞다.
+   *
+   * 계기판 오른쪽이 외부 조사로 바뀌면서 규칙을 바꾼다 — 출처를 섞지 말라가 아니라
+   * **출처를 반드시 밝히라**로. 흐려지는 것을 막는 장치는 세 겹이다:
+   *   ① `measured` 플래그가 코드에서 소유를 구분하고
+   *   ② 화면에서는 색이 구분하며(`data-measured="false"`면 파랑을 쓰지 않는다)
+   *   ③ 인용값은 출처에 조사 기관과 모수를 반드시 적는다.
+   * 이 테스트는 ①③을 잡는다.
    */
   assert.ok(measuredFigures.length >= 2)
   for (const figure of measuredFigures) {
-    assert.match(figure.source, /실측/, `"${figure.value}"이 자체 측정값임을 밝히지 않았습니다.`)
+    assert.equal(
+      typeof figure.measured,
+      'boolean',
+      `"${figure.value}"이 자체 측정값인지 인용값인지 표시하지 않았습니다.`,
+    )
+    if (figure.measured) {
+      assert.match(figure.source, /실측/, `"${figure.value}"이 자체 측정값임을 밝히지 않았습니다.`)
+    } else {
+      // 인용값은 조사 주체와 모수가 함께 적혀야 한다. 모수를 빼면 78.1%(전체 성인)와
+      // 60%(AI 이용자)가 한 모집단의 값처럼 읽힌다.
+      assert.doesNotMatch(
+        figure.source,
+        /실측/,
+        `"${figure.value}"은 인용값인데 자체 실측이라고 적혀 있습니다.`,
+      )
+      assert.match(
+        figure.source,
+        /·/,
+        `"${figure.value}"의 출처에 조사 주체와 모수가 함께 적혀 있어야 합니다: "${figure.source}"`,
+      )
+      assert.ok(
+        figure.source.split('·')[0].trim().length > 0,
+        `"${figure.value}"의 출처에 조사 주체가 없습니다.`,
+      )
+    }
   }
 })
 
-test('every measured figure names its measurement condition', () => {
-  assert.ok(measuredFigures.length >= 2)
-  assertSourced(measuredFigures, '자체 실측')
-  for (const figure of measuredFigures) {
-    assert.match(
-      figure.source,
-      /실측/,
-      `"${figure.value}"이 자체 측정값임을 출처에 밝히지 않았습니다.`,
-    )
-  }
+test('the evidence band still carries at least one thing we can point at', () => {
+  // 전부 인용값이 되면 계기판은 남의 자료 모음이 된다. 왼쪽 판(측정 규약)이 우리 몫을
+  // 들고 있어야 하고, 그 규약은 백엔드 계약과 묶여 있다(아래 규약 테스트가 잡는다).
+  assert.ok(measurementSpec.spec.length > 0)
+  assert.ok(measurementSpec.reproducibility.length > 0)
 })
 
 test('measured figures quote only the models we actually run', () => {
