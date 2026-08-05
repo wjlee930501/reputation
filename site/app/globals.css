@@ -445,8 +445,22 @@ summary:focus-visible {
    섹션마다 베끼는 대신 여기서 한 번만 선언한다. **블록이 아니라 글줄만 좁힌다** —
    래퍼는 `--shell-inner`로 둬야 auto margin 가운데 정렬이 기준선과 맞는다.
    래퍼 자체가 이미 640보다 좁은 사이드 헤딩(report 320 · faq 300)에는 무해하다. */
-.landing-shell .section-heading > :is(h2, p) {
+.landing-shell .section-heading > p {
   max-width: var(--prose-max);
+}
+
+/* **제목은 본문보다 넓게 잡는다.**
+   640(--prose-max)은 17px 본문의 읽는 폭이다. 같은 값을 44px 제목에 쓰면 스무 자짜리
+   한 문장도 두 줄로 접힌다 — "지금 우리 병원은 AI에 추천되고 있나요?"가 그랬고,
+   한 호흡짜리 질문이 두 호흡으로 끊겨 읽혔다. 글자 크기가 2.5배면 같은 글자 수를
+   담는 폭도 그만큼 필요하다.
+
+   1,200px까지 풀지 않는 이유는 그게 이 캡을 만든 이유이기 때문이다(제목 한 줄이
+   1,203px까지 흐르던 문제). 960은 44px 기준 약 스물두 자 — 한 호흡 문장은 한 줄에
+   들어가고, 그보다 긴 제목은 여전히 접힌다. */
+.landing-shell .section-heading > h2 {
+  max-width: 960px;
+  text-wrap: balance;
 }
 
 /* ── 히어로 브랜드 라인 아트 ─────────────────────────────────────────
@@ -492,49 +506,19 @@ summary:focus-visible {
   );
 }
 
-/* 움직이는 판 — `.hero-artwork`와 **같은 자리·같은 마스크**를 쓴다. 두 값이 갈라지면
-   재생이 시작되는 순간 그림이 튄다. 영상의 배경은 ffmpeg으로 순백(#ffffff)에 맞춰
-   두었으므로 흰 히어로 위에서 사각형 경계가 보이지 않는다. */
-.hero-artwork-video {
-  position: absolute;
-  z-index: -2;
-  top: 50%;
-  left: 50%;
-  width: min(1180px, 96%);
-  height: auto;
-  transform: translate(-50%, -50%);
-  opacity: 0.72;
-  pointer-events: none;
-  /* 가장자리만 부드럽게 지운다. 안쪽을 도려내지 않는 이유는 `.hero-section::after`의
-     흰 스크림이 글자 뒤를 이미 덮기 때문이다 — 두 번 지우면 아트가 남지 않는다. */
-  -webkit-mask-image: radial-gradient(
-    ellipse 58% 58% at 50% 46%,
-    #000 0%,
-    #000 62%,
-    transparent 96%
-  );
-  mask-image: radial-gradient(
-    ellipse 58% 58% at 50% 46%,
-    #000 0%,
-    #000 62%,
-    transparent 96%
-  );
-}
+/* 히어로 루프 영상(`HeroMotion` · `hero-lineart-loop.mp4`)은 여기 있었고 지웠다.
+   opacity 0.72 + 마스크 + 글자 뒤 흰 스크림이 겹쳐 **보이지도 안 보이지도 않는**
+   상태였다. 진하게 올리면 12~13px 보조 문구의 대비를 깎는데, 이 페이지에서 그
+   문구들이 근거를 지고 있어 그쪽으로는 갈 수 없다. 정적 라인아트가 브랜드 표식을
+   이미 하고 있으므로, 애매한 판 하나와 160KB를 함께 걷어낸다. */
 
 /* 재생이 실제로 시작된 뒤에만 정적 SVG를 숨긴다. 순서가 반대이면(먼저 숨기고 재생)
    실패했을 때 히어로에 아무것도 남지 않는다. */
-[data-hero-motion="on"] .hero-artwork {
-  visibility: hidden;
-}
 
 /* 좁은 화면에서는 걷어낸다. 390px에서 카피가 히어로 폭을 거의 다 쓰므로 마스크로
    비울 여백이 남지 않고, 남는 것은 글자 뒤 잡선뿐이다.
    영상은 컴포넌트가 아예 렌더하지 않으므로 160KB를 받지도 않는다. */
 @media (max-width: 720px) {
-  .hero-artwork,
-  .hero-artwork-video {
-    display: none;
-  }
 }
 
 /* ─── Hero ─── */
@@ -9021,92 +9005,125 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   border-top: 1px solid var(--line);
 }
 
-.funnel-chart { margin-top: clamp(28px, 4vh, 44px); }
+/* ── 답변 한 건의 자리 ────────────────────────────────────────────────
+   퍼널 5칸(`AI 답변에 언급 → … → 내원`)을 대체한다. 그 그림은 우리 위치를
+   설명했지만, 섹션 논조가 시점으로 바뀐 뒤에는 문장과 그림이 다른 말을 했다 —
+   문장은 자리가 유한하다 하고 그림은 단계가 이어진다고 했다.
 
-.funnel-stages {
+   지금 그림은 실측값을 그대로 그린다. 세 칸에는 이름이 있고 마지막 칸만 파랑이다 —
+   이 페이지에서 파랑은 "우리 몫"이고, 그 칸은 단정이 아니라 물음표다. */
+.slot-chart {
+  margin-top: clamp(28px, 4vh, 44px);
+}
+
+.slot-row {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
+  counter-reset: slot;
 }
 
-.funnel-stages li {
-  position: relative;
-  padding: 16px 14px;
+.slot-row li {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 20px 18px 22px;
   border: 1px solid var(--line);
   border-radius: var(--radius-card);
-  font-size: 0.9375rem;
-  line-height: 1.45;
-  letter-spacing: -0.01em;
-  color: var(--muted);
   background: #ffffff;
 }
 
-/* 우리 칸. 채우되 진하게 하지 않는다 — 이 칸은 퍼널의 끝이 아니라 시작이다. */
-.funnel-stages li[data-ours="yes"] {
-  border-color: var(--accent);
-  color: var(--accent-dark);
-  font-weight: 700;
+/* 우리 칸. 채우되 진하게 하지 않는다 — 단정이 아니라 질문이기 때문이다.
+   점선은 "아직 정해지지 않았다"를 선 하나로 말한다. */
+.slot-row li[data-ours="yes"] {
+  border: 1px dashed var(--accent);
   background: var(--accent-weak);
 }
 
-/* 칸 사이 진행 방향. 첫 칸 앞에는 붙지 않는다. */
-.funnel-stages li + li::before {
-  content: "";
-  position: absolute;
-  left: -8px;
-  top: 50%;
-  width: 6px;
-  height: 6px;
-  border-top: 1px solid var(--line-strong);
-  border-right: 1px solid var(--line-strong);
-  transform: translateY(-50%) rotate(45deg);
+.slot-index {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
-.funnel-legend {
-  display: grid;
-  grid-template-columns: 1fr 4fr;
-  gap: 10px;
-  margin-top: 12px;
+.slot-row li[data-ours="yes"] .slot-index {
+  color: var(--accent);
 }
 
-.funnel-legend p {
-  margin: 0;
-  padding-top: 9px;
-  font-size: 0.8125rem;
+.slot-name {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.slot-row li[data-ours="yes"] .slot-name {
+  color: var(--accent-dark);
+}
+
+.slot-caption {
+  margin: 14px 0 0;
+  font-size: 0.875rem;
   line-height: 1.5;
+  color: var(--muted);
+}
+
+.slot-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 24px;
+  margin-top: 18px;
+  padding-top: 14px;
   border-top: 1px solid var(--line);
 }
 
-.funnel-legend-ours {
-  color: var(--accent-dark);
-  border-top-color: var(--accent);
-  font-weight: 600;
+.slot-legend p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
-.funnel-legend-rest { color: var(--muted); }
+.slot-legend-ours {
+  font-weight: 600;
+  color: var(--accent);
+}
 
-.funnel-caveat {
-  margin: 18px 0 0;
+.slot-legend-rest {
+  color: var(--muted);
+}
+
+.slot-caveat {
+  margin: 14px 0 0;
   max-width: var(--prose-max);
   font-size: 0.9375rem;
-  line-height: 1.65;
+  line-height: 1.6;
   color: var(--text);
 }
 
 @media (max-width: 760px) {
-  /* 다섯 칸을 가로로 두면 글자가 부서진다. 세로로 세우고 화살표를 아래로 돌린다. */
-  .funnel-stages { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-
-  .funnel-stages li + li::before {
-    left: 50%;
-    top: -7px;
-    transform: translateX(-50%) rotate(135deg);
+  /* 네 칸을 한 줄에 두면 병원명이 글자마다 줄바꿈된다. 두 줄로 접는다. */
+  .slot-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .funnel-legend { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .slot-legend {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+
+/* 우리 칸. 채우되 진하게 하지 않는다 — 이 칸은 퍼널의 끝이 아니라 시작이다. */
+
+/* 칸 사이 진행 방향. 첫 칸 앞에는 붙지 않는다. */
+
+@media (max-width: 760px) {
+  /* 다섯 칸을 가로로 두면 글자가 부서진다. 세로로 세우고 화살표를 아래로 돌린다. */
 }
 
 /* ── 요금제 ──────────────────────────────────────────────────────────
