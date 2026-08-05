@@ -12,6 +12,7 @@ import {
   limitItems,
   limitsSection,
   marketSection,
+  measuredFigures,
   operationSection,
   operationSteps,
   painPoints,
@@ -194,6 +195,22 @@ export default function Home() {
           <p className="section-label">{marketSection.label}</p>
           <h2 id="market-heading">{marketSection.heading}</h2>
         </div>
+
+        {/* 히어로 계기판에서 내려온 외부 조사 둘. "왜 재야 하는가"가 이 섹션의
+            질문이므로 근거도 여기 선다 — 첫 화면은 "무엇을 받는가"가 맡는다.
+            색이 곧 출처의 구분이다: 인용값은 파랑을 쓰지 않는다. */}
+        <dl className="market-figures" data-reveal>
+          {measuredFigures.map((figure) => (
+            <div key={figure.value} data-measured={figure.measured ? "true" : "false"}>
+              <dt>{figure.value}</dt>
+              <dd>
+                {figure.label}
+                <span className="market-figure-meaning">{figure.meaning}</span>
+                <span className="market-figure-source">{figure.source}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
 
         {/* 이 섹션은 이제 "왜 두 곳만 재는가"에만 답한다. 차트가 본문이다. */}
         <div className="share-block" data-reveal>

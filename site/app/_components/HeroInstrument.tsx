@@ -1,13 +1,24 @@
-import { measuredFigures, measurementSpec } from "@/lib/landing-copy";
+import {
+  answerDemo,
+  answerExamples,
+  measurementSpec,
+  previewSection,
+} from "@/lib/landing-copy";
+
+import DiagnosisPreview from "./DiagnosisPreview";
 
 /**
  * 히어로 바로 아래 계기판.
  *
- * ## 왜 여기에 데이터가 있어야 하는가
+ * ## 왜 여기에 산출물이 있어야 하는가
  *
  * 접힘 위가 문장 두 줄과 버튼뿐이면 어느 카테고리 제품인지 보이지 않는다. 첫 화면에
- * **규약과 최근 측정치**가 있으면 같은 카피가 'AI 마케팅'이 아니라 '측정 도구'로
- * 읽힌다. 원장님이 회의적일수록 먼저 확인하는 것은 주장이 아니라 조건이다.
+ * **받는 것의 실물과 그것을 만든 규약**이 나란히 있으면 같은 카피가 'AI 마케팅'이
+ * 아니라 '측정 도구'로 읽힌다. 원장님이 회의적일수록 먼저 확인하는 것은 주장이 아니라
+ * 조건이고, 그다음이 "그래서 뭘 받는가"다.
+ *
+ * 외부 조사 수치(78.1% · 60%)는 여기 있었고 `#numbers`로 옮겼다 — "왜 재야 하는가"는
+ * 그 섹션의 질문이고, 이 자리는 "무엇을 받는가"가 맡는다.
  *
  * ## 파라미터 표에서 논증으로
  *
@@ -28,6 +39,19 @@ import { measuredFigures, measurementSpec } from "@/lib/landing-copy";
 export default function HeroInstrument() {
   return (
     <section className="instrument" aria-label="측정 방법과 최근 실측" data-reveal>
+      {/* **받는 것의 실물을 접힘 위에 둔다.**
+          앞 버전은 여기가 외부 조사 수치(78.1% · 60%) 둘이었다. 그 숫자들은 "왜 재야
+          하는가"에는 답했지만 "무엇을 받는가"에는 답하지 않았고, 첫 화면에 산출물이
+          없으니 히어로 한 줄이 혼자 설득해야 했다 — 외부 검토에서 "이름을 세어 숫자를
+          알려주는 것 같다"는 말이 나온 지점이다.
+
+          `#preview` 섹션과 같은 컴포넌트를 쓴다. 미리보기와 실물이 다르면 측정 규율을
+          파는 페이지에서 첫 번째로 깨지는 것이 그 규율이다. */}
+      <div className="instrument-report">
+        <p className="instrument-report-label">{previewSection.label}</p>
+        <DiagnosisPreview example={answerExamples[0]} disclaimer={answerDemo.disclaimer} />
+      </div>
+
       <div className="instrument-method">
         {/* 전제 — 이 문장이 없으면 아래 "9번씩"이 왜 필요한지 설명되지 않는다. */}
         <p className="instrument-premise">{measurementSpec.premise}</p>
@@ -42,22 +66,6 @@ export default function HeroInstrument() {
         <p className="instrument-repro">{measurementSpec.reproducibility}</p>
       </div>
 
-      <dl className="instrument-result">
-        {measuredFigures.map((figure) => (
-          // 색이 곧 출처의 구분이다 — 인용값(`measured: false`)은 파랑을 쓰지 않는다.
-          <div key={figure.value} data-measured={figure.measured ? "true" : "false"}>
-            <dt>
-              <span className="figure-value">{figure.value}</span>
-            </dt>
-            <dd>
-              {figure.label}
-              {/* 해석 기준 — 같은 숫자를 사람의 문장으로 다시 말한다. */}
-              <span className="instrument-meaning">{figure.meaning}</span>
-              <span className="instrument-source">{figure.source}</span>
-            </dd>
-          </div>
-        ))}
-      </dl>
     </section>
   );
 }
