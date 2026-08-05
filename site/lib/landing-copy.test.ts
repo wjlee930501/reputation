@@ -80,7 +80,6 @@ const ALL_COPY = [
   measurementSpec.premise,
   measurementSpec.headline,
   measurementSpec.spec,
-  measurementSpec.sample,
   measurementSpec.reproducibility,
   ...operationSteps.flatMap((s) => [s.label, s.title, s.body]),
   ...limitItems.flatMap((l) => [l.title, l.body]),
