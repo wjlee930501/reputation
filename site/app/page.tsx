@@ -37,7 +37,6 @@ import { JsonLd } from "./[slug]/_components/JsonLd";
 import AnswerExplorer from "./_components/AnswerExplorer";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
-import HeroMotion from "./_components/HeroMotion";
 import MotionToggle from "./_components/MotionToggle";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
@@ -131,10 +130,6 @@ export default function Home() {
             대비를 깎으면서까지 얻을 장식은 없다. `aria-hidden`은 컴포넌트가 갖고 있다. */}
         <HeroLineArt className="hero-artwork" />
 
-        {/* 같은 그림이 움직이는 판. 재생이 실제로 시작된 뒤에만 나타나고 그때 위 SVG를
-            숨긴다 — JS·코덱·네트워크 어디가 실패해도 화면은 지금 상태로 남는다.
-            감속 설정·정지 토글·720px 이하에서는 아예 받지 않는다. */}
-        <HeroMotion />
 
         {/* 아트는 섹션(화면 전체)에 깔리고 글은 이 래퍼가 잡는다.
             앞 버전은 섹션 자신이 860px이라 배경 아트도 860px에 갇혀, 키우면 잘리기만 했다. */}
@@ -232,23 +227,28 @@ export default function Home() {
           <p className="section-note">{funnelSection.body}</p>
         </div>
 
-        <div className="funnel-chart" data-reveal>
-          <ol className="funnel-stages">
-            {funnelSection.stages.map((stage) => (
-              <li key={stage.name} data-ours={stage.ours ? "yes" : "no"}>
-                <span>{stage.name}</span>
+        <div className="slot-chart" data-reveal>
+          {/* 실측값을 그대로 그린 그림 — 답변 한 건에 병원이 서너 곳 적힌다.
+              마지막 칸은 비어 있다고 쓰지 않고 물음표를 둔다. 자리가 남아 있다는 것은
+              우리가 재지 않은 사실이고, 물음표는 이 페이지가 내내 던진 질문이다. */}
+          <ol className="slot-row">
+            {funnelSection.slots.map((slot, index) => (
+              <li key={slot.name} data-ours={slot.ours ? "yes" : "no"}>
+                <span className="slot-index">{index + 1}</span>
+                <span className="slot-name">{slot.name}</span>
               </li>
             ))}
           </ol>
 
-          <div className="funnel-legend" aria-hidden="true">
-            <p className="funnel-legend-ours">{funnelSection.oursNote}</p>
-            <p className="funnel-legend-rest">{funnelSection.restNote}</p>
+          <p className="slot-caption">{funnelSection.slotsCaption}</p>
+
+          <div className="slot-legend">
+            <p className="slot-legend-ours">{funnelSection.oursNote}</p>
+            <p className="slot-legend-rest">{funnelSection.restNote}</p>
           </div>
 
-          {/* 그림이 성과 약속으로 읽히지 않게 잠그는 줄. 빼면 퍼널이 "내원까지
-              만들어 드립니다"로 읽히고, 그건 '하지 않는 것' 섹션과 정면으로 충돌한다. */}
-          <p className="funnel-caveat">{funnelSection.caveat}</p>
+          {/* 그림이 성과 약속으로 읽히지 않게 잠그는 줄. */}
+          <p className="slot-caveat">{funnelSection.caveat}</p>
         </div>
       </section>
 
