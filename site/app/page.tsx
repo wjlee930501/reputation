@@ -365,6 +365,9 @@ export default function Home() {
                 {plan.price}
                 <span>{plan.unit}</span>
               </p>
+              {/* 고를 근거. 편수가 아니라 우선순위로 나눈다 — 원장이 이미 알고 있는
+                  자기 상태가 곧 선택 기준이 된다. */}
+              <p className="pricing-note">{plan.note}</p>
             </li>
           ))}
         </ul>

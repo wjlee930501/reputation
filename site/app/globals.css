@@ -9143,13 +9143,26 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   border-top: 1px solid var(--line-strong);
 }
 
+/* 추천 문구가 붙으면서 칸 높이가 내용 따라 달라진다. 그리드 정렬로 세 칸의
+   이름·가격·문구가 같은 선에 서게 한다 — 값이 어긋나면 비교가 아니라 목록이 된다. */
 .pricing-plans li {
+  display: grid;
+  align-content: start;
   padding: 26px 24px 28px;
   border-bottom: 1px solid var(--line);
 }
 
 .pricing-plans li + li {
   border-left: 1px solid var(--line);
+}
+
+/* 고를 근거. 가격보다 작고 muted보다 진하게 — 읽히긴 해야 하지만 값을 이기면 안 된다. */
+.pricing-note {
+  margin: 14px 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--text);
+  text-wrap: pretty;
 }
 
 .pricing-name {
@@ -9190,16 +9203,24 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     border-left: 0;
   }
 
-  /* 이름과 금액 두 요소뿐이므로 한 줄에 좌우로 세운다. */
+  /* **세 요소가 됐다.** 앞 규칙은 이름·금액 둘뿐이라는 전제로 flex 한 줄이었고,
+     추천 문구가 붙으면 셋이 한 줄에 끼어 문구가 글자마다 접힌다.
+     이름·금액은 한 줄에 좌우로 세우고 문구만 아래로 내린다. */
   .pricing-plans li {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 18px 0;
+    gap: 0 16px;
+    padding: 20px 0 22px;
   }
 
   .pricing-price {
     margin: 0;
+  }
+
+  .pricing-note {
+    grid-column: 1 / -1;
+    margin-top: 8px;
+    font-size: 0.875rem;
   }
 }

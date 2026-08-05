@@ -60,7 +60,7 @@ const ALL_COPY = [
   pricingSection.label,
   pricingSection.heading,
   pricingSection.note,
-  ...pricingSection.plans.flatMap((p) => [p.name, p.price]),
+  ...pricingSection.plans.flatMap((p) => [p.name, p.price, p.note]),
 
 
 
