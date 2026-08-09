@@ -1,8 +1,10 @@
 """Admin operations 제어 평면 스키마 — 비용 가드, 후행 확인 대기 큐."""
+
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CostGuardCategoryUsage(BaseModel):
@@ -77,3 +79,142 @@ class AttentionQueueResponse(BaseModel):
     overdue_hours: int
     hospitals: list[AttentionHospital]
     reports: AttentionReports
+
+
+class OperationsQueue(StrEnum):
+    ONBOARDING = "ONBOARDING"
+    TODAY = "TODAY"
+    REPORTS = "REPORTS"
+    INCIDENTS = "INCIDENTS"
+
+
+class OperationsSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class OperationsOwner(OperationsSchema):
+    id: UUID
+    name: str
+    email: str
+
+
+class OperationsCustomer(OperationsSchema):
+    hospital_id: UUID | None
+    name: str
+    admin_path: str
+
+
+class OperationsAction(OperationsSchema):
+    kind: str
+    label: str
+    method: str
+    path: str
+    enabled: bool = True
+    reason_required: bool = False
+    requires_version: bool = False
+    requires_idempotency_key: bool = False
+
+
+class OperationsHistoryEntry(OperationsSchema):
+    event: str
+    at: datetime
+    actor: str | None = None
+
+
+class OperationsSlackState(OperationsSchema):
+    notification_id: UUID
+    notification_type: str
+    state: str
+    attempt_count: int
+    max_attempts: int
+    next_attempt_at: datetime | None
+    sent_at: datetime | None
+    safe_error_code: str | None
+    safe_error_message: str | None
+    version: int
+
+
+class OperationsRunSummary(OperationsSchema):
+    run_id: UUID
+    parent_run_id: UUID | None
+    operation_type: str
+    state: str
+    attempt_count: int
+    total_count: int
+    success_count: int
+    failure_count: int
+    skipped_count: int
+    safe_error_code: str | None
+    safe_error_message: str | None
+    requested_at: datetime
+    queued_at: datetime | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    version: int
+    retry: OperationsAction | None
+
+
+class OperationsQueueRow(OperationsSchema):
+    id: str
+    queue: OperationsQueue
+    customer: OperationsCustomer
+    status: str
+    severity: str
+    impact: str
+    owner: OperationsOwner | None
+    sla_due_at: datetime | None
+    sla_state: str
+    next_action: str
+    action: OperationsAction
+    retry: OperationsAction | None
+    safe_cause: str | None
+    history: list[OperationsHistoryEntry]
+    slack: OperationsSlackState | None
+    incident_id: UUID | None = None
+    operation_run_id: UUID | None = None
+    content_id: UUID | None = None
+    report_id: UUID | None = None
+    version: int | None = None
+    occurred_at: datetime
+
+
+class OperationsQueueSummary(OperationsSchema):
+    queue: OperationsQueue
+    total: int
+    overdue: int
+
+
+class OperationsQueueResponse(OperationsSchema):
+    queue: OperationsQueue
+    total: int
+    page: int
+    page_size: int
+    items: list[OperationsQueueRow]
+
+
+class OperationsOverviewResponse(OperationsSchema):
+    queues: list[OperationsQueueSummary]
+    items: list[OperationsQueueRow]
+
+
+class IncidentDetailResponse(OperationsSchema):
+    incident: OperationsQueueRow
+    run: OperationsRunSummary | None
+
+
+class VersionedReasonRequest(OperationsSchema):
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=200)
+
+
+class IncidentAssignRequest(VersionedReasonRequest):
+    owner_id: UUID | None
+    sla_due_at: datetime | None
+
+
+class OperationRetryRequest(OperationsSchema):
+    reason: str = Field(min_length=3, max_length=200)
+
+
+class NotificationRetryRequest(VersionedReasonRequest):
+    pass

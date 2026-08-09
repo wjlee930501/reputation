@@ -24,6 +24,7 @@ from app.api.admin import handoffs as admin_handoffs
 from app.api.admin import hospitals as admin_hospitals
 from app.api.admin import leads as admin_leads
 from app.api.admin import operations as admin_operations
+from app.api.admin import operations_center as admin_operations_center
 from app.api.admin import query_targets as admin_query_targets
 from app.api.admin import reports as admin_reports
 from app.api.admin import sov as admin_sov
@@ -178,6 +179,7 @@ app.include_router(admin_essence.router, prefix="/api/v1", dependencies=admin_de
 app.include_router(admin_exposure_actions.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_operations.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_operations.cost_guard_router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_operations_center.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_leads.router, prefix="/api/v1", dependencies=admin_deps)
 
 # Public 라우터: 인증 불필요 (의도적)

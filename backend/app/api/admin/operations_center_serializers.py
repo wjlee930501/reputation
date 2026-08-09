@@ -1,0 +1,189 @@
+"""Pure response projections for the operations-center API."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Final, Literal
+
+from app.models.admin_user import AdminUser
+from app.models.hospital import Hospital
+from app.models.operations import Incident, NotificationOutbox, OperationRun
+from app.schemas.operations import (
+    OperationsAction,
+    OperationsCustomer,
+    OperationsHistoryEntry,
+    OperationsOwner,
+    OperationsQueue,
+    OperationsQueueRow,
+    OperationsRunSummary,
+    OperationsSlackState,
+)
+
+__all__ = (
+    "history",
+    "next_onboarding_step",
+    "owner_projection",
+    "retry_action",
+    "run_summary",
+    "serialize_incident_row",
+    "slack_state",
+    "sla_state",
+)
+
+SlaState = Literal["NONE", "OVERDUE", "DUE"]
+_RETRYABLE_RUN_STATES: Final = frozenset({"PARTIAL", "FAILED", "CANCELLED"})
+_RETRYABLE_OPERATION_TYPES: Final = frozenset(
+    {
+        "TRIGGER_V0_REPORT",
+        "RUN_SOV",
+        "REBUILD_SITE",
+        "GENERATE_MONTHLY_REPORT",
+        "REGENERATE_CONTENT",
+        "REGENERATE_CONTENT_IMAGE",
+    }
+)
+
+
+def owner_projection(user: AdminUser | None) -> OperationsOwner | None:
+    """Project an optional assignee into the public operations contract."""
+    if user is None:
+        return None
+    return OperationsOwner(id=user.id, name=user.name, email=user.email)
+
+
+def sla_state(due_at: datetime | None, now: datetime) -> SlaState:
+    """Classify a due time relative to the request clock."""
+    if due_at is None:
+        return "NONE"
+    return "OVERDUE" if due_at < now else "DUE"
+
+
+def history(incident: Incident) -> list[OperationsHistoryEntry]:
+    """Serialize the operational incident timeline without fabricating events."""
+    values = [OperationsHistoryEntry(event="OPENED", at=incident.first_seen_at)]
+    if incident.last_seen_at != incident.first_seen_at:
+        values.append(OperationsHistoryEntry(event="OCCURRED", at=incident.last_seen_at))
+    if incident.recovered_at is not None:
+        values.append(OperationsHistoryEntry(event="RECOVERED", at=incident.recovered_at))
+    if incident.acknowledged_at is not None:
+        values.append(OperationsHistoryEntry(event="ACKNOWLEDGED", at=incident.acknowledged_at))
+    return values
+
+
+def slack_state(outbox: NotificationOutbox | None) -> OperationsSlackState | None:
+    """Project the latest Slack notification state when one is available."""
+    if outbox is None:
+        return None
+    return OperationsSlackState(
+        notification_id=outbox.id,
+        notification_type=outbox.notification_type,
+        state=outbox.state,
+        attempt_count=outbox.attempt_count,
+        max_attempts=outbox.max_attempts,
+        next_attempt_at=outbox.next_attempt_at,
+        sent_at=outbox.sent_at,
+        safe_error_code=outbox.safe_error_code,
+        safe_error_message=outbox.safe_error_message,
+        version=outbox.version,
+    )
+
+
+def retry_action(hospital_id: uuid.UUID, run: OperationRun | None) -> OperationsAction | None:
+    """Return the Admin BFF retry mutation descriptor only for supported failed runs."""
+    if (
+        run is None
+        or run.state not in _RETRYABLE_RUN_STATES
+        or run.operation_type not in _RETRYABLE_OPERATION_TYPES
+    ):
+        return None
+    return OperationsAction(
+        kind="RETRY_RUN",
+        label="작업 다시 시도",
+        method="POST",
+        path=f"/api/admin/operations/hospitals/{hospital_id}/runs/{run.id}/retry",
+        reason_required=True,
+        requires_idempotency_key=True,
+    )
+
+
+def run_summary(hospital_id: uuid.UUID, run: OperationRun | None) -> OperationsRunSummary | None:
+    """Project a durable operation run and its eligible retry affordance."""
+    if run is None:
+        return None
+    return OperationsRunSummary(
+        run_id=run.id,
+        parent_run_id=run.parent_run_id,
+        operation_type=run.operation_type,
+        state=run.state,
+        attempt_count=run.attempt_count,
+        total_count=run.total_count,
+        success_count=run.success_count,
+        failure_count=run.failure_count,
+        skipped_count=run.skipped_count,
+        safe_error_code=run.safe_error_code,
+        safe_error_message=run.safe_error_message,
+        requested_at=run.requested_at,
+        queued_at=run.queued_at,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        version=run.version,
+        retry=retry_action(hospital_id, run),
+    )
+
+
+def serialize_incident_row(
+    incident: Incident,
+    hospital: Hospital | None,
+    owner: AdminUser | None,
+    run: OperationRun | None,
+    outbox: NotificationOutbox | None,
+    now: datetime,
+) -> OperationsQueueRow:
+    """Build the operations queue projection for one incident and its related records."""
+    hospital_id = incident.hospital_id
+    customer_name = hospital.name if hospital is not None else "전체 시스템"
+    customer_path = f"/hospitals/{hospital_id}" if hospital_id else "/operations"
+    detail_path = (
+        f"/operations/hospitals/{hospital_id}/incidents/{incident.id}"
+        if hospital_id
+        else f"/operations/incidents/{incident.id}"
+    )
+    return OperationsQueueRow(
+        id=f"incident:{incident.id}",
+        queue=OperationsQueue.INCIDENTS,
+        customer=OperationsCustomer(
+            hospital_id=hospital_id, name=customer_name, admin_path=customer_path
+        ),
+        status=incident.state,
+        severity=incident.severity,
+        impact=incident.customer_impact,
+        owner=owner_projection(owner),
+        sla_due_at=incident.sla_due_at,
+        sla_state=sla_state(incident.sla_due_at, now),
+        next_action=incident.next_action,
+        action=OperationsAction(
+            kind="OPEN_INCIDENT", label="상세 확인", method="GET", path=detail_path
+        ),
+        retry=retry_action(hospital_id, run) if hospital_id else None,
+        safe_cause=incident.safe_error_message or incident.safe_error_code,
+        history=history(incident),
+        slack=slack_state(outbox),
+        incident_id=incident.id,
+        operation_run_id=incident.operation_run_id,
+        version=incident.version,
+        occurred_at=incident.last_seen_at,
+    )
+
+
+def next_onboarding_step(hospital: Hospital) -> str:
+    """Return the first incomplete gate in the hospital onboarding flow."""
+    if not hospital.profile_complete:
+        return "병원 프로파일을 완료해 주세요."
+    if not hospital.v0_report_done:
+        return "V0 진단 리포트를 확인해 주세요."
+    if not hospital.site_built:
+        return "콘텐츠 허브 노출 준비를 완료해 주세요."
+    if not hospital.schedule_set:
+        return "월간 콘텐츠 일정을 설정해 주세요."
+    return "공개 도메인을 확인하고 운영을 시작해 주세요."
