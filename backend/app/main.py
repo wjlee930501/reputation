@@ -20,6 +20,7 @@ from app.api.admin import domain_connect as admin_domain_connect
 from app.api.admin import domain_setup as admin_domain_setup
 from app.api.admin import essence as admin_essence
 from app.api.admin import exposure_actions as admin_exposure_actions
+from app.api.admin import handoffs as admin_handoffs
 from app.api.admin import hospitals as admin_hospitals
 from app.api.admin import leads as admin_leads
 from app.api.admin import operations as admin_operations
@@ -163,6 +164,7 @@ admin_deps = [
     Depends(capture_admin_actor),
 ]
 app.include_router(admin_hospitals.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_handoffs.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_auth.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_accounts.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_content.router, prefix="/api/v1", dependencies=admin_deps)

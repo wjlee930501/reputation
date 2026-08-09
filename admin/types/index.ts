@@ -2,6 +2,36 @@ import type { LeadDiagnosisSummary } from '@/lib/lead-diagnosis-status'
 
 export type { LeadDiagnosisSummary }
 
+export type PlanCode = 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
+export type HandoffState = 'CONTRACT_PENDING' | 'CONTRACTED' | 'HANDOFF_ACCEPTED'
+
+export interface Handoff {
+  id?: string | null
+  hospital_id?: string
+  state: HandoffState
+  sales_owner_id?: string | null
+  ae_owner_id?: string | null
+  sales_owner_name?: string | null
+  ae_owner_name?: string | null
+  contract_reference?: string | null
+  contract_effective_at?: string | null
+  plan?: PlanCode | null
+  sla_due_at?: string | null
+  accepted_by_id?: string | null
+  accepted_by_name?: string | null
+  accepted_at?: string | null
+  version: number
+  next_action?: string
+}
+
+export interface AdminAccountSummary {
+  id: string
+  email: string
+  name: string
+  role: 'OWNER' | 'OPERATOR'
+  is_active: boolean
+}
+
 export interface Hospital {
   id: string
   name: string

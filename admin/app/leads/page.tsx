@@ -162,13 +162,18 @@ export default function LeadsPage() {
 
   async function handleConfirmConvert() {
     if (!convertLead || converting) return
+    if (!linkHospitalId) {
+      router.push(getOnboardingHref(convertLead))
+      return
+    }
     setConverting(true)
     setConvertError(null)
     try {
       const result = await fetchAPI<ConvertResponse>(`/admin/leads/${convertLead.id}/convert`, {
         method: 'POST',
         body: JSON.stringify({
-          ...(linkHospitalId ? { hospital_id: linkHospitalId } : { plan: selectedPlan }),
+          hospital_id: linkHospitalId,
+          plan: selectedPlan,
           conversion_note: '상담 리드 목록에서 온보딩 시작',
         }),
       })
@@ -717,7 +722,7 @@ export default function LeadsPage() {
                   ? '전환 중...'
                   : linkHospitalId
                     ? '기존 병원에 연결하고 온보딩 이동'
-                    : '새 병원 생성하고 온보딩 이동'}
+                    : '담당자·계약·SLA 입력'}
               </button>
               <button
                 type="button"

@@ -21,6 +21,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin.accounts import require_active_account
 from app.api.admin.domain import (
     check_domain_dns,
     domain_dns_strategy_for_hospital,
@@ -28,7 +29,9 @@ from app.api.admin.domain import (
 )
 from app.core.config import settings
 from app.core.database import get_db
+from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
+from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
@@ -109,6 +112,8 @@ class HospitalCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     plan: Plan = Plan.PLAN_12
     onboarding_note: str | None = Field(default=None, max_length=2000)
+    sales_owner_id: uuid.UUID | None = None
+    ae_owner_id: uuid.UUID | None = None
 
 
 class HospitalProfileUpdate(BaseModel):
@@ -223,6 +228,20 @@ READINESS_CHECK_STATE_LABELS = {
     True: "완료",
     False: "필요",
 }
+
+
+def profile_completion_handoff_blocker(
+    _hospital: Hospital, handoff: HospitalHandoff | None
+) -> dict[str, object] | None:
+    if handoff is not None and handoff.state is HandoffState.HANDOFF_ACCEPTED:
+        return None
+    return {
+        "code": "HANDOFF_NOT_ACCEPTED",
+        "missing": ["handoff_accepted"],
+        "message": "고객 인수 승인이 완료된 뒤 프로파일을 완료할 수 있습니다.",
+    }
+
+
 PUBLIC_PROFILE_FIELDS = {
     "address",
     "phone",
@@ -270,8 +289,12 @@ RESERVED_SITE_SLUGS = frozenset(
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=HospitalDetail)
-async def create_hospital(body: HospitalCreate, db: AsyncSession = Depends(get_db)):
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_hospital(
+    body: HospitalCreate,
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
+):
     """신규 병원 등록 (계약 완료 후 AE가 첫 번째로 실행)"""
     slug = slugify(body.name, separator="-")
     # 공개 표면의 예약 경로와 겹치면 그 병원 페이지가 통째로 가려진다.
@@ -294,6 +317,24 @@ async def create_hospital(body: HospitalCreate, db: AsyncSession = Depends(get_d
     # check-then-insert 경합(같은 slug/도메인 동시 등록)은 500이 아니라 409로 변환한다.
     try:
         await db.flush()
+        actor_id = actor.id if isinstance(actor, AdminUser) else uuid.uuid4()
+        sales_owner_id = body.sales_owner_id or actor_id
+        ae_owner_id = body.ae_owner_id or actor_id
+        if isinstance(actor, AdminUser):
+            for owner_id in (sales_owner_id, ae_owner_id):
+                owner = await db.get(AdminUser, owner_id)
+                if owner is None or not owner.is_active:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"code": "ACTIVE_OWNER_REQUIRED", "owner_id": str(owner_id)},
+                    )
+        handoff = HospitalHandoff.pending(
+            hospital.id,
+            sales_owner_id=sales_owner_id,
+            ae_owner_id=ae_owner_id,
+            source=HandoffSource.DIRECT_CREATE,
+        )
+        db.add(handoff)
         await write_audit_log(
             db,
             action="create_hospital",
@@ -315,7 +356,17 @@ async def create_hospital(body: HospitalCreate, db: AsyncSession = Depends(get_d
             detail="이미 사용 중인 슬러그 또는 도메인입니다. 병원명을 확인해 주세요.",
         ) from exc
     await db.refresh(hospital)
-    return _serialize(hospital)
+    return {
+        **_serialize(hospital),
+        "handoff": {
+            "id": handoff.id,
+            "hospital_id": handoff.hospital_id,
+            "state": handoff.state,
+            "sales_owner_id": handoff.sales_owner_id,
+            "ae_owner_id": handoff.ae_owner_id,
+            "version": handoff.version,
+        },
+    }
 
 
 @router.get("", response_model=list[HospitalListItem])
@@ -429,6 +480,14 @@ async def update_profile(
                 status_code=400,
                 detail=f"프로파일 완료에 필요한 필드 누락: {', '.join(required_missing)}",
             )
+        if not was_complete:
+            handoff_result = await db.execute(
+                select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital_id)
+            )
+            handoff = handoff_result.scalar_one_or_none()
+            blocker = profile_completion_handoff_blocker(h, handoff)
+            if blocker is not None:
+                raise HTTPException(status_code=409, detail=blocker)
 
     if changed_fields:
         await write_audit_log(

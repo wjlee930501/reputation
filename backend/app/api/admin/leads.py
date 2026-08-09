@@ -9,7 +9,10 @@ from slugify import slugify
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin.accounts import require_active_account
 from app.core.database import get_db
+from app.models.admin_user import AdminUser
+from app.models.handoff import HandoffSource, HospitalHandoff
 from app.models.hospital import Hospital, Plan
 from app.models.lead import SalesLead
 from app.models.lead_diagnosis import (
@@ -30,6 +33,8 @@ class LeadConvertRequest(BaseModel):
     hospital_name: str | None = Field(default=None, max_length=200)
     plan: Plan = Plan.PLAN_12
     conversion_note: str | None = Field(default=None, max_length=2000)
+    sales_owner_id: uuid.UUID | None = None
+    ae_owner_id: uuid.UUID | None = None
 
 
 @router.get("")
@@ -118,6 +123,7 @@ async def convert_sales_lead(
     lead_id: uuid.UUID,
     body: LeadConvertRequest | None = None,
     db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
 ):
     lead = await db.get(SalesLead, lead_id)
     if lead is None:
@@ -144,6 +150,7 @@ async def convert_sales_lead(
 
     request_body = body or LeadConvertRequest()
     hospital = None
+    handoff = None
     if request_body.hospital_id:
         hospital = await db.get(Hospital, request_body.hospital_id)
         if hospital is None:
@@ -167,6 +174,30 @@ async def convert_sales_lead(
         )
         db.add(hospital)
         await db.flush()
+
+    existing_handoff = await db.execute(
+        select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital.id)
+    )
+    handoff = existing_handoff.scalar_one_or_none()
+    if handoff is None:
+        actor_id = actor.id if isinstance(actor, AdminUser) else uuid.uuid4()
+        sales_owner_id = request_body.sales_owner_id or actor_id
+        ae_owner_id = request_body.ae_owner_id or actor_id
+        if isinstance(actor, AdminUser):
+            for owner_id in (sales_owner_id, ae_owner_id):
+                owner = await db.get(AdminUser, owner_id)
+                if owner is None or not owner.is_active:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"code": "ACTIVE_OWNER_REQUIRED", "owner_id": str(owner_id)},
+                    )
+        handoff = HospitalHandoff.pending(
+            hospital.id,
+            sales_owner_id=sales_owner_id,
+            ae_owner_id=ae_owner_id,
+            source=HandoffSource.LEAD_CONVERSION,
+        )
+        db.add(handoff)
 
     lead.status = "CONVERTED"
     lead.converted_hospital_id = hospital.id
@@ -195,6 +226,14 @@ async def convert_sales_lead(
         "lead": _serialize_lead(lead),
         "hospital": _serialize_hospital(hospital),
         "onboarding_url": f"/hospitals/{hospital.id}/onboarding",
+        "handoff": {
+            "id": handoff.id,
+            "hospital_id": handoff.hospital_id,
+            "state": handoff.state,
+            "sales_owner_id": handoff.sales_owner_id,
+            "ae_owner_id": handoff.ae_owner_id,
+            "version": handoff.version,
+        },
     }
 
 

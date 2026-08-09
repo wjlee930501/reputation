@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
 import { readClinicNameFromLeadContext } from '@/lib/lead-onboarding'
+import { acceptancePayload, contractPayload } from '@/lib/handoff'
+import type { AdminAccountSummary, Handoff, PlanCode } from '@/types'
 
 interface LeadContext {
   id: string | null
@@ -18,6 +20,21 @@ export default function NewHospitalPage() {
   const [leadLoading, setLeadLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [accounts, setAccounts] = useState<AdminAccountSummary[]>([])
+  const [salesOwnerId, setSalesOwnerId] = useState('')
+  const [aeOwnerId, setAeOwnerId] = useState('')
+  const [contractReference, setContractReference] = useState('')
+  const [effectiveDate, setEffectiveDate] = useState('2026-08-10')
+  const [slaDueAt, setSlaDueAt] = useState('2026-08-11T18:00')
+
+  useEffect(() => {
+    fetchAPI<AdminAccountSummary[]>('/admin/accounts').then((rows) => {
+      const active = rows.filter((row) => row.is_active)
+      setAccounts(active)
+      setSalesOwnerId(active[0]?.id ?? '')
+      setAeOwnerId(active[0]?.id ?? '')
+    }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : '담당자 목록을 불러오지 못했습니다.'))
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -52,22 +69,44 @@ export default function NewHospitalPage() {
     setLoading(true)
     setError(null)
     try {
-      const hospital = leadContext?.id
-        ? await fetchAPI<{ hospital?: { id: string } | null }>(`/admin/leads/${leadContext.id}/convert`, {
+      let hospital: { id: string } | null | undefined
+      let handoff: Handoff | undefined
+      if (leadContext?.id) {
+        const created = await fetchAPI<{ hospital?: { id: string } | null; handoff?: Handoff }>(`/admin/leads/${leadContext.id}/convert`, {
             method: 'POST',
             body: JSON.stringify({
               hospital_name: name.trim(),
               plan,
+              sales_owner_id: salesOwnerId,
+              ae_owner_id: aeOwnerId,
               conversion_note: '상담 리드 수동 등록 화면에서 온보딩 시작',
             }),
-          }).then((result) => result?.hospital)
-        : await fetchAPI<{ id: string }>('/admin/hospitals', {
-            method: 'POST',
-            body: JSON.stringify({ name: name.trim(), plan }),
           })
+        hospital = created.hospital
+        handoff = created.handoff
+      } else {
+        const created = await fetchAPI<{ id: string; handoff: Handoff }>('/admin/hospitals', {
+            method: 'POST',
+            body: JSON.stringify({ name: name.trim(), plan, sales_owner_id: salesOwnerId, ae_owner_id: aeOwnerId }),
+          })
+        hospital = created
+        handoff = created.handoff
+      }
       if (!hospital?.id) {
         throw new Error('생성된 병원 정보를 확인할 수 없습니다.')
       }
+      if (!handoff?.id) throw new Error('고객 인수 기록을 확인할 수 없습니다.')
+      const contracted = await fetchAPI<Handoff>(`/admin/handoffs/${handoff.id}/contract`, {
+        method: 'POST',
+        body: JSON.stringify(contractPayload({
+          salesOwnerId, aeOwnerId, contractReference,
+          contractEffectiveAt: `${effectiveDate}T00:00:00+09:00`,
+          slaDueAt: `${slaDueAt}:00+09:00`, plan: plan as PlanCode,
+        }, handoff.version)),
+      })
+      await fetchAPI(`/admin/handoffs/${handoff.id}/accept`, {
+        method: 'POST', body: JSON.stringify(acceptancePayload(contracted.version)),
+      })
       router.push(`/hospitals/${hospital.id}/onboarding`)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '등록에 실패했습니다.')
@@ -100,6 +139,31 @@ export default function NewHospitalPage() {
           />
         </div>
 
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block text-sm font-medium text-slate-700">영업 담당자
+            <select required value={salesOwnerId} onChange={(e) => setSalesOwnerId(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm">
+              {accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.role}</option>)}
+            </select>
+          </label>
+          <label className="block text-sm font-medium text-slate-700">AE 담당자
+            <select required value={aeOwnerId} onChange={(e) => setAeOwnerId(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm">
+              {accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.role}</option>)}
+            </select>
+          </label>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-3">
+          <label className="block text-sm font-medium text-slate-700">계약 번호
+            <input required value={contractReference} onChange={(e) => setContractReference(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm" placeholder="CTR-20260810" />
+          </label>
+          <label className="block text-sm font-medium text-slate-700">계약 효력일
+            <input required type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+          </label>
+          <label className="block text-sm font-medium text-slate-700">인수 SLA
+            <input required type="datetime-local" value={slaDueAt} onChange={(e) => setSlaDueAt(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+          </label>
+        </div>
+
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
             월간 운영량 <span className="text-red-500">*</span>
@@ -130,10 +194,10 @@ export default function NewHospitalPage() {
 
         <button
           type="submit"
-          disabled={loading || leadLoading || !name.trim()}
+          disabled={loading || leadLoading || !name.trim() || !salesOwnerId || !aeOwnerId || !contractReference.trim()}
           className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {leadLoading ? '리드 정보 확인 중...' : loading ? '등록 중...' : '등록 후 온보딩 허브로 이동'}
+          {leadLoading ? '리드 정보 확인 중...' : loading ? '인수 승인 중...' : '등록하고 고객 인수 승인'}
         </button>
       </form>
     </div>
