@@ -11,7 +11,7 @@ from app.core.observability import configure_logging, sentry_before_send, set_re
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-08-10.1"
+REDBEAT_SCHEDULE_VERSION = "2026-08-10.2"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -67,6 +67,7 @@ celery_app = Celery(
         "app.workers.naver_sync",
         "app.workers.lead_diagnosis_tasks",
         "app.workers.notification_tasks",
+        "app.workers.milestone_event_tasks",
         "app.workers.operation_run_signals",
     ],
 )
@@ -129,6 +130,7 @@ celery_app.conf.update(
         "app.workers.lead_diagnosis_tasks.send_lead_report_email": {"queue": "leadgen"},
         "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": {"queue": "default"},
         "app.workers.notification_tasks.dispatch_notification_outbox": {"queue": "default"},
+        "app.workers.milestone_event_tasks.project_milestone_events": {"queue": "default"},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성
@@ -179,6 +181,11 @@ celery_app.conf.update(
         "dispatch-notification-outbox": {
             "task": "app.workers.notification_tasks.dispatch_notification_outbox",
             "schedule": crontab(minute="*"),
+        },
+        # 15분마다 — 완료된 구간의 현재 DB truth를 한 건의 운영 마일스톤 요약으로 투영.
+        "project-milestone-events": {
+            "task": "app.workers.milestone_event_tasks.project_milestone_events",
+            "schedule": crontab(minute="*/15"),
         },
         # 15분마다 — 런타임으로 추가된 모든 병원 자기 도메인의 실제 TLS/Host 응답 확인.
         "live-custom-domain-health": {
