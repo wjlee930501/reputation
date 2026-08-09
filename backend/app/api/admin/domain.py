@@ -16,7 +16,11 @@ from app.services.domain_certificate_manager import (
     DomainCertificateResult,
     ensure_domain_certificate,
 )
-from app.services.hospital_lifecycle import missing_live_prerequisite_labels
+from app.services.hospital_lifecycle import (
+    activation_gate_error,
+    evaluate_activation_gate,
+)
+from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Domain"])
 
@@ -45,15 +49,6 @@ class DomainDnsCheck:
     verification_method: str | None
 
 
-def missing_live_prerequisites(hospital: Hospital) -> list[str]:
-    """LIVE(site_live/ACTIVE) 전환 전 충족돼야 하는 단계 — operations verify-domain과 공유.
-
-    DNS만 맞으면 곧바로 라이브가 되어 V0/허브 빌드를 건너뛰는 우회 경로를 막는다.
-    스케줄과 최신 운영 기준은 STEP 6 operational gate라 여기서 검사하지 않는다.
-    """
-    return missing_live_prerequisite_labels(hospital)
-
-
 @router.post("/{hospital_id}/domain/verify", response_model=DomainVerifyResponse)
 async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     hospital = await _get_hospital_or_404(db, hospital_id)
@@ -71,11 +66,11 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     if dns_check.verified:
         # operations.py verify-domain / hospitals.py activate와 동일한 게이트 (P1-6).
-        missing = missing_live_prerequisites(hospital)
-        if missing:
+        gate = await evaluate_activation_gate(db, hospital)
+        if not gate["ready"]:
             raise HTTPException(
                 status_code=409,
-                detail=f"도메인 DNS는 확인됐지만 LIVE 전환 전 단계가 남아 있습니다: {', '.join(missing)}",
+                detail=activation_gate_error(gate),
             )
         certificate = await ensure_verified_domain_certificate(domain)
         serving_ready = certificate is None or certificate.ready
@@ -114,6 +109,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         previous_site_live = bool(hospital.site_live)
         hospital.site_live = True
         hospital.status = HospitalStatus.ACTIVE
+        await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
         # operations.py verify-domain 경로와 동일하게 LIVE 전환을 감사 로그에 남긴다.
         await write_audit_log(
             db,
@@ -135,6 +131,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
                 "previous_site_live": previous_site_live,
                 "new_status": HospitalStatus.ACTIVE.value,
                 "new_site_live": True,
+                "activation_gate": gate,
             },
         )
         await db.commit()

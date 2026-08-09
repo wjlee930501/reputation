@@ -8,7 +8,9 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from app.api.admin import hospitals as hospitals_api
+from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import HospitalStatus, Plan
+from app.models.monthly_control import HospitalServiceInterval
 
 
 # ── create_hospital ──────────────────────────────────────────────
@@ -69,13 +71,23 @@ async def test_create_hospital_converts_race_integrity_error_to_409():
 
 # ── pause / resume ───────────────────────────────────────────────
 class _LifecycleDB:
-    def __init__(self, hospital):
+    def __init__(self, hospital, *, handoff_state=HandoffState.HANDOFF_ACCEPTED, interval=None):
         self.hospital = hospital
+        self.handoff_state = handoff_state
+        self.interval = interval
         self.added = []
         self.committed = False
 
     async def get(self, model, object_id):
         return self.hospital if self.hospital.id == object_id else None
+
+    async def scalar(self, stmt):
+        entity = stmt.column_descriptions[0].get("entity")
+        if entity is HospitalHandoff:
+            return self.handoff_state
+        if entity is HospitalServiceInterval:
+            return self.interval
+        return None
 
     def add(self, item):
         self.added.append(item)
@@ -171,21 +183,20 @@ async def test_resume_to_active_when_gates_and_site_live_met():
     assert hospital.status == HospitalStatus.ACTIVE
     assert response["status"] == HospitalStatus.ACTIVE
     assert db.committed is True
-    assert [a.action for a in db.added] == ["resume_hospital"]
+    assert [a.action for a in db.added if hasattr(a, "action")] == ["resume_hospital"]
 
 
-async def test_resume_to_pending_domain_when_not_yet_live():
+async def test_resume_rejects_missing_schedule_without_mutation():
     hospital = _full_hospital(status=HospitalStatus.PAUSED, site_live=False, schedule_set=False)
     db = _LifecycleDB(hospital)
 
-    response = await hospitals_api.resume_hospital(hospital.id, db=db)
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.resume_hospital(hospital.id, db=db)
 
-    assert hospital.status == HospitalStatus.PENDING_DOMAIN
-    assert response["status"] == HospitalStatus.PENDING_DOMAIN
-    audit = db.added[0]
-    assert audit.action == "resume_hospital"
-    # Scheduling is STEP 6 operational readiness, not the STEP 5 public-live gate.
-    assert audit.detail["activation_missing"] == []
+    assert exc.value.status_code == 409
+    assert exc.value.detail["missing"] == ["schedule_set"]
+    assert hospital.status == HospitalStatus.PAUSED
+    assert db.added == []
 
 
 async def test_resume_rejected_when_not_paused():
@@ -197,3 +208,80 @@ async def test_resume_rejected_when_not_paused():
 
     assert exc.value.status_code == 409
     assert db.committed is False
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "overrides", "handoff_state"),
+    [
+        ("handoff_accepted", {}, HandoffState.CONTRACTED),
+        ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
+    ],
+)
+async def test_resume_blocks_each_authoritative_gate_without_interval(
+    missing_key, overrides, handoff_state
+):
+    hospital = _full_hospital(status=HospitalStatus.PAUSED, **overrides)
+    db = _LifecycleDB(hospital, handoff_state=handoff_state)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["missing"] == [missing_key]
+    assert hospital.status == HospitalStatus.PAUSED
+    assert not any(isinstance(item, HospitalServiceInterval) for item in db.added)
+
+
+async def test_resume_custom_domain_requires_current_dns(monkeypatch):
+    hospital = _full_hospital(
+        status=HospitalStatus.PAUSED,
+        aeo_domain="clinic.example.com",
+    )
+    db = _LifecycleDB(hospital)
+
+    async def _unverified_dns(domain, strategy):
+        return SimpleNamespace(verified=False)
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _unverified_dns)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "DOMAIN_NOT_READY"
+    assert hospital.status == HospitalStatus.PAUSED
+    assert db.added == []
+
+
+async def test_resume_custom_domain_requires_current_certificate(monkeypatch):
+    hospital = _full_hospital(
+        status=HospitalStatus.PAUSED,
+        aeo_domain="clinic.example.com",
+    )
+    db = _LifecycleDB(hospital)
+
+    async def _verified_dns(domain, strategy):
+        return SimpleNamespace(verified=True)
+
+    async def _pending_certificate(domain):
+        return SimpleNamespace(
+            ready=False,
+            phase="PROVISIONING",
+            message="HTTPS 인증서를 준비하고 있습니다.",
+        )
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _verified_dns)
+    monkeypatch.setattr(
+        hospitals_api, "ensure_verified_domain_certificate", _pending_certificate
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "CERTIFICATE_NOT_READY"
+    assert hospital.status == HospitalStatus.PAUSED
+    assert db.added == []

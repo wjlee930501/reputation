@@ -1,25 +1,44 @@
-"""Single-source lifecycle gates for hospital onboarding.
-
-The public site can go live after the profile, V0 report, and site preparation
-steps.  Content scheduling and the approved writing standard are operational
-gates, not domain/TLS gates; keeping the two separate preserves the documented
-eight-step onboarding order.
-"""
+"""Single-source lifecycle gates for hospital onboarding and resumption."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import Hospital
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ProfileRequirement:
     key: str
     label: str
     passed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationRequirement:
+    key: str
+    label: str
+    action: str
+    passed: bool
+
+
+class ActivationRequirementSnapshot(TypedDict):
+    key: str
+    label: str
+    action: str
+    passed: bool
+
+
+class ActivationGateSnapshot(TypedDict):
+    ready: bool
+    missing: list[str]
+    prerequisites: list[ActivationRequirementSnapshot]
 
 
 def _text(value: Any) -> bool:
@@ -108,24 +127,88 @@ def missing_profile_requirement_labels(hospital: Hospital) -> list[str]:
     ]
 
 
-def missing_live_prerequisite_keys(hospital: Hospital) -> list[str]:
-    """STEP 5 gate: scheduling intentionally belongs to STEP 6."""
+def activation_requirements(
+    hospital: Hospital, *, handoff_accepted: bool
+) -> list[ActivationRequirement]:
+    """Return ACTIVE prerequisites in the canonical operator order."""
 
     return [
-        key
-        for key, ready in (
-            ("profile_complete", hospital.profile_complete),
-            ("v0_report_done", hospital.v0_report_done),
-            ("site_built", hospital.site_built),
-        )
-        if not ready
+        ActivationRequirement(
+            "handoff_accepted", "고객 인계 승인", "계약·인계 정보를 승인하세요.", handoff_accepted
+        ),
+        ActivationRequirement(
+            "profile_complete", "프로파일 완료", "병원 프로파일의 필수 정보를 완료하세요.", hospital.profile_complete
+        ),
+        ActivationRequirement(
+            "v0_report_done", "V0 리포트", "V0 진단 리포트 생성을 완료하세요.", hospital.v0_report_done
+        ),
+        ActivationRequirement(
+            "site_built", "병원 정보 허브 빌드", "AI 노출 콘텐츠 허브 준비를 완료하세요.", hospital.site_built
+        ),
+        ActivationRequirement(
+            "schedule_set", "콘텐츠 스케줄", "요금제와 발행 요일을 저장하세요.", hospital.schedule_set
+        ),
     ]
 
 
-def missing_live_prerequisite_labels(hospital: Hospital) -> list[str]:
-    labels = {
-        "profile_complete": "프로파일 완료",
-        "v0_report_done": "V0 리포트",
-        "site_built": "병원 정보 허브 빌드",
+def missing_live_prerequisite_keys(
+    hospital: Hospital, *, handoff_accepted: bool | None = None
+) -> list[str]:
+    """Return missing ACTIVE prerequisites without treating essence as a gate."""
+
+    accepted = (
+        bool(getattr(hospital, "handoff_accepted", False))
+        if handoff_accepted is None
+        else handoff_accepted
+    )
+    return [
+        requirement.key
+        for requirement in activation_requirements(hospital, handoff_accepted=accepted)
+        if not requirement.passed
+    ]
+
+
+def activation_gate_snapshot(
+    hospital: Hospital, *, handoff_accepted: bool
+) -> ActivationGateSnapshot:
+    requirements = activation_requirements(hospital, handoff_accepted=handoff_accepted)
+    missing = [requirement.key for requirement in requirements if not requirement.passed]
+    return {
+        "ready": not missing,
+        "missing": missing,
+        "prerequisites": [
+            {
+                "key": requirement.key,
+                "label": requirement.label,
+                "action": requirement.action,
+                "passed": requirement.passed,
+            }
+            for requirement in requirements
+        ],
     }
-    return [labels[key] for key in missing_live_prerequisite_keys(hospital)]
+
+
+async def evaluate_activation_gate(
+    db: AsyncSession, hospital: Hospital
+) -> ActivationGateSnapshot:
+    """Evaluate the authoritative server gate from persisted handoff state."""
+
+    state = await db.scalar(
+        select(HospitalHandoff.state).where(HospitalHandoff.hospital_id == hospital.id)
+    )
+    return activation_gate_snapshot(
+        hospital, handoff_accepted=state is HandoffState.HANDOFF_ACCEPTED
+    )
+
+
+def activation_gate_error(
+    snapshot: ActivationGateSnapshot,
+) -> dict[str, str | list[str] | list[ActivationRequirementSnapshot]]:
+    """Return the stable machine-readable operator blocker payload."""
+
+    return {
+        "code": "ACTIVATION_PREREQUISITES_MISSING",
+        "message": "ACTIVE 전환 전 필수 단계를 완료해 주세요.",
+        "missing": snapshot["missing"],
+        "prerequisites": snapshot["prerequisites"],
+    }

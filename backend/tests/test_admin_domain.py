@@ -7,17 +7,28 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import domain as domain_api
+from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, HospitalStatus
+from app.models.monthly_control import HospitalServiceInterval
 
 
 class FakeDB:
-    def __init__(self, hospital):
+    def __init__(self, hospital, *, handoff_state=HandoffState.HANDOFF_ACCEPTED):
         self.hospital = hospital
+        self.handoff_state = handoff_state
         self.committed = False
         self.added = []
 
     async def get(self, model, object_id):
         return self.hospital if self.hospital.id == object_id else None
+
+    async def scalar(self, stmt):
+        entity = stmt.column_descriptions[0].get("entity")
+        if entity is HospitalHandoff:
+            return self.handoff_state
+        if entity is HospitalServiceInterval:
+            return None
+        return None
 
     def add(self, item):
         self.added.append(item)
@@ -72,7 +83,7 @@ async def test_verify_domain_activates_when_all_prerequisites_met(monkeypatch):
     assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
     # LIVE 전환은 감사 로그에 기록된다 (operations 경로와 정합).
-    assert db.added and db.added[0].action == "verify_domain"
+    assert any(getattr(item, "action", None) == "verify_domain" for item in db.added)
 
 
 @pytest.mark.parametrize(
@@ -93,7 +104,7 @@ async def test_verify_domain_blocks_live_without_profile_complete(
         await domain_api.verify_domain(hospital.id, db=db)
 
     assert exc_info.value.status_code == 409
-    assert expected_label in exc_info.value.detail
+    assert expected_label in [item["label"] for item in exc_info.value.detail["prerequisites"]]
     assert hospital.site_live is False
     assert hospital.status == HospitalStatus.PENDING_DOMAIN
     assert db.committed is False
@@ -118,7 +129,7 @@ async def test_verify_domain_blocks_live_without_prerequisites(
         await domain_api.verify_domain(hospital.id, db=db)
 
     assert exc_info.value.status_code == 409
-    assert expected_label in exc_info.value.detail
+    assert expected_label in [item["label"] for item in exc_info.value.detail["prerequisites"]]
     assert hospital.site_live is False
     assert hospital.status == HospitalStatus.PENDING_DOMAIN
     assert db.committed is False
@@ -253,3 +264,30 @@ async def test_verify_domain_requires_domain_set():
         await domain_api.verify_domain(hospital.id, db=db)
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "overrides", "handoff_state"),
+    [
+        ("handoff_accepted", {}, HandoffState.CONTRACTED),
+        ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
+    ],
+)
+async def test_verify_domain_blocks_each_authoritative_gate(
+    monkeypatch, missing_key, overrides, handoff_state
+):
+    hospital = _hospital(**overrides)
+    db = FakeDB(hospital, handoff_state=handoff_state)
+    _patch_dns(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await domain_api.verify_domain(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["missing"] == [missing_key]
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert hospital.site_live is False
+    assert not any(isinstance(item, HospitalServiceInterval) for item in db.added)

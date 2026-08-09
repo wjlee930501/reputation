@@ -20,7 +20,6 @@ from app.api.admin.domain import (
     check_domain_dns,
     domain_dns_strategy_for_hospital,
     ensure_verified_domain_certificate,
-    missing_live_prerequisites,
 )
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
@@ -42,6 +41,8 @@ from app.schemas.operations import (
 )
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
+from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
 from app.workers.tasks import (
     build_aeo_site,
     generate_content_image,
@@ -450,17 +451,20 @@ async def verify_domain_operation(
     )
     previous_site_live = bool(hospital.site_live)
     if dns_check.verified:
-        missing_prerequisites = missing_live_prerequisites(hospital)
-        if missing_prerequisites:
+        gate = await evaluate_activation_gate(db, hospital)
+        if not gate["ready"]:
             raise HTTPException(
                 status_code=409,
-                detail=f"도메인 DNS는 확인됐지만 LIVE 전환 전 단계가 남아 있습니다: {', '.join(missing_prerequisites)}",
+                detail=activation_gate_error(gate),
             )
         certificate = await ensure_verified_domain_certificate(hospital.aeo_domain)
         serving_ready = certificate is None or certificate.ready
         if serving_ready:
             hospital.site_live = True
             hospital.status = HospitalStatus.ACTIVE
+            await open_service_interval(
+                db, hospital.id, ServiceIntervalProvenance.ACTIVATION
+            )
 
     await write_audit_log(
         db,
@@ -486,6 +490,7 @@ async def verify_domain_operation(
             if hasattr(hospital.status, "value")
             else str(hospital.status),
             "new_site_live": bool(hospital.site_live),
+            "activation_gate": gate if dns_check.verified else None,
         },
     )
     await db.commit()

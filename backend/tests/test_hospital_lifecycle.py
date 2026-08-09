@@ -30,16 +30,17 @@ def _complete_hospital(**overrides):
         "profile_complete": True,
         "v0_report_done": True,
         "site_built": True,
+        "handoff_accepted": True,
         "schedule_set": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
 
 
-def test_complete_profile_and_step5_gate_do_not_require_schedule():
+def test_active_gate_requires_schedule_after_complete_profile():
     hospital = _complete_hospital(schedule_set=False)
     assert missing_profile_requirement_keys(hospital) == []
-    assert missing_live_prerequisite_keys(hospital) == []
+    assert missing_live_prerequisite_keys(hospital) == ["schedule_set"]
 
 
 @pytest.mark.parametrize(
@@ -51,10 +52,18 @@ def test_profile_rejects_invalid_coordinates(latitude, longitude):
     assert "geo" in missing_profile_requirement_keys(hospital)
 
 
-def test_step5_gate_requires_only_documented_steps():
-    hospital = _complete_hospital(profile_complete=False, v0_report_done=False, site_built=False)
+def test_active_gate_returns_canonical_order():
+    hospital = _complete_hospital(
+        handoff_accepted=False,
+        profile_complete=False,
+        v0_report_done=False,
+        site_built=False,
+        schedule_set=False,
+    )
     assert missing_live_prerequisite_keys(hospital) == [
+        "handoff_accepted",
         "profile_complete",
         "v0_report_done",
         "site_built",
+        "schedule_set",
     ]

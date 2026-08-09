@@ -13,7 +13,9 @@ from fastapi import HTTPException
 
 from app.api.admin import operations as operations_api
 from app.models.content import ContentStatus
+from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, HospitalStatus
+from app.models.monthly_control import HospitalServiceInterval
 from app.services import audit_log
 
 
@@ -28,10 +30,17 @@ class FakeTask:
 class FakeDB:
     """Records ordering between add()/commit() so we can assert audit→commit→queue."""
 
-    def __init__(self, hospital=None, content=None):
+    def __init__(
+        self,
+        hospital=None,
+        content=None,
+        *,
+        handoff_state=HandoffState.HANDOFF_ACCEPTED,
+    ):
         self.hospital = hospital
         self.content = content
         self.events = []  # ordered list of "add:<obj>" / "commit"
+        self.handoff_state = handoff_state
 
     async def get(self, model, object_id):
         name = getattr(model, "__name__", "")
@@ -39,6 +48,14 @@ class FakeDB:
             return self.hospital if self.hospital and self.hospital.id == object_id else None
         if name == "ContentItem":
             return self.content if self.content and self.content.id == object_id else None
+        return None
+
+    async def scalar(self, stmt):
+        entity = stmt.column_descriptions[0].get("entity")
+        if entity is HospitalHandoff:
+            return self.handoff_state
+        if entity is HospitalServiceInterval:
+            return None
         return None
 
     def add(self, item):
@@ -234,8 +251,9 @@ async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch)
     assert response["verified"] is True
     assert hospital.site_live is True
     assert hospital.status == HospitalStatus.ACTIVE
-    assert db.added[0].action == "verify_domain"
-    detail = db.added[0].detail
+    audit = next(item for item in db.added if hasattr(item, "action"))
+    assert audit.action == "verify_domain"
+    detail = audit.detail
     assert detail["verified"] is True
     assert detail["new_status"] == HospitalStatus.ACTIVE.value
     assert detail["previous_status"] == HospitalStatus.PENDING_DOMAIN.value
@@ -337,6 +355,44 @@ async def test_verify_domain_operation_accepts_apex_address_strategy(monkeypatch
     assert hospital.site_live is True
     assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "overrides", "handoff_state"),
+    [
+        ("handoff_accepted", {}, HandoffState.CONTRACTED),
+        ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
+    ],
+)
+async def test_operations_verify_blocks_each_authoritative_gate(
+    monkeypatch, missing_key, overrides, handoff_state
+):
+    hospital = _hospital(**overrides)
+    db = FakeDB(hospital=hospital, handoff_state=handoff_state)
+
+    async def _verified_dns(domain, strategy=DomainDnsStrategy.CNAME):
+        return SimpleNamespace(
+            verified=True,
+            cname_value="target.motionlabs.io",
+            address_values=[],
+            expected_cname="target.motionlabs.io",
+            expected_addresses=[],
+            verification_method="cname",
+        )
+
+    monkeypatch.setattr(operations_api, "check_domain_dns", _verified_dns)
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.verify_domain_operation(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["missing"] == [missing_key]
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert hospital.site_live is False
+    assert not any(isinstance(item, HospitalServiceInterval) for item in db.added)
 
 
 async def test_actor_uses_admin_actor_name_setting(monkeypatch):

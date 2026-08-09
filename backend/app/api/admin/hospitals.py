@@ -44,10 +44,16 @@ from app.services.essence_engine import (
 )
 from app.services.essence_readiness import get_essence_readiness
 from app.services.hospital_lifecycle import (
-    missing_live_prerequisite_keys,
+    activation_gate_error,
+    evaluate_activation_gate,
     missing_profile_requirement_keys,
 )
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.service_intervals import (
+    ServiceIntervalProvenance,
+    close_service_interval,
+    open_service_interval,
+)
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
@@ -570,18 +576,20 @@ async def autofill_hospital_profile(
 
 @router.patch("/{hospital_id}/activate")
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """STEP 5: 프로파일/V0/허브 준비 후 공개 상태로 전환.
-
-    콘텐츠 스케줄과 최신 운영 기준은 STEP 6의 operational gate이며 공개 도메인
-    활성화를 막지 않는다.
-    """
+    """Accepted onboarding through schedule, then domain, becomes ACTIVE."""
     h = await _get_or_404(db, hospital_id)
+    if h.status == HospitalStatus.ACTIVE:
+        return {
+            "detail": f"{h.name} activated",
+            "status": HospitalStatus.ACTIVE.value,
+            "site_live": bool(h.site_live),
+        }
 
-    missing = missing_live_prerequisite_keys(h)
-    if missing:
+    gate = await evaluate_activation_gate(db, h)
+    if not gate["ready"]:
         raise HTTPException(
-            status_code=400,
-            detail=f"활성화 사전 조건 미충족: {', '.join(missing)}",
+            status_code=409,
+            detail=activation_gate_error(gate),
         )
 
     # 하이브리드 도메인: 자기 도메인이 연결돼 있으면 그 DNS를 검증하고, 없으면
@@ -634,6 +642,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     ensure_site_revalidate_configured()
     h.status = HospitalStatus.ACTIVE
     h.site_live = True
+    await open_service_interval(db, hospital_id, ServiceIntervalProvenance.ACTIVATION)
     await write_audit_log(
         db,
         action="activate_hospital",
@@ -652,17 +661,17 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
             else "platform_subdomain",
             "certificate_phase": certificate.phase if certificate else "PLATFORM_MANAGED",
             "certificate_ready": True,
+            "activation_gate": gate,
         },
     )
     await db.commit()
     # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 활성화는 이미 성공했다.
     await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
-    return {"detail": f"{h.name} activated"}
-
-
-def _activation_missing(h: Hospital) -> list[str]:
-    """activate 게이트와 동일한 사전 조건 목록 — pause/resume가 재사용한다 (#11)."""
-    return missing_live_prerequisite_keys(h)
+    return {
+        "detail": f"{h.name} activated",
+        "status": HospitalStatus.ACTIVE.value,
+        "site_live": True,
+    }
 
 
 @router.post("/{hospital_id}/pause", response_model=HospitalDetail)
@@ -678,6 +687,7 @@ async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_
 
     previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
     h.status = HospitalStatus.PAUSED
+    await close_service_interval(db, hospital_id)
     await write_audit_log(
         db,
         action="pause_hospital",
@@ -699,19 +709,41 @@ async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_
 async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """일시 정지된 병원을 재개 (PAUSED 상태에서만 허용).
 
-    이전 활성 조건(activate 게이트 + site_live)이 여전히 충족되면 ACTIVE로, 아니면
-    PENDING_DOMAIN으로 복귀한다.
+    활성화 게이트와 사용자 도메인의 현재 DNS/인증서를 다시 확인한다.
     """
     h = await _get_or_404(db, hospital_id)
 
     if h.status != HospitalStatus.PAUSED:
         raise HTTPException(status_code=409, detail="재개는 PAUSED 상태에서만 가능합니다.")
 
-    missing = _activation_missing(h)
-    if not missing and h.site_live:
-        h.status = HospitalStatus.ACTIVE
-    else:
-        h.status = HospitalStatus.PENDING_DOMAIN
+    gate = await evaluate_activation_gate(db, h)
+    if not gate["ready"]:
+        raise HTTPException(status_code=409, detail=activation_gate_error(gate))
+
+    if h.aeo_domain:
+        dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
+        if not dns_check.verified:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DOMAIN_NOT_READY",
+                    "message": "재개 전 사용자 도메인의 DNS 설정을 확인해 주세요.",
+                },
+            )
+        certificate = await ensure_verified_domain_certificate(h.aeo_domain)
+        if certificate is not None and not certificate.ready:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CERTIFICATE_NOT_READY",
+                    "message": certificate.message,
+                    "certificate_phase": certificate.phase,
+                },
+            )
+
+    h.status = HospitalStatus.ACTIVE
+    h.site_live = True
+    await open_service_interval(db, hospital_id, ServiceIntervalProvenance.RESUME)
 
     await write_audit_log(
         db,
@@ -723,7 +755,7 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
         detail={
             "previous_status": HospitalStatus.PAUSED.value,
             "new_status": h.status.value,
-            "activation_missing": missing,
+            "activation_gate": gate,
             "site_live": bool(h.site_live),
         },
     )

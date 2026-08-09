@@ -11,6 +11,8 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.hospital import DomainDnsStrategy, DomainManagementMode, Hospital, HospitalStatus
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
+from app.services.service_intervals import close_service_interval
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
@@ -56,6 +58,9 @@ async def connect_domain(
     db: AsyncSession = Depends(get_db),
 ):
     h = await _get_or_404(db, hospital_id)
+    gate = await evaluate_activation_gate(db, h)
+    if not gate["ready"]:
+        raise HTTPException(status_code=409, detail=activation_gate_error(gate))
     domain = _normalize_and_validate_domain(body.domain)
     await _ensure_domain_not_taken(db, hospital_id, domain)
     previous_domain = h.aeo_domain
@@ -73,6 +78,7 @@ async def connect_domain(
         h.site_live = False
         if h.status == HospitalStatus.ACTIVE:
             h.status = HospitalStatus.PENDING_DOMAIN
+            await close_service_interval(db, hospital_id)
     if previous_site_live:
         ensure_site_revalidate_configured()
 
@@ -102,6 +108,7 @@ async def connect_domain(
             "domain_registrar": getattr(h, "domain_registrar", None),
             "domain_dns_provider": getattr(h, "domain_dns_provider", None),
             "domain_purchase_note": getattr(h, "domain_purchase_note", None),
+            "activation_gate": gate,
         },
     )
     await db.commit()

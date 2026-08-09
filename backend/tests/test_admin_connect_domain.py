@@ -10,7 +10,9 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app.api.admin import domain_connect as domain_connect_api
 from app.api.admin import hospitals as hospitals_api
+from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, HospitalStatus
+from app.models.monthly_control import HospitalServiceInterval
 
 
 class _Scalars:
@@ -32,12 +34,19 @@ class _Result:
 class FakeDB:
     """get → 대상 병원, execute → 중복 도메인 조회 결과."""
 
-    def __init__(self, hospital, duplicate_owner=None):
+    def __init__(
+        self,
+        hospital,
+        duplicate_owner=None,
+        *,
+        handoff_state=HandoffState.HANDOFF_ACCEPTED,
+    ):
         self._hospital = hospital
         self._duplicate_owner = duplicate_owner
         self.added = []
         self.committed = False
         self.statements = []
+        self.handoff_state = handoff_state
 
     async def get(self, model, object_id):
         return self._hospital if object_id == self._hospital.id else None
@@ -45,6 +54,14 @@ class FakeDB:
     async def execute(self, stmt):
         self.statements.append(stmt)
         return _Result(self._duplicate_owner)
+
+    async def scalar(self, stmt):
+        entity = stmt.column_descriptions[0].get("entity")
+        if entity is HospitalHandoff:
+            return self.handoff_state
+        if entity is HospitalServiceInterval:
+            return None
+        return None
 
     def add(self, obj):
         self.added.append(obj)
@@ -72,7 +89,7 @@ def _hospital(**overrides):
         google_maps_url=None,
         naver_place_url=None,
         site_live=False,
-        site_built=False,
+        site_built=True,
         aeo_domain=None,
         domain_dns_strategy=DomainDnsStrategy.CNAME,
         latitude=None,
@@ -91,9 +108,9 @@ def _hospital(**overrides):
         director_philosophy=None,
         director_credentials=None,
         treatments=[],
-        profile_complete=False,
-        v0_report_done=False,
-        schedule_set=False,
+        profile_complete=True,
+        v0_report_done=True,
+        schedule_set=True,
         created_at=None,
     )
     base.update(overrides)
@@ -329,13 +346,27 @@ async def test_activate_hospital_accepts_apex_address_strategy(monkeypatch):
 
     result = await hospitals_api.activate_hospital(hospital.id, db=db)
 
-    assert result == {"detail": "장편한외과의원 activated"}
+    assert result == {
+        "detail": "장편한외과의원 activated",
+        "status": "ACTIVE",
+        "site_live": True,
+    }
     assert hospital.site_live is True
     assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
-    detail = db.added[0].detail
+    detail = next(item.detail for item in db.added if hasattr(item, "detail"))
     assert detail["aeo_domain"] == "jangclinic.co.kr"
     assert detail["verification_method"] == "address"
+    assert detail["activation_gate"]["ready"] is True
+    assert [
+        item["key"] for item in detail["activation_gate"]["prerequisites"]
+    ] == [
+        "handoff_accepted",
+        "profile_complete",
+        "v0_report_done",
+        "site_built",
+        "schedule_set",
+    ]
 
 
 async def test_activate_hospital_cannot_bypass_pending_custom_domain_certificate(monkeypatch):
@@ -411,10 +442,89 @@ async def test_activate_hospital_subdomain_default_without_custom_domain(monkeyp
 
     result = await hospitals_api.activate_hospital(hospital.id, db=db)
 
-    assert result == {"detail": "장편한외과의원 activated"}
+    assert result == {
+        "detail": "장편한외과의원 activated",
+        "status": "ACTIVE",
+        "site_live": True,
+    }
     assert hospital.site_live is True
     assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
-    detail = db.added[0].detail
+    detail = next(item.detail for item in db.added if hasattr(item, "detail"))
     assert detail["aeo_domain"] is None
     assert detail["verification_method"] == "platform_subdomain"
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "overrides", "handoff_state"),
+    [
+        ("handoff_accepted", {}, HandoffState.CONTRACTED),
+        ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
+    ],
+)
+async def test_activate_blocks_each_authoritative_gate(
+    missing_key, overrides, handoff_state
+):
+    hospital = _hospital(status=HospitalStatus.PENDING_DOMAIN, aeo_domain=None, **overrides)
+    db = FakeDB(hospital, handoff_state=handoff_state)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.activate_hospital(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["missing"] == [missing_key]
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert hospital.site_live is False
+    assert not any(isinstance(item, HospitalServiceInterval) for item in db.added)
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "overrides", "handoff_state"),
+    [
+        ("handoff_accepted", {}, HandoffState.CONTRACTED),
+        ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
+        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
+    ],
+)
+async def test_connect_domain_blocks_each_authoritative_gate(
+    missing_key, overrides, handoff_state
+):
+    hospital = _hospital(**overrides)
+    db = FakeDB(hospital, handoff_state=handoff_state)
+
+    with pytest.raises(HTTPException) as exc:
+        await _connect(db, hospital, "clinic.example.com")
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["missing"] == [missing_key]
+    assert hospital.aeo_domain is None
+    assert db.committed is False
+
+
+async def test_preexisting_active_legacy_row_is_untouched_by_activation_replay():
+    hospital = _hospital(
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+        profile_complete=False,
+        v0_report_done=False,
+        site_built=False,
+        schedule_set=False,
+    )
+    db = FakeDB(hospital, handoff_state=HandoffState.CONTRACTED)
+
+    response = await hospitals_api.activate_hospital(hospital.id, db=db)
+
+    assert response == {
+        "detail": "장편한외과의원 activated",
+        "status": "ACTIVE",
+        "site_live": True,
+    }
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert hospital.site_live is True
+    assert db.added == []
+    assert db.committed is False
