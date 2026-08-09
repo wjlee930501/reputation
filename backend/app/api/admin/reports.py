@@ -7,7 +7,9 @@ POST /admin/hospitals/{hospital_id}/reports/{report_id}/mark-sent — 원장 전
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import quote
 
@@ -16,12 +18,27 @@ from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin.accounts import require_active_account, require_owner_account
 from app.core.config import settings
 from app.core.database import get_db
+from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
+from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
+from app.models.monthly_control import (
+    MonthlyDeliveryEvent,
+    MonthlyMeasurementManifest,
+    MonthlyReportArtifact,
+    ReportArtifactState,
+    ReportDeliveryEventType,
+)
 from app.models.report import MonthlyReport
-from app.schemas.report import ReportResponse
-from app.services.audit_log import default_actor, write_audit_log
+from app.schemas.report import (
+    ReportDeliveryCorrectionRequest,
+    ReportDeliveryRequest,
+    ReportDeliveryRescindRequest,
+    ReportResponse,
+)
+from app.services.audit_log import write_audit_log
 from app.services.essence_readiness import EssenceReadiness, get_essence_readiness
 from app.services.gcs_utils import get_signed_url
 
@@ -49,8 +66,15 @@ def _report_type_label(report_type: str | None) -> str | None:
     return REPORT_TYPE_DISPLAY_LABELS.get(report_type) or report_type
 
 
-def _screening_status(r: MonthlyReport) -> str:
-    if r.sent_at:
+@dataclass(frozen=True, slots=True)
+class DeliveryGate:
+    ready: bool
+    code: str | None
+    message: str | None
+
+
+def _screening_status(r: MonthlyReport, *, delivered: bool | None = None) -> str:
+    if delivered if delivered is not None else bool(r.sent_at):
         return "DELIVERED"
     if not r.pdf_path:
         return "PDF_PENDING"
@@ -82,8 +106,8 @@ def _safe_local_report_path(pdf_path: str) -> Path | None:
     return candidate
 
 
-def _serialize_display(r: MonthlyReport) -> dict:
-    screening_status = _screening_status(r)
+def _serialize_display(r: MonthlyReport, *, delivered: bool | None = None) -> dict:
+    screening_status = _screening_status(r, delivered=delivered)
     pdf_status = _pdf_status(r)
     return {
         "report_type_label": _report_type_label(r.report_type),
@@ -138,6 +162,58 @@ def _report_delivery_blockers(r: MonthlyReport) -> list[str]:
     return blockers
 
 
+def _artifact_state(
+    report: MonthlyReport, artifact: MonthlyReportArtifact | None
+) -> ReportArtifactState:
+    if artifact is None:
+        return ReportArtifactState.MISSING
+    metadata = artifact.validation_metadata
+    page_count = metadata.get("page_count") if isinstance(metadata, dict) else None
+    glyph_count = metadata.get("glyph_count") if isinstance(metadata, dict) else None
+    valid = (
+        artifact.report_id == report.id
+        and artifact.audience == "DOCTOR"
+        and artifact.path == report.doctor_pdf_path
+        and artifact.validated is True
+        and len(artifact.sha256) == 64
+        and all(character in "0123456789abcdef" for character in artifact.sha256)
+        and isinstance(page_count, int)
+        and page_count > 0
+        and isinstance(glyph_count, int)
+        and glyph_count > 0
+    )
+    return ReportArtifactState.VALID if valid else ReportArtifactState.INVALID
+
+
+def _delivery_gate(
+    report: MonthlyReport,
+    manifest: MonthlyMeasurementManifest | None,
+    artifact: MonthlyReportArtifact | None,
+) -> DeliveryGate:
+    """Derive customer readiness only from server-owned persisted facts."""
+    if report.report_type == "MONTHLY":
+        counts_complete = (
+            report.planned_count > 0
+            and report.success_count == report.planned_count
+            and report.failed_count == 0
+        )
+        if report.quality != "COMPLETE" or not counts_complete or manifest is None:
+            return DeliveryGate(False, "coverage_incomplete", "월간 측정 커버리지가 완전하지 않습니다.")
+        if manifest.id != report.manifest_id or manifest.closed_at is None:
+            return DeliveryGate(False, "manifest_open", "월간 측정 manifest가 아직 닫히지 않았습니다.")
+
+    state = _artifact_state(report, artifact)
+    if state is ReportArtifactState.MISSING:
+        return DeliveryGate(False, "doctor_artifact_missing", "검증된 원장 보고용 PDF가 없습니다.")
+    if state is ReportArtifactState.INVALID:
+        return DeliveryGate(False, "doctor_artifact_invalid", "원장 보고용 PDF 검증 정보가 유효하지 않습니다.")
+
+    blockers = _report_delivery_blockers(report)
+    if blockers:
+        return DeliveryGate(False, "report_blocked", blockers[0])
+    return DeliveryGate(True, None, None)
+
+
 def _current_essence_delivery_blockers(
     r: MonthlyReport,
     readiness: EssenceReadiness,
@@ -175,7 +251,7 @@ async def list_reports(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db
         .order_by(MonthlyReport.created_at.desc())
     )
     reports = result.scalars().all()
-    return [_serialize(r) for r in reports]
+    return [await _serialize_report(db, r) for r in reports]
 
 
 @router.get("/{hospital_id}/reports/{report_id}", response_model=ReportResponse)
@@ -188,7 +264,7 @@ async def get_report(
     r = await db.get(MonthlyReport, report_id)
     if not r or r.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Report not found")
-    return _serialize(r, full=True)
+    return await _serialize_report(db, r, full=True)
 
 
 def _content_disposition(ascii_name: str, display_name: str) -> str:
@@ -221,6 +297,9 @@ async def download_report(
 
     is_doctor = audience == "doctor"
     pdf_path = r.doctor_pdf_path if is_doctor else r.pdf_path
+    if is_doctor:
+        artifact = await _get_doctor_artifact(db, r.id)
+        await _assert_customer_ready(db, r, await _get_manifest(db, r.manifest_id), artifact)
     if not pdf_path:
         raise HTTPException(
             status_code=404,
@@ -279,51 +358,129 @@ async def download_report(
 async def mark_report_sent(
     hospital_id: uuid.UUID,
     report_id: uuid.UUID,
+    body: ReportDeliveryRequest,
     db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
 ):
-    """원장 보고 완료 기록 (A4) — sent_at=now 설정, 멱등.
-
-    이미 전달 완료된 리포트에 다시 호출하면 기존 sent_at을 유지한 채 200을 반환한다.
-    """
+    """Append a delivery or re-delivery event bound to the validated doctor PDF."""
     await _get_hospital_or_404(db, hospital_id)
-
-    r = await db.get(MonthlyReport, report_id)
-    if not r or r.hospital_id != hospital_id:
-        raise HTTPException(status_code=404, detail="Report not found")
-
-    if r.sent_at is None:
-        blockers = _report_delivery_blockers(r)
-        if not blockers and r.report_type == "MONTHLY":
-            readiness = await get_essence_readiness(db, hospital_id)
-            blockers.extend(_current_essence_delivery_blockers(r, readiness))
-        if blockers:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "REPORT_NOT_READY",
-                    "message": "원장 전달 전 필수 검수를 완료해 주세요.",
-                    "blockers": blockers,
-                },
-            )
-        r.sent_at = datetime.now(timezone.utc)
-        await write_audit_log(
-            db,
-            action="mark_report_sent",
-            hospital_id=hospital_id,
-            actor=default_actor(),
-            target_type="monthly_report",
-            target_id=report_id,
-            detail={
-                "report_type": r.report_type,
-                "period_year": r.period_year,
-                "period_month": r.period_month,
-                "sent_at": r.sent_at.isoformat(),
-            },
+    report = await _get_locked_report_or_404(db, hospital_id, report_id)
+    await _assert_delivery_actor(db, report.hospital_id, actor)
+    manifest = await _get_manifest(db, report.manifest_id)
+    artifact = await _get_doctor_artifact(db, report.id)
+    await _assert_customer_ready(db, report, manifest, artifact)
+    if artifact is None or body.artifact_sha256 != artifact.sha256:
+        raise _delivery_conflict(
+            "artifact_mismatch", "다운로드한 원장 보고용 PDF와 현재 검증본이 일치하지 않습니다."
         )
-        await db.commit()
-        await db.refresh(r)
 
-    return _serialize(r, full=True)
+    events = await _get_delivery_events(db, report.id)
+    effective = _effective_delivery_event(events)
+    if effective is not None and effective.event_type != ReportDeliveryEventType.RESCINDED:
+        raise _delivery_conflict("already_delivered", "이미 유효한 전달 기록이 있습니다.")
+    event_type = (
+        ReportDeliveryEventType.REDELIVERED
+        if effective is not None and effective.event_type == ReportDeliveryEventType.RESCINDED
+        else ReportDeliveryEventType.DELIVERED
+    )
+    now = datetime.now(timezone.utc)
+    event = _new_delivery_event(
+        report=report,
+        artifact=artifact,
+        event_type=event_type,
+        actor=actor,
+        recipient=body.recipient_label,
+        channel=body.channel,
+        note=body.note,
+        reason=None,
+        now=now,
+    )
+    db.add(event)
+    if report.sent_at is None:
+        report.sent_at = now
+    await _audit_delivery(db, report, actor, event)
+    await db.commit()
+    await db.refresh(report)
+    return await _serialize_report(db, report, full=True)
+
+
+@router.post(
+    "/{hospital_id}/reports/{report_id}/correct-delivery", response_model=ReportResponse
+)
+async def correct_report_delivery(
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    body: ReportDeliveryCorrectionRequest,
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_owner_account),
+):
+    """Append an OWNER-authorized correction without rewriting delivery history."""
+    if actor.role != ROLE_OWNER:
+        raise HTTPException(status_code=403, detail={"code": "DELIVERY_OWNER_REQUIRED"})
+    await _get_hospital_or_404(db, hospital_id)
+    report = await _get_locked_report_or_404(db, hospital_id, report_id)
+    manifest = await _get_manifest(db, report.manifest_id)
+    artifact = await _get_doctor_artifact(db, report.id)
+    await _assert_customer_ready(db, report, manifest, artifact)
+    if artifact is None or body.artifact_sha256 != artifact.sha256:
+        raise _delivery_conflict("artifact_mismatch", "현재 검증된 원장 보고용 PDF가 아닙니다.")
+    effective = _effective_delivery_event(await _get_delivery_events(db, report.id))
+    if effective is None or effective.event_type == ReportDeliveryEventType.RESCINDED:
+        raise _delivery_conflict("delivery_not_effective", "수정할 유효 전달 기록이 없습니다.")
+    event = _new_delivery_event(
+        report=report,
+        artifact=artifact,
+        event_type=ReportDeliveryEventType.CORRECTED,
+        actor=actor,
+        recipient=body.recipient_label,
+        channel=body.channel,
+        note=body.note,
+        reason=body.reason,
+        now=datetime.now(timezone.utc),
+    )
+    db.add(event)
+    await _audit_delivery(db, report, actor, event)
+    await db.commit()
+    return await _serialize_report(db, report, full=True)
+
+
+@router.post(
+    "/{hospital_id}/reports/{report_id}/rescind-delivery", response_model=ReportResponse
+)
+async def rescind_report_delivery(
+    hospital_id: uuid.UUID,
+    report_id: uuid.UUID,
+    body: ReportDeliveryRescindRequest,
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_owner_account),
+):
+    """Append an OWNER-authorized rescission; sent_at remains compatibility history."""
+    if actor.role != ROLE_OWNER:
+        raise HTTPException(status_code=403, detail={"code": "DELIVERY_OWNER_REQUIRED"})
+    await _get_hospital_or_404(db, hospital_id)
+    report = await _get_locked_report_or_404(db, hospital_id, report_id)
+    effective = _effective_delivery_event(await _get_delivery_events(db, report.id))
+    if effective is None or effective.event_type == ReportDeliveryEventType.RESCINDED:
+        raise _delivery_conflict("delivery_not_effective", "철회할 유효 전달 기록이 없습니다.")
+    artifact = await db.get(MonthlyReportArtifact, effective.artifact_id)
+    if artifact is None:
+        raise _delivery_conflict("doctor_artifact_missing", "전달에 연결된 원장 PDF가 없습니다.")
+    metadata = effective.metadata_json if isinstance(effective.metadata_json, dict) else {}
+    event = _new_delivery_event(
+        report=report,
+        artifact=artifact,
+        event_type=ReportDeliveryEventType.RESCINDED,
+        actor=actor,
+        recipient=effective.recipient,
+        channel=str(metadata.get("channel") or ""),
+        note=None,
+        reason=body.reason,
+        now=datetime.now(timezone.utc),
+    )
+    db.add(event)
+    await _audit_delivery(db, report, actor, event)
+    await db.commit()
+    return await _serialize_report(db, report, full=True)
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
@@ -334,26 +491,224 @@ async def _get_hospital_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hosp
     return h
 
 
-def _serialize(r: MonthlyReport, full: bool = False) -> dict:
-    delivery_blockers = _report_delivery_blockers(r)
+async def _get_locked_report_or_404(
+    db: AsyncSession, hospital_id: uuid.UUID, report_id: uuid.UUID
+) -> MonthlyReport:
+    result = await db.execute(
+        select(MonthlyReport)
+        .where(MonthlyReport.id == report_id, MonthlyReport.hospital_id == hospital_id)
+        .with_for_update()
+    )
+    report = result.scalar_one_or_none()
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return report
+
+
+async def _get_manifest(
+    db: AsyncSession, manifest_id: uuid.UUID | None
+) -> MonthlyMeasurementManifest | None:
+    return await db.get(MonthlyMeasurementManifest, manifest_id) if manifest_id else None
+
+
+async def _get_doctor_artifact(
+    db: AsyncSession, report_id: uuid.UUID
+) -> MonthlyReportArtifact | None:
+    result = await db.execute(
+        select(MonthlyReportArtifact).where(
+            MonthlyReportArtifact.report_id == report_id,
+            MonthlyReportArtifact.audience == "DOCTOR",
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_delivery_events(
+    db: AsyncSession, report_id: uuid.UUID
+) -> list[MonthlyDeliveryEvent]:
+    result = await db.execute(
+        select(MonthlyDeliveryEvent)
+        .where(MonthlyDeliveryEvent.report_id == report_id)
+        .order_by(MonthlyDeliveryEvent.created_at, MonthlyDeliveryEvent.id)
+    )
+    return list(result.scalars().all())
+
+
+def _effective_delivery_event(
+    events: list[MonthlyDeliveryEvent],
+) -> MonthlyDeliveryEvent | None:
+    return events[-1] if events else None
+
+
+async def _assert_delivery_actor(
+    db: AsyncSession, hospital_id: uuid.UUID, actor: AdminUser
+) -> None:
+    if actor.role == ROLE_OWNER:
+        return
+    if actor.role != ROLE_OPERATOR:
+        raise HTTPException(status_code=403, detail={"code": "DELIVERY_ROLE_FORBIDDEN"})
+    result = await db.execute(
+        select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital_id)
+    )
+    handoff = result.scalar_one_or_none()
+    if handoff is None or handoff.ae_owner_id != actor.id:
+        raise HTTPException(status_code=403, detail={"code": "DELIVERY_NOT_ASSIGNED"})
+
+
+def _delivery_conflict(code: str, message: str, blockers: list[str] | None = None) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": code, "message": message, "blockers": blockers or [message]},
+    )
+
+
+async def _assert_customer_ready(
+    db: AsyncSession,
+    report: MonthlyReport,
+    manifest: MonthlyMeasurementManifest | None,
+    artifact: MonthlyReportArtifact | None,
+) -> None:
+    gate = _delivery_gate(report, manifest, artifact)
+    if not gate.ready:
+        raise _delivery_conflict(gate.code or "report_blocked", gate.message or "전달할 수 없습니다.")
+    if report.report_type == "MONTHLY":
+        readiness = await get_essence_readiness(db, report.hospital_id)
+        blockers = _current_essence_delivery_blockers(report, readiness)
+        if blockers:
+            raise _delivery_conflict("current_readiness_blocked", blockers[0], blockers)
+
+
+def _new_delivery_event(
+    *,
+    report: MonthlyReport,
+    artifact: MonthlyReportArtifact,
+    event_type: ReportDeliveryEventType,
+    actor: AdminUser,
+    recipient: str | None,
+    channel: str,
+    note: str | None,
+    reason: str | None,
+    now: datetime,
+) -> MonthlyDeliveryEvent:
+    return MonthlyDeliveryEvent(
+        report_id=report.id,
+        artifact_id=artifact.id,
+        event_type=event_type.value,
+        actor_id=actor.id,
+        recipient=recipient,
+        metadata_json={
+            "artifact_sha256": artifact.sha256,
+            "artifact_path_hash": sha256(artifact.path.encode("utf-8")).hexdigest(),
+            "channel": channel,
+            "operator": actor.email,
+            "note": note,
+            "reason": reason,
+        },
+        created_at=now,
+    )
+
+
+async def _audit_delivery(
+    db: AsyncSession,
+    report: MonthlyReport,
+    actor: AdminUser,
+    event: MonthlyDeliveryEvent,
+) -> None:
+    await write_audit_log(
+        db,
+        action=f"report_delivery_{event.event_type.lower()}",
+        hospital_id=report.hospital_id,
+        actor=actor.email,
+        target_type="monthly_report",
+        target_id=report.id,
+        detail={"event_type": event.event_type, "artifact_id": str(event.artifact_id)},
+    )
+
+
+def _serialize(
+    r: MonthlyReport,
+    full: bool = False,
+    *,
+    manifest: MonthlyMeasurementManifest | None = None,
+    artifact: MonthlyReportArtifact | None = None,
+    events: list[MonthlyDeliveryEvent] | None = None,
+    current_blockers: list[str] | None = None,
+) -> dict:
+    gate = _delivery_gate(r, manifest, artifact)
+    delivery_events = events or []
+    effective = _effective_delivery_event(delivery_events)
+    delivered = (
+        effective.event_type != ReportDeliveryEventType.RESCINDED
+        if effective is not None
+        else bool(r.sent_at)
+    )
+    delivery_blockers = [] if gate.ready else [gate.message or "전달할 수 없습니다."]
+    delivery_blockers.extend(current_blockers or [])
+    ready = gate.ready and not current_blockers
+    artifact_state = _artifact_state(r, artifact)
+
+    def serialize_event(event: MonthlyDeliveryEvent) -> dict:
+        metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
+        return {
+            "id": str(event.id),
+            "event_type": event.event_type,
+            "artifact_id": str(event.artifact_id) if event.artifact_id else None,
+            "artifact_sha256": metadata.get("artifact_sha256"),
+            "artifact_path_hash": metadata.get("artifact_path_hash"),
+            "recipient_label": event.recipient,
+            "channel": metadata.get("channel"),
+            "operator": metadata.get("operator"),
+            "note": metadata.get("note"),
+            "reason": metadata.get("reason"),
+            "created_at": event.created_at.isoformat() if event.created_at else None,
+        }
+
     d = {
         "id": str(r.id),
         "hospital_id": str(r.hospital_id),
         "period_year": r.period_year,
         "period_month": r.period_month,
         "report_type": r.report_type,
-        "display": _serialize_display(r),
+        "display": _serialize_display(r, delivered=delivered),
         "has_pdf": r.pdf_path is not None,
-        "has_doctor_pdf": r.doctor_pdf_path is not None,
+        "has_doctor_pdf": artifact_state is ReportArtifactState.VALID,
+        "doctor_artifact_state": artifact_state.value,
+        "doctor_artifact_sha256": artifact.sha256
+        if artifact_state is ReportArtifactState.VALID and artifact is not None
+        else None,
         "download_url": f"/api/admin/hospitals/{r.hospital_id}/reports/{r.id}/download"
         if r.pdf_path
         else None,
         "sov_summary": r.sov_summary if full else None,
         "content_summary": r.content_summary if full else None,
         "essence_summary": r.essence_summary if full else None,
-        "delivery_ready": not delivery_blockers,
+        "delivery_ready": ready,
+        "customer_ready": ready,
         "delivery_blockers": delivery_blockers,
+        "effective_delivery": serialize_event(effective) if effective is not None else None,
+        "delivery_history": [serialize_event(event) for event in delivery_events] if full else [],
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "sent_at": r.sent_at.isoformat() if r.sent_at else None,
     }
     return d
+
+
+async def _serialize_report(
+    db: AsyncSession, report: MonthlyReport, *, full: bool = False
+) -> dict:
+    manifest = await _get_manifest(db, report.manifest_id)
+    artifact = await _get_doctor_artifact(db, report.id)
+    events = await _get_delivery_events(db, report.id)
+    gate = _delivery_gate(report, manifest, artifact)
+    current_blockers: list[str] = []
+    if gate.ready and report.report_type == "MONTHLY":
+        readiness = await get_essence_readiness(db, report.hospital_id)
+        current_blockers = _current_essence_delivery_blockers(report, readiness)
+    return _serialize(
+        report,
+        full,
+        manifest=manifest,
+        artifact=artifact,
+        events=events,
+        current_blockers=current_blockers,
+    )

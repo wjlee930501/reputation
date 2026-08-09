@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
@@ -19,6 +20,19 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.sov import SovRecord
+
+
+class ReportArtifactState(StrEnum):
+    MISSING = "MISSING"
+    INVALID = "INVALID"
+    VALID = "VALID"
+
+
+class ReportDeliveryEventType(StrEnum):
+    DELIVERED = "DELIVERED"
+    CORRECTED = "CORRECTED"
+    RESCINDED = "RESCINDED"
+    REDELIVERED = "REDELIVERED"
 
 
 class MonthlyMeasurementManifest(Base):

@@ -3,6 +3,37 @@ export interface ReportDeliveryContract {
   delivery_blockers?: string[]
 }
 
+export interface CustomerReportContract {
+  hospital_id: string
+  id: string
+  doctor_artifact_state?: 'MISSING' | 'INVALID' | 'VALID'
+  delivery_ready?: boolean
+  download_url?: string | null
+}
+
+export interface ReportDeliveryInput {
+  artifact_sha256: string
+  recipient_label: string
+  channel: string
+  note?: string
+}
+
+export interface EffectiveDeliveryContract {
+  sent_at?: string | null
+  effective_delivery?: { event_type?: string | null } | null
+}
+
+export function getCustomerReportDownload(report: CustomerReportContract): string | null {
+  if (report.doctor_artifact_state !== 'VALID' || report.delivery_ready !== true) return null
+  return `/api/admin/hospitals/${report.hospital_id}/reports/${report.id}/download?audience=doctor`
+}
+
+export function isEffectivelyDelivered(report: EffectiveDeliveryContract): boolean {
+  const eventType = report.effective_delivery?.event_type
+  if (eventType) return eventType !== 'RESCINDED'
+  return Boolean(report.sent_at)
+}
+
 export function readReportDeliveryState(report: ReportDeliveryContract): {
   ready: boolean
   blockers: string[]

@@ -6,7 +6,13 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import reports as reports_api
-from app.api.admin.reports import _serialize
+from app.api.admin.reports import _delivery_gate, _serialize
+from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER
+from app.schemas.report import (
+    ReportDeliveryCorrectionRequest,
+    ReportDeliveryRequest,
+    ReportDeliveryRescindRequest,
+)
 from app.services.essence_readiness import EssenceReadiness
 
 
@@ -37,9 +43,115 @@ def _report(**overrides):
         },
         created_at=datetime(2026, 5, 5, 12, 30, tzinfo=timezone.utc),
         sent_at=None,
+        quality="COMPLETE",
+        manifest_id=uuid.uuid4(),
+        customer_ready=False,
+        delivery_blockers=[],
+        planned_count=4,
+        success_count=4,
+        failed_count=0,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def _manifest(**overrides):
+    base = {
+        "id": uuid.uuid4(),
+        "closed_at": datetime(2026, 5, 31, 23, 59, tzinfo=timezone.utc),
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _doctor_artifact(**overrides):
+    base = {
+        "id": uuid.uuid4(),
+        "report_id": uuid.uuid4(),
+        "audience": "DOCTOR",
+        "path": "gs://reputation-reports/demo_doctor.pdf",
+        "sha256": "a" * 64,
+        "validated": True,
+        "validation_metadata": {"page_count": 1, "glyph_count": 840},
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize(
+    ("report_overrides", "manifest", "artifact", "expected_code"),
+    [
+        ({"quality": "DEGRADED"}, _manifest(), _doctor_artifact(), "coverage_incomplete"),
+        ({}, _manifest(closed_at=None), _doctor_artifact(), "manifest_open"),
+        ({}, _manifest(), None, "doctor_artifact_missing"),
+        ({}, _manifest(), _doctor_artifact(validated=False), "doctor_artifact_invalid"),
+        (
+            {},
+            _manifest(),
+            _doctor_artifact(validation_metadata={"page_count": 1}),
+            "doctor_artifact_invalid",
+        ),
+    ],
+)
+def test_monthly_customer_delivery_fails_closed(
+    report_overrides, manifest, artifact, expected_code
+):
+    report = _report(**report_overrides)
+    manifest.id = report.manifest_id
+    if artifact is not None:
+        artifact.report_id = report.id
+
+    gate = _delivery_gate(report, manifest, artifact)
+
+    assert gate.code == expected_code
+    assert gate.ready is False
+
+
+def test_monthly_customer_delivery_requires_matching_valid_doctor_artifact():
+    report = _report()
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+
+    gate = _delivery_gate(report, _manifest(id=report.manifest_id), artifact)
+
+    assert gate.ready is True
+    assert gate.code is None
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("coverage", "coverage_incomplete"),
+        ("open", "manifest_open"),
+        ("missing", "doctor_artifact_missing"),
+        ("invalid", "doctor_artifact_invalid"),
+    ],
+)
+async def test_mark_sent_returns_distinct_readiness_conflicts(mutation, expected_code):
+    hospital, report, actor, db = _ready_db()
+    if mutation == "coverage":
+        report.quality = "DEGRADED"
+    elif mutation == "open":
+        db.manifest.closed_at = None
+    elif mutation == "missing":
+        db.artifact = None
+    elif mutation == "invalid":
+        db.artifact.validated = False
+
+    with pytest.raises(HTTPException) as exc:
+        await reports_api.mark_report_sent(
+            hospital.id,
+            report.id,
+            ReportDeliveryRequest(
+                artifact_sha256="a" * 64, recipient_label="김원장", channel="대면"
+            ),
+            db=db,
+            actor=actor,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == expected_code
+    assert report.sent_at is None
+    assert db.events == []
 
 
 def test_report_list_hides_internal_summaries_but_keeps_pdf_contract():
@@ -64,14 +176,32 @@ def test_report_list_hides_internal_summaries_but_keeps_pdf_contract():
     assert payload["sov_summary"] is None
     assert payload["content_summary"] is None
     assert payload["essence_summary"] is None
-    assert payload["delivery_ready"] is True
-    assert payload["delivery_blockers"] == []
+    assert payload["delivery_ready"] is False
+    assert payload["doctor_artifact_state"] == "MISSING"
+
+
+class _FakeResult:
+    def __init__(self, values):
+        self.values = values
+
+    def scalar_one_or_none(self):
+        return self.values[0] if self.values else None
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.values
 
 
 class _FakeDB:
-    def __init__(self, hospital, report):
+    def __init__(self, hospital, report, *, manifest=None, artifact=None, events=None, handoff=None):
         self.hospital = hospital
         self.report = report
+        self.manifest = manifest
+        self.artifact = artifact
+        self.events = list(events or [])
+        self.handoff = handoff
         self.added = []
         self.committed = False
 
@@ -81,10 +211,33 @@ class _FakeDB:
             return self.hospital if self.hospital.id == object_id else None
         if name == "MonthlyReport":
             return self.report if self.report and self.report.id == object_id else None
+        if name == "MonthlyMeasurementManifest":
+            return self.manifest if self.manifest and self.manifest.id == object_id else None
+        if name == "MonthlyReportArtifact":
+            return self.artifact if self.artifact and self.artifact.id == object_id else None
         return None
+
+    async def execute(self, statement):
+        entity = statement.column_descriptions[0].get("entity")
+        name = getattr(entity, "__name__", "")
+        if name == "MonthlyReport":
+            values = [self.report] if self.report and self.report.hospital_id == self.hospital.id else []
+        elif name == "MonthlyReportArtifact":
+            values = [self.artifact] if self.artifact else []
+        elif name == "MonthlyDeliveryEvent":
+            values = self.events
+        elif name == "HospitalHandoff":
+            values = [self.handoff] if self.handoff else []
+        else:
+            values = []
+        return _FakeResult(values)
 
     def add(self, item):
         self.added.append(item)
+        if item.__class__.__name__ == "MonthlyDeliveryEvent":
+            if getattr(item, "id", None) is None:
+                item.id = uuid.uuid4()
+            self.events.append(item)
 
     async def commit(self):
         self.committed = True
@@ -97,11 +250,24 @@ def _hospital():
     return SimpleNamespace(id=uuid.uuid4())
 
 
-async def test_mark_report_sent_sets_sent_at_and_audits(monkeypatch):
-    """A4 — sent_at 기록 + audit log + 상세 응답 반환."""
+def _actor(*, role=ROLE_OWNER):
+    return SimpleNamespace(id=uuid.uuid4(), email="owner@example.com", role=role, is_active=True)
+
+
+def _ready_db(*, role=ROLE_OWNER):
     hospital = _hospital()
-    report = _report(hospital_id=hospital.id, sent_at=None)
-    db = _FakeDB(hospital, report)
+    report = _report(hospital_id=hospital.id)
+    manifest = _manifest(id=report.manifest_id)
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    actor = _actor(role=role)
+    handoff = SimpleNamespace(hospital_id=hospital.id, ae_owner_id=actor.id)
+    return hospital, report, actor, _FakeDB(
+        hospital, report, manifest=manifest, artifact=artifact, handoff=handoff
+    )
+
+
+async def test_mark_report_sent_sets_sent_at_and_audits(monkeypatch):
+    hospital, report, actor, db = _ready_db()
 
     async def _fresh_essence(db, hospital_id):
         del db, hospital_id
@@ -116,21 +282,35 @@ async def test_mark_report_sent_sets_sent_at_and_audits(monkeypatch):
 
     monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh_essence)
 
-    payload = await reports_api.mark_report_sent(hospital.id, report.id, db=db)
+    payload = await reports_api.mark_report_sent(
+        hospital.id,
+        report.id,
+        ReportDeliveryRequest(
+            artifact_sha256=db.artifact.sha256,
+            recipient_label="김원장",
+            channel="대면",
+            note="2026-05 월간 보고",
+        ),
+        db=db,
+        actor=actor,
+    )
 
     assert report.sent_at is not None
     assert payload["sent_at"] == report.sent_at.isoformat()
     assert payload["display"]["screening_status"] == "DELIVERED"
     assert payload["sov_summary"] == {"sov_pct": 42.0}  # full serialization
     assert db.committed is True
-    assert len(db.added) == 1
-    assert db.added[0].action == "mark_report_sent"
+    event = next(item for item in db.added if item.__class__.__name__ == "MonthlyDeliveryEvent")
+    assert event.event_type == "DELIVERED"
+    assert event.artifact_id == db.artifact.id
+    assert event.recipient == "김원장"
+    assert event.metadata_json["artifact_sha256"] == db.artifact.sha256
+    assert len(event.metadata_json["artifact_path_hash"]) == 64
+    assert payload["effective_delivery"]["operator"] == actor.email
 
 
 async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(monkeypatch):
-    hospital = _hospital()
-    report = _report(hospital_id=hospital.id, sent_at=None)
-    db = _FakeDB(hospital, report)
+    hospital, report, actor, db = _ready_db()
 
     async def _stale_essence(db, hospital_id):
         del db, hospital_id
@@ -145,7 +325,15 @@ async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(mo
     monkeypatch.setattr(reports_api, "get_essence_readiness", _stale_essence)
 
     with pytest.raises(HTTPException) as exc:
-        await reports_api.mark_report_sent(hospital.id, report.id, db=db)
+        await reports_api.mark_report_sent(
+            hospital.id,
+            report.id,
+            ReportDeliveryRequest(
+                artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
+            ),
+            db=db,
+            actor=actor,
+        )
 
     assert exc.value.status_code == 409
     assert any("현재 병원 자료" in blocker for blocker in exc.value.detail["blockers"])
@@ -153,18 +341,144 @@ async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(mo
     assert report.sent_at is None
 
 
-async def test_mark_report_sent_is_idempotent():
-    hospital = _hospital()
-    original_sent_at = datetime(2026, 5, 31, 9, 0, tzinfo=timezone.utc)
-    report = _report(hospital_id=hospital.id, sent_at=original_sent_at)
-    db = _FakeDB(hospital, report)
+async def test_mark_report_sent_rejects_artifact_hash_mismatch(monkeypatch):
+    hospital, report, actor, db = _ready_db()
 
-    payload = await reports_api.mark_report_sent(hospital.id, report.id, db=db)
+    async def _fresh(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(philosophy, philosophy, 4, 4, "snapshot")
 
-    assert report.sent_at == original_sent_at  # 기존 기록 유지
-    assert payload["sent_at"] == original_sent_at.isoformat()
-    assert db.committed is False  # 변경 없음 → 커밋/감사 로그 없음
-    assert db.added == []
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh)
+    with pytest.raises(HTTPException) as exc:
+        await reports_api.mark_report_sent(
+            hospital.id,
+            report.id,
+            ReportDeliveryRequest(
+                artifact_sha256="b" * 64, recipient_label="김원장", channel="대면"
+            ),
+            db=db,
+            actor=actor,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "artifact_mismatch"
+    assert report.sent_at is None
+    assert db.events == []
+
+
+async def test_delivery_operator_must_be_assigned(monkeypatch):
+    hospital, report, actor, db = _ready_db(role=ROLE_OPERATOR)
+    db.handoff.ae_owner_id = uuid.uuid4()
+
+    with pytest.raises(HTTPException) as exc:
+        await reports_api.mark_report_sent(
+            hospital.id,
+            report.id,
+            ReportDeliveryRequest(
+                artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
+            ),
+            db=db,
+            actor=actor,
+        )
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "DELIVERY_NOT_ASSIGNED"
+    assert db.events == []
+
+
+async def test_correction_rescind_and_redelivery_are_append_only(monkeypatch):
+    hospital, report, owner, db = _ready_db()
+
+    async def _fresh(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(philosophy, philosophy, 4, 4, "snapshot")
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh)
+    delivered = await reports_api.mark_report_sent(
+        hospital.id,
+        report.id,
+        ReportDeliveryRequest(
+            artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
+        ),
+        db=db,
+        actor=owner,
+    )
+    first_sent_at = report.sent_at
+    corrected = await reports_api.correct_report_delivery(
+        hospital.id,
+        report.id,
+        ReportDeliveryCorrectionRequest(
+            artifact_sha256=db.artifact.sha256,
+            recipient_label="김 원장",
+            channel="대면",
+            note="성명 띄어쓰기 수정",
+            reason="수신자 표기 정정",
+        ),
+        db=db,
+        actor=owner,
+    )
+    rescinded = await reports_api.rescind_report_delivery(
+        hospital.id,
+        report.id,
+        ReportDeliveryRescindRequest(reason="잘못된 수신자에게 전달"),
+        db=db,
+        actor=owner,
+    )
+    redelivered = await reports_api.mark_report_sent(
+        hospital.id,
+        report.id,
+        ReportDeliveryRequest(
+            artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
+        ),
+        db=db,
+        actor=owner,
+    )
+
+    assert delivered["effective_delivery"]["event_type"] == "DELIVERED"
+    assert corrected["effective_delivery"]["event_type"] == "CORRECTED"
+    assert rescinded["effective_delivery"]["event_type"] == "RESCINDED"
+    assert rescinded["display"]["screening_status"] == "AWAITING_REVIEW"
+    assert redelivered["effective_delivery"]["event_type"] == "REDELIVERED"
+    assert [event.event_type for event in db.events] == [
+        "DELIVERED",
+        "CORRECTED",
+        "RESCINDED",
+        "REDELIVERED",
+    ]
+    assert report.sent_at == first_sent_at
+
+
+async def test_operator_cannot_correct_or_rescind_delivery():
+    hospital, report, _owner, db = _ready_db()
+    operator = _actor(role=ROLE_OPERATOR)
+
+    with pytest.raises(HTTPException) as correction:
+        await reports_api.correct_report_delivery(
+            hospital.id,
+            report.id,
+            ReportDeliveryCorrectionRequest(
+                artifact_sha256=db.artifact.sha256,
+                recipient_label="김원장",
+                channel="대면",
+                reason="정정",
+            ),
+            db=db,
+            actor=operator,
+        )
+    with pytest.raises(HTTPException) as rescind:
+        await reports_api.rescind_report_delivery(
+            hospital.id,
+            report.id,
+            ReportDeliveryRescindRequest(reason="철회"),
+            db=db,
+            actor=operator,
+        )
+
+    assert correction.value.status_code == 403
+    assert rescind.value.status_code == 403
+    assert db.events == []
 
 
 async def test_mark_report_sent_404_for_foreign_report():
@@ -173,7 +487,15 @@ async def test_mark_report_sent_404_for_foreign_report():
     db = _FakeDB(hospital, report)
 
     with pytest.raises(HTTPException) as exc:
-        await reports_api.mark_report_sent(hospital.id, report.id, db=db)
+        await reports_api.mark_report_sent(
+            hospital.id,
+            report.id,
+            ReportDeliveryRequest(
+                artifact_sha256="a" * 64, recipient_label="김원장", channel="대면"
+            ),
+            db=db,
+            actor=_actor(),
+        )
 
     assert exc.value.status_code == 404
 
@@ -226,12 +548,20 @@ def test_report_detail_serializes_essence_summary_for_pre_pdf_review():
     ],
 )
 async def test_mark_report_sent_blocks_incomplete_delivery(overrides, expected):
-    hospital = _hospital()
-    report = _report(hospital_id=hospital.id, sent_at=None, **overrides)
-    db = _FakeDB(hospital, report)
+    hospital, report, actor, db = _ready_db()
+    for key, value in overrides.items():
+        setattr(report, key, value)
 
     with pytest.raises(HTTPException) as exc:
-        await reports_api.mark_report_sent(hospital.id, report.id, db=db)
+        await reports_api.mark_report_sent(
+            hospital.id,
+            report.id,
+            ReportDeliveryRequest(
+                artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
+            ),
+            db=db,
+            actor=actor,
+        )
 
     assert exc.value.status_code == 409
     assert any(expected in blocker for blocker in exc.value.detail["blockers"])
@@ -242,14 +572,21 @@ async def test_mark_report_sent_blocks_incomplete_delivery(overrides, expected):
 async def test_download_report_uses_one_hour_signed_url(monkeypatch):
     hospital = _hospital()
     report = _report(hospital_id=hospital.id)
-    db = _FakeDB(hospital, report)
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    db = _FakeDB(hospital, report, manifest=_manifest(id=report.manifest_id), artifact=artifact)
     calls = []
+
+    async def _fresh(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(philosophy, philosophy, 4, 4, "snapshot")
 
     def fake_signed_url(path, expiration_hours=24, response_disposition=None):
         calls.append((path, expiration_hours, response_disposition))
         return "https://storage.example/report.pdf"
 
     monkeypatch.setattr(reports_api, "get_signed_url", fake_signed_url)
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh)
     response = await reports_api.download_report(hospital.id, report.id, db=db)
 
     assert calls == [
@@ -265,14 +602,26 @@ async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch)
     """원장용은 같은 데이터를 다른 편집으로 렌더한 별도 파일이다 — 경로도 파일명도 다르다."""
     hospital = _hospital()
     report = _report(hospital_id=hospital.id)
-    db = _FakeDB(hospital, report)
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    db = _FakeDB(
+        hospital,
+        report,
+        manifest=_manifest(id=report.manifest_id),
+        artifact=artifact,
+    )
     calls = []
+
+    async def _fresh_essence(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(philosophy, philosophy, 4, 4, "snapshot")
 
     def fake_signed_url(path, expiration_hours=24, response_disposition=None):
         calls.append((path, expiration_hours, response_disposition))
         return "https://storage.example/doctor.pdf"
 
     monkeypatch.setattr(reports_api, "get_signed_url", fake_signed_url)
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh_essence)
     response = await reports_api.download_report(
         hospital.id, report.id, audience="doctor", db=db
     )
@@ -290,16 +639,22 @@ async def test_download_report_explains_a_missing_doctor_edition(monkeypatch):
     """AE용은 있는데 원장용만 없을 수 있다 — 'PDF 경로 없음'은 그 상황을 설명하지 못한다."""
     hospital = _hospital()
     report = _report(hospital_id=hospital.id, doctor_pdf_path=None)
-    db = _FakeDB(hospital, report)
+    db = _FakeDB(hospital, report, manifest=_manifest(id=report.manifest_id))
 
     with pytest.raises(HTTPException) as exc:
         await reports_api.download_report(hospital.id, report.id, audience="doctor", db=db)
 
-    assert exc.value.status_code == 404
-    assert "원장" in exc.value.detail
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "doctor_artifact_missing"
 
 
 async def test_report_list_reports_whether_the_doctor_edition_exists():
-    for path, expected in ((None, False), ("gs://reputation-reports/x_doctor.pdf", True)):
-        payload = reports_api._serialize(_report(doctor_pdf_path=path))
-        assert payload["has_doctor_pdf"] is expected
+    report = _report()
+    missing = reports_api._serialize(report)
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    valid = reports_api._serialize(
+        report, manifest=_manifest(id=report.manifest_id), artifact=artifact
+    )
+
+    assert missing["has_doctor_pdf"] is False
+    assert valid["has_doctor_pdf"] is True

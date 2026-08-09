@@ -4,7 +4,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
 import { parseMonthValue, previousMonthValue } from '@/lib/report-period'
-import { readReportDeliveryState } from '@/lib/report-delivery'
+import {
+  getCustomerReportDownload,
+  isEffectivelyDelivered,
+  readReportDeliveryState,
+  type ReportDeliveryInput,
+} from '@/lib/report-delivery'
 
 interface Report {
   id: string
@@ -22,11 +27,16 @@ interface Report {
   has_pdf: boolean
   /** 원장에게 그대로 전달하는 1페이지 판본이 준비됐는지. */
   has_doctor_pdf?: boolean
+  doctor_artifact_state?: 'MISSING' | 'INVALID' | 'VALID'
+  doctor_artifact_sha256?: string | null
   download_url: string | null
   created_at: string
   sent_at: string | null
   delivery_ready?: boolean
   delivery_blockers?: string[]
+  customer_ready?: boolean
+  delivery_history?: Array<Record<string, unknown>>
+  effective_delivery?: ({ event_type?: string | null } & Record<string, unknown>) | null
   sov_summary?: Record<string, unknown> | null
   content_summary?: Record<string, unknown> | null
   essence_summary?: Record<string, unknown> | null
@@ -50,7 +60,7 @@ function getScreeningStatus(r: Report): ScreeningStatus {
   if (displayStatus === 'DELIVERED' || displayStatus === 'PDF_PENDING' || displayStatus === 'AWAITING_REVIEW') {
     return displayStatus
   }
-  if (r.sent_at) return 'DELIVERED'
+  if (isEffectivelyDelivered(r)) return 'DELIVERED'
   if (!r.download_url && !r.has_pdf) return 'PDF_PENDING'
   return 'AWAITING_REVIEW'
 }
@@ -167,9 +177,14 @@ function ChecklistRow({ ok, label, hint }: { ok: boolean; label: string; hint?: 
 // 백엔드 계약(추가 예정): POST /admin/hospitals/{id}/reports/{report_id}/mark-sent
 // → MonthlyReport.sent_at이 기록된 갱신 리포트를 반환.
 // 실제 경로/메서드가 달라지면 이 함수 한 곳만 수정하면 된다.
-function requestMarkSent(hospitalId: string, reportId: string): Promise<Report> {
+function requestMarkSent(
+  hospitalId: string,
+  reportId: string,
+  input: ReportDeliveryInput,
+): Promise<Report> {
   return fetchAPI<Report>(`/admin/hospitals/${hospitalId}/reports/${reportId}/mark-sent`, {
     method: 'POST',
+    body: JSON.stringify(input),
   })
 }
 
@@ -213,8 +228,8 @@ export default function ReportsPage() {
     }
   }
 
-  async function handleMarkSent(report: Report) {
-    if (markingSent || report.sent_at) return
+  async function handleMarkSent(report: Report, input: ReportDeliveryInput) {
+    if (markingSent || isEffectivelyDelivered(report)) return
     if (!readReportDeliveryState(report).ready) {
       setMarkSentError('백엔드 전달 준비 검사를 통과한 리포트만 완료로 표시할 수 있습니다.')
       return
@@ -222,7 +237,7 @@ export default function ReportsPage() {
     setMarkSentError(null)
     setMarkingSent(true)
     try {
-      const updated = await requestMarkSent(id, report.id)
+      const updated = await requestMarkSent(id, report.id, input)
       if (updated) {
         setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, ...updated } : r)))
         setSelected((prev) => (prev && prev.id === report.id ? { ...prev, ...updated } : prev))
@@ -423,7 +438,7 @@ export default function ReportsPage() {
         <DetailDrawer
           report={selected}
           onClose={() => setSelected(null)}
-          onMarkSent={() => handleMarkSent(selected)}
+          onMarkSent={(input) => handleMarkSent(selected, input)}
           markingSent={markingSent}
           markSentError={markSentError}
         />
@@ -525,7 +540,7 @@ function DetailDrawer({
 }: {
   report: Report
   onClose: () => void
-  onMarkSent: () => void
+  onMarkSent: (input: ReportDeliveryInput) => void
   markingSent: boolean
   markSentError: string | null
 }) {
@@ -546,6 +561,14 @@ function DetailDrawer({
   const processedSourceCount = essence ? asNumber(essence.processed_source_count) ?? 0 : 0
   const totalSourceCount = essence ? asNumber(essence.source_count) ?? 0 : 0
   const { ready: deliveryReady, blockers: deliveryBlockers } = readReportDeliveryState(report)
+  const customerDownload = getCustomerReportDownload(report)
+  const [recipientLabel, setRecipientLabel] = useState('')
+  const [channel, setChannel] = useState('대면')
+  const [deliveryNote, setDeliveryNote] = useState('')
+  const canSubmitDelivery = Boolean(
+    deliveryReady && report.doctor_artifact_sha256 && recipientLabel.trim() && channel.trim(),
+  )
+  const effectivelyDelivered = isEffectivelyDelivered(report)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
@@ -559,28 +582,6 @@ function DetailDrawer({
               <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
                 {meta.label}
               </span>
-              {report.download_url && (
-                <a
-                  href={report.download_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-600 text-white hover:bg-blue-700"
-                >
-                  내부 검수용 PDF
-                </a>
-              )}
-              {/* 원장에게 그대로 보내는 1페이지 판본. 내부 검수용과 편집이 다르다 —
-                  원장 화면에는 담당·기한·플랫폼별 표가 들어가지 않는다. */}
-              {report.has_doctor_pdf && (
-                <a
-                  href={`/api/admin/hospitals/${report.hospital_id}/reports/${report.id}/download?audience=doctor`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-900 text-white hover:bg-slate-800"
-                >
-                  원장 보고용 PDF
-                </a>
-              )}
             </div>
             <div className="mt-1 text-xs text-slate-500">
               생성 {formatDate(report.created_at)}
@@ -739,23 +740,33 @@ function DetailDrawer({
 
           <section>
             <h4 className="text-sm font-semibold text-slate-900 mb-3">원장 보고 자료</h4>
-            {report.download_url ? (
+            {customerDownload ? (
               <div className="space-y-2">
                 <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900">
-                  위 운영 기준 검수와 권장 조치를 먼저 확인한 뒤 원장님께 전달할 PDF를 내려받습니다.
+                  검증된 원장 보고용 판본입니다. 아래 전달 기록의 PDF 해시와 같은 파일인지 확인하세요.
                 </p>
                 <a
-                  href={report.download_url}
+                  href={customerDownload}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="block w-full text-center py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700"
+                  className="block min-h-11 w-full rounded-lg bg-blue-600 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-blue-700"
                 >
-                  PDF 다운로드
+                  원장 전달용 PDF 다운로드
                 </a>
+                {report.download_url && (
+                  <a
+                    href={report.download_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-center text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    AE 내부 검수용 PDF · 고객 전달 금지
+                  </a>
+                )}
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-4 text-center text-sm text-slate-500">
-                {report.has_pdf ? getPdfStatusLabel(report) : `${getPdfStatusLabel(report)} — 잠시 후 다시 확인해 주세요.`}
+                검증된 원장 전달용 PDF가 없습니다. 내부 검수용 PDF로 대신 전달할 수 없습니다.
               </div>
             )}
 
@@ -764,23 +775,84 @@ function DetailDrawer({
                 {markSentError}
               </p>
             )}
-            {report.sent_at ? (
+            {effectivelyDelivered ? (
               <p className="mt-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
                 원장 보고 완료 — 전달일 {formatDate(report.sent_at)}
               </p>
             ) : (
-              <button
-                type="button"
-                onClick={onMarkSent}
-                disabled={markingSent || !deliveryReady}
-                className="mt-2 block w-full rounded-lg border border-green-300 bg-white py-2.5 text-center text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50"
-              >
-                {markingSent
-                  ? '처리 중...'
-                  : deliveryReady
-                    ? '원장 보고 완료로 표시'
-                    : '전달 전 차단 항목을 해결해 주세요'}
-              </button>
+              <div className="mt-3 space-y-3 rounded-lg border border-slate-200 p-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm text-slate-700">
+                    수신자
+                    <input
+                      value={recipientLabel}
+                      onChange={(event) => setRecipientLabel(event.target.value)}
+                      placeholder="예: 김원장"
+                      className="mt-1 min-h-11 w-full rounded-md border border-slate-300 px-3"
+                    />
+                  </label>
+                  <label className="text-sm text-slate-700">
+                    전달 채널
+                    <input
+                      value={channel}
+                      onChange={(event) => setChannel(event.target.value)}
+                      placeholder="예: 대면"
+                      className="mt-1 min-h-11 w-full rounded-md border border-slate-300 px-3"
+                    />
+                  </label>
+                </div>
+                <label className="block text-sm text-slate-700">
+                  메모 (선택)
+                  <input
+                    value={deliveryNote}
+                    onChange={(event) => setDeliveryNote(event.target.value)}
+                    placeholder="예: 2026-08 월간 보고"
+                    className="mt-1 min-h-11 w-full rounded-md border border-slate-300 px-3"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!report.doctor_artifact_sha256) return
+                    onMarkSent({
+                      artifact_sha256: report.doctor_artifact_sha256,
+                      recipient_label: recipientLabel.trim(),
+                      channel: channel.trim(),
+                      note: deliveryNote.trim() || undefined,
+                    })
+                  }}
+                  disabled={markingSent || !canSubmitDelivery}
+                  className="block min-h-11 w-full rounded-lg border border-green-300 bg-white px-4 py-3 text-center text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50"
+                >
+                  {markingSent
+                    ? '처리 중...'
+                    : deliveryReady
+                      ? '원장 전달 기록 남기기'
+                      : '전달 전 차단 항목을 해결해 주세요'}
+                </button>
+              </div>
+            )}
+            {(report.delivery_history?.length ?? 0) > 0 && (
+              <div className="mt-4 border-t border-slate-200 pt-4">
+                <h5 className="text-sm font-semibold text-slate-900">전달 이력</h5>
+                <ol className="mt-2 space-y-2">
+                  {report.delivery_history?.map((event, index) => (
+                    <li key={asString(event.id) ?? index} className="rounded-md bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700">
+                      <div className="font-semibold text-slate-900">
+                        {asString(event.event_type) ?? '전달 이벤트'} · {formatDate(asString(event.created_at))}
+                      </div>
+                      <div>
+                        수신 {asString(event.recipient_label) ?? '-'} · 채널 {asString(event.channel) ?? '-'} · 담당 {asString(event.operator) ?? '-'}
+                      </div>
+                      {asString(event.artifact_sha256) && (
+                        <div className="break-all font-mono text-[11px] text-slate-500">
+                          SHA-256 {asString(event.artifact_sha256)}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </div>
             )}
           </section>
         </div>

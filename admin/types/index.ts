@@ -426,11 +426,21 @@ export interface Report {
   period_month: number
   report_type: 'V0' | 'MONTHLY'
   pdf_path: string | null
+  has_pdf?: boolean
+  has_doctor_pdf?: boolean
+  doctor_artifact_state?: 'MISSING' | 'INVALID' | 'VALID'
+  doctor_artifact_sha256?: string | null
+  download_url?: string | null
   sov_summary: Record<string, unknown> | null
   content_summary: Record<string, unknown> | null
   essence_summary?: Record<string, unknown> | null
   created_at: string
   sent_at: string | null
+  delivery_ready?: boolean
+  customer_ready?: boolean
+  delivery_blockers?: string[]
+  effective_delivery?: ({ event_type?: string | null } & Record<string, unknown>) | null
+  delivery_history?: Array<Record<string, unknown>>
 }
 
 export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
