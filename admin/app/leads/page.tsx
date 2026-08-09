@@ -40,7 +40,7 @@ interface ConvertResponse {
   onboarding_url?: string | null
 }
 
-type PlanOption = 'PLAN_16' | 'PLAN_12' | 'PLAN_8'
+type PlanOption = 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
 
 type DiagnosisAction = 'retry' | 'release'
 
@@ -91,7 +91,7 @@ export default function LeadsPage() {
   const [candidates, setCandidates] = useState<HospitalCandidate[]>([])
   const [candidatesLoading, setCandidatesLoading] = useState(false)
   const [candidatesError, setCandidatesError] = useState<string | null>(null)
-  const [selectedPlan, setSelectedPlan] = useState<PlanOption>('PLAN_16')
+  const [selectedPlan, setSelectedPlan] = useState<PlanOption>('PLAN_12')
   const [linkHospitalId, setLinkHospitalId] = useState<string | null>(null)
   const [converting, setConverting] = useState(false)
   const [convertError, setConvertError] = useState<string | null>(null)
@@ -142,7 +142,7 @@ export default function LeadsPage() {
       return
     }
     setConvertLead(lead)
-    setSelectedPlan('PLAN_16')
+    setSelectedPlan('PLAN_12')
     setLinkHospitalId(null)
     setConvertError(null)
     setCandidates([])
@@ -676,7 +676,7 @@ export default function LeadsPage() {
                 <fieldset>
                   <legend className="text-sm font-medium text-slate-700">월간 운영량</legend>
                   <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                    {(['PLAN_16', 'PLAN_12', 'PLAN_8'] as PlanOption[]).map((planOption) => (
+                    {(['PLAN_12', 'PLAN_16', 'PLAN_20'] as PlanOption[]).map((planOption) => (
                       <label
                         key={planOption}
                         className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-colors ${

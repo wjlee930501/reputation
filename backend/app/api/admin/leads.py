@@ -28,7 +28,7 @@ router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
 class LeadConvertRequest(BaseModel):
     hospital_id: uuid.UUID | None = None
     hospital_name: str | None = Field(default=None, max_length=200)
-    plan: Plan = Plan.PLAN_8
+    plan: Plan = Plan.PLAN_12
     conversion_note: str | None = Field(default=None, max_length=2000)
 
 

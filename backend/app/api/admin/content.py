@@ -100,7 +100,7 @@ ESSENCE_STATUS_DISPLAY_LABELS = {
 
 
 class ScheduleCreate(BaseModel):
-    plan: str = Field(pattern=r"^PLAN_(16|12|8)$")  # PLAN_16 | PLAN_12 | PLAN_8
+    plan: str = Field(pattern=r"^PLAN_(20|16|12)$")  # PLAN_20 | PLAN_16 | PLAN_12
     publish_days: list[int]  # [1, 4] = 화·금
     active_from: date
 

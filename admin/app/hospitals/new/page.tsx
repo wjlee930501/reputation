@@ -13,7 +13,7 @@ interface LeadContext {
 export default function NewHospitalPage() {
   const router = useRouter()
   const [name, setName] = useState('')
-  const [plan, setPlan] = useState('PLAN_16')
+  const [plan, setPlan] = useState('PLAN_12')
   const [leadContext, setLeadContext] = useState<LeadContext | null>(null)
   const [leadLoading, setLeadLoading] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -109,9 +109,9 @@ export default function NewHospitalPage() {
             onChange={(e) => setPlan(e.target.value)}
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
           >
-            <option value="PLAN_16">월 16편 집중 운영</option>
-            <option value="PLAN_12">월 12편 표준 운영</option>
-            <option value="PLAN_8">월 8편 기본 운영</option>
+            <option value="PLAN_12">스타터 · 월 12편</option>
+            <option value="PLAN_16">그로워 · 월 16편</option>
+            <option value="PLAN_20">리더 · 월 20편</option>
           </select>
         </div>
 

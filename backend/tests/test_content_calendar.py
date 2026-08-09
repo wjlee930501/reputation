@@ -24,9 +24,9 @@ from app.services.content_calendar import _interleave_types, generate_monthly_sl
 # 계약 표 (CLAUDE.md "요금제별 월간 편수 배분")를 테스트가 독립적으로 들고 있는다.
 # PLAN_DISTRIBUTION을 그대로 기대값으로 쓰면 배분이 잘못 바뀌어도 자기참조라 통과한다.
 EXPECTED_DISTRIBUTION = {
+    "PLAN_20": {"FAQ": 5, "DISEASE": 4, "TREATMENT": 4, "COLUMN": 2, "HEALTH": 2, "LOCAL": 2, "NOTICE": 1},
     "PLAN_16": {"FAQ": 4, "DISEASE": 3, "TREATMENT": 3, "COLUMN": 2, "HEALTH": 2, "LOCAL": 1, "NOTICE": 1},
     "PLAN_12": {"FAQ": 3, "DISEASE": 3, "TREATMENT": 2, "COLUMN": 2, "HEALTH": 1, "LOCAL": 1, "NOTICE": 0},
-    "PLAN_8": {"FAQ": 2, "DISEASE": 2, "TREATMENT": 2, "COLUMN": 1, "HEALTH": 1, "LOCAL": 0, "NOTICE": 0},
 }
 ALL_PLANS = sorted(EXPECTED_DISTRIBUTION)
 
@@ -131,27 +131,27 @@ def test_generate_monthly_slots_same_hospital_and_month_is_deterministic():
 
 def test_generate_monthly_slots_preserves_dates_and_sequence_numbers():
     slots = generate_monthly_slots(
-        "PLAN_8", [0, 1, 2, 3, 4, 5, 6], arrow.get("2026-07-01").floor("month")
+        "PLAN_12", [0, 1, 2, 3, 4, 5, 6], arrow.get("2026-07-01").floor("month")
     )
 
-    assert [seq for _, _, seq, _ in slots] == list(range(1, 9))
-    assert all(total == 8 for _, _, _, total in slots)
+    assert [seq for _, _, seq, _ in slots] == list(range(1, 13))
+    assert all(total == 12 for _, _, _, total in slots)
     dates = [d for d, _, _, _ in slots]
     assert dates == sorted(dates)
-    # PLAN_8 + 모든 요일 허용이어도 월초 8일에 몰리지 않고 월 전체에 분산한다.
+    # PLAN_12 + 모든 요일 허용이어도 월초 12일에 몰리지 않고 월 전체에 분산한다.
     assert dates[0].isoformat() == "2026-07-01"
     assert dates[-1].isoformat() == "2026-07-31"
-    assert max((right - left).days for left, right in zip(dates, dates[1:])) <= 5
-    assert min((right - left).days for left, right in zip(dates, dates[1:])) >= 4
+    assert max((right - left).days for left, right in zip(dates, dates[1:])) <= 3
+    assert min((right - left).days for left, right in zip(dates, dates[1:])) >= 2
 
 
 def test_generate_monthly_slots_spreads_across_allowed_weekdays():
     slots = generate_monthly_slots(
-        "PLAN_8", [1, 4], arrow.get("2026-08-01").floor("month")
+        "PLAN_12", [0, 2, 4], arrow.get("2026-08-01").floor("month")
     )
 
     dates = [d for d, *_rest in slots]
-    assert len(dates) == 8
-    assert all(d.weekday() in {1, 4} for d in dates)
+    assert len(dates) == 12
+    assert all(d.weekday() in {0, 2, 4} for d in dates)
     assert dates[0].day <= 7
     assert dates[-1].day >= 25

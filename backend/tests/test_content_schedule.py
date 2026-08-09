@@ -108,15 +108,15 @@ async def test_set_schedule_syncs_hospital_plan_and_queues_imminent_slots(monkey
     _freeze_arrow(monkeypatch)  # today=2026-06-10, tomorrow=2026-06-11
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[0, 1, 2, 3, 4, 5, 6],
         active_from=date(2026, 6, 11),
     )
     response = await content_api.set_schedule(hospital.id, body, db=db)
 
-    assert response["slots_created"] == 8
+    assert response["slots_created"] == 12
     assert response["first_publish_date"] == "2026-06-11"
-    assert hospital.plan == Plan.PLAN_8
+    assert hospital.plan == Plan.PLAN_12
     assert hospital.schedule_set is True
     assert db.committed is True
     # 2026-06-11(내일) 슬롯 1개만 즉시 생성 큐에 적재
@@ -136,7 +136,7 @@ async def test_set_schedule_writes_audit_log(monkeypatch):
     _freeze_arrow(monkeypatch)
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[0, 1, 2, 3, 4, 5, 6],
         active_from=date(2026, 6, 11),
     )
@@ -144,8 +144,8 @@ async def test_set_schedule_writes_audit_log(monkeypatch):
 
     audit_rows = [a for a in db.added if getattr(a, "action", None) == "set_schedule"]
     assert len(audit_rows) == 1
-    assert audit_rows[0].detail["plan"] == "PLAN_8"
-    assert audit_rows[0].detail["slots_created"] == 8
+    assert audit_rows[0].detail["plan"] == "PLAN_12"
+    assert audit_rows[0].detail["slots_created"] == 12
 
 
 async def test_set_schedule_does_not_queue_future_only_slots(monkeypatch):
@@ -160,7 +160,7 @@ async def test_set_schedule_does_not_queue_future_only_slots(monkeypatch):
     _freeze_arrow(monkeypatch)  # tomorrow=2026-06-11
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[0, 1, 2, 3, 4, 5, 6],
         active_from=date(2026, 6, 15),
     )
@@ -176,7 +176,7 @@ async def test_set_schedule_rejects_past_active_from(monkeypatch):
     _freeze_arrow(monkeypatch)  # today=2026-06-10
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[0, 1, 2, 3, 4, 5, 6],
         active_from=date(2026, 6, 9),
     )
@@ -209,13 +209,13 @@ async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
     _freeze_arrow(monkeypatch)  # today=2026-06-10, tomorrow=2026-06-11
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[0, 1, 2, 3, 4, 5, 6],
         active_from=date(2026, 6, 11),  # 내일 슬롯 → 즉시 큐잉 시도
     )
     response = await content_api.set_schedule(hospital.id, body, db=db)
 
-    assert response["slots_created"] == 8
+    assert response["slots_created"] == 12
     assert db.committed is True
     assert len(alerts) == 1
     assert "큐잉 실패" in alerts[0]["title"]
@@ -254,7 +254,7 @@ async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):
     _freeze_arrow(monkeypatch)  # today=2026-06-10
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[0, 1, 2, 3, 4, 5, 6],
         active_from=date(2026, 6, 11),
     )
@@ -306,7 +306,7 @@ async def test_set_schedule_preserves_carried_over_unpublished_slots(monkeypatch
     _freeze_arrow(monkeypatch)  # today=2026-06-10
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[0, 1, 2, 3, 4, 5, 6],
         active_from=date(2026, 6, 11),
     )
@@ -421,7 +421,7 @@ async def test_set_schedule_does_not_resume_a_paused_hospital(monkeypatch):
     _freeze_arrow(monkeypatch)
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8", publish_days=[0, 2, 4], active_from=date(2026, 6, 11)
+        plan="PLAN_12", publish_days=[0, 1, 2, 3, 4, 5, 6], active_from=date(2026, 6, 11)
     )
     await content_api.set_schedule(hospital.id, body, db=db)
 
@@ -444,7 +444,7 @@ async def test_set_schedule_keeps_an_active_hospital_active(monkeypatch):
     _freeze_arrow(monkeypatch)
 
     body = content_api.ScheduleCreate(
-        plan="PLAN_8", publish_days=[0, 2, 4], active_from=date(2026, 6, 11)
+        plan="PLAN_12", publish_days=[0, 1, 2, 3, 4, 5, 6], active_from=date(2026, 6, 11)
     )
     await content_api.set_schedule(hospital.id, body, db=db)
 

@@ -107,7 +107,7 @@ class DirectorCredentials(BaseModel):
 
 class HospitalCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    plan: Plan = Plan.PLAN_8
+    plan: Plan = Plan.PLAN_12
     onboarding_note: str | None = Field(default=None, max_length=2000)
 
 
@@ -304,7 +304,7 @@ async def create_hospital(body: HospitalCreate, db: AsyncSession = Depends(get_d
             detail={
                 "name": hospital.name,
                 "slug": slug,
-                "plan": _enum_value(body.plan, Plan.PLAN_8.value),
+                "plan": _enum_value(body.plan, Plan.PLAN_12.value),
             },
         )
         await db.commit()

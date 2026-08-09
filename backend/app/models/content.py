@@ -51,6 +51,15 @@ class ContentStatus(str, enum.Enum):
 
 # 요금제별 유형·편수 배분
 PLAN_DISTRIBUTION = {
+    "PLAN_20": {
+        ContentType.FAQ: 5,
+        ContentType.DISEASE: 4,
+        ContentType.TREATMENT: 4,
+        ContentType.COLUMN: 2,
+        ContentType.HEALTH: 2,
+        ContentType.LOCAL: 2,
+        ContentType.NOTICE: 1,
+    },
     "PLAN_16": {
         ContentType.FAQ: 4,
         ContentType.DISEASE: 3,
@@ -67,15 +76,6 @@ PLAN_DISTRIBUTION = {
         ContentType.COLUMN: 2,
         ContentType.HEALTH: 1,
         ContentType.LOCAL: 1,
-        ContentType.NOTICE: 0,
-    },
-    "PLAN_8": {
-        ContentType.FAQ: 2,
-        ContentType.DISEASE: 2,
-        ContentType.TREATMENT: 2,
-        ContentType.COLUMN: 1,
-        ContentType.HEALTH: 1,
-        ContentType.LOCAL: 0,
         ContentType.NOTICE: 0,
     },
 }
@@ -103,7 +103,7 @@ class ContentSchedule(Base):
         index=True,  # ix_content_schedules_hospital_id (migration 0023)
     )
 
-    plan: Mapped[str] = mapped_column(String(20), nullable=False)  # PLAN_16 | PLAN_12 | PLAN_8
+    plan: Mapped[str] = mapped_column(String(20), nullable=False)  # PLAN_20 | PLAN_16 | PLAN_12
     publish_days: Mapped[list] = mapped_column(JSON, nullable=False)
     # 예: [1, 4] = 화요일·금요일 (월=0, 화=1, 수=2, 목=3, 금=4, 토=5, 일=6)
 

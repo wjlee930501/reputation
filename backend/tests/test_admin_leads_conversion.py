@@ -93,7 +93,7 @@ def test_build_onboarding_note_excludes_raw_pii():
 async def test_convert_sales_lead_creates_draft_hospital_from_lead():
     lead = _lead()
     db = FakeDB(lead=lead)
-    body = leads_api.LeadConvertRequest(plan=Plan.PLAN_8, conversion_note="priority onboarding")
+    body = leads_api.LeadConvertRequest(plan=Plan.PLAN_12, conversion_note="priority onboarding")
 
     response = await leads_api.convert_sales_lead(lead.id, body=body, db=db)
 
@@ -187,7 +187,7 @@ async def test_convert_sales_lead_audits_target_id_without_pii():
     assert logs[0].target_type == "sales_lead"
     assert logs[0].target_id == str(lead.id)
     assert logs[0].detail["linked_existing_hospital"] is False
-    assert logs[0].detail["plan"] == "PLAN_8"
+    assert logs[0].detail["plan"] == "PLAN_12"
     serialized = str(logs[0].detail)
     assert "010-1111-2222" not in serialized and "임플란트 상담 문의" not in serialized
 

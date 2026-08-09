@@ -91,7 +91,8 @@ Re:putation은 병원이 AI 검색/답변 환경에서 추천 후보로 등장�
 - `Hospital` profile onboarding: 병원명, 주소, 전화, 진료시간, 지역, 진료과목, 키워드, 경쟁 병원, 원장 정보, 진료항목, 외부 URL, Google/Naver/도메인 필드를 유지한다.
 - Source-backed Essence: `hospital_source_assets`, `hospital_source_evidence_notes`, `hospital_content_philosophies` 모델과 Admin Essence 탭을 유지한다.
 - Approved content philosophy contract: 승인된 철학이 없으면 자동 콘텐츠 운영 품질을 통과하지 않는 구조를 유지한다.
-- Content schedule/item: `PLAN_16/12/8`, 콘텐츠 타입, 발행일, DRAFT/PUBLISHED/REJECTED 상태, `content_philosophy_id`, `essence_status`, `essence_check_summary`를 유지한다.
+- Content schedule/item: `PLAN_20/16/12`(리더/그로워/스타터), 콘텐츠 타입, 발행일, DRAFT/PUBLISHED/REJECTED 상태, `content_philosophy_id`, `essence_status`, `essence_check_summary`를 유지한다.
+- Tier migration runbook: 0039는 기존 `PLAN_8`을 `PLAN_12`로 전환한다. `PLAN_20` 기록이 생긴 뒤에는 `PLAN_8` 원본을 복원할 수 없고 PostgreSQL enum label도 남으므로, 0039 이전으로의 destructive downgrade는 금지하고 roll-forward migration만 사용한다.
 - Claude content generation: 승인된 philosophy를 프롬프트에 넣는 방향을 유지하되, Query Target 기반 brief를 추가한다.
 - Medical filter: 정적 금지 표현 검사와 Essence 기반 검수 차단을 유지한다.
 - SoV baseline: `QueryMatrix`, `SovRecord`, ChatGPT/Gemini 플랫폼, raw response, mention rank, competitor mentions, priority 필드를 유지한다.

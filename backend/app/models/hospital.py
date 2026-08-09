@@ -40,9 +40,9 @@ if TYPE_CHECKING:
 
 
 class Plan(str, enum.Enum):
+    PLAN_20 = "PLAN_20"   # 리더 · 월 20편
     PLAN_16 = "PLAN_16"   # 월 16편
     PLAN_12 = "PLAN_12"   # 월 12편
-    PLAN_8 = "PLAN_8"     # 월 8편
 
 
 class HospitalStatus(str, enum.Enum):

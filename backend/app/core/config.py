@@ -338,9 +338,9 @@ class Settings(BaseSettings):
     # 상한과 킬스위치로 지출 폭주를 차단한다. 기본값은 병원 50개 × 요금제 상한 × 재시도
     # 여유를 감안한 대략치이며, 실제 계약 규모에 맞춰 조정한다.
     COST_GUARD_ENABLED: bool = True
-    # 월간 상한 (병원50 × 16편 × 재시도 여유 ≈ 2500)
-    COST_GUARD_MONTHLY_CONTENT_CALLS: int = 2500
-    COST_GUARD_MONTHLY_IMAGE_CALLS: int = 2500
+    # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
+    COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
+    COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
     # SoV: 병원50 × 주간 spec 다수 × 4주 여유 ≈ 20000
     COST_GUARD_MONTHLY_SOV_QUERIES: int = 20000
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)

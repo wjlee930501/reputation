@@ -34,7 +34,7 @@ def create_next_month_slots_for_schedule(
 
     # "이 스케줄의 이번 달 계획 슬롯이 이미 만들어졌는가"로만 판정한다.
     # 월 전체에 아이템이 1건이라도 있으면 건너뛰던 과거 조건은, 지난달에서 이월된
-    # (carried_over_from) 1건이나 다른 스케줄의 행 하나가 다음 달 16편 전체 생성을
+    # (carried_over_from) 1건이나 다른 스케줄의 행 하나가 다음 달 약정 편수 전체 생성을
     # 통째로 막았다. 이월 슬롯은 계획 편수에 포함되지 않으므로 판정에서 제외한다.
     existing_sequences = set(
         db.execute(

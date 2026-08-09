@@ -9,9 +9,10 @@ import {
   validateScheduleCapacity,
 } from './schedule.ts'
 
-test('PLAN_16 default days can create all monthly slots from the next month start', () => {
-  assert.equal(countMonthlyPublishDates('2026-06-01', DEFAULT_PUBLISH_DAYS_BY_PLAN.PLAN_16), 18)
+test('every current tier has enough default days for its monthly volume', () => {
+  assert.equal(validateScheduleCapacity('PLAN_12', DEFAULT_PUBLISH_DAYS_BY_PLAN.PLAN_12, '2026-06-01'), null)
   assert.equal(validateScheduleCapacity('PLAN_16', DEFAULT_PUBLISH_DAYS_BY_PLAN.PLAN_16, '2026-06-01'), null)
+  assert.equal(validateScheduleCapacity('PLAN_20', DEFAULT_PUBLISH_DAYS_BY_PLAN.PLAN_20, '2026-06-01'), null)
 })
 
 test('schedule validation catches too few publish days before the API call', () => {

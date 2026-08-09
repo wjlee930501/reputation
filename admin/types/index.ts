@@ -7,7 +7,7 @@ export interface Hospital {
   name: string
   slug: string
   status: 'ONBOARDING' | 'ANALYZING' | 'BUILDING' | 'PENDING_DOMAIN' | 'ACTIVE' | 'PAUSED'
-  plan: 'PLAN_16' | 'PLAN_12' | 'PLAN_8' | null
+  plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12' | null
   profile_complete: boolean
   v0_report_done: boolean
   site_built?: boolean
@@ -383,7 +383,7 @@ export interface ExposureActionCreateBriefResponse {
 
 // GET /admin/hospitals/{id}/schedule — 활성 스케줄 (없으면 404)
 export interface ScheduleInfo {
-  plan: 'PLAN_16' | 'PLAN_12' | 'PLAN_8'
+  plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
   publish_days: number[]
   active_from: string
   is_active: boolean
@@ -413,9 +413,9 @@ export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
 }
 
 export const PLAN_LABELS: Record<string, string> = {
-  PLAN_16: '월 16편 집중 운영',
-  PLAN_12: '월 12편 표준 운영',
-  PLAN_8: '월 8편 기본 운영',
+  PLAN_12: '스타터 · 월 12편',
+  PLAN_16: '그로워 · 월 16편',
+  PLAN_20: '리더 · 월 20편',
 }
 
 export const TYPE_LABELS: Record<string, string> = {

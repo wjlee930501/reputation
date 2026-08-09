@@ -14,17 +14,17 @@ import { PLAN_LABELS, type ScheduleInfo } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
 const PLAN_DISTRIBUTION: Record<string, Array<[string, number]>> = {
+  PLAN_20: [['FAQ', 5], ['질환 가이드', 4], ['치료 안내', 4], ['원장 칼럼', 2], ['건강 정보', 2], ['지역 특화', 2], ['공지', 1]],
   PLAN_16: [['FAQ', 4], ['질환 가이드', 3], ['치료 안내', 3], ['원장 칼럼', 2], ['건강 정보', 2], ['지역 특화', 1], ['공지', 1]],
   PLAN_12: [['FAQ', 3], ['질환 가이드', 3], ['치료 안내', 2], ['원장 칼럼', 2], ['건강 정보', 1], ['지역 특화', 1]],
-  PLAN_8: [['FAQ', 2], ['질환 가이드', 2], ['치료 안내', 2], ['원장 칼럼', 1], ['건강 정보', 1]],
 }
 
 export default function SchedulePage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const { refetch: refetchHeader } = useHospitalHeader()
-  const [plan, setPlan] = useState('PLAN_16')
-  const [selectedDays, setSelectedDays] = useState<number[]>(DEFAULT_PUBLISH_DAYS_BY_PLAN.PLAN_16)
+  const [plan, setPlan] = useState('PLAN_12')
+  const [selectedDays, setSelectedDays] = useState<number[]>(DEFAULT_PUBLISH_DAYS_BY_PLAN.PLAN_12)
   const [activeFrom, setActiveFrom] = useState(firstDayOfNextMonthInputValue())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -207,9 +207,9 @@ export default function SchedulePage() {
               }}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             >
-              <option value="PLAN_16">월 16편 집중 운영</option>
-              <option value="PLAN_12">월 12편 표준 운영</option>
-              <option value="PLAN_8">월 8편 기본 운영</option>
+              <option value="PLAN_12">스타터 · 월 12편</option>
+              <option value="PLAN_16">그로워 · 월 16편</option>
+              <option value="PLAN_20">리더 · 월 20편</option>
             </select>
           </div>
 

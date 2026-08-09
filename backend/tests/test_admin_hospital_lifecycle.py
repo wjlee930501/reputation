@@ -93,7 +93,7 @@ def _full_hospital(**overrides):
         name="테스트의원",
         slug="test-clinic",
         status=HospitalStatus.ACTIVE,
-        plan=Plan.PLAN_8,
+        plan=Plan.PLAN_12,
         source_lead_id=None,
         onboarding_note=None,
         address="서울 성동구",

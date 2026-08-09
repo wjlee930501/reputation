@@ -1,15 +1,15 @@
 export const DAYS = ['월', '화', '수', '목', '금', '토', '일'] as const
 
 export const PLAN_TOTALS: Record<string, number> = {
+  PLAN_20: 20,
   PLAN_16: 16,
   PLAN_12: 12,
-  PLAN_8: 8,
 }
 
 export const DEFAULT_PUBLISH_DAYS_BY_PLAN: Record<string, number[]> = {
+  PLAN_20: [0, 1, 2, 3, 4],
   PLAN_16: [0, 1, 2, 3],
   PLAN_12: [0, 2, 4],
-  PLAN_8: [1, 4],
 }
 
 export function localDateInputValue(date = new Date()): string {

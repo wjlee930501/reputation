@@ -149,7 +149,7 @@ def test_unrelated_schedule_items_do_not_block_generation(db):
     schedule = _make_schedule(db)
     other = ContentSchedule(
         hospital_id=schedule.hospital_id,
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[0, 2],
         active_from=date(2026, 1, 1),
         is_active=False,
@@ -198,23 +198,23 @@ def test_schedule_activating_after_target_month_is_skipped(db):
 def test_activation_inside_target_month_only_uses_dates_from_active_from(db):
     """활성화가 대상 월 중간이면 그 날짜 이후로만 발행한다 (결함 2)."""
     schedule = _make_schedule(
-        db, plan="PLAN_8", publish_days=[0, 1, 2, 3, 4, 5, 6], active_from=date(2026, 8, 10)
+        db, plan="PLAN_12", publish_days=[0, 1, 2, 3, 4, 5, 6], active_from=date(2026, 8, 10)
     )
 
     assert _run(db, schedule) is True
     dates = db.execute(
         select(ContentItem.scheduled_date).where(ContentItem.schedule_id == schedule.id)
     ).scalars().all()
-    assert len(dates) == sum(PLAN_DISTRIBUTION["PLAN_8"].values())
+    assert len(dates) == sum(PLAN_DISTRIBUTION["PLAN_12"].values())
     assert min(dates) >= date(2026, 8, 10)
 
 
 def test_active_from_on_the_last_day_of_month_is_not_treated_as_future(db):
     """경계 — active_from이 대상 월 마지막 날이면 아직 '완전히 이전'이 아니다."""
-    schedule = _make_schedule(db, plan="PLAN_8", publish_days=[0, 1, 2, 3, 4, 5, 6],
+    schedule = _make_schedule(db, plan="PLAN_12", publish_days=[0, 1, 2, 3, 4, 5, 6],
                               active_from=MONTH_END)
 
-    # 8/31 하루에 PLAN_8(8편)은 들어가지 않으므로 캘린더가 명시적으로 거부한다 —
+    # 8/31 하루에 PLAN_12(12편)는 들어가지 않으므로 캘린더가 명시적으로 거부한다 —
     # 조용히 한 달 앞당겨 발행하는 것보다 실패 알림이 낫다.
     with pytest.raises(ValueError):
         _run(db, schedule)
