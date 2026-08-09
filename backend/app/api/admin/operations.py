@@ -8,10 +8,10 @@ row proves broker acceptance.
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import JSONValue
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant
 from app.schemas.operations import (
@@ -42,6 +43,13 @@ from app.schemas.operations import (
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
+from app.services.operation_runs import (
+    DispatchTask,
+    OperationCommand,
+    OperationDispatch,
+    OperationQueueUnavailable,
+    dispatch_operation,
+)
 from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
 from app.workers.tasks import (
     build_aeo_site,
@@ -61,6 +69,10 @@ cost_guard_router = APIRouter(prefix="/admin/operations", tags=["Admin — Cost 
 # 08:00 자동 발행 → 그날 업무 시간 안에 후행 확인이 정상 흐름이므로, 하루가 통째로
 # 지났다는 것은 그 흐름에서 빠졌다는 뜻이다.
 POST_PUBLISH_REVIEW_OVERDUE_HOURS = 24
+IdempotencyKeyHeader = Annotated[
+    str | None,
+    Header(alias="Idempotency-Key", min_length=1, max_length=255),
+]
 
 
 async def _enqueue_with_truthful_audit(
@@ -70,53 +82,37 @@ async def _enqueue_with_truthful_audit(
     hospital_id: uuid.UUID,
     target_type: str,
     target_id: uuid.UUID | str,
-    task: Any,
-    args: list[Any],
+    task: DispatchTask,
+    args: list[JSONValue],
     queue: str,
-) -> str | None:
+    idempotency_key: str | None = None,
+) -> OperationDispatch:
     """Durably record request, dispatch, then record broker acceptance."""
-    actor = default_actor()
-    await write_audit_log(
-        db,
-        action=f"{action}_requested",
-        hospital_id=hospital_id,
-        actor=actor,
-        target_type=target_type,
-        target_id=target_id,
-        detail={"queued": False, "queue": queue},
-    )
-    await db.commit()
-
     try:
-        result = task.apply_async(args=args, queue=queue)
-    except Exception as exc:
-        await write_audit_log(
+        return await dispatch_operation(
             db,
-            action=f"{action}_queue_failed",
-            hospital_id=hospital_id,
-            actor=actor,
-            target_type=target_type,
-            target_id=target_id,
-            detail={"queued": False, "queue": queue, "error_type": type(exc).__name__},
+            OperationCommand(
+                operation_type=action.upper(),
+                hospital_id=hospital_id,
+                requested_by_id=None,
+                idempotency_key=idempotency_key,
+                audit_actor=default_actor(),
+                target_type=target_type,
+                target_id=str(target_id),
+                queue=queue,
+                task_args=tuple(args),
+            ),
+            task,
         )
-        await db.commit()
+    except OperationQueueUnavailable as exc:
         raise HTTPException(
             status_code=503,
-            detail="작업 큐 연결에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+            detail={
+                "message": str(exc),
+                "operation_run_id": str(exc.run_id),
+                "operation_state": "FAILED",
+            },
         ) from exc
-
-    task_id = str(result.id) if getattr(result, "id", None) else None
-    await write_audit_log(
-        db,
-        action=action,
-        hospital_id=hospital_id,
-        actor=actor,
-        target_type=target_type,
-        target_id=target_id,
-        detail={"queued": True, "queue": queue, "task_id": task_id},
-    )
-    await db.commit()
-    return task_id
 
 
 @cost_guard_router.get("/attention", response_model=AttentionQueueResponse)
@@ -314,6 +310,7 @@ async def set_cost_guard_daily_limit(
 async def trigger_v0_report_operation(
     hospital_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    idempotency_key: IdempotencyKeyHeader = None,
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
     # 태스크는 v0_report_done인 병원을 조용히 건너뛴다(중복 리포트·중복 측정 비용 방지).
@@ -327,7 +324,7 @@ async def trigger_v0_report_operation(
                 "최신 수치가 필요하면 'AI 언급률 측정'을 실행하고 리포트 화면에서 확인해 주세요."
             ),
         )
-    await _enqueue_with_truthful_audit(
+    dispatch = await _enqueue_with_truthful_audit(
         db,
         action="trigger_v0_report",
         hospital_id=hospital.id,
@@ -336,14 +333,23 @@ async def trigger_v0_report_operation(
         task=trigger_v0_report,
         args=[str(hospital.id)],
         queue="reports",
+        idempotency_key=idempotency_key,
     )
-    return {"detail": "V0 report queued", "hospital_id": str(hospital.id)}
+    return {
+        "detail": "V0 report queued",
+        "hospital_id": str(hospital.id),
+        "operation_run_id": str(dispatch.run.id),
+        "operation_state": dispatch.run.state,
+        "task_id": dispatch.run.task_id,
+        "idempotent_replay": dispatch.replayed,
+    }
 
 
 @router.post("/{hospital_id}/operations/run-sov")
 async def run_sov_operation(
     hospital_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    idempotency_key: IdempotencyKeyHeader = None,
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
     if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
@@ -356,7 +362,7 @@ async def run_sov_operation(
             status_code=409,
             detail="활성 문구가 있는 환자 질문 타깃이 없어 AI 언급률 측정을 실행할 수 없습니다.",
         )
-    await _enqueue_with_truthful_audit(
+    dispatch = await _enqueue_with_truthful_audit(
         db,
         action="run_sov",
         hospital_id=hospital.id,
@@ -365,17 +371,26 @@ async def run_sov_operation(
         task=run_sov_for_hospital,
         args=[str(hospital.id)],
         queue="sov",
+        idempotency_key=idempotency_key,
     )
-    return {"detail": "AI 언급률 측정이 큐에 등록되었습니다.", "hospital_id": str(hospital.id)}
+    return {
+        "detail": "AI 언급률 측정이 큐에 등록되었습니다.",
+        "hospital_id": str(hospital.id),
+        "operation_run_id": str(dispatch.run.id),
+        "operation_state": dispatch.run.state,
+        "task_id": dispatch.run.task_id,
+        "idempotent_replay": dispatch.replayed,
+    }
 
 
 @router.post("/{hospital_id}/operations/rebuild-site")
 async def rebuild_site_operation(
     hospital_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    idempotency_key: IdempotencyKeyHeader = None,
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
-    await _enqueue_with_truthful_audit(
+    dispatch = await _enqueue_with_truthful_audit(
         db,
         action="rebuild_site",
         hospital_id=hospital.id,
@@ -384,8 +399,16 @@ async def rebuild_site_operation(
         task=build_aeo_site,
         args=[str(hospital.id)],
         queue="default",
+        idempotency_key=idempotency_key,
     )
-    return {"detail": "Site rebuild queued", "hospital_id": str(hospital.id)}
+    return {
+        "detail": "Site rebuild queued",
+        "hospital_id": str(hospital.id),
+        "operation_run_id": str(dispatch.run.id),
+        "operation_state": dispatch.run.state,
+        "task_id": dispatch.run.task_id,
+        "idempotent_replay": dispatch.replayed,
+    }
 
 
 @router.post("/{hospital_id}/operations/generate-monthly-report")
@@ -394,6 +417,7 @@ async def generate_monthly_report_operation(
     year: int | None = Query(default=None, ge=2000, le=2200),
     month: int | None = Query(default=None, ge=1, le=12),
     db: AsyncSession = Depends(get_db),
+    idempotency_key: IdempotencyKeyHeader = None,
 ):
     """월간 리포트를 병원 단위로 다시 만든다.
 
@@ -416,7 +440,7 @@ async def generate_monthly_report_operation(
                 detail="이번 달과 그 이후는 만들 수 없습니다. 월말 자동 생성이 끝난 지난달까지만 가능합니다.",
             )
     hospital = await _get_hospital_or_404(db, hospital_id)
-    await _enqueue_with_truthful_audit(
+    dispatch = await _enqueue_with_truthful_audit(
         db,
         action="generate_monthly_report",
         hospital_id=hospital.id,
@@ -425,10 +449,15 @@ async def generate_monthly_report_operation(
         task=generate_monthly_report_for_hospital,
         args=[str(hospital.id), year, month],
         queue="reports",
+        idempotency_key=idempotency_key,
     )
     return {
         "detail": "월간 리포트 생성을 요청했습니다. 완료되면 Slack으로 알려드립니다.",
         "hospital_id": str(hospital.id),
+        "operation_run_id": str(dispatch.run.id),
+        "operation_state": dispatch.run.state,
+        "task_id": dispatch.run.task_id,
+        "idempotent_replay": dispatch.replayed,
     }
 
 
@@ -520,6 +549,7 @@ async def regenerate_content_operation(
     hospital_id: uuid.UUID,
     content_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    idempotency_key: IdempotencyKeyHeader = None,
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
     item = await db.get(ContentItem, content_id)
@@ -530,7 +560,7 @@ async def regenerate_content_operation(
             status_code=409,
             detail="Published or cancelled content cannot be regenerated",
         )
-    await _enqueue_with_truthful_audit(
+    dispatch = await _enqueue_with_truthful_audit(
         db,
         action="regenerate_content",
         hospital_id=hospital.id,
@@ -539,8 +569,16 @@ async def regenerate_content_operation(
         task=regenerate_content_item,
         args=[str(content_id)],
         queue="content",
+        idempotency_key=idempotency_key,
     )
-    return {"detail": "Content regeneration queued", "content_id": str(content_id)}
+    return {
+        "detail": "Content regeneration queued",
+        "content_id": str(content_id),
+        "operation_run_id": str(dispatch.run.id),
+        "operation_state": dispatch.run.state,
+        "task_id": dispatch.run.task_id,
+        "idempotent_replay": dispatch.replayed,
+    }
 
 
 @router.post("/{hospital_id}/content/{content_id}/regenerate-image")
@@ -548,6 +586,7 @@ async def regenerate_content_image_operation(
     hospital_id: uuid.UUID,
     content_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    idempotency_key: IdempotencyKeyHeader = None,
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
     item = await db.get(ContentItem, content_id)
@@ -558,7 +597,7 @@ async def regenerate_content_image_operation(
             status_code=409,
             detail="Published or cancelled content image cannot be regenerated",
         )
-    await _enqueue_with_truthful_audit(
+    dispatch = await _enqueue_with_truthful_audit(
         db,
         action="regenerate_content_image",
         hospital_id=hospital.id,
@@ -567,8 +606,16 @@ async def regenerate_content_image_operation(
         task=generate_content_image,
         args=[str(content_id)],
         queue="content",
+        idempotency_key=idempotency_key,
     )
-    return {"detail": "Content image generation queued", "content_id": str(content_id)}
+    return {
+        "detail": "Content image generation queued",
+        "content_id": str(content_id),
+        "operation_run_id": str(dispatch.run.id),
+        "operation_state": dispatch.run.state,
+        "task_id": dispatch.run.task_id,
+        "idempotent_replay": dispatch.replayed,
+    }
 
 
 @router.get("/{hospital_id}/operations/audit-logs")

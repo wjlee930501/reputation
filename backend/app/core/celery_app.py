@@ -67,6 +67,7 @@ celery_app = Celery(
         "app.workers.naver_sync",
         "app.workers.lead_diagnosis_tasks",
         "app.workers.notification_tasks",
+        "app.workers.operation_run_signals",
     ],
 )
 

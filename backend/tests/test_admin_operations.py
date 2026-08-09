@@ -1,7 +1,7 @@
 """Tests for the v1.0 operations control plane.
 
 Single-actor model: actor is sourced from settings.ADMIN_ACTOR_NAME, not from
-client headers. Transaction order: write_audit_log → commit → apply_async.
+client headers. Transaction order: OperationRun + audit → commit → apply_async.
 """
 
 import uuid
@@ -12,19 +12,24 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import operations as operations_api
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentStatus
 from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
-from app.services import audit_log
+from app.models.operations import OperationRun
+from app.services import audit_log, operation_runs
 
 
 class FakeTask:
     def __init__(self):
         self.calls = []
+        self.headers = []
 
-    def apply_async(self, *, args, queue):
+    def apply_async(self, *, args, queue, headers, task_id):
         self.calls.append({"args": args, "queue": queue})
+        self.headers.append({**headers, "task_id": task_id})
+        return SimpleNamespace(id=task_id)
 
 
 class FakeDB:
@@ -56,6 +61,11 @@ class FakeDB:
             return self.handoff_state
         if entity is HospitalServiceInterval:
             return None
+        if entity is OperationRun:
+            return next(
+                (item for item in self.added if isinstance(item, OperationRun)),
+                None,
+            )
         return None
 
     def add(self, item):
@@ -63,6 +73,15 @@ class FakeDB:
 
     async def commit(self):
         self.events.append(("commit", None))
+
+    async def execute(self, _statement):
+        if not getattr(_statement, "is_update", False):
+            return SimpleNamespace(scalar_one_or_none=lambda: uuid.uuid4())
+        run = next(item for item in self.added if isinstance(item, OperationRun))
+        run.state = "QUEUED"
+        run.queued_at = datetime.now(timezone.utc)
+        run.version += 1
+        return SimpleNamespace(scalar_one_or_none=lambda: run)
 
     @property
     def added(self):
@@ -110,9 +129,9 @@ async def test_run_sov_operation_queues_task_after_audit_commit(monkeypatch):
     task = FakeTask()
     apply_calls_when_invoked = []
 
-    def record_apply(*, args, queue):
+    def record_apply(*, args, queue, headers, task_id):
         apply_calls_when_invoked.append(("apply", db.events.copy()))
-        task.apply_async(args=args, queue=queue)
+        task.apply_async(args=args, queue=queue, headers=headers, task_id=task_id)
 
     monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", record_apply)
     async def active_variant(_db, _hospital_id):
@@ -122,38 +141,92 @@ async def test_run_sov_operation_queues_task_after_audit_commit(monkeypatch):
 
     response = await operations_api.run_sov_operation(hospital.id, db=db)
 
-    assert response == {
-        "detail": "AI 언급률 측정이 큐에 등록되었습니다.",
-        "hospital_id": str(hospital.id),
-    }
+    assert response["detail"] == "AI 언급률 측정이 큐에 등록되었습니다."
+    assert response["hospital_id"] == str(hospital.id)
+    assert response["operation_state"] == "QUEUED"
+    assert response["idempotent_replay"] is False
     assert task.calls == [{"args": [str(hospital.id)], "queue": "sov"}]
+    assert task.headers == [
+        {
+            "operation_run_id": response["operation_run_id"],
+            "task_id": response["task_id"],
+        }
+    ]
     # audit-row added, commit ran, then apply_async fired (in that order)
     assert apply_calls_when_invoked, "apply_async should have been called"
     events_at_apply = apply_calls_when_invoked[0][1]
-    assert events_at_apply[0][0] == "add"
-    assert events_at_apply[1] == ("commit", None)
-    assert [row.action for row in db.added] == ["run_sov_requested", "run_sov"]
-    assert db.added[0].detail["queued"] is False
-    assert db.added[1].detail["queued"] is True
-    assert db.added[0].actor == "AE-test"
+    assert isinstance(events_at_apply[0][1], OperationRun)
+    assert isinstance(events_at_apply[1][1], AdminAuditLog)
+    assert events_at_apply[2] == ("commit", None)
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == ["run_sov_requested", "run_sov"]
+    assert audit_rows[0].detail["queued"] is False
+    assert audit_rows[1].detail["queued"] is True
+    assert audit_rows[0].actor == "AE-test"
 
 
 async def test_queue_failure_never_records_queued_true(monkeypatch):
     hospital = _hospital(status=HospitalStatus.ACTIVE)
     db = FakeDB(hospital=hospital)
 
-    def fail_dispatch(*, args, queue):
+    def fail_dispatch(*, args, queue, headers, task_id):
+        del args, queue, headers, task_id
         raise ConnectionError("broker unavailable")
 
+    incident_requests = []
+
+    async def record_incident(_db, request, **_kwargs):
+        incident_requests.append(request)
+        return SimpleNamespace()
+
     monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", fail_dispatch)
+    monkeypatch.setattr(operation_runs, "open_or_touch_incident", record_incident)
 
     with pytest.raises(HTTPException) as exc:
         await operations_api.run_sov_operation(hospital.id, db=db)
 
     assert exc.value.status_code == 503
-    assert [row.action for row in db.added] == ["run_sov_requested", "run_sov_queue_failed"]
-    assert all(row.detail["queued"] is False for row in db.added)
-    assert db.added[1].detail["error_type"] == "ConnectionError"
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == [
+        "run_sov_requested",
+        "run_sov_queue_failed",
+    ]
+    assert all(row.detail["queued"] is False for row in audit_rows)
+    assert audit_rows[1].detail["error_code"] == "BROKER_UNAVAILABLE"
+    run = next(row for row in db.added if isinstance(row, OperationRun))
+    assert run.state == "FAILED"
+    assert exc.value.detail["operation_run_id"] == str(run.id)
+    assert [request.operation_run_id for request in incident_requests] == [run.id]
+
+
+async def test_idempotency_header_replays_same_operation_run(monkeypatch):
+    # Given: the same Admin command and client idempotency key
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+
+    async def active_variant(_db, _hospital_id):
+        return True
+
+    monkeypatch.setattr(operations_api, "_has_active_query_variant", active_variant)
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", task.apply_async)
+
+    # When: the route receives a browser retry with the same key
+    first = await operations_api.run_sov_operation(
+        hospital.id,
+        db=db,
+        idempotency_key="OPS-QA-API-REPLAY",
+    )
+    second = await operations_api.run_sov_operation(
+        hospital.id,
+        db=db,
+        idempotency_key="OPS-QA-API-REPLAY",
+    )
+
+    # Then: both responses identify one run and only one broker dispatch exists
+    assert second["operation_run_id"] == first["operation_run_id"]
+    assert second["idempotent_replay"] is True
+    assert task.calls == [{"args": [str(hospital.id)], "queue": "sov"}]
 
 
 async def test_run_sov_operation_rejects_onboarding_hospital():
@@ -221,7 +294,7 @@ async def test_regenerate_content_image_operation_queues_without_replacing_text(
     assert response["detail"] == "Content image generation queued"
     assert task.calls == [{"args": [str(content.id)], "queue": "content"}]
     assert db.committed is True
-    assert [row.action for row in db.added] == [
+    assert [row.action for row in db.added if isinstance(row, AdminAuditLog)] == [
         "regenerate_content_image_requested",
         "regenerate_content_image",
     ]
@@ -407,7 +480,8 @@ async def test_actor_uses_admin_actor_name_setting(monkeypatch):
 
     await operations_api.run_sov_operation(hospital.id, db=db)
 
-    assert db.added[0].actor == "Operator-A"
+    audit_row = next(row for row in db.added if isinstance(row, AdminAuditLog))
+    assert audit_row.actor == "Operator-A"
 
 
 def test_serialize_audit_log():
