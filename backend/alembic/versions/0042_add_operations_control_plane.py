@@ -207,7 +207,6 @@ def upgrade() -> None:
             "next_attempt_at",
             sa.DateTime(timezone=True),
             server_default=sa.func.now(),
-            nullable=False,
         ),
         sa.Column("lease_owner", sa.String(255)),
         sa.Column("lease_expires_at", sa.DateTime(timezone=True)),
@@ -236,6 +235,12 @@ def upgrade() -> None:
             "(state = 'SENT' AND sent_at IS NOT NULL) OR "
             "(state <> 'SENT' AND sent_at IS NULL)",
             name="ck_notification_outbox_sent_fact",
+        ),
+        sa.CheckConstraint(
+            "(state IN ('PENDING', 'RETRYING') AND next_attempt_at IS NOT NULL) OR "
+            "(state IN ('SENDING', 'HOLD', 'SENT', 'FAILED') "
+            "AND next_attempt_at IS NULL)",
+            name="ck_notification_outbox_retry_schedule",
         ),
         sa.ForeignKeyConstraint(["hospital_id"], ["hospitals.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["incident_id"], ["incidents.id"], ondelete="SET NULL"),

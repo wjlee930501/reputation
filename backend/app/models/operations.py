@@ -267,6 +267,12 @@ class NotificationOutbox(Base):
             "(state <> 'SENT' AND sent_at IS NULL)",
             name="ck_notification_outbox_sent_fact",
         ),
+        CheckConstraint(
+            "(state IN ('PENDING', 'RETRYING') AND next_attempt_at IS NOT NULL) OR "
+            "(state IN ('SENDING', 'HOLD', 'SENT', 'FAILED') "
+            "AND next_attempt_at IS NULL)",
+            name="ck_notification_outbox_retry_schedule",
+        ),
         Index(
             "ix_notification_outbox_claim",
             "state",
@@ -303,8 +309,8 @@ class NotificationOutbox(Base):
     fallback_text: Mapped[str] = mapped_column(String(1000), nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3", nullable=False)
-    next_attempt_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
     lease_owner: Mapped[str | None] = mapped_column(String(255))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

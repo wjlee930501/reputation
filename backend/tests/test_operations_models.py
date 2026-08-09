@@ -73,6 +73,7 @@ def test_operations_tables_encode_keys_versions_leases_and_queue_indexes() -> No
     assert isinstance(runs.c.result_summary.type, sa.JSON)
     assert isinstance(outbox.c.payload.type, sa.JSON)
     assert isinstance(outbox.c.provider_response.type, sa.JSON)
+    assert outbox.c.next_attempt_at.nullable is True
     assert "parent_run_id" in runs.c
     assert "retry_of_run_id" not in runs.c
     assert incidents.c.occurrence_count.nullable is False
@@ -94,6 +95,16 @@ def test_operations_tables_encode_keys_versions_leases_and_queue_indexes() -> No
         constraint.name == "uq_notification_outbox_dedupe_key"
         for constraint in outbox.constraints
     )
+    scheduling_check = next(
+        constraint
+        for constraint in outbox.constraints
+        if constraint.name == "ck_notification_outbox_retry_schedule"
+    )
+    scheduling_sql = str(scheduling_check.sqltext)
+    assert "PENDING" in scheduling_sql and "RETRYING" in scheduling_sql
+    assert "next_attempt_at IS NOT NULL" in scheduling_sql
+    assert "SENDING" in scheduling_sql and "HOLD" in scheduling_sql
+    assert "next_attempt_at IS NULL" in scheduling_sql
 
 
 def test_postgres_preserves_recovery_and_scopes_terminal_idempotency() -> None:

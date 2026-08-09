@@ -131,6 +131,19 @@ def test_upgrade_declares_minimal_control_plane_contract(monkeypatch) -> None:
         if isinstance(item, sa.Column)
     }
     assert "provider_response" in outbox_columns
+    outbox_next_attempt = next(
+        item
+        for item in recorder.tables["notification_outbox"]
+        if isinstance(item, sa.Column) and item.name == "next_attempt_at"
+    )
+    assert outbox_next_attempt.nullable is True
+    outbox_checks = " ".join(
+        str(item.sqltext)
+        for item in recorder.tables["notification_outbox"]
+        if isinstance(item, sa.CheckConstraint)
+    )
+    assert "next_attempt_at IS NOT NULL" in outbox_checks
+    assert "next_attempt_at IS NULL" in outbox_checks
 
 
 def test_downgrade_removes_only_control_plane_artifacts(monkeypatch) -> None:
