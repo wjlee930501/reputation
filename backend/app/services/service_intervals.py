@@ -7,12 +7,21 @@ from enum import StrEnum
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.hospital import Hospital
 from app.models.monthly_control import HospitalServiceInterval
 
 
 class ServiceIntervalProvenance(StrEnum):
     ACTIVATION = "ACTIVATION"
     RESUME = "RESUME"
+
+
+async def _lock_hospital(db: AsyncSession, hospital_id: uuid.UUID) -> None:
+    """Serialize all interval transitions for one hospital transaction."""
+
+    await db.scalar(
+        select(Hospital.id).where(Hospital.id == hospital_id).with_for_update()
+    )
 
 
 async def open_service_interval(
@@ -24,6 +33,7 @@ async def open_service_interval(
 ) -> HospitalServiceInterval:
     """Open one interval, reusing an existing open interval on a replay."""
 
+    await _lock_hospital(db, hospital_id)
     current = await db.scalar(
         select(HospitalServiceInterval)
         .where(
@@ -48,6 +58,7 @@ async def close_service_interval(
 ) -> HospitalServiceInterval | None:
     """Close exactly the current open interval, leaving provenance unchanged."""
 
+    await _lock_hospital(db, hospital_id)
     current = await db.scalar(
         select(HospitalServiceInterval)
         .where(
