@@ -16,6 +16,7 @@ from app.models.essence import (
     SourceStatus,
     SourceType,
 )
+from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import (
     DomainDnsStrategy,
     DomainManagementMode,
@@ -52,6 +53,7 @@ from app.models.sov import (
 
 __all__ = [
     "Hospital", "Plan", "HospitalStatus", "DomainManagementMode", "DomainDnsStrategy",
+    "HospitalHandoff", "HandoffState", "HandoffSource",
     "AdminAuditLog", "AdminUser",
     "ContentSchedule", "ContentItem", "ContentType", "ContentStatus", "PLAN_DISTRIBUTION",
     "HospitalSourceAsset", "HospitalSourceEvidenceNote", "HospitalContentPhilosophy",
