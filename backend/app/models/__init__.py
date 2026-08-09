@@ -40,6 +40,14 @@ from app.models.lead_diagnosis import (
     MentionVerdict,
     ReportStatus,
 )
+from app.models.monthly_control import (
+    HospitalServiceInterval,
+    MonthlyDeliveryEvent,
+    MonthlyMeasurementAttempt,
+    MonthlyMeasurementCell,
+    MonthlyMeasurementManifest,
+    MonthlyReportArtifact,
+)
 from app.models.report import MonthlyReport
 from app.models.sov import (
     AIQueryTarget,
@@ -61,6 +69,8 @@ __all__ = [
     "AIQueryTarget", "AIQueryVariant", "ExposureAction", "ExposureGap",
     "MeasurementRun", "QueryMatrix", "SovRecord",
     "MonthlyReport",
+    "MonthlyMeasurementManifest", "MonthlyMeasurementCell", "MonthlyMeasurementAttempt",
+    "HospitalServiceInterval", "MonthlyReportArtifact", "MonthlyDeliveryEvent",
     "SalesLead", "LEAD_SOURCE_INQUIRY", "LEAD_SOURCE_AI_DIAGNOSIS",
     "LeadDiagnosis", "LeadDiagnosisResult", "LeadDiagnosisSlotDay", "LeadQueryAnswer",
     "LeadReportToken", "LeadReportArtifact", "LeadDelivery",

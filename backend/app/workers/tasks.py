@@ -41,6 +41,11 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.monthly_control import (
+    MonthlyMeasurementAttempt,
+    MonthlyMeasurementCell,
+    MonthlyMeasurementManifest,
+)
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
 from app.services import cost_guard, indexnow, notifier
@@ -62,6 +67,11 @@ from app.services.essence_engine import (
 )
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
+from app.services.monthly_manifest import (
+    apply_manifest_to_report,
+    freeze_dispatch_manifest,
+    link_attempt,
+)
 from app.services.report_engine import (
     build_content_attribution_summary,
     build_doctor_report_view,
@@ -1662,6 +1672,19 @@ def run_sov_for_hospital(self, hospital_id: str):
                 )
                 return
 
+            manifest = freeze_dispatch_manifest(
+                db,
+                hospital.id,
+                today_kst.year,
+                today_kst.month,
+                measurement_specs,
+                gemini_configured=bool(settings.GEMINI_API_KEY),
+            )
+            db.commit()
+            manifest_cells = {
+                (cell.query_key, cell.platform): cell for cell in manifest.cells
+            }
+
             # 비용 가드: spec 개수 × **반복 횟수**만큼 예산을 run 단위로 일괄 확인.
             # 각 spec은 run_single_query에서 SOV_REPEAT_WEEKLY번 실제 호출을 낸다.
             # 반복 횟수를 빼면 가드가 실제 호출의 1/SOV_REPEAT_WEEKLY만 예약한다.
@@ -1709,6 +1732,7 @@ def run_sov_for_hospital(self, hospital_id: str):
                 },
             )
             records = []
+            attempt_pairs = []
             success_count = 0
             failure_count = 0
             for spec in measurement_specs:
@@ -1727,8 +1751,7 @@ def run_sov_for_hospital(self, hospital_id: str):
                         success_count += 1
                     else:
                         failure_count += 1
-                    records.append(
-                        _build_sov_record_from_result(
+                    record = _build_sov_record_from_result(
                             hospital_id=hospital.id,
                             query_id=spec["query_id"],
                             measurement_run_id=run.id,
@@ -1737,9 +1760,19 @@ def run_sov_for_hospital(self, hospital_id: str):
                             target_id=spec["target_id"],
                             variant_id=spec["variant_id"],
                         )
+                    records.append(record)
+                    query_key = (
+                        f"variant:{spec['variant_id']}"
+                        if spec.get("variant_id")
+                        else f"query:{spec['query_id']}"
+                    )
+                    attempt_pairs.append(
+                        (manifest_cells[(query_key, spec["platform"])], record)
                     )
 
             db.add_all(records)
+            db.flush()
+            db.add_all([link_attempt(cell, record) for cell, record in attempt_pairs])
             _finish_measurement_run(run, success_count, failure_count)
             db.commit()
 
@@ -2211,6 +2244,14 @@ def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str
     period_start = now.floor("month").datetime
     period_end = now.ceil("month").datetime
 
+    manifest = db.execute(
+        select(MonthlyMeasurementManifest).where(
+            MonthlyMeasurementManifest.hospital_id == h.id,
+            MonthlyMeasurementManifest.period_year == now.year,
+            MonthlyMeasurementManifest.period_month == now.month,
+        )
+    ).scalar_one_or_none()
+
     # 월간 리포트 중복 생성 방지
     existing_check = db.execute(
         select(MonthlyReport).where(
@@ -2230,16 +2271,32 @@ def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str
     # 이번 달 AI 답변 언급률 집계
     # QueryMatrix를 조인해 질문 유형을 가져온다 — SovRecord에는 유형이 없고,
     # 유형 없이는 INFO(지역 없는 의학 설명 질문)를 분모에서 뺄 수 없다.
-    sov_stmt = (
-        select(SovRecord, QueryMatrix.query_intent)
-        .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
-        .where(
-            SovRecord.hospital_id == h.id,
-            SovRecord.measured_at >= period_start,
-            SovRecord.measured_at <= period_end,
-        )
-    )
-    sov_rows = db.execute(sov_stmt).all()
+    if manifest is None:
+        sov_rows = []
+    else:
+        attempt_rows = db.execute(
+            select(
+                MonthlyMeasurementCell.id,
+                SovRecord,
+                QueryMatrix.query_intent,
+            )
+            .join(
+                MonthlyMeasurementAttempt,
+                MonthlyMeasurementAttempt.cell_id == MonthlyMeasurementCell.id,
+            )
+            .join(SovRecord, SovRecord.id == MonthlyMeasurementAttempt.sov_record_id)
+            .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
+            .where(MonthlyMeasurementCell.manifest_id == manifest.id)
+            .order_by(MonthlyMeasurementCell.id, SovRecord.measured_at, SovRecord.id)
+        ).all()
+        earliest_success = {}
+        for cell_id, record, query_intent in attempt_rows:
+            if (
+                str(record.measurement_status or "SUCCESS").upper() == "SUCCESS"
+                and cell_id not in earliest_success
+            ):
+                earliest_success[cell_id] = (record, query_intent)
+        sov_rows = list(earliest_success.values())
     sov_records = [row[0] for row in sov_rows]
     sov_dicts = [
         {
@@ -2353,8 +2410,7 @@ def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str
     except Exception as exc:  # noqa: BLE001 — 원장 판본 실패가 월간 리포트를 막지 않는다.
         logger.error("Doctor report rendering failed for %s: %s", h.name, exc)
 
-    db.add(
-        MonthlyReport(
+    report = MonthlyReport(
             hospital_id=h.id,
             period_year=now.year,
             period_month=now.month,
@@ -2375,7 +2431,12 @@ def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str
             },
             essence_summary=essence_summary,
         )
-    )
+    if manifest is None:
+        report.quality = "BLOCKED"
+        report.delivery_blockers = ["MANIFEST_MISSING", "DOCTOR_ARTIFACT_UNVALIDATED"]
+    else:
+        apply_manifest_to_report(report, manifest)
+    db.add(report)
     db.commit()
 
     _run_async(
