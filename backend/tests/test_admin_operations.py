@@ -302,6 +302,62 @@ async def test_regenerate_content_image_operation_queues_without_replacing_text(
     assert content.body == "검수 중인 본문"
 
 
+async def test_owner_force_release_is_versioned_audited_and_idempotent():
+    claimed_at = datetime.now(timezone.utc)
+    hospital = _hospital()
+    content = _content(
+        hospital.id,
+        title="검수 중인 제목",
+        body=None,
+        generation_claimed_at=claimed_at,
+    )
+
+    class ForceReleaseDB(FakeDB):
+        async def flush(self):
+            return None
+
+        async def rollback(self):
+            return None
+
+        async def execute(self, statement):
+            if getattr(getattr(statement, "table", None), "name", None) == "content_items":
+                return SimpleNamespace(scalar_one_or_none=lambda: content.id)
+            return await super().execute(statement)
+
+    db = ForceReleaseDB(hospital=hospital, content=content)
+    actor = SimpleNamespace(id=uuid.uuid4(), email="owner@example.com", role="OWNER")
+    payload = operations_api.GenerationClaimReleaseRequest(
+        expected_claimed_at=claimed_at,
+        reason="stale worker confirmed",
+    )
+
+    first = await operations_api.force_release_generation_claim(
+        hospital.id,
+        content.id,
+        payload,
+        idempotency_key="release-claim-001",
+        db=db,
+        actor=actor,
+    )
+    second = await operations_api.force_release_generation_claim(
+        hospital.id,
+        content.id,
+        payload,
+        idempotency_key="release-claim-001",
+        db=db,
+        actor=actor,
+    )
+
+    assert first["released"] is True
+    assert first["operation_state"] == "SUCCEEDED"
+    assert second["operation_run_id"] == first["operation_run_id"]
+    assert second["idempotent_replay"] is True
+    audits = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert len(audits) == 1
+    assert audits[0].detail["reason"] == "stale worker confirmed"
+    assert content.title == "검수 중인 제목"
+
+
 async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch):
     hospital = _hospital(schedule_set=True)
     db = FakeDB(hospital=hospital)

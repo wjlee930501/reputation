@@ -11,21 +11,30 @@ Admin에서 해당 아이템을 취소(CANCELLED)할 수 있다.
 mock 기반 유닛 테스트로는 이 보장을 확인할 수 없다 — 확인해야 하는 것이 rowcount와
 WHERE 절의 실제 SQL 동작이기 때문이다.
 """
+
 import uuid
 from datetime import date
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentStatus
+from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import Incident, NotificationOutbox, OperationRun, OperationRunState
+from app.workers import generation_incident_control, tasks
+from app.workers.generation_batch_run import GenerationBatchRecorder
+from app.workers.generation_run_control import GenerationItemState
 from app.workers.nightly_generation_batch import write_back_generated_content
 
 
 @pytest.fixture
 def pg_session(pg_conn):
     """테스트 트랜잭션에 묶인 ORM 세션 — 프로덕션 함수를 그대로 호출하기 위한 것."""
-    session = Session(bind=pg_conn, expire_on_commit=False, join_transaction_mode="create_savepoint")
+    session = Session(
+        bind=pg_conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
     try:
         yield session
     finally:
@@ -199,3 +208,281 @@ def test_unfinished_claims_are_released_so_a_redelivery_can_pick_them_up(pg_conn
     assert rows[unfinished_id] is None, "미생성 슬롯의 claim이 남아 다음 실행을 막는다"
     # 생성에 성공한 슬롯은 claim 이력을 유지한다(중복 생성 방지 신호).
     assert rows[generated_id] is not None
+
+
+def test_claim_release_is_scoped_to_the_exact_attempt(pg_conn, pg_session):
+    """늦은 워커의 finally가 더 최신 claim을 해제하면 안 된다."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.workers.nightly_generation_batch import release_unfinished_claims
+
+    item_id = _seed_item(pg_conn, status="DRAFT")
+    old_claim = datetime.now(timezone.utc) - timedelta(hours=3)
+    new_claim = datetime.now(timezone.utc)
+    pg_conn.execute(
+        text("UPDATE content_items SET generation_claimed_at = :t WHERE id = :id"),
+        {"t": new_claim, "id": item_id},
+    )
+
+    released = release_unfinished_claims(
+        pg_session,
+        [item_id],
+        expected_claimed_at=old_claim,
+    )
+
+    assert released == 0
+    stored = pg_conn.execute(
+        text("SELECT generation_claimed_at FROM content_items WHERE id = :id"),
+        {"id": item_id},
+    ).scalar_one()
+    assert stored == new_claim
+
+
+def test_mixed_generation_batch_finishes_partial_with_retryable_failed_item(pg_conn, pg_session):
+    success_id = _seed_item(pg_conn, status="DRAFT")
+    failure_id = _seed_item(pg_conn, status="DRAFT")
+    hospital_ids = dict(
+        pg_conn.execute(
+            text("SELECT id, hospital_id FROM content_items WHERE id IN (:a, :b)"),
+            {"a": success_id, "b": failure_id},
+        ).all()
+    )
+    recorder = GenerationBatchRecorder(
+        pg_session,
+        "task-14-partial-batch",
+        date(2026, 7, 14),
+        date(2026, 7, 15),
+    )
+
+    recorder.record(success_id, GenerationItemState.SUCCEEDED)
+    recorder.item_run(
+        success_id,
+        hospital_ids[success_id],
+        "REGENERATE_CONTENT",
+        OperationRunState.SUCCEEDED,
+    )
+    recorder.record(
+        failure_id,
+        GenerationItemState.FAILED,
+        safe_error_code="PROVIDER_TIMEOUT",
+        safe_error_message="운영 센터에서 재시도해 주세요.",
+    )
+    failed = recorder.item_run(
+        failure_id,
+        hospital_ids[failure_id],
+        "REGENERATE_CONTENT",
+        OperationRunState.FAILED,
+        safe_error_code="PROVIDER_TIMEOUT",
+        safe_error_message="운영 센터에서 재시도해 주세요.",
+    )
+    state = recorder.finish()
+
+    row = pg_conn.execute(
+        text(
+            "SELECT state, total_count, success_count, failure_count, result_summary "
+            "FROM operation_runs WHERE id = :id"
+        ),
+        {"id": recorder.run.id},
+    ).one()
+    assert state == OperationRunState.PARTIAL
+    assert (row.state, row.total_count, row.success_count, row.failure_count) == (
+        "PARTIAL",
+        2,
+        1,
+        1,
+    )
+    failed_payload = row.result_summary["items"][str(failure_id)]
+    assert failed_payload["safe_error_code"] == "PROVIDER_TIMEOUT"
+    assert failed_payload["next_retry_at"]
+    child = pg_conn.execute(
+        text(
+            "SELECT state, operation_type, parent_run_id, safe_error_code "
+            "FROM operation_runs WHERE id = :id"
+        ),
+        {"id": failed.id},
+    ).one()
+    assert child.state == "FAILED"
+    assert child.operation_type == "REGENERATE_CONTENT"
+    assert child.parent_run_id == recorder.run.id
+    assert child.safe_error_code == "PROVIDER_TIMEOUT"
+
+
+def test_all_due_items_behind_live_leases_finish_failed(pg_conn, pg_session, monkeypatch):
+    from datetime import datetime, timezone
+
+    item_id = _seed_item(pg_conn, status="DRAFT")
+    pg_conn.execute(
+        text("UPDATE content_items SET generation_claimed_at = :t WHERE id = :id"),
+        {"t": datetime.now(timezone.utc), "id": item_id},
+    )
+    recorder = GenerationBatchRecorder(
+        pg_session,
+        f"task-14-all-locked-{uuid.uuid4()}",
+        date(2026, 7, 15),
+        date(2026, 7, 15),
+    )
+
+    def close_async(coroutine):
+        coroutine.close()
+
+    monkeypatch.setattr(tasks, "_run_async", close_async)
+    stuck_items = tasks.load_stuck_claims(
+        pg_session,
+        date(2026, 7, 15),
+        date(2026, 7, 15),
+    )
+    tasks._record_locked_generation_items(recorder, stuck_items)
+    state = recorder.finish()
+
+    pg_session.expire_all()
+    run = pg_session.get(OperationRun, recorder.run.id)
+    assert state == OperationRunState.FAILED
+    assert run is not None
+    assert (run.total_count, run.success_count, run.failure_count) == (1, 0, 1)
+    assert run.result_summary["items"][str(item_id)]["safe_error_code"] == (
+        "GENERATION_LEASE_ACTIVE"
+    )
+
+
+def test_processed_and_live_lease_items_finish_partial(pg_conn, pg_session, monkeypatch):
+    from datetime import datetime, timezone
+
+    success_id = _seed_item(pg_conn, status="DRAFT")
+    locked_id = _seed_item(pg_conn, status="DRAFT")
+    pg_conn.execute(
+        text("UPDATE content_items SET body = 'saved' WHERE id = :id"),
+        {"id": success_id},
+    )
+    pg_conn.execute(
+        text("UPDATE content_items SET generation_claimed_at = :t WHERE id = :id"),
+        {"t": datetime.now(timezone.utc), "id": locked_id},
+    )
+    recorder = GenerationBatchRecorder(
+        pg_session,
+        f"task-14-mixed-locked-{uuid.uuid4()}",
+        date(2026, 7, 15),
+        date(2026, 7, 15),
+    )
+    recorder.record(success_id, GenerationItemState.SUCCEEDED)
+
+    def close_async(coroutine):
+        coroutine.close()
+
+    monkeypatch.setattr(tasks, "_run_async", close_async)
+    stuck_items = tasks.load_stuck_claims(
+        pg_session,
+        date(2026, 7, 15),
+        date(2026, 7, 15),
+    )
+    tasks._record_locked_generation_items(recorder, stuck_items)
+    state = recorder.finish()
+
+    pg_session.expire_all()
+    run = pg_session.get(OperationRun, recorder.run.id)
+    assert state == OperationRunState.PARTIAL
+    assert run is not None
+    assert (run.total_count, run.success_count, run.failure_count) == (2, 1, 1)
+    assert set(run.result_summary["items"]) == {str(success_id), str(locked_id)}
+
+
+async def test_generation_failure_opens_outbox_and_retry_recovers_it(pg_async_session, monkeypatch):
+    hospital = Hospital(
+        id=uuid.uuid4(),
+        name="복구통합의원",
+        slug=f"recovery-{uuid.uuid4().hex[:8]}",
+        status=HospitalStatus.ACTIVE,
+    )
+    item_id = uuid.uuid4()
+    failed_run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="REGENERATE_CONTENT",
+        state=OperationRunState.FAILED,
+        request_payload={},
+        attempt_count=1,
+        total_count=1,
+        success_count=0,
+        failure_count=1,
+        skipped_count=0,
+        version=1,
+    )
+    hospital_id = hospital.id
+    hospital_name = hospital.name
+    failed_run_id = failed_run.id
+    pg_async_session.add_all((hospital, failed_run))
+    await pg_async_session.commit()
+
+    class SharedSessions:
+        def __call__(self):
+            return AsyncSession(
+                bind=pg_async_session.bind,
+                expire_on_commit=False,
+                join_transaction_mode="create_savepoint",
+            )
+
+    monkeypatch.setattr(
+        generation_incident_control,
+        "get_async_sessionmaker",
+        lambda: SharedSessions(),
+    )
+
+    incident_id = await generation_incident_control.open_generation_incident(
+        item_id=item_id,
+        hospital_id=hospital_id,
+        hospital_name=hospital_name,
+        run_id=failed_run_id,
+        code="PROVIDER_TIMEOUT",
+        message="운영 센터에서 재시도해 주세요.",
+    )
+
+    pg_async_session.expire_all()
+    incident = await pg_async_session.get(Incident, incident_id)
+    assert incident is not None
+    assert incident.state == "OPEN"
+    assert incident.safe_error_code == "PROVIDER_TIMEOUT"
+    open_outbox = await pg_async_session.scalar(
+        select(func.count(NotificationOutbox.id)).where(
+            NotificationOutbox.incident_id == incident_id,
+            NotificationOutbox.notification_type == "INCIDENT_OPEN",
+        )
+    )
+    assert open_outbox == 1
+
+    succeeded_run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type="REGENERATE_CONTENT",
+        state=OperationRunState.SUCCEEDED,
+        parent_run_id=failed_run_id,
+        request_payload={},
+        attempt_count=1,
+        total_count=1,
+        success_count=1,
+        failure_count=0,
+        skipped_count=0,
+        version=1,
+    )
+    succeeded_run_id = succeeded_run.id
+    pg_async_session.add(succeeded_run)
+    await pg_async_session.commit()
+
+    recovered = await generation_incident_control.recover_generation_incidents(
+        item_id,
+        hospital_id,
+        hospital_name,
+        succeeded_run_id,
+    )
+
+    assert recovered == 1
+    pg_async_session.expire_all()
+    incident = await pg_async_session.get(Incident, incident_id)
+    assert incident is not None
+    assert incident.state == "RECOVERED"
+    assert incident.operation_run_id == succeeded_run_id
+    recovery_outbox = await pg_async_session.scalar(
+        select(func.count(NotificationOutbox.id)).where(
+            NotificationOutbox.incident_id == incident_id,
+            NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
+        )
+    )
+    assert recovery_outbox == 1

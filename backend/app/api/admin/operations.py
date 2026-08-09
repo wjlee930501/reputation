@@ -12,7 +12,9 @@ from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from sqlalchemy import case, func, select
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from sqlalchemy import case, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_owner_account
@@ -26,7 +28,7 @@ from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
-from app.models.operations import JSONValue
+from app.models.operations import JSONValue, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant
 from app.schemas.operations import (
@@ -43,6 +45,7 @@ from app.schemas.operations import (
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
+from app.services.incident_safety import sanitize_operator_text
 from app.services.operation_runs import (
     DispatchTask,
     OperationCommand,
@@ -73,6 +76,17 @@ IdempotencyKeyHeader = Annotated[
     str | None,
     Header(alias="Idempotency-Key", min_length=1, max_length=255),
 ]
+RequiredIdempotencyKeyHeader = Annotated[
+    str,
+    Header(alias="Idempotency-Key", min_length=1, max_length=255),
+]
+
+
+class GenerationClaimReleaseRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    expected_claimed_at: AwareDatetime
+    reason: str = Field(min_length=3, max_length=200)
 
 
 async def _enqueue_with_truthful_audit(
@@ -615,6 +629,146 @@ async def regenerate_content_image_operation(
         "operation_state": dispatch.run.state,
         "task_id": dispatch.run.task_id,
         "idempotent_replay": dispatch.replayed,
+    }
+
+
+@router.post("/{hospital_id}/content/{content_id}/generation-claim/release")
+async def force_release_generation_claim(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    payload: GenerationClaimReleaseRequest,
+    idempotency_key: RequiredIdempotencyKeyHeader,
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_owner_account),
+) -> dict[str, object]:
+    """Release only the exact stale generation lease an OWNER inspected."""
+    await _get_hospital_or_404(db, hospital_id)
+    item = await db.get(ContentItem, content_id)
+    if item is None or item.hospital_id != hospital_id:
+        raise HTTPException(status_code=404, detail="Content not found")
+    operation_type = "FORCE_RELEASE_GENERATION_CLAIM"
+    existing = await db.scalar(
+        select(OperationRun).where(
+            OperationRun.requested_by_id == actor.id,
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == operation_type,
+            OperationRun.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        source_id = existing.request_payload.get("source_id")
+        if source_id != str(content_id):
+            raise HTTPException(
+                status_code=409,
+                detail="같은 요청 키가 다른 콘텐츠 복구 작업에 이미 사용됐습니다.",
+            )
+        return _claim_release_response(existing, replayed=True)
+
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type=operation_type,
+        state=OperationRunState.REQUESTED,
+        idempotency_key=idempotency_key,
+        requested_by_id=actor.id,
+        request_payload={
+            "source_type": "content_item",
+            "source_id": str(content_id),
+            "expected_claimed_at": payload.expected_claimed_at.isoformat(),
+        },
+        attempt_count=1,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        version=1,
+    )
+    db.add(run)
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        replay = await db.scalar(
+            select(OperationRun).where(
+                OperationRun.requested_by_id == actor.id,
+                OperationRun.hospital_id == hospital_id,
+                OperationRun.operation_type == operation_type,
+                OperationRun.idempotency_key == idempotency_key,
+            )
+        )
+        if replay is None:
+            raise
+        return _claim_release_response(replay, replayed=True)
+
+    released = (
+        await db.execute(
+            update(ContentItem)
+            .where(
+                ContentItem.id == content_id,
+                ContentItem.hospital_id == hospital_id,
+                ContentItem.status.in_((ContentStatus.DRAFT, ContentStatus.REJECTED)),
+                ContentItem.body.is_(None),
+                ContentItem.generation_claimed_at == payload.expected_claimed_at,
+            )
+            .values(generation_claimed_at=None)
+            .returning(ContentItem.id)
+        )
+    ).scalar_one_or_none()
+    succeeded = released is not None
+    run.state = OperationRunState.SUCCEEDED if succeeded else OperationRunState.FAILED
+    run.success_count = int(succeeded)
+    run.failure_count = int(not succeeded)
+    run.completed_at = datetime.now(UTC)
+    run.result_summary = {"released": succeeded}
+    run.safe_error_code = None if succeeded else "GENERATION_CLAIM_VERSION_CONFLICT"
+    run.safe_error_message = (
+        None if succeeded else "claim 상태가 이미 변경됐습니다. 최신 상태를 다시 확인해 주세요."
+    )
+    run.version += 1
+    await write_audit_log(
+        db,
+        action="force_release_generation_claim",
+        hospital_id=hospital_id,
+        actor=actor.email,
+        target_type="content_item",
+        target_id=content_id,
+        detail={
+            "operation_run_id": str(run.id),
+            "released": succeeded,
+            "reason": sanitize_operator_text(payload.reason, limit=200),
+            "idempotency_key_present": True,
+        },
+    )
+    await db.commit()
+    if not succeeded:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": run.safe_error_code,
+                "message": run.safe_error_message,
+                "operation_run_id": str(run.id),
+            },
+        )
+    return _claim_release_response(run, replayed=False)
+
+
+def _claim_release_response(run: OperationRun, *, replayed: bool) -> dict[str, object]:
+    released = bool(run.result_summary and run.result_summary.get("released"))
+    if run.state == OperationRunState.FAILED:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": run.safe_error_code,
+                "message": run.safe_error_message,
+                "operation_run_id": str(run.id),
+            },
+        )
+    return {
+        "content_id": str(run.request_payload.get("source_id")),
+        "released": released,
+        "operation_run_id": str(run.id),
+        "operation_state": run.state,
+        "idempotent_replay": replayed,
     }
 
 

@@ -37,6 +37,23 @@ def test_generation_catchup_window_is_seven_days():
     assert tasks.GENERATION_CATCHUP_DAYS == 7
 
 
+@pytest.mark.parametrize(
+    ("error", "expected_code"),
+    [
+        (TimeoutError("secret-token"), "PROVIDER_TIMEOUT"),
+        (ConnectionError("secret-token"), "PROVIDER_UNAVAILABLE"),
+        (ValueError("secret-token"), "GENERATION_REJECTED"),
+        (RuntimeError("secret-token"), "GENERATION_FAILED"),
+    ],
+)
+def test_generation_failure_classification_never_persists_exception_text(error, expected_code):
+    code, message = tasks.classify_generation_failure(error)
+
+    assert code == expected_code
+    assert str(error) not in message
+    assert "운영 센터" in message
+
+
 def test_nightly_generation_stmt_filters_hospital_status():
     """야간 생성은 ACTIVE/PENDING_DOMAIN 병원만 대상 — PAUSED 등에 생성 비용 발생 방지 (결함 8)."""
     stmt = tasks._nightly_generation_stmt(date(2026, 6, 3), date(2026, 6, 11))
@@ -312,8 +329,7 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
     written = db.written_values[0]
     # SQLAlchemy는 .values()의 값을 BindParameter로 감싼다 — 실제 값을 꺼낸다.
     values = {
-        str(getattr(col, "key", col)): getattr(val, "value", val)
-        for col, val in written.items()
+        str(getattr(col, "key", col)): getattr(val, "value", val) for col, val in written.items()
     }
     assert values["status"] == tasks.ContentStatus.DRAFT
     assert values["content_philosophy_id"] == philosophy.id
@@ -323,6 +339,46 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
     assert "published_by" not in values
     assert item.published_at is None
     assert item.published_by is None
+
+
+def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        content_philosophy_id=uuid.uuid4(),
+        essence_status=None,
+        essence_check_summary=None,
+    )
+    hospital = SimpleNamespace(id=item.hospital_id, name="준비중의원")
+
+    class ExistingTitles:
+        def all(self):
+            return []
+
+    class DB:
+        def __init__(self):
+            self.commit_calls = 0
+
+        def execute(self, _statement):
+            return ExistingTitles()
+
+        def commit(self):
+            self.commit_calls += 1
+
+    async def forbidden_call(*_args, **_kwargs):
+        raise AssertionError("승인 전에는 공급자/비용 가드를 호출하면 안 된다")
+
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", forbidden_call)
+    monkeypatch.setattr(tasks, "generate_content", forbidden_call)
+
+    outcome, code, _message = tasks._generate_single_content_item(DB(), item, hospital)
+
+    assert outcome == tasks.GenerationItemState.SKIPPED
+    assert code == "MISSING_APPROVED_ESSENCE"
+    assert item.content_philosophy_id is None
+    assert item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
+    assert item.essence_check_summary["blocking"] is True
 
 
 def test_content_item_schedule_slots_have_db_uniqueness():
@@ -460,11 +516,17 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
     ]
     schedules = [
         SimpleNamespace(
-            id="s1", hospital=hospitals[0], plan="PLAN_4", publish_days=[0],
+            id="s1",
+            hospital=hospitals[0],
+            plan="PLAN_4",
+            publish_days=[0],
             active_from=date(2026, 1, 1),
         ),
         SimpleNamespace(
-            id="s2", hospital=hospitals[1], plan="PLAN_4", publish_days=[0],
+            id="s2",
+            hospital=hospitals[1],
+            plan="PLAN_4",
+            publish_days=[0],
             active_from=date(2026, 1, 1),
         ),
     ]

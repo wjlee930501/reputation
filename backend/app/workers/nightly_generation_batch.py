@@ -38,6 +38,7 @@ def write_back_generated_content(db, *, item_id, values: dict[str, Any]) -> int:
     )
     return result.rowcount
 
+
 # 야간 생성 대상 병원 상태 — PAUSED/ONBOARDING 병원은 생성 비용을 발생시키지 않도록 제외.
 NIGHTLY_GENERATION_HOSPITAL_STATUSES = (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN)
 
@@ -100,13 +101,21 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
         truncated_count = max(int(overflow) - NIGHTLY_GENERATION_CAP, 1)
     claimed_items = items[:NIGHTLY_GENERATION_CAP]
     for item in claimed_items:
+        # SQLAlchemy에 영속화되지 않는 시도 메타데이터. 새 배치가 만료 claim을
+        # 인수했는지와 finally가 해제할 정확한 lease 시각을 호출부에 전달한다.
+        item._generation_reclaimed_stale = getattr(item, "generation_claimed_at", None) is not None
         item.generation_claimed_at = now
     if claimed_items:
         db.commit()
     return claimed_items, truncated_count
 
 
-def release_unfinished_claims(db, item_ids: list) -> int:
+def release_unfinished_claims(
+    db,
+    item_ids: list,
+    *,
+    expected_claimed_at: datetime | None = None,
+) -> int:
     """생성되지 않은 채 남은 claim을 즉시 해제한다. 반환값은 해제된 건수.
 
     claim은 커밋으로 내구화되는데(잠금 해제를 위해 필요하다) 실패 시 해제 경로가
@@ -117,30 +126,32 @@ def release_unfinished_claims(db, item_ids: list) -> int:
     """
     if not item_ids:
         return 0
+    predicates = [
+        ContentItem.id.in_(item_ids),
+        ContentItem.body.is_(None),
+        ContentItem.generation_claimed_at.isnot(None),
+    ]
+    if expected_claimed_at is not None:
+        predicates.append(ContentItem.generation_claimed_at == expected_claimed_at)
     result = db.execute(
         update(ContentItem)
-        .where(
-            ContentItem.id.in_(item_ids),
-            ContentItem.body.is_(None),
-            ContentItem.generation_claimed_at.isnot(None),
-        )
+        .where(*predicates)
         .values(generation_claimed_at=None)
         .execution_options(synchronize_session=False)
     )
     return result.rowcount
 
 
-def count_stuck_claims(db, window_start, window_end) -> int:
-    """아직 만료되지 않은 claim 때문에 이번 배치가 건너뛴 슬롯 수.
+def load_stuck_claims(db, window_start, window_end) -> list[ContentItem]:
+    """아직 만료되지 않은 claim 때문에 이번 배치가 건너뛴 슬롯.
 
     배치가 빈손으로 끝났을 때 "정말 할 일이 없는 것"과 "직전 실행이 죽어 claim이
     잠긴 것"을 구분하기 위한 값이다. 구분하지 않으면 한 달치 유실도 조용히 성공으로 보고된다.
     """
     claim_cutoff = _nightly_generation_claim_cutoff()
-    return int(
+    return list(
         db.execute(
-            select(func.count())
-            .select_from(ContentItem)
+            select(ContentItem)
             .join(Hospital, ContentItem.hospital_id == Hospital.id)
             .where(
                 ContentItem.scheduled_date >= window_start,
@@ -151,5 +162,6 @@ def count_stuck_claims(db, window_start, window_end) -> int:
                 ContentItem.generation_claimed_at.isnot(None),
                 ContentItem.generation_claimed_at >= claim_cutoff,
             )
-        ).scalar_one()
+            .options(joinedload(ContentItem.hospital))
+        ).scalars().all()
     )
