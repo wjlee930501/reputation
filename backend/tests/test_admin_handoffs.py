@@ -5,7 +5,6 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import handoffs as handoffs_api
-from app.api.admin.accounts import require_owner_account
 from app.models.admin_user import AdminUser
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, Plan
@@ -160,10 +159,51 @@ async def test_owner_accepts_for_another_ae_with_reason() -> None:
 
 
 async def test_contract_correction_is_owner_only() -> None:
+    actor = _account("OPERATOR")
+    handoff = _contracted(actor)
     with pytest.raises(HTTPException) as exc:
-        await require_owner_account(_account("OPERATOR"))
+        await handoffs_api.correct_contract(
+            handoff.id,
+            handoffs_api.HandoffCorrection(
+                version=2,
+                reason="요금제 정정",
+                contract_reference="CTR-2",
+                contract_effective_at=datetime.now(UTC),
+                plan=Plan.PLAN_20,
+                sla_due_at=datetime.now(UTC),
+            ),
+            db=MemoryDB(handoff, [actor]),
+            actor=actor,
+        )
 
     assert exc.value.status_code == 403
+
+
+async def test_owner_correction_updates_handoff_and_hospital_plan_with_audit_reason() -> None:
+    actor = _account("OWNER")
+    handoff = _contracted(actor)
+    handoff.created_at = datetime.now(UTC)
+    handoff.updated_at = datetime.now(UTC)
+    db = MemoryDB(handoff, [actor])
+
+    corrected = await handoffs_api.correct_contract(
+        handoff.id,
+        handoffs_api.HandoffCorrection(
+            version=2,
+            reason="계약서 요금제 오기 정정",
+            contract_reference="CTR-2",
+            contract_effective_at=datetime.now(UTC),
+            plan=Plan.PLAN_20,
+            sla_due_at=datetime.now(UTC),
+        ),
+        db=db,
+        actor=actor,
+    )
+
+    assert corrected["plan"] is Plan.PLAN_20
+    assert db.hospital.plan is Plan.PLAN_20
+    audit = next(item for item in db.added if item.action == "handoff_contract_corrected")
+    assert audit.detail["reason"] == "계약서 요금제 오기 정정"
 
 
 async def test_operator_cannot_accept_another_ae_assignment() -> None:

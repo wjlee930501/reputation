@@ -4,9 +4,12 @@ import argparse
 import json
 import os
 import secrets
+import sys
 import uuid
 from pathlib import Path
+from typing import Final
 
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import delete, select
 
 from app.core.database import SyncSessionLocal
@@ -17,6 +20,82 @@ from app.services.admin_passwords import hash_admin_password
 
 QA_PREFIX = "OPS-QA-20260810"
 QA_ADMIN_EMAIL = "ops-qa-20260810@example.invalid"
+QA_SOURCE_MARKER: Final = "[OPS-QA-20260810]"
+QA_FIXTURE: Final = "ops-control-qa"
+QA_MANIFEST_VERSION: Final = 1
+QA_ADMIN_IDENTITIES: Final = {
+    QA_ADMIN_EMAIL: "Ops QA Owner",
+    "ops-qa-sales-20260810@example.invalid": "Sales QA",
+    "ops-qa-ae-20260810@example.invalid": "AE QA",
+}
+
+
+class CleanupManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    fixture: str
+    manifest_version: int
+    prefix: str
+    admin_user_ids: list[uuid.UUID]
+    lead_ids: list[uuid.UUID]
+    hospital_ids: list[uuid.UUID]
+
+
+class CleanupManifestError(RuntimeError):
+    """The cleanup request does not exclusively identify owned QA fixtures."""
+
+
+def _read_manifest(path: Path) -> CleanupManifest:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    payload = raw.get("manifest", raw) if isinstance(raw, dict) else raw
+    manifest = CleanupManifest.model_validate(payload)
+    if (
+        manifest.fixture != QA_FIXTURE
+        or manifest.manifest_version != QA_MANIFEST_VERSION
+        or manifest.prefix != QA_PREFIX
+    ):
+        raise CleanupManifestError("manifest provenance does not match this QA fixture")
+    for ids in (manifest.admin_user_ids, manifest.lead_ids, manifest.hospital_ids):
+        if len(ids) != len(set(ids)):
+            raise CleanupManifestError("manifest contains duplicate record IDs")
+    return manifest
+
+
+def _verify_cleanup_targets(db, manifest: CleanupManifest) -> None:
+    """Fetch and verify every row before the first destructive statement."""
+    qa_lead_ids = set(manifest.lead_ids)
+    for record_id in manifest.lead_ids:
+        lead = db.get(SalesLead, record_id)
+        if (
+            lead is None
+            or lead.clinic_name != f"{QA_PREFIX}-LEAD"
+            or lead.source_path != "/ops-qa"
+            or lead.consent_version != "ops-qa-v1"
+        ):
+            raise CleanupManifestError(f"lead {record_id} is absent or not an owned QA fixture")
+    for record_id in manifest.hospital_ids:
+        hospital = db.get(Hospital, record_id)
+        source_owned = hospital is not None and hospital.source_lead_id in qa_lead_ids
+        marker_owned = (
+            hospital is not None
+            and isinstance(hospital.onboarding_note, str)
+            and QA_SOURCE_MARKER in hospital.onboarding_note
+        )
+        if (
+            hospital is None
+            or not hospital.name.startswith(f"{QA_PREFIX}-")
+            or not (source_owned or marker_owned)
+        ):
+            raise CleanupManifestError(
+                f"hospital {record_id} is absent or lacks immutable QA provenance"
+            )
+    for record_id in manifest.admin_user_ids:
+        account = db.get(AdminUser, record_id)
+        expected_name = QA_ADMIN_IDENTITIES.get(account.email) if account is not None else None
+        if account is None or expected_name is None or account.name != expected_name:
+            raise CleanupManifestError(
+                f"admin account {record_id} is absent or outside the QA identity namespace"
+            )
 
 
 def _upsert_admin(db, email: str, name: str, role: str, password: str) -> AdminUser:
@@ -66,6 +145,8 @@ def seed(evidence_dir: Path) -> Path:
             db.flush()
         db.commit()
         manifest = {
+            "fixture": QA_FIXTURE,
+            "manifest_version": QA_MANIFEST_VERSION,
             "prefix": QA_PREFIX,
             "admin_user_ids": [str(owner.id), str(sales.id), str(ae.id)],
             "lead_ids": [str(lead.id)],
@@ -81,29 +162,17 @@ def seed(evidence_dir: Path) -> Path:
 
 
 def cleanup(manifest_path: Path) -> None:
-    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest = raw.get("manifest", raw)
-    hospital_ids = [uuid.UUID(value) for value in manifest.get("hospital_ids", [])]
-    lead_ids = [uuid.UUID(value) for value in manifest.get("lead_ids", [])]
-    admin_ids = [uuid.UUID(value) for value in manifest.get("admin_user_ids", [])]
+    manifest = _read_manifest(manifest_path)
     with SyncSessionLocal() as db:
-        if hospital_ids:
-            db.execute(delete(Hospital).where(Hospital.id.in_(hospital_ids)))
-        if lead_ids:
-            db.execute(delete(SalesLead).where(SalesLead.id.in_(lead_ids)))
-        if admin_ids:
-            db.execute(delete(AdminUser).where(AdminUser.id.in_(admin_ids)))
+        _verify_cleanup_targets(db, manifest)
+        if manifest.hospital_ids:
+            db.execute(delete(Hospital).where(Hospital.id.in_(manifest.hospital_ids)))
+        if manifest.lead_ids:
+            db.execute(delete(SalesLead).where(SalesLead.id.in_(manifest.lead_ids)))
+        if manifest.admin_user_ids:
+            db.execute(delete(AdminUser).where(AdminUser.id.in_(manifest.admin_user_ids)))
         db.commit()
-        remaining = sum(
-            db.execute(select(model.id).where(model.id.in_(ids))).scalars().all().__len__()
-            for model, ids in (
-                (Hospital, hospital_ids),
-                (SalesLead, lead_ids),
-                (AdminUser, admin_ids),
-            )
-            if ids
-        )
-    print(json.dumps({"remaining_recorded_ids": remaining}))
+    print(json.dumps({"remaining_recorded_ids": 0}))
 
 
 def main() -> int:
@@ -113,10 +182,14 @@ def main() -> int:
     mode.add_argument("--cleanup-manifest", type=Path)
     parser.add_argument("--evidence-dir", type=Path, default=Path(".omo/evidence"))
     args = parser.parse_args()
-    if args.seed:
-        seed(args.evidence_dir)
-    else:
-        cleanup(args.cleanup_manifest)
+    try:
+        if args.seed:
+            seed(args.evidence_dir)
+        else:
+            cleanup(args.cleanup_manifest)
+    except (CleanupManifestError, ValidationError, json.JSONDecodeError) as exc:
+        print(f"cleanup refused: {exc}", file=sys.stderr)
+        return 2
     return 0
 
 

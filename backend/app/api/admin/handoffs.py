@@ -207,6 +207,8 @@ async def correct_contract(
     db: AsyncSession = Depends(get_db),
     actor: AdminUser = Depends(require_owner_account),
 ) -> dict[str, object]:
+    if actor.role != ROLE_OWNER:
+        raise HTTPException(status_code=403, detail={"code": "HANDOFF_CORRECTION_OWNER_REQUIRED"})
     handoff = await _get_or_404(db, handoff_id)
     _assert_version(handoff, body.version)
     if handoff.state is HandoffState.CONTRACT_PENDING:
@@ -223,6 +225,9 @@ async def correct_contract(
     handoff.contract_effective_at = body.contract_effective_at
     handoff.plan = body.plan
     handoff.sla_due_at = body.sla_due_at
+    hospital = await db.get(Hospital, handoff.hospital_id)
+    if hospital is not None:
+        hospital.plan = body.plan
     await write_audit_log(
         db,
         action="handoff_contract_corrected",

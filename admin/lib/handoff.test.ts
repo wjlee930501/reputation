@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { acceptancePayload, contractPayload, handoffNextAction } from './handoff.ts'
+import { acceptanceDecision, acceptancePayload, contractPayload, handoffNextAction } from './handoff.ts'
 
 test('contract payload carries CAS version and never acceptance facts', () => {
   const payload = contractPayload({
@@ -20,4 +20,22 @@ test('contract payload carries CAS version and never acceptance facts', () => {
 test('accepted handoff exposes exactly the profile next action', () => {
   assert.equal(handoffNextAction({ state: 'HANDOFF_ACCEPTED' } as never), '병원 프로파일 입력')
   assert.deepEqual(acceptancePayload(4), { version: 4 })
+})
+
+test('assigned operator can self-accept without an override reason', () => {
+  assert.deepEqual(acceptanceDecision({
+    actorId: 'ae-1', actorRole: 'OPERATOR', aeOwnerId: 'ae-1', reason: '',
+  }), { kind: 'ready' })
+})
+
+test('owner cross-AE acceptance requires a visible audited reason', () => {
+  assert.deepEqual(acceptanceDecision({
+    actorId: 'owner-1', actorRole: 'OWNER', aeOwnerId: 'ae-1', reason: ' ',
+  }), {
+    kind: 'blocked',
+    message: '다른 AE 대신 인수 승인하는 사유를 입력해 주세요.',
+  })
+  assert.deepEqual(acceptanceDecision({
+    actorId: 'owner-1', actorRole: 'OWNER', aeOwnerId: 'ae-1', reason: 'AE 휴가 대행',
+  }), { kind: 'ready', reason: 'AE 휴가 대행' })
 })

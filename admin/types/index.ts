@@ -6,8 +6,8 @@ export type PlanCode = 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
 export type HandoffState = 'CONTRACT_PENDING' | 'CONTRACTED' | 'HANDOFF_ACCEPTED'
 
 export interface Handoff {
-  id?: string | null
-  hospital_id?: string
+  id: string
+  hospital_id: string
   state: HandoffState
   sales_owner_id?: string | null
   ae_owner_id?: string | null
