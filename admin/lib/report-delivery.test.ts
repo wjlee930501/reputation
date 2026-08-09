@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   getCustomerReportDownload,
+  getInternalReportLabel,
   isEffectivelyDelivered,
   readReportDeliveryState,
 } from './report-delivery.ts'
@@ -17,6 +18,21 @@ test('backend delivery_ready is the only positive delivery authority', () => {
   assert.equal(
     readReportDeliveryState({ delivery_ready: true, delivery_blockers: ['계약 불일치'] }).ready,
     false,
+  )
+})
+
+test('internal report labels never imply customer-safe delivery', () => {
+  assert.equal(
+    getInternalReportLabel({ download_url: '/api/admin/report.pdf', has_pdf: true }),
+    'AE 내부 리포트 다운로드 · 고객 전달 금지',
+  )
+  assert.equal(
+    getInternalReportLabel({ download_url: null, has_pdf: true }),
+    'AE 내부 리포트 링크 준비 중 · 고객 전달 금지',
+  )
+  assert.equal(
+    getInternalReportLabel({ download_url: null, has_pdf: false }),
+    'AE 내부 리포트 생성 중 · 고객 전달 금지',
   )
 })
 

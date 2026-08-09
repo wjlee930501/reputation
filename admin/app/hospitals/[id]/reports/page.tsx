@@ -6,6 +6,7 @@ import { fetchAPI } from '@/lib/api'
 import { parseMonthValue, previousMonthValue } from '@/lib/report-period'
 import {
   getCustomerReportDownload,
+  getInternalReportLabel,
   isEffectivelyDelivered,
   readReportDeliveryState,
   type ReportDeliveryInput,
@@ -50,10 +51,38 @@ const TYPE_LABELS: Record<string, string> = {
 type ScreeningStatus = 'PDF_PENDING' | 'AWAITING_REVIEW' | 'DELIVERED'
 
 const SCREENING_LABELS: Record<ScreeningStatus, { label: string; cls: string }> = {
-  PDF_PENDING: { label: 'PDF 생성 중', cls: 'bg-amber-100 text-amber-700' },
-  AWAITING_REVIEW: { label: '검수 대기', cls: 'bg-blue-100 text-blue-700' },
-  DELIVERED: { label: '전달 완료', cls: 'bg-green-100 text-green-700' },
+  PDF_PENDING: {
+    label: '내부 리포트 생성 중',
+    cls: 'bg-[var(--color-revisit-coolgrey-90)] text-[var(--color-revisit-text-helper)]',
+  },
+  AWAITING_REVIEW: {
+    label: '검수 대기',
+    cls: 'bg-[var(--color-revisit-primary-95)] text-[var(--color-revisit-nav)]',
+  },
+  DELIVERED: {
+    label: '전달 완료',
+    cls: 'bg-[color-mix(in_srgb,var(--color-revisit-green-50)_12%,white)] text-[var(--color-revisit-green-50)]',
+  },
 }
+
+const REPORT_DRAWER_STYLE = {
+  overlay: 'fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[color-mix(in_srgb,var(--color-revisit-nav)_55%,transparent)] p-4',
+  surface: 'my-8 w-full max-w-2xl rounded-xl bg-white',
+  header: 'flex items-center justify-between border-b border-[var(--color-revisit-coolgrey-20)] p-6',
+  heading: 'text-lg font-bold text-[var(--color-revisit-text-title)]',
+  helper: 'text-[var(--color-revisit-text-helper)]',
+  muted: 'text-[var(--color-revisit-text-caption)]',
+  close: 'min-h-11 min-w-11 rounded-lg text-xl text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]',
+  panel: 'rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-4',
+  softPanel: 'rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-[var(--color-revisit-coolgrey-90)] p-4',
+  infoPanel: 'rounded-lg border border-[var(--color-revisit-primary-80)] bg-[var(--color-revisit-primary-95)] p-4',
+  sectionTitle: 'mb-3 text-sm font-semibold text-[var(--color-revisit-text-title)]',
+  primaryAction: 'block min-h-11 w-full rounded-lg bg-[var(--color-revisit-nav)] px-4 py-3 text-center text-sm font-semibold text-white hover:opacity-90',
+  secondaryAction: 'block min-h-11 w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-4 py-3 text-center text-sm font-medium text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]',
+  control: 'mt-1 min-h-11 w-full rounded-md border border-[var(--color-revisit-coolgrey-20)] bg-white px-3 text-[var(--color-revisit-text-title)]',
+  success: 'rounded-lg border border-[var(--color-revisit-green-50)] bg-white text-[var(--color-revisit-green-50)]',
+  danger: 'rounded-lg border border-[var(--color-revisit-red-50)] bg-white text-[var(--color-revisit-red-50)]',
+} as const
 
 function getScreeningStatus(r: Report): ScreeningStatus {
   const displayStatus = r.display?.screening_status
@@ -73,13 +102,6 @@ function getScreeningMeta(r: Report): { label: string; cls: string } {
 
 function getReportTypeLabel(r: Report): string {
   return r.display?.report_type_label ?? TYPE_LABELS[r.report_type] ?? r.report_type
-}
-
-function getPdfStatusLabel(r: Report): string {
-  if (r.display?.pdf_status_label) return r.display.pdf_status_label
-  if (r.download_url) return '다운로드'
-  if (r.has_pdf) return '링크 준비 중'
-  return '생성 중'
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -142,14 +164,14 @@ function renderSummaryValue(key: string, value: unknown): string {
 function SummaryGrid({ data }: { data: Record<string, unknown> }) {
   const entries = Object.entries(data).filter(([, v]) => v !== null && v !== undefined)
   if (entries.length === 0) {
-    return <p className="text-sm text-slate-400">표시할 항목이 없습니다.</p>
+    return <p className={`text-sm ${REPORT_DRAWER_STYLE.muted}`}>표시할 항목이 없습니다.</p>
   }
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-2">
       {entries.map(([k, v]) => (
         <div key={k} className="flex justify-between gap-2 text-sm">
-          <span className="text-slate-600">{humanizeKey(k)}</span>
-          <span className="font-medium text-slate-900">{renderSummaryValue(k, v)}</span>
+          <span className={REPORT_DRAWER_STYLE.helper}>{humanizeKey(k)}</span>
+          <span className="font-medium text-[var(--color-revisit-text-title)]">{renderSummaryValue(k, v)}</span>
         </div>
       ))}
     </div>
@@ -161,14 +183,16 @@ function ChecklistRow({ ok, label, hint }: { ok: boolean; label: string; hint?: 
     <div className="flex items-start gap-2 text-sm">
       <span
         className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold ${
-          ok ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'
+          ok
+            ? 'bg-[color-mix(in_srgb,var(--color-revisit-green-50)_12%,white)] text-[var(--color-revisit-green-50)]'
+            : 'bg-[var(--color-revisit-primary-95)] text-[var(--color-revisit-nav)]'
         }`}
       >
         {ok ? '✓' : '!'}
       </span>
       <div className="flex-1">
-        <div className={ok ? 'text-slate-800' : 'text-amber-800 font-medium'}>{label}</div>
-        {hint && <div className="text-xs text-slate-500 mt-0.5">{hint}</div>}
+        <div className={ok ? 'text-[var(--color-revisit-text-title)]' : 'font-medium text-[var(--color-revisit-nav)]'}>{label}</div>
+        {hint && <div className={`mt-0.5 text-xs ${REPORT_DRAWER_STYLE.helper}`}>{hint}</div>}
       </div>
     </div>
   )
@@ -337,7 +361,7 @@ export default function ReportsPage() {
       {!loading && !error && (
         <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
           <SummaryCard label="검수 대기" value={stats.awaiting} tone="blue" />
-          <SummaryCard label="PDF 준비" value={stats.pdfReady} tone="indigo" />
+          <SummaryCard label="내부 리포트 준비" value={stats.pdfReady} tone="indigo" />
           <SummaryCard label="전달 완료" value={stats.delivered} tone="green" />
           <SummaryCard label="이번 달 리포트" value={stats.thisMonth} tone="gray" />
         </div>
@@ -363,7 +387,7 @@ export default function ReportsPage() {
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">기간</th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">리포트 유형</th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">검수 상태</th>
-                <th className="text-center px-6 py-3 text-slate-600 font-medium">PDF</th>
+                <th className="text-center px-6 py-3 text-slate-600 font-medium">AE 내부 리포트</th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">생성일</th>
                 <th className="text-right px-6 py-3 text-slate-600 font-medium">액션</th>
               </tr>
@@ -397,20 +421,20 @@ export default function ReportsPage() {
                         </p>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-center" data-label="PDF">
+                    <td className="px-6 py-4 text-center" data-label="AE 내부 리포트">
                       {r.download_url ? (
                         <a
                           href={r.download_url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="px-3 py-1 bg-blue-100 text-blue-700 text-xs rounded hover:bg-blue-200"
+                          className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-3 text-xs font-semibold text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]"
                         >
-                          다운로드
+                          {getInternalReportLabel(r)}
                         </a>
                       ) : r.has_pdf ? (
-                        <span className="text-blue-600 text-xs">{getPdfStatusLabel(r)}</span>
+                        <span className="text-xs text-[var(--color-revisit-text-helper)]">{getInternalReportLabel(r)}</span>
                       ) : (
-                        <span className="text-slate-400 text-xs">{getPdfStatusLabel(r)}</span>
+                        <span className="text-xs text-[var(--color-revisit-text-caption)]">{getInternalReportLabel(r)}</span>
                       )}
                     </td>
                     <td className="px-6 py-4 text-slate-600" data-label="생성일">
@@ -498,29 +522,29 @@ function ReportGuidance({
   const hasGuidance = missingItems.length > 0 || recommendedActions.length > 0 || medicalRiskCount > 0
   if (!hasGuidance) {
     return (
-      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
-        원장님께 전달하기 전 필수 요약은 모두 준비되어 있습니다. PDF 내용만 최종 확인하면 됩니다.
+      <div className={`${REPORT_DRAWER_STYLE.success} p-3 text-sm`}>
+        원장님께 전달하기 전 필수 요약은 모두 준비되어 있습니다. 원장 전달용 리포트 내용만 최종 확인하면 됩니다.
       </div>
     )
   }
 
   return (
-    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-      <div className="text-xs font-semibold text-amber-800">전달 전 보완할 항목</div>
+    <div className={`${REPORT_DRAWER_STYLE.infoPanel} p-3`}>
+      <div className="text-xs font-semibold text-[var(--color-revisit-nav)]">전달 전 보완할 항목</div>
       {missingItems.length > 0 && (
-        <ul className="mt-2 list-disc list-inside text-sm text-amber-900 space-y-0.5">
+        <ul className="mt-2 list-inside list-disc space-y-0.5 text-sm text-[var(--color-revisit-nav)]">
           {missingItems.map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ul>
       )}
       {medicalRiskCount > 0 && (
-        <p className="mt-2 text-sm text-amber-900">의료광고 리스크 {medicalRiskCount}건은 PDF 전달 전 표현 수정 여부를 확인해야 합니다.</p>
+        <p className="mt-2 text-sm text-[var(--color-revisit-nav)]">의료광고 리스크 {medicalRiskCount}건은 원장 전달용 리포트 전달 전 표현 수정 여부를 확인해야 합니다.</p>
       )}
       {recommendedActions.length > 0 && (
         <div className="mt-3 rounded-md bg-white/70 p-2">
-          <div className="text-xs font-semibold text-amber-800">권장 조치</div>
-          <ul className="mt-1 list-disc list-inside text-sm text-amber-900 space-y-0.5">
+          <div className="text-xs font-semibold text-[var(--color-revisit-nav)]">권장 조치</div>
+          <ul className="mt-1 list-inside list-disc space-y-0.5 text-sm text-[var(--color-revisit-nav)]">
             {recommendedActions.map((action, i) => (
               <li key={i}>{action}</li>
             ))}
@@ -571,31 +595,31 @@ function DetailDrawer({
   const effectivelyDelivered = isEffectivelyDelivered(report)
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
-      <div className="bg-white rounded-xl shadow-xl max-w-2xl w-full my-8">
-        <div className="flex items-center justify-between p-6 border-b border-slate-200">
+    <div className={REPORT_DRAWER_STYLE.overlay}>
+      <div className={REPORT_DRAWER_STYLE.surface} role="dialog" aria-modal="true" aria-labelledby="report-drawer-title">
+        <div className={REPORT_DRAWER_STYLE.header}>
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-lg font-bold text-slate-900">
+              <h3 id="report-drawer-title" className={REPORT_DRAWER_STYLE.heading}>
                 {getReportTypeLabel(report)} — {report.period_year}년 {report.period_month}월
               </h3>
               <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
                 {meta.label}
               </span>
             </div>
-            <div className="mt-1 text-xs text-slate-500">
+            <div className={`mt-1 text-xs ${REPORT_DRAWER_STYLE.helper}`}>
               생성 {formatDate(report.created_at)}
               {report.sent_at ? ` · 전달 ${formatDate(report.sent_at)}` : ''}
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl" aria-label="닫기">
+          <button onClick={onClose} className={REPORT_DRAWER_STYLE.close} aria-label="닫기">
             ✕
           </button>
         </div>
 
         <div className="p-6 space-y-6">
-          <section className="rounded-lg border border-slate-200 p-4">
-            <h4 className="text-sm font-semibold text-slate-900 mb-3">원장 보고 전 체크</h4>
+          <section className={REPORT_DRAWER_STYLE.panel}>
+            <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>원장 보고 전 체크</h4>
             <div className="space-y-3">
               <ReportGuidance
                 missingItems={deliveryBlockers}
@@ -605,8 +629,10 @@ function DetailDrawer({
               <div className="space-y-2">
                 <ChecklistRow
                   ok={Boolean(report.download_url || report.has_pdf)}
-                  label="PDF 준비 완료"
-                  hint={report.download_url ? undefined : '생성이 완료되면 다운로드 버튼이 활성화됩니다.'}
+                  label="내부 리포트 준비"
+                  hint={report.download_url
+                    ? 'AE 검수 전용 · 고객 전달 금지'
+                    : 'AE 내부 리포트 생성이 완료되면 검수 링크가 활성화됩니다. 고객 전달 금지'}
                 />
                 <ChecklistRow ok={Boolean(sov)} label="AI 답변 언급률 요약 존재" hint={sov ? undefined : '환자 질문 측정 결과를 먼저 확인하세요.'} />
                 {report.report_type === 'MONTHLY' && (
@@ -617,8 +643,8 @@ function DetailDrawer({
                 )}
               </div>
               {essence && (
-                <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3">
-                  <div className="text-xs font-semibold text-slate-700 mb-2">PDF 확인 전 먼저 볼 운영 기준 검수</div>
+                <div className={`mt-3 ${REPORT_DRAWER_STYLE.softPanel}`}>
+                  <div className="mb-2 text-xs font-semibold text-[var(--color-revisit-text-helper)]">내부 리포트 확인 전 먼저 볼 운영 기준 검수</div>
                   <div className="grid gap-2 text-sm md:grid-cols-2">
                     <ChecklistRow
                       ok={Boolean(essence.approved_philosophy_exists)}
@@ -647,23 +673,23 @@ function DetailDrawer({
           </section>
 
           <section>
-            <h4 className="text-sm font-semibold text-slate-900 mb-3">이번 달 핵심 변화</h4>
+            <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>이번 달 핵심 변화</h4>
             <div className="grid gap-3 md:grid-cols-2">
-              <div className="rounded-lg bg-blue-50 border border-blue-100 p-4">
-                <p className="text-xs font-semibold text-blue-700 mb-2">AI 답변 언급률</p>
-                {sov ? <SummaryGrid data={sov} /> : <p className="text-sm text-slate-400">데이터 없음</p>}
+              <div className={REPORT_DRAWER_STYLE.infoPanel}>
+                <p className="mb-2 text-xs font-semibold text-[var(--color-revisit-nav)]">AI 답변 언급률</p>
+                {sov ? <SummaryGrid data={sov} /> : <p className={`text-sm ${REPORT_DRAWER_STYLE.muted}`}>데이터 없음</p>}
               </div>
-              <div className="rounded-lg bg-slate-50 border border-slate-200 p-4">
-                <p className="text-xs font-semibold text-slate-700 mb-2">콘텐츠 성과</p>
-                {content ? <SummaryGrid data={content} /> : <p className="text-sm text-slate-400">데이터 없음</p>}
+              <div className={REPORT_DRAWER_STYLE.softPanel}>
+                <p className="mb-2 text-xs font-semibold text-[var(--color-revisit-text-helper)]">콘텐츠 성과</p>
+                {content ? <SummaryGrid data={content} /> : <p className={`text-sm ${REPORT_DRAWER_STYLE.muted}`}>데이터 없음</p>}
               </div>
             </div>
           </section>
 
           {essence ? (
             <section>
-              <h4 className="text-sm font-semibold text-slate-900 mb-3">콘텐츠 운영 기준</h4>
-              <div className="rounded-lg border border-slate-200 p-4 space-y-3">
+              <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>콘텐츠 운영 기준</h4>
+              <div className={`${REPORT_DRAWER_STYLE.panel} space-y-3`}>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                   <EssenceRow
                     label="승인된 운영 기준"
@@ -704,11 +730,11 @@ function DetailDrawer({
                 </div>
 
                 {medicalRiskFindings.length > 0 && (
-                  <div className="rounded-md border border-red-200 bg-red-50 p-3">
-                    <div className="text-xs font-semibold text-red-800 mb-1">
+                  <div className={`${REPORT_DRAWER_STYLE.danger} p-3`}>
+                    <div className="mb-1 text-xs font-semibold">
                       의료광고 리스크 {medicalRiskFindings.length}건
                     </div>
-                    <ul className="text-sm text-red-900 space-y-1">
+                    <ul className="space-y-1 text-sm">
                       {medicalRiskFindings.slice(0, 5).map((finding, i) => {
                         const title = asString(finding.title) ?? '(제목 없음)'
                         const violations = Array.isArray(finding.violations)
@@ -722,7 +748,7 @@ function DetailDrawer({
                         )
                       })}
                       {medicalRiskFindings.length > 5 && (
-                        <li className="text-xs text-red-800">외 {medicalRiskFindings.length - 5}건</li>
+                        <li className="text-xs">외 {medicalRiskFindings.length - 5}건</li>
                       )}
                     </ul>
                   </div>
@@ -731,25 +757,25 @@ function DetailDrawer({
             </section>
           ) : (
             <section>
-              <h4 className="text-sm font-semibold text-slate-900 mb-3">콘텐츠 운영 기준</h4>
-              <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>콘텐츠 운영 기준</h4>
+              <div className={`${REPORT_DRAWER_STYLE.infoPanel} border-dashed text-sm text-[var(--color-revisit-nav)]`}>
                 운영 기준 요약이 아직 리포트에 포함되지 않았습니다. 원장님께 전달하기 전 병원 자료 검토와 승인된 운영 기준 상태를 먼저 확인하세요.
               </div>
             </section>
           )}
 
           <section>
-            <h4 className="text-sm font-semibold text-slate-900 mb-3">원장 보고 자료</h4>
+            <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>원장 보고 자료</h4>
             {customerDownload ? (
               <div className="space-y-2">
-                <p className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900">
+                <p className={`${REPORT_DRAWER_STYLE.infoPanel} px-3 py-2 text-xs leading-5 text-[var(--color-revisit-nav)]`}>
                   검증된 원장 보고용 판본입니다. 아래 전달 기록의 PDF 해시와 같은 파일인지 확인하세요.
                 </p>
                 <a
                   href={customerDownload}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="block min-h-11 w-full rounded-lg bg-blue-600 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-blue-700"
+                  className={REPORT_DRAWER_STYLE.primaryAction}
                 >
                   원장 전달용 PDF 다운로드
                 </a>
@@ -758,56 +784,56 @@ function DetailDrawer({
                     href={report.download_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="block min-h-11 w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-center text-sm font-medium text-slate-700 hover:bg-slate-50"
+                    className={REPORT_DRAWER_STYLE.secondaryAction}
                   >
-                    AE 내부 검수용 PDF · 고객 전달 금지
+                    AE 내부 리포트 다운로드 · 고객 전달 금지
                   </a>
                 )}
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-4 text-center text-sm text-slate-500">
+              <div className={`${REPORT_DRAWER_STYLE.softPanel} border-dashed py-4 text-center text-sm ${REPORT_DRAWER_STYLE.helper}`}>
                 검증된 원장 전달용 PDF가 없습니다. 내부 검수용 PDF로 대신 전달할 수 없습니다.
               </div>
             )}
 
             {markSentError && (
-              <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <p className={`mt-2 px-3 py-2 text-sm ${REPORT_DRAWER_STYLE.danger}`}>
                 {markSentError}
               </p>
             )}
             {effectivelyDelivered ? (
-              <p className="mt-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+              <p className={`mt-2 px-3 py-2 text-sm ${REPORT_DRAWER_STYLE.success}`}>
                 원장 보고 완료 — 전달일 {formatDate(report.sent_at)}
               </p>
             ) : (
-              <div className="mt-3 space-y-3 rounded-lg border border-slate-200 p-4">
+              <div className={`mt-3 space-y-3 ${REPORT_DRAWER_STYLE.panel}`}>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm text-slate-700">
+                  <label className={`text-sm ${REPORT_DRAWER_STYLE.helper}`}>
                     수신자
                     <input
                       value={recipientLabel}
                       onChange={(event) => setRecipientLabel(event.target.value)}
                       placeholder="예: 김원장"
-                      className="mt-1 min-h-11 w-full rounded-md border border-slate-300 px-3"
+                      className={REPORT_DRAWER_STYLE.control}
                     />
                   </label>
-                  <label className="text-sm text-slate-700">
+                  <label className={`text-sm ${REPORT_DRAWER_STYLE.helper}`}>
                     전달 채널
                     <input
                       value={channel}
                       onChange={(event) => setChannel(event.target.value)}
                       placeholder="예: 대면"
-                      className="mt-1 min-h-11 w-full rounded-md border border-slate-300 px-3"
+                      className={REPORT_DRAWER_STYLE.control}
                     />
                   </label>
                 </div>
-                <label className="block text-sm text-slate-700">
+                <label className={`block text-sm ${REPORT_DRAWER_STYLE.helper}`}>
                   메모 (선택)
                   <input
                     value={deliveryNote}
                     onChange={(event) => setDeliveryNote(event.target.value)}
                     placeholder="예: 2026-08 월간 보고"
-                    className="mt-1 min-h-11 w-full rounded-md border border-slate-300 px-3"
+                    className={REPORT_DRAWER_STYLE.control}
                   />
                 </label>
                 <button
@@ -822,7 +848,7 @@ function DetailDrawer({
                     })
                   }}
                   disabled={markingSent || !canSubmitDelivery}
-                  className="block min-h-11 w-full rounded-lg border border-green-300 bg-white px-4 py-3 text-center text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50"
+                  className={`${REPORT_DRAWER_STYLE.success} block min-h-11 w-full px-4 py-3 text-center text-sm font-medium hover:opacity-80 disabled:opacity-50`}
                 >
                   {markingSent
                     ? '처리 중...'
@@ -833,19 +859,19 @@ function DetailDrawer({
               </div>
             )}
             {(report.delivery_history?.length ?? 0) > 0 && (
-              <div className="mt-4 border-t border-slate-200 pt-4">
-                <h5 className="text-sm font-semibold text-slate-900">전달 이력</h5>
+              <div className="mt-4 border-t border-[var(--color-revisit-coolgrey-20)] pt-4">
+                <h5 className="text-sm font-semibold text-[var(--color-revisit-text-title)]">전달 이력</h5>
                 <ol className="mt-2 space-y-2">
                   {report.delivery_history?.map((event, index) => (
-                    <li key={asString(event.id) ?? index} className="rounded-md bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700">
-                      <div className="font-semibold text-slate-900">
+                    <li key={asString(event.id) ?? index} className="rounded-md bg-[var(--color-revisit-coolgrey-90)] px-3 py-2 text-xs leading-5 text-[var(--color-revisit-text-helper)]">
+                      <div className="font-semibold text-[var(--color-revisit-text-title)]">
                         {asString(event.event_type) ?? '전달 이벤트'} · {formatDate(asString(event.created_at))}
                       </div>
                       <div>
                         수신 {asString(event.recipient_label) ?? '-'} · 채널 {asString(event.channel) ?? '-'} · 담당 {asString(event.operator) ?? '-'}
                       </div>
                       {asString(event.artifact_sha256) && (
-                        <div className="break-all font-mono text-[11px] text-slate-500">
+                        <div className={`break-all font-mono text-[11px] ${REPORT_DRAWER_STYLE.helper}`}>
                           SHA-256 {asString(event.artifact_sha256)}
                         </div>
                       )}
@@ -870,10 +896,12 @@ function EssenceRow({
   value: string
   tone: 'ok' | 'warn'
 }) {
-  const cls = tone === 'warn' ? 'text-amber-800 font-medium' : 'text-slate-900 font-medium'
+  const cls = tone === 'warn'
+    ? 'font-medium text-[var(--color-revisit-nav)]'
+    : 'font-medium text-[var(--color-revisit-text-title)]'
   return (
     <div className="flex justify-between gap-2">
-      <span className="text-slate-600">{label}</span>
+      <span className={REPORT_DRAWER_STYLE.helper}>{label}</span>
       <span className={cls}>{value}</span>
     </div>
   )

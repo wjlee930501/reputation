@@ -23,6 +23,17 @@ export interface EffectiveDeliveryContract {
   effective_delivery?: { event_type?: string | null } | null
 }
 
+export interface InternalReportContract {
+  download_url?: string | null
+  has_pdf?: boolean
+}
+
+export function getInternalReportLabel(report: InternalReportContract): string {
+  if (report.download_url) return 'AE 내부 리포트 다운로드 · 고객 전달 금지'
+  if (report.has_pdf) return 'AE 내부 리포트 링크 준비 중 · 고객 전달 금지'
+  return 'AE 내부 리포트 생성 중 · 고객 전달 금지'
+}
+
 export function getCustomerReportDownload(report: CustomerReportContract): string | null {
   if (report.doctor_artifact_state !== 'VALID' || report.delivery_ready !== true) return null
   return `/api/admin/hospitals/${report.hospital_id}/reports/${report.id}/download?audience=doctor`
