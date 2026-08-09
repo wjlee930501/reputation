@@ -22,6 +22,7 @@ const ALLOWED_PREFIXES = [
   'domain',
   'essence',
   'leads',
+  'handoffs',
   // 전역 제어 평면 — 병원 단위가 아니라 /admin/operations, /admin/accounts로 열린다.
   // 여기 없으면 백엔드에 라우터가 있어도 프록시가 403으로 끊는다.
   'operations',

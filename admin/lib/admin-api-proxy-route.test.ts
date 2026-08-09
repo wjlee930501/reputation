@@ -255,6 +255,71 @@ test('admin API route proxies the global control-plane prefixes', async () => {
   }
 })
 
+test('admin API route proxies handoff list and transition routes', async () => {
+  clearAdminSessionRevocationCache()
+  const originalFetch = globalThis.fetch
+  const proxied: Array<{ method: string; path: string }> = []
+  const fetchMock: typeof fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
+      return new Response(JSON.stringify({ revoked: false }), { status: 200 })
+    }
+    proxied.push({ method: init?.method ?? 'GET', path: new URL(url).pathname })
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }
+  globalThis.fetch = fetchMock
+
+  try {
+    const handoffId = 'ea0f6a57-d8d7-4447-9f89-baf1b329f2dd'
+    const routes = [
+      { method: 'GET', path: ['handoffs'] },
+      { method: 'POST', path: ['handoffs', handoffId, 'contract'] },
+      { method: 'POST', path: ['handoffs', handoffId, 'accept'] },
+    ]
+    for (const route of routes) {
+      const request = await buildAuthorizedRequest(
+        route.method,
+        route.method === 'POST' ? sessionPayload.csrfToken : undefined,
+      )
+      const res = await handleAdminApiProxy(request, {
+        params: Promise.resolve({ path: route.path }),
+      })
+      assert.equal(res.status, 200, `${route.method} /${route.path.join('/')} must reach the backend`)
+    }
+
+    assert.deepEqual(proxied, [
+      { method: 'GET', path: '/api/v1/admin/handoffs' },
+      { method: 'POST', path: `/api/v1/admin/handoffs/${handoffId}/contract` },
+      { method: 'POST', path: `/api/v1/admin/handoffs/${handoffId}/accept` },
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})
+
+test('admin API route rejects a handoffs sibling prefix and traversal before backend fetch', async () => {
+  const originalFetch = globalThis.fetch
+  let fetchCalled = false
+  globalThis.fetch = async () => {
+    fetchCalled = true
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }
+
+  try {
+    for (const path of [['handoffs-admin'], ['handoffs', '..', 'accounts']]) {
+      const res = await handleAdminApiProxy(await buildAuthorizedRequest('GET'), {
+        params: Promise.resolve({ path }),
+      })
+      assert.equal(res.status, 403)
+      assert.equal(await res.text(), 'Forbidden')
+    }
+    assert.equal(fetchCalled, false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('admin API route asks the backend to judge the session account, not just the token hash', async () => {
   // 계정을 정지해도 이미 발급된 세션 쿠키는 만료(최대 7일)까지 살아 있다. 폐기 조회에
   // account_id를 함께 보내야 백엔드가 계정 상태까지 보고 즉시 끊을 수 있다.
