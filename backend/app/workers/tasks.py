@@ -69,6 +69,7 @@ from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
 from app.services.monthly_manifest import (
     apply_manifest_to_report,
+    close_manifest,
     freeze_dispatch_manifest,
     link_attempt,
 )
@@ -1666,10 +1667,17 @@ def run_sov_for_hospital(self, hospital_id: str):
                     )
                 )
 
-            if not measurement_specs:
-                logger.info(
-                    f"No queries to run for hospital {hospital_id} this week (priority filter)"
-                )
+            frozen_specs, _ = _build_measurement_specs(
+                db=db,
+                hospital=hospital,
+                query_targets=query_targets,
+                fallback_queries=all_queries,
+                is_even_week=True,
+                is_month_start=True,
+                high_priority_cap=-1,
+            )
+            if not frozen_specs:
+                logger.info("No queries available to freeze for hospital %s", hospital_id)
                 return
 
             manifest = freeze_dispatch_manifest(
@@ -1677,13 +1685,25 @@ def run_sov_for_hospital(self, hospital_id: str):
                 hospital.id,
                 today_kst.year,
                 today_kst.month,
-                measurement_specs,
+                frozen_specs,
                 gemini_configured=bool(settings.GEMINI_API_KEY),
             )
             db.commit()
-            manifest_cells = {
-                (cell.query_key, cell.platform): cell for cell in manifest.cells
-            }
+            measurement_specs = [
+                {
+                    "query_id": cell.query_matrix_id,
+                    "query_text": cell.query_text,
+                    "platform": cell.platform,
+                    "target_id": cell.query_target_id,
+                    "variant_id": cell.query_variant_id,
+                    "manifest_cell": cell,
+                }
+                for cell in manifest.cells
+                if cell.state == "FAILED"
+            ]
+            if not measurement_specs:
+                logger.info("Monthly manifest has no pending cells for hospital %s", hospital_id)
+                return
 
             # 비용 가드: spec 개수 × **반복 횟수**만큼 예산을 run 단위로 일괄 확인.
             # 각 spec은 run_single_query에서 SOV_REPEAT_WEEKLY번 실제 호출을 낸다.
@@ -1761,14 +1781,7 @@ def run_sov_for_hospital(self, hospital_id: str):
                             variant_id=spec["variant_id"],
                         )
                     records.append(record)
-                    query_key = (
-                        f"variant:{spec['variant_id']}"
-                        if spec.get("variant_id")
-                        else f"query:{spec['query_id']}"
-                    )
-                    attempt_pairs.append(
-                        (manifest_cells[(query_key, spec["platform"])], record)
-                    )
+                    attempt_pairs.append((spec["manifest_cell"], record))
 
             db.add_all(records)
             db.flush()
@@ -2232,7 +2245,14 @@ def adjust_query_priorities():
 # ══════════════════════════════════════════════════════════════════
 # 월간 리포트 (매월 마지막 날 21:00)
 # ══════════════════════════════════════════════════════════════════
-def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str:
+def _build_monthly_report_for_hospital(
+    db,
+    h: Hospital,
+    now: arrow.Arrow,
+    *,
+    rebuild: bool = False,
+    observed_at: datetime | None = None,
+) -> str:
     """`now`가 가리키는 달의 월간 리포트 1건을 만든다.
 
     반환값은 ``"created"`` 또는 이미 있어서 건너뛴 경우 ``"skipped_existing"``이다.
@@ -2251,6 +2271,9 @@ def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str
             MonthlyMeasurementManifest.period_month == now.month,
         )
     ).scalar_one_or_none()
+    actual_now = observed_at or arrow.now("Asia/Seoul").datetime
+    if manifest is not None and manifest.closed_at is None and actual_now >= manifest.closes_at:
+        close_manifest(manifest, now=actual_now)
 
     # 월간 리포트 중복 생성 방지
     existing_check = db.execute(
@@ -2259,14 +2282,16 @@ def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str
             MonthlyReport.period_year == now.year,
             MonthlyReport.period_month == now.month,
             MonthlyReport.report_type == "MONTHLY",
-        )
+        ).order_by(MonthlyReport.version.desc())
     )
-    if existing_check.scalar_one_or_none():
+    existing_reports = existing_check.scalars().all()
+    if existing_reports and not rebuild:
         logger.warning(
             f"Monthly report already exists for {h.name} "
             f"{now.year}-{now.month:02d}, skipping."
         )
         return "skipped_existing"
+    prior_report = existing_reports[0] if existing_reports else None
 
     # 이번 달 AI 답변 언급률 집계
     # QueryMatrix를 조인해 질문 유형을 가져온다 — SovRecord에는 유형이 없고,
@@ -2415,6 +2440,8 @@ def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str
             period_year=now.year,
             period_month=now.month,
             report_type="MONTHLY",
+            version=(prior_report.version + 1) if prior_report else 1,
+            supersedes_report_id=prior_report.id if prior_report else None,
             pdf_path=pdf_path,
             doctor_pdf_path=doctor_pdf_path,
             sov_summary={
@@ -2468,6 +2495,8 @@ def _build_monthly_report_for_hospital(db, h: Hospital, now: arrow.Arrow) -> str
 )
 def run_monthly_reports(self):
     now = arrow.now("Asia/Seoul")
+    # Task 21이 실행 시각을 익월 cutoff 이후로 옮길 때까지 이 legacy 호출은 open manifest를
+    # BLOCKED로만 snapshot한다. close_manifest가 cutoff 전 COMPLETE를 허용하지 않는다.
     # beat은 28~31일에 매일 실행 — 실제 마지막 날인지 확인
     if now.date() != now.ceil("month").date():
         logger.info(f"Not last day of month ({now.date()}), skipping monthly reports")
@@ -2503,7 +2532,11 @@ def run_monthly_reports(self):
     time_limit=900,
 )
 def generate_monthly_report_for_hospital(
-    self, hospital_id: str, year: int | None = None, month: int | None = None
+    self,
+    hospital_id: str,
+    year: int | None = None,
+    month: int | None = None,
+    rebuild: bool = False,
 ):
     """병원 1곳의 월간 리포트를 수동으로 만든다 (Admin '월간 리포트 생성').
 
@@ -2536,7 +2569,11 @@ def generate_monthly_report_for_hospital(
             logger.error(f"Monthly report requested for unknown hospital {hospital_id}")
             return {"status": "hospital_not_found"}
         try:
-            outcome = _build_monthly_report_for_hospital(db, hospital, anchor)
+            outcome = (
+                _build_monthly_report_for_hospital(db, hospital, anchor, rebuild=True)
+                if rebuild
+                else _build_monthly_report_for_hospital(db, hospital, anchor)
+            )
         except Exception as e:
             logger.error(f"Manual monthly report failed for {hospital.name}: {e}")
             db.rollback()

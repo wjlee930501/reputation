@@ -38,6 +38,7 @@ def upgrade() -> None:
         sa.Column(
             "frozen_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
+        sa.Column("closes_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("closed_at", sa.DateTime(timezone=True)),
         sa.CheckConstraint("period_month BETWEEN 1 AND 12", name="ck_monthly_manifest_month"),
         sa.ForeignKeyConstraint(["hospital_id"], ["hospitals.id"], ondelete="CASCADE"),
@@ -95,7 +96,7 @@ def upgrade() -> None:
     op.execute(
         sa.text(
             "CREATE FUNCTION enforce_monthly_manifest_immutability() RETURNS trigger AS $$ "
-            "BEGIN IF NEW.hospital_id IS DISTINCT FROM OLD.hospital_id OR NEW.period_year IS DISTINCT FROM OLD.period_year OR NEW.period_month IS DISTINCT FROM OLD.period_month OR NEW.configured_platforms IS DISTINCT FROM OLD.configured_platforms OR NEW.platform_provenance IS DISTINCT FROM OLD.platform_provenance OR NEW.frozen_at IS DISTINCT FROM OLD.frozen_at THEN RAISE EXCEPTION 'monthly manifest is immutable'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql"
+            "BEGIN IF NEW.hospital_id IS DISTINCT FROM OLD.hospital_id OR NEW.period_year IS DISTINCT FROM OLD.period_year OR NEW.period_month IS DISTINCT FROM OLD.period_month OR NEW.configured_platforms IS DISTINCT FROM OLD.configured_platforms OR NEW.platform_provenance IS DISTINCT FROM OLD.platform_provenance OR NEW.frozen_at IS DISTINCT FROM OLD.frozen_at OR NEW.closes_at IS DISTINCT FROM OLD.closes_at THEN RAISE EXCEPTION 'monthly manifest is immutable'; END IF; IF OLD.closed_at IS NOT NULL AND NEW.closed_at IS DISTINCT FROM OLD.closed_at THEN RAISE EXCEPTION 'monthly manifest close is immutable'; END IF; IF NEW.closed_at IS NOT NULL AND NEW.closed_at < NEW.closes_at THEN RAISE EXCEPTION 'monthly manifest cannot close before cutoff'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql"
         )
     )
     op.execute(
@@ -151,7 +152,7 @@ def upgrade() -> None:
     )
     op.execute(
         sa.text(
-            "INSERT INTO hospital_service_intervals (id, hospital_id, started_at, provenance) SELECT gen_random_uuid(), id, now(), 'LEGACY_CUTOVER' FROM hospitals WHERE status = 'ACTIVE'"
+            "INSERT INTO hospital_service_intervals (id, hospital_id, started_at, provenance) SELECT id, id, now(), 'LEGACY_CUTOVER' FROM hospitals WHERE status = 'ACTIVE'"
         )
     )
 
@@ -188,6 +189,7 @@ def upgrade() -> None:
     op.alter_column(
         "monthly_reports", "quality", nullable=False, server_default="LEGACY_UNVERIFIED"
     )
+    op.drop_constraint("uq_monthly_reports_hospital_period_type", "monthly_reports", type_="unique")
     op.create_foreign_key(
         "fk_monthly_reports_manifest",
         "monthly_reports",
@@ -226,6 +228,25 @@ def upgrade() -> None:
         "ck_monthly_reports_customer_ready",
         "monthly_reports",
         "customer_ready = false OR quality = 'COMPLETE'",
+    )
+    op.create_check_constraint(
+        "ck_monthly_reports_version_chain",
+        "monthly_reports",
+        "(version = 1 AND supersedes_report_id IS NULL) OR "
+        "(version > 1 AND supersedes_report_id IS NOT NULL)",
+    )
+    op.execute(
+        sa.text(
+            "CREATE FUNCTION enforce_monthly_report_version_chain() RETURNS trigger AS $$ "
+            "DECLARE parent monthly_reports%ROWTYPE; BEGIN IF NEW.version > 1 THEN "
+            "SELECT * INTO parent FROM monthly_reports WHERE id=NEW.supersedes_report_id; "
+            "IF NOT FOUND OR parent.hospital_id<>NEW.hospital_id OR parent.period_year<>NEW.period_year OR parent.period_month<>NEW.period_month OR parent.report_type<>NEW.report_type OR NEW.version<>parent.version+1 THEN RAISE EXCEPTION 'invalid monthly report supersedes chain'; END IF; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql"
+        )
+    )
+    op.execute(
+        sa.text(
+            "CREATE TRIGGER trg_monthly_report_version_chain BEFORE INSERT OR UPDATE ON monthly_reports FOR EACH ROW EXECUTE FUNCTION enforce_monthly_report_version_chain()"
+        )
     )
 
     op.create_table(
@@ -290,7 +311,12 @@ def downgrade() -> None:
     op.execute(sa.text("DROP FUNCTION IF EXISTS prevent_monthly_delivery_event_mutation()"))
     op.drop_table("monthly_delivery_events")
     op.drop_table("monthly_report_artifacts")
+    op.execute(
+        sa.text("DROP TRIGGER IF EXISTS trg_monthly_report_version_chain ON monthly_reports")
+    )
+    op.execute(sa.text("DROP FUNCTION IF EXISTS enforce_monthly_report_version_chain()"))
     for name in (
+        "ck_monthly_reports_version_chain",
         "ck_monthly_reports_customer_ready",
         "ck_monthly_reports_counts",
         "ck_monthly_reports_quality",
@@ -298,6 +324,11 @@ def downgrade() -> None:
         op.drop_constraint(name, "monthly_reports", type_="check")
     for name in ("uq_monthly_reports_supersedes", "uq_monthly_reports_period_version"):
         op.drop_constraint(name, "monthly_reports", type_="unique")
+    op.create_unique_constraint(
+        "uq_monthly_reports_hospital_period_type",
+        "monthly_reports",
+        ["hospital_id", "period_year", "period_month", "report_type"],
+    )
     for name in ("fk_monthly_reports_supersedes", "fk_monthly_reports_manifest"):
         op.drop_constraint(name, "monthly_reports", type_="foreignkey")
     for name in (

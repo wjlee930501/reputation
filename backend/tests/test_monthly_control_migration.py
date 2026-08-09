@@ -27,6 +27,7 @@ class Recorder:
         self.constraints: list[str] = []
         self.dropped_tables: list[str] = []
         self.dropped_columns: list[tuple[str, str]] = []
+        self.dropped_constraints: list[tuple[str, str]] = []
 
     def install(self, monkeypatch, migration: ModuleType) -> None:
         monkeypatch.setattr(
@@ -56,7 +57,11 @@ class Recorder:
             "create_check_constraint",
             lambda name, *_a, **_k: self.constraints.append(name),
         )
-        monkeypatch.setattr(migration.op, "drop_constraint", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            migration.op,
+            "drop_constraint",
+            lambda name, table, **_k: self.dropped_constraints.append((table, name)),
+        )
         monkeypatch.setattr(migration.op, "drop_table", self.dropped_tables.append)
         monkeypatch.setattr(
             migration.op,
@@ -94,10 +99,21 @@ def test_upgrade_declares_full_monthly_control_contract(monkeypatch) -> None:
     assert "EXCLUDE USING gist" in sql
     assert "WHERE status = 'ACTIVE'" in sql
     assert "LEGACY_CUTOVER" in sql
+    assert "gen_random_uuid" not in sql
     assert "LEGACY_UNVERIFIED" in sql
     assert "append-only" in sql
     assert "uq_monthly_reports_period_version" in recorder.constraints
     assert "uq_monthly_reports_supersedes" in recorder.constraints
+    assert (
+        "monthly_reports",
+        "uq_monthly_reports_hospital_period_type",
+    ) in recorder.dropped_constraints
+    manifest_columns = {
+        item.name
+        for item in recorder.tables["monthly_measurement_manifests"]
+        if isinstance(item, sa.Column)
+    }
+    assert {"closes_at", "closed_at"} <= manifest_columns
     artifact_columns = {
         item.name
         for item in recorder.tables["monthly_report_artifacts"]

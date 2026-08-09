@@ -5,6 +5,7 @@
 **어느 달을 만드는가** — 배치 실패는 대개 달이 바뀐 뒤 발견되므로 기본값이 '지난달'이
 아니면 복구 자체가 엉뚱한 달을 만든다.
 """
+
 import uuid
 
 import arrow
@@ -136,13 +137,27 @@ def test_previous_month_is_still_allowed(monkeypatch, captured_anchor):
 
 def test_existing_report_is_not_overwritten(monkeypatch):
     _use_session(monkeypatch, FakeSession(FakeHospital()))
-    monkeypatch.setattr(
-        tasks, "_build_monthly_report_for_hospital", lambda *_a: "skipped_existing"
-    )
+    monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", lambda *_a: "skipped_existing")
 
     result = tasks.generate_monthly_report_for_hospital(str(FakeHospital.id), 2026, 2)
 
     assert result["status"] == "skipped_existing"
+
+
+def test_explicit_rebuild_requests_a_new_version(monkeypatch):
+    _use_session(monkeypatch, FakeSession(FakeHospital()))
+    seen: dict = {}
+
+    def fake_build(_db, _hospital, _anchor, *, rebuild=False):
+        seen["rebuild"] = rebuild
+        return "created"
+
+    monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", fake_build)
+
+    result = tasks.generate_monthly_report_for_hospital(str(FakeHospital.id), 2026, 2, rebuild=True)
+
+    assert result["status"] == "created"
+    assert seen == {"rebuild": True}
 
 
 def test_unknown_hospital_reports_instead_of_raising(monkeypatch, captured_anchor):

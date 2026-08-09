@@ -2,6 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final, Iterable
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -41,8 +42,9 @@ class ManifestSummary:
     customer_ready: bool = False
 
 
-def _signature(specs: Iterable[ManifestCellSpec]) -> tuple[tuple[str, str], ...]:
-    return tuple(sorted((spec.query_key, spec.platform.lower()) for spec in specs))
+def _month_close(year: int, month: int) -> datetime:
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return datetime(next_year, next_month, 1, 0, 15, tzinfo=ZoneInfo("Asia/Seoul"))
 
 
 def freeze_monthly_manifest(
@@ -57,11 +59,7 @@ def freeze_monthly_manifest(
 ) -> MonthlyMeasurementManifest:
     if not specs:
         raise ManifestError("manifest requires at least one cell")
-    expected = _signature(specs)
     if existing is not None:
-        actual = tuple(sorted((cell.query_key, cell.platform) for cell in existing.cells))
-        if actual != expected:
-            raise ManifestError("monthly manifest is immutable")
         return existing
     platforms = ["chatgpt", *(["gemini"] if gemini_configured else [])]
     manifest = MonthlyMeasurementManifest(
@@ -73,7 +71,9 @@ def freeze_monthly_manifest(
             "chatgpt": "ALWAYS",
             "gemini": "CONFIGURED" if gemini_configured else "NOT_CONFIGURED",
         },
+        closes_at=_month_close(year, month),
     )
+    frozen_queries = {spec.query_key: spec for spec in specs}
     manifest.cells = [
         MonthlyMeasurementCell(
             query_key=spec.query_key,
@@ -81,10 +81,11 @@ def freeze_monthly_manifest(
             query_matrix_id=spec.query_matrix_id,
             query_target_id=spec.query_target_id,
             query_variant_id=spec.query_variant_id,
-            platform=spec.platform.lower(),
+            platform=platform,
             state="FAILED",
         )
-        for spec in specs
+        for spec in frozen_queries.values()
+        for platform in platforms
     ]
     session.add(manifest)
     session.flush()
@@ -142,18 +143,27 @@ def link_attempt(cell: MonthlyMeasurementCell, sov_record) -> MonthlyMeasurement
     return attempt
 
 
-def summarize_manifest(cells: Iterable[MonthlyMeasurementCell]) -> ManifestSummary:
+def summarize_manifest(
+    cells: Iterable[MonthlyMeasurementCell],
+    *,
+    closed: bool,
+    configured_platforms: Iterable[str],
+) -> ManifestSummary:
     rows = list(cells)
     excluded = sum(cell.state == "EXCLUDED" for cell in rows)
     planned = len(rows) - excluded
     success = sum(cell.state == "SUCCESS" for cell in rows)
     failed = planned - success
-    quality = (
-        "BLOCKED"
-        if planned == 0 or success == 0
-        else ("COMPLETE" if success == planned else "DEGRADED")
-    )
+    present_platforms = {str(getattr(cell, "platform", "chatgpt")) for cell in rows}
+    platform_gap = bool(set(configured_platforms) - present_platforms)
+    quality = "BLOCKED"
+    if closed and planned > 0 and success > 0 and not platform_gap:
+        quality = "COMPLETE" if success == planned else "DEGRADED"
     blockers: list[str] = []
+    if not closed:
+        blockers.append("MANIFEST_OPEN")
+    if platform_gap:
+        blockers.append("CONFIGURED_PLATFORM_WITHOUT_CELLS")
     if planned == 0:
         blockers.append("MANIFEST_EMPTY")
     elif failed:
@@ -167,7 +177,11 @@ def apply_manifest_to_report(
 ) -> ManifestSummary:
     if manifest is None:
         raise ManifestError("manifest is required")
-    summary = summarize_manifest(manifest.cells)
+    summary = summarize_manifest(
+        manifest.cells,
+        closed=manifest.closed_at is not None,
+        configured_platforms=manifest.configured_platforms,
+    )
     report.manifest_id = manifest.id
     report.quality = summary.quality
     report.planned_count = summary.planned_count
@@ -176,7 +190,16 @@ def apply_manifest_to_report(
     report.excluded_count = summary.excluded_count
     report.customer_ready = False
     report.delivery_blockers = list(summary.blockers)
+    report.cutoff_at = manifest.closed_at or manifest.closes_at
     return summary
+
+
+def close_manifest(manifest: MonthlyMeasurementManifest, *, now: datetime) -> None:
+    if manifest.closed_at is not None:
+        return
+    if now < manifest.closes_at:
+        raise ManifestError("manifest cannot close before cutoff")
+    manifest.closed_at = now
 
 
 def exclude_cell(cell, *, role: str, reason: str, actor_id: uuid.UUID) -> None:
