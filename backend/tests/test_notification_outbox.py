@@ -132,6 +132,8 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
     assert str(second.incident_id) in summary_a.message.payload_json()
     assert open_intent.notification_type == "INCIDENT_OPEN"
     assert recovered.notification_type == "INCIDENT_RECOVERED"
+    assert "처리 기한: 오늘 18:00" in open_intent.message.payload_json()
+    assert "SLA:" not in open_intent.message.payload_json()
 
 
 def test_summary_identity_uses_sorted_unique_incidents_and_rejects_conflicts() -> None:

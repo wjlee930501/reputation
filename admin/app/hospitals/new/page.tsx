@@ -220,8 +220,9 @@ export default function NewHospitalPage() {
           <label className="block text-sm font-medium text-slate-700">계약 효력일
             <input required type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm" />
           </label>
-          <label className="block text-sm font-medium text-slate-700">인수 SLA
+          <label className="block text-sm font-medium text-slate-700">인수 처리 기한
             <input required type="datetime-local" value={slaDueAt} onChange={(e) => setSlaDueAt(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+            <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">이 시각까지 담당 AE가 계약 정보를 확인하고 고객 인수를 승인해야 합니다.</span>
           </label>
         </div>
 
@@ -242,14 +243,16 @@ export default function NewHospitalPage() {
 
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-            {error}
+            <p>{error}</p>
+            <p className="mt-1 break-keep text-xs leading-5">다시 시도해도 계속되면 병원명과 위 오류 문구를 개발팀에 전달해 주세요.</p>
           </div>
         )}
 
         {workflowHandoff && (
           <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
-            <p className="font-semibold">현재 인수 상태: {workflowHandoff.state}</p>
-            <p className="mt-1">다음 액션: {handoffNextAction(workflowHandoff)}</p>
+            <p className="font-semibold">고객 인수 절차가 아직 완료되지 않았습니다.</p>
+            <p className="mt-1">지금 할 일: {handoffNextAction(workflowHandoff)}</p>
+            <p className="mt-1 break-keep text-xs leading-5">등록 버튼을 다시 눌러 저장된 단계에서 이어서 진행하세요.</p>
           </div>
         )}
 

@@ -67,7 +67,7 @@ def _incident_notification(
                         f"영향: {_safe_text(incident.customer_impact, 500)}\n"
                         f"다음 행동: {_safe_text(incident.next_action, 500)}\n"
                         f"담당: {_safe_text(incident.owner_label, 100)} · "
-                        f"SLA: {_safe_text(incident.sla_label, 100)}"
+                        f"처리 기한: {_safe_text(incident.sla_label, 100)}"
                     ),
                 },
             ),

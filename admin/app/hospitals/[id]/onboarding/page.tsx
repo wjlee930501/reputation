@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 import type { Handoff } from '@/types'
 import {
+  deriveHandoffDueStatus,
   deriveOnboardingSteps,
   deriveOnboardingSummary,
   type LifecycleReadiness,
@@ -208,7 +209,7 @@ export default function OnboardingPage() {
   const outcomeSteps = steps.filter((step) => step.phase === 'post_onboarding')
   const completedCount = onboardingSteps.filter((step) => step.status === 'completed').length
   const slaDueAt = handoff?.sla_due_at ? new Date(handoff.sla_due_at) : null
-  const slaOverdue = Boolean(slaDueAt && checkedAt && Number.isFinite(slaDueAt.valueOf()) && slaDueAt.valueOf() < checkedAt && handoff?.state !== 'HANDOFF_ACCEPTED')
+  const handoffDueStatus = deriveHandoffDueStatus(handoff, checkedAt)
 
   return (
     <div className="min-h-full space-y-6 bg-slate-50 p-4 pt-3 [&_a.inline-flex]:min-h-11 [&_button]:min-h-11 [&_input]:min-h-11 [&_select]:min-h-11 sm:p-6 lg:p-8">
@@ -221,17 +222,20 @@ export default function OnboardingPage() {
         <div data-current-task className="mt-3 rounded-xl border border-white/15 bg-white/10 p-3 sm:mt-5 sm:p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
-              <p className="text-xs font-semibold text-blue-100">현재 차단 단계</p>
+              <p className="text-xs font-semibold text-blue-100">지금 해야 할 일</p>
               <p className="mt-1 text-base font-bold text-white sm:text-lg">{summary.headline}</p>
               <p className="mt-1 hidden max-w-3xl text-sm leading-6 text-blue-50/90 sm:block">{summary.detail}</p>
               {summary.blockedReason && (
-                <p className="mt-1 text-sm font-semibold text-red-100">차단 사유: {summary.blockedReason}</p>
+                <p className="mt-1 break-keep text-sm font-semibold text-red-100">진행이 멈춘 이유: {summary.blockedReason}</p>
               )}
               <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-blue-50/90">
                 <div className="flex gap-1"><dt>담당</dt><dd className="font-semibold text-white">{handoff?.ae_owner_name ?? '미지정'}</dd></div>
-                <div className="flex gap-1"><dt>SLA</dt><dd className="font-semibold text-white">{slaDueAt && Number.isFinite(slaDueAt.valueOf()) ? slaDueAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '미설정'}</dd></div>
-                <div className="flex gap-1"><dt>기한 상태</dt><dd className="font-semibold text-white">{slaOverdue ? 'SLA 지연' : '정상'}</dd></div>
+                <div className="flex gap-1"><dt>인수 처리 기한</dt><dd className="font-semibold text-white">{slaDueAt && Number.isFinite(slaDueAt.valueOf()) ? slaDueAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '미설정'}</dd></div>
+                <div className="flex gap-1"><dt>처리 상태</dt><dd className="font-semibold text-white">{handoffDueStatus.label}</dd></div>
               </dl>
+              {handoffDueStatus.isOverdue && (
+                <p className="mt-2 break-keep text-sm leading-6 text-amber-100">담당 AE가 아래 다음 작업 버튼을 눌러 계약 정보를 확인하고 인수를 승인해 주세요. 승인이 계속 안 되면 병원명과 현재 화면의 문구를 개발팀에 전달해 주세요.</p>
+              )}
             </div>
             {summary.nextActionHref && (
               <a
@@ -263,7 +267,10 @@ export default function OnboardingPage() {
 
       {error && (
         <div role="alert" className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 sm:flex-row sm:items-center sm:justify-between">
-          <span>온보딩 정보를 불러오지 못했습니다. {error}</span>
+          <div>
+            <p>온보딩 정보를 불러오지 못했습니다. {error}</p>
+            <p className="mt-1 break-keep text-xs leading-5">다시 시도해도 계속되면 병원명과 오류 문구를 개발팀에 전달해 주세요.</p>
+          </div>
           <button type="button" onClick={() => void refresh()} className="min-h-11 shrink-0 rounded-lg border border-red-300 bg-white px-4 font-semibold text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300">
             다시 시도
           </button>
@@ -420,8 +427,8 @@ function OperationalStepBody({ step }: { step: StepDef }) {
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <p className="text-sm text-slate-700">
         {step.status === 'completed'
-          ? '백엔드 운영 준비도와 실제 저장 데이터에서 완료를 확인했습니다.'
-          : '화면 표시용 추정값이 아니라 백엔드 운영 준비도 검사를 통과해야 완료됩니다.'}
+          ? '필수 정보가 실제로 저장되어 이 단계가 완료된 것을 확인했습니다.'
+          : '이 단계 화면에서 안내하는 필수 항목을 확인하고 완료해 주세요. 완료했는데도 상태가 바뀌지 않으면 새로 고침한 뒤 개발팀에 문의해 주세요.'}
       </p>
       {step.href && (
         <Link

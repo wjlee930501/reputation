@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { deriveOnboardingSteps, deriveOnboardingSummary } from './onboarding-lifecycle.ts'
+import {
+  deriveHandoffDueStatus,
+  deriveOnboardingSteps,
+  deriveOnboardingSummary,
+} from './onboarding-lifecycle.ts'
 
 const hospital = {
   profile_complete: true,
@@ -58,8 +62,32 @@ test('an unaccepted handoff is the first blocker and exposes one recovery action
 
   assert.equal(steps.find((step) => step.key === 'handoff')?.status, 'current')
   assert.equal(steps.find((step) => step.key === 'profile')?.status, 'upcoming')
-  assert.equal(summary.blockedReason, '계약 인수 승인이 완료되지 않았습니다.')
+  assert.equal(
+    summary.blockedReason,
+    '담당 AE가 인수 대기열에서 계약 정보와 처리 기한을 확인하고 인수를 승인해야 다음 단계로 진행할 수 있습니다.',
+  )
   assert.equal(summary.nextActionHref, '/leads')
+})
+
+test('handoff due status uses plain Korean and distinguishes the next action', () => {
+  const checkedAt = Date.parse('2026-08-11T10:00:00Z')
+
+  assert.deepEqual(
+    deriveHandoffDueStatus({ ...acceptedHandoff, state: 'CONTRACTED' }, checkedAt),
+    { label: '처리 기한 지남', isOverdue: true },
+  )
+  assert.deepEqual(
+    deriveHandoffDueStatus({ ...acceptedHandoff, state: 'HANDOFF_ACCEPTED' }, checkedAt),
+    { label: '인수 완료', isOverdue: false },
+  )
+  assert.deepEqual(
+    deriveHandoffDueStatus({ ...acceptedHandoff, state: 'CONTRACTED', sla_due_at: '2026-08-12T09:00:00Z' }, checkedAt),
+    { label: '기한 내 진행 중', isOverdue: false },
+  )
+  assert.deepEqual(
+    deriveHandoffDueStatus({ ...acceptedHandoff, state: 'CONTRACTED', sla_due_at: null }, checkedAt),
+    { label: '처리 기한 확인 필요', isOverdue: false },
+  )
 })
 
 test('schedule is completed before LIVE and recurring outcomes do not block onboarding completion', () => {

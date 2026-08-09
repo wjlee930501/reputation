@@ -55,6 +55,11 @@ export interface LifecycleHandoff {
   sla_due_at?: string | null
 }
 
+export type HandoffDueStatus = {
+  readonly label: string
+  readonly isOverdue: boolean
+}
+
 export interface LifecycleReadiness {
   status?: string | null
   published_content_count?: number | null
@@ -74,6 +79,24 @@ function readinessCheck(readiness: LifecycleReadiness | null, key: string): bool
 
 function isIncludedEvidenceSource(source: LifecycleSource): boolean {
   return source.status !== 'EXCLUDED' && !source.source_type.startsWith('PHOTO_')
+}
+
+export function deriveHandoffDueStatus(
+  handoff: LifecycleHandoff | null,
+  checkedAt: number | null,
+): HandoffDueStatus {
+  if (handoff?.state === 'HANDOFF_ACCEPTED') {
+    return { label: '인수 완료', isOverdue: false }
+  }
+
+  const dueAt = handoff?.sla_due_at ? Date.parse(handoff.sla_due_at) : Number.NaN
+  if (checkedAt === null || !Number.isFinite(dueAt)) {
+    return { label: '처리 기한 확인 필요', isOverdue: false }
+  }
+  if (dueAt < checkedAt) {
+    return { label: '처리 기한 지남', isOverdue: true }
+  }
+  return { label: '기한 내 진행 중', isOverdue: false }
 }
 
 export function deriveOnboardingSteps(
@@ -97,7 +120,7 @@ export function deriveOnboardingSteps(
       key: 'handoff',
       phase: 'onboarding',
       title: '계약 인수',
-      description: '담당 AE, 계약 정보와 SLA를 확인하고 고객 인수를 승인합니다.',
+      description: '담당 AE가 계약 정보와 인수 처리 기한을 확인하고 고객 인수를 승인합니다.',
       href: '/leads',
       done: handoff?.state === 'HANDOFF_ACCEPTED',
     },
@@ -207,7 +230,7 @@ export function deriveOnboardingSummary(
       nextActionLabel: currentOnboarding.title,
       nextActionHref: currentOnboarding.href ?? null,
       blockedReason: currentOnboarding.key === 'handoff'
-        ? '계약 인수 승인이 완료되지 않았습니다.'
+        ? '담당 AE가 인수 대기열에서 계약 정보와 처리 기한을 확인하고 인수를 승인해야 다음 단계로 진행할 수 있습니다.'
         : `${currentOnboarding.title} 완료 전 다음 온보딩 단계로 진행할 수 없습니다.`,
     }
   }
