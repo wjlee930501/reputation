@@ -48,6 +48,15 @@ from app.models.monthly_control import (
     MonthlyMeasurementManifest,
     MonthlyReportArtifact,
 )
+from app.models.operations import (
+    Incident,
+    IncidentSeverity,
+    IncidentState,
+    NotificationOutbox,
+    NotificationOutboxState,
+    OperationRun,
+    OperationRunState,
+)
 from app.models.report import MonthlyReport
 from app.models.sov import (
     AIQueryTarget,
@@ -71,6 +80,9 @@ __all__ = [
     "MonthlyReport",
     "MonthlyMeasurementManifest", "MonthlyMeasurementCell", "MonthlyMeasurementAttempt",
     "HospitalServiceInterval", "MonthlyReportArtifact", "MonthlyDeliveryEvent",
+    "Incident", "IncidentState", "IncidentSeverity",
+    "OperationRun", "OperationRunState",
+    "NotificationOutbox", "NotificationOutboxState",
     "SalesLead", "LEAD_SOURCE_INQUIRY", "LEAD_SOURCE_AI_DIAGNOSIS",
     "LeadDiagnosis", "LeadDiagnosisResult", "LeadDiagnosisSlotDay", "LeadQueryAnswer",
     "LeadReportToken", "LeadReportArtifact", "LeadDelivery",
