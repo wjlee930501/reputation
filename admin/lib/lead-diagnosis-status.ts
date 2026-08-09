@@ -26,7 +26,45 @@ export interface LeadDiagnosisSummary {
   needs_attention?: boolean
   error?: string | null
   created_at?: string | null
+  recovery_runs?: DiagnosisRecoveryRuns
 }
+
+export type RecoveryRunState =
+  | 'REQUESTED'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'PARTIAL'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export interface DiagnosisRecoveryRun {
+  readonly id: string
+  readonly state: RecoveryRunState | string
+  readonly requested_at: string | null
+  readonly safe_error_code?: string | null
+}
+
+export interface DiagnosisRecoveryRuns {
+  readonly measurement: DiagnosisRecoveryRun | null
+  readonly report: DiagnosisRecoveryRun | null
+}
+
+export type DiagnosisRecoveryAction =
+  | {
+      readonly kind: 'remeasure' | 'rebuild'
+      readonly enabled: true
+      readonly label: string
+      readonly description: string
+      readonly previousRun: DiagnosisRecoveryRun | null
+    }
+  | {
+      readonly kind: 'progress' | 'support'
+      readonly enabled: false
+      readonly label: string
+      readonly description: string
+      readonly run: DiagnosisRecoveryRun | null
+    }
 
 export type Tone = 'ok' | 'progress' | 'warn' | 'danger' | 'muted'
 
@@ -66,7 +104,7 @@ function badge(
   value: string,
 ): AxisBadge {
   const hit = table[value]
-  return { axis, label: hit?.label ?? value, tone: hit?.tone ?? 'muted' }
+  return { axis, label: hit?.label ?? '확인 필요', tone: hit?.tone ?? 'muted' }
 }
 
 export function diagnosisBadges(diagnosis: LeadDiagnosisSummary): AxisBadge[] {
@@ -98,6 +136,90 @@ export function canRetryDelivery(diagnosis: LeadDiagnosisSummary): boolean {
 /** 잠금 해제 버튼을 보여줄지. 이미 풀린 잠금을 다시 풀 수는 없다. */
 export function canReleaseLock(diagnosis: LeadDiagnosisSummary): boolean {
   return !diagnosis.lock_released_at
+}
+
+const ACTIVE_RECOVERY_STATES = new Set(['REQUESTED', 'QUEUED', 'RUNNING'])
+
+function activeRecoveryRun(diagnosis: LeadDiagnosisSummary): DiagnosisRecoveryRun | null {
+  const runs = diagnosis.recovery_runs
+  if (!runs) return null
+  if (runs.measurement && ACTIVE_RECOVERY_STATES.has(runs.measurement.state)) {
+    return runs.measurement
+  }
+  if (runs.report && ACTIVE_RECOVERY_STATES.has(runs.report.state)) return runs.report
+  return null
+}
+
+/** 한 진단에는 항상 하나의 권위 있는 복구 행동만 노출한다. */
+export function recoveryAction(
+  diagnosis: LeadDiagnosisSummary,
+): DiagnosisRecoveryAction | null {
+  const active = activeRecoveryRun(diagnosis)
+  if (active) {
+    return {
+      kind: 'progress',
+      enabled: false,
+      label: '복구 작업 진행 중',
+      description: '요청이 접수되어 처리 중입니다. 완료되면 이 상태가 자동으로 바뀝니다.',
+      run: active,
+    }
+  }
+
+  const measurementRun = diagnosis.recovery_runs?.measurement ?? null
+  const reportRun = diagnosis.recovery_runs?.report ?? null
+  if (diagnosis.execution_status === 'FAILED') {
+    if (
+      diagnosis.report_status === 'READY' ||
+      diagnosis.report_status === 'PURGED' ||
+      diagnosis.delivery_status === 'SENT' ||
+      diagnosis.delivery_status === 'SENDING'
+    ) {
+      return {
+        kind: 'support',
+        enabled: false,
+        label: '개발팀 확인 필요',
+        description: '이미 준비되었거나 전달된 리포트가 있어 자동 재측정으로 바꿀 수 없습니다.',
+        run: measurementRun,
+      }
+    }
+    return {
+      kind: 'remeasure',
+      enabled: true,
+      label: '다시 측정',
+      description: '같은 환자 질문을 AI에 다시 물어 병원명이 확인되는지 측정합니다.',
+      previousRun: measurementRun?.state === 'FAILED' ? measurementRun : null,
+    }
+  }
+
+  if (diagnosis.report_status !== 'BLOCKED') return null
+  if (diagnosis.delivery_status === 'SENT' || diagnosis.delivery_status === 'SENDING') {
+    return {
+      kind: 'support',
+      enabled: false,
+      label: '개발팀 확인 필요',
+      description: '이미 전달된 리포트 이력이 있어 자동으로 새 파일을 연결할 수 없습니다.',
+      run: reportRun,
+    }
+  }
+  if (
+    diagnosis.execution_status !== 'SUCCEEDED' &&
+    diagnosis.execution_status !== 'PARTIAL'
+  ) {
+    return {
+      kind: 'support',
+      enabled: false,
+      label: '측정 결과 확인 필요',
+      description: '리포트를 만들 수 있는 측정 결과가 없어 운영센터에서 확인해야 합니다.',
+      run: reportRun,
+    }
+  }
+  return {
+    kind: 'rebuild',
+    enabled: true,
+    label: '리포트 다시 만들기',
+    description: '기존 리포트는 보관하고 새 리포트를 만듭니다.',
+    previousRun: reportRun?.state === 'FAILED' ? reportRun : null,
+  }
 }
 
 /**

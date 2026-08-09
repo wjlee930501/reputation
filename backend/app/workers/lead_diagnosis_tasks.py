@@ -42,6 +42,11 @@ from app.services import (
     lead_report,
     notifier,
 )
+from app.workers.lead_recovery_incidents import (
+    mark_lead_recovery_failed,
+    mark_lead_recovery_succeeded,
+)
+from app.workers.lead_report_writeback import finalize_lead_report_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +69,10 @@ REPORT_LEASE_SECONDS = 600
 DRAIN_BATCH_SIZE = 20
 
 
+class LeadRecoveryRejected(RuntimeError):
+    """Recovery lost its compare-and-swap gate or remained terminal."""
+
+
 def _run_async(coro):
     """동기 Celery 태스크 안에서 코루틴을 돌린다 (tasks.py와 동일 규약).
 
@@ -78,19 +87,39 @@ def _run_async(coro):
     return loop.run_until_complete(coro)
 
 
-async def _claim_for_execution(session, diagnosis_id) -> bool:
+async def _claim_for_execution(
+    session, diagnosis_id, recovery_expected_attempts: int | None = None
+) -> bool:
     """PENDING → RUNNING 조건부 전이. 이긴 워커만 True.
 
     `rowcount == 0`은 다른 워커가 이미 가져갔거나 시도가 소진됐다는 뜻이다 —
     에러가 아니라 정상 경로이므로 조용히 종료한다.
     """
+    recovery = recovery_expected_attempts is not None
+    predicates = [LeadDiagnosis.id == diagnosis_id]
+    if recovery:
+        predicates.extend(
+            (
+                LeadDiagnosis.execution_status == ExecutionStatus.FAILED.value,
+                LeadDiagnosis.execution_attempts == recovery_expected_attempts,
+                LeadDiagnosis.report_status.notin_(
+                    (ReportStatus.READY.value, ReportStatus.PURGED.value)
+                ),
+                LeadDiagnosis.delivery_status.notin_(
+                    (DeliveryStatus.SENDING.value, DeliveryStatus.SENT.value)
+                ),
+            )
+        )
+    else:
+        predicates.extend(
+            (
+                LeadDiagnosis.execution_status == ExecutionStatus.PENDING.value,
+                LeadDiagnosis.execution_attempts < MAX_EXECUTION_ATTEMPTS,
+            )
+        )
     result = await session.execute(
         update(LeadDiagnosis)
-        .where(
-            LeadDiagnosis.id == diagnosis_id,
-            LeadDiagnosis.execution_status == ExecutionStatus.PENDING.value,
-            LeadDiagnosis.execution_attempts < MAX_EXECUTION_ATTEMPTS,
-        )
+        .where(*predicates)
         .values(
             execution_status=ExecutionStatus.RUNNING.value,
             running_since=datetime.now(timezone.utc),
@@ -102,14 +131,18 @@ async def _claim_for_execution(session, diagnosis_id) -> bool:
     return bool(result.rowcount)
 
 
-async def _run_lead_diagnosis(diagnosis_id: str) -> dict:
+async def _run_lead_diagnosis(
+    diagnosis_id: str, recovery_expected_attempts: int | None = None
+) -> dict:
     sessionmaker_ = get_async_sessionmaker()
     async with sessionmaker_() as session:
         import uuid as _uuid
 
         pk = _uuid.UUID(str(diagnosis_id))
-        if not await _claim_for_execution(session, pk):
+        if not await _claim_for_execution(session, pk, recovery_expected_attempts):
             logger.info("lead diagnosis %s already claimed or exhausted", diagnosis_id)
+            if recovery_expected_attempts is not None:
+                raise LeadRecoveryRejected("measurement recovery state changed")
             return {"skipped": "not_claimed"}
 
         diagnosis = (
@@ -119,7 +152,7 @@ async def _run_lead_diagnosis(diagnosis_id: str) -> dict:
             return {"skipped": "missing"}
 
         try:
-            return await lead_diagnosis_engine.run_diagnosis_measurements(session, diagnosis)
+            result = await lead_diagnosis_engine.run_diagnosis_measurements(session, diagnosis)
         except Exception as exc:
             # 실행 중 죽으면 RUNNING으로 남는다. 되돌려 놓아야 폴러가 다시 집는다 —
             # 리스 만료를 기다리면 15분 SLA 안에 재시도할 기회가 사라진다.
@@ -128,13 +161,23 @@ async def _run_lead_diagnosis(diagnosis_id: str) -> dict:
                 update(LeadDiagnosis)
                 .where(LeadDiagnosis.id == pk)
                 .values(
-                    execution_status=ExecutionStatus.PENDING.value,
+                    execution_status=(
+                        ExecutionStatus.FAILED.value
+                        if recovery_expected_attempts is not None
+                        else ExecutionStatus.PENDING.value
+                    ),
                     running_since=None,
                     error=f"{type(exc).__name__}: {exc}"[:2000],
                 )
             )
             await session.commit()
             raise
+        if (
+            recovery_expected_attempts is not None
+            and result.get("status") == ExecutionStatus.FAILED.value
+        ):
+            raise LeadRecoveryRejected("measurement recovery did not produce a usable result")
+        return result
 
 
 @celery_app.task(
@@ -148,21 +191,68 @@ def run_lead_diagnosis(self, diagnosis_id: str):
     return _run_async(_run_lead_diagnosis(diagnosis_id))
 
 
-async def _claim_for_report(session, diagnosis_id) -> bool:
+@celery_app.task(
+    name="app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_measurement",
+    bind=True,
+    max_retries=0,
+    soft_time_limit=DIAGNOSIS_SOFT_TIME_LIMIT,
+    time_limit=DIAGNOSIS_SOFT_TIME_LIMIT + 120,
+)
+def recover_lead_diagnosis_measurement(self, diagnosis_id: str, expected_attempts: int):
+    return _run_async(
+        _recover_lead_measurement(diagnosis_id, expected_attempts, _operation_run_id(self))
+    )
+
+
+async def _recover_lead_measurement(
+    diagnosis_id: str, expected_attempts: int, operation_run_id
+) -> dict:
+    import uuid as _uuid
+
+    diagnosis_uuid = _uuid.UUID(diagnosis_id)
+    try:
+        result = await _run_lead_diagnosis(diagnosis_id, expected_attempts)
+    except Exception as exc:  # noqa: BLE001 — Celery 작업 경계에서 incident를 되연다.
+        await mark_lead_recovery_failed(diagnosis_uuid, "MEASUREMENT", operation_run_id, str(exc))
+        raise
+    await mark_lead_recovery_succeeded(diagnosis_uuid, "MEASUREMENT")
+    return result
+
+
+async def _claim_for_report(
+    session, diagnosis_id, recovery_expected_attempts: int | None = None
+) -> bool:
     """PENDING → BUILDING. 측정이 쓸 만한 상태일 때만 통과한다.
 
     `REPORTABLE_EXECUTION_STATUSES`가 게이트의 전부인 것은 `ExecutionStatus`의 정의
     덕분이다 — 어느 한 플랫폼이라도 성공 0이면 `PARTIAL`이 아니라 `FAILED`이므로,
     분모가 0인 플랫폼 칸을 가진 리포트가 만들어질 수 없다.
     """
+    recovery = recovery_expected_attempts is not None
+    predicates = [
+        LeadDiagnosis.id == diagnosis_id,
+        LeadDiagnosis.execution_status.in_(sorted(REPORTABLE_EXECUTION_STATUSES)),
+    ]
+    if recovery:
+        predicates.extend(
+            (
+                LeadDiagnosis.report_status == ReportStatus.BLOCKED.value,
+                LeadDiagnosis.report_attempts == recovery_expected_attempts,
+                LeadDiagnosis.delivery_status.notin_(
+                    (DeliveryStatus.SENDING.value, DeliveryStatus.SENT.value)
+                ),
+            )
+        )
+    else:
+        predicates.extend(
+            (
+                LeadDiagnosis.report_status == ReportStatus.PENDING.value,
+                LeadDiagnosis.report_attempts < MAX_REPORT_ATTEMPTS,
+            )
+        )
     result = await session.execute(
         update(LeadDiagnosis)
-        .where(
-            LeadDiagnosis.id == diagnosis_id,
-            LeadDiagnosis.report_status == ReportStatus.PENDING.value,
-            LeadDiagnosis.execution_status.in_(sorted(REPORTABLE_EXECUTION_STATUSES)),
-            LeadDiagnosis.report_attempts < MAX_REPORT_ATTEMPTS,
-        )
+        .where(*predicates)
         .values(
             report_status=ReportStatus.BUILDING.value,
             report_attempts=LeadDiagnosis.report_attempts + 1,
@@ -172,14 +262,18 @@ async def _claim_for_report(session, diagnosis_id) -> bool:
     return bool(result.rowcount)
 
 
-async def _build_lead_report(diagnosis_id: str) -> dict:
+async def _build_lead_report(
+    diagnosis_id: str, recovery_expected_attempts: int | None = None
+) -> dict:
     import uuid as _uuid
 
     sessionmaker_ = get_async_sessionmaker()
     async with sessionmaker_() as session:
         pk = _uuid.UUID(str(diagnosis_id))
-        if not await _claim_for_report(session, pk):
+        if not await _claim_for_report(session, pk, recovery_expected_attempts):
             logger.info("lead report %s not claimable", diagnosis_id)
+            if recovery_expected_attempts is not None:
+                raise LeadRecoveryRejected("report recovery state changed")
             return {"skipped": "not_claimed"}
 
         diagnosis = (
@@ -214,20 +308,23 @@ async def _build_lead_report(diagnosis_id: str) -> dict:
             # 업로드가 먼저다 — 행을 먼저 쓰면 READY인데 파일이 없는 상태가 생긴다.
             storage_uri = lead_report.store_report_pdf(pk, version, pdf_bytes)
 
-            session.add(
-                LeadReportArtifact(
-                    diagnosis_id=pk,
-                    version=version,
-                    storage_uri=storage_uri,
-                    content_hash=lead_report.content_hash(pdf_bytes),
-                    byte_size=len(pdf_bytes),
-                    template_version=lead_report.TEMPLATE_VERSION,
-                )
+            artifact = LeadReportArtifact(
+                diagnosis_id=pk,
+                version=version,
+                storage_uri=storage_uri,
+                content_hash=lead_report.content_hash(pdf_bytes),
+                byte_size=len(pdf_bytes),
+                template_version=lead_report.TEMPLATE_VERSION,
             )
-            diagnosis.report_status = ReportStatus.READY.value
-            await session.commit()
+            finalized = await finalize_lead_report_artifact(
+                session, pk, diagnosis.report_attempts, artifact
+            )
+            if not finalized:
+                return {"skipped": "report_state_changed"}
             return {"version": version, "bytes": len(pdf_bytes)}
 
+        except LeadRecoveryRejected:
+            raise
         except Exception as exc:
             await session.rollback()
             # 시도가 남았으면 PENDING으로 되돌려 폴러가 다시 집게 한다.
@@ -235,6 +332,8 @@ async def _build_lead_report(diagnosis_id: str) -> dict:
             row = (
                 await session.execute(select(LeadDiagnosis).where(LeadDiagnosis.id == pk))
             ).scalar_one()
+            if row.report_status == ReportStatus.PURGED.value:
+                raise
             exhausted = row.report_attempts >= MAX_REPORT_ATTEMPTS
             row.report_status = (
                 ReportStatus.BLOCKED.value if exhausted else ReportStatus.PENDING.value
@@ -270,6 +369,51 @@ async def _notify_report_blocked(diagnosis: LeadDiagnosis) -> None:
 )
 def build_lead_report(self, diagnosis_id: str):
     return _run_async(_build_lead_report(diagnosis_id))
+
+
+@celery_app.task(
+    name="app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_report",
+    bind=True,
+    max_retries=0,
+    soft_time_limit=300,
+    time_limit=420,
+)
+def recover_lead_diagnosis_report(self, diagnosis_id: str, expected_attempts: int):
+    return _run_async(
+        _recover_lead_report(diagnosis_id, expected_attempts, _operation_run_id(self))
+    )
+
+
+async def _recover_lead_report(diagnosis_id: str, expected_attempts: int, operation_run_id) -> dict:
+    import uuid as _uuid
+
+    diagnosis_uuid = _uuid.UUID(diagnosis_id)
+    try:
+        result = await _build_lead_report(diagnosis_id, expected_attempts)
+    except Exception as exc:  # noqa: BLE001 — Celery 작업 경계에서 incident를 되연다.
+        await mark_lead_recovery_failed(diagnosis_uuid, "REPORT", operation_run_id, str(exc))
+        raise
+    if result.get("skipped") == "report_state_changed":
+        rejection = LeadRecoveryRejected("report recovery state changed before write-back")
+        await mark_lead_recovery_failed(
+            diagnosis_uuid, "REPORT", operation_run_id, str(rejection)
+        )
+        raise rejection
+    await mark_lead_recovery_succeeded(diagnosis_uuid, "REPORT")
+    return result
+
+
+def _operation_run_id(task):
+    import uuid as _uuid
+
+    headers = getattr(task.request, "headers", None) or {}
+    raw = headers.get("operation_run_id")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return _uuid.UUID(raw)
+    except ValueError:
+        return None
 
 
 async def _reports_to_build(session) -> list[str]:

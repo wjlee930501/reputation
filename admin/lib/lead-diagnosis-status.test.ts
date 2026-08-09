@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -7,9 +8,12 @@ import {
   canRetryDelivery,
   diagnosisBadges,
   diagnosisHint,
+  recoveryAction,
   leadNeedsAttention,
   needsAttention,
 } from './lead-diagnosis-status.ts'
+
+const LEADS_PAGE = readFileSync(new URL('../app/leads/page.tsx', import.meta.url), 'utf8')
 
 function make(overrides: Partial<LeadDiagnosisSummary> = {}): LeadDiagnosisSummary {
   return {
@@ -37,10 +41,22 @@ test('PARTIAL measurement is not painted as success', () => {
   assert.equal(badge.label, '일부 실패')
 })
 
-test('an unknown status falls back to the raw value instead of vanishing', () => {
+test('알 수 없는 상태는 영문 원문 대신 확인 필요로 표시한다', () => {
   const badge = diagnosisBadges(make({ delivery_status: 'WAT' }))[2]
-  assert.equal(badge.label, 'WAT')
+  assert.equal(badge.label, '확인 필요')
+  assert.doesNotMatch(badge.label, /WAT/)
   assert.equal(badge.tone, 'muted')
+})
+
+test('리드 운영 화면은 SLA 대신 인수 처리 기한을 안내한다', () => {
+  assert.doesNotMatch(LEADS_PAGE, /\bSLA\b/)
+  assert.match(LEADS_PAGE, /담당자·계약·인수 처리 기한 입력/)
+})
+
+test('복구 사유 최소 길이는 API 계약과 같은 3자다', () => {
+  assert.match(LEADS_PAGE, /reason\.length < 3/)
+  assert.match(LEADS_PAGE, /사유를 3자 이상 입력/)
+  assert.doesNotMatch(LEADS_PAGE, /사유를 2자 이상 입력/)
 })
 
 // ── 확인 필요 판정 ───────────────────────────────────────────────────
@@ -106,4 +122,54 @@ test('in-progress states are not described as problems', () => {
     make({ execution_status: 'RUNNING', report_status: 'PENDING', delivery_status: 'PENDING' }),
   )
   assert.match(hint, /진행 중/)
+})
+
+test('a failed measurement exposes one measurement recovery action first', () => {
+  const action = recoveryAction(
+    make({
+      execution_status: 'FAILED',
+      report_status: 'BLOCKED',
+      delivery_status: 'PENDING',
+    }),
+  )
+  assert.equal(action?.kind, 'remeasure')
+  assert.equal(action?.enabled, true)
+  assert.equal(
+    action?.description,
+    '같은 환자 질문을 AI에 다시 물어 병원명이 확인되는지 측정합니다.',
+  )
+})
+
+test('a blocked report exposes rebuild only after usable measurement', () => {
+  const action = recoveryAction(
+    make({ execution_status: 'PARTIAL', report_status: 'BLOCKED', delivery_status: 'PENDING' }),
+  )
+  assert.equal(action?.kind, 'rebuild')
+  assert.equal(action?.enabled, true)
+  assert.equal(action?.description, '기존 리포트는 보관하고 새 리포트를 만듭니다.')
+})
+
+test('an active recovery replaces the button with an authoritative progress outcome', () => {
+  const action = recoveryAction(
+    make({
+      execution_status: 'FAILED',
+      report_status: 'BLOCKED',
+      recovery_runs: {
+        measurement: { id: 'run-1', state: 'RUNNING', requested_at: '2026-08-10T00:00:00Z' },
+        report: null,
+      },
+    }),
+  )
+  assert.equal(action?.kind, 'progress')
+  assert.equal(action?.enabled, false)
+  assert.match(action?.label ?? '', /진행/)
+})
+
+test('an unsafe sent report rebuild is disabled with an operations-center handoff', () => {
+  const action = recoveryAction(
+    make({ execution_status: 'SUCCEEDED', report_status: 'BLOCKED', delivery_status: 'SENT' }),
+  )
+  assert.equal(action?.kind, 'support')
+  assert.equal(action?.enabled, false)
+  assert.match(action?.description ?? '', /이미 전달/)
 })

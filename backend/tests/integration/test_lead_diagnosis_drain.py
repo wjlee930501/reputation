@@ -12,8 +12,15 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.models.lead import SalesLead
-from app.models.lead_diagnosis import ExecutionStatus, LeadDiagnosis
+from app.models.lead_diagnosis import (
+    DeliveryStatus,
+    ExecutionStatus,
+    LeadDiagnosis,
+    LeadReportArtifact,
+    ReportStatus,
+)
 from app.workers import lead_diagnosis_tasks as leadgen_tasks
+from app.workers.lead_report_writeback import finalize_lead_report_artifact
 
 _slot_sequence = itertools.count(100)
 
@@ -23,6 +30,9 @@ async def _seed(
     *,
     execution_status=ExecutionStatus.PENDING.value,
     execution_attempts=0,
+    report_status=ReportStatus.PENDING.value,
+    report_attempts=0,
+    delivery_status=DeliveryStatus.PENDING.value,
     running_since=None,
     created_at=None,
 ):
@@ -49,6 +59,9 @@ async def _seed(
         repeat_count=settings.LEADGEN_REPEAT_COUNT,
         execution_status=execution_status,
         execution_attempts=execution_attempts,
+        report_status=report_status,
+        report_attempts=report_attempts,
+        delivery_status=delivery_status,
         running_since=running_since,
     )
     session.add(diagnosis)
@@ -194,6 +207,129 @@ class TestDispatchOrder:
 
 @pytest.mark.asyncio
 class TestExecutionRecovery:
+    async def test_terminal_measurement_recovery_uses_attempt_cas_without_reset(
+        self, pg_async_session
+    ):
+        # Given: 자동 재시도를 모두 소진한 실패 기록.
+        diagnosis = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.FAILED.value,
+            execution_attempts=3,
+        )
+        diagnosis.error = "provider timeout on attempt 3"
+        await pg_async_session.flush()
+
+        # When: 운영 복구가 화면에서 확인한 시도 번호로 claim한다.
+        claimed = await leadgen_tasks._claim_for_execution(
+            pg_async_session, diagnosis.id, recovery_expected_attempts=3
+        )
+
+        # Then: 실패 이력을 초기화하지 않고 4번째 시도로 이어진다.
+        await pg_async_session.refresh(diagnosis)
+        assert claimed is True
+        assert diagnosis.execution_status == ExecutionStatus.RUNNING.value
+        assert diagnosis.execution_attempts == 4
+        assert diagnosis.error == "provider timeout on attempt 3"
+
+    async def test_terminal_measurement_recovery_rejects_a_stale_attempt_cas(
+        self, pg_async_session
+    ):
+        # Given: 화면이 본 뒤 다른 복구가 이미 시도 번호를 올렸다.
+        diagnosis = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.FAILED.value,
+            execution_attempts=4,
+        )
+
+        # When: 오래된 화면이 3회 상태를 기준으로 claim한다.
+        claimed = await leadgen_tasks._claim_for_execution(
+            pg_async_session, diagnosis.id, recovery_expected_attempts=3
+        )
+
+        # Then: 행을 덮어쓰지 않는다.
+        assert claimed is False
+
+    async def test_terminal_report_rebuild_preserves_attempt_count_and_blocks_sent_report(
+        self, pg_async_session
+    ):
+        # Given: 측정은 유효하지만 렌더링이 세 번 실패한 진단.
+        diagnosis = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.SUCCEEDED.value,
+            report_status=ReportStatus.BLOCKED.value,
+            report_attempts=3,
+        )
+
+        # When: 리포트 축만 CAS claim한다.
+        claimed = await leadgen_tasks._claim_for_report(
+            pg_async_session, diagnosis.id, recovery_expected_attempts=3
+        )
+
+        # Then: 네 번째 시도로 이어지며 기존 횟수를 초기화하지 않는다.
+        await pg_async_session.refresh(diagnosis)
+        assert claimed is True
+        assert diagnosis.report_status == ReportStatus.BUILDING.value
+        assert diagnosis.report_attempts == 4
+
+        # Given: 이미 고객에게 전달된 별도 리포트 기록.
+        delivered = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.SUCCEEDED.value,
+            report_status=ReportStatus.READY.value,
+            report_attempts=3,
+            delivery_status=DeliveryStatus.SENT.value,
+        )
+
+        # When: 자동 재생성을 요청한다.
+        unsafe_claim = await leadgen_tasks._claim_for_report(
+            pg_async_session, delivered.id, recovery_expected_attempts=3
+        )
+
+        # Then: 전달 이력이 있는 리포트는 바꾸지 않는다.
+        assert unsafe_claim is False
+
+    async def test_report_writeback_loses_to_purge_and_deletes_uploaded_object(
+        self, pg_async_session, tmp_path
+    ):
+        # Given: 렌더링이 시작된 뒤 개인정보 파기가 먼저 커밋됐다.
+        diagnosis = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.SUCCEEDED.value,
+            report_status=ReportStatus.BLOCKED.value,
+            report_attempts=3,
+        )
+        assert await leadgen_tasks._claim_for_report(
+            pg_async_session, diagnosis.id, recovery_expected_attempts=3
+        )
+        diagnosis.report_status = ReportStatus.PURGED.value
+        await pg_async_session.commit()
+        diagnosis_id = diagnosis.id
+        uploaded = tmp_path / "race-upload.pdf"
+        uploaded.write_bytes(b"private report")
+        artifact = LeadReportArtifact(
+            diagnosis_id=diagnosis_id,
+            version=1,
+            storage_uri=str(uploaded),
+            content_hash="hash",
+            byte_size=14,
+            template_version="lead-v1",
+        )
+
+        # When: 늦게 끝난 렌더 워커가 READY와 새 artifact를 쓰려 한다.
+        finalized = await finalize_lead_report_artifact(
+            pg_async_session, diagnosis_id, 4, artifact
+        )
+
+        # Then: PURGED가 이기고, DB 행과 저장소 객체 모두 남지 않는다.
+        row = await pg_async_session.get(LeadDiagnosis, diagnosis_id)
+        stored = await pg_async_session.scalar(
+            select(LeadReportArtifact).where(LeadReportArtifact.diagnosis_id == diagnosis_id)
+        )
+        assert finalized is False
+        assert row is not None and row.report_status == ReportStatus.PURGED.value
+        assert stored is None
+        assert not uploaded.exists()
+
     async def test_a_crash_returns_the_row_to_pending(self, pg_async_session, monkeypatch):
         """RUNNING으로 남겨두고 리스 만료를 기다리면 15분 SLA 안에 재시도할 기회가 사라진다."""
         diagnosis = await _seed(pg_async_session)

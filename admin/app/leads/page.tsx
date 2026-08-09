@@ -16,6 +16,7 @@ import {
   diagnosisBadges,
   diagnosisHint,
   needsAttention,
+  recoveryAction,
 } from '@/lib/lead-diagnosis-status'
 
 // backend GET /admin/leads — limit(기본 50, 최대 200) + offset 지원.
@@ -42,12 +43,43 @@ interface ConvertResponse {
 
 type PlanOption = 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
 
-type DiagnosisAction = 'retry' | 'release'
+type DiagnosisAction = 'retry' | 'release' | 'remeasure' | 'rebuild'
 
 interface ActionTarget {
   lead: SalesLead
   diagnosis: LeadDiagnosisSummary
   kind: DiagnosisAction
+  idempotencyKey: string
+}
+
+const ACTION_COPY: Record<
+  DiagnosisAction,
+  { title: string; description: string; placeholder: string; submit: string }
+> = {
+  retry: {
+    title: '리포트 재발송',
+    description: '준비된 리포트를 같은 주소로 다시 보냅니다. 발송은 1분 안에 처리됩니다.',
+    placeholder: '예) 메일 발송 설정 수정 후 재발송',
+    submit: '재발송',
+  },
+  release: {
+    title: '무료 진단 1회 제한 해제',
+    description: '제3자가 먼저 신청해 원장의 기회가 소진된 경우에만 한 번 더 신청할 수 있게 합니다.',
+    placeholder: '예) 대행사가 대표번호로 선점, 원장 본인 확인 완료',
+    submit: '제한 해제',
+  },
+  remeasure: {
+    title: 'AI 답변 다시 측정',
+    description: '같은 환자 질문을 AI에 다시 물어 병원명이 확인되는지 측정합니다.',
+    placeholder: '예) 공급자 설정 정상화 확인 후 재측정',
+    submit: '다시 측정',
+  },
+  rebuild: {
+    title: '리포트 다시 만들기',
+    description: '기존 리포트는 보관하고 새 리포트를 만듭니다.',
+    placeholder: '예) PDF 렌더링 설정 수정 확인 후 재생성',
+    submit: '리포트 다시 만들기',
+  },
 }
 
 const TONE_CLASS: Record<Tone, string> = {
@@ -136,6 +168,21 @@ export default function LeadsPage() {
     void loadLeads(0)
   }, [loadLeads])
 
+  useEffect(() => {
+    const active = leads.some((lead) =>
+      (lead.diagnoses ?? []).some((diagnosis) =>
+        Object.values(diagnosis.recovery_runs ?? {}).some((run) =>
+          run ? ['REQUESTED', 'QUEUED', 'RUNNING'].includes(run.state) : false,
+        ),
+      ),
+    )
+    if (!active) return
+    const timer = window.setInterval(() => {
+      void loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [leads, loadLeads])
+
   async function openConvertModal(lead: SalesLead) {
     if (lead.converted_hospital_id) {
       router.push(`/hospitals/${lead.converted_hospital_id}/onboarding`)
@@ -207,7 +254,7 @@ export default function LeadsPage() {
   }
 
   function openAction(lead: SalesLead, diagnosis: LeadDiagnosisSummary, kind: DiagnosisAction) {
-    setActionTarget({ lead, diagnosis, kind })
+    setActionTarget({ lead, diagnosis, kind, idempotencyKey: crypto.randomUUID() })
     setActionReason('')
     setAckDuplicateRisk(false)
     setActionError(null)
@@ -217,29 +264,43 @@ export default function LeadsPage() {
   async function handleSubmitAction() {
     if (!actionTarget || actionSubmitting) return
     const reason = actionReason.trim()
-    if (reason.length < 2) {
-      setActionError('사유를 2자 이상 입력해 주세요. 감사 로그에 남습니다.')
+    if (reason.length < 3) {
+      setActionError('사유를 3자 이상 입력해 주세요. 감사 로그에 남습니다.')
       return
     }
     setActionSubmitting(true)
     setActionError(null)
-    const { lead, kind } = actionTarget
-    const path =
-      kind === 'retry'
-        ? `/admin/leads/${lead.id}/retry-report-delivery`
-        : `/admin/leads/${lead.id}/release-lock`
-    const body =
-      kind === 'retry'
-        ? { reason, acknowledge_duplicate_risk: ackDuplicateRisk }
-        : { reason }
+    const { lead, diagnosis, kind, idempotencyKey } = actionTarget
+    const path = (() => {
+      switch (kind) {
+        case 'retry':
+          return `/admin/leads/${lead.id}/retry-report-delivery`
+        case 'release':
+          return `/admin/leads/${lead.id}/release-lock`
+        case 'remeasure':
+          return `/admin/leads/${lead.id}/diagnoses/${diagnosis.id}/remeasure`
+        case 'rebuild':
+          return `/admin/leads/${lead.id}/diagnoses/${diagnosis.id}/rebuild-report`
+      }
+    })()
+    const body = kind === 'retry' ? { reason, acknowledge_duplicate_risk: ackDuplicateRisk } : { reason }
     try {
-      await fetchAPI(path, { method: 'POST', body: JSON.stringify(body) })
+      await fetchAPI(path, {
+        method: 'POST',
+        headers:
+          kind === 'remeasure' || kind === 'rebuild'
+            ? { 'Idempotency-Key': idempotencyKey }
+            : undefined,
+        body: JSON.stringify(body),
+      })
       setActionTarget(null)
-      setActionNotice(
-        kind === 'retry'
-          ? '재발송을 예약했습니다. 1분 안에 발송됩니다.'
-          : '무료 진단 1회 제한을 해제했습니다.',
-      )
+      const notices: Record<DiagnosisAction, string> = {
+        retry: '재발송을 예약했습니다. 1분 안에 발송됩니다.',
+        release: '무료 진단 1회 제한을 해제했습니다.',
+        remeasure: '다시 측정하도록 접수했습니다. 진행 상태를 이 화면에서 확인할 수 있습니다.',
+        rebuild: '새 리포트를 만들도록 접수했습니다. 기존 리포트와 전달 이력은 유지됩니다.',
+      }
+      setActionNotice(notices[kind])
       await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
     } catch (e: unknown) {
       const reasons = readRefusalReasons(e)
@@ -320,14 +381,14 @@ export default function LeadsPage() {
       {!loading && !error && leads.length > 0 && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="admin-responsive-table-wrap overflow-x-auto">
-          <table className="admin-responsive-table min-w-[860px] w-full text-sm">
+          <table className="admin-responsive-table w-full min-w-0 text-sm lg:min-w-[860px]">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">접수 시각</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">병원</th>
-                <th className="px-6 py-3 text-left font-medium text-slate-600">연락처</th>
-                <th className="px-6 py-3 text-left font-medium text-slate-600">문의</th>
-                <th className="px-6 py-3 text-left font-medium text-slate-600">유입</th>
+                <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">연락처</th>
+                <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">문의</th>
+                <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">유입</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">무료 진단</th>
                 <th className="px-6 py-3 text-right font-medium text-slate-600">다음 액션</th>
               </tr>
@@ -351,8 +412,8 @@ export default function LeadsPage() {
                       </span>
                     </div>
                   </td>
-                  <td className="px-6 py-4 font-medium text-slate-700" data-label="연락처">{lead.contact}</td>
-                  <td className="px-6 py-4 text-slate-600" data-label="문의">
+                  <td className="px-6 py-4 font-medium text-slate-700 sm:hidden lg:table-cell" data-label="연락처">{lead.contact}</td>
+                  <td className="px-6 py-4 text-slate-600 sm:hidden lg:table-cell" data-label="문의">
                     <p className="line-clamp-2 max-w-sm">{lead.question}</p>
                     <p className="mt-1 text-[11px] text-slate-400">
                       개인정보 동의 {lead.privacy ? '완료' : '미확인'}
@@ -366,7 +427,7 @@ export default function LeadsPage() {
                       <p className="mt-1 text-[11px] font-medium text-emerald-600">운영 알림 완료</p>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-xs text-slate-500" data-label="유입">{lead.source_path ?? '-'}</td>
+                  <td className="px-6 py-4 text-xs text-slate-500 sm:hidden lg:table-cell" data-label="유입">{lead.source_path ?? '-'}</td>
                   <td className="px-6 py-4" data-label="무료 진단">
                     {(lead.diagnoses ?? []).length === 0 ? (
                       <span className="text-xs text-slate-400">해당 없음</span>
@@ -400,26 +461,98 @@ export default function LeadsPage() {
                                 ? ` · 잠금 해제됨(${diagnosis.lock_released_by ?? '-'})`
                                 : ''}
                             </p>
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              {canRetryDelivery(diagnosis) && (
-                                <button
-                                  type="button"
-                                  onClick={() => openAction(lead, diagnosis, 'retry')}
-                                  className="text-[11px] font-semibold text-blue-600 hover:underline"
-                                >
-                                  리포트 재발송
-                                </button>
-                              )}
-                              {canReleaseLock(diagnosis) && (
-                                <button
-                                  type="button"
-                                  onClick={() => openAction(lead, diagnosis, 'release')}
-                                  className="text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:underline"
-                                >
-                                  1회 제한 해제
-                                </button>
-                              )}
-                            </div>
+                            {(() => {
+                              const recovery = recoveryAction(diagnosis)
+                              if (recovery?.enabled) {
+                                return (
+                                  <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                                    <p className="text-xs font-semibold text-slate-900">
+                                      지금 할 일 · {recovery.label}
+                                    </p>
+                                    <p className="mt-1 text-xs leading-5 text-slate-600">
+                                      {recovery.description}
+                                    </p>
+                                    {recovery.previousRun && (
+                                      <p className="mt-1 text-[11px] font-medium text-red-700">
+                                        이전 복구 요청도 완료되지 않았습니다. 원인을 확인한 뒤 다시 실행해 주세요.
+                                      </p>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => openAction(lead, diagnosis, recovery.kind)}
+                                      className="mt-2 inline-flex min-h-11 items-center rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+                                    >
+                                      {recovery.label}
+                                    </button>
+                                  </div>
+                                )
+                              }
+                              if (recovery?.kind === 'progress') {
+                                return (
+                                  <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                                    <p className="text-xs font-semibold text-blue-800">복구 작업 진행 중</p>
+                                    <p className="mt-1 text-xs leading-5 text-slate-600">
+                                      신청자에게는 아직 리포트가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.
+                                    </p>
+                                    <Link href="/operations" className="mt-2 inline-block text-xs font-semibold text-blue-700 hover:underline">
+                                      운영센터에서 상세 확인
+                                    </Link>
+                                  </div>
+                                )
+                              }
+                              if (recovery?.kind === 'support') {
+                                const supportInfo = [
+                                  `진단 ${diagnosis.id}`,
+                                  recovery.run ? `작업 ${recovery.run.id}` : null,
+                                  recovery.run?.safe_error_code ? `분류 ${recovery.run.safe_error_code}` : null,
+                                ].filter(Boolean).join(' · ')
+                                return (
+                                  <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                                    <p className="text-xs font-semibold text-amber-900">{recovery.label}</p>
+                                    <p className="mt-1 text-xs leading-5 text-amber-900">{recovery.description}</p>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          void navigator.clipboard.writeText(supportInfo).then(
+                                            () => setActionNotice('개발팀 문의 정보를 복사했습니다.'),
+                                            () => setActionNotice('복사하지 못했습니다. 운영센터에서 진단 번호를 확인해 주세요.'),
+                                          )
+                                        }}
+                                        className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900"
+                                      >
+                                        문의 정보 복사
+                                      </button>
+                                      <Link href="/operations" className="inline-flex min-h-11 items-center px-2 text-xs font-semibold text-amber-900 hover:underline">
+                                        운영센터 상세
+                                      </Link>
+                                    </div>
+                                  </div>
+                                )
+                              }
+                              return (
+                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  {canRetryDelivery(diagnosis) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openAction(lead, diagnosis, 'retry')}
+                                      className="text-[11px] font-semibold text-blue-600 hover:underline"
+                                    >
+                                      리포트 재발송
+                                    </button>
+                                  )}
+                                  {canReleaseLock(diagnosis) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openAction(lead, diagnosis, 'release')}
+                                      className="text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:underline"
+                                    >
+                                      1회 제한 해제
+                                    </button>
+                                  )}
+                                </div>
+                              )
+                            })()}
                           </div>
                         ))}
                       </div>
@@ -502,14 +635,12 @@ export default function LeadsPage() {
           >
             <div className="border-b border-slate-200 p-5">
               <h3 id="diagnosis-action-title" className="text-lg font-bold text-slate-900">
-                {actionTarget.kind === 'retry' ? '리포트 재발송' : '무료 진단 1회 제한 해제'}
+                {ACTION_COPY[actionTarget.kind].title}
                 {' — '}
                 {actionTarget.lead.clinic_name}
               </h3>
               <p className="mt-1 text-xs text-slate-500">
-                {actionTarget.kind === 'retry'
-                  ? '준비된 리포트를 같은 주소로 다시 보냅니다. 발송은 1분 안에 폴러가 처리합니다.'
-                  : '이 병원이 무료 진단을 한 번 더 받을 수 있게 됩니다. 제3자가 먼저 신청해 원장의 기회를 소진한 경우에만 사용하세요.'}
+                {ACTION_COPY[actionTarget.kind].description}
               </p>
             </div>
 
@@ -522,9 +653,7 @@ export default function LeadsPage() {
                   rows={3}
                   maxLength={200}
                   placeholder={
-                    actionTarget.kind === 'retry'
-                      ? '예) 메일 발송 키 오류 수정 후 재발송'
-                      : '예) 대행사가 병원 대표번호로 선점, 원장 본인 확인 완료'
+                    ACTION_COPY[actionTarget.kind].placeholder
                   }
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none"
                 />
@@ -564,9 +693,7 @@ export default function LeadsPage() {
               >
                 {actionSubmitting
                   ? '처리 중...'
-                  : actionTarget.kind === 'retry'
-                    ? '재발송'
-                    : '제한 해제'}
+                  : ACTION_COPY[actionTarget.kind].submit}
               </button>
               <button
                 type="button"
@@ -722,7 +849,7 @@ export default function LeadsPage() {
                   ? '전환 중...'
                   : linkHospitalId
                     ? '기존 병원에 연결하고 온보딩 이동'
-                    : '담당자·계약·SLA 입력'}
+                    : '담당자·계약·인수 처리 기한 입력'}
               </button>
               <button
                 type="button"

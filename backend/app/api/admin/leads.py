@@ -10,6 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account
+from app.api.admin.lead_recovery_routes import router as recovery_router
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.handoff import HandoffSource, HospitalHandoff
@@ -21,11 +22,13 @@ from app.models.lead_diagnosis import (
     LeadDiagnosis,
     ReportStatus,
 )
+from app.models.operations import OperationRun
 from app.services import lead_delivery
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.lead_privacy import purge_lead_completely_async, scrub_onboarding_note
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
+router.include_router(recovery_router)
 
 
 class LeadConvertRequest(BaseModel):
@@ -66,6 +69,10 @@ async def list_sales_leads(
     result = await db.execute(stmt.offset(offset).limit(limit))
     leads = list(result.scalars().all())
     diagnoses_by_lead = await _diagnoses_by_lead(db, [lead.id for lead in leads])
+    diagnosis_ids = [
+        diagnosis.id for diagnoses in diagnoses_by_lead.values() for diagnosis in diagnoses
+    ]
+    recovery_runs = await _recovery_runs_by_diagnosis(db, diagnosis_ids)
     # 한 번에 최대 200건의 이름·연락처·문의내용을 반환하는 대량 PII 열람이다. 누가 언제
     # 얼마나 조회했는지 남지 않으면 admin_audit_logs가 컴플라이언스 산출물로 성립하지 않는다.
     # 감사 로그 자체가 PII 사본이 되면 안 되므로 건수·페이지 메타만 남긴다.
@@ -81,7 +88,8 @@ async def list_sales_leads(
         {
             **_serialize_lead(lead),
             "diagnoses": [
-                _serialize_diagnosis(d) for d in diagnoses_by_lead.get(lead.id, [])
+                _serialize_diagnosis(d, recovery_runs.get(d.id, {}))
+                for d in diagnoses_by_lead.get(lead.id, [])
             ],
         }
         for lead in leads
@@ -314,7 +322,9 @@ async def _diagnoses_by_lead(db: AsyncSession, lead_ids: list[uuid.UUID]) -> dic
     return grouped
 
 
-def _serialize_diagnosis(diagnosis: LeadDiagnosis) -> dict:
+def _serialize_diagnosis(
+    diagnosis: LeadDiagnosis, recovery_runs: dict[str, OperationRun] | None = None
+) -> dict:
     """3축 상태를 그대로 노출한다.
 
     단일 status로 접어서 보여주면 "측정은 일부 실패했지만 리포트는 나갔다" 같은 상태가
@@ -323,6 +333,7 @@ def _serialize_diagnosis(diagnosis: LeadDiagnosis) -> dict:
     **병원명·지역은 담지 않는다.** 이 목록은 이미 대량 PII 열람이라 감사 로그를 남기는
     표면이고, 진단 요약에 식별정보를 더 얹을 이유가 없다 — 리드 행에 이미 있다.
     """
+    runs = recovery_runs or {}
     return {
         "id": str(diagnosis.id),
         "execution_status": diagnosis.execution_status,
@@ -343,7 +354,56 @@ def _serialize_diagnosis(diagnosis: LeadDiagnosis) -> dict:
         ),
         "error": diagnosis.error,
         "created_at": diagnosis.created_at.isoformat() if diagnosis.created_at else None,
+        "recovery_runs": {
+            "measurement": _serialize_recovery_run(runs.get("measurement")),
+            "report": _serialize_recovery_run(runs.get("report")),
+        },
     }
+
+
+def _serialize_recovery_run(run: OperationRun | None) -> dict | None:
+    if run is None:
+        return None
+    return {
+        "id": str(run.id),
+        "state": run.state,
+        "requested_at": run.requested_at.isoformat() if run.requested_at else None,
+        "safe_error_code": run.safe_error_code,
+    }
+
+
+async def _recovery_runs_by_diagnosis(
+    db: AsyncSession, diagnosis_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, OperationRun]]:
+    if not diagnosis_ids:
+        return {}
+    source_ids = [str(diagnosis_id) for diagnosis_id in diagnosis_ids]
+    rows = list(
+        (
+            await db.execute(
+                select(OperationRun)
+                .where(
+                    OperationRun.operation_type.in_(
+                        ("RECOVER_LEAD_MEASUREMENT", "RECOVER_LEAD_REPORT")
+                    ),
+                    OperationRun.request_payload["source_id"].as_string().in_(source_ids),
+                )
+                .order_by(OperationRun.created_at.desc())
+            )
+        ).scalars()
+    )
+    grouped: dict[uuid.UUID, dict[str, OperationRun]] = {}
+    for run in rows:
+        raw_id = run.request_payload.get("source_id")
+        if not isinstance(raw_id, str):
+            continue
+        try:
+            diagnosis_id = uuid.UUID(raw_id)
+        except ValueError:
+            continue
+        axis = "measurement" if run.operation_type == "RECOVER_LEAD_MEASUREMENT" else "report"
+        grouped.setdefault(diagnosis_id, {}).setdefault(axis, run)
+    return grouped
 
 
 def _serialize_lead(lead: SalesLead) -> dict:

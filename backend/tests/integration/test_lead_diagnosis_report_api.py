@@ -10,15 +10,21 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from app.api.admin import lead_recovery as recovery_commands
+from app.api.admin import lead_recovery_routes as recovery_api
 from app.api.public import diagnosis as diagnosis_api
+from app.models.admin_user import ROLE_OWNER, AdminUser
+from app.models.audit import AdminAuditLog
 from app.models.lead import SalesLead
 from app.models.lead_diagnosis import (
+    DeliveryStatus,
     ExecutionStatus,
     LeadDiagnosis,
     LeadReportArtifact,
     LeadReportToken,
     ReportStatus,
 )
+from app.models.operations import Incident, IncidentState, OperationRun
 from app.services import lead_report_token
 
 get_status = diagnosis_api.get_diagnosis_status
@@ -271,3 +277,169 @@ class TestReportDelivery:
 
         response = await get_report(raw, pg_async_session)
         assert b"fake report bytes" in response.body
+
+
+class _QueuedTask:
+    id = "queued-task"
+
+
+@pytest.mark.asyncio
+class TestAdminTerminalRecovery:
+    async def test_failed_measurement_recovery_is_audited_idempotent_and_non_destructive(
+        self, pg_async_session, monkeypatch
+    ):
+        # Given: 세 번 실패했고 아직 리포트가 전달되지 않은 진단과 OWNER 운영자.
+        diagnosis, _ = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.FAILED.value,
+            report_status=ReportStatus.BLOCKED.value,
+            with_artifact=False,
+        )
+        diagnosis.execution_attempts = 3
+        diagnosis.report_attempts = 3
+        diagnosis.delivery_status = DeliveryStatus.PENDING.value
+        diagnosis.error = "provider api_key=secret-value timeout 010-1234-5678"
+        actor = AdminUser(
+            email=f"owner-{uuid.uuid4()}@example.com",
+            name="복구 담당자",
+            role=ROLE_OWNER,
+            password_hash="not-used",
+            is_active=True,
+        )
+        pg_async_session.add(actor)
+        await pg_async_session.flush()
+        dispatches = 0
+
+        def fake_apply_async(**_kwargs):
+            nonlocal dispatches
+            dispatches += 1
+            return _QueuedTask()
+
+        monkeypatch.setattr(
+            recovery_commands.recover_lead_diagnosis_measurement,
+            "apply_async",
+            fake_apply_async,
+        )
+        request = recovery_api.LeadRecoveryRequest(
+            reason="owner@example.com 010-9876-5432 api_key=another-secret 수정 후 재측정"
+        )
+
+        # When: 같은 멱등 키로 요청을 두 번 보낸다.
+        first = await recovery_api.remeasure_lead_diagnosis(
+            diagnosis.lead_id,
+            diagnosis.id,
+            request,
+            "remeasure-once",
+            pg_async_session,
+            actor,
+        )
+        replay = await recovery_api.remeasure_lead_diagnosis(
+            diagnosis.lead_id,
+            diagnosis.id,
+            request,
+            "remeasure-once",
+            pg_async_session,
+            actor,
+        )
+
+        # Then: 한 작업만 큐에 들어가고 기존 상태·시도·오류는 그대로 남는다.
+        await pg_async_session.refresh(diagnosis)
+        assert dispatches == 1
+        assert replay["operation_run_id"] == first["operation_run_id"]
+        assert replay["idempotent_replay"] is True
+        assert diagnosis.execution_status == ExecutionStatus.FAILED.value
+        assert diagnosis.execution_attempts == 3
+        assert diagnosis.error == "provider api_key=secret-value timeout 010-1234-5678"
+        run = await pg_async_session.get(OperationRun, uuid.UUID(first["operation_run_id"]))
+        assert run is not None
+        assert "recovery_context" not in run.request_payload
+        assert "secret-value" not in str(run.request_payload)
+        assert "010-1234-5678" not in str(run.request_payload)
+        assert "owner@example.com" not in str(run.request_payload)
+        incident = (
+            await pg_async_session.execute(
+                select(Incident).where(Incident.operation_run_id == run.id)
+            )
+        ).scalar_one()
+        assert incident.state == IncidentState.RETRYING.value
+        assert "secret-value" not in (incident.safe_error_message or "")
+        assert "010-1234-5678" not in (incident.safe_error_message or "")
+        audits = list(
+            (
+                await pg_async_session.execute(
+                    select(AdminAuditLog).where(
+                        AdminAuditLog.target_type == "incident",
+                        AdminAuditLog.target_id == str(incident.id),
+                    )
+                )
+            ).scalars()
+        )
+        assert audits
+        audit_text = str([audit.detail for audit in audits])
+        assert "owner@example.com" not in audit_text
+        assert "010-9876-5432" not in audit_text
+        assert "another-secret" not in audit_text
+        assert "[email redacted]" in audit_text
+
+    async def test_recovery_prevents_parallel_axis_duplicate_and_ready_rebuild(
+        self, pg_async_session, monkeypatch
+    ):
+        # Given: 복구 가능한 측정 실패와 OWNER 운영자.
+        diagnosis, _ = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.FAILED.value,
+            report_status=ReportStatus.BLOCKED.value,
+            with_artifact=False,
+        )
+        diagnosis.execution_attempts = 3
+        actor = AdminUser(
+            email=f"owner-{uuid.uuid4()}@example.com",
+            name="복구 담당자",
+            role=ROLE_OWNER,
+            password_hash="not-used",
+            is_active=True,
+        )
+        pg_async_session.add(actor)
+        await pg_async_session.flush()
+        monkeypatch.setattr(
+            recovery_commands.recover_lead_diagnosis_measurement,
+            "apply_async",
+            lambda **_kwargs: _QueuedTask(),
+        )
+        request = recovery_api.LeadRecoveryRequest(reason="원인 수정 후 재측정")
+        await recovery_api.remeasure_lead_diagnosis(
+            diagnosis.lead_id,
+            diagnosis.id,
+            request,
+            "first-key",
+            pg_async_session,
+            actor,
+        )
+
+        # When/Then: 다른 키의 같은 축 요청은 현재 작업을 가리키며 거절된다.
+        with pytest.raises(HTTPException) as duplicate:
+            await recovery_api.remeasure_lead_diagnosis(
+                diagnosis.lead_id,
+                diagnosis.id,
+                request,
+                "second-key",
+                pg_async_session,
+                actor,
+            )
+        assert duplicate.value.status_code == 409
+        assert "operation_run_id" in duplicate.value.detail
+
+        # Given: 이미 고객에게 전달 가능한 READY 리포트.
+        ready, _ = await _seed(pg_async_session, report_status=ReportStatus.READY.value)
+
+        # When/Then: 안전하지 않은 덮어쓰기 재생성은 큐에 들어가지 않는다.
+        with pytest.raises(HTTPException) as unsafe:
+            await recovery_api.rebuild_lead_diagnosis_report(
+                ready.lead_id,
+                ready.id,
+                request,
+                "unsafe-ready",
+                pg_async_session,
+                actor,
+            )
+        assert unsafe.value.status_code == 409
