@@ -88,6 +88,7 @@ export default function HospitalLayout({
 
   const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
+  const visibleLifecycleAction = lifecycleAction === 'resume' && !hospital?.schedule_set ? null : lifecycleAction
   const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
   const activeMainTab = MAIN_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
   const activeTab = activeConfigTab ?? activeMainTab ?? MAIN_TABS[0]
@@ -140,8 +141,8 @@ export default function HospitalLayout({
                   <div className="mt-3 grid gap-2 text-xs text-slate-600">
                     <ProgressDot label="프로파일 완료" done={hospital.profile_complete} />
                     <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
-                    <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
                     <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
+                    <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
                   </div>
                   {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">운영량 {planLabel}</p>}
                 </div>
@@ -169,7 +170,7 @@ export default function HospitalLayout({
           <div className="min-w-0">
             <Link
               href="/hospitals"
-              className="details2 inline-flex items-center gap-1 text-[var(--color-revisit-text-helper)] transition-colors hover:text-[var(--color-revisit-text-title)]"
+              className="details2 inline-flex min-h-11 items-center gap-1 text-[var(--color-revisit-text-helper)] transition-colors hover:text-[var(--color-revisit-text-title)]"
             >
               ← 병원 목록
             </Link>
@@ -187,18 +188,18 @@ export default function HospitalLayout({
                   {planLabel}
                 </span>
               )}
-              {lifecycleAction && (
+              {visibleLifecycleAction && (
                 <button
                   type="button"
                   onClick={() => void handleLifecycleAction()}
                   disabled={lifecycleLoading}
                   className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                    lifecycleAction === 'pause'
+                    visibleLifecycleAction === 'pause'
                       ? 'border-red-200 text-red-700 hover:bg-red-50'
                       : 'border-green-200 text-green-700 hover:bg-green-50'
                   }`}
                 >
-                  {lifecycleLoading ? '처리 중...' : lifecycleAction === 'pause' ? '일시정지' : '재개'}
+                  {lifecycleLoading ? '처리 중...' : visibleLifecycleAction === 'pause' ? '일시정지' : '재개'}
                 </button>
               )}
             </div>
@@ -227,8 +228,8 @@ export default function HospitalLayout({
             <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 lg:shrink-0">
               <ProgressDot label="프로파일 완료" done={hospital.profile_complete} />
               <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
-              <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
               <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
+              <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
             </div>
           )}
         </div>
@@ -334,7 +335,9 @@ function ProgressDot({ label, done }: { label: string; done: boolean | undefined
         className={`h-2 w-2 rounded-full ${done ? 'bg-[var(--color-revisit-green-50)]' : 'bg-[var(--color-revisit-coolgrey-70)]'}`}
         aria-hidden
       />
-      <span className={done ? 'text-[var(--color-revisit-text-title)]' : 'text-[var(--color-revisit-text-caption)]'}>{label}</span>
+      <span className={done ? 'text-[var(--color-revisit-text-title)]' : 'text-[var(--color-revisit-text-caption)]'}>
+        {label} · {done ? '완료' : '대기'}
+      </span>
     </span>
   )
 }

@@ -22,17 +22,67 @@ const readiness = {
     'schedule', 'published_content', 'sov_data',
   ].map((key) => ({ key, passed: true })),
 }
+const acceptedHandoff = {
+  state: 'HANDOFF_ACCEPTED',
+  ae_owner_name: 'AE QA',
+  sla_due_at: '2026-08-11T09:00:00Z',
+}
 
-test('onboarding only completes after LIVE and every operational hard gate', () => {
-  const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id')
-  assert.equal(steps.every((step) => step.status === 'completed'), true)
-  assert.equal(deriveOnboardingSummary(steps, readiness).stateLabel, '운영 준비 완료')
+test('onboarding follows the operator sequence and separates recurring outcomes', () => {
+  const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', acceptedHandoff)
+
+  assert.deepEqual(
+    steps.map(({ key, phase }) => ({ key, phase })),
+    [
+      { key: 'handoff', phase: 'onboarding' },
+      { key: 'profile', phase: 'onboarding' },
+      { key: 'v0', phase: 'onboarding' },
+      { key: 'site', phase: 'onboarding' },
+      { key: 'processing', phase: 'onboarding' },
+      { key: 'philosophy_approved', phase: 'onboarding' },
+      { key: 'schedule', phase: 'onboarding' },
+      { key: 'live', phase: 'onboarding' },
+      { key: 'first_publish', phase: 'post_onboarding' },
+      { key: 'sov', phase: 'post_onboarding' },
+    ],
+  )
+  assert.equal(deriveOnboardingSummary(steps, readiness).stateLabel, '정기 운영 중')
 })
 
-test('schedule is an operational gate after LIVE, not an activation prerequisite', () => {
-  const steps = deriveOnboardingSteps({ ...hospital, schedule_set: false }, sources, philosophies, readiness, 'hospital-id')
-  assert.equal(steps.find((step) => step.key === 'live')?.status, 'completed')
-  assert.equal(steps.find((step) => step.key === 'schedule')?.status, 'current')
+test('an unaccepted handoff is the first blocker and exposes one recovery action', () => {
+  const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', {
+    ...acceptedHandoff,
+    state: 'CONTRACTED',
+  })
+  const summary = deriveOnboardingSummary(steps, readiness)
+
+  assert.equal(steps.find((step) => step.key === 'handoff')?.status, 'current')
+  assert.equal(steps.find((step) => step.key === 'profile')?.status, 'upcoming')
+  assert.equal(summary.blockedReason, '계약 인수 승인이 완료되지 않았습니다.')
+  assert.equal(summary.nextActionHref, '/leads')
+})
+
+test('schedule is completed before LIVE and recurring outcomes do not block onboarding completion', () => {
+  const beforeSchedule = deriveOnboardingSteps(
+    { ...hospital, schedule_set: false, site_live: true },
+    sources,
+    philosophies,
+    readiness,
+    'hospital-id',
+    acceptedHandoff,
+  )
+  assert.equal(beforeSchedule.find((step) => step.key === 'schedule')?.status, 'current')
+  assert.equal(beforeSchedule.find((step) => step.key === 'live')?.status, 'upcoming')
+
+  const withoutOutcomes = deriveOnboardingSteps(
+    hospital,
+    sources,
+    philosophies,
+    { ...readiness, published_content_count: 0, sov_record_count: 0 },
+    'hospital-id',
+    acceptedHandoff,
+  )
+  assert.equal(deriveOnboardingSummary(withoutOutcomes, readiness).stateLabel, '온보딩 완료')
 })
 
 test('stale approved essence and partially processed included sources block readiness', () => {
@@ -42,35 +92,20 @@ test('stale approved essence and partially processed included sources block read
     philosophies,
     { ...readiness, status: 'NEEDS_WORK', essence: { approved_philosophy_exists: true, source_stale: true } },
     'hospital-id',
+    acceptedHandoff,
   )
   assert.equal(steps.find((step) => step.key === 'processing')?.status, 'current')
   assert.notEqual(steps.find((step) => step.key === 'philosophy_approved')?.status, 'completed')
 })
 
-test('completed-looking flags are not reported ready when backend readiness is not READY', () => {
-  const needsWork = { ...readiness, status: 'NEEDS_WORK' }
-  const steps = deriveOnboardingSteps(hospital, sources, philosophies, needsWork, 'hospital-id')
-  const summary = deriveOnboardingSummary(steps, needsWork)
-  assert.equal(summary.stateLabel, '검증 필요')
-})
-
 test('the next-action CTA always points somewhere real', () => {
-  // href="#"는 눌러도 아무 일이 없어서 AE 입장에서 '고장 난 버튼'과 구분되지 않는다.
-  // 모든 분기에서 실제 경로이거나, 링크를 아예 만들지 않아야 한다.
   const branches = [
-    // 전부 통과 → '운영 대시보드 확인'
     deriveOnboardingSummary(
-      deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id'),
+      deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', acceptedHandoff),
       readiness,
     ),
-    // 단계는 끝났는데 백엔드 판정이 READY가 아닌 분기 (예전에 href='#'였다)
     deriveOnboardingSummary(
-      deriveOnboardingSteps(hospital, sources, philosophies, { ...readiness, status: 'NEEDS_WORK' }, 'hospital-id'),
-      { ...readiness, status: 'NEEDS_WORK' },
-    ),
-    // 진행 중인 단계가 있는 분기
-    deriveOnboardingSummary(
-      deriveOnboardingSteps({ ...hospital, schedule_set: false }, sources, philosophies, readiness, 'hospital-id'),
+      deriveOnboardingSteps({ ...hospital, schedule_set: false }, sources, philosophies, readiness, 'hospital-id', acceptedHandoff),
       readiness,
     ),
   ]
@@ -79,19 +114,9 @@ test('the next-action CTA always points somewhere real', () => {
     assert.notEqual(summary.nextActionHref, '#', `${summary.stateLabel}: dead link`)
     if (summary.nextActionHref !== null) {
       assert.ok(
-        summary.nextActionHref.startsWith('/hospitals/') || summary.nextActionHref.startsWith('#step-'),
+        summary.nextActionHref.startsWith('/hospitals/') || summary.nextActionHref === '/leads',
         `${summary.stateLabel}: unexpected href ${summary.nextActionHref}`,
       )
     }
   }
-})
-
-test('the readiness-mismatch branch links to the dashboard instead of nowhere', () => {
-  const needsWork = { ...readiness, status: 'NEEDS_WORK' }
-  const steps = deriveOnboardingSteps(hospital, sources, philosophies, needsWork, 'hospital-id')
-
-  const summary = deriveOnboardingSummary(steps, needsWork)
-
-  assert.equal(summary.stateLabel, '검증 필요')
-  assert.equal(summary.nextActionHref, '/hospitals/hospital-id/dashboard')
 })

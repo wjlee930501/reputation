@@ -1,19 +1,21 @@
 export type OnboardingStepKey =
+  | 'handoff'
   | 'profile'
   | 'v0'
   | 'site'
-  | 'live'
-  | 'sources'
   | 'processing'
-  | 'philosophy_draft'
   | 'philosophy_approved'
   | 'schedule'
+  | 'live'
   | 'first_publish'
   | 'sov'
+
+export type OnboardingPhase = 'onboarding' | 'post_onboarding'
 
 export interface OnboardingStep {
   key: OnboardingStepKey
   index: number
+  phase: OnboardingPhase
   title: string
   description: string
   href?: string
@@ -26,7 +28,6 @@ export interface OnboardingSummary {
   headline: string
   detail: string
   nextActionLabel: string
-  /** null이면 이동할 곳이 없다는 뜻 — 화면은 링크 대신 아무것도 그리지 않아야 한다. */
   nextActionHref: string | null
   blockedReason: string | null
 }
@@ -46,6 +47,12 @@ export interface LifecycleSource {
 
 export interface LifecyclePhilosophy {
   status: string
+}
+
+export interface LifecycleHandoff {
+  state?: string | null
+  ae_owner_name?: string | null
+  sla_due_at?: string | null
 }
 
 export interface LifecycleReadiness {
@@ -75,18 +82,28 @@ export function deriveOnboardingSteps(
   philosophies: LifecyclePhilosophy[],
   readiness: LifecycleReadiness | null,
   hospitalId: string,
+  handoff: LifecycleHandoff | null = null,
 ): OnboardingStep[] {
   const includedSources = sources.filter(isIncludedEvidenceSource)
   const hasSource = includedSources.length > 0
   const allIncludedSourcesProcessed = hasSource && includedSources.every((source) => source.status === 'PROCESSED')
-  const draftReady = philosophies.some((item) => item.status === 'DRAFT' || item.status === 'APPROVED')
   const approved = philosophies.some((item) => item.status === 'APPROVED')
-  const essenceFresh = readiness?.essence?.source_stale === false
-  const approvedCurrent = approved && readiness?.essence?.approved_philosophy_exists !== false && essenceFresh
+  const approvedCurrent = approved
+    && readiness?.essence?.approved_philosophy_exists !== false
+    && readiness?.essence?.source_stale === false
 
   const definitions: Array<Omit<OnboardingStep, 'index' | 'status'> & { done: boolean }> = [
     {
+      key: 'handoff',
+      phase: 'onboarding',
+      title: '계약 인수',
+      description: '담당 AE, 계약 정보와 SLA를 확인하고 고객 인수를 승인합니다.',
+      href: '/leads',
+      done: handoff?.state === 'HANDOFF_ACCEPTED',
+    },
+    {
       key: 'profile',
+      phase: 'onboarding',
       title: '병원 프로파일 입력',
       description: '필수 병원·원장·진료·공식 채널 정보를 검증하고 완료합니다.',
       href: `/hospitals/${hospitalId}/profile`,
@@ -94,69 +111,65 @@ export function deriveOnboardingSteps(
     },
     {
       key: 'v0',
+      phase: 'onboarding',
       title: 'V0 진단 리포트',
-      description: '초기 AI 답변 노출 진단과 PDF 생성 완료를 확인합니다.',
+      description: '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다.',
       href: `/hospitals/${hospitalId}/reports`,
       done: Boolean(hospital?.v0_report_done) && readinessCheck(readiness, 'v0_report') !== false,
     },
     {
       key: 'site',
-      title: '병원 정보 허브 준비',
-      description: '공개 허브 빌드가 완료됐는지 확인합니다.',
+      phase: 'onboarding',
+      title: '콘텐츠 허브 준비',
+      description: '승인된 병원 정보와 콘텐츠를 공개 표면이 읽을 수 있는지 확인합니다.',
       href: `/hospitals/${hospitalId}/profile#domain-setup`,
       done: Boolean(hospital?.site_built) && readinessCheck(readiness, 'site_built') !== false,
     },
     {
-      key: 'live',
-      title: '기본 주소 또는 자기 도메인 LIVE',
-      description: '공개 주소를 명시적으로 활성화하고 실제 노출 상태를 확인합니다.',
-      href: `/hospitals/${hospitalId}/profile#domain-setup`,
-      done: Boolean(hospital?.site_live) && readinessCheck(readiness, 'domain') !== false,
-    },
-    {
-      key: 'sources',
-      title: '병원 자산 인입',
-      description: '홈페이지 URL, 인터뷰 PDF/DOCX 등 근거 자료를 추가합니다.',
-      done: hasSource,
-    },
-    {
       key: 'processing',
-      title: '포함 자료 전체 처리',
-      description: '제외하지 않은 모든 근거 자료의 처리를 완료합니다.',
+      phase: 'onboarding',
+      title: '근거 자료 수집 및 처리',
+      description: '병원 근거 자료를 추가하고 제외하지 않은 모든 자료의 처리를 완료합니다.',
+      href: `/hospitals/${hospitalId}/onboarding#step-4`,
       done: allIncludedSourcesProcessed && readinessCheck(readiness, 'essence_sources') !== false,
     },
     {
-      key: 'philosophy_draft',
-      title: '운영 기준 초안 검토',
-      description: '처리된 근거로 콘텐츠 운영 기준 초안을 생성·검토합니다.',
-      href: `/hospitals/${hospitalId}/essence`,
-      done: draftReady,
-    },
-    {
       key: 'philosophy_approved',
-      title: '현재 자료 기준 운영 기준 승인',
-      description: '현재 자료 스냅샷과 일치하는 운영 기준을 승인합니다.',
+      phase: 'onboarding',
+      title: '콘텐츠 운영 기준 승인',
+      description: '현재 근거 자료에 맞는 원장 톤, 의료 지식과 가치 기준을 검토·승인합니다.',
       href: `/hospitals/${hospitalId}/essence`,
       done: approvedCurrent && readinessCheck(readiness, 'essence_freshness') !== false,
     },
     {
       key: 'schedule',
+      phase: 'onboarding',
       title: '콘텐츠 스케줄 설정',
-      description: '요금제와 발행 요일을 저장하고 월간 슬롯을 생성합니다.',
+      description: '요금제와 발행 요일을 저장하고 첫 달 콘텐츠 캘린더를 생성합니다.',
       href: `/hospitals/${hospitalId}/schedule`,
       done: Boolean(hospital?.schedule_set) && readinessCheck(readiness, 'schedule') !== false,
     },
     {
+      key: 'live',
+      phase: 'onboarding',
+      title: '도메인 확인 및 ACTIVE 전환',
+      description: '공개 URL과 도메인 상태를 확인한 뒤 ACTIVE로 전환합니다.',
+      href: `/hospitals/${hospitalId}/profile#domain-setup`,
+      done: Boolean(hospital?.site_live) && readinessCheck(readiness, 'domain') !== false,
+    },
+    {
       key: 'first_publish',
+      phase: 'post_onboarding',
       title: '첫 콘텐츠 발행',
-      description: '검수된 콘텐츠를 최소 1편 실제 공개합니다.',
+      description: '온보딩 이후 첫 초안을 검수하고 실제 공개합니다.',
       href: `/hospitals/${hospitalId}/content`,
       done: (readiness?.published_content_count ?? 0) > 0 && readinessCheck(readiness, 'published_content') !== false,
     },
     {
       key: 'sov',
-      title: 'AI 답변 언급률 측정',
-      description: '실제 측정 기록이 저장됐는지 확인합니다.',
+      phase: 'post_onboarding',
+      title: '첫 AI 답변 언급률 측정',
+      description: '온보딩 이후 첫 ChatGPT·Gemini 측정 기록을 확인합니다.',
       href: `/hospitals/${hospitalId}/dashboard`,
       done: (readiness?.sov_record_count ?? 0) > 0 && readinessCheck(readiness, 'sov_data') !== false,
     },
@@ -166,55 +179,60 @@ export function deriveOnboardingSteps(
   return definitions.map((item, index) => ({
     key: item.key,
     index,
+    phase: item.phase,
     title: item.title,
     description: item.description,
     href: item.href,
-    status: item.done ? 'completed' : index === firstIncomplete ? 'current' : 'upcoming',
+    status: index < firstIncomplete || (firstIncomplete === -1 && item.done)
+      ? 'completed'
+      : index === firstIncomplete
+        ? 'current'
+        : 'upcoming',
   }))
 }
 
 export function deriveOnboardingSummary(
   steps: OnboardingStep[],
-  readiness: LifecycleReadiness | null,
+  _readiness: LifecycleReadiness | null,
 ): OnboardingSummary {
-  // '운영 대시보드 확인' CTA의 목적지. sov 단계가 대시보드를 가리키므로 거기서 얻는다.
-  // 못 찾으면 링크를 만들지 않는다 — href="#"는 눌러도 아무 일이 없어서, AE 입장에서는
-  // 버튼이 고장 난 것과 구분되지 않는다.
-  const dashboardHref = steps.find((step) => step.key === 'sov')?.href ?? null
+  const onboardingSteps = steps.filter((step) => step.phase === 'onboarding')
+  const currentOnboarding = onboardingSteps.find((step) => step.status === 'current')
 
-  const allHardGatesDone = steps.every((step) => step.status === 'completed')
-  if (allHardGatesDone && readiness?.status === 'READY') {
+  if (currentOnboarding) {
     return {
-      stateLabel: '운영 준비 완료',
+      stateLabel: '다음 작업',
+      stateClassName: 'bg-blue-100 text-blue-800',
+      headline: `${currentOnboarding.title} 단계가 필요합니다.`,
+      detail: currentOnboarding.description,
+      nextActionLabel: currentOnboarding.title,
+      nextActionHref: currentOnboarding.href ?? null,
+      blockedReason: currentOnboarding.key === 'handoff'
+        ? '계약 인수 승인이 완료되지 않았습니다.'
+        : `${currentOnboarding.title} 완료 전 다음 온보딩 단계로 진행할 수 없습니다.`,
+    }
+  }
+
+  const nextOutcome = steps.find((step) => step.phase === 'post_onboarding' && step.status !== 'completed')
+  if (nextOutcome) {
+    return {
+      stateLabel: '온보딩 완료',
       stateClassName: 'bg-green-100 text-green-800',
-      headline: '신규 병원 온보딩의 모든 하드 게이트가 통과됐습니다.',
-      detail: 'LIVE, 최신 운영 기준, 스케줄, 첫 발행, AI 답변 언급률 측정까지 실제 데이터로 확인했습니다.',
-      nextActionLabel: '운영 대시보드 확인',
-      nextActionHref: dashboardHref,
+      headline: 'ACTIVE 전환까지 온보딩을 완료했습니다.',
+      detail: `이제 정기 운영 성과를 시작합니다. 다음 후속 작업은 ${nextOutcome.title}입니다.`,
+      nextActionLabel: nextOutcome.title,
+      nextActionHref: nextOutcome.href ?? null,
       blockedReason: null,
     }
   }
 
-  const current = steps.find((step) => step.status === 'current')
-  if (!current) {
-    return {
-      stateLabel: '검증 필요',
-      stateClassName: 'bg-amber-100 text-amber-900',
-      headline: '단계는 완료됐지만 백엔드 운영 준비 판정이 남아 있습니다.',
-      detail: '운영 준비도 검사에서 실패한 항목을 확인해 주세요.',
-      nextActionLabel: '운영 대시보드 확인',
-      nextActionHref: dashboardHref,
-      blockedReason: 'readiness 상태가 READY가 아닙니다.',
-    }
-  }
-
+  const dashboardHref = steps.find((step) => step.key === 'sov')?.href ?? null
   return {
-    stateLabel: '다음 작업',
-    stateClassName: 'bg-blue-100 text-blue-800',
-    headline: `${current.title} 단계가 필요합니다.`,
-    detail: current.description,
-    nextActionLabel: current.title,
-    nextActionHref: current.href ?? `#step-${current.index}`,
+    stateLabel: '정기 운영 중',
+    stateClassName: 'bg-green-100 text-green-800',
+    headline: '온보딩과 첫 정기 운영 성과를 확인했습니다.',
+    detail: '콘텐츠 발행과 AI 답변 언급률 측정을 정기 운영 대시보드에서 관리합니다.',
+    nextActionLabel: '운영 대시보드 확인',
+    nextActionHref: dashboardHref,
     blockedReason: null,
   }
 }

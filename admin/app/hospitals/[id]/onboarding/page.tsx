@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { fetchAPI } from '@/lib/api'
+import type { Handoff } from '@/types'
 import {
   deriveOnboardingSteps,
   deriveOnboardingSummary,
@@ -162,6 +163,8 @@ export default function OnboardingPage() {
   const [sources, setSources] = useState<Source[]>([])
   const [philosophies, setPhilosophies] = useState<Philosophy[]>([])
   const [readiness, setReadiness] = useState<LifecycleReadiness | null>(null)
+  const [handoff, setHandoff] = useState<Handoff | null>(null)
+  const [checkedAt, setCheckedAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -169,16 +172,19 @@ export default function OnboardingPage() {
     setLoading(true)
     setError(null)
     try {
-      const [h, s, p, r] = await Promise.all([
+      const [h, s, p, r, handoffs] = await Promise.all([
         fetchAPI(`/admin/hospitals/${id}`),
         fetchAPI(`/admin/hospitals/${id}/essence/sources`),
         fetchAPI(`/admin/hospitals/${id}/essence/philosophies`),
         fetchAPI<LifecycleReadiness>(`/admin/hospitals/${id}/readiness`),
+        fetchAPI<Handoff[]>('/admin/handoffs'),
       ])
       setHospital(h as Hospital)
       setSources(Array.isArray(s) ? (s as Source[]) : [])
       setPhilosophies(Array.isArray(p) ? (p as Philosophy[]) : [])
       setReadiness(r)
+      setHandoff(handoffs.find((item) => item.hospital_id === id) ?? null)
+      setCheckedAt(Date.now())
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '로딩 실패')
     } finally {
@@ -191,61 +197,77 @@ export default function OnboardingPage() {
   }, [refresh])
 
   const steps = useMemo(
-    () => deriveOnboardingSteps(hospital, sources, philosophies, readiness, id),
-    [hospital, sources, philosophies, readiness, id],
+    () => deriveOnboardingSteps(hospital, sources, philosophies, readiness, id, handoff),
+    [hospital, sources, philosophies, readiness, id, handoff],
   )
   const summary = useMemo(
     () => deriveOnboardingSummary(steps, readiness),
     [steps, readiness],
   )
-  const completedCount = steps.filter((s) => s.status === 'completed').length
+  const onboardingSteps = steps.filter((step) => step.phase === 'onboarding')
+  const outcomeSteps = steps.filter((step) => step.phase === 'post_onboarding')
+  const completedCount = onboardingSteps.filter((step) => step.status === 'completed').length
+  const slaDueAt = handoff?.sla_due_at ? new Date(handoff.sla_due_at) : null
+  const slaOverdue = Boolean(slaDueAt && checkedAt && Number.isFinite(slaDueAt.valueOf()) && slaDueAt.valueOf() < checkedAt && handoff?.state !== 'HANDOFF_ACCEPTED')
 
   return (
-    <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
-      <header className="rounded-2xl bg-slate-900 p-5 text-white sm:p-7">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">신규 병원 온보딩</p>
-        <h2 className="mt-2 text-2xl font-bold">{hospital?.name ?? '온보딩'}</h2>
-        <p className="mt-2 text-sm leading-6 text-blue-50/90 max-w-2xl">
-          프로파일부터 LIVE, 근거 자료, 운영 기준, 스케줄, 첫 발행, AI 답변 언급률 측정까지 실제 상태로 검증합니다.
+    <div className="min-h-full space-y-6 bg-slate-50 p-4 pt-3 [&_a.inline-flex]:min-h-11 [&_button]:min-h-11 [&_input]:min-h-11 [&_select]:min-h-11 sm:p-6 lg:p-8">
+      <header className="rounded-2xl bg-slate-900 p-4 text-white sm:p-7">
+        <p className="hidden text-xs font-semibold text-blue-200 sm:block">신규 병원 온보딩</p>
+        <h2 className="hidden text-xl font-bold sm:mt-2 sm:block sm:text-2xl">{hospital?.name ?? '온보딩'}</h2>
+        <p className="mt-2 hidden max-w-2xl text-sm leading-6 text-blue-50/90 sm:block">
+          계약 인수부터 스케줄, 도메인과 ACTIVE 전환까지 실제 운영 순서로 확인합니다.
         </p>
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <span className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white">
-            진행 {completedCount}/{steps.length} 단계
-          </span>
-          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${summary.stateClassName}`}>
-            {summary.stateLabel}
-          </span>
-          <button
-            onClick={refresh}
-            className="text-xs font-medium text-blue-100 hover:text-white underline underline-offset-2"
-          >
-            새로 고침
-          </button>
-        </div>
-        <div className="mt-5 rounded-xl border border-white/15 bg-white/10 p-4">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-100">현재 상태</p>
-              <p className="mt-1 text-lg font-bold text-white">{summary.headline}</p>
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-blue-50/90">{summary.detail}</p>
+        <div data-current-task className="mt-3 rounded-xl border border-white/15 bg-white/10 p-3 sm:mt-5 sm:p-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-blue-100">현재 차단 단계</p>
+              <p className="mt-1 text-base font-bold text-white sm:text-lg">{summary.headline}</p>
+              <p className="mt-1 hidden max-w-3xl text-sm leading-6 text-blue-50/90 sm:block">{summary.detail}</p>
               {summary.blockedReason && (
-                <p className="mt-2 text-sm font-semibold text-red-100">차단 사유: {summary.blockedReason}</p>
+                <p className="mt-1 text-sm font-semibold text-red-100">차단 사유: {summary.blockedReason}</p>
               )}
+              <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-blue-50/90">
+                <div className="flex gap-1"><dt>담당</dt><dd className="font-semibold text-white">{handoff?.ae_owner_name ?? '미지정'}</dd></div>
+                <div className="flex gap-1"><dt>SLA</dt><dd className="font-semibold text-white">{slaDueAt && Number.isFinite(slaDueAt.valueOf()) ? slaDueAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '미설정'}</dd></div>
+                <div className="flex gap-1"><dt>기한 상태</dt><dd className="font-semibold text-white">{slaOverdue ? 'SLA 지연' : '정상'}</dd></div>
+              </dl>
             </div>
             {summary.nextActionHref && (
               <a
                 href={summary.nextActionHref}
-                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-blue-50"
+                data-primary-next-action
+                className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg bg-white px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
               >
                 다음 작업: {summary.nextActionLabel}
               </a>
             )}
           </div>
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <span className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white">
+            온보딩 {completedCount}/{onboardingSteps.length} 단계
+          </span>
+          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${summary.stateClassName}`}>
+            {summary.stateLabel}
+          </span>
+          <button
+            type="button"
+            onClick={refresh}
+            className="min-h-11 text-xs font-medium text-blue-100 underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
+          >
+            새로 고침
+          </button>
+        </div>
       </header>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 sm:flex-row sm:items-center sm:justify-between">
+          <span>온보딩 정보를 불러오지 못했습니다. {error}</span>
+          <button type="button" onClick={() => void refresh()} className="min-h-11 shrink-0 rounded-lg border border-red-300 bg-white px-4 font-semibold text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300">
+            다시 시도
+          </button>
+        </div>
       )}
 
       <section className="grid gap-4 lg:grid-cols-[260px_1fr]">
@@ -254,23 +276,23 @@ export default function OnboardingPage() {
           <details className="lg:hidden">
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-800 [&::-webkit-details-marker]:hidden">
               전체 단계 보기
-              <span className="text-xs text-slate-500">{completedCount}/{steps.length} 완료</span>
+              <span className="text-xs text-slate-500">{completedCount}/{onboardingSteps.length} 완료</span>
             </summary>
             <ol className="mt-2 space-y-1 border-t border-slate-100 pt-2">
-              {steps.map((s) => (
+              {onboardingSteps.map((s) => (
                 <StepBadge key={s.key} step={s} />
               ))}
             </ol>
           </details>
           <ol className="hidden space-y-1 lg:block">
-            {steps.map((s) => (
+            {onboardingSteps.map((s) => (
               <StepBadge key={s.key} step={s} />
             ))}
           </ol>
         </aside>
 
         <div className="space-y-4">
-          {steps.map((s) => (
+          {onboardingSteps.map((s) => (
             <StepCard
               key={s.key}
               step={s}
@@ -282,9 +304,18 @@ export default function OnboardingPage() {
               onChanged={refresh}
             />
           ))}
+          <section aria-labelledby="post-onboarding-title" className="mt-8 border-t border-slate-300 pt-6">
+            <h2 id="post-onboarding-title" className="text-lg font-bold text-slate-900">온보딩 이후 정기 운영 성과</h2>
+            <p className="mt-1 text-sm text-slate-600">첫 발행과 첫 AI 답변 언급률 측정은 ACTIVE 전환 이후의 성과이며 온보딩 완료를 막지 않습니다.</p>
+            <div className="mt-4 space-y-4">
+              {outcomeSteps.map((step) => (
+                <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} />
+              ))}
+            </div>
+          </section>
         </div>
       </section>
-    </main>
+    </div>
   )
 }
 
@@ -304,7 +335,7 @@ function StepBadge({ step }: { step: StepDef }) {
       >
         <span className="text-lg leading-none">{mark}</span>
         <span className="min-w-0">
-          <span className="block text-xs font-semibold uppercase tracking-wider">STEP {step.index + 1}</span>
+          <span className="block text-xs font-semibold">{step.phase === 'onboarding' ? `온보딩 ${step.index + 1}` : `후속 성과 ${step.index - 7}`}</span>
           <span className="block break-words text-sm font-medium">{step.title}</span>
         </span>
       </a>
@@ -340,8 +371,8 @@ function StepCard({
     <details id={`step-${step.index}`} open={step.status === 'current'} className={`overflow-hidden rounded-2xl border ${tone} bg-white`}>
       <summary className="flex min-h-20 cursor-pointer list-none items-start justify-between gap-3 px-4 py-4 sm:px-6 sm:py-5 [&::-webkit-details-marker]:hidden">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-600">
-            STEP {step.index + 1} / {11}
+          <p className="text-xs font-semibold text-blue-600">
+            {step.phase === 'onboarding' ? `온보딩 ${step.index + 1} / 8` : `후속 성과 ${step.index - 7} / 2`}
           </p>
           <h2 className="mt-1 text-lg font-bold text-slate-900">{step.title}</h2>
           <p className="mt-1 text-sm text-slate-600 max-w-2xl">{step.description}</p>
@@ -350,28 +381,21 @@ function StepCard({
       </summary>
 
       <div className="border-t border-slate-100 px-4 py-5 sm:px-6">
+        {step.key === 'handoff' && <HandoffStepBody />}
         {step.key === 'profile' && (
           <ProfileStepBody hospital={hospital} hospitalId={hospitalId} />
         )}
-        {step.key === 'sources' && (
-          <SourcesStepBody
-            hospital={hospital}
-            hospitalId={hospitalId}
-            sources={sources}
-            onChanged={onChanged}
-            loading={loading}
-          />
-        )}
         {step.key === 'processing' && (
-          <ProcessingStepBody hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
-        )}
-        {step.key === 'philosophy_draft' && (
-          <PhilosophyStepBody
-            hospitalId={hospitalId}
-            philosophies={philosophies}
-            sources={sources}
-            mode="draft"
-          />
+          <div className="space-y-6">
+            <SourcesStepBody
+              hospital={hospital}
+              hospitalId={hospitalId}
+              sources={sources}
+              onChanged={onChanged}
+              loading={loading}
+            />
+            <ProcessingStepBody hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
+          </div>
         )}
         {step.key === 'philosophy_approved' && (
           <PhilosophyStepBody
@@ -407,6 +431,20 @@ function OperationalStepBody({ step }: { step: StepDef }) {
           {step.status === 'completed' ? '상태 확인' : '단계 진행'} →
         </Link>
       )}
+    </div>
+  )
+}
+
+function HandoffStepBody() {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <p className="text-sm text-slate-700">계약 정보와 담당 AE가 일치하는지 확인한 뒤 고객 인수 기록을 승인합니다.</p>
+      <Link
+        href="/leads"
+        className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-blue-200 hover:text-blue-700"
+      >
+        인수 대기열 확인
+      </Link>
     </div>
   )
 }
