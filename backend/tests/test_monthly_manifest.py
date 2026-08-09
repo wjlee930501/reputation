@@ -10,6 +10,7 @@ from app.services.monthly_manifest import (
     apply_manifest_to_report,
     close_manifest,
     exclude_cell,
+    freeze_dispatch_manifest,
     freeze_monthly_manifest,
     summarize_manifest,
 )
@@ -27,6 +28,21 @@ class FakeSession:
 
     def flush(self) -> None:
         return None
+
+
+class ExistingManifestSession(FakeSession):
+    def __init__(self, manifest) -> None:
+        super().__init__()
+        self.manifest = manifest
+
+    def execute(self, _statement):
+        manifest = self.manifest
+
+        class Result:
+            def scalar_one_or_none(self):
+                return manifest
+
+        return Result()
 
 
 def _spec(index: int, platform: str = "chatgpt") -> ManifestCellSpec:
@@ -146,6 +162,24 @@ def test_pre_boundary_report_is_blocked_pending_task21_schedule_move() -> None:
     assert report.customer_ready is False
     assert report.cutoff_at == manifest.closes_at
     assert "MANIFEST_OPEN" in report.delivery_blockers
+
+
+def test_dispatch_reuses_frozen_cells_when_current_specs_are_empty() -> None:
+    hospital_id = uuid.uuid4()
+    manifest = SimpleNamespace(
+        hospital_id=hospital_id,
+        period_year=2026,
+        period_month=7,
+        cells=[SimpleNamespace(state="FAILED", query_text="retired after freeze")],
+    )
+    session = ExistingManifestSession(manifest)
+
+    reused = freeze_dispatch_manifest(
+        session, hospital_id, 2026, 7, [], gemini_configured=False
+    )
+
+    assert reused is manifest
+    assert reused.cells[0].query_text == "retired after freeze"
 
 
 @pytest.mark.parametrize("role", ["OPERATOR", "VIEWER"])

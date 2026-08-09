@@ -68,6 +68,7 @@ from app.services.essence_engine import (
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
 from app.services.monthly_manifest import (
+    ManifestError,
     apply_manifest_to_report,
     close_manifest,
     freeze_dispatch_manifest,
@@ -1676,18 +1677,18 @@ def run_sov_for_hospital(self, hospital_id: str):
                 is_month_start=True,
                 high_priority_cap=-1,
             )
-            if not frozen_specs:
+            try:
+                manifest = freeze_dispatch_manifest(
+                    db,
+                    hospital.id,
+                    today_kst.year,
+                    today_kst.month,
+                    frozen_specs,
+                    gemini_configured=bool(settings.GEMINI_API_KEY),
+                )
+            except ManifestError:
                 logger.info("No queries available to freeze for hospital %s", hospital_id)
                 return
-
-            manifest = freeze_dispatch_manifest(
-                db,
-                hospital.id,
-                today_kst.year,
-                today_kst.month,
-                frozen_specs,
-                gemini_configured=bool(settings.GEMINI_API_KEY),
-            )
             db.commit()
             measurement_specs = [
                 {

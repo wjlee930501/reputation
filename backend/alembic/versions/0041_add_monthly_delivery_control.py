@@ -303,6 +303,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    versioned_periods = op.get_bind().execute(
+        sa.text(
+            "SELECT count(*) FROM (SELECT 1 FROM monthly_reports "
+            "GROUP BY hospital_id, period_year, period_month, report_type "
+            "HAVING count(*) > 1) versioned"
+        )
+    ).scalar_one()
+    if versioned_periods:
+        raise RuntimeError(
+            "0041 downgrade refused: versioned monthly reports exist; preserve report history "
+            "and roll forward instead of downgrading"
+        )
     op.execute(
         sa.text(
             "DROP TRIGGER IF EXISTS trg_monthly_delivery_events_append_only ON monthly_delivery_events"

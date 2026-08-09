@@ -30,6 +30,15 @@ class Recorder:
         self.dropped_constraints: list[tuple[str, str]] = []
 
     def install(self, monkeypatch, migration: ModuleType) -> None:
+        class EmptyVersionResult:
+            def scalar_one(self) -> int:
+                return 0
+
+        class Bind:
+            def execute(self, _statement):
+                return EmptyVersionResult()
+
+        monkeypatch.setattr(migration.op, "get_bind", Bind)
         monkeypatch.setattr(
             migration.op, "create_table", lambda name, *items: self.tables.setdefault(name, items)
         )
@@ -146,3 +155,30 @@ def test_downgrade_removes_only_0041_artifacts(monkeypatch) -> None:
         "monthly_measurement_manifests",
     ]
     assert len(recorder.dropped_columns) == 11
+
+
+def test_downgrade_refuses_version_history_before_schema_mutation(monkeypatch) -> None:
+    migration = _load()
+    recorder = Recorder()
+    recorder.install(monkeypatch, migration)
+
+    class VersionedResult:
+        def scalar_one(self) -> int:
+            return 1
+
+    class Bind:
+        def execute(self, _statement):
+            return VersionedResult()
+
+    monkeypatch.setattr(migration.op, "get_bind", Bind)
+
+    try:
+        migration.downgrade()
+    except RuntimeError as exc:
+        assert "roll forward" in str(exc)
+    else:
+        raise AssertionError("versioned downgrade unexpectedly succeeded")
+
+    assert recorder.sql == []
+    assert recorder.dropped_tables == []
+    assert recorder.dropped_columns == []

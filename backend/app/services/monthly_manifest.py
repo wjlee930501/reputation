@@ -57,10 +57,10 @@ def freeze_monthly_manifest(
     gemini_configured: bool,
     existing: MonthlyMeasurementManifest | None = None,
 ) -> MonthlyMeasurementManifest:
-    if not specs:
-        raise ManifestError("manifest requires at least one cell")
     if existing is not None:
         return existing
+    if not specs:
+        raise ManifestError("manifest requires at least one cell")
     platforms = ["chatgpt", *(["gemini"] if gemini_configured else [])]
     manifest = MonthlyMeasurementManifest(
         hospital_id=hospital_id,
