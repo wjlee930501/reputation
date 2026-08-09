@@ -68,8 +68,8 @@ const SCREENING_LABELS: Record<ScreeningStatus, { label: string; cls: string }> 
 const REPORT_DRAWER_STYLE = {
   overlay: 'fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[color-mix(in_srgb,var(--color-revisit-nav)_55%,transparent)] p-4',
   surface: 'my-8 w-full max-w-2xl rounded-xl bg-white',
-  header: 'flex items-center justify-between border-b border-[var(--color-revisit-coolgrey-20)] p-6',
-  heading: 'text-lg font-bold text-[var(--color-revisit-text-title)]',
+  header: 'flex items-start justify-between gap-3 border-b border-[var(--color-revisit-coolgrey-20)] p-6',
+  heading: 'text-base font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all] sm:text-lg',
   helper: 'text-[var(--color-revisit-text-helper)]',
   muted: 'text-[var(--color-revisit-text-caption)]',
   close: 'min-h-11 min-w-11 rounded-lg text-xl text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]',
@@ -598,12 +598,12 @@ function DetailDrawer({
     <div className={REPORT_DRAWER_STYLE.overlay}>
       <div className={REPORT_DRAWER_STYLE.surface} role="dialog" aria-modal="true" aria-labelledby="report-drawer-title">
         <div className={REPORT_DRAWER_STYLE.header}>
-          <div>
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
               <h3 id="report-drawer-title" className={REPORT_DRAWER_STYLE.heading}>
                 {getReportTypeLabel(report)} — {report.period_year}년 {report.period_month}월
               </h3>
-              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
+              <span className={`inline-flex shrink-0 items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
                 {meta.label}
               </span>
             </div>
