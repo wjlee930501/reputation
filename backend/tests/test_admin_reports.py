@@ -58,10 +58,21 @@ def _report(**overrides):
 def _manifest(**overrides):
     base = {
         "id": uuid.uuid4(),
+        "hospital_id": uuid.uuid4(),
+        "period_year": 2026,
+        "period_month": 5,
         "closed_at": datetime(2026, 5, 31, 23, 59, tzinfo=timezone.utc),
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def _bind_manifest(report, manifest):
+    manifest.id = report.manifest_id
+    manifest.hospital_id = report.hospital_id
+    manifest.period_year = report.period_year
+    manifest.period_month = report.period_month
+    return manifest
 
 
 def _doctor_artifact(**overrides):
@@ -97,7 +108,7 @@ def test_monthly_customer_delivery_fails_closed(
     report_overrides, manifest, artifact, expected_code
 ):
     report = _report(**report_overrides)
-    manifest.id = report.manifest_id
+    _bind_manifest(report, manifest)
     if artifact is not None:
         artifact.report_id = report.id
 
@@ -111,10 +122,28 @@ def test_monthly_customer_delivery_requires_matching_valid_doctor_artifact():
     report = _report()
     artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
 
-    gate = _delivery_gate(report, _manifest(id=report.manifest_id), artifact)
+    gate = _delivery_gate(report, _bind_manifest(report, _manifest()), artifact)
 
     assert gate.ready is True
     assert gate.code is None
+
+
+@pytest.mark.parametrize("mismatch", ["hospital", "year", "month"])
+def test_monthly_customer_delivery_rejects_manifest_tenant_or_period_mismatch(mismatch):
+    report = _report()
+    manifest = _bind_manifest(report, _manifest())
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    if mismatch == "hospital":
+        manifest.hospital_id = uuid.uuid4()
+    elif mismatch == "year":
+        manifest.period_year -= 1
+    else:
+        manifest.period_month -= 1
+
+    gate = _delivery_gate(report, manifest, artifact)
+
+    assert gate.code == "manifest_mismatch"
+    assert gate.ready is False
 
 
 @pytest.mark.parametrize(
@@ -122,6 +151,8 @@ def test_monthly_customer_delivery_requires_matching_valid_doctor_artifact():
     [
         ("coverage", "coverage_incomplete"),
         ("open", "manifest_open"),
+        ("manifest_hospital", "manifest_mismatch"),
+        ("manifest_period", "manifest_mismatch"),
         ("missing", "doctor_artifact_missing"),
         ("invalid", "doctor_artifact_invalid"),
     ],
@@ -132,6 +163,10 @@ async def test_mark_sent_returns_distinct_readiness_conflicts(mutation, expected
         report.quality = "DEGRADED"
     elif mutation == "open":
         db.manifest.closed_at = None
+    elif mutation == "manifest_hospital":
+        db.manifest.hospital_id = uuid.uuid4()
+    elif mutation == "manifest_period":
+        db.manifest.period_month -= 1
     elif mutation == "missing":
         db.artifact = None
     elif mutation == "invalid":
@@ -257,7 +292,7 @@ def _actor(*, role=ROLE_OWNER):
 def _ready_db(*, role=ROLE_OWNER):
     hospital = _hospital()
     report = _report(hospital_id=hospital.id)
-    manifest = _manifest(id=report.manifest_id)
+    manifest = _bind_manifest(report, _manifest())
     artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
     actor = _actor(role=role)
     handoff = SimpleNamespace(hospital_id=hospital.id, ae_owner_id=actor.id)
@@ -573,7 +608,9 @@ async def test_download_report_uses_one_hour_signed_url(monkeypatch):
     hospital = _hospital()
     report = _report(hospital_id=hospital.id)
     artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
-    db = _FakeDB(hospital, report, manifest=_manifest(id=report.manifest_id), artifact=artifact)
+    db = _FakeDB(
+        hospital, report, manifest=_bind_manifest(report, _manifest()), artifact=artifact
+    )
     calls = []
 
     async def _fresh(db, hospital_id):
@@ -606,7 +643,7 @@ async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch)
     db = _FakeDB(
         hospital,
         report,
-        manifest=_manifest(id=report.manifest_id),
+        manifest=_bind_manifest(report, _manifest()),
         artifact=artifact,
     )
     calls = []
@@ -623,7 +660,7 @@ async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch)
     monkeypatch.setattr(reports_api, "get_signed_url", fake_signed_url)
     monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh_essence)
     response = await reports_api.download_report(
-        hospital.id, report.id, audience="doctor", db=db
+        hospital.id, report.id, audience="doctor", db=db, actor=_actor()
     )
 
     # 헤더는 latin-1만 담을 수 있다 — 한글 이름은 RFC 5987 filename*으로만 나간다.
@@ -635,14 +672,59 @@ async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch)
     response.headers["content-disposition"].encode("latin-1")  # 인코딩 가능해야 한다
 
 
+@pytest.mark.parametrize(("assigned", "expected_status"), [(True, 302), (False, 403)])
+async def test_doctor_download_requires_owner_or_assigned_operator(
+    monkeypatch, assigned, expected_status
+):
+    hospital, report, operator, db = _ready_db(role=ROLE_OPERATOR)
+    if not assigned:
+        db.handoff.ae_owner_id = uuid.uuid4()
+
+    async def _fresh(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(philosophy, philosophy, 4, 4, "snapshot")
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh)
+    monkeypatch.setattr(reports_api, "get_signed_url", lambda *args, **kwargs: "https://x.test")
+
+    if expected_status == 302:
+        response = await reports_api.download_report(
+            hospital.id, report.id, audience="doctor", db=db, actor=operator
+        )
+        assert response.status_code == 302
+    else:
+        with pytest.raises(HTTPException) as exc:
+            await reports_api.download_report(
+                hospital.id, report.id, audience="doctor", db=db, actor=operator
+            )
+        assert exc.value.status_code == expected_status
+        assert exc.value.detail["code"] == "DELIVERY_NOT_ASSIGNED"
+
+
+async def test_doctor_download_is_cross_tenant_404():
+    hospital = _hospital()
+    report = _report(hospital_id=uuid.uuid4())
+    db = _FakeDB(hospital, report)
+
+    with pytest.raises(HTTPException) as exc:
+        await reports_api.download_report(
+            hospital.id, report.id, audience="doctor", db=db, actor=_actor()
+        )
+
+    assert exc.value.status_code == 404
+
+
 async def test_download_report_explains_a_missing_doctor_edition(monkeypatch):
     """AE용은 있는데 원장용만 없을 수 있다 — 'PDF 경로 없음'은 그 상황을 설명하지 못한다."""
     hospital = _hospital()
     report = _report(hospital_id=hospital.id, doctor_pdf_path=None)
-    db = _FakeDB(hospital, report, manifest=_manifest(id=report.manifest_id))
+    db = _FakeDB(hospital, report, manifest=_bind_manifest(report, _manifest()))
 
     with pytest.raises(HTTPException) as exc:
-        await reports_api.download_report(hospital.id, report.id, audience="doctor", db=db)
+        await reports_api.download_report(
+            hospital.id, report.id, audience="doctor", db=db, actor=_actor()
+        )
 
     assert exc.value.status_code == 409
     assert exc.value.detail["code"] == "doctor_artifact_missing"
@@ -653,7 +735,7 @@ async def test_report_list_reports_whether_the_doctor_edition_exists():
     missing = reports_api._serialize(report)
     artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
     valid = reports_api._serialize(
-        report, manifest=_manifest(id=report.manifest_id), artifact=artifact
+        report, manifest=_bind_manifest(report, _manifest()), artifact=artifact
     )
 
     assert missing["has_doctor_pdf"] is False

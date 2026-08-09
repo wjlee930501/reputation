@@ -199,7 +199,19 @@ def _delivery_gate(
         )
         if report.quality != "COMPLETE" or not counts_complete or manifest is None:
             return DeliveryGate(False, "coverage_incomplete", "월간 측정 커버리지가 완전하지 않습니다.")
-        if manifest.id != report.manifest_id or manifest.closed_at is None:
+        manifest_matches = (
+            manifest.id == report.manifest_id
+            and manifest.hospital_id == report.hospital_id
+            and manifest.period_year == report.period_year
+            and manifest.period_month == report.period_month
+        )
+        if not manifest_matches:
+            return DeliveryGate(
+                False,
+                "manifest_mismatch",
+                "월간 측정 manifest가 이 병원과 보고 기간에 연결되지 않았습니다.",
+            )
+        if manifest.closed_at is None:
             return DeliveryGate(False, "manifest_open", "월간 측정 manifest가 아직 닫히지 않았습니다.")
 
     state = _artifact_state(report, artifact)
@@ -283,6 +295,7 @@ async def download_report(
     report_id: uuid.UUID,
     audience: str = Query(default="ae", pattern="^(ae|doctor)$"),
     db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
 ):
     """PDF 다운로드 — GCS signed URL로 리다이렉트 (1시간 만료).
 
@@ -298,6 +311,7 @@ async def download_report(
     is_doctor = audience == "doctor"
     pdf_path = r.doctor_pdf_path if is_doctor else r.pdf_path
     if is_doctor:
+        await _assert_delivery_actor(db, r.hospital_id, actor)
         artifact = await _get_doctor_artifact(db, r.id)
         await _assert_customer_ready(db, r, await _get_manifest(db, r.manifest_id), artifact)
     if not pdf_path:
