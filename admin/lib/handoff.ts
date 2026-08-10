@@ -61,6 +61,6 @@ export function handoffNextAction(handoff: Handoff): string {
   switch (handoff.state) {
     case 'CONTRACT_PENDING': return '계약 정보 입력'
     case 'CONTRACTED': return 'AE 고객 인수 승인'
-    case 'HANDOFF_ACCEPTED': return '병원 프로파일 입력'
+    case 'HANDOFF_ACCEPTED': return '병원 기본 정보 입력'
   }
 }

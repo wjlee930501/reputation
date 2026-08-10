@@ -6,6 +6,8 @@ import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
   buildPublicContentUrl,
   ContentOperationsFilter,
@@ -186,18 +188,18 @@ function getReviewState(item: ContentItem): ReviewState {
 }
 
 function getContentTypeLabel(item: ContentItem): string {
-  return item.display?.content_type_label ?? TYPE_LABELS[item.content_type] ?? item.content_type
+  return item.display?.content_type_label ?? TYPE_LABELS[item.content_type] ?? '콘텐츠 유형 확인 필요'
 }
 
 function getEssenceLabel(item: ContentItem): { label: string; color: string } {
   if (!item.essence_status) return ESSENCE_FALLBACK
-  const fallback = ESSENCE_LABELS[item.essence_status] ?? { label: item.essence_status, color: 'bg-slate-100 text-slate-700' }
+  const fallback = ESSENCE_LABELS[item.essence_status] ?? { label: '운영 기준 확인 필요', color: 'bg-slate-100 text-slate-700' }
   return { ...fallback, label: item.display?.essence_status_label ?? fallback.label }
 }
 
 function getBriefLabel(item: ContentItem): { label: string; color: string } {
   if (!item.brief_status) return BRIEF_FALLBACK
-  const fallback = BRIEF_LABELS[item.brief_status] ?? { label: item.brief_status, color: 'bg-slate-100 text-slate-700' }
+  const fallback = BRIEF_LABELS[item.brief_status] ?? { label: '콘텐츠 가이드 확인 필요', color: 'bg-slate-100 text-slate-700' }
   return { ...fallback, label: item.display?.brief_status_label ?? fallback.label }
 }
 
@@ -261,9 +263,13 @@ export default function ContentPage() {
 
   const load = useCallback(() => {
     setLoading(true)
+    setError(null)
     fetchAPI<ContentItem[]>(`/admin/hospitals/${id}/content?year=${year}&month=${month}`)
       .then(setItems)
-      .catch((e: Error) => setError(e.message))
+      .catch((reason: unknown) => {
+        if (!isExpectedOperatorRequestFailure(reason)) throw reason
+        setError(safeOperatorError('content', '콘텐츠 목록 다시 불러오기를 누르세요.'))
+      })
       .finally(() => setLoading(false))
   }, [id, month, year])
 
@@ -379,7 +385,7 @@ export default function ContentPage() {
     void fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${contentId}`)
       .then(setSelected)
       .catch((reason: unknown) => {
-        setActionError(reason instanceof Error ? reason.message : '연결된 콘텐츠를 불러오지 못했습니다.')
+        setActionError(safeOperatorError('content', '목록에서 해당 콘텐츠의 ‘상세 보기’를 다시 누르세요.'))
       })
   }, [id])
 
@@ -433,13 +439,13 @@ export default function ContentPage() {
       void refetchHeader()
       load()
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '발행에 실패했습니다.'
+      const message = safeOperatorError('content', '의료광고 확인 결과를 검토한 뒤 ‘운영 복구 발행’을 다시 누르세요.')
       const violationList = readViolationsFromError(e)
       // 편집 모드 전환은 해당 콘텐츠가 모달에 열려 있을 때만 — 닫힌 모달의 상태를 건드리지 않는다.
       if (selected && selected.id === itemId) {
         if (violationList.length > 0) {
           setViolations(violationList)
-          setEditError(`의료광고 금지 표현이 발견되어 발행할 수 없습니다: ${violationList.join(', ')}`)
+          setEditError(`문제: 의료광고 금지 표현이 발견됐습니다: ${violationList.join(', ')}\n고객 영향: 이 상태의 글은 공개하지 않습니다.\n지금 할 일: 표시된 표현을 수정하고 저장한 뒤 다시 발행하세요.`)
           setEditMode(true)
           setEditTitle(selected.title ?? '')
           setEditBody(selected.body ?? '')
@@ -469,7 +475,7 @@ export default function ContentPage() {
       setSelected(full)
       load()
     } catch (e: unknown) {
-      setEditError(e instanceof Error ? e.message : '공개 내용 확인 기록에 실패했습니다.')
+      setEditError(safeOperatorError('content', '최신 공개 글을 확인한 뒤 ‘문제 없음’을 다시 누르세요.'))
     } finally {
       setActionLoading(false)
     }
@@ -486,7 +492,7 @@ export default function ContentPage() {
       load()
       setSelected(null)
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '반려에 실패했습니다.'
+      const message = safeOperatorError('content', '최신 상태를 다시 확인한 뒤 ‘문제 발견’을 다시 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
       else setActionError(message)
     } finally {
@@ -505,7 +511,7 @@ export default function ContentPage() {
       load()
       setSelected(null)
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '재생성 요청에 실패했습니다.'
+      const message = safeOperatorError('content', '콘텐츠 목록을 다시 불러온 뒤 ‘다시 만들기’를 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
       else setActionError(message)
     } finally {
@@ -527,7 +533,7 @@ export default function ContentPage() {
       load()
       setSelected(null)
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '발행일 변경에 실패했습니다.'
+      const message = safeOperatorError('content', '날짜를 확인한 뒤 ‘발행일 변경’을 다시 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
       else setActionError(message)
     } finally {
@@ -546,7 +552,7 @@ export default function ContentPage() {
       load()
       setSelected(null)
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '슬롯 종료에 실패했습니다.'
+      const message = safeOperatorError('content', '최신 상태를 확인한 뒤 ‘슬롯 종료’를 다시 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
       else setActionError(message)
     } finally {
@@ -564,7 +570,7 @@ export default function ContentPage() {
       setActionSuccess('이미지 재생성을 요청했습니다. 본문은 그대로 유지됩니다.')
       load()
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '이미지 재생성 요청에 실패했습니다.'
+      const message = safeOperatorError('content', '본문 상태를 확인한 뒤 ‘이미지만 다시 만들기’를 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
       else setActionError(message)
     } finally {
@@ -715,7 +721,7 @@ export default function ContentPage() {
         setViolations(violationList)
         setEditError(`금지 표현: ${violationList.join(', ')}`)
       } else {
-        setEditError(e instanceof Error ? e.message : '저장에 실패했습니다.')
+        setEditError(safeOperatorError('content', '입력 내용을 확인한 뒤 ‘저장’을 다시 누르세요.'))
       }
     } finally {
       setEditSaving(false)
@@ -757,7 +763,7 @@ export default function ContentPage() {
       setBriefEditMode(false)
       load()
     } catch (e: unknown) {
-      setBriefError(e instanceof Error ? e.message : 'Brief 저장에 실패했습니다.')
+      setBriefError(safeOperatorError('content', '콘텐츠 가이드 내용을 확인한 뒤 ‘저장’을 다시 누르세요.'))
     } finally {
       setBriefSaving(false)
     }
@@ -782,6 +788,15 @@ export default function ContentPage() {
   const selectedAction = selected?.exposure_action_id
     ? exposureActions.find((action) => action.id === selected.exposure_action_id) ?? null
     : null
+  const applyOperationsFilter = (filter: ContentOperationsFilter) => {
+    setActiveFilter(filter)
+    window.requestAnimationFrame(() => {
+      document.getElementById('content-operations-list')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+    })
+  }
   const primaryOperation: {
     label: string
     value: number
@@ -791,16 +806,16 @@ export default function ContentPage() {
   } = summary.needsReview > 0
     ? { label: '지금 확인: 자동 발행 차단', value: summary.needsReview, tone: 'orange', hint: '차단 사유를 확인하고 공개 전 조치', filter: 'needsReview' }
     : summary.notificationPending > 0
-      ? { label: '지금 확인: Slack 알림 재시도', value: summary.notificationPending, tone: 'red', hint: '공개 완료 · 알림 기록 없음', filter: 'notificationPending' }
+      ? { label: '지금 확인: Slack 알림 확인 필요', value: summary.notificationPending, tone: 'amber', hint: '눌러 아래 항목의 알림 상태와 처리 방법 확인', filter: 'notificationPending' }
       : summary.postReviewPending > 0
         ? { label: '지금 확인: 공개 내용', value: summary.postReviewPending, tone: 'blue', hint: '공개된 글에 문제가 없는지 확인', filter: 'postReviewPending' }
-        : { label: '현재 자동 발행 대기', value: summary.publishable, tone: 'green', hint: '기계 안전검사를 통과한 콘텐츠', filter: 'publishable' }
+        : { label: '현재 자동 발행 대기', value: summary.publishable, tone: 'green', hint: '공개 전 안전 확인을 통과한 콘텐츠', filter: 'publishable' }
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       {/* Hero / summary header */}
       <div className="mb-6">
-        <div className="flex flex-wrap items-end justify-between gap-4">
+        <div data-current-task className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h2 className="text-2xl font-bold text-slate-900">자동 발행 · 공개 내용 확인</h2>
             <p className="text-sm text-slate-500 mt-1">
@@ -810,7 +825,7 @@ export default function ContentPage() {
         </div>
 
         {actionError && (
-          <DismissibleBanner tone="error" message={actionError} dismissLabel="오류 메시지 닫기" onClose={() => setActionError(null)} />
+          <div className="mt-4"><OperatorIssuePanel message={actionError} surface="content" /></div>
         )}
         {actionSuccess && (
           <DismissibleBanner tone="success" message={actionSuccess} dismissLabel="완료 메시지 닫기" onClose={() => setActionSuccess(null)} />
@@ -818,26 +833,26 @@ export default function ContentPage() {
 
         {/* 현재 할 일에 시각적 우선순위를 주고, 정상/기록 상태는 펼침 안으로 보낸다. */}
         <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard {...primaryOperation} featured activeFilter={activeFilter} onFilter={setActiveFilter} />
-          <SummaryCard label="자동 발행 대기" value={summary.publishable} tone="green" hint="기계 안전검사 통과" filter="publishable" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          <SummaryCard label="공개 내용 확인 대기" value={summary.postReviewPending} tone="blue" hint="Slack 알림 후 공개 글 확인" filter="postReviewPending" activeFilter={activeFilter} onFilter={setActiveFilter} />
+          <SummaryCard {...primaryOperation} featured activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+          <SummaryCard label="자동 발행 대기" value={summary.publishable} tone="green" hint="공개 전 안전 확인 통과" filter="publishable" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+          <SummaryCard label="공개 내용 확인 대기" value={summary.postReviewPending} tone="blue" hint="Slack 알림 후 공개 글 확인" filter="postReviewPending" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
         </div>
         <details className="admin-disclosure mt-3">
-          <summary>전체 파이프라인 상태</summary>
+          <summary>전체 처리 상태</summary>
           <div className="grid grid-cols-2 gap-3 p-3 md:grid-cols-3 xl:grid-cols-6">
-            {carriedCount > 0 && <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨" filter="carried" activeFilter={activeFilter} onFilter={setActiveFilter} />}
-            <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단" filter="needsReview" activeFilter={activeFilter} onFilter={setActiveFilter} />
-            <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={setActiveFilter} />
-            <SummaryCard label="Slack 알림 재시도" value={summary.notificationPending} tone="red" hint="알림 기록 없음" filter="notificationPending" activeFilter={activeFilter} onFilter={setActiveFilter} />
-            <SummaryCard label="공개 내용 확인 완료" value={summary.published} tone="green" hint="공개 글 확인 기록됨" filter="published" activeFilter={activeFilter} onFilter={setActiveFilter} />
-            <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={setActiveFilter} />
-            <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복·노후 슬롯" filter="cancelled" activeFilter={activeFilter} onFilter={setActiveFilter} />
+            {carriedCount > 0 && <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨" filter="carried" activeFilter={activeFilter} onFilter={applyOperationsFilter} />}
+            <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단" filter="needsReview" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="Slack 알림 확인 필요" value={summary.notificationPending} tone="amber" hint="알림 상태와 처리 방법 확인" filter="notificationPending" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="공개 내용 확인 완료" value={summary.published} tone="green" hint="공개 글 확인 기록됨" filter="published" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복·노후 슬롯" filter="cancelled" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
           </div>
         </details>
         {activeFilter !== 'all' && (
           <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
             <span>선택한 상태만 표시 중 · {filteredItems.length}건</span>
-            <button type="button" onClick={() => setActiveFilter('all')} className="min-h-8 rounded-md px-2.5 font-semibold hover:bg-blue-100">
+            <button type="button" onClick={() => setActiveFilter('all')} className="min-h-11 rounded-md px-2.5 font-semibold hover:bg-blue-100">
               전체 보기
             </button>
           </div>
@@ -852,7 +867,7 @@ export default function ContentPage() {
           id="content-year"
           value={year}
           onChange={(e) => setYear(Number(e.target.value))}
-          className="min-h-10 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="min-h-11 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           {yearOptions.map((y) => (
             <option key={y} value={y}>{y}년</option>
@@ -863,7 +878,7 @@ export default function ContentPage() {
           id="content-month"
           value={month}
           onChange={(e) => setMonth(Number(e.target.value))}
-          className="min-h-10 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="min-h-11 px-3 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           {monthOptions.map((m) => (
             <option key={m} value={m}>{m}월</option>
@@ -878,11 +893,11 @@ export default function ContentPage() {
       {loading && <div className="text-center py-16 text-slate-500">불러오는 중...</div>}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">오류: {error}</div>
+        <OperatorIssuePanel message={error} surface="content" onRetry={load} retryLabel="콘텐츠 목록 다시 불러오기" />
       )}
 
       {!loading && !error && (
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div id="content-operations-list" className="scroll-mt-4 rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 sm:px-6">
             <p className="text-sm font-semibold text-slate-800">콘텐츠 {filteredItems.length}건</p>
             <p className="text-xs text-slate-500">카드를 눌러 상태별로 좁혀볼 수 있습니다.</p>
@@ -925,26 +940,26 @@ export default function ContentPage() {
                   <button
                     type="button"
                     onClick={() => openDetail(item)}
-                    className="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                    className="mt-3 inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                   >
-                    {item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? '공개 내용 확인' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
+                    {getContentOperationsState(item) === 'notificationPending' ? '알림 상태 확인' : item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? '공개 내용 확인' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
                   </button>
                 </article>
               )
             })}
           </div>
           <div className="hidden overflow-x-auto lg:block">
-          <table className="min-w-[920px] w-full text-sm">
+          <table className="min-w-[1080px] w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="text-left px-6 py-3 text-slate-600 font-medium">발행예정일</th>
-                <th className="text-left px-6 py-3 text-slate-600 font-medium">유형</th>
+                <th className="whitespace-nowrap break-keep text-left px-6 py-3 text-slate-600 font-medium">발행예정일</th>
+                <th className="whitespace-nowrap break-keep text-left px-6 py-3 text-slate-600 font-medium">유형</th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">제목</th>
-                <th className="text-center px-6 py-3 text-slate-600 font-medium">순번</th>
-                <th className="text-center px-6 py-3 text-slate-600 font-medium">자동 발행 / 공개 내용 확인</th>
-                <th className="text-center px-6 py-3 text-slate-600 font-medium">운영 기준</th>
-                <th className="text-center px-6 py-3 text-slate-600 font-medium">콘텐츠 가이드</th>
-                <th className="text-right px-6 py-3 text-slate-600 font-medium">액션</th>
+                <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">순번</th>
+                <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">자동 발행 / 공개 내용 확인</th>
+                <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">운영 기준</th>
+                <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">콘텐츠 가이드</th>
+                <th className="whitespace-nowrap break-keep text-right px-6 py-3 text-slate-600 font-medium">액션</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -975,9 +990,9 @@ export default function ContentPage() {
                         </span>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-slate-600">{getContentTypeLabel(item)}</td>
+                    <td className="whitespace-nowrap break-keep px-6 py-4 text-slate-600">{getContentTypeLabel(item)}</td>
                     <td className="px-6 py-4">
-                      <button onClick={() => openDetail(item)} className="text-blue-600 hover:underline text-left">
+                      <button onClick={() => openDetail(item)} className="inline-flex min-h-11 items-center text-left text-blue-600 hover:underline">
                         {item.title ?? <span className="text-slate-400 italic">생성 전</span>}
                       </button>
                     </td>
@@ -985,7 +1000,7 @@ export default function ContentPage() {
                       {item.sequence_no}/{item.total_count}
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${review.badge}`}>
+                      <span className={`inline-flex whitespace-nowrap break-keep px-2.5 py-0.5 rounded-full text-xs font-medium ${review.badge}`}>
                         {review.label}
                       </span>
                       {getContentOperationsState(item) === 'postReviewPending' && item.post_publish_notified_at && (
@@ -993,20 +1008,27 @@ export default function ContentPage() {
                       )}
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${essence.color}`}>
+                      <span className={`inline-flex whitespace-nowrap break-keep px-2.5 py-0.5 rounded-full text-xs font-medium ${essence.color}`}>
                         {essence.label}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${brief.color}`}>
+                      <span className={`inline-flex whitespace-nowrap break-keep px-2.5 py-0.5 rounded-full text-xs font-medium ${brief.color}`}>
                         {brief.label}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      {item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? (
+                      {getContentOperationsState(item) === 'notificationPending' ? (
                         <button
                           onClick={() => openDetail(item)}
-                          className="inline-flex min-h-9 items-center rounded-md px-2.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
+                          className="inline-flex min-h-11 items-center whitespace-nowrap break-keep rounded-md px-2.5 text-xs font-medium text-amber-800 hover:bg-amber-50"
+                        >
+                          알림 상태 확인
+                        </button>
+                      ) : item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? (
+                        <button
+                          onClick={() => openDetail(item)}
+                          className="inline-flex min-h-11 items-center rounded-md px-2.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
                         >
                           공개 내용 확인
                         </button>
@@ -1015,12 +1037,12 @@ export default function ContentPage() {
                       ) : review.key === 'needsReview' && item.title ? (
                         <button
                           onClick={() => openDetail(item)}
-                          className="inline-flex min-h-9 items-center rounded-md px-2.5 text-xs font-medium text-orange-700 hover:bg-orange-50"
+                          className="inline-flex min-h-11 items-center rounded-md px-2.5 text-xs font-medium text-orange-700 hover:bg-orange-50"
                         >
                           차단 사유 확인
                         </button>
                       ) : (
-                        <button onClick={() => openDetail(item)} className="inline-flex min-h-9 items-center rounded-md px-2.5 text-xs text-slate-600 hover:bg-slate-100">
+                        <button onClick={() => openDetail(item)} className="inline-flex min-h-11 items-center rounded-md px-2.5 text-xs text-slate-600 hover:bg-slate-100">
                           상세 확인
                         </button>
                       )}
@@ -1120,19 +1142,17 @@ export default function ContentPage() {
             )}
 
             {editError && (
-              <div className="mx-6 mt-4 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
-                {editError}
+              <div className="mx-6 mt-4">
+                <OperatorIssuePanel message={editError} surface="content" />
                 {violations.length > 0 && (
-                  <ul className="mt-1 list-disc list-inside text-xs">
+                  <ul className="mt-2 list-inside list-disc text-xs text-red-800">
                     {violations.map((v) => <li key={v}>{v}</li>)}
                   </ul>
                 )}
               </div>
             )}
             {briefError && (
-              <div className="mx-6 mt-4 bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
-                {briefError}
-              </div>
+              <div className="mx-6 mt-4"><OperatorIssuePanel message={briefError} surface="content" /></div>
             )}
 
             {briefEditMode ? (
@@ -1540,7 +1560,7 @@ export default function ContentPage() {
                     <button
                       type="button"
                       onClick={(selected.references?.length ?? 0) === 0 ? enterReferenceEditMode : enterEditMode}
-                      className="inline-flex min-h-9 items-center rounded-md bg-white px-3 text-xs font-semibold text-orange-800 shadow-sm ring-1 ring-orange-200 hover:bg-orange-100"
+                      className="inline-flex min-h-11 items-center rounded-md bg-white px-3 text-xs font-semibold text-orange-800 shadow-sm ring-1 ring-orange-200 hover:bg-orange-100"
                     >
                       {(selected.references?.length ?? 0) === 0 ? '참고 자료 추가' : '콘텐츠 수정'}
                     </button>
@@ -1630,14 +1650,14 @@ export default function ContentPage() {
                     <button
                       onClick={() => handlePublish(selected.id)}
                       disabled={actionLoading || !selectedReview.publishable || !selected.title}
-                      className="flex-1 min-w-44 py-2.5 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="min-h-11 flex-1 min-w-44 py-2.5 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       지금 발행 (운영 복구)
                     </button>
                     <button
                       onClick={() => setConfirmAction('regenerate')}
                       disabled={actionLoading}
-                      className="flex-1 min-w-44 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
+                      className="min-h-11 flex-1 min-w-44 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
                     >
                       즉시 재생성
                     </button>
@@ -1763,6 +1783,7 @@ function SummaryCard({
   const active = activeFilter === filter
   return (
     <button
+      data-current-task={featured ? '' : undefined}
       type="button"
       aria-pressed={active}
       onClick={() => onFilter(active ? 'all' : filter)}

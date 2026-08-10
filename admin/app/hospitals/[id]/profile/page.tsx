@@ -3,6 +3,8 @@
 import { useParams } from 'next/navigation'
 import { useEffect, useId, useState } from 'react'
 import { fetchAPI, autofillProfile } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
 import { useHospitalHeader } from '../hospital-context'
 import { DomainSetupPanel } from '../DomainSetupPanel'
@@ -235,7 +237,7 @@ function AutofillModal({
         <div className="px-6 py-5 border-b border-slate-100">
           <h3 className="text-base font-semibold text-slate-900">자동 채우기</h3>
           <p className="text-xs text-slate-500 mt-1">
-            홈페이지·블로그·네이버 플레이스를 스크래핑해 프로파일을 자동으로 채웁니다.
+            홈페이지·블로그·네이버 플레이스를 확인해 병원 기본 정보를 자동으로 채웁니다.
             빈 필드만 채우며, 이미 입력된 내용은 덮어쓰지 않습니다.
             <span className="block mt-1 text-slate-400">수집에 약 20~40초가 소요될 수 있습니다.</span>
           </p>
@@ -332,6 +334,7 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorCanReload, setErrorCanReload] = useState(false)
   const [success, setSuccess] = useState(false)
 
   // Autofill state
@@ -355,7 +358,11 @@ export default function ProfilePage() {
           longitude: data.longitude ?? null,
         })
       })
-      .catch((e) => setError(e.message))
+      .catch((reason: unknown) => {
+        if (!isExpectedOperatorRequestFailure(reason)) throw reason
+        setErrorCanReload(true)
+        setError(safeOperatorError('onboarding', '운영 화면을 다시 불러 병원 기본 정보를 확인하세요.'))
+      })
       .finally(() => setLoading(false))
   }, [hospitalId])
 
@@ -391,12 +398,13 @@ export default function ProfilePage() {
     e.preventDefault()
     const missing = buildProfileChecklist(profile).filter((item) => item.required && item.status !== 'done')
     if (profile.profile_complete && missing.length > 0) {
-      setError(`프로파일 완료 전 필수 항목을 채워 주세요: ${missing.map((item) => item.label).join(', ')}`)
+      setError(`병원 기본 정보 완료 전 필수 항목을 채워 주세요: ${missing.map((item) => item.label).join(', ')}`)
       document.querySelector('[data-profile-completion]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
     setSaving(true)
     setError(null)
+    setErrorCanReload(false)
     setSuccess(false)
     try {
       await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, {
@@ -407,7 +415,8 @@ export default function ProfilePage() {
       void refetchHeader() // 프로파일 완료 플래그 등 헤더 진행 점 갱신
       setTimeout(() => setSuccess(false), 3000)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '저장에 실패했습니다.')
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setError(safeOperatorError('onboarding', '필수 항목을 확인한 뒤 ‘저장’을 다시 누르세요.'))
     } finally {
       setSaving(false)
     }
@@ -416,6 +425,7 @@ export default function ProfilePage() {
   async function handleAutofill(name: string, websiteUrl: string, blogUrl: string) {
     setAutofillLoading(true)
     setError(null)
+    setErrorCanReload(false)
     try {
       const body: { name?: string; website_url?: string; blog_url?: string } = {}
       if (name.trim()) body.name = name.trim()
@@ -478,7 +488,8 @@ export default function ProfilePage() {
       setAiFilled(newAiFilled)
       setAutofillOpen(false)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '자동 채우기에 실패했습니다.')
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setError(safeOperatorError('onboarding', '공식 주소를 확인한 뒤 ‘자동 채우기’를 다시 누르세요.'))
     } finally {
       setAutofillLoading(false)
     }
@@ -526,7 +537,7 @@ export default function ProfilePage() {
       <form onSubmit={handleSave} className="profile-layout space-y-6 p-4 sm:p-6 lg:p-8">
       <div className="profile-full flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">프로파일 온보딩</h2>
+          <h2 className="text-xl font-bold text-slate-900">병원 기본 정보 입력</h2>
           <p className="text-sm text-slate-600 mt-1">
             원장 인터뷰, 병원 기본정보, 외부 채널, 진료 항목, 도메인까지 누락 없이 세팅합니다.
           </p>
@@ -554,9 +565,7 @@ export default function ProfilePage() {
       </div>
 
       {error && (
-        <div className="profile-full bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
-          {error}
-        </div>
+        <div className="profile-full"><OperatorIssuePanel message={error} surface="onboarding" onRetry={errorCanReload ? () => window.location.reload() : undefined} retryLabel="병원 기본 정보 다시 불러오기" /></div>
       )}
 
       {/* Autofill result: violations warning */}
@@ -1125,7 +1134,7 @@ export default function ProfilePage() {
               className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
             />
             <div>
-              <span className="text-sm font-medium text-slate-800">프로파일 완료로 표시</span>
+              <span className="text-sm font-medium text-slate-800">병원 기본 정보 완료로 표시</span>
               <p className="text-xs text-slate-500 mt-0.5">
                 저장 시점에 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다. 운영 알림으로 결과를 확인합니다.
               </p>

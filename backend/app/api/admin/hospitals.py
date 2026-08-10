@@ -78,11 +78,11 @@ async def _trigger_v0_report_safe(hospital_id_str: str, hospital_name: str) -> N
         logger.warning("V0 report enqueue failed for hospital %s: %s", hospital_id_str, exc)
         try:
             await notifier.notify_ops_alert(
-                title="V0 리포트 자동 시작 확인 필요",
+                title="초기 진단 리포트 자동 시작 확인 필요",
                 message=(
                     f"병원: {hospital_name}\n"
-                    "영향: V0 리포트가 생성되지 않아 원장 보고 준비를 시작할 수 없습니다.\n"
-                    "다음 행동: 병원 대시보드에서 “V0 리포트 재실행”을 누르세요. "
+                    "영향: 초기 진단 리포트가 생성되지 않아 원장 보고 준비를 시작할 수 없습니다.\n"
+                    "다음 행동: 병원 대시보드에서 “초기 진단 리포트 다시 만들기”를 누르세요. "
                     "버튼이 없거나 다시 실패하면 개발팀에 병원명과 현재 화면의 문구를 전달하세요."
                 ),
             )
@@ -881,7 +881,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ),
         ReadinessCheck(
             "v0_report",
-            "V0 진단 리포트",
+            "초기 진단 리포트",
             bool(h.v0_report_done or report_count > 0),
             12,
             readiness_actions["v0_report"],

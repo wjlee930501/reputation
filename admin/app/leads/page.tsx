@@ -1,13 +1,16 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { formatDateTime } from '@/lib/format'
 import { SkeletonTable } from '@/app/components/Skeleton'
 import { PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
 import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
+import { leadSourceLabel, safeOperatorError } from '@/lib/operations-journey'
 import {
   type LeadDiagnosisSummary,
   type Tone,
@@ -58,7 +61,7 @@ const ACTION_COPY: Record<
 > = {
   retry: {
     title: '리포트 재발송',
-    description: '준비된 리포트를 같은 주소로 다시 보냅니다. 발송은 1분 안에 처리됩니다.',
+    description: '준비된 리포트를 같은 주소로 다시 보내도록 접수합니다. 이후 진행 상태를 이 화면에서 확인합니다.',
     placeholder: '예) 메일 발송 설정 수정 후 재발송',
     submit: '재발송',
   },
@@ -94,20 +97,16 @@ function getOnboardingHref(lead: SalesLead) {
   return buildLeadOnboardingHref(lead.id)
 }
 
-/** 409 본문에 담긴 진단별 거절 사유를 그대로 꺼낸다 — AE가 볼 유일한 설명이다. */
+/** Count structured 409 rows without reflecting backend text into the marketer screen. */
 function readRefusalReasons(error: unknown): string[] {
   if (!(error instanceof ApiError)) return []
   const detail = error.detail
   if (typeof detail !== 'object' || detail === null) return []
   const rows = (detail as { diagnoses?: unknown }).diagnoses
   if (!Array.isArray(rows)) return []
-  return rows
-    .map((row) =>
-      typeof row === 'object' && row !== null && typeof (row as { message?: unknown }).message === 'string'
-        ? ((row as { message: string }).message)
-        : '',
-    )
-    .filter(Boolean)
+  return rows.length > 0
+    ? [safeOperatorError('leads', '상담 요청 다시 불러오기를 눌러 가능한 후속 작업을 확인하세요.')]
+    : []
 }
 
 export default function LeadsPage() {
@@ -140,6 +139,53 @@ export default function LeadsPage() {
   const [actionSubmitting, setActionSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
+  const actionDialogRef = useRef<HTMLDivElement>(null)
+  const convertDialogRef = useRef<HTMLDivElement>(null)
+  const modalBusyRef = useRef(false)
+
+  useEffect(() => {
+    modalBusyRef.current = actionSubmitting || converting
+  }, [actionSubmitting, converting])
+
+  useEffect(() => {
+    const dialog = actionTarget ? actionDialogRef.current : convertLead ? convertDialogRef.current : null
+    if (!dialog) return
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const main = document.getElementById('main-content')
+    main?.setAttribute('inert', '')
+    document.body.style.overflow = 'hidden'
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    )).filter((element) => element.offsetParent !== null)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !modalBusyRef.current) {
+        event.preventDefault()
+        setActionTarget(null)
+        setConvertLead(null)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const controls = focusable()
+      const first = controls[0]
+      const last = controls.at(-1)
+      if (!first || !last) return
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    window.requestAnimationFrame(() => focusable()[0]?.focus())
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      main?.removeAttribute('inert')
+      document.body.style.overflow = ''
+      previousFocus?.focus()
+    }
+  }, [actionTarget, convertLead])
 
   const loadLeads = useCallback(
     async (offset: number, options?: { append?: boolean; limit?: number; attention?: boolean }) => {
@@ -155,7 +201,7 @@ export default function LeadsPage() {
         setLeads((prev) => (options?.append ? [...prev, ...page] : page))
         setHasMore(page.length === limit)
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : '리드 목록을 불러오지 못했습니다.')
+        setError(safeOperatorError('leads', '상담 요청 다시 불러오기를 누르세요.'))
       } finally {
         setLoading(false)
         setLoadingMore(false)
@@ -201,14 +247,14 @@ export default function LeadsPage() {
       )
       setCandidates(Array.isArray(result?.candidates) ? result.candidates : [])
     } catch (e: unknown) {
-      setCandidatesError(e instanceof Error ? e.message : '중복 병원 확인에 실패했습니다.')
+      setCandidatesError(safeOperatorError('leads', '병원 목록에서 같은 이름을 확인한 뒤 다시 시도하세요.'))
     } finally {
       setCandidatesLoading(false)
     }
   }
 
   async function handleConfirmConvert() {
-    if (!convertLead || converting) return
+    if (!convertLead || converting || candidatesLoading || candidatesError) return
     if (!linkHospitalId) {
       router.push(getOnboardingHref(convertLead))
       return
@@ -221,7 +267,7 @@ export default function LeadsPage() {
         body: JSON.stringify({
           hospital_id: linkHospitalId,
           plan: selectedPlan,
-          conversion_note: '상담 리드 목록에서 온보딩 시작',
+          conversion_note: '상담 요청 목록에서 온보딩 시작',
         }),
       })
       const hospitalId = result?.hospital?.id ?? result?.lead?.converted_hospital_id
@@ -230,7 +276,7 @@ export default function LeadsPage() {
       }
       router.push(`/hospitals/${hospitalId}/onboarding`)
     } catch (e: unknown) {
-      setConvertError(e instanceof Error ? e.message : '온보딩 전환에 실패했습니다.')
+      setConvertError(safeOperatorError('leads', '모달을 닫고 최신 상담 요청을 다시 불러온 뒤 온보딩 시작을 누르세요.'))
       setConverting(false)
     }
   }
@@ -247,7 +293,7 @@ export default function LeadsPage() {
       // 현재 로드된 창 전체를 다시 읽어 파기 결과를 반영한다 (백엔드 limit 상한 내).
       await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
     } catch (e: unknown) {
-      setEraseError(e instanceof Error ? e.message : '개인정보 파기에 실패했습니다.')
+      setEraseError(safeOperatorError('leads', '상담 요청 다시 불러오기를 누른 뒤 개인정보 파기를 다시 실행하세요.'))
     } finally {
       setErasingLeadId(null)
     }
@@ -295,7 +341,7 @@ export default function LeadsPage() {
       })
       setActionTarget(null)
       const notices: Record<DiagnosisAction, string> = {
-        retry: '재발송을 예약했습니다. 1분 안에 발송됩니다.',
+        retry: '재발송을 접수했습니다. 이후 진행 상태를 이 화면에서 확인해 주세요.',
         release: '무료 진단 1회 제한을 해제했습니다.',
         remeasure: '다시 측정하도록 접수했습니다. 진행 상태를 이 화면에서 확인할 수 있습니다.',
         rebuild: '새 리포트를 만들도록 접수했습니다. 기존 리포트와 전달 이력은 유지됩니다.',
@@ -307,9 +353,7 @@ export default function LeadsPage() {
       setActionError(
         reasons.length > 0
           ? reasons.join('\n')
-          : e instanceof Error
-            ? e.message
-            : '처리에 실패했습니다.',
+          : safeOperatorError('leads', '모달의 처리 버튼을 다시 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.'),
       )
     } finally {
       setActionSubmitting(false)
@@ -318,9 +362,9 @@ export default function LeadsPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div data-current-task className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">상담 리드</h1>
+          <h1 className="text-2xl font-bold text-slate-900">상담 요청</h1>
           <p className="mt-1 text-sm text-slate-500">
             공개 페이지에서 접수된 병원 문의와 무료 AI 노출 진단 신청을 확인합니다.
           </p>
@@ -334,7 +378,7 @@ export default function LeadsPage() {
               void loadLeads(0, { attention: next })
             }}
             aria-pressed={attentionOnly}
-            className={`rounded-xl border px-4 py-3 text-xs font-semibold shadow-sm transition-colors ${
+            className={`min-h-11 rounded-xl border px-4 py-3 text-xs font-semibold shadow-sm transition-colors ${
               attentionOnly
                 ? 'border-red-300 bg-red-50 text-red-700'
                 : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
@@ -343,7 +387,7 @@ export default function LeadsPage() {
             {attentionOnly ? '확인 필요만 보는 중' : '확인 필요만 보기'}
           </button>
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-right shadow-sm">
-            <p className="text-xs font-medium text-slate-500">불러온 리드</p>
+            <p className="text-xs font-medium text-slate-500">불러온 상담 요청</p>
             <p className="mt-0.5 text-2xl font-bold text-slate-900">{leads.length}</p>
           </div>
         </div>
@@ -358,15 +402,11 @@ export default function LeadsPage() {
       {loading && <SkeletonTable rows={5} />}
 
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          오류: {error}
-        </div>
+        <OperatorIssuePanel message={error} surface="leads" onRetry={() => void loadLeads(0)} retryLabel="상담 요청 다시 불러오기" />
       )}
 
       {eraseError && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          개인정보 파기 실패: {eraseError}
-        </div>
+        <div className="mb-4"><OperatorIssuePanel message={eraseError} surface="leads" onRetry={() => void loadLeads(0)} retryLabel="상담 요청 다시 불러오기" /></div>
       )}
 
       {!loading && !error && leads.length === 0 && (
@@ -381,7 +421,7 @@ export default function LeadsPage() {
       {!loading && !error && leads.length > 0 && (
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="admin-responsive-table-wrap overflow-x-auto">
-          <table className="admin-responsive-table w-full min-w-0 text-sm lg:min-w-[860px]">
+          <table className="admin-responsive-table w-full min-w-0 text-sm lg:min-w-[1040px]">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">접수 시각</th>
@@ -398,7 +438,7 @@ export default function LeadsPage() {
                 <tr key={lead.id} className="transition-colors hover:bg-slate-50">
                   <td className="px-6 py-4 text-xs text-slate-500" data-label="접수 시각">{formatDateTime(lead.created_at)}</td>
                   <td className="px-6 py-4" data-primary="true">
-                    <p className="font-semibold text-slate-900">{lead.clinic_name}</p>
+                    <p className="font-semibold whitespace-nowrap text-slate-900">{lead.clinic_name}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-slate-500">{lead.clinic_type}</span>
                       <span
@@ -414,20 +454,25 @@ export default function LeadsPage() {
                   </td>
                   <td className="px-6 py-4 font-medium text-slate-700 sm:hidden lg:table-cell" data-label="연락처">{lead.contact}</td>
                   <td className="px-6 py-4 text-slate-600 sm:hidden lg:table-cell" data-label="문의">
-                    <p className="line-clamp-2 max-w-sm">{lead.question}</p>
-                    <p className="mt-1 text-[11px] text-slate-400">
+                    <p className="line-clamp-2 max-w-sm break-keep text-pretty">{lead.question}</p>
+                    <p className="mt-1 whitespace-nowrap text-[11px] text-slate-400">
                       개인정보 동의 {lead.privacy ? '완료' : '미확인'}
                     </p>
                     {lead.notification_status === 'FAILED' && (
-                      <p className="mt-1 text-[11px] font-semibold text-red-600">
-                        알림 실패: {lead.notification_error ?? '설정을 확인해 주세요'}
-                      </p>
+                      <div className="mt-2 min-w-[18rem] break-keep">
+                        <OperatorIssuePanel
+                          message={'문제: 상담 요청은 저장됐지만 담당자 알림을 보내지 못했습니다.\n고객 영향: 담당자가 신규 문의를 늦게 확인할 수 있습니다.\n지금 할 일: ‘운영 센터에서 확인’을 눌러 알림 복구 상태를 확인하세요.'}
+                          surface="leads"
+                          actionHref="/operations?queue=incidents"
+                          actionLabel="운영 센터에서 확인"
+                        />
+                      </div>
                     )}
                     {lead.notification_status === 'SENT' && (
                       <p className="mt-1 text-[11px] font-medium text-emerald-600">운영 알림 완료</p>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-xs text-slate-500 sm:hidden lg:table-cell" data-label="유입">{lead.source_path ?? '-'}</td>
+                  <td className="px-6 py-4 text-xs text-slate-500 sm:hidden lg:table-cell" data-label="유입">{leadSourceLabel(lead.source_path)}</td>
                   <td className="px-6 py-4" data-label="무료 진단">
                     {(lead.diagnoses ?? []).length === 0 ? (
                       <span className="text-xs text-slate-400">해당 없음</span>
@@ -446,7 +491,7 @@ export default function LeadsPage() {
                               ))}
                             </div>
                             <p
-                              className={`mt-1 text-[11px] ${
+                              className={`mt-1 break-keep text-[11px] ${
                                 needsAttention(diagnosis)
                                   ? 'font-semibold text-red-600'
                                   : 'text-slate-500'
@@ -454,6 +499,11 @@ export default function LeadsPage() {
                             >
                               {diagnosisHint(diagnosis)}
                             </p>
+                            {needsAttention(diagnosis) && (
+                              <p className="mt-1 break-keep text-pretty text-[11px] leading-5 text-red-700">
+                                고객 영향: 신청자가 정확한 진단 리포트를 받지 못합니다.
+                              </p>
+                            )}
                             <p className="mt-0.5 text-[11px] text-slate-400">
                               {diagnosis.slot_date ?? '-'}
                               {diagnosis.slot_no ? ` · ${diagnosis.slot_no}번째 자리` : ''}
@@ -469,7 +519,7 @@ export default function LeadsPage() {
                                     <p className="text-xs font-semibold text-slate-900">
                                       지금 할 일 · {recovery.label}
                                     </p>
-                                    <p className="mt-1 text-xs leading-5 text-slate-600">
+                                    <p className="mt-1 break-keep text-xs leading-5 text-slate-600">
                                       {recovery.description}
                                     </p>
                                     {recovery.previousRun && (
@@ -494,7 +544,7 @@ export default function LeadsPage() {
                                     <p className="mt-1 text-xs leading-5 text-slate-600">
                                       신청자에게는 아직 리포트가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.
                                     </p>
-                                    <Link href="/operations" className="mt-2 inline-block text-xs font-semibold text-blue-700 hover:underline">
+                                    <Link href="/operations" className="mt-2 inline-flex min-h-11 items-center text-xs font-semibold text-blue-700 hover:underline">
                                       운영센터에서 상세 확인
                                     </Link>
                                   </div>
@@ -536,7 +586,7 @@ export default function LeadsPage() {
                                     <button
                                       type="button"
                                       onClick={() => openAction(lead, diagnosis, 'retry')}
-                                      className="text-[11px] font-semibold text-blue-600 hover:underline"
+                                      className="inline-flex min-h-11 items-center text-[11px] font-semibold text-blue-600 hover:underline"
                                     >
                                       리포트 재발송
                                     </button>
@@ -545,7 +595,7 @@ export default function LeadsPage() {
                                     <button
                                       type="button"
                                       onClick={() => openAction(lead, diagnosis, 'release')}
-                                      className="text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:underline"
+                                      className="inline-flex min-h-11 items-center text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:underline"
                                     >
                                       1회 제한 해제
                                     </button>
@@ -562,7 +612,7 @@ export default function LeadsPage() {
                     {lead.converted_hospital_id ? (
                       <Link
                         href={`/hospitals/${lead.converted_hospital_id}/onboarding`}
-                        className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
+                        className="inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
                       >
                         온보딩 허브
                       </Link>
@@ -570,7 +620,7 @@ export default function LeadsPage() {
                       <button
                         type="button"
                         onClick={() => openConvertModal(lead)}
-                        className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
+                        className="inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
                       >
                         온보딩 시작
                       </button>
@@ -582,7 +632,7 @@ export default function LeadsPage() {
                       {!lead.converted_hospital_id && (
                         <Link
                           href={getOnboardingHref(lead)}
-                          className="inline-block text-[11px] font-medium text-slate-400 hover:text-slate-600 hover:underline"
+                          className="inline-flex min-h-11 items-center text-[11px] font-medium text-slate-400 hover:text-slate-600 hover:underline"
                         >
                           수동 등록
                         </Link>
@@ -591,7 +641,7 @@ export default function LeadsPage() {
                         type="button"
                         onClick={() => handleErase(lead)}
                         disabled={erasingLeadId === lead.id}
-                        className="inline-block text-[11px] font-medium text-red-400 hover:text-red-600 hover:underline disabled:opacity-50"
+                        className="inline-flex min-h-11 min-w-11 items-center justify-center text-[11px] font-medium text-red-400 hover:text-red-600 hover:underline disabled:opacity-50"
                       >
                         {erasingLeadId === lead.id ? '파기 중...' : '개인정보 파기'}
                       </button>
@@ -618,7 +668,7 @@ export default function LeadsPage() {
       )}
 
       {/* 무료 진단 액션 모달 — 재발송 / 1회 제한 해제 */}
-      {actionTarget && (
+      {actionTarget && typeof document !== 'undefined' && createPortal((
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           role="presentation"
@@ -627,6 +677,7 @@ export default function LeadsPage() {
           }}
         >
           <div
+            ref={actionDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="diagnosis-action-title"
@@ -678,9 +729,7 @@ export default function LeadsPage() {
               )}
 
               {actionError && (
-                <p className="whitespace-pre-line rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
-                  {actionError}
-                </p>
+                <OperatorIssuePanel message={actionError} surface="leads" />
               )}
             </div>
 
@@ -706,10 +755,10 @@ export default function LeadsPage() {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
 
       {/* 온보딩 전환 모달 */}
-      {convertLead && (
+      {convertLead && typeof document !== 'undefined' && createPortal((
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           role="presentation"
@@ -718,6 +767,7 @@ export default function LeadsPage() {
           }}
         >
           <div
+            ref={convertDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="convert-dialog-title"
@@ -752,9 +802,17 @@ export default function LeadsPage() {
                 </p>
               )}
               {candidatesError && (
-                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
-                  중복 병원 확인에 실패했습니다. 같은 병원이 이미 등록되어 있지 않은지 직접 확인해 주세요. ({candidatesError})
-                </p>
+                <div className="space-y-2">
+                  <OperatorIssuePanel
+                    message={candidatesError}
+                    surface="leads"
+                    onRetry={() => void openConvertModal(convertLead)}
+                    retryLabel="중복 확인 다시 시도"
+                  />
+                  <Link href="/hospitals" className="inline-flex min-h-11 items-center rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700">
+                    병원 목록에서 확인
+                  </Link>
+                </div>
               )}
               {!candidatesLoading && candidates.length > 0 && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
@@ -787,10 +845,12 @@ export default function LeadsPage() {
                         />
                         <span className="min-w-0 flex-1">
                           <span className="font-medium">{candidate.name}</span>
-                          <span className="ml-2 font-mono text-[11px] text-slate-400">{candidate.slug}</span>
+                          <span className="ml-2 text-[11px] text-slate-500">
+                            {candidate.plan ? PLAN_LABELS[candidate.plan] ?? '요금제 확인 필요' : '요금제 확인 필요'}
+                          </span>
                         </span>
                         <span className="shrink-0 text-[11px] text-slate-500">
-                          {candidate.status ? STATUS_LABELS[candidate.status]?.label ?? candidate.status : '-'}
+                          {candidate.status ? STATUS_LABELS[candidate.status]?.label ?? '상태 확인 필요' : '-'}
                         </span>
                       </label>
                     ))}
@@ -832,9 +892,7 @@ export default function LeadsPage() {
               )}
 
               {convertError && (
-                <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700">
-                  {convertError}
-                </p>
+                <OperatorIssuePanel message={convertError} surface="leads" />
               )}
             </div>
 
@@ -842,8 +900,8 @@ export default function LeadsPage() {
               <button
                 type="button"
                 onClick={handleConfirmConvert}
-                disabled={converting || candidatesLoading}
-                className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                disabled={converting || candidatesLoading || Boolean(candidatesError)}
+                className="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {converting
                   ? '전환 중...'
@@ -862,7 +920,7 @@ export default function LeadsPage() {
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
     </div>
   )
 }

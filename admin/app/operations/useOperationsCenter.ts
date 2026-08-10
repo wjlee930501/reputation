@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 
 import { ApiError, fetchAPI } from '@/lib/api'
 import { fetchCurrentAccount } from '@/lib/current-account'
+import { safeOperatorError } from '@/lib/operations-journey'
 import {
   canonicalizeOperationsQuery,
   createUserActionKey,
@@ -43,12 +44,10 @@ function paramQueue(queue: OperationsQueue): OperationsQueueParam {
 }
 
 function errorMessage(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.status >= 500) return '운영 정보를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.'
-    return error.message
-  }
-  if (error instanceof Error) return error.message
-  return '운영 정보를 불러오지 못했습니다.'
+  const action = error instanceof ApiError && error.status === 403
+    ? '권한 있는 담당자에게 요청하고, 처리할 수 없으면 개발팀 문의용 정보를 복사하세요.'
+    : '운영 목록 다시 불러오기를 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.'
+  return safeOperatorError('operations', action)
 }
 
 function isAbort(error: unknown): boolean {
@@ -213,7 +212,10 @@ export function useOperationsCenter() {
         setActionError('이 작업은 권한 있는 담당자만 처리할 수 있습니다. 담당자에게 요청하거나 개발팀 문의 정보를 복사하세요.')
         setPermissionDenied(true)
       } else {
-        setActionError(errorMessage(error))
+        setActionError(safeOperatorError(
+          'operations',
+          '같은 처리 버튼을 다시 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.',
+        ))
       }
     } finally {
       setBusy(false)

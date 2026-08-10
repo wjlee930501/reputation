@@ -564,7 +564,7 @@ QUERY_TARGET_PRIORITY_DISPLAY_LABELS = {
     "LOW": "낮음",
 }
 QUERY_TARGET_STATUS_DISPLAY_LABELS = {
-    "ACTIVE": "운영중",
+    "ACTIVE": "운영 중",
     "PAUSED": "일시정지",
     "ARCHIVED": "보관됨",
 }

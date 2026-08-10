@@ -31,7 +31,7 @@ test('readHospitalDomainStatus separates live, DNS waiting, default, and unset s
   assert.deepEqual(
     readHospitalDomainStatus({ slug: 'clinic-a', aeo_domain: 'clinic-a.example.com', site_live: true }),
     {
-      label: '운영중',
+      label: '운영 중',
       detail: 'clinic-a.example.com',
       tone: 'live',
     },
@@ -39,7 +39,7 @@ test('readHospitalDomainStatus separates live, DNS waiting, default, and unset s
   assert.deepEqual(
     readHospitalDomainStatus({ slug: 'clinic-b', aeo_domain: 'clinic-b.example.com', site_live: false }),
     {
-      label: 'DNS 대기',
+      label: '공개 주소 확인 대기',
       detail: 'clinic-b.example.com',
       tone: 'waiting',
     },
@@ -59,7 +59,7 @@ test('readHospitalDomainStatus separates live, DNS waiting, default, and unset s
     readHospitalDomainStatus({ slug: 'clinic-d', site_built: false, site_live: false }),
     {
       label: '미설정',
-      detail: '프로파일에서 도메인 연결',
+      detail: '병원 기본 정보에서 공개 주소 연결',
       tone: 'empty',
     },
   )
@@ -76,7 +76,7 @@ test('domainSearchText includes custom domain and derived status label', () => {
   assert.match(text, /장편한외과의원/)
   assert.match(text, /jangclinic/)
   assert.match(text, /jangclinic\.kr/)
-  assert.match(text, /dns 대기/i)
+  assert.match(text, /공개 주소 확인 대기/)
 })
 
 test('readHospitalDomainStatus derives the default host from NEXT_PUBLIC_SITE_URL', () => {

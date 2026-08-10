@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
   DAYS,
   DEFAULT_PUBLISH_DAYS_BY_PLAN,
@@ -56,7 +58,8 @@ export default function SchedulePage() {
         if (e instanceof ApiError && e.status === 404) {
           setExisting(null) // 아직 설정된 스케줄 없음 — 정상 흐름
         } else {
-          setExistingError(e instanceof Error ? e.message : '기존 스케줄을 확인하지 못했습니다.')
+          if (!isExpectedOperatorRequestFailure(e)) throw e
+          setExistingError(safeOperatorError('onboarding', '운영 화면을 다시 불러 현재 콘텐츠 발행 일정을 확인하세요.'))
         }
       })
       .finally(() => {
@@ -109,7 +112,8 @@ export default function SchedulePage() {
       })
       void refetchHeader()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '저장에 실패했습니다.')
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setError(safeOperatorError('onboarding', '운영량과 발행 요일을 확인한 뒤 ‘저장’을 다시 누르세요.'))
     } finally {
       setLoading(false)
     }
@@ -130,9 +134,7 @@ export default function SchedulePage() {
         </div>
       )}
       {existingError && (
-        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          기존 스케줄을 확인하지 못했습니다. 저장 전 운영 상태를 다시 확인해 주세요. ({existingError})
-        </div>
+        <div className="mb-4"><OperatorIssuePanel message={existingError} surface="onboarding" onRetry={() => window.location.reload()} retryLabel="콘텐츠 발행 일정 다시 불러오기" /></div>
       )}
       {!existingLoading && existing && (
         <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
@@ -252,7 +254,7 @@ export default function SchedulePage() {
           </div>
 
           {error && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">{error}</div>
+            <OperatorIssuePanel message={error} surface="onboarding" />
           )}
 
           <button

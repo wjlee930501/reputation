@@ -11,7 +11,7 @@ interface HospitalDomainInput {
 }
 
 export interface HospitalDomainStatus {
-  label: '운영중' | 'DNS 대기' | '기본 주소' | '미설정'
+  label: '운영 중' | '공개 주소 확인 대기' | '기본 주소' | '미설정'
   detail: string
   tone: DomainTone
 }
@@ -24,7 +24,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
   const domain = normalizedDomain(hospital.aeo_domain)
   if (domain) {
     return {
-      label: hospital.site_live ? '운영중' : 'DNS 대기',
+      label: hospital.site_live ? '운영 중' : '공개 주소 확인 대기',
       detail: domain,
       tone: hospital.site_live ? 'live' : 'waiting',
     }
@@ -41,7 +41,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
 
   return {
     label: '미설정',
-    detail: '프로파일에서 도메인 연결',
+    detail: '병원 기본 정보에서 공개 주소 연결',
     tone: 'empty',
   }
 }

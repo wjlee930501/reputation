@@ -205,6 +205,18 @@ def test_monthly_customer_delivery_open_measurement_copy_is_plain_korean():
     assert "필수 측정 집계" in (gate.message or "")
 
 
+def test_monthly_customer_delivery_incomplete_coverage_copy_is_plain_korean():
+    report = _report(quality="DEGRADED")
+    manifest = _bind_manifest(report, _manifest())
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+
+    gate = _delivery_gate(report, manifest, artifact)
+
+    assert gate.code == "coverage_incomplete"
+    assert gate.message == "이번 달 필수 질문 측정이 모두 끝나지 않았습니다."
+    assert "coverage" not in gate.message.lower()
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     [

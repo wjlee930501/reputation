@@ -1,11 +1,12 @@
-import type {
-  OperationsAction,
-  OperationsIncidentDetail,
-  OperationsQueueParam,
-  OperationsQueueResponse,
-  OperationsQueueRow,
-  OperationsRunState,
-  OperationsSlackState,
+import {
+  STATUS_LABELS,
+  type OperationsAction,
+  type OperationsIncidentDetail,
+  type OperationsQueueParam,
+  type OperationsQueueResponse,
+  type OperationsQueueRow,
+  type OperationsRunState,
+  type OperationsSlackState,
 } from '../types/index.ts'
 
 export interface OperationsQuery {
@@ -127,13 +128,9 @@ export function slackStateLabel(state: OperationsSlackState): string {
   }
 }
 export function operationStatusLabel(status: string): string {
+  const hospitalStatus = STATUS_LABELS[status]
+  if (hospitalStatus) return hospitalStatus.label
   switch (status) {
-    case 'ONBOARDING': return '온보딩 진행 중'
-    case 'ANALYZING': return 'AI 진단 분석 중'
-    case 'BUILDING': return '콘텐츠 허브 준비 중'
-    case 'PENDING_DOMAIN': return '도메인 확인 대기'
-    case 'ACTIVE': return '운영 중'
-    case 'PAUSED': return '운영 일시 정지'
     case 'PUBLISH_DUE': return '오늘 발행 예정'
     case 'REVIEW_PENDING': return '발행 후 확인 대기'
     case 'OVERDUE_REVIEW': return '발행 후 확인 기한 지남'
@@ -158,6 +155,16 @@ export function historyEventLabel(event: string): string {
     default: return '운영 기록'
   }
 }
+export function safeCauseText(value: string | null | undefined): string {
+  const cleaned = value?.trim() ?? ''
+  const codeLike = /^[A-Z0-9_:-]+$/.test(cleaned)
+  const sensitive = /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:https?|redis):\/\/|traceback|task[_ -]?id|api[_ -]?key|secret|token|exception|error|refused|timeout|\b0\d{1,2}[- ]?\d{3,4}[- ]?\d{4}\b/i.test(cleaned)
+  const operatorReadable = /[가-힣]{2,}/.test(cleaned)
+  if (!cleaned || codeLike || sensitive || !operatorReadable) {
+    return '원인 설명을 확인할 수 없습니다. 아래 조치가 실패하면 개발팀 문의용 정보를 복사해 주세요.'
+  }
+  return cleaned
+}
 export function buildDevelopmentSupportSummary(
   detail: OperationsIncidentDetail,
   origin: string,
@@ -169,10 +176,9 @@ export function buildDevelopmentSupportSummary(
   })
   const recentAt = row.history.at(-1)?.at ?? row.occurred_at
   const code = detail.run?.safe_error_code ?? row.slack?.safe_error_code ?? '기록되지 않음'
-  const description = row.safe_cause
-    ?? detail.run?.safe_error_message
-    ?? row.slack?.safe_error_message
-    ?? '원인 설명이 기록되지 않았습니다. 아래 상세 URL과 함께 개발팀에 전달해 주세요.'
+  const description = safeCauseText(
+    row.safe_cause ?? detail.run?.safe_error_message ?? row.slack?.safe_error_message,
+  )
   return [
     '[운영 센터 개발팀 문의]',
     `병원: ${row.customer.name}`,

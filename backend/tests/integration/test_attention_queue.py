@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from slowapi import Limiter
-from sqlalchemy import event
+from sqlalchemy import event, null
 
 from app.api.admin import operations_center
 from app.api.admin.operations import (
@@ -698,7 +698,7 @@ async def test_outbox_retry_is_scoped_and_never_returns_payload(pg_async_session
         fallback_text="운영 이슈가 발생했습니다.",
         attempt_count=3,
         max_attempts=3,
-        next_attempt_at=None,
+        next_attempt_at=null(),
         safe_error_code="INVALID_PAYLOAD",
         safe_error_message="Slack 요청 형식을 확인해 주세요.",
     )

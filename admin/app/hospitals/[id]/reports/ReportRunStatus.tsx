@@ -22,6 +22,16 @@ export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; 
   const [busy, setBusy] = useState(false)
   const active = useRef(false)
   const keys = useRef(new Map<string, string>())
+  const maximumPeriod = parseMonthValue(previousMonthValue()) ?? { year: new Date().getFullYear(), month: 12 }
+  const selectedPeriod = parseMonthValue(period) ?? maximumPeriod
+  const selectableYears = Array.from(
+    { length: Math.max(1, maximumPeriod.year - 2020 + 1) },
+    (_, index) => maximumPeriod.year - index,
+  )
+  const selectableMonths = Array.from(
+    { length: selectedPeriod.year === maximumPeriod.year ? maximumPeriod.month : 12 },
+    (_, index) => index + 1,
+  )
 
   const refresh = useCallback(async () => {
     try {
@@ -29,7 +39,7 @@ export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; 
       setRuns(parseReportRuns(payload))
       setError(null)
     } catch {
-      setError('작업 기록을 불러오지 못했습니다. 다시 시도하고, 계속 실패하면 개발팀에 병원명을 알려 주세요.')
+      setError('문제: 최근 리포트 작업 기록을 불러오지 못했습니다. 고객 영향: 생성·복구 진행 상태를 확인할 수 없습니다. 지금 할 일: ‘작업 기록 다시 시도’를 누르세요. 반복 실패 시 ‘개발팀 문의용 정보 복사’를 전달하세요.')
     } finally {
       setLoading(false)
     }
@@ -86,12 +96,35 @@ export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; 
         <button type="button" onClick={() => void refresh()} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">진행 상태 새로고침</button>
       </div>
       {loading && <p className="mt-4 text-sm" role="status">작업 기록을 불러오는 중입니다.</p>}
-      {error && <div className="mt-4 rounded-lg border border-[var(--color-revisit-red-50)] p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert"><p>{error}</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" onClick={() => void refresh()} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 font-bold text-white">작업 기록 다시 시도</button><button type="button" onClick={() => void copyPageError()} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div></div>}
+      {error && <div className="mt-4 rounded-lg border border-[var(--color-revisit-red-50)] p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert"><p className="break-keep text-pretty">{error}</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" onClick={() => void refresh()} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 font-bold text-white">작업 기록 다시 시도</button><button type="button" onClick={() => void copyPageError()} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div></div>}
       <div className="mt-4 grid gap-3">{runs.slice(0, 3).map((run) => <ReportRunCard key={run.runId} run={run} disabled={busy} operationsHref={`/operations?queue=REPORTS&hospital_id=${hospitalId}`} onReview={() => run.reportId ? onReview(run.reportId) : setError('연결된 리포트를 찾지 못했습니다. 새로고침 후 계속 보이지 않으면 개발팀에 문의해 주세요.')} onRebuild={(reason) => void generate(run, reason)} onCopy={() => void copy(run)} />)}</div>
       {message && <p className="mt-3 text-sm text-[var(--color-revisit-text-helper)]" role="status">{message}</p>}
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--color-revisit-coolgrey-20)] pt-4">
-        <label htmlFor="report-period" className="text-sm font-bold">리포트가 없다면 대상 월 선택</label>
-        <input id="report-period" type="month" value={period} max={previousMonthValue()} onChange={(event) => setPeriod(event.target.value)} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-3 text-sm" />
+        <span className="text-sm font-bold">리포트가 없다면 대상 월 선택</span>
+        <label htmlFor="report-period-year" className="sr-only">대상 연도</label>
+        <select
+          id="report-period-year"
+          value={selectedPeriod.year}
+          onChange={(event) => {
+            const year = Number(event.target.value)
+            const month = year === maximumPeriod.year
+              ? Math.min(selectedPeriod.month, maximumPeriod.month)
+              : selectedPeriod.month
+            setPeriod(`${year}-${String(month).padStart(2, '0')}`)
+          }}
+          className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-3 text-sm"
+        >
+          {selectableYears.map((year) => <option key={year} value={year}>{year}년</option>)}
+        </select>
+        <label htmlFor="report-period-month" className="sr-only">대상 월</label>
+        <select
+          id="report-period-month"
+          value={selectedPeriod.month}
+          onChange={(event) => setPeriod(`${selectedPeriod.year}-${String(Number(event.target.value)).padStart(2, '0')}`)}
+          className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-3 text-sm"
+        >
+          {selectableMonths.map((month) => <option key={month} value={month}>{month}월</option>)}
+        </select>
         <button type="button" onClick={() => void generate()} disabled={busy} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white disabled:opacity-50">{busy ? '요청 중' : '리포트 생성'}</button>
       </div>
     </section>

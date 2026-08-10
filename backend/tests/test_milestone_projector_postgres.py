@@ -29,6 +29,7 @@ from app.models.operations import (
 from app.models.report import MonthlyReport
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.notification_outbox import dispatch_notification_batch
+from app.services.report_artifact_validation import DOCTOR_ARTIFACT_VALIDATION_VERSION
 from app.workers.milestone_event_tasks import (
     canonical_projection_window,
     project_milestone_window,
@@ -43,6 +44,24 @@ from tests.milestone_projector_support import (
 from tests.milestone_projector_support import (
     monthly_session_factory as _monthly_sessions_fixture,  # noqa: F401
 )
+
+
+def _valid_artifact_metadata(*, sha256: str, byte_size: int) -> dict[str, object]:
+    return {
+        "validation_version": DOCTOR_ARTIFACT_VALIDATION_VERSION,
+        "validation_source": "SYSTEM",
+        "page_count": 1,
+        "page_size": "A4",
+        "glyph_count": 500,
+        "font_family": "Pretendard",
+        "font_embedded": True,
+        "korean_to_unicode": True,
+        "link_count": 1,
+        "expected_link_present": True,
+        "required_text_present": True,
+        "sha256": sha256,
+        "byte_size": byte_size,
+    }
 
 
 @pytest.mark.asyncio
@@ -169,7 +188,10 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
         artifact.validated = True
         artifact.validated_at = first_window.end + timedelta(minutes=5)
         artifact.validated_by_id = ADMIN_ID
-        artifact.validation_metadata = {"page_count": 2, "glyph_count": 500}
+        artifact.validation_metadata = _valid_artifact_metadata(
+            sha256=artifact.sha256,
+            byte_size=artifact.byte_size,
+        )
         await db.commit()
     async with monthly_sessions() as db:
         later = await project_milestone_window(db, later_window, "http://localhost:3000")

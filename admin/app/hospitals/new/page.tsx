@@ -4,9 +4,11 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { fetchCurrentAccount, type CurrentAccount } from '@/lib/current-account'
 import { readClinicNameFromLeadContext } from '@/lib/lead-onboarding'
 import { acceptanceDecision, acceptancePayload, contractPayload, handoffNextAction, parsePlanCode } from '@/lib/handoff'
+import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import type { AdminAccountSummary, Handoff, PlanCode } from '@/types'
 
 interface LeadContext {
@@ -21,6 +23,7 @@ export default function NewHospitalPage() {
   const [leadLoading, setLeadLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorCanReload, setErrorCanReload] = useState(false)
   const [accounts, setAccounts] = useState<AdminAccountSummary[]>([])
   const [salesOwnerId, setSalesOwnerId] = useState('')
   const [aeOwnerId, setAeOwnerId] = useState('')
@@ -39,7 +42,11 @@ export default function NewHospitalPage() {
       setAccounts(active)
       setSalesOwnerId(active[0]?.id ?? '')
       setAeOwnerId(active[0]?.id ?? '')
-    }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : '담당자 목록을 불러오지 못했습니다.'))
+    }).catch((cause: unknown) => {
+      if (!isExpectedOperatorRequestFailure(cause)) throw cause
+      setErrorCanReload(true)
+      setError(safeOperatorError('onboarding', '운영 화면 다시 불러오기를 눌러 담당자 목록을 다시 확인하세요.'))
+    })
   }, [])
 
   useEffect(() => {
@@ -58,7 +65,11 @@ export default function NewHospitalPage() {
         if (!cancelled && clinicName) setName(clinicName)
       })
       .catch((cause: unknown) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : '상담 리드 정보를 불러오지 못했습니다.')
+        if (!isExpectedOperatorRequestFailure(cause)) throw cause
+        if (!cancelled) {
+          setErrorCanReload(true)
+          setError(safeOperatorError('onboarding', '운영 화면 다시 불러오기를 눌러 상담 요청 정보를 다시 확인하세요.'))
+        }
       })
       .finally(() => {
         if (!cancelled) setLeadLoading(false)
@@ -74,6 +85,7 @@ export default function NewHospitalPage() {
 
     setLoading(true)
     setError(null)
+    setErrorCanReload(false)
     if (!currentAccount) {
       setError('로그인 운영자 정보를 확인할 수 없습니다. 다시 로그인해 주세요.')
       setLoading(false)
@@ -103,7 +115,7 @@ export default function NewHospitalPage() {
               plan,
               sales_owner_id: salesOwnerId,
               ae_owner_id: aeOwnerId,
-              conversion_note: '상담 리드 수동 등록 화면에서 온보딩 시작',
+              conversion_note: '상담 요청 수동 등록 화면에서 온보딩 시작',
             }),
           })
           hospitalId = created.hospital?.id ?? null
@@ -148,7 +160,8 @@ export default function NewHospitalPage() {
           if (!(reloadError instanceof Error)) throw reloadError
         }
       }
-      setError(e instanceof Error ? e.message : '등록에 실패했습니다.')
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setError(safeOperatorError('onboarding', '입력 내용을 확인한 뒤 ‘등록하고 고객 인수 승인’을 다시 누르세요.'))
     } finally {
       setLoading(false)
     }
@@ -172,7 +185,7 @@ export default function NewHospitalPage() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder={leadLoading ? '상담 리드에서 병원명을 불러오는 중...' : '예: 장편한외과의원'}
+            placeholder={leadLoading ? '상담 요청에서 병원명을 불러오는 중...' : '예: 장편한외과의원'}
             required
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
@@ -242,10 +255,7 @@ export default function NewHospitalPage() {
         </div>
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-            <p>{error}</p>
-            <p className="mt-1 break-keep text-xs leading-5">다시 시도해도 계속되면 병원명과 위 오류 문구를 개발팀에 전달해 주세요.</p>
-          </div>
+          <OperatorIssuePanel message={error} surface="onboarding" onRetry={errorCanReload ? () => window.location.reload() : undefined} retryLabel="운영 화면 다시 불러오기" />
         )}
 
         {workflowHandoff && (
@@ -257,9 +267,9 @@ export default function NewHospitalPage() {
         )}
 
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-          <p className="font-medium text-slate-800">다음: 프로파일 입력</p>
+          <p className="font-medium text-slate-800">다음: 병원 기본 정보 입력</p>
           <p className="mt-1">
-            생성 직후 온보딩 허브로 이동합니다. 허브에서 부족한 프로파일, 자료 인입, 운영 기준 상태를 확인할 수 있습니다.
+            생성 직후 온보딩 화면으로 이동합니다. 부족한 병원 기본 정보, 근거 자료, 운영 기준 상태를 확인할 수 있습니다.
           </p>
         </div>
 

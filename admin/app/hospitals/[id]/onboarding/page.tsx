@@ -5,6 +5,8 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { safeOperatorError } from '@/lib/operations-journey'
 import type { Handoff } from '@/types'
 import {
   deriveHandoffDueStatus,
@@ -83,6 +85,23 @@ const SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string; group: 'TEXT' |
 
 function hasProcessableText(source: Source): boolean {
   return (source.raw_text?.trim() ?? '').length > 0
+}
+
+function sourceTypeLabel(source: Source): string {
+  return source.display?.source_type_label
+    ?? SOURCE_TYPE_OPTIONS.find((item) => item.value === source.source_type)?.label
+    ?? '자료 유형 확인 필요'
+}
+
+function sourceStatusLabel(source: Source): string {
+  return source.display?.status_label ?? '처리 상태 확인 필요'
+}
+
+function sourceFileFormatLabel(mimeType: string | null): string {
+  if (mimeType === 'application/pdf') return 'PDF 문서'
+  if (mimeType?.includes('word')) return '문서 파일'
+  if (mimeType?.startsWith('image/')) return '이미지 파일'
+  return '파일 형식 확인 필요'
 }
 
 function getProcessingBlockReason(source: Source): string | null {
@@ -188,7 +207,7 @@ export default function OnboardingPage() {
       setHandoff(handoffs.find((item) => item.hospital_id === id) ?? null)
       setCheckedAt(Date.now())
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '로딩 실패')
+      setError(safeOperatorError('onboarding', '온보딩 정보 다시 불러오기를 누르세요.'))
     } finally {
       setLoading(false)
     }
@@ -218,7 +237,7 @@ export default function OnboardingPage() {
         <p className="hidden text-xs font-semibold text-blue-200 sm:block">신규 병원 온보딩</p>
         <h2 className="hidden text-xl font-bold sm:mt-2 sm:block sm:text-2xl">{hospital?.name ?? '온보딩'}</h2>
         <p className="mt-2 hidden max-w-2xl text-sm leading-6 text-blue-50/90 sm:block">
-          계약 인수부터 스케줄, 도메인과 ACTIVE 전환까지 실제 운영 순서로 확인합니다.
+          계약 인수부터 스케줄, 도메인과 공개 운영 시작까지 실제 운영 순서로 확인합니다.
         </p>
         <div data-current-task className="mt-3 rounded-xl border border-white/15 bg-white/10 p-3 sm:mt-5 sm:p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -267,15 +286,7 @@ export default function OnboardingPage() {
       </header>
 
       {error && (
-        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p>온보딩 정보를 불러오지 못했습니다. {error}</p>
-            <p className="mt-1 break-keep text-xs leading-5">다시 시도해도 계속되면 병원명과 오류 문구를 개발팀에 전달해 주세요.</p>
-          </div>
-          <button type="button" onClick={() => void refresh()} className="min-h-11 shrink-0 rounded-lg border border-red-300 bg-white px-4 font-semibold text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300">
-            다시 시도
-          </button>
-        </div>
+        <OperatorIssuePanel message={error} surface="onboarding" onRetry={() => void refresh()} retryLabel="온보딩 정보 다시 불러오기" />
       )}
 
       <section className="grid gap-4 lg:grid-cols-[260px_1fr]">
@@ -314,7 +325,7 @@ export default function OnboardingPage() {
           ))}
           <section aria-labelledby="post-onboarding-title" className="mt-8 border-t border-slate-300 pt-6">
             <h2 id="post-onboarding-title" className="text-lg font-bold text-slate-900">온보딩 이후 정기 운영 성과</h2>
-            <p className="mt-1 text-sm text-slate-600">첫 발행과 첫 AI 답변 언급률 측정은 ACTIVE 전환 이후의 성과이며 온보딩 완료를 막지 않습니다.</p>
+            <p className="mt-1 text-sm text-slate-600">첫 발행과 첫 AI 답변 언급률 측정은 공개 운영 시작 이후의 성과이며 온보딩 완료를 막지 않습니다.</p>
             <div className="mt-4 space-y-4">
               {outcomeSteps.map((step) => (
                 <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} />
@@ -473,14 +484,14 @@ function ProfileStepBody({ hospital, hospitalId }: { hospital: Hospital | null; 
   return (
     <div className="space-y-3">
       <ul className="text-sm text-slate-700 space-y-1">
-        <li>· 프로파일 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
-        <li>· 필수 프로파일은 화면 체크리스트와 백엔드 검증을 모두 통과해야 합니다.</li>
+        <li>· 필수 병원 정보 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
+        <li>· 화면의 필수 항목을 모두 입력하고 저장이 완료되어야 합니다.</li>
       </ul>
       <Link
         href={`/hospitals/${hospitalId}/profile`}
         className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
       >
-        프로파일 화면으로 →
+        병원 기본 정보 화면으로 →
       </Link>
     </div>
   )
@@ -540,7 +551,7 @@ function ProfileUrlCandidates({
       setFeedback(`${candidate.title} 자료를 추가했습니다.`)
       onChanged()
     } catch (e: unknown) {
-      setFeedback(e instanceof Error ? e.message : '자료 추가에 실패했습니다.')
+      setFeedback(safeOperatorError('onboarding', '입력 내용을 확인한 뒤 자료 추가를 다시 누르세요.'))
     } finally {
       setAddingKey(null)
     }
@@ -549,7 +560,7 @@ function ProfileUrlCandidates({
   if (candidates.length === 0) {
     return (
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-        프로파일에 새로 추가할 공식 URL 후보가 없습니다.
+        병원 기본 정보에 추가할 공식 주소 후보가 없습니다.
       </div>
     )
   }
@@ -557,9 +568,9 @@ function ProfileUrlCandidates({
   return (
     <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
       <div className="flex flex-col gap-1">
-        <h3 className="text-sm font-bold text-blue-950">프로파일 URL 자료 후보</h3>
+        <h3 className="text-sm font-bold text-blue-950">병원 기본 정보에 추가할 공식 주소</h3>
         <p className="text-xs text-blue-700">
-          프로파일에 입력된 공식 채널을 다시 입력하지 않고 자료 인입으로 보낼 수 있습니다.
+          병원 기본 정보에 입력된 공식 채널을 다시 입력하지 않고 자료로 가져올 수 있습니다.
         </p>
       </div>
       <ul className="mt-3 space-y-2">
@@ -609,7 +620,7 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
       setFeedback('URL 크롤 완료. 본문이 자동 추출됐습니다.')
       onCreated()
     } catch (e: unknown) {
-      setFeedback(e instanceof Error ? e.message : '실패')
+      setFeedback(safeOperatorError('onboarding', '현재 병원 주소를 확인한 뒤 다시 추가를 누르세요.'))
     } finally {
       setBusy(false)
     }
@@ -688,7 +699,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       setFeedback('업로드 완료.')
       onCreated()
     } catch (e: unknown) {
-      setFeedback(e instanceof Error ? e.message : '실패')
+      setFeedback(safeOperatorError('onboarding', '선택한 사진과 공개 여부를 확인한 뒤 다시 저장하세요.'))
     } finally {
       setBusy(false)
     }
@@ -759,7 +770,7 @@ function SourcesList({
   const [excludeErrors, setExcludeErrors] = useState<Record<string, string>>({})
 
   async function exclude(sourceId: string) {
-    if (!confirm('이 자료를 제외하시겠습니까? 운영 기준 초안과 /site 노출에서 빠집니다.')) return
+    if (!confirm('이 자료를 제외하시겠습니까? 운영 기준 초안과 병원 공개 페이지에서 빠집니다.')) return
     setExcludingId(sourceId)
     setExcludeErrors((prev) => {
       const next = { ...prev }
@@ -772,7 +783,7 @@ function SourcesList({
       })
       onChanged()
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '제외 실패'
+      const message = safeOperatorError('onboarding', '자료 목록을 다시 불러온 뒤 제외를 다시 누르세요.')
       setExcludeErrors((prev) => ({ ...prev, [sourceId]: message }))
     } finally {
       setExcludingId(null)
@@ -806,13 +817,13 @@ function SourcesList({
                 <div className="min-w-0">
                   <p className="flex items-center gap-2 font-medium text-slate-900">
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
-                      {s.display?.source_type_label ?? s.source_type}
+                      {sourceTypeLabel(s)}
                     </span>
                     <span className="truncate">{s.title}</span>
                   </p>
                   <p className="mt-1 text-xs text-slate-500 truncate">
                     {s.url ? (
-                      <a href={s.url} target="_blank" rel="noopener" className="underline">{s.url}</a>
+                      <a href={s.url} target="_blank" rel="noopener" className="inline-flex min-h-11 items-center underline">{s.url}</a>
                     ) : fileHref ? (
                       <a
                         href={fileHref}
@@ -820,7 +831,7 @@ function SourcesList({
                         rel="noopener"
                         className="underline"
                       >
-                        파일 보기 ({s.mime_type ?? 'binary'})
+                        파일 보기 ({sourceFileFormatLabel(s.mime_type)})
                       </a>
                     ) : (
                       '본문 직접 입력'
@@ -840,13 +851,13 @@ function SourcesList({
                             : 'bg-yellow-100 text-yellow-800'
                     }`}
                   >
-                    {s.display?.status_label ?? s.status}
+                    {sourceStatusLabel(s)}
                   </span>
                   {s.status !== 'EXCLUDED' && (
                     <button
                       onClick={() => exclude(s.id)}
                       disabled={excludingId === s.id}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                      className="min-h-11 rounded border border-slate-300 bg-white px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                     >
                       {excludingId === s.id ? '제외 중…' : '제외'}
                     </button>
@@ -895,7 +906,7 @@ function ProcessingStepBody({
       })
       onChanged()
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '처리 실패'
+      const message = safeOperatorError('onboarding', '해당 자료의 ‘다시 처리’를 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.')
       setErrors((prev) => ({ ...prev, [sourceId]: message }))
     } finally {
       setBusyId(null)
@@ -917,7 +928,7 @@ function ProcessingStepBody({
       )
       window.setTimeout(onChanged, 2500)
     } catch (e: unknown) {
-      setBulkFeedback(e instanceof Error ? e.message : '일괄 처리 큐잉 실패')
+      setBulkFeedback(safeOperatorError('onboarding', '오류 자료 다시 처리를 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.'))
     } finally {
       setBulkBusy(false)
     }
@@ -1019,7 +1030,7 @@ function ProcessingStepBody({
                   </button>
                 </div>
                 {(errors[s.id] || s.process_error) && (
-                  <p className="text-red-700">{errors[s.id] || s.process_error}</p>
+                  <p className="whitespace-pre-line text-red-700">{errors[s.id] || safeOperatorError('onboarding', '이 자료의 ‘다시 처리’를 누르세요.')}</p>
                 )}
               </li>
             ))}

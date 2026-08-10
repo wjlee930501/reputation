@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
   ATTENTION_VISIBLE_ROWS,
   type AttentionQueue,
@@ -37,7 +39,8 @@ export default function HospitalsPage() {
       setHospitals((prev) => (skip === 0 ? page : [...prev, ...page]))
       setHasMore(page.length === PAGE_SIZE)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '병원 목록을 불러오지 못했습니다.')
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setError(safeOperatorError('onboarding', '병원 목록 다시 불러오기를 누르세요.'))
     } finally {
       setLoading(false)
       setLoadingMore(false)
@@ -94,7 +97,7 @@ export default function HospitalsPage() {
         {!loading && !error && hospitals.length > 0 && (
           <div className="flex items-center gap-6 text-xs text-slate-500 mt-4">
             <StatPill label="전체" value={stats.total} />
-            <StatPill label="운영중" value={stats.active} tone="good" />
+            <StatPill label="운영 중" value={stats.active} tone="good" />
             <StatPill label="온보딩" value={stats.onboarding} tone="warn" />
           </div>
         )}
@@ -183,9 +186,7 @@ export default function HospitalsPage() {
       {loading && <SkeletonTable rows={6} />}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">
-          오류: {error}
-        </div>
+        <OperatorIssuePanel message={error} surface="onboarding" onRetry={() => void loadPage(0)} retryLabel="병원 목록 다시 불러오기" />
       )}
 
       {!loading && !error && hospitals.length === 0 && (
@@ -230,7 +231,7 @@ export default function HospitalsPage() {
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">상태</th>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">도메인</th>
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">월간 운영량</th>
-                  <th className="text-center px-4 py-3 text-slate-600 font-medium">프로파일</th>
+                  <th className="text-center px-4 py-3 text-slate-600 font-medium">병원 기본 정보</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">병원 정보 허브</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">스케줄</th>
                   <th className="px-4 py-3"></th>
@@ -293,7 +294,7 @@ export default function HospitalsPage() {
                       <td className="px-6 py-4 text-slate-600" data-label="월간 운영량">
                         {h.plan ? PLAN_LABELS[h.plan] ?? h.plan : '-'}
                       </td>
-                      <td className="px-4 py-4 text-center" data-label="프로파일">
+                      <td className="px-4 py-4 text-center" data-label="병원 기본 정보">
                         <CheckCell done={h.profile_complete} />
                       </td>
                       <td className="px-4 py-4 text-center" data-label="정보 허브">

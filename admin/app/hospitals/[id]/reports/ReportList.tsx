@@ -23,7 +23,7 @@ export function ReportList({
 }) {
   const { delivered, ready, blocked } = reportSummaryCounts(reports)
   return (
-    <section aria-labelledby="report-list-heading">
+    <section data-current-task aria-labelledby="report-list-heading">
       <div className="mb-4 grid grid-cols-3 gap-2 sm:gap-3">
         <Summary label="전달 전 검수 가능" value={ready} />
         <Summary label="조치 필요" value={blocked} />
@@ -65,6 +65,7 @@ export function ReportList({
                       {!wasDelivered && !report.deliveryReady && (
                         <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-red-50)] [word-break:keep-all]">
                           문제: {report.deliveryBlockers[0] ?? '최신 전달 가능 상태를 확인할 수 없습니다.'}<br />
+                          고객 영향: 최신 월간 보고 자료를 원장에게 전달할 수 없습니다.<br />
                           지금 할 일: ‘검수하고 조치하기’에서 해결 방법을 확인하세요.
                         </p>
                       )}

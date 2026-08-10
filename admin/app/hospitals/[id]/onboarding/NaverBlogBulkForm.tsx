@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 
 import { fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { safeOperatorError } from '@/lib/operations-journey'
 import {
   buildNaverDeveloperContext,
   isNaverEvidenceAvailable,
@@ -148,11 +150,13 @@ export default function NaverBlogBulkForm({ hospitalId, onCreated }: NaverBlogBu
         </button>
       </form>
 
-      {feedback && (
+      {feedback?.isError ? (
+        <OperatorIssuePanel message={feedback.message} surface="onboarding" />
+      ) : feedback ? (
         <p className={`break-keep text-sm font-medium ${feedback.isError ? 'text-red-700' : 'text-slate-700'}`} role={feedback.isError ? 'alert' : 'status'} aria-live="polite">
           {feedback.message}
         </p>
-      )}
+      ) : null}
 
       {items.length > 0 && (
         <div className="space-y-3 border-t border-slate-200 pt-4" aria-label="글 가져오기 결과">
@@ -184,6 +188,6 @@ function summaryMessage(result: ReturnType<typeof parseNaverHandoffResponse>): s
   return parts.join(' · ')
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '글을 가져오지 못했습니다. 다시 시도하고, 계속 실패하면 개발팀에 문의해 주세요.'
+function errorMessage(_error: unknown): string {
+  return safeOperatorError('onboarding', '네이버 블로그 주소를 확인한 뒤 ‘최근 글 가져오기’를 다시 누르세요.')
 }

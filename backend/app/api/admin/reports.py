@@ -48,7 +48,7 @@ from app.services.report_review_evidence import build_report_review_evidence
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Reports"])
 
 REPORT_TYPE_DISPLAY_LABELS = {
-    "V0": "V0 진단",
+    "V0": "초기 진단 리포트",
     "MONTHLY": "월간 리포트",
 }
 SCREENING_STATUS_DISPLAY = {
@@ -204,7 +204,11 @@ def _delivery_gate(
             and report.failed_count == 0
         )
         if report.quality != "COMPLETE" or not counts_complete or manifest is None:
-            return DeliveryGate(False, "coverage_incomplete", "월간 측정 커버리지가 완전하지 않습니다.")
+            return DeliveryGate(
+                False,
+                "coverage_incomplete",
+                "이번 달 필수 질문 측정이 모두 끝나지 않았습니다.",
+            )
         manifest_matches = (
             manifest.id == report.manifest_id
             and manifest.hospital_id == report.hospital_id

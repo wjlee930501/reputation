@@ -420,7 +420,7 @@ async def trigger_v0_report_operation(
         raise HTTPException(
             status_code=409,
             detail=(
-                "이 병원은 이미 V0 리포트가 생성돼 있어 다시 만들지 않습니다. "
+                "이 병원은 이미 초기 진단 리포트가 생성돼 있어 다시 만들지 않습니다. "
                 "최신 수치가 필요하면 'AI 언급률 측정'을 실행하고 리포트 화면에서 확인해 주세요."
             ),
         )

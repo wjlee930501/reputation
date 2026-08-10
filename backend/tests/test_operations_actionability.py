@@ -149,10 +149,10 @@ def test_report_queue_guides_the_operator_to_the_real_generation_control() -> No
 def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     hospital = Hospital(id=uuid.uuid4(), name="테스트의원", slug="test-clinic")
 
-    assert "프로파일" in next_onboarding_step(hospital)
+    assert "병원 기본 정보 탭" in next_onboarding_step(hospital)
     assert "저장" in next_onboarding_step(hospital)
     hospital.profile_complete = True
-    assert "V0 진단 리포트" in next_onboarding_step(hospital)
+    assert "초기 진단 리포트" in next_onboarding_step(hospital)
     assert "확인" in next_onboarding_step(hospital)
     hospital.v0_report_done = True
     assert "공개 정보" in next_onboarding_step(hospital)
@@ -173,6 +173,8 @@ def test_readiness_guidance_always_names_customer_impact_and_support_fallback() 
     assert all("개발팀" in action for action in actions.values())
     assert all("없으면" in action for action in actions.values())
     assert "“저장”" in actions["core_profile"]
+    assert "병원 기본 정보 탭" in actions["core_profile"]
+    assert all("프로파일" not in action for action in actions.values())
     assert "“근거 추출”" in actions["essence_sources"]
     assert "“승인”" in actions["essence_philosophy"]
     assert "“스케줄 저장 및 슬롯 생성”" in actions["schedule"]
@@ -198,7 +200,7 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
     # Then
     payload = intent.message.payload_json()
     assert "담당: 미지정(담당자 지정 필요)" in payload
-    assert "언제까지: 운영 센터에서 확인" in payload
+    assert "처리 기한: 운영 센터에서 확인" in payload
     assert "SLA" not in payload
 
 

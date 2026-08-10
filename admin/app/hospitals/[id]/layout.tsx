@@ -14,9 +14,9 @@ import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '대시보드', path: 'dashboard', hint: 'AI 언급률과 운영 준비 상태 한눈에 보기' },
-  { label: '온보딩', path: 'onboarding', hint: '신규 병원 자료 인입 + 운영 기준 승인까지 한 화면에서' },
-  { label: '프로파일', path: 'profile', hint: '병원 기본 정보' },
-  { label: '콘텐츠', path: 'content', hint: '자동 발행·후행 점검' },
+  { label: '온보딩', path: 'onboarding', hint: '병원 자료 입력과 운영 기준 승인' },
+  { label: '병원 기본 정보', path: 'profile', hint: '병원과 원장 기본 정보' },
+  { label: '콘텐츠', path: 'content', hint: '자동 발행·공개 내용 확인' },
   { label: '스케줄', path: 'schedule', hint: '발행 캘린더' },
   { label: '리포트', path: 'reports', hint: '월간 리포트' },
 ]
@@ -83,10 +83,10 @@ export default function HospitalLayout({
   }
 
   const statusInfo = hospital
-    ? STATUS_LABELS[hospital.status] ?? { label: hospital.status, color: 'bg-slate-100 text-slate-700' }
+    ? STATUS_LABELS[hospital.status] ?? { label: '상태 확인 필요', color: 'bg-slate-100 text-slate-700' }
     : null
 
-  const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? hospital.plan : null
+  const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? '요금제 확인 필요' : null
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
   const visibleLifecycleAction = lifecycleAction === 'resume' && !hospital?.schedule_set ? null : lifecycleAction
   const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
@@ -129,7 +129,9 @@ export default function HospitalLayout({
                   </span>
                 )}
               </div>
-              <p className="mt-0.5 truncate text-xs text-slate-500">{hospital?.aeo_domain || hospital?.slug || '병원 정보를 확인하고 있습니다.'}</p>
+              <p className="mt-0.5 truncate text-xs text-slate-500">
+                {hospital?.aeo_domain ? `공개 주소 ${hospital.aeo_domain}` : '공개 주소 준비 중'}
+              </p>
             </div>
             {hospital && (
               <details className="group relative shrink-0">
@@ -139,10 +141,10 @@ export default function HospitalLayout({
                 <div className="absolute right-0 top-[calc(100%+8px)] z-40 w-[min(21rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
                   <p className="text-xs font-semibold text-slate-900">운영 준비 상태</p>
                   <div className="mt-3 grid gap-2 text-xs text-slate-600">
-                    <ProgressDot label="프로파일 완료" done={hospital.profile_complete} />
+                    <ProgressDot label="필수 병원 정보 완료" done={hospital.profile_complete} />
                     <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
                     <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
-                    <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
+                    <ProgressDot label="병원 정보 허브 운영 중" done={hospital.site_live} />
                   </div>
                   {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">운영량 {planLabel}</p>}
                 </div>
@@ -193,7 +195,7 @@ export default function HospitalLayout({
                   type="button"
                   onClick={() => void handleLifecycleAction()}
                   disabled={lifecycleLoading}
-                  className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  className={`inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                     visibleLifecycleAction === 'pause'
                       ? 'border-red-200 text-red-700 hover:bg-red-50'
                       : 'border-green-200 text-green-700 hover:bg-green-50'
@@ -205,19 +207,15 @@ export default function HospitalLayout({
             </div>
             {hospital && (
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 sm:gap-3">
-                <span className="font-mono text-slate-400">{hospital.slug}</span>
-                {hospital.aeo_domain && (
-                  <>
-                    <span aria-hidden className="text-slate-300">·</span>
-                    <span>
-                      병원 정보 허브 도메인 <span className="text-[var(--color-revisit-text-title)]">{hospital.aeo_domain}</span>
-                    </span>
-                  </>
-                )}
+                <span>
+                  {hospital.aeo_domain ? (
+                    <>공개 주소 <span className="text-[var(--color-revisit-text-title)]">{hospital.aeo_domain}</span></>
+                  ) : '공개 주소 준비 중'}
+                </span>
                 {hospital.site_live && (
                   <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    병원 정보 허브 운영중
+                    병원 정보 허브 운영 중
                   </span>
                 )}
               </div>
@@ -226,10 +224,10 @@ export default function HospitalLayout({
 
           {hospital && (
             <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 lg:shrink-0">
-              <ProgressDot label="프로파일 완료" done={hospital.profile_complete} />
+              <ProgressDot label="필수 병원 정보 완료" done={hospital.profile_complete} />
               <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
               <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
-              <ProgressDot label="병원 정보 허브 운영중" done={hospital.site_live} />
+              <ProgressDot label="병원 정보 허브 운영 중" done={hospital.site_live} />
             </div>
           )}
         </div>

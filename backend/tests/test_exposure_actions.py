@@ -330,7 +330,7 @@ async def test_exposure_actions_endpoint_shape(monkeypatch):
                 "status": "ACTIVE",
                 "display": {
                     "priority_label": "높음",
-                    "status_label": "운영중",
+                    "status_label": "운영 중",
                 },
                 "target_month": "2026-05",
             },
@@ -364,7 +364,7 @@ async def test_get_exposure_action_detail(monkeypatch):
     assert response["id"] == str(action_id)
     assert response["gap_type"] == "MISSING_MENTION"
     assert response["query_target"]["name"] == "강남 치질 수술 추천"
-    assert response["query_target"]["display"] == {"priority_label": "높음", "status_label": "운영중"}
+    assert response["query_target"]["display"] == {"priority_label": "높음", "status_label": "운영 중"}
 
 
 def test_serialize_target_washes_stale_operator_copy():

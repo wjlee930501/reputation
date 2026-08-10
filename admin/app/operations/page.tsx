@@ -3,6 +3,7 @@
 import { Suspense, useMemo } from 'react'
 
 import { selectCurrentAction } from '@/lib/operations-center'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { CostGuardPanel } from './CostGuardPanel'
 import { CurrentActionStrip } from './CurrentActionStrip'
 import { OperationDetail } from './OperationDetail'
@@ -21,10 +22,10 @@ function OperationsCenter() {
     <div className="ops-page">
       <header className="ops-header">
         <div>
-          <p className="admin-eyebrow">MotionLabs 운영 관제</p>
+          <p className="admin-eyebrow">MotionLabs 고객 운영 현황</p>
           <h1 className="title2 mt-1 text-slate-950">운영 센터</h1>
         </div>
-        <p className="ops-refresh-note">자동 작업은 12초마다, 실행 중인 작업은 3초마다 갱신됩니다.</p>
+        <p className="ops-refresh-note">화면은 자동으로 최신 상태를 확인합니다.</p>
       </header>
 
       <CurrentActionStrip item={currentAction} onOpen={center.select} />
@@ -39,9 +40,13 @@ function OperationsCenter() {
       </div>
 
       {center.loadError && center.page ? (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-          <p role="alert" className="text-sm text-amber-900">최신 상태를 확인하지 못했습니다. 기존 목록을 유지합니다.</p>
-          <button type="button" onClick={() => void center.reload(false)} className="ops-control rounded-lg border border-amber-300 px-3 text-sm font-semibold text-amber-900">다시 확인</button>
+        <div className="mt-3">
+          <OperatorIssuePanel
+            message={center.loadError}
+            surface="operations"
+            onRetry={() => void center.reload(false)}
+            retryLabel="최신 운영 상태 다시 확인"
+          />
         </div>
       ) : null}
 

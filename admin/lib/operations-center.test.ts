@@ -10,6 +10,7 @@ import {
   interpretOperationsConflict,
   operationStatusLabel,
   runStateLabel,
+  safeCauseText,
   selectCurrentAction,
   shouldAutoRetrySlack,
   shouldPollRun,
@@ -57,6 +58,18 @@ test('canonical query parses supported values and drops unsafe noise', () => {
 
   // Then
   assert.equal(canonical.toString(), 'queue=incidents&status=OPEN&detail=i-1')
+})
+
+test('code-like causes and contact details never render as marketer explanations', () => {
+  const fallback = '원인 설명을 확인할 수 없습니다.'
+
+  assert.match(safeCauseText('IMAGE_PROVIDER_UNAVAILABLE'), new RegExp(fallback))
+  assert.match(safeCauseText('failed for owner@example.test'), new RegExp(fallback))
+  assert.match(safeCauseText('redis://private-host:6379'), new RegExp(fallback))
+  assert.match(safeCauseText('KeyError: Connection refused'), new RegExp(fallback))
+  assert.match(safeCauseText('API_KEY secret-token'), new RegExp(fallback))
+  assert.match(safeCauseText('담당자 010-1234-5678에게 연락'), new RegExp(fallback))
+  assert.equal(safeCauseText('대표 이미지 생성 연결이 잠시 중단되었습니다.'), '대표 이미지 생성 연결이 잠시 중단되었습니다.')
 })
 
 test('changing a quick filter resets page while preserving detail', () => {
@@ -121,7 +134,7 @@ test('customer-facing operation labels never expose raw backend states', () => {
   const states = ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN', 'ACTIVE', 'PAUSED', 'PUBLISH_DUE', 'REVIEW_PENDING', 'OVERDUE_REVIEW', 'MISSING', 'DELIVERY_PENDING', 'OPEN', 'RETRYING', 'RECOVERED', 'ACKNOWLEDGED']
 
   assert.deepEqual(states.map(operationStatusLabel), [
-    '온보딩 진행 중', 'AI 진단 분석 중', '콘텐츠 허브 준비 중', '도메인 확인 대기', '운영 중', '운영 일시 정지',
+    '온보딩 진행 중', 'AI 진단 분석 중', '콘텐츠 허브 준비 중', '공개 주소 확인 대기', '운영 중', '운영 일시 정지',
     '오늘 발행 예정', '발행 후 확인 대기', '발행 후 확인 기한 지남', '지난달 보고서 미생성', '원장 전달 검수 대기',
     '처리 필요', '복구 재시도 중', '복구 확인됨', '확인 완료',
   ])

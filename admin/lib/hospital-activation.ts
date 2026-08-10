@@ -31,8 +31,8 @@ export interface ServerActivationBlocker {
 }
 
 const DISPLAY_PREREQUISITES: readonly ActivationPrerequisite[] = [
-  { key: 'profile_complete', label: '프로파일 완료', hrefSuffix: 'profile' },
-  { key: 'v0_report_done', label: 'V0 리포트 생성', hrefSuffix: 'reports' },
+  { key: 'profile_complete', label: '병원 기본 정보 완료', hrefSuffix: 'profile' },
+  { key: 'v0_report_done', label: '초기 진단 리포트 생성', hrefSuffix: 'reports' },
   { key: 'site_built', label: '콘텐츠 허브 준비', hrefSuffix: 'profile' },
   { key: 'schedule_set', label: '콘텐츠 스케줄 설정', hrefSuffix: 'schedule' },
 ]

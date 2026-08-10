@@ -9,6 +9,7 @@ import {
   historyEventLabel,
   operationStatusLabel,
   runStateLabel,
+  safeCauseText,
   shouldPollRun,
   slackStateLabel,
 } from '@/lib/operations-center'
@@ -115,7 +116,7 @@ export function OperationDetail(props: Props) {
   const directLink = !mutation && isOperatorNavigation(row)
   const waitUntil = slack?.state === 'RETRYING' && slack.next_attempt_at
     ? `${formatDate(slack.next_attempt_at)}까지`
-    : '화면이 최대 3초 안에 한 번 더 갱신될 때까지'
+    : '화면이 자동으로 최신 상태를 다시 확인할 때까지'
 
   const copyForDevelopment = async () => {
     try {
@@ -137,7 +138,7 @@ export function OperationDetail(props: Props) {
       <section className="ops-detail-section">
         <h3>무슨 문제인지</h3>
         <p className="text-sm font-semibold text-slate-800">{operationStatusLabel(row.status)}</p>
-        <p className="ops-readable mt-2 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600">{row.safe_cause ?? '상세 원인 기록을 확인하는 단계입니다.'}</p>
+        <p className="ops-readable mt-2 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600">{safeCauseText(row.safe_cause)}</p>
       </section>
 
       <section className="ops-detail-section">
@@ -163,6 +164,7 @@ export function OperationDetail(props: Props) {
         )}
         {copyStatus ? <p role="status" aria-live="polite" className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{copyStatus}</p> : null}
         {error ? <p role="alert" className="ops-readable mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm leading-5 text-red-700">{error}</p> : null}
+        {error && mutation && !permissionDenied ? <button ref={copyButton} type="button" onClick={copyForDevelopment} className="ops-control mt-2 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700">개발팀 문의용 정보 복사</button> : null}
         {mutation && permissionDenied ? <button ref={copyButton} type="button" onClick={copyForDevelopment} className="ops-control mt-2 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700">개발팀 문의용 정보 복사</button> : null}
       </section>
 

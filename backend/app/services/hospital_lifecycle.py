@@ -137,16 +137,16 @@ def activation_requirements(
             "handoff_accepted", "고객 인계 승인", "계약·인계 정보를 승인하세요.", handoff_accepted
         ),
         ActivationRequirement(
-            "profile_complete", "프로파일 완료", "병원 프로파일의 필수 정보를 완료하세요.", hospital.profile_complete
+            "profile_complete", "병원 기본 정보 완료", "병원 기본 정보의 필수 항목을 완료하세요.", hospital.profile_complete
         ),
         ActivationRequirement(
-            "v0_report_done", "V0 리포트", "V0 진단 리포트 생성을 완료하세요.", hospital.v0_report_done
+            "v0_report_done", "초기 진단 리포트", "초기 진단 리포트 생성을 완료하세요.", hospital.v0_report_done
         ),
         ActivationRequirement(
-            "site_built", "병원 정보 허브 빌드", "AI 노출 콘텐츠 허브 준비를 완료하세요.", hospital.site_built
+            "site_built", "콘텐츠 허브 준비", "AI 노출 콘텐츠 허브 준비를 완료하세요.", hospital.site_built
         ),
         ActivationRequirement(
-            "schedule_set", "콘텐츠 스케줄", "요금제와 발행 요일을 저장하세요.", hospital.schedule_set
+            "schedule_set", "콘텐츠 발행 일정", "요금제와 발행 요일을 저장하세요.", hospital.schedule_set
         ),
     ]
 
@@ -208,7 +208,7 @@ def activation_gate_error(
 
     return {
         "code": "ACTIVATION_PREREQUISITES_MISSING",
-        "message": "ACTIVE 전환 전 필수 단계를 완료해 주세요.",
+        "message": "공개 운영 시작 전 필수 단계를 완료해 주세요.",
         "missing": snapshot["missing"],
         "prerequisites": snapshot["prerequisites"],
     }

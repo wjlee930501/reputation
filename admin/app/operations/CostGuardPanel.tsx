@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { ApiError, fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { fetchAPI } from '@/lib/api'
+import { safeOperatorError } from '@/lib/operations-journey'
 
 type CostCategory = {
   readonly category: string
@@ -23,9 +25,8 @@ type CostStatus = {
   readonly categories: readonly CostCategory[]
 }
 
-function message(error: unknown): string {
-  if (error instanceof ApiError || error instanceof Error) return error.message
-  return '비용 설정을 처리하지 못했습니다.'
+function message(_error: unknown): string {
+  return safeOperatorError('operations', '‘상태 다시 확인’을 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.')
 }
 
 function ratio(used: number | null, limit: number): number {
@@ -112,7 +113,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
           비용 급증 시에만 사용하세요. 여기서 자동 작업을 중지해도{' '}
           <span className="whitespace-nowrap">진행 중인 고객 작업 결과는 유지됩니다.</span>
         </p>
-        {error ? <p role="alert" className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+        {error ? <div className="mt-3"><OperatorIssuePanel message={error} surface="operations" onRetry={() => void load()} retryLabel="상태 다시 확인" /></div> : null}
         {notice ? <p role="status" className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{notice}</p> : null}
         {status?.availability === 'UNAVAILABLE' ? (
           <section className="ops-readable mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950">

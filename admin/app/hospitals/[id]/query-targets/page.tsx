@@ -3,6 +3,8 @@
 import { useParams } from 'next/navigation'
 import { Dispatch, FormEvent, SetStateAction, useEffect, useMemo, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
   buildPlatformVariants,
   canRunMeasurement,
@@ -81,7 +83,7 @@ export default function QueryTargetsPage() {
   const measureDisabledReason = hospital == null
     ? '병원 상태를 확인하는 중입니다.'
     : !canMeasureStatus
-      ? `현재 병원 상태(${STATUS_LABELS[hospital.status]?.label ?? hospital.status})에서는 측정을 실행할 수 없습니다. 운영중 또는 도메인대기 상태에서 실행할 수 있습니다.`
+      ? `현재 병원 상태(${STATUS_LABELS[hospital.status]?.label ?? '상태 확인 필요'})에서는 측정을 실행할 수 없습니다. 운영 중 또는 공개 주소 확인 대기 상태에서 실행할 수 있습니다.`
       : !hasMeasurableVariant
         ? '운영 중인 환자 질문에 활성 문구가 하나 이상 있어야 측정할 수 있습니다.'
         : null
@@ -91,18 +93,19 @@ export default function QueryTargetsPage() {
     setMeasuring(true)
     setMeasureFeedback(null)
     try {
-      const result = await fetchAPI<{ detail?: string }>(
+      await fetchAPI<{ detail?: string }>(
         `/admin/hospitals/${hospitalId}/operations/run-sov`,
         { method: 'POST' },
       )
       setMeasureFeedback({
         tone: 'success',
-        text: result?.detail ?? 'AI 언급률 측정이 큐에 등록되었습니다. 결과는 대시보드에서 확인할 수 있습니다.',
+        text: 'AI 답변 언급 측정을 접수했습니다. 진행 상태는 운영 센터에서 확인하세요.',
       })
-    } catch (err) {
+    } catch (err: unknown) {
+      if (!isExpectedOperatorRequestFailure(err)) throw err
       setMeasureFeedback({
         tone: 'error',
-        text: err instanceof Error ? err.message : '측정 실행에 실패했습니다.',
+        text: safeOperatorError('onboarding', '환자 질문 상태를 확인한 뒤 ‘AI 언급률 측정’을 다시 누르세요.'),
       })
     } finally {
       setMeasuring(false)
@@ -120,8 +123,9 @@ export default function QueryTargetsPage() {
     try {
       const data = await fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${hospitalId}/query-targets?include_archived=true`)
       setTargets(data ?? [])
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI 노출용 환자 질문 전략을 불러오지 못했습니다.')
+    } catch (err: unknown) {
+      if (!isExpectedOperatorRequestFailure(err)) throw err
+      setError(safeOperatorError('onboarding', '환자 질문 목록 다시 불러오기를 누르세요.'))
     } finally {
       setLoading(false)
     }
@@ -159,8 +163,9 @@ export default function QueryTargetsPage() {
       })
       setForm(DEFAULT_FORM)
       await loadTargets()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI 노출용 환자 질문 전략을 저장하지 못했습니다.')
+    } catch (err: unknown) {
+      if (!isExpectedOperatorRequestFailure(err)) throw err
+      setError(safeOperatorError('onboarding', '입력 내용을 확인한 뒤 ‘환자 질문 추가’를 다시 누르세요.'))
     } finally {
       setSaving(false)
     }
@@ -174,8 +179,9 @@ export default function QueryTargetsPage() {
         body: JSON.stringify({ ...patch, updated_by: 'MotionLabs Ops' }),
       })
       await loadTargets()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '상태를 변경하지 못했습니다.')
+    } catch (err: unknown) {
+      if (!isExpectedOperatorRequestFailure(err)) throw err
+      setError(safeOperatorError('onboarding', '최신 상태를 확인한 뒤 상태 변경을 다시 선택하세요.'))
     }
   }
 
@@ -209,8 +215,9 @@ export default function QueryTargetsPage() {
       })
       setVariantDrafts((prev) => ({ ...prev, [target.id]: '' }))
       await loadTargets()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '환자 질문 문구를 추가하지 못했습니다.')
+    } catch (err: unknown) {
+      if (!isExpectedOperatorRequestFailure(err)) throw err
+      setError(safeOperatorError('onboarding', '질문 문구를 확인한 뒤 ‘문구 추가’를 다시 누르세요.'))
     } finally {
       setVariantSavingByTarget((prev) => ({ ...prev, [target.id]: false }))
     }
@@ -224,8 +231,9 @@ export default function QueryTargetsPage() {
         body: JSON.stringify({ is_active: isActive }),
       })
       await loadTargets()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '환자 질문 문구 상태를 변경하지 못했습니다.')
+    } catch (err: unknown) {
+      if (!isExpectedOperatorRequestFailure(err)) throw err
+      setError(safeOperatorError('onboarding', '최신 문구 상태를 확인한 뒤 변경을 다시 선택하세요.'))
     }
   }
 
@@ -246,11 +254,11 @@ export default function QueryTargetsPage() {
           </div>
           <div className="grid grid-cols-3 gap-2 text-center text-xs lg:min-w-[320px]">
             <SummaryPill
-              label="운영중"
+              label="운영 중"
               value={String(activeTargets.filter((target) => target.status === 'ACTIVE').length)}
             />
             <SummaryPill
-              label="일시정지"
+              label="운영 일시 정지"
               value={String(activeTargets.filter((target) => target.status === 'PAUSED').length)}
             />
             <SummaryPill label="보관" value={String(archivedTargets.length)} />
@@ -262,8 +270,8 @@ export default function QueryTargetsPage() {
           <div>
             <p className="text-sm font-semibold text-white">AI 언급률 측정</p>
             <p className="mt-0.5 text-xs text-blue-100">
-              등록된 환자 질문 문구로 ChatGPT·Gemini 답변에서 우리 병원 언급 여부를 확인합니다. 측정은 백그라운드에서
-              진행되며 결과는 대시보드에 누적됩니다.
+              등록된 환자 질문 문구로 ChatGPT·Gemini 답변에서 우리 병원 언급 여부를 확인합니다. 화면을 떠나도 측정은
+              계속되며 결과는 대시보드에 누적됩니다.
             </p>
             {measureDisabledReason && (
               <p className="mt-1 text-xs font-medium text-amber-200">{measureDisabledReason}</p>
@@ -278,23 +286,20 @@ export default function QueryTargetsPage() {
             {measuring ? '측정 시작 중...' : '측정 실행'}
           </button>
         </div>
-        {measureFeedback && (
+        {measureFeedback?.tone === 'success' && (
           <div
-            className={`mt-3 rounded-xl px-4 py-3 text-sm ${
-              measureFeedback.tone === 'success'
-                ? 'bg-emerald-500/15 text-emerald-100 border border-emerald-300/40'
-                : 'bg-red-500/15 text-red-100 border border-red-300/40'
-            }`}
+            className="mt-3 rounded-xl border border-emerald-300/40 bg-emerald-500/15 px-4 py-3 text-sm text-emerald-100"
           >
             {measureFeedback.text}
           </div>
         )}
+        {measureFeedback?.tone === 'error' && (
+          <div className="mt-3"><OperatorIssuePanel message={measureFeedback.text} surface="onboarding" /></div>
+        )}
       </section>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
+        <OperatorIssuePanel message={error} surface="onboarding" onRetry={() => void loadTargets()} retryLabel="환자 질문 목록 다시 불러오기" />
       )}
 
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -371,7 +376,7 @@ export default function QueryTargetsPage() {
                 label="상태"
                 value={form.status}
                 onChange={(value) => setFormValue(setForm, 'status', value as AIQueryTargetStatus)}
-                options={[['ACTIVE', '운영중'], ['PAUSED', '일시정지']]}
+                options={[['ACTIVE', '운영 중'], ['PAUSED', '운영 일시 정지']]}
               />
             </div>
             <Input label="진료과" value={form.specialty} onChange={(value) => setFormValue(setForm, 'specialty', value)} placeholder="대장항문외과" />
@@ -483,8 +488,8 @@ function TargetCard({
             onChange={(event) => onStatusChange(event.target.value as AIQueryTargetStatus)}
             className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
           >
-            <option value="ACTIVE">운영중</option>
-            <option value="PAUSED">일시정지</option>
+            <option value="ACTIVE">운영 중</option>
+            <option value="PAUSED">운영 일시 정지</option>
             <option value="ARCHIVED">보관</option>
           </select>
         </div>

@@ -769,7 +769,7 @@ function formatQueryTargetPriority(priority: string): string {
 }
 
 function formatQueryTargetStatus(status: string): string {
-  return QUERY_TARGET_STATUS_LABELS[status as keyof typeof QUERY_TARGET_STATUS_LABELS]?.label ?? status
+  return QUERY_TARGET_STATUS_LABELS[status as keyof typeof QUERY_TARGET_STATUS_LABELS]?.label ?? '상태 확인 필요'
 }
 
 function formatLinkedContent(content: ExposureActionContentSummary | null | undefined): string {

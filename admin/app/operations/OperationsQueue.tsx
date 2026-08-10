@@ -1,7 +1,8 @@
 'use client'
 
 import type { OperationsQueueResponse, OperationsQueueRow } from '@/types'
-import { operationStatusLabel } from '@/lib/operations-center'
+import { operationStatusLabel, safeCauseText } from '@/lib/operations-center'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 
 type QueueProps = {
   readonly data: OperationsQueueResponse | null
@@ -45,7 +46,7 @@ function ProblemBlock({ item }: { readonly item: OperationsQueueRow }) {
         </span>
         <span className="ops-badge ops-badge--neutral">{operationStatusLabel(item.status)}</span>
       </div>
-      <p className="ops-readable mt-1.5 text-sm leading-5 text-slate-600">{item.safe_cause ?? '상세에서 원인 기록을 확인해 주세요.'}</p>
+      <p className="ops-readable mt-1.5 text-sm leading-5 text-slate-600">{safeCauseText(item.safe_cause)}</p>
     </div>
   )
 }
@@ -91,8 +92,12 @@ export function OperationsQueueList(props: QueueProps) {
   if (error && data === null) {
     return (
       <div className="ops-queue-state">
-        <p role="alert" className="text-red-700">{error}</p>
-        <button type="button" className="ops-control mt-3 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white" onClick={onRetryLoad}>다시 불러오기</button>
+        <OperatorIssuePanel
+          message={error}
+          surface="operations"
+          onRetry={onRetryLoad}
+          retryLabel="운영 목록 다시 불러오기"
+        />
       </div>
     )
   }

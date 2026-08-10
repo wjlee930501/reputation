@@ -35,30 +35,30 @@ test('409 without a step list is read as an already-in-use conflict', () => {
 test('verify 409 with a prerequisite list is read as missing launch steps', () => {
   const error = new ApiError('운영 시작 전 완료해야 할 단계가 있습니다.', 409, {
     message: '운영 시작 전 완료해야 할 단계가 있습니다.',
-    missing: ['프로파일 완료', 'V0 리포트 생성'],
+    missing: ['병원 기본 정보 완료', '초기 진단 리포트 생성'],
   })
 
   const info = readDomainError(error, '도메인 검증에 실패했습니다.')
 
   assert.equal(info.kind, 'prerequisite')
-  assert.deepEqual(info.missingSteps, ['프로파일 완료', 'V0 리포트 생성'])
+  assert.deepEqual(info.missingSteps, ['병원 기본 정보 완료', '초기 진단 리포트 생성'])
 })
 
 test('extractMissingSteps reads known list keys and object entries with labels', () => {
   assert.deepEqual(extractMissingSteps({ prerequisites: ['콘텐츠 스케줄 설정'] }), ['콘텐츠 스케줄 설정'])
   assert.deepEqual(
-    extractMissingSteps({ missing_steps: [{ label: '프로파일 완료' }, { message: 'V0 리포트 생성' }] }),
-    ['프로파일 완료', 'V0 리포트 생성'],
+    extractMissingSteps({ missing_steps: [{ label: '병원 기본 정보 완료' }, { message: '초기 진단 리포트 생성' }] }),
+    ['병원 기본 정보 완료', '초기 진단 리포트 생성'],
   )
-  assert.deepEqual(extractMissingSteps(['프로파일 완료']), ['프로파일 완료'])
+  assert.deepEqual(extractMissingSteps(['병원 기본 정보 완료']), ['병원 기본 정보 완료'])
   assert.deepEqual(extractMissingSteps('문자열 detail'), [])
   assert.deepEqual(extractMissingSteps(null), [])
 })
 
 test('parseStepsFromMessage splits a colon-suffixed Korean step list', () => {
   assert.deepEqual(
-    parseStepsFromMessage('도메인 DNS는 확인됐지만 LIVE 전환 전 단계가 남아 있습니다: V0 리포트, 콘텐츠 스케줄'),
-    ['V0 리포트', '콘텐츠 스케줄'],
+    parseStepsFromMessage('공개 주소는 확인됐지만 운영 시작 전 단계가 남아 있습니다: 초기 진단 리포트, 콘텐츠 스케줄'),
+    ['초기 진단 리포트', '콘텐츠 스케줄'],
   )
   assert.deepEqual(parseStepsFromMessage('콜론 없는 메시지'), [])
 })

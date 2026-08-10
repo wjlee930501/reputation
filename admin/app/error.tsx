@@ -1,23 +1,24 @@
 'use client'
 
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { safeOperatorError } from '@/lib/operations-journey'
+
 export default function GlobalError({
-  error,
   reset,
 }: {
   error: Error & { digest?: string }
   reset: () => void
 }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <div className="text-center">
-        <h2 className="text-xl font-bold text-slate-800 mb-4">오류가 발생했습니다</h2>
-        <p className="text-slate-500 mb-6 text-sm">{error.message || '알 수 없는 오류'}</p>
-        <button
-          onClick={reset}
-          className="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors"
-        >
-          다시 시도
-        </button>
+    <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
+      <div className="w-full max-w-xl">
+        <h2 className="mb-4 text-xl font-bold text-slate-800">운영 화면을 불러오지 못했습니다</h2>
+        <OperatorIssuePanel
+          message={safeOperatorError('admin', '운영 화면 다시 불러오기를 누르세요.')}
+          surface="admin"
+          onRetry={reset}
+          retryLabel="운영 화면 다시 불러오기"
+        />
       </div>
     </div>
   )

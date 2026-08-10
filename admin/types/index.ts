@@ -444,12 +444,12 @@ export interface Report {
 }
 
 export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
-  ONBOARDING: { label: '온보딩', color: 'bg-gray-100 text-gray-700' },
-  ANALYZING: { label: '분석중', color: 'bg-blue-100 text-blue-700' },
-  BUILDING: { label: '빌드중', color: 'bg-orange-100 text-orange-700' },
-  PENDING_DOMAIN: { label: '도메인대기', color: 'bg-yellow-100 text-yellow-700' },
-  ACTIVE: { label: '운영중', color: 'bg-green-100 text-green-700' },
-  PAUSED: { label: '일시정지', color: 'bg-red-100 text-red-700' },
+  ONBOARDING: { label: '온보딩 진행 중', color: 'bg-gray-100 text-gray-700' },
+  ANALYZING: { label: 'AI 진단 분석 중', color: 'bg-blue-100 text-blue-700' },
+  BUILDING: { label: '콘텐츠 허브 준비 중', color: 'bg-orange-100 text-orange-700' },
+  PENDING_DOMAIN: { label: '공개 주소 확인 대기', color: 'bg-yellow-100 text-yellow-700' },
+  ACTIVE: { label: '운영 중', color: 'bg-green-100 text-green-700' },
+  PAUSED: { label: '운영 일시 정지', color: 'bg-red-100 text-red-700' },
 }
 
 export const PLAN_LABELS: Record<string, string> = {
@@ -475,8 +475,8 @@ export const QUERY_TARGET_PRIORITY_LABELS: Record<AIQueryTargetPriority, { label
 }
 
 export const QUERY_TARGET_STATUS_LABELS: Record<AIQueryTargetStatus, { label: string; color: string }> = {
-  ACTIVE: { label: '운영중', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-  PAUSED: { label: '일시정지', color: 'bg-amber-50 text-amber-700 border-amber-200' },
+  ACTIVE: { label: '운영 중', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  PAUSED: { label: '운영 일시 정지', color: 'bg-amber-50 text-amber-700 border-amber-200' },
   ARCHIVED: { label: '보관됨', color: 'bg-slate-100 text-slate-500 border-slate-200' },
 }
 

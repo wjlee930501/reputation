@@ -127,7 +127,7 @@ export function deriveOnboardingSteps(
     {
       key: 'profile',
       phase: 'onboarding',
-      title: '병원 프로파일 입력',
+      title: '병원 기본 정보 입력',
       description: '필수 병원·원장·진료·공식 채널 정보를 검증하고 완료합니다.',
       href: `/hospitals/${hospitalId}/profile`,
       done: Boolean(hospital?.profile_complete) && readinessCheck(readiness, 'core_profile') !== false,
@@ -135,7 +135,7 @@ export function deriveOnboardingSteps(
     {
       key: 'v0',
       phase: 'onboarding',
-      title: 'V0 진단 리포트',
+      title: '초기 진단 리포트',
       description: '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다.',
       href: `/hospitals/${hospitalId}/reports`,
       done: Boolean(hospital?.v0_report_done) && readinessCheck(readiness, 'v0_report') !== false,
@@ -175,8 +175,8 @@ export function deriveOnboardingSteps(
     {
       key: 'live',
       phase: 'onboarding',
-      title: '도메인 확인 및 ACTIVE 전환',
-      description: '공개 URL과 도메인 상태를 확인한 뒤 ACTIVE로 전환합니다.',
+      title: '도메인 확인 및 공개 운영 시작',
+      description: '공개 주소와 도메인 상태를 확인한 뒤 공개 운영을 시작합니다.',
       href: `/hospitals/${hospitalId}/profile#domain-setup`,
       done: Boolean(hospital?.site_live) && readinessCheck(readiness, 'domain') !== false,
     },
@@ -240,7 +240,7 @@ export function deriveOnboardingSummary(
     return {
       stateLabel: '온보딩 완료',
       stateClassName: 'bg-green-100 text-green-800',
-      headline: 'ACTIVE 전환까지 온보딩을 완료했습니다.',
+      headline: '공개 운영 시작까지 온보딩을 완료했습니다.',
       detail: `이제 정기 운영 성과를 시작합니다. 다음 후속 작업은 ${nextOutcome.title}입니다.`,
       nextActionLabel: nextOutcome.title,
       nextActionHref: nextOutcome.href ?? null,

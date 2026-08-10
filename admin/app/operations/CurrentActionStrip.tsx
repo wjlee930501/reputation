@@ -12,7 +12,7 @@ type Props = {
 export function CurrentActionStrip({ item, onOpen }: Props) {
   if (!item) {
     return (
-      <section className="ops-current ops-current--empty" aria-labelledby="ops-current-title">
+      <section data-current-task className="ops-current ops-current--empty" aria-labelledby="ops-current-title">
         <div>
           <p className="text-xs font-bold text-emerald-700">지금 먼저 처리</p>
           <h2 id="ops-current-title" className="mt-1 text-base font-bold text-slate-900">긴급한 운영 작업이 없습니다.</h2>
@@ -24,7 +24,7 @@ export function CurrentActionStrip({ item, onOpen }: Props) {
 
   const opensDetail = item.incident_id !== null || item.action.method === 'POST'
   return (
-    <section className="ops-current" aria-labelledby="ops-current-title">
+    <section data-current-task className="ops-current" aria-labelledby="ops-current-title">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-xs font-bold text-blue-700">지금 먼저 처리</p>
@@ -36,7 +36,7 @@ export function CurrentActionStrip({ item, onOpen }: Props) {
       </div>
       {opensDetail ? (
         <button id="ops-current-action" type="button" onClick={() => onOpen(item)} className="ops-control ops-primary-action rounded-lg px-4 text-sm font-bold text-white">
-          안전하게 처리하기
+          원인과 처리 방법 보기
         </button>
       ) : (
         <Link id="ops-current-action" href={item.action.path} className="ops-control ops-primary-action inline-flex items-center justify-center rounded-lg px-4 text-sm font-bold text-white">

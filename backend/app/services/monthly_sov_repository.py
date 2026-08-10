@@ -25,7 +25,7 @@ class MonthlySovDataError(RuntimeError):
     value: str
 
     def __str__(self) -> str:
-        return f"invalid monthly SoV {self.field}: {self.value}"
+        return f"invalid monthly SoV {self.field}: {self.value}"  # copy-guard: internal-only
 
 
 @dataclass(frozen=True, slots=True)

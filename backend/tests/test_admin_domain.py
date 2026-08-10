@@ -150,7 +150,7 @@ async def test_verify_domain_activates_when_all_prerequisites_met(monkeypatch):
 @pytest.mark.parametrize(
     "overrides,expected_label",
     [
-        ({"profile_complete": False}, "프로파일 완료"),
+        ({"profile_complete": False}, "병원 기본 정보 완료"),
     ],
 )
 async def test_verify_domain_blocks_live_without_profile_complete(
@@ -174,8 +174,8 @@ async def test_verify_domain_blocks_live_without_profile_complete(
 @pytest.mark.parametrize(
     "overrides,expected_label",
     [
-        ({"v0_report_done": False}, "V0 리포트"),
-        ({"site_built": False}, "병원 정보 허브 빌드"),
+        ({"v0_report_done": False}, "초기 진단 리포트"),
+        ({"site_built": False}, "콘텐츠 허브 준비"),
     ],
 )
 async def test_verify_domain_blocks_live_without_prerequisites(

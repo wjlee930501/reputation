@@ -230,7 +230,7 @@ export function recoveryAction(
 export function diagnosisHint(diagnosis: LeadDiagnosisSummary): string {
   if (diagnosis.report_status === 'PURGED') return '개인정보가 파기된 진단입니다.'
   if (diagnosis.execution_status === 'FAILED') {
-    return '측정이 재시도까지 모두 실패했습니다. 리포트를 만들 수 없습니다.'
+    return '측정이 다시 실패해 리포트를 만들지 못했습니다.'
   }
   if (diagnosis.report_status === 'BLOCKED') {
     return '리포트 생성이 재시도까지 실패했습니다. 신청자에게 메일이 나가지 않았습니다.'
@@ -244,7 +244,7 @@ export function diagnosisHint(diagnosis: LeadDiagnosisSummary): string {
       : '발송 완료.'
   }
   if (diagnosis.execution_status === 'RUNNING' || diagnosis.report_status === 'BUILDING') {
-    return '진행 중입니다. 접수 후 15분 안에 완료됩니다.'
+    return '진행 중으로 접수되었습니다. 완료 여부는 이 화면에서 확인해 주세요.'
   }
   return '대기 중입니다.'
 }

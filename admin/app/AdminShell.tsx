@@ -6,6 +6,11 @@ import { useState } from 'react'
 
 import { buildAdminCsrfHeaders } from '@/lib/csrf'
 import { clearPublisherIdentity } from '@/lib/publisher-identity'
+import {
+  developerSupportText,
+  isExpectedClipboardFailure,
+  safeOperatorError,
+} from '@/lib/operations-journey'
 
 const NAV_ITEMS = [
   {
@@ -32,7 +37,7 @@ const NAV_ITEMS = [
   },
   {
     href: '/leads',
-    label: '상담 리드',
+    label: '상담 요청',
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M3 5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H7l-4 4V5z" />
@@ -42,7 +47,7 @@ const NAV_ITEMS = [
   {
     href: '/operations',
     label: '운영 센터',
-    meta: '관제',
+    meta: '현황',
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M3 16V9M8 16V5M13 16v-4M18 16V7" />
@@ -66,6 +71,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const [logoutError, setLogoutError] = useState(false)
+  const [logoutCopyStatus, setLogoutCopyStatus] = useState('')
   const isLogin = pathname === '/login'
 
   async function handleLogout() {
@@ -81,6 +87,17 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     router.push('/login')
   }
 
+  async function copyLogoutSupport() {
+    const issue = safeOperatorError('session', '로그아웃을 다시 누르고, 계속 실패하면 이 정보를 개발팀에 전달하세요.')
+    try {
+      await navigator.clipboard.writeText(developerSupportText('session', issue, window.location.href))
+      setLogoutCopyStatus('개발팀 문의용 정보가 복사되었습니다.')
+    } catch (error: unknown) {
+      if (!isExpectedClipboardFailure(error)) throw error
+      setLogoutCopyStatus('복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.')
+    }
+  }
+
   if (isLogin) {
     return <div className="min-h-screen bg-slate-50">{children}</div>
   }
@@ -89,15 +106,15 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-slate-50 lg:flex lg:h-screen">
       <aside className="sticky top-0 z-50 flex shrink-0 flex-col bg-slate-900 text-slate-100 lg:static lg:w-60">
         <div className="flex h-14 items-center border-b border-slate-800 px-4 lg:block lg:h-auto lg:px-5 lg:py-4">
-          <Link href="/hospitals" className="min-w-0 flex-1 lg:block">
+          <Link href="/hospitals" className="inline-flex min-h-11 min-w-0 flex-1 items-center lg:block">
             <div className="flex items-baseline gap-1.5">
               <span className="text-lg font-bold tracking-tight text-white">Re:putation</span>
               <span className="text-[11px] font-semibold tracking-wider text-blue-300">운영</span>
             </div>
-            <p className="mt-0.5 hidden text-[11px] text-slate-400 lg:block">MotionLabs 내부 운영 콘솔</p>
+            <p className="mt-0.5 hidden text-[11px] text-slate-400 lg:block">MotionLabs 고객 운영 화면</p>
             <span className="mt-2 hidden items-center gap-1 rounded-full bg-blue-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-blue-200 lg:inline-flex">
               <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-blue-400" />
-              Research Preview
+              시험 운영
             </span>
           </Link>
 
@@ -137,7 +154,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
               >
                 로그아웃
               </button>
-              {logoutError ? <p role="alert" className="px-3 py-2 text-xs text-red-300">로그아웃에 실패했습니다.</p> : null}
+              {logoutError ? <div className="px-3 py-2 text-xs text-red-300"><p role="alert" className="whitespace-pre-line">{safeOperatorError('session', '로그아웃을 다시 누르세요.')}</p><button type="button" onClick={() => void copyLogoutSupport()} className="mt-2 min-h-11 w-full rounded-lg border border-red-300 px-2 font-semibold">개발팀 문의용 정보 복사</button>{logoutCopyStatus ? <p role="status" className="mt-1">{logoutCopyStatus}</p> : null}</div> : null}
             </div>
           </details>
         </div>
@@ -156,7 +173,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 key={item.href}
                 href={item.href}
                 aria-current={active ? 'page' : undefined}
-                className={`flex min-w-fit items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
+                className={`flex min-h-11 min-w-fit items-center justify-between gap-3 rounded-md px-3 py-2 text-sm transition-colors ${
                   active
                     ? 'bg-slate-800 text-white'
                     : 'text-slate-300 hover:bg-slate-800 hover:text-white'
@@ -181,7 +198,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           })}
 
           <div className="hidden px-3 py-2 text-[11px] leading-relaxed text-slate-400 lg:mt-6 lg:block">
-            병원 자료, 운영 기준 승인, 콘텐츠 자동 발행·후행 점검, 월간 리포트 순서로 진행합니다.
+            병원 자료, 운영 기준 승인, 콘텐츠 자동 발행·공개 내용 확인, 월간 리포트 순서로 진행합니다.
           </div>
         </nav>
 
@@ -189,7 +206,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             onClick={handleLogout}
-            className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
+            className="flex min-h-11 w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
           >
             <span
               aria-hidden
@@ -204,15 +221,13 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             로그아웃
           </button>
           {logoutError ? (
-            <p role="alert" className="mt-2 px-3 text-xs leading-relaxed text-red-300">
-              로그아웃에 실패했습니다. 잠시 후 다시 시도해 주세요.
-            </p>
+            <div className="mt-2 px-3 text-xs leading-relaxed text-red-300"><p role="alert" className="whitespace-pre-line">{safeOperatorError('session', '로그아웃을 다시 누르세요.')}</p><button type="button" onClick={() => void copyLogoutSupport()} className="mt-2 min-h-11 w-full rounded-lg border border-red-300 px-2 font-semibold">개발팀 문의용 정보 복사</button>{logoutCopyStatus ? <p role="status" className="mt-1">{logoutCopyStatus}</p> : null}</div>
           ) : null}
         </div>
 
         <div className="hidden space-y-1 border-t border-slate-800 px-4 py-3 lg:block">
           <p className="text-[11px] font-medium text-slate-300">MotionLabs Inc.</p>
-          <p className="text-[10px] text-slate-500">v1.0 Research Preview · 내부 운영 콘솔</p>
+          <p className="text-[10px] text-slate-500">v1.0 시험 운영 · 고객 운영 화면</p>
           <a
             href="https://motionlabs.kr"
             target="_blank"
@@ -224,7 +239,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main id="main-content" className="min-w-0 flex-1 overflow-auto bg-slate-50">{children}</main>
+      <main id="main-content" className="min-w-0 flex-1 overflow-auto bg-slate-50 break-keep text-pretty [overflow-wrap:anywhere]">{children}</main>
     </div>
   )
 }

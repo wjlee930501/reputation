@@ -179,9 +179,9 @@ def serialize_incident_row(
 def next_onboarding_step(hospital: Hospital) -> str:
     """Return the first incomplete gate in the hospital onboarding flow."""
     if not hospital.profile_complete:
-        return "프로파일 탭에서 필수 병원 정보를 입력하고 저장하세요."
+        return "병원 기본 정보 탭에서 필수 병원 정보를 입력하고 저장하세요."
     if not hospital.v0_report_done:
-        return "V0 진단 리포트 생성 결과를 확인하세요."
+        return "초기 진단 리포트 생성 결과를 확인하세요."
     if not hospital.site_built:
         return "콘텐츠 허브에 노출할 병원 공개 정보를 확인하세요."
     if not hospital.schedule_set:

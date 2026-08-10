@@ -53,7 +53,7 @@ QUERY_TARGET_PRIORITY_DISPLAY_LABELS = {
     "LOW": "낮음",
 }
 QUERY_TARGET_STATUS_DISPLAY_LABELS = {
-    "ACTIVE": "운영중",
+    "ACTIVE": "운영 중",
     "PAUSED": "일시정지",
     "ARCHIVED": "보관",
 }
@@ -63,7 +63,7 @@ PLATFORM_DISPLAY_LABELS = {
     "GOOGLE_AI_OVERVIEW": "Google AI Overview",
     "PERPLEXITY": "Perplexity",
 }
-VARIANT_STATUS_DISPLAY_LABELS = {True: "운영중", False: "일시정지"}
+VARIANT_STATUS_DISPLAY_LABELS = {True: "운영 중", False: "운영 일시 정지"}
 
 
 def _display_label(labels: dict, value) -> str | None:

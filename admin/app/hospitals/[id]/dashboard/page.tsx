@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
+import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import { countUnpublishedCarriedOver } from '@/lib/content'
 import { canRunMeasurement } from '@/lib/operator-safety'
 import { summarizeSovTrend } from '@/lib/sov-trend'
@@ -90,10 +92,10 @@ interface AuditLogRow {
 }
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
-  trigger_v0_report: 'V0 리포트 재실행',
+  trigger_v0_report: '초기 진단 리포트 다시 만들기',
   run_sov: 'AI 언급률 측정',
   rebuild_site: '사이트 재빌드',
-  verify_domain: 'DNS 확인',
+  verify_domain: '공개 주소 확인',
   regenerate_content: '콘텐츠 재생성',
   publish_content: '콘텐츠 발행',
   reject_content: '콘텐츠 반려',
@@ -154,7 +156,7 @@ function getReadinessCheckStateLabel(check: ReadinessCheck): string {
 
 function getExposureActionTypeLabel(action: ExposureAction) {
   const fallback = EXPOSURE_ACTION_TYPE_LABELS[action.action_type] ?? {
-    label: String(action.action_type),
+    label: '개선 작업 유형 확인 필요',
     color: 'bg-slate-50 text-slate-700 border-slate-200',
   }
   return { ...fallback, label: action.display?.action_type_label ?? fallback.label }
@@ -162,7 +164,7 @@ function getExposureActionTypeLabel(action: ExposureAction) {
 
 function getExposureActionStatusLabel(action: ExposureAction) {
   const fallback = EXPOSURE_ACTION_STATUS_LABELS[action.status] ?? {
-    label: String(action.status),
+    label: '처리 상태 확인 필요',
     color: 'bg-slate-50 text-slate-700 border-slate-200',
   }
   return { ...fallback, label: action.display?.status_label ?? fallback.label }
@@ -181,6 +183,7 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null)
   const [operationLoading, setOperationLoading] = useState<string | null>(null)
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
   const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([])
   // 이번 달 전월 이월 콘텐츠 중 아직 발행되지 않은 슬롯 수 — 우선 발행 알림용
   const [carriedOverCount, setCarriedOverCount] = useState(0)
@@ -327,18 +330,24 @@ export default function DashboardPage() {
   async function runOperation(key: string, path: string) {
     setOperationLoading(key)
     setOperationMessage(null)
+    setOperationError(null)
     try {
       const result = await fetchAPI(`/admin/hospitals/${id}/operations/${path}`, {
         method: 'POST',
       }) as OperationResponse
       if (path === 'verify-domain') {
-        setOperationMessage(result.verified ? '도메인 DNS 확인 완료' : '도메인 DNS 확인이 아직 되지 않았습니다.')
-      } else {
-        setOperationMessage(result.detail ?? '작업이 큐에 등록되었습니다.')
+        setOperationMessage(result.verified ? '공개 주소 연결 확인 완료' : '공개 주소 연결 확인 필요')
+      } else if (path === 'trigger-v0-report') {
+        setOperationMessage('초기 진단 리포트 다시 만들기 작업을 접수했습니다. 진행 상태에서 결과를 확인하세요.')
+      } else if (path === 'run-sov') {
+        setOperationMessage('AI 답변 언급 측정을 접수했습니다. 진행 상태에서 결과를 확인하세요.')
+      } else if (path === 'rebuild-site') {
+        setOperationMessage('공개 정보 갱신을 접수했습니다. 진행 상태에서 결과를 확인하세요.')
       }
       await refreshAuditLogs()
     } catch (e: unknown) {
-      setOperationMessage(e instanceof Error ? e.message : '작업 실행에 실패했습니다.')
+      if (!isExpectedOperatorRequestFailure(e)) throw e
+      setOperationError(safeOperatorError('operations', '현재 상태를 다시 확인한 뒤 같은 작업 버튼을 다시 누르세요.'))
     } finally {
       setOperationLoading(null)
     }
@@ -352,10 +361,7 @@ export default function DashboardPage() {
     if (!detail) return ''
     if (action === 'verify_domain') {
       const verified = detail.verified === true
-      const cname = typeof detail.cname_value === 'string' ? detail.cname_value : '-'
-      const addresses = Array.isArray(detail.address_values) ? detail.address_values.join(', ') : ''
-      const current = cname !== '-' ? cname : addresses || '-'
-      return verified ? `DNS 확인됨 (${current})` : `DNS 미일치 (현재 ${current})`
+      return verified ? '공개 주소 연결 확인 완료' : '공개 주소 연결 확인 필요'
     }
     if (action === 'update_exposure_action' && detail.changes && typeof detail.changes === 'object') {
       const changes = Object.keys(detail.changes as Record<string, unknown>)
@@ -415,7 +421,7 @@ export default function DashboardPage() {
             <HeroStat
               label="환자 질문"
               value={`${activeTargets.length}/${nonArchivedTargets.length}`}
-              hint="운영중 / 전체"
+              hint="운영 중 / 전체"
             />
             <HeroStat
               label="현재 AI 언급률"
@@ -542,12 +548,12 @@ export default function DashboardPage() {
               <p className="admin-eyebrow">v1.0 운영 제어</p>
               <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">수동 재실행·상태 확인</h3>
               <p className="body4 admin-muted mt-1">
-                고객 보고 전 필요한 분석, 사이트 갱신, DNS 확인을 이 화면에서 다시 실행합니다. 모든 실행은 감사 로그에 남습니다.
+                고객 보고 전 필요한 분석, 공개 정보 갱신, 공개 주소 확인을 이 화면에서 다시 실행합니다. 모든 실행은 감사 기록에 남습니다.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
               <OperationButton
-                label="V0 리포트 재실행"
+                label="초기 진단 리포트 다시 만들기"
                 loading={operationLoading === 'v0'}
                 disabled={v0AlreadyDone}
                 onClick={() => runOperation('v0', 'trigger-v0-report')}
@@ -564,7 +570,7 @@ export default function DashboardPage() {
                 onClick={() => runOperation('site', 'rebuild-site')}
               />
               <OperationButton
-                label="DNS 확인"
+                label="공개 주소 확인"
                 loading={operationLoading === 'dns'}
                 onClick={() => runOperation('dns', 'verify-domain')}
               />
@@ -572,19 +578,22 @@ export default function DashboardPage() {
           </div>
           {v0AlreadyDone && (
             <p className="mt-3 text-xs text-slate-600">
-              V0 리포트는 이미 생성됐습니다. 초기 진단은 병원당 한 번만 만들며, 이후 수치는
+              초기 진단 리포트는 이미 생성됐습니다. 초기 진단은 병원당 한 번만 만들며, 이후 수치는
               &lsquo;AI 언급률 측정&rsquo;과 월간 리포트로 확인합니다.
             </p>
           )}
           {!canRunSov && (
             <p className="mt-3 text-xs text-amber-700">
-              AI 언급률 측정은 운영중 또는 도메인 대기 상태에서, 활성 환자 질문 문구가 있을 때 실행할 수 있습니다.
+              AI 언급률 측정은 운영 중 또는 공개 주소 확인 대기 상태에서, 활성 환자 질문 문구가 있을 때 실행할 수 있습니다.
             </p>
           )}
           {operationMessage && (
             <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
               {operationMessage}
             </div>
+          )}
+          {operationError && (
+            <div className="mt-3"><OperatorIssuePanel message={operationError} surface="operations" /></div>
           )}
         </section>
       )}
@@ -648,7 +657,7 @@ export default function DashboardPage() {
               done={hasQueryTargets}
               summary={
                 hasQueryTargets
-                  ? `${activeTargets.length}개 운영중`
+                  ? `${activeTargets.length}개 운영 중`
                   : '운영 중인 환자 질문이 없습니다.'
               }
               href={queryTargetsHref}

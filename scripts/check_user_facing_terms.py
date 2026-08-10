@@ -76,6 +76,7 @@ BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("internal screening", re.compile(r"internal\s+screening", re.I)),
     ("raw essence_summary", re.compile(r"raw\s+essence_summary|essence_summary\s*JSON", re.I)),
 ]
+INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"
 
 # Internal docs/comments that are not shown to operators can be allowed by path.
 ALLOW_PATH_FRAGMENTS = {
@@ -110,6 +111,13 @@ def is_probably_non_user_line(line: str) -> bool:
     return False
 
 
+def banned_labels_for_line(line: str) -> list[str]:
+    """Return matched labels unless this exact source line declares an internal-only contract."""
+    if INTERNAL_ONLY_MARKER in line:
+        return []
+    return [label for label, pattern in BANNED_PATTERNS if pattern.search(line)]
+
+
 def main() -> int:
     violations: list[str] = []
     for path in iter_files():
@@ -129,9 +137,8 @@ def main() -> int:
                 continue
             if is_probably_non_user_line(line):
                 continue
-            for label, pattern in BANNED_PATTERNS:
-                if pattern.search(line):
-                    violations.append(f"{rel}:{lineno}: {label}: {line.strip()}")
+            for label in banned_labels_for_line(line):
+                violations.append(f"{rel}:{lineno}: {label}: {line.strip()}")
     if violations:
         print("User-facing hard terms found. Replace with marketer/operator language:\n")
         print("\n".join(violations))

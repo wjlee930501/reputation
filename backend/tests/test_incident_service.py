@@ -50,13 +50,21 @@ async def db() -> AsyncIterator[AsyncSession]:
                 pytest.fail(f"required incident PostgreSQL unavailable: {exc}", pytrace=False)
             pytest.skip("local incident PostgreSQL is unavailable")
         transaction = await connection.begin()
-        revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-        if revision != "0042_add_operations_control_plane":
+        operations_schema_ready = await connection.scalar(
+            text(
+                "SELECT to_regclass('public.incidents') IS NOT NULL "
+                "AND to_regclass('public.notification_outbox') IS NOT NULL"
+            )
+        )
+        if not operations_schema_ready:
             await transaction.rollback()
             await connection.close()
             if required:
-                pytest.fail(f"incident PostgreSQL must be at 0042, got {revision}", pytrace=False)
-            pytest.skip("local incident PostgreSQL is not migrated to 0042")
+                pytest.fail(
+                    "incident PostgreSQL must include the operations control schema",
+                    pytrace=False,
+                )
+            pytest.skip("local incident PostgreSQL lacks the operations control schema")
         session = AsyncSession(
             bind=connection,
             expire_on_commit=False,

@@ -22,6 +22,7 @@ import {
 } from './DomainSetupPrimitives'
 import { DEFAULT_CNAME_TARGET, platformSubdomainUrl, statusBadge, trimmed } from './DomainSetupState'
 import { isPlatformAddressBrowsable, missingActivationPrerequisites } from '@/lib/hospital-activation'
+import { safeOperatorError } from '@/lib/operations-journey'
 
 export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeaderRefresh }: DomainSetupPanelProps) {
   const [domainSavedValue, setDomainSavedValue] = useState('')
@@ -222,9 +223,12 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       onHeaderRefresh()
       setDomainFeedback({ tone: 'success', message: '기본 플랫폼 주소로 운영을 시작했습니다.' })
     } catch (error: unknown) {
+      if (!(error instanceof ApiError || error instanceof TypeError || error instanceof DOMException)) {
+        throw error
+      }
       setDomainFeedback({
         tone: 'error',
-        message: error instanceof Error ? error.message : '기본 플랫폼 주소 활성화에 실패했습니다.',
+        message: safeOperatorError('onboarding', '공개 운영 시작을 다시 누르고, 계속 실패하면 운영 센터에서 도메인 작업을 확인하세요.'),
       })
     } finally {
       setPlatformActivating(false)
@@ -358,7 +362,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
 
         {profile.site_live && !hasUnsavedChange ? (
           <a href={`https://${currentDomain}`} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-            병원 정보 허브 운영중 · {currentDomain}
+            병원 정보 허브 운영 중 · {currentDomain}
           </a>
         ) : (
           <button type="button" onClick={handleVerifyDomain} disabled={domainVerifying || !domainSavedValue || hasUnsavedChange} className="min-h-11 w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">

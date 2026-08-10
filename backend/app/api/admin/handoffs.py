@@ -86,7 +86,7 @@ async def _payload(db: AsyncSession, handoff: HospitalHandoff) -> dict[str, obje
         "next_action": {
             HandoffState.CONTRACT_PENDING: "계약 정보 입력",
             HandoffState.CONTRACTED: "AE 고객 인수 승인",
-            HandoffState.HANDOFF_ACCEPTED: "병원 프로파일 입력",
+            HandoffState.HANDOFF_ACCEPTED: "병원 기본 정보 입력",
         }[handoff.state],
     }
 

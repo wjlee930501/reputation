@@ -18,7 +18,7 @@ test('contract payload carries CAS version and never acceptance facts', () => {
 })
 
 test('accepted handoff exposes exactly the profile next action', () => {
-  assert.equal(handoffNextAction({ state: 'HANDOFF_ACCEPTED' } as never), '병원 프로파일 입력')
+  assert.equal(handoffNextAction({ state: 'HANDOFF_ACCEPTED' } as never), '병원 기본 정보 입력')
   assert.deepEqual(acceptancePayload(4), { version: 4 })
 })
 
