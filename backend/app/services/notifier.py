@@ -2,12 +2,17 @@
 import asyncio
 import logging
 import re
+import uuid
 from typing import TypedDict
 from urllib.parse import urlsplit
 
 import httpx
 
 from app.core.config import settings
+from app.services.content_batch_messages import (
+    ContentBatchSummary,
+    build_content_batch_message,
+)
 from app.services.notification_milestone_rendering import safe_text as _slack_safe_text
 
 logger = logging.getLogger(__name__)
@@ -835,6 +840,8 @@ async def notify_auto_publish_block_digest(
 
 
 async def notify_content_batch_summary(
+    *,
+    hospital_id: uuid.UUID,
     hospital_name: str,
     generated: int,
     failed: int,
@@ -844,38 +851,24 @@ async def notify_content_batch_summary(
     discarded: int = 0,
     image_missing: int = 0,
 ) -> bool:
-    if (
-        generated == 0
-        and failed == 0
-        and skipped == 0
-        and cost_blocked == 0
-        and discarded == 0
-        and image_missing == 0
-    ):
-        return False
-    status_emoji = (
-        "✅" if failed == 0 and skipped == 0 and cost_blocked == 0 and discarded == 0 else "⚠️"
+    summary = ContentBatchSummary(
+        hospital_id=hospital_id,
+        hospital_name=hospital_name,
+        scheduled_date=scheduled_date,
+        generated=generated,
+        failed=failed,
+        skipped=skipped,
+        cost_blocked=cost_blocked,
+        discarded=discarded,
+        image_missing=image_missing,
     )
-    summary = (
-        f"{generated}건 생성 완료"
-        + (f", {failed}건 실패" if failed > 0 else "")
-        + (f", {skipped}건 차단(운영 기준 미승인)" if skipped > 0 else "")
-        + (f", {cost_blocked}건 차단(비용 가드로 스킵)" if cost_blocked > 0 else "")
-        # 생성 중 운영자가 종료/발행 등으로 상태를 바꾼 건. 생성 결과는 버려졌고
-        # 운영자 의도가 유지됐다는 뜻이므로 실패와 구분해서 알린다.
-        + (f", {discarded}건 폐기(생성 중 상태 변경)" if discarded > 0 else "")
-        # 본문은 살아 있으나 대표 이미지가 비었다 — 실패와 구분해 알린다.
-        + (f", {image_missing}건 대표 이미지 없음" if image_missing > 0 else "")
+    if not summary.has_activity:
+        return False
+    message = build_content_batch_message(
+        summary,
+        admin_base_url=settings.ADMIN_BASE_URL,
     )
     return await _send(
-        text=f"{status_emoji} [콘텐츠 배치] {hospital_name} {scheduled_date} — {summary}",
-        blocks=[{
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": (
-                f"{status_emoji} *[콘텐츠 배치 완료]* *{hospital_name}*\n"
-                f"발행 예정일: {scheduled_date}\n"
-                f"결과: {summary}\n\n"
-                f"실패 항목은 Admin 콘텐츠 화면에서 직접 재생성해 주세요."
-            )},
-        }],
+        text=message.fallback_text,
+        blocks=list(message.blocks),
     )

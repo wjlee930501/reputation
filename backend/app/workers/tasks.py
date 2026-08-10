@@ -1297,6 +1297,7 @@ def nightly_content_generation(self):
             ):
                 _run_async(
                     notifier.notify_content_batch_summary(
+                        hospital_id=uuid.UUID(hospital_key),
                         hospital_name=stat["name"],
                         generated=stat["generated"],
                         failed=stat["failed"],
