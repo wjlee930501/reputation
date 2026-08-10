@@ -120,3 +120,7 @@ def test_invalid_sla_filter_returns_a_typed_422() -> None:
 
     assert invalid.value.status_code == 422
     assert invalid.value.detail["code"] == "INVALID_SLA_FILTER"
+    message = invalid.value.detail["message"]
+    assert "처리 기한" in message
+    assert "SLA" not in message
+    assert all(raw not in message for raw in ("OVERDUE", "DUE", "NONE"))

@@ -42,6 +42,9 @@ def _incident_notification(
     event = "INCIDENT_RECOVERED" if recovered else "INCIDENT_OPEN"
     status = "복구 확인" if recovered else "운영 확인 필요"
     hospital_name = _safe_text(incident.hospital_name, 100)
+    owner_label = _operator_owner_label(incident.owner_label)
+    deadline_label = _operator_deadline_label(incident.sla_label)
+    severity_label = _operator_severity_label(incident.severity)
     url = _admin_url(admin_base_url, incident.admin_path)
     message = _message(
         f"[{status}] {hospital_name}",
@@ -52,10 +55,7 @@ def _incident_notification(
                 "incident_identity",
                 {
                     "type": "mrkdwn",
-                    "text": (
-                        f"*{hospital_name}* · {_safe_text(incident.severity, 30)}\n"
-                        f"`{incident.incident_id}`"
-                    ),
+                    "text": (f"*{hospital_name}* · {severity_label}\n`{incident.incident_id}`"),
                 },
             ),
             _block(
@@ -66,12 +66,12 @@ def _incident_notification(
                     "text": (
                         f"영향: {_safe_text(incident.customer_impact, 500)}\n"
                         f"다음 행동: {_safe_text(incident.next_action, 500)}\n"
-                        f"담당: {_safe_text(incident.owner_label, 100)} · "
-                        f"처리 기한: {_safe_text(incident.sla_label, 100)}"
+                        f"담당: {owner_label} · "
+                        f"언제까지: {deadline_label}"
                     ),
                 },
             ),
-            _action_block("incident_action", url),
+            _action_block("incident_action", url, "조치 화면 열기"),
         ),
         url,
     )
@@ -113,7 +113,12 @@ def build_summary_notification(
     ).hexdigest()
     url = _admin_url(admin_base_url, "/operations?state=OPEN")
     lines = tuple(
-        f"• `{item.incident_id}` · {_safe_text(item.hospital_name, 100)}" for item in ordered
+        (
+            f"• {_safe_text(item.hospital_name, 100)} (`{item.incident_id}`)\n"
+            f"  영향: {_safe_text(item.customer_impact, 300)}\n"
+            f"  조치: {_safe_text(item.next_action, 300)}"
+        )
+        for item in ordered
     )
     chunks = _chunk_lines(lines)
     if len(chunks) > _MAX_BLOCKS - 3:
@@ -126,8 +131,7 @@ def build_summary_notification(
             {
                 "type": "mrkdwn",
                 "text": (
-                    f"{normalized_event} · {_canonical_time(window_start)} ~ "
-                    f"{_canonical_time(window_end)}"
+                    f"집계 기간: {_canonical_time(window_start)} ~ {_canonical_time(window_end)}"
                 ),
             },
         ),
@@ -135,7 +139,7 @@ def build_summary_notification(
             _block("section", f"summary_incidents_{index}", {"type": "mrkdwn", "text": chunk})
             for index, chunk in enumerate(chunks)
         ),
-        _action_block("summary_action", url),
+        _action_block("summary_action", url, "운영 센터에서 모아보기"),
     )
     return NotificationIntent(
         dedupe_key=f"INCIDENT_SUMMARY:{digest}",
@@ -171,13 +175,13 @@ def _block(kind: str, block_id: str, text: dict[str, JSONValue]) -> dict[str, JS
     return {"type": kind, "block_id": block_id, "text": text}
 
 
-def _action_block(block_id: str, url: str) -> dict[str, JSONValue]:
+def _action_block(block_id: str, url: str, label: str) -> dict[str, JSONValue]:
     return {
         "type": "actions",
         "block_id": block_id,
         "elements": [{
             "type": "button",
-            "text": {"type": "plain_text", "text": "Admin에서 확인"},
+            "text": {"type": "plain_text", "text": label},
             "url": url,
         }],
     }
@@ -212,3 +216,26 @@ def _canonical_time(value: datetime) -> str:
 def _safe_text(value: str, limit: int) -> str:
     cleaned = sanitize_operator_text(value, limit=limit) or "확인 필요"
     return cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _operator_owner_label(value: str) -> str:
+    cleaned = _safe_text(value, 100)
+    if cleaned in {"미지정", "확인 필요", "담당자 미배정"}:
+        return "미지정(담당자 지정 필요)"
+    return cleaned
+
+
+def _operator_deadline_label(value: str) -> str:
+    cleaned = _safe_text(value, 100)
+    if cleaned in {"확인 필요", "기한 미설정"}:
+        return "운영 센터에서 확인"
+    return cleaned
+
+
+def _operator_severity_label(value: str) -> str:
+    return {
+        "LOW": "낮음",
+        "MEDIUM": "보통",
+        "HIGH": "높음",
+        "CRITICAL": "긴급",
+    }.get(value.upper(), "상세 확인 필요")

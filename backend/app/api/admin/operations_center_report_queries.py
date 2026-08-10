@@ -1,6 +1,7 @@
 """Set-based monthly-report queue query for the operations center."""
 
 from datetime import datetime
+from typing import Final, Literal, assert_never
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, case, func, or_, select
@@ -24,6 +25,26 @@ from app.schemas.operations import (
     OperationsQueue,
     OperationsQueueRow,
 )
+
+ReportQueueState = Literal["MISSING", "DELIVERY_PENDING"]
+_REPORT_ACTION_LABEL: Final = "보고서 확인"
+
+
+def _report_operator_copy(state: ReportQueueState) -> tuple[str, str]:
+    match state:
+        case "MISSING":
+            return (
+                "지난달 보고서가 없어 원장 보고가 지연됩니다.",
+                f"운영 센터의 “{_REPORT_ACTION_LABEL}”을 누른 뒤 지난달을 선택하고 “리포트 생성”을 "
+                "누르세요. 버튼이 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요.",
+            )
+        case "DELIVERY_PENDING":
+            return (
+                "생성된 지난달 보고서의 원장 전달 검수가 완료되지 않았습니다.",
+                f"운영 센터의 “{_REPORT_ACTION_LABEL}”을 눌러 고객용 PDF와 전달 기록을 확인하세요.",
+            )
+        case unreachable:
+            assert_never(unreachable)
 
 
 def _previous_period(now: datetime) -> tuple[int, int, datetime]:
@@ -122,22 +143,14 @@ async def load_reports_queue(
             ),
             status=report_state_value,
             severity="HIGH",
-            impact=(
-                "지난달 원장 보고서가 생성되지 않았습니다."
-                if report_state_value == "MISSING"
-                else "생성된 지난달 보고서가 원장 전달 완료로 기록되지 않았습니다."
-            ),
+            impact=_report_operator_copy(report_state_value)[0],
             owner=owner_projection(actor),
             sla_due_at=handoff.sla_due_at if handoff else None,
             sla_state="OVERDUE",
-            next_action=(
-                "보고서를 생성해 주세요."
-                if report_state_value == "MISSING"
-                else "전달 자료를 검수해 주세요."
-            ),
+            next_action=_report_operator_copy(report_state_value)[1],
             action=OperationsAction(
                 kind="OPEN_REPORT",
-                label="보고서 확인",
+                label=_REPORT_ACTION_LABEL,
                 method="GET",
                 path=f"/hospitals/{hospital.id}/reports",
             ),

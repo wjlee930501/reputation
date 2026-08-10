@@ -92,11 +92,15 @@ async def load_onboarding_queue(
             severity="HIGH"
             if sla_state(handoff.sla_due_at if handoff else None, now) == "OVERDUE"
             else "MEDIUM",
-            impact="정기 운영을 시작하기 위한 준비가 완료되지 않았습니다.",
+            impact="필수 온보딩이 남아 있어 병원 채널의 공개 운영을 시작할 수 없습니다.",
             owner=owner_projection(actor),
             sla_due_at=handoff.sla_due_at if handoff else None,
             sla_state=sla_state(handoff.sla_due_at if handoff else None, now),
-            next_action=next_onboarding_step(hospital),
+            next_action=(
+                "운영 센터의 “온보딩 계속”을 눌러 표시된 다음 단계의 저장 또는 승인을 "
+                f"완료하세요. 다음 단계: {next_onboarding_step(hospital)} "
+                "표시된 조치가 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요."
+            ),
             action=OperationsAction(
                 kind="CONTINUE_ONBOARDING",
                 label="온보딩 계속",

@@ -163,7 +163,7 @@ def serialize_incident_row(
         sla_state=sla_state(incident.sla_due_at, now),
         next_action=incident.next_action,
         action=OperationsAction(
-            kind="OPEN_INCIDENT", label="상세 확인", method="GET", path=detail_path
+            kind="OPEN_INCIDENT", label="문제와 조치 확인", method="GET", path=detail_path
         ),
         retry=retry_action(hospital_id, run) if hospital_id else None,
         safe_cause=incident.safe_error_message or incident.safe_error_code,
@@ -179,11 +179,11 @@ def serialize_incident_row(
 def next_onboarding_step(hospital: Hospital) -> str:
     """Return the first incomplete gate in the hospital onboarding flow."""
     if not hospital.profile_complete:
-        return "병원 프로파일을 완료해 주세요."
+        return "프로파일 탭에서 필수 병원 정보를 입력하고 저장하세요."
     if not hospital.v0_report_done:
-        return "V0 진단 리포트를 확인해 주세요."
+        return "V0 진단 리포트 생성 결과를 확인하세요."
     if not hospital.site_built:
-        return "콘텐츠 허브 노출 준비를 완료해 주세요."
+        return "콘텐츠 허브에 노출할 병원 공개 정보를 확인하세요."
     if not hospital.schedule_set:
-        return "월간 콘텐츠 일정을 설정해 주세요."
-    return "공개 도메인을 확인하고 운영을 시작해 주세요."
+        return "스케줄 탭에서 월간 콘텐츠 일정과 발행 요일을 저장하세요."
+    return "도메인 화면에서 공개 주소를 검증하고 운영 시작을 완료하세요."

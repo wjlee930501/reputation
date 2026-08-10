@@ -30,6 +30,20 @@ from app.schemas.operations import (
 
 _OVERDUE_REVIEW_HOURS: Final = 24
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
+_TODAY_ACTION_LABEL: Final = "콘텐츠 확인"
+
+
+def _today_operator_copy(*, review: bool) -> tuple[str, str]:
+    if review:
+        return (
+            "공개된 콘텐츠의 내용 확인이 끝나지 않아 운영 검수가 지연됩니다.",
+            f"운영 센터의 “{_TODAY_ACTION_LABEL}”을 눌러 공개 상태와 본문을 확인하세요.",
+        )
+    return (
+        "오늘 발행 예정 글이 아직 병원 채널에 공개되지 않았습니다.",
+        f"운영 센터의 “{_TODAY_ACTION_LABEL}”을 눌러 발행 가능한 상태인지 확인하세요. "
+        "처리할 버튼이 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요.",
+    )
 
 
 async def load_today_queue(
@@ -127,6 +141,7 @@ async def load_today_queue(
     for content, hospital, handoff, actor, state, _total in rows:
         overdue = state == "OVERDUE_REVIEW"
         review = state in {"OVERDUE_REVIEW", "REVIEW_PENDING"}
+        impact, next_action = _today_operator_copy(review=review)
         occurred_at = content.published_at or content.created_at
         history_at = content.published_at or datetime.combine(
             content.scheduled_date, datetime.min.time(), tzinfo=_SEOUL
@@ -142,20 +157,14 @@ async def load_today_queue(
                 ),
                 status=state,
                 severity="HIGH" if overdue else "MEDIUM",
-                impact=(
-                    "공개된 콘텐츠의 후행 확인이 지연되고 있습니다."
-                    if review
-                    else "오늘 발행 예정 콘텐츠가 아직 공개되지 않았습니다."
-                ),
+                impact=impact,
                 owner=owner_projection(actor),
                 sla_due_at=handoff.sla_due_at if handoff else None,
                 sla_state="OVERDUE" if overdue else "DUE",
-                next_action="공개 내용을 확인해 주세요."
-                if review
-                else "콘텐츠 상태를 확인해 주세요.",
+                next_action=next_action,
                 action=OperationsAction(
                     kind="REVIEW_CONTENT",
-                    label="콘텐츠 확인",
+                    label=_TODAY_ACTION_LABEL,
                     method="GET",
                     path=f"/hospitals/{hospital.id}/content?item={content.id}",
                 ),

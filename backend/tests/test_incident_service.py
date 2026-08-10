@@ -162,6 +162,23 @@ def test_operator_text_masks_contact_and_credentials() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_operator_copy_gets_actionable_customer_and_support_fallback(
+    db: AsyncSession,
+) -> None:
+    # Given
+    _, _, hospital = await _actors_and_hospital(db)
+    request = replace(_request(hospital), customer_impact="", next_action="")
+
+    # When
+    incident = await open_or_touch_incident(db, request)
+
+    # Then
+    assert incident.customer_impact == "고객 영향 정보를 아직 확인하지 못했습니다."
+    assert "상세 화면" in incident.next_action
+    assert "개발팀 문의용 정보" in incident.next_action
+
+
+@pytest.mark.asyncio
 async def test_duplicate_touch_escalates_and_preserves_first_occurrence(db: AsyncSession) -> None:
     # Given: one low-severity failure assigned to an owner and SLA
     owner, _, hospital = await _actors_and_hospital(db)

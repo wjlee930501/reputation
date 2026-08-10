@@ -19,22 +19,57 @@ from app.services.notification_messages import (
 from app.services.notification_store import enqueue_notification
 
 
+def _generation_operator_copy(code: str) -> tuple[str, str]:
+    impact = "발행 예정 콘텐츠가 저장되지 않아 병원 채널에 제때 공개되지 않습니다."
+    support = " 조치 버튼이 없거나 같은 문제가 반복되면 “개발팀 문의용 정보 복사”로 전달하세요."
+    actions = {
+        "MISSING_APPROVED_ESSENCE": (
+            "병원 온보딩의 운영 기준 단계에서 근거 자료를 처리하고 운영 기준을 승인하세요. "
+            "승인 후 운영 센터에 “작업 다시 시도”가 보이면 누르세요."
+        ),
+        "COST_BLOCKED": (
+            "운영 센터 하단의 “비용·자동 작업 안전장치”를 펼치세요. 전체 중지 상태면 “중지 해제”를 "
+            "누르고, 오늘 한도에 도달했다면 계정 소유자에게 “오늘 한도 2배” 조치를 요청하세요."
+        ),
+        "GENERATION_LEASE_ACTIVE": (
+            "다른 생성 작업이 진행 중입니다. 완료될 때까지 기다린 뒤 운영 센터를 새로고침하세요."
+        ),
+        "STALE_GENERATION_CLAIM": (
+            "이전 작업 기록이 남아 자동 생성이 시작되지 않았습니다. 운영 센터를 새로고침해 "
+            "현재 상태를 다시 확인하세요."
+        ),
+    }
+    action = actions.get(
+        code,
+        "운영 센터에 “작업 다시 시도”가 보이면 누르고 완료 결과를 확인하세요.",
+    )
+    return impact, action + support
+
+
+def _generation_safe_cause(code: str) -> str:
+    return {
+        "PROVIDER_TIMEOUT": "콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.",
+        "PROVIDER_UNAVAILABLE": "콘텐츠 생성 서비스를 일시적으로 사용할 수 없습니다.",
+        "GENERATION_REJECTED": "콘텐츠 생성 서비스가 이번 요청을 처리하지 못했습니다.",
+        "MISSING_APPROVED_ESSENCE": "승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다.",
+        "COST_BLOCKED": "오늘 설정된 사용 한도에 도달해 자동 생성을 시작하지 않았습니다.",
+        "IMAGE_GENERATION_FAILED": "본문은 준비됐지만 대표 이미지를 만들지 못했습니다.",
+        "GENERATION_LEASE_ACTIVE": "같은 콘텐츠의 다른 생성 작업이 아직 진행 중입니다.",
+        "STALE_GENERATION_CLAIM": "완료되지 않은 이전 작업 기록 때문에 새 생성을 시작하지 못했습니다.",
+    }.get(code, "자동 콘텐츠 생성 작업이 완료되지 않았습니다.")
+
+
 def _fingerprint(code: str) -> IncidentFingerprint:
-    match code:
-        case "PROVIDER_TIMEOUT":
-            return IncidentFingerprint.PROVIDER_TIMEOUT
-        case "PROVIDER_UNAVAILABLE" | "GENERATION_REJECTED":
-            return IncidentFingerprint.PROVIDER_REJECTED
-        case "MISSING_APPROVED_ESSENCE":
-            return IncidentFingerprint.MISSING_PREREQUISITE
-        case "COST_BLOCKED":
-            return IncidentFingerprint.COST_BLOCKED
-        case "IMAGE_GENERATION_FAILED":
-            return IncidentFingerprint.RENDER_FAILED
-        case "GENERATION_LEASE_ACTIVE" | "STALE_GENERATION_CLAIM":
-            return IncidentFingerprint.VALIDATION_FAILED
-        case _:
-            return IncidentFingerprint.UNKNOWN
+    return {
+        "PROVIDER_TIMEOUT": IncidentFingerprint.PROVIDER_TIMEOUT,
+        "PROVIDER_UNAVAILABLE": IncidentFingerprint.PROVIDER_REJECTED,
+        "GENERATION_REJECTED": IncidentFingerprint.PROVIDER_REJECTED,
+        "MISSING_APPROVED_ESSENCE": IncidentFingerprint.MISSING_PREREQUISITE,
+        "COST_BLOCKED": IncidentFingerprint.COST_BLOCKED,
+        "IMAGE_GENERATION_FAILED": IncidentFingerprint.RENDER_FAILED,
+        "GENERATION_LEASE_ACTIVE": IncidentFingerprint.VALIDATION_FAILED,
+        "STALE_GENERATION_CLAIM": IncidentFingerprint.VALIDATION_FAILED,
+    }.get(code, IncidentFingerprint.UNKNOWN)
 
 
 def _projection(
@@ -66,6 +101,7 @@ async def open_generation_incident(
 ) -> uuid.UUID:
     sessions = get_async_sessionmaker()
     async with sessions() as db:
+        customer_impact, next_action = _generation_operator_copy(code)
         incident = await open_or_touch_incident(
             db,
             IncidentOpenRequest(
@@ -75,15 +111,15 @@ async def open_generation_incident(
                 fingerprint=_fingerprint(code),
                 incident_type="CONTENT_GENERATION_FAILED",
                 severity=IncidentSeverity.HIGH,
-                customer_impact="예정된 콘텐츠 생성이 완료되지 않았습니다.",
+                customer_impact=customer_impact,
                 source_type="CONTENT_GENERATION",
-                next_action="운영 기준과 공급자 상태를 확인한 뒤 작업을 다시 시도해 주세요.",
-                admin_path=f"/hospitals/{hospital_id}/content",
+                next_action=next_action,
+                admin_path="/operations",
                 hospital_id=hospital_id,
                 operation_run_id=run_id,
                 source_id=str(item_id),
                 safe_error_code=code,
-                safe_error_message=message,
+                safe_error_message=_generation_safe_cause(code),
             ),
             actor="content-generation-worker",
             reason="generation attempt failed",

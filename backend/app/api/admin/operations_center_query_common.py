@@ -38,7 +38,10 @@ def normalize_filters(
             status_code=422,
             detail={
                 "code": "INVALID_SLA_FILTER",
-                "message": "SLA 필터는 OVERDUE, DUE, NONE 중 하나입니다.",
+                "message": (
+                    "처리 기한 필터 값이 올바르지 않습니다. 운영 센터에서 기한 지남, "
+                    "기한 임박, 기한 없음 중 하나를 선택해 다시 조회하세요."
+                ),
             },
         ) from exc
     return OperationsFilters(

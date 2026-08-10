@@ -49,6 +49,7 @@ from app.services.hospital_lifecycle import (
     missing_profile_requirement_keys,
 )
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.readiness_operator_copy import readiness_next_actions
 from app.services.service_intervals import (
     ServiceIntervalProvenance,
     close_service_interval,
@@ -77,12 +78,12 @@ async def _trigger_v0_report_safe(hospital_id_str: str, hospital_name: str) -> N
         logger.warning("V0 report enqueue failed for hospital %s: %s", hospital_id_str, exc)
         try:
             await notifier.notify_ops_alert(
-                title="V0 리포트 큐잉 실패",
+                title="V0 리포트 자동 시작 확인 필요",
                 message=(
                     f"병원: {hospital_name}\n"
-                    f"프로파일 완료로 V0 리포트를 자동 트리거하려 했지만 큐잉에 실패했습니다.\n"
-                    f"오류: `{str(exc)[:200]}`\n"
-                    f"Admin 운영 탭에서 수동으로 V0 리포트를 실행해 주세요."
+                    "영향: V0 리포트가 생성되지 않아 원장 보고 준비를 시작할 수 없습니다.\n"
+                    "다음 행동: 병원 대시보드에서 “V0 리포트 재실행”을 누르세요. "
+                    "버튼이 없거나 다시 실패하면 개발팀에 병원명과 현재 화면의 문구를 전달하세요."
                 ),
             )
         except Exception:
@@ -816,6 +817,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     has_external_profiles = bool(
         h.website_url or h.blog_url or h.kakao_channel_url or h.naver_place_url
     )
+    readiness_actions = readiness_next_actions()
 
     checks = [
         ReadinessCheck(
@@ -823,91 +825,91 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "병원 핵심 프로파일",
             bool(has_core_profile),
             18,
-            "프로파일에서 주소, 전화, 지역, 진료과목, 키워드, 원장, 진료항목을 채우세요.",
+            readiness_actions["core_profile"],
         ),
         ReadinessCheck(
             "local_entity",
             "Google 지도·프로필 정보",
             has_local_entity,
             14,
-            "구글 병원 정보 또는 구글 지도 URL을 입력하세요.",
+            readiness_actions["local_entity"],
         ),
         ReadinessCheck(
             "external_profiles",
             "외부 공식 채널",
             has_external_profiles,
             8,
-            "기존 홈페이지, 블로그, 카카오 채널, Naver Place 중 하나 이상을 연결하세요.",
+            readiness_actions["external_profiles"],
         ),
         ReadinessCheck(
             "essence_sources",
             "콘텐츠 운영 기준 자료",
             essence.processed_source_count > 0 and not essence.has_unprocessed_sources,
             12,
-            "운영 기준 탭에서 병원 자료를 입력하고 근거 추출을 완료하세요.",
+            readiness_actions["essence_sources"],
         ),
         ReadinessCheck(
             "essence_philosophy",
             "승인된 콘텐츠 운영 기준",
             approved_philosophy is not None,
             14,
-            "운영 기준 탭에서 근거 기반 콘텐츠 운영 기준 초안을 생성하고 승인하세요.",
+            readiness_actions["essence_philosophy"],
         ),
         ReadinessCheck(
             "essence_freshness",
             "운영 기준 자료 최신성",
             essence_fresh,
             8,
-            "처리된 병원 자료가 바뀌었습니다. 콘텐츠 운영 기준 새 버전을 검토하세요.",
+            readiness_actions["essence_freshness"],
         ),
         ReadinessCheck(
             "content_alignment",
             "콘텐츠 운영 기준 정렬",
             essence_blocked_content_count == 0,
             6,
-            "승인된 콘텐츠 운영 기준이 없거나 재검토가 필요한 콘텐츠를 수정하세요.",
+            readiness_actions["content_alignment"],
         ),
         ReadinessCheck(
             "v0_report",
             "V0 진단 리포트",
             bool(h.v0_report_done or report_count > 0),
             12,
-            "프로파일 완료 후 V0 리포트를 생성하세요.",
+            readiness_actions["v0_report"],
         ),
         ReadinessCheck(
             "site_built",
             "콘텐츠 허브 노출 준비",
             bool(h.site_built),
             10,
-            "승인된 병원 정보와 콘텐츠가 공개 표면에 노출될 준비를 완료하세요.",
+            readiness_actions["site_built"],
         ),
         ReadinessCheck(
             "domain",
             "공개 도메인 상태",
             bool(h.site_live),
             10,
-            "병원 정보 허브의 공개 도메인과 노출 상태를 확인하세요.",
+            readiness_actions["domain"],
         ),
         ReadinessCheck(
             "schedule",
             "콘텐츠 스케줄",
             bool(h.schedule_set),
             8,
-            "월간 콘텐츠 스케줄을 설정하세요.",
+            readiness_actions["schedule"],
         ),
         ReadinessCheck(
             "published_content",
             "발행 콘텐츠",
             published_count > 0,
             12,
-            "초안 콘텐츠를 검수하고 최소 1편 이상 발행하세요.",
+            readiness_actions["published_content"],
         ),
         ReadinessCheck(
             "sov_data",
             "AI 답변 언급률 측정 데이터",
             sov_count > 0,
             8,
-            "ChatGPT/Gemini에 확인할 환자 질문 측정을 실행하세요.",
+            readiness_actions["sov_data"],
         ),
     ]
 

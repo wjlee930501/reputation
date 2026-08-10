@@ -130,9 +130,11 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
     assert summary_a.dedupe_key == summary_b.dedupe_key
     assert str(first.incident_id) in summary_a.message.payload_json()
     assert str(second.incident_id) in summary_a.message.payload_json()
+    assert "영향:" in summary_a.message.payload_json()
+    assert "조치:" in summary_a.message.payload_json()
     assert open_intent.notification_type == "INCIDENT_OPEN"
     assert recovered.notification_type == "INCIDENT_RECOVERED"
-    assert "처리 기한: 오늘 18:00" in open_intent.message.payload_json()
+    assert "언제까지: 오늘 18:00" in open_intent.message.payload_json()
     assert "SLA:" not in open_intent.message.payload_json()
 
 

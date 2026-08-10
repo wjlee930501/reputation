@@ -197,7 +197,7 @@ async def notify_content_auto_published(
     return await _send(
         text=(
             f"✅ [자동 발행 완료] {hospital_name} {total_count}편 중 {sequence_no}번째 — "
-            f"후행 확인 필요"
+            f"공개 내용 확인 필요"
         ),
         blocks=[
             {
@@ -209,7 +209,7 @@ async def notify_content_auto_published(
                         f"{total_count}편 중 {sequence_no}번째 콘텐츠가 공개되었습니다.\n"
                         f"유형: {type_label} | 발행일: {scheduled_date}{carry_note}\n"
                         f"제목: *{title}*\n\n"
-                        f"<{public_url}|공개 글 보기> · <{admin_url}|Admin에서 후행 확인>\n"
+                        f"<{public_url}|공개 글 보기> · <{admin_url}|Admin에서 공개 내용 확인>\n"
                         "사전 승인 없이 자동 발행된 글입니다. 문제가 있으면 Admin에서 즉시 수정하거나 비공개 처리해 주세요."
                     ),
                 },

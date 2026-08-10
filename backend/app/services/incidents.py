@@ -64,14 +64,14 @@ async def open_or_touch_incident(
         incident_type=normalize_incident_code(request.incident_type),
         state=IncidentState.OPEN.value,
         severity=request.severity.value,
-        customer_impact=sanitize_operator_text(request.customer_impact) or "영향 확인 필요",
+        customer_impact=sanitize_operator_text(request.customer_impact) or "고객 영향 정보를 아직 확인하지 못했습니다.",
         source_type=normalize_incident_code(request.source_type),
         source_id=normalize_source_id(request.source_id),
         safe_error_code=(
             normalize_incident_code(request.safe_error_code) if request.safe_error_code else None
         ),
         safe_error_message=sanitize_operator_text(request.safe_error_message),
-        next_action=sanitize_operator_text(request.next_action) or "운영 센터에서 확인",
+        next_action=sanitize_operator_text(request.next_action) or "상세 화면에서 원인을 확인하고, 조치 버튼이 없으면 개발팀 문의용 정보를 전달하세요.",
         admin_path=normalize_admin_path(request.admin_path),
         first_seen_at=observed_at,
         last_seen_at=observed_at,
