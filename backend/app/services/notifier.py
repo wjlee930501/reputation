@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+from typing import TypedDict
 from urllib.parse import urlsplit
 
 import httpx
@@ -126,6 +127,34 @@ def _format_sov(sov_pct: float | None) -> str:
     return "측정 데이터 없음" if sov_pct is None else f"{sov_pct:.1f}%"
 
 
+class _LegacyButtonText(TypedDict):
+    type: str
+    text: str
+
+
+class _LegacyButton(TypedDict):
+    type: str
+    text: _LegacyButtonText
+    url: str
+
+
+class _LegacyActionBlock(TypedDict):
+    type: str
+    elements: list[_LegacyButton]
+
+
+def _admin_action_block(*, path: str, label: str) -> _LegacyActionBlock:
+    """Build the one allowlisted Admin action used by legacy Slack messages."""
+    return {
+        "type": "actions",
+        "elements": [{
+            "type": "button",
+            "text": {"type": "plain_text", "text": label},
+            "url": f"{settings.ADMIN_BASE_URL.rstrip('/')}{path}",
+        }],
+    }
+
+
 async def notify_v0_report_ready(
     hospital_name: str,
     sov_pct: float | None,
@@ -133,19 +162,33 @@ async def notify_v0_report_ready(
     platforms: list[str] | None = None,
 ) -> bool:
     """V0 리포트 생성 완료 → AE에게"""
-    measurement_label = _measurement_label(platforms)
+    del pdf_path
+    platform_labels = {"chatgpt": "ChatGPT", "gemini": "Gemini"}
+    measured_platforms = platforms or ["chatgpt"] + (["gemini"] if settings.GEMINI_API_KEY else [])
+    measurement_label = " · ".join(
+        dict.fromkeys(
+            platform_labels.get(platform.lower(), "측정한 AI 서비스 확인 필요")
+            for platform in measured_platforms
+        )
+    )
+    safe_hospital_name = _safe_label(hospital_name)
     return await _send(
-        text=f"🔍 [V0 리포트] {hospital_name} AI 답변 인용 진단 완료",
-        blocks=[{
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": (
-                f"🔍 *[V0 리포트]* *{hospital_name}* AI 답변 인용 진단 리포트 생성 완료\n"
-                f"AI 답변 내 병원 언급률: *{_format_sov(sov_pct)}*\n"
-                f"측정 방식: {measurement_label}\n"
-                f"파일: `{pdf_path}`\n\n"
-                f"원장 보고 전 내용 확인 후 전달해 주세요."
-            )},
-        }],
+        text=f"🔍 [V0 리포트] {safe_hospital_name} 초기 진단 준비 완료",
+        blocks=[
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": (
+                    f"🔍 *[V0 리포트]* *{safe_hospital_name}*\n"
+                    "무슨 문제인지: 초기 AI 노출 진단 리포트가 준비되었습니다.\n"
+                    "고객 영향: 원장 보고 전에 현재 언급 상태와 설명 근거를 확인할 수 있습니다.\n"
+                    f"현재 확인: AI 답변 내 병원 언급률 *{_format_sov(sov_pct)}* · "
+                    f"측정 대상 {measurement_label}\n"
+                    "지금 할 일: Admin에서 리포트를 검토한 뒤 원장님께 전달해 주세요.\n"
+                    "개발팀 전달용 참조: `V0-REPORT-READY`"
+                )},
+            },
+            _admin_action_block(path="/operations?queue=REPORTS", label="V0 리포트 확인"),
+        ],
     )
 
 
@@ -372,15 +415,23 @@ async def notify_monitoring_queued(queued: int) -> bool:
 
 
 async def notify_ops_alert(*, title: str, message: str) -> bool:
-    """운영자 대상 일반 운영 알림 — 데이터는 안전하지만 후속 확인이 필요한 이벤트용."""
+    """Fail closed when legacy callers provide unsafe free-form operational details."""
+    del title, message
     return await _send(
-        text=f"🟧 [운영 알림] {title}",
-        blocks=[{
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": (
-                f"🟧 *[운영 알림]* {title}\n{message}"
-            )},
-        }],
+        text="🟧 [운영 알림] 운영 확인 필요",
+        blocks=[
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": (
+                    "🟧 *[운영 알림]* 운영 확인 필요\n"
+                    "무슨 문제인지: 자동 운영 중 확인이 필요한 항목이 감지되었습니다.\n"
+                    "고객 영향: 연결된 고객 대응 또는 운영 일정이 지연될 수 있습니다.\n"
+                    "지금 할 일: 운영센터에서 안전 정보를 복사한 뒤 개발팀에 문의해 주세요.\n"
+                    "개발팀 전달용 참조: `LEGACY-OPS-ALERT`"
+                )},
+            },
+            _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
+        ],
     )
 
 
@@ -519,26 +570,39 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
     """
     if error:
         return await _send(
-            text=f"🟥 [PII 자동 파기 실패] {error[:200]}",
-            blocks=[{
+            text="🟥 [개인정보 자동 파기] 운영 확인 필요",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": (
+                        "🟥 *[개인정보 자동 파기]* 운영 확인 필요\n"
+                        "무슨 문제인지: 보관기간이 지난 신청 정보의 파기 결과를 확정하지 못했습니다.\n"
+                        "고객 영향: 일부 개인정보가 예정된 시간에 정리되지 않았을 수 있습니다.\n"
+                        "지금 할 일: 운영센터에서 개인정보 보관 항목의 안전 정보를 복사한 뒤 "
+                        "개발팀에 문의해 주세요.\n"
+                        "개발팀 전달용 참조: `PRIVACY-RETENTION`"
+                    )},
+                },
+                _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
+            ],
+        )
+    return await _send(
+        text=f"🧹 [개인정보 자동 파기] 만료 신청 정보 {purged}건 정리 완료"
+        + (f" (재처리 제외 {skipped}건)" if skipped else ""),
+        blocks=[
+            {
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": (
-                    f"🟥 *[PII 자동 파기 실패]*\n"
-                    f"오류: `{error[:300]}`\n\n"
-                    f"개인정보보호법 제21조 의무 이행 차질. 즉시 확인 필요."
+                    "🧹 *[개인정보 자동 파기]* 처리 완료\n"
+                    f"무슨 문제인지: 보관기간이 지난 신청 정보 {purged}건을 안전하게 정리했습니다."
+                    + (f" 이미 처리된 {skipped}건은 다시 변경하지 않았습니다." if skipped else "")
+                    + "\n고객 영향: 보관기간이 지난 개인정보가 운영 화면에 남지 않도록 정리되었습니다.\n"
+                    "지금 할 일: 추가 조치는 없습니다. 필요하면 운영센터에서 처리 상태를 확인해 주세요.\n"
+                    "개발팀 전달용 참조: `PRIVACY-RETENTION`"
                 )},
-        }],
-    )
-    return await _send(
-        text=f"🧹 [PII 자동 파기] 만료 리드 {purged}건 익명화 완료" + (f" (스킵 {skipped})" if skipped else ""),
-        blocks=[{
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": (
-                f"🧹 *[PII 자동 파기]* 만료 lead {purged}건 익명화 완료"
-                + (f" · 이미 처리된 {skipped}건 스킵" if skipped else "")
-                + "\n개인정보보호법 제21조 자동 파기 cron 정상 동작 중."
-            )},
-        }],
+            },
+            _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
+        ],
     )
 
 
