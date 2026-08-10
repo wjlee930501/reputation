@@ -22,6 +22,56 @@ class DoctorArtifactProjection(BaseModel):
     validation_version: Literal["doctor-pdf-v1"] | None = None
 
 
+class ReportMeasurementProjection(BaseModel):
+    """Frozen measurement counts and operator copy for one report version."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    quality: Literal["COMPLETE", "DEGRADED", "BLOCKED", "LEGACY_UNVERIFIED"]
+    quality_label: str
+    planned_count: int = Field(ge=0)
+    success_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    excluded_count: int = Field(ge=0)
+    problem: str
+    customer_impact: str
+    next_action: str
+
+
+class ReportNotificationProjection(BaseModel):
+    """Safe Slack evidence; transport payload and internal identifiers stay private."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    state: Literal[
+        "PENDING",
+        "SENDING",
+        "RETRYING",
+        "HOLD",
+        "SENT",
+        "FAILED",
+        "NOT_INDIVIDUALLY_LINKED",
+    ]
+    state_label: str
+    problem: str
+    customer_impact: str
+    next_action: str
+    sent_at: datetime | None = None
+    operations_url: str
+
+
+class ReportReviewEvidence(BaseModel):
+    """Detail-only evidence needed before customer delivery."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: int = Field(ge=1)
+    version_label: str
+    supersedes_report_id: str | None = None
+    measurement: ReportMeasurementProjection
+    notification: ReportNotificationProjection
+
+
 class ReportListResponse(BaseModel):
     id: str
     hospital_id: str
@@ -49,6 +99,7 @@ class ReportListResponse(BaseModel):
 
 class ReportResponse(ReportListResponse):
     doctor_artifact: Optional[DoctorArtifactProjection] = None
+    review_evidence: Optional[ReportReviewEvidence] = None
 
 
 class ReportDeliveryRequest(BaseModel):

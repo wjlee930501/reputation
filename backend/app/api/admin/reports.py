@@ -43,6 +43,7 @@ from app.services.audit_log import write_audit_log
 from app.services.essence_readiness import EssenceReadiness, get_essence_readiness
 from app.services.gcs_utils import get_signed_url
 from app.services.report_artifact_validation import parse_doctor_artifact_metadata
+from app.services.report_review_evidence import build_report_review_evidence
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Reports"])
 
@@ -655,6 +656,7 @@ def _serialize(
     artifact: MonthlyReportArtifact | None = None,
     events: list[MonthlyDeliveryEvent] | None = None,
     current_blockers: list[str] | None = None,
+    review_evidence: dict[str, object] | None = None,
 ) -> dict:
     gate = _delivery_gate(r, manifest, artifact)
     delivery_events = events or []
@@ -733,6 +735,7 @@ def _serialize(
                 artifact_metadata.validation_version if artifact_metadata else None
             ),
         }
+        d["review_evidence"] = review_evidence
     return d
 
 
@@ -747,6 +750,7 @@ async def _serialize_report(
     if gate.ready and report.report_type == "MONTHLY":
         readiness = await get_essence_readiness(db, report.hospital_id)
         current_blockers = _current_essence_delivery_blockers(report, readiness)
+    review_evidence = await build_report_review_evidence(db, report) if full else None
     return _serialize(
         report,
         full,
@@ -754,4 +758,5 @@ async def _serialize_report(
         artifact=artifact,
         events=events,
         current_blockers=current_blockers,
+        review_evidence=review_evidence,
     )

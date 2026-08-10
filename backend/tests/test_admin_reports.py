@@ -23,6 +23,8 @@ def _report(**overrides):
         period_year=2026,
         period_month=5,
         report_type="MONTHLY",
+        version=1,
+        supersedes_report_id=None,
         pdf_path="gs://reputation-reports/demo.pdf",
         doctor_pdf_path="gs://reputation-reports/demo_doctor.pdf",
         sov_summary={"sov_pct": 42.0},
@@ -50,6 +52,7 @@ def _report(**overrides):
         planned_count=4,
         success_count=4,
         failed_count=0,
+        excluded_count=0,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

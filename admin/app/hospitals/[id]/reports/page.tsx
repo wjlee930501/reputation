@@ -1,1194 +1,143 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import Link from 'next/link'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
-import { fetchAPI } from '@/lib/api'
-import { parseMonthValue, previousMonthValue } from '@/lib/report-period'
+import { ApiError, fetchAPI } from '@/lib/api'
+import { fetchCurrentAccount } from '@/lib/current-account'
 import {
-  parseReportRuns,
-  isValidReportRebuildReason,
-  getOrCreateReportRequestKey,
-  reportRebuildIdempotencyKey,
-  reportRebuildFingerprint,
-  reportRunDeveloperNote,
-  type ReportRunView,
-} from '@/lib/report-run'
-import {
-  getCustomerReportDownload,
-  getInternalReportLabel,
-  isEffectivelyDelivered,
-  readReportDeliveryState,
-  type ReportDeliveryInput,
+  deliveryConflict,
+  deliveryDeveloperNote,
+  reportListDeveloperNote,
+  type DeliveryIssue,
 } from '@/lib/report-delivery'
+import { parseReport, parseReports, type ReportView } from '@/lib/report-review'
+import { preflightDeliveryAction } from '@/lib/report-component-behavior'
+import { ReportList } from './ReportList'
+import { type DeliveryAction } from './ReportDelivery'
+import { ReportReviewDialog } from './ReportReviewDialog'
+import { ReportRunStatus } from './ReportRunStatus'
 
-interface Report {
-  id: string
-  hospital_id: string
-  period_year: number
-  period_month: number
-  report_type: string
-  display?: {
-    report_type_label?: string | null
-    screening_status?: ScreeningStatus | string | null
-    screening_status_label?: string | null
-    pdf_status?: string | null
-    pdf_status_label?: string | null
-  }
-  has_pdf: boolean
-  /** 원장에게 그대로 전달하는 1페이지 판본이 준비됐는지. */
-  has_doctor_pdf?: boolean
-  doctor_artifact_state?: 'MISSING' | 'INVALID' | 'VALID'
-  doctor_artifact_sha256?: string | null
-  download_url: string | null
-  created_at: string
-  sent_at: string | null
-  delivery_ready?: boolean
-  delivery_blockers?: string[]
-  customer_ready?: boolean
-  delivery_history?: Array<Record<string, unknown>>
-  effective_delivery?: ({ event_type?: string | null } & Record<string, unknown>) | null
-  sov_summary?: Record<string, unknown> | null
-  content_summary?: Record<string, unknown> | null
-  essence_summary?: Record<string, unknown> | null
+const LOAD_ERROR: DeliveryIssue = {
+  title: '최신 리포트 상태를 불러오지 못했습니다',
+  problem: '서버에서 이 리포트의 최신 검수 근거를 확인하지 못했습니다.',
+  customerImpact: '오래된 화면만 보고 원장 전달 여부를 결정할 수 없습니다.',
+  nextAction: '‘최신 상태 다시 확인’을 누르세요. 계속 실패하면 개발팀 문의용 정보를 복사해 전달해 주세요.',
+  action: 'developer',
 }
-
-const TYPE_LABELS: Record<string, string> = {
-  V0: 'V0 진단',
-  MONTHLY: '월간 리포트',
-}
-
-type ScreeningStatus = 'PDF_PENDING' | 'AWAITING_REVIEW' | 'DELIVERED'
-
-const SCREENING_LABELS: Record<ScreeningStatus, { label: string; cls: string }> = {
-  PDF_PENDING: {
-    label: '내부 리포트 생성 중',
-    cls: 'bg-[var(--color-revisit-coolgrey-90)] text-[var(--color-revisit-text-helper)]',
-  },
-  AWAITING_REVIEW: {
-    label: '검수 대기',
-    cls: 'bg-[var(--color-revisit-primary-95)] text-[var(--color-revisit-nav)]',
-  },
-  DELIVERED: {
-    label: '전달 완료',
-    cls: 'bg-[color-mix(in_srgb,var(--color-revisit-green-50)_12%,white)] text-[var(--color-revisit-green-50)]',
-  },
-}
-
-const REPORT_DRAWER_STYLE = {
-  overlay: 'fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[color-mix(in_srgb,var(--color-revisit-nav)_55%,transparent)] p-4',
-  surface: 'my-8 w-full max-w-2xl rounded-xl bg-white',
-  header: 'flex items-start justify-between gap-3 border-b border-[var(--color-revisit-coolgrey-20)] p-6',
-  heading: 'text-base font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all] sm:text-lg',
-  helper: 'text-[var(--color-revisit-text-helper)]',
-  muted: 'text-[var(--color-revisit-text-caption)]',
-  close: 'min-h-11 min-w-11 rounded-lg text-xl text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]',
-  panel: 'rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-4',
-  softPanel: 'rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-[var(--color-revisit-coolgrey-90)] p-4',
-  infoPanel: 'rounded-lg border border-[var(--color-revisit-primary-80)] bg-[var(--color-revisit-primary-95)] p-4',
-  sectionTitle: 'mb-3 text-sm font-semibold text-[var(--color-revisit-text-title)]',
-  primaryAction: 'block min-h-11 w-full rounded-lg bg-[var(--color-revisit-nav)] px-4 py-3 text-center text-sm font-semibold text-white hover:opacity-90',
-  secondaryAction: 'block min-h-11 w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-4 py-3 text-center text-sm font-medium text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]',
-  control: 'mt-1 min-h-11 w-full rounded-md border border-[var(--color-revisit-coolgrey-20)] bg-white px-3 text-[var(--color-revisit-text-title)]',
-  success: 'rounded-lg border border-[var(--color-revisit-green-50)] bg-white text-[var(--color-revisit-green-50)]',
-  danger: 'rounded-lg border border-[var(--color-revisit-red-50)] bg-white text-[var(--color-revisit-red-50)]',
-} as const
-
-function getScreeningStatus(r: Report): ScreeningStatus {
-  const displayStatus = r.display?.screening_status
-  if (displayStatus === 'DELIVERED' || displayStatus === 'PDF_PENDING' || displayStatus === 'AWAITING_REVIEW') {
-    return displayStatus
-  }
-  if (isEffectivelyDelivered(r)) return 'DELIVERED'
-  if (!r.download_url && !r.has_pdf) return 'PDF_PENDING'
-  return 'AWAITING_REVIEW'
-}
-
-function getScreeningMeta(r: Report): { label: string; cls: string } {
-  const status = getScreeningStatus(r)
-  const fallback = SCREENING_LABELS[status]
-  return { ...fallback, label: r.display?.screening_status_label ?? fallback.label }
-}
-
-function getReportTypeLabel(r: Report): string {
-  return r.display?.report_type_label ?? TYPE_LABELS[r.report_type] ?? r.report_type
-}
-
-function formatDate(value: string | null | undefined): string {
-  if (!value) return '-'
-  try {
-    return new Date(value).toLocaleDateString('ko-KR')
-  } catch {
-    return value
-  }
-}
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function asNumber(v: unknown): number | null {
-  if (typeof v === 'number' && Number.isFinite(v)) return v
-  if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v)
-  return null
-}
-
-function asString(v: unknown): string | null {
-  if (typeof v === 'string') return v
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-  return null
-}
-
-const SUMMARY_LABEL_MAP: Record<string, string> = {
-  sov_pct: '통합 AI 답변 언급률',
-  prev_sov_pct: '전월 AI 답변 언급률',
-  change_pct: 'AI 답변 언급률 변화',
-  chatgpt: 'ChatGPT',
-  gemini: 'Gemini',
-  overall: '통합',
-  published_count: '발행 콘텐츠 수',
-  generated_count: '생성 콘텐츠 수',
-}
-
-function humanizeKey(k: string): string {
-  return SUMMARY_LABEL_MAP[k] ?? k.replace(/_/g, ' ')
-}
-
-function renderSummaryValue(key: string, value: unknown): string {
-  if (value === null || value === undefined) return '-'
-  if (typeof value === 'boolean') return value ? '예' : '아니오'
-  const num = asNumber(value)
-  if (num !== null) {
-    if (key.endsWith('_pct') || key === 'overall' || key === 'chatgpt' || key === 'gemini') {
-      const sign = key === 'change_pct' && num > 0 ? '+' : ''
-      return `${sign}${num.toFixed(1)}%`
-    }
-    return Number.isInteger(num) ? String(num) : num.toFixed(2)
-  }
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return `${value.length}개 항목`
-  if (isPlainObject(value)) return `${Object.keys(value).length}개 항목`
-  return '-'
-}
-
-function SummaryGrid({ data }: { data: Record<string, unknown> }) {
-  const entries = Object.entries(data).filter(([, v]) => v !== null && v !== undefined)
-  if (entries.length === 0) {
-    return <p className={`text-sm ${REPORT_DRAWER_STYLE.muted}`}>표시할 항목이 없습니다.</p>
-  }
-  return (
-    <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-      {entries.map(([k, v]) => (
-        <div key={k} className="flex justify-between gap-2 text-sm">
-          <span className={REPORT_DRAWER_STYLE.helper}>{humanizeKey(k)}</span>
-          <span className="font-medium text-[var(--color-revisit-text-title)]">{renderSummaryValue(k, v)}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function ChecklistRow({ ok, label, hint }: { ok: boolean; label: string; hint?: string }) {
-  return (
-    <div className="flex items-start gap-2 text-sm">
-      <span
-        className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold ${
-          ok
-            ? 'bg-[color-mix(in_srgb,var(--color-revisit-green-50)_12%,white)] text-[var(--color-revisit-green-50)]'
-            : 'bg-[var(--color-revisit-primary-95)] text-[var(--color-revisit-nav)]'
-        }`}
-      >
-        {ok ? '✓' : '!'}
-      </span>
-      <div className="flex-1">
-        <div className={ok ? 'text-[var(--color-revisit-text-title)]' : 'font-medium text-[var(--color-revisit-nav)]'}>{label}</div>
-        {hint && <div className={`mt-0.5 text-xs ${REPORT_DRAWER_STYLE.helper}`}>{hint}</div>}
-      </div>
-    </div>
-  )
-}
-
-// 백엔드 계약(추가 예정): POST /admin/hospitals/{id}/reports/{report_id}/mark-sent
-// → MonthlyReport.sent_at이 기록된 갱신 리포트를 반환.
-// 실제 경로/메서드가 달라지면 이 함수 한 곳만 수정하면 된다.
-function requestMarkSent(
-  hospitalId: string,
-  reportId: string,
-  input: ReportDeliveryInput,
-): Promise<Report> {
-  return fetchAPI<Report>(`/admin/hospitals/${hospitalId}/reports/${reportId}/mark-sent`, {
-    method: 'POST',
-    body: JSON.stringify(input),
-  })
-}
-
-const defaultGeneratePeriod = previousMonthValue()
 
 export default function ReportsPage() {
-  const { id } = useParams<{ id: string }>()
-  const [reports, setReports] = useState<Report[]>([])
+  const { id: hospitalId } = useParams<{ id: string }>()
+  const [reports, setReports] = useState<ReportView[]>([])
+  const [selected, setSelected] = useState<ReportView | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<Report | null>(null)
-  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null)
-  const [detailError, setDetailError] = useState<string | null>(null)
-  const [markingSent, setMarkingSent] = useState(false)
-  const [markSentError, setMarkSentError] = useState<string | null>(null)
-  // 기본값은 지난달 — 월말 배치 실패는 대개 달이 바뀐 뒤에 발견된다.
-  const [generatePeriod, setGeneratePeriod] = useState(defaultGeneratePeriod)
-  const [generating, setGenerating] = useState(false)
-  const [generateMessage, setGenerateMessage] = useState<string | null>(null)
-  const [generateError, setGenerateError] = useState<string | null>(null)
-  const [reportRuns, setReportRuns] = useState<readonly ReportRunView[]>([])
-  const [runsLoading, setRunsLoading] = useState(true)
-  const [runsError, setRunsError] = useState<string | null>(null)
-  const [copyMessage, setCopyMessage] = useState<string | null>(null)
-  const generationRequestActive = useRef(false)
-  const generationRequestKeys = useRef(new Map<string, string>())
+  const [loadingId, setLoadingId] = useState<string | null>(null)
+  const [pageError, setPageError] = useState<string | null>(null)
+  const [issue, setIssue] = useState<DeliveryIssue | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [isOwner, setIsOwner] = useState(false)
+  const [statusMessage, setStatusMessage] = useState<string | null>(null)
 
-  const refreshReportRuns = useCallback(async () => {
-    try {
-      const payload = await fetchAPI<unknown>(
-        `/admin/hospitals/${id}/operations/monthly-report-runs`,
-      )
-      setReportRuns(parseReportRuns(payload))
-      setRunsError(null)
-    } catch (error: unknown) {
-      setRunsError(error instanceof Error ? error.message : '작업 기록을 불러오지 못했습니다.')
-    } finally {
-      setRunsLoading(false)
-    }
-  }, [id])
+  const loadDetail = useCallback(async (reportId: string): Promise<ReportView> => {
+    const payload = await fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports/${reportId}`)
+    const report = parseReport(payload)
+    if (!report?.review) throw new Error('검수 근거가 없는 응답입니다.')
+    return report
+  }, [hospitalId])
+
+  const applyReport = useCallback((report: ReportView) => {
+    setSelected(report)
+    setReports((current) => current.map((item) => item.id === report.id ? report : item))
+  }, [])
+
+  const openReport = useCallback(async (reportId: string) => {
+    setLoadingId(reportId)
+    setIssue(null)
+    try { applyReport(await loadDetail(reportId)) }
+    catch { setPageError('리포트 상세를 불러오지 못했습니다. 고객 영향: 최신 근거를 확인할 수 없습니다. 지금 할 일: 다시 시도하고 계속 실패하면 개발팀에 문의해 주세요.') }
+    finally { setLoadingId(null) }
+  }, [applyReport, loadDetail])
 
   useEffect(() => {
-    fetchAPI<Report[]>(`/admin/hospitals/${id}/reports`)
-      .then(setReports)
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [id])
+    let active = true
+    Promise.all([
+      fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports`),
+      fetchCurrentAccount(),
+    ]).then(([payload, account]) => {
+      if (!active) return
+      setReports(parseReports(payload))
+      setIsOwner(account?.role === 'OWNER')
+      const reportId = new URLSearchParams(window.location.search).get('report')
+      if (reportId) void openReport(reportId)
+    }).catch(() => {
+      if (active) setPageError('리포트 목록을 불러오지 못했습니다. 고객 영향: 검수와 전달 기록을 확인할 수 없습니다. 지금 할 일: 새로고침 후 계속 실패하면 개발팀에 병원명을 알려 주세요.')
+    }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [hospitalId, openReport])
 
-  useEffect(() => {
-    void refreshReportRuns()
-  }, [refreshReportRuns])
+  const refreshSelected = useCallback(async () => {
+    if (!selected) return
+    setBusy(true)
+    try { applyReport(await loadDetail(selected.id)); setIssue(null); setStatusMessage('최신 상태를 확인했습니다.') }
+    catch { setIssue(LOAD_ERROR) }
+    finally { setBusy(false) }
+  }, [applyReport, loadDetail, selected])
 
-  useEffect(() => {
-    if (!reportRuns.some((run) => run.isActive)) return
-    const timer = window.setInterval(() => void refreshReportRuns(), 5000)
-    return () => window.clearInterval(timer)
-  }, [refreshReportRuns, reportRuns])
-
-  async function openDetail(report: Report) {
-    setDetailError(null)
-    setMarkSentError(null)
-    setDetailLoadingId(report.id)
+  const handleAction = useCallback(async (action: DeliveryAction) => {
+    if (!selected || busy) return
+    setBusy(true)
+    setIssue(null)
     try {
-      const full = await fetchAPI<Report>(`/admin/hospitals/${id}/reports/${report.id}`)
-      setSelected(full)
-    } catch (e: unknown) {
-      setDetailError(e instanceof Error ? e.message : '리포트 상세 정보를 불러오지 못했습니다.')
-      setSelected(null)
-    } finally {
-      setDetailLoadingId(null)
-    }
-  }
-
-  async function handleMarkSent(report: Report, input: ReportDeliveryInput) {
-    if (markingSent || isEffectivelyDelivered(report)) return
-    if (!readReportDeliveryState(report).ready) {
-      setMarkSentError('원장 전달 준비가 완료된 리포트만 전달 완료로 표시할 수 있습니다.')
-      return
-    }
-    setMarkSentError(null)
-    setMarkingSent(true)
-    try {
-      const updated = await requestMarkSent(id, report.id, input)
-      if (updated) {
-        setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, ...updated } : r)))
-        setSelected((prev) => (prev && prev.id === report.id ? { ...prev, ...updated } : prev))
+      const fresh = await loadDetail(selected.id)
+      applyReport(fresh)
+      const preflightIssue = preflightDeliveryAction(fresh, action.kind)
+      if (preflightIssue) {
+        setIssue(preflightIssue)
+        return
       }
-    } catch (e: unknown) {
-      setMarkSentError(e instanceof Error ? e.message : '전달 완료 처리에 실패했습니다.')
-    } finally {
-      setMarkingSent(false)
-    }
-  }
+      const base = `/admin/hospitals/${hospitalId}/reports/${fresh.id}`
+      const path = action.kind === 'deliver' ? `${base}/mark-sent` : action.kind === 'correct' ? `${base}/correct-delivery` : `${base}/rescind-delivery`
+      const body = action.kind === 'rescind'
+        ? { reason: action.reason }
+        : {
+            artifact_sha256: fresh.doctorArtifact.sha256,
+            recipient_label: action.recipient,
+            channel: action.channel,
+            note: action.note,
+            ...(action.kind === 'correct' ? { reason: action.reason } : {}),
+          }
+      const updated = parseReport(await fetchAPI<unknown>(path, { method: 'POST', body: JSON.stringify(body) }))
+      if (!updated?.review) throw new Error('갱신된 검수 근거가 없습니다.')
+      applyReport(updated)
+      setStatusMessage(action.kind === 'deliver' ? '원장 전달 기록을 남겼습니다.' : action.kind === 'correct' ? '수정 기록을 덧붙였습니다.' : '전달 기록을 무효 처리했습니다. 이미 보낸 파일은 별도로 사용 중지를 안내해 주세요.')
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 409) {
+        try { applyReport(await loadDetail(selected.id)) } catch { /* conflict copy still remains actionable */ }
+        setIssue(deliveryConflict(caught.detail))
+      } else if (caught instanceof ApiError && caught.status === 403) {
+        setIssue({ title: '이 작업을 실행할 권한이 없습니다', problem: '현재 계정은 이 전달 기록을 수정할 수 없습니다.', customerImpact: '전달 이력은 변경되지 않았습니다.', nextAction: '관리자에게 이 리포트 기간과 필요한 조치를 알려 주세요.', action: 'developer' })
+      } else setIssue(LOAD_ERROR)
+    } finally { setBusy(false) }
+  }, [applyReport, busy, hospitalId, loadDetail, selected])
 
-  async function handleGenerateMonthly(run?: ReportRunView, rebuildReason?: string) {
-    if (generationRequestActive.current) return
-    setGenerateMessage(null)
-    setGenerateError(null)
-    const parsed = run
-      ? { year: run.periodYear, month: run.periodMonth }
-      : parseMonthValue(generatePeriod)
-    if (!parsed) {
-      setGenerateError('생성할 월을 선택해 주세요.')
-      return
-    }
-    const { year, month } = parsed
-    if (run && !isValidReportRebuildReason(rebuildReason ?? '')) {
-      setGenerateError('새 버전을 만드는 이유를 3자 이상 입력해 주세요.')
-      return
-    }
-    generationRequestActive.current = true
-    setGenerating(true)
+  const closeDialog = useCallback(() => { setSelected(null); setIssue(null) }, [])
+  async function copyDeveloperInfo() {
     try {
-      const normalizedReason = (rebuildReason ?? '').trim()
-      const fingerprint = run
-        ? reportRebuildFingerprint(run.runId, year, month, normalizedReason)
-        : `create\u0000${id}\u0000${year}\u0000${month}`
-      const requestKey = getOrCreateReportRequestKey(
-        generationRequestKeys.current,
-        fingerprint,
-        () => run
-          ? reportRebuildIdempotencyKey(run.runId, crypto.randomUUID())
-          : `monthly-report-create:${id}:${crypto.randomUUID()}`,
-      )
-      await fetchAPI(
-        `/admin/hospitals/${id}/operations/generate-monthly-report?year=${year}&month=${month}${run ? '&rebuild=true' : ''}`,
-        {
-          method: 'POST',
-          headers: { 'Idempotency-Key': requestKey },
-          body: JSON.stringify(run ? { reason: normalizedReason } : {}),
-        },
-      )
-      generationRequestKeys.current.delete(fingerprint)
-      setGenerateMessage(
-        run
-          ? `${year}년 ${month}월 새 버전 생성을 요청했습니다. 기존 리포트는 보존됩니다.`
-          : `${year}년 ${month}월 리포트 생성을 요청했습니다. 위의 최근 작업에서 진행 상태를 확인해 주세요.`,
-      )
-      await refreshReportRuns()
-    } catch (e: unknown) {
-      setGenerateError(e instanceof Error ? e.message : '리포트 생성 요청에 실패했습니다.')
-    } finally {
-      generationRequestActive.current = false
-      setGenerating(false)
-    }
+      const note = selected
+        ? deliveryDeveloperNote(hospitalId, selected.id, `${selected.periodYear}년 ${selected.periodMonth}월`)
+        : reportListDeveloperNote(hospitalId)
+      await navigator.clipboard.writeText(note)
+      setStatusMessage('개발팀 문의용 정보를 복사했습니다.')
+    } catch { setStatusMessage('복사하지 못했습니다. 개발팀에 병원명과 리포트 기간을 알려 주세요.') }
   }
-
-  async function copyDeveloperNote(run: ReportRunView) {
-    try {
-      await navigator.clipboard.writeText(reportRunDeveloperNote(id, run))
-      setCopyMessage('개발팀 문의용 정보를 복사했습니다.')
-    } catch (error: unknown) {
-      setCopyMessage(
-        error instanceof Error
-          ? '복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.'
-          : '복사하지 못했습니다. 개발팀에 병원명과 작업 시각을 알려 주세요.',
-      )
-    }
-  }
-
-  async function openReportRunReview(run: ReportRunView) {
-    if (!run.reportId) {
-      setCopyMessage('연결된 리포트를 찾지 못했습니다. 진행 상태를 새로고침한 뒤 계속 보이지 않으면 개발팀에 문의해 주세요.')
-      return
-    }
-    setDetailError(null)
-    setDetailLoadingId(run.reportId)
-    try {
-      const report = await fetchAPI<Report>(`/admin/hospitals/${id}/reports/${run.reportId}`)
-      setSelected(report)
-    } catch (error: unknown) {
-      setCopyMessage(
-        error instanceof Error
-          ? '원장 전달 자료를 열지 못했습니다. 진행 상태를 새로고침한 뒤 다시 시도해 주세요.'
-          : '원장 전달 자료를 열지 못했습니다. 개발팀에 병원명과 작업 시각을 알려 주세요.',
-      )
-    } finally {
-      setDetailLoadingId(null)
-    }
-  }
-
-  const stats = useMemo(() => {
-    const now = new Date()
-    const y = now.getFullYear()
-    const m = now.getMonth() + 1
-    let awaiting = 0
-    let pdfReady = 0
-    let delivered = 0
-    let thisMonth = 0
-    for (const r of reports) {
-      const s = getScreeningStatus(r)
-      if (s === 'AWAITING_REVIEW') awaiting += 1
-      if (s === 'DELIVERED') delivered += 1
-      if (r.has_pdf || r.download_url) pdfReady += 1
-      if (r.period_year === y && r.period_month === m) thisMonth += 1
-    }
-    return { awaiting, pdfReady, delivered, thisMonth }
-  }, [reports])
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
-      <div className="mb-6">
-        <div>
-          <h2 className="text-xl font-bold text-slate-900">리포트 검수</h2>
-          <p className="mt-1 text-sm text-slate-600">
-            PDF를 내려받기 전에 AI 답변 노출, 콘텐츠 성과, 운영 기준 검수 결과를 먼저 확인합니다.
-          </p>
-        </div>
-      </div>
-
-      <section className="mb-6 rounded-xl border border-[var(--color-revisit-coolgrey-20)] bg-white p-4 sm:p-5" aria-labelledby="monthly-run-heading">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 id="monthly-run-heading" className="text-base font-bold text-[var(--color-revisit-text-title)]">
-              최근 월간 리포트 작업
-            </h3>
-            <p className="mt-1 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
-              자동 생성과 직접 요청한 작업이 어디까지 진행됐는지 확인하고, 필요한 조치를 바로 실행합니다.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => void refreshReportRuns()}
-            className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-4 text-sm font-semibold text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]"
-          >
-            진행 상태 새로고침
-          </button>
-        </div>
-
-        {runsLoading && (
-          <p className="mt-4 text-sm text-[var(--color-revisit-text-helper)]" role="status">
-            작업 기록을 불러오는 중입니다.
-          </p>
-        )}
-        {runsError && (
-          <div className="mt-4 rounded-lg border border-[var(--color-revisit-red-50)] bg-white p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert">
-            <p>작업 기록을 불러오지 못했습니다. 잠시 후 ‘진행 상태 새로고침’을 눌러 주세요.</p>
-            <p className="mt-1">계속 실패하면 개발팀에 이 화면과 병원명을 알려 주세요.</p>
-          </div>
-        )}
-        {!runsLoading && !runsError && reportRuns.length === 0 && (
-          <p className="mt-4 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-4 text-sm leading-6 text-[var(--color-revisit-text-helper)]">
-            아직 실행된 월간 리포트 작업이 없습니다. 아래에서 대상 월을 고른 뒤 ‘리포트 생성’을 눌러 주세요.
-          </p>
-        )}
-        <div className="mt-4 grid gap-3">
-          {reportRuns.slice(0, 3).map((run) => (
-            <ReportRunCard
-              key={run.runId}
-              run={run}
-              onRebuild={(reason) => void handleGenerateMonthly(run, reason)}
-              onReview={() => void openReportRunReview(run)}
-              onCopy={() => void copyDeveloperNote(run)}
-              operationsHref={`/operations?hospital_id=${id}`}
-              disabled={generating}
-            />
-          ))}
-        </div>
-        {copyMessage && (
-          <p className="mt-3 text-sm text-[var(--color-revisit-text-helper)]" role="status">
-            {copyMessage}
-          </p>
-        )}
-      </section>
-
-      {/* 월말 배치가 실패하면 그 달 리포트가 통째로 비어 있게 된다 — 그때 AE가
-          개발자 없이 다시 만드는 경로. 이미 있는 달은 덮어쓰지 않는다. */}
-      <div className="mb-6 w-fit max-w-full rounded-xl border border-slate-200 bg-white p-3">
-        <p className="text-xs font-medium text-slate-700">월간 리포트가 없나요?</p>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <input
-            type="month"
-            value={generatePeriod}
-            // 이번 달 이후는 백엔드가 거부한다 — 빈 리포트 행이 월말 배치를 막기 때문에.
-            max={defaultGeneratePeriod}
-            onChange={(e) => setGeneratePeriod(e.target.value)}
-            className="min-h-11 rounded-lg border border-slate-300 px-3 text-sm"
-            aria-label="생성할 리포트 월"
-          />
-          <button
-            type="button"
-            onClick={() => void handleGenerateMonthly()}
-            disabled={generating}
-            className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
-          >
-            {generating ? '요청 중...' : '리포트 생성'}
-          </button>
-        </div>
-        {generateMessage && (
-          <p role="status" className="mt-2 max-w-xs text-xs text-emerald-700">{generateMessage}</p>
-        )}
-        {generateError && (
-          <p role="alert" className="mt-2 max-w-xs text-xs text-red-600">{generateError}</p>
-        )}
-      </div>
-
-      {!loading && !error && (
-        <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-          <SummaryCard label="검수 대기" value={stats.awaiting} tone="blue" />
-          <SummaryCard label="내부 리포트 준비" value={stats.pdfReady} tone="indigo" />
-          <SummaryCard label="전달 완료" value={stats.delivered} tone="green" />
-          <SummaryCard label="이번 달 리포트" value={stats.thisMonth} tone="gray" />
-        </div>
-      )}
-
-      {loading && <div className="text-center py-16 text-slate-500">불러오는 중...</div>}
-
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">오류: {error}</div>
-      )}
-
-      {detailError && (
-        <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg p-4 text-amber-800 text-sm">
-          리포트 상세를 불러오지 못했습니다. 원장 보고 전 검수 데이터가 불완전할 수 있습니다. ({detailError})
-        </div>
-      )}
-
-      {!loading && !error && (
-        <div className="admin-responsive-table-wrap overflow-hidden rounded-xl border border-slate-200 bg-white">
-          <table className="admin-responsive-table w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                <th className="text-left px-6 py-3 text-slate-600 font-medium">기간</th>
-                <th className="text-left px-6 py-3 text-slate-600 font-medium">리포트 유형</th>
-                <th className="text-left px-6 py-3 text-slate-600 font-medium">검수 상태</th>
-                <th className="text-center px-6 py-3 text-slate-600 font-medium">AE 내부 리포트</th>
-                <th className="text-left px-6 py-3 text-slate-600 font-medium">생성일</th>
-                <th className="text-right px-6 py-3 text-slate-600 font-medium">액션</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {reports.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-6 py-10">
-                    <EmptyReportState />
-                  </td>
-                </tr>
-              )}
-              {reports.map((r) => {
-                const status = getScreeningStatus(r)
-                const meta = getScreeningMeta(r)
-                return (
-                  <tr key={r.id} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-6 py-4 text-slate-900 font-medium" data-primary="true">
-                      {r.period_year}년 {r.period_month}월
-                    </td>
-                    <td className="px-6 py-4 text-slate-600" data-label="유형">
-                      {getReportTypeLabel(r)}
-                    </td>
-                    <td className="px-6 py-4" data-label="검수 상태">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
-                        {meta.label}
-                      </span>
-                      {!r.sent_at && r.delivery_ready === false && (
-                        <p className="mt-1 text-[11px] font-medium text-amber-700">
-                          전달 차단 {r.delivery_blockers?.length ?? 0}건
-                        </p>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 text-center" data-label="AE 내부 리포트">
-                      {r.download_url ? (
-                        <a
-                          href={r.download_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex min-h-11 items-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-3 text-xs font-semibold text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]"
-                        >
-                          {getInternalReportLabel(r)}
-                        </a>
-                      ) : r.has_pdf ? (
-                        <span className="text-xs text-[var(--color-revisit-text-helper)]">{getInternalReportLabel(r)}</span>
-                      ) : (
-                        <span className="text-xs text-[var(--color-revisit-text-caption)]">{getInternalReportLabel(r)}</span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 text-slate-600" data-label="생성일">
-                      <div>{formatDate(r.created_at)}</div>
-                      {r.sent_at && <div className="text-xs text-green-700 mt-0.5">전달 {formatDate(r.sent_at)}</div>}
-                    </td>
-                    <td className="px-6 py-4 text-right" data-label="액션">
-                      <button
-                        onClick={() => openDetail(r)}
-                        disabled={detailLoadingId === r.id}
-                        className="px-3 py-1 bg-slate-900 text-white text-xs rounded hover:bg-slate-700 disabled:opacity-60"
-                      >
-                        {detailLoadingId === r.id ? '불러오는 중' : status === 'DELIVERED' ? '보기' : '검수하기'}
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {selected && (
-        <DetailDrawer
-          report={selected}
-          onClose={() => setSelected(null)}
-          onMarkSent={(input) => handleMarkSent(selected, input)}
-          markingSent={markingSent}
-          markSentError={markSentError}
-        />
-      )}
-    </div>
-  )
-}
-
-function ReportRunCard({
-  run,
-  onRebuild,
-  onReview,
-  onCopy,
-  operationsHref,
-  disabled,
-}: {
-  run: ReportRunView
-  onRebuild: (reason: string) => void
-  onReview: () => void
-  onCopy: () => void
-  operationsHref: string
-  disabled: boolean
-}) {
-  const [showRebuildReason, setShowRebuildReason] = useState(false)
-  const [rebuildReason, setRebuildReason] = useState('')
-  const reasonValid = isValidReportRebuildReason(rebuildReason)
-
-  return (
-    <article className="rounded-lg border border-[var(--color-revisit-coolgrey-20)] p-4">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <p className="text-sm font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all]">
-            {run.periodYear}년 {run.periodMonth}월 · <span className="whitespace-nowrap">{run.statusLabel}</span>
-          </p>
-          {run.versionLabel && (
-            <p className="mt-1 text-xs text-[var(--color-revisit-text-caption)]">
-              {run.versionLabel}
-            </p>
-          )}
-        </div>
-        <span className="rounded-full bg-[var(--color-revisit-primary-95)] px-3 py-1 text-xs font-semibold text-[var(--color-revisit-nav)]">
-          {run.attentionLabel}
-        </span>
-      </div>
-      <dl className="mt-4 grid gap-3 text-sm leading-6 sm:grid-cols-3">
-        <div>
-          <dt className="font-semibold text-[var(--color-revisit-text-title)]">무슨 문제인지</dt>
-          <dd className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{run.whatHappened}</dd>
-        </div>
-        <div>
-          <dt className="font-semibold text-[var(--color-revisit-text-title)]">고객 영향</dt>
-          <dd className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{run.customerImpact}</dd>
-        </div>
-        <div>
-          <dt className="font-semibold text-[var(--color-revisit-text-title)]">지금 할 일</dt>
-          <dd className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{run.nextAction}</dd>
-        </div>
-      </dl>
-      {!run.isActive && (
-        <div className="mt-4 flex flex-col items-start gap-2 sm:flex-row">
-          {run.primaryAction === 'review' && (
-            <button
-              type="button"
-              onClick={onReview}
-              disabled={disabled}
-              className="min-h-11 max-sm:w-full rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
-            >
-              원장 전달 자료 확인
-            </button>
-          )}
-          {run.primaryAction === 'operations' && (
-            <Link
-              href={operationsHref}
-              className="inline-flex min-h-11 max-sm:w-full items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-semibold text-white hover:opacity-90"
-            >
-              운영 센터에서 차단 사유 확인
-            </Link>
-          )}
-          {run.canRebuild && (
-            showRebuildReason ? (
-              <div className="w-full rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3">
-                <label className="text-sm font-semibold text-[var(--color-revisit-text-title)]" htmlFor={`rebuild-reason-${run.runId}`}>
-                  새 버전을 만드는 이유
-                </label>
-                <p className="mt-1 text-xs leading-5 text-[var(--color-revisit-text-helper)]">
-                  나중에 확인된 자료나 수정할 내용을 3자 이상 적어 주세요. 이 기록은 작업 이력에 남습니다.
-                </p>
-                <textarea
-                  id={`rebuild-reason-${run.runId}`}
-                  value={rebuildReason}
-                  onChange={(event) => setRebuildReason(event.target.value)}
-                  maxLength={200}
-                  rows={2}
-                  placeholder="예: 늦게 확인된 측정 결과를 반영해야 합니다."
-                  className="mt-2 w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-3 text-sm [word-break:keep-all]"
-                />
-                <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-                  <button
-                    type="button"
-                    onClick={() => onRebuild(rebuildReason.trim())}
-                    disabled={disabled || !reasonValid}
-                    className="min-h-11 max-sm:w-full rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
-                  >
-                    이 사유로 새 버전 만들기
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowRebuildReason(false)}
-                    className="min-h-11 max-sm:w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-4 text-sm font-semibold text-[var(--color-revisit-text-helper)]"
-                  >
-                    취소
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setShowRebuildReason(true)}
-                disabled={disabled}
-                className={`min-h-11 max-sm:w-full rounded-lg px-4 text-sm font-semibold disabled:opacity-50 ${
-                  run.primaryAction === 'rebuild'
-                    ? 'bg-[var(--color-revisit-primary-40)] text-white hover:opacity-90'
-                    : 'border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]'
-                }`}
-              >
-                {run.primaryAction === 'operations' ? '해결 후 리포트 다시 만들기' : '리포트 다시 만들기'}
-              </button>
-            )
-          )}
-          <button
-            type="button"
-            onClick={onCopy}
-            className="min-h-11 max-sm:w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-4 text-sm font-semibold text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]"
-          >
-            개발팀 문의용 정보 복사
-          </button>
-        </div>
-      )}
-    </article>
-  )
-}
-
-function SummaryCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string
-  value: number
-  tone: 'blue' | 'green' | 'indigo' | 'gray'
-}) {
-  const toneCls: Record<string, string> = {
-    blue: 'border-blue-200 bg-blue-50 text-blue-900',
-    green: 'border-green-200 bg-green-50 text-green-900',
-    indigo: 'border-indigo-200 bg-indigo-50 text-indigo-900',
-    gray: 'border-slate-200 bg-slate-50 text-slate-900',
-  }
-  return (
-    <div className={`rounded-xl border p-4 ${toneCls[tone]}`}>
-      <div className="text-xs font-medium opacity-80">{label}</div>
-      <div className="mt-1 text-2xl font-bold">{value}</div>
-    </div>
-  )
-}
-
-function EmptyReportState() {
-  return (
-    <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center">
-      <p className="text-sm font-semibold text-slate-800">아직 검수할 리포트가 없습니다.</p>
-      <p className="mt-2 text-sm leading-6 text-slate-500">
-        병원 자료와 콘텐츠 운영 기준을 검토한 뒤 AI 언급률 측정과 콘텐츠 성과가 쌓이면 리포트가 생성됩니다.
-      </p>
-      <div className="mt-4 grid gap-2 text-left text-xs text-slate-600 md:grid-cols-3">
-        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200">1. 운영 기준 승인 확인</span>
-        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200">2. AI 언급률 측정 실행</span>
-        <span className="rounded-lg bg-white px-3 py-2 ring-1 ring-slate-200">3. 발행 콘텐츠 성과 확인</span>
-      </div>
-    </div>
-  )
-}
-
-function ReportGuidance({
-  missingItems,
-  recommendedActions,
-  medicalRiskCount,
-}: {
-  missingItems: string[]
-  recommendedActions: string[]
-  medicalRiskCount: number
-}) {
-  const hasGuidance = missingItems.length > 0 || recommendedActions.length > 0 || medicalRiskCount > 0
-  if (!hasGuidance) {
-    return (
-      <div className={`${REPORT_DRAWER_STYLE.success} p-3 text-sm`}>
-        원장님께 전달하기 전 필수 요약은 모두 준비되어 있습니다. 원장 전달용 리포트 내용만 최종 확인하면 됩니다.
-      </div>
-    )
-  }
-
-  return (
-    <div className={`${REPORT_DRAWER_STYLE.infoPanel} p-3`}>
-      <div className="text-xs font-semibold text-[var(--color-revisit-nav)]">전달 전 보완할 항목</div>
-      {missingItems.length > 0 && (
-        <ul className="mt-2 list-inside list-disc space-y-0.5 text-sm text-[var(--color-revisit-nav)]">
-          {missingItems.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      )}
-      {medicalRiskCount > 0 && (
-        <p className="mt-2 text-sm text-[var(--color-revisit-nav)]">의료광고 리스크 {medicalRiskCount}건은 원장 전달용 리포트 전달 전 표현 수정 여부를 확인해야 합니다.</p>
-      )}
-      {recommendedActions.length > 0 && (
-        <div className="mt-3 rounded-md bg-white/70 p-2">
-          <div className="text-xs font-semibold text-[var(--color-revisit-nav)]">권장 조치</div>
-          <ul className="mt-1 list-inside list-disc space-y-0.5 text-sm text-[var(--color-revisit-nav)]">
-            {recommendedActions.map((action, i) => (
-              <li key={i}>{action}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function DetailDrawer({
-  report,
-  onClose,
-  onMarkSent,
-  markingSent,
-  markSentError,
-}: {
-  report: Report
-  onClose: () => void
-  onMarkSent: (input: ReportDeliveryInput) => void
-  markingSent: boolean
-  markSentError: string | null
-}) {
-  const meta = getScreeningMeta(report)
-  const sov = isPlainObject(report.sov_summary) ? report.sov_summary : null
-  const content = isPlainObject(report.content_summary) ? report.content_summary : null
-  const essence = isPlainObject(report.essence_summary) ? report.essence_summary : null
-
-  const recommendedActions = essence && Array.isArray(essence.recommended_actions)
-    ? (essence.recommended_actions as unknown[]).map((v) => String(v))
-    : []
-  const medicalRiskFindings = essence && Array.isArray(essence.medical_risk_findings)
-    ? (essence.medical_risk_findings as Array<Record<string, unknown>>)
-    : []
-  const needsReviewCount = essence ? asNumber(essence.needs_review_content_count) ?? 0 : 0
-  const missingStandardCount = essence ? asNumber(essence.missing_philosophy_content_count) ?? 0 : 0
-  const alignedContentCount = essence ? asNumber(essence.aligned_content_count) ?? 0 : 0
-  const processedSourceCount = essence ? asNumber(essence.processed_source_count) ?? 0 : 0
-  const totalSourceCount = essence ? asNumber(essence.source_count) ?? 0 : 0
-  const { ready: deliveryReady, blockers: deliveryBlockers } = readReportDeliveryState(report)
-  const customerDownload = getCustomerReportDownload(report)
-  const [recipientLabel, setRecipientLabel] = useState('')
-  const [channel, setChannel] = useState('대면')
-  const [deliveryNote, setDeliveryNote] = useState('')
-  const canSubmitDelivery = Boolean(
-    deliveryReady && report.doctor_artifact_sha256 && recipientLabel.trim() && channel.trim(),
-  )
-  const effectivelyDelivered = isEffectivelyDelivered(report)
-
-  return (
-    <div className={REPORT_DRAWER_STYLE.overlay}>
-      <div className={REPORT_DRAWER_STYLE.surface} role="dialog" aria-modal="true" aria-labelledby="report-drawer-title">
-        <div className={REPORT_DRAWER_STYLE.header}>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
-              <h3 id="report-drawer-title" className={REPORT_DRAWER_STYLE.heading}>
-                {getReportTypeLabel(report)} — {report.period_year}년 {report.period_month}월
-              </h3>
-              <span className={`inline-flex shrink-0 items-center whitespace-nowrap px-2 py-0.5 rounded text-xs font-medium ${meta.cls}`}>
-                {meta.label}
-              </span>
-            </div>
-            <div className={`mt-1 text-xs ${REPORT_DRAWER_STYLE.helper}`}>
-              생성 {formatDate(report.created_at)}
-              {report.sent_at ? ` · 전달 ${formatDate(report.sent_at)}` : ''}
-            </div>
-          </div>
-          <button onClick={onClose} className={REPORT_DRAWER_STYLE.close} aria-label="닫기">
-            ✕
-          </button>
-        </div>
-
-        <div className="p-6 space-y-6">
-          <section className={REPORT_DRAWER_STYLE.panel}>
-            <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>원장 보고 전 체크</h4>
-            <div className="space-y-3">
-              <ReportGuidance
-                missingItems={deliveryBlockers}
-                recommendedActions={recommendedActions}
-                medicalRiskCount={medicalRiskFindings.length}
-              />
-              <div className="space-y-2">
-                <ChecklistRow
-                  ok={Boolean(report.download_url || report.has_pdf)}
-                  label="내부 리포트 준비"
-                  hint={report.download_url
-                    ? 'AE 검수 전용 · 고객 전달 금지'
-                    : 'AE 내부 리포트 생성이 완료되면 검수 링크가 활성화됩니다. 고객 전달 금지'}
-                />
-                <ChecklistRow ok={Boolean(sov)} label="AI 답변 언급률 요약 존재" hint={sov ? undefined : '환자 질문 측정 결과를 먼저 확인하세요.'} />
-                {report.report_type === 'MONTHLY' && (
-                  <>
-                    <ChecklistRow ok={Boolean(content)} label="콘텐츠 성과 요약 존재" hint={content ? undefined : '발행 콘텐츠 수와 성과 요약을 먼저 확인하세요.'} />
-                    <ChecklistRow ok={Boolean(essence)} label="운영 기준 요약 존재" hint={essence ? undefined : '승인된 운영 기준과 자료 검토 상태를 먼저 확인하세요.'} />
-                  </>
-                )}
-              </div>
-              {essence && (
-                <div className={`mt-3 ${REPORT_DRAWER_STYLE.softPanel}`}>
-                  <div className="mb-2 text-xs font-semibold text-[var(--color-revisit-text-helper)]">내부 리포트 확인 전 먼저 볼 운영 기준 검수</div>
-                  <div className="grid gap-2 text-sm md:grid-cols-2">
-                    <ChecklistRow
-                      ok={Boolean(essence.approved_philosophy_exists)}
-                      label={essence.approved_philosophy_exists ? '승인된 콘텐츠 운영 기준 있음' : '승인된 콘텐츠 운영 기준 없음'}
-                      hint={essence.approved_at ? `승인일 ${formatDate(asString(essence.approved_at))}` : undefined}
-                    />
-                    <ChecklistRow
-                      ok={processedSourceCount > 0 && processedSourceCount === totalSourceCount}
-                      label={`검토된 병원 자료 ${processedSourceCount}/${totalSourceCount}`}
-                      hint={processedSourceCount === totalSourceCount ? undefined : '아직 검토가 끝나지 않은 병원 자료가 있습니다.'}
-                    />
-                    <ChecklistRow
-                      ok={needsReviewCount === 0 && missingStandardCount === 0}
-                      label={`재검토 필요 콘텐츠 ${needsReviewCount + missingStandardCount}건`}
-                      hint={alignedContentCount ? `운영 기준에 맞는 콘텐츠 ${alignedContentCount}건` : undefined}
-                    />
-                    <ChecklistRow
-                      ok={medicalRiskFindings.length === 0}
-                      label={`의료광고 리스크 ${medicalRiskFindings.length}건`}
-                      hint={medicalRiskFindings.length ? '원장님께 전달하기 전 표현 수정 여부를 확인하세요.' : undefined}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section>
-            <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>이번 달 핵심 변화</h4>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className={REPORT_DRAWER_STYLE.infoPanel}>
-                <p className="mb-2 text-xs font-semibold text-[var(--color-revisit-nav)]">AI 답변 언급률</p>
-                {sov ? <SummaryGrid data={sov} /> : <p className={`text-sm ${REPORT_DRAWER_STYLE.muted}`}>데이터 없음</p>}
-              </div>
-              <div className={REPORT_DRAWER_STYLE.softPanel}>
-                <p className="mb-2 text-xs font-semibold text-[var(--color-revisit-text-helper)]">콘텐츠 성과</p>
-                {content ? <SummaryGrid data={content} /> : <p className={`text-sm ${REPORT_DRAWER_STYLE.muted}`}>데이터 없음</p>}
-              </div>
-            </div>
-          </section>
-
-          {essence ? (
-            <section>
-              <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>콘텐츠 운영 기준</h4>
-              <div className={`${REPORT_DRAWER_STYLE.panel} space-y-3`}>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                  <EssenceRow
-                    label="승인된 운영 기준"
-                    value={
-                      essence.approved_philosophy_exists
-                        ? `v${asNumber(essence.philosophy_version) ?? '-'}${
-                            essence.approved_at ? ` · 승인 ${formatDate(asString(essence.approved_at))}` : ''
-                          }`
-                        : '미승인'
-                    }
-                    tone={essence.approved_philosophy_exists ? 'ok' : 'warn'}
-                  />
-                  <EssenceRow
-                    label="자료 처리"
-                    value={`${asNumber(essence.processed_source_count) ?? 0} / ${asNumber(essence.source_count) ?? 0}`}
-                    tone={asNumber(essence.processed_source_count) ? 'ok' : 'warn'}
-                  />
-                  <EssenceRow
-                    label="정합 콘텐츠"
-                    value={String(asNumber(essence.aligned_content_count) ?? 0)}
-                    tone="ok"
-                  />
-                  <EssenceRow
-                    label="재검수 필요"
-                    value={String(asNumber(essence.needs_review_content_count) ?? 0)}
-                    tone={asNumber(essence.needs_review_content_count) ? 'warn' : 'ok'}
-                  />
-                  <EssenceRow
-                    label="운영 기준 누락 콘텐츠"
-                    value={String(asNumber(essence.missing_philosophy_content_count) ?? 0)}
-                    tone={asNumber(essence.missing_philosophy_content_count) ? 'warn' : 'ok'}
-                  />
-                  <EssenceRow
-                    label="자료 최신성"
-                    value={essence.source_stale ? '변경됨 (재검토 필요)' : '최신'}
-                    tone={essence.source_stale ? 'warn' : 'ok'}
-                  />
-                </div>
-
-                {medicalRiskFindings.length > 0 && (
-                  <div className={`${REPORT_DRAWER_STYLE.danger} p-3`}>
-                    <div className="mb-1 text-xs font-semibold">
-                      의료광고 리스크 {medicalRiskFindings.length}건
-                    </div>
-                    <ul className="space-y-1 text-sm">
-                      {medicalRiskFindings.slice(0, 5).map((finding, i) => {
-                        const title = asString(finding.title) ?? '(제목 없음)'
-                        const violations = Array.isArray(finding.violations)
-                          ? (finding.violations as unknown[]).map((v) => String(v)).join(', ')
-                          : ''
-                        return (
-                          <li key={i} className="flex flex-col">
-                            <span className="font-medium">{title}</span>
-                            {violations && <span className="text-xs">금지 표현: {violations}</span>}
-                          </li>
-                        )
-                      })}
-                      {medicalRiskFindings.length > 5 && (
-                        <li className="text-xs">외 {medicalRiskFindings.length - 5}건</li>
-                      )}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </section>
-          ) : (
-            <section>
-              <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>콘텐츠 운영 기준</h4>
-              <div className={`${REPORT_DRAWER_STYLE.infoPanel} border-dashed text-sm text-[var(--color-revisit-nav)]`}>
-                운영 기준 요약이 아직 리포트에 포함되지 않았습니다. 원장님께 전달하기 전 병원 자료 검토와 승인된 운영 기준 상태를 먼저 확인하세요.
-              </div>
-            </section>
-          )}
-
-          <section>
-            <h4 className={REPORT_DRAWER_STYLE.sectionTitle}>원장 보고 자료</h4>
-            {customerDownload ? (
-              <div className="space-y-2">
-                <p className={`${REPORT_DRAWER_STYLE.infoPanel} px-3 py-2 text-xs leading-5 text-[var(--color-revisit-nav)]`}>
-                  확인이 끝난 원장 보고용 판본입니다. 아래 전달 기록과 같은 파일인지 확인하세요.
-                </p>
-                <a
-                  href={customerDownload}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={REPORT_DRAWER_STYLE.primaryAction}
-                >
-                  원장 전달용 PDF 다운로드
-                </a>
-                {report.download_url && (
-                  <a
-                    href={report.download_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={REPORT_DRAWER_STYLE.secondaryAction}
-                  >
-                    AE 내부 리포트 다운로드 · 고객 전달 금지
-                  </a>
-                )}
-              </div>
-            ) : (
-              <div className={`${REPORT_DRAWER_STYLE.softPanel} border-dashed py-4 text-center text-sm ${REPORT_DRAWER_STYLE.helper}`}>
-                검증된 원장 전달용 PDF가 없습니다. 내부 검수용 PDF로 대신 전달할 수 없습니다.
-              </div>
-            )}
-
-            {markSentError && (
-              <p className={`mt-2 px-3 py-2 text-sm ${REPORT_DRAWER_STYLE.danger}`}>
-                {markSentError}
-              </p>
-            )}
-            {effectivelyDelivered ? (
-              <p className={`mt-2 px-3 py-2 text-sm ${REPORT_DRAWER_STYLE.success}`}>
-                원장 보고 완료 — 전달일 {formatDate(report.sent_at)}
-              </p>
-            ) : (
-              <div className={`mt-3 space-y-3 ${REPORT_DRAWER_STYLE.panel}`}>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className={`text-sm ${REPORT_DRAWER_STYLE.helper}`}>
-                    수신자
-                    <input
-                      value={recipientLabel}
-                      onChange={(event) => setRecipientLabel(event.target.value)}
-                      placeholder="예: 김원장"
-                      className={REPORT_DRAWER_STYLE.control}
-                    />
-                  </label>
-                  <label className={`text-sm ${REPORT_DRAWER_STYLE.helper}`}>
-                    전달 채널
-                    <input
-                      value={channel}
-                      onChange={(event) => setChannel(event.target.value)}
-                      placeholder="예: 대면"
-                      className={REPORT_DRAWER_STYLE.control}
-                    />
-                  </label>
-                </div>
-                <label className={`block text-sm ${REPORT_DRAWER_STYLE.helper}`}>
-                  메모 (선택)
-                  <input
-                    value={deliveryNote}
-                    onChange={(event) => setDeliveryNote(event.target.value)}
-                    placeholder="예: 2026-08 월간 보고"
-                    className={REPORT_DRAWER_STYLE.control}
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!report.doctor_artifact_sha256) return
-                    onMarkSent({
-                      artifact_sha256: report.doctor_artifact_sha256,
-                      recipient_label: recipientLabel.trim(),
-                      channel: channel.trim(),
-                      note: deliveryNote.trim() || undefined,
-                    })
-                  }}
-                  disabled={markingSent || !canSubmitDelivery}
-                  className={`${REPORT_DRAWER_STYLE.success} block min-h-11 w-full px-4 py-3 text-center text-sm font-medium hover:opacity-80 disabled:opacity-50`}
-                >
-                  {markingSent
-                    ? '처리 중...'
-                    : deliveryReady
-                      ? '원장 전달 기록 남기기'
-                      : '전달 전 차단 항목을 해결해 주세요'}
-                </button>
-              </div>
-            )}
-            {(report.delivery_history?.length ?? 0) > 0 && (
-              <div className="mt-4 border-t border-[var(--color-revisit-coolgrey-20)] pt-4">
-                <h5 className="text-sm font-semibold text-[var(--color-revisit-text-title)]">전달 이력</h5>
-                <ol className="mt-2 space-y-2">
-                  {report.delivery_history?.map((event, index) => (
-                    <li key={asString(event.id) ?? index} className="rounded-md bg-[var(--color-revisit-coolgrey-90)] px-3 py-2 text-xs leading-5 text-[var(--color-revisit-text-helper)]">
-                      <div className="font-semibold text-[var(--color-revisit-text-title)]">
-                        {asString(event.event_type) ?? '전달 이벤트'} · {formatDate(asString(event.created_at))}
-                      </div>
-                      <div>
-                        수신 {asString(event.recipient_label) ?? '-'} · 채널 {asString(event.channel) ?? '-'} · 담당 {asString(event.operator) ?? '-'}
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
-          </section>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function EssenceRow({
-  label,
-  value,
-  tone,
-}: {
-  label: string
-  value: string
-  tone: 'ok' | 'warn'
-}) {
-  const cls = tone === 'warn'
-    ? 'font-medium text-[var(--color-revisit-nav)]'
-    : 'font-medium text-[var(--color-revisit-text-title)]'
-  return (
-    <div className="flex justify-between gap-2">
-      <span className={REPORT_DRAWER_STYLE.helper}>{label}</span>
-      <span className={cls}>{value}</span>
+      <header className="mb-5"><h2 className="text-xl font-bold text-[var(--color-revisit-text-title)]">월간 리포트 검수와 전달</h2><p className="mt-1 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">측정 근거와 원장 전달용 파일을 먼저 확인하고, 같은 화면에서 전달 이력을 남깁니다.</p></header>
+      <ReportRunStatus hospitalId={hospitalId} onReview={(reportId) => void openReport(reportId)} />
+      {statusMessage && <p className="mb-4 rounded-lg bg-[var(--color-revisit-primary-95)] p-3 text-sm" role="status">{statusMessage}</p>}
+      {pageError && <div className="mb-4 rounded-lg border border-[var(--color-revisit-red-50)] p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert"><p>{pageError}</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" onClick={() => window.location.reload()} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 font-bold text-white">리포트 목록 다시 시도</button><button type="button" onClick={() => void copyDeveloperInfo()} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div></div>}
+      {loading ? <p className="py-12 text-center text-sm" role="status">리포트 목록을 불러오는 중입니다.</p> : <ReportList reports={reports} loadingId={loadingId} onOpen={(report) => void openReport(report.id)} />}
+      {selected && <ReportReviewDialog report={selected} issue={issue} isOwner={isOwner} busy={busy} onClose={closeDialog} onRefresh={() => void refreshSelected()} onAction={(action) => void handleAction(action)} onCopyIssue={() => void copyDeveloperInfo()} onCopyNotification={() => void copyDeveloperInfo()} />}
     </div>
   )
 }
