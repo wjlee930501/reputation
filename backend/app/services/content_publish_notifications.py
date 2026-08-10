@@ -15,8 +15,15 @@ from app.models.operations import NotificationOutbox, NotificationOutboxState
 from app.services.notification_contracts import (
     NotificationIntent,
     NotificationPayloadError,
-    SlackMessage,
-    validate_message,
+)
+from app.services.notification_milestone_rendering import (
+    RenderedSlackMessage,
+    action_block,
+    admin_url,
+    header_block,
+    safe_text,
+    section_block,
+    validated_message,
 )
 from app.services.notification_store import enqueue_notification
 
@@ -65,56 +72,47 @@ def build_publish_notification_intent(
 
     if item.published_at is None:
         raise NotificationPayloadError("PUBLISHED_AT_REQUIRED")
-    admin_url = (
-        f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals/{hospital.id}/content"
-        f"?content={item.id}"
+    action_url = admin_url(
+        settings.ADMIN_BASE_URL,
+        f"/hospitals/{hospital.id}/content?content={item.id}",
     )
-    title = (item.title or "제목 없는 콘텐츠")[:180]
-    message = SlackMessage(
-        fallback_text=f"[콘텐츠 공개 완료] {hospital.name} · {title}",
-        blocks=(
-            {
-                "type": "header",
-                "block_id": "publish_header",
-                "text": {"type": "plain_text", "text": "콘텐츠 공개 완료"},
-            },
-            {
-                "type": "section",
-                "block_id": "publish_identity",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*{hospital.name}*\n{title}",
-                },
-            },
-            {
-                "type": "section",
-                "block_id": "publish_next_action",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "콘텐츠는 이미 공개되었습니다. 공개된 글에 문제가 없는지 확인해 주세요.",
-                },
-            },
-            {
-                "type": "actions",
-                "block_id": "publish_action",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Admin에서 확인"},
-                        "url": admin_url,
-                    }
-                ],
-            },
+    hospital_name = _publish_safe_text(hospital.name, 100)
+    title = _publish_safe_text(item.title or "제목 없는 콘텐츠", 180)
+    details = (
+        "무슨 문제인지: 콘텐츠가 공개되어 운영 확인이 필요합니다.\n"
+        "고객 영향: 확인 전까지 잘못된 정보가 공개 화면에 남아 있을 수 있습니다.\n"
+        "지금 할 일: Admin에서 공개된 글의 내용과 이미지를 확인해 주세요.\n"
+        "처리 기한: 오늘 중"
+    )
+    message = validated_message(
+        RenderedSlackMessage(
+            "무슨 문제인지: 콘텐츠 공개 확인 필요 · "
+            "고객 영향: 공개 정보 확인 전 · 지금 할 일: Admin 검토 · 처리 기한: 오늘 중",
+            (
+                header_block("publish_header", "콘텐츠 공개 확인"),
+                section_block("publish_identity", f"*{hospital_name}*\n{title}"),
+                section_block("publish_context", details),
+                action_block("publish_action", action_url, "Admin에서 공개 내용 확인"),
+            ),
+            action_url,
         ),
-        admin_url=admin_url,
+        settings.ADMIN_BASE_URL,
     )
-    validate_message(message, allowed_admin_base_url=settings.ADMIN_BASE_URL)
     return NotificationIntent(
         dedupe_key=_publish_dedupe_key(item.id, item.published_at),
         notification_type=PUBLISH_NOTIFICATION_TYPE,
         message=message,
         hospital_id=hospital.id,
         max_attempts=1,
+    )
+
+
+def _publish_safe_text(value: str, limit: int) -> str:
+    return (
+        safe_text(value, limit)
+        .replace("[storage path redacted]", "[경로 숨김]")
+        .replace("[email redacted]", "[이메일 숨김]")
+        .replace("[phone redacted]", "[연락처 숨김]")
     )
 
 

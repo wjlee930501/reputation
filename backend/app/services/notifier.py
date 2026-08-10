@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.core.config import settings
+from app.services.notification_milestone_rendering import safe_text as _slack_safe_text
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,44 @@ def _safe_label(value: str | None) -> str:
     if not text:
         return "(미입력)"
     return text if len(text) <= _SAFE_LABEL_MAX_CHARS else f"{text[:_SAFE_LABEL_MAX_CHARS]}…"
+
+
+def _safe_operator_label(value: str | None, *, limit: int = 100) -> str:
+    """Render user-controlled Slack copy without contact or filesystem details."""
+
+    return (
+        _slack_safe_text(value or "", limit)
+        .replace("[storage path redacted]", "[경로 숨김]")
+        .replace("[email redacted]", "[이메일 숨김]")
+        .replace("[phone redacted]", "[연락처 숨김]")
+    )
+
+
+def _validated_admin_path(candidate_url: str) -> str:
+    """Convert a same-origin Admin URL to an allowlisted action path."""
+
+    fallback = "/operations?queue=INCIDENTS"
+    try:
+        candidate = urlsplit(candidate_url)
+        base = urlsplit(settings.ADMIN_BASE_URL)
+        candidate_origin = (candidate.scheme, candidate.hostname, candidate.port)
+        base_origin = (base.scheme, base.hostname, base.port)
+    except ValueError:
+        return fallback
+    allowed_root = any(
+        candidate.path == root or candidate.path.startswith(f"{root}/")
+        for root in ("/operations", "/hospitals", "/leads")
+    )
+    if (
+        candidate_origin != base_origin
+        or candidate.username is not None
+        or candidate.password is not None
+        or not allowed_root
+        or "\\" in candidate.path
+        or any(segment == ".." for segment in candidate.path.split("/"))
+    ):
+        return fallback
+    return candidate.path
 
 
 async def _send(text: str, blocks: list | None = None) -> bool:
@@ -194,16 +233,28 @@ async def notify_v0_report_ready(
 
 async def notify_site_built(hospital_name: str, preview_url: str) -> bool:
     """콘텐츠 허브 노출 준비 완료 → AE에게 (legacy function name)"""
+    safe_hospital_name = _safe_operator_label(hospital_name)
     return await _send(
-        text=f"🏗️ [AI 노출 콘텐츠 허브] {hospital_name} 노출 준비 완료",
-        blocks=[{
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": (
-                f"🏗️ *[AI 노출 콘텐츠 허브]* *{hospital_name}* 병원 정보와 콘텐츠 허브 노출 준비 완료\n"
-                f"미리보기: {preview_url}\n\n"
-                f"Admin에서 공개 정보와 도메인 상태를 확인해 주세요."
-            )},
-        }],
+        text=(
+            f"무슨 문제인지: {safe_hospital_name} 공개 준비 완료 · "
+            "고객 영향: 공개 상태 확인 전 · 지금 할 일: Admin 검토 · 처리 기한: 오늘 중"
+        ),
+        blocks=[
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": (
+                    f"🏗️ *[AI 노출 콘텐츠 허브]* *{safe_hospital_name}*\n"
+                    "무슨 문제인지: 병원 정보와 콘텐츠 허브의 공개 준비가 완료됐습니다.\n"
+                    "고객 영향: 공개 상태를 확인하기 전에는 환자에게 최신 정보가 보이지 않을 수 있습니다.\n"
+                    "지금 할 일: Admin에서 공개 주소와 병원 정보를 확인해 주세요.\n"
+                    "처리 기한: 오늘 중"
+                )},
+            },
+            _admin_action_block(
+                path=_validated_admin_path(preview_url),
+                label="공개 정보 확인",
+            ),
+        ],
     )
 
 
@@ -322,6 +373,43 @@ async def notify_lead_created(
                 f"{link_line} 후 진단 범위를 확정해 주세요."
             )},
         }],
+    )
+
+
+async def notify_lead_diagnosis_received(
+    *,
+    clinic_name: str,
+    clinic_type: str,
+    region: str,
+    keywords: list[str],
+    contact: str,
+    email: str,
+    slot_no: int,
+    admin_url: str,
+) -> bool:
+    """무료 AI 노출 진단 접수를 한 건만 즉시 알린다."""
+    del clinic_type, region, keywords, contact, email
+    safe_clinic_name = _safe_operator_label(clinic_name)
+    body = (
+        f"📩 *[무료 AI 노출 진단 접수]* *{safe_clinic_name}* · 오늘 {slot_no}번째 접수\n"
+        "무슨 문제인지: 새로운 무료 진단 신청이 접수됐습니다.\n"
+        "고객 영향: 접수 확인이 늦어지면 상담 연락과 진단 일정이 지연될 수 있습니다.\n"
+        "지금 할 일: Admin에서 신청 정보를 확인하고 담당자를 지정해 주세요.\n"
+        "처리 기한: 접수 당일"
+    )
+    return await _send(
+        text=(
+            f"무슨 문제인지: {safe_clinic_name} 진단 신청 접수 · "
+            "고객 영향: 상담 연락 대기 · 지금 할 일: Admin 확인 · "
+            "처리 기한: 접수 당일"
+        ),
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            _admin_action_block(
+                path=_validated_admin_path(admin_url),
+                label="무료 진단 신청 확인",
+            ),
+        ],
     )
 
 
@@ -660,6 +748,90 @@ def mask_contact_free(text: str) -> str:
     text = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "[email]", text)
     text = re.sub(r"0\d{1,2}[-\s]?\d{3,4}[-\s]?\d{4}", "[phone]", text)
     return text
+
+
+async def notify_content_missed_digest(
+    *, entries: list[dict[str, object]], admin_url: str
+) -> bool:
+    """아침의 미생성 콘텐츠를 병원별 한 줄로 묶는다."""
+    if not entries:
+        return False
+    missed_total = sum(int(entry.get("missed_count", 0) or 0) for entry in entries)
+    lines: list[str] = []
+    for entry in entries[:15]:
+        dates = [
+            _safe_operator_label(str(value), limit=20)
+            for value in list(entry.get("dates", []))[:3]
+        ]
+        date_text = ", ".join(dates) + (
+            " 외" if len(list(entry.get("dates", []))) > 3 else ""
+        )
+        lines.append(
+            f"• *{_safe_operator_label(str(entry.get('hospital_name', '')))}* — "
+            f"{int(entry.get('missed_count', 0) or 0)}건 ({date_text})"
+        )
+    if len(entries) > 15:
+        lines.append(f"• 그 외 {len(entries) - 15}개 병원")
+    body = (
+        f"⏰ *[아침 검수 대기 요약]* *{len(entries)}개 병원 · {missed_total}건*\n"
+        "무슨 문제인지: 발행 예정 콘텐츠가 제때 생성되지 않았습니다.\n"
+        "고객 영향: 공개 예정이 늦어질 수 있습니다.\n"
+        "지금 할 일: 급한 항목만 Admin에서 확인하고 필요하면 수동 생성해 주세요.\n"
+        "처리 기한: 오늘 중\n\n"
+        + "\n".join(lines)
+    )
+    return await _send(
+        text=(
+            f"무슨 문제인지: 콘텐츠 {missed_total}건 생성 대기 · "
+            "고객 영향: 공개 예정 지연 가능 · 지금 할 일: Admin 확인 · "
+            "처리 기한: 오늘 중"
+        ),
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            _admin_action_block(
+                path=_validated_admin_path(admin_url),
+                label="생성 대기 항목 확인",
+            ),
+        ],
+    )
+
+
+async def notify_auto_publish_block_digest(
+    *, entries: list[dict[str, object]], admin_url: str
+) -> bool:
+    """안전 검사로 공개되지 않은 콘텐츠를 한 메시지에 모아 설명한다."""
+    if not entries:
+        return False
+    lines: list[str] = []
+    for entry in entries[:12]:
+        lines.append(
+            f"• *{_safe_operator_label(str(entry.get('hospital_name', '')))}* · "
+            f"{_safe_operator_label(str(entry.get('scheduled_date', '')), limit=20)}"
+        )
+    if len(entries) > 12:
+        lines.append(f"• 그 외 {len(entries) - 12}건")
+    body = (
+        f"🚫 *[발행 차단 요약]* 공개되지 않은 콘텐츠 *{len(entries)}건*\n"
+        "무슨 문제인지: 공개 전 확인 항목이 남아 자동 발행이 멈췄습니다.\n"
+        "고객 영향: 해당 콘텐츠는 환자에게 공개되지 않았습니다.\n"
+        "지금 할 일: Admin에서 차단 항목을 확인하고 수정 또는 재시도를 선택해 주세요.\n"
+        "처리 기한: 오늘 중\n\n"
+        + "\n".join(lines)
+    )
+    return await _send(
+        text=(
+            f"무슨 문제인지: 콘텐츠 {len(entries)}건 발행 멈춤 · "
+            "고객 영향: 해당 콘텐츠 미공개 · 지금 할 일: Admin 확인 · "
+            "처리 기한: 오늘 중"
+        ),
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            _admin_action_block(
+                path=_validated_admin_path(admin_url),
+                label="발행 차단 항목 확인",
+            ),
+        ],
+    )
 
 
 async def notify_content_batch_summary(

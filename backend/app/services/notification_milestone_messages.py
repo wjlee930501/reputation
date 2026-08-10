@@ -123,7 +123,10 @@ def build_milestone_summary_notification(
     )
     message = validated_message(
         RenderedSlackMessage(
-            f"[운영 마일스톤 요약] {len(ordered)}건 · 문제·고객 영향·지금 할 일을 확인해 주세요.",
+            f"무슨 문제인지: 운영 마일스톤 {len(ordered)}건 · "
+            "고객 영향: 항목별 확인 필요 · "
+            "지금 할 일: Admin에서 관련 작업 확인 · "
+            "처리 기한: 각 항목 확인",
             blocks,
             url,
         ),
@@ -158,7 +161,7 @@ def _single_notification(
     status = safe_text(milestone.status_label, 100)
     deadline_label = _deadline_label(milestone)
     details = (
-        f"문제: {status}\n"
+        f"무슨 문제인지: {status}\n"
         f"고객 영향: {safe_text(milestone.customer_impact, 400)}\n"
         f"지금 할 일: {safe_text(milestone.next_action, 400)}\n"
         f"담당: {safe_text(milestone.owner_label, 100)} · "
@@ -176,9 +179,10 @@ def _single_notification(
     event = "MILESTONE_RECOVERED" if recovery else "MILESTONE_ACTION"
     message = validated_message(
         RenderedSlackMessage(
-            f"문제: {status} · 고객 영향: "
+            f"무슨 문제인지: {status} · 고객 영향: "
             f"{safe_text(milestone.customer_impact, 240)} · 지금 할 일: "
-            f"{safe_text(milestone.next_action, 240)}",
+            f"{safe_text(milestone.next_action, 240)} · "
+            f"{deadline_label}: {safe_text(milestone.sla_label, 100)}",
             blocks,
             url,
         ),
@@ -215,7 +219,7 @@ def _summary_path(milestones: Sequence[MilestoneProjection]) -> str:
 def _summary_line(milestone: MilestoneProjection) -> str:
     return (
         f"• *{safe_text(milestone.hospital_name, 100)}* · "
-        f"문제: {safe_text(milestone.status_label, 100)}\n"
+        f"무슨 문제인지: {safe_text(milestone.status_label, 100)}\n"
         f"  고객 영향: {safe_text(milestone.customer_impact, 300)}\n"
         f"  지금 할 일: {safe_text(milestone.next_action, 300)}\n"
         f"담당: {safe_text(milestone.owner_label, 80)} · "
@@ -223,9 +227,7 @@ def _summary_line(milestone: MilestoneProjection) -> str:
     )
 
 
-def _deadline_label(milestone: MilestoneProjection) -> str:
-    if milestone.kind in {MilestoneKind.HANDOFF_OVERDUE, MilestoneKind.HANDOFF_ACCEPTED}:
-        return "인수 처리 기한"
+def _deadline_label(_milestone: MilestoneProjection) -> str:
     return "처리 기한"
 
 

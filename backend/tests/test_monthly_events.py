@@ -298,16 +298,20 @@ def test_mixed_daily_summary_has_stable_constituents_and_one_operations_link() -
     # Then: one deterministic summary hides internal IDs and has exactly one deep link
     payload_json = first.message.payload_json()
     assert first.dedupe_key == second.dedupe_key
-    assert first.message.fallback_text.startswith("[운영 마일스톤 요약] 2건")
+    assert first.message.fallback_text.startswith("무슨 문제인지: 운영 마일스톤 2건")
     assert all(
-        label in first.message.fallback_text for label in ("문제", "고객 영향", "지금 할 일")
+        label in first.message.fallback_text
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
     )
     assert overdue.stable_id not in payload_json
     assert blocked.stable_id not in payload_json
     assert payload_json.count(f"{_ADMIN}/operations") == 1
     assert len(first.message.blocks) <= 50
     assert json.loads(payload_json)["text"] == first.message.fallback_text
-    assert all(label in payload_json for label in ("문제:", "고객 영향:", "지금 할 일:"))
+    assert all(
+        label in payload_json
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:")
+    )
     assert "처리 기한:" in payload_json
     assert "SLA:" not in payload_json
     assert "T08:00:00" not in payload_json

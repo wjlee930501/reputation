@@ -72,17 +72,18 @@ def test_handoff_overdue_action_is_stable_safe_and_admin_linked() -> None:
     assert "doctor@example.com" not in encoded
     assert "010-1234-5678" not in encoded
     assert "gs://private/report.pdf" not in encoded
-    assert "문제:" in encoded
+    assert "무슨 문제인지:" in encoded
     assert "고객 영향:" in encoded
     assert "지금 할 일:" in encoded
-    assert "인수 처리 기한:" in encoded
+    assert "처리 기한:" in encoded
     assert "SLA:" not in encoded
     assert "2026-08-10T" not in encoded
     assert "2026년 8월 10일 01:00 (UTC)" in encoded
     assert first.stable_id not in encoded
     assert "고객 인계 승인하기" in encoded
     assert all(
-        label in intent.message.fallback_text for label in ("문제:", "고객 영향:", "지금 할 일:")
+        label in intent.message.fallback_text
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
     )
 
 

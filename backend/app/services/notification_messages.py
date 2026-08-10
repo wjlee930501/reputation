@@ -59,7 +59,12 @@ def _incident_notification(
     )
     developer_reference = _developer_reference(incident)
     message = _message(
-        f"[{status}] {hospital_name}",
+        (
+            f"무슨 문제인지: {_safe_text(problem, 180)} · "
+            f"고객 영향: {_safe_text(incident.customer_impact, 180)} · "
+            f"지금 할 일: {_safe_text(next_action, 180)} · "
+            f"처리 기한: {deadline_label}"
+        ),
         (
             _block("header", "header", {"type": "plain_text", "text": status}),
             _block(
@@ -81,7 +86,7 @@ def _incident_notification(
                         f"*지금 할 일*\n{_safe_text(next_action, 500)} "
                         f"{support_fallback}\n"
                         f"담당: {owner_label} · "
-                        f"언제까지: {deadline_label}"
+                        f"처리 기한: {deadline_label}"
                     ),
                 },
             ),
@@ -140,6 +145,7 @@ def build_summary_notification(
             f"  무슨 문제인지: {_safe_text(item.problem, 300)}\n"
             f"  고객 영향: {_safe_text(item.customer_impact, 300)}\n"
             f"  지금 할 일: {_safe_text(item.next_action, 300)}\n"
+            f"  처리 기한: {_operator_deadline_label(item.sla_label)}\n"
             f"  개발팀에 전달할 정보: `{_developer_reference(item)}`"
         )
         for item in ordered
@@ -168,7 +174,14 @@ def build_summary_notification(
     return NotificationIntent(
         dedupe_key=f"INCIDENT_SUMMARY:{digest}",
         notification_type="INCIDENT_SUMMARY",
-        message=_message(f"[운영 요약] {len(ordered)}건 확인 필요", blocks, url),
+        message=_message(
+            f"무슨 문제인지: 운영 알림 {len(ordered)}건 · "
+            "고객 영향: 항목별 확인 필요 · "
+            "지금 할 일: Admin에서 모아보기 · "
+            "처리 기한: 각 항목 확인",
+            blocks,
+            url,
+        ),
     )
 
 
@@ -266,7 +279,6 @@ def _operator_severity_label(value: str) -> str:
 
 
 def _developer_reference(incident: IncidentSlackProjection) -> str:
-    parts = [f"사건 {incident.incident_id}"]
-    if incident.operation_run_id is not None:
-        parts.append(f"작업 {incident.operation_run_id}")
-    return " · ".join(parts)
+    identity = f"{incident.incident_id}:{incident.operation_run_id or ''}"
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:12].upper()
+    return f"OPS-{digest}"

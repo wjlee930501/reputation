@@ -136,8 +136,9 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
         "https://admin.example.test/operations?queue=incidents&status=OPEN"
     ]
     assert summary_a.dedupe_key == summary_b.dedupe_key
-    assert str(first.incident_id) in summary_a.message.payload_json()
-    assert str(second.incident_id) in summary_a.message.payload_json()
+    assert str(first.incident_id) not in summary_a.message.payload_json()
+    assert str(first.operation_run_id) not in summary_a.message.payload_json()
+    assert str(second.incident_id) not in summary_a.message.payload_json()
     assert all(
         label in summary_a.message.payload_json()
         for label in ("무슨 문제인지", "고객 영향", "지금 할 일")
@@ -145,7 +146,7 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
     assert "개발팀에 전달할 정보" in summary_a.message.payload_json()
     assert open_intent.notification_type == "INCIDENT_OPEN"
     assert recovered.notification_type == "INCIDENT_RECOVERED"
-    assert "언제까지: 오늘 18:00" in open_intent.message.payload_json()
+    assert "처리 기한: 오늘 18:00" in open_intent.message.payload_json()
     assert "SLA:" not in open_intent.message.payload_json()
     assert "운영센터에서 조치하기" in open_intent.message.payload_json()
     recovered_payload = recovered.message.payload_json()
@@ -172,8 +173,11 @@ def test_summary_identity_uses_sorted_unique_incidents_and_rejects_conflicts() -
 
     # Then: identity/count/body use the unique set, while conflicting facts fail closed
     assert deduped.dedupe_key == canonical.dedupe_key
-    assert deduped.message.fallback_text.endswith("2건 확인 필요")
-    assert deduped.message.payload_json().count(str(first.incident_id)) == 1
+    assert all(
+        label in deduped.message.fallback_text
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+    )
+    assert str(first.incident_id) not in deduped.message.payload_json()
     with pytest.raises(NotificationPayloadError, match="SUMMARY_INCIDENT_CONFLICT"):
         build_summary_notification(
             (first, replace(first, hospital_name="다른 병원")),

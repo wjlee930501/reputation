@@ -40,6 +40,31 @@ def test_publish_intent_keeps_publication_identity_and_one_admin_action() -> Non
     assert intent.notification_type == "CONTENT_PUBLISHED"
     assert intent.max_attempts == 1
     assert intent.message.admin_url.endswith(f"/hospitals/{hospital.id}/content?content={item.id}")
+    payload = intent.message.payload_json()
+    assert all(
+        label in payload
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+    )
+    assert payload.count('"type": "button"') == 1
+
+
+def test_publish_intent_sanitizes_visible_identity() -> None:
+    item = _published_item()
+    item.title = "queue /tmp/patient.pdf doctor@example.com 010-1234-5678"
+    hospital = SimpleNamespace(id=item.hospital_id, name="/Users/private/patient@example.com")
+
+    intent = build_publish_notification_intent(item, hospital)
+
+    visible = " ".join(
+        [intent.message.fallback_text]
+        + [
+            str(block.get("text", {}).get("text", ""))
+            for block in intent.message.blocks
+            if isinstance(block.get("text"), dict)
+        ]
+    )
+    for forbidden in ("/tmp/", "/Users/", "patient@example.com", "010-1234-5678"):
+        assert forbidden not in visible
 
 
 def test_publish_projection_uses_outbox_state_instead_of_legacy_timestamp() -> None:

@@ -150,3 +150,97 @@ async def test_purge_success_explains_outcome_and_links_one_incident_action(monk
     rendered = f"{payload['text']} {body}"
     for forbidden in ("PII", "cron", "lead"):
         assert forbidden.lower() not in rendered.lower()
+
+
+async def test_site_ready_uses_safe_copy_and_one_hospital_action(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "ADMIN_BASE_URL", "https://admin.example.test")
+    payload = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_site_built(
+        "/tmp/patient@example.com",
+        "https://admin.example.test/hospitals/hospital-1/profile#domain-setup",
+    )
+
+    assert sent is True
+    body = _section_text(payload)
+    assert all(
+        label in body
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+    )
+    assert _button_url(payload) == "https://admin.example.test/hospitals/hospital-1/profile"
+    assert "/tmp/" not in f"{payload['text']} {body}"
+    assert "patient@example.com" not in f"{payload['text']} {body}"
+
+
+async def test_lead_diagnosis_received_omits_contact_and_uses_one_lead_action(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "ADMIN_BASE_URL", "https://admin.example.test")
+    payload = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_lead_diagnosis_received(
+        clinic_name="테스트의원",
+        clinic_type="외과",
+        region="서울",
+        keywords=["진단"],
+        contact="010-1234-5678",
+        email="doctor@example.com",
+        slot_no=3,
+        admin_url="https://admin.example.test/leads",
+    )
+
+    assert sent is True
+    body = _section_text(payload)
+    assert all(
+        label in body
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+    )
+    assert _button_url(payload) == "https://admin.example.test/leads"
+    assert "010-1234-5678" not in f"{payload['text']} {body}"
+    assert "doctor@example.com" not in f"{payload['text']} {body}"
+
+
+async def test_auto_publish_block_digest_has_one_validated_admin_action(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "ADMIN_BASE_URL", "https://admin.example.test")
+    payload = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_auto_publish_block_digest(
+        entries=[{
+            "hospital_name": "테스트의원",
+            "title": "/tmp/private.pdf",
+            "scheduled_date": "2026-08-10",
+            "reason": "RuntimeError queue failed",
+        }],
+        admin_url="https://evil.example.test/private",
+    )
+
+    assert sent is True
+    body = _section_text(payload)
+    assert all(
+        label in body
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+    )
+    assert _button_url(payload) == "https://admin.example.test/operations?queue=INCIDENTS"
+    rendered = f"{payload['text']} {body}"
+    for forbidden in ("RuntimeError", "queue", "/tmp/"):
+        assert forbidden.lower() not in rendered.lower()
+
+
+async def test_content_missed_digest_has_one_validated_admin_action(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "ADMIN_BASE_URL", "https://admin.example.test")
+    payload = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_content_missed_digest(
+        entries=[{
+            "hospital_name": "테스트의원",
+            "missed_count": 2,
+            "dates": ["2026-08-09", "2026-08-10"],
+        }],
+        admin_url="https://admin.example.test/hospitals",
+    )
+
+    assert sent is True
+    body = _section_text(payload)
+    assert all(
+        label in body
+        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+    )
+    assert _button_url(payload) == "https://admin.example.test/hospitals"
