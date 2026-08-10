@@ -1,6 +1,9 @@
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
@@ -35,15 +38,24 @@ def _sync_connect_args():
 def get_async_sessionmaker():
     global engine, AsyncSessionLocal
     if AsyncSessionLocal is None:
-        engine = create_async_engine(
-            settings.DATABASE_URL,
-            echo=settings.APP_ENV == "development",
-            pool_pre_ping=True,
-            pool_size=settings.DB_POOL_SIZE,
-            max_overflow=settings.DB_MAX_OVERFLOW,
-            pool_timeout=settings.DB_POOL_TIMEOUT,
-            connect_args=_async_connect_args(),
-        )
+        worker_process = os.getenv("SERVICE", "").strip().lower() in {"worker", "beat"}
+        engine_kwargs = {
+            "echo": settings.APP_ENV == "development",
+            "pool_pre_ping": True,
+            "connect_args": _async_connect_args(),
+        }
+        if worker_process:
+            # Celery task families own different event loops in one prefork process.
+            # A pooled asyncpg connection cannot cross those loops, so worker async
+            # connections live only for the session/loop that opened them.
+            engine_kwargs["poolclass"] = NullPool
+        else:
+            engine_kwargs.update(
+                pool_size=settings.DB_POOL_SIZE,
+                max_overflow=settings.DB_MAX_OVERFLOW,
+                pool_timeout=settings.DB_POOL_TIMEOUT,
+            )
+        engine = create_async_engine(settings.DATABASE_URL, **engine_kwargs)
         AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     return AsyncSessionLocal
 

@@ -46,6 +46,18 @@ def _incident_notification(
     deadline_label = _operator_deadline_label(incident.sla_label)
     severity_label = _operator_severity_label(incident.severity)
     url = _admin_url(admin_base_url, incident.admin_path)
+    problem = "자동 복구가 확인되었습니다." if recovered else incident.problem
+    next_action = (
+        "운영센터에서 복구 결과를 확인하고 ‘확인 완료’ 처리하세요."
+        if recovered
+        else incident.next_action
+    )
+    action_label = "복구 상태 확인" if recovered else "운영센터에서 조치하기"
+    support_fallback = (
+        "운영센터의 조치 버튼을 사용할 수 없거나 같은 문제가 반복되면 "
+        "‘개발팀 문의용 정보 복사’를 개발팀에 전달하세요."
+    )
+    developer_reference = _developer_reference(incident)
     message = _message(
         f"[{status}] {hospital_name}",
         (
@@ -55,7 +67,7 @@ def _incident_notification(
                 "incident_identity",
                 {
                     "type": "mrkdwn",
-                    "text": (f"*{hospital_name}* · {severity_label}\n`{incident.incident_id}`"),
+                    "text": f"*{hospital_name}* · {severity_label}",
                 },
             ),
             _block(
@@ -64,14 +76,24 @@ def _incident_notification(
                 {
                     "type": "mrkdwn",
                     "text": (
-                        f"영향: {_safe_text(incident.customer_impact, 500)}\n"
-                        f"다음 행동: {_safe_text(incident.next_action, 500)}\n"
+                        f"*무슨 문제인지*\n{_safe_text(problem, 500)}\n"
+                        f"*고객 영향*\n{_safe_text(incident.customer_impact, 500)}\n"
+                        f"*지금 할 일*\n{_safe_text(next_action, 500)} "
+                        f"{support_fallback}\n"
                         f"담당: {owner_label} · "
                         f"언제까지: {deadline_label}"
                     ),
                 },
             ),
-            _action_block("incident_action", url, "조치 화면 열기"),
+            _block(
+                "section",
+                "developer_reference",
+                {
+                    "type": "mrkdwn",
+                    "text": f"*개발팀에 전달할 정보*\n`{developer_reference}`",
+                },
+            ),
+            _action_block("incident_action", url, action_label),
         ),
         url,
     )
@@ -114,9 +136,11 @@ def build_summary_notification(
     url = _admin_url(admin_base_url, "/operations?state=OPEN")
     lines = tuple(
         (
-            f"• {_safe_text(item.hospital_name, 100)} (`{item.incident_id}`)\n"
-            f"  영향: {_safe_text(item.customer_impact, 300)}\n"
-            f"  조치: {_safe_text(item.next_action, 300)}"
+            f"• *{_safe_text(item.hospital_name, 100)}*\n"
+            f"  무슨 문제인지: {_safe_text(item.problem, 300)}\n"
+            f"  고객 영향: {_safe_text(item.customer_impact, 300)}\n"
+            f"  지금 할 일: {_safe_text(item.next_action, 300)}\n"
+            f"  개발팀에 전달할 정보: `{_developer_reference(item)}`"
         )
         for item in ordered
     )
@@ -239,3 +263,10 @@ def _operator_severity_label(value: str) -> str:
         "HIGH": "높음",
         "CRITICAL": "긴급",
     }.get(value.upper(), "상세 확인 필요")
+
+
+def _developer_reference(incident: IncidentSlackProjection) -> str:
+    parts = [f"사건 {incident.incident_id}"]
+    if incident.operation_run_id is not None:
+        parts.append(f"작업 {incident.operation_run_id}")
+    return " · ".join(parts)

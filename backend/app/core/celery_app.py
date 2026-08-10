@@ -1,9 +1,8 @@
-import asyncio
 import logging
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import task_failure, task_prerun
+from celery.signals import task_failure, task_postrun, task_prerun
 
 from app.core.config import settings
 from app.core.observability import configure_logging, sentry_before_send, set_request_id
@@ -38,23 +37,31 @@ def _bind_request_id(task=None, **_kwargs):
 
 @task_failure.connect
 def _alert_on_task_failure(sender=None, task_id=None, exception=None, **_kwargs):
-    """Slack-alert when a task fails after retries are exhausted (CELERY-3)."""
+    """Open one recoverable incident only for a durable operation run."""
     task_name = getattr(sender, "name", str(sender))
     try:
-        from app.services import notifier
+        from app.workers.task_incident_control import record_task_failure
 
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(
-                notifier.notify_task_failure(
-                    task_name=task_name, task_id=str(task_id or "?"), error=str(exception)
-                )
-            )
-        finally:
-            loop.close()
-    except Exception:
+        record_task_failure(sender, str(task_id) if task_id is not None else None)
+    except Exception:  # noqa: BLE001 - Celery signal boundary must not replace task outcome.
         logging.getLogger("app.celery").error(
-            "task_failure alert delivery failed for %s", task_name
+            "task failure incident projection unavailable task_name=%s", task_name
+        )
+
+
+@task_postrun.connect
+def _recover_after_task_success(sender=None, task_id=None, state=None, **_kwargs):
+    """Close only the incident correlated to this exact successful run."""
+    if state != "SUCCESS":
+        return
+    task_name = getattr(sender, "name", str(sender))
+    try:
+        from app.workers.task_incident_control import record_task_success
+
+        record_task_success(sender, str(task_id) if task_id is not None else None)
+    except Exception:  # noqa: BLE001 - Celery signal boundary must not replace task outcome.
+        logging.getLogger("app.celery").error(
+            "task recovery projection unavailable task_name=%s", task_name
         )
 
 
@@ -69,6 +76,7 @@ celery_app = Celery(
         "app.workers.notification_tasks",
         "app.workers.milestone_event_tasks",
         "app.workers.operation_run_signals",
+        "app.workers.canary_tasks",
     ],
 )
 
@@ -131,6 +139,11 @@ celery_app.conf.update(
         "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": {"queue": "default"},
         "app.workers.notification_tasks.dispatch_notification_outbox": {"queue": "default"},
         "app.workers.milestone_event_tasks.project_milestone_events": {"queue": "default"},
+        "app.workers.canary_tasks.canary_default": {"queue": "default"},
+        "app.workers.canary_tasks.canary_content": {"queue": "content"},
+        "app.workers.canary_tasks.canary_sov": {"queue": "sov"},
+        "app.workers.canary_tasks.canary_reports": {"queue": "reports"},
+        "app.workers.canary_tasks.canary_leadgen": {"queue": "leadgen"},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성
@@ -191,6 +204,26 @@ celery_app.conf.update(
         "live-custom-domain-health": {
             "task": "app.workers.tasks.monitor_live_custom_domains",
             "schedule": crontab(minute="*/15"),
+        },
+        "canary-default": {
+            "task": "app.workers.canary_tasks.canary_default",
+            "schedule": crontab(minute="*/5"),
+        },
+        "canary-content": {
+            "task": "app.workers.canary_tasks.canary_content",
+            "schedule": crontab(minute="*/5"),
+        },
+        "canary-sov": {
+            "task": "app.workers.canary_tasks.canary_sov",
+            "schedule": crontab(minute="*/5"),
+        },
+        "canary-reports": {
+            "task": "app.workers.canary_tasks.canary_reports",
+            "schedule": crontab(minute="*/5"),
+        },
+        "canary-leadgen": {
+            "task": "app.workers.canary_tasks.canary_leadgen",
+            "schedule": crontab(minute="*/5"),
         },
     },
 )

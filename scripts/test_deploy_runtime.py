@@ -4,7 +4,6 @@ import stat
 import subprocess
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -119,6 +118,7 @@ def _clean_env(fake_bin: Path, command_log: Path, **extra: str) -> dict[str, str
         "FAKE_COMMAND_LOG": str(command_log),
         "GCP_PROJECT_ID": "test-project",
         "GCP_REGION": "asia-northeast3",
+        "REPUTATION_RELEASE_REVISION": "test-source-revision",
     }
     env.update(extra)
     return env
@@ -165,6 +165,117 @@ def test_production_env_template_passes_every_deploy_guard(tmp_path: Path) -> No
     ]
     first_service_env = env_keys[: len(env_keys) // max(env_keys.count("SERVICE"), 1)]
     assert len(first_service_env) == len(set(first_service_env)), sorted(first_service_env)
+
+    release_lines = [
+        line for line in commands.splitlines() if line.startswith("env REPUTATION_RELEASE_REVISION:")
+    ]
+    # api + worker + beat, plus the beat-image reconciliation job, all use one rollout id.
+    assert len(release_lines) >= 3
+    assert len(set(release_lines)) == 1
+    assert release_lines[0].endswith('"')
+    assert release_lines[0] == 'env REPUTATION_RELEASE_REVISION: "test-source-revision"'
+
+
+def test_independent_backend_deploys_keep_one_source_revision(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    for target in ("worker", "api", "beat"):
+        result = subprocess.run(
+            ["bash", "scripts/deploy.sh", target],
+            cwd=project,
+            env=_clean_env(
+                fake_bin,
+                command_log,
+                SKIP_ASSET_BUCKET_PREFLIGHT="1",
+                REPUTATION_RELEASE_REVISION="same-source-sha",
+            ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    release_lines = [
+        line
+        for line in command_log.read_text().splitlines()
+        if line.startswith("env REPUTATION_RELEASE_REVISION:")
+    ]
+    assert len(release_lines) >= 3
+    assert set(release_lines) == {'env REPUTATION_RELEASE_REVISION: "same-source-sha"'}
+
+
+def test_backend_deploy_rejects_unknown_release_revision_before_mutation(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            REPUTATION_RELEASE_REVISION="invalid revision with spaces",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "배포 소스 버전 형식" in result.stderr
+    assert not command_log.exists() or "run deploy" not in command_log.read_text()
+
+
+def test_backend_deploy_fails_closed_when_source_revision_is_unavailable(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    env = _clean_env(fake_bin, command_log)
+    env["REPUTATION_RELEASE_REVISION"] = ""
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "worker"],
+        cwd=project,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "배포 소스 버전을 확인할 수 없습니다" in result.stderr
+    assert not command_log.exists()
+
+
+def test_backend_deploy_fails_closed_for_dirty_source_without_override(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    env_file = project / ".env.production"
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", env_file)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.email", "task20@example.test"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "Task20"], cwd=project, check=True)
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=project, check=True)
+    env_file.write_text(env_file.read_text() + "\n# uncommitted\n")
+    env = _clean_env(fake_bin, command_log)
+    env["REPUTATION_RELEASE_REVISION"] = ""
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "커밋되지 않은 변경" in result.stderr
+    assert not command_log.exists()
 
 
 def test_deploy_refuses_to_drop_a_terraform_declared_env_key(tmp_path: Path) -> None:
@@ -390,8 +501,9 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             "DB_USER": "reputation",
             "GCP_STORAGE_BUCKET": "reputation-assets",
             "OPENAI_CHATGPT_USE_WEB_SEARCH": "true",
-            "CERTIFICATE_MANAGER_AUTO_PROVISION": "true",
-            "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
+                "CERTIFICATE_MANAGER_AUTO_PROVISION": "true",
+                "REPUTATION_RELEASE_REVISION": "test-source-revision",
+                "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
             "SKIP_ASSET_BUCKET_PREFLIGHT": "1",
         }
     )
@@ -546,8 +658,9 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
             "GCP_PROJECT_ID": "test-project",
             "GCP_REGION": "asia-northeast3",
             "PUBLIC_DOMAIN": "reputation.example.test",
-            "ADMIN_DOMAIN": "admin.reputation.example.test",
-            "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
+                "ADMIN_DOMAIN": "admin.reputation.example.test",
+                "REPUTATION_RELEASE_REVISION": "test-source-revision",
+                "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
             "SKIP_ASSET_BUCKET_PREFLIGHT": "1",
         }
     )

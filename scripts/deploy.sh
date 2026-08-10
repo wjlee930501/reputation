@@ -55,6 +55,28 @@ REGION="${GCP_REGION:-asia-northeast3}"
 REPO="${GCP_ARTIFACT_REPO:-reputation}"
 IMAGE_TAG="$(date +%Y%m%d-%H%M%S)"
 IMAGE_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/reputation"
+RELEASE_REVISION=""
+
+resolve_release_revision() {
+  local revision="${REPUTATION_RELEASE_REVISION:-}"
+  if [[ -z "$revision" ]]; then
+    git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      || fail "배포 소스 버전을 확인할 수 없습니다. 개발팀에 문의해 배포 기준을 확인하세요."
+    if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=normal)" ]]; then
+      fail "커밋되지 않은 변경이 있어 배포 기준을 고정할 수 없습니다. 변경을 커밋하거나 개발팀이 승인한 REPUTATION_RELEASE_REVISION을 입력하세요."
+    fi
+    revision="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  fi
+  [[ "$revision" =~ ^[A-Za-z0-9._-]{1,128}$ ]] \
+    || fail "배포 소스 버전 형식이 올바르지 않습니다. 개발팀에 REPUTATION_RELEASE_REVISION 확인을 요청하세요."
+  printf '%s' "$revision"
+}
+
+case "$TARGET" in
+  backend|api|worker|beat|all)
+    RELEASE_REVISION="$(resolve_release_revision)"
+    ;;
+esac
 
 SERVICE_ACCOUNT="${GCP_SERVICE_ACCOUNT:-reputation-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
 ALLOW_PLAINTEXT_ENV_SECRETS="${ALLOW_PLAINTEXT_ENV_SECRETS:-0}"
@@ -350,6 +372,9 @@ make_service_env_file() {
     "$OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE" \
     "$CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE" \
     >> "$SERVICE_ENV_FILE"
+  if [[ "$service" == "api" || "$service" == "worker" || "$service" == "beat" ]]; then
+    printf 'REPUTATION_RELEASE_REVISION: "%s"\n' "$RELEASE_REVISION" >> "$SERVICE_ENV_FILE"
+  fi
 }
 
 # ─── 시크릿 조회: "없다"와 "못 봤다"를 구분한다 ───────────────────────

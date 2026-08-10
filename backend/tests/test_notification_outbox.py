@@ -130,12 +130,21 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
     assert summary_a.dedupe_key == summary_b.dedupe_key
     assert str(first.incident_id) in summary_a.message.payload_json()
     assert str(second.incident_id) in summary_a.message.payload_json()
-    assert "영향:" in summary_a.message.payload_json()
-    assert "조치:" in summary_a.message.payload_json()
+    assert all(
+        label in summary_a.message.payload_json()
+        for label in ("무슨 문제인지", "고객 영향", "지금 할 일")
+    )
+    assert "개발팀에 전달할 정보" in summary_a.message.payload_json()
     assert open_intent.notification_type == "INCIDENT_OPEN"
     assert recovered.notification_type == "INCIDENT_RECOVERED"
     assert "언제까지: 오늘 18:00" in open_intent.message.payload_json()
     assert "SLA:" not in open_intent.message.payload_json()
+    assert "운영센터에서 조치하기" in open_intent.message.payload_json()
+    recovered_payload = recovered.message.payload_json()
+    assert "자동 복구가 확인되었습니다" in recovered_payload
+    assert "운영센터에서 복구 결과를 확인" in recovered_payload
+    assert "복구 상태 확인" in recovered_payload
+    assert "재시도를 확인해 주세요" not in recovered_payload
 
 
 def test_summary_identity_uses_sorted_unique_incidents_and_rejects_conflicts() -> None:
