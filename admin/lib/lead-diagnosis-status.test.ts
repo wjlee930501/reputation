@@ -59,6 +59,17 @@ test('복구 사유 최소 길이는 API 계약과 같은 3자다', () => {
   assert.doesNotMatch(LEADS_PAGE, /사유를 2자 이상 입력/)
 })
 
+test('복구 모달은 개발 용어 없이 운영자가 확인한 사실을 적게 한다', () => {
+  assert.doesNotMatch(LEADS_PAGE, /공급자 설정|PDF 렌더링/)
+  assert.match(LEADS_PAGE, /같은 질문으로 다시 확인이 필요해 재측정/)
+  assert.match(LEADS_PAGE, /리포트가 열리지 않아 다시 만들기/)
+})
+
+test('복구 모달 실행과 취소 버튼은 44px 조작 영역을 가진다', () => {
+  assert.match(LEADS_PAGE, /flex-1 min-h-11 rounded-lg bg-blue-600/)
+  assert.match(LEADS_PAGE, /min-h-11 rounded-lg bg-slate-100/)
+})
+
 // ── 확인 필요 판정 ───────────────────────────────────────────────────
 test('backend needs_attention wins when present', () => {
   assert.equal(needsAttention(make({ needs_attention: true })), true)

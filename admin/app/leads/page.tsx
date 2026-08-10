@@ -71,13 +71,13 @@ const ACTION_COPY: Record<
   remeasure: {
     title: 'AI 답변 다시 측정',
     description: '같은 환자 질문을 AI에 다시 물어 병원명이 확인되는지 측정합니다.',
-    placeholder: '예) 공급자 설정 정상화 확인 후 재측정',
+    placeholder: '예) 같은 질문으로 다시 확인이 필요해 재측정',
     submit: '다시 측정',
   },
   rebuild: {
     title: '리포트 다시 만들기',
     description: '기존 리포트는 보관하고 새 리포트를 만듭니다.',
-    placeholder: '예) PDF 렌더링 설정 수정 확인 후 재생성',
+    placeholder: '예) 리포트가 열리지 않아 다시 만들기',
     submit: '리포트 다시 만들기',
   },
 }
@@ -689,7 +689,7 @@ export default function LeadsPage() {
                 type="button"
                 onClick={handleSubmitAction}
                 disabled={actionSubmitting}
-                className="flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                className="flex-1 min-h-11 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {actionSubmitting
                   ? '처리 중...'
@@ -699,7 +699,7 @@ export default function LeadsPage() {
                 type="button"
                 onClick={() => setActionTarget(null)}
                 disabled={actionSubmitting}
-                className="rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+                className="min-h-11 rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
               >
                 취소
               </button>
