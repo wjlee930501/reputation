@@ -10,6 +10,12 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.core.config import settings
 from app.models.hospital import Hospital
+from app.services.doctor_pdf_contracts import (
+    DoctorEvidence,
+    DoctorEvidenceCase,
+    DoctorReportView,
+    DoctorTile,
+)
 from app.services.monthly_sov_types import MonthlySovPayload
 from app.services.report_attribution import ContentAttributionPayload
 
@@ -414,7 +420,7 @@ def _competitors_named_in(record: Any) -> list[str]:
     ]
 
 
-def _pick_evidence(records: list, hospital_name: str) -> dict[str, Any]:
+def _pick_evidence(records: list, hospital_name: str) -> DoctorEvidence:
     """나온 사례 1개와 안 나온 사례 1개.
 
     이 블록이 리포트의 심장이다 — 원장이 자기 폰으로 물어봤는데 안 나오는 순간이
@@ -424,7 +430,7 @@ def _pick_evidence(records: list, hospital_name: str) -> dict[str, Any]:
     mentioned = next((r for r in usable if getattr(r, "is_mentioned", False)), None)
     missing = next((r for r in usable if not getattr(r, "is_mentioned", False)), None)
 
-    def _shape(record: Any, *, found: bool) -> dict[str, Any] | None:
+    def _shape(record: Any, *, found: bool) -> DoctorEvidenceCase | None:
         if record is None:
             return None
         return {
@@ -451,7 +457,8 @@ def build_doctor_report_view(
     attribution: ContentAttributionPayload | None,
     records: list,
     platforms: list[str] | None = None,
-) -> dict[str, Any]:
+    sov_coverage: MonthlySovPayload | None = None,
+) -> DoctorReportView:
     """원장에게 보낼 1페이지의 모든 문구와 숫자를 만든다.
 
     숫자는 전부 코드 바인딩이다 — 시장 1위 리포팅 툴의 현재 1순위 불만이 AI 요약의
@@ -478,7 +485,7 @@ def build_doctor_report_view(
     non_comparable_questions = int((attribution or {}).get("non_comparable_count") or 0)
     ahead_of = _competitor_outcomes(records)
 
-    tiles: list[dict[str, Any]] = [
+    tiles: list[DoctorTile] = [
         {
             "label": "이번 달 발행한 글",
             "value": f"{published_count}편" if plan_quota is None else f"{plan_quota}편 중 {published_count}편",
@@ -513,11 +520,18 @@ def build_doctor_report_view(
         ours.append("아직 병원이 나오지 않는 질문을 추려 다음 글의 주제를 정합니다.")
 
     platform_names = ", ".join(_platform_label(p) for p in (platforms or [])) or "챗GPT, 제미나이"
+    if sov_coverage is None:
+        coverage_text = f"측정 범위: {platform_names}에서 확인한 AI 답변을 사용했습니다."
+    else:
+        coverage_text = (
+            f"측정 범위: {platform_names}에서 계획한 답변 {sov_coverage['planned_count']}개 중 "
+            f"{sov_coverage['success_count']}개를 확인했습니다."
+        )
 
     footnotes = [
         f"{platform_names}에 환자들이 실제로 쓰는 표현으로 질문해 답변을 모았습니다.",
         f"횟수가 {NORMAL_FLUCTUATION}개 안팎으로 오르내리는 것은 정상 범위입니다.",
-        "이 결과는 환자 수 증가를 보장하지 않습니다.",
+        "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.",
     ]
     if first_measured_questions:
         footnotes.append(
@@ -540,6 +554,7 @@ def build_doctor_report_view(
             "delta_sentence": delta_sentence,
         },
         "summary": summary,
+        "coverage_text": coverage_text,
         "tiles": tiles,
         "evidence": _pick_evidence(records, getattr(hospital, "name", "") or ""),
         "next_actions": {
@@ -548,40 +563,3 @@ def build_doctor_report_view(
         },
         "footnotes": footnotes,
     }
-
-
-def generate_doctor_pdf_report(
-    hospital: Hospital,
-    period_start: datetime,
-    view: dict[str, Any],
-) -> str:
-    """원장에게 전달할 1페이지 PDF를 만들고 GCS에 올린다.
-
-    AE용(generate_pdf_report)과 파일을 나눈다 — 같은 문서를 두 독자에게 맞추려다
-    양쪽 다 어정쩡해지는 것이 §5-3 결정 ⑥이 지적한 문제다.
-    """
-    from weasyprint import HTML
-
-    output_dir = Path(settings.REPORT_OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    label = arrow.get(period_start).format("YYYY-MM")
-    filename = f"{hospital.slug}_{label}_doctor.pdf"
-    local_pdf_path = output_dir / filename
-
-    env = Environment(
-        loader=FileSystemLoader(str(TEMPLATE_DIR)),
-        autoescape=select_autoescape(enabled_extensions=("html",)),
-    )
-    html = env.get_template("doctor_report.html").render(view=view, period_label=label)
-
-    HTML(string=html).write_pdf(str(local_pdf_path))
-    logger.info(f"Doctor PDF generated: {local_pdf_path}")
-
-    gcs_path = _upload_to_gcs(local_pdf_path, hospital.slug, filename)
-    if gcs_path.startswith("gs://"):
-        try:
-            local_pdf_path.unlink()
-        except Exception as e:
-            logger.warning(f"Failed to delete local PDF {local_pdf_path}: {e}")
-    return gcs_path

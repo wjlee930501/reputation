@@ -69,6 +69,20 @@ test('versioned rebuild names the prior report without exposing raw state', () =
   assert.equal(run?.attentionLabel, '검수 필요')
 })
 
+test('validated PDF stage stays distinct from final delivery readiness', () => {
+  const [run] = parseReportRuns([{
+    run_id: 'run-validated', parent_run_id: null, state: 'SUCCEEDED',
+    stage: 'ARTIFACT_VALIDATED', period_year: 2026, period_month: 7,
+    report_id: 'report-validated', report_version: 1, supersedes_report_id: null,
+    requested_at: '2026-08-10T00:00:00Z', completed_at: '2026-08-10T00:01:00Z',
+  }])
+
+  assert.equal(run?.statusLabel, '원장 전달용 PDF 검증 완료')
+  assert.equal(run?.customerImpact, '최종 전달 가능 여부는 최신 병원 자료와 공개 상태를 함께 확인해야 합니다.')
+  assert.equal(run?.nextAction, '리포트 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.')
+  assert.doesNotMatch(JSON.stringify(run), /CUSTOMER_READY|SLA/)
+})
+
 test('blocked reports lead with the operations center before a rebuild', () => {
   const [run] = parseReportRuns([{
     run_id: 'run-blocked', state: 'PARTIAL', stage: 'BLOCKED', period_year: 2026,

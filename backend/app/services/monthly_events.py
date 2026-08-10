@@ -37,6 +37,7 @@ class MonthlyRunStage(StrEnum):
     BLOCKED = "BLOCKED"
     COVERAGE_COMPLETE = "COVERAGE_COMPLETE"
     ARTIFACT_VALIDATION_PENDING = "ARTIFACT_VALIDATION_PENDING"
+    ARTIFACT_VALIDATED = "ARTIFACT_VALIDATED"
     EXISTING = "EXISTING"
     FAILED = "FAILED"
 
@@ -86,6 +87,13 @@ def monthly_run_operator_copy(stage: MonthlyRunStage) -> MonthlyRunOperatorCopy:
                 "측정 집계와 리포트 생성은 끝났지만 원장 전달용 PDF 확인이 남았습니다.",
                 "확인 전 파일은 원장님께 전달할 수 없습니다.",
                 "원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.",
+            )
+        case MonthlyRunStage.ARTIFACT_VALIDATED:
+            return MonthlyRunOperatorCopy(
+                "원장 전달용 PDF 검증 완료",
+                "원장 전달용 PDF의 한 페이지 구성, 한글, 필수 안내와 링크를 확인했습니다.",
+                "최종 전달 가능 여부는 최신 병원 자료와 공개 상태를 함께 확인해야 합니다.",
+                "리포트 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.",
             )
         case MonthlyRunStage.EXISTING:
             return MonthlyRunOperatorCopy(

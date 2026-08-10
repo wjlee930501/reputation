@@ -1,9 +1,19 @@
 """report.html 렌더링 회귀 — repeat_count 동적 표기 + 측정 데이터 없음(None) 표기 (결함 2, 3)."""
+import uuid
 from datetime import datetime
+from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from app.services import doctor_report_artifact
+from app.services.report_artifact_validation import (
+    DoctorArtifactMetadata,
+    DoctorPdfValidationError,
+    ValidatedDoctorPdf,
+)
 from app.services.report_engine import TEMPLATE_DIR, build_strategy_summary
 
 
@@ -250,3 +260,127 @@ def test_strategy_summary_excludes_empty_explicit_success_measurement():
 
     assert summary["query_targets"][0]["sov_pct"] == 100.0
     assert summary["query_targets"][0]["failed_measurement_count"] == 1
+
+
+@pytest.mark.parametrize("failure_mode", ["mkdir", "write", "hash", "upload"])
+def test_doctor_pdf_storage_failures_are_typed_and_remove_partial_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+) -> None:
+    pdf_bytes = b"validated-pdf-bytes"
+    digest = sha256(pdf_bytes).hexdigest()
+    metadata = DoctorArtifactMetadata(
+        validation_version="doctor-pdf-v1",
+        validation_source="SYSTEM",
+        page_count=1,
+        page_size="A4",
+        glyph_count=10,
+        font_family="Pretendard",
+        font_embedded=True,
+        korean_to_unicode=True,
+        link_count=1,
+        expected_link_present=True,
+        required_text_present=True,
+        sha256=digest,
+        byte_size=len(pdf_bytes),
+    )
+    rendered = ValidatedDoctorPdf(pdf_bytes, digest, len(pdf_bytes), metadata)
+    monkeypatch.setattr(doctor_report_artifact.settings, "REPORT_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        doctor_report_artifact, "render_validated_doctor_pdf", lambda **_kwargs: rendered
+    )
+    if failure_mode == "mkdir":
+        monkeypatch.setattr(Path, "mkdir", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()))
+    elif failure_mode == "write":
+        monkeypatch.setattr(Path, "write_bytes", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError()))
+    elif failure_mode == "hash":
+        monkeypatch.setattr(Path, "read_bytes", lambda *_args, **_kwargs: b"mutated")
+    else:
+        monkeypatch.setattr(
+            doctor_report_artifact,
+            "_upload_to_gcs",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError()),
+        )
+
+    hospital = SimpleNamespace(slug="jangpyeonhan")
+    with pytest.raises(DoctorPdfValidationError) as exc:
+        doctor_report_artifact.generate_doctor_pdf_report(
+            hospital,
+            uuid.UUID("d2410000-0000-0000-0000-000000000001"),
+            datetime(2026, 7, 1),
+            {
+                "hospital_name": "장편한외과의원",
+                "coverage_text": "측정 범위 안내",
+            },
+            "https://reputation.motionlabs.kr/jangpyeonhan",
+        )
+
+    assert exc.value.code == "DOCTOR_PDF_STORAGE_FAILED"
+    assert not (
+        tmp_path
+        / "jangpyeonhan_2026-07_doctor_d2410000-0000-0000-0000-000000000001.pdf"
+    ).exists()
+
+
+def test_rebuilt_doctor_artifacts_keep_distinct_immutable_paths_and_hashes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_id = uuid.UUID("d2410000-0000-0000-0000-000000000011")
+    second_id = uuid.UUID("d2410000-0000-0000-0000-000000000012")
+    rendered_items: list[ValidatedDoctorPdf] = []
+    for body in (b"validated-v1", b"validated-v2"):
+        digest = sha256(body).hexdigest()
+        metadata = DoctorArtifactMetadata(
+            validation_version="doctor-pdf-v1",
+            validation_source="SYSTEM",
+            page_count=1,
+            page_size="A4",
+            glyph_count=10,
+            font_family="Pretendard",
+            font_embedded=True,
+            korean_to_unicode=True,
+            link_count=1,
+            expected_link_present=True,
+            required_text_present=True,
+            sha256=digest,
+            byte_size=len(body),
+        )
+        rendered_items.append(ValidatedDoctorPdf(body, digest, len(body), metadata))
+    monkeypatch.setattr(doctor_report_artifact.settings, "REPORT_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        doctor_report_artifact,
+        "render_validated_doctor_pdf",
+        lambda **_kwargs: rendered_items.pop(0),
+    )
+    monkeypatch.setattr(
+        doctor_report_artifact,
+        "_upload_to_gcs",
+        lambda local_path, *_args: str(local_path),
+    )
+    hospital = SimpleNamespace(slug="jangpyeonhan")
+    view = {"hospital_name": "장편한외과의원", "coverage_text": "측정 범위 안내"}
+
+    first = doctor_report_artifact.generate_doctor_pdf_report(
+        hospital,
+        first_id,
+        datetime(2026, 7, 1),
+        view,
+        "https://reputation.motionlabs.kr/jangpyeonhan",
+    )
+    first_bytes = Path(first.path).read_bytes()
+    second = doctor_report_artifact.generate_doctor_pdf_report(
+        hospital,
+        second_id,
+        datetime(2026, 7, 1),
+        view,
+        "https://reputation.motionlabs.kr/jangpyeonhan",
+    )
+
+    assert first.path != second.path
+    assert first.sha256 != second.sha256
+    assert Path(first.path).read_bytes() == first_bytes == b"validated-v1"
+    assert Path(second.path).read_bytes() == b"validated-v2"
+    assert sha256(Path(first.path).read_bytes()).hexdigest() == first.sha256
+    assert sha256(Path(second.path).read_bytes()).hexdigest() == second.sha256

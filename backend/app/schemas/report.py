@@ -1,9 +1,28 @@
+from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class ReportResponse(BaseModel):
+class DoctorArtifactProjection(BaseModel):
+    """Safe doctor-artifact facts exposed only by the report detail API."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    state: Literal["MISSING", "INVALID", "VALID"]
+    state_label: Literal[
+        "원장 전달용 PDF가 없습니다",
+        "원장 전달용 PDF를 다시 만들어야 합니다",
+        "원장 전달용 PDF 검증 완료",
+    ]
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    byte_size: int | None = Field(default=None, gt=0)
+    page_count: Literal[1] | None = None
+    validated_at: datetime | None = None
+    validation_version: Literal["doctor-pdf-v1"] | None = None
+
+
+class ReportListResponse(BaseModel):
     id: str
     hospital_id: str
     period_year: int
@@ -26,6 +45,10 @@ class ReportResponse(BaseModel):
     delivery_history: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str
     sent_at: Optional[str]
+
+
+class ReportResponse(ReportListResponse):
+    doctor_artifact: Optional[DoctorArtifactProjection] = None
 
 
 class ReportDeliveryRequest(BaseModel):

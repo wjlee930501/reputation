@@ -36,11 +36,13 @@ from app.schemas.report import (
     ReportDeliveryCorrectionRequest,
     ReportDeliveryRequest,
     ReportDeliveryRescindRequest,
+    ReportListResponse,
     ReportResponse,
 )
 from app.services.audit_log import write_audit_log
 from app.services.essence_readiness import EssenceReadiness, get_essence_readiness
 from app.services.gcs_utils import get_signed_url
+from app.services.report_artifact_validation import parse_doctor_artifact_metadata
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Reports"])
 
@@ -57,6 +59,11 @@ PDF_STATUS_LABELS = {
     "READY": "다운로드 가능",
     "LINK_PENDING": "링크 준비 중",
     "GENERATING": "생성 중",
+}
+DOCTOR_ARTIFACT_STATE_LABELS = {
+    ReportArtifactState.MISSING: "원장 전달용 PDF가 없습니다",
+    ReportArtifactState.INVALID: "원장 전달용 PDF를 다시 만들어야 합니다",
+    ReportArtifactState.VALID: "원장 전달용 PDF 검증 완료",
 }
 
 
@@ -167,9 +174,7 @@ def _artifact_state(
 ) -> ReportArtifactState:
     if artifact is None:
         return ReportArtifactState.MISSING
-    metadata = artifact.validation_metadata
-    page_count = metadata.get("page_count") if isinstance(metadata, dict) else None
-    glyph_count = metadata.get("glyph_count") if isinstance(metadata, dict) else None
+    metadata = parse_doctor_artifact_metadata(artifact.validation_metadata)
     valid = (
         artifact.report_id == report.id
         and artifact.audience == "DOCTOR"
@@ -177,10 +182,10 @@ def _artifact_state(
         and artifact.validated is True
         and len(artifact.sha256) == 64
         and all(character in "0123456789abcdef" for character in artifact.sha256)
-        and isinstance(page_count, int)
-        and page_count > 0
-        and isinstance(glyph_count, int)
-        and glyph_count > 0
+        and artifact.byte_size > 0
+        and metadata is not None
+        and metadata.sha256 == artifact.sha256
+        and metadata.byte_size == artifact.byte_size
     )
     return ReportArtifactState.VALID if valid else ReportArtifactState.INVALID
 
@@ -252,7 +257,10 @@ def _current_essence_delivery_blockers(
     return blockers
 
 
-@router.get("/{hospital_id}/reports", response_model=list[ReportResponse])
+@router.get(
+    "/{hospital_id}/reports",
+    response_model=list[ReportListResponse],
+)
 async def list_reports(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """리포트 목록 (최신순)"""
     await _get_hospital_or_404(db, hospital_id)
@@ -660,6 +668,11 @@ def _serialize(
     delivery_blockers.extend(current_blockers or [])
     ready = gate.ready and not current_blockers
     artifact_state = _artifact_state(r, artifact)
+    artifact_metadata = (
+        parse_doctor_artifact_metadata(artifact.validation_metadata)
+        if artifact_state is ReportArtifactState.VALID and artifact is not None
+        else None
+    )
 
     def serialize_event(event: MonthlyDeliveryEvent) -> dict:
         metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
@@ -704,6 +717,22 @@ def _serialize(
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "sent_at": r.sent_at.isoformat() if r.sent_at else None,
     }
+    if full:
+        d["doctor_artifact"] = {
+            "state": artifact_state.value,
+            "state_label": DOCTOR_ARTIFACT_STATE_LABELS[artifact_state],
+            "sha256": artifact.sha256 if artifact_metadata is not None and artifact else None,
+            "byte_size": artifact.byte_size if artifact_metadata is not None and artifact else None,
+            "page_count": artifact_metadata.page_count if artifact_metadata else None,
+            "validated_at": (
+                artifact.validated_at.isoformat()
+                if artifact_metadata is not None and artifact and artifact.validated_at
+                else None
+            ),
+            "validation_version": (
+                artifact_metadata.validation_version if artifact_metadata else None
+            ),
+        }
     return d
 
 

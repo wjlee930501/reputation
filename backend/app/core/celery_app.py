@@ -10,7 +10,7 @@ from app.core.observability import configure_logging, sentry_before_send, set_re
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-08-10.3"
+REDBEAT_SCHEDULE_VERSION = "2026-08-10.4"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -75,6 +75,7 @@ celery_app = Celery(
         "app.workers.lead_diagnosis_tasks",
         "app.workers.notification_tasks",
         "app.workers.milestone_event_tasks",
+        "app.workers.monthly_artifact_reconciliation",
         "app.workers.operation_run_signals",
         "app.workers.canary_tasks",
     ],
@@ -139,6 +140,7 @@ celery_app.conf.update(
         "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": {"queue": "default"},
         "app.workers.notification_tasks.dispatch_notification_outbox": {"queue": "default"},
         "app.workers.milestone_event_tasks.project_milestone_events": {"queue": "default"},
+        "app.workers.monthly_artifact_reconciliation.reconcile": {"queue": "reports"},
         "app.workers.canary_tasks.canary_default": {"queue": "default"},
         "app.workers.canary_tasks.canary_content": {"queue": "content"},
         "app.workers.canary_tasks.canary_sov": {"queue": "sov"},
@@ -192,6 +194,11 @@ celery_app.conf.update(
         # 1분마다 — 커밋된 Slack 의도를 임대해 전송하고 재시도/HOLD 상태를 회수한다.
         "dispatch-notification-outbox": {
             "task": "app.workers.notification_tasks.dispatch_notification_outbox",
+            "schedule": crontab(minute="*"),
+        },
+        # 1분마다 — 리포트 커밋 직후 워커가 종료돼도 누락된 운영 이슈와 알림을 복구한다.
+        "reconcile-monthly-artifact-incidents": {
+            "task": "app.workers.monthly_artifact_reconciliation.reconcile",
             "schedule": crontab(minute="*"),
         },
         # 15분마다 — 완료된 구간의 현재 DB truth를 한 건의 운영 마일스톤 요약으로 투영.

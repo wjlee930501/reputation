@@ -15,22 +15,50 @@ from unittest.mock import AsyncMock
 import arrow
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from app.api.admin import operations
 from app.models.hospital import Hospital
-from app.models.monthly_control import HospitalServiceInterval
-from app.models.operations import OperationRun, OperationRunState
+from app.models.monthly_control import (
+    HospitalServiceInterval,
+    MonthlyMeasurementManifest,
+    MonthlyReportArtifact,
+)
+from app.models.operations import Incident, NotificationOutbox, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.services.monthly_period import ReportBuildReason
-from app.workers import tasks
+from app.services.report_artifact_validation import (
+    DOCTOR_ARTIFACT_VALIDATION_VERSION,
+    DoctorPdfValidationError,
+)
+from app.workers import monthly_artifact_incident_control, tasks
 
 _POSTGRES_URL = os.getenv(
     "TASK16_DATABASE_URL",
     "postgresql://reputation:reputation@localhost:5434/reputation_test",
 )
+
+
+def _valid_artifact_metadata(sha: str = "a" * 64, byte_size: int = 4096) -> dict:
+    return {
+        "validation_version": DOCTOR_ARTIFACT_VALIDATION_VERSION,
+        "validation_source": "SYSTEM",
+        "page_count": 1,
+        "page_size": "A4",
+        "glyph_count": 840,
+        "font_family": "Pretendard",
+        "font_embedded": True,
+        "korean_to_unicode": True,
+        "link_count": 1,
+        "expected_link_present": True,
+        "required_text_present": True,
+        "sha256": sha,
+        "byte_size": byte_size,
+    }
 
 
 class FakeSession:
@@ -553,7 +581,203 @@ def monthly_pg_session():
         engine.dispose()
 
 
-def test_rebuild_run_links_new_report_version_and_records_validation_pending(
+@pytest.mark.parametrize("storage_step", ["파일 쓰기", "파일 업로드"])
+def test_doctor_artifact_storage_failure_keeps_report_blocked_and_opens_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    storage_step: str,
+) -> None:
+    engine = create_engine(_POSTGRES_URL, future=True)
+    try:
+        connection = engine.connect()
+    except OperationalError as exc:
+        engine.dispose()
+        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+    connection.close()
+    session = Session(engine, expire_on_commit=False)
+    hospital_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    report_id: uuid.UUID | None = None
+    async_url = _POSTGRES_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    async_engine = create_async_engine(async_url, poolclass=NullPool)
+    async_sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(
+        monthly_artifact_incident_control,
+        "get_async_sessionmaker",
+        lambda: async_sessions,
+    )
+
+    payload = {
+        "sov_pct": 47.0,
+        "prev_sov_pct": None,
+        "change_pct": None,
+        "planned_count": 20,
+        "success_count": 20,
+        "failed_count": 0,
+        "excluded_count": 0,
+        "query_intent_snapshot": "FROZEN",
+        "cells": [],
+        "platforms": [],
+        "queries": [],
+        "segments": {},
+        "comparison": {
+            "status": "NON_COMPARABLE",
+            "reason": "NO_PRIOR_MANIFEST",
+            "current_sov_pct": None,
+            "prior_sov_pct": None,
+            "change_pct": None,
+            "matched_cell_count": 0,
+            "current_unmatched_cell_count": 20,
+            "prior_unmatched_cell_count": 0,
+            "problem": "지난달에 같은 기준으로 확인한 결과가 없습니다.",
+            "customer_impact": "전월 대비 증감 숫자는 표시하지 않습니다.",
+            "next_action": "이번 달 현재 수치만 전달해 주세요.",
+        },
+    }
+
+    class FakeMonthlySov:
+        sov_pct = 47.0
+        comparison = SimpleNamespace(prior_sov_pct=None, change_pct=None)
+
+        def to_payload(self):
+            return payload
+
+    def apply_complete(report, manifest):
+        report.manifest_id = manifest.id
+        report.quality = "COMPLETE"
+        report.planned_count = 20
+        report.success_count = 20
+        report.failed_count = 0
+        report.excluded_count = 0
+        report.customer_ready = False
+        report.delivery_blockers = ["DOCTOR_ARTIFACT_UNVALIDATED"]
+
+    failure = DoctorPdfValidationError(
+        "DOCTOR_PDF_STORAGE_FAILED",
+        f"원장 전달용 PDF {storage_step}에 실패했습니다.",
+    )
+    monkeypatch.setattr(
+        tasks,
+        "load_monthly_sov_manifest",
+        lambda *_args: SimpleNamespace(cells=(), selected_records=()),
+    )
+    monkeypatch.setattr(tasks, "build_monthly_sov", lambda *_args, **_kwargs: FakeMonthlySov())
+    monkeypatch.setattr(tasks, "generate_pdf_report", lambda **_kwargs: "gs://qa-private/ae.pdf")
+    monkeypatch.setattr(tasks, "build_content_attribution_summary", lambda *_args: {})
+    monkeypatch.setattr(tasks, "build_monthly_essence_summary", lambda *_args: {})
+    monkeypatch.setattr(tasks, "apply_manifest_to_report", apply_complete)
+    monkeypatch.setattr(
+        tasks,
+        "lock_report_version_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            create=True, version=1, supersedes_report_id=None
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "generate_doctor_pdf_report",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    try:
+        hospital = Hospital(
+            id=hospital_id,
+            name=f"원장 PDF 저장 실패 의원 {storage_step}",
+            slug=f"doctor-storage-{uuid.uuid4().hex}",
+            plan="PLAN_16",
+        )
+        manifest = MonthlyMeasurementManifest(
+            hospital_id=hospital_id,
+            period_year=2026,
+            period_month=7,
+            configured_platforms=["chatgpt", "gemini"],
+            platform_provenance={"query_intents": {}},
+            closes_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            closed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+        run = OperationRun(
+            id=run_id,
+            hospital_id=hospital_id,
+            operation_type="GENERATE_MONTHLY_REPORT",
+            state=OperationRunState.RUNNING,
+            attempt_count=1,
+            total_count=1,
+            success_count=0,
+            failure_count=0,
+            skipped_count=0,
+            request_payload={"source_type": "hospital", "source_id": str(hospital_id)},
+        )
+        session.add_all((hospital, manifest, run))
+        session.commit()
+
+        outcome = tasks._build_monthly_report_for_hospital(
+            session,
+            hospital,
+            arrow.get(2026, 7, 31, 23, 59, tzinfo="Asia/Seoul"),
+            rebuild=True,
+            operation_run_id=run_id,
+        )
+        tasks._finish_monthly_operation_run(
+            session, run_id, hospital_id, 2026, 7, outcome
+        )
+
+        report = session.execute(
+            select(MonthlyReport).where(MonthlyReport.hospital_id == hospital_id)
+        ).scalar_one()
+        report_id = report.id
+        incident = session.execute(
+            select(Incident).where(Incident.hospital_id == hospital_id)
+        ).scalar_one()
+        outbox = session.execute(
+            select(NotificationOutbox).where(NotificationOutbox.incident_id == incident.id)
+        ).scalar_one()
+        session.refresh(run)
+
+        assert outcome == "blocked_artifact"
+        assert report.doctor_pdf_path is None
+        artifact = session.execute(
+            select(MonthlyReportArtifact).where(
+                MonthlyReportArtifact.report_id == report.id
+            )
+        ).scalar_one_or_none()
+        assert artifact is None
+        assert run.state == OperationRunState.PARTIAL
+        assert run.result_summary["stage"] == "BLOCKED"
+        assert run.safe_error_code == "DOCTOR_ARTIFACT_BLOCKED"
+        assert incident.state == "OPEN"
+        assert incident.operation_run_id == run_id
+        assert incident.safe_error_code == "DOCTOR_PDF_STORAGE_FAILED"
+        assert outbox.operation_run_id == run_id
+        assert outbox.state == "PENDING"
+        assert "무슨 문제인지" in str(outbox.payload)
+        assert "고객 영향" in str(outbox.payload)
+        assert "지금 할 일" in str(outbox.payload)
+    finally:
+        session.rollback()
+        session.execute(
+            delete(NotificationOutbox).where(NotificationOutbox.hospital_id == hospital_id)
+        )
+        session.execute(delete(Incident).where(Incident.hospital_id == hospital_id))
+        if report_id is not None:
+            session.execute(
+                delete(MonthlyReportArtifact).where(
+                    MonthlyReportArtifact.report_id == report_id
+                )
+            )
+        session.execute(delete(MonthlyReport).where(MonthlyReport.hospital_id == hospital_id))
+        session.execute(
+            delete(MonthlyMeasurementManifest).where(
+                MonthlyMeasurementManifest.hospital_id == hospital_id
+            )
+        )
+        session.execute(delete(OperationRun).where(OperationRun.id == run_id))
+        session.execute(delete(Hospital).where(Hospital.id == hospital_id))
+        session.commit()
+        session.close()
+        tasks._run_async(async_engine.dispose())
+        engine.dispose()
+
+
+def test_rebuild_run_links_new_report_version_and_records_validated_artifact(
     monthly_pg_session: Session,
 ) -> None:
     # Given: a prior report and a queued rebuild run for the same month
@@ -584,6 +808,7 @@ def test_rebuild_run_links_new_report_version_and_records_validation_pending(
         planned_count=20,
         success_count=20,
         failed_count=0,
+        doctor_pdf_path="gs://qa-private/rebuilt-doctor.pdf",
     )
     run = OperationRun(
         hospital_id=hospital.id,
@@ -597,6 +822,19 @@ def test_rebuild_run_links_new_report_version_and_records_validation_pending(
         request_payload={"source_type": "hospital", "source_id": str(hospital.id)},
     )
     monthly_pg_session.add_all((rebuilt, run))
+    monthly_pg_session.flush()
+    monthly_pg_session.add(
+        MonthlyReportArtifact(
+            report_id=rebuilt.id,
+            audience="DOCTOR",
+            path=rebuilt.doctor_pdf_path,
+            sha256="a" * 64,
+            byte_size=4096,
+            validated=True,
+            validated_at=datetime.now(timezone.utc),
+            validation_metadata=_valid_artifact_metadata(),
+        )
+    )
     monthly_pg_session.commit()
 
     # When: the worker records the completed rebuild
@@ -608,10 +846,10 @@ def test_rebuild_run_links_new_report_version_and_records_validation_pending(
     monthly_pg_session.refresh(run)
     assert run.state == OperationRunState.SUCCEEDED
     assert run.result_summary is not None
-    assert run.result_summary["stage"] == "ARTIFACT_VALIDATION_PENDING"
+    assert run.result_summary["stage"] == "ARTIFACT_VALIDATED"
     assert run.result_summary["milestones"] == [
         "COVERAGE_COMPLETE",
-        "ARTIFACT_VALIDATION_PENDING",
+        "ARTIFACT_VALIDATED",
     ]
     assert run.result_summary["report_version"] == 2
     assert run.result_summary["supersedes_report_id"] == str(previous.id)
@@ -695,18 +933,47 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
 
     def fake_build(db, hospital, now, **_kwargs):
         if hospital.id == failed_hospital.id:
-            raise RuntimeError("renderer unavailable")
+            db.add(
+                MonthlyReport(
+                    hospital_id=hospital.id,
+                    period_year=now.year,
+                    period_month=now.month,
+                    report_type="MONTHLY",
+                    version=1,
+                    quality="COMPLETE",
+                    planned_count=20,
+                    success_count=20,
+                    failed_count=0,
+                    doctor_pdf_path=None,
+                    delivery_blockers=["DOCTOR_ARTIFACT_UNVALIDATED"],
+                )
+            )
+            db.commit()
+            return "blocked_artifact"
+        report = MonthlyReport(
+            hospital_id=hospital.id,
+            period_year=now.year,
+            period_month=now.month,
+            report_type="MONTHLY",
+            version=1,
+            quality="COMPLETE",
+            planned_count=20,
+            success_count=20,
+            failed_count=0,
+            doctor_pdf_path="gs://qa-private/scheduled-doctor.pdf",
+        )
+        db.add(report)
+        db.flush()
         db.add(
-            MonthlyReport(
-                hospital_id=hospital.id,
-                period_year=now.year,
-                period_month=now.month,
-                report_type="MONTHLY",
-                version=1,
-                quality="COMPLETE",
-                planned_count=20,
-                success_count=20,
-                failed_count=0,
+            MonthlyReportArtifact(
+                report_id=report.id,
+                audience="DOCTOR",
+                path=report.doctor_pdf_path,
+                sha256="a" * 64,
+                byte_size=4096,
+                validated=True,
+                validated_at=datetime.now(timezone.utc),
+                validation_metadata=_valid_artifact_metadata(),
             )
         )
         db.commit()
@@ -740,7 +1007,7 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
     )
     assert {run.hospital_id: run.state for run in runs} == {
         success_hospital.id: OperationRunState.SUCCEEDED,
-        failed_hospital.id: OperationRunState.FAILED,
+        failed_hospital.id: OperationRunState.PARTIAL,
     }
     assert monthly_pg_session.execute(
         select(MonthlyReport).where(MonthlyReport.hospital_id == success_hospital.id)

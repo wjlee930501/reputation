@@ -87,6 +87,17 @@ def test_monthly_reports_close_after_the_next_month_boundary():
     assert schedule.day_of_month == {1}
 
 
+def test_monthly_artifact_incident_reconciliation_runs_each_minute_on_reports_queue():
+    task_name = "app.workers.monthly_artifact_reconciliation.reconcile"
+    entry = celery_app.conf.beat_schedule["reconcile-monthly-artifact-incidents"]
+
+    assert entry["task"] == task_name
+    assert entry["schedule"].minute == set(range(60))
+    assert _resolved_queue(task_name) == "reports"
+    assert "app.workers.monthly_artifact_reconciliation" in celery_app.conf.include
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-08-10.4"
+
+
 def test_redbeat_refreshes_lock_well_before_ttl_expires():
     """max loop와 lock TTL이 같아 LockNotOwnedError crash loop가 재발하지 않게 한다."""
     max_interval = celery_app.conf.beat_max_loop_interval

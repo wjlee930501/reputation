@@ -41,7 +41,7 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital, HospitalStatus
-from app.models.monthly_control import MonthlyMeasurementManifest
+from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReportArtifact
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
@@ -56,6 +56,7 @@ from app.services.content_publish_notifications import enqueue_publish_notificat
 from app.services.content_publish_reconciliation import reconcile_sent_publish_notifications
 from app.services.content_publish_state import recover_publish_notification_sync
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
+from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -87,13 +88,16 @@ from app.services.monthly_period import (
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
+from app.services.report_artifact_validation import (
+    DoctorPdfValidationError,
+    parse_doctor_artifact_metadata,
+)
 from app.services.report_attribution import (
     ContentAttributionInput,
     build_content_attribution_summary,
 )
 from app.services.report_engine import (
     build_doctor_report_view,
-    generate_doctor_pdf_report,
     generate_pdf_report,
 )
 from app.services.site_revalidate import (
@@ -126,6 +130,11 @@ from app.workers.generation_run_control import (
     create_item_run,
     finish_explicit_run,
 )
+from app.workers.monthly_artifact_incident_control import (
+    MonthlyArtifactIncidentContext,
+    record_monthly_artifact_failure,
+)
+from app.workers.monthly_artifact_recovery_control import recover_monthly_artifact_failures
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
 from app.workers.nightly_generation_batch import (
     GENERATION_CATCHUP_DAYS,
@@ -2759,8 +2768,10 @@ def _finish_monthly_operation_run(
         stage = MonthlyRunStage.EXISTING
         state = OperationRunState.SUCCEEDED
         counts = (0, 0, 1)
-    elif report is not None and report.quality == "COMPLETE":
-        stage = MonthlyRunStage.ARTIFACT_VALIDATION_PENDING
+    elif report is not None and report.quality == "COMPLETE" and _has_valid_doctor_artifact(
+        db, report
+    ):
+        stage = MonthlyRunStage.ARTIFACT_VALIDATED
         state = OperationRunState.SUCCEEDED
         counts = (1, 0, 0)
     elif report is not None:
@@ -2774,9 +2785,9 @@ def _finish_monthly_operation_run(
     milestones = (
         [
             MonthlyRunStage.COVERAGE_COMPLETE.value,
-            MonthlyRunStage.ARTIFACT_VALIDATION_PENDING.value,
+            MonthlyRunStage.ARTIFACT_VALIDATED.value,
         ]
-        if stage is MonthlyRunStage.ARTIFACT_VALIDATION_PENDING
+        if stage is MonthlyRunStage.ARTIFACT_VALIDATED
         else [stage.value]
     )
     run.state = state
@@ -2802,8 +2813,35 @@ def _finish_monthly_operation_run(
     if stage is MonthlyRunStage.FAILED:
         run.safe_error_code = "MONTHLY_REPORT_FAILED"
         run.safe_error_message = "월간 리포트를 만들지 못했습니다. 다시 만들기를 시도해 주세요."
+    elif stage is MonthlyRunStage.BLOCKED:
+        artifact_blocked = report is not None and report.quality == "COMPLETE"
+        run.safe_error_code = (
+            "DOCTOR_ARTIFACT_BLOCKED" if artifact_blocked else "MONTHLY_REPORT_BLOCKED"
+        )
+        run.safe_error_message = (
+            "원장 전달용 PDF 검증을 완료하지 못했습니다. 리포트 화면에서 다시 만들기를 눌러 주세요."
+            if artifact_blocked
+            else "필수 측정이나 운영 자료가 부족합니다. 운영 센터에서 차단 사유를 확인해 주세요."
+        )
     run.version += 1
     db.commit()
+
+
+def _has_valid_doctor_artifact(db, report: MonthlyReport) -> bool:
+    artifact = db.execute(
+        select(MonthlyReportArtifact).where(
+            MonthlyReportArtifact.report_id == report.id,
+            MonthlyReportArtifact.audience == "DOCTOR",
+        )
+    ).scalar_one_or_none()
+    if artifact is None or not artifact.validated or artifact.path != report.doctor_pdf_path:
+        return False
+    metadata = parse_doctor_artifact_metadata(artifact.validation_metadata)
+    return bool(
+        metadata is not None
+        and metadata.sha256 == artifact.sha256
+        and metadata.byte_size == artifact.byte_size
+    )
 
 
 def _fail_monthly_operation_run(
@@ -2825,10 +2863,12 @@ def _build_monthly_report_for_hospital(
     observed_at: datetime | None = None,
     build_reason: ReportBuildReason = ReportBuildReason.MANUAL_REBUILD,
     correlation_key: str | None = None,
+    operation_run_id: uuid.UUID | None = None,
 ) -> str:
     """`now`가 가리키는 달의 월간 리포트 1건을 만든다.
 
-    반환값은 ``"created"`` 또는 이미 있어서 건너뛴 경우 ``"skipped_existing"``이다.
+    반환값은 생성 완료 ``"created"``, 원장 PDF가 차단된 ``"blocked_artifact"``,
+    이미 있어서 건너뛴 ``"skipped_existing"`` 중 하나다.
 
     월말 배치(run_monthly_reports)와 Admin의 병원별 수동 재생성이 이 함수를 공유한다 —
     두 경로가 서로 다른 코드였다면 배치 실패를 복구한 리포트가 배치본과 다른 내용이 될 수
@@ -2939,24 +2979,6 @@ def _build_monthly_report_for_hospital(
     )
     essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
 
-    # 원장 보고용 1페이지. AE용과 같은 데이터를 다른 편집으로 렌더한다.
-    # 실패해도 월간 리포트 자체를 잃지 않도록 격리한다 — AE는 AE용으로 보고할 수 있다.
-    doctor_pdf_path = None
-    try:
-        doctor_view = build_doctor_report_view(
-            hospital=h,
-            sov_pct=sov_pct,
-            prev_sov_pct=prev_sov,
-            published_count=len(published_contents),
-            plan_quota=monthly_quota_for_plan(h.plan),
-            attribution=attribution,
-            records=sov_records,
-            platforms=report_platforms,
-        )
-        doctor_pdf_path = generate_doctor_pdf_report(h, period_start, doctor_view)
-    except Exception as exc:  # noqa: BLE001 — 원장 판본 실패가 월간 리포트를 막지 않는다.
-        logger.error("Doctor report rendering failed for %s: %s", h.name, exc)
-
     version_plan = lock_report_version_plan(
         db,
         hospital_id=h.id,
@@ -2975,7 +2997,7 @@ def _build_monthly_report_for_hospital(
         version=version_plan.version,
         supersedes_report_id=version_plan.supersedes_report_id,
         pdf_path=pdf_path,
-        doctor_pdf_path=doctor_pdf_path,
+        doctor_pdf_path=None,
         sov_summary=monthly_sov.to_payload(),
         content_summary={
             "published_count": len(published_contents),
@@ -2989,9 +3011,69 @@ def _build_monthly_report_for_hospital(
     else:
         apply_manifest_to_report(report, manifest)
     db.add(report)
+    db.flush()
+
+    artifact_error: DoctorPdfValidationError | None = None
+    try:
+        doctor_view = build_doctor_report_view(
+            hospital=h,
+            sov_pct=sov_pct,
+            prev_sov_pct=prev_sov,
+            published_count=len(published_contents),
+            plan_quota=monthly_quota_for_plan(h.plan),
+            attribution=attribution,
+            records=sov_records,
+            platforms=report_platforms,
+            sov_coverage=monthly_sov.to_payload(),
+        )
+        public_url = _public_site_url(h.aeo_domain, h.slug)
+        doctor_artifact = generate_doctor_pdf_report(
+            h, report.id, period_start, doctor_view, public_url
+        )
+        report.doctor_pdf_path = doctor_artifact.path
+        report.delivery_blockers = [
+            blocker
+            for blocker in report.delivery_blockers
+            if blocker != "DOCTOR_ARTIFACT_UNVALIDATED"
+        ]
+        db.add(
+            MonthlyReportArtifact(
+                report_id=report.id,
+                audience="DOCTOR",
+                path=doctor_artifact.path,
+                sha256=doctor_artifact.sha256,
+                byte_size=doctor_artifact.byte_size,
+                validated=True,
+                validated_at=datetime.now(timezone.utc),
+                validated_by_id=None,
+                validation_metadata=doctor_artifact.metadata.model_dump(mode="json"),
+            )
+        )
+    except DoctorPdfValidationError as exc:
+        artifact_error = exc
+        report.doctor_pdf_path = None
+        logger.warning(
+            "Doctor report artifact blocked: hospital_id=%s report_id=%s code=%s",
+            h.id,
+            report.id,
+            exc.code,
+        )
     db.commit()
 
-    return "created"
+    incident_context = MonthlyArtifactIncidentContext(
+        hospital_id=h.id,
+        hospital_name=h.name,
+        report_id=report.id,
+        year=now.year,
+        month=now.month,
+        operation_run_id=operation_run_id,
+    )
+    if artifact_error is not None:
+        _run_async(record_monthly_artifact_failure(incident_context, artifact_error))
+    else:
+        _run_async(recover_monthly_artifact_failures(incident_context))
+
+    return "blocked_artifact" if artifact_error is not None else "created"
 
 
 @celery_app.task(
@@ -3038,11 +3120,17 @@ def run_monthly_reports(self):
                     anchor,
                     build_reason=ReportBuildReason.SCHEDULED_CLOSE,
                     correlation_key=f"scheduled:{h.id}:{anchor.year}-{anchor.month:02d}",
+                    operation_run_id=run_id,
                 )
                 _finish_monthly_operation_run(
                     db, run_id, h.id, anchor.year, anchor.month, outcome
                 )
-                successes += 1
+                if outcome == "blocked_artifact":
+                    failures.append(
+                        (h.name, RuntimeError("monthly report requires operator action"))
+                    )
+                else:
+                    successes += 1
             except Exception as e:
                 logger.error(f"Monthly report failed for {h.name}: {e}")
                 db.rollback()
@@ -3115,13 +3203,15 @@ def generate_monthly_report_for_hospital(
             else f"manual:{hospital.id}:{anchor.year}-{anchor.month:02d}"
         )
         try:
+            build_kwargs = {
+                "rebuild": rebuild,
+                "build_reason": ReportBuildReason.MANUAL_REBUILD,
+                "correlation_key": correlation_key,
+            }
+            if run_id is not None:
+                build_kwargs["operation_run_id"] = run_id
             outcome = _build_monthly_report_for_hospital(
-                db,
-                hospital,
-                anchor,
-                rebuild=rebuild,
-                build_reason=ReportBuildReason.MANUAL_REBUILD,
-                correlation_key=correlation_key,
+                db, hospital, anchor, **build_kwargs
             )
         except Exception as e:
             logger.error(f"Manual monthly report failed for {hospital.name}: {e}")

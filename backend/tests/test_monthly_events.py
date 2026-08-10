@@ -121,6 +121,10 @@ def test_complete_coverage_without_artifact_is_internal_pending_not_customer_rea
             "원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.",
         ),
         (
+            MonthlyRunStage.ARTIFACT_VALIDATED,
+            "리포트 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.",
+        ),
+        (
             MonthlyRunStage.FAILED,
             "‘리포트 다시 만들기’를 눌러 주세요. 다시 실패하면 ‘개발팀 문의용 정보 복사’로 전달해 주세요.",
         ),
@@ -137,6 +141,15 @@ def test_monthly_run_copy_is_plain_korean_and_actionable(
     assert copy.next_action == expected_action
     rendered = " ".join((copy.what_happened, copy.customer_impact, copy.next_action))
     assert all(term not in rendered for term in ("SLA", "CUSTOMER_READY", "PARTIAL"))
+
+
+def test_artifact_validated_stage_does_not_claim_final_customer_readiness() -> None:
+    copy = monthly_run_operator_copy(MonthlyRunStage.ARTIFACT_VALIDATED)
+
+    assert copy.status_label == "원장 전달용 PDF 검증 완료"
+    assert "전달할 수 있습니다" not in " ".join(
+        (copy.what_happened, copy.customer_impact, copy.next_action)
+    )
 
 
 @pytest.mark.parametrize(

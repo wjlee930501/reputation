@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -144,6 +145,13 @@ class HospitalServiceInterval(Base):
 class MonthlyReportArtifact(Base):
     __tablename__ = "monthly_report_artifacts"
     __table_args__ = (
+        CheckConstraint(
+            "(validated = false AND validated_at IS NULL AND validated_by_id IS NULL) OR "
+            "(validated = true AND validated_at IS NOT NULL "
+            "AND validation_metadata IS NOT NULL AND (validated_by_id IS NOT NULL OR "
+            "validation_metadata->>'validation_source' = 'SYSTEM'))",
+            name="ck_monthly_artifact_validation",
+        ),
         UniqueConstraint("report_id", "audience", name="uq_monthly_report_artifact_audience"),
     )
 

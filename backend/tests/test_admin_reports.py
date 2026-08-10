@@ -82,8 +82,24 @@ def _doctor_artifact(**overrides):
         "audience": "DOCTOR",
         "path": "gs://reputation-reports/demo_doctor.pdf",
         "sha256": "a" * 64,
+        "byte_size": 4096,
         "validated": True,
-        "validation_metadata": {"page_count": 1, "glyph_count": 840},
+        "validated_at": datetime(2026, 5, 5, 12, 35, tzinfo=timezone.utc),
+        "validation_metadata": {
+            "validation_version": "doctor-pdf-v1",
+            "validation_source": "SYSTEM",
+            "page_count": 1,
+            "page_size": "A4",
+            "glyph_count": 840,
+            "font_family": "Pretendard",
+            "font_embedded": True,
+            "korean_to_unicode": True,
+            "link_count": 1,
+            "expected_link_present": True,
+            "required_text_present": True,
+            "sha256": "a" * 64,
+            "byte_size": 4096,
+        },
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -126,6 +142,33 @@ def test_monthly_customer_delivery_requires_matching_valid_doctor_artifact():
 
     assert gate.ready is True
     assert gate.code is None
+
+
+@pytest.mark.parametrize(
+    "metadata_override",
+    [
+        {"page_count": 2},
+        {"page_size": "LETTER"},
+        {"font_family": "NanumGothic"},
+        {"font_embedded": False},
+        {"korean_to_unicode": False},
+        {"link_count": 0},
+        {"expected_link_present": False},
+        {"required_text_present": False},
+        {"validation_version": "doctor-pdf-v0"},
+    ],
+)
+def test_monthly_customer_delivery_rejects_artifacts_that_fail_the_shared_parser(
+    metadata_override,
+):
+    report = _report()
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    artifact.validation_metadata = {**artifact.validation_metadata, **metadata_override}
+
+    gate = _delivery_gate(report, _bind_manifest(report, _manifest()), artifact)
+
+    assert gate.ready is False
+    assert gate.code == "doctor_artifact_invalid"
 
 
 @pytest.mark.parametrize("mismatch", ["hospital", "year", "month"])
@@ -213,6 +256,69 @@ def test_report_list_hides_internal_summaries_but_keeps_pdf_contract():
     assert payload["essence_summary"] is None
     assert payload["delivery_ready"] is False
     assert payload["doctor_artifact_state"] == "MISSING"
+    assert "doctor_artifact" not in payload
+
+
+def test_report_detail_exposes_only_safe_authoritative_artifact_evidence():
+    from app.schemas.report import ReportResponse
+
+    report = _report()
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+
+    payload = _serialize(
+        report,
+        full=True,
+        manifest=_bind_manifest(report, _manifest()),
+        artifact=artifact,
+    )
+
+    assert payload["doctor_artifact"] == {
+        "state": "VALID",
+        "state_label": "원장 전달용 PDF 검증 완료",
+        "sha256": "a" * 64,
+        "byte_size": 4096,
+        "page_count": 1,
+        "validated_at": "2026-05-05T12:35:00+00:00",
+        "validation_version": "doctor-pdf-v1",
+    }
+    assert "path" not in payload["doctor_artifact"]
+    assert "validation_metadata" not in payload["doctor_artifact"]
+    serialized = ReportResponse.model_validate(payload).model_dump(mode="json")
+    assert serialized["doctor_artifact"]["validated_at"] == "2026-05-05T12:35:00Z"
+    assert serialized["doctor_artifact"]["sha256"] == "a" * 64
+    assert "gs://" not in str(serialized["doctor_artifact"])
+
+
+def test_report_schema_closes_artifact_projection_and_hides_storage_fields():
+    from app.main import app
+    from app.schemas.report import DoctorArtifactProjection, ReportListResponse, ReportResponse
+
+    artifact_schema = DoctorArtifactProjection.model_json_schema()
+    assert artifact_schema["additionalProperties"] is False
+    assert set(artifact_schema["properties"]) == {
+        "state",
+        "state_label",
+        "sha256",
+        "byte_size",
+        "page_count",
+        "validated_at",
+        "validation_version",
+    }
+    assert "path" not in str(artifact_schema)
+    assert "validation_metadata" not in str(artifact_schema)
+    report_schema = ReportResponse.model_json_schema()
+    artifact_ref = report_schema["properties"]["doctor_artifact"]
+    assert "DoctorArtifactProjection" in str(artifact_ref)
+    assert "doctor_artifact" not in ReportListResponse.model_json_schema()["properties"]
+
+    openapi = app.openapi()
+    schemas = openapi["components"]["schemas"]
+    assert "path" not in schemas["DoctorArtifactProjection"]["properties"]
+    assert "validation_metadata" not in schemas["DoctorArtifactProjection"]["properties"]
+    list_response = openapi["paths"]["/api/v1/admin/hospitals/{hospital_id}/reports"]["get"]
+    response_schema = list_response["responses"]["200"]["content"]["application/json"]["schema"]
+    assert "ReportListResponse" in str(response_schema)
+    assert "doctor_artifact" not in schemas["ReportListResponse"]["properties"]
 
 
 class _FakeResult:
