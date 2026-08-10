@@ -26,7 +26,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
-from app.core.database import SyncSessionLocal
+from app.core.database import SyncSessionLocal, get_async_sessionmaker
 from app.models.content import (
     ContentItem,
     ContentSchedule,
@@ -56,6 +56,9 @@ from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
 )
+from app.services.content_publish_notifications import enqueue_publish_notification_sync
+from app.services.content_publish_reconciliation import reconcile_sent_publish_notifications
+from app.services.content_publish_state import recover_publish_notification_sync
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -1709,8 +1712,6 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
-            if not _deliver_post_publish_notification(content_id, outcome):
-                notification_failures += 1
 
         # A worker may have committed publication and died before Slack. Recover those rows
         # without re-publishing or mutating their public timestamp.
@@ -1719,9 +1720,8 @@ def morning_content_auto_publish(self):
                 db.execute(_post_publish_notification_pending_stmt(today)).scalars().all()
             )
         for content_id in pending_ids:
-            outcome = _load_published_notification_payload(content_id)
-            if outcome and not _deliver_post_publish_notification(content_id, outcome):
-                notification_failures += 1
+            _recover_post_publish_notification(content_id)
+        _run_async(reconcile_sent_publish_notifications(get_async_sessionmaker()))
 
         _notify_missed_content_generation(today)
     except Exception as exc:
@@ -1756,9 +1756,7 @@ def _post_publish_notification_pending_stmt(today):
     return (
         select(ContentItem.id)
         .where(
-            ContentItem.scheduled_date <= today,
             ContentItem.status == ContentStatus.PUBLISHED,
-            ContentItem.published_by == AUTO_PUBLISH_ACTOR,
             ContentItem.post_publish_notified_at.is_(None),
         )
         .order_by(ContentItem.published_at)
@@ -1828,6 +1826,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
         item.post_publish_notified_at = None
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
+        enqueue_publish_notification_sync(db, item, hospital)
         write_audit_log_sync(
             db,
             action="auto_publish_content",
@@ -1866,7 +1865,7 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
     }
 
 
-def _load_published_notification_payload(content_id: uuid.UUID) -> dict | None:
+def _recover_post_publish_notification(content_id: uuid.UUID) -> None:
     with SyncSessionLocal() as db:
         item = db.execute(
             select(ContentItem)
@@ -1876,48 +1875,11 @@ def _load_published_notification_payload(content_id: uuid.UUID) -> dict | None:
         if (
             not item
             or item.status != ContentStatus.PUBLISHED
-            or item.published_by != AUTO_PUBLISH_ACTOR
             or item.post_publish_notified_at is not None
         ):
-            return None
-        return _publication_notification_payload(item, item.hospital)
-
-
-def _deliver_post_publish_notification(content_id: uuid.UUID, payload: dict) -> bool:
-    sent = _run_async(
-        notifier.notify_content_auto_published(
-            hospital_name=payload["hospital_name"],
-            title=payload["title"],
-            sequence_no=payload["sequence_no"],
-            total_count=payload["total_count"],
-            content_type=payload["content_type"],
-            scheduled_date=payload["scheduled_date"],
-            public_url=payload["public_url"],
-            admin_url=payload["admin_url"],
-            carried_over=payload["carried_over"],
-        )
-    )
-    if not sent:
-        return False
-    with SyncSessionLocal() as db:
-        item = db.execute(
-            select(ContentItem)
-            .where(ContentItem.id == content_id)
-            .with_for_update()
-        ).scalar_one_or_none()
-        if item and item.post_publish_notified_at is None:
-            item.post_publish_notified_at = datetime.now(timezone.utc)
-            write_audit_log_sync(
-                db,
-                action="post_publish_notification_sent",
-                hospital_id=item.hospital_id,
-                actor=AUTO_PUBLISH_ACTOR,
-                target_type="content_item",
-                target_id=item.id,
-                detail={"channel": "slack"},
-            )
-            db.commit()
-    return True
+            return
+        recover_publish_notification_sync(db, item, item.hospital)
+        db.commit()
 
 
 def _notify_missed_content_generation(today) -> None:

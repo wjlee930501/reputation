@@ -14,6 +14,7 @@ from sqlalchemy.sql.dml import Update
 from app.models.content import ContentItem
 from app.models.essence import PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import NotificationOutbox
 from app.workers import tasks
 
 
@@ -662,7 +663,7 @@ def test_auto_publish_due_statement_requires_live_active_draft():
     assert "content_items.scheduled_date <= '2026-06-10'" in sql
 
 
-def test_pending_post_publish_notification_only_targets_system_publications():
+def test_pending_post_publish_notification_targets_manual_and_automatic_publications():
     sql = str(
         tasks._post_publish_notification_pending_stmt(date(2026, 6, 10)).compile(
             compile_kwargs={"literal_binds": True}
@@ -670,7 +671,7 @@ def test_pending_post_publish_notification_only_targets_system_publications():
     )
 
     assert "content_items.status = 'PUBLISHED'" in sql
-    assert "content_items.published_by = 'SYSTEM_AUTO_PUBLISH'" in sql
+    assert "content_items.published_by" not in sql
     assert "content_items.post_publish_notified_at IS NULL" in sql
 
 
@@ -711,6 +712,9 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
         commits = 0
         execute_calls = 0
 
+        def __init__(self):
+            self.added = []
+
         def execute(self, _stmt):
             results = [_Result(items=[item]), _Result(items=[hospital])]
             result = results[self.execute_calls]
@@ -719,6 +723,9 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
 
         def commit(self):
             self.commits += 1
+
+        def add(self, value):
+            self.added.append(value)
 
         def __enter__(self):
             return self
@@ -753,60 +760,9 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     assert item.published_at is not None
     assert payload["public_url"] == f"https://test.example.com/contents/{content_id}"
     assert audits[0]["action"] == "auto_publish_content"
-
-
-def test_deliver_post_publish_notification_marks_durable_timestamp(monkeypatch):
-    content_id = uuid.uuid4()
-    item = SimpleNamespace(
-        id=content_id,
-        hospital_id=uuid.uuid4(),
-        post_publish_notified_at=None,
-    )
-    audit_calls = []
-
-    class DB:
-        committed = False
-
-        def execute(self, _stmt):
-            return _Result(items=[item])
-
-        def commit(self):
-            self.committed = True
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-    db = DB()
-
-    async def sent(**_kwargs):
-        return True
-
-    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks.notifier, "notify_content_auto_published", sent)
-    monkeypatch.setattr(
-        tasks,
-        "write_audit_log_sync",
-        lambda *_args, **kwargs: audit_calls.append(kwargs),
-    )
-    payload = {
-        "hospital_name": "테스트의원",
-        "title": "공개 글",
-        "sequence_no": 1,
-        "total_count": 8,
-        "content_type": "FAQ",
-        "scheduled_date": "2026-06-10",
-        "public_url": "https://example.com/contents/1",
-        "admin_url": "https://admin.example.com/content?content=1",
-        "carried_over": False,
-    }
-
-    assert tasks._deliver_post_publish_notification(content_id, payload) is True
-    assert item.post_publish_notified_at is not None
-    assert db.committed is True
-    assert audit_calls[0]["action"] == "post_publish_notification_sent"
+    outboxes = [value for value in db.added if isinstance(value, NotificationOutbox)]
+    assert len(outboxes) == 1
+    assert outboxes[0].state == "PENDING"
 
 
 # ── 08:00 자동 발행 안전 게이트: **실제** assess_content_publication으로 검증 ──
@@ -1043,14 +999,11 @@ def test_auto_publish_is_idempotent(monkeypatch):
     assert second is None
     assert db.commits == 1
     assert item.published_at == published_at
-    assert [log.action for log in db.added] == ["auto_publish_content"]
-
-    # morning 루프는 payload가 None이 아닐 때만 Slack을 보낸다 → 실제 발송도 1회.
-    for outcome in (first, second):
-        if outcome is not None:
-            tasks._deliver_post_publish_notification(item.id, outcome)
-
-    assert len(effects["published_slack"]) == 1
+    audits = [log for log in db.added if hasattr(log, "action")]
+    outboxes = [log for log in db.added if isinstance(log, NotificationOutbox)]
+    assert [log.action for log in audits] == ["auto_publish_content"]
+    assert len(outboxes) == 1
+    assert effects["published_slack"] == []
 
 
 def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatch):

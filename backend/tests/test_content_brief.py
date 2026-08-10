@@ -377,6 +377,7 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
     )
     audit_calls = []
     published_notifications = []
+    enqueued_notifications = []
 
     class FakeDB:
         commit_calls = 0
@@ -405,6 +406,10 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
         published_notifications.append((hospital_name, title))
         return True
 
+    async def fake_enqueue_publish_notification(db, published_item, published_hospital):
+        enqueued_notifications.append((db, published_item, published_hospital))
+        return SimpleNamespace(state="PENDING")
+
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)
     monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
     monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
@@ -422,6 +427,9 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
         ),
     )
     monkeypatch.setattr(content_api, "write_audit_log", fake_write_audit_log)
+    monkeypatch.setattr(
+        content_api, "enqueue_publish_notification", fake_enqueue_publish_notification
+    )
     monkeypatch.setattr(content_api.notifier, "notify_content_published", fake_notify_content_published)
 
     db = FakeDB()
@@ -433,6 +441,7 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
     )
 
     assert result["detail"] == "Published"
+    assert result["notification_state"] == "PENDING"
     assert item.status == content_api.ContentStatus.PUBLISHED
     assert item.published_at is not None
     assert item.published_by == "김민지 AE"
@@ -454,7 +463,8 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
             },
         }
     ]
-    assert published_notifications == [(hospital.name, item.title)]
+    assert published_notifications == []
+    assert enqueued_notifications == [(db, item, hospital)]
 
 
 async def test_post_publish_review_records_authenticated_actor_and_is_idempotent(monkeypatch):

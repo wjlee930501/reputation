@@ -11,6 +11,7 @@ import {
   ContentOperationsFilter,
   countCarriedOver,
   getContentOperationsState,
+  getPublishNotificationPresentation,
   matchesContentOperationsFilter,
   sortCarriedOverFirst,
 } from '@/lib/content'
@@ -149,18 +150,22 @@ function getReviewState(item: ContentItem): ReviewState {
   const displayReason = displayReview?.reason ?? undefined
   if (item.status === 'PUBLISHED') {
     if (item.post_publish_reviewed_at) {
-      return { key: 'published', label: '후행 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
+      return { key: 'published', label: '공개 내용 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
     }
-    if (!item.post_publish_notified_at) {
+    if (getContentOperationsState(item) === 'notificationPending') {
+      const notification = getPublishNotificationPresentation(item)
+      const needsAttention = notification.state === 'FAILED' || notification.state === 'HOLD'
       return {
         key: 'notificationPending',
-        label: 'Slack 알림 재시도',
-        badge: 'bg-red-100 text-red-700',
-        reason: '공개는 완료됐지만 Slack 알림 전송 기록이 없습니다.',
+        label: notification.label,
+        badge: needsAttention ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800',
+        reason: [notification.problem, notification.publication_impact, notification.next_action]
+          .filter(Boolean)
+          .join(' '),
         publishable: false,
       }
     }
-    return { key: 'postReviewPending', label: '후행 확인 대기', badge: 'bg-blue-100 text-blue-700', publishable: false }
+    return { key: 'postReviewPending', label: '공개 내용 확인 대기', badge: 'bg-blue-100 text-blue-700', publishable: false }
   }
   if (item.status === 'REJECTED') {
     return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
@@ -459,12 +464,12 @@ export default function ContentPage() {
         method: 'POST',
         body: JSON.stringify({}),
       })
-      setActionSuccess('후행 확인을 완료로 기록했습니다.')
+      setActionSuccess('공개 내용 확인을 완료로 기록했습니다.')
       const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}`)
       setSelected(full)
       load()
     } catch (e: unknown) {
-      setEditError(e instanceof Error ? e.message : '후행 확인 기록에 실패했습니다.')
+      setEditError(e instanceof Error ? e.message : '공개 내용 확인 기록에 실패했습니다.')
     } finally {
       setActionLoading(false)
     }
@@ -763,6 +768,7 @@ export default function ContentPage() {
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1)
 
   const selectedReview = selected ? getReviewState(selected) : null
+  const selectedNotification = selected ? getPublishNotificationPresentation(selected) : null
   const selectedPublicUrl = selected ? buildPublicContentUrl(publicHost, selected.id) : null
   // 금지 표현 검출도 backend compliance가 단일 기준 (FAQ 분리 필드까지 포함해 검사한다).
   // FORBIDDEN_RULES는 편집 모드의 실시간 힌트 용도로만 유지.
@@ -787,7 +793,7 @@ export default function ContentPage() {
     : summary.notificationPending > 0
       ? { label: '지금 확인: Slack 알림 재시도', value: summary.notificationPending, tone: 'red', hint: '공개 완료 · 알림 기록 없음', filter: 'notificationPending' }
       : summary.postReviewPending > 0
-        ? { label: '지금 확인: 후행 검수', value: summary.postReviewPending, tone: 'blue', hint: '공개 글을 확인하고 검수 완료 처리', filter: 'postReviewPending' }
+        ? { label: '지금 확인: 공개 내용', value: summary.postReviewPending, tone: 'blue', hint: '공개된 글에 문제가 없는지 확인', filter: 'postReviewPending' }
         : { label: '현재 자동 발행 대기', value: summary.publishable, tone: 'green', hint: '기계 안전검사를 통과한 콘텐츠', filter: 'publishable' }
 
   return (
@@ -796,9 +802,9 @@ export default function ContentPage() {
       <div className="mb-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">자동 발행 · 후행 점검</h2>
+            <h2 className="text-2xl font-bold text-slate-900">자동 발행 · 공개 내용 확인</h2>
             <p className="text-sm text-slate-500 mt-1">
-              예약 콘텐츠는 발행일 08시에 자동 공개됩니다. Slack 알림 후 문제 여부만 후행 확인합니다.
+              예약 콘텐츠는 발행일 08시에 자동 공개됩니다. Slack 알림을 받은 뒤 공개된 글에 문제가 없는지 확인합니다.
             </p>
           </div>
         </div>
@@ -814,7 +820,7 @@ export default function ContentPage() {
         <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <SummaryCard {...primaryOperation} featured activeFilter={activeFilter} onFilter={setActiveFilter} />
           <SummaryCard label="자동 발행 대기" value={summary.publishable} tone="green" hint="기계 안전검사 통과" filter="publishable" activeFilter={activeFilter} onFilter={setActiveFilter} />
-          <SummaryCard label="후행 확인 대기" value={summary.postReviewPending} tone="blue" hint="Slack 알림 후 확인" filter="postReviewPending" activeFilter={activeFilter} onFilter={setActiveFilter} />
+          <SummaryCard label="공개 내용 확인 대기" value={summary.postReviewPending} tone="blue" hint="Slack 알림 후 공개 글 확인" filter="postReviewPending" activeFilter={activeFilter} onFilter={setActiveFilter} />
         </div>
         <details className="admin-disclosure mt-3">
           <summary>전체 파이프라인 상태</summary>
@@ -823,7 +829,7 @@ export default function ContentPage() {
             <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단" filter="needsReview" activeFilter={activeFilter} onFilter={setActiveFilter} />
             <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={setActiveFilter} />
             <SummaryCard label="Slack 알림 재시도" value={summary.notificationPending} tone="red" hint="알림 기록 없음" filter="notificationPending" activeFilter={activeFilter} onFilter={setActiveFilter} />
-            <SummaryCard label="후행 확인 완료" value={summary.published} tone="green" hint="사람 확인 기록됨" filter="published" activeFilter={activeFilter} onFilter={setActiveFilter} />
+            <SummaryCard label="공개 내용 확인 완료" value={summary.published} tone="green" hint="공개 글 확인 기록됨" filter="published" activeFilter={activeFilter} onFilter={setActiveFilter} />
             <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={setActiveFilter} />
             <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복·노후 슬롯" filter="cancelled" activeFilter={activeFilter} onFilter={setActiveFilter} />
           </div>
@@ -908,7 +914,7 @@ export default function ContentPage() {
                       {review.label}
                     </span>
                   </div>
-                  {item.post_publish_notified_at && !item.post_publish_reviewed_at && (
+                  {getContentOperationsState(item) === 'postReviewPending' && item.post_publish_notified_at && (
                     <p className="mt-2 text-xs text-slate-500">Slack 알림 {formatDateTime(item.post_publish_notified_at)}</p>
                   )}
                   {item.carried_over_from && (
@@ -921,7 +927,7 @@ export default function ContentPage() {
                     onClick={() => openDetail(item)}
                     className="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                   >
-                    {item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? '후행 확인 열기' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
+                    {item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? '공개 내용 확인' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
                   </button>
                 </article>
               )
@@ -935,7 +941,7 @@ export default function ContentPage() {
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">유형</th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">제목</th>
                 <th className="text-center px-6 py-3 text-slate-600 font-medium">순번</th>
-                <th className="text-center px-6 py-3 text-slate-600 font-medium">자동 발행 / 후행 확인</th>
+                <th className="text-center px-6 py-3 text-slate-600 font-medium">자동 발행 / 공개 내용 확인</th>
                 <th className="text-center px-6 py-3 text-slate-600 font-medium">운영 기준</th>
                 <th className="text-center px-6 py-3 text-slate-600 font-medium">콘텐츠 가이드</th>
                 <th className="text-right px-6 py-3 text-slate-600 font-medium">액션</th>
@@ -982,7 +988,7 @@ export default function ContentPage() {
                       <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${review.badge}`}>
                         {review.label}
                       </span>
-                      {item.post_publish_notified_at && !item.post_publish_reviewed_at && (
+                      {getContentOperationsState(item) === 'postReviewPending' && item.post_publish_notified_at && (
                         <span className="mt-1 block text-[11px] text-slate-500">알림 {formatDateTime(item.post_publish_notified_at)}</span>
                       )}
                     </td>
@@ -1002,7 +1008,7 @@ export default function ContentPage() {
                           onClick={() => openDetail(item)}
                           className="inline-flex min-h-9 items-center rounded-md px-2.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
                         >
-                          후행 확인
+                          공개 내용 확인
                         </button>
                       ) : item.status === 'PUBLISHED' ? (
                         <span className="text-xs text-green-700">확인 완료</span>
@@ -1074,7 +1080,7 @@ export default function ContentPage() {
                 {!editMode && !briefEditMode && (
                   <button
                     onClick={enterBriefEditMode}
-                    className="hidden min-h-10 px-3 py-1.5 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 sm:inline-flex sm:items-center"
+                    className="hidden min-h-11 px-3 py-1.5 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 sm:inline-flex sm:items-center"
                   >
                     콘텐츠 가이드 편집
                   </button>
@@ -1082,7 +1088,7 @@ export default function ContentPage() {
                 {!editMode && !briefEditMode && ['DRAFT', 'PUBLISHED'].includes(selected.status) && (
                   <button
                     onClick={enterEditMode}
-                    className="hidden min-h-10 px-3 py-1.5 text-sm font-medium text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 sm:inline-flex sm:items-center"
+                    className="hidden min-h-11 px-3 py-1.5 text-sm font-medium text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 sm:inline-flex sm:items-center"
                   >
                     편집
                   </button>
@@ -1091,7 +1097,7 @@ export default function ContentPage() {
                   ref={dialogCloseRef}
                   onClick={closeDetail}
                   aria-label="콘텐츠 상세 닫기"
-                  className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-md text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   ✕
                 </button>
@@ -1505,20 +1511,29 @@ export default function ContentPage() {
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div className="text-xs text-slate-600">
                     <span className={`mr-2 inline-flex rounded-full px-2.5 py-1 font-semibold ${selectedReview.badge}`}>{selectedReview.label}</span>
-                    {selected.status === 'PUBLISHED' && !selected.post_publish_notified_at && 'Slack 알림은 다음 재시도 주기에 다시 전송됩니다.'}
-                    {selected.status === 'PUBLISHED' && selected.post_publish_notified_at && !selected.post_publish_reviewed_at && `Slack 알림 ${formatDateTime(selected.post_publish_notified_at)}`}
+                    {selected.status === 'PUBLISHED' && selectedNotification?.state === 'SENT' && selected.post_publish_notified_at && `Slack 전달 ${formatDateTime(selected.post_publish_notified_at)}`}
                   </div>
                   {selected.status === 'PUBLISHED' && selectedPublicUrl && (
                     <a
                       href={selectedPublicUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex min-h-10 items-center rounded-lg border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                      className="inline-flex min-h-11 items-center rounded-lg border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
                     >
                       공개 사이트에서 보기 ↗
                     </a>
                   )}
                 </div>
+                {selected.status === 'PUBLISHED' && selectedNotification?.state !== 'SENT' && (
+                  <div className="mb-3 break-keep [overflow-wrap:anywhere] rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                    {selectedNotification?.problem && <p><strong>무슨 문제인가요?</strong> {selectedNotification.problem}</p>}
+                    <p className="mt-1"><strong>발행 영향</strong> {selectedNotification?.publication_impact}</p>
+                    <p className="mt-1"><strong>지금 할 일</strong> {selectedNotification?.next_action}</p>
+                    <a href="/operations?queue=incidents" className="mt-2 inline-flex min-h-11 items-center font-semibold text-blue-700 underline underline-offset-2">
+                      운영센터에서 알림 상태 확인
+                    </a>
+                  </div>
+                )}
                 {!['PUBLISHED', 'CANCELLED'].includes(selected.status) && !selectedReview.publishable && (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2">
                     <p className="text-xs text-orange-800">공개되지 않았습니다. 수정 저장 후 자동 안전검사를 다시 수행합니다.</p>
@@ -1537,9 +1552,9 @@ export default function ContentPage() {
                   </p>
                 )}
                 <div className="mb-3 flex gap-2 sm:hidden">
-                  <button type="button" onClick={enterBriefEditMode} className="min-h-10 flex-1 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700">콘텐츠 가이드 편집</button>
+                  <button type="button" onClick={enterBriefEditMode} className="min-h-11 flex-1 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700">콘텐츠 가이드 편집</button>
                   {['DRAFT', 'PUBLISHED'].includes(selected.status) && (
-                    <button type="button" onClick={enterEditMode} className="min-h-10 flex-1 rounded-lg border border-blue-300 px-3 text-sm font-medium text-blue-700">콘텐츠 편집</button>
+                    <button type="button" onClick={enterEditMode} className="min-h-11 flex-1 rounded-lg border border-blue-300 px-3 text-sm font-medium text-blue-700">콘텐츠 편집</button>
                   )}
                 </div>
 
@@ -1560,7 +1575,7 @@ export default function ContentPage() {
                           : '현재 콘텐츠가 재생성 대기열에 등록되고, 생성이 끝나면 새 초안으로 교체됩니다.'}
                     </p>
                     <div className="mt-3 flex justify-end gap-2">
-                      <button type="button" onClick={() => setConfirmAction(null)} className="min-h-10 rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-50">취소</button>
+                      <button type="button" onClick={() => setConfirmAction(null)} className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-50">취소</button>
                       <button
                         type="button"
                         ref={destructiveConfirmRef}
@@ -1570,7 +1585,7 @@ export default function ContentPage() {
                           else handleRegenerate(selected.id)
                         }}
                         disabled={actionLoading}
-                        className="min-h-10 rounded-lg bg-red-700 px-4 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50"
+                        className="min-h-11 rounded-lg bg-red-700 px-4 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50"
                       >
                         {actionLoading
                           ? '처리 중...'
@@ -1590,7 +1605,7 @@ export default function ContentPage() {
                         disabled={actionLoading}
                         className="min-h-11 flex-1 min-w-48 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
                       >
-                        문제 없음 · 후행 확인 완료
+                        문제 없음 · 공개 내용 확인 완료
                       </button>
                     )}
                     {selected.post_publish_reviewed_at && (

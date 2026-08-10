@@ -49,6 +49,11 @@ from app.services.content_publication import (
     has_required_references,
     publication_field_values,
 )
+from app.services.content_publish_notifications import (
+    enqueue_publish_notification,
+    project_publish_notification,
+)
+from app.services.content_publish_state import attach_publish_notification_state
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
 from app.services.essence_readiness import get_current_approved_philosophy
 from app.services.exposure_content_linker import (
@@ -375,6 +380,7 @@ async def list_content(
 
     result = await db.execute(stmt)
     items = result.scalars().all()
+    await attach_publish_notification_state(db, items)
 
     return [_serialize_item(i) for i in items]
 
@@ -387,6 +393,7 @@ async def get_content(
 ):
     """콘텐츠 상세 (본문 포함)"""
     item = await _get_content(db, content_id, hospital_id)
+    await attach_publish_notification_state(db, (item,))
     return _serialize_item(item, full=True)
 
 
@@ -465,7 +472,7 @@ async def update_content(
         item.body_updated_at = datetime.now(timezone.utc)
 
     # 공개 후 확인 기록은 그 당시 본문에 대한 기록이다. 공개 필드가 바뀌면 이전 확인을
-    # 무효화해 Admin 목록에서 다시 후행 확인 대기로 보이게 한다.
+    # 무효화해 Admin 목록에서 다시 공개 내용 확인 대기로 보이게 한다.
     public_fields_changed = bool(body.model_fields_set & set(FORBIDDEN_CHECK_FIELDS)) or (
         "references" in body.model_fields_set
     )
@@ -719,10 +726,8 @@ async def publish_content(
             "mode": "manual_recovery",
         },
     )
+    await enqueue_publish_notification(db, item, hospital)
     await db.commit()
-
-    # Slack 알림
-    await notifier.notify_content_published(hospital.name, item.title or "")
 
     # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library/관련 풀페이지에 즉시 반영되도록.
     # 커밋 이후이므로 실패해도 raise하지 않는다 (P2-9b): 발행은 이미 성공했는데 500을
@@ -735,7 +740,11 @@ async def publish_content(
             treatments=hospital.treatments,
         )
 
-    return {"detail": "Published", "published_at": item.published_at.isoformat()}
+    return {
+        "detail": "Published",
+        "published_at": item.published_at.isoformat(),
+        "notification_state": "PENDING",
+    }
 
 
 @router.post("/{hospital_id}/content/{content_id}/post-publish-review")
@@ -1064,8 +1073,12 @@ def _content_review_display(
 ) -> dict[str, str | bool | None]:
     if status_value == ContentStatus.PUBLISHED.value:
         if getattr(item, "post_publish_reviewed_at", None):
-            return {"label": "후행 확인 완료", "reason": None, "publishable": False}
-        return {"label": "후행 확인 대기", "reason": "발행 후 내용 확인 필요", "publishable": False}
+            return {"label": "공개 내용 확인 완료", "reason": None, "publishable": False}
+        return {
+            "label": "공개 내용 확인 대기",
+            "reason": "공개된 글에 문제가 없는지 확인해 주세요.",
+            "publishable": False,
+        }
     if status_value == ContentStatus.REJECTED.value:
         return {"label": "반려됨", "reason": "야간 재생성 대기", "publishable": False}
     if status_value == ContentStatus.CANCELLED.value:
@@ -1087,12 +1100,24 @@ def _content_review_display(
 def _serialize_item_display(
     item: ContentItem, content_type: str | None, status_value: str | None
 ) -> dict:
+    review = _content_review_display(item, status_value)
+    if status_value == ContentStatus.PUBLISHED.value:
+        notification = getattr(item, "_publish_notification_projection", None)
+        if notification is None:
+            notification = project_publish_notification(
+                None, notification_id=None, safe_error_code=None
+            )
+        review["notification_state"] = notification["state"]
+        review["notification"] = notification
+        if notification["state"] != "SENT":
+            review["label"] = notification["label"]
+            review["reason"] = notification["problem"] or notification["next_action"]
     return {
         "content_type_label": _display_label(CONTENT_TYPE_DISPLAY_LABELS, content_type),
         "status_label": _display_label(CONTENT_STATUS_DISPLAY_LABELS, status_value),
         "brief_status_label": _display_label(BRIEF_STATUS_DISPLAY_LABELS, item.brief_status),
         "essence_status_label": _display_label(ESSENCE_STATUS_DISPLAY_LABELS, item.essence_status),
-        "review": _content_review_display(item, status_value),
+        "review": review,
     }
 
 

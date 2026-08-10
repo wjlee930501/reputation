@@ -23,16 +23,52 @@ export interface ContentOperationsItem extends CarriedOverItem {
   title?: string | null
   post_publish_notified_at?: string | null
   post_publish_reviewed_at?: string | null
+  display?: {
+    review?: {
+      label?: string | null
+      reason?: string | null
+      publishable?: boolean | null
+      notification_state?: 'PENDING' | 'SENDING' | 'RETRYING' | 'HOLD' | 'SENT' | 'FAILED' | 'MISSING'
+      notification?: PublishNotificationPresentation
+    } | null
+  } | null
   compliance?: {
     publishable: boolean
   }
 }
 
+export interface PublishNotificationPresentation {
+  state: 'PENDING' | 'SENDING' | 'RETRYING' | 'HOLD' | 'SENT' | 'FAILED' | 'MISSING'
+  label: string
+  problem: string | null
+  publication_impact: string
+  next_action: string
+  notification_id: string | null
+  safe_error_code: string | null
+}
+
+const NOTIFICATION_FALLBACK: PublishNotificationPresentation = {
+  state: 'MISSING',
+  label: 'Slack 알림 준비 중',
+  problem: '발행 알림 작업이 아직 준비되지 않았습니다.',
+  publication_impact: '콘텐츠 발행에는 영향이 없습니다.',
+  next_action: '다음 아침 복구 작업이 자동으로 준비합니다.',
+  notification_id: null,
+  safe_error_code: null,
+}
+
+export function getPublishNotificationPresentation(
+  item: ContentOperationsItem,
+): PublishNotificationPresentation {
+  return item.display?.review?.notification ?? NOTIFICATION_FALLBACK
+}
+
 export function getContentOperationsState(item: ContentOperationsItem): Exclude<ContentOperationsFilter, 'all' | 'carried'> {
   if (item.status === 'PUBLISHED') {
     if (item.post_publish_reviewed_at) return 'published'
-    if (!item.post_publish_notified_at) return 'notificationPending'
-    return 'postReviewPending'
+    return item.display?.review?.notification_state === 'SENT'
+      ? 'postReviewPending'
+      : 'notificationPending'
   }
   if (item.status === 'REJECTED') return 'rejected'
   if (item.status === 'CANCELLED') return 'cancelled'

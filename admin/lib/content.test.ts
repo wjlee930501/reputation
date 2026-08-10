@@ -6,6 +6,7 @@ import {
   countCarriedOver,
   countUnpublishedCarriedOver,
   getContentOperationsState,
+  getPublishNotificationPresentation,
   isCarriedOver,
   matchesContentOperationsFilter,
   sortCarriedOverFirst,
@@ -67,10 +68,28 @@ test('countUnpublishedCarriedOver excludes published carried items', () => {
 })
 
 test('content operations state distinguishes Slack retry, post-review, and reviewed states', () => {
-  assert.equal(getContentOperationsState({ status: 'PUBLISHED' }), 'notificationPending')
   assert.equal(
-    getContentOperationsState({ status: 'PUBLISHED', post_publish_notified_at: '2026-07-16T08:00:00Z' }),
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      display: { review: { notification_state: 'PENDING' } },
+    }),
+    'notificationPending',
+  )
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      display: { review: { notification_state: 'SENT' } },
+    }),
     'postReviewPending',
+  )
+  // Legacy timestamp must never override the server-authoritative outbox state.
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      post_publish_notified_at: '2026-07-16T08:00:00Z',
+      display: { review: { notification_state: 'FAILED' } },
+    }),
+    'notificationPending',
   )
   assert.equal(
     getContentOperationsState({
@@ -92,11 +111,38 @@ test('content operations state distinguishes Slack retry, post-review, and revie
   assert.equal(getContentOperationsState({ status: 'CANCELLED', title: 'old draft' }), 'cancelled')
 })
 
+test('publish notification presentation is server-authoritative and operator-readable', () => {
+  const presentation = getPublishNotificationPresentation({
+    status: 'PUBLISHED',
+    post_publish_notified_at: '2026-07-16T08:00:00Z',
+    display: {
+      review: {
+        notification_state: 'FAILED',
+        notification: {
+          state: 'FAILED',
+          label: 'Slack 전달 실패',
+          problem: 'Slack에 운영 알림을 전달하지 못했습니다.',
+          publication_impact: '콘텐츠 발행에는 영향이 없습니다.',
+          next_action: '운영센터에서 실패 원인을 확인하고 알림을 다시 시도해 주세요.',
+          notification_id: 'notification-1',
+          safe_error_code: 'DELIVERY_RETRY_EXHAUSTED',
+        },
+      },
+    },
+  })
+
+  assert.equal(presentation.state, 'FAILED')
+  assert.equal(presentation.label, 'Slack 전달 실패')
+  assert.match(presentation.publication_impact, /발행에는 영향이 없습니다/)
+  assert.match(presentation.next_action, /운영센터/)
+})
+
 test('content operations filters support actionable summary-card filtering', () => {
   const item = {
     status: 'PUBLISHED',
     carried_over_from: '2026-06-30',
     post_publish_notified_at: '2026-07-16T08:00:00Z',
+    display: { review: { notification_state: 'SENT' as const } },
   }
   assert.equal(matchesContentOperationsFilter(item, 'all'), true)
   assert.equal(matchesContentOperationsFilter(item, 'carried'), true)

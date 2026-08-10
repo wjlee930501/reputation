@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -20,12 +21,15 @@ from app.services.notification_store import (
     claim_notification_batch,
     recover_stale_sending,
 )
+from app.services.notification_success_hooks import run_notification_success_hook
 from app.services.notification_transport import (
     TransportDecision,
     deliver_once,
     retry_delay,
     safe_error_message,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +83,17 @@ async def dispatch_notification_batch(
             counts["stale"] += 1
         else:
             _increment(counts, decision.state)
+            if decision.state == NotificationOutboxState.SENT:
+                # SENT is committed before domain stamping. A hook failure can delay the
+                # local projection, but can never roll Slack truth back to a sendable state.
+                async with sessions() as hook_db:
+                    try:
+                        await run_notification_success_hook(hook_db, row.id, dispatch_at)
+                    except Exception:
+                        logger.exception(
+                            "Notification success projection deferred for outbox_id=%s",
+                            row.id,
+                        )
         if decision.attempted and index < len(claimed) - 1:
             await pause()
     return DispatchResult(claimed=len(claimed), **counts)
