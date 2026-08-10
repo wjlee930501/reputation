@@ -79,13 +79,12 @@ def test_pii_purge_task_is_routed():
     assert _resolved_queue("app.workers.tasks.purge_expired_leads") == "default"
 
 
-def test_monthly_reports_run_at_21_to_avoid_nightly_generation_overlap():
-    """월간 리포트는 21:00 — 야간 콘텐츠 생성(23:00)과 워커 슬롯 경합을 피한다 (결함 11)."""
+def test_monthly_reports_close_after_the_next_month_boundary():
+    """월간 리포트는 다음 달 1일 00:15에 직전 달을 마감한다."""
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
-    assert 21 in schedule.hour
-    assert 23 not in schedule.hour
-    # 28~31일 로직 유지
-    assert schedule.day_of_month == {28, 29, 30, 31}
+    assert schedule.minute == {15}
+    assert schedule.hour == {0}
+    assert schedule.day_of_month == {1}
 
 
 def test_redbeat_refreshes_lock_well_before_ttl_expires():

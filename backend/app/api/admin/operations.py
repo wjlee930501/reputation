@@ -48,6 +48,11 @@ from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
 from app.services.incident_safety import sanitize_operator_text
 from app.services.monthly_events import MonthlyRunStage
+from app.services.monthly_period import (
+    MonthlyPeriodError,
+    prior_month_to_close,
+    require_closed_period,
+)
 from app.services.operation_run_payloads import UnsafeDispatchPayload, parse_stored_dispatch
 from app.services.operation_runs import (
     DispatchTask,
@@ -615,15 +620,16 @@ async def generate_monthly_report_operation(
         raise HTTPException(
             status_code=400, detail="연도와 월은 함께 지정해야 합니다."
         )
-    if year is not None and month is not None:
-        # 이번 달·다음 달을 미리 만들면 아직 쌓이지 않은 데이터로 빈 리포트가 생기고,
-        # 그 행 때문에 정작 월말 배치가 dedupe로 건너뛰어 진짜 리포트가 영영 생기지 않는다.
-        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
-        if (year, month) >= (now_kst.year, now_kst.month):
-            raise HTTPException(
-                status_code=400,
-                detail="이번 달과 그 이후는 만들 수 없습니다. 월말 자동 생성이 끝난 지난달까지만 가능합니다.",
-            )
+    now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+    try:
+        period = (
+            require_closed_period(year, month, now=now_kst)
+            if year is not None and month is not None
+            else prior_month_to_close(now_kst)
+        )
+    except MonthlyPeriodError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    year, month = period.year, period.month
     rebuild_reason = sanitize_operator_text(payload.reason if payload is not None else None, limit=200)
     if rebuild and (rebuild_reason is None or len(rebuild_reason) < 3):
         raise HTTPException(

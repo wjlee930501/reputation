@@ -21,8 +21,10 @@ from sqlalchemy.orm import Session
 
 from app.api.admin import operations
 from app.models.hospital import Hospital
+from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
+from app.services.monthly_period import ReportBuildReason
 from app.workers import tasks
 
 _POSTGRES_URL = os.getenv(
@@ -59,7 +61,7 @@ def captured_anchor(monkeypatch):
     """_build_monthly_report_for_hospital에 넘어간 anchor를 가로챈다."""
     seen: dict = {}
 
-    def fake_build(_db, hospital, anchor):
+    def fake_build(_db, hospital, anchor, **_kwargs):
         seen["hospital"] = hospital
         seen["anchor"] = anchor
         return "created"
@@ -110,6 +112,34 @@ def test_january_default_rolls_back_to_previous_december(monkeypatch, captured_a
     assert (result["year"], result["month"]) == (2025, 12)
 
 
+def test_default_month_waits_for_first_day_0015_kst(monkeypatch, captured_anchor):
+    _use_session(monkeypatch, FakeSession(FakeHospital()))
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_a, **_k: arrow.get(2026, 9, 1, 0, 14, 59, tzinfo="Asia/Seoul"),
+    )
+
+    result = tasks.generate_monthly_report_for_hospital(str(FakeHospital.id))
+
+    assert result == {"status": "period_not_closed"}
+    assert "anchor" not in captured_anchor
+
+
+def test_default_month_matches_scheduled_period_at_exact_cutoff(monkeypatch, captured_anchor):
+    _use_session(monkeypatch, FakeSession(FakeHospital()))
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_a, **_k: arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
+    )
+
+    result = tasks.generate_monthly_report_for_hospital(str(FakeHospital.id))
+
+    assert (result["year"], result["month"]) == (2026, 8)
+    assert (captured_anchor["anchor"].year, captured_anchor["anchor"].month) == (2026, 8)
+
+
 def test_partial_period_is_rejected(monkeypatch, captured_anchor):
     """잘못된 요청은 예외가 아니라 상태로 돌려준다 — autoretry가 헛돌지 않게."""
     _use_session(monkeypatch, FakeSession(FakeHospital()))
@@ -136,7 +166,7 @@ def test_current_and_future_months_are_rejected(monkeypatch, captured_anchor, of
         str(FakeHospital.id), target.year, target.month
     )
 
-    assert result == {"status": "invalid_period"}
+    assert result == {"status": "period_not_closed"}
     assert "anchor" not in captured_anchor
 
 
@@ -154,7 +184,9 @@ def test_previous_month_is_still_allowed(monkeypatch, captured_anchor):
 
 def test_existing_report_is_not_overwritten(monkeypatch):
     _use_session(monkeypatch, FakeSession(FakeHospital()))
-    monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", lambda *_a: "skipped_existing")
+    monkeypatch.setattr(
+        tasks, "_build_monthly_report_for_hospital", lambda *_a, **_k: "skipped_existing"
+    )
 
     result = tasks.generate_monthly_report_for_hospital(str(FakeHospital.id), 2026, 2)
 
@@ -165,8 +197,18 @@ def test_explicit_rebuild_requests_a_new_version(monkeypatch):
     _use_session(monkeypatch, FakeSession(FakeHospital()))
     seen: dict = {}
 
-    def fake_build(_db, _hospital, _anchor, *, rebuild=False):
+    def fake_build(
+        _db,
+        _hospital,
+        _anchor,
+        *,
+        rebuild=False,
+        build_reason=None,
+        correlation_key=None,
+    ):
         seen["rebuild"] = rebuild
+        seen["build_reason"] = build_reason
+        seen["correlation_key"] = correlation_key
         return "created"
 
     monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", fake_build)
@@ -174,7 +216,80 @@ def test_explicit_rebuild_requests_a_new_version(monkeypatch):
     result = tasks.generate_monthly_report_for_hospital(str(FakeHospital.id), 2026, 2, rebuild=True)
 
     assert result["status"] == "created"
-    assert seen == {"rebuild": True}
+    assert seen == {
+        "rebuild": True,
+        "build_reason": ReportBuildReason.MANUAL_REBUILD,
+        "correlation_key": f"manual:{FakeHospital.id}:2026-02",
+    }
+
+
+@pytest.mark.asyncio
+async def test_manual_api_freezes_the_same_prior_month_as_the_scheduled_close(
+    monkeypatch,
+) -> None:
+    hospital_id = uuid.uuid4()
+    captured_args: list[object] = []
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 9, 1, 0, 15, tzinfo=timezone(timedelta(hours=9)))
+            return value if tz is None else value.astimezone(tz)
+
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        state=OperationRunState.QUEUED,
+        task_id="task-21-manual",
+    )
+
+    async def enqueue(*_args, **kwargs):
+        captured_args.extend(kwargs["args"])
+        return SimpleNamespace(run=run, replayed=False)
+
+    monkeypatch.setattr(operations, "datetime", FrozenDatetime)
+    monkeypatch.setattr(
+        operations,
+        "_get_hospital_or_404",
+        AsyncMock(return_value=SimpleNamespace(id=hospital_id)),
+    )
+    monkeypatch.setattr(operations, "_enqueue_with_truthful_audit", enqueue)
+
+    await operations.generate_monthly_report_operation(
+        hospital_id,
+        year=None,
+        month=None,
+        rebuild=False,
+        payload=None,
+        db=AsyncMock(),
+        idempotency_key=None,
+    )
+
+    assert captured_args == [str(hospital_id), 2026, 8]
+
+
+@pytest.mark.asyncio
+async def test_manual_api_refuses_previous_month_before_0015_kst(monkeypatch) -> None:
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 9, 1, 0, 14, 59, tzinfo=timezone(timedelta(hours=9)))
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(operations, "datetime", FrozenDatetime)
+
+    with pytest.raises(HTTPException) as blocked:
+        await operations.generate_monthly_report_operation(
+            uuid.uuid4(),
+            year=2026,
+            month=8,
+            rebuild=False,
+            payload=None,
+            db=AsyncMock(),
+            idempotency_key=None,
+        )
+
+    assert blocked.value.status_code == 400
+    assert "00시 15분 이후" in str(blocked.value.detail)
 
 
 def test_unknown_hospital_reports_instead_of_raising(monkeypatch, captured_anchor):
@@ -195,7 +310,7 @@ def _run_failing_attempt(monkeypatch, retries: int) -> tuple[FakeSession, list[d
         alerts.append(kwargs)
         return True
 
-    def boom(*_a):
+    def boom(*_a, **_k):
         raise RuntimeError("pdf renderer down")
 
     monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", boom)
@@ -552,6 +667,23 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
         status="ACTIVE",
     )
     monthly_pg_session.add_all((success_hospital, failed_hospital))
+    monthly_pg_session.flush()
+    monthly_pg_session.add_all(
+        (
+            HospitalServiceInterval(
+                hospital_id=success_hospital.id,
+                started_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                provenance="ACTIVATION",
+            ),
+            HospitalServiceInterval(
+                hospital_id=failed_hospital.id,
+                started_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                provenance="ACTIVATION",
+            ),
+        )
+    )
     monthly_pg_session.commit()
 
     class SessionContext:
@@ -561,7 +693,7 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
         def __exit__(self, *_exc):
             return False
 
-    def fake_build(db, hospital, now):
+    def fake_build(db, hospital, now, **_kwargs):
         if hospital.id == failed_hospital.id:
             raise RuntimeError("renderer unavailable")
         db.add(
@@ -585,7 +717,7 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
     monkeypatch.setattr(
         tasks.arrow,
         "now",
-        lambda *_args, **_kwargs: arrow.get(2026, 7, 31, 21, tzinfo="Asia/Seoul"),
+        lambda *_args, **_kwargs: arrow.get(2026, 8, 1, 0, 15, tzinfo="Asia/Seoul"),
     )
 
     # When: the monthly batch processes both hospitals
@@ -615,6 +747,77 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
     ).scalar_one().version == 1
 
 
+def test_first_day_close_uses_historical_service_interval_not_current_status(
+    monthly_pg_session: Session, monkeypatch
+) -> None:
+    eligible_paused = Hospital(
+        name="8월 운영 후 일시정지 의원",
+        slug=f"monthly-eligible-paused-{uuid.uuid4().hex}",
+        status="PAUSED",
+    )
+    active_without_history = Hospital(
+        name="9월 신규 운영 의원",
+        slug=f"monthly-active-new-{uuid.uuid4().hex}",
+        status="ACTIVE",
+    )
+    monthly_pg_session.add_all((eligible_paused, active_without_history))
+    monthly_pg_session.flush()
+    monthly_pg_session.add(
+        HospitalServiceInterval(
+            hospital_id=eligible_paused.id,
+            started_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
+            ended_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+            provenance="ACTIVATION",
+        )
+    )
+    monthly_pg_session.commit()
+
+    class SessionContext:
+        def __enter__(self):
+            return monthly_pg_session
+
+        def __exit__(self, *_exc):
+            return False
+
+    built: list[tuple[uuid.UUID, int, int]] = []
+
+    def fake_build(db, hospital, anchor, **_kwargs):
+        built.append((hospital.id, anchor.year, anchor.month))
+        db.add(
+            MonthlyReport(
+                hospital_id=hospital.id,
+                period_year=anchor.year,
+                period_month=anchor.month,
+                report_type="MONTHLY",
+                version=1,
+                quality="BLOCKED",
+                planned_count=0,
+                success_count=0,
+                failed_count=0,
+            )
+        )
+        db.commit()
+        return "created"
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", SessionContext)
+    monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", fake_build)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
+    )
+
+    result = tasks.run_monthly_reports()
+
+    assert result == {
+        "status": "SUCCEEDED",
+        "total_count": 1,
+        "success_count": 1,
+        "failure_count": 0,
+    }
+    assert built == [(eligible_paused.id, 2026, 8)]
+
+
 def test_scheduled_replay_keeps_a_prior_failure_visible(
     monthly_pg_session: Session, monkeypatch
 ) -> None:
@@ -639,6 +842,14 @@ def test_scheduled_replay_keeps_a_prior_failure_visible(
         result_summary={"stage": "FAILED", "period_year": 2026, "period_month": 7},
     )
     monthly_pg_session.add(run)
+    monthly_pg_session.add(
+        HospitalServiceInterval(
+            hospital_id=hospital.id,
+            started_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+            ended_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            provenance="ACTIVATION",
+        )
+    )
     monthly_pg_session.commit()
 
     class SessionContext:
@@ -652,7 +863,7 @@ def test_scheduled_replay_keeps_a_prior_failure_visible(
     monkeypatch.setattr(
         tasks.arrow,
         "now",
-        lambda *_args, **_kwargs: arrow.get(2026, 7, 31, 21, tzinfo="Asia/Seoul"),
+        lambda *_args, **_kwargs: arrow.get(2026, 8, 1, 0, 15, tzinfo="Asia/Seoul"),
     )
 
     result = tasks.run_monthly_reports()

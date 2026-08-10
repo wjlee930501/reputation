@@ -80,6 +80,15 @@ from app.services.monthly_manifest import (
     freeze_dispatch_manifest,
     link_attempt,
 )
+from app.services.monthly_period import (
+    MonthlyPeriodError,
+    ReportBuildReason,
+    eligible_hospital_ids,
+    lock_report_version_plan,
+    prior_month_to_close,
+    reporting_period,
+    require_closed_period,
+)
 from app.services.report_engine import (
     build_content_attribution_summary,
     build_doctor_report_view,
@@ -2812,6 +2821,8 @@ def _build_monthly_report_for_hospital(
     *,
     rebuild: bool = False,
     observed_at: datetime | None = None,
+    build_reason: ReportBuildReason = ReportBuildReason.MANUAL_REBUILD,
+    correlation_key: str | None = None,
 ) -> str:
     """`now`가 가리키는 달의 월간 리포트 1건을 만든다.
 
@@ -2821,8 +2832,9 @@ def _build_monthly_report_for_hospital(
     두 경로가 서로 다른 코드였다면 배치 실패를 복구한 리포트가 배치본과 다른 내용이 될 수
     있다. 리포트 커밋까지 여기서 끝내고, 작업 상태 기록과 알림 이벤트는 호출자가 처리한다.
     """
-    period_start = now.floor("month").datetime
-    period_end = now.ceil("month").datetime
+    period = reporting_period(now.year, now.month)
+    period_start = period.starts_at
+    period_end = period.ends_at
 
     manifest = db.execute(
         select(MonthlyMeasurementManifest).where(
@@ -2851,8 +2863,6 @@ def _build_monthly_report_for_hospital(
             f"{now.year}-{now.month:02d}, skipping."
         )
         return "skipped_existing"
-    prior_report = existing_reports[0] if existing_reports else None
-
     # 이번 달 AI 답변 언급률 집계
     # QueryMatrix를 조인해 질문 유형을 가져온다 — SovRecord에는 유형이 없고,
     # 유형 없이는 INFO(지역 없는 의학 설명 질문)를 분모에서 뺄 수 없다.
@@ -2939,7 +2949,7 @@ def _build_monthly_report_for_hospital(
         ContentItem.hospital_id == h.id,
         ContentItem.status == ContentStatus.PUBLISHED,
         ContentItem.published_at >= period_start,
-        ContentItem.published_at <= period_end,
+        ContentItem.published_at < period_end,
     )
     content_result = db.execute(content_stmt)
     published_contents = content_result.scalars().all()
@@ -2995,29 +3005,39 @@ def _build_monthly_report_for_hospital(
     except Exception as exc:  # noqa: BLE001 — 원장 판본 실패가 월간 리포트를 막지 않는다.
         logger.error("Doctor report rendering failed for %s: %s", h.name, exc)
 
+    version_plan = lock_report_version_plan(
+        db,
+        hospital_id=h.id,
+        period=period,
+        reason_code=build_reason,
+        correlation_key=correlation_key or f"manual:{h.id}:{now.year}-{now.month:02d}",
+    )
+    if not version_plan.create:
+        return "skipped_existing"
+
     report = MonthlyReport(
-            hospital_id=h.id,
-            period_year=now.year,
-            period_month=now.month,
-            report_type="MONTHLY",
-            version=(prior_report.version + 1) if prior_report else 1,
-            supersedes_report_id=prior_report.id if prior_report else None,
-            pdf_path=pdf_path,
-            doctor_pdf_path=doctor_pdf_path,
-            sov_summary={
-                "sov_pct": sov_pct,
-                "prev_sov_pct": prev_sov,
-                "change_pct": change_pct,
-                # 헤드라인(sov_pct)은 LOCAL 질문만의 언급률이다. INFO 구간이
-                # 사라지면 "왜 이 숫자가 올랐나"를 설명할 수 없으므로 함께 남긴다.
-                "segments": sov_segments,
-            },
-            content_summary={
-                "published_count": len(published_contents),
-                "attribution": attribution,
-            },
-            essence_summary=essence_summary,
-        )
+        hospital_id=h.id,
+        period_year=now.year,
+        period_month=now.month,
+        report_type="MONTHLY",
+        version=version_plan.version,
+        supersedes_report_id=version_plan.supersedes_report_id,
+        pdf_path=pdf_path,
+        doctor_pdf_path=doctor_pdf_path,
+        sov_summary={
+            "sov_pct": sov_pct,
+            "prev_sov_pct": prev_sov,
+            "change_pct": change_pct,
+            # 헤드라인(sov_pct)은 LOCAL 질문만의 언급률이다. INFO 구간이
+            # 사라지면 "왜 이 숫자가 올랐나"를 설명할 수 없으므로 함께 남긴다.
+            "segments": sov_segments,
+        },
+        content_summary={
+            "published_count": len(published_contents),
+            "attribution": attribution,
+        },
+        essence_summary=essence_summary,
+    )
     if manifest is None:
         report.quality = "BLOCKED"
         report.delivery_blockers = ["MANIFEST_MISSING", "DOCTOR_ARTIFACT_UNVALIDATED"]
@@ -3042,22 +3062,23 @@ def _build_monthly_report_for_hospital(
 )
 def run_monthly_reports(self):
     now = arrow.now("Asia/Seoul")
-    # Task 21이 실행 시각을 익월 cutoff 이후로 옮길 때까지 이 legacy 호출은 open manifest를
-    # BLOCKED로만 snapshot한다. close_manifest가 cutoff 전 COMPLETE를 허용하지 않는다.
-    # beat은 28~31일에 매일 실행 — 실제 마지막 날인지 확인
-    if now.date() != now.ceil("month").date():
-        logger.info(f"Not last day of month ({now.date()}), skipping monthly reports")
-        return
+    try:
+        period = prior_month_to_close(now.datetime)
+    except MonthlyPeriodError as exc:
+        logger.info("Monthly close is not ready: %s", exc)
+        return {"status": "period_not_closed"}
+    anchor = arrow.get(period.ends_at).shift(microseconds=-1)
 
     with SyncSessionLocal() as db:
-        stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
+        hospital_ids = eligible_hospital_ids(db, period)
+        stmt = select(Hospital).where(Hospital.id.in_(hospital_ids))
         result = db.execute(stmt)
         hospitals = result.scalars().all()
         failures: list[tuple[str, Exception]] = []
         successes = 0
 
         for h in hospitals:
-            run_id, replayed = _start_scheduled_monthly_operation_run(db, h, now)
+            run_id, replayed = _start_scheduled_monthly_operation_run(db, h, anchor)
             if replayed:
                 existing_run = db.get(OperationRun, run_id)
                 if existing_run is not None and existing_run.state == OperationRunState.SUCCEEDED:
@@ -3066,13 +3087,21 @@ def run_monthly_reports(self):
                     failures.append((h.name, RuntimeError("scheduled run already incomplete")))
                 continue
             try:
-                outcome = _build_monthly_report_for_hospital(db, h, now)
-                _finish_monthly_operation_run(db, run_id, h.id, now.year, now.month, outcome)
+                outcome = _build_monthly_report_for_hospital(
+                    db,
+                    h,
+                    anchor,
+                    build_reason=ReportBuildReason.SCHEDULED_CLOSE,
+                    correlation_key=f"scheduled:{h.id}:{anchor.year}-{anchor.month:02d}",
+                )
+                _finish_monthly_operation_run(
+                    db, run_id, h.id, anchor.year, anchor.month, outcome
+                )
                 successes += 1
             except Exception as e:
                 logger.error(f"Monthly report failed for {h.name}: {e}")
                 db.rollback()
-                _fail_monthly_operation_run(db, run_id, h.id, now.year, now.month)
+                _fail_monthly_operation_run(db, run_id, h.id, anchor.year, anchor.month)
                 failures.append((h.name, e))
 
         return {
@@ -3117,15 +3146,16 @@ def generate_monthly_report_for_hospital(
     if (year is None) != (month is None):
         logger.error("Monthly report requested with a partial period: year=%s month=%s", year, month)
         return {"status": "invalid_period"}
-    if year is not None and month is not None:
-        # 이번 달 이후를 만들면 빈 리포트 행이 생기고, 그 행 때문에 월말 배치가 dedupe로
-        # 건너뛰어 진짜 리포트가 영영 생기지 않는다.
-        if (year, month) >= (now.year, now.month):
-            logger.error("Monthly report requested for a non-past period: %s-%s", year, month)
-            return {"status": "invalid_period"}
-        anchor = arrow.Arrow(year, month, 1, tzinfo="Asia/Seoul").ceil("month")
-    else:
-        anchor = now.shift(months=-1).ceil("month")
+    try:
+        period = (
+            require_closed_period(year, month, now=now.datetime)
+            if year is not None and month is not None
+            else prior_month_to_close(now.datetime)
+        )
+    except MonthlyPeriodError as exc:
+        logger.error("Monthly report period is not closed: %s", exc)
+        return {"status": "period_not_closed"}
+    anchor = arrow.get(period.ends_at).shift(microseconds=-1)
 
     run_id = _monthly_operation_run_id(self)
     with SyncSessionLocal() as db:
@@ -3134,11 +3164,19 @@ def generate_monthly_report_for_hospital(
             logger.error(f"Monthly report requested for unknown hospital {hospital_id}")
             return {"status": "hospital_not_found"}
         _mark_monthly_operation_run_running(db, run_id, anchor.year, anchor.month)
+        correlation_key = (
+            f"operation-run:{run_id}"
+            if run_id is not None
+            else f"manual:{hospital.id}:{anchor.year}-{anchor.month:02d}"
+        )
         try:
-            outcome = (
-                _build_monthly_report_for_hospital(db, hospital, anchor, rebuild=True)
-                if rebuild
-                else _build_monthly_report_for_hospital(db, hospital, anchor)
+            outcome = _build_monthly_report_for_hospital(
+                db,
+                hospital,
+                anchor,
+                rebuild=rebuild,
+                build_reason=ReportBuildReason.MANUAL_REBUILD,
+                correlation_key=correlation_key,
             )
         except Exception as e:
             logger.error(f"Manual monthly report failed for {hospital.name}: {e}")

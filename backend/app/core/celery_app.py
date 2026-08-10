@@ -10,7 +10,7 @@ from app.core.observability import configure_logging, sentry_before_send, set_re
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-08-10.2"
+REDBEAT_SCHEDULE_VERSION = "2026-08-10.3"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -161,11 +161,10 @@ celery_app.conf.update(
             "task": "app.workers.tasks.run_weekly_monitoring",
             "schedule": crontab(hour=2, minute=0, day_of_week=1),
         },
-        # 매월 28~31일 21:00 — 월간 SoV 리포트 (태스크 내부에서 마지막 날 체크).
-        # 야간 콘텐츠 생성(23:00)과 시간대를 분리해 reports/content 워커 슬롯 경합을 피한다.
+        # 매월 1일 00:15 — 직전 달 자료가 모두 들어온 뒤 월간 SoV 리포트를 마감한다.
         "monthly-reports": {
             "task": "app.workers.tasks.run_monthly_reports",
-            "schedule": crontab(hour=21, minute=0, day_of_month="28-31"),
+            "schedule": crontab(hour=0, minute=15, day_of_month=1),
         },
         # 매월 25일 00:00 — 다음 달 콘텐츠 슬롯 자동 생성
         "monthly-slot-generation": {
