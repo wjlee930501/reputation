@@ -10,6 +10,7 @@ import httpx
 from fastapi import HTTPException
 
 from app.core.config import settings
+from app.services.hospital_revalidation_control import start_hospital_revalidation_failure
 from app.services.site_revalidation_control import (
     REVALIDATION_RETRY_DELAYS_SECONDS as _REVALIDATION_RETRY_DELAYS_SECONDS,
 )
@@ -104,24 +105,27 @@ async def trigger_hospital_site_revalidate_safe(
     프로파일/도메인/활성화/자료 공개 토글은 이미 커밋된 뒤이므로, revalidate 실패로
     500을 돌려주면 저장이 실패한 것처럼 보인다. 경고 로그 + Slack 운영 알림으로 강등.
     """
-    from app.services import notifier
-
     try:
         return await trigger_site_revalidate(paths=hospital_site_paths(slug, treatments))
     except Exception as exc:
-        logger.warning("post-commit hospital site revalidate failed for %s: %s", slug, exc)
+        logger.warning(
+            "post-commit hospital site revalidate failed for %s: %s",
+            slug,
+            exc.__class__.__name__,
+        )
         try:
-            await notifier.notify_ops_alert(
-                title="공개 페이지 캐시 무효화 실패",
-                message=(
-                    f"병원: {hospital_name or slug}\n"
-                    f"변경 사항은 정상 저장되었지만 공개 페이지 캐시 갱신에 실패했습니다.\n"
-                    f"오류: `{str(exc)[:200]}`\n"
-                    f"공개 페이지가 잠시 이전 상태로 보일 수 있습니다. 필요 시 수동 재검증해 주세요."
-                ),
-            )
+            plan = await start_hospital_revalidation_failure(slug)
+            if plan is not None and plan.created and plan.delay_seconds is not None:
+                from app.core.celery_app import celery_app
+
+                celery_app.send_task(
+                    "app.workers.tasks.retry_site_revalidation",
+                    args=[str(plan.run_id), 0],
+                    queue="default",
+                    countdown=plan.delay_seconds,
+                )
         except Exception:
-            logger.exception("revalidate failure ops alert delivery failed (non-fatal)")
+            logger.exception("durable hospital revalidation recovery setup failed")
         return False
 
 
@@ -157,7 +161,7 @@ async def trigger_content_site_revalidate_safe(
 
                 celery_app.send_task(
                     "app.workers.tasks.retry_site_revalidation",
-                    args=[str(plan.run_id)],
+                    args=[str(plan.run_id), 0],
                     queue="default",
                     countdown=plan.delay_seconds,
                 )

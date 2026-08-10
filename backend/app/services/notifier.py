@@ -1,3 +1,4 @@
+# allow: SIZE_OK -- Slack message registry keeps every event behind one allowlisted delivery seam.
 """Slack 알림 — 모든 주요 이벤트 규격화"""
 import asyncio
 import logging
@@ -614,6 +615,33 @@ async def notify_naver_assets_synced(
     )
 
 
+async def notify_naver_assets_digest(
+    *, entries: list[dict[str, object]], admin_url: str
+) -> bool:
+    """주간 네이버 인입 성공을 전체 병원 한 메시지로 요약한다."""
+    if not entries:
+        return False
+    created_total = sum(int(entry.get("created", 0) or 0) for entry in entries)
+    lines = [
+        f"• *{_safe_label(str(entry.get('hospital_name', '')))}* — "
+        f"신규 {int(entry.get('created', 0) or 0)}건 "
+        f"(최근 {int(entry.get('requested', 0) or 0)}건 확인)"
+        for entry in entries[:15]
+    ]
+    if len(entries) > 15:
+        lines.append(f"• 그 외 {len(entries) - 15}개 병원")
+    body = (
+        f"📰 *[네이버 자산 주간 요약]* *{len(entries)}개 병원 · 신규 {created_total}건*\n\n"
+        + "\n".join(lines)
+        + "\n\n원문은 모두 검토 대기로 저장했습니다. "
+        + f"변경된 병원만 <{admin_url}|Admin에서 근거 추출·승인>해 주세요."
+    )
+    return await _send(
+        text=f"📰 [네이버 자산 주간 요약] {len(entries)}개 병원 · 신규 {created_total}건",
+        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": body}}],
+    )
+
+
 async def notify_philosophy_refresh_required(
     *, hospital_name: str, findings: list[str], admin_url: str
 ) -> bool:
@@ -679,6 +707,9 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
                 _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
             ],
         )
+    if purged == 0 and skipped == 0:
+        logger.info("PII retention sweep completed with no expired leads")
+        return False
     return await _send(
         text=f"🧹 [개인정보 자동 파기] 만료 신청 정보 {purged}건 정리 완료"
         + (f" (재처리 제외 {skipped}건)" if skipped else ""),
@@ -755,6 +786,119 @@ def mask_contact_free(text: str) -> str:
     return text
 
 
+async def notify_content_batch_summary(
+    *,
+    hospital_id: uuid.UUID,
+    hospital_name: str,
+    generated: int,
+    failed: int,
+    scheduled_date: str,
+    skipped: int = 0,
+    cost_blocked: int = 0,
+    discarded: int = 0,
+    image_missing: int = 0,
+) -> bool:
+    summary = ContentBatchSummary(
+        hospital_id=hospital_id,
+        hospital_name=hospital_name,
+        scheduled_date=scheduled_date,
+        generated=generated,
+        failed=failed,
+        skipped=skipped,
+        cost_blocked=cost_blocked,
+        discarded=discarded,
+        image_missing=image_missing,
+    )
+    if not summary.has_activity:
+        return False
+    message = build_content_batch_message(
+        summary,
+        admin_base_url=settings.ADMIN_BASE_URL,
+    )
+    return await _send(
+        text=message.fallback_text,
+        blocks=list(message.blocks),
+    )
+
+
+def _content_generation_line(entry: dict[str, object]) -> str:
+    parts: list[str] = []
+    labels = (
+        ("generated", "초안 저장 완료"),
+        ("failed", "초안 생성 실패"),
+        ("skipped", "콘텐츠 운영 기준 승인 대기"),
+        ("cost_blocked", "자동 작업 안전장치로 대기"),
+        ("discarded", "운영자 변경으로 결과 미적용"),
+        ("image_missing", "대표 이미지 생성 필요"),
+    )
+    for key, label in labels:
+        count = int(entry.get(key, 0) or 0)
+        if count:
+            parts.append(f"{label} {count}")
+    return f"• *{_safe_label(str(entry.get('hospital_name', '')))}* — {', '.join(parts)}"
+
+
+async def notify_content_generation_digest(
+    *, scheduled_date: str, entries: list[dict[str, object]]
+) -> bool:
+    """야간 생성 결과를 병원 수와 무관하게 한 번의 운영 요약으로 보낸다."""
+    if not entries:
+        return False
+    item_total = sum(
+        int(entry.get(key, 0) or 0)
+        for entry in entries
+        for key in ("generated", "failed", "skipped", "cost_blocked", "discarded")
+    )
+    issue_total = sum(
+        int(entry.get(key, 0) or 0)
+        for entry in entries
+        for key in ("failed", "skipped", "cost_blocked", "image_missing")
+    )
+    visible = entries[:15]
+    lines = [_content_generation_line(entry) for entry in visible]
+    if len(entries) > len(visible):
+        lines.append(f"• 그 외 {len(entries) - len(visible)}개 병원 — Admin에서 확인")
+    problem = (
+        "일부 콘텐츠가 발행 준비를 마치지 못했습니다."
+        if issue_total
+        else "발행 준비를 막는 문제가 확인되지 않았습니다."
+    )
+    impact = (
+        "준비되지 않은 콘텐츠는 예정일 공개가 늦어질 수 있습니다."
+        if issue_total
+        else "현재 확인된 고객 공개 일정 영향은 없습니다."
+    )
+    action = (
+        "아래 ‘오늘 콘텐츠 확인’을 눌러 실패하거나 대기 중인 항목을 확인해 주세요. "
+        "다시 시도한 뒤에도 실패하면 개발팀 문의용 정보를 복사해 전달해 주세요."
+        if issue_total
+        else "필요하면 아래 ‘오늘 콘텐츠 확인’을 눌러 저장된 초안을 검수해 주세요."
+    )
+    body = (
+        f"*야간 콘텐츠 준비 결과* · 발행 예정일 {scheduled_date}\n"
+        f"대상: *{len(entries)}개 병원 · {item_total}건*"
+        + (f" · 조치 필요 {issue_total}건" if issue_total else "")
+        + f"\n*무슨 문제인지:* {problem}"
+        + f"\n*고객 영향:* {impact}"
+        + f"\n*지금 할 일:* {action}"
+        + f"\n*처리 기한:* {scheduled_date} 공개 전\n\n"
+        + "\n".join(lines)
+    )
+    return await _send(
+        text=(
+            f"야간 콘텐츠 준비 결과 · 무슨 문제인지: {problem} · 고객 영향: {impact} · "
+            f"지금 할 일: 오늘 콘텐츠 확인 · 처리 기한: {scheduled_date} 공개 전"
+        ),
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            _admin_action_block(
+                path="/operations?queue=TODAY",
+                label="오늘 콘텐츠 확인",
+            ),
+        ],
+    )
+
+
 async def notify_content_missed_digest(
     *, entries: list[dict[str, object]], admin_url: str
 ) -> bool:
@@ -764,13 +908,8 @@ async def notify_content_missed_digest(
     missed_total = sum(int(entry.get("missed_count", 0) or 0) for entry in entries)
     lines: list[str] = []
     for entry in entries[:15]:
-        dates = [
-            _safe_operator_label(str(value), limit=20)
-            for value in list(entry.get("dates", []))[:3]
-        ]
-        date_text = ", ".join(dates) + (
-            " 외" if len(list(entry.get("dates", []))) > 3 else ""
-        )
+        dates = [_safe_operator_label(str(value), limit=20) for value in list(entry.get("dates", []))[:3]]
+        date_text = ", ".join(dates) + (" 외" if len(list(entry.get("dates", []))) > 3 else "")
         lines.append(
             f"• *{_safe_operator_label(str(entry.get('hospital_name', '')))}* — "
             f"{int(entry.get('missed_count', 0) or 0)}건 ({date_text})"
@@ -839,36 +978,31 @@ async def notify_auto_publish_block_digest(
     )
 
 
-async def notify_content_batch_summary(
-    *,
-    hospital_id: uuid.UUID,
-    hospital_name: str,
-    generated: int,
-    failed: int,
-    scheduled_date: str,
-    skipped: int = 0,
-    cost_blocked: int = 0,
-    discarded: int = 0,
-    image_missing: int = 0,
+async def notify_content_auto_publish_digest(
+    *, entries: list[dict[str, object]], admin_url: str
 ) -> bool:
-    summary = ContentBatchSummary(
-        hospital_id=hospital_id,
-        hospital_name=hospital_name,
-        scheduled_date=scheduled_date,
-        generated=generated,
-        failed=failed,
-        skipped=skipped,
-        cost_blocked=cost_blocked,
-        discarded=discarded,
-        image_missing=image_missing,
-    )
-    if not summary.has_activity:
+    """자동 발행 성공도 콘텐츠마다 알리지 않고 아침 한 번으로 묶는다."""
+    if not entries:
         return False
-    message = build_content_batch_message(
-        summary,
-        admin_base_url=settings.ADMIN_BASE_URL,
+    hospital_count = len({str(entry.get("hospital_name", "")) for entry in entries})
+    lines: list[str] = []
+    for entry in entries[:15]:
+        sequence_no = int(entry.get("sequence_no", 0) or 0)
+        total_count = int(entry.get("total_count", 0) or 0)
+        lines.append(
+            f"• *{_safe_label(str(entry.get('hospital_name', '')))}* — "
+            f"{total_count}편 중 {sequence_no}번째 · "
+            f"{_safe_label(str(entry.get('title', '제목 없음')))}"
+        )
+    if len(entries) > 15:
+        lines.append(f"• 그 외 {len(entries) - 15}건")
+    body = (
+        f"✅ *[오늘 발행 요약]* *{hospital_count}개 병원 · {len(entries)}건* 공개\n\n"
+        + "\n".join(lines)
+        + "\n\n사전 안전 검사를 통과한 글입니다. "
+        + f"문제가 있는 항목만 <{admin_url}|Admin에서 공개 내용 확인>해 주세요."
     )
     return await _send(
-        text=message.fallback_text,
-        blocks=list(message.blocks),
+        text=f"✅ [오늘 발행 요약] {hospital_count}개 병원 · {len(entries)}건",
+        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": body}}],
     )

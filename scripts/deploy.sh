@@ -67,7 +67,7 @@ resolve_release_revision() {
     fi
     revision="$(git -C "$PROJECT_ROOT" rev-parse HEAD 2>/dev/null || true)"
   fi
-  [[ "$revision" =~ ^[A-Za-z0-9._-]{1,128}$ ]] \
+  [[ "$revision" =~ ^[A-Za-z0-9._-]{7,128}$ ]] \
     || fail "배포 소스 버전 형식이 올바르지 않습니다. 개발팀에 REPUTATION_RELEASE_REVISION 확인을 요청하세요."
   printf '%s' "$revision"
 }
@@ -110,6 +110,8 @@ SITE_MIN="${SITE_MIN:-1}"
 # site max=1 기본: on-demand ISR revalidate가 단일 인스턴스 캐시만 비우기 때문
 # (terraform variables.tf site_max_instances 설명 참조).
 SITE_MAX="${SITE_MAX:-1}"
+[[ "$SITE_MAX" == "1" ]] \
+  || fail "Site는 ISR 정합성을 위해 max instances=1이어야 합니다. SITE_MAX를 1로 설정하세요."
 ADMIN_MEMORY="${ADMIN_MEMORY:-512Mi}"
 ADMIN_MIN="${ADMIN_MIN:-0}"
 ADMIN_MAX="${ADMIN_MAX:-2}"
@@ -120,6 +122,7 @@ BACKEND_BASE_REQUIRED_SECRET_NAMES=(
   "GEMINI_API_KEY"
   "SLACK_WEBHOOK_URL"
   "ADMIN_SECRET_KEY"
+  "WORKER_DISPATCH_SECRET"
   "ADMIN_SESSION_SECRET"
   "SITE_BFF_SECRET"
   "REDIS_URL"
@@ -913,6 +916,7 @@ DEPLOY_INJECTED_ENV_KEYS=(
   "APP_ENV"
   "OPENAI_CHATGPT_USE_WEB_SEARCH"
   "CERTIFICATE_MANAGER_AUTO_PROVISION"
+  "REPUTATION_RELEASE_REVISION"
 )
 
 is_deploy_injected_env_key() {
@@ -1020,7 +1024,7 @@ run_redbeat_reconcile() {
   build_backend_runtime_args
   make_service_env_file "beat"
 
-  # 새 이미지가 선언한 allowlist만 남기고 과거 app.workers.tasks.* 정적/고아
+  # 새 이미지가 선언한 allowlist만 남기고 과거 app.workers.* 정적/고아
   # entry를 제거한다. 별도 애플리케이션의 동적 RedBeat entry는 도구가 보존한다.
   set +u
   gcloud run jobs create reputation-redbeat-reconcile \
@@ -1048,6 +1052,43 @@ run_redbeat_reconcile() {
 
   gcloud run jobs execute reputation-redbeat-reconcile --region="$REGION" --wait
   ok "RedBeat 저장 스케줄 정합성 복구 완료"
+}
+
+run_production_readiness_gate() {
+  local image_url="$1"
+  info "현재 배포 버전의 5개 작업 큐 준비 상태 확인 중..."
+
+  require_backend_runtime_shape
+  build_backend_runtime_args
+  make_service_env_file "worker"
+
+  set +u
+  gcloud run jobs create reputation-production-readiness \
+    --image="$image_url" \
+    --region="$REGION" \
+    --service-account="$SERVICE_ACCOUNT" \
+    --env-vars-file="$SERVICE_ENV_FILE" \
+    "${SECRET_ARGS[@]}" \
+    "${BACKEND_RUNTIME_ARGS[@]}" \
+    --command=python \
+    --args=-m,app.utils.wait_production_readiness \
+    --task-timeout=1000 \
+    --max-retries=0 \
+    2>/dev/null || gcloud run jobs update reputation-production-readiness \
+    --image="$image_url" \
+    --region="$REGION" \
+    --env-vars-file="$SERVICE_ENV_FILE" \
+    "${SECRET_ARGS[@]}" \
+    "${BACKEND_RUNTIME_ARGS[@]}" \
+    --command=python \
+    --args=-m,app.utils.wait_production_readiness \
+    --task-timeout=1000 \
+    --max-retries=0
+  set -u
+
+  gcloud run jobs execute reputation-production-readiness --region="$REGION" --wait \
+    || fail "새 배포의 자동 작업 준비 확인에 실패했습니다. 트래픽 승격을 중단하고 롤백 좌표를 확인하세요."
+  ok "현재 배포 버전의 모든 작업 큐 준비 확인 완료"
 }
 
 # ─── 롤백 좌표 ─────────────────────────────────────────────────────
@@ -1132,10 +1173,11 @@ case "$TARGET" in
     capture_rollback_point reputation-api reputation-worker reputation-beat
     IMAGE_URL=$(build_and_push)
     run_migration "$IMAGE_URL"
-    deploy_api "$IMAGE_URL"
     deploy_worker "$IMAGE_URL"
     run_redbeat_reconcile "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
+    run_production_readiness_gate "$IMAGE_URL"
+    deploy_api "$IMAGE_URL"
     ;;
   api|worker|beat)
     prepare_backend_secret_args
@@ -1148,10 +1190,17 @@ case "$TARGET" in
     fi
     capture_rollback_point "reputation-${TARGET}"
     IMAGE_URL=$(build_and_push)
+    run_migration "$IMAGE_URL"
     if [[ "$TARGET" == "beat" ]]; then
       run_redbeat_reconcile "$IMAGE_URL"
     fi
-    "deploy_${TARGET}" "$IMAGE_URL"
+    if [[ "$TARGET" == "api" ]]; then
+      run_production_readiness_gate "$IMAGE_URL"
+      deploy_api "$IMAGE_URL"
+    else
+      "deploy_${TARGET}" "$IMAGE_URL"
+      run_production_readiness_gate "$IMAGE_URL"
+    fi
     ;;
   site)
     require_secret_versions "${SITE_REQUIRED_SECRET_NAMES[@]}"
@@ -1192,10 +1241,11 @@ case "$TARGET" in
     # 마이그레이션을 새 코드 배포보다 먼저 실행 — 새 리비전이 옛 스키마 위에서
     # 기동하는 시간을 없앤다 (additive migration 전제).
     run_migration "$IMAGE_URL"
-    deploy_api "$IMAGE_URL"
     deploy_worker "$IMAGE_URL"
     run_redbeat_reconcile "$IMAGE_URL"
     deploy_beat "$IMAGE_URL"
+    run_production_readiness_gate "$IMAGE_URL"
+    deploy_api "$IMAGE_URL"
     deploy_site "$SITE_IMAGE_URL"
     deploy_admin "$ADMIN_IMAGE_URL"
     ;;

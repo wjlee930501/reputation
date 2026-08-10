@@ -42,10 +42,12 @@ terraform/.terraform/
 
 # OMC
 .omc/
+.omo/
 .claude/
 .omx/
 
 # Artifacts
+artifacts/
 reports/
 tmp/
 celerybeat-schedule

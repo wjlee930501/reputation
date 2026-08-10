@@ -113,7 +113,6 @@ def assess_content_publication(
             item=item,
             philosophy=philosophy,
         )
-
     # 필드별로 올바른 기준을 적용한다 — 본문은 마크다운 렌더 결과 기준, 제목·메타·FAQ는
     # 평문 기준. 합쳐서 한 번에 검사하면 `최**고**의`가 통과하거나(본문 우회) 제목의
     # 리터럴 별표가 위반으로 오탐되는 등 양방향으로 틀린다.
@@ -146,6 +145,14 @@ def assess_content_publication(
             essence_status=screening.status,
             essence_summary=screening.summary,
             philosophy_id=getattr(philosophy, "id", None),
+        )
+
+    if not getattr(item, "image_url", None):
+        return _blocked(
+            code="CONTENT_IMAGE_NOT_READY",
+            message="대표 이미지가 아직 준비되지 않았습니다.",
+            item=item,
+            philosophy=philosophy,
         )
 
     return PublicationAssessment(

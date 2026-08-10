@@ -803,7 +803,7 @@ async def test_resolve_brief_slot_filters_available_slots_by_requested_content_t
     hospital_id = uuid.uuid4()
     action = _action(hospital_id=hospital_id)
     requested_type = exposure_actions_api.ContentType.TREATMENT
-    schedule = SimpleNamespace(id=uuid.uuid4(), plan="PLAN_8")
+    schedule = SimpleNamespace(id=uuid.uuid4(), plan="PLAN_12")
     created_item = _content_item(hospital_id=hospital_id)
     seen_content_type = None
 

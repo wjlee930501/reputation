@@ -173,6 +173,32 @@ class TestRenderedOutputIsClean:
 
 
 class TestDescriptiveStatistics:
+    def test_query_disclosure_aggregates_safe_outcomes_without_raw_answers(self, payload):
+        query = payload.queries[0]
+
+        assert query.planned == 6
+        assert query.measured == 4
+        assert query.mentioned == 4
+        assert query.failed == 2
+
+    def test_report_contact_comes_from_typed_settings(self, monkeypatch):
+        diagnosis = _diagnosis()
+        monkeypatch.setattr(lead_report.settings, "LEAD_REPORT_CONTACT_NAME", "담당자")
+        monkeypatch.setattr(lead_report.settings, "LEAD_REPORT_CONTACT_ROLE", "마케팅")
+        monkeypatch.setattr(lead_report.settings, "LEAD_REPORT_CONTACT_EMAIL", "owner@example.com")
+        monkeypatch.setattr(lead_report.settings, "LEAD_REPORT_CONTACT_PHONE", "070-0000-0000")
+
+        payload = lead_report.build_lead_report_payload(
+            diagnosis,
+            _results(diagnosis),
+            generated_at=datetime(2026, 7, 30, 10, 0, tzinfo=timezone.utc),
+        )
+
+        assert payload.contact.name == "담당자"
+        assert payload.contact.role == "마케팅"
+        assert payload.contact.email == "owner@example.com"
+        assert payload.contact.phone == "070-0000-0000"
+
     def test_failed_measurements_are_excluded_from_the_denominator_but_shown(self, payload):
         """실패를 분모에 넣으면 도구 장애가 병원 성과처럼 보인다.
         감추면 '9번 중 0번'과 '1번 중 0번'이 같아 보인다 — 빼되 보여준다(F3-5)."""
@@ -220,6 +246,19 @@ class TestReadableDocument:
     def test_the_region_is_still_shown(self, payload):
         # 기호만 지우고 값까지 지우면 안 된다.
         assert payload.region in lead_report.render_lead_report_html(payload)
+
+    @pytest.mark.skipif(
+        os.getenv("REQUIRE_PDF_RENDER") is None,
+        reason="weasyprint 네이티브 의존성이 필요하다. CI에서 REQUIRE_PDF_RENDER=1로 강제한다.",
+    )
+    def test_pdf_has_two_intentional_pages(self, payload):
+        from io import BytesIO
+
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(lead_report.render_lead_report_pdf(payload)))
+
+        assert len(reader.pages) == 2
 
     def test_zero_mentions_are_explained_not_left_bare(self):
         """0회는 가장 흔한 결과이고 가장 오해받기 쉽다.

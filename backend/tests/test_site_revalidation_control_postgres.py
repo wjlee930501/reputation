@@ -79,16 +79,16 @@ async def test_cache_refresh_failure_escalates_once_without_undoing_publication(
         duplicate = await control.start_revalidation_failure(slug, content_id)
         assert first is not None and first.created is True and first.delay_seconds == 60
         assert duplicate is not None and duplicate.created is False
-        assert (await control.record_retry_failure(first.run_id)).delay_seconds == 300
-        assert (await control.record_retry_failure(first.run_id)).delay_seconds == 900
-        terminal = await control.record_retry_failure(first.run_id)
+        assert (await control.record_retry_failure(first.run_id, 0)).delay_seconds == 300
+        assert (await control.record_retry_failure(first.run_id, 1)).delay_seconds == 900
+        terminal = await control.record_retry_failure(first.run_id, 2)
         assert terminal is not None and terminal.operator_action_required is True
-        assert await control.record_retry_failure(first.run_id) is None
+        assert await control.record_retry_failure(first.run_id, 3) is None
 
         recovery = await control.start_revalidation_failure(slug, recovery_content_id)
         assert recovery is not None
-        assert await control.record_revalidation_success(recovery.run_id) is True
-        assert await control.record_revalidation_success(recovery.run_id) is False
+        assert await control.record_revalidation_success(recovery.run_id, 0) is True
+        assert await control.record_revalidation_success(recovery.run_id, 0) is False
 
         async with sessions() as db:
             published = await db.get(ContentItem, content_id)

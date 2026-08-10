@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account
 from app.api.admin.lead_recovery_routes import router as recovery_router
+from app.api.admin.lead_report_view import router as report_view_router
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.handoff import HandoffSource, HospitalHandoff
@@ -29,6 +30,7 @@ from app.services.lead_privacy import purge_lead_completely_async, scrub_onboard
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
 router.include_router(recovery_router)
+router.include_router(report_view_router)
 
 
 class LeadConvertRequest(BaseModel):

@@ -113,14 +113,14 @@ def test_site_revalidation_worker_retries_cache_only_at_control_delay(monkeypatc
     monkeypatch.setattr(
         tasks,
         "_site_revalidation_context",
-        lambda _run_id: ("clinic", content_id, [{"name": "허리 통증"}]),
+        lambda _run_id, _attempt: [f"/clinic/contents/{content_id}"],
     )
 
     async def refresh(*, paths):
         paths_seen.extend(paths)
         return False
 
-    async def failed(_run_id):
+    async def failed(_run_id, _attempt):
         return RevalidationRetryPlan(run_id, 300, False)
 
     monkeypatch.setattr(tasks, "trigger_site_revalidate", refresh)
@@ -131,10 +131,10 @@ def test_site_revalidation_worker_retries_cache_only_at_control_delay(monkeypatc
         lambda *, args, queue, countdown: scheduled.append((args, queue, countdown)),
     )
 
-    result = tasks.retry_site_revalidation.run(str(run_id))
+    result = tasks.retry_site_revalidation.run(str(run_id), 0)
 
     assert f"/clinic/contents/{content_id}" in paths_seen
-    assert scheduled == [([str(run_id)], "default", 300)]
+    assert scheduled == [([str(run_id), 1], "default", 300)]
     assert result == {"status": "retry_scheduled", "delay_seconds": 300}
 
 
@@ -145,20 +145,20 @@ def test_site_revalidation_worker_closes_only_after_observed_refresh(monkeypatch
     monkeypatch.setattr(
         tasks,
         "_site_revalidation_context",
-        lambda _run_id: ("clinic", content_id, []),
+        lambda _run_id, _attempt: [f"/clinic/contents/{content_id}"],
     )
 
     async def refresh(*, paths):
         return bool(paths)
 
-    async def succeeded(observed_run_id):
-        successes.append(observed_run_id)
+    async def succeeded(observed_run_id, observed_attempt):
+        successes.append((observed_run_id, observed_attempt))
         return True
 
     monkeypatch.setattr(tasks, "trigger_site_revalidate", refresh)
     monkeypatch.setattr(tasks, "record_revalidation_success", succeeded)
 
-    result = tasks.retry_site_revalidation.run(str(run_id))
+    result = tasks.retry_site_revalidation.run(str(run_id), 0)
 
     assert result == {"status": "recovered"}
-    assert successes == [run_id]
+    assert successes == [(run_id, 0)]

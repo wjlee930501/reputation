@@ -18,6 +18,7 @@ import {
   canRetryDelivery,
   diagnosisBadges,
   diagnosisHint,
+  diagnosisReportHref,
   needsAttention,
   recoveryAction,
 } from '@/lib/lead-diagnosis-status'
@@ -511,6 +512,16 @@ export default function LeadsPage() {
                                 ? ` · 잠금 해제됨(${diagnosis.lock_released_by ?? '-'})`
                                 : ''}
                             </p>
+                            {diagnosisReportHref(lead.id, diagnosis) && (
+                              <a
+                                href={diagnosisReportHref(lead.id, diagnosis) ?? undefined}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-2 inline-flex min-h-11 items-center rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 shadow-sm hover:bg-blue-50"
+                              >
+                                리포트 열기
+                              </a>
+                            )}
                             {(() => {
                               const recovery = recoveryAction(diagnosis)
                               if (recovery?.enabled) {

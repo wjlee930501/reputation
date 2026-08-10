@@ -229,6 +229,31 @@ def test_backend_deploy_rejects_unknown_release_revision_before_mutation(tmp_pat
     assert not command_log.exists() or "run deploy" not in command_log.read_text()
 
 
+def test_backend_deploy_rejects_too_short_release_revision_before_mutation(
+    tmp_path: Path,
+) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            REPUTATION_RELEASE_REVISION="short",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "배포 소스 버전 형식" in result.stderr
+    assert not command_log.exists() or "run deploy" not in command_log.read_text()
+
+
 def test_backend_deploy_fails_closed_when_source_revision_is_unavailable(tmp_path: Path) -> None:
     project, fake_bin, command_log = _make_project(tmp_path)
     shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
@@ -540,6 +565,13 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
     assert commands.index(
         "gcloud run jobs create reputation-redbeat-reconcile"
     ) < commands.index("gcloud run deploy reputation-beat")
+    assert commands.index("gcloud run deploy reputation-beat") < commands.index(
+        "gcloud run jobs create reputation-production-readiness"
+    )
+    assert commands.index("gcloud run jobs create reputation-production-readiness") < commands.index(
+        "gcloud run deploy reputation-api"
+    )
+    assert "--args=-m,app.utils.wait_production_readiness" in commands
 
     for service in ("reputation-api", "reputation-worker", "reputation-beat"):
         deploy = next(

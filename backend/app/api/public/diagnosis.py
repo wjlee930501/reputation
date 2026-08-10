@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -346,6 +346,7 @@ def _violated(exc: IntegrityError, *index_names: str) -> bool:
 async def create_diagnosis(
     request: Request,
     body: DiagnosisRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     # 허니팟 — 정상 사용자는 비워둔다. 봇에게는 성공처럼 보이게 하고 저장하지 않는다.
@@ -448,6 +449,7 @@ async def create_diagnosis(
         # 클라이언트 입력을 신뢰하지 않고 항상 서버 ENV에서 가져온다.
         consent_version=settings.LEAD_CONSENT_VERSION.strip()[:40],
         retain_until=now + timedelta(days=settings.LEAD_RETENTION_DAYS),
+        notification_status="PENDING",
     )
     diagnosis = LeadDiagnosis(
         applicant_email_hash=email_hash,
@@ -498,6 +500,10 @@ async def create_diagnosis(
             ) from exc
         raise
 
+    # Slack 지연/장애가 신청 응답을 늦추지 않도록 커밋 뒤 Celery로 넘긴다. Redis가
+    # 순간적으로 내려가도 1분 폴러가 notification_status=PENDING을 다시 회수한다.
+    background_tasks.add_task(_enqueue_lead_intake_notification, str(lead.id))
+
     return {
         "ok": True,
         "diagnosis_id": str(diagnosis.id),
@@ -508,3 +514,11 @@ async def create_diagnosis(
     }
 
 
+def _enqueue_lead_intake_notification(lead_id: str) -> None:
+    """응답 이후 broker에 접수 알림을 넣는다; 실패분은 1분 폴러가 회수한다."""
+    try:
+        from app.workers.lead_diagnosis_tasks import notify_lead_intake
+
+        notify_lead_intake.delay(lead_id)
+    except Exception:  # noqa: BLE001 — 접수는 이미 안전하게 저장됐다.
+        logger.warning("lead intake notification enqueue failed for %s", lead_id)

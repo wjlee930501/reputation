@@ -21,11 +21,13 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
+from celery import current_task
+from sqlalchemy import func, or_, select, update
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
+from app.models.lead import LEAD_SOURCE_AI_DIAGNOSIS, SalesLead
 from app.models.lead_diagnosis import (
     REPORTABLE_EXECUTION_STATUSES,
     DeliveryStatus,
@@ -42,6 +44,7 @@ from app.services import (
     lead_report,
     notifier,
 )
+from app.workers.dispatch_auth import require_dispatch
 from app.workers.lead_recovery_incidents import (
     mark_lead_recovery_failed,
     mark_lead_recovery_succeeded,
@@ -68,6 +71,11 @@ REPORT_LEASE_SECONDS = 600
 # 적체를 만나도 한 tick에 워커를 통째로 점유하지 않게 한다.
 DRAIN_BATCH_SIZE = 20
 
+LEAD_NOTIFICATION_PENDING = "PENDING"
+LEAD_NOTIFICATION_SENDING = "SENDING"
+LEAD_NOTIFICATION_SENT = "SENT"
+LEAD_NOTIFICATION_FAILED = "FAILED"
+
 
 class LeadRecoveryRejected(RuntimeError):
     """Recovery lost its compare-and-swap gate or remained terminal."""
@@ -85,6 +93,69 @@ def _run_async(coro):
         asyncio.set_event_loop(loop)
         _tls.loop = loop
     return loop.run_until_complete(coro)
+
+
+async def _notify_lead_intake(lead_id: str) -> dict:
+    """접수 Slack을 한 번만 보내고 결과를 lead 행에 남긴다."""
+    import uuid as _uuid
+
+    pk = _uuid.UUID(str(lead_id))
+    sessionmaker_ = get_async_sessionmaker()
+    async with sessionmaker_() as session:
+        claimed = (
+            await session.execute(
+                update(SalesLead)
+                .where(
+                    SalesLead.id == pk,
+                    SalesLead.source == LEAD_SOURCE_AI_DIAGNOSIS,
+                    or_(
+                        SalesLead.notification_status.is_(None),
+                        SalesLead.notification_status == LEAD_NOTIFICATION_PENDING,
+                    ),
+                )
+                .values(notification_status=LEAD_NOTIFICATION_SENDING, notification_error=None)
+                .returning(SalesLead.id)
+            )
+        ).scalar_one_or_none()
+        if claimed is None:
+            await session.rollback()
+            return {"skipped": "already_claimed_or_finished"}
+        await session.commit()
+
+        lead = (
+            await session.execute(select(SalesLead).where(SalesLead.id == pk))
+        ).scalar_one_or_none()
+        if lead is None:  # pragma: no cover - claim 직후 삭제된 극단적 경쟁
+            return {"skipped": "lead_deleted"}
+
+        sent = await notifier.notify_lead_diagnosis_received(
+            clinic_name=lead.clinic_name,
+            clinic_type=lead.clinic_type,
+            region=lead.region_keyword or "",
+            keywords=list(lead.core_keywords or []),
+            contact=lead.contact,
+            email=lead.email or "",
+            slot_no=(
+                await session.execute(
+                    select(LeadDiagnosis.slot_no).where(LeadDiagnosis.lead_id == lead.id)
+                )
+            ).scalar_one(),
+            admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/leads",
+        )
+        lead.notification_status = (
+            LEAD_NOTIFICATION_SENT if sent else LEAD_NOTIFICATION_FAILED
+        )
+        lead.notification_error = (
+            None if sent else "Slack/webhook delivery failed or is not configured."
+        )
+        await session.commit()
+        return {"sent": sent, "lead_id": str(lead.id)}
+
+
+@celery_app.task(name="app.workers.lead_diagnosis_tasks.notify_lead_intake")
+def notify_lead_intake(lead_id: str):
+    """신청 응답을 Slack 네트워크 지연과 분리한다."""
+    return _run_async(_notify_lead_intake(lead_id))
 
 
 async def _claim_for_execution(
@@ -487,6 +558,25 @@ async def _deliveries_to_send(session) -> list[str]:
     return [str(row) for row in rows]
 
 
+async def _lead_notifications_to_dispatch(session) -> list[str]:
+    """API가 Redis dispatch에 실패해도 1분 폴러가 접수 알림을 회수한다."""
+    rows = (
+        await session.execute(
+            select(SalesLead.id)
+            .where(
+                SalesLead.source == LEAD_SOURCE_AI_DIAGNOSIS,
+                or_(
+                    SalesLead.notification_status.is_(None),
+                    SalesLead.notification_status == LEAD_NOTIFICATION_PENDING,
+                )
+            )
+            .order_by(SalesLead.created_at.asc())
+            .limit(DRAIN_BATCH_SIZE)
+        )
+    ).scalars().all()
+    return [str(row) for row in rows]
+
+
 async def _reclaim_stalled(session) -> int:
     """워커가 죽어 RUNNING으로 좌초한 행을 PENDING으로 되돌린다.
 
@@ -559,6 +649,7 @@ async def _drain() -> dict:
         pending = await _pending_to_dispatch(session)
         reports = await _reports_to_build(session)
         deliveries = await _deliveries_to_send(session)
+        lead_notifications = await _lead_notifications_to_dispatch(session)
         stuck = await lead_delivery.sweep_stuck_deliveries(session)
         deliveries += [d for d in stuck["retriable"] if d not in deliveries]
 
@@ -579,6 +670,12 @@ async def _drain() -> dict:
             send_lead_report_email.delay(diagnosis_id)
         except Exception:  # noqa: BLE001
             logger.warning("lead delivery dispatch failed for %s", diagnosis_id)
+
+    for lead_id in lead_notifications:
+        try:
+            notify_lead_intake.delay(lead_id)
+        except Exception:  # noqa: BLE001 — 다음 tick이 PENDING을 다시 회수한다.
+            logger.warning("lead intake notification dispatch failed for %s", lead_id)
 
     for delivery_id in stuck["abandoned"]:
         try:
@@ -612,6 +709,7 @@ async def _drain() -> dict:
         "dispatched": len(pending),
         "reports": len(reports),
         "deliveries": len(deliveries),
+        "lead_notifications": len(lead_notifications),
         "abandoned_deliveries": len(stuck["abandoned"]),
         "reclaimed": reclaimed,
         "failed": len(exhausted),
@@ -625,6 +723,7 @@ def drain_lead_diagnoses():
 
     태스크를 넷으로 쪼갤 물량이 아니다(하루 20건). 하나의 tick이 전부 처리한다.
     """
+    require_dispatch(current_task, "drain-lead-diagnoses")
     if not settings.LEADGEN_DAILY_SLOTS:
         return {"skipped": "disabled"}
     return _run_async(_drain())

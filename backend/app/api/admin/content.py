@@ -67,6 +67,7 @@ from app.services.site_revalidate import (
     trigger_content_site_revalidate_safe,
 )
 from app.utils.medical_filter import check_forbidden_content_fields
+from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.tasks import regenerate_content_item
 
 logger = logging.getLogger(__name__)
@@ -289,7 +290,12 @@ async def set_schedule(
     try:
         for item in created_items:
             if today_kst <= item.scheduled_date <= tomorrow_kst:
-                regenerate_content_item.apply_async(args=[str(item.id)], queue="content")
+                item_id = str(item.id)
+                regenerate_content_item.apply_async(
+                    args=[item_id],
+                    queue="content",
+                    headers=build_dispatch_headers("regenerate-content", item_id),
+                )
     except Exception as exc:
         logger.warning(
             "immediate content generation enqueue failed for hospital %s: %s", hospital_id, exc

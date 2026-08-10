@@ -9,6 +9,7 @@ class FakeClient:
         self.schedule = {
             "redbeat:nightly-content-generation",
             "redbeat:legacy-overdue-notification",
+            "redbeat:legacy-notification-dispatch",
             "redbeat:orphan",
             "redbeat:foreign-dynamic",
         }
@@ -64,6 +65,12 @@ def _entry_loader(client: FakeClient):
             "redbeat:legacy-overdue-notification",
             client,
         ),
+        "redbeat:legacy-notification-dispatch": FakeEntry(
+            "legacy-notification-dispatch",
+            "app.workers.notification_tasks.legacy_dispatch",
+            "redbeat:legacy-notification-dispatch",
+            client,
+        ),
         "redbeat:foreign-dynamic": FakeEntry(
             "foreign-dynamic",
             "other.application.periodic_task",
@@ -88,7 +95,10 @@ def test_inspection_reports_version_stale_app_entry_and_orphan(monkeypatch):
     result = reconcile.inspect_schedule(client)
 
     assert result.clean is False
-    assert result.stale_keys == ("redbeat:legacy-overdue-notification",)
+    assert result.stale_keys == (
+        "redbeat:legacy-notification-dispatch",
+        "redbeat:legacy-overdue-notification",
+    )
     assert result.orphan_keys == ("redbeat:orphan",)
     assert result.stale_static_names == ("legacy-overdue-notification",)
     assert "redbeat:foreign-dynamic" not in result.stale_keys
@@ -103,6 +113,7 @@ def test_apply_removes_only_app_owned_stale_state_and_records_version(monkeypatc
     assert result.clean is True
     assert client.values[reconcile._version_key(celery_app)] == REDBEAT_SCHEDULE_VERSION
     assert "redbeat:legacy-overdue-notification" not in client.schedule
+    assert "redbeat:legacy-notification-dispatch" not in client.schedule
     assert "redbeat:orphan" not in client.schedule
     assert "redbeat:foreign-dynamic" in client.schedule
     assert "nightly-content-generation" in client.statics

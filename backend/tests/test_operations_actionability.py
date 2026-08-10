@@ -51,6 +51,25 @@ def test_generation_safe_cause_hides_raw_provider_messages() -> None:
     assert generation_incident_control._generation_safe_cause("PROVIDER_TIMEOUT").endswith(
         "오지 않았습니다."
     )
+
+
+def test_publication_blockers_name_the_exact_operator_recovery() -> None:
+    expected = {
+        "CONTENT_NOT_GENERATED": "01시·04시·07시·07시 45분",
+        "MISSING_REFERENCES": "참고 자료",
+        "FORBIDDEN_EXPRESSION": "의료광고 금지 표현",
+        "ESSENCE_NOT_ALIGNED": "운영 기준",
+        "CONTENT_IMAGE_NOT_READY": "대표 이미지 다시 생성",
+    }
+
+    for code, instruction in expected.items():
+        impact, action = generation_incident_control._generation_operator_copy(code)
+        cause = generation_incident_control._generation_safe_cause(code)
+
+        assert "제때 공개되지 않습니다" in impact
+        assert instruction in action
+        assert "개발팀 문의용 정보 복사" in action
+        assert cause.endswith("습니다.")
     assert "PROVIDER" not in generation_incident_control._generation_safe_cause(
         "PROVIDER_TIMEOUT"
     )

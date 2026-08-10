@@ -867,7 +867,7 @@
       <div class="flow-step-content">
         <h4>콘텐츠 자동 생성 사이클 <span class="step-badge badge-auto">자동</span></h4>
         <p><strong>발행일 전날 23:00</strong> — Claude Sonnet으로 본문 생성 + Google Imagen 3으로 이미지 생성 → DB 저장(DRAFT)</p>
-        <p><strong>발행일 당일 08:00</strong> — Slack 알림 → AE가 Admin에서 확인 후 [발행] 클릭 → 콘텐츠 허브 즉시 게재</p>
+        <p><strong>발행일 당일 08:00</strong> — 시스템이 의료광고 금지 표현·근거 자료·승인된 운영 기준을 다시 확인한 뒤 자동 발행 → Slack에서 AE에게 후행 확인 요청</p>
       </div>
     </div>
 
@@ -1053,7 +1053,7 @@
         <ul class="checklist">
           <li>Slack → AE 알림 발송</li>
           <li>AE가 Admin에서 콘텐츠 확인</li>
-          <li>[발행] 버튼 클릭</li>
+          <li>자동 안전검사를 통과한 콘텐츠는 08:00에 발행되며, AE는 Admin에서 발행 결과와 차단 사유를 후행 확인</li>
           <li>콘텐츠 허브 즉시 게재 (PUBLISHED)</li>
           <li>[반려] 시 → 당일 밤 재생성</li>
         </ul>
@@ -1320,7 +1320,7 @@
     </div>
     <div class="card">
       <h4>📝 콘텐츠 관리 (/hospitals/[id]/content)</h4>
-      <p>생성된 초안 목록 확인. [발행] / [반려] 버튼으로 검토. 반려 시 당일 밤 Claude가 재생성</p>
+      <p>생성된 초안과 자동 발행 결과를 확인. 차단된 항목은 문제·고객 영향·지금 할 일 안내에 따라 복구</p>
     </div>
     <div class="card">
       <h4>📅 스케줄 설정 (/hospitals/[id]/schedule)</h4>

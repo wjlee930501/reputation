@@ -133,6 +133,15 @@ export function canRetryDelivery(diagnosis: LeadDiagnosisSummary): boolean {
   )
 }
 
+/** 준비된 리포트만 인증된 Admin PDF 경로로 연다. 고객용 토큰은 화면에 노출하지 않는다. */
+export function diagnosisReportHref(
+  leadId: string,
+  diagnosis: LeadDiagnosisSummary,
+): string | null {
+  if (diagnosis.report_status !== 'READY') return null
+  return `/api/admin/leads/${encodeURIComponent(leadId)}/diagnoses/${encodeURIComponent(diagnosis.id)}/report`
+}
+
 /** 잠금 해제 버튼을 보여줄지. 이미 풀린 잠금을 다시 풀 수는 없다. */
 export function canReleaseLock(diagnosis: LeadDiagnosisSummary): boolean {
   return !diagnosis.lock_released_at

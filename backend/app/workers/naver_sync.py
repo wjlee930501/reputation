@@ -7,6 +7,7 @@ import logging
 import threading
 from datetime import datetime, timezone
 
+from celery import current_task
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -17,6 +18,7 @@ from app.services.naver_handoff import sync_hospital_naver_sources
 from app.services.naver_handoff_contracts import NaverHandoffResult, NaverHandoffState
 from app.services.naver_handoff_messages import NaverWeeklyEntry, build_naver_weekly_digest
 from app.services.notification_outbox import enqueue_notification
+from app.workers.dispatch_auth import require_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,7 @@ def _run_async(coroutine):
 )
 def weekly_naver_source_sync() -> dict[str, int]:
     """Run the Tuesday handoff and return aggregate counters."""
+    require_dispatch(current_task, "weekly-naver-source-sync")
     return _run_async(_weekly_naver_source_sync_async())
 
 

@@ -59,6 +59,7 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
+from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.tasks import trigger_v0_report
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,11 @@ async def _trigger_v0_report_safe(hospital_id_str: str, hospital_name: str) -> N
     조용히 삼켜 AE가 프로파일 완료 후 V0가 트리거되지 않은 것을 알 수 없게 된다 (#8).
     """
     try:
-        trigger_v0_report.apply_async(args=[hospital_id_str], queue="reports")
+        trigger_v0_report.apply_async(
+            args=[hospital_id_str],
+            queue="reports",
+            headers=build_dispatch_headers("trigger-v0-report", hospital_id_str),
+        )
     except Exception as exc:  # noqa: BLE001 — 큐잉 실패는 요청 흐름에 영향 없이 강등
         logger.warning("V0 report enqueue failed for hospital %s: %s", hospital_id_str, exc)
         try:

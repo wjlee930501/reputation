@@ -218,3 +218,184 @@ async def test_monthly_report_uses_plain_fallback_for_unknown_platform(monkeypat
     body = captured["blocks"][0]["text"]["text"]
     assert "측정한 AI 서비스 확인 필요" in body
     assert "provider_internal_code" not in body
+
+
+async def test_lead_diagnosis_intake_message_is_actionable_and_omits_pii(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_lead_diagnosis_received(
+        clinic_name="장편한외과의원",
+        clinic_type="외과",
+        region="수서역",
+        keywords=["대장내시경", "치질"],
+        contact="010-1234-5678",
+        email="doctor@example.com",
+        slot_no=4,
+        admin_url="https://admin.example.test/leads",
+    )
+
+    assert sent is True
+    body = captured["blocks"][0]["text"]["text"]
+    assert "무료 AI 노출 진단 접수" in body
+    assert "장편한외과의원" in body
+    assert "무슨 문제인지:" in body
+    assert "고객 영향:" in body
+    assert "지금 할 일:" in body
+    assert "처리 기한:" in body
+    assert "외과 · 수서역" not in body
+    assert "대장내시경" not in body
+    assert "010-1234-5678" not in body
+    assert "doctor@example.com" not in body
+    assert "오늘 4번째 접수" in body
+    assert captured["blocks"][1]["type"] == "actions"
+
+
+async def test_content_generation_digest_combines_hospitals_into_one_message(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_content_generation_digest(
+        scheduled_date="2026-08-10",
+        entries=[
+            {
+                "hospital_name": "장편한외과의원",
+                "generated": 2,
+                "failed": 0,
+                "skipped": 0,
+                "cost_blocked": 0,
+                "discarded": 0,
+                "image_missing": 0,
+            },
+            {
+                "hospital_name": "행복드림의원",
+                "generated": 0,
+                "failed": 0,
+                "skipped": 1,
+                "cost_blocked": 0,
+                "discarded": 0,
+                "image_missing": 0,
+            },
+        ],
+    )
+
+    assert sent is True
+    body = captured["blocks"][0]["text"]["text"]
+    assert "야간 콘텐츠 준비 결과" in body
+    assert "2개 병원 · 3건" in body
+    assert "*장편한외과의원* — 초안 저장 완료 2" in body
+    assert "*행복드림의원* — 콘텐츠 운영 기준 승인 대기 1" in body
+    assert all(
+        label in body
+        for label in ("무슨 문제인지", "고객 영향", "지금 할 일", "처리 기한")
+    )
+    assert len(captured["blocks"]) == 2
+    assert captured["blocks"][1]["elements"][0]["url"].endswith(
+        "/operations?queue=TODAY"
+    )
+
+
+async def test_content_missed_digest_combines_hospitals(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_content_missed_digest(
+        entries=[
+            {"hospital_name": "장편한외과의원", "missed_count": 2, "dates": ["2026-08-04", "2026-08-07"]},
+            {"hospital_name": "행복드림의원", "missed_count": 1, "dates": ["2026-08-07"]},
+        ],
+        admin_url="https://admin.example.test/hospitals",
+    )
+
+    assert sent is True
+    body = captured["blocks"][0]["text"]["text"]
+    assert "아침 검수 대기 요약" in body
+    assert "2개 병원 · 3건" in body
+    assert "*장편한외과의원* — 2건" in body
+    assert "*행복드림의원* — 1건" in body
+
+
+async def test_auto_publish_block_digest_hides_reasons_and_has_one_admin_action(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_auto_publish_block_digest(
+        entries=[
+            {
+                "hospital_name": "장편한외과의원",
+                "title": "치질 진료 안내",
+                "scheduled_date": "2026-08-10",
+                "reason": "운영 기준 검사를 통과하지 못했습니다.",
+            },
+            {
+                "hospital_name": "행복드림의원",
+                "title": "내시경 전 준비",
+                "scheduled_date": "2026-08-10",
+                "reason": "의료광고 금지 표현이 확인됐습니다.",
+            },
+        ],
+        admin_url="https://admin.example.test/hospitals",
+    )
+
+    assert sent is True
+    body = captured["blocks"][0]["text"]["text"]
+    assert "발행 차단 요약" in body
+    assert "장편한외과의원" in body
+    assert "행복드림의원" in body
+    assert "운영 기준 검사" not in body
+    assert "의료광고 금지 표현" not in body
+    assert captured["blocks"][1]["type"] == "actions"
+
+
+async def test_auto_publish_digest_combines_successes_into_one_message(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_content_auto_publish_digest(
+        entries=[
+            {
+                "hospital_name": "장편한외과의원",
+                "title": "치질 진료 안내",
+                "sequence_no": 3,
+                "total_count": 12,
+            },
+            {
+                "hospital_name": "행복드림의원",
+                "title": "내시경 전 준비",
+                "sequence_no": 1,
+                "total_count": 16,
+            },
+        ],
+        admin_url="https://admin.example.test/hospitals",
+    )
+
+    assert sent is True
+    body = captured["blocks"][0]["text"]["text"]
+    assert "오늘 발행 요약" in body
+    assert "2개 병원 · 2건" in body
+    assert "장편한외과의원" in body
+    assert "12편 중 3번째" in body
+    assert "행복드림의원" in body
+    assert body.count("Admin에서 공개 내용 확인") == 1
+
+
+async def test_zero_pii_purge_does_not_send_daily_noise(monkeypatch):
+    async def should_not_send(*_args, **_kwargs):
+        raise AssertionError("zero-work purge must stay in logs instead of Slack")
+
+    monkeypatch.setattr(notifier, "_send", should_not_send)
+    assert await notifier.notify_lead_purge_result(purged=0) is False
+
+
+async def test_naver_asset_digest_combines_hospitals(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_naver_assets_digest(
+        entries=[
+            {"hospital_name": "장편한외과의원", "created": 7, "requested": 15},
+            {"hospital_name": "행복드림의원", "created": 5, "requested": 15},
+        ],
+        admin_url="https://admin.example.test/hospitals",
+    )
+
+    assert sent is True
+    body = captured["blocks"][0]["text"]["text"]
+    assert "네이버 자산 주간 요약" in body
+    assert "2개 병원 · 신규 12건" in body
+    assert "*장편한외과의원* — 신규 7건" in body
+    assert "*행복드림의원* — 신규 5건" in body

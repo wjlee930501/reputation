@@ -103,7 +103,7 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
     schedule = ContentSchedule(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
-        plan="PLAN_8",
+        plan="PLAN_12",
         publish_days=[1, 3],
         active_from=date(2026, 7, 1),
     )

@@ -125,6 +125,7 @@ declare -A SECRETS=(
   ["OPENAI_API_KEY"]="OpenAI API 키"
   ["GEMINI_API_KEY"]="Gemini API 키"
   ["ADMIN_SECRET_KEY"]="Admin API 인증 키"
+  ["WORKER_DISPATCH_SECRET"]="Celery 작업 메시지 전용 서명 키 (32자 이상)"
   ["SLACK_WEBHOOK_URL"]="Slack 웹훅 URL"
   ["ADMIN_SESSION_SECRET"]="Admin 세션 서명키"
   ["DB_PASSWORD"]="Cloud SQL 앱 사용자 비밀번호"

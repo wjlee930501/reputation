@@ -95,7 +95,7 @@ def project_onboarding_event(event: OnboardingEvent) -> MilestoneProjection:
                 event.hospital_name,
                 "공개 활성화 준비 완료",
                 "모든 온보딩 선행 조건이 충족됐습니다.",
-                "병원 프로파일에서 도메인 상태를 확인하고 공개 활성화를 진행해 주세요.",
+                "병원 기본 정보에서 공개 주소 상태를 확인하고 공개 운영을 시작해 주세요.",
                 event.owner_label,
                 sla_label,
                 f"/hospitals/{event.hospital_id}/profile#domain-setup",

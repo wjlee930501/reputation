@@ -1,6 +1,8 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.utils import production_readiness
 from app.workers import canary_tasks
 
@@ -20,6 +22,15 @@ def test_every_consumed_queue_has_a_real_canary_task_route() -> None:
         task_name: routes.get(task_name, {}).get("queue")
         for task_name in EXPECTED_CANARY_ROUTES
     } == EXPECTED_CANARY_ROUTES
+
+
+def test_readiness_covers_every_declared_schedule_and_routed_task() -> None:
+    assert production_readiness.EXPECTED_BEAT_SCHEDULES == set(
+        production_readiness.celery_app.conf.beat_schedule
+    )
+    assert production_readiness.EXPECTED_TASKS == set(
+        production_readiness.celery_app.conf.task_routes
+    )
 
 
 class _CanaryRedis:
@@ -95,6 +106,26 @@ def test_readiness_names_withheld_queue_then_passes_after_current_canary(monkeyp
     assert complete["operator_guidance"]["affected_work"] == []
     monkeypatch.setattr(production_readiness, "_queue_canary_facts", lambda: complete)
     assert production_readiness.build_report()["ready"] is True
+
+
+def test_queue_canary_rejects_a_revision_shorter_than_the_deploy_contract(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(canary_tasks.settings, "APP_ENV", "production")
+    monkeypatch.setattr(canary_tasks.settings, "REPUTATION_RELEASE_REVISION", "short")
+
+    with pytest.raises(canary_tasks.CanaryConfigurationError):
+        canary_tasks.release_revision()
+
+
+def test_queue_canary_development_fallback_obeys_the_release_contract(monkeypatch) -> None:
+    monkeypatch.setattr(canary_tasks.settings, "APP_ENV", "test")
+    monkeypatch.setattr(canary_tasks.settings, "REPUTATION_RELEASE_REVISION", "")
+
+    revision = canary_tasks.release_revision()
+
+    assert revision == "local-dev"
+    assert canary_tasks.canary_key(revision, "default").endswith(":local-dev:default")
 
 
 def test_previous_release_or_fifteen_minute_old_canary_never_marks_ready(monkeypatch) -> None:

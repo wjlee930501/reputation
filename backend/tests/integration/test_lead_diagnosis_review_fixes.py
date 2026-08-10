@@ -9,7 +9,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import select
 
 from app.api.admin import leads as admin_leads
@@ -264,6 +264,7 @@ class TestQueryInjectionSurface:
             await create_diagnosis(
                 _Req(),
                 _payload(clinic_name="장편한외과의원", **{field: "장편한외과의원"}),
+                BackgroundTasks(),
                 pg_async_session,
             )
         assert exc.value.status_code == 400
@@ -271,7 +272,10 @@ class TestQueryInjectionSurface:
     async def test_generated_queries_never_contain_the_hospital_name(self, pg_async_session):
         """fail-closed 최종 확인 — 어떤 조합이 와도 병원명이 든 질의는 저장되지 않는다."""
         result = await create_diagnosis(
-            _Req(), _payload(clinic_name="수서연세내과의원"), pg_async_session
+            _Req(),
+            _payload(clinic_name="수서연세내과의원"),
+            BackgroundTasks(),
+            pg_async_session,
         )
         diagnosis = (
             await pg_async_session.execute(
@@ -455,10 +459,14 @@ class TestAdminReleaseLock:
     async def test_a_released_phone_can_apply_again(self, pg_async_session):
         """해제의 목적은 이것 하나다 — 실제로 다시 신청이 되어야 한다."""
         phone = "02-777-8888"
-        first = await create_diagnosis(_Req(), _payload(clinic_phone=phone), pg_async_session)
+        first = await create_diagnosis(
+            _Req(), _payload(clinic_phone=phone), BackgroundTasks(), pg_async_session
+        )
 
         with pytest.raises(HTTPException):
-            await create_diagnosis(_Req(), _payload(clinic_phone=phone), pg_async_session)
+            await create_diagnosis(
+                _Req(), _payload(clinic_phone=phone), BackgroundTasks(), pg_async_session
+            )
 
         diagnosis = (
             await pg_async_session.execute(
@@ -473,7 +481,9 @@ class TestAdminReleaseLock:
             db=pg_async_session,
         )
 
-        again = await create_diagnosis(_Req(), _payload(clinic_phone=phone), pg_async_session)
+        again = await create_diagnosis(
+            _Req(), _payload(clinic_phone=phone), BackgroundTasks(), pg_async_session
+        )
         assert again["ok"] is True
 
 

@@ -1,153 +1,405 @@
-{# 무료 진단 블러 리포트 (PRD F5).
-
-   이 템플릿은 `LeadReportPayload`만 받는다. 원자료(raw_response)나 경쟁 병원명을
-   담은 변수는 컨텍스트에 존재하지 않으므로, 실수로 출력할 수 있는 경로가 없다.
-
-   플랫폼 표기는 API·모델명이다(F5-1) — "ChatGPT 9번 중 0번"이라고 쓰면 §2-2에서
-   철회한 "환자가 보는 화면" 주장을 라벨로 되살리는 셈이다.
-#}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <title>{{ payload.hospital_name }} AI 노출 진단</title>
+  <title>{{ payload.hospital_name }} AI 답변 노출 진단서</title>
   <style>
-    /* A4 1쪽에 들어가도록 조인 값들이다. 리포트가 2쪽으로 넘어가면 둘째 장이
-       15%만 차서 미완성처럼 보인다 — 여백·행높이를 늘릴 때는 쪽수를 다시 재라. */
-    @page { size: A4; margin: 14mm 15mm; }
-    body { font-family: "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
-           color: #1a1d21; font-size: 10.5pt; line-height: 1.5; }
-    h1 { font-size: 17pt; margin: 0 0 3px; }
-    h2 { font-size: 11.5pt; margin: 15px 0 6px; border-bottom: 1px solid #d8dde3; padding-bottom: 4px; }
-    .sub { color: #5b6672; font-size: 9.5pt; margin-bottom: 12px; }
-    table { width: 100%; border-collapse: collapse; margin-bottom: 7px; }
-    th, td { border: 1px solid #d8dde3; padding: 5px 8px; text-align: left; font-size: 9.5pt; }
-    th { background: #f4f6f8; font-weight: 600; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .headline { font-size: 13pt; font-weight: 600; }
-    .caveat { color: #5b6672; font-size: 9pt; margin-top: 6px; }
-    .locked { background: #f4f6f8; border: 1px dashed #b9c2cc; border-radius: 6px;
-              padding: 12px 14px; color: #5b6672; font-size: 9.5pt;
-              page-break-inside: avoid; }
-    table, h2 { page-break-inside: avoid; }
-    h2 { page-break-after: avoid; }
-    .locked strong { color: #1a1d21; }
-    .notice { color: #5b6672; font-size: 8.5pt; margin-top: 4px; }
-    code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 9pt; }
+    @font-face {
+      font-family: "Pretendard";
+      src: url("../assets/fonts/PretendardVariable.woff2") format("woff2-variations");
+      font-style: normal;
+      font-weight: 100 900;
+    }
+    @page { size: A4; margin: 0; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: #20242a;
+      font-family: "Pretendard";
+      font-size: 9pt;
+      font-weight: 400;
+      line-height: 1.46;
+    }
+    strong, b, h2, th { font-weight: 600; }
+    h1 { font-weight: 800; }
+    .page {
+      position: relative;
+      width: 210mm;
+      min-height: 297mm;
+      padding: 12mm 16mm 12mm;
+      overflow: hidden;
+    }
+    .page-summary { break-after: page; }
+    .brand {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      padding-bottom: 3mm;
+      border-bottom: 1.5px solid #233b52;
+    }
+    .brand strong { font-size: 12pt; font-weight: 800; letter-spacing: -0.025em; }
+    .brand span { color: #64748b; font-size: 7.8pt; }
+    .eyebrow {
+      margin: 5mm 0 1.5mm;
+      color: #233b52;
+      font-size: 8pt;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    h1 {
+      margin: 0;
+      color: #161a20;
+      font-size: 21pt;
+      line-height: 1.2;
+      letter-spacing: -0.045em;
+    }
+    .lede {
+      max-width: 158mm;
+      margin: 2mm 0 0;
+      color: #475467;
+      font-size: 9.5pt;
+    }
+    .result-card {
+      display: grid;
+      grid-template-columns: 38mm 1fr;
+      gap: 7mm;
+      align-items: center;
+      margin-top: 4mm;
+      padding: 4mm 0;
+      border-top: 1.5px solid #233b52;
+      border-bottom: 1px solid #bbc3cb;
+    }
+    .result-number { color: #233b52; text-align: left; font-size: 7.5pt; }
+    .result-number strong {
+      display: block;
+      margin: .5mm 0;
+      font-size: 25pt;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .result-number span { display: block; margin-top: 1mm; color: #616a75; }
+    .result-copy strong {
+      display: block;
+      margin-bottom: 1mm;
+      color: #161a20;
+      font-size: 12pt;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .result-copy p { margin: 0; color: #475467; }
+    .caveat { margin-top: 1.5mm; color: #667085; font-size: 7.6pt; }
+    .section { margin-top: 4mm; }
+    .section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 4mm;
+      margin-bottom: 2mm;
+    }
+    .section h2, .section-head h2 {
+      margin: 0;
+      color: #101828;
+      font-size: 11.8pt;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+    }
+    .section-head h2 { flex: none; white-space: nowrap; }
+    .section-note { margin: 0 0 0 auto; color: #667085; font-size: 7.6pt; }
+    .reason-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm; }
+    .reason {
+      min-height: 24mm;
+      padding: 2.5mm 0 0;
+      border-top: 1px solid #7d8894;
+    }
+    .reason span { display: block; color: #233b52; font-size: 7.4pt; font-weight: 600; }
+    .reason strong { display: block; margin: .8mm 0; font-size: 9.5pt; }
+    .reason p { margin: 0; color: #5d6b80; font-size: 7.7pt; }
+    .query-list { display: grid; gap: 1.2mm; }
+    .query-row {
+      display: grid;
+      grid-template-columns: 7mm 1fr 36mm;
+      gap: 2.5mm;
+      align-items: center;
+      padding: 1.8mm 0;
+      border-bottom: 1px solid #d8dde2;
+    }
+    .query-row:first-child { border-top: 1px solid #d8dde2; }
+    .query-row b { color: #233b52; font-weight: 600; }
+    .query-text { font-size: 8.2pt; }
+    .query-outcome { text-align: right; color: #475467; font-size: 7.4pt; }
+    .query-outcome strong { display: block; color: #101828; font-size: 8pt; }
+    .verification {
+      margin-top: 4mm;
+      padding-top: 3mm;
+      border-top: 1px solid #d8e0ea;
+    }
+    .verification-intro { margin: 0 0 2.5mm; color: #475467; font-size: 8.1pt; }
+    .method-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2mm; }
+    .method { padding: 2.5mm 0 0; border-top: 1px solid #7d8894; }
+    .method b { display: block; margin-bottom: .8mm; color: #233b52; font-size: 7.4pt; }
+    .method strong { display: block; margin-bottom: .6mm; font-size: 8.4pt; }
+    .method p { margin: 0; color: #667085; font-size: 7.1pt; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 1.5mm 2mm; border: 1px solid #d8e0ea; font-size: 7.1pt; text-align: left; }
+    th { background: #f1f2f3; color: #343a43; }
+    .platform-table { margin-top: 2.5mm; }
+    .platform-table th { width: auto; }
+    .num { text-align: right; }
+    .audit-meta { margin-top: 1.5mm; color: #667085; font-size: 6.7pt; line-height: 1.35; }
+    .audit-meta strong { color: #344054; }
+    .page-reputation .brand strong { white-space: nowrap; }
+    .reputation-kicker { margin: 7mm 0 1mm; color: #233b52; font-size: 8.2pt; font-weight: 600; }
+    .reputation-heading { max-width: 170mm; font-size: 22pt; }
+    .reputation-lede { max-width: 164mm; margin-top: 2.5mm; font-size: 10.2pt; line-height: 1.55; }
+    .reputation-lede strong { color: #233b52; font-weight: 600; }
+    .page2-section { margin-top: 4mm; }
+    .page2-section h2 { margin: 0 0 2mm; font-size: 11.5pt; font-weight: 600; }
+    .channel-grid, .hub-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5mm; }
+    .channel-card, .hub-card { padding: 2.6mm 0 0; border-top: 1px solid #7d8894; }
+    .channel-card b, .hub-card b { display: block; color: #233b52; font-size: 7.2pt; }
+    .channel-card strong, .hub-card strong { display: block; margin: .7mm 0; font-size: 9pt; }
+    .channel-card p, .hub-card p { margin: 0; color: #5d6b80; font-size: 7.5pt; }
+    .scope-note {
+      margin: 2mm 0 0;
+      padding-left: 2.5mm;
+      border-left: 2px solid #233b52;
+      color: #475467;
+      font-size: 7.4pt;
+    }
+    .hub-card.hub-primary { border-color: #233b52; }
+    .hub-principle { margin: 2mm 0 0; color: #344054; font-size: 7.5pt; }
+    .hub-principle strong { color: #233b52; }
+    .service { margin-top: 4mm; padding-top: 3mm; border-top: 1px solid #d8e0ea; }
+    .service h2 { margin: 0; font-size: 11.5pt; font-weight: 600; }
+    .service-intro { margin: 1mm 0 2mm; color: #5d6b80; font-size: 7.7pt; }
+    .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2mm; }
+    .step { min-height: 27mm; padding: 2.5mm 0 0; border-top: 1px solid #7d8894; }
+    .step b { color: #233b52; font-size: 7.3pt; font-weight: 600; }
+    .step strong { display: block; margin: .8mm 0; font-size: 8.3pt; }
+    .step p { margin: 0; color: #5d6b80; font-size: 7pt; }
+    .tier-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; margin-top: 2.5mm; }
+    .tier { padding: 2.5mm 0; border-top: 1px solid #7d8894; border-bottom: 1px solid #d8dde2; }
+    .tier b { display: block; color: #344054; font-size: 7.2pt; letter-spacing: .07em; }
+    .tier strong { display: block; margin: .8mm 0 .5mm; color: #233b52; font-size: 11pt; }
+    .tier span { display: block; color: #616a75; font-size: 7.2pt; }
+    .boundary {
+      display: flex;
+      justify-content: space-between;
+      gap: 5mm;
+      margin-top: 3mm;
+      padding: 2.5mm 0;
+      border-top: 1px solid #d8dde2;
+      border-bottom: 1px solid #d8dde2;
+      color: #5d6b80;
+      font-size: 7.2pt;
+    }
+    .boundary strong { color: #344054; }
+    .brand-statement {
+      margin: 4mm 0 0;
+      color: #233b52;
+      font-size: 13pt;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+    }
+    .contact-card {
+      display: grid;
+      grid-template-columns: 1fr 52mm;
+      gap: 5mm;
+      align-items: center;
+      margin-top: 4mm;
+      padding: 3.5mm 0;
+      border-top: 2px solid #233b52;
+      border-bottom: 1px solid #7d8894;
+    }
+    .contact-card h2 { margin: 0 0 1mm; color: #161a20; font-size: 11.5pt; font-weight: 600; }
+    .contact-card p { margin: 0; color: #5d6670; font-size: 7.8pt; }
+    .contact-person { padding-left: 4mm; border-left: 1px solid #aeb6be; }
+    .contact-person strong, .contact-person a { display: block; color: #233b52; }
+    .contact-person strong { font-size: 10pt; font-weight: 600; }
+    .contact-person span { color: #616a75; font-size: 7.4pt; }
+    .contact-person a { margin-top: 1mm; font-size: 7.5pt; text-decoration: none; }
+    .notice { display: inline; margin-right: 2mm; color: #7a8799; font-size: 6.5pt; }
+    .footer {
+      position: absolute;
+      left: 16mm;
+      right: 16mm;
+      bottom: 7mm;
+      display: flex;
+      justify-content: space-between;
+      color: #98a2b3;
+      font-size: 6.7pt;
+    }
   </style>
 </head>
 <body>
+  <section class="page page-summary">
+    <header class="brand">
+      <strong>Re:putation</strong>
+      <span>MotionLabs · AI 답변 노출 진단</span>
+    </header>
 
-  <h1>{{ payload.hospital_name }} AI 노출 진단</h1>
-  <div class="sub">
-    {# 겹화살괄호(«»)를 장식으로 쓰지 않는다. PDF 폰트에서 ≪ ≫로 렌더돼 인코딩 오류처럼 보인다. #}
-    지역 {{ payload.region }} · 생성 {{ payload.generated_at.strftime('%Y-%m-%d %H:%M') }}
-  </div>
+    <p class="eyebrow">{{ payload.hospital_name }} · {{ payload.region }} · {{ payload.generated_at.strftime('%Y.%m.%d') }}</p>
+    <h1>환자가 AI에게 병원을 물을 때,<br>우리 병원 이름은 얼마나 확인될까요?</h1>
+    <p class="lede">지역과 진료 맥락을 담은 질문 3개로 현재 상태를 확인했습니다. 이 문서는 순위표가 아니라, 앞으로 같은 기준으로 변화를 살펴보기 위한 시작 기록입니다.</p>
 
-  <h2>측정 결과</h2>
-  {% if payload.segments %}
-    <table>
-      <thead>
-        <tr>
-          <th>측정 경로</th>
-          <th class="num">측정</th>
-          <th class="num">언급</th>
-          <th class="num">실패</th>
-          <th class="num">언급 비율</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for segment in payload.segments %}
-          <tr>
-            <td>{{ segment.label }}</td>
-            <td class="num">{{ segment.measured }}회</td>
-            <td class="num">{{ segment.mentioned }}회</td>
-            <td class="num">{{ segment.failed }}회</td>
-            <td class="num">
-              {%- if segment.mention_rate is none -%}측정 데이터 없음
-              {%- else -%}{{ segment.mention_rate }}%{%- endif -%}
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    <div class="headline">
-      전체 {{ payload.total_measured }}번의 측정 중 {{ payload.total_mentioned }}번 언급되었습니다.
-    </div>
-    {#
-      0회는 이 리포트에서 가장 흔한 결과이면서 가장 오해받기 쉬운 숫자다. 아무 설명 없이
-      "0번"만 두면 원장님은 병원 평가로 읽는다. 실제 의미는 **AI가 인용할 근거가 공개된 곳에
-      없다**는 것이고, 그건 진료의 질과 다른 문제다.
-
-      개선을 약속하지 않는다 — 무엇이 측정됐는지만 해석한다.
-    #}
-    {% if payload.total_mentioned == 0 %}
-      <div class="caveat">
-        0번은 진료의 질에 대한 평가가 아닙니다. 위 질문에 답할 때 AI가 참고한 자료 중
-        귀 병원의 정보가 없었다는 뜻이며, 대부분의 병원이 같은 상태에서 시작합니다.
+    <div class="result-card" id="result">
+      <div class="result-number">
+        {% if payload.total_measured == 0 %}<strong>0 / 0</strong>{% else %}<strong>{{ payload.total_mentioned }} / {{ payload.total_measured }}</strong>{% endif %}
+        <span>병원명 언급 / 성공 답변</span>
       </div>
-    {% endif %}
-  {% else %}
-    <p>측정 데이터가 없습니다.</p>
-  {% endif %}
-  <div class="caveat">{{ sample_caveat }}</div>
+      <div class="result-copy">
+        {% if payload.total_measured == 0 %}
+          <strong>이번에는 유효한 답변을 받지 못했습니다.</strong>
+          <p>병원 상태가 아니라 측정 환경의 문제입니다. 재측정 후 판단해야 합니다.</p>
+        {% elif payload.total_mentioned == 0 %}
+          <strong>환자 질문에 답한 {{ payload.total_measured }}건 중 우리 병원 이름이 언급된 답변은 0건입니다.</strong>
+          <p>AI가 병원을 평가했다는 뜻이 아니라, 이 질문과 모델, 측정 시점의 답변에 병원 이름이 나오지 않았다는 뜻입니다.</p>
+          <div class="caveat">0번은 진료의 질에 대한 평가가 아닙니다. 이번 질문과 측정 조건에서 병원명이 확인되지 않았다는 관찰 결과입니다.</div>
+        {% elif payload.total_mentioned == payload.total_measured %}
+          <strong>환자 질문에 답한 {{ payload.total_measured }}건 모두에서 우리 병원 이름이 언급됐습니다.</strong>
+          <p>현재 질문 세트에서 확인된 결과입니다. 다른 질문이나 다음 측정에서는 달라질 수 있습니다.</p>
+        {% else %}
+          <strong>환자 질문에 답한 {{ payload.total_measured }}건 중 {{ payload.total_mentioned }}건에서 우리 병원 이름이 언급됐습니다.</strong>
+          <p>일부 답변에서는 확인됐고, 일부 답변에서는 확인되지 않았습니다. 어떤 질문에서 차이가 났는지부터 살펴봐야 합니다.</p>
+        {% endif %}
+        <div class="caveat">{{ sample_caveat }}</div>
+      </div>
+    </div>
 
-  <h2>측정 조건 — 전문 공개</h2>
-  <table>
-    <tbody>
-      <tr><th style="width:28%">반복 횟수</th><td>질문당 {{ payload.repeat_count }}회</td></tr>
-      <tr><th>판정 모델</th><td><code>{{ payload.judge_model }}</code></td></tr>
-      {% for segment in payload.segments %}
-        <tr><th>{{ segment.vendor_label }} 답변 모델</th><td><code>{{ segment.model }}</code></td></tr>
-      {% endfor %}
-      <tr><th>시스템 지시문</th><td>{{ payload.system_prompt }}</td></tr>
-    </tbody>
-  </table>
-  <div class="caveat">
-    답변 모델과 판정 모델을 의도적으로 분리합니다. 같은 모델로 통일하면 자와 대상이 함께
-    움직여 변화를 잴 수 없고, 생성자가 자기 출력을 채점하는 편향도 생깁니다.
-  </div>
+    <section class="section" id="importance">
+      <div class="section-head"><h2>왜 이 기록이 중요할까요?</h2></div>
+      <div class="reason-grid">
+        <div class="reason">
+          <span>환자의 탐색 방식</span>
+          <strong>환자는 지역과 증상을 함께 묻습니다.</strong>
+          <p>검색 결과와 함께 AI 답변으로도 진료 선택지를 좁힙니다. 답변에 병원 정보가 없으면 비교 후보로 검토될 기회도 줄어듭니다.</p>
+        </div>
+        <div class="reason">
+          <span>지금 시작할 이유</span>
+          <strong>한 번의 숫자보다 기준선이 먼저입니다.</strong>
+          <p>공개 정보를 정리하고 같은 조건으로 다시 측정해야 변화가 보입니다. 지금 시작하면 다음 달부터 비교 가능한 운영 기록이 남습니다.</p>
+        </div>
+      </div>
+    </section>
 
-  <h2>사용한 질문 전문</h2>
-  <table>
-    <thead>
-      <tr>
-        <th style="width:8%">#</th>
-        <th>질문</th>
-        <th style="width:24%">측정 일시</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for query in payload.queries %}
-        <tr>
-          <td>{{ query.slot }}</td>
-          <td>{{ query.text }}</td>
-          <td>
-            {%- if query.measured_at -%}
-              {{ query.measured_at.strftime('%Y-%m-%d %H:%M') }}
-            {%- else -%}—{%- endif -%}
-          </td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  <div class="caveat">
-    질문에 병원명을 넣지 않습니다. 자기 이름을 물으면 언급은 보장되고 측정은 무의미해집니다.
-  </div>
+    <section class="section" id="query-results">
+      <div class="section-head">
+        <h2>우리 병원은 어떤 질문에서 확인됐나요?</h2>
+        <p class="section-note">응답에 병원명이 나온 경우만 ‘확인’으로 기록했습니다.</p>
+      </div>
+      <div class="query-list">
+        {% for query in payload.queries %}
+          <div class="query-row">
+            <b>{{ query.slot }}</b>
+            <div class="query-text">{{ query.text }}</div>
+            <div class="query-outcome">
+              {% if query.measured == 0 %}<strong>측정 불가</strong>{{ query.failed }}건 응답 실패
+              {% elif query.mentioned == 0 %}<strong>병원명 미확인</strong>{{ query.measured }}건 답변 기준
+              {% else %}<strong>{{ query.mentioned }}건에서 확인</strong>{{ query.measured }}건 답변 기준{% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
 
-  <h2>전체 리포트에 포함되는 항목</h2>
-  <div class="locked">
-    <strong>이 진단에서는 제공하지 않습니다.</strong><br>
-    · 함께 언급된 다른 병원 목록<br>
-    · 언급된 답변의 원문 발췌<br>
-    · 노출을 높이기 위한 개선 항목<br>
-    <br>
-    위 항목은 계약 후 월간 리포트에서 제공합니다.
-  </div>
+    <section class="verification" id="verification">
+      <div class="section-head">
+        <h2>어떻게 확인했나요? - 검증 기록</h2>
+        <p class="section-note">질문·모델·시점이 달라지면 결과도 달라질 수 있습니다.</p>
+      </div>
+      <p class="verification-intro"><strong>왜 이 방식이어야 하나요? 한 번의 답변을 결과로 단정하지 않기 위해서입니다.</strong> 실제 환자가 사용할 법한 질문을 병원명 없이 묻고, 두 AI 경로에서 반복 확인하며, 응답 실패는 병원 결과와 분리했습니다.</p>
+      <div class="method-grid">
+        <div class="method"><b>01 · 병원명 없는 질문</b><strong>자기 이름을 묻지 않습니다.</strong><p>병원명을 질문에 넣으면 언급이 예정된 결과가 되어 현재 노출 상태를 확인할 수 없습니다.</p></div>
+        <div class="method"><b>02 · 두 경로 반복 측정</b><strong>한 번의 우연을 줄입니다.</strong><p>OpenAI와 Gemini 경로에서 같은 질문을 반복해 특정 답변 하나에 판단이 치우치지 않게 합니다.</p></div>
+        <div class="method"><b>03 · 성공과 실패 분리</b><strong>도구 오류를 병원 성과로 세지 않습니다.</strong><p>응답을 받은 건만 결과에 포함하고, 실패 건수는 감추지 않고 별도로 공개합니다.</p></div>
+      </div>
+      {% if payload.segments %}
+        <table class="platform-table">
+          <thead><tr><th>측정 경로</th><th class="num">계획</th><th class="num">성공</th><th class="num">병원명 확인</th><th class="num">응답 실패</th></tr></thead>
+          <tbody>
+            {% for segment in payload.segments %}
+              <tr><td>{{ segment.label }}</td><td class="num">{{ segment.planned }}건</td><td class="num">{{ segment.measured }}건</td><td class="num">{{ segment.mentioned }}건</td><td class="num">{{ segment.failed }}건</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+      <div class="audit-meta">
+        <strong>반복</strong> 질문당 {{ payload.repeat_count }}회 · <strong>판정 모델</strong> {{ payload.judge_model }} ·
+        <strong>측정 시각</strong>
+        {% for query in payload.queries %}질문 {{ query.slot }} {% if query.measured_at %}{{ query.measured_at.strftime('%Y-%m-%d %H:%M') }}{% else %}기록 없음{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}<br>
+        <strong>시스템 지시문</strong> {{ payload.system_prompt }}
+      </div>
+    </section>
 
-  {% for notice in payload.notices %}
-    <div class="notice">{{ notice }}</div>
-  {% endfor %}
+    <footer class="footer"><span>Re:putation by MotionLabs</span><span>1 / 2</span></footer>
+  </section>
 
+  <section class="page page-reputation">
+    <header class="brand">
+      <strong>Re:putation</strong>
+      <span>{{ payload.hospital_name }}</span>
+    </header>
+
+    <p class="reputation-kicker">REPUTATION · 병원의 평판을 정보로 관리합니다</p>
+    <h1 class="reputation-heading">Re:putation은 ‘평판’이라는 뜻입니다.</h1>
+    <p class="lede reputation-lede">병원의 평판은 진료실 안에서만 만들어지지 않습니다. 환자가 병원을 알아보는 동안 접하는 정보가 <strong>정확한지, 서로 일관되는지, 믿을 근거가 있는지</strong>가 병원을 이해하는 첫인상이 됩니다.</p>
+
+    <section class="page2-section" id="channel-scope">
+      <h2>왜 ChatGPT·Gemini부터 확인하나요?</h2>
+      <div class="channel-grid">
+        <div class="channel-card"><b>서로 다른 두 생태계</b><strong>OpenAI와 Google의 답변 경로를 함께 봅니다.</strong><p>한 회사의 한 모델에만 기대지 않고, 서로 다른 AI 생태계가 같은 환자 질문에 병원 정보를 어떻게 구성하는지 비교합니다.</p></div>
+        <div class="channel-card"><b>반복 가능한 기준선</b><strong>질문·모델·시점을 기록해 다시 확인합니다.</strong><p>채널 수를 무작정 늘리기보다 같은 조건을 반복해 변화의 방향을 읽는 것이 이번 진단의 우선 목적입니다.</p></div>
+      </div>
+      <p class="scope-note">Claude와 Perplexity가 중요하지 않다는 뜻은 아닙니다. 현재 무료 진단은 ChatGPT/OpenAI 계열과 Gemini 계열을 우선 측정하며, 운영 범위와 측정 기준이 준비된 채널부터 확장할 수 있습니다.</p>
+    </section>
+
+    <section class="page2-section" id="content-hub">
+      <h2>기존 홈페이지와 AEO/GEO 콘텐츠 허브는 역할이 다릅니다.</h2>
+      <div class="hub-grid">
+        <div class="hub-card"><b>기존 병원 홈페이지</b><strong>공식 정보와 환자 안내의 기준점</strong><p>병원 소개, 의료진, 진료시간, 위치처럼 오래 유지해야 할 정보를 안정적으로 전달합니다. 전체 구조를 자주 바꾸기에는 운영 부담이 큽니다.</p></div>
+        <div class="hub-card hub-primary"><b>AEO/GEO 콘텐츠 허브</b><strong>환자 질문과 AI 읽기 방식에 맞춰 계속 조정</strong><p>질문에 먼저 답하는 글, 병원 근거, 구조화된 정보를 월별로 축적하고 재측정 결과에 따라 주제와 표현 방식을 업데이트합니다.</p></div>
+      </div>
+      <p class="hub-principle"><strong>기존 홈페이지를 대체하지 않습니다.</strong> 공식 홈페이지는 기준점으로 두고, 별도 콘텐츠 허브를 변화하는 AEO/GEO 전략에 빠르게 대응하는 운영 표면으로 함께 사용합니다.</p>
+    </section>
+
+    <section class="service">
+      <h2>Re:putation의 운영 방식</h2>
+      <p class="service-intro">광고 문구를 더 만드는 일이 아니라, 병원이 이미 가진 근거를 정리하고 환자 질문에 답하는 정보를 꾸준히 운영한 뒤 같은 기준으로 변화를 확인합니다.</p>
+      <div class="steps">
+        <div class="step"><b>01 · 진단</b><strong>현재 기준선 기록</strong><p>지역·진료 질문을 정하고 OpenAI·Gemini 경로의 현재 상태를 남깁니다.</p></div>
+        <div class="step"><b>02 · 근거 정리</b><strong>병원 정보 승인</strong><p>홈페이지·블로그·인터뷰에서 실제 진료 범위와 원장 철학을 정리합니다.</p></div>
+        <div class="step"><b>03 · 콘텐츠 운영</b><strong>질문 중심으로 발행</strong><p>FAQ, 질환·치료 안내, 칼럼을 근거와 의료광고 기준에 맞춰 공개합니다.</p></div>
+        <div class="step"><b>04 · 재측정</b><strong>변화와 운영 기록 보고</strong><p>같은 조건으로 다시 확인하고 질문별 결과와 발행 이력을 함께 설명합니다.</p></div>
+      </div>
+      <div class="tier-row">
+        <div class="tier"><b>STARTER</b><strong>월 60만 원</strong><span>부가세 별도 · 월 12편 발행</span></div>
+        <div class="tier"><b>GROWER</b><strong>월 90만 원</strong><span>부가세 별도 · 월 16편 발행</span></div>
+        <div class="tier"><b>LEADER</b><strong>월 120만 원</strong><span>부가세 별도 · 월 20편 발행</span></div>
+      </div>
+    </section>
+
+    <div class="boundary">
+      <span><strong>운영 원칙</strong> 측정할 수 없는 것은 약속드리지 않습니다.</span>
+      <span>특정 AI 순위 보장 · 고정 노출 보장 · 환자 수·매출 절대 증가</span>
+    </div>
+
+    <p class="brand-statement">모션랩스가 하면 AI 최적화도 다릅니다.</p>
+
+    <section class="contact-card">
+      <div>
+        <h2>우리 병원은 무엇부터 정리해야 할지 함께 보겠습니다.</h2>
+        <p>진단 결과와 병원 상황을 바탕으로 우선 확인할 공개 정보와 환자 질문을 친절하게 설명드립니다.</p>
+      </div>
+      <div class="contact-person">
+        <strong>{{ payload.contact.name }}</strong>
+        <span>{{ payload.contact.role }}</span>
+        <a href="mailto:{{ payload.contact.email }}">{{ payload.contact.email }}</a>
+        <a href="tel:{{ payload.contact.phone }}">{{ payload.contact.phone }}</a>
+      </div>
+    </section>
+
+    {% for notice in payload.notices %}<div class="notice">{{ notice }}</div>{% endfor %}
+    <footer class="footer"><span>Re:putation by MotionLabs</span><span>2 / 2</span></footer>
+  </section>
 </body>
 </html>

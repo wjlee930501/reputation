@@ -12,6 +12,7 @@ Celery 태스크 전체
 """
 
 import asyncio
+import hashlib
 import logging
 import threading
 import uuid
@@ -21,6 +22,7 @@ from urllib.parse import urlparse
 
 import arrow
 import httpx
+from celery import current_task
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -103,6 +105,7 @@ from app.services.report_engine import (
 from app.services.site_revalidate import (
     content_site_paths,
     ensure_site_revalidate_configured,
+    hospital_site_paths,
     trigger_content_site_revalidate_safe,
     trigger_hospital_site_revalidate_safe,
     trigger_site_revalidate,
@@ -119,6 +122,8 @@ from app.services.sov_engine import (
     run_single_query,
 )
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
+from app.workers.content_publication_block_control import ensure_publication_block_run
+from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_incident_control import (
     open_generation_incident,
@@ -128,6 +133,8 @@ from app.workers.generation_run_control import (
     GenerationItemState,
     classify_generation_failure,
     create_item_run,
+    explicit_run_context,
+    explicit_run_matches,
     finish_explicit_run,
 )
 from app.workers.monthly_artifact_incident_control import (
@@ -163,6 +170,10 @@ def _is_even_measurement_week(today: date) -> bool:
 logger = logging.getLogger(__name__)
 
 AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
+
+
+class MonthlyBatchIncompleteError(RuntimeError):
+    """Raised after durable per-hospital failures so Celery schedules a retry."""
 
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
@@ -207,6 +218,8 @@ def v0_sample_query_stmt(hospital_id):
         .order_by(QueryMatrix.created_at, QueryMatrix.query_text)
         .limit(V0_QUERY_SAMPLE_COUNT)
     )
+
+
 # 주간 측정에서 HIGH 우선순위 쿼리 spec 상한 — target 자동 시드로 매트릭스가 폭증해도
 # 매주 전량 측정되며 API 비용이 무한정 늘지 않도록 태스크 측에서 잘라낸다.
 SOV_HIGH_PRIORITY_CAP = settings.SOV_HIGH_PRIORITY_CAP
@@ -264,6 +277,22 @@ def _mark_done(key: str, ttl_seconds: int = 82_800) -> None:
         _get_redis().set(key, "1", ex=ttl_seconds)
     except Exception:
         logger.warning("Redis idempotency mark unavailable for %s", key)
+
+
+def _generation_missed_alert_key(hospital_id: uuid.UUID | str, content_ids: list[uuid.UUID]) -> str:
+    """같은 미생성 항목 집합은 날짜가 바뀌어도 같은 알림 상태로 취급한다."""
+    fingerprint = hashlib.sha256(
+        "|".join(sorted(str(content_id) for content_id in content_ids)).encode()
+    ).hexdigest()[:16]
+    return f"content_generation_missed:{hospital_id}:{fingerprint}"
+
+
+def _auto_publish_block_alert_key(
+    content_id: uuid.UUID, scheduled_date: str, code: str, reason: str
+) -> str:
+    """동일 원인은 묶되, 수정 후 달라진 차단 원인은 다시 알린다."""
+    reason_fingerprint = hashlib.sha256(reason.encode()).hexdigest()[:12]
+    return f"auto_publish_blocked:{content_id}:{scheduled_date}:{code}:{reason_fingerprint}"
 
 
 def _record_locked_generation_items(
@@ -420,8 +449,7 @@ def process_source_asset_task(self, source_id: str) -> dict[str, object]:
             for payload in payloads:
                 if not validate_source_excerpt(source, payload.source_excerpt):
                     raise ValueError(
-                        "source_excerpt가 원문에 존재하지 않습니다: "
-                        f"{payload.source_excerpt[:80]}"
+                        f"source_excerpt가 원문에 존재하지 않습니다: {payload.source_excerpt[:80]}"
                     )
 
             db.execute(
@@ -499,6 +527,7 @@ def process_source_asset_task(self, source_id: str) -> dict[str, object]:
 )
 def trigger_v0_report(self, hospital_id: str):
     """프로파일 완료 후 V0 분석 즉시 실행"""
+    require_dispatch(self, "trigger-v0-report", hospital_id)
     prior_status: str | None = None  # ANALYZING 전환 전 상태 — 실패 시 복원용 (P2-15)
     try:
         with SyncSessionLocal() as db:
@@ -694,7 +723,11 @@ def trigger_v0_report(self, hospital_id: str):
             # 사이드이펙트다. 큐잉 실패가 outer except로 흘러가면 self.retry가 v0_report_done
             # 멱등 가드에 막혀 STEP4가 영구 유실되므로, 여기서 격리하고 실패는 ops 알림만 낸다.
             try:
-                build_aeo_site.apply_async(args=[hospital_id], queue="default")
+                build_aeo_site.apply_async(
+                    args=[hospital_id],
+                    queue="default",
+                    headers=build_dispatch_headers("build-aeo-site", hospital_id),
+                )
             except Exception:
                 logger.exception(
                     "build_aeo_site enqueue failed post-V0 (STEP4 deferred): %s", hospital_id
@@ -706,7 +739,7 @@ def trigger_v0_report(self, hospital_id: str):
                             message=(
                                 f"병원: *{hospital.name}* (`{hospital_id}`)\n"
                                 f"V0 리포트는 정상 생성됐으나 콘텐츠 허브 준비(build_aeo_site) 큐잉에 "
-                                f"실패했습니다. Admin에서 허브 준비를 수동 재실행해 주세요."
+                            f"실패했습니다. 자동 복구 작업이 다시 큐잉합니다."
                             ),
                         )
                     )
@@ -773,6 +806,7 @@ def _site_build_prerequisites_met(hospital: Hospital) -> bool:
 )
 def build_aeo_site(self, hospital_id: str):
     """콘텐츠 허브 노출 상태 전환 + Slack 알림 (legacy task name; 실제 공개 화면은 Next.js /site 담당)"""
+    require_dispatch(self, "build-aeo-site", hospital_id)
     with SyncSessionLocal() as db:
         hospital = db.get(Hospital, uuid.UUID(hospital_id))
         if not hospital:
@@ -784,6 +818,8 @@ def build_aeo_site(self, hospital_id: str):
                 hospital.profile_complete,
                 hospital.v0_report_done,
             )
+            return
+        if hospital.site_built:
             return
 
         hospital.site_built = True
@@ -824,6 +860,7 @@ def nightly_content_generation(self):
     되지 않도록 '오늘-{GENERATION_CATCHUP_DAYS}일 ~ 내일' 범위의 미생성 슬롯을 함께
     집어 재시도한다.
     """
+    require_dispatch(self, "nightly-content-generation")
     now_kst = arrow.now("Asia/Seoul")
     window_start = now_kst.shift(days=-GENERATION_CATCHUP_DAYS).date()
     tomorrow = now_kst.shift(days=1).date()
@@ -1158,8 +1195,47 @@ def nightly_content_generation(self):
                     db.refresh(item)  # re-sync after rollback
                     item_state = GenerationItemState.PARTIAL
 
+                readiness_failure = None
+                if item_state != GenerationItemState.DISCARDED:
+                    readiness_failure = _persist_publication_readiness(db, item, philosophy)
+                    if (
+                        readiness_failure is not None
+                        and item_state == GenerationItemState.SUCCEEDED
+                    ):
+                        item_state = GenerationItemState.FAILED
+
                 hospital_stats[hospital_key]["generated"] += 1
-                if item_state == GenerationItemState.PARTIAL:
+                if item_state == GenerationItemState.FAILED:
+                    code, message = readiness_failure or (
+                        "GENERATION_FAILED",
+                        "자동 발행 준비 검사를 통과하지 못했습니다.",
+                    )
+                    hospital_stats[hospital_key]["failed"] += 1
+                    recorder.record(
+                        item.id,
+                        item_state,
+                        safe_error_code=code,
+                        safe_error_message=message,
+                    )
+                    failed_run = recorder.item_run(
+                        item.id,
+                        hospital_id,
+                        "REGENERATE_CONTENT",
+                        OperationRunState.FAILED,
+                        safe_error_code=code,
+                        safe_error_message=message,
+                    )
+                    _run_async(
+                        open_generation_incident(
+                            item_id=item.id,
+                            hospital_id=hospital_id,
+                            hospital_name=hospital_name,
+                            run_id=failed_run.id,
+                            code=code,
+                            message=message,
+                        )
+                    )
+                elif item_state == GenerationItemState.PARTIAL:
                     code = "IMAGE_GENERATION_FAILED"
                     message = "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다."
                     recorder.record(
@@ -1229,9 +1305,7 @@ def nightly_content_generation(self):
 
             except Exception as e:
                 code, message = classify_generation_failure(e)
-                logger.error(
-                    "Content generation failed for item %s: %s", item.id, type(e).__name__
-                )
+                logger.error("Content generation failed for item %s: %s", item.id, type(e).__name__)
                 db.rollback()
                 db.expire_all()
                 hospital_stats[hospital_key]["failed"] += 1
@@ -1275,18 +1349,12 @@ def nightly_content_generation(self):
             _record_locked_generation_items(recorder, stuck_items)
         recorder.finish()
 
-        # 배치 완료 후 병원별 요약 Slack 발송
-        for stat in hospital_stats.values():
-            # 운영 기준 미승인 차단은 병원당 1회 전용 알림 — 한 달 내내 생성이 막혀도
-            # Slack 신호가 0건이던 문제 해소 (P1-7).
-            if stat["skipped"] > 0:
-                _run_async(
-                    notifier.notify_generation_blocked_no_philosophy(
-                        hospital_name=stat["name"],
-                        blocked_count=stat["skipped"],
-                        scheduled_date=str(tomorrow),
-                    )
-                )
+        # 배치 완료 후 전체 병원을 한 번에 요약한다. 병원별 메시지는 고객 수에 비례해
+        # Slack 소음을 만들고, 같은 '운영 기준 미승인'을 차단 알림과 배치 알림으로
+        # 중복 전달했다. 준비만 덜 된 병원은 기존 3일 dedupe도 유지한다.
+        digest_entries: list[dict[str, object]] = []
+        preparation_keys: list[str] = []
+        for hospital_id, stat in hospital_stats.items():
             if (
                 stat["generated"] > 0
                 or stat["failed"] > 0
@@ -1295,19 +1363,40 @@ def nightly_content_generation(self):
                 or stat["discarded"] > 0
                 or stat["image_missing"] > 0
             ):
-                _run_async(
-                    notifier.notify_content_batch_summary(
-                        hospital_id=uuid.UUID(hospital_key),
-                        hospital_name=stat["name"],
-                        generated=stat["generated"],
-                        failed=stat["failed"],
-                        scheduled_date=str(tomorrow),
-                        skipped=stat["skipped"],
-                        cost_blocked=stat["cost_blocked"],
-                        discarded=stat["discarded"],
-                        image_missing=stat["image_missing"],
-                    )
+                preparation_key = f"content_generation_preparation:{hospital_id}"
+                preparation_only = (
+                    stat["skipped"] > 0
+                    and stat["generated"] == 0
+                    and stat["failed"] == 0
+                    and stat["cost_blocked"] == 0
+                    and stat["discarded"] == 0
+                    and stat["image_missing"] == 0
                 )
+                if preparation_only and _already_done(preparation_key):
+                    continue
+                digest_entries.append(
+                    {
+                        "hospital_name": stat["name"],
+                        "generated": stat["generated"],
+                        "failed": stat["failed"],
+                        "skipped": stat["skipped"],
+                        "cost_blocked": stat["cost_blocked"],
+                        "discarded": stat["discarded"],
+                        "image_missing": stat["image_missing"],
+                    }
+                )
+                if preparation_only:
+                    preparation_keys.append(preparation_key)
+
+        if digest_entries:
+            sent = _run_async(
+                notifier.notify_content_generation_digest(
+                    scheduled_date=str(tomorrow), entries=digest_entries
+                )
+            )
+            if sent:
+                for preparation_key in preparation_keys:
+                    _mark_done(preparation_key, 3 * 86_400)
 
         logger.info("Nightly generation finalized %d item claims", len(claimed_item_ids))
 
@@ -1316,11 +1405,17 @@ def nightly_content_generation(self):
 def regenerate_content_item(self, content_id: str):
     """Generate a single unpublished content item on operator request."""
     item_id = uuid.UUID(content_id)
+    if explicit_run_context(self) is None:
+        require_dispatch(self, "regenerate-content", str(item_id))
     with SyncSessionLocal() as db:
         item = db.get(ContentItem, item_id)
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
+        if explicit_run_context(self) is not None and not explicit_run_matches(
+            db, self, item_id, item.hospital_id
+        ):
+            raise PermissionError("operation run does not authorize this content target")
         if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
@@ -1401,7 +1496,7 @@ def regenerate_content_item(self, content_id: str):
                     )
                 )
             return
-        if outcome == GenerationItemState.SKIPPED:
+        if outcome in (GenerationItemState.SKIPPED, GenerationItemState.FAILED):
             run_id = finish_explicit_run(
                 db,
                 self,
@@ -1495,10 +1590,22 @@ def generate_content_image(self, content_id: str):
                 )
                 return
             db.commit()
+            db.refresh(item)
+            philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+            _persist_publication_readiness(db, item, philosophy)
             run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
             if run_id is not None:
                 _run_async(
-                    recover_generation_incidents(item_id, hospital.id, hospital.name, run_id)
+                    recover_generation_incidents(
+                        item_id,
+                        hospital.id,
+                        hospital.name,
+                        run_id,
+                        safe_error_codes=(
+                            "IMAGE_GENERATION_FAILED",
+                            "CONTENT_IMAGE_NOT_READY",
+                        ),
+                    )
                 )
         except Exception as exc:
             db.rollback()
@@ -1660,12 +1767,31 @@ def _generate_single_content_item(
             db.refresh(item)
             image_failed = True
     if image_failed:
+        _persist_publication_readiness(db, item, philosophy)
         return (
             GenerationItemState.PARTIAL,
             "IMAGE_GENERATION_FAILED",
             "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다.",
         )
+    readiness_failure = _persist_publication_readiness(db, item, philosophy)
+    if readiness_failure is not None:
+        return GenerationItemState.FAILED, *readiness_failure
     return GenerationItemState.SUCCEEDED, None, None
+
+
+def _persist_publication_readiness(
+    db, item: ContentItem, philosophy: HospitalContentPhilosophy | None
+) -> tuple[str, str] | None:
+    """Persist the exact morning publication verdict immediately after generation."""
+    assessment = assess_content_publication(item, philosophy)
+    apply_publication_assessment(item, assessment)
+    db.commit()
+    if assessment.publishable:
+        return None
+    return (
+        assessment.code or "GENERATION_FAILED",
+        assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다.",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1678,43 +1804,58 @@ def _generate_single_content_item(
 )
 def morning_content_auto_publish(self):
     """Publish due content after machine checks, then request a human follow-up check."""
+    require_dispatch(self, "morning-content-auto-publish")
     today = arrow.now("Asia/Seoul").date()
     notification_failures = 0
+    blocked_entries: list[dict[str, object]] = []
+    blocked_keys: list[str] = []
 
     try:
         with SyncSessionLocal() as db:
             due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
-
-        if due_ids:
-            # Publishing without a working cache invalidation path can leave a successful DB
-            # transaction invisible. Production therefore fails closed before any mutation.
-            ensure_site_revalidate_configured()
 
         for content_id in due_ids:
             outcome = _auto_publish_one(content_id)
             if outcome is None:
                 continue
             if outcome["kind"] == "blocked":
-                block_key = (
-                    f"auto_publish_blocked:{content_id}:"
-                    f"{outcome['scheduled_date']}:{outcome['code']}"
+                _run_async(
+                    open_generation_incident(
+                        item_id=content_id,
+                        hospital_id=outcome["hospital_id"],
+                        hospital_name=outcome["hospital_name"],
+                        run_id=outcome["run_id"],
+                        code=outcome["code"],
+                        message=outcome["message"],
+                    )
+                )
+                block_key = _auto_publish_block_alert_key(
+                    content_id,
+                    outcome["scheduled_date"],
+                    outcome["code"],
+                    outcome["reason"],
                 )
                 if _already_done(block_key):
                     continue
-                sent = _run_async(
-                    notifier.notify_content_auto_publish_blocked(
-                        hospital_name=outcome["hospital_name"],
-                        title=outcome["title"],
-                        scheduled_date=outcome["scheduled_date"],
-                        reason=outcome["reason"],
-                        admin_url=outcome["admin_url"],
-                    )
+                blocked_entries.append(
+                    {
+                        "hospital_name": outcome["hospital_name"],
+                        "title": outcome["title"],
+                        "scheduled_date": outcome["scheduled_date"],
+                        "reason": outcome["reason"],
+                    }
                 )
-                if sent:
-                    _mark_done(block_key, GENERATION_CATCHUP_DAYS * 86_400)
-                else:
-                    notification_failures += 1
+                blocked_keys.append(block_key)
                 continue
+
+            _run_async(
+                recover_generation_incidents(
+                    content_id,
+                    outcome["hospital_id"],
+                    outcome["hospital_name"],
+                    None,
+                )
+            )
 
             revalidated = _run_async(
                 trigger_content_site_revalidate_safe(
@@ -1739,6 +1880,19 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
+
+        if blocked_entries:
+            sent = _run_async(
+                notifier.notify_auto_publish_block_digest(
+                    entries=blocked_entries,
+                    admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals",
+                )
+            )
+            if sent:
+                for block_key in blocked_keys:
+                    _mark_done(block_key, GENERATION_CATCHUP_DAYS * 86_400)
+            else:
+                notification_failures += 1
 
         # A worker may have committed publication and died before Slack. Recover those rows
         # without re-publishing or mutating their public timestamp.
@@ -1771,7 +1925,6 @@ def _auto_publish_due_stmt(today):
             ContentItem.scheduled_date <= today,
             ContentItem.scheduled_date >= window_start,
             ContentItem.status == ContentStatus.DRAFT,
-            ContentItem.body.isnot(None),
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
         )
@@ -1822,6 +1975,12 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
         apply_publication_assessment(item, assessment)
         admin_url = _admin_content_url(hospital.id, item.id)
         if not assessment.publishable:
+            findings = assessment.essence_summary.get("findings") or []
+            operator_reason = (
+                str(findings[0])
+                if findings
+                else (assessment.message or "자동 안전검사를 통과하지 못했습니다.")
+            )
             write_audit_log_sync(
                 db,
                 action="auto_publish_blocked",
@@ -1835,17 +1994,31 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                     "scheduled_date": str(item.scheduled_date),
                 },
             )
+            blocked_run = ensure_publication_block_run(
+                db,
+                item=item,
+                hospital=hospital,
+                code=assessment.code or "GENERATION_FAILED",
+                message=assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다.",
+            )
             db.commit()
             return {
                 "kind": "blocked",
                 "code": assessment.code or "UNKNOWN",
-                "reason": assessment.message or "자동 안전검사를 통과하지 못했습니다.",
+                "message": assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다.",
+                "reason": operator_reason,
+                "hospital_id": hospital.id,
                 "hospital_name": hospital.name,
                 "title": item.title,
                 "scheduled_date": str(item.scheduled_date),
                 "admin_url": admin_url,
+                "run_id": blocked_run.id,
             }
 
+        # Publishing without a working cache invalidation path can leave a successful DB
+        # transaction invisible. Check only after blocker projection so a missing body/image
+        # still reaches Operations Center even when the revalidation dependency is unavailable.
+        ensure_site_revalidate_configured()
         published_at = datetime.now(timezone.utc)
         item.status = ContentStatus.PUBLISHED
         item.published_at = published_at
@@ -1877,6 +2050,7 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
     public_base = _public_site_url(hospital.aeo_domain, hospital.slug).rstrip("/")
     return {
         "kind": "published",
+        "hospital_id": hospital.id,
         "hospital_name": hospital.name,
         "slug": hospital.slug,
         "aeo_domain": hospital.aeo_domain,  # IndexNow 제출 호스트 결정용
@@ -1915,25 +2089,38 @@ def _notify_missed_content_generation(today) -> None:
         missed_by_hospital: dict[str, dict] = {}
         for item in missed_items:
             entry = missed_by_hospital.setdefault(
-                str(item.hospital_id), {"name": item.hospital.name, "dates": []}
+                str(item.hospital_id), {"name": item.hospital.name, "dates": [], "ids": []}
             )
             entry["dates"].append(str(item.scheduled_date))
+            entry["ids"].append(item.id)
 
+    digest_entries: list[dict[str, object]] = []
+    digest_keys: list[str] = []
     for hospital_id, entry in missed_by_hospital.items():
-        key = f"content_generation_missed:{today}:{hospital_id}"
+        key = _generation_missed_alert_key(hospital_id, entry["ids"])
         if _already_done(key):
             continue
+        digest_entries.append(
+            {
+                "hospital_name": entry["name"],
+                "missed_count": len(entry["dates"]),
+                "dates": entry["dates"],
+            }
+        )
+        digest_keys.append(key)
+
+    if digest_entries:
         sent = _run_async(
-            notifier.notify_content_generation_missed(
-                hospital_name=entry["name"],
-                missed_count=len(entry["dates"]),
-                dates=entry["dates"],
+            notifier.notify_content_missed_digest(
+                entries=digest_entries,
+                admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals",
             )
         )
         if sent:
-            _mark_done(key)
+            for key in digest_keys:
+                _mark_done(key, GENERATION_CATCHUP_DAYS * 86_400)
         else:
-            logger.warning("generation-missed alert delivery failed for %s", entry["name"])
+            logger.warning("generation-missed digest delivery failed")
 
 
 def _morning_missed_stmt(today):
@@ -1969,6 +2156,7 @@ def _morning_missed_stmt(today):
     time_limit=2100,
 )
 def run_sov_for_hospital(self, hospital_id: str):
+    require_dispatch(self, "run-sov", hospital_id)
     try:
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, uuid.UUID(hospital_id))
@@ -2144,14 +2332,14 @@ def run_sov_for_hospital(self, hospital_id: str):
                     else:
                         failure_count += 1
                     record = _build_sov_record_from_result(
-                            hospital_id=hospital.id,
-                            query_id=spec["query_id"],
-                            measurement_run_id=run.id,
-                            platform=spec["platform"],
-                            result=r,
-                            target_id=spec["target_id"],
-                            variant_id=spec["variant_id"],
-                        )
+                        hospital_id=hospital.id,
+                        query_id=spec["query_id"],
+                        measurement_run_id=run.id,
+                        platform=spec["platform"],
+                        result=r,
+                        target_id=spec["target_id"],
+                        variant_id=spec["variant_id"],
+                    )
                     records.append(record)
                     attempt_pairs.append((spec["manifest_cell"], record))
 
@@ -2477,10 +2665,11 @@ def _normalize_platform(platform: str) -> str:
     time_limit=1500,
 )
 def monthly_slot_generation():
-    """매월 25일: 다음 달 콘텐츠 슬롯을 미리 생성"""
+    """매월 25일 이후 반복 실행해 다음 달의 누락 슬롯을 자동 보충한다."""
+    require_dispatch(current_task, "monthly-slot-generation")
     today = arrow.now("Asia/Seoul")
-    if today.day != 25:
-        logger.info(f"Not the 25th ({today.date()}), skipping monthly slot generation")
+    if today.day < 25:
+        logger.info("Next-month slot reconciliation is not due: %s", today.date())
         return
 
     next_month = today.shift(months=1).floor("month")
@@ -2532,7 +2721,7 @@ def monthly_slot_generation():
                     message=(
                         f"{len(failures)}개 병원의 다음 달 슬롯 생성에 실패했습니다: {names}\n"
                         f"나머지 병원은 정상 생성됐습니다. 실패 병원의 스케줄(발행요일/요금제)을 "
-                        f"확인 후 Admin에서 재생성해 주세요."
+                        f"확인해 주세요. 시스템은 다음 6시간 주기에 자동으로 다시 시도합니다."
                     ),
                 )
             )
@@ -2540,13 +2729,19 @@ def monthly_slot_generation():
 
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
 def run_weekly_monitoring():
+    require_dispatch(current_task, "weekly-sov-monitoring")
     with SyncSessionLocal() as db:
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         hospitals = result.scalars().all()
 
         for h in hospitals:
-            run_sov_for_hospital.apply_async(args=[str(h.id)], queue="sov")
+            hospital_id = str(h.id)
+            run_sov_for_hospital.apply_async(
+                args=[hospital_id],
+                queue="sov",
+                headers=build_dispatch_headers("run-sov", hospital_id),
+            )
 
         # 측정은 이제 막 큐에 적재됐을 뿐이다 — '완료'가 아니라 '시작'을 알린다 (P2-14).
         _run_async(notifier.notify_monitoring_queued(len(hospitals)))
@@ -2557,12 +2752,17 @@ def run_weekly_monitoring():
         # 측정 결과가 반영되기 전에 실행될 수 있다 — 우선순위 조정은 최근 4주 누적 기준이라
         # 다음 주 실행에서 따라잡는다. countdown은 측정 큐 소화 시간의 보수적 버퍼.
         if hospitals:
-            adjust_query_priorities.apply_async(queue="sov", countdown=1800)
+            adjust_query_priorities.apply_async(
+                queue="sov",
+                countdown=1800,
+                headers=build_dispatch_headers("adjust-query-priorities"),
+            )
 
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
 def adjust_query_priorities():
     """Adjust query priorities based on recent AI mention results. Run after weekly measurement tasks complete."""
+    require_dispatch(current_task, "adjust-query-priorities")
     with SyncSessionLocal() as db:
         four_weeks_ago = datetime.now(timezone.utc) - timedelta(weeks=4)
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
@@ -2617,7 +2817,7 @@ def adjust_query_priorities():
 
 
 # ══════════════════════════════════════════════════════════════════
-# 월간 리포트 (매월 마지막 날 21:00)
+# 월간 리포트 (다음 달 1일 00:15 마감, 7일까지 6시간 간격 자동 복구)
 # ══════════════════════════════════════════════════════════════════
 def _monthly_operation_run_id(task) -> uuid.UUID | None:
     headers = getattr(getattr(task, "request", None), "headers", None)
@@ -2673,33 +2873,36 @@ def _start_scheduled_monthly_operation_run(
     if existing is not None:
         observed_at = datetime.now(timezone.utc)
         last_seen = existing.heartbeat_at or existing.started_at or existing.requested_at
-        if (
-            existing.state
-            in (
-                OperationRunState.REQUESTED,
-                OperationRunState.QUEUED,
-                OperationRunState.RUNNING,
-            )
-            and last_seen <= observed_at - timedelta(hours=1)
-        ):
-            existing.state = OperationRunState.FAILED
-            existing.completed_at = observed_at
-            existing.heartbeat_at = None
+        active = existing.state in (
+            OperationRunState.REQUESTED,
+            OperationRunState.QUEUED,
+            OperationRunState.RUNNING,
+        )
+        stale = active and last_seen <= observed_at - timedelta(hours=1)
+        retryable = existing.state in (
+            OperationRunState.FAILED,
+            OperationRunState.PARTIAL,
+        )
+        if stale or retryable:
+            existing.state = OperationRunState.RUNNING
+            existing.completed_at = None
+            existing.started_at = observed_at
+            existing.heartbeat_at = observed_at
             existing.total_count = 1
             existing.success_count = 0
-            existing.failure_count = 1
+            existing.failure_count = 0
             existing.skipped_count = 0
-            existing.safe_error_code = "MONTHLY_REPORT_RUN_INTERRUPTED"
-            existing.safe_error_message = (
-                "월간 리포트 작업이 중간에 멈췄습니다. 리포트 화면에서 다시 만들기를 눌러 주세요."
-            )
+            existing.safe_error_code = None
+            existing.safe_error_message = None
             existing.result_summary = {
-                "stage": MonthlyRunStage.FAILED.value,
+                "stage": MonthlyRunStage.RUNNING.value,
                 "period_year": now.year,
                 "period_month": now.month,
             }
+            existing.attempt_count += 1
             existing.version += 1
             db.commit()
+            return existing.id, False
         return existing.id, True
     observed_at = datetime.now(timezone.utc)
     run = OperationRun(
@@ -2735,16 +2938,20 @@ def _start_scheduled_monthly_operation_run(
 
 
 def _latest_monthly_report(db, hospital_id: uuid.UUID, year: int, month: int):
-    return db.execute(
-        select(MonthlyReport)
-        .where(
-            MonthlyReport.hospital_id == hospital_id,
-            MonthlyReport.period_year == year,
-            MonthlyReport.period_month == month,
-            MonthlyReport.report_type == "MONTHLY",
+    return (
+        db.execute(
+            select(MonthlyReport)
+            .where(
+                MonthlyReport.hospital_id == hospital_id,
+                MonthlyReport.period_year == year,
+                MonthlyReport.period_month == month,
+                MonthlyReport.report_type == "MONTHLY",
+            )
+            .order_by(MonthlyReport.version.desc())
         )
-        .order_by(MonthlyReport.version.desc())
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
 
 def _finish_monthly_operation_run(
@@ -2892,18 +3099,19 @@ def _build_monthly_report_for_hospital(
 
     # 월간 리포트 중복 생성 방지
     existing_check = db.execute(
-        select(MonthlyReport).where(
+        select(MonthlyReport)
+        .where(
             MonthlyReport.hospital_id == h.id,
             MonthlyReport.period_year == now.year,
             MonthlyReport.period_month == now.month,
             MonthlyReport.report_type == "MONTHLY",
-        ).order_by(MonthlyReport.version.desc())
+        )
+        .order_by(MonthlyReport.version.desc())
     )
     existing_reports = existing_check.scalars().all()
     if existing_reports and not rebuild:
         logger.warning(
-            f"Monthly report already exists for {h.name} "
-            f"{now.year}-{now.month:02d}, skipping."
+            f"Monthly report already exists for {h.name} {now.year}-{now.month:02d}, skipping."
         )
         return "skipped_existing"
     prev_start = now.shift(months=-1).floor("month").datetime
@@ -3089,6 +3297,7 @@ def _build_monthly_report_for_hospital(
     time_limit=2700,
 )
 def run_monthly_reports(self):
+    require_dispatch(self, "monthly-reports")
     now = arrow.now("Asia/Seoul")
     try:
         period = prior_month_to_close(now.datetime)
@@ -3102,7 +3311,7 @@ def run_monthly_reports(self):
         stmt = select(Hospital).where(Hospital.id.in_(hospital_ids))
         result = db.execute(stmt)
         hospitals = result.scalars().all()
-        failures: list[tuple[str, Exception]] = []
+        failures: list[str] = []
         successes = 0
 
         for h in hospitals:
@@ -3112,38 +3321,56 @@ def run_monthly_reports(self):
                 if existing_run is not None and existing_run.state == OperationRunState.SUCCEEDED:
                     successes += 1
                 else:
-                    failures.append((h.name, RuntimeError("scheduled run already incomplete")))
+                    failures.append(h.name)
                 continue
             try:
+                latest = _latest_monthly_report(db, h.id, anchor.year, anchor.month)
+                rebuilding = latest is not None
                 outcome = _build_monthly_report_for_hospital(
                     db,
                     h,
                     anchor,
-                    build_reason=ReportBuildReason.SCHEDULED_CLOSE,
+                    rebuild=rebuilding,
+                    build_reason=(
+                        ReportBuildReason.AUTOMATIC_RECOVERY
+                        if rebuilding
+                        else ReportBuildReason.SCHEDULED_CLOSE
+                    ),
                     correlation_key=f"scheduled:{h.id}:{anchor.year}-{anchor.month:02d}",
                     operation_run_id=run_id,
                 )
                 _finish_monthly_operation_run(
                     db, run_id, h.id, anchor.year, anchor.month, outcome
                 )
-                if outcome == "blocked_artifact":
-                    failures.append(
-                        (h.name, RuntimeError("monthly report requires operator action"))
-                    )
+                finished_run = db.get(OperationRun, run_id)
+                if finished_run is not None and finished_run.state in (
+                    OperationRunState.PARTIAL,
+                    OperationRunState.FAILED,
+                ):
+                    failures.append(h.name)
                 else:
                     successes += 1
             except Exception as e:
                 logger.error(f"Monthly report failed for {h.name}: {e}")
                 db.rollback()
                 _fail_monthly_operation_run(db, run_id, h.id, anchor.year, anchor.month)
-                failures.append((h.name, e))
+                failures.append(h.name)
 
-        return {
-            "status": "PARTIAL" if failures and successes else "FAILED" if failures else "SUCCEEDED",
+        result = {
+            "status": "PARTIAL"
+            if failures and successes
+            else "FAILED"
+            if failures
+            else "SUCCEEDED",
             "total_count": len(hospitals),
             "success_count": successes,
             "failure_count": len(failures),
         }
+    if failures:
+        raise MonthlyBatchIncompleteError(
+            f"scheduled monthly reports incomplete: {len(failures)}"
+        )
+    return result
 
 
 @celery_app.task(
@@ -3167,8 +3394,7 @@ def generate_monthly_report_for_hospital(
 ):
     """병원 1곳의 월간 리포트를 수동으로 만든다 (Admin '월간 리포트 생성').
 
-    월말 배치가 실패하면 다음 달 마지막 날까지 그 병원 리포트가 비게 되고, 종전에는
-    `make monthly-report`(전체 병원, 마지막 날에만 동작)뿐이라 개발자 손이 필요했다.
+    월간 배치가 반복 실패해도 운영자가 해당 병원만 다시 만들 수 있는 복구 경로다.
 
     year/month를 주면 그 달을, 없으면 지난달을 만든다 — 배치가 실패했다는 사실은 보통
     달이 바뀐 뒤에 드러나므로 '지난달'이 기본값으로 맞다. 이미 리포트가 있으면 덮어쓰지
@@ -3178,7 +3404,9 @@ def generate_monthly_report_for_hospital(
     # 상태를 반환한다. API가 먼저 같은 검사를 하므로 여기 걸리는 것은 직접 호출뿐이다.
     now = arrow.now("Asia/Seoul")
     if (year is None) != (month is None):
-        logger.error("Monthly report requested with a partial period: year=%s month=%s", year, month)
+        logger.error(
+            "Monthly report requested with a partial period: year=%s month=%s", year, month
+        )
         return {"status": "invalid_period"}
     try:
         period = (
@@ -3220,13 +3448,9 @@ def generate_monthly_report_for_hospital(
             # 재시도가 남아 있으면 알리지 않는다 — 일시 장애 한 번에 Slack이 세 번 울리면
             # AE가 알림을 신뢰하지 않게 된다. 마지막 시도에서만 사람을 부른다.
             if self.request.retries >= self.max_retries:
-                _fail_monthly_operation_run(
-                    db, run_id, hospital.id, anchor.year, anchor.month
-                )
+                _fail_monthly_operation_run(db, run_id, hospital.id, anchor.year, anchor.month)
             raise
-        _finish_monthly_operation_run(
-            db, run_id, hospital.id, anchor.year, anchor.month, outcome
-        )
+        _finish_monthly_operation_run(db, run_id, hospital.id, anchor.year, anchor.month, outcome)
     return {"status": outcome, "year": anchor.year, "month": anchor.month}
 
 
@@ -3265,59 +3489,64 @@ def _check_custom_domain_https(
 
 def _site_revalidation_context(
     run_id: uuid.UUID,
-) -> tuple[str, uuid.UUID, list[dict]] | None:
+    expected_attempt_count: int,
+) -> list[str] | None:
     with SyncSessionLocal() as db:
         run = db.get(OperationRun, run_id)
-        if run is None or run.state != OperationRunState.RUNNING.value:
+        if (
+            run is None
+            or run.state != OperationRunState.RUNNING.value
+            or run.attempt_count != expected_attempt_count
+        ):
             return None
+        hospital = db.get(Hospital, run.hospital_id)
+        if hospital is None:
+            return None
+        treatments = hospital.treatments if isinstance(hospital.treatments, list) else []
+        if run.request_payload.get("scope") == "HOSPITAL":
+            return hospital_site_paths(hospital.slug, treatments)
         raw_content_id = run.request_payload.get("content_id")
         try:
             content_id = uuid.UUID(str(raw_content_id))
         except (TypeError, ValueError):
             return None
         content = db.get(ContentItem, content_id)
-        hospital = db.get(Hospital, run.hospital_id)
         if (
             content is None
-            or hospital is None
             or content.hospital_id != hospital.id
             or content.status != ContentStatus.PUBLISHED
         ):
             return None
-        treatments = hospital.treatments if isinstance(hospital.treatments, list) else []
-        return hospital.slug, content.id, treatments
+        return content_site_paths(hospital.slug, content.id, treatments)
 
 
 @celery_app.task(name="app.workers.tasks.retry_site_revalidation")
-def retry_site_revalidation(run_id: str):
+def retry_site_revalidation(run_id: str, expected_attempt_count: int):
     """Retry only the public cache refresh; never repeat or undo publication."""
 
     try:
         parsed_run_id = uuid.UUID(run_id)
     except (TypeError, ValueError):
         return {"status": "invalid_run"}
-    context = _site_revalidation_context(parsed_run_id)
+    context = _site_revalidation_context(parsed_run_id, expected_attempt_count)
     refreshed = False
     if context is not None:
-        slug, content_id, treatments = context
         try:
-            refreshed = bool(
-                _run_async(
-                    trigger_site_revalidate(paths=content_site_paths(slug, content_id, treatments))
-                )
-            )
+            refreshed = bool(_run_async(trigger_site_revalidate(paths=context)))
         except Exception as exc:  # noqa: BLE001 — bounded retry records a safe code below.
             logger.warning("site revalidation retry failed: code=%s", exc.__class__.__name__)
     if refreshed:
-        recorded = _run_async(record_revalidation_success(parsed_run_id))
+        recorded = _run_async(
+            record_revalidation_success(parsed_run_id, expected_attempt_count)
+        )
         return {"status": "recovered" if recorded else "stale_run"}
 
-    plan = _run_async(record_retry_failure(parsed_run_id))
+    plan = _run_async(record_retry_failure(parsed_run_id, expected_attempt_count))
     if plan is None:
         return {"status": "stale_run"}
     if plan.delay_seconds is not None:
         retry_site_revalidation.apply_async(
-            args=[str(parsed_run_id)],
+            args=[str(parsed_run_id), expected_attempt_count + 1],
             queue="default",
             countdown=plan.delay_seconds,
         )
@@ -3331,6 +3560,7 @@ def retry_site_revalidation(run_id: str):
 @celery_app.task(name="app.workers.tasks.monitor_live_custom_domains")
 def monitor_live_custom_domains():
     """Persist every tenant marker check; Redis is never incident truth."""
+    require_dispatch(current_task, "live-custom-domain-health")
     with SyncSessionLocal() as db:
         hospitals = (
             db.execute(
@@ -3404,6 +3634,7 @@ def purge_expired_leads():
     from app.models.lead import SalesLead
     from app.services.lead_privacy import purge_lead_completely, scrub_onboarding_note
 
+    require_dispatch(current_task, "purge-expired-leads")
     now = datetime.now(timezone.utc)
     purged = 0
     stuck = 0
@@ -3438,9 +3669,7 @@ def purge_expired_leads():
                     db.rollback()
                     stuck += 1
                     logger.exception("lead purge failed for %s: %s", lead.id, exc)
-        logger.info(
-            "purge_expired_leads: anonymized %s expired leads (%s stuck)", purged, stuck
-        )
+        logger.info("purge_expired_leads: anonymized %s expired leads (%s stuck)", purged, stuck)
         if stuck:
             error_msg = f"{stuck}건이 파기에 실패했습니다 (로그 확인 필요)"
     except Exception as exc:
@@ -3493,12 +3722,16 @@ def backfill_indexnow(self, hospital_id: str | None = None, dry_run: bool = Fals
             if not getattr(hospital, "site_live", False):
                 continue
 
-            content_ids = db.execute(
-                select(ContentItem.id)
-                .where(ContentItem.hospital_id == hospital.id)
-                .where(ContentItem.status == ContentStatus.PUBLISHED)
-                .order_by(ContentItem.scheduled_date)
-            ).scalars().all()
+            content_ids = (
+                db.execute(
+                    select(ContentItem.id)
+                    .where(ContentItem.hospital_id == hospital.id)
+                    .where(ContentItem.status == ContentStatus.PUBLISHED)
+                    .order_by(ContentItem.scheduled_date)
+                )
+                .scalars()
+                .all()
+            )
 
             base, urls = indexnow.hospital_all_urls(
                 slug=hospital.slug,
@@ -3516,9 +3749,7 @@ def backfill_indexnow(self, hospital_id: str | None = None, dry_run: bool = Fals
             if dry_run:
                 entry["submitted"] = False
             else:
-                entry["submitted"] = _run_async(
-                    indexnow.submit_urls(base_url=base, urls=urls)
-                )
+                entry["submitted"] = _run_async(indexnow.submit_urls(base_url=base, urls=urls))
             summary.append(entry)
             logger.info(
                 "backfill_indexnow: %s (%s) 콘텐츠 %d편 · URL %d개 · 제출=%s",

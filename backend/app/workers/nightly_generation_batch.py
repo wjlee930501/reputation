@@ -54,6 +54,14 @@ def _nightly_generation_claim_filter(claim_cutoff: datetime):
     )
 
 
+def _needs_generation_recovery():
+    return or_(
+        ContentItem.body.is_(None),
+        ContentItem.image_url.is_(None),
+        ContentItem.essence_check_summary["blocking"].as_boolean().is_(True),
+    )
+
+
 def _nightly_generation_stmt(window_start, window_end, claim_cutoff: datetime | None = None):
     claim_cutoff = claim_cutoff or _nightly_generation_claim_cutoff()
     return (
@@ -63,7 +71,7 @@ def _nightly_generation_stmt(window_start, window_end, claim_cutoff: datetime | 
             ContentItem.scheduled_date >= window_start,
             ContentItem.scheduled_date <= window_end,
             ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
-            ContentItem.body.is_(None),
+            _needs_generation_recovery(),
             Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
             _nightly_generation_claim_filter(claim_cutoff),
         )
@@ -93,7 +101,7 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
                 ContentItem.scheduled_date >= window_start,
                 ContentItem.scheduled_date <= window_end,
                 ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
-                ContentItem.body.is_(None),
+                _needs_generation_recovery(),
                 Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
                 _nightly_generation_claim_filter(claim_cutoff),
             )
@@ -128,7 +136,7 @@ def release_unfinished_claims(
         return 0
     predicates = [
         ContentItem.id.in_(item_ids),
-        ContentItem.body.is_(None),
+        _needs_generation_recovery(),
         ContentItem.generation_claimed_at.isnot(None),
     ]
     if expected_claimed_at is not None:
@@ -157,7 +165,7 @@ def load_stuck_claims(db, window_start, window_end) -> list[ContentItem]:
                 ContentItem.scheduled_date >= window_start,
                 ContentItem.scheduled_date <= window_end,
                 ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
-                ContentItem.body.is_(None),
+                _needs_generation_recovery(),
                 Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
                 ContentItem.generation_claimed_at.isnot(None),
                 ContentItem.generation_claimed_at >= claim_cutoff,

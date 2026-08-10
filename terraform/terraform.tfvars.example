@@ -31,6 +31,7 @@ db_instance_tier = "db-custom-1-3840"
 # Terraform creates Secret Manager containers only. Add secret versions out-of-band
 # before deploying Cloud Run, for example:
 # gcloud secrets versions add ADMIN_SECRET_KEY --data-file=-
+# gcloud secrets versions add WORKER_DISPATCH_SECRET --data-file=-
 
 # ── Site ───────────────────────────────────────────────────────────
 site_revalidate_url    = "https://reputation.motionlabs.kr/api/revalidate"

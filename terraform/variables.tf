@@ -134,12 +134,16 @@ variable "site_max_instances" {
     Public site max instances. DEFAULT 1 ON PURPOSE: Next.js on-demand ISR
     revalidation (POST /api/revalidate, fired on content publish) only clears the
     cache of the instance that receives it — with N>1 instances, other instances
-    serve stale pages until the time-based revalidate (3600s) expires. Raise this
-    only if you accept up-to-1h staleness after publish, or move the ISR cache to
-    a shared backend (custom cacheHandler) first.
+    serve stale pages until the time-based revalidate (3600s) expires. This must
+    remain 1 until ISR uses a shared cache backend.
   EOT
   type        = number
   default     = 1
+
+  validation {
+    condition     = var.site_max_instances == 1
+    error_message = "site_max_instances must remain 1 until a shared ISR cache is configured."
+  }
 }
 
 variable "admin_memory" {
@@ -381,6 +385,16 @@ variable "sentry_dsn" {
   EOT
   type        = string
   default     = ""
+}
+
+variable "release_revision" {
+  description = "Immutable source revision shared by API, worker, Beat, and queue canaries."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]{7,128}$", var.release_revision))
+    error_message = "release_revision must be a 7-128 character immutable release identifier."
+  }
 }
 
 # ── Redis hardening (INFRA-5) ─────────────────────────────────────

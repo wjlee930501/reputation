@@ -26,22 +26,53 @@ from app.core.database import SyncSessionLocal
 from app.workers.canary_tasks import read_queue_canaries
 
 EXPECTED_BEAT_SCHEDULES = {
-    "nightly-content-generation",
-    "morning-content-auto-publish",
-    "weekly-sov-monitoring",
+    "canary-content",
+    "canary-default",
+    "canary-leadgen",
+    "canary-reports",
+    "canary-sov",
+    "dispatch-notification-outbox",
+    "drain-lead-diagnoses",
+    "live-custom-domain-health",
     "monthly-reports",
     "monthly-slot-generation",
+    "nightly-content-generation",
+    "overnight-content-generation-recovery",
+    "prepublish-content-generation-recovery",
+    "morning-content-auto-publish",
+    "project-milestone-events",
     "purge-expired-leads",
-    "live-custom-domain-health",
+    "reconcile-autonomous-workflows",
+    "reconcile-monthly-artifact-incidents",
+    "weekly-naver-source-sync",
+    "weekly-sov-monitoring",
 }
 
 EXPECTED_TASKS = {
+    "app.workers.autonomous_recovery.reconcile",
+    "app.workers.canary_tasks.canary_content",
+    "app.workers.canary_tasks.canary_default",
+    "app.workers.canary_tasks.canary_leadgen",
+    "app.workers.canary_tasks.canary_reports",
+    "app.workers.canary_tasks.canary_sov",
+    "app.workers.lead_diagnosis_tasks.build_lead_report",
+    "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses",
+    "app.workers.lead_diagnosis_tasks.notify_lead_intake",
+    "app.workers.lead_diagnosis_tasks.run_lead_diagnosis",
+    "app.workers.lead_diagnosis_tasks.send_lead_report_email",
+    "app.workers.milestone_event_tasks.project_milestone_events",
+    "app.workers.monthly_artifact_reconciliation.reconcile",
+    "app.workers.naver_sync.weekly_naver_source_sync",
+    "app.workers.notification_tasks.dispatch_notification_outbox",
+    "app.workers.tasks.adjust_query_priorities",
     "app.workers.tasks.build_aeo_site",
+    "app.workers.tasks.generate_monthly_report_for_hospital",
     "app.workers.tasks.monitor_live_custom_domains",
     "app.workers.tasks.monthly_slot_generation",
     "app.workers.tasks.morning_content_auto_publish",
     "app.workers.tasks.nightly_content_generation",
     "app.workers.tasks.purge_expired_leads",
+    "app.workers.tasks.regenerate_content_item",
     "app.workers.tasks.run_monthly_reports",
     "app.workers.tasks.run_sov_for_hospital",
     "app.workers.tasks.run_weekly_monitoring",
@@ -87,6 +118,13 @@ def _redis_ready() -> bool:
 def _workflow_facts() -> dict[str, bool]:
     # Celery's include list is lazy; importing the task module verifies that the
     # deployed image can load every task and populates the registry used below.
+    import app.workers.autonomous_recovery  # noqa: F401, PLC0415
+    import app.workers.canary_tasks  # noqa: F401, PLC0415
+    import app.workers.lead_diagnosis_tasks  # noqa: F401, PLC0415
+    import app.workers.milestone_event_tasks  # noqa: F401, PLC0415
+    import app.workers.monthly_artifact_reconciliation  # noqa: F401, PLC0415
+    import app.workers.naver_sync  # noqa: F401, PLC0415
+    import app.workers.notification_tasks  # noqa: F401, PLC0415
     import app.workers.tasks  # noqa: F401, PLC0415
 
     registered = set(celery_app.tasks)
@@ -117,6 +155,16 @@ def _configuration_facts() -> dict[str, bool]:
                 settings.SITE_REVALIDATE_SECRET.strip(),
             )
         ),
+        "lead_delivery_configured": all(
+            (
+                settings.LEAD_LOCK_HASH_PEPPER.strip(),
+                settings.LEAD_REPORT_TOKEN_SECRET.strip(),
+                settings.RESEND_API_KEY.strip(),
+                settings.LEAD_MAIL_FROM.strip(),
+            )
+        )
+        and settings.RESEND_API_KEY.strip().lower()
+        not in {"placeholder", "replace_me", "changeme"},
         "asset_bucket_configured": bool(project_suffix)
         and settings.GCP_STORAGE_BUCKET.endswith(project_suffix),
         "report_bucket_configured": bool(project_suffix)
@@ -206,3 +254,10 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    "app.workers.milestone_event_tasks.project_milestone_events",
+    "app.workers.monthly_artifact_reconciliation.reconcile",
+    "app.workers.naver_sync.weekly_naver_source_sync",
+    "app.workers.notification_tasks.dispatch_notification_outbox",
+    "app.workers.tasks.adjust_query_priorities",
+    "app.workers.tasks.generate_monthly_report_for_hospital",
+    "app.workers.tasks.regenerate_content_item",

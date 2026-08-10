@@ -39,6 +39,10 @@ resource "google_cloud_run_v2_service" "api" {
         value = "production"
       }
       env {
+        name  = "REPUTATION_RELEASE_REVISION"
+        value = var.release_revision
+      }
+      env {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
@@ -255,6 +259,10 @@ resource "google_cloud_run_v2_service" "worker" {
         value = "production"
       }
       env {
+        name  = "REPUTATION_RELEASE_REVISION"
+        value = var.release_revision
+      }
+      env {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
@@ -385,7 +393,15 @@ resource "google_cloud_run_v2_service" "worker" {
         timeout_seconds       = 5
         period_seconds        = 5
         failure_threshold     = 6
-        tcp_socket {
+        http_get {
+          path = "/ready"
+          port = 8080
+        }
+      }
+
+      liveness_probe {
+        http_get {
+          path = "/live"
           port = 8080
         }
       }
@@ -451,6 +467,10 @@ resource "google_cloud_run_v2_service" "beat" {
       env {
         name  = "APP_ENV"
         value = "production"
+      }
+      env {
+        name  = "REPUTATION_RELEASE_REVISION"
+        value = var.release_revision
       }
       env {
         name  = "GCP_PROJECT_ID"
@@ -563,7 +583,15 @@ resource "google_cloud_run_v2_service" "beat" {
         timeout_seconds       = 5
         period_seconds        = 5
         failure_threshold     = 6
-        tcp_socket {
+        http_get {
+          path = "/ready"
+          port = 8080
+        }
+      }
+
+      liveness_probe {
+        http_get {
+          path = "/live"
           port = 8080
         }
       }

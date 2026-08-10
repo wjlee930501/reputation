@@ -38,6 +38,24 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             "이전 작업 기록이 남아 자동 생성이 시작되지 않았습니다. 운영 센터를 새로고침해 "
             "현재 상태를 다시 확인하세요."
         ),
+        "CONTENT_NOT_GENERATED": (
+            "운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요. 자동 복구는 "
+            "01시·04시·07시·07시 45분에도 다시 실행됩니다."
+        ),
+        "MISSING_REFERENCES": (
+            "운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 참고 자료가 포함된 "
+            "본문을 다시 생성하세요."
+        ),
+        "FORBIDDEN_EXPRESSION": (
+            "운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 의료광고 금지 표현이 없는 "
+            "본문을 다시 생성하세요."
+        ),
+        "ESSENCE_NOT_ALIGNED": (
+            "병원 온보딩에서 운영 기준을 확인한 뒤 운영 센터의 “작업 다시 시도”를 누르세요."
+        ),
+        "CONTENT_IMAGE_NOT_READY": (
+            "운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 누르고 완료 결과를 확인하세요."
+        ),
     }
     action = actions.get(
         code,
@@ -56,6 +74,11 @@ def _generation_safe_cause(code: str) -> str:
         "IMAGE_GENERATION_FAILED": "본문은 준비됐지만 대표 이미지를 만들지 못했습니다.",
         "GENERATION_LEASE_ACTIVE": "같은 콘텐츠의 다른 생성 작업이 아직 진행 중입니다.",
         "STALE_GENERATION_CLAIM": "완료되지 않은 이전 작업 기록 때문에 새 생성을 시작하지 못했습니다.",
+        "CONTENT_NOT_GENERATED": "발행 시각까지 콘텐츠 제목과 본문이 준비되지 않았습니다.",
+        "MISSING_REFERENCES": "의료 콘텐츠에 필요한 참고 자료가 준비되지 않았습니다.",
+        "FORBIDDEN_EXPRESSION": "의료광고 금지 표현이 발견되어 공개를 중단했습니다.",
+        "ESSENCE_NOT_ALIGNED": "콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.",
+        "CONTENT_IMAGE_NOT_READY": "대표 이미지가 준비되지 않아 공개를 중단했습니다.",
     }.get(code, "자동 콘텐츠 생성 작업이 완료되지 않았습니다.")
 
 
@@ -69,11 +92,16 @@ def _fingerprint(code: str) -> IncidentFingerprint:
         "IMAGE_GENERATION_FAILED": IncidentFingerprint.RENDER_FAILED,
         "GENERATION_LEASE_ACTIVE": IncidentFingerprint.VALIDATION_FAILED,
         "STALE_GENERATION_CLAIM": IncidentFingerprint.VALIDATION_FAILED,
+        "CONTENT_NOT_GENERATED": IncidentFingerprint.MISSING_PREREQUISITE,
+        "MISSING_REFERENCES": IncidentFingerprint.MISSING_PREREQUISITE,
+        "FORBIDDEN_EXPRESSION": IncidentFingerprint.SAFETY_BLOCKED,
+        "ESSENCE_NOT_ALIGNED": IncidentFingerprint.VALIDATION_FAILED,
+        "CONTENT_IMAGE_NOT_READY": IncidentFingerprint.RENDER_FAILED,
     }.get(code, IncidentFingerprint.UNKNOWN)
 
 
 def _projection(
-    incident: Incident, hospital_name: str, run_id: uuid.UUID, owner: str, sla: str
+    incident: Incident, hospital_name: str, run_id: uuid.UUID | None, owner: str, sla: str
 ) -> IncidentSlackProjection:
     return IncidentSlackProjection(
         incident.id,
@@ -139,9 +167,10 @@ async def recover_generation_incidents(
     item_id: uuid.UUID,
     hospital_id: uuid.UUID,
     hospital_name: str,
-    run_id: uuid.UUID,
+    run_id: uuid.UUID | None,
     *,
     include_image: bool = True,
+    safe_error_codes: tuple[str, ...] | None = None,
 ) -> int:
     sessions = get_async_sessionmaker()
     recovered = 0
@@ -152,8 +181,14 @@ async def recover_generation_incidents(
             Incident.source_id == str(item_id),
             Incident.state.in_((IncidentState.OPEN, IncidentState.RETRYING)),
         )
-        if not include_image:
-            statement = statement.where(Incident.safe_error_code != "IMAGE_GENERATION_FAILED")
+        if safe_error_codes is not None:
+            statement = statement.where(Incident.safe_error_code.in_(safe_error_codes))
+        elif not include_image:
+            statement = statement.where(
+                Incident.safe_error_code.notin_(
+                    ("IMAGE_GENERATION_FAILED", "CONTENT_IMAGE_NOT_READY")
+                )
+            )
         incidents = list(
             (
                 await db.execute(statement)
@@ -172,7 +207,8 @@ async def recover_generation_incidents(
                 if not isinstance(retrying, Incident):
                     continue
                 current = retrying
-            current.operation_run_id = run_id
+            if run_id is not None:
+                current.operation_run_id = run_id
             result = await mark_recovered(
                 db,
                 current.id,

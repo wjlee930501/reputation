@@ -9,6 +9,7 @@ def _item(**overrides):
     base = {
         "title": "치질 진료 전 확인할 점",
         "body": "증상과 생활 불편을 확인한 뒤 진료 방향을 설명합니다.",
+        "image_url": "https://storage.googleapis.com/reputation/content.png",
         "meta_description": "진료 전 확인할 내용을 정리합니다.",
         "faq_question": None,
         "faq_answer_summary": None,
@@ -53,6 +54,18 @@ def test_publication_policy_blocks_missing_reference(monkeypatch):
 
     assert assessment.publishable is False
     assert assessment.code == "MISSING_REFERENCES"
+    assert assessment.essence_summary["blocking"] is True
+
+
+def test_publication_policy_blocks_missing_representative_image(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _item(image_url=None), _philosophy()
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_IMAGE_NOT_READY"
     assert assessment.essence_summary["blocking"] is True
 
 

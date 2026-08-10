@@ -8,6 +8,7 @@ import {
   canRetryDelivery,
   diagnosisBadges,
   diagnosisHint,
+  diagnosisReportHref,
   recoveryAction,
   leadNeedsAttention,
   needsAttention,
@@ -103,6 +104,15 @@ test('retry is offered only when a report exists to send', () => {
     canRetryDelivery(make({ report_status: 'BLOCKED', delivery_status: 'FAILED' })),
     false,
   )
+})
+
+test('a ready report opens through the authenticated Admin route', () => {
+  assert.equal(
+    diagnosisReportHref('lead/1', make({ id: 'diagnosis 1' })),
+    '/api/admin/leads/lead%2F1/diagnoses/diagnosis%201/report',
+  )
+  assert.equal(diagnosisReportHref('lead-1', make({ report_status: 'BLOCKED' })), null)
+  assert.equal(diagnosisReportHref('lead-1', make({ report_status: 'PURGED' })), null)
 })
 
 test('an already released lock is not offered again', () => {

@@ -14,7 +14,7 @@ from sqlalchemy.sql.dml import Update
 from app.models.content import ContentItem
 from app.models.essence import PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
-from app.models.operations import NotificationOutbox
+from app.models.operations import NotificationOutbox, OperationRun
 from app.workers import tasks
 
 
@@ -29,6 +29,9 @@ def test_nightly_generation_stmt_covers_window_bounds():
     assert "scheduled_date >= '2026-06-03'" in sql
     assert "scheduled_date <= '2026-06-11'" in sql
     assert "body IS NULL" in sql
+    assert "image_url IS NULL" in sql
+    assert "essence_check_summary" in sql
+    assert "blocking" in sql
     # cap+1로 읽어 절단 발생을 감지한다
     assert f"LIMIT {tasks.NIGHTLY_GENERATION_CAP + 1}" in sql
 
@@ -53,6 +56,36 @@ def test_generation_failure_classification_never_persists_exception_text(error, 
     assert code == expected_code
     assert str(error) not in message
     assert "운영 센터" in message
+
+
+def test_generation_missed_alert_key_changes_only_when_missing_items_change():
+    hospital_id = uuid.uuid4()
+    first_item = uuid.uuid4()
+    second_item = uuid.uuid4()
+
+    initial = tasks._generation_missed_alert_key(hospital_id, [first_item])
+    unchanged = tasks._generation_missed_alert_key(hospital_id, [first_item])
+    worsened = tasks._generation_missed_alert_key(hospital_id, [first_item, second_item])
+
+    assert initial == unchanged
+    assert initial != worsened
+
+
+def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
+    content_id = uuid.uuid4()
+
+    initial = tasks._auto_publish_block_alert_key(
+        content_id, "2026-08-09", "ESSENCE_NOT_ALIGNED", "운영 기준 미승인"
+    )
+    unchanged = tasks._auto_publish_block_alert_key(
+        content_id, "2026-08-09", "ESSENCE_NOT_ALIGNED", "운영 기준 미승인"
+    )
+    corrected_but_still_blocked = tasks._auto_publish_block_alert_key(
+        content_id, "2026-08-09", "ESSENCE_NOT_ALIGNED", "피해야 할 표현 포함"
+    )
+
+    assert initial == unchanged
+    assert initial != corrected_but_still_blocked
 
 
 def test_nightly_generation_stmt_filters_hospital_status():
@@ -484,14 +517,14 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
         SimpleNamespace(
             id="s1",
             hospital=hospitals[0],
-            plan="PLAN_8",
+            plan="PLAN_12",
             publish_days=[0, 2],
             active_from=date(2026, 1, 1),
         ),
         SimpleNamespace(
             id="s2",
             hospital=hospitals[1],
-            plan="PLAN_8",
+            plan="PLAN_12",
             publish_days=[1],
             active_from=date(2026, 1, 1),
         ),
@@ -559,6 +592,7 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
         tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(2026, 6, 25, tzinfo="Asia/Seoul")
     )
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(
         "app.workers.monthly_slots.generate_monthly_slots",
         lambda *_args, **_kwargs: [(date(2026, 7, 1), "FAQ", 1, 1)],
@@ -671,7 +705,7 @@ def test_load_nightly_generation_batch_detects_cap_truncation():
 # ── 08:00 자동 발행: due/public 상태와 Slack 복구 대상의 DB 필터 ──
 
 
-def test_auto_publish_due_statement_requires_live_active_draft():
+def test_auto_publish_due_statement_includes_missing_body_for_blocker_projection():
     sql = str(
         tasks._auto_publish_due_stmt(date(2026, 6, 10)).compile(
             compile_kwargs={"literal_binds": True}
@@ -679,7 +713,7 @@ def test_auto_publish_due_statement_requires_live_active_draft():
     )
 
     assert "content_items.status = 'DRAFT'" in sql
-    assert "content_items.body IS NOT NULL" in sql
+    assert "content_items.body IS NOT NULL" not in sql
     assert "hospitals.status = 'ACTIVE'" in sql
     assert "hospitals.site_live IS true" in sql
     assert "content_items.scheduled_date <= '2026-06-10'" in sql
@@ -822,6 +856,8 @@ class _AutoPublishDB:
             return _Result(items=[self.item] if self.item else [])
         if entity is Hospital:
             return _Result(items=[self.hospital] if self.hospital else [])
+        if entity is OperationRun:
+            return _Result(items=[])
         raise AssertionError(f"예상하지 못한 조회 대상: {entity}")
 
     def add(self, obj):
@@ -857,6 +893,7 @@ def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
         status=tasks.ContentStatus.DRAFT,
         title=title,
         body=body,
+        image_url="https://storage.googleapis.com/reputation/content.png",
         meta_description="진료 전 확인할 점을 정리했습니다.",
         faq_question=None,
         faq_answer_summary=None,
@@ -942,7 +979,13 @@ def test_auto_publish_blocks_content_with_forbidden_expression(monkeypatch):
     assert item.status is tasks.ContentStatus.DRAFT
     assert item.published_at is None
     assert item.published_by is None
-    assert [log.action for log in db.added] == ["auto_publish_blocked"]
+    assert [log.action for log in db.added if hasattr(log, "action")] == [
+        "auto_publish_blocked"
+    ]
+    runs = [value for value in db.added if isinstance(value, OperationRun)]
+    assert len(runs) == 1
+    assert runs[0].operation_type == "REGENERATE_CONTENT"
+    assert runs[0].request_payload["_dispatch"]["target_id"] == str(item.id)
     assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
 
 
@@ -968,7 +1011,9 @@ def test_auto_publish_blocks_markdown_hidden_forbidden_expression(monkeypatch):
     assert item.status is tasks.ContentStatus.DRAFT
     assert item.published_at is None
     assert item.published_by is None
-    assert [log.action for log in db.added] == ["auto_publish_blocked"]
+    assert [log.action for log in db.added if hasattr(log, "action")] == [
+        "auto_publish_blocked"
+    ]
     assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
 
 
@@ -985,14 +1030,40 @@ def test_auto_publish_blocks_when_no_approved_philosophy(monkeypatch):
 
     assert payload["kind"] == "blocked"
     assert payload["code"] == "ESSENCE_NOT_ALIGNED"
+    assert payload["reason"] == item.essence_check_summary["findings"][0]
     assert item.status is tasks.ContentStatus.DRAFT
     assert item.published_at is None
     assert item.published_by is None
     # 차단 사유가 DB에도 남아야 Admin에서 AE가 원인을 볼 수 있다.
     assert item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
     assert item.essence_check_summary["blocking"] is True
-    assert [log.action for log in db.added] == ["auto_publish_blocked"]
+    assert [log.action for log in db.added if hasattr(log, "action")] == [
+        "auto_publish_blocked"
+    ]
     assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
+
+
+def test_auto_publish_records_content_block_before_revalidation_dependency(monkeypatch):
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body=None, title=None)
+    db = _AutoPublishDB(item, hospital)
+
+    def unexpected_revalidation_check() -> None:
+        raise AssertionError("blocked content needs no revalidation")
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "ensure_site_revalidate_configured",
+        unexpected_revalidation_check,
+    )
+
+    payload = tasks._auto_publish_one(item.id)
+
+    assert payload["kind"] == "blocked"
+    assert payload["code"] == "CONTENT_NOT_GENERATED"
+    assert any(isinstance(value, OperationRun) for value in db.added)
 
 
 def test_auto_publish_is_idempotent(monkeypatch):

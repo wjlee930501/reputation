@@ -21,7 +21,9 @@ def _valid_prod_kwargs(**overrides):
     base = dict(
         _env_file=None,
         APP_ENV="production",
+        REPUTATION_RELEASE_REVISION="release-test",
         ADMIN_SECRET_KEY="admin-secret",
+        WORKER_DISPATCH_SECRET="worker-only-secret-32-bytes-minimum",
         SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx",
         DATABASE_URL="postgresql+asyncpg://postgres:postgres@db/reputation",
         SYNC_DATABASE_URL="postgresql+psycopg2://postgres:postgres@db/reputation",
@@ -33,6 +35,7 @@ def _valid_prod_kwargs(**overrides):
         CERTIFICATE_MANAGER_AUTO_PROVISION=True,
         LEAD_LOCK_HASH_PEPPER="prod-lock-pepper",
         LEAD_REPORT_TOKEN_SECRET="prod-report-secret",
+        RESEND_API_KEY="re_prod_test_key",
     )
     base.update(overrides)
     return base
@@ -46,7 +49,9 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
     settings = Settings(
         _env_file=None,
         APP_ENV="production",
+        REPUTATION_RELEASE_REVISION="release-test",
         ADMIN_SECRET_KEY="admin-secret",
+        WORKER_DISPATCH_SECRET="worker-only-secret-32-bytes-minimum",
         SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx",
         DB_USER="reputation",
         DB_PASSWORD="p@ss word",
@@ -60,6 +65,7 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         CERTIFICATE_MANAGER_AUTO_PROVISION=True,
         LEAD_LOCK_HASH_PEPPER="prod-lock-pepper",
         LEAD_REPORT_TOKEN_SECRET="prod-report-secret",
+        RESEND_API_KEY="re_prod_test_key",
     )
 
     assert settings.DATABASE_URL == (
@@ -147,6 +153,13 @@ def test_production_accepts_valid_secure_config(monkeypatch):
     assert settings.SITE_BASE_URL == "https://reputation.co.kr"
 
 
+def test_production_rejects_missing_worker_dispatch_secret(monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("WORKER_DISPATCH_SECRET", raising=False)
+    with pytest.raises(ValueError, match="WORKER_DISPATCH_SECRET"):
+        Settings(**_valid_prod_kwargs(WORKER_DISPATCH_SECRET=""))
+
+
 def test_production_does_not_probe_optional_unmanaged_jina_secret(monkeypatch):
     from app.core import config
 
@@ -183,6 +196,14 @@ def test_production_fails_fast_when_slack_webhook_empty(monkeypatch):
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     with pytest.raises(ValueError, match="SLACK_WEBHOOK_URL"):
         Settings(**_valid_prod_kwargs(SLACK_WEBHOOK_URL=""))
+
+
+@pytest.mark.parametrize("value", ["", "PLACEHOLDER", "replace_me", "changeme"])
+def test_production_rejects_missing_or_placeholder_resend_key(monkeypatch, value):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="RESEND_API_KEY"):
+        Settings(**_valid_prod_kwargs(RESEND_API_KEY=value))
 
 
 def test_production_warns_on_empty_flow_secrets_and_placeholder_buckets(monkeypatch, caplog):

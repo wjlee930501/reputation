@@ -103,7 +103,9 @@ async def test_set_schedule_syncs_hospital_plan_and_queues_imminent_slots(monkey
     monkeypatch.setattr(
         content_api.regenerate_content_item,
         "apply_async",
-        lambda *, args, queue: queued.append({"args": args, "queue": queue}),
+        lambda *, args, queue, headers: queued.append(
+            {"args": args, "queue": queue, "headers": headers}
+        ),
     )
     _freeze_arrow(monkeypatch)  # today=2026-06-10, tomorrow=2026-06-11
 
@@ -131,7 +133,7 @@ async def test_set_schedule_writes_audit_log(monkeypatch):
     monkeypatch.setattr(
         content_api.regenerate_content_item,
         "apply_async",
-        lambda *, args, queue: None,
+        lambda *, args, queue, headers: None,
     )
     _freeze_arrow(monkeypatch)
 
@@ -155,7 +157,9 @@ async def test_set_schedule_does_not_queue_future_only_slots(monkeypatch):
     monkeypatch.setattr(
         content_api.regenerate_content_item,
         "apply_async",
-        lambda *, args, queue: queued.append({"args": args, "queue": queue}),
+        lambda *, args, queue, headers: queued.append(
+            {"args": args, "queue": queue, "headers": headers}
+        ),
     )
     _freeze_arrow(monkeypatch)  # tomorrow=2026-06-11
 
@@ -197,7 +201,7 @@ async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
     db = _FakeDB(hospital)
     alerts = []
 
-    def _broker_down(*, args, queue):
+    def _broker_down(*, args, queue, headers):
         raise ConnectionError("redis broker unreachable")
 
     async def _fake_ops_alert(*, title, message):
@@ -249,7 +253,7 @@ async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):
     monkeypatch.setattr(
         content_api.regenerate_content_item,
         "apply_async",
-        lambda *, args, queue: None,
+        lambda *, args, queue, headers: None,
     )
     _freeze_arrow(monkeypatch)  # today=2026-06-10
 
@@ -301,7 +305,7 @@ async def test_set_schedule_preserves_carried_over_unpublished_slots(monkeypatch
     monkeypatch.setattr(
         content_api.regenerate_content_item,
         "apply_async",
-        lambda *, args, queue: None,
+        lambda *, args, queue, headers: None,
     )
     _freeze_arrow(monkeypatch)  # today=2026-06-10
 

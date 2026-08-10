@@ -37,16 +37,19 @@ logger = logging.getLogger(__name__)
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 TEMPLATE_NAME = "lead_report.html"
+PRETENDARD_FONT_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "fonts" / "PretendardVariable.woff2"
+)
 
 # 템플릿이 바뀌면 같은 데이터라도 다른 리포트가 나온다. artifact에 기록해
 # "같은 병원인데 숫자가 왜 다르냐"에 답할 수 있게 한다.
-TEMPLATE_VERSION = "lead-v1"
+TEMPLATE_VERSION = "lead-v7"
 
 # 공급자 표기 — 사람이 읽는 이름이지 "ChatGPT 화면"이 아니다.
 _VENDOR_LABELS = {"chatgpt": "OpenAI API", "gemini": "Google Gemini API"}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PlatformSegment:
     """플랫폼 1개의 기술통계. 분모·분자·실패 수를 따로 표기한다(F3-5)."""
 
@@ -70,17 +73,31 @@ class PlatformSegment:
         return round(self.mentioned / self.measured * 100, 1)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class QueryDisclosure:
-    """질의 원문 공개 (§2-2). 원장이 직접 재현할 수 있어야 한다."""
+    """질의 원문과 안전한 집계 결과. 원문 답변은 의도적으로 포함하지 않는다."""
 
     slot: int
     kind: str
     text: str
     measured_at: datetime | None   # 캐시 적중 시 **원본 측정 시각**이지 오늘이 아니다
+    planned: int
+    measured: int
+    mentioned: int
+    failed: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class LeadReportContact:
+    """무료 진단 결과를 설명할 MotionLabs 담당자."""
+
+    name: str
+    role: str
+    email: str
+    phone: str
+
+
+@dataclass(frozen=True, slots=True)
 class LeadReportPayload:
     """리포트에 실리는 것 **전부**.
 
@@ -97,6 +114,7 @@ class LeadReportPayload:
     segments: tuple[PlatformSegment, ...] = ()
     queries: tuple[QueryDisclosure, ...] = ()
     notices: tuple[str, ...] = ()
+    contact: LeadReportContact = LeadReportContact(name="", role="", email="", phone="")
 
     @property
     def total_measured(self) -> int:
@@ -162,15 +180,23 @@ def build_lead_report_payload(
         if current is None or row.measured_at < current:
             measured_at_by_slot[row.query_slot] = row.measured_at
 
-    queries = tuple(
-        QueryDisclosure(
-            slot=int(q["slot"]),
-            kind=q.get("kind", ""),
-            text=q["text"],
-            measured_at=measured_at_by_slot.get(int(q["slot"])),
+    queries: list[QueryDisclosure] = []
+    for query in diagnosis.queries or []:
+        slot = int(query["slot"])
+        rows = [row for row in results if row.query_slot == slot]
+        succeeded = [row for row in rows if row.measurement_status == "SUCCESS"]
+        queries.append(
+            QueryDisclosure(
+                slot=slot,
+                kind=query.get("kind", ""),
+                text=query["text"],
+                measured_at=measured_at_by_slot.get(slot),
+                planned=len(rows),
+                measured=len(succeeded),
+                mentioned=sum(1 for row in succeeded if row.is_mentioned),
+                failed=len(rows) - len(succeeded),
+            )
         )
-        for q in (diagnosis.queries or [])
-    )
 
     return LeadReportPayload(
         hospital_name=diagnosis.subject_hospital_name,
@@ -180,8 +206,14 @@ def build_lead_report_payload(
         system_prompt=sov_engine.SYSTEM_PROMPT_SOV,
         judge_model=models.get("judge") or "",
         segments=tuple(segments),
-        queries=queries,
+        queries=tuple(queries),
         notices=_NOTICES,
+        contact=LeadReportContact(
+            name=settings.LEAD_REPORT_CONTACT_NAME,
+            role=settings.LEAD_REPORT_CONTACT_ROLE,
+            email=settings.LEAD_REPORT_CONTACT_EMAIL,
+            phone=settings.LEAD_REPORT_CONTACT_PHONE,
+        ),
     )
 
 
@@ -202,7 +234,10 @@ def render_lead_report_pdf(payload: LeadReportPayload) -> bytes:
     """HTML을 그대로 PDF로. 가림 대상은 HTML에 없으므로 텍스트 레이어에도 없다."""
     from weasyprint import HTML  # 네이티브 의존성 — 임포트를 지연시킨다.
 
-    return HTML(string=render_lead_report_html(payload)).write_pdf()
+    return HTML(
+        string=render_lead_report_html(payload),
+        base_url=str(TEMPLATE_DIR),
+    ).write_pdf()
 
 
 def artifact_storage_uri(diagnosis_id, version: int) -> str:

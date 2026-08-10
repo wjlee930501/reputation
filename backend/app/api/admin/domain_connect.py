@@ -18,6 +18,7 @@ from app.services.site_revalidate import (
     trigger_hospital_site_revalidate_safe,
 )
 from app.utils.domain import is_valid_hostname, normalize_domain
+from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.tasks import build_aeo_site
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Domain Connect"])
@@ -124,6 +125,7 @@ async def connect_domain(
             build_aeo_site.apply_async,
             args=[str(hospital_id)],
             queue="default",
+            headers=build_dispatch_headers("build-aeo-site", str(hospital_id)),
         )
         return {"detail": f"Domain {domain} set. Content hub exposure refresh triggered."}
     if domain_changed or not h.site_built:

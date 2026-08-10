@@ -9,7 +9,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import delete, func, select
 
 from app.api.public import diagnosis as diagnosis_api
@@ -53,13 +53,18 @@ def _payload(**overrides):
 
 
 async def _post(session, **overrides):
-    return await create_diagnosis(FakeRequest(), _payload(**overrides), session)
+    return await create_diagnosis(
+        FakeRequest(), _payload(**overrides), BackgroundTasks(), session
+    )
 
 
 @pytest.mark.asyncio
 class TestHappyPath:
     async def test_accepted_application_creates_lead_diagnosis_and_token(self, pg_async_session):
-        result = await _post(pg_async_session)
+        background_tasks = BackgroundTasks()
+        result = await create_diagnosis(
+            FakeRequest(), _payload(), background_tasks, pg_async_session
+        )
 
         assert result["ok"] is True
         assert result["slot_no"] == 1
@@ -81,6 +86,8 @@ class TestHappyPath:
         ).scalar_one()
         assert lead.source == LEAD_SOURCE_AI_DIAGNOSIS
         assert lead.question is None
+        assert lead.notification_status == "PENDING"
+        assert len(background_tasks.tasks) == 1
         # 동의 버전은 클라이언트가 아니라 서버 ENV에서 온다.
         assert lead.consent_version == settings.LEAD_CONSENT_VERSION
 
@@ -212,7 +219,10 @@ class TestAbuseDefenses:
             await pg_async_session.scalar(select(func.count()).select_from(LeadDiagnosis)) or 0
         )
         result = await create_diagnosis(
-            FakeRequest(), _payload(website="http://spam.example"), pg_async_session
+            FakeRequest(),
+            _payload(website="http://spam.example"),
+            BackgroundTasks(),
+            pg_async_session,
         )
         assert result["ok"] is True
         assert result["diagnosis_id"] is None

@@ -27,6 +27,7 @@ _TASK_REVOKED_MESSAGE = "작업 실행이 취소되었습니다."
 
 class _SignalRequest(Protocol):
     headers: Mapping[str, str] | None
+    delivery_info: Mapping[str, object] | None
     operation_run_claim_version: int | None
 
 
@@ -53,10 +54,22 @@ def track_operation_prerun(
     if run_id is None or worker_id is None:
         return
     now = datetime.now(UTC)
-    task.request.operation_run_claim_version = _claim_safely(run_id, worker_id, now)
+    delivery_info = getattr(task.request, "delivery_info", None)
+    redelivered = isinstance(delivery_info, Mapping) and delivery_info.get(
+        "redelivered"
+    ) is True
+    task.request.operation_run_claim_version = _claim_safely(
+        run_id, worker_id, now, redelivered=redelivered
+    )
 
 
-def _claim_safely(run_id: UUID, worker_id: str, now: datetime) -> int | None:
+def _claim_safely(
+    run_id: UUID,
+    worker_id: str,
+    now: datetime,
+    *,
+    redelivered: bool,
+) -> int | None:
     queued = (
         update(OperationRun)
         .where(
@@ -77,6 +90,11 @@ def _claim_safely(run_id: UUID, worker_id: str, now: datetime) -> int | None:
             OperationRun.task_id == worker_id,
             or_(
                 OperationRun.state == OperationRunState.QUEUED,
+                and_(
+                    redelivered,
+                    OperationRun.state == OperationRunState.RUNNING,
+                    OperationRun.lease_owner == worker_id,
+                ),
                 and_(
                     OperationRun.state == OperationRunState.RUNNING,
                     OperationRun.lease_expires_at <= now,

@@ -80,11 +80,11 @@ def test_pii_purge_task_is_routed():
 
 
 def test_monthly_reports_close_after_the_next_month_boundary():
-    """월간 리포트는 다음 달 1일 00:15에 직전 달을 마감한다."""
+    """월간 리포트는 마감 뒤 일주일 동안 자동 재시도한다."""
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
     assert schedule.minute == {15}
-    assert schedule.hour == {0}
-    assert schedule.day_of_month == {1}
+    assert schedule.hour == {0, 6, 12, 18}
+    assert schedule.day_of_month == set(range(1, 8))
 
 
 def test_monthly_artifact_incident_reconciliation_runs_each_minute_on_reports_queue():

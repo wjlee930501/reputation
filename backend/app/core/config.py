@@ -12,7 +12,11 @@ logger = logging.getLogger(__name__)
 # 프로덕션 부팅 시 비어 있으면 즉시 실패(fail-fast)시키는 시크릿.
 # SLACK_WEBHOOK_URL 포함: 모든 주요 이벤트 알림이 Slack로 나가므로(CLAUDE.md), 누락 시
 # V0/콘텐츠/월간 리포트 알림이 조용히 사라진다 → AE가 운영 이벤트를 놓친다.
-_CRITICAL_PRODUCTION_SECRETS = ("ADMIN_SECRET_KEY", "SLACK_WEBHOOK_URL")
+_CRITICAL_PRODUCTION_SECRETS = (
+    "ADMIN_SECRET_KEY",
+    "WORKER_DISPATCH_SECRET",
+    "SLACK_WEBHOOK_URL",
+)
 
 
 def _resolve_secret(name: str, default: str = "") -> str:
@@ -48,6 +52,7 @@ class Settings(BaseSettings):
     APP_ENV: str = "production"
     REPUTATION_RELEASE_REVISION: str = ""
     ADMIN_SECRET_KEY: str = ""
+    WORKER_DISPATCH_SECRET: str = ""
     # NoDecode: pydantic-settings의 env-source 자동 JSON 디코드를 끄고 raw 문자열을 검증자에 전달.
     ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
     TRUSTED_PROXY_IPS: Annotated[list[str], NoDecode] = ["127.0.0.1", "::1"]
@@ -56,6 +61,9 @@ class Settings(BaseSettings):
         super().__init__(**kwargs)
         if self.APP_ENV == "production":
             self.ADMIN_SECRET_KEY = _resolve_secret("ADMIN_SECRET_KEY", self.ADMIN_SECRET_KEY)
+            self.WORKER_DISPATCH_SECRET = _resolve_secret(
+                "WORKER_DISPATCH_SECRET", self.WORKER_DISPATCH_SECRET
+            )
             self.ANTHROPIC_API_KEY = _resolve_secret("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY)
             self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
             self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)
@@ -70,6 +78,13 @@ class Settings(BaseSettings):
                 "SITE_REVALIDATE_SECRET", self.SITE_REVALIDATE_SECRET
             )
             self.SITE_BFF_SECRET = _resolve_secret("SITE_BFF_SECRET", self.SITE_BFF_SECRET)
+            self.LEAD_LOCK_HASH_PEPPER = _resolve_secret(
+                "LEAD_LOCK_HASH_PEPPER", self.LEAD_LOCK_HASH_PEPPER
+            )
+            self.LEAD_REPORT_TOKEN_SECRET = _resolve_secret(
+                "LEAD_REPORT_TOKEN_SECRET", self.LEAD_REPORT_TOKEN_SECRET
+            )
+            self.RESEND_API_KEY = _resolve_secret("RESEND_API_KEY", self.RESEND_API_KEY)
             self._fail_if_critical_production_secrets_empty()
             self._validate_production_config()
             self._warn_if_production_flow_config_incomplete()
@@ -177,6 +192,17 @@ class Settings(BaseSettings):
             value = str(getattr(self, name, "")).strip()
             if not value or value == dev_default:
                 errors.append(f"{name} must be set to a production secret (dev default detected).")
+
+        resend_key = self.RESEND_API_KEY.strip()
+        if not resend_key or resend_key.lower() in {"placeholder", "replace_me", "changeme"}:
+            errors.append("RESEND_API_KEY must be set to a real production sending key.")
+
+        if len(self.WORKER_DISPATCH_SECRET.strip()) < 32:
+            errors.append("WORKER_DISPATCH_SECRET must contain at least 32 characters.")
+        if not self.REPUTATION_RELEASE_REVISION.strip():
+            errors.append("REPUTATION_RELEASE_REVISION must be set in production.")
+        if "@" not in self.LEAD_MAIL_FROM:
+            errors.append("LEAD_MAIL_FROM must contain a verified sender email address.")
 
         if errors:
             raise ValueError("Insecure production config:\n  - " + "\n  - ".join(errors))
@@ -410,7 +436,7 @@ class Settings(BaseSettings):
 
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수
-    LEAD_CONSENT_VERSION: str = "v1.2026-05"  # 처리방침 버전 — 변경 시 재동의 필요
+    LEAD_CONSENT_VERSION: str = "v1.2026-08"  # 처리방침 버전 — 변경 시 재동의 필요
 
     # ── 리드마그넷 무료 진단 (1단). 설계: docs/plans/2026-07-29-lead-diagnosis-funnel-design.md
     # 하루 자리 수. **이 값이 곧 예산 상한이다** — 건당 최악 1,600원이므로 20건이면
@@ -432,6 +458,10 @@ class Settings(BaseSettings):
     # 리포트/상태 페이지 서명 키. Admin 세션 HMAC과 audience가 다르다(PRD F5-4).
     LEAD_REPORT_TOKEN_SECRET: str = "dev-report-secret-change-me"
     LEAD_REPORT_TOKEN_TTL_DAYS: int = 30
+    LEAD_REPORT_CONTACT_NAME: str = "김효진"
+    LEAD_REPORT_CONTACT_ROLE: str = "Re:putation 마케팅 팀장"
+    LEAD_REPORT_CONTACT_EMAIL: str = "hjkim@motionlabs.kr"
+    LEAD_REPORT_CONTACT_PHONE: str = "070-8671-0100"
     # 리포트 발송 (Resend). 비어 있으면 발송을 시도하지 않고 delivery 행에 사유를 남긴다 —
     # 조용히 성공 처리하면 "발송 완료"인데 아무도 못 받는 상태가 된다.
     RESEND_API_KEY: str = ""

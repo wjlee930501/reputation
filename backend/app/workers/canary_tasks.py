@@ -21,11 +21,12 @@ from app.core.config import settings
 from app.core.database import SyncSessionLocal
 from app.services.notification_contracts import IncidentSlackProjection, validate_message
 from app.services.notification_messages import build_open_incident_notification
+from app.workers.dispatch_auth import require_dispatch
 
 EXPECTED_QUEUES: Final = ("default", "content", "sov", "reports", "leadgen")
 CANARY_MAX_AGE: Final = timedelta(minutes=15)
 CANARY_TTL_SECONDS: Final = 20 * 60
-_SAFE_REVISION: Final = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_SAFE_REVISION: Final = re.compile(r"^[A-Za-z0-9._-]{7,128}$")
 
 
 class CanaryPayload(TypedDict):
@@ -57,7 +58,7 @@ class CanaryConfigurationError(RuntimeError):
 def release_revision() -> str:
     raw = settings.REPUTATION_RELEASE_REVISION.strip()
     if not raw and settings.APP_ENV != "production":
-        return "local"
+        return "local-dev"
     if not _SAFE_REVISION.fullmatch(raw):
         raise CanaryConfigurationError("RELEASE_REVISION_REQUIRED")
     return raw
@@ -97,6 +98,7 @@ def _observed_queue(task: Task) -> str | None:
 
 
 def _run_canary(task: Task, expected_queue: str) -> CanaryPayload:
+    require_dispatch(task, f"canary-{expected_queue}")
     observed_queue = _observed_queue(task)
     if observed_queue is not None and observed_queue != expected_queue:
         raise CanaryConfigurationError("CANARY_WRONG_QUEUE")

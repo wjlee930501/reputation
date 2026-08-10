@@ -64,7 +64,7 @@ def _seed_item(conn, *, status: str) -> uuid.UUID:
     conn.execute(
         text(
             "INSERT INTO content_schedules (id, hospital_id, plan, publish_days, active_from) "
-            "VALUES (:id, :hid, 'PLAN_8', '[1, 3]', :active_from)"
+            "VALUES (:id, :hid, 'PLAN_12', '[1, 3]', :active_from)"
         ),
         {"id": schedule_id, "hid": hospital_id, "active_from": date(2026, 7, 1)},
     )
@@ -190,7 +190,8 @@ def test_unfinished_claims_are_released_so_a_redelivery_can_pick_them_up(pg_conn
         text("UPDATE content_items SET generation_claimed_at = :t WHERE id IN (:a, :b)"),
         {"t": now, "a": generated_id, "b": unfinished_id},
     )
-    # 하나는 생성에 성공해 본문이 있다.
+    # 하나는 본문만 생성됐고 대표 이미지는 아직 없다. 다음 복구 pass가 이미지를
+    # 다시 만들 수 있도록 이 슬롯도 claim을 해제해야 한다.
     pg_conn.execute(
         text("UPDATE content_items SET body = '생성된 본문' WHERE id = :id"),
         {"id": generated_id},
@@ -198,7 +199,7 @@ def test_unfinished_claims_are_released_so_a_redelivery_can_pick_them_up(pg_conn
 
     released = release_unfinished_claims(pg_session, [generated_id, unfinished_id])
 
-    assert released == 1, "본문 없는 슬롯 1건만 해제되어야 한다"
+    assert released == 2, "본문 또는 대표 이미지가 없는 슬롯은 모두 해제되어야 한다"
     rows = dict(
         pg_conn.execute(
             text("SELECT id, generation_claimed_at FROM content_items WHERE id IN (:a, :b)"),
@@ -206,8 +207,7 @@ def test_unfinished_claims_are_released_so_a_redelivery_can_pick_them_up(pg_conn
         ).all()
     )
     assert rows[unfinished_id] is None, "미생성 슬롯의 claim이 남아 다음 실행을 막는다"
-    # 생성에 성공한 슬롯은 claim 이력을 유지한다(중복 생성 방지 신호).
-    assert rows[generated_id] is not None
+    assert rows[generated_id] is None, "이미지 없는 슬롯의 claim이 남아 복구를 막는다"
 
 
 def test_claim_release_is_scoped_to_the_exact_attempt(pg_conn, pg_session):

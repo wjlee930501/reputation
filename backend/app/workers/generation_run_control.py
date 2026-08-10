@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -17,7 +17,12 @@ from app.models.operations import (
     OperationRun,
     OperationRunState,
 )
-from app.services.operation_run_payloads import DispatchPayload, build_request_payload
+from app.services.operation_run_payloads import (
+    DispatchPayload,
+    UnsafeDispatchPayload,
+    build_request_payload,
+    parse_stored_dispatch,
+)
 
 _SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
 
@@ -39,6 +44,46 @@ class GenerationTaskRequest(Protocol):
 
 class GenerationTask(Protocol):
     request: GenerationTaskRequest
+
+
+_OPERATION_TASK_POLICIES = {
+    "app.workers.tasks.trigger_v0_report": ("TRIGGER_V0_REPORT", "hospital", "reports"),
+    "app.workers.tasks.build_aeo_site": ("REBUILD_SITE", "hospital", "default"),
+    "app.workers.tasks.run_sov_for_hospital": ("RUN_SOV", "hospital", "sov"),
+    "app.workers.tasks.regenerate_content_item": (
+        "REGENERATE_CONTENT",
+        "content_item",
+        "content",
+    ),
+    "app.workers.tasks.generate_content_image": (
+        "REGENERATE_CONTENT_IMAGE",
+        "content_item",
+        "content",
+    ),
+    "app.workers.tasks.generate_monthly_report_for_hospital": (
+        "GENERATE_MONTHLY_REPORT",
+        "hospital",
+        "reports",
+    ),
+    "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_measurement": (
+        "RECOVER_LEAD_MEASUREMENT",
+        "lead_diagnosis",
+        "leadgen",
+    ),
+    "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_report": (
+        "RECOVER_LEAD_REPORT",
+        "lead_diagnosis",
+        "leadgen",
+    ),
+}
+_OPERATION_RUN_REQUIRED_TASKS = frozenset(
+    {
+        "app.workers.tasks.generate_content_image",
+        "app.workers.tasks.generate_monthly_report_for_hospital",
+        "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_measurement",
+        "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_report",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +122,71 @@ def explicit_run_context(task: GenerationTask) -> ExplicitRunContext | None:
         return ExplicitRunContext(uuid.UUID(run_id), worker_id, version)
     except ValueError:
         return None
+
+
+def explicit_run_matches(
+    db: Session,
+    task: GenerationTask,
+    item_id: uuid.UUID | str,
+    hospital_id: uuid.UUID | str,
+) -> bool:
+    """Prove that the claimed Admin run authorizes this exact tenant target."""
+    context = explicit_run_context(task)
+    if context is None:
+        return False
+    run = db.get(OperationRun, context.run_id)
+    if run is None:
+        return False
+    payload = run.request_payload if isinstance(run.request_payload, Mapping) else {}
+    state = getattr(run.state, "value", run.state)
+    return (
+        run.operation_type == "REGENERATE_CONTENT"
+        and state == OperationRunState.RUNNING.value
+        and run.task_id == context.worker_id
+        and run.lease_owner == context.worker_id
+        and run.version == context.version
+        and str(run.hospital_id) == str(hospital_id)
+        and payload.get("source_type") == "content_item"
+        and payload.get("source_id") == str(item_id)
+    )
+
+
+def operation_run_dispatch_authorized(
+    db: Session,
+    task: GenerationTask,
+    task_name: str,
+    task_args: Sequence[JSONValue],
+) -> bool:
+    """Bind an Admin dispatch to its claimed run, tenant, target, queue, and arguments."""
+    context = explicit_run_context(task)
+    policy = _OPERATION_TASK_POLICIES.get(task_name)
+    if context is None or policy is None:
+        return False
+    run = db.get(OperationRun, context.run_id)
+    if run is None:
+        return False
+    operation_type, target_type, queue = policy
+    try:
+        dispatch = parse_stored_dispatch(run.request_payload.get("_dispatch"))
+    except (AttributeError, UnsafeDispatchPayload):
+        return False
+    state = getattr(run.state, "value", run.state)
+    return (
+        run.operation_type == operation_type
+        and state == OperationRunState.RUNNING.value
+        and run.task_id == context.worker_id
+        and run.lease_owner == context.worker_id
+        and run.version == context.version
+        and dispatch.target_type == target_type
+        and dispatch.target_id
+        == str(run.hospital_id if target_type == "hospital" else task_args[0])
+        and dispatch.queue == queue
+        and dispatch.task_args == tuple(task_args)
+    )
+
+
+def operation_run_required(task_name: str) -> bool:
+    return task_name in _OPERATION_RUN_REQUIRED_TASKS
 
 
 def finish_explicit_run(

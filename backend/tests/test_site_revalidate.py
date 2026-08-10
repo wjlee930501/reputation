@@ -64,8 +64,8 @@ async def test_trigger_content_site_revalidate_safe_never_raises(monkeypatch):
     assert ok is False
     assert scheduled == [
         (
-            "app.workers.tasks.retry_site_revalidation",
-            ["f5aa8f49-fc76-46b6-b6d5-d372dad2522a"],
+                "app.workers.tasks.retry_site_revalidation",
+                ["f5aa8f49-fc76-46b6-b6d5-d372dad2522a", 0],
             "default",
             60,
         )
@@ -80,6 +80,44 @@ async def test_trigger_content_site_revalidate_safe_returns_true_on_success(monk
     monkeypatch.setattr(site_revalidate, "trigger_site_revalidate", fine)
 
     assert await site_revalidate.trigger_content_site_revalidate_safe("test-clinic", "content-1") is True
+
+
+async def test_hospital_revalidation_failure_is_persisted_and_requeued(monkeypatch):
+    scheduled = []
+
+    async def boom(*, paths):
+        raise RuntimeError("revalidate endpoint down")
+
+    async def fake_start(slug):
+        assert slug == "test-clinic"
+        return RevalidationRetryPlan(
+            site_revalidate.uuid.UUID("f5aa8f49-fc76-46b6-b6d5-d372dad2522a"),
+            60,
+            False,
+            True,
+        )
+
+    monkeypatch.setattr(site_revalidate, "trigger_site_revalidate", boom)
+    monkeypatch.setattr(site_revalidate, "start_hospital_revalidation_failure", fake_start)
+    from app.core.celery_app import celery_app
+
+    monkeypatch.setattr(
+        celery_app,
+        "send_task",
+        lambda name, *, args, queue, countdown: scheduled.append(
+            (name, args, queue, countdown)
+        ),
+    )
+
+    assert await site_revalidate.trigger_hospital_site_revalidate_safe("test-clinic") is False
+    assert scheduled == [
+        (
+            "app.workers.tasks.retry_site_revalidation",
+            ["f5aa8f49-fc76-46b6-b6d5-d372dad2522a", 0],
+            "default",
+            60,
+        )
+    ]
 
 
 @pytest.mark.parametrize("path", ["", "no-slash", None])

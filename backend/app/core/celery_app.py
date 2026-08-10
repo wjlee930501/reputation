@@ -2,15 +2,20 @@ import logging
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import task_failure, task_postrun, task_prerun
+from celery.signals import before_task_publish, task_failure, task_postrun, task_prerun
 
 from app.core.config import settings
 from app.core.observability import configure_logging, sentry_before_send, set_request_id
+from app.workers.dispatch_auth import (
+    AuthenticatedTask,
+    build_dispatch_headers,
+    stamp_published_message,
+)
 
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-08-10.4"
+REDBEAT_SCHEDULE_VERSION = "2026-08-10.6"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -69,6 +74,7 @@ celery_app = Celery(
     "reputation",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
+    task_cls=AuthenticatedTask,
     include=[
         "app.workers.tasks",
         "app.workers.naver_sync",
@@ -76,10 +82,13 @@ celery_app = Celery(
         "app.workers.notification_tasks",
         "app.workers.milestone_event_tasks",
         "app.workers.monthly_artifact_reconciliation",
+        "app.workers.autonomous_recovery",
         "app.workers.operation_run_signals",
         "app.workers.canary_tasks",
     ],
 )
+
+before_task_publish.connect(stamp_published_message, weak=False)
 
 celery_app.conf.update(
     task_serializer="json",
@@ -137,10 +146,12 @@ celery_app.conf.update(
         "app.workers.lead_diagnosis_tasks.run_lead_diagnosis": {"queue": "leadgen"},
         "app.workers.lead_diagnosis_tasks.build_lead_report": {"queue": "leadgen"},
         "app.workers.lead_diagnosis_tasks.send_lead_report_email": {"queue": "leadgen"},
+        "app.workers.lead_diagnosis_tasks.notify_lead_intake": {"queue": "default"},
         "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": {"queue": "default"},
         "app.workers.notification_tasks.dispatch_notification_outbox": {"queue": "default"},
         "app.workers.milestone_event_tasks.project_milestone_events": {"queue": "default"},
         "app.workers.monthly_artifact_reconciliation.reconcile": {"queue": "reports"},
+        "app.workers.autonomous_recovery.reconcile": {"queue": "default"},
         "app.workers.canary_tasks.canary_default": {"queue": "default"},
         "app.workers.canary_tasks.canary_content": {"queue": "content"},
         "app.workers.canary_tasks.canary_sov": {"queue": "sov"},
@@ -152,37 +163,56 @@ celery_app.conf.update(
         "nightly-content-generation": {
             "task": "app.workers.tasks.nightly_content_generation",
             "schedule": crontab(hour=23, minute=0),
+            "options": {"headers": build_dispatch_headers("nightly-content-generation")},
+        },
+        # 23시 생성 이후 운영 기준 승인·비용 차단 해제·일시 공급자 장애가 해결된 항목을
+        # 아침 발행 전에 다시 회수한다. 횟수를 네 번으로 제한해 무한 비용 재시도를 막는다.
+        "overnight-content-generation-recovery": {
+            "task": "app.workers.tasks.nightly_content_generation",
+            "schedule": crontab(hour="1,4,7", minute=0),
+            "options": {"headers": build_dispatch_headers("nightly-content-generation")},
+        },
+        "prepublish-content-generation-recovery": {
+            "task": "app.workers.tasks.nightly_content_generation",
+            "schedule": crontab(hour=7, minute=45),
+            "options": {"headers": build_dispatch_headers("nightly-content-generation")},
         },
         # 매일 아침 08:00 — 자동 안전검사 후 발행 + Slack 후행 확인 알림
         "morning-content-auto-publish": {
             "task": "app.workers.tasks.morning_content_auto_publish",
             "schedule": crontab(hour=8, minute=0),
+            "options": {"headers": build_dispatch_headers("morning-content-auto-publish")},
         },
         # 매주 월요일 02:00 — 전체 병원 AI 답변 언급률 측정
         "weekly-sov-monitoring": {
             "task": "app.workers.tasks.run_weekly_monitoring",
             "schedule": crontab(hour=2, minute=0, day_of_week=1),
+            "options": {"headers": build_dispatch_headers("weekly-sov-monitoring")},
         },
         # 매월 1일 00:15 — 직전 달 자료가 모두 들어온 뒤 월간 SoV 리포트를 마감한다.
         "monthly-reports": {
             "task": "app.workers.tasks.run_monthly_reports",
-            "schedule": crontab(hour=0, minute=15, day_of_month=1),
+            "schedule": crontab(hour="*/6", minute=15, day_of_month="1-7"),
+            "options": {"headers": build_dispatch_headers("monthly-reports")},
         },
         # 매월 25일 00:00 — 다음 달 콘텐츠 슬롯 자동 생성
         "monthly-slot-generation": {
             "task": "app.workers.tasks.monthly_slot_generation",
-            "schedule": crontab(hour=0, minute=0, day_of_month=25),
+            "schedule": crontab(hour="*/6", minute=0, day_of_month="25-31"),
+            "options": {"headers": build_dispatch_headers("monthly-slot-generation")},
         },
         # 매일 04:00 — 보관기간 만료 리드 자동 파기 (개인정보보호법 제21조)
         "purge-expired-leads": {
             "task": "app.workers.tasks.purge_expired_leads",
             "schedule": crontab(hour=4, minute=0),
+            "options": {"headers": build_dispatch_headers("purge-expired-leads")},
         },
         # 매주 화요일 03:00 — 병원 네이버 블로그 신규 글을 검토 대기 자산으로 인입.
         # 주간 측정(월 02:00)과 겹치지 않게 하루 뒤로 두어 워커 슬롯 경합을 피한다.
         "weekly-naver-source-sync": {
             "task": "app.workers.naver_sync.weekly_naver_source_sync",
             "schedule": crontab(hour=3, minute=0, day_of_week=2),
+            "options": {"headers": build_dispatch_headers("weekly-naver-source-sync")},
         },
         # 1분마다 — 무료 진단 폴러. DB가 큐이므로(outbox 없음) 이 tick이 유일한
         # 신뢰 경로다: 접수의 celery publish가 실패해도 60초 안에 회수된다.
@@ -190,6 +220,7 @@ celery_app.conf.update(
         "drain-lead-diagnoses": {
             "task": "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses",
             "schedule": crontab(minute="*"),
+            "options": {"headers": build_dispatch_headers("drain-lead-diagnoses")},
         },
         # 1분마다 — 커밋된 Slack 의도를 임대해 전송하고 재시도/HOLD 상태를 회수한다.
         "dispatch-notification-outbox": {
@@ -201,6 +232,12 @@ celery_app.conf.update(
             "task": "app.workers.monthly_artifact_reconciliation.reconcile",
             "schedule": crontab(minute="*"),
         },
+        # 1분마다 — 커밋은 됐지만 최초 broker publish가 유실된 허브 준비/캐시 복구를 회수.
+        "reconcile-autonomous-workflows": {
+            "task": "app.workers.autonomous_recovery.reconcile",
+            "schedule": crontab(minute="*"),
+            "options": {"headers": build_dispatch_headers("reconcile-autonomous-workflows")},
+        },
         # 15분마다 — 완료된 구간의 현재 DB truth를 한 건의 운영 마일스톤 요약으로 투영.
         "project-milestone-events": {
             "task": "app.workers.milestone_event_tasks.project_milestone_events",
@@ -210,26 +247,32 @@ celery_app.conf.update(
         "live-custom-domain-health": {
             "task": "app.workers.tasks.monitor_live_custom_domains",
             "schedule": crontab(minute="*/15"),
+            "options": {"headers": build_dispatch_headers("live-custom-domain-health")},
         },
         "canary-default": {
             "task": "app.workers.canary_tasks.canary_default",
             "schedule": crontab(minute="*/5"),
+            "options": {"headers": build_dispatch_headers("canary-default")},
         },
         "canary-content": {
             "task": "app.workers.canary_tasks.canary_content",
             "schedule": crontab(minute="*/5"),
+            "options": {"headers": build_dispatch_headers("canary-content")},
         },
         "canary-sov": {
             "task": "app.workers.canary_tasks.canary_sov",
             "schedule": crontab(minute="*/5"),
+            "options": {"headers": build_dispatch_headers("canary-sov")},
         },
         "canary-reports": {
             "task": "app.workers.canary_tasks.canary_reports",
             "schedule": crontab(minute="*/5"),
+            "options": {"headers": build_dispatch_headers("canary-reports")},
         },
         "canary-leadgen": {
             "task": "app.workers.canary_tasks.canary_leadgen",
             "schedule": crontab(minute="*/5"),
+            "options": {"headers": build_dispatch_headers("canary-leadgen")},
         },
     },
 )

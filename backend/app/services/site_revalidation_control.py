@@ -126,7 +126,9 @@ async def start_revalidation_failure(
         return RevalidationRetryPlan(run.id, REVALIDATION_RETRY_DELAYS_SECONDS[0], False, True)
 
 
-async def record_retry_failure(run_id: uuid.UUID) -> RevalidationRetryPlan | None:
+async def record_retry_failure(
+    run_id: uuid.UUID, expected_attempt_count: int
+) -> RevalidationRetryPlan | None:
     """Advance one observed retry failure and escalate only after the third retry."""
 
     sessions = get_async_sessionmaker()
@@ -134,7 +136,11 @@ async def record_retry_failure(run_id: uuid.UUID) -> RevalidationRetryPlan | Non
         run = await db.scalar(
             select(OperationRun).where(OperationRun.id == run_id).with_for_update()
         )
-        if run is None or run.state != OperationRunState.RUNNING.value:
+        if (
+            run is None
+            or run.state != OperationRunState.RUNNING.value
+            or run.attempt_count != expected_attempt_count
+        ):
             return None
         run.attempt_count += 1
         run.heartbeat_at = datetime.now(UTC)
@@ -159,7 +165,7 @@ async def record_retry_failure(run_id: uuid.UUID) -> RevalidationRetryPlan | Non
         return RevalidationRetryPlan(run.id, delay, terminal)
 
 
-async def record_revalidation_success(run_id: uuid.UUID) -> bool:
+async def record_revalidation_success(run_id: uuid.UUID, expected_attempt_count: int) -> bool:
     """Close the exact cache incident only after an observed successful refresh."""
 
     sessions = get_async_sessionmaker()
@@ -167,7 +173,11 @@ async def record_revalidation_success(run_id: uuid.UUID) -> bool:
         run = await db.scalar(
             select(OperationRun).where(OperationRun.id == run_id).with_for_update()
         )
-        if run is None or run.state != OperationRunState.RUNNING.value:
+        if (
+            run is None
+            or run.state != OperationRunState.RUNNING.value
+            or run.attempt_count != expected_attempt_count
+        ):
             return False
         run.attempt_count += 1
         run.state = OperationRunState.SUCCEEDED.value
@@ -221,17 +231,24 @@ async def _touch_incident(
     *,
     terminal: bool,
 ) -> Incident:
-    content_id = str(run.request_payload["content_id"])
+    raw_content_id = run.request_payload.get("content_id")
+    hospital_scope = run.request_payload.get("scope") == "HOSPITAL"
+    object_type = "hospital" if hospital_scope else "content_item"
+    object_id = str(run.hospital_id) if hospital_scope else str(raw_content_id)
     return await open_or_touch_incident(
         db,
         IncidentOpenRequest(
             pipeline="site_revalidation",
-            object_type="content_item",
-            object_id=content_id,
+            object_type=object_type,
+            object_id=object_id,
             fingerprint=IncidentFingerprint.CACHE_REVALIDATION_FAILED,
             incident_type="CACHE_REVALIDATION_FAILED",
             severity=IncidentSeverity.HIGH if terminal else IncidentSeverity.MEDIUM,
-            customer_impact="콘텐츠 발행은 완료됐지만 공개 페이지에는 이전 내용이 잠시 보일 수 있습니다.",
+            customer_impact=(
+                "공개 페이지에 병원 정보 변경이 늦게 반영될 수 있습니다."
+                if hospital_scope
+                else "콘텐츠 발행은 완료됐지만 공개 페이지에는 이전 내용이 잠시 보일 수 있습니다."
+            ),
             source_type=_SOURCE_TYPE,
             next_action=(
                 "운영 센터에서 개발팀 문의용 정보를 복사해 전달하세요. 발행 버튼을 다시 누르지 마세요."
@@ -241,7 +258,7 @@ async def _touch_incident(
             admin_path="/operations",
             hospital_id=run.hospital_id,
             operation_run_id=run.id,
-            source_id=content_id,
+            source_id=object_id,
             safe_error_code="CACHE_REVALIDATION_FAILED",
             safe_error_message="공개 페이지 최신화 작업을 완료하지 못했습니다.",
         ),

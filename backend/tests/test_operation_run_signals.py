@@ -212,3 +212,53 @@ async def test_duplicate_delivery_cannot_finish_until_expired_lease_is_reclaimed
         finished = await db.get(OperationRun, run.id)
     assert finished is not None
     assert finished.state == OperationRunState.SUCCEEDED.value
+
+
+@pytest.mark.asyncio
+async def test_broker_marked_worker_loss_redelivery_reclaims_the_same_run(
+    signal_store: tuple[async_sessionmaker[AsyncSession], UUID],
+) -> None:
+    factory, hospital_id = signal_store
+    task = RecordingTask()
+    run = await dispatch_test_run(factory, hospital_id, task, "signal-worker-loss")
+    headers = {"operation_run_id": str(run.id)}
+    lost_worker = SimpleNamespace(request=SimpleNamespace(headers=headers))
+    redelivery = SimpleNamespace(
+        request=SimpleNamespace(
+            headers=headers,
+            delivery_info={"redelivered": True},
+        )
+    )
+    operation_run_signals.track_operation_prerun(
+        task_id=run.task_id,
+        task=lost_worker,
+    )
+    operation_run_signals.track_operation_prerun(
+        task_id=run.task_id,
+        task=redelivery,
+    )
+
+    assert redelivery.request.operation_run_claim_version is not None
+    assert (
+        redelivery.request.operation_run_claim_version
+        > lost_worker.request.operation_run_claim_version
+    )
+    operation_run_signals.track_operation_postrun(
+        task_id=run.task_id,
+        task=lost_worker,
+        state="SUCCESS",
+    )
+    async with factory() as db:
+        still_running = await db.get(OperationRun, run.id)
+    assert still_running is not None
+    assert still_running.state == OperationRunState.RUNNING.value
+
+    operation_run_signals.track_operation_postrun(
+        task_id=run.task_id,
+        task=redelivery,
+        state="SUCCESS",
+    )
+    async with factory() as db:
+        finished = await db.get(OperationRun, run.id)
+    assert finished is not None
+    assert finished.state == OperationRunState.SUCCEEDED.value

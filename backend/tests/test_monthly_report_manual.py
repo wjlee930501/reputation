@@ -988,15 +988,11 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
     )
 
     # When: the monthly batch processes both hospitals
-    result = tasks.run_monthly_reports()
+    with pytest.raises(tasks.MonthlyBatchIncompleteError):
+        tasks.run_monthly_reports()
 
-    # Then: the batch is partial, the success remains committed, and each hospital has truth
-    assert result == {
-        "status": "PARTIAL",
-        "total_count": 2,
-        "success_count": 1,
-        "failure_count": 1,
-    }
+    # Then: Celery retries the incomplete batch, the success remains committed,
+    # and each hospital keeps its own durable truth.
     runs = list(
         monthly_pg_session.execute(
             select(OperationRun).where(
@@ -1050,17 +1046,30 @@ def test_first_day_close_uses_historical_service_interval_not_current_status(
 
     def fake_build(db, hospital, anchor, **_kwargs):
         built.append((hospital.id, anchor.year, anchor.month))
+        report = MonthlyReport(
+            hospital_id=hospital.id,
+            period_year=anchor.year,
+            period_month=anchor.month,
+            report_type="MONTHLY",
+            version=1,
+            quality="COMPLETE",
+            planned_count=20,
+            success_count=20,
+            failed_count=0,
+            doctor_pdf_path="gs://qa-private/historical-doctor.pdf",
+        )
+        db.add(report)
+        db.flush()
         db.add(
-            MonthlyReport(
-                hospital_id=hospital.id,
-                period_year=anchor.year,
-                period_month=anchor.month,
-                report_type="MONTHLY",
-                version=1,
-                quality="BLOCKED",
-                planned_count=0,
-                success_count=0,
-                failed_count=0,
+            MonthlyReportArtifact(
+                report_id=report.id,
+                audience="DOCTOR",
+                path=report.doctor_pdf_path,
+                sha256="b" * 64,
+                byte_size=4096,
+                validated=True,
+                validated_at=datetime.now(timezone.utc),
+                validation_metadata=_valid_artifact_metadata("b" * 64),
             )
         )
         db.commit()
@@ -1085,7 +1094,7 @@ def test_first_day_close_uses_historical_service_interval_not_current_status(
     assert built == [(eligible_paused.id, 2026, 8)]
 
 
-def test_scheduled_replay_keeps_a_prior_failure_visible(
+def test_scheduled_replay_reclaims_a_prior_failure(
     monthly_pg_session: Session, monkeypatch
 ) -> None:
     hospital = Hospital(
@@ -1127,6 +1136,38 @@ def test_scheduled_replay_keeps_a_prior_failure_visible(
             return False
 
     monkeypatch.setattr(tasks, "SyncSessionLocal", SessionContext)
+
+    def fake_build(db, observed_hospital, anchor, **_kwargs):
+        report = MonthlyReport(
+            hospital_id=observed_hospital.id,
+            period_year=anchor.year,
+            period_month=anchor.month,
+            report_type="MONTHLY",
+            version=1,
+            quality="COMPLETE",
+            planned_count=20,
+            success_count=20,
+            failed_count=0,
+            doctor_pdf_path="gs://qa-private/recovered-doctor.pdf",
+        )
+        db.add(report)
+        db.flush()
+        db.add(
+            MonthlyReportArtifact(
+                report_id=report.id,
+                audience="DOCTOR",
+                path=report.doctor_pdf_path,
+                sha256="c" * 64,
+                byte_size=4096,
+                validated=True,
+                validated_at=datetime.now(timezone.utc),
+                validation_metadata=_valid_artifact_metadata("c" * 64),
+            )
+        )
+        db.commit()
+        return "created"
+
+    monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", fake_build)
     monkeypatch.setattr(
         tasks.arrow,
         "now",
@@ -1136,17 +1177,18 @@ def test_scheduled_replay_keeps_a_prior_failure_visible(
     result = tasks.run_monthly_reports()
 
     assert result == {
-        "status": "FAILED",
+        "status": "SUCCEEDED",
         "total_count": 1,
-        "success_count": 0,
-        "failure_count": 1,
+        "success_count": 1,
+        "failure_count": 0,
     }
     monthly_pg_session.refresh(run)
-    assert run.state == OperationRunState.FAILED
-    assert run.result_summary["stage"] == "FAILED"
+    assert run.state == OperationRunState.SUCCEEDED
+    assert run.attempt_count == 2
+    assert run.result_summary["stage"] == "ARTIFACT_VALIDATED"
 
 
-def test_stale_scheduled_run_is_terminalized_with_a_manual_recovery_action(
+def test_stale_scheduled_run_is_reclaimed_for_automatic_recovery(
     monthly_pg_session: Session,
 ) -> None:
     hospital = Hospital(name="월간 중단 의원", slug=f"monthly-stale-{uuid.uuid4().hex}")
@@ -1177,11 +1219,11 @@ def test_stale_scheduled_run_is_terminalized_with_a_manual_recovery_action(
     )
 
     monthly_pg_session.refresh(run)
-    assert (run_id, replayed) == (run.id, True)
-    assert run.state == OperationRunState.FAILED
-    assert run.result_summary["stage"] == "FAILED"
-    assert run.safe_error_code == "MONTHLY_REPORT_RUN_INTERRUPTED"
-    assert "다시 만들기" in (run.safe_error_message or "")
+    assert (run_id, replayed) == (run.id, False)
+    assert run.state == OperationRunState.RUNNING
+    assert run.attempt_count == 2
+    assert run.result_summary["stage"] == "RUNNING"
+    assert run.safe_error_code is None
 
 
 def test_failed_rebuild_does_not_misreport_the_preserved_prior_version_as_success(

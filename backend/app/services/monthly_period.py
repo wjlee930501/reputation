@@ -29,6 +29,7 @@ class MonthlyPeriod:
 
 class ReportBuildReason(StrEnum):
     SCHEDULED_CLOSE = "SCHEDULED_CLOSE"
+    AUTOMATIC_RECOVERY = "AUTOMATIC_RECOVERY"
     MANUAL_REBUILD = "MANUAL_REBUILD"
     LATE_DATA_REBUILD = "LATE_DATA_REBUILD"
 
@@ -129,6 +130,9 @@ def plan_report_version(
                     latest_version, None, reason_code, correlation_key, False
                 )
             return ReportVersionPlan(1, None, reason_code, correlation_key, True)
+        case ReportBuildReason.AUTOMATIC_RECOVERY:
+            if latest_version is None:
+                return ReportVersionPlan(1, None, reason_code, correlation_key, True)
         case ReportBuildReason.MANUAL_REBUILD:
             if latest_version is None:
                 return ReportVersionPlan(1, None, reason_code, correlation_key, True)

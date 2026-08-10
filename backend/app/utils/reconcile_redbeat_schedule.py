@@ -24,7 +24,7 @@ from redbeat.schedulers import RedBeatSchedulerEntry, ensure_conf, get_redis
 
 from app.core.celery_app import REDBEAT_SCHEDULE_VERSION, celery_app
 
-APP_TASK_PREFIX = "app.workers.tasks."
+APP_TASK_PREFIX = "app.workers."
 
 
 @dataclass(frozen=True)
