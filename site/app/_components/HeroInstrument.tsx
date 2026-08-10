@@ -35,7 +35,7 @@ export default function HeroInstrument() {
 
         <p className="instrument-spec">
           {measurementSpec.spec}
-          <span>{measurementSpec.models}</span>
+          <span>{measurementSpec.condition}</span>
         </p>
 
         {/* 방법론을 공개하는 목적. 이게 없으면 위 파라미터는 장식이다. */}

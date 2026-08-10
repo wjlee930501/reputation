@@ -63,13 +63,13 @@ export default function DiagnosisPreview({
       </div>
 
       <div className="dx-results">
-        {rows.map(({ key, vendor, model, Logo, hits }, rowIndex) => (
+        {rows.map(({ key, label, note, Logo, hits }, rowIndex) => (
           <div className="dx-row" key={key}>
             <span className="dx-platform">
               <Logo className="dx-logo" />
               <span className="dx-platform-name">
-                {vendor}
-                <em>{model}</em>
+                {label}
+                <em>{note}</em>
               </span>
             </span>
 
@@ -94,11 +94,9 @@ export default function DiagnosisPreview({
       </div>
 
       <div className="dx-cite">
-        <span className="dx-eyebrow">AI가 인용한 병원 정보</span>
+        <span className="dx-eyebrow">검증 기록</span>
         <p>
-          <strong>{example.answerClinic}</strong>
-          {" — "}
-          {example.answerSources.join(" · ")}
+          질문 원문 · 확인 시각 · 병원명 확인 기준을 함께 공개합니다.
         </p>
       </div>
 

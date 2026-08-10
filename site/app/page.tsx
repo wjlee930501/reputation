@@ -7,7 +7,6 @@ import {
   faqItems,
   faqSection,
   funnelSection,
-  heroScarcity,
   landingHero,
   limitItems,
   limitsSection,
@@ -34,6 +33,7 @@ import { platformSiteUrl } from "@/lib/site-url";
 import { JsonLd } from "./[slug]/_components/JsonLd";
 
 import AnswerExplorer from "./_components/AnswerExplorer";
+import LiveDiagnosisQuota from "./_components/DiagnosisQuota";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
 import MotionToggle from "./_components/MotionToggle";
@@ -152,8 +152,7 @@ export default function Home() {
             </Link>
           </div>
 
-          {/* 제목이 두 로고를 이미 품고 있으므로 하단 "진단 대상" 줄은 중복이라 뺐다. */}
-          <p className="hero-slots-note">{heroScarcity.note}</p>
+          <LiveDiagnosisQuota variant="hero" />
         </div>
       </section>
 
@@ -380,6 +379,8 @@ export default function Home() {
                 {plan.price}
                 <span>{plan.unit}</span>
               </p>
+              <p className="pricing-terms">{plan.vatExcluded ? "부가세 별도" : "부가세 포함"}</p>
+              <p className="pricing-management">{plan.management}</p>
               {/* 고를 근거. 편수가 아니라 우선순위로 나눈다 — 원장이 이미 알고 있는
                   자기 상태가 곧 선택 기준이 된다. */}
               <p className="pricing-note">{plan.note}</p>
@@ -394,6 +395,8 @@ export default function Home() {
           <p className="section-label">{ctaSection.label}</p>
           <h2 id="cta-heading">{ctaSection.heading}</h2>
           <p className="cta-body">{ctaSection.body}</p>
+
+          <LiveDiagnosisQuota variant="cta" />
 
           <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
             {ctaSection.primaryCta}
@@ -415,7 +418,8 @@ export default function Home() {
           390px 헤더는 브랜드·내비·정지버튼·CTA를 동시에 담지 못해 CTA가 잘리고 있었다.
           전환 수단을 헤더에서 빼 여기로 내리면 잘림이 사라지고 누르기도 쉬워진다.
 
-          서버에서 그려 두고 히어로를 지나면 올라온다(`<html data-past-hero>`).
+          서버에서 그려 두고 히어로를 지나면 올라오며, 마지막 신청 섹션에 닿으면 내려간다
+          (`<html data-past-hero>`).
           JS가 죽으면 올라오지 않지만, 그 경우에도 히어로와 최종 CTA는 그대로 남는다. */}
       <div className="mobile-cta">
         <p className="mobile-cta-note">{ctaSection.body}</p>

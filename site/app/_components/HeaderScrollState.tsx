@@ -29,6 +29,7 @@ export default function HeaderScrollState() {
 
     const root = document.documentElement;
     const hero = document.querySelector<HTMLElement>(".hero-section");
+    const finalCta = document.querySelector<HTMLElement>(".cta-section");
 
     let ticking = false;
     let condensed: boolean | null = null;
@@ -50,7 +51,8 @@ export default function HeaderScrollState() {
          기준선을 상수로 박지 않고 히어로의 실제 바닥을 쓴다 — 카피가 길어져 히어로가
          자라도 경계가 따라 움직인다. */
       const heroBottom = hero ? hero.offsetTop + hero.offsetHeight : CONDENSE_AT;
-      const nextPast = y > heroBottom;
+      const finalCtaTop = finalCta ? finalCta.offsetTop : Number.POSITIVE_INFINITY;
+      const nextPast = y > heroBottom && y + window.innerHeight < finalCtaTop;
       if (nextPast !== pastHero) {
         pastHero = nextPast;
         if (nextPast) root.setAttribute("data-past-hero", "");

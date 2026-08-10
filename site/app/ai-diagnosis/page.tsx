@@ -32,7 +32,12 @@ export default function AiDiagnosisPage() {
             입력하신 <strong>지역·진료과·키워드</strong>로 환자가 쓸 법한 질문 3개를 만듭니다.
           </li>
           <li>
-            그 질문을 <strong>ChatGPT(OpenAI API)와 Gemini API에 각각 3번씩</strong> 던집니다.
+            그 질문을{' '}
+            <strong>
+              <span className="dg-no-break">ChatGPT(OpenAI API)</span>와{' '}
+              <span className="dg-no-break">Gemini API</span>에 각각 3번씩
+            </strong>{' '}
+            던집니다.
           </li>
           <li>
             답변에 병원 이름이 나왔는지 세어, <strong>18번 중 몇 번</strong> 나왔는지 알려드립니다.

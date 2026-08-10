@@ -1,7 +1,8 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { DiagnosisQuota, useDiagnosisSlots } from '@/app/_components/DiagnosisQuota'
 import {
   EMPTY_FORM,
   type DiagnosisFormValues,
@@ -11,8 +12,6 @@ import {
   toRequestPayload,
   validateDiagnosisForm,
 } from '@/lib/diagnosis-form'
-
-type SlotInfo = { total: number; used: number; remaining: number }
 
 type Submission =
   | { phase: 'idle' }
@@ -58,22 +57,7 @@ export default function DiagnosisForm() {
   const [values, setValues] = useState<DiagnosisFormValues>(EMPTY_FORM)
   const [errors, setErrors] = useState<FieldErrors>({})
   const [submission, setSubmission] = useState<Submission>({ phase: 'idle' })
-  const [slots, setSlots] = useState<SlotInfo | null>(null)
-
-  // 남은 자리는 실제 카운터다. 희소성을 연출하려고 숫자를 꾸미지 않는다 —
-  // 방법론 공개가 이 제품의 차별점인데 카운터를 꾸미면 그 주장이 무너진다.
-  useEffect(() => {
-    let cancelled = false
-    fetch('/api/diagnosis/slots', { cache: 'no-store' })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data) => {
-        if (!cancelled && data) setSlots(data)
-      })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const slots = useDiagnosisSlots()
 
   const emailSuggestion = useMemo(() => suggestEmailCorrection(values.email), [values.email])
   const soldOut = slots !== null && slots.remaining <= 0
@@ -144,11 +128,7 @@ export default function DiagnosisForm() {
 
   return (
     <div className="dg-panel">
-      {slots && (
-        <p className="dg-slots" aria-live="polite">
-          오늘 남은 자리 <strong>{slots.remaining}</strong> / {slots.total}
-        </p>
-      )}
+      <DiagnosisQuota slots={slots} variant="form" />
 
       <p className="dg-once-notice">
         <strong>한 병원당 딱 한 번만 신청할 수 있습니다.</strong> 대표번호와 이메일 모두 재신청이

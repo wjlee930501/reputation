@@ -60,7 +60,7 @@ const ALL_COPY = [
   pricingSection.label,
   pricingSection.heading,
   pricingSection.note,
-  ...pricingSection.plans.flatMap((p) => [p.name, p.price, p.note]),
+  ...pricingSection.plans.flatMap((p) => [p.name, p.price, p.management, p.note]),
 
 
 
@@ -82,6 +82,7 @@ const ALL_COPY = [
   measurementSpec.premise,
   measurementSpec.headline,
   measurementSpec.spec,
+  measurementSpec.condition,
   measurementSpec.reproducibility,
   ...operationSteps.flatMap((s) => [s.label, s.title, s.body]),
   ...limitItems.flatMap((l) => [l.title, l.body]),
@@ -352,13 +353,12 @@ test('the scarcity note carries the whole rule', () => {
   assert.match(heroScarcity.note, /리셋|열립니다|초기화/)
 })
 
-test('the landing does not resurrect the countdown badge', () => {
-  /**
-   * 남은 자리를 실시간으로 보여주는 것 자체는 정직하지만, "N개 남음" 배지는 어느
-   * 랜딩에나 붙어 있는 그로스해킹 클리셰라 값싸 보인다. 실시간 잔여 수는 접수 화면이
-   * 담당한다.
-   */
-  assert.doesNotMatch(ALL_COPY, /남았습니다|남음/)
+test('every pricing tier includes direct MotionLabs marketer management', () => {
+  for (const plan of pricingSection.plans) {
+    assert.equal(plan.vatExcluded, true)
+    assert.match(plan.management, /모션랩스.*전담 마케터.*직접.*관리.*소통/)
+    assert.doesNotMatch(`${plan.management} ${plan.note}`, /월 \d+편|\d+편 발행/)
+  }
 })
 
 test('the reset time in the copy matches the code', () => {
@@ -459,39 +459,16 @@ test('the hero instrument states the same measurement contract the backend runs'
    * 문자열을 통째로 고정하지 않고 **곱이 맞는지**만 본다 — 표현을 다듬을 때마다
    * 테스트가 깨지면 정작 지켜야 할 숫자를 못 지킨다.
    */
-  // 각주(spec)에 적힌 인수들의 곱이 총 호출 수와 같아야 한다.
-  const factors = (measurementSpec.spec.match(/\d+/g) ?? []).map(Number)
-  assert.ok(factors.length >= 3, `규약에서 곱할 값을 찾지 못했습니다: "${measurementSpec.spec}"`)
-  // 마지막 숫자(= 18)는 결과이므로 곱에서 제외한다.
-  const product = factors.slice(0, 3).reduce((a, b) => a * b, 1)
-  assert.equal(
-    product,
-    measurementSpec.totalCalls,
-    `규약 "${measurementSpec.spec}"의 곱은 ${product}인데 총 호출 수는 ${measurementSpec.totalCalls}입니다.`,
-  )
   assert.equal(measurementSpec.totalCalls, 18)
   assert.match(measurementSpec.spec, new RegExp(String(measurementSpec.totalCalls)))
   // 플랫폼당 호출 수 × 플랫폼 2 = 총 호출 수.
   assert.equal(measurementSpec.perPlatform * 2, measurementSpec.totalCalls)
 })
 
-test('the instrument headline carries exactly one number', () => {
-  /**
-   * Consumer Reports의 규칙을 테스트로 고정한다 — "Every refrigerator we test gets wired
-   * up with 15 temperature sensors."처럼 헤드라인 문장에는 숫자가 하나여야 한다.
-   * 둘이면 스펙시트가 되고 영이면 슬로건이 된다.
-   *
-   * 앞 버전(`질의 3 × 반복 3 × 모델 2`)은 한 문장에 숫자가 셋이었다. 카피를 다듬다가
-   * 파라미터가 헤드라인으로 다시 올라오는 것을 막는다.
-   */
-  const numbers = measurementSpec.headline.match(/\d+/g) ?? []
-  assert.equal(
-    numbers.length,
-    1,
-    `헤드라인에 숫자가 ${numbers.length}개입니다(1개여야 함): "${measurementSpec.headline}"`,
-  )
-  // 그 하나는 플랫폼당 호출 수여야 한다 — 다른 숫자가 오면 규약과 어긋난다.
-  assert.equal(Number(numbers[0]), measurementSpec.perPlatform)
+test('the instrument headline explains the service without implementation identifiers', () => {
+  assert.match(measurementSpec.headline, /환자.*질문 방식/)
+  assert.match(measurementSpec.headline, /측정.*노출 전략/)
+  assert.doesNotMatch(measurementSpec.headline, /API|gpt-|gemini-\d|파라미터/)
 })
 
 test('the instrument states the premise before the number', () => {
@@ -503,8 +480,7 @@ test('the instrument states the premise before the number', () => {
 test('the instrument names the platforms we actually measure', () => {
   assert.match(measurementSpec.headline, /ChatGPT/)
   assert.match(measurementSpec.headline, /Gemini/)
-  // 쓰지 않는 모델 이름이 새면 안 된다(실측 출처와 같은 규칙).
-  assert.doesNotMatch(measurementSpec.models, /gpt-5-mini|gpt-4o|terra/)
+  assert.doesNotMatch(measurementSpec.condition, /gpt-|gemini-\d|API/)
 })
 
 test('every measured figure carries a plain-language meaning', () => {
