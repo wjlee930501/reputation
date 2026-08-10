@@ -7,6 +7,14 @@ import pytest
 from app.core.celery_app import celery_app
 from app.workers import dispatch_auth, generation_run_control
 
+CANARY_TASKS = {
+    "app.workers.canary_tasks.canary_default": "canary-default",
+    "app.workers.canary_tasks.canary_content": "canary-content",
+    "app.workers.canary_tasks.canary_sov": "canary-sov",
+    "app.workers.canary_tasks.canary_reports": "canary-reports",
+    "app.workers.canary_tasks.canary_leadgen": "canary-leadgen",
+}
+
 
 def _task(
     headers: dict[str, str] | None,
@@ -95,6 +103,34 @@ def test_scheduled_dispatch_cannot_be_reused_for_another_job(monkeypatch) -> Non
             kwargs={},
             now=1_700_000_001,
         )
+
+
+@pytest.mark.parametrize(("task_name", "purpose"), CANARY_TASKS.items())
+def test_queue_canary_stamp_preserves_the_task_local_purpose(
+    monkeypatch, task_name: str, purpose: str
+) -> None:
+    monkeypatch.setattr(dispatch_auth.settings, "APP_ENV", "production")
+    monkeypatch.setattr(
+        dispatch_auth.settings, "WORKER_DISPATCH_SECRET", "worker-only-secret-32-bytes-minimum"
+    )
+    monkeypatch.setattr(dispatch_auth.settings, "REPUTATION_RELEASE_REVISION", "release-a")
+    headers = dispatch_auth.stamp_dispatch_headers(
+        task_name=task_name,
+        task_id=f"{purpose}-task",
+        args=[],
+        kwargs={},
+        retries=0,
+        headers=dispatch_auth.build_dispatch_headers(purpose),
+        now=1_700_000_000,
+    )
+
+    dispatch_auth.require_dispatch(
+        _task(headers, task_id=f"{purpose}-task"),
+        purpose,
+        args=[],
+        kwargs={},
+        now=1_700_000_001,
+    )
 
 
 def test_every_routed_worker_task_is_protected_by_the_authenticated_base() -> None:
