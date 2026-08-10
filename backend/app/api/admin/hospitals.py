@@ -291,7 +291,17 @@ def _serialize_readiness_check(check: ReadinessCheck) -> dict:
 # site/lib/host-routing.ts의 RESERVED_PREFIXES와 동기 유지해야 한다.
 # 한쪽만 고치면 "등록은 되는데 페이지가 안 열리는 병원"이 조용히 생긴다.
 RESERVED_SITE_SLUGS = frozenset(
-    {"api", "ai-diagnosis", "landing", "privacy", "terms", "robots", "sitemap", "favicon"}
+    {
+        ".well-known",
+        "api",
+        "ai-diagnosis",
+        "landing",
+        "privacy",
+        "terms",
+        "robots",
+        "sitemap",
+        "favicon",
+    }
 )
 
 

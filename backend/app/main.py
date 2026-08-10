@@ -132,6 +132,11 @@ class PublicApiCacheMiddleware(BaseHTTPMiddleware):
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
             response.headers["Referrer-Policy"] = "no-referrer"
             return response
+        if request.url.path.startswith(
+            "/api/v1/public/site/hospitals/health/by-domain/"
+        ):
+            response.headers["Cache-Control"] = "no-store, private"
+            return response
         if request.method != "GET":
             response.headers["Cache-Control"] = "no-store"
             return response

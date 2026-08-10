@@ -1,15 +1,24 @@
 """Trigger Next.js site revalidation after public-surface mutations."""
+
 import logging
 import re
 import unicodedata
+import uuid
 from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException
 
 from app.core.config import settings
+from app.services.site_revalidation_control import (
+    REVALIDATION_RETRY_DELAYS_SECONDS as _REVALIDATION_RETRY_DELAYS_SECONDS,
+)
+from app.services.site_revalidation_control import (
+    start_revalidation_failure,
+)
 
 logger = logging.getLogger(__name__)
+REVALIDATION_RETRY_DELAYS_SECONDS = _REVALIDATION_RETRY_DELAYS_SECONDS
 
 # site/lib/treatment-slug.ts buildTreatmentSlug와 동일한 규칙 — pillar URL이 양쪽에서
 # 어긋나면 revalidate가 잘못된 경로를 두드린다.
@@ -128,34 +137,41 @@ async def trigger_content_site_revalidate_safe(
     발행 커밋 뒤 revalidate 실패로 500을 돌려주면 AE는 실패로 인지하고 재시도하다
     "Already published"를 만난다. 프로덕션 포함, 경고 로그 + Slack 운영 알림으로 강등.
     """
-    from app.services import notifier
-
     try:
         return await trigger_site_revalidate(paths=content_site_paths(slug, content_id, treatments))
     except Exception as exc:
-        logger.warning(
-            "post-commit site revalidate failed for %s/%s: %s", slug, content_id, exc
-        )
+        logger.warning("post-commit site revalidate failed: code=%s", exc.__class__.__name__)
         try:
-            await notifier.notify_ops_alert(
-                title="공개 페이지 캐시 무효화 실패",
-                message=(
-                    f"병원: {hospital_name or slug}\n"
-                    f"콘텐츠: `{content_id}`\n"
-                    f"발행/반려는 정상 반영되었지만 공개 페이지 캐시 갱신에 실패했습니다.\n"
-                    f"오류: `{str(exc)[:200]}`\n"
-                    f"공개 페이지가 잠시 이전 상태로 보일 수 있습니다. 필요 시 수동 재검증해 주세요."
-                ),
-            )
+            parsed_content_id = uuid.UUID(str(content_id))
+        except (TypeError, ValueError):
+            logger.warning("revalidation failure has invalid content identity")
+            return False
+        try:
+            plan = await start_revalidation_failure(slug, parsed_content_id)
+            if plan is None:
+                logger.warning(
+                    "durable revalidation recovery skipped: code=tenant_or_publication_not_found"
+                )
+            elif plan.created and plan.delay_seconds is not None:
+                from app.core.celery_app import celery_app
+
+                celery_app.send_task(
+                    "app.workers.tasks.retry_site_revalidation",
+                    args=[str(plan.run_id)],
+                    queue="default",
+                    countdown=plan.delay_seconds,
+                )
         except Exception:
-            logger.exception("revalidate failure ops alert delivery failed (non-fatal)")
+            logger.exception("durable revalidation recovery setup failed (non-fatal)")
         return False
 
 
 async def trigger_site_revalidate(*, paths: list[str]) -> bool:
     if not settings.SITE_REVALIDATE_URL or not settings.SITE_REVALIDATE_SECRET:
         if settings.APP_ENV.lower() == "production":
-            raise RuntimeError("SITE_REVALIDATE_URL and SITE_REVALIDATE_SECRET are required in production")
+            raise RuntimeError(
+                "SITE_REVALIDATE_URL and SITE_REVALIDATE_SECRET are required in production"
+            )
         return False
     clean_paths = _normalize_paths(paths)
     try:

@@ -2,6 +2,7 @@
 import pytest
 
 from app.services import site_revalidate
+from app.services.site_revalidation_control import RevalidationRetryPlan
 
 
 def test_hospital_site_paths_include_root_llms_and_treatment_pillars():
@@ -37,29 +38,38 @@ def test_build_treatment_slug_matches_site_rules():
 
 
 async def test_trigger_content_site_revalidate_safe_never_raises(monkeypatch):
-    """발행 커밋 이후 revalidate 실패는 500 대신 경고+Slack 운영 알림 (P2-9b)."""
-    alerts = []
+    """발행 커밋 이후 실패는 발행을 되돌리지 않고 내구성 있는 재시도로 넘긴다."""
+    scheduled = []
 
     async def boom(*, paths):
         raise RuntimeError("revalidate endpoint down")
 
-    async def fake_ops_alert(*, title, message):
-        alerts.append({"title": title, "message": message})
-        return True
+    async def fake_start(slug, content_id):
+        assert slug == "test-clinic"
+        return RevalidationRetryPlan(content_id, 60, False, True)
 
-    from app.services import notifier
+    def fake_send_task(name, *, args, queue, countdown):
+        scheduled.append((name, args, queue, countdown))
 
     monkeypatch.setattr(site_revalidate, "trigger_site_revalidate", boom)
-    monkeypatch.setattr(notifier, "notify_ops_alert", fake_ops_alert)
+    monkeypatch.setattr(site_revalidate, "start_revalidation_failure", fake_start)
+    from app.core.celery_app import celery_app
+
+    monkeypatch.setattr(celery_app, "send_task", fake_send_task)
 
     ok = await site_revalidate.trigger_content_site_revalidate_safe(
-        "test-clinic", "content-1", hospital_name="테스트의원"
+        "test-clinic", "f5aa8f49-fc76-46b6-b6d5-d372dad2522a", hospital_name="테스트의원"
     )
 
     assert ok is False
-    assert len(alerts) == 1
-    assert "캐시 무효화 실패" in alerts[0]["title"]
-    assert "테스트의원" in alerts[0]["message"]
+    assert scheduled == [
+        (
+            "app.workers.tasks.retry_site_revalidation",
+            ["f5aa8f49-fc76-46b6-b6d5-d372dad2522a"],
+            "default",
+            60,
+        )
+    ]
 
 
 async def test_trigger_content_site_revalidate_safe_returns_true_on_success(monkeypatch):
@@ -75,3 +85,7 @@ async def test_trigger_content_site_revalidate_safe_returns_true_on_success(monk
 @pytest.mark.parametrize("path", ["", "no-slash", None])
 def test_normalize_paths_drops_invalid(path):
     assert site_revalidate._normalize_paths([path, "/ok"]) == ["/ok"]
+
+
+def test_publication_revalidation_has_bounded_operator_escalation_schedule():
+    assert site_revalidate.REVALIDATION_RETRY_DELAYS_SECONDS == (60, 300, 900)

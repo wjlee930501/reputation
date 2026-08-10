@@ -3,6 +3,7 @@
 import uuid
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -10,6 +11,7 @@ from app.api.admin import domain as domain_api
 from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
+from app.workers import tasks
 
 
 class FakeDB:
@@ -35,6 +37,65 @@ class FakeDB:
 
     async def commit(self):
         self.committed = True
+
+
+def test_live_domain_check_rejects_redirect_without_following_it():
+    requests: list[httpx.Request] = []
+
+    def redirecting_handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            302,
+            headers={"location": "https://unrelated.example.net/"},
+            request=request,
+        )
+
+    with httpx.Client(
+        transport=httpx.MockTransport(redirecting_handler),
+        follow_redirects=False,
+        timeout=httpx.Timeout(10.0, connect=5.0),
+    ) as client:
+        healthy, reason = tasks._check_custom_domain_https(
+            client,
+            "clinic.example.com",
+            expected_hospital_id=uuid.uuid4(),
+            expected_slug="jang-clinic",
+        )
+
+    assert healthy is False
+    assert reason == "redirect_not_allowed"
+    assert requests[0].url.path == "/.well-known/reputation-health"
+
+
+def test_live_domain_check_rejects_another_hospital_marker():
+    expected_hospital_id = uuid.uuid4()
+
+    def wrong_tenant_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "hospital_id": str(uuid.uuid4()),
+                "slug": "other-clinic",
+                "canonical_host": "clinic.example.com",
+                "release": "site-r17",
+            },
+            request=request,
+        )
+
+    with httpx.Client(
+        transport=httpx.MockTransport(wrong_tenant_handler),
+        follow_redirects=False,
+        timeout=httpx.Timeout(10.0, connect=5.0),
+    ) as client:
+        healthy, reason = tasks._check_custom_domain_https(
+            client,
+            "clinic.example.com",
+            expected_hospital_id=expected_hospital_id,
+            expected_slug="jang-clinic",
+        )
+
+    assert healthy is False
+    assert reason == "tenant_marker_mismatch"
 
 
 def _hospital(**overrides):

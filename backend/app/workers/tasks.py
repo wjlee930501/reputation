@@ -12,7 +12,6 @@ Celery 태스크 전체
 """
 
 import asyncio
-import hashlib
 import logging
 import threading
 import uuid
@@ -61,6 +60,7 @@ from app.services.content_publish_notifications import enqueue_publish_notificat
 from app.services.content_publish_reconciliation import reconcile_sent_publish_notifications
 from app.services.content_publish_state import recover_publish_notification_sync
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
+from app.services.domain_health_control import record_domain_health_check
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     build_monthly_essence_summary,
@@ -87,9 +87,15 @@ from app.services.report_engine import (
     generate_pdf_report,
 )
 from app.services.site_revalidate import (
+    content_site_paths,
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
     trigger_hospital_site_revalidate_safe,
+    trigger_site_revalidate,
+)
+from app.services.site_revalidation_control import (
+    record_retry_failure,
+    record_revalidation_success,
 )
 from app.services.sov_engine import (
     MENTION_RATE_INTENTS,
@@ -3150,32 +3156,107 @@ def generate_monthly_report_for_hospital(
     return {"status": outcome, "year": anchor.year, "month": anchor.month}
 
 
-# ══════════════════════════════════════════════════════════════════
-# 신규 런타임 도메인 HTTPS 상태 감시 — Terraform 정적 목록 밖까지 포함
-# ══════════════════════════════════════════════════════════════════
-def _domain_health_incident_key(domain: str) -> str:
-    digest = hashlib.sha256(domain.encode("utf-8")).hexdigest()[:16]
-    return f"reputation:domain-health:incident:{digest}"
-
-
 def _check_custom_domain_https(
     client: httpx.Client,
     domain: str,
+    *,
+    expected_hospital_id: uuid.UUID,
+    expected_slug: str,
 ) -> tuple[bool, str]:
     try:
-        response = client.get(f"https://{domain}/")
+        response = client.get(f"https://{domain}/.well-known/reputation-health")
     except httpx.TimeoutException:
         return False, "timeout"
     except httpx.HTTPError:
         return False, "tls_or_network_error"
-    if 200 <= response.status_code < 400:
-        return True, f"http_{response.status_code}"
+    if 300 <= response.status_code < 400:
+        return False, "redirect_not_allowed"
+    if response.status_code == 200:
+        try:
+            marker = response.json()
+        except ValueError:
+            return False, "invalid_tenant_marker"
+        if not isinstance(marker, dict):
+            return False, "invalid_tenant_marker"
+        matches = (
+            marker.get("hospital_id") == str(expected_hospital_id)
+            and marker.get("slug") == expected_slug
+            and marker.get("canonical_host") == domain
+            and isinstance(marker.get("release"), str)
+            and bool(marker["release"].strip())
+        )
+        return (True, "tenant_marker_ok") if matches else (False, "tenant_marker_mismatch")
     return False, f"http_{response.status_code}"
 
 
+def _site_revalidation_context(
+    run_id: uuid.UUID,
+) -> tuple[str, uuid.UUID, list[dict]] | None:
+    with SyncSessionLocal() as db:
+        run = db.get(OperationRun, run_id)
+        if run is None or run.state != OperationRunState.RUNNING.value:
+            return None
+        raw_content_id = run.request_payload.get("content_id")
+        try:
+            content_id = uuid.UUID(str(raw_content_id))
+        except (TypeError, ValueError):
+            return None
+        content = db.get(ContentItem, content_id)
+        hospital = db.get(Hospital, run.hospital_id)
+        if (
+            content is None
+            or hospital is None
+            or content.hospital_id != hospital.id
+            or content.status != ContentStatus.PUBLISHED
+        ):
+            return None
+        treatments = hospital.treatments if isinstance(hospital.treatments, list) else []
+        return hospital.slug, content.id, treatments
+
+
+@celery_app.task(name="app.workers.tasks.retry_site_revalidation")
+def retry_site_revalidation(run_id: str):
+    """Retry only the public cache refresh; never repeat or undo publication."""
+
+    try:
+        parsed_run_id = uuid.UUID(run_id)
+    except (TypeError, ValueError):
+        return {"status": "invalid_run"}
+    context = _site_revalidation_context(parsed_run_id)
+    refreshed = False
+    if context is not None:
+        slug, content_id, treatments = context
+        try:
+            refreshed = bool(
+                _run_async(
+                    trigger_site_revalidate(paths=content_site_paths(slug, content_id, treatments))
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — bounded retry records a safe code below.
+            logger.warning("site revalidation retry failed: code=%s", exc.__class__.__name__)
+    if refreshed:
+        recorded = _run_async(record_revalidation_success(parsed_run_id))
+        return {"status": "recovered" if recorded else "stale_run"}
+
+    plan = _run_async(record_retry_failure(parsed_run_id))
+    if plan is None:
+        return {"status": "stale_run"}
+    if plan.delay_seconds is not None:
+        retry_site_revalidation.apply_async(
+            args=[str(parsed_run_id)],
+            queue="default",
+            countdown=plan.delay_seconds,
+        )
+        return {"status": "retry_scheduled", "delay_seconds": plan.delay_seconds}
+    return {"status": "operator_action_required"}
+
+
+# ══════════════════════════════════════════════════════════════════
+# 신규 런타임 도메인 HTTPS 상태 감시 — Terraform 정적 목록 밖까지 포함
+# ══════════════════════════════════════════════════════════════════
 @celery_app.task(name="app.workers.tasks.monitor_live_custom_domains")
 def monitor_live_custom_domains():
-    """모든 LIVE 자기 도메인의 실제 TLS/Host routing 응답을 주기적으로 확인한다."""
+    """Persist every tenant marker check; Redis is never incident truth."""
     with SyncSessionLocal() as db:
         hospitals = (
             db.execute(
@@ -3189,53 +3270,46 @@ def monitor_live_custom_domains():
             .all()
         )
 
-    new_failures: list[tuple[str, str]] = []
-    recoveries: list[str] = []
-    with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+    new_failures = 0
+    recoveries = 0
+    state_unavailable = 0
+    timeout = httpx.Timeout(10.0, connect=5.0)
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for hospital in hospitals:
             domain = (hospital.aeo_domain or "").strip().lower()
             if not domain:
                 continue
-            healthy, reason = _check_custom_domain_https(client, domain)
-            incident_key = _domain_health_incident_key(domain)
+            healthy, reason = _check_custom_domain_https(
+                client,
+                domain,
+                expected_hospital_id=hospital.id,
+                expected_slug=hospital.slug,
+            )
             try:
-                incident_open = bool(_get_redis().get(incident_key))
-                if healthy:
-                    if incident_open:
-                        _get_redis().delete(incident_key)
-                        recoveries.append(domain)
-                elif not incident_open:
-                    _get_redis().set(incident_key, reason, ex=21_600)
-                    new_failures.append((domain, reason))
-            except Exception:
-                logger.warning("Domain health incident state unavailable: domain=%s", domain)
-                if not healthy:
-                    new_failures.append((domain, reason))
-
-            if not healthy:
-                logger.error(
-                    "Custom domain health check failed: domain=%s reason=%s", domain, reason
+                outcome = _run_async(
+                    record_domain_health_check(
+                        hospital_id=hospital.id,
+                        canonical_host=domain,
+                        healthy=healthy,
+                        safe_reason=reason,
+                    )
+                )
+                new_failures += int(outcome.incident_opened)
+                recoveries += int(outcome.incident_recovered)
+            except Exception as exc:  # noqa: BLE001 — no fallback may invent incident truth.
+                state_unavailable += 1
+                logger.warning(
+                    "domain health persistence unavailable: code=%s",
+                    exc.__class__.__name__,
                 )
 
-    if new_failures:
-        lines = "\n".join(f"• {domain}: {reason}" for domain, reason in new_failures[:20])
-        _run_async(
-            notifier.notify_ops_alert(
-                title=f"병원 커스텀 도메인 장애 {len(new_failures)}건",
-                message=f"실제 HTTPS/Host routing 확인 실패:\n{lines}",
-            )
-        )
-    if recoveries:
-        _run_async(
-            notifier.notify_ops_alert(
-                title=f"병원 커스텀 도메인 복구 {len(recoveries)}건",
-                message="HTTPS 응답 복구: " + ", ".join(recoveries[:20]),
-            )
-        )
+            if not healthy:
+                logger.warning("custom domain marker rejected: reason=%s", reason)
     return {
         "checked": len(hospitals),
-        "new_failures": len(new_failures),
-        "recoveries": len(recoveries),
+        "new_failures": new_failures,
+        "recoveries": recoveries,
+        "state_unavailable": state_unavailable,
     }
 
 

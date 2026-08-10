@@ -451,13 +451,13 @@ def _empty_category_usage(category: str) -> dict:
     return {
         "category": category,
         "label": _CATEGORY_LABELS[category],
-        "daily_used": 0,
+        "daily_used": None,
         "daily_limit": daily_limit,
         "daily_limit_default": daily_limit,
-        "monthly_used": 0,
+        "monthly_used": None,
         "monthly_limit": monthly_limit,
-        "daily_actual": 0,
-        "monthly_actual": 0,
+        "daily_actual": None,
+        "monthly_actual": None,
     }
 
 
@@ -472,7 +472,8 @@ async def get_usage_snapshot(*, redis_client: redis_async.Redis | None = None) -
     daily_period = _daily_period(now)
     monthly_period = _monthly_period(now)
 
-    kill_switch_active = False
+    available = True
+    kill_switch_active: bool | None = False
     categories: list[dict] = []
     try:
         kill_switch_active = await _is_kill_switch_active(client)
@@ -502,12 +503,14 @@ async def get_usage_snapshot(*, redis_client: redis_async.Redis | None = None) -
                 }
             )
     except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
-        # 대시보드 조회 실패가 500으로 번지지 않게 — 상한만이라도 표기한다(사용량 0 표시).
+        # 관측 실패를 0건/정상으로 위장하지 않는다. 설정 상한만 남기고 실제 값은 명시적으로 비운다.
         logger.warning("cost_guard snapshot degraded (redis unavailable): %s", exc.__class__.__name__)
-        if not categories:
-            categories = [_empty_category_usage(category) for category in CATEGORIES]
+        available = False
+        kill_switch_active = None
+        categories = [_empty_category_usage(category) for category in CATEGORIES]
 
     return {
+        "availability": "AVAILABLE" if available else "UNAVAILABLE",
         "enabled": settings.COST_GUARD_ENABLED,
         "kill_switch_active": kill_switch_active,
         "categories": categories,

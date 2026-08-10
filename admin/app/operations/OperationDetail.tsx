@@ -95,7 +95,7 @@ export function OperationDetail(props: Props) {
     if (permissionDenied) window.requestAnimationFrame(() => copyButton.current?.focus())
   }, [permissionDenied])
   if (!row) {
-    return <aside className="ops-detail ops-detail--empty" aria-label="작업 상세"><p className="font-semibold text-slate-700">목록에서 작업을 선택하면 처리 순서와 이력이 표시됩니다.</p></aside>
+    return <aside className="ops-detail ops-detail--empty" aria-label="작업 상세"><p className="ops-readable font-semibold text-slate-700">목록에서 작업을 선택하면 처리 순서와 이력이 표시됩니다.</p></aside>
   }
 
   const effectiveDetail: OperationsIncidentDetail = detail ?? { incident: row, run: null }

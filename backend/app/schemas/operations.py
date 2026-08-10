@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -10,20 +11,21 @@ from pydantic import BaseModel, ConfigDict, Field
 class CostGuardCategoryUsage(BaseModel):
     category: str
     label: str
-    daily_used: int
+    daily_used: int | None
     daily_limit: int
     # 설정 기본값. daily_limit과 다르면 오늘치 임시 상향이 걸려 있다는 뜻이다.
     daily_limit_default: int = 0
-    monthly_used: int
+    monthly_used: int | None
     monthly_limit: int
     # 예약 수(*_used)와 실제 공급자 호출 수(*_actual)가 벌어지면 재시도 증폭 신호다.
-    daily_actual: int = 0
-    monthly_actual: int = 0
+    daily_actual: int | None = None
+    monthly_actual: int | None = None
 
 
 class CostGuardStatusResponse(BaseModel):
+    availability: Literal["AVAILABLE", "UNAVAILABLE"] = "AVAILABLE"
     enabled: bool
-    kill_switch_active: bool
+    kill_switch_active: bool | None
     categories: list[CostGuardCategoryUsage]
 
 

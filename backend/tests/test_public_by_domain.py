@@ -1,6 +1,7 @@
 """커스텀 도메인 → 병원 역조회 (GET /api/v1/public/site/hospitals/by-domain/{domain})
 + 도메인 정규화 유틸 (조회/저장 공용 규칙).
 """
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -81,6 +82,7 @@ def _request():
 
 def _hospital():
     return SimpleNamespace(
+        id=uuid.uuid4(),
         slug="jang-clinic",
         name="장편한외과의원",
         aeo_domain="clinic.example.com",
@@ -173,3 +175,24 @@ async def test_by_domain_multi_label_subdomain_uses_aeo_domain_path(monkeypatch)
     assert exc_info.value.status_code == 404
     params = db.statements[0].compile().params
     assert "a.b.reputation.motionlabs.kr" in params.values()
+
+
+def test_tenant_health_lookup_route_is_publicly_available():
+    route_paths = {route.path for route in site_api.domain_router.routes}
+
+    assert "/public/site/hospitals/health/by-domain/{domain}" in route_paths
+
+
+async def test_tenant_health_lookup_returns_only_requested_tenant_identity():
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    response = await site_api.get_tenant_health_by_domain.__wrapped__(
+        _request(), "Clinic.Example.COM:443", db=db
+    )
+
+    assert response.model_dump(mode="json") == {
+        "hospital_id": str(hospital.id),
+        "slug": "jang-clinic",
+        "canonical_host": "clinic.example.com",
+    }

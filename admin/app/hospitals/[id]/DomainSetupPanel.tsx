@@ -232,7 +232,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   }
 
   return (
-    <section className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+    <section id="domain-setup" className="scroll-mt-20 overflow-hidden rounded-xl border border-slate-200 bg-white">
       <div className="border-b border-slate-100 bg-blue-50 px-4 py-5 sm:px-6">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -289,7 +289,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
                   type="button"
                   onClick={handleActivatePlatform}
                   disabled={platformActivating || activationMissing.length > 0 || Boolean(currentDomain || domainSavedValue)}
-                  className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="min-h-11 w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {platformActivating
                     ? '운영 전환 중...'
@@ -327,7 +327,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
             type="button"
             onClick={handleSaveDomain}
             disabled={domainSaving || !currentDomain || !hasUnsavedChange}
-            className="self-end px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="min-h-11 self-end rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {domainSaving ? '저장 중...' : '도메인 저장'}
           </button>
@@ -361,7 +361,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
             병원 정보 허브 운영중 · {currentDomain}
           </a>
         ) : (
-          <button type="button" onClick={handleVerifyDomain} disabled={domainVerifying || !domainSavedValue || hasUnsavedChange} className="w-full py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">
+          <button type="button" onClick={handleVerifyDomain} disabled={domainVerifying || !domainSavedValue || hasUnsavedChange} className="min-h-11 w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
             {domainVerifying ? 'DNS 확인 중...' : hasUnsavedChange ? '변경한 도메인을 먼저 저장해 주세요' : !domainSavedValue ? '도메인을 먼저 저장해 주세요' : 'DNS 확인하고 운영 시작'}
           </button>
         )}

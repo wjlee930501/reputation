@@ -47,6 +47,7 @@ test('isPrimaryHost: platform, localhost with port, 127.0.0.1, run.app, vercel.a
 test('isReservedPath: platform-owned paths and static files are reserved', () => {
   assert.equal(isReservedPath('/_next/data/x.json'), true)
   assert.equal(isReservedPath('/api/leads'), true)
+  assert.equal(isReservedPath('/.well-known/reputation-health'), true)
   assert.equal(isReservedPath('/landing'), true)
   assert.equal(isReservedPath('/privacy'), true)
   assert.equal(isReservedPath('/terms'), true)

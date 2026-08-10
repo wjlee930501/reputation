@@ -9,18 +9,20 @@
 여기서 검증하지 않으면 조용히 덮인 채로 배포된다. 그래서 라우트가 아니라
 **미들웨어를 직접** 시험한다 — DB 없이 돌고, 덮어쓰기 규칙 자체를 겨눈다.
 """
+
 import pytest
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from fastapi.testclient import TestClient
 
-from app.main import PublicApiCacheMiddleware
+from app.main import PublicApiCacheMiddleware, SecurityHeadersMiddleware
 
 
 @pytest.fixture
 def client():
     """미들웨어만 얹은 최소 앱. 라우트는 프로덕션과 같은 경로 모양을 흉내낸다."""
     app = FastAPI()
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(PublicApiCacheMiddleware)
 
     @app.get("/api/v1/public/diagnosis/slots")
@@ -43,6 +45,10 @@ def client():
     @app.get("/api/v1/public/hospitals/{slug}/contents")
     async def contents(slug: str):
         return []
+
+    @app.get("/api/v1/public/site/hospitals/health/by-domain/{domain}")
+    async def tenant_health(domain: str):
+        return {"canonical_host": domain}
 
     with TestClient(app) as test_client:
         yield test_client
@@ -80,6 +86,13 @@ class TestDiagnosisSurfaceIsNeverCached:
 
 
 class TestOtherPublicSurfacesKeepTheirCdnHeaders:
+    def test_tenant_health_marker_is_never_cached(self, client):
+        response = client.get("/api/v1/public/site/hospitals/health/by-domain/clinic.example.com")
+        assert _cache_control(response) == "no-store, private"
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+
     def test_hospital_surface_is_still_cacheable(self, client):
         """진단 예외가 공개 표면 전체의 캐시를 꺼버리면 CDN 이점이 사라진다."""
         cache_control = _cache_control(client.get("/api/v1/public/hospitals/abc"))

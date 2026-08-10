@@ -9,7 +9,7 @@ from redis.exceptions import RedisError
 
 from app.api.admin import operations as operations_api
 from app.models.content import ContentType
-from app.schemas.operations import CostGuardKillSwitchRequest
+from app.schemas.operations import CostGuardKillSwitchRequest, CostGuardStatusResponse
 from app.services import audit_log, cost_guard
 
 
@@ -367,9 +367,15 @@ async def test_snapshot_degrades_gracefully_on_redis_failure(monkeypatch):
 
     snapshot = await cost_guard.get_usage_snapshot(redis_client=redis)
 
-    # 500 대신 상한만이라도 반환(사용량 0)
-    assert snapshot["kill_switch_active"] is False
+    # 저장소 장애를 정상/0건으로 오인하지 않도록 관측 불가 상태를 명시한다.
+    assert snapshot["availability"] == "UNAVAILABLE"
+    assert snapshot["kill_switch_active"] is None
     assert len(snapshot["categories"]) == len(cost_guard.CATEGORIES)
+    assert all(category["daily_used"] is None for category in snapshot["categories"])
+    assert all(category["monthly_used"] is None for category in snapshot["categories"])
+    parsed = CostGuardStatusResponse.model_validate(snapshot)
+    assert parsed.availability == "UNAVAILABLE"
+    assert parsed.kill_switch_active is None
 
 
 # ── generation 스킵 경로 (이미지 생성 차단 시 이미지 없이 진행) ──────────────
@@ -418,6 +424,7 @@ async def test_get_cost_guard_status_endpoint(monkeypatch):
 
     # 엔드포인트는 dict를 반환하고 FastAPI가 response_model로 직렬화한다.
     assert response["enabled"] is True
+    assert response["availability"] == "AVAILABLE"
     assert response["kill_switch_active"] is False
     assert {c["category"] for c in response["categories"]} == set(cost_guard.CATEGORIES)
 

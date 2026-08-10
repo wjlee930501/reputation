@@ -88,25 +88,41 @@ def test_site_build_requires_profile_and_v0(profile_complete, v0_report_done, ex
     assert tasks._site_build_prerequisites_met(hospital) is expected
 
 
-def test_custom_domain_https_health_contract_and_hashed_incident_key():
+def test_custom_domain_https_health_contract():
+    hospital_id = uuid.uuid4()
+
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "healthy.example.com":
-            return httpx.Response(200)
+            return httpx.Response(
+                200,
+                json={
+                    "hospital_id": str(hospital_id),
+                    "slug": "healthy-clinic",
+                    "canonical_host": "healthy.example.com",
+                    "release": "site-r17",
+                },
+            )
         return httpx.Response(503)
 
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        assert tasks._check_custom_domain_https(client, "healthy.example.com") == (
+    with httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False) as client:
+        assert tasks._check_custom_domain_https(
+            client,
+            "healthy.example.com",
+            expected_hospital_id=hospital_id,
+            expected_slug="healthy-clinic",
+        ) == (
             True,
-            "http_200",
+            "tenant_marker_ok",
         )
-        assert tasks._check_custom_domain_https(client, "broken.example.com") == (
+        assert tasks._check_custom_domain_https(
+            client,
+            "broken.example.com",
+            expected_hospital_id=hospital_id,
+            expected_slug="healthy-clinic",
+        ) == (
             False,
             "http_503",
         )
-
-    key = tasks._domain_health_incident_key("healthy.example.com")
-    assert key.startswith("reputation:domain-health:incident:")
-    assert "healthy.example.com" not in key
 
 
 def test_public_site_url_prefers_aeo_domain():
@@ -466,11 +482,17 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
     ]
     schedules = [
         SimpleNamespace(
-            id="s1", hospital=hospitals[0], plan="PLAN_8", publish_days=[0, 2],
+            id="s1",
+            hospital=hospitals[0],
+            plan="PLAN_8",
+            publish_days=[0, 2],
             active_from=date(2026, 1, 1),
         ),
         SimpleNamespace(
-            id="s2", hospital=hospitals[1], plan="PLAN_8", publish_days=[1],
+            id="s2",
+            hospital=hospitals[1],
+            plan="PLAN_8",
+            publish_days=[1],
             active_from=date(2026, 1, 1),
         ),
     ]

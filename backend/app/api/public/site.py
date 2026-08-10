@@ -3,6 +3,7 @@ import uuid
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -37,6 +38,12 @@ domain_router = APIRouter(prefix="/public/site/hospitals", tags=["Public — Sit
 # 플랫폼 서브도메인({slug}.{platform host})에서 hospital slug가 아닌 예약 라벨.
 # 와일드카드 cert가 이들도 커버하므로 slug로 오인하지 않도록 명시 차단.
 _RESERVED_PLATFORM_LABELS = frozenset({"www", "admin", "api", "cname", "static", "assets"})
+
+
+class TenantHealthLookup(BaseModel):
+    hospital_id: uuid.UUID
+    slug: str
+    canonical_host: str
 
 
 def _platform_site_host() -> str:
@@ -100,6 +107,49 @@ async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return {"slug": h.slug, "name": h.name, "aeo_domain": h.aeo_domain}
+
+
+@domain_router.get("/health/by-domain/{domain}", response_model=TenantHealthLookup)
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_tenant_health_by_domain(
+    request: Request,
+    domain: str,
+    db: AsyncSession = Depends(get_db),
+) -> TenantHealthLookup:
+    """Return the minimum tenant identity used by the public health marker."""
+
+    normalized = normalize_domain(domain)
+    if not normalized:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+
+    subdomain_slug = _platform_subdomain_slug(normalized)
+    match_clause = (
+        Hospital.slug == subdomain_slug
+        if subdomain_slug is not None
+        else func.lower(Hospital.aeo_domain) == normalized
+    )
+    hospital = (
+        (
+            await db.execute(
+                select(Hospital)
+                .where(
+                    match_clause,
+                    Hospital.status == HospitalStatus.ACTIVE,
+                    Hospital.site_live.is_(True),
+                )
+                .limit(1)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if hospital is None:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+    return TenantHealthLookup(
+        hospital_id=hospital.id,
+        slug=hospital.slug,
+        canonical_host=normalized,
+    )
 
 
 @router.get("")
