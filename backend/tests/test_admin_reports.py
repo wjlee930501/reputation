@@ -190,6 +190,19 @@ def test_monthly_customer_delivery_rejects_manifest_tenant_or_period_mismatch(mi
 
     assert gate.code == "manifest_mismatch"
     assert gate.ready is False
+    assert "manifest" not in (gate.message or "").lower()
+
+
+def test_monthly_customer_delivery_open_measurement_copy_is_plain_korean():
+    report = _report()
+    manifest = _bind_manifest(report, _manifest(closed_at=None))
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+
+    gate = _delivery_gate(report, manifest, artifact)
+
+    assert gate.code == "manifest_open"
+    assert "manifest" not in (gate.message or "").lower()
+    assert "필수 측정 집계" in (gate.message or "")
 
 
 @pytest.mark.parametrize(

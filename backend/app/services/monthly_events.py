@@ -19,6 +19,7 @@ from app.services.notification_milestone_messages import (
     build_milestone_action_notification,
     build_milestone_recovery_notification,
 )
+from app.services.notification_milestone_rendering import operator_deadline
 from app.services.notification_outbox import enqueue_notification
 
 
@@ -154,7 +155,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
     )
     stable_id = f"milestone:v1:{event.event_id}"
     admin_path = f"/hospitals/{event.hospital_id}/reports?report={event.report_id}"
-    sla_label = event.sla_due_at.isoformat() if event.sla_due_at is not None else "기한 없음"
+    sla_label = operator_deadline(event.sla_due_at)
     match event.event_type:
         case MonthlyEventType.CUSTOMER_READY:
             if not customer_ready:
@@ -200,7 +201,8 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 event.hospital_name,
                 "월간 리포트 차단",
                 "월간 리포트를 아직 고객에게 전달할 수 없습니다.",
-                "운영 센터에서 차단 사유를 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요.",
+                "리포트 화면에서 차단 사유를 확인해 해결한 뒤 ‘리포트 다시 만들기’를 눌러 "
+                "주세요. 다시 실패하면 ‘개발팀 문의용 정보 복사’를 눌러 개발팀에 전달해 주세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,
@@ -213,9 +215,9 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 MilestoneKind.DELIVERY_CORRECTED,
                 event.hospital_id,
                 event.hospital_name,
-                "전달 기록 정정 완료",
-                "잘못된 전달 정보가 정정됐습니다.",
-                "정정된 전달 이력을 확인해 주세요.",
+                "전달 정보 수정 기록 추가",
+                "수정 기록이 추가됐으며 실제 전달 여부는 이 기록만으로 확인되지 않습니다.",
+                "수정된 전달 기록을 확인해 주세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,
@@ -229,9 +231,9 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 MilestoneKind.DELIVERY_RESCINDED,
                 event.hospital_id,
                 event.hospital_name,
-                "리포트 전달 철회",
-                "이전 전달 기록이 더 이상 유효하지 않습니다.",
-                "철회 사유와 후속 재전달 필요 여부를 확인해 주세요.",
+                "전달 기록 무효 처리",
+                "기존 전달 기록은 무효가 됐지만 이미 보낸 파일은 회수되지 않습니다.",
+                "무효 처리 사유를 확인하고 이미 보낸 파일은 별도로 사용 중지를 안내해 주세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,
@@ -244,9 +246,9 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 MilestoneKind.DELIVERY_REDELIVERED,
                 event.hospital_id,
                 event.hospital_name,
-                "리포트 재전달 완료",
-                "검증된 원장용 PDF가 다시 전달됐습니다.",
-                "최신 전달 이력을 확인해 주세요.",
+                "재전달 기록 추가",
+                "재전달 운영 기록이 추가됐으며 실제 수신 여부는 별도로 확인해야 합니다.",
+                "재전달 기록과 원장 수신 여부를 확인해 주세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,

@@ -18,6 +18,7 @@ from app.services.notification_milestone_messages import (
     build_milestone_action_notification,
     build_milestone_recovery_notification,
 )
+from app.services.notification_milestone_rendering import operator_deadline
 from app.services.notification_outbox import enqueue_notification
 
 
@@ -44,7 +45,7 @@ def project_onboarding_event(event: OnboardingEvent) -> MilestoneProjection:
     if event.occurred_at.tzinfo is None:
         raise NotificationPayloadError("ONBOARDING_EVENT_TIME_REQUIRED")
     stable_id = f"milestone:v1:{event.event_id}"
-    sla_label = event.sla_due_at.isoformat() if event.sla_due_at is not None else "기한 없음"
+    sla_label = operator_deadline(event.sla_due_at)
     recovery_of = (
         f"milestone:v1:{event.recovered_from_event_id}"
         if event.recovered_from_event_id is not None
@@ -66,7 +67,7 @@ def project_onboarding_event(event: OnboardingEvent) -> MilestoneProjection:
                 "계약·담당자 정보를 확인하고 고객 인계를 승인해 주세요.",
                 event.owner_label,
                 sla_label,
-                "/operations",
+                "/operations?queue=onboarding",
                 True,
                 False,
             )
@@ -78,10 +79,10 @@ def project_onboarding_event(event: OnboardingEvent) -> MilestoneProjection:
                 event.hospital_name,
                 "고객 인계 승인",
                 "온보딩 작업을 시작할 수 있습니다.",
-                "Admin 온보딩 체크리스트를 진행해 주세요.",
+                "온보딩 체크리스트에서 다음 미완료 항목을 진행해 주세요.",
                 event.owner_label,
                 sla_label,
-                "/operations",
+                f"/hospitals/{event.hospital_id}/onboarding",
                 False,
                 recovery_of is not None,
                 recovery_of,
@@ -94,10 +95,10 @@ def project_onboarding_event(event: OnboardingEvent) -> MilestoneProjection:
                 event.hospital_name,
                 "공개 활성화 준비 완료",
                 "모든 온보딩 선행 조건이 충족됐습니다.",
-                "도메인 상태를 확인하고 공개 활성화를 진행해 주세요.",
+                "병원 프로파일에서 도메인 상태를 확인하고 공개 활성화를 진행해 주세요.",
                 event.owner_label,
                 sla_label,
-                "/operations",
+                f"/hospitals/{event.hospital_id}/profile#domain-setup",
                 True,
                 False,
             )
@@ -109,10 +110,10 @@ def project_onboarding_event(event: OnboardingEvent) -> MilestoneProjection:
                 event.hospital_name,
                 "운영 활성화 완료",
                 "병원이 자율 운영 대상으로 전환됐습니다.",
-                "정기 운영 요약에서 상태를 확인해 주세요.",
+                "병원 운영 현황에서 다음 정기 작업을 확인해 주세요.",
                 event.owner_label,
                 sla_label,
-                "/operations",
+                f"/hospitals/{event.hospital_id}/dashboard",
                 False,
                 False,
             )

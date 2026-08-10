@@ -4,6 +4,8 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.models.operations import JSONValue
 from app.services.notification_milestone_messages import (
     build_milestone_action_notification,
@@ -65,7 +67,7 @@ def test_handoff_overdue_action_is_stable_safe_and_admin_linked() -> None:
     encoded = json.dumps(payload, ensure_ascii=False)
     assert first.stable_id == second.stable_id
     assert intent.dedupe_key.endswith(first.stable_id)
-    assert _urls(payload) == [f"{_ADMIN}/operations"]
+    assert _urls(payload) == [f"{_ADMIN}/operations?queue=onboarding"]
     assert len(intent.message.blocks) <= 50
     assert "doctor@example.com" not in encoded
     assert "010-1234-5678" not in encoded
@@ -75,6 +77,10 @@ def test_handoff_overdue_action_is_stable_safe_and_admin_linked() -> None:
     assert "지금 할 일:" in encoded
     assert "인수 처리 기한:" in encoded
     assert "SLA:" not in encoded
+    assert "2026-08-10T" not in encoded
+    assert "2026년 8월 10일 01:00 (UTC)" in encoded
+    assert first.stable_id not in encoded
+    assert "고객 인계 승인하기" in encoded
     assert all(
         label in intent.message.fallback_text for label in ("문제:", "고객 영향:", "지금 할 일:")
     )
@@ -98,8 +104,35 @@ def test_accepted_handoff_can_close_an_overdue_action_without_success_spam() -> 
     # Then: it is recovery-only and remains idempotent by transition ID
     assert accepted.is_recovery is True
     assert accepted.requires_action is False
-    assert str(overdue_id) in intent.message.payload_json()
-    assert _urls(intent.message.payload()) == [f"{_ADMIN}/operations"]
+    payload_json = intent.message.payload_json()
+    assert str(overdue_id) not in payload_json
+    assert accepted.stable_id not in payload_json
+    assert "복구 대상" not in payload_json
+    assert "온보딩 체크리스트 열기" in payload_json
+    assert _urls(intent.message.payload()) == [
+        f"{_ADMIN}/hospitals/{accepted.hospital_id}/onboarding"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "expected_path"),
+    [
+        (
+            OnboardingEventType.ACTIVATION_READY,
+            f"/hospitals/{uuid.UUID('b1300000-0000-0000-0000-000000000001')}/profile#domain-setup",
+        ),
+        (
+            OnboardingEventType.HOSPITAL_ACTIVE,
+            f"/hospitals/{uuid.UUID('b1300000-0000-0000-0000-000000000001')}/dashboard",
+        ),
+    ],
+)
+def test_onboarding_destinations_open_the_exact_work_surface(
+    event_type: OnboardingEventType, expected_path: str
+) -> None:
+    projection = project_onboarding_event(_event(event_type))
+
+    assert projection.admin_path == expected_path
 
 
 def test_projector_window_is_the_same_completed_quarter_for_safe_reruns() -> None:

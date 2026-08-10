@@ -133,7 +133,7 @@ def build_summary_notification(
     digest = hashlib.sha256(
         json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
-    url = _admin_url(admin_base_url, "/operations?state=OPEN")
+    url = _admin_url(admin_base_url, "/operations?queue=incidents&status=OPEN")
     lines = tuple(
         (
             f"• *{_safe_text(item.hospital_name, 100)}*\n"

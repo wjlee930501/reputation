@@ -119,7 +119,7 @@ def build_milestone_summary_notification(
             f"{window_start} ~ {window_end} · 총 {len(ordered)}건",
         ),
         *(section_block(f"milestone_summary_{index}", chunk) for index, chunk in enumerate(chunks)),
-        action_block("milestone_summary_action", url),
+        action_block("milestone_summary_action", url, "관련 작업 모아보기"),
     )
     message = validated_message(
         RenderedSlackMessage(
@@ -164,16 +164,14 @@ def _single_notification(
         f"담당: {safe_text(milestone.owner_label, 100)} · "
         f"{deadline_label}: {safe_text(milestone.sla_label, 100)}"
     )
-    if recovery:
-        details = f"복구 대상: `{safe_text(milestone.recovery_of or '', 180)}`\n{details}"
     blocks = (
         header_block("milestone_header", status),
         section_block(
             "milestone_identity",
-            f"*{safe_text(milestone.hospital_name, 100)}*\n`{milestone.stable_id}`",
+            f"*{safe_text(milestone.hospital_name, 100)}*",
         ),
         section_block("milestone_context", details),
-        action_block("milestone_action", url),
+        action_block("milestone_action", url, _action_label(milestone.kind)),
     )
     event = "MILESTONE_RECOVERED" if recovery else "MILESTONE_ACTION"
     message = validated_message(
@@ -216,7 +214,7 @@ def _summary_path(milestones: Sequence[MilestoneProjection]) -> str:
 
 def _summary_line(milestone: MilestoneProjection) -> str:
     return (
-        f"• `{milestone.stable_id}` · *{safe_text(milestone.hospital_name, 100)}* · "
+        f"• *{safe_text(milestone.hospital_name, 100)}* · "
         f"문제: {safe_text(milestone.status_label, 100)}\n"
         f"  고객 영향: {safe_text(milestone.customer_impact, 300)}\n"
         f"  지금 할 일: {safe_text(milestone.next_action, 300)}\n"
@@ -229,3 +227,27 @@ def _deadline_label(milestone: MilestoneProjection) -> str:
     if milestone.kind in {MilestoneKind.HANDOFF_OVERDUE, MilestoneKind.HANDOFF_ACCEPTED}:
         return "인수 처리 기한"
     return "처리 기한"
+
+
+def _action_label(kind: MilestoneKind) -> str:
+    match kind:
+        case MilestoneKind.HANDOFF_OVERDUE:
+            return "고객 인계 승인하기"
+        case MilestoneKind.HANDOFF_ACCEPTED:
+            return "온보딩 체크리스트 열기"
+        case MilestoneKind.ACTIVATION_READY:
+            return "도메인 상태 확인하기"
+        case MilestoneKind.HOSPITAL_ACTIVE:
+            return "병원 운영 현황 보기"
+        case MilestoneKind.MONTHLY_BLOCKED:
+            return "차단 사유 확인"
+        case MilestoneKind.MONTHLY_ARTIFACT_PENDING:
+            return "원장용 PDF 검수"
+        case MilestoneKind.MONTHLY_CUSTOMER_READY:
+            return "원장용 PDF 확인"
+        case MilestoneKind.DELIVERY_CORRECTED:
+            return "수정된 전달 기록 확인"
+        case MilestoneKind.DELIVERY_RESCINDED:
+            return "무효 처리 기록 확인"
+        case MilestoneKind.DELIVERY_REDELIVERED:
+            return "재전달 기록 확인"

@@ -215,10 +215,14 @@ def _delivery_gate(
             return DeliveryGate(
                 False,
                 "manifest_mismatch",
-                "월간 측정 manifest가 이 병원과 보고 기간에 연결되지 않았습니다.",
+                "이번 달 필수 측정 결과가 이 병원과 보고 기간에 연결되지 않았습니다.",
             )
         if manifest.closed_at is None:
-            return DeliveryGate(False, "manifest_open", "월간 측정 manifest가 아직 닫히지 않았습니다.")
+            return DeliveryGate(
+                False,
+                "manifest_open",
+                "이번 달 필수 측정 집계가 아직 끝나지 않았습니다.",
+            )
 
     state = _artifact_state(report, artifact)
     if state is ReportArtifactState.MISSING:

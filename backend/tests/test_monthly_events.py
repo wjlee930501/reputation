@@ -17,6 +17,8 @@ from app.services.monthly_events import (
 from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_milestone_messages import (
     MilestoneBatch,
+    build_milestone_action_notification,
+    build_milestone_recovery_notification,
     build_milestone_summary_notification,
 )
 from app.services.onboarding_events import (
@@ -177,6 +179,86 @@ def test_delivery_history_events_project_even_if_current_readiness_later_changes
     assert projection.kind.value == event_type.value
 
 
+@pytest.mark.parametrize(
+    ("event_type", "status_fragment", "impact_fragment", "action_text", "forbidden_claims"),
+    [
+        (
+            MonthlyEventType.DELIVERY_CORRECTED,
+            "기록 추가",
+            "실제 전달 여부",
+            "수정된 전달 기록 확인",
+            ("전달 완료", "전달됐습니다"),
+        ),
+        (
+            MonthlyEventType.DELIVERY_RESCINDED,
+            "기록 무효 처리",
+            "이미 보낸 파일은 회수되지 않습니다",
+            "무효 처리 기록 확인",
+            ("파일 회수 완료", "파일이 회수됐습니다"),
+        ),
+        (
+            MonthlyEventType.DELIVERY_REDELIVERED,
+            "기록 추가",
+            "실제 수신 여부",
+            "재전달 기록 확인",
+            ("재전달 완료", "다시 전달됐습니다"),
+        ),
+    ],
+)
+def test_delivery_history_copy_describes_records_without_claiming_transport(
+    event_type: MonthlyEventType,
+    status_fragment: str,
+    impact_fragment: str,
+    action_text: str,
+    forbidden_claims: tuple[str, ...],
+) -> None:
+    event = _monthly(event_type)
+    projection = project_monthly_event(event)
+    intent = (
+        build_milestone_action_notification(projection, _ADMIN)
+        if projection.requires_action
+        else build_milestone_recovery_notification(projection, _ADMIN)
+    )
+    payload_json = intent.message.payload_json()
+
+    visible_copy = " ".join(
+        (projection.status_label, projection.customer_impact, projection.next_action)
+    )
+    assert status_fragment in projection.status_label
+    assert impact_fragment in projection.customer_impact
+    assert all(claim not in visible_copy for claim in forbidden_claims)
+    assert intent.dedupe_key.endswith(projection.stable_id)
+    assert action_text in payload_json
+    assert projection.stable_id not in payload_json
+    assert "복구 대상" not in payload_json
+    if projection.is_recovery:
+        assert projection.recovery_of == f"report:{event.report_id}:delivery"
+
+
+def test_blocked_monthly_action_and_link_point_to_the_same_report_work() -> None:
+    event = _monthly(
+        MonthlyEventType.BLOCKED,
+        quality="BLOCKED",
+        success_count=3,
+        failed_count=17,
+        artifact_state=ReportArtifactState.MISSING,
+        doctor_artifact_id=None,
+        delivery_ready=False,
+        blocker_codes=("MEASUREMENT_FAILED",),
+    )
+    projection = project_monthly_event(event)
+    intent = build_milestone_action_notification(projection, _ADMIN)
+    payload_json = intent.message.payload_json()
+
+    assert projection.admin_path == (
+        f"/hospitals/{event.hospital_id}/reports?report={event.report_id}"
+    )
+    assert "리포트 화면에서 차단 사유" in projection.next_action
+    assert "개발팀 문의용 정보 복사" in projection.next_action
+    assert "차단 사유 확인" in payload_json
+    assert f"{_ADMIN}{projection.admin_path}" in payload_json
+
+
 def test_mixed_daily_summary_has_stable_constituents_and_one_operations_link() -> None:
     # Given: one overdue handoff and one blocked monthly report in the same window
     overdue = project_onboarding_event(
@@ -213,21 +295,23 @@ def test_mixed_daily_summary_has_stable_constituents_and_one_operations_link() -
         MilestoneBatch((blocked, overdue), _NOW, _NOW + timedelta(days=1)), _ADMIN
     )
 
-    # Then: one deterministic summary names both stable IDs and has exactly one deep link
+    # Then: one deterministic summary hides internal IDs and has exactly one deep link
     payload_json = first.message.payload_json()
     assert first.dedupe_key == second.dedupe_key
     assert first.message.fallback_text.startswith("[운영 마일스톤 요약] 2건")
     assert all(
         label in first.message.fallback_text for label in ("문제", "고객 영향", "지금 할 일")
     )
-    assert overdue.stable_id in payload_json
-    assert blocked.stable_id in payload_json
+    assert overdue.stable_id not in payload_json
+    assert blocked.stable_id not in payload_json
     assert payload_json.count(f"{_ADMIN}/operations") == 1
     assert len(first.message.blocks) <= 50
     assert json.loads(payload_json)["text"] == first.message.fallback_text
     assert all(label in payload_json for label in ("문제:", "고객 영향:", "지금 할 일:"))
     assert "처리 기한:" in payload_json
     assert "SLA:" not in payload_json
+    assert "T08:00:00" not in payload_json
+    assert "관련 작업 모아보기" in payload_json
     assert "MEASUREMENT_FAILED" not in payload_json
     assert "HANDOFF_OVERDUE" not in payload_json
     assert "BLOCKED" not in payload_json

@@ -126,7 +126,15 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
         assert len(intent.message.blocks) <= 50
         block_ids = [str(block["block_id"]) for block in intent.message.blocks]
         assert len(block_ids) == len(set(block_ids))
-        assert _urls(intent.message.blocks) == ["https://admin.example.test/operations?state=OPEN"]
+    assert _urls(open_intent.message.blocks) == [
+        "https://admin.example.test/operations?state=OPEN"
+    ]
+    assert _urls(recovered.message.blocks) == [
+        "https://admin.example.test/operations?state=OPEN"
+    ]
+    assert _urls(summary_a.message.blocks) == [
+        "https://admin.example.test/operations?queue=incidents&status=OPEN"
+    ]
     assert summary_a.dedupe_key == summary_b.dedupe_key
     assert str(first.incident_id) in summary_a.message.payload_json()
     assert str(second.incident_id) in summary_a.message.payload_json()

@@ -58,14 +58,14 @@ def section_block(block_id: str, text: str) -> dict[str, JSONValue]:
     }
 
 
-def action_block(block_id: str, url: str) -> dict[str, JSONValue]:
+def action_block(block_id: str, url: str, label: str) -> dict[str, JSONValue]:
     return {
         "type": "actions",
         "block_id": block_id,
         "elements": [
             {
                 "type": "button",
-                "text": {"type": "plain_text", "text": "Admin에서 확인"},
+                "text": {"type": "plain_text", "text": safe_text(label, 75)},
                 "url": url,
             }
         ],
@@ -111,6 +111,14 @@ def canonical_time(value: datetime) -> str:
     if value.tzinfo is None:
         raise NotificationPayloadError("MILESTONE_WINDOW_MUST_BE_TIMEZONE_AWARE")
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def operator_deadline(value: datetime | None) -> str:
+    if value is None:
+        return "기한 없음"
+    zone = value.tzname()
+    suffix = f" ({zone})" if zone else ""
+    return f"{value.year}년 {value.month}월 {value.day}일 {value.hour:02d}:{value.minute:02d}{suffix}"
 
 
 def validate_stable_id(value: str) -> None:
