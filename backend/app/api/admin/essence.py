@@ -6,12 +6,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin.accounts import require_active_account
 from app.core.celery_app import celery_app
 from app.core.database import get_db
+from app.models.admin_user import ADMIN_ROLES, AdminUser
 from app.models.content import ContentItem
 from app.models.essence import (
     PHOTO_SOURCE_TYPES,
@@ -38,10 +40,7 @@ from app.services.asset_extractor import (
     detect_extractor_for,
     extract_docx_text,
     extract_pdf_text,
-    fetch_naver_blog_post_urls,
     fetch_url_text,
-    naver_blog_id_from,
-    naver_blog_post_identity,
 )
 from app.services.asset_storage import (
     resolve_legacy_asset_path,
@@ -61,6 +60,17 @@ from app.services.essence_engine import (
     validate_source_excerpt,
 )
 from app.services.gcs_utils import get_signed_url
+from app.services.naver_handoff import (
+    NaverCrawlOptions,
+    NaverRetryRequest,
+    retry_failed_naver_source,
+    sync_hospital_naver_sources,
+)
+from app.services.naver_handoff_contracts import NaverHandoffResult
+from app.services.naver_handoff_runs import (
+    NaverRetryConflict,
+    list_open_naver_failures,
+)
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
@@ -102,10 +112,11 @@ class SourceCrawlRequest(BaseModel):
 
 
 class BlogCrawlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     url: str = Field(min_length=2, max_length=1000)  # 블로그 URL 또는 blogId
     max_posts: int = Field(default=10, ge=1, le=15)
     operator_note: str | None = None
-    created_by: str | None = Field(default=None, max_length=100)
 
 
 class BlogCrawlResult(BaseModel):
@@ -116,6 +127,16 @@ class BlogCrawlResult(BaseModel):
     skipped_empty: int
     failed: list[dict[str, str]]
     source_ids: list[str]
+    operation_run_id: str
+    items: list[dict[str, str | None]]
+
+
+class BlogCrawlOpenFailures(BaseModel):
+    items: list[dict[str, str | None]]
+
+
+class NaverRetryBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class BulkSourceProcessResult(BaseModel):
@@ -581,100 +602,149 @@ async def crawl_naver_blog(
     hospital_id: uuid.UUID,
     body: BlogCrawlRequest,
     db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
 ):
-    """네이버 블로그 RSS로 최근 글을 일괄 수집해 source로 저장한다.
-
-    각 글은 모바일 본문 URL로 정규화되어 fetch되고, 빈 셸·중복(url/content_hash)은 건너뛴다.
-    동기 처리라 max_posts는 요청 타임아웃을 고려해 15개로 제한한다.
-    """
-    await _get_hospital_or_404(db, hospital_id)
-
-    post_urls, enum_error = await fetch_naver_blog_post_urls(body.url, body.max_posts)
-    if enum_error:
+    """Collect recent posts and return a durable, URL-specific operator result."""
+    if actor.role not in ADMIN_ROLES:
         raise HTTPException(
-            status_code=400, detail=f"네이버 블로그 글 목록을 가져오지 못했습니다: {enum_error}"
+            status_code=403,
+            detail="활성 운영자 또는 소유자 계정만 블로그 글을 가져올 수 있습니다.",
         )
-
-    blog_id = naver_blog_id_from(body.url)
-
-    existing_rows = await db.execute(
-        select(HospitalSourceAsset.url, HospitalSourceAsset.content_hash).where(
-            HospitalSourceAsset.hospital_id == hospital_id
-        )
-    )
-    existing_urls: set[str] = set()
-    existing_hashes: set[str] = set()
-    for row_url, row_hash in existing_rows.all():
-        if row_url:
-            existing_urls.add(naver_blog_post_identity(row_url))
-        if row_hash:
-            existing_hashes.add(row_hash)
-
-    created = 0
-    skipped_duplicate = 0
-    skipped_empty = 0
-    failed: list[dict[str, str]] = []
-    source_ids: list[str] = []
-
-    for index, post_url in enumerate(post_urls, start=1):
-        post_identity = naver_blog_post_identity(post_url)
-        if post_identity in existing_urls:
-            skipped_duplicate += 1
-            continue
-        text, error, quality = await fetch_url_text(post_url)
-        if error:
-            failed.append({"url": post_url, "reason": error})
-            continue
-        if (quality is not None and quality.looks_like_shell) or not (text and text.strip()):
-            skipped_empty += 1
-            continue
-        title = f"네이버 블로그 {blog_id} #{index}"
-        content_hash = compute_source_content_hash(title, post_url, text, body.operator_note)
-        if content_hash in existing_hashes:
-            skipped_duplicate += 1
-            continue
-        source = HospitalSourceAsset(
-            hospital_id=hospital_id,
-            source_type=SourceType.NAVER_BLOG,
-            title=title,
-            url=post_url,
-            raw_text=text,
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    result = await sync_hospital_naver_sources(
+        db,
+        hospital,
+        NaverCrawlOptions(
+            blog_ref=body.url,
+            max_posts=body.max_posts,
             operator_note=_clean_optional(body.operator_note),
-            source_metadata={
-                "crawled_at": datetime.now(timezone.utc).isoformat(),
-                "bulk_blog_id": blog_id,
-            },
-            content_hash=content_hash,
-            status=SourceStatus.PENDING,
-            created_by=body.created_by,
-        )
-        db.add(source)
-        await db.flush()
-        existing_urls.add(post_identity)
-        existing_hashes.add(content_hash)
-        source_ids.append(str(source.id))
-        created += 1
+            created_by=actor.email[:100],
+            actor=actor.email,
+        ),
+    )
+    await write_audit_log(
+        db,
+        action="crawl_naver_blog",
+        hospital_id=hospital_id,
+        actor=actor.email,
+        target_type="operation_run",
+        target_id=result.run_id,
+        detail={
+            "blog_id": result.blog_id,
+            "created": result.created,
+            "requested": result.requested,
+            "failed": len(result.failed),
+        },
+    )
+    await db.commit()
+    return _serialize_naver_result(result)
 
-    if created:
-        await write_audit_log(
+
+@router.post(
+    "/sources/crawl-blog/runs/{run_id}/items/{url_hash}/retry",
+    status_code=status.HTTP_200_OK,
+    response_model=BlogCrawlResult,
+)
+async def retry_naver_blog_item(
+    hospital_id: uuid.UUID,
+    run_id: uuid.UUID,
+    url_hash: str,
+    _body: NaverRetryBody,
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
+):
+    """Allow active OPERATOR/OWNER accounts to retry one failed source only."""
+    if actor.role not in ADMIN_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="활성 운영자 또는 소유자 계정만 실패한 글을 다시 수집할 수 있습니다.",
+        )
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    try:
+        result = await retry_failed_naver_source(
             db,
-            action="crawl_naver_blog",
-            hospital_id=hospital_id,
-            actor=default_actor(),
-            target_type="hospital",
-            target_id=hospital_id,
-            detail={"blog_id": blog_id, "created": created, "requested": len(post_urls)},
+            NaverRetryRequest(
+                hospital=hospital,
+                parent_run_id=run_id,
+                url_hash=url_hash,
+                actor=actor.email,
+            ),
         )
-        await db.commit()
+    except NaverRetryConflict as exc:
+        code = status.HTTP_404_NOT_FOUND if exc.code == "NAVER_RUN_NOT_FOUND" else status.HTTP_409_CONFLICT
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    await write_audit_log(
+        db,
+        action="retry_naver_blog_item",
+        hospital_id=hospital_id,
+        actor=actor.email,
+        target_type="operation_run",
+        target_id=result.run_id,
+        detail={
+            "parent_run_id": str(run_id),
+            "url_hash": url_hash,
+            "state": result.items[0].state.value,
+        },
+    )
+    await db.commit()
+    return _serialize_naver_result(result)
 
+
+@router.get(
+    "/sources/crawl-blog/failures",
+    status_code=status.HTTP_200_OK,
+    response_model=BlogCrawlOpenFailures,
+)
+async def get_naver_blog_failures(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _actor: AdminUser = Depends(require_active_account),
+):
+    """List unresolved post failures so refresh never removes the recovery action."""
+    await _get_hospital_or_404(db, hospital_id)
+    failures = await list_open_naver_failures(db, hospital_id)
+    return BlogCrawlOpenFailures(
+        items=[
+            {**failure.item.payload(), "operation_run_id": str(failure.run_id)}
+            for failure in failures
+        ]
+    )
+
+
+def _serialize_naver_result(result: NaverHandoffResult) -> BlogCrawlResult:
+    assert result.run_id is not None
     return BlogCrawlResult(
-        blog_id=blog_id,
-        requested=len(post_urls),
-        created=created,
-        skipped_duplicate=skipped_duplicate,
-        skipped_empty=skipped_empty,
-        failed=failed,
-        source_ids=source_ids,
+        blog_id=result.blog_id,
+        requested=result.requested,
+        created=result.created,
+        skipped_duplicate=result.skipped_duplicate,
+        skipped_empty=result.skipped_empty,
+        failed=[
+            {
+                "url": item.url,
+                "reason": item.safe_error_message or "네이버 글을 가져오지 못했습니다.",
+                "next_action": item.next_action or "실패한 글만 다시 수집해 주세요.",
+            }
+            for item in result.items
+            if item.state.value == "FAILED"
+        ],
+        source_ids=[str(source_id) for source_id in result.source_ids],
+        operation_run_id=str(result.run_id),
+        items=[
+            {
+                "url": item.url,
+                "url_hash": item.url_hash,
+                "state": item.state.value,
+                "safe_error_code": item.safe_error_code,
+                "safe_error_message": item.safe_error_message,
+                "next_action": item.next_action,
+                "source_id": str(item.source_id) if item.source_id else None,
+                "retry_of_run_id": (
+                    str(item.retry_of_run_id) if item.retry_of_run_id else None
+                ),
+            }
+            for item in result.items
+        ],
     )
 
 

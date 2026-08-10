@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from app.services import asset_extractor as asset_extractor_module
 from app.services.asset_extractor import (
     FetchTarget,
     _assess_fetch_quality,
@@ -68,6 +69,20 @@ def test_naver_blog_post_identity_ignores_tracking_and_url_form():
     ) == naver_blog_post_identity(
         "https://m.blog.naver.com/jangpyeonhan/123?trackingCode=rss"
     )
+
+
+def test_naver_blog_post_hash_is_stable_across_mobile_and_desktop_forms():
+    # Given: one public post represented by Naver's desktop and mobile URLs
+    desktop = "https://blog.naver.com/jangpyeonhan/123?fromRss=true"
+    mobile = "https://m.blog.naver.com/jangpyeonhan/123?trackingCode=rss"
+
+    # When: the handoff identity is hashed for durable storage
+    desktop_hash = asset_extractor_module.naver_blog_post_hash(desktop)
+    mobile_hash = asset_extractor_module.naver_blog_post_hash(mobile)
+
+    # Then: both links address the same retry item without storing tracking noise
+    assert desktop_hash == mobile_hash
+    assert len(desktop_hash) == 64
 
 
 def test_assess_fetch_quality_flags_frameset_shell():

@@ -2,10 +2,12 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.celery_app import celery_app
-from app.models.essence import SourceStatus
+from app.models.essence import HospitalSourceAsset, SourceStatus
 from app.models.hospital import HospitalStatus
+from app.services import naver_handoff, naver_handoff_sources
 from app.workers import naver_sync
 
 WEEKLY_TASK_NAME = "app.workers.naver_sync.weekly_naver_source_sync"
@@ -25,14 +27,17 @@ class _DB:
         self.added = []
         self.commits = 0
 
-    def execute(self, _stmt):
+    async def execute(self, _stmt):
         return _Rows(self.rows)
 
     def add(self, value):
         self.added.append(value)
 
-    def commit(self):
+    async def commit(self):
         self.commits += 1
+
+    async def flush(self):
+        return None
 
 
 @pytest.mark.asyncio
@@ -49,13 +54,14 @@ async def test_sync_hospital_naver_sources_adds_new_posts_as_pending(monkeypatch
     async def fake_text(url):
         return f"{url} 본문 " + ("충분한 설명 " * 30), None, SimpleNamespace(looks_like_shell=False)
 
-    monkeypatch.setattr(naver_sync, "fetch_naver_blog_post_urls", fake_urls)
-    monkeypatch.setattr(naver_sync, "fetch_url_text", fake_text)
+    monkeypatch.setattr(naver_handoff, "fetch_naver_blog_post_urls", fake_urls)
+    monkeypatch.setattr(naver_handoff, "fetch_url_text", fake_text)
     # Legacy rows retained RSS tracking parameters while the new enumerator
     # returns canonical URLs. They must still compare as the same post.
     db = _DB(rows=[("https://blog.naver.com/sw_hang/111?trackingCode=legacy", "existing-hash")])
     hospital = SimpleNamespace(
         id=uuid.uuid4(),
+        name="테스트 의원",
         blog_url="https://blog.naver.com/sw_hang",
     )
 
@@ -63,10 +69,10 @@ async def test_sync_hospital_naver_sources_adds_new_posts_as_pending(monkeypatch
 
     assert result.created == 1
     assert result.skipped_duplicate == 1
-    assert db.commits == 1
-    assert len(db.added) == 1
-    assert db.added[0].status == SourceStatus.PENDING
-    assert db.added[0].source_metadata["review_required"] is True
+    sources = [item for item in db.added if isinstance(item, HospitalSourceAsset)]
+    assert len(sources) == 1
+    assert sources[0].status == SourceStatus.PENDING
+    assert sources[0].source_metadata["review_required"] is True
 
 
 @pytest.mark.asyncio
@@ -74,15 +80,61 @@ async def test_sync_hospital_naver_sources_does_not_commit_on_rss_error(monkeypa
     async def fake_urls(_ref, max_posts):
         return [], "RSS unavailable"
 
-    monkeypatch.setattr(naver_sync, "fetch_naver_blog_post_urls", fake_urls)
+    monkeypatch.setattr(naver_handoff, "fetch_naver_blog_post_urls", fake_urls)
     db = _DB()
-    hospital = SimpleNamespace(id=uuid.uuid4(), blog_url="https://blog.naver.com/sw_hang")
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="테스트 의원", blog_url="https://blog.naver.com/sw_hang"
+    )
 
     result = await naver_sync.sync_hospital_naver_sources(db, hospital)
 
-    assert result.error == "RSS unavailable"
-    assert db.added == []
-    assert db.commits == 0
+    assert result.error == "네이버 글 목록을 가져오지 못했습니다. 잠시 후 다시 시도해 주세요."
+    sources = [item for item in db.added if isinstance(item, HospitalSourceAsset)]
+    assert sources == []
+    assert result.run_id is not None
+
+
+@pytest.mark.asyncio
+async def test_sync_handoff_keeps_mixed_url_outcomes_without_fake_evidence(monkeypatch):
+    # Given: one valid post, one provider failure, and one empty page
+    urls = [
+        "https://blog.naver.com/sw_hang/101",
+        "https://blog.naver.com/sw_hang/202",
+        "https://blog.naver.com/sw_hang/303",
+    ]
+
+    async def fake_urls(_ref, max_posts):
+        assert max_posts == 15
+        return urls, None
+
+    async def fake_text(url):
+        if url.endswith("/202"):
+            return "", "HTTP 500 — URL 접근 실패.", None
+        if url.endswith("/303"):
+            return "", None, SimpleNamespace(looks_like_shell=True)
+        return "근거가 되는 병원 설명 " * 30, None, SimpleNamespace(looks_like_shell=False)
+
+    async def fake_record_failure(_db, _context):
+        return SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(naver_handoff, "fetch_naver_blog_post_urls", fake_urls)
+    monkeypatch.setattr(naver_handoff, "fetch_url_text", fake_text)
+    monkeypatch.setattr(naver_handoff_sources, "record_naver_failure", fake_record_failure)
+    db = _DB()
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="테스트 의원", blog_url="https://blog.naver.com/sw_hang"
+    )
+
+    # When: the handoff processes every discovered URL
+    result = await naver_sync.sync_hospital_naver_sources(db, hospital)
+
+    # Then: every URL has a durable typed outcome and only real text becomes evidence
+    assert [item.state.value for item in result.items] == ["INGESTED", "FAILED", "SKIPPED"]
+    assert result.items[1].safe_error_code == "NAVER_HTTP_ERROR"
+    assert "개발팀" in result.items[1].next_action
+    assert result.items[2].safe_error_code == "EMPTY_CONTENT"
+    sources = [item for item in db.added if isinstance(item, HospitalSourceAsset)]
+    assert len(sources) == 1
 
 
 # ── 주간 배치 등록 회귀 가드 ────────────────────────────────────────────
@@ -111,16 +163,19 @@ class _WeeklyDB:
         self._hospitals = hospitals
         self.rolled_back = 0
 
-    def execute(self, _stmt):
+    async def execute(self, _stmt):
         return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self._hospitals))
 
-    def rollback(self):
+    async def rollback(self):
         self.rolled_back += 1
 
-    def __enter__(self):
+    async def commit(self):
+        return None
+
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *_exc):
+    async def __aexit__(self, *_exc):
         return False
 
 
@@ -140,32 +195,23 @@ def test_weekly_naver_sync_isolates_failures_and_notifies(monkeypatch):
 
     async def fake_sync(_db, hospital, **_kwargs):
         if hospital.name == "차단의원":
-            raise RuntimeError("naver blocked")
+            raise SQLAlchemyError("database unavailable")
         return naver_sync.NaverSyncResult(blog_id="ok", requested=5, created=2)
 
-    synced: list[dict] = []
-    ops: list[dict] = []
+    queued = []
 
-    async def fake_synced_notify(**kwargs):
-        synced.append(kwargs)
-        return True
+    async def fake_enqueue(_db, intent):
+        queued.append(intent)
+        return SimpleNamespace(id=uuid.uuid4())
 
-    async def fake_ops_alert(**kwargs):
-        ops.append(kwargs)
-        return True
-
-    monkeypatch.setattr(naver_sync, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(naver_sync, "get_async_sessionmaker", lambda: lambda: db)
     monkeypatch.setattr(naver_sync, "sync_hospital_naver_sources", fake_sync)
-    monkeypatch.setattr(naver_sync.notifier, "notify_naver_assets_synced", fake_synced_notify)
-    monkeypatch.setattr(naver_sync.notifier, "notify_ops_alert", fake_ops_alert)
+    monkeypatch.setattr(naver_sync, "enqueue_notification", fake_enqueue)
 
     summary = naver_sync.weekly_naver_source_sync()
 
     assert summary == {"processed": 1, "created": 2, "failed": 1}
-    assert len(synced) == 1
-    assert synced[0]["hospital_name"] == "정상의원"
-    assert synced[0]["created"] == 2
-    assert f"/hospitals/{hospitals[0].id}/essence" in synced[0]["admin_url"]
+    assert len(queued) == 1
+    assert queued[0].notification_type == "NAVER_WEEKLY_HANDOFF"
+    assert "새 자료 2개" in queued[0].message.fallback_text
     assert db.rolled_back == 1
-    assert len(ops) == 1
-    assert "차단의원" in ops[0]["message"]

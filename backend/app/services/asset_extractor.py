@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import ipaddress
 import logging
@@ -307,6 +308,11 @@ def naver_blog_post_identity(url: str) -> str:
     same posts again after the canonical RSS representation changes.
     """
     return _normalize_naver_blog_url(url).rstrip("/")
+
+
+def naver_blog_post_hash(url: str) -> str:
+    """Hash the canonical public post identity for durable retry lookup."""
+    return hashlib.sha256(naver_blog_post_identity(url).encode()).hexdigest()
 
 
 def _scope_to_content_container(html: str) -> str:
