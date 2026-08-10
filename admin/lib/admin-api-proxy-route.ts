@@ -29,6 +29,27 @@ const ALLOWED_PREFIXES = [
   'accounts',
 ]
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE'])
+const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9_.:-]{1,255}$/
+
+type IdempotencyKeyValidation =
+  | { valid: true; value: string | null }
+  | { valid: false }
+
+export function validateAdminIdempotencyKey(value: string | null): IdempotencyKeyValidation {
+  if (value === null) return { valid: true, value: null }
+  if (!SAFE_IDEMPOTENCY_KEY.test(value)) return { valid: false }
+  return { valid: true, value }
+}
+
+function isLeadRecoveryPath(path: string): boolean {
+  const segments = path.split('/')
+  return (
+    segments.length === 5 &&
+    segments[0] === 'leads' &&
+    segments[2] === 'diagnoses' &&
+    (segments[4] === 'remeasure' || segments[4] === 'rebuild-report')
+  )
+}
 
 type AdminApiProxyContext = {
   params: Promise<{ path: string[] }>
@@ -95,6 +116,17 @@ export async function handleAdminApiProxy(
     return textNoStore('Forbidden', { status: 403 })
   }
 
+  const isWriteMethod = req.method !== 'GET' && req.method !== 'HEAD'
+  const idempotency = validateAdminIdempotencyKey(
+    isWriteMethod ? req.headers.get('idempotency-key') : null,
+  )
+  if (
+    !idempotency.valid ||
+    (isWriteMethod && isLeadRecoveryPath(path) && idempotency.value === null)
+  ) {
+    return jsonNoStore({ error: 'Invalid Idempotency-Key' }, { status: 400 })
+  }
+
   const backendUrl = backendUrlOrNull()
   if (!backendUrl) {
     return jsonNoStore({ error: 'Server misconfigured' }, { status: 500 })
@@ -135,6 +167,9 @@ export async function handleAdminApiProxy(
   const contentType = req.headers.get('content-type')
   if (contentType) {
     headers['content-type'] = contentType
+  }
+  if (idempotency.valid && idempotency.value !== null) {
+    headers['Idempotency-Key'] = idempotency.value
   }
 
   let body: ArrayBuffer | undefined

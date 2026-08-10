@@ -3,7 +3,10 @@ import test from 'node:test'
 
 import { NextRequest } from 'next/server.js'
 
-import { handleAdminApiProxy } from './admin-api-proxy-route.ts'
+import {
+  handleAdminApiProxy,
+  validateAdminIdempotencyKey,
+} from './admin-api-proxy-route.ts'
 import { clearAdminSessionRevocationCache } from './session-revocation.ts'
 import { generateSessionToken } from './session.ts'
 
@@ -19,6 +22,7 @@ async function buildAuthorizedRequest(
   method: string,
   csrfToken?: string,
   tokenOverride?: string,
+  extraHeaders: Record<string, string> = {},
 ): Promise<NextRequest> {
   const secret = 'test-session-secret'
   const token = tokenOverride ?? (await generateSessionToken(secret, 60, sessionPayload))
@@ -34,10 +38,127 @@ async function buildAuthorizedRequest(
       origin: 'https://admin.example.test',
       'content-type': 'application/json',
       ...(csrfToken ? { 'x-admin-csrf-token': csrfToken } : {}),
+      ...extraHeaders,
     },
     body: method === 'GET' ? undefined : JSON.stringify({ name: 'demo' }),
   })
 }
+
+test('Task17 recovery forwards only a validated Idempotency-Key through the Admin BFF', async () => {
+  clearAdminSessionRevocationCache()
+  const originalFetch = globalThis.fetch
+  let backendHeaders = new Headers()
+  const fetchMock: typeof fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
+      return new Response(JSON.stringify({ revoked: false }), { status: 200 })
+    }
+    backendHeaders = new Headers(init?.headers)
+    return new Response(JSON.stringify({ detail: 'already active' }), { status: 409 })
+  }
+  globalThis.fetch = fetchMock
+
+  try {
+    const request = await buildAuthorizedRequest('POST', sessionPayload.csrfToken, undefined, {
+      'Idempotency-Key': 'task17-safe-key',
+      'X-Admin-Actor': 'forged@example.com',
+      'X-Do-Not-Forward': 'secret',
+    })
+    const response = await handleAdminApiProxy(request, {
+      params: Promise.resolve({
+        path: [
+          'leads',
+          '11111111-1111-4111-8111-111111111111',
+          'diagnoses',
+          '22222222-2222-4222-8222-222222222222',
+          'remeasure',
+        ],
+      }),
+    })
+
+    assert.equal(response.status, 409)
+    assert.equal(backendHeaders.get('idempotency-key'), 'task17-safe-key')
+    assert.equal(backendHeaders.get('x-admin-actor'), sessionPayload.email)
+    assert.equal(backendHeaders.get('x-do-not-forward'), null)
+  } finally {
+    globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})
+
+test('Task17 recovery rejects missing or invalid Idempotency-Key before backend mutation', async () => {
+  const originalFetch = globalThis.fetch
+  let backendMutationCalled = false
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
+      return new Response(JSON.stringify({ revoked: false }), { status: 200 })
+    }
+    backendMutationCalled = true
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }
+
+  try {
+    for (const value of [undefined, '   ', 'x'.repeat(256)]) {
+      const request = await buildAuthorizedRequest(
+        'POST',
+        sessionPayload.csrfToken,
+        undefined,
+        value === undefined ? {} : { 'Idempotency-Key': value },
+      )
+      const response = await handleAdminApiProxy(request, {
+        params: Promise.resolve({
+          path: [
+            'leads',
+            '11111111-1111-4111-8111-111111111111',
+            'diagnoses',
+            '22222222-2222-4222-8222-222222222222',
+            'rebuild-report',
+          ],
+        }),
+      })
+      assert.equal(response.status, 400)
+      assert.deepEqual(await response.json(), { error: 'Invalid Idempotency-Key' })
+    }
+    assert.equal(backendMutationCalled, false)
+    for (const invalid of ['line\r\nbreak', 'tab\tkey', 'unsafe key', ' 앞공백', '한글키']) {
+      assert.deepEqual(validateAdminIdempotencyKey(invalid), { valid: false })
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})
+
+test('a valid operations retry key is forwarded without opening arbitrary headers', async () => {
+  clearAdminSessionRevocationCache()
+  const originalFetch = globalThis.fetch
+  let backendHeaders = new Headers()
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
+      return new Response(JSON.stringify({ revoked: false }), { status: 200 })
+    }
+    backendHeaders = new Headers(init?.headers)
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }
+
+  try {
+    const request = await buildAuthorizedRequest('POST', sessionPayload.csrfToken, undefined, {
+      'Idempotency-Key': 'operations.retry:123',
+      Authorization: 'Bearer must-not-forward',
+    })
+    const response = await handleAdminApiProxy(request, {
+      params: Promise.resolve({ path: ['operations', 'runs', '123', 'retry'] }),
+    })
+    assert.equal(response.status, 200)
+    assert.equal(backendHeaders.get('idempotency-key'), 'operations.retry:123')
+    assert.equal(backendHeaders.get('authorization'), null)
+  } finally {
+    globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})
 
 async function withActiveRevocationThenThrowing(error: unknown, callback: () => Promise<void>) {
   const originalFetch = globalThis.fetch
