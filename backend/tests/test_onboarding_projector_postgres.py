@@ -89,6 +89,8 @@ async def test_real_postgres_scan_keeps_only_highest_state_and_summary_dedupes(
                 v0_report_done=True,
                 site_built=True,
                 schedule_set=True,
+                created_at=window.start + timedelta(minutes=6),
+                updated_at=window.start + timedelta(minutes=6),
             ),
             Hospital(
                 name=f"{_PREFIX}-ACTIVE",
