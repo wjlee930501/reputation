@@ -6,12 +6,13 @@ This keeps the audit trail truthful without pretending that a pre-dispatch
 row proves broker acceptance.
 """
 
+import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -46,6 +47,8 @@ from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
 from app.services.incident_safety import sanitize_operator_text
+from app.services.monthly_events import MonthlyRunStage
+from app.services.operation_run_payloads import UnsafeDispatchPayload, parse_stored_dispatch
 from app.services.operation_runs import (
     DispatchTask,
     OperationCommand,
@@ -87,6 +90,84 @@ class GenerationClaimReleaseRequest(BaseModel):
 
     expected_claimed_at: AwareDatetime
     reason: str = Field(min_length=3, max_length=200)
+
+
+class MonthlyReportRunResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    run_id: uuid.UUID
+    parent_run_id: uuid.UUID | None
+    state: str
+    stage: str
+    period_year: int
+    period_month: int
+    report_id: uuid.UUID | None
+    report_version: int | None
+    supersedes_report_id: uuid.UUID | None
+    requested_at: datetime
+    completed_at: datetime | None
+
+
+class MonthlyReportBuildRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=200)
+
+
+_MONTHLY_REBUILD_AUDIT_ACTION = "generate_monthly_report_rebuild_requested"
+_MONTHLY_REBUILD_AUDIT_TARGET = "monthly_report_rebuild_request"
+
+
+async def _prepare_monthly_rebuild_audit(
+    db: AsyncSession,
+    *,
+    hospital_id: uuid.UUID,
+    idempotency_key: str,
+    year: int | None,
+    month: int | None,
+    reason: str,
+) -> bool:
+    """Lock the hospital and stage a reason audit before durable dispatch.
+
+    ``dispatch_operation`` commits the staged audit together with the new run before
+    contacting the broker.  The operation payload consequently stays limited to
+    machine dispatch facts while the operator's redacted reason remains in the
+    append-only audit trail.
+    """
+
+    await db.execute(
+        select(Hospital.id).where(Hospital.id == hospital_id).with_for_update()
+    )
+    request_fingerprint = hashlib.sha256(idempotency_key.encode()).hexdigest()
+    existing = await db.scalar(
+        select(AdminAuditLog)
+        .where(
+            AdminAuditLog.hospital_id == hospital_id,
+            AdminAuditLog.action == _MONTHLY_REBUILD_AUDIT_ACTION,
+            AdminAuditLog.target_type == _MONTHLY_REBUILD_AUDIT_TARGET,
+            AdminAuditLog.target_id == request_fingerprint,
+        )
+        .order_by(AdminAuditLog.created_at.desc())
+    )
+    expected = {"period_year": year, "period_month": month, "reason": reason}
+    if existing is not None:
+        if existing.detail != expected:
+            raise HTTPException(
+                status_code=409,
+                detail="같은 요청 키가 다른 월 또는 다른 사유에 이미 사용됐습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+            )
+        return False
+
+    await write_audit_log(
+        db,
+        action=_MONTHLY_REBUILD_AUDIT_ACTION,
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type=_MONTHLY_REBUILD_AUDIT_TARGET,
+        target_id=request_fingerprint,
+        detail=expected,
+    )
+    return True
 
 
 async def _enqueue_with_truthful_audit(
@@ -425,11 +506,101 @@ async def rebuild_site_operation(
     }
 
 
+def _monthly_run_period(run: OperationRun) -> tuple[int, int]:
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    year = summary.get("period_year")
+    month = summary.get("period_month")
+    if isinstance(year, int) and isinstance(month, int):
+        return year, month
+    try:
+        dispatch = parse_stored_dispatch(run.request_payload.get("_dispatch"))
+    except UnsafeDispatchPayload:
+        dispatch = None
+    if dispatch is not None and len(dispatch.task_args) >= 3:
+        requested_year, requested_month = dispatch.task_args[1:3]
+        if isinstance(requested_year, int) and isinstance(requested_month, int):
+            return requested_year, requested_month
+    previous = datetime.now(ZoneInfo("Asia/Seoul")).replace(day=1) - timedelta(days=1)
+    return previous.year, previous.month
+
+
+def _monthly_run_stage(run: OperationRun) -> MonthlyRunStage:
+    summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+    raw = summary.get("stage")
+    if isinstance(raw, str):
+        try:
+            return MonthlyRunStage(raw)
+        except ValueError:
+            pass
+    if run.state in (OperationRunState.REQUESTED, OperationRunState.QUEUED):
+        return MonthlyRunStage.QUEUED
+    if run.state == OperationRunState.RUNNING:
+        return MonthlyRunStage.RUNNING
+    return MonthlyRunStage.FAILED
+
+
+def _monthly_run_uuid(summary: dict[str, JSONValue], field: str) -> uuid.UUID | None:
+    raw = summary.get(field)
+    try:
+        return uuid.UUID(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+
+
+@router.get(
+    "/{hospital_id}/operations/monthly-report-runs",
+    response_model=list[MonthlyReportRunResponse],
+)
+async def list_monthly_report_runs(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> list[MonthlyReportRunResponse]:
+    await _get_hospital_or_404(db, hospital_id)
+    runs = list(
+        (
+            await db.execute(
+                select(OperationRun)
+                .where(
+                    OperationRun.hospital_id == hospital_id,
+                    OperationRun.operation_type.in_(
+                        ("GENERATE_MONTHLY_REPORT", "SCHEDULED_MONTHLY_REPORT")
+                    ),
+                )
+                .order_by(OperationRun.requested_at.desc())
+                .limit(20)
+            )
+        ).scalars()
+    )
+    response: list[MonthlyReportRunResponse] = []
+    for run in runs:
+        summary = run.result_summary if isinstance(run.result_summary, dict) else {}
+        year, month = _monthly_run_period(run)
+        version = summary.get("report_version")
+        response.append(
+            MonthlyReportRunResponse(
+                run_id=run.id,
+                parent_run_id=run.parent_run_id,
+                state=run.state,
+                stage=_monthly_run_stage(run).value,
+                period_year=year,
+                period_month=month,
+                report_id=_monthly_run_uuid(summary, "report_id"),
+                report_version=version if isinstance(version, int) else None,
+                supersedes_report_id=_monthly_run_uuid(summary, "supersedes_report_id"),
+                requested_at=run.requested_at,
+                completed_at=run.completed_at,
+            )
+        )
+    return response
+
+
 @router.post("/{hospital_id}/operations/generate-monthly-report")
 async def generate_monthly_report_operation(
     hospital_id: uuid.UUID,
     year: int | None = Query(default=None, ge=2000, le=2200),
     month: int | None = Query(default=None, ge=1, le=12),
+    rebuild: bool = Query(default=False),
+    payload: MonthlyReportBuildRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
     idempotency_key: IdempotencyKeyHeader = None,
 ):
@@ -453,7 +624,31 @@ async def generate_monthly_report_operation(
                 status_code=400,
                 detail="이번 달과 그 이후는 만들 수 없습니다. 월말 자동 생성이 끝난 지난달까지만 가능합니다.",
             )
+    rebuild_reason = sanitize_operator_text(payload.reason if payload is not None else None, limit=200)
+    if rebuild and (rebuild_reason is None or len(rebuild_reason) < 3):
+        raise HTTPException(
+            status_code=400,
+            detail="새 버전을 만드는 이유를 3자 이상 입력해 주세요.",
+        )
+    if rebuild and idempotency_key is None:
+        raise HTTPException(
+            status_code=400,
+            detail="중복 요청을 막는 요청 키가 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+        )
     hospital = await _get_hospital_or_404(db, hospital_id)
+    task_args: list[JSONValue] = [str(hospital.id), year, month, *([True] if rebuild else [])]
+    rebuild_audit_created = False
+    if rebuild:
+        assert idempotency_key is not None
+        assert rebuild_reason is not None
+        rebuild_audit_created = await _prepare_monthly_rebuild_audit(
+            db,
+            hospital_id=hospital.id,
+            idempotency_key=idempotency_key,
+            year=year,
+            month=month,
+            reason=rebuild_reason,
+        )
     dispatch = await _enqueue_with_truthful_audit(
         db,
         action="generate_monthly_report",
@@ -461,12 +656,31 @@ async def generate_monthly_report_operation(
         target_type="hospital",
         target_id=hospital.id,
         task=generate_monthly_report_for_hospital,
-        args=[str(hospital.id), year, month],
+        args=task_args,
         queue="reports",
         idempotency_key=idempotency_key,
     )
+    if dispatch.replayed:
+        if rebuild and rebuild_audit_created:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="기존 요청에는 재생성 사유 기록이 없습니다. 새 요청 키로 다시 시도해 주세요.",
+            )
+        try:
+            stored = parse_stored_dispatch(dispatch.run.request_payload.get("_dispatch"))
+        except UnsafeDispatchPayload as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="기존 요청 내용을 확인할 수 없습니다. 개발팀에 작업 ID를 알려 주세요.",
+            ) from exc
+        if stored.task_args != tuple(task_args):
+            raise HTTPException(
+                status_code=409,
+                detail="같은 요청 키가 다른 월 또는 다른 사유에 이미 사용됐습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+            )
     return {
-        "detail": "월간 리포트 생성을 요청했습니다. 완료되면 Slack으로 알려드립니다.",
+        "detail": "월간 리포트 생성을 요청했습니다. 아래 작업 기록에서 진행 상황을 확인해 주세요.",
         "hospital_id": str(hospital.id),
         "operation_run_id": str(dispatch.run.id),
         "operation_state": dispatch.run.state,

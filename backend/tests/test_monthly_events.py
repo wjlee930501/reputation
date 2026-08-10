@@ -7,7 +7,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app.models.monthly_control import ReportArtifactState
-from app.services.monthly_events import MonthlyEvent, MonthlyEventType, project_monthly_event
+from app.services.monthly_events import (
+    MonthlyEvent,
+    MonthlyEventType,
+    MonthlyRunStage,
+    monthly_run_operator_copy,
+    project_monthly_event,
+)
 from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_milestone_messages import (
     MilestoneBatch,
@@ -99,6 +105,38 @@ def test_complete_coverage_without_artifact_is_internal_pending_not_customer_rea
     assert projection.kind.value == "MONTHLY_ARTIFACT_PENDING"
     assert projection.requires_action is True
     assert "CUSTOMER_READY" not in projection.stable_id
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_action"),
+    [
+        (MonthlyRunStage.QUEUED, "잠시 기다린 뒤 이 화면에서 진행 상태를 다시 확인해 주세요."),
+        (MonthlyRunStage.RUNNING, "완료될 때까지 기다린 뒤 새 리포트를 검수해 주세요."),
+        (
+            MonthlyRunStage.BLOCKED,
+            "운영 센터에서 차단 사유를 확인하고 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요.",
+        ),
+        (
+            MonthlyRunStage.ARTIFACT_VALIDATION_PENDING,
+            "원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.",
+        ),
+        (
+            MonthlyRunStage.FAILED,
+            "‘리포트 다시 만들기’를 눌러 주세요. 다시 실패하면 ‘개발팀 문의용 정보 복사’로 전달해 주세요.",
+        ),
+    ],
+)
+def test_monthly_run_copy_is_plain_korean_and_actionable(
+    stage: MonthlyRunStage, expected_action: str
+) -> None:
+    # Given: an internal monthly execution stage
+    # When: it is projected for a non-technical operator
+    copy = monthly_run_operator_copy(stage)
+
+    # Then: it explains the issue, impact, and exact next action without raw terms
+    assert copy.next_action == expected_action
+    rendered = " ".join((copy.what_happened, copy.customer_impact, copy.next_action))
+    assert all(term not in rendered for term in ("SLA", "CUSTOMER_READY", "PARTIAL"))
 
 
 @pytest.mark.parametrize(

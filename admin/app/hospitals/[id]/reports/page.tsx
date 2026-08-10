@@ -1,9 +1,19 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
 import { parseMonthValue, previousMonthValue } from '@/lib/report-period'
+import {
+  parseReportRuns,
+  isValidReportRebuildReason,
+  getOrCreateReportRequestKey,
+  reportRebuildIdempotencyKey,
+  reportRebuildFingerprint,
+  reportRunDeveloperNote,
+  type ReportRunView,
+} from '@/lib/report-run'
 import {
   getCustomerReportDownload,
   getInternalReportLabel,
@@ -229,6 +239,26 @@ export default function ReportsPage() {
   const [generating, setGenerating] = useState(false)
   const [generateMessage, setGenerateMessage] = useState<string | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
+  const [reportRuns, setReportRuns] = useState<readonly ReportRunView[]>([])
+  const [runsLoading, setRunsLoading] = useState(true)
+  const [runsError, setRunsError] = useState<string | null>(null)
+  const [copyMessage, setCopyMessage] = useState<string | null>(null)
+  const generationRequestActive = useRef(false)
+  const generationRequestKeys = useRef(new Map<string, string>())
+
+  const refreshReportRuns = useCallback(async () => {
+    try {
+      const payload = await fetchAPI<unknown>(
+        `/admin/hospitals/${id}/operations/monthly-report-runs`,
+      )
+      setReportRuns(parseReportRuns(payload))
+      setRunsError(null)
+    } catch (error: unknown) {
+      setRunsError(error instanceof Error ? error.message : '작업 기록을 불러오지 못했습니다.')
+    } finally {
+      setRunsLoading(false)
+    }
+  }, [id])
 
   useEffect(() => {
     fetchAPI<Report[]>(`/admin/hospitals/${id}/reports`)
@@ -236,6 +266,16 @@ export default function ReportsPage() {
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
   }, [id])
+
+  useEffect(() => {
+    void refreshReportRuns()
+  }, [refreshReportRuns])
+
+  useEffect(() => {
+    if (!reportRuns.some((run) => run.isActive)) return
+    const timer = window.setInterval(() => void refreshReportRuns(), 5000)
+    return () => window.clearInterval(timer)
+  }, [refreshReportRuns, reportRuns])
 
   async function openDetail(report: Report) {
     setDetailError(null)
@@ -255,7 +295,7 @@ export default function ReportsPage() {
   async function handleMarkSent(report: Report, input: ReportDeliveryInput) {
     if (markingSent || isEffectivelyDelivered(report)) return
     if (!readReportDeliveryState(report).ready) {
-      setMarkSentError('백엔드 전달 준비 검사를 통과한 리포트만 완료로 표시할 수 있습니다.')
+      setMarkSentError('원장 전달 준비가 완료된 리포트만 전달 완료로 표시할 수 있습니다.')
       return
     }
     setMarkSentError(null)
@@ -273,29 +313,90 @@ export default function ReportsPage() {
     }
   }
 
-  async function handleGenerateMonthly() {
+  async function handleGenerateMonthly(run?: ReportRunView, rebuildReason?: string) {
+    if (generationRequestActive.current) return
     setGenerateMessage(null)
     setGenerateError(null)
-    const parsed = parseMonthValue(generatePeriod)
+    const parsed = run
+      ? { year: run.periodYear, month: run.periodMonth }
+      : parseMonthValue(generatePeriod)
     if (!parsed) {
       setGenerateError('생성할 월을 선택해 주세요.')
       return
     }
     const { year, month } = parsed
+    if (run && !isValidReportRebuildReason(rebuildReason ?? '')) {
+      setGenerateError('새 버전을 만드는 이유를 3자 이상 입력해 주세요.')
+      return
+    }
+    generationRequestActive.current = true
     setGenerating(true)
     try {
+      const normalizedReason = (rebuildReason ?? '').trim()
+      const fingerprint = run
+        ? reportRebuildFingerprint(run.runId, year, month, normalizedReason)
+        : `create\u0000${id}\u0000${year}\u0000${month}`
+      const requestKey = getOrCreateReportRequestKey(
+        generationRequestKeys.current,
+        fingerprint,
+        () => run
+          ? reportRebuildIdempotencyKey(run.runId, crypto.randomUUID())
+          : `monthly-report-create:${id}:${crypto.randomUUID()}`,
+      )
       await fetchAPI(
-        `/admin/hospitals/${id}/operations/generate-monthly-report?year=${year}&month=${month}`,
-        { method: 'POST' },
+        `/admin/hospitals/${id}/operations/generate-monthly-report?year=${year}&month=${month}${run ? '&rebuild=true' : ''}`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': requestKey },
+          body: JSON.stringify(run ? { reason: normalizedReason } : {}),
+        },
       )
+      generationRequestKeys.current.delete(fingerprint)
       setGenerateMessage(
-        `${year}년 ${month}월 리포트 생성을 요청했습니다. 완료되면 Slack으로 알려드립니다. ` +
-          '이 목록에는 새로고침해야 나타납니다. 이미 있는 달은 새로 만들지 않습니다.',
+        run
+          ? `${year}년 ${month}월 새 버전 생성을 요청했습니다. 기존 리포트는 보존됩니다.`
+          : `${year}년 ${month}월 리포트 생성을 요청했습니다. 위의 최근 작업에서 진행 상태를 확인해 주세요.`,
       )
+      await refreshReportRuns()
     } catch (e: unknown) {
       setGenerateError(e instanceof Error ? e.message : '리포트 생성 요청에 실패했습니다.')
     } finally {
+      generationRequestActive.current = false
       setGenerating(false)
+    }
+  }
+
+  async function copyDeveloperNote(run: ReportRunView) {
+    try {
+      await navigator.clipboard.writeText(reportRunDeveloperNote(id, run))
+      setCopyMessage('개발팀 문의용 정보를 복사했습니다.')
+    } catch (error: unknown) {
+      setCopyMessage(
+        error instanceof Error
+          ? '복사하지 못했습니다. 브라우저의 클립보드 권한을 확인해 주세요.'
+          : '복사하지 못했습니다. 개발팀에 병원명과 작업 시각을 알려 주세요.',
+      )
+    }
+  }
+
+  async function openReportRunReview(run: ReportRunView) {
+    if (!run.reportId) {
+      setCopyMessage('연결된 리포트를 찾지 못했습니다. 진행 상태를 새로고침한 뒤 계속 보이지 않으면 개발팀에 문의해 주세요.')
+      return
+    }
+    setDetailError(null)
+    setDetailLoadingId(run.reportId)
+    try {
+      const report = await fetchAPI<Report>(`/admin/hospitals/${id}/reports/${run.reportId}`)
+      setSelected(report)
+    } catch (error: unknown) {
+      setCopyMessage(
+        error instanceof Error
+          ? '원장 전달 자료를 열지 못했습니다. 진행 상태를 새로고침한 뒤 다시 시도해 주세요.'
+          : '원장 전달 자료를 열지 못했습니다. 개발팀에 병원명과 작업 시각을 알려 주세요.',
+      )
+    } finally {
+      setDetailLoadingId(null)
     }
   }
 
@@ -319,43 +420,99 @@ export default function ReportsPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
-      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="mb-6">
         <div>
           <h2 className="text-xl font-bold text-slate-900">리포트 검수</h2>
           <p className="mt-1 text-sm text-slate-600">
             PDF를 내려받기 전에 AI 답변 노출, 콘텐츠 성과, 운영 기준 검수 결과를 먼저 확인합니다.
           </p>
         </div>
-        {/* 월말 배치가 실패하면 그 달 리포트가 통째로 비어 있게 된다 — 그때 AE가
-            개발자 없이 다시 만드는 경로. 이미 있는 달은 덮어쓰지 않는다. */}
-        <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-3">
-          <p className="text-xs font-medium text-slate-700">월간 리포트가 없나요?</p>
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <input
-              type="month"
-              value={generatePeriod}
-              // 이번 달 이후는 백엔드가 거부한다 — 빈 리포트 행이 월말 배치를 막기 때문에.
-              max={defaultGeneratePeriod}
-              onChange={(e) => setGeneratePeriod(e.target.value)}
-              className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
-              aria-label="생성할 리포트 월"
-            />
-            <button
-              type="button"
-              onClick={() => void handleGenerateMonthly()}
-              disabled={generating}
-              className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
-            >
-              {generating ? '요청 중...' : '리포트 생성'}
-            </button>
+      </div>
+
+      <section className="mb-6 rounded-xl border border-[var(--color-revisit-coolgrey-20)] bg-white p-4 sm:p-5" aria-labelledby="monthly-run-heading">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 id="monthly-run-heading" className="text-base font-bold text-[var(--color-revisit-text-title)]">
+              최근 월간 리포트 작업
+            </h3>
+            <p className="mt-1 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
+              자동 생성과 직접 요청한 작업이 어디까지 진행됐는지 확인하고, 필요한 조치를 바로 실행합니다.
+            </p>
           </div>
-          {generateMessage && (
-            <p role="status" className="mt-2 max-w-xs text-xs text-emerald-700">{generateMessage}</p>
-          )}
-          {generateError && (
-            <p role="alert" className="mt-2 max-w-xs text-xs text-red-600">{generateError}</p>
-          )}
+          <button
+            type="button"
+            onClick={() => void refreshReportRuns()}
+            className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-4 text-sm font-semibold text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]"
+          >
+            진행 상태 새로고침
+          </button>
         </div>
+
+        {runsLoading && (
+          <p className="mt-4 text-sm text-[var(--color-revisit-text-helper)]" role="status">
+            작업 기록을 불러오는 중입니다.
+          </p>
+        )}
+        {runsError && (
+          <div className="mt-4 rounded-lg border border-[var(--color-revisit-red-50)] bg-white p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert">
+            <p>작업 기록을 불러오지 못했습니다. 잠시 후 ‘진행 상태 새로고침’을 눌러 주세요.</p>
+            <p className="mt-1">계속 실패하면 개발팀에 이 화면과 병원명을 알려 주세요.</p>
+          </div>
+        )}
+        {!runsLoading && !runsError && reportRuns.length === 0 && (
+          <p className="mt-4 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-4 text-sm leading-6 text-[var(--color-revisit-text-helper)]">
+            아직 실행된 월간 리포트 작업이 없습니다. 아래에서 대상 월을 고른 뒤 ‘리포트 생성’을 눌러 주세요.
+          </p>
+        )}
+        <div className="mt-4 grid gap-3">
+          {reportRuns.slice(0, 3).map((run) => (
+            <ReportRunCard
+              key={run.runId}
+              run={run}
+              onRebuild={(reason) => void handleGenerateMonthly(run, reason)}
+              onReview={() => void openReportRunReview(run)}
+              onCopy={() => void copyDeveloperNote(run)}
+              operationsHref={`/operations?hospital_id=${id}`}
+              disabled={generating}
+            />
+          ))}
+        </div>
+        {copyMessage && (
+          <p className="mt-3 text-sm text-[var(--color-revisit-text-helper)]" role="status">
+            {copyMessage}
+          </p>
+        )}
+      </section>
+
+      {/* 월말 배치가 실패하면 그 달 리포트가 통째로 비어 있게 된다 — 그때 AE가
+          개발자 없이 다시 만드는 경로. 이미 있는 달은 덮어쓰지 않는다. */}
+      <div className="mb-6 w-fit max-w-full rounded-xl border border-slate-200 bg-white p-3">
+        <p className="text-xs font-medium text-slate-700">월간 리포트가 없나요?</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <input
+            type="month"
+            value={generatePeriod}
+            // 이번 달 이후는 백엔드가 거부한다 — 빈 리포트 행이 월말 배치를 막기 때문에.
+            max={defaultGeneratePeriod}
+            onChange={(e) => setGeneratePeriod(e.target.value)}
+            className="min-h-11 rounded-lg border border-slate-300 px-3 text-sm"
+            aria-label="생성할 리포트 월"
+          />
+          <button
+            type="button"
+            onClick={() => void handleGenerateMonthly()}
+            disabled={generating}
+            className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {generating ? '요청 중...' : '리포트 생성'}
+          </button>
+        </div>
+        {generateMessage && (
+          <p role="status" className="mt-2 max-w-xs text-xs text-emerald-700">{generateMessage}</p>
+        )}
+        {generateError && (
+          <p role="alert" className="mt-2 max-w-xs text-xs text-red-600">{generateError}</p>
+        )}
       </div>
 
       {!loading && !error && (
@@ -468,6 +625,140 @@ export default function ReportsPage() {
         />
       )}
     </div>
+  )
+}
+
+function ReportRunCard({
+  run,
+  onRebuild,
+  onReview,
+  onCopy,
+  operationsHref,
+  disabled,
+}: {
+  run: ReportRunView
+  onRebuild: (reason: string) => void
+  onReview: () => void
+  onCopy: () => void
+  operationsHref: string
+  disabled: boolean
+}) {
+  const [showRebuildReason, setShowRebuildReason] = useState(false)
+  const [rebuildReason, setRebuildReason] = useState('')
+  const reasonValid = isValidReportRebuildReason(rebuildReason)
+
+  return (
+    <article className="rounded-lg border border-[var(--color-revisit-coolgrey-20)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all]">
+            {run.periodYear}년 {run.periodMonth}월 · <span className="whitespace-nowrap">{run.statusLabel}</span>
+          </p>
+          {run.versionLabel && (
+            <p className="mt-1 text-xs text-[var(--color-revisit-text-caption)]">
+              {run.versionLabel}
+            </p>
+          )}
+        </div>
+        <span className="rounded-full bg-[var(--color-revisit-primary-95)] px-3 py-1 text-xs font-semibold text-[var(--color-revisit-nav)]">
+          {run.attentionLabel}
+        </span>
+      </div>
+      <dl className="mt-4 grid gap-3 text-sm leading-6 sm:grid-cols-3">
+        <div>
+          <dt className="font-semibold text-[var(--color-revisit-text-title)]">무슨 문제인지</dt>
+          <dd className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{run.whatHappened}</dd>
+        </div>
+        <div>
+          <dt className="font-semibold text-[var(--color-revisit-text-title)]">고객 영향</dt>
+          <dd className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{run.customerImpact}</dd>
+        </div>
+        <div>
+          <dt className="font-semibold text-[var(--color-revisit-text-title)]">지금 할 일</dt>
+          <dd className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{run.nextAction}</dd>
+        </div>
+      </dl>
+      {!run.isActive && (
+        <div className="mt-4 flex flex-col items-start gap-2 sm:flex-row">
+          {run.primaryAction === 'review' && (
+            <button
+              type="button"
+              onClick={onReview}
+              disabled={disabled}
+              className="min-h-11 max-sm:w-full rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            >
+              원장 전달 자료 확인
+            </button>
+          )}
+          {run.primaryAction === 'operations' && (
+            <Link
+              href={operationsHref}
+              className="inline-flex min-h-11 max-sm:w-full items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-semibold text-white hover:opacity-90"
+            >
+              운영 센터에서 차단 사유 확인
+            </Link>
+          )}
+          {run.canRebuild && (
+            showRebuildReason ? (
+              <div className="w-full rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3">
+                <label className="text-sm font-semibold text-[var(--color-revisit-text-title)]" htmlFor={`rebuild-reason-${run.runId}`}>
+                  새 버전을 만드는 이유
+                </label>
+                <p className="mt-1 text-xs leading-5 text-[var(--color-revisit-text-helper)]">
+                  나중에 확인된 자료나 수정할 내용을 3자 이상 적어 주세요. 이 기록은 작업 이력에 남습니다.
+                </p>
+                <textarea
+                  id={`rebuild-reason-${run.runId}`}
+                  value={rebuildReason}
+                  onChange={(event) => setRebuildReason(event.target.value)}
+                  maxLength={200}
+                  rows={2}
+                  placeholder="예: 늦게 확인된 측정 결과를 반영해야 합니다."
+                  className="mt-2 w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-3 text-sm [word-break:keep-all]"
+                />
+                <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => onRebuild(rebuildReason.trim())}
+                    disabled={disabled || !reasonValid}
+                    className="min-h-11 max-sm:w-full rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    이 사유로 새 버전 만들기
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowRebuildReason(false)}
+                    className="min-h-11 max-sm:w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-4 text-sm font-semibold text-[var(--color-revisit-text-helper)]"
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowRebuildReason(true)}
+                disabled={disabled}
+                className={`min-h-11 max-sm:w-full rounded-lg px-4 text-sm font-semibold disabled:opacity-50 ${
+                  run.primaryAction === 'rebuild'
+                    ? 'bg-[var(--color-revisit-primary-40)] text-white hover:opacity-90'
+                    : 'border border-[var(--color-revisit-coolgrey-20)] bg-white text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]'
+                }`}
+              >
+                {run.primaryAction === 'operations' ? '해결 후 리포트 다시 만들기' : '리포트 다시 만들기'}
+              </button>
+            )
+          )}
+          <button
+            type="button"
+            onClick={onCopy}
+            className="min-h-11 max-sm:w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white px-4 text-sm font-semibold text-[var(--color-revisit-text-helper)] hover:bg-[var(--color-revisit-coolgrey-90)]"
+          >
+            개발팀 문의용 정보 복사
+          </button>
+        </div>
+      )}
+    </article>
   )
 }
 
@@ -769,7 +1060,7 @@ function DetailDrawer({
             {customerDownload ? (
               <div className="space-y-2">
                 <p className={`${REPORT_DRAWER_STYLE.infoPanel} px-3 py-2 text-xs leading-5 text-[var(--color-revisit-nav)]`}>
-                  검증된 원장 보고용 판본입니다. 아래 전달 기록의 PDF 해시와 같은 파일인지 확인하세요.
+                  확인이 끝난 원장 보고용 판본입니다. 아래 전달 기록과 같은 파일인지 확인하세요.
                 </p>
                 <a
                   href={customerDownload}
@@ -870,11 +1161,6 @@ function DetailDrawer({
                       <div>
                         수신 {asString(event.recipient_label) ?? '-'} · 채널 {asString(event.channel) ?? '-'} · 담당 {asString(event.operator) ?? '-'}
                       </div>
-                      {asString(event.artifact_sha256) && (
-                        <div className={`break-all font-mono text-[11px] ${REPORT_DRAWER_STYLE.helper}`}>
-                          SHA-256 {asString(event.artifact_sha256)}
-                        </div>
-                      )}
                     </li>
                   ))}
                 </ol>

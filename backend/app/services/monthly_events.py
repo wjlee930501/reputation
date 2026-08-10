@@ -31,6 +31,80 @@ class MonthlyEventType(StrEnum):
     DELIVERY_REDELIVERED = "DELIVERY_REDELIVERED"
 
 
+class MonthlyRunStage(StrEnum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    BLOCKED = "BLOCKED"
+    COVERAGE_COMPLETE = "COVERAGE_COMPLETE"
+    ARTIFACT_VALIDATION_PENDING = "ARTIFACT_VALIDATION_PENDING"
+    EXISTING = "EXISTING"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True, slots=True)
+class MonthlyRunOperatorCopy:
+    status_label: str
+    what_happened: str
+    customer_impact: str
+    next_action: str
+
+
+def monthly_run_operator_copy(stage: MonthlyRunStage) -> MonthlyRunOperatorCopy:
+    """Translate a persisted execution stage into one actionable operator card."""
+    match stage:
+        case MonthlyRunStage.QUEUED:
+            return MonthlyRunOperatorCopy(
+                "리포트 생성 대기 중",
+                "리포트 생성 요청이 순서대로 대기하고 있습니다.",
+                "완료 전까지 원장님께 전달할 새 파일이 없습니다.",
+                "잠시 기다린 뒤 이 화면에서 진행 상태를 다시 확인해 주세요.",
+            )
+        case MonthlyRunStage.RUNNING:
+            return MonthlyRunOperatorCopy(
+                "리포트를 만들고 있습니다",
+                "측정 결과를 모아 월간 리포트를 만드는 중입니다.",
+                "아직 원장님께 전달할 수 없습니다.",
+                "완료될 때까지 기다린 뒤 새 리포트를 검수해 주세요.",
+            )
+        case MonthlyRunStage.BLOCKED:
+            return MonthlyRunOperatorCopy(
+                "필수 측정이 부족해 전달이 멈췄습니다",
+                "리포트는 만들어졌지만 필수 측정이나 운영 자료가 부족합니다.",
+                "현재 파일은 원장님께 전달할 수 없습니다.",
+                "운영 센터에서 차단 사유를 확인하고 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요.",
+            )
+        case MonthlyRunStage.COVERAGE_COMPLETE:
+            return MonthlyRunOperatorCopy(
+                "측정 집계가 완료됐습니다",
+                "이번 달에 계획한 측정 결과가 모두 모였습니다.",
+                "원장 전달용 PDF 확인이 끝나기 전에는 전달할 수 없습니다.",
+                "원장 전달용 PDF 준비 상태를 이어서 확인해 주세요.",
+            )
+        case MonthlyRunStage.ARTIFACT_VALIDATION_PENDING:
+            return MonthlyRunOperatorCopy(
+                "원장 전달용 PDF 확인이 필요합니다",
+                "측정 집계와 리포트 생성은 끝났지만 원장 전달용 PDF 확인이 남았습니다.",
+                "확인 전 파일은 원장님께 전달할 수 없습니다.",
+                "원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.",
+            )
+        case MonthlyRunStage.EXISTING:
+            return MonthlyRunOperatorCopy(
+                "기존 리포트가 있습니다",
+                "같은 기간의 리포트가 있어 중복 생성을 건너뛰었습니다.",
+                "기존 리포트는 그대로 보존됩니다.",
+                "기존 리포트를 검수하거나 변경 사항이 있으면 ‘리포트 다시 만들기’를 눌러 주세요.",
+            )
+        case MonthlyRunStage.FAILED:
+            return MonthlyRunOperatorCopy(
+                "리포트를 만들지 못했습니다",
+                "월간 리포트를 끝까지 만들지 못했습니다.",
+                "해당 월의 새 리포트를 원장님께 전달할 수 없습니다.",
+                "‘리포트 다시 만들기’를 눌러 주세요. 다시 실패하면 ‘개발팀 문의용 정보 복사’로 전달해 주세요.",
+            )
+        case unreachable:
+            assert_never(unreachable)
+
+
 @dataclass(frozen=True, slots=True)
 class MonthlyEvent:
     event_id: uuid.UUID
@@ -99,9 +173,9 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 MilestoneKind.MONTHLY_ARTIFACT_PENDING,
                 event.hospital_id,
                 event.hospital_name,
-                "내부 집계 완료 · 산출물 검증 대기",
+                "측정 집계 완료 · 원장 전달용 PDF 확인 대기",
                 "측정은 완료됐지만 아직 고객 전달 가능 상태가 아닙니다.",
-                "원장용 PDF를 생성하고 시각·폰트·파일 검증을 완료해 주세요.",
+                "원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,
@@ -118,7 +192,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 event.hospital_name,
                 "월간 리포트 차단",
                 "월간 리포트를 아직 고객에게 전달할 수 없습니다.",
-                "Admin에서 측정 실패와 현재 차단 사유를 해결해 주세요.",
+                "운영 센터에서 차단 사유를 해결한 뒤 ‘리포트 다시 만들기’를 눌러 주세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,

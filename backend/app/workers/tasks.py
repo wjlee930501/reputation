@@ -16,6 +16,7 @@ import hashlib
 import logging
 import threading
 import uuid
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -46,7 +47,7 @@ from app.models.monthly_control import (
     MonthlyMeasurementCell,
     MonthlyMeasurementManifest,
 )
-from app.models.operations import OperationRunState
+from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
 from app.services import cost_guard, indexnow, notifier
@@ -71,6 +72,7 @@ from app.services.essence_engine import (
 )
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
+from app.services.monthly_events import MonthlyRunStage
 from app.services.monthly_manifest import (
     ManifestError,
     apply_manifest_to_report,
@@ -2590,6 +2592,213 @@ def adjust_query_priorities():
 # ══════════════════════════════════════════════════════════════════
 # 월간 리포트 (매월 마지막 날 21:00)
 # ══════════════════════════════════════════════════════════════════
+def _monthly_operation_run_id(task) -> uuid.UUID | None:
+    headers = getattr(getattr(task, "request", None), "headers", None)
+    if not isinstance(headers, Mapping):
+        return None
+    raw = headers.get("operation_run_id")
+    try:
+        return uuid.UUID(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
+def _mark_monthly_operation_run_running(
+    db,
+    run_id: uuid.UUID | None,
+    year: int,
+    month: int,
+) -> None:
+    if run_id is None:
+        return
+    run = db.get(OperationRun, run_id)
+    if run is None or run.state not in (
+        OperationRunState.REQUESTED,
+        OperationRunState.QUEUED,
+        OperationRunState.RUNNING,
+    ):
+        return
+    observed_at = datetime.now(timezone.utc)
+    run.state = OperationRunState.RUNNING
+    run.started_at = run.started_at or observed_at
+    run.heartbeat_at = observed_at
+    run.attempt_count += 1
+    run.result_summary = {
+        "stage": MonthlyRunStage.RUNNING.value,
+        "period_year": year,
+        "period_month": month,
+    }
+    run.version += 1
+    db.commit()
+
+
+def _start_scheduled_monthly_operation_run(
+    db, hospital: Hospital, now: arrow.Arrow
+) -> tuple[uuid.UUID, bool]:
+    idempotency_key = f"scheduled:{hospital.id}:{now.year}-{now.month:02d}"
+    existing = db.execute(
+        select(OperationRun).where(
+            OperationRun.hospital_id == hospital.id,
+            OperationRun.operation_type == "SCHEDULED_MONTHLY_REPORT",
+            OperationRun.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        observed_at = datetime.now(timezone.utc)
+        last_seen = existing.heartbeat_at or existing.started_at or existing.requested_at
+        if (
+            existing.state
+            in (
+                OperationRunState.REQUESTED,
+                OperationRunState.QUEUED,
+                OperationRunState.RUNNING,
+            )
+            and last_seen <= observed_at - timedelta(hours=1)
+        ):
+            existing.state = OperationRunState.FAILED
+            existing.completed_at = observed_at
+            existing.heartbeat_at = None
+            existing.total_count = 1
+            existing.success_count = 0
+            existing.failure_count = 1
+            existing.skipped_count = 0
+            existing.safe_error_code = "MONTHLY_REPORT_RUN_INTERRUPTED"
+            existing.safe_error_message = (
+                "월간 리포트 작업이 중간에 멈췄습니다. 리포트 화면에서 다시 만들기를 눌러 주세요."
+            )
+            existing.result_summary = {
+                "stage": MonthlyRunStage.FAILED.value,
+                "period_year": now.year,
+                "period_month": now.month,
+            }
+            existing.version += 1
+            db.commit()
+        return existing.id, True
+    observed_at = datetime.now(timezone.utc)
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="SCHEDULED_MONTHLY_REPORT",
+        state=OperationRunState.RUNNING,
+        idempotency_key=idempotency_key,
+        requested_by_id=None,
+        task_id=None,
+        attempt_count=1,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload={
+            "source_type": "MONTHLY_SCHEDULE",
+            "source_id": f"{now.year}-{now.month:02d}",
+        },
+        result_summary={
+            "stage": MonthlyRunStage.RUNNING.value,
+            "period_year": now.year,
+            "period_month": now.month,
+        },
+        requested_at=observed_at,
+        started_at=observed_at,
+        heartbeat_at=observed_at,
+        version=1,
+    )
+    db.add(run)
+    db.commit()
+    return run.id, False
+
+
+def _latest_monthly_report(db, hospital_id: uuid.UUID, year: int, month: int):
+    return db.execute(
+        select(MonthlyReport)
+        .where(
+            MonthlyReport.hospital_id == hospital_id,
+            MonthlyReport.period_year == year,
+            MonthlyReport.period_month == month,
+            MonthlyReport.report_type == "MONTHLY",
+        )
+        .order_by(MonthlyReport.version.desc())
+    ).scalars().first()
+
+
+def _finish_monthly_operation_run(
+    db,
+    run_id: uuid.UUID | None,
+    hospital_id: uuid.UUID,
+    year: int,
+    month: int,
+    outcome: str,
+) -> None:
+    if run_id is None:
+        return
+    run = db.get(OperationRun, run_id)
+    if run is None:
+        return
+    report = _latest_monthly_report(db, hospital_id, year, month)
+    if outcome == "failed":
+        stage = MonthlyRunStage.FAILED
+        state = OperationRunState.FAILED
+        counts = (0, 1, 0)
+    elif outcome == "skipped_existing":
+        stage = MonthlyRunStage.EXISTING
+        state = OperationRunState.SUCCEEDED
+        counts = (0, 0, 1)
+    elif report is not None and report.quality == "COMPLETE":
+        stage = MonthlyRunStage.ARTIFACT_VALIDATION_PENDING
+        state = OperationRunState.SUCCEEDED
+        counts = (1, 0, 0)
+    elif report is not None:
+        stage = MonthlyRunStage.BLOCKED
+        state = OperationRunState.PARTIAL
+        counts = (0, 1, 0)
+    else:
+        stage = MonthlyRunStage.FAILED
+        state = OperationRunState.FAILED
+        counts = (0, 1, 0)
+    milestones = (
+        [
+            MonthlyRunStage.COVERAGE_COMPLETE.value,
+            MonthlyRunStage.ARTIFACT_VALIDATION_PENDING.value,
+        ]
+        if stage is MonthlyRunStage.ARTIFACT_VALIDATION_PENDING
+        else [stage.value]
+    )
+    run.state = state
+    run.completed_at = datetime.now(timezone.utc)
+    run.heartbeat_at = None
+    run.lease_owner = None
+    run.lease_expires_at = None
+    run.total_count = 1
+    run.success_count, run.failure_count, run.skipped_count = counts
+    run.result_summary = {
+        "stage": stage.value,
+        "milestones": milestones,
+        "period_year": year,
+        "period_month": month,
+        "report_id": str(report.id) if report is not None else None,
+        "report_version": report.version if report is not None else None,
+        "supersedes_report_id": (
+            str(report.supersedes_report_id)
+            if report is not None and report.supersedes_report_id is not None
+            else None
+        ),
+    }
+    if stage is MonthlyRunStage.FAILED:
+        run.safe_error_code = "MONTHLY_REPORT_FAILED"
+        run.safe_error_message = "월간 리포트를 만들지 못했습니다. 다시 만들기를 시도해 주세요."
+    run.version += 1
+    db.commit()
+
+
+def _fail_monthly_operation_run(
+    db,
+    run_id: uuid.UUID | None,
+    hospital_id: uuid.UUID,
+    year: int,
+    month: int,
+) -> None:
+    _finish_monthly_operation_run(db, run_id, hospital_id, year, month, "failed")
+
+
 def _build_monthly_report_for_hospital(
     db,
     h: Hospital,
@@ -2604,7 +2813,7 @@ def _build_monthly_report_for_hospital(
 
     월말 배치(run_monthly_reports)와 Admin의 병원별 수동 재생성이 이 함수를 공유한다 —
     두 경로가 서로 다른 코드였다면 배치 실패를 복구한 리포트가 배치본과 다른 내용이 될 수
-    있다. 커밋과 Slack 알림까지 여기서 끝내고, 예외는 호출자가 처리한다.
+    있다. 리포트 커밋까지 여기서 끝내고, 작업 상태 기록과 알림 이벤트는 호출자가 처리한다.
     """
     period_start = now.floor("month").datetime
     period_end = now.ceil("month").datetime
@@ -2811,19 +3020,6 @@ def _build_monthly_report_for_hospital(
     db.add(report)
     db.commit()
 
-    _run_async(
-        notifier.notify_monthly_report_ready(
-            h.name,
-            now.year,
-            now.month,
-            sov_pct,
-            change_pct,
-            pdf_path,
-            platforms=report_platforms,
-            new_mention_count=attribution["new_mention_count"],
-        )
-    )
-
     return "created"
 
 
@@ -2852,16 +3048,33 @@ def run_monthly_reports(self):
         result = db.execute(stmt)
         hospitals = result.scalars().all()
         failures: list[tuple[str, Exception]] = []
+        successes = 0
 
         for h in hospitals:
+            run_id, replayed = _start_scheduled_monthly_operation_run(db, h, now)
+            if replayed:
+                existing_run = db.get(OperationRun, run_id)
+                if existing_run is not None and existing_run.state == OperationRunState.SUCCEEDED:
+                    successes += 1
+                else:
+                    failures.append((h.name, RuntimeError("scheduled run already incomplete")))
+                continue
             try:
-                _build_monthly_report_for_hospital(db, h, now)
+                outcome = _build_monthly_report_for_hospital(db, h, now)
+                _finish_monthly_operation_run(db, run_id, h.id, now.year, now.month, outcome)
+                successes += 1
             except Exception as e:
                 logger.error(f"Monthly report failed for {h.name}: {e}")
                 db.rollback()
+                _fail_monthly_operation_run(db, run_id, h.id, now.year, now.month)
                 failures.append((h.name, e))
 
-        _raise_if_monthly_report_failures(failures)
+        return {
+            "status": "PARTIAL" if failures and successes else "FAILED" if failures else "SUCCEEDED",
+            "total_count": len(hospitals),
+            "success_count": successes,
+            "failure_count": len(failures),
+        }
 
 
 @celery_app.task(
@@ -2908,11 +3121,13 @@ def generate_monthly_report_for_hospital(
     else:
         anchor = now.shift(months=-1).ceil("month")
 
+    run_id = _monthly_operation_run_id(self)
     with SyncSessionLocal() as db:
         hospital = db.get(Hospital, uuid.UUID(str(hospital_id)))
         if hospital is None:
             logger.error(f"Monthly report requested for unknown hospital {hospital_id}")
             return {"status": "hospital_not_found"}
+        _mark_monthly_operation_run_running(db, run_id, anchor.year, anchor.month)
         try:
             outcome = (
                 _build_monthly_report_for_hospital(db, hospital, anchor, rebuild=True)
@@ -2925,16 +3140,13 @@ def generate_monthly_report_for_hospital(
             # 재시도가 남아 있으면 알리지 않는다 — 일시 장애 한 번에 Slack이 세 번 울리면
             # AE가 알림을 신뢰하지 않게 된다. 마지막 시도에서만 사람을 부른다.
             if self.request.retries >= self.max_retries:
-                _run_async(
-                    notifier.notify_ops_alert(
-                        title="월간 리포트 수동 생성 실패",
-                        message=(
-                            f"*{hospital.name}* {anchor.year}년 {anchor.month}월 리포트를 만들지 못했습니다.\n"
-                            f"사유: `{type(e).__name__}`\nAdmin에서 다시 시도해 주세요."
-                        ),
-                    )
+                _fail_monthly_operation_run(
+                    db, run_id, hospital.id, anchor.year, anchor.month
                 )
             raise
+        _finish_monthly_operation_run(
+            db, run_id, hospital.id, anchor.year, anchor.month, outcome
+        )
     return {"status": outcome, "year": anchor.year, "month": anchor.month}
 
 
