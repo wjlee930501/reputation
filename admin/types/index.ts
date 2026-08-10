@@ -495,3 +495,130 @@ export const EXPOSURE_ACTION_STATUS_LABELS: Record<string, { label: string; colo
   CANCELLED: { label: '취소', color: 'bg-slate-100 text-slate-500 border-slate-200' },
   ARCHIVED: { label: '보관', color: 'bg-slate-100 text-slate-500 border-slate-200' },
 }
+
+export type OperationsQueue = 'ONBOARDING' | 'TODAY' | 'REPORTS' | 'INCIDENTS'
+export type OperationsQueueParam = 'onboarding' | 'today' | 'reports' | 'incidents'
+export type OperationsSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+export type OperationsSlaState = 'NONE' | 'DUE' | 'OVERDUE'
+export type OperationsRunState =
+  | 'REQUESTED'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'SUCCEEDED'
+  | 'PARTIAL'
+  | 'FAILED'
+  | 'CANCELLED'
+export type OperationsSlackState =
+  | 'PENDING'
+  | 'SENDING'
+  | 'RETRYING'
+  | 'HOLD'
+  | 'SENT'
+  | 'FAILED'
+export type OperationsIncidentState = 'OPEN' | 'RETRYING' | 'RECOVERED' | 'ACKNOWLEDGED'
+
+export interface OperationsOwner {
+  readonly id: string
+  readonly name: string
+  readonly email: string
+}
+
+export interface OperationsAction {
+  readonly kind: string
+  readonly label: string
+  readonly method: 'GET' | 'POST'
+  readonly path: string
+  readonly enabled: boolean
+  readonly reason_required?: boolean
+  readonly requires_version?: boolean
+  readonly requires_idempotency_key?: boolean
+}
+
+export interface OperationsSlack {
+  readonly notification_id: string
+  readonly notification_type: string
+  readonly state: OperationsSlackState
+  readonly attempt_count: number
+  readonly max_attempts: number
+  readonly next_attempt_at: string | null
+  readonly sent_at: string | null
+  readonly safe_error_code: string | null
+  readonly safe_error_message: string | null
+  readonly version: number
+}
+
+export interface OperationsHistoryEntry {
+  readonly event: string
+  readonly at: string
+  readonly actor?: string | null
+}
+
+export interface OperationsQueueRow {
+  readonly id: string
+  readonly queue: OperationsQueue
+  readonly customer: {
+    readonly hospital_id: string | null
+    readonly name: string
+    readonly admin_path: string
+  }
+  readonly status: string
+  readonly severity: OperationsSeverity
+  readonly impact: string
+  readonly owner: OperationsOwner | null
+  readonly sla_due_at: string | null
+  readonly sla_state: OperationsSlaState
+  readonly next_action: string
+  readonly action: OperationsAction
+  readonly retry: OperationsAction | null
+  readonly safe_cause: string | null
+  readonly history: readonly OperationsHistoryEntry[]
+  readonly slack: OperationsSlack | null
+  readonly incident_id: string | null
+  readonly operation_run_id: string | null
+  readonly content_id: string | null
+  readonly report_id: string | null
+  readonly version: number | null
+  readonly occurred_at: string
+}
+
+export interface OperationsQueueResponse {
+  readonly queue: OperationsQueue
+  readonly total: number
+  readonly page: number
+  readonly page_size: number
+  readonly items: readonly OperationsQueueRow[]
+}
+
+export interface OperationsOverviewResponse {
+  readonly queues: readonly {
+    readonly queue: OperationsQueue
+    readonly total: number
+    readonly overdue: number
+  }[]
+  readonly items: readonly OperationsQueueRow[]
+}
+
+export interface OperationsRunSummary {
+  readonly run_id: string
+  readonly parent_run_id: string | null
+  readonly operation_type: string
+  readonly state: OperationsRunState
+  readonly attempt_count: number
+  readonly total_count: number
+  readonly success_count: number
+  readonly failure_count: number
+  readonly skipped_count: number
+  readonly safe_error_code: string | null
+  readonly safe_error_message: string | null
+  readonly requested_at: string
+  readonly queued_at: string | null
+  readonly started_at: string | null
+  readonly completed_at: string | null
+  readonly version: number
+  readonly retry: OperationsAction | null
+}
+
+export interface OperationsIncidentDetail {
+  readonly incident: OperationsQueueRow
+  readonly run: OperationsRunSummary | null
+}

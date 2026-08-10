@@ -41,8 +41,8 @@ const NAV_ITEMS = [
   },
   {
     href: '/operations',
-    label: '비용 사용량',
-    meta: '설정',
+    label: '운영 센터',
+    meta: '관제',
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M3 16V9M8 16V5M13 16v-4M18 16V7" />
