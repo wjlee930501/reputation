@@ -73,7 +73,7 @@ resolve_release_revision() {
 }
 
 case "$TARGET" in
-  backend|api|worker|beat|all)
+  backend|api|worker|beat|migrate|all)
     RELEASE_REVISION="$(resolve_release_revision)"
     ;;
 esac
@@ -375,7 +375,8 @@ make_service_env_file() {
     "$OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE" \
     "$CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE" \
     >> "$SERVICE_ENV_FILE"
-  if [[ "$service" == "api" || "$service" == "worker" || "$service" == "beat" ]]; then
+  if [[ "$service" == "api" || "$service" == "worker" || "$service" == "beat" \
+    || "$service" == "migrate" ]]; then
     printf 'REPUTATION_RELEASE_REVISION: "%s"\n' "$RELEASE_REVISION" >> "$SERVICE_ENV_FILE"
   fi
 }

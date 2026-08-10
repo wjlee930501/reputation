@@ -371,6 +371,31 @@ def test_migration_job_never_retries_on_create_or_update(tmp_path: Path) -> None
     assert "max_retries = 0" in cloudrun
 
 
+def test_migration_job_receives_the_release_revision(tmp_path: Path) -> None:
+    """Production settings validate the rollout identity before Alembic imports models."""
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "migrate"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = command_log.read_text()
+    assert "gcloud run jobs create reputation-migrate" in commands
+    assert 'env REPUTATION_RELEASE_REVISION: "test-source-revision"' in commands
+
+
 def test_deploy_records_rollback_revisions_and_rollback_restores_traffic(
     tmp_path: Path,
 ) -> None:
