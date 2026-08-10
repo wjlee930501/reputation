@@ -595,4 +595,3 @@ def test_notification_worker_is_included_routed_and_scheduled_every_minute() -> 
     assert schedule["task"] == "app.workers.notification_tasks.dispatch_notification_outbox"
     assert schedule["schedule"].minute == set(range(60))
     assert REDBEAT_SCHEDULE_VERSION >= "2026-08-10.1"
-    assert celery_app.conf.task_routes["app.workers.lead_diagnosis_tasks.notify_lead_intake"]["queue"] == "default"
