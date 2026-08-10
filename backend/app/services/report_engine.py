@@ -1,6 +1,5 @@
 """PDF 리포트 생성 엔진 — V0 및 월간 리포트"""
 import logging
-import re
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -12,12 +11,12 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 from app.models.hospital import Hospital
 from app.services.monthly_sov_types import MonthlySovPayload
+from app.services.report_attribution import ContentAttributionPayload
 
 logger = logging.getLogger(__name__)
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 
 # 7가지 콘텐츠 유형 — 리포트 표 노출 순서(요금제 배분 순서와 동일).
-CONTENT_TYPE_ORDER = ["FAQ", "DISEASE", "TREATMENT", "COLUMN", "HEALTH", "LOCAL", "NOTICE"]
 ACTIVE_GAP_STATUSES = {"OPEN", "WATCHING"}
 ACTIVE_ACTION_STATUSES = {"OPEN", "IN_PROGRESS", "BLOCKED"}
 PRIORITY_RANK = {"HIGH": 0, "NORMAL": 1, "LOW": 2}
@@ -33,20 +32,6 @@ GAP_TYPE_LABELS = {
 }
 
 
-def _enum_value(value: Any) -> Any:
-    return value.value if hasattr(value, "value") else value
-
-
-def _content_type_counts(contents: list) -> dict[str, int]:
-    """발행 콘텐츠를 7유형별 편수로 집계 (없는 유형은 0)."""
-    counts = {t: 0 for t in CONTENT_TYPE_ORDER}
-    for c in contents:
-        key = str(_enum_value(getattr(c, "content_type", None)))
-        if key in counts:
-            counts[key] += 1
-    return counts
-
-
 def _query_text_of(record: Any) -> str | None:
     """SoV 레코드의 표시용 쿼리 텍스트 — QueryMatrix.query_text 우선, 없으면 타깃명."""
     query = getattr(record, "query", None)
@@ -56,118 +41,6 @@ def _query_text_of(record: Any) -> str | None:
     if target is not None and getattr(target, "name", None):
         return target.name
     return None
-
-
-def _mention_state(records: list) -> tuple[bool, bool]:
-    """한 쿼리의 (측정됨, 언급됨) 상태 — calculate_sov와 동일한 성공 측정 필터 적용.
-
-    - measurement_status == "FAILED" → 분모 제외
-    - status 미존재 + raw_response 공백 → 네트워크 실패 추정, 제외
-    성공 측정이 0건이면 (False, False) = '측정 없음'. 이 경우 전월 미측정으로 간주된다.
-    """
-    successful = []
-    for r in records:
-        status = getattr(r, "measurement_status", None)
-        if status == "FAILED":
-            continue
-        raw = getattr(r, "raw_response", None)
-        if status is None and raw is not None and not str(raw).strip():
-            continue
-        successful.append(r)
-    if not successful:
-        return (False, False)
-    mentioned = any(getattr(r, "is_mentioned", False) for r in successful)
-    return (True, mentioned)
-
-
-def _related_content_titles(query_text: str, target_id: Any, contents: list) -> list[str]:
-    """신규 언급 쿼리와 연관된 발행 콘텐츠 제목.
-
-    1순위: exposure_content_linker가 설정한 content.query_target_id 링크 재사용.
-    2순위: 링크가 없으면 쿼리 텍스트 토큰과 제목의 단순 키워드 매칭(폴백).
-    """
-    titles: list[str] = []
-    seen: set[str] = set()
-
-    if target_id is not None:
-        for c in contents:
-            title = getattr(c, "title", None)
-            if getattr(c, "query_target_id", None) == target_id and title and title not in seen:
-                titles.append(title)
-                seen.add(title)
-    if titles:
-        return titles
-
-    tokens = [t for t in re.split(r"\s+", query_text) if len(t) >= 2]
-    for c in contents:
-        title = getattr(c, "title", None)
-        if not title or title in seen:
-            continue
-        if any(tok in title for tok in tokens):
-            titles.append(title)
-            seen.add(title)
-    return titles
-
-
-def build_content_attribution_summary(
-    *,
-    published_contents: list,
-    prev_published_contents: list,
-    this_records: list,
-    prev_records: list,
-    sov_pct: float | None,
-    prev_sov_pct: float | None,
-    change_pct: float | None,
-    max_new_queries: int = 5,
-) -> dict[str, Any]:
-    """콘텐츠 발행과 AI 언급 변화를 상관 표기용으로 집계한다(인과 주장 아님).
-
-    - 유형별 발행 편수(이번/전월)
-    - 신규 언급 쿼리: 전월 미언급(또는 미측정) → 이번 달 언급 시작된 쿼리 최대 N개
-    - 각 신규 언급 쿼리의 연관 발행 콘텐츠 제목(링크 우선, 키워드 폴백)
-    반환 dict는 JSON 직렬화 가능(템플릿 렌더 + content_summary 저장 겸용).
-    """
-    this_by_query: dict[Any, list] = defaultdict(list)
-    for r in this_records:
-        this_by_query[getattr(r, "query_id", None)].append(r)
-    prev_by_query: dict[Any, list] = defaultdict(list)
-    for r in prev_records:
-        prev_by_query[getattr(r, "query_id", None)].append(r)
-
-    new_mention_queries: list[dict[str, Any]] = []
-    for query_id, records in this_by_query.items():
-        measured, mentioned = _mention_state(records)
-        if not (measured and mentioned):
-            continue
-        # 전월에 이미 언급된 쿼리는 '신규'가 아니다. 전월 미측정도 신규로 인정.
-        _, prev_mentioned = _mention_state(prev_by_query.get(query_id, []))
-        if prev_mentioned:
-            continue
-        text = _query_text_of(records[0])
-        if not text:
-            continue
-        target_id = next(
-            (getattr(r, "ai_query_target_id", None) for r in records if getattr(r, "ai_query_target_id", None)),
-            None,
-        )
-        new_mention_queries.append({
-            "query_text": text,
-            "related_contents": _related_content_titles(text, target_id, published_contents),
-        })
-        if len(new_mention_queries) >= max_new_queries:
-            break
-
-    return {
-        "content_type_counts": _content_type_counts(published_contents),
-        "prev_content_type_counts": _content_type_counts(prev_published_contents),
-        "published_count": len(published_contents),
-        "prev_published_count": len(prev_published_contents),
-        "new_mention_queries": new_mention_queries,
-        "new_mention_count": len(new_mention_queries),
-        "sov_pct": sov_pct,
-        "prev_sov_pct": prev_sov_pct,
-        "change_pct": change_pct,
-    }
 
 
 def build_strategy_summary(
@@ -414,7 +287,7 @@ def generate_pdf_report(
     sov_pct: float | None = 0.0,
     published_count: int = 0,
     repeat_count: int = 5,
-    attribution: dict[str, Any] | None = None,
+    attribution: ContentAttributionPayload | None = None,
     strategy: dict[str, Any] | None = None,
     sov_coverage: MonthlySovPayload | None = None,
 ) -> str:
@@ -575,7 +448,7 @@ def build_doctor_report_view(
     prev_sov_pct: float | None,
     published_count: int,
     plan_quota: int | None,
-    attribution: dict[str, Any] | None,
+    attribution: ContentAttributionPayload | None,
     records: list,
     platforms: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -599,6 +472,10 @@ def build_doctor_report_view(
         delta_sentence = f"전월 {prev_count}번 → 이번 달 {this_count}번 (변화 없습니다)"
 
     new_questions = int((attribution or {}).get("new_mention_count") or 0)
+    first_measured_questions = int(
+        (attribution or {}).get("first_measured_mention_count") or 0
+    )
+    non_comparable_questions = int((attribution or {}).get("non_comparable_count") or 0)
     ahead_of = _competitor_outcomes(records)
 
     tiles: list[dict[str, Any]] = [
@@ -608,9 +485,9 @@ def build_doctor_report_view(
             "hint": "약정한 편수 대비 진행률입니다.",
         },
         {
-            "label": "새로 나오기 시작한 질문",
+            "label": "지난달 기준에서 새로 확인된 병원 언급",
             "value": f"{new_questions}개",
-            "hint": "지난달에는 답변에 없었는데 이번 달부터 병원이 언급된 질문입니다.",
+            "hint": "지난달에도 정상 확인한 같은 질문에는 없었지만 이번 달에는 나온 경우입니다.",
         },
     ]
     if ahead_of:
@@ -637,6 +514,22 @@ def build_doctor_report_view(
 
     platform_names = ", ".join(_platform_label(p) for p in (platforms or [])) or "챗GPT, 제미나이"
 
+    footnotes = [
+        f"{platform_names}에 환자들이 실제로 쓰는 표현으로 질문해 답변을 모았습니다.",
+        f"횟수가 {NORMAL_FLUCTUATION}개 안팎으로 오르내리는 것은 정상 범위입니다.",
+        "이 결과는 환자 수 증가를 보장하지 않습니다.",
+    ]
+    if first_measured_questions:
+        footnotes.append(
+            f"이번 달 처음 확인된 질문 {first_measured_questions}개는 지난달 결과가 없어 "
+            "새로 좋아진 결과로 계산하지 않았습니다."
+        )
+    if non_comparable_questions:
+        footnotes.append(
+            f"지난달 측정이 끝나지 않은 질문 {non_comparable_questions}개는 비교에서 제외했습니다. "
+            "다음 달 정상 측정 후 비교합니다."
+        )
+
     return {
         "measured": measured,
         "hospital_name": hospital.name,
@@ -653,11 +546,7 @@ def build_doctor_report_view(
             "ours": ours,
             "yours": ["월 1회 30분 통화로 요즘 환자분들이 많이 묻는 것을 알려주세요."],
         },
-        "footnotes": [
-            f"{platform_names}에 환자들이 실제로 쓰는 표현으로 질문해 답변을 모았습니다.",
-            f"횟수가 {NORMAL_FLUCTUATION}개 안팎으로 오르내리는 것은 정상 범위입니다.",
-            "이 결과는 환자 수 증가를 보장하지 않습니다.",
-        ],
+        "footnotes": footnotes,
     }
 
 

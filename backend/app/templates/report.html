@@ -153,7 +153,7 @@
 {% if report_type == 'MONTHLY' and attribution %}
 <h2>🔗 콘텐츠 발행과 AI 언급 변화</h2>
 <p class="note">
-  아래는 이번 기간에 발행된 콘텐츠와 같은 기간에 새로 시작된 AI 답변 언급을 나란히 정리한 자료입니다.
+  아래는 이번 기간에 발행된 콘텐츠와 같은 기간에 관찰한 AI 답변 내 병원 언급 변화를 나란히 정리한 자료입니다.
   콘텐츠 발행이 언급의 원인이라고 단정하지 않으며, 같은 기간에 함께 관찰된 상관 데이터로만 제공합니다.
 </p>
 
@@ -172,24 +172,48 @@
   {% if attribution.prev_sov_pct is not none %} (전월 {{ "%.1f"|format(attribution.prev_sov_pct) }}%{% if attribution.change_pct is not none %}, {{ "%+.1f"|format(attribution.change_pct) }}%p{% endif %}){% endif %}
 </p>
 
-<h3>이번 기간 신규 언급 시작 쿼리</h3>
-{% if attribution.new_mention_queries %}
+<h3>지난달보다 새로 확인된 언급</h3>
+{% if attribution.new_mention_cells %}
 <table>
-  <tr><th>신규 언급 쿼리</th><th>같은 기간 발행된 연관 콘텐츠</th></tr>
-  {% for q in attribution.new_mention_queries %}
+  <tr><th>환자 질문·AI 서비스</th><th>같은 기간 발행된 연관 콘텐츠</th></tr>
+  {% for q in attribution.new_mention_cells %}
   <tr>
-    <td>{{ q.query_text }}</td>
+    <td>{{ q.query_text }}<br><span class="note">{{ q.platform_label }}</span></td>
     <td>{% if q.related_contents %}{% for t in q.related_contents %}{{ t }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
   </tr>
   {% endfor %}
 </table>
 <p class="note">
-  위 쿼리들은 전월에는 AI 답변에서 병원이 언급되지 않았고, 이번 기간에 언급이 시작되었습니다.
-  연관 콘텐츠는 같은 기간에 발행되었고, 같은 기간에 해당 쿼리의 언급이 시작되었습니다.
+  지난달에도 정상 측정한 같은 질문·AI 서비스에서는 병원이 나오지 않았고, 이번 달에는 나온 경우만 {{ attribution.new_mention_count }}건으로 계산했습니다.
   발행과 언급 시작의 인과관계는 단정할 수 없으며, 시점 상관 정보로만 참고해 주세요.
 </p>
 {% else %}
-<p class="note">이번 기간에 새로 언급이 시작된 쿼리는 확인되지 않았습니다.</p>
+<p class="note">지난달과 같은 기준으로 새로 확인된 언급은 없습니다.</p>
+{% endif %}
+
+{% if attribution.first_measured_mention_cells %}
+<h3>이번 달 처음 확인된 언급</h3>
+<table>
+  <tr><th>환자 질문·AI 서비스</th><th>의미</th></tr>
+  {% for q in attribution.first_measured_mention_cells %}
+  <tr><td>{{ q.query_text }}<br><span class="note">{{ q.platform_label }}</span></td><td>{{ q.meaning }}</td></tr>
+  {% endfor %}
+</table>
+<p class="note">지난달 결과가 없으므로 새 언급으로 계산하지 않습니다. 좋아진 결과로도 설명하지 않고, 이번 달 현재 상태로만 보고한 뒤 다음 달 같은 기준으로 비교합니다.</p>
+{% endif %}
+
+{% if attribution.non_comparable_cells %}
+<h3>지난달과 비교할 수 없는 언급</h3>
+<table>
+  <tr><th>무슨 문제인지</th><th>고객 영향</th><th>지금 할 일</th></tr>
+  {% for q in attribution.non_comparable_cells %}
+  <tr>
+    <td>{{ q.query_text }} · {{ q.platform_label }}<br>{{ q.meaning }}</td>
+    <td>{{ q.customer_impact }}</td>
+    <td>{{ q.next_action }}</td>
+  </tr>
+  {% endfor %}
+</table>
 {% endif %}
 {% endif %}
 

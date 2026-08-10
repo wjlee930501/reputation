@@ -291,29 +291,62 @@ async def notify_monthly_report_ready(
     pdf_path: str,
     platforms: list[str] | None = None,
     new_mention_count: int | None = None,
+    first_measured_mention_count: int | None = None,
+    non_comparable_count: int | None = None,
 ) -> bool:
     """월간 리포트 생성 완료 → AE에게.
 
-    new_mention_count: 전월 미언급 → 이번 달 언급 시작된 쿼리 수. 1건 이상일 때만 한 줄 추가.
+    지난달과 같은 고정 질문·AI 서비스로 확인한 변화만 새 언급으로 표시한다.
     """
     change_text = f" | 전월 대비: *{change_pct:+.1f}%p*" if change_pct is not None else ""
     new_mention_text = (
-        f"신규 언급 시작 쿼리: *{new_mention_count}건*\n"
+        f"지난달과 같은 기준으로 새로 확인된 질문: *{new_mention_count}건*\n"
         if new_mention_count is not None and new_mention_count > 0
         else ""
     )
-    measurement_label = _measurement_label(platforms)
+    first_measured_text = (
+        "이번 달 처음 확인되어 새 언급으로 계산하지 않은 질문: "
+        f"*{first_measured_mention_count}건*\n"
+        if first_measured_mention_count is not None and first_measured_mention_count > 0
+        else ""
+    )
+    non_comparable_text = (
+        "무슨 문제인지: 지난달 측정이 끝나지 않아 비교에서 제외한 질문: "
+        f"*{non_comparable_count}건*\n"
+        "고객 영향: 이 질문은 새로 좋아진 결과로 설명할 수 없습니다.\n"
+        "지금 할 일: 이번 달 현재 상태로만 전달하고 다음 달 정상 측정 후 비교하세요.\n"
+        if non_comparable_count is not None and non_comparable_count > 0
+        else ""
+    )
+    monthly_labels = {
+        "chatgpt": "ChatGPT",
+        "gemini": "Gemini",
+    }
+    measurement_label = (
+        " · ".join(
+            dict.fromkeys(
+                monthly_labels.get(value.lower(), "측정한 AI 서비스 확인 필요")
+                for value in platforms
+            )
+        )
+        if platforms
+        else "측정한 AI 서비스 확인 필요"
+    )
+    reports_url = f"{settings.ADMIN_BASE_URL.rstrip('/')}/operations?queue=REPORTS"
     return await _send(
-        text=f"📊 [월간 리포트] {hospital_name} {year}년 {month}월 AI 답변 인용 리포트 완료",
+        text=f"📊 [월간 리포트] {hospital_name} {year}년 {month}월 AI 답변 언급 리포트 완료",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"📊 *[월간 리포트]* *{hospital_name}* {year}년 {month}월 AI 답변 인용 리포트 생성 완료\n"
+                f"📊 *[월간 리포트]* *{hospital_name}* {year}년 {month}월 AI 답변 언급 리포트 생성 완료\n"
                 f"AI 답변 내 병원 언급률: *{_format_sov(sov_pct)}*{change_text}\n"
                 f"{new_mention_text}"
-                f"측정 방식: {measurement_label} · 측정 실패는 분모에서 제외\n"
-                f"파일: `{pdf_path}`\n\n"
-                f"원장 보고 자료를 확인해 주세요."
+                f"{first_measured_text}"
+                f"{non_comparable_text}"
+                f"측정 방식: {measurement_label} · 측정하지 못한 답변은 언급률 계산에 넣지 않았습니다.\n"
+                f"<{reports_url}|월간 리포트 확인>\n\n"
+                "월간 리포트에서 측정 기준과 원장 전달용 PDF를 확인하세요. "
+                "버튼이 없거나 비교 상태가 이해되지 않으면 개발팀 문의용 정보를 전달하세요."
             )},
         }],
     )

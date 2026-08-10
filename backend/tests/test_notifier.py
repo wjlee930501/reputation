@@ -164,19 +164,35 @@ async def test_monthly_report_shows_no_data_when_sov_none(monkeypatch):
 
     body = captured["blocks"][0]["text"]["text"]
     assert "측정 데이터 없음" in body
-    assert "Gemini 그라운디드" in body
+    assert "Gemini" in body
+    assert "그라운디드" not in body
 
 
 async def test_monthly_report_adds_new_mention_line_when_present(monkeypatch):
     captured = _capture_send(monkeypatch)
+    monkeypatch.setattr(notifier.settings, "ADMIN_BASE_URL", "https://admin.example.test")
 
     await notifier.notify_monthly_report_ready(
-        "장편한외과의원", 2026, 7, 42.0, 12.0, "gs://x.pdf",
+        "장편한외과의원", 2026, 7, 42.0, 12.0, pdf_path="gs://x.pdf",
         platforms=["chatgpt"], new_mention_count=3,
+        first_measured_mention_count=2, non_comparable_count=1,
     )
 
     body = captured["blocks"][0]["text"]["text"]
-    assert "신규 언급 시작 쿼리: *3건*" in body
+    assert "지난달과 같은 기준으로 새로 확인된 질문: *3건*" in body
+    assert "이번 달 처음 확인되어 새 언급으로 계산하지 않은 질문: *2건*" in body
+    assert "지난달 측정이 끝나지 않아 비교에서 제외한 질문: *1건*" in body
+    assert "고객 영향:" in body
+    assert "지금 할 일:" in body
+    assert "https://admin.example.test/operations?queue=REPORTS" in body
+    assert "gs://x.pdf" not in body
+    assert "NEW_MENTION" not in body
+    assert "NON_COMPARABLE" not in body
+    assert "분모" not in body
+    assert "AI 답변 인용 리포트" not in body
+    assert "AI 답변 언급 리포트" in body
+    for jargon in ["Responses API", "gpt-4o", "그라운디드", "미상", "pdf_path"]:
+        assert jargon not in body
 
 
 async def test_monthly_report_omits_new_mention_line_when_zero(monkeypatch):
@@ -188,4 +204,17 @@ async def test_monthly_report_omits_new_mention_line_when_zero(monkeypatch):
     )
 
     body = captured["blocks"][0]["text"]["text"]
-    assert "신규 언급 시작 쿼리" not in body
+    assert "지난달과 같은 기준으로 새로 확인된 질문" not in body
+
+
+async def test_monthly_report_uses_plain_fallback_for_unknown_platform(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_monthly_report_ready(
+        "장편한외과의원", 2026, 7, 42.0, None, "gs://x.pdf",
+        platforms=["provider_internal_code"],
+    )
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert "측정한 AI 서비스 확인 필요" in body
+    assert "provider_internal_code" not in body

@@ -87,8 +87,11 @@ from app.services.monthly_period import (
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
-from app.services.report_engine import (
+from app.services.report_attribution import (
+    ContentAttributionInput,
     build_content_attribution_summary,
+)
+from app.services.report_engine import (
     build_doctor_report_view,
     generate_doctor_pdf_report,
     generate_pdf_report,
@@ -2885,7 +2888,6 @@ def _build_monthly_report_for_hospital(
         ),
     )
     sov_records = list(current_loaded.selected_records) if current_loaded is not None else []
-    prev_records = list(prior_loaded.selected_records) if prior_loaded is not None else []
     sov_pct = monthly_sov.sov_pct
     prev_sov = monthly_sov.comparison.prior_sov_pct
     change_pct = monthly_sov.comparison.change_pct
@@ -2913,13 +2915,15 @@ def _build_monthly_report_for_hospital(
 
     # 콘텐츠 발행-AI 언급 상관 집계(인과 주장 아님, 상관 표기용)
     attribution = build_content_attribution_summary(
-        published_contents=published_contents,
-        prev_published_contents=prev_published_contents,
-        this_records=sov_records,
-        prev_records=prev_records,
-        sov_pct=sov_pct,
-        prev_sov_pct=prev_sov,
-        change_pct=change_pct,
+        ContentAttributionInput(
+            published_contents=published_contents,
+            prev_published_contents=prev_published_contents,
+            current_cells=current_loaded.cells if current_loaded is not None else (),
+            prior_cells=prior_loaded.cells if prior_loaded is not None else None,
+            sov_pct=sov_pct,
+            prev_sov_pct=prev_sov,
+            change_pct=change_pct,
+        )
     )
 
     pdf_path = generate_pdf_report(

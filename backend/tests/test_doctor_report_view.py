@@ -51,7 +51,12 @@ def _view(**overrides):
         "prev_sov_pct": 39.0,
         "published_count": 12,
         "plan_quota": 16,
-        "attribution": {"new_mention_count": 3, "new_mention_queries": [{"query_text": "q"}]},
+        "attribution": {
+            "new_mention_count": 3,
+            "first_measured_mention_count": 2,
+            "non_comparable_count": 1,
+            "new_mention_cells": [{"query_text": "q"}],
+        },
         "records": [_record(mentioned=True), _record(mentioned=False)],
         "platforms": ["chatgpt", "gemini"],
     }
@@ -126,6 +131,22 @@ def test_publishing_tile_degrades_when_no_quota_is_known():
     tile = next(t for t in _view(plan_quota=None)["tiles"] if t["label"] == "이번 달 발행한 글")
 
     assert tile["value"] == "12편"
+
+
+def test_attribution_copy_separates_real_change_from_missing_baseline():
+    view = _view()
+    tile = next(
+        t for t in view["tiles"]
+        if t["label"] == "지난달 기준에서 새로 확인된 병원 언급"
+    )
+    copy = _all_copy(view)
+
+    assert tile["value"] == "3개"
+    assert "지난달에도 정상 확인한 같은 질문" in tile["hint"]
+    assert "이번 달 처음 확인된 질문 2개" in copy
+    assert "새로 좋아진 결과로 계산하지 않았습니다" in copy
+    assert "지난달 측정이 끝나지 않은 질문 1개" in copy
+    assert "다음 달 정상 측정 후 비교합니다" in copy
 
 
 def test_evidence_pairs_one_appearance_with_one_absence():
