@@ -22,6 +22,9 @@
 
   .note { font-size: 9pt; color: #888; margin-top: 8px; }
   .highlight { background: #fff8e1; border-left: 4px solid #f5a623; padding: 12px 16px; border-radius: 4px; margin: 14px 0; font-size: 10.5pt; }
+  .action-box { background: #F5F8FC; border: 1px solid #D7E2F2; padding: 12px 14px; border-radius: 6px; margin: 12px 0; }
+  .action-box dt { color: #1A4B8C; font-weight: bold; margin-top: 7px; }
+  .action-box dt:first-child { margin-top: 0; }
 
   table { width: 100%; border-collapse: collapse; font-size: 10pt; margin: 10px 0; }
   th { background: #1A4B8C; color: white; padding: 7px 10px; text-align: left; }
@@ -49,11 +52,11 @@
 </div>
 {% endif %}
 
-<h2>📊 AI 검색 노출 현황 (SoV)</h2>
+<h2>📊 AI 답변 내 병원 언급률</h2>
 <div class="kpi-grid">
   <div class="kpi">
     <div class="val">{% if sov_measured %}{{ "%.1f"|format(sov_pct) }}%{% else %}측정 데이터 없음{% endif %}</div>
-    <div class="lbl">통합 SoV</div>
+    <div class="lbl">통합 병원 언급률</div>
   </div>
   <div class="kpi">
     <div class="val">{{ hospital.region|join(' ') }}</div>
@@ -66,11 +69,71 @@
 </div>
 <p class="note">
   {% if sov_measured %}
-  ※ 각 검색 쿼리를 {{ repeat_count }}회 반복 발송하여 통계적으로 측정한 수치입니다.
+    {% if report_type == 'MONTHLY' and sov_coverage %}
+    ※ 월초에 고정한 질문과 AI 서비스의 각 조합에서 성공 결과 1개만 사용했습니다. 추가 반복 측정은 점수 비중을 늘리지 않습니다.
+    {% else %}
+    ※ 각 검색 쿼리를 {{ repeat_count }}회 반복 발송하여 통계적으로 측정한 수치입니다.
+    {% endif %}
   {% else %}
   ※ 이번 기간에는 성공한 AI 답변 측정 데이터가 없어 언급률을 산출하지 못했습니다.
   {% endif %}
 </p>
+
+{% if report_type == 'MONTHLY' and sov_coverage %}
+<h3>이번 달 측정 표본</h3>
+<p class="note">
+  계획한 {{ sov_coverage.planned_count }}개 조합 중 {{ sov_coverage.success_count }}개를 측정했고,
+  {{ sov_coverage.failed_count }}개는 측정하지 못했으며 {{ sov_coverage.excluded_count }}개는 사전에 제외했습니다.
+</p>
+{% set platform_labels = {'chatgpt':'ChatGPT','gemini':'Gemini'} %}
+<table>
+  <tr><th>AI 서비스</th><th>계획</th><th>측정 완료</th><th>측정 못함</th><th>사전 제외</th><th>병원 언급</th></tr>
+  {% for row in sov_coverage.platforms %}
+  <tr>
+    <td>{{ platform_labels.get(row.platform, '기타 AI 서비스') }}</td>
+    <td>{{ row.planned_count }}개</td>
+    <td>{{ row.success_count }}개</td>
+    <td>{{ row.failed_count }}개</td>
+    <td>{{ row.excluded_count }}개</td>
+    <td>{% if row.mention_rate is not none %}{{ row.mentioned_count }}/{{ row.measured_count }}개 · {{ "%.1f"|format(row.mention_rate) }}%{% else %}산출하지 않음{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h3>질문 구성</h3>
+<table>
+  <tr><th>질문</th><th>질문 유형</th><th>전체 조합</th><th>측정 완료</th><th>측정 못함</th><th>사전 제외</th></tr>
+  {% for row in sov_coverage.queries %}
+  <tr>
+    <td>{{ row.query_text }}</td>
+    <td>{{ row.query_intent_label }}</td>
+    <td>{{ row.cell_count }}개</td>
+    <td>{{ row.success_count }}개</td>
+    <td>{{ row.failed_count }}개</td>
+    <td>{{ row.excluded_count }}개</td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="note">
+  통합 AI 답변 언급률에는 지역·병원 선택 질문만 사용합니다. 일반 건강정보 질문은 별도로 공개하지만 통합 수치에는 넣지 않습니다.
+</p>
+
+{% if sov_coverage.comparison.status == 'COMPARABLE' %}
+<div class="highlight">
+  지난달과 같은 질문·같은 AI 서비스 {{ sov_coverage.comparison.matched_cell_count }}개 조합만 비교했습니다.
+  {% if sov_coverage.comparison.change_pct is not none %}
+  같은 조건의 변화는 {{ "%+.1f"|format(sov_coverage.comparison.change_pct) }}%p입니다.
+  {% endif %}
+  이번 달에만 있는 조합 {{ sov_coverage.comparison.current_unmatched_cell_count }}개와 지난달에만 있는 조합 {{ sov_coverage.comparison.prior_unmatched_cell_count }}개는 증감 계산에서 뺐습니다.
+</div>
+{% else %}
+<dl class="action-box">
+  <dt>무슨 문제인지</dt><dd>{{ sov_coverage.comparison.problem }}</dd>
+  <dt>고객 영향</dt><dd>{{ sov_coverage.comparison.customer_impact }}</dd>
+  <dt>지금 할 일</dt><dd>{{ sov_coverage.comparison.next_action }}</dd>
+</dl>
+{% endif %}
+{% endif %}
 
 {% if report_type == 'MONTHLY' %}
 <h2>📝 이번 달 콘텐츠 발행 현황</h2>
@@ -80,7 +143,8 @@
     <div class="lbl">발행 완료 콘텐츠</div>
   </div>
   <div class="kpi">
-    <div class="val">{{ hospital.plan }}</div>
+    {% set plan_labels = {'PLAN_12':'스타터 · 월 12편','PLAN_16':'그로워 · 월 16편','PLAN_20':'리더 · 월 20편'} %}
+    <div class="val">{{ plan_labels.get(hospital.plan, '요금제 확인 필요') }}</div>
     <div class="lbl">요금제</div>
   </div>
 </div>
@@ -103,7 +167,7 @@
   <tr><td><strong>합계</strong></td><td><strong>{{ attribution.published_count }}</strong></td><td><strong>{{ attribution.prev_published_count }}</strong></td></tr>
 </table>
 <p class="note">
-  같은 기간 통합 SoV:
+  같은 기간 통합 병원 언급률:
   {% if attribution.sov_pct is not none %}{{ "%.1f"|format(attribution.sov_pct) }}%{% else %}측정 데이터 없음{% endif %}
   {% if attribution.prev_sov_pct is not none %} (전월 {{ "%.1f"|format(attribution.prev_sov_pct) }}%{% if attribution.change_pct is not none %}, {{ "%+.1f"|format(attribution.change_pct) }}%p{% endif %}){% endif %}
 </p>
@@ -133,7 +197,7 @@
 <h2>🎯 환자 질문 목표별 AI 노출 결과</h2>
 {% if strategy.query_targets %}
 <table>
-  <tr><th>환자 질문 목표</th><th>플랫폼별 SoV</th><th>통합 SoV</th><th>경쟁 병원 언급</th><th>출처 확인</th></tr>
+  <tr><th>환자 질문 목표</th><th>AI 서비스별 병원 언급률</th><th>통합 병원 언급률</th><th>경쟁 병원 언급</th><th>출처 확인</th></tr>
   {% set platform_labels = {'chatgpt':'ChatGPT','gemini':'Gemini'} %}
   {% for target in strategy.query_targets %}
   <tr>
@@ -141,7 +205,7 @@
     <td>
       {% if target.platform_sov %}
         {% for platform, value in target.platform_sov.items() %}
-          {{ platform_labels.get(platform, platform) }} {% if value is not none %}{{ "%.1f"|format(value) }}%{% else %}측정 없음{% endif %}{% if not loop.last %}<br>{% endif %}
+          {{ platform_labels.get(platform, '기타 AI 서비스') }} {% if value is not none %}{{ "%.1f"|format(value) }}%{% else %}측정 없음{% endif %}{% if not loop.last %}<br>{% endif %}
         {% endfor %}
       {% else %}측정 없음{% endif %}
     </td>

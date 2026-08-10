@@ -41,11 +41,7 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital, HospitalStatus
-from app.models.monthly_control import (
-    MonthlyMeasurementAttempt,
-    MonthlyMeasurementCell,
-    MonthlyMeasurementManifest,
-)
+from app.models.monthly_control import MonthlyMeasurementManifest
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
@@ -89,6 +85,8 @@ from app.services.monthly_period import (
     reporting_period,
     require_closed_period,
 )
+from app.services.monthly_sov import build_monthly_sov
+from app.services.monthly_sov_repository import load_monthly_sov_manifest
 from app.services.report_engine import (
     build_content_attribution_summary,
     build_doctor_report_view,
@@ -112,7 +110,6 @@ from app.services.sov_engine import (
     classify_query_intent,
     generate_query_matrix_specs,
     run_single_query,
-    segment_mention_rates,
 )
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 from app.workers.generation_batch_run import GenerationBatchRecorder
@@ -2355,6 +2352,7 @@ def _build_measurement_specs(
                     "target_id": target.id,
                     "variant_id": variant.id,
                     "priority": target_priority,
+                    "query_intent": str(getattr(query, "query_intent", "LOCAL") or "LOCAL"),
                 }
             )
 
@@ -2374,6 +2372,7 @@ def _build_measurement_specs(
                     "target_id": None,
                     "variant_id": None,
                     "priority": str(getattr(query, "priority", "NORMAL") or "NORMAL").upper(),
+                    "query_intent": str(getattr(query, "query_intent", "LOCAL") or "LOCAL"),
                 }
             )
     return _apply_high_priority_cap(specs, high_priority_cap)
@@ -2863,86 +2862,34 @@ def _build_monthly_report_for_hospital(
             f"{now.year}-{now.month:02d}, skipping."
         )
         return "skipped_existing"
-    # 이번 달 AI 답변 언급률 집계
-    # QueryMatrix를 조인해 질문 유형을 가져온다 — SovRecord에는 유형이 없고,
-    # 유형 없이는 INFO(지역 없는 의학 설명 질문)를 분모에서 뺄 수 없다.
-    if manifest is None:
-        sov_rows = []
-    else:
-        attempt_rows = db.execute(
-            select(
-                MonthlyMeasurementCell.id,
-                SovRecord,
-                QueryMatrix.query_intent,
-            )
-            .join(
-                MonthlyMeasurementAttempt,
-                MonthlyMeasurementAttempt.cell_id == MonthlyMeasurementCell.id,
-            )
-            .join(SovRecord, SovRecord.id == MonthlyMeasurementAttempt.sov_record_id)
-            .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
-            .where(MonthlyMeasurementCell.manifest_id == manifest.id)
-            .order_by(MonthlyMeasurementCell.id, SovRecord.measured_at, SovRecord.id)
-        ).all()
-        earliest_success = {}
-        for cell_id, record, query_intent in attempt_rows:
-            if (
-                str(record.measurement_status or "SUCCESS").upper() == "SUCCESS"
-                and cell_id not in earliest_success
-            ):
-                earliest_success[cell_id] = (record, query_intent)
-        sov_rows = list(earliest_success.values())
-    sov_records = [row[0] for row in sov_rows]
-    sov_dicts = [
-        {
-            "is_mentioned": row[0].is_mentioned,
-            "measurement_status": row[0].measurement_status,
-            "query_intent": row[1],
-        }
-        for row in sov_rows
-    ]
-    # None → '측정 데이터 없음' (허위 0%가 원장 보고에 들어가는 것 방지)
-    # 분모는 LOCAL 질문만 (calculate_sov 기본값).
-    sov_pct = calculate_sov(sov_dicts)
-    sov_segments = segment_mention_rates(sov_dicts)
-    # 실제 측정된 플랫폼만 라벨에 반영 (없으면 None → 설정 기준 유추).
-    measured_platforms = sorted({r.ai_platform for r in sov_records if r.ai_platform})
-    report_platforms = measured_platforms or None
-
-    # 전월 AI 답변 언급률
     prev_start = now.shift(months=-1).floor("month").datetime
     prev_end = now.floor("month").datetime
-    prev_stmt = (
-        select(SovRecord, QueryMatrix.query_intent)
-        .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
-        .where(
-            SovRecord.hospital_id == h.id,
-            SovRecord.measured_at >= prev_start,
-            SovRecord.measured_at < prev_end,
+    prior_anchor = now.shift(months=-1)
+    prior_manifest = db.execute(
+        select(MonthlyMeasurementManifest).where(
+            MonthlyMeasurementManifest.hospital_id == h.id,
+            MonthlyMeasurementManifest.period_year == prior_anchor.year,
+            MonthlyMeasurementManifest.period_month == prior_anchor.month,
         )
+    ).scalar_one_or_none()
+    current_loaded = load_monthly_sov_manifest(db, manifest) if manifest is not None else None
+    prior_loaded = (
+        load_monthly_sov_manifest(db, prior_manifest) if prior_manifest is not None else None
     )
-    prev_rows = db.execute(prev_stmt).all()
-    prev_records = [row[0] for row in prev_rows]
-    prev_sov = (
-        calculate_sov(
-            [
-                {
-                    "is_mentioned": row[0].is_mentioned,
-                    "measurement_status": row[0].measurement_status,
-                    "query_intent": row[1],
-                }
-                for row in prev_rows
-            ]
-        )
-        if prev_rows
-        else None
+    monthly_sov = build_monthly_sov(
+        current_loaded.cells if current_loaded is not None else (),
+        tuple(manifest.configured_platforms) if manifest is not None else (),
+        prior_cells=prior_loaded.cells if prior_loaded is not None else None,
+        prior_platforms=(
+            tuple(prior_manifest.configured_platforms) if prior_manifest is not None else None
+        ),
     )
-    # 전월대비는 두 달 모두 실측치가 있을 때만 계산 (None-safe).
-    change_pct = (
-        round(sov_pct - prev_sov, 1)
-        if sov_pct is not None and prev_sov is not None
-        else None
-    )
+    sov_records = list(current_loaded.selected_records) if current_loaded is not None else []
+    prev_records = list(prior_loaded.selected_records) if prior_loaded is not None else []
+    sov_pct = monthly_sov.sov_pct
+    prev_sov = monthly_sov.comparison.prior_sov_pct
+    change_pct = monthly_sov.comparison.change_pct
+    report_platforms = list(manifest.configured_platforms) if manifest is not None else None
 
     # 이번 달 발행 콘텐츠 집계
     content_stmt = select(ContentItem).where(
@@ -2984,6 +2931,7 @@ def _build_monthly_report_for_hospital(
         published_count=len(published_contents),
         repeat_count=SOV_REPEAT_WEEKLY,
         attribution=attribution,
+        sov_coverage=monthly_sov.to_payload(),
     )
     essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
 
@@ -3024,14 +2972,7 @@ def _build_monthly_report_for_hospital(
         supersedes_report_id=version_plan.supersedes_report_id,
         pdf_path=pdf_path,
         doctor_pdf_path=doctor_pdf_path,
-        sov_summary={
-            "sov_pct": sov_pct,
-            "prev_sov_pct": prev_sov,
-            "change_pct": change_pct,
-            # 헤드라인(sov_pct)은 LOCAL 질문만의 언급률이다. INFO 구간이
-            # 사라지면 "왜 이 숫자가 올랐나"를 설명할 수 없으므로 함께 남긴다.
-            "segments": sov_segments,
-        },
+        sov_summary=monthly_sov.to_payload(),
         content_summary={
             "published_count": len(published_contents),
             "attribution": attribution,

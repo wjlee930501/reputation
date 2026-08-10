@@ -11,6 +11,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.core.config import settings
 from app.models.hospital import Hospital
+from app.services.monthly_sov_types import MonthlySovPayload
 
 logger = logging.getLogger(__name__)
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
@@ -415,6 +416,7 @@ def generate_pdf_report(
     repeat_count: int = 5,
     attribution: dict[str, Any] | None = None,
     strategy: dict[str, Any] | None = None,
+    sov_coverage: MonthlySovPayload | None = None,
 ) -> str:
     """
     PDF 리포트 생성 후 GCS에 업로드.
@@ -450,6 +452,7 @@ def generate_pdf_report(
         # 콘텐츠 발행-AI 언급 상관 섹션 데이터(월간 전용). None이면 섹션 미노출.
         attribution=attribution,
         strategy=strategy,
+        sov_coverage=sov_coverage,
         generated_at=now.datetime,
     )
 

@@ -569,6 +569,65 @@ def test_report_detail_serializes_essence_summary_for_pre_pdf_review():
     assert payload["essence_summary"]["recommended_actions"] == []
 
 
+def test_report_detail_returns_persisted_fixed_manifest_breakdown_unchanged():
+    stored_summary = {
+        "sov_pct": 50.0,
+        "planned_count": 3,
+        "success_count": 2,
+        "failed_count": 1,
+        "excluded_count": 1,
+        "cells": [
+            {
+                "query_key": "query:fixed",
+                "query_text": "강남 내과를 찾아줘",
+                "query_intent_label": "지역·병원 선택 질문",
+                "platform": "chatgpt",
+                "platform_label": "ChatGPT",
+                "state": "SUCCESS",
+                "state_label": "측정 완료",
+                "measured": True,
+                "mentioned": True,
+            }
+        ],
+        "platforms": [
+            {
+                "platform": "chatgpt",
+                "cell_count": 2,
+                "planned_count": 1,
+                "success_count": 1,
+                "failed_count": 0,
+                "excluded_count": 1,
+            },
+            {
+                "platform": "gemini",
+                "cell_count": 2,
+                "planned_count": 2,
+                "success_count": 1,
+                "failed_count": 1,
+                "excluded_count": 0,
+            },
+        ],
+        "queries": [{"query_key": "query:fixed", "cell_count": 4}],
+        "comparison": {
+            "status": "NON_COMPARABLE",
+            "reason": "NO_PRIOR_MANIFEST",
+            "matched_cell_count": 0,
+        },
+    }
+    report = _report(sov_summary=stored_summary)
+
+    detail = _serialize(report, full=True)
+    listing = _serialize(report)
+
+    assert detail["sov_summary"] == stored_summary
+    assert detail["sov_summary"]["planned_count"] == 3
+    assert sum(row["cell_count"] for row in detail["sov_summary"]["platforms"]) == 4
+    assert detail["sov_summary"]["queries"][0]["cell_count"] == 4
+    assert detail["sov_summary"]["cells"][0]["state_label"] == "측정 완료"
+    assert "raw_response" not in detail["sov_summary"]["cells"][0]
+    assert listing["sov_summary"] is None
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [

@@ -53,6 +53,7 @@ def _spec(index: int, platform: str = "chatgpt") -> ManifestCellSpec:
         query_matrix_id=uuid.uuid4(),
         query_target_id=uuid.uuid4(),
         query_variant_id=uuid.uuid4(),
+        query_intent="LOCAL",
     )
 
 
@@ -120,6 +121,10 @@ def test_freeze_expands_every_query_across_configured_platforms_and_reuses_snaps
         ("variant:1", "gemini"),
         ("variant:2", "chatgpt"),
         ("variant:2", "gemini"),
+    }
+    assert manifest.platform_provenance["query_intents"] == {
+        "variant:1": "LOCAL",
+        "variant:2": "LOCAL",
     }
 
 

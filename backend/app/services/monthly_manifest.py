@@ -29,6 +29,7 @@ class ManifestCellSpec:
     query_matrix_id: uuid.UUID | None
     query_target_id: uuid.UUID | None
     query_variant_id: uuid.UUID | None
+    query_intent: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +71,7 @@ def freeze_monthly_manifest(
         platform_provenance={
             "chatgpt": "ALWAYS",
             "gemini": "CONFIGURED" if gemini_configured else "NOT_CONFIGURED",
+            "query_intents": {spec.query_key: spec.query_intent for spec in specs},
         },
         closes_at=_month_close(year, month),
     )
@@ -120,6 +122,7 @@ def freeze_dispatch_manifest(
             query_matrix_id=spec["query_id"],
             query_target_id=spec.get("target_id"),
             query_variant_id=spec.get("variant_id"),
+            query_intent=str(spec.get("query_intent") or "LOCAL").upper(),
         )
         for spec in measurement_specs
     ]
