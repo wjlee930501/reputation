@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>방향 C — 스위스 그리드</title>
+<link rel="stylesheet" href="_shared.css">
+<style>
+  :root {
+    --bg: #ffffff;
+    --ink: #0a0a0a;
+    --ink-2: #55575b;
+    --muted: #8e9095;
+    --rule: #111;
+    --hair: #e6e6e7;
+    --accent: #0038ff; /* 단 한 곳, 결론에만 */
+  }
+
+  body { background: var(--bg); color: var(--ink); }
+
+  /* 12칼럼이 눈에 보인다 — 격자가 곧 장식이다. */
+  .grid {
+    max-width: 1240px; margin: 0 auto; padding: 0 60px;
+    display: grid; grid-template-columns: repeat(12, 1fr); column-gap: 24px;
+  }
+
+  header {
+    border-bottom: 2px solid var(--rule);
+    padding: 18px 0 14px; align-items: baseline;
+  }
+  .logo { grid-column: 1 / 4; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; }
+  .logo span { color: var(--muted); font-weight: 400; margin-left: 6px; font-size: 12px; }
+  nav { grid-column: 6 / 11; display: flex; gap: 24px; font-size: 13px; color: var(--ink-2); }
+  .hcta { grid-column: 12 / 13; text-align: right; font-size: 13px; font-weight: 600; }
+
+  /* ── 히어로 ─────────────────────────────────── */
+  .hero { padding: 88px 0 0; }
+  .hero-eyebrow {
+    grid-column: 1 / 5; font-size: 12.5px; line-height: 1.7;
+    color: var(--ink-2); font-weight: 450; padding-top: 10px;
+  }
+  .hero-eyebrow b { color: var(--ink); font-weight: 600; }
+  h1 {
+    grid-column: 5 / 13;
+    font-size: 68px; line-height: 1.16; font-weight: 550;
+    letter-spacing: -0.045em; text-indent: -0.03em;
+  }
+  .hero-sub {
+    grid-column: 5 / 10; margin-top: 32px;
+    font-size: 16px; line-height: 1.78; color: var(--ink-2); font-weight: 420;
+  }
+  .hero-act { grid-column: 5 / 13; margin-top: 40px; padding-bottom: 70px; display: flex; align-items: center; gap: 24px; }
+  .btn {
+    display: inline-block; padding: 14px 26px;
+    background: var(--ink); color: #fff; font-size: 14.5px; font-weight: 550;
+  }
+  .hero-note { font-size: 12.5px; color: var(--muted); }
+
+  .rule-strong { grid-column: 1 / 13; border-top: 2px solid var(--rule); }
+
+  /* ── 실측 ───────────────────────────────────── */
+  .section { padding-top: 22px; }
+  .sec-label {
+    grid-column: 1 / 5; font-size: 11.5px; font-weight: 600;
+    letter-spacing: 0.14em; color: var(--muted); padding-top: 6px;
+  }
+  h2 {
+    grid-column: 5 / 13; font-size: 34px; font-weight: 550;
+    letter-spacing: -0.032em; line-height: 1.32; padding-bottom: 54px;
+  }
+
+  .fig { padding: 26px 0 30px; border-top: 1px solid var(--hair); }
+  .fig-a { grid-column: 1 / 7; padding-right: 40px; }
+  .fig-b { grid-column: 7 / 13; padding-right: 40px; }
+  .fig-val {
+    font-size: 88px; font-weight: 500; line-height: 1;
+    letter-spacing: -0.055em; font-variant-numeric: tabular-nums;
+  }
+  .fig-label { margin-top: 20px; font-size: 16.5px; line-height: 1.62; font-weight: 450; max-width: 24ch; }
+  .fig-src {
+    margin-top: 20px; font-size: 12.5px; line-height: 1.7;
+    color: var(--ink-2); font-weight: 450; max-width: 34ch;
+  }
+  .fig-src span {
+    display: block; font-size: 10.5px; letter-spacing: 0.12em;
+    color: var(--muted); font-weight: 600; margin-bottom: 5px;
+  }
+
+  /* ── 점유율 ─────────────────────────────────── */
+  .share-lead {
+    grid-column: 1 / 6; margin-top: 66px; padding-top: 26px;
+    border-top: 2px solid var(--rule);
+    font-size: 22px; line-height: 1.56; font-weight: 500; letter-spacing: -0.026em;
+  }
+  .share-lead em { font-style: normal; color: var(--accent); }
+  .share-lead p { margin-top: 20px; font-size: 12px; line-height: 1.7; color: var(--muted); font-weight: 450; }
+
+  .share-data { grid-column: 7 / 13; margin-top: 66px; padding-top: 26px; border-top: 2px solid var(--rule); }
+  .row { display: grid; grid-template-columns: 1fr 62px; align-items: baseline; padding: 13px 0 11px; border-bottom: 1px solid var(--hair); }
+  .row .n { font-size: 14.5px; font-weight: 500; }
+  .row .v { text-align: right; font-size: 14.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .row .bar { grid-column: 1 / 3; height: 3px; background: var(--hair); margin-top: 9px; }
+  .row .bar i { display: block; height: 3px; background: var(--ink); }
+  .row.off .n, .row.off .v { color: var(--muted); }
+  .row.off .bar i { background: #c9cacd; }
+  .total { margin-top: 26px; display: flex; align-items: baseline; gap: 14px; }
+  .total .v { font-size: 40px; font-weight: 550; letter-spacing: -0.045em; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .total .t { font-size: 13.5px; color: var(--ink-2); }
+</style>
+</head>
+<body>
+<div class="mock-tag">C — 스위스 그리드</div>
+
+<div class="grid" style="display:grid">
+  <header class="grid" style="grid-column:1/13; padding-left:0; padding-right:0; max-width:none;">
+    <div class="logo">Re:putation<span>by MotionLabs</span></div>
+    <nav><a>근거</a><a>운영 방식</a><a>자주 묻는 질문</a></nav>
+    <div class="hcta">무료 진단</div>
+  </header>
+</div>
+
+<div class="grid hero">
+  <p class="hero-eyebrow">이제 환자들은 <b>ChatGPT</b>에 병원을 묻습니다.</p>
+  <h1>원장님,<br>우리 병원은<br>어떤가요?</h1>
+  <p class="hero-sub">
+    AI 답변에 우리 병원이 몇 번 나오는지 직접 측정해 알려드립니다.
+    측정 조건과 원문을 함께 드리므로, 결과를 그대로 확인하실 수 있습니다.
+  </p>
+  <div class="hero-act">
+    <a class="btn">지금 무료로 진단받기</a>
+    <span class="hero-note">매일 선착순 20분 · 아침 8시 리셋</span>
+  </div>
+  <div class="rule-strong"></div>
+</div>
+
+<div class="grid section">
+  <p class="sec-label">자체 실측</p>
+  <h2>자리는 좁고, 매번 바뀝니다</h2>
+
+  <div class="fig fig-a">
+    <div class="fig-val">3~4</div>
+    <p class="fig-label">AI 답변 한 건에 실제로 등장한 병원 수입니다.</p>
+    <p class="fig-src"><span>측정 조건</span>2026-07-29 · 수서역·내과 고정 · 질의 3개 × 반복 3회 · gpt-5.6-luna, gemini-3.6-flash</p>
+  </div>
+  <div class="fig fig-b">
+    <div class="fig-val">40%</div>
+    <p class="fig-label">등장한 병원 중 단 한 번만 나온 비율입니다. 자리가 고정되어 있지 않습니다.</p>
+    <p class="fig-src"><span>측정 조건</span>같은 실측 · gemini-3.6-flash 38% · gpt-5.6-luna 42%</p>
+  </div>
+
+  <div class="share-lead">
+    도달의 <em>84%</em>가 두 곳에 있습니다. 나머지 16%에 같은 비용을 쓸 이유가 없습니다.
+    <p>웹 검색 점유율 기준 · 앱 MAU는 ChatGPT 2,345만 · Gemini 845만 · Claude 241만</p>
+  </div>
+  <div class="share-data">
+    <div class="row"><span class="n">ChatGPT</span><span class="v">66.6%</span><span class="bar"><i style="width:66.6%"></i></span></div>
+    <div class="row"><span class="n">Gemini</span><span class="v">17.3%</span><span class="bar"><i style="width:17.3%"></i></span></div>
+    <div class="row off"><span class="n">Claude</span><span class="v">5.8%</span><span class="bar"><i style="width:5.8%"></i></span></div>
+    <div class="row off"><span class="n">그 외</span><span class="v">10.3%</span><span class="bar"><i style="width:10.3%"></i></span></div>
+    <div class="total"><span class="v">83.9%</span><span class="t">Re:putation이 측정하는 두 곳의 합</span></div>
+  </div>
+</div>
+</body>
+</html>

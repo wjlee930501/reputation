@@ -1,0 +1,1057 @@
+<title>Re:putation 랜딩 — 개편안 미리보기</title>
+
+<style>
+/* ══════════════════════════════════════════════════════════════
+   Re:putation 랜딩 개편안 — 임상 소견서 골격 + 계측 디테일
+
+   색의 규율 하나만 기억하면 된다:
+   --measured 는 "우리가 직접 잰 값"이라는 뜻이다. 장식으로 쓰지 않는다.
+   이 페이지에서 파랑이 보이면 예외 없이 실측값이다.
+
+   이 미리보기는 종이/잉크 한 세계에 의도적으로 고정한다 — 다크 테마를
+   따로 만들면 검토 대상인 색 관계가 화면마다 달라진다.
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  color-scheme: light;
+
+  --paper:        #faf9f7;  /* 흰색이 아니다. 종이다. */
+  --paper-sunk:   #f4f2ee;  /* 데이터 구간만 한 톤 내린다 */
+  --ink:          #16181b;
+  --ink-2:        #4a4e54;
+  --muted:        #82868c;
+  --rule:         #e2dfd9;  /* 머리카락 괘선 */
+  --rule-2:       #ebe8e3;
+  --rule-strong:  #16181b;  /* 구획 괘선 */
+  --measured:     #1b4f8a;  /* 자체 실측. 이 뜻 외에는 쓰지 않는다 */
+  --measured-bg:  #e8eef5;
+
+  --sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+          "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  --gut: 24px;
+  --max: 1080px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.72;
+  word-break: keep-all;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+}
+
+h1, h2, h3, p, ul, ol, dl, dd, dt, figure, blockquote { margin: 0; }
+ul, ol { padding: 0; list-style: none; }
+a { color: inherit; text-decoration: none; }
+
+:focus-visible {
+  outline: 2px solid var(--measured);
+  outline-offset: 3px;
+}
+
+.wrap {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding-inline: var(--gut);
+}
+
+/* 굵기 상한 600. 800은 쓰지 않는다 — 위계는 괘선과 여백이 만든다. */
+h1 {
+  font-size: clamp(2.1rem, 7.6vw, 3.35rem);
+  line-height: 1.24;
+  font-weight: 600;
+  letter-spacing: -0.038em;
+  text-wrap: balance;
+}
+h2 {
+  font-size: clamp(1.45rem, 5vw, 1.95rem);
+  line-height: 1.36;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+h3 {
+  font-size: 1.0625rem;
+  line-height: 1.5;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+}
+
+/* ── 헤더 ─────────────────────────────────────────────────── */
+.site-header {
+  display: flex;
+  align-items: baseline;
+  gap: 20px;
+  padding-block: 20px 16px;
+  border-bottom: 1px solid var(--rule);
+}
+.brand { font-size: 0.9375rem; font-weight: 600; letter-spacing: -0.02em; }
+.brand span {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-left: 6px;
+  letter-spacing: 0;
+}
+.site-header nav {
+  margin-left: auto;
+  display: flex;
+  gap: 22px;
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+}
+.header-cta {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-bottom: 1.5px solid var(--ink);
+  padding-bottom: 1px;
+}
+
+/* ── 상태 바 — 이 서비스는 마케팅 페이지가 아니라 돌아가는 계측 장비다 ── */
+.statusbar {
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-sunk);
+}
+.statusbar ul {
+  display: flex;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+  scrollbar-width: none;
+}
+.statusbar ul::-webkit-scrollbar { display: none; }
+.statusbar li {
+  flex: none;
+  padding: 9px 16px 9px 0;
+  white-space: nowrap;
+}
+.statusbar li + li {
+  padding-left: 16px;
+  border-left: 1px solid var(--rule);
+}
+.statusbar b { color: var(--ink); font-weight: 500; }
+.pulse {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--measured);
+  margin-right: 7px;
+  animation: pulse 2.6s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.28 } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none } }
+
+/* ── 히어로 ───────────────────────────────────────────────── */
+.hero { padding-block: clamp(56px, 12vw, 104px) clamp(48px, 9vw, 84px); }
+.hero-lead {
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  margin-bottom: clamp(18px, 3vw, 26px);
+}
+.hero-lead b { color: var(--ink); font-weight: 600; }
+.hero h1 { max-width: 15ch; }
+.hero-act {
+  margin-top: clamp(32px, 6vw, 44px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 24px;
+}
+.btn {
+  display: inline-block;
+  padding: 15px 30px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition: background 0.16s ease;
+}
+.btn:hover { background: #000; }
+.hero-note { font-size: 0.8125rem; color: var(--muted); }
+
+/* ── 섹션 뼈대 ────────────────────────────────────────────── */
+.band { border-top: 1px solid var(--rule); }
+.band--sunk { background: var(--paper-sunk); }
+.section { padding-block: clamp(52px, 9vw, 82px); }
+
+.label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+/* 실측 라벨만 파랑 + 표식 — 색이 곧 출처 구분이다 */
+.label--measured { color: var(--measured); }
+.label--measured::before {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  background: var(--measured);
+  margin-right: 8px;
+  vertical-align: 1px;
+}
+
+/* (가) 비대칭 2단 — 좌측 라벨/리드, 우측 내용 */
+.split {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(0, 2.15fr);
+  gap: clamp(28px, 5vw, 64px);
+  align-items: start;
+}
+.split-lead p {
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  margin-top: 12px;
+  max-width: 30ch;
+}
+
+/* (다) 좌축 단독 */
+.stack-head { max-width: 22ch; margin-bottom: clamp(28px, 5vw, 44px); }
+
+/* ── 환자 질문 표 ─────────────────────────────────────────── */
+.queries { border-top: 1.5px solid var(--rule-strong); }
+.queries li {
+  padding: 13px 0;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+.queries .qn {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--muted);
+  width: 22px;
+}
+.src {
+  margin-top: 16px;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+/* ── 환자가 보는 화면 ─────────────────────────────────────── */
+.scene {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: clamp(28px, 4vw, 52px);
+  align-items: start;
+  margin-top: clamp(28px, 5vw, 40px);
+}
+.answer {
+  background: #fff;
+  border: 1px solid var(--rule);
+}
+.answer-q {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.answer-q span {
+  display: block;
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+.answer-q strong {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.5;
+}
+.answer-body { padding: 20px; }
+.answer-body > p { font-size: 0.9375rem; color: var(--ink-2); }
+.clinics { margin: 16px 0 0; border-top: 1px solid var(--rule-2); }
+.clinics li {
+  padding: 11px 0;
+  border-bottom: 1px solid var(--rule-2);
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+.clinics .cn {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--muted);
+}
+.answer-why {
+  margin-top: 16px;
+  font-size: 0.8125rem;
+  line-height: 1.68;
+  color: var(--ink-2);
+}
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chips li {
+  font-size: 0.6875rem;
+  color: var(--ink-2);
+  border: 1px solid var(--rule);
+  padding: 3px 9px;
+}
+.disclaimer {
+  padding: 11px 20px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.6875rem;
+  color: var(--muted);
+}
+.steps li {
+  padding: 15px 0 15px 18px;
+  border-left: 2px solid var(--rule);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  letter-spacing: -0.015em;
+  color: var(--ink-2);
+}
+.steps li:last-child {
+  border-left-color: var(--ink);
+  color: var(--ink);
+  font-weight: 600;
+}
+.ask-line {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+/* ── 실측 수치 ────────────────────────────────────────────── */
+/* 칸을 내용 폭에 맞춰 좁힌다 — 1fr 두 칸이면 글이 끝난 뒤로 빈 면이 남는다. */
+.figures {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: 820px;
+  margin-top: clamp(28px, 5vw, 42px);
+  border-top: 1.5px solid var(--rule-strong);
+}
+.figures > div { padding: 26px 28px 28px 0; }
+.figures > div + div {
+  padding-left: 36px;
+  border-left: 1px solid var(--rule);
+}
+.fig-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.fig-val {
+  font-size: clamp(2.6rem, 8vw, 3.7rem);
+  line-height: 1.04;
+  font-weight: 500;
+  letter-spacing: -0.048em;
+}
+.fig-label {
+  margin-top: 14px;
+  font-size: 1rem;
+  line-height: 1.62;
+  max-width: 26ch;
+}
+/* 측정 조건은 각주가 아니다. 숫자를 신뢰하게 만드는 본문이다. */
+.fig-src {
+  margin-top: 18px;
+  padding-top: 13px;
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.75;
+  color: var(--ink-2);
+  max-width: 34ch;
+}
+.fig-src b {
+  display: block;
+  color: var(--measured);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin-bottom: 4px;
+}
+
+/* ── 점유율 ───────────────────────────────────────────────── */
+.share { margin-top: clamp(44px, 7vw, 68px); }
+.share-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  gap: clamp(28px, 5vw, 60px);
+  align-items: start;
+  margin-top: 22px;
+}
+.nudge {
+  font-size: 1.125rem;
+  line-height: 1.62;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.nudge em { font-style: normal; color: var(--measured); font-weight: 600; }
+.share-note { margin-top: 14px; font-size: 0.8125rem; color: var(--ink-2); }
+
+.bars { border-top: 1.5px solid var(--rule-strong); }
+.bar-row {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr) 62px;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.bar-row .nm { font-size: 0.9375rem; font-weight: 500; }
+.bar-row .nm small {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  font-weight: 400;
+  color: var(--measured);
+  letter-spacing: 0.06em;
+}
+.track { height: 12px; background: #e6e3dd; }
+.track i { display: block; height: 12px; background: #c3bfb7; }
+.bar-row.is-measured .track i { background: var(--measured); }
+.bar-row .pct {
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+.bar-row:not(.is-measured) .nm,
+.bar-row:not(.is-measured) .pct { color: var(--ink-2); }
+.share-total {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1.5px solid var(--rule-strong);
+}
+.share-total b {
+  font-size: 1.9rem;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  color: var(--measured);
+}
+.share-total span { font-size: 0.875rem; color: var(--ink-2); }
+
+/* ── 원장님들이 하시는 말 ─────────────────────────────────── */
+.pain { border-top: 1.5px solid var(--rule-strong); }
+.pain li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(16px, 4vw, 48px);
+  padding: 22px 0;
+  border-bottom: 1px solid var(--rule);
+  align-items: baseline;
+}
+.pain q {
+  font-size: 1.0625rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.6;
+  quotes: "“" "”";
+}
+.pain p { font-size: 0.9375rem; color: var(--ink-2); }
+
+/* ── 운영 방식 — 실제 순서가 있는 절차이므로 번호를 쓴다 ──── */
+.process { border-top: 1.5px solid var(--rule-strong); }
+.process li {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 150px) minmax(0, 1fr);
+  gap: 16px;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--rule);
+  align-items: baseline;
+}
+.process .no {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.process .st { font-size: 0.8125rem; color: var(--ink-2); }
+.process h3 { letter-spacing: -0.02em; }
+
+/* ── 이건 못 합니다 ───────────────────────────────────────── */
+.limits { border-top: 1.5px solid var(--rule-strong); margin-top: clamp(24px, 4vw, 36px); }
+.limits li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: clamp(14px, 4vw, 44px);
+  padding: 18px 0;
+  border-bottom: 1px solid var(--rule);
+  align-items: baseline;
+}
+.limits h3::before {
+  content: "×";
+  color: var(--muted);
+  font-weight: 400;
+  margin-right: 10px;
+}
+.limits p { font-size: 0.9375rem; color: var(--ink-2); }
+
+/* ── FAQ ──────────────────────────────────────────────────── */
+.faq { border-top: 1.5px solid var(--rule-strong); }
+.faq details { border-bottom: 1px solid var(--rule); }
+.faq summary {
+  padding: 17px 28px 17px 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  line-height: 1.55;
+  cursor: pointer;
+  position: relative;
+  list-style: none;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after {
+  content: "+";
+  position: absolute;
+  right: 2px; top: 15px;
+  font-size: 1.1rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+.faq details[open] > summary::after { content: "−"; }
+.faq details p {
+  padding: 0 0 20px;
+  max-width: 62ch;
+  font-size: 0.9375rem;
+  color: var(--ink-2);
+}
+.faq .more > summary { color: var(--measured); font-weight: 600; }
+.faq .more[open] > summary { border-bottom: 1px solid var(--rule); }
+.faq .more details:last-child { border-bottom: none; }
+
+/* ── 리포트 미리보기 ──────────────────────────────────────── */
+.report {
+  margin-top: clamp(26px, 5vw, 38px);
+  background: #fff;
+  border: 1px solid var(--rule);
+}
+.report-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 20px;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--muted);
+}
+.report-q { padding: 18px 20px; border-bottom: 1px solid var(--rule); }
+.report-q span {
+  display: block;
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.report-q strong { font-size: 1rem; font-weight: 600; letter-spacing: -0.018em; }
+.counts { padding: 6px 20px 18px; }
+.count-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 72px;
+  gap: 14px;
+  align-items: center;
+  padding: 13px 0;
+}
+.count-row + .count-row { border-top: 1px solid var(--rule-2); }
+.count-row .nm { font-size: 0.875rem; font-weight: 500; }
+.pips { display: flex; gap: 4px; }
+.pips i { flex: 1; height: 14px; background: #eceae5; }
+.pips i.on { background: var(--measured); }
+.count-row .val { text-align: right; font-size: 0.8125rem; }
+.count-row .val b { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.03em; }
+.count-row .val span { color: var(--muted); font-family: var(--mono); font-size: 0.6875rem; }
+
+/* ── 최종 CTA ─────────────────────────────────────────────── */
+.cta { padding-block: clamp(56px, 10vw, 92px); }
+.cta h2 { max-width: 18ch; }
+.cta-body { margin-top: 16px; font-size: 1rem; color: var(--ink-2); max-width: 42ch; }
+.cta-notes { margin-top: 28px; border-top: 1px solid var(--rule); max-width: 52ch; }
+.cta-notes li {
+  padding: 11px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+}
+
+/* ── 푸터 ─────────────────────────────────────────────────── */
+.site-footer {
+  border-top: 1px solid var(--rule);
+  padding-block: 34px 44px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 28px;
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+}
+.site-footer strong { display: block; color: var(--ink); font-size: 0.9375rem; margin-bottom: 10px; }
+.site-footer p + p { margin-top: 12px; color: var(--muted); }
+.site-footer nav { display: flex; flex-direction: column; gap: 9px; align-items: flex-start; }
+.site-footer a { border-bottom: 1px solid transparent; }
+.site-footer a:hover { border-bottom-color: var(--rule); }
+
+/* ── 미리보기 표시 ────────────────────────────────────────── */
+.previewbar {
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  padding: 9px 0;
+}
+.previewbar .wrap { display: flex; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
+.previewbar span { color: #a9adb3; }
+
+/* ── 좁은 화면 ────────────────────────────────────────────── */
+@media (max-width: 760px) {
+  :root { --gut: 20px; }
+  .site-header { flex-wrap: wrap; gap: 10px 16px; }
+  .site-header nav { display: none; }
+  .header-cta { margin-left: auto; }
+
+  .split,
+  .scene,
+  .share-grid { grid-template-columns: minmax(0, 1fr); }
+
+  .figures { grid-template-columns: minmax(0, 1fr); }
+  .figures > div { padding: 24px 0 22px; }
+  .figures > div + div {
+    padding-left: 0;
+    border-left: none;
+    border-top: 1px solid var(--rule);
+    padding-top: 24px;
+  }
+  .fig-label, .fig-src { max-width: none; }
+
+  .bar-row { grid-template-columns: 96px minmax(0, 1fr) 54px; gap: 10px; }
+
+  .pain li,
+  .limits li { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .process li { grid-template-columns: 32px minmax(0, 1fr); }
+  .process .no { grid-row: span 2; }
+
+  .count-row { grid-template-columns: 72px minmax(0, 1fr) 62px; gap: 10px; }
+
+  .site-footer { grid-template-columns: minmax(0, 1fr); }
+  .site-footer nav { flex-direction: row; flex-wrap: wrap; gap: 8px 18px; }
+}
+</style>
+
+<div class="previewbar">
+  <div class="wrap">
+    <div>Re:putation 랜딩 개편안 · 검토용</div>
+    <div><span>서체는 실제 적용 시 Pretendard</span></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <header class="site-header">
+    <a class="brand" href="#top">Re:putation<span>by MotionLabs</span></a>
+    <nav>
+      <a href="#numbers">근거</a>
+      <a href="#operation">운영 방식</a>
+      <a href="#faq">자주 묻는 질문</a>
+    </nav>
+    <a class="header-cta" href="#lead">무료 진단</a>
+  </header>
+</div>
+
+<!-- 상태 바 — 선착순 고지를 마케팅 배지가 아니라 장비 상태로 바꾼다 -->
+<div class="statusbar">
+  <div class="wrap">
+    <ul>
+      <li><span class="pulse"></span>측정 가동 중</li>
+      <li>최근 실측 <b>2026-07-29 14:02 KST</b></li>
+      <li>측정 대상 <b>ChatGPT · Gemini</b></li>
+      <li>규약 <b>질의 3 × 반복 3 = 9회</b></li>
+      <li>오늘 남은 자리 <b>20 / 20</b></li>
+    </ul>
+  </div>
+</div>
+
+<main id="top">
+
+  <!-- ① 히어로 ─────────────────────────────────────────────── -->
+  <section class="wrap hero">
+    <p class="hero-lead">이제 환자들은 <b>ChatGPT</b>에 병원을 묻습니다.</p>
+    <h1>원장님, 우리 병원은 어떤가요?</h1>
+    <div class="hero-act">
+      <a class="btn" href="#lead">지금 무료로 진단받기</a>
+      <p class="hero-note">매일 선착순 20분만 참여 가능하며, 매일 아침 8시에 리셋됩니다.</p>
+    </div>
+  </section>
+
+  <!-- ② 환자가 실제로 묻는 말 — 마퀴 대신 정적 목록 ─────────── -->
+  <div class="band band--sunk">
+    <section class="wrap section">
+      <div class="split">
+        <div class="split-lead">
+          <p class="label">환자가 묻는 말</p>
+          <h2>이런 문장으로 묻습니다</h2>
+          <p>지어낸 예시가 아니라, 진단에서 실제로 만들어 보내는 질의 형태 그대로입니다.</p>
+        </div>
+        <div>
+          <ul class="queries">
+            <li><span class="qn">01</span>수서역 근처 내과 병원 추천해줘</li>
+            <li><span class="qn">02</span>강남에서 어깨 통증 진료 받을 수 있는 병원 알려줘</li>
+            <li><span class="qn">03</span>분당 근처 대장내시경 병원 추천해줘</li>
+            <li><span class="qn">04</span>경산에서 소아 예방접종 진료 받을 수 있는 병원 알려줘</li>
+            <li><span class="qn">05</span>수원 근처 치질 병원 추천해줘</li>
+            <li><span class="qn">06</span>일산에서 생리불순 진료 받을 수 있는 병원 알려줘</li>
+          </ul>
+          <p class="src">
+            템플릿 &nbsp;{지역} 근처 {진료과} 병원 추천해줘<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{지역}에서 {증상} 진료 받을 수 있는 병원 알려줘
+          </p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ③ 환자가 보는 화면 — 스크롤 고정 시퀀스 제거, 정적 2단 ── -->
+  <div class="band">
+    <section class="wrap section" id="scene">
+      <p class="label">환자가 보는 화면</p>
+      <h2>지금 이 답변에 우리 병원이 있나요?</h2>
+
+      <div class="scene">
+        <figure class="answer">
+          <div class="answer-q">
+            <span>환자 질문</span>
+            <strong>강남에서 어깨 통증 비수술 치료 잘 보는 병원 알려줘</strong>
+          </div>
+          <div class="answer-body">
+            <p>강남 지역에서 어깨 통증을 비수술적으로 진료하는 병원으로는 다음을 참고해 보실 수 있습니다.</p>
+            <ul class="clinics">
+              <li><span class="cn">1</span>○○정형외과의원</li>
+              <li><span class="cn">2</span>△△재활의학과의원</li>
+              <li><span class="cn">3</span>□□마취통증의학과의원</li>
+            </ul>
+            <p class="answer-why">비수술 통증 치료 중심으로 어깨 질환 진료 안내와 의료진 이력이 정리되어 있습니다.</p>
+            <ul class="chips">
+              <li>병원 진료 안내</li>
+              <li>의료진 소개</li>
+              <li>어깨 통증 FAQ</li>
+            </ul>
+          </div>
+          <figcaption class="disclaimer">예시 답변입니다. 실제 AI 답변과 노출 결과는 보장되지 않습니다.</figcaption>
+        </figure>
+
+        <div>
+          <ol class="steps">
+            <li>환자가 증상을 물어봅니다.</li>
+            <li>AI는 병원 서너 곳만 적습니다.</li>
+            <li>그 목록에 우리 병원이 있어야 합니다.</li>
+          </ol>
+          <p class="ask-line">여기 이름이 있어야 환자가 우리 병원을 압니다.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ④ 실측 ────────────────────────────────────────────────── -->
+  <div class="band band--sunk">
+    <section class="wrap section" id="numbers">
+      <p class="label label--measured">실측</p>
+      <h2>자리는 좁고, 매번 바뀝니다</h2>
+
+      <div class="figures">
+        <div>
+          <div class="fig-head"><span>답변 1건당 등장 병원 수</span><span>n = 9</span></div>
+          <p class="fig-val">3~4곳</p>
+          <p class="fig-label">AI 답변 한 건에 실제로 등장한 병원 수입니다.</p>
+          <p class="fig-src">
+            <b>측정 조건</b>
+            자체 실측 2026-07-29 · 수서역·내과 고정, 질의 3개 × 반복 3회
+          </p>
+        </div>
+        <div>
+          <div class="fig-head"><span>단 1회만 등장한 비율</span><span>n = 9</span></div>
+          <p class="fig-val">약 40%</p>
+          <p class="fig-label">등장한 병원 중 단 한 번만 나온 비율입니다. 자리가 고정되어 있지 않습니다.</p>
+          <p class="fig-src">
+            <b>측정 조건</b>
+            같은 실측 · gemini-3.6-flash 38%, gpt-5.6-luna 42%
+          </p>
+        </div>
+      </div>
+
+      <div class="share">
+        <p class="label">측정 범위</p>
+        <h2>왜 두 곳만 재는가</h2>
+        <div class="share-grid">
+          <div>
+            <p class="nudge">도달의 <em>84%</em>가 두 곳에 있습니다. 나머지 16%에 같은 비용을 쓸 이유가 없습니다.</p>
+            <p class="share-note">네이버 Cue:와 CLOVA X는 2026년 4월 문을 닫았습니다.</p>
+          </div>
+          <div>
+            <div class="bars">
+              <div class="bar-row is-measured">
+                <div class="nm">ChatGPT<small>측정 대상</small></div>
+                <div class="track"><i style="width:66.6%"></i></div>
+                <div class="pct">66.6%</div>
+              </div>
+              <div class="bar-row is-measured">
+                <div class="nm">Gemini<small>측정 대상</small></div>
+                <div class="track"><i style="width:17.3%"></i></div>
+                <div class="pct">17.3%</div>
+              </div>
+              <div class="bar-row">
+                <div class="nm">Claude</div>
+                <div class="track"><i style="width:5.8%"></i></div>
+                <div class="pct">5.8%</div>
+              </div>
+              <div class="bar-row">
+                <div class="nm">그 외</div>
+                <div class="track"><i style="width:10.3%"></i></div>
+                <div class="pct">10.3%</div>
+              </div>
+            </div>
+            <div class="share-total">
+              <b>83.9%</b><span>Re:putation이 측정하는 두 곳의 합</span>
+            </div>
+            <p class="src">웹 검색 점유율 기준 · 앱 MAU는 ChatGPT 2,345만 · Gemini 845만 · Claude 241만</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ⑤ 원장님들이 하시는 말 ────────────────────────────────── -->
+  <div class="band">
+    <section class="wrap section">
+      <div class="stack-head">
+        <p class="label">원장님들이 하시는 말</p>
+        <h2>이런 말씀, 자주 듣습니다</h2>
+      </div>
+      <ul class="pain">
+        <li>
+          <q>ChatGPT에 우리 병원을 물어봤는데 안 나와요.</q>
+          <p>어떤 질문에서 안 나오는지부터 확인하면 됩니다.</p>
+        </li>
+        <li>
+          <q>블로그는 쓰고 있는데, AI가 읽는지는 모르겠어요.</q>
+          <p>AI가 인용하려면 기계가 읽는 형식으로도 정리돼 있어야 합니다.</p>
+        </li>
+        <li>
+          <q>뭘 어디서부터 손대야 하는지 모르겠어요.</q>
+          <p>정리·발행·측정은 담당 매니저와 자동 발행이 매달 대신 합니다.</p>
+        </li>
+      </ul>
+    </section>
+  </div>
+
+  <!-- ⑥ 운영 방식 ──────────────────────────────────────────── -->
+  <div class="band band--sunk">
+    <section class="wrap section" id="operation">
+      <div class="split">
+        <div class="split-lead">
+          <p class="label">운영 방식</p>
+          <h2>원장님 몫은 정보를 주시는 것까지</h2>
+        </div>
+        <ol class="process">
+          <li>
+            <span class="no">01</span>
+            <span class="st">정보 구조화</span>
+            <h3>AI가 읽는 형태로 정리합니다.</h3>
+          </li>
+          <li>
+            <span class="no">02</span>
+            <span class="st">근거 콘텐츠 발행</span>
+            <h3>환자 질문에 답하는 글을 매달 발행합니다.</h3>
+          </li>
+          <li>
+            <span class="no">03</span>
+            <span class="st">답변 측정</span>
+            <h3>실제로 AI에 물어 결과를 기록합니다.</h3>
+          </li>
+        </ol>
+      </div>
+    </section>
+  </div>
+
+  <!-- ⑦ 이건 못 합니다 — 험블의 증거이므로 정면에 ───────────── -->
+  <div class="band">
+    <section class="wrap section">
+      <div class="stack-head">
+        <p class="label">하지 않는 것</p>
+        <h2>이건 못 합니다</h2>
+      </div>
+      <ul class="limits">
+        <li>
+          <h3>노출 순위 보장</h3>
+          <p>약속하지 않습니다. 플랫폼이 정합니다.</p>
+        </li>
+        <li>
+          <h3>환자 수 증가</h3>
+          <p>재지 않은 것을 성과로 적지 않습니다.</p>
+        </li>
+        <li>
+          <h3>치료 효과 표현</h3>
+          <p>생성 단계에서 걸러냅니다.</p>
+        </li>
+        <li>
+          <h3>검수 없는 자동 발행</h3>
+          <p>그대로 내보내지 않습니다. 발행 전후로 두 번 봅니다.</p>
+        </li>
+      </ul>
+    </section>
+  </div>
+
+  <!-- ⑧ FAQ ────────────────────────────────────────────────── -->
+  <div class="band band--sunk">
+    <section class="wrap section" id="faq">
+      <div class="split">
+        <div class="split-lead">
+          <p class="label">자주 받는 질문</p>
+          <h2>미리 답해 둡니다</h2>
+        </div>
+        <div class="faq">
+          <details>
+            <summary>무료 진단은 무엇을 주는 건가요?</summary>
+            <p>환자가 실제로 쓸 질문 3개를 골라 ChatGPT와 Gemini에 각각 세 번씩, 총 18회 물어봅니다. 답변에 병원이 몇 번 등장했는지를 플랫폼별로 정리한 PDF를 메일로 보내드립니다. 질문 원문과 모델명, 측정 일시가 함께 들어갑니다.</p>
+          </details>
+          <details>
+            <summary>왜 ChatGPT와 Gemini만 재나요? Perplexity나 Claude는요?</summary>
+            <p>국내 웹 검색 점유율로 보면 두 곳이 약 84%입니다. 채널을 늘리면 측정 비용은 채널 수만큼 늘어나는데 도달은 거의 그대로입니다. 필요해지면 실측으로 판단해 추가합니다.</p>
+          </details>
+          <details>
+            <summary>우리 병원 순위가 올라가는 건가요?</summary>
+            <p>아닙니다. AI 답변에 어느 병원이 들어갈지는 플랫폼이 결정하고, 우리는 그것을 통제할 수 없습니다. 하는 일은 AI가 인용할 근거를 병원 쪽에 갖추는 것까지이고, 그 결과를 매달 같은 방식으로 측정해 보고합니다.</p>
+          </details>
+          <details>
+            <summary>콘텐츠는 누가 쓰나요? 원장이 검수해야 하나요?</summary>
+            <p>병원이 주신 근거 자료를 바탕으로 생성하고, 발행 전 의료광고법 위반 표현을 자동 검사합니다. 발행 후에는 담당 매니저가 다시 확인합니다. 원장님 검수는 필수가 아니지만, 원하시면 발행 전 단계에서 보실 수 있습니다.</p>
+          </details>
+
+          <details class="more">
+            <summary>질문 7개 더 보기</summary>
+            <details>
+              <summary>원장이 실제로 해야 하는 일은 뭔가요?</summary>
+              <p>처음에 병원 정보와 근거 자료를 주시는 것, 그리고 콘텐츠 운영 기준을 한 번 확인해 주시는 것입니다. 그 뒤로는 매달 리포트를 받아보시면 됩니다.</p>
+            </details>
+            <details>
+              <summary>얼마나 걸리나요?</summary>
+              <p>무료 진단은 신청 후 15분 안에 리포트를 보냅니다. 계약 후에는 정보 정리와 첫 발행까지 2주 정도, AI 답변의 변화는 콘텐츠가 쌓이는 속도에 따라 달라지므로 기간을 약속하지 않습니다.</p>
+            </details>
+            <details>
+              <summary>기존 홈페이지나 블로그는 어떻게 되나요?</summary>
+              <p>그대로 두시면 됩니다. 병원 정보와 콘텐츠를 AI가 읽기 쉬운 형태로 따로 정리해 운영하는 방식이고, 기존 채널을 옮기거나 바꾸지 않습니다.</p>
+            </details>
+            <details>
+              <summary>숫자를 어떻게 믿나요?</summary>
+              <p>측정에 쓴 질문 원문, 답변 모델명, 반복 횟수, 측정 일시를 리포트에 그대로 적습니다. 같은 조건으로 직접 물어보시면 재현하실 수 있습니다.</p>
+            </details>
+            <details>
+              <summary>질문에 병원 이름을 넣나요?</summary>
+              <p>넣지 않습니다. 자기 이름을 물으면 언급은 보장되고 측정은 무의미해집니다. 환자가 실제로 쓸 법한 증상·지역·진료과 질문만 씁니다.</p>
+            </details>
+            <details>
+              <summary>측정이 실패하면 0%로 잡히나요?</summary>
+              <p>아닙니다. 측정이 안 된 경우와 언급이 없는 경우를 구분해 적습니다. 둘을 섞으면 저희 쪽 장애가 병원 성과처럼 보입니다.</p>
+            </details>
+            <details>
+              <summary>개인정보는 어떻게 처리되나요?</summary>
+              <p>무료 진단 신청 시 받는 담당자 연락처는 진단 결과 발송과 상담 안내에만 씁니다. 보유기간이 지나면 자동 파기하며, 요청하시면 즉시 파기합니다.</p>
+            </details>
+          </details>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ⑨ 받아보시는 리포트 ──────────────────────────────────── -->
+  <div class="band">
+    <section class="wrap section" id="preview">
+      <p class="label">리포트 미리보기</p>
+      <h2>받아보시는 리포트</h2>
+
+      <div class="report">
+        <div class="report-head">
+          <span>진단 리포트 · 예시</span>
+          <span>질의 3 × 반복 3 = 9회</span>
+        </div>
+        <div class="report-q">
+          <span>환자 질문</span>
+          <strong>강남에서 어깨 통증 비수술 치료 잘 보는 병원 알려줘</strong>
+        </div>
+        <div class="counts">
+          <div class="count-row">
+            <div class="nm">ChatGPT</div>
+            <div class="pips">
+              <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i>
+              <i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <div class="val"><b>4</b> <span>/ 9회</span></div>
+          </div>
+          <div class="count-row">
+            <div class="nm">Gemini</div>
+            <div class="pips">
+              <i class="on"></i><i class="on"></i>
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <div class="val"><b>2</b> <span>/ 9회</span></div>
+          </div>
+        </div>
+        <p class="disclaimer">예시 답변입니다. 실제 AI 답변과 노출 결과는 보장되지 않습니다.</p>
+      </div>
+    </section>
+  </div>
+
+  <!-- ⑩ 무료 진단 ──────────────────────────────────────────── -->
+  <div class="band band--sunk">
+    <section class="wrap cta" id="lead">
+      <p class="label label--measured">무료 진단</p>
+      <h2>우리 병원은 지금 몇 번 나올까요?</h2>
+      <p class="cta-body">남겨 주시면 ChatGPT와 Gemini에 실제로 물어 메일로 보내드립니다.</p>
+      <div class="hero-act">
+        <a class="btn" href="#lead">무료 진단 신청하기</a>
+      </div>
+      <ul class="cta-notes">
+        <li>하루 20곳까지 선착순으로 받습니다.</li>
+        <li>전화번호와 이메일 기준으로 병원당 1회입니다.</li>
+        <li>진단 결과는 측정 조건과 함께 제공되며, 노출 순위는 보장하지 않습니다.</li>
+      </ul>
+    </section>
+  </div>
+
+</main>
+
+<div class="wrap">
+  <footer class="site-footer">
+    <div>
+      <strong>Re:putation</strong>
+      <p>병원 정보를 AI가 읽을 수 있는 형태로 정리하고, 근거 기반 콘텐츠를 매달 발행하는 AI 노출 컨설팅·콘텐츠 운영 서비스입니다.</p>
+      <p>운영사: 주식회사 모션랩스(MotionLabs Inc.) · 대표 이우진<br>서울특별시 강남구 · 사업자 정보는 motionlabs.kr에서 확인하실 수 있습니다.</p>
+    </div>
+    <nav>
+      <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">motionlabs.kr ↗</a>
+      <a href="mailto:contact@motionlabs.kr">contact@motionlabs.kr</a>
+      <a href="#">개인정보 처리방침</a>
+      <a href="#">이용약관</a>
+      <a href="#lead">무료 진단</a>
+    </nav>
+  </footer>
+</div>
