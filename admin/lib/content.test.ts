@@ -71,6 +71,13 @@ test('content operations state distinguishes Slack retry, post-review, and revie
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      display: { review: { notification_state: 'NOT_REQUIRED' } },
+    }),
+    'published',
+  )
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
       display: { review: { notification_state: 'PENDING' } },
     }),
     'notificationPending',

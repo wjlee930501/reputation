@@ -4,7 +4,7 @@ Celery 태스크 전체
 - trigger_v0_report: 프로파일 완료 시 V0 분석 트리거
 - build_aeo_site: 콘텐츠 허브 공개 노출 상태 준비 (legacy task name)
 - nightly_content_generation: 매일 밤 내일 콘텐츠 생성
-- morning_content_auto_publish: 매일 아침 오늘 콘텐츠 자동 발행 + 후행 확인 Slack
+- morning_content_auto_publish: 매일 아침 오늘 콘텐츠 자동 검증·발행 + 예외 요약
 - run_sov_for_hospital: 단일 병원 AI 답변 언급률 측정
 - run_weekly_monitoring: 전체 병원 주간 측정
 - adjust_query_priorities: AI 답변 언급 결과 기반 질문 우선순위 조정
@@ -28,7 +28,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
-from app.core.database import SyncSessionLocal, get_async_sessionmaker
+from app.core.database import SyncSessionLocal
 from app.models.content import (
     ContentItem,
     ContentSchedule,
@@ -39,7 +39,6 @@ from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
-    PhilosophyStatus,
     SourceStatus,
 )
 from app.models.hospital import Hospital, HospitalStatus
@@ -54,9 +53,6 @@ from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
 )
-from app.services.content_publish_notifications import enqueue_publish_notification_sync
-from app.services.content_publish_reconciliation import reconcile_sent_publish_notifications
-from app.services.content_publish_state import recover_publish_notification_sync
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
@@ -279,14 +275,6 @@ def _mark_done(key: str, ttl_seconds: int = 82_800) -> None:
         logger.warning("Redis idempotency mark unavailable for %s", key)
 
 
-def _generation_missed_alert_key(hospital_id: uuid.UUID | str, content_ids: list[uuid.UUID]) -> str:
-    """같은 미생성 항목 집합은 날짜가 바뀌어도 같은 알림 상태로 취급한다."""
-    fingerprint = hashlib.sha256(
-        "|".join(sorted(str(content_id) for content_id in content_ids)).encode()
-    ).hexdigest()[:16]
-    return f"content_generation_missed:{hospital_id}:{fingerprint}"
-
-
 def _auto_publish_block_alert_key(
     content_id: uuid.UUID, scheduled_date: str, code: str, reason: str
 ) -> str:
@@ -326,6 +314,7 @@ def _record_locked_generation_items(
                 run_id=failed_run.id,
                 code=code,
                 message=message,
+                notify=False,
             )
         )
 
@@ -871,23 +860,12 @@ def nightly_content_generation(self):
         items, truncated_count = _load_nightly_generation_batch(db, window_start, tomorrow)
 
         if truncated_count:
-            # 상한 절단은 조용히 슬롯을 버리는 것과 같다 — 반드시 로그 + Slack (P1-3).
+            # 상한 밖 슬롯은 상태에 남아 다음 주기에 다시 회수된다.
+            # 발행 시각까지 해결되지 않을 때만 08시 예외 요약으로 올린다.
             logger.warning(
                 "nightly_content_generation cap reached: %d items deferred beyond cap %d",
                 truncated_count,
                 NIGHTLY_GENERATION_CAP,
-            )
-            _run_async(
-                notifier.notify_ops_alert(
-                    title="야간 콘텐츠 생성 상한 초과",
-                    message=(
-                        f"생성 대기 슬롯이 배치 상한({NIGHTLY_GENERATION_CAP}건)을 초과해 "
-                        f"{truncated_count}건이 이번 실행에서 처리되지 못했습니다.\n"
-                        f"대상 기간: {window_start} ~ {tomorrow}\n"
-                        f"미처리분은 다음 야간 배치에서 재시도됩니다. 누적이 계속되면 "
-                        f"워커 증설 또는 수동 재생성이 필요합니다."
-                    ),
-                )
             )
 
         if not items:
@@ -901,29 +879,17 @@ def nightly_content_generation(self):
                     len(stuck_items),
                 )
                 _record_locked_generation_items(recorder, stuck_items)
-                _run_async(
-                    notifier.notify_ops_alert(
-                        title="야간 콘텐츠 생성이 빈손으로 종료",
-                        message=(
-                            f"{len(stuck_items)}건이 직전 실행의 claim에 잠겨 이번 배치가 아무것도 "
-                            f"생성하지 못했습니다. 직전 워커가 비정상 종료했을 수 있습니다."
-                        ),
-                    )
-                )
             else:
                 logger.info(f"No content to generate for {window_start}~{tomorrow}")
             recorder.finish()
             return
 
         claimed_item_ids = [item.id for item in items]
-
-        # 병원별 생성 성공/실패/차단 추적 → 배치 완료 후 요약 Slack
-        hospital_stats: dict[str, dict] = {}
+        missing_essence_hospitals: set[uuid.UUID] = set()
 
         for item in items:
             item_id = item.id
             hospital = item.hospital
-            hospital_key = str(hospital.id)
             hospital_id = hospital.id
             hospital_name = hospital.name
             claim_time = item.generation_claimed_at
@@ -955,25 +921,9 @@ def nightly_content_generation(self):
                         run_id=stale_run.id,
                         code=stale_code,
                         message=stale_message,
+                        notify=False,
                     )
                 )
-
-            if hospital_key not in hospital_stats:
-                hospital_stats[hospital_key] = {
-                    "name": hospital.name,
-                    "generated": 0,
-                    "failed": 0,
-                    # "skipped"는 **운영 기준 미승인 차단 전용**이다 — 그 값이 그대로
-                    # notify_generation_blocked_no_philosophy의 blocked_count로 나간다.
-                    # 다른 사유의 건너뜀을 여기에 더하면 잘못된 사유로 알림이 발송된다.
-                    "skipped": 0,
-                    "cost_blocked": 0,
-                    # 생성 도중 운영자가 상태를 바꿔(취소 등) 결과를 버린 건수.
-                    "discarded": 0,
-                    # 본문은 저장됐지만 대표 이미지가 없는 건수. 생성 성공으로만 집계하면
-                    # 이미지 없는 글이 나간 것을 로그 말고는 알 길이 없다.
-                    "image_missing": 0,
-                }
 
             try:
                 # 기존 제목 목록 (중복 방지)
@@ -997,10 +947,14 @@ def nightly_content_generation(self):
                         "checked_at": datetime.now(timezone.utc).isoformat(),
                     }
                     db.commit()
-                    logger.warning(
-                        f"Skipping content generation without approved clinic writing standard: {hospital.name}"
-                    )
-                    hospital_stats[hospital_key]["skipped"] += 1
+                    first_gate_observation = hospital_id not in missing_essence_hospitals
+                    missing_essence_hospitals.add(hospital_id)
+                    if first_gate_observation:
+                        logger.warning(
+                            "Skipping content generation without approved clinic writing "
+                            "standard: %s",
+                            hospital.name,
+                        )
                     code = "MISSING_APPROVED_ESSENCE"
                     message = "승인된 콘텐츠 운영 기준을 먼저 승인해 주세요."
                     recorder.record(
@@ -1017,16 +971,20 @@ def nightly_content_generation(self):
                         safe_error_code=code,
                         safe_error_message=message,
                     )
-                    _run_async(
-                        open_generation_incident(
-                            item_id=item.id,
-                            hospital_id=hospital_id,
-                            hospital_name=hospital_name,
-                            run_id=failed_run.id,
-                            code=code,
-                            message=message,
+                    if first_gate_observation:
+                        _run_async(
+                            open_generation_incident(
+                                item_id=item.id,
+                                hospital_id=hospital_id,
+                                hospital_name=hospital_name,
+                                run_id=failed_run.id,
+                                code=code,
+                                message=message,
+                                # 최신 승인 없이는 시스템이 대신 판단할 수 없다. 병원 단위 인시던트가
+                                # 최초 진입/재진입할 때만 한 번 알리고, 이후 배치는 상태만 재확인한다.
+                                notify=True,
+                            )
                         )
-                    )
                     continue
 
                 # 비용 가드: Claude 호출 예산 확인. 차단 시 예외로 배치를 죽이지 않고 이 아이템만
@@ -1038,7 +996,6 @@ def nightly_content_generation(self):
                         hospital.name,
                         cost_decision.reason,
                     )
-                    hospital_stats[hospital_key]["cost_blocked"] += 1
                     code = "COST_BLOCKED"
                     message = "비용 가드가 생성을 보류했습니다. 운영 센터에서 한도를 확인해 주세요."
                     recorder.record(
@@ -1063,6 +1020,7 @@ def nightly_content_generation(self):
                             run_id=failed_run.id,
                             code=code,
                             message=message,
+                            notify=False,
                         )
                     )
                     continue
@@ -1135,7 +1093,6 @@ def nightly_content_generation(self):
                         "Discarding generated content for %s — status changed during generation",
                         item.id,
                     )
-                    hospital_stats[hospital_key]["discarded"] += 1
                     recorder.record(item.id, GenerationItemState.DISCARDED)
                     recorder.item_run(
                         item.id,
@@ -1158,7 +1115,6 @@ def nightly_content_generation(self):
                     if not image_url:
                         # generate_image는 실패·비용차단을 ("", "") 센티널로 알린다.
                         # 그대로 대입하면 기존 이미지를 지우게 되므로 값이 있을 때만 쓴다.
-                        hospital_stats[hospital_key]["image_missing"] += 1
                         logger.warning(
                             "Image generation returned no URL for %s (text saved)", item.id
                         )
@@ -1174,7 +1130,6 @@ def nightly_content_generation(self):
                             # 이미지 없는 글이 생긴 걸 아무도 모른다 — 요약에 드러낸다.
                             db.rollback()
                             db.refresh(item)
-                            hospital_stats[hospital_key]["image_missing"] += 1
                             logger.warning(
                                 "Image write-back skipped for %s — status changed during "
                                 "image generation",
@@ -1190,7 +1145,6 @@ def nightly_content_generation(self):
                         item.id,
                         type(img_e).__name__,
                     )
-                    hospital_stats[hospital_key]["image_missing"] += 1
                     db.rollback()
                     db.refresh(item)  # re-sync after rollback
                     item_state = GenerationItemState.PARTIAL
@@ -1204,13 +1158,11 @@ def nightly_content_generation(self):
                     ):
                         item_state = GenerationItemState.FAILED
 
-                hospital_stats[hospital_key]["generated"] += 1
                 if item_state == GenerationItemState.FAILED:
                     code, message = readiness_failure or (
                         "GENERATION_FAILED",
                         "자동 발행 준비 검사를 통과하지 못했습니다.",
                     )
-                    hospital_stats[hospital_key]["failed"] += 1
                     recorder.record(
                         item.id,
                         item_state,
@@ -1233,6 +1185,7 @@ def nightly_content_generation(self):
                             run_id=failed_run.id,
                             code=code,
                             message=message,
+                            notify=False,
                         )
                     )
                 elif item_state == GenerationItemState.PARTIAL:
@@ -1279,6 +1232,7 @@ def nightly_content_generation(self):
                             run_id=image_run.id,
                             code=code,
                             message=message,
+                            notify=False,
                         )
                     )
                 elif item_state == GenerationItemState.DISCARDED:
@@ -1308,7 +1262,6 @@ def nightly_content_generation(self):
                 logger.error("Content generation failed for item %s: %s", item.id, type(e).__name__)
                 db.rollback()
                 db.expire_all()
-                hospital_stats[hospital_key]["failed"] += 1
                 recorder.record(
                     item.id,
                     GenerationItemState.FAILED,
@@ -1331,6 +1284,7 @@ def nightly_content_generation(self):
                         run_id=failed_run.id,
                         code=code,
                         message=message,
+                        notify=False,
                     )
                 )
             finally:
@@ -1349,55 +1303,10 @@ def nightly_content_generation(self):
             _record_locked_generation_items(recorder, stuck_items)
         recorder.finish()
 
-        # 배치 완료 후 전체 병원을 한 번에 요약한다. 병원별 메시지는 고객 수에 비례해
-        # Slack 소음을 만들고, 같은 '운영 기준 미승인'을 차단 알림과 배치 알림으로
-        # 중복 전달했다. 준비만 덜 된 병원은 기존 3일 dedupe도 유지한다.
-        digest_entries: list[dict[str, object]] = []
-        preparation_keys: list[str] = []
-        for hospital_id, stat in hospital_stats.items():
-            if (
-                stat["generated"] > 0
-                or stat["failed"] > 0
-                or stat["skipped"] > 0
-                or stat["cost_blocked"] > 0
-                or stat["discarded"] > 0
-                or stat["image_missing"] > 0
-            ):
-                preparation_key = f"content_generation_preparation:{hospital_id}"
-                preparation_only = (
-                    stat["skipped"] > 0
-                    and stat["generated"] == 0
-                    and stat["failed"] == 0
-                    and stat["cost_blocked"] == 0
-                    and stat["discarded"] == 0
-                    and stat["image_missing"] == 0
-                )
-                if preparation_only and _already_done(preparation_key):
-                    continue
-                digest_entries.append(
-                    {
-                        "hospital_name": stat["name"],
-                        "generated": stat["generated"],
-                        "failed": stat["failed"],
-                        "skipped": stat["skipped"],
-                        "cost_blocked": stat["cost_blocked"],
-                        "discarded": stat["discarded"],
-                        "image_missing": stat["image_missing"],
-                    }
-                )
-                if preparation_only:
-                    preparation_keys.append(preparation_key)
-
-        if digest_entries:
-            sent = _run_async(
-                notifier.notify_content_generation_digest(
-                    scheduled_date=str(tomorrow), entries=digest_entries
-                )
-            )
-            if sent:
-                for preparation_key in preparation_keys:
-                    _mark_done(preparation_key, 3 * 86_400)
-
+        # 성공과 자동 복구 중간 상태는 Slack으로 보내지 않는다. 인시던트/실행 기록이 다음
+        # 배치의 입력이 되고, 01·04·07·07:45 재시도가 스스로 복구한다. 사람만 해결할 수 있는
+        # 병원 단위 운영 기준 게이트는 위에서 상태 전환당 한 번, 재시도 소진 후 남은 최종
+        # 발행 차단은 08시 배치에서 한 번의 요약으로만 알린다.
         logger.info("Nightly generation finalized %d item claims", len(claimed_item_ids))
 
 
@@ -1664,7 +1573,7 @@ def _generate_single_content_item(
         )
 
     # 비용 가드: Claude 호출 예산 확인. 차단 시 생성을 건너뛴다(item은 DRAFT/본문 없음 유지 —
-    # 다음 야간 배치의 생성 누락 경보/재시도가 커버한다). 하드 상한 알림은 가드가 자체 발송한다.
+    # 다음 야간 배치의 생성 재시도가 커버한다). 하드 상한 알림은 가드가 자체 발송한다.
     cost_decision = _run_async(cost_guard.check_and_increment("content"))
     if not cost_decision.allowed:
         logger.warning(
@@ -1795,7 +1704,7 @@ def _persist_publication_readiness(
 
 
 # ══════════════════════════════════════════════════════════════════
-# 아침 자동 발행 + 후행 확인 Slack (매일 08:00)
+# 아침 자동 발행 + 예외 관제 (매일 08:00)
 # ══════════════════════════════════════════════════════════════════
 @celery_app.task(
     name="app.workers.tasks.morning_content_auto_publish",
@@ -1803,7 +1712,7 @@ def _persist_publication_readiness(
     max_retries=3,
 )
 def morning_content_auto_publish(self):
-    """Publish due content after machine checks, then request a human follow-up check."""
+    """Publish verified content silently and summarize only exhausted blockers."""
     require_dispatch(self, "morning-content-auto-publish")
     today = arrow.now("Asia/Seoul").date()
     notification_failures = 0
@@ -1827,6 +1736,7 @@ def morning_content_auto_publish(self):
                         run_id=outcome["run_id"],
                         code=outcome["code"],
                         message=outcome["message"],
+                        notify=False,
                     )
                 )
                 block_key = _auto_publish_block_alert_key(
@@ -1894,17 +1804,8 @@ def morning_content_auto_publish(self):
             else:
                 notification_failures += 1
 
-        # A worker may have committed publication and died before Slack. Recover those rows
-        # without re-publishing or mutating their public timestamp.
-        with SyncSessionLocal() as db:
-            pending_ids = list(
-                db.execute(_post_publish_notification_pending_stmt(today)).scalars().all()
-            )
-        for content_id in pending_ids:
-            _recover_post_publish_notification(content_id)
-        _run_async(reconcile_sent_publish_notifications(get_async_sessionmaker()))
-
-        _notify_missed_content_generation(today)
+        # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다.
+        # Slack은 자동 복구가 소진된 발행 차단 예외만 위의 요약으로 보낸다.
     except Exception as exc:
         logger.exception("morning_content_auto_publish failed")
         raise self.retry(exc=exc, countdown=300)
@@ -1929,17 +1830,6 @@ def _auto_publish_due_stmt(today):
             Hospital.site_live.is_(True),
         )
         .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
-    )
-
-
-def _post_publish_notification_pending_stmt(today):
-    return (
-        select(ContentItem.id)
-        .where(
-            ContentItem.status == ContentStatus.PUBLISHED,
-            ContentItem.post_publish_notified_at.is_(None),
-        )
-        .order_by(ContentItem.published_at)
     )
 
 
@@ -2026,7 +1916,6 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
         item.post_publish_notified_at = None
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
-        enqueue_publish_notification_sync(db, item, hospital)
         write_audit_log_sync(
             db,
             action="auto_publish_content",
@@ -2064,85 +1953,6 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
         "admin_url": _admin_content_url(hospital.id, item.id),
         "carried_over": bool(item.carried_over_from),
     }
-
-
-def _recover_post_publish_notification(content_id: uuid.UUID) -> None:
-    with SyncSessionLocal() as db:
-        item = db.execute(
-            select(ContentItem)
-            .where(ContentItem.id == content_id)
-            .options(joinedload(ContentItem.hospital))
-        ).scalar_one_or_none()
-        if (
-            not item
-            or item.status != ContentStatus.PUBLISHED
-            or item.post_publish_notified_at is not None
-        ):
-            return
-        recover_publish_notification_sync(db, item, item.hospital)
-        db.commit()
-
-
-def _notify_missed_content_generation(today) -> None:
-    with SyncSessionLocal() as db:
-        missed_items = db.execute(_morning_missed_stmt(today)).scalars().all()
-        missed_by_hospital: dict[str, dict] = {}
-        for item in missed_items:
-            entry = missed_by_hospital.setdefault(
-                str(item.hospital_id), {"name": item.hospital.name, "dates": [], "ids": []}
-            )
-            entry["dates"].append(str(item.scheduled_date))
-            entry["ids"].append(item.id)
-
-    digest_entries: list[dict[str, object]] = []
-    digest_keys: list[str] = []
-    for hospital_id, entry in missed_by_hospital.items():
-        key = _generation_missed_alert_key(hospital_id, entry["ids"])
-        if _already_done(key):
-            continue
-        digest_entries.append(
-            {
-                "hospital_name": entry["name"],
-                "missed_count": len(entry["dates"]),
-                "dates": entry["dates"],
-            }
-        )
-        digest_keys.append(key)
-
-    if digest_entries:
-        sent = _run_async(
-            notifier.notify_content_missed_digest(
-                entries=digest_entries,
-                admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals",
-            )
-        )
-        if sent:
-            for key in digest_keys:
-                _mark_done(key, GENERATION_CATCHUP_DAYS * 86_400)
-        else:
-            logger.warning("generation-missed digest delivery failed")
-
-
-def _morning_missed_stmt(today):
-    """생성 누락 경보 조회 statement (R1) — 테스트에서 윈도우/필터 경계를 검증한다."""
-    window_start = today - timedelta(days=GENERATION_CATCHUP_DAYS)
-    approved_philosophy_hospitals = select(HospitalContentPhilosophy.hospital_id).where(
-        HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED
-    )
-    return (
-        select(ContentItem)
-        .join(Hospital, ContentItem.hospital_id == Hospital.id)
-        .where(
-            ContentItem.scheduled_date <= today,
-            ContentItem.scheduled_date >= window_start,
-            ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
-            ContentItem.body.is_(None),
-            Hospital.status == HospitalStatus.ACTIVE,
-            ContentItem.hospital_id.in_(approved_philosophy_hospitals),
-        )
-        .options(joinedload(ContentItem.hospital))
-        .order_by(ContentItem.scheduled_date)
-    )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -2287,17 +2097,8 @@ def run_sov_for_hospital(self, hospital_id: str):
                     hospital.name,
                     sov_decision.reason,
                 )
-                _run_async(
-                    notifier.notify_ops_alert(
-                        title="주간 AI 언급률 측정 비용 가드 차단",
-                        message=(
-                            f"병원: *{hospital.name}*\n"
-                            f"사유: {sov_decision.reason}\n"
-                            f"이번 주 측정({len(measurement_specs)} spec)이 건너뛰어졌습니다. "
-                            f"상한/킬스위치를 Admin에서 확인해 주세요."
-                        ),
-                    )
-                )
+                # cost_guard가 일/월 범위별로 첫 상한 도달만 알린다.
+                # 병원별 작업은 실행 기록만 남겨 같은 원인을 중복 전파하지 않는다.
                 return
 
             competitors = hospital.competitors or []
@@ -2715,16 +2516,24 @@ def monthly_slot_generation():
 
         if failures:
             names = ", ".join(failures[:10]) + (" 외" if len(failures) > 10 else "")
-            _run_async(
-                notifier.notify_ops_alert(
-                    title="다음 달 콘텐츠 슬롯 생성 실패",
-                    message=(
-                        f"{len(failures)}개 병원의 다음 달 슬롯 생성에 실패했습니다: {names}\n"
-                        f"나머지 병원은 정상 생성됐습니다. 실패 병원의 스케줄(발행요일/요금제)을 "
-                        f"확인해 주세요. 시스템은 다음 6시간 주기에 자동으로 다시 시도합니다."
-                    ),
+            fingerprint = hashlib.sha256(
+                "|".join(sorted(failures)).encode()
+            ).hexdigest()[:16]
+            alert_key = f"monthly_slot_failure:{next_month_start}:{fingerprint}"
+            sent = False
+            if not _already_done(alert_key):
+                sent = _run_async(
+                    notifier.notify_ops_alert(
+                        title="다음 달 콘텐츠 슬롯 생성 실패",
+                        message=(
+                            f"{len(failures)}개 병원의 다음 달 슬롯 생성에 실패했습니다: {names}\n"
+                            f"나머지 병원은 정상 생성됐습니다. 실패 병원의 스케줄(발행요일/요금제)을 "
+                            f"확인해 주세요. 시스템은 다음 6시간 주기에 자동으로 다시 시도합니다."
+                        ),
+                    )
                 )
-            )
+            if sent:
+                _mark_done(alert_key, 32 * 86_400)
 
 
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
@@ -2742,9 +2551,6 @@ def run_weekly_monitoring():
                 queue="sov",
                 headers=build_dispatch_headers("run-sov", hospital_id),
             )
-
-        # 측정은 이제 막 큐에 적재됐을 뿐이다 — '완료'가 아니라 '시작'을 알린다 (P2-14).
-        _run_async(notifier.notify_monitoring_queued(len(hospitals)))
 
         # 측정 결과 기반 질문 우선순위 조정 (P1-4) — 같은 "sov" 큐 뒤에 적재되므로 단일
         # sov 워커(FIFO) 기준으로는 병원별 측정 태스크가 모두 끝난 뒤 실행된다.
@@ -3628,7 +3434,7 @@ def purge_expired_leads():
     개인 식별 가능 필드(clinic_name, contact, question, consent_ip)는 즉시 폐기한다.
     이미 처리된 row는 skip.
 
-    매일 결과는 Slack에 notify — 0건이라도 송출하여 cron이 살아 있음을 운영자가 매일 확인.
+    정상 파기는 DB 증적과 로그로 종료하고, 파기 실패가 남을 때만 Slack으로 올린다.
     """
     from app.models.hospital import Hospital
     from app.models.lead import SalesLead
@@ -3676,10 +3482,11 @@ def purge_expired_leads():
         error_msg = str(exc)
         logger.exception("purge_expired_leads failed")
 
-    try:
-        _run_async(notifier.notify_lead_purge_result(purged=purged, error=error_msg))
-    except Exception:
-        logger.exception("purge_expired_leads slack notify failed (non-fatal)")
+    if error_msg:
+        try:
+            _run_async(notifier.notify_lead_purge_result(purged=purged, error=error_msg))
+        except Exception:
+            logger.exception("purge_expired_leads slack notify failed (non-fatal)")
 
     return {"purged": purged, "stuck": stuck, "error": error_msg}
 

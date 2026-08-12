@@ -16,14 +16,15 @@ from app.services.readiness_operator_copy import readiness_next_actions
 from app.workers import generation_incident_control
 
 
-def test_generation_failure_names_customer_impact_and_existing_recovery_controls() -> None:
+def test_generation_failure_names_customer_impact_and_one_recovery_control() -> None:
     # Given / When
     impact, action = generation_incident_control._generation_operator_copy("PROVIDER_TIMEOUT")
 
     # Then
     assert "병원 채널" in impact
-    assert "작업 다시 시도" in action
-    assert "개발팀 문의용 정보 복사" in action
+    assert "자동으로 다시 시도" in action
+    assert "지금은 기다리세요" in action
+    assert "개발팀 문의용 정보 복사" not in action
 
 
 def test_generation_prerequisites_do_not_promise_an_unavailable_retry() -> None:
@@ -38,7 +39,9 @@ def test_generation_prerequisites_do_not_promise_an_unavailable_retry() -> None:
 
     # Then
     assert "운영 기준" in essence_action
-    assert "보이면" in essence_action
+    assert "한 번 승인" in essence_action
+    assert "승인 전에는 재시도할 필요가 없" in essence_action
+    assert "자동으로 다시 생성" in essence_action
     assert "비용·자동 작업 안전장치" in cost_action
     assert "중지 해제" in cost_action
     assert "계정 소유자" in cost_action
@@ -68,11 +71,9 @@ def test_publication_blockers_name_the_exact_operator_recovery() -> None:
 
         assert "제때 공개되지 않습니다" in impact
         assert instruction in action
-        assert "개발팀 문의용 정보 복사" in action
+        assert "개발팀 문의용 정보 복사" not in action
         assert cause.endswith("습니다.")
-    assert "PROVIDER" not in generation_incident_control._generation_safe_cause(
-        "PROVIDER_TIMEOUT"
-    )
+    assert "PROVIDER" not in generation_incident_control._generation_safe_cause("PROVIDER_TIMEOUT")
 
 
 async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
@@ -91,6 +92,9 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
         async def commit(self) -> None:
             return None
 
+        async def scalar(self, _statement):
+            return None
+
     async def capture_request(_db, request, **_kwargs):
         captured["request"] = request
         return SimpleNamespace(
@@ -101,6 +105,8 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
             admin_path=request.admin_path,
             hospital_id=request.hospital_id,
             version=1,
+            safe_error_code=request.safe_error_code,
+            safe_error_message=request.safe_error_message,
         )
 
     async def accept_notification(_db, _intent) -> None:
@@ -111,12 +117,8 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
         "get_async_sessionmaker",
         lambda: lambda: FakeSession(),
     )
-    monkeypatch.setattr(
-        generation_incident_control, "open_or_touch_incident", capture_request
-    )
-    monkeypatch.setattr(
-        generation_incident_control, "enqueue_notification", accept_notification
-    )
+    monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", capture_request)
+    monkeypatch.setattr(generation_incident_control, "enqueue_notification", accept_notification)
     monkeypatch.setattr(
         generation_incident_control,
         "build_open_incident_notification",
@@ -137,6 +139,181 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
     request = captured["request"]
     assert request.safe_error_message == "콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다."
     assert "provider" not in request.safe_error_message
+
+
+async def test_generation_gate_inherits_open_legacy_episode_without_repaging(
+    monkeypatch,
+) -> None:
+    hospital_id = uuid.uuid4()
+    legacy = SimpleNamespace(state="OPEN")
+    scalar_results = iter((None, legacy))
+    captured = {"opened": 0, "notified": 0}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+        async def scalar(self, _statement):
+            return next(scalar_results)
+
+    async def capture_request(_db, request, **_kwargs):
+        captured["opened"] += 1
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            severity="MEDIUM",
+            customer_impact=request.customer_impact,
+            next_action=request.next_action,
+            admin_path=request.admin_path,
+            hospital_id=request.hospital_id,
+            version=1,
+            safe_error_code=request.safe_error_code,
+            safe_error_message=request.safe_error_message,
+        )
+
+    async def capture_notification(_db, _intent) -> None:
+        captured["notified"] += 1
+
+    monkeypatch.setattr(
+        generation_incident_control,
+        "get_async_sessionmaker",
+        lambda: lambda: FakeSession(),
+    )
+    monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", capture_request)
+    monkeypatch.setattr(generation_incident_control, "enqueue_notification", capture_notification)
+
+    await generation_incident_control.open_generation_incident(
+        item_id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        hospital_name="테스트의원",
+        run_id=uuid.uuid4(),
+        code="MISSING_APPROVED_ESSENCE",
+        message="raw detail",
+    )
+
+    assert captured == {"opened": 1, "notified": 0}
+
+
+async def test_generation_gate_does_not_touch_unchanged_open_incident(monkeypatch) -> None:
+    incident_id = uuid.uuid4()
+    current = SimpleNamespace(id=incident_id, state="OPEN")
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def scalar(self, _statement):
+            return current
+
+    async def must_not_open(*_args, **_kwargs):
+        raise AssertionError("unchanged open incident must not be touched")
+
+    monkeypatch.setattr(
+        generation_incident_control,
+        "get_async_sessionmaker",
+        lambda: lambda: FakeSession(),
+    )
+    monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", must_not_open)
+
+    result = await generation_incident_control.open_generation_incident(
+        item_id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        hospital_name="테스트의원",
+        run_id=uuid.uuid4(),
+        code="MISSING_APPROVED_ESSENCE",
+        message="raw detail",
+    )
+
+    assert result == incident_id
+
+
+def test_generation_projection_uses_the_specific_safe_cause() -> None:
+    incident = SimpleNamespace(
+        id=uuid.uuid4(),
+        severity="MEDIUM",
+        customer_impact="예정 공개가 늦어질 수 있습니다.",
+        next_action="운영 기준을 승인하세요.",
+        admin_path="/operations",
+        hospital_id=uuid.uuid4(),
+        version=1,
+        safe_error_code="MISSING_APPROVED_ESSENCE",
+        safe_error_message="승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다.",
+    )
+
+    projection = generation_incident_control._projection(
+        incident,
+        "테스트의원",
+        uuid.uuid4(),
+        "병원 운영 담당자",
+        "예정 공개 전",
+    )
+
+    assert projection.problem == "승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다."
+    assert projection.owner_label == "병원 운영 담당자"
+    assert projection.sla_label == "예정 공개 전"
+
+
+def test_generation_gate_is_hospital_scoped_and_paged_once_per_state_episode() -> None:
+    hospital_id = uuid.uuid4()
+    first = generation_incident_control._incident_identity(
+        "MISSING_APPROVED_ESSENCE", uuid.uuid4(), hospital_id
+    )
+    second = generation_incident_control._incident_identity(
+        "MISSING_APPROVED_ESSENCE", uuid.uuid4(), hospital_id
+    )
+
+    assert first == second
+    assert first == ("hospital", str(hospital_id), f"/hospitals/{hospital_id}/essence")
+    assert (
+        generation_incident_control._generation_severity("MISSING_APPROVED_ESSENCE").value
+        == "MEDIUM"
+    )
+    assert generation_incident_control._should_send_generation_notification(
+        notify_requested=True,
+        previous_state=None,
+    )
+    assert not generation_incident_control._should_send_generation_notification(
+        notify_requested=True,
+        previous_state="OPEN",
+    )
+
+
+def test_generation_incident_pages_once_until_it_recovers() -> None:
+    should_send = generation_incident_control._should_send_generation_notification
+
+    assert should_send(notify_requested=True, previous_state=None)
+    assert not should_send(notify_requested=True, previous_state="OPEN")
+    assert not should_send(notify_requested=False, previous_state=None)
+    assert should_send(notify_requested=True, previous_state="RECOVERED")
+
+
+def test_generation_notification_has_one_developer_fallback() -> None:
+    impact, action = generation_incident_control._generation_operator_copy("GENERATION_REJECTED")
+    incident = IncidentSlackProjection(
+        incident_id=uuid.uuid4(),
+        hospital_name="테스트의원",
+        severity="HIGH",
+        customer_impact=impact,
+        next_action=action,
+        admin_path="/operations",
+        owner_label="병원 운영 담당자",
+        sla_label="예정 공개 전",
+        problem="콘텐츠 생성 서비스가 이번 요청을 처리하지 못했습니다.",
+    )
+
+    payload = build_open_incident_notification(
+        incident, "https://admin.example.test"
+    ).message.payload_json()
+
+    assert payload.count("개발팀 문의용 정보 복사") == 1
 
 
 def test_today_queue_guidance_uses_the_content_check_link_for_both_states() -> None:

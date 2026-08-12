@@ -49,10 +49,7 @@ from app.services.content_publication import (
     has_required_references,
     publication_field_values,
 )
-from app.services.content_publish_notifications import (
-    enqueue_publish_notification,
-    project_publish_notification,
-)
+from app.services.content_publish_notifications import project_publish_notification
 from app.services.content_publish_state import attach_publish_notification_state
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
 from app.services.essence_readiness import get_current_approved_philosophy
@@ -732,7 +729,6 @@ async def publish_content(
             "mode": "manual_recovery",
         },
     )
-    await enqueue_publish_notification(db, item, hospital)
     await db.commit()
 
     # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library/관련 풀페이지에 즉시 반영되도록.
@@ -749,7 +745,7 @@ async def publish_content(
     return {
         "detail": "Published",
         "published_at": item.published_at.isoformat(),
-        "notification_state": "PENDING",
+        "notification_state": "NOT_REQUIRED",
     }
 
 

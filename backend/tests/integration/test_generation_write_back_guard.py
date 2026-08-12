@@ -485,4 +485,5 @@ async def test_generation_failure_opens_outbox_and_retry_recovers_it(pg_async_se
             NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
         )
     )
-    assert recovery_outbox == 1
+    # 자동 복구 성공은 운영센터 상태만 닫고 Slack 소음을 만들지 않는다.
+    assert recovery_outbox == 0

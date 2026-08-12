@@ -28,7 +28,7 @@ export interface ContentOperationsItem extends CarriedOverItem {
       label?: string | null
       reason?: string | null
       publishable?: boolean | null
-      notification_state?: 'PENDING' | 'SENDING' | 'RETRYING' | 'HOLD' | 'SENT' | 'FAILED' | 'MISSING'
+      notification_state?: 'PENDING' | 'SENDING' | 'RETRYING' | 'HOLD' | 'SENT' | 'FAILED' | 'MISSING' | 'NOT_REQUIRED'
       notification?: PublishNotificationPresentation
     } | null
   } | null
@@ -38,7 +38,7 @@ export interface ContentOperationsItem extends CarriedOverItem {
 }
 
 export interface PublishNotificationPresentation {
-  state: 'PENDING' | 'SENDING' | 'RETRYING' | 'HOLD' | 'SENT' | 'FAILED' | 'MISSING'
+  state: 'PENDING' | 'SENDING' | 'RETRYING' | 'HOLD' | 'SENT' | 'FAILED' | 'MISSING' | 'NOT_REQUIRED'
   label: string
   problem: string | null
   publication_impact: string
@@ -48,11 +48,11 @@ export interface PublishNotificationPresentation {
 }
 
 const NOTIFICATION_FALLBACK: PublishNotificationPresentation = {
-  state: 'MISSING',
-  label: 'Slack 알림 준비 중',
-  problem: '발행 알림 작업이 아직 준비되지 않았습니다.',
+  state: 'NOT_REQUIRED',
+  label: '자동 관제 중',
+  problem: null,
   publication_impact: '콘텐츠 발행에는 영향이 없습니다.',
-  next_action: '다음 아침 복구 작업이 자동으로 준비합니다.',
+  next_action: '문제가 감지된 항목만 예외 큐에 표시됩니다.',
   notification_id: null,
   safe_error_code: null,
 }
@@ -66,6 +66,7 @@ export function getPublishNotificationPresentation(
 export function getContentOperationsState(item: ContentOperationsItem): Exclude<ContentOperationsFilter, 'all' | 'carried'> {
   if (item.status === 'PUBLISHED') {
     if (item.post_publish_reviewed_at) return 'published'
+    if (item.display?.review?.notification_state === 'NOT_REQUIRED') return 'published'
     return item.display?.review?.notification_state === 'SENT'
       ? 'postReviewPending'
       : 'notificationPending'

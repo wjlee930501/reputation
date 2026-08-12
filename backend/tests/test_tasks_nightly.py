@@ -1,4 +1,4 @@
-"""P1-3/R1 — 야간 생성 catch-up window + cap 절단 감지 + 아침 누락 경보 윈도우."""
+"""P1-3/R1 — 야간 생성 catch-up window, cap 절단 감지, 자동 발행 검증."""
 
 import uuid
 from datetime import date
@@ -14,7 +14,7 @@ from sqlalchemy.sql.dml import Update
 from app.models.content import ContentItem
 from app.models.essence import PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
-from app.models.operations import NotificationOutbox, OperationRun
+from app.models.operations import OperationRun
 from app.workers import tasks
 
 
@@ -37,7 +37,7 @@ def test_nightly_generation_stmt_covers_window_bounds():
 
 
 def test_generation_catchup_window_is_seven_days():
-    """야간 catch-up과 아침 누락 경보가 공유하는 윈도우 (R1) — 경보 문구의 약속과 결합."""
+    """일시 장애를 사람에게 올리지 않고 일주일 동안 자동 재시도한다."""
     assert tasks.GENERATION_CATCHUP_DAYS == 7
 
 
@@ -56,19 +56,6 @@ def test_generation_failure_classification_never_persists_exception_text(error, 
     assert code == expected_code
     assert str(error) not in message
     assert "운영 센터" in message
-
-
-def test_generation_missed_alert_key_changes_only_when_missing_items_change():
-    hospital_id = uuid.uuid4()
-    first_item = uuid.uuid4()
-    second_item = uuid.uuid4()
-
-    initial = tasks._generation_missed_alert_key(hospital_id, [first_item])
-    unchanged = tasks._generation_missed_alert_key(hospital_id, [first_item])
-    worsened = tasks._generation_missed_alert_key(hospital_id, [first_item, second_item])
-
-    assert initial == unchanged
-    assert initial != worsened
 
 
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
@@ -606,24 +593,6 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
     assert db.persisted[0].hospital_id == "h1"
 
 
-def test_morning_missed_stmt_bounds_and_filters():
-    """R1 — 누락 경보는 catch-up 윈도우 내, ACTIVE 병원, 승인된 운영 기준 보유만 본다."""
-    today = date(2026, 6, 10)
-
-    stmt = tasks._morning_missed_stmt(today)
-    sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-
-    assert "scheduled_date <= '2026-06-10'" in sql
-    # 야간 catch-up 윈도우와 동일한 하한 — 윈도우 밖 슬롯은 영원히 재경보되지 않는다.
-    assert "scheduled_date >= '2026-06-03'" in sql
-    assert "body IS NULL" in sql
-    assert "JOIN hospitals" in sql
-    assert "'ACTIVE'" in sql
-    # 운영 기준 미승인 병원은 전용 '생성 차단' 알림이 커버하므로 제외.
-    assert "IN (SELECT" in sql
-    assert "'APPROVED'" in sql
-
-
 class _Scalars:
     def __init__(self, items):
         self._items = items
@@ -702,7 +671,7 @@ def test_load_nightly_generation_batch_detects_cap_truncation():
     assert all(item.generation_claimed_at is not None for item in items)
 
 
-# ── 08:00 자동 발행: due/public 상태와 Slack 복구 대상의 DB 필터 ──
+# ── 08:00 자동 발행: due/public 상태와 예외 필터 ──
 
 
 def test_auto_publish_due_statement_includes_missing_body_for_blocker_projection():
@@ -717,18 +686,6 @@ def test_auto_publish_due_statement_includes_missing_body_for_blocker_projection
     assert "hospitals.status = 'ACTIVE'" in sql
     assert "hospitals.site_live IS true" in sql
     assert "content_items.scheduled_date <= '2026-06-10'" in sql
-
-
-def test_pending_post_publish_notification_targets_manual_and_automatic_publications():
-    sql = str(
-        tasks._post_publish_notification_pending_stmt(date(2026, 6, 10)).compile(
-            compile_kwargs={"literal_binds": True}
-        )
-    )
-
-    assert "content_items.status = 'PUBLISHED'" in sql
-    assert "content_items.published_by" not in sql
-    assert "content_items.post_publish_notified_at IS NULL" in sql
 
 
 def test_auto_publish_one_commits_publication_before_external_effects(monkeypatch):
@@ -816,9 +773,7 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     assert item.published_at is not None
     assert payload["public_url"] == f"https://test.example.com/contents/{content_id}"
     assert audits[0]["action"] == "auto_publish_content"
-    outboxes = [value for value in db.added if isinstance(value, NotificationOutbox)]
-    assert len(outboxes) == 1
-    assert outboxes[0].state == "PENDING"
+    assert db.added == []
 
 
 # ── 08:00 자동 발행 안전 게이트: **실제** assess_content_publication으로 검증 ──
@@ -1067,10 +1022,10 @@ def test_auto_publish_records_content_block_before_revalidation_dependency(monke
 
 
 def test_auto_publish_is_idempotent(monkeypatch):
-    """같은 콘텐츠를 두 번 처리해도 발행·커밋·Slack은 각각 1회여야 한다.
+    """같은 콘텐츠를 두 번 처리해도 발행·커밋·감사 기록은 각각 1회여야 한다.
 
     catch-up 윈도우 재실행이나 Celery 재시도로 morning 태스크가 같은 id를 다시 집는 일은
-    정상이다. DRAFT 가드가 없으면 published_at이 덮어써지고 AE에게 중복 확인 요청이 간다.
+    정상이다. DRAFT 가드가 없으면 published_at이 덮어써지고 중복 후처리가 실행된다.
     """
     hospital = _publication_hospital()
     item = _publication_item(hospital, body="증상 단계에 따라 진료 방향을 설명드립니다.")
@@ -1093,9 +1048,7 @@ def test_auto_publish_is_idempotent(monkeypatch):
     assert db.commits == 1
     assert item.published_at == published_at
     audits = [log for log in db.added if hasattr(log, "action")]
-    outboxes = [log for log in db.added if isinstance(log, NotificationOutbox)]
     assert [log.action for log in audits] == ["auto_publish_content"]
-    assert len(outboxes) == 1
     assert effects["published_slack"] == []
 
 
