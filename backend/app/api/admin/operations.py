@@ -61,6 +61,7 @@ from app.services.operation_runs import (
     OperationQueueUnavailable,
     dispatch_operation,
 )
+from app.services.post_publish_review_policy import human_post_publish_review_predicate
 from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
 from app.workers.tasks import (
     build_aeo_site,
@@ -217,12 +218,10 @@ async def _enqueue_with_truthful_audit(
 
 @cost_guard_router.get("/attention", response_model=AttentionQueueResponse)
 async def get_attention_queue(db: AsyncSession = Depends(get_db)):
-    """공개됐지만 아직 사람이 확인하지 않은 콘텐츠를 병원 횡단으로 집계한다.
+    """자동 검수를 통과한 공개 콘텐츠 중 정기 품질 표본만 병원 횡단 집계한다.
 
-    08:00 자동 발행은 사람 승인 없이 공개된다. 그래서 운영의 병목은 "발행 전 승인"이
-    아니라 **이미 공개된 것 중 아직 아무도 안 본 것**이고, 그 노출 시간이 곧 위험이다.
-    지금까지 이 상태는 병원 상세 화면에 들어가야만 보여서, 병원이 늘면 AE가 매일
-    전 병원을 순회해야 확인할 수 있었다.
+    발행 차단은 자동 검수와 예외 큐가 담당한다. 정상 발행 전건을 다시 사람이 확인하면
+    자동화가 사람 승인 큐로 되돌아가므로 월간 시퀀스 첫 글만 드리프트 감시 표본으로 둔다.
 
     조건은 순수 컬럼 술어(PUBLISHED · 미확인 · 공개시각 존재)라 집계 1회로 끝난다 —
     발행 가능 여부 재계산 같은 무거운 판정은 여기서 하지 않는다.
@@ -242,9 +241,7 @@ async def get_attention_queue(db: AsyncSession = Depends(get_db)):
             )
             .join(ContentItem, ContentItem.hospital_id == Hospital.id)
             .where(
-                ContentItem.status == ContentStatus.PUBLISHED,
-                ContentItem.post_publish_reviewed_at.is_(None),
-                ContentItem.published_at.is_not(None),
+                human_post_publish_review_predicate(),
             )
             .group_by(Hospital.id, Hospital.name)
             # 오래 방치된 병원이 위로 — 큐의 정렬 기준은 심각도가 아니라 경과 시간이다.

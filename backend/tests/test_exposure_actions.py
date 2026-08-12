@@ -5,7 +5,10 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 from app.api.admin import exposure_actions as exposure_actions_api
-from app.services.exposure_action_engine import build_exposure_recommendations
+from app.services.exposure_action_engine import (
+    _reconcile_stale_work,
+    build_exposure_recommendations,
+)
 
 
 class _FakeDB:
@@ -227,6 +230,28 @@ def test_competitor_gap_not_triggered_by_many_competitors_in_single_record():
 
     # competitor_count(레코드당 0/1) = 1, mention_count = 2 → 1 >= max(2,1) 거짓 → 갭 없음
     assert "COMPETITOR_VISIBILITY" not in gap_types
+
+
+def test_reconciliation_closes_gap_and_action_after_measurement_recovers():
+    completed_at = datetime(2026, 5, 8, 8, 0, tzinfo=timezone.utc)
+    action = SimpleNamespace(
+        action_type="CONTENT",
+        status="IN_PROGRESS",
+        completed_at=None,
+    )
+    gap = SimpleNamespace(
+        query_target_id=uuid.uuid4(),
+        gap_type="MISSING_MENTION",
+        status="OPEN",
+        actions=[action],
+    )
+
+    changed = _reconcile_stale_work([gap], [], completed_at=completed_at)
+
+    assert changed is True
+    assert gap.status == "RESOLVED"
+    assert action.status == "COMPLETED"
+    assert action.completed_at == completed_at
 
 
 async def test_exposure_actions_endpoint_shape(monkeypatch):

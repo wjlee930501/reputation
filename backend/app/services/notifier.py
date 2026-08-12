@@ -979,12 +979,26 @@ async def notify_auto_publish_block_digest(
 
 
 async def notify_content_auto_publish_digest(
-    *, entries: list[dict[str, object]], admin_url: str
+    *,
+    entries: list[dict[str, object]],
+    admin_url: str,
+    blocked_entries: list[dict[str, object]] | None = None,
 ) -> bool:
-    """자동 발행 성공도 콘텐츠마다 알리지 않고 아침 한 번으로 묶는다."""
-    if not entries:
+    """Report one autonomous cycle: published, auto-repaired, and human-only blockers."""
+    blocked = blocked_entries or []
+    if not entries and not blocked:
         return False
-    hospital_count = len({str(entry.get("hospital_name", "")) for entry in entries})
+    hospital_count = len(
+        {
+            str(entry.get("hospital_name", ""))
+            for entry in [*entries, *blocked]
+            if str(entry.get("hospital_name", ""))
+        }
+    )
+    remediated_count = sum(
+        int(int(entry.get("automatic_remediation_attempts", 0) or 0) > 0)
+        for entry in entries
+    )
     lines: list[str] = []
     for entry in entries[:15]:
         sequence_no = int(entry.get("sequence_no", 0) or 0)
@@ -996,13 +1010,42 @@ async def notify_content_auto_publish_digest(
         )
     if len(entries) > 15:
         lines.append(f"• 그 외 {len(entries) - 15}건")
+    blocker_lines = [
+        (
+            f"• *{_safe_operator_label(str(entry.get('hospital_name', '')))}* · "
+            f"{_safe_operator_label(str(entry.get('scheduled_date', '')), limit=20)} — "
+            f"{_safe_operator_label(str(entry.get('reason', '자동 보완을 완료하지 못했습니다.')), limit=180)}"
+        )
+        for entry in blocked[:12]
+    ]
+    if len(blocked) > 12:
+        blocker_lines.append(f"• 그 외 {len(blocked) - 12}건")
+    published_section = "\n".join(lines) if lines else "• 자동 공개 없음"
+    blocked_section = "\n".join(blocker_lines) if blocker_lines else "• 사람 조치 필요 없음"
     body = (
-        f"✅ *[오늘 발행 요약]* *{hospital_count}개 병원 · {len(entries)}건* 공개\n\n"
-        + "\n".join(lines)
-        + "\n\n사전 안전 검사를 통과한 글입니다. "
-        + f"문제가 있는 항목만 <{admin_url}|Admin에서 공개 내용 확인>해 주세요."
+        f"✅ *[오늘 발행 요약]* *{hospital_count}개 병원 · {len(entries)}건* 공개\n"
+        f"자동 검수 후 보완: *{remediated_count}건* · 사람 확인 필요: *{len(blocked)}건*\n\n"
+        "*자동 완료*\n"
+        + published_section
+        + "\n\n*예외 관제*\n"
+        + blocked_section
+        + (
+            "\n\n자동 보완을 소진했거나 시스템이 대신 결정할 수 없는 항목만 "
+            "Admin에서 확인해 주세요."
+            if blocked
+            else "\n\n모든 항목이 사전 안전 검사를 통과했습니다. "
+            f"문제가 있는 경우에만 <{admin_url}|Admin에서 공개 내용 확인>해 주세요."
+        )
     )
+    blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": body}}]
+    if blocked:
+        blocks.append(
+            _admin_action_block(
+                path=_validated_admin_path(admin_url),
+                label="사람 확인 필요 항목",
+            )
+        )
     return await _send(
         text=f"✅ [오늘 발행 요약] {hospital_count}개 병원 · {len(entries)}건",
-        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": body}}],
+        blocks=blocks,
     )

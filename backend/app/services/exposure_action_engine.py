@@ -5,7 +5,7 @@ external AI, Slack, or network APIs.
 """
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, Iterable, Sequence
 
 from sqlalchemy import select
@@ -49,21 +49,27 @@ async def ensure_hospital_exposure_actions(
     today: date | None = None,
     max_create: int = 12,
 ) -> None:
-    """Create missing open gaps/actions for current deterministic recommendations."""
+    """Reconcile open gaps/actions with the latest deterministic recommendations.
+
+    The previous implementation only created work. Once a measurement improved, the old
+    gap stayed open forever and the operations queue could only grow. Reconciliation makes
+    the measurement -> diagnosis -> action loop self-closing: disappeared gaps and their
+    actions are resolved automatically, while continuing gaps receive fresh evidence.
+    """
     # select-then-insert 패턴이라 동시 호출(대시보드 이중 로드/프리페치)이 둘 다 존재
     # 검사를 통과해 OPEN gap/action을 중복 생성할 수 있다 — 병원 단위 advisory lock으로
     # 트랜잭션을 직렬화한다 (gap/action 테이블에는 부분 유니크 제약이 없음).
     await _acquire_hospital_advisory_lock(db, hospital_id)
     targets = await _load_targets(db, hospital_id)
-    if not targets:
-        return
-
-    records = await _load_recent_sov_records(db, hospital_id)
+    records = await _load_recent_sov_records(db, hospital_id) if targets else []
     recommendations = build_exposure_recommendations(targets, records, today=today)
-    if not recommendations:
-        return
+    active_gaps = await _load_active_gaps(db, hospital_id)
 
-    changed = False
+    changed = _reconcile_stale_work(
+        active_gaps,
+        recommendations,
+        completed_at=datetime.now(UTC),
+    )
     for recommendation in recommendations[:max_create]:
         gap = await _find_active_gap(db, recommendation)
         if gap is None:
@@ -78,6 +84,8 @@ async def ensure_hospital_exposure_actions(
             db.add(gap)
             await db.flush()
             changed = True
+        else:
+            changed = _refresh_gap(gap, recommendation) or changed
 
         action = await _find_active_action(db, recommendation, gap.id)
         if action is None:
@@ -95,6 +103,8 @@ async def ensure_hospital_exposure_actions(
                 )
             )
             changed = True
+        else:
+            changed = _refresh_action(action, recommendation) or changed
 
     if changed:
         await db.commit()
@@ -170,6 +180,77 @@ async def _load_recent_sov_records(db: AsyncSession, hospital_id: uuid.UUID) -> 
         .limit(1000)
     )
     return list(result.scalars().all())
+
+
+async def _load_active_gaps(db: AsyncSession, hospital_id: uuid.UUID) -> list[ExposureGap]:
+    result = await db.execute(
+        select(ExposureGap)
+        .options(selectinload(ExposureGap.actions))
+        .where(
+            ExposureGap.hospital_id == hospital_id,
+            ExposureGap.status.in_(ACTIVE_GAP_STATUSES),
+        )
+    )
+    return list(result.scalars().all())
+
+
+def _reconcile_stale_work(
+    gaps: Sequence[Any],
+    recommendations: Sequence[ExposureRecommendation],
+    *,
+    completed_at: datetime,
+) -> bool:
+    """Close gaps/actions that the latest successful diagnosis no longer reproduces."""
+    current_gap_keys = {
+        (str(item.query_target_id), item.gap_type) for item in recommendations
+    }
+    current_action_keys = {
+        (str(item.query_target_id), item.gap_type, item.action_type)
+        for item in recommendations
+    }
+    changed = False
+    for gap in gaps:
+        gap_key = (str(getattr(gap, "query_target_id", None)), str(gap.gap_type))
+        if gap_key not in current_gap_keys and gap.status in ACTIVE_GAP_STATUSES:
+            gap.status = "RESOLVED"
+            changed = True
+
+        for action in getattr(gap, "actions", []) or []:
+            action_key = (*gap_key, str(action.action_type))
+            if (
+                action.status in ACTIVE_ACTION_STATUSES
+                and action_key not in current_action_keys
+            ):
+                action.status = "COMPLETED"
+                action.completed_at = completed_at
+                changed = True
+    return changed
+
+
+def _refresh_gap(gap: Any, recommendation: ExposureRecommendation) -> bool:
+    changed = False
+    for field, value in (
+        ("severity", recommendation.severity),
+        ("evidence", recommendation.evidence),
+    ):
+        if getattr(gap, field) != value:
+            setattr(gap, field, value)
+            changed = True
+    return changed
+
+
+def _refresh_action(action: Any, recommendation: ExposureRecommendation) -> bool:
+    changed = False
+    for field, value in (
+        ("title", recommendation.title),
+        ("description", recommendation.description),
+        ("owner", recommendation.owner),
+        ("due_month", recommendation.due_month),
+    ):
+        if getattr(action, field) != value:
+            setattr(action, field, value)
+            changed = True
+    return changed
 
 
 async def _find_active_gap(

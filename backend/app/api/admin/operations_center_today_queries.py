@@ -27,6 +27,7 @@ from app.schemas.operations import (
     OperationsQueue,
     OperationsQueueRow,
 )
+from app.services.post_publish_review_policy import human_post_publish_review_predicate
 
 _OVERDUE_REVIEW_HOURS: Final = 24
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
@@ -36,8 +37,8 @@ _TODAY_ACTION_LABEL: Final = "콘텐츠 확인"
 def _today_operator_copy(*, review: bool) -> tuple[str, str]:
     if review:
         return (
-            "공개된 콘텐츠의 내용 확인이 끝나지 않아 운영 검수가 지연됩니다.",
-            f"운영 센터의 “{_TODAY_ACTION_LABEL}”을 눌러 공개 상태와 본문을 확인하세요.",
+            "자동 검수를 통과해 공개된 콘텐츠의 정기 표본 운영 검수가 남아 있습니다.",
+            f"운영 센터의 “{_TODAY_ACTION_LABEL}”에서 표본의 공개 상태와 본문만 확인하세요.",
         )
     return (
         "오늘 발행 예정 글이 아직 병원 채널에 공개되지 않았습니다.",
@@ -63,11 +64,7 @@ async def load_today_queue(
     assignee = aliased(AdminUser)
     today = now.astimezone(_SEOUL).date()
     overdue_before = now - timedelta(hours=_OVERDUE_REVIEW_HOURS)
-    waiting_review = and_(
-        ContentItem.status == ContentStatus.PUBLISHED,
-        ContentItem.post_publish_reviewed_at.is_(None),
-        ContentItem.published_at.is_not(None),
-    )
+    waiting_review = human_post_publish_review_predicate()
     due_publish = and_(
         ContentItem.scheduled_date <= today,
         ContentItem.status.in_((ContentStatus.DRAFT, ContentStatus.READY)),
