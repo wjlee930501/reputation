@@ -192,9 +192,9 @@ def project_publish_notification(
             return {"state": state, "label": "Slack 전달 대기", "problem": None,
                     "next_action": "잠시 후 자동으로 전달됩니다.", **common}
         case None:
-            return {"state": "MISSING", "label": "Slack 알림 준비 중",
-                    "problem": "발행 알림 작업이 아직 준비되지 않았습니다.",
-                    "next_action": "다음 아침 복구 작업이 자동으로 준비합니다.", **common}
+            return {"state": "NOT_REQUIRED", "label": "자동 관제 중",
+                    "problem": None,
+                    "next_action": "문제가 감지된 항목만 예외 큐에 표시됩니다.", **common}
         case unreachable:
             assert_never(unreachable)
 

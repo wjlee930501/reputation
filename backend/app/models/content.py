@@ -185,7 +185,7 @@ class ContentItem(Base):
 
     # 전월 이월 추적 (월말 반려 carry-over): 반려 재스케줄이 원래 발행 예정일과 다른
     # 달로 넘어간 경우 원래 scheduled_date를 기록한다. 야간 생성이 이월분을 최우선
-    # 처리하고, 아침 Slack에 "(전월 이월 — 우선 검토)"를 붙이는 근거. 내부 운영 데이터 —
+    # 처리하고, 아침 예외 요약에 이월 상태를 표시하는 근거. 내부 운영 데이터 —
     # 공개(/site) 직렬화에는 포함하지 않는다.
     carried_over_from: Mapped[date | None] = mapped_column(Date)
 
@@ -193,8 +193,8 @@ class ContentItem(Base):
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름 또는 SYSTEM_AUTO_PUBLISH
-    # 자동 발행과 Slack 후행 확인을 분리한다. 발행 커밋 이후 Slack이 실패해도
-    # post_publish_notified_at이 NULL로 남아 다음 작업 재시도에서 복구된다.
+    # 과거 콘텐츠별 Slack 발행 알림의 전달 시각. 신규 발행은 정상 성공을
+    # 무음 처리하므로 NULL이 정상이며, 기존 알림 이력 표시에만 유지한다.
     post_publish_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # 후행 확인은 공개를 막지 않는 비차단 운영 기록이다.
     post_publish_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

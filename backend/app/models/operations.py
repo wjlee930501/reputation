@@ -310,7 +310,12 @@ class NotificationOutbox(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, server_default="3", nullable=False)
     next_attempt_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        # Keep the server default for ordinary PENDING inserts, but persist an
+        # explicitly supplied None as SQL NULL for terminal/leased states.
+        # Without evaluates_none(), SQLAlchemy omits the column and PostgreSQL
+        # applies now(), violating ck_notification_outbox_retry_schedule.
+        DateTime(timezone=True).evaluates_none(),
+        server_default=func.now(),
     )
     lease_owner: Mapped[str | None] = mapped_column(String(255))
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -177,7 +177,7 @@ celery_app.conf.update(
             "schedule": crontab(hour=7, minute=45),
             "options": {"headers": build_dispatch_headers("nightly-content-generation")},
         },
-        # 매일 아침 08:00 — 자동 안전검사 후 발행 + Slack 후행 확인 알림
+        # 매일 아침 08:00 — 자동 안전검사 후 발행 + 자동 복구 소진 예외 요약
         "morning-content-auto-publish": {
             "task": "app.workers.tasks.morning_content_auto_publish",
             "schedule": crontab(hour=8, minute=0),

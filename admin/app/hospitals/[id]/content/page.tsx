@@ -154,6 +154,9 @@ function getReviewState(item: ContentItem): ReviewState {
     if (item.post_publish_reviewed_at) {
       return { key: 'published', label: '공개 내용 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
     }
+    if (getContentOperationsState(item) === 'published') {
+      return { key: 'published', label: '자동 검증 완료', badge: 'bg-green-100 text-green-700', publishable: false }
+    }
     if (getContentOperationsState(item) === 'notificationPending') {
       const notification = getPublishNotificationPresentation(item)
       const needsAttention = notification.state === 'FAILED' || notification.state === 'HOLD'
@@ -817,9 +820,9 @@ export default function ContentPage() {
       <div className="mb-6">
         <div data-current-task className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">자동 발행 · 공개 내용 확인</h2>
+            <h2 className="text-2xl font-bold text-slate-900">자동 발행 · 예외 관제</h2>
             <p className="text-sm text-slate-500 mt-1">
-              예약 콘텐츠는 발행일 08시에 자동 공개됩니다. Slack 알림을 받은 뒤 공개된 글에 문제가 없는지 확인합니다.
+              예약 콘텐츠는 발행일 08시에 자동 검증·공개됩니다. 자동 복구로 해결할 수 없는 예외만 확인하세요.
             </p>
           </div>
         </div>
@@ -844,7 +847,7 @@ export default function ContentPage() {
             <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단" filter="needsReview" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="Slack 알림 확인 필요" value={summary.notificationPending} tone="amber" hint="알림 상태와 처리 방법 확인" filter="notificationPending" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-            <SummaryCard label="공개 내용 확인 완료" value={summary.published} tone="green" hint="공개 글 확인 기록됨" filter="published" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="정상 발행" value={summary.published} tone="green" hint="자동 검증 통과·공개 완료" filter="published" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복·노후 슬롯" filter="cancelled" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
           </div>
@@ -942,7 +945,7 @@ export default function ContentPage() {
                     onClick={() => openDetail(item)}
                     className="mt-3 inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                   >
-                    {getContentOperationsState(item) === 'notificationPending' ? '알림 상태 확인' : item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? '공개 내용 확인' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
+                    {getContentOperationsState(item) === 'notificationPending' ? '알림 상태 확인' : getContentOperationsState(item) === 'postReviewPending' ? '공개 내용 확인' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
                   </button>
                 </article>
               )
@@ -1025,7 +1028,7 @@ export default function ContentPage() {
                         >
                           알림 상태 확인
                         </button>
-                      ) : item.status === 'PUBLISHED' && !item.post_publish_reviewed_at ? (
+                      ) : getContentOperationsState(item) === 'postReviewPending' ? (
                         <button
                           onClick={() => openDetail(item)}
                           className="inline-flex min-h-11 items-center rounded-md px-2.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
@@ -1544,7 +1547,7 @@ export default function ContentPage() {
                     </a>
                   )}
                 </div>
-                {selected.status === 'PUBLISHED' && selectedNotification?.state !== 'SENT' && (
+                {selected.status === 'PUBLISHED' && !['SENT', 'NOT_REQUIRED'].includes(selectedNotification?.state ?? '') && (
                   <div className="mb-3 break-keep [overflow-wrap:anywhere] rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
                     {selectedNotification?.problem && <p><strong>무슨 문제인가요?</strong> {selectedNotification.problem}</p>}
                     <p className="mt-1"><strong>발행 영향</strong> {selectedNotification?.publication_impact}</p>
@@ -1568,7 +1571,7 @@ export default function ContentPage() {
                 )}
                 {!['PUBLISHED', 'CANCELLED'].includes(selected.status) && selectedReview.publishable && (
                   <p className="mb-3 text-xs text-slate-500">
-                    사전 승인 작업은 필요하지 않습니다. 발행 예정일 08:00에 자동 공개되고 Slack으로 알려드립니다.
+                    사전 승인 작업은 필요하지 않습니다. 발행 예정일 08:00에 자동 검증·공개되며, 예외가 남을 때만 Slack으로 알려드립니다.
                   </p>
                 )}
                 <div className="mb-3 flex gap-2 sm:hidden">

@@ -85,3 +85,15 @@ def test_publish_projection_uses_outbox_state_instead_of_legacy_timestamp() -> N
     assert failed["label"] == "Slack 전달 실패"
     assert failed["publication_impact"] == "콘텐츠 발행에는 영향이 없습니다."
     assert failed["next_action"]
+
+
+def test_publish_projection_treats_missing_success_alert_as_intentional_silence() -> None:
+    projection = project_publish_notification(
+        None,
+        notification_id=None,
+        safe_error_code=None,
+    )
+
+    assert projection["state"] == "NOT_REQUIRED"
+    assert projection["label"] == "자동 관제 중"
+    assert projection["problem"] is None
