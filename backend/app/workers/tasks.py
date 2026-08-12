@@ -2755,7 +2755,7 @@ def adjust_query_priorities():
                     target.priority = desired
                     target.updated_by = "SYSTEM_RECURSIVE_LEARNING"
                     logger.info(
-                        "AI query target %s priority changed to %s",
+                        "환자 질문 목표 %s 우선순위가 %s로 변경됨",
                         target.id,
                         desired,
                     )
