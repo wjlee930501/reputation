@@ -105,6 +105,78 @@ def test_scheduled_dispatch_cannot_be_reused_for_another_job(monkeypatch) -> Non
         )
 
 
+def test_previous_release_dispatch_is_accepted_only_during_rollout_handoff(monkeypatch) -> None:
+    monkeypatch.setattr(dispatch_auth.settings, "APP_ENV", "production")
+    monkeypatch.setattr(
+        dispatch_auth.settings,
+        "WORKER_DISPATCH_SECRET",
+        "worker-only-secret-32-bytes-minimum",
+    )
+    monkeypatch.setattr(dispatch_auth.settings, "REPUTATION_RELEASE_REVISION", "release-a")
+    headers = dispatch_auth.stamp_dispatch_headers(
+        task_name="app.workers.autonomous_recovery.reconcile",
+        task_id="rollout-task",
+        args=[],
+        kwargs={},
+        retries=0,
+        headers=dispatch_auth.build_dispatch_headers("reconcile-autonomous-workflows"),
+        now=1_700_000_000,
+    )
+
+    monkeypatch.setattr(dispatch_auth.settings, "REPUTATION_RELEASE_REVISION", "release-b")
+    dispatch_auth.validate_task_dispatch(
+        task_name="app.workers.autonomous_recovery.reconcile",
+        task_id="rollout-task",
+        args=[],
+        kwargs={},
+        retries=0,
+        headers=headers,
+        now=1_700_000_000 + dispatch_auth.RELEASE_HANDOFF_GRACE_SECONDS,
+    )
+
+    with pytest.raises(dispatch_auth.DispatchAuthorizationError, match="handoff expired"):
+        dispatch_auth.validate_task_dispatch(
+            task_name="app.workers.autonomous_recovery.reconcile",
+            task_id="rollout-task",
+            args=[],
+            kwargs={},
+            retries=0,
+            headers=headers,
+            now=1_700_000_000 + dispatch_auth.RELEASE_HANDOFF_GRACE_SECONDS + 1,
+        )
+
+
+def test_release_header_cannot_be_tampered_during_rollout_handoff(monkeypatch) -> None:
+    monkeypatch.setattr(dispatch_auth.settings, "APP_ENV", "production")
+    monkeypatch.setattr(
+        dispatch_auth.settings,
+        "WORKER_DISPATCH_SECRET",
+        "worker-only-secret-32-bytes-minimum",
+    )
+    monkeypatch.setattr(dispatch_auth.settings, "REPUTATION_RELEASE_REVISION", "release-a")
+    headers = dispatch_auth.stamp_dispatch_headers(
+        task_name="app.workers.notification_tasks.dispatch_notification_outbox",
+        task_id="tampered-task",
+        args=[],
+        kwargs={},
+        retries=0,
+        headers={},
+        now=1_700_000_000,
+    )
+    headers[dispatch_auth.RELEASE_HEADER] = "release-b"
+
+    with pytest.raises(dispatch_auth.DispatchAuthorizationError, match="signature"):
+        dispatch_auth.validate_task_dispatch(
+            task_name="app.workers.notification_tasks.dispatch_notification_outbox",
+            task_id="tampered-task",
+            args=[],
+            kwargs={},
+            retries=0,
+            headers=headers,
+            now=1_700_000_001,
+        )
+
+
 @pytest.mark.parametrize(("task_name", "purpose"), CANARY_TASKS.items())
 def test_queue_canary_stamp_preserves_the_task_local_purpose(
     monkeypatch, task_name: str, purpose: str
