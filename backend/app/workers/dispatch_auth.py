@@ -47,6 +47,12 @@ class DispatchAuthorizationError(PermissionError):
     """The broker message was not created by an authorized server process."""
 
 
+# Cloud Run updates worker before beat so the two revisions intentionally overlap. Messages
+# already signed by the previous beat remain trusted only for this short handoff window; the
+# normal envelope TTL, signature, task id, arguments, purpose and target checks still apply.
+RELEASE_HANDOFF_GRACE_SECONDS = 15 * 60
+
+
 class _Request(Protocol):
     headers: Mapping[str, str] | None
     id: str
@@ -81,6 +87,13 @@ def validate_task_dispatch(
         raise DispatchAuthorizationError("expired authenticated dispatch envelope")
     if issued_at > current + CLOCK_SKEW_SECONDS or expires_at - issued_at != DISPATCH_TTL_SECONDS:
         raise DispatchAuthorizationError("invalid authenticated dispatch lifetime")
+    observed_release = str(observed[RELEASE_HEADER])
+    current_release = release_revision()
+    if (
+        observed_release != current_release
+        and current - issued_at > RELEASE_HANDOFF_GRACE_SECONDS
+    ):
+        raise DispatchAuthorizationError("authenticated dispatch release handoff expired")
     expected = {
         PURPOSE_HEADER: expected_purpose(task_name),
         TARGET_HEADER: expected_target(task_name, args),
@@ -88,7 +101,10 @@ def validate_task_dispatch(
         RETRIES_HEADER: str(retries),
         ISSUED_HEADER: str(issued_at),
         EXPIRES_HEADER: str(expires_at),
-        RELEASE_HEADER: release_revision(),
+        # Validate the publisher's signed release value rather than rewriting it to the
+        # consumer's value. A signature made for another release cannot be forged or edited,
+        # and the bounded handoff check above prevents indefinite cross-release replay.
+        RELEASE_HEADER: observed_release,
         ARGS_DIGEST_HEADER: args_digest(args, kwargs),
         OPERATION_RUN_HEADER: str(headers.get("operation_run_id") or "-"),
     }
