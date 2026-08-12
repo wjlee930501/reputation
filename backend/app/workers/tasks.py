@@ -16,7 +16,7 @@ import hashlib
 import logging
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -57,6 +57,7 @@ from app.services.content_target_planner import prepare_automatic_content_brief_
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
 from app.services.essence_engine import (
+    ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_MISSING_APPROVED,
     build_monthly_essence_summary,
     compute_source_content_hash,
@@ -166,6 +167,81 @@ def _is_even_measurement_week(today: date) -> bool:
 logger = logging.getLogger(__name__)
 
 AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
+AUTO_REMEDIATION_MAX_GENERATIONS = 2
+
+
+def _review_findings(summary: object) -> list[str]:
+    if not isinstance(summary, dict):
+        return []
+    findings = summary.get("findings")
+    if not isinstance(findings, list):
+        return []
+    return [str(finding) for finding in findings if str(finding).strip()][:5]
+
+
+def _screening_probe(content_data: dict) -> ContentItem:
+    return ContentItem(
+        title=content_data["title"],
+        body=content_data["body"],
+        meta_description=content_data.get("meta_description"),
+        faq_question=content_data.get("faq_question"),
+        faq_answer_summary=content_data.get("faq_answer_summary"),
+    )
+
+
+async def _generate_with_auto_review(
+    *,
+    hospital: Hospital,
+    item: ContentItem,
+    existing_titles: list[str],
+    philosophy: HospitalContentPhilosophy,
+    approved_brief: dict | None,
+):
+    """Generate, screen, and rewrite once with deterministic validator feedback."""
+
+    findings = _review_findings(getattr(item, "essence_check_summary", None))
+    automatic_rewrites = int(bool(findings))
+    last_content: dict | None = None
+    last_screening = None
+
+    for generation_index in range(AUTO_REMEDIATION_MAX_GENERATIONS):
+        if generation_index > 0:
+            decision = await cost_guard.check_and_increment("content")
+            if not decision.allowed:
+                logger.info(
+                    "Automatic content remediation stopped by cost guard: hospital=%s",
+                    hospital.id,
+                )
+                break
+            automatic_rewrites += 1
+
+        last_content = await generate_content(
+            hospital,
+            item.content_type,
+            existing_titles,
+            philosophy,
+            approved_brief,
+            remediation_findings=findings,
+        )
+        last_screening = screen_content_against_philosophy(
+            _screening_probe(last_content), philosophy
+        )
+        if last_screening.status == ESSENCE_STATUS_ALIGNED:
+            break
+        findings = _review_findings(last_screening.summary)
+        if not findings:
+            break
+
+    if last_content is None or last_screening is None:
+        raise RuntimeError("automatic content review produced no candidate")
+    summary = dict(last_screening.summary or {})
+    if automatic_rewrites > 0:
+        summary["automatic_remediation_attempts"] = automatic_rewrites
+    reviewed_screening = type(last_screening)(
+        status=last_screening.status,
+        summary=summary,
+    )
+    return last_content, reviewed_screening
 
 
 class MonthlyBatchIncompleteError(RuntimeError):
@@ -1038,13 +1114,13 @@ def nightly_content_generation(self):
                 # 않는다"는 가드의 전제가 깨진다. 여기서 확정해 item을 clean 상태로 만든다.
                 # (기획 메타데이터라 생성이 실패해도 남는 편이 맞고, claim 커밋과 같은 취급이다.)
                 db.commit()
-                content_data = _run_async(
-                    generate_content(
-                        hospital,
-                        item.content_type,
-                        existing_titles,
-                        philosophy,
-                        approved_brief,
+                content_data, screening = _run_async(
+                    _generate_with_auto_review(
+                        hospital=hospital,
+                        item=item,
+                        existing_titles=existing_titles,
+                        philosophy=philosophy,
+                        approved_brief=approved_brief,
                     )
                 )
                 now = datetime.now(timezone.utc)
@@ -1057,15 +1133,6 @@ def nightly_content_generation(self):
                 # execute/commit 앞에서 autoflush로 그 값을 먼저 써버려 취소가 되살아난다
                 # (세션은 expire_on_commit=False). 그래서 조건부 UPDATE 한 방으로만 쓰고,
                 # 0행이면 운영자의 취소가 이긴 것으로 보고 결과를 버린다.
-                screening_probe = ContentItem(
-                    title=content_data["title"],
-                    body=content_data["body"],
-                    meta_description=content_data.get("meta_description"),
-                    faq_question=content_data.get("faq_question"),
-                    faq_answer_summary=content_data.get("faq_answer_summary"),
-                )
-                screening = screen_content_against_philosophy(screening_probe, philosophy)
-
                 written = write_back_generated_content(
                     db,
                     item_id=item.id,
@@ -1593,28 +1660,19 @@ def _generate_single_content_item(
     )
     # 야간 배치와 동일한 이유로, 긴 생성 호출 전에 플래너 변경을 확정해 item을 clean으로 만든다.
     db.commit()
-    content_data = _run_async(
-        generate_content(
-            hospital,
-            item.content_type,
-            existing_titles,
-            philosophy,
-            approved_brief,
+    content_data, screening = _run_async(
+        _generate_with_auto_review(
+            hospital=hospital,
+            item=item,
+            existing_titles=existing_titles,
+            philosophy=philosophy,
+            approved_brief=approved_brief,
         )
     )
     now = datetime.now(timezone.utc)
 
     # 배치 경로와 같은 상태 가드를 쓴다. 재생성이 도는 동안 AE가 이 슬롯을 종료(CANCELLED)할
     # 수 있고, 가드 없이 쓰면 종료된 슬롯에 미검수 본문이 들어간다(실제 DB에서 재현됨).
-    screening_probe = ContentItem(
-        title=content_data["title"],
-        body=content_data["body"],
-        meta_description=content_data.get("meta_description"),
-        faq_question=content_data.get("faq_question"),
-        faq_answer_summary=content_data.get("faq_answer_summary"),
-    )
-    screening = screen_content_against_philosophy(screening_probe, philosophy)
-
     written = write_back_generated_content(
         db,
         item_id=item.id,
@@ -1790,22 +1848,28 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
+        # Slack 전송 실패 뒤 태스크가 재시도되면 방금 공개한 항목은 더 이상 DRAFT가
+        # 아니어서 due_ids에 잡히지 않는다. DB의 미보고 표식을 다시 읽어야
+        # "게재됐지만 사람에게 보고되지 않은" 상태도 다음 실행에서 자동 복구된다.
+        published_entries = _load_pending_auto_publish_digest_entries(today)
 
-        if blocked_entries:
+        if published_entries or blocked_entries:
             sent = _run_async(
-                notifier.notify_auto_publish_block_digest(
-                    entries=blocked_entries,
-                    admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals",
+                notifier.notify_content_auto_publish_digest(
+                    entries=published_entries,
+                    blocked_entries=blocked_entries,
+                    admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/operations?queue=TODAY",
                 )
             )
             if sent:
+                _mark_auto_publish_digest_reported(published_entries)
                 for block_key in blocked_keys:
                     _mark_done(block_key, GENERATION_CATCHUP_DAYS * 86_400)
             else:
                 notification_failures += 1
 
-        # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다.
-        # Slack은 자동 복구가 소진된 발행 차단 예외만 위의 요약으로 보낸다.
+        # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
+        # 개별 알림 대신 자동 완료와 미해결 예외를 한 번의 운영 요약으로만 보낸다.
     except Exception as exc:
         logger.exception("morning_content_auto_publish failed")
         raise self.retry(exc=exc, countdown=300)
@@ -1831,6 +1895,64 @@ def _auto_publish_due_stmt(today):
         )
         .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
     )
+
+
+def _pending_auto_publish_digest_stmt(today: date):
+    window_start = today - timedelta(days=GENERATION_CATCHUP_DAYS)
+    return (
+        select(ContentItem, Hospital)
+        .join(Hospital, ContentItem.hospital_id == Hospital.id)
+        .where(
+            ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.published_by == AUTO_PUBLISH_ACTOR,
+            ContentItem.post_publish_notified_at.is_(None),
+            ContentItem.published_at.is_not(None),
+            ContentItem.scheduled_date >= window_start,
+            ContentItem.scheduled_date <= today,
+        )
+        .order_by(ContentItem.published_at, ContentItem.id)
+    )
+
+
+def _load_pending_auto_publish_digest_entries(today: date) -> list[dict[str, object]]:
+    with SyncSessionLocal() as db:
+        rows = db.execute(_pending_auto_publish_digest_stmt(today)).all()
+        return [
+            {
+                **_publication_notification_payload(item, hospital),
+                "content_id": item.id,
+            }
+            for item, hospital in rows
+        ]
+
+
+def _mark_auto_publish_digest_reported(entries: list[dict[str, object]]) -> None:
+    content_ids = [entry.get("content_id") for entry in entries if entry.get("content_id")]
+    if not content_ids:
+        return
+    with SyncSessionLocal() as db:
+        items = db.execute(
+            select(ContentItem)
+            .where(
+                ContentItem.id.in_(content_ids),
+                ContentItem.status == ContentStatus.PUBLISHED,
+                ContentItem.post_publish_notified_at.is_(None),
+            )
+            .with_for_update()
+        ).scalars().all()
+        reported_at = datetime.now(timezone.utc)
+        for item in items:
+            item.post_publish_notified_at = reported_at
+            write_audit_log_sync(
+                db,
+                action="post_publish_digest_reported",
+                hospital_id=item.hospital_id,
+                actor=AUTO_PUBLISH_ACTOR,
+                target_type="content_item",
+                target_id=item.id,
+                detail={"channel": "slack", "mode": "daily_digest"},
+            )
+        db.commit()
 
 
 def _admin_content_url(hospital_id: object, content_id: object) -> str:
@@ -1952,6 +2074,11 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
         "public_url": f"{public_base}/contents/{item.id}",
         "admin_url": _admin_content_url(hospital.id, item.id),
         "carried_over": bool(item.carried_over_from),
+        "automatic_remediation_attempts": int(
+            (item.essence_check_summary or {}).get("automatic_remediation_attempts", 0)
+            if isinstance(item.essence_check_summary, dict)
+            else 0
+        ),
     }
 
 
@@ -2594,32 +2721,61 @@ def adjust_query_priorities():
                 )
                 rec_result = db.execute(rec_stmt)
                 recent_records = rec_result.scalars().all()
-
-                if not recent_records:
+                desired = _desired_query_priority(recent_records)
+                if desired is None:
                     continue
-
-                successful_records = [
-                    record
-                    for record in recent_records
-                    if str(record.measurement_status or "SUCCESS").upper() == "SUCCESS"
-                ]
-                if not successful_records:
-                    continue
-                has_any_mention = any(r.is_mentioned for r in successful_records)
-
-                # 미언급 질문이 개선 작업의 우선 대상이다. 기존 로직은 반대로 언급된
-                # 질문을 HIGH로 올려 노출이 없는 질문을 측정·콘텐츠 큐에서 밀어냈다.
-                desired = "NORMAL" if has_any_mention else "HIGH"
                 if q.priority != desired:
                     q.priority = desired
                     logger.info(
-                        "Query %s priority changed to %s (mentioned=%s)",
+                        "Legacy query %s priority changed to %s",
                         q.id,
                         desired,
-                        has_any_mention,
+                    )
+
+            # 콘텐츠 타깃 플래너와 노출 액션 엔진은 QueryMatrix가 아니라
+            # AIQueryTarget.priority를 읽는다. 두 모델을 함께 갱신해야 측정 결과가
+            # 다음 콘텐츠 생성의 실제 우선순위로 되먹여진다.
+            target_result = db.execute(
+                select(AIQueryTarget).where(
+                    AIQueryTarget.hospital_id == h.id,
+                    AIQueryTarget.status == "ACTIVE",
+                )
+            )
+            for target in target_result.scalars().all():
+                target_records = db.execute(
+                    select(SovRecord)
+                    .where(
+                        SovRecord.ai_query_target_id == target.id,
+                        SovRecord.measured_at >= four_weeks_ago,
+                    )
+                    .order_by(SovRecord.measured_at.desc())
+                ).scalars().all()
+                desired = _desired_query_priority(target_records)
+                if desired is not None and target.priority != desired:
+                    target.priority = desired
+                    target.updated_by = "SYSTEM_RECURSIVE_LEARNING"
+                    logger.info(
+                        "AI query target %s priority changed to %s",
+                        target.id,
+                        desired,
                     )
 
         db.commit()
+
+
+def _desired_query_priority(records: Sequence[SovRecord]) -> str | None:
+    """Map recent successful measurements to the next-loop planning priority."""
+    successful_records = [
+        record
+        for record in records
+        if str(getattr(record, "measurement_status", None) or "SUCCESS").upper()
+        == "SUCCESS"
+    ]
+    if not successful_records:
+        return None
+    # 미언급 질문이 개선 작업의 우선 대상이다. 이미 언급되는 질문은 정상 감시로
+    # 되돌리고, 전혀 언급되지 않은 질문만 HIGH로 올린다.
+    return "NORMAL" if any(record.is_mentioned for record in successful_records) else "HIGH"
 
 
 # ══════════════════════════════════════════════════════════════════

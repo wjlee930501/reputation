@@ -374,6 +374,38 @@ async def test_auto_publish_digest_combines_successes_into_one_message(monkeypat
     assert body.count("Admin에서 공개 내용 확인") == 1
 
 
+async def test_auto_publish_digest_reports_only_exceptions_as_human_work(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_content_auto_publish_digest(
+        entries=[
+            {
+                "hospital_name": "자동완료의원",
+                "title": "진료 안내",
+                "sequence_no": 2,
+                "total_count": 8,
+                "automatic_remediation_attempts": 1,
+            }
+        ],
+        blocked_entries=[
+            {
+                "hospital_name": "근거확인의원",
+                "scheduled_date": "2026-08-12",
+                "reason": "승인된 근거 자료가 없습니다.",
+            }
+        ],
+        admin_url="https://admin.example.test/operations?queue=TODAY",
+    )
+
+    assert sent is True
+    body = captured["blocks"][0]["text"]["text"]
+    assert "자동 검수 후 보완: *1건*" in body
+    assert "사람 확인 필요: *1건*" in body
+    assert "근거확인의원" in body
+    assert "승인된 근거 자료가 없습니다" in body
+    assert captured["blocks"][1]["type"] == "actions"
+
+
 async def test_zero_pii_purge_does_not_send_daily_noise(monkeypatch):
     async def should_not_send(*_args, **_kwargs):
         raise AssertionError("zero-work purge must stay in logs instead of Slack")

@@ -64,6 +64,8 @@ async def _content(
     status: ContentStatus = ContentStatus.PUBLISHED,
     published_hours_ago: float | None = 1,
     reviewed: bool = False,
+    sequence_no: int | None = None,
+    scheduled_days_ago: int = 0,
 ) -> ContentItem:
     published_at = (
         datetime.now(UTC) - timedelta(hours=published_hours_ago)
@@ -76,9 +78,9 @@ async def _content(
         hospital_id=hospital.id,
         schedule_id=hospital._test_schedule_id,
         content_type=ContentType.FAQ,
-        sequence_no=hospital._test_seq,
+        sequence_no=sequence_no or hospital._test_seq,
         total_count=8,
-        scheduled_date=date.today(),
+        scheduled_date=date.today() - timedelta(days=scheduled_days_ago),
         status=status,
         published_at=published_at,
         post_publish_reviewed_at=datetime.now(UTC) if reviewed else None,
@@ -111,9 +113,21 @@ async def test_separates_overdue_from_freshly_published(pg_async_session):
     """1시간 미확인과 이틀 미확인이 같은 숫자로 보이면 큐가 아무것도 알려주지 않는다."""
     db = pg_async_session
     hospital = await _hospital(db, "노후 의원")
-    await _content(db, hospital, published_hours_ago=1)
-    await _content(db, hospital, published_hours_ago=POST_PUBLISH_REVIEW_OVERDUE_HOURS + 6)
-    await _content(db, hospital, published_hours_ago=POST_PUBLISH_REVIEW_OVERDUE_HOURS + 48)
+    await _content(db, hospital, published_hours_ago=1, sequence_no=1)
+    await _content(
+        db,
+        hospital,
+        published_hours_ago=POST_PUBLISH_REVIEW_OVERDUE_HOURS + 6,
+        sequence_no=1,
+        scheduled_days_ago=1,
+    )
+    await _content(
+        db,
+        hospital,
+        published_hours_ago=POST_PUBLISH_REVIEW_OVERDUE_HOURS + 48,
+        sequence_no=1,
+        scheduled_days_ago=2,
+    )
 
     result = await get_attention_queue(db)
 
@@ -141,9 +155,13 @@ async def test_oldest_waiting_hospital_comes_first(pg_async_session):
     recent = await _hospital(db, "최근 의원")
     stale = await _hospital(db, "방치 의원")
     # 건수는 recent가 더 많지만, 오래 방치된 stale이 위로 와야 한다.
-    await _content(db, recent, published_hours_ago=2)
-    await _content(db, recent, published_hours_ago=3)
-    await _content(db, recent, published_hours_ago=4)
+    await _content(db, recent, published_hours_ago=2, sequence_no=1)
+    await _content(
+        db, recent, published_hours_ago=3, sequence_no=1, scheduled_days_ago=1
+    )
+    await _content(
+        db, recent, published_hours_ago=4, sequence_no=1, scheduled_days_ago=2
+    )
     await _content(db, stale, published_hours_ago=200)
 
     result = await get_attention_queue(db)
@@ -167,8 +185,14 @@ async def test_totals_add_up_across_hospitals(pg_async_session):
     first = await _hospital(db, "가 의원")
     second = await _hospital(db, "나 의원")
     await _content(db, first, published_hours_ago=POST_PUBLISH_REVIEW_OVERDUE_HOURS + 1)
-    await _content(db, second, published_hours_ago=1)
-    await _content(db, second, published_hours_ago=POST_PUBLISH_REVIEW_OVERDUE_HOURS + 1)
+    await _content(db, second, published_hours_ago=1, sequence_no=1)
+    await _content(
+        db,
+        second,
+        published_hours_ago=POST_PUBLISH_REVIEW_OVERDUE_HOURS + 1,
+        sequence_no=1,
+        scheduled_days_ago=1,
+    )
 
     result = await get_attention_queue(db)
 
@@ -177,6 +201,17 @@ async def test_totals_add_up_across_hospitals(pg_async_session):
     assert _row(result, first).overdue_count == 1
     assert _row(result, second).unreviewed_count == 2
     assert _row(result, second).overdue_count == 1
+
+
+async def test_non_sample_publications_do_not_create_human_work(pg_async_session):
+    db = pg_async_session
+    hospital = await _hospital(db, "자동관제 의원")
+    await _content(db, hospital, sequence_no=2)
+    await _content(db, hospital, sequence_no=3)
+
+    result = await get_attention_queue(db)
+
+    assert _row(result, hospital) is None
 
 
 # ── 지난달 원장 보고 누락·미전달 ──────────────────────────────────────

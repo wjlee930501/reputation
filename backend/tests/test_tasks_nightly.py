@@ -41,6 +41,56 @@ def test_generation_catchup_window_is_seven_days():
     assert tasks.GENERATION_CATCHUP_DAYS == 7
 
 
+@pytest.mark.asyncio
+async def test_generation_rewrites_once_with_automatic_review_feedback(monkeypatch):
+    calls = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "수정 전" if len(calls) == 1 else "수정 완료",
+            "body": "본문",
+        }
+
+    def fake_screen(item, _philosophy):
+        if item.title == "수정 전":
+            return SimpleNamespace(
+                status="NEEDS_REVIEW",
+                summary={"blocking": True, "findings": ["피해야 할 표현을 제거하세요."]},
+            )
+        return SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []})
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", fake_screen)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief=None,
+    )
+
+    assert content["title"] == "수정 완료"
+    assert calls == [[], ["피해야 할 표현을 제거하세요."]]
+    assert screening.status == "ALIGNED"
+    assert screening.summary["automatic_remediation_attempts"] == 1
+
+
+def test_query_priority_promotes_only_unmentioned_targets():
+    successful_missing = SimpleNamespace(measurement_status="SUCCESS", is_mentioned=False)
+    successful_mentioned = SimpleNamespace(measurement_status="SUCCESS", is_mentioned=True)
+    failed = SimpleNamespace(measurement_status="FAILED", is_mentioned=False)
+
+    assert tasks._desired_query_priority([successful_missing]) == "HIGH"
+    assert tasks._desired_query_priority([successful_missing, successful_mentioned]) == "NORMAL"
+    assert tasks._desired_query_priority([failed]) is None
+
+
 @pytest.mark.parametrize(
     ("error", "expected_code"),
     [
@@ -685,6 +735,20 @@ def test_auto_publish_due_statement_includes_missing_body_for_blocker_projection
     assert "content_items.body IS NOT NULL" not in sql
     assert "hospitals.status = 'ACTIVE'" in sql
     assert "hospitals.site_live IS true" in sql
+    assert "content_items.scheduled_date <= '2026-06-10'" in sql
+
+
+def test_publish_digest_reloads_unreported_auto_publications_for_retry():
+    sql = str(
+        tasks._pending_auto_publish_digest_stmt(date(2026, 6, 10)).compile(
+            compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "content_items.status = 'PUBLISHED'" in sql
+    assert "content_items.published_by = 'SYSTEM_AUTO_PUBLISH'" in sql
+    assert "content_items.post_publish_notified_at IS NULL" in sql
+    assert "content_items.scheduled_date >= '2026-06-03'" in sql
     assert "content_items.scheduled_date <= '2026-06-10'" in sql
 
 
