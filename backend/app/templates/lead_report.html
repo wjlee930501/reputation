@@ -317,15 +317,15 @@
       <p class="verification-intro"><strong>왜 이 방식이어야 하나요? 한 번의 답변을 결과로 단정하지 않기 위해서입니다.</strong> 실제 환자가 사용할 법한 질문을 병원명 없이 묻고, 두 AI 경로에서 반복 확인하며, 응답 실패는 병원 결과와 분리했습니다.</p>
       <div class="method-grid">
         <div class="method"><b>01 · 병원명 없는 질문</b><strong>자기 이름을 묻지 않습니다.</strong><p>병원명을 질문에 넣으면 언급이 예정된 결과가 되어 현재 노출 상태를 확인할 수 없습니다.</p></div>
-        <div class="method"><b>02 · 두 경로 반복 측정</b><strong>한 번의 우연을 줄입니다.</strong><p>OpenAI와 Gemini 경로에서 같은 질문을 반복해 특정 답변 하나에 판단이 치우치지 않게 합니다.</p></div>
+        <div class="method"><b>02 · 두 경로 반복 측정</b><strong>한 번의 우연을 줄입니다.</strong><p>OpenAI와 Gemini 경로에서 같은 질문을 반복해 특정 답변 하나에 판단이 치우치지 않게 합니다. 웹 검색 도구는 제공하되 사용을 강제하지 않으며, 실제로 검색이 사용된 횟수를 아래 표에 공개합니다.</p></div>
         <div class="method"><b>03 · 확정된 판정만 계산</b><strong>도구 오류도 이름 모호성도 성과로 세지 않습니다.</strong><p>응답을 받고 동일 병원임이 확정된 건만 분모에 넣습니다. 응답 실패와, 동명 기관 가능성으로 확정하지 못한 건은 언급으로도 미언급으로도 세지 않고 건수를 공개합니다.</p></div>
       </div>
       {% if payload.segments %}
         <table class="platform-table">
-          <thead><tr><th>측정 경로</th><th class="num">계획</th><th class="num">확정 판정</th><th class="num">병원명 확인</th><th class="num">응답 실패</th><th class="num">판정 보류</th></tr></thead>
+          <thead><tr><th>측정 경로</th><th class="num">계획</th><th class="num">확정 판정</th><th class="num">병원명 확인</th><th class="num">응답 실패</th><th class="num">판정 보류</th><th class="num">웹 검색 사용</th></tr></thead>
           <tbody>
             {% for segment in payload.segments %}
-              <tr><td>{{ segment.label }}</td><td class="num">{{ segment.planned }}건</td><td class="num">{{ segment.measured }}건</td><td class="num">{{ segment.mentioned }}건</td><td class="num">{{ segment.failed }}건</td><td class="num">{{ segment.ambiguous }}건</td></tr>
+              <tr><td>{{ segment.label }}</td><td class="num">{{ segment.planned }}건</td><td class="num">{{ segment.measured }}건</td><td class="num">{{ segment.mentioned }}건</td><td class="num">{{ segment.failed }}건</td><td class="num">{{ segment.ambiguous }}건</td><td class="num">{% if segment.searched is none %}기록 없음{% else %}{{ segment.searched }}건{% endif %}</td></tr>
             {% endfor %}
           </tbody>
         </table>

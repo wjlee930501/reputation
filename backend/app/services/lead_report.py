@@ -64,6 +64,10 @@ class PlatformSegment:
     mentioned: int        # 언급 횟수 = 분자
     failed: int
     ambiguous: int = 0    # 판정 보류 — 분모·분자 어디에도 들어가지 않는다 (F3-7)
+    # 답변을 받은 측정 중 모델이 실제로 웹 검색을 한 건수. 검색 도구는 제공하되
+    # 강제하지 않으므로(측정 정책 v2), 이 값이 답변의 성격을 크게 가른다.
+    # None은 계측 이전 측정이라 '모름'이라는 뜻이다 — 0(안 씀)과 다르다.
+    searched: int | None = None
 
     @property
     def label(self) -> str:
@@ -191,6 +195,9 @@ def build_lead_report_payload(
             continue
         succeeded = [r for r in rows if r.measurement_status == "SUCCESS"]
         confirmed = [r for r in succeeded if r.mention_verdict != MentionVerdict.AMBIGUOUS.value]
+        # 한 건이라도 계측된 진단만 검색 사용을 표기한다. 전부 NULL(계측 이전)이면
+        # 0으로 인쇄해 "검색을 한 번도 안 썼다"는 없는 사실을 만들지 않는다.
+        instrumented = [r for r in succeeded if r.search_calls is not None]
         segments.append(
             PlatformSegment(
                 platform=platform,
@@ -201,6 +208,11 @@ def build_lead_report_payload(
                 mentioned=sum(1 for r in confirmed if r.is_mentioned),
                 failed=len(rows) - len(succeeded),
                 ambiguous=len(succeeded) - len(confirmed),
+                searched=(
+                    sum(1 for r in instrumented if (r.search_calls or 0) > 0)
+                    if instrumented
+                    else None
+                ),
             )
         )
 

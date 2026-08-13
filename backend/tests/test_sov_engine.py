@@ -148,6 +148,67 @@ async def test_chatgpt_web_search_is_offered_but_not_forced(monkeypatch):
     assert responses.kwargs["tool_choice"] == "auto"
 
 
+class TestProviderTelemetry:
+    """검색 사용·응답 모델을 실제로 기록하는가.
+
+    `search_calls` 컬럼은 오래전부터 있었지만 아무도 채우지 않았다. 그래서
+    tool_choice를 auto로 바꾼 뒤 "그래도 검색이 매번 도니까 높다"는 설명이 나왔을 때
+    확인도 반박도 못 했다. 이 테스트가 그 공백의 재발을 막는다.
+    """
+
+    class _Responses:
+        def __init__(self, search_items: int):
+            self.kwargs = None
+            self._search_items = search_items
+
+        async def create(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                output_text="검색 기반 답변",
+                model="gpt-5.6-luna-2026-07-01",
+                output=[
+                    SimpleNamespace(type="web_search_call")
+                    for _ in range(self._search_items)
+                ],
+                usage=SimpleNamespace(input_tokens=1200, output_tokens=340),
+            )
+
+    @pytest.mark.asyncio
+    async def test_openai_records_search_calls_and_resolved_model(self, monkeypatch):
+        responses = self._Responses(search_items=2)
+        monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
+
+        result = await sov_engine._query_chatgpt_with_search_result("수원 외과 추천")
+
+        assert result["search_calls"] == 2
+        assert result["answer_model"] == "gpt-5.6-luna-2026-07-01"
+        assert result["input_tokens"] == 1200
+        assert result["output_tokens"] == 340
+
+    @pytest.mark.asyncio
+    async def test_no_search_is_recorded_as_zero_not_missing(self, monkeypatch):
+        """0(검색 안 씀)과 None(계측 없음)은 다른 사실이다."""
+        responses = self._Responses(search_items=0)
+        monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
+
+        result = await sov_engine._query_chatgpt_with_search_result("수원 외과 추천")
+
+        assert result["search_calls"] == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_answer_passes_telemetry_through(self, monkeypatch):
+        """공급자가 잰 값이 측정 레코드까지 도달해야 저장된다."""
+        responses = self._Responses(search_items=1)
+        monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
+        monkeypatch.setattr(sov_engine.settings, "OPENAI_CHATGPT_USE_WEB_SEARCH", True)
+
+        answer = await sov_engine.fetch_answer("수원 외과 추천", "chatgpt")
+
+        assert answer["measurement_status"] == "SUCCESS"
+        assert answer["search_calls"] == 1
+        assert answer["answer_model"] == "gpt-5.6-luna-2026-07-01"
+
+
 def test_system_prompt_does_not_instruct_the_model_to_name_hospitals():
     """지시문이 병원명을 시키면, 우리가 세는 대상(병원명 등장)을 우리가 만든 것이다."""
     assert "병원 이름을 포함" not in sov_engine.SYSTEM_PROMPT_SOV

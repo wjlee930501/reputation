@@ -291,7 +291,22 @@ def generate_query_matrix_specs(
 #
 # 이 전환은 숫자를 낮추려는 튜닝이 아니라 편향 제거지만, **기준선은 확실히 바뀐다.**
 # 그래서 정책 버전을 붙여 어디에나 스냅샷하고, 버전이 다른 두 달은 비교하지 않는다.
-MEASUREMENT_POLICY_VERSION = "v2-neutral-auto"
+# v2.1: 지시문을 질문에 이어붙이던 것을 전용 지시문 파라미터로 옮겼다. 같은 문자열도
+# 역할이 다르면 모델 동작이 달라지므로 **기준선이 바뀐다** — 버전을 올려 v2와 비교되지
+# 않게 한다. 편향 제거가 아니라 재현성 계약(공개 조건 = 실제 조건) 수정이다.
+MEASUREMENT_POLICY_VERSION = "v2.1-neutral-auto-systemrole"
+
+# 두 측정이 "같은 조건"인지 판정하는 키 **전부**. 지문 계산과 비교 게이트가 같은
+# 목록을 봐야 한다 — 하나에만 키를 추가하면, 조건이 바뀌었는데 비교 게이트는
+# 통과하는(또는 그 반대의) 상태가 조용히 만들어진다.
+_PROTOCOL_IDENTITY_KEYS = (
+    "policy_version",
+    "prompt_fingerprint",
+    "prompt_delivery",
+    "openai_tool_choice",
+    "judge_prompt_fingerprint",
+    "judge_model",
+)
 
 SYSTEM_PROMPT_SOV = (
     "질문에 정확하고 유용하게 답하십시오. "
@@ -302,9 +317,10 @@ SYSTEM_PROMPT_SOV = (
 OPENAI_SEARCH_TOOL_CHOICE = "auto"
 
 
-def build_sov_prompt(query: str) -> str:
-    """플랫폼 공통 질의문. 양쪽이 반드시 이 함수를 거쳐야 비대칭이 재발하지 않는다."""
-    return f"{SYSTEM_PROMPT_SOV}\n\n질문: {query}"
+# 지시문을 어떻게 전달하는가. 이전 정책은 질문 문자열에 이어붙였고(`prepended`),
+# 리포트는 그것을 "시스템 지시문"이라고 인쇄했다 — 공개한 조건과 실제 호출이 달랐다.
+# v2.1부터 양 플랫폼 모두 전용 지시문 파라미터로 보낸다.
+PROMPT_DELIVERY = "system_role"
 
 
 def measurement_protocol() -> dict:
@@ -318,6 +334,8 @@ def measurement_protocol() -> dict:
         "policy_version": MEASUREMENT_POLICY_VERSION,
         "system_prompt": SYSTEM_PROMPT_SOV,
         "openai_tool_choice": OPENAI_SEARCH_TOOL_CHOICE,
+        # 같은 지시문도 전달 역할이 다르면 다른 측정이다.
+        "prompt_delivery": PROMPT_DELIVERY,
         "prompt_fingerprint": _fingerprint(SYSTEM_PROMPT_SOV),
         "judge_prompt_fingerprint": _fingerprint(PARSE_PROMPT),
         # 판정 모델도 결과를 바꾼다. 답변 모델은 접수 시점 핀(requested_models)이
@@ -336,8 +354,7 @@ def protocol_fingerprint() -> str:
     protocol = measurement_protocol()
     material = "|".join(
         f"{key}={protocol[key]}"
-        for key in ("policy_version", "prompt_fingerprint", "openai_tool_choice",
-                    "judge_prompt_fingerprint")
+        for key in _PROTOCOL_IDENTITY_KEYS
     )
     return hashlib.sha256(material.encode()).hexdigest()[:16]
 
@@ -350,9 +367,7 @@ def same_measurement_policy(left: dict | None, right: dict | None) -> bool:
     """
     if not left or not right:
         return False
-    keys = ("policy_version", "prompt_fingerprint", "openai_tool_choice",
-            "judge_prompt_fingerprint", "judge_model")
-    return all(left.get(key) == right.get(key) for key in keys)
+    return all(left.get(key) == right.get(key) for key in _PROTOCOL_IDENTITY_KEYS)
 
 
 def record_is_confirmed(record) -> bool:
@@ -409,9 +424,15 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
         temperature=0.7,
         max_tokens=800,
     )
+    usage = _field(response, "usage")
     return {
         "text": response.choices[0].message.content or "",
         "source_urls": [],
+        "answer_model": _field(response, "model"),
+        # 이 경로는 도구를 주지 않는다 — 검색 0회가 사실이다(None이 아니다).
+        "search_calls": 0,
+        "input_tokens": _field(usage, "prompt_tokens"),
+        "output_tokens": _field(usage, "completion_tokens"),
         "measurement_method": "OPENAI_CHAT_COMPLETIONS",
     }
 
@@ -433,7 +454,11 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
             # 구조적으로 병원명이 많이 등장한다. 모델이 검색을 쓸지 고르는 것까지가
             # 측정 대상이다.
             tool_choice=OPENAI_SEARCH_TOOL_CHOICE,
-            input=build_sov_prompt(query),
+            # **지시문은 지시문 자리로 보낸다.** 이전에는 `input`에 이어붙였는데,
+            # 리포트는 그것을 "시스템 지시문"이라고 인쇄했다 — 역할이 다르면 같은
+            # 문자열이라도 모델 동작이 달라지므로, 공개한 조건으로 재현이 안 됐다.
+            instructions=SYSTEM_PROMPT_SOV,
+            input=query,
         )
     except AttributeError:
         # SDK 버전이 responses API를 지원하지 않으면 chat.completions로 폴백
@@ -456,9 +481,14 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
                     break
             if text:
                 break
+    input_tokens, output_tokens = _extract_openai_usage(response)
     return {
         "text": text,
         "source_urls": _extract_openai_source_urls(response),
+        "answer_model": _field(response, "model"),
+        "search_calls": _extract_openai_search_calls(response),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
     }
 
@@ -483,18 +513,27 @@ async def _query_gemini_result(query: str) -> dict[str, Any]:
         asyncio.to_thread(
             client.models.generate_content,
             model=settings.GEMINI_MODEL,
-            contents=build_sov_prompt(query),
+            contents=query,
             config=genai_types.GenerateContentConfig(
                 temperature=1.0,
                 max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
                 tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                # OpenAI 경로와 **같은 문자열을 같은 역할로** 보낸다. 한쪽만 지시문을
+                # 질문에 이어붙이면 "ChatGPT n% vs Gemini m%"가 플랫폼 차이가 아니라
+                # 우리 호출 방식의 차이가 된다 (2026-07-29 비대칭 회귀와 같은 종류).
+                system_instruction=SYSTEM_PROMPT_SOV,
             ),
         ),
         timeout=GEMINI_TIMEOUT_SECONDS,
     )
+    input_tokens, output_tokens = _extract_gemini_usage(response)
     return {
         "text": response.text or "",
         "source_urls": _extract_gemini_source_urls(response),
+        "answer_model": _field(response, "model_version"),
+        "search_calls": _extract_gemini_search_calls(response),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "measurement_method": "GEMINI_GOOGLE_SEARCH",
     }
 
@@ -542,6 +581,44 @@ def _extract_gemini_source_urls(response: Any) -> list[str]:
         for chunk in _field(metadata, "grounding_chunks", []) or []:
             urls.append(_field(_field(chunk, "web"), "uri"))
     return _normalize_source_urls(urls)
+
+
+# ── 측정 메타데이터 추출.
+#
+# 검색이 실제로 돌았는지는 **측정 결과를 해석하는 데 필수**다. `tool_choice=auto`로
+# 바꾼 뒤 "그래도 매번 검색이 도니까 숫자가 높다"는 설명이 나왔는데, 이 값을 저장하지
+# 않아 확인할 방법이 없었다. 설명할 수 없는 숫자는 팔 수 없다.
+#
+# 실제 응답 모델(`answer_model`)도 같은 이유다 — 리포트는 "요청한 모델"이 아니라
+# 실제로 답한 모델을 공개해야 재현성 계약이 성립한다.
+
+
+def _extract_openai_search_calls(response: Any) -> int:
+    """모델이 실제로 호출한 web_search 횟수. 도구를 강제하지 않으므로 0일 수 있다."""
+    return sum(
+        1
+        for item in (_field(response, "output", []) or [])
+        if str(_field(item, "type", "")).startswith("web_search")
+    )
+
+
+def _extract_openai_usage(response: Any) -> tuple[int | None, int | None]:
+    usage = _field(response, "usage")
+    return _field(usage, "input_tokens"), _field(usage, "output_tokens")
+
+
+def _extract_gemini_search_calls(response: Any) -> int:
+    """Gemini가 실제로 발행한 검색 질의 수. grounding이 안 걸리면 0이다."""
+    calls = 0
+    for candidate in _field(response, "candidates", []) or []:
+        metadata = _field(candidate, "grounding_metadata")
+        calls += len(_field(metadata, "web_search_queries", []) or [])
+    return calls
+
+
+def _extract_gemini_usage(response: Any) -> tuple[int | None, int | None]:
+    usage = _field(response, "usage_metadata")
+    return _field(usage, "prompt_token_count"), _field(usage, "candidates_token_count")
 
 
 def _normalize_for_prefilter(text: str) -> str:
@@ -790,6 +867,10 @@ async def run_single_query(
                     "raw_response": raw,
                     "competitor_mentions": comp_mentions or None,
                     "source_urls": source_urls,
+                    "answer_model": provider_result.get("answer_model"),
+                    "search_calls": provider_result.get("search_calls"),
+                    "input_tokens": provider_result.get("input_tokens"),
+                    "output_tokens": provider_result.get("output_tokens"),
                     "measurement_method": measurement_method,
                     "measurement_status": "SUCCESS",
                     "failure_reason": None,
@@ -878,6 +959,11 @@ async def fetch_answer(
         "text": raw,
         "source_urls": _normalize_source_urls(provider_result.get("source_urls") or []),
         "answer_model": provider_result.get("answer_model"),
+        # 검색이 실제로 돌았는지는 이 숫자를 해석하는 데 필수다 — 없으면
+        # "검색 때문에 높다"는 설명을 확인할 수도 반박할 수도 없다.
+        "search_calls": provider_result.get("search_calls"),
+        "input_tokens": provider_result.get("input_tokens"),
+        "output_tokens": provider_result.get("output_tokens"),
         "measurement_method": provider_result.get("measurement_method"),
         "measurement_status": "SUCCESS",
         "failure_reason": None,

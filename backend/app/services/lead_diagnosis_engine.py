@@ -124,6 +124,12 @@ async def _load_cached(db: AsyncSession, diagnosis: LeadDiagnosis, planned: list
             sibling.raw_response = hit.raw_response
             sibling.answer_model = hit.answer_model
             sibling.source_urls = hit.source_urls or []
+            # 캐시 적중분도 원본 측정의 메타데이터를 그대로 들고 온다. 여기서 빠뜨리면
+            # 캐시 적중률이 높은 진단일수록 "검색 사용 N/9"가 비어 보여, 측정 조건을
+            # 설명해야 할 때 정작 캐시가 잘 든 건들이 설명 불가가 된다.
+            sibling.search_calls = hit.search_calls
+            sibling.input_tokens = hit.input_tokens
+            sibling.output_tokens = hit.output_tokens
             # **원본 측정 시각을 그대로 들고 온다.** 오늘로 찍으면 7일 전 답변을
             # 오늘 측정한 것처럼 파는 것이 된다 (설계 §2-6, T-15).
             sibling.measured_at = hit.measured_at
@@ -148,6 +154,9 @@ async def _measure_one(diagnosis: LeadDiagnosis, measurement: _Measurement) -> N
             return
         measurement.raw_response = answer["text"]
         measurement.answer_model = answer.get("answer_model")
+        measurement.search_calls = answer.get("search_calls")
+        measurement.input_tokens = answer.get("input_tokens")
+        measurement.output_tokens = answer.get("output_tokens")
         # 답변 자체는 병원과 무관하므로, 판정이 실패해도 이 답변은 캐시할 값어치가 있다.
         measurement.cache_on_write = True
 

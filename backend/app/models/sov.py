@@ -236,6 +236,15 @@ class SovRecord(Base):
     source_urls: Mapped[list | None] = mapped_column(JSON)
     # 예: [{"name": "경쟁병원", "is_mentioned": true, "mention_rank": 2}]
 
+    # 실제로 답한 모델. 요청 설정값이 아니라 응답이 알려준 값이다 — 둘을 구분해야
+    # 공급자의 조용한 모델 교체를 탐지할 수 있다.
+    answer_model: Mapped[str | None] = mapped_column(String(100))
+    # 이 측정에서 모델이 실제로 호출한 검색 횟수. `tool_choice=auto`이므로 0일 수 있고,
+    # **0인지 아닌지가 숫자 해석을 가른다.** NULL은 "계측 이전 측정"을 뜻한다.
+    search_calls: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+
     hospital: Mapped["Hospital"] = relationship(back_populates="sov_records")
     query: Mapped["QueryMatrix"] = relationship(back_populates="sov_records")
     measurement_run: Mapped["MeasurementRun | None"] = relationship(back_populates="sov_records")

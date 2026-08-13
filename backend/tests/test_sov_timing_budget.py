@@ -152,12 +152,24 @@ def test_both_platforms_receive_the_identical_prompt() -> None:
     source = (sov_engine.__file__ or "").replace(".pyc", ".py")
     text = open(source, encoding="utf-8").read()
 
-    # 양쪽 호출부가 모두 공통 빌더를 거쳐야 한다.
-    assert "input=build_sov_prompt(query)" in text, "OpenAI 경로가 공통 프롬프트를 안 쓴다"
-    assert "contents=build_sov_prompt(query)" in text, "Gemini 경로가 공통 프롬프트를 안 쓴다"
+    # 양쪽 모두 **같은 상수를 같은 역할(지시문 파라미터)로** 보내야 한다.
+    # 문자열만 같고 역할이 다르면(한쪽은 지시문, 한쪽은 질문에 이어붙임) 그것도 비대칭이다.
+    assert "instructions=SYSTEM_PROMPT_SOV" in text, "OpenAI 경로가 지시문을 지시문 자리로 안 보낸다"
+    assert "system_instruction=SYSTEM_PROMPT_SOV" in text, "Gemini 경로가 지시문을 지시문 자리로 안 보낸다"
     # 한쪽에만 프롬프트를 직접 끼워 넣는 옛 형태가 남아 있으면 안 된다.
     assert "SYSTEM_PROMPT_CHATGPT" not in text, "플랫폼 전용 프롬프트 상수가 남아 있다"
-    assert "contents=query," not in text, "Gemini가 맨 질문을 받는 경로가 남아 있다"
+    # 지시문을 질문 문자열에 이어붙이던 옛 전달 방식이 남아 있으면 안 된다 —
+    # 리포트가 "시스템 지시문"이라고 공개하는 것과 실제 호출이 어긋난다.
+    assert "build_sov_prompt" not in text, "지시문을 질문에 이어붙이는 옛 경로가 남아 있다"
+
+
+def test_measurement_protocol_records_how_the_prompt_is_delivered() -> None:
+    """같은 지시문도 전달 역할이 다르면 다른 측정이다 — 비교 게이트가 이를 봐야 한다."""
+    protocol = sov_engine.measurement_protocol()
+
+    assert protocol["prompt_delivery"] == "system_role"
+    drifted = {**protocol, "prompt_delivery": "prepended"}
+    assert not sov_engine.same_measurement_policy(protocol, drifted)
 
 
 def test_gemini_output_cap_is_not_the_binding_constraint() -> None:
