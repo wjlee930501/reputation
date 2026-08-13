@@ -302,9 +302,14 @@ async def seed_query_targets_from_matrix(
         else:
             existing_by_name[target.name] = target
 
-    # 전체 QueryMatrix 행 조회 (is_active 필터 없음 — 시드 시점엔 모두 포함)
+    # **활성 행만** 시드한다. 비활성은 "더 이상 재지 않기로 한 질의"이므로, 여기서
+    # 걸르지 않으면 폐기한 질의가 target·variant로 되살아나 주간 측정에 다시 들어간다
+    # (변형 경로는 매트릭스의 is_active를 보지 않고 variant.query_text로 측정한다).
     matrix_result = await db.execute(
-        select(QueryMatrix).where(QueryMatrix.hospital_id == hospital_id)
+        select(QueryMatrix).where(
+            QueryMatrix.hospital_id == hospital_id,
+            QueryMatrix.is_active,
+        )
     )
     matrix_rows: list[QueryMatrix] = list(matrix_result.scalars().all())
 
