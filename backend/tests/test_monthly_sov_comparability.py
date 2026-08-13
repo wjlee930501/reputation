@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from app.services import sov_engine
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_types import (
     CellAttempt,
@@ -8,6 +9,13 @@ from app.services.monthly_sov_types import (
 )
 
 BASE_TIME = datetime(2026, 8, 3, tzinfo=timezone.utc)
+
+# 정책 게이트가 아닌 다른 게이트를 검증하는 테스트들이 정책에서 걸리지 않도록,
+# 양쪽에 같은 스냅샷을 넘기는 공통 인자.
+_SAME_POLICY = {
+    "current_protocol": sov_engine.measurement_protocol(),
+    "prior_protocol": sov_engine.measurement_protocol(),
+}
 
 
 def _attempt(
@@ -141,8 +149,13 @@ def test_a_missing_prior_protocol_snapshot_suppresses_monthly_delta() -> None:
     assert summary.comparison.reason == "MEASUREMENT_POLICY_CHANGED"
 
 
-def test_two_pre_snapshot_months_remain_comparable() -> None:
-    """둘 다 기록이 없으면 같은 이전 세대다 — 소급해서 기존 추세를 끊지 않는다."""
+def test_two_snapshotless_months_are_not_comparable() -> None:
+    """스냅샷이 둘 다 없어도 비교하지 않는다.
+
+    처음에는 "같은 이전 세대"로 허용했지만, v2 배포 후 스냅샷 없는 manifest(배포 전
+    동결된 이번 달)에 v2 재측정이 섞이면 없음=없음이 "같다"로 접혀 v1/v2 혼합 월이
+    비교 가능으로 팔린다. 전환 월의 추세 단절은 의도된 비용이다.
+    """
     cells = (_cell("q1", "chatgpt", mentioned=True),)
     prior = (_cell("q1", "chatgpt", mentioned=False),)
 
@@ -151,7 +164,8 @@ def test_two_pre_snapshot_months_remain_comparable() -> None:
         current_protocol=None, prior_protocol=None,
     )
 
-    assert summary.comparison.status == "COMPARABLE"
+    assert summary.comparison.status == "NON_COMPARABLE"
+    assert summary.comparison.reason == "MEASUREMENT_POLICY_CHANGED"
 
 
 def test_missing_platform_cohort_suppresses_monthly_delta() -> None:
@@ -168,6 +182,7 @@ def test_missing_platform_cohort_suppresses_monthly_delta() -> None:
         ("chatgpt", "gemini"),
         prior_cells=prior,
         prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
     )
 
     # Then: 서로 다른 플랫폼 구성을 증감 숫자로 포장하지 않는다
@@ -198,6 +213,7 @@ def test_delta_uses_only_query_cells_matched_within_every_platform() -> None:
         ("chatgpt", "gemini"),
         prior_cells=prior,
         prior_platforms=("chatgpt", "gemini"),
+        **_SAME_POLICY,
     )
 
     # Then: 두 플랫폼의 shared 셀만 비교하고 구성 차이는 숨기지 않는다
@@ -284,6 +300,7 @@ def test_failed_matched_identity_is_counted_as_unused_comparison_cell() -> None:
         ("chatgpt",),
         prior_cells=prior,
         prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
     ).comparison
 
     # Then: 구조적 키가 같아도 실제 비교에 쓰지 못한 양쪽 셀을 숨기지 않는다
@@ -334,6 +351,7 @@ def test_legacy_manifest_without_intent_snapshot_suppresses_delta() -> None:
         ("chatgpt",),
         prior_cells=prior,
         prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
     ).comparison
 
     # Then: live 분류를 과거 사실처럼 믿고 증감 숫자를 만들지 않는다

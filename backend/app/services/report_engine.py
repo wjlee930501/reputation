@@ -10,6 +10,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.core.config import settings
 from app.models.hospital import Hospital
+from app.services import sov_engine
 from app.services.doctor_pdf_contracts import (
     DoctorEvidence,
     DoctorEvidenceCase,
@@ -190,8 +191,13 @@ def _successful_measurement(record: Any) -> bool:
     if str(status or "SUCCESS").upper() == "FAILED":
         return False
     if hasattr(record, "raw_response"):
-        return bool(str(getattr(record, "raw_response", "") or "").strip())
-    return True
+        if not str(getattr(record, "raw_response", "") or "").strip():
+            return False
+    # 판정 보류(AMBIGUOUS, is_mentioned=None)는 분모에서 뺀다 — falsy 비교로 흘리면
+    # 보류가 미언급으로 계상된다 (PRD F3-7). sov_engine.record_is_confirmed와 같은 기준.
+    if getattr(record, "mention_verdict", None) == sov_engine.VERDICT_AMBIGUOUS:
+        return False
+    return getattr(record, "is_mentioned", None) is not None
 
 
 def _competitor_outcomes(records: list) -> list[dict[str, Any]]:

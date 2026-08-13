@@ -139,12 +139,12 @@ def _comparison(
         )
     # 측정 정책이 바뀐 두 달은 같은 질문·같은 플랫폼이라도 비교하지 않는다 — 지시문이나
     # 검색 강제 여부가 다르면 수치 차이가 병원 성과인지 측정 기준 변경인지 가를 수 없다.
-    # 한쪽 스냅샷이라도 없으면(도입 이전 달) 다르다고 본다: "모르겠다"를 "같다"로 접으면
-    # v1↔v2 경계가 성과 변화로 팔린다. 단 **둘 다 없으면** 같은 이전 세대이므로 비교를
-    # 막지 않는다 — 소급해서 기존 고객의 추세를 전부 끊을 이유는 없다.
-    if (current_protocol or prior_protocol) and not sov_engine.same_measurement_policy(
-        current_protocol, prior_protocol
-    ):
+    #
+    # **스냅샷이 없는 쪽이 하나라도 있으면 비교하지 않는다.** 처음에는 "둘 다 없으면 같은
+    # 이전 세대"로 허용했지만, 그 규칙은 배포 이전에만 안전하다: v2 배포 후에 스냅샷 없는
+    # manifest(배포 전에 동결된 이번 달)에 v2 재측정이 섞이면, 없음=없음이 "같다"로 접혀
+    # v1/v2 혼합 월이 비교 가능으로 팔린다. 전환 월의 추세 단절은 의도된 비용이다.
+    if not sov_engine.same_measurement_policy(current_protocol, prior_protocol):
         return _non_comparable(
             "MEASUREMENT_POLICY_CHANGED",
             current_unmatched=len(current_keys),

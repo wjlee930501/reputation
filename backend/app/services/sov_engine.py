@@ -320,6 +320,10 @@ def measurement_protocol() -> dict:
         "openai_tool_choice": OPENAI_SEARCH_TOOL_CHOICE,
         "prompt_fingerprint": _fingerprint(SYSTEM_PROMPT_SOV),
         "judge_prompt_fingerprint": _fingerprint(PARSE_PROMPT),
+        # 판정 모델도 결과를 바꾼다. 답변 모델은 접수 시점 핀(requested_models)이
+        # 별도로 지키지만, 판정 모델은 실행 시점 전역값을 쓰므로 여기 없으면
+        # 모델 교체 배포 창에서 리포트가 공개한 판정 모델과 실제가 어긋난다.
+        "judge_model": settings.OPENAI_MODEL_PARSE,
     }
 
 
@@ -347,8 +351,37 @@ def same_measurement_policy(left: dict | None, right: dict | None) -> bool:
     if not left or not right:
         return False
     keys = ("policy_version", "prompt_fingerprint", "openai_tool_choice",
-            "judge_prompt_fingerprint")
+            "judge_prompt_fingerprint", "judge_model")
     return all(left.get(key) == right.get(key) for key in keys)
+
+
+def record_is_confirmed(record) -> bool:
+    """이 측정 레코드가 언급률 분모에 들어갈 자격이 있는가 — **모든 집계가 이걸 쓴다.**
+
+    조건: 측정 성공 + 판정 확정(AMBIGUOUS 아님). 소비처마다 조건을 제각각 쓰면
+    판정 보류가 어느 화면에서는 미언급, 어느 화면에서는 실패로 계상된다 — 그 불일치가
+    이번에 admin/월간/우선순위 세 군데에서 동시에 발견된 결함이다.
+
+    verdict가 NULL인 레거시 행(3값 도입 이전)은 is_mentioned가 bool이므로 확정으로 본다.
+    """
+    status = getattr(record, "measurement_status", None)
+    if str(status or "SUCCESS").upper() != "SUCCESS":
+        return False
+    if getattr(record, "mention_verdict", None) == VERDICT_AMBIGUOUS:
+        return False
+    # verdict 없이 is_mentioned만 None인 방어 — 어느 쪽이든 확정이 아니다.
+    return getattr(record, "is_mentioned", None) is not None
+
+
+def record_is_ambiguous(record) -> bool:
+    """측정은 성공했지만 판정을 확정하지 못한 레코드 — 실패와 구분해 따로 센다."""
+    status = getattr(record, "measurement_status", None)
+    if str(status or "SUCCESS").upper() != "SUCCESS":
+        return False
+    return (
+        getattr(record, "mention_verdict", None) == VERDICT_AMBIGUOUS
+        or getattr(record, "is_mentioned", None) is None
+    )
 
 
 # Gemini에만 출력 상한이 걸려 있으면 답변이 짧게 잘려 병원 이름이 나올 자리가 줄어든다
@@ -552,9 +585,13 @@ def _corroborates(hospital_name: str, matched_text: str | None, response_text: s
     "행복한"은 "행복한 진료를 위해" 같은 평범한 문장에도 걸린다. 필터를 통과한 뒤
     판정기가 그 조각을 근거로 MATCHED를 주면 오탐이 그대로 언급으로 계상된다.
 
-    그래서 MATCHED는 **인용된 근거가 병원명 전체(접미사 포함)를 담고 있을 때만**
-    승인한다. 근거가 핵심 조각뿐이면 언급이 아니라 '확정 불가'다 — 미언급으로
-    내리지 않는 이유는, 답변이 실제로 약칭만 쓴 경우를 0으로 깎지 않기 위해서다.
+    승인 기준은 동일성 규칙(_IDENTITY_RULE)이 명시한 그대로다: 병원명 전체, 또는
+    **법적 접미사(의원/병원/클리닉)만 뗀 상호**. AI 답변은 "군자성모정형외과의원"을
+    "군자성모정형외과"로 부르는 게 보통이라, 전체 명칭만 요구하면 정상 언급이 대량으로
+    보류에 떨어진다 — 실측에서 플랫폼당 3~4건이 그렇게 빠져 하한 미달까지 갔다.
+
+    인용이 핵심(접두 상호)에도 못 미치는 조각이면 승인하지 않는다. 미언급으로
+    내리지도 않는다 — 둘 다 틀릴 수 있는 자리에서는 '확정 불가'가 사실이다.
     """
     quoted = _normalize_for_prefilter(matched_text or "")
     if not quoted:
@@ -562,7 +599,15 @@ def _corroborates(hospital_name: str, matched_text: str | None, response_text: s
     # 지어낸 인용은 근거가 아니다.
     if quoted not in _normalize_for_prefilter(response_text):
         return False
-    return _normalize_for_prefilter(hospital_name) in quoted
+    normalized_name = _normalize_for_prefilter(hospital_name)
+    if normalized_name in quoted:
+        return True
+    # 접미사만 뗀 상호와의 **동등** 비교. 포함(in)으로 풀면 "행복한의원"의 핵심
+    # "행복한"이 "행복한 진료" 같은 인용에 다시 걸린다 — 판정 프롬프트가 인용을
+    # "언급 표현 그대로"로 요구하므로, 약칭 언급이면 인용 자체가 핵심과 일치한다.
+    # 핵심이 3글자 미만이면 접미사 포함 전체를 요구한다 (prefilter_key와 같은 하한).
+    core = re.sub(r"(의원|병원|클리닉)$", "", normalized_name)
+    return len(core) >= 3 and quoted == core
 
 
 async def _parse_mention(hospital_name: str, response_text: str, region: str = "") -> dict:
@@ -683,12 +728,16 @@ async def run_single_query(
     repeat_count: int,
     competitors: list[str] | None = None,
     pool: str = POOL_SOV,
+    region: str = "",
 ) -> list[dict]:
     """`pool`은 동시성 풀만 고르고 측정 조건은 바꾸지 않는다.
 
     무료 진단과 유료 측정이 **같은 모델·같은 프롬프트·같은 판정 기준**을 써야
     무료에서 본 숫자와 첫 유료 리포트가 어긋나지 않는다(PRD §7-4). 여기서 갈리는 것은
     "동시에 몇 개를 던지느냐"뿐이다.
+
+    `region`도 그 조건의 일부다 — 무료 진단은 지역을 판정기에 넘기는데 유료가 넘기지
+    않으면, 같은 동명 기관 답변이 무료에서는 확정되고 유료에서는 보류가 된다.
     """
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
 
@@ -732,7 +781,7 @@ async def run_single_query(
                     "failure_reason": "empty_raw_response",
                 }
             try:
-                parsed = await _parse_mention(hospital_name, raw)
+                parsed = await _parse_mention(hospital_name, raw, region)
                 comp_mentions = (
                     await _parse_competitors(competitors or [], raw) if competitors else []
                 )

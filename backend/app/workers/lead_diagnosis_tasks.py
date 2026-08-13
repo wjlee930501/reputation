@@ -253,9 +253,15 @@ async def _run_lead_diagnosis(
         # 복구 대상이라(Admin에서 AE가 클릭), 일시적인 공급자 장애까지 사람 손을 기다리게
         # 된다. 시도가 남아 있으면 PENDING으로 되돌려 폴러가 자동으로 다시 집게 한다 —
         # 소진되면 그때 FAILED로 남고, 그 목록이 DLQ가 된다.
+        #
+        # **차단(blocked)은 재큐하지 않는다.** 예산 소진과 정책 드리프트는 다시 돌려도
+        # 같은 결과이고, 각각 사람의 결정(상한 조정·배포 완료)이 풀어야 한다 — 재시도는
+        # 시도 횟수만 태워 진짜 재측정 기회를 없앤다. 예산 차단은 엔진이 이미 Slack을
+        # 보냈고, 정책 드리프트는 아래 종결 알림이 담당한다.
         if (
             recovery_expected_attempts is None
             and result.get("status") == ExecutionStatus.FAILED.value
+            and not result.get("blocked")
             and (diagnosis.execution_attempts or 1) < MAX_EXECUTION_ATTEMPTS
         ):
             await session.execute(
@@ -279,6 +285,28 @@ async def _run_lead_diagnosis(
                 diagnosis.error,
             )
             return {**result, "requeued": True}
+
+        # 재큐 없이 FAILED로 종결되는 진단은 여기가 마지막이다. `_exhausted_to_failed`의
+        # DLQ 알림은 PENDING에서 소진된 것만 잡으므로, 이 경로를 알리지 않으면 신청자
+        # 리포트가 **무통보로** 죽는다. 예산 차단은 엔진이 전용 알림을 이미 보냈다.
+        if (
+            recovery_expected_attempts is None
+            and result.get("status") == ExecutionStatus.FAILED.value
+            and result.get("blocked") != "cost_guard"
+        ):
+            try:
+                await notifier.notify_ops_alert(
+                    title="무료 진단 측정이 재시도 없이 종결됨",
+                    message=(
+                        f"진단 `{diagnosis_id}` ({diagnosis.subject_hospital_name})이 "
+                        f"FAILED로 종결됐습니다 (시도 {diagnosis.execution_attempts}"
+                        f"/{MAX_EXECUTION_ATTEMPTS}).\n사유: {diagnosis.error or '알 수 없음'}\n"
+                        "**신청자는 리포트를 받지 못합니다.** 원인 해소 후 Admin에서 "
+                        "재실행해 주세요."
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — 알림 실패가 상태 확정을 되돌리지 않는다.
+                logger.warning("lead diagnosis terminal-failure alert delivery failed")
         return result
 
 

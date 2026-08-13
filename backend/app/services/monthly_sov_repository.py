@@ -10,6 +10,7 @@ from app.models.monthly_control import (
     MonthlyMeasurementManifest,
 )
 from app.models.sov import QueryMatrix, SovRecord
+from app.services import sov_engine
 from app.services.monthly_sov_types import (
     CellAttempt,
     CellState,
@@ -81,10 +82,12 @@ def load_monthly_sov_manifest(
             CellAttempt(
                 record_id=attempt.sov_record.id,
                 measured_at=attempt.sov_record.measured_at,
-                succeeded=(
-                    str(attempt.sov_record.measurement_status or "SUCCESS").upper() == "SUCCESS"
-                ),
-                is_mentioned=attempt.sov_record.is_mentioned,
+                # **확정 판정만 성공으로 승격한다.** AMBIGUOUS는 status가 SUCCESS이고
+                # is_mentioned가 None이다 — 그대로 흘리면 selected_attempt가 보류를
+                # 선택해 `sum(attempt.is_mentioned ...)`이 None에서 TypeError로 죽거나,
+                # falsy 비교 경로에서는 보류가 미언급으로 계상된다 (PRD F3-7 위반).
+                succeeded=sov_engine.record_is_confirmed(attempt.sov_record),
+                is_mentioned=bool(attempt.sov_record.is_mentioned),
             )
             for attempt in cell.attempts
         )

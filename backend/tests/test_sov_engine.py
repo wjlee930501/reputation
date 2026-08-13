@@ -282,6 +282,51 @@ async def test_matched_with_a_fabricated_quote_is_downgraded(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_matched_with_the_suffix_stripped_trade_name_is_approved(monkeypatch):
+    """"군자성모정형외과의원"을 "군자성모정형외과"로 부르는 것은 정상 언급이다.
+
+    동일성 규칙이 접미사 차이를 명시적으로 인정하는데 corroboration이 전체 명칭만
+    요구하면, AI가 상호로 부르는 게 보통이라 정상 언급이 대량 보류로 빠진다 —
+    실측에서 플랫폼당 3~4건이 그렇게 빠져 하한 미달까지 갔다.
+    """
+    monkeypatch.setattr(
+        sov_engine.openai_client.chat,
+        "completions",
+        _VerdictCompletions("MATCHED", "군자성모정형외과"),
+    )
+
+    parsed = await sov_engine._parse_mention(
+        "군자성모정형외과의원", "군자역 근처는 군자성모정형외과를 추천합니다."
+    )
+
+    assert parsed["verdict"] == "MATCHED"
+    assert parsed["is_mentioned"] is True
+
+
+class TestRecordConfirmation:
+    """모든 유료 집계가 공유하는 확정 판정 기준."""
+
+    class _Row:
+        def __init__(self, status="SUCCESS", verdict=None, mentioned=True):
+            self.measurement_status = status
+            self.mention_verdict = verdict
+            self.is_mentioned = mentioned
+
+    def test_legacy_binary_rows_stay_confirmed(self):
+        assert sov_engine.record_is_confirmed(self._Row(verdict=None, mentioned=False))
+
+    def test_ambiguous_rows_are_not_confirmed_and_not_failed(self):
+        row = self._Row(verdict="AMBIGUOUS", mentioned=None)
+        assert not sov_engine.record_is_confirmed(row)
+        assert sov_engine.record_is_ambiguous(row)
+
+    def test_failed_rows_are_neither(self):
+        row = self._Row(status="FAILED", mentioned=None)
+        assert not sov_engine.record_is_confirmed(row)
+        assert not sov_engine.record_is_ambiguous(row)
+
+
+@pytest.mark.asyncio
 async def test_matched_with_the_full_name_quoted_is_approved(monkeypatch):
     monkeypatch.setattr(
         sov_engine.openai_client.chat,

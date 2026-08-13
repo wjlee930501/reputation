@@ -367,7 +367,7 @@ class TestExecutionRecovery:
         assert row.execution_attempts == 1
 
     async def _run_with_engine_status(
-        self, session, monkeypatch, diagnosis_id, status: str
+        self, session, monkeypatch, diagnosis_id, status: str, blocked: str | None = None
     ) -> None:
         """엔진이 특정 상태로 종결한 것처럼 만들고 워커 경로를 태운다."""
 
@@ -377,7 +377,10 @@ class TestExecutionRecovery:
             diag.finished_at = datetime.now(timezone.utc)
             diag.running_since = None
             await _session.commit()
-            return {"planned": 18, "succeeded": 11, "confirmed": 11, "status": status}
+            result = {"planned": 18, "succeeded": 11, "confirmed": 11, "status": status}
+            if blocked:
+                result["blocked"] = blocked
+            return result
 
         monkeypatch.setattr(
             leadgen_tasks.lead_diagnosis_engine, "run_diagnosis_measurements", fake_measure
@@ -417,6 +420,25 @@ class TestExecutionRecovery:
         assert row.execution_attempts == 1     # 시도는 소모됐다
         assert row.finished_at is None         # 아직 끝난 진단이 아니다
         assert "하한에 미달" in (row.error or "")
+
+    async def test_blocked_failures_are_not_requeued(self, pg_async_session, monkeypatch):
+        """정책 드리프트·예산 차단은 다시 돌려도 같은 결과다 — 재시도는 시도 횟수만
+        태워, 원인이 풀린 뒤 쓸 진짜 재측정 기회를 없앤다."""
+        diagnosis = await _seed(pg_async_session)
+        diagnosis_id = diagnosis.id
+
+        await self._run_with_engine_status(
+            pg_async_session, monkeypatch, diagnosis_id,
+            ExecutionStatus.FAILED.value, blocked="policy_drift",
+        )
+
+        row = (
+            await pg_async_session.execute(
+                select(LeadDiagnosis).where(LeadDiagnosis.id == diagnosis_id)
+            )
+        ).scalar_one()
+        assert row.execution_status == ExecutionStatus.FAILED.value  # PENDING 복귀 없음
+        assert row.execution_attempts == 1
 
     async def test_insufficient_confirmation_stays_failed_once_attempts_are_spent(
         self, pg_async_session, monkeypatch

@@ -111,6 +111,7 @@ async def get_sov_trend(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         total = len(successful_rows)
         mentioned = sum(1 for r in successful_rows if r.is_mentioned)
         failure_count = sum(1 for r in rows if _is_failed_measurement(r))
+        ambiguous_count = sum(1 for r in rows if sov_engine.record_is_ambiguous(r))
         # 성공 측정 0건이면 None — 측정 실패/미측정 주간을 '언급률 0%'로 보고하면
         # 원장 보고에 허위 수치가 들어간다 (sov_engine.calculate_sov의 반환 계약과 동일).
         sov_pct = round(mentioned / total * 100, 1) if total > 0 else None
@@ -120,6 +121,7 @@ async def get_sov_trend(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "mention_count": mentioned,
             "total_count": total,
             "failure_count": failure_count,
+            "ambiguous_count": ambiguous_count,
         })
 
     return result
@@ -159,6 +161,7 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
         total = len(successful_records)
         mentioned = sum(1 for r in successful_records if r.is_mentioned)
         failure_count = sum(1 for r in records if _is_failed_measurement(r))
+        ambiguous_count = sum(1 for r in records if sov_engine.record_is_ambiguous(r))
         # 전부 실패했거나 아직 측정 전인 쿼리는 None — 0%로 표기하면 '언급되지 않았다'는
         # 사실이 아닌 진단이 되어 보완 작업 우선순위까지 왜곡된다.
         mention_rate = round(mentioned / total * 100, 1) if total > 0 else None
@@ -170,6 +173,7 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
             "mention_count": mentioned,
             "total_count": total,
             "failure_count": failure_count,
+            "ambiguous_count": ambiguous_count,
             "platform_breakdown": _build_platform_breakdown(records),
             "last_measured_at": last_measured.isoformat() if last_measured else None,
         })
@@ -223,6 +227,7 @@ def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:
                 "mention_count": 0,
                 "total_count": 0,
                 "failure_count": 0,
+                "ambiguous_count": 0,
                 "mention_rate": None,
             },
         )
@@ -230,6 +235,10 @@ def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:
             bucket["total_count"] += 1
             if getattr(record, "is_mentioned", False):
                 bucket["mention_count"] += 1
+        elif sov_engine.record_is_ambiguous(record):
+            # 판정 보류는 실패가 아니다 — 실패로 접으면 운영 화면이 공급자 장애로
+            # 오독하고, PRD F3-7의 '별도 집계' 요구도 깨진다.
+            bucket["ambiguous_count"] += 1
         else:
             bucket["failure_count"] += 1
 

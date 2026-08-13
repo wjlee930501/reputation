@@ -39,6 +39,7 @@ from app.schemas.query_target import (
     AIQueryVariantResponse,
     AIQueryVariantUpdate,
 )
+from app.services import sov_engine
 from app.services.audit_log import default_actor, write_audit_log
 
 logger = logging.getLogger(__name__)
@@ -318,9 +319,12 @@ async def seed_query_targets_from_matrix(
             SovRecord.hospital_id == hospital_id
         )
     )
-    # query_id → 언급된 적 있는지 여부
+    # query_id → 언급된 적 있는지 여부. 판정 보류(None)는 언급도 미언급도 아니므로
+    # 건너뛴다 — False로 접으면 보류만 있는 질문이 '미언급 HIGH'로 승격된다.
     mentioned_by_query: dict[str, bool] = {}
     for row in sov_result.all():
+        if row.is_mentioned is None:
+            continue
         qid = str(row.query_id)
         if row.is_mentioned:
             mentioned_by_query[qid] = True
@@ -782,12 +786,15 @@ def _build_target_operational_summaries(
 
 
 def _successful_record(record) -> bool:
+    """확정 판정만 분모다 — 판정 보류(is_mentioned=None)를 falsy로 흘리면
+    보류가 미언급으로 계상되어 노출 갭이 실제보다 커 보인다 (PRD F3-7)."""
     status = getattr(record, "measurement_status", None)
     if str(status or "SUCCESS").upper() == "FAILED":
         return False
     if hasattr(record, "raw_response"):
-        return bool(str(getattr(record, "raw_response", "") or "").strip())
-    return True
+        if not str(getattr(record, "raw_response", "") or "").strip():
+            return False
+    return sov_engine.record_is_confirmed(record)
 
 
 def _serialize_target(target: AIQueryTarget, operational_summary: dict | None = None) -> dict:

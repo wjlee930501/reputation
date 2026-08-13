@@ -721,6 +721,9 @@ def trigger_v0_report(self, hospital_id: str):
                             platform,
                             repeat_count=V0_REPEAT_COUNT,
                             competitors=competitors,
+                            # 무료 진단과 같은 판정 조건 — 지역이 빠지면 동명 기관이
+                            # 무료에서는 확정, 유료에서는 보류로 갈린다 (PRD §7-4).
+                            region=(hospital.region or [""])[0],
                         )
                     )
                     for r in results:
@@ -2251,6 +2254,7 @@ def run_sov_for_hospital(self, hospital_id: str):
                         spec["platform"],
                         SOV_REPEAT_WEEKLY,
                         competitors=competitors,
+                        region=(hospital.region or [""])[0],
                     )
                 )
                 for r in results:
@@ -2769,12 +2773,14 @@ def adjust_query_priorities():
 
 
 def _desired_query_priority(records: Sequence[SovRecord]) -> str | None:
-    """Map recent successful measurements to the next-loop planning priority."""
+    """Map recent successful measurements to the next-loop planning priority.
+
+    확정 판정만 본다 — 판정 보류(is_mentioned=None)를 남기면 any()가 False로 접혀
+    '전혀 언급되지 않음(HIGH)'으로 오판한다. 보류뿐인 질문은 판단 근거가 없는 것이므로
+    None(우선순위 변경 없음)이 맞다.
+    """
     successful_records = [
-        record
-        for record in records
-        if str(getattr(record, "measurement_status", None) or "SUCCESS").upper()
-        == "SUCCESS"
+        record for record in records if sov_engine.record_is_confirmed(record)
     ]
     if not successful_records:
         return None

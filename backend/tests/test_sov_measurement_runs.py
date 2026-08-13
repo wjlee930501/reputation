@@ -92,6 +92,7 @@ async def test_sov_queries_split_success_and_failure_by_platform():
             "mention_count": 1,
             "total_count": 2,
             "failure_count": 0,
+            "ambiguous_count": 0,
             "mention_rate": 50.0,
         },
         "GEMINI": {
@@ -99,6 +100,7 @@ async def test_sov_queries_split_success_and_failure_by_platform():
             "mention_count": 1,
             "total_count": 1,
             "failure_count": 1,
+            "ambiguous_count": 0,
             "mention_rate": 100.0,
         },
     }
