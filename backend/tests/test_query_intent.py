@@ -85,7 +85,7 @@ def test_templates_without_a_region_are_tagged_info() -> None:
     """유형 태깅이 실제 템플릿과 일치하는가 — 지역 치환자 유무가 근거다."""
     from app.services.sov_engine import _TEMPLATE_SPECS
 
-    for template, intent in _TEMPLATE_SPECS:
+    for template, intent, _applies in _TEMPLATE_SPECS:
         has_region = "{region}" in template or "{sub_region}" in template
         expected = QUERY_INTENT_LOCAL if has_region else QUERY_INTENT_INFO
         assert intent == expected, f"{template!r} 의 유형이 지역 치환자 유무와 어긋난다"
@@ -95,8 +95,71 @@ def test_info_templates_are_a_meaningful_share_worth_separating() -> None:
     """분리할 가치가 있는 규모인지 고정 — 22%였다."""
     from app.services.sov_engine import _TEMPLATE_SPECS
 
-    info = sum(1 for _, intent in _TEMPLATE_SPECS if intent == QUERY_INTENT_INFO)
+    info = sum(1 for _, intent, _applies in _TEMPLATE_SPECS if intent == QUERY_INTENT_INFO)
     assert info >= 4, "INFO 템플릿이 사라졌다면 분모 분리 자체를 재검토해야 한다"
+
+
+def test_legacy_info_queries_are_still_recognised() -> None:
+    """기존 병원의 QueryMatrix에는 폐기된 옛 문장이 그대로 저장돼 있다.
+
+    판별기가 이걸 못 알아보면 INFO 질문이 LOCAL로 접혀 언급률 분모에 들어간다.
+    지역이 없어 구조적으로 0이므로, 언급률이 조용히 내려간다.
+    """
+    from app.services.sov_engine import classify_query_intent
+
+    legacy = [
+        "치질 초기 증상이 뭔지 알려줘",
+        "치질 치료하려면 어떤 전문의한테 가야 해?",
+        "치질 치료 비용이 얼마나 드는지 알려줘",
+        "대장내시경 수술 후 회복 기간 얼마나 돼?",
+    ]
+    for text in legacy:
+        assert classify_query_intent(text) == QUERY_INTENT_INFO, text
+
+
+class TestTemplatesMatchKeywordKind:
+    """2026-08-14 — 모든 템플릿 × 모든 키워드를 곱해 비문을 만들던 결함 회귀 방지.
+
+    정신과 병원의 '우울증'이 시술 템플릿에 들어가 "우울증 수술 …"이 됐다.
+    무료 진단에서 "우울증 받으려는데"를 만들던 것과 같은 종류의 결함이다.
+    """
+
+    def test_disease_keywords_never_get_procedure_phrasing(self) -> None:
+        specs = generate_query_matrix_specs(
+            ["용산역", "용산구"], ["정신과"], ["우울증", "adhd", "불면증"]
+        )
+        for text, _intent in specs:
+            for term in ("우울증", "ADHD", "불면증"):
+                assert f"{term} 수술" not in text, text
+                assert f"{term} 받을 수 있는" not in text, text
+                assert f"{term} 초기 증상" not in text or term != "통증", text
+
+    def test_procedure_keywords_never_get_illness_phrasing(self) -> None:
+        specs = generate_query_matrix_specs(
+            ["팔달구", "수원시"], ["항문외과"], ["대장내시경"]
+        )
+        for text, _intent in specs:
+            assert "대장내시경 있는데" not in text, text
+            assert "대장내시경 초기 증상" not in text, text
+            assert "대장내시경 치료 비용" not in text, text
+
+    def test_no_superlatives_in_paid_queries(self) -> None:
+        """무료가 F2-3로 금지한 표현을 유료만 쓰면, 같은 엔진이 두 기준으로 재는 셈이다."""
+        forbidden = ["잘하는", "잘 보는", "빨리 낫는", "소문난", "후기 좋은", "제일", "1등", "최고", "명의"]
+        specs = generate_query_matrix_specs(
+            ["보라매역", "동작구"], ["재활의학과"], ["척추", "통증", "비수술"]
+        )
+        for text, _intent in specs:
+            for word in forbidden:
+                assert word not in text, (word, text)
+
+    def test_search_phrase_keywords_are_skipped(self) -> None:
+        """'군자역 정형외과'는 진료과 템플릿과 같은 질문이라 슬롯만 낭비한다."""
+        specs = generate_query_matrix_specs(
+            ["군자역", "광진구"], ["정형외과"], ["군자역 정형외과"]
+        )
+        for text, _intent in specs:
+            assert text.count("군자역") <= 1, text
 
 
 def test_generated_specs_carry_intent_and_match_plain_generation() -> None:

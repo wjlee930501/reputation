@@ -18,6 +18,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.services import query_mapper
+from app.services.keyword_analysis import KeywordClass, analyze_keyword
 
 logger = logging.getLogger(__name__)
 
@@ -124,45 +125,88 @@ QUERY_INTENT_INFO = "INFO"
 # 언급률(원장 보고 헤드라인)의 분모에 들어가는 유형.
 MENTION_RATE_INTENTS = frozenset({QUERY_INTENT_LOCAL})
 
-_TEMPLATE_SPECS: list[tuple[str, str]] = [
-    # 추천형
-    ("{region} {keyword} 잘 보는 병원 추천해줘", QUERY_INTENT_LOCAL),
-    ("{region} {specialty} 어디가 좋아", QUERY_INTENT_LOCAL),
-    ("{sub_region} {keyword} 잘하는 곳", QUERY_INTENT_LOCAL),
-    ("{region} {specialty} 전문의 추천", QUERY_INTENT_LOCAL),
-    ("{keyword} 수술 {region} 어느 병원이 좋아?", QUERY_INTENT_LOCAL),
-    ("{region} {keyword} 치료 잘하는 병원", QUERY_INTENT_LOCAL),
-    # 증상·탐색형
-    ("{keyword} 증상 {region}에서 치료 잘하는 곳", QUERY_INTENT_LOCAL),
-    ("{keyword} 있는데 {region} 어느 병원 가야 해?", QUERY_INTENT_LOCAL),
-    ("{keyword} 초기 증상이 뭔지 알려줘", QUERY_INTENT_INFO),
-    ("{keyword} 치료하려면 어떤 전문의한테 가야 해?", QUERY_INTENT_INFO),
-    ("{region} {keyword} 빨리 낫는 병원", QUERY_INTENT_LOCAL),
-    # 비교형
-    ("{region} {specialty} 병원 어디가 좋은지 비교해줘", QUERY_INTENT_LOCAL),
-    ("{region} {keyword} 병원 후기 좋은 곳", QUERY_INTENT_LOCAL),
-    ("{sub_region} {specialty} 잘한다고 소문난 병원", QUERY_INTENT_LOCAL),
-    # 비용·정보형
-    ("{keyword} 치료 비용이 얼마나 드는지 알려줘", QUERY_INTENT_INFO),
-    ("{keyword} 수술 후 회복 기간 얼마나 돼?", QUERY_INTENT_INFO),
-    ("{keyword} 비수술 치료 가능한 병원 {region}", QUERY_INTENT_LOCAL),
-    ("{region} {specialty} 비용 어느 정도야?", QUERY_INTENT_LOCAL),
+# ── 유료 질의 매트릭스 템플릿.
+#
+# 2026-08-14 재작성. 이전 세트에는 두 종류의 결함이 있었다.
+#
+# 1. **과장 표현**: "잘 보는", "잘하는 곳", "빨리 낫는", "잘한다고 소문난", "후기 좋은 곳".
+#    무료 진단은 같은 표현을 PRD F2-3로 금지했는데(의료광고법 위험 + 실측에서 커버리지가
+#    아니라 분산만 키움) 유료만 그대로 쓰고 있었다. 같은 엔진이 같은 병원을 두 기준으로
+#    재는 셈이었다.
+# 2. **무의미한 조합**: 모든 템플릿 × 모든 키워드를 곱해서, 정신과 병원의 '우울증'이
+#    "{keyword} 수술 …" 템플릿에 들어가 `"우울증 수술 용산역 어느 병원이 좋아?"`가 됐다.
+#    무료 진단에서 `"우울증 받으려는데"`를 만들던 것과 같은 종류의 결함이다.
+#
+# 그래서 템플릿마다 **어떤 키워드 종류에 붙을 수 있는지**를 함께 선언한다.
+# `applies`가 비어 있으면 키워드 종류를 가리지 않는다(진료과만 쓰는 템플릿 등).
+_ALL_CLINICAL = frozenset(
+    {
+        KeywordClass.PROCEDURE,
+        KeywordClass.DISEASE,
+        KeywordClass.SYMPTOM,
+        KeywordClass.BODY_PART,
+        KeywordClass.CARE_SERVICE,
+        KeywordClass.UNKNOWN,
+    }
+)
+_TREATABLE = frozenset(
+    {KeywordClass.DISEASE, KeywordClass.SYMPTOM, KeywordClass.BODY_PART, KeywordClass.UNKNOWN}
+)
+_PROCEDURAL = frozenset({KeywordClass.PROCEDURE, KeywordClass.CARE_SERVICE})
+_DISEASE_ONLY = frozenset({KeywordClass.DISEASE})
+
+_TEMPLATE_SPECS: list[tuple[str, str, frozenset]] = [
+    # 진료과 기반 — 키워드를 쓰지 않으므로 종류를 가리지 않는다.
+    ("{region} {specialty} 병원 추천해줘", QUERY_INTENT_LOCAL, frozenset()),
+    ("{region} {specialty} 전문의 추천", QUERY_INTENT_LOCAL, frozenset()),
+    ("{region} {specialty} 병원 어디가 좋은지 비교해줘", QUERY_INTENT_LOCAL, frozenset()),
+    ("{sub_region}에서 {specialty} 진료 받을 수 있는 병원 알려줘", QUERY_INTENT_LOCAL, frozenset()),
+    ("{region} {specialty} 진료비 어느 정도야?", QUERY_INTENT_LOCAL, frozenset()),
+    # 질환·증상·부위 — "치료받는" 대상이다. "수술"을 붙이지 않는다.
+    ("{keyword} 진료를 받으려는데 {region} 어느 병원으로 가야 해?", QUERY_INTENT_LOCAL, _TREATABLE),
+    ("{region}에서 {keyword} 치료하는 병원 알려줘", QUERY_INTENT_LOCAL, _TREATABLE),
+    ("{sub_region} {keyword} 진료 가능한 병원", QUERY_INTENT_LOCAL, _TREATABLE),
+    # 시술·검사·진료방식 — "받는" 대상이다.
+    ("{region}에서 {keyword} 받을 수 있는 병원 알려줘", QUERY_INTENT_LOCAL, _PROCEDURAL),
+    ("{sub_region} {keyword} 가능한 병원 추천해줘", QUERY_INTENT_LOCAL, _PROCEDURAL),
+    # 정보형 — 지역이 없어 병원명이 나올 이유가 없다. 언급률 분모에서 빠진다.
+    #
+    # "초기 증상"은 병에만 붙는다. 부위('척추')나 증상('통증') 자체에 붙이면
+    # "척추 초기 증상이 뭔지"처럼 어색해진다.
+    ("{keyword} 초기 증상이 뭔지 알려줘", QUERY_INTENT_INFO, _DISEASE_ONLY),
+    ("{keyword} 치료하려면 어떤 전문의한테 가야 해?", QUERY_INTENT_INFO, _TREATABLE),
+    ("{keyword} 치료 비용이 얼마나 드는지 알려줘", QUERY_INTENT_INFO, _TREATABLE),
+    # 시술은 "치료 비용"이 아니라 그냥 "비용"이다.
+    ("{keyword} 비용이 얼마나 드는지 알려줘", QUERY_INTENT_INFO, _PROCEDURAL),
+    ("{keyword} 후 회복 기간 얼마나 돼?", QUERY_INTENT_INFO, _PROCEDURAL),
 ]
 
-QUERY_TEMPLATES = [template for template, _ in _TEMPLATE_SPECS]
+# 이전 템플릿 세트의 INFO 고정부. **지우면 안 된다** — 기존 병원의 QueryMatrix에는 옛
+# 문장이 그대로 저장돼 있고, `classify_query_intent`가 이걸 못 알아보면 INFO 질문이
+# LOCAL로 접혀 언급률 분모에 들어간다(구조적 0이라 언급률이 조용히 내려간다).
+_LEGACY_INFO_MARKERS: tuple[str, ...] = (
+    "초기 증상이 뭔지 알려줘",
+    "치료하려면 어떤 전문의한테 가야 해?",
+    "치료 비용이 얼마나 드는지 알려줘",
+    "수술 후 회복 기간 얼마나 돼?",
+)
+
+QUERY_TEMPLATES = [template for template, _, _ in _TEMPLATE_SPECS]
 
 # 템플릿의 고정부(치환자를 뺀 부분)로 기존 질문 텍스트의 유형을 되찾는다.
 # 마이그레이션 백필과, 템플릿을 거치지 않고 들어온 AIQueryTarget 질문에 쓴다.
+# 현재 세트 + 폐기된 옛 세트를 **모두** 본다.
 _INFO_TEMPLATE_MARKERS = tuple(
     sorted(
-        (
+        {
             max(
                 (part for part in template.replace("{keyword}", "\x00").split("\x00")),
                 key=len,
             ).strip()
-            for template, intent in _TEMPLATE_SPECS
+            for template, intent, _ in _TEMPLATE_SPECS
             if intent == QUERY_INTENT_INFO
-        ),
+        }
+        | set(_LEGACY_INFO_MARKERS),
         key=len,
         reverse=True,
     )
@@ -262,9 +306,33 @@ def generate_query_matrix_specs(
     seen: dict[str, str] = {}
     main_region = region[0] if region else ""
     sub_region = region[1] if len(region) > 1 else main_region
-    for (template, intent), keyword, specialty in product(_TEMPLATE_SPECS, keywords, specialties):
+
+    # 키워드를 한 번만 분석해 재사용한다. 무료 진단과 **같은 분류기**를 쓴다 —
+    # 두 경로가 다른 기준으로 같은 단어를 판단하면 무료에서 본 숫자와 첫 유료
+    # 리포트가 어긋난다(PRD §7-4).
+    analyses = {keyword: analyze_keyword(keyword) for keyword in keywords}
+
+    for (template, intent, applies), keyword, specialty in product(
+        _TEMPLATE_SPECS, keywords, specialties
+    ):
+        analysis = analyses[keyword]
+        if "{keyword}" in template:
+            # 검색어 형태('군자역 정형외과')는 진료과 템플릿과 같은 질문이 된다.
+            if analysis.keyword_class is KeywordClass.SEARCH_PHRASE:
+                continue
+            # 종류에 맞지 않는 템플릿은 건너뛴다. 이 검사가 없으면 정신과의 '우울증'이
+            # 시술 템플릿에 들어가 "우울증 수술 …" 같은 비문이 만들어진다.
+            if applies and analysis.keyword_class not in applies:
+                continue
+            rendered_keyword = analysis.canonical_term
+        else:
+            rendered_keyword = keyword
+
         q = template.format(
-            region=main_region, sub_region=sub_region, keyword=keyword, specialty=specialty
+            region=main_region,
+            sub_region=sub_region,
+            keyword=rendered_keyword,
+            specialty=specialty,
         )
         # 서로 다른 템플릿이 같은 문장을 만들면 더 보수적인 쪽(LOCAL)을 남긴다.
         if seen.get(q) != QUERY_INTENT_LOCAL:
