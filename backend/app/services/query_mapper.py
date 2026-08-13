@@ -47,6 +47,7 @@ from app.services.keyword_analysis import (
     KeywordClass,
     analyze_keyword,
     canonical_specialty,
+    clinic_phrase,
     lexicon_fingerprint,
     normalize,
 )
@@ -103,7 +104,9 @@ def object_particle(word: str) -> str:
 
 
 def _specialty_query(region: str, specialty: str) -> tuple[str, str]:
-    return "specialty_anchor_v1", f"{region} 근처 {specialty} 병원 추천해줘"
+    # `clinic_phrase`는 기관어 중복을 막는다 — 진료과 칸에 '일반의원'이 들어오면
+    # "일반의원 병원 추천해줘"가 된다(프로덕션에 실제로 있는 입력).
+    return "specialty_anchor_v1", f"{region} 근처 {clinic_phrase(specialty)} 추천해줘"
 
 
 def _primary_template(analysis: KeywordAnalysis, region: str) -> tuple[str, str]:
@@ -169,8 +172,8 @@ def _secondary_template(analysis: KeywordAnalysis, region: str) -> tuple[str, st
 # 사람이 "질의 다양성이 낮은 진단"임을 알 수 있게 한다.
 _SPECIALTY_FALLBACKS: tuple[tuple[str, str], ...] = (
     ("specialty_availability_v1", "{region}에서 {specialty} 진료 받을 수 있는 병원 알려줘"),
-    ("specialty_nearby_v1", "{region} 근처에 {specialty} 병원 어디 있어?"),
-    ("specialty_choice_v1", "{region} 근처 {specialty} 어디로 가는 게 좋을까?"),
+    ("specialty_nearby_v1", "{region} 근처에 {clinic} 어디 있어?"),
+    ("specialty_choice_v1", "{region} 근처 {clinic} 어디로 가는 게 좋을까?"),
 )
 
 
@@ -293,7 +296,11 @@ def build_lead_diagnosis_queries(
     for template_id, template in _SPECIALTY_FALLBACKS:
         if len(slots) >= QUERY_SLOT_COUNT:
             break
-        text = template.format(region=region, specialty=specialty)
+        text = template.format(
+            region=region,
+            specialty=re.sub(r"\s*진료$", "", specialty).strip() or specialty,
+            clinic=clinic_phrase(specialty),
+        )
         if text in seen_texts:
             continue
         seen_texts.add(text)

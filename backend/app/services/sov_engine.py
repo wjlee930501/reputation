@@ -18,7 +18,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.services import query_mapper
-from app.services.keyword_analysis import KeywordClass, analyze_keyword
+from app.services.keyword_analysis import KeywordClass, analyze_keyword, clinic_phrase
 
 logger = logging.getLogger(__name__)
 
@@ -157,9 +157,10 @@ _DISEASE_ONLY = frozenset({KeywordClass.DISEASE})
 
 _TEMPLATE_SPECS: list[tuple[str, str, frozenset]] = [
     # 진료과 기반 — 키워드를 쓰지 않으므로 종류를 가리지 않는다.
-    ("{region} {specialty} 병원 추천해줘", QUERY_INTENT_LOCAL, frozenset()),
+    # `{clinic}`은 기관어 중복을 막은 표현이다('일반의원 병원' → '일반의원').
+    ("{region} {clinic} 추천해줘", QUERY_INTENT_LOCAL, frozenset()),
     ("{region} {specialty} 전문의 추천", QUERY_INTENT_LOCAL, frozenset()),
-    ("{region} {specialty} 병원 어디가 좋은지 비교해줘", QUERY_INTENT_LOCAL, frozenset()),
+    ("{region} {clinic} 어디가 좋은지 비교해줘", QUERY_INTENT_LOCAL, frozenset()),
     ("{sub_region}에서 {specialty} 진료 받을 수 있는 병원 알려줘", QUERY_INTENT_LOCAL, frozenset()),
     ("{region} {specialty} 진료비 어느 정도야?", QUERY_INTENT_LOCAL, frozenset()),
     # 질환·증상·부위 — "치료받는" 대상이다. "수술"을 붙이지 않는다.
@@ -332,7 +333,8 @@ def generate_query_matrix_specs(
             region=main_region,
             sub_region=sub_region,
             keyword=rendered_keyword,
-            specialty=specialty,
+            specialty=re.sub(r"\s*진료$", "", specialty).strip() or specialty,
+            clinic=clinic_phrase(specialty),
         )
         # 서로 다른 템플릿이 같은 문장을 만들면 더 보수적인 쪽(LOCAL)을 남긴다.
         if seen.get(q) != QUERY_INTENT_LOCAL:

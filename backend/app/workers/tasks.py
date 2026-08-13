@@ -286,6 +286,9 @@ def v0_sample_query_stmt(hospital_id):
             # INFO 질문은 언급률 분모에서 빠지므로 진단 표본으로 쓰면 호출만 쓰고
             # 헤드라인에는 기여하지 않는다.
             QueryMatrix.query_intent.in_(tuple(MENTION_RATE_INTENTS)),
+            # 주간·월간 경로와 같은 필터. 이게 없으면 폐기한 질의가 V0 재생성에서
+            # 되살아나, 비활성화가 한 경로에서만 지켜지는 상태가 된다.
+            QueryMatrix.is_active,
         )
         .order_by(QueryMatrix.created_at, QueryMatrix.query_text)
         .limit(V0_QUERY_SAMPLE_COUNT)

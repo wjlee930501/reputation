@@ -177,6 +177,25 @@ def canonical_specialty(text: str) -> str:
     return _SPECIALTY_ALIASES.get(key, key)
 
 
+def clinic_phrase(specialty: str) -> str:
+    """"{진료과} 병원" 자리에 넣을 표현.
+
+    폼의 진료과 칸에는 '내과'만 오지 않는다 — 실제로 '일반의원', '내과 진료',
+    '소아청소년 진료' 같은 값이 들어온다. 템플릿에 그대로 끼우면
+    `"경산 일반의원 병원 추천해줘"`처럼 기관어가 겹친다.
+
+    '내과' → '내과 병원' · '일반의원' → '일반의원' · '내과 진료' → '내과 병원'
+    """
+    text = re.sub(r"\s*진료$", "", normalize(specialty))
+    if not text:
+        return "병원"
+    # 이미 기관을 가리키는 말이면 '병원'을 덧붙이지 않는다. 단 '내과'처럼 '과'로
+    # 끝나는 것은 진료과목이지 기관이 아니다.
+    if _SPECIALTY_SUFFIX_RE.search(text) and not text.endswith("과"):
+        return text
+    return f"{text} 병원"
+
+
 def _looks_like_region(token: str) -> bool:
     return len(token) >= 2 and bool(_REGION_SUFFIX_RE.search(token))
 
