@@ -209,7 +209,14 @@ class SovRecord(Base):
 
     ai_platform: Mapped[str] = mapped_column(String(50))   # chatgpt | gemini
     measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    is_mentioned: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    # MATCHED | NOT_MATCHED | AMBIGUOUS. AMBIGUOUS는 is_mentioned가 NULL이고
+    # 언급률의 분모·분자 양쪽에서 빠진다(PRD F3-7) — 확정하지 못한 판정을 False로
+    # 접으면 하향, True로 접으면 상향 편향이 되고 둘 다 사실이 아니다.
+    #
+    # 3값 도입 이전 행은 NULL이다. 이진 판정 시절의 행을 MATCHED/NOT_MATCHED로
+    # 소급 표기하면 "확정했다"는 없는 사실을 만들어내므로 백필하지 않는다.
+    mention_verdict: Mapped[str | None] = mapped_column(String(20))
+    is_mentioned: Mapped[bool | None] = mapped_column(Boolean)
     mention_rank: Mapped[int | None] = mapped_column(Integer)
     mention_sentiment: Mapped[str | None] = mapped_column(String(20))
     mention_context: Mapped[str | None] = mapped_column(Text)

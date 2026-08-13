@@ -248,6 +248,37 @@ async def _run_lead_diagnosis(
             and result.get("status") == ExecutionStatus.FAILED.value
         ):
             raise LeadRecoveryRejected("measurement recovery did not produce a usable result")
+
+        # 확정 판정이 하한에 미달하면 엔진은 FAILED로 종결한다. 그런데 FAILED는 **수동**
+        # 복구 대상이라(Admin에서 AE가 클릭), 일시적인 공급자 장애까지 사람 손을 기다리게
+        # 된다. 시도가 남아 있으면 PENDING으로 되돌려 폴러가 자동으로 다시 집게 한다 —
+        # 소진되면 그때 FAILED로 남고, 그 목록이 DLQ가 된다.
+        if (
+            recovery_expected_attempts is None
+            and result.get("status") == ExecutionStatus.FAILED.value
+            and (diagnosis.execution_attempts or 1) < MAX_EXECUTION_ATTEMPTS
+        ):
+            await session.execute(
+                update(LeadDiagnosis)
+                .where(
+                    LeadDiagnosis.id == pk,
+                    LeadDiagnosis.execution_status == ExecutionStatus.FAILED.value,
+                )
+                .values(
+                    execution_status=ExecutionStatus.PENDING.value,
+                    running_since=None,
+                    finished_at=None,
+                )
+            )
+            await session.commit()
+            logger.info(
+                "lead diagnosis %s requeued for retry (attempt %s/%s): %s",
+                diagnosis_id,
+                diagnosis.execution_attempts,
+                MAX_EXECUTION_ATTEMPTS,
+                diagnosis.error,
+            )
+            return {**result, "requeued": True}
         return result
 
 
@@ -353,11 +384,15 @@ async def _build_lead_report(
         if diagnosis is None:  # pragma: no cover
             return {"skipped": "missing"}
 
+        # **최신 시도의 결과만 읽는다.** 측정은 재시도마다 18행을 새로 INSERT하고
+        # 이전 시도 행을 지우지 않는다(감사·장애분석용으로 보존). diagnosis_id만으로
+        # 긁으면 2회 시도한 진단이 "9번 중 N번"을 "18번 중 2N번"으로 인쇄하게 된다.
         results = list(
             (
                 await session.execute(
                     select(LeadDiagnosisResult).where(
-                        LeadDiagnosisResult.diagnosis_id == pk
+                        LeadDiagnosisResult.diagnosis_id == pk,
+                        LeadDiagnosisResult.attempt_no == diagnosis.execution_attempts,
                     )
                 )
             ).scalars().all()

@@ -106,6 +106,54 @@ def test_info_cells_are_disclosed_but_do_not_change_local_headline() -> None:
     assert summary.segments.info.mention_rate == 0.0
 
 
+def test_a_measurement_policy_change_suppresses_monthly_delta() -> None:
+    """측정 정책(지시문·검색 강제)이 바뀐 두 달은 성과 변화로 붙여 팔 수 없다."""
+    from app.services import sov_engine
+
+    cells = (_cell("q1", "chatgpt", mentioned=True),)
+    prior = (_cell("q1", "chatgpt", mentioned=False),)
+    v2 = sov_engine.measurement_protocol()
+    v1 = {**v2, "policy_version": "v1", "openai_tool_choice": "required"}
+
+    summary = build_monthly_sov(
+        cells, ("chatgpt",), prior_cells=prior, prior_platforms=("chatgpt",),
+        current_protocol=v2, prior_protocol=v1,
+    )
+
+    assert summary.comparison.status == "NON_COMPARABLE"
+    assert summary.comparison.reason == "MEASUREMENT_POLICY_CHANGED"
+    assert summary.comparison.change_pct is None
+
+
+def test_a_missing_prior_protocol_snapshot_suppresses_monthly_delta() -> None:
+    """스냅샷 도입 이전 달(v1, 기록 없음)과 v2를 비교하면 안 된다."""
+    from app.services import sov_engine
+
+    cells = (_cell("q1", "chatgpt", mentioned=True),)
+    prior = (_cell("q1", "chatgpt", mentioned=False),)
+
+    summary = build_monthly_sov(
+        cells, ("chatgpt",), prior_cells=prior, prior_platforms=("chatgpt",),
+        current_protocol=sov_engine.measurement_protocol(), prior_protocol=None,
+    )
+
+    assert summary.comparison.status == "NON_COMPARABLE"
+    assert summary.comparison.reason == "MEASUREMENT_POLICY_CHANGED"
+
+
+def test_two_pre_snapshot_months_remain_comparable() -> None:
+    """둘 다 기록이 없으면 같은 이전 세대다 — 소급해서 기존 추세를 끊지 않는다."""
+    cells = (_cell("q1", "chatgpt", mentioned=True),)
+    prior = (_cell("q1", "chatgpt", mentioned=False),)
+
+    summary = build_monthly_sov(
+        cells, ("chatgpt",), prior_cells=prior, prior_platforms=("chatgpt",),
+        current_protocol=None, prior_protocol=None,
+    )
+
+    assert summary.comparison.status == "COMPARABLE"
+
+
 def test_missing_platform_cohort_suppresses_monthly_delta() -> None:
     # Given: 이번 달은 두 플랫폼, 지난달은 ChatGPT만 고정했다
     current = (

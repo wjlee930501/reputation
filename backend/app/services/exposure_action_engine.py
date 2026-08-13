@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.sov import AIQueryTarget, ExposureAction, ExposureGap, SovRecord
+from app.services import sov_engine
 from app.utils.db_locks import acquire_hospital_advisory_lock
 
 ACTIVE_TARGET_STATUSES = {"ACTIVE"}
@@ -491,8 +492,15 @@ def _base_evidence(
 
 
 def _is_successful_measurement(record: Any) -> bool:
+    """확정 판정만 분모다 — admin/sov.py의 동명 함수와 같은 기준이어야 한다.
+
+    AMBIGUOUS를 남기면 `is_mentioned`의 None이 falsy라 '미언급'으로 계상되고,
+    노출 액션 우선순위가 있지도 않은 미언급을 근거로 매겨진다.
+    """
     status = getattr(record, "measurement_status", None)
-    return status is None or str(status).upper() == "SUCCESS"
+    if not (status is None or str(status).upper() == "SUCCESS"):
+        return False
+    return getattr(record, "mention_verdict", None) != sov_engine.VERDICT_AMBIGUOUS
 
 
 def _competitor_mention_count(records: Iterable[Any]) -> int:

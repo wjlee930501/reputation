@@ -119,6 +119,15 @@ class LeadDiagnosis(Base):
 
     queries: Mapped[list] = mapped_column(_jsonb_type(), nullable=False, default=list)
     requested_models: Mapped[dict] = mapped_column(_jsonb_type(), nullable=False, default=dict)
+    # 접수 시점의 측정 조건 스냅샷 (sov_engine.measurement_protocol()).
+    #
+    # 리포트는 질의·모델·지시문을 공개하고 "직접 재현하실 수 있습니다"라고 판다. 그런데
+    # 지시문을 전역 상수에서 렌더 시점에 읽으면, 프롬프트를 바꾼 뒤 리포트를 재생성했을 때
+    # **공개된 조건과 실제 측정 조건이 어긋난다.** 재현성 계약을 지키려면 잰 조건을
+    # 그때 붙잡아둬야 한다.
+    #
+    # 정책 스냅샷 도입 이전 행은 NULL이며 v1으로 취급한다.
+    measurement_config: Mapped[dict | None] = mapped_column(_jsonb_type())
     repeat_count: Mapped[int] = mapped_column(Integer, nullable=False)
 
     execution_status: Mapped[str] = mapped_column(

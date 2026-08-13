@@ -32,6 +32,8 @@ def design_payload() -> lead_report.LeadReportPayload:
         repeat_count=3,
         system_prompt="지역 병원 정보를 잘 아는 의료 정보 도우미입니다.",
         judge_model="gpt-4o-mini-2024-07-18",
+        # 실제 리포트는 항상 두 경로다. 그리고 **결측 수가 서로 다른** 경우를 쓴다 —
+        # 합산 헤드라인이 왜 위험한지가 드러나는 유일한 형태이기 때문이다.
         segments=(
             lead_report.PlatformSegment(
                 platform="chatgpt",
@@ -41,6 +43,16 @@ def design_payload() -> lead_report.LeadReportPayload:
                 measured=8,
                 mentioned=2,
                 failed=1,
+            ),
+            lead_report.PlatformSegment(
+                platform="gemini",
+                vendor_label="Google Gemini API",
+                model="gemini-3.6-flash",
+                planned=9,
+                measured=8,
+                mentioned=1,
+                failed=0,
+                ambiguous=1,
             ),
         ),
         queries=queries,
@@ -105,14 +117,22 @@ def test_contact_exposes_the_representative_number_as_a_phone_link(
     assert ">070-8671-0100</a>" in html
 
 
-def test_result_headline_exposes_mentions_over_successful_answers(
+def test_result_headline_reports_each_platform_separately(
     design_payload: lead_report.LeadReportPayload,
 ) -> None:
+    """헤드라인은 경로별로 따로 인쇄한다.
+
+    합산하면 실패·보류가 적은 경로가 결과를 대표하게 되는데, 그 가중치는 문서 어디에도
+    표기되지 않는다. 경로마다 `분자 / 분모`가 각각 보여야 한다.
+    """
     html = lead_report.render_lead_report_html(design_payload)
     first_page = html.split('class="page page-reputation"', maxsplit=1)[0]
 
-    assert "2 / 8" in first_page
-    assert "환자 질문에 답한 8건 중 2건에서 우리 병원 이름이 언급됐습니다" in first_page
+    for segment in design_payload.segments:
+        assert f"{segment.mentioned} / {segment.measured}" in first_page
+        assert segment.vendor_label in first_page
+    # 두 경로를 더한 합산 분모가 헤드라인 숫자로 등장하면 안 된다.
+    assert f"{design_payload.total_mentioned} / {design_payload.total_measured}" not in first_page
 
 
 def test_reputation_page_explains_channel_scope_and_complementary_content_hub(

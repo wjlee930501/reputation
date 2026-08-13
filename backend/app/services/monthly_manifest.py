@@ -11,6 +11,7 @@ from app.models.monthly_control import (
     MonthlyMeasurementCell,
     MonthlyMeasurementManifest,
 )
+from app.services import sov_engine
 
 EXCLUSION_REASONS: Final[frozenset[str]] = frozenset(
     {"DUPLICATE_TARGET", "RETIRED_BEFORE_MEASUREMENT", "LEGAL_REMOVAL"}
@@ -72,6 +73,9 @@ def freeze_monthly_manifest(
             "chatgpt": "ALWAYS",
             "gemini": "CONFIGURED" if gemini_configured else "NOT_CONFIGURED",
             "query_intents": {spec.query_key: spec.query_intent for spec in specs},
+            # 동결 시점의 측정 정책. 전월 대비 비교는 두 달의 이 스냅샷이 같을 때만
+            # 성립한다 — 정책이 바뀐 달을 성과 변화로 붙여 팔 수 없다.
+            "measurement_protocol": sov_engine.measurement_protocol(),
         },
         closes_at=_month_close(year, month),
     )

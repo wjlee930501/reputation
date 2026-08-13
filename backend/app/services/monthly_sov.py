@@ -1,3 +1,4 @@
+from app.services import sov_engine
 from app.services.monthly_sov_types import (
     ComparisonSummary,
     ManifestCellInput,
@@ -99,6 +100,10 @@ def _non_comparable(reason: str, *, current_unmatched: int, prior_unmatched: int
         "PLATFORM_COHORT_MISSING": "이번 달과 지난달에 사용한 AI 서비스 구성이 다릅니다.",
         "NO_MATCHED_CELLS": "두 달에 공통으로 성공한 같은 질문이 없습니다.",
         "INTENT_SNAPSHOT_MISSING": "질문 유형을 월초 기준으로 고정한 기록이 없습니다.",
+        "MEASUREMENT_POLICY_CHANGED": (
+            "이번 달과 지난달의 측정 기준(지시문·검색 정책)이 다릅니다. "
+            "수치 변화는 병원 성과가 아니라 측정 기준 변경일 수 있습니다."
+        ),
     }
     return ComparisonSummary(
         status="NON_COMPARABLE",
@@ -120,6 +125,8 @@ def _comparison(
     current_platforms: tuple[str, ...],
     prior: tuple[ManifestCellInput, ...] | None,
     prior_platforms: tuple[str, ...] | None,
+    current_protocol: dict | None = None,
+    prior_protocol: dict | None = None,
 ) -> ComparisonSummary:
     current_keys = {
         (cell.query_key, cell.platform)
@@ -129,6 +136,21 @@ def _comparison(
     if prior is None or prior_platforms is None:
         return _non_comparable(
             "NO_PRIOR_MANIFEST", current_unmatched=len(current_keys), prior_unmatched=0
+        )
+    # 측정 정책이 바뀐 두 달은 같은 질문·같은 플랫폼이라도 비교하지 않는다 — 지시문이나
+    # 검색 강제 여부가 다르면 수치 차이가 병원 성과인지 측정 기준 변경인지 가를 수 없다.
+    # 한쪽 스냅샷이라도 없으면(도입 이전 달) 다르다고 본다: "모르겠다"를 "같다"로 접으면
+    # v1↔v2 경계가 성과 변화로 팔린다. 단 **둘 다 없으면** 같은 이전 세대이므로 비교를
+    # 막지 않는다 — 소급해서 기존 고객의 추세를 전부 끊을 이유는 없다.
+    if (current_protocol or prior_protocol) and not sov_engine.same_measurement_policy(
+        current_protocol, prior_protocol
+    ):
+        return _non_comparable(
+            "MEASUREMENT_POLICY_CHANGED",
+            current_unmatched=len(current_keys),
+            prior_unmatched=sum(
+                cell.query_intent == "LOCAL" and cell.state != "EXCLUDED" for cell in prior
+            ),
         )
     if any(cell.query_intent_source == "LEGACY_LIVE" for cell in (*current, *prior)):
         return _non_comparable(
@@ -196,6 +218,8 @@ def build_monthly_sov(
     *,
     prior_cells: tuple[ManifestCellInput, ...] | None = None,
     prior_platforms: tuple[str, ...] | None = None,
+    current_protocol: dict | None = None,
+    prior_protocol: dict | None = None,
 ) -> MonthlySovSummary:
     platforms = tuple(dict.fromkeys(configured_platforms))
     queries = tuple(
@@ -219,5 +243,7 @@ def build_monthly_sov(
             local=_segment(cells, platforms, "LOCAL"),
             info=_segment(cells, platforms, "INFO"),
         ),
-        comparison=_comparison(cells, platforms, prior_cells, prior_platforms),
+        comparison=_comparison(
+            cells, platforms, prior_cells, prior_platforms, current_protocol, prior_protocol
+        ),
     )

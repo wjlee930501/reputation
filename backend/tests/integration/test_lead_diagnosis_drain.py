@@ -365,3 +365,76 @@ class TestExecutionRecovery:
         assert "provider exploded" in (row.error or "")
         # 시도는 소모됐다 — 크래시가 무한 루프가 되지 않는다.
         assert row.execution_attempts == 1
+
+    async def _run_with_engine_status(
+        self, session, monkeypatch, diagnosis_id, status: str
+    ) -> None:
+        """엔진이 특정 상태로 종결한 것처럼 만들고 워커 경로를 태운다."""
+
+        async def fake_measure(_session, diag):
+            diag.execution_status = status
+            diag.error = "확정 판정이 하한에 미달했습니다 (chatgpt 확정 2건, gemini 확정 9건)"
+            diag.finished_at = datetime.now(timezone.utc)
+            diag.running_since = None
+            await _session.commit()
+            return {"planned": 18, "succeeded": 11, "confirmed": 11, "status": status}
+
+        monkeypatch.setattr(
+            leadgen_tasks.lead_diagnosis_engine, "run_diagnosis_measurements", fake_measure
+        )
+
+        class _Ctx:
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(leadgen_tasks, "get_async_sessionmaker", lambda: _Ctx)
+        await leadgen_tasks._run_lead_diagnosis(str(diagnosis_id))
+
+    async def test_insufficient_confirmation_is_requeued_while_attempts_remain(
+        self, pg_async_session, monkeypatch
+    ):
+        """확정 하한 미달은 자동으로 다시 잰다.
+
+        FAILED로 두면 **수동** 복구 대상이 되어, 일시적인 공급자 장애까지 AE가 Admin에서
+        클릭해줄 때까지 신청자가 기다린다.
+        """
+        diagnosis = await _seed(pg_async_session)
+        diagnosis_id = diagnosis.id
+
+        await self._run_with_engine_status(
+            pg_async_session, monkeypatch, diagnosis_id, ExecutionStatus.FAILED.value
+        )
+
+        row = (
+            await pg_async_session.execute(
+                select(LeadDiagnosis).where(LeadDiagnosis.id == diagnosis_id)
+            )
+        ).scalar_one()
+        assert row.execution_status == ExecutionStatus.PENDING.value
+        assert row.execution_attempts == 1     # 시도는 소모됐다
+        assert row.finished_at is None         # 아직 끝난 진단이 아니다
+        assert "하한에 미달" in (row.error or "")
+
+    async def test_insufficient_confirmation_stays_failed_once_attempts_are_spent(
+        self, pg_async_session, monkeypatch
+    ):
+        """시도가 소진되면 FAILED로 남는다 — 그 목록이 DLQ이고, 사람이 본다."""
+        diagnosis = await _seed(
+            pg_async_session, execution_attempts=leadgen_tasks.MAX_EXECUTION_ATTEMPTS - 1
+        )
+        diagnosis_id = diagnosis.id
+
+        await self._run_with_engine_status(
+            pg_async_session, monkeypatch, diagnosis_id, ExecutionStatus.FAILED.value
+        )
+
+        row = (
+            await pg_async_session.execute(
+                select(LeadDiagnosis).where(LeadDiagnosis.id == diagnosis_id)
+            )
+        ).scalar_one()
+        assert row.execution_status == ExecutionStatus.FAILED.value
+        assert row.execution_attempts == leadgen_tasks.MAX_EXECUTION_ATTEMPTS

@@ -30,8 +30,11 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.core.config import settings
-from app.models.lead_diagnosis import LeadDiagnosis, LeadDiagnosisResult
+from app.models.lead_diagnosis import LeadDiagnosis, LeadDiagnosisResult, MentionVerdict
 from app.services import sov_engine
+
+# 리포트가 칸을 인쇄하는 순서. 측정 엔진의 PLATFORMS와 같은 집합이어야 한다.
+_PLATFORMS = ("chatgpt", "gemini")
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ PRETENDARD_FONT_PATH = (
 
 # 템플릿이 바뀌면 같은 데이터라도 다른 리포트가 나온다. artifact에 기록해
 # "같은 병원인데 숫자가 왜 다르냐"에 답할 수 있게 한다.
-TEMPLATE_VERSION = "lead-v7"
+TEMPLATE_VERSION = "lead-v8"
 
 # 공급자 표기 — 사람이 읽는 이름이지 "ChatGPT 화면"이 아니다.
 _VENDOR_LABELS = {"chatgpt": "OpenAI API", "gemini": "Google Gemini API"}
@@ -51,15 +54,16 @@ _VENDOR_LABELS = {"chatgpt": "OpenAI API", "gemini": "Google Gemini API"}
 
 @dataclass(frozen=True, slots=True)
 class PlatformSegment:
-    """플랫폼 1개의 기술통계. 분모·분자·실패 수를 따로 표기한다(F3-5)."""
+    """플랫폼 1개의 기술통계. 분모·분자·실패·보류 수를 따로 표기한다(F3-5)."""
 
     platform: str
     vendor_label: str
     model: str
-    planned: int          # 계획 측정 수
-    measured: int         # 성공 측정 수 = 분모
+    planned: int          # 계획 측정 수 (설계값 — 실제 행 수가 아니다)
+    measured: int         # 확정 판정 수 = 분모
     mentioned: int        # 언급 횟수 = 분자
     failed: int
+    ambiguous: int = 0    # 판정 보류 — 분모·분자 어디에도 들어가지 않는다 (F3-7)
 
     @property
     def label(self) -> str:
@@ -67,10 +71,22 @@ class PlatformSegment:
 
     @property
     def mention_rate(self) -> float | None:
-        """성공 측정이 0이면 None. '측정 안 됨'과 '실제 0%'는 다른 사실이다."""
+        """확정 판정이 0이면 None. '측정 안 됨'과 '실제 0%'는 다른 사실이다."""
         if self.measured <= 0:
             return None
         return round(self.mentioned / self.measured * 100, 1)
+
+    @property
+    def rate_ceiling(self) -> float | None:
+        """미확정 건이 전부 언급이었다고 가정한 상한.
+
+        신뢰구간이 아니다 — 미확정 셀의 가능한 결과를 그대로 편 결정론적 범위다.
+        `mention_rate`만 크게 인쇄하면 결측이 있었다는 사실이 시각적으로 사라진다.
+        """
+        unconfirmed = self.failed + self.ambiguous
+        if self.measured <= 0 or unconfirmed <= 0:
+            return None
+        return round((self.mentioned + unconfirmed) / (self.measured + unconfirmed) * 100, 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +101,7 @@ class QueryDisclosure:
     measured: int
     mentioned: int
     failed: int
+    ambiguous: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +133,9 @@ class LeadReportPayload:
     notices: tuple[str, ...] = ()
     contact: LeadReportContact = LeadReportContact(name="", role="", email="", phone="")
 
+    # 합산값은 **헤드라인이 아니라 존재 여부 판정에만** 쓴다("확정 0건인가?").
+    # 경로별 결측률이 다르면 합산 비율은 결측이 적은 경로에 가중치를 주는데,
+    # 그 가중치는 문서 어디에도 표기되지 않는다.
     @property
     def total_measured(self) -> int:
         return sum(s.measured for s in self.segments)
@@ -123,6 +143,11 @@ class LeadReportPayload:
     @property
     def total_mentioned(self) -> int:
         return sum(s.mentioned for s in self.segments)
+
+    @property
+    def total_unconfirmed(self) -> int:
+        """응답 실패 + 판정 보류. 분모에서 빠진 것이 몇 건인지 독자가 알아야 한다."""
+        return sum(s.failed + s.ambiguous for s in self.segments)
 
 
 # F5-5 고지 2종. 문구만으로 의료법 제56조 위험이 통제되지는 않지만, 빠지면 확실히 문제다.
@@ -147,26 +172,35 @@ def build_lead_report_payload(
     """측정 결과 → 공개 대상만 담은 allowlist.
 
     실패 측정은 분모에서 뺀다 — 도구 장애를 병원 성과로 계상하지 않기 위해서다.
-    대신 실패 건수를 그대로 표기한다(F3-5). 감추면 "9번 중 0번"과
+    판정 보류(AMBIGUOUS)도 뺀다 — 확정하지 못한 것을 언급으로도 미언급으로도 세지
+    않는다(F3-7). 대신 실패·보류 건수를 그대로 표기한다(F3-5). 감추면 "9번 중 0번"과
     "1번 중 0번"이 같은 숫자로 보인다.
+
+    **계획 건수는 행 수가 아니라 설계값에서 계산한다.** 행 수로 세면 재시도로 누적된
+    행이 그대로 "계획 18건"이 되어, 리포트가 공개하는 측정 설계(질의 3 × 플랫폼 2 ×
+    반복 3)와 인쇄된 값이 어긋난다.
     """
     models = diagnosis.requested_models or {}
     segments: list[PlatformSegment] = []
+    query_count = len(diagnosis.queries or [])
+    planned_per_platform = query_count * diagnosis.repeat_count
 
-    for platform in ("chatgpt", "gemini"):
+    for platform in _PLATFORMS:
         rows = [r for r in results if r.platform == platform]
         if not rows:
             continue
         succeeded = [r for r in rows if r.measurement_status == "SUCCESS"]
+        confirmed = [r for r in succeeded if r.mention_verdict != MentionVerdict.AMBIGUOUS.value]
         segments.append(
             PlatformSegment(
                 platform=platform,
                 vendor_label=_VENDOR_LABELS.get(platform, platform),
                 model=models.get("openai" if platform == "chatgpt" else "gemini") or "",
-                planned=len(rows),
-                measured=len(succeeded),
-                mentioned=sum(1 for r in succeeded if r.is_mentioned),
+                planned=planned_per_platform,
+                measured=len(confirmed),
+                mentioned=sum(1 for r in confirmed if r.is_mentioned),
                 failed=len(rows) - len(succeeded),
+                ambiguous=len(succeeded) - len(confirmed),
             )
         )
 
@@ -185,25 +219,34 @@ def build_lead_report_payload(
         slot = int(query["slot"])
         rows = [row for row in results if row.query_slot == slot]
         succeeded = [row for row in rows if row.measurement_status == "SUCCESS"]
+        confirmed = [
+            row for row in succeeded if row.mention_verdict != MentionVerdict.AMBIGUOUS.value
+        ]
         queries.append(
             QueryDisclosure(
                 slot=slot,
                 kind=query.get("kind", ""),
                 text=query["text"],
                 measured_at=measured_at_by_slot.get(slot),
-                planned=len(rows),
-                measured=len(succeeded),
-                mentioned=sum(1 for row in succeeded if row.is_mentioned),
+                planned=diagnosis.repeat_count * len(_PLATFORMS),
+                measured=len(confirmed),
+                mentioned=sum(1 for row in confirmed if row.is_mentioned),
                 failed=len(rows) - len(succeeded),
+                ambiguous=len(succeeded) - len(confirmed),
             )
         )
+
+    # 리포트가 공개하는 지시문은 **측정 당시의 스냅샷**이다. 렌더 시점의 전역 상수를
+    # 읽으면 프롬프트 변경 후 재생성한 리포트가 실제 측정과 다른 조건을 공개하게 된다.
+    # 스냅샷 도입 이전 진단(NULL)만 전역값으로 폴백한다.
+    snapshot = diagnosis.measurement_config or {}
 
     return LeadReportPayload(
         hospital_name=diagnosis.subject_hospital_name,
         region=diagnosis.subject_region,
         generated_at=generated_at,
         repeat_count=diagnosis.repeat_count,
-        system_prompt=sov_engine.SYSTEM_PROMPT_SOV,
+        system_prompt=snapshot.get("system_prompt") or sov_engine.SYSTEM_PROMPT_SOV,
         judge_model=models.get("judge") or "",
         segments=tuple(segments),
         queries=tuple(queries),

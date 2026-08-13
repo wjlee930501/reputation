@@ -1,6 +1,7 @@
 """AI 답변 언급률 엔진 — 환자 질문 생성·발송·파싱·계산"""
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -186,15 +187,34 @@ _IDENTITY_RULE = """\
 띄어쓰기·의원/병원 접미사 차이처럼 동일 기관임이 명확한 표기 변형만 인정한다.
 흔한 앞글자 2~3자가 같거나 다른 지역의 동명 기관인 것만으로는 동일 병원으로 간주하지 않는다."""
 
+# 판정 3값 (PRD F3-7). 이진 판정은 "확정할 수 없음"을 표현할 자리가 없어
+# 경계 사례를 전부 true/false 중 하나로 접는다. 판정기는 애매하면 true로 기울고,
+# 그 편향이 그대로 언급률이 된다 — 그래서 "모르겠다"를 1급 결과로 둔다.
+VERDICT_MATCHED = "MATCHED"
+VERDICT_NOT_MATCHED = "NOT_MATCHED"
+VERDICT_AMBIGUOUS = "AMBIGUOUS"
+_VERDICTS = (VERDICT_MATCHED, VERDICT_NOT_MATCHED, VERDICT_AMBIGUOUS)
+
 PARSE_PROMPT = f"""\
-다음 AI 답변에서 "{{hospital_name}}"이 언급되었는지 분석하라.
+다음 AI 답변이 "{{hospital_name}}"(소재 지역: {{region}})을 언급했는지 판정하라.
 {_IDENTITY_RULE}
+
+판정값은 셋 중 하나다:
+- MATCHED: 답변에 이 병원을 가리키는 표현이 있고, 정식 명칭이거나 명확한 표기 변형이며,
+  지역 정보가 충돌하지 않는다.
+- NOT_MATCHED: 후보 표현이 없거나, 다른 기관임이 분명하다.
+- AMBIGUOUS: 동명 기관일 수 있거나, 타지역 기관일 수 있거나, 접미사를 뗀 흔한 표현만
+  등장하거나, 이름 일부만 나와 동일 기관인지 확정할 수 없다.
+
+진료과 이름·일반 형용사·흔한 접두어만 겹치는 것으로 MATCHED를 주지 마라.
+확신이 서지 않으면 추측하지 말고 반드시 AMBIGUOUS를 골라라.
+matched_text에는 답변에서 **그대로 잘라낸** 표현만 넣는다. 지어내지 마라.
 
 [답변]
 {{response}}
 
 반드시 아래 JSON만 출력:
-{{{{"is_mentioned": true/false, "mention_rank": null 또는 정수, "sentiment": "positive"/"neutral"/"negative"/null, "mention_context": "언급 문장 또는 null"}}}}"""
+{{{{"verdict": "MATCHED"/"NOT_MATCHED"/"AMBIGUOUS", "matched_text": "답변에서 인용한 표현 또는 null", "mention_rank": null 또는 정수, "sentiment": "positive"/"neutral"/"negative"/null, "mention_context": "언급 문장 또는 null"}}}}"""
 
 COMPETITOR_PARSE_PROMPT = f"""\
 다음 AI 답변에서 아래 병원들이 각각 언급되었는지 분석하라.
@@ -257,14 +277,78 @@ def generate_query_matrix_specs(
 # "ChatGPT 32% vs Gemini 8%" 같은 숫자가 나와도 그건 플랫폼 차이가 아니라 우리가 두
 # 모델을 다르게 대우한 결과였다 — 플랫폼 비교가 성립하지 않았다.
 # 이름을 CHATGPT에서 SOV로 바꾼 것은 "이건 한 플랫폼 전용이 아니다"를 코드에 못 박기 위함이다.
+# ── 측정 정책 v2 (상향 편향 제거).
+#
+# v1은 두 군데에서 답변을 병원명 쪽으로 밀고 있었다.
+#
+#   1. 시스템 프롬프트가 "구체적인 병원 이름을 포함해 답변하세요"라고 **지시**했다.
+#      우리가 세는 대상(병원명 등장)을 모델에게 시켜놓고 그 빈도를 노출도라고 판 셈이다.
+#   2. `tool_choice="required"`로 매 요청 웹검색을 강제했다. "{지역} 근처 {진료과} 병원
+#      추천해줘"에 검색을 강제하면 사실상 지역 병원 디렉터리를 긁어와 나열하게 된다.
+#
+# v2는 둘 다 놓는다. 도구는 **제공하되 강제하지 않고**, 지시문은 중립으로 되돌린다.
+# 모델이 검색을 쓸지 말지 고르는 것까지가 측정 대상이다.
+#
+# 이 전환은 숫자를 낮추려는 튜닝이 아니라 편향 제거지만, **기준선은 확실히 바뀐다.**
+# 그래서 정책 버전을 붙여 어디에나 스냅샷하고, 버전이 다른 두 달은 비교하지 않는다.
+MEASUREMENT_POLICY_VERSION = "v2-neutral-auto"
+
 SYSTEM_PROMPT_SOV = (
-    "지역 병원 정보를 잘 아는 의료 정보 도우미입니다. 구체적인 병원 이름을 포함해 답변하세요."
+    "질문에 정확하고 유용하게 답하십시오. "
+    "특정 병원을 제시할 경우 확인 가능한 근거에 기반하십시오."
 )
+
+# 도구는 준다. 쓸지는 모델이 정한다.
+OPENAI_SEARCH_TOOL_CHOICE = "auto"
 
 
 def build_sov_prompt(query: str) -> str:
     """플랫폼 공통 질의문. 양쪽이 반드시 이 함수를 거쳐야 비대칭이 재발하지 않는다."""
     return f"{SYSTEM_PROMPT_SOV}\n\n질문: {query}"
+
+
+def measurement_protocol() -> dict:
+    """이 측정이 어떤 조건에서 이뤄졌는지 — 접수/동결 시점에 스냅샷할 값 전부.
+
+    **버전 문자열만 두지 않는다.** 사람이 버전을 올리는 것을 잊으면 조건이 바뀐 측정이
+    같은 버전으로 기록되고, 그때부터 비교 게이트는 통과하는데 숫자는 못 믿게 된다.
+    지시문·판정 프롬프트의 지문을 함께 넣어 잊을 수 없게 만든다.
+    """
+    return {
+        "policy_version": MEASUREMENT_POLICY_VERSION,
+        "system_prompt": SYSTEM_PROMPT_SOV,
+        "openai_tool_choice": OPENAI_SEARCH_TOOL_CHOICE,
+        "prompt_fingerprint": _fingerprint(SYSTEM_PROMPT_SOV),
+        "judge_prompt_fingerprint": _fingerprint(PARSE_PROMPT),
+    }
+
+
+def _fingerprint(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def protocol_fingerprint() -> str:
+    """프로토콜 전체의 단일 지문 — 캐시 키와 비교 게이트가 같은 값을 본다."""
+    protocol = measurement_protocol()
+    material = "|".join(
+        f"{key}={protocol[key]}"
+        for key in ("policy_version", "prompt_fingerprint", "openai_tool_choice",
+                    "judge_prompt_fingerprint")
+    )
+    return hashlib.sha256(material.encode()).hexdigest()[:16]
+
+
+def same_measurement_policy(left: dict | None, right: dict | None) -> bool:
+    """두 측정이 같은 조건이었는가.
+
+    한쪽이라도 기록이 없으면 **다르다고 본다.** 정책 스냅샷 도입 이전 측정은 v1이었고,
+    "모르겠다"를 "같다"로 접으면 기준선이 바뀐 두 달을 성과 변화로 붙여 팔게 된다.
+    """
+    if not left or not right:
+        return False
+    keys = ("policy_version", "prompt_fingerprint", "openai_tool_choice",
+            "judge_prompt_fingerprint")
+    return all(left.get(key) == right.get(key) for key in keys)
 
 
 # Gemini에만 출력 상한이 걸려 있으면 답변이 짧게 잘려 병원 이름이 나올 자리가 줄어든다
@@ -311,9 +395,11 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
         response = await openai_client.responses.create(
             model=settings.OPENAI_MODEL_QUERY,
             tools=[{"type": "web_search"}],
-            # 도구를 단순 제공만 하면 모델이 검색 없이 답할 수 있다. SoV 계약은 실제
-            # 웹 검색 노출 측정이므로 매 요청에서 web_search 호출을 강제한다.
-            tool_choice="required",
+            # 도구는 제공하되 강제하지 않는다 (측정 정책 v2). 매 요청 검색을 강제하면
+            # 지역 병원 디렉터리를 긁어와 나열하게 되어, 환자가 실제로 받는 답변보다
+            # 구조적으로 병원명이 많이 등장한다. 모델이 검색을 쓸지 고르는 것까지가
+            # 측정 대상이다.
+            tool_choice=OPENAI_SEARCH_TOOL_CHOICE,
             input=build_sov_prompt(query),
         )
     except AttributeError:
@@ -448,25 +534,46 @@ def prefilter_key(hospital_name: str) -> str:
     return core if len(core) >= 3 else normalized
 
 
-async def _parse_mention(hospital_name: str, response_text: str) -> dict:
+def _not_matched(verdict: str = VERDICT_NOT_MATCHED) -> dict:
+    return {
+        "verdict": verdict,
+        "is_mentioned": False if verdict == VERDICT_NOT_MATCHED else None,
+        "matched_text": None,
+        "mention_rank": None,
+        "sentiment": None,
+        "mention_context": None,
+    }
+
+
+def _corroborates(hospital_name: str, matched_text: str | None, response_text: str) -> bool:
+    """판정기가 MATCHED의 근거로 든 표현이 실제 언급 증거인가.
+
+    사전 필터는 접미사를 뗀 핵심의 substring 일치라 느슨하다 — "행복한의원"의 핵심
+    "행복한"은 "행복한 진료를 위해" 같은 평범한 문장에도 걸린다. 필터를 통과한 뒤
+    판정기가 그 조각을 근거로 MATCHED를 주면 오탐이 그대로 언급으로 계상된다.
+
+    그래서 MATCHED는 **인용된 근거가 병원명 전체(접미사 포함)를 담고 있을 때만**
+    승인한다. 근거가 핵심 조각뿐이면 언급이 아니라 '확정 불가'다 — 미언급으로
+    내리지 않는 이유는, 답변이 실제로 약칭만 쓴 경우를 0으로 깎지 않기 위해서다.
+    """
+    quoted = _normalize_for_prefilter(matched_text or "")
+    if not quoted:
+        return False
+    # 지어낸 인용은 근거가 아니다.
+    if quoted not in _normalize_for_prefilter(response_text):
+        return False
+    return _normalize_for_prefilter(hospital_name) in quoted
+
+
+async def _parse_mention(hospital_name: str, response_text: str, region: str = "") -> dict:
     if not response_text.strip():
-        return {
-            "is_mentioned": False,
-            "mention_rank": None,
-            "sentiment": None,
-            "mention_context": None,
-        }
+        return _not_matched()
     # 빠른 사전 필터 — 경쟁사 판정과 동일한 키를 쓴다(prefilter_key).
     normalized_response = _normalize_for_prefilter(response_text)
     prefilter_name = prefilter_key(hospital_name)
     if prefilter_name and prefilter_name not in normalized_response:
         logger.debug("prefilter skip (mention): hospital=%s", hospital_name)
-        return {
-            "is_mentioned": False,
-            "mention_rank": None,
-            "sentiment": None,
-            "mention_context": None,
-        }
+        return _not_matched()
 
     await _record_sov_provider_call()
     result = await openai_client.chat.completions.create(
@@ -475,21 +582,50 @@ async def _parse_mention(hospital_name: str, response_text: str) -> dict:
             {
                 "role": "user",
                 "content": PARSE_PROMPT.format(
-                    response=response_text[:3000], hospital_name=hospital_name
+                    response=response_text[:3000],
+                    hospital_name=hospital_name,
+                    region=region or "미상",
                 ),
             }
         ],
         temperature=0,
-        max_tokens=200,
+        max_tokens=300,
         response_format={"type": "json_object"},
     )
     try:
         parsed = json.loads(result.choices[0].message.content or "{}")
     except Exception as exc:
         raise ValueError("mention_parse_failed") from exc
-    if not isinstance(parsed, dict) or not isinstance(parsed.get("is_mentioned"), bool):
+    if not isinstance(parsed, dict) or parsed.get("verdict") not in _VERDICTS:
         raise ValueError("mention_parse_failed")
-    return parsed
+
+    verdict = parsed["verdict"]
+    matched_text = parsed.get("matched_text")
+    if verdict == VERDICT_MATCHED and not _corroborates(
+        hospital_name, matched_text, response_text
+    ):
+        # 판정기가 근거를 대지 못한 MATCHED는 승격시키지 않는다. 미언급으로도
+        # 내리지 않는다 — 둘 다 틀릴 수 있는 자리에서는 '확정 불가'가 사실이다.
+        logger.debug(
+            "mention verdict downgraded to AMBIGUOUS: hospital=%s quote=%r",
+            hospital_name,
+            matched_text,
+        )
+        verdict = VERDICT_AMBIGUOUS
+
+    return {
+        "verdict": verdict,
+        # AMBIGUOUS는 참도 거짓도 아니다. None으로 두어 집계가 분모·분자 양쪽에서
+        # 빼도록 강제한다 — False로 접으면 조용히 하향 편향이 된다.
+        "is_mentioned": (
+            True if verdict == VERDICT_MATCHED
+            else (False if verdict == VERDICT_NOT_MATCHED else None)
+        ),
+        "matched_text": matched_text,
+        "mention_rank": parsed.get("mention_rank"),
+        "sentiment": parsed.get("sentiment"),
+        "mention_context": parsed.get("mention_context"),
+    }
 
 
 async def _parse_competitors(competitors: list[str], response_text: str) -> list[dict]:
@@ -699,12 +835,15 @@ async def fetch_answer(
     }
 
 
-async def judge_mention(hospital_name: str, response_text: str) -> dict:
+async def judge_mention(hospital_name: str, response_text: str, region: str = "") -> dict:
     """이 답변이 그 병원을 언급했는가.
 
     캐시된 답변에도 **반드시 다시 실행한다** — 답변은 병원과 무관하지만 판정은 아니다.
+
+    `region`은 동명 기관을 가르는 유일한 단서다. 넘기지 않으면 판정기는 "서울내과"가
+    이 병원인지 다른 동네 같은 이름인지 알 방법이 없고, 그 불확실성이 MATCHED로 접힌다.
     """
-    return await _parse_mention(hospital_name, response_text)
+    return await _parse_mention(hospital_name, response_text, region)
 
 
 def calculate_sov(
@@ -730,10 +869,13 @@ def calculate_sov(
 
 
 def successful_records(results: list[dict], *, intents: frozenset[str] | None = None) -> list[dict]:
-    """실패를 걸러내고, 요청한 질문 유형만 남긴다.
+    """실패와 판정 보류를 걸러내고, 요청한 질문 유형만 남긴다.
 
     intents=None이면 유형을 가리지 않는다(운영 진단·전체 집계용).
     유형이 없는 레코드는 LOCAL로 본다 — classify_query_intent와 같은 fail-open이다.
+
+    AMBIGUOUS는 분모에서 뺀다(PRD F3-7). 확정하지 못한 판정을 미언급으로 세면 하향
+    편향, 언급으로 세면 상향 편향이다 — 어느 쪽도 사실이 아니므로 세지 않고 따로 센다.
     """
     successful: list[dict] = []
     for r in results:
@@ -741,6 +883,13 @@ def successful_records(results: list[dict], *, intents: frozenset[str] | None = 
         if status == "FAILED":
             continue
         if status is None and "raw_response" in r and not (r.get("raw_response") or "").strip():
+            continue
+        # 판정 보류만 뺀다. `is_mentioned` 키가 아예 없는 레코드(집계용으로 조립된
+        # 요약 dict 등)까지 빼면 분모가 조용히 줄어들므로, **키가 있는데 None인**
+        # 경우만 보류로 본다.
+        if r.get("verdict") == VERDICT_AMBIGUOUS or (
+            "is_mentioned" in r and r["is_mentioned"] is None
+        ):
             continue
         if intents is not None:
             intent = r.get("query_intent") or QUERY_INTENT_LOCAL

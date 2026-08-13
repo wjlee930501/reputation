@@ -81,6 +81,85 @@ def _results(diagnosis: LeadDiagnosis, *, mentioned_per_platform=2, failed_per_p
     return rows
 
 
+class TestAggregationCannotBeInflated:
+    """분모·분자가 부풀려지는 두 경로를 막는다."""
+
+    def test_planned_comes_from_the_design_not_the_row_count(self):
+        """재시도로 행이 쌓여도 '계획 9건'은 9건이다.
+
+        측정은 재시도마다 18행을 새로 INSERT하고 이전 시도를 지우지 않는다. 행 수를
+        계획 수로 쓰면 2회 시도한 진단이 "계획 18건"으로 인쇄되고, 리포트가 공개하는
+        측정 설계(질의 3 × 플랫폼 2 × 반복 3)와 어긋난다.
+        """
+        diagnosis = _diagnosis()
+        doubled = _results(diagnosis) + _results(diagnosis)
+
+        payload = lead_report.build_lead_report_payload(
+            diagnosis, doubled, generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc)
+        )
+
+        for segment in payload.segments:
+            assert segment.planned == 9
+        for query in payload.queries:
+            assert query.planned == 6
+
+    def test_ambiguous_verdicts_leave_both_numerator_and_denominator(self):
+        """판정 보류는 언급으로도 미언급으로도 세지 않는다 (PRD F3-7)."""
+        diagnosis = _diagnosis()
+        rows = _results(diagnosis, mentioned_per_platform=2, failed_per_platform=0)
+        # 플랫폼당 1건씩 보류로 바꾼다.
+        for platform in ("chatgpt", "gemini"):
+            for row in rows:
+                if row.platform == platform and not row.is_mentioned:
+                    row.mention_verdict = "AMBIGUOUS"
+                    row.is_mentioned = None
+                    break
+
+        payload = lead_report.build_lead_report_payload(
+            diagnosis, rows, generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc)
+        )
+
+        for segment in payload.segments:
+            assert segment.ambiguous == 1
+            assert segment.measured == 8          # 9건 중 보류 1건을 뺀 분모
+            assert segment.mentioned == 2
+            assert segment.mention_rate == 25.0   # 2/8 — 보류를 미언급으로 세면 2/9가 된다
+        assert payload.total_unconfirmed == 2
+
+
+class TestDisclosedConditionsMatchTheMeasurement:
+    """리포트가 공개하는 측정 조건은 렌더 시점이 아니라 **측정 시점**의 것이다."""
+
+    def test_the_snapshot_prompt_wins_over_the_global_constant(self):
+        from app.services import sov_engine
+
+        diagnosis = _diagnosis()
+        diagnosis.measurement_config = {
+            **sov_engine.measurement_protocol(),
+            "system_prompt": "측정 당시의 지시문 (이후 전역값이 바뀌었다)",
+        }
+
+        payload = lead_report.build_lead_report_payload(
+            diagnosis, _results(diagnosis),
+            generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        )
+
+        assert payload.system_prompt == "측정 당시의 지시문 (이후 전역값이 바뀌었다)"
+
+    def test_pre_snapshot_diagnoses_fall_back_to_the_global_prompt(self):
+        from app.services import sov_engine
+
+        diagnosis = _diagnosis()
+        diagnosis.measurement_config = None
+
+        payload = lead_report.build_lead_report_payload(
+            diagnosis, _results(diagnosis),
+            generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc),
+        )
+
+        assert payload.system_prompt == sov_engine.SYSTEM_PROMPT_SOV
+
+
 @pytest.fixture
 def payload():
     diagnosis = _diagnosis()

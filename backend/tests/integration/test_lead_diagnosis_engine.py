@@ -65,11 +65,29 @@ class _ProviderSpy:
         return sum(1 for p, _ in self.calls if p == platform)
 
 
-async def _judge_matched(hospital_name, response_text):
+def _verdict_for(mentioned: bool) -> dict:
     return {
-        "is_mentioned": hospital_name in response_text,
-        "mention_rank": 1,
+        "verdict": "MATCHED" if mentioned else "NOT_MATCHED",
+        "is_mentioned": mentioned,
+        "matched_text": None,
+        "mention_rank": 1 if mentioned else None,
         "sentiment": "neutral",
+        "mention_context": None,
+    }
+
+
+async def _judge_matched(hospital_name, response_text, region=""):
+    return _verdict_for(hospital_name in response_text)
+
+
+async def _judge_ambiguous(hospital_name, response_text, region=""):
+    """동명 기관 가능성으로 확정하지 못한 판정 — 분모에서 빠진다."""
+    return {
+        "verdict": "AMBIGUOUS",
+        "is_mentioned": None,
+        "matched_text": None,
+        "mention_rank": None,
+        "sentiment": None,
         "mention_context": None,
     }
 
@@ -286,15 +304,15 @@ class TestExecutionStatus:
         assert diagnosis.execution_status == ExecutionStatus.FAILED.value
         assert diagnosis.error
 
-    async def test_scattered_failures_with_both_platforms_alive_is_partial(
+    async def test_one_missing_measurement_per_platform_is_still_partial(
         self, pg_async_session, monkeypatch
     ):
-        """반복 일부가 실패해도 두 플랫폼에 데이터가 있으면 리포트를 만들 수 있다."""
-        flaky = itertools.count()
+        """플랫폼당 결측 1건까지는 리포트를 만든다 — 하한(8/9)이 허용하는 범위다."""
+        failed_by_platform: dict[str, int] = {}
 
         async def fetch(query_text, platform, *, pool=None, requested_model=None):
-            # 3번째 호출마다 실패 — 두 플랫폼 모두 성공이 남는다.
-            if next(flaky) % 3 == 0:
+            if failed_by_platform.get(platform, 0) < 1:
+                failed_by_platform[platform] = failed_by_platform.get(platform, 0) + 1
                 return {
                     "text": "",
                     "source_urls": [],
@@ -316,6 +334,111 @@ class TestExecutionStatus:
         await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, diagnosis)
         assert diagnosis.execution_status == ExecutionStatus.PARTIAL.value
 
+    async def test_scattered_failures_below_the_floor_are_failed(
+        self, pg_async_session, monkeypatch
+    ):
+        """결측이 하한을 넘으면 FAILED다.
+
+        예전에는 플랫폼당 성공 1건만 있어도 PARTIAL이라 리포트가 나갔다. 실패는 분모에서
+        빠지므로, 18건 중 2건만 성공하고 그 2건에 병원명이 나오면 **100%** 가 인쇄된다.
+        결측이 그대로 '성과'가 되는 구조였다.
+        """
+        flaky = itertools.count()
+
+        async def fetch(query_text, platform, *, pool=None, requested_model=None):
+            # 3번째 호출마다 실패 — 플랫폼당 3건씩 빠져 하한(8/9) 미달.
+            if next(flaky) % 3 == 0:
+                return {
+                    "text": "",
+                    "source_urls": [],
+                    "measurement_status": "FAILED",
+                    "failure_reason": "empty_raw_response",
+                }
+            return {
+                "text": "장편한외과의원이 있습니다.",
+                "source_urls": [],
+                "answer_model": "m",
+                "measurement_status": "SUCCESS",
+                "failure_reason": None,
+            }
+
+        monkeypatch.setattr(sov_engine, "fetch_answer", fetch)
+        monkeypatch.setattr(sov_engine, "judge_mention", _judge_matched)
+
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, diagnosis)
+        assert diagnosis.execution_status == ExecutionStatus.FAILED.value
+        assert diagnosis.error
+
+    async def test_ambiguous_verdicts_do_not_count_as_confirmed(
+        self, pg_async_session, monkeypatch
+    ):
+        """판정 보류는 측정 성공이지만 분모가 아니다.
+
+        전부 보류면 확정 0건이므로 리포트를 만들 수 없다 — 분모 없는 비율을 인쇄하느니
+        측정 불충분으로 막는다.
+        """
+        spy = _ProviderSpy()
+        monkeypatch.setattr(sov_engine, "fetch_answer", spy.fetch_answer)
+        monkeypatch.setattr(sov_engine, "judge_mention", _judge_ambiguous)
+
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        result = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert result["succeeded"] == 18      # 답변 수신·판정 수행은 전부 성공
+        assert result["confirmed"] == 0       # 그러나 확정된 판정은 0건
+        assert result["ambiguous"] == 18
+        assert diagnosis.execution_status == ExecutionStatus.FAILED.value
+
+        rows = (
+            await pg_async_session.execute(
+                select(LeadDiagnosisResult).where(
+                    LeadDiagnosisResult.diagnosis_id == diagnosis.id
+                )
+            )
+        ).scalars().all()
+        # 보류를 False로 접으면 조용한 하향 편향이 된다. None이어야 한다.
+        assert all(r.is_mentioned is None for r in rows)
+        assert all(r.mention_verdict == "AMBIGUOUS" for r in rows)
+
+    async def test_policy_drift_blocks_measurement_before_any_provider_call(
+        self, pg_async_session, spy
+    ):
+        """접수 시점 정책과 실행 시점 정책이 다르면 재지 않는다 — 모델 핀과 같은 규약.
+
+        리포트가 공개하는 조건은 접수 스냅샷이므로, 다른 조건으로 잰 숫자를 그 스냅샷
+        아래 인쇄하면 재현성 계약이 깨진다.
+        """
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        diagnosis.measurement_config = {
+            **sov_engine.measurement_protocol(),
+            "policy_version": "v1",
+            "openai_tool_choice": "required",
+        }
+        await pg_async_session.flush()
+
+        result = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert result["blocked"] == "policy_drift"
+        assert diagnosis.execution_status == ExecutionStatus.FAILED.value
+        assert "측정 정책 불일치" in (diagnosis.error or "")
+        assert spy.calls == []   # 돈을 쓰기 전에 막았다
+
+    async def test_matching_policy_snapshot_measures_normally(self, pg_async_session, spy):
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        diagnosis.measurement_config = sov_engine.measurement_protocol()
+        await pg_async_session.flush()
+
+        result = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert result["status"] == ExecutionStatus.SUCCEEDED.value
+
     async def test_judge_failure_is_not_recorded_as_a_zero_mention(
         self, pg_async_session, monkeypatch
     ):
@@ -323,7 +446,7 @@ class TestExecutionStatus:
         spy = _ProviderSpy()
         monkeypatch.setattr(sov_engine, "fetch_answer", spy.fetch_answer)
 
-        async def broken_judge(hospital_name, response_text):
+        async def broken_judge(hospital_name, response_text, region=""):
             raise RuntimeError("judge model down")
 
         monkeypatch.setattr(sov_engine, "judge_mention", broken_judge)
@@ -398,14 +521,9 @@ class TestSharedQueryCache:
         spy = _ProviderSpy(text="수서역에는 가나의원이 있습니다.")
         judged: list[str] = []
 
-        async def judge(hospital_name, response_text):
+        async def judge(hospital_name, response_text, region=""):
             judged.append(hospital_name)
-            return {
-                "is_mentioned": hospital_name in response_text,
-                "mention_rank": None,
-                "sentiment": None,
-                "mention_context": None,
-            }
+            return _verdict_for(hospital_name in response_text)
 
         monkeypatch.setattr(sov_engine, "fetch_answer", spy.fetch_answer)
         monkeypatch.setattr(sov_engine, "judge_mention", judge)

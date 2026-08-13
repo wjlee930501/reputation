@@ -243,24 +243,31 @@
     <p class="lede">지역과 진료 맥락을 담은 질문 3개로 현재 상태를 확인했습니다. 이 문서는 순위표가 아니라, 앞으로 같은 기준으로 변화를 살펴보기 위한 시작 기록입니다.</p>
 
     <div class="result-card" id="result">
+      {# 두 경로를 합산하지 않는다. 실패·보류 수가 경로마다 다르면 합산은 결측이 적은
+         쪽에 더 큰 가중치를 주고, 그 가중치는 어디에도 표기되지 않는다. #}
       <div class="result-number">
-        {% if payload.total_measured == 0 %}<strong>0 / 0</strong>{% else %}<strong>{{ payload.total_mentioned }} / {{ payload.total_measured }}</strong>{% endif %}
-        <span>병원명 언급 / 성공 답변</span>
+        {% for segment in payload.segments %}
+          <strong>{{ segment.mentioned }} / {{ segment.measured }}</strong>
+          <span>{{ segment.vendor_label }} · 병원명 언급 / 확정 판정</span>
+        {% else %}
+          <strong>0 / 0</strong>
+          <span>병원명 언급 / 확정 판정</span>
+        {% endfor %}
       </div>
       <div class="result-copy">
         {% if payload.total_measured == 0 %}
-          <strong>이번에는 유효한 답변을 받지 못했습니다.</strong>
+          <strong>이번에는 판정을 확정한 답변이 없습니다.</strong>
           <p>병원 상태가 아니라 측정 환경의 문제입니다. 재측정 후 판단해야 합니다.</p>
         {% elif payload.total_mentioned == 0 %}
-          <strong>환자 질문에 답한 {{ payload.total_measured }}건 중 우리 병원 이름이 언급된 답변은 0건입니다.</strong>
+          <strong>판정을 확정한 답변 중 우리 병원 이름이 언급된 답변은 0건입니다.</strong>
           <p>AI가 병원을 평가했다는 뜻이 아니라, 이 질문과 모델, 측정 시점의 답변에 병원 이름이 나오지 않았다는 뜻입니다.</p>
           <div class="caveat">0번은 진료의 질에 대한 평가가 아닙니다. 이번 질문과 측정 조건에서 병원명이 확인되지 않았다는 관찰 결과입니다.</div>
-        {% elif payload.total_mentioned == payload.total_measured %}
-          <strong>환자 질문에 답한 {{ payload.total_measured }}건 모두에서 우리 병원 이름이 언급됐습니다.</strong>
-          <p>현재 질문 세트에서 확인된 결과입니다. 다른 질문이나 다음 측정에서는 달라질 수 있습니다.</p>
         {% else %}
-          <strong>환자 질문에 답한 {{ payload.total_measured }}건 중 {{ payload.total_mentioned }}건에서 우리 병원 이름이 언급됐습니다.</strong>
-          <p>일부 답변에서는 확인됐고, 일부 답변에서는 확인되지 않았습니다. 어떤 질문에서 차이가 났는지부터 살펴봐야 합니다.</p>
+          <strong>경로별로 위 숫자만큼 우리 병원 이름이 확인됐습니다.</strong>
+          <p>두 경로를 하나로 합치지 않았습니다. 실패·보류 건수가 경로마다 달라, 합산하면 결측이 적은 쪽이 결과를 대표하게 됩니다.</p>
+        {% endif %}
+        {% if payload.total_unconfirmed %}
+          <div class="caveat">판정을 확정하지 못한 측정이 {{ payload.total_unconfirmed }}건 있습니다(응답 실패 또는 동명 기관 가능성으로 인한 판정 보류). 위 숫자의 분모에서 제외했으며, 경로별 내역은 검증 기록 표에 있습니다.</div>
         {% endif %}
         <div class="caveat">{{ sample_caveat }}</div>
       </div>
@@ -293,9 +300,9 @@
             <b>{{ query.slot }}</b>
             <div class="query-text">{{ query.text }}</div>
             <div class="query-outcome">
-              {% if query.measured == 0 %}<strong>측정 불가</strong>{{ query.failed }}건 응답 실패
-              {% elif query.mentioned == 0 %}<strong>병원명 미확인</strong>{{ query.measured }}건 답변 기준
-              {% else %}<strong>{{ query.mentioned }}건에서 확인</strong>{{ query.measured }}건 답변 기준{% endif %}
+              {% if query.measured == 0 %}<strong>측정 불가</strong>응답 실패 {{ query.failed }}건 · 판정 보류 {{ query.ambiguous }}건
+              {% elif query.mentioned == 0 %}<strong>병원명 미확인</strong>확정 {{ query.measured }}건 기준{% if query.failed or query.ambiguous %} · 미확정 {{ query.failed + query.ambiguous }}건{% endif %}
+              {% else %}<strong>{{ query.mentioned }}건에서 확인</strong>확정 {{ query.measured }}건 기준{% if query.failed or query.ambiguous %} · 미확정 {{ query.failed + query.ambiguous }}건{% endif %}{% endif %}
             </div>
           </div>
         {% endfor %}
@@ -311,14 +318,14 @@
       <div class="method-grid">
         <div class="method"><b>01 · 병원명 없는 질문</b><strong>자기 이름을 묻지 않습니다.</strong><p>병원명을 질문에 넣으면 언급이 예정된 결과가 되어 현재 노출 상태를 확인할 수 없습니다.</p></div>
         <div class="method"><b>02 · 두 경로 반복 측정</b><strong>한 번의 우연을 줄입니다.</strong><p>OpenAI와 Gemini 경로에서 같은 질문을 반복해 특정 답변 하나에 판단이 치우치지 않게 합니다.</p></div>
-        <div class="method"><b>03 · 성공과 실패 분리</b><strong>도구 오류를 병원 성과로 세지 않습니다.</strong><p>응답을 받은 건만 결과에 포함하고, 실패 건수는 감추지 않고 별도로 공개합니다.</p></div>
+        <div class="method"><b>03 · 확정된 판정만 계산</b><strong>도구 오류도 이름 모호성도 성과로 세지 않습니다.</strong><p>응답을 받고 동일 병원임이 확정된 건만 분모에 넣습니다. 응답 실패와, 동명 기관 가능성으로 확정하지 못한 건은 언급으로도 미언급으로도 세지 않고 건수를 공개합니다.</p></div>
       </div>
       {% if payload.segments %}
         <table class="platform-table">
-          <thead><tr><th>측정 경로</th><th class="num">계획</th><th class="num">성공</th><th class="num">병원명 확인</th><th class="num">응답 실패</th></tr></thead>
+          <thead><tr><th>측정 경로</th><th class="num">계획</th><th class="num">확정 판정</th><th class="num">병원명 확인</th><th class="num">응답 실패</th><th class="num">판정 보류</th></tr></thead>
           <tbody>
             {% for segment in payload.segments %}
-              <tr><td>{{ segment.label }}</td><td class="num">{{ segment.planned }}건</td><td class="num">{{ segment.measured }}건</td><td class="num">{{ segment.mentioned }}건</td><td class="num">{{ segment.failed }}건</td></tr>
+              <tr><td>{{ segment.label }}</td><td class="num">{{ segment.planned }}건</td><td class="num">{{ segment.measured }}건</td><td class="num">{{ segment.mentioned }}건</td><td class="num">{{ segment.failed }}건</td><td class="num">{{ segment.ambiguous }}건</td></tr>
             {% endfor %}
           </tbody>
         </table>

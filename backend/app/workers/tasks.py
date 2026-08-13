@@ -46,7 +46,7 @@ from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReport
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
-from app.services import cost_guard, indexnow, notifier
+from app.services import cost_guard, indexnow, notifier, sov_engine
 from app.services.audit_log import write_audit_log_sync
 from app.services.content_engine import generate_content
 from app.services.content_publication import (
@@ -2318,6 +2318,8 @@ def _start_measurement_run(
                 "chatgpt": settings.OPENAI_MODEL_QUERY,
                 **({"gemini": settings.GEMINI_MODEL} if settings.GEMINI_API_KEY else {}),
             },
+            # 실행 시점 측정 정책 — 이 run의 숫자가 어떤 조건에서 나왔는지 남긴다.
+            "measurement_protocol": sov_engine.measurement_protocol(),
         },
     )
     db.add(run)
@@ -2377,7 +2379,10 @@ def _build_sov_record_from_result(
         ai_query_target_id=target_id,
         ai_query_variant_id=variant_id,
         ai_platform=platform,
-        is_mentioned=bool(result.get("is_mentioned")),
+        # bool()로 감싸지 않는다 — AMBIGUOUS의 None이 False로 접히면 판정 보류가
+        # 조용히 '미언급'이 되어 분모에 남는다.
+        mention_verdict=result.get("verdict"),
+        is_mentioned=result.get("is_mentioned"),
         mention_rank=result.get("mention_rank"),
         mention_sentiment=result.get("sentiment"),
         mention_context=result.get("mention_context"),
@@ -3096,6 +3101,18 @@ def _build_monthly_report_for_hospital(
         prior_cells=prior_loaded.cells if prior_loaded is not None else None,
         prior_platforms=(
             tuple(prior_manifest.configured_platforms) if prior_manifest is not None else None
+        ),
+        # 동결 시점의 측정 정책 스냅샷. 두 달의 정책이 다르면(v1↔v2 경계 등)
+        # 비교가 NON_COMPARABLE로 떨어진다 — 측정 기준 변경을 성과로 팔지 않는다.
+        current_protocol=(
+            (manifest.platform_provenance or {}).get("measurement_protocol")
+            if manifest is not None
+            else None
+        ),
+        prior_protocol=(
+            (prior_manifest.platform_provenance or {}).get("measurement_protocol")
+            if prior_manifest is not None
+            else None
         ),
     )
     sov_records = list(current_loaded.selected_records) if current_loaded is not None else []

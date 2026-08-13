@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.hospital import Hospital
 from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
+from app.services import sov_engine
 from app.services.sov_engine import MENTION_RATE_INTENTS
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Answer Mention Rate"])
@@ -191,12 +192,24 @@ async def _get_hospital_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hosp
 
 
 def _is_successful_measurement(record: Any) -> bool:
+    """분모에 들어갈 자격 — 응답을 받았고 **판정까지 확정**된 측정.
+
+    AMBIGUOUS(동명 기관 가능성 등으로 확정 불가)는 측정 자체는 성공했지만 분모가
+    아니다(PRD F3-7). 여기서 걸러야 하는 이유는 아래 집계들이 전부
+    `sum(1 for r in successful if r.is_mentioned)` 형태이기 때문이다 — None은 falsy라
+    보류가 조용히 '미언급'으로 분모에 남는다.
+    """
     status = getattr(record, "measurement_status", None)
-    return status is None or str(status).upper() == "SUCCESS"
+    if not (status is None or str(status).upper() == "SUCCESS"):
+        return False
+    return getattr(record, "mention_verdict", None) != sov_engine.VERDICT_AMBIGUOUS
 
 
 def _is_failed_measurement(record: Any) -> bool:
-    return not _is_successful_measurement(record)
+    """응답 실패만 센다. 판정 보류는 실패가 아니므로 실패 건수에 넣지 않는다 —
+    섞으면 공급자 장애와 이름 모호성을 같은 칸에서 보게 된다."""
+    status = getattr(record, "measurement_status", None)
+    return not (status is None or str(status).upper() == "SUCCESS")
 
 
 def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:

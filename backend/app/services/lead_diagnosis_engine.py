@@ -34,6 +34,15 @@ PLATFORMS: tuple[str, ...] = ("chatgpt", "gemini")
 MEASUREMENT_SUCCESS = "SUCCESS"
 MEASUREMENT_FAILED = "FAILED"
 
+# 플랫폼당 허용하는 미확정(실패 + 판정 보류) 최대 건수. 계획 9건 기준 하한 8건.
+# 이 값을 올리면 결측이 숫자를 흔드는 폭이 커진다 — resolve_execution_status 참고.
+MAX_UNCONFIRMED_PER_PLATFORM = 1
+
+
+def min_confirmed_for(planned_count: int) -> int:
+    """계획 건수에 대한 확정 하한. 계획이 1건뿐이면 하한도 1이다(0으로 내리지 않는다)."""
+    return max(1, planned_count - MAX_UNCONFIRMED_PER_PLATFORM)
+
 
 @dataclass
 class _Measurement:
@@ -144,7 +153,9 @@ async def _measure_one(diagnosis: LeadDiagnosis, measurement: _Measurement) -> N
 
     try:
         parsed = await sov_engine.judge_mention(
-            diagnosis.subject_hospital_name, measurement.raw_response
+            diagnosis.subject_hospital_name,
+            measurement.raw_response,
+            diagnosis.subject_region,
         )
     except Exception as exc:  # noqa: BLE001
         # 응답 수신과 언급 판정 성공은 별개다. 판정 실패를 '미언급 0%'로 넣지 않는다 —
@@ -154,34 +165,70 @@ async def _measure_one(diagnosis: LeadDiagnosis, measurement: _Measurement) -> N
         measurement.failure_reason = "mention_parse_failed"
         return
 
-    measurement.is_mentioned = bool(parsed.get("is_mentioned"))
-    measurement.mention_verdict = (
-        MentionVerdict.MATCHED.value
-        if measurement.is_mentioned
-        else MentionVerdict.NOT_MATCHED.value
-    )
+    # 판정 3값을 그대로 들고 온다. AMBIGUOUS의 is_mentioned는 None이고, 집계는
+    # 이 None을 분자에서도 분모에서도 뺀다 — 확정하지 못한 것을 세지 않기 위해서다.
+    measurement.mention_verdict = parsed["verdict"]
+    measurement.is_mentioned = parsed.get("is_mentioned")
+    # 측정(답변 수신 + 판정 수행)은 성공했다. 판정이 '확정 불가'인 것은 측정 실패가
+    # 아니라 판정 결과이므로 여기서 FAILED로 접지 않는다 — 섞으면 공급자 장애와
+    # 이름 모호성을 같은 칸에 넣게 되고, 어느 쪽이 문제인지 영영 못 가른다.
     measurement.measurement_status = MEASUREMENT_SUCCESS
     measurement.failure_reason = None
 
 
-def resolve_execution_status(diagnosis: LeadDiagnosis, planned: list[_Measurement]) -> str:
-    """§4-4 — 성공 **개수**로 판정한다.
+def is_confirmed(measurement: _Measurement) -> bool:
+    """분모에 들어갈 자격 — 답변을 받았고 **판정까지 확정**된 측정.
 
-    'PARTIAL'을 느낌으로 두면 리포트 생성 게이트가 흔들린다. 어느 한 플랫폼이라도
-    성공 0이면 `FAILED`이고 리포트가 만들어지지 않는다 — 분모가 0인 플랫폼 칸을
-    인쇄할 방법이 없기 때문이다(PRD F3-5는 플랫폼별 분모 표기를 요구한다).
+    AMBIGUOUS는 측정은 성공했지만 확정되지 않았으므로 분모가 아니다.
+    """
+    return (
+        measurement.measurement_status == MEASUREMENT_SUCCESS
+        and measurement.mention_verdict != MentionVerdict.AMBIGUOUS.value
+    )
+
+
+def confirmed_per_platform(planned: list[_Measurement]) -> dict[str, int]:
+    counts: dict[str, int] = {platform: 0 for platform in PLATFORMS}
+    for measurement in planned:
+        if is_confirmed(measurement):
+            counts[measurement.platform] = counts.get(measurement.platform, 0) + 1
+    return counts
+
+
+def resolve_execution_status(diagnosis: LeadDiagnosis, planned: list[_Measurement]) -> str:
+    """§4-4 — **확정 판정 개수**로 판정한다.
+
+    ## 왜 플랫폼당 하한이 필요한가
+
+    이전에는 플랫폼당 확정 1건만 있어도 `PARTIAL`이었고 `PARTIAL`은 리포트가 나갔다.
+    실패는 분모에서 빠지므로, 18건 중 2건만 확정되고 그 2건에 병원명이 나오면
+    리포트에 **100%** 가 찍힌다. 공급자 장애가 몰린 날의 결측이 그대로 '성과'로
+    인쇄되는 구조였다 — 그리고 결측은 무작위가 아니므로 이 오차는 양방향이 아니다.
+
+    그래서 플랫폼당 계획 9건 중 **8건 이상 확정**을 요구한다. 8/9는 11.1% 한 칸까지만
+    결측을 허용한다는 뜻이다. 7/9부터는 최대 22.2%가 사라져 숫자가 결측에 좌우된다.
+    9/9(무결측)가 아닌 이유는 SLA와의 절충이다 — 이 완화는 리포트에 실패·보류 건수를
+    같은 크기로 표기한다는 전제 위에서만 정당하다(F3-5).
+
+    합산으로 갈음하지 않는다. 9/9와 7/9를 더해 16/18로 통과시키면 취약한 플랫폼이
+    튼튼한 플랫폼 뒤에 숨는다.
     """
     if not planned:
         return ExecutionStatus.FAILED.value
 
-    per_platform: dict[str, int] = {platform: 0 for platform in PLATFORMS}
+    planned_per_platform: dict[str, int] = {platform: 0 for platform in PLATFORMS}
     for measurement in planned:
-        if measurement.measurement_status == MEASUREMENT_SUCCESS:
-            per_platform[measurement.platform] = per_platform.get(measurement.platform, 0) + 1
+        planned_per_platform[measurement.platform] = (
+            planned_per_platform.get(measurement.platform, 0) + 1
+        )
+    confirmed = confirmed_per_platform(planned)
 
-    if any(count == 0 for count in per_platform.values()):
-        return ExecutionStatus.FAILED.value
-    if sum(per_platform.values()) == len(planned):
+    for platform, planned_count in planned_per_platform.items():
+        floor = min_confirmed_for(planned_count)
+        if confirmed.get(platform, 0) < floor:
+            return ExecutionStatus.FAILED.value
+
+    if sum(confirmed.values()) == len(planned):
         return ExecutionStatus.SUCCEEDED.value
     return ExecutionStatus.PARTIAL.value
 
@@ -219,6 +266,31 @@ async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis)
         diagnosis.finished_at = datetime.now(timezone.utc)
         await db.commit()
         return {"planned": 0, "succeeded": 0, "cached": 0, "status": diagnosis.execution_status}
+
+    # 접수 시점에 고정한 측정 정책과 실행 시점 정책이 다르면 재지 않는다 — 모델 핀과
+    # 같은 규약이다. API 배포와 워커 배포 사이에 정책이 바뀌면, 리포트가 공개하는
+    # 조건(접수 스냅샷)과 실제 측정 조건이 어긋난 숫자를 팔게 된다.
+    # 스냅샷이 없는 진단(도입 이전 접수)은 검사 대상이 아니다.
+    snapshot = diagnosis.measurement_config
+    if snapshot and not sov_engine.same_measurement_policy(
+        snapshot, sov_engine.measurement_protocol()
+    ):
+        diagnosis.execution_status = ExecutionStatus.FAILED.value
+        diagnosis.error = (
+            f"측정 정책 불일치: 접수 {snapshot.get('policy_version')} ≠ "
+            f"실행 {sov_engine.MEASUREMENT_POLICY_VERSION}. 접수 시점 조건으로 잴 수 없어 "
+            "중단했습니다."
+        )
+        diagnosis.finished_at = datetime.now(timezone.utc)
+        diagnosis.running_since = None
+        await db.commit()
+        return {
+            "planned": len(planned),
+            "succeeded": 0,
+            "cached": 0,
+            "status": diagnosis.execution_status,
+            "blocked": "policy_drift",
+        }
 
     await _load_cached(db, diagnosis, planned)
 
@@ -298,25 +370,38 @@ async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis)
     diagnosis.running_since = None
     if diagnosis.execution_status == ExecutionStatus.FAILED.value:
         failures = [m.failure_reason for m in planned if m.failure_reason]
-        diagnosis.error = f"측정 실패 {len(failures)}/{len(planned)}건: {failures[0] if failures else '알 수 없음'}"
+        confirmed = confirmed_per_platform(planned)
+        detail = ", ".join(f"{platform} 확정 {count}건" for platform, count in confirmed.items())
+        diagnosis.error = (
+            f"확정 판정이 하한에 미달했습니다 ({detail}). "
+            f"측정 실패 {len(failures)}/{len(planned)}건"
+            + (f": {failures[0]}" if failures else "")
+        )
     else:
         diagnosis.error = None
 
     await db.commit()
 
     succeeded = sum(1 for m in planned if m.measurement_status == MEASUREMENT_SUCCESS)
+    confirmed = sum(1 for m in planned if is_confirmed(m))
+    ambiguous = succeeded - confirmed
     cached = sum(1 for m in planned if m.answer_source == AnswerSource.CACHED.value)
     logger.info(
-        "lead diagnosis %s measured: %s/%s success, %s from cache, status=%s",
+        "lead diagnosis %s measured: %s/%s success (%s confirmed, %s ambiguous), "
+        "%s from cache, status=%s",
         diagnosis.id,
         succeeded,
         len(planned),
+        confirmed,
+        ambiguous,
         cached,
         diagnosis.execution_status,
     )
     return {
         "planned": len(planned),
         "succeeded": succeeded,
+        "confirmed": confirmed,
+        "ambiguous": ambiguous,
         "cached": cached,
         "status": diagnosis.execution_status,
     }

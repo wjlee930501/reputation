@@ -39,7 +39,7 @@ from app.models.lead_diagnosis import (
     LeadReportToken,
     ReportStatus,
 )
-from app.services import lead_report_token
+from app.services import lead_report_token, sov_engine
 from app.services.lead_diagnosis_identity import (
     InvalidEmail,
     InvalidPhoneNumber,
@@ -257,7 +257,12 @@ async def get_diagnosis_status(token: str, db: AsyncSession = Depends(get_db)):
             _PHASE_MEASURING: "AI 답변을 측정하고 있습니다. 완료되면 이메일로 알려드립니다.",
             _PHASE_BUILDING: "측정을 마쳤습니다. 리포트를 만들고 있습니다.",
             _PHASE_READY: "리포트가 준비되었습니다.",
-            _PHASE_FAILED: "측정에 실패했습니다. 담당자가 확인 후 연락드립니다.",
+            # 공급자 응답 실패와 '판정을 확정하지 못함'을 모두 덮는 문구다. 어느 쪽이든
+            # 신청자에게 파는 것은 같다 — 믿을 만한 숫자를 확보하지 못했다는 사실.
+            _PHASE_FAILED: (
+                "믿을 만한 결과를 낼 만큼 측정을 확보하지 못해 리포트를 만들지 않았습니다. "
+                "담당자가 확인 후 연락드립니다."
+            ),
             _PHASE_EXPIRED: "보관 기간이 지나 리포트가 삭제되었습니다.",
         }[phase],
     }
@@ -464,6 +469,9 @@ async def create_diagnosis(
             "gemini": settings.GEMINI_MODEL,
             "judge": settings.OPENAI_MODEL_PARSE,
         },
+        # 접수 시점의 측정 조건을 고정한다 — 리포트가 공개하는 지시문은 이 스냅샷이지
+        # 렌더 시점의 전역 상수가 아니다.
+        measurement_config=sov_engine.measurement_protocol(),
         repeat_count=settings.LEADGEN_REPEAT_COUNT,
     )
 

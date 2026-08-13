@@ -97,7 +97,9 @@ class _MentionedCompletions:
                 _FakeChoice(
                     json.dumps(
                         {
-                            "is_mentioned": True,
+                            "verdict": "MATCHED",
+                            # 근거 인용은 답변에서 그대로 잘라낸 것이어야 승인된다.
+                            "matched_text": "장편한 외과",
                             "mention_rank": 1,
                             "sentiment": "positive",
                             "mention_context": "언급됨",
@@ -129,7 +131,13 @@ class _SearchResponses:
 
 
 @pytest.mark.asyncio
-async def test_chatgpt_web_search_is_required_not_optional(monkeypatch):
+async def test_chatgpt_web_search_is_offered_but_not_forced(monkeypatch):
+    """측정 정책 v2 — 도구는 제공하되 강제하지 않는다.
+
+    v1은 `tool_choice="required"`로 매 요청 검색을 강제했다. "{지역} 근처 {진료과}
+    병원 추천해줘"에 강제 검색을 걸면 지역 병원 디렉터리를 긁어와 나열하게 되어,
+    환자가 실제로 받는 답변보다 병원명이 구조적으로 많이 등장했다.
+    """
     responses = _SearchResponses()
     monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
 
@@ -137,7 +145,33 @@ async def test_chatgpt_web_search_is_required_not_optional(monkeypatch):
 
     assert result == "검색 기반 답변"
     assert responses.kwargs["tools"] == [{"type": "web_search"}]
-    assert responses.kwargs["tool_choice"] == "required"
+    assert responses.kwargs["tool_choice"] == "auto"
+
+
+def test_system_prompt_does_not_instruct_the_model_to_name_hospitals():
+    """지시문이 병원명을 시키면, 우리가 세는 대상(병원명 등장)을 우리가 만든 것이다."""
+    assert "병원 이름을 포함" not in sov_engine.SYSTEM_PROMPT_SOV
+
+
+class TestMeasurementPolicy:
+    def test_protocol_snapshot_carries_the_conditions_that_change_answers(self):
+        protocol = sov_engine.measurement_protocol()
+        assert protocol["policy_version"] == sov_engine.MEASUREMENT_POLICY_VERSION
+        assert protocol["system_prompt"] == sov_engine.SYSTEM_PROMPT_SOV
+        assert protocol["openai_tool_choice"] == "auto"
+
+    def test_same_policy_requires_both_snapshots(self):
+        """한쪽이라도 기록이 없으면 다르다고 본다 — '모르겠다'는 '같다'가 아니다."""
+        protocol = sov_engine.measurement_protocol()
+        assert sov_engine.same_measurement_policy(protocol, dict(protocol))
+        assert not sov_engine.same_measurement_policy(protocol, None)
+        assert not sov_engine.same_measurement_policy(None, protocol)
+        assert not sov_engine.same_measurement_policy(None, None)
+
+    def test_changing_the_tool_choice_changes_the_fingerprint(self):
+        protocol = sov_engine.measurement_protocol()
+        drifted = {**protocol, "openai_tool_choice": "required"}
+        assert not sov_engine.same_measurement_policy(protocol, drifted)
 
 
 # ── 자사/경쟁사 판정 대칭성 (PRD F4) ──
@@ -185,6 +219,99 @@ async def test_self_and_competitor_prefilter_make_the_same_decision(monkeypatch)
 
     assert mention["is_mentioned"] is False
     assert competitors[0]["is_mentioned"] is False
+
+
+class _VerdictCompletions:
+    """판정기가 임의의 verdict/근거를 돌려주는 상황."""
+
+    def __init__(self, verdict: str, matched_text):
+        self.verdict = verdict
+        self.matched_text = matched_text
+
+    async def create(self, **kwargs):
+        return SimpleNamespace(
+            choices=[
+                _FakeChoice(
+                    json.dumps(
+                        {
+                            "verdict": self.verdict,
+                            "matched_text": self.matched_text,
+                            "mention_rank": 1,
+                            "sentiment": None,
+                            "mention_context": None,
+                        }
+                    )
+                )
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_matched_without_the_full_name_in_the_quote_is_downgraded(monkeypatch):
+    """사전 필터는 접미사를 뗀 핵심의 substring 일치라 느슨하다.
+
+    "행복한의원"의 핵심 "행복한"은 "행복한 진료를 위해" 같은 평범한 문장에도 걸린다.
+    판정기가 그 조각을 근거로 MATCHED를 주면 오탐이 그대로 언급률이 되므로,
+    근거 인용이 병원명 전체를 담지 않으면 승격시키지 않는다.
+    """
+    monkeypatch.setattr(
+        sov_engine.openai_client.chat,
+        "completions",
+        _VerdictCompletions("MATCHED", "행복한 진료"),
+    )
+
+    parsed = await sov_engine._parse_mention("행복한의원", "행복한 진료를 위해 노력합니다.")
+
+    assert parsed["verdict"] == "AMBIGUOUS"
+    # 미언급으로 내리지도 않는다 — 답변이 약칭만 쓴 경우를 0으로 깎지 않기 위해서다.
+    assert parsed["is_mentioned"] is None
+
+
+@pytest.mark.asyncio
+async def test_matched_with_a_fabricated_quote_is_downgraded(monkeypatch):
+    """답변에 없는 문자열을 근거랍시고 지어내면 근거가 아니다."""
+    monkeypatch.setattr(
+        sov_engine.openai_client.chat,
+        "completions",
+        _VerdictCompletions("MATCHED", "행복한의원"),
+    )
+
+    parsed = await sov_engine._parse_mention("행복한의원", "행복한 진료를 위해 노력합니다.")
+
+    assert parsed["verdict"] == "AMBIGUOUS"
+
+
+@pytest.mark.asyncio
+async def test_matched_with_the_full_name_quoted_is_approved(monkeypatch):
+    monkeypatch.setattr(
+        sov_engine.openai_client.chat,
+        "completions",
+        _VerdictCompletions("MATCHED", "행복한의원"),
+    )
+
+    parsed = await sov_engine._parse_mention("행복한의원", "수서역 근처 행복한의원을 추천합니다.")
+
+    assert parsed["verdict"] == "MATCHED"
+    assert parsed["is_mentioned"] is True
+
+
+def test_ambiguous_records_leave_the_mention_rate_denominator():
+    """확정하지 못한 판정을 미언급으로 세면 하향, 언급으로 세면 상향 편향이다."""
+    records = [
+        {"is_mentioned": True, "verdict": "MATCHED", "measurement_status": "SUCCESS"},
+        {"is_mentioned": False, "verdict": "NOT_MATCHED", "measurement_status": "SUCCESS"},
+        {"is_mentioned": None, "verdict": "AMBIGUOUS", "measurement_status": "SUCCESS"},
+    ]
+
+    assert len(sov_engine.successful_records(records)) == 2
+    assert sov_engine.calculate_sov(records, intents=None) == 50.0
+
+
+def test_records_without_a_mention_key_are_still_counted():
+    """집계용으로 조립된 요약 dict까지 보류로 오인해 분모에서 빼면 안 된다."""
+    records = [{"measurement_status": "SUCCESS", "raw_response": "답변"}]
+
+    assert len(sov_engine.successful_records(records)) == 1
 
 
 def test_both_parse_prompts_share_the_same_identity_rule():

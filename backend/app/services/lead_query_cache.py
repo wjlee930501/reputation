@@ -30,13 +30,17 @@ logger = logging.getLogger(__name__)
 
 
 def prompt_version() -> str:
-    """측정 지시문의 지문.
+    """측정 **프로토콜 전체**의 지문.
 
-    수동으로 관리하는 버전 문자열이면 프롬프트를 고치고 버전 올리는 것을 잊는다 —
-    그 순간 캐시가 옛 조건의 답변을 새 조건의 결과라고 내놓는다. 프롬프트 자체에서
+    수동으로 관리하는 버전 문자열이면 조건을 고치고 버전 올리는 것을 잊는다 —
+    그 순간 캐시가 옛 조건의 답변을 새 조건의 결과라고 내놓는다. 조건 자체에서
     파생시켜 잊을 수 없게 만든다.
+
+    지시문만 해싱하면 부족하다. 검색 강제 여부(`tool_choice`)가 바뀌면 같은 지시문으로도
+    전혀 다른 답변이 나오는데, v1 캐시가 7일간 살아남아 v2 측정으로 팔린다.
+    정책 전환이 캐시를 자동으로 무효화하도록 프로토콜 지문을 그대로 쓴다.
     """
-    return hashlib.sha256(sov_engine.SYSTEM_PROMPT_SOV.encode()).hexdigest()[:16]
+    return sov_engine.protocol_fingerprint()
 
 
 def query_cache_key(*, query_text: str, platform: str, requested_model: str) -> str:
