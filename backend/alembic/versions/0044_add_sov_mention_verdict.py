@@ -15,6 +15,7 @@ Revises: 0043_allow_system_report_artifact_validation
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0044_add_sov_mention_verdict"

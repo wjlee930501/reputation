@@ -17,6 +17,7 @@ Revises: 0045_add_lead_measurement_config
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0046_add_sov_measurement_telemetry"

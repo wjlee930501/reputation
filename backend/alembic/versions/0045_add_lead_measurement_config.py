@@ -13,8 +13,9 @@ Revises: 0044_add_sov_mention_verdict
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision: str = "0045_add_lead_measurement_config"
 down_revision: str | None = "0044_add_sov_mention_verdict"
