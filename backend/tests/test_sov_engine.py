@@ -224,15 +224,35 @@ class TestMeasurementPolicy:
     def test_same_policy_requires_both_snapshots(self):
         """한쪽이라도 기록이 없으면 다르다고 본다 — '모르겠다'는 '같다'가 아니다."""
         protocol = sov_engine.measurement_protocol()
-        assert sov_engine.same_measurement_policy(protocol, dict(protocol))
-        assert not sov_engine.same_measurement_policy(protocol, None)
-        assert not sov_engine.same_measurement_policy(None, protocol)
-        assert not sov_engine.same_measurement_policy(None, None)
+        assert sov_engine.same_execution_policy(protocol, dict(protocol))
+        assert not sov_engine.same_execution_policy(protocol, None)
+        assert not sov_engine.same_execution_policy(None, protocol)
+        assert not sov_engine.same_execution_policy(None, None)
 
     def test_changing_the_tool_choice_changes_the_fingerprint(self):
         protocol = sov_engine.measurement_protocol()
         drifted = {**protocol, "openai_tool_choice": "required"}
-        assert not sov_engine.same_measurement_policy(protocol, drifted)
+        assert not sov_engine.same_execution_policy(protocol, drifted)
+
+    def test_query_design_blocks_comparison_but_not_execution(self):
+        """질의 설계 변경은 기간 비교를 막되 측정 실행은 막지 않는다.
+
+        접수 시점에 질의 원문이 이미 저장되므로, 생성기가 바뀌어도 그 진단은 저장된
+        질의로 잴 수 있다. 둘을 한 덩어리로 두면 생성기 배포가 대기 중인 진단을
+        전부 죽인다.
+        """
+        protocol = sov_engine.measurement_protocol()
+        older_design = {**protocol, "query_design_version": "lead-local-v1"}
+
+        assert sov_engine.same_execution_policy(protocol, older_design)
+        assert not sov_engine.same_measurement_basis(protocol, older_design)
+
+    def test_query_design_is_snapshotted(self):
+        protocol = sov_engine.measurement_protocol()
+        assert protocol["query_design_version"]
+        assert protocol["template_fingerprint"]
+        assert protocol["lexicon_fingerprint"]
+        assert protocol["slot_count"] == 3
 
 
 # ── 자사/경쟁사 판정 대칭성 (PRD F4) ──

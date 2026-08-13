@@ -169,7 +169,7 @@ def test_measurement_protocol_records_how_the_prompt_is_delivered() -> None:
 
     assert protocol["prompt_delivery"] == "system_role"
     drifted = {**protocol, "prompt_delivery": "prepended"}
-    assert not sov_engine.same_measurement_policy(protocol, drifted)
+    assert not sov_engine.same_execution_policy(protocol, drifted)
 
 
 def test_gemini_output_cap_is_not_the_binding_constraint() -> None:

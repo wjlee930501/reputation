@@ -281,7 +281,10 @@ async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis)
     # 조건(접수 스냅샷)과 실제 측정 조건이 어긋난 숫자를 팔게 된다.
     # 스냅샷이 없는 진단(도입 이전 접수)은 검사 대상이 아니다.
     snapshot = diagnosis.measurement_config
-    if snapshot and not sov_engine.same_measurement_policy(
+    # **실행 조건**만 본다. 질의 설계가 바뀐 것은 실행을 막을 이유가 되지 않는다 —
+    # 접수 시점에 질의 원문이 이미 저장됐으므로 그 질의로 재면 된다. 여기서 질의
+    # 설계까지 보면 생성기 배포가 대기 중인 진단을 전부 죽인다.
+    if snapshot and not sov_engine.same_execution_policy(
         snapshot, sov_engine.measurement_protocol()
     ):
         diagnosis.execution_status = ExecutionStatus.FAILED.value

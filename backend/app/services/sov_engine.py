@@ -17,6 +17,7 @@ from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
+from app.services import query_mapper
 
 logger = logging.getLogger(__name__)
 
@@ -296,16 +297,29 @@ def generate_query_matrix_specs(
 # 않게 한다. 편향 제거가 아니라 재현성 계약(공개 조건 = 실제 조건) 수정이다.
 MEASUREMENT_POLICY_VERSION = "v2.1-neutral-auto-systemrole"
 
-# 두 측정이 "같은 조건"인지 판정하는 키 **전부**. 지문 계산과 비교 게이트가 같은
-# 목록을 봐야 한다 — 하나에만 키를 추가하면, 조건이 바뀌었는데 비교 게이트는
-# 통과하는(또는 그 반대의) 상태가 조용히 만들어진다.
-_PROTOCOL_IDENTITY_KEYS = (
+# ── 정책 동일성은 두 층으로 나뉜다.
+#
+# **실행 정책**: 답변을 만들고 판정하는 조건(모델·지시문·검색·판정기). 접수 시점과
+# 실행 시점이 다르면 잰 숫자를 리포트가 공개한 조건으로 설명할 수 없으므로 측정을
+# 막는다. 캐시 키도 이것만 보면 된다 — 질의 원문은 이미 캐시 키에 들어 있다.
+#
+# **측정 기반**: 실행 정책 + **질의 설계**. 질의가 달라지면 같은 병원도 다른 숫자가
+# 나오므로 기간 비교를 막아야 한다. 그러나 실행을 막으면 안 된다 — 접수 때 이미
+# 질의 원문이 저장됐으므로, 생성기가 바뀌어도 그 진단은 저장된 질의로 잴 수 있다.
+# 둘을 한 덩어리로 두면 생성기 배포가 대기 중인 진단을 전부 죽인다.
+_EXECUTION_POLICY_KEYS = (
     "policy_version",
     "prompt_fingerprint",
     "prompt_delivery",
     "openai_tool_choice",
     "judge_prompt_fingerprint",
     "judge_model",
+)
+_QUERY_DESIGN_KEYS = (
+    "query_design_version",
+    "template_fingerprint",
+    "lexicon_fingerprint",
+    "slot_count",
 )
 
 SYSTEM_PROMPT_SOV = (
@@ -342,6 +356,8 @@ def measurement_protocol() -> dict:
         # 별도로 지키지만, 판정 모델은 실행 시점 전역값을 쓰므로 여기 없으면
         # 모델 교체 배포 창에서 리포트가 공개한 판정 모델과 실제가 어긋난다.
         "judge_model": settings.OPENAI_MODEL_PARSE,
+        # 질의 설계. 실행을 막지는 않지만(저장된 질의로 잴 수 있다) 기간 비교는 막는다.
+        **query_mapper.query_design(),
     }
 
 
@@ -350,24 +366,42 @@ def _fingerprint(text: str) -> str:
 
 
 def protocol_fingerprint() -> str:
-    """프로토콜 전체의 단일 지문 — 캐시 키와 비교 게이트가 같은 값을 본다."""
+    """캐시 키에 들어갈 실행 조건 지문.
+
+    질의 설계는 넣지 않는다 — 캐시 키에는 질의 원문이 이미 들어 있어, 렌더링 결과가
+    같으면 같은 답변을 재사용하는 것이 맞다. 생성기 버전만으로 캐시를 버리면
+    실제로 같은 질문을 다시 사서 돈만 쓴다.
+    """
     protocol = measurement_protocol()
-    material = "|".join(
-        f"{key}={protocol[key]}"
-        for key in _PROTOCOL_IDENTITY_KEYS
-    )
+    material = "|".join(f"{key}={protocol[key]}" for key in _EXECUTION_POLICY_KEYS)
     return hashlib.sha256(material.encode()).hexdigest()[:16]
 
 
-def same_measurement_policy(left: dict | None, right: dict | None) -> bool:
-    """두 측정이 같은 조건이었는가.
-
-    한쪽이라도 기록이 없으면 **다르다고 본다.** 정책 스냅샷 도입 이전 측정은 v1이었고,
-    "모르겠다"를 "같다"로 접으면 기준선이 바뀐 두 달을 성과 변화로 붙여 팔게 된다.
-    """
+def _same_on(left: dict | None, right: dict | None, keys: tuple[str, ...]) -> bool:
+    # 한쪽이라도 기록이 없으면 **다르다고 본다.** 스냅샷 도입 이전 측정은 조건을 알 수
+    # 없고, "모르겠다"를 "같다"로 접으면 기준선이 바뀐 두 구간을 성과 변화로 팔게 된다.
     if not left or not right:
         return False
-    return all(left.get(key) == right.get(key) for key in _PROTOCOL_IDENTITY_KEYS)
+    return all(left.get(key) == right.get(key) for key in keys)
+
+
+def same_execution_policy(left: dict | None, right: dict | None) -> bool:
+    """답변·판정 조건이 같은가 — **측정 실행 가능 여부**를 가른다.
+
+    접수 스냅샷과 실행 시점이 다르면 재지 않는다. 리포트가 공개한 조건으로 설명할 수
+    없는 숫자를 만들지 않기 위해서다.
+    """
+    return _same_on(left, right, _EXECUTION_POLICY_KEYS)
+
+
+def same_measurement_basis(left: dict | None, right: dict | None) -> bool:
+    """실행 조건 **+ 질의 설계**가 같은가 — **기간 비교 가능 여부**를 가른다.
+
+    질의가 달라지면 같은 병원이라도 다른 숫자가 나온다. 실행은 막지 않는다 —
+    접수 시점에 질의 원문이 이미 저장돼 있으므로, 생성기가 바뀌어도 그 진단은
+    저장된 질의로 잴 수 있다.
+    """
+    return _same_on(left, right, _EXECUTION_POLICY_KEYS + _QUERY_DESIGN_KEYS)
 
 
 def record_is_confirmed(record) -> bool:

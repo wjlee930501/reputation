@@ -144,7 +144,7 @@ def _comparison(
     # 이전 세대"로 허용했지만, 그 규칙은 배포 이전에만 안전하다: v2 배포 후에 스냅샷 없는
     # manifest(배포 전에 동결된 이번 달)에 v2 재측정이 섞이면, 없음=없음이 "같다"로 접혀
     # v1/v2 혼합 월이 비교 가능으로 팔린다. 전환 월의 추세 단절은 의도된 비용이다.
-    if not sov_engine.same_measurement_policy(current_protocol, prior_protocol):
+    if not sov_engine.same_measurement_basis(current_protocol, prior_protocol):
         return _non_comparable(
             "MEASUREMENT_POLICY_CHANGED",
             current_unmatched=len(current_keys),
