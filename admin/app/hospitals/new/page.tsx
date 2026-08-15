@@ -7,7 +7,21 @@ import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { fetchCurrentAccount, type CurrentAccount } from '@/lib/current-account'
 import { readClinicNameFromLeadContext } from '@/lib/lead-onboarding'
-import { acceptanceDecision, acceptancePayload, contractPayload, handoffNextAction, parsePlanCode } from '@/lib/handoff'
+import {
+  ONBOARDING_CREATE_REQUEST_STORAGE_KEY,
+  ONBOARDING_WORKFLOW_STORAGE_KEY,
+  acceptanceDecision,
+  acceptancePayload,
+  contractPayload,
+  defaultAcquisitionDates,
+  handoffNextAction,
+  koreanDateInputValue,
+  koreanDateTimeLocalInputValue,
+  parseOnboardingCreateRequestId,
+  parseOnboardingWorkflowCheckpoint,
+  parsePlanCode,
+  serializeOnboardingWorkflowCheckpoint,
+} from '@/lib/handoff'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import { PLAN_CONTRACT_LABELS, type AdminAccountSummary, type Handoff, type PlanCode } from '@/types'
 
@@ -17,6 +31,7 @@ interface LeadContext {
 
 export default function NewHospitalPage() {
   const router = useRouter()
+  const [defaultDates] = useState(() => defaultAcquisitionDates())
   const [name, setName] = useState('')
   const [plan, setPlan] = useState<PlanCode>('PLAN_12')
   const [leadContext, setLeadContext] = useState<LeadContext | null>(null)
@@ -28,26 +43,109 @@ export default function NewHospitalPage() {
   const [salesOwnerId, setSalesOwnerId] = useState('')
   const [aeOwnerId, setAeOwnerId] = useState('')
   const [contractReference, setContractReference] = useState('')
-  const [effectiveDate, setEffectiveDate] = useState('2026-08-10')
-  const [slaDueAt, setSlaDueAt] = useState('2026-08-11T18:00')
+  const [effectiveDate, setEffectiveDate] = useState(defaultDates.effectiveDate)
+  const [slaDueAt, setSlaDueAt] = useState(defaultDates.slaDueAt)
   const [currentAccount, setCurrentAccount] = useState<CurrentAccount | null>(null)
   const [overrideReason, setOverrideReason] = useState('')
   const [workflowHospitalId, setWorkflowHospitalId] = useState<string | null>(null)
   const [workflowHandoff, setWorkflowHandoff] = useState<Handoff | null>(null)
+  const [workflowRestoring, setWorkflowRestoring] = useState(true)
+  const [creationRequestId, setCreationRequestId] = useState<string | null>(null)
+
+  function rememberWorkflow(hospitalId: string, handoffId: string) {
+    window.sessionStorage.setItem(
+      ONBOARDING_WORKFLOW_STORAGE_KEY,
+      serializeOnboardingWorkflowCheckpoint({ hospitalId, handoffId }),
+    )
+  }
+
+  function clearRememberedWorkflow() {
+    window.sessionStorage.removeItem(ONBOARDING_WORKFLOW_STORAGE_KEY)
+    window.sessionStorage.removeItem(ONBOARDING_CREATE_REQUEST_STORAGE_KEY)
+  }
+
+  function resetRememberedWorkflow() {
+    window.sessionStorage.removeItem(ONBOARDING_WORKFLOW_STORAGE_KEY)
+    const requestId = window.crypto.randomUUID()
+    window.sessionStorage.setItem(ONBOARDING_CREATE_REQUEST_STORAGE_KEY, requestId)
+    setCreationRequestId(requestId)
+    setWorkflowHospitalId(null)
+    setWorkflowHandoff(null)
+  }
 
   useEffect(() => {
     void fetchCurrentAccount().then(setCurrentAccount)
     fetchAPI<AdminAccountSummary[]>('/admin/accounts').then((rows) => {
       const active = rows.filter((row) => row.is_active)
       setAccounts(active)
-      setSalesOwnerId(active[0]?.id ?? '')
-      setAeOwnerId(active[0]?.id ?? '')
+      setSalesOwnerId((current) => current || active[0]?.id || '')
+      setAeOwnerId((current) => current || active[0]?.id || '')
     }).catch((cause: unknown) => {
       if (!isExpectedOperatorRequestFailure(cause)) throw cause
       setErrorCanReload(true)
       setError(safeOperatorError('onboarding', '운영 화면 다시 불러오기를 눌러 담당자 목록을 다시 확인하세요.'))
     })
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const savedRequestId = parseOnboardingCreateRequestId(
+      window.sessionStorage.getItem(ONBOARDING_CREATE_REQUEST_STORAGE_KEY),
+    )
+    const requestId = savedRequestId ?? window.crypto.randomUUID()
+    window.sessionStorage.setItem(ONBOARDING_CREATE_REQUEST_STORAGE_KEY, requestId)
+    setCreationRequestId(requestId)
+    const checkpoint = parseOnboardingWorkflowCheckpoint(
+      window.sessionStorage.getItem(ONBOARDING_WORKFLOW_STORAGE_KEY),
+    )
+    if (!checkpoint) {
+      window.sessionStorage.removeItem(ONBOARDING_WORKFLOW_STORAGE_KEY)
+      setWorkflowRestoring(false)
+      return
+    }
+
+    fetchAPI<Handoff>(`/admin/handoffs/${checkpoint.handoffId}`)
+      .then((handoff) => {
+        if (cancelled) return
+        if (handoff.hospital_id !== checkpoint.hospitalId) {
+          resetRememberedWorkflow()
+          setError('저장된 온보딩 진행 정보가 일치하지 않아 초기화했습니다. 다시 등록해 주세요.')
+          return
+        }
+        if (handoff.state === 'HANDOFF_ACCEPTED') {
+          clearRememberedWorkflow()
+          router.replace(`/hospitals/${checkpoint.hospitalId}/onboarding`)
+          return
+        }
+        setWorkflowHospitalId(checkpoint.hospitalId)
+        setWorkflowHandoff(handoff)
+        if (handoff.hospital_name) setName(handoff.hospital_name)
+        setSalesOwnerId(handoff.sales_owner_id ?? '')
+        setAeOwnerId(handoff.ae_owner_id ?? '')
+        if (handoff.plan) setPlan(handoff.plan)
+        if (handoff.contract_reference) setContractReference(handoff.contract_reference)
+        const savedEffectiveDate = koreanDateInputValue(handoff.contract_effective_at)
+        const savedDueAt = koreanDateTimeLocalInputValue(handoff.sla_due_at)
+        if (savedEffectiveDate) setEffectiveDate(savedEffectiveDate)
+        if (savedDueAt) setSlaDueAt(savedDueAt)
+      })
+      .catch((cause: unknown) => {
+        if (!isExpectedOperatorRequestFailure(cause)) throw cause
+        if (!cancelled) {
+          if (cause instanceof ApiError && cause.status === 404) {
+            resetRememberedWorkflow()
+          }
+          setErrorCanReload(true)
+          setError(safeOperatorError('onboarding', '운영 화면 다시 불러오기를 눌러 저장된 고객 인수 단계를 다시 확인하세요.'))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setWorkflowRestoring(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [router])
 
   useEffect(() => {
     let cancelled = false
@@ -103,6 +201,7 @@ export default function NewHospitalPage() {
       return
     }
     let recoveryHandoff = workflowHandoff
+    let recoveryHospitalId = workflowHospitalId
     try {
       let hospitalId = workflowHospitalId
       let handoff = workflowHandoff
@@ -121,9 +220,16 @@ export default function NewHospitalPage() {
           hospitalId = created.hospital?.id ?? null
           handoff = created.handoff ?? null
         } else {
+          if (!creationRequestId) throw new Error('등록 요청 식별자를 준비하지 못했습니다.')
           const created = await fetchAPI<{ id: string; handoff: Handoff }>('/admin/hospitals', {
             method: 'POST',
-            body: JSON.stringify({ name: name.trim(), plan, sales_owner_id: salesOwnerId, ae_owner_id: aeOwnerId }),
+            body: JSON.stringify({
+              name: name.trim(),
+              plan,
+              sales_owner_id: salesOwnerId,
+              ae_owner_id: aeOwnerId,
+              onboarding_request_id: creationRequestId,
+            }),
           })
           hospitalId = created.id
           handoff = created.handoff
@@ -133,7 +239,14 @@ export default function NewHospitalPage() {
         }
         setWorkflowHospitalId(hospitalId)
         setWorkflowHandoff(handoff)
+        rememberWorkflow(hospitalId, handoff.id)
         recoveryHandoff = handoff
+        recoveryHospitalId = hospitalId
+      }
+      if (handoff.state === 'HANDOFF_ACCEPTED') {
+        clearRememberedWorkflow()
+        router.push(`/hospitals/${hospitalId}/onboarding`)
+        return
       }
       if (handoff.state === 'CONTRACT_PENDING') {
         handoff = await fetchAPI<Handoff>(`/admin/handoffs/${handoff.id}/contract`, {
@@ -147,15 +260,29 @@ export default function NewHospitalPage() {
         setWorkflowHandoff(handoff)
         recoveryHandoff = handoff
       }
-      const accepted = await fetchAPI<Handoff>(`/admin/handoffs/${handoff.id}/accept`, {
-        method: 'POST', body: JSON.stringify(acceptancePayload(handoff.version, decision.reason)),
-      })
-      setWorkflowHandoff(accepted)
+      if (handoff.state === 'CONTRACTED') {
+        const accepted = await fetchAPI<Handoff>(`/admin/handoffs/${handoff.id}/accept`, {
+          method: 'POST', body: JSON.stringify(acceptancePayload(handoff.version, decision.reason)),
+        })
+        setWorkflowHandoff(accepted)
+      }
+      clearRememberedWorkflow()
       router.push(`/hospitals/${hospitalId}/onboarding`)
     } catch (e: unknown) {
-      if (e instanceof ApiError && e.status === 409 && recoveryHandoff?.id) {
+      if ((e instanceof ApiError || isExpectedOperatorRequestFailure(e)) && recoveryHandoff?.id && recoveryHospitalId) {
         try {
-          setWorkflowHandoff(await fetchAPI<Handoff>(`/admin/handoffs/${recoveryHandoff.id}`))
+          const latest = await fetchAPI<Handoff>(`/admin/handoffs/${recoveryHandoff.id}`)
+          setWorkflowHospitalId(recoveryHospitalId)
+          setWorkflowHandoff(latest)
+          setSalesOwnerId(latest.sales_owner_id ?? '')
+          setAeOwnerId(latest.ae_owner_id ?? '')
+          if (latest.plan) setPlan(latest.plan)
+          rememberWorkflow(recoveryHospitalId, latest.id)
+          if (latest.state === 'HANDOFF_ACCEPTED') {
+            clearRememberedWorkflow()
+            router.push(`/hospitals/${recoveryHospitalId}/onboarding`)
+            return
+          }
         } catch (reloadError: unknown) {
           if (!(reloadError instanceof Error)) throw reloadError
         }
@@ -185,6 +312,7 @@ export default function NewHospitalPage() {
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
+            disabled={workflowHandoff !== null}
             placeholder={leadLoading ? '상담 요청에서 병원명을 불러오는 중...' : '예: 장편한외과의원'}
             required
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -193,12 +321,12 @@ export default function NewHospitalPage() {
 
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block text-sm font-medium text-slate-700">영업 담당자
-            <select required value={salesOwnerId} onChange={(e) => setSalesOwnerId(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm">
+            <select required disabled={workflowHandoff !== null} value={salesOwnerId} onChange={(e) => setSalesOwnerId(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm disabled:bg-slate-100">
               {accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.role}</option>)}
             </select>
           </label>
           <label className="block text-sm font-medium text-slate-700">AE 담당자
-            <select required value={aeOwnerId} onChange={(e) => setAeOwnerId(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm">
+            <select required disabled={workflowHandoff !== null} value={aeOwnerId} onChange={(e) => setAeOwnerId(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm disabled:bg-slate-100">
               {accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {account.role}</option>)}
             </select>
           </label>
@@ -228,13 +356,13 @@ export default function NewHospitalPage() {
 
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="block text-sm font-medium text-slate-700">계약 번호
-            <input required value={contractReference} onChange={(e) => setContractReference(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm" placeholder="CTR-20260810" />
+            <input required disabled={workflowHandoff?.state === 'CONTRACTED'} value={contractReference} onChange={(e) => setContractReference(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" placeholder="CTR-20260810" />
           </label>
           <label className="block text-sm font-medium text-slate-700">계약 효력일
-            <input required type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+            <input required disabled={workflowHandoff?.state === 'CONTRACTED'} type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" />
           </label>
           <label className="block text-sm font-medium text-slate-700">인수 처리 기한
-            <input required type="datetime-local" value={slaDueAt} onChange={(e) => setSlaDueAt(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm" />
+            <input required disabled={workflowHandoff?.state === 'CONTRACTED'} type="datetime-local" value={slaDueAt} onChange={(e) => setSlaDueAt(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" />
             <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">이 시각까지 담당 AE가 계약 정보를 확인하고 고객 인수를 승인해야 합니다.</span>
           </label>
         </div>
@@ -245,8 +373,9 @@ export default function NewHospitalPage() {
           </label>
           <select
             value={plan}
+            disabled={workflowHandoff?.state === 'CONTRACTED'}
             onChange={(e) => setPlan(parsePlanCode(e.target.value))}
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white disabled:bg-slate-100"
           >
             <option value="PLAN_12">{PLAN_CONTRACT_LABELS.PLAN_12}</option>
             <option value="PLAN_16">{PLAN_CONTRACT_LABELS.PLAN_16}</option>
@@ -275,10 +404,10 @@ export default function NewHospitalPage() {
 
         <button
           type="submit"
-          disabled={loading || leadLoading || !name.trim() || !salesOwnerId || !aeOwnerId || !contractReference.trim() || !currentAccount}
+          disabled={loading || leadLoading || workflowRestoring || !creationRequestId || !name.trim() || !salesOwnerId || !aeOwnerId || !contractReference.trim() || !currentAccount}
           className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {leadLoading ? '리드 정보 확인 중...' : loading ? '인수 승인 중...' : '등록하고 고객 인수 승인'}
+          {workflowRestoring ? '저장된 진행 상태 확인 중...' : leadLoading ? '리드 정보 확인 중...' : loading ? '인수 승인 중...' : '등록하고 고객 인수 승인'}
         </button>
       </form>
     </div>

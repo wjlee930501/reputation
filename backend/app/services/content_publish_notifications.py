@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, TypedDict, assert_never
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -28,7 +29,9 @@ from app.services.notification_milestone_rendering import (
 from app.services.notification_store import enqueue_notification
 
 PUBLISH_NOTIFICATION_TYPE = "CONTENT_PUBLISHED"
+POST_PUBLISH_REVIEW_OVERDUE_TYPE = "POST_PUBLISH_REVIEW_OVERDUE"
 _DEDUPE_PREFIX = f"{PUBLISH_NOTIFICATION_TYPE}:"
+_REVIEW_OVERDUE_DEDUPE_PREFIX = f"{POST_PUBLISH_REVIEW_OVERDUE_TYPE}:"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -103,7 +106,49 @@ def build_publish_notification_intent(
         notification_type=PUBLISH_NOTIFICATION_TYPE,
         message=message,
         hospital_id=hospital.id,
-        max_attempts=1,
+        max_attempts=3,
+    )
+
+
+def build_post_publish_review_overdue_intent(
+    item: PublishedItem, hospital: HospitalIdentity
+) -> NotificationIntent:
+    """Build one overdue human-review alert for one publication episode."""
+
+    if item.published_at is None:
+        raise NotificationPayloadError("PUBLISHED_AT_REQUIRED")
+    action_url = admin_url(
+        settings.ADMIN_BASE_URL,
+        f"/hospitals/{hospital.id}/content?content={item.id}",
+    )
+    hospital_name = _publish_safe_text(hospital.name, 100)
+    title = _publish_safe_text(item.title or "제목 없는 콘텐츠", 180)
+    details = (
+        "무슨 문제인지: 자동 공개 후 표본 검수가 24시간 넘게 남아 있습니다.\n"
+        "고객 영향: 자동 검수는 통과했지만 사람의 최소 사후 확인이 지연되고 있습니다.\n"
+        "지금 할 일: Admin에서 공개 글과 이미지를 확인하고 검수 완료 처리해 주세요.\n"
+        "처리 기한: 가능한 한 빨리"
+    )
+    message = validated_message(
+        RenderedSlackMessage(
+            "무슨 문제인지: 공개 후 표본 검수 지연 · "
+            "고객 영향: 사후 확인 지연 · 지금 할 일: Admin 검수 완료 · 처리 기한: 가능한 한 빨리",
+            (
+                header_block("post_publish_review_header", "공개 후 검수 지연"),
+                section_block("post_publish_review_identity", f"*{hospital_name}*\n{title}"),
+                section_block("post_publish_review_context", details),
+                action_block("post_publish_review_action", action_url, "Admin에서 검수 완료"),
+            ),
+            action_url,
+        ),
+        settings.ADMIN_BASE_URL,
+    )
+    return NotificationIntent(
+        dedupe_key=_review_overdue_dedupe_key(item.id, item.published_at),
+        notification_type=POST_PUBLISH_REVIEW_OVERDUE_TYPE,
+        message=message,
+        hospital_id=hospital.id,
+        max_attempts=3,
     )
 
 
@@ -127,10 +172,29 @@ def enqueue_publish_notification_sync(
 ) -> NotificationOutbox:
     """Add the intent to the same sync transaction as automatic publication."""
 
-    intent = build_publish_notification_intent(item, hospital)
+    return _enqueue_notification_sync(db, build_publish_notification_intent(item, hospital))
+
+
+def enqueue_post_publish_review_overdue_notification_sync(
+    db: Session, item: PublishedItem, hospital: HospitalIdentity
+) -> NotificationOutbox:
+    """Add one overdue-review notification intent without committing."""
+
+    intent = build_post_publish_review_overdue_intent(item, hospital)
+    existing = db.execute(
+        select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    return _enqueue_notification_sync(db, intent)
+
+
+def _enqueue_notification_sync(db: Session, intent: NotificationIntent) -> NotificationOutbox:
     now = datetime.now(UTC)
     row = NotificationOutbox(
         hospital_id=intent.hospital_id,
+        incident_id=intent.incident_id,
+        operation_run_id=intent.operation_run_id,
         dedupe_key=intent.dedupe_key,
         notification_type=intent.notification_type,
         channel=intent.channel,
@@ -200,7 +264,14 @@ def project_publish_notification(
 
 
 def _publish_dedupe_key(content_id: uuid.UUID, published_at: datetime) -> str:
+    return f"{_DEDUPE_PREFIX}{content_id}:{_publication_epoch_micros(published_at)}"
+
+
+def _review_overdue_dedupe_key(content_id: uuid.UUID, published_at: datetime) -> str:
+    return f"{_REVIEW_OVERDUE_DEDUPE_PREFIX}{content_id}:{_publication_epoch_micros(published_at)}"
+
+
+def _publication_epoch_micros(published_at: datetime) -> int:
     normalized = published_at.astimezone(UTC)
     elapsed = normalized - _EPOCH
-    micros = ((elapsed.days * 86_400) + elapsed.seconds) * 1_000_000 + elapsed.microseconds
-    return f"{_DEDUPE_PREFIX}{content_id}:{micros}"
+    return ((elapsed.days * 86_400) + elapsed.seconds) * 1_000_000 + elapsed.microseconds

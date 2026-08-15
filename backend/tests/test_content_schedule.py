@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from app.api.admin import content as content_api
 from app.models.hospital import HospitalStatus, Plan
 from app.services.content_calendar import generate_monthly_slots
+from app.services.essence_readiness import EssenceReadiness
 
 
 class _ScalarResult:
@@ -56,6 +57,14 @@ class _FakeDB:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _allow_content_readiness_for_existing_schedule_tests(monkeypatch):
+    async def _ready(_db, _hospital):
+        return []
+
+    monkeypatch.setattr(content_api, "_schedule_readiness_blockers", _ready)
+
+
 def test_generate_monthly_slots_rejects_capacity_shortfall():
     with pytest.raises(ValueError, match="발행일 수\\(9\\).*요금제 편수\\(16\\)"):
         generate_monthly_slots("PLAN_16", [1, 4], arrow.get("2026-05-10").floor("month"))
@@ -85,6 +94,64 @@ async def test_set_schedule_returns_validation_error_for_capacity_shortfall(monk
     assert db.committed is False
 
 
+async def test_set_schedule_requires_processed_sources_and_fresh_approved_essence(monkeypatch):
+    async def _blocked(_db, _hospital):
+        return ["처리되지 않은 병원 근거 자료 1개가 남아 있습니다.", "승인된 콘텐츠 운영 기준이 없습니다."]
+
+    monkeypatch.setattr(content_api, "_schedule_readiness_blockers", _blocked)
+    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=True, schedule_set=False, plan=None)
+    db = _FakeDB(hospital)
+    _freeze_arrow(monkeypatch, "2026-06-10T12:00:00+09:00")
+    body = content_api.ScheduleCreate(
+        plan="PLAN_12",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 6, 11),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "CONTENT_READINESS_PREREQUISITES_MISSING"
+    assert exc.value.detail["blockers"] == [
+        "처리되지 않은 병원 근거 자료 1개가 남아 있습니다.",
+        "승인된 콘텐츠 운영 기준이 없습니다.",
+    ]
+    assert hospital.schedule_set is False
+    assert db.committed is False
+
+
+@pytest.mark.parametrize(
+    ("readiness", "expected"),
+    [
+        (
+            EssenceReadiness(None, None, 0, 0, "empty"),
+            [
+                "병원 근거 자료를 1개 이상 추가해 주세요.",
+                "승인된 콘텐츠 운영 기준이 없습니다.",
+            ],
+        ),
+        (
+            EssenceReadiness(None, None, 1, 2, "partial"),
+            [
+                "처리되지 않은 병원 근거 자료 1개가 남아 있습니다.",
+                "승인된 콘텐츠 운영 기준이 없습니다.",
+            ],
+        ),
+        (
+            EssenceReadiness(SimpleNamespace(), None, 2, 2, "stale"),
+            ["콘텐츠 운영 기준이 현재 근거 자료 snapshot과 일치하지 않습니다."],
+        ),
+        (
+            EssenceReadiness(SimpleNamespace(), SimpleNamespace(), 2, 2, "fresh"),
+            [],
+        ),
+    ],
+)
+def test_content_readiness_blockers_cover_every_schedule_gate(readiness, expected):
+    assert content_api._content_readiness_blockers(readiness) == expected
+
+
 def _freeze_arrow(monkeypatch, iso="2026-06-10T12:00:00+09:00"):
     frozen = arrow.get(iso)
     monkeypatch.setattr(
@@ -97,7 +164,13 @@ def _freeze_arrow(monkeypatch, iso="2026-06-10T12:00:00+09:00"):
 
 async def test_set_schedule_syncs_hospital_plan_and_queues_imminent_slots(monkeypatch):
     """A3: hospital.plan 동기화 / P2-9: 오늘·내일 슬롯은 야간 배치를 못 타므로 즉시 큐잉."""
-    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+        schedule_set=False,
+        plan=None,
+    )
     db = _FakeDB(hospital)
     queued = []
     monkeypatch.setattr(
@@ -196,7 +269,12 @@ async def test_set_schedule_rejects_past_active_from(monkeypatch):
 async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
     """R2 — 커밋 이후 브로커 장애로 큐잉이 실패해도 저장은 성공 응답 + 운영 알림."""
     hospital = SimpleNamespace(
-        id=uuid.uuid4(), name="테스트의원", site_live=False, schedule_set=False, plan=None
+        id=uuid.uuid4(),
+        name="테스트의원",
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+        schedule_set=False,
+        plan=None,
     )
     db = _FakeDB(hospital)
     alerts = []

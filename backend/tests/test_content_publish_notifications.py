@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 from app.models.operations import NotificationOutboxState
 from app.services.content_publish_notifications import (
+    build_post_publish_review_overdue_intent,
     build_publish_notification_intent,
+    enqueue_post_publish_review_overdue_notification_sync,
     parse_publish_notification_identity,
     project_publish_notification,
 )
@@ -38,7 +40,7 @@ def test_publish_intent_keeps_publication_identity_and_one_admin_action() -> Non
     assert identity.content_id == item.id
     assert identity.published_at == item.published_at
     assert intent.notification_type == "CONTENT_PUBLISHED"
-    assert intent.max_attempts == 1
+    assert intent.max_attempts == 3
     assert intent.message.admin_url.endswith(f"/hospitals/{hospital.id}/content?content={item.id}")
     payload = intent.message.payload_json()
     assert all(
@@ -46,6 +48,48 @@ def test_publish_intent_keeps_publication_identity_and_one_admin_action() -> Non
         for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
     )
     assert payload.count('"type": "button"') == 1
+
+
+def test_post_publish_review_overdue_intent_is_episode_deduped() -> None:
+    item = _published_item()
+    hospital = SimpleNamespace(id=item.hospital_id, name="테스트의원")
+
+    intent = build_post_publish_review_overdue_intent(item, hospital)
+    second = build_post_publish_review_overdue_intent(item, hospital)
+
+    assert intent.dedupe_key == second.dedupe_key
+    assert intent.notification_type == "POST_PUBLISH_REVIEW_OVERDUE"
+    assert intent.max_attempts == 3
+    assert intent.message.admin_url.endswith(f"/hospitals/{hospital.id}/content?content={item.id}")
+    payload = intent.message.payload_json()
+    assert "24시간" in payload
+    assert payload.count('"type": "button"') == 1
+
+
+def test_enqueue_post_publish_review_overdue_sync_reuses_existing_row() -> None:
+    item = _published_item()
+    hospital = SimpleNamespace(id=item.hospital_id, name="테스트의원")
+    existing = SimpleNamespace(dedupe_key="existing")
+
+    class _Result:
+        def scalar_one_or_none(self):
+            return existing
+
+    class _DB:
+        added = []
+
+        def execute(self, _stmt):
+            return _Result()
+
+        def add(self, value):
+            self.added.append(value)
+
+    db = _DB()
+
+    row = enqueue_post_publish_review_overdue_notification_sync(db, item, hospital)
+
+    assert row is existing
+    assert db.added == []
 
 
 def test_publish_intent_sanitizes_visible_identity() -> None:

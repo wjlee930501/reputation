@@ -1,6 +1,7 @@
 """#6/#9/#11 — create_hospital 감사 로그 + 경합 409, pause/resume 라이프사이클."""
 
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -8,8 +9,8 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from app.api.admin import hospitals as hospitals_api
-from app.models.handoff import HandoffState, HospitalHandoff
-from app.models.hospital import HospitalStatus, Plan
+from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
+from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.monthly_control import HospitalServiceInterval
 
 
@@ -67,6 +68,177 @@ async def test_create_hospital_converts_race_integrity_error_to_409():
     assert "슬러그 또는 도메인" in exc.value.detail
     assert db.rolled_back is True
     assert db.committed is False
+
+
+class _IdempotentCreateDB(_CreateDB):
+    async def get(self, model, object_id):
+        return next(
+            (
+                item
+                for item in self.added
+                if isinstance(item, model) and getattr(item, "id", None) == object_id
+            ),
+            None,
+        )
+
+    async def execute(self, stmt):
+        if "hospital_handoffs" in str(stmt):
+            handoff = next(
+                (item for item in self.added if isinstance(item, HospitalHandoff)),
+                None,
+            )
+            return SimpleNamespace(scalar_one_or_none=lambda: handoff)
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+    async def flush(self):
+        for item in self.added:
+            if getattr(item, "id", None) is None:
+                item.id = uuid.uuid4()
+
+
+async def test_create_hospital_replays_same_onboarding_request_without_duplicate():
+    db = _IdempotentCreateDB()
+    request_id = uuid.uuid4()
+    sales_owner_id = uuid.uuid4()
+    ae_owner_id = uuid.uuid4()
+    body = hospitals_api.HospitalCreate(
+        name="재시도 의원",
+        plan=Plan.PLAN_16,
+        sales_owner_id=sales_owner_id,
+        ae_owner_id=ae_owner_id,
+        onboarding_request_id=request_id,
+    )
+
+    first = await hospitals_api.create_hospital(body, db=db)
+    second = await hospitals_api.create_hospital(body, db=db)
+
+    hospitals = [item for item in db.added if item.__class__.__name__ == "Hospital"]
+    handoffs = [item for item in db.added if isinstance(item, HospitalHandoff)]
+    assert len(hospitals) == 1
+    assert len(handoffs) == 1
+    assert first["id"] == second["id"] == str(request_id)
+    assert first["handoff"]["id"] == second["handoff"]["id"]
+
+
+async def test_create_hospital_replay_returns_contract_handoff_fields_for_resume():
+    db = _IdempotentCreateDB()
+    request_id = uuid.uuid4()
+    sales_owner_id = uuid.uuid4()
+    ae_owner_id = uuid.uuid4()
+    body = hospitals_api.HospitalCreate(
+        name="재시도 의원",
+        plan=Plan.PLAN_16,
+        sales_owner_id=sales_owner_id,
+        ae_owner_id=ae_owner_id,
+        onboarding_request_id=request_id,
+    )
+    await hospitals_api.create_hospital(body, db=db)
+    handoff = next(item for item in db.added if isinstance(item, HospitalHandoff))
+    contracted_at = datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+    sla_due_at = datetime(2026, 8, 11, 18, 0, tzinfo=timezone.utc)
+    handoff.state = HandoffState.CONTRACTED
+    handoff.acceptance_source = HandoffSource.DIRECT_CREATE
+    handoff.contract_reference = "CTR-DIRECT-1"
+    handoff.contract_effective_at = contracted_at
+    handoff.plan = Plan.PLAN_16
+    handoff.sla_due_at = sla_due_at
+
+    replay = await hospitals_api.create_hospital(body, db=db)
+
+    assert replay["handoff"]["contract_reference"] == "CTR-DIRECT-1"
+    assert replay["handoff"]["contract_effective_at"] == contracted_at
+    assert replay["handoff"]["plan"] == Plan.PLAN_16
+    assert replay["handoff"]["sla_due_at"] == sla_due_at
+
+
+class _ConcurrentIdempotentCreateDB(_CreateDB):
+    def __init__(self, *, prior_hospital, prior_handoff):
+        super().__init__()
+        self.prior_hospital = prior_hospital
+        self.prior_handoff = prior_handoff
+
+    async def get(self, model, object_id):
+        if self.rolled_back and model is Hospital and object_id == self.prior_hospital.id:
+            return self.prior_hospital
+        return None
+
+    async def execute(self, stmt):
+        if self.rolled_back and "hospital_handoffs" in str(stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: self.prior_handoff)
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+    async def commit(self):
+        raise IntegrityError("INSERT", {}, Exception("duplicate key value"))
+
+
+async def test_create_hospital_recovers_concurrent_same_onboarding_request():
+    request_id = uuid.uuid4()
+    sales_owner_id = uuid.uuid4()
+    ae_owner_id = uuid.uuid4()
+    prior_hospital = Hospital(
+        id=request_id,
+        name="동시등록의원",
+        slug="dongsideungroguiweon",
+        plan=Plan.PLAN_20,
+    )
+    prior_handoff = HospitalHandoff.pending(
+        request_id,
+        sales_owner_id=sales_owner_id,
+        ae_owner_id=ae_owner_id,
+        source=HandoffSource.DIRECT_CREATE,
+    )
+    db = _ConcurrentIdempotentCreateDB(
+        prior_hospital=prior_hospital,
+        prior_handoff=prior_handoff,
+    )
+    body = hospitals_api.HospitalCreate(
+        name="동시등록의원",
+        plan=Plan.PLAN_20,
+        sales_owner_id=sales_owner_id,
+        ae_owner_id=ae_owner_id,
+        onboarding_request_id=request_id,
+    )
+
+    response = await hospitals_api.create_hospital(body, db=db)
+
+    assert db.rolled_back is True
+    assert response["id"] == str(request_id)
+    assert response["handoff"]["id"] == prior_handoff.id
+
+
+async def test_create_hospital_rejects_concurrent_onboarding_request_payload_mismatch():
+    request_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    prior_hospital = Hospital(
+        id=request_id,
+        name="먼저등록된의원",
+        slug="meonjeodeungrogdoenuiweon",
+        plan=Plan.PLAN_12,
+    )
+    prior_handoff = HospitalHandoff.pending(
+        request_id,
+        sales_owner_id=owner_id,
+        ae_owner_id=owner_id,
+        source=HandoffSource.DIRECT_CREATE,
+    )
+    db = _ConcurrentIdempotentCreateDB(
+        prior_hospital=prior_hospital,
+        prior_handoff=prior_handoff,
+    )
+    body = hospitals_api.HospitalCreate(
+        name="다른의원",
+        plan=Plan.PLAN_12,
+        sales_owner_id=owner_id,
+        ae_owner_id=owner_id,
+        onboarding_request_id=request_id,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.create_hospital(body, db=db)
+
+    assert db.rolled_back is True
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "ONBOARDING_REQUEST_CONFLICT"
 
 
 # ── pause / resume ───────────────────────────────────────────────

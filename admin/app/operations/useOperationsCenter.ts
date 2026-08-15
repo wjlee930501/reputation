@@ -187,10 +187,10 @@ export function useOperationsCenter() {
     setBusy(true)
     setActionError('')
     setPermissionDenied(false)
-    const body = mutation.kind === 'RETRY_RUN'
+    const body = mutation.kind === 'RETRY_RUN' || mutation.kind === 'POST_ACTION'
       ? { reason: mutation.reason }
       : { expected_version: mutation.version, reason: mutation.reason }
-    const headers = mutation.kind === 'RETRY_RUN'
+    const headers = mutation.requiresIdempotencyKey
       ? { 'Idempotency-Key': createUserActionKey(mutation.kind, mutation.targetId, crypto.randomUUID()) }
       : undefined
     try {

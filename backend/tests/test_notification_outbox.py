@@ -20,6 +20,7 @@ from app.models.operations import (
     NotificationOutboxState,
 )
 from app.services.notification_outbox import (
+    DispatchResult,
     IncidentSlackProjection,
     NotificationIntent,
     NotificationPayloadError,
@@ -34,6 +35,8 @@ from app.services.notification_outbox import (
     recover_stale_sending,
     retry_notification,
 )
+from app.services.notification_success_hooks import reconcile_sent_notification_incidents
+from app.workers import notification_tasks
 
 _DATABASE_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
 _NOW = datetime(2026, 8, 10, 9, 0, tzinfo=UTC)
@@ -289,6 +292,12 @@ async def test_stale_sending_lease_moves_to_hold(outbox_sessions) -> None:
         assert row.safe_error_code == "DELIVERY_OUTCOME_UNKNOWN"
         assert row.next_attempt_at is None
         assert row.lease_owner is None
+        assert row.incident_id is not None
+        incident = await verify.get(Incident, row.incident_id)
+        assert incident is not None
+        assert incident.incident_type == "NOTIFICATION_DELIVERY_UNKNOWN"
+        assert incident.source_id == str(row.id)
+        assert incident.safe_error_code == "DELIVERY_OUTCOME_UNKNOWN"
 
 
 async def _dispatch_once(outbox_sessions, key: str, handler, *, now: datetime = _NOW, max_attempts: int = 3):
@@ -377,6 +386,52 @@ async def test_slack_success_never_recovers_the_linked_incident(outbox_sessions)
 
 
 @pytest.mark.asyncio
+async def test_retry_success_recovers_notification_delivery_incident(outbox_sessions) -> None:
+    # Given: the delivery incident for an outbox row is open after a retryable failure
+    async with outbox_sessions() as db:
+        row = await enqueue_notification(db, _intent("OPS-QA-T10-DELIVERY-RECOVERY"), now=_NOW)
+        row.state = NotificationOutboxState.RETRYING
+        row.attempt_count = 1
+        row.next_attempt_at = _NOW
+        await db.flush()
+        incident = Incident(
+            dedupe_key="OPS-QA-T10-DELIVERY-RECOVERY-INCIDENT",
+            incident_type="NOTIFICATION_DELIVERY_FAILED",
+            state=IncidentState.OPEN,
+            severity="HIGH",
+            customer_impact="운영 알림 미전달",
+            source_type="NOTIFICATION_OUTBOX",
+            source_id=str(row.id),
+            safe_error_code="DELIVERY_RETRY_EXHAUSTED",
+            next_action="Slack 설정 확인 후 재시도",
+            admin_path="/operations",
+        )
+        db.add(incident)
+        await db.flush()
+        row.incident_id = incident.id
+        row_id = row.id
+        incident_id = incident.id
+        await db.commit()
+
+    # When: the retry is accepted by Slack
+    result = await _dispatch_once(
+        outbox_sessions,
+        "OPS-QA-T10-DELIVERY-RECOVERY",
+        lambda _request: httpx.Response(200, text="ok"),
+    )
+
+    # Then: only the delivery incident is recovered by the observed send
+    assert result.sent == 1
+    async with outbox_sessions() as verify:
+        row = await verify.get(NotificationOutbox, row_id)
+        incident = await verify.get(Incident, incident_id)
+        assert row is not None and row.state == NotificationOutboxState.SENT
+        assert incident is not None
+        assert incident.state == IncidentState.RECOVERED
+        assert incident.recovered_at == _NOW
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_honors_retry_after_and_permanent_4xx_fails(outbox_sessions) -> None:
     # Given: one rate limit and one permanent invalid payload
     rate = await _dispatch_once(
@@ -405,6 +460,7 @@ async def test_rate_limit_honors_retry_after_and_permanent_4xx_fails(outbox_sess
             )
         )
         assert delivery_incident is not None
+        assert rows["OPS-QA-T10-400"].incident_id == delivery_incident.id
         assert delivery_incident.state == IncidentState.OPEN
         assert delivery_incident.safe_error_code == "SLACK_PERMANENT_ERROR"
 
@@ -429,6 +485,13 @@ async def test_ambiguous_delivery_outcomes_are_held(outbox_sessions, outcome: st
         row = await verify.scalar(select(NotificationOutbox).where(NotificationOutbox.dedupe_key == f"OPS-QA-T10-HOLD-{outcome}"))
         assert row is not None and row.state == NotificationOutboxState.HOLD
         assert row.safe_error_code == "DELIVERY_OUTCOME_UNKNOWN"
+        assert row.next_attempt_at is None
+        assert row.incident_id is not None
+        incident = await verify.get(Incident, row.incident_id)
+        assert incident is not None
+        assert incident.incident_type == "NOTIFICATION_DELIVERY_UNKNOWN"
+        assert incident.source_id == str(row.id)
+        assert incident.safe_error_code == "DELIVERY_OUTCOME_UNKNOWN"
 
 
 @pytest.mark.asyncio
@@ -607,3 +670,95 @@ def test_notification_worker_is_included_routed_and_scheduled_every_minute() -> 
     assert schedule["task"] == "app.workers.notification_tasks.dispatch_notification_outbox"
     assert schedule["schedule"].minute == set(range(60))
     assert REDBEAT_SCHEDULE_VERSION >= "2026-08-10.1"
+
+
+@pytest.mark.asyncio
+async def test_notification_worker_reconciles_sent_publish_hooks_every_tick(monkeypatch) -> None:
+    sessions = object()
+    observed: list[tuple[str, object]] = []
+
+    async def fake_dispatch(sessionmaker, _client, **_kwargs):
+        observed.append(("dispatch", sessionmaker))
+        return DispatchResult(claimed=1, sent=1)
+
+    async def fake_reconcile(sessionmaker):
+        observed.append(("reconcile", sessionmaker))
+        return 2
+
+    async def fake_incident_reconcile(sessionmaker):
+        observed.append(("incident_reconcile", sessionmaker))
+        return 1
+
+    monkeypatch.setattr(notification_tasks, "get_async_sessionmaker", lambda: sessions)
+    monkeypatch.setattr(notification_tasks, "dispatch_notification_batch", fake_dispatch)
+    monkeypatch.setattr(
+        notification_tasks,
+        "reconcile_sent_publish_notifications",
+        fake_reconcile,
+    )
+    monkeypatch.setattr(
+        notification_tasks,
+        "reconcile_sent_notification_incidents",
+        fake_incident_reconcile,
+    )
+
+    result, reconciled, incidents_recovered = await notification_tasks._dispatch_once(
+        "worker:test"
+    )
+
+    assert result == DispatchResult(claimed=1, sent=1)
+    assert reconciled == 2
+    assert incidents_recovered == 1
+    assert observed == [
+        ("dispatch", sessions),
+        ("reconcile", sessions),
+        ("incident_reconcile", sessions),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sent_delivery_incident_is_recovered_by_periodic_reconciliation(
+    outbox_sessions,
+) -> None:
+    async with outbox_sessions() as db:
+        row = await enqueue_notification(db, _intent("OPS-QA-T10-SENT-RECONCILE"), now=_NOW)
+        row.state = NotificationOutboxState.SENT
+        row.sent_at = _NOW
+        row.next_attempt_at = None
+        older_incident = Incident(
+            dedupe_key="OPS-QA-T10-SENT-RECONCILE-UNKNOWN",  # gitleaks:allow — test dedupe key
+            incident_type="NOTIFICATION_DELIVERY_UNKNOWN",
+            state=IncidentState.OPEN,
+            severity="HIGH",
+            customer_impact="Slack 수신 여부 불명",
+            source_type="NOTIFICATION_OUTBOX",
+            source_id=str(row.id),
+            safe_error_code="DELIVERY_OUTCOME_UNKNOWN",
+            next_action="Slack 수신 여부 확인",
+            admin_path="/operations",
+        )
+        current_incident = Incident(
+            dedupe_key="OPS-QA-T10-SENT-RECONCILE-INCIDENT",  # gitleaks:allow — test dedupe key
+            incident_type="NOTIFICATION_DELIVERY_FAILED",
+            state=IncidentState.OPEN,
+            severity="HIGH",
+            customer_impact="운영 알림 미전달",
+            source_type="NOTIFICATION_OUTBOX",
+            source_id=str(row.id),
+            safe_error_code="DELIVERY_RETRY_EXHAUSTED",
+            next_action="Slack 설정 확인 후 재시도",
+            admin_path="/operations",
+        )
+        db.add_all((older_incident, current_incident))
+        await db.flush()
+        row.incident_id = current_incident.id
+        incident_ids = (older_incident.id, current_incident.id)
+        await db.commit()
+
+    assert await reconcile_sent_notification_incidents(outbox_sessions) == 1
+
+    async with outbox_sessions() as verify:
+        incidents = [await verify.get(Incident, incident_id) for incident_id in incident_ids]
+        assert all(incident is not None for incident in incidents)
+        assert all(incident.state == IncidentState.RECOVERED for incident in incidents)
+        assert all(incident.recovered_at == _NOW for incident in incidents)

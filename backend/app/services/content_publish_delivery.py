@@ -109,35 +109,44 @@ async def _recover_incident(
     db: AsyncSession, outbox_id: uuid.UUID, sent_at: datetime
 ) -> bool:
     for _attempt in range(_INCIDENT_CAS_ATTEMPTS):
-        incident = await db.scalar(
-            select(Incident)
-            .where(
-                Incident.source_type == "NOTIFICATION_OUTBOX",
-                Incident.source_id == str(outbox_id),
-            )
-            .execution_options(populate_existing=True)
+        incidents = tuple(
+            (
+                await db.scalars(
+                    select(Incident)
+                    .where(
+                        Incident.source_type == "NOTIFICATION_OUTBOX",
+                        Incident.source_id == str(outbox_id),
+                        Incident.state.in_(
+                            (IncidentState.OPEN.value, IncidentState.RETRYING.value)
+                        ),
+                    )
+                    .order_by(Incident.id)
+                    .execution_options(populate_existing=True)
+                )
+            ).all()
         )
-        if incident is None:
+        if not incidents:
             return True
-        match IncidentState(incident.state):
-            case IncidentState.OPEN:
-                await mark_retrying(
-                    db,
-                    incident.id,
-                    expected_version=incident.version,
-                    actor="notification-worker",
-                    reason="delivery retry succeeded",
-                )
-            case IncidentState.RETRYING:
-                await mark_recovered(
-                    db,
-                    incident.id,
-                    expected_version=incident.version,
-                    observed_success=True,
-                    actor="notification-worker",
-                    reason="Slack delivery observed",
-                    now=sent_at,
-                )
-            case IncidentState.RECOVERED | IncidentState.ACKNOWLEDGED:
-                return True
+        for incident in incidents:
+            match IncidentState(incident.state):
+                case IncidentState.OPEN:
+                    await mark_retrying(
+                        db,
+                        incident.id,
+                        expected_version=incident.version,
+                        actor="notification-worker",
+                        reason="delivery retry succeeded",
+                    )
+                case IncidentState.RETRYING:
+                    await mark_recovered(
+                        db,
+                        incident.id,
+                        expected_version=incident.version,
+                        observed_success=True,
+                        actor="notification-worker",
+                        reason="Slack delivery observed",
+                        now=sent_at,
+                    )
+                case IncidentState.RECOVERED | IncidentState.ACKNOWLEDGED:
+                    pass
     return False

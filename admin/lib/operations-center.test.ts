@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -9,6 +10,7 @@ import {
   enabledPostAction,
   interpretOperationsConflict,
   operationStatusLabel,
+  primaryOperationsMutation,
   runStateLabel,
   safeCauseText,
   selectCurrentAction,
@@ -194,12 +196,47 @@ test('server action descriptor controls permission and exact mutation path', () 
   assert.equal(enabledPostAction({ ...descriptor, method: 'GET' }), null)
 })
 
+test('non-incident POST actions become reasoned idempotent mutations', () => {
+  const report = row('report:clinic-1:2026-07', {
+    queue: 'REPORTS',
+    status: 'MISSING',
+    action: {
+      kind: 'GENERATE_MONTHLY_REPORT',
+      label: '지난달 리포트 생성',
+      method: 'POST',
+      path: '/hospitals/clinic-1/operations/generate-monthly-report?year=2026&month=7',
+      enabled: true,
+      reason_required: true,
+      requires_idempotency_key: true,
+    },
+  })
+
+  const mutation = primaryOperationsMutation({ incident: report, run: null }, '월말 누락 복구')
+
+  assert.equal(mutation?.kind, 'POST_ACTION')
+  assert.equal(mutation?.label, '지난달 리포트 생성')
+  assert.equal(mutation?.path, '/hospitals/clinic-1/operations/generate-monthly-report?year=2026&month=7')
+  assert.equal(mutation?.targetId, 'report:clinic-1:2026-07')
+  assert.equal(mutation?.requiresIdempotencyKey, true)
+})
+
 test('Slack HOLD never auto retries and active runs alone poll', () => {
   // Given / When / Then
   assert.equal(shouldAutoRetrySlack('HOLD'), false)
   assert.equal(shouldAutoRetrySlack('RETRYING'), true)
   assert.equal(shouldPollRun('RUNNING'), true)
   assert.equal(shouldPollRun('FAILED'), false)
+})
+
+test('operation detail exposes manual Slack retry for HOLD and FAILED only', () => {
+  const source = readFileSync(
+    new URL('../app/operations/OperationDetail.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(source, /slack\?\.state === 'HOLD' \|\| slack\?\.state === 'FAILED'/)
+  assert.match(source, /발송 결과가 불확실해 자동 재시도하지 않습니다/)
+  assert.match(source, /이미 전달되었을 가능성이 있으면 재시도하지 마세요/)
 })
 
 test('queue view distinguishes loading, empty, error and ready', () => {

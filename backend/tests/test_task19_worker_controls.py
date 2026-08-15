@@ -128,13 +128,22 @@ def test_site_revalidation_worker_retries_cache_only_at_control_delay(monkeypatc
     monkeypatch.setattr(
         tasks.retry_site_revalidation,
         "apply_async",
-        lambda *, args, queue, countdown: scheduled.append((args, queue, countdown)),
+        lambda *, args, queue, countdown, headers: scheduled.append(
+            (args, queue, countdown, headers)
+        ),
     )
 
     result = tasks.retry_site_revalidation.run(str(run_id), 0)
 
     assert f"/clinic/contents/{content_id}" in paths_seen
-    assert scheduled == [([str(run_id), 1], "default", 300)]
+    assert scheduled == [
+        (
+            [str(run_id), 1],
+            "default",
+            300,
+            tasks.build_dispatch_headers("retry-site-revalidation", str(run_id)),
+        )
+    ]
     assert result == {"status": "retry_scheduled", "delay_seconds": 300}
 
 

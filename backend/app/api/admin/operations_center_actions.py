@@ -42,6 +42,7 @@ class _TaskPolicy:
     queue: str
     target_type: str
     arg_count: int
+    allow_rebuild_true_arg: bool = False
 
 
 _TASK_POLICIES: Final[dict[str, _TaskPolicy]] = {
@@ -49,7 +50,7 @@ _TASK_POLICIES: Final[dict[str, _TaskPolicy]] = {
     "RUN_SOV": _TaskPolicy(run_sov_for_hospital, "sov", "hospital", 1),
     "REBUILD_SITE": _TaskPolicy(build_aeo_site, "default", "hospital", 1),
     "GENERATE_MONTHLY_REPORT": _TaskPolicy(
-        generate_monthly_report_for_hospital, "reports", "hospital", 3
+        generate_monthly_report_for_hospital, "reports", "hospital", 3, True
     ),
     "REGENERATE_CONTENT": _TaskPolicy(regenerate_content_item, "content", "content_item", 1),
     "REGENERATE_CONTENT_IMAGE": _TaskPolicy(generate_content_image, "content", "content_item", 1),
@@ -217,9 +218,7 @@ async def retry_policy(db: AsyncSession, run: OperationRun) -> _TaskPolicy:
     dispatch_matches = (
         dispatch.queue == policy.queue
         and dispatch.target_type == policy.target_type
-        and len(dispatch.task_args) == policy.arg_count
-        and bool(dispatch.task_args)
-        and dispatch.task_args[0] == dispatch.target_id
+        and _args_match_policy(dispatch, policy)
     )
     if not dispatch_matches or run.hospital_id is None:
         raise operations_error(
@@ -248,3 +247,19 @@ async def retry_policy(db: AsyncSession, run: OperationRun) -> _TaskPolicy:
             "저장된 작업 정보가 허용 목록과 맞지 않습니다.",
         )
     return policy
+
+
+def _args_match_policy(
+    dispatch: operation_run_payloads.DispatchPayload,
+    policy: _TaskPolicy,
+) -> bool:
+    args = dispatch.task_args
+    if not args or args[0] != dispatch.target_id:
+        return False
+    if len(args) == policy.arg_count:
+        return True
+    return (
+        policy.allow_rebuild_true_arg
+        and len(args) == policy.arg_count + 1
+        and args[-1] is True
+    )

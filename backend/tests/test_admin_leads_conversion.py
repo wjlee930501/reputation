@@ -1,8 +1,10 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.api.admin import leads as leads_api
 from app.models.audit import AdminAuditLog
+from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, Plan
 from app.models.lead import SalesLead
 
@@ -20,10 +22,19 @@ class EmptyResult:
         return EmptyScalars()
 
 
+class SingleResult(EmptyResult):
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one_or_none(self):
+        return self.value
+
+
 class FakeDB:
-    def __init__(self, lead=None, hospital=None):
+    def __init__(self, lead=None, hospital=None, handoff=None):
         self.lead = lead
         self.hospital = hospital
+        self.handoff = handoff
         self.added = []
         self.committed = False
         self.flushed = False
@@ -35,7 +46,11 @@ class FakeDB:
             return self.hospital
         return None
 
-    async def execute(self, _stmt):
+    async def execute(self, stmt):
+        if self.lead is not None and "sales_leads" in str(stmt):
+            return SingleResult(self.lead)
+        if self.handoff is not None and "hospital_handoffs" in str(stmt):
+            return SingleResult(self.handoff)
         return EmptyResult()
 
     def add(self, item):
@@ -144,6 +159,27 @@ def _audit_rows(db) -> list[AdminAuditLog]:
     return [item for item in db.added if isinstance(item, AdminAuditLog)]
 
 
+async def test_convert_sales_lead_locks_the_lead_before_checking_conversion_state():
+    lead = _lead()
+
+    class LockRecordingDB(FakeDB):
+        def __init__(self):
+            super().__init__(lead=lead)
+            self.first_statement = None
+
+        async def execute(self, stmt):
+            if self.first_statement is None:
+                self.first_statement = stmt
+            return await super().execute(stmt)
+
+    db = LockRecordingDB()
+    await leads_api.convert_sales_lead(lead.id, body=leads_api.LeadConvertRequest(), db=db)
+
+    compiled = str(db.first_statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "FROM sales_leads" in compiled
+    assert "FOR UPDATE" in compiled
+
+
 async def test_list_sales_leads_audits_bulk_pii_read_with_meta_only():
     """200건까지의 이름·연락처·문의내용을 반환하는 대량 열람은 감사 로그에 남아야 한다.
 
@@ -197,10 +233,74 @@ async def test_convert_sales_lead_audits_repeat_read_of_already_converted_lead()
         id=uuid.uuid4(), name="온보딩치과", slug="x", status=None, plan=None, source_lead_id=None
     )
     lead = _lead(status="CONVERTED", converted_hospital_id=hospital.id)
-    db = FakeDB(lead=lead, hospital=hospital)
+    handoff = HospitalHandoff.pending(
+        hospital.id,
+        sales_owner_id=uuid.uuid4(),
+        ae_owner_id=uuid.uuid4(),
+        source=HandoffSource.LEAD_CONVERSION,
+    )
+    handoff.id = uuid.uuid4()
+    db = FakeDB(lead=lead, hospital=hospital, handoff=handoff)
 
-    await leads_api.convert_sales_lead(lead.id, body=None, db=db)
+    response = await leads_api.convert_sales_lead(lead.id, body=None, db=db)
 
     logs = _audit_rows(db)
     assert len(logs) == 1
-    assert logs[0].detail == {"already_converted": True}
+    assert logs[0].detail == {"already_converted": True, "handoff_reconstructed": False}
+    assert response["handoff"]["id"] == handoff.id
+    assert response["handoff"]["hospital_id"] == hospital.id
+
+
+async def test_already_converted_lead_returns_contract_handoff_fields_for_resume():
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="온보딩치과", slug="x", status=None, plan=None, source_lead_id=None
+    )
+    lead = _lead(status="CONVERTED", converted_hospital_id=hospital.id)
+    contracted_at = datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+    sla_due_at = datetime(2026, 8, 11, 18, 0, tzinfo=timezone.utc)
+    handoff = HospitalHandoff(
+        hospital_id=hospital.id,
+        state=HandoffState.CONTRACTED,
+        acceptance_source=HandoffSource.LEAD_CONVERSION,
+        sales_owner_id=uuid.uuid4(),
+        ae_owner_id=uuid.uuid4(),
+        contract_reference="CTR-ONBOARD-1",
+        contract_effective_at=contracted_at,
+        plan=Plan.PLAN_16,
+        sla_due_at=sla_due_at,
+    )
+    handoff.id = uuid.uuid4()
+    db = FakeDB(lead=lead, hospital=hospital, handoff=handoff)
+
+    response = await leads_api.convert_sales_lead(lead.id, body=None, db=db)
+
+    assert response["handoff"]["contract_reference"] == "CTR-ONBOARD-1"
+    assert response["handoff"]["contract_effective_at"] == contracted_at
+    assert response["handoff"]["plan"] == Plan.PLAN_16
+    assert response["handoff"]["sla_due_at"] == sla_due_at
+
+
+async def test_already_converted_lead_reconstructs_missing_handoff_for_resume():
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="온보딩치과", slug="x", status=None, plan=None, source_lead_id=None
+    )
+    lead = _lead(status="CONVERTED", converted_hospital_id=hospital.id)
+    db = FakeDB(lead=lead, hospital=hospital)
+    sales_owner_id = uuid.uuid4()
+    ae_owner_id = uuid.uuid4()
+
+    response = await leads_api.convert_sales_lead(
+        lead.id,
+        body=leads_api.LeadConvertRequest(
+            sales_owner_id=sales_owner_id,
+            ae_owner_id=ae_owner_id,
+        ),
+        db=db,
+    )
+
+    handoffs = [item for item in db.added if isinstance(item, HospitalHandoff)]
+    assert len(handoffs) == 1
+    assert handoffs[0].sales_owner_id == sales_owner_id
+    assert handoffs[0].ae_owner_id == ae_owner_id
+    assert response["handoff"]["id"] == handoffs[0].id
+    assert _audit_rows(db)[0].detail["handoff_reconstructed"] is True

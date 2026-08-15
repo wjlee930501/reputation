@@ -52,7 +52,11 @@ from app.services.content_publication import (
 from app.services.content_publish_notifications import project_publish_notification
 from app.services.content_publish_state import attach_publish_notification_state
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
-from app.services.essence_readiness import get_current_approved_philosophy
+from app.services.essence_readiness import (
+    EssenceReadiness,
+    get_current_approved_philosophy,
+    get_essence_readiness,
+)
 from app.services.exposure_content_linker import (
     ensure_brief_capable_action,
     link_content_to_exposure_action,
@@ -118,6 +122,26 @@ class ScheduleCreate(BaseModel):
         return list(set(v))  # 중복 제거
 
 
+def _content_readiness_blockers(readiness: EssenceReadiness) -> list[str]:
+    blockers: list[str] = []
+    if readiness.required_source_count == 0:
+        blockers.append("병원 근거 자료를 1개 이상 추가해 주세요.")
+    if readiness.has_unprocessed_sources:
+        blockers.append(
+            f"처리되지 않은 병원 근거 자료 "
+            f"{readiness.required_source_count - readiness.processed_source_count}개가 남아 있습니다."
+        )
+    if readiness.approved is None:
+        blockers.append("승인된 콘텐츠 운영 기준이 없습니다.")
+    elif not readiness.is_fresh:
+        blockers.append("콘텐츠 운영 기준이 현재 근거 자료 snapshot과 일치하지 않습니다.")
+    return blockers
+
+
+async def _schedule_readiness_blockers(db: AsyncSession, hospital: Hospital) -> list[str]:
+    return _content_readiness_blockers(await get_essence_readiness(db, hospital.id))
+
+
 class ReferencePatchItem(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     url: str = Field(min_length=1, max_length=500)
@@ -170,6 +194,16 @@ async def set_schedule(
     저장 즉시 해당 월의 ContentItem 슬롯을 자동 생성.
     """
     hospital = await _get_hospital(db, hospital_id)
+    readiness_blockers = await _schedule_readiness_blockers(db, hospital)
+    if readiness_blockers:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONTENT_READINESS_PREREQUISITES_MISSING",
+                "message": "콘텐츠 스케줄 설정 전 근거 자료 처리와 콘텐츠 운영 기준 승인을 완료해 주세요.",
+                "blockers": readiness_blockers,
+            },
+        )
 
     # active_from이 과거면 첫날부터 야간 배치가 이미 지나간 슬롯이 무더기로 생기고,
     # 아래 즉시 생성 큐잉이 상한 없이 폭주한다 (R2). 과거 시작일은 운영상 의미도 없다.
@@ -286,7 +320,11 @@ async def set_schedule(
     tomorrow_kst = arrow.now("Asia/Seoul").shift(days=1).date()
     try:
         for item in created_items:
-            if today_kst <= item.scheduled_date <= tomorrow_kst:
+            if (
+                previous_hospital_status == HospitalStatus.ACTIVE
+                and hospital.site_live
+                and today_kst <= item.scheduled_date <= tomorrow_kst
+            ):
                 item_id = str(item.id)
                 regenerate_content_item.apply_async(
                     args=[item_id],

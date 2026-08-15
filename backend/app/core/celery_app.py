@@ -132,6 +132,7 @@ celery_app.conf.update(
         "app.workers.tasks.generate_monthly_report_for_hospital": {"queue": "reports"},
         "app.workers.tasks.trigger_v0_report": {"queue": "reports"},
         "app.workers.tasks.build_aeo_site": {"queue": "default"},
+        "app.workers.tasks.retry_site_revalidation": {"queue": "default"},
         "app.workers.tasks.monthly_slot_generation": {"queue": "default"},
         # 라우팅 누락 시 기본 "celery" 큐로 떨어지는데, 워커는 -Q default,content,sov,reports만
         # 소비하므로 영원히 실행되지 않는다 — beat 태스크는 반드시 여기 등록할 것

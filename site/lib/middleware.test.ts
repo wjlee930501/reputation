@@ -6,8 +6,8 @@ import { NextRequest } from 'next/server.js'
 import {
   __clearDomainSlugCacheForTest,
   __setDomainSlugCacheEntryForTest,
-  middleware,
-} from '../middleware.ts'
+  proxy as middleware,
+} from '../proxy.ts'
 
 const ORIGINAL_FETCH = globalThis.fetch
 const ORIGINAL_SITE_URL = process.env.NEXT_PUBLIC_SITE_URL

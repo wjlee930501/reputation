@@ -113,12 +113,11 @@ test('activationBlockers allows default platform domain only after all prerequis
     profile_complete: true,
     v0_report_done: true,
     site_built: true,
-    schedule_set: true,
   }), [])
   assert.deepEqual(activationBlockers({
     profile_complete: true,
     v0_report_done: false,
     site_built: true,
     schedule_set: false,
-  }), ['초기 진단 리포트', '콘텐츠 스케줄'])
+  }), ['초기 진단 리포트'])
 })

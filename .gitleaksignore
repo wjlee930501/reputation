@@ -1,0 +1,5 @@
+# False positive: test-only notification dedupe key, not a credential.
+c5bb1279e76d922592dc4d1601d4bf9738334a6a:backend/tests/test_notification_outbox.py:generic-api-key:542
+
+# False positive: arithmetic expression for a Redis TTL in seconds.
+0d86462b4a21669d2bf424562302e5b0eb5ce1ab:backend/app/workers/tasks.py:generic-api-key:815

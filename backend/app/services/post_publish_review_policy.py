@@ -1,5 +1,6 @@
 """Human review policy for content that already passed automatic publication checks."""
 
+from datetime import timedelta
 from typing import Final
 
 from sqlalchemy import and_, func, or_
@@ -8,10 +9,27 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
 
+AUTO_PUBLISHABLE_STATUSES: Final = (ContentStatus.DRAFT, ContentStatus.READY)
+AUTO_PUBLISH_CATCHUP_DAYS: Final = 7
+
 # The automatic review remains the publication gate. Human review is observability sampling,
 # not a second approval queue. Keep one baseline item per monthly sequence, then add only
 # machine-observed risk: automatic remediation or a body edit after publication.
 POST_PUBLISH_SAMPLE_SEQUENCE: Final = 1
+
+
+def auto_publish_catchup_start(today):
+    """Return the oldest scheduled date the autonomous publisher may still catch up."""
+    return today - timedelta(days=AUTO_PUBLISH_CATCHUP_DAYS)
+
+
+def auto_publish_due_predicate(today) -> ColumnElement[bool]:
+    """SQL predicate shared by worker and Operations Center for due publish slots."""
+    return and_(
+        ContentItem.scheduled_date <= today,
+        ContentItem.scheduled_date >= auto_publish_catchup_start(today),
+        ContentItem.status.in_(AUTO_PUBLISHABLE_STATUSES),
+    )
 
 
 def publicly_operational_hospital_predicate() -> ColumnElement[bool]:

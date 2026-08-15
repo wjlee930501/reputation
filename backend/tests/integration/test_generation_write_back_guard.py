@@ -56,8 +56,8 @@ def _seed_item(conn, *, status: str) -> uuid.UUID:
     item_id = uuid.uuid4()
     conn.execute(
         text(
-            "INSERT INTO hospitals (id, name, slug, status) "
-            "VALUES (:id, '통합테스트병원', :slug, 'ACTIVE')"
+            "INSERT INTO hospitals (id, name, slug, status, site_live) "
+            "VALUES (:id, '통합테스트병원', :slug, 'ACTIVE', true)"
         ),
         {"id": hospital_id, "slug": f"itest-{uuid.uuid4().hex[:8]}"},
     )

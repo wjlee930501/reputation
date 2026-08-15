@@ -23,7 +23,8 @@ from urllib.parse import urlparse
 import arrow
 import httpx
 from celery import current_task
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
@@ -54,12 +55,16 @@ from app.models.sov import (
     QueryMatrix,
     SovRecord,
 )
-from app.services import cost_guard, indexnow, notifier, sov_engine
+from app.services import cost_guard, indexnow, notifier, operation_run_payloads, sov_engine
 from app.services.audit_log import write_audit_log_sync
 from app.services.content_engine import generate_content
 from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
+)
+from app.services.content_publish_notifications import (
+    enqueue_post_publish_review_overdue_notification_sync,
+    enqueue_publish_notification_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
@@ -95,7 +100,14 @@ from app.services.monthly_period import (
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
+from app.services.onboarding_notifications import (
+    build_site_built_notification,
+    build_v0_ready_notification,
+    enqueue_onboarding_notification_sync,
+)
 from app.services.post_publish_review_policy import (
+    AUTO_PUBLISHABLE_STATUSES,
+    auto_publish_due_predicate,
     human_post_publish_review_predicate,
     publicly_operational_hospital_predicate,
 )
@@ -152,15 +164,24 @@ from app.workers.monthly_artifact_incident_control import (
     record_monthly_artifact_failure,
 )
 from app.workers.monthly_artifact_recovery_control import recover_monthly_artifact_failures
+from app.workers.monthly_slot_incident_control import (
+    open_monthly_slot_failure,
+    recover_monthly_slot_failure,
+)
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
 from app.workers.nightly_generation_batch import (
     GENERATION_CATCHUP_DAYS,
     NIGHTLY_GENERATION_CAP,
     _load_nightly_generation_batch,
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
+    _stuck_claims_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     load_stuck_claims,
     release_unfinished_claims,
     write_back_generated_content,
+)
+from app.workers.weekly_sov_incident_control import (
+    open_weekly_sov_failure,
+    recover_weekly_sov_failure,
 )
 
 # 격주 측정 주차 판정 — **절대 기준 경과 주 수**로 계산한다.
@@ -787,19 +808,23 @@ def trigger_v0_report(self, hospital_id: str):
                 sov_summary={"sov_pct": sov_pct, "platforms": platforms},
             )
             db.add(report)
+            db.flush()
             hospital.v0_report_done = True
             hospital.status = HospitalStatus.BUILDING
+            enqueue_onboarding_notification_sync(
+                db,
+                build_v0_ready_notification(
+                    hospital_id=hospital.id,
+                    hospital_name=hospital.name,
+                    report_id=report.id,
+                    sov_pct=sov_pct,
+                    platforms=platforms,
+                ),
+            )
             db.commit()
 
-            # Slack 알림 (실제 측정 플랫폼 라벨 전달 — Gemini 미측정 시 라벨에서 제외)
-            _run_async(
-                notifier.notify_v0_report_ready(
-                    hospital.name, sov_pct, pdf_path, platforms=platforms
-                )
-            )
-
             # V0 QueryMatrix → AIQueryTarget 자동 시드 (노출 보완 탭 즉시 활성화)
-            # V0 리포트·Slack이 이미 커밋·발송 완료된 뒤 실행하므로, 시드 실패는
+            # V0 리포트·Slack outbox가 이미 함께 커밋된 뒤 실행하므로, 시드 실패는
             # V0 결과를 롤백하지 않고 로그만 남긴다 (post-commit side effect 격리).
             _seed_query_targets_from_matrix_sync(hospital.id)
 
@@ -913,16 +938,14 @@ def build_aeo_site(self, hospital_id: str):
         # 강등은 connect_domain이 검증 무효화와 함께 명시적으로 수행한다.
         if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PAUSED):
             hospital.status = HospitalStatus.PENDING_DOMAIN
-        db.commit()
-
-        # PENDING_DOMAIN is intentionally not public, so a public preview URL is a
-        # guaranteed 404. Send the AE to the control plane activation step instead.
-        admin_url = (
-            f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals/{hospital.id}/profile#domain-setup"
+        enqueue_onboarding_notification_sync(
+            db,
+            build_site_built_notification(
+                hospital_id=hospital.id,
+                hospital_name=hospital.name,
+            ),
         )
-        notified = _run_async(notifier.notify_site_built(hospital.name, admin_url))
-        if not notified:
-            raise RuntimeError("site build Slack notification was not delivered")
+        db.commit()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1792,9 +1815,6 @@ def morning_content_auto_publish(self):
     """Publish verified content silently and summarize only exhausted blockers."""
     require_dispatch(self, "morning-content-auto-publish")
     today = arrow.now("Asia/Seoul").date()
-    notification_failures = 0
-    blocked_entries: list[dict[str, object]] = []
-    blocked_keys: list[str] = []
 
     try:
         with SyncSessionLocal() as db:
@@ -1813,26 +1833,9 @@ def morning_content_auto_publish(self):
                         run_id=outcome["run_id"],
                         code=outcome["code"],
                         message=outcome["message"],
-                        notify=False,
+                        notify=True,
                     )
                 )
-                block_key = _auto_publish_block_alert_key(
-                    content_id,
-                    outcome["scheduled_date"],
-                    outcome["code"],
-                    outcome["reason"],
-                )
-                if _already_done(block_key):
-                    continue
-                blocked_entries.append(
-                    {
-                        "hospital_name": outcome["hospital_name"],
-                        "title": outcome["title"],
-                        "scheduled_date": outcome["scheduled_date"],
-                        "reason": outcome["reason"],
-                    }
-                )
-                blocked_keys.append(block_key)
                 continue
 
             _run_async(
@@ -1867,46 +1870,7 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
-        # Slack 전송 실패 뒤 태스크가 재시도되면 방금 공개한 항목은 더 이상 DRAFT가
-        # 아니어서 due_ids에 잡히지 않는다. DB의 미보고 표식을 다시 읽어야
-        # "게재됐지만 사람에게 보고되지 않은" 상태도 다음 실행에서 자동 복구된다.
-        published_entries = _load_pending_auto_publish_digest_entries(today)
-
-        if published_entries or blocked_entries:
-            sent = _run_async(
-                notifier.notify_content_auto_publish_digest(
-                    entries=published_entries,
-                    blocked_entries=blocked_entries,
-                    admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/operations?queue=TODAY",
-                )
-            )
-            if sent:
-                _mark_auto_publish_digest_reported(published_entries)
-                for block_key in blocked_keys:
-                    _mark_done(block_key, GENERATION_CATCHUP_DAYS * 86_400)
-            else:
-                notification_failures += 1
-
-        review_entries = _load_overdue_post_publish_review_entries(
-            datetime.now(timezone.utc)
-        )
-        unsent_review_entries = [
-            entry
-            for entry in review_entries
-            if not _already_done(str(entry["alert_key"]))
-        ]
-        if unsent_review_entries:
-            sent = _run_async(
-                notifier.notify_post_publish_review_overdue(
-                    entries=unsent_review_entries,
-                    admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/operations?queue=TODAY&sla=OVERDUE",
-                )
-            )
-            if sent:
-                for entry in unsent_review_entries:
-                    _mark_done(str(entry["alert_key"]), 32 * 86_400)
-            else:
-                notification_failures += 1
+        _enqueue_overdue_post_publish_review_notifications(datetime.now(timezone.utc))
 
         # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
         # 개별 알림 대신 자동 완료와 미해결 예외를 한 번의 운영 요약으로만 보낸다.
@@ -1914,49 +1878,20 @@ def morning_content_auto_publish(self):
         logger.exception("morning_content_auto_publish failed")
         raise self.retry(exc=exc, countdown=300)
 
-    if notification_failures:
-        raise self.retry(
-            exc=RuntimeError(f"자동 발행 Slack 알림 {notification_failures}건 전송 실패"),
-            countdown=300,
-        )
-
 
 def _auto_publish_due_stmt(today):
-    window_start = today - timedelta(days=GENERATION_CATCHUP_DAYS)
     return (
         select(ContentItem.id)
         .join(Hospital, ContentItem.hospital_id == Hospital.id)
         .where(
-            ContentItem.scheduled_date <= today,
-            ContentItem.scheduled_date >= window_start,
-            ContentItem.status == ContentStatus.DRAFT,
-            Hospital.status == HospitalStatus.ACTIVE,
-            Hospital.site_live.is_(True),
+            auto_publish_due_predicate(today),
+            publicly_operational_hospital_predicate(),
         )
         .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
     )
 
 
-def _pending_auto_publish_digest_stmt(today: date):
-    window_start = today - timedelta(days=GENERATION_CATCHUP_DAYS)
-    return (
-        select(ContentItem, Hospital)
-        .join(Hospital, ContentItem.hospital_id == Hospital.id)
-        .where(
-            ContentItem.status == ContentStatus.PUBLISHED,
-            ContentItem.published_by == AUTO_PUBLISH_ACTOR,
-            ContentItem.post_publish_notified_at.is_(None),
-            ContentItem.published_at.is_not(None),
-            ContentItem.scheduled_date >= window_start,
-            ContentItem.scheduled_date <= today,
-        )
-        .order_by(ContentItem.published_at, ContentItem.id)
-    )
-
-
-def _load_overdue_post_publish_review_entries(
-    now: datetime,
-) -> list[dict[str, object]]:
+def _enqueue_overdue_post_publish_review_notifications(now: datetime) -> int:
     overdue_before = now - timedelta(hours=24)
     with SyncSessionLocal() as db:
         rows = db.execute(
@@ -1969,59 +1904,12 @@ def _load_overdue_post_publish_review_entries(
             )
             .order_by(ContentItem.published_at, ContentItem.id)
         ).all()
-    return [
-        {
-            "hospital_name": hospital.name,
-            "title": item.title or "제목 없음",
-            "content_id": item.id,
-            "alert_key": (
-                f"post_publish_review_overdue:{item.id}:"
-                f"{int(item.published_at.timestamp()) if item.published_at else 0}"
-            ),
-        }
-        for item, hospital in rows
-    ]
-
-
-def _load_pending_auto_publish_digest_entries(today: date) -> list[dict[str, object]]:
-    with SyncSessionLocal() as db:
-        rows = db.execute(_pending_auto_publish_digest_stmt(today)).all()
-        return [
-            {
-                **_publication_notification_payload(item, hospital),
-                "content_id": item.id,
-            }
-            for item, hospital in rows
-        ]
-
-
-def _mark_auto_publish_digest_reported(entries: list[dict[str, object]]) -> None:
-    content_ids = [entry.get("content_id") for entry in entries if entry.get("content_id")]
-    if not content_ids:
-        return
-    with SyncSessionLocal() as db:
-        items = db.execute(
-            select(ContentItem)
-            .where(
-                ContentItem.id.in_(content_ids),
-                ContentItem.status == ContentStatus.PUBLISHED,
-                ContentItem.post_publish_notified_at.is_(None),
-            )
-            .with_for_update()
-        ).scalars().all()
-        reported_at = datetime.now(timezone.utc)
-        for item in items:
-            item.post_publish_notified_at = reported_at
-            write_audit_log_sync(
-                db,
-                action="post_publish_digest_reported",
-                hospital_id=item.hospital_id,
-                actor=AUTO_PUBLISH_ACTOR,
-                target_type="content_item",
-                target_id=item.id,
-                detail={"channel": "slack", "mode": "daily_digest"},
-            )
+        enqueued = 0
+        for item, hospital in rows:
+            enqueue_post_publish_review_overdue_notification_sync(db, item, hospital)
+            enqueued += 1
         db.commit()
+    return enqueued
 
 
 def _admin_content_url(hospital_id: object, content_id: object) -> str:
@@ -2038,7 +1926,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             .where(ContentItem.id == content_id)
             .with_for_update(skip_locked=True)
         ).scalar_one_or_none()
-        if not item or item.status != ContentStatus.DRAFT:
+        if not item or item.status not in AUTO_PUBLISHABLE_STATUSES:
             return None
         # 콘텐츠 검사와 동시에 병원이 PAUSED/비공개로 전환되는 경합을 막는다. 병원 행을
         # 같은 트랜잭션에서 잠근 뒤 ACTIVE/LIVE를 재확인해야 공개 중지 요청 이후 새 글이
@@ -2122,6 +2010,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             },
         )
         payload = _publication_notification_payload(item, hospital)
+        enqueue_publish_notification_sync(db, item, hospital)
         db.commit()
         return payload
 
@@ -2163,6 +2052,12 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
 )
 def run_sov_for_hospital(self, hospital_id: str):
     require_dispatch(self, "run-sov", hospital_id)
+    if not _operation_run_claimed_or_legacy(self):
+        logger.info(
+            "Skipping duplicate RUN_SOV delivery without OperationRun claim: hospital=%s",
+            hospital_id,
+        )
+        return
     try:
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, uuid.UUID(hospital_id))
@@ -2175,6 +2070,7 @@ def run_sov_for_hospital(self, hospital_id: str):
             # priority 기반 쿼리 필터링 — beat은 월요일 02:00 KST(=일요일 UTC)에 발화하므로
             # UTC date.today()를 쓰면 ISO 주차 짝/홀이 뒤집히고 월초 판정도 어긋난다 (P1-5).
             today_kst = arrow.now("Asia/Seoul").date()
+            week_key = _weekly_measurement_key(today_kst)
             is_even_week = _is_even_measurement_week(today_kst)
             current_month_day = today_kst.day
             is_month_start = current_month_day <= 7  # 월초 첫째 주
@@ -2253,7 +2149,13 @@ def run_sov_for_hospital(self, hospital_id: str):
                 )
             except ManifestError:
                 logger.info("No queries available to freeze for hospital %s", hospital_id)
-                return
+                _record_weekly_sov_failure(
+                    hospital,
+                    week_key,
+                    "WEEKLY_SOV_NO_MEASUREMENT_MANIFEST",
+                    _operation_run_id_from_task(self),
+                )
+                raise RuntimeError("weekly_sov_no_measurement_manifest")
             db.commit()
             measurement_specs = [
                 {
@@ -2269,7 +2171,18 @@ def run_sov_for_hospital(self, hospital_id: str):
             ]
             if not measurement_specs:
                 logger.info("Monthly manifest has no pending cells for hospital %s", hospital_id)
-                return
+                if _weekly_manifest_is_resolved(manifest):
+                    _run_async(
+                        recover_weekly_sov_failure(hospital_id=hospital.id, week_key=week_key)
+                    )
+                    return
+                _record_weekly_sov_failure(
+                    hospital,
+                    week_key,
+                    "WEEKLY_SOV_UNRESOLVED_MANIFEST_STATE",
+                    _operation_run_id_from_task(self),
+                )
+                raise RuntimeError("weekly_sov_unresolved_manifest_state")
 
             # 비용 가드: spec 개수 × **반복 횟수**만큼 예산을 run 단위로 일괄 확인.
             # 각 spec은 run_single_query에서 SOV_REPEAT_WEEKLY번 실제 호출을 낸다.
@@ -2294,8 +2207,15 @@ def run_sov_for_hospital(self, hospital_id: str):
                     sov_decision.reason,
                 )
                 # cost_guard가 일/월 범위별로 첫 상한 도달만 알린다.
-                # 병원별 작업은 실행 기록만 남겨 같은 원인을 중복 전파하지 않는다.
-                return
+                # 병원별 작업은 실행 기록만 남겨 같은 원인을 중복 전파하지 않는다. 다만
+                # OperationRun은 성공으로 닫히면 안 되므로 Celery 실패 신호를 남긴다.
+                _record_weekly_sov_failure(
+                    hospital,
+                    week_key,
+                    "WEEKLY_SOV_COST_GUARD_BLOCKED",
+                    _operation_run_id_from_task(self),
+                )
+                raise RuntimeError("weekly_sov_cost_guard_blocked")
 
             competitors = hospital.competitors or []
             run = _start_measurement_run(
@@ -2350,9 +2270,64 @@ def run_sov_for_hospital(self, hospital_id: str):
             # 결과가 생긴 직후 노출 갭/보완 액션을 갱신한다. 대시보드 GET 요청이 우연히
             # 액션 생성을 일으키는 구조에 의존하지 않고 다음 콘텐츠 생성이 최신 결과를 읽는다.
             _refresh_exposure_actions_sync(hospital.id)
+            if failure_count > 0:
+                _record_weekly_sov_failure(
+                    hospital,
+                    week_key,
+                    "WEEKLY_SOV_MEASUREMENT_PARTIAL",
+                    _operation_run_id_from_task(self),
+                )
+                raise RuntimeError("weekly_sov_measurement_partial")
+            _run_async(recover_weekly_sov_failure(hospital_id=hospital.id, week_key=week_key))
 
     except Exception as exc:
         raise self.retry(exc=exc, countdown=300)
+
+
+def _operation_run_id_from_task(task) -> uuid.UUID | None:
+    headers = getattr(getattr(task, "request", None), "headers", None)
+    if not isinstance(headers, Mapping):
+        return None
+    value = headers.get("operation_run_id")
+    if not isinstance(value, str):
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
+def _operation_run_claimed_or_legacy(task) -> bool:
+    """Run only legacy tasks or tasks that OperationRun signals actually claimed."""
+
+    if _operation_run_id_from_task(task) is None:
+        return True
+    claim_version = getattr(getattr(task, "request", None), "operation_run_claim_version", None)
+    return isinstance(claim_version, int)
+
+
+def _record_weekly_sov_failure(
+    hospital: Hospital,
+    week_key: str,
+    error_code: str,
+    operation_run_id: uuid.UUID | None,
+) -> None:
+    _run_async(
+        open_weekly_sov_failure(
+            hospital_id=hospital.id,
+            hospital_name=hospital.name,
+            week_key=week_key,
+            error_code=error_code,
+            operation_run_id=operation_run_id,
+        )
+    )
+
+
+def _weekly_manifest_is_resolved(manifest) -> bool:
+    cells = list(getattr(manifest, "cells", ()) or ())
+    if not cells:
+        return False
+    return all(getattr(cell, "state", None) in {"SUCCESS", "EXCLUDED"} for cell in cells)
 
 
 def _start_measurement_run(
@@ -2693,8 +2668,12 @@ def monthly_slot_generation():
         schedules = result.scalars().all()
 
         created_count = 0
-        failures: list[str] = []
+        failures: list[tuple[uuid.UUID | None, str, str]] = []
+        successes: list[uuid.UUID] = []
+        period_key = f"{next_month_start.year}-{next_month_start.month:02d}"
         for schedule in schedules:
+            schedule_hospital_id = getattr(schedule, "hospital_id", None)
+            hospital_name = getattr(getattr(schedule, "hospital", None), "name", "(unknown)")
             # 병원(스케줄) 단위 격리 — 발행요일이 적은 스케줄이 2월(28일) 등에서
             # generate_monthly_slots ValueError를 내면 루프 전체가 죽어 이전 병원 슬롯이
             # 커밋되지 않고 이후 병원은 처리조차 안 되던 문제 방지. 슬롯 삽입 자체는 savepoint
@@ -2708,10 +2687,17 @@ def monthly_slot_generation():
                     next_month_end,
                 ):
                     created_count += 1
+                if schedule_hospital_id is not None:
+                    successes.append(schedule_hospital_id)
             except Exception:
-                hospital_name = getattr(getattr(schedule, "hospital", None), "name", "(unknown)")
                 logger.exception("monthly slot generation failed for %s; skipping", hospital_name)
-                failures.append(hospital_name)
+                failures.append(
+                    (
+                        schedule_hospital_id,
+                        hospital_name,
+                        "MONTHLY_SLOT_GENERATION_FAILED",
+                    )
+                )
                 continue
 
         db.commit()
@@ -2720,43 +2706,58 @@ def monthly_slot_generation():
             f"{len(failures)} failed"
         )
 
-        if failures:
-            names = ", ".join(failures[:10]) + (" 외" if len(failures) > 10 else "")
-            fingerprint = hashlib.sha256(
-                "|".join(sorted(failures)).encode()
-            ).hexdigest()[:16]
-            alert_key = f"monthly_slot_failure:{next_month_start}:{fingerprint}"
-            sent = False
-            if not _already_done(alert_key):
-                sent = _run_async(
-                    notifier.notify_ops_alert(
-                        title="다음 달 콘텐츠 슬롯 생성 실패",
-                        message=(
-                            f"{len(failures)}개 병원의 다음 달 슬롯 생성에 실패했습니다: {names}\n"
-                            f"나머지 병원은 정상 생성됐습니다. 실패 병원의 스케줄(발행요일/요금제)을 "
-                            f"확인해 주세요. 시스템은 다음 6시간 주기에 자동으로 다시 시도합니다."
-                        ),
-                    )
+        for hospital_id in successes:
+            _run_async(
+                recover_monthly_slot_failure(
+                    hospital_id=hospital_id,
+                    period_key=period_key,
                 )
-            if sent:
-                _mark_done(alert_key, 32 * 86_400)
+            )
+        for hospital_id, hospital_name, error_code in failures:
+            if hospital_id is None:
+                continue
+            _run_async(
+                open_monthly_slot_failure(
+                    hospital_id=hospital_id,
+                    hospital_name=hospital_name,
+                    period_key=period_key,
+                    error_code=error_code,
+                )
+            )
 
 
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
 def run_weekly_monitoring():
     require_dispatch(current_task, "weekly-sov-monitoring")
+    observed_at = datetime.now(timezone.utc)
+    week_key = _weekly_measurement_key(arrow.now("Asia/Seoul").date())
     with SyncSessionLocal() as db:
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         hospitals = result.scalars().all()
 
         for h in hospitals:
+            run = _ensure_weekly_sov_operation_run(db, h, week_key, observed_at)
+            if run is None or run.task_id is None:
+                continue
             hospital_id = str(h.id)
-            run_sov_for_hospital.apply_async(
-                args=[hospital_id],
-                queue="sov",
-                headers=build_dispatch_headers("run-sov", hospital_id),
-            )
+            try:
+                run_sov_for_hospital.apply_async(
+                    args=[hospital_id],
+                    queue="sov",
+                    headers={
+                        **build_dispatch_headers("run-sov", hospital_id),
+                        "operation_run_id": str(run.id),
+                    },
+                    task_id=run.task_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Weekly visibility measurement dispatch failed; autonomous recovery will redispatch",
+                    extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
+                )
+                continue
+            _mark_weekly_sov_operation_queued(db, run.id, observed_at)
 
         # 측정 결과 기반 질문 우선순위 조정 (P1-4) — 같은 "sov" 큐 뒤에 적재되므로 단일
         # sov 워커(FIFO) 기준으로는 병원별 측정 태스크가 모두 끝난 뒤 실행된다.
@@ -2857,6 +2858,91 @@ def _desired_query_priority(records: Sequence[SovRecord]) -> str | None:
     # 미언급 질문이 개선 작업의 우선 대상이다. 이미 언급되는 질문은 정상 감시로
     # 되돌리고, 전혀 언급되지 않은 질문만 HIGH로 올린다.
     return "NORMAL" if any(record.is_mentioned for record in successful_records) else "HIGH"
+
+
+def _weekly_measurement_key(today: date) -> str:
+    iso = today.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _ensure_weekly_sov_operation_run(
+    db,
+    hospital: Hospital,
+    week_key: str,
+    observed_at: datetime,
+) -> OperationRun | None:
+    idempotency_key = f"weekly-sov:{hospital.id}:{week_key}"
+    existing = db.execute(
+        select(OperationRun).where(
+            OperationRun.hospital_id == hospital.id,
+            OperationRun.operation_type == "RUN_SOV",
+            OperationRun.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing if existing.state == OperationRunState.REQUESTED else None
+    hospital_id = str(hospital.id)
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="RUN_SOV",
+        state=OperationRunState.REQUESTED,
+        idempotency_key=idempotency_key,
+        requested_by_id=None,
+        task_id=str(uuid.uuid4()),
+        attempt_count=0,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload=operation_run_payloads.build_request_payload(
+            operation_run_payloads.DispatchPayload(
+                "hospital",
+                hospital_id,
+                "sov",
+                (hospital_id,),
+            )
+        ),
+        result_summary={"measurement_week": week_key},
+        requested_at=observed_at,
+        version=1,
+    )
+    db.add(run)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.execute(
+            select(OperationRun).where(
+                OperationRun.hospital_id == hospital.id,
+                OperationRun.operation_type == "RUN_SOV",
+                OperationRun.idempotency_key == idempotency_key,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing if existing.state == OperationRunState.REQUESTED else None
+    return run
+
+
+def _mark_weekly_sov_operation_queued(db, run_id: uuid.UUID, observed_at: datetime) -> bool:
+    """CAS REQUESTED->QUEUED after broker publish without overwriting worker signals."""
+
+    queued = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == run_id,
+            OperationRun.state == OperationRunState.REQUESTED,
+        )
+        .values(
+            state=OperationRunState.QUEUED,
+            queued_at=observed_at,
+            version=OperationRun.version + 1,
+        )
+        .returning(OperationRun.id)
+    ).scalar_one_or_none()
+    db.commit()
+    return queued is not None
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -3623,10 +3709,17 @@ def _site_revalidation_context(
         return content_site_paths(hospital.slug, content.id, treatments)
 
 
-@celery_app.task(name="app.workers.tasks.retry_site_revalidation")
-def retry_site_revalidation(run_id: str, expected_attempt_count: int):
+@celery_app.task(bind=True, name="app.workers.tasks.retry_site_revalidation")
+def retry_site_revalidation(self, run_id: str, expected_attempt_count: int):
     """Retry only the public cache refresh; never repeat or undo publication."""
 
+    require_dispatch(
+        self,
+        "retry-site-revalidation",
+        run_id,
+        args=[run_id, expected_attempt_count],
+        kwargs={},
+    )
     try:
         parsed_run_id = uuid.UUID(run_id)
     except (TypeError, ValueError):
@@ -3652,6 +3745,7 @@ def retry_site_revalidation(run_id: str, expected_attempt_count: int):
             args=[str(parsed_run_id), expected_attempt_count + 1],
             queue="default",
             countdown=plan.delay_seconds,
+            headers=build_dispatch_headers("retry-site-revalidation", str(parsed_run_id)),
         )
         return {"status": "retry_scheduled", "delay_seconds": plan.delay_seconds}
     return {"status": "operator_action_required"}

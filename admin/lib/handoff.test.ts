@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { acceptanceDecision, acceptancePayload, contractPayload, handoffNextAction } from './handoff.ts'
+import {
+  acceptanceDecision,
+  acceptancePayload,
+  contractPayload,
+  defaultAcquisitionDates,
+  handoffNextAction,
+  koreanDateInputValue,
+  koreanDateTimeLocalInputValue,
+  parseOnboardingCreateRequestId,
+  parseOnboardingWorkflowCheckpoint,
+  serializeOnboardingWorkflowCheckpoint,
+} from './handoff.ts'
 
 test('contract payload carries CAS version and never acceptance facts', () => {
   const payload = contractPayload({
@@ -38,4 +49,39 @@ test('owner cross-AE acceptance requires a visible audited reason', () => {
   assert.deepEqual(acceptanceDecision({
     actorId: 'owner-1', actorRole: 'OWNER', aeOwnerId: 'ae-1', reason: 'AE 휴가 대행',
   }), { kind: 'ready', reason: 'AE 휴가 대행' })
+})
+
+test('contract defaults follow the Korean business date and roll over the month', () => {
+  assert.deepEqual(defaultAcquisitionDates(new Date('2026-08-31T15:30:00Z')), {
+    effectiveDate: '2026-09-01',
+    slaDueAt: '2026-09-02T18:00',
+  })
+  assert.deepEqual(defaultAcquisitionDates(new Date('2026-12-31T14:59:00Z')), {
+    effectiveDate: '2026-12-31',
+    slaDueAt: '2027-01-01T18:00',
+  })
+})
+
+test('saved contract instants restore into Korean date controls', () => {
+  assert.equal(koreanDateInputValue('2026-08-10T15:00:00Z'), '2026-08-11')
+  assert.equal(koreanDateTimeLocalInputValue('2026-08-11T09:00:00Z'), '2026-08-11T18:00')
+  assert.equal(koreanDateInputValue('invalid'), null)
+})
+
+test('workflow checkpoint persists opaque ids only and rejects corrupt values', () => {
+  const checkpoint = {
+    hospitalId: 'b1400000-0000-4000-8000-000000000001',
+    handoffId: 'c1400000-0000-4000-8000-000000000001',
+  }
+  const encoded = serializeOnboardingWorkflowCheckpoint(checkpoint)
+
+  assert.deepEqual(parseOnboardingWorkflowCheckpoint(encoded), checkpoint)
+  assert.deepEqual(Object.keys(JSON.parse(encoded)).sort(), ['handoffId', 'hospitalId'])
+  assert.equal(parseOnboardingWorkflowCheckpoint('{broken'), null)
+  assert.equal(parseOnboardingWorkflowCheckpoint(JSON.stringify({
+    ...checkpoint,
+    hospitalId: '../other-hospital',
+  })), null)
+  assert.equal(parseOnboardingCreateRequestId(checkpoint.hospitalId), checkpoint.hospitalId)
+  assert.equal(parseOnboardingCreateRequestId('../other-hospital'), null)
 })

@@ -14,7 +14,7 @@ from sqlalchemy.sql.dml import Update
 from app.models.content import ContentItem
 from app.models.essence import PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
-from app.models.operations import OperationRun
+from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
 from app.workers import tasks
 
 
@@ -91,6 +91,224 @@ def test_query_priority_promotes_only_unmentioned_targets():
     assert tasks._desired_query_priority([failed]) is None
 
 
+def test_weekly_monitoring_commits_operation_run_before_sov_dispatch(monkeypatch):
+    hospital_id = uuid.uuid4()
+    hospital = SimpleNamespace(id=hospital_id, status=HospitalStatus.ACTIVE)
+    dispatched: list[dict] = []
+    adjusted: list[dict] = []
+
+    class _WeeklyDB:
+        def __init__(self):
+            self.added = []
+            self.commits = 0
+
+        def execute(self, stmt):
+            if isinstance(stmt, Update):
+                for run in self.added:
+                    if isinstance(run, OperationRun):
+                        run.state = OperationRunState.QUEUED
+                        run.queued_at = arrow.get(2026, 8, 10).datetime
+                        run.version += 1
+                        return _Result(scalar=run.id)
+                return _Result(scalar=None)
+            entity = _statement_entity(stmt)
+            if entity is Hospital:
+                return _Result(items=[hospital])
+            if entity is OperationRun:
+                return _Result(items=[])
+            raise AssertionError(f"unexpected entity: {entity}")
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    db = _WeeklyDB()
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(2026, 8, 10, tzinfo="Asia/Seoul")
+    )
+    monkeypatch.setattr(
+        tasks.run_sov_for_hospital,
+        "apply_async",
+        lambda **kwargs: dispatched.append(kwargs),
+    )
+    monkeypatch.setattr(
+        tasks.adjust_query_priorities,
+        "apply_async",
+        lambda **kwargs: adjusted.append(kwargs),
+    )
+
+    tasks.run_weekly_monitoring.run()
+
+    runs = [value for value in db.added if isinstance(value, OperationRun)]
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.operation_type == "RUN_SOV"
+    assert run.state == OperationRunState.QUEUED
+    assert run.request_payload["_dispatch"]["target_id"] == str(hospital_id)
+    assert run.request_payload["_dispatch"]["queue"] == "sov"
+    assert dispatched == [
+        {
+            "args": [str(hospital_id)],
+            "queue": "sov",
+            "headers": {
+                **tasks.build_dispatch_headers("run-sov", str(hospital_id)),
+                "operation_run_id": str(run.id),
+            },
+            "task_id": run.task_id,
+        }
+    ]
+    assert adjusted and adjusted[0]["queue"] == "sov"
+    assert db.commits >= 2
+
+
+def test_weekly_monitoring_isolates_broker_failure_and_keeps_run_requested(monkeypatch):
+    first_id = uuid.uuid4()
+    second_id = uuid.uuid4()
+    hospitals = [
+        SimpleNamespace(id=first_id, status=HospitalStatus.ACTIVE),
+        SimpleNamespace(id=second_id, status=HospitalStatus.ACTIVE),
+    ]
+    dispatched: list[str] = []
+    last_success_id: uuid.UUID | None = None
+
+    class _WeeklyDB:
+        def __init__(self):
+            self.added = []
+            self.commits = 0
+
+        def execute(self, stmt):
+            if isinstance(stmt, Update):
+                for run in self.added:
+                    if isinstance(run, OperationRun) and run.hospital_id == last_success_id:
+                        run.state = OperationRunState.QUEUED
+                        return _Result(scalar=run.id)
+                return _Result(scalar=None)
+            entity = _statement_entity(stmt)
+            if entity is Hospital:
+                return _Result(items=hospitals)
+            if entity is OperationRun:
+                return _Result(items=[])
+            raise AssertionError(f"unexpected entity: {entity}")
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def dispatch(**kwargs):
+        nonlocal last_success_id
+        hospital_id = kwargs["args"][0]
+        if hospital_id == str(first_id):
+            raise RuntimeError("broker unavailable")
+        last_success_id = uuid.UUID(hospital_id)
+        dispatched.append(hospital_id)
+
+    db = _WeeklyDB()
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(2026, 8, 10, tzinfo="Asia/Seoul")
+    )
+    monkeypatch.setattr(tasks.run_sov_for_hospital, "apply_async", dispatch)
+    monkeypatch.setattr(tasks.adjust_query_priorities, "apply_async", lambda **_kwargs: None)
+
+    tasks.run_weekly_monitoring.run()
+
+    runs = [value for value in db.added if isinstance(value, OperationRun)]
+    assert len(runs) == 2
+    assert next(run for run in runs if run.hospital_id == first_id).state == OperationRunState.REQUESTED
+    assert next(run for run in runs if run.hospital_id == second_id).state == OperationRunState.QUEUED
+    assert dispatched == [str(second_id)]
+
+
+def test_run_sov_operation_run_header_requires_signal_claim():
+    run_id = str(uuid.uuid4())
+    duplicate = SimpleNamespace(
+        request=SimpleNamespace(
+            headers={"operation_run_id": run_id},
+            operation_run_claim_version=None,
+        )
+    )
+    claimed = SimpleNamespace(
+        request=SimpleNamespace(
+            headers={"operation_run_id": run_id},
+            operation_run_claim_version=7,
+        )
+    )
+    legacy = SimpleNamespace(request=SimpleNamespace(headers={}, operation_run_claim_version=None))
+
+    assert tasks._operation_run_claimed_or_legacy(duplicate) is False
+    assert tasks._operation_run_claimed_or_legacy(claimed) is True
+    assert tasks._operation_run_claimed_or_legacy(legacy) is True
+
+
+def test_weekly_sov_failure_records_operator_visible_incident(monkeypatch):
+    hospital_id = uuid.uuid4()
+    run_id = uuid.uuid4()
+    calls = []
+
+    async def fake_open(**kwargs):
+        calls.append(kwargs)
+        return uuid.uuid4()
+
+    monkeypatch.setattr(tasks, "open_weekly_sov_failure", fake_open)
+
+    tasks._record_weekly_sov_failure(
+        SimpleNamespace(id=hospital_id, name="테스트의원"),
+        "2026-W33",
+        "WEEKLY_SOV_NO_MEASUREMENT_MANIFEST",
+        run_id,
+    )
+
+    assert calls == [
+        {
+            "hospital_id": hospital_id,
+            "hospital_name": "테스트의원",
+            "week_key": "2026-W33",
+            "error_code": "WEEKLY_SOV_NO_MEASUREMENT_MANIFEST",
+            "operation_run_id": run_id,
+        }
+    ]
+
+
+def test_weekly_manifest_without_failed_cells_is_resolved_only_when_complete_or_excluded():
+    resolved = SimpleNamespace(
+        cells=[
+            SimpleNamespace(state="SUCCESS"),
+            SimpleNamespace(state="EXCLUDED"),
+        ]
+    )
+    unresolved = SimpleNamespace(
+        cells=[
+            SimpleNamespace(state="SUCCESS"),
+            SimpleNamespace(state="PENDING"),
+        ]
+    )
+    empty = SimpleNamespace(cells=[])
+
+    assert tasks._weekly_manifest_is_resolved(resolved) is True
+    assert tasks._weekly_manifest_is_resolved(unresolved) is False
+    assert tasks._weekly_manifest_is_resolved(empty) is False
+
+
 @pytest.mark.parametrize(
     ("error", "expected_code"),
     [
@@ -126,14 +344,30 @@ def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
 
 
 def test_nightly_generation_stmt_filters_hospital_status():
-    """야간 생성은 ACTIVE/PENDING_DOMAIN 병원만 대상 — PAUSED 등에 생성 비용 발생 방지 (결함 8)."""
+    """야간 생성은 공개 활성화된 병원만 대상 — 미공개 병원 비용 발생 방지."""
     stmt = tasks._nightly_generation_stmt(date(2026, 6, 3), date(2026, 6, 11))
     sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
     assert "JOIN hospitals" in sql
     assert "'ACTIVE'" in sql
-    assert "'PENDING_DOMAIN'" in sql
-    # PAUSED/ONBOARDING 은 IN 목록에 없어야 한다.
+    assert "hospitals.site_live IS true" in sql
+    # PENDING_DOMAIN/PAUSED/ONBOARDING 은 IN 목록에 없어야 한다.
+    assert "'PENDING_DOMAIN'" not in sql
+    assert "'PAUSED'" not in sql
+
+
+def test_load_stuck_claims_filters_live_active_hospitals():
+    """stuck claim 복구 감지도 실제 생성 대상과 같은 공개 활성화 병원만 본다."""
+    sql = str(
+        tasks._stuck_claims_stmt(date(2026, 6, 3), date(2026, 6, 11)).compile(
+            compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "JOIN hospitals" in sql
+    assert "'ACTIVE'" in sql
+    assert "hospitals.site_live IS true" in sql
+    assert "'PENDING_DOMAIN'" not in sql
     assert "'PAUSED'" not in sql
 
 
@@ -543,9 +777,9 @@ class _MonthlySlotDB:
         return False
 
 
-def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch):
+def test_monthly_slot_generation_isolates_valueerror_and_opens_incident(monkeypatch):
     """발행요일이 적은 스케줄이 generate_monthly_slots ValueError를 내도 이전 병원 슬롯은
-    유지되고, 이후 병원 처리도 계속되며, ops Slack 알림에 실패 병원명이 담긴다 (결함 1)."""
+    유지되고, 이후 병원 처리도 계속되며, 실패 병원은 durable incident/outbox로 남는다."""
     hospitals = [
         SimpleNamespace(id="h1", name="첫번째의원", status=HospitalStatus.ACTIVE),
         SimpleNamespace(id="h2", name="문제의원", status=HospitalStatus.ACTIVE),
@@ -553,6 +787,7 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
     schedules = [
         SimpleNamespace(
             id="s1",
+            hospital_id=hospitals[0].id,
             hospital=hospitals[0],
             plan="PLAN_12",
             publish_days=[0, 2],
@@ -560,6 +795,7 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
         ),
         SimpleNamespace(
             id="s2",
+            hospital_id=hospitals[1].id,
             hospital=hospitals[1],
             plan="PLAN_12",
             publish_days=[1],
@@ -576,23 +812,25 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
             raise ValueError("발행요일 대비 편수가 과다")
         return [(date(2026, 3, 2), "FAQ", 1, 1)]
 
-    alerts: list[dict] = []
+    opened: list[dict] = []
+    recovered: list[dict] = []
 
-    async def fake_ops_alert(**kwargs):
-        alerts.append(kwargs)
-        return True
+    async def fake_open(**kwargs):
+        opened.append(kwargs)
+        return uuid.uuid4()
+
+    async def fake_recover(**kwargs):
+        recovered.append(kwargs)
+        return False
 
     # 2월(28일) 다음 달 슬롯 생성 상황 — 25일 트리거.
     monkeypatch.setattr(
         tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 2, 25, tzinfo="Asia/Seoul")
     )
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks.notifier, "notify_ops_alert", fake_ops_alert)
+    monkeypatch.setattr(tasks, "open_monthly_slot_failure", fake_open)
+    monkeypatch.setattr(tasks, "recover_monthly_slot_failure", fake_recover)
     monkeypatch.setattr("app.workers.monthly_slots.generate_monthly_slots", fake_generate)
-    # Unit tests must not inherit an idempotency marker from a developer Redis
-    # instance or another test process.
-    monkeypatch.setattr(tasks, "_already_done", lambda _key: False)
-    monkeypatch.setattr(tasks, "_mark_done", lambda _key, _ttl: None)
 
     tasks.monthly_slot_generation()
 
@@ -601,9 +839,10 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
     assert db.commit_calls == 1
     assert len(db.persisted) == 1
     assert db.persisted[0].hospital_id == "h1"
-    # ops 알림에 실패 병원명 포함
-    assert len(alerts) == 1
-    assert "문제의원" in alerts[0]["message"]
+    assert recovered == [{"hospital_id": "h1", "period_key": "2026-03"}]
+    assert len(opened) == 1
+    assert opened[0]["hospital_id"] == "h2"
+    assert opened[0]["hospital_name"] == "문제의원"
 
 
 def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflicts(monkeypatch):
@@ -614,6 +853,7 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
     schedules = [
         SimpleNamespace(
             id="s1",
+            hospital_id=hospitals[0].id,
             hospital=hospitals[0],
             plan="PLAN_4",
             publish_days=[0],
@@ -621,6 +861,7 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
         ),
         SimpleNamespace(
             id="s2",
+            hospital_id=hospitals[1].id,
             hospital=hospitals[1],
             plan="PLAN_4",
             publish_days=[0],
@@ -634,6 +875,10 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
     )
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "open_monthly_slot_failure", lambda **_kwargs: None)
+    async def fake_recover(**_kwargs):
+        return False
+    monkeypatch.setattr(tasks, "recover_monthly_slot_failure", fake_recover)
     monkeypatch.setattr(
         "app.workers.monthly_slots.generate_monthly_slots",
         lambda *_args, **_kwargs: [(date(2026, 7, 1), "FAQ", 1, 1)],
@@ -735,23 +980,10 @@ def test_auto_publish_due_statement_includes_missing_body_for_blocker_projection
         )
     )
 
-    assert "content_items.status = 'DRAFT'" in sql
+    assert "content_items.status IN ('DRAFT', 'READY')" in sql
     assert "content_items.body IS NOT NULL" not in sql
     assert "hospitals.status = 'ACTIVE'" in sql
     assert "hospitals.site_live IS true" in sql
-    assert "content_items.scheduled_date <= '2026-06-10'" in sql
-
-
-def test_publish_digest_reloads_unreported_auto_publications_for_retry():
-    sql = str(
-        tasks._pending_auto_publish_digest_stmt(date(2026, 6, 10)).compile(
-            compile_kwargs={"literal_binds": True}
-        )
-    )
-
-    assert "content_items.status = 'PUBLISHED'" in sql
-    assert "content_items.published_by = 'SYSTEM_AUTO_PUBLISH'" in sql
-    assert "content_items.post_publish_notified_at IS NULL" in sql
     assert "content_items.scheduled_date >= '2026-06-03'" in sql
     assert "content_items.scheduled_date <= '2026-06-10'" in sql
 
@@ -841,7 +1073,10 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     assert item.published_at is not None
     assert payload["public_url"] == f"https://test.example.com/contents/{content_id}"
     assert audits[0]["action"] == "auto_publish_content"
-    assert db.added == []
+    outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
+    assert len(outbox) == 1
+    assert outbox[0].notification_type == "CONTENT_PUBLISHED"
+    assert item.post_publish_notified_at is None
 
 
 # ── 08:00 자동 발행 안전 게이트: **실제** assess_content_publication으로 검증 ──
@@ -1117,7 +1352,27 @@ def test_auto_publish_is_idempotent(monkeypatch):
     assert item.published_at == published_at
     audits = [log for log in db.added if hasattr(log, "action")]
     assert [log.action for log in audits] == ["auto_publish_content"]
+    outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
+    assert len(outbox) == 1
+    assert outbox[0].notification_type == "CONTENT_PUBLISHED"
     assert effects["published_slack"] == []
+
+
+def test_auto_publish_accepts_ready_status(monkeypatch):
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="증상 단계에 따라 진료 방향을 설명드립니다.")
+    item.status = tasks.ContentStatus.READY
+    db = _AutoPublishDB(item, hospital)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+    )
+
+    payload = tasks._auto_publish_one(item.id)
+
+    assert payload["kind"] == "published"
+    assert item.status is tasks.ContentStatus.PUBLISHED
+    assert len([value for value in db.added if isinstance(value, NotificationOutbox)]) == 1
 
 
 def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatch):

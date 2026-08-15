@@ -95,7 +95,7 @@ export interface ActivationReadiness {
   profile_complete: boolean
   v0_report_done: boolean
   site_built?: boolean
-  schedule_set: boolean
+  schedule_set?: boolean
 }
 
 export function activationBlockers(readiness: ActivationReadiness): string[] {
@@ -103,6 +103,5 @@ export function activationBlockers(readiness: ActivationReadiness): string[] {
     !readiness.profile_complete ? '병원 프로필' : null,
     !readiness.v0_report_done ? '초기 진단 리포트' : null,
     !readiness.site_built ? '병원 정보 허브' : null,
-    !readiness.schedule_set ? '콘텐츠 스케줄' : null,
   ].filter((item): item is string => Boolean(item))
 }

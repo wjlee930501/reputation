@@ -105,6 +105,45 @@ def test_scheduled_dispatch_cannot_be_reused_for_another_job(monkeypatch) -> Non
         )
 
 
+def test_site_revalidation_retry_is_routed_and_bound_to_run_id(monkeypatch) -> None:
+    monkeypatch.setattr(dispatch_auth.settings, "APP_ENV", "production")
+    monkeypatch.setattr(
+        dispatch_auth.settings, "WORKER_DISPATCH_SECRET", "worker-only-secret-32-bytes-minimum"
+    )
+    monkeypatch.setattr(dispatch_auth.settings, "REPUTATION_RELEASE_REVISION", "release-a")
+    run_id = "f5aa8f49-fc76-46b6-b6d5-d372dad2522a"
+    headers = dispatch_auth.stamp_dispatch_headers(
+        task_name="app.workers.tasks.retry_site_revalidation",
+        task_id="retry-task",
+        args=[run_id, 0],
+        kwargs={},
+        retries=0,
+        headers=dispatch_auth.build_dispatch_headers("retry-site-revalidation", run_id),
+        now=1_700_000_000,
+    )
+
+    assert celery_app.conf.task_routes["app.workers.tasks.retry_site_revalidation"] == {
+        "queue": "default"
+    }
+    dispatch_auth.require_dispatch(
+        _task(headers, task_id="retry-task"),
+        "retry-site-revalidation",
+        run_id,
+        args=[run_id, 0],
+        kwargs={},
+        now=1_700_000_001,
+    )
+    with pytest.raises(dispatch_auth.DispatchAuthorizationError):
+        dispatch_auth.require_dispatch(
+            _task(headers, task_id="retry-task"),
+            "retry-site-revalidation",
+            "c57d5398-99f4-4e3c-a3c7-98d4448ffc11",
+            args=["c57d5398-99f4-4e3c-a3c7-98d4448ffc11", 0],
+            kwargs={},
+            now=1_700_000_001,
+        )
+
+
 def test_previous_release_dispatch_is_accepted_only_during_rollout_handoff(monkeypatch) -> None:
     monkeypatch.setattr(dispatch_auth.settings, "APP_ENV", "production")
     monkeypatch.setattr(
