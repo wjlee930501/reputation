@@ -41,9 +41,20 @@ test('JSON body cap allows normal JSON requests', async () => {
 })
 
 test('multipart form cap rejects oversized requests without Content-Length', async () => {
-  const formData = new FormData()
-  formData.set('clinicName', 'x'.repeat(2048))
-  const request = new Request('https://site.test/api/leads', { method: 'POST', body: formData })
+  const boundary = 'test-boundary'
+  const multipartBody = [
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="clinicName"',
+    '',
+    'x'.repeat(2048),
+    `--${boundary}--`,
+    '',
+  ].join('\r\n')
+  const request = new Request('https://site.test/api/leads', {
+    method: 'POST',
+    body: multipartBody,
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+  })
   assert.equal(request.headers.get('content-length'), null)
   await assert.rejects(
     () => readFormDataBodyWithLimit(request, 256),
