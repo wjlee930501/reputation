@@ -19,6 +19,7 @@ from app.services.incidents import open_or_touch_incident
 from app.services.notification_store import (
     ClaimedNotification,
     claim_notification_batch,
+    create_delivery_unknown_incident,
     recover_stale_sending,
 )
 from app.services.notification_success_hooks import run_notification_success_hook
@@ -134,6 +135,19 @@ async def _finalize(
         .returning(NotificationOutbox.id)
     )
     finalized = result.scalar_one_or_none() is not None
+    if finalized and decision.state == NotificationOutboxState.HOLD:
+        incident_id = await create_delivery_unknown_incident(
+            db,
+            claimed,
+            now=now,
+            actor="notification-worker",
+            reason="notification delivery outcome unknown",
+        )
+        await db.execute(
+            update(NotificationOutbox)
+            .where(NotificationOutbox.id == claimed.id)
+            .values(incident_id=incident_id, updated_at=now)
+        )
     if finalized and decision.state == NotificationOutboxState.FAILED:
         fingerprint = (
             IncidentFingerprint.CONFIGURATION_ERROR
@@ -144,7 +158,7 @@ async def _finalize(
             }
             else IncidentFingerprint.DELIVERY_FAILED
         )
-        await open_or_touch_incident(
+        incident = await open_or_touch_incident(
             db,
             IncidentOpenRequest(
                 pipeline="notification",
@@ -166,6 +180,11 @@ async def _finalize(
             actor="notification-worker",
             reason="notification delivery became terminal",
             now=now,
+        )
+        await db.execute(
+            update(NotificationOutbox)
+            .where(NotificationOutbox.id == claimed.id)
+            .values(incident_id=incident.id, updated_at=now)
         )
     await db.commit()
     return finalized

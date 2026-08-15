@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import String, case, func, select
+from sqlalchemy import String, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -41,7 +41,16 @@ async def load_onboarding_queue(
 ) -> tuple[int, list[OperationsQueueRow]]:
     """Load one onboarding page using one overview query or count plus page queries."""
     assignee = aliased(AdminUser)
-    predicates = [Hospital.status.notin_((HospitalStatus.ACTIVE, HospitalStatus.PAUSED))]
+    # 공개 활성화(STEP 5) 뒤에도 자료/Essence/스케줄(STEP 6)이 남는다. ACTIVE만
+    # 보고 온보딩 큐에서 제거하면 AE가 콘텐츠 운영 준비를 끝내기 전에 병원이 사라진다.
+    # 신규 온보딩의 schedule_set은 서버의 fresh-Essence gate를 통과해야만 True가 된다.
+    predicates = [
+        Hospital.status != HospitalStatus.PAUSED,
+        or_(
+            Hospital.status != HospitalStatus.ACTIVE,
+            Hospital.schedule_set.is_(False),
+        ),
+    ]
     owner_filter = owner_predicate(assignee, filters.owner)
     sla_filter = sla_predicate(HospitalHandoff.sla_due_at, filters.sla, now)
     severity = case(
@@ -92,7 +101,7 @@ async def load_onboarding_queue(
             severity="HIGH"
             if sla_state(handoff.sla_due_at if handoff else None, now) == "OVERDUE"
             else "MEDIUM",
-            impact="필수 온보딩이 남아 있어 병원 채널의 공개 운영을 시작할 수 없습니다.",
+            impact="필수 온보딩이 남아 있어 자동 콘텐츠 운영 준비가 완료되지 않았습니다.",
             owner=owner_projection(actor),
             sla_due_at=handoff.sla_due_at if handoff else None,
             sla_state=sla_state(handoff.sla_due_at if handoff else None, now),

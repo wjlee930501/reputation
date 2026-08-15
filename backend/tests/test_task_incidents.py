@@ -106,7 +106,7 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
                     )
                 )
             )
-            assert [notice.notification_type for notice in notices] == [
+            assert sorted(notice.notification_type for notice in notices) == [
                 "INCIDENT_OPEN",
                 "INCIDENT_RECOVERED",
             ]

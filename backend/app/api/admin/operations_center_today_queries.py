@@ -17,7 +17,7 @@ from app.api.admin.operations_center_query_common import (
 )
 from app.api.admin.operations_center_serializers import owner_projection
 from app.models.admin_user import AdminUser
-from app.models.content import ContentItem, ContentStatus
+from app.models.content import ContentItem
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
 from app.schemas.operations import (
@@ -28,6 +28,7 @@ from app.schemas.operations import (
     OperationsQueueRow,
 )
 from app.services.post_publish_review_policy import (
+    auto_publish_due_predicate,
     human_post_publish_review_predicate,
     publicly_operational_hospital_predicate,
 )
@@ -68,10 +69,7 @@ async def load_today_queue(
     today = now.astimezone(_SEOUL).date()
     overdue_before = now - timedelta(hours=_OVERDUE_REVIEW_HOURS)
     waiting_review = human_post_publish_review_predicate()
-    due_publish = and_(
-        ContentItem.scheduled_date <= today,
-        ContentItem.status.in_((ContentStatus.DRAFT, ContentStatus.READY)),
-    )
+    due_publish = auto_publish_due_predicate(today)
     task_state = case(
         (and_(waiting_review, ContentItem.published_at < overdue_before), "OVERDUE_REVIEW"),
         (waiting_review, "REVIEW_PENDING"),

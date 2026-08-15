@@ -39,8 +39,9 @@ def write_back_generated_content(db, *, item_id, values: dict[str, Any]) -> int:
     return result.rowcount
 
 
-# 야간 생성 대상 병원 상태 — PAUSED/ONBOARDING 병원은 생성 비용을 발생시키지 않도록 제외.
-NIGHTLY_GENERATION_HOSPITAL_STATUSES = (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN)
+# STEP 7 자동 생성은 공개 활성화가 끝난 병원만 대상으로 한다. PENDING_DOMAIN
+# pre-warm은 공개되지 않을 초안에 비용을 쓰고 STEP 5/6 순서를 우회하므로 제외한다.
+NIGHTLY_GENERATION_HOSPITAL_STATUSES = (HospitalStatus.ACTIVE,)
 
 
 def _nightly_generation_claim_cutoff() -> datetime:
@@ -73,6 +74,7 @@ def _nightly_generation_stmt(window_start, window_end, claim_cutoff: datetime | 
             ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
             _needs_generation_recovery(),
             Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
+            Hospital.site_live.is_(True),
             _nightly_generation_claim_filter(claim_cutoff),
         )
         .order_by(
@@ -103,6 +105,7 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
                 ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
                 _needs_generation_recovery(),
                 Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
+                Hospital.site_live.is_(True),
                 _nightly_generation_claim_filter(claim_cutoff),
             )
         ).scalar_one()
@@ -157,19 +160,23 @@ def load_stuck_claims(db, window_start, window_end) -> list[ContentItem]:
     잠긴 것"을 구분하기 위한 값이다. 구분하지 않으면 한 달치 유실도 조용히 성공으로 보고된다.
     """
     claim_cutoff = _nightly_generation_claim_cutoff()
-    return list(
-        db.execute(
-            select(ContentItem)
-            .join(Hospital, ContentItem.hospital_id == Hospital.id)
-            .where(
-                ContentItem.scheduled_date >= window_start,
-                ContentItem.scheduled_date <= window_end,
-                ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
-                _needs_generation_recovery(),
-                Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
-                ContentItem.generation_claimed_at.isnot(None),
-                ContentItem.generation_claimed_at >= claim_cutoff,
-            )
-            .options(joinedload(ContentItem.hospital))
-        ).scalars().all()
+    return list(db.execute(_stuck_claims_stmt(window_start, window_end, claim_cutoff)).scalars().all())
+
+
+def _stuck_claims_stmt(window_start, window_end, claim_cutoff: datetime | None = None):
+    claim_cutoff = claim_cutoff or _nightly_generation_claim_cutoff()
+    return (
+        select(ContentItem)
+        .join(Hospital, ContentItem.hospital_id == Hospital.id)
+        .where(
+            ContentItem.scheduled_date >= window_start,
+            ContentItem.scheduled_date <= window_end,
+            ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
+            _needs_generation_recovery(),
+            Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
+            Hospital.site_live.is_(True),
+            ContentItem.generation_claimed_at.isnot(None),
+            ContentItem.generation_claimed_at >= claim_cutoff,
+        )
+        .options(joinedload(ContentItem.hospital))
     )

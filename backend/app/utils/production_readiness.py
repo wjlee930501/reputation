@@ -73,6 +73,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.nightly_content_generation",
     "app.workers.tasks.purge_expired_leads",
     "app.workers.tasks.regenerate_content_item",
+    "app.workers.tasks.retry_site_revalidation",
     "app.workers.tasks.run_monthly_reports",
     "app.workers.tasks.run_sov_for_hospital",
     "app.workers.tasks.run_weekly_monitoring",

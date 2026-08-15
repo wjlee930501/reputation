@@ -17,6 +17,7 @@ from app.services.site_revalidation_control import (
 from app.services.site_revalidation_control import (
     start_revalidation_failure,
 )
+from app.workers.dispatch_auth import build_dispatch_headers
 
 logger = logging.getLogger(__name__)
 REVALIDATION_RETRY_DELAYS_SECONDS = _REVALIDATION_RETRY_DELAYS_SECONDS
@@ -123,6 +124,9 @@ async def trigger_hospital_site_revalidate_safe(
                     args=[str(plan.run_id), 0],
                     queue="default",
                     countdown=plan.delay_seconds,
+                    headers=build_dispatch_headers(
+                        "retry-site-revalidation", str(plan.run_id)
+                    ),
                 )
         except Exception:
             logger.exception("durable hospital revalidation recovery setup failed")
@@ -164,6 +168,9 @@ async def trigger_content_site_revalidate_safe(
                     args=[str(plan.run_id), 0],
                     queue="default",
                     countdown=plan.delay_seconds,
+                    headers=build_dispatch_headers(
+                        "retry-site-revalidation", str(plan.run_id)
+                    ),
                 )
         except Exception:
             logger.exception("durable revalidation recovery setup failed (non-fatal)")

@@ -4,6 +4,10 @@ fakeredis 패키지가 미설치이므로, 기존 test_admin_session_revocation.
 패턴을 확장해 이 테스트에서 필요한 async 메서드(get/set/incrby/expire/exists/delete)를
 구현한다.
 """
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from uuid import uuid4
+
 import pytest
 from redis.exceptions import RedisError
 
@@ -80,16 +84,26 @@ class FakeRedis:
 class AlertRecorder:
     def __init__(self):
         self.calls: list[dict] = []
+        self.succeed = True
 
-    async def __call__(self, *, title, message):
-        self.calls.append({"title": title, "message": message})
-        return True
+    async def __call__(self, category, scope, period, value, limit, *, hard):
+        self.calls.append(
+            {
+                "category": category,
+                "scope": scope,
+                "period": period,
+                "value": value,
+                "limit": limit,
+                "hard": hard,
+            }
+        )
+        return self.succeed
 
 
 @pytest.fixture
 def alerts(monkeypatch):
     recorder = AlertRecorder()
-    monkeypatch.setattr(cost_guard.notifier, "notify_ops_alert", recorder)
+    monkeypatch.setattr(cost_guard, "_enqueue_durable_cost_alert", recorder)
     return recorder
 
 
@@ -138,7 +152,7 @@ async def test_blocks_when_monthly_hard_cap_reached(monkeypatch, alerts):
     monthly_key = next(k for k in redis.store if ":monthly:" in k)
     assert redis.store[monthly_key] == 3
     # 하드 알림은 1회만
-    hard = [c for c in alerts.calls if "상한 도달" in c["title"]]
+    hard = [c for c in alerts.calls if c["hard"]]
     assert len(hard) == 1
 
 
@@ -163,7 +177,7 @@ async def test_soft_warning_fires_once(monkeypatch, alerts):
     for _ in range(9):  # 8번째에 소프트, 9번째는 dedup
         await cost_guard.check_and_increment("content", redis_client=redis)
 
-    soft = [c for c in alerts.calls if "소프트 경고" in c["title"]]
+    soft = [c for c in alerts.calls if not c["hard"]]
     assert len(soft) == 1
 
 
@@ -174,8 +188,104 @@ async def test_hard_warning_fires_once_on_reaching_limit(monkeypatch, alerts):
     for _ in range(5):  # 3번째 도달 시 hard, 이후 차단은 dedup
         await cost_guard.check_and_increment("content", redis_client=redis)
 
-    hard = [c for c in alerts.calls if "상한 도달" in c["title"]]
+    hard = [c for c in alerts.calls if c["hard"]]
     assert len(hard) == 1
+
+
+async def test_alert_projection_failure_does_not_claim_redis_dedupe(monkeypatch, alerts):
+    _set_limits(monkeypatch, daily=1000, monthly=1)
+    redis = FakeRedis()
+    alerts.succeed = False
+
+    first = await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert first.allowed is True
+    assert alerts.calls[-1]["hard"] is True
+    assert not any(key.endswith("hard_alerted:" + alerts.calls[-1]["period"]) for key in redis.store)
+
+    alerts.succeed = True
+    second = await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert second.allowed is False
+    hard = [call for call in alerts.calls if call["hard"]]
+    assert len(hard) == 2
+    assert any(key.endswith("hard_alerted:" + hard[-1]["period"]) for key in redis.store)
+
+
+async def test_hard_cost_alert_records_incident_and_outbox(monkeypatch):
+    opened = {}
+    enqueued = {}
+    incident_id = uuid4()
+
+    async def fake_open(_db, request, *, actor, reason, now):
+        opened["request"] = request
+        opened["actor"] = actor
+        opened["reason"] = reason
+        opened["now"] = now
+        return SimpleNamespace(id=incident_id)
+
+    async def fake_enqueue(_db, intent, *, now):
+        enqueued["intent"] = intent
+        enqueued["now"] = now
+
+    monkeypatch.setattr(cost_guard, "open_or_touch_incident", fake_open)
+    monkeypatch.setattr(cost_guard, "enqueue_notification", fake_enqueue)
+
+    now = datetime(2026, 8, 15, tzinfo=UTC)
+    await cost_guard._enqueue_durable_cost_alert_in_session(
+        object(),
+        "content",
+        "monthly",
+        "202608",
+        1200,
+        1200,
+        hard=True,
+        now=now,
+    )
+
+    request = opened["request"]
+    intent = enqueued["intent"]
+    assert request.incident_type == "COST_GUARD_LIMIT_REACHED"
+    assert request.source_type == "COST_GUARD"
+    assert request.source_id == "content:monthly:202608:hard"
+    assert request.safe_error_message == "category=content scope=monthly period=202608 usage=1200/1200"
+    assert intent.dedupe_key == "COST_GUARD_ALERT:content:monthly:202608:hard"
+    assert intent.notification_type == "COST_GUARD_LIMIT_REACHED"
+    assert intent.incident_id == incident_id
+    assert intent.max_attempts == 3
+    assert enqueued["now"] == now
+
+
+async def test_soft_cost_alert_records_outbox_without_incident(monkeypatch):
+    async def unexpected_open(*_args, **_kwargs):
+        raise AssertionError("soft cost warnings should not open incidents")
+
+    enqueued = {}
+
+    async def fake_enqueue(_db, intent, *, now):
+        enqueued["intent"] = intent
+        enqueued["now"] = now
+
+    monkeypatch.setattr(cost_guard, "open_or_touch_incident", unexpected_open)
+    monkeypatch.setattr(cost_guard, "enqueue_notification", fake_enqueue)
+
+    now = datetime(2026, 8, 15, tzinfo=UTC)
+    await cost_guard._enqueue_durable_cost_alert_in_session(
+        object(),
+        "sov",
+        "daily",
+        "20260815",
+        80,
+        100,
+        hard=False,
+        now=now,
+    )
+
+    intent = enqueued["intent"]
+    assert intent.dedupe_key == "COST_GUARD_ALERT:sov:daily:20260815:soft"
+    assert intent.notification_type == "COST_GUARD_SOFT_WARNING"
+    assert intent.incident_id is None
+    assert intent.max_attempts == 3
 
 
 async def test_kill_switch_blocks_all_categories(monkeypatch, alerts):

@@ -15,10 +15,45 @@ import { canSubmitSchedule } from '@/lib/operator-safety'
 import { PLAN_CONTRACT_LABELS, PLAN_LABELS, type ScheduleInfo } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
+interface ReadinessCheck {
+  key: string
+  label: string
+  passed: boolean
+  next_action?: string | null
+}
+
+interface ScheduleReadiness {
+  essence?: {
+    processed_source_count?: number | null
+    required_source_count?: number | null
+    approved_philosophy_exists?: boolean | null
+    source_stale?: boolean | null
+  } | null
+  checks?: ReadinessCheck[]
+}
+
 const PLAN_DISTRIBUTION: Record<string, Array<[string, number]>> = {
   PLAN_20: [['FAQ', 5], ['질환 가이드', 4], ['치료 안내', 4], ['원장 칼럼', 2], ['건강 정보', 2], ['지역 특화', 2], ['공지', 1]],
   PLAN_16: [['FAQ', 4], ['질환 가이드', 3], ['치료 안내', 3], ['원장 칼럼', 2], ['건강 정보', 2], ['지역 특화', 1], ['공지', 1]],
   PLAN_12: [['FAQ', 3], ['질환 가이드', 3], ['치료 안내', 2], ['원장 칼럼', 2], ['건강 정보', 1], ['지역 특화', 1]],
+}
+
+function contentReadinessBlockers(readiness: ScheduleReadiness | null): string[] {
+  if (!readiness) return []
+  const checkByKey = new Map((readiness.checks ?? []).map((check) => [check.key, check]))
+  const essence = readiness.essence
+  const blockers: string[] = []
+
+  if ((essence?.required_source_count ?? 0) === 0) {
+    blockers.push('병원 근거 자료를 1개 이상 추가해 주세요.')
+  }
+  for (const key of ['essence_sources', 'essence_philosophy', 'essence_freshness']) {
+    const check = checkByKey.get(key)
+    if (check && !check.passed) {
+      blockers.push(check.next_action || `${check.label} 단계를 완료해 주세요.`)
+    }
+  }
+  return Array.from(new Set(blockers))
 }
 
 export default function SchedulePage() {
@@ -36,6 +71,9 @@ export default function SchedulePage() {
   const [existing, setExisting] = useState<ScheduleInfo | null>(null)
   const [existingLoading, setExistingLoading] = useState(true)
   const [existingError, setExistingError] = useState<string | null>(null)
+  const [readiness, setReadiness] = useState<ScheduleReadiness | null>(null)
+  const [readinessLoading, setReadinessLoading] = useState(true)
+  const [readinessError, setReadinessError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -68,6 +106,30 @@ export default function SchedulePage() {
     return () => { cancelled = true }
   }, [id])
 
+  useEffect(() => {
+    let cancelled = false
+    setReadinessLoading(true)
+    fetchAPI<ScheduleReadiness>(`/admin/hospitals/${id}/readiness`)
+      .then((value) => {
+        if (!cancelled) setReadiness(value)
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        if (!isExpectedOperatorRequestFailure(e)) throw e
+        setReadinessError(safeOperatorError('onboarding', '운영 준비도를 다시 불러 근거 자료와 콘텐츠 운영 기준 상태를 확인하세요.'))
+      })
+      .finally(() => {
+        if (!cancelled) setReadinessLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [id])
+
+  const readinessBlockers = contentReadinessBlockers(readiness)
+  const canSaveSchedule = canSubmitSchedule(existingLoading, existingError)
+    && !readinessLoading
+    && !readinessError
+    && readinessBlockers.length === 0
+
   function toggleDay(idx: number) {
     setSelectedDays((prev) =>
       prev.includes(idx) ? prev.filter((d) => d !== idx) : [...prev, idx].sort()
@@ -78,6 +140,14 @@ export default function SchedulePage() {
     e.preventDefault()
     if (!canSubmitSchedule(existingLoading, existingError)) {
       setError('기존 스케줄 상태를 확인한 뒤 다시 시도해 주세요.')
+      return
+    }
+    if (readinessLoading || readinessError) {
+      setError(readinessError ?? '운영 준비도를 확인한 뒤 다시 시도해 주세요.')
+      return
+    }
+    if (readinessBlockers.length > 0) {
+      setError(`콘텐츠 스케줄 설정 전 필요한 작업이 남아 있습니다.\n- ${readinessBlockers.join('\n- ')}`)
       return
     }
     if (selectedDays.length === 0) {
@@ -135,6 +205,19 @@ export default function SchedulePage() {
       )}
       {existingError && (
         <div className="mb-4"><OperatorIssuePanel message={existingError} surface="onboarding" onRetry={() => window.location.reload()} retryLabel="콘텐츠 발행 일정 다시 불러오기" /></div>
+      )}
+      {readinessError && (
+        <div className="mb-4"><OperatorIssuePanel message={readinessError} surface="onboarding" onRetry={() => window.location.reload()} retryLabel="운영 준비도 다시 불러오기" /></div>
+      )}
+      {!readinessLoading && readinessBlockers.length > 0 && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-semibold text-amber-900">스케줄 설정 전 완료할 작업</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-900">
+            {readinessBlockers.map((blocker) => (
+              <li key={blocker}>{blocker}</li>
+            ))}
+          </ul>
+        </div>
       )}
       {!existingLoading && existing && (
         <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
@@ -259,7 +342,7 @@ export default function SchedulePage() {
 
           <button
             type="submit"
-            disabled={loading || !canSubmitSchedule(existingLoading, existingError)}
+            disabled={loading || !canSaveSchedule}
             className="w-full py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
             {loading ? '저장 중...' : existing ? '스케줄 교체 및 슬롯 재생성' : '스케줄 저장 및 슬롯 생성'}

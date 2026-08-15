@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import pytest
@@ -101,8 +101,24 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 worker_id="task15-fail",
                 throttle=_no_pause,
             )
-        assert first.failed == 1
-        assert failed_calls == 1
+            second_retry = await dispatch_notification_batch(
+                sessions,
+                client,
+                webhook_url="https://hooks.slack.com/services/test/task15",
+                worker_id="task15-fail-2",
+                now=datetime.now(UTC) + timedelta(minutes=2),
+                throttle=_no_pause,
+            )
+            third = await dispatch_notification_batch(
+                sessions,
+                client,
+                webhook_url="https://hooks.slack.com/services/test/task15",
+                worker_id="task15-fail-3",
+                now=datetime.now(UTC) + timedelta(minutes=5),
+                throttle=_no_pause,
+            )
+        assert (first.retried, second_retry.retried, third.failed) == (1, 1, 1)
+        assert failed_calls == 3
 
         with Session(sync_engine, expire_on_commit=False) as db:
             item = db.get(ContentItem, content_id)

@@ -12,9 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.audit import AdminAuditLog
-from app.models.operations import JSONValue, NotificationOutbox, NotificationOutboxState
+from app.models.operations import (
+    IncidentSeverity,
+    JSONValue,
+    NotificationOutbox,
+    NotificationOutboxState,
+)
 from app.services.audit_log import write_audit_log
 from app.services.incident_safety import sanitize_operator_text
+from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+from app.services.incidents import open_or_touch_incident
 from app.services.notification_contracts import (
     NotificationIntent,
     NotificationPayloadError,
@@ -26,6 +33,7 @@ from app.services.notification_contracts import (
 class ClaimedNotification:
     id: uuid.UUID
     hospital_id: uuid.UUID | None
+    incident_id: uuid.UUID | None
     operation_run_id: uuid.UUID | None
     payload: dict[str, JSONValue]
     attempt_count: int
@@ -165,34 +173,99 @@ async def retry_notification(
     return NotificationRetryConflict(code, notification_id, expected_version, current.version, current.state)
 
 
+async def create_delivery_unknown_incident(
+    db: AsyncSession,
+    row_or_claim: NotificationOutbox | ClaimedNotification,
+    *,
+    now: datetime,
+    actor: str,
+    reason: str,
+) -> uuid.UUID:
+    """Open the operator reconciliation incident for an unknowable Slack delivery."""
+
+    incident = await open_or_touch_incident(
+        db,
+        IncidentOpenRequest(
+            pipeline="notification",
+            object_type="outbox",
+            object_id=str(row_or_claim.id),
+            fingerprint=IncidentFingerprint.DELIVERY_OUTCOME_UNKNOWN,
+            incident_type="NOTIFICATION_DELIVERY_UNKNOWN",
+            severity=IncidentSeverity.HIGH,
+            customer_impact=(
+                "운영 알림이 Slack에 도착했는지 확인할 수 없습니다. "
+                "중복 발송 가능성이 있어 자동 재시도하지 않습니다."
+            ),
+            source_type="NOTIFICATION_OUTBOX",
+            next_action=(
+                "Slack 채널에서 해당 알림 수신 여부를 확인한 뒤, 미수신이 확실할 때만 "
+                "Admin에서 수동 재시도해 주세요."
+            ),
+            admin_path="/operations",
+            hospital_id=row_or_claim.hospital_id,
+            operation_run_id=row_or_claim.operation_run_id,
+            source_id=str(row_or_claim.id),
+            safe_error_code="DELIVERY_OUTCOME_UNKNOWN",
+            safe_error_message="Slack 수신 여부가 불확실합니다. 중복 여부 확인 후 수동 재시도하세요.",
+        ),
+        actor=actor,
+        reason=reason,
+        now=now,
+    )
+    return incident.id
+
+
 async def recover_stale_sending(db: AsyncSession, *, now: datetime | None = None) -> int:
     """Hold expired leases because the remote delivery outcome is unknowable."""
 
     observed_at = now or datetime.now(UTC)
-    result = await db.execute(
-        update(NotificationOutbox)
-        .where(
-            NotificationOutbox.state == NotificationOutboxState.SENDING.value,
-            (
-                (NotificationOutbox.lease_expires_at <= observed_at)
-                | NotificationOutbox.lease_expires_at.is_(None)
-            ),
-        )
-        .values(
-            state=NotificationOutboxState.HOLD.value,
-            lease_owner=None,
-            lease_expires_at=None,
-            next_attempt_at=None,
-            safe_error_code="DELIVERY_OUTCOME_UNKNOWN",
-            safe_error_message="Slack 수신 여부를 확인한 뒤 수동으로 재시도해 주세요.",
-            version=NotificationOutbox.version + 1,
-            updated_at=observed_at,
-        )
-        .returning(NotificationOutbox.id)
+    stale_rows = tuple(
+        (
+            await db.execute(
+                select(NotificationOutbox)
+                .where(
+                    NotificationOutbox.state == NotificationOutboxState.SENDING.value,
+                    (
+                        (NotificationOutbox.lease_expires_at <= observed_at)
+                        | NotificationOutbox.lease_expires_at.is_(None)
+                    ),
+                )
+                .with_for_update(skip_locked=True)
+            )
+        ).scalars()
     )
-    ids = tuple(result.scalars())
+    recovered = 0
+    for row in stale_rows:
+        incident_id = await create_delivery_unknown_incident(
+            db,
+            row,
+            now=observed_at,
+            actor="notification-worker",
+            reason="stale notification lease outcome unknown",
+        )
+        result = await db.execute(
+            update(NotificationOutbox)
+            .where(
+                NotificationOutbox.id == row.id,
+                NotificationOutbox.state == NotificationOutboxState.SENDING.value,
+                NotificationOutbox.version == row.version,
+            )
+            .values(
+                state=NotificationOutboxState.HOLD.value,
+                incident_id=incident_id,
+                lease_owner=None,
+                lease_expires_at=None,
+                next_attempt_at=None,
+                safe_error_code="DELIVERY_OUTCOME_UNKNOWN",
+                safe_error_message="Slack 수신 여부를 확인한 뒤 수동으로 재시도해 주세요.",
+                version=NotificationOutbox.version + 1,
+                updated_at=observed_at,
+            )
+            .returning(NotificationOutbox.id)
+        )
+        recovered += int(result.scalar_one_or_none() is not None)
     await db.commit()
-    return len(ids)
+    return recovered
 
 
 async def claim_notification_batch(
@@ -237,6 +310,7 @@ async def claim_notification_batch(
             ClaimedNotification(
                 row.id,
                 row.hospital_id,
+                row.incident_id,
                 row.operation_run_id,
                 row.payload,
                 row.attempt_count,

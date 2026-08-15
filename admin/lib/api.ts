@@ -81,7 +81,11 @@ export async function fetchAPI<T = unknown>(path: string, options?: RequestInit)
   if (!res.ok) {
     if (res.status === 401) {
       const currentPath = window.location.pathname + window.location.search
-      window.location.href = `/login?redirect=${encodeURIComponent(currentPath)}`
+      const loginUrl = new URL('/login', window.location.origin)
+      loginUrl.searchParams.set('redirect', currentPath)
+      // 인증 만료 화면으로 돌아오는 history entry를 남기지 않는다. 일반 앱 내
+      // 이동이 아니라 전역 API 계층에서 발생하는 강제 재인증 경계다.
+      window.location.replace(loginUrl)
       throw new ApiError('인증이 만료되었습니다. 로그인 페이지로 이동합니다.', 401)
     }
     const body = await res.text()

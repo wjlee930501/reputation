@@ -18,14 +18,21 @@ KST 기준이므로 일/월 경계도 KST로 맞춰야 집계가 직관적이다
 """
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import redis.asyncio as redis_async
 from redis.exceptions import RedisError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.services import notifier
+from app.core.database import get_async_sessionmaker
+from app.models.operations import Incident, IncidentSeverity
+from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+from app.services.incidents import open_or_touch_incident
+from app.services.notification_contracts import NotificationIntent, SlackMessage
+from app.services.notification_outbox import enqueue_notification
 
 logger = logging.getLogger(__name__)
 
@@ -415,35 +422,204 @@ async def _best_effort_alert(
     *,
     hard: bool,
 ) -> None:
-    """Slack 경고를 중복 없이 1회 발송한다. 알림 실패가 가드 결정을 바꾸지 않도록 격리."""
+    """Record one durable cost alert. Alert failures never affect the guard decision."""
     kind = "hard" if hard else "soft"
     flag_key = f"cost_guard:{category}:{scope}:{kind}_alerted:{period}"
+    try:
+        if await client.exists(flag_key):
+            return
+        if not await _enqueue_durable_cost_alert(
+            category,
+            scope,
+            period,
+            value,
+            limit,
+            hard=hard,
+        ):
+            return
+        # Claim only after the durable DB projection exists. If the DB is down,
+        # the next guard observation retries instead of suppressing the alert
+        # for the rest of the day/month.
+        await _claim_flag(client, flag_key, scope)
+    except Exception:  # noqa: BLE001 — 알림 실패는 가드 결정에 영향 주지 않는다.
+        logger.warning("cost_guard alert projection failed: category=%s scope=%s", category, scope)
+
+
+async def _enqueue_durable_cost_alert(
+    category: str,
+    scope: str,
+    period: str,
+    value: int,
+    limit: int,
+    *,
+    hard: bool,
+) -> bool:
+    """Persist a cost alert through the shared Incident/NotificationOutbox control plane."""
+
+    try:
+        sessionmaker = get_async_sessionmaker()
+        async with sessionmaker() as db:
+            await _enqueue_durable_cost_alert_in_session(
+                db,
+                category,
+                scope,
+                period,
+                value,
+                limit,
+                hard=hard,
+                now=datetime.now(UTC),
+            )
+            await db.commit()
+            return True
+    except Exception:  # noqa: BLE001 — 비용 가드 결정은 DB/알림 장애와 독립이어야 한다.
+        logger.warning(
+            "cost_guard durable alert skipped: category=%s scope=%s kind=%s",
+            category,
+            scope,
+            "hard" if hard else "soft",
+        )
+        return False
+
+
+async def _enqueue_durable_cost_alert_in_session(
+    db: AsyncSession,
+    category: str,
+    scope: str,
+    period: str,
+    value: int,
+    limit: int,
+    *,
+    hard: bool,
+    now: datetime,
+) -> None:
+    kind = "hard" if hard else "soft"
+    incident: Incident | None = None
+    if hard:
+        incident = await open_or_touch_incident(
+            db,
+            IncidentOpenRequest(
+                pipeline="cost_guard",
+                object_type="budget_scope",
+                object_id=_cost_alert_identity(category, scope, period, kind),
+                fingerprint=IncidentFingerprint.COST_BLOCKED,
+                incident_type="COST_GUARD_LIMIT_REACHED",
+                severity=IncidentSeverity.HIGH,
+                customer_impact=(
+                    "해당 비용 범위가 리셋되거나 Admin에서 상한을 조정하기 전까지 "
+                    "자동 AI 호출이 차단됩니다."
+                ),
+                source_type="COST_GUARD",
+                next_action=(
+                    "운영센터의 비용 가드 사용량을 확인하고, 필요한 경우 킬스위치나 "
+                    "일일 상한을 조정한 뒤 차단된 작업을 재시도하세요."
+                ),
+                admin_path="/operations",
+                source_id=_cost_alert_identity(category, scope, period, kind),
+                safe_error_code="COST_GUARD_LIMIT_REACHED",
+                safe_error_message=_cost_alert_safe_message(category, scope, period, value, limit),
+            ),
+            actor="cost-guard",
+            reason="cost guard hard limit reached",
+            now=now,
+        )
+    await enqueue_notification(
+        db,
+        _build_cost_alert_intent(
+            category,
+            scope,
+            period,
+            value,
+            limit,
+            hard=hard,
+            incident=incident,
+        ),
+        now=now,
+    )
+
+
+def _cost_alert_identity(category: str, scope: str, period: str, kind: str) -> str:
+    return f"{category}:{scope}:{period}:{kind}"
+
+
+def _cost_alert_safe_message(
+    category: str, scope: str, period: str, value: int, limit: int
+) -> str:
+    scope_label = "daily" if scope == "daily" else "monthly"
+    return f"category={category} scope={scope_label} period={period} usage={value}/{limit}"
+
+
+def _build_cost_alert_intent(
+    category: str,
+    scope: str,
+    period: str,
+    value: int,
+    limit: int,
+    *,
+    hard: bool,
+    incident: Incident | None,
+) -> NotificationIntent:
+    kind = "hard" if hard else "soft"
     scope_label = "일일" if scope == "daily" else "월간"
     label = _CATEGORY_LABELS[category]
-    try:
-        if not await _claim_flag(client, flag_key, scope):
-            return
-        if hard:
-            await notifier.notify_ops_alert(
-                title=f"비용 가드 {scope_label} 상한 도달 — {label}",
-                message=(
-                    f"카테고리: *{label}*\n"
-                    f"{scope_label} 사용량이 상한에 도달했습니다: {value}/{limit}건\n"
-                    f"이후 {scope_label} 자동 호출은 기간이 리셋될 때까지 차단됩니다. "
-                    f"긴급 시 킬스위치/상한을 Admin에서 조정해 주세요."
-                ),
-            )
-        else:
-            await notifier.notify_ops_alert(
-                title=f"비용 가드 {scope_label} 소프트 경고(80%) — {label}",
-                message=(
-                    f"카테고리: *{label}*\n"
-                    f"{scope_label} 사용량이 상한의 80%를 넘었습니다: {value}/{limit}건\n"
-                    f"현재 추세라면 곧 상한에 도달합니다. 사용량을 확인해 주세요."
-                ),
-            )
-    except Exception:  # noqa: BLE001 — 알림 실패는 가드 결정에 영향 주지 않는다.
-        logger.warning("cost_guard alert delivery failed: category=%s scope=%s", category, scope)
+    title = (
+        f"비용 가드 {scope_label} 상한 도달 - {label}"
+        if hard
+        else f"비용 가드 {scope_label} 소프트 경고(80%) - {label}"
+    )
+    context = (
+        f"{scope_label} 사용량이 상한에 도달했습니다: {value}/{limit}건"
+        if hard
+        else f"{scope_label} 사용량이 상한의 80%를 넘었습니다: {value}/{limit}건"
+    )
+    next_action = (
+        f"이후 {scope_label} 자동 호출은 기간이 리셋될 때까지 차단됩니다. "
+        "운영센터에서 사용량과 상한을 확인해 주세요."
+        if hard
+        else "현재 추세라면 곧 상한에 도달합니다. 운영센터에서 사용량을 확인해 주세요."
+    )
+    admin_url = urljoin(settings.ADMIN_BASE_URL.rstrip("/") + "/", "operations")
+    message = SlackMessage(
+        fallback_text=f"{title}: {context}",
+        blocks=(
+            {
+                "type": "header",
+                "block_id": "cost_guard_header",
+                "text": {"type": "plain_text", "text": title},
+            },
+            {
+                "type": "section",
+                "block_id": "cost_guard_context",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"*카테고리*\n{label}\n"
+                        f"*범위*\n{scope_label} · {period}\n"
+                        f"*상태*\n{context}\n"
+                        f"*지금 할 일*\n{next_action}"
+                    ),
+                },
+            },
+            {
+                "type": "actions",
+                "block_id": "cost_guard_action",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "운영센터에서 확인"},
+                        "url": admin_url,
+                    },
+                ],
+            },
+        ),
+        admin_url=admin_url,
+    )
+    return NotificationIntent(
+        dedupe_key=f"COST_GUARD_ALERT:{category}:{scope}:{period}:{kind}",
+        notification_type="COST_GUARD_LIMIT_REACHED" if hard else "COST_GUARD_SOFT_WARNING",
+        message=message,
+        incident_id=incident.id if incident is not None else None,
+        max_attempts=3,
+    )
 
 
 def _empty_category_usage(category: str) -> dict:

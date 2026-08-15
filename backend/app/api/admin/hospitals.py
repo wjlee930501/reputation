@@ -126,6 +126,7 @@ class HospitalCreate(BaseModel):
     onboarding_note: str | None = Field(default=None, max_length=2000)
     sales_owner_id: uuid.UUID | None = None
     ae_owner_id: uuid.UUID | None = None
+    onboarding_request_id: uuid.UUID | None = None
 
 
 class HospitalProfileUpdate(BaseModel):
@@ -310,6 +311,45 @@ RESERVED_SITE_SLUGS = frozenset(
 )
 
 
+async def _load_replayed_onboarding_request(
+    db: AsyncSession,
+    body: HospitalCreate,
+    *,
+    requested_sales_owner_id: uuid.UUID | None,
+    requested_ae_owner_id: uuid.UUID | None,
+) -> dict[str, object] | None:
+    if body.onboarding_request_id is None:
+        return None
+
+    prior = await db.get(Hospital, body.onboarding_request_id)
+    if prior is None:
+        return None
+
+    prior_handoff = (
+        await db.execute(select(HospitalHandoff).where(HospitalHandoff.hospital_id == prior.id))
+    ).scalar_one_or_none()
+    same_request = (
+        prior.name == body.name
+        and prior.plan == body.plan
+        and prior_handoff is not None
+        and (
+            requested_sales_owner_id is None
+            or prior_handoff.sales_owner_id == requested_sales_owner_id
+        )
+        and (requested_ae_owner_id is None or prior_handoff.ae_owner_id == requested_ae_owner_id)
+    )
+    if not same_request:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ONBOARDING_REQUEST_CONFLICT",
+                "message": "같은 등록 요청 식별자가 다른 병원 정보에 사용되었습니다.",
+            },
+        )
+
+    return {**_serialize(prior), "handoff": _serialize_handoff_summary(prior_handoff)}
+
+
 # ── 엔드포인트 ────────────────────────────────────────────────────
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_hospital(
@@ -318,6 +358,18 @@ async def create_hospital(
     actor: AdminUser = Depends(require_active_account),
 ):
     """신규 병원 등록 (계약 완료 후 AE가 첫 번째로 실행)"""
+    actor_id = actor.id if isinstance(actor, AdminUser) else None
+    requested_sales_owner_id = body.sales_owner_id or actor_id
+    requested_ae_owner_id = body.ae_owner_id or actor_id
+    replayed = await _load_replayed_onboarding_request(
+        db,
+        body,
+        requested_sales_owner_id=requested_sales_owner_id,
+        requested_ae_owner_id=requested_ae_owner_id,
+    )
+    if replayed is not None:
+        return replayed
+
     slug = slugify(body.name, separator="-")
     # 공개 표면의 예약 경로와 겹치면 그 병원 페이지가 통째로 가려진다.
     # 예: slug가 'ai-diagnosis'인 병원은 무료 진단 퍼널에 먹혀 영원히 열리지 않는다 (PRD F1-3).
@@ -329,6 +381,7 @@ async def create_hospital(
         slug = f"{slug}-{uuid.uuid4().hex[:4]}"
 
     hospital = Hospital(
+        id=body.onboarding_request_id or uuid.uuid4(),
         name=body.name,
         slug=slug,
         plan=body.plan,
@@ -373,6 +426,14 @@ async def create_hospital(
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
+        replayed = await _load_replayed_onboarding_request(
+            db,
+            body,
+            requested_sales_owner_id=requested_sales_owner_id,
+            requested_ae_owner_id=requested_ae_owner_id,
+        )
+        if replayed is not None:
+            return replayed
         raise HTTPException(
             status_code=409,
             detail="이미 사용 중인 슬러그 또는 도메인입니다. 병원명을 확인해 주세요.",
@@ -380,14 +441,7 @@ async def create_hospital(
     await db.refresh(hospital)
     return {
         **_serialize(hospital),
-        "handoff": {
-            "id": handoff.id,
-            "hospital_id": handoff.hospital_id,
-            "state": handoff.state,
-            "sales_owner_id": handoff.sales_owner_id,
-            "ae_owner_id": handoff.ae_owner_id,
-            "version": handoff.version,
-        },
+        "handoff": _serialize_handoff_summary(handoff),
     }
 
 
@@ -592,7 +646,11 @@ async def autofill_hospital_profile(
 
 @router.patch("/{hospital_id}/activate")
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Accepted onboarding through schedule, then domain, becomes ACTIVE."""
+    """Start STEP 5 public operation after profile, V0, and site build.
+
+    Content scheduling belongs to STEP 6 and is deliberately not an activation
+    prerequisite.
+    """
     h = await _get_or_404(db, hospital_id)
     if h.status == HospitalStatus.ACTIVE:
         return {
@@ -1049,4 +1107,22 @@ def _serialize_list(h: Hospital) -> dict:
         "schedule_set": h.schedule_set,
         "aeo_domain": h.aeo_domain,
         "created_at": h.created_at.isoformat() if h.created_at else None,
+    }
+
+
+def _serialize_handoff_summary(handoff: HospitalHandoff) -> dict[str, object]:
+    return {
+        "id": handoff.id,
+        "hospital_id": handoff.hospital_id,
+        "state": handoff.state,
+        "sales_owner_id": handoff.sales_owner_id,
+        "ae_owner_id": handoff.ae_owner_id,
+        "contract_reference": handoff.contract_reference,
+        "contract_effective_at": handoff.contract_effective_at,
+        "plan": handoff.plan,
+        "sla_due_at": handoff.sla_due_at,
+        "accepted_by_id": handoff.accepted_by_id,
+        "accepted_at": handoff.accepted_at,
+        "acceptance_source": handoff.acceptance_source,
+        "version": handoff.version,
     }

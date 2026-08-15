@@ -8,6 +8,7 @@ export type HandoffState = 'CONTRACT_PENDING' | 'CONTRACTED' | 'HANDOFF_ACCEPTED
 export interface Handoff {
   id: string
   hospital_id: string
+  hospital_name?: string | null
   state: HandoffState
   sales_owner_id?: string | null
   ae_owner_id?: string | null

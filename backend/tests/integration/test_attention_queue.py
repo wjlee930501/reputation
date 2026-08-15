@@ -16,10 +16,12 @@ from slowapi import Limiter
 from sqlalchemy import event, null
 
 from app.api.admin import operations_center
+from app.api.admin import operations_center_report_queries as report_queries
 from app.api.admin.operations import (
     POST_PUBLISH_REVIEW_OVERDUE_HOURS,
     get_attention_queue,
 )
+from app.api.admin.operations_center_query_common import OperationsFilters
 from app.api.admin.operations_center_read_routes import get_global_incident_detail
 from app.core.database import get_db
 from app.core.rate_limit import get_request_ip
@@ -27,6 +29,7 @@ from app.main import app
 from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import (
     Incident,
     IncidentSeverity,
@@ -251,7 +254,16 @@ async def _active_hospital(db, name: str, *, created_months_ago: int = 6) -> Hos
     hospital = await _hospital(db, name)
     hospital.status = HospitalStatus.ACTIVE
     now = datetime.now(UTC)
-    hospital.created_at = now - timedelta(days=31 * created_months_ago)
+    started_at = now - timedelta(days=31 * created_months_ago)
+    hospital.created_at = started_at
+    db.add(
+        HospitalServiceInterval(
+            hospital_id=hospital.id,
+            started_at=started_at,
+            ended_at=None,
+            provenance="ACTIVATION",
+        )
+    )
     await db.flush()
     return hospital
 
@@ -413,6 +425,42 @@ async def test_operations_overview_returns_all_four_operator_queues(pg_async_ses
     assert all(row.history is not None for row in rows)
 
 
+async def test_live_hospital_stays_in_onboarding_until_content_schedule_is_ready(
+    pg_async_session,
+):
+    """STEP 5 공개 뒤 STEP 6이 남은 병원이 운영 대기열에서 사라지면 안 된다."""
+    db = pg_async_session
+    actor = await _operations_actor(db)
+    hospital = await _hospital(
+        db,
+        "공개 후 콘텐츠 준비 의원",
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+    )
+    hospital.schedule_set = False
+    await db.flush()
+
+    pending = await operations_center.get_operations_queue(
+        operations_center.OperationsQueue.ONBOARDING,
+        page=1,
+        page_size=100,
+        db=db,
+        _actor=actor,
+    )
+    assert any(row.customer.hospital_id == hospital.id for row in pending.items)
+
+    hospital.schedule_set = True
+    await db.flush()
+    completed = await operations_center.get_operations_queue(
+        operations_center.OperationsQueue.ONBOARDING,
+        page=1,
+        page_size=100,
+        db=db,
+        _actor=actor,
+    )
+    assert all(row.customer.hospital_id != hospital.id for row in completed.items)
+
+
 async def test_operations_incident_filters_paginate_and_empty(pg_async_session):
     db = pg_async_session
     actor = await _operations_actor(db, "필터 담당자")
@@ -533,6 +581,70 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
     assert reports_due.total == 0
     assert reports_due.items == []
     assert report.id is not None
+
+
+async def test_report_queue_suppresses_monthly_report_while_autonomous_run_is_active(
+    pg_async_session,
+):
+    db = pg_async_session
+    now = datetime(2026, 8, 2, tzinfo=UTC)
+    hospital = await _active_hospital(db, "자동 월간 생성 중 의원")
+    hospital.created_at = datetime(2026, 6, 1, tzinfo=UTC)
+    db.add(
+        OperationRun(
+            hospital_id=hospital.id,
+            operation_type="SCHEDULED_MONTHLY_REPORT",
+            state="RUNNING",
+            request_payload={"source_type": "MONTHLY_SCHEDULE", "source_id": "2026-07"},
+            result_summary={"stage": "RUNNING", "period_year": 2026, "period_month": 7},
+            started_at=now - timedelta(minutes=20),
+        )
+    )
+    await db.flush()
+
+    total, rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=now,
+    )
+
+    assert total == 0
+    assert all(row.customer.hospital_id != hospital.id for row in rows)
+
+
+async def test_report_queue_returns_monthly_report_after_autonomous_run_fails(
+    pg_async_session,
+):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "월간 실패 조치 의원")
+    hospital.created_at = datetime(2026, 6, 1, tzinfo=UTC)
+    db.add(
+        OperationRun(
+            hospital_id=hospital.id,
+            operation_type="SCHEDULED_MONTHLY_REPORT",
+            state="FAILED",
+            request_payload={"source_type": "MONTHLY_SCHEDULE", "source_id": "2026-07"},
+            result_summary={"stage": "FAILED", "period_year": 2026, "period_month": 7},
+            completed_at=datetime(2026, 8, 1, 0, 40, tzinfo=UTC),
+        )
+    )
+    await db.flush()
+
+    total, rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=datetime(2026, 8, 2, tzinfo=UTC),
+    )
+
+    assert total == 1
+    assert [row.customer.hospital_id for row in rows] == [hospital.id]
+    assert rows[0].status == "MISSING"
 
 
 async def test_operations_cross_hospital_and_illegal_ack_fail_closed(pg_async_session):

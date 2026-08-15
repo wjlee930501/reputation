@@ -38,6 +38,7 @@ TASK_PURPOSES = {
     "app.workers.tasks.run_weekly_monitoring": "weekly-sov-monitoring",
     "app.workers.tasks.adjust_query_priorities": "adjust-query-priorities",
     "app.workers.tasks.run_monthly_reports": "monthly-reports",
+    "app.workers.tasks.retry_site_revalidation": "retry-site-revalidation",
     "app.workers.tasks.monitor_live_custom_domains": "live-custom-domain-health",
     "app.workers.tasks.purge_expired_leads": "purge-expired-leads",
     "app.workers.naver_sync.weekly_naver_source_sync": "weekly-naver-source-sync",

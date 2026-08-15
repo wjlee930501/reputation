@@ -5,22 +5,25 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   buildDevelopmentSupportSummary,
-  enabledPostAction,
   historyEventLabel,
   operationStatusLabel,
+  primaryOperationsMutation,
   runStateLabel,
   safeCauseText,
   shouldPollRun,
   slackStateLabel,
+  type OperationsMutationDescriptor,
 } from '@/lib/operations-center'
 import type { OperationsIncidentDetail, OperationsQueueRow } from '@/types'
 
-export type OperationMutation = {
-  readonly kind: 'RETRY_RUN' | 'RECOVER_INCIDENT' | 'ACK_INCIDENT' | 'RETRY_SLACK'
+export type OperationMutation = OperationsMutationDescriptor | {
+  readonly kind: 'RETRY_SLACK'
   readonly path: string
   readonly targetId: string
   readonly version: number | null
   readonly reason: string
+  readonly label: string
+  readonly requiresIdempotencyKey: false
 }
 
 type Props = {
@@ -40,37 +43,10 @@ function formatDate(value: string | null): string {
   }).format(new Date(value))
 }
 
-function incidentBase(row: OperationsQueueRow): string {
-  const hospital = row.customer.hospital_id
-  return hospital
-    ? `/admin/operations/hospitals/${hospital}/incidents/${row.incident_id}`
-    : `/admin/operations/incidents/${row.incident_id}`
-}
-
 function isOperatorNavigation(row: OperationsQueueRow): boolean {
   return row.action.enabled
     && row.action.method === 'GET'
     && (row.action.path.startsWith('/hospitals/') || row.action.path.startsWith('/leads/'))
-}
-
-function primaryMutation(detail: OperationsIncidentDetail, reason: string): OperationMutation | null {
-  const row = detail.incident
-  const run = detail.run
-  const retry = enabledPostAction(run?.retry ?? null) ?? enabledPostAction(row.retry)
-  if (retry?.kind === 'RETRY_RUN') {
-    return { kind: 'RETRY_RUN', path: retry.path, targetId: run?.run_id ?? row.operation_run_id ?? row.id, version: null, reason }
-  }
-  const action = enabledPostAction(row.action)
-  if (action?.kind === 'RECOVER_INCIDENT' || action?.kind === 'ACK_INCIDENT') {
-    return { kind: action.kind, path: action.path, targetId: row.incident_id ?? row.id, version: row.version, reason }
-  }
-  if (run?.state === 'SUCCEEDED' && row.status === 'RETRYING') {
-    return { kind: 'RECOVER_INCIDENT', path: `${incidentBase(row)}/recover`, targetId: row.incident_id ?? row.id, version: row.version, reason }
-  }
-  if (row.status === 'RECOVERED') {
-    return { kind: 'ACK_INCIDENT', path: `${incidentBase(row)}/ack`, targetId: row.incident_id ?? row.id, version: row.version, reason }
-  }
-  return null
 }
 
 function mutationLabel(mutation: OperationMutation): string {
@@ -78,6 +54,7 @@ function mutationLabel(mutation: OperationMutation): string {
     case 'RETRY_RUN': return '작업 다시 시도'
     case 'RECOVER_INCIDENT': return '복구 확인 완료'
     case 'ACK_INCIDENT': return '문제 확인 완료'
+    case 'POST_ACTION': return mutation.label
     case 'RETRY_SLACK': return 'Slack 다시 보내기'
   }
 }
@@ -105,14 +82,15 @@ export function OperationDetail(props: Props) {
   const hospitalId = row.customer.hospital_id
   const runAutomatic = Boolean(run && shouldPollRun(run.state))
   const automatic = runAutomatic || slack?.state === 'RETRYING'
-  const slackRetry: OperationMutation | null = slack?.state === 'FAILED' && !runAutomatic ? {
+  const slackRetry: OperationMutation | null = (slack?.state === 'HOLD' || slack?.state === 'FAILED') && !runAutomatic ? {
     kind: 'RETRY_SLACK',
     path: hospitalId
       ? `/admin/operations/hospitals/${hospitalId}/notifications/${slack.notification_id}/retry`
       : `/admin/operations/notifications/${slack.notification_id}/retry`,
-    targetId: slack.notification_id, version: slack.version, reason,
+    targetId: slack.notification_id, version: slack.version, reason, label: 'Slack 다시 보내기',
+    requiresIdempotencyKey: false,
   } : null
-  const mutation = primaryMutation(effectiveDetail, reason) ?? slackRetry
+  const mutation = primaryOperationsMutation(effectiveDetail, reason) ?? slackRetry
   const directLink = !mutation && isOperatorNavigation(row)
   const waitUntil = slack?.state === 'RETRYING' && slack.next_attempt_at
     ? `${formatDate(slack.next_attempt_at)}까지`
@@ -178,6 +156,7 @@ export function OperationDetail(props: Props) {
         <p className="text-sm font-semibold text-slate-800">{slack ? slackStateLabel(slack.state) : '연결된 알림 없음'}</p>
         <p className="mt-1 text-xs leading-5 text-slate-500">Slack 발송 상태는 고객 작업의 성공 여부와 별개입니다.</p>
         {slack?.state === 'HOLD' ? <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">발송 결과가 불확실해 자동 재시도하지 않습니다. Slack에서 중복 여부를 먼저 확인해 주세요.</p> : null}
+        {slack?.state === 'FAILED' ? <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">Slack 설정 또는 채널 수신 상태를 확인한 뒤 수동 재시도해 주세요. 같은 알림이 이미 전달되었을 가능성이 있으면 재시도하지 마세요.</p> : null}
       </section>
 
       <section className="ops-detail-section"><h3>문제 이력</h3>{row.history.length ? <ol className="space-y-2">{row.history.map((entry) => <li key={`${entry.event}-${entry.at}`} className="flex justify-between gap-3 text-sm"><span className="font-semibold text-slate-700">{historyEventLabel(entry.event)}</span><time className="shrink-0 text-slate-500">{formatDate(entry.at)}</time></li>)}</ol> : <p className="text-sm text-slate-500">기록된 문제 이력이 없습니다.</p>}</section>

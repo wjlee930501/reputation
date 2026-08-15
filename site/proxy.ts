@@ -102,7 +102,7 @@ export function __setDomainSlugCacheEntryForTest(hostname: string, entry: CacheE
   domainSlugCache.set(hostname, entry)
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const host = request.headers.get('host')
   const primaryHostnames = getPrimaryHostnames(process.env.NEXT_PUBLIC_SITE_URL)
   const effectiveHost = resolveRequestHost(

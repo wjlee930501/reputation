@@ -1,6 +1,7 @@
 """Unified operations-center API contracts."""
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -105,6 +106,47 @@ def test_retry_task_policies_match_celery_routes_and_consumed_queues() -> None:
         route = routes.get(policy.task.name)
         if route is not None:
             assert route["queue"] == policy.queue
+
+
+@pytest.mark.asyncio
+async def test_retry_policy_allows_monthly_rebuild_true_payload_only() -> None:
+    """Manual retry must support rebuild runs without opening arbitrary task args."""
+
+    from app.api.admin.operations_center_actions import retry_policy
+    from app.models.operations import OperationRun
+
+    hospital_id = uuid.uuid4()
+
+    def run_with_args(args: list[str | int | bool]) -> OperationRun:
+        return OperationRun(
+            hospital_id=hospital_id,
+            operation_type="GENERATE_MONTHLY_REPORT",
+            state="FAILED",
+            request_payload={
+                "_dispatch": {
+                    "target_type": "hospital",
+                    "target_id": str(hospital_id),
+                    "queue": "reports",
+                    "task_args": args,
+                }
+            },
+        )
+
+    db = SimpleNamespace()
+
+    assert (await retry_policy(db, run_with_args([str(hospital_id), 2026, 7]))).queue == "reports"
+    assert (
+        await retry_policy(db, run_with_args([str(hospital_id), 2026, 7, True]))
+    ).queue == "reports"
+
+    for invalid_args in (
+        [str(hospital_id), 2026, 7, False],
+        [str(hospital_id), 2026, 7, True, 1],
+    ):
+        with pytest.raises(HTTPException) as blocked:
+            await retry_policy(db, run_with_args(invalid_args))
+        assert blocked.value.status_code == 422
+        assert blocked.value.detail["code"] == "UNSAFE_STORED_DISPATCH"
 
 
 def test_invalid_sla_filter_returns_a_typed_422() -> None:

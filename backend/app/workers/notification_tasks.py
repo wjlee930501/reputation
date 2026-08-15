@@ -11,10 +11,14 @@ from celery.app.task import Task
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
+from app.services.content_publish_reconciliation import (
+    reconcile_sent_publish_notifications,
+)
 from app.services.notification_outbox import DispatchResult, dispatch_notification_batch
+from app.services.notification_success_hooks import reconcile_sent_notification_incidents
 
 
-async def _dispatch_once(worker_id: str) -> DispatchResult:
+async def _dispatch_once(worker_id: str) -> tuple[DispatchResult, int, int]:
     limits = httpx.Limits(
         max_connections=20,
         max_keepalive_connections=10,
@@ -26,12 +30,18 @@ async def _dispatch_once(worker_id: str) -> DispatchResult:
         timeout=timeout,
         follow_redirects=False,
     ) as client:
-        return await dispatch_notification_batch(
-            get_async_sessionmaker(),
+        sessions = get_async_sessionmaker()
+        result = await dispatch_notification_batch(
+            sessions,
             client,
             webhook_url=settings.SLACK_WEBHOOK_URL,
             worker_id=worker_id,
         )
+    # Slack SENT is committed before domain hooks by design. Reapply any publish
+    # projection whose worker died between those two commits.
+    reconciled = await reconcile_sent_publish_notifications(sessions)
+    incidents_recovered = await reconcile_sent_notification_incidents(sessions)
+    return result, reconciled, incidents_recovered
 
 
 @celery_app.task(name="app.workers.notification_tasks.dispatch_notification_outbox", bind=True)
@@ -40,7 +50,9 @@ def dispatch_notification_outbox(task: Task) -> dict[str, int]:
 
     request_id = str(getattr(task.request, "id", None) or uuid.uuid4())
     hostname = str(getattr(task.request, "hostname", None) or "notification-worker")
-    result = anyio.run(_dispatch_once, f"{hostname}:{request_id}")
+    result, publish_reconciled, incidents_recovered = anyio.run(
+        _dispatch_once, f"{hostname}:{request_id}"
+    )
     return {
         "claimed": result.claimed,
         "sent": result.sent,
@@ -48,4 +60,6 @@ def dispatch_notification_outbox(task: Task) -> dict[str, int]:
         "held": result.held,
         "failed": result.failed,
         "stale": result.stale,
+        "publish_reconciled": publish_reconciled,
+        "incidents_recovered": incidents_recovered,
     }

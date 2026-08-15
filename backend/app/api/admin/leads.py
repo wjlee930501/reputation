@@ -135,12 +135,54 @@ async def convert_sales_lead(
     db: AsyncSession = Depends(get_db),
     actor: AdminUser = Depends(require_active_account),
 ):
-    lead = await db.get(SalesLead, lead_id)
+    # One lead can produce exactly one hospital. Serialize concurrent conversion
+    # attempts on the lead row so a double click or retry cannot create orphans.
+    lead = (
+        await db.execute(
+            select(SalesLead).where(SalesLead.id == lead_id).with_for_update()
+        )
+    ).scalar_one_or_none()
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
 
     if lead.converted_hospital_id:
         hospital = await db.get(Hospital, lead.converted_hospital_id)
+        handoff = None
+        handoff_reconstructed = False
+        if hospital is not None:
+            handoff = (
+                await db.execute(
+                    select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital.id)
+                )
+            ).scalar_one_or_none()
+            # Older conversions and interrupted releases can predate the explicit
+            # handoff row. Reconstruct the missing resumable step instead of
+            # returning a hospital that the onboarding UI cannot advance.
+            if handoff is None:
+                request_body = body or LeadConvertRequest()
+                actor_id = actor.id if isinstance(actor, AdminUser) else uuid.uuid4()
+                sales_owner_id = request_body.sales_owner_id or actor_id
+                ae_owner_id = request_body.ae_owner_id or actor_id
+                if isinstance(actor, AdminUser):
+                    for owner_id in (sales_owner_id, ae_owner_id):
+                        owner = await db.get(AdminUser, owner_id)
+                        if owner is None or not owner.is_active:
+                            raise HTTPException(
+                                status_code=422,
+                                detail={
+                                    "code": "ACTIVE_OWNER_REQUIRED",
+                                    "owner_id": str(owner_id),
+                                },
+                            )
+                handoff = HospitalHandoff.pending(
+                    hospital.id,
+                    sales_owner_id=sales_owner_id,
+                    ae_owner_id=ae_owner_id,
+                    source=HandoffSource.LEAD_CONVERSION,
+                )
+                db.add(handoff)
+                await db.flush()
+                handoff_reconstructed = True
         # 이미 전환된 리드도 응답에 PII가 실려 나가므로 재열람 사실을 남긴다.
         await write_audit_log(
             db,
@@ -149,13 +191,17 @@ async def convert_sales_lead(
             actor=default_actor(),
             target_type="sales_lead",
             target_id=str(lead.id),
-            detail={"already_converted": True},
+            detail={
+                "already_converted": True,
+                "handoff_reconstructed": handoff_reconstructed,
+            },
         )
         await db.commit()
         return {
             "lead": _serialize_lead(lead),
             "hospital": _serialize_hospital(hospital) if hospital else None,
             "onboarding_url": f"/hospitals/{hospital.id}/onboarding" if hospital else None,
+            "handoff": _serialize_handoff(handoff),
         }
 
     request_body = body or LeadConvertRequest()
@@ -236,14 +282,7 @@ async def convert_sales_lead(
         "lead": _serialize_lead(lead),
         "hospital": _serialize_hospital(hospital),
         "onboarding_url": f"/hospitals/{hospital.id}/onboarding",
-        "handoff": {
-            "id": handoff.id,
-            "hospital_id": handoff.hospital_id,
-            "state": handoff.state,
-            "sales_owner_id": handoff.sales_owner_id,
-            "ae_owner_id": handoff.ae_owner_id,
-            "version": handoff.version,
-        },
+        "handoff": _serialize_handoff(handoff),
     }
 
 
@@ -440,6 +479,26 @@ def _serialize_hospital(hospital: Hospital | None) -> dict | None:
         "plan": hospital.plan.value if hospital.plan else None,
         "source_lead_id": str(hospital.source_lead_id) if hospital.source_lead_id else None,
         "onboarding_url": f"/hospitals/{hospital.id}/onboarding",
+    }
+
+
+def _serialize_handoff(handoff: HospitalHandoff | None) -> dict | None:
+    if handoff is None:
+        return None
+    return {
+        "id": handoff.id,
+        "hospital_id": handoff.hospital_id,
+        "state": handoff.state,
+        "sales_owner_id": handoff.sales_owner_id,
+        "ae_owner_id": handoff.ae_owner_id,
+        "contract_reference": handoff.contract_reference,
+        "contract_effective_at": handoff.contract_effective_at,
+        "plan": handoff.plan,
+        "sla_due_at": handoff.sla_due_at,
+        "accepted_by_id": handoff.accepted_by_id,
+        "accepted_at": handoff.accepted_at,
+        "acceptance_source": handoff.acceptance_source,
+        "version": handoff.version,
     }
 
 

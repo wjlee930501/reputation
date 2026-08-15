@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from sqlalchemy.dialects import postgresql
@@ -359,14 +360,72 @@ def test_report_queue_guides_the_operator_to_the_real_generation_control() -> No
     # Given / When
     missing_impact, missing_action = report_queries._report_operator_copy("MISSING")
     pending_impact, pending_action = report_queries._report_operator_copy("DELIVERY_PENDING")
+    hospital_id = uuid.uuid4()
+    missing_control = report_queries._report_action(
+        hospital_id,
+        state="MISSING",
+        year=2026,
+        month=7,
+    )
+    pending_control = report_queries._report_action(
+        hospital_id,
+        state="DELIVERY_PENDING",
+        year=2026,
+        month=7,
+    )
 
     # Then
     assert "원장 보고" in missing_impact
-    assert "보고서 확인" in missing_action
-    assert "리포트 생성" in missing_action
-    assert "개발팀" in missing_action
+    assert "지난달 리포트 생성" in missing_action
+    assert "진행 상태" in missing_action
+    assert missing_control.kind == "GENERATE_MONTHLY_REPORT"
+    assert missing_control.method == "POST"
+    assert missing_control.requires_idempotency_key is True
+    assert missing_control.reason_required is True
+    assert missing_control.path == (
+        f"/hospitals/{hospital_id}/operations/generate-monthly-report?year=2026&month=7"
+    )
     assert "원장 전달 검수" in pending_impact
     assert "보고서 확인" in pending_action
+    assert pending_control.kind == "OPEN_REPORT"
+    assert pending_control.method == "GET"
+
+
+def test_report_queue_uses_historical_service_interval_scope() -> None:
+    period_start = datetime(2026, 7, 1, tzinfo=UTC)
+    period_end = datetime(2026, 8, 1, tzinfo=UTC)
+
+    sql = str(
+        report_queries._eligible_hospital_ids_stmt(period_start, period_end).compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "hospital_service_intervals" in sql
+    assert "started_at <" in sql
+    assert "ended_at IS NULL" in sql
+    assert "ended_at >" in sql
+    assert "hospitals.status" not in sql
+    assert "hospitals.created_at" not in sql
+
+
+def test_report_queue_does_not_hide_stale_monthly_runs() -> None:
+    now = datetime(2026, 8, 1, 3, 0, tzinfo=UTC)
+
+    sql = str(
+        report_queries._fresh_active_monthly_run_predicate(now).compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "coalesce" in sql.lower()
+    assert "heartbeat_at" in sql
+    assert "started_at" in sql
+    assert "queued_at" in sql
+    assert "requested_at" in sql
+    assert str(now - timedelta(hours=1)).replace("+00:00", "")[:19] in sql
 
 
 def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
@@ -383,6 +442,8 @@ def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     assert "도메인" in next_onboarding_step(hospital)
     assert "검증" in next_onboarding_step(hospital)
     hospital.site_live = True
+    assert "근거 자료 처리" in next_onboarding_step(hospital)
+    assert "운영 기준 승인" in next_onboarding_step(hospital)
     assert "일정" in next_onboarding_step(hospital)
     assert "저장" in next_onboarding_step(hospital)
     hospital.schedule_set = True

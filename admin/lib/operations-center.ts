@@ -33,6 +33,21 @@ export interface OperationsConflict {
   readonly currentState: string | null
   readonly focusTarget: FocusTarget
 }
+export type OperationsMutationKind =
+  | 'RETRY_RUN'
+  | 'RECOVER_INCIDENT'
+  | 'ACK_INCIDENT'
+  | 'POST_ACTION'
+
+export interface OperationsMutationDescriptor {
+  readonly kind: OperationsMutationKind
+  readonly path: string
+  readonly targetId: string
+  readonly version: number | null
+  readonly reason: string
+  readonly label: string
+  readonly requiresIdempotencyKey: boolean
+}
 const QUEUES: readonly OperationsQueueParam[] = ['onboarding', 'today', 'reports', 'incidents']
 const FILTER_KEYS = ['queue', 'owner', 'status', 'severity', 'sla', 'q', 'detail', 'page'] as const
 
@@ -219,6 +234,85 @@ export function createUserActionKey(kind: string, targetId: string, nonce: strin
 
 export function enabledPostAction(action: OperationsAction | null): OperationsAction | null {
   return action?.enabled && action.method === 'POST' ? action : null
+}
+
+function incidentBase(row: OperationsQueueRow): string {
+  const hospital = row.customer.hospital_id
+  return hospital
+    ? `/admin/operations/hospitals/${hospital}/incidents/${row.incident_id}`
+    : `/admin/operations/incidents/${row.incident_id}`
+}
+
+function mutationFromPostAction(
+  action: OperationsAction,
+  row: OperationsQueueRow,
+  reason: string,
+): OperationsMutationDescriptor {
+  return {
+    kind: 'POST_ACTION',
+    path: action.path,
+    targetId: row.operation_run_id ?? row.incident_id ?? row.report_id ?? row.content_id ?? row.id,
+    version: null,
+    reason,
+    label: action.label,
+    requiresIdempotencyKey: Boolean(action.requires_idempotency_key),
+  }
+}
+
+export function primaryOperationsMutation(
+  detail: OperationsIncidentDetail,
+  reason: string,
+): OperationsMutationDescriptor | null {
+  const row = detail.incident
+  const run = detail.run
+  const retry = enabledPostAction(run?.retry ?? null) ?? enabledPostAction(row.retry)
+  if (retry?.kind === 'RETRY_RUN') {
+    return {
+      kind: 'RETRY_RUN',
+      path: retry.path,
+      targetId: run?.run_id ?? row.operation_run_id ?? row.id,
+      version: null,
+      reason,
+      label: retry.label,
+      requiresIdempotencyKey: true,
+    }
+  }
+  const action = enabledPostAction(row.action)
+  if (action?.kind === 'RECOVER_INCIDENT' || action?.kind === 'ACK_INCIDENT') {
+    return {
+      kind: action.kind,
+      path: action.path,
+      targetId: row.incident_id ?? row.id,
+      version: row.version,
+      reason,
+      label: action.label,
+      requiresIdempotencyKey: false,
+    }
+  }
+  if (action) return mutationFromPostAction(action, row, reason)
+  if (run?.state === 'SUCCEEDED' && row.status === 'RETRYING') {
+    return {
+      kind: 'RECOVER_INCIDENT',
+      path: `${incidentBase(row)}/recover`,
+      targetId: row.incident_id ?? row.id,
+      version: row.version,
+      reason,
+      label: '복구 확인 완료',
+      requiresIdempotencyKey: false,
+    }
+  }
+  if (row.status === 'RECOVERED') {
+    return {
+      kind: 'ACK_INCIDENT',
+      path: `${incidentBase(row)}/ack`,
+      targetId: row.incident_id ?? row.id,
+      version: row.version,
+      reason,
+      label: '문제 확인 완료',
+      requiresIdempotencyKey: false,
+    }
+  }
+  return null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
