@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+import uuid
+from types import SimpleNamespace
+
 from app.services.sov_engine import (
     MENTION_RATE_INTENTS,
     QUERY_INTENT_INFO,
@@ -209,12 +212,14 @@ def test_v0_sample_is_large_enough_for_a_diagnosis_number() -> None:
 
 def test_v0_samples_only_from_queries_that_count_toward_the_headline() -> None:
     """INFO 질문을 V0 표본에 넣으면 호출만 쓰고 헤드라인에는 기여하지 않는다."""
-    import inspect
-
     from app.workers import tasks
 
-    source = inspect.getsource(tasks.v0_sample_query_stmt)
-    assert "query_intent" in source, "V0 표본이 질문 유형을 가리지 않는다"
+    stmt = tasks.v0_sample_query_stmt(uuid.uuid4())
+    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "query_matrix.query_intent" in compiled, (
+        "V0 표본이 질문 유형을 가리지 않는다"
+    )
+    assert QUERY_INTENT_LOCAL in compiled
 
 
 def test_the_dead_monthly_repeat_setting_is_gone() -> None:
@@ -233,11 +238,32 @@ def test_the_dead_monthly_repeat_setting_is_gone() -> None:
 def test_ae_registered_variant_queries_are_classified_too() -> None:
     """AIQueryTarget variant는 템플릿을 거치지 않는다 — 여기서 분류를 빠뜨리면
     AE가 등록한 정보성 질문이 LOCAL로 들어가 분모 분리가 조용히 무력화된다."""
-    import inspect
-
     from app.workers import tasks
 
-    source = inspect.getsource(tasks._ensure_variant_query_matrix)
-    assert "classify_query_intent" in source, (
+    class FakeDB:
+        def __init__(self):
+            self.added = None
+
+        def get(self, *_args):
+            return None
+
+        def add(self, value):
+            self.added = value
+
+        def flush(self):
+            return None
+
+    db = FakeDB()
+    hospital = SimpleNamespace(id=uuid.uuid4())
+    variant = SimpleNamespace(
+        id=uuid.uuid4(),
+        query_matrix_id=None,
+        query_text="무릎 통증 초기 증상이 뭔지 알려줘",
+    )
+
+    query = tasks._ensure_variant_query_matrix(db, hospital, variant)
+
+    assert query is db.added
+    assert query.query_intent == QUERY_INTENT_INFO, (
         "variant 유래 QueryMatrix가 유형 없이 생성된다"
     )

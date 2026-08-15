@@ -11,6 +11,8 @@ test('readReportStrategy exposes target evidence, gaps, completed work, and next
         sov_pct: 50,
         platform_sov: { chatgpt: 100, gemini: 0 },
         source_backed_count: 1,
+        owned_source_count: 1,
+        owned_citation_share_pct: 33.3,
         successful_measurement_count: 2,
         competitor_outcomes: [{ name: '경쟁병원', mention_pct: 50 }],
       }],
@@ -23,6 +25,8 @@ test('readReportStrategy exposes target evidence, gaps, completed work, and next
   })
 
   assert.equal(strategy?.queryTargets[0].platformSov.chatgpt, 100)
+  assert.equal(strategy?.queryTargets[0].ownedSourceCount, 1)
+  assert.equal(strategy?.queryTargets[0].ownedCitationSharePct, 33.3)
   assert.equal(strategy?.queryTargets[0].competitorOutcomes[0].mentionPct, 50)
   assert.equal(strategy?.exposureGaps[0].gapTypeLabel, '낮은 AI 언급률')
   assert.equal(strategy?.completedActions[0].linkedContentTitle, '치질 FAQ')

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getApiBase } from '@/lib/config'
 import { containsPatientSensitiveLeadText, leadSafetyError } from '@/lib/lead-safety'
 import { buildLeadOutboundHeaders, isLeadValidationUpstreamStatus } from '@/lib/leads-proxy'
+import { BodyTooLargeError, readFormDataBodyWithLimit } from '@/lib/request-body'
 
 export const runtime = 'nodejs'
 
@@ -24,17 +25,15 @@ function readField(formData: FormData, field: string, max: number) {
 export async function POST(request: Request) {
   const wantsJson = request.headers.get('accept')?.includes('application/json') ?? false
 
-  const contentLength = Number(request.headers.get('content-length') || '0')
-  if (contentLength && contentLength > MAX_BODY_BYTES) {
-    return wantsJson
-      ? NextResponse.json({ ok: false, error: 'Payload too large' }, { status: 413 })
-      : NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)
-  }
-
   let formData: FormData
   try {
-    formData = await request.formData()
-  } catch {
+    formData = await readFormDataBodyWithLimit(request, MAX_BODY_BYTES)
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      return wantsJson
+        ? NextResponse.json({ ok: false, error: 'Payload too large' }, { status: 413 })
+        : NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)
+    }
     return wantsJson
       ? NextResponse.json({ ok: false, error: 'Invalid form payload' }, { status: 400 })
       : NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)

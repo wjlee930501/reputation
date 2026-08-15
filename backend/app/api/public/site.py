@@ -447,20 +447,27 @@ def _safe_treatments(treatments) -> list:
     """AE 자유 입력 진료 항목 중 의료광고 금지 표현이 든 항목은 공개 표면에서 제외한다.
 
     public_about과 동일한 보수적 게이트를 진료 항목에도 적용한다(JSON-LD·llms.txt·UI로
-    검수 없이 새어 나가지 않도록). 항목 형태(str/dict)와 무관하게 전체 텍스트로 검사한다.
+    검수 없이 새어 나가지 않도록). 항목 형태(str/dict)와 무관하게 전체 텍스트로 검사한 뒤,
+    Site 런타임 계약에 맞춰 항상 {name: str, description: str} 형태로 내보낸다.
     """
     if not isinstance(treatments, list):
         return []
     safe: list = []
     for item in treatments:
         if isinstance(item, str):
+            name = item.strip()
+            description = ""
             text = item
         elif isinstance(item, dict):
+            raw_name = item.get("name")
+            raw_description = item.get("description")
+            name = raw_name.strip() if isinstance(raw_name, str) else ""
+            description = raw_description.strip() if isinstance(raw_description, str) else ""
             text = " ".join(str(v) for v in item.values())
         else:
-            text = str(item)
-        if text.strip() and not check_forbidden(text):
-            safe.append(item)
+            continue
+        if name and text.strip() and not check_forbidden(text):
+            safe.append({"name": name, "description": description})
     return safe
 
 

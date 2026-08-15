@@ -46,7 +46,7 @@ PRETENDARD_FONT_PATH = (
 
 # 템플릿이 바뀌면 같은 데이터라도 다른 리포트가 나온다. artifact에 기록해
 # "같은 병원인데 숫자가 왜 다르냐"에 답할 수 있게 한다.
-TEMPLATE_VERSION = "lead-v8"
+TEMPLATE_VERSION = "lead-v9"
 
 # 공급자 표기 — 사람이 읽는 이름이지 "ChatGPT 화면"이 아니다.
 _VENDOR_LABELS = {"chatgpt": "OpenAI API", "gemini": "Google Gemini API"}
@@ -163,7 +163,8 @@ _NOTICES = (
 # F3-6 — 무료 진단은 기술통계다. 표본 한계를 숫자 옆에 붙여 고지한다.
 _SAMPLE_CAVEAT = (
     "이 숫자는 아래 공개된 질문 세트 기준이며, 다른 질문에서는 다르게 나올 수 있습니다. "
-    "질문·모델·지시문을 그대로 공개하므로 직접 재현하실 수 있습니다."
+    "OpenAI·Gemini API의 표준화된 반복 관찰이며 소비자용 앱 화면, 위치·개인화 노출을 "
+    "그대로 재현한 값이 아닙니다. 질문·모델·지시문을 공개해 같은 조건으로 확인할 수 있습니다."
 )
 
 

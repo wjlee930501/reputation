@@ -8,7 +8,7 @@ import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { formatDateTime } from '@/lib/format'
 import { SkeletonTable } from '@/app/components/Skeleton'
-import { PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
+import { PLAN_CONTRACT_LABELS, PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
 import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
 import { leadSourceLabel, safeOperatorError } from '@/lib/operations-journey'
 import {
@@ -895,7 +895,7 @@ export default function LeadsPage() {
                           checked={selectedPlan === planOption}
                           onChange={() => setSelectedPlan(planOption)}
                         />
-                        <span className="text-xs font-medium">{PLAN_LABELS[planOption]}</span>
+                        <span className="text-xs font-medium">{PLAN_CONTRACT_LABELS[planOption]}</span>
                       </label>
                     ))}
                   </div>

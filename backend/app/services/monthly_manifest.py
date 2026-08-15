@@ -79,7 +79,15 @@ def freeze_monthly_manifest(
         },
         closes_at=_month_close(year, month),
     )
-    frozen_queries = {spec.query_key: spec for spec in specs}
+    # `measurement_specs` is already expanded to query × platform by the dispatcher.
+    # Do not expand it again here. Platform-specific Query Target variants can have
+    # different wording per provider; cross-expanding them would measure the Gemini
+    # variant on ChatGPT and the ChatGPT variant on Gemini, doubling cost and
+    # corrupting the frozen denominator.
+    frozen_queries = {
+        (spec.query_key, spec.platform.lower()): spec
+        for spec in specs
+    }
     manifest.cells = [
         MonthlyMeasurementCell(
             query_key=spec.query_key,
@@ -87,11 +95,10 @@ def freeze_monthly_manifest(
             query_matrix_id=spec.query_matrix_id,
             query_target_id=spec.query_target_id,
             query_variant_id=spec.query_variant_id,
-            platform=platform,
+            platform=spec.platform.lower(),
             state="FAILED",
         )
         for spec in frozen_queries.values()
-        for platform in platforms
     ]
     session.add(manifest)
     session.flush()
@@ -143,7 +150,7 @@ def freeze_dispatch_manifest(
 
 def link_attempt(cell: MonthlyMeasurementCell, sov_record) -> MonthlyMeasurementAttempt:
     attempt = MonthlyMeasurementAttempt(cell=cell, sov_record=sov_record)
-    if str(sov_record.measurement_status or "SUCCESS").upper() == "SUCCESS":
+    if sov_engine.record_is_confirmed(sov_record):
         cell.state = "SUCCESS"
     elif cell.state != "SUCCESS":
         cell.state = "FAILED"

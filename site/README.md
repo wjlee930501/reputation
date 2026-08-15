@@ -21,6 +21,14 @@ npm install
 npm run dev
 ```
 
+프로덕션 빌드에는 다음 공개 환경변수가 필요합니다.
+
+- `NEXT_PUBLIC_SITE_URL`: 공개 사이트 origin (예: `https://reputation.co.kr`)
+- `NEXT_PUBLIC_API_URL`: Public API base (예: `https://reputation.co.kr/api/v1/public`)
+- `NEXT_PUBLIC_BACKEND_URL`: 이미지·파일 URL을 제공하는 backend origin
+
+`NEXT_PUBLIC_SITE_URL`이 없거나 localhost를 가리키면 프로덕션 빌드는 안전하게 실패합니다.
+
 ## 배포
 
 Vercel을 통해 배포. `next build && next start` 또는 Vercel Git integration.

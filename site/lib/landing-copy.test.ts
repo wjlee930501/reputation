@@ -23,7 +23,6 @@ import {
   painPoints,
   painSection,
   platformShareSection,
-  platformShares,
   previewSection,
   sceneSection,
 } from './landing-copy.ts'
@@ -54,7 +53,6 @@ const ALL_COPY = [
   ...painPoints.flatMap((p) => [p.quote, p.answer]),
   platformShareSection.nudge,
   platformShareSection.sourceNote,
-  ...platformShares.flatMap((p) => [p.name, p.note ?? ""]),
   faqSection.label,
   faqSection.heading,
   pricingSection.label,
@@ -186,7 +184,7 @@ test('the page states explicitly what it does not do', () => {
   for (const item of limitItems) {
     assert.match(
       `${item.title} ${item.body}`,
-      /(않습니다|못|밖입니다|걸러냅니다|다시 봅니다)/,
+      /(않습니다|못|밖입니다|걸러냅니다|확인합니다)/,
       `"${item.title}"이 무엇을 못 하는지 말하지 않습니다.`,
     )
   }
@@ -286,9 +284,28 @@ test('every specialty answer example stays a safe placeholder example', () => {
   for (const example of answerExamples) {
     assert.ok(example.tag.length > 0)
     assert.ok(example.question.length > 0)
+    assert.doesNotMatch(
+      example.question,
+      /잘 보는|잘하는 곳|후기 좋은 곳|빨리 낫는/,
+      `${example.tag}: 무료 진단 예시 질문에 과장·평판성 표현이 들어갔습니다.`,
+    )
     assert.match(example.answerClinic, /○○/)
     assert.ok(example.answerSources.length >= 1)
   }
+})
+
+test('post-publication human review copy matches the sampling policy', () => {
+  const reviewCopy = [
+    ...operationSteps.map((s) => s.body),
+    ...limitItems.map((l) => l.body),
+    ...faqItems.map((f) => f.answer),
+  ].join(' ')
+
+  assert.match(reviewCopy, /사후 점검 큐/)
+  assert.doesNotMatch(
+    reviewCopy,
+    /발행 뒤(?:에는)? 담당 매니저가 다시 봅니다|모든 글을.*사람|전건.*검수/,
+  )
 })
 
 // ── 구조 ─────────────────────────────────────────────────────────────
@@ -354,6 +371,19 @@ test('the scarcity note carries the whole rule', () => {
 })
 
 test('every pricing tier includes direct MotionLabs marketer management', () => {
+  assert.deepEqual(
+    pricingSection.plans.map(({ name, price, monthlyContents, vatExcluded }) => ({
+      name,
+      price,
+      monthlyContents,
+      vatExcluded,
+    })),
+    [
+      { name: 'Starter', price: '60만원', monthlyContents: 12, vatExcluded: true },
+      { name: 'Grower', price: '90만원', monthlyContents: 16, vatExcluded: true },
+      { name: 'Leader', price: '120만원', monthlyContents: 20, vatExcluded: true },
+    ],
+  )
   for (const plan of pricingSection.plans) {
     assert.equal(plan.vatExcluded, true)
     assert.match(plan.management, /모션랩스.*전담 마케터.*직접.*관리.*소통/)
@@ -392,49 +422,19 @@ test('pain point answers do not promise an outcome', () => {
   assert.doesNotMatch(answers, /반드시|틀림없이|확실히 (오릅|늘)/)
 })
 
-// ── 점유율 차트 = 비용 판단의 근거 ───────────────────────────────────
-test('platform shares add up to a plausible whole', () => {
-  const total = platformShares.reduce((sum, item) => sum + item.share, 0)
-  assert.ok(Math.abs(total - 100) < 0.5, `점유율 합이 ${total}%입니다.`)
+// ── 측정 범위 = 서로 다른 공급자 경로의 교차 관찰 ───────────────────
+test('measurement scope explains the two-provider comparison without a market-share claim', () => {
+  const copy = `${marketSection.heading} ${platformShareSection.nudge}`
+  assert.match(copy, /OpenAI API/)
+  assert.match(copy, /Google Gemini API/)
+  assert.match(copy, /같은 환자 질문/)
+  assert.doesNotMatch(copy, /83\.9|84%|점유율/)
 })
 
-test('exactly the platforms we measure are marked as measured', () => {
-  const measured = platformShares.filter((p) => p.measured).map((p) => p.name)
-  // 프로덕션이 재는 것은 두 곳이다(backend config: OPENAI_MODEL_QUERY, GEMINI_MODEL).
-  assert.deepEqual(measured.sort(), ['ChatGPT', 'Gemini'])
-})
-
-test('the measured platforms actually justify the coverage claim', () => {
-  /**
-   * 넛지가 성립하려면 **칠해진 면적이 실제로 대부분**이어야 한다. 점유율 데이터가
-   * 갱신돼 두 곳 합이 낮아지면 "나머지에 돈 쓸 이유가 없다"는 문장은 근거를 잃는다.
-   * 그때는 문장을 고쳐야 하므로 여기서 막는다.
-   */
-  const measuredTotal = platformShares
-    .filter((p) => p.measured)
-    .reduce((sum, item) => sum + item.share, 0)
-  assert.ok(
-    measuredTotal >= 75,
-    `측정 대상 합이 ${measuredTotal}%로 떨어졌습니다 — 측정 범위 카피를 다시 써야 합니다.`,
-  )
-  /**
-   * 카피의 숫자는 **차트가 실제로 인쇄하는 문자열과 같아야 한다.**
-   *
-   * 앞 버전은 `Math.round(measuredTotal)`을 찾았고, 그래서 제목의 "84%"가 통과했다.
-   * 그런데 차트는 바로 아래에서 `toFixed(1)`로 "83.9%"를 찍는다 — 같은 화면에 84와
-   * 83.9가 동시에 있었고 테스트가 그 상태를 승인하고 있었다. 자기에게 불리하게
-   * 반올림하는 것으로 신뢰를 사는 페이지에서, 유일하게 올려 반올림한 곳이 제목이면 안 된다.
-   */
-  const rendered = `${measuredTotal.toFixed(1)}%`
-  const coverageCopy = `${marketSection.heading} ${platformShareSection.nudge}`
-  assert.ok(
-    coverageCopy.includes(rendered),
-    `커버리지 카피가 차트 값(${rendered})과 다릅니다: ${coverageCopy}`,
-  )
-})
-
-test('the coverage nudge is framed as a cost decision, not a limitation', () => {
-  assert.match(platformShareSection.nudge, /비용|예산/)
+test('measurement scope states what the synthetic panel does not represent', () => {
+  assert.match(platformShareSection.sourceNote, /소비자용 앱/)
+  assert.match(platformShareSection.sourceNote, /개인화 노출/)
+  assert.match(platformShareSection.sourceNote, /실제 환자 유입/)
 })
 
 // ── FAQ ─────────────────────────────────────────────────────────────

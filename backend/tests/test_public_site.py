@@ -83,9 +83,36 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["brand_accent_color"] == "#B79045"
     assert serialized["logo_url"] == "https://cdn.example.com/logo.png"
     assert serialized["hero_image_url"] == "https://cdn.example.com/hero.png"
+    assert serialized["treatments"] == [{"name": "리프팅", "description": "안면 리프팅"}]
     # license_number는 내부 보관 전용 — 공개 응답에서 제거됨.
     assert "license_number" not in serialized["director_credentials"]
     assert serialized["director_credentials"]["medical_school"] == "서울대학교 의과대학"
+
+
+def test_serialize_hospital_normalizes_treatments_for_site_contract():
+    hospital = SimpleNamespace(
+        id="hospital-id", name="테스트병원", slug="test-hospital",
+        address="서울시 강남구", phone="02-123-4567",
+        business_hours={"mon": "09:00-18:00"}, website_url=None, blog_url=None,
+        kakao_channel_url=None, google_business_profile_url=None, google_maps_url=None,
+        naver_place_url=None, aeo_domain=None, latitude=None, longitude=None,
+        wikidata_qid=None, gbp_place_id=None, naver_place_id=None, kakao_place_id=None,
+        hira_org_id=None, region=[], specialties=[], keywords=[], director_name="홍길동",
+        director_career="전문의", director_philosophy="근거 중심 진료",
+        director_photo_url=None, director_credentials=None,
+        treatments=[
+            {"name": "치질 수술", "description": None},
+            "대장 내시경",
+            {"name": "  ", "description": "이름 없는 항목"},
+        ],
+    )
+
+    serialized = _serialize_hospital(hospital)
+
+    assert serialized["treatments"] == [
+        {"name": "치질 수술", "description": ""},
+        {"name": "대장 내시경", "description": ""},
+    ]
 
 
 def test_public_content_policy_requires_published_and_essence_aligned():

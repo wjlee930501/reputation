@@ -27,7 +27,10 @@ from app.schemas.operations import (
     OperationsQueue,
     OperationsQueueRow,
 )
-from app.services.post_publish_review_policy import human_post_publish_review_predicate
+from app.services.post_publish_review_policy import (
+    human_post_publish_review_predicate,
+    publicly_operational_hospital_predicate,
+)
 
 _OVERDUE_REVIEW_HOURS: Final = 24
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
@@ -78,7 +81,13 @@ async def load_today_queue(
         (and_(waiting_review, ContentItem.published_at < overdue_before), "HIGH"),
         else_="MEDIUM",
     )
-    predicates = [or_(waiting_review, due_publish)]
+    # 공개할 수 없는 병원의 슬롯을 사람 업무로 만들지 않는다. 자동 발행 worker도
+    # ACTIVE + site_live만 처리하므로, 운영센터가 그보다 넓은 집합을 보여주면 사람에게
+    # 영원히 해결할 수 없는 가짜 blocker를 만든다.
+    predicates = [
+        publicly_operational_hospital_predicate(),
+        or_(waiting_review, due_publish),
+    ]
     owner_filter = owner_predicate(assignee, filters.owner)
     if owner_filter is not None:
         predicates.append(owner_filter)

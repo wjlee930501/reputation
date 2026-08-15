@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import arrow
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -50,8 +51,90 @@ def _query_text_of(record: Any) -> str | None:
     return None
 
 
+def _source_metrics(records: list[Any], hospital: Hospital | None) -> dict[str, int | float]:
+    """Separate answer grounding from citations to the hospital's own channels.
+
+    ``source_backed_count`` answers whether an AI answer exposed any inspectable source.
+    The owned-source fields answer the materially different GEO question: whether the
+    hospital's official web properties were selected as evidence.
+    """
+    roots = _owned_source_roots(hospital)
+    source_backed_count = 0
+    owned_source_count = 0
+    source_url_count = 0
+    owned_source_url_count = 0
+    for record in records:
+        urls = [
+            value.strip()
+            for value in (getattr(record, "source_urls", None) or [])
+            if isinstance(value, str) and value.strip()
+        ]
+        if urls:
+            source_backed_count += 1
+        owned_urls = [url for url in urls if _matches_owned_source(url, roots)]
+        if owned_urls:
+            owned_source_count += 1
+        source_url_count += len(urls)
+        owned_source_url_count += len(owned_urls)
+    owned_citation_share_pct = (
+        round(owned_source_url_count / source_url_count * 100, 1)
+        if source_url_count
+        else 0.0
+    )
+    return {
+        "source_backed_count": source_backed_count,
+        "owned_source_count": owned_source_count,
+        "source_url_count": source_url_count,
+        "owned_source_url_count": owned_source_url_count,
+        # This is an observational share of captured source URL occurrences, not a rank.
+        "owned_citation_share_pct": owned_citation_share_pct,
+    }
+
+
+def _owned_source_roots(hospital: Hospital | None) -> set[tuple[str, str]]:
+    if hospital is None:
+        return set()
+    candidates = [
+        getattr(hospital, "website_url", None),
+        getattr(hospital, "blog_url", None),
+        getattr(hospital, "kakao_channel_url", None),
+        getattr(hospital, "google_business_profile_url", None),
+        getattr(hospital, "google_maps_url", None),
+        getattr(hospital, "naver_place_url", None),
+    ]
+    if getattr(hospital, "aeo_domain", None):
+        candidates.append(f"https://{hospital.aeo_domain}")
+
+    roots: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        parsed = urlparse(candidate.strip())
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        if not host:
+            continue
+        roots.add((host, parsed.path.rstrip("/")))
+    return roots
+
+
+def _matches_owned_source(url: str, roots: set[tuple[str, str]]) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = parsed.path.rstrip("/")
+    return any(
+        host == root_host
+        and (
+            not root_path
+            or path == root_path
+            or path.startswith(f"{root_path}/")
+        )
+        for root_host, root_path in roots
+    )
+
+
 def build_strategy_summary(
     *,
+    hospital: Hospital | None = None,
     query_targets: list,
     sov_records: list,
     exposure_gaps: list,
@@ -95,6 +178,7 @@ def build_strategy_summary(
     for target in sorted(report_targets, key=_strategy_target_sort_key):
         records = records_by_target.get(str(target.id), [])
         successful = [record for record in records if _successful_measurement(record)]
+        source_metrics = _source_metrics(successful, hospital)
         platform_sov: dict[str, float | None] = {}
         platforms = sorted({str(record.ai_platform).lower() for record in records if record.ai_platform})
         for platform in platforms:
@@ -117,7 +201,7 @@ def build_strategy_summary(
             "platform_sov": platform_sov,
             "successful_measurement_count": len(successful),
             "failed_measurement_count": len(records) - len(successful),
-            "source_backed_count": sum(1 for record in successful if getattr(record, "source_urls", None)),
+            **source_metrics,
             "competitor_outcomes": _competitor_outcomes(successful),
             "last_measured_at": _iso_or_none(max(
                 (getattr(record, "measured_at", None) for record in records),

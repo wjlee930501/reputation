@@ -186,17 +186,16 @@ async def test_resume_to_active_when_gates_and_site_live_met():
     assert [a.action for a in db.added if hasattr(a, "action")] == ["resume_hospital"]
 
 
-async def test_resume_rejects_missing_schedule_without_mutation():
+async def test_resume_allows_missing_schedule():
     hospital = _full_hospital(status=HospitalStatus.PAUSED, site_live=False, schedule_set=False)
     db = _LifecycleDB(hospital)
 
-    with pytest.raises(HTTPException) as exc:
-        await hospitals_api.resume_hospital(hospital.id, db=db)
+    response = await hospitals_api.resume_hospital(hospital.id, db=db)
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail["missing"] == ["schedule_set"]
-    assert hospital.status == HospitalStatus.PAUSED
-    assert db.added == []
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert response["status"] == HospitalStatus.ACTIVE
+    assert db.committed is True
+    assert [a.action for a in db.added if hasattr(a, "action")] == ["resume_hospital"]
 
 
 async def test_resume_rejected_when_not_paused():
@@ -213,11 +212,9 @@ async def test_resume_rejected_when_not_paused():
 @pytest.mark.parametrize(
     ("missing_key", "overrides", "handoff_state"),
     [
-        ("handoff_accepted", {}, HandoffState.CONTRACTED),
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
         ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )
 async def test_resume_blocks_each_authoritative_gate_without_interval(

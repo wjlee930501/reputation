@@ -144,6 +144,15 @@ def test_strategy_summary_connects_targets_platform_sov_gaps_and_actions():
     )
 
     summary = build_strategy_summary(
+        hospital=SimpleNamespace(
+            website_url="https://example.com",
+            blog_url=None,
+            kakao_channel_url=None,
+            google_business_profile_url=None,
+            google_maps_url=None,
+            naver_place_url=None,
+            aeo_domain="clinic.example.kr",
+        ),
         query_targets=[target],
         sov_records=records,
         exposure_gaps=[gap],
@@ -157,6 +166,9 @@ def test_strategy_summary_connects_targets_platform_sov_gaps_and_actions():
     assert outcome["sov_pct"] == 50.0
     assert outcome["platform_sov"] == {"chatgpt": 100.0, "gemini": 0.0}
     assert outcome["source_backed_count"] == 1
+    assert outcome["owned_source_count"] == 1
+    assert outcome["owned_source_url_count"] == 1
+    assert outcome["owned_citation_share_pct"] == 100.0
     assert outcome["competitor_outcomes"] == [{
         "name": "경쟁병원",
         "observed_count": 2,
@@ -178,6 +190,9 @@ def test_monthly_report_renders_data_driven_strategy_instead_of_generic_recommen
             "sov_pct": 50.0,
             "platform_sov": {"chatgpt": 100.0, "gemini": 0.0},
             "source_backed_count": 1,
+            "owned_source_count": 1,
+            "source_url_count": 2,
+            "owned_citation_share_pct": 50.0,
             "successful_measurement_count": 2,
         }],
         "exposure_gaps": [{
@@ -207,6 +222,8 @@ def test_monthly_report_renders_data_driven_strategy_instead_of_generic_recommen
     assert "환자 질문 목표별 AI 노출 결과" in html
     assert "강남 치질 수술 추천" in html
     assert "ChatGPT 100.0%" in html
+    assert "병원 공식 채널 인용" in html
+    assert "수집 URL 중 50.0%" in html
     assert "LOW_MENTION_SHARE" in html  # legacy payload without display label remains readable
     assert "FAQ 콘텐츠 발행" in html
     assert "공식 근거 자료 보강" in html

@@ -42,10 +42,10 @@ test('onboarding follows the operator sequence and separates recurring outcomes'
       { key: 'profile', phase: 'onboarding' },
       { key: 'v0', phase: 'onboarding' },
       { key: 'site', phase: 'onboarding' },
+      { key: 'live', phase: 'onboarding' },
       { key: 'processing', phase: 'onboarding' },
       { key: 'philosophy_approved', phase: 'onboarding' },
       { key: 'schedule', phase: 'onboarding' },
-      { key: 'live', phase: 'onboarding' },
       { key: 'first_publish', phase: 'post_onboarding' },
       { key: 'sov', phase: 'post_onboarding' },
     ],
@@ -90,7 +90,7 @@ test('handoff due status uses plain Korean and distinguishes the next action', (
   )
 })
 
-test('schedule is completed before LIVE and recurring outcomes do not block onboarding completion', () => {
+test('LIVE is completed before content scheduling and recurring outcomes do not block onboarding completion', () => {
   const beforeSchedule = deriveOnboardingSteps(
     { ...hospital, schedule_set: false, site_live: true },
     sources,
@@ -100,7 +100,7 @@ test('schedule is completed before LIVE and recurring outcomes do not block onbo
     acceptedHandoff,
   )
   assert.equal(beforeSchedule.find((step) => step.key === 'schedule')?.status, 'current')
-  assert.equal(beforeSchedule.find((step) => step.key === 'live')?.status, 'upcoming')
+  assert.equal(beforeSchedule.find((step) => step.key === 'live')?.status, 'completed')
 
   const withoutOutcomes = deriveOnboardingSteps(
     hospital,

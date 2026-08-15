@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getApiBase } from '@/lib/config'
 import { containsPatientSensitiveLeadText, leadSafetyError } from '@/lib/lead-safety'
 import { buildLeadOutboundHeaders, isLeadValidationUpstreamStatus } from '@/lib/leads-proxy'
+import { BodyTooLargeError, readJsonBodyWithLimit } from '@/lib/request-body'
 
 export const runtime = 'nodejs'
 
@@ -22,15 +23,16 @@ const MAX_BODY_BYTES = 32 * 1024 // 정상 폼은 ~1KB. 그 이상이면 abuse.
 const FREE_TEXT_FIELDS = ['clinic_name', 'clinic_type', 'region_keyword', 'contact_name'] as const
 
 export async function POST(request: Request) {
-  const contentLength = Number(request.headers.get('content-length') || '0')
-  if (contentLength && contentLength > MAX_BODY_BYTES) {
-    return NextResponse.json({ ok: false, error: '요청이 너무 큽니다.' }, { status: 413 })
-  }
-
   let body: Record<string, unknown>
   try {
-    body = await request.json()
-  } catch {
+    const payload = await readJsonBodyWithLimit(request, MAX_BODY_BYTES)
+    body = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : {}
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) {
+      return NextResponse.json({ ok: false, error: '요청이 너무 큽니다.' }, { status: 413 })
+    }
     return NextResponse.json({ ok: false, error: '요청 형식이 올바르지 않습니다.' }, { status: 400 })
   }
 

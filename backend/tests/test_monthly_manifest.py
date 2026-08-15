@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.models.monthly_control import MonthlyMeasurementCell
+from app.models.sov import SovRecord
 from app.services.monthly_manifest import (
     ManifestCellSpec,
     ManifestError,
@@ -12,6 +14,7 @@ from app.services.monthly_manifest import (
     exclude_cell,
     freeze_dispatch_manifest,
     freeze_monthly_manifest,
+    link_attempt,
     summarize_manifest,
 )
 
@@ -95,10 +98,14 @@ def test_complete_manifest_still_requires_doctor_artifact() -> None:
     assert summary.blockers == ("DOCTOR_ARTIFACT_UNVALIDATED",)
 
 
-def test_freeze_expands_every_query_across_configured_platforms_and_reuses_snapshot() -> None:
+def test_freeze_preserves_already_expanded_query_platform_cells_and_reuses_snapshot() -> None:
     # Given
     session = FakeSession()
-    specs = [_spec(1), _spec(2)]
+    specs = [
+        _spec(1, "chatgpt"),
+        _spec(1, "gemini"),
+        _spec(2, "chatgpt"),
+    ]
 
     # When
     manifest = freeze_monthly_manifest(
@@ -120,12 +127,63 @@ def test_freeze_expands_every_query_across_configured_platforms_and_reuses_snaps
         ("variant:1", "chatgpt"),
         ("variant:1", "gemini"),
         ("variant:2", "chatgpt"),
-        ("variant:2", "gemini"),
     }
     assert manifest.platform_provenance["query_intents"] == {
         "variant:1": "LOCAL",
         "variant:2": "LOCAL",
     }
+
+
+def test_freeze_deduplicates_exact_query_platform_specs_without_cross_expanding() -> None:
+    session = FakeSession()
+    duplicate = _spec(1, "chatgpt")
+    manifest = freeze_monthly_manifest(
+        session,
+        uuid.uuid4(),
+        2026,
+        7,
+        [duplicate, duplicate, _spec(1, "gemini")],
+        gemini_configured=True,
+    )
+
+    assert [(cell.query_key, cell.platform) for cell in manifest.cells] == [
+        ("variant:1", "chatgpt"),
+        ("variant:1", "gemini"),
+    ]
+
+
+def test_link_attempt_requires_confirmed_measurement_before_success() -> None:
+    cell = MonthlyMeasurementCell(
+        manifest_id=uuid.uuid4(),
+        query_key="variant:ambiguous",
+        query_text="강남 내과 추천",
+        platform="chatgpt",
+        state="FAILED",
+    )
+    ambiguous = SovRecord(
+        hospital_id=uuid.uuid4(),
+        query_id=uuid.uuid4(),
+        ai_platform="chatgpt",
+        raw_response="응답",
+        measurement_status="SUCCESS",
+        mention_verdict="AMBIGUOUS",
+        is_mentioned=None,
+    )
+    confirmed = SovRecord(
+        hospital_id=uuid.uuid4(),
+        query_id=uuid.uuid4(),
+        ai_platform="chatgpt",
+        raw_response="응답",
+        measurement_status="SUCCESS",
+        mention_verdict="NOT_MATCHED",
+        is_mentioned=False,
+    )
+
+    link_attempt(cell, ambiguous)
+    assert cell.state == "FAILED"
+
+    link_attempt(cell, confirmed)
+    assert cell.state == "SUCCESS"
 
 
 def test_configured_platform_without_planned_cell_is_blocked() -> None:

@@ -36,7 +36,7 @@ test-local: test-backend-local test-frontend copy-guard
 
 test-backend-local: db-budget-guard
 	backend/.venv/bin/python -m ruff check backend
-	backend/.venv/bin/python -m pytest
+	cd backend && .venv/bin/python -m pytest
 
 # Cloud SQL 연결 예산 불변식 가드 (config.py 풀 × terraform 인스턴스/CELERY_CONCURRENCY
 # 합계 ≤ max_connections × 0.9). 어느 한쪽만 상향하면 여기서 배포 전에 잡힌다.

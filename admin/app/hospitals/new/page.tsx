@@ -9,7 +9,7 @@ import { fetchCurrentAccount, type CurrentAccount } from '@/lib/current-account'
 import { readClinicNameFromLeadContext } from '@/lib/lead-onboarding'
 import { acceptanceDecision, acceptancePayload, contractPayload, handoffNextAction, parsePlanCode } from '@/lib/handoff'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
-import type { AdminAccountSummary, Handoff, PlanCode } from '@/types'
+import { PLAN_CONTRACT_LABELS, type AdminAccountSummary, type Handoff, type PlanCode } from '@/types'
 
 interface LeadContext {
   id: string | null
@@ -248,9 +248,9 @@ export default function NewHospitalPage() {
             onChange={(e) => setPlan(parsePlanCode(e.target.value))}
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
           >
-            <option value="PLAN_12">스타터 · 월 12편</option>
-            <option value="PLAN_16">그로워 · 월 16편</option>
-            <option value="PLAN_20">리더 · 월 20편</option>
+            <option value="PLAN_12">{PLAN_CONTRACT_LABELS.PLAN_12}</option>
+            <option value="PLAN_16">{PLAN_CONTRACT_LABELS.PLAN_16}</option>
+            <option value="PLAN_20">{PLAN_CONTRACT_LABELS.PLAN_20}</option>
           </select>
         </div>
 

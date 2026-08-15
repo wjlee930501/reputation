@@ -16,7 +16,6 @@ import {
   painPoints,
   painSection,
   platformShareSection,
-  platformShares,
   previewSection,
   pricingSection,
   sceneSection,
@@ -40,7 +39,6 @@ import MotionToggle from "./_components/MotionToggle";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
 import SceneSequence from "./_components/SceneSequence";
-import PlatformShareChart from "./_components/PlatformShareChart";
 import ScrollReveal from "./_components/ScrollReveal";
 
 const DIAGNOSIS_PATH = "/ai-diagnosis";
@@ -235,13 +233,10 @@ export default function Home() {
           <h2 id="market-heading">{marketSection.heading}</h2>
         </div>
 
-        {/* 이 섹션은 이제 "왜 두 곳만 재는가"에만 답한다. 차트가 본문이다. */}
+        {/* 공급자별 결과를 교차 관찰하는 이유와 한계를 함께 밝힌다. */}
         <div className="share-block" data-reveal>
           <p className="share-nudge">{platformShareSection.nudge}</p>
-          <PlatformShareChart
-            shares={platformShares}
-            sourceNote={platformShareSection.sourceNote}
-          />
+          <p className="share-source">{platformShareSection.sourceNote}</p>
         </div>
       </section>
 
@@ -379,10 +374,11 @@ export default function Home() {
                 {plan.price}
                 <span>{plan.unit}</span>
               </p>
-              <p className="pricing-terms">{plan.vatExcluded ? "부가세 별도" : "부가세 포함"}</p>
+              <p className="pricing-terms">
+                월 {plan.monthlyContents}편 발행 · {plan.vatExcluded ? "부가세 별도" : "부가세 포함"}
+              </p>
               <p className="pricing-management">{plan.management}</p>
-              {/* 고를 근거. 편수가 아니라 우선순위로 나눈다 — 원장이 이미 알고 있는
-                  자기 상태가 곧 선택 기준이 된다. */}
+              {/* 월 편수 외에도 운영 우선순위를 설명해 선택 기준을 보완한다. */}
               <p className="pricing-note">{plan.note}</p>
             </li>
           ))}

@@ -2,13 +2,12 @@ export interface HospitalActivationInput {
   profile_complete?: boolean | null
   v0_report_done?: boolean | null
   site_built?: boolean | null
-  schedule_set?: boolean | null
 }
 
 export interface ActivationPrerequisite {
   key: keyof HospitalActivationInput
   label: string
-  hrefSuffix: 'profile' | 'reports' | 'schedule'
+  hrefSuffix: 'profile' | 'reports'
 }
 
 export interface ServerActivationPrerequisite {
@@ -34,15 +33,12 @@ const DISPLAY_PREREQUISITES: readonly ActivationPrerequisite[] = [
   { key: 'profile_complete', label: '병원 기본 정보 완료', hrefSuffix: 'profile' },
   { key: 'v0_report_done', label: '초기 진단 리포트 생성', hrefSuffix: 'reports' },
   { key: 'site_built', label: '콘텐츠 허브 준비', hrefSuffix: 'profile' },
-  { key: 'schedule_set', label: '콘텐츠 스케줄 설정', hrefSuffix: 'schedule' },
 ]
 
 const SERVER_GATE_ORDER = [
-  'handoff_accepted',
   'profile_complete',
   'v0_report_done',
   'site_built',
-  'schedule_set',
 ] as const
 
 /**

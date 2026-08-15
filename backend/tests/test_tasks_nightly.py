@@ -589,6 +589,10 @@ def test_monthly_slot_generation_isolates_valueerror_and_alerts_ops(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks.notifier, "notify_ops_alert", fake_ops_alert)
     monkeypatch.setattr("app.workers.monthly_slots.generate_monthly_slots", fake_generate)
+    # Unit tests must not inherit an idempotency marker from a developer Redis
+    # instance or another test process.
+    monkeypatch.setattr(tasks, "_already_done", lambda _key: False)
+    monkeypatch.setattr(tasks, "_mark_done", lambda _key, _ttl: None)
 
     tasks.monthly_slot_generation()
 

@@ -37,10 +37,10 @@ def _complete_hospital(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_active_gate_requires_schedule_after_complete_profile():
-    hospital = _complete_hospital(schedule_set=False)
+def test_active_gate_does_not_require_handoff_or_schedule_after_complete_profile():
+    hospital = _complete_hospital(handoff_accepted=False, schedule_set=False)
     assert missing_profile_requirement_keys(hospital) == []
-    assert missing_live_prerequisite_keys(hospital) == ["schedule_set"]
+    assert missing_live_prerequisite_keys(hospital) == []
 
 
 @pytest.mark.parametrize(
@@ -61,9 +61,7 @@ def test_active_gate_returns_canonical_order():
         schedule_set=False,
     )
     assert missing_live_prerequisite_keys(hospital) == [
-        "handoff_accepted",
         "profile_complete",
         "v0_report_done",
         "site_built",
-        "schedule_set",
     ]

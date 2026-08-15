@@ -43,7 +43,8 @@
       Slack으로 "운영 기준 미승인" 알림을 발송한다 (발행 게이트로도 재사용됨)
     ↓
 [STEP 6] 콘텐츠 스케줄 설정 (사람 — Admin에서 AE가)
-    • 요금제 선택: 16편/12편/8편 (월간)
+    • 요금제 선택: 스타터 12편/월 60만원, 그로워 16편/월 90만원,
+      리더 20편/월 120만원 (모두 부가세 별도)
     • 발행 요일 설정 (예: 화·목 or 월·수·금 등)
     • 저장 시 첫 달 콘텐츠 캘린더 자동 생성
     • ACTIVE 전환(STEP7)의 필수 사전 조건 중 하나 — STEP7보다 먼저 완료되어 있어야 한다
@@ -90,15 +91,17 @@
 
 ### 요금제별 월간 편수 배분
 
-| 유형 | 16편/월 | 12편/월 | 8편/월 |
-|------|:-------:|:-------:|:------:|
-| FAQ | 4 | 3 | 2 |
-| DISEASE | 3 | 3 | 2 |
-| TREATMENT | 3 | 2 | 2 |
-| COLUMN | 2 | 2 | 1 |
-| HEALTH | 2 | 1 | 1 |
-| LOCAL | 1 | 1 | 0 |
-| NOTICE | 1 | 0 | 0 |
+| 유형 | 리더 20편/월<br>120만원 | 그로워 16편/월<br>90만원 | 스타터 12편/월<br>60만원 |
+|------|:------------------------:|:------------------------:|:-------------------------:|
+| FAQ | 5 | 4 | 3 |
+| DISEASE | 4 | 3 | 3 |
+| TREATMENT | 4 | 3 | 2 |
+| COLUMN | 2 | 2 | 2 |
+| HEALTH | 2 | 2 | 1 |
+| LOCAL | 2 | 1 | 1 |
+| NOTICE | 1 | 1 | 0 |
+
+> 모든 가격은 부가세 별도다.
 
 ---
 
@@ -194,7 +197,7 @@ reputation/
 
 ### Hospital (병원 프로파일)
 ```
-기본: id, name, slug, plan (PLAN_16|PLAN_12|PLAN_8), status, created_at
+기본: id, name, slug, plan (PLAN_20|PLAN_16|PLAN_12), status, created_at
 
 연락처: address, phone, business_hours (JSON)
 URL: website_url, blog_url, kakao_channel_url, aeo_domain (연결된 도메인)
@@ -215,7 +218,7 @@ URL: website_url, blog_url, kakao_channel_url, aeo_domain (연결된 도메인)
 ### ContentSchedule (콘텐츠 스케줄)
 ```
 id, hospital_id
-plan: PLAN_16|PLAN_12|PLAN_8
+plan: PLAN_20|PLAN_16|PLAN_12
 publish_days: [0,2,4]  (월=0, 화=1, ... 일=6)
 active_from: date
 is_active: bool

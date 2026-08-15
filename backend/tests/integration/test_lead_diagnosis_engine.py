@@ -100,6 +100,22 @@ def spy(monkeypatch):
     return spy
 
 
+@pytest.fixture(autouse=True)
+def allow_leadgen_budget_by_default(monkeypatch):
+    """이 파일은 측정 엔진·공유 캐시 계약을 검증한다.
+
+    실제 Redis 비용 가드 상태가 남아 있으면 로컬/CI 환경의 사용량에 따라 측정이 시작 전
+    차단되고, provider spy나 캐시 행이 전혀 만들어지지 않는다. 비용 가드 자체는 별도
+    테스트가 담당하므로 여기서는 기본 허용으로 고정하고, 예산 예약/차단을 보는 테스트만
+    각자 `_GuardSpy`로 덮어쓴다.
+    """
+
+    async def _allow(category, *, count=1, redis_client=None):
+        return cost_guard.CostGuardDecision(True, None)
+
+    monkeypatch.setattr(cost_guard, "check_and_increment", _allow)
+
+
 async def _seed_diagnosis(
     session, *, hospital_name="장편한외과의원", region="수서역", specialty="외과",
     keywords=("대장내시경", "치질"),

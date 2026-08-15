@@ -1877,18 +1877,13 @@ summary:focus-visible {
   color: var(--text);
 }
 
-/* ─── 측정 범위 + 점유율 차트 ───────────────────────────────────
-   측정 대상만 accent로 칠한다 — 칠해진 면적이 곧 84%다. */
-/* 차트는 이제 근거 섹션 안의 블록이다 — "왜 두 곳만"을 위해 밴드 하나를 통째로
-   쓰지 않는다. 해설은 FAQ가 답한다. */
+/* ─── 측정 범위 ─────────────────────────────────────────────── */
 .share-block {
   margin-top: clamp(40px, 6vh, 64px);
   padding-top: clamp(32px, 5vh, 48px);
   border-top: 1px solid var(--line);
   display: grid;
-  /* 왼쪽은 한 문장, 오른쪽은 막대 넷 + 합계 + 각주다. 0.85:1로 두면 문장 하나가
-     화면 절반을 차지하고 정작 근거인 차트가 좁아진다. 본문 쪽에 무게를 준다. */
-  grid-template-columns: minmax(0, 0.55fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: clamp(28px, 5vw, 64px);
   align-items: start;
 }
@@ -1902,164 +1897,8 @@ summary:focus-visible {
   font-weight: 600;
 }
 
-.share-chart {
-  margin: 0;
-}
-
-.share-bars {
-  display: grid;
-  gap: 14px;
-}
-
-.share-row {
-  display: grid;
-  grid-template-columns: 5.5rem minmax(0, 1fr) 3.25rem;
-  align-items: center;
-  gap: 14px;
-}
-
-.share-name {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text);
-}
-
-.share-track {
-  display: block;
-  height: 26px;
-  background: #ededed;
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.share-fill {
-  display: block;
-  height: 100%;
-  background: var(--line-strong);
-  border-radius: 3px;
-  transform-origin: left;
-}
-
-/* 막대만 애니메이션한다 — 옆 숫자는 항상 최종값이라 JS 실패와 무관하게 정확하다.
-   reveal-ready 스코프가 없으면 JS가 죽은 화면에서 막대가 영원히 0으로 남는다. */
-.reveal-ready .landing-shell [data-reveal] .share-fill {
-  transform: scaleX(0);
-  transition: transform 1.05s var(--ease-enter);
-}
-
-.reveal-ready .landing-shell [data-reveal].in-view .share-fill {
-  transform: scaleX(1);
-}
-
-.reveal-ready .landing-shell [data-reveal].in-view .share-row:nth-child(2) .share-fill { transition-delay: 0.09s; }
-.reveal-ready .landing-shell [data-reveal].in-view .share-row:nth-child(3) .share-fill { transition-delay: 0.18s; }
-.reveal-ready .landing-shell [data-reveal].in-view .share-row:nth-child(4) .share-fill { transition-delay: 0.27s; }
-
-.share-fill.is-measured {
-  background: var(--accent);
-}
-
-.share-value {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--ink);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.share-total {
-  margin: 24px 0 0;
-  padding-top: 20px;
-  border-top: 1px solid var(--line-strong);
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.share-total strong {
-  font-size: clamp(2rem, 1.5rem + 1.6vw, 2.75rem);
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1;
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
-}
-
-.share-total span {
-  font-size: 0.875rem;
-  line-height: 1.5;
-  color: var(--text);
-}
-
-.share-table {
-  margin-top: 20px;
-}
-
-/* 실측 높이가 20px이었다 — WCAG 2.5.8(24×24)에도 못 미친다. 글자는 그대로 두고
-   누를 수 있는 상자만 44px로 올린다. `inline-flex`가 필요한 이유는 `summary`가
-   기본 `list-item`이라 min-height가 걸리지 않기 때문이다. */
-.share-table summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  font-size: 0.8125rem;
-  color: var(--muted);
-  cursor: pointer;
-  list-style: none;
-}
-
-.share-table summary::-webkit-details-marker {
-  display: none;
-}
-
-/* 표식은 FAQ와 같은 방식으로 그린다 — 문자(▶)를 쓰면 폰트에 따라 모양이 흔들리고,
-   이 페이지는 유니코드 글리프를 아이콘으로 쓰지 않는다. */
-.share-table summary::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-right: 2px solid var(--muted);
-  border-bottom: 2px solid var(--muted);
-  transform: rotate(-45deg);
-  transition: transform 0.2s var(--ease);
-}
-
-.share-table[open] > summary::before {
-  transform: rotate(45deg);
-}
-
-.share-table table {
-  width: 100%;
-  margin-top: 14px;
-  border-collapse: collapse;
-  font-size: 0.8125rem;
-}
-
-.share-table caption {
-  margin-bottom: 10px;
-  font-size: 0.75rem;
-  line-height: 1.5;
-  color: var(--muted);
-  text-align: left;
-}
-
-.share-table th,
-.share-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
-  color: var(--text);
-}
-
-.share-table thead th {
-  font-weight: 600;
-  color: var(--ink);
-}
-
 .share-source {
-  margin: 14px 0 0;
+  margin: 0;
   font-size: 0.875rem;
   line-height: 1.55;
   color: var(--muted);

@@ -406,6 +406,27 @@ async def test_auto_publish_digest_reports_only_exceptions_as_human_work(monkeyp
     assert captured["blocks"][1]["type"] == "actions"
 
 
+async def test_post_publish_review_overdue_escalates_only_the_sample_queue(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_post_publish_review_overdue(
+        entries=[
+            {
+                "hospital_name": "장편한외과의원",
+                "title": "자동 보완된 진료 안내",
+            }
+        ],
+        admin_url="https://admin.example.test/operations?queue=TODAY&sla=OVERDUE",
+    )
+
+    assert sent is True
+    body = captured["blocks"][0]["text"]["text"]
+    assert "공개 후 표본 확인 지연" in body
+    assert "24시간" in body
+    assert "즉시 비공개 후 재생성" in body
+    assert captured["blocks"][1]["type"] == "actions"
+
+
 async def test_zero_pii_purge_does_not_send_daily_noise(monkeypatch):
     async def should_not_send(*_args, **_kwargs):
         raise AssertionError("zero-work purge must stay in logs instead of Slack")

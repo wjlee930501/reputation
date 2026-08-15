@@ -6,10 +6,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import Hospital
 
 
@@ -128,14 +126,15 @@ def missing_profile_requirement_labels(hospital: Hospital) -> list[str]:
 
 
 def activation_requirements(
-    hospital: Hospital, *, handoff_accepted: bool
+    hospital: Hospital, *, handoff_accepted: bool | None = None
 ) -> list[ActivationRequirement]:
-    """Return ACTIVE prerequisites in the canonical operator order."""
+    """Return the canonical STEP 5 public-activation prerequisites.
+
+    ``handoff_accepted`` is compatibility-only. Handoff tracking and content
+    scheduling are separate workflows and never block public activation.
+    """
 
     return [
-        ActivationRequirement(
-            "handoff_accepted", "고객 인계 승인", "계약·인계 정보를 승인하세요.", handoff_accepted
-        ),
         ActivationRequirement(
             "profile_complete", "병원 기본 정보 완료", "병원 기본 정보의 필수 항목을 완료하세요.", hospital.profile_complete
         ),
@@ -145,9 +144,6 @@ def activation_requirements(
         ActivationRequirement(
             "site_built", "콘텐츠 허브 준비", "AI 노출 콘텐츠 허브 준비를 완료하세요.", hospital.site_built
         ),
-        ActivationRequirement(
-            "schedule_set", "콘텐츠 발행 일정", "요금제와 발행 요일을 저장하세요.", hospital.schedule_set
-        ),
     ]
 
 
@@ -156,20 +152,17 @@ def missing_live_prerequisite_keys(
 ) -> list[str]:
     """Return missing ACTIVE prerequisites without treating essence as a gate."""
 
-    accepted = (
-        bool(getattr(hospital, "handoff_accepted", False))
-        if handoff_accepted is None
-        else handoff_accepted
-    )
     return [
         requirement.key
-        for requirement in activation_requirements(hospital, handoff_accepted=accepted)
+        for requirement in activation_requirements(
+            hospital, handoff_accepted=handoff_accepted
+        )
         if not requirement.passed
     ]
 
 
 def activation_gate_snapshot(
-    hospital: Hospital, *, handoff_accepted: bool
+    hospital: Hospital, *, handoff_accepted: bool | None = None
 ) -> ActivationGateSnapshot:
     requirements = activation_requirements(hospital, handoff_accepted=handoff_accepted)
     missing = [requirement.key for requirement in requirements if not requirement.passed]
@@ -191,14 +184,13 @@ def activation_gate_snapshot(
 async def evaluate_activation_gate(
     db: AsyncSession, hospital: Hospital
 ) -> ActivationGateSnapshot:
-    """Evaluate the authoritative server gate from persisted handoff state."""
+    """Evaluate the authoritative STEP 5 gate.
 
-    state = await db.scalar(
-        select(HospitalHandoff.state).where(HospitalHandoff.hospital_id == hospital.id)
-    )
-    return activation_gate_snapshot(
-        hospital, handoff_accepted=state is HandoffState.HANDOFF_ACCEPTED
-    )
+    ``db`` remains in the signature for call-site compatibility; this gate has
+    no dependency on handoff or schedule persistence.
+    """
+
+    return activation_gate_snapshot(hospital)
 
 
 def activation_gate_error(

@@ -23,6 +23,7 @@ import {
 import { DEFAULT_CNAME_TARGET, platformSubdomainUrl, statusBadge, trimmed } from './DomainSetupState'
 import { isPlatformAddressBrowsable, missingActivationPrerequisites } from '@/lib/hospital-activation'
 import { safeOperatorError } from '@/lib/operations-journey'
+import { customDomainLiveUrl } from '@/lib/domain-live-links'
 
 export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeaderRefresh }: DomainSetupPanelProps) {
   const [domainSavedValue, setDomainSavedValue] = useState('')
@@ -102,6 +103,11 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
           : 'empty'
   const badge = statusBadge(status)
   const platformAddressBrowsable = isPlatformAddressBrowsable(profile)
+  const customDomainUrl = customDomainLiveUrl({
+    site_live: profile.site_live,
+    aeo_domain: currentDomain,
+    hasUnsavedChange,
+  })
   const displayPlan = useMemo(
     () => setupPlan ?? (domainSavedValue ? buildFallbackDomainSetupPlan(domainSavedValue, DEFAULT_CNAME_TARGET) : null),
     [domainSavedValue, setupPlan],
@@ -360,8 +366,8 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
           <DomainChecklist plan={displayPlan} />
         )}
 
-        {profile.site_live && !hasUnsavedChange ? (
-          <a href={`https://${currentDomain}`} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+        {customDomainUrl ? (
+          <a href={customDomainUrl} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
             병원 정보 허브 운영 중 · {currentDomain}
           </a>
         ) : (
