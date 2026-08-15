@@ -145,6 +145,8 @@ def _safe_message(error_code: str) -> str:
             return "이번 주 측정에서 실행할 항목을 찾지 못했습니다."
         case "WEEKLY_SOV_UNRESOLVED_MANIFEST_STATE":
             return "이번 주 측정에 완료·제외·재측정 대상으로 분류되지 않은 항목이 남아 있습니다."
+        case "WEEKLY_SOV_MEASUREMENT_POLICY_DRIFT":
+            return "월간 측정 기준과 현재 실행 기준이 달라 외부 AI 측정 호출을 시작하지 않았습니다."
         case "WEEKLY_SOV_MEASUREMENT_PARTIAL":
             return "일부 AI 검색 서비스 측정이 실패해 이번 주 측정이 부분 완료 상태입니다."
         case _:

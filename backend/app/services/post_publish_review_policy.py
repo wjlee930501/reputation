@@ -56,3 +56,25 @@ def human_post_publish_review_predicate() -> ColumnElement[bool]:
             ContentItem.body_updated_at > ContentItem.published_at,
         ),
     )
+
+
+def is_human_post_publish_review_sample(item: ContentItem) -> bool:
+    """Return whether a published item belongs to the same human review sample.
+
+    The SQL predicate above is for the live Operations queue, so it also excludes
+    already-reviewed rows. Monthly reporting needs the same sample boundary but must count
+    both reviewed and pending samples at the reporting cutoff.
+    """
+    if item.status != ContentStatus.PUBLISHED or item.published_at is None:
+        return False
+    summary = item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
+    remediation_attempts = summary.get("automatic_remediation_attempts")
+    return (
+        item.sequence_no == POST_PUBLISH_SAMPLE_SEQUENCE
+        or (isinstance(remediation_attempts, int) and remediation_attempts > 0)
+        or (
+            item.body_updated_at is not None
+            and item.published_at is not None
+            and item.body_updated_at > item.published_at
+        )
+    )

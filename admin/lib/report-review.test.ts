@@ -16,10 +16,23 @@ const payload = {
   },
   sov_summary: {
     sov_pct: 50,
+    platforms: [{ platform: 'chatgpt', platform_label: 'ChatGPT', answer_models: ['gpt-answer-2026-08'], model_observation_complete: true, search_observed_count: 2, search_used_count: 2 }],
     cells: [{ query_key: 'q1', query_text: '강남 내과 추천', query_intent_label: '지역·병원 선택 질문', platform_label: 'ChatGPT', state_label: '측정 완료', measured: true, mentioned: true }],
     comparison: { status: 'NON_COMPARABLE', problem: '지난달 기준 없음', customer_impact: '증감을 말할 수 없습니다.', next_action: '현재 수치만 설명하세요.' },
   },
-  content_summary: { first_measured_mention_cells: [{ classification_label: '이번 달 처음 확인된 언급', meaning: '지난달 기록이 없습니다.', customer_impact: '상승으로 설명할 수 없습니다.', next_action: '다음 달과 비교하세요.', query_text: '강남 내과 추천', platform_label: 'ChatGPT', related_contents: ['내과 진료 안내'] }] },
+  content_summary: {
+    operations: {
+      plan_quota: 16,
+      published_count: 15,
+      shortfall_count: 1,
+      scheduled_slot_count: 16,
+      scheduled_slot_state_counts: { PUBLISHED: 15, DRAFT: 1 },
+      delivery_warnings: ['약정 콘텐츠 16편 중 15편만 발행되었습니다.'],
+      post_publish_review: { required_sample_count: 2, reviewed_count: 1, pending_count: 1, overdue_count: 1, cutoff_at: '2026-08-02T09:00:00Z' },
+      operator_copy: { label: '콘텐츠 운영 증거', problem: '사후검수 대기', customer_impact: '전달 불가', next_action: '운영 센터 확인' },
+    },
+    first_measured_mention_cells: [{ classification_label: '이번 달 처음 확인된 언급', meaning: '지난달 기록이 없습니다.', customer_impact: '상승으로 설명할 수 없습니다.', next_action: '다음 달과 비교하세요.', query_text: '강남 내과 추천', platform_label: 'ChatGPT', related_contents: ['내과 진료 안내'] }],
+  },
   delivery_history: [], effective_delivery: null,
 }
 
@@ -29,13 +42,20 @@ test('strict report boundary preserves frozen cells, version lineage, and honest
   assert.equal(report?.review?.measurement.successCount, 2)
   assert.equal(report?.review?.notification.state, 'NOT_INDIVIDUALLY_LINKED')
   assert.equal(report?.cells[0]?.stateLabel, '측정 완료')
+  assert.deepEqual(report?.platforms[0]?.answerModels, ['gpt-answer-2026-08'])
+  assert.equal(report?.platforms[0]?.searchUsedCount, 2)
   assert.equal(report?.mentions[0]?.label, '이번 달 처음 확인된 언급')
+  assert.equal(report?.contentOperations?.planQuota, 16)
+  assert.equal(report?.contentOperations?.pendingReviewCount, 1)
+  assert.equal(report?.contentOperations?.scheduledSlotStateCounts.DRAFT, 1)
+  assert.equal(report?.contentOperations?.deliveryWarnings.length, 1)
   assert.doesNotMatch(JSON.stringify(report), /SLA|CUSTOMER_READY|raw_response/)
 })
 
 test('evidence sections are rendered before every delivery control', () => {
   const deliveryIndex = REPORT_REVIEW_SECTION_ORDER.indexOf('delivery')
   assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('measurement') < deliveryIndex)
+  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('operations') < deliveryIndex)
   assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('artifact') < deliveryIndex)
   assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('notification') < deliveryIndex)
 })

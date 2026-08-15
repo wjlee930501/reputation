@@ -13,7 +13,7 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from slowapi import Limiter
-from sqlalchemy import event, null
+from sqlalchemy import event, null, select
 
 from app.api.admin import operations_center
 from app.api.admin import operations_center_report_queries as report_queries
@@ -29,7 +29,11 @@ from app.main import app
 from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital, HospitalStatus
-from app.models.monthly_control import HospitalServiceInterval
+from app.models.monthly_control import (
+    HospitalServiceInterval,
+    MonthlyDeliveryEvent,
+    ReportDeliveryEventType,
+)
 from app.models.operations import (
     Incident,
     IncidentSeverity,
@@ -268,19 +272,47 @@ async def _active_hospital(db, name: str, *, created_months_ago: int = 6) -> Hos
     return hospital
 
 
-async def _monthly_report(db, hospital: Hospital, *, sent: bool) -> MonthlyReport:
+async def _monthly_report(
+    db,
+    hospital: Hospital,
+    *,
+    sent: bool,
+    version: int = 1,
+    supersedes_report_id: uuid.UUID | None = None,
+    created_at: datetime | None = None,
+) -> MonthlyReport:
     year, month = _previous_month(datetime.now(UTC))
     report = MonthlyReport(
         hospital_id=hospital.id,
         period_year=year,
         period_month=month,
         report_type="MONTHLY",
+        version=version,
+        supersedes_report_id=supersedes_report_id,
         pdf_path="gs://bucket/report.pdf",
         sent_at=datetime.now(UTC) if sent else None,
+        created_at=created_at,
     )
     db.add(report)
     await db.flush()
     return report
+
+
+async def _delivery_event(
+    db,
+    report: MonthlyReport,
+    event_type: ReportDeliveryEventType,
+    *,
+    created_at: datetime,
+) -> MonthlyDeliveryEvent:
+    event = MonthlyDeliveryEvent(
+        report_id=report.id,
+        event_type=event_type.value,
+        created_at=created_at,
+    )
+    db.add(event)
+    await db.flush()
+    return event
 
 
 def _names(entries) -> set[str]:
@@ -329,6 +361,134 @@ async def test_a_delivered_report_disappears_from_the_queue(pg_async_session):
     assert hospital.name not in _names(result.reports.undelivered)
 
 
+async def test_append_only_delivery_event_overrides_missing_legacy_sent_at(pg_async_session):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "이벤트전달 의원")
+    report = await _monthly_report(db, hospital, sent=False)
+    now = datetime.now(UTC)
+    await _delivery_event(db, report, ReportDeliveryEventType.DELIVERED, created_at=now)
+
+    result = await get_attention_queue(db)
+
+    assert hospital.name not in _names(result.reports.missing)
+    assert hospital.name not in _names(result.reports.undelivered)
+
+
+async def test_rescinded_delivery_returns_report_to_undelivered_queue(pg_async_session):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "철회 의원")
+    report = await _monthly_report(db, hospital, sent=True)
+    now = datetime.now(UTC)
+    await _delivery_event(db, report, ReportDeliveryEventType.DELIVERED, created_at=now)
+    await _delivery_event(
+        db,
+        report,
+        ReportDeliveryEventType.RESCINDED,
+        created_at=now + timedelta(minutes=1),
+    )
+
+    result = await get_attention_queue(db)
+
+    assert hospital.name not in _names(result.reports.missing)
+    entry = next(e for e in result.reports.undelivered if e.hospital_name == hospital.name)
+    assert entry.report_id == report.id
+
+
+async def test_corrected_delivery_remains_effective_for_attention_queue(pg_async_session):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "정정 의원")
+    report = await _monthly_report(db, hospital, sent=False)
+    now = datetime.now(UTC)
+    await _delivery_event(db, report, ReportDeliveryEventType.DELIVERED, created_at=now)
+    await _delivery_event(
+        db,
+        report,
+        ReportDeliveryEventType.CORRECTED,
+        created_at=now + timedelta(minutes=1),
+    )
+
+    result = await get_attention_queue(db)
+
+    assert hospital.name not in _names(result.reports.missing)
+    assert hospital.name not in _names(result.reports.undelivered)
+
+
+async def test_latest_monthly_report_version_controls_legacy_attention(pg_async_session):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "최신버전 의원")
+    created = datetime.now(UTC)
+    first = await _monthly_report(db, hospital, sent=True, version=1, created_at=created)
+    latest = await _monthly_report(
+        db,
+        hospital,
+        sent=False,
+        version=2,
+        supersedes_report_id=first.id,
+        created_at=created + timedelta(minutes=1),
+    )
+
+    result = await get_attention_queue(db)
+
+    assert hospital.name not in _names(result.reports.missing)
+    entry = next(e for e in result.reports.undelivered if e.hospital_name == hospital.name)
+    assert entry.report_id == latest.id
+
+
+async def test_operations_reports_queue_uses_delivery_events_not_sent_at(pg_async_session):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "운영철회 의원")
+    report = await _monthly_report(db, hospital, sent=True)
+    now = datetime.now(UTC)
+    await _delivery_event(db, report, ReportDeliveryEventType.DELIVERED, created_at=now)
+    await _delivery_event(
+        db,
+        report,
+        ReportDeliveryEventType.RESCINDED,
+        created_at=now + timedelta(minutes=1),
+    )
+
+    _total, rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=now,
+    )
+
+    row = next(item for item in rows if item.customer.hospital_id == hospital.id)
+    assert row.status == "DELIVERY_PENDING"
+    assert row.report_id == report.id
+
+
+async def test_operations_reports_queue_reads_only_latest_report_version(pg_async_session):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "운영최신버전 의원")
+    now = datetime.now(UTC)
+    first = await _monthly_report(db, hospital, sent=True, version=1, created_at=now)
+    latest = await _monthly_report(
+        db,
+        hospital,
+        sent=False,
+        version=2,
+        supersedes_report_id=first.id,
+        created_at=now + timedelta(minutes=1),
+    )
+
+    _total, rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=now,
+    )
+
+    row = next(item for item in rows if item.customer.hospital_id == hospital.id)
+    assert row.status == "DELIVERY_PENDING"
+    assert row.report_id == latest.id
+
+
 async def test_a_hospital_that_did_not_exist_yet_is_not_blamed(pg_async_session):
     """이번 달에 막 온보딩한 병원에 지난달 리포트가 없는 건 정상이다."""
     db = pg_async_session
@@ -346,11 +506,41 @@ async def test_hospitals_that_are_not_live_are_not_expected_to_have_reports(pg_a
     db = pg_async_session
     hospital = await _active_hospital(db, "온보딩중 의원")
     hospital.status = HospitalStatus.ONBOARDING
+    interval = await db.scalar(
+        select(HospitalServiceInterval).where(HospitalServiceInterval.hospital_id == hospital.id)
+    )
+    assert interval is not None
+    interval.ended_at = datetime.now(UTC) - timedelta(days=60)
     await db.flush()
 
     result = await get_attention_queue(db)
 
     assert hospital.name not in _names(result.reports.missing)
+
+
+async def test_prior_month_service_interval_controls_legacy_report_attention(pg_async_session):
+    db = pg_async_session
+    served_then_paused = await _active_hospital(db, "지난달해지 의원")
+    served_then_paused.status = HospitalStatus.PAUSED
+    year, month, period_start, _period_end = report_queries._previous_period(datetime.now(UTC))
+    assert (year, month) == _previous_month(datetime.now(UTC))
+    interval = await db.scalar(
+        select(HospitalServiceInterval).where(
+            HospitalServiceInterval.hospital_id == served_then_paused.id
+        )
+    )
+    assert interval is not None
+    interval.ended_at = period_start + timedelta(days=10)
+
+    no_prior_service = await _hospital(db, "구간없는 의원")
+    no_prior_service.status = HospitalStatus.ACTIVE
+    no_prior_service.created_at = period_start - timedelta(days=90)
+    await db.flush()
+
+    result = await get_attention_queue(db)
+
+    assert served_then_paused.name in _names(result.reports.missing)
+    assert no_prior_service.name not in _names(result.reports.missing)
 
 
 # ── 통합 운영 센터 읽기 모델 ──────────────────────────────────────────

@@ -220,6 +220,9 @@ class TestMeasurementPolicy:
         assert protocol["policy_version"] == sov_engine.MEASUREMENT_POLICY_VERSION
         assert protocol["system_prompt"] == sov_engine.SYSTEM_PROMPT_SOV
         assert protocol["openai_tool_choice"] == "auto"
+        assert protocol["openai_use_web_search"] == sov_engine.settings.OPENAI_CHATGPT_USE_WEB_SEARCH
+        assert protocol["openai_model_query"] == sov_engine.settings.OPENAI_MODEL_QUERY
+        assert protocol["gemini_model"] == sov_engine.settings.GEMINI_MODEL
 
     def test_same_policy_requires_both_snapshots(self):
         """한쪽이라도 기록이 없으면 다르다고 본다 — '모르겠다'는 '같다'가 아니다."""
@@ -233,6 +236,18 @@ class TestMeasurementPolicy:
         protocol = sov_engine.measurement_protocol()
         drifted = {**protocol, "openai_tool_choice": "required"}
         assert not sov_engine.same_execution_policy(protocol, drifted)
+
+    def test_changing_requested_model_or_search_path_changes_the_policy(self):
+        protocol = sov_engine.measurement_protocol()
+
+        assert not sov_engine.same_execution_policy(
+            protocol,
+            {**protocol, "openai_model_query": "different-model"},
+        )
+        assert not sov_engine.same_execution_policy(
+            protocol,
+            {**protocol, "openai_use_web_search": not protocol["openai_use_web_search"]},
+        )
 
     def test_query_design_blocks_comparison_but_not_execution(self):
         """질의 설계 변경은 기간 비교를 막되 측정 실행은 막지 않는다.

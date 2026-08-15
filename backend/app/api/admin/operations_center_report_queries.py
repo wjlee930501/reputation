@@ -18,7 +18,7 @@ from app.api.admin.operations_center_serializers import owner_projection
 from app.models.admin_user import AdminUser
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
-from app.models.monthly_control import HospitalServiceInterval
+from app.models.monthly_control import HospitalServiceInterval, ReportDeliveryEventType
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.schemas.operations import (
@@ -27,6 +27,10 @@ from app.schemas.operations import (
     OperationsHistoryEntry,
     OperationsQueue,
     OperationsQueueRow,
+)
+from app.services.monthly_delivery_projection import (
+    latest_delivery_event_subquery,
+    latest_monthly_report_subquery,
 )
 from app.services.monthly_period import reporting_period
 
@@ -157,16 +161,8 @@ async def load_reports_queue(
     ):
         return 0, []
     year, month, period_start, period_end = _previous_period(now)
-    latest = (
-        select(MonthlyReport.hospital_id, func.max(MonthlyReport.version).label("version"))
-        .where(
-            MonthlyReport.period_year == year,
-            MonthlyReport.period_month == month,
-            MonthlyReport.report_type == "MONTHLY",
-        )
-        .group_by(MonthlyReport.hospital_id)
-        .subquery()
-    )
+    latest = latest_monthly_report_subquery(year, month)
+    latest_delivery = latest_delivery_event_subquery()
     active_report_runs = (
         select(OperationRun.hospital_id)
         .where(
@@ -183,7 +179,14 @@ async def load_reports_queue(
     predicates = [
         Hospital.id.in_(_eligible_hospital_ids_stmt(period_start, period_end)),
         active_report_runs.c.hospital_id.is_(None),
-        or_(MonthlyReport.id.is_(None), MonthlyReport.sent_at.is_(None)),
+        or_(
+            MonthlyReport.id.is_(None),
+            and_(
+                latest_delivery.c.report_id.is_(None),
+                MonthlyReport.sent_at.is_(None),
+            ),
+            latest_delivery.c.event_type == ReportDeliveryEventType.RESCINDED.value,
+        ),
     ]
     owner_filter = owner_predicate(assignee, filters.owner)
     if owner_filter is not None:
@@ -193,16 +196,25 @@ async def load_reports_queue(
 
     def with_joins(statement):
         return (
-            statement.outerjoin(latest, latest.c.hospital_id == Hospital.id)
+            statement.outerjoin(
+                latest,
+                and_(latest.c.hospital_id == Hospital.id, latest.c.rn == 1),
+            )
             .outerjoin(active_report_runs, active_report_runs.c.hospital_id == Hospital.id)
             .outerjoin(
                 MonthlyReport,
                 and_(
-                    MonthlyReport.hospital_id == latest.c.hospital_id,
-                    MonthlyReport.version == latest.c.version,
+                    MonthlyReport.id == latest.c.report_id,
                     MonthlyReport.period_year == year,
                     MonthlyReport.period_month == month,
                     MonthlyReport.report_type == "MONTHLY",
+                ),
+            )
+            .outerjoin(
+                latest_delivery,
+                and_(
+                    latest_delivery.c.report_id == MonthlyReport.id,
+                    latest_delivery.c.rn == 1,
                 ),
             )
             .outerjoin(HospitalHandoff, HospitalHandoff.hospital_id == Hospital.id)

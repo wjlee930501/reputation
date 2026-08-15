@@ -34,6 +34,10 @@ class PlatformPayload(TypedDict):
     measured_count: int
     mentioned_count: int
     mention_rate: float | None
+    answer_models: list[str]
+    model_observation_complete: bool
+    search_observed_count: int
+    search_used_count: int
 
 
 class QueryPayload(TypedDict):

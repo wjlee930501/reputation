@@ -125,7 +125,13 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
             pdf_path="gs://qa-private/ae.pdf",
             doctor_pdf_path="gs://qa-private/doctor.pdf",
             sov_summary={"sov_pct": 20.0},
-            content_summary={"published_count": 20},
+            content_summary={
+                "published_count": 20,
+                "operations": {
+                    "schema_version": 1,
+                    "delivery_blockers": [],
+                },
+            },
             essence_summary={
                 "approved_philosophy_exists": True,
                 "source_stale": False,

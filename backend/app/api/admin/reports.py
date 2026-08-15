@@ -42,6 +42,10 @@ from app.schemas.report import (
 from app.services.audit_log import write_audit_log
 from app.services.essence_readiness import EssenceReadiness, get_essence_readiness
 from app.services.gcs_utils import get_signed_url
+from app.services.monthly_delivery_projection import (
+    delivery_is_effective,
+    effective_delivery_event,
+)
 from app.services.report_artifact_validation import parse_doctor_artifact_metadata
 from app.services.report_review_evidence import build_report_review_evidence
 
@@ -147,6 +151,13 @@ def _report_delivery_blockers(r: MonthlyReport) -> list[str]:
     content_summary = r.content_summary if isinstance(r.content_summary, dict) else {}
     if "published_count" not in content_summary:
         blockers.append("월간 콘텐츠 발행 요약이 없습니다.")
+    operations_summary = content_summary.get("operations")
+    if isinstance(operations_summary, dict):
+        for blocker in operations_summary.get("delivery_blockers") or []:
+            if isinstance(blocker, str) and blocker:
+                blockers.append(blocker)
+    else:
+        blockers.append("월간 콘텐츠 운영 검수 요약이 없습니다.")
 
     essence = r.essence_summary if isinstance(r.essence_summary, dict) else {}
     if not essence.get("approved_philosophy_exists"):
@@ -330,7 +341,19 @@ async def download_report(
     if is_doctor:
         await _assert_delivery_actor(db, r.hospital_id, actor)
         artifact = await _get_doctor_artifact(db, r.id)
-        await _assert_customer_ready(db, r, await _get_manifest(db, r.manifest_id), artifact)
+        if artifact is None:
+            raise _delivery_conflict(
+                "doctor_artifact_missing",
+                "검증된 원장 보고용 PDF가 없습니다.",
+            )
+        events = await _get_delivery_events(db, r.id)
+        effective = _effective_delivery_event(events)
+        delivered = delivery_is_effective(
+            latest_event_type=effective.event_type if effective is not None else None,
+            legacy_sent_at_present=bool(r.sent_at),
+        )
+        if not delivered:
+            await _assert_customer_ready(db, r, await _get_manifest(db, r.manifest_id), artifact)
     if not pdf_path:
         raise HTTPException(
             status_code=404,
@@ -568,7 +591,7 @@ async def _get_delivery_events(
 def _effective_delivery_event(
     events: list[MonthlyDeliveryEvent],
 ) -> MonthlyDeliveryEvent | None:
-    return events[-1] if events else None
+    return effective_delivery_event(events)
 
 
 async def _assert_delivery_actor(
@@ -669,14 +692,14 @@ def _serialize(
     gate = _delivery_gate(r, manifest, artifact)
     delivery_events = events or []
     effective = _effective_delivery_event(delivery_events)
-    delivered = (
-        effective.event_type != ReportDeliveryEventType.RESCINDED
-        if effective is not None
-        else bool(r.sent_at)
+    delivered = delivery_is_effective(
+        latest_event_type=effective.event_type if effective is not None else None,
+        legacy_sent_at_present=bool(r.sent_at),
     )
-    delivery_blockers = [] if gate.ready else [gate.message or "전달할 수 없습니다."]
-    delivery_blockers.extend(current_blockers or [])
-    ready = gate.ready and not current_blockers
+    delivery_blockers = [] if gate.ready or delivered else [gate.message or "전달할 수 없습니다."]
+    if not delivered:
+        delivery_blockers.extend(current_blockers or [])
+    ready = delivered or (gate.ready and not current_blockers)
     artifact_state = _artifact_state(r, artifact)
     artifact_metadata = (
         parse_doctor_artifact_metadata(artifact.validation_metadata)

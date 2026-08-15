@@ -382,6 +382,9 @@ _EXECUTION_POLICY_KEYS = (
     "prompt_fingerprint",
     "prompt_delivery",
     "openai_tool_choice",
+    "openai_use_web_search",
+    "openai_model_query",
+    "gemini_model",
     "judge_prompt_fingerprint",
     "judge_model",
 )
@@ -418,6 +421,12 @@ def measurement_protocol() -> dict:
         "policy_version": MEASUREMENT_POLICY_VERSION,
         "system_prompt": SYSTEM_PROMPT_SOV,
         "openai_tool_choice": OPENAI_SEARCH_TOOL_CHOICE,
+        # 요청 모델과 검색 경로도 답변 분포를 바꾸는 실행 조건이다. 실제 응답 모델은
+        # SovRecord.answer_model로 별도 검증하지만, 설정 변경 자체도 접수/비교 게이트가
+        # 먼저 잡아야 서로 다른 조건의 측정을 같은 기준으로 취급하지 않는다.
+        "openai_use_web_search": settings.OPENAI_CHATGPT_USE_WEB_SEARCH,
+        "openai_model_query": settings.OPENAI_MODEL_QUERY,
+        "gemini_model": settings.GEMINI_MODEL,
         # 같은 지시문도 전달 역할이 다르면 다른 측정이다.
         "prompt_delivery": PROMPT_DELIVERY,
         "prompt_fingerprint": _fingerprint(SYSTEM_PROMPT_SOV),
@@ -435,7 +444,26 @@ def _fingerprint(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def protocol_fingerprint() -> str:
+def _execution_policy_keys_for_platform(platform: str | None) -> tuple[str, ...]:
+    common = (
+        "policy_version",
+        "prompt_fingerprint",
+        "prompt_delivery",
+        "judge_prompt_fingerprint",
+        "judge_model",
+    )
+    if platform == "chatgpt":
+        return common + (
+            "openai_tool_choice",
+            "openai_use_web_search",
+            "openai_model_query",
+        )
+    if platform == "gemini":
+        return common + ("gemini_model",)
+    return _EXECUTION_POLICY_KEYS
+
+
+def protocol_fingerprint(*, platform: str | None = None) -> str:
     """캐시 키에 들어갈 실행 조건 지문.
 
     질의 설계는 넣지 않는다 — 캐시 키에는 질의 원문이 이미 들어 있어, 렌더링 결과가
@@ -443,7 +471,9 @@ def protocol_fingerprint() -> str:
     실제로 같은 질문을 다시 사서 돈만 쓴다.
     """
     protocol = measurement_protocol()
-    material = "|".join(f"{key}={protocol[key]}" for key in _EXECUTION_POLICY_KEYS)
+    material = "|".join(
+        f"{key}={protocol[key]}" for key in _execution_policy_keys_for_platform(platform)
+    )
     return hashlib.sha256(material.encode()).hexdigest()[:16]
 
 
@@ -455,23 +485,53 @@ def _same_on(left: dict | None, right: dict | None, keys: tuple[str, ...]) -> bo
     return all(left.get(key) == right.get(key) for key in keys)
 
 
-def same_execution_policy(left: dict | None, right: dict | None) -> bool:
+def same_execution_policy(
+    left: dict | None,
+    right: dict | None,
+    *,
+    platforms: tuple[str, ...] | None = None,
+) -> bool:
     """답변·판정 조건이 같은가 — **측정 실행 가능 여부**를 가른다.
 
     접수 스냅샷과 실행 시점이 다르면 재지 않는다. 리포트가 공개한 조건으로 설명할 수
     없는 숫자를 만들지 않기 위해서다.
     """
-    return _same_on(left, right, _EXECUTION_POLICY_KEYS)
+    if platforms is None:
+        keys = _EXECUTION_POLICY_KEYS
+    else:
+        keys = tuple(
+            dict.fromkeys(
+                key
+                for platform in platforms
+                for key in _execution_policy_keys_for_platform(platform)
+            )
+        )
+    return _same_on(left, right, keys)
 
 
-def same_measurement_basis(left: dict | None, right: dict | None) -> bool:
+def same_measurement_basis(
+    left: dict | None,
+    right: dict | None,
+    *,
+    platforms: tuple[str, ...] | None = None,
+) -> bool:
     """실행 조건 **+ 질의 설계**가 같은가 — **기간 비교 가능 여부**를 가른다.
 
     질의가 달라지면 같은 병원이라도 다른 숫자가 나온다. 실행은 막지 않는다 —
     접수 시점에 질의 원문이 이미 저장돼 있으므로, 생성기가 바뀌어도 그 진단은
     저장된 질의로 잴 수 있다.
     """
-    return _same_on(left, right, _EXECUTION_POLICY_KEYS + _QUERY_DESIGN_KEYS)
+    if platforms is None:
+        execution_keys = _EXECUTION_POLICY_KEYS
+    else:
+        execution_keys = tuple(
+            dict.fromkeys(
+                key
+                for platform in platforms
+                for key in _execution_policy_keys_for_platform(platform)
+            )
+        )
+    return _same_on(left, right, execution_keys + _QUERY_DESIGN_KEYS)
 
 
 def record_is_confirmed(record) -> bool:

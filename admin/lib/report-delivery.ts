@@ -69,6 +69,12 @@ export function isEffectivelyDelivered(report: Pick<DeliveryContract, 'effective
   return Boolean(report.sentAt)
 }
 
+export function isDoctorDownloadAvailable(
+  report: Pick<DeliveryContract, 'deliveryReady' | 'effectiveEventType' | 'sentAt'>,
+): boolean {
+  return report.deliveryReady || isEffectivelyDelivered(report)
+}
+
 /** API가 생성 시각 오름차순으로 반환한 전달 이력에서 현재 기록을 고른다. */
 export function latestDeliveryEvent(events: readonly ReportEvent[]): ReportEvent | undefined {
   return events.at(-1)
@@ -78,9 +84,9 @@ export function getDoctorDownload(
   hospitalId: string,
   reportId: string,
   artifactState: string,
-  deliveryReady: boolean,
+  report: Pick<DeliveryContract, 'deliveryReady' | 'effectiveEventType' | 'sentAt'>,
 ): string | null {
-  if (artifactState !== 'VALID' || !deliveryReady) return null
+  if (artifactState !== 'VALID' || !isDoctorDownloadAvailable(report)) return null
   return `/api/admin/hospitals/${hospitalId}/reports/${reportId}/download?audience=doctor`
 }
 

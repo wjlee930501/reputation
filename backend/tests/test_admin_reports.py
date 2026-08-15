@@ -28,7 +28,13 @@ def _report(**overrides):
         pdf_path="gs://reputation-reports/demo.pdf",
         doctor_pdf_path="gs://reputation-reports/demo_doctor.pdf",
         sov_summary={"sov_pct": 42.0},
-        content_summary={"published_count": 8},
+        content_summary={
+            "published_count": 8,
+            "operations": {
+                "schema_version": 1,
+                "delivery_blockers": [],
+            },
+        },
         essence_summary={
             "approved_philosophy_exists": True,
             "philosophy_version": 3,
@@ -688,7 +694,7 @@ def test_report_detail_serializes_essence_summary_for_pre_pdf_review():
     payload = _serialize(report, full=True)
 
     assert payload["sov_summary"] == {"sov_pct": 42.0}
-    assert payload["content_summary"] == {"published_count": 8}
+    assert payload["content_summary"] == report.content_summary
     assert payload["essence_summary"] == report.essence_summary
     assert payload["display"]["report_type_label"] == "월간 리포트"
     assert payload["display"]["screening_status_label"] == "검수 대기"
@@ -762,12 +768,60 @@ def test_report_detail_returns_persisted_fixed_manifest_breakdown_unchanged():
     assert listing["sov_summary"] is None
 
 
+def test_report_detail_keeps_delivered_reports_downloadable_even_if_current_readiness_changes():
+    report = _report()
+    report.sent_at = datetime(2026, 5, 10, 3, 0, tzinfo=timezone.utc)
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    payload = _serialize(
+        report,
+        full=True,
+        manifest=_bind_manifest(report, _manifest()),
+        artifact=artifact,
+        events=[
+            SimpleNamespace(
+                id=uuid.uuid4(),
+                event_type="DELIVERED",
+                artifact_id=artifact.id,
+                recipient="김원장",
+                metadata_json={
+                    "artifact_sha256": artifact.sha256,
+                    "artifact_path_hash": "b" * 64,
+                    "channel": "대면",
+                    "operator": "owner@example.com",
+                    "note": None,
+                    "reason": None,
+                },
+                created_at=datetime(2026, 5, 10, 3, 0, tzinfo=timezone.utc),
+            )
+        ],
+        current_blockers=["현재 병원 자료가 변경됐습니다."],
+    )
+
+    assert payload["delivery_ready"] is True
+    assert payload["customer_ready"] is True
+    assert payload["delivery_blockers"] == []
+    assert payload["display"]["screening_status"] == "DELIVERED"
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [
         ({"pdf_path": None}, "PDF 다운로드 파일"),
         ({"sov_summary": None}, "AI 언급률 요약"),
         ({"content_summary": None}, "월간 콘텐츠 발행 요약"),
+        (
+            {
+                "content_summary": {
+                    "published_count": 8,
+                    "operations": {
+                        "delivery_blockers": [
+                            "월간 리포트 필수 사후검수 샘플 1건이 아직 완료되지 않았습니다."
+                        ]
+                    },
+                }
+            },
+            "필수 사후검수 샘플",
+        ),
         ({"essence_summary": {"approved_philosophy_exists": False}}, "승인된 콘텐츠 운영 기준"),
         (
             {"essence_summary": {"approved_philosophy_exists": True, "source_stale": True}},
@@ -863,6 +917,34 @@ async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch)
     assert "filename*=UTF-8''" in disposition
     assert "원장보고" not in disposition, "한글이 latin-1 헤더에 그대로 들어가면 500이 난다"
     response.headers["content-disposition"].encode("latin-1")  # 인코딩 가능해야 한다
+
+
+async def test_legacy_delivered_doctor_artifact_remains_downloadable(monkeypatch):
+    """이벤트 도입 전 sent_at 전달본도 이후 readiness 변화로 감사 조회가 막히면 안 된다."""
+    hospital = _hospital()
+    report = _report(
+        hospital_id=hospital.id,
+        sent_at=datetime(2026, 5, 10, 3, 0, tzinfo=timezone.utc),
+        quality="DEGRADED",
+    )
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    db = _FakeDB(hospital, report, artifact=artifact)
+
+    async def fail_if_revalidated(*_args, **_kwargs):
+        raise AssertionError("과거 전달본 조회에 현재 readiness를 다시 적용하면 안 된다")
+
+    monkeypatch.setattr(reports_api, "_assert_customer_ready", fail_if_revalidated)
+    monkeypatch.setattr(reports_api, "get_signed_url", lambda *args, **kwargs: "https://x.test")
+
+    response = await reports_api.download_report(
+        hospital.id,
+        report.id,
+        audience="doctor",
+        db=db,
+        actor=_actor(),
+    )
+
+    assert response.status_code == 302
 
 
 @pytest.mark.parametrize(("assigned", "expected_status"), [(True, 302), (False, 403)])

@@ -28,6 +28,27 @@ export type MentionEvidence = ActionCopy & {
   platformLabel: string
   relatedContents: readonly string[]
 }
+export type ContentOperationsEvidence = ActionCopy & {
+  planQuota: number | null
+  publishedCount: number
+  shortfallCount: number
+  scheduledSlotCount: number
+  scheduledSlotStateCounts: Readonly<Record<string, number>>
+  requiredReviewCount: number
+  reviewedCount: number
+  pendingReviewCount: number
+  overdueReviewCount: number
+  cutoffAt: string | null
+  deliveryWarnings: readonly string[]
+}
+export type PlatformMeasurementEvidence = {
+  platform: string
+  platformLabel: string
+  answerModels: readonly string[]
+  modelObservationComplete: boolean
+  searchObservedCount: number
+  searchUsedCount: number
+}
 
 export type ReportView = {
   id: string
@@ -74,7 +95,9 @@ export type ReportView = {
     changePct: number | null
   } | null
   cells: readonly MeasurementCell[]
+  platforms: readonly PlatformMeasurementEvidence[]
   mentions: readonly MentionEvidence[]
+  contentOperations: ContentOperationsEvidence | null
   deliveryHistory: readonly ReportEvent[]
   effectiveEventType: string | null
 }
@@ -82,6 +105,7 @@ export type ReportView = {
 export const REPORT_REVIEW_SECTION_ORDER = [
   'status',
   'measurement',
+  'operations',
   'artifact',
   'notification',
   'delivery',
@@ -137,6 +161,23 @@ function parseCells(value: unknown): MeasurementCell[] {
   })
 }
 
+function parsePlatforms(value: unknown): PlatformMeasurementEvidence[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((raw) => {
+    const item = record(raw)
+    const platform = text(item?.platform)
+    if (!item || !platform) return []
+    return [{
+      platform,
+      platformLabel: text(item.platform_label, platform),
+      answerModels: strings(item.answer_models),
+      modelObservationComplete: item.model_observation_complete === true,
+      searchObservedCount: number(item.search_observed_count),
+      searchUsedCount: number(item.search_used_count),
+    }]
+  })
+}
+
 function parseEvents(value: unknown): ReportEvent[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((raw, index) => {
@@ -172,6 +213,34 @@ function parseMentions(value: unknown): MentionEvidence[] {
       relatedContents: strings(item.related_contents),
     }]
   })
+}
+
+function parseContentOperations(value: unknown): ContentOperationsEvidence | null {
+  const content = record(value)
+  const operations = record(content?.operations)
+  if (!operations) return null
+  const review = record(operations.post_publish_review)
+  const copy = actionCopy(operations.operator_copy, '콘텐츠 운영 증거')
+  const rawStateCounts = record(operations.scheduled_slot_state_counts)
+  const scheduledSlotStateCounts: Record<string, number> = {}
+  for (const [key, raw] of Object.entries(rawStateCounts ?? {})) {
+    const value = number(raw)
+    if (value > 0) scheduledSlotStateCounts[key] = value
+  }
+  return {
+    ...copy,
+    planQuota: nullableNumber(operations.plan_quota),
+    publishedCount: number(operations.published_count),
+    shortfallCount: number(operations.shortfall_count),
+    scheduledSlotCount: number(operations.scheduled_slot_count),
+    scheduledSlotStateCounts,
+    requiredReviewCount: number(review?.required_sample_count),
+    reviewedCount: number(review?.reviewed_count),
+    pendingReviewCount: number(review?.pending_count),
+    overdueReviewCount: number(review?.overdue_count),
+    cutoffAt: text(review?.cutoff_at) || null,
+    deliveryWarnings: strings(operations.delivery_warnings),
+  }
 }
 
 export function parseReport(value: unknown): ReportView | null {
@@ -236,7 +305,9 @@ export function parseReport(value: unknown): ReportView | null {
       changePct: nullableNumber(comparison.change_pct),
     } : null,
     cells: parseCells(sov?.cells),
+    platforms: parsePlatforms(sov?.platforms),
     mentions: parseMentions(root.content_summary),
+    contentOperations: parseContentOperations(root.content_summary),
     deliveryHistory: parseEvents(root.delivery_history),
     effectiveEventType: text(effective?.event_type) || null,
   }

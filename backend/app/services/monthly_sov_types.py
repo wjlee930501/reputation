@@ -38,6 +38,8 @@ class CellAttempt:
     measured_at: datetime
     succeeded: bool
     is_mentioned: bool
+    answer_model: str | None = None
+    search_calls: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +110,10 @@ class PlatformSummary:
     measured_count: int
     mentioned_count: int
     mention_rate: float | None
+    answer_models: tuple[str, ...]
+    model_observation_complete: bool
+    search_observed_count: int
+    search_used_count: int
 
     def to_payload(self) -> PlatformPayload:
         return {
@@ -120,6 +126,10 @@ class PlatformSummary:
             "measured_count": self.measured_count,
             "mentioned_count": self.mentioned_count,
             "mention_rate": self.mention_rate,
+            "answer_models": list(self.answer_models),
+            "model_observation_complete": self.model_observation_complete,
+            "search_observed_count": self.search_observed_count,
+            "search_used_count": self.search_used_count,
         }
 
 

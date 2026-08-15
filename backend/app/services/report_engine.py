@@ -375,6 +375,17 @@ def _iso_or_none(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else str(value) if value else None
 
 
+def report_pdf_filename(
+    hospital_slug: str,
+    label: str,
+    *,
+    report_type: str,
+    report_version: int | None,
+) -> str:
+    version_suffix = f"_v{report_version}" if report_type == "MONTHLY" and report_version else ""
+    return f"{hospital_slug}_{label}{version_suffix}.pdf"
+
+
 def generate_pdf_report(
     hospital: Hospital,
     period_start: datetime,
@@ -386,6 +397,8 @@ def generate_pdf_report(
     attribution: ContentAttributionPayload | None = None,
     strategy: dict[str, Any] | None = None,
     sov_coverage: MonthlySovPayload | None = None,
+    content_operations: dict[str, Any] | None = None,
+    report_version: int | None = None,
 ) -> str:
     """
     PDF 리포트 생성 후 GCS에 업로드.
@@ -398,7 +411,12 @@ def generate_pdf_report(
 
     now = arrow.now("Asia/Seoul")
     label = "V0-진단" if report_type == "V0" else arrow.get(period_start).format("YYYY-MM")
-    filename = f"{hospital.slug}_{label}.pdf"
+    filename = report_pdf_filename(
+        hospital.slug,
+        label,
+        report_type=report_type,
+        report_version=report_version,
+    )
     local_pdf_path = output_dir / filename
 
     env = Environment(
@@ -422,6 +440,7 @@ def generate_pdf_report(
         attribution=attribution,
         strategy=strategy,
         sov_coverage=sov_coverage,
+        content_operations=content_operations,
         generated_at=now.datetime,
     )
 

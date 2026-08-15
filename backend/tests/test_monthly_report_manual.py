@@ -221,6 +221,31 @@ def test_existing_report_is_not_overwritten(monkeypatch):
     assert result["status"] == "skipped_existing"
 
 
+def test_existing_report_skip_happens_before_pdf_side_effects(monkeypatch):
+    rendered: list[str] = []
+    monkeypatch.setattr(
+        tasks,
+        "lock_report_version_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            create=False, version=1, supersedes_report_id=None
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "generate_pdf_report",
+        lambda **_kwargs: rendered.append("pdf") or "gs://should-not-render.pdf",
+    )
+
+    outcome = tasks._build_monthly_report_for_hospital(
+        SimpleNamespace(),
+        SimpleNamespace(id=uuid.uuid4(), name="기존 리포트 의원", plan="PLAN_12"),
+        arrow.get(2026, 7, 31, 23, 59, tzinfo="Asia/Seoul"),
+    )
+
+    assert outcome == "skipped_existing"
+    assert rendered == []
+
+
 def test_explicit_rebuild_requests_a_new_version(monkeypatch):
     _use_session(monkeypatch, FakeSession(FakeHospital()))
     seen: dict = {}

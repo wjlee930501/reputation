@@ -56,6 +56,12 @@ def _platform_summary(cells: tuple[ManifestCellInput, ...], platform: str) -> Pl
         for attempt in (cell.selected_attempt,)
         if attempt is not None
     )
+    selected_attempts = tuple(
+        attempt
+        for cell in rows
+        for attempt in (cell.selected_attempt,)
+        if attempt is not None
+    )
     return PlatformSummary(
         platform=platform,
         cell_count=len(rows),
@@ -70,6 +76,13 @@ def _platform_summary(cells: tuple[ManifestCellInput, ...], platform: str) -> Pl
             if local_attempts
             else None
         ),
+        answer_models=tuple(
+            sorted({attempt.answer_model for attempt in selected_attempts if attempt.answer_model})
+        ),
+        model_observation_complete=bool(selected_attempts)
+        and all(attempt.answer_model for attempt in selected_attempts),
+        search_observed_count=sum(attempt.search_calls is not None for attempt in selected_attempts),
+        search_used_count=sum((attempt.search_calls or 0) > 0 for attempt in selected_attempts),
     )
 
 
@@ -104,6 +117,11 @@ def _non_comparable(reason: str, *, current_unmatched: int, prior_unmatched: int
             "이번 달과 지난달의 측정 기준(지시문·검색 정책)이 다릅니다. "
             "수치 변화는 병원 성과가 아니라 측정 기준 변경일 수 있습니다."
         ),
+        "ANSWER_MODEL_CHANGED": (
+            "이번 달과 지난달에 실제로 답변한 AI 모델 구성이 다릅니다. "
+            "수치 변화는 병원 성과가 아니라 모델 변경의 영향일 수 있습니다."
+        ),
+        "ANSWER_MODEL_UNKNOWN": "실제 응답 모델 기록이 없어 두 달의 측정 조건을 확인할 수 없습니다.",
     }
     return ComparisonSummary(
         status="NON_COMPARABLE",
@@ -137,6 +155,17 @@ def _comparison(
         return _non_comparable(
             "NO_PRIOR_MANIFEST", current_unmatched=len(current_keys), prior_unmatched=0
         )
+    prior_keys = {
+        (cell.query_key, cell.platform)
+        for cell in prior
+        if cell.query_intent == "LOCAL" and cell.state != "EXCLUDED"
+    }
+    if set(current_platforms) != set(prior_platforms):
+        return _non_comparable(
+            "PLATFORM_COHORT_MISSING",
+            current_unmatched=len(current_keys - prior_keys),
+            prior_unmatched=len(prior_keys - current_keys),
+        )
     # 측정 정책이 바뀐 두 달은 같은 질문·같은 플랫폼이라도 비교하지 않는다 — 지시문이나
     # 검색 강제 여부가 다르면 수치 차이가 병원 성과인지 측정 기준 변경인지 가를 수 없다.
     #
@@ -144,7 +173,11 @@ def _comparison(
     # 이전 세대"로 허용했지만, 그 규칙은 배포 이전에만 안전하다: v2 배포 후에 스냅샷 없는
     # manifest(배포 전에 동결된 이번 달)에 v2 재측정이 섞이면, 없음=없음이 "같다"로 접혀
     # v1/v2 혼합 월이 비교 가능으로 팔린다. 전환 월의 추세 단절은 의도된 비용이다.
-    if not sov_engine.same_measurement_basis(current_protocol, prior_protocol):
+    if not sov_engine.same_measurement_basis(
+        current_protocol,
+        prior_protocol,
+        platforms=current_platforms,
+    ):
         return _non_comparable(
             "MEASUREMENT_POLICY_CHANGED",
             current_unmatched=len(current_keys),
@@ -160,17 +193,6 @@ def _comparison(
                 cell.query_intent == "LOCAL" and cell.state != "EXCLUDED" for cell in prior
             ),
         )
-    prior_keys = {
-        (cell.query_key, cell.platform)
-        for cell in prior
-        if cell.query_intent == "LOCAL" and cell.state != "EXCLUDED"
-    }
-    if set(current_platforms) != set(prior_platforms):
-        return _non_comparable(
-            "PLATFORM_COHORT_MISSING",
-            current_unmatched=len(current_keys - prior_keys),
-            prior_unmatched=len(prior_keys - current_keys),
-        )
 
     current_by_key = {(cell.query_key, cell.platform): cell for cell in current}
     prior_by_key = {(cell.query_key, cell.platform): cell for cell in prior}
@@ -184,6 +206,26 @@ def _comparison(
     if any(not any(key[1] == platform for key in matched) for platform in current_platforms):
         return _non_comparable(
             "NO_MATCHED_CELLS",
+            current_unmatched=len(current_keys - matched_keys),
+            prior_unmatched=len(prior_keys - matched_keys),
+        )
+
+    model_pairs = tuple(
+        (
+            current_by_key[key].selected_attempt.answer_model,
+            prior_by_key[key].selected_attempt.answer_model,
+        )
+        for key in matched
+    )
+    if any(current_model is None or prior_model is None for current_model, prior_model in model_pairs):
+        return _non_comparable(
+            "ANSWER_MODEL_UNKNOWN",
+            current_unmatched=len(current_keys - matched_keys),
+            prior_unmatched=len(prior_keys - matched_keys),
+        )
+    if any(current_model != prior_model for current_model, prior_model in model_pairs):
+        return _non_comparable(
+            "ANSWER_MODEL_CHANGED",
             current_unmatched=len(current_keys - matched_keys),
             prior_unmatched=len(prior_keys - matched_keys),
         )

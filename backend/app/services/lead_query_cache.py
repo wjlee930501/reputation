@@ -29,7 +29,7 @@ from app.services import sov_engine
 logger = logging.getLogger(__name__)
 
 
-def prompt_version() -> str:
+def prompt_version(*, platform: str | None = None) -> str:
     """측정 **프로토콜 전체**의 지문.
 
     수동으로 관리하는 버전 문자열이면 조건을 고치고 버전 올리는 것을 잊는다 —
@@ -40,7 +40,7 @@ def prompt_version() -> str:
     전혀 다른 답변이 나오는데, v1 캐시가 7일간 살아남아 v2 측정으로 팔린다.
     정책 전환이 캐시를 자동으로 무효화하도록 프로토콜 지문을 그대로 쓴다.
     """
-    return sov_engine.protocol_fingerprint()
+    return sov_engine.protocol_fingerprint(platform=platform)
 
 
 def query_cache_key(*, query_text: str, platform: str, requested_model: str) -> str:
@@ -50,7 +50,7 @@ def query_cache_key(*, query_text: str, platform: str, requested_model: str) -> 
     틀린 숫자를 팔게 된다.
     """
     normalized = " ".join((query_text or "").split())
-    material = f"{normalized}|{platform}|{requested_model}|{prompt_version()}"
+    material = f"{normalized}|{platform}|{requested_model}|{prompt_version(platform=platform)}"
     return hashlib.sha256(material.encode()).hexdigest()
 
 
@@ -124,7 +124,7 @@ async def store_answer(
                     platform=platform,
                     requested_model=requested_model,
                     answer_model=answer_model,
-                    prompt_version=prompt_version(),
+                    prompt_version=prompt_version(platform=platform),
                     raw_response=raw_response,
                     source_urls=source_urls,
                     search_calls=search_calls,

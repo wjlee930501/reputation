@@ -20,9 +20,22 @@ test('server delivery readiness is the only positive authority', () => {
 })
 
 test('only the validated doctor artifact becomes the primary download', () => {
-  assert.equal(getDoctorDownload('h1', 'r1', 'VALID', true), '/api/admin/hospitals/h1/reports/r1/download?audience=doctor')
-  assert.equal(getDoctorDownload('h1', 'r1', 'INVALID', true), null)
-  assert.equal(getDoctorDownload('h1', 'r1', 'VALID', false), null)
+  assert.equal(
+    getDoctorDownload('h1', 'r1', 'VALID', { deliveryReady: true, effectiveEventType: null, sentAt: null }),
+    '/api/admin/hospitals/h1/reports/r1/download?audience=doctor',
+  )
+  assert.equal(
+    getDoctorDownload('h1', 'r1', 'VALID', { deliveryReady: false, effectiveEventType: 'DELIVERED', sentAt: '2026-08-01T00:00:00Z' }),
+    '/api/admin/hospitals/h1/reports/r1/download?audience=doctor',
+  )
+  assert.equal(
+    getDoctorDownload('h1', 'r1', 'INVALID', { deliveryReady: true, effectiveEventType: null, sentAt: null }),
+    null,
+  )
+  assert.equal(
+    getDoctorDownload('h1', 'r1', 'VALID', { deliveryReady: false, effectiveEventType: null, sentAt: null }),
+    null,
+  )
   assert.equal(getInternalReportLabel(true, true), '내부 검수용 리포트 열기 · 원장 전달 금지')
 })
 

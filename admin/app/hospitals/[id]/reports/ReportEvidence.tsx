@@ -38,6 +38,25 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
             <Count label="측정 제외" value={review.measurement.excludedCount} />
           </dl>
         )}
+        {report.platforms.length > 0 && (
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {report.platforms.map((platform) => (
+              <div key={platform.platform} className="rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3 text-sm leading-6">
+                <p className="font-bold">{platform.platformLabel} 실행 조건</p>
+                <p className="text-[var(--color-revisit-text-helper)]">
+                  실제 응답 모델: {platform.modelObservationComplete && platform.answerModels.length > 0
+                    ? platform.answerModels.join(', ')
+                    : '기록 불완전'}
+                </p>
+                <p className="text-[var(--color-revisit-text-helper)]">
+                  검색 사용: {platform.searchObservedCount > 0
+                    ? `${platform.searchUsedCount}/${platform.searchObservedCount}건`
+                    : '확인 불가'}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
         <details className="mt-4 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3" open>
           <summary className="flex min-h-11 cursor-pointer items-center font-bold text-[var(--color-revisit-text-title)]">질문별 측정 근거 {report.cells.length}건</summary>
           {report.cells.length ? (
@@ -59,6 +78,52 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
           <h4 id="comparison-heading" className="font-bold text-[var(--color-revisit-text-title)]">지난달과 비교</h4>
           <p className="mt-2 text-sm font-semibold">{report.comparison.comparable ? '같은 질문과 AI 서비스 기준으로 비교할 수 있습니다.' : '지난달과 직접 비교할 수 없습니다.'}</p>
           <EvidenceCopy copy={{ label: '', ...report.comparison }} />
+        </section>
+      )}
+
+      {report.contentOperations && (
+        <section className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="content-operations-heading" data-review-section="operations">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold text-[var(--color-revisit-text-caption)]">콘텐츠 운영 증거</p>
+              <h4 id="content-operations-heading" className="mt-1 font-bold text-[var(--color-revisit-text-title)]">{report.contentOperations.label}</h4>
+            </div>
+            <p className="text-sm font-semibold text-[var(--color-revisit-text-helper)]">
+              약정 {report.contentOperations.planQuota ?? '-'}편 · 발행 {report.contentOperations.publishedCount}편
+            </p>
+          </div>
+          <EvidenceCopy copy={report.contentOperations} />
+          {report.contentOperations.deliveryWarnings.length > 0 && (
+            <ul className="mt-3 rounded-lg border border-[var(--color-revisit-primary-80)] bg-[var(--color-revisit-primary-95)] p-3 text-sm leading-6 text-[var(--color-revisit-text-title)]">
+              {report.contentOperations.deliveryWarnings.map((warning) => <li key={warning}>주의: {warning}</li>)}
+            </ul>
+          )}
+          <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Count label="약정 미달" value={report.contentOperations.shortfallCount} />
+            <Count label="스케줄 슬롯" value={report.contentOperations.scheduledSlotCount} />
+            <Count label="사후검수 완료" value={report.contentOperations.reviewedCount} />
+            <Count label="사후검수 대기" value={report.contentOperations.pendingReviewCount} />
+          </dl>
+          <details className="mt-4 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3">
+            <summary className="flex min-h-11 cursor-pointer items-center font-bold text-[var(--color-revisit-text-title)]">슬롯 상태와 검수 기준 확인</summary>
+            <div className="mt-3 grid gap-3 text-sm leading-6 md:grid-cols-2">
+              <div>
+                <p className="font-bold">스케줄 슬롯 상태</p>
+                <p className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
+                  {Object.entries(report.contentOperations.scheduledSlotStateCounts).length
+                    ? Object.entries(report.contentOperations.scheduledSlotStateCounts).map(([state, count]) => `${contentStatusLabel(state)} ${count}건`).join(' · ')
+                    : '이번 달 스케줄 슬롯이 없습니다.'}
+                </p>
+              </div>
+              <div>
+                <p className="font-bold">필수 사후검수 샘플</p>
+                <p className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
+                  대상 {report.contentOperations.requiredReviewCount}건 · 완료 {report.contentOperations.reviewedCount}건 · 대기 {report.contentOperations.pendingReviewCount}건 · 기한 지남 {report.contentOperations.overdueReviewCount}건
+                </p>
+                <p className="mt-1 text-xs text-[var(--color-revisit-text-caption)]">마감 기준 {dateTime(report.contentOperations.cutoffAt)}</p>
+              </div>
+            </div>
+          </details>
         </section>
       )}
 
@@ -99,6 +164,16 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
   )
 }
 
+function contentStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    DRAFT: '초안',
+    READY: '발행 대기',
+    PUBLISHED: '발행 완료',
+    REJECTED: '반려',
+    CANCELLED: '취소',
+  }
+  return labels[value] ?? value
+}
 function EvidenceCopy({ copy }: { copy: ActionCopy }) {
   return <dl className="mt-3 grid gap-3 text-sm leading-6 md:grid-cols-3"><Copy label="무슨 문제인지" value={copy.problem} /><Copy label="고객 영향" value={copy.customerImpact} /><Copy label="지금 할 일" value={copy.nextAction} /></dl>
 }

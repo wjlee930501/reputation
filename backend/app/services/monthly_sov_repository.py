@@ -88,6 +88,12 @@ def load_monthly_sov_manifest(
                 # falsy 비교 경로에서는 보류가 미언급으로 계상된다 (PRD F3-7 위반).
                 succeeded=sov_engine.record_is_confirmed(attempt.sov_record),
                 is_mentioned=bool(attempt.sov_record.is_mentioned),
+                answer_model=(
+                    str(answer_model).strip()
+                    if (answer_model := getattr(attempt.sov_record, "answer_model", None))
+                    else None
+                ),
+                search_calls=getattr(attempt.sov_record, "search_calls", None),
             )
             for attempt in cell.attempts
         )

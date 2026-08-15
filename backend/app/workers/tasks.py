@@ -81,6 +81,9 @@ from app.services.essence_engine import (
 )
 from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
+from app.services.monthly_content_operations import (
+    build_monthly_content_operations_snapshot,
+)
 from app.services.monthly_events import MonthlyRunStage
 from app.services.monthly_manifest import (
     ManifestError,
@@ -2184,6 +2187,19 @@ def run_sov_for_hospital(self, hospital_id: str):
                 )
                 raise RuntimeError("weekly_sov_unresolved_manifest_state")
 
+            if not _manifest_execution_policy_matches(manifest):
+                logger.warning(
+                    "Monthly measurement protocol drift blocks provider calls for hospital %s",
+                    hospital_id,
+                )
+                _record_weekly_sov_failure(
+                    hospital,
+                    week_key,
+                    "WEEKLY_SOV_MEASUREMENT_POLICY_DRIFT",
+                    _operation_run_id_from_task(self),
+                )
+                raise RuntimeError("weekly_sov_measurement_policy_drift")
+
             # 비용 가드: spec 개수 × **반복 횟수**만큼 예산을 run 단위로 일괄 확인.
             # 각 spec은 run_single_query에서 SOV_REPEAT_WEEKLY번 실제 호출을 낸다.
             # 반복 횟수를 빼면 가드가 실제 호출의 1/SOV_REPEAT_WEEKLY만 예약한다.
@@ -2328,6 +2344,17 @@ def _weekly_manifest_is_resolved(manifest) -> bool:
     if not cells:
         return False
     return all(getattr(cell, "state", None) in {"SUCCESS", "EXCLUDED"} for cell in cells)
+
+
+def _manifest_execution_policy_matches(manifest) -> bool:
+    provenance = getattr(manifest, "platform_provenance", None)
+    snapshot = provenance.get("measurement_protocol") if isinstance(provenance, dict) else None
+    platforms = tuple(getattr(manifest, "configured_platforms", ()) or ())
+    return bool(platforms) and sov_engine.same_execution_policy(
+        snapshot,
+        sov_engine.measurement_protocol(),
+        platforms=platforms,
+    )
 
 
 def _start_measurement_run(
@@ -3214,6 +3241,15 @@ def _build_monthly_report_for_hospital(
     period = reporting_period(now.year, now.month)
     period_start = period.starts_at
     period_end = period.ends_at
+    version_plan = lock_report_version_plan(
+        db,
+        hospital_id=h.id,
+        period=period,
+        reason_code=build_reason,
+        correlation_key=correlation_key or f"manual:{h.id}:{now.year}-{now.month:02d}",
+    )
+    if not version_plan.create:
+        return "skipped_existing"
 
     manifest = db.execute(
         select(MonthlyMeasurementManifest).where(
@@ -3292,6 +3328,19 @@ def _build_monthly_report_for_hospital(
     )
     content_result = db.execute(content_stmt)
     published_contents = content_result.scalars().all()
+    scheduled_content_stmt = select(ContentItem).where(
+        ContentItem.hospital_id == h.id,
+        ContentItem.scheduled_date >= period_start.date(),
+        ContentItem.scheduled_date < period_end.date(),
+    )
+    scheduled_content_result = db.execute(scheduled_content_stmt)
+    scheduled_contents = scheduled_content_result.scalars().all()
+    content_operations = build_monthly_content_operations_snapshot(
+        plan=h.plan,
+        scheduled_items=scheduled_contents,
+        published_items=published_contents,
+        cutoff_at=actual_now,
+    )
 
     # 전월 발행 콘텐츠(유형별 발행 누적을 전월과 나란히 비교하기 위함)
     prev_content_stmt = select(ContentItem).where(
@@ -3373,18 +3422,10 @@ def _build_monthly_report_for_hospital(
         attribution=attribution,
         strategy=strategy,
         sov_coverage=monthly_sov_payload,
+        content_operations=content_operations.payload,
+        report_version=version_plan.version,
     )
     essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
-
-    version_plan = lock_report_version_plan(
-        db,
-        hospital_id=h.id,
-        period=period,
-        reason_code=build_reason,
-        correlation_key=correlation_key or f"manual:{h.id}:{now.year}-{now.month:02d}",
-    )
-    if not version_plan.create:
-        return "skipped_existing"
 
     report = MonthlyReport(
         hospital_id=h.id,
@@ -3398,6 +3439,7 @@ def _build_monthly_report_for_hospital(
         sov_summary=monthly_sov_payload,
         content_summary={
             "published_count": len(published_contents),
+            "operations": content_operations.payload,
             "attribution": attribution,
             "strategy": strategy,
         },
@@ -3408,8 +3450,21 @@ def _build_monthly_report_for_hospital(
         report.delivery_blockers = ["MANIFEST_MISSING", "DOCTOR_ARTIFACT_UNVALIDATED"]
     else:
         apply_manifest_to_report(report, manifest)
+    if content_operations.delivery_blockers:
+        report.delivery_blockers = [
+            *list(report.delivery_blockers or []),
+            *content_operations.delivery_blockers,
+        ]
     db.add(report)
     db.flush()
+    reported_next_action_ids = {
+        item.get("id")
+        for item in strategy.get("next_month_actions", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    for action in exposure_actions:
+        if action.linked_report_id is None and str(action.id) in reported_next_action_ids:
+            action.linked_report_id = report.id
 
     artifact_error: DoctorPdfValidationError | None = None
     try:

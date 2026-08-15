@@ -23,12 +23,16 @@ def _attempt(
     *,
     mentioned: bool,
     succeeded: bool = True,
+    answer_model: str | None = "test-answer-model",
+    search_calls: int | None = 1,
 ) -> CellAttempt:
     return CellAttempt(
         record_id=uuid.UUID(int=index + 1),
         measured_at=BASE_TIME + timedelta(minutes=index),
         succeeded=succeeded,
         is_mentioned=mentioned,
+        answer_model=answer_model,
+        search_calls=search_calls,
     )
 
 
@@ -133,6 +137,25 @@ def test_a_measurement_policy_change_suppresses_monthly_delta() -> None:
     assert summary.comparison.change_pct is None
 
 
+def test_unused_provider_model_change_does_not_break_single_platform_comparison() -> None:
+    cells = (_cell("q1", "chatgpt", mentioned=True),)
+    prior = (_cell("q1", "chatgpt", mentioned=False),)
+    current_protocol = sov_engine.measurement_protocol()
+    prior_protocol = {**current_protocol, "gemini_model": "unused-prior-model"}
+
+    summary = build_monthly_sov(
+        cells,
+        ("chatgpt",),
+        prior_cells=prior,
+        prior_platforms=("chatgpt",),
+        current_protocol=current_protocol,
+        prior_protocol=prior_protocol,
+    )
+
+    assert summary.comparison.status == "COMPARABLE"
+    assert summary.comparison.reason == "MATCHED_COHORT"
+
+
 def test_a_missing_prior_protocol_snapshot_suppresses_monthly_delta() -> None:
     """스냅샷 도입 이전 달(v1, 기록 없음)과 v2를 비교하면 안 된다."""
     from app.services import sov_engine
@@ -226,6 +249,52 @@ def test_delta_uses_only_query_cells_matched_within_every_platform() -> None:
     assert summary.comparison.prior_unmatched_cell_count == 1
 
 
+def test_actual_answer_model_change_suppresses_monthly_delta() -> None:
+    current = _cell(
+        "q1",
+        "chatgpt",
+        attempts=(_attempt(0, mentioned=True, answer_model="gpt-current"),),
+    )
+    prior = _cell(
+        "q1",
+        "chatgpt",
+        attempts=(_attempt(1, mentioned=False, answer_model="gpt-prior"),),
+    )
+
+    summary = build_monthly_sov(
+        (current,),
+        ("chatgpt",),
+        prior_cells=(prior,),
+        prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
+    )
+
+    assert summary.comparison.status == "NON_COMPARABLE"
+    assert summary.comparison.reason == "ANSWER_MODEL_CHANGED"
+    assert summary.comparison.change_pct is None
+
+
+def test_missing_actual_answer_model_suppresses_monthly_delta() -> None:
+    current = _cell(
+        "q1",
+        "chatgpt",
+        attempts=(_attempt(0, mentioned=True, answer_model=None),),
+    )
+    prior = _cell("q1", "chatgpt", mentioned=False)
+
+    summary = build_monthly_sov(
+        (current,),
+        ("chatgpt",),
+        prior_cells=(prior,),
+        prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
+    )
+
+    assert summary.comparison.status == "NON_COMPARABLE"
+    assert summary.comparison.reason == "ANSWER_MODEL_UNKNOWN"
+    assert summary.comparison.change_pct is None
+
+
 def test_payload_counts_and_query_breakdown_equal_fixed_cells() -> None:
     # Given
     cells = (
@@ -245,6 +314,11 @@ def test_payload_counts_and_query_breakdown_equal_fixed_cells() -> None:
     assert payload["excluded_count"] == 1
     assert sum(row["cell_count"] for row in payload["queries"]) == 4
     assert sum(row["cell_count"] for row in payload["platforms"]) == 4
+    chatgpt = next(row for row in payload["platforms"] if row["platform"] == "chatgpt")
+    assert chatgpt["answer_models"] == ["test-answer-model"]
+    assert chatgpt["model_observation_complete"] is True
+    assert chatgpt["search_observed_count"] == 1
+    assert chatgpt["search_used_count"] == 1
     assert len(payload["cells"]) == 4
     assert payload["cells"][0] == {
         "query_key": "q1",

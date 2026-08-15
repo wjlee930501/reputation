@@ -309,6 +309,39 @@ def test_weekly_manifest_without_failed_cells_is_resolved_only_when_complete_or_
     assert tasks._weekly_manifest_is_resolved(empty) is False
 
 
+def test_weekly_manifest_blocks_provider_execution_when_frozen_policy_drifted():
+    protocol = tasks.sov_engine.measurement_protocol()
+    manifest = SimpleNamespace(
+        configured_platforms=["chatgpt"],
+        platform_provenance={
+            "measurement_protocol": {**protocol, "openai_model_query": "prior-model"}
+        },
+    )
+
+    assert tasks._manifest_execution_policy_matches(manifest) is False
+
+
+def test_weekly_manifest_ignores_unused_provider_drift():
+    protocol = tasks.sov_engine.measurement_protocol()
+    manifest = SimpleNamespace(
+        configured_platforms=["chatgpt"],
+        platform_provenance={
+            "measurement_protocol": {**protocol, "gemini_model": "unused-prior-model"}
+        },
+    )
+
+    assert tasks._manifest_execution_policy_matches(manifest) is True
+
+
+def test_weekly_manifest_without_a_platform_fails_closed():
+    manifest = SimpleNamespace(
+        configured_platforms=[],
+        platform_provenance={"measurement_protocol": tasks.sov_engine.measurement_protocol()},
+    )
+
+    assert tasks._manifest_execution_policy_matches(manifest) is False
+
+
 @pytest.mark.parametrize(
     ("error", "expected_code"),
     [

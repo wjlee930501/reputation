@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from sqlalchemy import case, func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,7 @@ from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.monthly_control import HospitalServiceInterval, ReportDeliveryEventType
 from app.models.operations import JSONValue, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import AIQueryTarget, AIQueryVariant
@@ -47,10 +48,15 @@ from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
 from app.services.incident_safety import sanitize_operator_text
+from app.services.monthly_delivery_projection import (
+    latest_delivery_event_subquery,
+    latest_monthly_report_subquery,
+)
 from app.services.monthly_events import MonthlyRunStage
 from app.services.monthly_period import (
     MonthlyPeriodError,
     prior_month_to_close,
+    reporting_period,
     require_closed_period,
 )
 from app.services.operation_run_payloads import UnsafeDispatchPayload, parse_stored_dispatch
@@ -286,22 +292,55 @@ async def _previous_month_report_gaps(db: AsyncSession) -> AttentionReports:
     now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
     year = now_kst.year if now_kst.month > 1 else now_kst.year - 1
     month = now_kst.month - 1 if now_kst.month > 1 else 12
-    period_start = datetime(year, month, 1, tzinfo=ZoneInfo("Asia/Seoul"))
+    period = reporting_period(year, month)
+    eligible_hospital_ids = (
+        select(HospitalServiceInterval.hospital_id)
+        .where(
+            HospitalServiceInterval.started_at < period.ends_at,
+            or_(
+                HospitalServiceInterval.ended_at.is_(None),
+                HospitalServiceInterval.ended_at > period.starts_at,
+            ),
+        )
+        .distinct()
+    )
+    latest_report = latest_monthly_report_subquery(year, month)
+    latest_delivery = latest_delivery_event_subquery()
 
     rows = (
         await db.execute(
-            select(Hospital.id, Hospital.name, MonthlyReport.id, MonthlyReport.sent_at)
+            select(Hospital.id, Hospital.name, MonthlyReport.id, latest_delivery.c.event_type)
+            .outerjoin(
+                latest_report,
+                and_(latest_report.c.hospital_id == Hospital.id, latest_report.c.rn == 1),
+            )
             .outerjoin(
                 MonthlyReport,
-                (MonthlyReport.hospital_id == Hospital.id)
-                & (MonthlyReport.period_year == year)
-                & (MonthlyReport.period_month == month)
-                & (MonthlyReport.report_type == "MONTHLY"),
+                and_(
+                    MonthlyReport.id == latest_report.c.report_id,
+                    MonthlyReport.period_year == year,
+                    MonthlyReport.period_month == month,
+                    MonthlyReport.report_type == "MONTHLY",
+                ),
+            )
+            .outerjoin(
+                latest_delivery,
+                and_(
+                    latest_delivery.c.report_id == MonthlyReport.id,
+                    latest_delivery.c.rn == 1,
+                ),
             )
             .where(
-                Hospital.status == HospitalStatus.ACTIVE,
-                # 그 달에 아직 존재하지 않던 병원은 리포트가 없는 게 정상이다.
-                Hospital.created_at < period_start,
+                # 현재 상태가 아니라 그 달에 실제 서비스 대상이었는지를 본다.
+                Hospital.id.in_(eligible_hospital_ids),
+                or_(
+                    MonthlyReport.id.is_(None),
+                    and_(
+                        latest_delivery.c.report_id.is_(None),
+                        MonthlyReport.sent_at.is_(None),
+                    ),
+                    latest_delivery.c.event_type == ReportDeliveryEventType.RESCINDED.value,
+                ),
             )
             .order_by(Hospital.name.asc())
         )
@@ -309,12 +348,12 @@ async def _previous_month_report_gaps(db: AsyncSession) -> AttentionReports:
 
     missing: list[AttentionReportHospital] = []
     undelivered: list[AttentionReportHospital] = []
-    for hospital_id, hospital_name, report_id, sent_at in rows:
+    for hospital_id, hospital_name, report_id, _event_type in rows:
         if report_id is None:
             missing.append(
                 AttentionReportHospital(hospital_id=hospital_id, hospital_name=hospital_name)
             )
-        elif sent_at is None:
+        else:
             undelivered.append(
                 AttentionReportHospital(
                     hospital_id=hospital_id, hospital_name=hospital_name, report_id=report_id

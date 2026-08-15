@@ -31,7 +31,7 @@ export function ReportDelivery({
   onAction: (action: DeliveryAction) => void
 }) {
   const delivered = isEffectivelyDelivered(report)
-  const doctorUrl = getDoctorDownload(report.hospitalId, report.id, report.doctorArtifact.state, report.deliveryReady)
+  const doctorUrl = getDoctorDownload(report.hospitalId, report.id, report.doctorArtifact.state, report)
   const current = latestDeliveryEvent(report.deliveryHistory)
   const [recipient, setRecipient] = useState(current?.recipient === '-' ? '' : current?.recipient ?? '')
   const [channel, setChannel] = useState(current?.channel === '-' ? '대면' : current?.channel ?? '대면')

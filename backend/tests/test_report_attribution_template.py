@@ -135,3 +135,25 @@ def test_report_attribution_coheres_with_no_sov_data():
 def test_report_without_attribution_omits_section():
     html = _render(None)
     assert "콘텐츠 발행과 AI 언급 변화" not in html
+
+
+def test_report_renders_content_operations_truthfully():
+    html = _render(
+        None,
+        content_operations={
+            "plan_quota": 16,
+            "published_count": 15,
+            "shortfall_count": 1,
+            "post_publish_review": {
+                "required_sample_count": 2,
+                "pending_count": 0,
+            },
+            "delivery_warnings": ["약정 콘텐츠 16편 중 15편만 발행되었습니다."],
+        },
+    )
+
+    assert "약정 편수" in html
+    assert "16편" in html
+    assert "15편" in html
+    assert "약정 콘텐츠 16편 중 15편만 발행되었습니다." in html
+    assert "다음 달 복구 계획" in html

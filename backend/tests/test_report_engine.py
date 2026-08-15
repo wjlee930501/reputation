@@ -14,7 +14,11 @@ from app.services.report_artifact_validation import (
     DoctorPdfValidationError,
     ValidatedDoctorPdf,
 )
-from app.services.report_engine import TEMPLATE_DIR, build_strategy_summary
+from app.services.report_engine import (
+    TEMPLATE_DIR,
+    build_strategy_summary,
+    report_pdf_filename,
+)
 
 
 def _render(**overrides) -> str:
@@ -43,6 +47,25 @@ def _render(**overrides) -> str:
     )
     ctx.update(overrides)
     return template.render(**ctx)
+
+
+def test_monthly_ae_pdf_filename_preserves_report_versions():
+    first = report_pdf_filename(
+        "jangpyeonhan",
+        "2026-07",
+        report_type="MONTHLY",
+        report_version=1,
+    )
+    second = report_pdf_filename(
+        "jangpyeonhan",
+        "2026-07",
+        report_type="MONTHLY",
+        report_version=2,
+    )
+
+    assert first == "jangpyeonhan_2026-07_v1.pdf"
+    assert second == "jangpyeonhan_2026-07_v2.pdf"
+    assert first != second
 
 
 def test_report_renders_actual_repeat_count_not_hardcoded_ten():
