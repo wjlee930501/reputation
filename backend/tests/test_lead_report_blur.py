@@ -227,6 +227,7 @@ class TestRenderedOutputIsClean:
         """무료 진단은 기술통계다 — 표본 한계 고지가 숫자와 함께 있어야 한다 (F3-6)."""
         html = lead_report.render_lead_report_html(payload)
         assert "다른 질문에서는 다르게 나올 수 있습니다" in html
+        assert "소비자용 앱 화면" in html
 
     @pytest.mark.skipif(
         os.getenv("REQUIRE_PDF_RENDER") is None,

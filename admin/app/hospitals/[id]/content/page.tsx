@@ -27,6 +27,8 @@ import {
 } from '@/lib/edit-draft-snapshot'
 import { formatDate, formatDateTime } from '@/lib/format'
 import { platformSubdomainHost } from '@/lib/platform-domain'
+import { fetchCurrentAccount } from '@/lib/current-account'
+import { buildManualPublishPayload, resolveAuditActorName } from '@/lib/publishing'
 import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
@@ -224,6 +226,7 @@ export default function ContentPage() {
   const [error, setError] = useState<string | null>(null)
   const [queryTargets, setQueryTargets] = useState<AIQueryTarget[]>([])
   const [exposureActions, setExposureActions] = useState<ExposureAction[]>([])
+  const [currentOperatorName, setCurrentOperatorName] = useState<string | null>(null)
 
   // Detail / edit modal
   const [selected, setSelected] = useState<ContentItem | null>(null)
@@ -240,7 +243,7 @@ export default function ContentPage() {
   const [briefQueryTargetId, setBriefQueryTargetId] = useState('')
   const [briefExposureActionId, setBriefExposureActionId] = useState('')
   const [briefStatus, setBriefStatus] = useState<BriefStatus>('DRAFT')
-  const [briefApprovedBy, setBriefApprovedBy] = useState('AE')
+  const [briefApprovedBy, setBriefApprovedBy] = useState('')
   const [briefJson, setBriefJson] = useState('')
   const [briefSaving, setBriefSaving] = useState(false)
   const [briefError, setBriefError] = useState<string | null>(null)
@@ -286,6 +289,16 @@ export default function ContentPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchCurrentAccount().then((account) => {
+      if (!cancelled) setCurrentOperatorName(resolveAuditActorName(account?.name))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     confirmActionRef.current = confirmAction
@@ -430,12 +443,19 @@ export default function ContentPage() {
   }
 
   async function handlePublish(itemId: string) {
+    const payload = buildManualPublishPayload(currentOperatorName ?? '')
+    if (!payload) {
+      const message = '로그인 운영자 정보를 확인할 수 없어 발행자를 기록하지 못합니다. 다시 로그인한 뒤 발행해 주세요.'
+      if (selected && selected.id === itemId) setEditError(message)
+      else setActionError(message)
+      return
+    }
     setActionLoading(true)
     clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
         method: 'POST',
-        body: JSON.stringify({ published_by: 'SYSTEM_MANUAL_RECOVERY' }),
+        body: JSON.stringify(payload),
       })
       setPublishSuccessId(itemId)
       setActionSuccess('운영 복구 발행을 완료했습니다.')
@@ -661,7 +681,7 @@ export default function ContentPage() {
     setBriefQueryTargetId(selected.query_target_id ?? '')
     setBriefExposureActionId(selected.exposure_action_id ?? '')
     setBriefStatus((selected.brief_status as BriefStatus | null) ?? 'DRAFT')
-    setBriefApprovedBy(selected.brief_approved_by ?? 'AE')
+    setBriefApprovedBy(selected.brief_approved_by ?? currentOperatorName ?? '')
     setBriefJson(selected.content_brief ? JSON.stringify(washContentGuideValue(selected.content_brief), null, 2) : '')
     setBriefError(null)
     setBriefEditMode(true)
@@ -734,6 +754,13 @@ export default function ContentPage() {
   async function handleSaveBrief() {
     if (!selected) return
     let parsedBrief: Record<string, unknown> | undefined
+    const approvedBy = briefStatus === 'APPROVED'
+      ? resolveAuditActorName(currentOperatorName)
+      : null
+    if (briefStatus === 'APPROVED' && !approvedBy) {
+      setBriefError('로그인 운영자 정보를 확인할 수 없어 승인자를 기록하지 못합니다. 다시 로그인한 뒤 승인해 주세요.')
+      return
+    }
     const trimmed = briefJson.trim()
     if (trimmed) {
       try {
@@ -758,7 +785,7 @@ export default function ContentPage() {
           query_target_id: briefQueryTargetId || null,
           exposure_action_id: briefExposureActionId || null,
           brief_status: briefStatus,
-          brief_approved_by: briefStatus === 'APPROVED' ? (briefApprovedBy || 'AE') : null,
+          brief_approved_by: approvedBy,
           ...(parsedBrief ? { content_brief: parsedBrief } : { regenerate_brief: true }),
         }),
       })
@@ -1207,8 +1234,8 @@ export default function ContentPage() {
                     <label className="block text-sm font-medium text-slate-700 mb-1.5">승인자</label>
                     <input
                       type="text"
-                      value={briefApprovedBy}
-                      onChange={(e) => setBriefApprovedBy(e.target.value)}
+                      value={briefStatus === 'APPROVED' ? (currentOperatorName ?? '') : briefApprovedBy}
+                      readOnly
                       disabled={briefStatus !== 'APPROVED'}
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
                     />

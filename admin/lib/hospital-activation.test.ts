@@ -7,12 +7,11 @@ import {
   readServerActivationBlockers,
 } from './hospital-activation.ts'
 
-test('client preview includes schedule but never authorizes activation', () => {
+test('client preview follows the STEP 5 activation gate', () => {
   const ready = {
     profile_complete: true,
     v0_report_done: true,
     site_built: true,
-    schedule_set: true,
   }
   assert.deepEqual(missingActivationPrerequisites(ready), [])
 })
@@ -22,27 +21,23 @@ test('site_built preview never makes the public platform address browsable befor
   assert.equal(isPlatformAddressBrowsable({ site_live: true }), true)
 })
 
-test('platform activation preview keeps schedule before the domain action', () => {
+test('platform activation preview does not require content scheduling', () => {
   const missing = missingActivationPrerequisites({ profile_complete: true, v0_report_done: true, site_built: true })
-  assert.deepEqual(
-    missing.map(({ key, label, hrefSuffix }) => ({ key, label, hrefSuffix })),
-    [{ key: 'schedule_set', label: '콘텐츠 스케줄 설정', hrefSuffix: 'schedule' }],
-  )
+  assert.deepEqual(missing, [])
 })
 
 test('server-provided activation blockers remain authoritative and canonically ordered', () => {
   const blockers = readServerActivationBlockers({
     code: 'ACTIVATION_PREREQUISITES_MISSING',
-    missing: ['schedule_set', 'handoff_accepted'],
+    missing: ['site_built', 'profile_complete'],
     prerequisites: [
-      { key: 'schedule_set', label: '서버 스케줄 차단', action: '서버 스케줄 액션', passed: false },
-      { key: 'site_built', label: '서버 허브', action: '서버 허브 액션', passed: true },
-      { key: 'handoff_accepted', label: '서버 인수 차단', action: '서버 인수 액션', passed: false },
+      { key: 'site_built', label: '서버 허브 차단', action: '서버 허브 액션', passed: false },
+      { key: 'profile_complete', label: '서버 프로필 차단', action: '서버 프로필 액션', passed: false },
     ],
   })
 
   assert.deepEqual(blockers, [
-    { key: 'handoff_accepted', label: '서버 인수 차단', action: '서버 인수 액션' },
-    { key: 'schedule_set', label: '서버 스케줄 차단', action: '서버 스케줄 액션' },
+    { key: 'profile_complete', label: '서버 프로필 차단', action: '서버 프로필 액션' },
+    { key: 'site_built', label: '서버 허브 차단', action: '서버 허브 액션' },
   ])
 })

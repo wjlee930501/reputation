@@ -458,6 +458,12 @@ export const PLAN_LABELS: Record<string, string> = {
   PLAN_20: '리더 · 월 20편',
 }
 
+export const PLAN_CONTRACT_LABELS: Record<string, string> = {
+  PLAN_12: '스타터 · 월 12편 · 60만원 (부가세 별도)',
+  PLAN_16: '그로워 · 월 16편 · 90만원 (부가세 별도)',
+  PLAN_20: '리더 · 월 20편 · 120만원 (부가세 별도)',
+}
+
 export const TYPE_LABELS: Record<string, string> = {
   FAQ: '자주 묻는 질문',
   DISEASE: '질환 가이드',

@@ -61,7 +61,10 @@ from app.services.operation_runs import (
     OperationQueueUnavailable,
     dispatch_operation,
 )
-from app.services.post_publish_review_policy import human_post_publish_review_predicate
+from app.services.post_publish_review_policy import (
+    human_post_publish_review_predicate,
+    publicly_operational_hospital_predicate,
+)
 from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
 from app.workers.tasks import (
     build_aeo_site,
@@ -221,7 +224,8 @@ async def get_attention_queue(db: AsyncSession = Depends(get_db)):
     """자동 검수를 통과한 공개 콘텐츠 중 정기 품질 표본만 병원 횡단 집계한다.
 
     발행 차단은 자동 검수와 예외 큐가 담당한다. 정상 발행 전건을 다시 사람이 확인하면
-    자동화가 사람 승인 큐로 되돌아가므로 월간 시퀀스 첫 글만 드리프트 감시 표본으로 둔다.
+    자동화가 사람 승인 큐로 되돌아가지 않도록 월간 시퀀스 첫 글과 자동 보완·공개 후 수정
+    신호가 있는 글만 드리프트 감시 표본으로 둔다.
 
     조건은 순수 컬럼 술어(PUBLISHED · 미확인 · 공개시각 존재)라 집계 1회로 끝난다 —
     발행 가능 여부 재계산 같은 무거운 판정은 여기서 하지 않는다.
@@ -241,6 +245,7 @@ async def get_attention_queue(db: AsyncSession = Depends(get_db)):
             )
             .join(ContentItem, ContentItem.hospital_id == Hospital.id)
             .where(
+                publicly_operational_hospital_predicate(),
                 human_post_publish_review_predicate(),
             )
             .group_by(Hospital.id, Hospital.name)

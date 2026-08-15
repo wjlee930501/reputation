@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from types import SimpleNamespace
 
+from sqlalchemy.dialects import postgresql
+
 from app.api.admin import operations_center_report_queries as report_queries
 from app.api.admin import operations_center_today_queries as today_queries
 from app.api.admin.operations_center_serializers import next_onboarding_step
@@ -12,8 +14,33 @@ from app.models.hospital import Hospital
 from app.services import notifier as legacy_notifier
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
+from app.services.post_publish_review_policy import (
+    human_post_publish_review_predicate,
+    publicly_operational_hospital_predicate,
+)
 from app.services.readiness_operator_copy import readiness_next_actions
 from app.workers import generation_incident_control
+
+
+def test_today_queue_and_post_publish_sampling_share_automatic_operation_boundaries() -> None:
+    operational_sql = str(
+        publicly_operational_hospital_predicate().compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    review_sql = str(
+        human_post_publish_review_predicate().compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "hospitals.status = 'ACTIVE'" in operational_sql
+    assert "hospitals.site_live IS true" in operational_sql
+    assert "content_items.sequence_no = 1" in review_sql
+    assert "automatic_remediation_attempts" in review_sql
+    assert "content_items.body_updated_at > content_items.published_at" in review_sql
 
 
 def test_generation_failure_names_customer_impact_and_one_recovery_control() -> None:
@@ -353,11 +380,13 @@ def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     hospital.v0_report_done = True
     assert "공개 정보" in next_onboarding_step(hospital)
     hospital.site_built = True
+    assert "도메인" in next_onboarding_step(hospital)
+    assert "검증" in next_onboarding_step(hospital)
+    hospital.site_live = True
     assert "일정" in next_onboarding_step(hospital)
     assert "저장" in next_onboarding_step(hospital)
     hospital.schedule_set = True
-    assert "도메인" in next_onboarding_step(hospital)
-    assert "검증" in next_onboarding_step(hospital)
+    assert "첫 발행" in next_onboarding_step(hospital)
 
 
 def test_readiness_guidance_always_names_customer_impact_and_support_fallback() -> None:

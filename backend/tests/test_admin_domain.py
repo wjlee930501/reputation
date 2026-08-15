@@ -330,11 +330,9 @@ async def test_verify_domain_requires_domain_set():
 @pytest.mark.parametrize(
     ("missing_key", "overrides", "handoff_state"),
     [
-        ("handoff_accepted", {}, HandoffState.CONTRACTED),
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
         ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )
 async def test_verify_domain_blocks_each_authoritative_gate(

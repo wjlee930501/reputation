@@ -221,7 +221,7 @@
 <h2>🎯 환자 질문 목표별 AI 노출 결과</h2>
 {% if strategy.query_targets %}
 <table>
-  <tr><th>환자 질문 목표</th><th>AI 서비스별 병원 언급률</th><th>통합 병원 언급률</th><th>경쟁 병원 언급</th><th>출처 확인</th></tr>
+  <tr><th>환자 질문 목표</th><th>AI 서비스별 병원 언급률</th><th>통합 병원 언급률</th><th>경쟁 병원 언급</th><th>검색 근거 URL</th><th>병원 공식 채널 인용</th></tr>
   {% set platform_labels = {'chatgpt':'ChatGPT','gemini':'Gemini'} %}
   {% for target in strategy.query_targets %}
   <tr>
@@ -240,6 +240,10 @@
       {% else %}측정 없음{% endif %}
     </td>
     <td>{{ target.source_backed_count }}/{{ target.successful_measurement_count }}건</td>
+    <td>
+      {{ target.owned_source_count }}/{{ target.successful_measurement_count }}건
+      {% if target.source_url_count %}<br><span class="note">수집 URL 중 {{ "%.1f"|format(target.owned_citation_share_pct) }}%</span>{% endif %}
+    </td>
   </tr>
   {% endfor %}
 </table>

@@ -12,3 +12,7 @@ export function buildManualPublishPayload(value: string): ManualPublishPayload |
   if (!publishedBy) return null
   return { published_by: publishedBy }
 }
+
+export function resolveAuditActorName(value: string | null | undefined): string | null {
+  return normalizePublisherName(value ?? '')
+}

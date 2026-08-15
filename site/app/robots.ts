@@ -1,6 +1,7 @@
 import { MetadataRoute } from 'next'
 import { headers } from 'next/headers'
 
+import { AI_SEARCH_USER_AGENTS } from '@/lib/ai-crawlers'
 import { resolveSitemapUrl } from '@/lib/robots-host'
 
 const DISALLOWED_PATHS = ['/api/', '/_next/', '/.well-known/']
@@ -32,17 +33,7 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
         disallow: DISALLOWED_PATHS,
       },
       {
-        userAgent: [
-          'GPTBot',
-          'OAI-SearchBot',
-          'ChatGPT-User',
-          'PerplexityBot',
-          'ClaudeBot',
-          'anthropic-ai',
-          'Google-Extended',
-          'Bingbot',
-          'Googlebot',
-        ],
+        userAgent: [...AI_SEARCH_USER_AGENTS],
         allow: ALLOWED_PATHS,
         disallow: DISALLOWED_PATHS,
       },

@@ -39,8 +39,19 @@ from app.services.operation_run_payloads import DispatchPayload, build_request_p
 pytestmark = pytest.mark.asyncio
 
 
-async def _hospital(db, name: str) -> Hospital:
-    hospital = Hospital(name=name, slug=f"clinic-{uuid.uuid4().hex[:12]}")
+async def _hospital(
+    db,
+    name: str,
+    *,
+    status: HospitalStatus = HospitalStatus.ACTIVE,
+    site_live: bool = True,
+) -> Hospital:
+    hospital = Hospital(
+        name=name,
+        slug=f"clinic-{uuid.uuid4().hex[:12]}",
+        status=status,
+        site_live=site_live,
+    )
     db.add(hospital)
     await db.flush()
     # content_items.schedule_id는 NOT NULL — 콘텐츠는 언제나 스케줄에 속한다.
@@ -214,6 +225,19 @@ async def test_non_sample_publications_do_not_create_human_work(pg_async_session
     assert _row(result, hospital) is None
 
 
+async def test_paused_or_non_live_hospitals_do_not_create_human_work(pg_async_session):
+    db = pg_async_session
+    paused = await _hospital(db, "중지 의원", status=HospitalStatus.PAUSED)
+    non_live = await _hospital(db, "비공개 의원", site_live=False)
+    await _content(db, paused, published_hours_ago=48)
+    await _content(db, non_live, published_hours_ago=48)
+
+    result = await get_attention_queue(db)
+
+    assert _row(result, paused) is None
+    assert _row(result, non_live) is None
+
+
 # ── 지난달 원장 보고 누락·미전달 ──────────────────────────────────────
 # 월말 배치 실패는 Slack 한 줄로 지나가고, 그 병원은 다음 달 마지막 날까지 리포트가
 # 빈 채로 남는다. 만들어졌어도 원장에게 안 갔으면 운영 실패는 같다.
@@ -357,8 +381,16 @@ async def test_operations_overview_returns_all_four_operator_queues(pg_async_ses
     """한 화면이 고객·영향·담당자·다음 행동을 공통 형식으로 답한다."""
     db = pg_async_session
     actor = await _operations_actor(db)
-    onboarding = await _hospital(db, "온보딩 의원")
+    onboarding = await _hospital(
+        db,
+        "온보딩 의원",
+        status=HospitalStatus.ONBOARDING,
+        site_live=False,
+    )
     today = await _hospital(db, "금일 의원")
+    today.status = HospitalStatus.ACTIVE
+    today.site_live = True
+    await db.flush()
     await _content(db, today, published_hours_ago=2)
     report = await _active_hospital(db, "월간 의원")
     incident_hospital = await _active_hospital(db, "예외 의원")
@@ -433,7 +465,12 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
 ):
     db = pg_async_session
     actor = await _operations_actor(db)
-    onboarding = await _hospital(db, "필터 온보딩 의원")
+    onboarding = await _hospital(
+        db,
+        "필터 온보딩 의원",
+        status=HospitalStatus.ONBOARDING,
+        site_live=False,
+    )
     today = await _hospital(db, "필터 금일 의원")
     content = await _content(db, today, published_hours_ago=1)
     report = await _active_hospital(db, "필터 월간 의원")

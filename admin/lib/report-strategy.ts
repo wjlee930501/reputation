@@ -3,6 +3,8 @@ export interface ReportStrategyTarget {
   sovPct: number | null
   platformSov: Record<string, number | null>
   sourceBackedCount: number
+  ownedSourceCount: number
+  ownedCitationSharePct: number
   successfulMeasurementCount: number
   competitorOutcomes: Array<{ name: string; mentionPct: number }>
 }
@@ -83,6 +85,8 @@ export function readReportStrategy(contentSummary: Record<string, unknown> | nul
       sovPct: number(row.sov_pct),
       platformSov,
       sourceBackedCount: number(row.source_backed_count) ?? 0,
+      ownedSourceCount: number(row.owned_source_count) ?? 0,
+      ownedCitationSharePct: number(row.owned_citation_share_pct) ?? 0,
       successfulMeasurementCount: number(row.successful_measurement_count) ?? 0,
       competitorOutcomes,
     }]

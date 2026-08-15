@@ -254,10 +254,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-    "app.workers.milestone_event_tasks.project_milestone_events",
-    "app.workers.monthly_artifact_reconciliation.reconcile",
-    "app.workers.naver_sync.weekly_naver_source_sync",
-    "app.workers.notification_tasks.dispatch_notification_outbox",
-    "app.workers.tasks.adjust_query_priorities",
-    "app.workers.tasks.generate_monthly_report_for_hospital",
-    "app.workers.tasks.regenerate_content_item",

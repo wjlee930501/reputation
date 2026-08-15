@@ -1045,7 +1045,9 @@ async def _apply_content_brief_update(
             item.content_philosophy_id = philosophy.id
             item.brief_status = body.brief_status
             item.brief_approved_at = datetime.now(timezone.utc)
-            item.brief_approved_by = body.brief_approved_by or item.brief_approved_by or "AE"
+            item.brief_approved_by = (
+                body.brief_approved_by or item.brief_approved_by or default_actor()
+            )
         else:
             item.brief_status = body.brief_status
             item.brief_approved_at = None

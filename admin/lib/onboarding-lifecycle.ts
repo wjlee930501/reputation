@@ -149,6 +149,14 @@ export function deriveOnboardingSteps(
       done: Boolean(hospital?.site_built) && readinessCheck(readiness, 'site_built') !== false,
     },
     {
+      key: 'live',
+      phase: 'onboarding',
+      title: '도메인 확인 및 공개 운영 시작',
+      description: '공개 주소와 도메인 상태를 확인한 뒤 공개 운영을 시작합니다.',
+      href: `/hospitals/${hospitalId}/profile#domain-setup`,
+      done: Boolean(hospital?.site_live) && readinessCheck(readiness, 'domain') !== false,
+    },
+    {
       key: 'processing',
       phase: 'onboarding',
       title: '근거 자료 수집 및 처리',
@@ -171,14 +179,6 @@ export function deriveOnboardingSteps(
       description: '요금제와 발행 요일을 저장하고 첫 달 콘텐츠 캘린더를 생성합니다.',
       href: `/hospitals/${hospitalId}/schedule`,
       done: Boolean(hospital?.schedule_set) && readinessCheck(readiness, 'schedule') !== false,
-    },
-    {
-      key: 'live',
-      phase: 'onboarding',
-      title: '도메인 확인 및 공개 운영 시작',
-      description: '공개 주소와 도메인 상태를 확인한 뒤 공개 운영을 시작합니다.',
-      href: `/hospitals/${hospitalId}/profile#domain-setup`,
-      done: Boolean(hospital?.site_live) && readinessCheck(readiness, 'domain') !== false,
     },
     {
       key: 'first_publish',

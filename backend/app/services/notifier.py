@@ -683,6 +683,42 @@ async def notify_content_review_overdue(
     )
 
 
+async def notify_post_publish_review_overdue(
+    *, entries: list[dict[str, object]], admin_url: str
+) -> bool:
+    """Escalate only risk-sampled public content left unchecked for 24 hours."""
+    if not entries:
+        return False
+    lines = [
+        f"• *{_safe_operator_label(str(entry.get('hospital_name', '')))}* · "
+        f"{_safe_operator_label(str(entry.get('title', '제목 없음')), limit=120)}"
+        for entry in entries[:12]
+    ]
+    if len(entries) > 12:
+        lines.append(f"• 그 외 {len(entries) - 12}건")
+    body = (
+        f"🔎 *[공개 후 표본 확인 지연]* *{len(entries)}건*\n"
+        "무슨 문제인지: 자동 검사를 통과해 공개된 위험 기반 표본이 24시간 넘게 확인되지 않았습니다.\n"
+        "고객 영향: 공개는 유지되지만 자동 검사가 놓친 품질 이상을 늦게 발견할 수 있습니다.\n"
+        "지금 할 일: 공개 글과 이미지만 확인하고, 문제가 있으면 즉시 비공개 후 재생성하세요.\n"
+        "처리 기한: 오늘 중\n\n"
+        + "\n".join(lines)
+    )
+    return await _send(
+        text=(
+            f"무슨 문제인지: 공개 후 표본 {len(entries)}건 확인 지연 · "
+            "고객 영향: 품질 이상 발견 지연 가능 · 지금 할 일: Admin 확인 · 처리 기한: 오늘 중"
+        ),
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            _admin_action_block(
+                path=_validated_admin_path(admin_url),
+                label="공개 후 표본 확인",
+            ),
+        ],
+    )
+
+
 async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str | None = None) -> bool:
     """매일 04:00 KST 보관기간 만료 lead 자동 파기 결과.
 

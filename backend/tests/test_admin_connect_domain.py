@@ -361,11 +361,9 @@ async def test_activate_hospital_accepts_apex_address_strategy(monkeypatch):
     assert [
         item["key"] for item in detail["activation_gate"]["prerequisites"]
     ] == [
-        "handoff_accepted",
         "profile_complete",
         "v0_report_done",
         "site_built",
-        "schedule_set",
     ]
 
 
@@ -458,11 +456,9 @@ async def test_activate_hospital_subdomain_default_without_custom_domain(monkeyp
 @pytest.mark.parametrize(
     ("missing_key", "overrides", "handoff_state"),
     [
-        ("handoff_accepted", {}, HandoffState.CONTRACTED),
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
         ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )
 async def test_activate_blocks_each_authoritative_gate(
@@ -484,11 +480,9 @@ async def test_activate_blocks_each_authoritative_gate(
 @pytest.mark.parametrize(
     ("missing_key", "overrides", "handoff_state"),
     [
-        ("handoff_accepted", {}, HandoffState.CONTRACTED),
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
         ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("schedule_set", {"schedule_set": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )
 async def test_connect_domain_blocks_each_authoritative_gate(

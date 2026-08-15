@@ -28,7 +28,8 @@ from app.services import cost_guard, lead_query_cache, notifier, sov_engine
 
 logger = logging.getLogger(__name__)
 
-# 측정 대상 플랫폼. 국내 점유 합산 84% (PRD §2).
+# 서로 다른 공급자 경로를 동일 질문·동일 반복 수로 교차 관찰한다. 소비자 앱 시장
+# 점유율이나 개인화 화면을 재현한다는 뜻이 아니다(PRD §2).
 PLATFORMS: tuple[str, ...] = ("chatgpt", "gemini")
 
 MEASUREMENT_SUCCESS = "SUCCESS"

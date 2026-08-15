@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 import arrow
 import httpx
 from celery import current_task
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
@@ -45,7 +45,15 @@ from app.models.hospital import Hospital, HospitalStatus
 from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReportArtifact
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
-from app.models.sov import AIQueryTarget, AIQueryVariant, MeasurementRun, QueryMatrix, SovRecord
+from app.models.sov import (
+    AIQueryTarget,
+    AIQueryVariant,
+    ExposureAction,
+    ExposureGap,
+    MeasurementRun,
+    QueryMatrix,
+    SovRecord,
+)
 from app.services import cost_guard, indexnow, notifier, sov_engine
 from app.services.audit_log import write_audit_log_sync
 from app.services.content_engine import generate_content
@@ -87,6 +95,10 @@ from app.services.monthly_period import (
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
+from app.services.post_publish_review_policy import (
+    human_post_publish_review_predicate,
+    publicly_operational_hospital_predicate,
+)
 from app.services.report_artifact_validation import (
     DoctorPdfValidationError,
     parse_doctor_artifact_metadata,
@@ -97,6 +109,7 @@ from app.services.report_attribution import (
 )
 from app.services.report_engine import (
     build_doctor_report_view,
+    build_strategy_summary,
     generate_pdf_report,
 )
 from app.services.site_revalidate import (
@@ -1874,6 +1887,27 @@ def morning_content_auto_publish(self):
             else:
                 notification_failures += 1
 
+        review_entries = _load_overdue_post_publish_review_entries(
+            datetime.now(timezone.utc)
+        )
+        unsent_review_entries = [
+            entry
+            for entry in review_entries
+            if not _already_done(str(entry["alert_key"]))
+        ]
+        if unsent_review_entries:
+            sent = _run_async(
+                notifier.notify_post_publish_review_overdue(
+                    entries=unsent_review_entries,
+                    admin_url=f"{settings.ADMIN_BASE_URL.rstrip('/')}/operations?queue=TODAY&sla=OVERDUE",
+                )
+            )
+            if sent:
+                for entry in unsent_review_entries:
+                    _mark_done(str(entry["alert_key"]), 32 * 86_400)
+            else:
+                notification_failures += 1
+
         # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
         # 개별 알림 대신 자동 완료와 미해결 예외를 한 번의 운영 요약으로만 보낸다.
     except Exception as exc:
@@ -1918,6 +1952,35 @@ def _pending_auto_publish_digest_stmt(today: date):
         )
         .order_by(ContentItem.published_at, ContentItem.id)
     )
+
+
+def _load_overdue_post_publish_review_entries(
+    now: datetime,
+) -> list[dict[str, object]]:
+    overdue_before = now - timedelta(hours=24)
+    with SyncSessionLocal() as db:
+        rows = db.execute(
+            select(ContentItem, Hospital)
+            .join(Hospital, ContentItem.hospital_id == Hospital.id)
+            .where(
+                human_post_publish_review_predicate(),
+                ContentItem.published_at < overdue_before,
+                publicly_operational_hospital_predicate(),
+            )
+            .order_by(ContentItem.published_at, ContentItem.id)
+        ).all()
+    return [
+        {
+            "hospital_name": hospital.name,
+            "title": item.title or "제목 없음",
+            "content_id": item.id,
+            "alert_key": (
+                f"post_publish_review_overdue:{item.id}:"
+                f"{int(item.published_at.timestamp()) if item.published_at else 0}"
+            ),
+        }
+        for item, hospital in rows
+    ]
 
 
 def _load_pending_auto_publish_digest_entries(today: date) -> list[dict[str, object]]:
@@ -3167,6 +3230,52 @@ def _build_monthly_report_for_hospital(
         )
     )
 
+    # Persist the measurement-to-action layer that the Admin and PDF already know how to
+    # render. Previously this analysis existed only as a helper and never entered the
+    # production monthly-report path, so source evidence and next actions disappeared.
+    query_targets = db.execute(
+        select(AIQueryTarget)
+        .where(AIQueryTarget.hospital_id == h.id)
+        .options(selectinload(AIQueryTarget.variants))
+    ).scalars().all()
+    exposure_gaps = db.execute(
+        select(ExposureGap).where(
+            ExposureGap.hospital_id == h.id,
+            ExposureGap.status.in_(("OPEN", "WATCHING")),
+        )
+    ).scalars().all()
+    exposure_actions = db.execute(
+        select(ExposureAction)
+        .where(
+            ExposureAction.hospital_id == h.id,
+            or_(
+                ExposureAction.status.in_(("OPEN", "IN_PROGRESS", "BLOCKED")),
+                and_(
+                    ExposureAction.status == "COMPLETED",
+                    ExposureAction.completed_at >= period_start,
+                    ExposureAction.completed_at < period_end,
+                ),
+            ),
+        )
+        .options(
+            selectinload(ExposureAction.linked_content),
+            selectinload(ExposureAction.query_target),
+            selectinload(ExposureAction.gap),
+        )
+    ).scalars().all()
+    next_month = arrow.get(period_start).shift(months=1).format("YYYY-MM")
+    strategy = build_strategy_summary(
+        hospital=h,
+        query_targets=list(query_targets),
+        sov_records=sov_records,
+        exposure_gaps=list(exposure_gaps),
+        exposure_actions=list(exposure_actions),
+        period_start=period_start,
+        period_end=period_end,
+        next_month=next_month,
+    )
+    monthly_sov_payload = monthly_sov.to_payload()
+
     pdf_path = generate_pdf_report(
         hospital=h,
         period_start=period_start,
@@ -3176,7 +3285,8 @@ def _build_monthly_report_for_hospital(
         published_count=len(published_contents),
         repeat_count=SOV_REPEAT_WEEKLY,
         attribution=attribution,
-        sov_coverage=monthly_sov.to_payload(),
+        strategy=strategy,
+        sov_coverage=monthly_sov_payload,
     )
     essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
 
@@ -3199,10 +3309,11 @@ def _build_monthly_report_for_hospital(
         supersedes_report_id=version_plan.supersedes_report_id,
         pdf_path=pdf_path,
         doctor_pdf_path=None,
-        sov_summary=monthly_sov.to_payload(),
+        sov_summary=monthly_sov_payload,
         content_summary={
             "published_count": len(published_contents),
             "attribution": attribution,
+            "strategy": strategy,
         },
         essence_summary=essence_summary,
     )
@@ -3225,7 +3336,7 @@ def _build_monthly_report_for_hospital(
             attribution=attribution,
             records=sov_records,
             platforms=report_platforms,
-            sov_coverage=monthly_sov.to_payload(),
+            sov_coverage=monthly_sov_payload,
         )
         public_url = _public_site_url(h.aeo_domain, h.slug)
         doctor_artifact = generate_doctor_pdf_report(
