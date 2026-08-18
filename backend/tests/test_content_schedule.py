@@ -302,6 +302,7 @@ async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
     assert len(alerts) == 1
     assert alerts[0]["safe_error_code"] == "CONTENT_DISPATCH_FAILED"
     assert alerts[0]["hospital_name"] == "테스트의원"
+    assert alerts[0].get("notify") is False
 
 
 async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):

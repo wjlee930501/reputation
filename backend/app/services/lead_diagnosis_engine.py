@@ -261,7 +261,6 @@ async def _notify_budget_blocked(
             source_type="LEAD_DIAGNOSIS",
             hospital_name=diagnosis.subject_hospital_name,
             actor="lead-diagnosis-worker",
-            notify=False,
         )
     except Exception:  # noqa: BLE001 — 알림 실패가 상태 확정을 되돌리지 않는다.
         logger.warning("lead diagnosis budget-block alert delivery failed")

@@ -350,6 +350,7 @@ async def set_schedule(
                 hospital_id=hospital.id,
                 admin_path=f"/hospitals/{hospital.id}/schedule",
                 actor="admin-content-api",
+                notify=False,
             )
         except Exception:
             logger.exception("enqueue-failure ops alert delivery failed (non-fatal)")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -33,6 +34,7 @@ _EXPECTED_PENDING_CODES = {
     "STALE_GENERATION_CLAIM",
     "COST_BLOCKED",
 }
+_EXPECTED_PENDING_STALE_AFTER = timedelta(hours=48)
 
 
 def _generation_operator_copy(code: str) -> tuple[str, str]:
@@ -158,20 +160,41 @@ def generation_notify_requested(code: str) -> bool:
     return code not in _EXPECTED_PENDING_CODES
 
 
+def _expected_pending_crossed_stale(
+    *,
+    first_seen_at: datetime | None,
+    last_seen_at: datetime | None,
+    now: datetime | None,
+) -> bool:
+    """Promote expected pending to human-now on the first observation after 48h."""
+
+    if first_seen_at is None or last_seen_at is None or now is None:
+        return False
+    threshold = first_seen_at + _EXPECTED_PENDING_STALE_AFTER
+    return last_seen_at < threshold <= now
+
+
 def _should_send_generation_notification(
     *,
     notify_requested: bool,
     previous_state: str | None,
     code: str | None = None,
     has_open_cause: bool = False,
+    first_seen_at: datetime | None = None,
+    last_seen_at: datetime | None = None,
+    now: datetime | None = None,
 ) -> bool:
-    """Page once per human-now episode; self-healable codes never enqueue Slack."""
+    """Page once per human-now episode; expected pending pages only after 48h."""
 
-    if not notify_requested:
-        return False
-    if code in _EXPECTED_PENDING_CODES or code == "CONTENT_NOT_GENERATED":
-        return False
     if has_open_cause:
+        return False
+    if code in _EXPECTED_PENDING_CODES:
+        return _expected_pending_crossed_stale(
+            first_seen_at=first_seen_at,
+            last_seen_at=last_seen_at,
+            now=now,
+        )
+    if not notify_requested:
         return False
     return previous_state is None or previous_state in {
         IncidentState.RECOVERED.value,
@@ -282,11 +305,15 @@ async def open_generation_incident(
             actor="content-generation-worker",
             reason="generation attempt failed",
         )
+        observed_at = datetime.now(UTC)
         if _should_send_generation_notification(
             notify_requested=notify,
             previous_state=previous_state,
             code=code,
             has_open_cause=has_open_cause,
+            first_seen_at=previous.first_seen_at if previous is not None else None,
+            last_seen_at=previous.last_seen_at if previous is not None else None,
+            now=observed_at,
         ):
             await enqueue_notification(
                 db,

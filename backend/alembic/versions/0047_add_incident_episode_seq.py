@@ -2,6 +2,9 @@
 
 Revision ID: 0047_add_incident_episode_seq
 Revises: 0046_add_sov_measurement_telemetry
+
+Deploy note: apply this revision before the episode_seq application code.
+If incidents.episode_seq is missing, Incident reads fail. This PR does not deploy.
 """
 
 import sqlalchemy as sa

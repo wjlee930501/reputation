@@ -479,6 +479,39 @@ def test_seven_forty_five_then_eight_oh_one_content_not_generated_never_pages() 
     )
 
 
+def test_expected_pending_promotes_to_human_now_once_after_48h() -> None:
+    should_send = generation_incident_control._should_send_generation_notification
+    first_seen = datetime(2026, 8, 16, 1, 0, tzinfo=UTC)
+    before = datetime(2026, 8, 18, 0, 59, tzinfo=UTC)
+    crossed = datetime(2026, 8, 18, 1, 0, tzinfo=UTC)
+    after = datetime(2026, 8, 18, 2, 0, tzinfo=UTC)
+
+    assert not should_send(
+        notify_requested=False,
+        previous_state="OPEN",
+        code="CONTENT_NOT_GENERATED",
+        first_seen_at=first_seen,
+        last_seen_at=first_seen,
+        now=before,
+    )
+    assert should_send(
+        notify_requested=False,
+        previous_state="OPEN",
+        code="CONTENT_NOT_GENERATED",
+        first_seen_at=first_seen,
+        last_seen_at=first_seen,
+        now=crossed,
+    )
+    assert not should_send(
+        notify_requested=False,
+        previous_state="OPEN",
+        code="CONTENT_NOT_GENERATED",
+        first_seen_at=first_seen,
+        last_seen_at=crossed,
+        now=after,
+    )
+
+
 def test_generation_notification_has_one_developer_fallback() -> None:
     impact, action = generation_incident_control._generation_operator_copy("GENERATION_REJECTED")
     incident = IncidentSlackProjection(

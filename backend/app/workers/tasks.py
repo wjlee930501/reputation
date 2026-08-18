@@ -749,7 +749,7 @@ def trigger_v0_report(self, hospital_id: str):
                         customer_impact="초기 진단 리포트 생성이 시작되지 않았습니다.",
                         next_action="비용 안전장치 상태를 확인하고 조정 후 초기 진단을 재실행하세요.",
                         source_type="V0_REPORT", hospital_name=hospital.name,
-                        hospital_id=hospital.id, actor="v0-report-worker", notify=False,
+                        hospital_id=hospital.id, actor="v0-report-worker", notify=True,
                     )
                 )
                 return
@@ -856,7 +856,7 @@ def trigger_v0_report(self, hospital_id: str):
                             customer_impact="콘텐츠 허브 공개 준비가 늦어질 수 있습니다.",
                             next_action="자동 복구 결과를 확인하고 계속 실패하면 운영센터에서 사이트 준비를 재시도하세요.",
                             source_type="SITE_BUILD", hospital_name=hospital.name,
-                            hospital_id=hospital.id, actor="v0-report-worker",
+                            hospital_id=hospital.id, actor="v0-report-worker", notify=False,
                         )
                     )
                 except Exception:

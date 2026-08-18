@@ -231,7 +231,7 @@ class TestCallBudget:
         assert "예산" in (diagnosis.error or "")
         # 조용히 실패하면 신청자는 리포트를 못 받고 아무도 이유를 모른다.
         assert len(alerts) == 1
-        assert alerts[0]["notify"] is False
+        assert alerts[0].get("notify", True) is True
 
     async def test_blocked_budget_writes_no_measurement_rows(
         self, pg_async_session, spy, monkeypatch
