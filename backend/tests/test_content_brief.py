@@ -376,7 +376,6 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
         status="DRAFT",
     )
     audit_calls = []
-    published_notifications = []
 
     class FakeDB:
         commit_calls = 0
@@ -401,10 +400,6 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
         audit_calls.append(kwargs)
         return SimpleNamespace(id=uuid.uuid4())
 
-    async def fake_notify_content_published(hospital_name, title):
-        published_notifications.append((hospital_name, title))
-        return True
-
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)
     monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
     monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
@@ -422,7 +417,6 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
         ),
     )
     monkeypatch.setattr(content_api, "write_audit_log", fake_write_audit_log)
-    monkeypatch.setattr(content_api.notifier, "notify_content_published", fake_notify_content_published)
 
     db = FakeDB()
     result = await content_api.publish_content(
@@ -455,7 +449,6 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
             },
         }
     ]
-    assert published_notifications == []
 
 
 async def test_post_publish_review_records_authenticated_actor_and_is_idempotent(monkeypatch):

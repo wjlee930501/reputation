@@ -62,10 +62,23 @@ def resolve_essence_readiness(
         and approved.source_snapshot_hash == snapshot
     )
     fresh = processed_snapshot_matches and len(processed_sources) == len(required_sources)
+    source_asset_ids = getattr(approved, "source_asset_ids", None) if approved else None
+    if approved and source_asset_ids:
+        baseline_ids = {str(source_id) for source_id in source_asset_ids}
+        baseline_processed = [
+            source for source in processed_sources if str(source.id) in baseline_ids
+        ]
+        public_philosophy = (
+            approved
+            if compute_sources_snapshot_hash(baseline_processed) == approved.source_snapshot_hash
+            else None
+        )
+    else:
+        public_philosophy = approved if processed_snapshot_matches else None
     return EssenceReadiness(
         approved=approved,
         current=approved if fresh else None,
-        public_philosophy=approved if processed_snapshot_matches else None,
+        public_philosophy=public_philosophy,
         processed_source_count=len(processed_sources),
         required_source_count=len(required_sources),
         current_snapshot_hash=snapshot,

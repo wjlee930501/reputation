@@ -159,12 +159,17 @@ def test_weekly_naver_sync_is_scheduled_and_routed():
 
 
 class _WeeklyDB:
-    def __init__(self, hospitals):
+    def __init__(self, hospitals, leftover=None):
         self._hospitals = hospitals
+        self._leftover = leftover if leftover is not None else []
+        self._hospital_query_done = False
         self.rolled_back = 0
 
     async def execute(self, _stmt):
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self._hospitals))
+        if not self._hospital_query_done:
+            self._hospital_query_done = True
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self._hospitals))
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self._leftover))
 
     async def rollback(self):
         self.rolled_back += 1
@@ -215,3 +220,80 @@ def test_weekly_naver_sync_isolates_failures_and_notifies(monkeypatch):
     assert queued[0].notification_type == "NAVER_WEEKLY_HANDOFF"
     assert "새 자료 2개" in queued[0].message.fallback_text
     assert db.rolled_back == 1
+
+
+def test_weekly_naver_sync_queues_source_processing_and_skips_healthy_digest(monkeypatch):
+    """성공 인입은 process_source_asset_task만 큐잉하고, 건강한 PENDING digest는 보내지 않는다."""
+    source_id = uuid.uuid4()
+    leftover_id = uuid.uuid4()
+    hospitals = [
+        SimpleNamespace(
+            id=uuid.uuid4(), name="정상의원", status=HospitalStatus.ACTIVE,
+            blog_url="https://blog.naver.com/ok",
+        ),
+    ]
+    leftover = [
+        SimpleNamespace(id=source_id, raw_text="이미 큐잉된 자료"),
+        SimpleNamespace(id=leftover_id, raw_text="남은 PENDING 본문"),
+    ]
+    db = _WeeklyDB(hospitals, leftover=leftover)
+
+    async def fake_sync(_db, hospital, **_kwargs):
+        return naver_sync.NaverSyncResult(
+            blog_id="ok", requested=2, created=1, source_ids=(source_id,)
+        )
+
+    queued_tasks = []
+    queued_notifications = []
+
+    def fake_send_task(name, args=None, queue=None, **_kwargs):
+        queued_tasks.append((name, list(args or []), queue))
+
+    async def fake_enqueue(_db, intent):
+        queued_notifications.append(intent)
+        return SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(naver_sync, "get_async_sessionmaker", lambda: lambda: db)
+    monkeypatch.setattr(naver_sync, "sync_hospital_naver_sources", fake_sync)
+    monkeypatch.setattr(naver_sync, "enqueue_notification", fake_enqueue)
+    monkeypatch.setattr(naver_sync.celery_app, "send_task", fake_send_task)
+
+    summary = naver_sync.weekly_naver_source_sync()
+
+    assert summary == {"processed": 1, "created": 1, "failed": 0}
+    assert queued_tasks == [
+        ("app.workers.tasks.process_source_asset_task", [str(source_id)], "default"),
+        ("app.workers.tasks.process_source_asset_task", [str(leftover_id)], "default"),
+    ]
+    assert queued_notifications == []
+
+
+def test_weekly_naver_sync_does_not_queue_without_source_ids(monkeypatch):
+    hospitals = [
+        SimpleNamespace(
+            id=uuid.uuid4(), name="정상의원", status=HospitalStatus.ACTIVE,
+            blog_url="https://blog.naver.com/ok",
+        ),
+    ]
+    db = _WeeklyDB(hospitals)
+
+    async def fake_sync(_db, hospital, **_kwargs):
+        return naver_sync.NaverSyncResult(blog_id="ok", requested=3, created=0)
+
+    queued_tasks = []
+
+    def fake_send_task(name, args=None, queue=None, **_kwargs):
+        queued_tasks.append((name, list(args or []), queue))
+
+    async def fake_enqueue(_db, intent):
+        raise AssertionError("새/잔여 source_id가 없으면 digest도 큐잉하면 안 된다")
+
+    monkeypatch.setattr(naver_sync, "get_async_sessionmaker", lambda: lambda: db)
+    monkeypatch.setattr(naver_sync, "sync_hospital_naver_sources", fake_sync)
+    monkeypatch.setattr(naver_sync, "enqueue_notification", fake_enqueue)
+    monkeypatch.setattr(naver_sync.celery_app, "send_task", fake_send_task)
+
+    summary = naver_sync.weekly_naver_source_sync()
+
+    assert summary == {"processed": 1, "created": 0, "failed": 0}
+    assert queued_tasks == []

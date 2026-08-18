@@ -74,12 +74,12 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     build_monthly_essence_summary,
     compute_source_content_hash,
+    get_approved_philosophy_sync,
     metered_llm_calls,
     process_source_asset,
     screen_content_against_philosophy,
     validate_source_excerpt,
 )
-from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
 from app.services.monthly_content_operations import (
     build_monthly_content_operations_snapshot,
@@ -1060,7 +1060,7 @@ def nightly_content_generation(self):
                 )
                 existing_titles = [r[0] for r in existing.all()]
 
-                philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+                philosophy = get_approved_philosophy_sync(db, hospital.id)
                 if not philosophy:
                     item.content_philosophy_id = None
                     item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
@@ -1616,7 +1616,7 @@ def generate_content_image(self, content_id: str):
                 return
             db.commit()
             db.refresh(item)
-            philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+            philosophy = get_approved_philosophy_sync(db, hospital.id)
             _persist_publication_readiness(db, item, philosophy)
             run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
             if run_id is not None:
@@ -1670,7 +1670,7 @@ def _generate_single_content_item(
     )
     existing_titles = [row[0] for row in existing.all()]
 
-    philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+    philosophy = get_approved_philosophy_sync(db, hospital.id)
     if not philosophy:
         item.content_philosophy_id = None
         item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
@@ -1946,7 +1946,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
         if hospital.status != HospitalStatus.ACTIVE or not hospital.site_live:
             return None
 
-        philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+        philosophy = get_approved_philosophy_sync(db, hospital.id)
         assessment = assess_content_publication(item, philosophy)
         apply_publication_assessment(item, assessment)
         admin_url = _admin_content_url(hospital.id, item.id)

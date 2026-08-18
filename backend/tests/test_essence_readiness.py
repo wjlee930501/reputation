@@ -47,3 +47,18 @@ def test_changed_processed_snapshot_blocks_writes_and_public_reads():
     assert readiness.current is None
     assert readiness.public_philosophy is None
     assert readiness.is_stale is True
+
+
+def test_absorbed_new_processed_source_keeps_public_on_intact_approved_baseline():
+    original = _source()
+    new = _source()
+    philosophy = SimpleNamespace(
+        source_snapshot_hash=compute_sources_snapshot_hash([original]),
+        source_asset_ids=[original.id],
+    )
+
+    readiness = resolve_essence_readiness(philosophy, [original, new])
+
+    assert readiness.current is None
+    assert readiness.public_philosophy is philosophy
+    assert readiness.is_stale is True

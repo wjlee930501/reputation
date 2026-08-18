@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.celery_app import celery_app
 from app.core.database import get_async_sessionmaker
+from app.models.essence import HospitalSourceAsset, SourceStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.naver_handoff import sync_hospital_naver_sources
 from app.services.naver_handoff_contracts import NaverHandoffResult, NaverHandoffState
@@ -53,6 +54,7 @@ async def _weekly_naver_source_sync_async() -> dict[str, int]:
     created_total = 0
     failures: list[str] = []
     entries: list[NaverWeeklyEntry] = []
+    queued_source_ids: set[str] = set()
     sessions = get_async_sessionmaker()
     async with sessions() as db:
         hospitals = (
@@ -90,7 +92,39 @@ async def _weekly_naver_source_sync_async() -> dict[str, int]:
                     failed=failed_count,
                 )
             )
-        if entries:
+            for source_id in result.source_ids:
+                sid = str(source_id)
+                if sid in queued_source_ids:
+                    continue
+                queued_source_ids.add(sid)
+                celery_app.send_task(
+                    "app.workers.tasks.process_source_asset_task",
+                    args=[sid],
+                    queue="default",
+                )
+        leftover = (
+            await db.execute(
+                select(HospitalSourceAsset).where(
+                    HospitalSourceAsset.created_by == "NAVER_WEEKLY_SYNC",
+                    HospitalSourceAsset.status == SourceStatus.PENDING,
+                    HospitalSourceAsset.raw_text.is_not(None),
+                )
+            )
+        ).scalars().all()
+        for asset in leftover:
+            if not asset.raw_text:
+                continue
+            sid = str(asset.id)
+            if sid in queued_source_ids:
+                continue
+            queued_source_ids.add(sid)
+            celery_app.send_task(
+                "app.workers.tasks.process_source_asset_task",
+                args=[sid],
+                queue="default",
+            )
+        has_failure = bool(failures) or any(entry.failed > 0 for entry in entries)
+        if entries and has_failure:
             await enqueue_notification(
                 db,
                 build_naver_weekly_digest(
