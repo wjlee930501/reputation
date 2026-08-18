@@ -148,11 +148,16 @@ export default function EssencePage() {
         .filter((source: SourceAsset) => source.status === 'PROCESSED')
         .map((source: SourceAsset) => source.id)
       setSelectedSourceIds(new Set(processedIds))
-      const latestDraft = (Array.isArray(philosophyData) ? philosophyData : []).find(
-        (item: ContentPhilosophy) => item.status === 'DRAFT'
+      const philosophyList = Array.isArray(philosophyData) ? philosophyData : []
+      const approvedPhilosophy = approvedData?.approved ?? null
+      const reviewDraft = philosophyList.find(
+        (item: ContentPhilosophy) =>
+          item.status === 'DRAFT' &&
+          (!approvedPhilosophy || item.version > approvedPhilosophy.version)
       )
-      setSelectedDraftId(latestDraft?.id ?? null)
-      if (latestDraft) setDraftFields(latestDraft)
+      const initialSelection = reviewDraft ?? approvedPhilosophy ?? philosophyList[0] ?? null
+      setSelectedDraftId(initialSelection?.id ?? null)
+      if (initialSelection) setDraftFields(initialSelection)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '콘텐츠 운영 기준 데이터를 불러오지 못했습니다.')
     } finally {
@@ -179,7 +184,13 @@ export default function EssencePage() {
     ].map((note) => [note.id, note] as const)
     return new Map(entries)
   }, [sources, selectedSource])
-  const draftCount = philosophies.filter((item) => item.status === 'DRAFT').length
+  const reviewDraftCount = philosophies.filter(
+    (item) => item.status === 'DRAFT' && (!approved || item.version > approved.version)
+  ).length
+  const selectedIsReviewDraft = Boolean(
+    selectedDraft?.status === 'DRAFT' &&
+      (!approved || selectedDraft.version > approved.version)
+  )
   const evidenceTotal = sources.reduce((sum, item) => sum + (item.evidence_note_count ?? 0), 0)
 
   // Operator next-action hint
@@ -187,11 +198,11 @@ export default function EssencePage() {
     if (sources.length === 0) return '① 자료를 1개 이상 입력하세요.'
     if (processedSources.length === 0) return '② 자료의 [근거 추출]을 실행하세요.'
     if (!selectedDraft && !approved) return '③ 처리된 자료를 선택하고 [선택 자료로 초안 만들기]를 누르세요.'
-    if (selectedDraft && selectedDraft.status === 'DRAFT')
-      return '④ 초안 내용을 검토 후 우측에서 [승인]하세요.'
+    if (selectedIsReviewDraft)
+      return '④ AI 안전 검수에서 보류된 최신 초안의 근거와 차단 사유를 확인하세요.'
     if (approved) return '운영 중 — 새 자료를 추가하면 새 버전 초안을 만들 수 있습니다.'
     return null
-  }, [sources.length, processedSources.length, selectedDraft, approved])
+  }, [sources.length, processedSources.length, selectedDraft, selectedIsReviewDraft, approved])
 
   function setDraftFields(philosophy: ContentPhilosophy) {
     setDraftPositioning(philosophy.positioning_statement ?? '')
@@ -413,8 +424,8 @@ export default function EssencePage() {
           />
           <SummaryCard
             label="검토 대기 초안"
-            value={`${draftCount}개`}
-            tone={draftCount > 0 ? 'warn' : undefined}
+            value={`${reviewDraftCount}개`}
+            tone={reviewDraftCount > 0 ? 'warn' : undefined}
           />
         </div>
       </div>
