@@ -192,6 +192,55 @@ def test_json_provider_call_retries_empty_response(monkeypatch, llm_key):
     assert messages.calls == 2
 
 
+def test_compact_structured_entries_expand_to_grounded_payload(monkeypatch, llm_key):
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.TREATMENT_SIGNAL,
+        source_excerpt="치질 수술은 상담 후 결정합니다.",
+        note_metadata={"treatment": "치질 수술"},
+    )
+    source = SimpleNamespace(id=uuid.uuid4(), processed_at=None, status=None, content_hash="h")
+    llm_payload = json.dumps(
+        {
+            "entries": [
+                {
+                    "kind": "positioning_statement",
+                    "text": "충분한 상담을 바탕으로 치료 선택지를 설명합니다.",
+                    "detail": "",
+                    "patient_language": [],
+                    "cautions": [],
+                    "evidence_note_ids": [str(note.id)],
+                },
+                {
+                    "kind": "treatment_narrative",
+                    "text": "치질 수술",
+                    "detail": "",
+                    "patient_language": ["상담 후 결정"],
+                    "cautions": ["치료 결과를 단정하지 않습니다."],
+                    "evidence_note_ids": [str(note.id)],
+                },
+                {
+                    "kind": "synthesis_note",
+                    "text": "근거 기반 합성",
+                    "detail": "",
+                    "patient_language": [],
+                    "cautions": [],
+                    "evidence_note_ids": [],
+                },
+            ]
+        }
+    )
+    fake = _patch_client(monkeypatch, llm_payload)
+
+    payload = synthesize_philosophy(SimpleNamespace(name="테스트병원"), [source], [note])
+
+    assert payload["positioning_statement"].startswith("충분한 상담")
+    assert payload["treatment_narratives"][0]["treatment"] == "치질 수술"
+    assert payload["evidence_map"]["positioning_statement"] == [str(note.id)]
+    schema = fake.messages.calls[0]["output_config"]["format"]["schema"]
+    assert list(schema["properties"]) == ["entries"]
+
+
 def test_llm_synthesis_missing_cautions_uses_safe_default(monkeypatch, llm_key):
     note = SimpleNamespace(
         id=uuid.uuid4(),

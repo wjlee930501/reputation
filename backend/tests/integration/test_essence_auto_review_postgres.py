@@ -374,9 +374,14 @@ def test_refresh_carries_forward_current_grounded_approved_core(pg_session) -> N
     hospital, source, note, previous = _seed_baseline(pg_session, label="carry-forward")
     previous.positioning_statement = "충분한 설명과 환자별 선택지 안내"
     previous.must_use_messages = ["환자 상태에 맞춰 선택지를 안내합니다."]
+    previous.content_principles = [
+        "완치와 성공률 표현을 사용하지 않습니다.",
+        "환자 상태에 따라 설명합니다.",
+    ]
     previous.evidence_map = {
         "positioning_statement": [str(note.id)],
         "must_use_messages": [str(note.id)],
+        "content_principles": [str(note.id)],
     }
     pg_session.flush()
 
@@ -396,6 +401,7 @@ def test_refresh_carries_forward_current_grounded_approved_core(pg_session) -> N
     assert result.status == EssenceRefreshStatus.AUTO_APPROVED
     assert candidate_seen["positioning_statement"] == "충분한 설명과 환자별 선택지 안내"
     assert candidate_seen["must_use_messages"] == ["환자 상태에 맞춰 선택지를 안내합니다."]
+    assert candidate_seen["content_principles"] == ["환자 상태에 따라 설명합니다."]
     assert candidate_seen["evidence_map"]["positioning_statement"] == [str(note.id)]
 
 
@@ -416,7 +422,7 @@ def test_legacy_automatic_draft_is_superseded_only_after_fresh_review(pg_session
     # system artifact keeps equal creation/update timestamps.
     legacy.unsupported_gaps = [
         {"field": "automatic_ai_review", "reason": "이전 자동 안전검사 차단"},
-        {"field": "automatic_recovery_cycle", "reason": "2"},
+        {"field": "automatic_recovery_cycle", "reason": "3"},
     ]
     pg_session.flush()
 
@@ -501,7 +507,7 @@ def test_persistent_candidate_failure_stops_periodic_retry_loop(pg_session) -> N
     assert essence_refresh_needed(pg_session, hospital.id) is False
     escalated = pg_session.get(HospitalContentPhilosophy, first.philosophy_id)
     assert any(
-        item.get("field") == "automatic_recovery_cycle" and item.get("reason") == "3"
+        item.get("field") == "automatic_recovery_cycle" and item.get("reason") == "4"
         for item in escalated.unsupported_gaps
         if isinstance(item, dict)
     )

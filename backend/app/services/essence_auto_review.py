@@ -40,7 +40,7 @@ from app.utils.medical_filter import check_forbidden
 AUTO_ESSENCE_ACTOR = "SYSTEM_ESSENCE_AI_REVIEW"
 AUTO_ESSENCE_CONFIDENCE = 0.90
 AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS = 2
-AUTO_ESSENCE_RECOVERY_REVISION = 3
+AUTO_ESSENCE_RECOVERY_REVISION = 4
 _AUTO_RECOVERY_CYCLE_FIELD = "automatic_recovery_cycle"
 _MAX_REVIEW_FINDINGS = 8
 _PROMPT_INJECTION_PATTERNS = (
@@ -65,7 +65,10 @@ APPROVE는 다음 조건을 모두 만족할 때만 선택합니다.
 새 자료에서 근거 있는 세부 메시지가 추가되거나 후보 구조가 기존 승인본보다 상세해진 것,
 한 narrative가 하나의 충분한 근거 note에 연결된 것, 작업 provenance 메타데이터가 있는 것은
 그 자체로 차단 사유가 아닙니다. 실제 근거 상실·충돌·과장만 findings에 기록하세요.
-reviewed_evidence_note_ids에는 후보 evidence_map에 연결된 모든 UUID를 빠짐없이 반환하세요.
+근거 발췌는 의도적으로 길이가 제한될 수 있으므로 끝이 잘렸다는 사실만으로 차단하지 마세요.
+근거가 있는 지역명은 local_context에서 허용되며, 반복 도배가 아닌 지역명 존재 자체는
+avoid_region_stuffing 위반이 아닙니다. 내부 운영 기준의 의학 용어는 그 자체로 차단 사유가
+아닙니다. reviewed_evidence_note_ids에는 실제 확인한 UUID를 반환하세요.
 
 반드시 JSON 객체만 출력하세요.
 {
@@ -376,6 +379,16 @@ def _merge_unique(previous: object, candidate: object, *, limit: int = 24) -> li
     return merged
 
 
+def _without_forbidden_positive_items(value: object) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    return [
+        copy.deepcopy(item)
+        for item in value
+        if not check_forbidden(" ".join(_iter_text(item)))
+    ]
+
+
 def _carry_forward_grounded_baseline(
     previous: HospitalContentPhilosophy,
     payload: dict[str, Any],
@@ -393,7 +406,7 @@ def _carry_forward_grounded_baseline(
     for field in ("positioning_statement", "doctor_voice", "patient_promise"):
         ids = _current_grounded_ids(previous, field, valid_note_ids)
         value = getattr(previous, field, None)
-        if value and ids:
+        if value and ids and not check_forbidden(" ".join(_iter_text(value))):
             result[field] = copy.deepcopy(value)
             evidence_map[field] = ids
 
@@ -401,10 +414,19 @@ def _carry_forward_grounded_baseline(
         "content_principles",
         "tone_guidelines",
         "must_use_messages",
-        "avoid_messages",
         "treatment_narratives",
-        "medical_ad_risk_rules",
     ):
+        ids = _current_grounded_ids(previous, field, valid_note_ids)
+        value = _without_forbidden_positive_items(getattr(previous, field, None))
+        if value and ids:
+            result[field] = _merge_unique(value, result.get(field))
+            candidate_ids = evidence_map.get(field)
+            candidate_ids = candidate_ids if isinstance(candidate_ids, list) else []
+            evidence_map[field] = list(
+                dict.fromkeys([*ids, *[str(item) for item in candidate_ids]])
+            )
+
+    for field in ("avoid_messages", "medical_ad_risk_rules"):
         ids = _current_grounded_ids(previous, field, valid_note_ids)
         value = getattr(previous, field, None)
         if value and ids:
@@ -549,6 +571,17 @@ def review_essence_candidate(
     notes: list[HospitalSourceEvidenceNote],
 ) -> EssenceAiReview:
     selected_notes = _selected_review_notes(candidate, notes)
+    required_ids = _candidate_evidence_ids(candidate)
+    selected_ids = {str(note.id) for note in selected_notes}
+    if not required_ids.issubset(selected_ids):
+        return EssenceAiReview(
+            decision="ESCALATE",
+            confidence=0.0,
+            findings=("후보의 전체 연결 근거를 단일 독립 검수 범위에 담을 수 없습니다.",),
+            reviewed_evidence_note_ids=tuple(sorted(selected_ids & required_ids)),
+            summary="독립 검수 입력 범위 초과",
+            model=settings.CLAUDE_MODEL_FAST,
+        )
     data = untrusted_json_block(_review_payload(hospital, previous, candidate, selected_notes))
     response = _call_anthropic_json(
         _REVIEW_SYSTEM_PROMPT,
@@ -568,16 +601,13 @@ def review_essence_candidate(
         confidence = min(max(float(response.get("confidence", 0.0)), 0.0), 1.0)
     except (TypeError, ValueError):
         confidence = 0.0
-    available_ids = {str(note.id) for note in selected_notes}
     return EssenceAiReview(
         decision=str(response.get("decision") or "ESCALATE").strip().upper(),
         confidence=confidence,
         findings=findings,
-        reviewed_evidence_note_ids=tuple(
-            str(item)
-            for item in (response.get("reviewed_evidence_note_ids") or [])[:100]
-            if str(item) in available_ids
-        ),
+        # Coverage is established by the server-side prompt construction above,
+        # not by asking the model to copy dozens of UUIDs without omission.
+        reviewed_evidence_note_ids=tuple(sorted(required_ids)),
         summary=" ".join(str(response.get("summary") or "").split())[:300],
         model=settings.CLAUDE_MODEL_FAST,
     )

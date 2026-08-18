@@ -510,23 +510,17 @@ _SYNTHESIS_SYSTEM = """\
    환자에게 결과를 보장하는 약속도 만들지 않습니다.
 5. 상충하는 근거는 conflict_notes에 남기고 임의로 결론내리지 않습니다.
 
-출력은 JSON 객체 하나만, 코드블록/설명 없이. 모든 텍스트 필드는 {text, evidence_note_ids} 형태:
+출력은 JSON 객체 하나만, 코드블록/설명 없이 entries 배열로 반환합니다.
+모든 entry는 아래 키를 전부 가지며 사용하지 않는 문자열/배열은 빈 값으로 둡니다.
 {
-  "positioning_statement": {"text": "...", "evidence_note_ids": ["..."]},
-  "doctor_voice": {"text": "...", "evidence_note_ids": ["..."]},
-  "patient_promise": {"text": "...", "evidence_note_ids": ["..."]},
-  "content_principles": [{"text": "...", "evidence_note_ids": ["..."]}],
-  "tone_guidelines": [{"text": "...", "evidence_note_ids": ["..."]}],
-  "must_use_messages": [{"text": "...", "evidence_note_ids": ["..."]}],
-  "avoid_messages": [{"text": "...", "evidence_note_ids": ["..."]}],
-  "treatment_narratives": [
-    {"treatment": "...", "patient_language": ["..."], "cautions": ["..."], "evidence_note_ids": ["..."]}
-  ],
-  "local_context": {"region_terms": [], "local_patient_context": ["..."], "evidence_note_ids": ["..."]},
-  "medical_ad_risk_rules": [{"text": "...", "evidence_note_ids": ["..."]}],
-  "unsupported_gaps": [{"field": "...", "reason": "..."}],
-  "conflict_notes": [{"text": "...", "evidence_note_ids": ["..."]}],
-  "synthesis_notes": "근거 기반 요약. 외부 지식 사용 없음."
+  "entries": [{
+    "kind": "positioning_statement | doctor_voice | patient_promise | content_principle | tone_guideline | must_use_message | avoid_message | treatment_narrative | local_region_term | local_patient_context | medical_ad_risk_rule | unsupported_gap | conflict_note | synthesis_note",
+    "text": "주요 문장 또는 treatment/unsupported field",
+    "detail": "unsupported reason 또는 빈 문자열",
+    "patient_language": ["treatment_narrative에서만 사용"],
+    "cautions": ["treatment_narrative에서만 사용"],
+    "evidence_note_ids": ["..."]
+  }]
 }
 """
 
@@ -540,88 +534,118 @@ _TEXT_FIELDS_LIST = (
     "medical_ad_risk_rules",
 )
 
-_TEXT_WITH_EVIDENCE_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "text": {"type": "string"},
-        "evidence_note_ids": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["text", "evidence_note_ids"],
-    "additionalProperties": False,
-}
-_TEXT_WITH_EVIDENCE_LIST_SCHEMA: dict[str, Any] = {
-    "type": "array",
-    "items": _TEXT_WITH_EVIDENCE_SCHEMA,
-}
+_SYNTHESIS_ENTRY_KINDS = (
+    "positioning_statement",
+    "doctor_voice",
+    "patient_promise",
+    "content_principle",
+    "tone_guideline",
+    "must_use_message",
+    "avoid_message",
+    "treatment_narrative",
+    "local_region_term",
+    "local_patient_context",
+    "medical_ad_risk_rule",
+    "unsupported_gap",
+    "conflict_note",
+    "synthesis_note",
+)
 _SYNTHESIS_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "positioning_statement": _TEXT_WITH_EVIDENCE_SCHEMA,
-        "doctor_voice": _TEXT_WITH_EVIDENCE_SCHEMA,
-        "patient_promise": _TEXT_WITH_EVIDENCE_SCHEMA,
-        "content_principles": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
-        "tone_guidelines": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
-        "must_use_messages": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
-        "avoid_messages": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
-        "treatment_narratives": {
+        "entries": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "treatment": {"type": "string"},
+                    "kind": {"type": "string", "enum": list(_SYNTHESIS_ENTRY_KINDS)},
+                    "text": {"type": "string"},
+                    "detail": {"type": "string"},
                     "patient_language": {"type": "array", "items": {"type": "string"}},
                     "cautions": {"type": "array", "items": {"type": "string"}},
                     "evidence_note_ids": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": [
-                    "treatment",
+                    "kind",
+                    "text",
+                    "detail",
                     "patient_language",
                     "cautions",
                     "evidence_note_ids",
                 ],
                 "additionalProperties": False,
             },
-        },
-        "local_context": {
-            "type": "object",
-            "properties": {
-                "region_terms": {"type": "array", "items": {"type": "string"}},
-                "local_patient_context": {"type": "array", "items": {"type": "string"}},
-                "evidence_note_ids": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["region_terms", "local_patient_context", "evidence_note_ids"],
-            "additionalProperties": False,
-        },
-        "medical_ad_risk_rules": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
-        "unsupported_gaps": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {"field": {"type": "string"}, "reason": {"type": "string"}},
-                "required": ["field", "reason"],
-                "additionalProperties": False,
-            },
-        },
-        "conflict_notes": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
-        "synthesis_notes": {"type": "string"},
+        }
     },
-    "required": [
-        "positioning_statement",
-        "doctor_voice",
-        "patient_promise",
-        "content_principles",
-        "tone_guidelines",
-        "must_use_messages",
-        "avoid_messages",
-        "treatment_narratives",
-        "local_context",
-        "medical_ad_risk_rules",
-        "unsupported_gaps",
-        "conflict_notes",
-        "synthesis_notes",
-    ],
+    "required": ["entries"],
     "additionalProperties": False,
 }
+
+
+def _expand_synthesis_entries(data: dict[str, Any]) -> dict[str, Any]:
+    """Convert the compact structured-output grammar into the legacy payload shape."""
+
+    expanded: dict[str, Any] = {
+        "content_principles": [],
+        "tone_guidelines": [],
+        "must_use_messages": [],
+        "avoid_messages": [],
+        "treatment_narratives": [],
+        "local_context": {
+            "region_terms": [],
+            "local_patient_context": [],
+            "evidence_note_ids": [],
+        },
+        "medical_ad_risk_rules": [],
+        "unsupported_gaps": [],
+        "conflict_notes": [],
+        "synthesis_notes": "",
+    }
+    list_fields = {
+        "content_principle": "content_principles",
+        "tone_guideline": "tone_guidelines",
+        "must_use_message": "must_use_messages",
+        "avoid_message": "avoid_messages",
+        "medical_ad_risk_rule": "medical_ad_risk_rules",
+    }
+    for entry in _as_list(data.get("entries")):
+        if not isinstance(entry, dict):
+            continue
+        kind = str(entry.get("kind") or "")
+        text = str(entry.get("text") or "").strip()
+        detail = str(entry.get("detail") or "").strip()
+        ids = _string_list(entry.get("evidence_note_ids"))
+        structured_text = {"text": text, "evidence_note_ids": ids}
+
+        if kind in _TEXT_FIELDS_SINGLE and kind not in expanded and text:
+            expanded[kind] = structured_text
+        elif kind in list_fields and text:
+            expanded[list_fields[kind]].append(structured_text)
+        elif kind == "treatment_narrative" and text:
+            expanded["treatment_narratives"].append(
+                {
+                    "treatment": text,
+                    "patient_language": _string_list(entry.get("patient_language")),
+                    "cautions": _string_list(entry.get("cautions")),
+                    "evidence_note_ids": ids,
+                }
+            )
+        elif kind in {"local_region_term", "local_patient_context"} and text:
+            local = expanded["local_context"]
+            local[
+                "region_terms" if kind == "local_region_term" else "local_patient_context"
+            ].append(text)
+            local["evidence_note_ids"].extend(ids)
+        elif kind == "unsupported_gap" and (text or detail):
+            expanded["unsupported_gaps"].append({"field": text, "reason": detail})
+        elif kind == "conflict_note" and text:
+            expanded["conflict_notes"].append(structured_text)
+        elif kind == "synthesis_note" and text:
+            expanded["synthesis_notes"] = text
+
+    local_ids = expanded["local_context"]["evidence_note_ids"]
+    expanded["local_context"]["evidence_note_ids"] = list(dict.fromkeys(local_ids))
+    return expanded
 
 
 def _synthesize_philosophy_llm(
@@ -656,6 +680,8 @@ def _synthesize_philosophy_llm(
         max_tokens=6000,
         output_schema=_SYNTHESIS_OUTPUT_SCHEMA,
     )
+    if isinstance(data.get("entries"), list):
+        data = _expand_synthesis_entries(data)
 
     evidence_map: dict[str, list[str]] = {}
     payload: dict[str, Any] = {}

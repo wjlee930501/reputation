@@ -90,13 +90,16 @@ def test_independent_reviewer_requires_high_confidence_and_exact_decision(monkey
                     "decision": "APPROVE",
                     "confidence": 0.95,
                     "findings": [],
-                    "reviewed_evidence_note_ids": [str(note_id)],
+                    "reviewed_evidence_note_ids": [],
                     "summary": "전체 연결 근거 확인",
                 }
             )
         )
 
     monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    candidate = _empty_candidate(uuid.uuid4())
+    candidate["positioning_statement"] = "근거 기반 설명"
+    candidate["evidence_map"] = {"positioning_statement": [str(note_id)]}
     review = essence_auto_review.review_essence_candidate(
         SimpleNamespace(id=uuid.uuid4(), name="테스트 병원"),
         SimpleNamespace(
@@ -107,7 +110,7 @@ def test_independent_reviewer_requires_high_confidence_and_exact_decision(monkey
             must_use_messages=[],
             treatment_narratives=[],
         ),
-        _empty_candidate(uuid.uuid4()),
+        candidate,
         [
             SimpleNamespace(
                 id=note_id,
