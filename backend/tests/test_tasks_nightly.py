@@ -965,6 +965,22 @@ def test_v0_quota_failure_opens_platform_circuit_and_reports_skipped_work():
     }
 
 
+def test_v0_partial_success_does_not_tell_operator_to_rerun_completed_onboarding():
+    reason = "provider_query_failed:ClientError:http_429:resource_exhausted"
+    summary = tasks._classify_v0_failure(
+        tasks.Counter({f"gemini:{reason}": 5}),
+        {
+            "chatgpt": tasks.Counter({"SUCCESS": 75}),
+            "gemini": tasks.Counter({"FAILED": 5}),
+        },
+        planned_counts={"chatgpt": 75, "gemini": 75},
+        blocked_platforms={"gemini": reason},
+    )
+
+    assert summary["safe_error_code"] == "V0_PARTIAL_PROVIDER_DEGRADED"
+    assert "다시 실행하지 마세요" in summary["next_action"]
+
+
 def test_v0_parse_failures_do_not_open_provider_circuit():
     results = [
         {"measurement_status": "FAILED", "failure_reason": "mention_parse_failed"}

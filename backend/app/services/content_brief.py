@@ -57,11 +57,11 @@ def build_content_brief(
         "must_use_messages": _list(getattr(philosophy, "must_use_messages", None)),
         "avoid_messages": safety_policy["avoid_messages"],
         "medical_risk_rules": safety_policy["medical_ad_risk_rules"],
-        "internal_link_target": {
-            "type": "content_item",
-            "content_id": str(content_item.id),
-            "path": f"/{hospital.slug}/contents/{content_item.id}",
-        },
+        # 이 함수는 현재 슬롯 외의 콘텐츠를 조회하지 않는다. 현재 글 자신을 링크
+        # 대상으로 주면 생성 모델이 자가 링크를 본문에 넣고, 독자와 크롤러 모두 같은
+        # 페이지로 되돌아오게 된다. 실제 관련 글을 선택할 수 있을 때만 별도 단계에서
+        # 채운다.
+        "internal_link_target": None,
         "operator_notes": [],
         "source": {
             "mode": "deterministic_fallback",

@@ -138,7 +138,7 @@ def test_build_content_brief_uses_query_target_action_and_philosophy():
     assert any("의료광고 공통 금지 표현" in item for item in brief["avoid_messages"])
     assert brief["medical_risk_rules"][0] == "치료 효과를 보장하지 않습니다."
     assert any("완치·안전성을 단정" in item for item in brief["medical_risk_rules"])
-    assert brief["internal_link_target"]["path"] == f"/test-clinic/contents/{item.id}"
+    assert brief["internal_link_target"] is None
 
 
 def test_content_brief_schema_rejects_unknown_status():

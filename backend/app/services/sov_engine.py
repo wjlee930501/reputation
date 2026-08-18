@@ -52,6 +52,11 @@ _semaphore_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _pool_limit(pool: str) -> int:
+    # Gemini Search는 같은 키에서 짧은 burst가 나가면 단건 호출은 정상이어도 429를
+    # 반환한다. 워커 한 인스턴스당 직렬화해 플랫폼 rate limit을 피하되, ChatGPT와
+    # 서로 다른 세마포어를 사용해 전체 측정 시간은 불필요하게 늘리지 않는다.
+    if pool.endswith(":gemini"):
+        return 1
     if pool == POOL_LEADGEN:
         return settings.LEADGEN_PROVIDER_CONCURRENCY
     return SOV_PROVIDER_CONCURRENCY
@@ -162,7 +167,6 @@ def is_terminal_provider_failure(reason: str | None) -> bool:
             "http_401",
             "http_403",
             "http_404",
-            "http_429",
             "authentication",
             "permission",
             "notfound",
@@ -174,7 +178,7 @@ def is_terminal_provider_failure(reason: str | None) -> bool:
 
 
 def _should_retry_provider_exception(exc: BaseException) -> bool:
-    """타임아웃·5xx만 짧게 재시도하고 인증·크레딧·쿼터 오류는 즉시 중단한다."""
+    """타임아웃·5xx·일반 429는 짧게 재시도하고 명시적 크레딧/쿼터 오류는 중단한다."""
     return not is_terminal_provider_failure(provider_failure_reason(exc))
 
 
@@ -1081,7 +1085,8 @@ async def run_single_query(
         # 이 측정에서 나가는 실제 호출을 어느 예산으로 셀지 고정한다. 무료 진단이
         # 유료 측정 예산에 섞이면 상한 판단이 무너진다.
         _provider_cost_category.set(pool)
-        async with _get_semaphore(pool):
+        provider_pool = f"{pool}:gemini" if platform == "gemini" else pool
+        async with _get_semaphore(provider_pool):
             try:
                 provider_result = await query_fn(query_text)
             except Exception as e:

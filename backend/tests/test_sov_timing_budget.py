@@ -112,6 +112,12 @@ async def test_provider_concurrency_is_actually_used_by_the_semaphore() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gemini_provider_pool_is_serial_per_worker() -> None:
+    semaphore = sov_engine._get_semaphore(f"{sov_engine.POOL_SOV}:gemini")
+    assert semaphore._value == 1
+
+
+@pytest.mark.asyncio
 async def test_leadgen_and_paid_measurement_do_not_share_a_concurrency_pool() -> None:
     """무료 진단이 유료 측정의 슬롯을 굶기면 안 된다 (PRD F6-1 · 설계 T-13).
 

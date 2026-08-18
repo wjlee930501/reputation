@@ -16,6 +16,10 @@ class _QuotaError(RuntimeError):
     code = "credit_balance_exhausted"
 
 
+class _TransientRateLimitError(RuntimeError):
+    status_code = 429
+
+
 def test_provider_failure_reason_preserves_safe_quota_cause():
     reason = sov_engine.provider_failure_reason(_QuotaError("secret provider detail"))
 
@@ -29,6 +33,7 @@ def test_provider_failure_reason_preserves_safe_quota_cause():
 
 def test_provider_retry_policy_keeps_transient_failures_retryable():
     assert sov_engine._should_retry_provider_exception(TimeoutError("temporary")) is True
+    assert sov_engine._should_retry_provider_exception(_TransientRateLimitError("slow down")) is True
 
 
 def test_measurement_client_disables_sdk_retry_without_weakening_judge_client():

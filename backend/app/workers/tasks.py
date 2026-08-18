@@ -566,13 +566,25 @@ def _classify_v0_failure(
     blocked_platforms: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     reason_text = " ".join(failure_reasons).lower()
-    if any(
+    success_count = sum(counts["SUCCESS"] for counts in platform_counts.values())
+    if success_count > 0 and failure_reasons:
+        code = "V0_PARTIAL_PROVIDER_DEGRADED"
+        message = "일부 AI 측정 호출은 실패했지만 성공 데이터로 초기 진단을 완료했습니다."
+        next_action = (
+            "초기 진단을 다시 실행하지 마세요. 운영센터에서 실패한 플랫폼의 상태만 확인하고 "
+            "다음 정기 측정에서 회복 여부를 점검하세요."
+        )
+    elif any(
         token in reason_text
-        for token in ("http_429", "ratelimit", "credit_balance_exhausted", "quota")
+        for token in ("credit_balance_exhausted", "quota")
     ):
         code = "V0_PROVIDER_QUOTA_EXHAUSTED"
         message = "AI 측정 공급자의 크레딧 또는 호출 쿼터가 소진되었습니다."
         next_action = "OpenAI 크레딧과 Gemini 쿼터를 복구한 뒤 초기 진단을 한 번만 재실행하세요."
+    elif any(token in reason_text for token in ("http_429", "ratelimit")):
+        code = "V0_PROVIDER_RATE_LIMITED"
+        message = "AI 측정 공급자가 일시적으로 호출 속도를 제한했습니다."
+        next_action = "잠시 후 초기 진단을 한 번만 재실행하세요."
     elif any(
         token in reason_text
         for token in (

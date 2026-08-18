@@ -95,6 +95,13 @@ def _review_data(
         "hospital_profile": {
             "name": _bounded_text(getattr(hospital, "name", None), 150),
             "director_name": _bounded_text(getattr(hospital, "director_name", None), 150),
+            "director_career": _bounded_text(
+                getattr(hospital, "director_career", None), 2000
+            ),
+            "address": _bounded_text(getattr(hospital, "address", None), 500),
+            "phone": _bounded_text(getattr(hospital, "phone", None), 100),
+            "business_hours": getattr(hospital, "business_hours", None) or {},
+            "website_url": _bounded_text(getattr(hospital, "website_url", None), 500),
             "region": list(getattr(hospital, "region", None) or [])[:10],
             "specialties": list(getattr(hospital, "specialties", None) or [])[:20],
             "treatments": list(getattr(hospital, "treatments", None) or [])[:30],
