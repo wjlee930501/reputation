@@ -917,6 +917,63 @@ def test_v0_report_requires_at_least_one_successful_measurement():
         tasks._ensure_v0_has_successful_measurements(success_count=0, failure_count=5)
 
 
+def test_v0_failure_summary_preserves_platform_and_safe_cause():
+    summary = tasks._classify_v0_failure(
+        tasks.Counter(
+            {
+                "chatgpt:provider_query_failed:AuthenticationError": 75,
+                "gemini:provider_query_failed:PermissionDenied": 75,
+            }
+        ),
+        {
+            "chatgpt": tasks.Counter({"FAILED": 75}),
+            "gemini": tasks.Counter({"FAILED": 75}),
+        },
+    )
+
+    assert summary["safe_error_code"] == "V0_PROVIDER_AUTH_OR_MODEL"
+    assert summary["failed_count"] == 150
+    assert summary["platforms"]["chatgpt"]["failure_count"] == 75
+    assert summary["platforms"]["gemini"]["failure_count"] == 75
+
+
+def test_v0_quota_failure_opens_platform_circuit_and_reports_skipped_work():
+    reason = "provider_query_failed:RateLimitError:http_429:credit_balance_exhausted"
+    results = [
+        {"measurement_status": "FAILED", "failure_reason": reason}
+        for _ in range(tasks.V0_REPEAT_COUNT)
+    ]
+
+    assert tasks._provider_batch_outage_reason(results) == reason
+
+    summary = tasks._classify_v0_failure(
+        tasks.Counter({f"chatgpt:{reason}": tasks.V0_REPEAT_COUNT}),
+        {"chatgpt": tasks.Counter({"FAILED": tasks.V0_REPEAT_COUNT})},
+        planned_counts={"chatgpt": 75},
+        blocked_platforms={"chatgpt": reason},
+    )
+
+    assert summary["safe_error_code"] == "V0_PROVIDER_QUOTA_EXHAUSTED"
+    assert summary["platforms"]["chatgpt"] == {
+        "success_count": 0,
+        "failure_count": tasks.V0_REPEAT_COUNT,
+        "attempted_count": tasks.V0_REPEAT_COUNT,
+        "planned_count": 75,
+        "skipped_count": 75 - tasks.V0_REPEAT_COUNT,
+        "blocked_reason": reason,
+        "failure_reasons": {reason: tasks.V0_REPEAT_COUNT},
+    }
+
+
+def test_v0_parse_failures_do_not_open_provider_circuit():
+    results = [
+        {"measurement_status": "FAILED", "failure_reason": "mention_parse_failed"}
+        for _ in range(tasks.V0_REPEAT_COUNT)
+    ]
+
+    assert tasks._provider_batch_outage_reason(results) is None
+
+
 def test_monthly_report_failures_are_raised_for_celery_autoretry():
     with pytest.raises(RuntimeError, match="월간 리포트 실패"):
         tasks._raise_if_monthly_report_failures([("장편한외과의원", RuntimeError("pdf boom"))])

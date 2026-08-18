@@ -16,6 +16,7 @@ from app.models.content import ContentType  # noqa: E402
 from app.services import content_engine  # noqa: E402
 from app.services.content_engine import (  # noqa: E402
     _build_content_brief_context,
+    _build_philosophy_context,
     _build_remediation_context,
     _curated_reference_focus,
     _format_internal_link_target,
@@ -316,3 +317,23 @@ def test_build_content_brief_context_excludes_raw_dict_repr():
     assert "{'type'" not in context
     assert "치질 수술 — 회복 계획을 설명합니다." in context
     assert "/test-clinic/contents/abc-123" in context
+
+
+def test_legacy_empty_approved_philosophy_gets_runtime_safety_floor():
+    philosophy = SimpleNamespace(
+        version=1,
+        positioning_statement=None,
+        doctor_voice=None,
+        patient_promise=None,
+        content_principles=[],
+        tone_guidelines=[],
+        must_use_messages=[],
+        avoid_messages=[],
+        medical_ad_risk_rules=[],
+        treatment_narratives=[],
+    )
+
+    context = _build_philosophy_context(philosophy)
+
+    assert "의료광고 공통 금지 표현" in context
+    assert "치료 효과·성공·완치·안전성을 단정하거나 보장하지 않습니다." in context

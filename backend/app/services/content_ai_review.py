@@ -20,6 +20,7 @@ from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.services import cost_guard
 from app.services.ai_prompt_boundary import untrusted_json_block
+from app.services.essence_engine import effective_safety_policy
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ def _review_data(
     content: dict[str, Any],
     content_brief: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    safety_policy = effective_safety_policy(philosophy)
     return {
         "hospital_profile": {
             "name": _bounded_text(getattr(hospital, "name", None), 150),
@@ -102,10 +104,8 @@ def _review_data(
                 getattr(philosophy, "positioning_statement", None), 600
             ),
             "must_use_messages": list(getattr(philosophy, "must_use_messages", None) or [])[:12],
-            "avoid_messages": list(getattr(philosophy, "avoid_messages", None) or [])[:12],
-            "medical_ad_risk_rules": list(getattr(philosophy, "medical_ad_risk_rules", None) or [])[
-                :12
-            ],
+            "avoid_messages": safety_policy["avoid_messages"][:12],
+            "medical_ad_risk_rules": safety_policy["medical_ad_risk_rules"][:12],
         },
         "approved_brief": {
             "target_query": _bounded_text((content_brief or {}).get("target_query"), 300),

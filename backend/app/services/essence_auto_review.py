@@ -28,8 +28,10 @@ from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.audit_log import write_audit_log_sync
 from app.services.essence_engine import (
     _call_anthropic_json,
+    apply_mandatory_safety_policy,
     compute_sources_snapshot_hash,
     find_error_marker_fields,
+    mandatory_safety_findings,
     screen_content_against_philosophy,
     synthesize_philosophy,
     validate_philosophy_grounding,
@@ -538,6 +540,7 @@ def deterministic_candidate_findings(
     if marker_fields:
         findings.append("차단·오류 페이지 잔재: " + ", ".join(marker_fields))
     findings.extend(validate_philosophy_grounding(payload, notes))
+    findings.extend(mandatory_safety_findings(payload))
     findings.extend(_critical_losses(previous, payload))
     if payload.get("conflict_notes"):
         findings.append("현재 자료에 해결되지 않은 상충 근거가 있습니다.")
@@ -861,6 +864,9 @@ def refresh_essence_snapshot(
     while synthesis_attempts < AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS:
         payload = synthesizer(hospital, sources, notes, operator_note=operator_note)
         payload = _carry_forward_grounded_baseline(previous, payload, notes)
+        # Enforce the global medical-ad safety floor at the orchestration boundary,
+        # including custom synthesizers and deterministic test/provider fallbacks.
+        payload = apply_mandatory_safety_policy(payload)
         synthesis_attempts += 1
         deterministic_findings = deterministic_candidate_findings(
             previous=previous,

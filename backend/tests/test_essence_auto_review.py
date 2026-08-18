@@ -54,6 +54,19 @@ def test_prompt_injection_in_source_blocks_automatic_approval() -> None:
     assert any("프롬프트 인젝션" in finding for finding in findings)
 
 
+def test_empty_medical_safety_rules_block_automatic_approval() -> None:
+    source_id = uuid.uuid4()
+    findings = essence_auto_review.deterministic_candidate_findings(
+        previous=None,
+        payload=_empty_candidate(source_id),
+        sources=[SimpleNamespace(id=source_id, raw_text="정상 자료", operator_note=None)],
+        notes=[],
+    )
+
+    assert any("avoid_messages" in finding for finding in findings)
+    assert any("medical_ad_risk_rules" in finding for finding in findings)
+
+
 def test_source_set_mismatch_and_critical_loss_block_automatic_approval() -> None:
     source_id = uuid.uuid4()
     source = SimpleNamespace(id=source_id, raw_text="정상 자료", operator_note=None)

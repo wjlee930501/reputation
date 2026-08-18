@@ -11,6 +11,31 @@ class _FakeChoice:
         self.message = SimpleNamespace(content=content)
 
 
+class _QuotaError(RuntimeError):
+    status_code = 429
+    code = "credit_balance_exhausted"
+
+
+def test_provider_failure_reason_preserves_safe_quota_cause():
+    reason = sov_engine.provider_failure_reason(_QuotaError("secret provider detail"))
+
+    assert reason == (
+        "provider_query_failed:_QuotaError:http_429:credit_balance_exhausted"
+    )
+    assert "secret provider detail" not in reason
+    assert sov_engine.is_terminal_provider_failure(reason) is True
+    assert sov_engine._should_retry_provider_exception(_QuotaError("quota")) is False
+
+
+def test_provider_retry_policy_keeps_transient_failures_retryable():
+    assert sov_engine._should_retry_provider_exception(TimeoutError("temporary")) is True
+
+
+def test_measurement_client_disables_sdk_retry_without_weakening_judge_client():
+    assert sov_engine.openai_query_client.max_retries == 0
+    assert sov_engine.openai_client.max_retries > 0
+
+
 class _FakeCompletions:
     async def create(self, **kwargs):
         assert kwargs["response_format"] == {"type": "json_object"}
@@ -139,7 +164,7 @@ async def test_chatgpt_web_search_is_offered_but_not_forced(monkeypatch):
     환자가 실제로 받는 답변보다 병원명이 구조적으로 많이 등장했다.
     """
     responses = _SearchResponses()
-    monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
+    monkeypatch.setattr(sov_engine.openai_query_client, "responses", responses)
 
     result = await sov_engine._query_chatgpt_with_search("수원 외과 추천")
 
@@ -176,7 +201,7 @@ class TestProviderTelemetry:
     @pytest.mark.asyncio
     async def test_openai_records_search_calls_and_resolved_model(self, monkeypatch):
         responses = self._Responses(search_items=2)
-        monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
+        monkeypatch.setattr(sov_engine.openai_query_client, "responses", responses)
 
         result = await sov_engine._query_chatgpt_with_search_result("수원 외과 추천")
 
@@ -189,7 +214,7 @@ class TestProviderTelemetry:
     async def test_no_search_is_recorded_as_zero_not_missing(self, monkeypatch):
         """0(검색 안 씀)과 None(계측 없음)은 다른 사실이다."""
         responses = self._Responses(search_items=0)
-        monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
+        monkeypatch.setattr(sov_engine.openai_query_client, "responses", responses)
 
         result = await sov_engine._query_chatgpt_with_search_result("수원 외과 추천")
 
@@ -199,7 +224,7 @@ class TestProviderTelemetry:
     async def test_fetch_answer_passes_telemetry_through(self, monkeypatch):
         """공급자가 잰 값이 측정 레코드까지 도달해야 저장된다."""
         responses = self._Responses(search_items=1)
-        monkeypatch.setattr(sov_engine.openai_client, "responses", responses)
+        monkeypatch.setattr(sov_engine.openai_query_client, "responses", responses)
         monkeypatch.setattr(sov_engine.settings, "OPENAI_CHATGPT_USE_WEB_SEARCH", True)
 
         answer = await sov_engine.fetch_answer("수원 외과 추천", "chatgpt")

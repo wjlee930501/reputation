@@ -8,6 +8,7 @@ import {
   createUserActionKey,
   deriveQueueView,
   enabledPostAction,
+  effectiveSafeCause,
   interpretOperationsConflict,
   operationStatusLabel,
   primaryOperationsMutation,
@@ -72,6 +73,26 @@ test('code-like causes and contact details never render as marketer explanations
   assert.match(safeCauseText('API_KEY secret-token'), new RegExp(fallback))
   assert.match(safeCauseText('담당자 010-1234-5678에게 연락'), new RegExp(fallback))
   assert.equal(safeCauseText('대표 이미지 생성 연결이 잠시 중단되었습니다.'), '대표 이미지 생성 연결이 잠시 중단되었습니다.')
+})
+
+test('generic incident cause falls through to a classified run cause', () => {
+  const incident = row('incident:classified', {
+    queue: 'INCIDENTS',
+    safe_cause: '원인 설명을 확인할 수 없습니다',
+  })
+
+  const cause = effectiveSafeCause({
+    incident,
+    run: {
+      run_id: 'run-classified', parent_run_id: null, operation_type: 'V0', state: 'FAILED', attempt_count: 3,
+      total_count: 150, success_count: 0, failure_count: 150, skipped_count: 0,
+      safe_error_code: 'V0_PROVIDER_UNAVAILABLE', safe_error_message: null,
+      requested_at: '2026-08-10T01:00:00Z', queued_at: null, started_at: null,
+      completed_at: '2026-08-10T01:10:00Z', version: 1, retry: null,
+    },
+  })
+
+  assert.equal(cause, '외부 AI 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.')
 })
 
 test('changing a quick filter resets page while preserving detail', () => {
@@ -160,6 +181,7 @@ test('developer support copy includes safe facts and excludes task payloads', ()
   }, 'https://admin.example.test')
 
   assert.match(summary, /병원: 서울 바른 병원/)
+  assert.match(summary, /병원 ID: hospital-1/)
   assert.match(summary, /현상: 복구 재시도 중/)
   assert.match(summary, /오류 식별자\(개발팀용\): SAFE_TIMEOUT/)
   assert.match(summary, /detail=incident%3A1/)

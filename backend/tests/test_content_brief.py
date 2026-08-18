@@ -134,8 +134,10 @@ def test_build_content_brief_uses_query_target_action_and_philosophy():
     assert brief["philosophy_reference"]["id"] == str(philosophy.id)
     assert brief["treatment_narrative"]["source"] == "approved_philosophy"
     assert brief["must_use_messages"] == ["상태 확인 후 치료 방향을 정합니다."]
-    assert brief["avoid_messages"] == ["완치 보장"]
-    assert brief["medical_risk_rules"] == ["치료 효과를 보장하지 않습니다."]
+    assert brief["avoid_messages"][0] == "완치 보장"
+    assert any("의료광고 공통 금지 표현" in item for item in brief["avoid_messages"])
+    assert brief["medical_risk_rules"][0] == "치료 효과를 보장하지 않습니다."
+    assert any("완치·안전성을 단정" in item for item in brief["medical_risk_rules"])
     assert brief["internal_link_target"]["path"] == f"/test-clinic/contents/{item.id}"
 
 

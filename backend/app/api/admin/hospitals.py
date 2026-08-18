@@ -48,6 +48,12 @@ from app.services.hospital_lifecycle import (
     missing_profile_requirement_keys,
 )
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.keyword_analysis import (
+    analyze_keyword,
+)
+from app.services.keyword_analysis import (
+    normalize as normalize_keyword,
+)
 from app.services.ops_incident_alerts import open_ops_incident
 from app.services.readiness_operator_copy import readiness_next_actions
 from app.services.service_intervals import (
@@ -134,6 +140,26 @@ class HospitalCreate(BaseModel):
     sales_owner_id: uuid.UUID | None = None
     ae_owner_id: uuid.UUID | None = None
     onboarding_request_id: uuid.UUID | None = None
+
+
+def _normalized_hospital_name(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().lower()
+
+
+async def _exact_name_candidates(db: AsyncSession, name: str) -> list[Hospital]:
+    normalized = _normalized_hospital_name(name)
+    if not normalized:
+        return []
+    result = await db.execute(
+        select(Hospital)
+        .where(
+            func.replace(func.lower(func.trim(Hospital.name)), " ", "")
+            == normalized.replace(" ", "")
+        )
+        .order_by(Hospital.created_at.desc())
+        .limit(10)
+    )
+    return list(result.scalars().all())
 
 
 class HospitalProfileUpdate(BaseModel):
@@ -377,6 +403,25 @@ async def create_hospital(
     if replayed is not None:
         return replayed
 
+    duplicate_candidates = await _exact_name_candidates(db, body.name)
+    if duplicate_candidates:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DUPLICATE_HOSPITAL_NAME",
+                "message": "같은 이름의 병원이 이미 등록되어 있습니다. 기존 병원을 확인해 주세요.",
+                "candidates": [
+                    {
+                        "id": str(candidate.id),
+                        "name": candidate.name,
+                        "status": candidate.status.value,
+                        "onboarding_url": f"/hospitals/{candidate.id}/onboarding",
+                    }
+                    for candidate in duplicate_candidates
+                ],
+            },
+        )
+
     slug = slugify(body.name, separator="-")
     # 공개 표면의 예약 경로와 겹치면 그 병원 페이지가 통째로 가려진다.
     # 예: slug가 'ai-diagnosis'인 병원은 무료 진단 퍼널에 먹혀 영원히 열리지 않는다 (PRD F1-3).
@@ -452,6 +497,26 @@ async def create_hospital(
     }
 
 
+@router.get("/candidates")
+async def list_hospital_name_candidates(
+    name: str = Query(min_length=1, max_length=200),
+    db: AsyncSession = Depends(get_db),
+):
+    candidates = await _exact_name_candidates(db, name)
+    return {
+        "normalized_name": _normalized_hospital_name(name),
+        "candidates": [
+            {
+                "id": str(candidate.id),
+                "name": candidate.name,
+                "status": candidate.status.value,
+                "onboarding_url": f"/hospitals/{candidate.id}/onboarding",
+            }
+            for candidate in candidates
+        ],
+    }
+
+
 @router.get("", response_model=list[HospitalListItem])
 async def list_hospitals(
     skip: int = Query(default=0, ge=0),
@@ -484,6 +549,33 @@ async def update_profile(
     profile_complete=True 설정 시 자동으로 V0 분석 트리거.
     """
     h = await _get_or_404(db, hospital_id)
+
+    if body.keywords is not None:
+        regions = body.region if body.region is not None else (h.region or [])
+        invalid_keywords = []
+        for keyword in body.keywords:
+            analysis = analyze_keyword(keyword, regions)
+            normalized = normalize_keyword(keyword)
+            if analysis.embedded_region is not None:
+                invalid_keywords.append(
+                    {
+                        "keyword": keyword,
+                        "suggested_keyword": (
+                            analysis.canonical_term
+                            if analysis.canonical_term and analysis.canonical_term != normalized
+                            else None
+                        ),
+                    }
+                )
+        if invalid_keywords:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "REGION_KEYWORD_MIXED",
+                    "message": "지역 태그는 핵심 키워드와 분리해 입력해 주세요.",
+                    "invalid_keywords": invalid_keywords,
+                },
+            )
 
     PROFILE_FIELDS = {
         "address",
@@ -637,6 +729,7 @@ async def autofill_hospital_profile(
             "name": name,
             "filled_fields": sorted(result.draft.keys()),
             "violation_fields": [v["field"] for v in result.violations],
+            "rejected_fields": [v["field"] for v in result.rejected_fields],
             "sources": [{"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources],
         },
     )
@@ -646,6 +739,7 @@ async def autofill_hospital_profile(
         "draft": result.draft,
         "field_meta": result.field_meta,
         "violations": result.violations,
+        "rejected_fields": result.rejected_fields,
         "naver_place_id": result.naver_place_id,
         "sources": [{"name": s.name, "ok": s.ok, "reason": s.reason} for s in result.sources],
     }

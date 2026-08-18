@@ -164,6 +164,21 @@ class TestTemplatesMatchKeywordKind:
         for text, _intent in specs:
             assert text.count("군자역") <= 1, text
 
+    def test_region_only_keywords_never_enter_clinical_templates(self) -> None:
+        cases = [
+            (["하남시"], ["하남"]),
+            (["위례", "송파구"], ["위례 송파"]),
+            (["마산"], ["마산", "마산 마산 심장초음파"]),
+        ]
+        for regions, keywords in cases:
+            specs = generate_query_matrix_specs(regions, ["내과"], keywords)
+            texts = [text for text, _intent in specs]
+            assert not any("하남 치료" in text for text in texts)
+            assert not any("위례 송파 진료" in text for text in texts)
+            assert not any("마산 마산 심장초음파" in text for text in texts)
+            if "마산 마산 심장초음파" in keywords:
+                assert any("심장초음파" in text for text in texts)
+
 
 def test_generated_specs_carry_intent_and_match_plain_generation() -> None:
     specs = generate_query_matrix_specs(REGION, SPECIALTIES, KEYWORDS)

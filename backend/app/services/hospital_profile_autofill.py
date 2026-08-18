@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 import anthropic
@@ -50,6 +51,7 @@ _ALLOWED_FIELDS = {
     "website_url",
     "blog_url",
     "kakao_channel_url",
+    "naver_place_url",
     "region",
     "specialties",
     "keywords",
@@ -68,7 +70,8 @@ EXTRACTION_SYSTEM_PROMPT = """\
 3. 의료광고법상 다음 표현은 절대 생성·전재하지 마세요(있어도 빼고 정리):
    1등·최고·최우수·유일·완치·100%·성공률·부작용 없는·검증된·가장 잘하는·
    국내 최초·세계 최초·특허·독보적·노하우·효과 보장·최첨단·안전한 시술·통증 없는·흉터 없는.
-4. 각 필드에 출처(source)와 신뢰도(confidence 0~1)를 함께 적습니다.
+4. 각 필드에 출처(source), 신뢰도(confidence 0~1), 근거 원문(evidence)을 함께 적습니다.
+   evidence는 입력 출처에 실제로 연속해서 존재하는 짧은 원문 발췌여야 합니다.
    source ∈ {"homepage","blog","naver","inferred"}. 여러 출처면 가장 신뢰 높은 것.
 5. director_philosophy는 1~2문장 요약, director_career는 사실 위주 약력(과장 금지).
 6. keywords는 환자가 검색할 법한 진료 키워드 5~12개(질환·시술·지역+증상).
@@ -84,19 +87,19 @@ EXTRACTION_SYSTEM_PROMPT = """\
 [출력 — JSON 객체만, 코드펜스/설명 없이]
 {
   "fields": {
-    "director_name": {"value": "...", "source": "homepage", "confidence": 0.9},
-    "address": {"value": "...", "source": "naver", "confidence": 0.95},
-    "phone": {"value": "...", "source": "naver", "confidence": 0.95},
-    "business_hours": {"value": {"mon": "...", ...}, "source": "naver", "confidence": 0.8},
-    "region": {"value": ["수원시 팔달구"], "source": "naver", "confidence": 0.8},
-    "specialties": {"value": ["외과"], "source": "naver", "confidence": 0.8},
-    "keywords": {"value": ["치질","치루"], "source": "blog", "confidence": 0.6},
-    "competitors": {"value": [], "source": "inferred", "confidence": 0.3},
-    "treatments": {"value": [{"name":"...","description":"..."}], "source": "homepage", "confidence": 0.7},
-    "director_career": {"value": "...", "source": "homepage", "confidence": 0.7},
-    "director_philosophy": {"value": "...", "source": "homepage", "confidence": 0.6},
-    "website_url": {"value": "https://...", "source": "naver", "confidence": 0.9},
-    "blog_url": {"value": "https://...", "source": "naver", "confidence": 0.9}
+    "director_name": {"value": "...", "source": "homepage", "confidence": 0.9, "evidence": "입력에 실제로 있는 원문"},
+    "address": {"value": "...", "source": "naver", "confidence": 0.95, "evidence": "주소가 포함된 원문"},
+    "phone": {"value": "...", "source": "naver", "confidence": 0.95, "evidence": "전화번호가 포함된 원문"},
+    "business_hours": {"value": {"mon": "...", ...}, "source": "naver", "confidence": 0.8, "evidence": "요일별 시간이 포함된 원문"},
+    "region": {"value": ["수원시 팔달구"], "source": "naver", "confidence": 0.8, "evidence": "수원시 팔달구"},
+    "specialties": {"value": ["외과"], "source": "naver", "confidence": 0.8, "evidence": "외과"},
+    "keywords": {"value": ["치질","치루"], "source": "blog", "confidence": 0.6, "evidence": "치질과 치루가 함께 있는 원문"},
+    "competitors": {"value": ["..."], "source": "homepage", "confidence": 0.6, "evidence": "경쟁 병원명이 있는 원문"},
+    "treatments": {"value": [{"name":"...","description":"..."}], "source": "homepage", "confidence": 0.7, "evidence": "진료 항목명이 있는 원문"},
+    "director_career": {"value": "...", "source": "homepage", "confidence": 0.7, "evidence": "약력이 포함된 원문"},
+    "director_philosophy": {"value": "...", "source": "homepage", "confidence": 0.6, "evidence": "진료 철학이 포함된 원문"},
+    "website_url": {"value": "https://...", "source": "naver", "confidence": 0.9, "evidence": "홈페이지 URL 원문"},
+    "blog_url": {"value": "https://...", "source": "naver", "confidence": 0.9, "evidence": "블로그 URL 원문"}
   }
 }
 근거 없는 필드는 통째로 생략하세요.
@@ -117,6 +120,7 @@ class AutofillResult:
     violations: list[dict] = field(default_factory=list)   # [{"field","expressions"}]
     sources: list[SourceStatus] = field(default_factory=list)
     naver_place_id: str | None = None
+    rejected_fields: list[dict] = field(default_factory=list)
 
 
 async def _gather_sources(
@@ -192,10 +196,79 @@ async def _extract_with_claude(name: str, aggregated_text: str) -> dict:
     return fields if isinstance(fields, dict) else {}
 
 
-def _normalize_fields(fields: dict) -> tuple[dict, dict]:
+def _compact_text(value: object) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _field_value_is_grounded(key: str, value: object, evidence: str) -> bool:
+    """Require the proposed value to be visible in the exact cited excerpt.
+
+    Looking anywhere in the aggregate source let a time from Tuesday accidentally
+    support a fabricated Monday schedule.  The cited excerpt is the smallest trust
+    boundary that keeps the field and its source coupled.
+    """
+    compact_source = _compact_text(evidence)
+    if key in {"specialties", "keywords", "region", "competitors"} and isinstance(value, list):
+        return all(_compact_text(item) in compact_source for item in value if str(item).strip())
+    if key == "treatments" and isinstance(value, list):
+        return all(
+            _compact_text(item.get("name")) in compact_source
+            for item in value
+            if isinstance(item, dict) and item.get("name")
+        )
+    if key == "business_hours" and isinstance(value, dict):
+        normalized_evidence = evidence.replace("：", ":")
+        day_keys = {
+            "mon": "월",
+            "tue": "화",
+            "wed": "수",
+            "thu": "목",
+            "fri": "금",
+            "sat": "토",
+            "sun": "일",
+        }
+        day_marker_pattern = re.compile(
+            r"(?<![가-힣])(월요일|화요일|수요일|목요일|금요일|토요일|일요일|월|화|수|목|금|토|일)(?=\s|[:\d]|$)"
+        )
+        markers = list(day_marker_pattern.finditer(normalized_evidence))
+        for day, hours in value.items():
+            day_key = day_keys.get(str(day).lower())
+            marker_index = next(
+                (
+                    index
+                    for index, marker in enumerate(markers)
+                    if day_key and marker.group(1).startswith(day_key)
+                ),
+                None,
+            )
+            if marker_index is None:
+                return False
+            segment_start = markers[marker_index].start()
+            segment_end = (
+                markers[marker_index + 1].start()
+                if marker_index + 1 < len(markers)
+                else len(normalized_evidence)
+            )
+            day_segment = normalized_evidence[segment_start:segment_end]
+            time_tokens = re.findall(r"\d{1,2}:\d{2}", str(hours))
+            if time_tokens and not all(token in day_segment for token in time_tokens):
+                return False
+            if not time_tokens and "휴진" in str(hours) and "휴진" not in day_segment:
+                return False
+        return bool(value)
+    if key in {"director_name", "address", "phone", "website_url", "blog_url", "kakao_channel_url", "naver_place_url"}:
+        return _compact_text(value) in compact_source
+    return True
+
+
+def _normalize_fields(
+    fields: dict,
+    source_text: str | None = None,
+) -> tuple[dict, dict, list[dict]]:
     """Claude의 {field:{value,source,confidence}} → (draft, field_meta)."""
     draft: dict = {}
     meta: dict = {}
+    rejected: list[dict] = []
     for key, payload in fields.items():
         if key not in _ALLOWED_FIELDS or not isinstance(payload, dict):
             continue
@@ -204,12 +277,25 @@ def _normalize_fields(fields: dict) -> tuple[dict, dict]:
         value = payload["value"]
         if value in (None, "", [], {}):
             continue
+        source = str(payload.get("source") or "inferred")
+        evidence = str(payload.get("evidence") or "").strip()
+        if source_text is not None:
+            if source not in {"homepage", "blog", "naver"}:
+                rejected.append({"field": key, "reason": "공식 출처가 아닌 추론 값입니다."})
+                continue
+            if not evidence or _compact_text(evidence) not in _compact_text(source_text):
+                rejected.append({"field": key, "reason": "출처 원문 발췌를 확인할 수 없습니다."})
+                continue
+            if not _field_value_is_grounded(key, value, evidence):
+                rejected.append({"field": key, "reason": "제안 값이 출처 원문과 일치하지 않습니다."})
+                continue
         draft[key] = value
         meta[key] = {
-            "source": str(payload.get("source") or "inferred"),
+            "source": source,
             "confidence": _clamp_confidence(payload.get("confidence")),
+            "evidence_excerpt": evidence or None,
         }
-    return draft, meta
+    return draft, meta, rejected
 
 
 def _clamp_confidence(value: object) -> float:
@@ -266,14 +352,18 @@ async def autofill_profile(
         logger.warning("autofill extraction failed for %s: %s", name, exc)
         return result
 
-    draft, meta = _normalize_fields(fields)
+    draft, meta, rejected = _normalize_fields(fields, aggregated)
 
     # 네이버 place_id는 스크랩에서 직접 얻은 값이 LLM 추출보다 신뢰도 높다.
     if naver_res.place_id:
         draft["naver_place_id"] = naver_res.place_id
         meta["naver_place_id"] = {"source": "naver", "confidence": 0.95}
+    if naver_res.canonical_url:
+        draft["naver_place_url"] = naver_res.canonical_url
+        meta["naver_place_url"] = {"source": "naver", "confidence": 1.0}
 
     result.draft = draft
     result.field_meta = meta
     result.violations = _collect_violations(draft)
+    result.rejected_fields = rejected
     return result

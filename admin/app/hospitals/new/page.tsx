@@ -29,6 +29,13 @@ interface LeadContext {
   id: string | null
 }
 
+interface DuplicateCandidate {
+  id: string
+  name: string
+  status: string
+  onboarding_url: string
+}
+
 export default function NewHospitalPage() {
   const router = useRouter()
   const [defaultDates] = useState(() => defaultAcquisitionDates())
@@ -51,6 +58,12 @@ export default function NewHospitalPage() {
   const [workflowHandoff, setWorkflowHandoff] = useState<Handoff | null>(null)
   const [workflowRestoring, setWorkflowRestoring] = useState(true)
   const [creationRequestId, setCreationRequestId] = useState<string | null>(null)
+  const [duplicateCandidates, setDuplicateCandidates] = useState<DuplicateCandidate[]>([])
+  const [duplicateCheck, setDuplicateCheck] = useState<'idle' | 'checking' | 'clear' | 'duplicate' | 'error'>('idle')
+
+  function openCanonicalOnboarding(hospitalId: string) {
+    window.location.replace(`/hospitals/${hospitalId}/onboarding`)
+  }
 
   function rememberWorkflow(hospitalId: string, handoffId: string) {
     window.sessionStorage.setItem(
@@ -86,6 +99,36 @@ export default function NewHospitalPage() {
       setError(safeOperatorError('onboarding', '운영 화면 다시 불러오기를 눌러 담당자 목록을 다시 확인하세요.'))
     })
   }, [])
+
+  useEffect(() => {
+    const hospitalName = name.trim()
+    if (!hospitalName || workflowHandoff) {
+      setDuplicateCandidates([])
+      setDuplicateCheck(workflowHandoff ? 'clear' : 'idle')
+      return
+    }
+    let cancelled = false
+    setDuplicateCheck('checking')
+    const timer = window.setTimeout(() => {
+      fetchAPI<{ candidates: DuplicateCandidate[] }>(`/admin/hospitals/candidates?name=${encodeURIComponent(hospitalName)}`)
+        .then((result) => {
+          if (cancelled) return
+          setDuplicateCandidates(result.candidates)
+          setDuplicateCheck(result.candidates.length > 0 ? 'duplicate' : 'clear')
+        })
+        .catch((cause: unknown) => {
+          if (!isExpectedOperatorRequestFailure(cause)) throw cause
+          if (!cancelled) {
+            setDuplicateCandidates([])
+            setDuplicateCheck('error')
+          }
+        })
+    }, 350)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [name, workflowHandoff])
 
   useEffect(() => {
     let cancelled = false
@@ -245,7 +288,7 @@ export default function NewHospitalPage() {
       }
       if (handoff.state === 'HANDOFF_ACCEPTED') {
         clearRememberedWorkflow()
-        router.push(`/hospitals/${hospitalId}/onboarding`)
+        openCanonicalOnboarding(hospitalId)
         return
       }
       if (handoff.state === 'CONTRACT_PENDING') {
@@ -267,7 +310,7 @@ export default function NewHospitalPage() {
         setWorkflowHandoff(accepted)
       }
       clearRememberedWorkflow()
-      router.push(`/hospitals/${hospitalId}/onboarding`)
+      openCanonicalOnboarding(hospitalId)
     } catch (e: unknown) {
       if ((e instanceof ApiError || isExpectedOperatorRequestFailure(e)) && recoveryHandoff?.id && recoveryHospitalId) {
         try {
@@ -280,7 +323,7 @@ export default function NewHospitalPage() {
           rememberWorkflow(recoveryHospitalId, latest.id)
           if (latest.state === 'HANDOFF_ACCEPTED') {
             clearRememberedWorkflow()
-            router.push(`/hospitals/${recoveryHospitalId}/onboarding`)
+            openCanonicalOnboarding(recoveryHospitalId)
             return
           }
         } catch (reloadError: unknown) {
@@ -317,6 +360,27 @@ export default function NewHospitalPage() {
             required
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
+          {duplicateCheck === 'checking' && (
+            <p className="mt-2 text-xs text-slate-500">기존 병원과 중복되는지 확인하는 중입니다.</p>
+          )}
+          {duplicateCheck === 'error' && (
+            <p className="mt-2 text-xs font-medium text-red-700">중복 확인을 완료하지 못했습니다. 잠시 후 다시 입력해 주세요.</p>
+          )}
+          {duplicateCandidates.length > 0 && (
+            <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="font-semibold">같은 이름의 병원이 이미 등록되어 있습니다.</p>
+              <p className="mt-1 text-xs">중복 생성하지 말고 아래 기존 병원을 확인해 주세요.</p>
+              <ul className="mt-2 space-y-1">
+                {duplicateCandidates.map((candidate) => (
+                  <li key={candidate.id}>
+                    <Link className="font-semibold underline" href={candidate.onboarding_url}>
+                      {candidate.name} · {candidate.status}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -404,7 +468,7 @@ export default function NewHospitalPage() {
 
         <button
           type="submit"
-          disabled={loading || leadLoading || workflowRestoring || !creationRequestId || !name.trim() || !salesOwnerId || !aeOwnerId || !contractReference.trim() || !currentAccount}
+          disabled={loading || leadLoading || workflowRestoring || !creationRequestId || !name.trim() || !salesOwnerId || !aeOwnerId || !contractReference.trim() || !currentAccount || duplicateCheck !== 'clear'}
           className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {workflowRestoring ? '저장된 진행 상태 확인 중...' : leadLoading ? '리드 정보 확인 중...' : loading ? '인수 승인 중...' : '등록하고 고객 인수 승인'}

@@ -53,7 +53,9 @@ from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
     compute_sources_snapshot_hash,
+    effective_safety_policy,
     find_error_marker_fields,
+    mandatory_safety_findings,
     metered_llm_calls,
     process_source_asset,
     screen_content_against_philosophy,
@@ -979,6 +981,7 @@ async def approve_philosophy(
 
     notes = await _get_notes_for_philosophy(db, philosophy)
     grounding_errors = validate_philosophy_grounding(philosophy, notes, require_text_support=True)
+    grounding_errors.extend(mandatory_safety_findings(philosophy))
     if grounding_errors:
         raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
 
@@ -1341,6 +1344,7 @@ def _serialize_note(note: HospitalSourceEvidenceNote) -> dict:
 
 
 def _serialize_philosophy(philosophy: HospitalContentPhilosophy) -> dict:
+    safety_policy = effective_safety_policy(philosophy)
     return {
         "id": str(philosophy.id),
         "hospital_id": str(philosophy.hospital_id),
@@ -1353,10 +1357,12 @@ def _serialize_philosophy(philosophy: HospitalContentPhilosophy) -> dict:
         "content_principles": philosophy.content_principles or [],
         "tone_guidelines": philosophy.tone_guidelines or [],
         "must_use_messages": philosophy.must_use_messages or [],
-        "avoid_messages": philosophy.avoid_messages or [],
+        # 과거 승인본의 저장값이 비어 있어도 공개/운영 화면에는 현재 적용되는
+        # 전역 의료광고 안전 정책을 보여 준다. 원본 행을 묵시적으로 수정하지 않는다.
+        "avoid_messages": safety_policy["avoid_messages"],
         "treatment_narratives": philosophy.treatment_narratives or [],
         "local_context": philosophy.local_context or {},
-        "medical_ad_risk_rules": philosophy.medical_ad_risk_rules or [],
+        "medical_ad_risk_rules": safety_policy["medical_ad_risk_rules"],
         "evidence_map": philosophy.evidence_map or {},
         "source_asset_ids": philosophy.source_asset_ids or [],
         "unsupported_gaps": philosophy.unsupported_gaps or [],
