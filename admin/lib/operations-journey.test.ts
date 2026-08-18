@@ -114,7 +114,7 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.match(currentAction, /원인과 처리 방법 보기/)
   assert.doesNotMatch(hospitalLayout, /label: hospital\.status/)
   assert.match(hospitalLayout, /상태 확인 필요/)
-  assert.match(hospitalLayout, /label: '온보딩', path: 'onboarding', hint: '병원 자료 입력과 운영 기준 승인'/)
+  assert.match(hospitalLayout, /label: '온보딩', path: 'onboarding', hint: '병원 자료 입력과 운영 기준 자동 준비'/)
   assert.match(shell, /break-keep text-pretty \[overflow-wrap:anywhere\]/)
   assert.match(leads, /font-semibold whitespace-nowrap text-slate-900/)
   assert.match(leads, /min-h-11 items-center justify-center whitespace-nowrap[\s\S]{0,500}온보딩 허브/)

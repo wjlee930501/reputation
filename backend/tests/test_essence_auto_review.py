@@ -141,6 +141,17 @@ def test_low_confidence_reviewer_can_never_auto_approve() -> None:
     assert review.approves is False
 
 
+def test_initial_review_payload_has_no_previous_approved_baseline() -> None:
+    payload = essence_auto_review._review_payload(
+        SimpleNamespace(id=uuid.uuid4(), name="신규 병원"),
+        None,
+        _empty_candidate(uuid.uuid4()),
+        [],
+    )
+
+    assert payload["previous_approved"] is None
+
+
 def test_second_ai_adjudicator_can_clear_primary_false_positive(monkeypatch) -> None:
     note_id = uuid.uuid4()
     responses = iter(

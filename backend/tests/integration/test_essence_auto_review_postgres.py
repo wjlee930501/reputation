@@ -1,4 +1,4 @@
-"""Real-Postgres proof for atomic AI refresh of an approved Essence snapshot."""
+"""Real-Postgres proofs for atomic initial approval and Essence refresh."""
 
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -121,6 +121,52 @@ def _approved_review(note: HospitalSourceEvidenceNote) -> EssenceAiReview:
         summary="전체 근거 확인",
         model="reviewer-test",
     )
+
+
+def test_initial_snapshot_is_auto_approved_and_idempotent(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="initial-approval")
+    pg_session.delete(previous)
+    pg_session.flush()
+    synthesis_calls = 0
+
+    def synthesize(*_args, **_kwargs):
+        nonlocal synthesis_calls
+        synthesis_calls += 1
+        return _candidate_payload(source, note)
+
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+    first = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=synthesize,
+        reviewer=lambda *_args, **_kwargs: _approved_review(note),
+    )
+
+    assert first.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert first.previous_philosophy_id is None
+    assert synthesis_calls == 1
+    approved = list(
+        pg_session.scalars(
+            select(HospitalContentPhilosophy).where(
+                HospitalContentPhilosophy.hospital_id == hospital.id,
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            )
+        )
+    )
+    assert len(approved) == 1
+    assert approved[0].version == 1
+    assert approved[0].reviewed_by == AUTO_ESSENCE_ACTOR
+
+    second = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("up-to-date initial approval must not synthesize again")
+        ),
+        reviewer=lambda *_args, **_kwargs: _approved_review(note),
+    )
+    assert second.status == EssenceRefreshStatus.UP_TO_DATE
+    assert synthesis_calls == 1
 
 
 def test_clean_snapshot_atomically_archives_previous_and_is_idempotent(pg_session) -> None:

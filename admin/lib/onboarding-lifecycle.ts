@@ -167,8 +167,8 @@ export function deriveOnboardingSteps(
     {
       key: 'philosophy_approved',
       phase: 'onboarding',
-      title: '콘텐츠 운영 기준 승인',
-      description: '현재 근거 자료에 맞는 원장 톤, 의료 지식과 가치 기준을 검토·승인합니다.',
+      title: '콘텐츠 운영 기준 자동 준비',
+      description: 'AI 이중 검수와 안전 규칙으로 현재 근거 자료에 맞는 운영 기준을 자동 준비합니다.',
       href: `/hospitals/${hospitalId}/essence`,
       done: approvedCurrent && readinessCheck(readiness, 'essence_freshness') !== false,
     },

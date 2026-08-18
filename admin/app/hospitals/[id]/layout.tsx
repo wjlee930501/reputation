@@ -14,7 +14,7 @@ import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '대시보드', path: 'dashboard', hint: 'AI 언급률과 운영 준비 상태 한눈에 보기' },
-  { label: '온보딩', path: 'onboarding', hint: '병원 자료 입력과 운영 기준 승인' },
+  { label: '온보딩', path: 'onboarding', hint: '병원 자료 입력과 운영 기준 자동 준비' },
   { label: '병원 기본 정보', path: 'profile', hint: '병원과 원장 기본 정보' },
   { label: '콘텐츠', path: 'content', hint: '자동 발행·공개 내용 확인' },
   { label: '스케줄', path: 'schedule', hint: '발행 캘린더' },
@@ -23,7 +23,7 @@ const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
 
 const CONFIG_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: 'Wiki', path: 'wiki', hint: '검증된 근거 노트 + 사진 공개 토글' },
-  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준(진료 철학·말투·금기 표현) 승인' },
+  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준 자동 준비·예외 확인' },
   { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini 같은 AI 답변 서비스에 노출시킬 환자 질문 정의' },
   { label: '노출 보완', path: 'exposure-actions', hint: 'AI에 더 잘 노출되도록 보완할 작업과 콘텐츠 가이드 연결' },
 ]
@@ -143,6 +143,7 @@ export default function HospitalLayout({
                   <div className="mt-3 grid gap-2 text-xs text-slate-600">
                     <ProgressDot label="필수 병원 정보 완료" done={hospital.profile_complete} />
                     <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
+                    <ProgressDot label="콘텐츠 허브 준비 완료" done={hospital.site_built} />
                     <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
                     <ProgressDot label="병원 정보 허브 운영 중" done={hospital.site_live} />
                   </div>
@@ -226,6 +227,7 @@ export default function HospitalLayout({
             <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 lg:shrink-0">
               <ProgressDot label="필수 병원 정보 완료" done={hospital.profile_complete} />
               <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
+              <ProgressDot label="콘텐츠 허브 준비 완료" done={hospital.site_built} />
               <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
               <ProgressDot label="병원 정보 허브 운영 중" done={hospital.site_live} />
             </div>

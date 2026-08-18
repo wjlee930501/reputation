@@ -41,7 +41,6 @@ from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
-    PhilosophyStatus,
     SourceStatus,
 )
 from app.models.hospital import Hospital, HospitalStatus
@@ -774,7 +773,7 @@ def _cost_guarded_essence_review(
     time_limit=840,
 )
 def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
-    """Build and independently review a changed post-onboarding Essence snapshot."""
+    """Build and independently review an initial or changed Essence snapshot."""
 
     require_dispatch(self, "auto-review-essence-snapshot", hospital_id)
     hospital_uuid = uuid.UUID(hospital_id)
@@ -806,7 +805,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
                 hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}/content",
+                admin_path=f"/hospitals/{hospital_id}/essence",
                 fingerprint=IncidentFingerprint.COST_BLOCKED,
                 actor=AUTO_ESSENCE_ACTOR,
             )
@@ -828,7 +827,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
                 hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}/content",
+                admin_path=f"/hospitals/{hospital_id}/essence",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
             )
@@ -874,7 +873,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
                 hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}/content",
+                admin_path=f"/hospitals/{hospital_id}/essence",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
             )
@@ -932,23 +931,16 @@ def _essence_reconcile_offset(
     bind=True,
 )
 def reconcile_essence_snapshots(self) -> dict[str, int]:
-    """Recover lost immediate dispatches by revisiting approved hospitals."""
+    """Recover lost immediate dispatches for initial and changed snapshots."""
 
     require_dispatch(self, "reconcile-essence-snapshots")
     with SyncSessionLocal() as db:
-        approved_filter = HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED
-        total = int(
-            db.scalar(
-                select(func.count()).select_from(HospitalContentPhilosophy).where(approved_filter)
-            )
-            or 0
-        )
+        total = int(db.scalar(select(func.count()).select_from(Hospital)) or 0)
         offset = _essence_reconcile_offset(total, datetime.now(timezone.utc))
         candidate_ids = list(
             db.execute(
-                select(HospitalContentPhilosophy.hospital_id)
-                .where(approved_filter)
-                .order_by(HospitalContentPhilosophy.hospital_id)
+                select(Hospital.id)
+                .order_by(Hospital.id)
                 .offset(offset)
                 .limit(200)
             )

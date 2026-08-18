@@ -696,9 +696,9 @@ export default function EssencePage() {
       <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <StepLabel index={3} label="콘텐츠 운영 기준 검토 및 승인" />
+            <StepLabel index={3} label="콘텐츠 운영 기준 자동 준비 및 예외 검토" />
             <p className="text-xs text-slate-500 mt-1.5">
-              초안 상태만 편집할 수 있습니다. 승인하려면 각 메시지가 어떤 자료에서 나왔는지 확인되어야 합니다.
+              AI 이중 검수와 안전 규칙을 통과한 기준은 자동 승인됩니다. 보류된 초안만 근거를 확인해 주세요.
             </p>
           </div>
           {philosophies.length > 0 && (

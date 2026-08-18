@@ -1092,9 +1092,9 @@ function PhilosophyStepBody({
     }
     return (
       <p className="text-sm text-slate-700">
-        처리된 자료 {processedCount}개로 운영 기준 초안을 생성할 수 있습니다.{' '}
+        처리된 자료 {processedCount}개로 운영 기준을 자동 준비하고 있습니다.{' '}
         <Link href={`/hospitals/${hospitalId}/essence`} className="text-blue-600 underline">
-          essence 화면에서 초안 생성 →
+          운영 기준 진행 상태 보기 →
         </Link>
       </p>
     )
@@ -1119,12 +1119,12 @@ function PhilosophyStepBody({
   if (draft) {
     return (
       <p className="text-sm text-slate-700">
-        v{draft.version} 초안이 검토 대기 중입니다.{' '}
+        AI 안전검수가 v{draft.version} 초안을 보류했습니다.{' '}
         <Link href={`/hospitals/${hospitalId}/essence`} className="text-blue-600 underline">
-          essence 화면에서 근거 검토 후 승인 →
+          예외 근거만 확인 →
         </Link>
       </p>
     )
   }
-  return <p className="text-sm text-slate-500">초안을 먼저 생성해 주세요.</p>
+  return <p className="text-sm text-slate-500">자료 처리가 끝나면 운영 기준이 자동으로 준비됩니다.</p>
 }
