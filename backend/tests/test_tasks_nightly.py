@@ -668,7 +668,7 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
         }
 
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(
         tasks,
         "screen_content_against_philosophy",
@@ -722,7 +722,7 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
     async def forbidden_call(*_args, **_kwargs):
         raise AssertionError("승인 전에는 공급자/비용 가드를 호출하면 안 된다")
 
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", forbidden_call)
     monkeypatch.setattr(tasks, "generate_content", forbidden_call)
 
@@ -733,6 +733,60 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
     assert item.content_philosophy_id is None
     assert item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
     assert item.essence_check_summary["blocking"] is True
+
+
+def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch):
+    """마지막 승인 철학이 있으면 current PENDING이어도 생성하고, 온보딩만 MISSING으로 건너뛴다."""
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="승인의원", slug="approved-clinic")
+    approved = SimpleNamespace(id=uuid.uuid4(), status=PhilosophyStatus.APPROVED)
+
+    class ExistingTitles:
+        def all(self):
+            return []
+
+    class DB:
+        def execute(self, _statement):
+            return ExistingTitles()
+
+        def commit(self):
+            return None
+
+    async def blocked_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=False, reason="budget")
+
+    async def forbidden_call(*_args, **_kwargs):
+        raise AssertionError("온보딩(None)에서는 공급자/비용 가드를 호출하면 안 된다")
+
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: approved)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", blocked_cost)
+    monkeypatch.setattr(tasks, "generate_content", forbidden_call)
+
+    pending_item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        content_philosophy_id=None,
+        essence_status=None,
+        essence_check_summary=None,
+    )
+    outcome, code, _message = tasks._generate_single_content_item(DB(), pending_item, hospital)
+    assert outcome == tasks.GenerationItemState.SKIPPED
+    assert code == "COST_BLOCKED"
+    assert pending_item.essence_status != tasks.ESSENCE_STATUS_MISSING_APPROVED
+
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", forbidden_call)
+    onboarding_item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        content_philosophy_id=uuid.uuid4(),
+        essence_status=None,
+        essence_check_summary=None,
+    )
+    outcome, code, _message = tasks._generate_single_content_item(DB(), onboarding_item, hospital)
+    assert outcome == tasks.GenerationItemState.SKIPPED
+    assert code == "MISSING_APPROVED_ESSENCE"
+    assert onboarding_item.content_philosophy_id is None
+    assert onboarding_item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
 
 
 def test_content_item_schedule_slots_have_db_uniqueness():
@@ -907,7 +961,7 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
         tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(2026, 6, 25, tzinfo="Asia/Seoul")
     )
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(tasks, "open_monthly_slot_failure", lambda **_kwargs: None)
     async def fake_recover(**_kwargs):
         return False
@@ -1092,7 +1146,7 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     )
     audits = []
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: assessment)
     monkeypatch.setattr(
         tasks, "write_audit_log_sync", lambda *_args, **kwargs: audits.append(kwargs)
@@ -1260,7 +1314,7 @@ def test_auto_publish_blocks_content_with_forbidden_expression(monkeypatch):
     effects = _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
-        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+        tasks, "get_approved_philosophy_sync", lambda *_args: _approved_philosophy()
     )
 
     payload = tasks._auto_publish_one(item.id)
@@ -1292,7 +1346,7 @@ def test_auto_publish_blocks_markdown_hidden_forbidden_expression(monkeypatch):
     effects = _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
-        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+        tasks, "get_approved_philosophy_sync", lambda *_args: _approved_philosophy()
     )
 
     payload = tasks._auto_publish_one(item.id)
@@ -1315,7 +1369,7 @@ def test_auto_publish_blocks_when_no_approved_philosophy(monkeypatch):
     db = _AutoPublishDB(item, hospital)
     effects = _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
 
     payload = tasks._auto_publish_one(item.id)
 
@@ -1343,7 +1397,7 @@ def test_auto_publish_records_content_block_before_revalidation_dependency(monke
         raise AssertionError("blocked content needs no revalidation")
 
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(
         tasks,
         "ensure_site_revalidate_configured",
@@ -1369,7 +1423,7 @@ def test_auto_publish_is_idempotent(monkeypatch):
     effects = _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
-        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+        tasks, "get_approved_philosophy_sync", lambda *_args: _approved_philosophy()
     )
 
     first = tasks._auto_publish_one(item.id)
@@ -1398,7 +1452,7 @@ def test_auto_publish_accepts_ready_status(monkeypatch):
     db = _AutoPublishDB(item, hospital)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
-        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+        tasks, "get_approved_philosophy_sync", lambda *_args: _approved_philosophy()
     )
 
     payload = tasks._auto_publish_one(item.id)
@@ -1477,7 +1531,7 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
 
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
     monkeypatch.setattr(tasks, "generate_image", _boom_image)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: philosophy)
     # 이 테스트의 대상은 write-back 가드다 — 브리프 플래너는 범위 밖이라 고정한다.
     monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", lambda *a, **k: None)
     monkeypatch.setattr(
