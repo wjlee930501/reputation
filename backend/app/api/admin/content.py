@@ -28,7 +28,6 @@ from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
-from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
@@ -63,6 +62,7 @@ from app.services.exposure_content_linker import (
     unlink_content_from_exposure_action,
 )
 from app.services.gcs_utils import get_signed_url
+from app.services.ops_incident_alerts import open_ops_incident
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
@@ -336,14 +336,20 @@ async def set_schedule(
             "immediate content generation enqueue failed for hospital %s: %s", hospital_id, exc
         )
         try:
-            await notifier.notify_ops_alert(
-                title="콘텐츠 즉시 생성 큐잉 실패",
-                message=(
-                    f"병원: {hospital.name}\n"
-                    f"스케줄 저장은 완료됐지만 오늘/내일 슬롯의 즉시 생성 태스크 큐잉에 실패했습니다.\n"
-                    f"오류: `{str(exc)[:200]}`\n"
-                    f"해당 슬롯은 오늘 밤 자동 생성에서 재시도됩니다. 급한 경우 Admin에서 수동 재생성해 주세요."
-                ),
+            await open_ops_incident(
+                pipeline="content_schedule",
+                object_type="hospital",
+                object_id=str(hospital.id),
+                incident_type="CONTENT_DISPATCH_FAILED",
+                safe_error_code="CONTENT_DISPATCH_FAILED",
+                problem="오늘 또는 내일 콘텐츠의 즉시 생성 작업을 시작하지 못했습니다.",
+                customer_impact="스케줄은 저장됐지만 가까운 발행 일정의 콘텐츠 준비가 늦어질 수 있습니다.",
+                next_action="야간 자동 생성 결과를 확인하고, 급한 항목만 운영센터에서 다시 시도하세요.",
+                source_type="CONTENT_SCHEDULE",
+                hospital_name=hospital.name,
+                hospital_id=hospital.id,
+                admin_path=f"/hospitals/{hospital.id}/schedule",
+                actor="admin-content-api",
             )
         except Exception:
             logger.exception("enqueue-failure ops alert delivery failed (non-fatal)")

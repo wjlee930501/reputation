@@ -149,6 +149,14 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
     assert "개발팀에 전달할 정보" in summary_a.message.payload_json()
     assert open_intent.notification_type == "INCIDENT_OPEN"
     assert recovered.notification_type == "INCIDENT_RECOVERED"
+    assert open_intent.dedupe_key.endswith(":e1")
+    assert recovered.dedupe_key.endswith(":e1")
+    assert build_open_incident_notification(
+        replace(first, version=99), "https://admin.example.test"
+    ).dedupe_key == open_intent.dedupe_key
+    assert build_open_incident_notification(
+        replace(first, episode_seq=2), "https://admin.example.test"
+    ).dedupe_key.endswith(":e2")
     assert "처리 기한: 오늘 18:00" in open_intent.message.payload_json()
     assert "SLA:" not in open_intent.message.payload_json()
     assert "운영센터에서 조치하기" in open_intent.message.payload_json()

@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import TypedDict
 
 from app.services import notifier
@@ -48,34 +49,22 @@ def _button_url(payload: _CapturedPayload) -> str:
     return url
 
 
-async def test_ops_alert_hides_untrusted_details_and_links_one_incident_action(monkeypatch):
-    # Given
-    monkeypatch.setattr(notifier.settings, "ADMIN_BASE_URL", "https://admin.example.test")
-    payload = _capture_send(monkeypatch)
-    unsafe = "queue cache claim spec kill-switch /tmp/patient.pdf doctor@example.com 010-1234-5678"
+def test_legacy_ops_alert_contract_is_removed_from_the_repository():
+    root = Path(__file__).resolve().parents[2]
+    forbidden_symbol = "notify_" + "ops_alert"
+    forbidden_reference = "LEGACY" + "-OPS-ALERT"
 
-    # When
-    sent = await notifier.notify_ops_alert(title=unsafe, message=f"RuntimeError: {unsafe}")
-
-    # Then
-    assert sent is True
-    body = _section_text(payload)
-    assert all(label in body for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:"))
-    assert "개발팀 전달용 참조:" in body
-    assert _button_url(payload) == "https://admin.example.test/operations?queue=INCIDENTS"
-    rendered = f"{payload['text']} {body}"
-    for forbidden in (
-        "queue",
-        "cache",
-        "claim",
-        "spec",
-        "kill-switch",
-        "/tmp/patient.pdf",
-        "doctor@example.com",
-        "010-1234-5678",
-        "RuntimeError",
-    ):
-        assert forbidden.lower() not in rendered.lower()
+    assert not hasattr(notifier, forbidden_symbol)
+    remnants = []
+    for path in root.rglob("*"):
+        if path.is_file() and ".git" not in path.parts and "__pycache__" not in path.parts:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if forbidden_reference in text:
+                remnants.append(str(path.relative_to(root)))
+    assert remnants == []
 
 
 async def test_v0_ready_uses_plain_measurement_copy_and_one_report_action(monkeypatch):

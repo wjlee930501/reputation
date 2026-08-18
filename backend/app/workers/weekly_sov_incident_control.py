@@ -91,6 +91,7 @@ async def open_weekly_sov_failure(
                         incident.operation_run_id,
                         incident.version,
                         incident.safe_error_message or "주간 AI 검색 노출 측정에 실패했습니다.",
+                        incident.episode_seq,
                     ),
                     settings.ADMIN_BASE_URL,
                 ),

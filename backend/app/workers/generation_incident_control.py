@@ -20,6 +20,15 @@ from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
 
+_EXPECTED_PENDING_CODES = {
+    "MISSING_APPROVED_ESSENCE",
+    "COST_BLOCKED",
+    "GENERATION_LEASE_ACTIVE",
+    "STALE_GENERATION_CLAIM",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_UNAVAILABLE",
+}
+
 
 def _generation_operator_copy(code: str) -> tuple[str, str]:
     impact = "발행 예정 콘텐츠가 저장되지 않아 병원 채널에 제때 공개되지 않습니다."
@@ -139,11 +148,19 @@ def _incident_identity(
 
 
 def _should_send_generation_notification(
-    *, notify_requested: bool, previous_state: str | None
+    *,
+    notify_requested: bool,
+    previous_state: str | None,
+    code: str | None = None,
+    has_open_cause: bool = False,
 ) -> bool:
     """Page once per incident episode, never once per observation or expected gate item."""
 
     if not notify_requested:
+        return False
+    if code in _EXPECTED_PENDING_CODES:
+        return False
+    if code == "CONTENT_NOT_GENERATED" and has_open_cause:
         return False
     return previous_state is None or previous_state in {
         IncidentState.RECOVERED.value,
@@ -167,6 +184,7 @@ def _projection(
         run_id,
         incident.version,
         incident.safe_error_message or _generation_safe_cause(incident.safe_error_code or ""),
+        incident.episode_seq,
     )
 
 
@@ -188,6 +206,21 @@ async def open_generation_incident(
         )
         previous = await db.scalar(select(Incident).where(Incident.dedupe_key == dedupe_key))
         previous_state = previous.state if previous is not None else None
+        has_open_cause = False
+        if code == "CONTENT_NOT_GENERATED":
+            has_open_cause = (
+                await db.scalar(
+                    select(Incident.id).where(
+                        Incident.hospital_id == hospital_id,
+                        Incident.state.in_((
+                            IncidentState.OPEN.value,
+                            IncidentState.RETRYING.value,
+                        )),
+                        Incident.safe_error_code != "CONTENT_NOT_GENERATED",
+                        Incident.source_id.in_((str(item_id), str(hospital_id))),
+                    )
+                )
+            ) is not None
 
         # The old implementation opened one incident per content item for this
         # hospital-level gate.  During the first rollout of the hospital-scoped
@@ -241,6 +274,8 @@ async def open_generation_incident(
         if _should_send_generation_notification(
             notify_requested=notify,
             previous_state=previous_state,
+            code=code,
+            has_open_cause=has_open_cause,
         ):
             await enqueue_notification(
                 db,

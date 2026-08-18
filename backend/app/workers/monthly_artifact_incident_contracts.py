@@ -46,4 +46,5 @@ def incident_projection(
         operation_run_id=context.operation_run_id,
         version=incident.version,
         problem=problem,
+        episode_seq=incident.episode_seq,
     )

@@ -92,6 +92,7 @@ async def open_monthly_slot_failure(
                         incident.operation_run_id,
                         incident.version,
                         incident.safe_error_message or "월간 슬롯 생성에 실패했습니다.",
+                        incident.episode_seq,
                     ),
                     settings.ADMIN_BASE_URL,
                 ),

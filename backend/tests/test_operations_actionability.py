@@ -263,6 +263,59 @@ async def test_generation_gate_does_not_touch_unchanged_open_incident(monkeypatc
     assert result == incident_id
 
 
+async def test_open_cause_suppresses_content_not_generated_symptom(monkeypatch) -> None:
+    scalar_results = iter((None, uuid.uuid4()))
+    captured = {"notifications": 0}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def scalar(self, _statement):
+            return next(scalar_results)
+
+        async def commit(self):
+            return None
+
+    async def fake_open(_db, request, **_kwargs):
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            severity="HIGH",
+            customer_impact=request.customer_impact,
+            next_action=request.next_action,
+            admin_path=request.admin_path,
+            hospital_id=request.hospital_id,
+            version=1,
+            episode_seq=1,
+            safe_error_code=request.safe_error_code,
+            safe_error_message=request.safe_error_message,
+        )
+
+    async def capture_notification(_db, _intent):
+        captured["notifications"] += 1
+
+    monkeypatch.setattr(
+        generation_incident_control, "get_async_sessionmaker", lambda: lambda: FakeSession()
+    )
+    monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", fake_open)
+    monkeypatch.setattr(generation_incident_control, "enqueue_notification", capture_notification)
+
+    await generation_incident_control.open_generation_incident(
+        item_id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        hospital_name="테스트의원",
+        run_id=uuid.uuid4(),
+        code="CONTENT_NOT_GENERATED",
+        message="발행 시각까지 제목·본문 미준비",
+        notify=True,
+    )
+
+    assert captured["notifications"] == 0
+
+
 def test_generation_projection_uses_the_specific_safe_cause() -> None:
     incident = SimpleNamespace(
         id=uuid.uuid4(),
@@ -274,6 +327,7 @@ def test_generation_projection_uses_the_specific_safe_cause() -> None:
         version=1,
         safe_error_code="MISSING_APPROVED_ESSENCE",
         safe_error_message="승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다.",
+        episode_seq=1,
     )
 
     projection = generation_incident_control._projection(
@@ -321,6 +375,39 @@ def test_generation_incident_pages_once_until_it_recovers() -> None:
     assert not should_send(notify_requested=True, previous_state="OPEN")
     assert not should_send(notify_requested=False, previous_state=None)
     assert should_send(notify_requested=True, previous_state="RECOVERED")
+
+
+def test_expected_generation_pending_never_pages_but_actual_failure_does() -> None:
+    should_send = generation_incident_control._should_send_generation_notification
+
+    for code in (
+        "MISSING_APPROVED_ESSENCE",
+        "COST_BLOCKED",
+        "GENERATION_LEASE_ACTIVE",
+        "STALE_GENERATION_CLAIM",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+    ):
+        assert not should_send(notify_requested=True, previous_state=None, code=code)
+    for code in (
+        "GENERATION_REJECTED",
+        "FORBIDDEN_EXPRESSION",
+        "ESSENCE_NOT_ALIGNED",
+        "IMAGE_GENERATION_FAILED",
+    ):
+        assert should_send(notify_requested=True, previous_state=None, code=code)
+    assert not should_send(
+        notify_requested=True,
+        previous_state=None,
+        code="CONTENT_NOT_GENERATED",
+        has_open_cause=True,
+    )
+    assert should_send(
+        notify_requested=True,
+        previous_state=None,
+        code="CONTENT_NOT_GENERATED",
+        has_open_cause=False,
+    )
 
 
 def test_generation_notification_has_one_developer_fallback() -> None:

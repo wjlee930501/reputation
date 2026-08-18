@@ -30,6 +30,7 @@ def incident_projection(
         incident.hospital_id,
         run_id,
         incident.version,
+        episode_seq=incident.episode_seq,
     )
 
 

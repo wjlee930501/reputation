@@ -189,7 +189,7 @@ def _recovery_intent(context: NaverIncidentContext, incident: Incident) -> Notif
         admin_url=admin_url,
     )
     return NotificationIntent(
-        dedupe_key=f"NAVER_SOURCE_RECOVERED:{incident.id}:v{incident.version}",
+        dedupe_key=f"NAVER_SOURCE_RECOVERED:{incident.id}:e{incident.episode_seq}",
         notification_type="NAVER_SOURCE_RECOVERED",
         message=message,
         hospital_id=context.hospital_id,

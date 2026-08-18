@@ -67,6 +67,8 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
     admin_ids = []
     try:
         assert task_incident_control.record_task_failure(celery_task, run.task_id) is True
+        assert task_incident_control.record_task_failure(celery_task, run.task_id) is True
+        assert task_incident_control.record_task_failure(celery_task, run.task_id) is True
         with sync_factory() as db:
             incident = db.scalar(
                 select(Incident).where(Incident.operation_run_id == run.id)
@@ -74,11 +76,14 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
             assert incident is not None
             incident_ids.append(incident.id)
             assert incident.state == "OPEN"
+            assert incident.occurrence_count == 3
+            assert incident.episode_seq == 1
             assert "작업 다시 시도" in incident.next_action
             open_notice = db.scalar(
                 select(NotificationOutbox).where(NotificationOutbox.incident_id == incident.id)
             )
             assert open_notice is not None
+            assert open_notice.dedupe_key.endswith(":e1")
             rendered = json.dumps(open_notice.payload, ensure_ascii=False)
             assert all(
                 label in rendered
@@ -137,7 +142,20 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
             reopened = db.get(Incident, incident_ids[0])
             assert reopened is not None
             assert reopened.state == IncidentState.OPEN.value
+            assert reopened.episode_seq == 2
             assert reopened.acknowledged_at is None
+            open_notices = list(
+                db.scalars(
+                    select(NotificationOutbox).where(
+                        NotificationOutbox.incident_id == reopened.id,
+                        NotificationOutbox.notification_type == "INCIDENT_OPEN",
+                    )
+                )
+            )
+            assert sorted(notice.dedupe_key.rsplit(":", 1)[-1] for notice in open_notices) == [
+                "e1",
+                "e2",
+            ]
             stale_version = reopened.version - 1
             stale = task_incident_control._transition_incident(
                 db,

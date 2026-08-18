@@ -24,7 +24,6 @@ from app.services import (
     cost_guard,
     lead_diagnosis_engine,
     lead_query_cache,
-    notifier,
     sov_engine,
 )
 from app.services.query_mapper import build_lead_diagnosis_queries
@@ -219,7 +218,7 @@ class TestCallBudget:
         async def _capture(**kwargs):
             alerts.append(kwargs)
 
-        monkeypatch.setattr(notifier, "notify_ops_alert", _capture)
+        monkeypatch.setattr(lead_diagnosis_engine, "open_ops_incident", _capture)
 
         diagnosis = await _seed_diagnosis(pg_async_session)
         result = await lead_diagnosis_engine.run_diagnosis_measurements(
@@ -232,7 +231,7 @@ class TestCallBudget:
         assert "예산" in (diagnosis.error or "")
         # 조용히 실패하면 신청자는 리포트를 못 받고 아무도 이유를 모른다.
         assert len(alerts) == 1
-        assert "예산" in alerts[0]["title"]
+        assert alerts[0]["notify"] is False
 
     async def test_blocked_budget_writes_no_measurement_rows(
         self, pg_async_session, spy, monkeypatch
@@ -240,7 +239,7 @@ class TestCallBudget:
         """0건 측정을 행으로 남기면 리포트가 분모 0으로 만들어질 여지가 생긴다."""
         guard = _GuardSpy(allowed=False, reason="상한 도달")
         monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
-        monkeypatch.setattr(notifier, "notify_ops_alert", _noop_alert)
+        monkeypatch.setattr(lead_diagnosis_engine, "open_ops_incident", _noop_alert)
 
         diagnosis = await _seed_diagnosis(pg_async_session)
         await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, diagnosis)

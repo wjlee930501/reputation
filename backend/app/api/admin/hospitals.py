@@ -36,7 +36,6 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
-from app.services import notifier
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -49,6 +48,7 @@ from app.services.hospital_lifecycle import (
     missing_profile_requirement_keys,
 )
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.ops_incident_alerts import open_ops_incident
 from app.services.readiness_operator_copy import readiness_next_actions
 from app.services.service_intervals import (
     ServiceIntervalProvenance,
@@ -82,14 +82,21 @@ async def _trigger_v0_report_safe(hospital_id_str: str, hospital_name: str) -> N
     except Exception as exc:  # noqa: BLE001 — 큐잉 실패는 요청 흐름에 영향 없이 강등
         logger.warning("V0 report enqueue failed for hospital %s: %s", hospital_id_str, exc)
         try:
-            await notifier.notify_ops_alert(
-                title="초기 진단 리포트 자동 시작 확인 필요",
-                message=(
-                    f"병원: {hospital_name}\n"
-                    "영향: 초기 진단 리포트가 생성되지 않아 원장 보고 준비를 시작할 수 없습니다.\n"
-                    "다음 행동: 병원 대시보드에서 “초기 진단 리포트 다시 만들기”를 누르세요. "
-                    "버튼이 없거나 다시 실패하면 개발팀에 병원명과 현재 화면의 문구를 전달하세요."
-                ),
+            hospital_id = uuid.UUID(hospital_id_str)
+            await open_ops_incident(
+                pipeline="v0_report_dispatch",
+                object_type="hospital",
+                object_id=hospital_id_str,
+                incident_type="V0_REPORT_DISPATCH_FAILED",
+                safe_error_code="V0_REPORT_DISPATCH_FAILED",
+                problem="초기 진단 리포트 자동 시작 작업을 큐에 넣지 못했습니다.",
+                customer_impact="초기 진단 리포트 준비가 시작되지 않아 원장 보고 일정이 늦어질 수 있습니다.",
+                next_action="병원 대시보드에서 ‘초기 진단 리포트 다시 만들기’를 한 번 누르세요.",
+                source_type="V0_REPORT",
+                hospital_name=hospital_name,
+                hospital_id=hospital_id,
+                admin_path=f"/hospitals/{hospital_id}",
+                actor="admin-hospital-api",
             )
         except Exception:
             logger.exception("V0 enqueue-failure ops alert delivery failed (non-fatal)")

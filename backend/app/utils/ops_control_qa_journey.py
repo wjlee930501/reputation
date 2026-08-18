@@ -111,6 +111,7 @@ def _ensure_incident_and_outbox(
         operation_run_id=run.id,
         version=incident.version,
         problem="대표 이미지 생성이 완료되지 않았습니다.",
+        episode_seq=incident.episode_seq,
     )
     intent = build_open_incident_notification(projection, _ADMIN_BASE_URL)
     validate_message(intent.message, allowed_admin_base_url=_ADMIN_BASE_URL)

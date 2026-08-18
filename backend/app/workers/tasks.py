@@ -108,6 +108,7 @@ from app.services.onboarding_notifications import (
     build_v0_ready_notification,
     enqueue_onboarding_notification_sync,
 )
+from app.services.ops_incident_alerts import open_ops_incident
 from app.services.post_publish_review_policy import (
     AUTO_PUBLISHABLE_STATUSES,
     auto_publish_due_predicate,
@@ -740,14 +741,14 @@ def trigger_v0_report(self, hospital_id: str):
                     hospital.status = HospitalStatus(prior_status)
                     db.commit()
                 _run_async(
-                    notifier.notify_ops_alert(
-                        title="V0 리포트 비용 가드 차단",
-                        message=(
-                            f"병원: *{hospital.name}*\n"
-                            f"사유: {v0_decision.reason}\n"
-                            f"V0 진단 측정({v0_units} 호출)이 차단돼 리포트가 생성되지 않았습니다. "
-                            f"상한/킬스위치를 조정한 뒤 Admin에서 V0를 재트리거해 주세요."
-                        ),
+                    open_ops_incident(
+                        pipeline="v0_report", object_type="hospital", object_id=str(hospital.id),
+                        incident_type="V0_REPORT_COST_BLOCKED", safe_error_code="COST_BLOCKED",
+                        problem="초기 진단 측정이 비용 안전장치로 시작되지 않았습니다.",
+                        customer_impact="초기 진단 리포트 생성이 시작되지 않았습니다.",
+                        next_action="비용 안전장치 상태를 확인하고 조정 후 초기 진단을 재실행하세요.",
+                        source_type="V0_REPORT", hospital_name=hospital.name,
+                        hospital_id=hospital.id, actor="v0-report-worker", notify=False,
                     )
                 )
                 return
@@ -846,13 +847,15 @@ def trigger_v0_report(self, hospital_id: str):
                 )
                 try:
                     _run_async(
-                        notifier.notify_ops_alert(
-                            title="콘텐츠 허브 준비 태스크 큐잉 실패",
-                            message=(
-                                f"병원: *{hospital.name}* (`{hospital_id}`)\n"
-                                f"V0 리포트는 정상 생성됐으나 콘텐츠 허브 준비(build_aeo_site) 큐잉에 "
-                            f"실패했습니다. 자동 복구 작업이 다시 큐잉합니다."
-                            ),
+                        open_ops_incident(
+                            pipeline="site_build_dispatch", object_type="hospital",
+                            object_id=hospital_id, incident_type="SITE_BUILD_DISPATCH_FAILED",
+                            safe_error_code="SITE_BUILD_DISPATCH_FAILED",
+                            problem="초기 진단 완료 후 콘텐츠 허브 준비 작업을 큐에 넣지 못했습니다.",
+                            customer_impact="콘텐츠 허브 공개 준비가 늦어질 수 있습니다.",
+                            next_action="자동 복구 결과를 확인하고 계속 실패하면 운영센터에서 사이트 준비를 재시도하세요.",
+                            source_type="SITE_BUILD", hospital_name=hospital.name,
+                            hospital_id=hospital.id, actor="v0-report-worker",
                         )
                     )
                 except Exception:
@@ -867,15 +870,15 @@ def trigger_v0_report(self, hospital_id: str):
             # 재시도 소진 — 병원이 ANALYZING에 갇히지 않게 복원했음을 운영자에게 알린다.
             try:
                 _run_async(
-                    notifier.notify_ops_alert(
-                        title="V0 리포트 생성 최종 실패",
-                        message=(
-                            f"병원 ID: `{hospital_id}`\n"
-                            f"재시도 {self.max_retries}회 모두 실패했습니다. "
-                            f"병원 상태는 이전 상태({prior_status or '유지'})로 복원했습니다.\n"
-                            f"오류: `{str(exc)[:200]}`\n"
-                            f"원인 확인 후 Admin에서 V0 리포트를 수동 재실행해 주세요."
-                        ),
+                    open_ops_incident(
+                        pipeline="v0_report", object_type="hospital", object_id=hospital_id,
+                        incident_type="V0_REPORT_FAILED",
+                        safe_error_code="V0_REPORT_RETRIES_EXHAUSTED",
+                        problem="초기 진단 리포트 생성 재시도가 모두 실패했습니다.",
+                        customer_impact="초기 진단 리포트를 준비할 수 없습니다.",
+                        next_action="운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
+                        source_type="V0_REPORT", hospital_name="병원 초기 진단",
+                        hospital_id=uuid.UUID(hospital_id), actor="v0-report-worker",
                     )
                 )
             except Exception:
@@ -2121,14 +2124,15 @@ def run_sov_for_hospital(self, hospital_id: str):
                     SOV_HIGH_PRIORITY_CAP,
                 )
                 _run_async(
-                    notifier.notify_ops_alert(
-                        title="주간 측정 HIGH 우선순위 쿼리 상한 초과",
-                        message=(
-                            f"병원: *{hospital.name}*\n"
-                            f"HIGH 우선순위 측정 spec이 상한({SOV_HIGH_PRIORITY_CAP}건)을 초과해 "
-                            f"{trimmed_high}건이 이번 주 측정에서 제외됐습니다.\n"
-                            f"쿼리 타깃/변형이 과도하게 늘었는지 Admin에서 확인해 주세요."
-                        ),
+                    open_ops_incident(
+                        pipeline="weekly_sov_capacity", object_type="hospital",
+                        object_id=str(hospital.id), incident_type="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
+                        safe_error_code="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
+                        problem="주간 측정의 높은 우선순위 항목 수가 안전 상한을 초과했습니다.",
+                        customer_impact="일부 높은 우선순위 질문이 이번 주 측정에서 제외되었습니다.",
+                        next_action="운영센터에서 쿼리 타깃과 변형 수를 검토하세요.",
+                        source_type="WEEKLY_SOV_MEASUREMENT", hospital_name=hospital.name,
+                        hospital_id=hospital.id, actor="weekly-sov-worker",
                     )
                 )
 
