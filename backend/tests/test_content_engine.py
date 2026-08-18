@@ -25,6 +25,7 @@ from app.services.content_engine import (  # noqa: E402
     _sanitize_forbidden,
     _validate_body_length,
     _validate_geo,
+    _validate_unverified_price_claims,
     forbidden_check_text,
 )
 from app.utils.medical_filter import check_forbidden  # noqa: E402
@@ -89,6 +90,27 @@ def test_validate_body_length_rejects_short_body():
 def test_validate_body_length_rejects_runaway_body():
     with pytest.raises(ValueError, match="too long"):
         _validate_body_length("긴 본문입니다. " * 900)
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "본인부담금은 2만 원 안팁입니다.",
+        "비급여로 5만 원에서 10만 원 정도입니다.",
+        "공단이 비용의 90%를 부담합니다.",
+        "일반건강검진은 무료로 받을 수 있습니다.",
+    ],
+)
+def test_validate_unverified_price_claims_rejects_fixed_claims(claim):
+    with pytest.raises(ValueError, match="unverified fixed price"):
+        _validate_unverified_price_claims(claim)
+
+
+def test_validate_unverified_price_claims_allows_variable_cost_guidance():
+    _validate_unverified_price_claims(
+        "비용은 검사 목적과 보험 적용 여부에 따라 달라질 수 있으므로 "
+        "의료기관에 현재 기준을 확인하세요."
+    )
 
 
 def test_forbidden_check_text_includes_faq_fields():

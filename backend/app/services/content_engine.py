@@ -56,6 +56,19 @@ SEO_STAT_PATTERN = re.compile(   # 통계/수치 proxy — 숫자+단위 패턴
     r"(\d+[\.,]?\d*)\s*(%|명|건|개|회|주|일|개월|년|배|kg|cm|mm)",
     re.UNICODE,
 )
+UNVERIFIED_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?:\d[\d,]*(?:\.\d+)?|수)\s*(?:천|만)?\s*원"),
+    re.compile(
+        r"(?:본인\s*부담|건강보험|공단|보험\s*적용|비용).{0,40}"
+        r"\d+(?:\.\d+)?\s*%"
+    ),
+    re.compile(
+        r"\d+(?:\.\d+)?\s*%.{0,40}"
+        r"(?:본인\s*부담|건강보험|공단|보험\s*적용|비용)"
+    ),
+    re.compile(r"(?:무료|무상|본인이\s*내는\s*금액이\s*없)"),
+    re.compile(r"(?:공단|건강보험).{0,30}전액\s*부담"),
+)
 SEASON_MONTHS = {
     "봄": {3, 4, 5},
     "여름": {6, 7, 8},
@@ -97,7 +110,9 @@ SYSTEM_PROMPT = """\
 7. **분량**: 본문은 최소 기준보다 짧아지지 않도록 2200~4200자를 목표로 작성하고, H2 4~6개를 사용하세요.
    1800자 미만은 저장되지 않으며 5200자는 넘기지 마세요.
    이미 다른 글에 있는 일반론을 반복하지 말고, 이 질문에 필요한 감별 포인트·진료 흐름·내원 기준을 충분히 풉니다.
-8. **발행 시점 일치**: 콘텐츠 가이드에 planned_publish_date가 있으면 그 날짜의 계절과 맞지 않는
+8. **비용 정보**: 승인된 병원 자료에 명시되지 않은 구체적 금액, '무료', 건강보험 본인부담률을 추정하지 마세요.
+   비용 질문에는 진료 목적·검사 범위·보험 적용 여부에 따라 달라질 수 있으므로 의료기관에 현재 기준을 확인하라고 설명하세요.
+9. **발행 시점 일치**: 콘텐츠 가이드에 planned_publish_date가 있으면 그 날짜의 계절과 맞지 않는
    봄철·여름철·가을철·겨울철 제목이나 도입을 만들지 마세요. 계절성이 필요 없으면 연중형 제목을 사용하세요.
 
 [의료광고법 준수 — 절대 금지 표현]
@@ -437,6 +452,7 @@ async def generate_content(
     result = _parse_json_response(raw, json_module=json)
 
     _validate_body_length(result.get("body"))
+    _validate_unverified_price_claims(result.get("body"))
 
     # 참고 자료 정규화를 GEO 검증보다 먼저 수행한다. GEO hard-fail은
     # "references가 비어있으면 재시도"인데, raw(정규화 전) 리스트로 검사하면
@@ -601,6 +617,21 @@ def _validate_body_length(value: object) -> None:
             f"Generated content body is too long "
             f"({body_length} > {CONTENT_BODY_MAX_CHARS})"
         )
+
+
+def _validate_unverified_price_claims(value: object) -> None:
+    """Reject precise medical pricing/coverage claims not backed by hospital data."""
+
+    if not isinstance(value, str):
+        return
+    compact = re.sub(r"\s+", " ", value)
+    for pattern in UNVERIFIED_PRICE_PATTERNS:
+        match = pattern.search(compact)
+        if match:
+            raise ValueError(
+                "Generated content contains an unverified fixed price or coverage claim: "
+                f"{match.group(0)[:80]}"
+            )
 
 
 def _validate_seo(
