@@ -386,7 +386,8 @@ def test_legacy_automatic_draft_is_superseded_only_after_fresh_review(pg_session
     # the same transaction. PostgreSQL now() is transaction-stable, so an untouched
     # system artifact keeps equal creation/update timestamps.
     legacy.unsupported_gaps = [
-        {"field": "automatic_ai_review", "reason": "이전 자동 안전검사 차단"}
+        {"field": "automatic_ai_review", "reason": "이전 자동 안전검사 차단"},
+        {"field": "automatic_recovery_cycle", "reason": "1"},
     ]
     pg_session.flush()
 
@@ -469,6 +470,12 @@ def test_persistent_candidate_failure_stops_periodic_retry_loop(pg_session) -> N
     assert first.synthesis_attempts == 2
     assert synth_calls == 2
     assert essence_refresh_needed(pg_session, hospital.id) is False
+    escalated = pg_session.get(HospitalContentPhilosophy, first.philosophy_id)
+    assert any(
+        item.get("field") == "automatic_recovery_cycle" and item.get("reason") == "2"
+        for item in escalated.unsupported_gaps
+        if isinstance(item, dict)
+    )
 
     second = refresh_essence_snapshot(
         pg_session,

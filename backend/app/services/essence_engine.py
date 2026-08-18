@@ -599,7 +599,7 @@ def _extract_treatment_narratives(
                 else "자료 기반 진료 항목",
                 "patient_language": _string_list(entry.get("patient_language")),
                 "cautions": _string_list(entry.get("cautions"))
-                or ["효과, 완치, 성공률을 보장하지 않습니다."],
+                or ["치료 결과를 단정하거나 보장하지 않습니다."],
                 "evidence_note_ids": ids,
             }
         )
@@ -791,7 +791,7 @@ def _synthesize_philosophy_deterministic(
                 "treatment": (note.note_metadata or {}).get("treatment") or "자료 기반 진료 항목",
                 "angle": _short(note.source_excerpt, 140),
                 "explanation_style": "근거 발췌에 포함된 표현만 사용합니다.",
-                "cautions": ["효과, 완치, 성공률을 보장하지 않습니다."],
+                "cautions": ["치료 결과를 단정하거나 보장하지 않습니다."],
                 "evidence_note_ids": [_note_id(note)],
             }
         )

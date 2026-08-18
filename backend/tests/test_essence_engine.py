@@ -19,6 +19,7 @@ from app.services.essence_engine import (
     synthesize_philosophy,
     validate_philosophy_grounding,
 )
+from app.utils.medical_filter import check_forbidden
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +111,29 @@ def test_synthesize_philosophy_requires_evidence_map_for_non_empty_fields():
     assert payload["positioning_statement"]
     assert payload["evidence_map"]["positioning_statement"] == [str(note.id)]
     assert validate_philosophy_grounding(payload, [note]) == []
+
+
+def test_deterministic_treatment_fallback_never_emits_forbidden_policy_text():
+    source = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash=compute_source_content_hash(
+            "진료 안내", None, "치질 수술은 상태를 확인한 뒤 방법을 결정합니다."
+        ),
+        status=SourceStatus.PROCESSED,
+        processed_at=datetime.now(timezone.utc),
+    )
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.TREATMENT_SIGNAL,
+        source_excerpt="치질 수술은 상태를 확인한 뒤 방법을 결정합니다.",
+        note_metadata={"treatment": "치질 수술"},
+    )
+
+    payload = synthesize_philosophy(SimpleNamespace(name="테스트병원"), [source], [note])
+    narrative_text = str(payload["treatment_narratives"])
+
+    assert payload["treatment_narratives"]
+    assert check_forbidden(narrative_text) == []
 
 
 def test_synthesize_philosophy_keeps_medical_risk_rules_source_backed():

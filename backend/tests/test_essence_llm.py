@@ -19,6 +19,7 @@ from app.services.essence_engine import (
     synthesize_philosophy,
     validate_philosophy_grounding,
 )
+from app.utils.medical_filter import check_forbidden
 
 
 class _FakeMessage:
@@ -159,6 +160,35 @@ def test_llm_synthesis_produces_grounded_voice_and_narrative(monkeypatch, llm_ke
     assert "must_use_messages" not in payload["evidence_map"]
     # 합성 결과가 grounding 검증을 통과한다.
     assert validate_philosophy_grounding(payload, notes) == []
+
+
+def test_llm_synthesis_missing_cautions_uses_safe_default(monkeypatch, llm_key):
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.TREATMENT_SIGNAL,
+        source_excerpt="치질 수술은 상담 후 결정합니다.",
+        note_metadata={"treatment": "치질 수술"},
+    )
+    source = SimpleNamespace(id=uuid.uuid4(), processed_at=None, status=None, content_hash="h")
+    llm_payload = json.dumps(
+        {
+            "treatment_narratives": [
+                {
+                    "treatment": "치질 수술",
+                    "patient_language": ["상담 후 결정"],
+                    "evidence_note_ids": [str(note.id)],
+                }
+            ],
+            "synthesis_notes": "근거 기반 합성.",
+        }
+    )
+    _patch_client(monkeypatch, llm_payload)
+
+    payload = synthesize_philosophy(SimpleNamespace(name="테스트병원"), [source], [note])
+    narrative = payload["treatment_narratives"][0]
+
+    assert narrative["cautions"] == ["치료 결과를 단정하거나 보장하지 않습니다."]
+    assert check_forbidden(str(narrative)) == []
 
 
 def test_llm_synthesis_falls_back_when_response_ungrounded(monkeypatch, llm_key):

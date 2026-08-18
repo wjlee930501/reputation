@@ -39,6 +39,7 @@ from app.utils.medical_filter import check_forbidden
 AUTO_ESSENCE_ACTOR = "SYSTEM_ESSENCE_AI_REVIEW"
 AUTO_ESSENCE_CONFIDENCE = 0.90
 AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS = 2
+AUTO_ESSENCE_RECOVERY_REVISION = 2
 _AUTO_RECOVERY_CYCLE_FIELD = "automatic_recovery_cycle"
 _MAX_REVIEW_FINDINGS = 8
 _PROMPT_INJECTION_PATTERNS = (
@@ -250,7 +251,7 @@ def _is_untouched_legacy_auto_draft(philosophy: HospitalContentPhilosophy) -> bo
     return bool(
         philosophy.created_by == AUTO_ESSENCE_ACTOR
         and has_auto_review_finding
-        and _automatic_recovery_cycles(philosophy) < 1
+        and _automatic_recovery_cycles(philosophy) < AUTO_ESSENCE_RECOVERY_REVISION
         and philosophy.created_at is not None
         and philosophy.updated_at is not None
         and philosophy.created_at == philosophy.updated_at
@@ -765,7 +766,12 @@ def refresh_essence_snapshot(
         candidate.unsupported_gaps = (
             list(candidate.unsupported_gaps or [])
             + [{"field": "automatic_ai_review", "reason": finding} for finding in findings]
-            + [{"field": _AUTO_RECOVERY_CYCLE_FIELD, "reason": "1"}]
+            + [
+                {
+                    "field": _AUTO_RECOVERY_CYCLE_FIELD,
+                    "reason": str(AUTO_ESSENCE_RECOVERY_REVISION),
+                }
+            ]
         )
     write_audit_log_sync(
         db,
@@ -813,6 +819,7 @@ __all__ = (
     "AUTO_ESSENCE_ACTOR",
     "AUTO_ESSENCE_CONFIDENCE",
     "AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS",
+    "AUTO_ESSENCE_RECOVERY_REVISION",
     "EssenceAiReview",
     "EssenceRefreshResult",
     "EssenceRefreshStatus",
