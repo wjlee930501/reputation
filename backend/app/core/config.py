@@ -97,7 +97,7 @@ class Settings(BaseSettings):
         """
         flow_impact = {
             "ANTHROPIC_API_KEY": "콘텐츠 자동 생성(Claude Sonnet) 중단",
-            "OPENAI_API_KEY": "SoV 측정(ChatGPT) + 대표 이미지 생성(gpt-image) 중단",
+            "OPENAI_API_KEY": "SoV 측정(ChatGPT) 중단",
             "GEMINI_API_KEY": "SoV 측정(Gemini) 중단",
         }
         for name, impact in flow_impact.items():
@@ -314,7 +314,7 @@ class Settings(BaseSettings):
     # 선택값: 비어 있어도 무인증 free tier로 동작(분당 제한 빡빡). 키가 있으면 상향.
     JINA_API_KEY: str = ""
 
-    # Google Cloud — Imagen 3 (이미지 폴백)
+    # Google Cloud — Gemini 이미지 생성(Imagen GA endpoint 종료 후 대체)
     GCP_PROJECT_ID: str = ""
     GCP_LOCATION: str = "us-central1"
     GCP_STORAGE_BUCKET: str = "reputation-images"
@@ -326,9 +326,11 @@ class Settings(BaseSettings):
     CERTIFICATE_MAP_NAME: str = "reputation-certmap"
 
     # 콘텐츠 대표 이미지 생성기
-    #   "openai" → gpt-image-2 (기본, editorial 일러스트·항목별 다양성)
-    #   "imagen" → Vertex AI Imagen 3 폴백
-    IMAGE_PROVIDER: str = "openai"
+    #   "google" → Vertex AI Gemini 2.5 Flash Image (기본)
+    #   "openai" → gpt-image-2 우선, 실패 시 Google 경로로 폴백
+    IMAGE_PROVIDER: str = "google"
+    GOOGLE_IMAGE_MODEL: str = "gemini-2.5-flash-image"
+    GOOGLE_IMAGE_LOCATION: str = "global"
     OPENAI_IMAGE_MODEL: str = "gpt-image-2"
     OPENAI_IMAGE_SIZE: str = "1536x864"  # 16:9 (16의 배수, 비율≤3:1) — 카드 레이아웃 일치
     OPENAI_IMAGE_QUALITY: str = "high"  # low|medium|high

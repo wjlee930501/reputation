@@ -10,7 +10,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 from types import SimpleNamespace  # noqa: E402
 
 import pytest  # noqa: E402
-from tenacity import RetryError, stop_after_attempt  # noqa: E402
+from tenacity import stop_after_attempt  # noqa: E402
 
 from app.models.content import ContentType  # noqa: E402
 from app.services import content_engine  # noqa: E402
@@ -217,10 +217,8 @@ async def test_generate_content_hard_fails_end_to_end_for_non_whitelisted_only_r
     monkeypatch.setattr(content_engine.generate_content.retry, "stop", stop_after_attempt(1))
     monkeypatch.setattr(content_engine.generate_content.retry, "sleep", _no_sleep)
 
-    with pytest.raises(RetryError) as exc_info:
+    with pytest.raises(ValueError, match="GEO hard-fail"):
         await content_engine.generate_content(hospital, ContentType.DISEASE)
-
-    assert "GEO hard-fail" in str(exc_info.value.last_attempt.exception())
 
 
 # ── content_brief dict 필드 → 자연어 프롬프트 조립 회귀 (P-4) ──────────────────

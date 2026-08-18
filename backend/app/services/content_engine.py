@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import anthropic
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.models.content import ContentType
@@ -338,7 +338,12 @@ def _bullet_list(values: list) -> str:
     return "\n".join(f"- {value}" for value in values if value) or "- 없음"
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=2, max=10),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 async def generate_content(
     hospital: Hospital,
     content_type: ContentType,

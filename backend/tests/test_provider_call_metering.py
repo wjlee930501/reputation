@@ -1,7 +1,7 @@
 """실제 공급자 호출 계수 — 비용 가드가 '예약'이 아니라 '실제 지출'을 볼 수 있는가.
 
 비용 가드의 예약 카운터(check_and_increment)는 작업 1건을 1회로 센다. 그런데 실제
-호출은 재시도와 폴백으로 훨씬 많아질 수 있다 — 이미지 1건은 OpenAI 최대 3회 + Imagen
+호출은 재시도와 폴백으로 훨씬 많아질 수 있다 — 이미지 1건은 OpenAI 최대 3회 + Google
 1회까지 간다. 그 차이가 기록되지 않으면 상한이 실제 지출의 몇 분의 일만 보고 있게 되고,
 운영자가 상한을 조정할 근거 자체가 사라진다.
 
@@ -72,7 +72,7 @@ def test_openai_image_retries_each_count_as_a_paid_call(monkeypatch):
 
 
 def test_image_generation_records_every_attempt_including_the_fallback(monkeypatch, recorded):
-    """OpenAI 3회 전부 실패 후 Imagen 1회 성공 → 실제 호출 4회로 기록된다."""
+    """OpenAI 3회 전부 실패 후 Google 1회 성공 → 실제 호출 4회로 기록된다."""
 
     async def allowed(*_a, **_k):
         from app.services.cost_guard import CostGuardDecision
@@ -90,13 +90,13 @@ def test_image_generation_records_every_attempt_including_the_fallback(monkeypat
                 counter.tick()
         raise RuntimeError("all openai attempts failed")
 
-    def succeeding_imagen(_prompt, _hospital, *, counter=None):
+    def succeeding_google(_prompt, _hospital, *, counter=None):
         if counter is not None:
             counter.tick()
         return "gs://bucket/image.png"
 
     monkeypatch.setattr(image_engine, "_openai_generate_and_upload", failing_openai)
-    monkeypatch.setattr(image_engine, "_generate_and_upload", succeeding_imagen)
+    monkeypatch.setattr(image_engine, "_generate_and_upload", succeeding_google)
 
     url, _prompt = asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원"))
 

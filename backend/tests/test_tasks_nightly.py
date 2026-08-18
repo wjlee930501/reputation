@@ -41,6 +41,16 @@ def test_generation_catchup_window_is_seven_days():
     assert tasks.GENERATION_CATCHUP_DAYS == 7
 
 
+def test_nightly_generation_recovers_legacy_ready_items_with_missing_assets():
+    compiled = str(
+        tasks._nightly_generation_stmt(date(2026, 8, 11), date(2026, 8, 19)).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "content_items.status IN ('DRAFT', 'REJECTED', 'READY')" in compiled
+
+
 @pytest.mark.asyncio
 async def test_generation_rewrites_once_with_automatic_review_feedback(monkeypatch):
     calls = []
@@ -234,8 +244,13 @@ def test_weekly_monitoring_isolates_broker_failure_and_keeps_run_requested(monke
 
     runs = [value for value in db.added if isinstance(value, OperationRun)]
     assert len(runs) == 2
-    assert next(run for run in runs if run.hospital_id == first_id).state == OperationRunState.REQUESTED
-    assert next(run for run in runs if run.hospital_id == second_id).state == OperationRunState.QUEUED
+    assert (
+        next(run for run in runs if run.hospital_id == first_id).state
+        == OperationRunState.REQUESTED
+    )
+    assert (
+        next(run for run in runs if run.hospital_id == second_id).state == OperationRunState.QUEUED
+    )
     assert dispatched == [str(second_id)]
 
 
@@ -963,8 +978,10 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(tasks, "open_monthly_slot_failure", lambda **_kwargs: None)
+
     async def fake_recover(**_kwargs):
         return False
+
     monkeypatch.setattr(tasks, "recover_monthly_slot_failure", fake_recover)
     monkeypatch.setattr(
         "app.workers.monthly_slots.generate_monthly_slots",
@@ -1324,9 +1341,7 @@ def test_auto_publish_blocks_content_with_forbidden_expression(monkeypatch):
     assert item.status is tasks.ContentStatus.DRAFT
     assert item.published_at is None
     assert item.published_by is None
-    assert [log.action for log in db.added if hasattr(log, "action")] == [
-        "auto_publish_blocked"
-    ]
+    assert [log.action for log in db.added if hasattr(log, "action")] == ["auto_publish_blocked"]
     runs = [value for value in db.added if isinstance(value, OperationRun)]
     assert len(runs) == 1
     assert runs[0].operation_type == "REGENERATE_CONTENT"
@@ -1356,9 +1371,7 @@ def test_auto_publish_blocks_markdown_hidden_forbidden_expression(monkeypatch):
     assert item.status is tasks.ContentStatus.DRAFT
     assert item.published_at is None
     assert item.published_by is None
-    assert [log.action for log in db.added if hasattr(log, "action")] == [
-        "auto_publish_blocked"
-    ]
+    assert [log.action for log in db.added if hasattr(log, "action")] == ["auto_publish_blocked"]
     assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
 
 
@@ -1382,9 +1395,7 @@ def test_auto_publish_blocks_when_no_approved_philosophy(monkeypatch):
     # 차단 사유가 DB에도 남아야 Admin에서 AE가 원인을 볼 수 있다.
     assert item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
     assert item.essence_check_summary["blocking"] is True
-    assert [log.action for log in db.added if hasattr(log, "action")] == [
-        "auto_publish_blocked"
-    ]
+    assert [log.action for log in db.added if hasattr(log, "action")] == ["auto_publish_blocked"]
     assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
 
 

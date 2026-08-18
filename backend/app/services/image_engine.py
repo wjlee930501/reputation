@@ -1,7 +1,7 @@
 """
 이미지 생성 엔진
-- 기본: OpenAI **gpt-image-2** (프리미엄 의료 에디토리얼 사진, 주제별 프롬프트로 다양성 확보)
-- 폴백: Google Imagen 3 (Vertex AI) — OPENAI 키 미설정/IMAGE_PROVIDER=imagen 일 때
+- 기본: Vertex AI **Gemini 2.5 Flash Image**
+- 선택: OpenAI **gpt-image-2**, 실패 시 Google 경로로 폴백
 - 생성물은 GCS에 저장 후 gs:// 경로 반환 (공개 표면은 안정 프록시로 서빙)
 
 설계 메모: 콘텐츠 카드 이미지가 유형별 고정 프롬프트라 "파란 빈 방"이 반복되던 슬롭 문제를
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 def _is_transient_openai_error(exc: BaseException) -> bool:
     """결정적 4xx(예: moderation_blocked)는 재시도해도 항상 실패하므로 재시도 금지 —
-    바로 폴백(Imagen)으로 넘겨 시간/비용 낭비와 Job 타임아웃을 막는다. 5xx/네트워크만 재시도."""
+    바로 Google 경로로 넘겨 시간/비용 낭비와 Job 타임아웃을 막는다. 5xx/네트워크만 재시도."""
     try:
         from openai import APIStatusError
 
@@ -34,17 +34,6 @@ def _is_transient_openai_error(exc: BaseException) -> bool:
     except Exception:  # noqa: BLE001 — openai 미설치 등은 재시도 대상으로 둔다
         pass
     return True
-
-_vertexai_initialized = False
-
-
-def _ensure_vertexai_initialized():
-    global _vertexai_initialized
-    if not _vertexai_initialized and settings.GCP_PROJECT_ID:
-        import vertexai
-        vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_LOCATION)
-        _vertexai_initialized = True
-
 
 # ── gpt-image-2 프롬프트 (유형별 개념 + 항목 주제 주입) ───────────────────
 _OPENAI_TYPE_SUBJECT = {
@@ -98,7 +87,7 @@ def _build_openai_image_prompt(content_type: ContentType, topic: str | None) -> 
     )
 
 
-# ── 유형별 이미지 프롬프트 (Imagen 폴백용) ───────────────────────────────
+# ── 유형별 이미지 프롬프트 (Google 폴백용) ───────────────────────────────
 IMAGE_PROMPTS = {
     ContentType.FAQ: (
         "Clean medical infographic, soft blue and white color palette, Korean hospital setting, "
@@ -160,8 +149,8 @@ async def generate_image(
 ) -> tuple[str, str]:
     """
     대표 이미지 생성 후 GCS에 저장.
-    - 기본 gpt-image-2 (topic으로 항목별 다양성 확보)
-    - gpt-image-2 실패(접근권한/일시오류) 또는 IMAGE_PROVIDER=imagen → Imagen 3 폴백
+    - 기본 Vertex AI Gemini 2.5 Flash Image (topic으로 항목별 다양성 확보)
+    - IMAGE_PROVIDER=openai이면 gpt-image-2 우선, 실패 시 Google 폴백
     - 둘 다 불가하면 ("", "") — 이미지 실패가 텍스트 콘텐츠를 막지 않게 한다.
     Returns: (gcs_path, prompt_used)  — gs://bucket/path 형태
     """
@@ -180,7 +169,7 @@ async def generate_image(
     provider = (settings.IMAGE_PROVIDER or "").lower()
 
     # 이미지 1건은 공급자 호출 1회가 아니다 — OpenAI가 최대 3회 재시도되고, 그게 다
-    # 실패하면 Imagen이 다시 호출된다. 예약은 위에서 1건만 잡았으므로, 실제 호출을
+    # 실패하면 Google이 다시 호출된다. 예약은 위에서 1건만 잡았으므로, 실제 호출을
     # 세어 두지 않으면 상한이 실제 지출의 몇 분의 일만 보고 있게 된다.
     attempts = _CallCounter()
 
@@ -192,17 +181,19 @@ async def generate_image(
             )
             if url:
                 return url, prompt
-        except Exception as e:  # noqa: BLE001 — gpt-image-2 불가 시 Imagen으로 폴백
-            logger.error("gpt-image-2 path failed, falling back to Imagen: %s", e)
+        except Exception as e:  # noqa: BLE001 — gpt-image-2 불가 시 Google 경로로 폴백
+            logger.error("gpt-image-2 path failed, falling back to Google image: %s", e)
         finally:
             await _record_image_calls(attempts)
 
-    # ── Imagen 3 (명시 선택 또는 폴백) ──
+    # ── Vertex AI Gemini image (기본 또는 폴백) ──
     if not settings.GCP_PROJECT_ID:
         logger.warning("No usable image provider (OPENAI_API_KEY/GCP_PROJECT_ID) — skipping")
         return ("", "")
 
     prompt = IMAGE_PROMPTS.get(content_type, IMAGE_PROMPTS[ContentType.FAQ])
+    if topic:
+        prompt = f"{prompt}. Specific subject: {topic.strip()}"
     fallback_attempts = _CallCounter()
     try:
         url = await loop.run_in_executor(
@@ -210,7 +201,7 @@ async def generate_image(
         )
         return url, prompt
     except Exception as e:  # noqa: BLE001
-        logger.error("Imagen fallback failed: %s", e)
+        logger.error("Google image fallback failed: %s", e)
         return ("", "")
     finally:
         await _record_image_calls(fallback_attempts)
@@ -239,14 +230,14 @@ def _openai_generate_and_upload(
     prompt: str, hospital_name: str, *, counter: _CallCounter | None = None
 ) -> str:
     """동기 — gpt-image-2 이미지 생성 + GCS 업로드 (실패 시 raise → 호출부에서 폴백).
-    moderation_blocked 등 결정적 4xx 는 재시도하지 않고 즉시 raise → Imagen 폴백."""
+    moderation_blocked 등 결정적 4xx 는 재시도하지 않고 즉시 raise → Google 폴백."""
     # tenacity 재시도마다 본문이 다시 실행된다 — 시도 1회 = 유료 호출 1회.
     if counter is not None:
         counter.tick()
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=180.0)
+        client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=180.0, max_retries=0)
         # response_format은 gpt-image 계열에서 기본 b64_json이며 일부 버전이 명시 전달을
         # 거부하므로 전달하지 않는다(기본값 사용).
         result = client.images.generate(
@@ -275,31 +266,52 @@ def _openai_generate_and_upload(
 def _generate_and_upload(
     prompt: str, hospital_name: str, *, counter: _CallCounter | None = None
 ) -> str:
-    """동기 — Vertex AI Imagen 3 이미지 생성 + GCS 업로드 (폴백)."""
+    """동기 — Vertex AI Gemini 이미지 생성 + GCS 업로드 (기본/폴백)."""
     if counter is not None:
         counter.tick()
     try:
-        from vertexai.preview.vision_models import ImageGenerationModel
+        from google import genai
+        from google.genai import types
 
-        _ensure_vertexai_initialized()
-        model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
-
-        images = model.generate_images(
-            prompt=prompt,
-            number_of_images=1,
-            aspect_ratio="16:9",
-            safety_filter_level="block_some",
-            person_generation="dont_allow",  # 병원 콘텐츠: 실제 인물 생성 금지
+        client = genai.Client(
+            vertexai=True,
+            project=settings.GCP_PROJECT_ID,
+            location=settings.GOOGLE_IMAGE_LOCATION,
+            http_options=types.HttpOptions(api_version="v1"),
         )
-
-        if not images or not images.images:
-            raise ValueError("Imagen 3 returned no images")
-
-        image_bytes = images.images[0]._image_bytes
+        response = client.models.generate_content(
+            model=settings.GOOGLE_IMAGE_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
+                candidate_count=1,
+                image_config=types.ImageConfig(
+                    aspect_ratio="16:9",
+                    image_size="1K",
+                    person_generation="ALLOW_NONE",
+                    output_mime_type="image/png",
+                ),
+            ),
+        )
+        parts = (
+            response.candidates[0].content.parts
+            if response.candidates and response.candidates[0].content
+            else []
+        )
+        image_bytes = next(
+            (
+                part.inline_data.data
+                for part in parts
+                if part.inline_data and part.inline_data.data
+            ),
+            None,
+        )
+        if not image_bytes:
+            raise ValueError("Google image model returned no image payload")
         return _upload_png_to_gcs(image_bytes, hospital_name)
 
     except ImportError:
-        logger.error("Vertex AI or GCS SDK not installed")
+        logger.error("Google Gen AI or GCS SDK not installed")
         return ""
     except Exception as e:
         logger.error("Image generation failed: %s", e)

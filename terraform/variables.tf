@@ -168,7 +168,7 @@ variable "admin_max_instances" {
 
 variable "worker_memory" {
   type    = string
-  default = "1Gi"
+  default = "2Gi"
 }
 
 variable "worker_cpu" {
@@ -419,8 +419,8 @@ variable "redis_auth_enabled" {
 variable "aiplatform_role" {
   description = <<-EOT
     Vertex AI role granted to the app service account (INFRA-7). The app only
-    needs Imagen 3 prediction. Defaults to the broad predefined roles/aiplatform.user;
-    override with a custom role (e.g. "projects/<project>/roles/imagenPredictor"
+    needs Vertex AI Gemini image generation. Defaults to the broad predefined roles/aiplatform.user;
+    override with a custom role (e.g. "projects/<project>/roles/vertexImagePredictor"
     carrying only aiplatform.endpoints.predict) to follow least-privilege.
   EOT
   type        = string

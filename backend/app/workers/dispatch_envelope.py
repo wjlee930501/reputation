@@ -44,6 +44,7 @@ TASK_PURPOSES = {
     "app.workers.naver_sync.weekly_naver_source_sync": "weekly-naver-source-sync",
     "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": "drain-lead-diagnoses",
     "app.workers.autonomous_recovery.reconcile": "reconcile-autonomous-workflows",
+    "app.workers.content_backlog_recovery.reconcile": "reconcile-stranded-content",
     "app.workers.canary_tasks.canary_default": "canary-default",
     "app.workers.canary_tasks.canary_content": "canary-content",
     "app.workers.canary_tasks.canary_sov": "canary-sov",

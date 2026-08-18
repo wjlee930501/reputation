@@ -15,7 +15,7 @@ from app.workers.dispatch_auth import (
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-08-10.6"
+REDBEAT_SCHEDULE_VERSION = "2026-08-18.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -83,6 +83,7 @@ celery_app = Celery(
         "app.workers.milestone_event_tasks",
         "app.workers.monthly_artifact_reconciliation",
         "app.workers.autonomous_recovery",
+        "app.workers.content_backlog_recovery",
         "app.workers.operation_run_signals",
         "app.workers.canary_tasks",
     ],
@@ -153,6 +154,7 @@ celery_app.conf.update(
         "app.workers.milestone_event_tasks.project_milestone_events": {"queue": "default"},
         "app.workers.monthly_artifact_reconciliation.reconcile": {"queue": "reports"},
         "app.workers.autonomous_recovery.reconcile": {"queue": "default"},
+        "app.workers.content_backlog_recovery.reconcile": {"queue": "default"},
         "app.workers.canary_tasks.canary_default": {"queue": "default"},
         "app.workers.canary_tasks.canary_content": {"queue": "content"},
         "app.workers.canary_tasks.canary_sov": {"queue": "sov"},
@@ -177,6 +179,13 @@ celery_app.conf.update(
             "task": "app.workers.tasks.nightly_content_generation",
             "schedule": crontab(hour=7, minute=45),
             "options": {"headers": build_dispatch_headers("nightly-content-generation")},
+        },
+        # 22:30 — 오늘까지 생성되지 못한 슬롯을 병원별 하루 한 편의 빈 미래 날짜로
+        # 옮긴다. 23:00 생성보다 먼저 실행해 오래된 슬롯이 7일 창 밖에서 좌초되지 않게 한다.
+        "stranded-content-recovery": {
+            "task": "app.workers.content_backlog_recovery.reconcile",
+            "schedule": crontab(hour=22, minute=30),
+            "options": {"headers": build_dispatch_headers("reconcile-stranded-content")},
         },
         # 매일 아침 08:00 — 자동 안전검사 후 발행 + 자동 복구 소진 예외 요약
         "morning-content-auto-publish": {

@@ -71,6 +71,16 @@ WHITELIST_DOMAINS: frozenset[str] = frozenset(
 # URL보다 이 목록을 우선한다.
 CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
     {
+        "keywords": ("탈수", "수분부족", "수분보충"),
+        "title": "질병관리청 국가건강정보포털 — 탈수",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+    },
+    {
+        "keywords": ("구토", "오심", "메스꺼움"),
+        "title": "질병관리청 국가건강정보포털 — 오심과 구토",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5804",
+    },
+    {
         "keywords": ("치열", "항문열상"),
         "title": "서울아산병원 질환백과 — 치열",
         "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31773",

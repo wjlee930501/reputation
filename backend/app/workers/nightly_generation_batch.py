@@ -14,7 +14,11 @@ GENERATION_CATCHUP_DAYS = 7
 
 # 생성 결과를 되쓸 수 있는 상태. 그 외(CANCELLED/PUBLISHED 등)는 운영자·발행 파이프라인이
 # 이미 확정한 상태이므로 야간 배치가 덮어쓰면 안 된다.
-GENERATION_WRITE_BACK_STATUSES = (ContentStatus.DRAFT, ContentStatus.REJECTED)
+GENERATION_WRITE_BACK_STATUSES = (
+    ContentStatus.DRAFT,
+    ContentStatus.REJECTED,
+    ContentStatus.READY,
+)
 
 
 def write_back_generated_content(db, *, item_id, values: dict[str, Any]) -> int:
@@ -71,7 +75,7 @@ def _nightly_generation_stmt(window_start, window_end, claim_cutoff: datetime | 
         .where(
             ContentItem.scheduled_date >= window_start,
             ContentItem.scheduled_date <= window_end,
-            ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
+            ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
             _needs_generation_recovery(),
             Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
             Hospital.site_live.is_(True),
@@ -102,7 +106,7 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
             .where(
                 ContentItem.scheduled_date >= window_start,
                 ContentItem.scheduled_date <= window_end,
-                ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
+                ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
                 _needs_generation_recovery(),
                 Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
                 Hospital.site_live.is_(True),
@@ -160,7 +164,9 @@ def load_stuck_claims(db, window_start, window_end) -> list[ContentItem]:
     잠긴 것"을 구분하기 위한 값이다. 구분하지 않으면 한 달치 유실도 조용히 성공으로 보고된다.
     """
     claim_cutoff = _nightly_generation_claim_cutoff()
-    return list(db.execute(_stuck_claims_stmt(window_start, window_end, claim_cutoff)).scalars().all())
+    return list(
+        db.execute(_stuck_claims_stmt(window_start, window_end, claim_cutoff)).scalars().all()
+    )
 
 
 def _stuck_claims_stmt(window_start, window_end, claim_cutoff: datetime | None = None):
@@ -171,7 +177,7 @@ def _stuck_claims_stmt(window_start, window_end, claim_cutoff: datetime | None =
         .where(
             ContentItem.scheduled_date >= window_start,
             ContentItem.scheduled_date <= window_end,
-            ContentItem.status.in_([ContentStatus.DRAFT, ContentStatus.REJECTED]),
+            ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
             _needs_generation_recovery(),
             Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
             Hospital.site_live.is_(True),

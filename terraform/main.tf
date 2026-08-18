@@ -42,7 +42,7 @@ resource "google_project_service" "services" {
     "iamcredentials.googleapis.com",
     "monitoring.googleapis.com",
     "dns.googleapis.com",
-    "aiplatform.googleapis.com", # Vertex AI — image_engine.py uses Imagen 3 prediction
+    "aiplatform.googleapis.com", # Vertex AI — image_engine.py uses Gemini image generation
   ])
   project            = var.project_id
   service            = each.key

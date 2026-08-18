@@ -43,6 +43,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "project-milestone-events",
     "purge-expired-leads",
     "reconcile-autonomous-workflows",
+    "stranded-content-recovery",
     "reconcile-monthly-artifact-incidents",
     "weekly-naver-source-sync",
     "weekly-sov-monitoring",
@@ -50,6 +51,7 @@ EXPECTED_BEAT_SCHEDULES = {
 
 EXPECTED_TASKS = {
     "app.workers.autonomous_recovery.reconcile",
+    "app.workers.content_backlog_recovery.reconcile",
     "app.workers.canary_tasks.canary_content",
     "app.workers.canary_tasks.canary_default",
     "app.workers.canary_tasks.canary_leadgen",
@@ -121,6 +123,7 @@ def _workflow_facts() -> dict[str, bool]:
     # deployed image can load every task and populates the registry used below.
     import app.workers.autonomous_recovery  # noqa: F401, PLC0415
     import app.workers.canary_tasks  # noqa: F401, PLC0415
+    import app.workers.content_backlog_recovery  # noqa: F401, PLC0415
     import app.workers.lead_diagnosis_tasks  # noqa: F401, PLC0415
     import app.workers.milestone_event_tasks  # noqa: F401, PLC0415
     import app.workers.monthly_artifact_reconciliation  # noqa: F401, PLC0415

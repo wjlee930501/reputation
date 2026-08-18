@@ -64,3 +64,14 @@ def test_select_curated_authority_sources_returns_topic_specific_document_pages(
 
 def test_select_curated_authority_sources_does_not_guess_for_unknown_topic():
     assert select_curated_authority_sources("알 수 없는 새 진료 주제") == []
+
+
+def test_select_curated_authority_sources_supports_dehydration_content():
+    sources = select_curated_authority_sources(
+        "소아 발열이 이어질 때 탈수 징후와 수분 보충 방법",
+    )
+
+    assert [source["url"] for source in sources] == [
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+    ]
+    assert sources[0]["source_type"] == SOURCE_TYPE_GOV_KR

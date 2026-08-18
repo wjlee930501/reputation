@@ -46,7 +46,7 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
-      # Vertex AI Imagen / GCS region — pin to the deploy region so terraform-owned
+      # Vertex AI/GCS 기본 region — 이미지 생성 자체는 별도 global 설정을 사용한다.
       # env matches scripts/deploy.sh (.env.production GCP_LOCATION). Without this,
       # config.py's us-central1 default would drift the worker cross-region from the
       # asia-northeast3 images bucket on a terraform apply.
@@ -266,7 +266,7 @@ resource "google_cloud_run_v2_service" "worker" {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
-      # Vertex AI Imagen / GCS region — pin to the deploy region so terraform-owned
+      # Vertex AI/GCS 기본 region — 이미지 생성 자체는 별도 global 설정을 사용한다.
       # env matches scripts/deploy.sh (.env.production GCP_LOCATION). Without this,
       # config.py's us-central1 default would drift the worker cross-region from the
       # asia-northeast3 images bucket on a terraform apply.
@@ -476,7 +476,7 @@ resource "google_cloud_run_v2_service" "beat" {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
-      # Vertex AI Imagen / GCS region — pin to the deploy region so terraform-owned
+      # Vertex AI/GCS 기본 region — 이미지 생성 자체는 별도 global 설정을 사용한다.
       # env matches scripts/deploy.sh (.env.production GCP_LOCATION). Without this,
       # config.py's us-central1 default would drift the worker cross-region from the
       # asia-northeast3 images bucket on a terraform apply.
