@@ -519,7 +519,7 @@ _SYNTHESIS_SYSTEM = """\
 5. 상충하는 근거는 conflict_notes에 남기고 임의로 결론내리지 않습니다.
 6. 제목만 있거나 문장이 중간에 잘린 발췌는 긍정 운영 기준에 사용하지 않고
    unsupported_gap으로 남깁니다. 모든 note를 억지로 출력에 포함하지 않습니다.
-7. 핵심 운영 기준만 최대 40개 entry로 압축합니다.
+7. 핵심 운영 기준만 최대 24개 entry로 압축합니다.
 
 출력은 JSON 객체 하나만, 코드블록/설명 없이 entries 배열로 반환합니다.
 모든 entry는 아래 키를 전부 가지며 사용하지 않는 문자열/배열은 빈 값으로 둡니다.
@@ -688,7 +688,7 @@ def _synthesize_philosophy_llm(
     data = _call_anthropic_json(
         _SYNTHESIS_SYSTEM,
         user_message,
-        max_tokens=3600,
+        max_tokens=5000,
         output_schema=_SYNTHESIS_OUTPUT_SCHEMA,
         # A safe deterministic synthesis fallback exists. Preserve the task
         # budget for the two independent safety reviews instead of spending
