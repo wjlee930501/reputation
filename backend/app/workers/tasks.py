@@ -152,7 +152,6 @@ from app.workers.content_publication_block_control import ensure_publication_blo
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_incident_control import (
-    generation_notify_requested,
     open_generation_incident,
     recover_generation_incidents,
 )
@@ -1840,7 +1839,7 @@ def morning_content_auto_publish(self):
                         run_id=outcome["run_id"],
                         code=outcome["code"],
                         message=outcome["message"],
-                        notify=generation_notify_requested(outcome["code"]),
+                        notify=True,
                     )
                 )
                 continue
