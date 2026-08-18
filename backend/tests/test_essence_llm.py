@@ -299,6 +299,7 @@ def test_compact_structured_entries_expand_to_grounded_payload(monkeypatch, llm_
     assert "maxItems" not in schema["properties"]["entries"]
     assert fake.messages.calls[0]["max_tokens"] == 5000
     assert fake.messages.calls[0]["timeout"] == 90.0
+    assert "최대 14개 entry" in fake.messages.calls[0]["system"]
 
 
 def test_llm_synthesis_missing_cautions_uses_safe_default(monkeypatch, llm_key):
