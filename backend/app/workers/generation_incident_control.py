@@ -21,12 +21,17 @@ from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
 
 _EXPECTED_PENDING_CODES = {
-    "MISSING_APPROVED_ESSENCE",
-    "COST_BLOCKED",
-    "GENERATION_LEASE_ACTIVE",
-    "STALE_GENERATION_CLAIM",
+    "CONTENT_NOT_GENERATED",
+    "FORBIDDEN_EXPRESSION",
+    "ESSENCE_NOT_ALIGNED",
+    "MISSING_REFERENCES",
+    "CONTENT_IMAGE_NOT_READY",
+    "IMAGE_GENERATION_FAILED",
     "PROVIDER_TIMEOUT",
     "PROVIDER_UNAVAILABLE",
+    "GENERATION_LEASE_ACTIVE",
+    "STALE_GENERATION_CLAIM",
+    "COST_BLOCKED",
 }
 
 
@@ -147,6 +152,12 @@ def _incident_identity(
     return "content_item", str(item_id), "/operations"
 
 
+def generation_notify_requested(code: str) -> bool:
+    """Slack only when AI cannot proceed and a human must act now."""
+
+    return code not in _EXPECTED_PENDING_CODES
+
+
 def _should_send_generation_notification(
     *,
     notify_requested: bool,
@@ -154,13 +165,13 @@ def _should_send_generation_notification(
     code: str | None = None,
     has_open_cause: bool = False,
 ) -> bool:
-    """Page once per incident episode, never once per observation or expected gate item."""
+    """Page once per human-now episode; self-healable codes never enqueue Slack."""
 
     if not notify_requested:
         return False
-    if code in _EXPECTED_PENDING_CODES:
+    if code in _EXPECTED_PENDING_CODES or code == "CONTENT_NOT_GENERATED":
         return False
-    if code == "CONTENT_NOT_GENERATED" and has_open_cause:
+    if has_open_cause:
         return False
     return previous_state is None or previous_state in {
         IncidentState.RECOVERED.value,
