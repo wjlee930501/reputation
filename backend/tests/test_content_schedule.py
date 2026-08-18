@@ -282,12 +282,12 @@ async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
     def _broker_down(*, args, queue, headers):
         raise ConnectionError("redis broker unreachable")
 
-    async def _fake_ops_alert(*, title, message):
-        alerts.append({"title": title, "message": message})
-        return True
+    async def _fake_ops_incident(**payload):
+        alerts.append(payload)
+        return uuid.uuid4()
 
     monkeypatch.setattr(content_api.regenerate_content_item, "apply_async", _broker_down)
-    monkeypatch.setattr(content_api.notifier, "notify_ops_alert", _fake_ops_alert)
+    monkeypatch.setattr(content_api, "open_ops_incident", _fake_ops_incident)
     _freeze_arrow(monkeypatch)  # today=2026-06-10, tomorrow=2026-06-11
 
     body = content_api.ScheduleCreate(
@@ -300,8 +300,9 @@ async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
     assert response["slots_created"] == 12
     assert db.committed is True
     assert len(alerts) == 1
-    assert "큐잉 실패" in alerts[0]["title"]
-    assert "테스트의원" in alerts[0]["message"]
+    assert alerts[0]["safe_error_code"] == "CONTENT_DISPATCH_FAILED"
+    assert alerts[0]["hospital_name"] == "테스트의원"
+    assert alerts[0].get("notify") is False
 
 
 async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):

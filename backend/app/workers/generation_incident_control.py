@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -19,6 +20,21 @@ from app.services.incidents import (
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
+
+_EXPECTED_PENDING_CODES = {
+    "CONTENT_NOT_GENERATED",
+    "FORBIDDEN_EXPRESSION",
+    "ESSENCE_NOT_ALIGNED",
+    "MISSING_REFERENCES",
+    "CONTENT_IMAGE_NOT_READY",
+    "IMAGE_GENERATION_FAILED",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_UNAVAILABLE",
+    "GENERATION_LEASE_ACTIVE",
+    "STALE_GENERATION_CLAIM",
+    "COST_BLOCKED",
+}
+_EXPECTED_PENDING_STALE_AFTER = timedelta(hours=48)
 
 
 def _generation_operator_copy(code: str) -> tuple[str, str]:
@@ -138,11 +154,52 @@ def _incident_identity(
     return "content_item", str(item_id), "/operations"
 
 
-def _should_send_generation_notification(
-    *, notify_requested: bool, previous_state: str | None
-) -> bool:
-    """Page once per incident episode, never once per observation or expected gate item."""
+def generation_notify_requested(code: str) -> bool:
+    """Slack only when AI cannot proceed and a human must act now."""
 
+    return code not in _EXPECTED_PENDING_CODES
+
+
+def _expected_pending_crossed_stale(
+    *,
+    first_seen_at: datetime | None,
+    last_seen_at: datetime | None,
+    now: datetime | None,
+) -> bool:
+    """Promote expected pending once, 48h after the current episode start (first_seen_at)."""
+
+    if first_seen_at is None or last_seen_at is None or now is None:
+        return False
+    threshold = first_seen_at + _EXPECTED_PENDING_STALE_AFTER
+    return last_seen_at < threshold <= now
+
+
+def _should_send_generation_notification(
+    *,
+    notify_requested: bool,
+    previous_state: str | None,
+    code: str | None = None,
+    has_open_cause: bool = False,
+    first_seen_at: datetime | None = None,
+    last_seen_at: datetime | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Page once per human-now episode; expected pending pages only after 48h."""
+
+    if has_open_cause:
+        return False
+    if code in _EXPECTED_PENDING_CODES:
+        if previous_state in {
+            IncidentState.RECOVERED.value,
+            IncidentState.ACKNOWLEDGED.value,
+        }:
+            # New episode. Do not score stale against the previous episode clock.
+            return False
+        return _expected_pending_crossed_stale(
+            first_seen_at=first_seen_at,
+            last_seen_at=last_seen_at,
+            now=now,
+        )
     if not notify_requested:
         return False
     return previous_state is None or previous_state in {
@@ -167,6 +224,7 @@ def _projection(
         run_id,
         incident.version,
         incident.safe_error_message or _generation_safe_cause(incident.safe_error_code or ""),
+        incident.episode_seq,
     )
 
 
@@ -188,6 +246,21 @@ async def open_generation_incident(
         )
         previous = await db.scalar(select(Incident).where(Incident.dedupe_key == dedupe_key))
         previous_state = previous.state if previous is not None else None
+        has_open_cause = False
+        if code == "CONTENT_NOT_GENERATED":
+            has_open_cause = (
+                await db.scalar(
+                    select(Incident.id).where(
+                        Incident.hospital_id == hospital_id,
+                        Incident.state.in_((
+                            IncidentState.OPEN.value,
+                            IncidentState.RETRYING.value,
+                        )),
+                        Incident.safe_error_code != "CONTENT_NOT_GENERATED",
+                        Incident.source_id.in_((str(item_id), str(hospital_id))),
+                    )
+                )
+            ) is not None
 
         # The old implementation opened one incident per content item for this
         # hospital-level gate.  During the first rollout of the hospital-scoped
@@ -238,9 +311,15 @@ async def open_generation_incident(
             actor="content-generation-worker",
             reason="generation attempt failed",
         )
+        observed_at = datetime.now(UTC)
         if _should_send_generation_notification(
             notify_requested=notify,
             previous_state=previous_state,
+            code=code,
+            has_open_cause=has_open_cause,
+            first_seen_at=previous.first_seen_at if previous is not None else None,
+            last_seen_at=previous.last_seen_at if previous is not None else None,
+            now=observed_at,
         ):
             await enqueue_notification(
                 db,

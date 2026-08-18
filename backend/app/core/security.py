@@ -109,20 +109,24 @@ def _should_alert_unverified(actor: str, *, now: float | None = None) -> bool:
 def _alert_unverified_actor(actor: str, method: str, path: str) -> None:
     """Slack 경보를 백그라운드로 던진다.
 
-    notifier._send는 재시도 포함 수 초가 걸릴 수 있어 요청 경로에서 await하면 Admin 응답이
+    incident/outbox 기록이 요청 경로를 지연시키지 않도록 백그라운드에서 처리한다.
     그만큼 느려진다. 경보 실패가 요청을 깨뜨려서도 안 되므로 전부 best-effort로 처리한다.
     """
-    from app.services import notifier  # 지연 import — core가 services에 시작 시점 의존하지 않게.
+    from app.services.ops_incident_alerts import open_ops_incident
 
     try:
         task = asyncio.get_running_loop().create_task(
-            notifier.notify_ops_alert(
-                title="검증되지 않은 관리자 actor의 쓰기 요청",
-                message=(
-                    f"actor: `{actor}`\n요청: `{method} {path}`\n"
-                    "활성 AdminUser와 매칭되지 않는 X-Admin-Actor로 상태 변경이 시도되었습니다. "
-                    "비활성화·퇴사 계정이거나 헤더 위조일 수 있으니 감사 로그를 확인해 주세요."
-                ),
+            open_ops_incident(
+                pipeline="admin_security",
+                object_type="unverified_actor",
+                object_id=actor,
+                incident_type="UNVERIFIED_ADMIN_ACTOR",
+                safe_error_code="UNVERIFIED_ADMIN_ACTOR",
+                problem="활성 관리자 계정과 일치하지 않는 actor로 쓰기 요청이 시도되었습니다.",
+                customer_impact="관리자 변경 요청의 신뢰성을 확인할 때까지 운영 기록 검토가 필요합니다.",
+                next_action="운영센터의 감사 기록에서 요청 경로와 계정 상태를 확인하세요.",
+                source_type="ADMIN_SECURITY",
+                actor="admin-security",
             )
         )
     except RuntimeError:

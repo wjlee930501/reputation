@@ -214,6 +214,7 @@ async def test_duplicate_touch_escalates_and_preserves_first_occurrence(db: Asyn
     # Then: one row accumulates the occurrence and keeps ownership/first fact
     assert second.id == first.id
     assert second.occurrence_count == 2
+    assert second.episode_seq == 1
     assert second.severity == IncidentSeverity.HIGH.value
     assert second.first_seen_at == first_seen
     assert second.last_seen_at == first_seen + timedelta(minutes=10)
@@ -269,6 +270,8 @@ async def test_retry_recovery_ack_and_recurrence_reopen_with_audit(db: AsyncSess
     # Then: recovery facts are retained until a new occurrence explicitly reopens it
     assert reopened.state == IncidentState.OPEN.value
     assert reopened.occurrence_count == 2
+    assert reopened.episode_seq == 2
+    assert reopened.first_seen_at == started + timedelta(hours=1)
     assert reopened.recovered_at is None
     assert reopened.acknowledged_at is None
     assert reopened.acknowledged_by_id is None

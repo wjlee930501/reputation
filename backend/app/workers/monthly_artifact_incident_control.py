@@ -15,7 +15,7 @@ from app.services.incident_types import (
     IncidentFingerprint,
     IncidentOpenRequest,
 )
-from app.services.incidents import open_or_touch_incident
+from app.services.incidents import build_incident_key, open_or_touch_incident
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
 from app.services.report_artifact_validation import DoctorPdfValidationError
@@ -101,6 +101,18 @@ async def _open_and_notify(
     context: MonthlyArtifactIncidentContext,
     error: DoctorPdfValidationError,
 ) -> Incident:
+    previous = await db.scalar(
+        select(Incident).where(
+            Incident.dedupe_key
+            == build_incident_key(
+                "monthly_report_artifact",
+                "hospital_period",
+                context.period_key,
+                _fingerprint(error.code),
+            )
+        )
+    )
+    previous_state = previous.state if previous is not None else None
     incident = await open_or_touch_incident(
         db,
         IncidentOpenRequest(
@@ -123,11 +135,15 @@ async def _open_and_notify(
         actor="monthly-report-worker",
         reason="원장 전달용 PDF 검증 실패",
     )
-    await enqueue_notification(
-        db,
-        build_open_incident_notification(
-            incident_projection(context, incident, problem=error.problem),
-            settings.ADMIN_BASE_URL,
-        ),
-    )
+    if previous_state is None or previous_state in {
+        IncidentState.RECOVERED.value,
+        IncidentState.ACKNOWLEDGED.value,
+    }:
+        await enqueue_notification(
+            db,
+            build_open_incident_notification(
+                incident_projection(context, incident, problem=error.problem),
+                settings.ADMIN_BASE_URL,
+            ),
+        )
     return incident

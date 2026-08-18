@@ -44,6 +44,7 @@ from app.services import (
     lead_report,
     notifier,
 )
+from app.services.ops_incident_alerts import open_ops_incident
 from app.workers.dispatch_auth import require_dispatch
 from app.workers.lead_recovery_incidents import (
     mark_lead_recovery_failed,
@@ -295,15 +296,18 @@ async def _run_lead_diagnosis(
             and result.get("blocked") != "cost_guard"
         ):
             try:
-                await notifier.notify_ops_alert(
-                    title="무료 진단 측정이 재시도 없이 종결됨",
-                    message=(
-                        f"진단 `{diagnosis_id}` ({diagnosis.subject_hospital_name})이 "
-                        f"FAILED로 종결됐습니다 (시도 {diagnosis.execution_attempts}"
-                        f"/{MAX_EXECUTION_ATTEMPTS}).\n사유: {diagnosis.error or '알 수 없음'}\n"
-                        "**신청자는 리포트를 받지 못합니다.** 원인 해소 후 Admin에서 "
-                        "재실행해 주세요."
-                    ),
+                await open_ops_incident(
+                    pipeline="lead_diagnosis",
+                    object_type="diagnosis",
+                    object_id=str(diagnosis_id),
+                    incident_type="LEAD_DIAGNOSIS_FAILED",
+                    safe_error_code="LEAD_DIAGNOSIS_FAILED",
+                    problem="무료 진단 측정이 재시도 없이 실패로 종결되었습니다.",
+                    customer_impact="신청자에게 진단 리포트를 전달할 수 없습니다.",
+                    next_action="운영센터에서 원인을 확인하고 해소한 뒤 진단을 재실행하세요.",
+                    source_type="LEAD_DIAGNOSIS",
+                    hospital_name=diagnosis.subject_hospital_name,
+                    actor="lead-diagnosis-worker",
                 )
             except Exception:  # noqa: BLE001 — 알림 실패가 상태 확정을 되돌리지 않는다.
                 logger.warning("lead diagnosis terminal-failure alert delivery failed")
@@ -481,14 +485,18 @@ async def _build_lead_report(
 
 async def _notify_report_blocked(diagnosis: LeadDiagnosis) -> None:
     try:
-        await notifier.notify_ops_alert(
-            title="무료 진단 리포트 생성 실패 — 재시도 소진",
-            message=(
-                f"진단 `{diagnosis.id}` ({diagnosis.subject_hospital_name})의 리포트 생성이 "
-                f"{MAX_REPORT_ATTEMPTS}회 모두 실패했습니다.\n"
-                f"사유: {diagnosis.error or '알 수 없음'}\n"
-                "신청자에게 메일이 나가지 않았습니다. Admin에서 확인해 주세요."
-            ),
+        await open_ops_incident(
+            pipeline="lead_report",
+            object_type="diagnosis",
+            object_id=str(diagnosis.id),
+            incident_type="LEAD_REPORT_BLOCKED",
+            safe_error_code="LEAD_REPORT_RETRIES_EXHAUSTED",
+            problem="무료 진단 리포트 생성 재시도가 모두 실패했습니다.",
+            customer_impact="신청자에게 리포트 메일을 보낼 수 없습니다.",
+            next_action="운영센터에서 리포트 생성 상태를 확인하고 원인 해소 후 다시 실행하세요.",
+            source_type="LEAD_REPORT",
+            hospital_name=diagnosis.subject_hospital_name,
+            actor="lead-report-worker",
         )
     except Exception:  # noqa: BLE001
         logger.warning("lead report blocked alert delivery failed")
@@ -742,28 +750,35 @@ async def _drain() -> dict:
 
     for delivery_id in stuck["abandoned"]:
         try:
-            await notifier.notify_ops_alert(
-                title="무료 진단 리포트 메일 발송 실패",
-                message=(
-                    f"발송 `{delivery_id}`이(가) 재시도 소진 또는 멱등성 창(24시간) 초과로 "
-                    "중단됐습니다.\n"
-                    "**신청자는 리포트를 받지 못했습니다.** 중복 발송 위험이 있어 자동으로 "
-                    "다시 보내지 않습니다 — Admin에서 확인 후 수동 처리해 주세요."
-                ),
+            await open_ops_incident(
+                pipeline="lead_delivery",
+                object_type="delivery",
+                object_id=str(delivery_id),
+                incident_type="LEAD_DELIVERY_ABANDONED",
+                safe_error_code="LEAD_DELIVERY_ABANDONED",
+                problem="무료 진단 리포트 메일 발송이 재시도 소진 또는 멱등성 기한 초과로 중단되었습니다.",
+                customer_impact="신청자가 진단 리포트 메일을 받지 못했습니다.",
+                next_action="중복 발송 여부를 확인한 뒤 운영센터에서 수동 처리하세요.",
+                source_type="LEAD_DELIVERY",
+                actor="lead-delivery-worker",
             )
         except Exception:  # noqa: BLE001 — 알림 실패가 드레인을 멈추지 않는다.
             logger.warning("lead delivery abandon alert delivery failed")
 
     for diagnosis in exhausted:
         try:
-            await notifier.notify_ops_alert(
-                title="무료 진단 측정 실패 — 재시도 소진",
-                message=(
-                    f"진단 `{diagnosis.id}` ({diagnosis.subject_hospital_name})의 측정이 "
-                    f"{MAX_EXECUTION_ATTEMPTS}회 모두 실패했습니다.\n"
-                    f"사유: {diagnosis.error or '알 수 없음'}\n"
-                    "Admin에서 확인하고 필요하면 재실행해 주세요."
-                ),
+            await open_ops_incident(
+                pipeline="lead_diagnosis",
+                object_type="diagnosis",
+                object_id=str(diagnosis.id),
+                incident_type="LEAD_DIAGNOSIS_RETRIES_EXHAUSTED",
+                safe_error_code="LEAD_DIAGNOSIS_RETRIES_EXHAUSTED",
+                problem="무료 진단 측정 재시도가 모두 실패했습니다.",
+                customer_impact="신청자에게 진단 리포트를 전달할 수 없습니다.",
+                next_action="운영센터에서 실패 상태를 확인하고 원인 해소 후 재실행하세요.",
+                source_type="LEAD_DIAGNOSIS",
+                hospital_name=diagnosis.subject_hospital_name,
+                actor="lead-diagnosis-worker",
             )
         except Exception:  # noqa: BLE001 — 알림 실패가 드레인을 멈추지 않는다.
             logger.warning("lead diagnosis failure alert delivery failed")

@@ -508,27 +508,6 @@ async def notify_monitoring_queued(queued: int) -> bool:
     )
 
 
-async def notify_ops_alert(*, title: str, message: str) -> bool:
-    """Fail closed when legacy callers provide unsafe free-form operational details."""
-    del title, message
-    return await _send(
-        text="🟧 [운영 알림] 운영 확인 필요",
-        blocks=[
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": (
-                    "🟧 *[운영 알림]* 운영 확인 필요\n"
-                    "무슨 문제인지: 자동 운영 중 확인이 필요한 항목이 감지되었습니다.\n"
-                    "고객 영향: 연결된 고객 대응 또는 운영 일정이 지연될 수 있습니다.\n"
-                    "지금 할 일: 운영센터에서 안전 정보를 복사한 뒤 개발팀에 문의해 주세요.\n"
-                    "개발팀 전달용 참조: `LEGACY-OPS-ALERT`"
-                )},
-            },
-            _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
-        ],
-    )
-
-
 async def notify_generation_blocked_no_philosophy(
     hospital_name: str, blocked_count: int, scheduled_date: str
 ) -> bool:

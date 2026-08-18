@@ -359,15 +359,10 @@ def _run_failing_attempt(monkeypatch, retries: int) -> tuple[FakeSession, list[d
     _use_session(monkeypatch, session)
     alerts: list[dict] = []
 
-    async def fake_ops_alert(**kwargs):
-        alerts.append(kwargs)
-        return True
-
     def boom(*_a, **_k):
         raise RuntimeError("pdf renderer down")
 
     monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", boom)
-    monkeypatch.setattr(tasks.notifier, "notify_ops_alert", fake_ops_alert)
 
     task = tasks.generate_monthly_report_for_hospital
     task.push_request(retries=retries)

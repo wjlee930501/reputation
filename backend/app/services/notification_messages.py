@@ -103,7 +103,7 @@ def _incident_notification(
         url,
     )
     return NotificationIntent(
-        dedupe_key=f"{event}:{incident.incident_id}:v{incident.version}",
+        dedupe_key=f"{event}:{incident.incident_id}:e{incident.episode_seq}",
         notification_type=event,
         message=message,
         hospital_id=incident.hospital_id,

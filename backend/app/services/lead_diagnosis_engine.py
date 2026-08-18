@@ -24,7 +24,8 @@ from app.models.lead_diagnosis import (
     LeadDiagnosisResult,
     MentionVerdict,
 )
-from app.services import cost_guard, lead_query_cache, notifier, sov_engine
+from app.services import cost_guard, lead_query_cache, sov_engine
+from app.services.ops_incident_alerts import open_ops_incident
 
 logger = logging.getLogger(__name__)
 
@@ -248,16 +249,18 @@ async def _notify_budget_blocked(
 ) -> None:
     """예산 차단은 자동 복구 대상이 아니다 — 상한을 올릴지 사과할지는 사람이 정한다."""
     try:
-        await notifier.notify_ops_alert(
-            title="무료 진단 측정이 호출 예산으로 차단됨",
-            message=(
-                f"진단 `{diagnosis.id}` ({diagnosis.subject_hospital_name})의 측정을 "
-                f"시작하지 못했습니다.\n"
-                f"필요 호출: {live_calls}건\n"
-                f"사유: {reason or '알 수 없음'}\n"
-                "**신청자는 리포트를 받지 못합니다.** 상한을 조정하거나 신청자에게 안내가 "
-                "필요합니다. 상한 조정 후에는 Admin에서 재실행해 주세요."
-            ),
+        await open_ops_incident(
+            pipeline="lead_diagnosis",
+            object_type="diagnosis",
+            object_id=str(diagnosis.id),
+            incident_type="LEAD_DIAGNOSIS_COST_BLOCKED",
+            safe_error_code="COST_BLOCKED",
+            problem="무료 진단 측정이 호출 예산 안전장치로 시작되지 않았습니다.",
+            customer_impact="신청자에게 진단 리포트를 전달할 수 없습니다.",
+            next_action="비용 안전장치 상태를 확인하고 상한 조정 여부를 결정한 뒤 진단을 재실행하세요.",
+            source_type="LEAD_DIAGNOSIS",
+            hospital_name=diagnosis.subject_hospital_name,
+            actor="lead-diagnosis-worker",
         )
     except Exception:  # noqa: BLE001 — 알림 실패가 상태 확정을 되돌리지 않는다.
         logger.warning("lead diagnosis budget-block alert delivery failed")

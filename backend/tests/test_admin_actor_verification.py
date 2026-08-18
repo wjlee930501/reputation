@@ -132,13 +132,13 @@ async def test_unverified_write_logs_and_alerts_when_option_disabled(monkeypatch
     monkeypatch.setattr(security.settings, "ADMIN_REJECT_UNVERIFIED_ACTOR", False)
     alerts = []
 
-    async def fake_alert(*, title, message):
-        alerts.append((title, message))
-        return True
+    async def fake_alert(**payload):
+        alerts.append(payload)
+        return None
 
-    from app.services import notifier
+    from app.services import ops_incident_alerts
 
-    monkeypatch.setattr(notifier, "notify_ops_alert", fake_alert)
+    monkeypatch.setattr(ops_incident_alerts, "open_ops_incident", fake_alert)
 
     db = _FakeDB(matched=None)
     with caplog.at_level("WARNING", logger="app.core.security"):
@@ -149,8 +149,8 @@ async def test_unverified_write_logs_and_alerts_when_option_disabled(monkeypatch
     # 경보는 요청을 블로킹하지 않도록 백그라운드 태스크로 나간다.
     for task in list(security._pending_alert_tasks):
         await task
-    assert alerts and "ghost@attacker.com" in alerts[0][1]
-    assert "DELETE /api/v1/admin/leads" in alerts[0][1]
+    assert alerts and alerts[0]["object_id"] == "unverified:ghost@attacker.com"
+    assert alerts[0]["safe_error_code"] == "UNVERIFIED_ADMIN_ACTOR"
 
 
 def test_unverified_alert_is_throttled_per_actor():

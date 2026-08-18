@@ -178,6 +178,7 @@ class Incident(Base):
             name="ck_incidents_severity",
         ),
         CheckConstraint("version >= 1", name="ck_incidents_version_positive"),
+        CheckConstraint("episode_seq >= 1", name="ck_incidents_episode_seq_positive"),
         CheckConstraint("occurrence_count >= 1", name="ck_incidents_occurrence_count"),
         CheckConstraint(
             "(state IN ('RECOVERED', 'ACKNOWLEDGED') AND recovered_at IS NOT NULL) OR "
@@ -228,6 +229,7 @@ class Incident(Base):
     occurrence_count: Mapped[int] = mapped_column(
         Integer, default=1, server_default="1", nullable=False
     )
+    episode_seq: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     recovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     acknowledged_by_id: Mapped[uuid.UUID | None] = mapped_column(

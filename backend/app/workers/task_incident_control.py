@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -54,8 +54,20 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
         run = _tracked_run(db, run_id, worker_task_id)
         if run is None:
             return False
+        previous_state = db.scalar(
+            select(Incident.state).where(Incident.dedupe_key == _incident_key(run.id))
+        )
         incident = _open_incident(db, run)
-        _enqueue(db, build_open_incident_notification(_projection(db, incident), settings.ADMIN_BASE_URL))
+        if previous_state is None or previous_state in {
+            IncidentState.RECOVERED.value,
+            IncidentState.ACKNOWLEDGED.value,
+        }:
+            _enqueue(
+                db,
+                build_open_incident_notification(
+                    _projection(db, incident), settings.ADMIN_BASE_URL
+                ),
+            )
         _audit(db, incident, "generic_task_failure_opened")
         db.commit()
     return True
@@ -173,6 +185,26 @@ def _open_incident(db: Session, run: OperationRun) -> Incident:
                 "next_action": action,
                 "last_seen_at": now,
                 "occurrence_count": Incident.occurrence_count + 1,
+                "episode_seq": case(
+                    (
+                        Incident.state.in_((
+                            IncidentState.RECOVERED.value,
+                            IncidentState.ACKNOWLEDGED.value,
+                        )),
+                        Incident.episode_seq + 1,
+                    ),
+                    else_=Incident.episode_seq,
+                ),
+                "first_seen_at": case(
+                    (
+                        Incident.state.in_((
+                            IncidentState.RECOVERED.value,
+                            IncidentState.ACKNOWLEDGED.value,
+                        )),
+                        now,
+                    ),
+                    else_=Incident.first_seen_at,
+                ),
                 "recovered_at": None,
                 "acknowledged_at": None,
                 "acknowledged_by_id": None,
@@ -253,6 +285,7 @@ def _projection(db: Session, incident: Incident) -> IncidentSlackProjection:
         hospital_id=incident.hospital_id,
         operation_run_id=incident.operation_run_id,
         version=incident.version,
+        episode_seq=incident.episode_seq,
     )
 
 
