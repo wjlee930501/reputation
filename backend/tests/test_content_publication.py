@@ -93,6 +93,28 @@ def test_apply_publication_assessment_persists_exact_screening_result(monkeypatc
     assert item.essence_check_summary == {"blocking": False}
 
 
+def test_publication_assessment_preserves_ai_review_provenance_but_not_old_blocking(monkeypatch):
+    _aligned(monkeypatch)
+    item = _item()
+    item.essence_check_summary = {
+        "blocking": True,
+        "findings": ["이전 후보의 지적"],
+        "automatic_remediation_attempts": 1,
+        "reviewer_driven_rewrites": 1,
+        "ai_review": {"status": "PASS", "confidence": 0.97},
+    }
+    assessment = content_publication.assess_content_publication(item, _philosophy())
+
+    content_publication.apply_publication_assessment(item, assessment)
+
+    assert item.essence_check_summary == {
+        "blocking": False,
+        "automatic_remediation_attempts": 1,
+        "reviewer_driven_rewrites": 1,
+        "ai_review": {"status": "PASS", "confidence": 0.97},
+    }
+
+
 def test_publication_gate_uses_the_render_aware_check_for_the_body(monkeypatch):
     """발행 게이트는 본문을 **렌더 결과 기준**으로 검사해야 한다.
 

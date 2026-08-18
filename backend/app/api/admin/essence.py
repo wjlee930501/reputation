@@ -1,6 +1,7 @@
 """Admin API — hospital source-backed content operating standard."""
 
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account
@@ -60,6 +62,7 @@ from app.services.essence_engine import (
     validate_source_excerpt,
 )
 from app.services.gcs_utils import get_signed_url
+from app.services.incident_types import IncidentFingerprint
 from app.services.naver_handoff import (
     NaverCrawlOptions,
     NaverRetryRequest,
@@ -71,13 +74,36 @@ from app.services.naver_handoff_runs import (
     NaverRetryConflict,
     list_open_naver_failures,
 )
+from app.services.ops_incident_alerts import recover_ops_incident
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
+from app.utils.db_locks import acquire_hospital_advisory_lock
+from app.workers.dispatch_auth import build_dispatch_headers
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
+logger = logging.getLogger(__name__)
+
+
+def _enqueue_essence_review_best_effort(hospital_id: uuid.UUID) -> None:
+    """Immediate path; the periodic reconciler remains the durable fallback."""
+
+    hospital_id_text = str(hospital_id)
+    try:
+        celery_app.send_task(
+            "app.workers.tasks.auto_review_essence_snapshot",
+            args=[hospital_id_text],
+            queue="content",
+            headers=build_dispatch_headers("auto-review-essence-snapshot", hospital_id_text),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to enqueue immediate Essence review for hospital %s; "
+            "periodic reconciliation will retry",
+            hospital_id,
+        )
 
 
 async def _read_upload_within_limit(file: UploadFile) -> bytes:
@@ -212,6 +238,7 @@ async def create_source(
     db: AsyncSession = Depends(get_db),
 ):
     await _get_hospital_or_404(db, hospital_id)
+    await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=body.source_type,
@@ -253,6 +280,7 @@ async def patch_source(
     body: SourceAssetPatch,
     db: AsyncSession = Depends(get_db),
 ):
+    await acquire_hospital_advisory_lock(db, hospital_id)
     source = await _get_source_or_404(db, hospital_id, source_id)
     update = body.model_dump(exclude_unset=True)
     material_fields = {
@@ -306,6 +334,7 @@ async def process_source(
     source_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
+    await acquire_hospital_advisory_lock(db, hospital_id)
     source = await _get_source_or_404(db, hospital_id, source_id)
     hospital = await _get_hospital_or_404(db, hospital_id)
     should_revalidate = _has_public_site(hospital)
@@ -360,6 +389,7 @@ async def process_source(
         )
         await db.commit()
         await db.refresh(source)
+        _enqueue_essence_review_best_effort(hospital_id)
         if should_revalidate:
             await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
         return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
@@ -425,6 +455,7 @@ async def exclude_source(
     source_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
+    await acquire_hospital_advisory_lock(db, hospital_id)
     source = await _get_source_or_404(db, hospital_id, source_id)
     previous_status = source.status
     hospital = await _get_hospital_or_404(db, hospital_id)
@@ -444,6 +475,7 @@ async def exclude_source(
     )
     await db.commit()
     await db.refresh(source)
+    _enqueue_essence_review_best_effort(hospital_id)
     if should_revalidate:
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
         await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
@@ -499,6 +531,7 @@ async def upload_source_file(
     elif extractor_kind == "DOCX":
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
 
+    await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=source_type,
@@ -566,6 +599,7 @@ async def crawl_source_url(
             detail="페이지 본문을 충분히 가져오지 못했습니다 — 본문을 직접 붙여넣어 주세요.",
         )
 
+    await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=body.source_type,
@@ -611,6 +645,7 @@ async def crawl_naver_blog(
             detail="활성 운영자 또는 소유자 계정만 블로그 글을 가져올 수 있습니다.",
         )
     hospital = await _get_hospital_or_404(db, hospital_id)
+    await acquire_hospital_advisory_lock(db, hospital_id)
     result = await sync_hospital_naver_sources(
         db,
         hospital,
@@ -660,6 +695,7 @@ async def retry_naver_blog_item(
             detail="활성 운영자 또는 소유자 계정만 실패한 글을 다시 수집할 수 있습니다.",
         )
     hospital = await _get_hospital_or_404(db, hospital_id)
+    await acquire_hospital_advisory_lock(db, hospital_id)
     try:
         result = await retry_failed_naver_source(
             db,
@@ -671,7 +707,11 @@ async def retry_naver_blog_item(
             ),
         )
     except NaverRetryConflict as exc:
-        code = status.HTTP_404_NOT_FOUND if exc.code == "NAVER_RUN_NOT_FOUND" else status.HTTP_409_CONFLICT
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code == "NAVER_RUN_NOT_FOUND"
+            else status.HTTP_409_CONFLICT
+        )
         raise HTTPException(status_code=code, detail=str(exc)) from exc
     await write_audit_log(
         db,
@@ -739,9 +779,7 @@ def _serialize_naver_result(result: NaverHandoffResult) -> BlogCrawlResult:
                 "safe_error_message": item.safe_error_message,
                 "next_action": item.next_action,
                 "source_id": str(item.source_id) if item.source_id else None,
-                "retry_of_run_id": (
-                    str(item.retry_of_run_id) if item.retry_of_run_id else None
-                ),
+                "retry_of_run_id": (str(item.retry_of_run_id) if item.retry_of_run_id else None),
             }
             for item in result.items
         ],
@@ -832,6 +870,7 @@ async def create_philosophy_draft(
     body: PhilosophyDraftCreate,
     db: AsyncSession = Depends(get_db),
 ):
+    await acquire_hospital_advisory_lock(db, hospital_id)
     hospital = await _get_hospital_or_404(db, hospital_id)
     sources = await _select_processed_sources(db, hospital_id, body.source_asset_ids)
     if not sources:
@@ -892,6 +931,7 @@ async def patch_philosophy(
     body: PhilosophyPatch,
     db: AsyncSession = Depends(get_db),
 ):
+    await acquire_hospital_advisory_lock(db, hospital_id)
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
     if philosophy.status != PhilosophyStatus.DRAFT:
         raise HTTPException(
@@ -924,6 +964,7 @@ async def approve_philosophy(
     body: PhilosophyApprove,
     db: AsyncSession = Depends(get_db),
 ):
+    await acquire_hospital_advisory_lock(db, hospital_id)
     hospital = await _get_hospital_or_404(db, hospital_id)
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
     if philosophy.status != PhilosophyStatus.DRAFT:
@@ -1016,8 +1057,36 @@ async def approve_philosophy(
             "content_rescreened": rescreened,
         },
     )
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="운영 기준이 동시에 변경되었습니다. 새로고침 후 다시 확인해 주세요.",
+        ) from exc
     await db.refresh(philosophy)
+    try:
+        await recover_ops_incident(
+            pipeline="essence_auto_review",
+            object_type="essence_snapshot",
+            object_id=f"{hospital_id}:{current_snapshot_hash}",
+            fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+            hospital_name=hospital.name,
+            actor=default_actor(),
+            reason="operator approved the reviewed Essence snapshot",
+        )
+    except Exception:
+        # Approval is already durable. Incident recovery is retried independently
+        # and must never turn a successful operator action into an API failure.
+        logger.exception(
+            "Failed to recover Essence review incident after manual approval: %s:%s",
+            hospital_id,
+            current_snapshot_hash,
+        )
+    # A signed UP_TO_DATE task is the independent recovery fallback if the direct
+    # incident transition above was temporarily unavailable.
+    _enqueue_essence_review_best_effort(hospital_id)
     if needs_site_revalidate:
         await trigger_hospital_site_revalidate_safe(
             hospital.slug,

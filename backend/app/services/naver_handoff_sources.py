@@ -11,7 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.essence import HospitalSourceAsset, SourceStatus, SourceType
-from app.models.hospital import Hospital
 from app.services.asset_extractor import (
     FetchQuality,
     naver_blog_id_from,
@@ -25,6 +24,7 @@ from app.services.naver_handoff_contracts import (
     skipped_item,
 )
 from app.services.naver_handoff_incidents import NaverIncidentContext, record_naver_failure
+from app.utils.db_locks import acquire_hospital_advisory_lock
 
 
 class NaverHospitalRef(Protocol):
@@ -78,9 +78,7 @@ async def process_naver_item(
     blog_id = naver_blog_id_from(item.url) or "NAVER"
     title = f"네이버 블로그 {blog_id} {item.url.rsplit('/', 1)[-1]}"
     content_hash = compute_source_content_hash(title, item.url, text, context.operator_note)
-    await context.db.execute(
-        select(Hospital.id).where(Hospital.id == context.hospital.id).with_for_update()
-    )
+    await acquire_hospital_advisory_lock(context.db, context.hospital.id)
     existing_urls, existing_hashes = await _existing_source_keys(context.db, context.hospital.id)
     if item.url in existing_urls or content_hash in existing_hashes:
         return _duplicate(item)
@@ -125,6 +123,4 @@ async def _existing_source_keys(
 
 
 def _duplicate(item: NaverHandoffItem) -> NaverHandoffItem:
-    return skipped_item(
-        item, "DUPLICATE_SOURCE", "이미 수집된 글이라 다시 추가하지 않았습니다."
-    )
+    return skipped_item(item, "DUPLICATE_SOURCE", "이미 수집된 글이라 다시 추가하지 않았습니다.")

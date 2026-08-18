@@ -168,14 +168,18 @@ def assess_content_publication(
 
 def apply_publication_assessment(item: ContentItem, assessment: PublicationAssessment) -> None:
     previous_summary = getattr(item, "essence_check_summary", None)
-    remediation_attempts = (
-        previous_summary.get("automatic_remediation_attempts")
-        if isinstance(previous_summary, dict)
-        else None
-    )
     summary = dict(assessment.essence_summary or {})
-    if isinstance(remediation_attempts, int) and remediation_attempts > 0:
-        summary["automatic_remediation_attempts"] = remediation_attempts
+    if isinstance(previous_summary, dict):
+        # Preserve only advisory provenance. Blocking truth and findings always
+        # come from the fresh deterministic publication assessment above.
+        for key in (
+            "automatic_remediation_attempts",
+            "reviewer_driven_rewrites",
+            "ai_review",
+        ):
+            value = previous_summary.get(key)
+            if value is not None:
+                summary[key] = value
     item.content_philosophy_id = assessment.philosophy_id
     item.essence_status = assessment.essence_status
     item.essence_check_summary = summary

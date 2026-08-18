@@ -79,6 +79,18 @@ def test_pii_purge_task_is_routed():
     assert _resolved_queue("app.workers.tasks.purge_expired_leads") == "default"
 
 
+def test_essence_auto_review_has_immediate_and_periodic_recovery_routes():
+    review_task = "app.workers.tasks.auto_review_essence_snapshot"
+    reconcile_task = "app.workers.tasks.reconcile_essence_snapshots"
+    entry = celery_app.conf.beat_schedule["reconcile-essence-snapshots"]
+
+    assert _resolved_queue(review_task) == "content"
+    assert _resolved_queue(reconcile_task) == "default"
+    assert entry["task"] == reconcile_task
+    assert entry["schedule"].minute == {0, 15, 30, 45}
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-08-18.2"
+
+
 def test_monthly_reports_close_after_the_next_month_boundary():
     """월간 리포트는 마감 뒤 일주일 동안 자동 재시도한다."""
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]

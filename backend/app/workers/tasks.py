@@ -18,6 +18,7 @@ import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 from urllib.parse import urlparse
 
 import arrow
@@ -40,6 +41,7 @@ from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
+    PhilosophyStatus,
     SourceStatus,
 )
 from app.models.hospital import Hospital, HospitalStatus
@@ -57,6 +59,10 @@ from app.models.sov import (
 )
 from app.services import cost_guard, indexnow, notifier, operation_run_payloads, sov_engine
 from app.services.audit_log import write_audit_log_sync
+from app.services.content_ai_review import (
+    ContentAiReviewStatus,
+    review_generated_content,
+)
 from app.services.content_engine import generate_content
 from app.services.content_publication import (
     apply_publication_assessment,
@@ -69,18 +75,29 @@ from app.services.content_publish_notifications import (
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
+from app.services.essence_auto_review import (
+    AUTO_ESSENCE_ACTOR,
+    EssenceAiReview,
+    EssenceRefreshStatus,
+    essence_refresh_needed,
+    refresh_essence_snapshot,
+    review_essence_candidate,
+)
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_MISSING_APPROVED,
+    ESSENCE_STATUS_NEEDS_REVIEW,
     build_monthly_essence_summary,
     compute_source_content_hash,
-    get_approved_philosophy_sync,
     metered_llm_calls,
     process_source_asset,
     screen_content_against_philosophy,
+    synthesize_philosophy,
     validate_source_excerpt,
 )
+from app.services.essence_readiness import get_current_approved_philosophy_sync
 from app.services.image_engine import generate_image
+from app.services.incident_types import IncidentFingerprint
 from app.services.monthly_content_operations import (
     build_monthly_content_operations_snapshot,
 )
@@ -108,7 +125,7 @@ from app.services.onboarding_notifications import (
     build_v0_ready_notification,
     enqueue_onboarding_notification_sync,
 )
-from app.services.ops_incident_alerts import open_ops_incident
+from app.services.ops_incident_alerts import open_ops_incident, recover_ops_incident
 from app.services.post_publish_review_policy import (
     AUTO_PUBLISHABLE_STATUSES,
     auto_publish_due_predicate,
@@ -236,12 +253,15 @@ async def _generate_with_auto_review(
     philosophy: HospitalContentPhilosophy,
     approved_brief: dict | None,
 ):
-    """Generate, screen, and rewrite once with deterministic validator feedback."""
+    """Generate, independently review, and rewrite without bypassing hard gates."""
 
     findings = _review_findings(getattr(item, "essence_check_summary", None))
     automatic_rewrites = int(bool(findings))
+    reviewer_driven_rewrites = 0
     last_content: dict | None = None
     last_screening = None
+    last_ai_review = None
+    last_generation_error: Exception | None = None
 
     for generation_index in range(AUTO_REMEDIATION_MAX_GENERATIONS):
         if generation_index > 0:
@@ -254,28 +274,74 @@ async def _generate_with_auto_review(
                 break
             automatic_rewrites += 1
 
-        last_content = await generate_content(
-            hospital,
-            item.content_type,
-            existing_titles,
-            philosophy,
-            approved_brief,
-            remediation_findings=findings,
-        )
+        try:
+            last_content = await generate_content(
+                hospital,
+                item.content_type,
+                existing_titles,
+                philosophy,
+                approved_brief,
+                remediation_findings=findings,
+            )
+        except ValueError as exc:
+            last_generation_error = exc
+            findings = [f"생성 안전검사 실패: {' '.join(str(exc).split())[:300]}"]
+            if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
+                continue
+            raise
+        last_generation_error = None
+        last_ai_review = None
         last_screening = screen_content_against_philosophy(
             _screening_probe(last_content), philosophy
         )
-        if last_screening.status == ESSENCE_STATUS_ALIGNED:
+        if last_screening.status != ESSENCE_STATUS_ALIGNED:
+            findings = _review_findings(last_screening.summary)
+            if not findings:
+                break
+            continue
+
+        last_ai_review = await review_generated_content(
+            hospital=hospital,
+            philosophy=philosophy,
+            content=last_content,
+            content_brief=approved_brief,
+        )
+        if last_ai_review.status in {
+            ContentAiReviewStatus.PASS,
+            ContentAiReviewStatus.UNAVAILABLE,
+        }:
+            # UNAVAILABLE never grants approval: it merely leaves the candidate to
+            # the deterministic generation and publication gates below.
             break
-        findings = _review_findings(last_screening.summary)
-        if not findings:
-            break
+        findings = list(last_ai_review.findings)
+        if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
+            reviewer_driven_rewrites += 1
 
     if last_content is None or last_screening is None:
+        if last_generation_error is not None:
+            raise last_generation_error
         raise RuntimeError("automatic content review produced no candidate")
+
+    if last_ai_review and last_ai_review.status == ContentAiReviewStatus.REVISE:
+        summary = dict(last_screening.summary or {})
+        summary.update(
+            {
+                "blocking": True,
+                "findings": list(last_ai_review.findings),
+            }
+        )
+        last_screening = type(last_screening)(
+            status=ESSENCE_STATUS_NEEDS_REVIEW,
+            summary=summary,
+        )
+
     summary = dict(last_screening.summary or {})
     if automatic_rewrites > 0:
         summary["automatic_remediation_attempts"] = automatic_rewrites
+    if reviewer_driven_rewrites > 0:
+        summary["reviewer_driven_rewrites"] = reviewer_driven_rewrites
+    if last_ai_review is not None:
+        summary["ai_review"] = last_ai_review.payload()
     reviewed_screening = type(last_screening)(
         status=last_screening.status,
         summary=summary,
@@ -285,6 +351,7 @@ async def _generate_with_auto_review(
 
 class MonthlyBatchIncompleteError(RuntimeError):
     """Raised after durable per-hospital failures so Celery schedules a retry."""
+
 
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
@@ -504,6 +571,10 @@ def _mark_source_processing_error(source_id: uuid.UUID, error: Exception) -> Non
         with SyncSessionLocal() as db:
             source = db.get(HospitalSourceAsset, source_id)
             if source and source.status != SourceStatus.EXCLUDED:
+                acquire_hospital_advisory_lock_sync(db, source.hospital_id)
+                db.refresh(source)
+                if source.status == SourceStatus.EXCLUDED:
+                    return
                 source.status = SourceStatus.ERROR
                 source.process_error = str(error)[:2000]
                 db.commit()
@@ -534,6 +605,7 @@ def process_source_asset_task(self, source_id: str) -> dict[str, object]:
     모듈에 두어야 Celery가 기동 시 등록하고, 중복 전달에도 안전하게 복귀한다.
     """
     source_uuid = uuid.UUID(source_id)
+    hospital_id_for_review: uuid.UUID | None = None
     hospital_slug: str | None = None
     hospital_name: str | None = None
     should_revalidate = False
@@ -544,6 +616,9 @@ def process_source_asset_task(self, source_id: str) -> dict[str, object]:
             if not source:
                 logger.warning("Source asset not found; skipping: %s", source_uuid)
                 return {"source_id": source_id, "status": "NOT_FOUND"}
+            hospital_id_for_review = source.hospital_id
+            acquire_hospital_advisory_lock_sync(db, hospital_id_for_review)
+            db.refresh(source)
             if source.status == SourceStatus.EXCLUDED:
                 return {"source_id": source_id, "status": SourceStatus.EXCLUDED.value}
             if source.status == SourceStatus.PROCESSED:
@@ -605,6 +680,22 @@ def process_source_asset_task(self, source_id: str) -> dict[str, object]:
                     hospital_name=hospital_name,
                 )
             )
+        if hospital_name and hospital_id_for_review:
+            try:
+                auto_review_essence_snapshot.apply_async(
+                    args=[str(hospital_id_for_review)],
+                    queue="content",
+                    headers=build_dispatch_headers(
+                        "auto-review-essence-snapshot", str(hospital_id_for_review)
+                    ),
+                )
+            except Exception:
+                # Source truth is already durable. The periodic reconciler is the
+                # recovery path when this immediate publish is lost.
+                logger.exception(
+                    "Failed to enqueue Essence snapshot review for hospital %s",
+                    hospital_id_for_review,
+                )
         return {
             "source_id": source_id,
             "status": SourceStatus.PROCESSED.value,
@@ -620,6 +711,259 @@ def process_source_asset_task(self, source_id: str) -> dict[str, object]:
         _mark_source_processing_error(source_uuid, exc)
         logger.exception("Source processing failed after retries: %s", source_uuid)
         raise
+
+
+class _EssenceReviewCostBlocked(RuntimeError):
+    pass
+
+
+def _cost_guarded_essence_synthesis(
+    hospital: Hospital,
+    sources: list[HospitalSourceAsset],
+    notes: list[HospitalSourceEvidenceNote],
+    operator_note: str | None = None,
+) -> dict[str, Any]:
+    decision = _run_async(cost_guard.check_and_increment("content"))
+    if not decision.allowed:
+        raise _EssenceReviewCostBlocked(decision.reason or "Essence synthesis cost blocked")
+
+    async def _call():
+        async with metered_llm_calls():
+            return await asyncio.to_thread(
+                synthesize_philosophy,
+                hospital,
+                sources,
+                notes,
+                operator_note=operator_note,
+            )
+
+    return _run_async(_call())
+
+
+def _cost_guarded_essence_review(
+    hospital: Hospital,
+    previous: HospitalContentPhilosophy,
+    candidate: dict[str, Any],
+    notes: list[HospitalSourceEvidenceNote],
+) -> EssenceAiReview:
+    decision = _run_async(cost_guard.check_and_increment("content"))
+    if not decision.allowed:
+        raise _EssenceReviewCostBlocked(decision.reason or "Essence review cost blocked")
+
+    async def _call():
+        async with metered_llm_calls():
+            return await asyncio.to_thread(
+                review_essence_candidate,
+                hospital,
+                previous,
+                candidate,
+                notes,
+            )
+
+    return _run_async(_call())
+
+
+@celery_app.task(
+    name="app.workers.tasks.auto_review_essence_snapshot",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=420,
+    time_limit=480,
+)
+def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
+    """Build and independently review a changed post-onboarding Essence snapshot."""
+
+    require_dispatch(self, "auto-review-essence-snapshot", hospital_id)
+    hospital_uuid = uuid.UUID(hospital_id)
+    hospital_name = "병원"
+    hospital_slug: str | None = None
+    try:
+        with SyncSessionLocal() as db:
+            hospital = db.get(Hospital, hospital_uuid)
+            if hospital is not None:
+                hospital_name = hospital.name
+                hospital_slug = hospital.slug
+            result = refresh_essence_snapshot(
+                db,
+                hospital_uuid,
+                synthesizer=_cost_guarded_essence_synthesis,
+                reviewer=_cost_guarded_essence_review,
+            )
+    except _EssenceReviewCostBlocked as exc:
+        _run_async(
+            open_ops_incident(
+                pipeline="essence_auto_review",
+                object_type="hospital",
+                object_id=hospital_id,
+                incident_type="ESSENCE_AUTO_REVIEW_COST_BLOCKED",
+                safe_error_code="COST_BLOCKED",
+                problem="AI 운영 기준 자동 검수가 비용 가드로 보류되었습니다.",
+                customer_impact="기존 승인 운영 기준은 유지되지만 새 자료 반영이 지연됩니다.",
+                next_action="비용 가드가 해제되면 정기 복구가 자동으로 다시 시도합니다.",
+                source_type="ESSENCE_AUTO_REVIEW",
+                hospital_name=hospital_name,
+                hospital_id=hospital_uuid,
+                admin_path=f"/hospitals/{hospital_id}/content",
+                fingerprint=IncidentFingerprint.COST_BLOCKED,
+                actor=AUTO_ESSENCE_ACTOR,
+            )
+        )
+        return {"status": "COST_BLOCKED", "hospital_id": hospital_id, "reason": str(exc)}
+    except Exception as exc:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
+        _run_async(
+            open_ops_incident(
+                pipeline="essence_auto_review",
+                object_type="hospital",
+                object_id=hospital_id,
+                incident_type="ESSENCE_AUTO_REVIEW_FAILED",
+                safe_error_code="ESSENCE_AUTO_REVIEW_FAILED",
+                problem="AI 운영 기준 자동 검수를 완료하지 못했습니다.",
+                customer_impact="기존 승인 운영 기준은 유지되며 새 자료 자동 반영만 지연됩니다.",
+                next_action="운영센터에서 자동 생성된 초안과 근거 자료를 확인해 주세요.",
+                source_type="ESSENCE_AUTO_REVIEW",
+                hospital_name=hospital_name,
+                hospital_id=hospital_uuid,
+                admin_path=f"/hospitals/{hospital_id}/content",
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                actor=AUTO_ESSENCE_ACTOR,
+            )
+        )
+        raise
+
+    if result.status in {
+        EssenceRefreshStatus.UP_TO_DATE,
+        EssenceRefreshStatus.AUTO_APPROVED,
+        EssenceRefreshStatus.ESCALATED,
+    }:
+        for fingerprint in (
+            IncidentFingerprint.COST_BLOCKED,
+            IncidentFingerprint.VALIDATION_FAILED,
+        ):
+            _run_async(
+                recover_ops_incident(
+                    pipeline="essence_auto_review",
+                    object_type="hospital",
+                    object_id=hospital_id,
+                    fingerprint=fingerprint,
+                    hospital_name=hospital_name,
+                    actor=AUTO_ESSENCE_ACTOR,
+                )
+            )
+
+    if result.requires_operator:
+        snapshot = result.snapshot_hash or "unknown"
+        _run_async(
+            open_ops_incident(
+                pipeline="essence_auto_review",
+                object_type="essence_snapshot",
+                object_id=f"{hospital_id}:{snapshot}",
+                incident_type="ESSENCE_AUTO_REVIEW_ESCALATED",
+                safe_error_code="ESSENCE_AUTO_REVIEW_ESCALATED",
+                problem=(
+                    result.findings[0]
+                    if result.findings
+                    else "AI 근거 검수가 자동 승인을 보류했습니다."
+                ),
+                customer_impact="기존 승인 운영 기준은 유지되며 새 자료는 검토 대기 초안으로 보관됩니다.",
+                next_action="운영센터에서 새 운영 기준 초안의 근거와 충돌 항목만 확인해 주세요.",
+                source_type="ESSENCE_AUTO_REVIEW",
+                hospital_name=hospital_name,
+                hospital_id=hospital_uuid,
+                admin_path=f"/hospitals/{hospital_id}/content",
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                actor=AUTO_ESSENCE_ACTOR,
+            )
+        )
+    elif result.status in {
+        EssenceRefreshStatus.AUTO_APPROVED,
+        EssenceRefreshStatus.UP_TO_DATE,
+    }:
+        if result.snapshot_hash:
+            _run_async(
+                recover_ops_incident(
+                    pipeline="essence_auto_review",
+                    object_type="essence_snapshot",
+                    object_id=f"{hospital_id}:{result.snapshot_hash}",
+                    fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                    hospital_name=hospital_name,
+                    actor=AUTO_ESSENCE_ACTOR,
+                )
+            )
+        if result.status == EssenceRefreshStatus.AUTO_APPROVED and result.should_revalidate_site:
+            _run_async(
+                trigger_hospital_site_revalidate_safe(
+                    hospital_slug or "",
+                    hospital_name=hospital_name,
+                )
+            )
+
+    return {
+        "status": result.status.value,
+        "hospital_id": hospital_id,
+        "snapshot_hash": result.snapshot_hash,
+        "philosophy_id": str(result.philosophy_id) if result.philosophy_id else None,
+        "findings": list(result.findings),
+    }
+
+
+def _essence_reconcile_offset(
+    total: int,
+    now: datetime,
+    *,
+    batch_size: int = 200,
+) -> int:
+    """Rotate deterministic pages every beat interval so no hospital starves."""
+
+    if total <= 0 or batch_size <= 0:
+        return 0
+    page_count = (total + batch_size - 1) // batch_size
+    beat_slot = int(now.timestamp()) // (15 * 60)
+    return (beat_slot % page_count) * batch_size
+
+
+@celery_app.task(
+    name="app.workers.tasks.reconcile_essence_snapshots",
+    bind=True,
+)
+def reconcile_essence_snapshots(self) -> dict[str, int]:
+    """Recover lost immediate dispatches by revisiting approved hospitals."""
+
+    require_dispatch(self, "reconcile-essence-snapshots")
+    with SyncSessionLocal() as db:
+        approved_filter = HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED
+        total = int(
+            db.scalar(
+                select(func.count()).select_from(HospitalContentPhilosophy).where(approved_filter)
+            )
+            or 0
+        )
+        offset = _essence_reconcile_offset(total, datetime.now(timezone.utc))
+        candidate_ids = list(
+            db.execute(
+                select(HospitalContentPhilosophy.hospital_id)
+                .where(approved_filter)
+                .order_by(HospitalContentPhilosophy.hospital_id)
+                .offset(offset)
+                .limit(200)
+            )
+            .scalars()
+            .all()
+        )
+        hospital_ids = [
+            hospital_id for hospital_id in candidate_ids if essence_refresh_needed(db, hospital_id)
+        ]
+    queued = 0
+    for hospital_uuid in hospital_ids:
+        hospital_id = str(hospital_uuid)
+        auto_review_essence_snapshot.apply_async(
+            args=[hospital_id],
+            queue="content",
+            headers=build_dispatch_headers("auto-review-essence-snapshot", hospital_id),
+        )
+        queued += 1
+    return {"queued": queued}
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -743,13 +1087,19 @@ def trigger_v0_report(self, hospital_id: str):
                     db.commit()
                 _run_async(
                     open_ops_incident(
-                        pipeline="v0_report", object_type="hospital", object_id=str(hospital.id),
-                        incident_type="V0_REPORT_COST_BLOCKED", safe_error_code="COST_BLOCKED",
+                        pipeline="v0_report",
+                        object_type="hospital",
+                        object_id=str(hospital.id),
+                        incident_type="V0_REPORT_COST_BLOCKED",
+                        safe_error_code="COST_BLOCKED",
                         problem="초기 진단 측정이 비용 안전장치로 시작되지 않았습니다.",
                         customer_impact="초기 진단 리포트 생성이 시작되지 않았습니다.",
                         next_action="비용 안전장치 상태를 확인하고 조정 후 초기 진단을 재실행하세요.",
-                        source_type="V0_REPORT", hospital_name=hospital.name,
-                        hospital_id=hospital.id, actor="v0-report-worker", notify=True,
+                        source_type="V0_REPORT",
+                        hospital_name=hospital.name,
+                        hospital_id=hospital.id,
+                        actor="v0-report-worker",
+                        notify=True,
                     )
                 )
                 return
@@ -849,14 +1199,19 @@ def trigger_v0_report(self, hospital_id: str):
                 try:
                     _run_async(
                         open_ops_incident(
-                            pipeline="site_build_dispatch", object_type="hospital",
-                            object_id=hospital_id, incident_type="SITE_BUILD_DISPATCH_FAILED",
+                            pipeline="site_build_dispatch",
+                            object_type="hospital",
+                            object_id=hospital_id,
+                            incident_type="SITE_BUILD_DISPATCH_FAILED",
                             safe_error_code="SITE_BUILD_DISPATCH_FAILED",
                             problem="초기 진단 완료 후 콘텐츠 허브 준비 작업을 큐에 넣지 못했습니다.",
                             customer_impact="콘텐츠 허브 공개 준비가 늦어질 수 있습니다.",
                             next_action="자동 복구 결과를 확인하고 계속 실패하면 운영센터에서 사이트 준비를 재시도하세요.",
-                            source_type="SITE_BUILD", hospital_name=hospital.name,
-                            hospital_id=hospital.id, actor="v0-report-worker", notify=False,
+                            source_type="SITE_BUILD",
+                            hospital_name=hospital.name,
+                            hospital_id=hospital.id,
+                            actor="v0-report-worker",
+                            notify=False,
                         )
                     )
                 except Exception:
@@ -872,14 +1227,18 @@ def trigger_v0_report(self, hospital_id: str):
             try:
                 _run_async(
                     open_ops_incident(
-                        pipeline="v0_report", object_type="hospital", object_id=hospital_id,
+                        pipeline="v0_report",
+                        object_type="hospital",
+                        object_id=hospital_id,
                         incident_type="V0_REPORT_FAILED",
                         safe_error_code="V0_REPORT_RETRIES_EXHAUSTED",
                         problem="초기 진단 리포트 생성 재시도가 모두 실패했습니다.",
                         customer_impact="초기 진단 리포트를 준비할 수 없습니다.",
                         next_action="운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
-                        source_type="V0_REPORT", hospital_name="병원 초기 진단",
-                        hospital_id=uuid.UUID(hospital_id), actor="v0-report-worker",
+                        source_type="V0_REPORT",
+                        hospital_name="병원 초기 진단",
+                        hospital_id=uuid.UUID(hospital_id),
+                        actor="v0-report-worker",
                     )
                 )
             except Exception:
@@ -1060,7 +1419,7 @@ def nightly_content_generation(self):
                 )
                 existing_titles = [r[0] for r in existing.all()]
 
-                philosophy = get_approved_philosophy_sync(db, hospital.id)
+                philosophy = get_current_approved_philosophy_sync(db, hospital.id)
                 if not philosophy:
                     item.content_philosophy_id = None
                     item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
@@ -1616,7 +1975,7 @@ def generate_content_image(self, content_id: str):
                 return
             db.commit()
             db.refresh(item)
-            philosophy = get_approved_philosophy_sync(db, hospital.id)
+            philosophy = get_current_approved_philosophy_sync(db, hospital.id)
             _persist_publication_readiness(db, item, philosophy)
             run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
             if run_id is not None:
@@ -1670,7 +2029,7 @@ def _generate_single_content_item(
     )
     existing_titles = [row[0] for row in existing.all()]
 
-    philosophy = get_approved_philosophy_sync(db, hospital.id)
+    philosophy = get_current_approved_philosophy_sync(db, hospital.id)
     if not philosophy:
         item.content_philosophy_id = None
         item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
@@ -1946,7 +2305,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
         if hospital.status != HospitalStatus.ACTIVE or not hospital.site_live:
             return None
 
-        philosophy = get_approved_philosophy_sync(db, hospital.id)
+        philosophy = get_current_approved_philosophy_sync(db, hospital.id)
         assessment = assess_content_publication(item, philosophy)
         apply_publication_assessment(item, assessment)
         admin_url = _admin_content_url(hospital.id, item.id)
@@ -2126,14 +2485,18 @@ def run_sov_for_hospital(self, hospital_id: str):
                 )
                 _run_async(
                     open_ops_incident(
-                        pipeline="weekly_sov_capacity", object_type="hospital",
-                        object_id=str(hospital.id), incident_type="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
+                        pipeline="weekly_sov_capacity",
+                        object_type="hospital",
+                        object_id=str(hospital.id),
+                        incident_type="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
                         safe_error_code="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
                         problem="주간 측정의 높은 우선순위 항목 수가 안전 상한을 초과했습니다.",
                         customer_impact="일부 높은 우선순위 질문이 이번 주 측정에서 제외되었습니다.",
                         next_action="운영센터에서 쿼리 타깃과 변형 수를 검토하세요.",
-                        source_type="WEEKLY_SOV_MEASUREMENT", hospital_name=hospital.name,
-                        hospital_id=hospital.id, actor="weekly-sov-worker",
+                        source_type="WEEKLY_SOV_MEASUREMENT",
+                        hospital_name=hospital.name,
+                        hospital_id=hospital.id,
+                        actor="weekly-sov-worker",
                     )
                 )
 
@@ -2854,14 +3217,18 @@ def adjust_query_priorities():
                 )
             )
             for target in target_result.scalars().all():
-                target_records = db.execute(
-                    select(SovRecord)
-                    .where(
-                        SovRecord.ai_query_target_id == target.id,
-                        SovRecord.measured_at >= four_weeks_ago,
+                target_records = (
+                    db.execute(
+                        select(SovRecord)
+                        .where(
+                            SovRecord.ai_query_target_id == target.id,
+                            SovRecord.measured_at >= four_weeks_ago,
+                        )
+                        .order_by(SovRecord.measured_at.desc())
                     )
-                    .order_by(SovRecord.measured_at.desc())
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 desired = _desired_query_priority(target_records)
                 if desired is not None and target.priority != desired:
                     target.priority = desired
@@ -2882,9 +3249,7 @@ def _desired_query_priority(records: Sequence[SovRecord]) -> str | None:
     '전혀 언급되지 않음(HIGH)'으로 오판한다. 보류뿐인 질문은 판단 근거가 없는 것이므로
     None(우선순위 변경 없음)이 맞다.
     """
-    successful_records = [
-        record for record in records if sov_engine.record_is_confirmed(record)
-    ]
+    successful_records = [record for record in records if sov_engine.record_is_confirmed(record)]
     if not successful_records:
         return None
     # 미언급 질문이 개선 작업의 우선 대상이다. 이미 언급되는 질문은 정상 감시로
@@ -3137,8 +3502,10 @@ def _finish_monthly_operation_run(
         stage = MonthlyRunStage.EXISTING
         state = OperationRunState.SUCCEEDED
         counts = (0, 0, 1)
-    elif report is not None and report.quality == "COMPLETE" and _has_valid_doctor_artifact(
-        db, report
+    elif (
+        report is not None
+        and report.quality == "COMPLETE"
+        and _has_valid_doctor_artifact(db, report)
     ):
         stage = MonthlyRunStage.ARTIFACT_VALIDATED
         state = OperationRunState.SUCCEEDED
@@ -3373,36 +3740,48 @@ def _build_monthly_report_for_hospital(
     # Persist the measurement-to-action layer that the Admin and PDF already know how to
     # render. Previously this analysis existed only as a helper and never entered the
     # production monthly-report path, so source evidence and next actions disappeared.
-    query_targets = db.execute(
-        select(AIQueryTarget)
-        .where(AIQueryTarget.hospital_id == h.id)
-        .options(selectinload(AIQueryTarget.variants))
-    ).scalars().all()
-    exposure_gaps = db.execute(
-        select(ExposureGap).where(
-            ExposureGap.hospital_id == h.id,
-            ExposureGap.status.in_(("OPEN", "WATCHING")),
+    query_targets = (
+        db.execute(
+            select(AIQueryTarget)
+            .where(AIQueryTarget.hospital_id == h.id)
+            .options(selectinload(AIQueryTarget.variants))
         )
-    ).scalars().all()
-    exposure_actions = db.execute(
-        select(ExposureAction)
-        .where(
-            ExposureAction.hospital_id == h.id,
-            or_(
-                ExposureAction.status.in_(("OPEN", "IN_PROGRESS", "BLOCKED")),
-                and_(
-                    ExposureAction.status == "COMPLETED",
-                    ExposureAction.completed_at >= period_start,
-                    ExposureAction.completed_at < period_end,
+        .scalars()
+        .all()
+    )
+    exposure_gaps = (
+        db.execute(
+            select(ExposureGap).where(
+                ExposureGap.hospital_id == h.id,
+                ExposureGap.status.in_(("OPEN", "WATCHING")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    exposure_actions = (
+        db.execute(
+            select(ExposureAction)
+            .where(
+                ExposureAction.hospital_id == h.id,
+                or_(
+                    ExposureAction.status.in_(("OPEN", "IN_PROGRESS", "BLOCKED")),
+                    and_(
+                        ExposureAction.status == "COMPLETED",
+                        ExposureAction.completed_at >= period_start,
+                        ExposureAction.completed_at < period_end,
+                    ),
                 ),
-            ),
+            )
+            .options(
+                selectinload(ExposureAction.linked_content),
+                selectinload(ExposureAction.query_target),
+                selectinload(ExposureAction.gap),
+            )
         )
-        .options(
-            selectinload(ExposureAction.linked_content),
-            selectinload(ExposureAction.query_target),
-            selectinload(ExposureAction.gap),
-        )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     next_month = arrow.get(period_start).shift(months=1).format("YYYY-MM")
     strategy = build_strategy_summary(
         hospital=h,
@@ -3588,9 +3967,7 @@ def run_monthly_reports(self):
                     correlation_key=f"scheduled:{h.id}:{anchor.year}-{anchor.month:02d}",
                     operation_run_id=run_id,
                 )
-                _finish_monthly_operation_run(
-                    db, run_id, h.id, anchor.year, anchor.month, outcome
-                )
+                _finish_monthly_operation_run(db, run_id, h.id, anchor.year, anchor.month, outcome)
                 finished_run = db.get(OperationRun, run_id)
                 if finished_run is not None and finished_run.state in (
                     OperationRunState.PARTIAL,
@@ -3616,9 +3993,7 @@ def run_monthly_reports(self):
             "failure_count": len(failures),
         }
     if failures:
-        raise MonthlyBatchIncompleteError(
-            f"scheduled monthly reports incomplete: {len(failures)}"
-        )
+        raise MonthlyBatchIncompleteError(f"scheduled monthly reports incomplete: {len(failures)}")
     return result
 
 
@@ -3688,9 +4063,7 @@ def generate_monthly_report_for_hospital(
             }
             if run_id is not None:
                 build_kwargs["operation_run_id"] = run_id
-            outcome = _build_monthly_report_for_hospital(
-                db, hospital, anchor, **build_kwargs
-            )
+            outcome = _build_monthly_report_for_hospital(db, hospital, anchor, **build_kwargs)
         except Exception as e:
             logger.error(f"Manual monthly report failed for {hospital.name}: {e}")
             db.rollback()
@@ -3792,9 +4165,7 @@ def retry_site_revalidation(self, run_id: str, expected_attempt_count: int):
         except Exception as exc:  # noqa: BLE001 — bounded retry records a safe code below.
             logger.warning("site revalidation retry failed: code=%s", exc.__class__.__name__)
     if refreshed:
-        recorded = _run_async(
-            record_revalidation_success(parsed_run_id, expected_attempt_count)
-        )
+        recorded = _run_async(record_revalidation_success(parsed_run_id, expected_attempt_count))
         return {"status": "recovered" if recorded else "stale_run"}
 
     plan = _run_async(record_retry_failure(parsed_run_id, expected_attempt_count))

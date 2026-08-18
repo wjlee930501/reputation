@@ -15,6 +15,7 @@ from app.models.content import ContentItem
 from app.models.essence import PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
+from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
 from app.workers import tasks
 
 
@@ -73,8 +74,18 @@ async def test_generation_rewrites_once_with_automatic_review_feedback(monkeypat
     async def allow_cost(*_args, **_kwargs):
         return SimpleNamespace(allowed=True)
 
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.98,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
     monkeypatch.setattr(tasks, "generate_content", fake_generate)
     monkeypatch.setattr(tasks, "screen_content_against_philosophy", fake_screen)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
     content, screening = await tasks._generate_with_auto_review(
@@ -89,6 +100,95 @@ async def test_generation_rewrites_once_with_automatic_review_feedback(monkeypat
     assert calls == [[], ["피해야 할 표현을 제거하세요."]]
     assert screening.status == "ALIGNED"
     assert screening.summary["automatic_remediation_attempts"] == 1
+    assert screening.summary["ai_review"]["status"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_independent_ai_review_requests_one_bounded_rewrite(monkeypatch):
+    generation_findings = []
+    reviews = 0
+
+    async def fake_generate(*_args, **kwargs):
+        generation_findings.append(kwargs.get("remediation_findings"))
+        return {"title": f"후보 {len(generation_findings)}", "body": "본문"}
+
+    def deterministic_pass(*_args, **_kwargs):
+        return SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []})
+
+    async def fake_reviewer(**_kwargs):
+        nonlocal reviews
+        reviews += 1
+        if reviews == 1:
+            return ContentAiReview(
+                status=ContentAiReviewStatus.REVISE,
+                confidence=0.97,
+                findings=("근거 없는 장비 주장을 제거하세요.",),
+                summary="재작성 필요",
+                model="reviewer-test",
+            )
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.97,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", deterministic_pass)
+    monkeypatch.setattr(tasks, "review_generated_content", fake_reviewer)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief=None,
+    )
+
+    assert content["title"] == "후보 2"
+    assert generation_findings == [[], ["근거 없는 장비 주장을 제거하세요."]]
+    assert screening.status == "ALIGNED"
+    assert screening.summary["reviewer_driven_rewrites"] == 1
+    assert screening.summary["ai_review"]["status"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_ai_reviewer_is_never_called_before_deterministic_gate_passes(monkeypatch):
+    async def fake_generate(*_args, **_kwargs):
+        return {"title": "차단 후보", "body": "본문"}
+
+    def deterministic_block(*_args, **_kwargs):
+        return SimpleNamespace(
+            status="NEEDS_ESSENCE_REVIEW",
+            summary={"blocking": True, "findings": ["하드 게이트 차단"]},
+        )
+
+    async def reviewer_must_not_run(**_kwargs):
+        raise AssertionError("AI reviewer cannot override a deterministic blocker")
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", deterministic_block)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_must_not_run)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    _content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief=None,
+    )
+
+    assert screening.status == "NEEDS_ESSENCE_REVIEW"
+    assert screening.summary["blocking"] is True
 
 
 def test_query_priority_promotes_only_unmentioned_targets():
@@ -683,7 +783,7 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
         }
 
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(
         tasks,
         "screen_content_against_philosophy",
@@ -737,7 +837,7 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
     async def forbidden_call(*_args, **_kwargs):
         raise AssertionError("승인 전에는 공급자/비용 가드를 호출하면 안 된다")
 
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", forbidden_call)
     monkeypatch.setattr(tasks, "generate_content", forbidden_call)
 
@@ -772,7 +872,7 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
     async def forbidden_call(*_args, **_kwargs):
         raise AssertionError("온보딩(None)에서는 공급자/비용 가드를 호출하면 안 된다")
 
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: approved)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: approved)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", blocked_cost)
     monkeypatch.setattr(tasks, "generate_content", forbidden_call)
 
@@ -788,7 +888,7 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
     assert code == "COST_BLOCKED"
     assert pending_item.essence_status != tasks.ESSENCE_STATUS_MISSING_APPROVED
 
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", forbidden_call)
     onboarding_item = SimpleNamespace(
         id=uuid.uuid4(),
@@ -976,7 +1076,7 @@ def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflic
         tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(2026, 6, 25, tzinfo="Asia/Seoul")
     )
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(tasks, "open_monthly_slot_failure", lambda **_kwargs: None)
 
     async def fake_recover(**_kwargs):
@@ -1163,7 +1263,7 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     )
     audits = []
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: assessment)
     monkeypatch.setattr(
         tasks, "write_audit_log_sync", lambda *_args, **kwargs: audits.append(kwargs)
@@ -1331,7 +1431,7 @@ def test_auto_publish_blocks_content_with_forbidden_expression(monkeypatch):
     effects = _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
-        tasks, "get_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
     )
 
     payload = tasks._auto_publish_one(item.id)
@@ -1361,7 +1461,7 @@ def test_auto_publish_blocks_markdown_hidden_forbidden_expression(monkeypatch):
     effects = _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
-        tasks, "get_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
     )
 
     payload = tasks._auto_publish_one(item.id)
@@ -1382,7 +1482,7 @@ def test_auto_publish_blocks_when_no_approved_philosophy(monkeypatch):
     db = _AutoPublishDB(item, hospital)
     effects = _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
 
     payload = tasks._auto_publish_one(item.id)
 
@@ -1408,7 +1508,7 @@ def test_auto_publish_records_content_block_before_revalidation_dependency(monke
         raise AssertionError("blocked content needs no revalidation")
 
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(
         tasks,
         "ensure_site_revalidate_configured",
@@ -1434,7 +1534,7 @@ def test_auto_publish_is_idempotent(monkeypatch):
     effects = _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
-        tasks, "get_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
     )
 
     first = tasks._auto_publish_one(item.id)
@@ -1463,7 +1563,7 @@ def test_auto_publish_accepts_ready_status(monkeypatch):
     db = _AutoPublishDB(item, hospital)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
-        tasks, "get_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
     )
 
     payload = tasks._auto_publish_one(item.id)
@@ -1542,7 +1642,7 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
 
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
     monkeypatch.setattr(tasks, "generate_image", _boom_image)
-    monkeypatch.setattr(tasks, "get_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
     # 이 테스트의 대상은 write-back 가드다 — 브리프 플래너는 범위 밖이라 고정한다.
     monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", lambda *a, **k: None)
     monkeypatch.setattr(

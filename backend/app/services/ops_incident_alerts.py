@@ -10,9 +10,17 @@ from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentSeverity, IncidentState
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
-from app.services.incidents import build_incident_key, open_or_touch_incident
+from app.services.incidents import (
+    build_incident_key,
+    mark_recovered,
+    mark_retrying,
+    open_or_touch_incident,
+)
 from app.services.notification_contracts import IncidentSlackProjection
-from app.services.notification_messages import build_open_incident_notification
+from app.services.notification_messages import (
+    build_open_incident_notification,
+    build_recovered_incident_notification,
+)
 from app.services.notification_store import enqueue_notification
 
 
@@ -95,3 +103,75 @@ async def open_ops_incident(
             )
         await db.commit()
         return incident.id
+
+
+async def recover_ops_incident(
+    *,
+    pipeline: str,
+    object_type: str,
+    object_id: str,
+    fingerprint: IncidentFingerprint,
+    hospital_name: str = "시스템 공통 작업",
+    actor: str = "system",
+    reason: str = "automatic recovery observed",
+    notify: bool = True,
+) -> bool:
+    """Recover one exact incident only after this caller observed success."""
+
+    sessions = get_async_sessionmaker()
+    async with sessions() as db:
+        key = build_incident_key(pipeline, object_type, object_id, fingerprint)
+        incident = await db.scalar(select(Incident).where(Incident.dedupe_key == key))
+        if incident is None or incident.state in {
+            IncidentState.RECOVERED.value,
+            IncidentState.ACKNOWLEDGED.value,
+        }:
+            return False
+
+        if incident.state == IncidentState.OPEN.value:
+            retrying = await mark_retrying(
+                db,
+                incident.id,
+                expected_version=incident.version,
+                actor=actor,
+                reason=reason,
+            )
+            if not isinstance(retrying, Incident):
+                return False
+            incident = retrying
+        if incident.state != IncidentState.RETRYING.value:
+            return False
+
+        recovered = await mark_recovered(
+            db,
+            incident.id,
+            expected_version=incident.version,
+            observed_success=True,
+            actor=actor,
+            reason=reason,
+        )
+        if not isinstance(recovered, Incident):
+            return False
+        if notify:
+            await enqueue_notification(
+                db,
+                build_recovered_incident_notification(
+                    IncidentSlackProjection(
+                        incident_id=recovered.id,
+                        hospital_name=hospital_name,
+                        severity=recovered.severity,
+                        customer_impact=recovered.customer_impact,
+                        next_action=recovered.next_action,
+                        admin_path=recovered.admin_path,
+                        owner_label="미지정",
+                        sla_label="복구됨",
+                        hospital_id=recovered.hospital_id,
+                        operation_run_id=recovered.operation_run_id,
+                        version=recovered.version,
+                        episode_seq=recovered.episode_seq,
+                    ),
+                    settings.ADMIN_BASE_URL,
+                ),
+            )
+        await db.commit()
+        return True

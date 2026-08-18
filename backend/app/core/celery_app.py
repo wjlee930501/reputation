@@ -15,7 +15,7 @@ from app.workers.dispatch_auth import (
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-08-18.1"
+REDBEAT_SCHEDULE_VERSION = "2026-08-18.2"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -126,6 +126,8 @@ celery_app.conf.update(
     task_routes={
         "app.workers.tasks.nightly_content_generation": {"queue": "content"},
         "app.workers.tasks.regenerate_content_item": {"queue": "content"},
+        "app.workers.tasks.auto_review_essence_snapshot": {"queue": "content"},
+        "app.workers.tasks.reconcile_essence_snapshots": {"queue": "default"},
         "app.workers.tasks.morning_content_auto_publish": {"queue": "content"},
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
@@ -186,6 +188,13 @@ celery_app.conf.update(
             "task": "app.workers.content_backlog_recovery.reconcile",
             "schedule": crontab(hour=22, minute=30),
             "options": {"headers": build_dispatch_headers("reconcile-stranded-content")},
+        },
+        # 15분마다 — 자료 처리 직후 broker publish가 유실되어도 승인된 병원의
+        # 변경 snapshot을 AI 합성·독립 검수 경로로 다시 회수한다.
+        "reconcile-essence-snapshots": {
+            "task": "app.workers.tasks.reconcile_essence_snapshots",
+            "schedule": crontab(minute="*/15"),
+            "options": {"headers": build_dispatch_headers("reconcile-essence-snapshots")},
         },
         # 매일 아침 08:00 — 자동 안전검사 후 발행 + 자동 복구 소진 예외 요약
         "morning-content-auto-publish": {
