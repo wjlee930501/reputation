@@ -741,7 +741,7 @@ def _cost_guarded_essence_synthesis(
 
 def _cost_guarded_essence_review(
     hospital: Hospital,
-    previous: HospitalContentPhilosophy,
+    previous: HospitalContentPhilosophy | None,
     candidate: dict[str, Any],
     notes: list[HospitalSourceEvidenceNote],
 ) -> EssenceAiReview:
