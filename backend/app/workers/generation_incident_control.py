@@ -189,6 +189,12 @@ def _should_send_generation_notification(
     if has_open_cause:
         return False
     if code in _EXPECTED_PENDING_CODES:
+        if previous_state in {
+            IncidentState.RECOVERED.value,
+            IncidentState.ACKNOWLEDGED.value,
+        }:
+            # New episode. Do not score stale against the previous episode clock.
+            return False
         return _expected_pending_crossed_stale(
             first_seen_at=first_seen_at,
             last_seen_at=last_seen_at,

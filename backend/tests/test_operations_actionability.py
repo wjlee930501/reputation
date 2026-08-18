@@ -510,6 +510,24 @@ def test_expected_pending_promotes_to_human_now_once_after_48h() -> None:
         last_seen_at=crossed,
         now=after,
     )
+
+    assert not should_send(
+        notify_requested=False,
+        previous_state="RECOVERED",
+        code="CONTENT_NOT_GENERATED",
+        first_seen_at=first_seen,
+        last_seen_at=crossed,
+        now=after + timedelta(days=2),
+    )
+    assert not should_send(
+        notify_requested=False,
+        previous_state="ACKNOWLEDGED",
+        code="CONTENT_NOT_GENERATED",
+        first_seen_at=first_seen,
+        last_seen_at=crossed,
+        now=after + timedelta(days=2),
+    )
+
     # Reopen starts a new episode clock. The previous 48h crossing must not
     # silence the second episode (last_seen_at >= old threshold forever).
     episode2_start = datetime(2026, 8, 20, 9, 0, tzinfo=UTC)

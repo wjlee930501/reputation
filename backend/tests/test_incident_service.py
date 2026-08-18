@@ -271,6 +271,7 @@ async def test_retry_recovery_ack_and_recurrence_reopen_with_audit(db: AsyncSess
     assert reopened.state == IncidentState.OPEN.value
     assert reopened.occurrence_count == 2
     assert reopened.episode_seq == 2
+    assert reopened.first_seen_at == started + timedelta(hours=1)
     assert reopened.recovered_at is None
     assert reopened.acknowledged_at is None
     assert reopened.acknowledged_by_id is None
