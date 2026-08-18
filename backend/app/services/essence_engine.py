@@ -207,8 +207,45 @@ _SOURCE_PROCESSING_SYSTEM = """\
 }
 """
 
+_SOURCE_PROCESSING_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "evidence_notes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "note_type": {"type": "string", "enum": sorted(_VALID_NOTE_TYPES)},
+                    "claim": {"type": "string"},
+                    "source_excerpt": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "note_metadata": {
+                        "type": "object",
+                        "properties": {
+                            "treatment": {"type": ["string", "null"]},
+                            "patient_language": {"type": "array", "items": {"type": "string"}},
+                            "violations": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["treatment", "patient_language", "violations"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": [
+                    "note_type",
+                    "claim",
+                    "source_excerpt",
+                    "confidence",
+                    "note_metadata",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["evidence_notes"],
+    "additionalProperties": False,
+}
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+
 class _LlmCallCounter:
     __slots__ = ("count",)
 
@@ -246,21 +283,47 @@ async def metered_llm_calls() -> AsyncIterator[_LlmCallCounter]:
             await cost_guard.record_provider_call("content", count=counter.count)
 
 
-def _call_anthropic_json(system: str, user_message: str, *, max_tokens: int) -> dict[str, Any]:
-    """비용을 아끼기 위해 fast 모델로 essence 추출/합성을 호출하고 JSON으로 파싱한다."""
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=4), reraise=True)
+def _call_anthropic_json(
+    system: str,
+    user_message: str,
+    *,
+    max_tokens: int,
+    output_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Call the fast model with bounded retries and schema-constrained JSON."""
     client = _anthropic_client()
     if client is None:  # pragma: no cover — llm_enabled() 가드 이후에만 호출됨
         raise RuntimeError("ANTHROPIC_API_KEY가 설정되어 있지 않습니다.")
     counter = _llm_call_counter.get()
     if counter is not None:
         counter.tick()
+    request: dict[str, Any] = {
+        "model": settings.CLAUDE_MODEL_FAST,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    if output_schema is not None:
+        request["output_config"] = {
+            "format": {"type": "json_schema", "schema": output_schema}
+        }
     response = client.messages.create(
-        model=settings.CLAUDE_MODEL_FAST,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user_message}],
+        **request,
     )
-    raw = response.content[0].text
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason in {"max_tokens", "refusal"}:
+        raise ValueError(f"essence LLM incomplete structured output: {stop_reason}")
+    raw = next(
+        (
+            str(block.text)
+            for block in response.content
+            if getattr(block, "text", None) and str(block.text).strip()
+        ),
+        "",
+    )
+    if not raw:
+        raise ValueError("essence LLM returned no text JSON block")
     return _parse_json_object(raw)
 
 
@@ -273,7 +336,12 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
         + (f"[운영자 메모 operator_note]\n{operator_note}\n\n" if operator_note else "")
         + "위 원문에서만 근거 노트를 추출해 JSON으로 출력하세요."
     )
-    data = _call_anthropic_json(_SOURCE_PROCESSING_SYSTEM, user_message, max_tokens=3000)
+    data = _call_anthropic_json(
+        _SOURCE_PROCESSING_SYSTEM,
+        user_message,
+        max_tokens=3000,
+        output_schema=_SOURCE_PROCESSING_OUTPUT_SCHEMA,
+    )
 
     payloads: list[EvidenceNotePayload] = []
     seen: set[tuple[str, str]] = set()
@@ -472,6 +540,89 @@ _TEXT_FIELDS_LIST = (
     "medical_ad_risk_rules",
 )
 
+_TEXT_WITH_EVIDENCE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "evidence_note_ids": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["text", "evidence_note_ids"],
+    "additionalProperties": False,
+}
+_TEXT_WITH_EVIDENCE_LIST_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": _TEXT_WITH_EVIDENCE_SCHEMA,
+}
+_SYNTHESIS_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "positioning_statement": _TEXT_WITH_EVIDENCE_SCHEMA,
+        "doctor_voice": _TEXT_WITH_EVIDENCE_SCHEMA,
+        "patient_promise": _TEXT_WITH_EVIDENCE_SCHEMA,
+        "content_principles": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
+        "tone_guidelines": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
+        "must_use_messages": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
+        "avoid_messages": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
+        "treatment_narratives": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "treatment": {"type": "string"},
+                    "patient_language": {"type": "array", "items": {"type": "string"}},
+                    "cautions": {"type": "array", "items": {"type": "string"}},
+                    "evidence_note_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "treatment",
+                    "patient_language",
+                    "cautions",
+                    "evidence_note_ids",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "local_context": {
+            "type": "object",
+            "properties": {
+                "region_terms": {"type": "array", "items": {"type": "string"}},
+                "local_patient_context": {"type": "array", "items": {"type": "string"}},
+                "evidence_note_ids": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["region_terms", "local_patient_context", "evidence_note_ids"],
+            "additionalProperties": False,
+        },
+        "medical_ad_risk_rules": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
+        "unsupported_gaps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"field": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["field", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        "conflict_notes": _TEXT_WITH_EVIDENCE_LIST_SCHEMA,
+        "synthesis_notes": {"type": "string"},
+    },
+    "required": [
+        "positioning_statement",
+        "doctor_voice",
+        "patient_promise",
+        "content_principles",
+        "tone_guidelines",
+        "must_use_messages",
+        "avoid_messages",
+        "treatment_narratives",
+        "local_context",
+        "medical_ad_risk_rules",
+        "unsupported_gaps",
+        "conflict_notes",
+        "synthesis_notes",
+    ],
+    "additionalProperties": False,
+}
+
 
 def _synthesize_philosophy_llm(
     hospital: Hospital,
@@ -499,7 +650,12 @@ def _synthesize_philosophy_llm(
         "위 근거 노트만 사용해 콘텐츠 운영 기준을 JSON으로 합성하세요. "
         "각 필드의 evidence_note_ids는 위 id 목록 안에서만 고릅니다."
     )
-    data = _call_anthropic_json(_SYNTHESIS_SYSTEM, user_message, max_tokens=4000)
+    data = _call_anthropic_json(
+        _SYNTHESIS_SYSTEM,
+        user_message,
+        max_tokens=6000,
+        output_schema=_SYNTHESIS_OUTPUT_SCHEMA,
+    )
 
     evidence_map: dict[str, list[str]] = {}
     payload: dict[str, Any] = {}

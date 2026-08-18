@@ -370,6 +370,35 @@ def test_independent_review_finding_drives_one_fresh_synthesis(pg_session) -> No
     assert "환자 선택지 설명이 근거보다 넓습니다." in str(operator_notes[1])
 
 
+def test_refresh_carries_forward_current_grounded_approved_core(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="carry-forward")
+    previous.positioning_statement = "충분한 설명과 환자별 선택지 안내"
+    previous.must_use_messages = ["환자 상태에 맞춰 선택지를 안내합니다."]
+    previous.evidence_map = {
+        "positioning_statement": [str(note.id)],
+        "must_use_messages": [str(note.id)],
+    }
+    pg_session.flush()
+
+    candidate_seen: dict = {}
+
+    def review(_hospital, _previous, candidate, _notes):
+        candidate_seen.update(candidate)
+        return _approved_review(note)
+
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_args, **_kwargs: _candidate_payload(source, note),
+        reviewer=review,
+    )
+
+    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert candidate_seen["positioning_statement"] == "충분한 설명과 환자별 선택지 안내"
+    assert candidate_seen["must_use_messages"] == ["환자 상태에 맞춰 선택지를 안내합니다."]
+    assert candidate_seen["evidence_map"]["positioning_statement"] == [str(note.id)]
+
+
 def test_legacy_automatic_draft_is_superseded_only_after_fresh_review(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="legacy-auto-draft")
     legacy_payload = _candidate_payload(source, note)
@@ -387,7 +416,7 @@ def test_legacy_automatic_draft_is_superseded_only_after_fresh_review(pg_session
     # system artifact keeps equal creation/update timestamps.
     legacy.unsupported_gaps = [
         {"field": "automatic_ai_review", "reason": "이전 자동 안전검사 차단"},
-        {"field": "automatic_recovery_cycle", "reason": "1"},
+        {"field": "automatic_recovery_cycle", "reason": "2"},
     ]
     pg_session.flush()
 
@@ -472,7 +501,7 @@ def test_persistent_candidate_failure_stops_periodic_retry_loop(pg_session) -> N
     assert essence_refresh_needed(pg_session, hospital.id) is False
     escalated = pg_session.get(HospitalContentPhilosophy, first.philosophy_id)
     assert any(
-        item.get("field") == "automatic_recovery_cycle" and item.get("reason") == "2"
+        item.get("field") == "automatic_recovery_cycle" and item.get("reason") == "3"
         for item in escalated.unsupported_gaps
         if isinstance(item, dict)
     )

@@ -88,7 +88,7 @@ def test_llm_source_processing_keeps_only_verbatim_excerpts(monkeypatch, llm_key
             ]
         }
     )
-    _patch_client(monkeypatch, llm_payload)
+    fake = _patch_client(monkeypatch, llm_payload)
 
     notes = process_source_asset(asset)
 
@@ -101,6 +101,7 @@ def test_llm_source_processing_keeps_only_verbatim_excerpts(monkeypatch, llm_key
     assert any(n.note_type == EvidenceNoteType.DOCTOR_PHILOSOPHY for n in notes)
     treatment = next(n for n in notes if n.note_type == EvidenceNoteType.TREATMENT_SIGNAL)
     assert treatment.note_metadata.get("treatment") == "치질 수술"
+    assert fake.messages.calls[0]["output_config"]["format"]["type"] == "json_schema"
 
 
 def test_llm_synthesis_produces_grounded_voice_and_narrative(monkeypatch, llm_key):
@@ -144,7 +145,7 @@ def test_llm_synthesis_produces_grounded_voice_and_narrative(monkeypatch, llm_ke
             "synthesis_notes": "근거 기반 합성.",
         }
     )
-    _patch_client(monkeypatch, llm_payload)
+    fake = _patch_client(monkeypatch, llm_payload)
 
     payload = synthesize_philosophy(SimpleNamespace(name="장편한외과의원"), [source], notes)
 
@@ -160,6 +161,35 @@ def test_llm_synthesis_produces_grounded_voice_and_narrative(monkeypatch, llm_ke
     assert "must_use_messages" not in payload["evidence_map"]
     # 합성 결과가 grounding 검증을 통과한다.
     assert validate_philosophy_grounding(payload, notes) == []
+    output_format = fake.messages.calls[0]["output_config"]["format"]
+    assert output_format["type"] == "json_schema"
+    assert output_format["schema"]["additionalProperties"] is False
+
+
+def test_json_provider_call_retries_empty_response(monkeypatch, llm_key):
+    class SequenceMessages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            text = "" if self.calls == 1 else '{"ok": true}'
+            return SimpleNamespace(
+                content=[SimpleNamespace(text=text)],
+                stop_reason="end_turn",
+            )
+
+    messages = SequenceMessages()
+    monkeypatch.setattr(
+        essence_engine,
+        "_anthropic_client",
+        lambda: SimpleNamespace(messages=messages),
+    )
+
+    result = essence_engine._call_anthropic_json("system", "data", max_tokens=100)
+
+    assert result == {"ok": True}
+    assert messages.calls == 2
 
 
 def test_llm_synthesis_missing_cautions_uses_safe_default(monkeypatch, llm_key):

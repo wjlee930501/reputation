@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import uuid
 from dataclasses import dataclass
@@ -39,7 +40,7 @@ from app.utils.medical_filter import check_forbidden
 AUTO_ESSENCE_ACTOR = "SYSTEM_ESSENCE_AI_REVIEW"
 AUTO_ESSENCE_CONFIDENCE = 0.90
 AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS = 2
-AUTO_ESSENCE_RECOVERY_REVISION = 2
+AUTO_ESSENCE_RECOVERY_REVISION = 3
 _AUTO_RECOVERY_CYCLE_FIELD = "automatic_recovery_cycle"
 _MAX_REVIEW_FINDINGS = 8
 _PROMPT_INJECTION_PATTERNS = (
@@ -61,6 +62,11 @@ APPROVE는 다음 조건을 모두 만족할 때만 선택합니다.
 - 자료 간 충돌, 과장, 효과 보장, 근거 없는 비용·통계·장비·경력 주장이 없음
 - 불확실한 항목은 비워 두거나 unsupported gap으로 명시됨
 
+새 자료에서 근거 있는 세부 메시지가 추가되거나 후보 구조가 기존 승인본보다 상세해진 것,
+한 narrative가 하나의 충분한 근거 note에 연결된 것, 작업 provenance 메타데이터가 있는 것은
+그 자체로 차단 사유가 아닙니다. 실제 근거 상실·충돌·과장만 findings에 기록하세요.
+reviewed_evidence_note_ids에는 후보 evidence_map에 연결된 모든 UUID를 빠짐없이 반환하세요.
+
 반드시 JSON 객체만 출력하세요.
 {
   "decision": "APPROVE 또는 ESCALATE",
@@ -70,6 +76,28 @@ APPROVE는 다음 조건을 모두 만족할 때만 선택합니다.
   "summary": "한 문장 요약"
 }
 """
+
+_REVIEW_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "decision": {"type": "string", "enum": ["APPROVE", "ESCALATE"]},
+        "confidence": {"type": "number"},
+        "findings": {"type": "array", "items": {"type": "string"}},
+        "reviewed_evidence_note_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "summary": {"type": "string"},
+    },
+    "required": [
+        "decision",
+        "confidence",
+        "findings",
+        "reviewed_evidence_note_ids",
+        "summary",
+    ],
+    "additionalProperties": False,
+}
 
 
 class EssenceRefreshStatus(StrEnum):
@@ -321,6 +349,104 @@ def _critical_losses(
     return findings
 
 
+def _current_grounded_ids(
+    philosophy: HospitalContentPhilosophy,
+    field: str,
+    valid_note_ids: set[str],
+) -> list[str]:
+    evidence_map = philosophy.evidence_map or {}
+    raw_ids = evidence_map.get(field) if isinstance(evidence_map, dict) else None
+    values = raw_ids if isinstance(raw_ids, list) else [raw_ids]
+    return [str(item) for item in values if item and str(item) in valid_note_ids]
+
+
+def _merge_unique(previous: object, candidate: object, *, limit: int = 24) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[str] = set()
+    previous_items = previous if isinstance(previous, list) else []
+    candidate_items = candidate if isinstance(candidate, list) else []
+    for item in [*previous_items, *candidate_items]:
+        key = repr(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(copy.deepcopy(item))
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _carry_forward_grounded_baseline(
+    previous: HospitalContentPhilosophy,
+    payload: dict[str, Any],
+    notes: list[HospitalSourceEvidenceNote],
+) -> dict[str, Any]:
+    """Keep trusted approved principles when a larger snapshot adds new evidence."""
+
+    result = copy.deepcopy(payload)
+    evidence_map = result.get("evidence_map")
+    if not isinstance(evidence_map, dict):
+        evidence_map = {}
+        result["evidence_map"] = evidence_map
+    valid_note_ids = {str(note.id) for note in notes}
+
+    for field in ("positioning_statement", "doctor_voice", "patient_promise"):
+        ids = _current_grounded_ids(previous, field, valid_note_ids)
+        value = getattr(previous, field, None)
+        if value and ids:
+            result[field] = copy.deepcopy(value)
+            evidence_map[field] = ids
+
+    for field in (
+        "content_principles",
+        "tone_guidelines",
+        "must_use_messages",
+        "avoid_messages",
+        "treatment_narratives",
+        "medical_ad_risk_rules",
+    ):
+        ids = _current_grounded_ids(previous, field, valid_note_ids)
+        value = getattr(previous, field, None)
+        if value and ids:
+            result[field] = _merge_unique(value, result.get(field))
+            candidate_ids = evidence_map.get(field)
+            candidate_ids = candidate_ids if isinstance(candidate_ids, list) else []
+            evidence_map[field] = list(
+                dict.fromkeys([*ids, *[str(item) for item in candidate_ids]])
+            )
+
+    local_ids = _current_grounded_ids(previous, "local_context", valid_note_ids)
+    previous_local = previous.local_context or {}
+    candidate_local = result.get("local_context") or {}
+    if local_ids and isinstance(previous_local, dict) and isinstance(candidate_local, dict):
+        merged_local = copy.deepcopy(candidate_local)
+        for field in ("region_terms", "local_patient_context"):
+            merged_local[field] = _merge_unique(
+                previous_local.get(field), candidate_local.get(field), limit=20
+            )
+        merged_local["avoid_region_stuffing"] = True
+        candidate_local_ids = candidate_local.get("evidence_note_ids")
+        candidate_local_ids = (
+            candidate_local_ids if isinstance(candidate_local_ids, list) else []
+        )
+        merged_local["evidence_note_ids"] = list(
+            dict.fromkeys(
+                [
+                    *local_ids,
+                    *[str(item) for item in candidate_local_ids],
+                ]
+            )
+        )
+        result["local_context"] = merged_local
+        evidence_map["local_context"] = merged_local["evidence_note_ids"]
+
+    result["synthesis_notes"] = (
+        f"{str(result.get('synthesis_notes') or '').strip()} "
+        "Grounded fields from the previous approved version were carried forward."
+    ).strip()
+    return result
+
+
 def deterministic_candidate_findings(
     *,
     previous: HospitalContentPhilosophy,
@@ -428,6 +554,7 @@ def review_essence_candidate(
         _REVIEW_SYSTEM_PROMPT,
         data,
         max_tokens=1600,
+        output_schema=_REVIEW_OUTPUT_SCHEMA,
     )
     findings = tuple(
         text
@@ -592,6 +719,7 @@ def refresh_essence_snapshot(
     ai_review: EssenceAiReview | None = None
     while synthesis_attempts < AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS:
         payload = synthesizer(hospital, sources, notes, operator_note=operator_note)
+        payload = _carry_forward_grounded_baseline(previous, payload, notes)
         synthesis_attempts += 1
         deterministic_findings = deterministic_candidate_findings(
             previous=previous,
