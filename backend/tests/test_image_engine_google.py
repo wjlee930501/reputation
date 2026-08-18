@@ -36,7 +36,7 @@ def test_google_image_generation_uses_current_vertex_model_and_uploads_payload(m
     monkeypatch.setattr(
         image_engine.settings,
         "GOOGLE_IMAGE_MODEL",
-        "gemini-2.5-flash-image",
+        "gemini-3.1-flash-image",
     )
     monkeypatch.setattr(
         image_engine,
@@ -49,7 +49,23 @@ def test_google_image_generation_uses_current_vertex_model_and_uploads_payload(m
     assert result == "gs://bucket/hospital-slug/png-bytes.png"
     assert captured["client"]["vertexai"] is True
     assert captured["client"]["location"] == "global"
-    assert captured["request"]["model"] == "gemini-2.5-flash-image"
+    assert captured["request"]["model"] == "gemini-3.1-flash-image"
     config = captured["request"]["config"]
     assert config.image_config.aspect_ratio == "16:9"
     assert config.image_config.person_generation == "ALLOW_NONE"
+
+
+def test_google_visual_scene_does_not_echo_sensitive_medical_title():
+    scene = image_engine._safe_google_visual_scene(
+        "수원에서 치루나 항문농양을 진료할 병원은 어떻게 선택하나요?"
+    )
+
+    assert "치루" not in scene
+    assert "항문" not in scene
+    assert "glass of water" in scene
+
+
+def test_google_visual_scene_preserves_safe_topic_variety():
+    assert "thermometer" in image_engine._safe_google_visual_scene("소아 발열 치료")
+    assert "ultrasound monitor" in image_engine._safe_google_visual_scene("유방초음파 비용")
+    assert "clipboard" in image_engine._safe_google_visual_scene("건강검진 준비")

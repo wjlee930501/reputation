@@ -326,10 +326,10 @@ class Settings(BaseSettings):
     CERTIFICATE_MAP_NAME: str = "reputation-certmap"
 
     # 콘텐츠 대표 이미지 생성기
-    #   "google" → Vertex AI Gemini 2.5 Flash Image (기본)
+    #   "google" → Vertex AI Gemini 3.1 Flash Image (기본)
     #   "openai" → gpt-image-2 우선, 실패 시 Google 경로로 폴백
     IMAGE_PROVIDER: str = "google"
-    GOOGLE_IMAGE_MODEL: str = "gemini-2.5-flash-image"
+    GOOGLE_IMAGE_MODEL: str = "gemini-3.1-flash-image"
     GOOGLE_IMAGE_LOCATION: str = "global"
     OPENAI_IMAGE_MODEL: str = "gpt-image-2"
     OPENAI_IMAGE_SIZE: str = "1536x864"  # 16:9 (16의 배수, 비율≤3:1) — 카드 레이아웃 일치

@@ -1,6 +1,6 @@
 """
 이미지 생성 엔진
-- 기본: Vertex AI **Gemini 2.5 Flash Image**
+- 기본: Vertex AI **Gemini 3.1 Flash Image**
 - 선택: OpenAI **gpt-image-2**, 실패 시 Google 경로로 폴백
 - 생성물은 GCS에 저장 후 gs:// 경로 반환 (공개 표면은 안정 프록시로 서빙)
 
@@ -149,7 +149,7 @@ async def generate_image(
 ) -> tuple[str, str]:
     """
     대표 이미지 생성 후 GCS에 저장.
-    - 기본 Vertex AI Gemini 2.5 Flash Image (topic으로 항목별 다양성 확보)
+    - 기본 Vertex AI Gemini 3.1 Flash Image (안전한 주제 장면으로 항목별 다양성 확보)
     - IMAGE_PROVIDER=openai이면 gpt-image-2 우선, 실패 시 Google 폴백
     - 둘 다 불가하면 ("", "") — 이미지 실패가 텍스트 콘텐츠를 막지 않게 한다.
     Returns: (gcs_path, prompt_used)  — gs://bucket/path 형태
@@ -193,7 +193,7 @@ async def generate_image(
 
     prompt = IMAGE_PROMPTS.get(content_type, IMAGE_PROMPTS[ContentType.FAQ])
     if topic:
-        prompt = f"{prompt}. Specific subject: {topic.strip()}"
+        prompt = f"{prompt}. Specific visual scene: {_safe_google_visual_scene(topic)}"
     fallback_attempts = _CallCounter()
     try:
         url = await loop.run_in_executor(
@@ -219,6 +219,39 @@ def _upload_png_to_gcs(image_bytes: bytes, hospital_name: str) -> str:
     gcs_path = f"gs://{settings.GCP_STORAGE_BUCKET}/{filename}"
     logger.info("Image uploaded: %s", gcs_path)
     return gcs_path
+
+
+def _safe_google_visual_scene(topic: str) -> str:
+    """Map medical titles to non-sensitive, anonymous editorial still lifes.
+
+    Raw titles such as pediatric fever or proctology terms can trigger an image
+    model's safety stop even when the requested artwork is harmless.  They also
+    encourage unwanted anatomy.  Keep topic-level variety without sending the
+    diagnosis or body-region wording to the image model.
+    """
+    compact = "".join(topic.lower().split())
+    if any(keyword in compact for keyword in ("발열", "탈수", "수분")):
+        return "a glass of water and a digital thermometer arranged on a clean desk"
+    if any(keyword in compact for keyword in ("유방초음파", "초음파")):
+        return "an ultrasound monitor and folded towel in an empty bright examination room"
+    if any(keyword in compact for keyword in ("건강검진", "검진")):
+        return "a stethoscope, blank clipboard, and calendar blocks on a bright desk"
+    if any(
+        keyword in compact
+        for keyword in (
+            "항문",
+            "치루",
+            "치질",
+            "치핵",
+            "치열",
+            "변비",
+            "대장",
+            "내시경",
+            "출혈",
+        )
+    ):
+        return "a glass of water, a blank appointment card, and a folded neutral towel"
+    return "a blank appointment card and calm clinic objects arranged as a wellness still life"
 
 
 @retry(
@@ -289,7 +322,6 @@ def _generate_and_upload(
                     aspect_ratio="16:9",
                     image_size="1K",
                     person_generation="ALLOW_NONE",
-                    output_mime_type="image/png",
                 ),
             ),
         )
@@ -297,7 +329,7 @@ def _generate_and_upload(
             response.candidates[0].content.parts
             if response.candidates and response.candidates[0].content
             else []
-        )
+        ) or []
         image_bytes = next(
             (
                 part.inline_data.data
@@ -307,7 +339,14 @@ def _generate_and_upload(
             None,
         )
         if not image_bytes:
-            raise ValueError("Google image model returned no image payload")
+            finish_reasons = [
+                str(getattr(candidate, "finish_reason", None))
+                for candidate in (response.candidates or [])
+            ]
+            raise ValueError(
+                "Google image model returned no image payload "
+                f"(finish_reasons={finish_reasons})"
+            )
         return _upload_png_to_gcs(image_bytes, hospital_name)
 
     except ImportError:

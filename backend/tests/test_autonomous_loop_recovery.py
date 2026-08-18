@@ -200,6 +200,39 @@ def test_reconciler_redispatches_stranded_requested_operation_run(monkeypatch) -
     assert session.commits == 1
 
 
+def test_reconciler_does_not_duplicate_legitimately_queued_operation(monkeypatch) -> None:
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="REBUILD_SITE",
+        state=OperationRunState.QUEUED,
+        hospital_id=hospital_id,
+        task_id="waiting-for-worker-capacity",
+        request_payload={},
+        requested_at=now - timedelta(minutes=10),
+        queued_at=now - timedelta(minutes=3),
+    )
+    session = _RecoverySession(operation_runs=(run,))
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a healthy queued task must not be duplicated")
+        ),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result == {"site_builds": 0, "site_revalidations": 0, "operation_runs": 0}
+    assert run.state == OperationRunState.QUEUED
+    assert run.queued_at == now - timedelta(minutes=3)
+    assert session.commits == 1
+
+
 def test_reconciler_fails_unsafe_stranded_operation_without_dispatch(monkeypatch) -> None:
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     hospital_id = uuid.uuid4()
@@ -324,8 +357,8 @@ def test_reconciler_allows_monthly_report_rebuild_true_dispatch(monkeypatch) -> 
                 "task_args": [str(hospital_id), 2026, 7, True],
             }
         },
-        requested_at=now - timedelta(minutes=10),
-        queued_at=now - timedelta(minutes=10),
+        requested_at=now - timedelta(hours=2),
+        queued_at=now - timedelta(hours=2),
         safe_error_code=None,
         safe_error_message=None,
         version=3,

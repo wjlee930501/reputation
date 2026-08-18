@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, TypedDict
 
 from celery import current_task
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 
 from app.core.celery_app import celery_app
 from app.core.database import SyncSessionLocal
@@ -29,7 +29,8 @@ from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
 
 _BATCH_SIZE: Final = 100
-_OPERATION_REDISPATCH_GRACE: Final = timedelta(minutes=2)
+_REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
+_QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,20 @@ def _revalidation_is_due(run: OperationRun, observed_at: datetime) -> bool:
     return last_attempt <= observed_at - timedelta(seconds=delay)
 
 
+def _operation_redispatch_is_due(run: OperationRun, observed_at: datetime) -> bool:
+    """Distinguish a publish that may be lost from legitimate broker queue time."""
+
+    if run.state == OperationRunState.REQUESTED:
+        last_transition = run.requested_at
+        grace = _REQUESTED_REDISPATCH_GRACE
+    elif run.state == OperationRunState.QUEUED:
+        last_transition = run.queued_at or run.requested_at
+        grace = _QUEUED_REDISPATCH_GRACE
+    else:
+        return False
+    return last_transition <= observed_at - grace
+
+
 @celery_app.task(name="app.workers.autonomous_recovery.reconcile")
 def reconcile() -> RecoveryCounts:
     """Re-dispatch idempotent work from committed database truth."""
@@ -119,16 +134,24 @@ def reconcile() -> RecoveryCounts:
             .all()
             if _revalidation_is_due(run, observed_at)
         ]
-        operation_runs = list(
-            db.execute(
+        operation_runs = [
+            run
+            for run in db.execute(
                 select(OperationRun)
                 .where(
                     OperationRun.operation_type.in_(tuple(_OPERATION_REDISPATCH_POLICIES)),
-                    OperationRun.state.in_(
-                        (OperationRunState.REQUESTED, OperationRunState.QUEUED)
+                    or_(
+                        and_(
+                            OperationRun.state == OperationRunState.REQUESTED,
+                            OperationRun.requested_at
+                            <= observed_at - _REQUESTED_REDISPATCH_GRACE,
+                        ),
+                        and_(
+                            OperationRun.state == OperationRunState.QUEUED,
+                            func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
+                            <= observed_at - _QUEUED_REDISPATCH_GRACE,
+                        ),
                     ),
-                    func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
-                    <= observed_at - _OPERATION_REDISPATCH_GRACE,
                 )
                 .order_by(OperationRun.requested_at, OperationRun.id)
                 .with_for_update(skip_locked=True)
@@ -136,7 +159,8 @@ def reconcile() -> RecoveryCounts:
             )
             .scalars()
             .all()
-        )
+            if _operation_redispatch_is_due(run, observed_at)
+        ]
 
         for hospital in hospitals:
             hospital_id = str(hospital.id)
