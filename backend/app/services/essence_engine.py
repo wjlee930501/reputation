@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator, Iterable
 
 import anthropic
 from sqlalchemy import select
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import Retrying, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.models.content import ContentItem
@@ -283,48 +283,56 @@ async def metered_llm_calls() -> AsyncIterator[_LlmCallCounter]:
             await cost_guard.record_provider_call("content", count=counter.count)
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=4), reraise=True)
 def _call_anthropic_json(
     system: str,
     user_message: str,
     *,
     max_tokens: int,
     output_schema: dict[str, Any] | None = None,
+    attempts: int = 3,
+    timeout_seconds: float = 60.0,
 ) -> dict[str, Any]:
     """Call the fast model with bounded retries and schema-constrained JSON."""
-    client = _anthropic_client()
-    if client is None:  # pragma: no cover — llm_enabled() 가드 이후에만 호출됨
-        raise RuntimeError("ANTHROPIC_API_KEY가 설정되어 있지 않습니다.")
-    counter = _llm_call_counter.get()
-    if counter is not None:
-        counter.tick()
-    request: dict[str, Any] = {
-        "model": settings.CLAUDE_MODEL_FAST,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{"role": "user", "content": user_message}],
-    }
-    if output_schema is not None:
-        request["output_config"] = {
-            "format": {"type": "json_schema", "schema": output_schema}
-        }
-    response = client.messages.create(
-        **request,
-    )
-    stop_reason = getattr(response, "stop_reason", None)
-    if stop_reason in {"max_tokens", "refusal"}:
-        raise ValueError(f"essence LLM incomplete structured output: {stop_reason}")
-    raw = next(
-        (
-            str(block.text)
-            for block in response.content
-            if getattr(block, "text", None) and str(block.text).strip()
-        ),
-        "",
-    )
-    if not raw:
-        raise ValueError("essence LLM returned no text JSON block")
-    return _parse_json_object(raw)
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+    for attempt in Retrying(
+        stop=stop_after_attempt(attempts),
+        wait=wait_exponential(min=1, max=4),
+        reraise=True,
+    ):
+        with attempt:
+            client = _anthropic_client()
+            if client is None:  # pragma: no cover — llm_enabled() 가드 후에만 호출됨
+                raise RuntimeError("ANTHROPIC_API_KEY가 설정되어 있지 않습니다.")
+            counter = _llm_call_counter.get()
+            if counter is not None:
+                counter.tick()
+            request: dict[str, Any] = {
+                "model": settings.CLAUDE_MODEL_FAST,
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": [{"role": "user", "content": user_message}],
+            }
+            if output_schema is not None:
+                request["output_config"] = {
+                    "format": {"type": "json_schema", "schema": output_schema}
+                }
+            response = client.messages.create(**request, timeout=timeout_seconds)
+            stop_reason = getattr(response, "stop_reason", None)
+            if stop_reason in {"max_tokens", "refusal"}:
+                raise ValueError(f"essence LLM incomplete structured output: {stop_reason}")
+            raw = next(
+                (
+                    str(block.text)
+                    for block in response.content
+                    if getattr(block, "text", None) and str(block.text).strip()
+                ),
+                "",
+            )
+            if not raw:
+                raise ValueError("essence LLM returned no text JSON block")
+            return _parse_json_object(raw)
+    raise RuntimeError("essence LLM retry loop ended without a result")  # pragma: no cover
 
 
 def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePayload]:
@@ -509,6 +517,9 @@ _SYNTHESIS_SYSTEM = """\
 4. 의료광고 금지 표현(1등/최고/유일/완치/100%/성공률/부작용 없는 등)은 출력에 쓰지 않습니다.
    환자에게 결과를 보장하는 약속도 만들지 않습니다.
 5. 상충하는 근거는 conflict_notes에 남기고 임의로 결론내리지 않습니다.
+6. 제목만 있거나 문장이 중간에 잘린 발췌는 긍정 운영 기준에 사용하지 않고
+   unsupported_gap으로 남깁니다. 모든 note를 억지로 출력에 포함하지 않습니다.
+7. 핵심 운영 기준만 최대 40개 entry로 압축합니다.
 
 출력은 JSON 객체 하나만, 코드블록/설명 없이 entries 배열로 반환합니다.
 모든 entry는 아래 키를 전부 가지며 사용하지 않는 문자열/배열은 빈 값으로 둡니다.
@@ -555,6 +566,7 @@ _SYNTHESIS_OUTPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "entries": {
             "type": "array",
+            "maxItems": 40,
             "items": {
                 "type": "object",
                 "properties": {
@@ -677,8 +689,13 @@ def _synthesize_philosophy_llm(
     data = _call_anthropic_json(
         _SYNTHESIS_SYSTEM,
         user_message,
-        max_tokens=6000,
+        max_tokens=3600,
         output_schema=_SYNTHESIS_OUTPUT_SCHEMA,
+        # A safe deterministic synthesis fallback exists. Preserve the task
+        # budget for the two independent safety reviews instead of spending
+        # three minutes retrying a long synthesis response.
+        attempts=1,
+        timeout_seconds=90.0,
     )
     if isinstance(data.get("entries"), list):
         data = _expand_synthesis_entries(data)

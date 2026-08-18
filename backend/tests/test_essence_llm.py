@@ -192,6 +192,63 @@ def test_json_provider_call_retries_empty_response(monkeypatch, llm_key):
     assert messages.calls == 2
 
 
+def test_json_provider_call_honors_single_attempt_budget(monkeypatch, llm_key):
+    class EmptyMessages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(content=[SimpleNamespace(text="")], stop_reason="end_turn")
+
+    messages = EmptyMessages()
+    monkeypatch.setattr(
+        essence_engine,
+        "_anthropic_client",
+        lambda: SimpleNamespace(messages=messages),
+    )
+
+    with pytest.raises(ValueError, match="no text JSON block"):
+        essence_engine._call_anthropic_json(
+            "system",
+            "data",
+            max_tokens=100,
+            attempts=1,
+        )
+
+    assert messages.calls == 1
+
+
+def test_synthesis_path_falls_back_after_one_provider_attempt(monkeypatch, llm_key):
+    class EmptyMessages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(content=[SimpleNamespace(text="")], stop_reason="end_turn")
+
+    messages = EmptyMessages()
+    monkeypatch.setattr(
+        essence_engine,
+        "_anthropic_client",
+        lambda: SimpleNamespace(messages=messages),
+    )
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        source_excerpt="환자 상태를 확인하고 필요한 진료 과정을 설명합니다.",
+        note_metadata={},
+    )
+    source = SimpleNamespace(id=uuid.uuid4(), processed_at=None, status=None, content_hash="h")
+
+    payload = synthesize_philosophy(SimpleNamespace(name="테스트병원"), [source], [note])
+
+    assert messages.calls == 1
+    assert payload["positioning_statement"]
+    assert payload["evidence_map"]["positioning_statement"] == [str(note.id)]
+
+
 def test_compact_structured_entries_expand_to_grounded_payload(monkeypatch, llm_key):
     note = SimpleNamespace(
         id=uuid.uuid4(),
@@ -239,6 +296,8 @@ def test_compact_structured_entries_expand_to_grounded_payload(monkeypatch, llm_
     assert payload["evidence_map"]["positioning_statement"] == [str(note.id)]
     schema = fake.messages.calls[0]["output_config"]["format"]["schema"]
     assert list(schema["properties"]) == ["entries"]
+    assert schema["properties"]["entries"]["maxItems"] == 40
+    assert fake.messages.calls[0]["timeout"] == 90.0
 
 
 def test_llm_synthesis_missing_cautions_uses_safe_default(monkeypatch, llm_key):

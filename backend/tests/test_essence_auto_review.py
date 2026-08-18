@@ -139,3 +139,106 @@ def test_low_confidence_reviewer_can_never_auto_approve() -> None:
     )
 
     assert review.approves is False
+
+
+def test_second_ai_adjudicator_can_clear_primary_false_positive(monkeypatch) -> None:
+    note_id = uuid.uuid4()
+    responses = iter(
+        [
+            {
+                "decision": "ESCALATE",
+                "confidence": 0.96,
+                "blocking_findings": ["근거 있는 지역명 존재를 도배로 판단"],
+                "advisory_notes": [],
+                "reviewed_evidence_note_ids": [str(note_id)],
+                "summary": "지역명 확인 필요",
+            },
+            {
+                "decision": "OVERRIDE_TO_APPROVE",
+                "confidence": 0.98,
+                "blocking_findings": [],
+                "summary": "실제 반복 도배가 아니므로 거짓 양성",
+            },
+        ]
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_call(system_prompt, _data, **kwargs):
+        calls.append({"system": system_prompt, **kwargs})
+        return next(responses)
+
+    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    candidate = _empty_candidate(uuid.uuid4())
+    candidate["positioning_statement"] = "근거 기반 지역 진료 설명"
+    candidate["evidence_map"] = {"positioning_statement": [str(note_id)]}
+    review = essence_auto_review.review_essence_candidate(
+        SimpleNamespace(id=uuid.uuid4(), name="테스트 병원"),
+        SimpleNamespace(
+            version=1,
+            positioning_statement=None,
+            doctor_voice=None,
+            patient_promise=None,
+            must_use_messages=[],
+            treatment_narratives=[],
+        ),
+        candidate,
+        [
+            SimpleNamespace(
+                id=note_id,
+                source_asset_id=uuid.uuid4(),
+                note_type="LOCAL_SIGNAL",
+                claim="지역 근거",
+                source_excerpt="영통구 환자에게 진료 정보를 안내합니다.",
+            )
+        ],
+    )
+
+    assert review.approves is True
+    assert review.findings == ()
+    assert len(calls) == 2
+    assert calls[0]["attempts"] == 2
+    assert calls[1]["output_schema"] == essence_auto_review._ADJUDICATION_OUTPUT_SCHEMA
+
+
+def test_second_ai_adjudicator_fails_closed_below_confidence(monkeypatch) -> None:
+    responses = iter(
+        [
+            {
+                "decision": "ESCALATE",
+                "confidence": 0.96,
+                "blocking_findings": ["근거 범위 확인 필요"],
+                "advisory_notes": [],
+                "reviewed_evidence_note_ids": [],
+                "summary": "확인 필요",
+            },
+            {
+                "decision": "OVERRIDE_TO_APPROVE",
+                "confidence": 0.94,
+                "blocking_findings": [],
+                "summary": "확신 부족",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        essence_auto_review,
+        "_call_anthropic_json",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    review = essence_auto_review.review_essence_candidate(
+        SimpleNamespace(id=uuid.uuid4(), name="테스트 병원"),
+        SimpleNamespace(
+            version=1,
+            positioning_statement=None,
+            doctor_voice=None,
+            patient_promise=None,
+            must_use_messages=[],
+            treatment_narratives=[],
+        ),
+        _empty_candidate(uuid.uuid4()),
+        [],
+    )
+
+    assert review.approves is False
+    assert review.decision == "ESCALATE"
+    assert review.findings == ("근거 범위 확인 필요",)

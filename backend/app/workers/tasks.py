@@ -767,8 +767,11 @@ def _cost_guarded_essence_review(
     name="app.workers.tasks.auto_review_essence_snapshot",
     bind=True,
     max_retries=2,
-    soft_time_limit=420,
-    time_limit=480,
+    # Two complete remediation passes can each spend up to ~332 seconds on
+    # synthesis + primary review + adjudication. Leave enough margin to persist
+    # the final approval/escalation and recovery marker after provider timeouts.
+    soft_time_limit=780,
+    time_limit=840,
 )
 def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
     """Build and independently review a changed post-onboarding Essence snapshot."""
