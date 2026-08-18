@@ -296,7 +296,7 @@ def test_compact_structured_entries_expand_to_grounded_payload(monkeypatch, llm_
     assert payload["evidence_map"]["positioning_statement"] == [str(note.id)]
     schema = fake.messages.calls[0]["output_config"]["format"]["schema"]
     assert list(schema["properties"]) == ["entries"]
-    assert schema["properties"]["entries"]["maxItems"] == 40
+    assert "maxItems" not in schema["properties"]["entries"]
     assert fake.messages.calls[0]["timeout"] == 90.0
 
 

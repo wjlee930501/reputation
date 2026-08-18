@@ -566,7 +566,6 @@ _SYNTHESIS_OUTPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "entries": {
             "type": "array",
-            "maxItems": 40,
             "items": {
                 "type": "object",
                 "properties": {
