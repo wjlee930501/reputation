@@ -905,6 +905,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
         "snapshot_hash": result.snapshot_hash,
         "philosophy_id": str(result.philosophy_id) if result.philosophy_id else None,
         "findings": list(result.findings),
+        "synthesis_attempts": result.synthesis_attempts,
     }
 
 

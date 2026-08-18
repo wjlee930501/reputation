@@ -38,6 +38,8 @@ from app.utils.medical_filter import check_forbidden
 
 AUTO_ESSENCE_ACTOR = "SYSTEM_ESSENCE_AI_REVIEW"
 AUTO_ESSENCE_CONFIDENCE = 0.90
+AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS = 2
+_AUTO_RECOVERY_CYCLE_FIELD = "automatic_recovery_cycle"
 _MAX_REVIEW_FINDINGS = 8
 _PROMPT_INJECTION_PATTERNS = (
     re.compile(r"ignore\s+(?:all\s+)?previous\s+instructions?", re.IGNORECASE),
@@ -107,6 +109,7 @@ class EssenceRefreshResult:
     reviewer: EssenceAiReview | None = None
     findings: tuple[str, ...] = ()
     should_revalidate_site: bool = False
+    synthesis_attempts: int = 0
 
     @property
     def requires_operator(self) -> bool:
@@ -221,6 +224,81 @@ def _candidate_evidence_ids(payload: dict[str, Any]) -> set[str]:
                 if item:
                     ids.add(str(item))
     return ids
+
+
+def _automatic_recovery_cycles(philosophy: HospitalContentPhilosophy) -> int:
+    """Read the durable retry marker stored on an escalated automatic draft."""
+
+    cycles = 0
+    for item in philosophy.unsupported_gaps or []:
+        if not isinstance(item, dict) or item.get("field") != _AUTO_RECOVERY_CYCLE_FIELD:
+            continue
+        try:
+            cycles = max(cycles, int(item.get("reason") or 0))
+        except (TypeError, ValueError):
+            continue
+    return cycles
+
+
+def _is_untouched_legacy_auto_draft(philosophy: HospitalContentPhilosophy) -> bool:
+    """Only recover a positively identified, never-operator-touched system draft."""
+
+    has_auto_review_finding = any(
+        isinstance(item, dict) and item.get("field") == "automatic_ai_review"
+        for item in philosophy.unsupported_gaps or []
+    )
+    return bool(
+        philosophy.created_by == AUTO_ESSENCE_ACTOR
+        and has_auto_review_finding
+        and _automatic_recovery_cycles(philosophy) < 1
+        and philosophy.created_at is not None
+        and philosophy.updated_at is not None
+        and philosophy.created_at == philosophy.updated_at
+        and philosophy.reviewed_by is None
+        and philosophy.approved_at is None
+    )
+
+
+def _drafts_for_snapshot(
+    db: Session,
+    hospital_id: uuid.UUID,
+    snapshot_hash: str,
+) -> list[HospitalContentPhilosophy]:
+    return list(
+        db.execute(
+            select(HospitalContentPhilosophy)
+            .where(
+                HospitalContentPhilosophy.hospital_id == hospital_id,
+                HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
+                HospitalContentPhilosophy.source_snapshot_hash == snapshot_hash,
+            )
+            .order_by(HospitalContentPhilosophy.version, HospitalContentPhilosophy.id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _automatic_remediation_note(findings: list[str]) -> str:
+    bounded = [finding[:300] for finding in findings[:_MAX_REVIEW_FINDINGS]]
+    return f"""\
+자동 안전검사에서 아래 후보 출력 문제가 발견되었습니다.
+현재 전체 근거 노트만 사용해 후보 전체를 새로 작성하세요. 근거, source_asset_ids,
+source_snapshot_hash를 보존하고 확인되지 않은 사실은 추가하지 마세요. 의료광고 금지 표현은
+설명, 예시, 부정문, 규칙 문구를 포함해 해당 표현 자체를 긍정 운영 필드에 출력하지 마세요.
+검사 규칙을 약화하거나 findings를 숨기지 말고 실제 후보를 교정하세요.
+
+{untrusted_json_block({"findings": bounded})}
+"""
+
+
+def _can_automatically_remediate(
+    payload: dict[str, Any],
+    sources: list[HospitalSourceAsset],
+) -> bool:
+    """Source-level ambiguity is never rewritten away by a second model call."""
+
+    return not _has_prompt_injection(sources) and not bool(payload.get("conflict_notes"))
 
 
 def _critical_losses(
@@ -426,15 +504,16 @@ def essence_refresh_needed(db: Session, hospital_id: uuid.UUID) -> bool:
     snapshot_hash = compute_sources_snapshot_hash(sources)
     if previous.source_snapshot_hash == snapshot_hash:
         return False
-    existing_draft = db.scalar(
-        select(HospitalContentPhilosophy.id).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
-            HospitalContentPhilosophy.source_snapshot_hash == snapshot_hash,
-        )
-    )
-    if existing_draft is not None:
-        return False
+    existing_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
+    if existing_drafts:
+        # A legacy automatic escalation gets exactly one recovery cycle after this
+        # capability ships. Manual/ambiguous drafts and already-retried drafts stay
+        # operator-owned and never consume AI cost every reconciliation interval.
+        if len(existing_drafts) != 1:
+            return False
+        existing_draft = existing_drafts[0]
+        if not _is_untouched_legacy_auto_draft(existing_draft):
+            return False
     source_ids = [source.id for source in sources]
     return bool(_notes_for_sources(db, hospital_id, source_ids))
 
@@ -475,22 +554,23 @@ def refresh_essence_snapshot(
             previous_philosophy_id=previous.id,
         )
 
-    existing_draft = db.scalar(
-        select(HospitalContentPhilosophy).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
-            HospitalContentPhilosophy.source_snapshot_hash == snapshot_hash,
-        )
-    )
-    if existing_draft is not None:
-        return EssenceRefreshResult(
-            EssenceRefreshStatus.ESCALATED,
-            hospital_id,
-            snapshot_hash=snapshot_hash,
-            philosophy_id=existing_draft.id,
-            previous_philosophy_id=previous.id,
-            findings=("동일 자료 snapshot의 AI 검토 초안이 이미 있습니다.",),
-        )
+    existing_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
+    retryable_auto_draft: HospitalContentPhilosophy | None = None
+    if existing_drafts:
+        if len(existing_drafts) == 1:
+            existing_draft = existing_drafts[0]
+            if _is_untouched_legacy_auto_draft(existing_draft):
+                retryable_auto_draft = existing_draft
+        if retryable_auto_draft is None:
+            existing_draft = existing_drafts[0]
+            return EssenceRefreshResult(
+                EssenceRefreshStatus.ESCALATED,
+                hospital_id,
+                snapshot_hash=snapshot_hash,
+                philosophy_id=existing_draft.id,
+                previous_philosophy_id=previous.id,
+                findings=("동일 자료 snapshot의 검토 대기 초안이 이미 있습니다.",),
+            )
 
     source_ids = [source.id for source in sources]
     notes = _notes_for_sources(db, hospital_id, source_ids)
@@ -503,28 +583,44 @@ def refresh_essence_snapshot(
             findings=("현재 전체 자료에 연결된 근거 노트가 없습니다.",),
         )
 
-    payload = synthesizer(hospital, sources, notes, operator_note=None)
-    deterministic_findings = deterministic_candidate_findings(
-        previous=previous,
-        payload=payload,
-        sources=sources,
-        notes=notes,
-    )
+    synthesis_attempts = 0
+    operator_note: str | None = None
+    payload: dict[str, Any] = {}
+    deterministic_findings: list[str] = []
+    findings: list[str] = []
     ai_review: EssenceAiReview | None = None
-    if not deterministic_findings:
-        # Provider/parser failures are retryable task failures. Never turn a
-        # transient reviewer outage into a permanent human-review DRAFT.
-        ai_review = reviewer(hospital, previous, payload, notes)
-
-    reviewed_ids = set(ai_review.reviewed_evidence_note_ids if ai_review else ())
-    required_evidence_ids = _candidate_evidence_ids(payload)
-    if ai_review and not required_evidence_ids.issubset(reviewed_ids):
-        deterministic_findings.append(
-            "독립 AI 검수가 후보의 모든 연결 근거 노트를 확인하지 못했습니다."
+    while synthesis_attempts < AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS:
+        payload = synthesizer(hospital, sources, notes, operator_note=operator_note)
+        synthesis_attempts += 1
+        deterministic_findings = deterministic_candidate_findings(
+            previous=previous,
+            payload=payload,
+            sources=sources,
+            notes=notes,
         )
-    findings = list(deterministic_findings)
-    if ai_review and not ai_review.approves:
-        findings.extend(ai_review.findings or ("독립 AI 검수가 자동 승인을 보류했습니다.",))
+        ai_review = None
+        if not deterministic_findings:
+            # Provider/parser failures are retryable task failures. Never turn a
+            # transient reviewer outage into a permanent human-review DRAFT.
+            ai_review = reviewer(hospital, previous, payload, notes)
+            reviewed_ids = set(ai_review.reviewed_evidence_note_ids)
+            required_evidence_ids = _candidate_evidence_ids(payload)
+            if not required_evidence_ids.issubset(reviewed_ids):
+                deterministic_findings.append(
+                    "독립 AI 검수가 후보의 모든 연결 근거 노트를 확인하지 못했습니다."
+                )
+
+        findings = list(deterministic_findings)
+        if ai_review and not ai_review.approves:
+            findings.extend(ai_review.findings or ("독립 AI 검수가 자동 승인을 보류했습니다.",))
+        if not findings:
+            break
+        if (
+            synthesis_attempts >= AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS
+            or not _can_automatically_remediate(payload, sources)
+        ):
+            break
+        operator_note = _automatic_remediation_note(findings)
     previous_id = previous.id
 
     # Re-read current truth immediately before promotion. This protects against
@@ -545,18 +641,19 @@ def refresh_essence_snapshot(
             snapshot_hash=snapshot_hash,
             previous_philosophy_id=previous_id,
             reviewer=ai_review,
+            synthesis_attempts=synthesis_attempts,
         )
 
     # A DRAFT that appeared after synthesis/review was not the payload the reviewer
     # inspected. Never lend that review decision to a different row.
-    existing_draft = db.scalar(
-        select(HospitalContentPhilosophy).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
-            HospitalContentPhilosophy.source_snapshot_hash == snapshot_hash,
-        )
-    )
-    if existing_draft is not None:
+    current_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
+    competing_drafts = [
+        draft
+        for draft in current_drafts
+        if retryable_auto_draft is None or draft.id != retryable_auto_draft.id
+    ]
+    if competing_drafts:
+        existing_draft = competing_drafts[0]
         return EssenceRefreshResult(
             EssenceRefreshStatus.ESCALATED,
             hospital_id,
@@ -567,7 +664,16 @@ def refresh_essence_snapshot(
             findings=(
                 "독립 AI 검수 중 동일 자료 snapshot의 별도 초안이 생성되어 자동 승인을 보류했습니다.",
             ),
+            synthesis_attempts=synthesis_attempts,
         )
+
+    # A prior automatic escalation is an implementation artifact, not a human
+    # decision. Supersede it only after a complete fresh synthesis/review cycle.
+    if retryable_auto_draft is not None:
+        current_retryable = db.get(HospitalContentPhilosophy, retryable_auto_draft.id)
+        if current_retryable is not None and current_retryable.status == PhilosophyStatus.DRAFT:
+            current_retryable.status = PhilosophyStatus.ARCHIVED
+            db.flush()
 
     candidate = HospitalContentPhilosophy(
         hospital_id=hospital_id,
@@ -592,6 +698,7 @@ def refresh_essence_snapshot(
                 snapshot_hash=snapshot_hash,
                 previous_philosophy_id=previous_id,
                 reviewer=ai_review,
+                synthesis_attempts=synthesis_attempts,
             )
         if current_previous.source_snapshot_hash == snapshot_hash:
             db.rollback()
@@ -601,6 +708,7 @@ def refresh_essence_snapshot(
                 snapshot_hash=snapshot_hash,
                 philosophy_id=current_previous.id,
                 previous_philosophy_id=current_previous.id,
+                synthesis_attempts=synthesis_attempts,
             )
         current_previous.status = PhilosophyStatus.ARCHIVED
         db.flush()
@@ -631,6 +739,10 @@ def refresh_essence_snapshot(
                 "reviewer_confidence": ai_review.confidence,
                 "reviewed_evidence_note_ids": list(ai_review.reviewed_evidence_note_ids),
                 "deterministic_gate_findings": [],
+                "synthesis_attempts": synthesis_attempts,
+                "superseded_auto_draft_id": (
+                    str(retryable_auto_draft.id) if retryable_auto_draft else None
+                ),
                 "all_required_sources_processed": True,
                 "content_rescreened": rescreened,
             },
@@ -646,12 +758,15 @@ def refresh_essence_snapshot(
             should_revalidate_site=(
                 hospital.status == HospitalStatus.ACTIVE and bool(hospital.site_live)
             ),
+            synthesis_attempts=synthesis_attempts,
         )
 
     if findings:
-        candidate.unsupported_gaps = list(candidate.unsupported_gaps or []) + [
-            {"field": "automatic_ai_review", "reason": finding} for finding in findings
-        ]
+        candidate.unsupported_gaps = (
+            list(candidate.unsupported_gaps or [])
+            + [{"field": "automatic_ai_review", "reason": finding} for finding in findings]
+            + [{"field": _AUTO_RECOVERY_CYCLE_FIELD, "reason": "1"}]
+        )
     write_audit_log_sync(
         db,
         action="auto_review_philosophy_escalated",
@@ -673,6 +788,10 @@ def refresh_essence_snapshot(
                 list(ai_review.reviewed_evidence_note_ids) if ai_review else []
             ),
             "deterministic_gate_findings": deterministic_findings[:_MAX_REVIEW_FINDINGS],
+            "synthesis_attempts": synthesis_attempts,
+            "superseded_auto_draft_id": (
+                str(retryable_auto_draft.id) if retryable_auto_draft else None
+            ),
             "all_required_sources_processed": True,
             "findings": findings[:_MAX_REVIEW_FINDINGS],
         },
@@ -686,12 +805,14 @@ def refresh_essence_snapshot(
         previous_philosophy_id=previous.id,
         reviewer=ai_review,
         findings=tuple(findings[:_MAX_REVIEW_FINDINGS]),
+        synthesis_attempts=synthesis_attempts,
     )
 
 
 __all__ = (
     "AUTO_ESSENCE_ACTOR",
     "AUTO_ESSENCE_CONFIDENCE",
+    "AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS",
     "EssenceAiReview",
     "EssenceRefreshResult",
     "EssenceRefreshStatus",

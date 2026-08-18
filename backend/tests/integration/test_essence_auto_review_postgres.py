@@ -1,7 +1,7 @@
 """Real-Postgres proof for atomic AI refresh of an approved Essence snapshot."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -18,8 +18,10 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_auto_review import (
+    AUTO_ESSENCE_ACTOR,
     EssenceAiReview,
     EssenceRefreshStatus,
+    essence_refresh_needed,
     refresh_essence_snapshot,
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
@@ -108,6 +110,17 @@ def _candidate_payload(source, note) -> dict:
         "synthesis_notes": "integration test",
         "source_snapshot_hash": compute_sources_snapshot_hash([source]),
     }
+
+
+def _approved_review(note: HospitalSourceEvidenceNote) -> EssenceAiReview:
+    return EssenceAiReview(
+        decision="APPROVE",
+        confidence=0.98,
+        findings=(),
+        reviewed_evidence_note_ids=(str(note.id),),
+        summary="전체 근거 확인",
+        model="reviewer-test",
+    )
 
 
 def test_clean_snapshot_atomically_archives_previous_and_is_idempotent(pg_session) -> None:
@@ -273,7 +286,7 @@ def test_low_confidence_escalation_preserves_approval_and_reuses_one_draft(pg_se
 
     assert first.status == EssenceRefreshStatus.ESCALATED
     assert second.status == EssenceRefreshStatus.ESCALATED
-    assert synth_calls == 1
+    assert synth_calls == 2
     records = list(
         pg_session.scalars(
             select(HospitalContentPhilosophy).where(
@@ -283,6 +296,217 @@ def test_low_confidence_escalation_preserves_approval_and_reuses_one_draft(pg_se
     )
     assert sum(item.status == PhilosophyStatus.APPROVED for item in records) == 1
     assert sum(item.status == PhilosophyStatus.DRAFT for item in records) == 1
+    assert (
+        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
+    )
+
+
+def test_forbidden_candidate_is_resynthesized_once_then_auto_approved(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="bounded-remediation")
+    operator_notes: list[str | None] = []
+
+    def synthesize(*_args, operator_note=None, **_kwargs):
+        operator_notes.append(operator_note)
+        payload = _candidate_payload(source, note)
+        if operator_note is None:
+            payload["content_principles"] = ["완치와 성공률 표현을 사용하지 않는다."]
+            payload["evidence_map"]["content_principles"] = [str(note.id)]
+        else:
+            payload["content_principles"] = ["치료 효과를 단정하지 않는다."]
+            payload["evidence_map"]["content_principles"] = [str(note.id)]
+        return payload
+
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=synthesize,
+        reviewer=lambda *_args, **_kwargs: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert result.synthesis_attempts == 2
+    assert len(operator_notes) == 2
+    assert operator_notes[0] is None
+    assert "의료광고 금지 표현" in str(operator_notes[1])
+    assert (
+        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.ARCHIVED
+    )
+
+
+def test_independent_review_finding_drives_one_fresh_synthesis(pg_session) -> None:
+    hospital, source, note, _previous = _seed_baseline(pg_session, label="review-remediation")
+    operator_notes: list[str | None] = []
+    review_calls = 0
+
+    def synthesize(*_args, operator_note=None, **_kwargs):
+        operator_notes.append(operator_note)
+        return _candidate_payload(source, note)
+
+    def review(*_args, **_kwargs):
+        nonlocal review_calls
+        review_calls += 1
+        if review_calls == 1:
+            return EssenceAiReview(
+                decision="ESCALATE",
+                confidence=0.97,
+                findings=("환자 선택지 설명이 근거보다 넓습니다.",),
+                reviewed_evidence_note_ids=(str(note.id),),
+                summary="한정 재작성 필요",
+                model="reviewer-test",
+            )
+        return _approved_review(note)
+
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=synthesize,
+        reviewer=review,
+    )
+
+    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert result.synthesis_attempts == 2
+    assert review_calls == 2
+    assert operator_notes[0] is None
+    assert "환자 선택지 설명이 근거보다 넓습니다." in str(operator_notes[1])
+
+
+def test_legacy_automatic_draft_is_superseded_only_after_fresh_review(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="legacy-auto-draft")
+    legacy_payload = _candidate_payload(source, note)
+    legacy = HospitalContentPhilosophy(
+        hospital_id=hospital.id,
+        version=2,
+        status=PhilosophyStatus.DRAFT,
+        created_by=AUTO_ESSENCE_ACTOR,
+        **legacy_payload,
+    )
+    pg_session.add(legacy)
+    pg_session.flush()
+    # Match the production escalation path: INSERT/flush, then append findings in
+    # the same transaction. PostgreSQL now() is transaction-stable, so an untouched
+    # system artifact keeps equal creation/update timestamps.
+    legacy.unsupported_gaps = [
+        {"field": "automatic_ai_review", "reason": "이전 자동 안전검사 차단"}
+    ]
+    pg_session.flush()
+
+    assert legacy.created_at == legacy.updated_at
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_args, **_kwargs: _candidate_payload(source, note),
+        reviewer=lambda *_args, **_kwargs: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert result.synthesis_attempts == 1
+    assert pg_session.get(HospitalContentPhilosophy, legacy.id).status == PhilosophyStatus.ARCHIVED
+    assert (
+        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.ARCHIVED
+    )
+    assert pg_session.get(HospitalContentPhilosophy, result.philosophy_id).version == 3
+
+
+def test_operator_touched_automatic_draft_is_never_superseded(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="touched-auto-draft")
+    payload = _candidate_payload(source, note)
+    payload["unsupported_gaps"] = [
+        {"field": "automatic_ai_review", "reason": "이전 자동 안전검사 차단"}
+    ]
+    draft = HospitalContentPhilosophy(
+        hospital_id=hospital.id,
+        version=2,
+        status=PhilosophyStatus.DRAFT,
+        created_by=AUTO_ESSENCE_ACTOR,
+        **payload,
+    )
+    pg_session.add(draft)
+    pg_session.flush()
+    draft.positioning_statement = "운영자가 근거를 확인해 수정한 문안"
+    draft.updated_at = draft.created_at + timedelta(seconds=1)
+    pg_session.flush()
+
+    assert essence_refresh_needed(pg_session, hospital.id) is False
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("operator-touched auto draft must stop automatic synthesis")
+        ),
+        reviewer=lambda *_args, **_kwargs: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.ESCALATED
+    assert pg_session.get(HospitalContentPhilosophy, draft.id).status == PhilosophyStatus.DRAFT
+    assert (
+        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
+    )
+
+
+def test_persistent_candidate_failure_stops_periodic_retry_loop(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="persistent-failure")
+    synth_calls = 0
+
+    def still_forbidden(*_args, **_kwargs):
+        nonlocal synth_calls
+        synth_calls += 1
+        payload = _candidate_payload(source, note)
+        payload["content_principles"] = ["완치 표현을 사용하지 않는다."]
+        payload["evidence_map"]["content_principles"] = [str(note.id)]
+        return payload
+
+    first = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=still_forbidden,
+        reviewer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("deterministic failure must not reach AI review")
+        ),
+    )
+
+    assert first.status == EssenceRefreshStatus.ESCALATED
+    assert first.synthesis_attempts == 2
+    assert synth_calls == 2
+    assert essence_refresh_needed(pg_session, hospital.id) is False
+
+    second = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=still_forbidden,
+        reviewer=lambda *_args, **_kwargs: _approved_review(note),
+    )
+    assert second.status == EssenceRefreshStatus.ESCALATED
+    assert synth_calls == 2
+    assert (
+        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
+    )
+
+
+def test_manual_same_snapshot_draft_is_never_superseded(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="manual-draft")
+    manual = HospitalContentPhilosophy(
+        hospital_id=hospital.id,
+        version=2,
+        status=PhilosophyStatus.DRAFT,
+        created_by="OPERATOR",
+        **_candidate_payload(source, note),
+    )
+    pg_session.add(manual)
+    pg_session.flush()
+
+    assert essence_refresh_needed(pg_session, hospital.id) is False
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("manual draft must stop automatic synthesis")
+        ),
+        reviewer=lambda *_args, **_kwargs: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.ESCALATED
+    assert pg_session.get(HospitalContentPhilosophy, manual.id).status == PhilosophyStatus.DRAFT
     assert (
         pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
     )
