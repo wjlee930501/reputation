@@ -195,6 +195,16 @@ def _open_incident(db: Session, run: OperationRun) -> Incident:
                     ),
                     else_=Incident.episode_seq,
                 ),
+                "first_seen_at": case(
+                    (
+                        Incident.state.in_((
+                            IncidentState.RECOVERED.value,
+                            IncidentState.ACKNOWLEDGED.value,
+                        )),
+                        now,
+                    ),
+                    else_=Incident.first_seen_at,
+                ),
                 "recovered_at": None,
                 "acknowledged_at": None,
                 "acknowledged_by_id": None,

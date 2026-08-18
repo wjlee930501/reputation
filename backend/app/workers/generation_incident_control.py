@@ -166,7 +166,7 @@ def _expected_pending_crossed_stale(
     last_seen_at: datetime | None,
     now: datetime | None,
 ) -> bool:
-    """Promote expected pending to human-now on the first observation after 48h."""
+    """Promote expected pending once, 48h after the current episode start (first_seen_at)."""
 
     if first_seen_at is None or last_seen_at is None or now is None:
         return False

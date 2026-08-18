@@ -113,6 +113,17 @@ async def open_or_touch_incident(
                 ),
                 else_=Incident.episode_seq,
             ),
+            # Episode start. Reset only on reopen so 48h promotion can fire again.
+            "first_seen_at": case(
+                (
+                    Incident.state.in_((
+                        IncidentState.RECOVERED.value,
+                        IncidentState.ACKNOWLEDGED.value,
+                    )),
+                    observed_at,
+                ),
+                else_=Incident.first_seen_at,
+            ),
             "recovered_at": None,
             "acknowledged_at": None,
             "acknowledged_by_id": None,
