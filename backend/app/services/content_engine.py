@@ -369,6 +369,7 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
             [
                 content_brief.get("target_query"),
                 query_target.get("name") if isinstance(query_target, dict) else None,
+                *(content_brief.get("must_use_messages") or []),
             ]
         )
     if result:

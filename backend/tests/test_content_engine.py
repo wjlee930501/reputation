@@ -70,6 +70,18 @@ def test_curated_reference_focus_excludes_incidental_body_topics():
     assert "대장내시경" not in focus
 
 
+def test_curated_reference_focus_includes_approved_must_use_medical_topic():
+    brief = {
+        "target_query": "경산 일반의원 전문의 추천",
+        "must_use_messages": ["발열과 탈수 관리를 내과 관점에서 살폍니다."],
+    }
+
+    focus = _curated_reference_focus(brief)
+
+    assert "발열" in focus
+    assert "탈수" in focus
+
+
 def test_parse_json_response_extracts_surrounded_object():
     raw = 'Here is the JSON:\n{"title":"제목","body":"본문"}\nDone.'
 
