@@ -72,6 +72,32 @@ def test_select_curated_authority_sources_supports_dehydration_content():
     )
 
     assert [source["url"] for source in sources] == [
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5285",
         "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
     ]
+    assert all(source["source_type"] == SOURCE_TYPE_GOV_KR for source in sources)
+
+
+def test_select_curated_authority_sources_supports_pediatric_fever():
+    sources = select_curated_authority_sources("소아 발열 치료 비용")
+
+    assert sources[0]["url"].endswith("cntnts_sn=5285")
+
+
+def test_select_curated_authority_sources_supports_breast_ultrasound():
+    sources = select_curated_authority_sources("유방초음파 검사 비용")
+
+    assert sources == [
+        {
+            "title": "국립암센터 — 국가암검진 검진주기 및 검진방법",
+            "url": "https://edu.cancer.go.kr/lay1/S1T553C555/contents.do",
+            "source_type": SOURCE_TYPE_GOV_KR,
+        }
+    ]
+
+
+def test_select_curated_authority_sources_supports_general_health_screening():
+    sources = select_curated_authority_sources("건강검진 비용과 검사 항목")
+
+    assert sources[0]["url"].startswith("https://www.nhis.or.kr/")
     assert sources[0]["source_type"] == SOURCE_TYPE_GOV_KR

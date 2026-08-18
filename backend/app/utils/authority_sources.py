@@ -20,6 +20,7 @@ KR_PUBLIC_SOURCES: list[dict[str, str]] = [
     {"name": "보건복지부", "domain": "mohw.go.kr"},
     {"name": "식품의약품안전처 MFDS", "domain": "mfds.go.kr"},
     {"name": "의료기관 평가인증원 KOIHA", "domain": "koiha.or.kr"},
+    {"name": "국민건강보험공단 NHIS", "domain": "nhis.or.kr"},
 ]
 
 KR_ACADEMIC_SOURCES: list[dict[str, str]] = [
@@ -71,6 +72,11 @@ WHITELIST_DOMAINS: frozenset[str] = frozenset(
 # URL보다 이 목록을 우선한다.
 CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
     {
+        "keywords": ("소아발열", "아이발열", "어린이발열"),
+        "title": "질병관리청 국가건강정보포털 — 불명열(발열의 평가와 치료)",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5285",
+    },
+    {
         "keywords": ("탈수", "수분부족", "수분보충"),
         "title": "질병관리청 국가건강정보포털 — 탈수",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
@@ -79,6 +85,16 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "keywords": ("구토", "오심", "메스꺼움"),
         "title": "질병관리청 국가건강정보포털 — 오심과 구토",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5804",
+    },
+    {
+        "keywords": ("유방초음파", "유방촬영", "유방암검진"),
+        "title": "국립암센터 — 국가암검진 검진주기 및 검진방법",
+        "url": "https://edu.cancer.go.kr/lay1/S1T553C555/contents.do",
+    },
+    {
+        "keywords": ("건강검진", "일반건강검진", "국가건강검진"),
+        "title": "국민건강보험공단 — 건강검진 실시기준",
+        "url": "https://www.nhis.or.kr/lm/lmxsrv/law/lawFullContent.do?MODE=threeView&SEQ=80&SEQ_HISTORY=592019",
     },
     {
         "keywords": ("치열", "항문열상"),

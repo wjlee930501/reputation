@@ -338,6 +338,28 @@ def _bullet_list(values: list) -> str:
     return "\n".join(f"- {value}" for value in values if value) or "- 없음"
 
 
+def _curated_reference_focus(content_brief: dict | None, result: dict | None = None) -> str:
+    """Return only the intended topic text used for curated source matching.
+
+    Matching against the whole generated body is unsafe: a breast-ultrasound article
+    that merely mentions cancer screening can otherwise be overwritten with a
+    colorectal-cancer reference.  The approved target query and generated heading
+    define the topic; incidental body phrases must not change its evidence set.
+    """
+    values: list[object] = []
+    if content_brief:
+        query_target = content_brief.get("query_target")
+        values.extend(
+            [
+                content_brief.get("target_query"),
+                query_target.get("name") if isinstance(query_target, dict) else None,
+            ]
+        )
+    if result:
+        values.extend([result.get("title"), result.get("faq_question")])
+    return " ".join(str(value) for value in values if value)
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(min=2, max=10),
@@ -371,10 +393,23 @@ async def generate_content(
     essence_context = f"\n\n{philosophy_ctx}" if philosophy_ctx else ""
     brief_context = f"\n\n{brief_ctx}" if brief_ctx else ""
     source_hint = f"\n\n{render_source_hint_block()}"
+    curated_candidates = select_curated_authority_sources(
+        _curated_reference_focus(content_brief),
+    )
+    curated_candidate_hint = ""
+    if curated_candidates:
+        rendered_candidates = "\n".join(
+            f"- {reference['title']}: {reference['url']}"
+            for reference in curated_candidates
+        )
+        curated_candidate_hint = (
+            "\n\n[현재 주제와 일치하는 검증된 문서 — 해당 주장을 쓸 때 이 URL만 인용]\n"
+            f"{rendered_candidates}"
+        )
     remediation_context = _build_remediation_context(remediation_findings)
     user_message = (
         f"{profile_ctx}{essence_context}{brief_context}\n\n"
-        f"{type_prompt}{avoid_titles}{source_hint}{remediation_context}"
+        f"{type_prompt}{avoid_titles}{source_hint}{curated_candidate_hint}{remediation_context}"
     )
 
     # 실제 공급자 호출 계수. 이 함수는 tenacity로 최대 3회 재시도되고 Anthropic 클라이언트는
@@ -409,10 +444,7 @@ async def generate_content(
     # tenacity 재시도가 "화이트리스트 통과 references 1개 이상"을 실제로 강제한다.
     result["references"] = _normalize_references(result.get("references"))
     curated_references = select_curated_authority_sources(
-        " ".join(
-            str(result.get(field) or "")
-            for field in ("title", "body", "meta_description", "faq_question")
-        )
+        _curated_reference_focus(content_brief, result),
     )
     if curated_references:
         # 생성 모델은 브라우징하지 않으므로 존재하는 엉뚱한 문서 ID를 만들어낼 수
