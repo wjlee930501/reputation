@@ -29,6 +29,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum
+from typing import Iterable
 
 
 class KeywordClass(str, Enum):
@@ -204,7 +205,25 @@ def _looks_like_specialty(token: str) -> bool:
     return len(token) >= 2 and bool(_SPECIALTY_SUFFIX_RE.search(token))
 
 
-def _split_structure(text: str) -> tuple[str | None, str | None, str]:
+def _known_region_keys(regions: Iterable[str] | None) -> set[str]:
+    keys: set[str] = set()
+    for raw in regions or []:
+        normalized = normalize(raw)
+        for value in (normalized, *normalized.split()):
+            key = _match_key(value)
+            if not key:
+                continue
+            keys.add(key)
+            stripped = re.sub(r"(특별자치시|특별자치도|광역시|특별시|시|군|구|읍|면|동|역)$", "", key)
+            if len(stripped) >= 2:
+                keys.add(stripped)
+    return keys
+
+
+def _split_structure(
+    text: str,
+    known_regions: Iterable[str] | None = None,
+) -> tuple[str | None, str | None, str]:
     """'군자역 정형외과 PRP주사' → (군자역, 정형외과, 'PRP주사').
 
     잔여어가 남으면 그것을 다시 분류한다 — 지역·진료과를 지우는 것이 아니라
@@ -213,11 +232,12 @@ def _split_structure(text: str) -> tuple[str | None, str | None, str]:
     region: str | None = None
     specialty: str | None = None
     residue: list[str] = []
+    region_keys = _known_region_keys(known_regions)
     for token in normalize(text).split():
-        if region is None and _looks_like_region(token):
-            region = token
-        elif specialty is None and _looks_like_specialty(token):
-            specialty = token
+        if _match_key(token) in region_keys or _looks_like_region(token):
+            region = region or token
+        elif _looks_like_specialty(token):
+            specialty = specialty or token
         else:
             residue.append(token)
     return region, specialty, " ".join(residue)
@@ -237,9 +257,12 @@ def _classify_term(term: str) -> tuple[KeywordClass, str, str, str]:
     return KeywordClass.UNKNOWN, normalize(term), LOW, "fallback"
 
 
-def analyze_keyword(raw: str) -> KeywordAnalysis:
+def analyze_keyword(
+    raw: str,
+    known_regions: Iterable[str] | None = None,
+) -> KeywordAnalysis:
     """키워드 1개를 분석한다. **절대 예외를 던지지 않는다** — 접수를 막으면 리드가 죽는다."""
-    region, specialty, residue = _split_structure(raw)
+    region, specialty, residue = _split_structure(raw, known_regions)
 
     # 지역·진료과만 있고 임상 개념이 없으면 검색어 형태다. 이건 진료과 앵커 슬롯과
     # 같은 질문이라 그대로 쓰면 3개 질의가 사실상 1개가 된다.

@@ -24,7 +24,12 @@ class _CreateDB:
         self.rolled_back = False
 
     async def execute(self, _stmt):
-        return SimpleNamespace(scalar_one_or_none=lambda: self.existing)
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: self.existing,
+            scalars=lambda: SimpleNamespace(
+                all=lambda: [self.existing] if self.existing is not None else []
+            ),
+        )
 
     def add(self, item):
         self.added.append(item)
@@ -57,6 +62,26 @@ async def test_create_hospital_writes_audit_log():
     assert audit_rows[0].detail["plan"] == "PLAN_12"
 
 
+async def test_create_hospital_rejects_exact_duplicate_name():
+    existing = Hospital(
+        id=uuid.uuid4(),
+        name="행복드림의원",
+        slug="happy-dream",
+        status=HospitalStatus.ACTIVE,
+    )
+    db = _CreateDB(existing=existing)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.create_hospital(
+            hospitals_api.HospitalCreate(name="  행복드림의원  "),
+            db=db,
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "DUPLICATE_HOSPITAL_NAME"
+    assert exc.value.detail["candidates"][0]["id"] == str(existing.id)
+
+
 async def test_create_hospital_converts_race_integrity_error_to_409():
     db = _CreateDB(fail_commit=True)
     body = hospitals_api.HospitalCreate(name="장편한외과의원")
@@ -87,8 +112,14 @@ class _IdempotentCreateDB(_CreateDB):
                 (item for item in self.added if isinstance(item, HospitalHandoff)),
                 None,
             )
-            return SimpleNamespace(scalar_one_or_none=lambda: handoff)
-        return SimpleNamespace(scalar_one_or_none=lambda: None)
+            return SimpleNamespace(
+                scalar_one_or_none=lambda: handoff,
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            )
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: None,
+            scalars=lambda: SimpleNamespace(all=lambda: []),
+        )
 
     async def flush(self):
         for item in self.added:
@@ -164,8 +195,14 @@ class _ConcurrentIdempotentCreateDB(_CreateDB):
 
     async def execute(self, stmt):
         if self.rolled_back and "hospital_handoffs" in str(stmt):
-            return SimpleNamespace(scalar_one_or_none=lambda: self.prior_handoff)
-        return SimpleNamespace(scalar_one_or_none=lambda: None)
+            return SimpleNamespace(
+                scalar_one_or_none=lambda: self.prior_handoff,
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            )
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: None,
+            scalars=lambda: SimpleNamespace(all=lambda: []),
+        )
 
     async def commit(self):
         raise IntegrityError("INSERT", {}, Exception("duplicate key value"))

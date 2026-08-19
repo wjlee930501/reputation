@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { safeOperatorError } from '@/lib/operations-journey'
-import type { Handoff } from '@/types'
+import type { Handoff, MeasurementRun } from '@/types'
 import {
   deriveHandoffDueStatus,
   deriveOnboardingSteps,
@@ -104,6 +104,19 @@ function sourceFileFormatLabel(mimeType: string | null): string {
   return '파일 형식 확인 필요'
 }
 
+function measurementPlannedCount(run: MeasurementRun | null): number {
+  const platforms = run?.error_summary?.platforms
+  if (!platforms || typeof platforms !== 'object' || Array.isArray(platforms)) {
+    return run?.query_count ?? 0
+  }
+  const planned = Object.values(platforms).reduce((sum: number, value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return sum
+    const count = (value as Record<string, unknown>).planned_count
+    return sum + (typeof count === 'number' ? count : 0)
+  }, 0)
+  return planned > 0 ? planned : (run?.query_count ?? 0)
+}
+
 function getProcessingBlockReason(source: Source): string | null {
   if (source.status === 'EXCLUDED' || source.status === 'PROCESSED') return null
   if (hasProcessableText(source)) return null
@@ -185,6 +198,7 @@ export default function OnboardingPage() {
   const [philosophies, setPhilosophies] = useState<Philosophy[]>([])
   const [readiness, setReadiness] = useState<LifecycleReadiness | null>(null)
   const [handoff, setHandoff] = useState<Handoff | null>(null)
+  const [measurementRuns, setMeasurementRuns] = useState<MeasurementRun[]>([])
   const [checkedAt, setCheckedAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -193,18 +207,20 @@ export default function OnboardingPage() {
     setLoading(true)
     setError(null)
     try {
-      const [h, s, p, r, handoffs] = await Promise.all([
+      const [h, s, p, r, handoffs, runs] = await Promise.all([
         fetchAPI(`/admin/hospitals/${id}`),
         fetchAPI(`/admin/hospitals/${id}/essence/sources`),
         fetchAPI(`/admin/hospitals/${id}/essence/philosophies`),
         fetchAPI<LifecycleReadiness>(`/admin/hospitals/${id}/readiness`),
         fetchAPI<Handoff[]>('/admin/handoffs'),
+        fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`),
       ])
       setHospital(h as Hospital)
       setSources(Array.isArray(s) ? (s as Source[]) : [])
       setPhilosophies(Array.isArray(p) ? (p as Philosophy[]) : [])
       setReadiness(r)
       setHandoff(handoffs.find((item) => item.hospital_id === id) ?? null)
+      setMeasurementRuns(Array.isArray(runs) ? runs : [])
       setCheckedAt(Date.now())
     } catch (e: unknown) {
       setError(safeOperatorError('onboarding', '온보딩 정보 다시 불러오기를 누르세요.'))
@@ -225,6 +241,14 @@ export default function OnboardingPage() {
     () => deriveOnboardingSummary(steps, readiness),
     [steps, readiness],
   )
+  const latestMeasurementRun = measurementRuns.find((run) => run.run_label === 'V0 first measurement') ?? null
+  const latestV0Message = typeof latestMeasurementRun?.error_summary?.safe_error_message === 'string'
+    ? latestMeasurementRun.error_summary.safe_error_message
+    : null
+  const v0IsCurrent = steps.some((step) => step.key === 'v0' && step.status === 'current')
+  const blockedReason = v0IsCurrent && latestMeasurementRun?.status === 'FAILED'
+    ? `${latestV0Message ?? '외부 AI 측정을 완료하지 못했습니다.'} 성공 ${latestMeasurementRun.success_count}건·실패 ${latestMeasurementRun.failure_count}건·예정 ${measurementPlannedCount(latestMeasurementRun)}건 중 나머지는 추가 비용을 막기 위해 중단했으며, 사람 확인이 필요합니다.`
+    : summary.blockedReason
   const onboardingSteps = steps.filter((step) => step.phase === 'onboarding')
   const outcomeSteps = steps.filter((step) => step.phase === 'post_onboarding')
   const completedCount = onboardingSteps.filter((step) => step.status === 'completed').length
@@ -245,8 +269,8 @@ export default function OnboardingPage() {
               <p className="text-xs font-semibold text-blue-100">지금 해야 할 일</p>
               <p className="mt-1 text-base font-bold text-white sm:text-lg">{summary.headline}</p>
               <p className="mt-1 hidden max-w-3xl text-sm leading-6 text-blue-50/90 sm:block">{summary.detail}</p>
-              {summary.blockedReason && (
-                <p className="mt-1 break-keep text-sm font-semibold text-red-100">진행이 멈춘 이유: {summary.blockedReason}</p>
+              {blockedReason && (
+                <p className="mt-1 break-keep text-sm font-semibold text-red-100">진행이 멈춘 이유: {blockedReason}</p>
               )}
               <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-blue-50/90">
                 <div className="flex gap-1"><dt>담당</dt><dd className="font-semibold text-white">{handoff?.ae_owner_name ?? '미지정'}</dd></div>
@@ -890,11 +914,38 @@ function ProcessingStepBody({
   const blocked = sources.filter((s) => !!getProcessingBlockReason(s))
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkTracking, setBulkTracking] = useState(false)
+  const [processingActive, setProcessingActive] = useState(false)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
 
+  useEffect(() => {
+    if (!processingActive) {
+      setElapsedSeconds(0)
+      return
+    }
+    const timer = window.setInterval(() => setElapsedSeconds((value) => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [processingActive])
+
+  useEffect(() => {
+    if (!bulkTracking) return
+    if (pending.length === 0) {
+      setBulkTracking(false)
+      setProcessingActive(false)
+      setBulkFeedback('대기 자료 처리가 끝났습니다. 완료·오류 상태를 확인해 주세요.')
+      return
+    }
+    const timer = window.setInterval(onChanged, 5000)
+    return () => window.clearInterval(timer)
+  }, [bulkTracking, onChanged, pending.length])
+
   async function process(sourceId: string) {
+    if (busyId || bulkTracking) return
     setBusyId(sourceId)
+    setElapsedSeconds(0)
+    setProcessingActive(true)
     setErrors((prev) => {
       const next = { ...prev }
       delete next[sourceId]
@@ -910,6 +961,7 @@ function ProcessingStepBody({
       setErrors((prev) => ({ ...prev, [sourceId]: message }))
     } finally {
       setBusyId(null)
+      setProcessingActive(false)
     }
   }
 
@@ -926,7 +978,12 @@ function ProcessingStepBody({
           ? `${result.queued}개 자료를 처리 대기열에 넣었습니다. 잠시 뒤 상태를 새로 확인해 주세요.`
           : '처리할 대기 자료가 없습니다.',
       )
-      window.setTimeout(onChanged, 2500)
+      if (result.queued > 0) {
+        setBulkTracking(true)
+        setElapsedSeconds(0)
+        setProcessingActive(true)
+        window.setTimeout(onChanged, 2500)
+      }
     } catch (e: unknown) {
       setBulkFeedback(safeOperatorError('onboarding', '오류 자료 다시 처리를 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.'))
     } finally {
@@ -943,15 +1000,21 @@ function ProcessingStepBody({
         처리 가능: <strong>{pending.length}</strong>개 · 완료: <strong>{processed.length}</strong>개 ·
         오류: <strong>{errored.length}</strong>개 · 차단: <strong>{blocked.length}</strong>개
       </p>
+      {(busyId || bulkTracking) && (
+        <div role="status" className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+          근거를 추출하는 중입니다 · {elapsedSeconds}초 경과
+          <span className="mt-1 block text-xs text-blue-700">자료 1건은 보통 1~2분 걸립니다. 완료될 때까지 다른 처리 버튼은 잠깁니다.</span>
+        </div>
+      )}
       {pending.length > 1 && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
           <button
             type="button"
             onClick={processAllPending}
-            disabled={bulkBusy}
+            disabled={bulkBusy || bulkTracking || busyId !== null}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            {bulkBusy ? '일괄 처리 요청 중…' : `대기 자료 ${pending.length}개 일괄 처리`}
+            {bulkBusy ? '일괄 처리 요청 중…' : bulkTracking ? '일괄 처리 진행 중…' : `대기 자료 ${pending.length}개 일괄 처리`}
           </button>
           {bulkFeedback && <span className="text-xs text-blue-900">{bulkFeedback}</span>}
         </div>
@@ -972,7 +1035,7 @@ function ProcessingStepBody({
                 <span className="truncate">{s.title}</span>
                 <button
                   onClick={() => process(s.id)}
-                  disabled={busyId === s.id}
+                  disabled={busyId !== null || bulkTracking}
                   className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   {busyId === s.id ? '처리 중…' : '처리'}
@@ -1023,7 +1086,7 @@ function ProcessingStepBody({
                   <span className="truncate font-medium text-slate-900">{s.title}</span>
                   <button
                     onClick={() => process(s.id)}
-                    disabled={busyId === s.id}
+                    disabled={busyId !== null || bulkTracking}
                     className="rounded bg-red-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-red-700 disabled:opacity-50"
                   >
                     {busyId === s.id ? '재시도 중…' : '다시 처리'}

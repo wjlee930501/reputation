@@ -145,6 +145,24 @@ function formatRunStatus(status: string) {
   return labels[status] ?? status
 }
 
+function formatMeasurementFailurePlatforms(summary: Record<string, unknown> | null): string | null {
+  const platforms = summary?.platforms
+  if (!platforms || typeof platforms !== 'object' || Array.isArray(platforms)) return null
+  const labels: Record<string, string> = { chatgpt: 'ChatGPT', gemini: 'Gemini' }
+  const parts = Object.entries(platforms).flatMap(([platform, value]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const counts = value as Record<string, unknown>
+    const success = typeof counts.success_count === 'number' ? counts.success_count : 0
+    const failure = typeof counts.failure_count === 'number' ? counts.failure_count : 0
+    const attempted = typeof counts.attempted_count === 'number' ? counts.attempted_count : success + failure
+    const planned = typeof counts.planned_count === 'number' ? counts.planned_count : attempted
+    const skipped = typeof counts.skipped_count === 'number' ? counts.skipped_count : Math.max(0, planned - attempted)
+    const interrupted = skipped > 0 ? ` · 공급자 장애로 ${skipped}건 호출 중단` : ''
+    return [`${labels[platform] ?? platform} 성공 ${success}·실패 ${failure} (시도 ${attempted}/${planned})${interrupted}`]
+  })
+  return parts.length > 0 ? parts.join(' / ') : null
+}
+
 function getReadinessStatusLabel(readiness: Readiness | null): string {
   if (!readiness) return '측정 후 산출'
   return readiness.display?.status_label ?? (readiness.status === 'READY' ? '운영 준비 완료' : '보완 필요')
@@ -419,9 +437,9 @@ export default function DashboardPage() {
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[440px]">
             <HeroStat
-              label="환자 질문"
-              value={`${activeTargets.length}/${nonArchivedTargets.length}`}
-              hint="운영 중 / 전체"
+              label="측정 질문표"
+              value={`${queryCount}개`}
+              hint={`운영 타깃 ${activeTargets.length}/${nonArchivedTargets.length}`}
             />
             <HeroStat
               label="현재 AI 언급률"
@@ -715,7 +733,7 @@ export default function DashboardPage() {
 
       {/* Measurement runs */}
       {!loading && (
-        <details className="admin-disclosure">
+        <details id="v0-measurement-runs" className="admin-disclosure scroll-mt-6" open>
           <summary>
             <div>
               <h3 className="text-base font-semibold text-slate-900">측정 실행 로그</h3>
@@ -777,6 +795,16 @@ export default function DashboardPage() {
                         ? `실패율 ${run.failure_rate.toFixed(1)}% · AI 언급률 계산에서 제외`
                         : '측정 건이 없어 실패율을 산출할 수 없습니다'}
                     </p>
+                    {typeof run.error_summary?.safe_error_message === 'string' && (
+                      <p className="mt-1 text-xs font-medium text-amber-700">
+                        {run.error_summary.safe_error_message}
+                      </p>
+                    )}
+                    {formatMeasurementFailurePlatforms(run.error_summary) && (
+                      <p className="mt-1 text-xs text-amber-700">
+                        {formatMeasurementFailurePlatforms(run.error_summary)}
+                      </p>
+                    )}
                   </div>
                   <div className="text-xs text-slate-500 md:text-right">
                     <p>시작 {formatDateTime(run.started_at)}</p>

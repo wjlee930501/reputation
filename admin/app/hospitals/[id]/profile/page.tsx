@@ -2,7 +2,7 @@
 
 import { useParams } from 'next/navigation'
 import { useEffect, useId, useState } from 'react'
-import { fetchAPI, autofillProfile } from '@/lib/api'
+import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
@@ -179,6 +179,7 @@ const SCALAR_AUTOFILL_KEYS = [
   'blog_url',
   'kakao_channel_url',
   'naver_place_id',
+  'naver_place_url',
 ] as const
 
 type ScalarAutofillKey = (typeof SCALAR_AUTOFILL_KEYS)[number]
@@ -416,6 +417,22 @@ export default function ProfilePage() {
       setTimeout(() => setSuccess(false), 3000)
     } catch (e: unknown) {
       if (!isExpectedOperatorRequestFailure(e)) throw e
+      if (e instanceof ApiError && e.detail && typeof e.detail === 'object') {
+        const detail = e.detail as {
+          code?: string
+          message?: string
+          invalid_keywords?: Array<{ keyword: string; suggested_keyword?: string | null }>
+        }
+        if (detail.code === 'REGION_KEYWORD_MIXED') {
+          const items = (detail.invalid_keywords ?? []).map((item) => (
+            item.suggested_keyword
+              ? `${item.keyword} → ${item.suggested_keyword}`
+              : item.keyword
+          ))
+          setError(`${detail.message ?? '지역 태그와 핵심 키워드를 분리해 주세요.'}${items.length ? ` (${items.join(', ')})` : ''}`)
+          return
+        }
+      }
       setError(safeOperatorError('onboarding', '필수 항목을 확인한 뒤 ‘저장’을 다시 누르세요.'))
     } finally {
       setSaving(false)
@@ -578,6 +595,17 @@ export default function ProfilePage() {
               <li key={v.field} className="text-xs text-red-700">
                 <span className="font-medium">{v.field}</span>: {v.expressions.join(', ')}
               </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {autofillResult && (autofillResult.rejected_fields ?? []).length > 0 && (
+        <div className="profile-full rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-semibold text-amber-900">원문 근거가 부족해 자동 적용하지 않은 항목</p>
+          <ul className="mt-2 space-y-1 text-xs text-amber-800">
+            {(autofillResult.rejected_fields ?? []).map((item, index) => (
+              <li key={`${item.field}-${index}`}>{item.field}: {item.reason}</li>
             ))}
           </ul>
         </div>

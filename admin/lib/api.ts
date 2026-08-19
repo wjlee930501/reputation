@@ -7,6 +7,7 @@ const BASE = '/api/admin'
 export interface AutofillFieldMeta {
   source: string
   confidence: number
+  evidence_excerpt?: string | null
 }
 
 export interface AutofillViolation {
@@ -24,6 +25,7 @@ export interface AutofillResponse {
   draft: Record<string, unknown>
   field_meta: Record<string, AutofillFieldMeta>
   violations: AutofillViolation[]
+  rejected_fields: Array<{ field: string; reason: string }>
   naver_place_id: string | null
   sources: AutofillSource[]
 }

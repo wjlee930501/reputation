@@ -178,3 +178,5 @@ def test_serialize_philosophy_exposes_display_labels():
 
     assert serialized["display"] == {"status_label": "승인됨"}
     assert serialized["status"] == PhilosophyStatus.APPROVED
+    assert serialized["avoid_messages"]
+    assert serialized["medical_ad_risk_rules"]

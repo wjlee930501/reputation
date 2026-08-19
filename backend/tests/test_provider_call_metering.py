@@ -104,6 +104,37 @@ def test_image_generation_records_every_attempt_including_the_fallback(monkeypat
     assert recorded.by_category["image"] == 4, "예약은 1건이지만 실제 호출은 4회다"
 
 
+def test_google_topic_safety_failure_uses_neutral_fallback(monkeypatch, recorded):
+    async def allowed(*_a, **_k):
+        from app.services.cost_guard import CostGuardDecision
+
+        return CostGuardDecision(True, None)
+
+    monkeypatch.setattr("app.services.cost_guard.check_and_increment", allowed)
+    monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
+    prompts = []
+
+    def topic_then_fallback(prompt, _hospital, *, counter=None):
+        prompts.append(prompt)
+        if counter is not None:
+            counter.tick()
+        if len(prompts) == 1:
+            raise ValueError("IMAGE_SAFETY")
+        return "gs://bucket/neutral.png"
+
+    monkeypatch.setattr(image_engine, "_generate_and_upload", topic_then_fallback)
+
+    url, prompt = asyncio.run(
+        image_engine.generate_image(ContentType.LOCAL, "병원", topic="간질환 진료 흐름")
+    )
+
+    assert url == "gs://bucket/neutral.png"
+    assert prompt == image_engine.GOOGLE_SAFETY_FALLBACK_PROMPT
+    assert prompts[1] == image_engine.GOOGLE_SAFETY_FALLBACK_PROMPT
+    assert recorded.by_category["image"] == 2
+
+
 def test_blocked_image_generation_records_no_provider_call(monkeypatch, recorded):
     """가드에 막히면 공급자에 아무것도 나가지 않는다 — 계수도 0이어야 한다."""
 

@@ -5,11 +5,11 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   buildDevelopmentSupportSummary,
+  effectiveSafeCause,
   historyEventLabel,
   operationStatusLabel,
   primaryOperationsMutation,
   runStateLabel,
-  safeCauseText,
   shouldPollRun,
   slackStateLabel,
   type OperationsMutationDescriptor,
@@ -116,7 +116,7 @@ export function OperationDetail(props: Props) {
       <section className="ops-detail-section">
         <h3>무슨 문제인지</h3>
         <p className="text-sm font-semibold text-slate-800">{operationStatusLabel(row.status)}</p>
-        <p className="ops-readable mt-2 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600">{safeCauseText(row.safe_cause)}</p>
+        <p className="ops-readable mt-2 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600">{effectiveSafeCause(effectiveDetail)}</p>
       </section>
 
       <section className="ops-detail-section">
@@ -137,13 +137,10 @@ export function OperationDetail(props: Props) {
           </div>
         ) : directLink ? (
           <Link href={row.action.path} className="ops-control mt-3 inline-flex w-full items-center justify-center rounded-lg border border-blue-300 bg-blue-50 px-4 text-sm font-bold text-blue-800">{row.action.label}</Link>
-        ) : (
-          <button ref={copyButton} type="button" onClick={copyForDevelopment} className="ops-control mt-3 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700">개발팀 문의용 정보 복사</button>
-        )}
+        ) : null}
+        <button ref={copyButton} type="button" onClick={copyForDevelopment} className="ops-control mt-2 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700">개발팀 문의용 정보 복사</button>
         {copyStatus ? <p role="status" aria-live="polite" className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{copyStatus}</p> : null}
         {error ? <p role="alert" className="ops-readable mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm leading-5 text-red-700">{error}</p> : null}
-        {error && mutation && !permissionDenied ? <button ref={copyButton} type="button" onClick={copyForDevelopment} className="ops-control mt-2 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700">개발팀 문의용 정보 복사</button> : null}
-        {mutation && permissionDenied ? <button ref={copyButton} type="button" onClick={copyForDevelopment} className="ops-control mt-2 w-full rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-700">개발팀 문의용 정보 복사</button> : null}
       </section>
 
       <section className="ops-detail-section">

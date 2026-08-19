@@ -170,15 +170,41 @@ export function historyEventLabel(event: string): string {
     default: return '운영 기록'
   }
 }
+const UNKNOWN_SAFE_CAUSE = '원인 설명을 확인할 수 없습니다. 아래 조치가 실패하면 개발팀 문의용 정보를 복사해 주세요.'
+
 export function safeCauseText(value: string | null | undefined): string {
   const cleaned = value?.trim() ?? ''
+  const safeCodeMessages: Record<string, string> = {
+    V0_REPORT_RETRIES_EXHAUSTED: '외부 AI 측정 재시도를 모두 사용했지만 초기 진단을 완료하지 못했습니다.',
+    V0_PROVIDER_AUTH_OR_MODEL: 'AI 측정 공급자의 인증 또는 모델 설정을 확인해야 합니다.',
+    V0_PROVIDER_UNAVAILABLE: '외부 AI 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.',
+    V0_JUDGE_FAILED: 'AI 답변은 받았지만 공통 언급 판정 단계에서 처리하지 못했습니다.',
+    COST_BLOCKED: '비용 안전장치가 이 작업의 실행을 보류했습니다.',
+    ESSENCE_AUTO_REVIEW_FAILED: '콘텐츠 운영 기준 자동 검수를 완료하지 못했습니다.',
+  }
+  if (safeCodeMessages[cleaned]) return safeCodeMessages[cleaned]
   const codeLike = /^[A-Z0-9_:-]+$/.test(cleaned)
   const sensitive = /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:https?|redis):\/\/|traceback|task[_ -]?id|api[_ -]?key|secret|token|exception|error|refused|timeout|\b0\d{1,2}[- ]?\d{3,4}[- ]?\d{4}\b/i.test(cleaned)
   const operatorReadable = /[가-힣]{2,}/.test(cleaned)
-  if (!cleaned || codeLike || sensitive || !operatorReadable) {
-    return '원인 설명을 확인할 수 없습니다. 아래 조치가 실패하면 개발팀 문의용 정보를 복사해 주세요.'
+  if (!cleaned || cleaned.includes('원인 설명을 확인할 수 없습니다') || codeLike || sensitive || !operatorReadable) {
+    return UNKNOWN_SAFE_CAUSE
   }
   return cleaned
+}
+
+export function effectiveSafeCause(detail: OperationsIncidentDetail): string {
+  const candidates = [
+    detail.incident.safe_cause,
+    detail.run?.safe_error_message,
+    detail.run?.safe_error_code,
+    detail.incident.slack?.safe_error_message,
+    detail.incident.slack?.safe_error_code,
+  ]
+  for (const candidate of candidates) {
+    const safeCause = safeCauseText(candidate)
+    if (safeCause !== UNKNOWN_SAFE_CAUSE) return safeCause
+  }
+  return UNKNOWN_SAFE_CAUSE
 }
 export function buildDevelopmentSupportSummary(
   detail: OperationsIncidentDetail,
@@ -191,15 +217,16 @@ export function buildDevelopmentSupportSummary(
   })
   const recentAt = row.history.at(-1)?.at ?? row.occurred_at
   const code = detail.run?.safe_error_code ?? row.slack?.safe_error_code ?? '기록되지 않음'
-  const description = safeCauseText(
-    row.safe_cause ?? detail.run?.safe_error_message ?? row.slack?.safe_error_message,
-  )
+  const description = effectiveSafeCause(detail)
   return [
     '[운영 센터 개발팀 문의]',
     `병원: ${row.customer.name}`,
+    `병원 ID: ${row.customer.hospital_id}`,
     `현상: ${operationStatusLabel(row.status)}`,
     `고객 영향: ${row.impact}`,
     `오류 식별자(개발팀용): ${code}`,
+    `작업 실행 ID: ${detail.run?.run_id ?? row.operation_run_id ?? '기록되지 않음'}`,
+    `재시도 횟수: ${detail.run?.attempt_count ?? '기록되지 않음'}`,
     `안전한 원인 설명: ${description}`,
     `발생 시각: ${row.occurred_at}`,
     `최근 시각: ${recentAt}`,

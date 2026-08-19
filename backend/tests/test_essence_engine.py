@@ -110,6 +110,8 @@ def test_synthesize_philosophy_requires_evidence_map_for_non_empty_fields():
 
     assert payload["positioning_statement"]
     assert payload["evidence_map"]["positioning_statement"] == [str(note.id)]
+    assert payload["avoid_messages"]
+    assert payload["medical_ad_risk_rules"]
     assert validate_philosophy_grounding(payload, [note]) == []
 
 

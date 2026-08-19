@@ -137,7 +137,7 @@ export function deriveOnboardingSteps(
       phase: 'onboarding',
       title: '초기 진단 리포트',
       description: '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다.',
-      href: `/hospitals/${hospitalId}/reports`,
+      href: `/hospitals/${hospitalId}/dashboard#v0-measurement-runs`,
       done: Boolean(hospital?.v0_report_done) && readinessCheck(readiness, 'v0_report') !== false,
     },
     {
@@ -206,7 +206,9 @@ export function deriveOnboardingSteps(
     title: item.title,
     description: item.description,
     href: item.href,
-    status: index < firstIncomplete || (firstIncomplete === -1 && item.done)
+    // 완료 사실과 진행 순서는 별개다. V0처럼 앞 단계가 막혀 있어도 AE가 이미
+    // 끝낸 자료 처리·운영 기준·스케줄을 다시 '대기'로 되돌려 표시하지 않는다.
+    status: item.done
       ? 'completed'
       : index === firstIncomplete
         ? 'current'

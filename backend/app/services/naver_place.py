@@ -39,6 +39,12 @@ class NaverPlaceResult:
     markdown: str
     reason: str | None  # 실패/부분 성공 사유 (AE 안내용)
 
+    @property
+    def canonical_url(self) -> str | None:
+        if not self.place_id or not self.place_id.isdigit():
+            return None
+        return f"https://{NAVER_PLACE_HOST}/hospital/{self.place_id}/home"
+
 
 async def fetch_via_jina(target_url: str) -> tuple[str, str | None]:
     """Jina Reader로 target_url을 읽어 (마크다운, 오류사유) 반환.

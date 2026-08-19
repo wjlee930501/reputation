@@ -16,6 +16,7 @@ import hashlib
 import logging
 import threading
 import uuid
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -549,10 +550,114 @@ def _v0_claim_is_alive(db, hospital_id: uuid.UUID) -> bool:
     return running.scalar() is not None
 
 
-def _ensure_v0_has_successful_measurements(success_count: int, failure_count: int) -> None:
+class V0MeasurementUnavailable(RuntimeError):
+    def __init__(self, summary: dict[str, Any]):
+        self.summary = summary
+        super().__init__(
+            f"V0 리포트를 만들 수 있는 성공 측정 결과가 없습니다 (실패 {summary.get('failed_count', 0)}건)"
+        )
+
+
+def _classify_v0_failure(
+    failure_reasons: Counter[str],
+    platform_counts: dict[str, Counter[str]],
+    *,
+    planned_counts: dict[str, int] | None = None,
+    blocked_platforms: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    reason_text = " ".join(failure_reasons).lower()
+    success_count = sum(counts["SUCCESS"] for counts in platform_counts.values())
+    if success_count > 0 and failure_reasons:
+        code = "V0_PARTIAL_PROVIDER_DEGRADED"
+        message = "일부 AI 측정 호출은 실패했지만 성공 데이터로 초기 진단을 완료했습니다."
+        next_action = (
+            "초기 진단을 다시 실행하지 마세요. 운영센터에서 실패한 플랫폼의 상태만 확인하고 "
+            "다음 정기 측정에서 회복 여부를 점검하세요."
+        )
+    elif any(
+        token in reason_text
+        for token in ("credit_balance_exhausted", "quota")
+    ):
+        code = "V0_PROVIDER_QUOTA_EXHAUSTED"
+        message = "AI 측정 공급자의 크레딧 또는 호출 쿼터가 소진되었습니다."
+        next_action = "OpenAI 크레딧과 Gemini 쿼터를 복구한 뒤 초기 진단을 한 번만 재실행하세요."
+    elif any(token in reason_text for token in ("http_429", "ratelimit")):
+        code = "V0_PROVIDER_RATE_LIMITED"
+        message = "AI 측정 공급자가 일시적으로 호출 속도를 제한했습니다."
+        next_action = "잠시 후 초기 진단을 한 번만 재실행하세요."
+    elif any(
+        token in reason_text
+        for token in (
+            "http_400",
+            "http_401",
+            "http_403",
+            "http_404",
+            "authentication",
+            "permission",
+            "notfound",
+            "badrequest",
+        )
+    ):
+        code = "V0_PROVIDER_AUTH_OR_MODEL"
+        message = "AI 측정 공급자의 인증 또는 모델 설정을 확인해야 합니다."
+        next_action = "배포 환경의 공급자 API 키·모델명을 확인한 뒤 초기 진단을 재실행하세요."
+    elif failure_reasons and all(reason.endswith("mention_parse_failed") for reason in failure_reasons):
+        code = "V0_JUDGE_FAILED"
+        message = "AI 답변은 받았지만 공통 언급 판정 단계에서 처리하지 못했습니다."
+        next_action = "공통 판정 모델 설정과 파싱 로그를 확인한 뒤 초기 진단을 재실행하세요."
+    else:
+        code = "V0_PROVIDER_UNAVAILABLE"
+        message = "외부 AI 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다."
+        next_action = "공급자 상태와 호출 제한을 확인하고 장애가 해소된 뒤 초기 진단을 재실행하세요."
+
+    platforms: dict[str, dict[str, Any]] = {}
+    for platform, counts in sorted(platform_counts.items()):
+        prefix = f"{platform}:"
+        attempted_count = counts["SUCCESS"] + counts["FAILED"]
+        planned_count = (planned_counts or {}).get(platform, attempted_count)
+        platforms[platform] = {
+            "success_count": counts["SUCCESS"],
+            "failure_count": counts["FAILED"],
+            "attempted_count": attempted_count,
+            "planned_count": planned_count,
+            "skipped_count": max(0, planned_count - attempted_count),
+            "blocked_reason": (blocked_platforms or {}).get(platform),
+            "failure_reasons": {
+                key[len(prefix):]: count
+                for key, count in sorted(failure_reasons.items())
+                if key.startswith(prefix)
+            },
+        }
+    return {
+        "safe_error_code": code,
+        "safe_error_message": message,
+        "next_action": next_action,
+        "failed_count": sum(counts["FAILED"] for counts in platform_counts.values()),
+        "platforms": platforms,
+    }
+
+
+def _provider_batch_outage_reason(results: Sequence[Mapping[str, Any]]) -> str | None:
+    """반복 측정 전체가 공급자 호출 단계에서 실패하면 남은 질의를 중단한다.
+
+    한 질문에 대해 반복 5회가 모두 공급자 자체 재시도까지 소진했다면 같은 V0 실행에서
+    나머지 14개 질문을 보내도 회복 가능성이 낮다. 파싱 실패는 답변을 받은 상태이므로
+    여기서 회로를 열지 않는다.
+    """
+    reasons = [str(result.get("failure_reason") or "") for result in results]
+    if not reasons or not all(reason.startswith("provider_query_failed:") for reason in reasons):
+        return None
+    return Counter(reasons).most_common(1)[0][0]
+
+
+def _ensure_v0_has_successful_measurements(
+    success_count: int,
+    failure_count: int,
+    failure_summary: dict[str, Any] | None = None,
+) -> None:
     if success_count <= 0:
-        raise RuntimeError(
-            f"V0 리포트를 만들 수 있는 성공 측정 결과가 없습니다 (실패 {failure_count}건)"
+        raise V0MeasurementUnavailable(
+            {**(failure_summary or {}), "failed_count": failure_count}
         )
 
 
@@ -1055,6 +1160,9 @@ def trigger_v0_report(self, hospital_id: str):
             all_records = []
             success_count = 0
             failure_count = 0
+            failure_reasons: Counter[str] = Counter()
+            platform_counts: dict[str, Counter[str]] = {}
+            blocked_platforms: dict[str, str] = {}
             result = db.execute(v0_sample_query_stmt(hospital.id))
             sample_queries = result.scalars().all()
 
@@ -1062,6 +1170,9 @@ def trigger_v0_report(self, hospital_id: str):
             if settings.GEMINI_API_KEY:
                 platforms.append("gemini")
             competitors = hospital.competitors or []
+            planned_counts = {
+                platform: len(sample_queries) * V0_REPEAT_COUNT for platform in platforms
+            }
 
             # 비용 가드: V0 측정 예산 확인(쿼리 × 플랫폼 × **반복 횟수**).
             # 반복 횟수를 빼면 실제 호출의 1/V0_REPEAT_COUNT만 예약하게 되어 가드가
@@ -1102,6 +1213,8 @@ def trigger_v0_report(self, hospital_id: str):
 
             for q in sample_queries:
                 for platform in platforms:
+                    if platform in blocked_platforms:
+                        continue
                     results = _run_async(
                         run_single_query(
                             hospital.name,
@@ -1120,6 +1233,9 @@ def trigger_v0_report(self, hospital_id: str):
                             success_count += 1
                         else:
                             failure_count += 1
+                        platform_counts.setdefault(platform, Counter())[measurement_status] += 1
+                        if measurement_status == "FAILED":
+                            failure_reasons[f"{platform}:{_failure_reason or 'measurement_failed'}"] += 1
                         record = _build_sov_record_from_result(
                             hospital_id=hospital.id,
                             query_id=q.id,
@@ -1130,10 +1246,33 @@ def trigger_v0_report(self, hospital_id: str):
                         db.add(record)
                         # 언급률 분모가 유형을 알아야 INFO(이길 수 없는 질문)를 뺄 수 있다.
                         all_records.append({**r, "query_intent": q.query_intent})
+                    outage_reason = _provider_batch_outage_reason(results)
+                    if outage_reason:
+                        blocked_platforms[platform] = outage_reason
+                        logger.error(
+                            "V0 provider circuit opened: platform=%s reason=%s remaining queries skipped",
+                            platform,
+                            outage_reason,
+                        )
 
-            _finish_measurement_run(run, success_count, failure_count)
+            failure_summary = _classify_v0_failure(
+                failure_reasons,
+                platform_counts,
+                planned_counts=planned_counts,
+                blocked_platforms=blocked_platforms,
+            )
+            _finish_measurement_run(
+                run,
+                success_count,
+                failure_count,
+                error_summary=failure_summary if failure_count else None,
+            )
             db.commit()
-            _ensure_v0_has_successful_measurements(success_count, failure_count)
+            _ensure_v0_has_successful_measurements(
+                success_count,
+                failure_count,
+                failure_summary,
+            )
 
             # AI 답변 언급률 계산 (성공 측정 0건이면 None — 위 _ensure로 이미 방어됨)
             sov_pct = calculate_sov(all_records)
@@ -1218,8 +1357,11 @@ def trigger_v0_report(self, hospital_id: str):
         # 이 실행이 ANALYZING을 클레임했다면 복원 — 그래야 재시도/수동 재트리거가
         # in-progress 가드를 통과한다 (P2-15).
         _reset_v0_analyzing_status(hospital_id, prior_status)
-        if self.request.retries >= self.max_retries:
-            # 재시도 소진 — 병원이 ANALYZING에 갇히지 않게 복원했음을 운영자에게 알린다.
+        terminal_measurement_failure = isinstance(exc, V0MeasurementUnavailable)
+        if terminal_measurement_failure or self.request.retries >= self.max_retries:
+            # 공급자별 재시도와 회로 차단까지 끝난 측정 실패는 150건 전체를 Celery가
+            # 다시 돌려도 회복되지 않는다. 즉시 사람 확인 대상으로 넘긴다. 그 밖의
+            # 일시적 작업 오류만 task-level 재시도를 사용한다.
             try:
                 _run_async(
                     open_ops_incident(
@@ -1227,10 +1369,16 @@ def trigger_v0_report(self, hospital_id: str):
                         object_type="hospital",
                         object_id=hospital_id,
                         incident_type="V0_REPORT_FAILED",
-                        safe_error_code="V0_REPORT_RETRIES_EXHAUSTED",
-                        problem="초기 진단 리포트 생성 재시도가 모두 실패했습니다.",
+                        safe_error_code=getattr(exc, "summary", {}).get(
+                            "safe_error_code", "V0_REPORT_RETRIES_EXHAUSTED"
+                        ),
+                        problem=getattr(exc, "summary", {}).get(
+                            "safe_error_message", "초기 진단 리포트 생성 재시도가 모두 실패했습니다."
+                        ),
                         customer_impact="초기 진단 리포트를 준비할 수 없습니다.",
-                        next_action="운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
+                        next_action=getattr(exc, "summary", {}).get(
+                            "next_action", "운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요."
+                        ),
                         source_type="V0_REPORT",
                         hospital_name="병원 초기 진단",
                         hospital_id=uuid.UUID(hospital_id),
@@ -2763,7 +2911,13 @@ def _start_measurement_run(
     return run
 
 
-def _finish_measurement_run(run: MeasurementRun, success_count: int, failure_count: int) -> None:
+def _finish_measurement_run(
+    run: MeasurementRun,
+    success_count: int,
+    failure_count: int,
+    *,
+    error_summary: dict[str, Any] | None = None,
+) -> None:
     total = success_count + failure_count
     run.query_count = total
     run.success_count = success_count
@@ -2776,10 +2930,10 @@ def _finish_measurement_run(run: MeasurementRun, success_count: int, failure_cou
         run.status = "COMPLETED"
     elif success_count == 0:
         run.status = "FAILED"
-        run.error_summary = {"failed_count": failure_count}
+        run.error_summary = error_summary or {"failed_count": failure_count}
     else:
         run.status = "PARTIAL"
-        run.error_summary = {"failed_count": failure_count}
+        run.error_summary = error_summary or {"failed_count": failure_count}
 
 
 def _measurement_status_for_result(result: dict) -> tuple[str, str | None]:

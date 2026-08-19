@@ -20,6 +20,7 @@ from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.services import cost_guard
 from app.services.ai_prompt_boundary import untrusted_json_block
+from app.services.essence_engine import effective_safety_policy
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +90,18 @@ def _review_data(
     content: dict[str, Any],
     content_brief: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    safety_policy = effective_safety_policy(philosophy)
     return {
         "hospital_profile": {
             "name": _bounded_text(getattr(hospital, "name", None), 150),
             "director_name": _bounded_text(getattr(hospital, "director_name", None), 150),
+            "director_career": _bounded_text(
+                getattr(hospital, "director_career", None), 2000
+            ),
+            "address": _bounded_text(getattr(hospital, "address", None), 500),
+            "phone": _bounded_text(getattr(hospital, "phone", None), 100),
+            "business_hours": getattr(hospital, "business_hours", None) or {},
+            "website_url": _bounded_text(getattr(hospital, "website_url", None), 500),
             "region": list(getattr(hospital, "region", None) or [])[:10],
             "specialties": list(getattr(hospital, "specialties", None) or [])[:20],
             "treatments": list(getattr(hospital, "treatments", None) or [])[:30],
@@ -102,10 +111,8 @@ def _review_data(
                 getattr(philosophy, "positioning_statement", None), 600
             ),
             "must_use_messages": list(getattr(philosophy, "must_use_messages", None) or [])[:12],
-            "avoid_messages": list(getattr(philosophy, "avoid_messages", None) or [])[:12],
-            "medical_ad_risk_rules": list(getattr(philosophy, "medical_ad_risk_rules", None) or [])[
-                :12
-            ],
+            "avoid_messages": safety_policy["avoid_messages"][:12],
+            "medical_ad_risk_rules": safety_policy["medical_ad_risk_rules"][:12],
         },
         "approved_brief": {
             "target_query": _bounded_text((content_brief or {}).get("target_query"), 300),

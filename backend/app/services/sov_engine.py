@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from google import genai as google_genai
 from google.genai import types as genai_types
 from openai import AsyncOpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.services import query_mapper
@@ -38,10 +38,9 @@ _provider_cost_category: ContextVar[str] = ContextVar("sov_provider_cost_categor
 async def _record_sov_provider_call(count: int = 1) -> None:
     """실제로 나간 공급자 호출을 기록한다(차단하지 않음).
 
-    예약(check_and_increment)은 호출부가 측정 시작 전에 한 번만 한다. 그런데 이 모듈의
-    질의 함수는 tenacity로 최대 3회 재시도되고 `_query_gemini`는 `_query_gemini_result`를
-    감싸 중첩 재시도까지 있어, 실제 호출이 예약보다 몇 배 많아질 수 있다. 그 차이를
-    기록해 두지 않으면 상한이 실제 지출을 막고 있는지 판단할 근거 자체가 없다.
+    예약(check_and_increment)은 호출부가 측정 시작 전에 한 번만 한다. 이 모듈의 질의
+    함수는 일시 장애에 한해 최대 3회 재시도하므로 실제 호출은 예약보다 많을 수 있다.
+    그 차이를 기록해 두지 않으면 상한이 실제 지출을 막고 있는지 판단할 근거가 없다.
     """
     from app.services import cost_guard
 
@@ -53,6 +52,11 @@ _semaphore_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _pool_limit(pool: str) -> int:
+    # Gemini Search는 같은 키에서 짧은 burst가 나가면 단건 호출은 정상이어도 429를
+    # 반환한다. 워커 한 인스턴스당 직렬화해 플랫폼 rate limit을 피하되, ChatGPT와
+    # 서로 다른 세마포어를 사용해 전체 측정 시간은 불필요하게 늘리지 않는다.
+    if pool.endswith(":gemini"):
+        return 1
     if pool == POOL_LEADGEN:
         return settings.LEADGEN_PROVIDER_CONCURRENCY
     return SOV_PROVIDER_CONCURRENCY
@@ -93,7 +97,89 @@ OPENAI_TIMEOUT_SECONDS = 120.0
 GEMINI_TIMEOUT_SECONDS = 60.0
 
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_SECONDS)
+# 측정 공급자 호출만 SDK 재시도를 끈다. 판정기(`openai_client`)는 기존 SDK 복원력을
+# 유지하고, 측정 경로의 실제 호출 횟수·백오프·영구 오류 중단은 Tenacity 한곳에서 통제한다.
+openai_query_client = AsyncOpenAI(
+    api_key=settings.OPENAI_API_KEY,
+    timeout=OPENAI_TIMEOUT_SECONDS,
+    max_retries=0,
+)
 _gemini_client: google_genai.Client | None = None
+
+
+def _root_provider_exception(exc: BaseException) -> BaseException:
+    """Tenacity가 감싼 마지막 공급자 예외를 안전하게 꺼낸다."""
+    last_attempt = getattr(exc, "last_attempt", None)
+    if last_attempt is None:
+        return exc
+    try:
+        cause = last_attempt.exception()
+    except Exception:  # noqa: BLE001 - 진단 경로가 원래 예외를 가리면 안 된다.
+        return exc
+    return cause if isinstance(cause, BaseException) else exc
+
+
+def _provider_status_code(exc: BaseException) -> int | None:
+    root = _root_provider_exception(exc)
+    for value in (getattr(root, "status_code", None), getattr(root, "code", None)):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def _provider_error_code(exc: BaseException) -> str | None:
+    """운영 화면에 저장해도 안전한 공급자 오류 코드만 추출한다."""
+    root = _root_provider_exception(exc)
+    candidates: list[Any] = [getattr(root, "code", None)]
+    body = getattr(root, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            candidates.extend((error.get("code"), error.get("type")))
+    for value in candidates:
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", value):
+            return value.lower()
+    return None
+
+
+def provider_failure_reason(exc: BaseException) -> str:
+    """비밀·원문 응답 없이 공급자 실패의 분류 근거를 보존한다."""
+    root = _root_provider_exception(exc)
+    parts = ["provider_query_failed", type(root).__name__]
+    status_code = _provider_status_code(root)
+    if status_code is not None:
+        parts.append(f"http_{status_code}")
+    error_code = _provider_error_code(root)
+    if error_code:
+        parts.append(error_code)
+    return ":".join(parts)
+
+
+def is_terminal_provider_failure(reason: str | None) -> bool:
+    """같은 실행 안에서 다시 호출해도 회복되지 않는 공급자 오류인지 판정한다."""
+    normalized = str(reason or "").lower()
+    return any(
+        token in normalized
+        for token in (
+            "http_400",
+            "http_401",
+            "http_403",
+            "http_404",
+            "authentication",
+            "permission",
+            "notfound",
+            "badrequest",
+            "credit_balance_exhausted",
+            "quota",
+        )
+    )
+
+
+def _should_retry_provider_exception(exc: BaseException) -> bool:
+    """타임아웃·5xx·일반 429는 짧게 재시도하고 명시적 크레딧/쿼터 오류는 중단한다."""
+    return not is_terminal_provider_failure(provider_failure_reason(exc))
 
 
 def _get_gemini_client() -> google_genai.Client | None:
@@ -311,7 +397,7 @@ def generate_query_matrix_specs(
     # 키워드를 한 번만 분석해 재사용한다. 무료 진단과 **같은 분류기**를 쓴다 —
     # 두 경로가 다른 기준으로 같은 단어를 판단하면 무료에서 본 숫자와 첫 유료
     # 리포트가 어긋난다(PRD §7-4).
-    analyses = {keyword: analyze_keyword(keyword) for keyword in keywords}
+    analyses = {keyword: analyze_keyword(keyword, region) for keyword in keywords}
 
     for (template, intent, applies), keyword, specialty in product(
         _TEMPLATE_SPECS, keywords, specialties
@@ -569,7 +655,12 @@ def record_is_ambiguous(record) -> bool:
 GEMINI_MAX_OUTPUT_TOKENS = 4096
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=2, max=10),
+    retry=retry_if_exception(_should_retry_provider_exception),
+    reraise=True,
+)
 async def _query_chatgpt(query: str) -> dict[str, Any]:
     """ChatGPT 호출.
 
@@ -579,7 +670,7 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
     if settings.OPENAI_CHATGPT_USE_WEB_SEARCH:
         return await _query_chatgpt_with_search_result(query)
     await _record_sov_provider_call()
-    response = await openai_client.chat.completions.create(
+    response = await openai_query_client.chat.completions.create(
         model=settings.OPENAI_MODEL_QUERY,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT_SOV},
@@ -610,7 +701,7 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
     """OpenAI Responses web search의 답변과 실제 인용 URL을 함께 보존한다."""
     await _record_sov_provider_call()
     try:
-        response = await openai_client.responses.create(
+        response = await openai_query_client.responses.create(
             model=settings.OPENAI_MODEL_QUERY,
             tools=[{"type": "web_search"}],
             # 도구는 제공하되 강제하지 않는다 (측정 정책 v2). 매 요청 검색을 강제하면
@@ -657,13 +748,21 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
     }
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
 async def _query_gemini(query: str) -> str:
-    """진단 코드와 기존 호출부를 위한 text-only 호환 래퍼."""
+    """진단 코드와 기존 호출부를 위한 text-only 호환 래퍼.
+
+    재시도는 `_query_gemini_result` 한 계층에서만 수행한다. 래퍼까지 장식하면 일시
+    장애 한 건이 3×3회로 증폭된다.
+    """
     return str((await _query_gemini_result(query))["text"])
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=2, max=10),
+    retry=retry_if_exception(_should_retry_provider_exception),
+    reraise=True,
+)
 async def _query_gemini_result(query: str) -> dict[str, Any]:
     client = _get_gemini_client()
     if not client:
@@ -986,12 +1085,14 @@ async def run_single_query(
         # 이 측정에서 나가는 실제 호출을 어느 예산으로 셀지 고정한다. 무료 진단이
         # 유료 측정 예산에 섞이면 상한 판단이 무너진다.
         _provider_cost_category.set(pool)
-        async with _get_semaphore(pool):
+        provider_pool = f"{pool}:gemini" if platform == "gemini" else pool
+        async with _get_semaphore(provider_pool):
             try:
                 provider_result = await query_fn(query_text)
             except Exception as e:
                 # 쿼리 자체 실패 → raw="" 로 FAILED 처리.
-                logger.error(f"Query failed: {e}")
+                failure_reason = provider_failure_reason(e)
+                logger.error("Query failed: %s", failure_reason)
                 return {
                     "is_mentioned": False,
                     "mention_rank": None,
@@ -1001,7 +1102,7 @@ async def run_single_query(
                     "competitor_mentions": None,
                     "source_urls": [],
                     "measurement_status": "FAILED",
-                    "failure_reason": f"provider_query_failed:{type(e).__name__}",
+                    "failure_reason": failure_reason,
                 }
             if isinstance(provider_result, str):
                 provider_result = {"text": provider_result, "source_urls": []}
@@ -1101,12 +1202,13 @@ async def fetch_answer(
         try:
             provider_result = await query_fn(query_text)
         except Exception as exc:  # noqa: BLE001 — 측정 1건의 실패는 진단을 멈추지 않는다.
-            logger.error("Query failed (%s): %s", platform, exc)
+            failure_reason = provider_failure_reason(exc)
+            logger.error("Query failed (%s): %s", platform, failure_reason)
             return {
                 "text": "",
                 "source_urls": [],
                 "measurement_status": "FAILED",
-                "failure_reason": f"provider_query_failed:{type(exc).__name__}",
+                "failure_reason": failure_reason,
             }
 
     if isinstance(provider_result, str):

@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
+from app.services.essence_engine import effective_safety_policy
 from app.utils.authority_sources import (
     infer_source_type,
     is_citable_reference_url,
@@ -268,6 +269,7 @@ def _fill_type_prompt(content_type: ContentType, hospital: Hospital) -> str:
 def _build_philosophy_context(philosophy: HospitalContentPhilosophy | None) -> str:
     if not philosophy:
         return ""
+    safety_policy = effective_safety_policy(philosophy)
     treatments = "\n".join(
         f"- {item.get('treatment', '진료 항목')}: {item.get('angle', '')}"
         for item in (philosophy.treatment_narratives or [])
@@ -286,9 +288,9 @@ tone_guidelines:
 must_use_messages:
 {_bullet_list(philosophy.must_use_messages or [])}
 avoid_messages:
-{_bullet_list(philosophy.avoid_messages or [])}
+{_bullet_list(safety_policy['avoid_messages'])}
 medical_ad_risk_rules:
-{_bullet_list(philosophy.medical_ad_risk_rules or [])}
+{_bullet_list(safety_policy['medical_ad_risk_rules'])}
 treatment_narratives:
 {treatments}
 

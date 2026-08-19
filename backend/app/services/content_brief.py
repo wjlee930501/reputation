@@ -7,6 +7,7 @@ from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction
+from app.services.essence_engine import effective_safety_policy
 
 BRIEF_STATUS_DRAFT = "DRAFT"
 BRIEF_STATUS_APPROVED = "APPROVED"
@@ -44,6 +45,7 @@ def build_content_brief(
         hospital=hospital,
         philosophy=philosophy,
     )
+    safety_policy = effective_safety_policy(philosophy)
 
     return {
         "target_query": target_query,
@@ -53,13 +55,13 @@ def build_content_brief(
         "philosophy_reference": _philosophy_reference(philosophy),
         "treatment_narrative": treatment_narrative,
         "must_use_messages": _list(getattr(philosophy, "must_use_messages", None)),
-        "avoid_messages": _list(getattr(philosophy, "avoid_messages", None)),
-        "medical_risk_rules": _medical_risk_rules(philosophy),
-        "internal_link_target": {
-            "type": "content_item",
-            "content_id": str(content_item.id),
-            "path": f"/{hospital.slug}/contents/{content_item.id}",
-        },
+        "avoid_messages": safety_policy["avoid_messages"],
+        "medical_risk_rules": safety_policy["medical_ad_risk_rules"],
+        # 이 함수는 현재 슬롯 외의 콘텐츠를 조회하지 않는다. 현재 글 자신을 링크
+        # 대상으로 주면 생성 모델이 자가 링크를 본문에 넣고, 독자와 크롤러 모두 같은
+        # 페이지로 되돌아오게 된다. 실제 관련 글을 선택할 수 있을 때만 별도 단계에서
+        # 채운다.
+        "internal_link_target": None,
         "operator_notes": [],
         "source": {
             "mode": "deterministic_fallback",
@@ -197,14 +199,7 @@ def _treatment_narrative(
 
 
 def _medical_risk_rules(philosophy: HospitalContentPhilosophy | None) -> list[str]:
-    rules = _list(getattr(philosophy, "medical_ad_risk_rules", None))
-    if rules:
-        return rules
-    return [
-        "치료 효과를 보장하거나 100%로 표현하지 않습니다.",
-        "최고, 유일, 1등 등 비교 우위 표현을 사용하지 않습니다.",
-        "환자 상태에 따라 진료·치료 계획이 달라질 수 있음을 분명히 합니다.",
-    ]
+    return effective_safety_policy(philosophy)["medical_ad_risk_rules"]
 
 
 def _list(value: Any) -> list:

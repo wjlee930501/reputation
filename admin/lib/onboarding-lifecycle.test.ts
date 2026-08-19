@@ -61,7 +61,7 @@ test('an unaccepted handoff is the first blocker and exposes one recovery action
   const summary = deriveOnboardingSummary(steps, readiness)
 
   assert.equal(steps.find((step) => step.key === 'handoff')?.status, 'current')
-  assert.equal(steps.find((step) => step.key === 'profile')?.status, 'upcoming')
+  assert.equal(steps.find((step) => step.key === 'profile')?.status, 'completed')
   assert.equal(
     summary.blockedReason,
     '담당 AE가 인수 대기열에서 계약 정보와 처리 기한을 확인하고 인수를 승인해야 다음 단계로 진행할 수 있습니다.',
@@ -124,6 +124,26 @@ test('stale approved essence and partially processed included sources block read
   )
   assert.equal(steps.find((step) => step.key === 'processing')?.status, 'current')
   assert.notEqual(steps.find((step) => step.key === 'philosophy_approved')?.status, 'completed')
+})
+
+test('later work stays completed when V0 is the current blocker', () => {
+  const steps = deriveOnboardingSteps(
+    { ...hospital, v0_report_done: false, site_built: false, site_live: false },
+    sources,
+    philosophies,
+    readiness,
+    'hospital-id',
+    acceptedHandoff,
+  )
+
+  assert.equal(steps.find((step) => step.key === 'v0')?.status, 'current')
+  assert.equal(steps.find((step) => step.key === 'processing')?.status, 'completed')
+  assert.equal(steps.find((step) => step.key === 'philosophy_approved')?.status, 'completed')
+  assert.equal(steps.find((step) => step.key === 'schedule')?.status, 'completed')
+  assert.equal(
+    deriveOnboardingSummary(steps, readiness).nextActionHref,
+    '/hospitals/hospital-id/dashboard#v0-measurement-runs',
+  )
 })
 
 test('the next-action CTA always points somewhere real', () => {

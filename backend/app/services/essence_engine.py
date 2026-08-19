@@ -38,13 +38,65 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital
 from app.utils.error_page import looks_like_error_page_text
-from app.utils.medical_filter import check_forbidden
+from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden
 
 logger = logging.getLogger(__name__)
 
 ESSENCE_STATUS_ALIGNED = "ALIGNED"
 ESSENCE_STATUS_NEEDS_REVIEW = "NEEDS_ESSENCE_REVIEW"
 ESSENCE_STATUS_MISSING_APPROVED = "MISSING_APPROVED_PHILOSOPHY"
+
+# 병원 자료에서 추출하는 고유 규칙과 별개인 플랫폼 공통 안전 정책이다. 이 규칙을
+# 자료 evidence에 억지로 연결하면 없는 출처를 만든 셈이 되므로 grounding 대상에서
+# 제외하되, 모든 후보/승인본에는 반드시 존재하도록 검증한다.
+MANDATORY_AVOID_MESSAGES = (
+    "의료광고 공통 금지 표현을 홍보 문구로 사용하지 않습니다: "
+    + ", ".join(FORBIDDEN_EXPRESSIONS),
+)
+MANDATORY_MEDICAL_AD_RISK_RULES = (
+    "치료 효과·성공·완치·안전성을 단정하거나 보장하지 않습니다.",
+    "비교 우위·유일성·최상급 표현은 객관적 근거와 적법한 심의 없이 사용하지 않습니다.",
+    "환자 개인의 치료 결과를 일반화하지 않고 부작용·한계·개인차를 함께 검수합니다.",
+)
+
+
+def apply_mandatory_safety_policy(payload: dict[str, Any]) -> dict[str, Any]:
+    for field_name, mandatory in (
+        ("avoid_messages", MANDATORY_AVOID_MESSAGES),
+        ("medical_ad_risk_rules", MANDATORY_MEDICAL_AD_RISK_RULES),
+    ):
+        current = [str(item) for item in payload.get(field_name) or [] if str(item).strip()]
+        payload[field_name] = list(dict.fromkeys([*current, *mandatory]))
+    return payload
+
+
+def effective_safety_policy(payload: Any) -> dict[str, list[str]]:
+    """Return the runtime safety floor without mutating an ORM model.
+
+    Legacy approved rows may predate mandatory rules. Every consumer must see the
+    same effective policy even before operators regenerate those stored rows.
+    """
+    return apply_mandatory_safety_policy(
+        {
+            "avoid_messages": list(_payload_get(payload, "avoid_messages") or []),
+            "medical_ad_risk_rules": list(
+                _payload_get(payload, "medical_ad_risk_rules") or []
+            ),
+        }
+    )
+
+
+def mandatory_safety_findings(payload: Any) -> list[str]:
+    findings: list[str] = []
+    for field_name, mandatory in (
+        ("avoid_messages", MANDATORY_AVOID_MESSAGES),
+        ("medical_ad_risk_rules", MANDATORY_MEDICAL_AD_RISK_RULES),
+    ):
+        values = {str(item) for item in (_payload_get(payload, field_name) or [])}
+        missing = [item for item in mandatory if item not in values]
+        if missing:
+            findings.append(f"{field_name} 필드에 플랫폼 공통 의료광고 안전 규칙이 없습니다.")
+    return findings
 
 # content_engine.py와 동일한 sync Anthropic 클라이언트 패턴 — tenacity가 재시도를 관리하므로
 # SDK 내부 재시도는 끈다. 키가 없으면 lazy하게 None을 유지해 deterministic 폴백으로 떨어진다.
@@ -482,7 +534,9 @@ def synthesize_philosophy(
     ]
     if use_llm and llm_enabled() and notes:
         try:
-            payload = _synthesize_philosophy_llm(hospital, sources, notes, operator_note)
+            payload = apply_mandatory_safety_policy(
+                _synthesize_philosophy_llm(hospital, sources, notes, operator_note)
+            )
             if (
                 payload is not None
                 and payload.get("evidence_map")  # grounded 필드가 최소 1개는 있어야 함
@@ -493,7 +547,9 @@ def synthesize_philosophy(
         except Exception as exc:  # noqa: BLE001 — LLM 실패 시 폴백으로 계속
             logger.warning("essence LLM synthesis failed (%s); using deterministic fallback", exc)
 
-    return _synthesize_philosophy_deterministic(hospital, sources, notes, operator_note)
+    return apply_mandatory_safety_policy(
+        _synthesize_philosophy_deterministic(hospital, sources, notes, operator_note)
+    )
 
 
 # ── LLM philosophy synthesis ─────────────────────────────────────────────
@@ -1105,6 +1161,17 @@ def validate_philosophy_grounding(
         if not _field_has_source_backed_value(field_name, value):
             continue
 
+        if field_name == "avoid_messages":
+            source_backed = [item for item in value if item not in MANDATORY_AVOID_MESSAGES]
+            if not source_backed:
+                continue
+        if field_name == "medical_ad_risk_rules":
+            source_backed = [
+                item for item in value if item not in MANDATORY_MEDICAL_AD_RISK_RULES
+            ]
+            if not source_backed:
+                continue
+
         mapped_ids = _flatten_ids(evidence_map.get(field_name))
         if not mapped_ids:
             errors.append(f"{field_name} 필드에 evidence_map이 없습니다.")
@@ -1251,7 +1318,8 @@ def screen_content_against_philosophy(
     if forbidden:
         findings.append(f"의료광고 금지 표현: {', '.join(forbidden)}")
 
-    for message in _string_items(philosophy.avoid_messages or []):
+    effective_policy = effective_safety_policy(philosophy)
+    for message in _string_items(effective_policy["avoid_messages"]):
         direct = _strip_prefix(message)
         if direct and direct in text:
             findings.append(f"병원별 avoid message와 충돌: {_short(direct, 80)}")

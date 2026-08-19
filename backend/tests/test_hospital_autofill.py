@@ -60,10 +60,11 @@ def test_normalize_fields_filters_disallowed_empty_and_clamps():
         "keywords": {"value": [], "source": "blog", "confidence": 0.5},       # 빈 값
         "phone": {"source": "naver", "confidence": 0.9},                      # value 없음
     }
-    draft, meta = af._normalize_fields(fields)
+    draft, meta, rejected = af._normalize_fields(fields)
     assert set(draft) == {"director_name", "address"}
     assert meta["address"]["confidence"] == 1.0
     assert meta["director_name"]["source"] == "homepage"
+    assert rejected == []
 
 
 def test_collect_violations_flags_forbidden_fields():
@@ -91,7 +92,7 @@ async def test_autofill_profile_happy_path(monkeypatch):
         return "", "직접 fetch 실패", None  # Jina 폴백 강제 (3-튜플: text, error, quality)
 
     async def fake_jina(url: str):
-        return f"content for {url}", None
+        return "김원장 완치율 최고 보장 수원시 팔달구", None
 
     async def fake_naver(name: str):
         return naver_place.NaverPlaceResult("1595672233", "네이버 본문", None)
@@ -101,9 +102,9 @@ async def test_autofill_profile_happy_path(monkeypatch):
     monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
 
     fields = {
-        "director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9},
-        "address": {"value": "수원시 팔달구", "source": "naver", "confidence": 0.95},
-        "director_career": {"value": "완치율 최고 보장", "source": "homepage", "confidence": 0.6},
+        "director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9, "evidence": "김원장"},
+        "address": {"value": "수원시 팔달구", "source": "naver", "confidence": 0.95, "evidence": "수원시 팔달구"},
+        "director_career": {"value": "완치율 최고 보장", "source": "homepage", "confidence": 0.6, "evidence": "완치율 최고 보장"},
     }
     monkeypatch.setattr(
         af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields)
@@ -116,6 +117,7 @@ async def test_autofill_profile_happy_path(monkeypatch):
     assert res.draft["address"] == "수원시 팔달구"
     # place_id는 스크랩 값으로 직접 주입(신뢰도 0.95)
     assert res.draft["naver_place_id"] == "1595672233"
+    assert res.draft["naver_place_url"] == "https://m.place.naver.com/hospital/1595672233/home"
     assert res.field_meta["naver_place_id"]["source"] == "naver"
     # 의료광고 위반 플래그
     assert any(v["field"] == "director_career" for v in res.violations)
@@ -179,7 +181,7 @@ async def test_autofill_profile_direct_fetch_unpacks_three_tuple(monkeypatch):
     Jina 폴백을 타지 않고 직접 fetch가 성공하는 경로를 강제한다.
     """
     async def ok_fetch(url: str):
-        return f"홈페이지 본문 for {url}", None, None  # 실제 시그니처: (text, error, quality)
+        return f"홈페이지 본문 김원장 for {url}", None, None  # 실제 시그니처: (text, error, quality)
 
     async def _should_not_jina(url: str):
         raise AssertionError("직접 fetch 성공 시 Jina 폴백을 타면 안 된다")
@@ -191,7 +193,7 @@ async def test_autofill_profile_direct_fetch_unpacks_three_tuple(monkeypatch):
     monkeypatch.setattr(af.naver_place, "fetch_via_jina", _should_not_jina)
     monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
 
-    fields = {"director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9}}
+    fields = {"director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9, "evidence": "김원장"}}
     monkeypatch.setattr(
         af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields)
     )
@@ -201,6 +203,47 @@ async def test_autofill_profile_direct_fetch_unpacks_three_tuple(monkeypatch):
     assert res.draft["director_name"] == "김원장"
     # 홈페이지·블로그 소스는 직접 fetch로 ok, 네이버만 실패
     assert [s.ok for s in res.sources] == [True, True, False]
+
+
+async def test_autofill_rejects_ungrounded_specialty_and_hours(monkeypatch):
+    async def ok_fetch(url: str):
+        return "내과 진료 월요일 09:00-18:00", None, None
+
+    async def fake_naver(name: str):
+        return naver_place.NaverPlaceResult(None, "", "찾지 못함")
+
+    monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
+    monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
+    fields = {
+        "specialties": {"value": ["소아청소년과"], "source": "homepage", "confidence": 0.9, "evidence": "내과 진료"},
+        "business_hours": {"value": {"mon": "09:00-20:00"}, "source": "homepage", "confidence": 0.9, "evidence": "월요일 09:00-18:00"},
+    }
+    monkeypatch.setattr(af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields))
+
+    res = await af.autofill_profile("병원", "http://hp", None)
+
+    assert "specialties" not in res.draft
+    assert "business_hours" not in res.draft
+    assert {item["field"] for item in res.rejected_fields} == {"specialties", "business_hours"}
+
+
+def test_business_hours_cannot_borrow_late_time_from_another_day():
+    evidence = "월요일 09:00-18:00 화요일 09:00-20:00"
+    fields = {
+        "business_hours": {
+            "value": {"mon": "09:00-20:00"},
+            "source": "homepage",
+            "confidence": 0.9,
+            "evidence": evidence,
+        }
+    }
+
+    draft, _meta, rejected = af._normalize_fields(fields, evidence)
+
+    assert "business_hours" not in draft
+    assert rejected == [
+        {"field": "business_hours", "reason": "제안 값이 출처 원문과 일치하지 않습니다."}
+    ]
 
 
 async def test_autofill_endpoint_end_to_end_with_real_signature(monkeypatch):
@@ -223,14 +266,14 @@ async def test_autofill_endpoint_end_to_end_with_real_signature(monkeypatch):
             self.committed = True
 
     async def ok_fetch(url: str):
-        return f"본문 {url}", None, None
+        return f"본문 김원장 {url}", None, None
 
     async def fake_naver(name: str):
         return naver_place.NaverPlaceResult(None, "", "찾지 못함")
 
     monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
     monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
-    fields = {"director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9}}
+    fields = {"director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9, "evidence": "김원장"}}
     monkeypatch.setattr(
         af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields)
     )

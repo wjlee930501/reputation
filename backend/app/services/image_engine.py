@@ -119,6 +119,15 @@ IMAGE_PROMPTS = {
     ),
 }
 
+# 모델이 안전한 의료 제목까지 IMAGE_SAFETY로 오탐할 때 쓰는 최종 장면. 진단명·신체·
+# 실존 병원·인물을 전혀 언급하지 않아 카드가 이미지 없이 영구 차단되는 것을 막는다.
+GOOGLE_SAFETY_FALLBACK_PROMPT = (
+    "Abstract editorial still life made from layered ivory paper, soft navy geometric curves, "
+    "and one muted gold circle, calm balanced composition, subtle natural shadows, no people, "
+    "no body parts, no medical procedure, no building, no text, no letters, no numbers, no logo, "
+    "no watermark, family friendly, original artwork, 16:9 banner"
+)
+
 
 class _CallCounter:
     """동기 실행기 안에서 일어나는 재시도 횟수를 밖으로 전달하기 위한 카운터.
@@ -201,8 +210,20 @@ async def generate_image(
         )
         return url, prompt
     except Exception as e:  # noqa: BLE001
-        logger.error("Google image fallback failed: %s", e)
-        return ("", "")
+        logger.warning("Google topic image failed; trying safety-neutral fallback: %s", e)
+        try:
+            url = await loop.run_in_executor(
+                None,
+                lambda: _generate_and_upload(
+                    GOOGLE_SAFETY_FALLBACK_PROMPT,
+                    hospital_name,
+                    counter=fallback_attempts,
+                ),
+            )
+            return url, GOOGLE_SAFETY_FALLBACK_PROMPT
+        except Exception as fallback_exc:  # noqa: BLE001
+            logger.error("Google image fallback failed: %s", fallback_exc)
+            return ("", "")
     finally:
         await _record_image_calls(fallback_attempts)
 
