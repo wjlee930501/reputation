@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Literal, Protocol, TypedDict, assert_never
 
 from sqlalchemy import select
@@ -29,8 +30,10 @@ from app.services.notification_milestone_rendering import (
 from app.services.notification_store import enqueue_notification
 
 PUBLISH_NOTIFICATION_TYPE = "CONTENT_PUBLISHED"
+PUBLISH_DIGEST_NOTIFICATION_TYPE = "CONTENT_PUBLISH_DIGEST"
 POST_PUBLISH_REVIEW_OVERDUE_TYPE = "POST_PUBLISH_REVIEW_OVERDUE"
 _DEDUPE_PREFIX = f"{PUBLISH_NOTIFICATION_TYPE}:"
+_DIGEST_DEDUPE_PREFIX = f"{PUBLISH_DIGEST_NOTIFICATION_TYPE}:"
 _REVIEW_OVERDUE_DEDUPE_PREFIX = f"{POST_PUBLISH_REVIEW_OVERDUE_TYPE}:"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -110,6 +113,49 @@ def build_publish_notification_intent(
     )
 
 
+def build_content_publish_digest_intent(
+    cycle_date: date,
+    published_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationIntent:
+    """Build one neutral summary for an Asia/Seoul morning publication cycle."""
+
+    if not published_outcomes:
+        raise NotificationPayloadError("PUBLISH_DIGEST_ITEMS_REQUIRED")
+    hospital_ids = {
+        str(outcome["hospital_id"])
+        for outcome in published_outcomes
+        if outcome.get("hospital_id") is not None
+    }
+    if not hospital_ids:
+        raise NotificationPayloadError("PUBLISH_DIGEST_HOSPITALS_REQUIRED")
+    hospital_count = len(hospital_ids)
+    item_count = len(published_outcomes)
+    action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=TODAY")
+    summary = f"병원 {hospital_count}곳 · 글 {item_count}건"
+    message = validated_message(
+        RenderedSlackMessage(
+            f"오늘 발행 요약 · {summary} · Admin에서 사실 확인해주세요",
+            (
+                header_block("publish_digest_header", "오늘 발행 요약"),
+                section_block(
+                    "publish_digest_summary",
+                    f"*{summary}*\n오늘 자동 공개된 글을 요약했습니다. "
+                    "Admin에서 공개 내용을 사실 확인해주세요.",
+                ),
+                action_block("publish_digest_action", action_url, "오늘 공개 내용 확인"),
+            ),
+            action_url,
+        ),
+        settings.ADMIN_BASE_URL,
+    )
+    return NotificationIntent(
+        dedupe_key=f"{_DIGEST_DEDUPE_PREFIX}{cycle_date.isoformat()}",
+        notification_type=PUBLISH_DIGEST_NOTIFICATION_TYPE,
+        message=message,
+        max_attempts=3,
+    )
+
+
 def build_post_publish_review_overdue_intent(
     item: PublishedItem, hospital: HospitalIdentity
 ) -> NotificationIntent:
@@ -173,6 +219,22 @@ def enqueue_publish_notification_sync(
     """Add the intent to the same sync transaction as automatic publication."""
 
     return _enqueue_notification_sync(db, build_publish_notification_intent(item, hospital))
+
+
+def enqueue_content_publish_digest_sync(
+    db: Session,
+    cycle_date: date,
+    published_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationOutbox:
+    """Add at most one morning publication digest for the Seoul calendar date."""
+
+    intent = build_content_publish_digest_intent(cycle_date, published_outcomes)
+    existing = db.execute(
+        select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    return _enqueue_notification_sync(db, intent)
 
 
 def enqueue_post_publish_review_overdue_notification_sync(

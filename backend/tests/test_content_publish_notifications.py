@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 from app.models.operations import NotificationOutboxState
 from app.services.content_publish_notifications import (
+    build_content_publish_digest_intent,
     build_post_publish_review_overdue_intent,
     build_publish_notification_intent,
     enqueue_post_publish_review_overdue_notification_sync,
@@ -48,6 +49,30 @@ def test_publish_intent_keeps_publication_identity_and_one_admin_action() -> Non
         for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
     )
     assert payload.count('"type": "button"') == 1
+
+
+def test_publish_digest_counts_neutral_copy_one_action_and_cycle_dedupe() -> None:
+    cycle_date = date(2026, 8, 19)
+    first_hospital_id = uuid.uuid4()
+    outcomes = [
+        {"hospital_id": first_hospital_id, "hospital_name": "첫번째의원"},
+        {"hospital_id": first_hospital_id, "hospital_name": "첫번째의원"},
+        {"hospital_id": uuid.uuid4(), "hospital_name": "두번째의원"},
+    ]
+
+    intent = build_content_publish_digest_intent(cycle_date, outcomes)
+    same_cycle = build_content_publish_digest_intent(cycle_date, outcomes[:1])
+
+    assert intent.notification_type == "CONTENT_PUBLISH_DIGEST"
+    assert intent.dedupe_key == "CONTENT_PUBLISH_DIGEST:2026-08-19"
+    assert same_cycle.dedupe_key == intent.dedupe_key
+    payload = intent.message.payload_json()
+    assert "병원 2곳 · 글 3건" in payload
+    assert "사실 확인해주세요" in payload
+    assert payload.count('"type": "button"') == 1
+    assert intent.message.admin_url.endswith("/operations?queue=TODAY")
+    for warning_copy in ("무슨 문제인지", "고객 영향", "잘못된 정보가 공개"):
+        assert warning_copy not in payload
 
 
 def test_post_publish_review_overdue_intent_is_episode_deduped() -> None:

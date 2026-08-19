@@ -12,10 +12,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.dml import Update
 
 from app.models.content import ContentItem
-from app.models.essence import PhilosophyStatus
+from app.models.essence import (
+    HospitalContentPhilosophy,
+    HospitalSourceAsset,
+    PhilosophyStatus,
+    SourceStatus,
+)
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
 from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
+from app.services.essence_engine import compute_sources_snapshot_hash
 from app.workers import tasks
 
 
@@ -474,6 +480,11 @@ def test_generation_failure_classification_never_persists_exception_text(error, 
     assert "운영 센터" in message
 
 
+def test_fatal_generation_failures_still_request_immediate_slack():
+    assert tasks.generation_notify_requested("GENERATION_REJECTED")
+    assert tasks.generation_notify_requested("GENERATION_FAILED")
+
+
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
     content_id = uuid.uuid4()
 
@@ -853,15 +864,50 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
 def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch):
     """마지막 승인 철학이 있으면 current PENDING이어도 생성하고, 온보딩만 MISSING으로 건너뛴다."""
     hospital = SimpleNamespace(id=uuid.uuid4(), name="승인의원", slug="approved-clinic")
-    approved = SimpleNamespace(id=uuid.uuid4(), status=PhilosophyStatus.APPROVED)
+    processed = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash="approved-baseline",
+        status=SourceStatus.PROCESSED,
+        processed_at=arrow.get(2026, 8, 18).datetime,
+    )
+    pending = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash="pending-extra",
+        status=SourceStatus.PENDING,
+        processed_at=None,
+    )
+    approved = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=PhilosophyStatus.APPROVED,
+        source_snapshot_hash=compute_sources_snapshot_hash([processed]),
+        source_asset_ids=[processed.id],
+    )
 
     class ExistingTitles:
         def all(self):
             return []
 
+    class ScalarResult:
+        def scalar_one_or_none(self):
+            return approved
+
+    class SourcesResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [processed, pending]
+
     class DB:
-        def execute(self, _statement):
-            return ExistingTitles()
+        def execute(self, statement):
+            entity = _statement_entity(statement)
+            if entity is ContentItem:
+                return ExistingTitles()
+            if entity is HospitalContentPhilosophy:
+                return ScalarResult()
+            if entity is HospitalSourceAsset:
+                return SourcesResult()
+            raise AssertionError(f"unexpected entity: {entity}")
 
         def commit(self):
             return None
@@ -872,7 +918,6 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
     async def forbidden_call(*_args, **_kwargs):
         raise AssertionError("온보딩(None)에서는 공급자/비용 가드를 호출하면 안 된다")
 
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: approved)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", blocked_cost)
     monkeypatch.setattr(tasks, "generate_content", forbidden_call)
 
@@ -1265,6 +1310,94 @@ def test_auto_publish_due_statement_includes_missing_body_for_blocker_projection
     assert "content_items.scheduled_date <= '2026-06-10'" in sql
 
 
+def test_morning_publish_cycle_enqueues_one_digest_without_per_item_rows(monkeypatch):
+    cycle_date = date(2026, 8, 19)
+    content_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
+    first_hospital_id = uuid.uuid4()
+    second_hospital_id = uuid.uuid4()
+    outcomes = {
+        content_ids[0]: {
+            "kind": "published",
+            "hospital_id": first_hospital_id,
+            "hospital_name": "첫번째의원",
+            "slug": "first",
+            "aeo_domain": None,
+            "treatments": [],
+        },
+        content_ids[1]: {
+            "kind": "published",
+            "hospital_id": first_hospital_id,
+            "hospital_name": "첫번째의원",
+            "slug": "first",
+            "aeo_domain": None,
+            "treatments": [],
+        },
+        content_ids[2]: {
+            "kind": "published",
+            "hospital_id": second_hospital_id,
+            "hospital_name": "두번째의원",
+            "slug": "second",
+            "aeo_domain": None,
+            "treatments": [],
+        },
+    }
+
+    class CycleDB:
+        def __init__(self, *, due=False):
+            self.due = due
+            self.added = []
+            self.commits = 0
+
+        def execute(self, statement):
+            if self.due:
+                return _Result(items=content_ids)
+            assert _statement_entity(statement) is NotificationOutbox
+            return _Result(items=[])
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    due_db = CycleDB(due=True)
+    digest_db = CycleDB()
+    sessions = [due_db, digest_db]
+
+    def finish_async(awaitable):
+        awaitable.close()
+        return True
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: sessions.pop(0))
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(cycle_date, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: outcomes[content_id])
+    monkeypatch.setattr(tasks, "_run_async", finish_async)
+    monkeypatch.setattr(tasks, "_enqueue_overdue_post_publish_review_notifications", lambda _now: 0)
+
+    tasks.morning_content_auto_publish.run()
+
+    outbox = [value for value in digest_db.added if isinstance(value, NotificationOutbox)]
+    assert len(outbox) == 1
+    assert outbox[0].notification_type == "CONTENT_PUBLISH_DIGEST"
+    assert outbox[0].dedupe_key == f"CONTENT_PUBLISH_DIGEST:{cycle_date.isoformat()}"
+    visible = str(outbox[0].payload)
+    assert "병원 2곳 · 글 3건" in visible
+    assert "사실 확인해주세요" in visible
+    assert not any(row.notification_type == "CONTENT_PUBLISHED" for row in outbox)
+    assert digest_db.commits == 1
+
+
 def test_auto_publish_one_commits_publication_before_external_effects(monkeypatch):
     content_id = uuid.uuid4()
     hospital = SimpleNamespace(
@@ -1351,8 +1484,7 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     assert payload["public_url"] == f"https://test.example.com/contents/{content_id}"
     assert audits[0]["action"] == "auto_publish_content"
     outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
-    assert len(outbox) == 1
-    assert outbox[0].notification_type == "CONTENT_PUBLISHED"
+    assert outbox == []
     assert item.post_publish_notified_at is None
 
 
@@ -1624,8 +1756,7 @@ def test_auto_publish_is_idempotent(monkeypatch):
     audits = [log for log in db.added if hasattr(log, "action")]
     assert [log.action for log in audits] == ["auto_publish_content"]
     outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
-    assert len(outbox) == 1
-    assert outbox[0].notification_type == "CONTENT_PUBLISHED"
+    assert outbox == []
     assert effects["published_slack"] == []
 
 
@@ -1643,7 +1774,7 @@ def test_auto_publish_accepts_ready_status(monkeypatch):
 
     assert payload["kind"] == "published"
     assert item.status is tasks.ContentStatus.PUBLISHED
-    assert len([value for value in db.added if isinstance(value, NotificationOutbox)]) == 1
+    assert not any(isinstance(value, NotificationOutbox) for value in db.added)
 
 
 def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatch):

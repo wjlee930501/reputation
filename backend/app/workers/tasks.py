@@ -69,8 +69,8 @@ from app.services.content_publication import (
     assess_content_publication,
 )
 from app.services.content_publish_notifications import (
+    enqueue_content_publish_digest_sync,
     enqueue_post_publish_review_overdue_notification_sync,
-    enqueue_publish_notification_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
@@ -2330,6 +2330,7 @@ def morning_content_auto_publish(self):
         with SyncSessionLocal() as db:
             due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
 
+        published_outcomes: list[dict] = []
         for content_id in due_ids:
             outcome = _auto_publish_one(content_id)
             if outcome is None:
@@ -2348,6 +2349,7 @@ def morning_content_auto_publish(self):
                 )
                 continue
 
+            published_outcomes.append(outcome)
             _run_async(
                 recover_generation_incidents(
                     content_id,
@@ -2380,6 +2382,8 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
+        if published_outcomes:
+            _enqueue_morning_content_publish_digest(today, published_outcomes)
         _enqueue_overdue_post_publish_review_notifications(datetime.now(timezone.utc))
 
         # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
@@ -2399,6 +2403,14 @@ def _auto_publish_due_stmt(today):
         )
         .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
     )
+
+
+def _enqueue_morning_content_publish_digest(
+    cycle_date: date, published_outcomes: Sequence[Mapping[str, object]]
+) -> None:
+    with SyncSessionLocal() as db:
+        enqueue_content_publish_digest_sync(db, cycle_date, published_outcomes)
+        db.commit()
 
 
 def _enqueue_overdue_post_publish_review_notifications(now: datetime) -> int:
@@ -2520,7 +2532,6 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             },
         )
         payload = _publication_notification_payload(item, hospital)
-        enqueue_publish_notification_sync(db, item, hospital)
         db.commit()
         return payload
 
