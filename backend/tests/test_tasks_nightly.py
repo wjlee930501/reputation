@@ -17,6 +17,7 @@ from app.models.essence import (
     HospitalSourceAsset,
     PhilosophyStatus,
     SourceStatus,
+    SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
@@ -481,8 +482,15 @@ def test_generation_failure_classification_never_persists_exception_text(error, 
 
 
 def test_fatal_generation_failures_still_request_immediate_slack():
-    assert tasks.generation_notify_requested("GENERATION_REJECTED")
-    assert tasks.generation_notify_requested("GENERATION_FAILED")
+    for code in (
+        "COST_BLOCKED",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_REJECTED",
+        "GENERATION_FAILED",
+    ):
+        assert tasks.generation_notify_requested(code)
+    assert not tasks.generation_notify_requested("MISSING_APPROVED_ESSENCE")
 
 
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
@@ -866,12 +874,15 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
     hospital = SimpleNamespace(id=uuid.uuid4(), name="승인의원", slug="approved-clinic")
     processed = SimpleNamespace(
         id=uuid.uuid4(),
+        source_type=SourceType.NAVER_BLOG,
         content_hash="approved-baseline",
         status=SourceStatus.PROCESSED,
         processed_at=arrow.get(2026, 8, 18).datetime,
     )
     pending = SimpleNamespace(
         id=uuid.uuid4(),
+        source_type=SourceType.NAVER_BLOG,
+        raw_text="새로 추가된 네이버 텍스트 자료",
         content_hash="pending-extra",
         status=SourceStatus.PENDING,
         processed_at=None,
@@ -888,53 +899,148 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
             return []
 
     class ScalarResult:
+        def __init__(self, value):
+            self.value = value
+
         def scalar_one_or_none(self):
-            return approved
+            return self.value
 
     class SourcesResult:
+        def __init__(self, values):
+            self.values = values
+
         def scalars(self):
             return self
 
         def all(self):
-            return [processed, pending]
+            return self.values
+
+    class WriteBackResult:
+        rowcount = 1
 
     class DB:
+        def __init__(self, philosophy, sources):
+            self.philosophy = philosophy
+            self.sources = sources
+            self.written_values = []
+            self.item = None
+
         def execute(self, statement):
+            if isinstance(statement, Update):
+                values = {
+                    str(getattr(column, "key", column)): getattr(value, "value", value)
+                    for column, value in (statement._values or {}).items()
+                }
+                self.written_values.append(values)
+                return WriteBackResult()
             entity = _statement_entity(statement)
             if entity is ContentItem:
                 return ExistingTitles()
             if entity is HospitalContentPhilosophy:
-                return ScalarResult()
+                return ScalarResult(self.philosophy)
             if entity is HospitalSourceAsset:
-                return SourcesResult()
+                return SourcesResult(self.sources)
             raise AssertionError(f"unexpected entity: {entity}")
 
         def commit(self):
             return None
 
-    async def blocked_cost(*_args, **_kwargs):
-        return SimpleNamespace(allowed=False, reason="budget")
+        def refresh(self, item):
+            for key, value in self.written_values[-1].items():
+                setattr(item, key, value)
 
-    async def forbidden_call(*_args, **_kwargs):
-        raise AssertionError("온보딩(None)에서는 공급자/비용 가드를 호출하면 안 된다")
+    calls = {"cost": 0, "generate": 0}
 
-    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", blocked_cost)
-    monkeypatch.setattr(tasks, "generate_content", forbidden_call)
+    async def allow_cost(*_args, **_kwargs):
+        calls["cost"] += 1
+        return SimpleNamespace(allowed=True)
+
+    async def fake_generate_content(*_args, **_kwargs):
+        calls["generate"] += 1
+        return {
+            "title": "치질 수술 전 확인할 점",
+            "body": "환자 상태에 따라 진료 방향을 설명합니다.",
+            "meta_description": "진료 전 확인할 점.",
+            "references": [
+                {"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}
+            ],
+            "faq_question": "치질 수술 전 무엇을 확인하나요?",
+            "faq_answer_summary": "증상 단계와 회복 계획을 함께 확인합니다.",
+        }
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.98,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda _item, _philosophy: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "assess_content_publication",
+        lambda _item, philosophy: SimpleNamespace(
+            publishable=True,
+            code=None,
+            message=None,
+            violations=(),
+            essence_status="ALIGNED",
+            essence_summary={"blocking": False, "findings": []},
+            philosophy_id=philosophy.id,
+        ),
+    )
 
     pending_item = SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
+        content_type=SimpleNamespace(value="FAQ"),
+        title=None,
+        body=None,
+        meta_description=None,
+        image_url="gs://bucket/existing.png",
+        image_prompt=None,
+        generated_at=None,
+        body_updated_at=None,
+        status=tasks.ContentStatus.DRAFT,
+        published_at=None,
+        published_by=None,
         content_philosophy_id=None,
+        brief_status=None,
+        content_brief=None,
         essence_status=None,
         essence_check_summary=None,
+        references_list=None,
+        faq_question=None,
+        faq_answer_summary=None,
     )
-    outcome, code, _message = tasks._generate_single_content_item(DB(), pending_item, hospital)
-    assert outcome == tasks.GenerationItemState.SKIPPED
-    assert code == "COST_BLOCKED"
+    approved_db = DB(approved, [processed, pending])
+    outcome, code, _message = tasks._generate_single_content_item(
+        approved_db, pending_item, hospital
+    )
+    assert outcome == tasks.GenerationItemState.SUCCEEDED
+    assert code is None
+    assert calls["cost"] == 1
+    assert calls["generate"] == 1
+    assert approved_db.written_values
+    written = approved_db.written_values[0]
+    assert written["title"] == "치질 수술 전 확인할 점"
+    assert written["body"] == "환자 상태에 따라 진료 방향을 설명합니다."
+    assert written["status"] == tasks.ContentStatus.DRAFT
+    assert written["content_philosophy_id"] == approved.id
     assert pending_item.essence_status != tasks.ESSENCE_STATUS_MISSING_APPROVED
 
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
-    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", forbidden_call)
+    calls_before_onboarding = dict(calls)
     onboarding_item = SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -942,11 +1048,14 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
         essence_status=None,
         essence_check_summary=None,
     )
-    outcome, code, _message = tasks._generate_single_content_item(DB(), onboarding_item, hospital)
+    outcome, code, _message = tasks._generate_single_content_item(
+        DB(None, []), onboarding_item, hospital
+    )
     assert outcome == tasks.GenerationItemState.SKIPPED
     assert code == "MISSING_APPROVED_ESSENCE"
     assert onboarding_item.content_philosophy_id is None
     assert onboarding_item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
+    assert calls == calls_before_onboarding
 
 
 def test_content_item_schedule_slots_have_db_uniqueness():

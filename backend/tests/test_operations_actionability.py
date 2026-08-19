@@ -135,6 +135,7 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
             version=1,
             safe_error_code=request.safe_error_code,
             safe_error_message=request.safe_error_message,
+            episode_seq=1,
         )
 
     async def accept_notification(_db, _intent) -> None:
@@ -380,19 +381,17 @@ def test_generation_incident_pages_once_until_it_recovers() -> None:
 def test_expected_generation_pending_never_pages_but_actual_failure_does() -> None:
     should_send = generation_incident_control._should_send_generation_notification
 
-    for code in (
+    expected_pending_codes = (
         "CONTENT_NOT_GENERATED",
         "FORBIDDEN_EXPRESSION",
         "ESSENCE_NOT_ALIGNED",
         "MISSING_REFERENCES",
         "CONTENT_IMAGE_NOT_READY",
         "IMAGE_GENERATION_FAILED",
-        "COST_BLOCKED",
         "GENERATION_LEASE_ACTIVE",
         "STALE_GENERATION_CLAIM",
-        "PROVIDER_TIMEOUT",
-        "PROVIDER_UNAVAILABLE",
-    ):
+    )
+    for code in expected_pending_codes:
         assert not generation_incident_control.generation_notify_requested(code)
         assert not should_send(notify_requested=True, previous_state=None, code=code)
         assert not should_send(
@@ -401,17 +400,27 @@ def test_expected_generation_pending_never_pages_but_actual_failure_does() -> No
             code=code,
             has_open_cause=False,
         )
-    assert generation_incident_control.generation_notify_requested("MISSING_APPROVED_ESSENCE")
-    assert generation_incident_control.generation_notify_requested("GENERATION_REJECTED")
-    assert should_send(
-        notify_requested=True,
-        previous_state=None,
-        code="MISSING_APPROVED_ESSENCE",
+
+    for code in (
+        "COST_BLOCKED",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_REJECTED",
+        "GENERATION_FAILED",
+    ):
+        assert generation_incident_control.generation_notify_requested(code)
+        assert should_send(
+            notify_requested=True,
+            previous_state=None,
+            code=code,
+            has_open_cause=False,
+        )
+
+    assert not generation_incident_control.generation_notify_requested(
+        "MISSING_APPROVED_ESSENCE"
     )
-    assert should_send(
-        notify_requested=True,
-        previous_state=None,
-        code="GENERATION_REJECTED",
+    assert not should_send(
+        notify_requested=False, previous_state=None, code="MISSING_APPROVED_ESSENCE"
     )
     assert not should_send(
         notify_requested=True,
@@ -429,19 +438,13 @@ def test_expected_generation_pending_never_pages_but_actual_failure_does() -> No
 
 def test_human_now_generation_pages_once_per_episode_then_again_after_recovery() -> None:
     should_send = generation_incident_control._should_send_generation_notification
+    code = "GENERATION_FAILED"
 
-    assert should_send(
-        notify_requested=True, previous_state=None, code="MISSING_APPROVED_ESSENCE"
-    )
-    assert not should_send(
-        notify_requested=True, previous_state="OPEN", code="MISSING_APPROVED_ESSENCE"
-    )
-    assert not should_send(
-        notify_requested=True, previous_state="RETRYING", code="MISSING_APPROVED_ESSENCE"
-    )
-    assert should_send(
-        notify_requested=True, previous_state="RECOVERED", code="MISSING_APPROVED_ESSENCE"
-    )
+    assert generation_incident_control.generation_notify_requested(code)
+    assert should_send(notify_requested=True, previous_state=None, code=code)
+    assert not should_send(notify_requested=True, previous_state="OPEN", code=code)
+    assert not should_send(notify_requested=True, previous_state="RETRYING", code=code)
+    assert should_send(notify_requested=True, previous_state="RECOVERED", code=code)
 
 
 def test_morning_blocked_self_healable_codes_do_not_request_slack() -> None:
@@ -458,11 +461,6 @@ def test_morning_blocked_self_healable_codes_do_not_request_slack() -> None:
 def test_seven_forty_five_then_eight_oh_one_content_not_generated_never_pages() -> None:
     should_send = generation_incident_control._should_send_generation_notification
 
-    assert not should_send(
-        notify_requested=True,
-        previous_state=None,
-        code="PROVIDER_TIMEOUT",
-    )
     assert not should_send(
         notify_requested=generation_incident_control.generation_notify_requested(
             "CONTENT_NOT_GENERATED"
