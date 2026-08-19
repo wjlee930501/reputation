@@ -1,9 +1,9 @@
 """Resolve approved clinic writing standards for write and public-read gates.
 
 Approval alone is insufficient: processed sources can change after approval.
-Generation and publication require every source to be processed. Public reads
-may keep serving content from the approved processed-source snapshot while a
-new source is still pending, but must stop if that processed snapshot changes.
+Generation, publication, and public reads may keep using the intact approved
+processed-source baseline while a new source is pending, but must stop if that
+approved baseline changes.
 """
 
 from __future__ import annotations
@@ -33,14 +33,19 @@ class EssenceReadiness:
     required_source_count: int
     current_snapshot_hash: str
     public_philosophy: HospitalContentPhilosophy | None = None
+    complete_snapshot_is_fresh: bool | None = None
 
     @property
     def is_fresh(self) -> bool:
-        return self.current is not None
+        return (
+            self.complete_snapshot_is_fresh
+            if self.complete_snapshot_is_fresh is not None
+            else self.current is not None
+        )
 
     @property
     def is_stale(self) -> bool:
-        return self.approved is not None and self.current is None
+        return self.approved is not None and not self.is_fresh
 
     @property
     def has_unprocessed_sources(self) -> bool:
@@ -77,11 +82,12 @@ def resolve_essence_readiness(
         public_philosophy = approved if processed_snapshot_matches else None
     return EssenceReadiness(
         approved=approved,
-        current=approved if fresh else None,
+        current=public_philosophy,
         public_philosophy=public_philosophy,
         processed_source_count=len(processed_sources),
         required_source_count=len(required_sources),
         current_snapshot_hash=snapshot,
+        complete_snapshot_is_fresh=fresh,
     )
 
 

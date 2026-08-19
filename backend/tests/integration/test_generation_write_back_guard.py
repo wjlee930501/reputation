@@ -446,8 +446,8 @@ async def test_generation_failure_opens_outbox_and_retry_recovers_it(pg_async_se
             NotificationOutbox.notification_type == "INCIDENT_OPEN",
         )
     )
-    # PROVIDER_TIMEOUT first OPEN is expected pending: no INCIDENT_OPEN Slack.
-    assert open_outbox == 0
+    # PROVIDER_TIMEOUT first OPEN is immediate (allowlist): INCIDENT_OPEN=1.
+    assert open_outbox == 1
 
     succeeded_run = OperationRun(
         id=uuid.uuid4(),

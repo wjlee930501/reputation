@@ -69,8 +69,9 @@ from app.services.content_publication import (
     assess_content_publication,
 )
 from app.services.content_publish_notifications import (
+    enqueue_content_publish_digest_sync,
+    enqueue_missing_approved_essence_digest_sync,
     enqueue_post_publish_review_overdue_notification_sync,
-    enqueue_publish_notification_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
@@ -499,7 +500,7 @@ def _record_locked_generation_items(
                 run_id=failed_run.id,
                 code=code,
                 message=message,
-                notify=False,
+                notify=generation_notify_requested(code),
             )
         )
 
@@ -1514,6 +1515,7 @@ def nightly_content_generation(self):
 
         claimed_item_ids = [item.id for item in items]
         missing_essence_hospitals: set[uuid.UUID] = set()
+        missing_essence_outcomes: list[dict[str, object]] = []
 
         for item in items:
             item_id = item.id
@@ -1549,7 +1551,7 @@ def nightly_content_generation(self):
                         run_id=stale_run.id,
                         code=stale_code,
                         message=stale_message,
-                        notify=False,
+                        notify=generation_notify_requested(stale_code),
                     )
                 )
 
@@ -1577,6 +1579,7 @@ def nightly_content_generation(self):
                     db.commit()
                     first_gate_observation = hospital_id not in missing_essence_hospitals
                     missing_essence_hospitals.add(hospital_id)
+                    missing_essence_outcomes.append({"hospital_id": hospital_id})
                     if first_gate_observation:
                         logger.warning(
                             "Skipping content generation without approved clinic writing "
@@ -1608,9 +1611,7 @@ def nightly_content_generation(self):
                                 run_id=failed_run.id,
                                 code=code,
                                 message=message,
-                                # 최신 승인 없이는 시스템이 대신 판단할 수 없다. 병원 단위 인시던트가
-                                # 최초 진입/재진입할 때만 한 번 알리고, 이후 배치는 상태만 재확인한다.
-                                notify=True,
+                                notify=generation_notify_requested(code),
                             )
                         )
                     continue
@@ -1648,7 +1649,7 @@ def nightly_content_generation(self):
                             run_id=failed_run.id,
                             code=code,
                             message=message,
-                            notify=False,
+                            notify=generation_notify_requested(code),
                         )
                     )
                     continue
@@ -1804,7 +1805,7 @@ def nightly_content_generation(self):
                             run_id=failed_run.id,
                             code=code,
                             message=message,
-                            notify=False,
+                            notify=generation_notify_requested(code),
                         )
                     )
                 elif item_state == GenerationItemState.PARTIAL:
@@ -1851,7 +1852,7 @@ def nightly_content_generation(self):
                             run_id=image_run.id,
                             code=code,
                             message=message,
-                            notify=False,
+                            notify=generation_notify_requested(code),
                         )
                     )
                 elif item_state == GenerationItemState.DISCARDED:
@@ -1903,7 +1904,7 @@ def nightly_content_generation(self):
                         run_id=failed_run.id,
                         code=code,
                         message=message,
-                        notify=False,
+                        notify=generation_notify_requested(code),
                     )
                 )
             finally:
@@ -1920,12 +1921,16 @@ def nightly_content_generation(self):
         stuck_items = load_stuck_claims(db, window_start, tomorrow)
         if stuck_items:
             _record_locked_generation_items(recorder, stuck_items)
+        if missing_essence_outcomes:
+            enqueue_missing_approved_essence_digest_sync(
+                db, now_kst.date(), missing_essence_outcomes
+            )
         recorder.finish()
 
         # 성공과 자동 복구 중간 상태는 Slack으로 보내지 않는다. 인시던트/실행 기록이 다음
         # 배치의 입력이 되고, 01·04·07·07:45 재시도가 스스로 복구한다. 사람만 해결할 수 있는
-        # 병원 단위 운영 기준 게이트는 위에서 상태 전환당 한 번, 재시도 소진 후 남은 최종
-        # 발행 차단은 08시 배치에서 한 번의 요약으로만 알린다.
+        # 승인 기준 누락은 위에서 병원별 상태만 남기고 이 실행의 요약을 한 번 보낸다. 재시도
+        # 소진 후 남은 최종 발행 차단은 08시 배치에서 한 번의 요약으로만 알린다.
         logger.info("Nightly generation finalized %d item claims", len(claimed_item_ids))
 
 
@@ -2330,6 +2335,7 @@ def morning_content_auto_publish(self):
         with SyncSessionLocal() as db:
             due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
 
+        published_outcomes: list[dict] = []
         for content_id in due_ids:
             outcome = _auto_publish_one(content_id)
             if outcome is None:
@@ -2348,6 +2354,7 @@ def morning_content_auto_publish(self):
                 )
                 continue
 
+            published_outcomes.append(outcome)
             _run_async(
                 recover_generation_incidents(
                     content_id,
@@ -2380,6 +2387,8 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
+        if published_outcomes:
+            _enqueue_morning_content_publish_digest(today, published_outcomes)
         _enqueue_overdue_post_publish_review_notifications(datetime.now(timezone.utc))
 
         # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
@@ -2399,6 +2408,14 @@ def _auto_publish_due_stmt(today):
         )
         .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
     )
+
+
+def _enqueue_morning_content_publish_digest(
+    cycle_date: date, published_outcomes: Sequence[Mapping[str, object]]
+) -> None:
+    with SyncSessionLocal() as db:
+        enqueue_content_publish_digest_sync(db, cycle_date, published_outcomes)
+        db.commit()
 
 
 def _enqueue_overdue_post_publish_review_notifications(now: datetime) -> int:
@@ -2520,7 +2537,6 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             },
         )
         payload = _publication_notification_payload(item, hospital)
-        enqueue_publish_notification_sync(db, item, hospital)
         db.commit()
         return payload
 

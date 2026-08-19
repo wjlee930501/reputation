@@ -28,11 +28,15 @@ _EXPECTED_PENDING_CODES = {
     "MISSING_REFERENCES",
     "CONTENT_IMAGE_NOT_READY",
     "IMAGE_GENERATION_FAILED",
-    "PROVIDER_TIMEOUT",
-    "PROVIDER_UNAVAILABLE",
     "GENERATION_LEASE_ACTIVE",
     "STALE_GENERATION_CLAIM",
+}
+_IMMEDIATE_GENERATION_NOTIFICATION_CODES = {
     "COST_BLOCKED",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_UNAVAILABLE",
+    "GENERATION_REJECTED",
+    "GENERATION_FAILED",
 }
 _EXPECTED_PENDING_STALE_AFTER = timedelta(hours=48)
 
@@ -157,7 +161,7 @@ def _incident_identity(
 def generation_notify_requested(code: str) -> bool:
     """Slack only when AI cannot proceed and a human must act now."""
 
-    return code not in _EXPECTED_PENDING_CODES
+    return code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES
 
 
 def _expected_pending_crossed_stale(

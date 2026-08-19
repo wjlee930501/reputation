@@ -31,8 +31,9 @@ def test_new_pending_text_source_immediately_makes_approval_stale():
     pending = _source(status=SourceStatus.PENDING)
     philosophy = SimpleNamespace(source_snapshot_hash=compute_sources_snapshot_hash([processed]))
     readiness = resolve_essence_readiness(philosophy, [processed, pending])
-    assert readiness.current is None
+    assert readiness.current is philosophy
     assert readiness.public_philosophy is philosophy
+    assert readiness.is_fresh is False
     assert readiness.is_stale is True
     assert readiness.has_unprocessed_sources is True
 
@@ -59,6 +60,7 @@ def test_absorbed_new_processed_source_keeps_public_on_intact_approved_baseline(
 
     readiness = resolve_essence_readiness(philosophy, [original, new])
 
-    assert readiness.current is None
+    assert readiness.current is philosophy
     assert readiness.public_philosophy is philosophy
+    assert readiness.is_fresh is False
     assert readiness.is_stale is True

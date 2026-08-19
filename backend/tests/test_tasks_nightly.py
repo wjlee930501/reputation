@@ -12,10 +12,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.dml import Update
 
 from app.models.content import ContentItem
-from app.models.essence import PhilosophyStatus
+from app.models.essence import (
+    HospitalContentPhilosophy,
+    HospitalSourceAsset,
+    PhilosophyStatus,
+    SourceStatus,
+    SourceType,
+)
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
 from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
+from app.services.essence_engine import compute_sources_snapshot_hash
 from app.workers import tasks
 
 
@@ -474,6 +481,183 @@ def test_generation_failure_classification_never_persists_exception_text(error, 
     assert "운영 센터" in message
 
 
+def test_fatal_generation_failures_still_request_immediate_slack():
+    for code in (
+        "COST_BLOCKED",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_REJECTED",
+        "GENERATION_FAILED",
+    ):
+        assert tasks.generation_notify_requested(code)
+    assert not tasks.generation_notify_requested("MISSING_APPROVED_ESSENCE")
+
+
+class _NightlyTaskDB:
+    def __init__(self):
+        self.added = []
+        self.commits = 0
+
+    class _QueryResult:
+        def all(self):
+            return []
+
+        def scalar_one_or_none(self):
+            return None
+
+    def execute(self, _statement):
+        return self._QueryResult()
+
+    def add(self, value):
+        self.added.append(value)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        return None
+
+    def expire_all(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _NightlyTaskRecorder:
+    def __init__(self, db, *_args):
+        self.db = db
+        self.run = SimpleNamespace(id=uuid.uuid4())
+
+    def record(self, *_args, **_kwargs):
+        return None
+
+    def item_run(self, *_args, **_kwargs):
+        return SimpleNamespace(id=uuid.uuid4())
+
+    def finish(self):
+        self.db.commit()
+
+
+def _nightly_item(hospital_name: str):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name=hospital_name)
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital=hospital,
+        hospital_id=hospital.id,
+        generation_claimed_at=None,
+        content_philosophy_id=None,
+        essence_status=None,
+        essence_check_summary=None,
+    )
+
+
+def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date):
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "GenerationBatchRecorder", _NightlyTaskRecorder)
+    monkeypatch.setattr(
+        tasks, "_load_nightly_generation_batch", lambda *_args: (items, 0)
+    )
+    monkeypatch.setattr(tasks, "load_stuck_claims", lambda *_args: [])
+    monkeypatch.setattr(tasks, "release_unfinished_claims", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(cycle_date, tzinfo="Asia/Seoul"),
+    )
+
+
+def test_nightly_cost_blocked_opens_incident_with_notify_true(monkeypatch):
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    item = _nightly_item("비용차단의원")
+    incident_calls = []
+
+    async def block_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=False, reason="daily cap")
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: SimpleNamespace()
+    )
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", block_cost)
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.nightly_content_generation.run()
+
+    assert len(incident_calls) == 1
+    assert incident_calls[0]["code"] == "COST_BLOCKED"
+    assert incident_calls[0]["notify"] is True
+
+
+def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkeypatch):
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    item = _nightly_item("공급자지연의원")
+    incident_calls = []
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    def provider_timeout(*_args, **_kwargs):
+        raise TimeoutError("provider details must stay private")
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: SimpleNamespace()
+    )
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", provider_timeout)
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.nightly_content_generation.run()
+
+    assert len(incident_calls) == 1
+    assert incident_calls[0]["code"] == "PROVIDER_TIMEOUT"
+    assert incident_calls[0]["notify"] is True
+
+
+def test_nightly_missing_essence_is_silent_per_hospital_and_one_digest(monkeypatch):
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    items = [_nightly_item("첫번째의원"), _nightly_item("두번째의원")]
+    incident_calls = []
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    _patch_nightly_task_shell(monkeypatch, db, items, cycle_date)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: None
+    )
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.nightly_content_generation.run()
+
+    assert len(incident_calls) == 2
+    assert {call["code"] for call in incident_calls} == {"MISSING_APPROVED_ESSENCE"}
+    assert not any(call["notify"] for call in incident_calls)
+    outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
+    assert len(outbox) == 1
+    assert outbox[0].notification_type == "MISSING_APPROVED_ESSENCE_DIGEST"
+    assert outbox[0].dedupe_key == (
+        f"MISSING_APPROVED_ESSENCE_DIGEST:{cycle_date.isoformat()}"
+    )
+    visible = str(outbox[0].payload)
+    assert "온보딩 병원 2곳 · 글 2건" in visible
+    assert "승인 기준이 없어 생성을 건너뜀" in visible
+
+
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
     content_id = uuid.uuid4()
 
@@ -853,43 +1037,175 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
 def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch):
     """마지막 승인 철학이 있으면 current PENDING이어도 생성하고, 온보딩만 MISSING으로 건너뛴다."""
     hospital = SimpleNamespace(id=uuid.uuid4(), name="승인의원", slug="approved-clinic")
-    approved = SimpleNamespace(id=uuid.uuid4(), status=PhilosophyStatus.APPROVED)
+    processed = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_type=SourceType.NAVER_BLOG,
+        content_hash="approved-baseline",
+        status=SourceStatus.PROCESSED,
+        processed_at=arrow.get(2026, 8, 18).datetime,
+    )
+    pending = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_type=SourceType.NAVER_BLOG,
+        raw_text="새로 추가된 네이버 텍스트 자료",
+        content_hash="pending-extra",
+        status=SourceStatus.PENDING,
+        processed_at=None,
+    )
+    approved = SimpleNamespace(
+        id=uuid.uuid4(),
+        status=PhilosophyStatus.APPROVED,
+        source_snapshot_hash=compute_sources_snapshot_hash([processed]),
+        source_asset_ids=[processed.id],
+    )
 
     class ExistingTitles:
         def all(self):
             return []
 
+    class ScalarResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class SourcesResult:
+        def __init__(self, values):
+            self.values = values
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self.values
+
+    class WriteBackResult:
+        rowcount = 1
+
     class DB:
-        def execute(self, _statement):
-            return ExistingTitles()
+        def __init__(self, philosophy, sources):
+            self.philosophy = philosophy
+            self.sources = sources
+            self.written_values = []
+            self.item = None
+
+        def execute(self, statement):
+            if isinstance(statement, Update):
+                values = {
+                    str(getattr(column, "key", column)): getattr(value, "value", value)
+                    for column, value in (statement._values or {}).items()
+                }
+                self.written_values.append(values)
+                return WriteBackResult()
+            entity = _statement_entity(statement)
+            if entity is ContentItem:
+                return ExistingTitles()
+            if entity is HospitalContentPhilosophy:
+                return ScalarResult(self.philosophy)
+            if entity is HospitalSourceAsset:
+                return SourcesResult(self.sources)
+            raise AssertionError(f"unexpected entity: {entity}")
 
         def commit(self):
             return None
 
-    async def blocked_cost(*_args, **_kwargs):
-        return SimpleNamespace(allowed=False, reason="budget")
+        def refresh(self, item):
+            for key, value in self.written_values[-1].items():
+                setattr(item, key, value)
 
-    async def forbidden_call(*_args, **_kwargs):
-        raise AssertionError("온보딩(None)에서는 공급자/비용 가드를 호출하면 안 된다")
+    calls = {"cost": 0, "generate": 0}
 
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: approved)
-    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", blocked_cost)
-    monkeypatch.setattr(tasks, "generate_content", forbidden_call)
+    async def allow_cost(*_args, **_kwargs):
+        calls["cost"] += 1
+        return SimpleNamespace(allowed=True)
+
+    async def fake_generate_content(*_args, **_kwargs):
+        calls["generate"] += 1
+        return {
+            "title": "치질 수술 전 확인할 점",
+            "body": "환자 상태에 따라 진료 방향을 설명합니다.",
+            "meta_description": "진료 전 확인할 점.",
+            "references": [
+                {"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}
+            ],
+            "faq_question": "치질 수술 전 무엇을 확인하나요?",
+            "faq_answer_summary": "증상 단계와 회복 계획을 함께 확인합니다.",
+        }
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.98,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda _item, _philosophy: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "assess_content_publication",
+        lambda _item, philosophy: SimpleNamespace(
+            publishable=True,
+            code=None,
+            message=None,
+            violations=(),
+            essence_status="ALIGNED",
+            essence_summary={"blocking": False, "findings": []},
+            philosophy_id=philosophy.id,
+        ),
+    )
 
     pending_item = SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
+        content_type=SimpleNamespace(value="FAQ"),
+        title=None,
+        body=None,
+        meta_description=None,
+        image_url="gs://bucket/existing.png",
+        image_prompt=None,
+        generated_at=None,
+        body_updated_at=None,
+        status=tasks.ContentStatus.DRAFT,
+        published_at=None,
+        published_by=None,
         content_philosophy_id=None,
+        brief_status=None,
+        content_brief=None,
         essence_status=None,
         essence_check_summary=None,
+        references_list=None,
+        faq_question=None,
+        faq_answer_summary=None,
     )
-    outcome, code, _message = tasks._generate_single_content_item(DB(), pending_item, hospital)
-    assert outcome == tasks.GenerationItemState.SKIPPED
-    assert code == "COST_BLOCKED"
+    approved_db = DB(approved, [processed, pending])
+    outcome, code, _message = tasks._generate_single_content_item(
+        approved_db, pending_item, hospital
+    )
+    assert outcome == tasks.GenerationItemState.SUCCEEDED
+    assert code is None
+    assert calls["cost"] == 1
+    assert calls["generate"] == 1
+    assert approved_db.written_values
+    written = approved_db.written_values[0]
+    assert written["title"] == "치질 수술 전 확인할 점"
+    assert written["body"] == "환자 상태에 따라 진료 방향을 설명합니다."
+    assert written["status"] == tasks.ContentStatus.DRAFT
+    assert written["content_philosophy_id"] == approved.id
     assert pending_item.essence_status != tasks.ESSENCE_STATUS_MISSING_APPROVED
 
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
-    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", forbidden_call)
+    calls_before_onboarding = dict(calls)
     onboarding_item = SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -897,11 +1213,14 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
         essence_status=None,
         essence_check_summary=None,
     )
-    outcome, code, _message = tasks._generate_single_content_item(DB(), onboarding_item, hospital)
+    outcome, code, _message = tasks._generate_single_content_item(
+        DB(None, []), onboarding_item, hospital
+    )
     assert outcome == tasks.GenerationItemState.SKIPPED
     assert code == "MISSING_APPROVED_ESSENCE"
     assert onboarding_item.content_philosophy_id is None
     assert onboarding_item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
+    assert calls == calls_before_onboarding
 
 
 def test_content_item_schedule_slots_have_db_uniqueness():
@@ -1265,6 +1584,94 @@ def test_auto_publish_due_statement_includes_missing_body_for_blocker_projection
     assert "content_items.scheduled_date <= '2026-06-10'" in sql
 
 
+def test_morning_publish_cycle_enqueues_one_digest_without_per_item_rows(monkeypatch):
+    cycle_date = date(2026, 8, 19)
+    content_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
+    first_hospital_id = uuid.uuid4()
+    second_hospital_id = uuid.uuid4()
+    outcomes = {
+        content_ids[0]: {
+            "kind": "published",
+            "hospital_id": first_hospital_id,
+            "hospital_name": "첫번째의원",
+            "slug": "first",
+            "aeo_domain": None,
+            "treatments": [],
+        },
+        content_ids[1]: {
+            "kind": "published",
+            "hospital_id": first_hospital_id,
+            "hospital_name": "첫번째의원",
+            "slug": "first",
+            "aeo_domain": None,
+            "treatments": [],
+        },
+        content_ids[2]: {
+            "kind": "published",
+            "hospital_id": second_hospital_id,
+            "hospital_name": "두번째의원",
+            "slug": "second",
+            "aeo_domain": None,
+            "treatments": [],
+        },
+    }
+
+    class CycleDB:
+        def __init__(self, *, due=False):
+            self.due = due
+            self.added = []
+            self.commits = 0
+
+        def execute(self, statement):
+            if self.due:
+                return _Result(items=content_ids)
+            assert _statement_entity(statement) is NotificationOutbox
+            return _Result(items=[])
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    due_db = CycleDB(due=True)
+    digest_db = CycleDB()
+    sessions = [due_db, digest_db]
+
+    def finish_async(awaitable):
+        awaitable.close()
+        return True
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: sessions.pop(0))
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(cycle_date, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: outcomes[content_id])
+    monkeypatch.setattr(tasks, "_run_async", finish_async)
+    monkeypatch.setattr(tasks, "_enqueue_overdue_post_publish_review_notifications", lambda _now: 0)
+
+    tasks.morning_content_auto_publish.run()
+
+    outbox = [value for value in digest_db.added if isinstance(value, NotificationOutbox)]
+    assert len(outbox) == 1
+    assert outbox[0].notification_type == "CONTENT_PUBLISH_DIGEST"
+    assert outbox[0].dedupe_key == f"CONTENT_PUBLISH_DIGEST:{cycle_date.isoformat()}"
+    visible = str(outbox[0].payload)
+    assert "병원 2곳 · 글 3건" in visible
+    assert "사실 확인해주세요" in visible
+    assert not any(row.notification_type == "CONTENT_PUBLISHED" for row in outbox)
+    assert digest_db.commits == 1
+
+
 def test_auto_publish_one_commits_publication_before_external_effects(monkeypatch):
     content_id = uuid.uuid4()
     hospital = SimpleNamespace(
@@ -1351,8 +1758,7 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     assert payload["public_url"] == f"https://test.example.com/contents/{content_id}"
     assert audits[0]["action"] == "auto_publish_content"
     outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
-    assert len(outbox) == 1
-    assert outbox[0].notification_type == "CONTENT_PUBLISHED"
+    assert outbox == []
     assert item.post_publish_notified_at is None
 
 
@@ -1624,8 +2030,7 @@ def test_auto_publish_is_idempotent(monkeypatch):
     audits = [log for log in db.added if hasattr(log, "action")]
     assert [log.action for log in audits] == ["auto_publish_content"]
     outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
-    assert len(outbox) == 1
-    assert outbox[0].notification_type == "CONTENT_PUBLISHED"
+    assert outbox == []
     assert effects["published_slack"] == []
 
 
@@ -1643,7 +2048,7 @@ def test_auto_publish_accepts_ready_status(monkeypatch):
 
     assert payload["kind"] == "published"
     assert item.status is tasks.ContentStatus.PUBLISHED
-    assert len([value for value in db.added if isinstance(value, NotificationOutbox)]) == 1
+    assert not any(isinstance(value, NotificationOutbox) for value in db.added)
 
 
 def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatch):
