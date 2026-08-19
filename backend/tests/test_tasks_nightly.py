@@ -493,6 +493,171 @@ def test_fatal_generation_failures_still_request_immediate_slack():
     assert not tasks.generation_notify_requested("MISSING_APPROVED_ESSENCE")
 
 
+class _NightlyTaskDB:
+    def __init__(self):
+        self.added = []
+        self.commits = 0
+
+    class _QueryResult:
+        def all(self):
+            return []
+
+        def scalar_one_or_none(self):
+            return None
+
+    def execute(self, _statement):
+        return self._QueryResult()
+
+    def add(self, value):
+        self.added.append(value)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        return None
+
+    def expire_all(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _NightlyTaskRecorder:
+    def __init__(self, db, *_args):
+        self.db = db
+        self.run = SimpleNamespace(id=uuid.uuid4())
+
+    def record(self, *_args, **_kwargs):
+        return None
+
+    def item_run(self, *_args, **_kwargs):
+        return SimpleNamespace(id=uuid.uuid4())
+
+    def finish(self):
+        self.db.commit()
+
+
+def _nightly_item(hospital_name: str):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name=hospital_name)
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital=hospital,
+        hospital_id=hospital.id,
+        generation_claimed_at=None,
+        content_philosophy_id=None,
+        essence_status=None,
+        essence_check_summary=None,
+    )
+
+
+def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date):
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "GenerationBatchRecorder", _NightlyTaskRecorder)
+    monkeypatch.setattr(
+        tasks, "_load_nightly_generation_batch", lambda *_args: (items, 0)
+    )
+    monkeypatch.setattr(tasks, "load_stuck_claims", lambda *_args: [])
+    monkeypatch.setattr(tasks, "release_unfinished_claims", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(cycle_date, tzinfo="Asia/Seoul"),
+    )
+
+
+def test_nightly_cost_blocked_opens_incident_with_notify_true(monkeypatch):
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    item = _nightly_item("비용차단의원")
+    incident_calls = []
+
+    async def block_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=False, reason="daily cap")
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: SimpleNamespace()
+    )
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", block_cost)
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.nightly_content_generation.run()
+
+    assert len(incident_calls) == 1
+    assert incident_calls[0]["code"] == "COST_BLOCKED"
+    assert incident_calls[0]["notify"] is True
+
+
+def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkeypatch):
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    item = _nightly_item("공급자지연의원")
+    incident_calls = []
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    def provider_timeout(*_args, **_kwargs):
+        raise TimeoutError("provider details must stay private")
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: SimpleNamespace()
+    )
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", provider_timeout)
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.nightly_content_generation.run()
+
+    assert len(incident_calls) == 1
+    assert incident_calls[0]["code"] == "PROVIDER_TIMEOUT"
+    assert incident_calls[0]["notify"] is True
+
+
+def test_nightly_missing_essence_is_silent_per_hospital_and_one_digest(monkeypatch):
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    items = [_nightly_item("첫번째의원"), _nightly_item("두번째의원")]
+    incident_calls = []
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    _patch_nightly_task_shell(monkeypatch, db, items, cycle_date)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: None
+    )
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.nightly_content_generation.run()
+
+    assert len(incident_calls) == 2
+    assert {call["code"] for call in incident_calls} == {"MISSING_APPROVED_ESSENCE"}
+    assert not any(call["notify"] for call in incident_calls)
+    outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
+    assert len(outbox) == 1
+    assert outbox[0].notification_type == "MISSING_APPROVED_ESSENCE_DIGEST"
+    assert outbox[0].dedupe_key == (
+        f"MISSING_APPROVED_ESSENCE_DIGEST:{cycle_date.isoformat()}"
+    )
+    visible = str(outbox[0].payload)
+    assert "온보딩 병원 2곳 · 글 2건" in visible
+    assert "승인 기준이 없어 생성을 건너뜀" in visible
+
+
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
     content_id = uuid.uuid4()
 

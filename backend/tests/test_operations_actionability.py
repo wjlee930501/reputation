@@ -380,6 +380,13 @@ def test_generation_incident_pages_once_until_it_recovers() -> None:
 
 def test_expected_generation_pending_never_pages_but_actual_failure_does() -> None:
     should_send = generation_incident_control._should_send_generation_notification
+    assert generation_incident_control._IMMEDIATE_GENERATION_NOTIFICATION_CODES == {
+        "COST_BLOCKED",
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_REJECTED",
+        "GENERATION_FAILED",
+    }
 
     expected_pending_codes = (
         "CONTENT_NOT_GENERATED",

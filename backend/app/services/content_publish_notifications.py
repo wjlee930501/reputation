@@ -31,9 +31,15 @@ from app.services.notification_store import enqueue_notification
 
 PUBLISH_NOTIFICATION_TYPE = "CONTENT_PUBLISHED"
 PUBLISH_DIGEST_NOTIFICATION_TYPE = "CONTENT_PUBLISH_DIGEST"
+MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE = (
+    "MISSING_APPROVED_ESSENCE_DIGEST"
+)
 POST_PUBLISH_REVIEW_OVERDUE_TYPE = "POST_PUBLISH_REVIEW_OVERDUE"
 _DEDUPE_PREFIX = f"{PUBLISH_NOTIFICATION_TYPE}:"
 _DIGEST_DEDUPE_PREFIX = f"{PUBLISH_DIGEST_NOTIFICATION_TYPE}:"
+_MISSING_ESSENCE_DIGEST_DEDUPE_PREFIX = (
+    f"{MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE}:"
+)
 _REVIEW_OVERDUE_DEDUPE_PREFIX = f"{POST_PUBLISH_REVIEW_OVERDUE_TYPE}:"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
@@ -156,6 +162,52 @@ def build_content_publish_digest_intent(
     )
 
 
+def build_missing_approved_essence_digest_intent(
+    cycle_date: date,
+    skipped_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationIntent:
+    """Build one neutral summary for a Seoul nightly onboarding skip cycle."""
+
+    if not skipped_outcomes:
+        raise NotificationPayloadError("MISSING_ESSENCE_DIGEST_ITEMS_REQUIRED")
+    hospital_ids = {
+        str(outcome["hospital_id"])
+        for outcome in skipped_outcomes
+        if outcome.get("hospital_id") is not None
+    }
+    if not hospital_ids:
+        raise NotificationPayloadError("MISSING_ESSENCE_DIGEST_HOSPITALS_REQUIRED")
+    hospital_count = len(hospital_ids)
+    item_count = len(skipped_outcomes)
+    action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=onboarding")
+    summary = f"온보딩 병원 {hospital_count}곳 · 글 {item_count}건"
+    message = validated_message(
+        RenderedSlackMessage(
+            f"온보딩 생성 요약 · {summary} · 승인 기준이 없어 생성을 건너뜀",
+            (
+                header_block("missing_essence_digest_header", "온보딩 생성 요약"),
+                section_block(
+                    "missing_essence_digest_summary",
+                    f"*{summary}*\n승인 기준이 없어 생성을 건너뜀.",
+                ),
+                action_block(
+                    "missing_essence_digest_action",
+                    action_url,
+                    "온보딩 현황 확인",
+                ),
+            ),
+            action_url,
+        ),
+        settings.ADMIN_BASE_URL,
+    )
+    return NotificationIntent(
+        dedupe_key=f"{_MISSING_ESSENCE_DIGEST_DEDUPE_PREFIX}{cycle_date.isoformat()}",
+        notification_type=MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE,
+        message=message,
+        max_attempts=3,
+    )
+
+
 def build_post_publish_review_overdue_intent(
     item: PublishedItem, hospital: HospitalIdentity
 ) -> NotificationIntent:
@@ -229,6 +281,22 @@ def enqueue_content_publish_digest_sync(
     """Add at most one morning publication digest for the Seoul calendar date."""
 
     intent = build_content_publish_digest_intent(cycle_date, published_outcomes)
+    existing = db.execute(
+        select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    return _enqueue_notification_sync(db, intent)
+
+
+def enqueue_missing_approved_essence_digest_sync(
+    db: Session,
+    cycle_date: date,
+    skipped_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationOutbox:
+    """Add at most one onboarding skip digest for the Seoul calendar date."""
+
+    intent = build_missing_approved_essence_digest_intent(cycle_date, skipped_outcomes)
     existing = db.execute(
         select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
     ).scalar_one_or_none()
