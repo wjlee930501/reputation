@@ -58,7 +58,8 @@ SEO_STAT_PATTERN = re.compile(   # 통계/수치 proxy — 숫자+단위 패턴
     re.UNICODE,
 )
 UNVERIFIED_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?:\d[\d,]*(?:\.\d+)?|수)\s*(?:천|만)?\s*원"),
+    re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:천|만)?\s*원"),
+    re.compile(r"수\s*(?:천|만)\s*원"),
     re.compile(
         r"(?:본인\s*부담|건강보험|공단|보험\s*적용|비용).{0,40}"
         r"\d+(?:\.\d+)?\s*%"
