@@ -126,6 +126,24 @@ def test_validate_unverified_price_claims_allows_variable_cost_guidance():
     )
 
 
+def test_validate_unverified_price_claims_allows_suwon_city_name():
+    _validate_unverified_price_claims(
+        "수원시 팔달구 장편한외과의원에서는 검사 전 복용 약물을 확인합니다."
+    )
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "비용은 수만원 수준입니다.",
+        "수천원대입니다.",
+    ],
+)
+def test_validate_unverified_price_claims_still_rejects_approximate_won(claim):
+    with pytest.raises(ValueError, match="unverified fixed price"):
+        _validate_unverified_price_claims(claim)
+
+
 def test_forbidden_check_text_includes_faq_fields():
     # P1-2 회귀 가드: FAQPage rich result로 그대로 노출되는 faq_question/faq_answer_summary가
     # 금지 표현 검사 텍스트에서 빠지면 의료광고법 필터를 통째로 우회한다.
