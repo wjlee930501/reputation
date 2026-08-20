@@ -153,6 +153,27 @@ def should_revalidate_after_public_photo_upload(
     )
 
 
+def resolve_upload_title(title: str | None, filename: str | None) -> str:
+    """빈 제목은 파일명(경로·확장자 없음, 300자)으로 채운다."""
+    raw = (title or "").strip()
+    if raw:
+        return raw[:300]
+    fallback = _filename_without_extension(filename or "")
+    return fallback or "업로드 파일"
+
+
+def should_revalidate_on_source_upload(
+    skip_revalidate: bool,
+    source_type: SourceType,
+    is_public: bool,
+    hospital: Hospital,
+) -> bool:
+    """일괄 업로드는 skip 후 프론트가 한 번 갱신한다. skip이 아니면 즉시 갱신."""
+    return (not skip_revalidate) and should_revalidate_after_public_photo_upload(
+        source_type, is_public, hospital
+    )
+
+
 class SourceCrawlRequest(BaseModel):
     source_type: SourceType
     title: str = Field(min_length=1, max_length=300)
@@ -563,10 +584,7 @@ async def upload_source_file(
     elif extractor_kind == "DOCX":
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
 
-    # 제목이 비어 있으면 파일명(확장자 제외, 경로 제외, 300자 제한)을 사용
-    final_title = title.strip() if title.strip() else _filename_without_extension(file.filename or "")
-    if not final_title:
-        final_title = "업로드 파일"
+    final_title = resolve_upload_title(title, file.filename)
 
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
@@ -585,11 +603,10 @@ async def upload_source_file(
         status=SourceStatus.PENDING,
         created_by=created_by,
     )
-    # 사진 일괄 업로드 시 마지막 파일을 제외하고는 revalidate를 건너뛰어
-    # N개 사진 업로드 시 N번의 site revalidate 대신 1번만 호출되게 한다.
-    should_revalidate = (
-        not skip_revalidate
-        and should_revalidate_after_public_photo_upload(source_type, source.is_public, hospital)
+    # 일괄 업로드는 전 파일이 skip_revalidate=true 이고, 프론트가 성공 후
+    # POST /revalidate 를 한 번 호출한다. 단건은 skip 없이 여기서 즉시 갱신한다.
+    should_revalidate = should_revalidate_on_source_upload(
+        skip_revalidate, source_type, source.is_public, hospital
     )
     if should_revalidate:
         ensure_site_revalidate_configured()
