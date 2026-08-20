@@ -53,6 +53,98 @@ class DomainDnsCheck:
     verification_method: str | None
 
 
+@router.get("/{hospital_id}/domain/cert-status", response_model=DomainVerifyResponse)
+async def check_cert_status(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """인증서 작업 상태 확인 전용 (멱등, 새 발급 트리거 안 함).
+    
+    ISSUING 상태를 확인하고 DONE/FAILED로 전환 가능. 새 provision 시작하지 않음.
+    """
+    hospital = await _get_hospital_or_404(db, hospital_id)
+
+    if not hospital.aeo_domain:
+        raise HTTPException(
+            status_code=400, detail="도메인이 설정되지 않았습니다."
+        )
+
+    domain = hospital.aeo_domain
+    cert_job_state = getattr(hospital, "domain_cert_job_state", None)
+    cert_job_started_at = getattr(hospital, "domain_cert_job_started_at", None)
+    dns_verified_at = getattr(hospital, "domain_cert_dns_verified_at", None)
+    now = datetime.now(UTC)
+    
+    # DNS 미검증 상태
+    if not dns_verified_at:
+        return DomainVerifyResponse(
+            domain=domain,
+            verified=False,
+            dns_verified=False,
+            certificate_ready=False,
+            certificate_phase=None,
+            cert_job_state=cert_job_state,
+            cert_job_started_at=cert_job_started_at,
+            cert_job_elapsed_minutes=None,
+            cname_value=None,
+            expected_cname=settings.CNAME_TARGET,
+            address_values=[],
+            expected_addresses=[],
+            verification_method=None,
+            message="DNS 검증이 완료되지 않았습니다.",
+        )
+    
+    # ISSUING 상태 → 실제 인증서 확인하여 DONE/FAILED로 전환
+    if cert_job_state == DomainCertJobState.ISSUING.value:
+        certificate = await asyncio.to_thread(
+            lambda: __import__("app.services.domain_certificate_manager", fromlist=["inspect_domain_certificate"]).inspect_domain_certificate(domain)
+        )
+        
+        if certificate and certificate.ready:
+            # ISSUING → DONE
+            hospital.domain_cert_job_state = DomainCertJobState.DONE.value
+            cert_job_state = DomainCertJobState.DONE.value
+        elif certificate and certificate.phase == "FAILED":
+            # ISSUING → FAILED
+            hospital.domain_cert_job_state = DomainCertJobState.FAILED.value
+            cert_job_state = DomainCertJobState.FAILED.value
+        elif cert_job_started_at and (now - cert_job_started_at).total_seconds() > 600:
+            # 10분 타임아웃 → FAILED
+            hospital.domain_cert_job_state = DomainCertJobState.FAILED.value
+            cert_job_state = DomainCertJobState.FAILED.value
+        
+        await db.commit()
+    
+    elapsed_minutes = None
+    if cert_job_started_at:
+        elapsed_minutes = int((now - cert_job_started_at).total_seconds() / 60)
+    
+    certificate_ready = (cert_job_state == DomainCertJobState.DONE.value)
+    
+    if certificate_ready:
+        message = f"DNS 확인 완료 · HTTPS 인증서 준비 완료"
+    elif cert_job_state == DomainCertJobState.ISSUING.value:
+        message = f"DNS 확인 완료 · HTTPS 인증서 발급 진행 중 (경과 {elapsed_minutes or 0}분)"
+    elif cert_job_state == DomainCertJobState.FAILED.value:
+        message = f"DNS 확인 완료 · HTTPS 인증서 발급 실패. 재시도가 필요합니다."
+    else:
+        message = f"DNS 확인 완료"
+    
+    return DomainVerifyResponse(
+        domain=domain,
+        verified=True,
+        dns_verified=True,
+        certificate_ready=certificate_ready,
+        certificate_phase=cert_job_state,
+        cert_job_state=cert_job_state,
+        cert_job_started_at=cert_job_started_at,
+        cert_job_elapsed_minutes=elapsed_minutes,
+        cname_value=None,
+        expected_cname=settings.CNAME_TARGET,
+        address_values=[],
+        expected_addresses=[],
+        verification_method="status_check",
+        message=message,
+    )
+
+
 @router.post("/{hospital_id}/domain/verify", response_model=DomainVerifyResponse)
 async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """DNS 검증 전용 엔드포인트. DNS 확인 성공 시 온보딩 5단계 완료.
@@ -101,7 +193,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     # DNS 검증 성공 타임스탬프 기록 (온보딩 5단계 운영자 작업 완료 마커)
     now = datetime.now(UTC)
-    if not hospital.domain_cert_dns_verified_at:
+    if not getattr(hospital, "domain_cert_dns_verified_at", None):
         hospital.domain_cert_dns_verified_at = now
 
     # DM-F4: DNS 검증 성공하면 즉시 site_live=True 전환 (인증서 기다리지 않음)
@@ -116,8 +208,8 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
 
     # 인증서 작업 상태 확인 및 시작
-    cert_job_state = hospital.domain_cert_job_state
-    cert_job_started_at = hospital.domain_cert_job_started_at
+    cert_job_state = getattr(hospital, "domain_cert_job_state", None)
+    cert_job_started_at = getattr(hospital, "domain_cert_job_started_at", None)
     
     # DM-F2: 인증서 발급 작업이 이미 진행 중이면 409 반환 (멱등성)
     if cert_job_state == DomainCertJobState.ISSUING.value:
@@ -127,7 +219,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         
         await write_audit_log(
             db,
-            action="커스텀 도메인 저장",
+            action="verify_domain",
             hospital_id=hospital.id,
             actor=default_actor(),
             target_type="domain",
@@ -159,7 +251,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             
             await write_audit_log(
                 db,
-                action="HTTPS 인증서 발급 요청",
+                action="provision_domain_certificate",
                 hospital_id=hospital.id,
                 actor=default_actor(),
                 target_type="domain",
@@ -180,7 +272,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             
             await write_audit_log(
                 db,
-                action="HTTPS 인증서 발급 요청",
+                action="provision_domain_certificate",
                 hospital_id=hospital.id,
                 actor=default_actor(),
                 target_type="domain",
@@ -197,7 +289,7 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     if not previous_site_live:
         await write_audit_log(
             db,
-            action="커스텀 도메인 저장",
+            action="verify_domain",
             hospital_id=hospital.id,
             actor=default_actor(),
             target_type="domain",

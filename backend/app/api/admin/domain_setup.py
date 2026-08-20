@@ -22,7 +22,7 @@ class DomainSetupRecord(BaseModel):
     name: str
     host: str
     value: str
-    ttl: str = "300"
+    ttl: str = "300 (또는 등록기관 최소값)"
     purpose: str
 
 
@@ -149,12 +149,14 @@ def _domain_records(
         return [], []
     match strategy:
         case DomainDnsStrategy.CNAME:
+            # DM-U2: CNAME 대상값에 trailing dot 포함
+            cname_with_dot = settings.CNAME_TARGET if settings.CNAME_TARGET.endswith(".") else f"{settings.CNAME_TARGET}."
             return [
                 DomainSetupRecord(
                     type="CNAME",
                     name=domain,
                     host=domain,
-                    value=settings.CNAME_TARGET,
+                    value=cname_with_dot,
                     purpose="병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결",
                 )
             ], []

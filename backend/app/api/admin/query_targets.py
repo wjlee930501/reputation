@@ -157,7 +157,7 @@ async def create_query_target(
     # 리포트 수치가 왜 달라졌는지 사후에 설명할 수 없다.
     await write_audit_log(
         db,
-        action="측정 쿼리 타겟 생성",
+        action="create_query_target",
         hospital_id=hospital_id,
         actor=default_actor(),
         target_type="ai_query_target",

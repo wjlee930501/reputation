@@ -109,6 +109,9 @@ def _hospital(**overrides):
         schedule_set=True,
         site_live=False,
         profile_complete=True,
+        domain_cert_job_state=None,
+        domain_cert_job_started_at=None,
+        domain_cert_dns_verified_at=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)

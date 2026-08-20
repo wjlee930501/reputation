@@ -24,6 +24,50 @@ from app.workers.tasks import build_aeo_site
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Domain Connect"])
 
 
+@router.delete("/{hospital_id}/domain")
+async def disconnect_domain(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """커스텀 도메인 연결 해제 (롤백). 기본 주소는 계속 사용 가능."""
+    h = await _get_or_404(db, hospital_id)
+    
+    if not h.aeo_domain:
+        return {"detail": "연결된 커스텀 도메인이 없습니다."}
+    
+    previous_domain = h.aeo_domain
+    previous_site_live = bool(h.site_live)
+    
+    # 도메인 및 인증서 작업 상태 초기화
+    h.aeo_domain = None
+    h.domain_cert_job_state = None
+    h.domain_cert_job_started_at = None
+    h.domain_cert_dns_verified_at = None
+    
+    # site_live는 유지 (기본 플랫폼 주소로 계속 운영)
+    # 커스텀 도메인만 해제하고 ACTIVE 상태는 그대로
+    
+    await write_audit_log(
+        db,
+        action="disconnect_domain",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="domain",
+        target_id=previous_domain or "(none)",
+        detail={
+            "previous_domain": previous_domain,
+            "previous_site_live": previous_site_live,
+            "site_live_preserved": previous_site_live,
+        },
+    )
+    await db.commit()
+    
+    return {
+        "detail": f"커스텀 도메인 {previous_domain} 연결이 해제되었습니다. 기본 플랫폼 주소는 계속 사용 가능합니다.",
+        "previous_domain": previous_domain,
+    }
+
+
 class DomainConnect(BaseModel):
     domain: str = Field(min_length=1, max_length=500)
     domain_management_mode: DomainManagementMode | None = Field(
@@ -89,7 +133,7 @@ async def connect_domain(
 
     await write_audit_log(
         db,
-        action="커스텀 도메인 저장",
+        action="connect_domain",
         hospital_id=hospital_id,
         actor=default_actor(),
         target_type="domain",

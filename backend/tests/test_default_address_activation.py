@@ -116,7 +116,15 @@ async def test_activate_respects_activation_gate():
     with patch("app.api.admin.hospitals.evaluate_activation_gate") as mock_gate:
         mock_gate.return_value = {
             "ready": False,
-            "missing": ["프로파일 입력 완료"],
+            "missing": ["profile_complete"],
+            "prerequisites": [
+                {
+                    "key": "profile_complete",
+                    "label": "병원 기본 정보 완료",
+                    "action": "병원 기본 정보의 필수 항목을 완료하세요.",
+                    "passed": False,
+                }
+            ],
         }
         
         # HTTPException 발생 예상

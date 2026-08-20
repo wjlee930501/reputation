@@ -277,12 +277,15 @@ async def test_dns_fail_does_not_activate():
     
     # DNS 실패 → site_live=False 유지
     assert hospital.site_live is False
-    assert hospital.domain_cert_dns_verified_at is None
-    assert hospital.domain_cert_job_state is None
+    assert getattr(hospital, "domain_cert_dns_verified_at", None) is None
+    assert getattr(hospital, "domain_cert_job_state", None) is None
     
     assert result.dns_verified is False
     assert result.verified is False
     assert result.certificate_ready is False
+    assert result.cert_job_state is None
+    assert result.cert_job_started_at is None
+    assert result.cert_job_elapsed_minutes is None
 
 
 @pytest.mark.asyncio
