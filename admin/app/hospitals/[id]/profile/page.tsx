@@ -341,6 +341,11 @@ export default function ProfilePage() {
   // Autofill state
   const [autofillOpen, setAutofillOpen] = useState(false)
   const [autofillLoading, setAutofillLoading] = useState(false)
+  
+  // Wrap refetchHeader in useCallback to prevent poll reset on every render
+  const handleHeaderRefresh = useCallback(() => {
+    void refetchHeader()
+  }, [refetchHeader])
   const [autofillResult, setAutofillResult] = useState<AutofillResponse | null>(null)
   const [aiFilled, setAiFilled] = useState<Record<string, AutofillFieldMeta>>({})
 
@@ -1095,7 +1100,7 @@ export default function ProfilePage() {
             profile={profile}
             activationReadiness={hospital}
             onProfileChange={(patch) => setProfile((prev) => ({ ...prev, ...patch }))}
-            onHeaderRefresh={() => { void refetchHeader() }}
+            onHeaderRefresh={handleHeaderRefresh}
           />
         </div>
       )}
