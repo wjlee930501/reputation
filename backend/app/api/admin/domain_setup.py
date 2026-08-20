@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,6 +22,7 @@ class DomainSetupRecord(BaseModel):
     type: str
     name: str
     host: str
+    registrar_host: str | None = None
     value: str
     ttl: str = "300 (또는 등록기관 최소값)"
     purpose: str
@@ -157,6 +159,11 @@ def _domain_records(
             cname_with_dot = settings.CNAME_TARGET if settings.CNAME_TARGET.endswith(".") else f"{settings.CNAME_TARGET}."
             # DM-F5: 호스트 컬럼에 FQDN과 등록기관 호스트 표시
             registrar_host = domain.split('.')[0] if domain and '.' in domain else None
+            warnings = [
+                "FQDN 입력 시 끝에 점(.)을 붙이는 등록기관도 있습니다. 등록기관 UI 규칙을 확인하세요.",
+                "TTL은 DNS 검증 속도에 영향을 주지 않습니다. 등록기관 최소값을 사용하세요.",
+                "Gabia 사용 시: DNS 레코드 입력 후 반드시 '확인 후 저장' 버튼을 클릭해야 적용됩니다.",
+            ]
             return [
                 DomainSetupRecord(
                     type="CNAME",
@@ -166,26 +173,29 @@ def _domain_records(
                     value=cname_with_dot,
                     purpose="병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결",
                 )
-            ], []
+            ], warnings
         case DomainDnsStrategy.APEX_ADDRESS:
+            # DM-F5: apex의 경우 registrar_host는 @ 또는 도메인 자체
+            registrar_host = "@"
             records = [
                 DomainSetupRecord(
                     type="AAAA" if ":" in address else "A",
                     name=domain,
                     host=domain,
+                    registrar_host=registrar_host,
                     value=address,
                     purpose="루트 도메인을 Reputation 글로벌 로드밸런서로 연결",
                 )
                 for address in addresses
             ]
-            warnings = (
-                []
-                if records
-                else [
-                    "APEX_ADDRESS strategy is selected, but CUSTOM_DOMAIN_IP_TARGETS is not configured."
-                ]
-            )
-            return records, warnings
+            base_warnings = [
+                "FQDN 입력 시 끝에 점(.)을 붙이는 등록기관도 있습니다. 등록기관 UI 규칙을 확인하세요.",
+                "TTL은 DNS 검증 속도에 영향을 주지 않습니다. 등록기관 최소값을 사용하세요.",
+                "Gabia 사용 시: DNS 레코드 입력 후 반드시 '확인 후 저장' 버튼을 클릭해야 적용됩니다.",
+            ]
+            if not records:
+                base_warnings.append("APEX_ADDRESS strategy is selected, but CUSTOM_DOMAIN_IP_TARGETS is not configured.")
+            return records, base_warnings
 
 
 def _checklist(

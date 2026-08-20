@@ -119,13 +119,13 @@ async def check_cert_status(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     certificate_ready = (cert_job_state == DomainCertJobState.DONE.value)
     
     if certificate_ready:
-        message = f"DNS 확인 완료 · HTTPS 인증서 준비 완료"
+        message = "DNS 확인 완료 · HTTPS 인증서 준비 완료"
     elif cert_job_state == DomainCertJobState.ISSUING.value:
         message = f"DNS 확인 완료 · HTTPS 인증서 발급 진행 중 (경과 {elapsed_minutes or 0}분)"
     elif cert_job_state == DomainCertJobState.FAILED.value:
-        message = f"DNS 확인 완료 · HTTPS 인증서 발급 실패. 재시도가 필요합니다."
+        message = "DNS 확인 완료 · HTTPS 인증서 발급 실패. 재시도가 필요합니다."
     else:
-        message = f"DNS 확인 완료"
+        message = "DNS 확인 완료"
     
     return DomainVerifyResponse(
         domain=domain,

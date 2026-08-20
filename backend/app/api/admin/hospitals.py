@@ -25,7 +25,6 @@ from app.api.admin.accounts import require_active_account
 from app.api.admin.domain import (
     check_domain_dns,
     domain_dns_strategy_for_hospital,
-    ensure_verified_domain_certificate,
 )
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
