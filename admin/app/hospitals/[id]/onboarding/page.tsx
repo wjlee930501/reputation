@@ -83,6 +83,17 @@ const SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string; group: 'TEXT' |
   { value: 'PHOTO_TREATMENT_ROOM', label: '사진 — 진료/시술실', group: 'PHOTO' },
 ]
 
+const PHOTO_SOURCE_TYPES = new Set([
+  'PHOTO_DOCTOR',
+  'PHOTO_CLINIC_EXTERIOR',
+  'PHOTO_CLINIC_INTERIOR',
+  'PHOTO_TREATMENT_ROOM',
+])
+
+function isPhotoSourceType(sourceType: string): boolean {
+  return PHOTO_SOURCE_TYPES.has(sourceType)
+}
+
 function hasProcessableText(source: Source): boolean {
   return (source.raw_text?.trim() ?? '').length > 0
 }
@@ -710,6 +721,9 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       fd.append('source_type', type)
       fd.append('title', title)
       fd.append('file', file)
+      if (isPhotoSourceType(type)) {
+        fd.append('is_public', 'true')
+      }
       // fetchAPI 사용: 401 시 로그인 리다이렉트, 오류 메시지 한국어 변환 공통 처리
       await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/upload`, {
         method: 'POST',
@@ -792,6 +806,29 @@ function SourcesList({
 }) {
   const [excludingId, setExcludingId] = useState<string | null>(null)
   const [excludeErrors, setExcludeErrors] = useState<Record<string, string>>({})
+  const [pendingPublicId, setPendingPublicId] = useState<string | null>(null)
+  const [publicErrors, setPublicErrors] = useState<Record<string, string>>({})
+
+  async function togglePublic(sourceId: string, next: boolean) {
+    setPendingPublicId(sourceId)
+    setPublicErrors((prev) => {
+      const errors = { ...prev }
+      delete errors[sourceId]
+      return errors
+    })
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${sourceId}/public`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_public: next }),
+      })
+      onChanged()
+    } catch (e: unknown) {
+      const message = safeOperatorError('onboarding', '사진 공개 여부를 다시 저장하세요.')
+      setPublicErrors((prev) => ({ ...prev, [sourceId]: message }))
+    } finally {
+      setPendingPublicId(null)
+    }
+  }
 
   async function exclude(sourceId: string) {
     if (!confirm('이 자료를 제외하시겠습니까? 운영 기준 초안과 병원 공개 페이지에서 빠집니다.')) return
@@ -864,6 +901,27 @@ function SourcesList({
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  {isPhotoSourceType(s.source_type) && (
+                    <label className="flex min-h-11 cursor-pointer items-center gap-2">
+                      <span
+                        className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                          s.is_public
+                            ? 'bg-blue-100 text-blue-700'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {s.is_public ? '공개' : '비공개'}
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={s.is_public}
+                        disabled={pendingPublicId === s.id}
+                        onChange={(e) => togglePublic(s.id, e.target.checked)}
+                        aria-label={`${s.title} 공개 사이트 표시`}
+                        className="rounded border-slate-300"
+                      />
+                    </label>
+                  )}
                   <span
                     className={`rounded-full px-2 py-1 text-xs font-semibold ${
                       s.status === 'PROCESSED'
@@ -890,6 +948,9 @@ function SourcesList({
               </div>
               {excludeErrors[s.id] && (
                 <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{excludeErrors[s.id]}</p>
+              )}
+              {publicErrors[s.id] && (
+                <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{publicErrors[s.id]}</p>
               )}
             </li>
           )

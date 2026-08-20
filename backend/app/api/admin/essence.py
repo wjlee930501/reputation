@@ -131,6 +131,28 @@ async def _read_upload_within_limit(file: UploadFile) -> bytes:
     return b"".join(chunks)
 
 
+def resolve_upload_is_public(
+    source_type: SourceType, is_public_form: bool | None = None
+) -> bool:
+    """사진 업로드는 기본 공개. 비사진은 공개 요청이 와도 비공개로 둔다."""
+    if source_type not in PHOTO_SOURCE_TYPES:
+        return False
+    if is_public_form is None:
+        return True
+    return bool(is_public_form)
+
+
+def should_revalidate_after_public_photo_upload(
+    source_type: SourceType, is_public: bool, hospital: Hospital
+) -> bool:
+    """공개 사진이 새로 저장되면 PATCH와 같이 사이트 캐시를 갱신한다."""
+    return (
+        source_type in PHOTO_SOURCE_TYPES
+        and bool(is_public)
+        and _has_public_site(hospital)
+    )
+
+
 class SourceCrawlRequest(BaseModel):
     source_type: SourceType
     title: str = Field(min_length=1, max_length=300)
@@ -493,12 +515,13 @@ async def upload_source_file(
     source_type: SourceType = Form(...),
     title: str = Form(..., min_length=1, max_length=300),
     file: UploadFile = File(...),
+    is_public: bool | None = Form(default=None),
     operator_note: str | None = Form(default=None),
     created_by: str | None = Form(default=None, max_length=100),
     db: AsyncSession = Depends(get_db),
 ):
     """이미지/PDF/DOCX 업로드. 사진은 file_url만 저장, 텍스트형 자료는 raw_text 자동 추출."""
-    await _get_hospital_or_404(db, hospital_id)
+    hospital = await _get_hospital_or_404(db, hospital_id)
 
     data = await _read_upload_within_limit(file)
     if not data:
@@ -545,11 +568,16 @@ async def upload_source_file(
         file_url=file_url,
         mime_type=mime_type or None,
         file_size_bytes=len(data),
-        is_public=False,
+        is_public=resolve_upload_is_public(source_type, is_public),
         content_hash=compute_source_content_hash(title, None, raw_text, operator_note),
         status=SourceStatus.PENDING,
         created_by=created_by,
     )
+    should_revalidate = should_revalidate_after_public_photo_upload(
+        source_type, source.is_public, hospital
+    )
+    if should_revalidate:
+        ensure_site_revalidate_configured()
     db.add(source)
     await write_audit_log(
         db,
@@ -566,6 +594,10 @@ async def upload_source_file(
     )
     await db.commit()
     await db.refresh(source)
+    if should_revalidate:
+        await trigger_hospital_site_revalidate_safe(
+            hospital.slug, hospital_name=hospital.name
+        )
     return _serialize_source(source)
 
 
