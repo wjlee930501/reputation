@@ -158,7 +158,12 @@ export function DomainRecordTable({
               {plan.records.map((record) => (
                 <tr key={`${record.type}-${record.name}-${record.value}`}>
                   <td className="px-3 py-2 w-24 font-mono text-slate-800" data-primary="true">{record.type}</td>
-                  <td className="break-all px-3 py-2 font-mono text-slate-800" data-label="호스트">{record.name}</td>
+                  <td className="break-all px-3 py-2 font-mono text-slate-800" data-label="호스트">
+                    <div>{record.host}</div>
+                    {record.registrar_host && (
+                      <div className="text-xs text-slate-500 mt-0.5">등록기관 호스트: {record.registrar_host}</div>
+                    )}
+                  </td>
                   <td className="px-3 py-2" data-label="대상값">
                     <button type="button" onClick={() => onCopy(record.value)} className="break-all text-right font-mono text-blue-700 underline">
                       {record.value}

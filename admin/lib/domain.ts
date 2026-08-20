@@ -11,6 +11,8 @@ export type DomainDnsStrategy = 'CNAME' | 'APEX_ADDRESS'
 export interface DomainSetupRecord {
   type: 'CNAME' | 'A' | 'AAAA'
   name: string
+  host: string
+  registrar_host?: string | null
   value: string
   ttl: string
   purpose: string
@@ -20,7 +22,7 @@ export interface DomainSetupChecklistItem {
   key: string
   label: string
   description: string
-  status: 'DONE' | 'PENDING' | 'BLOCKED'
+  status: 'DONE' | 'PENDING' | 'WAITING' | 'BLOCKED'
 }
 
 export interface DomainSetupPlan {
@@ -80,8 +82,10 @@ export function buildFallbackDomainSetupPlan(domain: string, expectedCname: stri
       {
         type: 'CNAME',
         name: domain,
+        host: domain,
+        registrar_host: domain.split('.')[0] || null,
         value: cnameValueWithDot,
-        ttl: '300 (또는 등록기관 최소값)',  // DM-U1: TTL 안내 개선
+        ttl: '300 (또는 등록기관 최소값)',
         purpose: '병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결',
       },
     ],
