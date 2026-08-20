@@ -9,10 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.admin.domain import _normalize_dns_name
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.hospital import DomainDnsStrategy, DomainManagementMode, Hospital, HospitalStatus
+from app.models.hospital import DomainDnsStrategy, DomainManagementMode, Hospital
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
-from app.services.service_intervals import close_service_interval
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,

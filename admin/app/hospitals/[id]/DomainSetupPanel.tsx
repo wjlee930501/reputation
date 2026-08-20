@@ -31,7 +31,7 @@ function _certElapsedMinutes(started: string | null | undefined): number {
     const startTime = new Date(started).getTime()
     const now = Date.now()
     return Math.floor((now - startTime) / 60000)
-  } catch {
+  } catch (error: unknown) {
     return 0
   }
 }
@@ -205,7 +205,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     try {
       await fetchAPI(`/admin/hospitals/${hospitalId}/domain`, { method: 'DELETE' })
       onProfileChange({ 
-        aeo_domain: null,
+        aeo_domain: '',
         domain_cert_job_state: null,
         domain_cert_job_started_at: null,
         domain_cert_dns_verified_at: null,
@@ -426,7 +426,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
                     홈페이지 도메인 {hostname}을 사용하는 경우, 서브도메인을 ai.{hostname}로 설정할 수 있습니다.
                   </p>
                 )
-              } catch {
+              } catch (error: unknown) {
                 return null
               }
             })()}
