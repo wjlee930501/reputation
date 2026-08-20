@@ -840,6 +840,7 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     if not gate["ready"]:
         raise HTTPException(status_code=409, detail=activation_gate_error(gate))
 
+    # DM-F4: DNS 검증만 확인. 인증서는 후속 작업이므로 재개를 블록하지 않음.
     if h.aeo_domain:
         dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
         if not dns_check.verified:
@@ -848,16 +849,6 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
                 detail={
                     "code": "DOMAIN_NOT_READY",
                     "message": "재개 전 사용자 도메인의 DNS 설정을 확인해 주세요.",
-                },
-            )
-        certificate = await ensure_verified_domain_certificate(h.aeo_domain)
-        if certificate is not None and not certificate.ready:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "CERTIFICATE_NOT_READY",
-                    "message": certificate.message,
-                    "certificate_phase": certificate.phase,
                 },
             )
 
@@ -1122,6 +1113,17 @@ def _serialize(h: Hospital) -> dict:
         "director_credentials": h.director_credentials,
         "treatments": h.treatments,
         "profile_complete": h.profile_complete,
+        "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
+        "domain_cert_job_started_at": (
+            getattr(h, "domain_cert_job_started_at", None).isoformat()
+            if getattr(h, "domain_cert_job_started_at", None)
+            else None
+        ),
+        "domain_cert_dns_verified_at": (
+            getattr(h, "domain_cert_dns_verified_at", None).isoformat()
+            if getattr(h, "domain_cert_dns_verified_at", None)
+            else None
+        ),
         "v0_report_done": h.v0_report_done,
         "site_built": h.site_built,
         "site_live": h.site_live,

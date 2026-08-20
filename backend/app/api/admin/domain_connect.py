@@ -119,15 +119,12 @@ async def connect_domain(
         "domain_dns_strategy" in changed_metadata and previous_dns_strategy != h.domain_dns_strategy
     )
 
+    # DM-F3: 도메인 저장은 site_live를 건드리지 않음. 기본 주소와 커스텀 도메인은 독립적.
+    # 도메인이나 DNS 전략이 바뀌면 인증서 작업 상태만 리셋
     if domain_changed or strategy_changed:
-        h.site_live = False
-        # 도메인이나 DNS 전략이 바뀌면 인증서 작업 상태도 리셋
         h.domain_cert_job_state = None
         h.domain_cert_job_started_at = None
         h.domain_cert_dns_verified_at = None
-        if h.status == HospitalStatus.ACTIVE:
-            h.status = HospitalStatus.PENDING_DOMAIN
-            await close_service_interval(db, hospital_id)
     if previous_site_live:
         ensure_site_revalidate_configured()
 

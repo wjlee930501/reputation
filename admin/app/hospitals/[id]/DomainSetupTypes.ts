@@ -5,6 +5,7 @@ export interface DomainProfile {
   id?: string
   slug?: string
   aeo_domain?: string
+  website_url?: string
   status?: string
   profile_complete?: boolean
   v0_report_done?: boolean

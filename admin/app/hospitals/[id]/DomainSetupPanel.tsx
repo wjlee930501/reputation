@@ -67,39 +67,6 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     setPurchaseNote,
   })
 
-  useEffect(() => {
-    let cancelled = false
-    async function loadSetup() {
-      if (!domainSavedValue) {
-        setSetupPlan(null)
-        return
-      }
-      try {
-        const plan = await fetchSetupPlan()
-        if (!cancelled) setSetupPlan(plan)
-      } catch (error) {
-        if (error instanceof Error) {
-          if (!cancelled) setSetupPlan(buildFallbackDomainSetupPlan(domainSavedValue, DEFAULT_CNAME_TARGET))
-          return
-        }
-        throw error
-      }
-    }
-    void loadSetup()
-    return () => {
-      cancelled = true
-    }
-  }, [domainSavedValue, fetchSetupPlan])
-
-  useEffect(() => {
-    // DM-U6: 변경 사항이 있으면 미리보기 레코드 생성
-    if (hasUnsavedChange && currentDomain) {
-      setPreviewPlan(buildFallbackDomainSetupPlan(currentDomain, DEFAULT_CNAME_TARGET))
-    } else {
-      setPreviewPlan(null)
-    }
-  }, [hasUnsavedChange, currentDomain])
-
   const subdomainUrl = platformSubdomainUrl(profile.slug)
   const currentDomain = trimmed(profile.aeo_domain)
   const savedManagementMode = profile.domain_management_mode ?? 'HOSPITAL_MANAGED'
@@ -134,6 +101,39 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     [domainSavedValue, setupPlan],
   )
 
+  useEffect(() => {
+    let cancelled = false
+    async function loadSetup() {
+      if (!domainSavedValue) {
+        setSetupPlan(null)
+        return
+      }
+      try {
+        const plan = await fetchSetupPlan()
+        if (!cancelled) setSetupPlan(plan)
+      } catch (error) {
+        if (error instanceof Error) {
+          if (!cancelled) setSetupPlan(buildFallbackDomainSetupPlan(domainSavedValue, DEFAULT_CNAME_TARGET))
+          return
+        }
+        throw error
+      }
+    }
+    void loadSetup()
+    return () => {
+      cancelled = true
+    }
+  }, [domainSavedValue, fetchSetupPlan])
+
+  useEffect(() => {
+    // DM-U6: 변경 사항이 있으면 미리보기 레코드 생성
+    if (hasUnsavedChange && currentDomain) {
+      setPreviewPlan(buildFallbackDomainSetupPlan(currentDomain, DEFAULT_CNAME_TARGET))
+    } else {
+      setPreviewPlan(null)
+    }
+  }, [hasUnsavedChange, currentDomain])
+
   async function handleCopy(value: string) {
     try {
       await navigator.clipboard.writeText(value)
@@ -150,7 +150,6 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
 
   async function handleSaveDomain() {
     const domain = trimmed(profile.aeo_domain)
-    const resetsLive = hasDomainChange || dnsStrategy !== savedDnsStrategy
     if (!domain) {
       setDomainFeedback({ tone: 'error', message: '도메인을 입력해 주세요.' })
       return
@@ -176,9 +175,9 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         if (error instanceof Error) setSetupPlan(buildFallbackDomainSetupPlan(domain, DEFAULT_CNAME_TARGET))
         else throw error
       }
+      // DM-F3: 저장은 site_live를 건드리지 않음. 기본 주소와 커스텀 도메인은 독립적.
       onProfileChange({
         aeo_domain: domain,
-        ...(resetsLive ? { site_live: false } : {}),
         domain_management_mode: managementMode,
         domain_dns_strategy: dnsStrategy,
         domain_registrar: trimmed(registrar) || null,
@@ -194,6 +193,31 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         title: info.kind === 'invalid' ? '도메인 형식 오류' : info.kind === 'conflict' ? '이미 사용 중인 도메인' : undefined,
         message: info.kind === 'conflict' ? `${info.message} 해당 병원의 연결을 먼저 해제해 주세요.` : info.message,
       })
+    } finally {
+      setDomainSaving(false)
+    }
+  }
+
+  async function handleRollbackDomain() {
+    if (!confirm('커스텀 도메인 설정을 초기화하시겠습니까? 기본 주소는 유지됩니다.')) return
+    setDomainSaving(true)
+    setDomainFeedback(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/domain`, { method: 'DELETE' })
+      onProfileChange({ 
+        aeo_domain: null,
+        domain_cert_job_state: null,
+        domain_cert_job_started_at: null,
+        domain_cert_dns_verified_at: null,
+      })
+      setDomainSavedValue('')
+      setDomainFeedback({ tone: 'success', message: '커스텀 도메인 설정을 초기화했습니다.' })
+      onHeaderRefresh()
+    } catch (error: unknown) {
+      if (!(error instanceof ApiError || error instanceof TypeError || error instanceof DOMException)) {
+        throw error
+      }
+      setDomainFeedback({ tone: 'error', message: '초기화 실패. 다시 시도해 주세요.' })
     } finally {
       setDomainSaving(false)
     }
@@ -457,7 +481,8 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
           <DomainChecklist plan={displayPlan} />
         )}
 
-        {customDomainUrl ? (
+        {/* DM-F2: 인증서 준비 완료 여부로 버튼/링크 결정. site_live만으로는 판단하지 않음. */}
+        {profile.domain_cert_job_state === 'DONE' && customDomainUrl ? (
           <>
             <a href={customDomainUrl} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
               병원 정보 허브 운영 중 · {currentDomain}
@@ -486,7 +511,9 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
                   ? '변경한 도메인을 먼저 저장해 주세요' 
                   : !domainSavedValue 
                     ? '도메인을 먼저 저장해 주세요' 
-                    : 'DNS 확인하고 운영 시작'}
+                    : profile.domain_cert_job_state === 'FAILED'
+                      ? 'DNS 확인 및 인증서 재시도'
+                      : 'DNS 확인하고 운영 시작'}
           </button>
         )}
 
