@@ -5,7 +5,7 @@ DM-F3: Default-address go-live and custom-domain connect are independent.
 """
 
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

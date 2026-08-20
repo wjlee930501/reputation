@@ -27,7 +27,6 @@ from app.api.admin.domain import (
     domain_dns_strategy_for_hospital,
     ensure_verified_domain_certificate,
 )
-from app.core.config import settings
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
