@@ -56,7 +56,7 @@ def _get_setup(hospital, monkeypatch):
 
 def test_domain_setup_returns_cname_plan(monkeypatch):
     monkeypatch.setattr(settings, "CNAME_TARGET", "target.motionlabs.example")
-    hospital = _hospital(aeo_domain="www.clinic.example.com")
+    hospital = _hospital(aeo_domain="www.clinic.example.com", site_live=False, domain_cert_dns_verified_at=None, domain_cert_job_state=None)
 
     response = _get_setup(hospital, monkeypatch)
 
@@ -72,8 +72,10 @@ def test_domain_setup_returns_cname_plan(monkeypatch):
     assert payload["dns_strategy"] == "CNAME"
     assert payload["records"][0]["type"] == "CNAME"
     assert payload["records"][0]["name"] == "www.clinic.example.com"
-    assert payload["records"][0]["value"] == "target.motionlabs.example"
-    assert payload["records"][0]["ttl"] == "300"
+    assert payload["records"][0]["host"] == "www.clinic.example.com"
+    assert payload["records"][0]["registrar_host"] == "www"
+    assert payload["records"][0]["value"] == "target.motionlabs.example."  # DM-U2: trailing dot
+    assert payload["records"][0]["ttl"] == "300 (또는 등록기관 최소값)"  # DM-U1
     assert [step["key"] for step in payload["checklist"]] == [
         "domain_saved",
         "purchase",
@@ -81,7 +83,10 @@ def test_domain_setup_returns_cname_plan(monkeypatch):
         "dns_verified",
         "certificate_ready",
     ]
-    assert payload["warnings"] == []
+    # DM-U1/DM-F5: warnings include TTL 검증 무관 and Gabia
+    assert len(payload["warnings"]) == 3
+    assert any("TTL은 DNS 검증 속도에 영향을 주지 않습니다" in w for w in payload["warnings"])
+    assert any("Gabia" in w and "확인 후 저장" in w for w in payload["warnings"])
 
 
 def test_domain_setup_returns_apex_address_plan(monkeypatch):
