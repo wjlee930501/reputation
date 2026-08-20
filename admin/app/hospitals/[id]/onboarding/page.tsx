@@ -2,11 +2,16 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
-import { fetchAPI } from '@/lib/api'
+import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { safeOperatorError } from '@/lib/operations-journey'
+import {
+  addProfileUrlCandidate,
+  isProfileOnlyCandidate,
+  type ProfileUrlCandidate,
+} from '@/lib/onboarding-candidate'
 import type { Handoff, MeasurementRun } from '@/types'
 import {
   deriveHandoffDueStatus,
@@ -59,13 +64,6 @@ interface Philosophy {
   version: number
   status: string
   positioning_statement: string | null
-}
-
-interface UrlCandidate {
-  key: string
-  title: string
-  sourceType: string
-  url: string
 }
 
 const SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string; group: 'TEXT' | 'PHOTO' }> = [
@@ -150,14 +148,14 @@ function normalizeUrl(value: string | null | undefined): string | null {
   return cleaned.replace(/\/+$/, '').toLowerCase()
 }
 
-function getProfileUrlCandidates(hospital: Hospital | null, sources: Source[]): UrlCandidate[] {
+function getProfileUrlCandidates(hospital: Hospital | null, sources: Source[]): ProfileUrlCandidate[] {
   if (!hospital) return []
   const existingUrls = new Set(
     sources
       .map((source) => normalizeUrl(source.url))
       .filter((url): url is string => Boolean(url)),
   )
-  const candidates: UrlCandidate[] = [
+  const candidates: ProfileUrlCandidate[] = [
     {
       key: 'website_url',
       title: '병원 공식 홈페이지',
@@ -198,7 +196,8 @@ function getProfileUrlCandidates(hospital: Hospital | null, sources: Source[]): 
 
   return candidates.filter((candidate) => {
     const normalized = normalizeUrl(candidate.url)
-    return normalized !== null && !existingUrls.has(normalized)
+    return normalized !== null
+      && (isProfileOnlyCandidate(candidate.key) || !existingUrls.has(normalized))
   })
 }
 
@@ -244,14 +243,23 @@ export default function OnboardingPage() {
     void refresh()
   }, [refresh])
 
-  const steps = useMemo(
-    () => deriveOnboardingSteps(hospital, sources, philosophies, readiness, id, handoff),
-    [hospital, sources, philosophies, readiness, id, handoff],
-  )
-  const summary = useMemo(
-    () => deriveOnboardingSummary(steps, readiness),
-    [steps, readiness],
-  )
+  if (loading && !hospital) {
+    return <p>온보딩 정보를 불러오는 중…</p>
+  }
+
+  if (!hospital) {
+    return (
+      <OperatorIssuePanel
+        message={error ?? safeOperatorError('onboarding', '온보딩 정보 다시 불러오기를 누르세요.')}
+        surface="onboarding"
+        onRetry={() => void refresh()}
+        retryLabel="온보딩 정보 다시 불러오기"
+      />
+    )
+  }
+
+  const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, id, handoff)
+  const summary = deriveOnboardingSummary(steps, readiness)
   const latestMeasurementRun = measurementRuns.find((run) => run.run_label === 'V0 first measurement') ?? null
   const latestV0Message = typeof latestMeasurementRun?.error_summary?.safe_error_message === 'string'
     ? latestMeasurementRun.error_summary.safe_error_message
@@ -285,7 +293,9 @@ export default function OnboardingPage() {
               )}
               <dl className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-blue-50/90">
                 <div className="flex gap-1"><dt>담당</dt><dd className="font-semibold text-white">{handoff?.ae_owner_name ?? '미지정'}</dd></div>
-                <div className="flex gap-1"><dt>인수 처리 기한</dt><dd className="font-semibold text-white">{slaDueAt && Number.isFinite(slaDueAt.valueOf()) ? slaDueAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '미설정'}</dd></div>
+                {handoff?.state !== 'HANDOFF_ACCEPTED' && (
+                  <div className="flex gap-1"><dt>인수 처리 기한</dt><dd className="font-semibold text-white">{slaDueAt && Number.isFinite(slaDueAt.valueOf()) ? slaDueAt.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '미설정'}</dd></div>
+                )}
                 <div className="flex gap-1"><dt>처리 상태</dt><dd className="font-semibold text-white">{handoffDueStatus.label}</dd></div>
               </dl>
               {handoffDueStatus.isOverdue && (
@@ -422,7 +432,7 @@ function StepCard({
         : 'border-slate-200'
 
   return (
-    <details id={`step-${step.index}`} open={step.status === 'current'} className={`overflow-hidden rounded-2xl border ${tone} bg-white`}>
+    <details id={`step-${step.index}`} open={step.key === 'processing' || step.status === 'current'} className={`group overflow-hidden rounded-2xl border ${tone} bg-white`}>
       <summary className="flex min-h-20 cursor-pointer list-none items-start justify-between gap-3 px-4 py-4 sm:px-6 sm:py-5 [&::-webkit-details-marker]:hidden">
         <div>
           <p className="text-xs font-semibold text-blue-600">
@@ -431,7 +441,10 @@ function StepCard({
           <h2 className="mt-1 text-lg font-bold text-slate-900">{step.title}</h2>
           <p className="mt-1 text-sm text-slate-600 max-w-2xl">{step.description}</p>
         </div>
-        <StepStatusChip status={step.status} />
+        <div className="flex shrink-0 items-center gap-2">
+          <StepStatusChip status={step.status} />
+          <span aria-hidden className="text-xs text-slate-500 transition-transform group-open:rotate-180">▼</span>
+        </div>
       </summary>
 
       <div className="border-t border-slate-100 px-4 py-5 sm:px-6">
@@ -571,22 +584,21 @@ function ProfileUrlCandidates({
   const [feedback, setFeedback] = useState<string | null>(null)
   const candidates = getProfileUrlCandidates(hospital, sources)
 
-  async function addCandidate(candidate: UrlCandidate) {
+  async function addCandidate(candidate: ProfileUrlCandidate) {
     setAddingKey(candidate.key)
     setFeedback(null)
     try {
-      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources`, {
-        method: 'POST',
-        body: JSON.stringify({
-          source_type: candidate.sourceType,
-          title: candidate.title,
-          url: candidate.url,
-        }),
-      })
-      setFeedback(`${candidate.title} 자료를 추가했습니다.`)
-      onChanged()
+      const result = await addProfileUrlCandidate(fetchAPI, hospitalId, candidate)
+      if (result === 'crawled') {
+        setFeedback(`${candidate.title} 자료를 크롤했습니다.`)
+        onChanged()
+      }
     } catch (e: unknown) {
-      setFeedback(safeOperatorError('onboarding', '입력 내용을 확인한 뒤 자료 추가를 다시 누르세요.'))
+      setFeedback(
+        e instanceof ApiError
+          ? e.message
+          : safeOperatorError('onboarding', '입력 내용을 확인한 뒤 자료 추가를 다시 누르세요.'),
+      )
     } finally {
       setAddingKey(null)
     }
@@ -618,14 +630,18 @@ function ProfileUrlCandidates({
               <p className="text-sm font-semibold text-slate-900">{candidate.title}</p>
               <p className="truncate text-xs text-slate-500">{candidate.url}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => addCandidate(candidate)}
-              disabled={addingKey === candidate.key}
-              className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {addingKey === candidate.key ? '추가 중...' : '자료로 추가'}
-            </button>
+            {isProfileOnlyCandidate(candidate.key) ? (
+              <span className="shrink-0 text-xs font-semibold text-blue-800">이미 병원 기본 정보에 있습니다</span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => addCandidate(candidate)}
+                disabled={addingKey === candidate.key}
+                className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {addingKey === candidate.key ? '추가 중...' : '자료로 추가'}
+              </button>
+            )}
           </li>
         ))}
       </ul>
@@ -824,6 +840,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
         />
       </div>
+      {isPhotoType && <p className="text-xs text-slate-600">여러 장을 한 번에 고를 수 있습니다</p>}
       <input
         id="upload-file"
         required

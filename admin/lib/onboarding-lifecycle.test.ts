@@ -14,7 +14,7 @@ const hospital = {
   site_live: true,
   schedule_set: true,
 }
-const sources = [{ source_type: 'HOMEPAGE', status: 'PROCESSED' }]
+const sources = [{ source_type: 'HOMEPAGE', status: 'PROCESSED', raw_text: '병원 진료 근거' }]
 const philosophies = [{ status: 'APPROVED' }]
 const readiness = {
   status: 'READY',
@@ -49,6 +49,10 @@ test('onboarding follows the operator sequence and separates recurring outcomes'
       { key: 'first_publish', phase: 'post_onboarding' },
       { key: 'sov', phase: 'post_onboarding' },
     ],
+  )
+  assert.equal(
+    steps.find((step) => step.key === 'processing')?.href,
+    '/hospitals/hospital-id/onboarding#step-5',
   )
   assert.equal(deriveOnboardingSummary(steps, readiness).stateLabel, '정기 운영 중')
 })
@@ -116,7 +120,7 @@ test('LIVE is completed before content scheduling and recurring outcomes do not 
 test('stale approved essence and partially processed included sources block readiness', () => {
   const steps = deriveOnboardingSteps(
     hospital,
-    [...sources, { source_type: 'INTERVIEW', status: 'PENDING' }, { source_type: 'PHOTO_DOCTOR', status: 'PENDING' }],
+    [...sources, { source_type: 'INTERVIEW', status: 'PENDING', raw_text: '원장 인터뷰' }, { source_type: 'PHOTO_DOCTOR', status: 'PENDING' }],
     philosophies,
     { ...readiness, status: 'NEEDS_WORK', essence: { approved_philosophy_exists: true, source_stale: true } },
     'hospital-id',
@@ -124,6 +128,25 @@ test('stale approved essence and partially processed included sources block read
   )
   assert.equal(steps.find((step) => step.key === 'processing')?.status, 'current')
   assert.notEqual(steps.find((step) => step.key === 'philosophy_approved')?.status, 'completed')
+})
+
+test('raw-text-less pending rows and photos do not satisfy the evidence source requirement', () => {
+  for (const incompleteSources of [
+    [{ source_type: 'HOMEPAGE', status: 'PENDING' }],
+    [{ source_type: 'HOMEPAGE', status: 'PENDING', raw_text: '   ' }],
+    [{ source_type: 'PHOTO_DOCTOR', status: 'PROCESSED', raw_text: 'photo metadata' }],
+  ]) {
+    const steps = deriveOnboardingSteps(
+      hospital,
+      incompleteSources,
+      philosophies,
+      readiness,
+      'hospital-id',
+      acceptedHandoff,
+    )
+
+    assert.notEqual(steps.find((step) => step.key === 'processing')?.status, 'completed')
+  }
 })
 
 test('later work stays completed when V0 is the current blocker', () => {

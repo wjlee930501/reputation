@@ -16,6 +16,15 @@ test('photo uploads send public in the same request without an extra opt-in', ()
   assert.doesNotMatch(onboardingPage, /공개 사이트에 표시/)
 })
 
+test('photo file input shows the locked multi-select hint above it', () => {
+  const hintIndex = onboardingPage.indexOf('여러 장을 한 번에 고를 수 있습니다')
+  const inputIndex = onboardingPage.indexOf('id="upload-file"')
+
+  assert.ok(hintIndex >= 0)
+  assert.ok(hintIndex < inputIndex)
+  assert.match(onboardingPage, /\{isPhotoType && <p[^>]*>여러 장을 한 번에 고를 수 있습니다<\/p>\}/)
+})
+
 test('only photo rows expose their visibility badge and PATCH toggle', () => {
   const photoTypeGate = onboardingPage.match(
     /const PHOTO_SOURCE_TYPES = new Set\(\[([\s\S]*?)\]\)/,

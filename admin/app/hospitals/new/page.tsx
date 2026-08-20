@@ -343,7 +343,7 @@ export default function NewHospitalPage() {
         <Link href="/hospitals" className="text-sm text-slate-500 hover:text-slate-700">
           ← 목록으로
         </Link>
-        <h1 className="text-2xl font-bold text-slate-900 mt-2">신규 병원 등록</h1>
+        <h1 className="text-2xl font-bold text-slate-900 mt-2">신규 병원 온보딩</h1>
       </div>
 
       <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-5">
@@ -460,9 +460,9 @@ export default function NewHospitalPage() {
         )}
 
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-          <p className="font-medium text-slate-800">다음: 병원 기본 정보 입력</p>
+          <p className="font-medium text-slate-800">등록 버튼 실행 내용</p>
           <p className="mt-1">
-            생성 직후 온보딩 화면으로 이동합니다. 부족한 병원 기본 정보, 근거 자료, 운영 기준 상태를 확인할 수 있습니다.
+            병원을 생성하고 고객 인수를 승인한 뒤 온보딩 화면으로 이동합니다.
           </p>
         </div>
 
