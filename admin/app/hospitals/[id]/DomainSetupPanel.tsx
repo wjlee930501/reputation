@@ -184,7 +184,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       cancelled = true
       clearInterval(interval)
     }
-  }, [hospitalId, profile.domain_cert_job_state, profile.domain_cert_job_started_at, onProfileChange])
+  }, [hospitalId, profile.domain_cert_job_state, profile.domain_cert_job_started_at, onProfileChange, onHeaderRefresh])
 
   async function handleCopy(value: string) {
     try {
