@@ -89,7 +89,9 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     }
     // 도메인이 저장되어 있음
     if (profile.domain_cert_job_state === 'DONE') return 'live'  // 인증서까지 준비 완료
-    if (profile.domain_cert_dns_verified_at) return 'waiting'  // DNS 검증 완료, 인증서 대기 중
+    if (profile.domain_cert_job_state === 'FAILED') return 'failed'  // 인증서 발급 실패
+    if (profile.domain_cert_job_state === 'ISSUING') return 'issuing'  // 인증서 발급 진행 중
+    if (profile.domain_cert_dns_verified_at) return 'dns_verified'  // DNS 검증 완료, 인증서 대기
     return 'waiting'  // DNS 검증 대기 중
   })()
   
@@ -132,12 +134,17 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   useEffect(() => {
     // DM-U6: 변경 사항이 있으면 미리보기 레코드 생성
     if (hasUnsavedChange && currentDomain) {
-      // DM-U6: 전략에 맞는 미리보기 생성
-      setPreviewPlan(buildFallbackDomainSetupPlan(currentDomain, DEFAULT_CNAME_TARGET))
+      // DM-U6 #7: APEX 선택 시 CNAME 미리보기 금지. 전략에 맞는 미리보기 생성
+      if (dnsStrategy === 'APEX_ADDRESS') {
+        // APEX는 A 레코드. 미리보기는 실제 IP를 가져와야 하므로 생략.
+        setPreviewPlan(null)
+      } else {
+        setPreviewPlan(buildFallbackDomainSetupPlan(currentDomain, DEFAULT_CNAME_TARGET))
+      }
     } else {
       setPreviewPlan(null)
     }
-  }, [hasUnsavedChange, currentDomain])
+  }, [hasUnsavedChange, currentDomain, dnsStrategy])
 
   // DM-F1/F2: ISSUING 상태일 때 cert-status를 폴링하여 DONE/FAILED 전환 확인
   useEffect(() => {

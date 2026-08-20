@@ -227,7 +227,7 @@ def _checklist(
             key="dns_record",
             label="DNS 레코드 등록 (운영자)",
             description="설정표의 DNS 레코드를 등록기관 또는 DNS 제공자에 추가합니다. Gabia 사용 시 확인 후 저장 필수.",
-            status="WAITING",
+            status="DONE" if dns_verified else "WAITING" if state.domain else "PENDING",
         ),
         DomainSetupChecklistItem(
             key="dns_verified",

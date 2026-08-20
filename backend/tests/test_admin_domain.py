@@ -214,6 +214,7 @@ async def test_verify_domain_keeps_response_shape_on_cname_mismatch(monkeypatch)
 
 
 async def test_verify_domain_waits_for_https_certificate_after_dns_is_ready(monkeypatch):
+    # DM-F4 new contract: DNS 검증 성공 = 온보딩 5단계 완료, 인증서는 후속 작업
     hospital = _hospital()
     db = FakeDB(hospital)
     _patch_dns(monkeypatch)
@@ -232,12 +233,13 @@ async def test_verify_domain_waits_for_https_certificate_after_dns_is_ready(monk
 
     response = await domain_api.verify_domain(hospital.id, db=db)
 
+    # DNS 검증 성공 = operator step 5 done
     assert response.dns_verified is True
-    assert response.verified is False
+    assert response.verified is True  # DM-F4: DNS success means verified
     assert response.certificate_ready is False
     assert response.certificate_phase == "PROVISIONING"
-    assert hospital.site_live is False
-    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert hospital.site_live is True  # DM-F4: site goes live on DNS success
+    assert hospital.status == HospitalStatus.ACTIVE  # DM-F4: status becomes ACTIVE
     assert db.committed is True
     assert db.added[0].action == "provision_domain_certificate"
 
