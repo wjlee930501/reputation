@@ -294,9 +294,11 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       
       // DM-F4: DNS 검증 성공 = 온보딩 5단계 완료, 인증서는 시스템 후속 작업
       if (result?.dns_verified) {
-        // 프로파일 업데이트: site_live + 인증서 작업 상태
+        // DM-U3 #3 + optional: 프로파일 업데이트 (site_live + DNS timestamp + 인증서 작업 상태)
+        // DNS timestamp 갱신으로 배지가 reload 없이 즉시 업데이트됨
         onProfileChange({ 
           site_live: true,
+          domain_cert_dns_verified_at: new Date().toISOString(),
           domain_cert_job_state: result.cert_job_state ?? null,
           domain_cert_job_started_at: result.cert_job_started_at ?? null,
         })

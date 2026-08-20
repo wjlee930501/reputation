@@ -237,7 +237,7 @@ async def test_verify_domain_waits_for_https_certificate_after_dns_is_ready(monk
     assert response.dns_verified is True
     assert response.verified is True  # DM-F4: DNS success means verified
     assert response.certificate_ready is False
-    assert response.certificate_phase == "PROVISIONING"
+    assert response.cert_job_state == "ISSUING"  # Live contract: cert job state is ISSUING
     assert hospital.site_live is True  # DM-F4: site goes live on DNS success
     assert hospital.status == HospitalStatus.ACTIVE  # DM-F4: status becomes ACTIVE
     assert db.committed is True

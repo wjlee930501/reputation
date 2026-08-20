@@ -213,12 +213,17 @@ export default function HospitalLayout({
                     <>공개 주소 <span className="text-[var(--color-revisit-text-title)]">{hospital.aeo_domain}</span></>
                   ) : '공개 주소 준비 중'}
                 </span>
-                {hospital.site_live && (
-                  <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    병원 정보 허브 운영 중
-                  </span>
-                )}
+                {hospital.aeo_domain && (() => {
+                  const { domainHeaderStatus } = require('@/lib/hospital-domain-status')
+                  const statusText = domainHeaderStatus(hospital)
+                  const isDone = hospital.domain_cert_job_state === 'DONE'
+                  return (
+                    <span className={`inline-flex items-center gap-1 font-medium ${isDone ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${isDone ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                      {statusText}
+                    </span>
+                  )
+                })()}
               </div>
             )}
           </div>
