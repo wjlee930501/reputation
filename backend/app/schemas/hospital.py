@@ -16,6 +16,8 @@ class HospitalListItem(BaseModel):
     site_live: bool
     schedule_set: bool
     aeo_domain: Optional[str] = None
+    domain_cert_dns_verified_at: Optional[str] = None
+    domain_cert_job_state: Optional[str] = None
     created_at: Optional[str]
 
 
@@ -35,6 +37,7 @@ class HospitalDetail(HospitalListItem):
     domain_registrar: Optional[str] = None
     domain_dns_provider: Optional[str] = None
     domain_purchase_note: Optional[str] = None
+    domain_cert_job_started_at: Optional[str] = None
     latitude: Optional[float]
     longitude: Optional[float]
     wikidata_qid: Optional[str] = None
