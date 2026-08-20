@@ -7,14 +7,13 @@ const onboardingPage = readFileSync(
   'utf8',
 )
 
-test('photo uploads expose an explicit opt-in and only send true after it is checked', () => {
-  assert.match(onboardingPage, /isPhotoSourceType\(type\) && \([\s\S]*공개 사이트에 표시/)
+test('photo uploads send public in the same request without an extra opt-in', () => {
   assert.match(
     onboardingPage,
-    /if \(isPhotoSourceType\(type\) && isPublic\) \{\s*fd\.append\('is_public', 'true'\)/,
+    /if \(isPhotoSourceType\(type\)\) \{\s*fd\.append\('is_public', 'true'\)/,
   )
-  assert.match(onboardingPage, /const \[isPublic, setIsPublic\] = useState\(false\)/)
-  assert.match(onboardingPage, /setType\(e\.target\.value\)\s*setIsPublic\(false\)/)
+  assert.doesNotMatch(onboardingPage, /const \[isPublic, setIsPublic\] = useState/)
+  assert.doesNotMatch(onboardingPage, /공개 사이트에 표시/)
 })
 
 test('only photo rows expose their visibility badge and PATCH toggle', () => {

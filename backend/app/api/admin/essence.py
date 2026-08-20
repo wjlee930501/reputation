@@ -132,10 +132,14 @@ async def _read_upload_within_limit(file: UploadFile) -> bytes:
 
 
 def resolve_upload_is_public(
-    source_type: SourceType, is_public_form: bool | None = False
+    source_type: SourceType, is_public_form: bool | None = None
 ) -> bool:
-    """업로드 공개 요청은 사진 자료에만 적용하고 나머지는 항상 비공개로 둔다."""
-    return source_type in PHOTO_SOURCE_TYPES and bool(is_public_form)
+    """사진 업로드는 기본 공개. 비사진은 공개 요청이 와도 비공개로 둔다."""
+    if source_type not in PHOTO_SOURCE_TYPES:
+        return False
+    if is_public_form is None:
+        return True
+    return bool(is_public_form)
 
 
 class SourceCrawlRequest(BaseModel):
@@ -500,7 +504,7 @@ async def upload_source_file(
     source_type: SourceType = Form(...),
     title: str = Form(..., min_length=1, max_length=300),
     file: UploadFile = File(...),
-    is_public: bool = Form(default=False),
+    is_public: bool | None = Form(default=None),
     operator_note: str | None = Form(default=None),
     created_by: str | None = Form(default=None, max_length=100),
     db: AsyncSession = Depends(get_db),

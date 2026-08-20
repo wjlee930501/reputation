@@ -4,7 +4,6 @@ import { notFound } from 'next/navigation'
 import { fetchHospital, fetchContents, resolveAssetUrl, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec } from '@/lib/business-hours'
 import { buildAddressRegionFields } from '@/lib/clinic-schema'
-import { selectClinicHeroImage } from '@/lib/clinic-theme'
 import { getApiBase } from '@/lib/config'
 import { buildFaqPageJsonLd, buildPhysicianCredentials } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
@@ -247,10 +246,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             phone={hospital.phone}
             directorName={hospital.director_name}
             directorPhotoUrl={hospital.director_photo_url}
-            heroPhotoUrl={
-              clinicMedia?.hero
-              ?? (!hospital.director_photo_url ? selectClinicHeroImage(hospital) : undefined)
-            }
+            heroPhotoUrl={clinicMedia?.hero}
             address={hospital.address}
             businessHours={hospital.business_hours}
           />

@@ -708,7 +708,6 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
   const [type, setType] = useState('PHOTO_DOCTOR')
   const [title, setTitle] = useState('')
   const [file, setFile] = useState<File | null>(null)
-  const [isPublic, setIsPublic] = useState(false)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
 
@@ -722,7 +721,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       fd.append('source_type', type)
       fd.append('title', title)
       fd.append('file', file)
-      if (isPhotoSourceType(type) && isPublic) {
+      if (isPhotoSourceType(type)) {
         fd.append('is_public', 'true')
       }
       // fetchAPI 사용: 401 시 로그인 리다이렉트, 오류 메시지 한국어 변환 공통 처리
@@ -732,7 +731,6 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       })
       setTitle('')
       setFile(null)
-      setIsPublic(false)
       // reset file input
       const inp = document.getElementById('upload-file') as HTMLInputElement | null
       if (inp) inp.value = ''
@@ -751,10 +749,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       <div className="grid gap-2 md:grid-cols-[200px_1fr]">
         <select
           value={type}
-          onChange={(e) => {
-            setType(e.target.value)
-            setIsPublic(false)
-          }}
+          onChange={(e) => setType(e.target.value)}
           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
         >
           <optgroup label="사진">
@@ -784,17 +779,6 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
         onChange={(e) => setFile(e.target.files?.[0] ?? null)}
         className="block w-full text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm"
       />
-      {isPhotoSourceType(type) && (
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
-          <input
-            type="checkbox"
-            checked={isPublic}
-            onChange={(e) => setIsPublic(e.target.checked)}
-            className="rounded border-slate-300"
-          />
-          공개 사이트에 표시
-        </label>
-      )}
       <div className="flex items-center gap-3">
         <button
           type="submit"
