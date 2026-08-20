@@ -63,6 +63,8 @@ class DomainSetupState:
     dns_provider: str | None
     purchase_note: str | None
     site_live: bool
+    dns_verified_at: datetime | None
+    cert_job_state: str | None
 
 
 @router.get("/{hospital_id}/domain/setup", response_model=DomainSetupResponse)
@@ -114,6 +116,8 @@ def _domain_setup_state(hospital: Hospital) -> DomainSetupState:
         dns_provider=getattr(hospital, "domain_dns_provider", None),
         purchase_note=getattr(hospital, "domain_purchase_note", None),
         site_live=bool(getattr(hospital, "site_live", False)),
+        dns_verified_at=getattr(hospital, "domain_cert_dns_verified_at", None),
+        cert_job_state=getattr(hospital, "domain_cert_job_state", None),
     )
 
 
@@ -151,11 +155,14 @@ def _domain_records(
         case DomainDnsStrategy.CNAME:
             # DM-U2: CNAME 대상값에 trailing dot 포함
             cname_with_dot = settings.CNAME_TARGET if settings.CNAME_TARGET.endswith(".") else f"{settings.CNAME_TARGET}."
+            # DM-F5: 호스트 컬럼에 FQDN과 등록기관 호스트 표시
+            registrar_host = domain.split('.')[0] if domain and '.' in domain else None
             return [
                 DomainSetupRecord(
                     type="CNAME",
                     name=domain,
                     host=domain,
+                    registrar_host=registrar_host,
                     value=cname_with_dot,
                     purpose="병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결",
                 )
@@ -189,6 +196,10 @@ def _checklist(
     purchase_done = state.management_mode == DomainManagementMode.HOSPITAL_MANAGED or bool(
         state.registrar
     )
+    # DM-U5: 체크리스트는 각 단계의 실제 상태를 반영. site_live는 DNS 검증 완료 여부만 나타냄.
+    dns_verified = bool(state.dns_verified_at)
+    cert_done = state.cert_job_state == "DONE" if state.cert_job_state else False
+    
     return [
         DomainSetupChecklistItem(
             key="domain_saved",
@@ -204,20 +215,20 @@ def _checklist(
         ),
         DomainSetupChecklistItem(
             key="dns_record",
-            label="DNS 레코드 등록",
-            description="설정표의 DNS 레코드를 등록기관 또는 DNS 제공자에 추가합니다.",
-            status="DONE" if state.site_live else "PENDING",
+            label="DNS 레코드 등록 (운영자)",
+            description="설정표의 DNS 레코드를 등록기관 또는 DNS 제공자에 추가합니다. Gabia 사용 시 확인 후 저장 필수.",
+            status="WAITING",
         ),
         DomainSetupChecklistItem(
             key="dns_verified",
             label="③ DNS 검증 (운영자 작업 완료)",
             description="DNS 레코드 등록 후 연결 검증을 실행합니다. 검증 성공 시 온보딩 5단계 완료.",
-            status="DONE" if state.site_live else "PENDING",
+            status="DONE" if dns_verified else "PENDING",
         ),
         DomainSetupChecklistItem(
             key="certificate_ready",
             label="④ HTTPS 인증서 (시스템 후속)",
             description="인증서는 백그라운드에서 자동 발급됩니다.",
-            status="DONE" if state.site_live or certificate_ready else "PENDING",
+            status="DONE" if cert_done else "WAITING" if dns_verified else "PENDING",
         ),
     ]
