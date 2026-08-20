@@ -1,7 +1,7 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
