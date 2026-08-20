@@ -453,11 +453,7 @@ async def test_verify_domain_operation_rejects_apex_when_cname_exists_even_if_ad
     assert hospital.status == HospitalStatus.PENDING_DOMAIN
     # No state change = no audit
     assert all(not hasattr(item, "action") for item in db.added)
-    assert db.committed is True
-    detail = db.added[0].detail
-    assert detail["verified"] is False
-    assert detail["new_status"] == HospitalStatus.PENDING_DOMAIN.value
-    assert detail["new_site_live"] is False
+    assert db.committed is False
 
 
 async def test_verify_domain_operation_accepts_apex_address_strategy(monkeypatch):
