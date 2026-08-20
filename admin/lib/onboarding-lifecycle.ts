@@ -43,6 +43,7 @@ export interface LifecycleHospital {
 export interface LifecycleSource {
   source_type: string
   status: string
+  raw_text?: string | null
 }
 
 export interface LifecyclePhilosophy {
@@ -78,7 +79,9 @@ function readinessCheck(readiness: LifecycleReadiness | null, key: string): bool
 }
 
 function isIncludedEvidenceSource(source: LifecycleSource): boolean {
-  return source.status !== 'EXCLUDED' && !source.source_type.startsWith('PHOTO_')
+  return source.status !== 'EXCLUDED'
+    && !source.source_type.startsWith('PHOTO_')
+    && Boolean(source.raw_text?.trim())
 }
 
 export function deriveHandoffDueStatus(
@@ -161,7 +164,6 @@ export function deriveOnboardingSteps(
       phase: 'onboarding',
       title: '근거 자료 수집 및 처리',
       description: '병원 근거 자료를 추가하고 제외하지 않은 모든 자료의 처리를 완료합니다.',
-      href: `/hospitals/${hospitalId}/onboarding#step-4`,
       done: allIncludedSourcesProcessed && readinessCheck(readiness, 'essence_sources') !== false,
     },
     {
@@ -199,7 +201,7 @@ export function deriveOnboardingSteps(
   ]
 
   const firstIncomplete = definitions.findIndex((item) => !item.done)
-  return definitions.map((item, index) => ({
+  const steps: OnboardingStep[] = definitions.map((item, index) => ({
     key: item.key,
     index,
     phase: item.phase,
@@ -214,6 +216,11 @@ export function deriveOnboardingSteps(
         ? 'current'
         : 'upcoming',
   }))
+  const processingStep = steps.find((item) => item.key === 'processing')
+  if (processingStep) {
+    processingStep.href = `/hospitals/${hospitalId}/onboarding#step-${processingStep.index}`
+  }
+  return steps
 }
 
 export function deriveOnboardingSummary(
