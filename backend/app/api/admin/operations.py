@@ -60,7 +60,6 @@ from app.services.monthly_period import (
     require_closed_period,
 )
 from app.services.operation_run_payloads import UnsafeDispatchPayload, parse_stored_dispatch
-from app.services.v0_claim import latest_active_v0_run, v0_claim_is_alive
 from app.services.operation_runs import (
     DispatchTask,
     OperationCommand,
@@ -73,6 +72,7 @@ from app.services.post_publish_review_policy import (
     publicly_operational_hospital_predicate,
 )
 from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
+from app.services.v0_claim import latest_active_v0_run, v0_claim_is_alive
 from app.workers.tasks import (
     build_aeo_site,
     generate_content_image,
