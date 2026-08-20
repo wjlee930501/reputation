@@ -707,41 +707,95 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
 function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: () => void }) {
   const [type, setType] = useState('PHOTO_DOCTOR')
   const [title, setTitle] = useState('')
-  const [file, setFile] = useState<File | null>(null)
+  const [files, setFiles] = useState<FileList | null>(null)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
 
+  const isPhotoType = isPhotoSourceType(type)
+
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (!file) return
+    if (!files || files.length === 0) return
     setBusy(true)
     setFeedback(null)
+
+    const results: { success: boolean; filename: string }[] = []
+    const totalFiles = files.length
+    let anyPublicPhotoSucceeded = false
+
     try {
-      const fd = new FormData()
-      fd.append('source_type', type)
-      fd.append('title', title)
-      fd.append('file', file)
-      if (isPhotoSourceType(type)) {
-        fd.append('is_public', 'true')
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        try {
+          const fd = new FormData()
+          fd.append('source_type', type)
+          // 제목이 비어 있으면 파일명 사용 (백엔드가 자동 처리)
+          fd.append('title', title.trim())
+          fd.append('file', file)
+          if (isPhotoSourceType(type)) {
+            fd.append('is_public', 'true')
+          }
+          // 일괄 업로드 시 모든 파일에 skip_revalidate=true (마지막 후 명시적 revalidate)
+          const url = `/admin/hospitals/${hospitalId}/essence/sources/upload${
+            totalFiles > 1 ? '?skip_revalidate=true' : ''
+          }`
+          await fetchAPI(url, {
+            method: 'POST',
+            body: fd,
+          })
+          results.push({ success: true, filename: file.name })
+          if (isPhotoType) {
+            anyPublicPhotoSucceeded = true
+          }
+        } catch (e: unknown) {
+          results.push({ success: false, filename: file.name })
+        }
       }
-      // fetchAPI 사용: 401 시 로그인 리다이렉트, 오류 메시지 한국어 변환 공통 처리
-      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/upload`, {
-        method: 'POST',
-        body: fd,
-      })
-      setTitle('')
-      setFile(null)
-      // reset file input
-      const inp = document.getElementById('upload-file') as HTMLInputElement | null
-      if (inp) inp.value = ''
-      setFeedback('업로드 완료.')
-      onCreated()
+
+      // 공개 사진이 하나라도 성공했으면 마지막 파일 실패 여부와 무관하게 revalidate 1회
+      if (anyPublicPhotoSucceeded && totalFiles > 1) {
+        try {
+          await fetchAPI(`/admin/hospitals/${hospitalId}/essence/revalidate`, {
+            method: 'POST',
+          })
+        } catch (e: unknown) {
+          // revalidate 실패는 무시 (_safe 패턴)
+        }
+      }
+
+      const successCount = results.filter((r) => r.success).length
+      const failCount = results.filter((r) => !r.success).length
+
+      if (successCount > 0 && failCount === 0) {
+        if (isPhotoType) {
+          setFeedback(`${successCount}개 사진 저장 완료 — 병원 사이트에 표시됩니다.`)
+        } else {
+          setFeedback(`${successCount}개 파일 업로드 완료.`)
+        }
+      } else if (successCount > 0 && failCount > 0) {
+        setFeedback(`${successCount}개 성공, ${failCount}개 실패. 실패한 파일을 다시 선택해 업로드하세요.`)
+      } else {
+        setFeedback(safeOperatorError('onboarding', `${totalFiles}개 파일 업로드 실패. 선택한 파일과 유형을 확인한 뒤 다시 저장하세요.`))
+      }
+
+      if (successCount > 0) {
+        setTitle('')
+        setFiles(null)
+        const inp = document.getElementById('upload-file') as HTMLInputElement | null
+        if (inp) inp.value = ''
+        onCreated()
+      }
     } catch (e: unknown) {
-      setFeedback(safeOperatorError('onboarding', '선택한 사진과 공개 여부를 확인한 뒤 다시 저장하세요.'))
+      setFeedback(safeOperatorError('onboarding', '선택한 파일과 유형을 확인한 뒤 다시 저장하세요.'))
     } finally {
       setBusy(false)
     }
   }
+
+  const selectedFileCount = files?.length ?? 0
+  const acceptTypes = isPhotoType
+    ? 'image/*'
+    : 'image/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
   return (
     <form onSubmit={submit} className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
@@ -764,10 +818,9 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           </optgroup>
         </select>
         <input
-          required
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="자료 제목"
+          placeholder={isPhotoType ? '제목 (비워 두면 파일명 사용)' : '자료 제목'}
           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
         />
       </div>
@@ -775,17 +828,21 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
         id="upload-file"
         required
         type="file"
-        accept="image/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        multiple={isPhotoType}
+        accept={acceptTypes}
+        onChange={(e) => setFiles(e.target.files)}
         className="block w-full text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm"
       />
+      {selectedFileCount > 1 && (
+        <p className="text-xs text-slate-600">{selectedFileCount}개 파일 선택됨. 모두 같은 유형으로 저장됩니다.</p>
+      )}
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={busy || !file}
+          disabled={busy || !files || files.length === 0}
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
         >
-          {busy ? '업로드 중…' : '업로드'}
+          {busy ? '업로드 중…' : selectedFileCount > 1 ? `${selectedFileCount}개 업로드` : '업로드'}
         </button>
         {feedback && <span className="text-xs text-slate-600">{feedback}</span>}
       </div>

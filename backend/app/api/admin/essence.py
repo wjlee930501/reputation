@@ -153,6 +153,27 @@ def should_revalidate_after_public_photo_upload(
     )
 
 
+def resolve_upload_title(title: str | None, filename: str | None) -> str:
+    """빈 제목은 파일명(경로·확장자 없음, 300자)으로 채운다."""
+    raw = (title or "").strip()
+    if raw:
+        return raw[:300]
+    fallback = _filename_without_extension(filename or "")
+    return fallback or "업로드 파일"
+
+
+def should_revalidate_on_source_upload(
+    skip_revalidate: bool,
+    source_type: SourceType,
+    is_public: bool,
+    hospital: Hospital,
+) -> bool:
+    """일괄 업로드는 skip 후 프론트가 한 번 갱신한다. skip이 아니면 즉시 갱신."""
+    return (not skip_revalidate) and should_revalidate_after_public_photo_upload(
+        source_type, is_public, hospital
+    )
+
+
 class SourceCrawlRequest(BaseModel):
     source_type: SourceType
     title: str = Field(min_length=1, max_length=300)
@@ -513,14 +534,21 @@ async def exclude_source(
 async def upload_source_file(
     hospital_id: uuid.UUID,
     source_type: SourceType = Form(...),
-    title: str = Form(..., min_length=1, max_length=300),
+    title: str = Form(default="", max_length=300),
     file: UploadFile = File(...),
     is_public: bool | None = Form(default=None),
     operator_note: str | None = Form(default=None),
     created_by: str | None = Form(default=None, max_length=100),
+    skip_revalidate: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
 ):
-    """이미지/PDF/DOCX 업로드. 사진은 file_url만 저장, 텍스트형 자료는 raw_text 자동 추출."""
+    """이미지/PDF/DOCX 업로드. 사진은 file_url만 저장, 텍스트형 자료는 raw_text 자동 추출.
+    
+    사진 업로드는 LLM 처리를 트리거하지 않는다:
+    - process_source는 raw_text가 없는 사진을 거부한다
+    - philosophy/V0/content 자동 생성 큐잉이 없다
+    - skip_revalidate=true로 N개 사진 일괄 업로드 시 1번만 revalidate한다
+    """
     hospital = await _get_hospital_or_404(db, hospital_id)
 
     data = await _read_upload_within_limit(file)
@@ -556,11 +584,13 @@ async def upload_source_file(
     elif extractor_kind == "DOCX":
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
 
+    final_title = resolve_upload_title(title, file.filename)
+
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=source_type,
-        title=title.strip(),
+        title=final_title,
         url=None,
         raw_text=raw_text,
         operator_note=_clean_optional(operator_note),
@@ -569,12 +599,14 @@ async def upload_source_file(
         mime_type=mime_type or None,
         file_size_bytes=len(data),
         is_public=resolve_upload_is_public(source_type, is_public),
-        content_hash=compute_source_content_hash(title, None, raw_text, operator_note),
+        content_hash=compute_source_content_hash(final_title, None, raw_text, operator_note),
         status=SourceStatus.PENDING,
         created_by=created_by,
     )
-    should_revalidate = should_revalidate_after_public_photo_upload(
-        source_type, source.is_public, hospital
+    # 일괄 업로드는 전 파일이 skip_revalidate=true 이고, 프론트가 성공 후
+    # POST /revalidate 를 한 번 호출한다. 단건은 skip 없이 여기서 즉시 갱신한다.
+    should_revalidate = should_revalidate_on_source_upload(
+        skip_revalidate, source_type, source.is_public, hospital
     )
     if should_revalidate:
         ensure_site_revalidate_configured()
@@ -590,6 +622,7 @@ async def upload_source_file(
             "source_type": source_type.value,
             "extractor": extractor_kind,
             "size_bytes": len(data),
+            "skip_revalidate": skip_revalidate,
         },
     )
     await db.commit()
@@ -863,6 +896,31 @@ async def toggle_source_public(
         await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
     notes = await _get_notes_for_source(db, source.id)
     return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
+
+
+@router.post("/revalidate", status_code=status.HTTP_204_NO_CONTENT)
+async def trigger_site_revalidate_for_hospital(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: 병원 사이트 캐시를 명시적으로 무효화.
+    
+    사진 일괄 업로드 후 한 번만 revalidate하거나, 공개 자료 변경 후 수동으로
+    사이트 갱신이 필요할 때 호출한다. 커밋 없는 읽기 전용 엔드포인트.
+    """
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    if not _has_public_site(hospital):
+        raise HTTPException(
+            status_code=400,
+            detail="공개 사이트가 없는 병원은 revalidate할 수 없습니다.",
+        )
+    ensure_site_revalidate_configured()
+    await trigger_hospital_site_revalidate_safe(
+        hospital.slug,
+        hospital.treatments,
+        hospital_name=hospital.name,
+    )
+    # 204 No Content — revalidate 실패해도 안전하게 무시 (_safe)
 
 
 @router.get("/sources/{source_id}/file")
@@ -1408,6 +1466,21 @@ def _serialize_philosophy(philosophy: HospitalContentPhilosophy) -> dict:
         "created_at": philosophy.created_at.isoformat() if philosophy.created_at else None,
         "updated_at": philosophy.updated_at.isoformat() if philosophy.updated_at else None,
     }
+
+
+def _filename_without_extension(filename: str) -> str:
+    """파일명에서 확장자를 제거하고 반환. 경로는 basename만, 300자로 truncate."""
+    if not filename:
+        return ""
+    # os.path.basename 없이 순수 파일명만 추출 (/ 또는 \\ 이후)
+    basename = filename.replace("\\", "/").split("/")[-1]
+    # 마지막 점 이전까지만 가져옴
+    if "." in basename:
+        name_without_ext = basename.rsplit(".", 1)[0]
+    else:
+        name_without_ext = basename
+    # 300자 제한
+    return name_without_ext[:300]
 
 
 def _clean_optional(value: str | None) -> str | None:
