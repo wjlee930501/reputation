@@ -4,6 +4,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
@@ -634,6 +635,33 @@ async def upload_source_file(
     return _serialize_source(source)
 
 
+
+def _is_youtube_channel_home(url: str) -> bool:
+    """Channel listing pages have almost no article body and must not become evidence."""
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:
+        return False
+    host = (parsed.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host in {"youtu.be", "www.youtu.be"}:
+        return False
+    if host not in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
+        return False
+    path = parsed.path or ""
+    if path.startswith("/watch") or path.startswith("/shorts/") or path.startswith("/embed/") or path.startswith("/live/"):
+        return False
+    if "v=" in (parsed.query or ""):
+        return False
+    return (
+        path.startswith("/@")
+        or path.startswith("/channel/")
+        or path.startswith("/c/")
+        or path.startswith("/user/")
+    )
+
+
 @router.post(
     "/sources/crawl", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse
 )
@@ -649,6 +677,11 @@ async def crawl_source_url(
         raise HTTPException(
             status_code=400,
             detail="사진 카테고리는 URL 크롤링을 지원하지 않습니다. 업로드를 사용해 주세요.",
+        )
+    if _is_youtube_channel_home(body.url):
+        raise HTTPException(
+            status_code=422,
+            detail="유튜브 채널 홈은 본문이 없어 근거로 쓰지 않습니다. 개별 영상 URL을 넣어 주세요.",
         )
 
     text, error, quality = await fetch_url_text(body.url)

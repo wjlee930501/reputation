@@ -54,7 +54,11 @@ from app.services.keyword_analysis import (
 from app.services.keyword_analysis import (
     normalize as normalize_keyword,
 )
-from app.services.ops_incident_alerts import open_ops_incident
+from app.services.operation_runs import (
+    OperationCommand,
+    OperationQueueUnavailable,
+    dispatch_operation,
+)
 from app.services.readiness_operator_copy import readiness_next_actions
 from app.services.service_intervals import (
     ServiceIntervalProvenance,
@@ -65,47 +69,11 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
-from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.tasks import trigger_v0_report
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
-
-
-async def _trigger_v0_report_safe(hospital_id_str: str, hospital_name: str) -> None:
-    """V0 리포트 태스크를 큐잉하되, 실패 시 무음으로 사라지지 않도록 운영 알림으로 강등한다.
-
-    BackgroundTasks 안에서 apply_async가 브로커 장애 등으로 예외를 내면 Starlette가
-    조용히 삼켜 AE가 프로파일 완료 후 V0가 트리거되지 않은 것을 알 수 없게 된다 (#8).
-    """
-    try:
-        trigger_v0_report.apply_async(
-            args=[hospital_id_str],
-            queue="reports",
-            headers=build_dispatch_headers("trigger-v0-report", hospital_id_str),
-        )
-    except Exception as exc:  # noqa: BLE001 — 큐잉 실패는 요청 흐름에 영향 없이 강등
-        logger.warning("V0 report enqueue failed for hospital %s: %s", hospital_id_str, exc)
-        try:
-            hospital_id = uuid.UUID(hospital_id_str)
-            await open_ops_incident(
-                pipeline="v0_report_dispatch",
-                object_type="hospital",
-                object_id=hospital_id_str,
-                incident_type="V0_REPORT_DISPATCH_FAILED",
-                safe_error_code="V0_REPORT_DISPATCH_FAILED",
-                problem="초기 진단 리포트 자동 시작 작업을 큐에 넣지 못했습니다.",
-                customer_impact="초기 진단 리포트 준비가 시작되지 않아 원장 보고 일정이 늦어질 수 있습니다.",
-                next_action="병원 대시보드에서 ‘초기 진단 리포트 다시 만들기’를 한 번 누르세요.",
-                source_type="V0_REPORT",
-                hospital_name=hospital_name,
-                hospital_id=hospital_id,
-                admin_path=f"/hospitals/{hospital_id}",
-                actor="admin-hospital-api",
-            )
-        except Exception:
-            logger.exception("V0 enqueue-failure ops alert delivery failed (non-fatal)")
 
 
 # ── Pydantic 스키마 ───────────────────────────────────────────────
@@ -177,6 +145,13 @@ class HospitalProfileUpdate(BaseModel):
     naver_place_url: str | None = Field(None, max_length=500)
     latitude: float | None = Field(None, ge=-90, le=90)
     longitude: float | None = Field(None, ge=-180, le=180)
+
+    @field_validator("latitude", "longitude", mode="before")
+    @classmethod
+    def round_coordinates(cls, value):
+        if value is None or value == "":
+            return None
+        return round(float(value), 6)
 
     # 엔티티 식별자 (sameAs 그래프)
     wikidata_qid: str | None = Field(None, max_length=50)
@@ -548,6 +523,7 @@ async def update_profile(
     프로파일 수정.
     profile_complete=True 설정 시 자동으로 V0 분석 트리거.
     """
+    _ = background_tasks
     h = await _get_or_404(db, hospital_id)
 
     if body.keywords is not None:
@@ -687,9 +663,26 @@ async def update_profile(
     await db.commit()
     await db.refresh(h)
 
-    # 프로파일 완료로 변경된 경우 V0 분석 자동 트리거 (큐잉 실패는 운영 알림으로 강등)
+    # 프로파일 완료로 변경된 경우 V0 분석 자동 트리거 — OperationRun을 남겨 운영 화면에 붙인다.
     if not was_complete and h.profile_complete:
-        background_tasks.add_task(_trigger_v0_report_safe, str(hospital_id), h.name)
+        try:
+            await dispatch_operation(
+                db,
+                OperationCommand(
+                    operation_type="TRIGGER_V0_REPORT",
+                    hospital_id=h.id,
+                    requested_by_id=None,
+                    idempotency_key=None,
+                    audit_actor=default_actor(),
+                    target_type="hospital",
+                    target_id=str(h.id),
+                    queue="reports",
+                    task_args=(str(h.id),),
+                ),
+                trigger_v0_report,
+            )
+        except OperationQueueUnavailable:
+            logger.warning("V0 report enqueue failed for hospital %s after profile complete", h.id)
     if needs_site_revalidate:
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 저장은 이미 성공했다.
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)

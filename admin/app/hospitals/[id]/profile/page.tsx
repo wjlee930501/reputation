@@ -955,30 +955,46 @@ export default function ProfilePage() {
           <div>
             <label htmlFor="profile-latitude" className="block text-sm font-medium text-slate-700 mb-1.5">위도</label>
             <input
-              type="number"
-              step="0.000001"
-              min="-90"
-              max="90"
+              type="text"
+              inputMode="decimal"
               id="profile-latitude"
               value={profile.latitude ?? ''}
-              onChange={(e) => updateField('latitude', e.target.value === '' ? null : Number(e.target.value))}
+              onChange={(e) => {
+                const raw = e.target.value.trim()
+                if (raw === '') {
+                  updateField('latitude', null)
+                  return
+                }
+                const parsed = Number(raw)
+                if (!Number.isFinite(parsed)) return
+                updateField('latitude', Math.round(parsed * 1_000_000) / 1_000_000)
+              }}
               placeholder="37.497942"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
+            <p className="mt-1 text-xs text-slate-500">지도에서 붙여 넣으면 소수점 6자리로 저장됩니다.</p>
           </div>
           <div>
             <label htmlFor="profile-longitude" className="block text-sm font-medium text-slate-700 mb-1.5">경도</label>
             <input
-              type="number"
-              step="0.000001"
-              min="-180"
-              max="180"
+              type="text"
+              inputMode="decimal"
               id="profile-longitude"
               value={profile.longitude ?? ''}
-              onChange={(e) => updateField('longitude', e.target.value === '' ? null : Number(e.target.value))}
+              onChange={(e) => {
+                const raw = e.target.value.trim()
+                if (raw === '') {
+                  updateField('longitude', null)
+                  return
+                }
+                const parsed = Number(raw)
+                if (!Number.isFinite(parsed)) return
+                updateField('longitude', Math.round(parsed * 1_000_000) / 1_000_000)
+              }}
               placeholder="127.027621"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
+            <p className="mt-1 text-xs text-slate-500">지도에서 붙여 넣으면 소수점 6자리로 저장됩니다.</p>
           </div>
         </div>
       </section>

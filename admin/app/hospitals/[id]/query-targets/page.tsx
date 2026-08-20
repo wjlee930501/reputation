@@ -122,7 +122,7 @@ export default function QueryTargetsPage() {
     setError(null)
     try {
       const data = await fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${hospitalId}/query-targets?include_archived=true`)
-      setTargets(data ?? [])
+      setTargets(Array.isArray(data) ? data : [])
     } catch (err: unknown) {
       if (!isExpectedOperatorRequestFailure(err)) throw err
       setError(safeOperatorError('onboarding', '환자 질문 목록 다시 불러오기를 누르세요.'))
@@ -136,7 +136,7 @@ export default function QueryTargetsPage() {
     setSaving(true)
     setError(null)
     try {
-      await fetchAPI(`/admin/hospitals/${hospitalId}/query-targets`, {
+      const created = await fetchAPI<AIQueryTarget>(`/admin/hospitals/${hospitalId}/query-targets`, {
         method: 'POST',
         body: JSON.stringify({
           name: form.name,
@@ -161,6 +161,10 @@ export default function QueryTargetsPage() {
           ),
         }),
       })
+      if (created && typeof created === 'object' && created.id) {
+        setTargets((prev) => [created, ...prev.filter((item) => item.id !== created.id)])
+        setExpandedTargetId(created.id)
+      }
       setForm(DEFAULT_FORM)
       await loadTargets()
     } catch (err: unknown) {
@@ -440,8 +444,9 @@ function TargetCard({
   const status = getStatusLabel(target)
   const platformLabels = target.display?.platform_labels?.filter(Boolean) ?? target.platforms
   const supportedPlatforms = target.platforms.filter(isSupportedQueryPlatform)
-  const visibleVariants = target.variants.slice(0, 20)
-  const hiddenVariantCount = Math.max(target.variants.length - visibleVariants.length, 0)
+  const variants = target.variants ?? []
+  const visibleVariants = variants.slice(0, 20)
+  const hiddenVariantCount = Math.max(variants.length - visibleVariants.length, 0)
 
   return (
     <article className={`overflow-hidden rounded-2xl border bg-white ${target.status === 'ARCHIVED' ? 'border-slate-200 opacity-70' : 'border-slate-200'}`}>

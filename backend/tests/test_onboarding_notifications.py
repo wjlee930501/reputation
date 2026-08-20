@@ -131,3 +131,17 @@ def test_v0_and_site_workers_commit_outbox_with_the_domain_milestone() -> None:
     assert site_milestone < site_outbox < site_commit
     assert "notify_v0_report_ready" not in v0_source
     assert "notify_site_built" not in site_source
+
+
+def test_v0_session_lock_is_released_after_running_commit() -> None:
+    source = (Path(__file__).parents[1] / "app/workers/tasks.py").read_text()
+    v0_source = source[source.index("def trigger_v0_report"):source.index("def build_aeo_site")]
+    acquire = v0_source.index("acquire_hospital_advisory_session_lock_sync")
+    start = v0_source.index("_start_measurement_run")
+    running_commit = v0_source.index("db.commit()", start)
+    finally_at = v0_source.index("finally:", start)
+    release = v0_source.index("release_hospital_advisory_session_lock_sync")
+    assert acquire < start < running_commit < finally_at < release
+    # 측정 루프는 세션 락 해제 뒤에 있다. 30분 측정 동안 풀 커넥션에 락이 남으면 안 된다.
+    loop = v0_source.index("for q in sample_queries:")
+    assert release < loop

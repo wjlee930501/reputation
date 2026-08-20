@@ -19,7 +19,7 @@ export interface OnboardingStep {
   title: string
   description: string
   href?: string
-  status: 'completed' | 'current' | 'upcoming'
+  status: 'completed' | 'current' | 'upcoming' | 'locked'
 }
 
 export interface OnboardingSummary {
@@ -214,7 +214,9 @@ export function deriveOnboardingSteps(
       ? 'completed'
       : index === firstIncomplete
         ? 'current'
-        : 'upcoming',
+        : item.phase === 'onboarding' && firstIncomplete >= 0 && index > firstIncomplete
+          ? 'locked'
+          : 'upcoming',
   }))
   const processingStep = steps.find((item) => item.key === 'processing')
   if (processingStep) {

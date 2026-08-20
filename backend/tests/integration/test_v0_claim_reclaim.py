@@ -15,7 +15,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.workers.tasks import V0_CLAIM_MAX_AGE_SECONDS, _v0_claim_is_alive
+from app.services.v0_claim import V0_CLAIM_MAX_AGE_SECONDS
+from app.workers.tasks import _v0_claim_is_alive
 
 
 def _seed_hospital(conn) -> uuid.UUID:

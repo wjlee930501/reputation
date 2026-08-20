@@ -421,9 +421,11 @@ export default function NewHospitalPage() {
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="block text-sm font-medium text-slate-700">계약 번호
             <input required disabled={workflowHandoff?.state === 'CONTRACTED'} value={contractReference} onChange={(e) => setContractReference(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" placeholder="CTR-20260810" />
+            <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">계약 확정 메일 또는 계약 관리의 계약 ID를 넣습니다. 지정된 값이 있으면 그대로 두세요.</span>
           </label>
           <label className="block text-sm font-medium text-slate-700">계약 효력일
             <input required disabled={workflowHandoff?.state === 'CONTRACTED'} type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" />
+            <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">계약서에 적힌 시작일입니다.</span>
           </label>
           <label className="block text-sm font-medium text-slate-700">인수 처리 기한
             <input required disabled={workflowHandoff?.state === 'CONTRACTED'} type="datetime-local" value={slaDueAt} onChange={(e) => setSlaDueAt(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" />
@@ -435,6 +437,7 @@ export default function NewHospitalPage() {
           <label className="block text-sm font-medium text-slate-700 mb-1.5">
             월간 운영량 <span className="text-red-500">*</span>
           </label>
+          <p className="mb-1.5 text-xs font-normal text-slate-500">요금제·월 발행량·금액은 선택 라벨에 함께 표시됩니다.</p>
           <select
             value={plan}
             disabled={workflowHandoff?.state === 'CONTRACTED'}

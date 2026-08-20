@@ -9,7 +9,7 @@ import {
   hospitalLifecycleActionPath,
   hospitalLifecycleConfirmMessage,
 } from '@/lib/hospital-lifecycle'
-import { Hospital, PLAN_LABELS, STATUS_LABELS } from '@/types'
+import { Hospital, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
@@ -86,7 +86,7 @@ export default function HospitalLayout({
     ? STATUS_LABELS[hospital.status] ?? { label: '상태 확인 필요', color: 'bg-slate-100 text-slate-700' }
     : null
 
-  const planLabel = hospital?.plan ? PLAN_LABELS[hospital.plan] ?? '요금제 확인 필요' : null
+  const planLabel = hospital?.plan ? PLAN_CONTRACT_LABELS[hospital.plan] ?? '요금제 확인 필요' : null
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
   const visibleLifecycleAction = lifecycleAction === 'resume' && !hospital?.schedule_set ? null : lifecycleAction
   const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
@@ -141,11 +141,11 @@ export default function HospitalLayout({
                 <div className="absolute right-0 top-[calc(100%+8px)] z-40 w-[min(21rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
                   <p className="text-xs font-semibold text-slate-900">운영 준비 상태</p>
                   <div className="mt-3 grid gap-2 text-xs text-slate-600">
-                    <ProgressDot label="필수 병원 정보 완료" done={hospital.profile_complete} />
-                    <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
-                    <ProgressDot label="콘텐츠 허브 준비 완료" done={hospital.site_built} />
+                    <ProgressDot label="필수 병원 정보" done={hospital.profile_complete} />
+                    <ProgressDot label="초기 진단 리포트" done={hospital.v0_report_done} />
+                    <ProgressDot label="콘텐츠 허브 준비" done={hospital.site_built} />
                     <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
-                    <ProgressDot label="병원 정보 허브 운영 중" done={hospital.site_live} />
+                    <ProgressDot label="병원 정보 허브" done={hospital.site_live} />
                   </div>
                   {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">운영량 {planLabel}</p>}
                 </div>
@@ -224,12 +224,12 @@ export default function HospitalLayout({
           </div>
 
           {hospital && (
-            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-500 lg:shrink-0">
-              <ProgressDot label="필수 병원 정보 완료" done={hospital.profile_complete} />
-              <ProgressDot label="초기 진단 리포트 완료" done={hospital.v0_report_done} />
-              <ProgressDot label="콘텐츠 허브 준비 완료" done={hospital.site_built} />
+            <div className="flex max-w-xl flex-wrap items-center gap-x-3 gap-y-2 text-[11px] text-slate-500 lg:shrink-0">
+              <ProgressDot label="필수 병원 정보" done={hospital.profile_complete} />
+              <ProgressDot label="초기 진단 리포트" done={hospital.v0_report_done} />
+              <ProgressDot label="콘텐츠 허브 준비" done={hospital.site_built} />
               <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
-              <ProgressDot label="병원 정보 허브 운영 중" done={hospital.site_live} />
+              <ProgressDot label="병원 정보 허브" done={hospital.site_live} />
             </div>
           )}
         </div>
@@ -336,7 +336,7 @@ function ProgressDot({ label, done }: { label: string; done: boolean | undefined
         aria-hidden
       />
       <span className={done ? 'text-[var(--color-revisit-text-title)]' : 'text-[var(--color-revisit-text-caption)]'}>
-        {label} · {done ? '완료' : '대기'}
+        {label}: {done ? '완료' : '대기'}
       </span>
     </span>
   )

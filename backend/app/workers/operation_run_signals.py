@@ -149,6 +149,7 @@ def track_operation_postrun(
     task_id: str | None = None,
     task: _SignalTask | None = None,
     state: str | None = None,
+    retval: JSONValue | None = None,
     **_kwargs: JSONValue,
 ) -> None:
     try:
@@ -157,9 +158,23 @@ def track_operation_postrun(
         return
     match outcome:
         case _PostrunState.SUCCESS:
-            _finish_from_signal(
-                task_id, task, OperationRunState.SUCCEEDED, None, None
-            )
+            skipped = retval if isinstance(retval, dict) else None
+            if skipped and skipped.get("skipped"):
+                message = str(
+                    skipped.get("message")
+                    or "이미 진행 중이거나 완료된 작업이라 다시 실행하지 않았습니다."
+                )
+                _finish_from_signal(
+                    task_id,
+                    task,
+                    OperationRunState.PARTIAL,
+                    "OPERATION_SKIPPED",
+                    message,
+                )
+            else:
+                _finish_from_signal(
+                    task_id, task, OperationRunState.SUCCEEDED, None, None
+                )
         case _PostrunState.FAILURE:
             _finish_from_signal(
                 task_id,

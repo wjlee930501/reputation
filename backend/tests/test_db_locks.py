@@ -3,7 +3,9 @@ import uuid
 
 from app.utils.db_locks import (
     acquire_hospital_advisory_lock_sync,
+    acquire_hospital_advisory_session_lock_sync,
     hospital_lock_key,
+    release_hospital_advisory_session_lock_sync,
 )
 
 
@@ -44,3 +46,21 @@ def test_acquire_sync_is_noop_when_bind_unavailable():
 
     # 예외 없이 조용히 no-op이어야 한다
     acquire_hospital_advisory_lock_sync(_NoBindDB(), uuid.uuid4())
+
+
+def test_session_lock_acquire_release_are_noop_on_non_postgres_bind():
+    class _FakeDB:
+        def __init__(self):
+            self.executed = []
+
+        def get_bind(self):
+            return type("Bind", (), {"dialect": type("D", (), {"name": "sqlite"})()})()
+
+        def execute(self, stmt):
+            self.executed.append(stmt)
+
+    db = _FakeDB()
+    hid = uuid.uuid4()
+    acquire_hospital_advisory_session_lock_sync(db, hid)
+    release_hospital_advisory_session_lock_sync(db, hid)
+    assert db.executed == []

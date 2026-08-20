@@ -165,7 +165,12 @@ from app.services.sov_engine import (
     generate_query_matrix_specs,
     run_single_query,
 )
-from app.utils.db_locks import acquire_hospital_advisory_lock_sync
+from app.services.v0_claim import v0_claim_is_alive_sync
+from app.utils.db_locks import (
+    acquire_hospital_advisory_lock_sync,
+    acquire_hospital_advisory_session_lock_sync,
+    release_hospital_advisory_session_lock_sync,
+)
 from app.workers.content_publication_block_control import ensure_publication_block_run
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.generation_batch_run import GenerationBatchRecorder
@@ -523,32 +528,9 @@ def _reset_v0_analyzing_status(hospital_id: str, prior_status: str | None) -> No
         logger.exception("Failed to reset ANALYZING status for hospital %s", hospital_id)
 
 
-# V0 클레임의 최대 생존 시간. 태스크 하드 리밋(time_limit=2100s)보다 넉넉히 잡아,
-# 정상 실행이 진행 중인데 다른 실행이 클레임을 뺏어가는 일이 없게 한다.
-V0_CLAIM_MAX_AGE_SECONDS = 2400
-
-
 def _v0_claim_is_alive(db, hospital_id: uuid.UUID) -> bool:
-    """ANALYZING 클레임이 아직 살아 있는 실행의 것인가.
-
-    측정 실행(MeasurementRun)을 클레임의 하트비트로 쓴다. RUNNING 상태의 최근 실행이
-    있으면 진행 중, 없거나 하드 리밋을 넘겼으면 죽은 클레임으로 본다.
-
-    상태 컬럼만으로는 판단할 수 없다 — 하드 종료된 실행은 상태를 되돌리지 못하고
-    죽으므로, ANALYZING은 "진행 중"과 "죽은 채 방치됨"을 구분하지 못한다.
-    """
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=V0_CLAIM_MAX_AGE_SECONDS)
-    running = db.execute(
-        select(MeasurementRun.id)
-        .where(
-            MeasurementRun.hospital_id == hospital_id,
-            MeasurementRun.status == "RUNNING",
-            MeasurementRun.started_at.isnot(None),
-            MeasurementRun.started_at >= cutoff,
-        )
-        .limit(1)
-    )
-    return running.scalar() is not None
+    """ANALYZING 클레임이 아직 살아 있는 실행의 것인가. 정의는 v0_claim 모듈."""
+    return v0_claim_is_alive_sync(db, hospital_id)
 
 
 class V0MeasurementUnavailable(RuntimeError):
@@ -1085,79 +1067,95 @@ def trigger_v0_report(self, hospital_id: str):
     try:
         with SyncSessionLocal() as db:
             hospital_uuid = uuid.UUID(hospital_id)
-            # check-and-set 직렬화 (P2-15): 프로파일 저장 트리거와 수동 재트리거가 동시에
-            # 들어와도 v0_report_done/ANALYZING 검사를 둘 다 통과해 매트릭스·측정 비용이
-            # 중복 발생하지 않게 병원 단위 advisory lock으로 묶는다.
-            acquire_hospital_advisory_lock_sync(db, hospital_uuid)
-            hospital = db.get(Hospital, hospital_uuid)
-            if not hospital:
-                return
-
-            # Idempotency: 이미 V0가 완료된 병원은 재트리거/재배달 시 중복 리포트를 만들지 않는다.
-            if hospital.v0_report_done:
-                logger.info("V0 report already done for %s; skipping re-trigger", hospital.name)
-                return
-
-            # in-progress 가드: 다른 실행이 이미 ANALYZING으로 클레임했다면 중복 측정 금지.
-            #
-            # 단, ANALYZING만 보고 판단하면 안 된다. 실패 경로는 _reset_v0_analyzing_status로
-            # 상태를 복원하지만 **하드 종료(SIGKILL·OOM·Cloud Run scale-in)에서는 except가
-            # 실행되지 않는다**. 그러면 재배달된 실행이 ANALYZING을 보고 조용히 return하고,
-            # v0_report_done은 영원히 False로 남아 STEP4까지 함께 멈춘 채 Slack 신호도 없다.
-            # 그래서 클레임의 생존 여부를 측정 실행 기록으로 확인해 만료된 클레임은 탈취한다.
-            if hospital.status == HospitalStatus.ANALYZING:
-                if _v0_claim_is_alive(db, hospital.id):
-                    logger.info(
-                        "V0 report already in progress for %s; skipping duplicate", hospital.name
-                    )
+            # 세션 락은 ANALYZING commit ~ MeasurementRun RUNNING commit 사이만 잡는다.
+            # 워커 커넥션은 QueuePool이라 해제하지 않으면 락이 풀 커넥션에 영구 잔류하고,
+            # 같은 키의 xact 락(자료 저장·운영 기준)까지 막는다.
+            acquire_hospital_advisory_session_lock_sync(db, hospital_uuid)
+            run = None
+            try:
+                acquire_hospital_advisory_lock_sync(db, hospital_uuid)
+                hospital = db.get(Hospital, hospital_uuid)
+                if not hospital:
                     return
-                logger.warning(
-                    "Reclaiming a stale V0 ANALYZING claim for %s — the previous run died "
-                    "without releasing it",
-                    hospital.name,
-                )
 
-            prior_status = (
-                hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
-            )
-            hospital.status = HospitalStatus.ANALYZING
-            db.commit()
+                # Idempotency: 이미 V0가 완료된 병원은 재트리거/재배달 시 중복 리포트를 만들지 않는다.
+                if hospital.v0_report_done:
+                    logger.info("V0 report already done for %s; skipping re-trigger", hospital.name)
+                    return {"skipped": "already_done", "message": "이미 초기 진단 리포트가 있어 다시 만들지 않습니다."}
 
-            # 쿼리 매트릭스 생성 — 멱등: 측정/PDF 단계 실패 후 재시도 시(v0_report_done은
-            # 아직 False) 이미 커밋된 매트릭스를 통째로 중복 생성하지 않는다. 중복되면
-            # 주간 SoV 측정 볼륨·API 비용이 영구히 부풀려진다.
-            existing_count = db.execute(
-                select(func.count())
-                .select_from(QueryMatrix)
-                .where(QueryMatrix.hospital_id == hospital.id)
-            ).scalar_one()
-            if existing_count == 0:
-                specs = generate_query_matrix_specs(
-                    hospital.region, hospital.specialties, hospital.keywords
-                )
-                for q_text, q_intent in specs:
-                    db.add(
-                        QueryMatrix(
-                            hospital_id=hospital.id,
-                            query_text=q_text,
-                            query_intent=q_intent,
+                # in-progress 가드: 다른 실행이 이미 ANALYZING으로 클레임했다면 중복 측정 금지.
+                #
+                # 단, ANALYZING만 보고 판단하면 안 된다. 실패 경로는 _reset_v0_analyzing_status로
+                # 상태를 복원하지만 **하드 종료(SIGKILL·OOM·Cloud Run scale-in)에서는 except가
+                # 실행되지 않는다**. 그러면 재배달된 실행이 ANALYZING을 보고 조용히 return하고,
+                # v0_report_done은 영원히 False로 남아 STEP4까지 함께 멈춘 채 Slack 신호도 없다.
+                # 그래서 클레임의 생존 여부를 측정 실행 기록으로 확인해 만료된 클레임은 탈취한다.
+                if hospital.status == HospitalStatus.ANALYZING:
+                    if _v0_claim_is_alive(db, hospital.id):
+                        logger.info(
+                            "V0 report already in progress for %s; skipping duplicate", hospital.name
                         )
+                        return {
+                            "skipped": "already_in_progress",
+                            "message": "이미 초기 진단을 만들고 있습니다.",
+                        }
+                    logger.warning(
+                        "Reclaiming a stale V0 ANALYZING claim for %s — the previous run died "
+                        "without releasing it",
+                        hospital.name,
                     )
-                db.flush()
-            else:
-                logger.info(
-                    "Query matrix already exists for %s (%d rows); reusing on retry",
-                    hospital.name,
-                    existing_count,
-                )
 
-            # AI 답변 언급률 측정 (V0: 쿼리 수 제한, 빠른 실행)
-            run = _start_measurement_run(
-                db,
-                hospital,
-                run_label="V0 first measurement",
-                config={"source": "trigger_v0_report", "repeat_count": V0_REPEAT_COUNT},
-            )
+                prior_status = (
+                    hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+                )
+                hospital.status = HospitalStatus.ANALYZING
+                db.commit()
+                # commit이 xact 락을 풀므로, RUNNING 행을 커밋할 때까지 세션 락 + 새 xact 락을 유지한다.
+                acquire_hospital_advisory_lock_sync(db, hospital_uuid)
+
+                # 쿼리 매트릭스 생성 — 멱등: 측정/PDF 단계 실패 후 재시도 시(v0_report_done은
+                # 아직 False) 이미 커밋된 매트릭스를 통째로 중복 생성하지 않는다. 중복되면
+                # 주간 SoV 측정 볼륨·API 비용이 영구히 부풀려진다.
+                existing_count = db.execute(
+                    select(func.count())
+                    .select_from(QueryMatrix)
+                    .where(QueryMatrix.hospital_id == hospital.id)
+                ).scalar_one()
+                if existing_count == 0:
+                    specs = generate_query_matrix_specs(
+                        hospital.region, hospital.specialties, hospital.keywords
+                    )
+                    for q_text, q_intent in specs:
+                        db.add(
+                            QueryMatrix(
+                                hospital_id=hospital.id,
+                                query_text=q_text,
+                                query_intent=q_intent,
+                            )
+                        )
+                    db.flush()
+                else:
+                    logger.info(
+                        "Query matrix already exists for %s (%d rows); reusing on retry",
+                        hospital.name,
+                        existing_count,
+                    )
+
+                # AI 답변 언급률 측정 (V0: 쿼리 수 제한, 빠른 실행)
+                run = _start_measurement_run(
+                    db,
+                    hospital,
+                    run_label="V0 first measurement",
+                    config={"source": "trigger_v0_report", "repeat_count": V0_REPEAT_COUNT},
+                )
+                db.commit()
+            finally:
+                try:
+                    release_hospital_advisory_session_lock_sync(db, hospital_uuid)
+                except Exception:
+                    logger.exception("failed to release V0 session lock for %s", hospital_id)
+            if run is None:
+                return
             all_records = []
             success_count = 0
             failure_count = 0

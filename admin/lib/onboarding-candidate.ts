@@ -3,6 +3,7 @@ export interface ProfileUrlCandidate {
   title: string
   sourceType: string
   url: string
+  registeredCount?: number
 }
 
 export type CandidateAddResult = 'crawled' | 'already_in_profile'
