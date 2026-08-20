@@ -1153,8 +1153,8 @@ def _serialize_list(h: Hospital) -> dict:
         "site_live": h.site_live,
         "schedule_set": h.schedule_set,
         "aeo_domain": h.aeo_domain,
-        "domain_cert_dns_verified_at": h.domain_cert_dns_verified_at.isoformat() if h.domain_cert_dns_verified_at else None,
-        "domain_cert_job_state": h.domain_cert_job_state,
+        "domain_cert_dns_verified_at": getattr(h, "domain_cert_dns_verified_at", None).isoformat() if getattr(h, "domain_cert_dns_verified_at", None) else None,
+        "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
         "created_at": h.created_at.isoformat() if h.created_at else None,
     }
 
