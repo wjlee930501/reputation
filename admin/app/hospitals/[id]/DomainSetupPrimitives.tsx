@@ -66,22 +66,52 @@ export function DomainModeSelectors({
 }) {
   return (
     <div className="grid gap-3 md:grid-cols-2">
-      <ModeSelector
-        title="관리 방식"
-        value={managementMode}
-        options={['HOSPITAL_MANAGED', 'MOTIONLABS_MANAGED'] as const}
-        labelFor={domainManagementModeLabel}
-        activeClass="border-blue-500 bg-blue-50 text-blue-700"
-        onChange={onManagementModeChange}
-      />
-      <ModeSelector
-        title="DNS 전략"
-        value={dnsStrategy}
-        options={['CNAME', 'APEX_ADDRESS'] as const}
-        labelFor={domainStrategyLabel}
-        activeClass="border-emerald-500 bg-emerald-50 text-emerald-700"
-        onChange={onDnsStrategyChange}
-      />
+      <div>
+        <div className="mb-2 flex items-baseline gap-2">
+          <p className="text-sm font-semibold text-slate-800">관리 방식</p>
+          <span className="text-xs text-slate-500">(병원이 이미 도메인을 보유한 경우 병원 직접 관리)</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {(['HOSPITAL_MANAGED', 'MOTIONLABS_MANAGED'] as const).map((option) => (
+            <button
+              type="button"
+              key={option}
+              onClick={() => onManagementModeChange(option)}
+              className={`relative rounded-lg border px-3 py-2 text-sm font-medium ${
+                managementMode === option ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'
+              }`}
+            >
+              {domainManagementModeLabel(option)}
+              {option === 'HOSPITAL_MANAGED' && (
+                <span className="ml-1.5 rounded bg-blue-100 px-1 py-0.5 text-[10px] font-medium text-blue-700">권장</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="mb-2 flex items-baseline gap-2">
+          <p className="text-sm font-semibold text-slate-800">DNS 전략</p>
+          <span className="text-xs text-slate-500">(서브도메인 CNAME 방식 권장)</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {(['CNAME', 'APEX_ADDRESS'] as const).map((option) => (
+            <button
+              type="button"
+              key={option}
+              onClick={() => onDnsStrategyChange(option)}
+              className={`relative rounded-lg border px-3 py-2 text-sm font-medium ${
+                dnsStrategy === option ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-600'
+              }`}
+            >
+              {domainStrategyLabel(option)}
+              {option === 'CNAME' && (
+                <span className="ml-1.5 rounded bg-emerald-100 px-1 py-0.5 text-[10px] font-medium text-emerald-700">권장</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }

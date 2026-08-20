@@ -25,6 +25,17 @@ import { isPlatformAddressBrowsable, missingActivationPrerequisites } from '@/li
 import { safeOperatorError } from '@/lib/operations-journey'
 import { customDomainLiveUrl } from '@/lib/domain-live-links'
 
+function _certElapsedMinutes(started: string | null | undefined): number {
+  if (!started) return 0
+  try {
+    const startTime = new Date(started).getTime()
+    const now = Date.now()
+    return Math.floor((now - startTime) / 60000)
+  } catch {
+    return 0
+  }
+}
+
 export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeaderRefresh }: DomainSetupPanelProps) {
   const [domainSavedValue, setDomainSavedValue] = useState('')
   const [managementMode, setManagementMode] = useState<DomainManagementMode>('HOSPITAL_MANAGED')
@@ -38,6 +49,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   const [platformActivating, setPlatformActivating] = useState(false)
   const [domainFeedback, setDomainFeedback] = useState<DomainFeedback>(null)
   const [cnameCopied, setCnameCopied] = useState(false)
+  const [previewPlan, setPreviewPlan] = useState<DomainSetupPlan | null>(null)
 
   const fetchSetupPlan = useCallback(
     () => fetchAPI<DomainSetupPlan>(`/admin/hospitals/${hospitalId}/domain/setup`),
@@ -78,6 +90,15 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
       cancelled = true
     }
   }, [domainSavedValue, fetchSetupPlan])
+
+  useEffect(() => {
+    // DM-U6: 변경 사항이 있으면 미리보기 레코드 생성
+    if (hasUnsavedChange && currentDomain) {
+      setPreviewPlan(buildFallbackDomainSetupPlan(currentDomain, DEFAULT_CNAME_TARGET))
+    } else {
+      setPreviewPlan(null)
+    }
+  }, [hasUnsavedChange, currentDomain])
 
   const subdomainUrl = platformSubdomainUrl(profile.slug)
   const currentDomain = trimmed(profile.aeo_domain)
@@ -242,13 +263,22 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     } catch (e: unknown) {
       const info = readDomainError(e, '도메인 검증에 실패했습니다.')
       
-      // DM-F2: 409 = 인증서 발급 작업 이미 진행 중
+      // DM-F2 UI: 409는 여러 원인 가능. 인증서 작업 진행 중일 때만 특별 처리.
       if (e instanceof ApiError && e.status === 409) {
-        setDomainFeedback({ 
-          tone: 'info', 
-          title: 'HTTPS 인증서 발급 진행 중',
-          message: info.message 
-        })
+        const isCertJob = info.message.includes('인증서 발급이 이미 진행 중')
+        if (isCertJob) {
+          setDomainFeedback({ 
+            tone: 'info', 
+            title: 'HTTPS 인증서 발급 진행 중',
+            message: info.message 
+          })
+        } else if (info.kind === 'prerequisite') {
+          const steps = info.missingSteps.length > 0 ? info.missingSteps : parseStepsFromMessage(info.message)
+          setDomainFeedback({ tone: 'info', title: '운영 전 단계 필요', message: info.message, steps })
+        } else {
+          // 기타 409는 원본 메시지 표시
+          setDomainFeedback({ tone: 'error', message: info.message })
+        }
       } else if (info.kind === 'prerequisite') {
         const steps = info.missingSteps.length > 0 ? info.missingSteps : parseStepsFromMessage(info.message)
         setDomainFeedback({ tone: 'info', title: '운영 전 단계 필요', message: info.message, steps })
@@ -364,6 +394,11 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         <div className="grid gap-3 md:grid-cols-[1fr_auto]">
           <div>
             <label htmlFor="profile-aeo-domain" className="text-sm font-semibold text-slate-800">연결 도메인</label>
+            {dnsStrategy === 'CNAME' && profile.website_url && (
+              <p className="mt-1 text-xs text-slate-500">
+                홈페이지 도메인 {new URL(profile.website_url).hostname}을 사용하는 경우, 서브도메인을 ai.{new URL(profile.website_url).hostname.replace(/^www\./, '')}로 설정할 수 있습니다.
+              </p>
+            )}
             <input
               id="profile-aeo-domain"
               type="text"
@@ -394,6 +429,15 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
           />
         )}
 
+        {previewPlan && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+            <p className="text-xs font-semibold text-amber-800">저장 전 DNS 레코드 미리보기</p>
+            <div className="mt-2">
+              <DomainRecordTable plan={previewPlan} copied={false} onCopy={() => {}} />
+            </div>
+          </div>
+        )}
+
         <DomainRecordTable plan={displayPlan} copied={cnameCopied} onCopy={handleCopy} />
 
         {(displayPlan?.warnings.length ?? 0) > 0 && (
@@ -407,12 +451,35 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         )}
 
         {customDomainUrl ? (
-          <a href={customDomainUrl} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-            병원 정보 허브 운영 중 · {currentDomain}
-          </a>
+          <>
+            <a href={customDomainUrl} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+              병원 정보 허브 운영 중 · {currentDomain}
+            </a>
+            <button
+              type="button"
+              onClick={handleRollbackDomain}
+              disabled={domainSaving}
+              className="min-h-9 w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              커스텀 도메인 초기화
+            </button>
+          </>
         ) : (
-          <button type="button" onClick={handleVerifyDomain} disabled={domainVerifying || !domainSavedValue || hasUnsavedChange} className="min-h-11 w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
-            {domainVerifying ? 'DNS 확인 중...' : hasUnsavedChange ? '변경한 도메인을 먼저 저장해 주세요' : !domainSavedValue ? '도메인을 먼저 저장해 주세요' : 'DNS 확인하고 운영 시작'}
+          <button 
+            type="button" 
+            onClick={handleVerifyDomain} 
+            disabled={domainVerifying || !domainSavedValue || hasUnsavedChange || profile.domain_cert_job_state === 'ISSUING'} 
+            className="min-h-11 w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {domainVerifying 
+              ? 'DNS 확인 중...' 
+              : profile.domain_cert_job_state === 'ISSUING'
+                ? `HTTPS 인증서 발급 진행 중 (경과 ${_certElapsedMinutes(profile.domain_cert_job_started_at)}분)`
+                : hasUnsavedChange 
+                  ? '변경한 도메인을 먼저 저장해 주세요' 
+                  : !domainSavedValue 
+                    ? '도메인을 먼저 저장해 주세요' 
+                    : 'DNS 확인하고 운영 시작'}
           </button>
         )}
 
