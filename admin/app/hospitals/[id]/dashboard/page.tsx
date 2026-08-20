@@ -94,6 +94,14 @@ interface AuditLogRow {
 const AUDIT_ACTION_LABELS: Record<string, string> = {
   trigger_v0_report: '초기 진단 리포트 다시 만들기',
   trigger_v0_report_requested: '초기 진단 리포트 다시 만들기 요청',
+  auto_approve_philosophy: '운영 기준 자동 승인',
+  auto_review_philosophy_escalated: '운영 기준 자동 검수 확인 필요',
+  incident_occurrence_recorded: '운영 이상 기록',
+  handoff_accepted: '고객 인수 승인',
+  handoff_contracted: '계약 정보 저장',
+  create_hospital: '병원 등록',
+  set_schedule: '발행 스케줄 저장',
+  profile_completed: '병원 기본 정보 완료',
   run_sov: 'AI 언급률 측정',
   rebuild_site: '사이트 재빌드',
   verify_domain: '공개 주소 확인',
@@ -381,6 +389,25 @@ export default function DashboardPage() {
     }
   }
 
+  function sourceTypeLabel(value: string | null): string | null {
+    if (!value) return null
+    const raw = value.replace(/^SourceType\./, '')
+    const labels: Record<string, string> = {
+      YOUTUBE: '유튜브', HOMEPAGE: '홈페이지', NAVER_BLOG: '네이버 블로그', INTERVIEW: '원장 인터뷰',
+      BROCHURE: '브로슈어', LANDING_PAGE: '랜딩 페이지', INTERNAL_NOTE: '내부 메모', OTHER: '기타',
+    }
+    return labels[raw] ?? raw
+  }
+
+  function sourceStatusLabel(value: string | null): string | null {
+    if (!value) return null
+    const raw = value.replace(/^SourceStatus\./, '')
+    const labels: Record<string, string> = {
+      PENDING: '대기', PROCESSED: '처리 완료', EXCLUDED: '제외', ERROR: '오류',
+    }
+    return labels[raw] ?? raw
+  }
+
   function formatAuditAction(action: string): string {
     return AUDIT_ACTION_LABELS[action] ?? action
   }
@@ -419,7 +446,7 @@ export default function DashboardPage() {
     if (action === 'exclude_source_asset') {
       const fromStatus = typeof detail.from_status === 'string' ? detail.from_status : null
       const sourceType = typeof detail.source_type === 'string' ? detail.source_type : null
-      return [sourceType, fromStatus ? `이전 상태: ${fromStatus}` : null].filter(Boolean).join(' · ')
+      return [sourceTypeLabel(sourceType), fromStatus ? `이전 상태: ${sourceStatusLabel(fromStatus)}` : null].filter(Boolean).join(' · ')
     }
     if (action === 'toggle_source_public') {
       if (detail.from === false && detail.to === true) return '비공개 → 공개'
@@ -448,8 +475,8 @@ export default function DashboardPage() {
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[440px]">
             <HeroStat
               label="측정 질문표"
-              value={`${queryCount}개`}
-              hint={`운영 타깃 ${activeTargets.length}/${nonArchivedTargets.length}`}
+              value={`${nonArchivedTargets.length}개`}
+              hint={`측정 매트릭스 ${queryCount}개 · 운영 중 ${activeTargets.length}개`}
             />
             <HeroStat
               label="현재 AI 언급률"

@@ -148,6 +148,17 @@ function normalizeUrl(value: string | null | undefined): string | null {
   return cleaned.replace(/\/+$/, '').toLowerCase()
 }
 
+function urlHost(value: string | null | undefined): string | null {
+  const cleaned = value?.trim()
+  if (!cleaned) return null
+  try {
+    const href = cleaned.includes('://') ? cleaned : `https://${cleaned}`
+    return new URL(href).hostname.replace(/^www\./, '').toLowerCase()
+  } catch {
+    return null
+  }
+}
+
 function getProfileUrlCandidates(hospital: Hospital | null, sources: Source[]): ProfileUrlCandidate[] {
   if (!hospital) return []
   const existingUrls = new Set(
@@ -194,10 +205,23 @@ function getProfileUrlCandidates(hospital: Hospital | null, sources: Source[]): 
     },
   ]
 
-  return candidates.filter((candidate) => {
+  const homepageHosts = new Map<string, number>()
+  for (const source of sources) {
+    if (source.source_type !== 'HOMEPAGE') continue
+    const host = urlHost(source.url)
+    if (!host) continue
+    homepageHosts.set(host, (homepageHosts.get(host) ?? 0) + 1)
+  }
+  return candidates.flatMap((candidate) => {
     const normalized = normalizeUrl(candidate.url)
-    return normalized !== null
-      && (isProfileOnlyCandidate(candidate.key) || !existingUrls.has(normalized))
+    if (normalized === null) return []
+    if (isProfileOnlyCandidate(candidate.key)) return [candidate]
+    if (existingUrls.has(normalized)) return []
+    const host = urlHost(candidate.url)
+    const registeredCount = candidate.sourceType === 'HOMEPAGE' && host
+      ? homepageHosts.get(host) ?? 0
+      : 0
+    return [{ ...candidate, registeredCount }]
   })
 }
 
@@ -315,7 +339,12 @@ export default function OnboardingPage() {
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <span className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white">
-            온보딩 {completedCount}/{onboardingSteps.length} 단계
+            {(() => {
+              const current = onboardingSteps.find((step) => step.status === 'current')
+              return current
+                ? `완료 ${completedCount}/${onboardingSteps.length} · 다음 필수: ${current.index + 1}단계 ${current.title}`
+                : `완료 ${completedCount}/${onboardingSteps.length}`
+            })()}
           </span>
           <span className={`rounded-full px-3 py-1 text-xs font-semibold ${summary.stateClassName}`}>
             {summary.stateLabel}
@@ -389,8 +418,10 @@ function StepBadge({ step }: { step: StepDef }) {
       ? 'bg-green-50 text-green-700 border-green-200'
       : step.status === 'current'
         ? 'bg-blue-50 text-blue-700 border-blue-200'
-        : 'bg-slate-50 text-slate-500 border-slate-200'
-  const mark = step.status === 'completed' ? '✓' : step.status === 'current' ? '●' : '○'
+        : step.status === 'locked'
+          ? 'bg-amber-50 text-amber-800 border-amber-200'
+          : 'bg-slate-50 text-slate-500 border-slate-200'
+  const mark = step.status === 'completed' ? '✓' : step.status === 'current' ? '●' : step.status === 'locked' ? '✕' : '○'
   return (
     <li>
       <a
@@ -488,7 +519,9 @@ function OperationalStepBody({ step }: { step: StepDef }) {
       <p className="text-sm text-slate-700">
         {step.status === 'completed'
           ? '필수 정보가 실제로 저장되어 이 단계가 완료된 것을 확인했습니다.'
-          : '이 단계 화면에서 안내하는 필수 항목을 확인하고 완료해 주세요. 완료했는데도 상태가 바뀌지 않으면 새로 고침한 뒤 개발팀에 문의해 주세요.'}
+          : step.status === 'locked'
+            ? '앞 필수 단계가 끝나야 이 단계를 진행할 수 있습니다.'
+            : '이 단계 화면에서 안내하는 필수 항목을 확인하고 완료해 주세요.'}
       </p>
       {step.href && (
         <Link
@@ -521,6 +554,7 @@ function StepStatusChip({ status }: { status: StepDef['status'] }) {
     completed: { label: '완료', cls: 'bg-green-100 text-green-700' },
     current: { label: '진행 필요', cls: 'bg-blue-100 text-blue-700' },
     upcoming: { label: '대기', cls: 'bg-slate-100 text-slate-500' },
+    locked: { label: '잠김(선행 단계 필요)', cls: 'bg-amber-50 text-amber-800' },
   } as const
   const { label, cls } = map[status]
   return (
@@ -632,6 +666,8 @@ function ProfileUrlCandidates({
             </div>
             {isProfileOnlyCandidate(candidate.key) ? (
               <span className="shrink-0 text-xs font-semibold text-blue-800">이미 병원 기본 정보에 있습니다</span>
+            ) : (candidate.registeredCount ?? 0) > 0 ? (
+              <span className="shrink-0 text-xs font-semibold text-blue-800">등록됨(하위 페이지 {candidate.registeredCount}건)</span>
             ) : (
               <button
                 type="button"
@@ -1047,6 +1083,7 @@ function ProcessingStepBody({
   const processed = sources.filter((s) => s.status === 'PROCESSED')
   const errored = sources.filter((s) => s.status === 'ERROR' && hasProcessableText(s))
   const blocked = sources.filter((s) => !!getProcessingBlockReason(s))
+  const excluded = sources.filter((s) => s.status === 'EXCLUDED')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkTracking, setBulkTracking] = useState(false)
@@ -1133,7 +1170,7 @@ function ProcessingStepBody({
     <div className="space-y-3">
       <p className="text-sm text-slate-700">
         처리 가능: <strong>{pending.length}</strong>개 · 완료: <strong>{processed.length}</strong>개 ·
-        오류: <strong>{errored.length}</strong>개 · 차단: <strong>{blocked.length}</strong>개
+        오류: <strong>{errored.length}</strong>개 · 차단: <strong>{blocked.length}</strong>개 · 제외: <strong>{excluded.length}</strong>개
       </p>
       {(busyId || bulkTracking) && (
         <div role="status" className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">

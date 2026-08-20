@@ -142,6 +142,13 @@ class HospitalProfileUpdate(BaseModel):
     latitude: float | None = Field(None, ge=-90, le=90)
     longitude: float | None = Field(None, ge=-180, le=180)
 
+    @field_validator("latitude", "longitude", mode="before")
+    @classmethod
+    def round_coordinates(cls, value):
+        if value is None or value == "":
+            return None
+        return round(float(value), 6)
+
     # 엔티티 식별자 (sameAs 그래프)
     wikidata_qid: str | None = Field(None, max_length=50)
     gbp_place_id: str | None = Field(None, max_length=255)
