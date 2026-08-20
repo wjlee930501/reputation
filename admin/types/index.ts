@@ -319,6 +319,10 @@ export interface OperationResponse {
   verified?: boolean
   cname_value?: string | null
   expected_cname?: string
+  operation_run_id?: string
+  operation_state?: string
+  task_id?: string
+  idempotent_replay?: boolean
 }
 
 export interface SalesLead {

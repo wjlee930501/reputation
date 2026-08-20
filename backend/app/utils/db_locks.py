@@ -39,3 +39,17 @@ async def acquire_hospital_advisory_lock(db, hospital_id: uuid.UUID) -> None:
     if not _is_postgres_bind(db):
         return
     await db.execute(select(func.pg_advisory_xact_lock(hospital_lock_key(hospital_id))))
+
+
+def acquire_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> None:
+    """pg_advisory_lock — 커넥션이 살아 있는 동안 유지. commit으로 풀리지 않는다."""
+    if not _is_postgres_bind(db):
+        return
+    db.execute(select(func.pg_advisory_lock(hospital_lock_key(hospital_id))))
+
+
+def release_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> None:
+    """pg_advisory_unlock — 같은 커넥션에서만 해제된다."""
+    if not _is_postgres_bind(db):
+        return
+    db.execute(select(func.pg_advisory_unlock(hospital_lock_key(hospital_id))))

@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
-import { fetchAPI } from '@/lib/api'
+import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import { countUnpublishedCarriedOver } from '@/lib/content'
@@ -93,6 +93,7 @@ interface AuditLogRow {
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
   trigger_v0_report: '초기 진단 리포트 다시 만들기',
+  trigger_v0_report_requested: '초기 진단 리포트 다시 만들기 요청',
   run_sov: 'AI 언급률 측정',
   rebuild_site: '사이트 재빌드',
   verify_domain: '공개 주소 확인',
@@ -356,7 +357,12 @@ export default function DashboardPage() {
       if (path === 'verify-domain') {
         setOperationMessage(result.verified ? '공개 주소 연결 확인 완료' : '공개 주소 연결 확인 필요')
       } else if (path === 'trigger-v0-report') {
-        setOperationMessage('초기 진단 리포트 다시 만들기 작업을 접수했습니다. 진행 상태에서 결과를 확인하세요.')
+        const runId = result.operation_run_id ? ` 작업 ${result.operation_run_id}` : ''
+        if (result.idempotent_replay || result.operation_state === 'QUEUED' || result.operation_state === 'RUNNING') {
+          setOperationMessage(`초기 진단이 진행 중입니다.${runId}`)
+        } else {
+          setOperationMessage(`초기 진단 리포트를 다시 만들기 시작했습니다.${runId}`)
+        }
       } else if (path === 'run-sov') {
         setOperationMessage('AI 답변 언급 측정을 접수했습니다. 진행 상태에서 결과를 확인하세요.')
       } else if (path === 'rebuild-site') {
@@ -365,7 +371,11 @@ export default function DashboardPage() {
       await refreshAuditLogs()
     } catch (e: unknown) {
       if (!isExpectedOperatorRequestFailure(e)) throw e
-      setOperationError(safeOperatorError('operations', '현재 상태를 다시 확인한 뒤 같은 작업 버튼을 다시 누르세요.'))
+      const apiMessage = e instanceof ApiError ? e.message.trim() : ''
+      setOperationError(
+        apiMessage
+          || safeOperatorError('operations', '현재 상태를 다시 확인한 뒤 같은 작업 버튼을 다시 누르세요.'),
+      )
     } finally {
       setOperationLoading(null)
     }

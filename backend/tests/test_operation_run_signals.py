@@ -262,3 +262,26 @@ async def test_broker_marked_worker_loss_redelivery_reclaims_the_same_run(
         finished = await db.get(OperationRun, run.id)
     assert finished is not None
     assert finished.state == OperationRunState.SUCCEEDED.value
+
+
+def test_postrun_skip_finishes_partial(monkeypatch):
+    from app.models.operations import OperationRunState
+    from app.workers import operation_run_signals as signals
+
+    captured = {}
+
+    def fake_finish(task_id, task, state, code, message):
+        captured["state"] = state
+        captured["code"] = code
+        captured["message"] = message
+
+    monkeypatch.setattr(signals, "_finish_from_signal", fake_finish)
+    signals.track_operation_postrun(
+        task_id="t",
+        task=None,
+        state="SUCCESS",
+        retval={"skipped": "already_done", "message": "이미 초기 진단 리포트가 있어 다시 만들지 않습니다."},
+    )
+    assert captured["state"] == OperationRunState.PARTIAL
+    assert captured["code"] == "OPERATION_SKIPPED"
+    assert "이미 초기 진단" in captured["message"]

@@ -21,6 +21,7 @@ from app.api.admin.operations_center_serializers import (
 from app.models.admin_user import AdminUser
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import OperationRun
 from app.schemas.operations import (
     OperationsAction,
     OperationsCustomer,
@@ -88,6 +89,23 @@ async def load_onboarding_queue(
     else:
         total = int((await db.scalar(count_statement)) or 0)
 
+    run_by_hospital: dict = {}
+    if rows:
+        hospital_ids = [hospital.id for hospital, _handoff, _actor, _total in rows]
+        run_rows = (
+            await db.execute(
+                select(OperationRun.hospital_id, OperationRun.id)
+                .where(
+                    OperationRun.hospital_id.in_(hospital_ids),
+                    OperationRun.operation_type.in_(("TRIGGER_V0_REPORT", "REBUILD_SITE")),
+                )
+                .order_by(OperationRun.requested_at.desc())
+            )
+        ).all()
+        for hospital_id, run_id in run_rows:
+            if hospital_id not in run_by_hospital:
+                run_by_hospital[hospital_id] = run_id
+
     return total, [
         OperationsQueueRow(
             id=f"onboarding:{hospital.id}",
@@ -120,6 +138,7 @@ async def load_onboarding_queue(
             safe_cause=None,
             history=[OperationsHistoryEntry(event="ONBOARDING_STARTED", at=hospital.created_at)],
             slack=None,
+            operation_run_id=run_by_hospital.get(hospital.id),
             occurred_at=hospital.updated_at,
         )
         for hospital, handoff, actor, _total in rows

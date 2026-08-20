@@ -135,6 +135,19 @@ export function useOperationsCenter() {
     detailAbort.current?.abort()
     const controller = new AbortController()
     detailAbort.current = controller
+    if (row.operation_run_id && row.customer.hospital_id) {
+      try {
+        const run = await fetchAPI(
+          `/admin/operations/hospitals/${row.customer.hospital_id}/runs/${row.operation_run_id}`,
+          { signal: controller.signal },
+        )
+        setDetail({ incident: row, run })
+      } catch (error) {
+        if (!isAbort(error)) setActionError(errorMessage(error))
+        setDetail({ incident: row, run: null })
+      }
+      return
+    }
     if (!row.incident_id) {
       setDetail({ incident: row, run: null })
       return

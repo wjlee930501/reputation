@@ -165,7 +165,11 @@ from app.services.sov_engine import (
     generate_query_matrix_specs,
     run_single_query,
 )
-from app.utils.db_locks import acquire_hospital_advisory_lock_sync
+from app.utils.db_locks import (
+    acquire_hospital_advisory_lock_sync,
+    acquire_hospital_advisory_session_lock_sync,
+)
+from app.services.v0_claim import V0_CLAIM_MAX_AGE_SECONDS, v0_claim_is_alive_sync
 from app.workers.content_publication_block_control import ensure_publication_block_run
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.generation_batch_run import GenerationBatchRecorder
@@ -523,32 +527,9 @@ def _reset_v0_analyzing_status(hospital_id: str, prior_status: str | None) -> No
         logger.exception("Failed to reset ANALYZING status for hospital %s", hospital_id)
 
 
-# V0 클레임의 최대 생존 시간. 태스크 하드 리밋(time_limit=2100s)보다 넉넉히 잡아,
-# 정상 실행이 진행 중인데 다른 실행이 클레임을 뺏어가는 일이 없게 한다.
-V0_CLAIM_MAX_AGE_SECONDS = 2400
-
-
 def _v0_claim_is_alive(db, hospital_id: uuid.UUID) -> bool:
-    """ANALYZING 클레임이 아직 살아 있는 실행의 것인가.
-
-    측정 실행(MeasurementRun)을 클레임의 하트비트로 쓴다. RUNNING 상태의 최근 실행이
-    있으면 진행 중, 없거나 하드 리밋을 넘겼으면 죽은 클레임으로 본다.
-
-    상태 컬럼만으로는 판단할 수 없다 — 하드 종료된 실행은 상태를 되돌리지 못하고
-    죽으므로, ANALYZING은 "진행 중"과 "죽은 채 방치됨"을 구분하지 못한다.
-    """
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=V0_CLAIM_MAX_AGE_SECONDS)
-    running = db.execute(
-        select(MeasurementRun.id)
-        .where(
-            MeasurementRun.hospital_id == hospital_id,
-            MeasurementRun.status == "RUNNING",
-            MeasurementRun.started_at.isnot(None),
-            MeasurementRun.started_at >= cutoff,
-        )
-        .limit(1)
-    )
-    return running.scalar() is not None
+    """ANALYZING 클레임이 아직 살아 있는 실행의 것인가. 정의는 v0_claim 모듈."""
+    return v0_claim_is_alive_sync(db, hospital_id)
 
 
 class V0MeasurementUnavailable(RuntimeError):
@@ -1085,9 +1066,9 @@ def trigger_v0_report(self, hospital_id: str):
     try:
         with SyncSessionLocal() as db:
             hospital_uuid = uuid.UUID(hospital_id)
-            # check-and-set 직렬화 (P2-15): 프로파일 저장 트리거와 수동 재트리거가 동시에
-            # 들어와도 v0_report_done/ANALYZING 검사를 둘 다 통과해 매트릭스·측정 비용이
-            # 중복 발생하지 않게 병원 단위 advisory lock으로 묶는다.
+            # 세션 락은 commit 뒤에도 유지된다. xact 락만 쓰면 ANALYZING commit 직후
+            # MeasurementRun이 생기기 전에 두 번째 실행이 stale reclaim을 한다.
+            acquire_hospital_advisory_session_lock_sync(db, hospital_uuid)
             acquire_hospital_advisory_lock_sync(db, hospital_uuid)
             hospital = db.get(Hospital, hospital_uuid)
             if not hospital:
@@ -1096,7 +1077,7 @@ def trigger_v0_report(self, hospital_id: str):
             # Idempotency: 이미 V0가 완료된 병원은 재트리거/재배달 시 중복 리포트를 만들지 않는다.
             if hospital.v0_report_done:
                 logger.info("V0 report already done for %s; skipping re-trigger", hospital.name)
-                return
+                return {"skipped": "already_done", "message": "이미 초기 진단 리포트가 있어 다시 만들지 않습니다."}
 
             # in-progress 가드: 다른 실행이 이미 ANALYZING으로 클레임했다면 중복 측정 금지.
             #
@@ -1110,7 +1091,10 @@ def trigger_v0_report(self, hospital_id: str):
                     logger.info(
                         "V0 report already in progress for %s; skipping duplicate", hospital.name
                     )
-                    return
+                    return {
+                        "skipped": "already_in_progress",
+                        "message": "이미 초기 진단을 만들고 있습니다.",
+                    }
                 logger.warning(
                     "Reclaiming a stale V0 ANALYZING claim for %s — the previous run died "
                     "without releasing it",

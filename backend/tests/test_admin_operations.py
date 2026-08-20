@@ -594,3 +594,33 @@ async def test_trigger_v0_still_works_for_a_failed_or_pending_report(monkeypatch
 
     assert response["hospital_id"] == str(hospital.id)
     assert task.calls == [{"args": [str(hospital.id)], "queue": "reports"}]
+
+
+async def test_trigger_v0_rejects_analyzing_in_progress(monkeypatch):
+    """살아 있는 ANALYZING 클레임은 큐에 넣지 않고 409로 진행 중임을 알린다."""
+    hospital = _hospital(v0_report_done=False, status=HospitalStatus.ANALYZING)
+    db = FakeDB(hospital=hospital)
+    queued = []
+    active = SimpleNamespace(id=uuid.uuid4(), state=SimpleNamespace(value="RUNNING"))
+
+    async def _alive(_db, _hospital_id):
+        return True
+
+    async def _active(_db, _hospital_id):
+        return active
+
+    monkeypatch.setattr(operations_api, "v0_claim_is_alive", _alive)
+    monkeypatch.setattr(operations_api, "latest_active_v0_run", _active)
+    monkeypatch.setattr(
+        operations_api.trigger_v0_report,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.trigger_v0_report_operation(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert "이미 초기 진단을 만들고 있습니다" in exc.value.detail["message"]
+    assert exc.value.detail["operation_run_id"] == str(active.id)
+    assert queued == []
