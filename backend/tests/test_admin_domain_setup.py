@@ -98,6 +98,9 @@ def test_domain_setup_returns_apex_address_plan(monkeypatch):
         domain_registrar=None,
         domain_dns_provider=None,
         domain_purchase_note=None,
+        site_live=False,
+        domain_cert_dns_verified_at=None,
+        domain_cert_job_state=None,
     )
 
     response = _get_setup(hospital, monkeypatch)
@@ -106,22 +109,23 @@ def test_domain_setup_returns_apex_address_plan(monkeypatch):
     payload = response.json()
     assert payload["domain_management_mode"] == "MOTIONLABS_MANAGED"
     assert payload["domain_dns_strategy"] == "APEX_ADDRESS"
-    assert [(record["type"], record["name"], record["value"]) for record in payload["records"]] == [
-        ("A", "clinic.example.com", "34.117.10.20"),
-        ("AAAA", "clinic.example.com", "2600:1901::1"),
+    assert [(record["type"], record["name"], record["value"], record["registrar_host"]) for record in payload["records"]] == [
+        ("A", "clinic.example.com", "34.117.10.20", "@"),
+        ("AAAA", "clinic.example.com", "2600:1901::1", "@"),
     ]
-    assert payload["warnings"] == []
+    # DM-U1/DM-F5: warnings include TTL and Gabia
+    assert len(payload["warnings"]) == 3
 
 
 def test_domain_setup_warns_when_apex_has_no_ip_targets(monkeypatch):
     monkeypatch.setattr(settings, "CUSTOM_DOMAIN_IP_TARGETS", "")
-    hospital = _hospital(domain_dns_strategy="APEX_ADDRESS")
+    hospital = _hospital(domain_dns_strategy="APEX_ADDRESS", site_live=False, domain_cert_dns_verified_at=None, domain_cert_job_state=None)
 
     response = _get_setup(hospital, monkeypatch)
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["records"] == []
-    assert payload["warnings"] == [
-        "APEX_ADDRESS strategy is selected, but CUSTOM_DOMAIN_IP_TARGETS is not configured."
-    ]
+    # DM-U1/DM-F5: base warnings + config warning
+    assert len(payload["warnings"]) == 4
+    assert any("APEX_ADDRESS strategy is selected, but CUSTOM_DOMAIN_IP_TARGETS is not configured" in w for w in payload["warnings"])

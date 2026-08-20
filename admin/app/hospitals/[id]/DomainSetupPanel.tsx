@@ -80,16 +80,20 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     trimmed(purchaseNote) !== trimmed(profile.domain_purchase_note)
   const hasUnsavedChange = hasDomainChange || hasMetadataChange
   const activationMissing = missingActivationPrerequisites(profile)
-  const status = hasUnsavedChange
-    ? 'unsaved'
-    : profile.site_live
-      ? 'live'
-      : domainSavedValue
-        ? 'waiting'
-        : activationMissing.length === 0
-          ? 'ready'
-          : 'empty'
-  const badge = statusBadge(status)
+  
+  // DM-U3: 배지/헤더는 커스텀 도메인 상태(DNS 검증 / 인증서 작업)로 결정. site_live는 기본 주소 상태.
+  const customDomainStatus = (() => {
+    if (hasUnsavedChange) return 'unsaved'
+    if (!domainSavedValue) {
+      return activationMissing.length === 0 ? 'ready' : 'empty'
+    }
+    // 도메인이 저장되어 있음
+    if (profile.domain_cert_job_state === 'DONE') return 'live'  // 인증서까지 준비 완료
+    if (profile.domain_cert_dns_verified_at) return 'waiting'  // DNS 검증 완료, 인증서 대기 중
+    return 'waiting'  // DNS 검증 대기 중
+  })()
+  
+  const badge = statusBadge(customDomainStatus)
   const platformAddressBrowsable = isPlatformAddressBrowsable(profile)
   const customDomainUrl = customDomainLiveUrl({
     site_live: profile.site_live,
