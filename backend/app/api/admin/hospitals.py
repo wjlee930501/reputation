@@ -54,7 +54,11 @@ from app.services.keyword_analysis import (
 from app.services.keyword_analysis import (
     normalize as normalize_keyword,
 )
-from app.services.operation_runs import OperationCommand, OperationQueueUnavailable, dispatch_operation
+from app.services.operation_runs import (
+    OperationCommand,
+    OperationQueueUnavailable,
+    dispatch_operation,
+)
 from app.services.readiness_operator_copy import readiness_next_actions
 from app.services.service_intervals import (
     ServiceIntervalProvenance,
