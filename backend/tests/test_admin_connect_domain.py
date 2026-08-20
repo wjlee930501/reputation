@@ -258,8 +258,9 @@ async def test_connect_domain_strategy_change_resets_live_state_for_same_domain(
     )
 
     assert _enum_value(hospital.domain_dns_strategy) == "APEX_ADDRESS"
-    assert hospital.site_live is False
-    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    # DM-F3: DNS 전략 변경도 site_live를 건드리지 않음
+    assert hospital.site_live is True
+    assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
 
 
@@ -425,7 +426,7 @@ async def test_activate_hospital_subdomain_default_without_custom_domain(monkeyp
     assert db.committed is True
     detail = next(item.detail for item in db.added if hasattr(item, "detail"))
     assert detail["aeo_domain"] is None
-    assert detail["activation_method"] == "PLATFORM_SUBDOMAIN"
+    assert detail["activation_method"] == "platform_subdomain"  # Live: snake_case
 
 
 @pytest.mark.parametrize(

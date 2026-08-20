@@ -166,6 +166,8 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
             domain_cert_job_state: result.cert_job_state,
             domain_cert_job_started_at: result.cert_job_started_at ?? profile.domain_cert_job_started_at,
           })
+          // U3 async: cert transition → refresh header + result box
+          onHeaderRefresh?.()
         }
       } catch (error: unknown) {
         // 폴링 실패는 조용히 무시 (다음 폴링에서 재시도)

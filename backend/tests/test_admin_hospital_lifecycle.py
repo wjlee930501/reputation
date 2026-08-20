@@ -462,32 +462,22 @@ async def test_resume_custom_domain_requires_current_dns(monkeypatch):
     assert db.added == []
 
 
-async def test_resume_custom_domain_requires_current_certificate(monkeypatch):
+async def test_resume_custom_domain_no_longer_requires_certificate(monkeypatch):
+    """DM-F4: 운영 재개 시 DNS 검증만 확인, 인증서는 선행조건 아님."""
     hospital = _full_hospital(
         status=HospitalStatus.PAUSED,
         aeo_domain="clinic.example.com",
+        site_live=True,  # DNS already verified
     )
     db = _LifecycleDB(hospital)
 
     async def _verified_dns(domain, strategy):
         return SimpleNamespace(verified=True)
 
-    async def _pending_certificate(domain):
-        return SimpleNamespace(
-            ready=False,
-            phase="PROVISIONING",
-            message="HTTPS 인증서를 준비하고 있습니다.",
-        )
-
     monkeypatch.setattr(hospitals_api, "check_domain_dns", _verified_dns)
-    monkeypatch.setattr(
-        hospitals_api, "ensure_verified_domain_certificate", _pending_certificate
-    )
+    # DM-F4: resume does not call ensure_verified_domain_certificate
 
-    with pytest.raises(HTTPException) as exc:
-        await hospitals_api.resume_hospital(hospital.id, db=db)
+    result = await hospitals_api.resume_hospital(hospital.id, db=db)
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail["code"] == "CERTIFICATE_NOT_READY"
-    assert hospital.status == HospitalStatus.PAUSED
-    assert db.added == []
+    assert result["status"] == "ACTIVE"
+    assert hospital.status == HospitalStatus.ACTIVE
