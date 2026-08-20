@@ -22,6 +22,7 @@ import type {
   OperationsQueueParam,
   OperationsQueueResponse,
   OperationsQueueRow,
+  OperationsRunSummary,
 } from '@/types'
 import type { OperationMutation } from './OperationDetail'
 
@@ -137,7 +138,7 @@ export function useOperationsCenter() {
     detailAbort.current = controller
     if (row.operation_run_id && row.customer.hospital_id) {
       try {
-        const run = await fetchAPI(
+        const run = await fetchAPI<OperationsRunSummary>(
           `/admin/operations/hospitals/${row.customer.hospital_id}/runs/${row.operation_run_id}`,
           { signal: controller.signal },
         )
