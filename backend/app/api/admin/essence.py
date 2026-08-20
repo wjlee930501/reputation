@@ -513,7 +513,7 @@ async def exclude_source(
 async def upload_source_file(
     hospital_id: uuid.UUID,
     source_type: SourceType = Form(...),
-    title: str = Form(default=""),
+    title: str = Form(default="", max_length=300),
     file: UploadFile = File(...),
     is_public: bool | None = Form(default=None),
     operator_note: str | None = Form(default=None),
@@ -563,7 +563,7 @@ async def upload_source_file(
     elif extractor_kind == "DOCX":
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
 
-    # 제목이 비어 있으면 파일명(확장자 제외)을 사용
+    # 제목이 비어 있으면 파일명(확장자 제외, 경로 제외, 300자 제한)을 사용
     final_title = title.strip() if title.strip() else _filename_without_extension(file.filename or "")
     if not final_title:
         final_title = "업로드 파일"
@@ -879,6 +879,31 @@ async def toggle_source_public(
         await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
     notes = await _get_notes_for_source(db, source.id)
     return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
+
+
+@router.post("/revalidate", status_code=status.HTTP_204_NO_CONTENT)
+async def trigger_site_revalidate_for_hospital(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: 병원 사이트 캐시를 명시적으로 무효화.
+    
+    사진 일괄 업로드 후 한 번만 revalidate하거나, 공개 자료 변경 후 수동으로
+    사이트 갱신이 필요할 때 호출한다. 커밋 없는 읽기 전용 엔드포인트.
+    """
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    if not _has_public_site(hospital):
+        raise HTTPException(
+            status_code=400,
+            detail="공개 사이트가 없는 병원은 revalidate할 수 없습니다.",
+        )
+    ensure_site_revalidate_configured()
+    await trigger_hospital_site_revalidate_safe(
+        hospital.slug,
+        hospital.treatments,
+        hospital_name=hospital.name,
+    )
+    # 204 No Content — revalidate 실패해도 안전하게 무시 (_safe)
 
 
 @router.get("/sources/{source_id}/file")
@@ -1427,13 +1452,18 @@ def _serialize_philosophy(philosophy: HospitalContentPhilosophy) -> dict:
 
 
 def _filename_without_extension(filename: str) -> str:
-    """파일명에서 확장자를 제거하고 반환."""
+    """파일명에서 확장자를 제거하고 반환. 경로는 basename만, 300자로 truncate."""
     if not filename:
         return ""
+    # os.path.basename 없이 순수 파일명만 추출 (/ 또는 \\ 이후)
+    basename = filename.replace("\\", "/").split("/")[-1]
     # 마지막 점 이전까지만 가져옴
-    if "." in filename:
-        return filename.rsplit(".", 1)[0]
-    return filename
+    if "." in basename:
+        name_without_ext = basename.rsplit(".", 1)[0]
+    else:
+        name_without_ext = basename
+    # 300자 제한
+    return name_without_ext[:300]
 
 
 def _clean_optional(value: str | None) -> str | None:

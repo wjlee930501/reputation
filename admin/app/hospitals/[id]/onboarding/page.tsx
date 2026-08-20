@@ -721,11 +721,11 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
 
     const results: { success: boolean; filename: string }[] = []
     const totalFiles = files.length
+    let anyPublicPhotoSucceeded = false
 
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i]
-        const isLast = i === files.length - 1
         try {
           const fd = new FormData()
           fd.append('source_type', type)
@@ -735,17 +735,31 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           if (isPhotoSourceType(type)) {
             fd.append('is_public', 'true')
           }
-          // 마지막 파일이 아니면 revalidate 건너뛰기 (N개 사진 → 1번 revalidate)
+          // 일괄 업로드 시 모든 파일에 skip_revalidate=true (마지막 후 명시적 revalidate)
           const url = `/admin/hospitals/${hospitalId}/essence/sources/upload${
-            isPhotoType && !isLast ? '?skip_revalidate=true' : ''
+            totalFiles > 1 ? '?skip_revalidate=true' : ''
           }`
           await fetchAPI(url, {
             method: 'POST',
             body: fd,
           })
           results.push({ success: true, filename: file.name })
+          if (isPhotoType) {
+            anyPublicPhotoSucceeded = true
+          }
         } catch (e: unknown) {
           results.push({ success: false, filename: file.name })
+        }
+      }
+
+      // 공개 사진이 하나라도 성공했으면 마지막 파일 실패 여부와 무관하게 revalidate 1회
+      if (anyPublicPhotoSucceeded && totalFiles > 1) {
+        try {
+          await fetchAPI(`/admin/hospitals/${hospitalId}/essence/revalidate`, {
+            method: 'POST',
+          })
+        } catch (e: unknown) {
+          // revalidate 실패는 무시 (_safe 패턴)
         }
       }
 
