@@ -47,11 +47,15 @@ TASK_PURPOSES = {
     "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": "drain-lead-diagnoses",
     "app.workers.autonomous_recovery.reconcile": "reconcile-autonomous-workflows",
     "app.workers.content_backlog_recovery.reconcile": "reconcile-stranded-content",
+    "app.workers.domain_certificate_tasks.provision_domain_certificate": (
+        "provision-domain-certificate"
+    ),
     "app.workers.canary_tasks.canary_default": "canary-default",
     "app.workers.canary_tasks.canary_content": "canary-content",
     "app.workers.canary_tasks.canary_sov": "canary-sov",
     "app.workers.canary_tasks.canary_reports": "canary-reports",
     "app.workers.canary_tasks.canary_leadgen": "canary-leadgen",
+    "app.workers.canary_tasks.canary_certificates": "canary-certificates",
 }
 
 FIRST_ARG_TARGET_TASKS = frozenset(
@@ -65,6 +69,7 @@ FIRST_ARG_TARGET_TASKS = frozenset(
         "app.workers.tasks.run_sov_for_hospital",
         "app.workers.tasks.generate_monthly_report_for_hospital",
         "app.workers.tasks.retry_site_revalidation",
+        "app.workers.domain_certificate_tasks.provision_domain_certificate",
         "app.workers.lead_diagnosis_tasks.notify_lead_intake",
         "app.workers.lead_diagnosis_tasks.run_lead_diagnosis",
         "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_measurement",

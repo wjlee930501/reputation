@@ -23,7 +23,14 @@ from app.services.notification_contracts import IncidentSlackProjection, validat
 from app.services.notification_messages import build_open_incident_notification
 from app.workers.dispatch_auth import require_dispatch
 
-EXPECTED_QUEUES: Final = ("default", "content", "sov", "reports", "leadgen")
+EXPECTED_QUEUES: Final = (
+    "default",
+    "content",
+    "sov",
+    "reports",
+    "leadgen",
+    "certificates",
+)
 CANARY_MAX_AGE: Final = timedelta(minutes=15)
 CANARY_TTL_SECONDS: Final = 20 * 60
 _SAFE_REVISION: Final = re.compile(r"^[A-Za-z0-9._-]{7,128}$")
@@ -159,6 +166,11 @@ def canary_reports(task: Task) -> CanaryPayload:
 @celery_app.task(name="app.workers.canary_tasks.canary_leadgen", bind=True)
 def canary_leadgen(task: Task) -> CanaryPayload:
     return _run_canary(task, "leadgen")
+
+
+@celery_app.task(name="app.workers.canary_tasks.canary_certificates", bind=True)
+def canary_certificates(task: Task) -> CanaryPayload:
+    return _run_canary(task, "certificates")
 
 
 def read_queue_canaries(*, now: datetime | None = None) -> QueueCanaryFacts:

@@ -41,6 +41,8 @@ async def disconnect_domain(
     h.aeo_domain = None
     h.domain_cert_job_state = None
     h.domain_cert_job_started_at = None
+    h.domain_cert_job_token = None
+    h.domain_cert_job_domain = None
     h.domain_cert_dns_verified_at = None
     
     # site_live는 유지 (기본 플랫폼 주소로 계속 운영)
@@ -123,6 +125,8 @@ async def connect_domain(
     if domain_changed or strategy_changed:
         h.domain_cert_job_state = None
         h.domain_cert_job_started_at = None
+        h.domain_cert_job_token = None
+        h.domain_cert_job_domain = None
         h.domain_cert_dns_verified_at = None
     if previous_site_live:
         ensure_site_revalidate_configured()

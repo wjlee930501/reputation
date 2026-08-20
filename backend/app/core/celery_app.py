@@ -15,7 +15,7 @@ from app.workers.dispatch_auth import (
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-08-18.2"
+REDBEAT_SCHEDULE_VERSION = "2026-08-21.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -84,6 +84,7 @@ celery_app = Celery(
         "app.workers.monthly_artifact_reconciliation",
         "app.workers.autonomous_recovery",
         "app.workers.content_backlog_recovery",
+        "app.workers.domain_certificate_tasks",
         "app.workers.operation_run_signals",
         "app.workers.canary_tasks",
     ],
@@ -137,7 +138,7 @@ celery_app.conf.update(
         "app.workers.tasks.build_aeo_site": {"queue": "default"},
         "app.workers.tasks.retry_site_revalidation": {"queue": "default"},
         "app.workers.tasks.monthly_slot_generation": {"queue": "default"},
-        # 라우팅 누락 시 기본 "celery" 큐로 떨어지는데, 워커는 -Q default,content,sov,reports만
+        # 라우팅 누락 시 기본 "celery" 큐로 떨어지는데 배포 워커는 명시한 큐만
         # 소비하므로 영원히 실행되지 않는다 — beat 태스크는 반드시 여기 등록할 것
         # (tests/test_celery_routing.py가 회귀를 막는다).
         "app.workers.tasks.purge_expired_leads": {"queue": "default"},
@@ -157,11 +158,15 @@ celery_app.conf.update(
         "app.workers.monthly_artifact_reconciliation.reconcile": {"queue": "reports"},
         "app.workers.autonomous_recovery.reconcile": {"queue": "default"},
         "app.workers.content_backlog_recovery.reconcile": {"queue": "default"},
+        "app.workers.domain_certificate_tasks.provision_domain_certificate": {
+            "queue": "certificates"
+        },
         "app.workers.canary_tasks.canary_default": {"queue": "default"},
         "app.workers.canary_tasks.canary_content": {"queue": "content"},
         "app.workers.canary_tasks.canary_sov": {"queue": "sov"},
         "app.workers.canary_tasks.canary_reports": {"queue": "reports"},
         "app.workers.canary_tasks.canary_leadgen": {"queue": "leadgen"},
+        "app.workers.canary_tasks.canary_certificates": {"queue": "certificates"},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성
@@ -292,6 +297,11 @@ celery_app.conf.update(
             "task": "app.workers.canary_tasks.canary_leadgen",
             "schedule": crontab(minute="*/5"),
             "options": {"headers": build_dispatch_headers("canary-leadgen")},
+        },
+        "canary-certificates": {
+            "task": "app.workers.canary_tasks.canary_certificates",
+            "schedule": crontab(minute="*/5"),
+            "options": {"headers": build_dispatch_headers("canary-certificates")},
         },
     },
 )

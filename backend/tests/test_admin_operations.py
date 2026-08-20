@@ -11,11 +11,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from app.api.admin import domain as domain_api
 from app.api.admin import operations as operations_api
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentStatus
 from app.models.handoff import HandoffState, HospitalHandoff
-from app.models.hospital import DomainDnsStrategy, HospitalStatus
+from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import OperationRun
 from app.services import audit_log, operation_runs
@@ -61,6 +62,8 @@ class FakeDB:
             return self.handoff_state
         if entity is HospitalServiceInterval:
             return None
+        if entity is Hospital:
+            return self.hospital
         if entity is OperationRun:
             return next(
                 (item for item in self.added if isinstance(item, OperationRun)),
@@ -103,9 +106,23 @@ def _hospital(**overrides):
         site_built=True,
         schedule_set=True,
         site_live=False,
+        domain_cert_job_state=None,
+        domain_cert_job_started_at=None,
+        domain_cert_job_token=None,
+        domain_cert_job_domain=None,
+        domain_cert_dns_verified_at=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+@pytest.fixture(autouse=True)
+def _stub_domain_certificate_dispatch(monkeypatch):
+    monkeypatch.setattr(
+        domain_api.provision_domain_certificate,
+        "apply_async",
+        lambda **_kwargs: None,
+    )
 
 
 def _content(hospital_id, **overrides):
@@ -373,7 +390,7 @@ async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch)
             verification_method="cname",
         )
 
-    monkeypatch.setattr(operations_api, "check_domain_dns", _fake_check_domain_dns)
+    monkeypatch.setattr(domain_api, "check_domain_dns", _fake_check_domain_dns)
 
     response = await operations_api.verify_domain_operation(hospital.id, db=db)
 
@@ -407,7 +424,7 @@ async def test_verify_domain_operation_blocks_live_without_readiness(monkeypatch
             verification_method="cname",
         )
 
-    monkeypatch.setattr(operations_api, "check_domain_dns", _fake_check_domain_dns)
+    monkeypatch.setattr(domain_api, "check_domain_dns", _fake_check_domain_dns)
 
     with pytest.raises(HTTPException) as exc:
         await operations_api.verify_domain_operation(hospital.id, db=db)
@@ -442,7 +459,7 @@ async def test_verify_domain_operation_rejects_apex_when_cname_exists_even_if_ad
             verification_method=None,
         )
 
-    monkeypatch.setattr(operations_api, "check_domain_dns", _fake_check_domain_dns)
+    monkeypatch.setattr(domain_api, "check_domain_dns", _fake_check_domain_dns)
 
     response = await operations_api.verify_domain_operation(hospital.id, db=db)
 
@@ -477,7 +494,7 @@ async def test_verify_domain_operation_accepts_apex_address_strategy(monkeypatch
             verification_method="address",
         )
 
-    monkeypatch.setattr(operations_api, "check_domain_dns", _fake_check_domain_dns)
+    monkeypatch.setattr(domain_api, "check_domain_dns", _fake_check_domain_dns)
 
     response = await operations_api.verify_domain_operation(hospital.id, db=db)
 
@@ -517,7 +534,7 @@ async def test_operations_verify_blocks_each_authoritative_gate(
             verification_method="cname",
         )
 
-    monkeypatch.setattr(operations_api, "check_domain_dns", _verified_dns)
+    monkeypatch.setattr(domain_api, "check_domain_dns", _verified_dns)
 
     with pytest.raises(HTTPException) as exc:
         await operations_api.verify_domain_operation(hospital.id, db=db)

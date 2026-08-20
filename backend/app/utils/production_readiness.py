@@ -31,6 +31,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "canary-leadgen",
     "canary-reports",
     "canary-sov",
+    "canary-certificates",
     "dispatch-notification-outbox",
     "drain-lead-diagnoses",
     "live-custom-domain-health",
@@ -53,11 +54,13 @@ EXPECTED_BEAT_SCHEDULES = {
 EXPECTED_TASKS = {
     "app.workers.autonomous_recovery.reconcile",
     "app.workers.content_backlog_recovery.reconcile",
+    "app.workers.domain_certificate_tasks.provision_domain_certificate",
     "app.workers.canary_tasks.canary_content",
     "app.workers.canary_tasks.canary_default",
     "app.workers.canary_tasks.canary_leadgen",
     "app.workers.canary_tasks.canary_reports",
     "app.workers.canary_tasks.canary_sov",
+    "app.workers.canary_tasks.canary_certificates",
     "app.workers.lead_diagnosis_tasks.build_lead_report",
     "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses",
     "app.workers.lead_diagnosis_tasks.notify_lead_intake",
@@ -127,6 +130,7 @@ def _workflow_facts() -> dict[str, bool]:
     import app.workers.autonomous_recovery  # noqa: F401, PLC0415
     import app.workers.canary_tasks  # noqa: F401, PLC0415
     import app.workers.content_backlog_recovery  # noqa: F401, PLC0415
+    import app.workers.domain_certificate_tasks  # noqa: F401, PLC0415
     import app.workers.lead_diagnosis_tasks  # noqa: F401, PLC0415
     import app.workers.milestone_event_tasks  # noqa: F401, PLC0415
     import app.workers.monthly_artifact_reconciliation  # noqa: F401, PLC0415
@@ -224,6 +228,7 @@ def _queue_operator_label(queue: str) -> str:
         "sov": "AI 노출 측정",
         "reports": "보고서 생성",
         "leadgen": "무료 진단 접수",
+        "certificates": "도메인 인증서 발급",
     }.get(queue, "자동 작업")
 
 

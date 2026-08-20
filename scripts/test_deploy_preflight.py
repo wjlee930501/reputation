@@ -4,7 +4,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_SCRIPT = PROJECT_ROOT / "scripts" / "deploy.sh"
 SETUP_GCP_SCRIPT = PROJECT_ROOT / "scripts" / "setup-gcp.sh"
@@ -79,6 +78,31 @@ def test_backend_deploy_paths_run_asset_bucket_preflight() -> None:
         start = text.index(anchor)
         end = text.index(";;", start)
         assert "require_asset_bucket" in text[start:end], anchor
+
+
+def test_api_target_deploys_certificate_worker_before_api() -> None:
+    """새 API가 발행하는 전용 큐를 소비할 워커가 먼저 준비되어야 한다."""
+    text = DEPLOY_SCRIPT.read_text()
+    shared_case_start = text.index("  api|worker|beat)")
+    shared_case_end = text.index(";;", shared_case_start)
+    block = text[shared_case_start:shared_case_end]
+
+    assert 'capture_rollback_point reputation-worker reputation-beat reputation-api' in block
+    api_branch_start = block.rindex('if [[ "$TARGET" == "api" ]]')
+    api_branch_end = block.index("\n    else", api_branch_start)
+    api_branch = block[api_branch_start:api_branch_end]
+    assert api_branch.index('deploy_worker "$IMAGE_URL"') < api_branch.index(
+        'run_redbeat_reconcile "$IMAGE_URL"'
+    )
+    assert api_branch.index('run_redbeat_reconcile "$IMAGE_URL"') < api_branch.index(
+        'deploy_beat "$IMAGE_URL"'
+    )
+    assert api_branch.index('deploy_beat "$IMAGE_URL"') < api_branch.index(
+        'run_production_readiness_gate "$IMAGE_URL"'
+    )
+    assert api_branch.index('run_production_readiness_gate "$IMAGE_URL"') < api_branch.index(
+        'deploy_api "$IMAGE_URL"'
+    )
 
 
 def test_all_target_checks_public_dns_before_backend_mutation() -> None:

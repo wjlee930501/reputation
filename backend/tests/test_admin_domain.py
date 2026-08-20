@@ -9,8 +9,9 @@ from fastapi import HTTPException
 
 from app.api.admin import domain as domain_api
 from app.models.handoff import HandoffState, HospitalHandoff
-from app.models.hospital import DomainDnsStrategy, HospitalStatus
+from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
+from app.schemas.domain import DomainVerifyResponse as SchemaDomainVerifyResponse
 from app.workers import tasks
 
 
@@ -30,6 +31,8 @@ class FakeDB:
             return self.handoff_state
         if entity is HospitalServiceInterval:
             return None
+        if entity is Hospital:
+            return self.hospital
         return None
 
     def add(self, item):
@@ -111,6 +114,8 @@ def _hospital(**overrides):
         profile_complete=True,
         domain_cert_job_state=None,
         domain_cert_job_started_at=None,
+        domain_cert_job_token=None,
+        domain_cert_job_domain=None,
         domain_cert_dns_verified_at=None,
     )
     base.update(overrides)
@@ -131,6 +136,45 @@ def _patch_dns(monkeypatch, cname="target.motionlabs.io"):
         return []
 
     monkeypatch.setattr(domain_api, "_resolve_addresses", _fake_resolve_addresses)
+    monkeypatch.setattr(
+        domain_api.provision_domain_certificate,
+        "apply_async",
+        lambda **_kwargs: None,
+    )
+
+
+def test_domain_response_schema_remains_reexported_from_api_module():
+    assert domain_api.DomainVerifyResponse is SchemaDomainVerifyResponse
+
+
+async def test_dns_facade_uses_live_resolver_bindings_and_normalizes_cname(monkeypatch):
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(domain_api.settings, "CNAME_TARGET", "TARGET.MotionLabs.io")
+    monkeypatch.setattr(domain_api.settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20")
+
+    async def _fake_resolve_cname(domain):
+        calls.append(("cname", domain))
+        return "target.motionlabs.IO."
+
+    async def _fake_resolve_addresses(domain):
+        calls.append(("address", domain))
+        return ["34.117.10.20"]
+
+    monkeypatch.setattr(domain_api, "_resolve_cname", _fake_resolve_cname)
+    monkeypatch.setattr(domain_api, "_resolve_addresses", _fake_resolve_addresses)
+
+    result = await domain_api.check_domain_dns("Clinic.Example.com")
+
+    assert sorted(calls) == [
+        ("address", "Clinic.Example.com"),
+        ("cname", "Clinic.Example.com"),
+    ]
+    assert result.verified is True
+    assert result.verification_method == "cname"
+    assert result.cname_value == "target.motionlabs.IO."
+    assert result.address_values == ["34.117.10.20"]
+    assert result.expected_cname == "TARGET.MotionLabs.io"
+    assert result.expected_addresses == ["34.117.10.20"]
 
 
 async def test_verify_domain_activates_when_all_prerequisites_met(monkeypatch):
@@ -213,23 +257,19 @@ async def test_verify_domain_keeps_response_shape_on_cname_mismatch(monkeypatch)
     assert db.committed is False
 
 
-async def test_verify_domain_waits_for_https_certificate_after_dns_is_ready(monkeypatch):
+async def test_verify_domain_queues_https_certificate_after_dns_is_ready(monkeypatch):
     # DM-F4 new contract: DNS 검증 성공 = 온보딩 5단계 완료, 인증서는 후속 작업
     hospital = _hospital()
     db = FakeDB(hospital)
     _patch_dns(monkeypatch)
     monkeypatch.setattr(domain_api.settings, "CERTIFICATE_MANAGER_AUTO_PROVISION", True)
 
-    async def _pending_certificate(domain):
-        assert domain == "clinic.example.com"
-        return SimpleNamespace(
-            ready=False,
-            phase="PROVISIONING",
-            message="HTTPS 인증서를 준비하고 있습니다.",
-            error_code=None,
-        )
-
-    monkeypatch.setattr(domain_api, "ensure_verified_domain_certificate", _pending_certificate)
+    dispatches: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        domain_api.provision_domain_certificate,
+        "apply_async",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
 
     response = await domain_api.verify_domain(hospital.id, db=db)
 
@@ -241,6 +281,8 @@ async def test_verify_domain_waits_for_https_certificate_after_dns_is_ready(monk
     assert hospital.site_live is True  # DM-F4: site goes live on DNS success
     assert hospital.status == HospitalStatus.ACTIVE  # DM-F4: status becomes ACTIVE
     assert db.committed is True
+    assert len(dispatches) == 1
+    assert dispatches[0]["queue"] == "certificates"
     # open_service_interval is added first, find audit by action
     audit_rows = [row for row in db.added if hasattr(row, 'action')]
     assert any(row.action == "provision_domain_certificate" for row in audit_rows)

@@ -6,15 +6,20 @@ Tests for the domain onboarding step 5 fix:
 - DM-F4: DNS verification success = operator-complete for step 5, cert is follow-up
 """
 
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import anyio
 import pytest
 from fastapi import HTTPException
 
+from app.api.admin import domain as domain_api
 from app.api.admin.domain import verify_domain
 from app.models.hospital import DomainCertJobState, Hospital, HospitalStatus
+from app.services import domain_certificate_manager
 from app.services.domain_certificate_manager import DomainCertificateResult
 
 
@@ -30,7 +35,9 @@ class FakeDB:
         return self.hospital if self.hospital.id == object_id else None
 
     async def scalar(self, stmt):
-        # Mock service interval check - return None for new activation
+        entity = stmt.column_descriptions[0].get("entity")
+        if entity is Hospital:
+            return self.hospital
         return None
 
     def add(self, item):
@@ -38,6 +45,23 @@ class FakeDB:
 
     async def commit(self):
         self.committed = True
+
+
+class FakeCertificateTask:
+    def __init__(self, db: FakeDB):
+        self.db = db
+        self.calls: list[dict[str, object]] = []
+
+    def apply_async(self, *, args, queue, headers):
+        self.calls.append(
+            {
+                "args": args,
+                "queue": queue,
+                "headers": headers,
+                "committed": self.db.committed,
+            }
+        )
+        return SimpleNamespace(id="certificate-task")
 
 
 def make_hospital(
@@ -70,7 +94,113 @@ def make_hospital(
     hospital.domain_cert_job_state = cert_job_state
     hospital.domain_cert_job_started_at = cert_job_started_at
     hospital.domain_cert_dns_verified_at = dns_verified_at
+    hospital.domain_cert_job_domain = aeo_domain if cert_job_state else None
+    hospital.domain_cert_job_token = (
+        str(uuid.uuid4()) if cert_job_state == DomainCertJobState.ISSUING.value else None
+    )
     return hospital
+
+
+@pytest.fixture(autouse=True)
+def _stub_certificate_dispatch(monkeypatch):
+    monkeypatch.setattr(
+        domain_api.provision_domain_certificate,
+        "apply_async",
+        lambda **_kwargs: None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dns_verification_queues_certificate_without_waiting_for_provider(
+    monkeypatch,
+) -> None:
+    hospital = make_hospital(site_live=False)
+    db = FakeDB(hospital)
+    task = FakeCertificateTask(db)
+    provider_called = False
+
+    async def successful_dns(*_args):
+        return MagicMock(
+            verified=True,
+            cname_value="cname.reputation.motionlabs.kr",
+            address_values=[],
+            expected_cname="cname.reputation.motionlabs.kr",
+            expected_addresses=[],
+            verification_method="cname",
+        )
+
+    async def ready_gate(*_args):
+        return {"ready": True}
+
+    async def slow_provider(_domain: str):
+        nonlocal provider_called
+        provider_called = True
+        await anyio.sleep(0.1)
+        return DomainCertificateResult(
+            hostname=hospital.aeo_domain or "",
+            ready=False,
+            phase="PROVISIONING",
+            certificate_state="PROVISIONING",
+            map_entry_state="PENDING",
+            certificate_name="certificate",
+            map_entry_name="entry",
+            message="test",
+        )
+
+    monkeypatch.setattr(domain_api, "check_domain_dns", successful_dns)
+    monkeypatch.setattr(domain_api, "evaluate_activation_gate", ready_gate)
+    monkeypatch.setattr(
+        domain_api,
+        "ensure_verified_domain_certificate",
+        slow_provider,
+        raising=False,
+    )
+    monkeypatch.setattr(domain_api, "provision_domain_certificate", task, raising=False)
+
+    started = time.perf_counter()
+    result = await verify_domain(hospital.id, db)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.05
+    assert provider_called is False
+    assert result.dns_verified is True
+    assert len(task.calls) == 1
+    assert task.calls[0]["committed"] is True
+    assert task.calls[0]["queue"] == "certificates"
+
+
+@pytest.mark.asyncio
+async def test_cert_status_never_calls_certificate_manager_or_expires_worker_job(
+    monkeypatch,
+) -> None:
+    started_at = datetime.now(UTC) - timedelta(minutes=11)
+    hospital = make_hospital(
+        site_live=True,
+        status=HospitalStatus.ACTIVE,
+        cert_job_state=DomainCertJobState.ISSUING.value,
+        cert_job_started_at=started_at,
+        dns_verified_at=started_at,
+    )
+    hospital.domain_cert_job_token = str(uuid.uuid4())
+    hospital.domain_cert_job_domain = hospital.aeo_domain
+    db = FakeDB(hospital)
+
+    def must_not_inspect(_domain: str):
+        raise AssertionError("cert-status must read DB state instead of calling GCP")
+
+    monkeypatch.setattr(
+        domain_certificate_manager,
+        "inspect_domain_certificate",
+        must_not_inspect,
+    )
+
+    result = await domain_api.check_cert_status(hospital.id, db)
+
+    assert result.cert_job_state == DomainCertJobState.ISSUING.value
+    assert result.certificate_ready is False
+    assert hospital.domain_cert_job_state == DomainCertJobState.ISSUING.value
+    assert hospital.domain_cert_job_token is not None
+    assert db.committed is False
 
 
 @pytest.mark.asyncio
@@ -94,20 +224,7 @@ async def test_dns_verified_activates_site_live_without_cert():
         with patch("app.api.admin.domain.evaluate_activation_gate") as mock_gate:
             mock_gate.return_value = {"ready": True}
             
-            # Mock cert provisioning to return "issuing" state
-            with patch("app.api.admin.domain.ensure_verified_domain_certificate") as mock_cert:
-                mock_cert.return_value = DomainCertificateResult(
-                    hostname="ai.testclinic.co.kr",
-                    ready=False,
-                    phase="PROVISIONING",
-                    certificate_state="PROVISIONING",
-                    map_entry_state="PENDING",
-                    certificate_name="projects/test/certificates/cert-abc",
-                    map_entry_name="projects/test/maps/map-def",
-                    message="HTTPS 인증서를 준비하고 있습니다.",
-                )
-                
-                result = await verify_domain(hospital.id, db)
+            result = await verify_domain(hospital.id, db)
     
     # DNS 검증 성공 → site_live=True, status=ACTIVE (인증서 기다리지 않음)
     assert hospital.site_live is True
@@ -198,12 +315,12 @@ async def test_cert_job_done_does_not_reprovision():
         with patch("app.api.admin.domain.evaluate_activation_gate") as mock_gate:
             mock_gate.return_value = {"ready": True}
             
-            # Mock cert manager NOT to be called (already DONE)
-            with patch("app.api.admin.domain.ensure_verified_domain_certificate") as mock_cert:
+            with patch.object(
+                domain_api.provision_domain_certificate,
+                "apply_async",
+            ) as dispatch:
                 result = await verify_domain(hospital.id, db)
-                
-                # 인증서가 이미 DONE이므로 ensure_verified_domain_certificate 호출 안 함
-                mock_cert.assert_not_called()
+                dispatch.assert_not_called()
     
     # 결과: DNS verified, cert ready
     assert result.dns_verified is True
@@ -240,24 +357,15 @@ async def test_cert_job_failed_allows_retry():
         with patch("app.api.admin.domain.evaluate_activation_gate") as mock_gate:
             mock_gate.return_value = {"ready": True}
             
-            # Mock cert provisioning to succeed this time
-            with patch("app.api.admin.domain.ensure_verified_domain_certificate") as mock_cert:
-                mock_cert.return_value = DomainCertificateResult(
-                    hostname="ai.testclinic.co.kr",
-                    ready=True,
-                    phase="ACTIVE",
-                    certificate_state="ACTIVE",
-                    map_entry_state="ACTIVE",
-                    certificate_name="projects/test/certificates/cert-abc",
-                    map_entry_name="projects/test/maps/map-def",
-                    message="HTTPS 인증서가 준비되었습니다.",
-                )
-                
+            with patch.object(
+                domain_api.provision_domain_certificate,
+                "apply_async",
+            ) as dispatch:
                 result = await verify_domain(hospital.id, db)
-    
-    # FAILED → DONE으로 전환
-    assert hospital.domain_cert_job_state == DomainCertJobState.DONE.value
-    assert result.certificate_ready is True
+                dispatch.assert_called_once()
+
+    assert hospital.domain_cert_job_state == DomainCertJobState.ISSUING.value
+    assert result.certificate_ready is False
 
 
 @pytest.mark.asyncio

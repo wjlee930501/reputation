@@ -12,6 +12,7 @@ EXPECTED_CANARY_ROUTES = {
     "app.workers.canary_tasks.canary_sov": "sov",
     "app.workers.canary_tasks.canary_reports": "reports",
     "app.workers.canary_tasks.canary_leadgen": "leadgen",
+    "app.workers.canary_tasks.canary_certificates": "certificates",
 }
 
 

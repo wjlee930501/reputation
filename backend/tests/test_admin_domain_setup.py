@@ -1,9 +1,11 @@
 import uuid
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from slowapi import Limiter
 
+from app.api.admin import domain_setup as domain_setup_api
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import get_request_ip
@@ -87,6 +89,32 @@ def test_domain_setup_returns_cname_plan(monkeypatch):
     assert len(payload["warnings"]) == 3
     assert any("TTL은 DNS 검증 속도에 영향을 주지 않습니다" in w for w in payload["warnings"])
     assert any("Gabia" in w and "확인 후 저장" in w for w in payload["warnings"])
+
+
+def test_domain_setup_reads_certificate_state_without_provider_call(monkeypatch):
+    monkeypatch.setattr(settings, "CERTIFICATE_MANAGER_AUTO_PROVISION", True)
+    assert not hasattr(domain_setup_api, "inspect_domain_certificate")
+    hospital = _hospital(
+        site_live=True,
+        domain_cert_dns_verified_at="2026-08-21T00:00:00Z",
+        domain_cert_job_state="ISSUING",
+    )
+
+    with patch(
+        "app.services.domain_certificate_manager.inspect_domain_certificate"
+    ) as inspect_certificate:
+        response = _get_setup(hospital, monkeypatch)
+
+    inspect_certificate.assert_not_called()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["certificate_ready"] is False
+    assert payload["certificate_phase"] == "ISSUING"
+    certificate_step = next(
+        step for step in payload["checklist"] if step["key"] == "certificate_ready"
+    )
+    assert certificate_step["status"] == "WAITING"
 
 
 def test_domain_setup_returns_apex_address_plan(monkeypatch):

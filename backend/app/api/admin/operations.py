@@ -19,11 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_owner_account
-from app.api.admin.domain import (
-    check_domain_dns,
-    domain_dns_strategy_for_hospital,
-    ensure_verified_domain_certificate,
-)
+from app.api.admin.domain import verify_domain_for_hospital
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
@@ -46,7 +42,6 @@ from app.schemas.operations import (
 )
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
 from app.services.incident_safety import sanitize_operator_text
 from app.services.monthly_delivery_projection import (
     latest_delivery_event_subquery,
@@ -71,7 +66,6 @@ from app.services.post_publish_review_policy import (
     human_post_publish_review_predicate,
     publicly_operational_hospital_predicate,
 )
-from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
 from app.services.v0_claim import latest_active_v0_run, v0_claim_is_alive
 from app.workers.tasks import (
     build_aeo_site,
@@ -759,152 +753,21 @@ async def verify_domain_operation(
     hospital_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """Dashboard 공개 주소 확인용. /domain/verify와 동일한 멱등 로직 적용."""
-    from datetime import UTC, datetime
-    
-    from app.models.hospital import DomainCertJobState
-    
-    hospital = await _get_hospital_or_404(db, hospital_id)
-    if not hospital.aeo_domain:
-        raise HTTPException(status_code=400, detail="도메인이 설정되지 않았습니다.")
+    """Dashboard adapter over the canonical domain verification transaction."""
 
-    dns_check = await check_domain_dns(
-        hospital.aeo_domain, domain_dns_strategy_for_hospital(hospital)
-    )
-    
-    if not dns_check.verified:
-        # DNS 검증 실패
-        return {
-            "domain": hospital.aeo_domain,
-            "verified": False,
-            "dns_verified": False,
-            "cname_value": dns_check.cname_value,
-            "address_values": dns_check.address_values,
-            "expected_cname": dns_check.expected_cname,
-            "expected_addresses": dns_check.expected_addresses,
-            "verification_method": dns_check.verification_method,
-            "certificate_ready": False,
-            "certificate_phase": None,
-            "message": "DNS 설정이 아직 확인되지 않았습니다.",
-        }
-    
-    # DNS 검증 성공
-    gate = await evaluate_activation_gate(db, hospital)
-    if not gate["ready"]:
-        raise HTTPException(
-            status_code=409,
-            detail=activation_gate_error(gate),
-        )
-    
-    now = datetime.now(UTC)
-    if not getattr(hospital, "domain_cert_dns_verified_at", None):
-        hospital.domain_cert_dns_verified_at = now
-    
-    previous_status = (
-        hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
-    )
-    previous_site_live = bool(hospital.site_live)
-    
-    if not hospital.site_live:
-        hospital.site_live = True
-        hospital.status = HospitalStatus.ACTIVE
-        await open_service_interval(
-            db, hospital.id, ServiceIntervalProvenance.ACTIVATION
-        )
-    
-    # 인증서 작업 상태 확인 (멱등 - 중복 provision 방지)
-    cert_job_state = getattr(hospital, "domain_cert_job_state", None)
-    cert_job_started_at = getattr(hospital, "domain_cert_job_started_at", None)
-    
-    if cert_job_state == DomainCertJobState.ISSUING.value:
-        # 이미 진행 중이면 409
-        elapsed_minutes = None
-        if cert_job_started_at:
-            elapsed_minutes = int((now - cert_job_started_at).total_seconds() / 60)
-        
-        await db.commit()
-        raise HTTPException(
-            status_code=409,
-            detail=f"HTTPS 인증서 발급이 이미 진행 중입니다 (경과 {elapsed_minutes or 0}분).",
-        )
-    
-    # DONE이 아니면 인증서 발급 시작
-    certificate = None
-    if cert_job_state != DomainCertJobState.DONE.value:
-        certificate = await ensure_verified_domain_certificate(hospital.aeo_domain)
-        
-        if certificate and certificate.ready:
-            hospital.domain_cert_job_state = DomainCertJobState.DONE.value
-            hospital.domain_cert_job_started_at = now
-            cert_job_state = DomainCertJobState.DONE.value
-        else:
-            hospital.domain_cert_job_state = DomainCertJobState.ISSUING.value
-            hospital.domain_cert_job_started_at = now
-            cert_job_state = DomainCertJobState.ISSUING.value
-            
-            await write_audit_log(
-                db,
-                action="provision_domain_certificate",
-                hospital_id=hospital.id,
-                actor=default_actor(),
-                target_type="domain",
-                target_id=hospital.aeo_domain,
-                detail={
-                    "dns_verified": True,
-                    "certificate_ready": False,
-                    "certificate_phase": certificate.phase if certificate else None,
-                },
-            )
-    
-    certificate_ready = (cert_job_state == DomainCertJobState.DONE.value)
-    
-    if not previous_site_live:
-        await write_audit_log(
-            db,
-            action="verify_domain",
-            hospital_id=hospital.id,
-            actor=default_actor(),
-            target_type="domain",
-            target_id=hospital.aeo_domain,
-            detail={
-                "verified": True,
-                "dns_verified": True,
-                "cname_value": dns_check.cname_value,
-                "address_values": dns_check.address_values,
-                "expected_cname": dns_check.expected_cname,
-                "expected_addresses": dns_check.expected_addresses,
-                "verification_method": dns_check.verification_method,
-                "certificate_ready": certificate_ready,
-                "certificate_phase": cert_job_state,
-                "previous_status": previous_status,
-                "previous_site_live": previous_site_live,
-                "new_status": HospitalStatus.ACTIVE.value,
-                "new_site_live": True,
-                "activation_gate": gate,
-            },
-        )
-    
-    await db.commit()
-    
-    if certificate_ready:
-        message = "DNS 확인 완료 · HTTPS 인증서 준비 완료"
-    elif cert_job_state == DomainCertJobState.ISSUING.value:
-        message = "DNS 확인 완료 · HTTPS 인증서 발급 진행 중"
-    else:
-        message = "DNS 확인 완료"
-    
+    result = await verify_domain_for_hospital(hospital_id, db)
     return {
-        "domain": hospital.aeo_domain,
-        "verified": True,
-        "dns_verified": True,
-        "cname_value": dns_check.cname_value,
-        "address_values": dns_check.address_values,
-        "expected_cname": dns_check.expected_cname,
-        "expected_addresses": dns_check.expected_addresses,
-        "verification_method": dns_check.verification_method,
-        "certificate_ready": certificate_ready,
-        "certificate_phase": cert_job_state,
-        "message": message,
+        "domain": result.domain,
+        "verified": result.verified,
+        "dns_verified": result.dns_verified,
+        "cname_value": result.cname_value,
+        "address_values": result.address_values,
+        "expected_cname": result.expected_cname,
+        "expected_addresses": result.expected_addresses,
+        "verification_method": result.verification_method,
+        "certificate_ready": result.certificate_ready,
+        "certificate_phase": result.certificate_phase,
+        "message": result.message,
     }
 
 

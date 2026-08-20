@@ -13,6 +13,7 @@ CANARY_TASKS = {
     "app.workers.canary_tasks.canary_sov": "canary-sov",
     "app.workers.canary_tasks.canary_reports": "canary-reports",
     "app.workers.canary_tasks.canary_leadgen": "canary-leadgen",
+    "app.workers.canary_tasks.canary_certificates": "canary-certificates",
 }
 
 

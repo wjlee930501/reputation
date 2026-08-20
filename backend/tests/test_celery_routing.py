@@ -79,6 +79,13 @@ def test_pii_purge_task_is_routed():
     assert _resolved_queue("app.workers.tasks.purge_expired_leads") == "default"
 
 
+def test_domain_certificate_task_is_loaded_and_routed():
+    task_name = "app.workers.domain_certificate_tasks.provision_domain_certificate"
+
+    assert "app.workers.domain_certificate_tasks" in celery_app.conf.include
+    assert _resolved_queue(task_name) == "certificates"
+
+
 def test_essence_auto_review_has_immediate_and_periodic_recovery_routes():
     review_task = "app.workers.tasks.auto_review_essence_snapshot"
     reconcile_task = "app.workers.tasks.reconcile_essence_snapshots"

@@ -4,7 +4,7 @@
 # Re:putation — GCP Cloud Run 로컬 빌드 & 배포
 #
 # 사용법:
-#   bash scripts/deploy.sh api          # API 서비스만 배포
+#   bash scripts/deploy.sh api          # API + 호환 Worker/Beat 배포
 #   bash scripts/deploy.sh worker       # Worker 서비스만 배포
 #   bash scripts/deploy.sh beat         # Beat 서비스만 배포
 #   bash scripts/deploy.sh site         # 공개 site (Next.js) 배포
@@ -1057,7 +1057,7 @@ run_redbeat_reconcile() {
 
 run_production_readiness_gate() {
   local image_url="$1"
-  info "현재 배포 버전의 5개 작업 큐 준비 상태 확인 중..."
+  info "현재 배포 버전의 6개 작업 큐 준비 상태 확인 중..."
 
   require_backend_runtime_shape
   build_backend_runtime_args
@@ -1189,13 +1189,20 @@ case "$TARGET" in
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
-    capture_rollback_point "reputation-${TARGET}"
+    if [[ "$TARGET" == "api" ]]; then
+      capture_rollback_point reputation-worker reputation-beat reputation-api
+    else
+      capture_rollback_point "reputation-${TARGET}"
+    fi
     IMAGE_URL=$(build_and_push)
     run_migration "$IMAGE_URL"
     if [[ "$TARGET" == "beat" ]]; then
       run_redbeat_reconcile "$IMAGE_URL"
     fi
     if [[ "$TARGET" == "api" ]]; then
+      deploy_worker "$IMAGE_URL"
+      run_redbeat_reconcile "$IMAGE_URL"
+      deploy_beat "$IMAGE_URL"
       run_production_readiness_gate "$IMAGE_URL"
       deploy_api "$IMAGE_URL"
     else

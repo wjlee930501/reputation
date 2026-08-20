@@ -123,6 +123,8 @@ class Hospital(Base):
     # 커스텀 도메인 인증서 작업 상태 추적 (DM-F1: 작업 상태·시작 시각·경과 시간 노출)
     domain_cert_job_state: Mapped[str | None] = mapped_column(String(20))  # DomainCertJobState enum value
     domain_cert_job_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    domain_cert_job_token: Mapped[str | None] = mapped_column(String(36))
+    domain_cert_job_domain: Mapped[str | None] = mapped_column(String(200))
     domain_cert_dns_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     aeo_site_path: Mapped[str | None] = mapped_column(String(500))  # 빌드된 사이트 경로
     latitude: Mapped[float | None] = mapped_column(Float)

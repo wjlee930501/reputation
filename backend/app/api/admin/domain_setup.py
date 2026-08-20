@@ -1,9 +1,8 @@
-import asyncio
 import ipaddress
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TypeVar
+from typing import TypeVar, assert_never
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -11,8 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.hospital import DomainDnsStrategy, DomainManagementMode, Hospital
-from app.services.domain_certificate_manager import inspect_domain_certificate
+from app.models.hospital import (
+    DomainCertJobState,
+    DomainDnsStrategy,
+    DomainManagementMode,
+    Hospital,
+)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Domain Setup"])
 DomainEnumT = TypeVar("DomainEnumT", DomainManagementMode, DomainDnsStrategy)
@@ -56,7 +59,7 @@ class DomainSetupResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DomainSetupState:
     domain: str | None
     management_mode: DomainManagementMode
@@ -76,9 +79,7 @@ async def get_domain_setup(hospital_id: uuid.UUID, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=404, detail="Hospital not found")
 
     state = _domain_setup_state(hospital)
-    certificate = None
-    if state.domain and settings.CERTIFICATE_MANAGER_AUTO_PROVISION:
-        certificate = await asyncio.to_thread(inspect_domain_certificate, state.domain)
+    certificate_ready = state.cert_job_state == DomainCertJobState.DONE.value
     addresses = _configured_custom_domain_ips()
     records, warnings = _domain_records(state.domain, state.dns_strategy, addresses)
     return DomainSetupResponse(
@@ -95,10 +96,10 @@ async def get_domain_setup(hospital_id: uuid.UUID, db: AsyncSession = Depends(ge
         domain_purchase_note=state.purchase_note,
         expected_cname=settings.CNAME_TARGET,
         expected_addresses=addresses,
-        certificate_ready=bool(certificate and certificate.ready),
-        certificate_phase=certificate.phase if certificate else None,
+        certificate_ready=certificate_ready,
+        certificate_phase=state.cert_job_state,
         records=records,
-        checklist=_checklist(state, certificate_ready=bool(certificate and certificate.ready)),
+        checklist=_checklist(state),
         warnings=warnings,
     )
 
@@ -196,19 +197,19 @@ def _domain_records(
             if not records:
                 base_warnings.append("APEX_ADDRESS strategy is selected, but CUSTOM_DOMAIN_IP_TARGETS is not configured.")
             return records, base_warnings
+        case unreachable:
+            assert_never(unreachable)
 
 
 def _checklist(
     state: DomainSetupState,
-    *,
-    certificate_ready: bool = False,
 ) -> list[DomainSetupChecklistItem]:
     purchase_done = state.management_mode == DomainManagementMode.HOSPITAL_MANAGED or bool(
         state.registrar
     )
     # DM-U5: 체크리스트는 각 단계의 실제 상태를 반영. site_live는 DNS 검증 완료 여부만 나타냄.
     dns_verified = bool(state.dns_verified_at)
-    cert_done = state.cert_job_state == "DONE" if state.cert_job_state else False
+    cert_done = state.cert_job_state == DomainCertJobState.DONE.value
     
     return [
         DomainSetupChecklistItem(
