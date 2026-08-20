@@ -165,11 +165,11 @@ from app.services.sov_engine import (
     generate_query_matrix_specs,
     run_single_query,
 )
+from app.services.v0_claim import v0_claim_is_alive_sync
 from app.utils.db_locks import (
     acquire_hospital_advisory_lock_sync,
     acquire_hospital_advisory_session_lock_sync,
 )
-from app.services.v0_claim import V0_CLAIM_MAX_AGE_SECONDS, v0_claim_is_alive_sync
 from app.workers.content_publication_block_control import ensure_publication_block_run
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.generation_batch_run import GenerationBatchRecorder
