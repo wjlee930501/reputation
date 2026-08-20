@@ -6,9 +6,11 @@ import { buildOpeningHoursSpec } from '@/lib/business-hours'
 import { buildAddressRegionFields } from '@/lib/clinic-schema'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalHospitalUrl } from '@/lib/site-url'
+import { selectVisitFacilityPhotos } from '@/lib/visit-photos'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
+import { ClinicGallery } from '../_components/ClinicGallery'
 import { ClinicHeader } from '../_components/ClinicHeader'
 import { ContactCard } from '../_components/ContactCard'
 import { JsonLd } from '../_components/JsonLd'
@@ -100,6 +102,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
     { url: hospital.naver_place_url, label: '네이버 플레이스' },
     { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
   ]
+  const facilityPhotos = selectVisitFacilityPhotos(hospital.photos ?? [])
 
   return (
     <>
@@ -150,6 +153,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
             region={hospital.region}
             websiteUrl={hospital.website_url}
           />
+          <ClinicGallery photos={facilityPhotos} minimumPhotoCount={1} />
         </main>
         <ClinicFooter
           hospitalName={hospital.name}

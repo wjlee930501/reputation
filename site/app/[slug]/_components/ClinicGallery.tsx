@@ -4,6 +4,7 @@ import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
 
 interface Props {
   photos: HospitalPhoto[]
+  minimumPhotoCount?: number
 }
 
 const TYPE_LABELS: Record<HospitalPhoto['source_type'], string> = {
@@ -19,11 +20,11 @@ const NON_DOCTOR_TYPES: Array<HospitalPhoto['source_type']> = [
   'PHOTO_TREATMENT_ROOM',
 ]
 
-export function ClinicGallery({ photos }: Props) {
+export function ClinicGallery({ photos, minimumPhotoCount = 3 }: Props) {
   // 원장 사진은 DoctorIntro에서 노출하므로 갤러리에선 제외.
   const visible = photos.filter((p) => NON_DOCTOR_TYPES.includes(p.source_type))
-  // P0-3: 사진이 3장 미만이면 갤러리 섹션 자체를 숨긴다. 1~2장 grid는 휑해서 "미완성" 인상을 준다.
-  if (visible.length < 3) return null
+  // 홈은 기본 3장 게이트를 유지하고, /visit만 명시적으로 1장부터 공간 안내를 노출한다.
+  if (visible.length < minimumPhotoCount) return null
 
   return (
     <section className="clinic-section">
@@ -36,7 +37,7 @@ export function ClinicGallery({ photos }: Props) {
           </p>
         </header>
 
-        <div className="clinic-gallery-grid">
+        <div className={`clinic-gallery-grid${visible.length < 3 ? ' clinic-gallery-grid--sparse' : ''}`}>
           {visible.map((photo) => {
             const url = resolveAssetUrl(photo.url)
             if (!url) return null
