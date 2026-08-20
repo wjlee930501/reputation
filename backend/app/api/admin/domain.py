@@ -3,6 +3,7 @@ import ipaddress
 import socket
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
+from app.models.hospital import DomainCertJobState, DomainDnsStrategy, Hospital, HospitalStatus
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.domain_certificate_manager import (
     DomainCertificateResult,
@@ -31,6 +32,9 @@ class DomainVerifyResponse(BaseModel):
     dns_verified: bool
     certificate_ready: bool
     certificate_phase: str | None = None
+    cert_job_state: str | None = None
+    cert_job_started_at: datetime | None = None
+    cert_job_elapsed_minutes: int | None = None
     cname_value: str | None
     expected_cname: str
     address_values: list[str] = Field(default_factory=list)
@@ -51,6 +55,11 @@ class DomainDnsCheck:
 
 @router.post("/{hospital_id}/domain/verify", response_model=DomainVerifyResponse)
 async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """DNS 검증 전용 엔드포인트. DNS 확인 성공 시 온보딩 5단계 완료.
+    
+    인증서 발급은 별도의 비동기 작업으로 분리되어 DNS 검증 완료 후에도 
+    온보딩을 막지 않는다 (DM-F4). 인증서 발급 상태는 cert_job_* 필드로 추적한다 (DM-F1).
+    """
     hospital = await _get_hospital_or_404(db, hospital_id)
 
     if not hospital.aeo_domain:
@@ -61,23 +70,117 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     domain = hospital.aeo_domain
     dns_strategy = domain_dns_strategy_for_hospital(hospital)
     dns_check = await check_domain_dns(domain, dns_strategy)
-    certificate = None
-    serving_ready = False
 
-    if dns_check.verified:
-        # operations.py verify-domain / hospitals.py activate와 동일한 게이트 (P1-6).
-        gate = await evaluate_activation_gate(db, hospital)
-        if not gate["ready"]:
-            raise HTTPException(
-                status_code=409,
-                detail=activation_gate_error(gate),
-            )
+    if not dns_check.verified:
+        # DNS 검증 실패 - 인증서 작업 불가
+        message = _failure_message(domain, dns_strategy, dns_check)
+        return DomainVerifyResponse(
+            domain=domain,
+            verified=False,
+            dns_verified=False,
+            certificate_ready=False,
+            certificate_phase=None,
+            cert_job_state=None,
+            cert_job_started_at=None,
+            cert_job_elapsed_minutes=None,
+            cname_value=dns_check.cname_value,
+            expected_cname=dns_check.expected_cname,
+            address_values=dns_check.address_values,
+            expected_addresses=dns_check.expected_addresses,
+            verification_method=dns_check.verification_method,
+            message=message,
+        )
+
+    # DNS 검증 성공 - 활성화 게이트 확인
+    gate = await evaluate_activation_gate(db, hospital)
+    if not gate["ready"]:
+        raise HTTPException(
+            status_code=409,
+            detail=activation_gate_error(gate),
+        )
+
+    # DNS 검증 성공 타임스탬프 기록 (온보딩 5단계 운영자 작업 완료 마커)
+    now = datetime.now(UTC)
+    if not hospital.domain_cert_dns_verified_at:
+        hospital.domain_cert_dns_verified_at = now
+
+    # DM-F4: DNS 검증 성공하면 즉시 site_live=True 전환 (인증서 기다리지 않음)
+    previous_status = (
+        hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+    )
+    previous_site_live = bool(hospital.site_live)
+    
+    if not hospital.site_live:
+        hospital.site_live = True
+        hospital.status = HospitalStatus.ACTIVE
+        await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
+
+    # 인증서 작업 상태 확인 및 시작
+    cert_job_state = hospital.domain_cert_job_state
+    cert_job_started_at = hospital.domain_cert_job_started_at
+    
+    # DM-F2: 인증서 발급 작업이 이미 진행 중이면 409 반환 (멱등성)
+    if cert_job_state == DomainCertJobState.ISSUING.value:
+        elapsed_minutes = None
+        if cert_job_started_at:
+            elapsed_minutes = int((now - cert_job_started_at).total_seconds() / 60)
+        
+        await write_audit_log(
+            db,
+            action="커스텀 도메인 저장",
+            hospital_id=hospital.id,
+            actor=default_actor(),
+            target_type="domain",
+            target_id=domain,
+            detail={
+                "dns_verified": True,
+                "cert_job_already_running": True,
+                "cert_job_elapsed_minutes": elapsed_minutes,
+            },
+        )
+        await db.commit()
+        
+        raise HTTPException(
+            status_code=409,
+            detail=f"HTTPS 인증서 발급이 이미 진행 중입니다 (경과 {elapsed_minutes or 0}분). 작업이 완료될 때까지 기다려 주세요.",
+        )
+
+    # 인증서 상태 확인 (이미 DONE이면 재발급 불필요)
+    if cert_job_state != DomainCertJobState.DONE.value:
+        # 인증서 발급 시작
         certificate = await ensure_verified_domain_certificate(domain)
-        serving_ready = certificate is None or certificate.ready
-        if not serving_ready:
+        
+        if certificate and certificate.ready:
+            # 인증서 즉시 준비 완료
+            hospital.domain_cert_job_state = DomainCertJobState.DONE.value
+            hospital.domain_cert_job_started_at = now
+            cert_job_state = DomainCertJobState.DONE.value
+            cert_job_started_at = now
+            
             await write_audit_log(
                 db,
-                action="provision_domain_certificate",
+                action="HTTPS 인증서 발급 요청",
+                hospital_id=hospital.id,
+                actor=default_actor(),
+                target_type="domain",
+                target_id=domain,
+                detail={
+                    "dns_verified": True,
+                    "certificate_ready": True,
+                    "certificate_phase": certificate.phase,
+                    "instant_ready": True,
+                },
+            )
+        else:
+            # 인증서 발급 진행 중
+            hospital.domain_cert_job_state = DomainCertJobState.ISSUING.value
+            hospital.domain_cert_job_started_at = now
+            cert_job_state = DomainCertJobState.ISSUING.value
+            cert_job_started_at = now
+            
+            await write_audit_log(
+                db,
+                action="HTTPS 인증서 발급 요청",
                 hospital_id=hospital.id,
                 actor=default_actor(),
                 target_type="domain",
@@ -89,31 +192,12 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
                     "certificate_error_code": certificate.error_code if certificate else None,
                 },
             )
-            await db.commit()
-            return DomainVerifyResponse(
-                domain=domain,
-                verified=False,
-                dns_verified=True,
-                certificate_ready=False,
-                certificate_phase=certificate.phase if certificate else None,
-                cname_value=dns_check.cname_value,
-                expected_cname=dns_check.expected_cname,
-                address_values=dns_check.address_values,
-                expected_addresses=dns_check.expected_addresses,
-                verification_method=dns_check.verification_method,
-                message=certificate.message if certificate else "HTTPS 인증서를 준비하고 있습니다.",
-            )
-        previous_status = (
-            hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
-        )
-        previous_site_live = bool(hospital.site_live)
-        hospital.site_live = True
-        hospital.status = HospitalStatus.ACTIVE
-        await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
-        # operations.py verify-domain 경로와 동일하게 LIVE 전환을 감사 로그에 남긴다.
+
+    # DNS 검증 완료 감사 로그 (site_live 전환 포함)
+    if not previous_site_live:
         await write_audit_log(
             db,
-            action="verify_domain",
+            action="커스텀 도메인 저장",
             hospital_id=hospital.id,
             actor=default_actor(),
             target_type="domain",
@@ -125,8 +209,6 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
                 "expected_cname": dns_check.expected_cname,
                 "expected_addresses": dns_check.expected_addresses,
                 "verification_method": dns_check.verification_method,
-                "certificate_phase": certificate.phase if certificate else "PLATFORM_MANAGED",
-                "certificate_ready": True,
                 "previous_status": previous_status,
                 "previous_site_live": previous_site_live,
                 "new_status": HospitalStatus.ACTIVE.value,
@@ -134,18 +216,33 @@ async def verify_domain(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
                 "activation_gate": gate,
             },
         )
-        await db.commit()
-        resolved_value = dns_check.cname_value or ", ".join(dns_check.address_values)
-        message = f"공개 도메인 상태가 확인되었습니다. ({domain} → {resolved_value})"
+    
+    await db.commit()
+
+    # 응답 생성
+    elapsed_minutes = None
+    if cert_job_started_at:
+        elapsed_minutes = int((now - cert_job_started_at).total_seconds() / 60)
+    
+    certificate_ready = (cert_job_state == DomainCertJobState.DONE.value)
+    resolved_value = dns_check.cname_value or ", ".join(dns_check.address_values)
+    
+    if certificate_ready:
+        message = f"DNS 확인 완료 · HTTPS 인증서 준비 완료 ({domain} → {resolved_value})"
+    elif cert_job_state == DomainCertJobState.ISSUING.value:
+        message = f"DNS 확인 완료 · HTTPS 인증서 발급 진행 중 (경과 {elapsed_minutes or 0}분). 일반적으로 수 분 내에 완료됩니다."
     else:
-        message = _failure_message(domain, dns_strategy, dns_check)
+        message = f"DNS 확인 완료 ({domain} → {resolved_value}). 운영 전환은 완료되었으며, HTTPS 인증서는 백그라운드에서 발급됩니다."
 
     return DomainVerifyResponse(
         domain=domain,
-        verified=serving_ready,
-        dns_verified=dns_check.verified,
-        certificate_ready=serving_ready,
-        certificate_phase=certificate.phase if certificate else None,
+        verified=True,
+        dns_verified=True,
+        certificate_ready=certificate_ready,
+        certificate_phase=cert_job_state,
+        cert_job_state=cert_job_state,
+        cert_job_started_at=cert_job_started_at,
+        cert_job_elapsed_minutes=elapsed_minutes,
         cname_value=dns_check.cname_value,
         expected_cname=dns_check.expected_cname,
         address_values=dns_check.address_values,

@@ -551,7 +551,7 @@ async def rebuild_site_operation(
     hospital = await _get_hospital_or_404(db, hospital_id)
     dispatch = await _enqueue_with_truthful_audit(
         db,
-        action="rebuild_site",
+        action="사이트 재빌드 요청",
         hospital_id=hospital.id,
         target_type="hospital",
         target_id=hospital.id,

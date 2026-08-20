@@ -64,6 +64,9 @@ export function domainStrategyLabel(strategy: DomainDnsStrategy): string {
 }
 
 export function buildFallbackDomainSetupPlan(domain: string, expectedCname: string): DomainSetupPlan {
+  // DM-U2: CNAME 대상값에 trailing dot 포함 + FQDN 안내
+  const cnameValueWithDot = expectedCname.endsWith('.') ? expectedCname : `${expectedCname}.`
+  
   return {
     domain,
     management_mode: 'HOSPITAL_MANAGED',
@@ -77,38 +80,41 @@ export function buildFallbackDomainSetupPlan(domain: string, expectedCname: stri
       {
         type: 'CNAME',
         name: domain,
-        value: expectedCname,
-        ttl: '300',
+        value: cnameValueWithDot,
+        ttl: '300 (또는 등록기관 최소값)',  // DM-U1: TTL 안내 개선
         purpose: '병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결',
       },
     ],
     checklist: [
       {
         key: 'domain_saved',
-        label: '도메인 저장',
+        label: '① 도메인 저장',
         description: '병원 계정에 연결할 도메인을 저장합니다.',
         status: domain ? 'DONE' : 'PENDING',
       },
       {
         key: 'dns_record',
-        label: 'DNS 레코드 등록',
+        label: '② DNS 레코드 등록',
         description: '등록기관 DNS 관리 화면에 안내된 레코드를 추가합니다.',
         status: 'PENDING',
       },
       {
         key: 'dns_verified',
-        label: 'DNS 검증',
-        description: 'DNS 전파 후 연결 검증을 실행합니다.',
+        label: '③ DNS 검증 (운영자 작업 완료)',
+        description: 'DNS 전파 후 연결 검증을 실행합니다. 검증 성공 시 온보딩 5단계 완료.',
         status: 'PENDING',
       },
       {
         key: 'certificate_ready',
-        label: 'HTTPS 인증서',
-        description: '인증서가 발급되면 병원 정보 허브가 HTTPS로 제공됩니다.',
+        label: '④ HTTPS 인증서 (시스템 후속)',
+        description: '인증서는 백그라운드에서 자동 발급됩니다.',
         status: 'PENDING',
       },
     ],
-    warnings: [],
+    warnings: [
+      'FQDN 입력 시 끝에 점(.)을 붙이는 등록기관도 있습니다. 등록기관 UI 규칙을 확인하세요.',  // DM-U2
+      'TTL은 DNS 검증 속도에 영향을 주지 않습니다. 등록기관 최소값을 사용하세요.',  // DM-U1
+    ],
   }
 }
 

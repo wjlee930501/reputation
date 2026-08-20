@@ -187,30 +187,71 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         dns_verified?: boolean
         certificate_ready?: boolean
         certificate_phase?: string | null
+        cert_job_state?: string | null
+        cert_job_started_at?: string | null
+        cert_job_elapsed_minutes?: number | null
         expected_cname?: string
         message?: string
       }>(
         `/admin/hospitals/${hospitalId}/domain/verify`,
         { method: 'POST' },
       )
-      if (result?.verified) {
-        onProfileChange({ site_live: true })
-        onHeaderRefresh()
-        setDomainFeedback({ tone: 'success', message: result.message ?? '도메인 연결이 확인되어 운영 상태로 전환되었습니다.' })
-      } else if (result?.dns_verified && !result?.certificate_ready) {
-        setDomainFeedback({
-          tone: 'info',
-          title: result.certificate_phase === 'FAILED' ? 'DNS 확인 완료 · 인증서 점검 필요' : 'DNS 확인 완료 · HTTPS 준비 중',
-          message: result?.message ?? '인증서를 준비하고 있습니다. 잠시 후 다시 연결 검증을 실행해 주세요.',
+      
+      // DM-F4: DNS 검증 성공 = 온보딩 5단계 완료, 인증서는 시스템 후속 작업
+      if (result?.dns_verified) {
+        // 프로파일 업데이트: site_live + 인증서 작업 상태
+        onProfileChange({ 
+          site_live: true,
+          domain_cert_job_state: result.cert_job_state ?? null,
+          domain_cert_job_started_at: result.cert_job_started_at ?? null,
         })
+        onHeaderRefresh()
+        
+        if (result.certificate_ready) {
+          // 인증서까지 준비 완료
+          setDomainFeedback({ 
+            tone: 'success', 
+            message: result.message ?? 'DNS 확인 완료 · HTTPS 인증서 준비 완료. 운영 상태로 전환되었습니다.' 
+          })
+        } else if (result.cert_job_state === 'ISSUING') {
+          // 인증서 발급 진행 중 (DM-F1: 경과 시간 표시)
+          const elapsed = result.cert_job_elapsed_minutes ?? 0
+          setDomainFeedback({
+            tone: 'success',
+            title: `DNS 확인 완료 · HTTPS 인증서 발급 진행 중 (경과 ${elapsed}분)`,
+            message: result.message ?? '운영 전환은 완료되었습니다. HTTPS 인증서는 일반적으로 수 분 내에 발급됩니다.',
+          })
+        } else if (result.cert_job_state === 'FAILED') {
+          // 인증서 발급 실패
+          setDomainFeedback({
+            tone: 'info',
+            title: 'DNS 확인 완료 · HTTPS 인증서 발급 실패',
+            message: result.message ?? 'DNS 연결 상태를 다시 확인한 뒤 재시도해 주세요.',
+          })
+        } else {
+          // DNS 확인 완료, 인증서 대기 중
+          setDomainFeedback({ 
+            tone: 'success', 
+            message: result.message ?? 'DNS 확인 완료. 운영 전환되었으며 HTTPS 인증서는 백그라운드에서 발급됩니다.' 
+          })
+        }
       } else {
+        // DNS 검증 실패
         setDomainFeedback({ tone: 'error', message: result?.message ?? 'DNS 설정이 아직 확인되지 않았습니다.' })
       }
     } catch (e: unknown) {
       const info = readDomainError(e, '도메인 검증에 실패했습니다.')
-      if (info.kind === 'prerequisite' || (e instanceof ApiError && e.status === 409)) {
+      
+      // DM-F2: 409 = 인증서 발급 작업 이미 진행 중
+      if (e instanceof ApiError && e.status === 409) {
+        setDomainFeedback({ 
+          tone: 'info', 
+          title: 'HTTPS 인증서 발급 진행 중',
+          message: info.message 
+        })
+      } else if (info.kind === 'prerequisite') {
         const steps = info.missingSteps.length > 0 ? info.missingSteps : parseStepsFromMessage(info.message)
-        setDomainFeedback({ tone: 'info', title: 'DNS 확인 완료 · 운영 전 단계 필요', message: info.message, steps })
+        setDomainFeedback({ tone: 'info', title: '운영 전 단계 필요', message: info.message, steps })
       } else {
         setDomainFeedback({ tone: 'error', message: info.message })
       }
@@ -220,7 +261,8 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   }
 
   async function handleActivatePlatform() {
-    if (platformActivating || activationMissing.length > 0 || currentDomain || domainSavedValue) return
+    // DM-F3: 기본 주소 활성화는 커스텀 도메인과 독립적으로 가능
+    if (platformActivating || activationMissing.length > 0) return
     setPlatformActivating(true)
     setDomainFeedback(null)
     try {
@@ -298,16 +340,14 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
                 <button
                   type="button"
                   onClick={handleActivatePlatform}
-                  disabled={platformActivating || activationMissing.length > 0 || Boolean(currentDomain || domainSavedValue)}
+                  disabled={platformActivating || activationMissing.length > 0}
                   className="min-h-11 w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {platformActivating
                     ? '운영 전환 중...'
                     : activationMissing.length > 0
                       ? '선행 단계를 먼저 완료해 주세요'
-                      : currentDomain || domainSavedValue
-                        ? '커스텀 도메인 설정을 먼저 정리해 주세요'
-                        : '기본 주소로 운영 시작'}
+                      : '기본 주소로 운영 시작'}
                 </button>
               </div>
             )}

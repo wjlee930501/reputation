@@ -77,6 +77,10 @@ async def connect_domain(
 
     if domain_changed or strategy_changed:
         h.site_live = False
+        # 도메인이나 DNS 전략이 바뀌면 인증서 작업 상태도 리셋
+        h.domain_cert_job_state = None
+        h.domain_cert_job_started_at = None
+        h.domain_cert_dns_verified_at = None
         if h.status == HospitalStatus.ACTIVE:
             h.status = HospitalStatus.PENDING_DOMAIN
             await close_service_interval(db, hospital_id)
@@ -85,7 +89,7 @@ async def connect_domain(
 
     await write_audit_log(
         db,
-        action="connect_domain",
+        action="커스텀 도메인 저장",
         hospital_id=hospital_id,
         actor=default_actor(),
         target_type="domain",
