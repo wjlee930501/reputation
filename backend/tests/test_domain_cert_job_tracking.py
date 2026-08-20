@@ -52,6 +52,8 @@ def make_hospital(
     dns_verified_at=None,
 ):
     """Create test hospital with domain tracking fields."""
+    from app.models.hospital import DomainDnsStrategy, DomainManagementMode
+    
     hospital = Hospital(
         id=uuid.uuid4(),
         name="테스트의원",
@@ -62,6 +64,8 @@ def make_hospital(
         v0_report_done=v0_report_done,
         site_built=site_built,
         site_live=site_live,
+        domain_dns_strategy=DomainDnsStrategy.CNAME,  # Default strategy
+        domain_management_mode=DomainManagementMode.HOSPITAL_MANAGED,  # Default mode
     )
     hospital.domain_cert_job_state = cert_job_state
     hospital.domain_cert_job_started_at = cert_job_started_at

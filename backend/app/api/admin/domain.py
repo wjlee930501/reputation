@@ -455,6 +455,9 @@ async def check_domain_dns(
 
 def domain_dns_strategy_for_hospital(hospital: Hospital) -> DomainDnsStrategy:
     value = getattr(hospital, "domain_dns_strategy", DomainDnsStrategy.CNAME)
+    # None fallback: real column is non-null default CNAME, but test mocks may be None
+    if value is None:
+        return DomainDnsStrategy.CNAME
     if isinstance(value, str):
         try:
             return DomainDnsStrategy(value)

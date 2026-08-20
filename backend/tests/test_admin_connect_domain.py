@@ -236,7 +236,8 @@ async def test_connect_domain_persists_management_metadata():
     assert hospital.domain_registrar == "Gabia"
     assert hospital.domain_dns_provider == "Cloudflare"
     assert hospital.domain_purchase_note == "Hospital already owns the apex."
-    assert hospital.site_live is False
+    # DM-F3: 커스텀 도메인 저장은 site_live를 건드리지 않음
+    assert hospital.site_live is True
 
 
 async def test_connect_domain_strategy_change_resets_live_state_for_same_domain():
@@ -424,7 +425,7 @@ async def test_activate_hospital_subdomain_default_without_custom_domain(monkeyp
     assert db.committed is True
     detail = next(item.detail for item in db.added if hasattr(item, "detail"))
     assert detail["aeo_domain"] is None
-    assert detail["verification_method"] == "platform_subdomain"
+    assert detail["activation_method"] == "PLATFORM_SUBDOMAIN"
 
 
 @pytest.mark.parametrize(

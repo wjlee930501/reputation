@@ -241,7 +241,9 @@ async def test_verify_domain_waits_for_https_certificate_after_dns_is_ready(monk
     assert hospital.site_live is True  # DM-F4: site goes live on DNS success
     assert hospital.status == HospitalStatus.ACTIVE  # DM-F4: status becomes ACTIVE
     assert db.committed is True
-    assert db.added[0].action == "provision_domain_certificate"
+    # open_service_interval is added first, find audit by action
+    audit_rows = [row for row in db.added if hasattr(row, 'action')]
+    assert any(row.action == "provision_domain_certificate" for row in audit_rows)
 
 
 async def test_verify_domain_accepts_lb_address_for_apex_domain(monkeypatch):
