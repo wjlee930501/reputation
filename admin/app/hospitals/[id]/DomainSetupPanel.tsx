@@ -394,11 +394,18 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         <div className="grid gap-3 md:grid-cols-[1fr_auto]">
           <div>
             <label htmlFor="profile-aeo-domain" className="text-sm font-semibold text-slate-800">연결 도메인</label>
-            {dnsStrategy === 'CNAME' && profile.website_url && (
-              <p className="mt-1 text-xs text-slate-500">
-                홈페이지 도메인 {new URL(profile.website_url).hostname}을 사용하는 경우, 서브도메인을 ai.{new URL(profile.website_url).hostname.replace(/^www\./, '')}로 설정할 수 있습니다.
-              </p>
-            )}
+            {dnsStrategy === 'CNAME' && profile.website_url && (() => {
+              try {
+                const hostname = new URL(profile.website_url).hostname.replace(/^www\./, '')
+                return (
+                  <p className="mt-1 text-xs text-slate-500">
+                    홈페이지 도메인 {hostname}을 사용하는 경우, 서브도메인을 ai.{hostname}로 설정할 수 있습니다.
+                  </p>
+                )
+              } catch {
+                return null
+              }
+            })()}
             <input
               id="profile-aeo-domain"
               type="text"
