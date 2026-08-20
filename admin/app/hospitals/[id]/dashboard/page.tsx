@@ -476,7 +476,7 @@ export default function DashboardPage() {
             <HeroStat
               label="측정 질문표"
               value={`${nonArchivedTargets.length}개`}
-              hint={`측정 매트릭스 ${queryCount}개 · 운영 중 ${activeTargets.length}개`}
+              hint={`운영 중 ${activeTargets.length}개 · 측정용 질문 ${queryCount}개`}
             />
             <HeroStat
               label="현재 AI 언급률"
