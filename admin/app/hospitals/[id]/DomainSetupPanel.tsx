@@ -128,11 +128,50 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   useEffect(() => {
     // DM-U6: 변경 사항이 있으면 미리보기 레코드 생성
     if (hasUnsavedChange && currentDomain) {
+      // DM-U6: 전략에 맞는 미리보기 생성
       setPreviewPlan(buildFallbackDomainSetupPlan(currentDomain, DEFAULT_CNAME_TARGET))
     } else {
       setPreviewPlan(null)
     }
   }, [hasUnsavedChange, currentDomain])
+
+  // DM-F1/F2: ISSUING 상태일 때 cert-status를 폴링하여 DONE/FAILED 전환 확인
+  useEffect(() => {
+    if (profile.domain_cert_job_state !== 'ISSUING') return
+    
+    let cancelled = false
+    const checkCertStatus = async () => {
+      try {
+        const result = await fetchAPI<{
+          cert_job_state?: string | null
+          cert_job_started_at?: string | null
+          cert_job_elapsed_minutes?: number | null
+          certificate_ready?: boolean
+          message?: string
+        }>(`/admin/hospitals/${hospitalId}/domain/cert-status`)
+        
+        if (!cancelled && result.cert_job_state && result.cert_job_state !== profile.domain_cert_job_state) {
+          onProfileChange({
+            domain_cert_job_state: result.cert_job_state,
+            domain_cert_job_started_at: result.cert_job_started_at ?? profile.domain_cert_job_started_at,
+          })
+        }
+      } catch (error: unknown) {
+        // 폴링 실패는 조용히 무시 (다음 폴링에서 재시도)
+      }
+    }
+    
+    // 즉시 한 번 체크
+    void checkCertStatus()
+    
+    // 30초마다 폴링
+    const interval = setInterval(() => void checkCertStatus(), 30000)
+    
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [hospitalId, profile.domain_cert_job_state, profile.domain_cert_job_started_at, onProfileChange])
 
   async function handleCopy(value: string) {
     try {
@@ -482,11 +521,41 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         )}
 
         {/* DM-F2: 인증서 준비 완료 여부로 버튼/링크 결정. site_live만으로는 판단하지 않음. */}
+        {/* DM-F3: 롤백 버튼은 도메인이 저장되어 있으면 항상 표시 (ISSUING/FAILED도 탈출 가능) */}
         {profile.domain_cert_job_state === 'DONE' && customDomainUrl ? (
           <>
             <a href={customDomainUrl} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
               병원 정보 허브 운영 중 · {currentDomain}
             </a>
+            <button
+              type="button"
+              onClick={handleRollbackDomain}
+              disabled={domainSaving}
+              className="min-h-9 w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              커스텀 도메인 초기화
+            </button>
+          </>
+        ) : domainSavedValue ? (
+          <>
+            <button 
+              type="button" 
+              onClick={handleVerifyDomain} 
+              disabled={domainVerifying || !domainSavedValue || hasUnsavedChange || profile.domain_cert_job_state === 'ISSUING'} 
+              className="min-h-11 w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {domainVerifying 
+                ? 'DNS 확인 중...' 
+                : profile.domain_cert_job_state === 'ISSUING'
+                  ? `HTTPS 인증서 발급 진행 중 (경과 ${_certElapsedMinutes(profile.domain_cert_job_started_at)}분)`
+                  : hasUnsavedChange 
+                    ? '변경한 도메인을 먼저 저장해 주세요' 
+                    : !domainSavedValue 
+                      ? '도메인을 먼저 저장해 주세요' 
+                      : profile.domain_cert_job_state === 'FAILED'
+                        ? 'DNS 확인 및 인증서 재시도'
+                        : 'DNS 확인하고 운영 시작'}
+            </button>
             <button
               type="button"
               onClick={handleRollbackDomain}
