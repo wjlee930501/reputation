@@ -90,8 +90,10 @@ test('fallback setup plan gives operators a usable CNAME record before backend s
     {
       type: 'CNAME',
       name: 'ai.clinic.example',
-      value: 'cname.reputation.motionlabs.kr',
-      ttl: '300',
+      host: 'ai.clinic.example',
+      registrar_host: 'ai',
+      value: 'cname.reputation.motionlabs.kr.',
+      ttl: '300 (또는 등록기관 최소값)',
       purpose: '병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결',
     },
   ])

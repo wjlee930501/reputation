@@ -62,6 +62,8 @@ export interface Hospital {
   domain_registrar?: string | null
   domain_dns_provider?: string | null
   domain_purchase_note?: string | null
+  domain_cert_dns_verified_at?: string | null
+  domain_cert_job_state?: string | null
   region?: string[]
   specialties?: string[]
   keywords?: string[]

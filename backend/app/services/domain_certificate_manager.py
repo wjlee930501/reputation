@@ -206,7 +206,7 @@ def _result_from_entry(
         error_code = "CERTIFICATE_FAILED"
     else:
         phase = "PROVISIONING"
-        message = "HTTPS 인증서를 준비하고 있습니다. DNS 전파 후 다시 확인해 주세요."
+        message = "HTTPS 인증서를 준비하고 있습니다. 일반적으로 수 분 내에 완료됩니다."
         error_code = None
 
     return DomainCertificateResult(

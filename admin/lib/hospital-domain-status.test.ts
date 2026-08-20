@@ -28,14 +28,16 @@ test.after(() => {
 })
 
 test('readHospitalDomainStatus separates live, DNS waiting, default, and unset states', () => {
+  // DM-U3 new contract: cert DONE = 운영 중
   assert.deepEqual(
-    readHospitalDomainStatus({ slug: 'clinic-a', aeo_domain: 'clinic-a.example.com', site_live: true }),
+    readHospitalDomainStatus({ slug: 'clinic-a', aeo_domain: 'clinic-a.example.com', site_live: true, domain_cert_job_state: 'DONE' }),
     {
       label: '운영 중',
       detail: 'clinic-a.example.com',
       tone: 'live',
     },
   )
+  // DNS not verified = 공개 주소 확인 대기
   assert.deepEqual(
     readHospitalDomainStatus({ slug: 'clinic-b', aeo_domain: 'clinic-b.example.com', site_live: false }),
     {
@@ -91,4 +93,75 @@ test('readHospitalDomainStatus derives the default host from NEXT_PUBLIC_SITE_UR
       },
     ),
   )
+})
+
+test('custom domain with DNS verified but cert not done shows dns_verified', () => {
+  assert.deepEqual(
+    readHospitalDomainStatus({
+      slug: 'test',
+      aeo_domain: 'clinic.example.com',
+      site_live: true,
+      domain_cert_dns_verified_at: '2026-08-20T10:00:00Z',
+    }),
+    {
+      label: 'DNS 확인 완료',
+      detail: 'clinic.example.com',
+      tone: 'dns_verified',
+    },
+  )
+})
+
+test('custom domain with cert ISSUING shows issuing', () => {
+  assert.deepEqual(
+    readHospitalDomainStatus({
+      slug: 'test',
+      aeo_domain: 'clinic.example.com',
+      site_live: true,
+      domain_cert_dns_verified_at: '2026-08-20T10:00:00Z',
+      domain_cert_job_state: 'ISSUING',
+    }),
+    {
+      label: '인증서 발급 중',
+      detail: 'clinic.example.com',
+      tone: 'issuing',
+    },
+  )
+})
+
+test('custom domain with cert FAILED shows failed', () => {
+  assert.deepEqual(
+    readHospitalDomainStatus({
+      slug: 'test',
+      aeo_domain: 'clinic.example.com',
+      site_live: true,
+      domain_cert_dns_verified_at: '2026-08-20T10:00:00Z',
+      domain_cert_job_state: 'FAILED',
+    }),
+    {
+      label: '인증서 실패',
+      detail: 'clinic.example.com',
+      tone: 'failed',
+    },
+  )
+})
+
+test('site_live true + custom domain + DNS not verified must NOT be 운영 중', () => {
+  const status = readHospitalDomainStatus({
+    slug: 'test',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    // domain_cert_dns_verified_at and domain_cert_job_state are both absent
+  })
+  assert.notEqual(status.label, '운영 중')
+  assert.equal(status.label, '공개 주소 확인 대기')
+  assert.equal(status.tone, 'waiting')
+})
+
+test('domain with uppercase is normalized to lowercase', () => {
+  const status = readHospitalDomainStatus({
+    slug: 'test',
+    aeo_domain: 'CLINIC.EXAMPLE.COM',
+    domain_cert_job_state: 'DONE',
+  })
+  assert.equal(status.detail, 'clinic.example.com')
 })

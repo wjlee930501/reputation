@@ -236,7 +236,8 @@ async def test_connect_domain_persists_management_metadata():
     assert hospital.domain_registrar == "Gabia"
     assert hospital.domain_dns_provider == "Cloudflare"
     assert hospital.domain_purchase_note == "Hospital already owns the apex."
-    assert hospital.site_live is False
+    # DM-F3: 커스텀 도메인 저장은 site_live를 건드리지 않음
+    assert hospital.site_live is True
 
 
 async def test_connect_domain_strategy_change_resets_live_state_for_same_domain():
@@ -257,8 +258,9 @@ async def test_connect_domain_strategy_change_resets_live_state_for_same_domain(
     )
 
     assert _enum_value(hospital.domain_dns_strategy) == "APEX_ADDRESS"
-    assert hospital.site_live is False
-    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    # DM-F3: DNS 전략 변경도 site_live를 건드리지 않음
+    assert hospital.site_live is True
+    assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
 
 
@@ -277,6 +279,7 @@ def test_hospital_detail_serializes_domain_metadata_defaults_for_legacy_rows():
 async def test_activate_hospital_rejects_apex_when_cname_exists_even_if_address_matches(
     monkeypatch,
 ):
+    """DM-F3: 기본 주소 활성화는 커스텀 도메인 설정과 독립적이므로 항상 성공."""
     hospital = _hospital(
         aeo_domain="jangclinic.co.kr",
         domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS,
@@ -289,27 +292,20 @@ async def test_activate_hospital_rejects_apex_when_cname_exists_even_if_address_
     )
     db = FakeDB(hospital)
 
-    async def _fake_check_domain_dns(domain, strategy=DomainDnsStrategy.CNAME):
-        assert domain == "jangclinic.co.kr"
-        assert strategy == DomainDnsStrategy.APEX_ADDRESS
-        return SimpleNamespace(
-            verified=False,
-            cname_value="target.motionlabs.io",
-            address_values=["34.117.10.20"],
-            expected_cname="target.motionlabs.io",
-            expected_addresses=["34.117.10.20"],
-            verification_method=None,
-        )
+    async def _fake_revalidate(*args, **kwargs):
+        return None
 
-    monkeypatch.setattr(hospitals_api, "check_domain_dns", _fake_check_domain_dns)
+    monkeypatch.setattr(hospitals_api, "ensure_site_revalidate_configured", lambda: None)
+    monkeypatch.setattr(hospitals_api, "trigger_hospital_site_revalidate_safe", _fake_revalidate)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await hospitals_api.activate_hospital(hospital.id, db=db)
+    result = await hospitals_api.activate_hospital(hospital.id, db=db)
 
-    assert exc_info.value.status_code == 400
-    assert hospital.site_live is False
-    assert hospital.status == HospitalStatus.PENDING_DOMAIN
-    assert db.committed is False
+    # 커스텀 도메인 DNS 검증과 무관하게 기본 주소로 활성화 성공
+    assert result["status"] == "ACTIVE"
+    assert result["site_live"] is True
+    assert hospital.site_live is True
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert db.committed is True
 
 
 async def test_activate_hospital_accepts_apex_address_strategy(monkeypatch):
@@ -356,7 +352,7 @@ async def test_activate_hospital_accepts_apex_address_strategy(monkeypatch):
     assert db.committed is True
     detail = next(item.detail for item in db.added if hasattr(item, "detail"))
     assert detail["aeo_domain"] == "jangclinic.co.kr"
-    assert detail["verification_method"] == "address"
+    assert detail["activation_method"] == "platform_subdomain"
     assert detail["activation_gate"]["ready"] is True
     assert [
         item["key"] for item in detail["activation_gate"]["prerequisites"]
@@ -368,6 +364,7 @@ async def test_activate_hospital_accepts_apex_address_strategy(monkeypatch):
 
 
 async def test_activate_hospital_cannot_bypass_pending_custom_domain_certificate(monkeypatch):
+    """DM-F3: 기본 주소 활성화는 커스텀 도메인 인증서 상태와 독립적."""
     hospital = _hospital(
         aeo_domain="clinic.example.com",
         profile_complete=True,
@@ -378,41 +375,20 @@ async def test_activate_hospital_cannot_bypass_pending_custom_domain_certificate
     )
     db = FakeDB(hospital)
 
-    async def _fake_check_domain_dns(domain, strategy=DomainDnsStrategy.CNAME):
-        del domain, strategy
-        return SimpleNamespace(
-            verified=True,
-            cname_value="target.motionlabs.io",
-            address_values=[],
-            expected_cname="target.motionlabs.io",
-            expected_addresses=[],
-            verification_method="cname",
-        )
+    async def _fake_revalidate(*args, **kwargs):
+        return None
 
-    async def _pending_certificate(domain):
-        assert domain == "clinic.example.com"
-        return SimpleNamespace(
-            ready=False,
-            phase="PROVISIONING",
-            message="HTTPS 인증서를 준비하고 있습니다.",
-        )
+    monkeypatch.setattr(hospitals_api, "ensure_site_revalidate_configured", lambda: None)
+    monkeypatch.setattr(hospitals_api, "trigger_hospital_site_revalidate_safe", _fake_revalidate)
 
-    monkeypatch.setattr(hospitals_api, "check_domain_dns", _fake_check_domain_dns)
-    monkeypatch.setattr(
-        hospitals_api,
-        "ensure_verified_domain_certificate",
-        _pending_certificate,
-    )
+    result = await hospitals_api.activate_hospital(hospital.id, db=db)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await hospitals_api.activate_hospital(hospital.id, db=db)
-
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["code"] == "CERTIFICATE_NOT_READY"
-    assert hospital.site_live is False
-    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    # 커스텀 도메인 인증서가 미준비여도 기본 주소로 활성화 성공
+    assert result["status"] == "ACTIVE"
+    assert result["site_live"] is True
+    assert hospital.site_live is True
+    assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
-    assert db.added[0].action == "provision_domain_certificate"
 
 
 async def test_activate_hospital_subdomain_default_without_custom_domain(monkeypatch):
@@ -450,7 +426,7 @@ async def test_activate_hospital_subdomain_default_without_custom_domain(monkeyp
     assert db.committed is True
     detail = next(item.detail for item in db.added if hasattr(item, "detail"))
     assert detail["aeo_domain"] is None
-    assert detail["verification_method"] == "platform_subdomain"
+    assert detail["activation_method"] == "platform_subdomain"  # Live: snake_case
 
 
 @pytest.mark.parametrize(

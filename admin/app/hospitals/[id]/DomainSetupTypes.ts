@@ -5,6 +5,7 @@ export interface DomainProfile {
   id?: string
   slug?: string
   aeo_domain?: string
+  website_url?: string
   status?: string
   profile_complete?: boolean
   v0_report_done?: boolean
@@ -16,6 +17,9 @@ export interface DomainProfile {
   domain_registrar?: string | null
   domain_dns_provider?: string | null
   domain_purchase_note?: string | null
+  domain_cert_job_state?: string | null
+  domain_cert_job_started_at?: string | null
+  domain_cert_dns_verified_at?: string | null
 }
 
 export interface DomainSetupPanelProps {

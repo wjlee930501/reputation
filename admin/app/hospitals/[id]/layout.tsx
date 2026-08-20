@@ -9,6 +9,7 @@ import {
   hospitalLifecycleActionPath,
   hospitalLifecycleConfirmMessage,
 } from '@/lib/hospital-lifecycle'
+import { domainHeaderStatus } from '@/lib/hospital-domain-status'
 import { Hospital, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
@@ -213,12 +214,17 @@ export default function HospitalLayout({
                     <>공개 주소 <span className="text-[var(--color-revisit-text-title)]">{hospital.aeo_domain}</span></>
                   ) : '공개 주소 준비 중'}
                 </span>
-                {hospital.site_live && (
+                {hospital.aeo_domain ? (
+                  <span className={`inline-flex items-center gap-1 font-medium ${hospital.domain_cert_job_state === 'DONE' ? 'text-emerald-600' : 'text-amber-600'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${hospital.domain_cert_job_state === 'DONE' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                    {domainHeaderStatus(hospital)}
+                  </span>
+                ) : hospital.site_live ? (
                   <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    병원 정보 허브 운영 중
+                    허브 운영 중
                   </span>
-                )}
+                ) : null}
               </div>
             )}
           </div>

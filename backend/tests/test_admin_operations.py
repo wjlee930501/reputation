@@ -380,9 +380,12 @@ async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch)
     assert response["verified"] is True
     assert hospital.site_live is True
     assert hospital.status == HospitalStatus.ACTIVE
-    audit = next(item for item in db.added if hasattr(item, "action"))
-    assert audit.action == "verify_domain"
-    detail = audit.detail
+    
+    # New contract: verify_domain + optional provision_domain_certificate
+    audit_rows = [item for item in db.added if hasattr(item, "action")]
+    verify_audit = next((a for a in audit_rows if a.action == "verify_domain"), None)
+    assert verify_audit is not None
+    detail = verify_audit.detail
     assert detail["verified"] is True
     assert detail["new_status"] == HospitalStatus.ACTIVE.value
     assert detail["previous_status"] == HospitalStatus.PENDING_DOMAIN.value
@@ -443,15 +446,14 @@ async def test_verify_domain_operation_rejects_apex_when_cname_exists_even_if_ad
 
     response = await operations_api.verify_domain_operation(hospital.id, db=db)
 
+    # New contract: DNS fail does not change state, does not block further tries
     assert response["verified"] is False
     assert response["verification_method"] is None
     assert hospital.site_live is False
     assert hospital.status == HospitalStatus.PENDING_DOMAIN
-    assert db.committed is True
-    detail = db.added[0].detail
-    assert detail["verified"] is False
-    assert detail["new_status"] == HospitalStatus.PENDING_DOMAIN.value
-    assert detail["new_site_live"] is False
+    # No state change = no audit
+    assert all(not hasattr(item, "action") for item in db.added)
+    assert db.committed is False
 
 
 async def test_verify_domain_operation_accepts_apex_address_strategy(monkeypatch):
@@ -484,6 +486,11 @@ async def test_verify_domain_operation_accepts_apex_address_strategy(monkeypatch
     assert hospital.site_live is True
     assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
+    
+    # Audit log for activation
+    audit_rows = [item for item in db.added if hasattr(item, "action")]
+    verify_audit = next((a for a in audit_rows if a.action == "verify_domain"), None)
+    assert verify_audit is not None
 
 
 @pytest.mark.parametrize(

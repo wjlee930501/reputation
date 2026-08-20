@@ -64,6 +64,14 @@ class DomainDnsStrategy(str, enum.Enum):
     APEX_ADDRESS = "APEX_ADDRESS"
 
 
+class DomainCertJobState(str, enum.Enum):
+    """Certificate provisioning job state for custom domains."""
+    WAITING = "WAITING"       # DNS verified, cert provisioning not started
+    ISSUING = "ISSUING"       # Certificate provisioning in progress
+    DONE = "DONE"             # Certificate ready
+    FAILED = "FAILED"         # Certificate provisioning failed
+
+
 class Hospital(Base):
     __tablename__ = "hospitals"
 
@@ -112,6 +120,10 @@ class Hospital(Base):
     domain_registrar: Mapped[str | None] = mapped_column(String(200))
     domain_dns_provider: Mapped[str | None] = mapped_column(String(200))
     domain_purchase_note: Mapped[str | None] = mapped_column(Text)
+    # 커스텀 도메인 인증서 작업 상태 추적 (DM-F1: 작업 상태·시작 시각·경과 시간 노출)
+    domain_cert_job_state: Mapped[str | None] = mapped_column(String(20))  # DomainCertJobState enum value
+    domain_cert_job_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    domain_cert_dns_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     aeo_site_path: Mapped[str | None] = mapped_column(String(500))  # 빌드된 사이트 경로
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)

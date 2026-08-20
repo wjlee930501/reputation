@@ -25,9 +25,7 @@ from app.api.admin.accounts import require_active_account
 from app.api.admin.domain import (
     check_domain_dns,
     domain_dns_strategy_for_hospital,
-    ensure_verified_domain_certificate,
 )
-from app.core.config import settings
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
@@ -760,51 +758,9 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
             detail=activation_gate_error(gate),
         )
 
-    # 하이브리드 도메인: 자기 도메인이 연결돼 있으면 그 DNS를 검증하고, 없으면
-    # 기본 서브도메인({slug}.{platform host}, 와일드카드 cert+A로 커버)으로 라이브한다.
-    # 자기 도메인 검증 실패는 라이브를 막지만(운영자가 명시 연결한 경우), 미연결은 막지 않는다.
-    dns_check = None
-    certificate = None
-    if h.aeo_domain:
-        dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
-        if not dns_check.verified:
-            address_hint = (
-                f" 또는 A/AAAA {', '.join(dns_check.expected_addresses)}"
-                if dns_check.expected_addresses
-                else ""
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"DNS 설정이 확인되지 않았습니다. "
-                    f"{h.aeo_domain} → {settings.CNAME_TARGET}{address_hint} 로 설정해 주세요."
-                ),
-            )
-        certificate = await ensure_verified_domain_certificate(h.aeo_domain)
-        if certificate is not None and not certificate.ready:
-            await write_audit_log(
-                db,
-                action="provision_domain_certificate",
-                hospital_id=hospital_id,
-                actor=default_actor(),
-                target_type="domain",
-                target_id=h.aeo_domain,
-                detail={
-                    "dns_verified": True,
-                    "certificate_ready": False,
-                    "certificate_phase": certificate.phase,
-                    "certificate_error_code": getattr(certificate, "error_code", None),
-                },
-            )
-            await db.commit()
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "CERTIFICATE_NOT_READY",
-                    "message": certificate.message,
-                    "certificate_phase": certificate.phase,
-                },
-            )
+    # DM-F3: 기본 플랫폼 주소 활성화는 커스텀 도메인과 독립적으로 가능.
+    # 커스텀 도메인이 설정되어 있어도 기본 서브도메인으로 라이브할 수 있다.
+    # 커스텀 도메인 검증은 별도의 /domain/verify 엔드포인트에서 처리한다.
 
     previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
     ensure_site_revalidate_configured()
@@ -822,12 +778,7 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
             "previous_status": previous_status,
             "new_status": HospitalStatus.ACTIVE.value,
             "aeo_domain": h.aeo_domain,
-            "cname_value": dns_check.cname_value if dns_check else None,
-            "address_values": dns_check.address_values if dns_check else [],
-            "verification_method": dns_check.verification_method
-            if dns_check
-            else "platform_subdomain",
-            "certificate_phase": certificate.phase if certificate else "PLATFORM_MANAGED",
+            "activation_method": "platform_subdomain",
             "certificate_ready": True,
             "activation_gate": gate,
         },
@@ -888,6 +839,7 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     if not gate["ready"]:
         raise HTTPException(status_code=409, detail=activation_gate_error(gate))
 
+    # DM-F4: DNS 검증만 확인. 인증서는 후속 작업이므로 재개를 블록하지 않음.
     if h.aeo_domain:
         dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
         if not dns_check.verified:
@@ -896,16 +848,6 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
                 detail={
                     "code": "DOMAIN_NOT_READY",
                     "message": "재개 전 사용자 도메인의 DNS 설정을 확인해 주세요.",
-                },
-            )
-        certificate = await ensure_verified_domain_certificate(h.aeo_domain)
-        if certificate is not None and not certificate.ready:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "CERTIFICATE_NOT_READY",
-                    "message": certificate.message,
-                    "certificate_phase": certificate.phase,
                 },
             )
 
@@ -1170,6 +1112,17 @@ def _serialize(h: Hospital) -> dict:
         "director_credentials": h.director_credentials,
         "treatments": h.treatments,
         "profile_complete": h.profile_complete,
+        "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
+        "domain_cert_job_started_at": (
+            getattr(h, "domain_cert_job_started_at", None).isoformat()
+            if getattr(h, "domain_cert_job_started_at", None)
+            else None
+        ),
+        "domain_cert_dns_verified_at": (
+            getattr(h, "domain_cert_dns_verified_at", None).isoformat()
+            if getattr(h, "domain_cert_dns_verified_at", None)
+            else None
+        ),
         "v0_report_done": h.v0_report_done,
         "site_built": h.site_built,
         "site_live": h.site_live,
@@ -1200,6 +1153,8 @@ def _serialize_list(h: Hospital) -> dict:
         "site_live": h.site_live,
         "schedule_set": h.schedule_set,
         "aeo_domain": h.aeo_domain,
+        "domain_cert_dns_verified_at": getattr(h, "domain_cert_dns_verified_at", None).isoformat() if getattr(h, "domain_cert_dns_verified_at", None) else None,
+        "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
         "created_at": h.created_at.isoformat() if h.created_at else None,
     }
 
