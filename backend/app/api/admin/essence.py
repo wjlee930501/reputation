@@ -513,14 +513,21 @@ async def exclude_source(
 async def upload_source_file(
     hospital_id: uuid.UUID,
     source_type: SourceType = Form(...),
-    title: str = Form(..., min_length=1, max_length=300),
+    title: str = Form(default=""),
     file: UploadFile = File(...),
     is_public: bool | None = Form(default=None),
     operator_note: str | None = Form(default=None),
     created_by: str | None = Form(default=None, max_length=100),
+    skip_revalidate: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
 ):
-    """이미지/PDF/DOCX 업로드. 사진은 file_url만 저장, 텍스트형 자료는 raw_text 자동 추출."""
+    """이미지/PDF/DOCX 업로드. 사진은 file_url만 저장, 텍스트형 자료는 raw_text 자동 추출.
+    
+    사진 업로드는 LLM 처리를 트리거하지 않는다:
+    - process_source는 raw_text가 없는 사진을 거부한다
+    - philosophy/V0/content 자동 생성 큐잉이 없다
+    - skip_revalidate=true로 N개 사진 일괄 업로드 시 1번만 revalidate한다
+    """
     hospital = await _get_hospital_or_404(db, hospital_id)
 
     data = await _read_upload_within_limit(file)
@@ -556,11 +563,16 @@ async def upload_source_file(
     elif extractor_kind == "DOCX":
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
 
+    # 제목이 비어 있으면 파일명(확장자 제외)을 사용
+    final_title = title.strip() if title.strip() else _filename_without_extension(file.filename or "")
+    if not final_title:
+        final_title = "업로드 파일"
+
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=source_type,
-        title=title.strip(),
+        title=final_title,
         url=None,
         raw_text=raw_text,
         operator_note=_clean_optional(operator_note),
@@ -569,12 +581,15 @@ async def upload_source_file(
         mime_type=mime_type or None,
         file_size_bytes=len(data),
         is_public=resolve_upload_is_public(source_type, is_public),
-        content_hash=compute_source_content_hash(title, None, raw_text, operator_note),
+        content_hash=compute_source_content_hash(final_title, None, raw_text, operator_note),
         status=SourceStatus.PENDING,
         created_by=created_by,
     )
-    should_revalidate = should_revalidate_after_public_photo_upload(
-        source_type, source.is_public, hospital
+    # 사진 일괄 업로드 시 마지막 파일을 제외하고는 revalidate를 건너뛰어
+    # N개 사진 업로드 시 N번의 site revalidate 대신 1번만 호출되게 한다.
+    should_revalidate = (
+        not skip_revalidate
+        and should_revalidate_after_public_photo_upload(source_type, source.is_public, hospital)
     )
     if should_revalidate:
         ensure_site_revalidate_configured()
@@ -590,6 +605,7 @@ async def upload_source_file(
             "source_type": source_type.value,
             "extractor": extractor_kind,
             "size_bytes": len(data),
+            "skip_revalidate": skip_revalidate,
         },
     )
     await db.commit()
@@ -1408,6 +1424,16 @@ def _serialize_philosophy(philosophy: HospitalContentPhilosophy) -> dict:
         "created_at": philosophy.created_at.isoformat() if philosophy.created_at else None,
         "updated_at": philosophy.updated_at.isoformat() if philosophy.updated_at else None,
     }
+
+
+def _filename_without_extension(filename: str) -> str:
+    """파일명에서 확장자를 제거하고 반환."""
+    if not filename:
+        return ""
+    # 마지막 점 이전까지만 가져옴
+    if "." in filename:
+        return filename.rsplit(".", 1)[0]
+    return filename
 
 
 def _clean_optional(value: str | None) -> str | None:
