@@ -85,8 +85,8 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["naver_place_id"] == "38758880"
     assert serialized["brand_primary_color"] == "#17365D"
     assert serialized["brand_accent_color"] == "#B79045"
-    assert serialized["logo_url"] == "https://cdn.example.com/logo.png"
-    assert serialized["hero_image_url"] == "https://cdn.example.com/hero.png"
+    assert serialized["logo_url"] is None
+    assert serialized["hero_image_url"] is None
     assert serialized["hero_media_kind"] == "VERIFIED_FACILITY"
     assert serialized["hero_headline"] == "피부 건강 정보를 차분히 확인하세요"
     assert serialized["site_access_mode"] == "specialist"
@@ -245,6 +245,11 @@ def _doctor_photo_asset():
             "asset_kind": "VERIFIED_REAL_PERSON",
             "approved_usage": ["DOCTOR_IDENTITY"],
         },
+        photo_source_owner="홍길동",
+        photo_rights_basis="OWNER_CONSENT",
+        photo_evidence_reference="consent/doctor-1",
+        photo_verified_by="owner@example.com",
+        photo_verified_at=datetime(2026, 8, 22),
     )
 
 
@@ -285,6 +290,11 @@ def test_serialize_hospital_rejects_editorial_character_as_doctor_identity():
             "asset_kind": "EDITORIAL_GRAPHIC",
             "approved_usage": ["CONTENT_EDITORIAL"],
         },
+        photo_source_owner="테스트병원",
+        photo_rights_basis="LICENSE",
+        photo_evidence_reference="license/character-1",
+        photo_verified_by="owner@example.com",
+        photo_verified_at=datetime(2026, 8, 22),
     )
 
     serialized = _serialize_hospital(
@@ -294,6 +304,41 @@ def test_serialize_hospital_rejects_editorial_character_as_doctor_identity():
 
     assert serialized["director_photo_url"] is None
     assert serialized["photos"][0]["asset_kind"] == "EDITORIAL_GRAPHIC"
+
+
+def test_serialize_hospital_accepts_only_brand_asset_as_managed_logo():
+    brand = SimpleNamespace(
+        id="brand-id",
+        source_type=SourceType.PHOTO_BRAND,
+        title="공식 로고",
+        file_url="gs://bucket/logo.png",
+        source_metadata={
+            "asset_kind": "VERIFIED_BRAND_GRAPHIC",
+            "approved_usage": ["LOGO", "HERO"],
+        },
+        photo_source_owner="테스트병원",
+        photo_rights_basis="LICENSE",
+        photo_evidence_reference="license/logo-1",
+        photo_verified_by="owner@example.com",
+        photo_verified_at=datetime(2026, 8, 22),
+    )
+    hospital = _hospital_with_photo(None)
+    hospital.logo_url = "/api/v1/public/hospitals/test-hospital/assets/brand-id"
+
+    serialized = _serialize_hospital(hospital, [brand])
+
+    assert serialized["logo_url"] == hospital.logo_url
+    assert serialized["photos"][0]["provenance_verified"] is True
+
+
+def test_serialize_hospital_never_reinterprets_doctor_photo_as_logo():
+    doctor = _doctor_photo_asset()
+    hospital = _hospital_with_photo(None)
+    hospital.logo_url = "/api/v1/public/hospitals/test-hospital/assets/asset-id"
+
+    serialized = _serialize_hospital(hospital, [doctor])
+
+    assert serialized["logo_url"] is None
 
 
 def test_serialize_item_list_response_includes_reading_minutes_without_body():
@@ -356,6 +401,7 @@ def test_serialize_item_uses_stable_content_image_proxy_url():
         title="t",
         meta_description="m",
         image_url="gs://reputation-images/content/x/y.png",
+        image_policy_verified_at=datetime(2026, 6, 1, 7, 59, 0),
         scheduled_date=date(2026, 6, 1),
         published_at=datetime(2026, 6, 1, 8, 0, 0),
         body_updated_at=None,
@@ -372,16 +418,17 @@ def test_serialize_item_uses_stable_content_image_proxy_url():
     assert "storage.googleapis.com" not in (serialized["image_url"] or "")
 
 
-def test_serialize_item_passes_through_non_gcs_image_url():
+def test_serialize_item_exposes_only_policy_verified_images():
     # gs:// 가 아닌 이미 사용 가능한 URL(레거시 상대 public asset 경로/http)은 /contents/{id}/image
     # 프록시로 감싸면 _asset_response가 처리 못 해 404 → 그대로 통과시켜야 한다.
-    def _item(image_url):
+    def _item(image_url, *, verified=True):
         return SimpleNamespace(
             id="abc-123",
             content_type="DISEASE",
             title="t",
             meta_description="m",
             image_url=image_url,
+            image_policy_verified_at=(datetime(2026, 6, 1, 7, 59, 0) if verified else None),
             scheduled_date=date(2026, 6, 1),
             published_at=datetime(2026, 6, 1, 8, 0, 0),
             body_updated_at=None,
@@ -396,6 +443,7 @@ def test_serialize_item_passes_through_non_gcs_image_url():
     absolute = "https://cdn.example.com/x.png"
     assert _serialize_item(_item(absolute), "jangpyeonhanoegwayiweon")["image_url"] == absolute
     assert _serialize_item(_item(None), "jangpyeonhanoegwayiweon")["image_url"] is None
+    assert _serialize_item(_item(legacy, verified=False), "jangpyeonhanoegwayiweon")["image_url"] is None
 
 
 def test_reading_minutes_handles_empty_and_markdown_noise():

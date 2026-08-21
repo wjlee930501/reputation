@@ -7,6 +7,7 @@ import {
   clinicContentDensity,
   clinicComposition,
   displayClinicLabels,
+  getClinicNavigation,
   resolveClinicAccessMode,
   resolveClinicMediaMode,
   selectClinicGalleryPhotos,
@@ -58,12 +59,47 @@ test('hero and header labels stay concise even when onboarding contains many spe
   )
 })
 
+test('shared navigation marks only the containing route as current', () => {
+  // Given a nested treatment page in a hospital's public hub
+  const navigation = getClinicNavigation('/hanul-clinic', '/hanul-clinic/treatments/hemorrhoids')
+
+  // When the shared header derives its active item
+  // Then only the treatment section is exposed as the current page.
+  assert.deepEqual(
+    navigation.map(({ label, ariaCurrent }) => ({ label, ariaCurrent })),
+    [
+      { label: '진료 영역', ariaCurrent: 'page' },
+      { label: '진료시간·오시는 길', ariaCurrent: undefined },
+      { label: '의료진', ariaCurrent: undefined },
+      { label: '건강 정보', ariaCurrent: undefined },
+    ],
+  )
+
+  // Given the same visit route on a connected custom domain
+  const customDomainNavigation = getClinicNavigation('https://hanul.example', '/visit')
+
+  // When the browser reports its host-relative pathname
+  // Then the same visible navigation item remains current.
+  assert.equal(customDomainNavigation[1]?.ariaCurrent, 'page')
+
+  // Given the same custom-domain clinic rendered through the platform preview path
+  const previewNavigation = getClinicNavigation(
+    'https://hanul.example',
+    '/hanul-clinic/doctor/career',
+  )
+
+  // Then the route suffix still identifies the current section.
+  assert.equal(previewNavigation[2]?.ariaCurrent, 'page')
+})
+
 test('gallery selection exposes a representative set instead of an unbounded photo wall', () => {
   const photos = Array.from({ length: 12 }, (_, index) => ({
     id: String(index),
     source_type: index === 0 ? 'PHOTO_DOCTOR' as const : 'PHOTO_CLINIC_INTERIOR' as const,
     title: `공간 ${index}`,
     url: `/photo-${index}.jpg`,
+    asset_kind: 'VERIFIED_FACILITY' as const,
+    approved_usage: ['GALLERY'],
   }))
 
   assert.deepEqual(selectClinicGalleryPhotos(photos), {
@@ -95,6 +131,32 @@ test('editorial graphics never masquerade as verified clinic gallery photographs
   ]
 
   assert.deepEqual(selectClinicGalleryPhotos(photos).photos, [photos[0]])
+})
+
+test('gallery selection rejects legacy and hero-only facility records', () => {
+  // Given facility-shaped records without an explicit gallery approval
+  const photos: HospitalPhoto[] = [
+    {
+      id: 'legacy',
+      source_type: 'PHOTO_CLINIC_INTERIOR',
+      title: '예전 업로드',
+      url: '/legacy.jpg',
+    },
+    {
+      id: 'hero-only',
+      source_type: 'PHOTO_CLINIC_INTERIOR',
+      title: '대표 이미지 전용',
+      url: '/hero.jpg',
+      asset_kind: 'VERIFIED_FACILITY',
+      approved_usage: ['HERO'],
+    },
+  ]
+
+  // When the gallery chooses public facility media
+  const selection = selectClinicGalleryPhotos(photos)
+
+  // Then neither unclassified nor wrong-usage media is presented as a gallery photo.
+  assert.deepEqual(selection, { photos: [], total: 0, remaining: 0 })
 })
 
 test('doctor role does not repeat the representative-director label', () => {

@@ -207,6 +207,7 @@ from app.workers.nightly_generation_batch import (
     load_stuck_claims,
     release_unfinished_claims,
     write_back_generated_content,
+    write_back_generated_image,
 )
 from app.workers.weekly_sov_incident_control import (
     open_weekly_sov_failure,
@@ -1699,6 +1700,7 @@ def nightly_content_generation(self):
                         "references_list": content_data.get("references") or [],
                         "faq_question": content_data.get("faq_question"),
                         "faq_answer_summary": content_data.get("faq_answer_summary"),
+                        "image_policy_verified_at": None,
                         "generated_at": now,
                         "body_updated_at": now,
                         "status": ContentStatus.DRAFT,
@@ -1732,12 +1734,13 @@ def nightly_content_generation(self):
 
                 # 대표 이미지 생성 (gpt-image-2, 제목 주제 주입 — 실패해도 텍스트는 유지)
                 try:
+                    image_source_title = item.title
                     image_url, image_prompt = _run_async(
                         generate_image(
                             item.content_type,
                             hospital.slug,
-                            topic=item.title,
-                            direction=hospital_image_direction(hospital),
+                            topic=image_source_title,
+                            direction=hospital_image_direction(hospital, philosophy),
                         )
                     )
                     if not image_url:
@@ -1748,10 +1751,15 @@ def nightly_content_generation(self):
                         )
                         item_state = GenerationItemState.PARTIAL
                     else:
-                        image_written = write_back_generated_content(
+                        image_written = write_back_generated_image(
                             db,
                             item_id=item.id,
-                            values={"image_url": image_url, "image_prompt": image_prompt},
+                            expected_title=image_source_title,
+                            values={
+                                "image_url": image_url,
+                                "image_prompt": image_prompt,
+                                "image_policy_verified_at": datetime.now(timezone.utc),
+                            },
                         )
                         if image_written == 0:
                             # 이미지 생성 중 상태가 바뀌어 쓰지 못했다. 성공으로만 보고하면
@@ -2086,13 +2094,25 @@ def generate_content_image(self, content_id: str):
                 safe_error_message="병원 정보를 찾을 수 없어 이미지 생성을 중단했습니다.",
             )
             return
+        philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+        if not philosophy:
+            finish_explicit_run(
+                db,
+                self,
+                item_id,
+                OperationRunState.FAILED,
+                safe_error_code="MISSING_APPROVED_ESSENCE",
+                safe_error_message="승인된 콘텐츠 운영 기준이 없어 이미지 생성을 중단했습니다.",
+            )
+            return
         try:
+            image_source_title = item.title
             image_url, image_prompt = _run_async(
                 generate_image(
                     item.content_type,
                     hospital.slug,
-                    topic=item.title or "병원 의료 정보",
-                    direction=hospital_image_direction(hospital),
+                    topic=image_source_title or "병원 의료 정보",
+                    direction=hospital_image_direction(hospital, philosophy),
                 )
             )
             if not image_url:
@@ -2118,10 +2138,15 @@ def generate_content_image(self, content_id: str):
                         )
                     )
                 return
-            written = write_back_generated_content(
+            written = write_back_generated_image(
                 db,
                 item_id=item.id,
-                values={"image_url": image_url, "image_prompt": image_prompt},
+                expected_title=image_source_title,
+                values={
+                    "image_url": image_url,
+                    "image_prompt": image_prompt,
+                    "image_policy_verified_at": datetime.now(timezone.utc),
+                },
             )
             if written == 0:
                 db.rollback()
@@ -2133,7 +2158,6 @@ def generate_content_image(self, content_id: str):
                 return
             db.commit()
             db.refresh(item)
-            philosophy = get_current_approved_philosophy_sync(db, hospital.id)
             _persist_publication_readiness(db, item, philosophy)
             run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
             if run_id is not None:
@@ -2249,6 +2273,7 @@ def _generate_single_content_item(
             "references_list": content_data.get("references") or [],
             "faq_question": content_data.get("faq_question"),
             "faq_answer_summary": content_data.get("faq_answer_summary"),
+            "image_policy_verified_at": None,
             "generated_at": now,
             "body_updated_at": now,
             "status": ContentStatus.DRAFT,
@@ -2267,24 +2292,30 @@ def _generate_single_content_item(
     db.refresh(item)
 
     image_failed = False
-    if not item.image_url:
+    if not item.image_url or not item.image_policy_verified_at:
         try:
+            image_source_title = item.title
             image_url, image_prompt = _run_async(
                 generate_image(
                     item.content_type,
                     hospital.slug,
-                    topic=item.title,
-                    direction=hospital_image_direction(hospital),
+                    topic=image_source_title,
+                    direction=hospital_image_direction(hospital, philosophy),
                 )
             )
             if not image_url:
                 # 실패 센티널("")을 그대로 쓰면 기존 이미지를 지운다.
                 logger.warning("Image generation returned no URL for %s (text saved)", item.id)
                 image_failed = True
-            elif write_back_generated_content(
+            elif write_back_generated_image(
                 db,
                 item_id=item.id,
-                values={"image_url": image_url, "image_prompt": image_prompt},
+                expected_title=image_source_title,
+                values={
+                    "image_url": image_url,
+                    "image_prompt": image_prompt,
+                    "image_policy_verified_at": datetime.now(timezone.utc),
+                },
             ):
                 db.commit()
                 db.refresh(item)

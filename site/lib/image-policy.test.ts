@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { shouldBypassNextImageOptimization } from './image-policy.ts'
+import { clinicLogoPresentation, shouldBypassNextImageOptimization } from './image-policy.ts'
 
 test('public API assets stay on the responsive image optimizer path', () => {
   assert.equal(
@@ -22,9 +22,22 @@ test('shouldBypassNextImageOptimization keeps normal optimized image hosts untou
   assert.equal(shouldBypassNextImageOptimization(null), false)
 })
 
-test('shouldBypassNextImageOptimization bypasses off-allowlist external hosts (e.g. AE-pasted director photo)', () => {
-  // next.config remotePatterns에 없는 외부 호스트는 next/image 최적화 시 400이 나므로 우회해야 한다.
+test('off-allowlist external hosts are identified for explicit typographic fallbacks', () => {
+  // Given arbitrary external URLs that cannot use the controlled optimizer path
+  // When their host eligibility is checked
+  // Then callers can reject them to a visible non-image fallback instead of serving originals.
   assert.equal(shouldBypassNextImageOptimization('https://phinf.pstatic.net/clinic/director.jpg'), true)
   assert.equal(shouldBypassNextImageOptimization('https://example.com/photo.png'), true)
   assert.equal(shouldBypassNextImageOptimization('http://some-clinic-cdn.kr/doctor.jpg'), true)
+})
+
+test('an arbitrary logo URL resolves to the typographic fallback before image delivery', () => {
+  // Given an AE-pasted logo URL outside the controlled image origins
+  // When the header resolves its presentation state
+  // Then it uses the hospital-name fallback instead of attempting the original upload.
+  assert.deepEqual(clinicLogoPresentation('https://example.com/logo.png'), { kind: 'fallback' })
+  assert.deepEqual(clinicLogoPresentation('https://storage.googleapis.com/reputation-images/logo.png'), {
+    kind: 'image',
+    src: 'https://storage.googleapis.com/reputation-images/logo.png',
+  })
 })

@@ -1,8 +1,10 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, or_, select, update
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
@@ -21,7 +23,9 @@ GENERATION_WRITE_BACK_STATUSES = (
 )
 
 
-def write_back_generated_content(db, *, item_id, values: dict[str, Any]) -> int:
+def write_back_generated_content(
+    db: Session, *, item_id: uuid.UUID, values: dict[str, Any]
+) -> int:
     """생성 결과를 **상태 가드와 함께** 쓴다. 반환값은 갱신된 행 수.
 
     0이면 생성이 도는 동안 운영자가 상태를 바꾼 것(취소 등)이므로 호출부는 결과를 버려야 한다.
@@ -31,11 +35,39 @@ def write_back_generated_content(db, *, item_id, values: dict[str, Any]) -> int:
     execute/commit 앞에서 autoflush로 그것을 먼저 써버려 가드가 무력화된다.
     반드시 이 함수 하나로만 쓰고, 추적 객체는 이후 refresh 한다.
     """
-    result = db.execute(
+    statement = (
         update(ContentItem)
         .where(
             ContentItem.id == item_id,
             ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    result = db.execute(statement)
+    return result.rowcount
+
+
+def write_back_generated_image(
+    db: Session,
+    *,
+    item_id: uuid.UUID,
+    expected_title: str | None,
+    values: dict[str, Any],
+    allowed_statuses: tuple[ContentStatus, ...] = GENERATION_WRITE_BACK_STATUSES,
+) -> int:
+    """Persist an image only while its source title still matches the generated topic."""
+    title_clause = (
+        ContentItem.title.is_(None)
+        if expected_title is None
+        else ContentItem.title == expected_title
+    )
+    result = db.execute(
+        update(ContentItem)
+        .where(
+            ContentItem.id == item_id,
+            ContentItem.status.in_(allowed_statuses),
+            title_clause,
         )
         .values(**values)
         .execution_options(synchronize_session=False)
@@ -59,10 +91,11 @@ def _nightly_generation_claim_filter(claim_cutoff: datetime):
     )
 
 
-def _needs_generation_recovery():
+def _needs_generation_recovery() -> ColumnElement[bool]:
     return or_(
         ContentItem.body.is_(None),
         ContentItem.image_url.is_(None),
+        ContentItem.image_policy_verified_at.is_(None),
         ContentItem.essence_check_summary["blocking"].as_boolean().is_(True),
     )
 

@@ -154,6 +154,7 @@ class ContentItem(Base):
     # 이미지
     image_url: Mapped[str | None] = mapped_column(String(500))    # GCS public URL
     image_prompt: Mapped[str | None] = mapped_column(Text)        # 생성에 쓴 프롬프트
+    image_policy_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # 스케줄·상태
     scheduled_date: Mapped[date] = mapped_column(Date, nullable=False)

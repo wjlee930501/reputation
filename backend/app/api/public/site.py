@@ -208,6 +208,11 @@ async def get_hospital_public(request: Request, slug: str, db: AsyncSession = De
             HospitalSourceAsset.status != SourceStatus.EXCLUDED,
             HospitalSourceAsset.source_type.in_(list(PHOTO_SOURCE_TYPES)),
             HospitalSourceAsset.file_url.is_not(None),
+            HospitalSourceAsset.photo_source_owner.is_not(None),
+            HospitalSourceAsset.photo_rights_basis.in_(["LICENSE", "OWNER_CONSENT"]),
+            HospitalSourceAsset.photo_evidence_reference.is_not(None),
+            HospitalSourceAsset.photo_verified_by.is_not(None),
+            HospitalSourceAsset.photo_verified_at.is_not(None),
         )
         .order_by(HospitalSourceAsset.updated_at.desc())
     )
@@ -237,10 +242,15 @@ async def get_public_hospital_asset(
             HospitalSourceAsset.status != SourceStatus.EXCLUDED,
             HospitalSourceAsset.source_type.in_(list(PHOTO_SOURCE_TYPES)),
             HospitalSourceAsset.file_url.is_not(None),
+            HospitalSourceAsset.photo_source_owner.is_not(None),
+            HospitalSourceAsset.photo_rights_basis.in_(["LICENSE", "OWNER_CONSENT"]),
+            HospitalSourceAsset.photo_evidence_reference.is_not(None),
+            HospitalSourceAsset.photo_verified_by.is_not(None),
+            HospitalSourceAsset.photo_verified_at.is_not(None),
         )
     )
     asset = result.scalar_one_or_none()
-    if not asset or not asset.file_url:
+    if not asset or not asset.file_url or not _has_verified_photo_provenance(asset):
         raise HTTPException(status_code=404, detail="Asset not found")
     return public_asset_response(asset.file_url, hospital_id=h.id, media_type=asset.mime_type)
 
@@ -322,9 +332,10 @@ async def get_public_content_image(
         or item.hospital_id != h.id
         or not _is_public_safe_content(item, public_philosophy.id if public_philosophy else None)
         or not item.image_url
+        or not item.image_policy_verified_at
     ):
         raise HTTPException(status_code=404, detail="Content image not found")
-    return public_asset_response(item.image_url, hospital_id=h.id, media_type="image/png")
+    return public_asset_response(item.image_url, hospital_id=h.id, media_type="image/webp")
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
@@ -368,7 +379,9 @@ def _serialize_hospital(
     photos: list[HospitalSourceAsset] | None = None,
     philosophy: HospitalContentPhilosophy | None = None,
 ) -> dict:
-    photo_records: list[HospitalSourceAsset] = list(photos or [])
+    photo_records: list[HospitalSourceAsset] = [
+        asset for asset in (photos or []) if _has_verified_photo_provenance(asset)
+    ]
 
     # 인물 identity는 공개 토글만으로 부족하다. 실제 인물 확인과 사용 위치 승인이
     # source_metadata에 함께 있어야 원장 사진/Physician image로 내보낸다.
@@ -399,9 +412,34 @@ def _serialize_hospital(
             "url": public_asset_url(h.slug, asset.id),
             "asset_kind": photo_metadata(asset).get("asset_kind"),
             "approved_usage": photo_metadata(asset).get("approved_usage"),
+            "provenance_verified": True,
+            "verified_at": asset.photo_verified_at.isoformat(),
         }
         for asset in photo_records
     ]
+
+    def managed_profile_asset_url(value: str | None, usage: str) -> str | None:
+        if not value:
+            return None
+        allowed_types = (
+            {SourceType.PHOTO_BRAND}
+            if usage == "LOGO"
+            else {
+                SourceType.PHOTO_BRAND,
+                SourceType.PHOTO_CLINIC_EXTERIOR,
+                SourceType.PHOTO_CLINIC_INTERIOR,
+                SourceType.PHOTO_TREATMENT_ROOM,
+            }
+        )
+        for asset in photo_records:
+            metadata = photo_metadata(asset)
+            if (
+                asset.source_type in allowed_types
+                and usage in metadata.get("approved_usage", [])
+                and value == public_asset_url(h.slug, asset.id)
+            ):
+                return value
+        return None
 
     return {
         "id": str(h.id),
@@ -438,8 +476,11 @@ def _serialize_hospital(
         "director_photo_url": director_photo,
         "brand_primary_color": getattr(h, "brand_primary_color", None),
         "brand_accent_color": getattr(h, "brand_accent_color", None),
-        "logo_url": _safe_external_url(getattr(h, "logo_url", None)),
-        "hero_image_url": _safe_external_url(getattr(h, "hero_image_url", None)),
+        "logo_url": managed_profile_asset_url(getattr(h, "logo_url", None), "LOGO"),
+        "hero_image_url": managed_profile_asset_url(
+            getattr(h, "hero_image_url", None),
+            "HERO",
+        ),
         "hero_media_kind": getattr(h, "hero_media_kind", None),
         "hero_headline": getattr(h, "hero_headline", None),
         "hero_description": getattr(h, "hero_description", None),
@@ -534,6 +575,39 @@ def _safe_external_url(value: str | None) -> str | None:
     return value.strip()
 
 
+def _has_verified_photo_provenance(asset: HospitalSourceAsset) -> bool:
+    metadata = asset.source_metadata if isinstance(asset.source_metadata, dict) else {}
+    common_fields = (
+        asset.photo_source_owner,
+        asset.photo_evidence_reference,
+        asset.photo_verified_by,
+        asset.photo_verified_at,
+    )
+    if not all(common_fields) or asset.photo_rights_basis not in {"LICENSE", "OWNER_CONSENT"}:
+        return False
+    kind = metadata.get("asset_kind")
+    usage = metadata.get("approved_usage")
+    if not isinstance(usage, list):
+        return False
+    match asset.source_type:
+        case SourceType.PHOTO_DOCTOR:
+            return kind == "VERIFIED_REAL_PERSON" and usage == ["DOCTOR_IDENTITY"] or (
+                kind == "EDITORIAL_GRAPHIC" and usage == ["CONTENT_EDITORIAL"]
+            )
+        case SourceType.PHOTO_BRAND:
+            return kind == "VERIFIED_BRAND_GRAPHIC" and usage == ["LOGO", "HERO"]
+        case (
+            SourceType.PHOTO_CLINIC_EXTERIOR
+            | SourceType.PHOTO_CLINIC_INTERIOR
+            | SourceType.PHOTO_TREATMENT_ROOM
+        ):
+            return kind == "VERIFIED_FACILITY" and usage == ["HERO", "GALLERY"] or (
+                kind == "EDITORIAL_GRAPHIC" and usage == ["CONTENT_EDITORIAL"]
+            )
+        case _:
+            return False
+
+
 # 한국어 평균 읽기 속도 약 600자/분 — site 상세 페이지 calculateReadingMinutes와 동일 기준.
 _KOREAN_READING_SPEED_CHARS_PER_MIN = 600
 
@@ -550,12 +624,18 @@ def _reading_minutes(body: str | None) -> int:
 def _serialize_item(item: ContentItem, slug: str, full: bool = False) -> dict:
     query_target = getattr(item, "__dict__", {}).get("query_target")
     query_target_id = getattr(item, "query_target_id", None)
+    image_policy_verified = bool(getattr(item, "image_policy_verified_at", None))
     d = {
         "id": str(item.id),
         "content_type": item.content_type,
         "title": item.title,
         "meta_description": item.meta_description,
-        "image_url": _content_image_url(slug, item) if item.image_url else None,
+        "image_url": (
+            _content_image_url(slug, item)
+            if item.image_url and image_policy_verified
+            else None
+        ),
+        "image_policy_verified": image_policy_verified,
         "scheduled_date": str(item.scheduled_date),
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,

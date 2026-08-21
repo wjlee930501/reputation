@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.models.content import ContentType
@@ -10,6 +11,7 @@ def _item(**overrides):
         "title": "치질 진료 전 확인할 점",
         "body": "증상과 생활 불편을 확인한 뒤 진료 방향을 설명합니다.",
         "image_url": "https://storage.googleapis.com/reputation/content.png",
+        "image_policy_verified_at": datetime(2026, 8, 22, tzinfo=timezone.utc),
         "meta_description": "진료 전 확인할 내용을 정리합니다.",
         "faq_question": None,
         "faq_answer_summary": None,
@@ -67,6 +69,17 @@ def test_publication_policy_blocks_missing_representative_image(monkeypatch):
     assert assessment.publishable is False
     assert assessment.code == "CONTENT_IMAGE_NOT_READY"
     assert assessment.essence_summary["blocking"] is True
+
+
+def test_publication_policy_blocks_an_image_without_semantic_verification(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _item(image_policy_verified_at=None), _philosophy()
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_IMAGE_NOT_READY"
 
 
 def test_publication_policy_blocks_forbidden_expression_across_public_fields(monkeypatch):

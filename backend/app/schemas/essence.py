@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.essence import EvidenceNoteType, PhilosophyStatus, SourceStatus, SourceType
 
@@ -28,6 +28,9 @@ class SourceAssetPatch(BaseModel):
     raw_text: str | None = None
     operator_note: str | None = None
     source_metadata: dict[str, Any] | None = None
+    photo_source_owner: str | None = Field(default=None, min_length=1, max_length=200)
+    photo_rights_basis: str | None = Field(default=None, pattern="^(LICENSE|OWNER_CONSENT)$")
+    photo_evidence_reference: str | None = Field(default=None, min_length=1, max_length=500)
     updated_by: str | None = Field(default=None, max_length=100)
 
 
@@ -68,12 +71,25 @@ class SourceAssetResponse(BaseModel):
     mime_type: str | None = None
     file_size_bytes: int | None = None
     is_public: bool = False
+    photo_source_owner: str | None = None
+    photo_rights_basis: str | None = None
+    photo_evidence_reference: str | None = None
+    photo_verified_by: str | None = None
+    photo_verified_at: str | None = None
     evidence_note_count: int = 0
     evidence_notes: list[EvidenceNoteResponse] | None = None
 
 
 class SourcePublicToggle(BaseModel):
     is_public: bool
+
+
+class PhotoProvenanceInput(BaseModel):
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
+    source_owner: str = Field(min_length=1, max_length=200)
+    rights_basis: str = Field(pattern="^(LICENSE|OWNER_CONSENT)$")
+    evidence_reference: str = Field(min_length=1, max_length=500)
 
 
 class PhilosophyDraftCreate(BaseModel):

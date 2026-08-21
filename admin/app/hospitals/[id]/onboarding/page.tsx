@@ -21,6 +21,12 @@ import {
   type OnboardingStep as StepDef,
 } from '@/lib/onboarding-lifecycle'
 import NaverBlogBulkForm from './NaverBlogBulkForm'
+import {
+  buildPhotoProvenancePatch,
+  isPhotoProvenanceVerified,
+  type PhotoProvenanceDraft,
+} from '@/lib/photo-provenance'
+import type { SourceType } from '@/types'
 
 interface Hospital {
   id: string
@@ -43,7 +49,7 @@ interface Hospital {
 
 interface Source {
   id: string
-  source_type: string
+  source_type: SourceType
   title: string
   status: string
   url: string | null
@@ -52,6 +58,11 @@ interface Source {
   mime_type: string | null
   file_size_bytes: number | null
   is_public: boolean
+  photo_source_owner: string | null
+  photo_rights_basis: string | null
+  photo_evidence_reference: string | null
+  photo_verified_by: string | null
+  photo_verified_at: string | null
   raw_text: string | null
   process_error: string | null
   evidence_note_count: number
@@ -80,6 +91,7 @@ const SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string; group: 'TEXT' |
   { value: 'PHOTO_CLINIC_EXTERIOR', label: '사진 — 외관', group: 'PHOTO' },
   { value: 'PHOTO_CLINIC_INTERIOR', label: '사진 — 내부', group: 'PHOTO' },
   { value: 'PHOTO_TREATMENT_ROOM', label: '사진 — 진료/시술실', group: 'PHOTO' },
+  { value: 'PHOTO_BRAND', label: '이미지 — 공식 로고/브랜드 그래픽', group: 'PHOTO' },
 ]
 
 const PHOTO_SOURCE_TYPES = new Set([
@@ -87,6 +99,7 @@ const PHOTO_SOURCE_TYPES = new Set([
   'PHOTO_CLINIC_EXTERIOR',
   'PHOTO_CLINIC_INTERIOR',
   'PHOTO_TREATMENT_ROOM',
+  'PHOTO_BRAND',
 ])
 
 function isPhotoSourceType(sourceType: string): boolean {
@@ -103,10 +116,25 @@ const FACILITY_ASSET_KIND_OPTIONS = [
   { value: 'EDITORIAL_GRAPHIC', label: '생성·일러스트 이미지 — 콘텐츠 전용' },
 ]
 
+const BRAND_ASSET_KIND_OPTIONS = [
+  { value: 'VERIFIED_BRAND_GRAPHIC', label: '공식 로고·브랜드 그래픽 — 권리 확인 완료' },
+]
+
 function photoAssetKindOptions(sourceType: string) {
-  return sourceType === 'PHOTO_DOCTOR'
-    ? DOCTOR_ASSET_KIND_OPTIONS
-    : FACILITY_ASSET_KIND_OPTIONS
+  if (sourceType === 'PHOTO_DOCTOR') return DOCTOR_ASSET_KIND_OPTIONS
+  if (sourceType === 'PHOTO_BRAND') return BRAND_ASSET_KIND_OPTIONS
+  return FACILITY_ASSET_KIND_OPTIONS
+}
+
+function photoProvenanceDraft(source: Source): PhotoProvenanceDraft {
+  return {
+    assetKind: typeof source.source_metadata.asset_kind === 'string'
+      ? source.source_metadata.asset_kind
+      : '',
+    sourceOwner: source.photo_source_owner ?? '',
+    rightsBasis: source.photo_rights_basis ?? '',
+    evidenceReference: source.photo_evidence_reference ?? '',
+  }
 }
 
 function hasProcessableText(source: Source): boolean {
@@ -776,6 +804,9 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
 function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: () => void }) {
   const [type, setType] = useState('PHOTO_DOCTOR')
   const [assetKind, setAssetKind] = useState('')
+  const [photoSourceOwner, setPhotoSourceOwner] = useState('')
+  const [photoRightsBasis, setPhotoRightsBasis] = useState('')
+  const [photoEvidenceReference, setPhotoEvidenceReference] = useState('')
   const [title, setTitle] = useState('')
   const [files, setFiles] = useState<FileList | null>(null)
   const [busy, setBusy] = useState(false)
@@ -805,6 +836,9 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           if (isPhotoSourceType(type)) {
             fd.append('is_public', 'true')
             fd.append('asset_kind', assetKind)
+            fd.append('photo_source_owner', photoSourceOwner.trim())
+            fd.append('photo_rights_basis', photoRightsBasis)
+            fd.append('photo_evidence_reference', photoEvidenceReference.trim())
           }
           // 일괄 업로드 시 모든 파일에 skip_revalidate=true (마지막 후 명시적 revalidate)
           const url = `/admin/hospitals/${hospitalId}/essence/sources/upload${
@@ -918,6 +952,37 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           <p className="text-xs leading-5 text-slate-600">
             실제 인물로 확인된 사진만 의료진 영역에 노출됩니다. 생성 이미지와 캐릭터는 콘텐츠 삽화로만 사용할 수 있습니다.
           </p>
+          <div className="grid gap-2 md:grid-cols-2">
+            <input
+              required
+              value={photoSourceOwner}
+              onChange={(e) => setPhotoSourceOwner(e.target.value)}
+              placeholder="사진 소유자 또는 권리자"
+              maxLength={200}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            />
+            <select
+              required
+              value={photoRightsBasis}
+              onChange={(e) => setPhotoRightsBasis(e.target.value)}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">라이선스·동의 근거 선택</option>
+              <option value="OWNER_CONSENT">소유자·촬영 대상자 공개 동의</option>
+              <option value="LICENSE">사용 라이선스 보유</option>
+            </select>
+          </div>
+          <input
+            required
+            value={photoEvidenceReference}
+            onChange={(e) => setPhotoEvidenceReference(e.target.value)}
+            placeholder="동의서·계약서·원본 보관 위치 또는 증빙 번호"
+            maxLength={500}
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+          />
+          <p className="text-xs leading-5 text-slate-600">
+            입력한 권리자와 증빙 참조는 운영자 계정·확인 시각과 함께 서버에 기록됩니다.
+          </p>
         </div>
       ) : null}
       {isPhotoType && <p className="text-xs text-slate-600">여러 장을 한 번에 고를 수 있습니다</p>}
@@ -936,7 +1001,9 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={busy || !files || files.length === 0 || (isPhotoType && !assetKind)}
+          disabled={busy || !files || files.length === 0 || (isPhotoType && (
+            !assetKind || !photoSourceOwner.trim() || !photoRightsBasis || !photoEvidenceReference.trim()
+          ))}
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
         >
           {busy ? '업로드 중…' : selectedFileCount > 1 ? `${selectedFileCount}개 업로드` : '업로드'}
@@ -961,7 +1028,8 @@ function SourcesList({
   const [excludingId, setExcludingId] = useState<string | null>(null)
   const [excludeErrors, setExcludeErrors] = useState<Record<string, string>>({})
   const [pendingPublicId, setPendingPublicId] = useState<string | null>(null)
-  const [pendingAssetKindId, setPendingAssetKindId] = useState<string | null>(null)
+  const [pendingProvenanceId, setPendingProvenanceId] = useState<string | null>(null)
+  const [provenanceDrafts, setProvenanceDrafts] = useState<Record<string, PhotoProvenanceDraft>>({})
   const [publicErrors, setPublicErrors] = useState<Record<string, string>>({})
 
   async function togglePublic(sourceId: string, next: boolean) {
@@ -985,30 +1053,43 @@ function SourcesList({
     }
   }
 
-  async function updatePhotoAssetKind(source: Source, assetKind: string) {
-    setPendingAssetKindId(source.id)
+  function updateProvenanceDraft(source: Source, update: Partial<PhotoProvenanceDraft>) {
+    setProvenanceDrafts((previous) => ({
+      ...previous,
+      [source.id]: {
+        ...(previous[source.id] ?? photoProvenanceDraft(source)),
+        ...update,
+      },
+    }))
+  }
+
+  async function savePhotoProvenance(source: Source) {
+    const draft = provenanceDrafts[source.id] ?? photoProvenanceDraft(source)
+    const patch = buildPhotoProvenancePatch(source, draft)
+    if (!patch) {
+      setPublicErrors((prev) => ({
+        ...prev,
+        [source.id]: '사진 성격, 권리자, 라이선스·동의 근거, 증빙 참조를 모두 직접 입력해 주세요.',
+      }))
+      return
+    }
+    setPendingProvenanceId(source.id)
     try {
-      const approvedUsage = assetKind === 'VERIFIED_REAL_PERSON'
-        ? ['DOCTOR_IDENTITY']
-        : assetKind === 'VERIFIED_FACILITY'
-          ? ['HERO', 'GALLERY']
-          : ['CONTENT_EDITORIAL']
       await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${source.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({
-          source_metadata: {
-            ...source.source_metadata,
-            asset_kind: assetKind,
-            approved_usage: approvedUsage,
-          },
-        }),
+        body: JSON.stringify(patch),
+      })
+      setProvenanceDrafts((previous) => {
+        const next = { ...previous }
+        delete next[source.id]
+        return next
       })
       onChanged()
     } catch (e: unknown) {
-      const message = safeOperatorError('onboarding', '이미지 성격과 허용 용도를 다시 저장하세요.')
+      const message = safeOperatorError('onboarding', '사진 출처와 공개 권리 확인 정보를 다시 저장하세요.')
       setPublicErrors((prev) => ({ ...prev, [source.id]: message }))
     } finally {
-      setPendingAssetKindId(null)
+      setPendingProvenanceId(null)
     }
   }
 
@@ -1051,6 +1132,8 @@ function SourcesList({
       <ul className="space-y-2">
         {sources.map((s) => {
           const fileHref = s.file_access_url ?? s.file_url
+          const provenanceVerified = isPhotoProvenanceVerified(s)
+          const provenance = provenanceDrafts[s.id] ?? photoProvenanceDraft(s)
           return (
             <li
               key={s.id}
@@ -1086,9 +1169,9 @@ function SourcesList({
                   {isPhotoSourceType(s.source_type) && (
                     <div className="flex flex-col items-end gap-2">
                     <select
-                      value={typeof s.source_metadata.asset_kind === 'string' ? s.source_metadata.asset_kind : ''}
-                      disabled={pendingAssetKindId === s.id}
-                      onChange={(e) => updatePhotoAssetKind(s, e.target.value)}
+                      value={provenance.assetKind}
+                      disabled={pendingProvenanceId === s.id}
+                      onChange={(e) => updateProvenanceDraft(s, { assetKind: e.target.value })}
                       aria-label={`${s.title} 이미지 성격과 허용 용도`}
                       className="max-w-64 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
                     >
@@ -1097,6 +1180,44 @@ function SourcesList({
                         <option key={option.value} value={option.value}>{option.label}</option>
                       ))}
                     </select>
+                    <input
+                      value={provenance.sourceOwner}
+                      disabled={pendingProvenanceId === s.id}
+                      onChange={(e) => updateProvenanceDraft(s, { sourceOwner: e.target.value })}
+                      placeholder="사진 소유자 또는 권리자"
+                      maxLength={200}
+                      className="max-w-80 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+                    />
+                    <select
+                      value={provenance.rightsBasis}
+                      disabled={pendingProvenanceId === s.id}
+                      onChange={(e) => updateProvenanceDraft(s, { rightsBasis: e.target.value })}
+                      aria-label={`${s.title} 라이선스 또는 공개 동의 근거`}
+                      className="max-w-80 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+                    >
+                      <option value="">라이선스·동의 근거 선택</option>
+                      <option value="OWNER_CONSENT">소유자·촬영 대상자 공개 동의</option>
+                      <option value="LICENSE">사용 라이선스 보유</option>
+                    </select>
+                    <input
+                      value={provenance.evidenceReference}
+                      disabled={pendingProvenanceId === s.id}
+                      onChange={(e) => updateProvenanceDraft(s, { evidenceReference: e.target.value })}
+                      placeholder="동의서·계약서 보관 위치 또는 증빙 번호"
+                      maxLength={500}
+                      className="max-w-80 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => savePhotoProvenance(s)}
+                      disabled={pendingProvenanceId === s.id}
+                      className="min-h-11 rounded border border-blue-300 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 disabled:opacity-50"
+                    >
+                      {pendingProvenanceId === s.id ? '검증 저장 중…' : '출처·권리 재검증 저장'}
+                    </button>
+                    <p className={`text-xs font-semibold ${provenanceVerified ? 'text-green-700' : 'text-amber-700'}`}>
+                      {provenanceVerified ? '검증 완료' : '재검증 필요'}
+                    </p>
                     <label className="flex min-h-11 cursor-pointer items-center gap-2">
                       <span
                         className={`rounded-full px-2 py-1 text-xs font-semibold ${
@@ -1110,12 +1231,18 @@ function SourcesList({
                       <input
                         type="checkbox"
                         checked={s.is_public}
-                        disabled={pendingPublicId === s.id}
+                        disabled={pendingPublicId === s.id || (!provenanceVerified && !s.is_public)}
                         onChange={(e) => togglePublic(s.id, e.target.checked)}
                         aria-label={`${s.title} 공개 사이트 표시`}
                         className="rounded border-slate-300"
                       />
                     </label>
+                    {s.photo_verified_at && (
+                      <p className="max-w-80 text-right text-[11px] leading-4 text-slate-500">
+                        권리자: {s.photo_source_owner} · {s.photo_rights_basis === 'LICENSE' ? '라이선스' : '공개 동의'}<br />
+                        증빙: {s.photo_evidence_reference} · 확인: {s.photo_verified_by}
+                      </p>
+                    )}
                     </div>
                   )}
                   <span

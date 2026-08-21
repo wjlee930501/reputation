@@ -37,3 +37,12 @@ export function isOffAllowlistExternalUrl(src: string | null | undefined): boole
 export function shouldBypassNextImageOptimization(src: string | null | undefined): boolean {
   return isOffAllowlistExternalUrl(src)
 }
+
+export type ClinicLogoPresentation =
+  | { readonly kind: 'image'; readonly src: string }
+  | { readonly kind: 'fallback' }
+
+export function clinicLogoPresentation(src: string | null | undefined): ClinicLogoPresentation {
+  if (!src || isOffAllowlistExternalUrl(src)) return { kind: 'fallback' }
+  return { kind: 'image', src }
+}

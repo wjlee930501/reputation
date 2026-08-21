@@ -1,6 +1,6 @@
 """P1-2 / A1 — FAQ 분리 필드 금지 표현 게이트 + 참고 자료 보정 경로 테스트."""
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +34,7 @@ def _content_item(**overrides):
         meta_description="어깨 통증 진료 안내입니다.",
         image_url=None,
         image_prompt=None,
+        image_policy_verified_at=None,
         scheduled_date=date(2026, 6, 1),
         status="DRAFT",
         generated_at=None,
@@ -172,6 +173,47 @@ async def test_update_content_edits_faq_fields(monkeypatch):
     assert item.faq_question == "어깨 통증은 어느 과로 가야 하나요?"
     assert response["faq_question"] == "어깨 통증은 어느 과로 가야 하나요?"
     assert response["faq_answer_summary"] == "3주 이상 지속되면 정형외과 진료를 권합니다."
+
+
+async def test_update_content_invalidates_image_review_when_title_changes(monkeypatch):
+    hospital = _hospital()
+    verified_at = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    item = _content_item(
+        hospital_id=hospital.id,
+        image_url="https://storage.example.com/content.webp",
+        image_policy_verified_at=verified_at,
+    )
+    _wire(monkeypatch, item, hospital)
+
+    await content_api.update_content(
+        hospital.id,
+        item.id,
+        content_api.ContentPatch(title="무릎 통증 진료 안내"),
+        db=_PatchDB(),
+    )
+
+    assert item.image_url == "https://storage.example.com/content.webp"
+    assert item.image_policy_verified_at is None
+
+
+async def test_update_content_preserves_image_review_when_title_is_unchanged(monkeypatch):
+    hospital = _hospital()
+    verified_at = datetime(2026, 8, 22, tzinfo=timezone.utc)
+    item = _content_item(
+        hospital_id=hospital.id,
+        image_url="https://storage.example.com/content.webp",
+        image_policy_verified_at=verified_at,
+    )
+    _wire(monkeypatch, item, hospital)
+
+    await content_api.update_content(
+        hospital.id,
+        item.id,
+        content_api.ContentPatch(title=item.title, meta_description="설명을 다듬었습니다."),
+        db=_PatchDB(),
+    )
+
+    assert item.image_policy_verified_at == verified_at
 
 
 async def test_update_content_patches_references_with_whitelisted_source(monkeypatch):

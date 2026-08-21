@@ -17,6 +17,10 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+class InvalidAssetReference(ValueError):
+    """Raised when cleanup is asked to cross a storage ownership boundary."""
+
 LOCAL_UPLOAD_DIR = Path(settings.ASSET_LOCAL_UPLOAD_DIR)
 LOCAL_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -93,6 +97,36 @@ def _upload_to_gcs(hospital_id: uuid.UUID, file_id: str, data: bytes, mime_type:
     blob = bucket.blob(blob_path)
     blob.upload_from_string(data, content_type=mime_type)
     return f"gs://{settings.GCP_STORAGE_BUCKET}/{blob_path}"
+
+
+def delete_asset_ref(asset_ref: str, *, expected_hospital_id: uuid.UUID) -> None:
+    """Delete one exact private asset after a failed database persistence step."""
+    local_path = resolve_local_asset_path(
+        asset_ref,
+        expected_hospital_id=expected_hospital_id,
+    )
+    if local_path is not None:
+        local_path.unlink(missing_ok=True)
+        return
+    if not asset_ref.startswith("gs://"):
+        raise InvalidAssetReference("asset reference is not a managed hospital object")
+    bucket_name, separator, blob_name = asset_ref.removeprefix("gs://").partition("/")
+    expected_prefix = f"assets/{expected_hospital_id}/"
+    if not separator or not bucket_name or not blob_name.startswith(expected_prefix):
+        raise InvalidAssetReference("asset reference does not belong to the expected hospital")
+    _delete_gcs_object(bucket_name, blob_name)
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+def _delete_gcs_object(bucket_name: str, blob_name: str) -> None:
+    from google.api_core.exceptions import NotFound
+    from google.cloud import storage
+
+    blob = storage.Client(project=settings.GCP_PROJECT_ID).bucket(bucket_name).blob(blob_name)
+    try:
+        blob.delete()
+    except NotFound:
+        return
 
 
 def resolve_local_asset_path(asset_ref: str, *, expected_hospital_id: uuid.UUID | None = None) -> Path | None:

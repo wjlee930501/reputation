@@ -269,6 +269,7 @@ def _seed_demo_photos(db, hospital: Hospital) -> list[HospitalSourceAsset]:
             data=image_bytes,
             mime_type="image/png",
         )
+        verified_at = datetime.now(timezone.utc)
         asset = HospitalSourceAsset(
             hospital_id=hospital.id,
             source_type=spec["source_type"],
@@ -276,14 +277,24 @@ def _seed_demo_photos(db, hospital: Hospital) -> list[HospitalSourceAsset]:
             url=None,
             raw_text=None,
             operator_note="GPT image 2 generated fictional demo asset; no real clinic/person likeness.",
-            source_metadata={"channel": "gpt_image_2_demo", "fictional": True},
+            source_metadata={
+                "channel": "gpt_image_2_demo",
+                "fictional": True,
+                "asset_kind": "EDITORIAL_GRAPHIC",
+                "approved_usage": ["CONTENT_EDITORIAL"],
+            },
             file_url=file_url,
             mime_type="image/png",
             file_size_bytes=len(image_bytes),
             is_public=True,
+            photo_source_owner="MotionLabs Inc.",
+            photo_rights_basis="LICENSE",
+            photo_evidence_reference=f"bundled-demo-asset/{spec['asset_filename']}",
+            photo_verified_by="Demo AE",
+            photo_verified_at=verified_at,
             content_hash=compute_source_content_hash(spec["title"], None, None, None),
             status=SourceStatus.PROCESSED,
-            processed_at=datetime.now(timezone.utc),
+            processed_at=verified_at,
             created_by="Demo AE",
         )
         db.add(asset)

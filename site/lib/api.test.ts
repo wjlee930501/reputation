@@ -186,6 +186,24 @@ test('fetchContent returns parsed JSON on a 200', async () => {
   }
 })
 
+test('legacy content images stay hidden until the backend confirms semantic review', async () => {
+  const originalFetch = globalThis.fetch
+  const imageUrl = 'https://storage.googleapis.com/reputation-images/legacy.webp'
+  for (const [imagePolicyVerified, expected] of [[undefined, null], [false, null], [true, imageUrl]] as const) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(contentPayload({
+        image_url: imageUrl,
+        image_policy_verified: imagePolicyVerified,
+      })), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
+    try {
+      const content = await fetchContent('demo-clinic', 'abc')
+      assert.equal(content.image_url, expected)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
 test('fetchContents rejects malformed backend payloads at runtime', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () =>

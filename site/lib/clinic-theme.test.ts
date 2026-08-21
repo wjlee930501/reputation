@@ -61,7 +61,7 @@ test('hero imagery never invents a clinic photograph when no verified facility a
   ])
 })
 
-test('approved profile hero and clinic photos take precedence over generic imagery', () => {
+test('verified hero asset with explicit approval takes precedence over generic imagery', () => {
   assert.equal(
     selectClinicHeroImage({
       hero_image_url: 'http://localhost:8000/hero.jpg',
@@ -71,13 +71,47 @@ test('approved profile hero and clinic photos take precedence over generic image
           id: 'interior',
           source_type: 'PHOTO_CLINIC_INTERIOR',
           title: '진료실',
-          url: 'https://cdn.example.com/interior.jpg',
+          url: 'http://localhost:8000/hero.jpg',
+          asset_kind: 'VERIFIED_FACILITY',
+          approved_usage: ['HERO'],
         },
       ],
       specialties: ['대장항문외과'],
     }),
     'http://localhost:8000/hero.jpg',
   )
+})
+
+test('unclassified and gallery-only facility assets cannot lead the hero', () => {
+  // Given legacy and gallery-only photos marked as the profile hero
+  const base = {
+    hero_image_url: 'http://localhost:8000/hero.jpg',
+    hero_media_kind: 'VERIFIED_FACILITY' as const,
+    specialties: ['내과'],
+  }
+
+  // When the hero media is selected
+  // Then it falls back to the typographic state instead of calling either asset verified-real.
+  assert.equal(selectClinicHeroImage({
+    ...base,
+    photos: [{
+      id: 'legacy',
+      source_type: 'PHOTO_CLINIC_INTERIOR',
+      title: '예전 사진',
+      url: 'http://localhost:8000/hero.jpg',
+    }],
+  }), null)
+  assert.equal(selectClinicHeroImage({
+    ...base,
+    photos: [{
+      id: 'gallery',
+      source_type: 'PHOTO_CLINIC_INTERIOR',
+      title: '공간 사진',
+      url: 'http://localhost:8000/hero.jpg',
+      asset_kind: 'VERIFIED_FACILITY',
+      approved_usage: ['GALLERY'],
+    }],
+  }), null)
 })
 
 test('approved brand graphic can lead the hero without being represented as a clinic photo', () => {

@@ -505,6 +505,8 @@ async def update_content(
 
     body_changed = False
     if body.title is not None:
+        if body.title != item.title:
+            item.image_policy_verified_at = None
         item.title = body.title
     if body.body is not None and body.body != item.body:
         item.body = body.body
@@ -866,6 +868,7 @@ async def reject_content(
     item.body = None  # 초기화 → 야간 생성 태스크가 다시 처리
     item.title = None
     item.image_url = None
+    item.image_policy_verified_at = None
     # 발행됐던 아이템을 반려하면 발행 메타도 초기화 — 재생성·재발행 시 이전 발행 기록이
     # 새 본문에 잘못 남는 것 방지.
     item.published_at = None

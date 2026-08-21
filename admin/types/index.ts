@@ -149,6 +149,7 @@ export type SourceType =
   | 'PHOTO_CLINIC_EXTERIOR'
   | 'PHOTO_CLINIC_INTERIOR'
   | 'PHOTO_TREATMENT_ROOM'
+  | 'PHOTO_BRAND'
   | 'OTHER'
 
 export type SourceStatus = 'PENDING' | 'PROCESSED' | 'EXCLUDED' | 'ERROR'

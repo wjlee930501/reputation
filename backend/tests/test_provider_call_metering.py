@@ -7,12 +7,14 @@
 
 여기서 검증하는 것은 "재시도·폴백이 각각 실제 호출로 잡히는가"다.
 """
+
 import asyncio
 
 import pytest
 
 from app.models.content import ContentType
 from app.services import content_engine, image_engine, sov_engine
+from app.services.photo_upload import NormalizedPhoto
 
 
 class RecordedCalls:
@@ -62,17 +64,27 @@ def test_openai_image_retries_each_count_as_a_paid_call(monkeypatch):
     monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_MODEL", "gpt-image-2")
     # 백오프 대기는 이 테스트의 관심사가 아니다.
-    monkeypatch.setattr(image_engine._openai_generate_and_upload.retry, "sleep", lambda _s: None)
+    monkeypatch.setattr(image_engine._openai_generate.retry, "sleep", lambda _s: None)
+    scene = image_engine.build_scene_plan(
+        ContentType.FAQ,
+        "무릎 통증",
+        image_engine.HospitalImageDirection.default(),
+    )
+    spec = image_engine.ImageGenerationSpec(
+        hospital_slug="병원",
+        scene=scene,
+        prompt=image_engine.render_openai_prompt(scene),
+    )
 
     with pytest.raises(Exception):
-        image_engine._openai_generate_and_upload("prompt", "병원", counter=counter)
+        image_engine._openai_generate(spec, counter=counter)
 
     assert requests["n"] == 3, "tenacity가 3회 시도해야 하는 전제 확인"
     assert counter.count == requests["n"], "실제 요청 수와 계수가 같아야 한다"
 
 
-def test_image_generation_records_every_attempt_including_the_fallback(monkeypatch, recorded):
-    """OpenAI 3회 전부 실패 후 Google 1회 성공 → 실제 호출 4회로 기록된다."""
+def test_image_generation_records_generation_and_policy_calls(monkeypatch, recorded):
+    """OpenAI retries, Google fallback, and policy review are all metered."""
 
     async def allowed(*_a, **_k):
         from app.services.cost_guard import CostGuardDecision
@@ -84,27 +96,54 @@ def test_image_generation_records_every_attempt_including_the_fallback(monkeypat
     monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
 
-    def failing_openai(_prompt, _hospital, *, counter=None):
+    attempted_scenes = []
+
+    def failing_openai(spec, *, counter=None):
+        attempted_scenes.append(spec.scene)
         for _ in range(3):  # tenacity가 소진한 시도 수
             if counter is not None:
                 counter.tick()
-        raise RuntimeError("all openai attempts failed")
+        raise image_engine.NoImagePayloadError(provider="openai")
 
-    def succeeding_google(_prompt, _hospital, *, counter=None):
+    def succeeding_google(spec, *, counter=None):
+        attempted_scenes.append(spec.scene)
         if counter is not None:
             counter.tick()
-        return "gs://bucket/image.png"
+        return b"generated-image"
 
-    monkeypatch.setattr(image_engine, "_openai_generate_and_upload", failing_openai)
-    monkeypatch.setattr(image_engine, "_generate_and_upload", succeeding_google)
+    def passing_policy(_raster, _scene, *, counter=None):
+        if counter is not None:
+            counter.tick()
+        return image_engine.ImagePolicyAssessment(
+            has_text=False,
+            has_logo=False,
+            has_recognizable_people=False,
+            impersonates_real_clinic=False,
+            topic_relevant=True,
+        )
+
+    monkeypatch.setattr(image_engine, "_openai_generate", failing_openai)
+    monkeypatch.setattr(image_engine, "_google_generate", succeeding_google)
+    monkeypatch.setattr(image_engine, "_validate_generated_image", passing_policy)
+    monkeypatch.setattr(
+        image_engine,
+        "normalize_photo_upload",
+        lambda payload, **_kwargs: NormalizedPhoto(data=payload),
+    )
+    monkeypatch.setattr(
+        image_engine,
+        "_upload_generated_raster",
+        lambda _raster, _slug: "gs://bucket/image.webp",
+    )
 
     url, _prompt = asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원"))
 
-    assert url == "gs://bucket/image.png"
-    assert recorded.by_category["image"] == 4, "예약은 1건이지만 실제 호출은 4회다"
+    assert url == "gs://bucket/image.webp"
+    assert attempted_scenes[0] == attempted_scenes[1]
+    assert recorded.by_category["image"] == 5
 
 
-def test_google_topic_safety_failure_uses_neutral_fallback(monkeypatch, recorded):
+def test_google_generation_failure_fails_closed_without_ungrounded_fallback(monkeypatch, recorded):
     async def allowed(*_a, **_k):
         from app.services.cost_guard import CostGuardDecision
 
@@ -113,26 +152,24 @@ def test_google_topic_safety_failure_uses_neutral_fallback(monkeypatch, recorded
     monkeypatch.setattr("app.services.cost_guard.check_and_increment", allowed)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
-    prompts = []
+    scenes = []
 
-    def topic_then_fallback(prompt, _hospital, *, counter=None):
-        prompts.append(prompt)
+    def fail_grounded(spec, *, counter=None):
+        scenes.append(spec.scene)
         if counter is not None:
             counter.tick()
-        if len(prompts) == 1:
-            raise ValueError("IMAGE_SAFETY")
-        return "gs://bucket/neutral.png"
+        raise image_engine.NoImagePayloadError(provider="google")
 
-    monkeypatch.setattr(image_engine, "_generate_and_upload", topic_then_fallback)
+    monkeypatch.setattr(image_engine, "_google_generate", fail_grounded)
 
     url, prompt = asyncio.run(
         image_engine.generate_image(ContentType.LOCAL, "병원", topic="간질환 진료 흐름")
     )
 
-    assert url == "gs://bucket/neutral.png"
-    assert prompt == image_engine.GOOGLE_SAFETY_FALLBACK_PROMPT
-    assert prompts[1] == image_engine.GOOGLE_SAFETY_FALLBACK_PROMPT
-    assert recorded.by_category["image"] == 2
+    assert (url, prompt) == ("", "")
+    assert len(scenes) == 1
+    assert scenes[0].subject.value == "neighborhood_wellness"
+    assert recorded.by_category["image"] == 1
 
 
 def test_blocked_image_generation_records_no_provider_call(monkeypatch, recorded):

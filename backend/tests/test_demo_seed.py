@@ -1,6 +1,6 @@
 import os
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-key")
@@ -189,6 +189,15 @@ def test_monthly_summary_excludes_photos_but_blocks_on_pending_text_sources():
             status=SourceStatus.PROCESSED,
             file_url="gs://private/doctor.jpg",
             is_public=True,
+            source_metadata={
+                "asset_kind": "VERIFIED_REAL_PERSON",
+                "approved_usage": ["DOCTOR_IDENTITY"],
+            },
+            photo_source_owner="데모 원장",
+            photo_rights_basis="OWNER_CONSENT",
+            photo_evidence_reference="demo/consent",
+            photo_verified_by="demo@example.com",
+            photo_verified_at=datetime.now(timezone.utc),
         )
     )
     db.add(

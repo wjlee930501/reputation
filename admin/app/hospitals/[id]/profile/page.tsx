@@ -6,6 +6,7 @@ import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
+import type { SourceAsset } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 import { DomainSetupPanel } from '../DomainSetupPanel'
 import type { DomainProfile } from '../DomainSetupTypes'
@@ -72,6 +73,50 @@ interface HospitalProfile {
 
 const DAYS = ['월', '화', '수', '목', '금', '토', '일']
 const DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+const PHOTO_SOURCE_TYPES = new Set<SourceAsset['source_type']>([
+  'PHOTO_BRAND',
+  'PHOTO_DOCTOR',
+  'PHOTO_CLINIC_EXTERIOR',
+  'PHOTO_CLINIC_INTERIOR',
+  'PHOTO_TREATMENT_ROOM',
+])
+
+function managedProfileMediaUrl(slug: string, sourceId: string): string {
+  return `/api/v1/public/hospitals/${slug}/assets/${sourceId}`
+}
+
+function isVerifiedProfilePhoto(source: SourceAsset): boolean {
+  return (
+    source.is_public
+    && source.status !== 'EXCLUDED'
+    && source.file_access_url !== null
+    && source.mime_type?.startsWith('image/') === true
+    && PHOTO_SOURCE_TYPES.has(source.source_type)
+  )
+}
+
+function hasApprovedMediaUsage(source: SourceAsset, usage: 'LOGO' | 'HERO'): boolean {
+  const approvedUsage = source.source_metadata.approved_usage
+  return Array.isArray(approvedUsage) && approvedUsage.some((value) => value === usage)
+}
+
+function isLogoMedia(source: SourceAsset): boolean {
+  return (
+    isVerifiedProfilePhoto(source)
+    && source.source_type === 'PHOTO_BRAND'
+    && source.source_metadata.asset_kind === 'VERIFIED_BRAND_GRAPHIC'
+    && hasApprovedMediaUsage(source, 'LOGO')
+  )
+}
+
+function isHeroMedia(source: SourceAsset): boolean {
+  const assetKind = source.source_metadata.asset_kind
+  return (
+    isVerifiedProfilePhoto(source)
+    && (assetKind === 'VERIFIED_BRAND_GRAPHIC' || assetKind === 'VERIFIED_FACILITY')
+    && hasApprovedMediaUsage(source, 'HERO')
+  )
+}
 
 function TagInput({
   label,
@@ -342,6 +387,7 @@ export default function ProfilePage() {
   const [error, setError] = useState<string | null>(null)
   const [errorCanReload, setErrorCanReload] = useState(false)
   const [success, setSuccess] = useState(false)
+  const [managedPhotos, setManagedPhotos] = useState<SourceAsset[]>([])
 
   // Autofill state
   const [autofillOpen, setAutofillOpen] = useState(false)
@@ -355,8 +401,11 @@ export default function ProfilePage() {
   const [aiFilled, setAiFilled] = useState<Record<string, AutofillFieldMeta>>({})
 
   useEffect(() => {
-    fetchAPI<HospitalProfile>(`/admin/hospitals/${hospitalId}`)
-      .then((data) => {
+    Promise.all([
+      fetchAPI<HospitalProfile>(`/admin/hospitals/${hospitalId}`),
+      fetchAPI<SourceAsset[]>(`/admin/hospitals/${hospitalId}/essence/sources`),
+    ])
+      .then(([data, sources]) => {
         setProfile({
           ...data,
           business_hours: data.business_hours ?? {},
@@ -368,6 +417,7 @@ export default function ProfilePage() {
           latitude: data.latitude ?? null,
           longitude: data.longitude ?? null,
         })
+        setManagedPhotos(sources.filter(isVerifiedProfilePhoto))
       })
       .catch((reason: unknown) => {
         if (!isExpectedOperatorRequestFailure(reason)) throw reason
@@ -550,6 +600,12 @@ export default function ProfilePage() {
   const violationFields = new Set<string>(
     (autofillResult?.violations ?? []).map((v) => v.field)
   )
+  const mediaOptions = (sources: SourceAsset[]) => sources.map((source) => ({
+    label: `${source.display?.source_type_label ?? source.source_type} · ${source.title}`,
+    value: managedProfileMediaUrl(profile.slug ?? '', source.id),
+  }))
+  const logoMediaOptions = mediaOptions(managedPhotos.filter(isLogoMedia))
+  const heroMediaOptions = mediaOptions(managedPhotos.filter(isHeroMedia))
 
   function fieldCls(fieldKey: string, isAiFilled: boolean): string {
     if (violationFields.has(fieldKey)) {
@@ -761,15 +817,21 @@ export default function ProfilePage() {
           </label>
         </div>
         <div>
-          <label htmlFor="profile-logo-url" className="block text-sm font-medium text-slate-700 mb-1.5">로고 이미지 URL</label>
-          <input
+          <label htmlFor="profile-logo-url" className="block text-sm font-medium text-slate-700 mb-1.5">로고 이미지</label>
+          <select
             id="profile-logo-url"
-            type="url"
             value={profile.logo_url ?? ''}
             onChange={(e) => updateField('logo_url', e.target.value)}
-            placeholder="https://.../logo.png"
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+          >
+            <option value="">선택 안 함</option>
+            {profile.logo_url && !logoMediaOptions.some((option) => option.value === profile.logo_url) && (
+              <option value={profile.logo_url}>기존 등록 값 (변경하려면 승인 사진 선택)</option>
+            )}
+            {logoMediaOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="text-sm font-medium text-slate-700">
@@ -839,15 +901,28 @@ export default function ProfilePage() {
           </label>
         </div>
         <div>
-          <label htmlFor="profile-hero-image-url" className="block text-sm font-medium text-slate-700 mb-1.5">메인 대표 이미지 URL</label>
-          <input
+          <label htmlFor="profile-hero-image-url" className="block text-sm font-medium text-slate-700 mb-1.5">메인 대표 이미지</label>
+          <select
             id="profile-hero-image-url"
-            type="url"
             value={profile.hero_image_url ?? ''}
             onChange={(e) => updateField('hero_image_url', e.target.value)}
-            placeholder="https://.../hero.jpg"
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+          >
+            <option value="">등록 사진에서 자동 선택</option>
+            {profile.hero_image_url && !heroMediaOptions.some((option) => option.value === profile.hero_image_url) && (
+              <option value={profile.hero_image_url}>기존 등록 값 (변경하려면 승인 사진 선택)</option>
+            )}
+            {heroMediaOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-xs text-slate-500">
+            공개 승인된 온보딩 사진만 선택할 수 있습니다.{' '}
+            <a href={`/hospitals/${hospitalId}/onboarding`} className="font-medium text-blue-700 underline underline-offset-2">
+              온보딩 자료에서 사진을 관리하세요
+            </a>
+            .
+          </p>
         </div>
       </section>
 

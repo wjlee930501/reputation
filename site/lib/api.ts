@@ -33,6 +33,7 @@ export interface ContentSummary {
   title: string
   meta_description: string | null
   image_url: string | null
+  image_policy_verified?: boolean
   scheduled_date: string
   published_at: string | null
   body_updated_at: string | null
@@ -102,6 +103,7 @@ function isContentSummaryPayload(value: unknown): value is ContentSummary {
     typeof value.title === 'string' &&
     isNullableString(value.meta_description) &&
     isNullableString(value.image_url) &&
+    (value.image_policy_verified === undefined || typeof value.image_policy_verified === 'boolean') &&
     typeof value.scheduled_date === 'string' &&
     isNullableString(value.published_at) &&
     isNullableString(value.body_updated_at) &&
@@ -113,6 +115,13 @@ function isContentSummaryPayload(value: unknown): value is ContentSummary {
     (value.query_target_treatment === undefined || isNullableString(value.query_target_treatment)) &&
     (value.reading_minutes === undefined || typeof value.reading_minutes === 'number')
   )
+}
+
+function normalizeContentImage<T extends ContentSummary>(content: T): T {
+  return {
+    ...content,
+    image_url: content.image_policy_verified === true ? content.image_url : null,
+  }
 }
 
 function isContentDetailPayload(value: unknown): value is ContentDetail {
@@ -134,7 +143,7 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
   if (!Array.isArray(contents) || !contents.every(isContentSummaryPayload)) {
     throw new Error('Invalid contents payload')
   }
-  return contents
+  return contents.map(normalizeContentImage)
 }
 
 export async function fetchContent(slug: string, contentId: string): Promise<ContentDetail> {
@@ -148,7 +157,7 @@ export async function fetchContent(slug: string, contentId: string): Promise<Con
   if (!isContentDetailPayload(content)) {
     throw new Error('Invalid content payload')
   }
-  return content
+  return normalizeContentImage(content)
 }
 
 export const TYPE_LABELS: Record<string, string> = {

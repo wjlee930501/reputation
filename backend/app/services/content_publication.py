@@ -147,7 +147,9 @@ def assess_content_publication(
             philosophy_id=getattr(philosophy, "id", None),
         )
 
-    if not getattr(item, "image_url", None):
+    if not getattr(item, "image_url", None) or not getattr(
+        item, "image_policy_verified_at", None
+    ):
         return _blocked(
             code="CONTENT_IMAGE_NOT_READY",
             message="대표 이미지가 아직 준비되지 않았습니다.",

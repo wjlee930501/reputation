@@ -12,7 +12,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, assert_never
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -30,6 +30,7 @@ from app.api.admin.domain import (
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
+from app.models.essence import PHOTO_SOURCE_TYPES, HospitalSourceAsset, SourceStatus
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import MonthlyReport
@@ -74,6 +75,17 @@ from app.workers.tasks import trigger_v0_report
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
+
+_MANAGED_PROFILE_MEDIA_PATH = re.compile(
+    r"^/api/v1/public/hospitals/"
+    r"(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)/assets/"
+    r"(?P<source_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
+PROFILE_MEDIA_FIELDS: tuple[Literal["logo_url", "hero_image_url"], ...] = (
+    "logo_url",
+    "hero_image_url",
+)
 
 
 # ── Pydantic 스키마 ───────────────────────────────────────────────
@@ -128,6 +140,106 @@ async def _exact_name_candidates(db: AsyncSession, name: str) -> list[Hospital]:
         .limit(10)
     )
     return list(result.scalars().all())
+
+
+def _managed_profile_media_source_id(value: str, hospital_slug: str) -> uuid.UUID | None:
+    """Return the source id only for this hospital's canonical public asset path."""
+    match = _MANAGED_PROFILE_MEDIA_PATH.fullmatch(value)
+    if match is None or match.group("slug") != hospital_slug:
+        return None
+    return uuid.UUID(match.group("source_id"))
+
+
+async def _require_managed_profile_media_assets(
+    db: AsyncSession,
+    hospital: Hospital,
+    update_data: dict[str, object],
+) -> None:
+    """Allow changed profile media only when it is a public photo owned by the hospital."""
+    for field in PROFILE_MEDIA_FIELDS:
+        value = update_data.get(field)
+        if value is None or value == getattr(hospital, field, None):
+            continue
+        if not isinstance(value, str):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "MANAGED_MEDIA_ASSET_REQUIRED",
+                    "message": "로고와 대표 이미지는 이 병원의 공개 승인 사진에서 선택해 주세요.",
+                },
+            )
+        source_id = _managed_profile_media_source_id(value, hospital.slug)
+        if source_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "MANAGED_MEDIA_ASSET_REQUIRED",
+                    "message": "로고와 대표 이미지는 이 병원의 공개 승인 사진에서 선택해 주세요.",
+                },
+            )
+        asset = (
+            await db.execute(
+                select(HospitalSourceAsset).where(
+                    HospitalSourceAsset.id == source_id,
+                    HospitalSourceAsset.hospital_id == hospital.id,
+                    HospitalSourceAsset.is_public.is_(True),
+                    HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+                    HospitalSourceAsset.source_type.in_(list(PHOTO_SOURCE_TYPES)),
+                    HospitalSourceAsset.file_url.is_not(None),
+                    HospitalSourceAsset.photo_source_owner.is_not(None),
+                    HospitalSourceAsset.photo_rights_basis.is_not(None),
+                    HospitalSourceAsset.photo_evidence_reference.is_not(None),
+                    HospitalSourceAsset.photo_verified_by.is_not(None),
+                    HospitalSourceAsset.photo_verified_at.is_not(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if asset is None or not _is_allowed_profile_media_asset(asset, field):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "MANAGED_MEDIA_ASSET_REQUIRED",
+                    "message": "로고와 대표 이미지는 이 병원의 공개 승인 사진에서 선택해 주세요.",
+                },
+            )
+
+
+def _is_allowed_profile_media_asset(
+    asset: HospitalSourceAsset,
+    field: Literal["logo_url", "hero_image_url"],
+) -> bool:
+    """Match public profile roles to the source asset's server-derived visual metadata."""
+    metadata = asset.source_metadata or {}
+    asset_kind = metadata.get("asset_kind")
+    approved_usage = metadata.get("approved_usage")
+    source_type = getattr(asset.source_type, "value", asset.source_type)
+    has_usage = isinstance(approved_usage, list)
+    is_brand_asset = source_type == "PHOTO_BRAND"
+    is_facility_asset = source_type in {
+        "PHOTO_CLINIC_EXTERIOR",
+        "PHOTO_CLINIC_INTERIOR",
+        "PHOTO_TREATMENT_ROOM",
+    }
+
+    match field:
+        case "logo_url":
+            return (
+                is_brand_asset
+                and asset_kind == "VERIFIED_BRAND_GRAPHIC"
+                and has_usage
+                and "LOGO" in approved_usage
+            )
+        case "hero_image_url":
+            return (
+                (
+                    (is_brand_asset and asset_kind == "VERIFIED_BRAND_GRAPHIC")
+                    or (is_facility_asset and asset_kind == "VERIFIED_FACILITY")
+                )
+                and has_usage
+                and "HERO" in approved_usage
+            )
+        case unreachable:
+            assert_never(unreachable)
 
 
 class HospitalProfileUpdate(BaseModel):
@@ -229,8 +341,6 @@ class HospitalProfileUpdate(BaseModel):
         "google_business_profile_url",
         "google_maps_url",
         "naver_place_url",
-        "logo_url",
-        "hero_image_url",
     )
     @classmethod
     def validate_public_url(cls, value: str | None) -> str | None:
@@ -243,6 +353,15 @@ class HospitalProfileUpdate(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("URL must be absolute http(s)")
         return cleaned
+
+    @field_validator("logo_url", "hero_image_url")
+    @classmethod
+    def clean_profile_media_reference(cls, value: str | None) -> str | None:
+        """Keep legacy values readable; changed media is authorized against hospital assets later."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
 
 class ProfileAutofillRequest(BaseModel):
@@ -561,6 +680,7 @@ async def update_profile(
     body: HospitalProfileUpdate,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    _actor: AdminUser = Depends(require_active_account),
 ):
     """
     프로파일 수정.
@@ -568,6 +688,8 @@ async def update_profile(
     """
     _ = background_tasks
     h = await _get_or_404(db, hospital_id)
+    update_data = body.model_dump(exclude_unset=True)
+    await _require_managed_profile_media_assets(db, h, update_data)
 
     if body.keywords is not None:
         regions = body.region if body.region is not None else (h.region or [])
@@ -663,7 +785,6 @@ async def update_profile(
         "image_style_direction",
         "site_access_mode",
     }
-    update_data = body.model_dump(exclude_unset=True)
     was_complete = h.profile_complete
     changed_fields: list[str] = []
     for field, value in update_data.items():

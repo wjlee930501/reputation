@@ -118,16 +118,23 @@ function isColorectalClinic(specialties: string[]): boolean {
 export function selectClinicHeroImage(
   hospital: Pick<Hospital, 'hero_image_url' | 'hero_media_kind' | 'photos' | 'specialties'>,
 ): string | null {
-  const hero = hospital.hero_media_kind === 'VERIFIED_FACILITY' || hospital.hero_media_kind === 'BRAND_GRAPHIC'
-    ? resolveAssetUrl(hospital.hero_image_url)
-    : null
-  if (hero) return hero
+  const hero = resolveAssetUrl(hospital.hero_image_url)
+  if (hospital.hero_media_kind === 'BRAND_GRAPHIC' && hero) return hero
 
-  const clinicPhoto = hospital.photos.find((photo) =>
+  const isVerifiedFacilityHero = (photo: Hospital['photos'][number]): boolean => (
     ['PHOTO_CLINIC_EXTERIOR', 'PHOTO_CLINIC_INTERIOR', 'PHOTO_TREATMENT_ROOM'].includes(photo.source_type) &&
-    photo.asset_kind !== 'EDITORIAL_GRAPHIC' &&
-    (!photo.approved_usage || photo.approved_usage.includes('HERO')),
+    photo.asset_kind === 'VERIFIED_FACILITY' &&
+    Boolean(photo.approved_usage?.includes('HERO'))
   )
+
+  if (hospital.hero_media_kind === 'VERIFIED_FACILITY' && hero) {
+    const selectedHero = hospital.photos.find((photo) => (
+      isVerifiedFacilityHero(photo) && resolveAssetUrl(photo.url) === hero
+    ))
+    if (selectedHero) return hero
+  }
+
+  const clinicPhoto = hospital.photos.find(isVerifiedFacilityHero)
   return resolveAssetUrl(clinicPhoto?.url ?? null)
 }
 

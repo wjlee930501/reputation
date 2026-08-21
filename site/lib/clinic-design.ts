@@ -4,6 +4,12 @@ export type ClinicContentDensity = 'sparse' | 'standard' | 'rich'
 export type ClinicAccessMode = 'urgent' | 'appointment' | 'specialist'
 export type ClinicMediaMode = 'verified-real' | 'brand-graphic' | 'typographic'
 
+export interface ClinicNavigationItem {
+  readonly href: string
+  readonly label: string
+  readonly ariaCurrent: 'page' | undefined
+}
+
 export interface ClinicComposition {
   featuredSecondaryLimit: number
   galleryPreviewLimit: number
@@ -79,14 +85,48 @@ export function displayClinicLabels(values: string[], limit = 2): string[] {
   return [...new Set(normalized)].slice(0, Math.max(0, limit))
 }
 
+function routePath(route: string): string {
+  try {
+    const pathname = new URL(route, 'https://clinic.local').pathname
+    return pathname === '/' ? pathname : pathname.replace(/\/+$/, '')
+  } catch {
+    return route
+  }
+}
+
+function isCurrentClinicRoute(pathname: string, href: string): boolean {
+  const currentPath = routePath(pathname)
+  const targetPath = routePath(href)
+  return (
+    currentPath === targetPath ||
+    currentPath.startsWith(`${targetPath}/`) ||
+    currentPath.endsWith(targetPath) ||
+    currentPath.includes(`${targetPath}/`)
+  )
+}
+
+export function getClinicNavigation(hospitalRootUrl: string, pathname: string): readonly ClinicNavigationItem[] {
+  const items = [
+    { href: `${hospitalRootUrl}/treatments`, label: '진료 영역' },
+    { href: `${hospitalRootUrl}/visit`, label: '진료시간·오시는 길' },
+    { href: `${hospitalRootUrl}/doctor`, label: '의료진' },
+    { href: `${hospitalRootUrl}/contents`, label: '건강 정보' },
+  ] as const
+
+  return items.map((item) => ({
+    ...item,
+    ariaCurrent: isCurrentClinicRoute(pathname, item.href) ? 'page' : undefined,
+  }))
+}
+
 export function selectClinicGalleryPhotos(
   photos: HospitalPhoto[],
   requestedLimit = 6,
 ): { photos: HospitalPhoto[]; total: number; remaining: number } {
   const facilityPhotos = photos.filter((photo) => (
     FACILITY_PHOTO_TYPES.has(photo.source_type) &&
-    photo.asset_kind !== 'EDITORIAL_GRAPHIC' &&
-    (!photo.approved_usage || photo.approved_usage.includes('GALLERY'))
+    photo.asset_kind === 'VERIFIED_FACILITY' &&
+    Boolean(photo.approved_usage?.includes('GALLERY'))
   ))
   const limit = Math.max(1, Math.min(8, requestedLimit))
   const selected = facilityPhotos.slice(0, limit)

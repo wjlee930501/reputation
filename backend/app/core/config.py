@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Annotated
+from typing import Annotated, Literal, TypeAlias
 from urllib.parse import quote, urlparse
 
 from pydantic import field_validator
@@ -17,6 +17,18 @@ _CRITICAL_PRODUCTION_SECRETS = (
     "WORKER_DISPATCH_SECRET",
     "SLACK_WEBHOOK_URL",
 )
+
+OpenAIImageSize: TypeAlias = Literal[
+    "auto",
+    "1024x1024",
+    "1536x1024",
+    "1024x1536",
+    "256x256",
+    "512x512",
+    "1792x1024",
+    "1024x1792",
+]
+OpenAIImageQuality: TypeAlias = Literal["standard", "hd", "low", "medium", "high", "auto"]
 
 
 def _resolve_secret(name: str, default: str = "") -> str:
@@ -332,8 +344,8 @@ class Settings(BaseSettings):
     GOOGLE_IMAGE_MODEL: str = "gemini-3.1-flash-image"
     GOOGLE_IMAGE_LOCATION: str = "global"
     OPENAI_IMAGE_MODEL: str = "gpt-image-2"
-    OPENAI_IMAGE_SIZE: str = "1536x864"  # 16:9 (16의 배수, 비율≤3:1) — 카드 레이아웃 일치
-    OPENAI_IMAGE_QUALITY: str = "high"  # low|medium|high
+    OPENAI_IMAGE_SIZE: OpenAIImageSize = "1536x1024"
+    OPENAI_IMAGE_QUALITY: OpenAIImageQuality = "high"
 
     # OpenAI — SoV
     OPENAI_API_KEY: str = ""

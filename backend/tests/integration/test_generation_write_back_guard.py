@@ -26,7 +26,10 @@ from app.models.operations import Incident, NotificationOutbox, OperationRun, Op
 from app.workers import generation_incident_control, tasks
 from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_run_control import GenerationItemState
-from app.workers.nightly_generation_batch import write_back_generated_content
+from app.workers.nightly_generation_batch import (
+    write_back_generated_content,
+    write_back_generated_image,
+)
 
 
 @pytest.fixture
@@ -136,6 +139,49 @@ def test_write_back_does_not_overwrite_an_already_published_item(pg_conn, pg_ses
     ).one()
     assert row.status == "PUBLISHED"
     assert row.title is None
+
+
+def test_image_write_back_rejects_a_result_generated_for_an_old_title(pg_conn, pg_session):
+    item_id = _seed_item(pg_conn, status="DRAFT")
+    pg_conn.execute(
+        text("UPDATE content_items SET title = '새 제목' WHERE id = :id"), {"id": item_id}
+    )
+
+    written = write_back_generated_image(
+        pg_session,
+        item_id=item_id,
+        values={"image_url": "gs://bucket/old-title.webp"},
+        expected_title="이전 제목",
+    )
+
+    assert written == 0
+    row = pg_conn.execute(
+        text("SELECT title, image_url FROM content_items WHERE id = :id"), {"id": item_id}
+    ).one()
+    assert row.title == "새 제목"
+    assert row.image_url is None
+
+
+def test_published_backfill_rejects_a_result_generated_for_an_old_title(pg_conn, pg_session):
+    item_id = _seed_item(pg_conn, status="PUBLISHED")
+    pg_conn.execute(
+        text("UPDATE content_items SET title = '새 제목' WHERE id = :id"), {"id": item_id}
+    )
+
+    written = write_back_generated_image(
+        pg_session,
+        item_id=item_id,
+        values={"image_url": "gs://bucket/old-title.webp"},
+        expected_title="이전 제목",
+        allowed_statuses=(ContentStatus.PUBLISHED,),
+    )
+
+    assert written == 0
+    row = pg_conn.execute(
+        text("SELECT title, image_url FROM content_items WHERE id = :id"), {"id": item_id}
+    ).one()
+    assert row.title == "새 제목"
+    assert row.image_url is None
 
 
 def test_a_dirty_tracked_object_bypasses_the_guard_via_autoflush(pg_conn, pg_session):

@@ -1,6 +1,34 @@
 import pytest
+from pydantic import ValidationError
+from pytest import MonkeyPatch
 
 from app.core.config import Settings
+
+
+def test_image_provider_settings_default_to_openai_sdk_literals() -> None:
+    settings = Settings(_env_file=None, APP_ENV="development")
+
+    assert settings.OPENAI_IMAGE_SIZE == "1536x1024"
+    assert settings.OPENAI_IMAGE_QUALITY == "high"
+
+
+def test_image_provider_settings_parse_valid_environment_literals(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_IMAGE_SIZE", "1024x1536")
+    monkeypatch.setenv("OPENAI_IMAGE_QUALITY", "low")
+
+    settings = Settings(_env_file=None, APP_ENV="development")
+
+    assert settings.OPENAI_IMAGE_SIZE == "1024x1536"
+    assert settings.OPENAI_IMAGE_QUALITY == "low"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("OPENAI_IMAGE_SIZE", "1536x864"), ("OPENAI_IMAGE_QUALITY", "premium")),
+)
+def test_image_provider_settings_reject_unsupported_openai_values(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, APP_ENV="development", **{field: value})
 
 
 def test_production_fails_fast_when_admin_secret_empty(monkeypatch):

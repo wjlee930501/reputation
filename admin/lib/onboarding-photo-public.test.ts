@@ -36,6 +36,7 @@ test('only photo rows expose their visibility badge and PATCH toggle', () => {
     'PHOTO_CLINIC_EXTERIOR',
     'PHOTO_CLINIC_INTERIOR',
     'PHOTO_TREATMENT_ROOM',
+    'PHOTO_BRAND',
   ]) {
     assert.match(photoTypeGate, new RegExp(`'${sourceType}'`))
   }

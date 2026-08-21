@@ -1,7 +1,7 @@
 """P1-3/R1 — 야간 생성 catch-up window, cap 절단 감지, 자동 발행 검증."""
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import arrow
@@ -38,6 +38,7 @@ def test_nightly_generation_stmt_covers_window_bounds():
     assert "scheduled_date <= '2026-06-11'" in sql
     assert "body IS NULL" in sql
     assert "image_url IS NULL" in sql
+    assert "image_policy_verified_at IS NULL" in sql
     assert "essence_check_summary" in sql
     assert "blocking" in sql
     # cap+1로 읽어 절단 발생을 감지한다
@@ -902,6 +903,7 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
         body=None,
         meta_description=None,
         image_url="gs://bucket/existing.png",
+        image_policy_verified_at=datetime(2026, 8, 22, tzinfo=timezone.utc),
         image_prompt=None,
         generated_at=None,
         body_updated_at=None,
@@ -1133,6 +1135,9 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
             "faq_answer_summary": "증상 단계와 회복 계획을 함께 확인합니다.",
         }
 
+    async def fake_generate_image(*_args, **_kwargs):
+        return "gs://bucket/reviewed.webp", "bounded prompt"
+
     async def reviewer_pass(**_kwargs):
         return ContentAiReview(
             status=ContentAiReviewStatus.PASS,
@@ -1144,6 +1149,8 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
 
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
+    monkeypatch.setattr(tasks, "generate_image", fake_generate_image)
+    monkeypatch.setattr(tasks, "hospital_image_direction", lambda *_args: object())
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(
         tasks,
@@ -1174,6 +1181,7 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
         body=None,
         meta_description=None,
         image_url="gs://bucket/existing.png",
+        image_policy_verified_at=datetime(2026, 8, 22, tzinfo=timezone.utc),
         image_prompt=None,
         generated_at=None,
         body_updated_at=None,
@@ -1835,6 +1843,7 @@ def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
         title=title,
         body=body,
         image_url="https://storage.googleapis.com/reputation/content.png",
+        image_policy_verified_at=datetime(2026, 8, 22, tzinfo=timezone.utc),
         meta_description="진료 전 확인할 점을 정리했습니다.",
         faq_question=None,
         faq_answer_summary=None,

@@ -31,6 +31,11 @@ def test_serialize_source_exposes_display_labels():
         mime_type=None,
         file_size_bytes=None,
         is_public=False,
+        photo_source_owner=None,
+        photo_rights_basis=None,
+        photo_evidence_reference=None,
+        photo_verified_by=None,
+        photo_verified_at=None,
     )
 
     serialized = _serialize_source(source, evidence_note_count=2)
@@ -76,6 +81,11 @@ def test_serialize_source_includes_photo_asset_fields():
         mime_type="image/png",
         file_size_bytes=12_345,
         is_public=True,
+        photo_source_owner="장 원장",
+        photo_rights_basis="OWNER_CONSENT",
+        photo_evidence_reference="consent/42",
+        photo_verified_by="owner@example.com",
+        photo_verified_at=timestamp,
     )
 
     serialized = _serialize_source(source)
@@ -87,6 +97,7 @@ def test_serialize_source_includes_photo_asset_fields():
     assert serialized["mime_type"] == "image/png"
     assert serialized["file_size_bytes"] == 12_345
     assert serialized["is_public"] is True
+    assert serialized["photo_verified_by"] == "owner@example.com"
 
 
 def test_serialize_source_emits_evidence_notes_when_provided():
@@ -114,6 +125,11 @@ def test_serialize_source_emits_evidence_notes_when_provided():
         mime_type=None,
         file_size_bytes=None,
         is_public=False,
+        photo_source_owner=None,
+        photo_rights_basis=None,
+        photo_evidence_reference=None,
+        photo_verified_by=None,
+        photo_verified_at=None,
     )
 
     note = SimpleNamespace(

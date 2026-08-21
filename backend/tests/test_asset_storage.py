@@ -4,6 +4,7 @@ import pytest
 
 from app.services import asset_storage
 from app.services.asset_storage import (
+    delete_asset_ref,
     is_gcs_configured,
     resolve_local_asset_path,
     store_asset_bytes,
@@ -79,6 +80,48 @@ def test_store_asset_bytes_local_writes_file_and_returns_private_ref(monkeypatch
     assert saved.read_bytes() == payload
     # 파일명 sanitization: 공백은 _ 로 치환되어야 한다.
     assert " " not in saved.name
+
+
+def test_delete_asset_ref_removes_only_the_expected_hospitals_local_object(
+    monkeypatch, tmp_path
+) -> None:
+    # Given: one stored local object owned by a hospital.
+    monkeypatch.setattr(asset_storage, "LOCAL_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(asset_storage.settings, "GCP_PROJECT_ID", "")
+    monkeypatch.setattr(asset_storage.settings, "GCP_STORAGE_BUCKET", "")
+    hospital_id = uuid.uuid4()
+    asset_ref = store_asset_bytes(
+        hospital_id=hospital_id,
+        filename="photo.png",
+        data=b"pixels",
+        mime_type="image/png",
+    )
+    stored = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
+    assert stored is not None
+
+    # When: rollback cleanup targets that exact owned reference.
+    delete_asset_ref(asset_ref, expected_hospital_id=hospital_id)
+
+    # Then: the object is absent.
+    assert not stored.exists()
+
+
+def test_delete_asset_ref_rejects_cross_hospital_local_reference(monkeypatch, tmp_path) -> None:
+    # Given: a stored object and a different hospital identity.
+    monkeypatch.setattr(asset_storage, "LOCAL_UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(asset_storage.settings, "GCP_PROJECT_ID", "")
+    monkeypatch.setattr(asset_storage.settings, "GCP_STORAGE_BUCKET", "")
+    owner_id = uuid.uuid4()
+    asset_ref = store_asset_bytes(
+        hospital_id=owner_id,
+        filename="photo.png",
+        data=b"pixels",
+        mime_type="image/png",
+    )
+
+    # When / Then: cleanup cannot delete another hospital's object.
+    with pytest.raises(ValueError, match="hospital"):
+        delete_asset_ref(asset_ref, expected_hospital_id=uuid.uuid4())
 
 
 def test_store_asset_bytes_sanitizes_path_traversal_filename(monkeypatch, tmp_path):

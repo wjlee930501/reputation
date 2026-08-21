@@ -45,6 +45,7 @@ class SourceType(str, enum.Enum):
     PHOTO_CLINIC_EXTERIOR = "PHOTO_CLINIC_EXTERIOR"
     PHOTO_CLINIC_INTERIOR = "PHOTO_CLINIC_INTERIOR"
     PHOTO_TREATMENT_ROOM = "PHOTO_TREATMENT_ROOM"
+    PHOTO_BRAND = "PHOTO_BRAND"
     OTHER = "OTHER"
 
 
@@ -54,6 +55,7 @@ PHOTO_SOURCE_TYPES = frozenset(
         SourceType.PHOTO_CLINIC_EXTERIOR,
         SourceType.PHOTO_CLINIC_INTERIOR,
         SourceType.PHOTO_TREATMENT_ROOM,
+        SourceType.PHOTO_BRAND,
     }
 )
 
@@ -109,6 +111,13 @@ class HospitalSourceAsset(Base):
 
     # AE가 검수한 사진을 /site 공개 표면에 노출할지. PHOTO_* 타입에만 의미 있음.
     is_public: Mapped[bool] = mapped_column(default=False, nullable=False, server_default=text("false"))
+
+    # Operator-supplied rights provenance and server-recorded positive verification.
+    photo_source_owner: Mapped[str | None] = mapped_column(String(200))
+    photo_rights_basis: Mapped[str | None] = mapped_column(String(32))
+    photo_evidence_reference: Mapped[str | None] = mapped_column(String(500))
+    photo_verified_by: Mapped[str | None] = mapped_column(String(320))
+    photo_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     status: Mapped[SourceStatus] = mapped_column(
         Enum(SourceStatus, name="hospital_source_status"),

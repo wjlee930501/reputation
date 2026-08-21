@@ -4,13 +4,16 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
+from functools import partial
+from typing import Protocol
 from urllib.parse import urlparse
 
+import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account
@@ -34,6 +37,7 @@ from app.schemas.essence import (
     PhilosophyDraftCreate,
     PhilosophyPatch,
     PhilosophyResponse,
+    PhotoProvenanceInput,
     SourceAssetCreate,
     SourceAssetPatch,
     SourceAssetResponse,
@@ -46,6 +50,7 @@ from app.services.asset_extractor import (
     fetch_url_text,
 )
 from app.services.asset_storage import (
+    delete_asset_ref,
     resolve_legacy_asset_path,
     resolve_local_asset_path,
     store_asset_bytes,
@@ -78,6 +83,7 @@ from app.services.naver_handoff_runs import (
     list_open_naver_failures,
 )
 from app.services.ops_incident_alerts import recover_ops_incident
+from app.services.photo_upload import InvalidPhotoUpload, normalize_photo_upload
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
@@ -88,6 +94,17 @@ from app.workers.dispatch_auth import build_dispatch_headers
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
 logger = logging.getLogger(__name__)
+PHOTO_DECODE_LIMITER = anyio.CapacityLimiter(2)
+
+
+class PhotoProvenanceAsset(Protocol):
+    source_type: SourceType
+    source_metadata: dict[str, object]
+    photo_source_owner: str | None
+    photo_rights_basis: str | None
+    photo_evidence_reference: str | None
+    photo_verified_by: str | None
+    photo_verified_at: datetime | None
 
 
 def _enqueue_essence_review_best_effort(hospital_id: uuid.UUID) -> None:
@@ -156,6 +173,10 @@ def build_photo_source_metadata(
             "VERIFIED_REAL_PERSON": ["DOCTOR_IDENTITY"],
             "EDITORIAL_GRAPHIC": ["CONTENT_EDITORIAL"],
         }
+    elif source_type == SourceType.PHOTO_BRAND:
+        allowed = {
+            "VERIFIED_BRAND_GRAPHIC": ["LOGO", "HERO"],
+        }
     else:
         allowed = {
             "VERIFIED_FACILITY": ["HERO", "GALLERY"],
@@ -188,6 +209,46 @@ def validate_photo_source_metadata(
     untrusted_keys = {"asset_kind", "approved_usage", "original_filename"}
     preserved = {key: value for key, value in metadata.items() if key not in untrusted_keys}
     return {**preserved, **authoritative}
+
+
+def require_verified_photo_provenance(source: PhotoProvenanceAsset) -> None:
+    """Block public use unless rights evidence and server verification are durable."""
+    fields = (
+        source.photo_source_owner,
+        source.photo_rights_basis,
+        source.photo_evidence_reference,
+        source.photo_verified_by,
+        source.photo_verified_at,
+    )
+    if not all(fields) or source.photo_rights_basis not in {"LICENSE", "OWNER_CONSENT"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Photo provenance verification is required before publication.",
+        )
+    kind = source.source_metadata.get("asset_kind")
+    match source.source_type:
+        case SourceType.PHOTO_DOCTOR:
+            expected_kind = "VERIFIED_REAL_PERSON"
+        case SourceType.PHOTO_BRAND:
+            expected_kind = "VERIFIED_BRAND_GRAPHIC"
+        case (
+            SourceType.PHOTO_CLINIC_EXTERIOR
+            | SourceType.PHOTO_CLINIC_INTERIOR
+            | SourceType.PHOTO_TREATMENT_ROOM
+        ):
+            expected_kind = "VERIFIED_FACILITY"
+        case _:
+            raise HTTPException(status_code=422, detail="Photo provenance applies to photo assets only.")
+    allowed_kinds = (
+        {expected_kind}
+        if source.source_type == SourceType.PHOTO_BRAND
+        else {expected_kind, "EDITORIAL_GRAPHIC"}
+    )
+    if kind not in allowed_kinds:
+        raise HTTPException(
+            status_code=422,
+            detail="Named doctor or facility publication requires positive verification.",
+        )
 
 
 def should_revalidate_after_public_photo_upload(
@@ -372,6 +433,7 @@ async def patch_source(
     source_id: uuid.UUID,
     body: SourceAssetPatch,
     db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
 ):
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = await _get_source_or_404(db, hospital_id, source_id)
@@ -382,6 +444,14 @@ async def patch_source(
             pending_source_type,
             update["source_metadata"],
         )
+    provenance_fields = {
+        "source_type",
+        "source_metadata",
+        "photo_source_owner",
+        "photo_rights_basis",
+        "photo_evidence_reference",
+    }
+    provenance_changed = bool(provenance_fields.intersection(update))
     material_fields = {
         "source_type",
         "title",
@@ -389,6 +459,9 @@ async def patch_source(
         "raw_text",
         "operator_note",
         "source_metadata",
+        "photo_source_owner",
+        "photo_rights_basis",
+        "photo_evidence_reference",
     }
     material_changed = bool(material_fields.intersection(update.keys()))
     hospital = await _get_hospital_or_404(db, hospital_id) if material_changed else None
@@ -397,11 +470,27 @@ async def patch_source(
         ensure_site_revalidate_configured()
 
     for field_name, value in update.items():
-        if field_name in {"url", "raw_text", "operator_note"}:
+        if field_name in {
+            "url",
+            "raw_text",
+            "operator_note",
+            "photo_source_owner",
+            "photo_evidence_reference",
+        }:
             value = _clean_optional(value)
         setattr(source, field_name, value)
 
-    if not ((source.url and source.url.strip()) or (source.raw_text and source.raw_text.strip())):
+    if pending_source_type in PHOTO_SOURCE_TYPES and provenance_changed:
+        source.photo_verified_by = actor.email
+        source.photo_verified_at = datetime.now(timezone.utc)
+        require_verified_photo_provenance(source)
+
+    has_source_material = bool(
+        (source.url and source.url.strip())
+        or (source.raw_text and source.raw_text.strip())
+        or (source.source_type in PHOTO_SOURCE_TYPES and source.file_url)
+    )
+    if not has_source_material:
         raise HTTPException(status_code=400, detail="자료 URL 또는 자료 본문 중 하나는 필수입니다.")
 
     if material_changed:
@@ -592,10 +681,13 @@ async def upload_source_file(
     file: UploadFile = File(...),
     is_public: bool | None = Form(default=None),
     asset_kind: str | None = Form(default=None, max_length=32),
+    photo_source_owner: str | None = Form(default=None, max_length=200),
+    photo_rights_basis: str | None = Form(default=None, max_length=32),
+    photo_evidence_reference: str | None = Form(default=None, max_length=500),
     operator_note: str | None = Form(default=None),
-    created_by: str | None = Form(default=None, max_length=100),
     skip_revalidate: bool = Query(default=False),
     db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
 ):
     """이미지/PDF/DOCX 업로드. 사진은 file_url만 저장, 텍스트형 자료는 raw_text 자동 추출.
     
@@ -610,27 +702,69 @@ async def upload_source_file(
     if not data:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
 
-    mime_type = file.content_type or ""
-    extractor_kind = detect_extractor_for(mime_type, file.filename or "")
     is_photo_type = source_type in PHOTO_SOURCE_TYPES
+    source_metadata = build_photo_source_metadata(
+        source_type,
+        asset_kind,
+        file.filename or "",
+    )
+    provenance: PhotoProvenanceInput | None = None
+    if is_photo_type:
+        try:
+            provenance = PhotoProvenanceInput(
+                source_owner=photo_source_owner or "",
+                rights_basis=photo_rights_basis or "",
+                evidence_reference=photo_evidence_reference or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="사진 소유자, 라이선스 또는 동의 근거, 증빙 참조를 모두 입력해 주세요.",
+            ) from exc
+        try:
+            normalized = await anyio.to_thread.run_sync(
+                partial(
+                    normalize_photo_upload,
+                    data,
+                    lossless=source_type == SourceType.PHOTO_BRAND,
+                ),
+                limiter=PHOTO_DECODE_LIMITER,
+            )
+        except InvalidPhotoUpload as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        stored_data = normalized.data
+        stored_filename = normalized.filename
+        stored_mime_type = normalized.mime_type
+        extractor_kind = "IMAGE"
+    else:
+        stored_data = data
+        stored_filename = file.filename or "asset"
+        stored_mime_type = file.content_type or "application/octet-stream"
+        extractor_kind = detect_extractor_for(stored_mime_type, stored_filename)
+        if extractor_kind == "IMAGE":
+            raise HTTPException(
+                status_code=400,
+                detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요.",
+            )
 
-    if is_photo_type and extractor_kind != "IMAGE":
-        raise HTTPException(
-            status_code=400, detail="사진 카테고리에는 이미지 파일만 업로드할 수 있습니다."
-        )
-    if not is_photo_type and extractor_kind == "IMAGE":
-        raise HTTPException(
-            status_code=400, detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요."
-        )
+    proposed_public = resolve_upload_is_public(source_type, is_public)
+    should_revalidate = should_revalidate_on_source_upload(
+        skip_revalidate,
+        source_type,
+        proposed_public,
+        hospital,
+    )
+    if should_revalidate:
+        ensure_site_revalidate_configured()
 
     # 동기 GCS 업로드(최대 12MB)와 PDF/DOCX 파싱은 이벤트 루프를 수 초 블로킹할 수 있다 —
     # 워커 스레드에서 실행해 공개 표면 요청이 함께 멈추지 않게 한다.
     file_url = await asyncio.to_thread(
         store_asset_bytes,
         hospital_id=hospital_id,
-        filename=file.filename or "asset",
-        data=data,
-        mime_type=mime_type or "application/octet-stream",
+        filename=stored_filename,
+        data=stored_data,
+        mime_type=stored_mime_type,
     )
 
     raw_text: str | None = None
@@ -641,51 +775,58 @@ async def upload_source_file(
 
     final_title = resolve_upload_title(title, file.filename)
 
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    source = HospitalSourceAsset(
-        hospital_id=hospital_id,
-        source_type=source_type,
-        title=final_title,
-        url=None,
-        raw_text=raw_text,
-        operator_note=_clean_optional(operator_note),
-        source_metadata=build_photo_source_metadata(
-            source_type,
-            asset_kind,
-            file.filename or "",
-        ),
-        file_url=file_url,
-        mime_type=mime_type or None,
-        file_size_bytes=len(data),
-        is_public=resolve_upload_is_public(source_type, is_public),
-        content_hash=compute_source_content_hash(final_title, None, raw_text, operator_note),
-        status=SourceStatus.PENDING,
-        created_by=created_by,
-    )
-    # 일괄 업로드는 전 파일이 skip_revalidate=true 이고, 프론트가 성공 후
-    # POST /revalidate 를 한 번 호출한다. 단건은 skip 없이 여기서 즉시 갱신한다.
-    should_revalidate = should_revalidate_on_source_upload(
-        skip_revalidate, source_type, source.is_public, hospital
-    )
-    if should_revalidate:
-        ensure_site_revalidate_configured()
-    db.add(source)
-    await write_audit_log(
-        db,
-        action="upload_source_asset",
-        hospital_id=hospital_id,
-        actor=default_actor(),
-        target_type="source_asset",
-        target_id=source.id,
-        detail={
-            "source_type": source_type.value,
-            "extractor": extractor_kind,
-            "size_bytes": len(data),
-            "skip_revalidate": skip_revalidate,
-        },
-    )
-    await db.commit()
-    await db.refresh(source)
+    try:
+        await acquire_hospital_advisory_lock(db, hospital_id)
+        source = HospitalSourceAsset(
+            hospital_id=hospital_id,
+            source_type=source_type,
+            title=final_title,
+            url=None,
+            raw_text=raw_text,
+            operator_note=_clean_optional(operator_note),
+            source_metadata=source_metadata,
+            file_url=file_url,
+            mime_type=stored_mime_type,
+            file_size_bytes=len(stored_data),
+            is_public=proposed_public,
+            content_hash=compute_source_content_hash(final_title, None, raw_text, operator_note),
+            status=SourceStatus.PENDING,
+            created_by=actor.email[:100],
+            photo_source_owner=provenance.source_owner if provenance else None,
+            photo_rights_basis=provenance.rights_basis if provenance else None,
+            photo_evidence_reference=provenance.evidence_reference if provenance else None,
+            photo_verified_by=actor.email if provenance else None,
+            photo_verified_at=datetime.now(timezone.utc) if provenance else None,
+        )
+        if proposed_public:
+            require_verified_photo_provenance(source)
+        db.add(source)
+        await write_audit_log(
+            db,
+            action="upload_source_asset",
+            hospital_id=hospital_id,
+            actor=actor.email,
+            target_type="source_asset",
+            target_id=source.id,
+            detail={
+                "source_type": source_type.value,
+                "extractor": extractor_kind,
+                "size_bytes": len(stored_data),
+                "skip_revalidate": skip_revalidate,
+            },
+        )
+        await db.commit()
+        await db.refresh(source)
+    except SQLAlchemyError:
+        await db.rollback()
+        await anyio.to_thread.run_sync(
+            partial(
+                delete_asset_ref,
+                file_url,
+                expected_hospital_id=hospital_id,
+            )
+        )
+        raise
     if should_revalidate:
         await trigger_hospital_site_revalidate_safe(
             hospital.slug, hospital_name=hospital.name
@@ -950,6 +1091,7 @@ async def toggle_source_public(
     source_id: uuid.UUID,
     body: SourcePublicToggle,
     db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
 ):
     """사진 자료의 /site 공개 노출 플래그 토글. 사진이 아닌 자료는 거부."""
     source = await _get_source_or_404(db, hospital_id, source_id)
@@ -966,6 +1108,7 @@ async def toggle_source_public(
             source.source_type,
             source.source_metadata,
         )
+        require_verified_photo_provenance(source)
     previous = bool(source.is_public)
     hospital = await _get_hospital_or_404(db, hospital_id)
     will_change_public_photo = previous != bool(body.is_public)
@@ -976,7 +1119,7 @@ async def toggle_source_public(
         db,
         action="toggle_source_public",
         hospital_id=hospital_id,
-        actor=default_actor(),
+        actor=actor.email,
         target_type="source_asset",
         target_id=source.id,
         detail={
@@ -1457,6 +1600,13 @@ def _serialize_source(
         "mime_type": source.mime_type,
         "file_size_bytes": source.file_size_bytes,
         "is_public": bool(source.is_public),
+        "photo_source_owner": source.photo_source_owner,
+        "photo_rights_basis": source.photo_rights_basis,
+        "photo_evidence_reference": source.photo_evidence_reference,
+        "photo_verified_by": source.photo_verified_by,
+        "photo_verified_at": (
+            source.photo_verified_at.isoformat() if source.photo_verified_at else None
+        ),
         "evidence_note_count": evidence_note_count,
         "evidence_notes": [_serialize_note(note) for note in evidence_notes]
         if evidence_notes is not None

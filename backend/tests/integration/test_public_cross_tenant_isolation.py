@@ -84,6 +84,15 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         file_url="gs://reputation-images/doctor.png",
         mime_type="image/png",
         is_public=True,
+        source_metadata={
+            "asset_kind": "VERIFIED_REAL_PERSON",
+            "approved_usage": ["DOCTOR_IDENTITY"],
+        },
+        photo_source_owner=f"{label} 원장",
+        photo_rights_basis="OWNER_CONSENT",
+        photo_evidence_reference=f"consent/{suffix}",
+        photo_verified_by="owner@example.com",
+        photo_verified_at=processed_at,
         status=SourceStatus.PROCESSED,
     )
     session.add_all([source, photo])
@@ -120,6 +129,7 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         title=f"{label} 병원 전용 콘텐츠",
         body="본문",
         image_url="gs://reputation-images/content/x.png",
+        image_policy_verified_at=datetime(2026, 7, 1, 8, 59, tzinfo=timezone.utc),
         scheduled_date=date(2026, 7, 15),
         status=ContentStatus.PUBLISHED,
         published_at=processed_at,
@@ -251,6 +261,35 @@ async def test_content_image_under_another_hospitals_slug_is_404(pg_async_sessio
     )
 
     assert status == 404
+
+
+async def test_verified_content_image_uses_the_canonical_webp_contract(
+    pg_async_session, tenants, monkeypatch
+):
+    a, _ = tenants
+    captured = {}
+    response = object()
+
+    def fake_public_asset_response(file_url, *, hospital_id, media_type):
+        captured.update(
+            file_url=file_url,
+            hospital_id=hospital_id,
+            media_type=media_type,
+        )
+        return response
+
+    monkeypatch.setattr(site_api, "public_asset_response", fake_public_asset_response)
+
+    result = await get_public_content_image(
+        None, a.slug, a.content.id, db=pg_async_session
+    )
+
+    assert result is response
+    assert captured == {
+        "file_url": a.content.image_url,
+        "hospital_id": a.hospital.id,
+        "media_type": "image/webp",
+    }
 
 
 async def test_public_asset_under_another_hospitals_slug_is_404(pg_async_session, tenants):
