@@ -835,7 +835,7 @@ export default function ProfilePage() {
               placeholder="예: 지역 가족의 일상을 돌보는 따뜻한 의원. 밝은 자연광, 아이보리와 연두, 실제 병원처럼 가장하지 않는 손그림 질감."
               className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6"
             />
-            <span className="mt-1 block text-xs font-normal text-slate-500">콘텐츠 제목·진료 분야·승인된 진료 철학과 함께 이미지 생성 프롬프트에 사용됩니다.</span>
+            <span className="mt-1 block text-xs font-normal text-slate-500">콘텐츠 제목·진료 분야·원장 정보에 입력한 진료 방향을 참고해 이미지 분위기를 만듭니다.</span>
           </label>
         </div>
         <div>
