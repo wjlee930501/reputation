@@ -29,6 +29,7 @@ export interface Hospital {
   hira_org_id: string | null
   region: string[]
   specialties: string[]
+  hero_specialties: string[]
   keywords: string[]
   director_name: string
   director_career: string
@@ -209,6 +210,7 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
     isNullableString(value.hira_org_id) &&
     isStringArray(value.region) &&
     isStringArray(value.specialties) &&
+    (value.hero_specialties === undefined || isStringArray(value.hero_specialties)) &&
     isStringArray(value.keywords) &&
     isNullableString(value.director_name) &&
     isNullableString(value.director_career) &&
@@ -245,6 +247,7 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
     business_hours: hospital.business_hours ?? {},
     director_name: hospital.director_name ?? '',
     director_career: hospital.director_career ?? '',
+    hero_specialties: hospital.hero_specialties ?? [],
     // 구버전 응답에 필드가 없으면 null로 정규화 (다운스트림은 string | null만 본다).
     public_about: hospital.public_about ?? null,
     brand_primary_color: hospital.brand_primary_color ?? null,

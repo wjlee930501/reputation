@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -12,6 +13,10 @@ from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     REFERENCES_REQUIRED_TYPES,
     forbidden_check_text,
+)
+from app.services.content_focus import (
+    matching_content_focus_topic,
+    normalize_content_focus_topics,
 )
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
@@ -96,6 +101,8 @@ def publication_text(item: ContentItem) -> str:
 def assess_content_publication(
     item: ContentItem,
     philosophy: HospitalContentPhilosophy | None,
+    *,
+    allowed_focus_topics: Sequence[str] = (),
 ) -> PublicationAssessment:
     """Re-screen the exact stored content immediately before it becomes public."""
 
@@ -103,6 +110,25 @@ def assess_content_publication(
         return _blocked(
             code="CONTENT_NOT_GENERATED",
             message="제목과 본문이 아직 생성되지 않았습니다.",
+            item=item,
+            philosophy=philosophy,
+        )
+    normalized_focus_topics = normalize_content_focus_topics(allowed_focus_topics)
+    selected_focus_topic = getattr(item, "content_focus_topic", None)
+    if normalized_focus_topics and selected_focus_topic not in normalized_focus_topics:
+        return _blocked(
+            code="CONTENT_FOCUS_OUT_OF_SCOPE",
+            message="병원이 승인한 콘텐츠 주제 범위에서 하나를 선택해 주세요.",
+            item=item,
+            philosophy=philosophy,
+        )
+    if normalized_focus_topics and matching_content_focus_topic(
+        (getattr(item, "title", None), getattr(item, "body", None)),
+        (selected_focus_topic,),
+    ) is None:
+        return _blocked(
+            code="CONTENT_FOCUS_NOT_GROUNDED",
+            message="선택한 허용 주제가 제목이나 본문에 명확히 포함되어야 합니다.",
             item=item,
             philosophy=philosophy,
         )

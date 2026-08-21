@@ -16,6 +16,10 @@ from app.core.config import settings
 from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
+from app.services.content_focus import (
+    normalize_content_focus_topics,
+    validate_generated_content_focus,
+)
 from app.services.essence_engine import effective_safety_policy
 from app.utils.authority_sources import (
     infer_source_type,
@@ -150,6 +154,7 @@ OO만의 노하우 · 효과 보장 · 최첨단 · 안전한 시술 · 통증 �
   "title": "콘텐츠 제목 (50자 이내)",
   "body": "본문 마크다운 (참고 자료 섹션은 포함하지 않음)",
   "meta_description": "TL;DR — 1~2문장 직접 답변 (100~150자)",
+  "content_focus_topic": "콘텐츠 허용 범위가 있으면 그중 정확히 하나, 없으면 null",
   "references": [
     {"title": "출처 제목", "url": "https://..."},
     {"title": "출처 제목", "url": "https://..."}
@@ -235,6 +240,9 @@ def _build_profile_context(hospital: Hospital) -> str:
         f"- {t.get('name', '')}: {t.get('description', '')}"
         for t in (hospital.treatments or [])
     )
+    content_focus_topics = normalize_content_focus_topics(
+        getattr(hospital, "content_focus_topics", [])
+    )
     return f"""
 [병원 프로파일]
 병원명: {hospital.name}
@@ -244,6 +252,8 @@ def _build_profile_context(hospital: Hospital) -> str:
 지역: {', '.join(hospital.region or [])}
 진료과목: {', '.join(hospital.specialties or [])}
 핵심 키워드: {', '.join(hospital.keywords or [])}
+콘텐츠 허용 범위: {', '.join(content_focus_topics)}
+허용 범위가 있으면 글 전체를 그중 한 주제에만 맞추고 content_focus_topic에 정확한 값을 반환하세요.
 
 원장명: {hospital.director_name or ''}
 원장 약력: {hospital.director_career or ''}
@@ -257,9 +267,13 @@ def _build_profile_context(hospital: Hospital) -> str:
 def _fill_type_prompt(content_type: ContentType, hospital: Hospital) -> str:
     template = TYPE_PROMPTS.get(content_type, "")
     region_text = " ".join(hospital.region or [])
+    content_focus_topics = normalize_content_focus_topics(
+        getattr(hospital, "content_focus_topics", [])
+    )
+    focus_values = content_focus_topics or tuple(hospital.keywords or [])
     return template.format(
-        keywords=", ".join(hospital.keywords or []),
-        specialties=", ".join(hospital.specialties or []),
+        keywords=", ".join(focus_values),
+        specialties=", ".join(content_focus_topics or tuple(hospital.specialties or [])),
         director_name=hospital.director_name or "",
         director_philosophy=hospital.director_philosophy or "",
         region=region_text,
@@ -454,6 +468,10 @@ async def generate_content(
     raw = response.content[0].text
 
     result = _parse_json_response(raw, json_module=json)
+    result["content_focus_topic"] = validate_generated_content_focus(
+        result,
+        getattr(hospital, "content_focus_topics", []),
+    )
 
     _validate_body_length(result.get("body"))
     _validate_unverified_price_claims(result.get("body"))

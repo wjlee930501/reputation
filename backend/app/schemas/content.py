@@ -13,6 +13,7 @@ class ContentItemResponse(BaseModel):
     total_count: int
     title: Optional[str]
     meta_description: Optional[str]
+    content_focus_topic: Optional[str] = None
     image_url: Optional[str]
     scheduled_date: str
     # 전월 이월 기준일 (월말 반려 carry-over) — 원래 발행 예정일. 내부 운영 데이터로

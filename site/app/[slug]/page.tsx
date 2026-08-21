@@ -6,6 +6,7 @@ import { buildOpeningHoursSpec } from '@/lib/business-hours'
 import {
   clinicComposition,
   clinicContentDensity,
+  clinicHeroSpecialties,
   resolveClinicAccessMode,
   resolveClinicMediaMode,
 } from '@/lib/clinic-design'
@@ -224,6 +225,10 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   const contentDensity = clinicContentDensity(contents.length)
   const composition = clinicComposition(contentDensity)
   const heroPhotoUrl = selectClinicHeroImage(hospital)
+  const heroSpecialties = clinicHeroSpecialties(
+    hospital.specialties,
+    hospital.hero_specialties,
+  )
   const accessMode = resolveClinicAccessMode({
     configuredMode: hospital.site_access_mode,
     specialties: hospital.specialties,
@@ -247,7 +252,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           hospitalName={hospital.name}
           hospitalRootUrl={hospitalRootUrl}
           region={hospital.region}
-          specialties={hospital.specialties}
+          specialties={heroSpecialties}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
           logoUrl={hospital.logo_url}
@@ -261,7 +266,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             hospitalName={hospital.name}
             hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
-            specialties={hospital.specialties}
+            specialties={heroSpecialties}
             phone={hospital.phone}
             directorName={hospital.director_name}
             heroPhotoUrl={heroPhotoUrl}

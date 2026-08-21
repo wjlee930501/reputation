@@ -116,6 +116,20 @@ test('fetchHospital normalizes unsafe hospital URL fields before rendering', asy
   }
 })
 
+test('fetchHospital preserves approved first-viewport specialty overrides', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(hospitalPayload({
+      hero_specialties: ['정형외과', '통증의학과', '외상치료'],
+    })), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
+  try {
+    const hospital = await fetchHospital('demo-clinic')
+    assert.deepEqual(hospital.hero_specialties, ['정형외과', '통증의학과', '외상치료'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('fetchHospital accepts backend-nullable hospital fields and normalizes UI defaults', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () =>

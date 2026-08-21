@@ -51,6 +51,8 @@ def _hospital(**overrides):
         created_at=None,
         region=["성동구"],
         specialties=["외과"],
+        hero_specialties=[],
+        content_focus_topics=[],
         keywords=["치질"],
         competitors=[],
         director_name="김원장",
@@ -220,6 +222,28 @@ async def test_profile_media_keeps_an_unchanged_legacy_value():
     await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
 
     assert hospital.logo_url == legacy_url
+    assert db.committed is True
+
+
+async def test_profile_update_persists_director_requested_display_and_content_focus() -> None:
+    hospital = _hospital(profile_complete=False)
+    db = FakeDB(hospital)
+    body = hospitals_api.HospitalProfileUpdate(
+        hero_specialties=["정형외과", " 통증의학과 ", "외상치료"],
+        hero_description="매일 365 야간진료",
+        content_focus_topics=["정형외과", "신경외과", "통증의학과", "외상"],
+    )
+
+    payload = await hospitals_api.update_profile(
+        hospital.id,
+        body,
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert payload["hero_specialties"] == ["정형외과", "통증의학과", "외상치료"]
+    assert payload["hero_description"] == "매일 365 야간진료"
+    assert payload["content_focus_topics"] == ["정형외과", "신경외과", "통증의학과", "외상"]
     assert db.committed is True
 
 

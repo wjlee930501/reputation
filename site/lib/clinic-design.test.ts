@@ -6,6 +6,7 @@ import type { HospitalPhoto } from './hospital-payload.ts'
 import {
   clinicContentDensity,
   clinicComposition,
+  clinicHeroSpecialties,
   displayClinicLabels,
   getClinicNavigation,
   resolveClinicAccessMode,
@@ -56,6 +57,25 @@ test('hero and header labels stay concise even when onboarding contains many spe
   assert.deepEqual(
     displayClinicLabels([' 내과 ', '', '가정의학과', '건강검진', '내과'], 2),
     ['내과', '가정의학과'],
+  )
+})
+
+test('director-approved hero specialties override only the first-viewport labels', () => {
+  assert.deepEqual(
+    clinicHeroSpecialties(
+      ['응급의학과', '정형외과'],
+      ['정형외과', '통증의학과', '외상치료'],
+    ),
+    ['정형외과', '통증의학과', '외상치료'],
+  )
+  assert.deepEqual(clinicHeroSpecialties(['내과'], []), ['내과'])
+  assert.deepEqual(
+    clinicHeroSpecialties(['내과', '가정의학과', '건강검진'], null),
+    ['내과', '가정의학과'],
+  )
+  assert.deepEqual(
+    clinicHeroSpecialties([], ['정형외과', '통증의학과', '외상치료', '재활의학과']),
+    ['정형외과', '통증의학과', '외상치료'],
   )
 })
 

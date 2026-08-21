@@ -1700,6 +1700,7 @@ def nightly_content_generation(self):
                         "references_list": content_data.get("references") or [],
                         "faq_question": content_data.get("faq_question"),
                         "faq_answer_summary": content_data.get("faq_answer_summary"),
+                        "content_focus_topic": content_data.get("content_focus_topic"),
                         "image_policy_verified_at": None,
                         "generated_at": now,
                         "body_updated_at": now,
@@ -1787,7 +1788,9 @@ def nightly_content_generation(self):
 
                 readiness_failure = None
                 if item_state != GenerationItemState.DISCARDED:
-                    readiness_failure = _persist_publication_readiness(db, item, philosophy)
+                    readiness_failure = _persist_publication_readiness(
+                        db, item, philosophy, hospital
+                    )
                     if (
                         readiness_failure is not None
                         and item_state == GenerationItemState.SUCCEEDED
@@ -2158,7 +2161,7 @@ def generate_content_image(self, content_id: str):
                 return
             db.commit()
             db.refresh(item)
-            _persist_publication_readiness(db, item, philosophy)
+            _persist_publication_readiness(db, item, philosophy, hospital)
             run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
             if run_id is not None:
                 _run_async(
@@ -2273,6 +2276,7 @@ def _generate_single_content_item(
             "references_list": content_data.get("references") or [],
             "faq_question": content_data.get("faq_question"),
             "faq_answer_summary": content_data.get("faq_answer_summary"),
+            "content_focus_topic": content_data.get("content_focus_topic"),
             "image_policy_verified_at": None,
             "generated_at": now,
             "body_updated_at": now,
@@ -2336,23 +2340,30 @@ def _generate_single_content_item(
             db.refresh(item)
             image_failed = True
     if image_failed:
-        _persist_publication_readiness(db, item, philosophy)
+        _persist_publication_readiness(db, item, philosophy, hospital)
         return (
             GenerationItemState.PARTIAL,
             "IMAGE_GENERATION_FAILED",
             "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다.",
         )
-    readiness_failure = _persist_publication_readiness(db, item, philosophy)
+    readiness_failure = _persist_publication_readiness(db, item, philosophy, hospital)
     if readiness_failure is not None:
         return GenerationItemState.FAILED, *readiness_failure
     return GenerationItemState.SUCCEEDED, None, None
 
 
 def _persist_publication_readiness(
-    db, item: ContentItem, philosophy: HospitalContentPhilosophy | None
+    db,
+    item: ContentItem,
+    philosophy: HospitalContentPhilosophy | None,
+    hospital: Hospital,
 ) -> tuple[str, str] | None:
     """Persist the exact morning publication verdict immediately after generation."""
-    assessment = assess_content_publication(item, philosophy)
+    assessment = assess_content_publication(
+        item,
+        philosophy,
+        allowed_focus_topics=tuple(getattr(hospital, "content_focus_topics", []) or []),
+    )
     apply_publication_assessment(item, assessment)
     db.commit()
     if assessment.publishable:
@@ -2512,7 +2523,11 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             return None
 
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
-        assessment = assess_content_publication(item, philosophy)
+        assessment = assess_content_publication(
+            item,
+            philosophy,
+            allowed_focus_topics=tuple(getattr(hospital, "content_focus_topics", []) or []),
+        )
         apply_publication_assessment(item, assessment)
         admin_url = _admin_content_url(hospital.id, item.id)
         if not assessment.publishable:

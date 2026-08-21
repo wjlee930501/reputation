@@ -150,6 +150,7 @@ class ReferencePatchItem(BaseModel):
 class ContentPatch(BaseModel):
     title: str | None = Field(default=None, max_length=300)
     body: str | None = None
+    content_focus_topic: str | None = Field(default=None, max_length=40)
     # DB 컬럼이 VARCHAR(300) — 더 길게 허용하면 검증을 통과한 뒤 commit에서 DataError 500.
     meta_description: str | None = Field(default=None, max_length=300)
     # FAQ 분리 필드 — 공개 표면(FAQPage rich result)에 노출되므로 본문과 동일하게
@@ -504,19 +505,36 @@ async def update_content(
         item.references_list = normalized_refs
 
     body_changed = False
+    content_changed = False
     if body.title is not None:
         if body.title != item.title:
             item.image_policy_verified_at = None
+            content_changed = True
         item.title = body.title
     if body.body is not None and body.body != item.body:
         item.body = body.body
         body_changed = True
+        content_changed = True
     if body.meta_description is not None:
         item.meta_description = body.meta_description
     if body.faq_question is not None:
         item.faq_question = body.faq_question
     if body.faq_answer_summary is not None:
         item.faq_answer_summary = body.faq_answer_summary
+
+    if body.content_focus_topic is not None:
+        allowed_focus_topics = tuple(getattr(hospital, "content_focus_topics", []) or [])
+        if allowed_focus_topics and body.content_focus_topic not in allowed_focus_topics:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "병원이 승인한 콘텐츠 주제만 선택할 수 있습니다.",
+                    "allowed_topics": list(allowed_focus_topics),
+                },
+            )
+        item.content_focus_topic = body.content_focus_topic
+    elif content_changed and getattr(hospital, "content_focus_topics", None):
+        item.content_focus_topic = None
 
     if body_changed:
         item.body_updated_at = datetime.now(timezone.utc)
@@ -718,14 +736,23 @@ async def publish_content(
 
     # 제목/본문·참고자료·금지 표현은 DB 조회 없이 먼저 차단한다. 안전한 원고만 최신
     # 승인 운영 기준을 조회해 최종 screening 하므로, 정적 위반이 운영 기준 상태에 가려지지 않는다.
-    assessment = assess_content_publication(item, None)
+    allowed_focus_topics = tuple(getattr(hospital, "content_focus_topics", []) or [])
+    assessment = assess_content_publication(
+        item,
+        None,
+        allowed_focus_topics=allowed_focus_topics,
+    )
     if assessment.code not in {
         "CONTENT_NOT_GENERATED",
         "MISSING_REFERENCES",
         "FORBIDDEN_EXPRESSION",
     }:
         philosophy = await _get_approved_philosophy(db, hospital_id)
-        assessment = assess_content_publication(item, philosophy)
+        assessment = assess_content_publication(
+            item,
+            philosophy,
+            allowed_focus_topics=allowed_focus_topics,
+        )
     apply_publication_assessment(item, assessment)
     if not assessment.publishable:
         if hasattr(db, "commit"):
@@ -1216,6 +1243,7 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "total_count": item.total_count,
         "title": item.title,
         "meta_description": item.meta_description,
+        "content_focus_topic": getattr(item, "content_focus_topic", None),
         "image_url": get_signed_url(item.image_url) if item.image_url else None,
         "scheduled_date": str(item.scheduled_date),
         # 전월 이월 기준일 (내부 운영 데이터 — 공개 /site 직렬화에는 미포함)

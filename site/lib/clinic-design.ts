@@ -54,6 +54,14 @@ export function clinicComposition(density: ClinicContentDensity): ClinicComposit
   }
 }
 
+export function clinicHeroSpecialties(
+  specialties: readonly string[],
+  heroSpecialties: readonly string[] | null | undefined,
+): string[] {
+  const approvedOverride = displayClinicLabels([...(heroSpecialties ?? [])], 3)
+  return approvedOverride.length > 0 ? approvedOverride : displayClinicLabels([...specialties], 2)
+}
+
 export function resolveClinicAccessMode(input: {
   configuredMode?: string | null
   specialties: string[]

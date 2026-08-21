@@ -50,6 +50,7 @@ def test_serialize_hospital_includes_public_profile_fields():
         hira_org_id="11000000",
         region=["서울", "강남"],
         specialties=["피부과"],
+        hero_specialties=["여드름 진료", "피부 건강 상담"],
         keywords=["여드름", "리프팅"],
         director_name="홍길동",
         director_career="전문의",
@@ -89,6 +90,7 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["hero_image_url"] is None
     assert serialized["hero_media_kind"] == "VERIFIED_FACILITY"
     assert serialized["hero_headline"] == "피부 건강 정보를 차분히 확인하세요"
+    assert serialized["hero_specialties"] == ["여드름 진료", "피부 건강 상담"]
     assert serialized["site_access_mode"] == "specialist"
     assert serialized["treatments"] == [{"name": "리프팅", "description": "안면 리프팅"}]
     # license_number는 내부 보관 전용 — 공개 응답에서 제거됨.

@@ -15,6 +15,10 @@ from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.services.content_brief import BRIEF_STATUS_APPROVED, build_content_brief
+from app.services.content_focus import (
+    matching_content_focus_topic,
+    normalize_content_focus_topics,
+)
 from app.services.exposure_content_linker import BRIEF_CAPABLE_ACTION_TYPES
 
 ACTIVE_ACTION_STATUSES = {"OPEN", "IN_PROGRESS"}
@@ -36,11 +40,16 @@ def prepare_automatic_content_brief_sync(
     """
     scheduled_date = getattr(item, "scheduled_date", None)
     planned_publish_date = scheduled_date.isoformat() if scheduled_date else None
+    allowed_topics = normalize_content_focus_topics(
+        getattr(hospital, "content_focus_topics", [])
+    )
     if item.brief_status == BRIEF_STATUS_APPROVED and isinstance(item.content_brief, dict):
-        return {
-            **item.content_brief,
-            "planned_publish_date": planned_publish_date,
-        }
+        approved_focus = _brief_focus_topic(item.content_brief, allowed_topics)
+        if not allowed_topics or approved_focus is not None:
+            return {
+                **item.content_brief,
+                "planned_publish_date": planned_publish_date,
+            }
 
     # Lightweight stubs and imported legacy rows may not expose the linkage columns.
     # They still receive a philosophy-backed generic brief without attempting DB planning.
@@ -50,13 +59,23 @@ def prepare_automatic_content_brief_sync(
             content_item=item,
             philosophy=philosophy,
         )
+        _apply_focus_to_brief(brief, item=item, allowed_topics=allowed_topics)
         item.content_brief = brief
         item.brief_status = BRIEF_STATUS_APPROVED
         return brief
 
     target = _load_target(db, getattr(item, "query_target_id", None), hospital.id)
+    if target is not None and allowed_topics and not _target_matches_focus(target, allowed_topics):
+        target = None
+        item.query_target_id = None
+        item.exposure_action_id = None
     if target is None:
-        target = _choose_target(db, item=item, hospital_id=hospital.id)
+        target = _choose_target(
+            db,
+            item=item,
+            hospital_id=hospital.id,
+            allowed_topics=allowed_topics,
+        )
         if target is not None:
             item.query_target_id = target.id
 
@@ -72,6 +91,7 @@ def prepare_automatic_content_brief_sync(
         exposure_action=action,
         philosophy=philosophy,
     )
+    _apply_focus_to_brief(brief, item=item, allowed_topics=allowed_topics)
     brief["source"] = {
         **(brief.get("source") or {}),
         "mode": "automatic_exposure_plan",
@@ -99,7 +119,13 @@ def _load_target(db: Any, target_id: Any, hospital_id: Any) -> AIQueryTarget | N
     ).scalar_one_or_none()
 
 
-def _choose_target(db: Any, *, item: ContentItem, hospital_id: Any) -> AIQueryTarget | None:
+def _choose_target(
+    db: Any,
+    *,
+    item: ContentItem,
+    hospital_id: Any,
+    allowed_topics: tuple[str, ...],
+) -> AIQueryTarget | None:
     targets = list(
         db.execute(
             select(AIQueryTarget)
@@ -114,6 +140,11 @@ def _choose_target(db: Any, *, item: ContentItem, hospital_id: Any) -> AIQueryTa
     )
     if not targets:
         return None
+
+    if allowed_topics:
+        targets = [target for target in targets if _target_matches_focus(target, allowed_topics)]
+        if not targets:
+            return None
 
     slot_date = item.scheduled_date or date.today()
     month_start = slot_date.replace(day=1)
@@ -157,6 +188,67 @@ def _choose_target(db: Any, *, item: ContentItem, hospital_id: Any) -> AIQueryTa
             str(target.id),
         ),
     )
+
+
+def _target_matches_focus(target: AIQueryTarget, allowed_topics: tuple[str, ...]) -> bool:
+    searchable = " ".join(
+        str(value or "")
+        for value in (
+            target.name,
+            target.treatment,
+            target.condition_or_symptom,
+            target.target_intent,
+        )
+    )
+    return any(topic in searchable for topic in allowed_topics)
+
+
+def _brief_focus_topic(
+    brief: dict[str, Any],
+    allowed_topics: tuple[str, ...],
+) -> str | None:
+    query_target = brief.get("query_target")
+    exposure_action = brief.get("exposure_action")
+    treatment_narrative = brief.get("treatment_narrative")
+    values = [
+        brief.get("target_query"),
+        brief.get("patient_intent"),
+    ]
+    for nested in (query_target, exposure_action, treatment_narrative):
+        if not isinstance(nested, dict):
+            continue
+        values.extend(
+            nested.get(key)
+            for key in (
+                "name",
+                "target_intent",
+                "treatment",
+                "condition_or_symptom",
+                "title",
+                "description",
+                "angle",
+            )
+        )
+    return matching_content_focus_topic(
+        tuple(value if isinstance(value, str) else None for value in values),
+        allowed_topics,
+    )
+
+
+def _apply_focus_to_brief(
+    brief: dict[str, Any],
+    *,
+    item: ContentItem,
+    allowed_topics: tuple[str, ...],
+) -> None:
+    if not allowed_topics:
+        return
+    selected = _brief_focus_topic(brief, allowed_topics)
+    if selected is None:
+        sequence_no = max(int(getattr(item, "sequence_no", 1) or 1), 1)
+        selected = allowed_topics[(sequence_no - 1) % len(allowed_topics)]
+        brief["target_query"] = f"{selected} 진료 전 확인할 점"
+    brief["content_focus_topic"] = selected
 
 
 def _load_or_choose_action(

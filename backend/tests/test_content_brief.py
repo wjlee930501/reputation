@@ -408,7 +408,7 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
     monkeypatch.setattr(
         content_api,
         "assess_content_publication",
-        lambda _item, philosophy: SimpleNamespace(
+        lambda _item, philosophy, **_kwargs: SimpleNamespace(
             publishable=True,
             code=None,
             message=None,

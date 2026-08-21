@@ -26,7 +26,7 @@ export function ClinicHeader({
   logoUrl,
 }: Props) {
   // 진료과 표기는 프로파일의 specialties[]에서만 파생 — 하드코딩 금지.
-  const specialtyLabel = displayClinicLabels(specialties).join('·')
+  const specialtyLabel = displayClinicLabels(specialties, 3).join('·')
   const subline = displayClinicLabels(region).join(' ')
   const brandMeta = [specialtyLabel ? `${specialtyLabel} 진료` : '진료 안내', subline]
     .filter(Boolean)

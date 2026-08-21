@@ -484,6 +484,7 @@ def _serialize_hospital(
         "hero_media_kind": getattr(h, "hero_media_kind", None),
         "hero_headline": getattr(h, "hero_headline", None),
         "hero_description": getattr(h, "hero_description", None),
+        "hero_specialties": getattr(h, "hero_specialties", []),
         "site_access_mode": getattr(h, "site_access_mode", None),
         "director_credentials": _safe_credentials(getattr(h, "director_credentials", None)),
         "treatments": _safe_treatments(h.treatments),

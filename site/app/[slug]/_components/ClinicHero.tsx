@@ -72,7 +72,7 @@ export function ClinicHero({
 }: Props) {
   const today = todayHours(businessHours)
   const saturday = businessHours?.sat
-  const specialtyLabel = displayClinicLabels(specialties).join(' · ')
+  const specialtyLabel = displayClinicLabels(specialties, 3).join(' · ')
   const locationLabel = displayClinicLabels(region).join(' ')
   const approvedHeadlineLines = (heroHeadline ?? '')
     .split('\n')

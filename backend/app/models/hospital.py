@@ -162,6 +162,12 @@ class Hospital(Base):
     hero_media_kind: Mapped[str | None] = mapped_column(String(32))
     hero_headline: Mapped[str | None] = mapped_column(String(160))
     hero_description: Mapped[str | None] = mapped_column(String(320))
+    hero_specialties: Mapped[list] = mapped_column(
+        JSON, default=list, server_default=text("'[]'"), nullable=False
+    )
+    content_focus_topics: Mapped[list] = mapped_column(
+        JSON, default=list, server_default=text("'[]'"), nullable=False
+    )
     image_style_direction: Mapped[str | None] = mapped_column(String(600))
     site_access_mode: Mapped[str | None] = mapped_column(String(20))
     # Physician schema의 hasCredential / alumniOf / memberOf 매핑용 구조화 자격 정보.

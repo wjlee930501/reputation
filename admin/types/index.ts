@@ -66,6 +66,8 @@ export interface Hospital {
   domain_cert_job_state?: string | null
   region?: string[]
   specialties?: string[]
+  hero_specialties?: string[]
+  content_focus_topics?: string[]
   keywords?: string[]
   competitors?: string[]
   director_name?: string
@@ -87,6 +89,7 @@ export interface ContentItem {
   total_count: number
   title: string | null
   meta_description: string | null
+  content_focus_topic?: string | null
   image_url: string | null
   scheduled_date: string
   status: 'DRAFT' | 'READY' | 'PUBLISHED' | 'REJECTED' | 'CANCELLED'

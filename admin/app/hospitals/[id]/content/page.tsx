@@ -253,6 +253,7 @@ export default function ContentPage() {
   const [editTitle, setEditTitle] = useState('')
   const [editBody, setEditBody] = useState('')
   const [editMeta, setEditMeta] = useState('')
+  const [editContentFocusTopic, setEditContentFocusTopic] = useState('')
   const [editReferences, setEditReferences] = useState<ContentReference[]>([])
   const [violations, setViolations] = useState<string[]>([])
   const [editError, setEditError] = useState<string | null>(null)
@@ -620,6 +621,7 @@ export default function ContentPage() {
     setEditTitle(selected.title ?? '')
     setEditBody(selected.body ?? '')
     setEditMeta(selected.meta_description ?? '')
+    setEditContentFocusTopic(selected.content_focus_topic ?? '')
     setEditReferences((selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })))
     setViolations([])
     setEditError(null)
@@ -730,6 +732,7 @@ export default function ContentPage() {
           title: editTitle,
           body: editBody,
           meta_description: editMeta,
+          content_focus_topic: editContentFocusTopic || null,
           references: cleanedReferences,
         }),
       })
@@ -1308,6 +1311,22 @@ export default function ContentPage() {
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
+                {(hospital?.content_focus_topics?.length ?? 0) > 0 && (
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">콘텐츠 허용 주제</label>
+                    <select
+                      value={editContentFocusTopic}
+                      onChange={(event) => setEditContentFocusTopic(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">주제를 선택해 주세요</option>
+                      {hospital?.content_focus_topics?.map((topic) => (
+                        <option key={topic} value={topic}>{topic}</option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-xs text-slate-500">원장이 승인한 범위 밖의 주제는 발행할 수 없습니다.</p>
+                  </div>
+                )}
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">검색 미리보기 설명</label>
                   <input

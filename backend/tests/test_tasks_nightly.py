@@ -1162,7 +1162,7 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
     monkeypatch.setattr(
         tasks,
         "assess_content_publication",
-        lambda _item, philosophy: SimpleNamespace(
+            lambda _item, philosophy, **_kwargs: SimpleNamespace(
             publishable=True,
             code=None,
             message=None,
@@ -1752,7 +1752,11 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     audits = []
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
-    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: assessment)
+    monkeypatch.setattr(
+        tasks,
+        "assess_content_publication",
+        lambda *_args, **_kwargs: assessment,
+    )
     monkeypatch.setattr(
         tasks, "write_audit_log_sync", lambda *_args, **kwargs: audits.append(kwargs)
     )

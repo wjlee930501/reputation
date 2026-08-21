@@ -150,6 +150,7 @@ class ContentItem(Base):
     title: Mapped[str | None] = mapped_column(String(300))
     body: Mapped[str | None] = mapped_column(Text)          # 마크다운
     meta_description: Mapped[str | None] = mapped_column(String(300))  # SEO용 요약
+    content_focus_topic: Mapped[str | None] = mapped_column(String(40))
 
     # 이미지
     image_url: Mapped[str | None] = mapped_column(String(500))    # GCS public URL

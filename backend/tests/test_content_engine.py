@@ -29,6 +29,10 @@ from app.services.content_engine import (  # noqa: E402
     _validate_unverified_price_claims,
     forbidden_check_text,
 )
+from app.services.content_focus import (  # noqa: E402
+    ContentFocusOutOfScopeError,
+    validate_generated_content_focus,
+)
 from app.utils.medical_filter import check_forbidden  # noqa: E402
 
 
@@ -81,6 +85,36 @@ def test_curated_reference_focus_includes_approved_must_use_medical_topic():
 
     assert "발열" in focus
     assert "탈수" in focus
+
+
+def test_generated_content_focus_must_match_the_hospital_allowlist():
+    allowed_topics = ["정형외과", "신경외과", "통증의학과", "외상"]
+
+    assert validate_generated_content_focus(
+        {
+            "title": "통증의학과 진료 전 확인할 점",
+            "body": "통증의학과 진료는 증상에 따라 방향을 확인합니다.",
+            "content_focus_topic": "통증의학과",
+        },
+        allowed_topics,
+    ) == "통증의학과"
+
+    with pytest.raises(ContentFocusOutOfScopeError):
+        validate_generated_content_focus({"content_focus_topic": "감기"}, allowed_topics)
+
+    with pytest.raises(ContentFocusOutOfScopeError):
+        validate_generated_content_focus(
+            {
+                "title": "감기 수액 치료 안내",
+                "body": "발열과 기침에 대해 설명합니다.",
+                "content_focus_topic": "외상",
+            },
+            allowed_topics,
+        )
+
+
+def test_generated_content_focus_is_optional_without_a_hospital_allowlist():
+    assert validate_generated_content_focus({}, []) is None
 
 
 def test_parse_json_response_extracts_surrounded_object():

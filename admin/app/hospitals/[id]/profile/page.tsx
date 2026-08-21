@@ -40,6 +40,8 @@ interface HospitalProfile {
   hero_media_kind: 'VERIFIED_FACILITY' | 'BRAND_GRAPHIC' | ''
   hero_headline: string
   hero_description: string
+  hero_specialties: string[]
+  content_focus_topics: string[]
   image_style_direction: string
   site_access_mode: 'urgent' | 'appointment' | 'specialist' | ''
   address: string
@@ -411,6 +413,8 @@ export default function ProfilePage() {
           business_hours: data.business_hours ?? {},
           region: data.region ?? [],
           specialties: data.specialties ?? [],
+          hero_specialties: data.hero_specialties ?? [],
+          content_focus_topics: data.content_focus_topics ?? [],
           keywords: data.keywords ?? [],
           competitors: data.competitors ?? [],
           treatments: data.treatments ?? [],
@@ -551,7 +555,14 @@ export default function ProfilePage() {
         }
 
         // Array fields
-        const arrayKeys = ['region', 'specialties', 'keywords', 'competitors'] as const
+        const arrayKeys = [
+          'region',
+          'specialties',
+          'hero_specialties',
+          'content_focus_topics',
+          'keywords',
+          'competitors',
+        ] as const
         for (const key of arrayKeys) {
           if (key in draft && isBlankArray(prev[key])) {
             const val = draft[key]
@@ -861,6 +872,14 @@ export default function ProfilePage() {
           </label>
         </div>
         <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <TagInput
+            label="첫 화면 진료영역"
+            values={profile.hero_specialties ?? []}
+            onChange={(value) => updateField('hero_specialties', value)}
+          />
+          <p className="text-xs text-slate-500">
+            비워 두면 전문과목을 사용합니다. 원장 요청으로 첫 화면에 보여줄 표현만 바꾸며 실제 전문과목 정보는 유지됩니다.
+          </p>
           <label htmlFor="profile-hero-headline" className="block text-sm font-medium text-slate-700">
             메인 히어로 카피
             <textarea
@@ -1183,6 +1202,14 @@ export default function ProfilePage() {
           onChange={(v) => updateField('specialties', v)}
           badge={aiFilled.specialties ? <AiBadge meta={aiFilled.specialties} /> : undefined}
         />
+        <TagInput
+          label="콘텐츠 허용 주제"
+          values={profile.content_focus_topics ?? []}
+          onChange={(value) => updateField('content_focus_topics', value)}
+        />
+        <p className="text-xs text-slate-500">
+          값이 있으면 앞으로 자동 생성·발행하는 건강정보는 이 주제 중 하나로만 제한됩니다. 비워 두면 전문과목과 핵심 키워드를 사용합니다.
+        </p>
         <TagInput
           label="핵심 키워드"
           values={profile.keywords ?? []}

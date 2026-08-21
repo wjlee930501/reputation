@@ -37,6 +37,10 @@ from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.content_focus import (
+    MAX_CONTENT_FOCUS_TOPICS,
+    normalize_content_focus_topics,
+)
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
@@ -73,6 +77,7 @@ from app.utils.medical_filter import check_forbidden
 from app.workers.tasks import trigger_v0_report
 
 logger = logging.getLogger(__name__)
+MAX_HERO_SPECIALTIES = 3
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Hospitals"])
 
@@ -292,6 +297,8 @@ class HospitalProfileUpdate(BaseModel):
     hero_media_kind: Literal["VERIFIED_FACILITY", "BRAND_GRAPHIC"] | None = None
     hero_headline: str | None = Field(None, max_length=160)
     hero_description: str | None = Field(None, max_length=320)
+    hero_specialties: list[str] | None = None
+    content_focus_topics: list[str] | None = None
     image_style_direction: str | None = Field(None, max_length=600)
     site_access_mode: Literal["urgent", "appointment", "specialist"] | None = None
 
@@ -333,6 +340,29 @@ class HospitalProfileUpdate(BaseModel):
         if violations:
             raise ValueError(f"의료광고 금지 표현은 사용할 수 없습니다: {', '.join(violations)}")
         return cleaned
+
+    @field_validator("hero_specialties", "content_focus_topics")
+    @classmethod
+    def normalize_custom_topic_lists(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        if len(value) > MAX_CONTENT_FOCUS_TOPICS:
+            raise ValueError(f"custom topic lists accept at most {MAX_CONTENT_FOCUS_TOPICS} items")
+        if any(len(topic.strip()) > 40 for topic in value):
+            raise ValueError("custom topic labels accept at most 40 characters")
+        return list(normalize_content_focus_topics(value))
+
+    @field_validator("hero_specialties")
+    @classmethod
+    def validate_hero_specialties(cls, value: list[str] | None) -> list[str] | None:
+        if not value:
+            return value
+        if len(value) > MAX_HERO_SPECIALTIES:
+            raise ValueError(f"hero specialties accept at most {MAX_HERO_SPECIALTIES} items")
+        violations = check_forbidden(" ".join(value))
+        if violations:
+            raise ValueError(f"의료광고 금지 표현은 사용할 수 없습니다: {', '.join(violations)}")
+        return value
 
     @field_validator(
         "website_url",
@@ -441,6 +471,7 @@ PUBLIC_PROFILE_FIELDS = {
     "hero_media_kind",
     "hero_headline",
     "hero_description",
+    "hero_specialties",
     "image_style_direction",
     "site_access_mode",
     "treatments",
@@ -750,6 +781,8 @@ async def update_profile(
         "hero_media_kind",
         "hero_headline",
         "hero_description",
+        "hero_specialties",
+        "content_focus_topics",
         "image_style_direction",
         "site_access_mode",
         "treatments",
@@ -1301,6 +1334,8 @@ def _serialize(h: Hospital) -> dict:
         "hero_media_kind": getattr(h, "hero_media_kind", None),
         "hero_headline": getattr(h, "hero_headline", None),
         "hero_description": getattr(h, "hero_description", None),
+        "hero_specialties": getattr(h, "hero_specialties", []),
+        "content_focus_topics": getattr(h, "content_focus_topics", []),
         "image_style_direction": getattr(h, "image_style_direction", None),
         "site_access_mode": getattr(h, "site_access_mode", None),
         "treatments": h.treatments,

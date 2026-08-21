@@ -13,11 +13,15 @@ def test_visual_identity_profile_accepts_approved_theme_copy_and_generation_dire
         image_style_direction="밝은 자연광과 손그림 질감, 아이보리와 연두 포인트",
         site_access_mode="urgent",
         hero_media_kind="VERIFIED_FACILITY",
+        hero_specialties=[" 정형외과 ", "통증의학과", "정형외과", "외상치료"],
+        content_focus_topics=["정형외과", "신경외과", "통증의학과", "외상"],
     )
 
     assert profile.brand_primary_color == "#D6A72C"
     assert profile.site_access_mode == "urgent"
     assert profile.hero_headline.startswith("오늘도 문 여는")
+    assert profile.hero_specialties == ["정형외과", "통증의학과", "외상치료"]
+    assert profile.content_focus_topics == ["정형외과", "신경외과", "통증의학과", "외상"]
 
 
 @pytest.mark.parametrize("field", ["brand_primary_color", "brand_accent_color"])
@@ -29,3 +33,20 @@ def test_visual_identity_profile_rejects_malformed_colors(field: str):
 def test_visual_identity_profile_rejects_medical_advertising_superlatives():
     with pytest.raises(ValidationError):
         HospitalProfileUpdate(hero_headline="국내 최초 완치 치료를 약속합니다")
+
+
+def test_visual_identity_profile_rejects_too_many_custom_topics():
+    with pytest.raises(ValidationError):
+        HospitalProfileUpdate(hero_specialties=[f"진료영역 {index}" for index in range(9)])
+
+
+def test_visual_identity_profile_rejects_more_than_three_hero_specialties():
+    with pytest.raises(ValidationError, match="hero specialties accept at most 3 items"):
+        HospitalProfileUpdate(
+            hero_specialties=["정형외과", "통증의학과", "외상치료", "재활의학과"]
+        )
+
+
+def test_visual_identity_profile_rejects_oversized_custom_topic_label():
+    with pytest.raises(ValidationError, match="custom topic labels accept at most 40 characters"):
+        HospitalProfileUpdate(content_focus_topics=["주" * 41])

@@ -12,6 +12,7 @@ def _item(**overrides):
         "body": "증상과 생활 불편을 확인한 뒤 진료 방향을 설명합니다.",
         "image_url": "https://storage.googleapis.com/reputation/content.png",
         "image_policy_verified_at": datetime(2026, 8, 22, tzinfo=timezone.utc),
+        "content_focus_topic": None,
         "meta_description": "진료 전 확인할 내용을 정리합니다.",
         "faq_question": None,
         "faq_answer_summary": None,
@@ -45,6 +46,42 @@ def test_publication_policy_accepts_machine_safe_source_backed_content(monkeypat
     assert assessment.publishable is True
     assert assessment.philosophy_id == philosophy.id
     assert assessment.code is None
+
+
+def test_publication_policy_enforces_the_hospital_content_focus(monkeypatch):
+    _aligned(monkeypatch)
+
+    accepted = content_publication.assess_content_publication(
+        _item(
+            title="외상 후 통증이 계속될 때 확인할 점",
+            body="외상 후 통증은 상태에 따라 진료 방향을 확인합니다.",
+            content_focus_topic="외상",
+        ),
+        _philosophy(),
+        allowed_focus_topics=("정형외과", "통증의학과", "외상"),
+    )
+    blocked = content_publication.assess_content_publication(
+        _item(content_focus_topic="감기"),
+        _philosophy(),
+        allowed_focus_topics=("정형외과", "통증의학과", "외상"),
+    )
+
+    assert accepted.publishable is True
+    assert blocked.publishable is False
+    assert blocked.code == "CONTENT_FOCUS_OUT_OF_SCOPE"
+
+
+def test_publication_policy_rejects_an_approved_label_on_unrelated_content(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _item(content_focus_topic="외상"),
+        _philosophy(),
+        allowed_focus_topics=("정형외과", "통증의학과", "외상"),
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_FOCUS_NOT_GROUNDED"
 
 
 def test_publication_policy_blocks_missing_reference(monkeypatch):
