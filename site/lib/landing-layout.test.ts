@@ -64,3 +64,11 @@ test('centered section children never reset margin with the shorthand', () => {
     assert.match(body, /margin-block:/, `${selector}에 margin-block 선언이 없습니다.`)
   }
 })
+
+test('mobile clinic hero actions override the global full-width button rule', () => {
+  const actionRules = [...CSS.matchAll(/\.clinic-hero-editorial-actions \.clinic-btn \{([^}]*)\}/g)]
+  const mobileRule = actionRules.at(-1)?.[1] ?? ''
+
+  assert.match(mobileRule, /width:\s*auto/)
+  assert.match(mobileRule, /flex:\s*1 1 0/)
+})

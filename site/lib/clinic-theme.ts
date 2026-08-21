@@ -12,6 +12,7 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i
 
 type Rgb = Readonly<{ red: number; green: number; blue: number }>
 type ThemeStyle = CSSProperties & Record<`--clinic-${string}`, string>
+type ClinicSocialImage = Readonly<{ url: string; alt: string }>
 
 export function normalizeClinicColor(value: string | null | undefined, fallback: string): string {
   const color = (value || '').trim()
@@ -156,6 +157,31 @@ export function selectClinicDirectorImage(
   hospital: Pick<Hospital, 'slug' | 'director_photo_url' | 'photos'>,
 ): string | null {
   return selectVerifiedDoctorImage(hospital.photos)
+}
+
+export function selectClinicSocialImage(
+  hospital: Pick<
+    Hospital,
+    | 'name'
+    | 'director_name'
+    | 'slug'
+    | 'director_photo_url'
+    | 'hero_image_url'
+    | 'hero_media_kind'
+    | 'photos'
+    | 'specialties'
+  >,
+): ClinicSocialImage | null {
+  const directorImage = selectClinicDirectorImage(hospital)
+  if (directorImage) {
+    return {
+      url: directorImage,
+      alt: hospital.director_name ? `${hospital.director_name} 원장` : `${hospital.name} 의료진`,
+    }
+  }
+
+  const heroImage = selectClinicHeroImage(hospital)
+  return heroImage ? { url: heroImage, alt: `${hospital.name} 대표 이미지` } : null
 }
 
 export function absoluteClinicImageUrl(imageUrl: string | null, base: string): string | null {

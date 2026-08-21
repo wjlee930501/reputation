@@ -15,6 +15,7 @@ import {
   buildClinicThemeStyle,
   selectClinicDirectorImage,
   selectClinicHeroImage,
+  selectClinicSocialImage,
 } from '@/lib/clinic-theme'
 import { getApiBase } from '@/lib/config'
 import { buildFaqPageJsonLd, buildPhysicianCredentials } from '@/lib/schema'
@@ -84,7 +85,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const description = buildHospitalDescription(hospital)
     // 백엔드 자산 경로는 상대 URL일 수 있다 — 크롤러는 site origin 기준으로 잘못 해석하므로
     // 절대 URL로 변환해야 OG/구조화 데이터 이미지가 깨지지 않는다.
-    const ogImage = selectClinicDirectorImage(hospital) ?? '/landing/reputation-clinic-trust-interior.png'
+    const socialImage = selectClinicSocialImage(hospital)
     // 커스텀 도메인이 연결된 병원은 해당 도메인이 canonical origin이 된다 (site-url.ts 정책).
     const canonicalUrl = canonicalHospitalUrl(hospital, params.slug)
     return {
@@ -96,11 +97,11 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         description,
         url: canonicalUrl,
         type: 'website',
-        images: ogImage
+        images: socialImage
           ? [
               {
-                url: ogImage,
-                alt: hospital.director_name ? `${hospital.director_name} 원장` : hospital.name,
+                url: socialImage.url,
+                alt: socialImage.alt,
               },
             ]
           : undefined,
@@ -109,7 +110,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         card: 'summary_large_image',
         title,
         description,
-        images: ogImage ? [ogImage] : undefined,
+        images: socialImage ? [socialImage.url] : undefined,
       },
     }
   } catch {

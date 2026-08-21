@@ -8,6 +8,7 @@ import {
   contrastRatio,
   selectClinicDirectorImage,
   selectClinicHeroImage,
+  selectClinicSocialImage,
 } from './clinic-theme.ts'
 
 test('clinic theme accepts valid hospital colors and rejects malformed values', () => {
@@ -182,5 +183,47 @@ test('editorial character art cannot enter a named doctor identity slot', () => 
       ],
     }),
     null,
+  )
+})
+
+test('social metadata omits imagery when the hospital has no verified media', () => {
+  assert.equal(
+    selectClinicSocialImage({
+      name: '노원탑365의원',
+      director_name: '조태환',
+      slug: 'noweontab365yiweon',
+      director_photo_url: null,
+      hero_image_url: null,
+      hero_media_kind: null,
+      photos: [],
+      specialties: ['정형외과'],
+    }),
+    null,
+  )
+})
+
+test('social metadata describes verified facility media as the hospital, not its director', () => {
+  assert.deepEqual(
+    selectClinicSocialImage({
+      name: '테스트의원',
+      director_name: '김원장',
+      slug: 'test-clinic',
+      director_photo_url: null,
+      hero_image_url: '/api/v1/public/hospitals/test-clinic/assets/facility',
+      hero_media_kind: 'VERIFIED_FACILITY',
+      photos: [{
+        id: 'facility',
+        source_type: 'PHOTO_CLINIC_INTERIOR',
+        title: '진료실',
+        url: '/api/v1/public/hospitals/test-clinic/assets/facility',
+        asset_kind: 'VERIFIED_FACILITY',
+        approved_usage: ['HERO'],
+      }],
+      specialties: ['내과'],
+    }),
+    {
+      url: 'http://localhost:8000/api/v1/public/hospitals/test-clinic/assets/facility',
+      alt: '테스트의원 대표 이미지',
+    },
   )
 })

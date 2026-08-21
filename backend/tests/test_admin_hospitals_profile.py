@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app.api.admin import hospitals as hospitals_api
 from app.api.admin.accounts import require_active_account
+from app.schemas.hospital import HospitalDetail
 
 
 class FakeDB:
@@ -245,6 +246,18 @@ async def test_profile_update_persists_director_requested_display_and_content_fo
     assert payload["hero_description"] == "매일 365 야간진료"
     assert payload["content_focus_topics"] == ["정형외과", "신경외과", "통증의학과", "외상"]
     assert db.committed is True
+
+
+def test_detail_response_exposes_director_requested_display_and_content_focus() -> None:
+    hospital = _hospital(
+        hero_specialties=["정형외과", "통증의학과", "외상치료"],
+        content_focus_topics=["정형외과", "신경외과", "통증의학과", "외상"],
+    )
+
+    payload = HospitalDetail.model_validate(hospitals_api._serialize(hospital)).model_dump()
+
+    assert payload["hero_specialties"] == ["정형외과", "통증의학과", "외상치료"]
+    assert payload["content_focus_topics"] == ["정형외과", "신경외과", "통증의학과", "외상"]
 
 
 def test_profile_update_requires_an_active_account():

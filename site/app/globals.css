@@ -8309,8 +8309,9 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     margin-top: 28px;
   }
   .clinic-hero-editorial-actions .clinic-btn {
+    width: auto;
     min-width: 0;
-    flex: 1;
+    flex: 1 1 0;
     min-height: 50px;
   }
   .clinic-hero-editorial-photo {

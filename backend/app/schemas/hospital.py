@@ -59,6 +59,8 @@ class HospitalDetail(HospitalListItem):
     hero_media_kind: Optional[str] = None
     hero_headline: Optional[str] = None
     hero_description: Optional[str] = None
+    hero_specialties: list[str]
+    content_focus_topics: list[str]
     image_style_direction: Optional[str] = None
     site_access_mode: Optional[str] = None
     director_credentials: Optional[Any] = None
