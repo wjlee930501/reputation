@@ -145,9 +145,31 @@ export function ClinicHero({
             />
           ) : (
             <div className="clinic-hero-editorial-fallback">
-              <span>진료 정보 허브</span>
-              <strong>{hospitalName}</strong>
-              <small>{directorName ? `${directorName} 원장` : specialtyLabel || '진료 안내'}</small>
+              <div className="clinic-hero-editorial-fallback-intro">
+                <span>병원 방문 안내</span>
+                <strong>{hospitalName}</strong>
+                <small>{directorName ? `${directorName} 원장` : specialtyLabel || '진료 안내'}</small>
+              </div>
+              <nav
+                className="clinic-hero-editorial-fallback-index"
+                aria-label={`${hospitalName} 빠른 안내`}
+              >
+                <Link href={`${hospitalRootUrl}/treatments`}>
+                  <span>01</span>
+                  <strong>진료 영역</strong>
+                  <span aria-hidden="true">→</span>
+                </Link>
+                <Link href={`${hospitalRootUrl}/doctor`}>
+                  <span>02</span>
+                  <strong>의료진</strong>
+                  <span aria-hidden="true">→</span>
+                </Link>
+                <Link href={`${hospitalRootUrl}/visit`}>
+                  <span>03</span>
+                  <strong>진료시간·오시는 길</strong>
+                  <span aria-hidden="true">→</span>
+                </Link>
+              </nav>
             </div>
           )}
         </div>
