@@ -3,31 +3,16 @@ import test from 'node:test'
 
 import { shouldBypassNextImageOptimization } from './image-policy.ts'
 
-test('shouldBypassNextImageOptimization returns true for public API asset URLs', () => {
+test('public API assets stay on the responsive image optimizer path', () => {
   assert.equal(
     shouldBypassNextImageOptimization(
-      'https://api.example.com/api/v1/public/hospitals/test-hospital/assets/asset-id',
+      'https://reputation.motionlabs.kr/api/v1/public/hospitals/test-hospital/assets/asset-id',
     ),
-    true,
-  )
-  assert.equal(
-    shouldBypassNextImageOptimization(
-      'http://127.0.0.1:18081/api/v1/public/hospitals/test-hospital/assets/asset-id',
-    ),
-    true,
-  )
-})
-
-test('shouldBypassNextImageOptimization returns true for backend asset URLs', () => {
-  assert.equal(
-    shouldBypassNextImageOptimization(
-      'http://localhost:8000/assets/hospital-id/doctor-demo.png',
-    ),
-    true,
+    false,
   )
   assert.equal(
     shouldBypassNextImageOptimization('/assets/hospital-id/clinic-demo.png'),
-    true,
+    false,
   )
 })
 

@@ -1,54 +1,44 @@
-import Image from 'next/image'
-
-import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
+import type { HospitalPhoto } from '@/lib/api'
+import { selectDoctorRole } from '@/lib/clinic-design'
+import { selectVerifiedDoctorImage } from '@/lib/clinic-theme'
 
 import { ClinicAvatar } from './ClinicAvatar'
 
 interface Props {
   directorName: string
   directorCareer: string
-  directorPhotoUrl: string | null
-  localPhotoUrl?: string | null
   specialties: string[]
   region: string[]
   contentCount: number
   boardCertifications?: string[] | null
   societyMemberships?: string[] | null
-  // 병원 공개 API photos[]에 source_type=PHOTO_DOCTOR(원장 실사 기반 일러스트)가 있으면
-  // director_photo_url이 비어도 이 사진을 원장 프로필에 렌더한다. 로드 실패 시 모노그램 폴백.
+  priorityPhoto?: boolean
+  // 병원 공개 API photos[]에 source_type=PHOTO_DOCTOR가 있으면 원장 프로필에 렌더한다.
+  // 이 슬롯은 실제 인물 식별 사진만 허용하는 운영 계약을 따른다.
   photos?: HospitalPhoto[]
-}
-
-function resolveDoctorPhoto(directorPhotoUrl: string | null, photos: HospitalPhoto[]): string | null {
-  if (directorPhotoUrl?.startsWith('/clinic/')) return directorPhotoUrl
-  const direct = resolveAssetUrl(directorPhotoUrl)
-  if (direct) return direct
-  const doctorPhoto = photos.find((p) => p.source_type === 'PHOTO_DOCTOR')
-  return resolveAssetUrl(doctorPhoto?.url ?? null)
 }
 
 export function DoctorIntro({
   directorName,
   directorCareer,
-  directorPhotoUrl,
-  localPhotoUrl = null,
   specialties,
   region,
   contentCount,
   boardCertifications,
   societyMemberships,
+  priorityPhoto = false,
   photos = [],
 }: Props) {
   const boardCerts = (boardCertifications ?? []).filter(Boolean)
   const societies = (societyMemberships ?? []).filter(Boolean)
-  const resolvedPhoto = resolveDoctorPhoto(directorPhotoUrl, photos)
+  const resolvedPhoto = selectVerifiedDoctorImage(photos)
   const initial = (directorName || '').trim().slice(0, 1) || '醫'
-  const doctorRole = boardCerts[0] ?? '대표원장'
+  const doctorRole = selectDoctorRole(boardCerts)
 
   return (
     <section id="curator" className="clinic-section clinic-section--alt">
       <div className="clinic-section-inner">
-        <header className={localPhotoUrl ? 'sr-only' : 'clinic-section-head'}>
+        <header className="clinic-section-head">
           <h2 className="clinic-section-title">진료를 담당하는 의료진</h2>
           <p className="clinic-section-note">
             진료 경험과 환자 상담에서 반복되는 질문을 바탕으로, 필요한 의료 정보를 차분히 정리합니다.
@@ -57,38 +47,22 @@ export function DoctorIntro({
 
         <div className="clinic-curator">
           <div className="clinic-curator-figure">
-            {localPhotoUrl ? (
-              <div className="clinic-curator-portrait clinic-curator-portrait--local">
-                <Image
-                  src={localPhotoUrl}
-                  alt={`${directorName} 원장`}
-                  fill
-                  quality={84}
-                  sizes="(max-width: 720px) 132px, 360px"
-                  className="clinic-curator-portrait-image"
-                />
-              </div>
-            ) : (
-              <ClinicAvatar
-                src={resolvedPhoto}
-                alt={`${directorName} 원장`}
-                wrapperClassName="clinic-curator-portrait"
-                fallbackClassName="clinic-curator-portrait--monogram"
-                fallback={
-                  <>
-                    <span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>
-                    <span className="clinic-curator-monogram-name" aria-hidden="true">{directorName} 원장</span>
-                  </>
-                }
-              />
-            )}
+            <ClinicAvatar
+              src={resolvedPhoto}
+              alt={`${directorName} 원장`}
+              wrapperClassName="clinic-curator-portrait"
+              fallbackClassName="clinic-curator-portrait--monogram"
+              sizes="(max-width: 720px) 132px, 360px"
+              priority={priorityPhoto}
+              fallback={<span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>}
+            />
             <div className="clinic-curator-figure-meta">
               <span className="clinic-curator-eyebrow">대표원장</span>
               <h3 className="clinic-curator-name">
                 {directorName}
                 <small>원장</small>
               </h3>
-              <span className="clinic-curator-role">{doctorRole}</span>
+              {doctorRole ? <span className="clinic-curator-role">{doctorRole}</span> : null}
             </div>
           </div>
 

@@ -1,9 +1,20 @@
 import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
-import { fetchHospital, fetchContents, resolveAssetUrl, HospitalNotFoundError } from '@/lib/api'
+import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec } from '@/lib/business-hours'
+import {
+  clinicComposition,
+  clinicContentDensity,
+  resolveClinicAccessMode,
+  resolveClinicMediaMode,
+} from '@/lib/clinic-design'
 import { buildAddressRegionFields } from '@/lib/clinic-schema'
+import {
+  buildClinicThemeStyle,
+  selectClinicDirectorImage,
+  selectClinicHeroImage,
+} from '@/lib/clinic-theme'
 import { getApiBase } from '@/lib/config'
 import { buildFaqPageJsonLd, buildPhysicianCredentials } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
@@ -72,8 +83,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
     const description = buildHospitalDescription(hospital)
     // 백엔드 자산 경로는 상대 URL일 수 있다 — 크롤러는 site origin 기준으로 잘못 해석하므로
     // 절대 URL로 변환해야 OG/구조화 데이터 이미지가 깨지지 않는다.
-    const ogImage =
-      resolveAssetUrl(hospital.director_photo_url) ?? '/landing/reputation-clinic-trust-interior.png'
+    const ogImage = selectClinicDirectorImage(hospital) ?? '/landing/reputation-clinic-trust-interior.png'
     // 커스텀 도메인이 연결된 병원은 해당 도메인이 canonical origin이 된다 (site-url.ts 정책).
     const canonicalUrl = canonicalHospitalUrl(hospital, params.slug)
     return {
@@ -146,7 +156,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     '@id': `${hospitalRootUrl}#clinic`,
     name: hospital.name,
     url: hospitalRootUrl,
-    image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
+    image: selectClinicDirectorImage(hospital) ?? undefined,
     description: publicAbout ?? undefined,
     slogan: publicAbout ?? undefined,
     sameAs,
@@ -175,7 +185,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
       name: hospital.director_name,
       jobTitle: '원장',
       description: hospital.director_career,
-      image: resolveAssetUrl(hospital.director_photo_url) ?? undefined,
+      image: selectClinicDirectorImage(hospital) ?? undefined,
       url: `${hospitalRootUrl}/doctor`,
       // 자격·학회·전문영역 신뢰축을 최우선순위 URL(랜딩)에도 실어 /doctor에만
       // 의존하지 않게 한다.
@@ -211,18 +221,28 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     { url: hospital.kakao_channel_url, label: '카카오톡 채널' },
   ]
 
-  const clinicMedia =
-    params.slug === 'jangpyeonhanoegwayiweon'
-      ? {
-          hero: '/clinics/jangpyeonhanoegwayiweon/doctor-hero.jpg',
-          profile: '/clinics/jangpyeonhanoegwayiweon/doctor-profile.jpg',
-        }
-      : null
+  const contentDensity = clinicContentDensity(contents.length)
+  const composition = clinicComposition(contentDensity)
+  const heroPhotoUrl = selectClinicHeroImage(hospital)
+  const accessMode = resolveClinicAccessMode({
+    configuredMode: hospital.site_access_mode,
+    specialties: hospital.specialties,
+    businessHours: hospital.business_hours,
+    boardCertifications: hospital.director_credentials?.board_certifications ?? [],
+  })
+  const mediaMode = resolveClinicMediaMode({
+    hasVerifiedFacilityPhoto: Boolean(heroPhotoUrl) && hospital.hero_media_kind !== 'BRAND_GRAPHIC',
+    hasBrandGraphic: Boolean(heroPhotoUrl) && hospital.hero_media_kind === 'BRAND_GRAPHIC',
+    hasLogo: Boolean(hospital.logo_url),
+  })
 
   return (
     <>
       <JsonLd data={pageJsonLd} />
-      <div className="clinic-shell">
+      <div
+        className={`clinic-shell clinic-shell--editorial clinic-shell--density-${contentDensity}`}
+        style={buildClinicThemeStyle(hospital)}
+      >
         <ClinicHeader
           hospitalName={hospital.name}
           hospitalRootUrl={hospitalRootUrl}
@@ -239,16 +259,18 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
               병원 엔티티 사실과 대표 질문을 최신글 피드보다 먼저 노출한다. */}
           <ClinicHero
             hospitalName={hospital.name}
-            hospitalSlug={params.slug}
             hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
             specialties={hospital.specialties}
             phone={hospital.phone}
             directorName={hospital.director_name}
-            directorPhotoUrl={hospital.director_photo_url}
-            heroPhotoUrl={clinicMedia?.hero}
+            heroPhotoUrl={heroPhotoUrl}
             address={hospital.address}
             businessHours={hospital.business_hours}
+            accessMode={accessMode}
+            mediaMode={mediaMode}
+            heroHeadline={hospital.hero_headline}
+            heroDescription={hospital.hero_description}
           />
 
           <nav className="clinic-section-index" aria-label="이 페이지의 주요 정보">
@@ -267,8 +289,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           <DoctorIntro
             directorName={hospital.director_name}
             directorCareer={hospital.director_career}
-            directorPhotoUrl={hospital.director_photo_url}
-            localPhotoUrl={clinicMedia?.profile}
             specialties={hospital.specialties}
             region={hospital.region}
             contentCount={contents.length}
@@ -292,20 +312,28 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             hospitalRootUrl={hospitalRootUrl}
             hospitalName={hospital.name}
             directorName={hospital.director_name}
+            secondaryLimit={composition.featuredSecondaryLimit}
           />
           </div>
 
-          <AnswerClusters
-            contents={contents}
-            hospitalRootUrl={hospitalRootUrl}
-            treatments={hospital.treatments || []}
-            region={hospital.region}
-            specialties={hospital.specialties}
+          {composition.showAnswerClusters ? (
+            <AnswerClusters
+              contents={contents}
+              hospitalRootUrl={hospitalRootUrl}
+              treatments={hospital.treatments || []}
+              region={hospital.region}
+              specialties={hospital.specialties}
+            />
+          ) : null}
+
+          {composition.showCareFlow ? (
+            <CareFlow hospitalRootUrl={hospitalRootUrl} hospitalName={hospital.name} />
+          ) : null}
+
+          <ClinicGallery
+            photos={hospital.photos ?? []}
+            previewLimit={composition.galleryPreviewLimit}
           />
-
-          <CareFlow hospitalRootUrl={hospitalRootUrl} hospitalName={hospital.name} />
-
-          <ClinicGallery photos={hospital.photos ?? []} />
 
           <div id="facts" className="clinic-anchor-target">
           <HospitalFacts

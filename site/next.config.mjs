@@ -79,6 +79,7 @@ const nextConfig = {
   outputFileTracingRoot: appDir,
   images: {
     formats: ['image/avif', 'image/webp'],
+    qualities: [75, 84],
     minimumCacheTTL: 86400,
     remotePatterns: [
       { protocol: 'https', hostname: 'storage.googleapis.com' },

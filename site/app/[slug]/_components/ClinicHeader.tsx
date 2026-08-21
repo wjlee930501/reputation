@@ -1,7 +1,9 @@
 import Link from 'next/link'
 import Image from 'next/image'
 
-import { ExternalIcon, PhoneIcon } from './icons'
+import { displayClinicLabels } from '@/lib/clinic-design'
+
+import { CalendarIcon, ClockIcon, ExternalIcon, MapPinIcon, PhoneIcon } from './icons'
 
 interface Props {
   hospitalName: string
@@ -23,8 +25,8 @@ export function ClinicHeader({
   logoUrl,
 }: Props) {
   // 진료과 표기는 프로파일의 specialties[]에서만 파생 — 하드코딩 금지.
-  const specialtyLabel = specialties.filter(Boolean).join('·')
-  const subline = region.join(' ').trim()
+  const specialtyLabel = displayClinicLabels(specialties).join('·')
+  const subline = displayClinicLabels(region).join(' ')
   const brandMeta = [specialtyLabel ? `${specialtyLabel} 진료` : '진료 안내', subline]
     .filter(Boolean)
     .join(' · ')
@@ -76,6 +78,25 @@ export function ClinicHeader({
       {/* 모바일 전용 가로 스크롤 nav. desktop에선 숨김. */}
       <nav className="clinic-header-nav-mobile" aria-label="병원 섹션 (모바일)">
         {navItems}
+      </nav>
+
+      <nav className="clinic-mobile-actionbar" aria-label="빠른 병원 문의">
+        <a href={`tel:${phone}`}>
+          <PhoneIcon className="clinic-icon" />
+          전화
+        </a>
+        <Link href={`${hospitalRootUrl}/visit`}>
+          <ClockIcon className="clinic-icon" />
+          진료시간
+        </Link>
+        <Link href={`${hospitalRootUrl}/treatments`}>
+          <CalendarIcon className="clinic-icon" />
+          진료안내
+        </Link>
+        <Link href={`${hospitalRootUrl}/visit`}>
+          <MapPinIcon className="clinic-icon" />
+          길찾기
+        </Link>
       </nav>
     </header>
   )

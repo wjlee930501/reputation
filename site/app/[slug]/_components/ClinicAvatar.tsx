@@ -1,6 +1,9 @@
 'use client'
 
+import Image from 'next/image'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
+
+import { isOffAllowlistExternalUrl } from '@/lib/image-policy'
 
 /** 실질적으로 비어있는(1x1 placeholder) 이미지인지 판정 */
 function isBlankImage(img: HTMLImageElement): boolean {
@@ -16,6 +19,9 @@ interface Props {
   fallbackClassName?: string
   /** 이미지 fallback 콘텐츠 (모노그램 등) */
   fallback: ReactNode
+  /** 실제 렌더 너비를 Next 이미지 최적화기에 전달한다. */
+  sizes?: string
+  priority?: boolean
 }
 
 /**
@@ -24,7 +30,15 @@ interface Props {
  * 덮어씌운다. 따라서 이미지가 없거나 로딩 중이거나 깨져도 "빈 회색 박스"가 아니라
  * 품위 있는 모노그램이 보인다(anti-slop: 빈 박스 0개).
  */
-export function ClinicAvatar({ src, alt, wrapperClassName, fallbackClassName = '', fallback }: Props) {
+export function ClinicAvatar({
+  src,
+  alt,
+  wrapperClassName,
+  fallbackClassName = '',
+  fallback,
+  sizes = '(max-width: 720px) 100vw, 420px',
+  priority = false,
+}: Props) {
   const [failed, setFailed] = useState(!src)
   // 이미지는 클라이언트 마운트 후에만 렌더한다. SSR HTML에 들어간 img가 하이드레이션 전에
   // 로드 실패하면 onError가 유실되어 "깨진 이미지 아이콘"이 남는데, 마운트 게이팅으로 이를
@@ -50,24 +64,23 @@ export function ClinicAvatar({ src, alt, wrapperClassName, fallbackClassName = '
       aria-hidden={decorative || undefined}
     >
       {fallback}
-      {showImage && (
-        // next/image는 onError 후 대체 처리가 번거로워 일반 img로 처리
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
+      {showImage && src && (
+        <Image
           ref={imgRef}
-          src={src as string}
+          src={src}
           alt=""
           aria-hidden="true"
-          decoding="async"
+          fill
+          sizes={sizes}
+          priority={priority}
+          loading={priority ? 'eager' : 'lazy'}
+          quality={84}
+          unoptimized={isOffAllowlistExternalUrl(src)}
           onError={() => setFailed(true)}
           onLoad={(e) => {
             if (isBlankImage(e.currentTarget)) setFailed(true)
           }}
           style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            height: '100%',
             objectFit: 'cover',
           }}
         />

@@ -1,8 +1,10 @@
 'use client'
 
+import Image from 'next/image'
 import { useCallback, useEffect, useState } from 'react'
 
 import { ContentMotif } from '@/components/brand'
+import { isOffAllowlistExternalUrl } from '@/lib/image-policy'
 
 interface Props {
   type: string
@@ -15,6 +17,12 @@ interface Props {
 
 function isBlankImage(img: HTMLImageElement): boolean {
   return (img.naturalWidth || 0) <= 2
+}
+
+const COVER_SIZES: Record<NonNullable<Props['variant']>, string> = {
+  featured: '(max-width: 920px) 100vw, 58vw',
+  card: '(max-width: 720px) 100vw, (max-width: 1080px) 50vw, 360px',
+  band: '(max-width: 720px) 100vw, 720px',
 }
 
 /**
@@ -52,13 +60,17 @@ export function ContentCover({ type, src, variant = 'card', className = '' }: Pr
           </span>
         </>
       )}
-      {showImage && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
+      {showImage && src && (
+        <Image
           ref={imgRef}
-          src={src as string}
+          src={src}
           alt=""
-          decoding="async"
+          fill
+          sizes={COVER_SIZES[variant]}
+          priority={variant === 'featured'}
+          loading={variant === 'featured' ? 'eager' : 'lazy'}
+          quality={84}
+          unoptimized={isOffAllowlistExternalUrl(src)}
           onError={() => setFailed(true)}
           onLoad={(e) => {
             if (isBlankImage(e.currentTarget)) setFailed(true)

@@ -1,10 +1,12 @@
 import Image from 'next/image'
 
 import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
+import { selectClinicGalleryPhotos } from '@/lib/clinic-design'
 
 interface Props {
   photos: HospitalPhoto[]
   minimumPhotoCount?: number
+  previewLimit?: number
 }
 
 const TYPE_LABELS: Record<HospitalPhoto['source_type'], string> = {
@@ -14,15 +16,9 @@ const TYPE_LABELS: Record<HospitalPhoto['source_type'], string> = {
   PHOTO_TREATMENT_ROOM: '진료/시술실',
 }
 
-const NON_DOCTOR_TYPES: Array<HospitalPhoto['source_type']> = [
-  'PHOTO_CLINIC_EXTERIOR',
-  'PHOTO_CLINIC_INTERIOR',
-  'PHOTO_TREATMENT_ROOM',
-]
-
-export function ClinicGallery({ photos, minimumPhotoCount = 3 }: Props) {
-  // 원장 사진은 DoctorIntro에서 노출하므로 갤러리에선 제외.
-  const visible = photos.filter((p) => NON_DOCTOR_TYPES.includes(p.source_type))
+export function ClinicGallery({ photos, minimumPhotoCount = 3, previewLimit = 6 }: Props) {
+  const selection = selectClinicGalleryPhotos(photos, previewLimit)
+  const visible = selection.photos
   // 홈은 기본 3장 게이트를 유지하고, /visit만 명시적으로 1장부터 공간 안내를 노출한다.
   if (visible.length < minimumPhotoCount) return null
 
@@ -58,6 +54,11 @@ export function ClinicGallery({ photos, minimumPhotoCount = 3 }: Props) {
             )
           })}
         </div>
+        {selection.remaining > 0 ? (
+          <p className="clinic-gallery-summary">
+            등록된 공간 사진 {selection.total}장 중 대표 {visible.length}장을 보여드립니다.
+          </p>
+        ) : null}
       </div>
     </section>
   )

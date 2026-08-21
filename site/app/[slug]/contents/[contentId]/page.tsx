@@ -499,6 +499,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                       void node
                       return (
                         <div className="clinic-markdown-table" role="region" aria-label="표">
+                          <p className="clinic-markdown-table-hint">표는 좌우로 움직여 전체 내용을 확인할 수 있습니다.</p>
                           <table {...props}>{children}</table>
                         </div>
                       )

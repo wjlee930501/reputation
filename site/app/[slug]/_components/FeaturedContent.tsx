@@ -11,6 +11,7 @@ interface Props {
   hospitalRootUrl: string
   hospitalName: string
   directorName: string
+  secondaryLimit?: number
 }
 
 const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCAL', 'NOTICE']
@@ -22,21 +23,30 @@ function formatDate(value: string | null | undefined, fallback: string) {
   return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
-function selectFeatured(contents: ContentSummary[]): { primary: ContentSummary | null; rest: ContentSummary[] } {
+function selectFeatured(
+  contents: ContentSummary[],
+  secondaryLimit: number,
+): { primary: ContentSummary | null; rest: ContentSummary[] } {
   if (contents.length === 0) return { primary: null, rest: [] }
   // 우선순위 유형이 있으면 그 첫 항목을 primary로.
   for (const type of PRIORITY_TYPES) {
     const match = contents.find((c) => c.content_type === type)
     if (match) {
-      const rest = contents.filter((c) => c.id !== match.id).slice(0, 4)
+      const rest = contents.filter((c) => c.id !== match.id).slice(0, secondaryLimit)
       return { primary: match, rest }
     }
   }
-  return { primary: contents[0], rest: contents.slice(1, 5) }
+  return { primary: contents[0], rest: contents.slice(1, secondaryLimit + 1) }
 }
 
-export function FeaturedContent({ contents, hospitalRootUrl, hospitalName, directorName }: Props) {
-  const { primary, rest } = selectFeatured(contents)
+export function FeaturedContent({
+  contents,
+  hospitalRootUrl,
+  hospitalName,
+  directorName,
+  secondaryLimit = 4,
+}: Props) {
+  const { primary, rest } = selectFeatured(contents, secondaryLimit)
   if (!primary) return null
 
   const primaryTypeLabel = TYPE_LABELS[primary.content_type] ?? primary.content_type

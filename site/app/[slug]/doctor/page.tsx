@@ -158,12 +158,12 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
           <DoctorIntro
             directorName={hospital.director_name}
             directorCareer={hospital.director_career}
-            directorPhotoUrl={directorImageUrl}
             specialties={hospital.specialties}
             region={hospital.region}
             contentCount={contents.length}
             boardCertifications={hospital.director_credentials?.board_certifications ?? null}
             societyMemberships={hospital.director_credentials?.society_memberships ?? null}
+            priorityPhoto
             photos={hospital.photos ?? []}
           />
 

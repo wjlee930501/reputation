@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import { platformSiteUrl } from "@/lib/site-url";
+import { ReactDevTools } from "./ReactDevTools";
 import "./fonts/pretendard-subset.css";
 import "./globals.css";
 
@@ -87,6 +88,10 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <body>
+        {process.env.NODE_ENV === "development" &&
+        process.env.NEXT_PUBLIC_DISABLE_REACT_DEVTOOLS !== "1" ? (
+          <ReactDevTools />
+        ) : null}
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:rounded-lg focus:bg-blue-600 focus:px-4 focus:py-3 focus:text-sm focus:font-medium focus:text-white focus:shadow-lg focus:outline-none"

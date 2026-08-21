@@ -1,23 +1,25 @@
 import Image from 'next/image'
 import Link from 'next/link'
 
-import { resolveAssetUrl } from '@/lib/api'
+import { displayClinicLabels } from '@/lib/clinic-design'
+import type { ClinicAccessMode, ClinicMediaMode } from '@/lib/clinic-design'
 
-import { ClinicAvatar } from './ClinicAvatar'
 import { CalendarIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
 
 interface Props {
   hospitalName: string
-  hospitalSlug: string
   hospitalRootUrl: string
   region: string[]
   specialties: string[]
   phone: string
   directorName: string
-  directorPhotoUrl: string | null
   heroPhotoUrl?: string | null
   address: string
   businessHours: Record<string, string> | null | undefined
+  accessMode: ClinicAccessMode
+  mediaMode: ClinicMediaMode
+  heroHeadline?: string | null
+  heroDescription?: string | null
 }
 
 const DAY_FULL_LABELS: Record<string, string> = {
@@ -55,85 +57,97 @@ function compactAddress(address: string): string {
 
 export function ClinicHero({
   hospitalName,
-  hospitalSlug,
   hospitalRootUrl,
   region,
   specialties,
   phone,
   directorName,
-  directorPhotoUrl,
   heroPhotoUrl = null,
   address,
   businessHours,
+  accessMode,
+  mediaMode,
+  heroHeadline = null,
+  heroDescription = null,
 }: Props) {
-  const resolvedDirectorPhoto = resolveAssetUrl(directorPhotoUrl)
-  const photo = heroPhotoUrl || resolvedDirectorPhoto
   const today = todayHours(businessHours)
   const saturday = businessHours?.sat
-  const specialtyLabel = specialties.filter(Boolean).join(' · ')
-  const locationLabel = region.filter(Boolean).join(' ')
-  const isJangClinic = hospitalSlug === 'jangpyeonhanoegwayiweon'
-
-  const headline = isJangClinic
-    ? { first: '대장항문 질환,', second: '정확히 설명하고', accent: '필요한 치료만 권합니다' }
-    : {
-        first: specialtyLabel || hospitalName,
-        second: '증상을 정확히 확인하고',
-        accent: '필요한 치료만 안내합니다',
-      }
+  const specialtyLabel = displayClinicLabels(specialties).join(' · ')
+  const locationLabel = displayClinicLabels(region).join(' ')
+  const approvedHeadlineLines = (heroHeadline ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+  const defaultHeadlineLines = accessMode === 'urgent'
+    ? [specialtyLabel ? `${specialtyLabel},` : hospitalName, '오늘 진료시간과 위치를', '방문 전에 확인하세요']
+    : accessMode === 'specialist'
+      ? [specialtyLabel ? `${specialtyLabel},` : hospitalName, '진료 분야와 의료진 정보를', '차분히 확인하세요']
+      : [specialtyLabel ? `${specialtyLabel},` : hospitalName, '의료진과 진료 정보를', '방문 전에 확인하세요']
+  const headlineLines = approvedHeadlineLines.length > 0 ? approvedHeadlineLines : defaultHeadlineLines
 
   return (
-    <section className="clinic-hero clinic-hero--editorial" id="top">
+    <section
+      className={`clinic-hero clinic-hero--editorial clinic-hero--access-${accessMode} clinic-hero--media-${mediaMode}`}
+      id="top"
+    >
       <div className="clinic-hero-editorial-grid">
         <div className="clinic-hero-editorial-copy">
           <span className="clinic-hero-editorial-kicker">
             {[locationLabel, specialtyLabel].filter(Boolean).join(' · ')}
           </span>
           <h1 className="clinic-hero-editorial-title">
-            <span>{headline.first}</span>
-            <span>{headline.second}</span>
-            <strong>{headline.accent}</strong>
+            {headlineLines.map((line, index) => (
+              index === headlineLines.length - 1
+                ? <strong key={`${line}-${index}`}>{line}</strong>
+                : <span key={`${line}-${index}`}>{line}</span>
+            ))}
           </h1>
           <p className="clinic-hero-editorial-lede">
-            환자 한 분 한 분의 상황을 충분히 듣고, 확인된 결과를 바탕으로 치료 방향을 함께 결정합니다.
+            {heroDescription?.trim() || `${hospitalName}의 진료 영역, 진료시간과 위치를 한곳에서 확인할 수 있습니다.`}
           </p>
           <div className="clinic-hero-editorial-actions">
-            <a className="clinic-btn clinic-btn-cta" href={`tel:${phone}`}>
-              <PhoneIcon className="clinic-icon clinic-icon--sm" />
-              전화 상담
-            </a>
-            <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/visit`}>
-              <MapPinIcon className="clinic-icon clinic-icon--sm" />
-              오시는 길
-            </Link>
+            {accessMode === 'specialist' ? (
+              <>
+                <Link className="clinic-btn clinic-btn-cta" href={`${hospitalRootUrl}/doctor`}>
+                  의료진 보기
+                </Link>
+                <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/treatments`}>
+                  진료 영역
+                </Link>
+              </>
+            ) : (
+              <>
+                <a className="clinic-btn clinic-btn-cta" href={`tel:${phone}`}>
+                  <PhoneIcon className="clinic-icon clinic-icon--sm" />
+                  전화 상담
+                </a>
+                <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/visit`}>
+                  <MapPinIcon className="clinic-icon clinic-icon--sm" />
+                  오시는 길
+                </Link>
+              </>
+            )}
           </div>
         </div>
 
-        <div className={`clinic-hero-editorial-photo${photo ? '' : ' is-empty'}`}>
-          {photo ? (
-            heroPhotoUrl ? (
-              <Image
-                src={heroPhotoUrl}
-                alt={`${directorName} 원장 진료 상담 모습`}
-                fill
-                priority
-                quality={84}
-                sizes="(max-width: 920px) 100vw, 58vw"
-                className="clinic-hero-editorial-image"
-              />
-            ) : (
-              <ClinicAvatar
-                src={resolvedDirectorPhoto}
-                alt={`${directorName} 원장`}
-                wrapperClassName="clinic-hero-editorial-avatar"
-                fallback={<span className="clinic-hero-editorial-monogram">{directorName.slice(0, 1)}</span>}
-              />
-            )
+        <div className={`clinic-hero-editorial-photo${heroPhotoUrl ? '' : ' is-empty'}`}>
+          {heroPhotoUrl ? (
+            <Image
+              src={heroPhotoUrl}
+              alt={mediaMode === 'brand-graphic' ? `${hospitalName} 브랜드 그래픽` : `${hospitalName} 진료 공간`}
+              fill
+              priority
+              loading="eager"
+              quality={84}
+              sizes="(max-width: 920px) 100vw, 58vw"
+              className="clinic-hero-editorial-image"
+            />
           ) : (
             <div className="clinic-hero-editorial-fallback">
-              <span>{hospitalName}</span>
-              <strong>{directorName} 원장</strong>
-              <small>{specialtyLabel || '진료 안내'}</small>
+              <span>진료 정보 허브</span>
+              <strong>{hospitalName}</strong>
+              <small>{directorName ? `${directorName} 원장` : specialtyLabel || '진료 안내'}</small>
             </div>
           )}
         </div>
@@ -162,24 +176,6 @@ export function ClinicHero({
         </div>
       </dl>
 
-      <nav className="clinic-mobile-actionbar" aria-label="빠른 병원 문의">
-        <a href={`tel:${phone}`}>
-          <PhoneIcon className="clinic-icon" />
-          전화
-        </a>
-        <Link href={`${hospitalRootUrl}/visit`}>
-          <ClockIcon className="clinic-icon" />
-          진료시간
-        </Link>
-        <Link href={`${hospitalRootUrl}/treatments`}>
-          <CalendarIcon className="clinic-icon" />
-          진료안내
-        </Link>
-        <Link href={`${hospitalRootUrl}/visit`}>
-          <MapPinIcon className="clinic-icon" />
-          길찾기
-        </Link>
-      </nav>
     </section>
   )
 }

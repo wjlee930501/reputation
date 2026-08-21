@@ -40,6 +40,11 @@ export interface Hospital {
   brand_accent_color: string | null
   logo_url: string | null
   hero_image_url: string | null
+  hero_media_kind: 'VERIFIED_FACILITY' | 'BRAND_GRAPHIC' | null
+  hero_headline: string | null
+  hero_description: string | null
+  image_style_direction: string | null
+  site_access_mode: 'urgent' | 'appointment' | 'specialist' | null
   updated_at: string | null
   director_credentials: DirectorCredentials | null
   treatments: Array<{ name: string; description: string }>
@@ -58,6 +63,8 @@ export interface HospitalPhoto {
   source_type: HospitalPhotoType
   title: string
   url: string
+  asset_kind?: 'VERIFIED_REAL_PERSON' | 'VERIFIED_FACILITY' | 'EDITORIAL_GRAPHIC' | null
+  approved_usage?: string[] | null
 }
 
 type HospitalPayload = Omit<
@@ -177,7 +184,9 @@ function isHospitalPhotoPayload(value: unknown): value is HospitalPhoto {
     typeof value.id === 'string' &&
     typeof value.source_type === 'string' &&
     typeof value.title === 'string' &&
-    typeof value.url === 'string'
+    typeof value.url === 'string' &&
+    (value.asset_kind === undefined || value.asset_kind === null || typeof value.asset_kind === 'string') &&
+    (value.approved_usage === undefined || value.approved_usage === null || isStringArray(value.approved_usage))
   )
 }
 
@@ -211,6 +220,11 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
     (value.brand_accent_color === undefined || isNullableString(value.brand_accent_color)) &&
     (value.logo_url === undefined || isNullableString(value.logo_url)) &&
     (value.hero_image_url === undefined || isNullableString(value.hero_image_url)) &&
+    (value.hero_media_kind === undefined || isNullableString(value.hero_media_kind)) &&
+    (value.hero_headline === undefined || isNullableString(value.hero_headline)) &&
+    (value.hero_description === undefined || isNullableString(value.hero_description)) &&
+    (value.image_style_direction === undefined || isNullableString(value.image_style_direction)) &&
+    (value.site_access_mode === undefined || isNullableString(value.site_access_mode)) &&
     (value.updated_at === undefined || isNullableString(value.updated_at)) &&
     isDirectorCredentials(value.director_credentials) &&
     Array.isArray(value.treatments) &&
@@ -237,6 +251,19 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
     brand_accent_color: hospital.brand_accent_color ?? null,
     logo_url: hospital.logo_url ?? null,
     hero_image_url: hospital.hero_image_url ?? null,
+    hero_media_kind:
+      hospital.hero_media_kind === 'VERIFIED_FACILITY' || hospital.hero_media_kind === 'BRAND_GRAPHIC'
+        ? hospital.hero_media_kind
+        : null,
+    hero_headline: hospital.hero_headline ?? null,
+    hero_description: hospital.hero_description ?? null,
+    image_style_direction: hospital.image_style_direction ?? null,
+    site_access_mode:
+      hospital.site_access_mode === 'urgent' ||
+      hospital.site_access_mode === 'appointment' ||
+      hospital.site_access_mode === 'specialist'
+        ? hospital.site_access_mode
+        : null,
     updated_at: hospital.updated_at ?? null,
   }
   for (const field of HOSPITAL_EXTERNAL_URL_FIELDS) {
