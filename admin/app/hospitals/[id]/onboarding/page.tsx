@@ -55,6 +55,7 @@ interface Source {
   raw_text: string | null
   process_error: string | null
   evidence_note_count: number
+  source_metadata: Record<string, unknown>
   display: { source_type_label: string; status_label: string } | null
   created_at: string | null
 }
@@ -90,6 +91,22 @@ const PHOTO_SOURCE_TYPES = new Set([
 
 function isPhotoSourceType(sourceType: string): boolean {
   return PHOTO_SOURCE_TYPES.has(sourceType)
+}
+
+const DOCTOR_ASSET_KIND_OPTIONS = [
+  { value: 'VERIFIED_REAL_PERSON', label: '실제 원장 사진 — 본인 확인 완료' },
+  { value: 'EDITORIAL_GRAPHIC', label: '캐릭터·일러스트 — 의료진 영역 사용 안 함' },
+]
+
+const FACILITY_ASSET_KIND_OPTIONS = [
+  { value: 'VERIFIED_FACILITY', label: '실제 병원 공간 사진 — 장소 확인 완료' },
+  { value: 'EDITORIAL_GRAPHIC', label: '생성·일러스트 이미지 — 콘텐츠 전용' },
+]
+
+function photoAssetKindOptions(sourceType: string) {
+  return sourceType === 'PHOTO_DOCTOR'
+    ? DOCTOR_ASSET_KIND_OPTIONS
+    : FACILITY_ASSET_KIND_OPTIONS
 }
 
 function hasProcessableText(source: Source): boolean {
@@ -758,6 +775,7 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
 
 function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: () => void }) {
   const [type, setType] = useState('PHOTO_DOCTOR')
+  const [assetKind, setAssetKind] = useState('')
   const [title, setTitle] = useState('')
   const [files, setFiles] = useState<FileList | null>(null)
   const [busy, setBusy] = useState(false)
@@ -786,6 +804,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           fd.append('file', file)
           if (isPhotoSourceType(type)) {
             fd.append('is_public', 'true')
+            fd.append('asset_kind', assetKind)
           }
           // 일괄 업로드 시 모든 파일에 skip_revalidate=true (마지막 후 명시적 revalidate)
           const url = `/admin/hospitals/${hospitalId}/essence/sources/upload${
@@ -855,7 +874,10 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       <div className="grid gap-2 md:grid-cols-[200px_1fr]">
         <select
           value={type}
-          onChange={(e) => setType(e.target.value)}
+          onChange={(e) => {
+            setType(e.target.value)
+            setAssetKind('')
+          }}
           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
         >
           <optgroup label="사진">
@@ -876,6 +898,28 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
         />
       </div>
+      {isPhotoType ? (
+        <div className="space-y-1.5">
+          <label htmlFor="upload-asset-kind" className="block text-sm font-medium text-slate-700">
+            이미지 성격과 허용 용도
+          </label>
+          <select
+            id="upload-asset-kind"
+            required
+            value={assetKind}
+            onChange={(e) => setAssetKind(e.target.value)}
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+          >
+            <option value="">확인 후 선택</option>
+            {photoAssetKindOptions(type).map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+          <p className="text-xs leading-5 text-slate-600">
+            실제 인물로 확인된 사진만 의료진 영역에 노출됩니다. 생성 이미지와 캐릭터는 콘텐츠 삽화로만 사용할 수 있습니다.
+          </p>
+        </div>
+      ) : null}
       {isPhotoType && <p className="text-xs text-slate-600">여러 장을 한 번에 고를 수 있습니다</p>}
       <input
         id="upload-file"
@@ -892,7 +936,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={busy || !files || files.length === 0}
+          disabled={busy || !files || files.length === 0 || (isPhotoType && !assetKind)}
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
         >
           {busy ? '업로드 중…' : selectedFileCount > 1 ? `${selectedFileCount}개 업로드` : '업로드'}
@@ -917,6 +961,7 @@ function SourcesList({
   const [excludingId, setExcludingId] = useState<string | null>(null)
   const [excludeErrors, setExcludeErrors] = useState<Record<string, string>>({})
   const [pendingPublicId, setPendingPublicId] = useState<string | null>(null)
+  const [pendingAssetKindId, setPendingAssetKindId] = useState<string | null>(null)
   const [publicErrors, setPublicErrors] = useState<Record<string, string>>({})
 
   async function togglePublic(sourceId: string, next: boolean) {
@@ -937,6 +982,33 @@ function SourcesList({
       setPublicErrors((prev) => ({ ...prev, [sourceId]: message }))
     } finally {
       setPendingPublicId(null)
+    }
+  }
+
+  async function updatePhotoAssetKind(source: Source, assetKind: string) {
+    setPendingAssetKindId(source.id)
+    try {
+      const approvedUsage = assetKind === 'VERIFIED_REAL_PERSON'
+        ? ['DOCTOR_IDENTITY']
+        : assetKind === 'VERIFIED_FACILITY'
+          ? ['HERO', 'GALLERY']
+          : ['CONTENT_EDITORIAL']
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${source.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          source_metadata: {
+            ...source.source_metadata,
+            asset_kind: assetKind,
+            approved_usage: approvedUsage,
+          },
+        }),
+      })
+      onChanged()
+    } catch (e: unknown) {
+      const message = safeOperatorError('onboarding', '이미지 성격과 허용 용도를 다시 저장하세요.')
+      setPublicErrors((prev) => ({ ...prev, [source.id]: message }))
+    } finally {
+      setPendingAssetKindId(null)
     }
   }
 
@@ -1012,6 +1084,19 @@ function SourcesList({
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {isPhotoSourceType(s.source_type) && (
+                    <div className="flex flex-col items-end gap-2">
+                    <select
+                      value={typeof s.source_metadata.asset_kind === 'string' ? s.source_metadata.asset_kind : ''}
+                      disabled={pendingAssetKindId === s.id}
+                      onChange={(e) => updatePhotoAssetKind(s, e.target.value)}
+                      aria-label={`${s.title} 이미지 성격과 허용 용도`}
+                      className="max-w-64 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+                    >
+                      <option value="">사용 전 확인 필요</option>
+                      {photoAssetKindOptions(s.source_type).map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
                     <label className="flex min-h-11 cursor-pointer items-center gap-2">
                       <span
                         className={`rounded-full px-2 py-1 text-xs font-semibold ${
@@ -1031,6 +1116,7 @@ function SourcesList({
                         className="rounded border-slate-300"
                       />
                     </label>
+                    </div>
                   )}
                   <span
                     className={`rounded-full px-2 py-1 text-xs font-semibold ${

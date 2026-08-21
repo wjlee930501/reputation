@@ -36,6 +36,11 @@ interface HospitalProfile {
   brand_accent_color: string
   logo_url: string
   hero_image_url: string
+  hero_media_kind: 'VERIFIED_FACILITY' | 'BRAND_GRAPHIC' | ''
+  hero_headline: string
+  hero_description: string
+  image_style_direction: string
+  site_access_mode: 'urgent' | 'appointment' | 'specialist' | ''
   address: string
   phone: string
   business_hours: BusinessHours
@@ -376,6 +381,18 @@ export default function ProfilePage() {
     setProfile((prev) => ({ ...prev, [key]: value }))
   }
 
+  function updateAccessMode(value: string) {
+    if (value === '' || value === 'urgent' || value === 'appointment' || value === 'specialist') {
+      updateField('site_access_mode', value)
+    }
+  }
+
+  function updateHeroMediaKind(value: string) {
+    if (value === '' || value === 'VERIFIED_FACILITY' || value === 'BRAND_GRAPHIC') {
+      updateField('hero_media_kind', value)
+    }
+  }
+
   function updateHours(dayKey: string, value: string) {
     setProfile((prev) => ({
       ...prev,
@@ -698,7 +715,7 @@ export default function ProfilePage() {
         <div>
           <h3 className="text-base font-semibold text-slate-800">공개 사이트 브랜드</h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            레이아웃은 공통으로 유지하고 병원별 키컬러, 로고, 대표 이미지만 교체합니다.
+            병원의 공식 색상, 첫 문장과 이미지 방향을 승인합니다. 공개 화면은 대비가 부족한 색을 자동으로 안전하게 보정합니다.
           </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -753,6 +770,73 @@ export default function ProfilePage() {
             placeholder="https://.../logo.png"
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="text-sm font-medium text-slate-700">
+            첫 화면 정보 우선순위
+            <select
+              value={profile.site_access_mode ?? ''}
+              onChange={(e) => updateAccessMode(e.target.value)}
+              className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">병원 정보로 자동 선택</option>
+              <option value="urgent">당일·야간 진료형 — 시간·전화 우선</option>
+              <option value="appointment">예약·방문형 — 위치·상담 우선</option>
+              <option value="specialist">전문 진료형 — 의료진·진료 분야 우선</option>
+            </select>
+          </label>
+          <label className="text-sm font-medium text-slate-700">
+            대표 이미지 성격
+            <select
+              value={profile.hero_media_kind ?? ''}
+              onChange={(e) => updateHeroMediaKind(e.target.value)}
+              className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">등록 사진에서 자동 선택</option>
+              <option value="VERIFIED_FACILITY">실제 병원 공간 — 장소 확인 완료</option>
+              <option value="BRAND_GRAPHIC">브랜드 그래픽 — 실제 공간 아님</option>
+            </select>
+          </label>
+        </div>
+        <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <label htmlFor="profile-hero-headline" className="block text-sm font-medium text-slate-700">
+            메인 히어로 카피
+            <textarea
+              id="profile-hero-headline"
+              value={profile.hero_headline ?? ''}
+              onChange={(e) => updateField('hero_headline', e.target.value)}
+              maxLength={160}
+              rows={3}
+              placeholder={'예: 오늘도 문 여는 동네 주치의\n증상과 진료 정보를 방문 전에 확인하세요'}
+              className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6"
+            />
+            <span className="mt-1 block text-xs font-normal text-slate-500">줄바꿈은 최대 3줄까지 첫 화면에 반영됩니다. 의료광고 금지 표현은 저장되지 않습니다.</span>
+          </label>
+          <label htmlFor="profile-hero-description" className="block text-sm font-medium text-slate-700">
+            히어로 설명
+            <textarea
+              id="profile-hero-description"
+              value={profile.hero_description ?? ''}
+              onChange={(e) => updateField('hero_description', e.target.value)}
+              maxLength={320}
+              rows={2}
+              placeholder="병원의 진료 철학과 환자가 방문 전에 알아야 할 사실을 짧게 적어 주세요."
+              className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6"
+            />
+          </label>
+          <label htmlFor="profile-image-style-direction" className="block text-sm font-medium text-slate-700">
+            콘텐츠 이미지 아트 디렉션
+            <textarea
+              id="profile-image-style-direction"
+              value={profile.image_style_direction ?? ''}
+              onChange={(e) => updateField('image_style_direction', e.target.value)}
+              maxLength={600}
+              rows={3}
+              placeholder="예: 지역 가족의 일상을 돌보는 따뜻한 의원. 밝은 자연광, 아이보리와 연두, 실제 병원처럼 가장하지 않는 손그림 질감."
+              className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6"
+            />
+            <span className="mt-1 block text-xs font-normal text-slate-500">콘텐츠 제목·진료 분야·승인된 진료 철학과 함께 이미지 생성 프롬프트에 사용됩니다.</span>
+          </label>
         </div>
         <div>
           <label htmlFor="profile-hero-image-url" className="block text-sm font-medium text-slate-700 mb-1.5">메인 대표 이미지 URL</label>

@@ -370,18 +370,24 @@ def _serialize_hospital(
 ) -> dict:
     photo_records: list[HospitalSourceAsset] = list(photos or [])
 
-    # 카테고리별 첫 사진 — 컴포넌트 fallback용 단축 필드.
-    by_type: dict[SourceType, HospitalSourceAsset] = {}
-    for asset in photo_records:
-        if asset.source_type not in by_type:
-            by_type[asset.source_type] = asset
+    # 인물 identity는 공개 토글만으로 부족하다. 실제 인물 확인과 사용 위치 승인이
+    # source_metadata에 함께 있어야 원장 사진/Physician image로 내보낸다.
+    def photo_metadata(asset: HospitalSourceAsset) -> dict:
+        metadata = getattr(asset, "source_metadata", None)
+        return metadata if isinstance(metadata, dict) else {}
 
-    # 먼저 sanitize — 비 http(s) URL은 버린다. 무효/누락이면 AE가 공개 승인한
-    # PHOTO_DOCTOR 자산으로 폴백한다 (sanitize가 else 분기에만 있으면 무효 URL이
-    # null이 되면서 승인된 자산 폴백까지 건너뛰는 버그가 있었다).
-    director_photo = _safe_external_url(h.director_photo_url)
-    if not director_photo and SourceType.PHOTO_DOCTOR in by_type:
-        director_photo = public_asset_url(h.slug, by_type[SourceType.PHOTO_DOCTOR].id)
+    doctor_asset = next(
+        (
+            asset
+            for asset in photo_records
+            if asset.source_type == SourceType.PHOTO_DOCTOR
+            and photo_metadata(asset).get("asset_kind") == "VERIFIED_REAL_PERSON"
+            and isinstance(photo_metadata(asset).get("approved_usage"), list)
+            and "DOCTOR_IDENTITY" in photo_metadata(asset)["approved_usage"]
+        ),
+        None,
+    )
+    director_photo = public_asset_url(h.slug, doctor_asset.id) if doctor_asset else None
 
     serialized_photos = [
         {
@@ -391,6 +397,8 @@ def _serialize_hospital(
             else asset.source_type,
             "title": asset.title,
             "url": public_asset_url(h.slug, asset.id),
+            "asset_kind": photo_metadata(asset).get("asset_kind"),
+            "approved_usage": photo_metadata(asset).get("approved_usage"),
         }
         for asset in photo_records
     ]
@@ -432,6 +440,10 @@ def _serialize_hospital(
         "brand_accent_color": getattr(h, "brand_accent_color", None),
         "logo_url": _safe_external_url(getattr(h, "logo_url", None)),
         "hero_image_url": _safe_external_url(getattr(h, "hero_image_url", None)),
+        "hero_media_kind": getattr(h, "hero_media_kind", None),
+        "hero_headline": getattr(h, "hero_headline", None),
+        "hero_description": getattr(h, "hero_description", None),
+        "site_access_mode": getattr(h, "site_access_mode", None),
         "director_credentials": _safe_credentials(getattr(h, "director_credentials", None)),
         "treatments": _safe_treatments(h.treatments),
         "photos": serialized_photos,

@@ -59,6 +59,10 @@ def test_serialize_hospital_includes_public_profile_fields():
         brand_accent_color="#B79045",
         logo_url="https://cdn.example.com/logo.png",
         hero_image_url="https://cdn.example.com/hero.png",
+        hero_media_kind="VERIFIED_FACILITY",
+        hero_headline="피부 건강 정보를 차분히 확인하세요",
+        hero_description="진료 범위와 방문 정보를 안내합니다.",
+        site_access_mode="specialist",
         director_credentials={
             "medical_school": "서울대학교 의과대학",
             "board_certifications": ["피부과 전문의"],
@@ -83,6 +87,9 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["brand_accent_color"] == "#B79045"
     assert serialized["logo_url"] == "https://cdn.example.com/logo.png"
     assert serialized["hero_image_url"] == "https://cdn.example.com/hero.png"
+    assert serialized["hero_media_kind"] == "VERIFIED_FACILITY"
+    assert serialized["hero_headline"] == "피부 건강 정보를 차분히 확인하세요"
+    assert serialized["site_access_mode"] == "specialist"
     assert serialized["treatments"] == [{"name": "리프팅", "description": "안면 리프팅"}]
     # license_number는 내부 보관 전용 — 공개 응답에서 제거됨.
     assert "license_number" not in serialized["director_credentials"]
@@ -234,6 +241,10 @@ def _doctor_photo_asset():
         source_type=SourceType.PHOTO_DOCTOR,
         title="원장 사진",
         file_url="gs://bucket/doctor.png",
+        source_metadata={
+            "asset_kind": "VERIFIED_REAL_PERSON",
+            "approved_usage": ["DOCTOR_IDENTITY"],
+        },
     )
 
 
@@ -254,12 +265,35 @@ def test_serialize_hospital_invalid_director_photo_without_asset_is_null():
     assert serialized["director_photo_url"] is None
 
 
-def test_serialize_hospital_valid_director_photo_takes_priority_over_asset():
+def test_serialize_hospital_ignores_unproven_director_url_and_uses_verified_asset():
     serialized = _serialize_hospital(
         _hospital_with_photo("https://cdn.example.com/doctor.png"), [_doctor_photo_asset()]
     )
 
-    assert serialized["director_photo_url"] == "https://cdn.example.com/doctor.png"
+    assert serialized["director_photo_url"] == (
+        "/api/v1/public/hospitals/test-hospital/assets/asset-id"
+    )
+
+
+def test_serialize_hospital_rejects_editorial_character_as_doctor_identity():
+    character = SimpleNamespace(
+        id="character-id",
+        source_type=SourceType.PHOTO_DOCTOR,
+        title="원장 캐릭터 일러스트",
+        file_url="gs://bucket/character.png",
+        source_metadata={
+            "asset_kind": "EDITORIAL_GRAPHIC",
+            "approved_usage": ["CONTENT_EDITORIAL"],
+        },
+    )
+
+    serialized = _serialize_hospital(
+        _hospital_with_photo("https://cdn.example.com/character.png"),
+        [character],
+    )
+
+    assert serialized["director_photo_url"] is None
+    assert serialized["photos"][0]["asset_kind"] == "EDITORIAL_GRAPHIC"
 
 
 def test_serialize_item_list_response_includes_reading_minutes_without_body():

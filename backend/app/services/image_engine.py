@@ -18,6 +18,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from app.core.config import settings
 from app.models.content import ContentType
+from app.services.image_direction import HospitalImageDirection, image_direction_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -41,21 +42,21 @@ _OPENAI_TYPE_SUBJECT = {
         "Concept: a clear, reassuring visual metaphor that answers a common patient health question."
     ),
     ContentType.DISEASE: (
-        "Concept: a calm photographic still life or fully clothed anonymous lifestyle scene that "
+        "Concept: a calm symbolic still life or fully clothed anonymous lifestyle scene that "
         "helps explain a medical condition without explicit anatomy."
     ),
     ContentType.TREATMENT: (
-        "Concept: a calm editorial photograph of a medical examination setting or preparation "
+        "Concept: a calm editorial illustration of a medical examination setting or preparation "
         "with non-graphic instruments and no active procedure."
     ),
     ContentType.COLUMN: (
         "Concept: a warm, thoughtful editorial scene evoking a doctor's clinical perspective and patient care."
     ),
     ContentType.HEALTH: (
-        "Concept: a bright editorial lifestyle photograph about healthy daily habits and prevention."
+        "Concept: a bright editorial lifestyle illustration about healthy daily habits and prevention."
     ),
     ContentType.LOCAL: (
-        "Concept: a welcoming architectural or street-level editorial photograph evoking neighborhood healthcare."
+        "Concept: a welcoming architectural or street-level editorial illustration evoking neighborhood healthcare."
     ),
     ContentType.NOTICE: (
         "Concept: a clean, modern motif for a clinic notice or information update."
@@ -63,14 +64,19 @@ _OPENAI_TYPE_SUBJECT = {
 }
 
 
-def _build_openai_image_prompt(content_type: ContentType, topic: str | None) -> str:
+def _build_openai_image_prompt(
+    content_type: ContentType,
+    topic: str | None,
+    direction: HospitalImageDirection | None = None,
+) -> str:
     subject = _OPENAI_TYPE_SUBJECT.get(content_type, _OPENAI_TYPE_SUBJECT[ContentType.FAQ])
     topic_line = f" The specific subject of this illustration is: {topic.strip()}." if topic else ""
+    clinic_direction = image_direction_prompt(direction)
     return (
-        "Create a refined, premium editorial photograph for a Korean medical information hub. "
-        f"{subject}{topic_line} "
-        "Style: realistic contemporary Korean health-magazine photography with generous negative space, "
-        "natural skin and material texture, soft window light, warm ivory neutrals, subtle navy details, "
+        "Create a refined editorial illustration for a Korean medical information hub. "
+        f"{subject}{topic_line} {clinic_direction} "
+        "Style: contemporary Korean health-magazine art with tactile paper and softly modeled forms, generous negative space, "
+        "natural material texture, soft window light, warm ivory neutrals, subtle navy details, "
         "and one restrained muted-gold accent. Clean, calm, trustworthy and balanced; never glossy luxury. "
         "Tasteful and strictly non-graphic: no blood, no surgical gore, no needles in flesh, "
         "no distressing or clinical-procedure imagery. "
@@ -90,32 +96,32 @@ def _build_openai_image_prompt(content_type: ContentType, topic: str | None) -> 
 # ── 유형별 이미지 프롬프트 (Google 폴백용) ───────────────────────────────
 IMAGE_PROMPTS = {
     ContentType.FAQ: (
-        "Clean medical infographic, soft blue and white color palette, Korean hospital setting, "
-        "professional healthcare illustration, minimalist design, no text, no people"
+        "Refined Korean health-magazine editorial illustration, one clear reassuring visual metaphor, "
+        "tactile paper and softly modeled forms, generous negative space, no text, no recognizable face"
     ),
     ContentType.DISEASE: (
-        "Medical anatomy illustration, clean educational diagram, soft blue tones, "
-        "professional healthcare visual, no text, minimalist"
+        "Calm symbolic editorial still life explaining a health condition without explicit anatomy, "
+        "tactile material texture, restrained composition, no text, no recognizable face"
     ),
     ContentType.TREATMENT: (
-        "Modern Korean hospital treatment room, clean white aesthetic, medical equipment, "
-        "soft lighting, professional photography style, empty room, no people"
+        "Editorial illustration of careful preparation for a medical examination, non-graphic objects, "
+        "soft window light, warm ivory neutrals, no active procedure, no text, no recognizable face"
     ),
     ContentType.COLUMN: (
-        "Professional Korean doctor consultation setting, warm clinic atmosphere, "
-        "trustworthy medical environment, soft natural lighting, no people visible"
+        "Thoughtful editorial illustration expressing a clinician's care philosophy through symbolic objects, "
+        "warm calm atmosphere, subtle natural lighting, no named person, no text"
     ),
     ContentType.HEALTH: (
-        "Healthy lifestyle illustration, Korean context, clean bright design, "
-        "prevention healthcare theme, soft green and blue tones, no text"
+        "Bright Korean lifestyle editorial illustration about sustainable daily health habits, "
+        "tactile materials, calm balanced composition, no text, no recognizable face"
     ),
     ContentType.LOCAL: (
-        "Korean local clinic exterior, neighborhood healthcare building, welcoming entrance, "
-        "daytime, clean architecture, soft warm tones"
+        "Welcoming Korean neighborhood editorial streetscape suggesting accessible local healthcare, "
+        "daytime, clean architecture, soft warm tones, no signage, no text"
     ),
     ContentType.NOTICE: (
-        "Modern Korean hospital interior, clean white and blue color scheme, "
-        "professional medical environment, contemporary clinic design"
+        "Quiet editorial information motif made from paper, light, and orderly objects, "
+        "contemporary Korean clinic mood, generous negative space, no text, no logo"
     ),
 }
 
@@ -127,6 +133,28 @@ GOOGLE_SAFETY_FALLBACK_PROMPT = (
     "no body parts, no medical procedure, no building, no text, no letters, no numbers, no logo, "
     "no watermark, family friendly, original artwork, 16:9 banner"
 )
+
+GOOGLE_EDITORIAL_SAFETY = (
+    "No text, letters, numbers, caption, logo, or watermark. No recognizable face or named person. "
+    "No real clinic documentary claim, explicit anatomy, blood, invasive procedure, or patient-result imagery. "
+    "Keep every person fully clothed and anonymous. Original editorial artwork, 16:9 banner composition."
+)
+
+
+def _build_google_image_prompt(
+    content_type: ContentType,
+    topic: str | None,
+    direction: HospitalImageDirection | None = None,
+) -> str:
+    parts = [IMAGE_PROMPTS.get(content_type, IMAGE_PROMPTS[ContentType.FAQ])]
+    if topic:
+        parts.append(f"Specific visual scene: {_safe_google_visual_scene(topic)}")
+    clinic_direction = image_direction_prompt(direction)
+    if clinic_direction:
+        parts.append(clinic_direction)
+    # The non-overridable safety/semantics contract comes after operator direction.
+    parts.append(GOOGLE_EDITORIAL_SAFETY)
+    return ". ".join(parts)
 
 
 class _CallCounter:
@@ -154,7 +182,11 @@ async def _record_image_calls(counter: _CallCounter) -> None:
 
 
 async def generate_image(
-    content_type: ContentType, hospital_name: str, *, topic: str | None = None
+    content_type: ContentType,
+    hospital_name: str,
+    *,
+    topic: str | None = None,
+    direction: HospitalImageDirection | None = None,
 ) -> tuple[str, str]:
     """
     대표 이미지 생성 후 GCS에 저장.
@@ -183,7 +215,7 @@ async def generate_image(
     attempts = _CallCounter()
 
     if provider == "openai" and settings.OPENAI_API_KEY:
-        prompt = _build_openai_image_prompt(content_type, topic)
+        prompt = _build_openai_image_prompt(content_type, topic, direction)
         try:
             url = await loop.run_in_executor(
                 None, lambda: _openai_generate_and_upload(prompt, hospital_name, counter=attempts)
@@ -200,9 +232,7 @@ async def generate_image(
         logger.warning("No usable image provider (OPENAI_API_KEY/GCP_PROJECT_ID) — skipping")
         return ("", "")
 
-    prompt = IMAGE_PROMPTS.get(content_type, IMAGE_PROMPTS[ContentType.FAQ])
-    if topic:
-        prompt = f"{prompt}. Specific visual scene: {_safe_google_visual_scene(topic)}"
+    prompt = _build_google_image_prompt(content_type, topic, direction)
     fallback_attempts = _CallCounter()
     try:
         url = await loop.run_in_executor(

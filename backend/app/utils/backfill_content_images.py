@@ -21,6 +21,7 @@ from sqlalchemy import select
 from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital
+from app.services.image_direction import hospital_image_direction
 from app.services.image_engine import generate_image
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,12 @@ def main() -> None:
             try:
                 # generate_image는 async (내부에서 run_in_executor) — 동기 스크립트에서 asyncio.run.
                 url, prompt = asyncio.run(
-                    generate_image(item.content_type, hospital.slug, topic=item.title)
+                    generate_image(
+                        item.content_type,
+                        hospital.slug,
+                        topic=item.title,
+                        direction=hospital_image_direction(hospital),
+                    )
                 )
             except Exception as e:  # noqa: BLE001 — 한 건 실패가 전체를 막지 않도록
                 logger.error("FAIL %s (%s): %s", item.id, item.title, e)

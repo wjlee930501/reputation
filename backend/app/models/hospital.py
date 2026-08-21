@@ -159,6 +159,11 @@ class Hospital(Base):
     brand_accent_color: Mapped[str | None] = mapped_column(String(7))
     logo_url: Mapped[str | None] = mapped_column(String(500))
     hero_image_url: Mapped[str | None] = mapped_column(String(500))
+    hero_media_kind: Mapped[str | None] = mapped_column(String(32))
+    hero_headline: Mapped[str | None] = mapped_column(String(160))
+    hero_description: Mapped[str | None] = mapped_column(String(320))
+    image_style_direction: Mapped[str | None] = mapped_column(String(600))
+    site_access_mode: Mapped[str | None] = mapped_column(String(20))
     # Physician schema의 hasCredential / alumniOf / memberOf 매핑용 구조화 자격 정보.
     # 형식: {
     #   "medical_school": "서울대학교 의과대학",

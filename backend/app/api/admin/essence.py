@@ -143,6 +143,53 @@ def resolve_upload_is_public(
     return bool(is_public_form)
 
 
+def build_photo_source_metadata(
+    source_type: SourceType,
+    asset_kind: str | None,
+    original_filename: str,
+) -> dict[str, object]:
+    """Bind a photo to a truthful visual role before it can reach the public surface."""
+    if source_type not in PHOTO_SOURCE_TYPES:
+        return {"original_filename": original_filename}
+    if source_type == SourceType.PHOTO_DOCTOR:
+        allowed = {
+            "VERIFIED_REAL_PERSON": ["DOCTOR_IDENTITY"],
+            "EDITORIAL_GRAPHIC": ["CONTENT_EDITORIAL"],
+        }
+    else:
+        allowed = {
+            "VERIFIED_FACILITY": ["HERO", "GALLERY"],
+            "EDITORIAL_GRAPHIC": ["CONTENT_EDITORIAL"],
+        }
+    if asset_kind not in allowed:
+        raise HTTPException(
+            status_code=422,
+            detail="사진의 실사·일러스트 구분과 허용 용도를 먼저 선택해 주세요.",
+        )
+    return {
+        "original_filename": original_filename,
+        "asset_kind": asset_kind,
+        "approved_usage": allowed[asset_kind],
+    }
+
+
+def validate_photo_source_metadata(
+    source_type: SourceType,
+    metadata: object,
+) -> dict[str, object]:
+    """Validate operator classification and derive public usage instead of trusting client values."""
+    if not isinstance(metadata, dict):
+        raise HTTPException(status_code=422, detail="사진 메타데이터 형식이 올바르지 않습니다.")
+    original_filename = metadata.get("original_filename")
+    filename = original_filename if isinstance(original_filename, str) else "photo"
+    asset_kind = metadata.get("asset_kind")
+    kind = asset_kind if isinstance(asset_kind, str) else None
+    authoritative = build_photo_source_metadata(source_type, kind, filename)
+    untrusted_keys = {"asset_kind", "approved_usage", "original_filename"}
+    preserved = {key: value for key, value in metadata.items() if key not in untrusted_keys}
+    return {**preserved, **authoritative}
+
+
 def should_revalidate_after_public_photo_upload(
     source_type: SourceType, is_public: bool, hospital: Hospital
 ) -> bool:
@@ -329,6 +376,12 @@ async def patch_source(
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = await _get_source_or_404(db, hospital_id, source_id)
     update = body.model_dump(exclude_unset=True)
+    pending_source_type = update.get("source_type", source.source_type)
+    if "source_metadata" in update and pending_source_type in PHOTO_SOURCE_TYPES:
+        update["source_metadata"] = validate_photo_source_metadata(
+            pending_source_type,
+            update["source_metadata"],
+        )
     material_fields = {
         "source_type",
         "title",
@@ -538,6 +591,7 @@ async def upload_source_file(
     title: str = Form(default="", max_length=300),
     file: UploadFile = File(...),
     is_public: bool | None = Form(default=None),
+    asset_kind: str | None = Form(default=None, max_length=32),
     operator_note: str | None = Form(default=None),
     created_by: str | None = Form(default=None, max_length=100),
     skip_revalidate: bool = Query(default=False),
@@ -595,7 +649,11 @@ async def upload_source_file(
         url=None,
         raw_text=raw_text,
         operator_note=_clean_optional(operator_note),
-        source_metadata={"original_filename": file.filename or ""},
+        source_metadata=build_photo_source_metadata(
+            source_type,
+            asset_kind,
+            file.filename or "",
+        ),
         file_url=file_url,
         mime_type=mime_type or None,
         file_size_bytes=len(data),
@@ -903,6 +961,11 @@ async def toggle_source_public(
         raise HTTPException(status_code=400, detail="제외 처리된 사진은 공개할 수 없습니다.")
     if body.is_public and not source.file_url:
         raise HTTPException(status_code=400, detail="파일이 없는 사진은 공개할 수 없습니다.")
+    if body.is_public:
+        source.source_metadata = validate_photo_source_metadata(
+            source.source_type,
+            source.source_metadata,
+        )
     previous = bool(source.is_public)
     hospital = await _get_hospital_or_404(db, hospital_id)
     will_change_public_photo = previous != bool(body.is_public)

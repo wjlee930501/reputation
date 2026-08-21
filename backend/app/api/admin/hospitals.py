@@ -12,6 +12,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -67,6 +68,7 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
+from app.utils.medical_filter import check_forbidden
 from app.workers.tasks import trigger_v0_report
 
 logger = logging.getLogger(__name__)
@@ -170,6 +172,17 @@ class HospitalProfileUpdate(BaseModel):
     director_philosophy: str | None = Field(None, max_length=1000)
     director_credentials: DirectorCredentials | None = None
 
+    # 공개 사이트 identity — 운영자가 근거를 확인하고 승인한 값만 저장한다.
+    brand_primary_color: str | None = Field(None, max_length=7)
+    brand_accent_color: str | None = Field(None, max_length=7)
+    logo_url: str | None = Field(None, max_length=500)
+    hero_image_url: str | None = Field(None, max_length=500)
+    hero_media_kind: Literal["VERIFIED_FACILITY", "BRAND_GRAPHIC"] | None = None
+    hero_headline: str | None = Field(None, max_length=160)
+    hero_description: str | None = Field(None, max_length=320)
+    image_style_direction: str | None = Field(None, max_length=600)
+    site_access_mode: Literal["urgent", "appointment", "specialist"] | None = None
+
     # 진료 항목
     treatments: list[TreatmentItem] | None = None
 
@@ -188,6 +201,27 @@ class HospitalProfileUpdate(BaseModel):
             raise ValueError("Wikidata Q-ID must look like Q12345")
         return cleaned
 
+    @field_validator("brand_primary_color", "brand_accent_color")
+    @classmethod
+    def validate_brand_color(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        cleaned = value.strip().upper()
+        if not re.fullmatch(r"#[0-9A-F]{6}", cleaned):
+            raise ValueError("brand colors must use #RRGGBB")
+        return cleaned
+
+    @field_validator("hero_headline", "hero_description")
+    @classmethod
+    def validate_public_hero_copy(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        cleaned = value.strip()
+        violations = check_forbidden(cleaned)
+        if violations:
+            raise ValueError(f"의료광고 금지 표현은 사용할 수 없습니다: {', '.join(violations)}")
+        return cleaned
+
     @field_validator(
         "website_url",
         "blog_url",
@@ -195,6 +229,8 @@ class HospitalProfileUpdate(BaseModel):
         "google_business_profile_url",
         "google_maps_url",
         "naver_place_url",
+        "logo_url",
+        "hero_image_url",
     )
     @classmethod
     def validate_public_url(cls, value: str | None) -> str | None:
@@ -279,6 +315,15 @@ PUBLIC_PROFILE_FIELDS = {
     "director_name",
     "director_career",
     "director_philosophy",
+    "brand_primary_color",
+    "brand_accent_color",
+    "logo_url",
+    "hero_image_url",
+    "hero_media_kind",
+    "hero_headline",
+    "hero_description",
+    "image_style_direction",
+    "site_access_mode",
     "treatments",
 }
 
@@ -576,6 +621,15 @@ async def update_profile(
         "director_career",
         "director_philosophy",
         "director_credentials",
+        "brand_primary_color",
+        "brand_accent_color",
+        "logo_url",
+        "hero_image_url",
+        "hero_media_kind",
+        "hero_headline",
+        "hero_description",
+        "image_style_direction",
+        "site_access_mode",
         "treatments",
         "profile_complete",
     }
@@ -599,6 +653,15 @@ async def update_profile(
         "director_career",
         "director_philosophy",
         "director_credentials",
+        "brand_primary_color",
+        "brand_accent_color",
+        "logo_url",
+        "hero_image_url",
+        "hero_media_kind",
+        "hero_headline",
+        "hero_description",
+        "image_style_direction",
+        "site_access_mode",
     }
     update_data = body.model_dump(exclude_unset=True)
     was_complete = h.profile_complete
@@ -1110,6 +1173,15 @@ def _serialize(h: Hospital) -> dict:
         "director_career": h.director_career,
         "director_philosophy": h.director_philosophy,
         "director_credentials": h.director_credentials,
+        "brand_primary_color": getattr(h, "brand_primary_color", None),
+        "brand_accent_color": getattr(h, "brand_accent_color", None),
+        "logo_url": getattr(h, "logo_url", None),
+        "hero_image_url": getattr(h, "hero_image_url", None),
+        "hero_media_kind": getattr(h, "hero_media_kind", None),
+        "hero_headline": getattr(h, "hero_headline", None),
+        "hero_description": getattr(h, "hero_description", None),
+        "image_style_direction": getattr(h, "image_style_direction", None),
+        "site_access_mode": getattr(h, "site_access_mode", None),
         "treatments": h.treatments,
         "profile_complete": h.profile_complete,
         "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
@@ -1153,7 +1225,9 @@ def _serialize_list(h: Hospital) -> dict:
         "site_live": h.site_live,
         "schedule_set": h.schedule_set,
         "aeo_domain": h.aeo_domain,
-        "domain_cert_dns_verified_at": getattr(h, "domain_cert_dns_verified_at", None).isoformat() if getattr(h, "domain_cert_dns_verified_at", None) else None,
+        "domain_cert_dns_verified_at": getattr(h, "domain_cert_dns_verified_at", None).isoformat()
+        if getattr(h, "domain_cert_dns_verified_at", None)
+        else None,
         "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
         "created_at": h.created_at.isoformat() if h.created_at else None,
     }

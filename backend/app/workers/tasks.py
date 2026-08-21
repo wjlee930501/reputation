@@ -97,6 +97,7 @@ from app.services.essence_engine import (
     validate_source_excerpt,
 )
 from app.services.essence_readiness import get_current_approved_philosophy_sync
+from app.services.image_direction import hospital_image_direction
 from app.services.image_engine import generate_image
 from app.services.incident_types import IncidentFingerprint
 from app.services.monthly_content_operations import (
@@ -557,10 +558,7 @@ def _classify_v0_failure(
             "초기 진단을 다시 실행하지 마세요. 운영센터에서 실패한 플랫폼의 상태만 확인하고 "
             "다음 정기 측정에서 회복 여부를 점검하세요."
         )
-    elif any(
-        token in reason_text
-        for token in ("credit_balance_exhausted", "quota")
-    ):
+    elif any(token in reason_text for token in ("credit_balance_exhausted", "quota")):
         code = "V0_PROVIDER_QUOTA_EXHAUSTED"
         message = "AI 측정 공급자의 크레딧 또는 호출 쿼터가 소진되었습니다."
         next_action = "OpenAI 크레딧과 Gemini 쿼터를 복구한 뒤 초기 진단을 한 번만 재실행하세요."
@@ -584,14 +582,18 @@ def _classify_v0_failure(
         code = "V0_PROVIDER_AUTH_OR_MODEL"
         message = "AI 측정 공급자의 인증 또는 모델 설정을 확인해야 합니다."
         next_action = "배포 환경의 공급자 API 키·모델명을 확인한 뒤 초기 진단을 재실행하세요."
-    elif failure_reasons and all(reason.endswith("mention_parse_failed") for reason in failure_reasons):
+    elif failure_reasons and all(
+        reason.endswith("mention_parse_failed") for reason in failure_reasons
+    ):
         code = "V0_JUDGE_FAILED"
         message = "AI 답변은 받았지만 공통 언급 판정 단계에서 처리하지 못했습니다."
         next_action = "공통 판정 모델 설정과 파싱 로그를 확인한 뒤 초기 진단을 재실행하세요."
     else:
         code = "V0_PROVIDER_UNAVAILABLE"
         message = "외부 AI 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다."
-        next_action = "공급자 상태와 호출 제한을 확인하고 장애가 해소된 뒤 초기 진단을 재실행하세요."
+        next_action = (
+            "공급자 상태와 호출 제한을 확인하고 장애가 해소된 뒤 초기 진단을 재실행하세요."
+        )
 
     platforms: dict[str, dict[str, Any]] = {}
     for platform, counts in sorted(platform_counts.items()):
@@ -606,7 +608,7 @@ def _classify_v0_failure(
             "skipped_count": max(0, planned_count - attempted_count),
             "blocked_reason": (blocked_platforms or {}).get(platform),
             "failure_reasons": {
-                key[len(prefix):]: count
+                key[len(prefix) :]: count
                 for key, count in sorted(failure_reasons.items())
                 if key.startswith(prefix)
             },
@@ -639,9 +641,7 @@ def _ensure_v0_has_successful_measurements(
     failure_summary: dict[str, Any] | None = None,
 ) -> None:
     if success_count <= 0:
-        raise V0MeasurementUnavailable(
-            {**(failure_summary or {}), "failed_count": failure_count}
-        )
+        raise V0MeasurementUnavailable({**(failure_summary or {}), "failed_count": failure_count})
 
 
 def _raise_if_monthly_report_failures(failures: list[tuple[str, Exception]]) -> None:
@@ -1026,12 +1026,7 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
         total = int(db.scalar(select(func.count()).select_from(Hospital)) or 0)
         offset = _essence_reconcile_offset(total, datetime.now(timezone.utc))
         candidate_ids = list(
-            db.execute(
-                select(Hospital.id)
-                .order_by(Hospital.id)
-                .offset(offset)
-                .limit(200)
-            )
+            db.execute(select(Hospital.id).order_by(Hospital.id).offset(offset).limit(200))
             .scalars()
             .all()
         )
@@ -1081,7 +1076,10 @@ def trigger_v0_report(self, hospital_id: str):
                 # Idempotency: 이미 V0가 완료된 병원은 재트리거/재배달 시 중복 리포트를 만들지 않는다.
                 if hospital.v0_report_done:
                     logger.info("V0 report already done for %s; skipping re-trigger", hospital.name)
-                    return {"skipped": "already_done", "message": "이미 초기 진단 리포트가 있어 다시 만들지 않습니다."}
+                    return {
+                        "skipped": "already_done",
+                        "message": "이미 초기 진단 리포트가 있어 다시 만들지 않습니다.",
+                    }
 
                 # in-progress 가드: 다른 실행이 이미 ANALYZING으로 클레임했다면 중복 측정 금지.
                 #
@@ -1093,7 +1091,8 @@ def trigger_v0_report(self, hospital_id: str):
                 if hospital.status == HospitalStatus.ANALYZING:
                     if _v0_claim_is_alive(db, hospital.id):
                         logger.info(
-                            "V0 report already in progress for %s; skipping duplicate", hospital.name
+                            "V0 report already in progress for %s; skipping duplicate",
+                            hospital.name,
                         )
                         return {
                             "skipped": "already_in_progress",
@@ -1106,7 +1105,9 @@ def trigger_v0_report(self, hospital_id: str):
                     )
 
                 prior_status = (
-                    hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+                    hospital.status.value
+                    if hasattr(hospital.status, "value")
+                    else str(hospital.status)
                 )
                 hospital.status = HospitalStatus.ANALYZING
                 db.commit()
@@ -1234,7 +1235,9 @@ def trigger_v0_report(self, hospital_id: str):
                             failure_count += 1
                         platform_counts.setdefault(platform, Counter())[measurement_status] += 1
                         if measurement_status == "FAILED":
-                            failure_reasons[f"{platform}:{_failure_reason or 'measurement_failed'}"] += 1
+                            failure_reasons[
+                                f"{platform}:{_failure_reason or 'measurement_failed'}"
+                            ] += 1
                         record = _build_sov_record_from_result(
                             hospital_id=hospital.id,
                             query_id=q.id,
@@ -1372,11 +1375,13 @@ def trigger_v0_report(self, hospital_id: str):
                             "safe_error_code", "V0_REPORT_RETRIES_EXHAUSTED"
                         ),
                         problem=getattr(exc, "summary", {}).get(
-                            "safe_error_message", "초기 진단 리포트 생성 재시도가 모두 실패했습니다."
+                            "safe_error_message",
+                            "초기 진단 리포트 생성 재시도가 모두 실패했습니다.",
                         ),
                         customer_impact="초기 진단 리포트를 준비할 수 없습니다.",
                         next_action=getattr(exc, "summary", {}).get(
-                            "next_action", "운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요."
+                            "next_action",
+                            "운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
                         ),
                         source_type="V0_REPORT",
                         hospital_name="병원 초기 진단",
@@ -1728,7 +1733,12 @@ def nightly_content_generation(self):
                 # 대표 이미지 생성 (gpt-image-2, 제목 주제 주입 — 실패해도 텍스트는 유지)
                 try:
                     image_url, image_prompt = _run_async(
-                        generate_image(item.content_type, hospital.slug, topic=item.title)
+                        generate_image(
+                            item.content_type,
+                            hospital.slug,
+                            topic=item.title,
+                            direction=hospital_image_direction(hospital),
+                        )
                     )
                     if not image_url:
                         # generate_image는 실패·비용차단을 ("", "") 센티널로 알린다.
@@ -2082,6 +2092,7 @@ def generate_content_image(self, content_id: str):
                     item.content_type,
                     hospital.slug,
                     topic=item.title or "병원 의료 정보",
+                    direction=hospital_image_direction(hospital),
                 )
             )
             if not image_url:
@@ -2259,7 +2270,12 @@ def _generate_single_content_item(
     if not item.image_url:
         try:
             image_url, image_prompt = _run_async(
-                generate_image(item.content_type, hospital.slug, topic=item.title)
+                generate_image(
+                    item.content_type,
+                    hospital.slug,
+                    topic=item.title,
+                    direction=hospital_image_direction(hospital),
+                )
             )
             if not image_url:
                 # 실패 센티널("")을 그대로 쓰면 기존 이미지를 지운다.
