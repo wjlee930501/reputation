@@ -9467,8 +9467,15 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 /* 하한은 **두 방향 모두**여야 한다. 높이만 올리면 짧은 링크는 44×19가 44×19가
    아니라 20×44가 될 뿐이다 — 예를 들어 이동 경로의 "홈"은 글자 폭이 15px 남짓이라
    세로만 키워도 손가락이 겨냥할 면적이 생기지 않는다. 글자 크기는 그대로 두고 상자만
-   양방향으로 키운다. */
-.clinic-header-cta {
+   양방향으로 키운다.
+
+   모든 셀렉터에 `.clinic-shell`을 붙이는 이유는 **뒤에 있다고 이기는 게 아니기**
+   때문이다. 이 스타일시트에는 `.clinic-shell .clinic-filter-chip { min-height: 40px }`
+   처럼 셸로 한정한 규칙이 여럿 있고, 그쪽 특정도(0-2-0)가 여기 0-1-0보다 높아서
+   파일 끝에 둬도 40px가 이겼다(Chrome 390px 실측 75.9×40). 여기 규칙을 같은 셸
+   범위로 올려 순서로 이기게 한다. 이 조작 요소들은 모두 `.clinic-shell` 안에서만
+   렌더되므로 범위를 좁혀도 대상은 그대로다. */
+.clinic-shell .clinic-header-cta {
   min-height: 44px;
   min-width: 44px;
 }
@@ -9477,15 +9484,15 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   /* 글자 흐름 안에 있는 링크들 — inline 요소에는 min-height/min-width가 적용되지
      않으므로 inline-flex로 바꿔야 상자가 실제로 커진다. 상자가 글자보다 넓어질 때
      라벨이 한쪽에 붙지 않도록 가로도 가운데로 맞춘다. */
-  .clinic-header-nav-mobile a,
-  .clinic-hero-fact-rail dd a,
-  .clinic-featured-more,
-  .clinic-answers-all,
-  .clinic-keyfact-link,
-  .clinic-visit-location-link,
-  .clinic-footer-site,
-  .clinic-footer-meta a,
-  .clinic-breadcrumb a {
+  .clinic-shell .clinic-header-nav-mobile a,
+  .clinic-shell .clinic-hero-fact-rail dd a,
+  .clinic-shell .clinic-featured-more,
+  .clinic-shell .clinic-answers-all,
+  .clinic-shell .clinic-keyfact-link,
+  .clinic-shell .clinic-visit-location-link,
+  .clinic-shell .clinic-footer-site,
+  .clinic-shell .clinic-footer-meta a,
+  .clinic-shell .clinic-breadcrumb a {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -9494,7 +9501,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   }
 
   /* 브랜드 락업은 세로 방향 flex다 — align-items를 건드리면 이름이 가운데로 밀린다. */
-  .clinic-header-brand {
+  .clinic-shell .clinic-header-brand {
     justify-content: center;
     min-height: 44px;
     min-width: 44px;
@@ -9502,17 +9509,17 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
   /* 40px에서 4px 모자란 알약형 링크들. 이미 inline-flex + 가운데 정렬이라 하한만
      올린다. 라벨이 짧아도(예: "전체") 가로 44px는 확보된다. */
-  .clinic-official-links a,
-  .clinic-answer-treatment-strip a,
-  .clinic-principles-actions a,
-  .clinic-filter-chip {
+  .clinic-shell .clinic-official-links a,
+  .clinic-shell .clinic-answer-treatment-strip a,
+  .clinic-shell .clinic-principles-actions a,
+  .clinic-shell .clinic-filter-chip {
     min-height: 44px;
     min-width: 44px;
   }
 
   /* 축약 질문 행은 패딩만으로 44px 근처를 오간다 — 한 줄일 때도 44px를 보장한다.
      가로는 이미 목록 폭을 채우므로 하한이 레이아웃을 바꾸지 않는다. */
-  .clinic-qa-compact-row {
+  .clinic-shell .clinic-qa-compact-row {
     min-height: 44px;
     min-width: 44px;
   }
