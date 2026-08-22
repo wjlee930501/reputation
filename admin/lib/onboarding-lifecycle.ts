@@ -1,3 +1,5 @@
+import { type ClinicVisualInput, missingClinicVisualItems } from './clinic-visual-readiness.ts'
+
 export type OnboardingStepKey =
   | 'handoff'
   | 'profile'
@@ -32,7 +34,7 @@ export interface OnboardingSummary {
   blockedReason: string | null
 }
 
-export interface LifecycleHospital {
+export interface LifecycleHospital extends ClinicVisualInput {
   profile_complete?: boolean | null
   v0_report_done?: boolean | null
   site_built?: boolean | null
@@ -66,6 +68,8 @@ export interface LifecycleReadiness {
   published_content_count?: number | null
   sov_record_count?: number | null
   report_count?: number | null
+  /** PDF 파일까지 만들어진 리포트 수. 행만 있고 PDF가 없으면 0이다. */
+  report_pdf_count?: number | null
   essence?: {
     approved_philosophy_exists?: boolean | null
     source_stale?: boolean | null
@@ -110,6 +114,10 @@ export function deriveOnboardingSteps(
   hospitalId: string,
   handoff: LifecycleHandoff | null = null,
 ): OnboardingStep[] {
+  // 공개 표면 시각 승인(로고·대표색·첫 화면 카피·정보 우선순위)은 프로파일 단계
+  // 안에서 처리한다. 승인이 남아 있는데 단계가 완료로 보이면 8/8이 사실과 달라지므로
+  // 완료 판정에 함께 넣는다. 사진은 blocksApproval=false라 여기 들어오지 않는다.
+  const pendingVisualApprovals = missingClinicVisualItems(hospital ?? {})
   const includedSources = sources.filter(isIncludedEvidenceSource)
   const hasSource = includedSources.length > 0
   const allIncludedSourcesProcessed = hasSource && includedSources.every((source) => source.status === 'PROCESSED')
@@ -131,17 +139,27 @@ export function deriveOnboardingSteps(
       key: 'profile',
       phase: 'onboarding',
       title: '병원 기본 정보 입력',
-      description: '필수 병원·원장·진료·공식 채널 정보를 검증하고 완료합니다.',
+      description: pendingVisualApprovals.length > 0
+        ? `필수 병원·원장·진료·공식 채널 정보를 검증하고, 남은 공개 표면 시각 승인 ${pendingVisualApprovals.length}건(${pendingVisualApprovals.map((item) => item.label).join(', ')})을 마칩니다.`
+        : '필수 병원·원장·진료·공식 채널 정보를 검증하고 공개 표면 시각 요소를 승인합니다.',
       href: `/hospitals/${hospitalId}/profile`,
-      done: Boolean(hospital?.profile_complete) && readinessCheck(readiness, 'core_profile') !== false,
+      done: Boolean(hospital?.profile_complete)
+        && readinessCheck(readiness, 'core_profile') !== false
+        && pendingVisualApprovals.length === 0,
     },
     {
       key: 'v0',
       phase: 'onboarding',
       title: '초기 진단 리포트',
-      description: '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다.',
+      description: readiness?.report_pdf_count === 0
+        ? '초기 AI 답변 노출 진단은 기록됐지만 리포트 PDF가 아직 없습니다. PDF까지 만들어야 이 단계가 끝납니다.'
+        : '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다.',
       href: `/hospitals/${hospitalId}/dashboard#v0-measurement-runs`,
-      done: Boolean(hospital?.v0_report_done) && readinessCheck(readiness, 'v0_report') !== false,
+      // 단계 설명이 PDF를 요구하므로 완료 판정도 PDF 존재를 본다. 측정만 끝나고
+      // PDF 생성이 실패한 병원을 완료로 표시하면 원장 보고 자료가 없는 채로 넘어간다.
+      done: Boolean(hospital?.v0_report_done)
+        && readinessCheck(readiness, 'v0_report') !== false
+        && readiness?.report_pdf_count !== 0,
     },
     {
       key: 'site',

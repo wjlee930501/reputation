@@ -955,6 +955,19 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         db,
         select(func.count()).select_from(MonthlyReport).where(MonthlyReport.hospital_id == h.id),
     )
+    # 초기 진단 단계는 "진단 + PDF"를 요구한다. 측정만 끝나고 PDF 생성이 실패하면
+    # 리포트 행은 남지만 원장에게 보여줄 파일이 없으므로 행 수로 완료를 판정하면
+    # 온보딩이 사실과 어긋난다.
+    report_pdf_count = await _count(
+        db,
+        select(func.count())
+        .select_from(MonthlyReport)
+        .where(
+            MonthlyReport.hospital_id == h.id,
+            MonthlyReport.pdf_path.is_not(None),
+            MonthlyReport.pdf_path != "",
+        ),
+    )
     essence = await get_essence_readiness(db, h.id)
     approved_philosophy = essence.approved
     essence_fresh = essence.is_fresh
@@ -1043,7 +1056,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ReadinessCheck(
             "v0_report",
             "초기 진단 리포트",
-            bool(h.v0_report_done or report_count > 0),
+            report_pdf_count > 0,
             12,
             readiness_actions["v0_report"],
         ),
@@ -1102,6 +1115,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         "published_content_count": published_count,
         "sov_record_count": sov_count,
         "report_count": report_count,
+        "report_pdf_count": report_pdf_count,
         "essence": {
             "processed_source_count": essence.processed_source_count,
             "required_source_count": essence.required_source_count,

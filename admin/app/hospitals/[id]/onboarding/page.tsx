@@ -14,6 +14,7 @@ import {
 } from '@/lib/onboarding-candidate'
 import {
   buildClinicVisualChecklist,
+  missingClinicVisualItems,
   type ClinicVisualItem,
 } from '@/lib/clinic-visual-readiness'
 import {
@@ -633,11 +634,18 @@ function ProfileStepBody({
   sources: Source[]
   onChanged: () => void
 }) {
+  const pendingVisual = missingClinicVisualItems(hospital ?? {})
   return (
     <div className="space-y-5">
       <div className="space-y-3">
         <ul className="text-sm text-slate-700 space-y-1">
           <li>· 필수 병원 정보 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
+          <li>
+            · 공개 표면 시각 승인:{' '}
+            {pendingVisual.length === 0
+              ? '✓'
+              : `${pendingVisual.length}건 승인 필요 (${pendingVisual.map((item) => item.label).join(', ')})`}
+          </li>
           <li>· 화면의 필수 항목을 모두 입력하고 저장이 완료되어야 합니다.</li>
         </ul>
         <Link
