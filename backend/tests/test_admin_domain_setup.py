@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -157,3 +158,50 @@ def test_domain_setup_warns_when_apex_has_no_ip_targets(monkeypatch):
     # DM-U1/DM-F5: base warnings + config warning
     assert len(payload["warnings"]) == 4
     assert any("APEX_ADDRESS strategy is selected, but CUSTOM_DOMAIN_IP_TARGETS is not configured" in w for w in payload["warnings"])
+
+
+def test_domain_setup_tracker_follows_the_last_live_check(monkeypatch):
+    """A-1: 실제로 응답하는 도메인이 'DNS 검증 필요 / HTTPS 필요'로 남지 않는다."""
+    monkeypatch.setattr(settings, "CNAME_TARGET", "target.motionlabs.example")
+    # 도메인을 다시 저장하면 domain_cert_* 는 초기화된다. 그때도 마지막 관측이 정상이면
+    # 트래커는 그 사실을 따라야 한다.
+    hospital = _hospital(
+        site_live=True,
+        domain_cert_dns_verified_at=None,
+        domain_cert_job_state=None,
+        domain_last_checked_at=datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc),
+        domain_last_check_ok=True,
+        domain_last_check_reason="tenant_marker_ok",
+    )
+
+    response = _get_setup(hospital, monkeypatch)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["last_check_ok"] is True
+    assert payload["last_checked_at"].startswith("2026-08-22T03:00:00")
+    assert payload["last_check_reason"] == "tenant_marker_ok"
+    statuses = {item["key"]: item["status"] for item in payload["checklist"]}
+    assert statuses["dns_record"] == "DONE"
+    assert statuses["dns_verified"] == "DONE"
+    assert statuses["certificate_ready"] == "DONE"
+
+
+def test_domain_setup_tracker_stays_pending_when_the_last_check_failed(monkeypatch):
+    monkeypatch.setattr(settings, "CNAME_TARGET", "target.motionlabs.example")
+    hospital = _hospital(
+        site_live=False,
+        domain_cert_dns_verified_at=None,
+        domain_cert_job_state=None,
+        domain_last_checked_at=datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc),
+        domain_last_check_ok=False,
+        domain_last_check_reason="tls_or_network_error",
+    )
+
+    response = _get_setup(hospital, monkeypatch)
+
+    payload = response.json()
+    assert payload["last_check_ok"] is False
+    statuses = {item["key"]: item["status"] for item in payload["checklist"]}
+    assert statuses["dns_verified"] == "PENDING"
+    assert statuses["certificate_ready"] == "PENDING"

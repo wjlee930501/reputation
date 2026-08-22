@@ -23,8 +23,9 @@ class _Hospitals:
 
 
 class _Session:
-    def __init__(self, rows):
+    def __init__(self, rows, commits=None):
         self.rows = rows
+        self.commits = commits if commits is not None else []
 
     def __enter__(self):
         return self
@@ -35,6 +36,12 @@ class _Session:
     def execute(self, _statement):
         return _Hospitals(self.rows)
 
+    def get(self, _model, item_id):
+        return next((row for row in self.rows if row.id == item_id), None)
+
+    def commit(self):
+        self.commits.append(True)
+
 
 def test_domain_monitor_uses_bounded_no_redirect_probe_and_durable_control(monkeypatch):
     hospital_id = uuid.uuid4()
@@ -42,6 +49,14 @@ def test_domain_monitor_uses_bounded_no_redirect_probe_and_durable_control(monke
         id=hospital_id,
         slug="clinic",
         aeo_domain="Clinic.Example.COM",
+        domain_cert_job_state=None,
+        domain_cert_job_started_at=None,
+        domain_cert_job_token=None,
+        domain_cert_job_domain=None,
+        domain_cert_dns_verified_at=None,
+        domain_last_checked_at=None,
+        domain_last_check_ok=None,
+        domain_last_check_reason=None,
     )
     clients = []
     recorded = []
@@ -101,7 +116,13 @@ def test_domain_monitor_uses_bounded_no_redirect_probe_and_durable_control(monke
         "new_failures": 0,
         "recoveries": 1,
         "state_unavailable": 0,
+        "status_refreshed": 1,
     }
+    # A-1: 살아 있는 도메인의 관측이 배지·트래커가 읽는 상태에 그대로 반영돼야 한다.
+    assert hospital.domain_last_check_ok is True
+    assert hospital.domain_last_checked_at is not None
+    assert hospital.domain_cert_dns_verified_at is not None
+    assert hospital.domain_cert_job_state == "DONE"
 
 
 def test_site_revalidation_worker_retries_cache_only_at_control_delay(monkeypatch):

@@ -27,6 +27,8 @@ import { customDomainLiveUrl } from '@/lib/domain-live-links'
 import {
   certificateIssuingCanBeRetried,
   certificateIssuingElapsedMinutes,
+  customDomainPanelStatus,
+  domainLastCheckedLabel,
 } from '@/lib/hospital-domain-status'
 
 function _certElapsedMinutes(started: string | null | undefined, now?: number): number {
@@ -83,20 +85,20 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   const activationMissing = missingActivationPrerequisites(profile)
   
   // DM-U3: 배지/헤더는 커스텀 도메인 상태(DNS 검증 / 인증서 작업)로 결정. site_live는 기본 주소 상태.
-  const customDomainStatus = (() => {
-    if (hasUnsavedChange) return 'unsaved'
-    if (!domainSavedValue) {
-      return activationMissing.length === 0 ? 'ready' : 'empty'
-    }
-    // 도메인이 저장되어 있음
-    if (profile.domain_cert_job_state === 'DONE') return 'live'  // 인증서까지 준비 완료
-    if (profile.domain_cert_job_state === 'FAILED') return 'failed'  // 인증서 발급 실패
-    if (profile.domain_cert_job_state === 'ISSUING') return 'issuing'  // 인증서 발급 진행 중
-    if (profile.domain_cert_dns_verified_at) return 'dns_verified'  // DNS 검증 완료, 인증서 대기
-    return 'waiting'  // DNS 검증 대기 중
-  })()
-  
+  const customDomainStatus = customDomainPanelStatus({
+    hasUnsavedChange,
+    domainSaved: !!domainSavedValue,
+    activationReady: activationMissing.length === 0,
+    domain_cert_job_state: profile.domain_cert_job_state,
+    domain_cert_dns_verified_at: profile.domain_cert_dns_verified_at,
+    domain_last_check_ok: profile.domain_last_check_ok,
+  })
+
   const badge = statusBadge(customDomainStatus)
+  const lastCheckedLabel = domainLastCheckedLabel(
+    profile.domain_last_checked_at,
+    profile.domain_last_check_ok,
+  )
   const platformAddressBrowsable = isPlatformAddressBrowsable(profile)
   const customDomainUrl = customDomainLiveUrl({
     site_live: profile.site_live,
@@ -428,9 +430,14 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
             <h3 className="text-base font-semibold text-slate-900">자기 도메인 연결 <span className="text-slate-400 font-normal">(선택)</span></h3>
             <p className="text-sm text-slate-700 mt-1">기본 플랫폼 주소는 선행 단계 완료 후 직접 활성화하며, 병원 자기 도메인 연결은 선택입니다.</p>
           </div>
-          <span className={`shrink-0 inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full border ${badge.cls}`}>
-            {badge.label}
-          </span>
+          <div className="shrink-0 text-right">
+            <span className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full border ${badge.cls}`}>
+              {badge.label}
+            </span>
+            {lastCheckedLabel && (
+              <p className="mt-1 text-[11px] text-slate-500">{lastCheckedLabel}</p>
+            )}
+          </div>
         </div>
       </div>
 

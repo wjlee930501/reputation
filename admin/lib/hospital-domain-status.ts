@@ -10,6 +10,8 @@ interface HospitalDomainInput {
   site_live?: boolean | null
   domain_cert_dns_verified_at?: string | null
   domain_cert_job_state?: string | null
+  domain_last_checked_at?: string | null
+  domain_last_check_ok?: boolean | null
 }
 
 export interface HospitalDomainStatus {
@@ -22,6 +24,35 @@ function normalizedDomain(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? ''
 }
 
+/**
+ * 마지막 실제 확인 시각을 사람이 읽는 문구로.
+ *
+ * 배지가 언제의 사실을 말하는지 밝히지 않으면, 실제 주소가 열리는데도 "확인 대기"로
+ * 남아 있던 화면과 똑같이 신뢰할 수 없는 표시가 된다.
+ */
+export function domainLastCheckedLabel(
+  checkedAt: string | null | undefined,
+  ok?: boolean | null,
+): string | null {
+  if (!checkedAt) return null
+  const parsed = new Date(checkedAt)
+  if (Number.isNaN(parsed.getTime())) return null
+  const stamp = parsed.toLocaleString('ko-KR', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+  if (ok === true) return `마지막 확인 ${stamp} · 응답 정상`
+  if (ok === false) return `마지막 확인 ${stamp} · 응답 실패`
+  return `마지막 확인 ${stamp}`
+}
+
+function withLastChecked(hospital: HospitalDomainInput, base: string): string {
+  const suffix = domainLastCheckedLabel(hospital.domain_last_checked_at, hospital.domain_last_check_ok)
+  return suffix ? `${base} · ${suffix}` : base
+}
+
 export function readHospitalDomainStatus(hospital: HospitalDomainInput): HospitalDomainStatus {
   const domain = normalizedDomain(hospital.aeo_domain)
   
@@ -29,11 +60,21 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
   if (domain) {
     const certState = hospital.domain_cert_job_state
     const dnsVerified = !!hospital.domain_cert_dns_verified_at
-    
+
+    // A-1: 실제 공개 응답이 정상이면 그것이 가장 강한 증거다. 도메인 재저장으로
+    // cert 컬럼이 비워진 병원이 살아 있는 주소를 두고 '확인 대기'로 남지 않게 한다.
+    if (hospital.domain_last_check_ok === true) {
+      return {
+        label: '운영 중',
+        detail: withLastChecked(hospital, domain),
+        tone: 'live',
+      }
+    }
+
     if (certState === 'DONE') {
       return {
         label: '운영 중',
-        detail: domain,
+        detail: withLastChecked(hospital, domain),
         tone: 'live',
       }
     }
@@ -41,7 +82,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     if (certState === 'ISSUING') {
       return {
         label: '인증서 발급 중',
-        detail: domain,
+        detail: withLastChecked(hospital, domain),
         tone: 'issuing',
       }
     }
@@ -49,7 +90,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     if (certState === 'FAILED') {
       return {
         label: '인증서 실패',
-        detail: domain,
+        detail: withLastChecked(hospital, domain),
         tone: 'failed',
       }
     }
@@ -57,7 +98,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     if (dnsVerified) {
       return {
         label: 'DNS 확인 완료',
-        detail: domain,
+        detail: withLastChecked(hospital, domain),
         tone: 'dns_verified',
       }
     }
@@ -65,7 +106,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     // 저장됨, DNS 미검증
     return {
       label: '공개 주소 확인 대기',
-      detail: domain,
+      detail: withLastChecked(hospital, domain),
       tone: 'waiting',
     }
   }
@@ -85,6 +126,40 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     detail: '병원 기본 정보에서 공개 주소 연결',
     tone: 'empty',
   }
+}
+
+export type CustomDomainPanelStatus =
+  | 'live'
+  | 'waiting'
+  | 'dns_verified'
+  | 'issuing'
+  | 'failed'
+  | 'unsaved'
+  | 'ready'
+  | 'empty'
+
+/**
+ * `/profile`의 자기 도메인 패널 배지 상태.
+ *
+ * 목록·헤더와 같은 규칙을 쓴다 — 세 화면이 서로 다른 결론을 내면 운영자는 어느 쪽도
+ * 믿지 않게 된다.
+ */
+export function customDomainPanelStatus(input: {
+  hasUnsavedChange: boolean
+  domainSaved: boolean
+  activationReady: boolean
+  domain_cert_job_state?: string | null
+  domain_cert_dns_verified_at?: string | null
+  domain_last_check_ok?: boolean | null
+}): CustomDomainPanelStatus {
+  if (input.hasUnsavedChange) return 'unsaved'
+  if (!input.domainSaved) return input.activationReady ? 'ready' : 'empty'
+  if (input.domain_last_check_ok === true) return 'live'
+  if (input.domain_cert_job_state === 'DONE') return 'live'
+  if (input.domain_cert_job_state === 'FAILED') return 'failed'
+  if (input.domain_cert_job_state === 'ISSUING') return 'issuing'
+  if (input.domain_cert_dns_verified_at) return 'dns_verified'
+  return 'waiting'
 }
 
 export function domainSearchText(hospital: HospitalDomainInput): string {
@@ -130,18 +205,29 @@ export function certificateIssuingCanBeRetried(
   return elapsed >= CERTIFICATE_LEASE_MINUTES
 }
 
-export function domainHeaderStatus(profile: {
+interface DomainHeaderInput {
   site_live?: boolean
   aeo_domain?: string | null
   domain_cert_dns_verified_at?: string | null
   domain_cert_job_state?: string | null
-}) {
+  domain_last_check_ok?: boolean | null
+}
+
+/** 헤더 점 색상은 배지 문구와 같은 판단을 써야 한다 (녹색 점 + '미확인' 조합 방지). */
+export function domainHeaderIsLive(profile: DomainHeaderInput): boolean {
+  return domainHeaderStatus(profile) === '운영 중'
+}
+
+export function domainHeaderStatus(profile: DomainHeaderInput) {
   // DM-U3 #4: 커스텀 도메인 행은 DNS/cert 상태로 판단. site_live는 기본 URL 상태.
   if (!profile.aeo_domain) {
     // 커스텀 도메인이 없으면 site_live로 기본 주소 상태만 표시
     return profile.site_live ? '운영 중' : '공개 주소 확인 대기'
   }
-  
+
+  // A-1: 마지막 실제 응답이 정상이면 저장된 인증서 작업 상태보다 그쪽이 사실이다.
+  if (profile.domain_last_check_ok === true) return '운영 중'
+
   // 커스텀 도메인이 있으면 DNS/cert 상태로 판단
   if (profile.domain_cert_job_state === 'DONE') return '운영 중'
   if (profile.domain_cert_job_state === 'ISSUING') return 'DNS 확인 완료 · 인증서 발급 중'

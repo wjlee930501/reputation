@@ -9,7 +9,11 @@ import {
   hospitalLifecycleActionPath,
   hospitalLifecycleConfirmMessage,
 } from '@/lib/hospital-lifecycle'
-import { domainHeaderStatus } from '@/lib/hospital-domain-status'
+import {
+  domainHeaderIsLive,
+  domainHeaderStatus,
+  domainLastCheckedLabel,
+} from '@/lib/hospital-domain-status'
 import { Hospital, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
@@ -215,10 +219,17 @@ export default function HospitalLayout({
                   ) : '공개 주소 준비 중'}
                 </span>
                 {hospital.aeo_domain ? (
-                  <span className={`inline-flex items-center gap-1 font-medium ${hospital.domain_cert_job_state === 'DONE' ? 'text-emerald-600' : 'text-amber-600'}`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${hospital.domain_cert_job_state === 'DONE' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                    {domainHeaderStatus(hospital)}
-                  </span>
+                  <>
+                    <span className={`inline-flex items-center gap-1 font-medium ${domainHeaderIsLive(hospital) ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${domainHeaderIsLive(hospital) ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                      {domainHeaderStatus(hospital)}
+                    </span>
+                    {domainLastCheckedLabel(hospital.domain_last_checked_at, hospital.domain_last_check_ok) && (
+                      <span className="text-slate-400">
+                        {domainLastCheckedLabel(hospital.domain_last_checked_at, hospital.domain_last_check_ok)}
+                      </span>
+                    )}
+                  </>
                 ) : hospital.site_live ? (
                   <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />

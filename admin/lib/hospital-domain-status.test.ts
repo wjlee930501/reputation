@@ -4,6 +4,10 @@ import test from 'node:test'
 import {
   certificateIssuingCanBeRetried,
   certificateIssuingElapsedMinutes,
+  customDomainPanelStatus,
+  domainHeaderIsLive,
+  domainHeaderStatus,
+  domainLastCheckedLabel,
   domainSearchText,
   readHospitalDomainStatus,
 } from './hospital-domain-status.ts'
@@ -193,4 +197,104 @@ test('a certificate job with no start time never locks the button', () => {
   assert.equal(certificateIssuingElapsedMinutes(null), null)
   assert.equal(certificateIssuingCanBeRetried(null), true)
   assert.equal(certificateIssuingCanBeRetried('not-a-date'), true)
+})
+
+// ── A-1: 살아 있는 커스텀 도메인이 '확인 대기'로 남지 않는다 ──────────────────
+
+test('a domain whose last live check answered is 운영 중 on the list, header and panel', () => {
+  // 노원탑365의 실제 상태 — HTTPS 200 + CNAME 정상인데 도메인 재저장으로
+  // domain_cert_* 가 비워져 세 화면이 모두 '미확인'을 말하고 있었다.
+  const hospital = {
+    slug: 'no1top365',
+    aeo_domain: 'ai.no1top365.co.kr',
+    site_live: true,
+    domain_cert_dns_verified_at: null,
+    domain_cert_job_state: null,
+    domain_last_checked_at: '2026-08-22T03:00:00Z',
+    domain_last_check_ok: true,
+  }
+
+  const status = readHospitalDomainStatus(hospital)
+  assert.equal(status.label, '운영 중')
+  assert.equal(status.tone, 'live')
+  assert.match(status.detail, /^ai\.no1top365\.co\.kr · 마지막 확인 .+ · 응답 정상$/)
+
+  assert.equal(domainHeaderStatus(hospital), '운영 중')
+  assert.equal(domainHeaderIsLive(hospital), true)
+
+  assert.equal(
+    customDomainPanelStatus({
+      hasUnsavedChange: false,
+      domainSaved: true,
+      activationReady: true,
+      domain_cert_job_state: hospital.domain_cert_job_state,
+      domain_cert_dns_verified_at: hospital.domain_cert_dns_verified_at,
+      domain_last_check_ok: hospital.domain_last_check_ok,
+    }),
+    'live',
+  )
+})
+
+test('a failed live check does not turn a waiting domain into 운영 중', () => {
+  const hospital = {
+    slug: 'clinic',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    domain_last_checked_at: '2026-08-22T03:00:00Z',
+    domain_last_check_ok: false,
+  }
+
+  const status = readHospitalDomainStatus(hospital)
+  assert.equal(status.label, '공개 주소 확인 대기')
+  assert.match(status.detail, /응답 실패$/)
+  assert.equal(domainHeaderStatus(hospital), '저장됨 · DNS 미확인')
+  assert.equal(domainHeaderIsLive(hospital), false)
+})
+
+test('a domain that was never checked reads exactly as before', () => {
+  const status = readHospitalDomainStatus({
+    slug: 'clinic',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+  })
+
+  assert.equal(status.detail, 'clinic.example.com')
+  assert.equal(status.label, '공개 주소 확인 대기')
+})
+
+test('domainLastCheckedLabel reports the outcome and ignores unusable timestamps', () => {
+  assert.equal(domainLastCheckedLabel(null), null)
+  assert.equal(domainLastCheckedLabel('not-a-date', true), null)
+  assert.match(domainLastCheckedLabel('2026-08-22T03:00:00Z', true) ?? '', /응답 정상$/)
+  assert.match(domainLastCheckedLabel('2026-08-22T03:00:00Z', false) ?? '', /응답 실패$/)
+  assert.match(domainLastCheckedLabel('2026-08-22T03:00:00Z') ?? '', /^마지막 확인 /)
+})
+
+test('customDomainPanelStatus keeps the unsaved and empty branches ahead of live checks', () => {
+  assert.equal(
+    customDomainPanelStatus({
+      hasUnsavedChange: true,
+      domainSaved: true,
+      activationReady: true,
+      domain_last_check_ok: true,
+    }),
+    'unsaved',
+  )
+  assert.equal(
+    customDomainPanelStatus({ hasUnsavedChange: false, domainSaved: false, activationReady: true }),
+    'ready',
+  )
+  assert.equal(
+    customDomainPanelStatus({ hasUnsavedChange: false, domainSaved: false, activationReady: false }),
+    'empty',
+  )
+  assert.equal(
+    customDomainPanelStatus({
+      hasUnsavedChange: false,
+      domainSaved: true,
+      activationReady: true,
+      domain_cert_job_state: 'ISSUING',
+    }),
+    'issuing',
+  )
 })

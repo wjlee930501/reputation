@@ -64,6 +64,11 @@ export interface Hospital {
   domain_purchase_note?: string | null
   domain_cert_dns_verified_at?: string | null
   domain_cert_job_state?: string | null
+  // 마지막으로 공개 주소에 실제 요청을 보내 확인한 결과. domain_cert_* 는 도메인
+  // 재저장 시 초기화되므로, 살아 있는 도메인의 진실은 이쪽에 남는다.
+  domain_last_checked_at?: string | null
+  domain_last_check_ok?: boolean | null
+  domain_last_check_reason?: string | null
   region?: string[]
   specialties?: string[]
   keywords?: string[]

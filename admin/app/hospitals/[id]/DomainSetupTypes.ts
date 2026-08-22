@@ -20,6 +20,9 @@ export interface DomainProfile {
   domain_cert_job_state?: string | null
   domain_cert_job_started_at?: string | null
   domain_cert_dns_verified_at?: string | null
+  domain_last_checked_at?: string | null
+  domain_last_check_ok?: boolean | null
+  domain_last_check_reason?: string | null
 }
 
 export interface DomainSetupPanelProps {
