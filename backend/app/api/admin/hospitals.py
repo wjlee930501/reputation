@@ -211,6 +211,16 @@ class HospitalProfileUpdate(BaseModel):
             raise ValueError("brand colors must use #RRGGBB")
         return cleaned
 
+    # 운영 화면의 '자동 선택' 항목은 빈 문자열을 보낸다. 이를 Literal 위반으로 거부하면
+    # 프로파일 전체를 한 번에 PATCH하는 화면에서 요청 전체가 422가 되어, 같이 보낸
+    # 대표색·첫 화면 카피·이미지 방향까지 저장되지 않는다.
+    @field_validator("hero_media_kind", "site_access_mode", mode="before")
+    @classmethod
+    def blank_selection_clears_field(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("hero_headline", "hero_description")
     @classmethod
     def validate_public_hero_copy(cls, value: str | None) -> str | None:
