@@ -1,4 +1,5 @@
 .PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard admin-create-owner db-budget-guard
+.PHONY: clinic-visual-readiness clinic-visual-seed-report clinic-visual-seed
 .PHONY: deploy-api deploy-worker deploy-beat deploy-all deploy-migrate setup-gcp build-image
 
 setup:
@@ -76,6 +77,13 @@ copy-guard:
 # 사진은 필수가 아니므로 판정에 넣지 않는다.
 clinic-visual-readiness:
 	python3 scripts/check_clinic_visual_readiness.py
+
+# 위 점검에서 비어 있던 항목 중 근거가 확인된 값만 채운다. 먼저 dry run으로 확인한다.
+clinic-visual-seed-report:
+	docker compose exec api python -m app.utils.seed_clinic_visual_identity
+
+clinic-visual-seed:
+	docker compose exec api python -m app.utils.seed_clinic_visual_identity --apply
 
 # ── 수동 태스크 실행 ───────────────────────────────────────────────
 v0:
