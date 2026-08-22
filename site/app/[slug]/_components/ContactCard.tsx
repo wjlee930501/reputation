@@ -10,13 +10,14 @@ interface ChannelLink {
 interface Props {
   address: string
   phone: string
-  businessHours: Record<string, string> | null | undefined
   links: ChannelLink[]
   googleMapsUrl: string | null
   hospitalName: string
   hospitalRootUrl: string
   region: string[]
   websiteUrl: string | null
+  /** 진료시간 표가 있는 곳. /visit에서는 같은 페이지 앵커가 된다. */
+  hoursHref: string
 }
 
 function hostOf(url: string): string {
@@ -49,9 +50,11 @@ export function ContactCard({
   hospitalRootUrl,
   region,
   websiteUrl,
+  hoursHref,
 }: Props) {
   const visibleLinks = links.filter((link) => Boolean(link.url))
   const regionText = region.filter(Boolean).join(' ')
+  const hoursIsSamePageAnchor = hoursHref.startsWith('#')
 
   return (
     <section id="contact" className="clinic-section clinic-section--alt">
@@ -82,11 +85,21 @@ export function ContactCard({
               <small>오시는 길 안내</small>
             </Link>
           )}
-          <Link href={`${hospitalRootUrl}/visit`} className="clinic-visit-action">
-            <CalendarIcon aria-hidden="true" />
-            <span>진료시간 보기</span>
-            <small>요일별 진료 안내</small>
-          </Link>
+          {/* 같은 페이지를 다시 여는 링크는 환자에게 아무 정보도 주지 않는다.
+              /visit에서는 이 페이지의 진료시간 표로 바로 내려간다. */}
+          {hoursIsSamePageAnchor ? (
+            <a href={hoursHref} className="clinic-visit-action">
+              <CalendarIcon aria-hidden="true" />
+              <span>진료시간 보기</span>
+              <small>이 페이지의 요일별 진료시간</small>
+            </a>
+          ) : (
+            <Link href={hoursHref} className="clinic-visit-action">
+              <CalendarIcon aria-hidden="true" />
+              <span>진료시간 보기</span>
+              <small>요일별 진료 안내</small>
+            </Link>
+          )}
         </div>
 
         <div className="clinic-visit-body">

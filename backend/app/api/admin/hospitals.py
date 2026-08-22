@@ -41,6 +41,7 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
 )
 from app.services.essence_readiness import get_essence_readiness
+from app.services.hospital_duplicates import find_duplicate_hospitals, normalize_hospital_name
 from app.services.hospital_lifecycle import (
     activation_gate_error,
     evaluate_activation_gate,
@@ -111,23 +112,11 @@ class HospitalCreate(BaseModel):
 
 
 def _normalized_hospital_name(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip().lower()
+    return normalize_hospital_name(value)
 
 
 async def _exact_name_candidates(db: AsyncSession, name: str) -> list[Hospital]:
-    normalized = _normalized_hospital_name(name)
-    if not normalized:
-        return []
-    result = await db.execute(
-        select(Hospital)
-        .where(
-            func.replace(func.lower(func.trim(Hospital.name)), " ", "")
-            == normalized.replace(" ", "")
-        )
-        .order_by(Hospital.created_at.desc())
-        .limit(10)
-    )
-    return list(result.scalars().all())
+    return await find_duplicate_hospitals(db, name=name)
 
 
 class HospitalProfileUpdate(BaseModel):
@@ -1205,6 +1194,7 @@ def _serialize(h: Hospital) -> dict:
             if getattr(h, "domain_cert_dns_verified_at", None)
             else None
         ),
+        **_serialize_domain_live_check(h),
         "v0_report_done": h.v0_report_done,
         "site_built": h.site_built,
         "site_live": h.site_live,
@@ -1239,7 +1229,18 @@ def _serialize_list(h: Hospital) -> dict:
         if getattr(h, "domain_cert_dns_verified_at", None)
         else None,
         "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
+        **_serialize_domain_live_check(h),
         "created_at": h.created_at.isoformat() if h.created_at else None,
+    }
+
+
+def _serialize_domain_live_check(h: Hospital) -> dict:
+    """마지막 실제 관측 결과 — 인증서 작업 상태와 달리 도메인 재저장에 지워지지 않는다."""
+    checked_at = getattr(h, "domain_last_checked_at", None)
+    return {
+        "domain_last_checked_at": checked_at.isoformat() if checked_at else None,
+        "domain_last_check_ok": getattr(h, "domain_last_check_ok", None),
+        "domain_last_check_reason": getattr(h, "domain_last_check_reason", None),
     }
 
 

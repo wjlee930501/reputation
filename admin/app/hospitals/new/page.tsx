@@ -60,6 +60,9 @@ export default function NewHospitalPage() {
   const [creationRequestId, setCreationRequestId] = useState<string | null>(null)
   const [duplicateCandidates, setDuplicateCandidates] = useState<DuplicateCandidate[]>([])
   const [duplicateCheck, setDuplicateCheck] = useState<'idle' | 'checking' | 'clear' | 'duplicate' | 'error'>('idle')
+  // 상담 요청 전환이 새 병원을 만드는 대신 기존 병원에 리드를 연결했을 때. 말없이
+  // 다른 병원의 온보딩으로 넘어가면 운영자는 자기가 무엇을 만들었는지 알 수 없다.
+  const [linkedExistingHospital, setLinkedExistingHospital] = useState(false)
 
   function openCanonicalOnboarding(hospitalId: string) {
     window.location.replace(`/hospitals/${hospitalId}/onboarding`)
@@ -250,7 +253,11 @@ export default function NewHospitalPage() {
       let handoff = workflowHandoff
       if (!hospitalId || !handoff) {
         if (leadContext?.id) {
-          const created = await fetchAPI<{ hospital?: { id: string } | null; handoff?: Handoff }>(`/admin/leads/${leadContext.id}/convert`, {
+          const created = await fetchAPI<{
+            hospital?: { id: string } | null
+            handoff?: Handoff
+            duplicate_resolution?: string | null
+          }>(`/admin/leads/${leadContext.id}/convert`, {
             method: 'POST',
             body: JSON.stringify({
               hospital_name: name.trim(),
@@ -262,6 +269,7 @@ export default function NewHospitalPage() {
           })
           hospitalId = created.hospital?.id ?? null
           handoff = created.handoff ?? null
+          setLinkedExistingHospital(created.duplicate_resolution === 'LINKED_EXISTING')
         } else {
           if (!creationRequestId) throw new Error('등록 요청 식별자를 준비하지 못했습니다.')
           const created = await fetchAPI<{ id: string; handoff: Handoff }>('/admin/hospitals', {
@@ -360,6 +368,11 @@ export default function NewHospitalPage() {
             required
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />
+          {linkedExistingHospital && (
+            <p className="mt-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-900">
+              같은 병원이 이미 등록되어 있어 새로 만들지 않고 이 상담 요청을 기존 병원에 연결했습니다. 이어지는 단계는 그 병원의 온보딩입니다.
+            </p>
+          )}
           {duplicateCheck === 'checking' && (
             <p className="mt-2 text-xs text-slate-500">기존 병원과 중복되는지 확인하는 중입니다.</p>
           )}

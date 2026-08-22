@@ -54,6 +54,9 @@ class DomainSetupResponse(BaseModel):
     expected_addresses: list[str] = Field(default_factory=list)
     certificate_ready: bool = False
     certificate_phase: str | None = None
+    last_checked_at: datetime | None = None
+    last_check_ok: bool | None = None
+    last_check_reason: str | None = None
     records: list[DomainSetupRecord] = Field(default_factory=list)
     checklist: list[DomainSetupChecklistItem] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -70,6 +73,9 @@ class DomainSetupState:
     site_live: bool
     dns_verified_at: datetime | None
     cert_job_state: str | None
+    last_checked_at: datetime | None = None
+    last_check_ok: bool | None = None
+    last_check_reason: str | None = None
 
 
 @router.get("/{hospital_id}/domain/setup", response_model=DomainSetupResponse)
@@ -98,6 +104,9 @@ async def get_domain_setup(hospital_id: uuid.UUID, db: AsyncSession = Depends(ge
         expected_addresses=addresses,
         certificate_ready=certificate_ready,
         certificate_phase=state.cert_job_state,
+        last_checked_at=state.last_checked_at,
+        last_check_ok=state.last_check_ok,
+        last_check_reason=state.last_check_reason,
         records=records,
         checklist=_checklist(state),
         warnings=warnings,
@@ -121,6 +130,9 @@ def _domain_setup_state(hospital: Hospital) -> DomainSetupState:
         site_live=bool(getattr(hospital, "site_live", False)),
         dns_verified_at=getattr(hospital, "domain_cert_dns_verified_at", None),
         cert_job_state=getattr(hospital, "domain_cert_job_state", None),
+        last_checked_at=getattr(hospital, "domain_last_checked_at", None),
+        last_check_ok=getattr(hospital, "domain_last_check_ok", None),
+        last_check_reason=getattr(hospital, "domain_last_check_reason", None),
     )
 
 
@@ -208,8 +220,12 @@ def _checklist(
         state.registrar
     )
     # DM-U5: 체크리스트는 각 단계의 실제 상태를 반영. site_live는 DNS 검증 완료 여부만 나타냄.
-    dns_verified = bool(state.dns_verified_at)
-    cert_done = state.cert_job_state == DomainCertJobState.DONE.value
+    # A-1: 도메인이 지금 실제로 응답하고 있다면 그 관측이 저장된 인증서 작업 상태보다
+    # 강한 증거다. 도메인 재저장으로 cert 컬럼이 초기화된 병원이 살아 있는 주소를 두고
+    # "DNS 검증 필요 / HTTPS 필요"로 남는 것을 막는다.
+    live_ok = state.last_check_ok is True
+    dns_verified = bool(state.dns_verified_at) or live_ok
+    cert_done = state.cert_job_state == DomainCertJobState.DONE.value or live_ok
     
     return [
         DomainSetupChecklistItem(

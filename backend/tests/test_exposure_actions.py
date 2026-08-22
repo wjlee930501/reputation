@@ -161,6 +161,102 @@ def test_builds_measurement_action_when_target_has_no_successful_measurements():
     assert recommendation.evidence["successful_measurements"] == 0
 
 
+def test_unmeasured_target_is_not_reported_as_no_successful_measurement():
+    """A-2: 병원에 성공 측정이 있는데 '성공 측정값 없음'이 뜨면 대시보드와 정면 충돌한다."""
+    measured = _target(priority="HIGH", target_month="2026-05")
+    unmeasured = _target(priority="HIGH", target_month="2026-05")
+    unmeasured.hospital_id = measured.hospital_id
+    unmeasured.name = "아직 측정되지 않은 질문"
+    records = [_record(measured.id, is_mentioned=True, source_urls=["https://example.test"])]
+
+    recommendations = build_exposure_recommendations(
+        [measured, unmeasured], records, today=date(2026, 5, 3)
+    )
+
+    by_target = {r.query_target_id: r for r in recommendations}
+    assert by_target[unmeasured.id].gap_type == "TARGET_NOT_MEASURED"
+    assert by_target[unmeasured.id].evidence["rule"] == "target_not_measured_yet"
+    assert by_target[unmeasured.id].evidence["hospital_successful_measurements"] == 1
+    assert all(r.gap_type != "NO_SUCCESSFUL_MEASUREMENT" for r in recommendations)
+
+
+def test_unmeasured_targets_do_not_outrank_real_exposure_gaps():
+    """미측정 질문이 우선순위 상단을 채워 진짜 갭을 밀어내면 안 된다 (max_create 절단)."""
+    missing_mention = _target(priority="HIGH", target_month="2026-05")
+    missing_mention.name = "언급 실패 질문"
+    unmeasured = _target(priority="HIGH", target_month="2026-05")
+    unmeasured.hospital_id = missing_mention.hospital_id
+    unmeasured.name = "미측정 질문"
+    records = [
+        _record(missing_mention.id, is_mentioned=False, source_urls=["https://example.test"])
+    ]
+
+    recommendations = build_exposure_recommendations(
+        [missing_mention, unmeasured], records, today=date(2026, 5, 3)
+    )
+
+    assert recommendations[0].gap_type == "MISSING_MENTION"
+    assert recommendations[-1].gap_type == "TARGET_NOT_MEASURED"
+
+
+def test_unmeasured_high_priority_targets_cannot_fill_the_whole_creation_budget():
+    """A-2: HIGH 우선순위 미측정 질문이 NORMAL 질문의 실제 갭을 큐에서 밀어내면 안 된다.
+
+    V0 시드는 미측정 질문을 전부 HIGH로 만든다. 질문 우선순위가 심각도보다 앞서 정렬되면
+    ensure_hospital_exposure_actions의 max_create=12가 전부 '아직 측정 안 됨'으로 차서,
+    운영자는 실제로 관측된 미언급 갭을 영영 보지 못한다.
+    """
+    max_create = 12
+    hospital_id = uuid.uuid4()
+
+    unmeasured = []
+    for index in range(20):
+        target = _target(priority="HIGH", target_month="2026-05")
+        target.hospital_id = hospital_id
+        target.name = f"미측정 질문 {index:02d}"
+        unmeasured.append(target)
+
+    real_gap = _target(priority="NORMAL", target_month="2026-05")
+    real_gap.hospital_id = hospital_id
+    real_gap.name = "실제 미언급 질문"
+    records = [_record(real_gap.id, is_mentioned=False, source_urls=["https://example.test"])]
+
+    recommendations = build_exposure_recommendations(
+        [*unmeasured, real_gap], records, today=date(2026, 5, 3)
+    )
+
+    created = recommendations[:max_create]
+    created_types = [item.gap_type for item in created]
+    assert "MISSING_MENTION" in created_types
+    assert created[0].query_target_id == real_gap.id
+    # 미측정 항목이 예산 전부를 가져가지 않았는지도 함께 고정한다.
+    assert created_types.count("TARGET_NOT_MEASURED") < max_create
+
+
+def test_target_with_only_failed_measurements_still_reports_no_successful_measurement():
+    """이 타깃만 전부 실패한 경우는 여전히 '성공 측정 없음'이 사실이다."""
+    target = _target(priority="HIGH", target_month="2026-05")
+    other = _target(priority="NORMAL", target_month="2026-05")
+    other.hospital_id = target.hospital_id
+    failed = _record(target.id)
+    failed.measurement_status = "FAILED"
+    records = [failed, _record(other.id, is_mentioned=True, source_urls=["https://ok.test"])]
+
+    recommendations = build_exposure_recommendations([target, other], records, today=date(2026, 5, 3))
+
+    by_target = {r.query_target_id: r for r in recommendations}
+    assert by_target[target.id].gap_type == "NO_SUCCESSFUL_MEASUREMENT"
+
+
+def test_no_successful_measurement_still_fires_before_the_first_measurement():
+    """측정 이력이 아예 없는 병원에서는 '첫 측정 실행'이 그대로 맞는 진단이다."""
+    target = _target(priority="HIGH", target_month="2026-05")
+
+    recommendations = build_exposure_recommendations([target], [], today=date(2026, 5, 3))
+
+    assert [r.gap_type for r in recommendations] == ["NO_SUCCESSFUL_MEASUREMENT"]
+
+
 def test_builds_content_webblog_and_source_actions_from_missing_mentions():
     target = _target(priority="HIGH")
     records = [

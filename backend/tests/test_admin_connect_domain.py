@@ -3,6 +3,7 @@
 """
 
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -92,6 +93,14 @@ def _hospital(**overrides):
         site_built=True,
         aeo_domain=None,
         domain_dns_strategy=DomainDnsStrategy.CNAME,
+        domain_cert_job_state=None,
+        domain_cert_job_started_at=None,
+        domain_cert_job_token=None,
+        domain_cert_job_domain=None,
+        domain_cert_dns_verified_at=None,
+        domain_last_checked_at=None,
+        domain_last_check_ok=None,
+        domain_last_check_reason=None,
         latitude=None,
         longitude=None,
         wikidata_qid=None,
@@ -262,6 +271,94 @@ async def test_connect_domain_strategy_change_resets_live_state_for_same_domain(
     assert hospital.site_live is True
     assert hospital.status == HospitalStatus.ACTIVE
     assert db.committed is True
+
+
+async def test_saving_a_different_domain_forgets_the_previous_live_observation():
+    """A-1: 새 도메인이 확인된 적도 없이 이전 도메인의 '응답 정상'을 물려받으면 안 된다."""
+    verified_at = datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc)
+    hospital = _hospital(
+        aeo_domain="old.example.com",
+        site_live=True,
+        site_built=True,
+        status=HospitalStatus.ACTIVE,
+        domain_cert_job_state="DONE",
+        domain_cert_dns_verified_at=verified_at,
+        domain_last_checked_at=verified_at,
+        domain_last_check_ok=True,
+        domain_last_check_reason="tenant_marker_ok",
+    )
+    db = FakeDB(hospital)
+
+    await _connect(db, hospital, "new.example.com")
+
+    assert hospital.aeo_domain == "new.example.com"
+    assert hospital.domain_cert_dns_verified_at is None
+    assert hospital.domain_last_checked_at is None
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_check_reason is None
+
+
+async def test_changing_only_the_dns_strategy_also_forgets_the_observation():
+    verified_at = datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc)
+    hospital = _hospital(
+        aeo_domain="clinic.example.com",
+        domain_dns_strategy="CNAME",
+        site_live=True,
+        site_built=True,
+        status=HospitalStatus.ACTIVE,
+        domain_last_checked_at=verified_at,
+        domain_last_check_ok=True,
+        domain_last_check_reason="tenant_marker_ok",
+    )
+    db = FakeDB(hospital)
+
+    await _connect(db, hospital, "clinic.example.com", domain_dns_strategy="APEX_ADDRESS")
+
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_checked_at is None
+
+
+async def test_resaving_the_same_domain_keeps_the_observation():
+    """전략도 도메인도 그대로면 지난 관측은 여전히 그 도메인을 설명한다."""
+    verified_at = datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc)
+    hospital = _hospital(
+        aeo_domain="clinic.example.com",
+        site_live=True,
+        site_built=True,
+        status=HospitalStatus.ACTIVE,
+        domain_last_checked_at=verified_at,
+        domain_last_check_ok=True,
+        domain_last_check_reason="tenant_marker_ok",
+    )
+    db = FakeDB(hospital)
+
+    await _connect(db, hospital, "clinic.example.com", domain_registrar="Gabia")
+
+    assert hospital.domain_last_check_ok is True
+    assert hospital.domain_last_checked_at == verified_at
+
+
+async def test_disconnecting_the_domain_forgets_the_observation():
+    verified_at = datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc)
+    hospital = _hospital(
+        aeo_domain="clinic.example.com",
+        site_live=True,
+        site_built=True,
+        status=HospitalStatus.ACTIVE,
+        domain_cert_job_state="DONE",
+        domain_cert_dns_verified_at=verified_at,
+        domain_last_checked_at=verified_at,
+        domain_last_check_ok=True,
+        domain_last_check_reason="tenant_marker_ok",
+    )
+    db = FakeDB(hospital)
+
+    await domain_connect_api.disconnect_domain(hospital.id, db=db)
+
+    assert hospital.aeo_domain is None
+    assert hospital.domain_last_checked_at is None
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_check_reason is None
 
 
 def test_hospital_detail_serializes_domain_metadata_defaults_for_legacy_rows():

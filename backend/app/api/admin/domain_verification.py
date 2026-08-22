@@ -33,6 +33,7 @@ from app.services.domain_certificate_jobs import (
     lock_hospital_for_domain_certificate,
 )
 from app.services.domain_dns import DomainDnsCheck, strategy_for_hospital
+from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.hospital_lifecycle import (
     ActivationGateSnapshot,
     activation_gate_error,
@@ -85,6 +86,8 @@ async def verify_domain_for_hospital(
     dns_strategy = strategy_for_hospital(hospital)
     dns_check = await dependencies.check_dns(domain, dns_strategy)
     if not dns_check.verified:
+        # 실패한 검증은 상태를 바꾸지 않는다 — 재시도를 막지도, 이미 끝난 단계를 되돌리지도
+        # 않기 위해서다. 실패 관측 기록은 15분 주기 도메인 감시가 담당한다.
         return dns_failure_response(
             domain,
             dns_strategy,
@@ -106,6 +109,13 @@ async def verify_domain_for_hospital(
     gate = await dependencies.evaluate_gate(db, hospital)
     if not gate["ready"]:
         raise HTTPException(status_code=409, detail=activation_gate_error(gate))
+
+    # 운영자가 언제 확인했는지 남긴다. 배지가 어느 시점의 사실을 말하는지 알 수 없으면,
+    # 실제로 열리는 주소를 두고 '확인 대기'로 남았던 화면과 똑같이 신뢰할 수 없다.
+    apply_live_domain_check(
+        hospital,
+        LiveDomainCheck(domain=domain, healthy=True, reason="dns_ok", checked_at=now),
+    )
 
     previous_status = (
         hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)

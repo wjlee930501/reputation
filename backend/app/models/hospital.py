@@ -126,6 +126,12 @@ class Hospital(Base):
     domain_cert_job_token: Mapped[str | None] = mapped_column(String(36))
     domain_cert_job_domain: Mapped[str | None] = mapped_column(String(200))
     domain_cert_dns_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 실제 공개 응답(HTTPS + 테넌트 마커)에서 마지막으로 관측한 도메인 상태.
+    # domain_cert_* 는 도메인 재저장 시 초기화되므로, 살아 있는 도메인이 '미확인'으로
+    # 표시되는 것을 막으려면 관측 결과 자체를 남겨야 한다.
+    domain_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    domain_last_check_ok: Mapped[bool | None] = mapped_column(Boolean)
+    domain_last_check_reason: Mapped[str | None] = mapped_column(String(100))
     aeo_site_path: Mapped[str | None] = mapped_column(String(500))  # 빌드된 사이트 경로
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)

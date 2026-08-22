@@ -1176,12 +1176,21 @@ def validate_philosophy_grounding(
         if not mapped_ids:
             errors.append(f"{field_name} 필드에 evidence_map이 없습니다.")
             continue
-        unknown = [note_id for note_id in mapped_ids if note_id not in valid_note_ids]
-        if unknown:
-            errors.append(
-                f"{field_name} 필드가 존재하지 않는 근거 노트를 참조합니다: {', '.join(unknown)}"
-            )
-            continue
+
+    # evidence_map에 남은 **모든** 참조를 검사한다. 운영 화면은 필드 목록과 무관하게
+    # evidence_map 항목을 전부 그리므로, 위 목록만 검사하면 화면에서는 "근거 노트를 찾지
+    # 못했습니다"로 보이던 연결이 승인만 통과한다 — 자료를 다시 처리해 노트 id가 바뀐
+    # 초안이 정확히 그 경우다. 승인은 운영자가 확인할 수 있었던 것만 통과해야 한다.
+    if isinstance(evidence_map, dict):
+        for field_name, raw_ids in evidence_map.items():
+            unknown = [
+                note_id for note_id in _flatten_ids(raw_ids) if note_id not in valid_note_ids
+            ]
+            if unknown:
+                errors.append(
+                    f"{field_name} 필드가 존재하지 않는 근거 노트를 참조합니다: "
+                    f"{', '.join(unknown)}"
+                )
 
     return errors
 

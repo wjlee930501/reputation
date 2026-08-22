@@ -76,6 +76,7 @@ from app.services.content_publish_notifications import (
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
+from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.essence_auto_review import (
     AUTO_ESSENCE_ACTOR,
     EssenceAiReview,
@@ -4412,6 +4413,7 @@ def monitor_live_custom_domains():
     new_failures = 0
     recoveries = 0
     state_unavailable = 0
+    refreshed = 0
     timeout = httpx.Timeout(10.0, connect=5.0)
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for hospital in hospitals:
@@ -4423,6 +4425,21 @@ def monitor_live_custom_domains():
                 domain,
                 expected_hospital_id=hospital.id,
                 expected_slug=hospital.slug,
+            )
+            # 배지·트래커가 읽는 도메인 상태를 이 관측으로 갱신한다. 인시던트 기록과
+            # 달리 여기서 실패해도 감시 자체는 계속돼야 하므로 별도 세션으로 격리한다.
+            refreshed += int(
+                _persist_live_domain_check(
+                    hospital.id,
+                    LiveDomainCheck(
+                        domain=domain,
+                        healthy=healthy,
+                        reason=reason,
+                        checked_at=datetime.now(timezone.utc),
+                        # 테넌트 마커 200은 DNS·TLS·라우팅이 모두 맞아야만 나온다.
+                        proves_certificate=True,
+                    ),
+                )
             )
             try:
                 outcome = _run_async(
@@ -4449,7 +4466,21 @@ def monitor_live_custom_domains():
         "new_failures": new_failures,
         "recoveries": recoveries,
         "state_unavailable": state_unavailable,
+        "status_refreshed": refreshed,
     }
+
+
+def _persist_live_domain_check(hospital_id: uuid.UUID, check: LiveDomainCheck) -> bool:
+    try:
+        with SyncSessionLocal() as db:
+            hospital = db.get(Hospital, hospital_id)
+            if hospital is None or not apply_live_domain_check(hospital, check):
+                return False
+            db.commit()
+            return True
+    except Exception as exc:  # noqa: BLE001 — 상태 갱신 실패가 감시를 멈추면 안 된다.
+        logger.warning("domain status refresh failed: code=%s", exc.__class__.__name__)
+        return False
 
 
 # ══════════════════════════════════════════════════════════════════
