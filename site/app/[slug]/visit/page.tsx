@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
-import { buildOpeningHoursSpec } from '@/lib/business-hours'
+import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
 import { buildAddressRegionFields } from '@/lib/clinic-schema'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalHospitalUrl } from '@/lib/site-url'
@@ -14,6 +14,7 @@ import { ClinicGallery } from '../_components/ClinicGallery'
 import { ClinicHeader } from '../_components/ClinicHeader'
 import { ContactCard } from '../_components/ContactCard'
 import { JsonLd } from '../_components/JsonLd'
+import { VisitHoursTable } from '../_components/VisitHoursTable'
 
 interface Props {
   params: Promise<{ slug: string }>
@@ -142,16 +143,21 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
             </div>
           </section>
 
+          <VisitHoursTable
+            hospitalName={hospital.name}
+            phone={hospital.phone}
+            businessHours={hospital.business_hours}
+          />
           <ContactCard
             address={hospital.address}
             phone={hospital.phone}
-            businessHours={hospital.business_hours}
             googleMapsUrl={hospital.google_maps_url}
             links={externalChannels}
             hospitalName={hospital.name}
             hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
             websiteUrl={hospital.website_url}
+            hoursHref={visitHoursHref(hospitalRootUrl, true)}
           />
           <ClinicGallery photos={facilityPhotos} minimumPhotoCount={1} />
         </main>

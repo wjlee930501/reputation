@@ -12,6 +12,18 @@ export const SCHEMA_DAY_OF_WEEK: Record<string, string> = {
   sun: 'Sunday',
 }
 
+export const WEEKDAY_ORDER = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
+
+export const WEEKDAY_LABELS: Record<string, string> = {
+  mon: '월요일',
+  tue: '화요일',
+  wed: '수요일',
+  thu: '목요일',
+  fri: '금요일',
+  sat: '토요일',
+  sun: '일요일',
+}
+
 const CLOSED_KEYWORDS = ['휴진', '휴무', 'closed']
 
 export function isClosedLabel(value: string): boolean {
@@ -36,6 +48,55 @@ export function extractTimeRanges(value: string): Array<{ opens: string; closes:
     }
   }
   return ranges
+}
+
+export interface WeeklyHoursRow {
+  key: string
+  label: string
+  /** 운영자가 입력한 그대로의 문구. 값이 없으면 null — 없는 시간을 지어내지 않는다. */
+  value: string | null
+  closed: boolean
+}
+
+/**
+ * 요일별 진료시간 표의 행. 항상 월~일 7행을 같은 순서로 낸다.
+ *
+ * `/visit`의 "진료시간 보기"는 자기 자신을 가리키면서 정작 페이지에는 진료시간 표가
+ * 없었다. 이 함수는 JSON-LD(openingHoursSpecification)와 같은 원본(business_hours)에서
+ * 화면용 행을 만들어, 구조화 데이터와 사람이 보는 표가 갈리지 않게 한다.
+ */
+export function buildWeeklyHoursRows(
+  hours: Record<string, string> | null | undefined,
+): WeeklyHoursRow[] {
+  return WEEKDAY_ORDER.map((key) => {
+    const raw = hours?.[key]
+    const value = typeof raw === 'string' && raw.trim() ? raw.trim() : null
+    return {
+      key,
+      label: WEEKDAY_LABELS[key],
+      value,
+      closed: value !== null && isClosedLabel(value),
+    }
+  })
+}
+
+export function hasWeeklyHours(hours: Record<string, string> | null | undefined): boolean {
+  return buildWeeklyHoursRows(hours).some((row) => row.value !== null)
+}
+
+/** 진료시간 표의 페이지 내 앵커. 표가 실제로 존재하는 곳만 가리킨다. */
+export const VISIT_HOURS_ANCHOR = 'clinic-hours'
+
+/**
+ * "진료시간 보기" 버튼이 가리킬 주소.
+ *
+ * `onVisitPage`면 같은 페이지의 표로 스크롤한다 — 같은 URL을 다시 여는 링크는
+ * 환자에게 아무 정보도 더 주지 않는 막다른 길이다.
+ */
+export function visitHoursHref(hospitalRootUrl: string, onVisitPage: boolean): string {
+  return onVisitPage
+    ? `#${VISIT_HOURS_ANCHOR}`
+    : `${hospitalRootUrl}/visit#${VISIT_HOURS_ANCHOR}`
 }
 
 export function buildOpeningHoursSpec(hours: Record<string, string> | null | undefined) {

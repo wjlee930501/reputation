@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
-import { buildOpeningHoursSpec } from '@/lib/business-hours'
+import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
 import {
   clinicComposition,
   clinicContentDensity,
@@ -354,13 +354,13 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           <ContactCard
             address={hospital.address}
             phone={hospital.phone}
-            businessHours={hospital.business_hours}
             googleMapsUrl={hospital.google_maps_url}
             links={externalChannels}
             hospitalName={hospital.name}
             hospitalRootUrl={hospitalRootUrl}
             region={hospital.region}
             websiteUrl={hospital.website_url}
+            hoursHref={visitHoursHref(hospitalRootUrl, false)}
           />
           </div>
         </main>

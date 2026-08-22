@@ -6762,6 +6762,72 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   margin-top: 7px;
   flex-shrink: 0;
 }
+/* /visit 요일별 진료시간 표 — 답변 엔진이 읽는 openingHoursSpecification과 같은 값. */
+.clinic-hours-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--clinic-hair);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.6;
+}
+.clinic-hours-caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.clinic-hours-table th,
+.clinic-hours-table td {
+  padding: 13px 20px;
+  text-align: left;
+  border-bottom: 1px solid var(--clinic-hair);
+}
+.clinic-hours-table thead th {
+  background: var(--color-revisit-coolgrey-95);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--color-revisit-text-helper);
+  letter-spacing: 0.02em;
+}
+.clinic-hours-table tbody th {
+  width: 34%;
+  font-weight: 600;
+  color: var(--color-revisit-text-title);
+}
+.clinic-hours-table tbody tr:last-child th,
+.clinic-hours-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.clinic-hours-table tbody tr.is-closed td {
+  color: var(--color-revisit-text-helper);
+}
+.clinic-hours-empty {
+  margin: 0;
+  padding: 20px;
+  border: 1px solid var(--clinic-hair);
+  border-radius: 12px;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--color-revisit-text-helper);
+  word-break: keep-all;
+}
+.clinic-hours-empty a {
+  color: var(--color-revisit-primary-40);
+  font-weight: 700;
+}
+@media (max-width: 640px) {
+  .clinic-hours-table th,
+  .clinic-hours-table td {
+    padding: 11px 14px;
+    font-size: 14px;
+  }
+}
 .clinic-keyfacts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
