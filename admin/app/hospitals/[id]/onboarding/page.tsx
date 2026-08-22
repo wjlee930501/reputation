@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
@@ -16,6 +16,12 @@ import {
   buildClinicVisualChecklist,
   type ClinicVisualItem,
 } from '@/lib/clinic-visual-readiness'
+import {
+  clinicVisualSignature,
+  clinicVisualValuesOf,
+  shouldSyncFromServer,
+  type ClinicVisualValues,
+} from '@/lib/clinic-visual-form-sync'
 import type { Handoff, MeasurementRun } from '@/types'
 import {
   deriveHandoffDueStatus,
@@ -680,22 +686,37 @@ function ClinicVisualForm({
   sources: Source[]
   onSaved: () => void
 }) {
-  const [logoUrl, setLogoUrl] = useState('')
-  const [primaryColor, setPrimaryColor] = useState('')
-  const [heroHeadline, setHeroHeadline] = useState('')
-  const [heroDescription, setHeroDescription] = useState('')
-  const [accessMode, setAccessMode] = useState('')
+  const [form, setForm] = useState<ClinicVisualValues>(() => clinicVisualValuesOf(hospital))
+  const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { logoUrl, primaryColor, heroHeadline, heroDescription, accessMode } = form
+
+  // 자료 처리 추적은 5초마다 refresh()를 돌리고, 다른 자식 폼의 저장 성공도 같은
+  // refresh를 부른다. 그때마다 새 `hospital` 객체가 오므로 값이 그대로여도 참조는
+  // 바뀐다. 값을 기준으로 비교하고, 입력 중(dirty)에는 서버 값으로 덮지 않는다.
+  const serverValues = clinicVisualValuesOf(hospital)
+  const serverSignature = clinicVisualSignature(serverValues)
+  const syncedSignature = useRef(serverSignature)
 
   useEffect(() => {
-    setLogoUrl(hospital?.logo_url ?? '')
-    setPrimaryColor(hospital?.brand_primary_color ?? '')
-    setHeroHeadline(hospital?.hero_headline ?? '')
-    setHeroDescription(hospital?.hero_description ?? '')
-    setAccessMode(hospital?.site_access_mode ?? '')
-  }, [hospital])
+    if (!shouldSyncFromServer({ dirty, syncedSignature: syncedSignature.current, serverSignature }))
+      return
+    syncedSignature.current = serverSignature
+    setForm(serverValues)
+    // serverValues는 serverSignature와 같은 입력에서 파생된다 — 매 렌더 새로 만들어지는
+    // 객체를 의존성에 넣으면 이 이펙트가 다시 폴링마다 돌게 된다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverSignature, dirty])
+
+  function update<Field extends keyof ClinicVisualValues>(
+    field: Field,
+    value: ClinicVisualValues[Field],
+  ) {
+    setDirty(true)
+    setForm((current) => ({ ...current, [field]: value }))
+  }
 
   const photoCount = sources.filter((source) => isPhotoSourceType(source.source_type)).length
   const checklist = buildClinicVisualChecklist({
@@ -723,6 +744,8 @@ function ClinicVisualForm({
           site_access_mode: accessMode || null,
         }),
       })
+      // 저장에 성공한 뒤에야 서버 값(정규화된 결과)과 다시 동기화한다.
+      setDirty(false)
       setFeedback('공개 표면 시각 요소를 저장했습니다. 다음 사이트 갱신부터 반영됩니다.')
       onSaved()
     } catch (e: unknown) {
@@ -764,7 +787,7 @@ function ClinicVisualForm({
           <input
             type="url"
             value={logoUrl}
-            onChange={(e) => setLogoUrl(e.target.value)}
+            onChange={(e) => update('logoUrl', e.target.value)}
             placeholder="https://.../logo.png"
             className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
           />
@@ -775,14 +798,14 @@ function ClinicVisualForm({
             <input
               type="color"
               value={primaryColor || '#17365D'}
-              onChange={(e) => setPrimaryColor(e.target.value.toUpperCase())}
+              onChange={(e) => update('primaryColor', e.target.value.toUpperCase())}
               className="h-10 w-12 rounded border border-slate-300 bg-white p-1"
               aria-label="대표색 선택"
             />
             <input
               type="text"
               value={primaryColor}
-              onChange={(e) => setPrimaryColor(e.target.value)}
+              onChange={(e) => update('primaryColor', e.target.value)}
               placeholder="#17365D"
               pattern="#[0-9A-Fa-f]{6}"
               className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm"
@@ -795,7 +818,7 @@ function ClinicVisualForm({
         첫 화면 정보 우선순위
         <select
           value={accessMode}
-          onChange={(e) => setAccessMode(e.target.value)}
+          onChange={(e) => update('accessMode', e.target.value)}
           className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
         >
           <option value="">병원 정보로 자동 선택</option>
@@ -809,7 +832,7 @@ function ClinicVisualForm({
         첫 화면 카피
         <textarea
           value={heroHeadline}
-          onChange={(e) => setHeroHeadline(e.target.value)}
+          onChange={(e) => update('heroHeadline', e.target.value)}
           maxLength={160}
           rows={2}
           placeholder={'예: 오늘도 문 여는 동네 주치의\n증상과 진료 정보를 방문 전에 확인하세요'}
@@ -824,7 +847,7 @@ function ClinicVisualForm({
         첫 화면 설명
         <textarea
           value={heroDescription}
-          onChange={(e) => setHeroDescription(e.target.value)}
+          onChange={(e) => update('heroDescription', e.target.value)}
           maxLength={320}
           rows={2}
           placeholder="환자가 방문 전에 알아야 할 사실을 짧게 적어 주세요."
@@ -848,6 +871,11 @@ function ClinicVisualForm({
         </Link>
       </div>
 
+      {dirty && !saving && (
+        <p className="text-xs text-amber-700">
+          저장하지 않은 변경이 있습니다. 자료 처리가 도는 동안에도 입력은 그대로 유지됩니다.
+        </p>
+      )}
       {feedback && <p className="text-sm font-semibold text-green-700">{feedback}</p>}
       {error && <p className="text-sm font-semibold text-red-700">{error}</p>}
     </form>
