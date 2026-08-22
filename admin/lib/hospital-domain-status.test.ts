@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { domainSearchText, readHospitalDomainStatus } from './hospital-domain-status.ts'
+import {
+  certificateIssuingCanBeRetried,
+  certificateIssuingElapsedMinutes,
+  domainSearchText,
+  readHospitalDomainStatus,
+} from './hospital-domain-status.ts'
 
 const ORIGINAL_SITE_URL = process.env.NEXT_PUBLIC_SITE_URL
 
@@ -164,4 +169,28 @@ test('domain with uppercase is normalized to lowercase', () => {
     domain_cert_job_state: 'DONE',
   })
   assert.equal(status.detail, 'clinic.example.com')
+})
+
+test('a certificate job that just started still blocks a duplicate verify', () => {
+  const now = Date.parse('2026-08-22T10:00:00Z')
+  const startedAt = '2026-08-22T09:45:00Z'
+
+  assert.equal(certificateIssuingElapsedMinutes(startedAt, now), 15)
+  assert.equal(certificateIssuingCanBeRetried(startedAt, now), false)
+})
+
+test('a certificate job past the server lease can be verified again', () => {
+  // 커밋 직후 워커가 죽으면 아무도 폴링하지 않는 ISSUING이 남는다. 버튼이 계속
+  // 잠겨 있으면 운영자가 도메인을 되살릴 방법이 없다.
+  const now = Date.parse('2026-08-22T10:00:00Z')
+  const startedAt = '2026-08-22T09:20:00Z'
+
+  assert.equal(certificateIssuingElapsedMinutes(startedAt, now), 40)
+  assert.equal(certificateIssuingCanBeRetried(startedAt, now), true)
+})
+
+test('a certificate job with no start time never locks the button', () => {
+  assert.equal(certificateIssuingElapsedMinutes(null), null)
+  assert.equal(certificateIssuingCanBeRetried(null), true)
+  assert.equal(certificateIssuingCanBeRetried('not-a-date'), true)
 })

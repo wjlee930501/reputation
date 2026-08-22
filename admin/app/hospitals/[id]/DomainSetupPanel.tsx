@@ -24,16 +24,13 @@ import { DEFAULT_CNAME_TARGET, platformSubdomainUrl, statusBadge, trimmed } from
 import { isPlatformAddressBrowsable, missingActivationPrerequisites } from '@/lib/hospital-activation'
 import { safeOperatorError } from '@/lib/operations-journey'
 import { customDomainLiveUrl } from '@/lib/domain-live-links'
+import {
+  certificateIssuingCanBeRetried,
+  certificateIssuingElapsedMinutes,
+} from '@/lib/hospital-domain-status'
 
 function _certElapsedMinutes(started: string | null | undefined): number {
-  if (!started) return 0
-  try {
-    const startTime = new Date(started).getTime()
-    const now = Date.now()
-    return Math.floor((now - startTime) / 60000)
-  } catch (error: unknown) {
-    return 0
-  }
+  return certificateIssuingElapsedMinutes(started) ?? 0
 }
 
 export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeaderRefresh }: DomainSetupPanelProps) {
@@ -106,6 +103,24 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     () => setupPlan ?? (domainSavedValue ? buildFallbackDomainSetupPlan(domainSavedValue, DEFAULT_CNAME_TARGET) : null),
     [domainSavedValue, setupPlan],
   )
+  // 발급이 예상보다 오래 걸리면 서버가 그 작업을 만료로 보고 다시 잡는다. 그때부터는
+  // 재확인 버튼을 열어 둬야 죽은 작업에 도메인이 갇히지 않는다.
+  const certificateIssuingLocked =
+    profile.domain_cert_job_state === 'ISSUING' &&
+    !certificateIssuingCanBeRetried(profile.domain_cert_job_started_at)
+  const verifyButtonLabel = domainVerifying
+    ? 'DNS 확인 중...'
+    : certificateIssuingLocked
+      ? `HTTPS 인증서 발급 진행 중 (경과 ${_certElapsedMinutes(profile.domain_cert_job_started_at)}분)`
+      : hasUnsavedChange
+        ? '변경한 도메인을 먼저 저장해 주세요'
+        : !domainSavedValue
+          ? '도메인을 먼저 저장해 주세요'
+          : profile.domain_cert_job_state === 'ISSUING'
+            ? `HTTPS 인증서 발급이 지연되고 있습니다 (경과 ${_certElapsedMinutes(profile.domain_cert_job_started_at)}분) · 다시 확인`
+            : profile.domain_cert_job_state === 'FAILED'
+              ? 'DNS 확인 및 인증서 재시도'
+              : 'DNS 확인하고 운영 시작'
 
   useEffect(() => {
     let cancelled = false
@@ -556,20 +571,10 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
             <button 
               type="button" 
               onClick={handleVerifyDomain} 
-              disabled={domainVerifying || !domainSavedValue || hasUnsavedChange || profile.domain_cert_job_state === 'ISSUING'} 
+              disabled={domainVerifying || !domainSavedValue || hasUnsavedChange || certificateIssuingLocked} 
               className="min-h-11 w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {domainVerifying 
-                ? 'DNS 확인 중...' 
-                : profile.domain_cert_job_state === 'ISSUING'
-                  ? `HTTPS 인증서 발급 진행 중 (경과 ${_certElapsedMinutes(profile.domain_cert_job_started_at)}분)`
-                  : hasUnsavedChange 
-                    ? '변경한 도메인을 먼저 저장해 주세요' 
-                    : !domainSavedValue 
-                      ? '도메인을 먼저 저장해 주세요' 
-                      : profile.domain_cert_job_state === 'FAILED'
-                        ? 'DNS 확인 및 인증서 재시도'
-                        : 'DNS 확인하고 운영 시작'}
+              {verifyButtonLabel}
             </button>
             <button
               type="button"
@@ -584,20 +589,10 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
           <button 
             type="button" 
             onClick={handleVerifyDomain} 
-            disabled={domainVerifying || !domainSavedValue || hasUnsavedChange || profile.domain_cert_job_state === 'ISSUING'} 
+            disabled={domainVerifying || !domainSavedValue || hasUnsavedChange || certificateIssuingLocked} 
             className="min-h-11 w-full rounded-lg bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {domainVerifying 
-              ? 'DNS 확인 중...' 
-              : profile.domain_cert_job_state === 'ISSUING'
-                ? `HTTPS 인증서 발급 진행 중 (경과 ${_certElapsedMinutes(profile.domain_cert_job_started_at)}분)`
-                : hasUnsavedChange 
-                  ? '변경한 도메인을 먼저 저장해 주세요' 
-                  : !domainSavedValue 
-                    ? '도메인을 먼저 저장해 주세요' 
-                    : profile.domain_cert_job_state === 'FAILED'
-                      ? 'DNS 확인 및 인증서 재시도'
-                      : 'DNS 확인하고 운영 시작'}
+            {verifyButtonLabel}
           </button>
         )}
 

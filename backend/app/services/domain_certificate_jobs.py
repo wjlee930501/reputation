@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import assert_never
 
@@ -12,6 +12,12 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.hospital import DomainCertJobState, Hospital
+
+# ISSUING 클레임은 이 시간이 지나면 만료로 본다. 커밋 직후 디스패치 전에 워커가
+# 죽으면 아무도 폴링하지 않는 ISSUING이 남고, 만료가 없으면 재검증이 영구히 409로
+# 막혀 운영자가 도메인을 되살릴 방법이 없다. 만료된 클레임을 다시 잡아도 GCP
+# 리소스 id는 결정적이라 발급 작업이 중복되지 않는다.
+CERTIFICATE_LEASE_MINUTES = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +146,9 @@ def claim_locked_domain_certificate_job(
                 hospital.domain_cert_job_started_at,
             )
         case DomainCertJobState.ISSUING if (
-            job_domain == request.expected_domain and token is not None
+            job_domain == request.expected_domain
+            and token is not None
+            and not certificate_lease_expired(hospital.domain_cert_job_started_at, now)
         ):
             return CertificateJobInFlight(
                 request.expected_domain,
@@ -157,6 +165,18 @@ def claim_locked_domain_certificate_job(
             return _claim(hospital, request.expected_domain, now)
         case unreachable:
             assert_never(unreachable)
+
+
+def certificate_lease_expired(started_at: datetime | None, now: datetime) -> bool:
+    """진행 중이라고 주장하는 클레임이 실제로는 죽은 채 남아 있는지.
+
+    시작 시각이 없는 행(이전 버전이 남긴 흔적)도 만료로 본다 — 진행 중임을 증명할
+    근거가 없는데 재검증을 막을 이유는 없다.
+    """
+    if started_at is None:
+        return True
+    reference = started_at if started_at.tzinfo else started_at.replace(tzinfo=UTC)
+    return now - reference >= timedelta(minutes=CERTIFICATE_LEASE_MINUTES)
 
 
 def _claim(hospital: Hospital, domain: str, started_at: datetime) -> CertificateJobClaimed:
