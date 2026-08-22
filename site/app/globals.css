@@ -2479,7 +2479,7 @@ summary:focus-visible {
   padding: 8px 14px;
   border-radius: 8px;
   background: var(--color-revisit-primary-40);
-  color: #ffffff;
+  color: var(--clinic-on-brand, #ffffff);
   font-size: 13px;
   font-weight: 600;
   transition: background 150ms ease;
@@ -2698,11 +2698,11 @@ summary:focus-visible {
 
 .clinic-btn-primary {
   background: var(--color-revisit-navy-20, #12344d);
-  color: #ffffff;
+  color: var(--clinic-on-brand-strong, #ffffff);
 }
 
 .clinic-btn-primary:hover {
-  background: #0b2539;
+  background: var(--clinic-brand-hover, #0b2539);
 }
 
 .clinic-btn-secondary {
@@ -2720,7 +2720,7 @@ summary:focus-visible {
 /* 차분한 전화 CTA — 펄스/글로우 제거. 단일 블루 액센트, 조용한 hover. */
 .clinic-btn-cta {
   background: var(--color-revisit-primary-40);
-  color: #ffffff;
+  color: var(--clinic-on-brand, #ffffff);
 }
 
 .clinic-btn-cta:hover {
@@ -5319,7 +5319,7 @@ summary:focus-visible {
   background: var(--color-revisit-primary-10);
 }
 .clinic-btn-cta:hover {
-  background: #002d60;
+  background: var(--clinic-brand-hover, #002d60);
 }
 
 /* Cool-paper 배경 리듬: 흰색→cool-paper→흰색→cool-paper 교차.
@@ -5428,7 +5428,7 @@ summary:focus-visible {
   height: 40px;
   border-radius: 50%;
   background: var(--color-revisit-primary-10);
-  color: #fff;
+  color: var(--clinic-on-brand-strong, #fff);
   font-size: 13px;
   font-weight: 900;
   letter-spacing: 0.04em;
@@ -5581,17 +5581,11 @@ summary:focus-visible {
  * ══════════════════════════════════════════════════════════════════ */
 
 /* ── 토큰 정제 (clinic 표면에만 스코프) ─────────────────────────────
-   단일 임상 딥 블루로 통일 + 미세하게 블루-그레이로 기운 뉴트럴. */
+   링크·칩·CTA 색은 병원이 승인한 대표색에서 파생하므로 여기서 고정하지 않는다.
+   아래 v5 블록의 ramp가 primary/navy 슬롯을 소유한다. */
 .clinic-shell {
-  --color-revisit-primary-40: #0b53b8;   /* THE clinical blue — 링크·칩·CTA */
-  --color-revisit-primary-30: #083f8c;   /* hover/strong */
-  --color-revisit-primary-10: #0b53b8;   /* 채워진 CTA도 동일 블루로 통일 */
-  --color-revisit-navy-20: #0b53b8;      /* legacy navy 버튼 → 동일 블루 */
   --color-revisit-line-container: #e7ebf1;
   --color-revisit-line-border: #dbe1ea;
-  --clinic-paper: #fafbfd;
-  --clinic-hair: #e7ebf1;
-  --clinic-hair-strong: #d7dde7;
   background: var(--clinic-paper);
 }
 
@@ -5829,7 +5823,7 @@ summary:focus-visible {
   margin-top: 18px;
   border-radius: 12px;
   background: var(--color-revisit-primary-40);
-  color: #fff;
+  color: var(--clinic-on-brand, #fff);
   font-size: 15px;
   font-weight: 700;
   transition: background 150ms ease;
@@ -5864,7 +5858,7 @@ summary:focus-visible {
 /* 버튼 위계 — 채워진 블루 CTA 1개 + 아웃라인. */
 .clinic-shell .clinic-btn-cta {
   background: var(--color-revisit-primary-40);
-  color: #fff;
+  color: var(--clinic-on-brand);
 }
 .clinic-shell .clinic-btn-cta:hover {
   background: var(--color-revisit-primary-30);
@@ -6625,7 +6619,7 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   width: 540px;
   height: 540px;
   color: var(--color-revisit-primary-40);
-  --brand-ink-2: #c9d6ea;
+  --brand-ink-2: var(--clinic-brand-veil);
   opacity: 0.22;
   pointer-events: none;
   z-index: 0;
@@ -6861,7 +6855,7 @@ a.clinic-keyfact:hover {
 }
 .clinic-principles-band {
   border-radius: 22px;
-  border: 1px solid #dce6f4;
+  border: 1px solid var(--clinic-line);
   background: var(--color-revisit-primary-95);
   padding: 44px 44px 40px;
 }
@@ -6894,7 +6888,7 @@ a.clinic-keyfact:hover {
   align-items: flex-start;
   gap: 14px;
   padding: 22px 22px 24px;
-  border: 1px solid #dce6f4;
+  border: 1px solid var(--clinic-line);
   border-radius: 14px;
   background: #ffffff;
 }
@@ -6911,7 +6905,7 @@ a.clinic-keyfact:hover {
   border-radius: 11px;
   background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-40);
-  --brand-ink-2: #a9bfe0;
+  --brand-ink-2: var(--clinic-brand-veil);
 }
 .clinic-belief-icon svg {
   width: 22px;
@@ -6958,7 +6952,7 @@ a.clinic-keyfact:hover {
   gap: 12px;
   margin-top: 24px;
   padding: 18px;
-  border: 1px solid #dce6f4;
+  border: 1px solid var(--clinic-line);
   border-radius: 14px;
   background: var(--color-revisit-primary-95);
 }
@@ -6971,7 +6965,7 @@ a.clinic-keyfact:hover {
   justify-content: center;
   border-radius: 10px;
   background: #ffffff;
-  border: 1px solid #dce6f4;
+  border: 1px solid var(--clinic-line);
   color: var(--color-revisit-primary-40);
 }
 .clinic-answers-hint-icon svg {
@@ -7225,10 +7219,10 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   width: 100%;
   overflow: hidden;
   border-radius: 14px;
-  border: 1px solid #dce6f4;
+  border: 1px solid var(--clinic-line);
   background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-40);
-  --brand-ink-2: #b6c8e6;
+  --brand-ink-2: var(--clinic-brand-veil);
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -7288,7 +7282,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   right: -24px;
   bottom: -34px;
 }
-.clinic-cover--disease { background: #eaf1fb; color: var(--color-revisit-primary-30); --brand-ink-2: #adc3e6; }
+.clinic-cover--disease { background: var(--clinic-brand-soft); color: var(--color-revisit-primary-30); --brand-ink-2: var(--clinic-brand-veil); }
 .clinic-cover--treatment { background: var(--color-revisit-green-95); color: var(--color-revisit-green-40); --brand-ink-2: #a9d9c6; }
 .clinic-cover--column { background: var(--color-revisit-coolgrey-90); color: var(--color-revisit-coolgrey-30); --brand-ink-2: #c1c9d4; }
 .clinic-cover--health { background: var(--color-revisit-yellow-95); color: #b65f00; --brand-ink-2: #e6cfa3; }
@@ -7337,10 +7331,10 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-visit-action--primary {
   background: var(--color-revisit-primary-40);
   border-color: var(--color-revisit-primary-40);
-  color: #ffffff;
+  color: var(--clinic-on-brand);
 }
 .clinic-visit-action--primary svg {
-  color: #ffffff;
+  color: var(--clinic-on-brand);
 }
 .clinic-visit-action--primary small {
   color: rgba(255, 255, 255, 0.82);
@@ -7559,23 +7553,42 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
  * Medical Editorial v5 — photograph-led clinic surface
  * 실사 의료진, 에디토리얼 그리드, 번호형 진료 인덱스를 첫 화면의 중심으로 둔다.
  * ══════════════════════════════════════════════════════════════════ */
+/* 승인된 대표색 하나에서 파생된 ramp만 병원 표면의 색을 결정한다.
+   아래 값은 buildClinicThemeStyle()이 inline으로 덮기 전의 플랫폼 기본값이고,
+   legacy Revisit 슬롯도 전부 같은 ramp로 이어 붙여 브랜드가 화면에 실제로 닿게 한다. */
 .clinic-shell {
   --clinic-brand: #17365d;
+  --clinic-brand-strong: #17365d;
   --clinic-brand-action: #17365d;
   --clinic-brand-hover: #142f51;
+  --clinic-brand-edge: #8b9bb1;
+  --clinic-brand-veil: #b6c0cd;
   --clinic-brand-soft: #eaecef;
+  --clinic-brand-tint: #f4f5f6;
   --clinic-on-brand: #ffffff;
+  --clinic-on-brand-strong: #ffffff;
+  --clinic-on-brand-soft: #17365d;
   --clinic-ink: #0a1b2f;
   --clinic-paper: #fbfaf7;
   --clinic-line: #dfe3e8;
-  --clinic-focus: #b79045;
+  --clinic-focus: #17365d;
+  --clinic-revisit-primary-95: var(--clinic-brand-tint);
+  --clinic-revisit-primary-90: var(--clinic-brand-soft);
+  --clinic-revisit-primary-70: var(--clinic-brand-veil);
+  --clinic-revisit-primary-50: var(--clinic-brand-edge);
   --clinic-revisit-primary-40: var(--clinic-brand-action);
   --clinic-revisit-primary-30: var(--clinic-brand-hover);
-  --clinic-revisit-primary-10: var(--clinic-ink);
+  --clinic-revisit-primary-20: var(--clinic-brand-strong);
+  --clinic-revisit-primary-10: var(--clinic-brand-strong);
+  --color-revisit-primary-95: var(--clinic-revisit-primary-95);
+  --color-revisit-primary-90: var(--clinic-revisit-primary-90);
+  --color-revisit-primary-70: var(--clinic-revisit-primary-70);
+  --color-revisit-primary-50: var(--clinic-revisit-primary-50);
   --color-revisit-primary-40: var(--clinic-revisit-primary-40);
   --color-revisit-primary-30: var(--clinic-revisit-primary-30);
+  --color-revisit-primary-20: var(--clinic-revisit-primary-20);
   --color-revisit-primary-10: var(--clinic-revisit-primary-10);
-  --color-revisit-navy-20: var(--clinic-ink);
+  --color-revisit-navy-20: var(--clinic-brand-strong);
   --clinic-hair: var(--clinic-line);
   --clinic-hair-strong: var(--clinic-line);
   background: var(--clinic-paper);
