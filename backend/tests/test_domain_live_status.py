@@ -4,7 +4,11 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.models.hospital import DomainCertJobState
-from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
+from app.services.domain_live_status import (
+    LiveDomainCheck,
+    apply_live_domain_check,
+    clear_live_domain_check,
+)
 
 CHECKED_AT = datetime(2026, 8, 22, 3, 0, tzinfo=UTC)
 
@@ -90,14 +94,52 @@ def test_issuing_certificate_lease_is_left_to_the_worker():
     assert hospital.domain_last_check_ok is True
 
 
-def test_dns_only_check_does_not_declare_the_certificate_ready():
+def test_dns_only_check_does_not_declare_the_domain_healthy_or_the_certificate_ready():
+    """CNAME 조회는 TLS도 라우팅도 증명하지 않는다 — '서빙 중'이라고 말할 수 없다."""
     hospital = _hospital()
 
     apply_live_domain_check(hospital, _check(reason="dns_ok", proves_certificate=False))
 
     assert hospital.domain_cert_dns_verified_at == CHECKED_AT
     assert hospital.domain_cert_job_state is None
-    assert hospital.domain_last_check_ok is True
+    # 판단 보류 — True로 접으면 발급 중/실패한 인증서를 '운영 중'으로 덮는다.
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_checked_at == CHECKED_AT
+    assert hospital.domain_last_check_reason == "dns_ok"
+
+
+def test_dns_only_check_never_overrides_a_certificate_that_is_issuing_or_failed():
+    for state in (DomainCertJobState.ISSUING.value, DomainCertJobState.FAILED.value):
+        hospital = _hospital(domain_cert_job_state=state, domain_cert_job_started_at=CHECKED_AT)
+
+        apply_live_domain_check(hospital, _check(reason="dns_ok", proves_certificate=False))
+
+        assert hospital.domain_cert_job_state == state
+        assert hospital.domain_last_check_ok is None
+
+
+def test_a_dns_only_check_retracts_a_previous_serving_confirmation():
+    """마지막 관측이 DNS 조회뿐이면 그 시각의 사실도 DNS까지다."""
+    hospital = _hospital(domain_last_check_ok=True, domain_last_check_reason="tenant_marker_ok")
+
+    apply_live_domain_check(hospital, _check(reason="dns_ok", proves_certificate=False))
+
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_check_reason == "dns_ok"
+
+
+def test_clearing_forgets_the_observation_so_a_new_domain_cannot_inherit_it():
+    hospital = _hospital(
+        domain_last_checked_at=CHECKED_AT,
+        domain_last_check_ok=True,
+        domain_last_check_reason="tenant_marker_ok",
+    )
+
+    clear_live_domain_check(hospital)
+
+    assert hospital.domain_last_checked_at is None
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_check_reason is None
 
 
 def test_result_for_a_different_domain_is_discarded():

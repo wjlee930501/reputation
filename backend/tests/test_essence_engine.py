@@ -310,6 +310,55 @@ def test_grounding_rejects_field_referencing_unknown_note():
     assert "positioning_statement" in errors[0]
 
 
+def test_grounding_rejects_orphan_references_on_fields_it_does_not_otherwise_check():
+    """C-1: 화면이 확인할 수 없었던 근거 연결은 승인도 통과하면 안 된다.
+
+    운영 화면은 evidence_map의 모든 항목을 그린다. 검증이 값이 있는 알려진 필드만 보면,
+    자료 재처리로 노트 id가 바뀐 초안이 화면에서는 '근거 노트를 찾지 못했습니다'인 채로
+    승인만 통과한다.
+    """
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        source_excerpt="충분히 설명합니다.",
+        note_metadata={},
+    )
+    orphan_id = str(uuid.uuid4())
+    payload = {
+        "positioning_statement": "도출된 포지셔닝 문구입니다.",
+        # 값이 비어 있는 필드와, 검증 목록에 없는 필드에만 죽은 참조가 남아 있다.
+        "local_context": None,
+        "evidence_map": {
+            "positioning_statement": [str(note.id)],
+            "local_context": [orphan_id],
+            "extra_operator_field": [orphan_id],
+        },
+    }
+
+    errors = validate_philosophy_grounding(payload, [note], require_text_support=True)
+
+    assert any("local_context" in message and orphan_id in message for message in errors)
+    assert any("extra_operator_field" in message and orphan_id in message for message in errors)
+
+
+def test_grounding_accepts_a_draft_whose_every_reference_resolves():
+    note = SimpleNamespace(
+        id=uuid.uuid4(),
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        source_excerpt="충분히 설명합니다.",
+        note_metadata={},
+    )
+    payload = {
+        "positioning_statement": "도출된 포지셔닝 문구입니다.",
+        "evidence_map": {
+            "positioning_statement": [str(note.id)],
+            "local_context": [],
+        },
+    }
+
+    assert validate_philosophy_grounding(payload, [note], require_text_support=True) == []
+
+
 def test_screen_content_blocks_missing_or_risky_essence_statuses():
     item = SimpleNamespace(
         title="치료 안내",

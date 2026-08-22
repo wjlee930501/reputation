@@ -23,6 +23,14 @@ test('a failed detail fetch is remembered per source so retry can target it', ()
   assert.match(page, /results\.filter\(\(result\) => result\.notes === null\)/)
 })
 
+test('a reload replaces the notes of the sources it read, keyed by source', () => {
+  // id를 키로 병합하면 자료 재처리로 사라진 노트가 남아 죽은 참조가 해석에 성공한
+  // 것처럼 보이고, 승인 잠금이 막아야 할 상황에서 풀린다.
+  assert.match(page, /useState<Map<string, EvidenceNote\[\]>>/)
+  assert.match(page, /setEvidenceNotesBySource\(\(prev\) => replaceSourceNotes\(prev, results\)\)/)
+  assert.match(page, /indexNotesById\(evidenceNotesBySource, selectedSource\?\.evidence_notes\)/)
+})
+
 test('the evidence panel exposes a retry control', () => {
   assert.match(page, /onClick=\{retryEvidenceNotes\}/)
   assert.match(page, /근거 노트 다시 불러오기/)

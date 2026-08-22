@@ -14,7 +14,7 @@ from app.api.admin import leads as leads_api
 from app.models.admin_user import ROLE_OWNER, AdminUser
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.lead import SalesLead
-from app.services.hospital_duplicates import find_duplicate_hospitals
+from app.services.hospital_duplicates import find_duplicate_hospitals, matches_hospital_name
 
 
 async def _actor(db) -> AdminUser:
@@ -95,15 +95,59 @@ async def test_whitespace_and_case_differences_still_count_as_the_same_hospital(
 
 
 @pytest.mark.asyncio
-async def test_a_matching_clinic_phone_links_even_when_the_name_differs(pg_async_session):
+async def test_a_phone_only_match_asks_the_operator_instead_of_linking_silently(
+    pg_async_session,
+):
+    """대표번호만 같은 병원은 '같은 병원일 수 있다'는 신호일 뿐이다.
+
+    말없이 이어 붙이면 이름이 다른 남의 병원 온보딩을 이 상담 요청으로 덮어쓴다.
+    """
     existing = _hospital("장편한외과", phone="02-123-4567")
-    lead = _lead(clinic_name="장편한 외과 (강남)", clinic_phone="021234567")
+    lead = _lead(clinic_name="전혀 다른 이름 의원", clinic_phone="021234567")
     pg_async_session.add_all([existing, lead])
     await pg_async_session.commit()
 
-    response = await leads_api.convert_sales_lead(lead.id, db=pg_async_session, actor=await _actor(pg_async_session))
+    with pytest.raises(HTTPException) as exc:
+        await leads_api.convert_sales_lead(
+            lead.id, db=pg_async_session, actor=await _actor(pg_async_session)
+        )
 
-    assert response["hospital"]["id"] == str(existing.id)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "DUPLICATE_HOSPITAL_FOR_LEAD"
+    assert [item["id"] for item in exc.value.detail["candidates"]] == [str(existing.id)]
+    assert lead.converted_hospital_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_domain_only_candidate_is_not_a_name_match(pg_async_session):
+    """도메인만 겹치는 후보도 자동 연결 조건(이름 일치)을 통과하지 못한다."""
+    domain = f"dup-{uuid.uuid4().hex[:8]}.example.com"
+    existing = _hospital("기존의원", aeo_domain=domain)
+    pg_async_session.add(existing)
+    await pg_async_session.commit()
+
+    candidates = await find_duplicate_hospitals(pg_async_session, name="다른의원", domain=domain)
+
+    assert candidates == [existing]
+    assert matches_hospital_name(candidates[0], "다른의원") is False
+
+
+@pytest.mark.asyncio
+async def test_the_applicant_personal_phone_is_never_matched_against_a_hospital_line(
+    pg_async_session,
+):
+    """lead.contact 는 문의한 사람의 개인 연락처다 — 병원 대표번호 대조에 쓰지 않는다."""
+    existing = _hospital("무관한의원", phone="010-1111-2222")
+    lead = _lead(clinic_name=f"신규의원-{uuid.uuid4().hex[:6]}", contact="010-1111-2222")
+    pg_async_session.add_all([existing, lead])
+    await pg_async_session.commit()
+
+    response = await leads_api.convert_sales_lead(
+        lead.id, db=pg_async_session, actor=await _actor(pg_async_session)
+    )
+
+    assert response["hospital"]["id"] != str(existing.id)
+    assert response["duplicate_resolution"] is None
 
 
 @pytest.mark.asyncio
@@ -180,3 +224,17 @@ async def test_the_lead_candidate_list_uses_the_same_rule_as_the_conversion(pg_a
     response = await leads_api.list_hospital_candidates(lead.id, db=pg_async_session)
 
     assert [item["id"] for item in response["candidates"]] == [str(existing.id)]
+
+
+@pytest.mark.asyncio
+async def test_the_candidate_list_does_not_surface_hospitals_by_applicant_phone(
+    pg_async_session,
+):
+    unrelated = _hospital("무관한의원2", phone="010-9999-8888")
+    lead = _lead(clinic_name=f"후보없음의원-{uuid.uuid4().hex[:6]}", contact="010-9999-8888")
+    pg_async_session.add_all([unrelated, lead])
+    await pg_async_session.commit()
+
+    response = await leads_api.list_hospital_candidates(lead.id, db=pg_async_session)
+
+    assert response["candidates"] == []

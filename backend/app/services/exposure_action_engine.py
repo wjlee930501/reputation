@@ -317,7 +317,9 @@ def _diagnose_target(
             _recommendation(
                 target,
                 "TARGET_NOT_MEASURED",
-                _severity_for_target(target, severe_for_high=False),
+                # 측정 차례를 기다리는 상태는 노출 문제가 아니다. 질문 우선순위와 무관하게
+                # 가장 낮은 심각도로 두어, 실제로 관측된 갭이 항상 앞선다.
+                "LOW",
                 {
                     **base_evidence,
                     "rule": "target_not_measured_yet",
@@ -576,12 +578,16 @@ def _target_sort_key(target: Any) -> tuple[int, str, str]:
     return (PRIORITY_RANK.get(priority, 9), target_month, name)
 
 
+# 정렬은 심각도가 먼저다. 질문 우선순위를 앞세우면 우선순위만 높고 심각도는 낮은
+# 항목(예: 아직 측정 차례가 오지 않은 HIGH 질문)이 max_create 슬롯을 전부 차지해,
+# 실제로 관측된 미언급 갭이 큐에서 아예 사라진다. 심각도 자체가 이미 질문 우선순위를
+# 반영하므로(_severity_for_target), 우선순위는 같은 심각도 안의 동점 처리로 남긴다.
 def _recommendation_sort_key(
     recommendation: ExposureRecommendation,
 ) -> tuple[int, int, str, int, str]:
     return (
-        PRIORITY_RANK.get(recommendation.target_priority, 9),
         SEVERITY_RANK.get(recommendation.severity, 9),
+        PRIORITY_RANK.get(recommendation.target_priority, 9),
         recommendation.due_month,
         ACTION_TYPE_RANK.get(recommendation.action_type, 9),
         recommendation.target_name,
@@ -596,8 +602,8 @@ def _action_sort_key(action: ExposureAction) -> tuple[int, int, str, int, str]:
     due_month = getattr(action, "due_month", None) or "9999-99"
     created_at = _to_iso(getattr(action, "created_at", None)) or ""
     return (
-        PRIORITY_RANK.get(priority, 9),
         SEVERITY_RANK.get(severity, 9),
+        PRIORITY_RANK.get(priority, 9),
         due_month,
         ACTION_TYPE_RANK.get(str(getattr(action, "action_type", "")).upper(), 9),
         created_at,

@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   evidenceApprovalBlockers,
   evidenceResolutionSummary,
+  indexNotesById,
+  replaceSourceNotes,
   resolveEvidenceMap,
 } from './essence-evidence.ts'
 
@@ -113,4 +115,60 @@ test('evidenceResolutionSummary states what the panel is actually showing', () =
     evidenceResolutionSummary({ resolution: resolveEvidenceMap({}, notes()), loading: false, loadFailed: false }),
     '연결된 근거 노트가 없습니다.',
   )
+})
+
+// ── 다시 불러오기는 병합이 아니라 교체다 ──────────────────────────────────────
+
+const SOURCE_A = 'source-a'
+const SOURCE_B = 'source-b'
+
+test('reloading a source replaces its notes instead of keeping the old ones', () => {
+  // 자료를 다시 처리하면 옛 노트는 삭제되고 새 id가 생긴다. 병합하면 사라진 노트가
+  // 화면에 남아, 초안이 참조하는 죽은 id가 해석에 성공한 것처럼 보인다.
+  const before = new Map([[SOURCE_A, [{ id: NOTE_A }]]])
+
+  const after = replaceSourceNotes(before, [{ sourceId: SOURCE_A, notes: [{ id: NOTE_B }] }])
+
+  assert.deepEqual(after.get(SOURCE_A), [{ id: NOTE_B }])
+  assert.equal(indexNotesById(after).has(NOTE_A), false)
+  assert.equal(indexNotesById(after).has(NOTE_B), true)
+})
+
+test('a source that failed to reload is dropped rather than left with stale notes', () => {
+  const before = new Map([[SOURCE_A, [{ id: NOTE_A }]]])
+
+  const after = replaceSourceNotes(before, [{ sourceId: SOURCE_A, notes: null }])
+
+  assert.equal(after.has(SOURCE_A), false)
+  // 그 결과 초안 참조가 미해석으로 남아 승인이 잠긴다.
+  const resolution = resolveEvidenceMap({ positioning: [NOTE_A] }, indexNotesById(after))
+  assert.deepEqual(resolution.missingIds, [NOTE_A])
+})
+
+test('reloading one source leaves the other sources untouched', () => {
+  const before = new Map([
+    [SOURCE_A, [{ id: NOTE_A }]],
+    [SOURCE_B, [{ id: NOTE_B }]],
+  ])
+
+  const after = replaceSourceNotes(before, [{ sourceId: SOURCE_A, notes: [] }])
+
+  assert.deepEqual(after.get(SOURCE_A), [])
+  assert.deepEqual(after.get(SOURCE_B), [{ id: NOTE_B }])
+})
+
+test('indexNotesById lets a freshly fetched source detail win over the stored copy', () => {
+  const stored = new Map([[SOURCE_A, [{ id: NOTE_A, claim: '옛 문구' }]]])
+
+  const index = indexNotesById(stored, [{ id: NOTE_A, claim: '새 문구' }])
+
+  assert.equal(index.get(NOTE_A)?.claim, '새 문구')
+})
+
+test('indexNotesById tolerates a missing overlay', () => {
+  const stored = new Map([[SOURCE_A, [{ id: NOTE_A }]]])
+
+  assert.equal(indexNotesById(stored, null).size, 1)
+  assert.equal(indexNotesById(stored, undefined).size, 1)
+  assert.equal(indexNotesById(new Map()).size, 0)
 })

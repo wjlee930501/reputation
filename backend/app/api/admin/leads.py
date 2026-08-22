@@ -26,7 +26,7 @@ from app.models.lead_diagnosis import (
 from app.models.operations import OperationRun
 from app.services import lead_delivery
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.hospital_duplicates import find_duplicate_hospitals
+from app.services.hospital_duplicates import find_duplicate_hospitals, matches_hospital_name
 from app.services.lead_privacy import purge_lead_completely_async, scrub_onboarding_note
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
@@ -221,20 +221,23 @@ async def convert_sales_lead(
         # insert 했다. 그래서 이미 운영 중인 병원을 가진 리드가 '온보딩 대기'로 남은 채
         # 빈 병원을 하나 더 만들어냈다.
         duplicates = await _find_duplicate_hospitals(db, lead, name=hospital_name)
-        if len(duplicates) == 1:
-            # 단일 정확 일치는 운영자가 선택할 것도 없다 — 같은 이름/전화의 병원을 새로
-            # 만드는 길은 애초에 막혀 있으므로, 있는 병원에 리드를 붙이는 것이 유일한 정답이다.
+        if len(duplicates) == 1 and matches_hospital_name(duplicates[0], hospital_name):
+            # 이름이 같은 병원을 새로 만드는 길은 POST /admin/hospitals 가 이미 막고 있다.
+            # 그러니 이 경우 있는 병원에 리드를 붙이는 것이 유일하게 남은 정답이다.
             hospital = duplicates[0]
             linked_existing = True
             auto_linked = True
-        elif len(duplicates) > 1:
+        elif duplicates:
+            # 전화나 도메인만 겹치는 후보는 "같은 병원일 수 있다"는 신호일 뿐이다.
+            # 말없이 이어 붙이면 다른 병원의 온보딩을 이 상담 요청으로 덮어쓸 수 있다.
             raise HTTPException(
                 status_code=409,
                 detail={
                     "code": "DUPLICATE_HOSPITAL_FOR_LEAD",
                     "message": (
-                        "이 상담 요청과 같은 병원이 이미 여러 건 등록되어 있습니다. "
-                        "온보딩을 이어갈 병원을 골라 연결해 주세요."
+                        "이 상담 요청과 같은 병원으로 보이는 기존 병원이 있습니다. "
+                        "온보딩을 이어갈 병원을 골라 연결하거나, 다른 병원이면 병원명을 "
+                        "정확히 입력해 주세요."
                     ),
                     "candidates": [
                         {
@@ -555,14 +558,15 @@ async def _find_duplicate_hospitals(
 
     /hospitals/new 와 같은 정규화를 쓴다 — 두 등록 경로가 서로 다른 기준으로
     중복을 판단하면 한쪽에서 막은 병원이 다른 쪽에서 그대로 만들어진다.
+
+    전화 대조는 병원 대표번호(`clinic_phone`)만 쓴다. `lead.contact`는 문의한 사람의
+    개인 연락처라서, 공개되는 병원 대표번호와 같다는 보장이 없고 우연히 겹치면
+    엉뚱한 병원에 상담 요청을 붙인다.
     """
     return await find_duplicate_hospitals(
         db,
         name=name or lead.clinic_name,
-        phones=(
-            getattr(lead, "clinic_phone", None),
-            lead.contact,
-        ),
+        phones=(getattr(lead, "clinic_phone", None),),
     )
 
 

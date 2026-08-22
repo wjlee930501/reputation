@@ -205,3 +205,25 @@ def test_domain_setup_tracker_stays_pending_when_the_last_check_failed(monkeypat
     statuses = {item["key"]: item["status"] for item in payload["checklist"]}
     assert statuses["dns_verified"] == "PENDING"
     assert statuses["certificate_ready"] == "PENDING"
+
+
+def test_domain_setup_tracker_does_not_call_https_ready_on_a_dns_only_check(monkeypatch):
+    """A-1: CNAME 조회만으로 인증서 단계를 완료로 표시하면 안 된다."""
+    monkeypatch.setattr(settings, "CNAME_TARGET", "target.motionlabs.example")
+    hospital = _hospital(
+        site_live=True,
+        domain_cert_dns_verified_at=datetime(2026, 8, 22, 2, 0, tzinfo=timezone.utc),
+        domain_cert_job_state="ISSUING",
+        domain_last_checked_at=datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc),
+        # DNS 조회만 한 관측은 서빙 여부에 대해 판단 보류다.
+        domain_last_check_ok=None,
+        domain_last_check_reason="dns_ok",
+    )
+
+    response = _get_setup(hospital, monkeypatch)
+
+    payload = response.json()
+    assert payload["last_check_ok"] is None
+    statuses = {item["key"]: item["status"] for item in payload["checklist"]}
+    assert statuses["dns_verified"] == "DONE"
+    assert statuses["certificate_ready"] == "WAITING"

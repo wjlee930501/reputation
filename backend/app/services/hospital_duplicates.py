@@ -12,6 +12,7 @@ would attach a lead to somebody else's hospital, which is worse than a duplicate
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,8 +27,19 @@ def normalize_hospital_name(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip().lower()
 
 
-def _name_match_key(value: str | None) -> str:
+def hospital_name_match_key(value: str | None) -> str:
+    """이름 비교용 키. `/hospitals/new` 의 SQL 비교와 같은 정규화다."""
     return normalize_hospital_name(value).replace(" ", "")
+
+
+def matches_hospital_name(candidate: Any, name: str | None) -> bool:
+    """후보가 **이름**으로 일치했는지.
+
+    전화나 도메인이 같다는 사실은 "같은 병원일 수 있다"는 신호일 뿐이라 운영자 확인이
+    필요하지만, 정규화된 이름이 같으면 새 병원을 만드는 길 자체가 이미 막혀 있다.
+    """
+    key = hospital_name_match_key(name)
+    return bool(key) and hospital_name_match_key(getattr(candidate, "name", None)) == key
 
 
 def normalize_phone_digits(value: str | None) -> str:
@@ -58,7 +70,7 @@ async def find_duplicate_hospitals(
     """이름·전화·도메인 중 하나라도 정확히 일치하는 기존 병원."""
     filters = []
 
-    name_key = _name_match_key(name)
+    name_key = hospital_name_match_key(name)
     if name_key:
         filters.append(
             func.replace(func.lower(func.trim(Hospital.name)), " ", "") == name_key

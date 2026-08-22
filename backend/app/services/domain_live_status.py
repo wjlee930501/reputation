@@ -32,8 +32,8 @@ class LiveDomainCheck:
 
     ``proves_certificate`` separates the two kinds of evidence. A CNAME lookup
     only shows where the name points; an HTTPS tenant-marker response also shows
-    that TLS validated for the domain, so only the latter may declare the
-    certificate ready.
+    that TLS validated for the domain and that the platform routed it to this
+    hospital. Only the latter can say the public address is actually serving.
     """
 
     domain: str
@@ -45,6 +45,18 @@ class LiveDomainCheck:
 
 def normalize_domain(value: str | None) -> str:
     return (value or "").strip().lower().rstrip(".")
+
+
+def clear_live_domain_check(hospital: Any) -> None:
+    """Forget the observation when the domain it described is gone or replaced.
+
+    A new or disconnected domain must not inherit the previous domain's "healthy"
+    reading — that would show a never-checked address as 운영 중 from the moment it
+    is saved. Callers already reset ``domain_cert_*`` at the same points.
+    """
+    hospital.domain_last_checked_at = None
+    hospital.domain_last_check_ok = None
+    hospital.domain_last_check_reason = None
 
 
 def apply_live_domain_check(hospital: Any, check: LiveDomainCheck) -> bool:
@@ -59,8 +71,12 @@ def apply_live_domain_check(hospital: Any, check: LiveDomainCheck) -> bool:
 
     checked_at = check.checked_at or datetime.now(UTC)
     hospital.domain_last_checked_at = checked_at
-    hospital.domain_last_check_ok = check.healthy
     hospital.domain_last_check_reason = (check.reason or "")[:MAX_REASON_LENGTH] or None
+    # domain_last_check_ok 는 오직 "공개 주소가 실제로 이 병원을 서빙했다"만 뜻한다.
+    # CNAME 조회는 이름이 어디를 가리키는지만 보여줄 뿐 TLS도 라우팅도 증명하지 못하므로
+    # 판단 보류(None)로 남긴다 — True로 접으면 발급 중이거나 실패한 인증서를 화면에서
+    # '운영 중'으로 덮어써, 이 필드가 고치려던 거짓 표시를 반대 방향으로 되풀이한다.
+    hospital.domain_last_check_ok = check.healthy if check.proves_certificate else None
 
     if not check.healthy:
         # 실패는 저장된 상태를 되돌리지 않는다. 한 번의 타임아웃으로 DNS 검증 이력을

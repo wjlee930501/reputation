@@ -199,6 +199,40 @@ def test_unmeasured_targets_do_not_outrank_real_exposure_gaps():
     assert recommendations[-1].gap_type == "TARGET_NOT_MEASURED"
 
 
+def test_unmeasured_high_priority_targets_cannot_fill_the_whole_creation_budget():
+    """A-2: HIGH 우선순위 미측정 질문이 NORMAL 질문의 실제 갭을 큐에서 밀어내면 안 된다.
+
+    V0 시드는 미측정 질문을 전부 HIGH로 만든다. 질문 우선순위가 심각도보다 앞서 정렬되면
+    ensure_hospital_exposure_actions의 max_create=12가 전부 '아직 측정 안 됨'으로 차서,
+    운영자는 실제로 관측된 미언급 갭을 영영 보지 못한다.
+    """
+    max_create = 12
+    hospital_id = uuid.uuid4()
+
+    unmeasured = []
+    for index in range(20):
+        target = _target(priority="HIGH", target_month="2026-05")
+        target.hospital_id = hospital_id
+        target.name = f"미측정 질문 {index:02d}"
+        unmeasured.append(target)
+
+    real_gap = _target(priority="NORMAL", target_month="2026-05")
+    real_gap.hospital_id = hospital_id
+    real_gap.name = "실제 미언급 질문"
+    records = [_record(real_gap.id, is_mentioned=False, source_urls=["https://example.test"])]
+
+    recommendations = build_exposure_recommendations(
+        [*unmeasured, real_gap], records, today=date(2026, 5, 3)
+    )
+
+    created = recommendations[:max_create]
+    created_types = [item.gap_type for item in created]
+    assert "MISSING_MENTION" in created_types
+    assert created[0].query_target_id == real_gap.id
+    # 미측정 항목이 예산 전부를 가져가지 않았는지도 함께 고정한다.
+    assert created_types.count("TARGET_NOT_MEASURED") < max_create
+
+
 def test_target_with_only_failed_measurements_still_reports_no_successful_measurement():
     """이 타깃만 전부 실패한 경우는 여전히 '성공 측정 없음'이 사실이다."""
     target = _target(priority="HIGH", target_month="2026-05")

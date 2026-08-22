@@ -8,6 +8,47 @@
  * 계산해 승인 버튼과 화면 문구가 같은 사실을 쓰게 한다.
  */
 
+interface IdentifiedNote {
+  id: string
+}
+
+/**
+ * 자료별 근거 노트 보관함을 다시 불러온 결과로 **교체**한다.
+ *
+ * 노트 id를 키로 병합하면, 자료를 다시 처리해 노트가 새로 만들어졌을 때 사라진 옛
+ * 노트가 화면에 그대로 남는다. 그러면 초안이 참조하는 죽은 id가 해석에 성공한 것처럼
+ * 보여, 승인 잠금이 정확히 막아야 할 상황에서 풀린다.
+ *
+ * 불러오지 못한 자료는 보관함에서 지운다 — 확인하지 못한 자료의 옛 노트가 방금 읽어온
+ * 사실인 척하면 안 된다.
+ */
+export function replaceSourceNotes<T extends IdentifiedNote>(
+  previous: ReadonlyMap<string, T[]>,
+  results: ReadonlyArray<{ sourceId: string; notes: T[] | null }>,
+): Map<string, T[]> {
+  const next = new Map(previous)
+  for (const result of results) {
+    if (result.notes === null) next.delete(result.sourceId)
+    else next.set(result.sourceId, result.notes)
+  }
+  return next
+}
+
+/** 자료별 보관함을 노트 id 조회용으로 펼친다. 뒤에 오는 목록이 앞을 덮는다. */
+export function indexNotesById<T extends IdentifiedNote>(
+  bySource: ReadonlyMap<string, T[]>,
+  ...overlays: ReadonlyArray<readonly T[] | null | undefined>
+): Map<string, T> {
+  const index = new Map<string, T>()
+  for (const notes of bySource.values()) {
+    for (const note of notes) index.set(note.id, note)
+  }
+  for (const overlay of overlays) {
+    for (const note of overlay ?? []) index.set(note.id, note)
+  }
+  return index
+}
+
 export interface EvidenceMapResolution {
   /** evidence_map이 참조하는 노트 참조의 총 개수 (중복 포함 — 화면 항목 수와 같다). */
   total: number

@@ -1,6 +1,9 @@
 """F-1: 병원 중복 판정은 모든 생성 경로에서 같은 규칙이어야 한다."""
 
+from types import SimpleNamespace
+
 from app.services.hospital_duplicates import (
+    matches_hospital_name,
     normalize_hospital_name,
     normalize_phone_digits,
     usable_phone_digits,
@@ -28,6 +31,19 @@ def test_only_values_that_can_be_a_phone_number_are_matched():
     assert usable_phone_digits("123") is None
     assert usable_phone_digits("") is None
     assert usable_phone_digits(None) is None
+
+
+def test_only_a_name_match_is_strong_enough_to_link_without_asking():
+    """전화·도메인 일치는 후보 신호일 뿐이다 — 자동 연결은 이름이 같을 때만."""
+    same_name = SimpleNamespace(name="장편한 외과의원", phone=None)
+    other_name = SimpleNamespace(name="전혀 다른 의원", phone="02-123-4567")
+
+    assert matches_hospital_name(same_name, "장편한외과의원") is True
+    assert matches_hospital_name(other_name, "장편한외과의원") is False
+    # 비교할 이름이 없으면 일치로 볼 근거도 없다.
+    assert matches_hospital_name(same_name, None) is False
+    assert matches_hospital_name(same_name, "   ") is False
+    assert matches_hospital_name(SimpleNamespace(name=None), "장편한외과의원") is False
 
 
 def test_hospital_create_and_lead_conversion_share_one_matcher():

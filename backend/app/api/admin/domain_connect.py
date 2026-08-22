@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.hospital import DomainDnsStrategy, DomainManagementMode, Hospital
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.domain_live_status import clear_live_domain_check
 from app.services.hospital_lifecycle import activation_gate_error, evaluate_activation_gate
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
@@ -44,6 +45,9 @@ async def disconnect_domain(
     h.domain_cert_job_token = None
     h.domain_cert_job_domain = None
     h.domain_cert_dns_verified_at = None
+    # 사라진 도메인의 관측 결과를 남겨두면 다음에 연결하는 도메인이 확인된 적도 없이
+    # '운영 중'을 물려받는다.
+    clear_live_domain_check(h)
     
     # site_live는 유지 (기본 플랫폼 주소로 계속 운영)
     # 커스텀 도메인만 해제하고 ACTIVE 상태는 그대로
@@ -128,6 +132,8 @@ async def connect_domain(
         h.domain_cert_job_token = None
         h.domain_cert_job_domain = None
         h.domain_cert_dns_verified_at = None
+        # 이전 도메인·전략에 대한 관측이므로 새 설정을 설명하지 못한다.
+        clear_live_domain_check(h)
     if previous_site_live:
         ensure_site_revalidate_configured()
 

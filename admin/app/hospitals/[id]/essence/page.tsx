@@ -7,6 +7,8 @@ import { persistThenApprove } from '@/lib/operator-safety'
 import {
   evidenceApprovalBlockers,
   evidenceResolutionSummary,
+  indexNotesById,
+  replaceSourceNotes,
   resolveEvidenceMap,
 } from '@/lib/essence-evidence'
 import {
@@ -140,14 +142,19 @@ export default function EssencePage() {
   // 목록 API는 노트 본문을 주지 않는다(evidence_notes: null). 초안의 evidence_map은
   // 노트 UUID만 담고 있으므로, 자료 상세를 따로 읽지 않으면 모든 항목이 해석 실패로
   // 보인다 — 오른쪽 패널 24개가 전부 "다시 불러와 확인이 필요합니다."였던 원인이다.
-  const [evidenceNotes, setEvidenceNotes] = useState<Map<string, EvidenceNote>>(new Map())
+  // 노트는 **자료별**로 들고 있다가 통째로 교체한다. id를 키로 병합하면 자료를 다시
+  // 처리해 사라진 옛 노트가 남아, 죽은 참조가 해석에 성공한 것처럼 보인다.
+  const [evidenceNotesBySource, setEvidenceNotesBySource] = useState<Map<string, EvidenceNote[]>>(
+    new Map(),
+  )
   const [evidenceLoading, setEvidenceLoading] = useState(false)
   const [evidenceFailedSourceIds, setEvidenceFailedSourceIds] = useState<string[]>([])
 
   const loadEvidenceNotes = useCallback(async (sourceIds: string[]) => {
     if (sourceIds.length === 0) {
-      setEvidenceLoading(false)
+      setEvidenceNotesBySource(new Map())
       setEvidenceFailedSourceIds([])
+      setEvidenceLoading(false)
       return
     }
     setEvidenceLoading(true)
@@ -161,13 +168,7 @@ export default function EssencePage() {
         }
       }),
     )
-    setEvidenceNotes((prev) => {
-      const next = new Map(prev)
-      for (const result of results) {
-        for (const note of result.notes ?? []) next.set(note.id, note)
-      }
-      return next
-    })
+    setEvidenceNotesBySource((prev) => replaceSourceNotes(prev, results))
     setEvidenceFailedSourceIds(results.filter((result) => result.notes === null).map((r) => r.sourceId))
     setEvidenceLoading(false)
   }, [id])
@@ -222,14 +223,11 @@ export default function EssencePage() {
     () => philosophies.find((item) => item.id === selectedDraftId) ?? null,
     [philosophies, selectedDraftId]
   )
-  const evidenceNoteById = useMemo(() => {
-    const entries = [
-      ...evidenceNotes.values(),
-      ...sources.flatMap((source) => source.evidence_notes ?? []),
-      ...(selectedSource?.evidence_notes ?? []),
-    ].map((note) => [note.id, note] as const)
-    return new Map(entries)
-  }, [evidenceNotes, sources, selectedSource])
+  const evidenceNoteById = useMemo(
+    // selectedSource는 방금 읽어온 상세라 같은 자료의 보관함보다 최신이다.
+    () => indexNotesById(evidenceNotesBySource, selectedSource?.evidence_notes),
+    [evidenceNotesBySource, selectedSource],
+  )
   const evidenceApproval = useMemo(
     () => ({
       resolution: resolveEvidenceMap(selectedDraft?.evidence_map, evidenceNoteById),

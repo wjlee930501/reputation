@@ -298,3 +298,57 @@ test('customDomainPanelStatus keeps the unsaved and empty branches ahead of live
     'issuing',
   )
 })
+
+test('a DNS-only observation never outranks an issuing or failed certificate', () => {
+  // CNAME 조회는 TLS도 라우팅도 증명하지 않는다. 백엔드가 그런 관측에 대해 ok를
+  // null(판단 보류)로 남기므로, 화면은 인증서 상태를 그대로 말해야 한다.
+  for (const [certState, label, tone] of [
+    ['ISSUING', '인증서 발급 중', 'issuing'],
+    ['FAILED', '인증서 실패', 'failed'],
+  ] as const) {
+    const hospital = {
+      slug: 'clinic',
+      aeo_domain: 'clinic.example.com',
+      site_live: true,
+      domain_cert_dns_verified_at: '2026-08-22T02:00:00Z',
+      domain_cert_job_state: certState,
+      domain_last_checked_at: '2026-08-22T03:00:00Z',
+      domain_last_check_ok: null,
+    }
+
+    const status = readHospitalDomainStatus(hospital)
+    assert.equal(status.label, label)
+    assert.equal(status.tone, tone)
+    // 마지막 확인 시각은 여전히 보여주되, 결과를 '정상'이라고 단정하지 않는다.
+    assert.match(status.detail, /마지막 확인 /)
+    assert.doesNotMatch(status.detail, /응답 정상/)
+
+    assert.notEqual(domainHeaderStatus(hospital), '운영 중')
+    assert.equal(domainHeaderIsLive(hospital), false)
+    assert.equal(
+      customDomainPanelStatus({
+        hasUnsavedChange: false,
+        domainSaved: true,
+        activationReady: true,
+        domain_cert_job_state: certState,
+        domain_cert_dns_verified_at: hospital.domain_cert_dns_verified_at,
+        domain_last_check_ok: null,
+      }),
+      certState === 'ISSUING' ? 'issuing' : 'failed',
+    )
+  }
+})
+
+test('a DNS-only observation on a domain with no certificate state stays 확인 대기', () => {
+  const status = readHospitalDomainStatus({
+    slug: 'clinic',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    domain_cert_dns_verified_at: '2026-08-22T02:00:00Z',
+    domain_last_checked_at: '2026-08-22T03:00:00Z',
+    domain_last_check_ok: null,
+  })
+
+  assert.equal(status.label, 'DNS 확인 완료')
+  assert.equal(status.tone, 'dns_verified')
+})
