@@ -24,6 +24,7 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import get_essence_readiness
+from app.services.photo_assets import effective_photo_metadata
 from app.utils.domain import normalize_domain
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden
@@ -372,9 +373,13 @@ def _serialize_hospital(
 
     # 인물 identity는 공개 토글만으로 부족하다. 실제 인물 확인과 사용 위치 승인이
     # source_metadata에 함께 있어야 원장 사진/Physician image로 내보낸다.
+    # 분류 이전에 저장된 사진은 저장을 바꾸지 않고 읽기 시점에만 보수적 역할을 채워,
+    # 공개 표면이 빈 메타데이터를 관대하게 해석하지 않아도 되게 한다.
     def photo_metadata(asset: HospitalSourceAsset) -> dict:
-        metadata = getattr(asset, "source_metadata", None)
-        return metadata if isinstance(metadata, dict) else {}
+        return effective_photo_metadata(
+            asset.source_type,
+            getattr(asset, "source_metadata", None),
+        )
 
     doctor_asset = next(
         (

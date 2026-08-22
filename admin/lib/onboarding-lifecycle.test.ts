@@ -57,6 +57,64 @@ test('onboarding follows the operator sequence and separates recurring outcomes'
   assert.equal(deriveOnboardingSummary(steps, readiness).stateLabel, '정기 운영 중')
 })
 
+// KEEP-8: 온보딩은 8단계다. 단계를 추가·합치거나 순서를 바꾸면 운영자가 외운 흐름과
+// 화면의 "온보딩 N / 8" 표기가 동시에 깨진다. 새 요구사항은 기존 단계 안에서 처리한다.
+test('onboarding stays at exactly eight steps — never a ninth', () => {
+  const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', acceptedHandoff)
+  const onboarding = steps.filter((step) => step.phase === 'onboarding')
+
+  assert.equal(onboarding.length, 8)
+  assert.equal(steps.filter((step) => step.phase === 'post_onboarding').length, 2)
+})
+
+test('the onboarding order is fixed and its indexes stay contiguous from zero', () => {
+  const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', acceptedHandoff)
+  const onboarding = steps.filter((step) => step.phase === 'onboarding')
+
+  assert.deepEqual(
+    onboarding.map((step) => step.key),
+    ['handoff', 'profile', 'v0', 'site', 'live', 'processing', 'philosophy_approved', 'schedule'],
+  )
+  assert.deepEqual(
+    onboarding.map((step) => step.index),
+    [0, 1, 2, 3, 4, 5, 6, 7],
+  )
+  // 후속 성과는 온보딩 8단계 뒤에 붙고, 그 안으로 끼어들지 않는다.
+  assert.deepEqual(
+    steps.filter((step) => step.phase === 'post_onboarding').map((step) => step.index),
+    [8, 9],
+  )
+})
+
+test('the hub owns the onboarding sequence and step keys never duplicate', () => {
+  const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', acceptedHandoff)
+
+  assert.equal(new Set(steps.map((step) => step.key)).size, steps.length)
+  // 자료 수집·처리는 허브 안에서 항상 펼쳐지는 6번째 단계다.
+  assert.equal(
+    steps.find((step) => step.key === 'processing')?.index,
+    5,
+  )
+})
+
+test('the derived step order does not depend on which flags are already done', () => {
+  const fresh = deriveOnboardingSteps(
+    { profile_complete: false, v0_report_done: false, site_built: false, site_live: false, schedule_set: false },
+    [],
+    [],
+    null,
+    'hospital-id',
+    null,
+  )
+  const finished = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', acceptedHandoff)
+
+  assert.deepEqual(
+    fresh.map((step) => step.key),
+    finished.map((step) => step.key),
+  )
+  assert.equal(fresh.filter((step) => step.phase === 'onboarding').length, 8)
+})
+
 test('an unaccepted handoff is the first blocker and exposes one recovery action', () => {
   const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', {
     ...acceptedHandoff,

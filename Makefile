@@ -72,6 +72,11 @@ admin-create-owner:
 copy-guard:
 	python3 scripts/check_user_facing_terms.py
 
+# 운영 중인 병원의 공개 표면 시각 승인(로고·대표색·카피·접근 유형) 상태 점검.
+# 사진은 필수가 아니므로 판정에 넣지 않는다.
+clinic-visual-readiness:
+	python3 scripts/check_clinic_visual_readiness.py
+
 # ── 수동 태스크 실행 ───────────────────────────────────────────────
 v0:
 	@read -p "Hospital ID: " id; \

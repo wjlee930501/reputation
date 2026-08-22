@@ -25,7 +25,53 @@ test('clinic theme accepts valid hospital colors and rejects malformed values', 
     brand_accent_color: 'gold',
   })
   assert.equal(fallback['--clinic-brand'], '#17365D')
-  assert.equal(fallback['--clinic-accent'], '#B79045')
+})
+
+test('one approved primary is enough — the whole ramp derives from it', () => {
+  // AE가 로고와 대표색 하나만 승인한 병원.
+  const theme = buildClinicThemeStyle({
+    brand_primary_color: '#6F8A56',
+    brand_accent_color: null,
+  })
+
+  // 시스템이 두 번째 브랜드 색을 지어내지 않는다.
+  assert.equal(theme['--clinic-accent'], '#6F8A56')
+
+  // 그리고 표면이 읽는 단계가 전부 채워진다.
+  const rampTokens: Array<`--clinic-${string}`> = [
+    '--clinic-brand-strong',
+    '--clinic-brand-action',
+    '--clinic-brand-hover',
+    '--clinic-brand-edge',
+    '--clinic-brand-veil',
+    '--clinic-brand-soft',
+    '--clinic-brand-tint',
+    '--clinic-line',
+  ]
+  for (const token of rampTokens) {
+    assert.match(theme[token], /^#[0-9A-F]{6}$/, `${token}이 파생되지 않았다`)
+  }
+})
+
+test('the derived ramp keeps every text pairing above its contrast floor', () => {
+  for (const primary of ['#17365D', '#D6A72C', '#6F8A56', '#000000', '#FFFF00', '#7C3AED']) {
+    const theme = buildClinicThemeStyle({
+      brand_primary_color: primary,
+      brand_accent_color: null,
+    })
+    const label = `primary ${primary}`
+
+    // 채워진 표면은 본문급 대비, 링크·CTA는 WCAG AA.
+    assert.ok(contrastRatio(theme['--clinic-brand-strong'], theme['--clinic-paper']) >= 7, label)
+    assert.ok(contrastRatio(theme['--clinic-brand-action'], theme['--clinic-paper']) >= 4.5, label)
+    assert.ok(contrastRatio(theme['--clinic-brand-action'], theme['--clinic-on-brand']) >= 4.5, label)
+    assert.ok(
+      contrastRatio(theme['--clinic-brand-strong'], theme['--clinic-on-brand-strong']) >= 4.5,
+      label,
+    )
+    assert.ok(contrastRatio(theme['--clinic-on-brand-soft'], theme['--clinic-brand-soft']) >= 4.5, label)
+    assert.ok(contrastRatio(theme['--clinic-focus'], theme['--clinic-paper']) >= 3, label)
+  }
 })
 
 test('light clinic colors receive a readable action foreground without erasing the brand', () => {
@@ -41,6 +87,20 @@ test('light clinic colors receive a readable action foreground without erasing t
   assert.ok(contrastRatio(theme['--clinic-brand-action'], theme['--clinic-paper']) >= 4.5)
   assert.ok(contrastRatio(theme['--clinic-brand-action'], theme['--clinic-on-brand']) >= 4.5)
   assert.ok(contrastRatio(theme['--clinic-focus'], theme['--clinic-paper']) >= 3)
+})
+
+test('two hospitals with different approved primaries do not render the same ramp', () => {
+  const gold = buildClinicThemeStyle({ brand_primary_color: '#D6A72C', brand_accent_color: null })
+  const navy = buildClinicThemeStyle({ brand_primary_color: '#17365D', brand_accent_color: null })
+
+  const distinguishing: Array<`--clinic-${string}`> = [
+    '--clinic-brand-action',
+    '--clinic-brand-soft',
+    '--clinic-line',
+  ]
+  for (const token of distinguishing) {
+    assert.notEqual(gold[token], navy[token], `${token}이 병원별로 갈리지 않는다`)
+  }
 })
 
 test('hero imagery never invents a clinic photograph when no verified facility asset exists', () => {

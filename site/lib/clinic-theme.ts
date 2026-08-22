@@ -3,12 +3,16 @@ import type { CSSProperties } from 'react'
 import { resolveAssetUrl, type Hospital } from './hospital-payload.ts'
 
 export const DEFAULT_CLINIC_PRIMARY = '#17365D'
-export const DEFAULT_CLINIC_ACCENT = '#B79045'
 
 const CLINIC_INK = '#0A1B2F'
 const CLINIC_PAPER = '#FBFAF7'
 const WHITE = '#FFFFFF'
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
+
+/** 채워진 표면·본문급 텍스트에 쓰는 단계는 종이 대비 7:1을 넘긴다. */
+const STRONG_CONTRAST = 7
+/** 링크·CTA 단계는 종이 대비 WCAG AA 4.5:1을 넘긴다. */
+const ACTION_CONTRAST = 4.5
 
 type Rgb = Readonly<{ red: number; green: number; blue: number }>
 type ThemeStyle = CSSProperties & Record<`--clinic-${string}`, string>
@@ -81,30 +85,56 @@ function readableForeground(background: string): string {
     : CLINIC_INK
 }
 
+/**
+ * 승인된 대표색 하나에서 병원 표면 전체가 쓰는 단계를 파생한다.
+ *
+ * AE는 로고와 대표색 하나만 승인하고, 밝기 단계와 대비 안전 색상은 여기서 만든다.
+ * 병원별로 임의의 색을 페이지에 직접 뿌리지 않기 위해 CSS는 이 토큰만 참조한다.
+ */
 export function buildClinicThemeStyle(
   hospital: Pick<Hospital, 'brand_primary_color' | 'brand_accent_color'>,
 ): ThemeStyle {
   const brand = normalizeClinicColor(hospital.brand_primary_color, DEFAULT_CLINIC_PRIMARY)
-  const accent = normalizeClinicColor(hospital.brand_accent_color, DEFAULT_CLINIC_ACCENT)
-  const action = contrastSafeColor(brand, CLINIC_PAPER, 4.5)
-  const onBrand = readableForeground(action)
-  const focus = contrastRatio(accent, CLINIC_PAPER) >= 3 ? accent : CLINIC_INK
+  const action = contrastSafeColor(brand, CLINIC_PAPER, ACTION_CONTRAST)
+  const strong = contrastSafeColor(brand, CLINIC_PAPER, STRONG_CONTRAST)
+  const hover = mixHex(action, CLINIC_INK, 0.14)
+  const soft = mixHex(brand, CLINIC_PAPER, 0.88)
+  const tint = mixHex(brand, CLINIC_PAPER, 0.94)
+  const veil = mixHex(brand, CLINIC_PAPER, 0.62)
+  const edge = mixHex(brand, CLINIC_PAPER, 0.45)
+  const line = mixHex(brand, CLINIC_PAPER, 0.78)
+
+  // 두 번째 브랜드 색을 새로 만들지 않는다. 승인된 accent가 없으면 대표색에서 파생한다.
+  const accent = normalizeClinicColor(hospital.brand_accent_color, brand)
+  const focus = contrastRatio(accent, CLINIC_PAPER) >= 3 ? accent : strong
 
   return {
     '--clinic-brand': brand,
     '--clinic-primary': brand,
     '--clinic-accent': accent,
+    '--clinic-brand-strong': strong,
     '--clinic-brand-action': action,
-    '--clinic-brand-hover': mixHex(action, CLINIC_INK, 0.14),
-    '--clinic-brand-soft': mixHex(brand, CLINIC_PAPER, 0.88),
-    '--clinic-on-brand': onBrand,
+    '--clinic-brand-hover': hover,
+    '--clinic-brand-edge': edge,
+    '--clinic-brand-veil': veil,
+    '--clinic-brand-soft': soft,
+    '--clinic-brand-tint': tint,
+    '--clinic-on-brand': readableForeground(action),
+    '--clinic-on-brand-strong': readableForeground(strong),
+    '--clinic-on-brand-soft': contrastSafeColor(brand, soft, ACTION_CONTRAST),
     '--clinic-ink': CLINIC_INK,
     '--clinic-paper': CLINIC_PAPER,
-    '--clinic-line': mixHex(brand, CLINIC_PAPER, 0.78),
+    '--clinic-line': line,
     '--clinic-focus': focus,
+    // 병원 표면에 남아 있는 legacy Revisit 팔레트 슬롯을 같은 ramp로 잇는다.
+    '--clinic-revisit-primary-95': tint,
+    '--clinic-revisit-primary-90': soft,
+    '--clinic-revisit-primary-70': veil,
+    '--clinic-revisit-primary-50': edge,
     '--clinic-revisit-primary-40': action,
-    '--clinic-revisit-primary-30': mixHex(action, CLINIC_INK, 0.16),
-    '--clinic-revisit-primary-10': CLINIC_INK,
+    '--clinic-revisit-primary-30': hover,
+    '--clinic-revisit-primary-20': strong,
+    '--clinic-revisit-primary-10': strong,
   }
 }
 
