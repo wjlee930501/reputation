@@ -157,18 +157,37 @@ test('reloading one source leaves the other sources untouched', () => {
   assert.deepEqual(after.get(SOURCE_B), [{ id: NOTE_B }])
 })
 
-test('indexNotesById lets a freshly fetched source detail win over the stored copy', () => {
-  const stored = new Map([[SOURCE_A, [{ id: NOTE_A, claim: '옛 문구' }]]])
+test('indexNotesById reflects only the per-source store, with no side entrance', () => {
+  // 보관함 밖의 노트를 얹을 수 있으면, 다시 불러오기로 지운 옛 노트가 그 경로로
+  // 되살아나 죽은 참조가 해석에 성공한 것처럼 보인다.
+  assert.equal(indexNotesById.length, 1)
 
-  const index = indexNotesById(stored, [{ id: NOTE_A, claim: '새 문구' }])
+  const stored = new Map([
+    [SOURCE_A, [{ id: NOTE_A }]],
+    [SOURCE_B, [{ id: NOTE_B }]],
+  ])
 
-  assert.equal(index.get(NOTE_A)?.claim, '새 문구')
+  assert.deepEqual([...indexNotesById(stored).keys()].sort(), [NOTE_A, NOTE_B].sort())
+  assert.equal(indexNotesById(new Map()).size, 0)
 })
 
-test('indexNotesById tolerates a missing overlay', () => {
-  const stored = new Map([[SOURCE_A, [{ id: NOTE_A }]]])
+test('a source dropped by a failed reload disappears from the index immediately', () => {
+  const stored = new Map([
+    [SOURCE_A, [{ id: NOTE_A }]],
+    [SOURCE_B, [{ id: NOTE_B }]],
+  ])
 
-  assert.equal(indexNotesById(stored, null).size, 1)
-  assert.equal(indexNotesById(stored, undefined).size, 1)
-  assert.equal(indexNotesById(new Map()).size, 0)
+  const after = replaceSourceNotes(stored, [{ sourceId: SOURCE_A, notes: null }])
+  const index = indexNotesById(after)
+
+  assert.equal(index.has(NOTE_A), false)
+  assert.equal(index.has(NOTE_B), true)
+  // 그 자료를 참조하던 항목은 미해석으로 남아 승인이 잠긴다.
+  const blockers = evidenceApprovalBlockers({
+    resolution: resolveEvidenceMap({ positioning: [NOTE_A] }, index),
+    loading: false,
+    loadFailed: true,
+  })
+  assert.equal(blockers.length, 1)
+  assert.match(blockers[0], /근거 노트 다시 불러오기/)
 })

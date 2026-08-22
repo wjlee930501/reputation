@@ -27,8 +27,36 @@ test('a reload replaces the notes of the sources it read, keyed by source', () =
   // id를 키로 병합하면 자료 재처리로 사라진 노트가 남아 죽은 참조가 해석에 성공한
   // 것처럼 보이고, 승인 잠금이 막아야 할 상황에서 풀린다.
   assert.match(page, /useState<Map<string, EvidenceNote\[\]>>/)
-  assert.match(page, /setEvidenceNotesBySource\(\(prev\) => replaceSourceNotes\(prev, results\)\)/)
-  assert.match(page, /indexNotesById\(evidenceNotesBySource, selectedSource\?\.evidence_notes\)/)
+  assert.match(page, /setEvidenceNotesBySource\(\(prev\) => replaceSourceNotes\(/)
+})
+
+test('a full refresh rebuilds the store so removed sources leave no notes behind', () => {
+  // 제외된 자료의 노트가 남으면, 서버가 그 초안의 근거로 인정하지 않는 노트를 화면만
+  // 해석에 성공한 것으로 보여준다.
+  assert.match(page, /replaceSourceNotes\(replaceAll \? new Map\(\) : prev, results\)/)
+  assert.match(page, /\{ replaceAll: true \},/)
+  // 재시도는 실패한 자료만 다루므로 나머지 보관함을 유지한다.
+  assert.match(page, /return loadEvidenceNotes\(retryIds\)/)
+})
+
+test('the per-source store is the only source of notes on this screen', () => {
+  // 목록·상세 응답의 노트를 덧씌우거나 그대로 그리면, 다시 불러오기로 지운 옛 노트가
+  // 그 경로로 되살아난다.
+  assert.match(page, /indexNotesById\(evidenceNotesBySource\)/)
+  assert.match(page, /evidenceNotesBySource\.get\(selectedSource\.id\) \?\? \[\]/)
+  assert.match(page, /<EvidenceList notes=\{selectedSourceNotes\} \/>/)
+  assert.doesNotMatch(page, /selectedSource\?\.evidence_notes/)
+  assert.doesNotMatch(page, /notes=\{selectedSource\.evidence_notes/)
+})
+
+test('a directly fetched source detail is written back into the store', () => {
+  // 상세를 화면 상태로만 들고 있으면 근거 패널과 자료 패널이 다른 노트를 보게 된다.
+  assert.match(page, /const rememberSourceDetail = useCallback\(\(detail: SourceAsset\) => \{/)
+  assert.match(page, /replaceSourceNotes\(prev, \[\{ sourceId: detail\.id, notes: detail\.evidence_notes \?\? \[\] \}\]\)/)
+  const openSource = page.slice(page.indexOf('async function openSource('))
+  assert.match(openSource.slice(0, 500), /rememberSourceDetail\(detail\)/)
+  const processSource = page.slice(page.indexOf('async function processSource('))
+  assert.match(processSource.slice(0, 700), /rememberSourceDetail\(detail\)/)
 })
 
 test('the evidence panel exposes a retry control', () => {

@@ -150,9 +150,12 @@ export default function EssencePage() {
   const [evidenceLoading, setEvidenceLoading] = useState(false)
   const [evidenceFailedSourceIds, setEvidenceFailedSourceIds] = useState<string[]>([])
 
-  const loadEvidenceNotes = useCallback(async (sourceIds: string[]) => {
+  const loadEvidenceNotes = useCallback(async (
+    sourceIds: string[],
+    { replaceAll = false }: { replaceAll?: boolean } = {},
+  ) => {
     if (sourceIds.length === 0) {
-      setEvidenceNotesBySource(new Map())
+      if (replaceAll) setEvidenceNotesBySource(new Map())
       setEvidenceFailedSourceIds([])
       setEvidenceLoading(false)
       return
@@ -168,10 +171,22 @@ export default function EssencePage() {
         }
       }),
     )
-    setEvidenceNotesBySource((prev) => replaceSourceNotes(prev, results))
+    // 전체 새로고침은 빈 보관함에서 다시 쌓는다. 제외되거나 목록에서 사라진 자료의 노트가
+    // 남아 있으면, 서버가 그 초안의 근거로 인정하지 않는 노트를 화면만 해석에 성공한
+    // 것으로 보여준다. 재시도는 실패한 자료만 다루므로 나머지를 유지한다.
+    setEvidenceNotesBySource((prev) => replaceSourceNotes(replaceAll ? new Map() : prev, results))
     setEvidenceFailedSourceIds(results.filter((result) => result.notes === null).map((r) => r.sourceId))
     setEvidenceLoading(false)
   }, [id])
+
+  // 자료 상세를 직접 읽어온 경우에도 보관함이 유일한 출처로 남게 한다. 상세 응답을 화면
+  // 상태로만 들고 있으면 근거 패널과 자료 패널이 서로 다른 노트를 보게 된다.
+  const rememberSourceDetail = useCallback((detail: SourceAsset) => {
+    setEvidenceNotesBySource((prev) =>
+      replaceSourceNotes(prev, [{ sourceId: detail.id, notes: detail.evidence_notes ?? [] }]),
+    )
+    setEvidenceFailedSourceIds((prev) => prev.filter((sourceId) => sourceId !== detail.id))
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -203,6 +218,7 @@ export default function EssencePage() {
         (Array.isArray(sourceData) ? sourceData : [])
           .filter((source: SourceAsset) => (source.evidence_note_count ?? 0) > 0)
           .map((source: SourceAsset) => source.id),
+        { replaceAll: true },
       )
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '콘텐츠 운영 기준 데이터를 불러오지 못했습니다.')
@@ -223,9 +239,14 @@ export default function EssencePage() {
     () => philosophies.find((item) => item.id === selectedDraftId) ?? null,
     [philosophies, selectedDraftId]
   )
+  // 근거 해석은 자료별 보관함만 본다. 목록·상세 응답에 실려 온 노트를 덧씌우면, 다시
+  // 불러오기로 지운 옛 노트가 그 경로로 되살아나 죽은 참조가 해석에 성공한 것처럼 보인다.
   const evidenceNoteById = useMemo(
-    // selectedSource는 방금 읽어온 상세라 같은 자료의 보관함보다 최신이다.
-    () => indexNotesById(evidenceNotesBySource, selectedSource?.evidence_notes),
+    () => indexNotesById(evidenceNotesBySource),
+    [evidenceNotesBySource],
+  )
+  const selectedSourceNotes = useMemo(
+    () => (selectedSource ? evidenceNotesBySource.get(selectedSource.id) ?? [] : []),
     [evidenceNotesBySource, selectedSource],
   )
   const evidenceApproval = useMemo(
@@ -317,6 +338,9 @@ export default function EssencePage() {
         method: 'POST',
       })
       setSelectedSource(detail)
+      // 재처리는 옛 노트를 지우고 새 id를 만든다. 보관함을 그 자리에서 교체해야
+      // 사라진 노트가 근거 해석에 남지 않는다.
+      rememberSourceDetail(detail)
       setNotice('근거 추출이 완료되었습니다.')
       await load()
     } catch (e: unknown) {
@@ -332,6 +356,7 @@ export default function EssencePage() {
     try {
       const detail = await fetchAPI<SourceAsset>(`/admin/hospitals/${id}/essence/sources/${sourceId}`)
       setSelectedSource(detail)
+      rememberSourceDetail(detail)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '자료 상세를 불러오지 못했습니다.')
     } finally {
@@ -761,7 +786,7 @@ export default function EssencePage() {
               aria-label="닫기"
             >×</button>
           </div>
-          <EvidenceList notes={selectedSource.evidence_notes ?? []} />
+          <EvidenceList notes={selectedSourceNotes} />
         </section>
       )}
 

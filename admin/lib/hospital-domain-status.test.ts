@@ -352,3 +352,100 @@ test('a DNS-only observation on a domain with no certificate state stays 확인 
   assert.equal(status.label, 'DNS 확인 완료')
   assert.equal(status.tone, 'dns_verified')
 })
+
+// ── 인증서 발급 중·실패는 마지막 관측이 정상이어도 가려지지 않는다 ──────────────
+
+function panelStatusOf(hospital: {
+  domain_cert_job_state?: string | null
+  domain_cert_dns_verified_at?: string | null
+  domain_last_check_ok?: boolean | null
+}) {
+  return customDomainPanelStatus({
+    hasUnsavedChange: false,
+    domainSaved: true,
+    activationReady: true,
+    domain_cert_job_state: hospital.domain_cert_job_state,
+    domain_cert_dns_verified_at: hospital.domain_cert_dns_verified_at,
+    domain_last_check_ok: hospital.domain_last_check_ok,
+  })
+}
+
+test('a healthy live check does not hide a certificate that is still issuing', () => {
+  // 도메인이 지금 응답한다는 사실과 인증서 발급이 끝났다는 사실은 다르다. 발급 중
+  // 배지를 관측으로 덮으면 운영자가 지연을 알아챌 화면이 사라진다.
+  const hospital = {
+    slug: 'clinic',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    domain_cert_dns_verified_at: '2026-08-22T02:00:00Z',
+    domain_cert_job_state: 'ISSUING',
+    domain_last_checked_at: '2026-08-22T03:00:00Z',
+    domain_last_check_ok: true,
+  }
+
+  const status = readHospitalDomainStatus(hospital)
+  assert.equal(status.label, '인증서 발급 중')
+  assert.equal(status.tone, 'issuing')
+
+  assert.equal(domainHeaderStatus(hospital), 'DNS 확인 완료 · 인증서 발급 중')
+  assert.equal(domainHeaderIsLive(hospital), false)
+  assert.equal(panelStatusOf(hospital), 'issuing')
+})
+
+test('a healthy live check does not hide a failed certificate', () => {
+  const hospital = {
+    slug: 'clinic',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    domain_cert_dns_verified_at: '2026-08-22T02:00:00Z',
+    domain_cert_job_state: 'FAILED',
+    domain_last_checked_at: '2026-08-22T03:00:00Z',
+    domain_last_check_ok: true,
+  }
+
+  const status = readHospitalDomainStatus(hospital)
+  assert.equal(status.label, '인증서 실패')
+  assert.equal(status.tone, 'failed')
+
+  assert.equal(domainHeaderStatus(hospital), 'DNS 확인 완료 · 인증서 실패')
+  assert.equal(domainHeaderIsLive(hospital), false)
+  assert.equal(panelStatusOf(hospital), 'failed')
+})
+
+test('a healthy live check reads 운영 중 when the certificate is done or not tracked', () => {
+  for (const certState of ['DONE', null, undefined] as const) {
+    const hospital = {
+      slug: 'clinic',
+      aeo_domain: 'clinic.example.com',
+      site_live: true,
+      domain_cert_job_state: certState,
+      domain_last_checked_at: '2026-08-22T03:00:00Z',
+      domain_last_check_ok: true,
+    }
+
+    const status = readHospitalDomainStatus(hospital)
+    assert.equal(status.label, '운영 중', `certState=${String(certState)}`)
+    assert.equal(status.tone, 'live')
+
+    assert.equal(domainHeaderStatus(hospital), '운영 중')
+    assert.equal(domainHeaderIsLive(hospital), true)
+    assert.equal(panelStatusOf(hospital), 'live')
+  }
+})
+
+test('an untracked certificate state is not upgraded to 운영 중 by a live check alone', () => {
+  // WAITING 은 '비어 있음'도 'DONE'도 아니다 — 관측만으로 운영 중이라고 말하지 않는다.
+  const hospital = {
+    slug: 'clinic',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    domain_cert_dns_verified_at: '2026-08-22T02:00:00Z',
+    domain_cert_job_state: 'WAITING',
+    domain_last_checked_at: '2026-08-22T03:00:00Z',
+    domain_last_check_ok: true,
+  }
+
+  assert.equal(readHospitalDomainStatus(hospital).label, 'DNS 확인 완료')
+  assert.equal(domainHeaderStatus(hospital), 'DNS 확인 완료')
+  assert.equal(panelStatusOf(hospital), 'dns_verified')
+})

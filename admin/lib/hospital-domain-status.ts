@@ -53,6 +53,25 @@ function withLastChecked(hospital: HospitalDomainInput, base: string): string {
   return suffix ? `${base} · ${suffix}` : base
 }
 
+/**
+ * 마지막 관측만으로 "운영 중"이라고 말해도 되는지.
+ *
+ * 관측이 정상이어도 인증서 작업이 발급 중이거나 실패 상태면 그 사실을 가려서는 안 된다.
+ * 도메인이 지금 응답한다는 것과 인증서 발급이 끝났다는 것은 다른 사실이고, 운영자는
+ * 후자를 보고 손을 써야 한다 — 발급 중 배지가 사라지면 지연이나 실패를 알 방법이 없다.
+ *
+ * 그래서 관측은 인증서 상태가 비어 있거나(도메인 재저장으로 초기화된 경우) 이미
+ * DONE일 때만 '운영 중'의 근거가 된다. 목록·헤더·패널이 모두 이 함수를 쓴다.
+ */
+function liveCheckProvesServing(input: {
+  domain_cert_job_state?: string | null
+  domain_last_check_ok?: boolean | null
+}): boolean {
+  if (input.domain_last_check_ok !== true) return false
+  const certState = input.domain_cert_job_state
+  return !certState || certState === 'DONE'
+}
+
 export function readHospitalDomainStatus(hospital: HospitalDomainInput): HospitalDomainStatus {
   const domain = normalizedDomain(hospital.aeo_domain)
   
@@ -61,13 +80,21 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     const certState = hospital.domain_cert_job_state
     const dnsVerified = !!hospital.domain_cert_dns_verified_at
 
-    // A-1: 실제 공개 응답이 정상이면 그것이 가장 강한 증거다. 도메인 재저장으로
-    // cert 컬럼이 비워진 병원이 살아 있는 주소를 두고 '확인 대기'로 남지 않게 한다.
-    if (hospital.domain_last_check_ok === true) {
+    // 진행 중이거나 실패한 인증서 작업이 먼저다. 마지막 관측이 정상이더라도 그 사실을
+    // 가리면 운영자가 발급 지연·실패를 알아챌 화면이 사라진다.
+    if (certState === 'ISSUING') {
       return {
-        label: '운영 중',
+        label: '인증서 발급 중',
         detail: withLastChecked(hospital, domain),
-        tone: 'live',
+        tone: 'issuing',
+      }
+    }
+
+    if (certState === 'FAILED') {
+      return {
+        label: '인증서 실패',
+        detail: withLastChecked(hospital, domain),
+        tone: 'failed',
       }
     }
 
@@ -78,23 +105,17 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
         tone: 'live',
       }
     }
-    
-    if (certState === 'ISSUING') {
+
+    // A-1: 인증서 상태가 비어 있어도(도메인 재저장으로 초기화) 주소가 실제로 응답하면
+    // 살아 있는 주소를 두고 '확인 대기'로 남기지 않는다.
+    if (liveCheckProvesServing(hospital)) {
       return {
-        label: '인증서 발급 중',
+        label: '운영 중',
         detail: withLastChecked(hospital, domain),
-        tone: 'issuing',
+        tone: 'live',
       }
     }
-    
-    if (certState === 'FAILED') {
-      return {
-        label: '인증서 실패',
-        detail: withLastChecked(hospital, domain),
-        tone: 'failed',
-      }
-    }
-    
+
     if (dnsVerified) {
       return {
         label: 'DNS 확인 완료',
@@ -154,10 +175,10 @@ export function customDomainPanelStatus(input: {
 }): CustomDomainPanelStatus {
   if (input.hasUnsavedChange) return 'unsaved'
   if (!input.domainSaved) return input.activationReady ? 'ready' : 'empty'
-  if (input.domain_last_check_ok === true) return 'live'
-  if (input.domain_cert_job_state === 'DONE') return 'live'
   if (input.domain_cert_job_state === 'FAILED') return 'failed'
   if (input.domain_cert_job_state === 'ISSUING') return 'issuing'
+  if (input.domain_cert_job_state === 'DONE') return 'live'
+  if (liveCheckProvesServing(input)) return 'live'
   if (input.domain_cert_dns_verified_at) return 'dns_verified'
   return 'waiting'
 }
@@ -225,13 +246,13 @@ export function domainHeaderStatus(profile: DomainHeaderInput) {
     return profile.site_live ? '운영 중' : '공개 주소 확인 대기'
   }
 
-  // A-1: 마지막 실제 응답이 정상이면 저장된 인증서 작업 상태보다 그쪽이 사실이다.
-  if (profile.domain_last_check_ok === true) return '운영 중'
-
-  // 커스텀 도메인이 있으면 DNS/cert 상태로 판단
-  if (profile.domain_cert_job_state === 'DONE') return '운영 중'
+  // 커스텀 도메인이 있으면 DNS/cert 상태로 판단. 발급 중·실패는 마지막 관측이 정상이어도
+  // 그대로 드러낸다 — 그 배지가 사라지면 운영자가 인증서 지연·실패를 알 방법이 없다.
   if (profile.domain_cert_job_state === 'ISSUING') return 'DNS 확인 완료 · 인증서 발급 중'
   if (profile.domain_cert_job_state === 'FAILED') return 'DNS 확인 완료 · 인증서 실패'
+  if (profile.domain_cert_job_state === 'DONE') return '운영 중'
+  // A-1: 인증서 상태가 비어 있을 때만 관측이 '운영 중'의 근거가 된다.
+  if (liveCheckProvesServing(profile)) return '운영 중'
   if (profile.domain_cert_dns_verified_at) return 'DNS 확인 완료'
   return '저장됨 · DNS 미확인'
 }

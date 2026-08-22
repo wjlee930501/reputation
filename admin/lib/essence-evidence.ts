@@ -34,17 +34,19 @@ export function replaceSourceNotes<T extends IdentifiedNote>(
   return next
 }
 
-/** 자료별 보관함을 노트 id 조회용으로 펼친다. 뒤에 오는 목록이 앞을 덮는다. */
+/**
+ * 자료별 보관함을 노트 id 조회용으로 펼친다.
+ *
+ * 보관함 밖의 노트를 덧씌우는 입구는 두지 않는다. 목록·상세 응답에 실려 온 노트를
+ * 얹을 수 있으면, 다시 불러오기로 지운 옛 노트가 그 경로로 되살아나 죽은 참조가
+ * 해석에 성공한 것처럼 보이고 승인 잠금이 풀린다.
+ */
 export function indexNotesById<T extends IdentifiedNote>(
   bySource: ReadonlyMap<string, T[]>,
-  ...overlays: ReadonlyArray<readonly T[] | null | undefined>
 ): Map<string, T> {
   const index = new Map<string, T>()
   for (const notes of bySource.values()) {
     for (const note of notes) index.set(note.id, note)
-  }
-  for (const overlay of overlays) {
-    for (const note of overlay ?? []) index.set(note.id, note)
   }
   return index
 }
