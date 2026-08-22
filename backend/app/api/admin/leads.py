@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from slugify import slugify
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account
@@ -26,6 +26,7 @@ from app.models.lead_diagnosis import (
 from app.models.operations import OperationRun
 from app.services import lead_delivery
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.hospital_duplicates import find_duplicate_hospitals
 from app.services.lead_privacy import purge_lead_completely_async, scrub_onboarding_note
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
@@ -207,15 +208,53 @@ async def convert_sales_lead(
     request_body = body or LeadConvertRequest()
     hospital = None
     handoff = None
+    linked_existing = False
+    auto_linked = False
     if request_body.hospital_id:
         hospital = await db.get(Hospital, request_body.hospital_id)
         if hospital is None:
             raise HTTPException(status_code=404, detail="Hospital not found")
+        linked_existing = True
+    else:
+        hospital_name = request_body.hospital_name or lead.clinic_name
+        # /hospitals/new 는 같은 이름의 병원을 409로 막지만, 리드 전환은 아무 검사 없이
+        # insert 했다. 그래서 이미 운영 중인 병원을 가진 리드가 '온보딩 대기'로 남은 채
+        # 빈 병원을 하나 더 만들어냈다.
+        duplicates = await _find_duplicate_hospitals(db, lead, name=hospital_name)
+        if len(duplicates) == 1:
+            # 단일 정확 일치는 운영자가 선택할 것도 없다 — 같은 이름/전화의 병원을 새로
+            # 만드는 길은 애초에 막혀 있으므로, 있는 병원에 리드를 붙이는 것이 유일한 정답이다.
+            hospital = duplicates[0]
+            linked_existing = True
+            auto_linked = True
+        elif len(duplicates) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DUPLICATE_HOSPITAL_FOR_LEAD",
+                    "message": (
+                        "이 상담 요청과 같은 병원이 이미 여러 건 등록되어 있습니다. "
+                        "온보딩을 이어갈 병원을 골라 연결해 주세요."
+                    ),
+                    "candidates": [
+                        {
+                            "id": str(candidate.id),
+                            "name": candidate.name,
+                            "status": candidate.status.value
+                            if hasattr(candidate.status, "value")
+                            else str(candidate.status),
+                            "onboarding_url": f"/hospitals/{candidate.id}/onboarding",
+                        }
+                        for candidate in duplicates
+                    ],
+                },
+            )
+
+    if linked_existing:
         _merge_onboarding_note(hospital, lead, request_body.conversion_note)
         if hospital.source_lead_id is None:
             hospital.source_lead_id = lead.id
     else:
-        hospital_name = request_body.hospital_name or lead.clinic_name
         slug = await _unique_hospital_slug(db, hospital_name)
         hospital = Hospital(
             name=hospital_name,
@@ -271,7 +310,8 @@ async def convert_sales_lead(
         target_id=str(lead.id),
         detail={
             "hospital_id": str(hospital.id),
-            "linked_existing_hospital": request_body.hospital_id is not None,
+            "linked_existing_hospital": linked_existing,
+            "auto_linked_duplicate": auto_linked,
             "plan": request_body.plan.value if request_body.plan else None,
         },
     )
@@ -283,6 +323,9 @@ async def convert_sales_lead(
         "hospital": _serialize_hospital(hospital),
         "onboarding_url": f"/hospitals/{hospital.id}/onboarding",
         "handoff": _serialize_handoff(handoff),
+        # 운영자가 "새 병원으로 생성"을 눌렀는데 기존 병원으로 이어진 경우를 화면이
+        # 알 수 있어야 한다 — 말없이 다른 병원의 온보딩으로 보내면 안 된다.
+        "duplicate_resolution": "LINKED_EXISTING" if auto_linked else None,
     }
 
 
@@ -502,16 +545,25 @@ def _serialize_handoff(handoff: HospitalHandoff | None) -> dict | None:
     }
 
 
-async def _find_duplicate_hospitals(db: AsyncSession, lead: SalesLead) -> list[Hospital]:
-    filters = [func.lower(Hospital.name) == lead.clinic_name.lower()]
-    phone = _phone_contact_or_none(lead.contact)
-    if phone:
-        filters.append(Hospital.phone == phone)
+async def _find_duplicate_hospitals(
+    db: AsyncSession,
+    lead: SalesLead,
+    *,
+    name: str | None = None,
+) -> list[Hospital]:
+    """이 리드가 가리키는 병원이 이미 등록돼 있는지.
 
-    result = await db.execute(
-        select(Hospital).where(or_(*filters)).order_by(Hospital.created_at.desc()).limit(10)
+    /hospitals/new 와 같은 정규화를 쓴다 — 두 등록 경로가 서로 다른 기준으로
+    중복을 판단하면 한쪽에서 막은 병원이 다른 쪽에서 그대로 만들어진다.
+    """
+    return await find_duplicate_hospitals(
+        db,
+        name=name or lead.clinic_name,
+        phones=(
+            getattr(lead, "clinic_phone", None),
+            lead.contact,
+        ),
     )
-    return list(result.scalars().all())
 
 
 async def _unique_hospital_slug(db: AsyncSession, name: str) -> str:
@@ -520,13 +572,6 @@ async def _unique_hospital_slug(db: AsyncSession, name: str) -> str:
     if existing.scalar_one_or_none():
         slug = f"{slug}-{uuid.uuid4().hex[:4]}"
     return slug
-
-
-def _phone_contact_or_none(contact: str | None) -> str | None:
-    if not contact:
-        return None
-    digits = "".join(ch for ch in contact if ch.isdigit())
-    return contact if len(digits) >= 7 and "@" not in contact else None
 
 
 def _build_onboarding_note(lead: SalesLead, operator_note: str | None) -> str:

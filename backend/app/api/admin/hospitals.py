@@ -41,6 +41,7 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
 )
 from app.services.essence_readiness import get_essence_readiness
+from app.services.hospital_duplicates import find_duplicate_hospitals, normalize_hospital_name
 from app.services.hospital_lifecycle import (
     activation_gate_error,
     evaluate_activation_gate,
@@ -111,23 +112,11 @@ class HospitalCreate(BaseModel):
 
 
 def _normalized_hospital_name(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip().lower()
+    return normalize_hospital_name(value)
 
 
 async def _exact_name_candidates(db: AsyncSession, name: str) -> list[Hospital]:
-    normalized = _normalized_hospital_name(name)
-    if not normalized:
-        return []
-    result = await db.execute(
-        select(Hospital)
-        .where(
-            func.replace(func.lower(func.trim(Hospital.name)), " ", "")
-            == normalized.replace(" ", "")
-        )
-        .order_by(Hospital.created_at.desc())
-        .limit(10)
-    )
-    return list(result.scalars().all())
+    return await find_duplicate_hospitals(db, name=name)
 
 
 class HospitalProfileUpdate(BaseModel):
