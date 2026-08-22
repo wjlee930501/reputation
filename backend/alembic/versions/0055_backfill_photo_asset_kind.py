@@ -20,6 +20,16 @@ directly after 0051: production is already stamped at 0054, so a second child of
 run. The statement below only touches rows that still have no `asset_kind`, so
 re-running it after the hardening migrations changes nothing that an operator
 has since classified.
+
+`jsonb ||` is not a merge when the left operand is not an object: PostgreSQL
+turns `[1,2] || {...}` into `[1,2,{...}]`, and `"x" || {...}` / `null || {...}`
+into two-element arrays. The added object then sits *inside* an array, so
+`source_metadata->>'asset_kind'` is still NULL and every subsequent run appends
+another copy. Coercing a non-object value to `'{}'::jsonb` before the merge is
+what keeps this statement idempotent — it also matches what the application
+already does with such a row, since
+`validate_photo_source_metadata(..., allow_legacy_recovery=True)` discards
+non-dict metadata and rebuilds it from the recovery defaults.
 """
 
 import sqlalchemy as sa
@@ -47,7 +57,11 @@ def upgrade() -> None:
         sa.text(
             """
             UPDATE hospital_source_assets
-               SET source_metadata = COALESCE(source_metadata, '{}'::jsonb)
+               SET source_metadata = CASE
+                       WHEN jsonb_typeof(source_metadata) = 'object'
+                       THEN source_metadata
+                       ELSE '{}'::jsonb
+                   END
                    || jsonb_build_object(
                        'asset_kind',
                        CASE WHEN source_type::text = 'PHOTO_DOCTOR'
@@ -64,8 +78,7 @@ def upgrade() -> None:
                    )
              WHERE source_type::text IN :photo_types
                AND (
-                   source_metadata IS NULL
-                   OR jsonb_typeof(source_metadata) <> 'object'
+                   jsonb_typeof(source_metadata) IS DISTINCT FROM 'object'
                    OR source_metadata->>'asset_kind' IS NULL
                )
             """
