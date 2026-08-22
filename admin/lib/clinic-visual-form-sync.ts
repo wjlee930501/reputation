@@ -48,9 +48,14 @@ export function shouldSyncFromServer(input: {
   dirty: boolean
   syncedSignature: string
   serverSignature: string
+  syncedHospitalId: string | null
+  hospitalId: string | null
 }): boolean {
+  // 다른 병원을 열었으면 이전 병원의 저장 전 입력은 버린다. 그 초안을 지금 화면의
+  // 병원에 남겨 두면 엉뚱한 병원의 로고·대표색을 저장하게 된다.
+  if (input.hospitalId !== input.syncedHospitalId) return true
   if (input.syncedSignature === input.serverSignature) return false
-  // 입력 중에는 서버 값이 바뀌어도 덮지 않는다. 저장에 성공하면 dirty가 풀리고
-  // 그때 서버가 정규화한 값으로 맞춰진다.
+  // 같은 병원을 다시 불러온 것뿐이라면, 입력 중에는 서버 값으로 덮지 않는다.
+  // 저장에 성공하면 dirty가 풀리고 그때 서버가 정규화한 값으로 맞춰진다.
   return !input.dirty
 }

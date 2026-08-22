@@ -695,20 +695,31 @@ function ClinicVisualForm({
 
   // 자료 처리 추적은 5초마다 refresh()를 돌리고, 다른 자식 폼의 저장 성공도 같은
   // refresh를 부른다. 그때마다 새 `hospital` 객체가 오므로 값이 그대로여도 참조는
-  // 바뀐다. 값을 기준으로 비교하고, 입력 중(dirty)에는 서버 값으로 덮지 않는다.
+  // 바뀐다. 같은 병원을 다시 불러온 것이라면 값을 기준으로 비교하고 입력 중(dirty)에는
+  // 덮지 않는다. 반대로 병원 자체가 바뀌면 이전 병원의 초안은 버리고 새로 채운다.
   const serverValues = clinicVisualValuesOf(hospital)
   const serverSignature = clinicVisualSignature(serverValues)
   const syncedSignature = useRef(serverSignature)
+  const syncedHospitalId = useRef<string | null>(hospitalId)
 
   useEffect(() => {
-    if (!shouldSyncFromServer({ dirty, syncedSignature: syncedSignature.current, serverSignature }))
-      return
+    const sync = shouldSyncFromServer({
+      dirty,
+      syncedSignature: syncedSignature.current,
+      serverSignature,
+      syncedHospitalId: syncedHospitalId.current,
+      hospitalId,
+    })
+    if (!sync) return
+    const switchedHospital = syncedHospitalId.current !== hospitalId
     syncedSignature.current = serverSignature
+    syncedHospitalId.current = hospitalId
     setForm(serverValues)
+    if (switchedHospital) setDirty(false)
     // serverValues는 serverSignature와 같은 입력에서 파생된다 — 매 렌더 새로 만들어지는
     // 객체를 의존성에 넣으면 이 이펙트가 다시 폴링마다 돌게 된다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverSignature, dirty])
+  }, [serverSignature, dirty, hospitalId])
 
   function update<Field extends keyof ClinicVisualValues>(
     field: Field,
