@@ -8,7 +8,7 @@ from app.models.essence import PHOTO_SOURCE_TYPES, SourceType
 from app.services.photo_assets import allowed_photo_asset_kinds, legacy_photo_asset_kind
 
 MIGRATION_PATH = (
-    Path(__file__).parents[1] / "alembic" / "versions" / "0052_backfill_photo_asset_kind.py"
+    Path(__file__).parents[1] / "alembic" / "versions" / "0055_backfill_photo_asset_kind.py"
 )
 
 
@@ -31,7 +31,7 @@ def test_backfill_only_touches_photos_without_a_classification(monkeypatch) -> N
 
     migration.upgrade()
 
-    assert migration.down_revision == "0051_add_hospital_visual_identity"
+    assert migration.down_revision == "0054_add_hospital_content_customization"
     assert len(statements) == 1
     sql = _sql(statements[0])
     assert "UPDATE hospital_source_assets" in sql

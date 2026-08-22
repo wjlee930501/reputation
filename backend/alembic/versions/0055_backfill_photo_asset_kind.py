@@ -1,7 +1,7 @@
 """Backfill asset_kind/approved_usage for photos stored before classification existed.
 
-Revision ID: 0052_backfill_photo_asset_kind
-Revises: 0051_add_hospital_visual_identity
+Revision ID: 0055_backfill_photo_asset_kind
+Revises: 0054_add_hospital_content_customization
 
 Photo classification was added as `source_metadata.asset_kind` without a data
 migration, so every photo uploaded before it has no role.  Those rows were
@@ -13,14 +13,21 @@ facility photos stay hero/gallery candidates, doctor photos stay editorial and
 are never promoted to a verified identity.  Rows touched here carry
 `asset_kind_source = 'LEGACY_BACKFILL'` and `needs_operator_review = true` so an
 AE can confirm the real classification without hunting for them.
+
+This runs after the photo provenance hardening chain (0052-0054) rather than
+directly after 0051: production is already stamped at 0054, so a second child of
+0051 would leave two alembic heads and `alembic upgrade head` would refuse to
+run. The statement below only touches rows that still have no `asset_kind`, so
+re-running it after the hardening migrations changes nothing that an operator
+has since classified.
 """
 
 import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0052_backfill_photo_asset_kind"
-down_revision: str | None = "0051_add_hospital_visual_identity"
+revision: str = "0055_backfill_photo_asset_kind"
+down_revision: str | None = "0054_add_hospital_content_customization"
 branch_labels: str | None = None
 depends_on: str | None = None
 
