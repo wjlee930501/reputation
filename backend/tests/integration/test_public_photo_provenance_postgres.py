@@ -7,7 +7,8 @@
 AsyncSession으로 호출해 다음을 고정한다:
 
 * 근거를 갖춘 업로드는 공개 상태로 커밋된다 (500 없음)
-* 근거 없는 업로드는 요청을 잃지 않고 비공개로 저장된다 (500 없음)
+* 근거 없이 공개를 요청하면 무엇이 비었는지 알려 주는 422로 막힌다 (조용한 비공개 저장 아님)
+* 공개를 요청하지 않은 업로드는 근거 없이도 비공개로 저장된다 (사진은 게이트가 아니다)
 * 근거 없는 공개 토글은 IntegrityError가 아니라 설명 가능한 422로 막힌다
 * 0052가 비공개로 돌려놓은 기존 사진은 근거를 채우면서 다시 공개할 수 있다
 """
@@ -18,7 +19,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from starlette.datastructures import Headers
 
@@ -66,6 +67,15 @@ async def _seed_hospital(session) -> Hospital:
     session.add(hospital)
     await session.flush()
     return hospital
+
+
+async def _photo_count(session, hospital_id) -> int:
+    result = await session.execute(
+        select(func.count())
+        .select_from(HospitalSourceAsset)
+        .where(HospitalSourceAsset.hospital_id == hospital_id)
+    )
+    return int(result.scalar_one())
 
 
 async def _get_source(session, source_id) -> HospitalSourceAsset:
@@ -128,8 +138,38 @@ async def test_public_photo_upload_with_rights_evidence_commits(pg_async_session
     assert stored.photo_evidence_reference == "계약서 부속 합의서 3조"
 
 
-async def test_public_photo_upload_without_rights_evidence_is_kept_private(pg_async_session):
-    """근거가 없으면 업로드를 잃지 않고 비공개로 저장한다 — 500도, 파일 유실도 없다."""
+async def test_asking_to_publish_without_rights_evidence_is_refused_at_upload(pg_async_session):
+    """공개를 요청했는데 근거가 없으면 조용히 비공개로 저장하지 않는다.
+
+    비공개 201로 넘기면 운영자는 사진이 공개된 줄 알고 다음 단계로 간다. 무엇이
+    비었는지 알려 주는 422로 돌려보낸다 — 500도, 저장소에 남는 파일도 없다.
+    """
+    hospital = await _seed_hospital(pg_async_session)
+
+    with pytest.raises(HTTPException) as refused:
+        await essence_api.upload_source_file(
+            hospital_id=hospital.id,
+            source_type=SourceType.PHOTO_CLINIC_EXTERIOR,
+            title="외관",
+            file=_upload_file(),
+            is_public=True,
+            asset_kind="VERIFIED_FACILITY",
+            photo_source_owner=None,
+            photo_rights_basis=None,
+            photo_evidence_reference=None,
+            operator_note=None,
+            created_by="AE",
+            skip_revalidate=False,
+            db=pg_async_session,
+        )
+
+    assert refused.value.status_code == 422
+    assert "사진 소유자" in refused.value.detail
+    assert await _photo_count(pg_async_session, hospital.id) == 0
+
+
+async def test_a_private_photo_upload_needs_no_rights_evidence(pg_async_session):
+    """사진은 온보딩 게이트가 아니다 — 공개를 요청하지 않으면 근거 없이도 저장된다."""
     hospital = await _seed_hospital(pg_async_session)
 
     response = await essence_api.upload_source_file(
@@ -137,7 +177,7 @@ async def test_public_photo_upload_without_rights_evidence_is_kept_private(pg_as
         source_type=SourceType.PHOTO_CLINIC_EXTERIOR,
         title="외관",
         file=_upload_file(),
-        is_public=True,
+        is_public=False,
         asset_kind="VERIFIED_FACILITY",
         photo_source_owner=None,
         photo_rights_basis=None,
@@ -156,6 +196,31 @@ async def test_public_photo_upload_without_rights_evidence_is_kept_private(pg_as
 
     stored = await _get_source(pg_async_session, response["id"])
     assert stored.is_public is False
+    assert stored.file_url
+
+
+async def test_an_upload_that_never_asked_to_publish_is_stored_private(pg_async_session):
+    """일괄 업로드가 공개 여부를 보내지 않으면 근거가 채워질 때까지 비공개로 둔다."""
+    hospital = await _seed_hospital(pg_async_session)
+
+    response = await essence_api.upload_source_file(
+        hospital_id=hospital.id,
+        source_type=SourceType.PHOTO_TREATMENT_ROOM,
+        title="시술실",
+        file=_upload_file(),
+        is_public=None,
+        asset_kind="VERIFIED_FACILITY",
+        photo_source_owner=None,
+        photo_rights_basis=None,
+        photo_evidence_reference=None,
+        operator_note=None,
+        created_by="AE",
+        skip_revalidate=False,
+        db=pg_async_session,
+    )
+
+    assert response["is_public"] is False
+    stored = await _get_source(pg_async_session, response["id"])
     assert stored.file_url
 
 

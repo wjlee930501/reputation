@@ -11,6 +11,7 @@ from app.services.photo_provenance import (
     apply_photo_provenance,
     describe_missing_provenance,
     missing_photo_provenance,
+    missing_provenance_input_fields,
     normalize_provenance_input,
     photo_provenance_is_complete,
     serialize_photo_provenance,
@@ -71,6 +72,20 @@ def test_blank_strings_do_not_pass_as_evidence():
         "photo_source_owner",
         "photo_evidence_reference",
     ]
+
+
+def test_a_new_upload_can_be_judged_before_the_row_exists():
+    """저장 전에 판단할 수 있어야 근거 없는 공개 업로드를 파일 저장 전에 돌려보낸다."""
+    complete = normalize_provenance_input("병원", "LICENSE", "계약서 5조")
+    partial = normalize_provenance_input("병원", None, None)
+
+    assert missing_provenance_input_fields(complete) == []
+    assert missing_provenance_input_fields(partial) == [
+        "photo_rights_basis",
+        "photo_evidence_reference",
+    ]
+    # 확인자·확인 시각은 서버가 찍으므로 운영자에게 요구하지 않는다.
+    assert "photo_verified_by" not in missing_provenance_input_fields(partial)
 
 
 def test_a_rights_basis_the_database_cannot_store_is_rejected_early():

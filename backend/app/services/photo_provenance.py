@@ -81,6 +81,22 @@ def normalize_provenance_input(
     )
 
 
+def missing_provenance_input_fields(provenance: PhotoProvenanceInput) -> list[str]:
+    """이번 요청만으로 사진을 공개할 수 있는지 — 아직 저장되지 않은 행에도 쓴다.
+
+    확인자·확인 시각은 서버가 찍으므로 운영자가 채워야 하는 세 값만 본다. 저장 전에
+    판단할 수 있어야 근거 없는 공개 업로드를 파일 저장 전에 돌려보낼 수 있다.
+    """
+    missing: list[str] = []
+    if not provenance.source_owner:
+        missing.append("photo_source_owner")
+    if provenance.rights_basis not in PHOTO_RIGHTS_BASES:
+        missing.append("photo_rights_basis")
+    if not provenance.evidence_reference:
+        missing.append("photo_evidence_reference")
+    return missing
+
+
 def apply_photo_provenance(
     source,
     provenance: PhotoProvenanceInput,

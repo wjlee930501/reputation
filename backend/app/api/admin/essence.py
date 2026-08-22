@@ -89,6 +89,7 @@ from app.services.photo_provenance import (
     apply_photo_provenance,
     describe_missing_provenance,
     missing_photo_provenance,
+    missing_provenance_input_fields,
     normalize_provenance_input,
     serialize_photo_provenance,
 )
@@ -154,9 +155,9 @@ def resolve_upload_is_public(
 ) -> bool:
     """사진 업로드는 기본 공개. 비사진은 공개 요청이 와도 비공개로 둔다.
 
-    권리 근거가 없는 사진은 애초에 공개로 저장될 수 없다(0052의 CHECK 제약). 업로드
-    자체를 거절하면 이미 저장소에 올라간 파일과 같은 배치의 나머지 사진까지 잃으므로,
-    파일은 그대로 두고 비공개로 저장한다. 근거를 채우면 공개 토글로 내보낼 수 있다.
+    권리 근거가 없는 사진은 공개로 저장될 수 없다(0052의 CHECK 제약). 공개를 명시적으로
+    요청한 경우는 호출자가 먼저 422로 돌려보내므로, 여기서 비공개로 낮추는 것은 공개를
+    요청하지 않은 업로드뿐이다 — 파일은 남고 근거를 채우면 공개 토글로 내보낼 수 있다.
     """
     if source_type not in PHOTO_SOURCE_TYPES:
         return False
@@ -727,8 +728,9 @@ async def upload_source_file(
     - skip_revalidate=true로 N개 사진 일괄 업로드 시 1번만 revalidate한다
 
     공개로 저장되는 사진은 권리 근거(소유자·라이선스 또는 동의·증빙 위치)가 있어야
-    한다. 근거 없이 올린 사진은 저장은 되지만 비공개로 남고, 근거를 채운 뒤 공개
-    토글로 내보낼 수 있다.
+    한다. 공개를 명시적으로 요청했는데 근거가 없으면 무엇이 비었는지 알려 주는 422로
+    돌려보낸다. 공개를 요청하지 않은 업로드는 근거 없이도 비공개로 저장되고, 나중에
+    근거를 채워 공개 토글로 내보낼 수 있다(사진은 온보딩 필수 게이트가 아니다).
     """
     hospital = await _get_hospital_or_404(db, hospital_id)
 
@@ -749,6 +751,17 @@ async def upload_source_file(
             status_code=400, detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요."
         )
 
+    provenance = read_photo_provenance_input(
+        photo_source_owner, photo_rights_basis, photo_evidence_reference
+    )
+    if is_photo_type and is_public is True:
+        # 공개를 명시적으로 요청했는데 근거가 없으면 조용히 비공개로 낮추지 않는다 —
+        # 운영자는 사진이 공개된 줄 알고 넘어가게 된다. 파일을 저장하기 전에 돌려보내
+        # 쓰이지 않을 자산이 저장소에 남지도 않게 한다.
+        missing = missing_provenance_input_fields(provenance)
+        if missing:
+            raise HTTPException(status_code=422, detail=describe_missing_provenance(missing))
+
     # 동기 GCS 업로드(최대 12MB)와 PDF/DOCX 파싱은 이벤트 루프를 수 초 블로킹할 수 있다 —
     # 워커 스레드에서 실행해 공개 표면 요청이 함께 멈추지 않게 한다.
     file_url = await asyncio.to_thread(
@@ -766,9 +779,6 @@ async def upload_source_file(
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
 
     final_title = resolve_upload_title(title, file.filename)
-    provenance = read_photo_provenance_input(
-        photo_source_owner, photo_rights_basis, photo_evidence_reference
-    )
 
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
