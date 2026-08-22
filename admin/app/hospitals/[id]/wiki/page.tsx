@@ -17,6 +17,7 @@ interface Source {
   file_access_url: string | null
   mime_type: string | null
   is_public: boolean
+  photo_provenance?: { is_complete: boolean; missing_message: string | null } | null
   raw_text: string | null
   evidence_note_count: number
   display: { source_type_label: string; status_label: string } | null
@@ -246,7 +247,10 @@ export default function WikiPage() {
                         <input
                           type="checkbox"
                           checked={p.is_public}
-                          disabled={pendingToggleId === p.id}
+                          disabled={
+                            pendingToggleId === p.id ||
+                            (!p.is_public && !(p.photo_provenance?.is_complete ?? false))
+                          }
                           onChange={(e) => togglePublic(p.id, e.target.checked)}
                           className="rounded border-slate-300"
                         />
@@ -258,6 +262,18 @@ export default function WikiPage() {
                               : '비공개'}
                         </span>
                       </label>
+                      {!p.is_public && !(p.photo_provenance?.is_complete ?? false) && (
+                        <p className="text-[11px] leading-4 text-amber-700">
+                          {p.photo_provenance?.missing_message ??
+                            '공개하려면 사진 사용 권리 정보가 필요합니다.'}{' '}
+                          <Link
+                            href={`/hospitals/${id}/onboarding`}
+                            className="underline"
+                          >
+                            온보딩 화면에서 입력
+                          </Link>
+                        </p>
+                      )}
                       {toggleErrors[p.id] && (
                         <p className="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700">
                           {toggleErrors[p.id]}

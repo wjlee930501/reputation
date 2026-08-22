@@ -83,6 +83,15 @@ from app.services.photo_assets import (
     allowed_photo_asset_kinds,
     recovered_photo_metadata,
 )
+from app.services.photo_provenance import (
+    InvalidPhotoRightsBasis,
+    PhotoProvenanceInput,
+    apply_photo_provenance,
+    describe_missing_provenance,
+    missing_photo_provenance,
+    normalize_provenance_input,
+    serialize_photo_provenance,
+)
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
@@ -138,10 +147,20 @@ async def _read_upload_within_limit(file: UploadFile) -> bytes:
 
 
 def resolve_upload_is_public(
-    source_type: SourceType, is_public_form: bool | None = None
+    source_type: SourceType,
+    is_public_form: bool | None = None,
+    *,
+    provenance_complete: bool = True,
 ) -> bool:
-    """사진 업로드는 기본 공개. 비사진은 공개 요청이 와도 비공개로 둔다."""
+    """사진 업로드는 기본 공개. 비사진은 공개 요청이 와도 비공개로 둔다.
+
+    권리 근거가 없는 사진은 애초에 공개로 저장될 수 없다(0052의 CHECK 제약). 업로드
+    자체를 거절하면 이미 저장소에 올라간 파일과 같은 배치의 나머지 사진까지 잃으므로,
+    파일은 그대로 두고 비공개로 저장한다. 근거를 채우면 공개 토글로 내보낼 수 있다.
+    """
     if source_type not in PHOTO_SOURCE_TYPES:
+        return False
+    if not provenance_complete:
         return False
     if is_public_form is None:
         return True
@@ -237,6 +256,32 @@ def resolve_patched_photo_metadata(
         merged,
         allow_legacy_recovery=True,
     )
+
+
+def read_photo_provenance_input(
+    source_owner: str | None,
+    rights_basis: str | None,
+    evidence_reference: str | None,
+) -> PhotoProvenanceInput:
+    """운영자가 보낸 권리 근거를 저장 가능한 형태로 정규화한다."""
+    try:
+        return normalize_provenance_input(source_owner, rights_basis, evidence_reference)
+    except InvalidPhotoRightsBasis as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="권리 근거는 라이선스 보유 또는 촬영 대상·소유자 동의 중 하나여야 합니다.",
+        ) from exc
+
+
+def require_public_photo_provenance(source) -> None:
+    """근거 없는 사진이 공개로 저장되는 것을 DB 제약보다 먼저, 설명과 함께 막는다.
+
+    막지 않으면 INSERT/UPDATE가 `ck_public_photo_requires_provenance`에 걸려
+    IntegrityError(500)로 끝난다 — 운영자는 무엇을 채워야 하는지 알 수 없다.
+    """
+    missing = missing_photo_provenance(source)
+    if missing:
+        raise HTTPException(status_code=422, detail=describe_missing_provenance(missing))
 
 
 def photo_file_is_the_material(source_type: SourceType, file_url: str | None) -> bool:
@@ -666,6 +711,9 @@ async def upload_source_file(
     file: UploadFile = File(...),
     is_public: bool | None = Form(default=None),
     asset_kind: str | None = Form(default=None, max_length=32),
+    photo_source_owner: str | None = Form(default=None, max_length=200),
+    photo_rights_basis: str | None = Form(default=None, max_length=32),
+    photo_evidence_reference: str | None = Form(default=None, max_length=500),
     operator_note: str | None = Form(default=None),
     created_by: str | None = Form(default=None, max_length=100),
     skip_revalidate: bool = Query(default=False),
@@ -677,6 +725,10 @@ async def upload_source_file(
     - process_source는 raw_text가 없는 사진을 거부한다
     - philosophy/V0/content 자동 생성 큐잉이 없다
     - skip_revalidate=true로 N개 사진 일괄 업로드 시 1번만 revalidate한다
+
+    공개로 저장되는 사진은 권리 근거(소유자·라이선스 또는 동의·증빙 위치)가 있어야
+    한다. 근거 없이 올린 사진은 저장은 되지만 비공개로 남고, 근거를 채운 뒤 공개
+    토글로 내보낼 수 있다.
     """
     hospital = await _get_hospital_or_404(db, hospital_id)
 
@@ -714,6 +766,9 @@ async def upload_source_file(
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
 
     final_title = resolve_upload_title(title, file.filename)
+    provenance = read_photo_provenance_input(
+        photo_source_owner, photo_rights_basis, photo_evidence_reference
+    )
 
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
@@ -731,10 +786,19 @@ async def upload_source_file(
         file_url=file_url,
         mime_type=mime_type or None,
         file_size_bytes=len(data),
-        is_public=resolve_upload_is_public(source_type, is_public),
+        is_public=False,
         content_hash=compute_source_content_hash(final_title, None, raw_text, operator_note),
         status=SourceStatus.PENDING,
         created_by=created_by,
+    )
+    if is_photo_type:
+        # 확인자·확인 시각은 서버가 요청 actor로 찍는다 — 클라이언트가 보낸 "확인됨"을
+        # 믿으면 근거 없는 사진도 공개될 수 있다.
+        apply_photo_provenance(source, provenance, verified_by=default_actor())
+    source.is_public = resolve_upload_is_public(
+        source_type,
+        is_public,
+        provenance_complete=not missing_photo_provenance(source),
     )
     # 일괄 업로드는 전 파일이 skip_revalidate=true 이고, 프론트가 성공 후
     # POST /revalidate 를 한 번 호출한다. 단건은 skip 없이 여기서 즉시 갱신한다.
@@ -756,6 +820,8 @@ async def upload_source_file(
             "extractor": extractor_kind,
             "size_bytes": len(data),
             "skip_revalidate": skip_revalidate,
+            "is_public": source.is_public,
+            "photo_rights_basis": source.photo_rights_basis,
         },
     )
     await db.commit()
@@ -1025,7 +1091,11 @@ async def toggle_source_public(
     body: SourcePublicToggle,
     db: AsyncSession = Depends(get_db),
 ):
-    """사진 자료의 /site 공개 노출 플래그 토글. 사진이 아닌 자료는 거부."""
+    """사진 자료의 /site 공개 노출 플래그 토글. 사진이 아닌 자료는 거부.
+
+    권리 근거를 같은 요청에 실어 보낼 수 있다. 0052 배포로 비공개가 된 기존 사진은
+    이 경로로 근거를 채우면서 다시 공개한다.
+    """
     source = await _get_source_or_404(db, hospital_id, source_id)
     if source.source_type not in PHOTO_SOURCE_TYPES:
         raise HTTPException(
@@ -1035,6 +1105,12 @@ async def toggle_source_public(
         raise HTTPException(status_code=400, detail="제외 처리된 사진은 공개할 수 없습니다.")
     if body.is_public and not source.file_url:
         raise HTTPException(status_code=400, detail="파일이 없는 사진은 공개할 수 없습니다.")
+    provenance = read_photo_provenance_input(
+        body.photo_source_owner, body.photo_rights_basis, body.photo_evidence_reference
+    )
+    provenance_recorded = apply_photo_provenance(
+        source, provenance, verified_by=default_actor()
+    )
     if body.is_public:
         # 분류 이전에 올라온 사진도 재공개가 막히지 않도록 복구 분류를 허용한다.
         source.source_metadata = validate_photo_source_metadata(
@@ -1042,6 +1118,7 @@ async def toggle_source_public(
             source.source_metadata,
             allow_legacy_recovery=True,
         )
+        require_public_photo_provenance(source)
     previous = bool(source.is_public)
     hospital = await _get_hospital_or_404(db, hospital_id)
     will_change_public_photo = previous != bool(body.is_public)
@@ -1059,6 +1136,8 @@ async def toggle_source_public(
             "from": previous,
             "to": bool(body.is_public),
             "source_type": source.source_type.value,
+            "provenance_recorded": provenance_recorded,
+            "photo_rights_basis": source.photo_rights_basis,
         },
     )
     await db.commit()
@@ -1533,6 +1612,11 @@ def _serialize_source(
         "mime_type": source.mime_type,
         "file_size_bytes": source.file_size_bytes,
         "is_public": bool(source.is_public),
+        "photo_provenance": (
+            serialize_photo_provenance(source)
+            if source.source_type in PHOTO_SOURCE_TYPES
+            else None
+        ),
         "evidence_note_count": evidence_note_count,
         "evidence_notes": [_serialize_note(note) for note in evidence_notes]
         if evidence_notes is not None

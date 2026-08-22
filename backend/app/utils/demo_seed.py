@@ -281,6 +281,13 @@ def _seed_demo_photos(db, hospital: Hospital) -> list[HospitalSourceAsset]:
             mime_type="image/png",
             file_size_bytes=len(image_bytes),
             is_public=True,
+            # 공개 사진은 권리 근거가 있어야 저장된다(0052 CHECK). 데모 이미지는
+            # MotionLabs가 생성한 가상 자산이라 소유·라이선스가 우리에게 있다.
+            photo_source_owner="MotionLabs Inc.",
+            photo_rights_basis="LICENSE",
+            photo_evidence_reference="MotionLabs demo asset library (fictional, GPT image 2)",
+            photo_verified_by="Demo AE",
+            photo_verified_at=datetime.now(timezone.utc),
             content_hash=compute_source_content_hash(spec["title"], None, None, None),
             status=SourceStatus.PROCESSED,
             processed_at=datetime.now(timezone.utc),

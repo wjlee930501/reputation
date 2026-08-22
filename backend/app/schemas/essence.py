@@ -68,12 +68,18 @@ class SourceAssetResponse(BaseModel):
     mime_type: str | None = None
     file_size_bytes: int | None = None
     is_public: bool = False
+    photo_provenance: dict[str, Any] | None = None
     evidence_note_count: int = 0
     evidence_notes: list[EvidenceNoteResponse] | None = None
 
 
 class SourcePublicToggle(BaseModel):
     is_public: bool
+    # 공개 사진은 권리 근거가 있어야 저장된다(0052 CHECK). 같은 요청에 근거를 실으면
+    # 0052로 비공개가 된 기존 사진을 한 번에 복구할 수 있다.
+    photo_source_owner: str | None = Field(default=None, max_length=200)
+    photo_rights_basis: str | None = Field(default=None, max_length=32)
+    photo_evidence_reference: str | None = Field(default=None, max_length=500)
 
 
 class PhilosophyDraftCreate(BaseModel):

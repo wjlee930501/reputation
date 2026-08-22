@@ -50,6 +50,18 @@ interface Hospital {
   site_access_mode?: string | null
 }
 
+interface PhotoProvenance {
+  source_owner: string | null
+  rights_basis: string | null
+  rights_basis_label: string | null
+  evidence_reference: string | null
+  verified_by: string | null
+  verified_at: string | null
+  is_complete: boolean
+  missing_fields: string[]
+  missing_message: string | null
+}
+
 interface Source {
   id: string
   source_type: string
@@ -61,6 +73,7 @@ interface Source {
   mime_type: string | null
   file_size_bytes: number | null
   is_public: boolean
+  photo_provenance?: PhotoProvenance | null
   raw_text: string | null
   process_error: string | null
   evidence_note_count: number
@@ -116,6 +129,16 @@ function photoAssetKindOptions(sourceType: string) {
   return sourceType === 'PHOTO_DOCTOR'
     ? DOCTOR_ASSET_KIND_OPTIONS
     : FACILITY_ASSET_KIND_OPTIONS
+}
+
+// 공개되는 사진에는 권리 근거가 있어야 저장된다. 값은 서버가 허용하는 두 가지뿐이다.
+const PHOTO_RIGHTS_BASIS_OPTIONS = [
+  { value: 'LICENSE', label: '라이선스 보유 — 촬영·구매 계약이 있음' },
+  { value: 'OWNER_CONSENT', label: '촬영 대상·소유자 동의를 받음' },
+]
+
+function photoProvenanceIsComplete(source: Source): boolean {
+  return source.photo_provenance?.is_complete ?? false
 }
 
 function hasProcessableText(source: Source): boolean {
@@ -1012,11 +1035,15 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
   const [type, setType] = useState('PHOTO_DOCTOR')
   const [assetKind, setAssetKind] = useState('')
   const [title, setTitle] = useState('')
+  const [rightsOwner, setRightsOwner] = useState('')
+  const [rightsBasis, setRightsBasis] = useState('')
+  const [rightsEvidence, setRightsEvidence] = useState('')
   const [files, setFiles] = useState<FileList | null>(null)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
 
   const isPhotoType = isPhotoSourceType(type)
+  const rightsReady = Boolean(rightsOwner.trim() && rightsBasis && rightsEvidence.trim())
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -1040,6 +1067,10 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           if (isPhotoSourceType(type)) {
             fd.append('is_public', 'true')
             fd.append('asset_kind', assetKind)
+            // 권리 근거가 없으면 서버가 사진을 비공개로 저장한다 — 공개하려면 함께 보낸다.
+            fd.append('photo_source_owner', rightsOwner.trim())
+            fd.append('photo_rights_basis', rightsBasis)
+            fd.append('photo_evidence_reference', rightsEvidence.trim())
           }
           // 일괄 업로드 시 모든 파일에 skip_revalidate=true (마지막 후 명시적 revalidate)
           const url = `/admin/hospitals/${hospitalId}/essence/sources/upload${
@@ -1086,6 +1117,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
 
       if (successCount > 0) {
         setTitle('')
+        setRightsEvidence('')
         setFiles(null)
         const inp = document.getElementById('upload-file') as HTMLInputElement | null
         if (inp) inp.value = ''
@@ -1155,6 +1187,48 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           </p>
         </div>
       ) : null}
+      {isPhotoType ? (
+        <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+          <p className="text-sm font-medium text-slate-700">사진 사용 권리 확인</p>
+          <div className="grid gap-2 md:grid-cols-2">
+            <input
+              id="upload-rights-owner"
+              required
+              value={rightsOwner}
+              onChange={(e) => setRightsOwner(e.target.value)}
+              placeholder="사진 소유자 (예: 장편한외과의원)"
+              aria-label="사진 소유자"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            />
+            <select
+              id="upload-rights-basis"
+              required
+              value={rightsBasis}
+              onChange={(e) => setRightsBasis(e.target.value)}
+              aria-label="사진 사용 권리 근거"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">권리 근거 선택</option>
+              {PHOTO_RIGHTS_BASIS_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <input
+            id="upload-rights-evidence"
+            required
+            value={rightsEvidence}
+            onChange={(e) => setRightsEvidence(e.target.value)}
+            placeholder="증빙 위치 (예: 계약서 부속 합의서 3조, 동의서 파일명)"
+            aria-label="사진 사용 권리 증빙 위치"
+            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+          />
+          <p className="text-xs leading-5 text-slate-600">
+            공개되는 사진은 소유자와 사용 근거가 기록되어야 합니다. 지금 채우지 않으면 사진은 저장되지만
+            비공개로 남고, 목록에서 근거를 채운 뒤 공개할 수 있습니다.
+          </p>
+        </div>
+      ) : null}
       {isPhotoType && <p className="text-xs text-slate-600">여러 장을 한 번에 고를 수 있습니다</p>}
       <input
         id="upload-file"
@@ -1171,7 +1245,12 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={busy || !files || files.length === 0 || (isPhotoType && !assetKind)}
+          disabled={
+            busy ||
+            !files ||
+            files.length === 0 ||
+            (isPhotoType && (!assetKind || !rightsReady))
+          }
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
         >
           {busy ? '업로드 중…' : selectedFileCount > 1 ? `${selectedFileCount}개 업로드` : '업로드'}
@@ -1179,6 +1258,75 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
         {feedback && <span className="text-xs text-slate-600">{feedback}</span>}
       </div>
     </form>
+  )
+}
+
+function PhotoRightsEvidence({
+  source,
+  busy,
+  onPublish,
+}: {
+  source: Source
+  busy: boolean
+  onPublish: (evidence: { owner: string; basis: string; reference: string }) => void
+}) {
+  const provenance = source.photo_provenance ?? null
+  const [owner, setOwner] = useState(provenance?.source_owner ?? '')
+  const [basis, setBasis] = useState(provenance?.rights_basis ?? '')
+  const [reference, setReference] = useState(provenance?.evidence_reference ?? '')
+
+  if (provenance?.is_complete) {
+    return (
+      <p className="text-xs text-slate-500">
+        사용 권리 확인됨 · {provenance.source_owner} · {provenance.rights_basis_label}
+        {provenance.verified_by ? ` · 확인 ${provenance.verified_by}` : ''}
+      </p>
+    )
+  }
+
+  const ready = Boolean(owner.trim() && basis && reference.trim())
+  return (
+    <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+      <p className="text-xs leading-5 text-amber-900">
+        {provenance?.missing_message ??
+          '이 사진을 공개하려면 소유자와 사용 근거를 먼저 입력해야 합니다.'}
+      </p>
+      <div className="grid gap-2 md:grid-cols-2">
+        <input
+          value={owner}
+          onChange={(e) => setOwner(e.target.value)}
+          placeholder="사진 소유자"
+          aria-label={`${source.title} 사진 소유자`}
+          className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+        />
+        <select
+          value={basis}
+          onChange={(e) => setBasis(e.target.value)}
+          aria-label={`${source.title} 사진 사용 권리 근거`}
+          className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+        >
+          <option value="">권리 근거 선택</option>
+          {PHOTO_RIGHTS_BASIS_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      </div>
+      <input
+        value={reference}
+        onChange={(e) => setReference(e.target.value)}
+        placeholder="증빙 위치 (계약 조항, 동의서 파일명 등)"
+        aria-label={`${source.title} 사진 사용 권리 증빙 위치`}
+        className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+      />
+      <button
+        type="button"
+        disabled={busy || !ready}
+        onClick={() => onPublish({ owner, basis, reference })}
+        className="min-h-11 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+      >
+        {busy ? '저장 중…' : '권리 정보 저장하고 공개'}
+      </button>
+    </div>
   )
 }
 
@@ -1214,6 +1362,35 @@ function SourcesList({
       onChanged()
     } catch (e: unknown) {
       const message = safeOperatorError('onboarding', '사진 공개 여부를 다시 저장하세요.')
+      setPublicErrors((prev) => ({ ...prev, [sourceId]: message }))
+    } finally {
+      setPendingPublicId(null)
+    }
+  }
+
+  async function publishWithRightsEvidence(
+    sourceId: string,
+    evidence: { owner: string; basis: string; reference: string },
+  ) {
+    setPendingPublicId(sourceId)
+    setPublicErrors((prev) => {
+      const errors = { ...prev }
+      delete errors[sourceId]
+      return errors
+    })
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${sourceId}/public`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          is_public: true,
+          photo_source_owner: evidence.owner.trim(),
+          photo_rights_basis: evidence.basis,
+          photo_evidence_reference: evidence.reference.trim(),
+        }),
+      })
+      onChanged()
+    } catch (e: unknown) {
+      const message = safeOperatorError('onboarding', '사진 사용 권리 정보를 확인한 뒤 다시 저장하세요.')
       setPublicErrors((prev) => ({ ...prev, [sourceId]: message }))
     } finally {
       setPendingPublicId(null)
@@ -1345,7 +1522,10 @@ function SourcesList({
                       <input
                         type="checkbox"
                         checked={s.is_public}
-                        disabled={pendingPublicId === s.id}
+                        disabled={
+                          pendingPublicId === s.id ||
+                          (!s.is_public && !photoProvenanceIsComplete(s))
+                        }
                         onChange={(e) => togglePublic(s.id, e.target.checked)}
                         aria-label={`${s.title} 공개 사이트 표시`}
                         className="rounded border-slate-300"
@@ -1377,6 +1557,13 @@ function SourcesList({
                   )}
                 </div>
               </div>
+              {isPhotoSourceType(s.source_type) && s.status !== 'EXCLUDED' && (
+                <PhotoRightsEvidence
+                  source={s}
+                  busy={pendingPublicId === s.id}
+                  onPublish={(evidence) => publishWithRightsEvidence(s.id, evidence)}
+                />
+              )}
               {excludeErrors[s.id] && (
                 <p className="rounded bg-red-50 px-2 py-1 text-xs text-red-700">{excludeErrors[s.id]}</p>
               )}
