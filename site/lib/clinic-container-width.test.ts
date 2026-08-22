@@ -69,7 +69,7 @@ test('plain containers take their width from the single token', () => {
   }
 })
 
-test('railed containers reserve room for their own gutter so content still lands on the baseline', () => {
+test('railed containers reserve room for their own gutter so content lands on the same line', () => {
   for (const selector of RAILED_CONTAINERS) {
     const body = rules(selector)[0]
     assert.match(
