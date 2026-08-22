@@ -152,11 +152,21 @@ def build_exposure_recommendations(
         if str(getattr(target, "status", "ACTIVE")).upper() in ACTIVE_TARGET_STATUSES
     ]
     records_by_target = _group_records_by_target(active_targets, records)
+    # 병원 전체의 성공 측정 수. 타깃 하나에 결과가 없다는 사실과, 병원이 아직 한 번도
+    # 측정되지 않았다는 사실은 전혀 다른 진단이다 — 후자만 "첫 측정 실행"이다.
+    hospital_successful_count = sum(1 for record in records if _is_successful_measurement(record))
 
     recommendations: list[ExposureRecommendation] = []
     for target in sorted(active_targets, key=_target_sort_key):
         target_records = records_by_target.get(str(target.id), [])
-        recommendations.extend(_diagnose_target(target, target_records, diagnosis_date))
+        recommendations.extend(
+            _diagnose_target(
+                target,
+                target_records,
+                diagnosis_date,
+                hospital_successful_count=hospital_successful_count,
+            )
+        )
 
     return sorted(recommendations, key=_recommendation_sort_key)
 
@@ -290,11 +300,38 @@ def _diagnose_target(
     target: Any,
     records: Sequence[Any],
     diagnosis_date: date,
+    *,
+    hospital_successful_count: int = 0,
 ) -> list[ExposureRecommendation]:
     successful_records = [record for record in records if _is_successful_measurement(record)]
     failed_count = len(records) - len(successful_records)
     due_month = getattr(target, "target_month", None) or diagnosis_date.strftime("%Y-%m")
     base_evidence = _base_evidence(target, records, successful_records, failed_count)
+    base_evidence["hospital_successful_measurements"] = hospital_successful_count
+
+    if not records and hospital_successful_count > 0:
+        # V0는 표본 질문만 측정하는데 타깃은 활성 질문 전체에서 시드된다. 아직 차례가
+        # 오지 않은 질문에 "성공 측정값 없음"을 붙이면 같은 화면의 언급률과 정면으로
+        # 충돌하고, 그 문구가 우선순위 상단을 전부 차지해 진짜 갭을 밀어낸다.
+        return [
+            _recommendation(
+                target,
+                "TARGET_NOT_MEASURED",
+                _severity_for_target(target, severe_for_high=False),
+                {
+                    **base_evidence,
+                    "rule": "target_not_measured_yet",
+                },
+                "MEASUREMENT",
+                "다음 측정 대상에 이 질문 포함",
+                (
+                    f"이 병원에는 성공한 측정이 {hospital_successful_count}건 있지만 "
+                    "이 환자 질문은 아직 측정된 적이 없습니다. "
+                    "질문 문구를 확인하고 다음 측정 대상에 포함하세요."
+                ),
+                due_month,
+            )
+        ]
 
     if not successful_records:
         return [

@@ -537,6 +537,7 @@ ACTION_STATUS_DISPLAY_LABELS = {
 
 GAP_TYPE_DISPLAY_LABELS = {
     "NO_SUCCESSFUL_MEASUREMENT": "측정값 없음",
+    "TARGET_NOT_MEASURED": "아직 측정 안 된 질문",
     "MISSING_MENTION": "병원 미언급",
     "LOW_MENTION_RATE": "낮은 AI 언급률",
     "MENTIONS_COMPETITOR_ONLY": "경쟁 병원만 언급",
@@ -588,6 +589,7 @@ EVIDENCE_KEY_DISPLAY_LABELS = {
     "total_measurements": "전체 측정 수",
     "successful_measurements": "성공 측정 수",
     "failed_measurements": "실패 측정 수",
+    "hospital_successful_measurements": "병원 전체 성공 측정 수",
     "source_missing_count": "근거 URL 부족 수",
     "competitor_mention_count": "경쟁 병원 언급 수",
     "competitor_names": "경쟁 병원",
@@ -639,6 +641,7 @@ EVIDENCE_VALUE_DISPLAY_LABELS = {
     "neutral": "중립",
     "negative": "부정",
     "no_successful_measurements": "성공 측정 없음",
+    "target_not_measured_yet": "이 질문 아직 미측정",
     "missing_mention": "병원 미언급",
     "competitor_visibility": "경쟁 병원이 더 많이 노출",
     "source_signal_gap": "AI가 참고할 근거 자료 부족",

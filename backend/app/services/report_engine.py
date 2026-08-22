@@ -33,6 +33,7 @@ PRIORITY_LABELS = {"HIGH": "높음", "NORMAL": "보통", "LOW": "낮음"}
 SEVERITY_LABELS = {"CRITICAL": "심각", "HIGH": "높음", "MEDIUM": "중간", "LOW": "낮음"}
 GAP_TYPE_LABELS = {
     "NO_SUCCESSFUL_MEASUREMENT": "성공 측정값 없음",
+    "TARGET_NOT_MEASURED": "아직 측정 안 된 질문",
     "MISSING_MENTION": "병원 미언급",
     "LOW_MENTION_SHARE": "낮은 AI 언급률",
     "COMPETITOR_VISIBILITY": "경쟁 병원 노출 우세",

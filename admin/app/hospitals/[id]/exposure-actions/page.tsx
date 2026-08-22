@@ -36,6 +36,7 @@ const SEVERITY_LABELS: Record<string, { label: string; color: string }> = {
 
 const GAP_TYPE_LABELS: Record<string, string> = {
   NO_SUCCESSFUL_MEASUREMENT: '측정값 없음',
+  TARGET_NOT_MEASURED: '아직 측정 안 된 질문',
   MISSING_MENTION: '병원 미언급',
   LOW_MENTION_RATE: '낮은 AI 언급률',
   MENTIONS_COMPETITOR_ONLY: '경쟁 병원만 언급',
@@ -70,6 +71,7 @@ const EVIDENCE_KEY_LABELS: Record<string, string> = {
   total_measurements: '전체 측정 수',
   successful_measurements: '성공 측정 수',
   failed_measurements: '실패 측정 수',
+  hospital_successful_measurements: '병원 전체 성공 측정 수',
   source_missing_count: '근거 URL 부족 수',
   competitor_mention_count: '경쟁 병원 언급 수',
   competitor_names: '경쟁 병원',
@@ -121,6 +123,7 @@ const EVIDENCE_VALUE_LABELS: Record<string, string> = {
   neutral: '중립',
   negative: '부정',
   no_successful_measurements: '성공 측정 없음',
+  target_not_measured_yet: '이 질문 아직 미측정',
   missing_mention: '병원 미언급',
   competitor_visibility: '경쟁 병원이 더 많이 노출',
   source_signal_gap: 'AI가 참고할 근거 자료 부족',
@@ -160,6 +163,7 @@ export default function ExposureActionsPage() {
 
   const [creatingBriefId, setCreatingBriefId] = useState<string | null>(null)
   const [briefResult, setBriefResult] = useState<BriefResultState | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
 
   const [ownerDraft, setOwnerDraft] = useState('')
   const [dueMonthDraft, setDueMonthDraft] = useState('')
@@ -202,6 +206,29 @@ export default function ExposureActionsPage() {
   useEffect(() => {
     loadActions()
   }, [loadActions])
+
+  // 진단은 측정 직후 워커에서만 갱신된다. 측정 결과가 바뀐 뒤 큐가 옛 진단을 계속
+  // 보여주면 같은 화면의 언급률과 어긋나므로, 운영자가 직접 다시 진단할 수 있게 한다.
+  const refreshDiagnosis = useCallback(async () => {
+    setRefreshing(true)
+    setError(null)
+    try {
+      const data: ExposureAction[] = await fetchAPI(
+        `/admin/hospitals/${hospitalId}/exposure-actions/refresh?limit=${ACTION_LIST_LIMIT}`,
+        { method: 'POST' },
+      )
+      const next = data ?? []
+      setActions(next)
+      setSelectedId((prev) => {
+        if (prev && next.some((action) => action.id === prev)) return prev
+        return next[0]?.id ?? null
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '진단을 다시 실행하지 못했습니다.')
+    } finally {
+      setRefreshing(false)
+    }
+  }, [hospitalId])
 
   function pushSaveMessage(kind: 'success' | 'error', text: string) {
     setSaveMessage({ kind, text })
@@ -286,11 +313,21 @@ export default function ExposureActionsPage() {
               우선순위 높은 항목부터 담당자·기한을 지정하고, 환자 질문에 맞춘 콘텐츠 가이드를 만들어 이번 달 운영 큐에 연결하세요.
             </p>
           </div>
-          <div className="grid w-full grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4 lg:min-w-[420px] lg:w-auto">
-            <SummaryPill label="대기" value={String(counts.open)} />
-            <SummaryPill label="진행중" value={String(counts.inProgress)} />
-            <SummaryPill label="확인필요" value={String(counts.blocked)} />
-            <SummaryPill label="완료" value={String(counts.completed)} />
+          <div className="w-full lg:min-w-[420px] lg:w-auto">
+            <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
+              <SummaryPill label="대기" value={String(counts.open)} />
+              <SummaryPill label="진행중" value={String(counts.inProgress)} />
+              <SummaryPill label="확인필요" value={String(counts.blocked)} />
+              <SummaryPill label="완료" value={String(counts.completed)} />
+            </div>
+            <button
+              type="button"
+              onClick={refreshDiagnosis}
+              disabled={refreshing || loading}
+              className="mt-2 w-full rounded-lg border border-white/25 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50"
+            >
+              {refreshing ? '진단 다시 실행 중...' : '최신 측정으로 진단 다시 실행'}
+            </button>
           </div>
         </div>
       </section>
