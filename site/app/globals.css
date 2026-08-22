@@ -9464,15 +9464,19 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
  * 때문이다 — 특정도를 올려 경쟁하는 것보다 순서로 이기는 편이 읽기 쉽다.
  * ══════════════════════════════════════════════════════════════════ */
 
-/* 헤더 전화 CTA는 데스크톱에서도 19.5px다. 헤더 행이 72px(720px 이하 60px)이므로
-   44px는 헤더 높이를 건드리지 않고 들어간다. */
+/* 하한은 **두 방향 모두**여야 한다. 높이만 올리면 짧은 링크는 44×19가 44×19가
+   아니라 20×44가 될 뿐이다 — 예를 들어 이동 경로의 "홈"은 글자 폭이 15px 남짓이라
+   세로만 키워도 손가락이 겨냥할 면적이 생기지 않는다. 글자 크기는 그대로 두고 상자만
+   양방향으로 키운다. */
 .clinic-header-cta {
   min-height: 44px;
+  min-width: 44px;
 }
 
 @media (max-width: 720px) {
-  /* 글자 흐름 안에 있는 링크들 — inline 요소에는 min-height가 적용되지 않으므로
-     inline-flex로 바꿔야 상자가 실제로 커진다. */
+  /* 글자 흐름 안에 있는 링크들 — inline 요소에는 min-height/min-width가 적용되지
+     않으므로 inline-flex로 바꿔야 상자가 실제로 커진다. 상자가 글자보다 넓어질 때
+     라벨이 한쪽에 붙지 않도록 가로도 가운데로 맞춘다. */
   .clinic-header-nav-mobile a,
   .clinic-hero-fact-rail dd a,
   .clinic-featured-more,
@@ -9484,25 +9488,32 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   .clinic-breadcrumb a {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     min-height: 44px;
+    min-width: 44px;
   }
 
   /* 브랜드 락업은 세로 방향 flex다 — align-items를 건드리면 이름이 가운데로 밀린다. */
   .clinic-header-brand {
     justify-content: center;
     min-height: 44px;
+    min-width: 44px;
   }
 
-  /* 40px에서 4px 모자란 알약형 링크들. 이미 inline-flex라 높이만 올린다. */
+  /* 40px에서 4px 모자란 알약형 링크들. 이미 inline-flex + 가운데 정렬이라 하한만
+     올린다. 라벨이 짧아도(예: "전체") 가로 44px는 확보된다. */
   .clinic-official-links a,
   .clinic-answer-treatment-strip a,
   .clinic-principles-actions a,
   .clinic-filter-chip {
     min-height: 44px;
+    min-width: 44px;
   }
 
-  /* 축약 질문 행은 패딩만으로 44px 근처를 오간다 — 한 줄일 때도 44px를 보장한다. */
+  /* 축약 질문 행은 패딩만으로 44px 근처를 오간다 — 한 줄일 때도 44px를 보장한다.
+     가로는 이미 목록 폭을 채우므로 하한이 레이아웃을 바꾸지 않는다. */
   .clinic-qa-compact-row {
     min-height: 44px;
+    min-width: 44px;
   }
 }
