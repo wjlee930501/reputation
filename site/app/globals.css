@@ -78,7 +78,17 @@
   --mint-soft: var(--color-revisit-green-90);
   --mint-pale: var(--color-revisit-green-95);
   --sky-soft: var(--color-revisit-primary-90);
-  --max: 1180px;
+  /* 공개 병원 화면의 단일 콘텐츠 기준선 (P-B-1).
+     홈은 1344(헤더·히어로·진료 인덱스) / 1200(대부분의 섹션) / 1080(추천 콘텐츠·푸터)
+     세 폭을 섞어 써서, 스크롤을 내릴 때 좌측 정렬선이 구간마다 흔들렸다. 컨테이너는
+     전부 이 값에서 폭을 받는다. 여기 있던 --max: 1180px는 아무 데서도 참조되지 않아
+     '기준선이 어느 값이냐'만 헷갈리게 했으므로 이 토큰으로 대체한다. */
+  --clinic-max: 1200px;
+  /* 자기 좌우 여백을 갖는 컨테이너(헤더 행·히어로·팩트 레일·진료 인덱스·진료
+     디렉터리)의 여백. 그 안쪽 콘텐츠가 --clinic-max에 맞으려면 바깥 상자는 여백만큼
+     더 커야 한다 — 이걸 빼먹으면 여백을 가진 쪽만 기준선 밖으로 밀린다. */
+  --clinic-rail: 48px;
+  --clinic-shell-max: calc(var(--clinic-max) + var(--clinic-rail) * 2);
   --radius-lg: 28px;
   --radius-md: 18px;
   --shadow-soft: 0 18px 50px rgba(33, 45, 59, 0.12);
@@ -2361,7 +2371,7 @@ summary:focus-visible {
 }
 
 .clinic-section-inner {
-  max-width: 1080px;
+  max-width: var(--clinic-max);
   margin: 0 auto;
 }
 
@@ -2421,10 +2431,10 @@ summary:focus-visible {
   justify-content: space-between;
   gap: 24px;
   width: 100%;
-  /* 1080(body content) + 48(L/R padding 24*2) = 1128: border-box 박스 모델에서
-     max-width는 padding을 포함하므로 1128로 두면 패딩 안쪽 컨텐츠 엣지가
-     .clinic-section-inner(1080 max-width, padding 0)와 정확히 일치한다. */
-  max-width: 1128px;
+  /* border-box에서 max-width는 padding을 포함하므로, 기준선 폭에 좌우 패딩(24*2)을
+     더해 둬야 패딩 안쪽 콘텐츠 엣지가 .clinic-section-inner와 정확히 일치한다.
+     기준선을 옮길 때 이 값을 같이 옮기지 않으면 헤더만 어긋난다. */
+  max-width: calc(var(--clinic-max) + 48px);
   margin: 0 auto;
   padding: 14px 24px;
 }
@@ -2558,7 +2568,7 @@ summary:focus-visible {
 }
 
 .clinic-hero-inner {
-  max-width: 1080px;
+  max-width: var(--clinic-max);
   margin: 0 auto;
 }
 
@@ -3002,9 +3012,9 @@ summary:focus-visible {
 .clinic-section-index {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  max-width: 1440px;
+  max-width: var(--clinic-shell-max);
   margin: 0 auto;
-  padding: 0 48px;
+  padding: 0 var(--clinic-rail);
   border-bottom: 1px solid #e5e5e1;
   background: #ffffff;
 }
@@ -3576,7 +3586,7 @@ summary:focus-visible {
 }
 
 .clinic-footer-inner {
-  max-width: 1080px;
+  max-width: var(--clinic-max);
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -3843,7 +3853,7 @@ summary:focus-visible {
 }
 
 .clinic-featured-inner {
-  max-width: 1080px;
+  max-width: var(--clinic-max);
   margin: 0 auto;
 }
 
@@ -4155,7 +4165,7 @@ summary:focus-visible {
 }
 
 .clinic-library-hero-inner {
-  max-width: 1080px;
+  max-width: var(--clinic-max);
   margin: 0 auto;
 }
 
@@ -7678,9 +7688,9 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-header-row {
-  max-width: 1440px;
+  max-width: var(--clinic-shell-max);
   min-height: 72px;
-  padding: 0 48px;
+  padding: 0 var(--clinic-rail);
 }
 
 .clinic-header-brand-name {
@@ -7744,7 +7754,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-hero-editorial-grid {
   display: grid;
   grid-template-columns: minmax(440px, 44%) minmax(0, 56%);
-  max-width: 1440px;
+  max-width: var(--clinic-shell-max);
   min-height: 580px;
   margin: 0 auto;
   background: var(--clinic-paper);
@@ -7754,12 +7764,13 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  /* 좌측 여백은 **상수**여야 한다. 그리드가 이미 `max-width: 1440px; margin: 0 auto`로
-     가운데 정렬돼 있어서, 여기에 `(100vw - 1344px) / 2`를 더하면 센터링 오프셋을 두 번
-     센다. 컬럼 폭은 634px로 고정인데 여백만 화면을 따라 자라서 1440px을 넘는 순간부터
-     본문이 깎이고 2400px에서 50px(한 글자), 2500px에서 0이 됐다.
-     바로 아래 .clinic-hero-fact-rail이 같은 축에서 쓰는 값과 맞춘다. */
-  padding: 68px 56px 72px 48px;
+  /* 좌측 여백은 **상수**여야 한다. 그리드가 이미 `max-width`로 가운데 정렬돼 있어서,
+     여기에 `(100vw - 콘텐츠폭) / 2`를 더하면 센터링 오프셋을 두 번 센다. 컬럼 폭은
+     고정인데 여백만 화면을 따라 자라서 그리드 폭을 넘는 순간부터 본문이 깎이고
+     2400px에서 50px(한 글자), 2500px에서 0이 됐다.
+     .clinic-hero-fact-rail·헤더 행과 같은 레일을 쓰므로 첫 화면 문장의 좌측 정렬선이
+     아래 섹션들과 정확히 맞는다. */
+  padding: 68px 56px 72px var(--clinic-rail);
 }
 
 .clinic-hero-editorial-kicker {
@@ -7928,9 +7939,9 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-hero-fact-rail {
   display: grid;
   grid-template-columns: 1fr 1fr 1.65fr 1fr;
-  max-width: 1440px;
+  max-width: var(--clinic-shell-max);
   margin: 0 auto;
-  padding: 0 48px;
+  padding: 0 var(--clinic-rail);
   border-top: 1px solid var(--clinic-line);
   border-bottom: 1px solid var(--clinic-line);
   background: var(--clinic-paper);
@@ -7987,9 +7998,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   border-top-color: var(--clinic-line);
 }
 
-.clinic-section-inner {
-  max-width: 1200px;
-}
 
 .clinic-treatment-directory {
   padding: 0;
@@ -7998,8 +8006,8 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 .clinic-treatment-directory .clinic-section-inner {
   display: block;
-  max-width: 1440px;
-  padding: 0 48px;
+  max-width: var(--clinic-shell-max);
+  padding: 0 var(--clinic-rail);
 }
 
 .clinic-treatment-directory .clinic-section-head {
@@ -9440,5 +9448,61 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   .pricing-terms,
   .pricing-management {
     grid-column: 1 / -1;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * 손가락으로 누르는 것은 44px다 — 공개 병원 화면 (P-D-1)
+ *
+ * 실측: 모바일에서 조작 요소 44개 중 19개가 높이 44px 미만이었고, 가장 심한 것은
+ * 헤더 전화 CTA(70×19.5px)였다 — 에디토리얼 v5가 헤더 버튼에서 padding을 걷어내면서
+ * 글자 높이만 남았다. 전화는 이 화면에서 가장 중요한 행동인데 가장 누르기 어려웠다.
+ *
+ * 글자 크기는 그대로 두고 누를 수 있는 상자만 키운다. 폰트를 키우면 정보 밀도가
+ * 무너지고, 요소 사이를 여백으로만 벌리면 한 화면에 들어가는 항목 수가 줄어든다.
+ * 파일 맨 끝에 두는 이유는 여기 값들이 앞선 에디토리얼 오버라이드를 이겨야 하기
+ * 때문이다 — 특정도를 올려 경쟁하는 것보다 순서로 이기는 편이 읽기 쉽다.
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* 헤더 전화 CTA는 데스크톱에서도 19.5px다. 헤더 행이 72px(720px 이하 60px)이므로
+   44px는 헤더 높이를 건드리지 않고 들어간다. */
+.clinic-header-cta {
+  min-height: 44px;
+}
+
+@media (max-width: 720px) {
+  /* 글자 흐름 안에 있는 링크들 — inline 요소에는 min-height가 적용되지 않으므로
+     inline-flex로 바꿔야 상자가 실제로 커진다. */
+  .clinic-header-nav-mobile a,
+  .clinic-hero-fact-rail dd a,
+  .clinic-featured-more,
+  .clinic-answers-all,
+  .clinic-keyfact-link,
+  .clinic-visit-location-link,
+  .clinic-footer-site,
+  .clinic-footer-meta a,
+  .clinic-breadcrumb a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  /* 브랜드 락업은 세로 방향 flex다 — align-items를 건드리면 이름이 가운데로 밀린다. */
+  .clinic-header-brand {
+    justify-content: center;
+    min-height: 44px;
+  }
+
+  /* 40px에서 4px 모자란 알약형 링크들. 이미 inline-flex라 높이만 올린다. */
+  .clinic-official-links a,
+  .clinic-answer-treatment-strip a,
+  .clinic-principles-actions a,
+  .clinic-filter-chip {
+    min-height: 44px;
+  }
+
+  /* 축약 질문 행은 패딩만으로 44px 근처를 오간다 — 한 줄일 때도 44px를 보장한다. */
+  .clinic-qa-compact-row {
+    min-height: 44px;
   }
 }
