@@ -116,6 +116,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   upload_source_asset: '자료 업로드',
   crawl_source_url: 'URL 자동 크롤',
   exclude_source_asset: '자료 제외',
+  reinclude_source_asset: '자료 제외 해제',
   toggle_source_public: '사진 공개 토글',
 }
 
@@ -450,6 +451,12 @@ export default function DashboardPage() {
       const fromStatus = typeof detail.from_status === 'string' ? detail.from_status : null
       const sourceType = typeof detail.source_type === 'string' ? detail.source_type : null
       return [sourceTypeLabel(sourceType), fromStatus ? `이전 상태: ${sourceStatusLabel(fromStatus)}` : null].filter(Boolean).join(' · ')
+    }
+    if (action === 'reinclude_source_asset') {
+      const toStatus = typeof detail.to_status === 'string' ? detail.to_status : null
+      const sourceType = typeof detail.source_type === 'string' ? detail.source_type : null
+      const notes = typeof detail.restored_note_count === 'number' ? `근거 노트 ${detail.restored_note_count}개 복원` : null
+      return [sourceTypeLabel(sourceType), toStatus ? `복원 상태: ${sourceStatusLabel(toStatus)}` : null, notes].filter(Boolean).join(' · ')
     }
     if (action === 'toggle_source_public') {
       if (detail.from === false && detail.to === true) return '비공개 → 공개'

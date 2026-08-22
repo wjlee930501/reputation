@@ -31,6 +31,7 @@ import {
   type LifecycleReadiness,
   type OnboardingStep as StepDef,
 } from '@/lib/onboarding-lifecycle'
+import { sourceUrlWarning } from '@/lib/source-url-warnings'
 import NaverBlogBulkForm from './NaverBlogBulkForm'
 
 interface Hospital {
@@ -1014,6 +1015,8 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
+  // 서버가 422로 거절할 URL을 저장 누르기 전에 알려 준다. 막지는 않는다.
+  const urlWarning = sourceUrlWarning(url)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -1064,6 +1067,7 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
         placeholder="https://..."
         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
       />
+      {urlWarning && <p className="text-xs text-amber-800">{urlWarning}</p>}
       <div className="flex items-center gap-3">
         <button
           type="submit"
@@ -1492,6 +1496,26 @@ function SourcesList({
     }
   }
 
+  async function reinclude(sourceId: string) {
+    setExcludingId(sourceId)
+    setExcludeErrors((prev) => {
+      const next = { ...prev }
+      delete next[sourceId]
+      return next
+    })
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${sourceId}/reinclude`, {
+        method: 'POST',
+      })
+      onChanged()
+    } catch (e: unknown) {
+      const message = safeOperatorError('onboarding', '자료 목록을 다시 불러온 뒤 제외 해제를 다시 누르세요.')
+      setExcludeErrors((prev) => ({ ...prev, [sourceId]: message }))
+    } finally {
+      setExcludingId(null)
+    }
+  }
+
   if (loading && sources.length === 0) {
     return <p className="text-sm text-slate-500">자료 목록을 불러오는 중…</p>
   }
@@ -1593,7 +1617,15 @@ function SourcesList({
                   >
                     {sourceStatusLabel(s)}
                   </span>
-                  {s.status !== 'EXCLUDED' && (
+                  {s.status === 'EXCLUDED' ? (
+                    <button
+                      onClick={() => reinclude(s.id)}
+                      disabled={excludingId === s.id}
+                      className="min-h-11 rounded border border-slate-300 bg-white px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {excludingId === s.id ? '제외 해제 중…' : '제외 해제'}
+                    </button>
+                  ) : (
                     <button
                       onClick={() => exclude(s.id)}
                       disabled={excludingId === s.id}

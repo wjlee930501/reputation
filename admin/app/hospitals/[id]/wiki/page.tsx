@@ -96,8 +96,11 @@ export default function WikiPage() {
     try {
       const list = (await fetchAPI(`/admin/hospitals/${id}/essence/sources`)) as Source[]
       setSources(Array.isArray(list) ? list : [])
-      // 처리 완료 자료의 근거 노트 상세 조회
-      const processed = (Array.isArray(list) ? list : []).filter((s) => s.evidence_note_count > 0)
+      // 처리 완료 자료의 근거 노트 상세 조회. 제외한 자료는 Wiki가 다루는 '검증된 사실'이
+      // 아니므로 상세를 불러오지 않는다 — 노트 조각이 다시 섞이면 안 된다(C-5).
+      const processed = (Array.isArray(list) ? list : []).filter(
+        (s) => s.status !== 'EXCLUDED' && s.evidence_note_count > 0,
+      )
       const detailEntries = await Promise.all(
         processed.map((s) =>
           fetchAPI(`/admin/hospitals/${id}/essence/sources/${s.id}`)
@@ -121,9 +124,13 @@ export default function WikiPage() {
     void refresh()
   }, [refresh])
 
+  // 제외한 자료는 근거·사진·집계 어디에도 들어가지 않는다. 몇 개를 제외했는지만 알린다.
+  const includedSources = useMemo(() => sources.filter((s) => s.status !== 'EXCLUDED'), [sources])
+  const excludedCount = sources.length - includedSources.length
+
   const allNotes = useMemo(() => {
     const notes: Array<EvidenceNote & { source_title: string; source_type_label: string }> = []
-    for (const s of sources) {
+    for (const s of includedSources) {
       const d = details[s.id]
       if (!d?.evidence_notes) continue
       for (const note of d.evidence_notes) {
@@ -135,7 +142,7 @@ export default function WikiPage() {
       }
     }
     return notes
-  }, [sources, details])
+  }, [includedSources, details])
 
   const notesByGroup = useMemo(() => {
     const grouped = new Map<string, typeof allNotes>()
@@ -153,7 +160,7 @@ export default function WikiPage() {
     return [...known, ...extras]
   }, [notesByGroup])
 
-  const photos = sources.filter((s) => PHOTO_TYPES.has(s.source_type))
+  const photos = includedSources.filter((s) => PHOTO_TYPES.has(s.source_type))
   const [toggleErrors, setToggleErrors] = useState<Record<string, string>>({})
   const [pendingToggleId, setPendingToggleId] = useState<string | null>(null)
 
@@ -190,7 +197,10 @@ export default function WikiPage() {
           사진 자산은 토글로 /site 공개 표면에 노출 여부를 결정합니다.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
-          <span>근거 노트 {allNotes.length}개 · 자료 {sources.length}개 · 사진 {photos.length}개</span>
+          <span>
+            근거 노트 {allNotes.length}개 · 자료 {includedSources.length}개 · 사진 {photos.length}개
+            {excludedCount > 0 && ` (제외한 자료 ${excludedCount}개는 집계에서 빠집니다)`}
+          </span>
           <button onClick={refresh} className="text-blue-600 hover:underline">새로 고침</button>
           <Link href={`/hospitals/${id}/onboarding`} className="text-blue-600 hover:underline">
             온보딩 화면 →
