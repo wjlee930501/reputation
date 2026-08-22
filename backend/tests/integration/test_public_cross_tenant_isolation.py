@@ -84,6 +84,13 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         file_url="gs://reputation-images/doctor.png",
         mime_type="image/png",
         is_public=True,
+        # ck_public_photo_requires_provenance — 공개 사진은 권리 근거와 검수 기록이
+        # 있어야 저장된다. 실제 Postgres 제약이므로 픽스처도 이를 만족해야 한다.
+        photo_source_owner=f"{label} 원장",
+        photo_rights_basis="OWNER_CONSENT",
+        photo_evidence_reference=f"consent/{suffix}",
+        photo_verified_by="owner@example.com",
+        photo_verified_at=processed_at,
         status=SourceStatus.PROCESSED,
     )
     session.add_all([source, photo])

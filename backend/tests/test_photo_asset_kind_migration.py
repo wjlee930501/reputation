@@ -8,7 +8,7 @@ from app.models.essence import PHOTO_SOURCE_TYPES, SourceType
 from app.services.photo_assets import allowed_photo_asset_kinds, legacy_photo_asset_kind
 
 MIGRATION_PATH = (
-    Path(__file__).parents[1] / "alembic" / "versions" / "0052_backfill_photo_asset_kind.py"
+    Path(__file__).parents[1] / "alembic" / "versions" / "0055_backfill_photo_asset_kind.py"
 )
 
 
@@ -31,12 +31,31 @@ def test_backfill_only_touches_photos_without_a_classification(monkeypatch) -> N
 
     migration.upgrade()
 
-    assert migration.down_revision == "0051_add_hospital_visual_identity"
+    assert migration.down_revision == "0054_add_hospital_content_customization"
     assert len(statements) == 1
     sql = _sql(statements[0])
     assert "UPDATE hospital_source_assets" in sql
     assert "source_metadata->>'asset_kind' IS NULL" in sql
     assert "source_type::text IN" in sql
+
+
+def test_non_object_metadata_is_coerced_before_the_jsonb_merge(monkeypatch) -> None:
+    """`jsonb ||`는 왼쪽이 객체가 아니면 배열로 이어붙인다 — 재실행마다 값이 자란다."""
+    migration = _load()
+    statements: list[object] = []
+    monkeypatch.setattr(migration.op, "execute", statements.append)
+
+    migration.upgrade()
+    sql = _sql(statements[0])
+
+    assert (
+        "SET source_metadata = CASE WHEN jsonb_typeof(source_metadata) = 'object' "
+        "THEN source_metadata ELSE '{}'::jsonb END" in sql
+    )
+    # COALESCE만으로는 배열·스칼라·JSON null을 객체로 만들지 못한다.
+    assert "COALESCE(source_metadata" not in sql
+    # 객체가 아닌 행도 한 번만 대상이 되도록 NULL까지 같은 술어로 잡는다.
+    assert "jsonb_typeof(source_metadata) IS DISTINCT FROM 'object'" in sql
 
 
 def test_backfill_covers_every_photo_source_type() -> None:
