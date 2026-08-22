@@ -448,6 +448,10 @@ def _serialize_hospital(
         "hero_media_kind": getattr(h, "hero_media_kind", None),
         "hero_headline": getattr(h, "hero_headline", None),
         "hero_description": getattr(h, "hero_description", None),
+        # 공개 표면 계약(site/lib/hospital-payload.ts)이 선언한 필드다. 빼두면 저장된
+        # 값이 있어도 항상 null로 정규화돼, 운영자가 승인한 아트 디렉션을 화면 쪽에서
+        # 확인할 방법이 없었다. 승인된 문장을 그대로 싣는다.
+        "image_style_direction": getattr(h, "image_style_direction", None),
         "site_access_mode": getattr(h, "site_access_mode", None),
         "director_credentials": _safe_credentials(getattr(h, "director_credentials", None)),
         "treatments": _safe_treatments(h.treatments),

@@ -62,6 +62,7 @@ def test_serialize_hospital_includes_public_profile_fields():
         hero_media_kind="VERIFIED_FACILITY",
         hero_headline="피부 건강 정보를 차분히 확인하세요",
         hero_description="진료 범위와 방문 정보를 안내합니다.",
+        image_style_direction="밝은 자연광, 실제 진료 공간에 가까운 조명",
         site_access_mode="specialist",
         director_credentials={
             "medical_school": "서울대학교 의과대학",
@@ -89,11 +90,34 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["hero_image_url"] == "https://cdn.example.com/hero.png"
     assert serialized["hero_media_kind"] == "VERIFIED_FACILITY"
     assert serialized["hero_headline"] == "피부 건강 정보를 차분히 확인하세요"
+    assert serialized["image_style_direction"] == "밝은 자연광, 실제 진료 공간에 가까운 조명"
     assert serialized["site_access_mode"] == "specialist"
     assert serialized["treatments"] == [{"name": "리프팅", "description": "안면 리프팅"}]
     # license_number는 내부 보관 전용 — 공개 응답에서 제거됨.
     assert "license_number" not in serialized["director_credentials"]
     assert serialized["director_credentials"]["medical_school"] == "서울대학교 의과대학"
+
+
+def test_serialize_hospital_covers_every_visual_field_the_site_contract_declares():
+    """site/lib/hospital-payload.ts declares these; a missing key normalizes to null."""
+    hospital = _hospital_with_photo(None)
+    hospital.image_style_direction = "차분한 청록 톤"
+
+    serialized = _serialize_hospital(hospital)
+
+    for field in (
+        "brand_primary_color",
+        "brand_accent_color",
+        "logo_url",
+        "hero_image_url",
+        "hero_media_kind",
+        "hero_headline",
+        "hero_description",
+        "image_style_direction",
+        "site_access_mode",
+    ):
+        assert field in serialized, field
+    assert serialized["image_style_direction"] == "차분한 청록 톤"
 
 
 def test_serialize_hospital_normalizes_treatments_for_site_contract():

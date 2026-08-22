@@ -5,6 +5,8 @@ from fastapi import HTTPException
 
 from app.api.admin.essence import (
     build_photo_source_metadata,
+    is_photo_classification_only,
+    photo_file_is_the_material,
     resolve_patched_photo_metadata,
     resolve_upload_is_public,
     should_revalidate_after_public_photo_upload,
@@ -186,6 +188,25 @@ def test_patch_on_a_legacy_row_recovers_rather_than_rejecting():
     assert resolved["operator_hint"] == "확인 필요"
 
 
+def test_classifying_a_photo_keeps_what_was_already_stored_about_it():
+    """Choosing a role is not a reason to forget the upload filename or operator notes."""
+    resolved = resolve_patched_photo_metadata(
+        SourceType.PHOTO_DOCTOR,
+        {
+            "original_filename": "director-2026.jpg",
+            "alt_text": "진료 중인 원장",
+            "asset_kind": "EDITORIAL_GRAPHIC",
+            "asset_kind_source": "LEGACY_BACKFILL",
+            "needs_operator_review": True,
+        },
+        {"asset_kind": "VERIFIED_REAL_PERSON"},
+    )
+
+    assert resolved["original_filename"] == "director-2026.jpg"
+    assert resolved["alt_text"] == "진료 중인 원장"
+    assert resolved["asset_kind"] == "VERIFIED_REAL_PERSON"
+
+
 def test_operator_classification_clears_the_legacy_review_flag():
     resolved = resolve_patched_photo_metadata(
         SourceType.PHOTO_DOCTOR,
@@ -201,6 +222,79 @@ def test_operator_classification_clears_the_legacy_review_flag():
     assert resolved["approved_usage"] == ["DOCTOR_IDENTITY"]
     assert "asset_kind_source" not in resolved
     assert "needs_operator_review" not in resolved
+
+
+def test_a_stored_kind_that_no_longer_fits_its_photo_type_recovers_instead_of_locking():
+    """A row whose source type changed after classification must not be stuck at 422.
+
+    Re-publishing and re-classifying both read the stored kind back. If the stored
+    kind is impossible for the current type, refusing it leaves the operator with no
+    way out, so the row falls back to the conservative recovery role.
+    """
+    stuck = {"original_filename": "clinic.jpg", "asset_kind": "VERIFIED_REAL_PERSON"}
+
+    republished = validate_photo_source_metadata(
+        SourceType.PHOTO_CLINIC_INTERIOR, stuck, allow_legacy_recovery=True
+    )
+    assert republished["asset_kind"] == "VERIFIED_FACILITY"
+    assert republished["needs_operator_review"] is True
+
+    patched = resolve_patched_photo_metadata(
+        SourceType.PHOTO_CLINIC_INTERIOR, stuck, {"alt_text": "진료실"}
+    )
+    assert patched["asset_kind"] == "VERIFIED_FACILITY"
+    assert patched["alt_text"] == "진료실"
+
+
+def test_recovering_a_mismatched_kind_never_promotes_a_doctor_photo_to_identity():
+    recovered = validate_photo_source_metadata(
+        SourceType.PHOTO_DOCTOR,
+        {"asset_kind": "VERIFIED_FACILITY"},
+        allow_legacy_recovery=True,
+    )
+
+    assert recovered["asset_kind"] == "EDITORIAL_GRAPHIC"
+    assert "DOCTOR_IDENTITY" not in recovered["approved_usage"]
+
+
+def test_a_client_supplied_kind_is_still_refused_when_it_does_not_fit_the_type():
+    """Recovery is only for stored rows. An explicit write keeps failing."""
+    with pytest.raises(HTTPException):
+        validate_photo_source_metadata(
+            SourceType.PHOTO_CLINIC_INTERIOR, {"asset_kind": "VERIFIED_REAL_PERSON"}
+        )
+    with pytest.raises(HTTPException):
+        resolve_patched_photo_metadata(
+            SourceType.PHOTO_CLINIC_INTERIOR,
+            {"asset_kind": "VERIFIED_FACILITY"},
+            {"asset_kind": "VERIFIED_REAL_PERSON"},
+        )
+
+
+@pytest.mark.parametrize("source_type", PHOTO_SOURCE_TYPES)
+def test_an_uploaded_photo_needs_no_url_or_body_text_to_be_classified(source_type: SourceType):
+    """Photo uploads store only a file, so requiring text material blocked every
+    classification PATCH with a 400 — including the rows recovery flags for review."""
+    assert photo_file_is_the_material(source_type, "gs://bucket/photo.jpg") is True
+    assert photo_file_is_the_material(source_type, None) is False
+
+
+def test_text_materials_still_require_a_url_or_a_body():
+    assert photo_file_is_the_material(SourceType.HOMEPAGE, "gs://bucket/report.pdf") is False
+    assert photo_file_is_the_material(SourceType.BROCHURE, None) is False
+
+
+def test_classifying_a_photo_is_not_a_material_change_that_resets_processing():
+    assert is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"source_metadata"}) is True
+    assert (
+        is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"source_metadata", "updated_by"})
+        is True
+    )
+    # Editing the material itself still reprocesses, and text sources are unaffected.
+    assert (
+        is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"source_metadata", "title"}) is False
+    )
+    assert is_photo_classification_only(SourceType.HOMEPAGE, {"source_metadata"}) is False
 
 
 def test_public_read_fills_legacy_gaps_without_changing_what_renders():
