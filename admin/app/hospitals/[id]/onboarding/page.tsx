@@ -12,6 +12,10 @@ import {
   isProfileOnlyCandidate,
   type ProfileUrlCandidate,
 } from '@/lib/onboarding-candidate'
+import {
+  buildClinicVisualChecklist,
+  type ClinicVisualItem,
+} from '@/lib/clinic-visual-readiness'
 import type { Handoff, MeasurementRun } from '@/types'
 import {
   deriveHandoffDueStatus,
@@ -39,6 +43,11 @@ interface Hospital {
   google_business_profile_url?: string | null
   google_maps_url?: string | null
   naver_place_url?: string | null
+  logo_url?: string | null
+  brand_primary_color?: string | null
+  hero_headline?: string | null
+  hero_description?: string | null
+  site_access_mode?: string | null
 }
 
 interface Source {
@@ -498,7 +507,12 @@ function StepCard({
       <div className="border-t border-slate-100 px-4 py-5 sm:px-6">
         {step.key === 'handoff' && <HandoffStepBody />}
         {step.key === 'profile' && (
-          <ProfileStepBody hospital={hospital} hospitalId={hospitalId} />
+          <ProfileStepBody
+            hospital={hospital}
+            hospitalId={hospitalId}
+            sources={sources}
+            onChanged={onChanged}
+          />
         )}
         {step.key === 'processing' && (
           <div className="space-y-6">
@@ -579,20 +593,241 @@ function StepStatusChip({ status }: { status: StepDef['status'] }) {
   )
 }
 
-function ProfileStepBody({ hospital, hospitalId }: { hospital: Hospital | null; hospitalId: string }) {
+function ProfileStepBody({
+  hospital,
+  hospitalId,
+  sources,
+  onChanged,
+}: {
+  hospital: Hospital | null
+  hospitalId: string
+  sources: Source[]
+  onChanged: () => void
+}) {
   return (
-    <div className="space-y-3">
-      <ul className="text-sm text-slate-700 space-y-1">
-        <li>· 필수 병원 정보 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
-        <li>· 화면의 필수 항목을 모두 입력하고 저장이 완료되어야 합니다.</li>
-      </ul>
-      <Link
-        href={`/hospitals/${hospitalId}/profile`}
-        className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-      >
-        병원 기본 정보 화면으로 →
-      </Link>
+    <div className="space-y-5">
+      <div className="space-y-3">
+        <ul className="text-sm text-slate-700 space-y-1">
+          <li>· 필수 병원 정보 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
+          <li>· 화면의 필수 항목을 모두 입력하고 저장이 완료되어야 합니다.</li>
+        </ul>
+        <Link
+          href={`/hospitals/${hospitalId}/profile`}
+          className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+        >
+          병원 기본 정보 화면으로 →
+        </Link>
+      </div>
+      <ClinicVisualForm
+        hospital={hospital}
+        hospitalId={hospitalId}
+        sources={sources}
+        onSaved={onChanged}
+      />
     </div>
+  )
+}
+
+const VISUAL_STATUS_STYLE: Record<ClinicVisualItem['status'], string> = {
+  done: 'bg-green-100 text-green-700',
+  needed: 'bg-amber-100 text-amber-800',
+  optional: 'bg-slate-100 text-slate-600',
+}
+
+const VISUAL_STATUS_LABEL: Record<ClinicVisualItem['status'], string> = {
+  done: '승인됨',
+  needed: '승인 필요',
+  optional: '선택',
+}
+
+/**
+ * 공개 표면 시각 요소를 병원 기본 정보 단계 안에서 바로 승인한다.
+ *
+ * 별도 단계를 만들지 않고 기존 프로파일 단계에 붙여, AE가 온보딩을 벗어나지 않고
+ * 로고·대표색 하나·첫 문장·정보 우선순위를 확정할 수 있게 한다.
+ */
+function ClinicVisualForm({
+  hospital,
+  hospitalId,
+  sources,
+  onSaved,
+}: {
+  hospital: Hospital | null
+  hospitalId: string
+  sources: Source[]
+  onSaved: () => void
+}) {
+  const [logoUrl, setLogoUrl] = useState('')
+  const [primaryColor, setPrimaryColor] = useState('')
+  const [heroHeadline, setHeroHeadline] = useState('')
+  const [heroDescription, setHeroDescription] = useState('')
+  const [accessMode, setAccessMode] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [feedback, setFeedback] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLogoUrl(hospital?.logo_url ?? '')
+    setPrimaryColor(hospital?.brand_primary_color ?? '')
+    setHeroHeadline(hospital?.hero_headline ?? '')
+    setHeroDescription(hospital?.hero_description ?? '')
+    setAccessMode(hospital?.site_access_mode ?? '')
+  }, [hospital])
+
+  const photoCount = sources.filter((source) => isPhotoSourceType(source.source_type)).length
+  const checklist = buildClinicVisualChecklist({
+    logo_url: logoUrl,
+    brand_primary_color: primaryColor,
+    hero_headline: heroHeadline,
+    hero_description: heroDescription,
+    site_access_mode: accessMode,
+    photo_count: photoCount,
+  })
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    setFeedback(null)
+    setError(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          logo_url: logoUrl.trim() || null,
+          brand_primary_color: primaryColor.trim() || null,
+          hero_headline: heroHeadline.trim() || null,
+          hero_description: heroDescription.trim() || null,
+          site_access_mode: accessMode || null,
+        }),
+      })
+      setFeedback('공개 표면 시각 요소를 저장했습니다. 다음 사이트 갱신부터 반영됩니다.')
+      onSaved()
+    } catch (e: unknown) {
+      setError(
+        e instanceof ApiError && e.message
+          ? e.message
+          : safeOperatorError('onboarding', '입력값을 확인한 뒤 다시 저장해 주세요.'),
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <div>
+        <h3 className="text-sm font-bold text-slate-900">공개 표면 시각 요소</h3>
+        <p className="mt-1 text-xs leading-5 text-slate-600">
+          공식 로고와 대표색 <strong>하나</strong>만 승인하면 나머지 밝기 단계와 대비 안전 색상은 공개 화면이 파생합니다.
+          실사진은 필수가 아니며, 없어도 정보 중심으로 정상 노출됩니다.
+        </p>
+      </div>
+
+      <ul className="flex flex-wrap gap-2">
+        {checklist.map((item) => (
+          <li
+            key={item.key}
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${VISUAL_STATUS_STYLE[item.status]}`}
+            title={item.hint}
+          >
+            {item.label} · {VISUAL_STATUS_LABEL[item.status]}
+          </li>
+        ))}
+      </ul>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="text-sm font-medium text-slate-700">
+          공식 로고 이미지 URL
+          <input
+            type="url"
+            value={logoUrl}
+            onChange={(e) => setLogoUrl(e.target.value)}
+            placeholder="https://.../logo.png"
+            className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+          />
+        </label>
+        <label className="text-sm font-medium text-slate-700">
+          승인된 대표색 1개
+          <span className="mt-1.5 flex items-center gap-2">
+            <input
+              type="color"
+              value={primaryColor || '#17365D'}
+              onChange={(e) => setPrimaryColor(e.target.value.toUpperCase())}
+              className="h-10 w-12 rounded border border-slate-300 bg-white p-1"
+              aria-label="대표색 선택"
+            />
+            <input
+              type="text"
+              value={primaryColor}
+              onChange={(e) => setPrimaryColor(e.target.value)}
+              placeholder="#17365D"
+              pattern="#[0-9A-Fa-f]{6}"
+              className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm"
+            />
+          </span>
+        </label>
+      </div>
+
+      <label className="block text-sm font-medium text-slate-700">
+        첫 화면 정보 우선순위
+        <select
+          value={accessMode}
+          onChange={(e) => setAccessMode(e.target.value)}
+          className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+        >
+          <option value="">병원 정보로 자동 선택</option>
+          <option value="urgent">당일·야간 진료형 — 시간·전화 우선</option>
+          <option value="appointment">예약·방문형 — 위치·상담 우선</option>
+          <option value="specialist">전문 진료형 — 의료진·진료 분야 우선</option>
+        </select>
+      </label>
+
+      <label className="block text-sm font-medium text-slate-700">
+        첫 화면 카피
+        <textarea
+          value={heroHeadline}
+          onChange={(e) => setHeroHeadline(e.target.value)}
+          maxLength={160}
+          rows={2}
+          placeholder={'예: 오늘도 문 여는 동네 주치의\n증상과 진료 정보를 방문 전에 확인하세요'}
+          className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6"
+        />
+        <span className="mt-1 block text-xs font-normal text-slate-500">
+          의료광고 금지 표현이 있으면 저장되지 않습니다.
+        </span>
+      </label>
+
+      <label className="block text-sm font-medium text-slate-700">
+        첫 화면 설명
+        <textarea
+          value={heroDescription}
+          onChange={(e) => setHeroDescription(e.target.value)}
+          maxLength={320}
+          rows={2}
+          placeholder="환자가 방문 전에 알아야 할 사실을 짧게 적어 주세요."
+          className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6"
+        />
+      </label>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="submit"
+          disabled={saving}
+          className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+        >
+          {saving ? '저장 중…' : '시각 요소 저장'}
+        </button>
+        <Link
+          href={`/hospitals/${hospitalId}/profile`}
+          className="text-sm font-semibold text-slate-600 underline-offset-2 hover:underline"
+        >
+          아트 디렉션·대표 이미지까지 편집
+        </Link>
+      </div>
+
+      {feedback && <p className="text-sm font-semibold text-green-700">{feedback}</p>}
+      {error && <p className="text-sm font-semibold text-red-700">{error}</p>}
+    </form>
   )
 }
 
