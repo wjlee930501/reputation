@@ -5,6 +5,11 @@ import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
 import { persistThenApprove } from '@/lib/operator-safety'
 import {
+  evidenceApprovalBlockers,
+  evidenceResolutionSummary,
+  resolveEvidenceMap,
+} from '@/lib/essence-evidence'
+import {
   ContentPhilosophy,
   EvidenceNote,
   SourceAsset,
@@ -132,6 +137,41 @@ export default function EssencePage() {
   const [approvalNote, setApprovalNote] = useState('')
   const [confirmEvidence, setConfirmEvidence] = useState(false)
 
+  // 목록 API는 노트 본문을 주지 않는다(evidence_notes: null). 초안의 evidence_map은
+  // 노트 UUID만 담고 있으므로, 자료 상세를 따로 읽지 않으면 모든 항목이 해석 실패로
+  // 보인다 — 오른쪽 패널 24개가 전부 "다시 불러와 확인이 필요합니다."였던 원인이다.
+  const [evidenceNotes, setEvidenceNotes] = useState<Map<string, EvidenceNote>>(new Map())
+  const [evidenceLoading, setEvidenceLoading] = useState(false)
+  const [evidenceFailedSourceIds, setEvidenceFailedSourceIds] = useState<string[]>([])
+
+  const loadEvidenceNotes = useCallback(async (sourceIds: string[]) => {
+    if (sourceIds.length === 0) {
+      setEvidenceLoading(false)
+      setEvidenceFailedSourceIds([])
+      return
+    }
+    setEvidenceLoading(true)
+    const results = await Promise.all(
+      sourceIds.map(async (sourceId) => {
+        try {
+          const detail = await fetchAPI<SourceAsset>(`/admin/hospitals/${id}/essence/sources/${sourceId}`)
+          return { sourceId, notes: detail.evidence_notes ?? [] }
+        } catch {
+          return { sourceId, notes: null }
+        }
+      }),
+    )
+    setEvidenceNotes((prev) => {
+      const next = new Map(prev)
+      for (const result of results) {
+        for (const note of result.notes ?? []) next.set(note.id, note)
+      }
+      return next
+    })
+    setEvidenceFailedSourceIds(results.filter((result) => result.notes === null).map((r) => r.sourceId))
+    setEvidenceLoading(false)
+  }, [id])
+
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -158,12 +198,17 @@ export default function EssencePage() {
       const initialSelection = reviewDraft ?? approvedPhilosophy ?? philosophyList[0] ?? null
       setSelectedDraftId(initialSelection?.id ?? null)
       if (initialSelection) setDraftFields(initialSelection)
+      await loadEvidenceNotes(
+        (Array.isArray(sourceData) ? sourceData : [])
+          .filter((source: SourceAsset) => (source.evidence_note_count ?? 0) > 0)
+          .map((source: SourceAsset) => source.id),
+      )
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '콘텐츠 운영 기준 데이터를 불러오지 못했습니다.')
     } finally {
       setLoading(false)
     }
-  }, [id])
+  }, [id, loadEvidenceNotes])
 
   useEffect(() => {
     load()
@@ -179,11 +224,30 @@ export default function EssencePage() {
   )
   const evidenceNoteById = useMemo(() => {
     const entries = [
+      ...evidenceNotes.values(),
       ...sources.flatMap((source) => source.evidence_notes ?? []),
       ...(selectedSource?.evidence_notes ?? []),
     ].map((note) => [note.id, note] as const)
     return new Map(entries)
-  }, [sources, selectedSource])
+  }, [evidenceNotes, sources, selectedSource])
+  const evidenceApproval = useMemo(
+    () => ({
+      resolution: resolveEvidenceMap(selectedDraft?.evidence_map, evidenceNoteById),
+      loading: evidenceLoading,
+      loadFailed: evidenceFailedSourceIds.length > 0,
+    }),
+    [selectedDraft, evidenceNoteById, evidenceLoading, evidenceFailedSourceIds],
+  )
+  const evidenceBlockers = useMemo(
+    () => evidenceApprovalBlockers(evidenceApproval),
+    [evidenceApproval],
+  )
+  const retryEvidenceNotes = useCallback(() => {
+    const retryIds = evidenceFailedSourceIds.length > 0
+      ? evidenceFailedSourceIds
+      : sources.filter((source) => (source.evidence_note_count ?? 0) > 0).map((source) => source.id)
+    return loadEvidenceNotes(retryIds)
+  }, [evidenceFailedSourceIds, sources, loadEvidenceNotes])
   const reviewDraftCount = philosophies.filter(
     (item) => item.status === 'DRAFT' && (!approved || item.version > approved.version)
   ).length
@@ -787,8 +851,25 @@ export default function EssencePage() {
 
             <aside className="space-y-4">
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
-                <p className="text-[11px] font-semibold text-slate-600 tracking-wider mb-2">항목별 근거 연결</p>
-                <EvidenceMapSummary evidenceMap={selectedDraft.evidence_map} evidenceNoteById={evidenceNoteById} />
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <p className="text-[11px] font-semibold text-slate-600 tracking-wider">항목별 근거 연결</p>
+                  <button
+                    type="button"
+                    onClick={retryEvidenceNotes}
+                    disabled={evidenceLoading}
+                    className="shrink-0 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    {evidenceLoading ? '불러오는 중...' : '근거 노트 다시 불러오기'}
+                  </button>
+                </div>
+                <p className={`mb-2 text-[11px] ${evidenceBlockers.length > 0 ? 'text-amber-700' : 'text-slate-500'}`}>
+                  {evidenceResolutionSummary(evidenceApproval)}
+                </p>
+                <EvidenceMapSummary
+                  evidenceMap={selectedDraft.evidence_map}
+                  evidenceNoteById={evidenceNoteById}
+                  loading={evidenceLoading}
+                />
               </div>
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
                 <p className="text-[11px] font-semibold text-slate-600 tracking-wider mb-2">근거가 부족해 비워둔 항목</p>
@@ -824,13 +905,26 @@ export default function EssencePage() {
                       type="checkbox"
                       checked={confirmEvidence}
                       onChange={(e) => setConfirmEvidence(e.target.checked)}
-                      className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      disabled={evidenceBlockers.length > 0}
+                      className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50"
                     />
                     근거 노트와 원문 발췌를 검토했습니다.
                   </label>
+                  {evidenceBlockers.length > 0 && (
+                    <ul className="space-y-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800">
+                      {evidenceBlockers.map((reason) => (
+                        <li key={reason}>{reason}</li>
+                      ))}
+                    </ul>
+                  )}
                   <button
                     onClick={approveDraft}
-                    disabled={!confirmEvidence || !reviewedBy.trim() || actionLoading === 'approve-draft'}
+                    disabled={
+                      evidenceBlockers.length > 0 ||
+                      !confirmEvidence ||
+                      !reviewedBy.trim() ||
+                      actionLoading === 'approve-draft'
+                    }
                     className="w-full py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"
                   >
                     {actionLoading === 'approve-draft' ? '승인 중...' : '승인'}
@@ -918,9 +1012,11 @@ function TextArea({
 function EvidenceMapSummary({
   evidenceMap,
   evidenceNoteById,
+  loading,
 }: {
   evidenceMap: Record<string, unknown>
   evidenceNoteById: Map<string, EvidenceNote>
+  loading: boolean
 }) {
   const entries = Object.entries(evidenceMap ?? {}).filter(([, value]) => Array.isArray(value) && value.length > 0)
 
@@ -944,8 +1040,12 @@ function EvidenceMapSummary({
                       <span className="text-slate-400"> · </span>
                       <span>{note.claim}</span>
                     </>
+                  ) : loading ? (
+                    <span className="text-slate-400">근거 노트를 불러오는 중...</span>
                   ) : (
-                    <span>근거 노트를 다시 불러와 확인이 필요합니다.</span>
+                    <span className="text-amber-700">
+                      근거 노트를 찾지 못했습니다. [근거 노트 다시 불러오기]를 눌러 주세요.
+                    </span>
                   )}
                 </li>
               )
