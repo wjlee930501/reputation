@@ -32,7 +32,7 @@ from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
-from app.models.report import MonthlyReport
+from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.services.audit_log import default_actor, write_audit_log
@@ -955,15 +955,19 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         db,
         select(func.count()).select_from(MonthlyReport).where(MonthlyReport.hospital_id == h.id),
     )
-    # 초기 진단 단계는 "진단 + PDF"를 요구한다. 측정만 끝나고 PDF 생성이 실패하면
-    # 리포트 행은 남지만 원장에게 보여줄 파일이 없으므로 행 수로 완료를 판정하면
-    # 온보딩이 사실과 어긋난다.
-    report_pdf_count = await _count(
+    # 온보딩 3단계는 "초기 진단 + PDF"를 요구한다. 두 조건을 모두 봐야 한다.
+    #
+    #   - PDF: 측정만 끝나고 PDF 생성이 실패하면 리포트 행은 남지만 원장에게 보여줄
+    #     파일이 없다. 행 수로 판정하면 온보딩이 사실과 어긋난다.
+    #   - V0: 월간 리포트 PDF는 초기 진단이 아니다. 종류를 가리지 않으면 운영 몇 달째
+    #     병원이 월간 PDF 덕에 초기 진단을 건너뛴 채로 완료 표시된다.
+    v0_report_pdf_count = await _count(
         db,
         select(func.count())
         .select_from(MonthlyReport)
         .where(
             MonthlyReport.hospital_id == h.id,
+            MonthlyReport.report_type == V0_REPORT_TYPE,
             MonthlyReport.pdf_path.is_not(None),
             MonthlyReport.pdf_path != "",
         ),
@@ -1056,7 +1060,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ReadinessCheck(
             "v0_report",
             "초기 진단 리포트",
-            report_pdf_count > 0,
+            v0_report_pdf_count > 0,
             12,
             readiness_actions["v0_report"],
         ),
@@ -1115,7 +1119,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         "published_content_count": published_count,
         "sov_record_count": sov_count,
         "report_count": report_count,
-        "report_pdf_count": report_pdf_count,
+        "v0_report_pdf_count": v0_report_pdf_count,
         "essence": {
             "processed_source_count": essence.processed_source_count,
             "required_source_count": essence.required_source_count,

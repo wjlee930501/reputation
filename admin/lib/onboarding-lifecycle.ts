@@ -68,8 +68,13 @@ export interface LifecycleReadiness {
   published_content_count?: number | null
   sov_record_count?: number | null
   report_count?: number | null
-  /** PDF 파일까지 만들어진 리포트 수. 행만 있고 PDF가 없으면 0이다. */
-  report_pdf_count?: number | null
+  /**
+   * PDF 파일까지 만들어진 **초기 진단(V0)** 리포트 수.
+   *
+   * 행만 있고 PDF가 없으면 0이고, 월간 리포트 PDF는 여기 들어오지 않는다 — 초기
+   * 진단을 건너뛴 병원이 월간 PDF 덕에 3단계 완료로 보이면 안 된다.
+   */
+  v0_report_pdf_count?: number | null
   essence?: {
     approved_philosophy_exists?: boolean | null
     source_stale?: boolean | null
@@ -151,15 +156,16 @@ export function deriveOnboardingSteps(
       key: 'v0',
       phase: 'onboarding',
       title: '초기 진단 리포트',
-      description: readiness?.report_pdf_count === 0
-        ? '초기 AI 답변 노출 진단은 기록됐지만 리포트 PDF가 아직 없습니다. PDF까지 만들어야 이 단계가 끝납니다.'
+      description: readiness?.v0_report_pdf_count === 0
+        ? '초기 AI 답변 노출 진단 리포트 PDF가 아직 없습니다. 월간 리포트가 아니라 초기 진단 PDF까지 만들어야 이 단계가 끝납니다.'
         : '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다.',
       href: `/hospitals/${hospitalId}/dashboard#v0-measurement-runs`,
-      // 단계 설명이 PDF를 요구하므로 완료 판정도 PDF 존재를 본다. 측정만 끝나고
-      // PDF 생성이 실패한 병원을 완료로 표시하면 원장 보고 자료가 없는 채로 넘어간다.
+      // 단계 설명이 초기 진단 + PDF를 요구하므로 완료 판정도 둘을 본다. 측정만 끝나고
+      // PDF 생성이 실패한 병원을 완료로 표시하면 원장 보고 자료가 없는 채로 넘어가고,
+      // 종류를 가리지 않으면 월간 PDF가 초기 진단을 대신해 버린다.
       done: Boolean(hospital?.v0_report_done)
         && readinessCheck(readiness, 'v0_report') !== false
-        && readiness?.report_pdf_count !== 0,
+        && readiness?.v0_report_pdf_count !== 0,
     },
     {
       key: 'site',

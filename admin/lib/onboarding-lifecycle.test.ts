@@ -26,7 +26,7 @@ const readiness = {
   published_content_count: 1,
   sov_record_count: 2,
   report_count: 1,
-  report_pdf_count: 1,
+  v0_report_pdf_count: 1,
   essence: { approved_philosophy_exists: true, source_stale: false },
   checks: [
     'core_profile', 'v0_report', 'site_built', 'domain', 'essence_sources', 'essence_freshness',
@@ -302,7 +302,7 @@ test('an initial diagnosis without a report PDF cannot complete step three', () 
     hospital,
     sources,
     philosophies,
-    { ...readiness, report_count: 1, report_pdf_count: 0 },
+    { ...readiness, report_count: 1, v0_report_pdf_count: 0 },
     'hospital-id',
     acceptedHandoff,
   )
@@ -316,10 +316,26 @@ test('an initial diagnosis without a report PDF cannot complete step three', () 
   )
 })
 
+// 월간 리포트 PDF는 초기 진단이 아니다. 리포트 행이 여러 건이어도 초기 진단 PDF가
+// 0이면 3단계는 끝나지 않고, 설명이 "월간 리포트가 아니라"는 점을 짚는다.
+test('monthly report PDFs never stand in for the initial diagnosis', () => {
+  const v0 = deriveOnboardingSteps(
+    hospital,
+    sources,
+    philosophies,
+    { ...readiness, report_count: 4, v0_report_pdf_count: 0 },
+    'hospital-id',
+    acceptedHandoff,
+  ).find((step) => step.key === 'v0')
+
+  assert.equal(v0?.status, 'current')
+  assert.match(v0?.description ?? '', /월간 리포트가 아니라 초기 진단 PDF/)
+})
+
 test('a report PDF completes step three and an unknown PDF count does not block it', () => {
   for (const readinessVariant of [
-    { ...readiness, report_pdf_count: 1 },
-    { ...readiness, report_pdf_count: undefined },
+    { ...readiness, v0_report_pdf_count: 1 },
+    { ...readiness, v0_report_pdf_count: undefined },
   ]) {
     const v0 = deriveOnboardingSteps(
       hospital,
