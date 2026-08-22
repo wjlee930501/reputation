@@ -110,6 +110,15 @@ class HospitalSourceAsset(Base):
     # AE가 검수한 사진을 /site 공개 표면에 노출할지. PHOTO_* 타입에만 의미 있음.
     is_public: Mapped[bool] = mapped_column(default=False, nullable=False, server_default=text("false"))
 
+    # 0052_add_photo_asset_provenance의 ck_public_photo_requires_provenance는 공개된
+    # PHOTO_* 행에 이 다섯 값을 모두 요구한다. 매핑하지 않으면 ORM으로는 사진을 공개
+    # 상태로 저장할 방법이 없다 — 프로덕션에는 이미 있는 컬럼이다.
+    photo_source_owner: Mapped[str | None] = mapped_column(String(200))
+    photo_rights_basis: Mapped[str | None] = mapped_column(String(32))
+    photo_evidence_reference: Mapped[str | None] = mapped_column(String(500))
+    photo_verified_by: Mapped[str | None] = mapped_column(String(320))
+    photo_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     status: Mapped[SourceStatus] = mapped_column(
         Enum(SourceStatus, name="hospital_source_status"),
         default=SourceStatus.PENDING,
