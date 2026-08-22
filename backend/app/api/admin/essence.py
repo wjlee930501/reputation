@@ -78,6 +78,11 @@ from app.services.naver_handoff_runs import (
     list_open_naver_failures,
 )
 from app.services.ops_incident_alerts import recover_ops_incident
+from app.services.photo_assets import (
+    DERIVED_METADATA_KEYS,
+    allowed_photo_asset_kinds,
+    recovered_photo_metadata,
+)
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
@@ -151,16 +156,7 @@ def build_photo_source_metadata(
     """Bind a photo to a truthful visual role before it can reach the public surface."""
     if source_type not in PHOTO_SOURCE_TYPES:
         return {"original_filename": original_filename}
-    if source_type == SourceType.PHOTO_DOCTOR:
-        allowed = {
-            "VERIFIED_REAL_PERSON": ["DOCTOR_IDENTITY"],
-            "EDITORIAL_GRAPHIC": ["CONTENT_EDITORIAL"],
-        }
-    else:
-        allowed = {
-            "VERIFIED_FACILITY": ["HERO", "GALLERY"],
-            "EDITORIAL_GRAPHIC": ["CONTENT_EDITORIAL"],
-        }
+    allowed = allowed_photo_asset_kinds(source_type)
     if asset_kind not in allowed:
         raise HTTPException(
             status_code=422,
@@ -176,18 +172,56 @@ def build_photo_source_metadata(
 def validate_photo_source_metadata(
     source_type: SourceType,
     metadata: object,
+    *,
+    allow_legacy_recovery: bool = False,
 ) -> dict[str, object]:
-    """Validate operator classification and derive public usage instead of trusting client values."""
+    """Validate operator classification and derive public usage instead of trusting client values.
+
+    `allow_legacy_recovery`는 이미 저장된 행을 다시 다룰 때만 켠다. 새 업로드는
+    운영자가 분류를 직접 고르도록 계속 422를 유지한다.
+    """
     if not isinstance(metadata, dict):
-        raise HTTPException(status_code=422, detail="사진 메타데이터 형식이 올바르지 않습니다.")
+        if not allow_legacy_recovery:
+            raise HTTPException(status_code=422, detail="사진 메타데이터 형식이 올바르지 않습니다.")
+        return recovered_photo_metadata(source_type, {})
     original_filename = metadata.get("original_filename")
     filename = original_filename if isinstance(original_filename, str) else "photo"
     asset_kind = metadata.get("asset_kind")
     kind = asset_kind if isinstance(asset_kind, str) else None
+    if kind is None and allow_legacy_recovery:
+        return recovered_photo_metadata(source_type, metadata)
     authoritative = build_photo_source_metadata(source_type, kind, filename)
-    untrusted_keys = {"asset_kind", "approved_usage", "original_filename"}
-    preserved = {key: value for key, value in metadata.items() if key not in untrusted_keys}
+    preserved = {
+        key: value for key, value in metadata.items() if key not in DERIVED_METADATA_KEYS
+    }
     return {**preserved, **authoritative}
+
+
+def resolve_patched_photo_metadata(
+    source_type: SourceType,
+    stored_metadata: object,
+    patch_metadata: object,
+) -> dict[str, object]:
+    """PATCH로 들어온 사진 메타데이터를 저장된 분류와 합쳐 확정한다.
+
+    운영자가 분류를 다시 보내지 않아도 기존 분류를 잃지 않고, 분류가 애초에
+    없던 legacy 행이면 422 대신 복구 값을 채운다.
+    """
+    incoming = patch_metadata if isinstance(patch_metadata, dict) else {}
+    incoming_kind = incoming.get("asset_kind")
+    if isinstance(incoming_kind, str):
+        return validate_photo_source_metadata(source_type, incoming)
+
+    stored = stored_metadata if isinstance(stored_metadata, dict) else {}
+    stored_kind = stored.get("asset_kind")
+    if isinstance(stored_kind, str):
+        return validate_photo_source_metadata(source_type, {**incoming, "asset_kind": stored_kind})
+
+    return validate_photo_source_metadata(
+        source_type,
+        incoming,
+        allow_legacy_recovery=True,
+    )
 
 
 def should_revalidate_after_public_photo_upload(
@@ -378,8 +412,9 @@ async def patch_source(
     update = body.model_dump(exclude_unset=True)
     pending_source_type = update.get("source_type", source.source_type)
     if "source_metadata" in update and pending_source_type in PHOTO_SOURCE_TYPES:
-        update["source_metadata"] = validate_photo_source_metadata(
+        update["source_metadata"] = resolve_patched_photo_metadata(
             pending_source_type,
+            source.source_metadata,
             update["source_metadata"],
         )
     material_fields = {
@@ -962,9 +997,11 @@ async def toggle_source_public(
     if body.is_public and not source.file_url:
         raise HTTPException(status_code=400, detail="파일이 없는 사진은 공개할 수 없습니다.")
     if body.is_public:
+        # 분류 이전에 올라온 사진도 재공개가 막히지 않도록 복구 분류를 허용한다.
         source.source_metadata = validate_photo_source_metadata(
             source.source_type,
             source.source_metadata,
+            allow_legacy_recovery=True,
         )
     previous = bool(source.is_public)
     hospital = await _get_hospital_or_404(db, hospital_id)
