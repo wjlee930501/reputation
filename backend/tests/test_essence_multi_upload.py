@@ -70,6 +70,25 @@ class TestResolveUploadTitle:
     def test_title_is_truncated_to_300(self):
         assert len(resolve_upload_title("한" * 400, "x.jpg")) == 300
 
+    def test_a_batch_keeps_one_distinct_title_per_file(self):
+        """D-1 — 제목 칸이 하나였을 때 N개 자산이 같은 제목으로 저장되고, 그 제목이
+        공개 표면의 사진 설명이 되어 갤러리가 같은 문구를 반복했다. 화면은 이제 파일별
+        제목을 보내므로 서로 다른 제목이 그대로 저장되어야 한다."""
+        batch = [("외관", "exterior.jpg"), ("진료실", "room.jpg"), ("대기실", "lobby.png")]
+        titles = [resolve_upload_title(title, filename) for title, filename in batch]
+
+        assert titles == ["외관", "진료실", "대기실"]
+        assert len(set(titles)) == len(titles)
+
+    def test_a_batch_with_no_titles_falls_back_to_distinct_filenames(self):
+        titles = [
+            resolve_upload_title("", filename)
+            for filename in ("exterior.jpg", "room.jpg", "lobby.png")
+        ]
+
+        assert titles == ["exterior", "room", "lobby"]
+        assert len(set(titles)) == len(titles)
+
 
 class TestSkipRevalidateContract:
     def _live(self):

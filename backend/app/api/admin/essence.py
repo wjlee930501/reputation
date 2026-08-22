@@ -296,9 +296,14 @@ def is_photo_classification_only(source_type: SourceType, changed_fields: set[st
     사진은 근거 추출 대상이 아니라 공개 자산이므로, 분류를 저장할 때 처리 상태를
     PENDING으로 되돌리거나 근거 노트를 지울 이유가 없다(제외 처리된 사진이 조용히
     되살아나는 것도 막는다). 공개 표면은 분류에 따라 달라지므로 캐시 갱신은 그대로 한다.
+
+    제목도 같은 부류다 — 사진 제목은 공개 표면의 사진 설명·대체 텍스트일 뿐이므로,
+    일괄 업로드로 같아진 설명을 고치는 일(D-1)이 운영 기준 스냅샷을 낡게 만들거나
+    처리 상태를 되돌려서는 안 된다.
     """
     return source_type in PHOTO_SOURCE_TYPES and changed_fields <= {
         "source_metadata",
+        "title",
         "updated_by",
     }
 

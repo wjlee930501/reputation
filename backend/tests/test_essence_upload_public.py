@@ -290,11 +290,18 @@ def test_classifying_a_photo_is_not_a_material_change_that_resets_processing():
         is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"source_metadata", "updated_by"})
         is True
     )
-    # Editing the material itself still reprocesses, and text sources are unaffected.
+    # D-1: 사진 제목은 공개 표면의 사진 설명일 뿐이다. 일괄 업로드로 같아진 설명을
+    # 고치는 일이 처리 상태를 되돌리거나 운영 기준 스냅샷을 낡게 만들어서는 안 된다.
+    assert is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"title"}) is True
     assert (
-        is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"source_metadata", "title"}) is False
+        is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"source_metadata", "title"}) is True
     )
+    # Editing the material itself still reprocesses, and text sources are unaffected.
+    assert is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"raw_text"}) is False
+    assert is_photo_classification_only(SourceType.PHOTO_DOCTOR, {"title", "url"}) is False
     assert is_photo_classification_only(SourceType.HOMEPAGE, {"source_metadata"}) is False
+    # 텍스트 자료의 제목은 content_hash와 스냅샷에 들어가므로 여전히 재처리 대상이다.
+    assert is_photo_classification_only(SourceType.HOMEPAGE, {"title"}) is False
 
 
 def test_public_read_fills_legacy_gaps_without_changing_what_renders():
