@@ -140,7 +140,7 @@ def test_v0_session_lock_is_released_after_running_commit() -> None:
     start = v0_source.index("_start_measurement_run")
     running_commit = v0_source.index("db.commit()", start)
     finally_at = v0_source.index("finally:", start)
-    release = v0_source.index("release_hospital_advisory_session_lock_sync")
+    release = v0_source.index("release_v0_session_lock")
     assert acquire < start < running_commit < finally_at < release
     # 측정 루프는 세션 락 해제 뒤에 있다. 30분 측정 동안 풀 커넥션에 락이 남으면 안 된다.
     loop = v0_source.index("for q in sample_queries:")

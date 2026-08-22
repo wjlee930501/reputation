@@ -101,6 +101,35 @@ export function domainSearchText(hospital: HospitalDomainInput): string {
     .toLowerCase()
 }
 
+// 백엔드가 ISSUING 클레임을 만료로 보는 시간(CERTIFICATE_LEASE_MINUTES)과 같아야 한다.
+// 이 시간이 지나면 재확인 요청이 새 발급 작업을 잡으므로 버튼을 막아 둘 이유가 없다.
+export const CERTIFICATE_LEASE_MINUTES = 30
+
+export function certificateIssuingElapsedMinutes(
+  startedAt: string | null | undefined,
+  now: number = Date.now(),
+): number | null {
+  if (!startedAt) return null
+  const started = new Date(startedAt).getTime()
+  if (Number.isNaN(started)) return null
+  return Math.max(0, Math.floor((now - started) / 60000))
+}
+
+/**
+ * 진행 중이라고 표시된 인증서 작업을 지금 다시 걸 수 있는지.
+ *
+ * 발급 작업이 커밋된 직후 워커가 죽으면 아무도 폴링하지 않는 ISSUING이 남는다.
+ * 버튼을 계속 잠가 두면 운영자가 도메인을 되살릴 방법이 없다.
+ */
+export function certificateIssuingCanBeRetried(
+  startedAt: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  const elapsed = certificateIssuingElapsedMinutes(startedAt, now)
+  if (elapsed === null) return true
+  return elapsed >= CERTIFICATE_LEASE_MINUTES
+}
+
 export function domainHeaderStatus(profile: {
   site_live?: boolean
   aeo_domain?: string | null

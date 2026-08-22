@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -89,6 +90,17 @@ class HospitalSourceAsset(Base):
         Index("ix_hospital_source_assets_hospital_status", "hospital_id", "status"),
         Index("ix_hospital_source_assets_hospital_type", "hospital_id", "source_type"),
         Index("ix_hospital_source_assets_hospital_hash", "hospital_id", "content_hash"),
+        # 0052_add_photo_asset_provenance와 같은 계약. 마이그레이션에만 있으면 메타데이터로
+        # 만든 테스트 스키마에는 제약이 없어, 프로덕션에서만 터지는 저장 경로가 생긴다.
+        CheckConstraint(
+            "NOT is_public OR CAST(source_type AS VARCHAR) NOT LIKE 'PHOTO_%' OR ("
+            "photo_source_owner IS NOT NULL AND photo_source_owner <> '' AND "
+            "photo_rights_basis IN ('LICENSE', 'OWNER_CONSENT') AND "
+            "photo_evidence_reference IS NOT NULL AND photo_evidence_reference <> '' AND "
+            "photo_verified_by IS NOT NULL AND photo_verified_by <> '' AND "
+            "photo_verified_at IS NOT NULL)",
+            name="ck_public_photo_requires_provenance",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

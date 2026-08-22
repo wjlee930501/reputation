@@ -48,8 +48,13 @@ def acquire_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> N
     db.execute(select(func.pg_advisory_lock(hospital_lock_key(hospital_id))))
 
 
-def release_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> None:
-    """pg_advisory_unlock — 같은 커넥션에서만 해제된다."""
+def release_hospital_advisory_session_lock_sync(db, hospital_id: uuid.UUID) -> bool | None:
+    """pg_advisory_unlock — 같은 커넥션에서만 해제된다.
+
+    Postgres는 그 커넥션이 락을 들고 있지 않으면 예외 없이 false를 돌려준다. 호출자가
+    "풀지 못했다"를 알아채고 커넥션을 폐기할 수 있도록 결과를 그대로 반환한다.
+    Postgres가 아닌 바인딩에서는 락 자체가 없으므로 None.
+    """
     if not _is_postgres_bind(db):
-        return
-    db.execute(select(func.pg_advisory_unlock(hospital_lock_key(hospital_id))))
+        return None
+    return db.execute(select(func.pg_advisory_unlock(hospital_lock_key(hospital_id)))).scalar()

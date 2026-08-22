@@ -31,7 +31,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
-from app.core.database import SyncSessionLocal
+from app.core.database import SyncSessionLocal, SyncSessionPinnedConnection
 from app.models.content import (
     ContentItem,
     ContentSchedule,
@@ -1048,6 +1048,34 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
 # ══════════════════════════════════════════════════════════════════
 # V0 리포트
 # ══════════════════════════════════════════════════════════════════
+def release_v0_session_lock(db, hospital_uuid: uuid.UUID) -> None:
+    """세션 advisory 락을 반드시 푼 상태로 커넥션을 풀에 돌려준다.
+
+    락 구간에서 SQLAlchemy 오류가 나면 세션이 pending-rollback 상태라 unlock 쿼리
+    자체가 실패한다. 세션 락은 트랜잭션 롤백으로 풀리지 않으므로 커넥션이 풀에
+    반환된 뒤에도 락이 살아남고, 같은 키를 쓰는 그 병원의 모든 쓰기(프로파일 저장,
+    자료 업로드, V0 재시도)가 알림 없이 무한 대기한다. 깨끗한 세션에서도 무해한
+    rollback을 먼저 돌리고, 그래도 해제를 확인하지 못하면 락을 들고 있을 수 있는
+    커넥션을 풀에 돌려주지 않고 폐기한다.
+    """
+    hospital_id = str(hospital_uuid)
+    try:
+        db.rollback()
+        if release_hospital_advisory_session_lock_sync(db, hospital_uuid) is False:
+            logger.error(
+                "V0 session lock for %s was not held by this connection; discarding it",
+                hospital_id,
+            )
+            db.invalidate()
+        return
+    except Exception:
+        logger.exception("failed to release V0 session lock for %s", hospital_id)
+    try:
+        db.invalidate()
+    except Exception:
+        logger.exception("failed to discard the V0 lock connection for %s", hospital_id)
+
+
 @celery_app.task(
     name="app.workers.tasks.trigger_v0_report",
     bind=True,
@@ -1060,7 +1088,9 @@ def trigger_v0_report(self, hospital_id: str):
     require_dispatch(self, "trigger-v0-report", hospital_id)
     prior_status: str | None = None  # ANALYZING 전환 전 상태 — 실패 시 복원용 (P2-15)
     try:
-        with SyncSessionLocal() as db:
+        # 세션 락은 커넥션에 붙는다 — 중간 commit이 커넥션을 풀에 반환해 버리면 unlock이
+        # 다른 커넥션에서 돌아 조용히 실패한다. 그래서 이 태스크만 커넥션을 고정한다.
+        with SyncSessionPinnedConnection() as db:
             hospital_uuid = uuid.UUID(hospital_id)
             # 세션 락은 ANALYZING commit ~ MeasurementRun RUNNING commit 사이만 잡는다.
             # 워커 커넥션은 QueuePool이라 해제하지 않으면 락이 풀 커넥션에 영구 잔류하고,
@@ -1151,10 +1181,7 @@ def trigger_v0_report(self, hospital_id: str):
                 )
                 db.commit()
             finally:
-                try:
-                    release_hospital_advisory_session_lock_sync(db, hospital_uuid)
-                except Exception:
-                    logger.exception("failed to release V0 session lock for %s", hospital_id)
+                release_v0_session_lock(db, hospital_uuid)
             if run is None:
                 return
             all_records = []
