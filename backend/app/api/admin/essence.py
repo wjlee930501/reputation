@@ -188,7 +188,10 @@ def validate_photo_source_metadata(
     filename = original_filename if isinstance(original_filename, str) else "photo"
     asset_kind = metadata.get("asset_kind")
     kind = asset_kind if isinstance(asset_kind, str) else None
-    if kind is None and allow_legacy_recovery:
+    if allow_legacy_recovery and kind not in allowed_photo_asset_kinds(source_type):
+        # 이미 저장된 행이 이 사진 종류에 맞지 않는 분류를 들고 있으면(예: 분류 뒤에
+        # 종류가 바뀐 행) 그대로 422로 막으면 재공개도 재분류도 할 수 없다. 보수적인
+        # 복구 값을 채워 운영자가 확인할 수 있는 상태로 되돌린다.
         return recovered_photo_metadata(source_type, metadata)
     authoritative = build_photo_source_metadata(source_type, kind, filename)
     preserved = {
@@ -208,20 +211,50 @@ def resolve_patched_photo_metadata(
     없던 legacy 행이면 422 대신 복구 값을 채운다.
     """
     incoming = patch_metadata if isinstance(patch_metadata, dict) else {}
+    stored = stored_metadata if isinstance(stored_metadata, dict) else {}
+    # 분류는 이 사진에 관해 저장된 다른 정보(업로드 당시 파일명 등)를 지우는 작업이
+    # 아니다. 파생 키만 다시 계산하고 나머지 저장값은 그대로 넘긴다.
+    carried_over = {key: value for key, value in stored.items() if key not in DERIVED_METADATA_KEYS}
+    original_filename = stored.get("original_filename")
+    if isinstance(original_filename, str):
+        carried_over["original_filename"] = original_filename
+    merged = {**carried_over, **incoming}
+
     incoming_kind = incoming.get("asset_kind")
     if isinstance(incoming_kind, str):
-        return validate_photo_source_metadata(source_type, incoming)
+        return validate_photo_source_metadata(source_type, merged)
 
-    stored = stored_metadata if isinstance(stored_metadata, dict) else {}
     stored_kind = stored.get("asset_kind")
     if isinstance(stored_kind, str):
-        return validate_photo_source_metadata(source_type, {**incoming, "asset_kind": stored_kind})
+        return validate_photo_source_metadata(
+            source_type,
+            {**merged, "asset_kind": stored_kind},
+            allow_legacy_recovery=True,
+        )
 
     return validate_photo_source_metadata(
         source_type,
-        incoming,
+        merged,
         allow_legacy_recovery=True,
     )
+
+
+def photo_file_is_the_material(source_type: SourceType, file_url: str | None) -> bool:
+    """사진은 업로드한 파일 자체가 자료다 — URL이나 본문 텍스트를 요구하지 않는다."""
+    return source_type in PHOTO_SOURCE_TYPES and bool(file_url)
+
+
+def is_photo_classification_only(source_type: SourceType, changed_fields: set[str]) -> bool:
+    """이번 PATCH가 사진의 시각 역할만 바꾸는지.
+
+    사진은 근거 추출 대상이 아니라 공개 자산이므로, 분류를 저장할 때 처리 상태를
+    PENDING으로 되돌리거나 근거 노트를 지울 이유가 없다(제외 처리된 사진이 조용히
+    되살아나는 것도 막는다). 공개 표면은 분류에 따라 달라지므로 캐시 갱신은 그대로 한다.
+    """
+    return source_type in PHOTO_SOURCE_TYPES and changed_fields <= {
+        "source_metadata",
+        "updated_by",
+    }
 
 
 def should_revalidate_after_public_photo_upload(
@@ -426,6 +459,7 @@ async def patch_source(
         "source_metadata",
     }
     material_changed = bool(material_fields.intersection(update.keys()))
+    classification_only = is_photo_classification_only(pending_source_type, set(update.keys()))
     hospital = await _get_hospital_or_404(db, hospital_id) if material_changed else None
     should_revalidate = bool(hospital and _has_public_site(hospital))
     if should_revalidate:
@@ -436,10 +470,15 @@ async def patch_source(
             value = _clean_optional(value)
         setattr(source, field_name, value)
 
-    if not ((source.url and source.url.strip()) or (source.raw_text and source.raw_text.strip())):
+    has_text_material = bool(
+        (source.url and source.url.strip()) or (source.raw_text and source.raw_text.strip())
+    )
+    if not has_text_material and not photo_file_is_the_material(
+        source.source_type, source.file_url
+    ):
         raise HTTPException(status_code=400, detail="자료 URL 또는 자료 본문 중 하나는 필수입니다.")
 
-    if material_changed:
+    if material_changed and not classification_only:
         await db.execute(
             delete(HospitalSourceEvidenceNote).where(
                 HospitalSourceEvidenceNote.source_asset_id == source.id
