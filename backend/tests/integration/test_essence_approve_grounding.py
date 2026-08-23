@@ -98,6 +98,16 @@ def _approval() -> essence_api.PhilosophyApprove:
     )
 
 
+async def _approve_as_verified(db, hospital_id, philosophy_id):
+    token = set_request_actor("grounding.operator@example.com")
+    try:
+        return await essence_api.approve_philosophy(
+            hospital_id, philosophy_id, _approval(), db=db
+        )
+    finally:
+        reset_request_actor(token)
+
+
 @pytest.mark.asyncio
 async def test_approve_rejects_a_draft_whose_evidence_notes_no_longer_exist(pg_async_session):
     dead_note_id = str(uuid.uuid4())
@@ -106,9 +116,7 @@ async def test_approve_rejects_a_draft_whose_evidence_notes_no_longer_exist(pg_a
     )
 
     with pytest.raises(HTTPException) as exc:
-        await essence_api.approve_philosophy(
-            hospital.id, draft.id, _approval(), db=pg_async_session
-        )
+        await _approve_as_verified(pg_async_session, hospital.id, draft.id)
 
     assert exc.value.status_code == 422
     errors = exc.value.detail["grounding_errors"]
@@ -129,9 +137,7 @@ async def test_approve_rejects_orphan_references_even_on_an_empty_field(pg_async
     await pg_async_session.commit()
 
     with pytest.raises(HTTPException) as exc:
-        await essence_api.approve_philosophy(
-            hospital.id, draft.id, _approval(), db=pg_async_session
-        )
+        await _approve_as_verified(pg_async_session, hospital.id, draft.id)
 
     assert exc.value.status_code == 422
     errors = exc.value.detail["grounding_errors"]
@@ -144,9 +150,7 @@ async def test_approve_succeeds_when_every_reference_resolves(pg_async_session):
     draft.evidence_map = {"positioning_statement": [str(note.id)]}
     await pg_async_session.commit()
 
-    result = await essence_api.approve_philosophy(
-        hospital.id, draft.id, _approval(), db=pg_async_session
-    )
+    result = await _approve_as_verified(pg_async_session, hospital.id, draft.id)
 
     assert result["status"] == PhilosophyStatus.APPROVED.value
 
@@ -179,19 +183,44 @@ async def test_the_recorded_reviewer_is_the_verified_account_not_the_request_bod
 
 @pytest.mark.asyncio
 async def test_an_unverified_actor_never_becomes_the_recorded_reviewer(pg_async_session):
-    """활성 계정과 매칭되지 않은 헤더 값은 승인자로 남기지 않는다."""
+    """활성 계정과 매칭되지 않은 헤더 값은 본문 이름으로 우회할 수 없다."""
     hospital, draft, note = await _seed_draft(pg_async_session, mapped_note_ids=[])
     draft.evidence_map = {"positioning_statement": [str(note.id)]}
     await pg_async_session.commit()
 
     token = set_request_actor(f"{UNVERIFIED_ACTOR_PREFIX}someone@example.com")
     try:
-        await essence_api.approve_philosophy(
-            hospital.id, draft.id, _approval(), db=pg_async_session
-        )
+        with pytest.raises(HTTPException) as exc:
+            await essence_api.approve_philosophy(
+                hospital.id, draft.id, _approval(), db=pg_async_session
+            )
     finally:
         reset_request_actor(token)
 
+    assert exc.value.status_code == 403
+    assert "로그인 계정" in exc.value.detail
     await pg_async_session.refresh(draft)
-    assert not draft.reviewed_by.startswith(UNVERIFIED_ACTOR_PREFIX)
-    assert draft.reviewed_by == "MotionLabs"
+    assert draft.status == PhilosophyStatus.DRAFT
+    assert draft.reviewed_by is None
+
+
+@pytest.mark.asyncio
+async def test_approve_requires_a_request_actor_instead_of_trusting_the_body(pg_async_session):
+    hospital, draft, note = await _seed_draft(pg_async_session, mapped_note_ids=[])
+    draft.evidence_map = {"positioning_statement": [str(note.id)]}
+    await pg_async_session.commit()
+
+    token = set_request_actor(None)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await essence_api.approve_philosophy(
+                hospital.id, draft.id, _approval(), db=pg_async_session
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert exc.value.status_code == 403
+    assert "다시 로그인" in exc.value.detail
+    await pg_async_session.refresh(draft)
+    assert draft.status == PhilosophyStatus.DRAFT
+    assert draft.reviewed_by is None
