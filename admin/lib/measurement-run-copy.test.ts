@@ -41,7 +41,34 @@ test('only a run without a single success is called unreflected', () => {
     failure_rate: 100,
   })
 
-  assert.match(text, /성공 측정이 없어 이 실행은 AI 언급률에 반영되지 않습니다/)
+  assert.match(text, /확정된 성공 측정이 없어 이 실행은 AI 언급률에 반영되지 않습니다/)
+})
+
+test('ambiguous SUCCESS rows are excluded from the absolute reflected count', () => {
+  const text = describeMeasurementRunMentionRateImpact({
+    query_count: 150,
+    success_count: 140,
+    ambiguous_count: 12,
+    failure_count: 10,
+    failure_rate: 6.7,
+  })
+
+  assert.match(text, /판정 미확정 12건은 분모에서 빠지고/)
+  assert.match(text, /확정 성공 128건은 AI 언급률에 반영됩니다/)
+  assert.doesNotMatch(text, /성공 140건.*반영됩니다/)
+})
+
+test('a run with only ambiguous SUCCESS rows has no confirmed mention-rate denominator', () => {
+  const text = describeMeasurementRunMentionRateImpact({
+    query_count: 8,
+    success_count: 8,
+    ambiguous_count: 8,
+    failure_count: 0,
+    failure_rate: 0,
+  })
+
+  assert.match(text, /확정된 성공 측정이 없어/)
+  assert.doesNotMatch(text, /8건이 모두 AI 언급률에 반영/)
 })
 
 test('a run with no measurement attempts reports no failure rate instead of 0%', () => {

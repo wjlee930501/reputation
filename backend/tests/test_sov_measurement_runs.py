@@ -220,6 +220,13 @@ async def test_measurement_runs_endpoint_shape():
         error_summary={"timeout": 2},
         created_at=timestamp,
         updated_at=timestamp,
+        sov_records=[
+            SimpleNamespace(
+                measurement_status="SUCCESS",
+                mention_verdict="AMBIGUOUS",
+                is_mentioned=None,
+            )
+        ],
     )
     db = _FakeDB(
         hospital=SimpleNamespace(id=hospital_id),
@@ -241,6 +248,7 @@ async def test_measurement_runs_endpoint_shape():
             },
             "query_count": 10,
             "success_count": 8,
+            "ambiguous_count": 1,
             "failure_count": 2,
             "success_rate": 80.0,
             "failure_rate": 20.0,

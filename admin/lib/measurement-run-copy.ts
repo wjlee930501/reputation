@@ -14,6 +14,8 @@
 export interface MeasurementRunCounts {
   query_count: number
   success_count: number
+  /** SUCCESS 중 판정이 확정되지 않아 언급률 분모에서 빠지는 측정 수 */
+  ambiguous_count?: number
   failure_count: number
   failure_rate: number | null
 }
@@ -35,6 +37,8 @@ export const MENTION_RATE_FAILURE_ALERT_COPY =
 export function describeMeasurementRunMentionRateImpact(run: MeasurementRunCounts): string {
   const queryCount = Math.max(0, run.query_count ?? 0)
   const successCount = Math.max(0, run.success_count ?? 0)
+  const ambiguousCount = Math.max(0, run.ambiguous_count ?? 0)
+  const confirmedCount = Math.max(0, successCount - ambiguousCount)
   const failureCount = Math.max(0, run.failure_count ?? 0)
 
   if (queryCount === 0) {
@@ -47,11 +51,17 @@ export function describeMeasurementRunMentionRateImpact(run: MeasurementRunCount
       : (failureCount / queryCount) * 100
   const rateText = `실패율 ${failureRate.toFixed(1)}%`
 
+  if (confirmedCount === 0) {
+    return `${rateText} · 확정된 성공 측정이 없어 이 실행은 AI 언급률에 반영되지 않습니다`
+  }
+  if (ambiguousCount > 0) {
+    const excluded = failureCount > 0
+      ? `실패 ${failureCount}건과 판정 미확정 ${ambiguousCount}건은 분모에서 빠지고`
+      : `판정 미확정 ${ambiguousCount}건은 분모에서 빠지고`
+    return `${rateText} · ${excluded} 확정 성공 ${confirmedCount}건은 AI 언급률에 반영됩니다`
+  }
   if (failureCount === 0) {
-    return `${rateText} · 성공 ${successCount}건이 모두 AI 언급률에 반영됩니다`
+    return `${rateText} · 성공 ${confirmedCount}건이 모두 AI 언급률에 반영됩니다`
   }
-  if (successCount === 0) {
-    return `${rateText} · 성공 측정이 없어 이 실행은 AI 언급률에 반영되지 않습니다`
-  }
-  return `${rateText} · 실패 ${failureCount}건만 분모에서 빠지고 성공 ${successCount}건은 AI 언급률에 반영됩니다`
+  return `${rateText} · 실패 ${failureCount}건만 분모에서 빠지고 성공 ${confirmedCount}건은 AI 언급률에 반영됩니다`
 }

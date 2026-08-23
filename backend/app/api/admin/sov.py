@@ -13,6 +13,7 @@ import arrow
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.hospital import Hospital
@@ -63,6 +64,7 @@ async def get_sov_measurement_runs(
     safe_limit = max(1, min(limit, 100))
     stmt = (
         select(MeasurementRun)
+        .options(selectinload(MeasurementRun.sov_records))
         .where(MeasurementRun.hospital_id == hospital_id)
         .order_by(MeasurementRun.created_at.desc())
         .limit(safe_limit)
@@ -253,6 +255,9 @@ def _serialize_measurement_run(run: MeasurementRun) -> dict[str, Any]:
     query_count = run.query_count or 0
     success_count = run.success_count or 0
     failure_count = run.failure_count or 0
+    ambiguous_count = sum(
+        1 for record in getattr(run, "sov_records", []) if sov_engine.record_is_ambiguous(record)
+    )
     return {
         "id": str(run.id),
         "hospital_id": str(run.hospital_id),
@@ -265,6 +270,7 @@ def _serialize_measurement_run(run: MeasurementRun) -> dict[str, Any]:
         },
         "query_count": query_count,
         "success_count": success_count,
+        "ambiguous_count": ambiguous_count,
         "failure_count": failure_count,
         # 측정 건이 0이면 비율을 만들 수 없다. 0.0으로 채우면 "전부 실패한 실행"이
         # "실패율 0.0%"로 표시되어 sov_pct/mention_rate에서 없앤 허위 숫자가 그대로 남는다.
