@@ -1,7 +1,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 
-import { uniformWeeklyHours } from '@/lib/business-hours'
+import { nextOpenDay, uniformWeeklyHours } from '@/lib/business-hours'
 import { displayClinicLabels } from '@/lib/clinic-design'
 import type { ClinicAccessMode, ClinicMediaMode } from '@/lib/clinic-design'
 import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
@@ -77,6 +77,9 @@ export function ClinicHero({
   // 요일 편차가 없는 병원에서 `토요일 진료`는 `오늘 진료`와 같은 값을 반복할 뿐이다.
   // 그 칸을 환자가 실제로 궁금해하는 사실(연중무휴)로 바꾼다.
   const uniformHours = uniformWeeklyHours(businessHours)
+  // 오늘이 휴진이면 지나간 요일의 시간을 보여 줄 게 아니라 다음에 언제 여는지를
+  // 알려야 한다(S-8).
+  const upcoming = today?.closed ? nextOpenDay(businessHours, seoulDayKey()) : null
   const specialtyLabel = displayClinicLabels(specialties).join(' · ')
   const locationLabel = displayClinicLabels(region).join(' ')
   const headline = buildClinicHeroHeadline({
@@ -127,7 +130,9 @@ export function ClinicHero({
               <>
                 <a className="clinic-btn clinic-btn-cta" href={`tel:${phone}`}>
                   <PhoneIcon className="clinic-icon clinic-icon--sm" />
-                  전화 상담
+                  {/* 오늘 휴진인데 '전화 상담'만 있으면 환자는 받지 않는 번호로 건다.
+                      사실을 먼저 말하고, 전화는 그대로 걸 수 있게 둔다(S-8). */}
+                  {today?.closed ? '오늘 휴진 · 전화 문의' : '전화 상담'}
                 </a>
                 <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/visit`}>
                   <MapPinIcon className="clinic-icon clinic-icon--sm" />
@@ -178,8 +183,14 @@ export function ClinicHero({
         </div>
         <div>
           <CalendarIcon className="clinic-icon" />
-          <dt>{uniformHours ? '휴무일' : '토요일 진료'}</dt>
-          <dd>{uniformHours ? '연중무휴' : saturday || '방문 전 전화 확인'}</dd>
+          <dt>{uniformHours ? '휴무일' : upcoming ? '다음 진료' : '토요일 진료'}</dt>
+          <dd>
+            {uniformHours
+              ? '연중무휴'
+              : upcoming
+                ? `${upcoming.label} ${upcoming.time}`
+                : saturday || '방문 전 전화 확인'}
+          </dd>
         </div>
       </dl>
 

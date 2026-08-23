@@ -91,6 +91,29 @@ export function hasWeeklyHours(hours: Record<string, string> | null | undefined)
  * 놓으면 같은 값을 두 번 말하는 셈이라 정보량이 0이다. 그 자리에 "연중무휴"를 넣으면
  * 환자가 실제로 알고 싶은 사실(주말·공휴일에도 여는가)을 한 칸으로 전달한다.
  */
+/**
+ * 오늘 다음으로 문 여는 날. 오늘이 휴진일 때 환자가 실제로 궁금해하는 사실이다.
+ *
+ * 첫 화면 4번째 칸이 `토요일 진료` 고정이라, 일요일에 방문한 환자에게 지나간 토요일
+ * 시간을 보여 주고 있었다(S-8). 요일 편차가 있는 병원에서는 그 자리를 "다음 진료"로
+ * 바꾼다. 7일을 모두 돌아도 열린 날이 없으면(전부 휴진) null이다.
+ */
+export function nextOpenDay(
+  hours: Record<string, string> | null | undefined,
+  todayKey: string,
+): { label: string; time: string } | null {
+  if (!hours) return null
+  const startIndex = WEEKDAY_ORDER.indexOf(todayKey as (typeof WEEKDAY_ORDER)[number])
+  if (startIndex < 0) return null
+  for (let offset = 1; offset <= 7; offset += 1) {
+    const day = WEEKDAY_ORDER[(startIndex + offset) % WEEKDAY_ORDER.length]
+    const value = (hours[day] ?? '').trim()
+    if (!value || isClosedLabel(value)) continue
+    return { label: WEEKDAY_LABELS[day] ?? day, time: value }
+  }
+  return null
+}
+
 export function uniformWeeklyHours(
   hours: Record<string, string> | null | undefined,
 ): string | null {

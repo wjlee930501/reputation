@@ -79,6 +79,7 @@ from app.services.naver_handoff_runs import (
 )
 from app.services.ops_incident_alerts import recover_ops_incident
 from app.services.photo_assets import (
+    build_image_quality_metadata,
     DERIVED_METADATA_KEYS,
     allowed_photo_asset_kinds,
     recovered_photo_metadata,
@@ -848,11 +849,16 @@ async def upload_source_file(
         url=None,
         raw_text=raw_text,
         operator_note=_clean_optional(operator_note),
-        source_metadata=build_photo_source_metadata(
-            source_type,
-            asset_kind,
-            file.filename or "",
-        ),
+        source_metadata={
+            **build_photo_source_metadata(
+                source_type,
+                asset_kind,
+                file.filename or "",
+            ),
+            # 해상도는 저장 시점에만 알 수 있다. 원본보다 크게 표시되면 화질이
+            # 뭉개지므로(S-3) 사실을 남겨 운영자가 교체 여부를 판단하게 한다.
+            **(build_image_quality_metadata(data) if extractor_kind == "IMAGE" else {}),
+        },
         file_url=file_url,
         mime_type=mime_type or None,
         file_size_bytes=len(data),

@@ -2610,7 +2610,16 @@ summary:focus-visible {
     display: none;
   }
 
-  .clinic-header-nav-mobile a {
+  /* 현재 페이지 항목 — 링크가 아니라 위치 표시다. 눌러도 아무 일이 없는 링크를
+   없애면서(S-1) 어디에 있는지는 계속 보이게 한다. */
+.clinic-header-nav-current,
+.clinic-mobile-actionbar-current {
+  color: var(--clinic-brand-action);
+  font-weight: var(--weight-bold);
+  cursor: default;
+}
+
+.clinic-header-nav-mobile a {
     flex-shrink: 0;
     padding: 8px 14px;
     border: 1px solid var(--color-revisit-line-container);
@@ -4238,6 +4247,9 @@ summary:focus-visible {
 }
 
 /* ── Hub library framing for /[slug]/contents ─────────────────── */
+/* 위아래 여백이 다른 것은 의도다 — 이건 콘텐츠 섹션이 아니라 아래 구분선으로 본문과
+   갈리는 페이지 머리글이다. 홈의 96/96 리듬을 그대로 쓰면 제목이 본문에서 떠 보인다.
+   (감사에서 반복 지적되던 S-7 — 규칙이 다른 게 아니라 역할이 다르다.) */
 .clinic-library-hero {
   position: relative;
   padding: var(--clinic-section-y) var(--clinic-section-x) var(--clinic-section-y-tight);
@@ -7898,17 +7910,39 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   color: var(--clinic-ink);
 }
 
+/* 가로형 병원 사진(대개 16:9)을 정사각에 가까운 박스에 cover로 넣으면 좌우가 크게
+   잘린다 — 간판의 병원명 마지막 글자가 날아갔다(S-2). 박스를 원본 종횡비 쪽으로
+   당겨 잘리는 양을 줄인다. 높이는 좌측 카피 높이에 맞춰 늘어난다. */
 .clinic-hero-editorial-photo {
   position: relative;
   min-width: 0;
-  min-height: 580px;
+  /* 높이는 컬럼 폭에서 파생시킨다. min-height와 aspect-ratio를 같이 주면 높이가 폭을
+     역산해 그리드 트랙보다 넓어지고, 그대로 가로 스크롤이 생긴다. */
+  width: 100%;
+  min-height: 0;
+  aspect-ratio: 16 / 10;
+  align-self: center;
   overflow: hidden;
   background: var(--color-revisit-coolgrey-90);
 }
 
+/* 사진이 없으면 오른쪽 절반을 회색 상자로 채우지 않는다 — 환자에게는 준비가 덜 된
+   화면으로 읽히고, 실제로 그 자리에 담을 사실이 없다(S-8). 카피가 폭을 다 쓰는
+   1컬럼으로 떨어뜨리는 편이 정보 밀도도 높고 의도적으로 보인다. */
 .clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty) {
-  grid-template-columns: minmax(440px, 58%) minmax(320px, 42%);
-  min-height: 520px;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty)
+  .clinic-hero-editorial-photo {
+  display: none;
+}
+
+.clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty)
+  .clinic-hero-editorial-copy {
+  max-width: 46rem;
+  padding-block: 76px;
 }
 
 .clinic-hero-editorial-photo.is-empty {
@@ -8396,15 +8430,22 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     gap: 20px;
     margin-right: 20px;
   }
-  .clinic-header-cta strong {
-    display: none;
-  }
   .clinic-hero-editorial-copy {
     padding-left: 36px;
     padding-right: 36px;
   }
+  /* 첫 화면 문장과 팩트 레일은 같은 정렬선에 서야 한다 — 여기서 36 대 28로 갈려
+     레일만 8px 왼쪽으로 튀어나왔다(S-4). */
   .clinic-hero-fact-rail {
-    padding-inline: 28px;
+    padding-inline: 36px;
+  }
+}
+
+/* 전화번호는 병원 사이트의 전환 요소다. 1080px에서 숨기면 노트북 대부분에서
+   번호가 사라진다 — 그 폭에는 아직 여백이 있다. 정말 좁아지는 구간까지 남긴다(S-5). */
+@media (max-width: 900px) {
+  .clinic-header-cta strong {
+    display: none;
   }
 }
 

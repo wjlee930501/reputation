@@ -138,6 +138,8 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
           logoUrl={hospital.logo_url}
+          currentSection="contents"
+          googleMapsUrl={hospital.google_maps_url}
         />
         <main id="main-content">
           <section className="clinic-library-hero">

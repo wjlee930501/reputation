@@ -120,6 +120,8 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
           logoUrl={hospital.logo_url}
+          currentSection="visit"
+          googleMapsUrl={hospital.google_maps_url}
         />
         <main id="main-content">
           <section className="clinic-library-hero">
