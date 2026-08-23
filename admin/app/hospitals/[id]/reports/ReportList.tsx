@@ -3,7 +3,9 @@
 import {
   getInternalReportLabel,
   isEffectivelyDelivered,
+  reportStatusLabel,
   reportSummaryCounts,
+  shouldShowDeliveryProblem,
 } from '@/lib/report-delivery'
 import type { ReportView } from '@/lib/report-review'
 
@@ -51,7 +53,8 @@ export function ReportList({
             </thead>
             <tbody className="divide-y divide-[var(--color-revisit-coolgrey-20)]">
               {reports.map((report) => {
-                const wasDelivered = isEffectivelyDelivered(report)
+                // 전달 기록을 남기지 않는 초기 진단(V0)에는 '전달 이력' 행동이 없다.
+                const wasDelivered = report.deliveryTracked && isEffectivelyDelivered(report)
                 return (
                   <tr key={report.id} className="align-top">
                     <td className="px-5 py-4 font-bold text-[var(--color-revisit-text-title)]" data-primary="true">
@@ -60,13 +63,20 @@ export function ReportList({
                     </td>
                     <td className="px-5 py-4" data-label="현재 상태">
                       <span className="font-semibold text-[var(--color-revisit-text-title)]">
-                        {wasDelivered ? '전달 기록 있음' : report.deliveryReady ? '전달 전 검수 가능' : '조치 필요'}
+                        {reportStatusLabel(report)}
                       </span>
-                      {!wasDelivered && !report.deliveryReady && (
+                      {shouldShowDeliveryProblem(report) && (
                         <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-red-50)] [word-break:keep-all]">
                           문제: {report.deliveryBlockers[0] ?? '최신 전달 가능 상태를 확인할 수 없습니다.'}<br />
-                          고객 영향: 최신 월간 보고 자료를 원장에게 전달할 수 없습니다.<br />
+                          고객 영향: {report.deliveryTracked
+                            ? '최신 월간 보고 자료를 원장에게 전달할 수 없습니다.'
+                            : '초기 진단 결과를 원장에게 보고할 자료가 없습니다.'}<br />
                           지금 할 일: ‘검수하고 조치하기’에서 해결 방법을 확인하세요.
+                        </p>
+                      )}
+                      {!report.deliveryTracked && report.deliveryReady && (
+                        <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
+                          초기 진단은 전달 기록을 남기지 않습니다. 내부 검수 자료를 확인한 뒤 원장에게 직접 보고해 주세요.
                         </p>
                       )}
                     </td>

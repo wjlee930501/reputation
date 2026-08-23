@@ -1015,3 +1015,37 @@ async def test_report_list_reports_whether_the_doctor_edition_exists():
 
     assert missing["has_doctor_pdf"] is False
     assert valid["has_doctor_pdf"] is True
+
+
+def test_v0_report_is_ready_on_its_own_pdf_not_a_monthly_doctor_artifact():
+    """A-7 — V0에는 검증된 원장 보고용 PDF를 만드는 경로가 아예 없다.
+
+    그런데 전달 게이트가 리포트 종류를 가리지 않고 그 아티팩트를 요구해서, 측정도 PDF도
+    끝난 V0가 영구히 `검증된 원장 보고용 PDF가 없습니다`로 남았다 — 온보딩 3단계는
+    완료인데 리포트 화면만 조치 필요로 보이던 모순의 원인이다.
+    """
+    report = _report(report_type="V0", doctor_pdf_path=None, manifest_id=None)
+
+    gate = _delivery_gate(report, None, None)
+
+    assert gate.ready is True
+    assert gate.code is None
+
+
+def test_v0_report_without_a_pdf_says_so_in_its_own_words():
+    report = _report(report_type="V0", pdf_path=None, doctor_pdf_path=None, manifest_id=None)
+
+    gate = _delivery_gate(report, None, None)
+
+    assert gate.ready is False
+    assert gate.code == "v0_pdf_missing"
+    assert "초기 진단" in gate.message
+
+
+def test_only_monthly_reports_are_tracked_by_the_delivery_receipt_pipeline():
+    """화면이 V0에 전달 버튼·전달 서사를 제안하지 않도록 종류를 실어 보낸다."""
+    monthly = _serialize(_report())
+    v0 = _serialize(_report(report_type="V0", doctor_pdf_path=None, manifest_id=None))
+
+    assert monthly["delivery_tracked"] is True
+    assert v0["delivery_tracked"] is False

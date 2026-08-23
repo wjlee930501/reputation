@@ -28,6 +28,12 @@ type DeliveryContract = {
   deliveryBlockers: readonly string[]
   effectiveEventType: string | null
   sentAt: string | null
+  /** 월간 전달 기록 파이프라인 대상인지. 없으면 월간으로 본다(report-review.ts 참조). */
+  deliveryTracked?: boolean
+}
+
+function isDeliveryTracked(report: Pick<DeliveryContract, 'deliveryTracked'>): boolean {
+  return report.deliveryTracked !== false
 }
 
 export function reportSummaryCounts(reports: readonly DeliveryContract[]): {
@@ -36,11 +42,31 @@ export function reportSummaryCounts(reports: readonly DeliveryContract[]): {
   blocked: number
 } {
   return reports.reduce((counts, report) => {
-    if (isEffectivelyDelivered(report)) counts.delivered += 1
+    if (isDeliveryTracked(report) && isEffectivelyDelivered(report)) counts.delivered += 1
     else if (report.deliveryReady) counts.ready += 1
     else counts.blocked += 1
     return counts
   }, { delivered: 0, ready: 0, blocked: 0 })
+}
+
+/**
+ * 목록 행과 요약 카드가 같은 말을 하도록 상태 문구를 한곳에서 만든다.
+ *
+ * 초기 진단(V0)은 전달 기록을 남기지 않으므로 월간의 "전달 전 검수 가능"으로 부르면
+ * 있지도 않은 전달 단계를 가리킨다. 준비 완료 사실만 말한다.
+ */
+export function reportStatusLabel(report: DeliveryContract): string {
+  if (!isDeliveryTracked(report)) {
+    return report.deliveryReady ? '원장 보고 자료 준비 완료' : '조치 필요'
+  }
+  if (isEffectivelyDelivered(report)) return '전달 기록 있음'
+  return report.deliveryReady ? '전달 전 검수 가능' : '조치 필요'
+}
+
+/** 상태 행에 문제·영향·다음 행동 설명을 붙여야 하는지. */
+export function shouldShowDeliveryProblem(report: DeliveryContract): boolean {
+  if (report.deliveryReady) return false
+  return !(isDeliveryTracked(report) && isEffectivelyDelivered(report))
 }
 
 function record(value: unknown): Record<string, unknown> | null {

@@ -10,7 +10,9 @@ import {
   latestDeliveryEvent,
   readReportDeliveryState,
   reportListDeveloperNote,
+  reportStatusLabel,
   reportSummaryCounts,
+  shouldShowDeliveryProblem,
 } from './report-delivery.ts'
 
 test('server delivery readiness is the only positive authority', () => {
@@ -74,6 +76,45 @@ test('list summary partitions delivered, ready, and blocked reports exactly once
   ]
 
   assert.deepEqual(reportSummaryCounts(reports), { delivered: 1, ready: 1, blocked: 1 })
+})
+
+test('the initial diagnosis report is never described with the monthly delivery story', () => {
+  // 초기 진단(V0)에는 검증본에 묶인 전달 기록이 없다. 그런데도 리포트 화면이 월간과
+  // 같은 게이트로 판정해 통과할 수 없는 조건(`검증된 원장 보고용 PDF`)을 요구했고,
+  // 온보딩 3단계는 완료인데 리포트만 조치 필요로 남는 모순이 생겼다(A-7).
+  const v0Ready = {
+    deliveryTracked: false,
+    deliveryReady: true,
+    deliveryBlockers: [],
+    effectiveEventType: null,
+    sentAt: null,
+  }
+  assert.equal(reportStatusLabel(v0Ready), '원장 보고 자료 준비 완료')
+  assert.equal(shouldShowDeliveryProblem(v0Ready), false)
+
+  const v0Blocked = { ...v0Ready, deliveryReady: false, deliveryBlockers: ['초기 진단 PDF가 아직 만들어지지 않았습니다.'] }
+  assert.equal(reportStatusLabel(v0Blocked), '조치 필요')
+  assert.equal(shouldShowDeliveryProblem(v0Blocked), true)
+
+  // 월간은 기존 서사를 그대로 지킨다.
+  const monthlyDelivered = {
+    deliveryTracked: true,
+    deliveryReady: true,
+    deliveryBlockers: [],
+    effectiveEventType: 'DELIVERED',
+    sentAt: '2026-08-01',
+  }
+  assert.equal(reportStatusLabel(monthlyDelivered), '전달 기록 있음')
+  assert.equal(reportStatusLabel({ ...monthlyDelivered, effectiveEventType: null, sentAt: null }), '전달 전 검수 가능')
+})
+
+test('a V0 report never counts as a delivery receipt even if a legacy sent_at exists', () => {
+  // 전달 기록을 남기지 않는 리포트가 '전달 기록 있음'으로 집계되면 요약 카드가
+  // 있지도 않은 전달을 보고하게 된다.
+  const reports = [
+    { deliveryTracked: false, deliveryReady: true, deliveryBlockers: [], effectiveEventType: null, sentAt: '2026-08-01' },
+  ]
+  assert.deepEqual(reportSummaryCounts(reports), { delivered: 0, ready: 1, blocked: 0 })
 })
 
 test('page-level developer copy works without a selected report and contains no raw failure', () => {

@@ -207,37 +207,53 @@ def _delivery_gate(
     manifest: MonthlyMeasurementManifest | None,
     artifact: MonthlyReportArtifact | None,
 ) -> DeliveryGate:
-    """Derive customer readiness only from server-owned persisted facts."""
-    if report.report_type == "MONTHLY":
-        counts_complete = (
-            report.planned_count > 0
-            and report.success_count == report.planned_count
-            and report.failed_count == 0
+    """Derive customer readiness only from server-owned persisted facts.
+
+    검증된 원장 보고용 PDF(MonthlyReportArtifact) 요구는 **월간 리포트 전용**이다.
+    초기 진단(V0)에는 그 아티팩트를 만드는 경로가 아예 없어서(workers/tasks.py의 V0
+    분기는 pdf_path만 남긴다), 모든 조건을 통과한 V0 리포트가 영구히
+    `검증된 원장 보고용 PDF가 없습니다`로 남았다 — 온보딩 3단계는 완료인데 리포트
+    화면만 조치 필요로 보이던 모순의 원인이다. V0의 원장 보고 자료는 생성된 PDF
+    자체이므로(CLAUDE.md STEP 3: AE가 직접 원장에게 보고), V0는 그 사실로 판정한다.
+    """
+    if report.report_type != "MONTHLY":
+        if not report.pdf_path:
+            return DeliveryGate(
+                False,
+                "v0_pdf_missing",
+                "초기 진단 PDF가 아직 만들어지지 않았습니다.",
+            )
+        return DeliveryGate(True, None, None)
+
+    counts_complete = (
+        report.planned_count > 0
+        and report.success_count == report.planned_count
+        and report.failed_count == 0
+    )
+    if report.quality != "COMPLETE" or not counts_complete or manifest is None:
+        return DeliveryGate(
+            False,
+            "coverage_incomplete",
+            "이번 달 필수 질문 측정이 모두 끝나지 않았습니다.",
         )
-        if report.quality != "COMPLETE" or not counts_complete or manifest is None:
-            return DeliveryGate(
-                False,
-                "coverage_incomplete",
-                "이번 달 필수 질문 측정이 모두 끝나지 않았습니다.",
-            )
-        manifest_matches = (
-            manifest.id == report.manifest_id
-            and manifest.hospital_id == report.hospital_id
-            and manifest.period_year == report.period_year
-            and manifest.period_month == report.period_month
+    manifest_matches = (
+        manifest.id == report.manifest_id
+        and manifest.hospital_id == report.hospital_id
+        and manifest.period_year == report.period_year
+        and manifest.period_month == report.period_month
+    )
+    if not manifest_matches:
+        return DeliveryGate(
+            False,
+            "manifest_mismatch",
+            "이번 달 필수 측정 결과가 이 병원과 보고 기간에 연결되지 않았습니다.",
         )
-        if not manifest_matches:
-            return DeliveryGate(
-                False,
-                "manifest_mismatch",
-                "이번 달 필수 측정 결과가 이 병원과 보고 기간에 연결되지 않았습니다.",
-            )
-        if manifest.closed_at is None:
-            return DeliveryGate(
-                False,
-                "manifest_open",
-                "이번 달 필수 측정 집계가 아직 끝나지 않았습니다.",
-            )
+    if manifest.closed_at is None:
+        return DeliveryGate(
+            False,
+            "manifest_open",
+            "이번 달 필수 측정 집계가 아직 끝나지 않았습니다.",
+        )
 
     state = _artifact_state(report, artifact)
     if state is ReportArtifactState.MISSING:
@@ -731,6 +747,10 @@ def _serialize(
         "report_type": r.report_type,
         "display": _serialize_display(r, delivered=delivered),
         "has_pdf": r.pdf_path is not None,
+        # 검증본 sha256에 묶인 전달 기록 파이프라인의 대상인지. 월간만 해당한다 —
+        # 초기 진단(V0)은 AE가 PDF를 직접 원장에게 전달하므로 전달 이벤트를 남기지
+        # 않는다. 화면이 이 값을 보고 V0에 전달 버튼을 제안하지 않는다.
+        "delivery_tracked": r.report_type == "MONTHLY",
         "has_doctor_pdf": artifact_state is ReportArtifactState.VALID,
         "doctor_artifact_state": artifact_state.value,
         "doctor_artifact_sha256": artifact.sha256
