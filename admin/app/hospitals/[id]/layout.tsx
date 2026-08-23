@@ -14,6 +14,7 @@ import {
   domainHeaderStatus,
   domainLastCheckedLabel,
 } from '@/lib/hospital-domain-status'
+import { summarizeHeaderProgress } from '@/lib/hospital-header-progress'
 import { Hospital, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
@@ -92,6 +93,7 @@ export default function HospitalLayout({
     : null
 
   const planLabel = hospital?.plan ? PLAN_CONTRACT_LABELS[hospital.plan] ?? '요금제 확인 필요' : null
+  const headerProgress = summarizeHeaderProgress(hospital)
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
   const visibleLifecycleAction = lifecycleAction === 'resume' && !hospital?.schedule_set ? null : lifecycleAction
   const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
@@ -174,7 +176,7 @@ export default function HospitalLayout({
           </label>
         </div>
 
-        <div className="mb-4 hidden flex-col gap-4 lg:flex lg:flex-row lg:items-start lg:justify-between lg:gap-6">
+        <div className="mb-4 hidden flex-col gap-4 lg:flex lg:flex-row lg:items-start lg:justify-between lg:gap-4 xl:gap-6">
           <div className="min-w-0">
             <Link
               href="/hospitals"
@@ -213,9 +215,14 @@ export default function HospitalLayout({
             </div>
             {hospital && (
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 sm:gap-3">
-                <span>
+                <span className="inline-flex min-w-0 max-w-[280px] items-baseline gap-1">
                   {hospital.aeo_domain ? (
-                    <>공개 주소 <span className="text-[var(--color-revisit-text-title)]">{hospital.aeo_domain}</span></>
+                    <>
+                      공개 주소{' '}
+                      <span className="truncate text-[var(--color-revisit-text-title)]" title={hospital.aeo_domain}>
+                        {hospital.aeo_domain}
+                      </span>
+                    </>
                   ) : '공개 주소 준비 중'}
                 </span>
                 {hospital.aeo_domain ? (
@@ -241,13 +248,23 @@ export default function HospitalLayout({
           </div>
 
           {hospital && (
-            <div className="flex max-w-xl flex-wrap items-center gap-x-3 gap-y-2 text-[11px] text-slate-500 lg:shrink-0">
-              <ProgressDot label="필수 병원 정보" done={hospital.profile_complete} />
-              <ProgressDot label="초기 진단 리포트" done={hospital.v0_report_done} />
-              <ProgressDot label="콘텐츠 허브 준비" done={hospital.site_built} />
-              <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
-              <ProgressDot label="병원 정보 허브" done={hospital.site_live} />
-            </div>
+            <>
+              {/*
+                1024~1280px에서는 다섯 칩이 두세 줄로 접혀 헤더가 본문을 밀어낸다.
+                그 폭에서는 한 줄 요약으로 접고, 폭이 실제로 있는 xl부터 펼친다(I-1).
+              */}
+              <span
+                className="hidden shrink-0 rounded-full bg-[var(--color-revisit-coolgrey-90)] px-3 py-1 text-[11px] font-medium text-[var(--color-revisit-text-helper)] lg:inline-flex xl:hidden"
+                title={headerProgress.label}
+              >
+                {headerProgress.label}
+              </span>
+              <div className="hidden max-w-xl flex-wrap items-center gap-x-3 gap-y-2 text-[11px] text-slate-500 lg:shrink-0 xl:flex">
+                {headerProgress.items.map((item) => (
+                  <ProgressDot key={item.label} label={item.label} done={item.done} />
+                ))}
+              </div>
+            </>
           )}
         </div>
 

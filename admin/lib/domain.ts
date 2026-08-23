@@ -65,6 +65,39 @@ export function domainStrategyLabel(strategy: DomainDnsStrategy): string {
   }
 }
 
+/**
+ * 도메인 연결 안내의 단계 순서 — 서버 응답과 이 fallback이 공유하는 정본.
+ *
+ * 이 목록의 순서가 화면에 붙는 번호를 정한다.
+ */
+export const DOMAIN_SETUP_STEP_ORDER = [
+  {
+    key: 'domain_saved',
+    label: '도메인 저장',
+    description: '병원 계정에 연결할 도메인을 저장합니다.',
+  },
+  {
+    key: 'purchase',
+    label: '구매/소유권 확인',
+    description: '병원 또는 MotionLabs가 도메인 구매와 갱신 책임자를 확정합니다.',
+  },
+  {
+    key: 'dns_record',
+    label: 'DNS 레코드 등록 (운영자)',
+    description: '등록기관 DNS 관리 화면에 안내된 레코드를 추가합니다.',
+  },
+  {
+    key: 'dns_verified',
+    label: 'DNS 검증 (운영자 작업 완료)',
+    description: 'DNS 레코드 등록 후 연결 검증을 실행합니다. 검증 성공 시 온보딩 5단계 완료.',
+  },
+  {
+    key: 'certificate_ready',
+    label: 'HTTPS 인증서 (시스템 후속)',
+    description: '인증서는 백그라운드에서 자동 발급됩니다.',
+  },
+] as const
+
 export function buildFallbackDomainSetupPlan(domain: string, expectedCname: string): DomainSetupPlan {
   // DM-U2: CNAME 대상값에 trailing dot 포함 + FQDN 안내
   const cnameValueWithDot = expectedCname.endsWith('.') ? expectedCname : `${expectedCname}.`
@@ -89,32 +122,16 @@ export function buildFallbackDomainSetupPlan(domain: string, expectedCname: stri
         purpose: '병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결',
       },
     ],
-    checklist: [
-      {
-        key: 'domain_saved',
-        label: '① 도메인 저장',
-        description: '병원 계정에 연결할 도메인을 저장합니다.',
-        status: domain ? 'DONE' : 'PENDING',
-      },
-      {
-        key: 'dns_record',
-        label: '② DNS 레코드 등록',
-        description: '등록기관 DNS 관리 화면에 안내된 레코드를 추가합니다.',
-        status: 'PENDING',
-      },
-      {
-        key: 'dns_verified',
-        label: '③ DNS 검증 (운영자 작업 완료)',
-        description: 'DNS 전파 후 연결 검증을 실행합니다. 검증 성공 시 온보딩 5단계 완료.',
-        status: 'PENDING',
-      },
-      {
-        key: 'certificate_ready',
-        label: '④ HTTPS 인증서 (시스템 후속)',
-        description: '인증서는 백그라운드에서 자동 발급됩니다.',
-        status: 'PENDING',
-      },
-    ],
+    // 번호는 라벨에 박지 않는다. 서버가 돌려주는 목록은 다섯 단계인데 이 fallback은
+    // 네 단계였고, 서버 쪽에서는 'DNS 레코드 등록'만 번호가 없어서 안내를 번호대로
+    // 따라가면 등록기관에서 해야 할 유일한 작업을 건너뛰게 됐다(E-3). 번호는 화면이
+    // 순서에서 매기고, 두 목록은 같은 단계를 같은 순서로 갖는다.
+    checklist: DOMAIN_SETUP_STEP_ORDER.map((step) => ({
+      key: step.key,
+      label: step.label,
+      description: step.description,
+      status: step.key === 'domain_saved' && domain ? 'DONE' : 'PENDING',
+    })),
     warnings: [
       'FQDN 입력 시 끝에 점(.)을 붙이는 등록기관도 있습니다. 등록기관 UI 규칙을 확인하세요.',  // DM-U2
       'TTL은 DNS 검증 속도에 영향을 주지 않습니다. 등록기관 최소값을 사용하세요.',  // DM-U1

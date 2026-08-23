@@ -513,7 +513,11 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
                 const hostname = new URL(profile.website_url).hostname.replace(/^www\./, '')
                 return (
                   <p className="mt-1 text-xs text-slate-500">
-                    홈페이지 도메인 {hostname}을 사용하는 경우, 서브도메인을 ai.{hostname}로 설정할 수 있습니다.
+                    {/*
+                      조사를 도메인 뒤에 붙이면 끝소리에 따라 틀린다(`example.io`는 "을"이
+                      아니라 "를"). 조사가 도메인에 붙지 않는 문장으로 쓴다(E-3).
+                    */}
+                    현재 홈페이지 도메인은 {hostname} 입니다. 서브도메인 ai.{hostname} 형태로 설정할 수 있습니다.
                   </p>
                 )
               } catch (error: unknown) {
