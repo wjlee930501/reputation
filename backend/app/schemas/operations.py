@@ -183,7 +183,6 @@ class OperationsQueueRow(OperationsSchema):
 class OperationsQueueSummary(OperationsSchema):
     queue: OperationsQueue
     total: int
-    overdue: int
 
 
 class OperationsQueueResponse(OperationsSchema):

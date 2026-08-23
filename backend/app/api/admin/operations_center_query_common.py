@@ -40,7 +40,7 @@ def normalize_filters(
                 "code": "INVALID_SLA_FILTER",
                 "message": (
                     "처리 기한 필터 값이 올바르지 않습니다. 운영 센터에서 기한 지남, "
-                    "기한 임박, 기한 없음 중 하나를 선택해 다시 조회하세요."
+                    "기한 남음, 기한 없음 중 하나를 선택해 다시 조회하세요."
                 ),
             },
         ) from exc

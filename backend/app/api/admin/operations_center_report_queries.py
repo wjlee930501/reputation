@@ -14,7 +14,7 @@ from app.api.admin.operations_center_query_common import (
     SlaFilter,
     owner_predicate,
 )
-from app.api.admin.operations_center_serializers import owner_projection
+from app.api.admin.operations_center_serializers import owner_projection, sla_state
 from app.models.admin_user import AdminUser
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
@@ -257,8 +257,12 @@ async def load_reports_queue(
             severity="HIGH",
             impact=_report_operator_copy(report_state_value)[0],
             owner=owner_projection(actor),
-            sla_due_at=handoff.sla_due_at if handoff else None,
-            sla_state="OVERDUE",
+            # 이 줄의 기한은 월간 리포트 마감이다. 예전에는 계약 인수 기한(handoff.sla_due_at)을
+            # 보여 주면서 상태는 무조건 "지남"으로 고정했다. 그러면 화면은 리포트와 아무 관계가
+            # 없는 날짜 옆에 "처리 기한 지남"을 붙이고, 인수 기한이 없는 병원에서는 날짜 없이
+            # 기한만 지났다고 말했다. 마감은 그 달이 닫힌 시점(period_end)이다(G-2).
+            sla_due_at=period_end,
+            sla_state=sla_state(period_end, now),
             next_action=_report_operator_copy(report_state_value)[1],
             action=_report_action(
                 hospital.id,

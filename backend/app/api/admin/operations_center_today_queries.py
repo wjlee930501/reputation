@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Final, assert_never
 from zoneinfo import ZoneInfo
 
@@ -15,7 +15,7 @@ from app.api.admin.operations_center_query_common import (
     SlaFilter,
     owner_predicate,
 )
-from app.api.admin.operations_center_serializers import owner_projection
+from app.api.admin.operations_center_serializers import owner_projection, sla_state
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem
 from app.models.handoff import HospitalHandoff
@@ -97,9 +97,21 @@ async def load_today_queue(
         case None:
             pass
         case SlaFilter.OVERDUE:
-            predicates.append(and_(waiting_review, ContentItem.published_at < overdue_before))
+            # 발행 예정일이 이미 지난 슬롯도 기한을 넘긴 일이다 — 행이 그렇게 표시되므로
+            # 필터도 같은 기준을 써야 목록과 필터가 어긋나지 않는다.
+            predicates.append(
+                or_(
+                    and_(waiting_review, ContentItem.published_at < overdue_before),
+                    and_(due_publish, ContentItem.scheduled_date < today),
+                )
+            )
         case SlaFilter.DUE:
-            predicates.append(or_(ContentItem.published_at >= overdue_before, due_publish))
+            predicates.append(
+                or_(
+                    and_(waiting_review, ContentItem.published_at >= overdue_before),
+                    and_(due_publish, ContentItem.scheduled_date >= today),
+                )
+            )
         case SlaFilter.NONE:
             predicates.append(false())
         case unreachable:
@@ -145,6 +157,15 @@ async def load_today_queue(
     for content, hospital, handoff, actor, state, _total in rows:
         overdue = state == "OVERDUE_REVIEW"
         review = state in {"OVERDUE_REVIEW", "REVIEW_PENDING"}
+        # 이 행의 기한은 콘텐츠 작업의 기한이다. 예전에는 계약 인수 기한을 보여 주면서
+        # 상태는 발행 후 검수 초과 여부로 정해, 서로 다른 두 기한이 한 줄에 섞였다(G-2).
+        # 발행 후 검수는 공개 시각 + 24시간, 발행 예정 글은 예정일이 끝나는 시각이 기한이다.
+        if not review:
+            due_at = datetime.combine(content.scheduled_date, time.max, tzinfo=_SEOUL)
+        elif content.published_at:
+            due_at = content.published_at + timedelta(hours=_OVERDUE_REVIEW_HOURS)
+        else:
+            due_at = None
         impact, next_action = _today_operator_copy(review=review)
         occurred_at = content.published_at or content.created_at
         history_at = content.published_at or datetime.combine(
@@ -163,8 +184,8 @@ async def load_today_queue(
                 severity="HIGH" if overdue else "MEDIUM",
                 impact=impact,
                 owner=owner_projection(actor),
-                sla_due_at=handoff.sla_due_at if handoff else None,
-                sla_state="OVERDUE" if overdue else "DUE",
+                sla_due_at=due_at,
+                sla_state=sla_state(due_at, now),
                 next_action=next_action,
                 action=OperationsAction(
                     kind="REVIEW_CONTENT",

@@ -71,7 +71,7 @@ export function OperationsFilters({ query, overview, onPatch }: Props) {
           <label>
             <span>처리 기한</span>
             <select value={query.sla} onChange={(event) => onPatch({ sla: event.target.value })}>
-              <option value="">전체</option><option value="OVERDUE">처리 기한 지남</option><option value="DUE">처리 기한 임박</option><option value="NONE">처리 기한 없음</option>
+              <option value="">전체</option><option value="OVERDUE">처리 기한 지남</option><option value="DUE">처리 기한 남음</option><option value="NONE">처리 기한 없음</option>
             </select>
           </label>
           <label className="ops-filter-search">

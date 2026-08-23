@@ -5,9 +5,11 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   buildDevelopmentSupportSummary,
+  describeOperationsDeadline,
   effectiveSafeCause,
   historyEventLabel,
   operationStatusLabel,
+  operationsRowTitle,
   primaryOperationsMutation,
   runStateLabel,
   shouldPollRun,
@@ -34,6 +36,8 @@ type Props = {
   readonly permissionDenied: boolean
   readonly onClose: () => void
   readonly onMutate: (mutation: OperationMutation) => void
+  /** 남은 처리 기한 계산의 기준 시각 — 상세를 받은 시점 */
+  readonly checkedAt: number
 }
 
 function formatDate(value: string | null): string {
@@ -60,7 +64,7 @@ function mutationLabel(mutation: OperationMutation): string {
 }
 
 export function OperationDetail(props: Props) {
-  const { detail, fallback, busy, error, permissionDenied, onClose, onMutate } = props
+  const { detail, fallback, busy, error, permissionDenied, onClose, onMutate, checkedAt } = props
   const [reason, setReason] = useState('')
   const [copyStatus, setCopyStatus] = useState('')
   const copyButton = useRef<HTMLButtonElement>(null)
@@ -92,6 +96,7 @@ export function OperationDetail(props: Props) {
   } : null
   const mutation = primaryOperationsMutation(effectiveDetail, reason) ?? slackRetry
   const directLink = !mutation && isOperatorNavigation(row)
+  const deadline = describeOperationsDeadline(row, checkedAt, formatDate)
   const waitUntil = slack?.state === 'RETRYING' && slack.next_attempt_at
     ? `${formatDate(slack.next_attempt_at)}까지`
     : '화면이 자동으로 최신 상태를 다시 확인할 때까지'
@@ -109,7 +114,7 @@ export function OperationDetail(props: Props) {
   return (
     <aside className="ops-detail" aria-labelledby="ops-detail-title">
       <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="min-w-0"><p className="text-xs font-bold text-blue-700">선택한 작업</p><h2 id="ops-detail-title" className="ops-readable mt-1 text-lg font-bold text-slate-950">{row.customer.name}</h2></div>
+        <div className="min-w-0"><p className="text-xs font-bold text-blue-700">선택한 작업</p><h2 id="ops-detail-title" className="ops-readable mt-1 text-lg font-bold text-slate-950">{operationsRowTitle(row)}</h2></div>
         <button type="button" onClick={onClose} className="ops-control shrink-0 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-600">닫기</button>
       </div>
 
@@ -122,6 +127,34 @@ export function OperationDetail(props: Props) {
       <section className="ops-detail-section">
         <h3>고객 영향</h3>
         <p className="ops-readable text-sm leading-6 text-slate-700">{row.impact}</p>
+      </section>
+
+      {/*
+        담당자와 처리 기한은 목록에만 있고 상세에는 없었다. 상세를 열어 처리 사유를 쓰는
+        순간이 "이 일이 내 일인가"를 판단하는 자리인데, 그때 담당자를 볼 수 없었다(G-3).
+      */}
+      <section className="ops-detail-section">
+        <h3>담당자 · 처리 기한</h3>
+        <p className="text-sm font-semibold text-slate-800">
+          담당 · {row.owner?.name ?? '미지정'}
+          {row.owner?.email ? <span className="ml-2 font-normal text-slate-500">{row.owner.email}</span> : null}
+        </p>
+        {!row.owner && (
+          <p className="ops-readable mt-1 text-xs leading-5 text-slate-500">
+            이 병원의 계약 인수에 담당 AE가 지정되지 않았습니다. 인수 대기열에서 담당자를 먼저 지정해 주세요.
+          </p>
+        )}
+        <p
+          className={`mt-1 text-sm ${
+            deadline.tone === 'overdue'
+              ? 'font-semibold text-red-700'
+              : deadline.tone === 'due_soon'
+                ? 'font-semibold text-amber-700'
+                : 'text-slate-500'
+          }`}
+        >
+          {deadline.text}
+        </p>
       </section>
 
       <section className="ops-detail-section">
