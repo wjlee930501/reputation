@@ -40,6 +40,30 @@ export function isApprovedAccessMode(value: string | null | undefined): boolean 
   return ACCESS_MODES.has(trimmed(value))
 }
 
+/**
+ * 공개 화면이 실제로 그릴 수 있는 로고인지.
+ *
+ * 값이 있다는 것과 화면에 뜬다는 것은 다르다. 공개 표면은 우리 저장소·오리진이 아닌
+ * 주소를 쓰지 않으므로, 외부 CDN 주소는 저장돼 있어도 헤더에 아무것도 그리지 못한다.
+ * 그런데 게이트가 "값이 있으면 승인됨"으로 판정해서, 운영자는 `승인됨` 배지만 보고
+ * 로고가 빠진 사이트를 정상으로 알고 넘어갔다(O-5).
+ *
+ * 판정 기준은 backend/app/services/hospital_logo.py의 `is_stored_logo_ref`와 같아야
+ * 한다 — 한쪽만 고치면 다시 어긋난다.
+ */
+const STORED_LOGO_PREFIXES = ['gs://', 'local://', '/assets/']
+
+export function isServableLogo(value: string | null | undefined): boolean {
+  const cleaned = trimmed(value)
+  return STORED_LOGO_PREFIXES.some((prefix) => cleaned.startsWith(prefix))
+}
+
+/** 저장돼 있지만 공개 화면이 못 쓰는 외부 주소 — 왜 승인이 안 되는지 설명해야 한다. */
+export function isExternalLogo(value: string | null | undefined): boolean {
+  const cleaned = trimmed(value)
+  return /^https?:\/\//i.test(cleaned) && !isServableLogo(cleaned)
+}
+
 export function buildClinicVisualChecklist(profile: ClinicVisualInput): ClinicVisualItem[] {
   const hasHeroCopy =
     trimmed(profile.hero_headline).length > 0 || trimmed(profile.hero_description).length > 0
@@ -48,8 +72,10 @@ export function buildClinicVisualChecklist(profile: ClinicVisualInput): ClinicVi
     {
       key: 'logo',
       label: '공식 로고',
-      hint: '병원이 실제로 쓰는 로고 이미지 URL을 등록합니다. 없으면 병원명 워드마크로 노출됩니다.',
-      status: trimmed(profile.logo_url).length > 0 ? 'done' : 'needed',
+      hint: isExternalLogo(profile.logo_url)
+        ? '등록된 주소가 외부 사이트라 공개 화면에서는 쓰이지 않습니다. 같은 로고 파일을 업로드해 주세요.'
+        : '병원 로고 파일을 업로드합니다. 없으면 병원명 워드마크로 노출됩니다.',
+      status: isServableLogo(profile.logo_url) ? 'done' : 'needed',
       blocksApproval: true,
     },
     {

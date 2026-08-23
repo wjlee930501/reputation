@@ -11,7 +11,8 @@ from scripts.check_clinic_visual_readiness import (
 APPROVED = {
     "name": "장편한외과의원",
     "slug": "jangpyeonhanoegwayiweon",
-    "logo_url": "https://jangclinic.kr/logo.png",
+    # 업로드된 자산 참조. 외부 주소는 공개 화면이 쓰지 못해 승인으로 치지 않는다(O-5).
+    "logo_url": "gs://reputation-images/assets/abc/logo.png",
     "brand_primary_color": "#17365D",
     "hero_headline": "증상을 정확히 확인합니다",
     "hero_description": None,
@@ -94,3 +95,14 @@ def test_audited_hospitals_missing_from_the_query_are_reported():
 def test_the_audited_set_covers_the_six_live_clinics_plus_nowon():
     assert len(AUDITED_HOSPITALS) == 6
     assert "노원탑365의원" in AUDITED_HOSPITALS
+
+
+def test_an_external_logo_url_is_not_an_approved_logo():
+    """저장은 됐지만 공개 화면이 그리지 못하는 주소 — 승인으로 세면 로고 없는 사이트가
+    정상으로 보고된다(O-5)."""
+    row = dict(APPROVED, logo_url="https://cdn.imweb.me/thumbnail/logo.png")
+
+    result = evaluate_hospital(row)
+
+    assert result.approved is False
+    assert result.missing == ("logo",)

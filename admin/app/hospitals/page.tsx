@@ -67,8 +67,12 @@ export default function HospitalsPage() {
 
   const stats = useMemo(() => {
     const active = hospitals.filter((h) => h.status === 'ACTIVE').length
-    const onboarding = hospitals.filter((h) =>
-      ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN'].includes(h.status),
+    // 상태값만 세면 이미 ACTIVE로 넘어간 병원의 남은 승인이 통계에서 사라진다 —
+    // 목록만 보는 운영자에게는 할 일이 0건으로 보였다(O-2).
+    const onboarding = hospitals.filter(
+      (h) =>
+        ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN'].includes(h.status) ||
+        pendingVisualCount(h) > 0,
     ).length
     return { total: hospitals.length, active, onboarding }
   }, [hospitals])
@@ -295,7 +299,20 @@ export default function HospitalsPage() {
                         {h.plan ? PLAN_LABELS[h.plan] ?? h.plan : '-'}
                       </td>
                       <td className="px-4 py-4 text-center" data-label="병원 기본 정보">
-                        <CheckCell done={h.profile_complete} />
+                        {/* 프로파일 필드가 다 찼어도 공개 표면 시각 승인이 남아 있으면
+                            이 단계는 끝난 게 아니다. ✓만 보여 주면 목록과 상세가
+                            정면으로 어긋난다(O-2). */}
+                        {pendingVisualCount(h) > 0 ? (
+                          <Link
+                            href={`/hospitals/${h.id}/onboarding`}
+                            className="inline-flex items-center whitespace-nowrap rounded-full bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+                            title={`승인 필요: ${(h.visual_approval_missing ?? []).join(', ')}`}
+                          >
+                            승인 대기 {pendingVisualCount(h)}건
+                          </Link>
+                        ) : (
+                          <CheckCell done={h.profile_complete} />
+                        )}
                       </td>
                       <td className="px-4 py-4 text-center" data-label="정보 허브">
                         <CheckCell done={h.site_live} />
@@ -378,6 +395,11 @@ function StatPill({
       <span className="font-semibold text-slate-700">{value}</span>
     </span>
   )
+}
+
+/** 승인이 남은 시각 항목 수. 값을 안 내려주는 구버전 응답은 0으로 본다. */
+function pendingVisualCount(hospital: { visual_approval_missing?: string[] }): number {
+  return hospital.visual_approval_missing?.length ?? 0
 }
 
 function CheckCell({ done }: { done: boolean | undefined }) {

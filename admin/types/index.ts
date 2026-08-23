@@ -40,6 +40,8 @@ export interface Hospital {
   status: 'ONBOARDING' | 'ANALYZING' | 'BUILDING' | 'PENDING_DOMAIN' | 'ACTIVE' | 'PAUSED'
   plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12' | null
   profile_complete: boolean
+  /** 승인이 남은 공개 표면 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
+  visual_approval_missing?: string[]
   v0_report_done: boolean
   site_built?: boolean
   site_live: boolean
