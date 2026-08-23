@@ -4,6 +4,10 @@ import { KeyboardEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { fetchAPI } from '@/lib/api'
 import {
+  EXPOSURE_ACTION_LIST_LIMIT,
+  summarizeExposureActions,
+} from '@/lib/exposure-action-counts'
+import {
   EXPOSURE_ACTION_STATUS_LABELS,
   EXPOSURE_ACTION_TYPE_LABELS,
   ExposureAction,
@@ -141,8 +145,6 @@ const EVIDENCE_VALUE_LABELS: Record<string, string> = {
 
 const PERCENT_KEY_RE = /(rate|share_of_voice|sov|percent|pct)/i
 
-const ACTION_LIST_LIMIT = 20
-
 interface BriefResultState {
   actionId: string
   contentItem: ExposureActionContentSummary
@@ -188,7 +190,7 @@ export default function ExposureActionsPage() {
     setError(null)
     try {
       const data: ExposureAction[] = await fetchAPI(
-        `/admin/hospitals/${hospitalId}/exposure-actions?limit=${ACTION_LIST_LIMIT}`,
+        `/admin/hospitals/${hospitalId}/exposure-actions?limit=${EXPOSURE_ACTION_LIST_LIMIT}`,
       )
       const next = data ?? []
       setActions(next)
@@ -214,7 +216,7 @@ export default function ExposureActionsPage() {
     setError(null)
     try {
       const data: ExposureAction[] = await fetchAPI(
-        `/admin/hospitals/${hospitalId}/exposure-actions/refresh?limit=${ACTION_LIST_LIMIT}`,
+        `/admin/hospitals/${hospitalId}/exposure-actions/refresh?limit=${EXPOSURE_ACTION_LIST_LIMIT}`,
         { method: 'POST' },
       )
       const next = data ?? []
@@ -291,13 +293,7 @@ export default function ExposureActionsPage() {
     }
   }
 
-  const counts = useMemo(() => {
-    const open = actions.filter((a) => a.status === 'OPEN').length
-    const inProgress = actions.filter((a) => a.status === 'IN_PROGRESS').length
-    const blocked = actions.filter((a) => a.status === 'BLOCKED').length
-    const completed = actions.filter((a) => a.status === 'COMPLETED').length
-    return { open, inProgress, blocked, completed }
-  }, [actions])
+  const counts = useMemo(() => summarizeExposureActions(actions), [actions])
 
   return (
     <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
@@ -314,11 +310,16 @@ export default function ExposureActionsPage() {
             </p>
           </div>
           <div className="w-full lg:min-w-[420px] lg:w-auto">
+            {/*
+              완료 항목은 이 조회가 애초에 돌려주지 않는다(백엔드는 대기·진행중·확인필요만
+              반환한다). 항상 0인 칸을 "완료"라고 세우면 완료된 작업이 없다는 거짓 신호가
+              된다 — 남은 작업 합계로 바꿨다(A-6).
+            */}
             <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
-              <SummaryPill label="대기" value={String(counts.open)} />
+              <SummaryPill label="대기" value={String(counts.waiting)} />
               <SummaryPill label="진행중" value={String(counts.inProgress)} />
               <SummaryPill label="확인필요" value={String(counts.blocked)} />
-              <SummaryPill label="완료" value={String(counts.completed)} />
+              <SummaryPill label="남은 작업" value={String(counts.active)} />
             </div>
             <button
               type="button"
@@ -357,7 +358,7 @@ export default function ExposureActionsPage() {
               <h3 className="text-lg font-semibold text-slate-900">상위 AI 노출 보완 작업</h3>
               <p className="text-sm text-slate-500">
                 현재 {actions.length}건을 우선순위 순으로 표시합니다
-                {actions.length >= ACTION_LIST_LIMIT ? ` · ${ACTION_LIST_LIMIT}건까지만 표시 중` : ''}. 행을 선택하면 우측에서 상세 정보를 확인할 수 있습니다.
+                {actions.length >= EXPOSURE_ACTION_LIST_LIMIT ? ` · ${EXPOSURE_ACTION_LIST_LIMIT}건까지만 표시 중` : ''}. 행을 선택하면 우측에서 상세 정보를 확인할 수 있습니다.
               </p>
             </div>
             <button

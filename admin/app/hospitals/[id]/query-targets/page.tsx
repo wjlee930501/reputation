@@ -19,6 +19,7 @@ import {
   QUERY_TARGET_STATUS_LABELS,
   STATUS_LABELS,
 } from '@/types'
+import { QUESTION_COUNT_LABELS, summarizeQuestionCounts } from '@/lib/question-counts'
 import { useHospitalHeader } from '../hospital-context'
 
 // backend/app/api/admin/operations.py run-sov: ACTIVE | PENDING_DOMAIN 외에는 409
@@ -76,6 +77,7 @@ export default function QueryTargetsPage() {
 
   const activeTargets = useMemo(() => targets.filter((target) => target.status !== 'ARCHIVED'), [targets])
   const archivedTargets = useMemo(() => targets.filter((target) => target.status === 'ARCHIVED'), [targets])
+  const questionCounts = useMemo(() => summarizeQuestionCounts(targets, []), [targets])
 
   const canMeasureStatus = hospital != null && MEASURABLE_STATUSES.has(hospital.status)
   const hasMeasurableVariant = canRunMeasurement(targets)
@@ -256,16 +258,20 @@ export default function QueryTargetsPage() {
               운영 흐름의 기준이 되는 질문입니다.
             </p>
           </div>
+          {/* 대시보드와 같은 어휘로 센다 — 이름이 갈라지면 숫자도 갈라진다(A-4). */}
           <div className="grid grid-cols-3 gap-2 text-center text-xs lg:min-w-[320px]">
             <SummaryPill
-              label="운영 중"
-              value={String(activeTargets.filter((target) => target.status === 'ACTIVE').length)}
+              label={QUESTION_COUNT_LABELS.topicsOperating}
+              value={String(questionCounts.topicsOperating)}
             />
             <SummaryPill
-              label="운영 일시 정지"
-              value={String(activeTargets.filter((target) => target.status === 'PAUSED').length)}
+              label={QUESTION_COUNT_LABELS.topicsPaused}
+              value={String(questionCounts.topicsPaused)}
             />
-            <SummaryPill label="보관" value={String(archivedTargets.length)} />
+            <SummaryPill
+              label={QUESTION_COUNT_LABELS.topicsArchived}
+              value={String(questionCounts.topicsArchived)}
+            />
           </div>
         </div>
 

@@ -8,7 +8,22 @@ import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import { countUnpublishedCarriedOver } from '@/lib/content'
 import { canRunMeasurement } from '@/lib/operator-safety'
-import { summarizeSovTrend } from '@/lib/sov-trend'
+import { summarizeSovTrend, trimTrendToMeasuredWeeks } from '@/lib/sov-trend'
+import {
+  MENTION_RATE_EXCLUSION_COPY,
+  MENTION_RATE_FAILURE_ALERT_COPY,
+  describeMeasurementRunMentionRateImpact,
+} from '@/lib/measurement-run-copy'
+import {
+  QUESTION_COUNT_LABELS,
+  describeQuestionPhraseCounts,
+  summarizeQuestionCounts,
+} from '@/lib/question-counts'
+import {
+  EXPOSURE_ACTION_LIST_LIMIT,
+  describeExposureActions,
+  summarizeExposureActions,
+} from '@/lib/exposure-action-counts'
 import { useHospitalHeader } from '../hospital-context'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
@@ -239,7 +254,10 @@ export default function DashboardPage() {
       fetchAPI<QueryRow[]>(`/admin/hospitals/${id}/sov/queries`),
       fetchAPI<Readiness | null>(`/admin/hospitals/${id}/readiness`),
       fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`),
-      fetchAPI<ExposureAction[]>(`/admin/hospitals/${id}/exposure-actions?limit=5`),
+      // 보완 작업 화면과 같은 창을 봐야 두 화면의 숫자가 같다(A-6).
+      fetchAPI<ExposureAction[]>(
+        `/admin/hospitals/${id}/exposure-actions?limit=${EXPOSURE_ACTION_LIST_LIMIT}`,
+      ),
       fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${id}/query-targets`),
       fetchAPI<AuditLogRow[]>(`/admin/hospitals/${id}/operations/audit-logs?limit=20`),
     ])
@@ -285,20 +303,19 @@ export default function DashboardPage() {
     return () => { cancelled = true }
   }, [id])
 
+  // 측정이 시작되기 전의 주는 차트에서 잘라낸다 — 빈 칸이 측정 실패로 읽힌다(A-5).
+  const measuredWeeks = trimTrendToMeasuredWeeks(trendData)
   const trendSummary = summarizeSovTrend(trendData)
   const currentSov = trendSummary.current
   const change = trendSummary.change
-  const queryCount = queries.length
+  const questionCounts = summarizeQuestionCounts(queryTargets, queries)
   const latestMeasurementRuns = measurementRuns.slice(0, 3)
   const topExposureActions = exposureActions.slice(0, 3)
 
   const activeTargets = queryTargets.filter((target) => target.status === 'ACTIVE')
-  const nonArchivedTargets = queryTargets.filter((target) => target.status !== 'ARCHIVED')
   const lastRun = measurementRuns[0] ?? null
-  const openActionCount = exposureActions.filter(
-    (action) => action.status === 'OPEN' || action.status === 'IN_PROGRESS',
-  ).length
-  const blockedActionCount = exposureActions.filter((action) => action.status === 'BLOCKED').length
+  const actionCounts = summarizeExposureActions(exposureActions)
+  const blockedActionCount = actionCounts.blocked
   const failedMeasurementCount = measurementRuns.reduce((sum, run) => sum + run.failure_count, 0)
   const pendingChecks = readiness?.checks.filter((check) => !check.passed).slice(0, 2) ?? []
 
@@ -356,7 +373,8 @@ export default function DashboardPage() {
 
   // 추이 창(12주) 안에 성공 측정이 한 건도 없으면 차트 대신 안내를 띄운다.
   // 측정 전/전부 실패인 구간을 0% 선으로 그리면 '언급이 아예 없다'는 허위 신호가 된다.
-  const isAnalyticsEmpty = !loading && !error && !trendData.some((point) => point.sov_pct !== null)
+  const isAnalyticsEmpty =
+    !loading && !error && !measuredWeeks.some((point) => point.sov_pct !== null)
 
   async function runOperation(key: string, path: string) {
     setOperationLoading(key)
@@ -484,9 +502,9 @@ export default function DashboardPage() {
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[440px]">
             <HeroStat
-              label="측정 질문표"
-              value={`${nonArchivedTargets.length}개`}
-              hint={`운영 중 ${activeTargets.length}개 · 측정용 질문 ${queryCount}개`}
+              label={QUESTION_COUNT_LABELS.topicsOperating}
+              value={`${questionCounts.topicsOperating}개`}
+              hint={describeQuestionPhraseCounts(questionCounts)}
             />
             <HeroStat
               label="현재 AI 언급률"
@@ -495,13 +513,9 @@ export default function DashboardPage() {
               tone={change === null ? 'neutral' : change >= 0 ? 'up' : 'down'}
             />
             <HeroStat
-              label="진행 작업"
-              value={`${openActionCount}건`}
-              hint={
-                blockedActionCount > 0
-                  ? `확인필요 ${blockedActionCount}건`
-                  : `누적 ${exposureActions.length}건`
-              }
+              label="남은 보완 작업"
+              value={`${actionCounts.active}건`}
+              hint={describeExposureActions(actionCounts)}
             />
             <HeroStat
               label="AI 노출 준비도"
@@ -593,7 +607,7 @@ export default function DashboardPage() {
                 <AlertLine tone="warn" label={`막힌 보완 작업 ${blockedActionCount}건`} hint="담당자 확인 또는 자료 보강이 필요합니다." />
               )}
               {failedMeasurementCount > 0 && (
-                <AlertLine tone="warn" label={`AI 확인 실패 누적 ${failedMeasurementCount}건`} hint="실패 건은 언급률 계산에서 제외되며, 측정 안정성만 별도로 봅니다." />
+                <AlertLine tone="warn" label={`AI 확인 실패 누적 ${failedMeasurementCount}건`} hint={MENTION_RATE_FAILURE_ALERT_COPY} />
               )}
               {pendingChecks.map((check) => (
                 <AlertLine key={check.key} tone="neutral" label={check.label} hint={check.next_action} />
@@ -749,13 +763,7 @@ export default function DashboardPage() {
               title="AI 노출 진단·보완 작업"
               caption="부족한 부분 보완 정리"
               done={hasExposureActions}
-              summary={
-                hasExposureActions
-                  ? `진행중 ${openActionCount}건${
-                      blockedActionCount > 0 ? ` · 확인필요 ${blockedActionCount}건` : ''
-                    }`
-                  : '진단 결과가 아직 없습니다.'
-              }
+              summary={hasExposureActions ? describeExposureActions(actionCounts) : '진단 결과가 아직 없습니다.'}
               href={exposureActionsHref}
               cta={hasExposureActions ? '검토' : '진단 시작'}
               disabled={!hasMeasurement}
@@ -788,9 +796,7 @@ export default function DashboardPage() {
           </summary>
           <div className="p-5 pt-2">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <p className="text-sm text-slate-500">
-              측정 방식·성공/실패 집계는 측정 안정성 지표로 기록하며 AI 언급률 계산에는 포함하지 않습니다.
-            </p>
+            <p className="text-sm text-slate-500">{MENTION_RATE_EXCLUSION_COPY}</p>
             <Link
               href={queryTargetsHref}
               className="self-start rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
@@ -838,9 +844,7 @@ export default function DashboardPage() {
                       성공 {run.success_count}/{run.query_count} · 실패 {run.failure_count}
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      {run.failure_rate !== null
-                        ? `실패율 ${run.failure_rate.toFixed(1)}% · AI 언급률 계산에서 제외`
-                        : '측정 건이 없어 실패율을 산출할 수 없습니다'}
+                      {describeMeasurementRunMentionRateImpact(run)}
                     </p>
                     {typeof run.error_summary?.safe_error_message === 'string' && (
                       <p className="mt-1 text-xs font-medium text-amber-700">
@@ -1013,13 +1017,13 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-semibold text-slate-900">AI 언급률 주간 추이</h3>
                 <span className="text-xs text-slate-400">
-                  측정한 환자 질문 {queryCount}개 · 누적 {trendData.length}주
+                  {QUESTION_COUNT_LABELS.phrasesMeasured} {questionCounts.phrasesMeasured}개 · 측정 시작 후 {measuredWeeks.length}주
                 </span>
               </div>
               <div className="mt-4">
                 <ResponsiveContainer width="100%" height={280}>
                   <LineChart
-                    data={trendData}
+                    data={measuredWeeks}
                     margin={{ top: 5, right: 20, left: 0, bottom: 5 }}
                   >
                     <XAxis dataKey="week_start" tick={{ fontSize: 12 }} />
