@@ -345,6 +345,21 @@ export default function NewHospitalPage() {
     }
   }
 
+  // 등록을 막고 있는 첫 번째 이유. 순서는 운영자가 화면에서 만나는 순서를 따른다.
+  const submitBlockReason = !currentAccount
+    ? '로그인 계정을 확인하는 중입니다. 잠시 후 다시 시도해 주세요.'
+    : !creationRequestId
+      ? '등록 준비 중입니다. 잠시 후 다시 시도해 주세요.'
+      : !name.trim()
+        ? '병원명을 입력해야 등록할 수 있습니다.'
+        : duplicateCheck !== 'clear'
+          ? '같은 이름의 병원이 있는지 확인이 끝나야 등록할 수 있습니다.'
+          : !salesOwnerId || !aeOwnerId
+            ? '영업·AE 담당자를 선택해야 등록할 수 있습니다.'
+            : !contractReference.trim()
+              ? '계약 번호를 입력해야 등록할 수 있습니다.'
+              : null
+
   return (
     <div className="max-w-3xl p-8">
       <div className="mb-6">
@@ -432,7 +447,7 @@ export default function NewHospitalPage() {
         )}
 
         <div className="grid gap-4 sm:grid-cols-3">
-          <label className="block text-sm font-medium text-slate-700">계약 번호
+          <label className="block text-sm font-medium text-slate-700">계약 번호 <span className="text-red-500">*</span>
             <input required disabled={workflowHandoff?.state === 'CONTRACTED'} value={contractReference} onChange={(e) => setContractReference(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" placeholder="CTR-20260810" />
             <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">계약 확정 메일 또는 계약 관리의 계약 ID를 넣습니다. 지정된 값이 있으면 그대로 두세요.</span>
           </label>
@@ -482,9 +497,14 @@ export default function NewHospitalPage() {
           </p>
         </div>
 
+        {/* 버튼이 왜 안 눌리는지 말해 주지 않으면 운영자는 별표 없는 필수 필드를
+            찾아 화면을 훑게 된다(O-1). 지금 막고 있는 것을 그대로 적는다. */}
+        {submitBlockReason && (
+          <p className="text-xs font-medium text-amber-800">{submitBlockReason}</p>
+        )}
         <button
           type="submit"
-          disabled={loading || leadLoading || workflowRestoring || !creationRequestId || !name.trim() || !salesOwnerId || !aeOwnerId || !contractReference.trim() || !currentAccount || duplicateCheck !== 'clear'}
+          disabled={loading || leadLoading || workflowRestoring || Boolean(submitBlockReason)}
           className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {workflowRestoring ? '저장된 진행 상태 확인 중...' : leadLoading ? '리드 정보 확인 중...' : loading ? '인수 승인 중...' : '등록하고 고객 인수 승인'}

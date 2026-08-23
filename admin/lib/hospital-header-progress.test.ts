@@ -59,5 +59,14 @@ test('the header folds the progress row at lg and only expands it at xl', () => 
 })
 
 test('a long public address truncates instead of widening the header', () => {
-  assert.match(layout, /aeo_domain[\s\S]{0,400}?truncate/)
+  // 자기 도메인이든 기본 플랫폼 주소든 헤더 폭을 밀어내면 안 된다. 주소 표시는
+  // readHospitalDomainStatus의 detail 하나로 통일돼 있으므로(O-7) 그 자리를 본다.
+  assert.match(layout, /truncate[\s\S]{0,400}?readHospitalDomainStatus\(hospital\)\.detail/)
+})
+
+test('the header names the platform address instead of calling a live site "준비 중"', () => {
+  // 자기 도메인이 없다는 것과 공개 주소가 없다는 것은 다르다 — 기본 주소로 이미
+  // 서비스 중인 병원을 "준비 중"이라 부르면 살아 있는 주소를 없는 것으로 읽는다(O-7).
+  assert.doesNotMatch(layout, /공개 주소 준비 중/)
+  assert.match(layout, /readHospitalDomainStatus/)
 })
