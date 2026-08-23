@@ -364,7 +364,7 @@ export default function NewHospitalPage() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={workflowHandoff !== null}
-            placeholder={leadLoading ? '상담 요청에서 병원명을 불러오는 중...' : '예: 장편한외과의원'}
+            placeholder={leadLoading ? '상담 요청에서 병원명을 불러오는 중...' : '계약서에 적힌 병원 이름'}
             required
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           />

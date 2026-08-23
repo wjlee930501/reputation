@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { describePhotoPublicGate } from './photo-public-gate.ts'
+
 const onboardingPage = readFileSync(
   new URL('../app/hospitals/[id]/onboarding/page.tsx', import.meta.url),
   'utf8',
@@ -33,7 +35,12 @@ test('a photo without rights evidence cannot be switched public by mistake', () 
     onboardingPage,
     /disabled=\{\s*pendingPublicId === s\.id \|\|\s*\(!s\.is_public && !photoProvenanceIsComplete\(s\)\)/,
   )
-  assert.match(wikiPage, /!p\.is_public && !\(p\.photo_provenance\?\.is_complete \?\? false\)/)
+  // Wiki는 같은 판단을 공유 게이트에서 받는다 — 조건 자체는 photo-public-gate가 검사한다.
+  assert.match(wikiPage, /disabled=\{pendingToggleId === p\.id \|\| !gate\.canToggle\}/)
+  assert.equal(
+    describePhotoPublicGate({ status: 'PENDING', is_public: false, photo_provenance: null }).canToggle,
+    false,
+  )
 })
 
 test('the operator can record rights evidence and publish in one request', () => {

@@ -33,6 +33,7 @@ import {
 } from '@/lib/onboarding-lifecycle'
 import { defaultAssetTitles, duplicateAssetTitles } from '@/lib/asset-title'
 import { sourceUrlWarning } from '@/lib/source-url-warnings'
+import { formatActorLabel } from '@/lib/actor-display'
 import NaverBlogBulkForm from './NaverBlogBulkForm'
 
 interface Hospital {
@@ -921,7 +922,7 @@ function SourcesStepBody({
       <ProfileUrlCandidates hospital={hospital} hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
       <CrawlForm hospitalId={hospitalId} onCreated={onChanged} />
       <NaverBlogBulkForm hospitalId={hospitalId} onCreated={onChanged} />
-      <UploadForm hospitalId={hospitalId} onCreated={onChanged} />
+      <UploadForm hospitalId={hospitalId} hospitalName={hospital?.name ?? null} onCreated={onChanged} />
       <SourcesList hospitalId={hospitalId} sources={sources} loading={loading} onChanged={onChanged} />
     </div>
   )
@@ -1083,7 +1084,15 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
   )
 }
 
-function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: () => void }) {
+function UploadForm({
+  hospitalId,
+  hospitalName,
+  onCreated,
+}: {
+  hospitalId: string
+  hospitalName: string | null
+  onCreated: () => void
+}) {
   const [type, setType] = useState('PHOTO_DOCTOR')
   const [assetKind, setAssetKind] = useState('')
   const [rightsOwner, setRightsOwner] = useState('')
@@ -1253,7 +1262,11 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
               required
               value={rightsOwner}
               onChange={(e) => setRightsOwner(e.target.value)}
-              placeholder="사진 소유자 (예: 장편한외과의원)"
+              /*
+                예시로 특정 병원 이름을 박아 두면, 지금 보고 있는 병원의 소유자 칸에 남의
+                병원 이름이 예시로 뜬다. 지금 병원 이름을 쓰고, 모를 때는 예시를 들지 않는다(D-4).
+              */
+              placeholder={hospitalName ? `사진 소유자 (예: ${hospitalName})` : '사진 소유자'}
               aria-label="사진 소유자"
               className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
             />
@@ -1463,7 +1476,7 @@ function PhotoRightsEvidence({
     return (
       <p className="text-xs text-slate-500">
         사용 권리 확인됨 · {provenance.source_owner} · {provenance.rights_basis_label}
-        {provenance.verified_by ? ` · 확인 ${provenance.verified_by}` : ''}
+        {provenance.verified_by ? ` · 확인 ${formatActorLabel(provenance.verified_by)}` : ''}
       </p>
     )
   }

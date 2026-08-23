@@ -8,6 +8,7 @@ import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import { countUnpublishedCarriedOver } from '@/lib/content'
 import { canRunMeasurement } from '@/lib/operator-safety'
+import { formatActorLabel } from '@/lib/actor-display'
 import { summarizeSovTrend, trimTrendToMeasuredWeeks } from '@/lib/sov-trend'
 import {
   MENTION_RATE_EXCLUSION_COPY,
@@ -706,7 +707,7 @@ export default function DashboardPage() {
                     )}
                   </div>
                   <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600 md:justify-self-end">
-                    {log.actor}
+                    {formatActorLabel(log.actor)}
                   </span>
                 </li>
               ))}

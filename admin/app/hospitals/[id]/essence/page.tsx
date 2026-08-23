@@ -13,6 +13,18 @@ import {
 } from '@/lib/essence-evidence'
 import { sourceUrlWarning } from '@/lib/source-url-warnings'
 import {
+  describePhotoSourceExclusion,
+  splitEssenceSources,
+} from '@/lib/essence-source-split'
+import {
+  essenceAutoReviewBlockReasons,
+  formatEssenceNextAction,
+  resolveEssenceNextAction,
+} from '@/lib/essence-next-action'
+import { fetchCurrentAccount } from '@/lib/current-account'
+import { resolveAuditActorName } from '@/lib/publishing'
+import { formatActorLabel } from '@/lib/actor-display'
+import {
   ContentPhilosophy,
   EvidenceNote,
   SourceAsset,
@@ -126,7 +138,10 @@ export default function EssencePage() {
   const [sourceUrl, setSourceUrl] = useState('')
   const [sourceRawText, setSourceRawText] = useState('')
   const [sourceOperatorNote, setSourceOperatorNote] = useState('')
-  const [sourceCreatedBy, setSourceCreatedBy] = useState('MotionLabs')
+  // 자료 등록자·검토자는 로그인한 계정이다. 화면이 고정 문자열을 넣으면 누가 승인했는지
+  // 감사 기록에 남지 않는다(C-3).
+  const [currentOperatorName, setCurrentOperatorName] = useState<string | null>(null)
+  const [sourceCreatedBy, setSourceCreatedBy] = useState('')
   // 본문이 없는 URL(유튜브 채널 홈 등)은 근거로 쓸 수 없다. 저장은 막지 않고 알린다.
   const sourceUrlNotice = sourceUrlWarning(sourceUrl)
 
@@ -138,7 +153,7 @@ export default function EssencePage() {
   const [draftMustUse, setDraftMustUse] = useState('')
   const [draftAvoid, setDraftAvoid] = useState('')
   const [draftRiskRules, setDraftRiskRules] = useState('')
-  const [reviewedBy, setReviewedBy] = useState('MotionLabs')
+  const reviewedBy = currentOperatorName ?? ''
   const [approvalNote, setApprovalNote] = useState('')
   const [confirmEvidence, setConfirmEvidence] = useState(false)
 
@@ -234,10 +249,20 @@ export default function EssencePage() {
     load()
   }, [load])
 
-  const processedSources = useMemo(
-    () => sources.filter((source) => source.status === 'PROCESSED'),
-    [sources]
-  )
+  useEffect(() => {
+    let cancelled = false
+    void fetchCurrentAccount().then((account) => {
+      if (cancelled) return
+      const name = resolveAuditActorName(account?.name)
+      setCurrentOperatorName(name)
+      setSourceCreatedBy((prev) => prev || name || '')
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  // 사진은 근거 추출 대상이 아니다 — 표·분모에서 뺀다(C-4).
+  const sourceSplit = useMemo(() => splitEssenceSources(sources), [sources])
+  const photoExclusionNotice = describePhotoSourceExclusion(sourceSplit.photoSources.length)
   const selectedDraft = useMemo(
     () => philosophies.find((item) => item.id === selectedDraftId) ?? null,
     [philosophies, selectedDraftId]
@@ -277,18 +302,23 @@ export default function EssencePage() {
     selectedDraft?.status === 'DRAFT' &&
       (!approved || selectedDraft.version > approved.version)
   )
-  const evidenceTotal = sources.reduce((sum, item) => sum + (item.evidence_note_count ?? 0), 0)
-
-  // Operator next-action hint
-  const nextAction = useMemo(() => {
-    if (sources.length === 0) return '① 자료를 1개 이상 입력하세요.'
-    if (processedSources.length === 0) return '② 자료의 [근거 추출]을 실행하세요.'
-    if (!selectedDraft && !approved) return '③ 처리된 자료를 선택하고 [선택 자료로 초안 만들기]를 누르세요.'
-    if (selectedIsReviewDraft)
-      return '④ AI 안전 검수에서 보류된 최신 초안의 근거와 차단 사유를 확인하세요.'
-    if (approved) return '운영 중 — 새 자료를 추가하면 새 버전 초안을 만들 수 있습니다.'
-    return null
-  }, [sources.length, processedSources.length, selectedDraft, selectedIsReviewDraft, approved])
+  // 안내 번호는 화면 섹션 번호에서 받는다 — 없는 ④번을 부르지 않는다(C-2).
+  const nextAction = useMemo(
+    () =>
+      resolveEssenceNextAction({
+        textSourceCount: sourceSplit.textSourceCount,
+        processedTextCount: sourceSplit.processedTextCount,
+        hasSelectedDraft: Boolean(selectedDraft),
+        hasApproved: Boolean(approved),
+        selectedIsReviewDraft,
+      }),
+    [sourceSplit.textSourceCount, sourceSplit.processedTextCount, selectedDraft, selectedIsReviewDraft, approved],
+  )
+  // 차단 사유는 오른쪽 패널 안쪽이 아니라 안내와 같은 자리에서 읽혀야 한다(C-2).
+  const autoReviewBlockReasons = useMemo(
+    () => (selectedIsReviewDraft ? essenceAutoReviewBlockReasons(selectedDraft?.unsupported_gaps) : []),
+    [selectedIsReviewDraft, selectedDraft],
+  )
 
   function setDraftFields(philosophy: ContentPhilosophy) {
     setDraftPositioning(philosophy.positioning_statement ?? '')
@@ -409,7 +439,7 @@ export default function EssencePage() {
         method: 'POST',
         body: JSON.stringify({
           source_asset_ids: sourceIds,
-          created_by: 'MotionLabs',
+          created_by: currentOperatorName,
         }),
       })
       setSelectedDraftId(draft.id)
@@ -520,13 +550,17 @@ export default function EssencePage() {
           />
           <SummaryCard
             label="처리된 자료"
-            value={`${processedSources.length} / ${sources.length}`}
-            hint="처리완료 / 전체"
+            value={`${sourceSplit.processedTextCount} / ${sourceSplit.textSourceCount}`}
+            hint={
+              sourceSplit.photoSources.length > 0
+                ? `처리완료 / 전체 · 사진 ${sourceSplit.photoSources.length}장 제외`
+                : '처리완료 / 전체'
+            }
           />
           <SummaryCard
             label="근거 노트"
-            value={`${evidenceTotal}개`}
-            hint="전체 자료 합계"
+            value={`${sourceSplit.evidenceNoteCount}개`}
+            hint="근거 자료 합계"
           />
           <SummaryCard
             label="검토 대기 초안"
@@ -546,8 +580,25 @@ export default function EssencePage() {
             i
           </span>
           <span>
-            <span className="font-semibold">다음 작업:</span> <span>{nextAction}</span>
+            <span className="font-semibold">다음 작업:</span>{' '}
+            <span>{formatEssenceNextAction(nextAction)}</span>
+            {autoReviewBlockReasons.length > 0 && (
+              <>
+                <span className="mt-2 block font-semibold">AI 안전 검수가 보류한 사유</span>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[13px] leading-relaxed">
+                  {autoReviewBlockReasons.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              </>
+            )}
           </span>
+        </div>
+      )}
+
+      {photoExclusionNotice && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+          {photoExclusionNotice}
         </div>
       )}
 
@@ -572,7 +623,7 @@ export default function EssencePage() {
                 </p>
               </div>
               <p className="text-xs text-slate-500">
-                승인일 {formatDate(approved.approved_at)} · 검토자 {approved.reviewed_by ?? '-'} · 연결된 자료 {approved.source_asset_ids.length}개
+                승인일 {formatDate(approved.approved_at)} · 검토자 {formatActorLabel(approved.reviewed_by)} · 연결된 자료 {approved.source_asset_ids.length}개
               </p>
             </div>
             <p className="text-xs text-slate-600 max-w-md">
@@ -700,14 +751,14 @@ export default function EssencePage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {sources.length === 0 && (
+              {sourceSplit.textSources.length === 0 && (
                 <tr>
                   <td colSpan={5} className="py-16 text-center text-slate-400 text-sm">
-                    아직 등록된 자료가 없습니다. 좌측에서 자료를 입력하세요.
+                    아직 등록된 근거 자료가 없습니다. 좌측에서 자료를 입력하세요.
                   </td>
                 </tr>
               )}
-              {sources.map((source) => {
+              {sourceSplit.textSources.map((source) => {
                 const statusStyle = getSourceStatusStyle(source)
                 return (
                   <tr key={source.id} className="hover:bg-slate-50/70">
@@ -936,13 +987,17 @@ export default function EssencePage() {
                     승인 전 체크: ① 항목별 근거 연결이 실제 근거 노트와 맞는지 ② 반드시 담을 메시지 / 피해야 할 표현이 의료광고 금지 표현과 충돌하지 않는지 ③ 근거가 부족한 항목을 운영 기준에서 허용해도 되는지.
                   </p>
                   <div>
-                    <label htmlFor="essence-reviewed-by" className="block text-xs font-medium text-slate-600 mb-1">검토자</label>
-                    <input
-                      id="essence-reviewed-by"
-                      value={reviewedBy}
-                      onChange={(e) => setReviewedBy(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
+                    <p className="mb-1 text-xs font-medium text-slate-600">검토자</p>
+                    {/*
+                      검토자는 고칠 수 있는 칸이 아니다. 승인 기록에는 실제로 승인을 누른
+                      계정이 남아야 한다 — 예전에는 누구든 'MotionLabs'로 승인할 수 있었다(C-3).
+                    */}
+                    <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
+                      {reviewedBy || '로그인 계정을 확인하는 중입니다.'}
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      로그인한 계정으로 승인 기록이 남습니다.
+                    </p>
                   </div>
                   <div>
                     <label htmlFor="essence-approval-note" className="block text-xs font-medium text-slate-600 mb-1">승인 메모</label>
