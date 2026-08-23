@@ -17,6 +17,7 @@ from sqlalchemy import event, null, select
 
 from app.api.admin import operations_center
 from app.api.admin import operations_center_report_queries as report_queries
+from app.api.admin import operations_center_today_queries as today_queries
 from app.api.admin.operations import (
     POST_PUBLISH_REVIEW_OVERDUE_HOURS,
     get_attention_queue,
@@ -28,6 +29,7 @@ from app.core.rate_limit import get_request_ip
 from app.main import app
 from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
+from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.monthly_control import (
     HospitalServiceInterval,
@@ -1202,3 +1204,98 @@ async def test_operations_http_surface_returns_typed_scoping_and_conflict_errors
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["code"] == "INCIDENT_VERSION_CONFLICT"
     assert conflict.json()["detail"]["refetch_path"].startswith("/api/admin/operations/")
+
+
+async def _accepted_handoff(db, hospital: Hospital, *, sla_due_at: datetime) -> HospitalHandoff:
+    """인수까지 끝난 계약 — ck_hospital_handoffs_state_facts가 요구하는 사실을 모두 채운다."""
+    owner = await _operations_actor(db)
+    handoff = HospitalHandoff(
+        hospital_id=hospital.id,
+        state=HandoffState.HANDOFF_ACCEPTED,
+        acceptance_source="DIRECT_CREATE",
+        sales_owner_id=owner.id,
+        ae_owner_id=owner.id,
+        contract_reference=f"CTR-{hospital.slug}",
+        contract_effective_at=datetime.now(UTC) - timedelta(days=1),
+        plan="PLAN_12",
+        sla_due_at=sla_due_at,
+        accepted_by_id=owner.id,
+        accepted_at=datetime.now(UTC) - timedelta(days=1),
+    )
+    db.add(handoff)
+    await db.flush()
+    return handoff
+
+
+# ── 처리 기한은 그 줄의 일에서 온다 ────────────────────────────────────
+# 오늘의 운영과 월간 리포트는 계약 인수 기한(handoff.sla_due_at)을 보여 주면서 상태는
+# 다른 기준으로 정했다. 그러면 화면은 그 일과 관계없는 날짜 옆에 "처리 기한 지남"을
+# 붙이고, 인수 기한이 없는 병원에서는 날짜 없이 기한만 지났다고 말한다.
+
+
+async def test_today_queue_deadline_is_the_review_window_not_the_handoff_date(pg_async_session):
+    db = pg_async_session
+    hospital = await _hospital(db, "검수기한 의원")
+    handoff_due = datetime.now(UTC) + timedelta(days=30)
+    await _accepted_handoff(db, hospital, sla_due_at=handoff_due)
+    content = await _content(db, hospital, published_hours_ago=2, sequence_no=1)
+    now = datetime.now(UTC)
+
+    _total, rows = await today_queries.load_today_queue(
+        db, OperationsFilters(), page=1, page_size=100, overview=False, now=now
+    )
+
+    row = next(item for item in rows if item.content_id == content.id)
+    assert row.sla_due_at is not None
+    assert row.sla_due_at != handoff_due
+    # 발행 후 검수 기한은 공개 시각 + 24시간이다.
+    assert abs((row.sla_due_at - (content.published_at + timedelta(hours=24))).total_seconds()) < 1
+    assert row.sla_state == "DUE"
+
+
+async def test_today_queue_marks_a_review_past_the_window_as_overdue(pg_async_session):
+    db = pg_async_session
+    hospital = await _hospital(db, "검수초과 의원")
+    content = await _content(db, hospital, published_hours_ago=30, sequence_no=1)
+    now = datetime.now(UTC)
+
+    _total, rows = await today_queries.load_today_queue(
+        db, OperationsFilters(), page=1, page_size=100, overview=False, now=now
+    )
+
+    row = next(item for item in rows if item.content_id == content.id)
+    assert row.status == "OVERDUE_REVIEW"
+    assert row.sla_state == "OVERDUE"
+    assert row.sla_due_at < now
+
+
+async def test_reports_queue_deadline_is_the_report_period_close(pg_async_session):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "리포트기한 의원")
+    handoff_due = datetime.now(UTC) + timedelta(days=30)
+    await _accepted_handoff(db, hospital, sla_due_at=handoff_due)
+    now = datetime.now(UTC)
+
+    _total, rows = await report_queries.load_reports_queue(
+        db, OperationsFilters(), page=1, page_size=100, overview=False, now=now
+    )
+
+    row = next(item for item in rows if item.customer.hospital_id == hospital.id)
+    assert row.sla_due_at is not None
+    # 인수 기한이 미래인데도 예전에는 그 날짜를 "기한 지남"과 함께 보여줬다.
+    assert row.sla_due_at != handoff_due
+    assert row.sla_due_at < now
+    assert row.sla_state == "OVERDUE"
+
+
+async def test_overview_summary_reports_no_sampled_overdue_count(pg_async_session):
+    """5건 표본에서 만든 기한 초과 수는 총계가 아니라서 내보내지 않는다."""
+    db = pg_async_session
+    actor = await _operations_actor(db)
+    hospital = await _active_hospital(db, "표본집계 의원")
+    await _incident(db, hospital, owner=actor)
+
+    result = await operations_center.get_operations_overview(db=db, _actor=actor)
+
+    for summary in result.queues:
+        assert "overdue" not in summary.model_dump()

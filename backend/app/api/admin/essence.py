@@ -50,7 +50,7 @@ from app.services.asset_storage import (
     resolve_local_asset_path,
     store_asset_bytes,
 )
-from app.services.audit_log import default_actor, write_audit_log
+from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
     compute_sources_snapshot_hash,
@@ -1438,7 +1438,11 @@ async def approve_philosophy(
     await db.flush()
 
     philosophy.status = PhilosophyStatus.APPROVED
-    philosophy.reviewed_by = body.reviewed_by
+    # 검토자는 확인된 로그인 계정이다. 예전에는 요청 본문에 적어 보낸 이름을 그대로
+    # 저장했으므로, 누가 승인했는지가 화면이 채워 준 고정 문자열("MotionLabs")로 남았고
+    # 승인 기록으로 책임을 되짚을 수 없었다(C-3). 계정이 확인되지 않는 호출(배치 등)에서만
+    # 본문 값으로 물러선다.
+    philosophy.reviewed_by = verified_request_actor() or body.reviewed_by
     philosophy.approval_note = body.approval_note
     philosophy.approved_at = datetime.now(timezone.utc)
 
@@ -1465,6 +1469,7 @@ async def approve_philosophy(
         detail={
             "version": philosophy.version,
             "claimed_reviewer": body.reviewed_by,
+            "recorded_reviewer": philosophy.reviewed_by,
             "evidence_reviewed_confirmed": True,
             "approval_note": body.approval_note,
             "source_asset_count": len(philosophy.source_asset_ids or []),
