@@ -79,9 +79,9 @@ from app.services.naver_handoff_runs import (
 )
 from app.services.ops_incident_alerts import recover_ops_incident
 from app.services.photo_assets import (
-    build_image_quality_metadata,
     DERIVED_METADATA_KEYS,
     allowed_photo_asset_kinds,
+    build_image_quality_metadata,
     recovered_photo_metadata,
 )
 from app.services.photo_provenance import (
