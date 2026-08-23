@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   buildDevelopmentSupportSummary,
   describeOperationsDeadline,
-  effectiveSafeCause,
+  knownSafeCause,
   historyEventLabel,
   operationStatusLabel,
   operationsRowTitle,
@@ -121,7 +121,14 @@ export function OperationDetail(props: Props) {
       <section className="ops-detail-section">
         <h3>무슨 문제인지</h3>
         <p className="text-sm font-semibold text-slate-800">{operationStatusLabel(row.status)}</p>
-        <p className="ops-readable mt-2 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600">{effectiveSafeCause(effectiveDetail)}</p>
+        {/* 원인이 있는 건에만 원인을 적는다 — 온보딩·오늘 발행처럼 예정된 일감은 실패가
+            아니라서 서버가 원인을 비워 보낸다. 그 자리를 "원인 설명을 확인할 수 없습니다"로
+            채우면 정상 건이 장애로 읽히고 조치 대신 개발팀 문의를 가리킨다(G-1). */}
+        {knownSafeCause(effectiveDetail) && (
+          <p className="ops-readable mt-2 rounded-lg bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600">
+            {knownSafeCause(effectiveDetail)}
+          </p>
+        )}
       </section>
 
       <section className="ops-detail-section">

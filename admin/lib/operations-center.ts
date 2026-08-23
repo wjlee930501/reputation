@@ -250,7 +250,15 @@ export function safeCauseText(value: string | null | undefined): string {
   return cleaned
 }
 
-export function effectiveSafeCause(detail: OperationsIncidentDetail): string {
+/**
+ * 알려진 원인이 있으면 그 설명, 없으면 null.
+ *
+ * 운영 센터의 큐에는 사건만 있는 것이 아니다 — 온보딩 진행, 오늘 발행, 리포트 준비처럼
+ * 예정된 일감은 원인이라는 개념 자체가 없어 서버가 `safe_cause`를 비워 보낸다. 그 자리를
+ * 늘 채우면 정상 행까지 `원인 설명을 확인할 수 없습니다`가 붙어 전부 장애처럼 읽히고,
+ * 그 문구는 조치가 아니라 개발팀 문의를 가리킨다(G-1). 없을 때는 없다고 말한다.
+ */
+export function knownSafeCause(detail: OperationsIncidentDetail): string | null {
   const candidates = [
     detail.incident.safe_cause,
     detail.run?.safe_error_message,
@@ -258,11 +266,18 @@ export function effectiveSafeCause(detail: OperationsIncidentDetail): string {
     detail.incident.slack?.safe_error_message,
     detail.incident.slack?.safe_error_code,
   ]
+  const hasAnyRawCause = candidates.some((candidate) => Boolean(candidate?.trim()))
   for (const candidate of candidates) {
     const safeCause = safeCauseText(candidate)
     if (safeCause !== UNKNOWN_SAFE_CAUSE) return safeCause
   }
-  return UNKNOWN_SAFE_CAUSE
+  // 원인 값은 왔는데 운영자가 읽을 말로 바꾸지 못한 경우는 여전히 알려야 한다 —
+  // 서버가 무언가 실패를 보고했다는 사실 자체가 정보다.
+  return hasAnyRawCause ? UNKNOWN_SAFE_CAUSE : null
+}
+
+export function effectiveSafeCause(detail: OperationsIncidentDetail): string {
+  return knownSafeCause(detail) ?? UNKNOWN_SAFE_CAUSE
 }
 export function buildDevelopmentSupportSummary(
   detail: OperationsIncidentDetail,

@@ -674,8 +674,12 @@ export default function LeadsPage() {
                         온보딩 시작
                       </button>
                     )}
+                    {/* 전환은 언제나 기존 병원 확인부터 시작한다 — 모달이 같은 병원으로
+                        보이는 후보를 먼저 보여 주고, 있으면 새로 만드는 대신 연결한다.
+                        여기서 "병원 생성"이라고만 하면 이미 운영 중인 병원을 가진 리드에서
+                        중복 생성이 유일한 길처럼 읽힌다(F-1). */}
                     <p className="mt-1 text-[11px] text-slate-400">
-                      {lead.converted_hospital_id ? '연결 병원으로 이동' : '운영량 선택 후 병원 생성'}
+                      {lead.converted_hospital_id ? '연결 병원으로 이동' : '기존 병원 확인 후 연결 또는 생성'}
                     </p>
                     <div className="mt-1 flex items-center justify-end gap-2">
                       {!lead.converted_hospital_id && (
