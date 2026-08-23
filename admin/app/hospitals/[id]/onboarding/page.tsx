@@ -14,6 +14,8 @@ import {
 } from '@/lib/onboarding-candidate'
 import {
   buildClinicVisualChecklist,
+  isExternalLogo,
+  isServableLogo,
   missingClinicVisualItems,
   type ClinicVisualItem,
 } from '@/lib/clinic-visual-readiness'
@@ -387,7 +389,21 @@ export default function OnboardingPage() {
     )
   }
 
-  const steps = deriveOnboardingSteps(hospital, sources, philosophies, readiness, id, handoff)
+  // 자료로 아직 가져오지 않은 공식 채널 — 처리 완료 판정의 분모에 들어가지 않아
+  // 채널이 비어 있는 채로 단계가 완료로 보였다(O-8). 실제 후보 목록에서 센다.
+  const unimportedChannelCount = hospital
+    ? getProfileUrlCandidates(hospital, sources).filter(
+        (candidate) => !isProfileOnlyCandidate(candidate.key),
+      ).length
+    : 0
+  const steps = deriveOnboardingSteps(
+    hospital ? { ...hospital, unimported_channel_count: unimportedChannelCount } : hospital,
+    sources,
+    philosophies,
+    readiness,
+    id,
+    handoff,
+  )
   const summary = deriveOnboardingSummary(steps, readiness)
   const latestMeasurementRun = measurementRuns.find((run) => run.run_label === 'V0 first measurement') ?? null
   const latestV0Message = typeof latestMeasurementRun?.error_summary?.safe_error_message === 'string'
@@ -1054,6 +1070,14 @@ function ClinicVisualForm({
  * 변화가 없었다(L-1). 필수 게이트가 효과 없는 입력을 강제하던 상태라 입력 수단 자체를
  * 바꿨다 — 업로드한 파일은 우리 오리진에서 서빙되므로 상대 CDN 정책과 무관하다.
  */
+function shortHost(value: string): string {
+  try {
+    return new URL(value).hostname
+  } catch {
+    return '외부 주소'
+  }
+}
+
 function ClinicLogoField({
   hospitalId,
   logoUrl,
@@ -1068,7 +1092,10 @@ function ClinicLogoField({
   // 업로드가 저장까지 마쳤다는 즉시 피드백. 다른 필드를 편집 중(dirty)이면 서버 값
   // 동기화가 미뤄지므로, 그 사이에도 방금 한 일이 반영됐음을 보여 준다.
   const [justUploaded, setJustUploaded] = useState(false)
-  const hasLogo = Boolean(logoUrl) || justUploaded
+  // 값이 있다는 것과 공개 화면에 뜬다는 것은 다르다 — 외부 주소는 저장돼 있어도
+  // 헤더에 아무것도 그리지 못하므로 "업로드됨"이라고 말하면 안 된다(O-5).
+  const hasLogo = isServableLogo(logoUrl) || justUploaded
+  const needsLogoMigration = !justUploaded && isExternalLogo(logoUrl)
 
   async function upload(file: File) {
     setUploading(true)
@@ -1100,6 +1127,10 @@ function ClinicLogoField({
           <span className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-green-700">
             업로드됨
           </span>
+        ) : needsLogoMigration ? (
+          <span className="inline-flex items-center rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">
+            외부 주소 — 화면에 안 뜸
+          </span>
         ) : (
           <span className="inline-flex items-center rounded-lg border border-dashed border-slate-300 px-2 py-1 text-xs text-slate-500">
             아직 없음
@@ -1121,6 +1152,13 @@ function ClinicLogoField({
           />
         </label>
       </div>
+      {needsLogoMigration && (
+        <p className="mt-1.5 rounded-lg bg-amber-50 px-2.5 py-2 text-xs leading-5 text-amber-900">
+          예전에 등록한 로고 주소가 외부 사이트({shortHost(logoUrl)})를 가리킵니다.
+          공개 화면은 외부 주소의 이미지를 쓰지 않아 지금 헤더에는 병원명만 나옵니다.
+          같은 로고 파일을 업로드하면 바로 반영됩니다.
+        </p>
+      )}
       <span className="mt-1 block text-xs font-normal text-slate-500">
         PNG·JPG·WEBP, 1MB 이하. 업로드한 파일은 병원 공개 화면에서 직접 제공되므로
         외부 사이트 주소와 달리 상대 사이트가 바뀌어도 깨지지 않습니다.

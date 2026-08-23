@@ -43,6 +43,14 @@ export interface OnboardingSummary {
 }
 
 export interface LifecycleHospital extends ClinicVisualInput {
+  /**
+   * 아직 자료로 가져오지 않은 공식 채널 수.
+   *
+   * 처리 완료 판정은 "제외하지 않은 자료"만 센다. 그래서 등록조차 안 된 공식 블로그는
+   * 애초에 분모에 들어가지 않고, 채널이 비어 있는 채로 단계가 `완료`가 됐다(O-8).
+   * 완료를 되돌리지는 않는다 — 가져오지 않은 채널이 있다는 사실을 함께 알린다.
+   */
+  unimported_channel_count?: number | null
   profile_complete?: boolean | null
   v0_report_done?: boolean | null
   site_built?: boolean | null
@@ -160,6 +168,7 @@ export function deriveOnboardingSteps(
     && readiness?.essence?.source_stale === false
 
   const pendingDraftCount = countPendingPhilosophyDrafts(philosophies)
+  const unimportedChannels = Math.max(0, hospital?.unimported_channel_count ?? 0)
 
   const definitions: Array<Omit<OnboardingStep, 'index' | 'status'> & { done: boolean }> = [
     {
@@ -217,8 +226,11 @@ export function deriveOnboardingSteps(
       key: 'processing',
       phase: 'onboarding',
       title: '근거 자료 수집 및 처리',
-      description: '병원 근거 자료를 추가하고 제외하지 않은 모든 자료의 처리를 완료합니다.',
+      description: unimportedChannels > 0
+        ? `병원 근거 자료를 추가하고 제외하지 않은 모든 자료의 처리를 완료합니다. 아직 가져오지 않은 공식 채널이 ${unimportedChannels}건 있습니다 — 가져오지 않으면 처리 대상에서 빠집니다.`
+        : '병원 근거 자료를 추가하고 제외하지 않은 모든 자료의 처리를 완료합니다.',
       done: allIncludedSourcesProcessed && readinessCheck(readiness, 'essence_sources') !== false,
+      badge: unimportedChannels > 0 ? `미수집 공식 채널 ${unimportedChannels}건` : undefined,
     },
     {
       key: 'philosophy_approved',
@@ -289,6 +301,31 @@ export function deriveOnboardingSummary(
   const currentOnboarding = onboardingSteps.find((step) => step.status === 'current')
 
   if (currentOnboarding) {
+    // 뒤 단계가 이미 다 끝난 병원에 "다음 단계로 진행할 수 없습니다"라고 하면 인과가
+    // 뒤집힌다 — 이미 운영 중인데 나중에 생긴 관문이 소급 적용된 경우다(O-3).
+    // 그때는 막힌 게 아니라 품질 보완이 남은 것이므로 그렇게 말한다.
+    // 소급으로 세워진 관문은 공개 표면 시각 승인(profile)뿐이다. 인수 승인 같은
+    // 진짜 선행 조건까지 이 문구를 쓰면 정반대로 안심시키게 된다.
+    const laterSteps = onboardingSteps.slice(onboardingSteps.indexOf(currentOnboarding) + 1)
+    const isRetroactive =
+      currentOnboarding.key === 'profile'
+      && laterSteps.length > 0
+      && laterSteps.every((step) => step.status === 'completed')
+
+    if (isRetroactive) {
+      return {
+        stateLabel: '보완 필요',
+        stateClassName: 'bg-amber-100 text-amber-800',
+        headline: `이미 운영 중인 병원입니다. ${currentOnboarding.title}에 남은 승인을 마쳐 주세요.`,
+        detail: currentOnboarding.description,
+        nextActionLabel: currentOnboarding.title,
+        nextActionHref: currentOnboarding.href ?? null,
+        blockedReason:
+          '공개 사이트는 이미 서비스 중이고 뒤 단계도 끝났습니다. 다만 나중에 추가된 '
+          + '공개 화면 품질 기준이 아직 승인되지 않아, 그만큼 기본값으로 노출되고 있습니다.',
+      }
+    }
+
     return {
       stateLabel: '다음 작업',
       stateClassName: 'bg-blue-100 text-blue-800',

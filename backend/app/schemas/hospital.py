@@ -15,6 +15,9 @@ class HospitalListItem(BaseModel):
     site_built: bool
     site_live: bool
     schedule_set: bool
+    # 승인이 남은 공개 표면 시각 항목의 사람이 읽는 라벨. 비어 있으면 승인 완료다.
+    # 목록이 이 값을 보지 않으면 상세와 다른 결론을 내놓는다(O-2).
+    visual_approval_missing: list[str] = []
     aeo_domain: Optional[str] = None
     domain_cert_dns_verified_at: Optional[str] = None
     domain_cert_job_state: Optional[str] = None

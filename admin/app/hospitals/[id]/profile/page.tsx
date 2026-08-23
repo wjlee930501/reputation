@@ -4,6 +4,7 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useId, useState } from 'react'
 import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
+import { isApprovedBrandColor } from '@/lib/clinic-visual-readiness'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
 import {
@@ -744,6 +745,21 @@ export default function ProfilePage() {
                 className="min-w-0 flex-1 px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </span>
+            {/* 색상 피커는 값이 없어도 무언가를 보여 줄 수밖에 없다(빈 색이 없다).
+                그래서 운영자는 저장된 줄 알고 지나가고 값은 계속 null로 남았다(O-6).
+                미설정이라는 사실과, 지금 보이는 색으로 확정하는 방법을 같이 알린다. */}
+            {!isApprovedBrandColor(profile.brand_primary_color) && (
+              <span className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-amber-800">
+                미설정 — 지금 보이는 색은 저장되지 않았습니다.
+                <button
+                  type="button"
+                  onClick={() => updateField('brand_primary_color', '#17365D')}
+                  className="inline-flex min-h-8 items-center rounded-md border border-amber-300 bg-amber-50 px-2 font-semibold hover:bg-amber-100"
+                >
+                  #17365D으로 설정
+                </button>
+              </span>
+            )}
           </label>
           <label className="text-sm font-medium text-slate-700">
             포인트 컬러
@@ -764,6 +780,21 @@ export default function ProfilePage() {
                 className="min-w-0 flex-1 px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </span>
+            {/* 색상 피커는 값이 없어도 무언가를 보여 줄 수밖에 없다(빈 색이 없다).
+                그래서 운영자는 저장된 줄 알고 지나가고 값은 계속 null로 남았다(O-6).
+                미설정이라는 사실과, 지금 보이는 색으로 확정하는 방법을 같이 알린다. */}
+            {!isApprovedBrandColor(profile.brand_accent_color) && (
+              <span className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-amber-800">
+                미설정 — 지금 보이는 색은 저장되지 않았습니다.
+                <button
+                  type="button"
+                  onClick={() => updateField('brand_accent_color', '#B79045')}
+                  className="inline-flex min-h-8 items-center rounded-md border border-amber-300 bg-amber-50 px-2 font-semibold hover:bg-amber-100"
+                >
+                  #B79045으로 설정
+                </button>
+              </span>
+            )}
           </label>
         </div>
         <div>

@@ -88,3 +88,37 @@ def effective_photo_metadata(
     if is_classified_photo_metadata(metadata):
         return dict(metadata)  # type: ignore[arg-type]
     return recovered_photo_metadata(source_type, metadata)
+
+
+# 히어로·갤러리는 원본보다 크게 표시될 수 있다. 장변이 이 값보다 짧으면 확대되어
+# 뭉개지므로(S-3), 저장은 하되 운영자에게 사실을 알린다 — 사진이 없는 것보다는 낫고,
+# 막아 버리면 자료가 있는 병원의 공개가 늦어진다.
+RECOMMENDED_PHOTO_LONG_EDGE = 1600
+
+
+def measure_image_dimensions(data: bytes) -> tuple[int, int] | None:
+    """이미지 픽셀 크기. 읽지 못하면 None — 측정 실패가 업로드를 막지는 않는다."""
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as image:
+            width, height = image.size
+        return int(width), int(height)
+    except Exception:  # noqa: BLE001 — 측정은 부가 정보다
+        return None
+
+
+def build_image_quality_metadata(data: bytes) -> dict[str, object]:
+    """업로드 사진의 해상도 사실. 판정이 아니라 사실만 기록한다."""
+    size = measure_image_dimensions(data)
+    if size is None:
+        return {}
+    width, height = size
+    return {
+        "image_width": width,
+        "image_height": height,
+        "below_recommended_resolution": max(width, height) < RECOMMENDED_PHOTO_LONG_EDGE,
+        "recommended_long_edge": RECOMMENDED_PHOTO_LONG_EDGE,
+    }

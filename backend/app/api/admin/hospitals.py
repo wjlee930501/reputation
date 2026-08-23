@@ -47,6 +47,7 @@ from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.clinic_visual_readiness import evaluate_visual_readiness
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
@@ -1339,6 +1340,9 @@ def _serialize_list(h: Hospital) -> dict:
         "site_built": h.site_built,
         "site_live": h.site_live,
         "schedule_set": h.schedule_set,
+        # 목록이 상세와 다른 말을 하지 않게, 시각 승인 상태를 함께 싣는다. 이게 없으면
+        # 목록은 `병원 기본 정보 ✓`인데 상세는 `7/8 진행 필요`가 된다(O-2).
+        "visual_approval_missing": list(evaluate_visual_readiness(h).missing_labels),
         "aeo_domain": h.aeo_domain,
         "domain_cert_dns_verified_at": getattr(h, "domain_cert_dns_verified_at", None).isoformat()
         if getattr(h, "domain_cert_dns_verified_at", None)

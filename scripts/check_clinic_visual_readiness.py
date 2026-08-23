@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 
 HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 ACCESS_MODES = frozenset({"urgent", "appointment", "specialist"})
+STORED_LOGO_PREFIXES = ("gs://", "local://", "/assets/")
 
 # 2026-08-21 감사 대상 6곳(노원탑365 포함). 조회 결과에 없으면 별도로 보고한다.
 AUDITED_HOSPITALS = (
@@ -67,7 +68,11 @@ def _text(value: object) -> str:
 def evaluate_hospital(row: dict) -> VisualReadiness:
     """한 병원의 시각 승인 상태. 사진 수는 참고 정보일 뿐 판정에 쓰지 않는다."""
     missing: list[str] = []
-    if not _text(row.get("logo_url")):
+    # 값이 있는 것으로는 부족하다 — 공개 표면은 우리 저장소·오리진이 아닌 주소를 쓰지
+    # 않으므로 외부 CDN 로고는 저장돼 있어도 화면에 뜨지 않는다(O-5).
+    # 판정 기준은 backend/app/services/hospital_logo.py의 is_stored_logo_ref와 같다.
+    # 이 스크립트는 앱 패키지 없이 단독 실행되므로 임포트하지 않고 규칙만 맞춘다.
+    if not _text(row.get("logo_url")).startswith(STORED_LOGO_PREFIXES):
         missing.append("logo")
     if not HEX_COLOR.fullmatch(_text(row.get("brand_primary_color"))):
         missing.append("primary_color")

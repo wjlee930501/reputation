@@ -123,7 +123,11 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.match(leads, /inline-flex min-h-11 items-center[\s\S]{0,160}1회 제한 해제/)
   assert.doesNotMatch(hospitalLayout, /hospital\?\.slug|\{hospital\.slug\}/)
   assert.doesNotMatch(hospitalLayout, /운영중/)
-  assert.match(hospitalLayout, /공개 주소 준비 중/)
+  // 공개 주소는 자기 도메인이든 기본 플랫폼 주소든 실제 값으로 말한다. 예전에는
+  // 자기 도메인이 없으면 무조건 "준비 중"이라, 이미 서비스 중인 4곳이 미완성으로
+  // 보였다(O-7). 원시 slug를 그대로 흘리지 않는다는 계약은 위 doesNotMatch가 지킨다.
+  assert.doesNotMatch(hospitalLayout, /공개 주소 준비 중/)
+  assert.match(hospitalLayout, /readHospitalDomainStatus\(hospital\)\.detail/)
   assert.doesNotMatch(leads, /\{candidate\.slug\}/)
   assert.match(leads, /불러온 상담 요청/)
   assert.doesNotMatch(leads, /\{lead\.source_path/)

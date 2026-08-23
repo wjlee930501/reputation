@@ -12,6 +12,7 @@ import {
 import {
   domainHeaderIsLive,
   domainHeaderStatus,
+  readHospitalDomainStatus,
   domainLastCheckedLabel,
 } from '@/lib/hospital-domain-status'
 import { summarizeHeaderProgress } from '@/lib/hospital-header-progress'
@@ -136,8 +137,11 @@ export default function HospitalLayout({
                   </span>
                 )}
               </div>
+              {/* 자기 도메인이 없다고 "준비 중"은 아니다 — 기본 플랫폼 주소로 이미
+                  서비스 중인 병원이 대부분이고, 그걸 준비 중이라 하면 운영자가 살아
+                  있는 주소를 없는 것으로 안다(O-7). 목록·패널과 같은 판정을 쓴다. */}
               <p className="mt-0.5 truncate text-xs text-slate-500">
-                {hospital?.aeo_domain ? `공개 주소 ${hospital.aeo_domain}` : '공개 주소 준비 중'}
+                {hospital ? `공개 주소 ${readHospitalDomainStatus(hospital).detail}` : '공개 주소 확인 중'}
               </p>
             </div>
             {hospital && (
@@ -216,14 +220,13 @@ export default function HospitalLayout({
             {hospital && (
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 sm:gap-3">
                 <span className="inline-flex min-w-0 max-w-[280px] items-baseline gap-1">
-                  {hospital.aeo_domain ? (
-                    <>
-                      공개 주소{' '}
-                      <span className="truncate text-[var(--color-revisit-text-title)]" title={hospital.aeo_domain}>
-                        {hospital.aeo_domain}
-                      </span>
-                    </>
-                  ) : '공개 주소 준비 중'}
+                  공개 주소{' '}
+                  <span
+                    className="truncate text-[var(--color-revisit-text-title)]"
+                    title={readHospitalDomainStatus(hospital).detail}
+                  >
+                    {readHospitalDomainStatus(hospital).detail}
+                  </span>
                 </span>
                 {hospital.aeo_domain ? (
                   <>

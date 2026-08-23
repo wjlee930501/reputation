@@ -16,7 +16,8 @@ const hospital = {
   site_live: true,
   schedule_set: true,
   // 공개 표면 시각 승인 네 항목. 프로파일 단계 완료 판정에 함께 들어간다.
-  logo_url: 'https://cdn.example.com/clinic-logo.svg',
+  // 업로드된 자산 참조여야 공개 화면이 실제로 그린다 — 외부 주소는 승인으로 치지 않는다.
+  logo_url: 'gs://reputation-images/assets/abc/clinic-logo.png',
   brand_primary_color: '#0d5bd1',
   hero_headline: '동네 주민의 일상을 지키는 진료',
   site_access_mode: 'appointment',
