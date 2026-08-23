@@ -208,6 +208,13 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   // 화면 FAQ 섹션과 같은 선택 결과를 쓴다 — 구조화 데이터에만 있는 Q&A를 만들지 않는다.
   const faqEntries = selectFaqEntries(contents, hospitalRootUrl)
   const faqJsonLd = buildFaqPageJsonLd(contents, hospitalRootUrl)
+
+  // 승인된 Q&A의 주인은 FAQ 섹션 하나다. 질문 목록(AnswerClusters)은 FAQ를
+  // 우선순위 맨 앞에 놓고 뽑기 때문에, 같은 항목을 두 섹션이 나란히 반복해서
+  // 보여주게 된다. FAQ 섹션이 질문과 답변을 모두 싣는 쪽이므로 그쪽에 남기고,
+  // 질문 목록은 아직 답이 붙지 않은 나머지 읽을 거리를 안내한다.
+  const faqEntryIds = new Set(faqEntries.map((entry) => entry.id))
+  const clusterContents = contents.filter((content) => !faqEntryIds.has(content.id))
   const pageJsonLd = [clinicJsonLd, breadcrumbJsonLd, ...(faqJsonLd ? [faqJsonLd] : [])]
 
   const externalChannels = [
@@ -322,7 +329,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
           {composition.showAnswerClusters ? (
             <AnswerClusters
-              contents={contents}
+              contents={clusterContents}
               hospitalRootUrl={hospitalRootUrl}
               treatments={hospital.treatments || []}
               region={hospital.region}
