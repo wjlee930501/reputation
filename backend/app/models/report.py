@@ -16,6 +16,13 @@ def _jsonb_type():
     return JSON().with_variant(JSONB, "postgresql")
 
 
+# `report_type` 값. 계약 문서(원장 보고 자료)로서 성격이 다르다 — V0는 계약 직후 한 번
+# 만드는 초기 진단이고 MONTHLY는 매월 마감 후 만드는 정기 리포트다. 둘을 섞어 세면
+# 운영 몇 달째 병원이 월간 리포트 덕에 초기 진단을 건너뛴 채로 완료 표시된다.
+V0_REPORT_TYPE = "V0"
+MONTHLY_REPORT_TYPE = "MONTHLY"
+
+
 class MonthlyReport(Base):
     __tablename__ = "monthly_reports"
     __table_args__ = (

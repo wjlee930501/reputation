@@ -296,9 +296,14 @@ def is_photo_classification_only(source_type: SourceType, changed_fields: set[st
     사진은 근거 추출 대상이 아니라 공개 자산이므로, 분류를 저장할 때 처리 상태를
     PENDING으로 되돌리거나 근거 노트를 지울 이유가 없다(제외 처리된 사진이 조용히
     되살아나는 것도 막는다). 공개 표면은 분류에 따라 달라지므로 캐시 갱신은 그대로 한다.
+
+    제목도 같은 부류다 — 사진 제목은 공개 표면의 사진 설명·대체 텍스트일 뿐이므로,
+    일괄 업로드로 같아진 설명을 고치는 일(D-1)이 운영 기준 스냅샷을 낡게 만들거나
+    처리 상태를 되돌려서는 안 된다.
     """
     return source_type in PHOTO_SOURCE_TYPES and changed_fields <= {
         "source_metadata",
+        "title",
         "updated_by",
     }
 
@@ -691,6 +696,61 @@ async def exclude_source(
         target_type="source_asset",
         target_id=source.id,
         detail={"from_status": str(previous_status), "source_type": str(source.source_type)},
+    )
+    await db.commit()
+    await db.refresh(source)
+    _enqueue_essence_review_best_effort(hospital_id)
+    if should_revalidate:
+        # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
+        await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
+    # 제외된 자료의 노트는 이제 어디에도 집계되지 않는다 — 응답도 같은 규칙을 따른다.
+    notes = await _get_notes_for_source(db, source.id)
+    return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
+
+
+@router.post("/sources/{source_id}/reinclude", response_model=SourceAssetResponse)
+async def reinclude_source(
+    hospital_id: uuid.UUID,
+    source_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """제외를 되돌린다.
+
+    제외는 실수로도 눌리는데 되돌릴 방법이 없어 자료를 다시 등록하는 것이 유일한
+    복구였다(C-5). 노트를 지우지 않고 상태만 바꿨으므로, 이미 근거를 추출해 둔
+    자료는 재처리 없이 PROCESSED로 돌아온다.
+
+    공개 여부는 복원하지 않는다. 사진 공개는 권리 근거 확인을 거친 별도 결정이므로
+    제외 해제가 조용히 다시 공개하면 안 된다.
+    """
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    source = await _get_source_or_404(db, hospital_id, source_id)
+    if source.status != SourceStatus.EXCLUDED:
+        raise HTTPException(status_code=400, detail="제외 상태가 아닌 자료입니다.")
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    should_revalidate = _has_public_site(hospital)
+    if should_revalidate:
+        ensure_site_revalidate_configured()
+
+    note_count = await _count_notes_for_source(db, source.id)
+    restored_status = (
+        SourceStatus.PROCESSED
+        if source.processed_at is not None and note_count > 0
+        else SourceStatus.PENDING
+    )
+    source.status = restored_status
+    await write_audit_log(
+        db,
+        action="reinclude_source_asset",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="source_asset",
+        target_id=source.id,
+        detail={
+            "to_status": str(restored_status),
+            "source_type": str(source.source_type),
+            "restored_note_count": note_count,
+        },
     )
     await db.commit()
     await db.refresh(source)
@@ -1513,15 +1573,45 @@ async def _get_approved(
     return result.scalar_one_or_none()
 
 
+def _included_notes_query():
+    """제외되지 않은 자료의 근거 노트만 고르는 기본 쿼리.
+
+    제외는 자료를 근거에서 빼는 조치다. 그런데 노트 행은 그대로 남으므로 조인 없이
+    노트만 세면 제외한 자료가 집계와 위키에 계속 나타난다(C-5). 노트를 삭제하지 않는
+    이유는 제외 해제가 재처리(LLM 비용) 없이 되돌아가야 하기 때문이다.
+    """
+    return select(HospitalSourceEvidenceNote).join(
+        HospitalSourceAsset,
+        HospitalSourceAsset.id == HospitalSourceEvidenceNote.source_asset_id,
+    ).where(HospitalSourceAsset.status != SourceStatus.EXCLUDED)
+
+
 async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
     if not source_ids:
         return {}
     result = await db.execute(
         select(HospitalSourceEvidenceNote.source_asset_id, func.count())
-        .where(HospitalSourceEvidenceNote.source_asset_id.in_(source_ids))
+        .join(
+            HospitalSourceAsset,
+            HospitalSourceAsset.id == HospitalSourceEvidenceNote.source_asset_id,
+        )
+        .where(
+            HospitalSourceEvidenceNote.source_asset_id.in_(source_ids),
+            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+        )
         .group_by(HospitalSourceEvidenceNote.source_asset_id)
     )
     return {source_id: int(count) for source_id, count in result.all()}
+
+
+async def _count_notes_for_source(db: AsyncSession, source_id: uuid.UUID) -> int:
+    """자료 상태와 무관한 노트 수. 제외 해제 시 복원 상태를 정하는 데만 쓴다."""
+    result = await db.execute(
+        select(func.count())
+        .select_from(HospitalSourceEvidenceNote)
+        .where(HospitalSourceEvidenceNote.source_asset_id == source_id)
+    )
+    return int(result.scalar_one() or 0)
 
 
 async def _get_notes_for_source(
@@ -1529,7 +1619,7 @@ async def _get_notes_for_source(
     source_id: uuid.UUID,
 ) -> list[HospitalSourceEvidenceNote]:
     result = await db.execute(
-        select(HospitalSourceEvidenceNote)
+        _included_notes_query()
         .where(HospitalSourceEvidenceNote.source_asset_id == source_id)
         .order_by(HospitalSourceEvidenceNote.created_at.asc())
     )
@@ -1541,7 +1631,7 @@ async def _get_notes_for_sources(
     source_ids: list[uuid.UUID],
 ) -> list[HospitalSourceEvidenceNote]:
     result = await db.execute(
-        select(HospitalSourceEvidenceNote)
+        _included_notes_query()
         .where(HospitalSourceEvidenceNote.source_asset_id.in_(source_ids))
         .order_by(HospitalSourceEvidenceNote.created_at.asc())
     )
@@ -1555,7 +1645,7 @@ async def _get_notes_for_philosophy(
     source_ids = [uuid.UUID(str(source_id)) for source_id in (philosophy.source_asset_ids or [])]
     if not source_ids:
         result = await db.execute(
-            select(HospitalSourceEvidenceNote).where(
+            _included_notes_query().where(
                 HospitalSourceEvidenceNote.hospital_id == philosophy.hospital_id
             )
         )

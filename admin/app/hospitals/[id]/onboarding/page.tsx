@@ -14,6 +14,7 @@ import {
 } from '@/lib/onboarding-candidate'
 import {
   buildClinicVisualChecklist,
+  missingClinicVisualItems,
   type ClinicVisualItem,
 } from '@/lib/clinic-visual-readiness'
 import {
@@ -30,6 +31,8 @@ import {
   type LifecycleReadiness,
   type OnboardingStep as StepDef,
 } from '@/lib/onboarding-lifecycle'
+import { defaultAssetTitles, duplicateAssetTitles } from '@/lib/asset-title'
+import { sourceUrlWarning } from '@/lib/source-url-warnings'
 import NaverBlogBulkForm from './NaverBlogBulkForm'
 
 interface Hospital {
@@ -633,11 +636,18 @@ function ProfileStepBody({
   sources: Source[]
   onChanged: () => void
 }) {
+  const pendingVisual = missingClinicVisualItems(hospital ?? {})
   return (
     <div className="space-y-5">
       <div className="space-y-3">
         <ul className="text-sm text-slate-700 space-y-1">
           <li>· 필수 병원 정보 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
+          <li>
+            · 공개 표면 시각 승인:{' '}
+            {pendingVisual.length === 0
+              ? '✓'
+              : `${pendingVisual.length}건 승인 필요 (${pendingVisual.map((item) => item.label).join(', ')})`}
+          </li>
           <li>· 화면의 필수 항목을 모두 입력하고 저장이 완료되어야 합니다.</li>
         </ul>
         <Link
@@ -1006,6 +1016,8 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
+  // 서버가 422로 거절할 URL을 저장 누르기 전에 알려 준다. 막지는 않는다.
+  const urlWarning = sourceUrlWarning(url)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -1056,6 +1068,7 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
         placeholder="https://..."
         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
       />
+      {urlWarning && <p className="text-xs text-amber-800">{urlWarning}</p>}
       <div className="flex items-center gap-3">
         <button
           type="submit"
@@ -1073,20 +1086,29 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
 function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: () => void }) {
   const [type, setType] = useState('PHOTO_DOCTOR')
   const [assetKind, setAssetKind] = useState('')
-  const [title, setTitle] = useState('')
   const [rightsOwner, setRightsOwner] = useState('')
   const [rightsBasis, setRightsBasis] = useState('')
   const [rightsEvidence, setRightsEvidence] = useState('')
-  const [files, setFiles] = useState<FileList | null>(null)
+  const [files, setFiles] = useState<File[]>([])
+  // 파일마다 제목을 따로 갖는다. 제목 칸이 하나면 N개 자산이 같은 제목으로 저장되고
+  // 그 제목이 공개 표면의 캡션·대체 텍스트가 되어 갤러리가 같은 문구를 반복한다(D-1).
+  const [titles, setTitles] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
 
   const isPhotoType = isPhotoSourceType(type)
   const rightsReady = Boolean(rightsOwner.trim() && rightsBasis && rightsEvidence.trim())
+  const duplicateTitles = duplicateAssetTitles(titles)
+
+  function selectFiles(picked: FileList | null) {
+    const list = picked ? Array.from(picked) : []
+    setFiles(list)
+    setTitles(defaultAssetTitles(list.map((file) => file.name)))
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (!files || files.length === 0) return
+    if (files.length === 0) return
     setBusy(true)
     setFeedback(null)
 
@@ -1101,7 +1123,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
           const fd = new FormData()
           fd.append('source_type', type)
           // 제목이 비어 있으면 파일명 사용 (백엔드가 자동 처리)
-          fd.append('title', title.trim())
+          fd.append('title', (titles[i] ?? '').trim())
           fd.append('file', file)
           if (isPhotoSourceType(type)) {
             fd.append('is_public', 'true')
@@ -1155,9 +1177,8 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
       }
 
       if (successCount > 0) {
-        setTitle('')
         setRightsEvidence('')
-        setFiles(null)
+        selectFiles(null)
         const inp = document.getElementById('upload-file') as HTMLInputElement | null
         if (inp) inp.value = ''
         onCreated()
@@ -1169,7 +1190,7 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
     }
   }
 
-  const selectedFileCount = files?.length ?? 0
+  const selectedFileCount = files.length
   const acceptTypes = isPhotoType
     ? 'image/*'
     : 'image/*,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -1197,12 +1218,9 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
             ))}
           </optgroup>
         </select>
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder={isPhotoType ? '제목 (비워 두면 파일명 사용)' : '자료 제목'}
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-        />
+        <p className="self-center text-xs leading-5 text-slate-600">
+          제목은 파일을 고른 뒤 파일마다 입력합니다. 이 제목이 병원 사이트의 사진 설명으로 쓰입니다.
+        </p>
       </div>
       {isPhotoType ? (
         <div className="space-y-1.5">
@@ -1275,18 +1293,49 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
         type="file"
         multiple={isPhotoType}
         accept={acceptTypes}
-        onChange={(e) => setFiles(e.target.files)}
+        onChange={(e) => selectFiles(e.target.files)}
         className="block w-full text-sm text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm"
       />
       {selectedFileCount > 1 && (
         <p className="text-xs text-slate-600">{selectedFileCount}개 파일 선택됨. 모두 같은 유형으로 저장됩니다.</p>
+      )}
+      {selectedFileCount > 0 && (
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-slate-700">파일별 제목</p>
+          <ul className="space-y-2">
+            {files.map((file, index) => (
+              <li key={`${file.name}-${index}`} className="grid gap-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-center">
+                <label
+                  htmlFor={`upload-title-${index}`}
+                  className="truncate text-xs text-slate-500"
+                  title={file.name}
+                >
+                  {file.name}
+                </label>
+                <input
+                  id={`upload-title-${index}`}
+                  value={titles[index] ?? ''}
+                  onChange={(e) =>
+                    setTitles((prev) => prev.map((value, i) => (i === index ? e.target.value : value)))
+                  }
+                  placeholder="제목 (비워 두면 파일명 사용)"
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </li>
+            ))}
+          </ul>
+          {duplicateTitles.length > 0 && (
+            <p className="text-xs text-amber-800">
+              같은 제목이 여러 파일에 있습니다({duplicateTitles.join(', ')}). 병원 사이트에서 사진 설명이 똑같이 반복됩니다.
+            </p>
+          )}
+        </div>
       )}
       <div className="flex items-center gap-3">
         <button
           type="submit"
           disabled={
             busy ||
-            !files ||
             files.length === 0 ||
             (isPhotoType && (!assetKind || !rightsReady))
           }
@@ -1297,6 +1346,102 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
         {feedback && <span className="text-xs text-slate-600">{feedback}</span>}
       </div>
     </form>
+  )
+}
+
+/**
+ * 올린 뒤에도 사진 제목을 고칠 수 있게 한다.
+ *
+ * 사진 제목은 공개 표면의 사진 설명·대체 텍스트다. 일괄 업로드로 여러 장이 같은
+ * 제목을 갖게 되면 갤러리가 같은 문구를 반복하는데, 지금까지는 자료를 지우고 다시
+ * 올리는 것이 유일한 수정 방법이었다(D-1). 서버는 사진 제목 변경을 분류 변경과
+ * 같이 다루므로 처리 상태와 근거 노트는 그대로 남는다.
+ */
+function AssetTitleEditor({
+  hospitalId,
+  source,
+  duplicated,
+  onRenamed,
+}: {
+  hospitalId: string
+  source: Source
+  duplicated: boolean
+  onRenamed: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(source.title)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function save() {
+    const next = draft.trim()
+    if (!next || next === source.title) {
+      setEditing(false)
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${source.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: next }),
+      })
+      setEditing(false)
+      onRenamed()
+    } catch (e: unknown) {
+      setError(safeOperatorError('onboarding', '제목을 확인한 뒤 다시 저장하세요.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <span className="flex min-w-0 items-center gap-2">
+        <span className={`truncate ${duplicated ? 'text-amber-900' : ''}`}>{source.title}</span>
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(source.title)
+            setEditing(true)
+          }}
+          className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+        >
+          제목 수정
+        </button>
+      </span>
+    )
+  }
+
+  return (
+    <span className="flex min-w-0 flex-1 flex-col gap-1">
+      <span className="flex min-w-0 items-center gap-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          maxLength={300}
+          aria-label={`${source.title} 제목`}
+          className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+        />
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={busy}
+          className="shrink-0 rounded bg-blue-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {busy ? '저장 중…' : '저장'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={busy}
+          className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+        >
+          취소
+        </button>
+      </span>
+      {error && <span className="text-xs font-normal text-red-700">{error}</span>}
+    </span>
   )
 }
 
@@ -1484,6 +1629,32 @@ function SourcesList({
     }
   }
 
+  async function reinclude(sourceId: string) {
+    setExcludingId(sourceId)
+    setExcludeErrors((prev) => {
+      const next = { ...prev }
+      delete next[sourceId]
+      return next
+    })
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${sourceId}/reinclude`, {
+        method: 'POST',
+      })
+      onChanged()
+    } catch (e: unknown) {
+      const message = safeOperatorError('onboarding', '자료 목록을 다시 불러온 뒤 제외 해제를 다시 누르세요.')
+      setExcludeErrors((prev) => ({ ...prev, [sourceId]: message }))
+    } finally {
+      setExcludingId(null)
+    }
+  }
+
+  // 일괄 업로드로 이미 같은 제목이 붙어 버린 사진들. 공개 표면에서 사진 설명이
+  // 그대로 반복되므로 어느 것을 고쳐야 하는지 목록에서 바로 알려 준다(D-1).
+  const duplicatePhotoTitles = duplicateAssetTitles(
+    sources.filter((s) => isPhotoSourceType(s.source_type)).map((s) => s.title),
+  )
+
   if (loading && sources.length === 0) {
     return <p className="text-sm text-slate-500">자료 목록을 불러오는 중…</p>
   }
@@ -1499,6 +1670,12 @@ function SourcesList({
       <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
         등록된 자료 ({sources.length})
       </p>
+      {duplicatePhotoTitles.length > 0 && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          같은 제목의 사진이 있습니다({duplicatePhotoTitles.join(', ')}). 병원 사이트에서 사진 설명이 똑같이 반복되므로
+          아래 목록에서 제목을 각각 고쳐 주세요.
+        </p>
+      )}
       <ul className="space-y-2">
         {sources.map((s) => {
           const fileHref = s.file_access_url ?? s.file_url
@@ -1513,7 +1690,16 @@ function SourcesList({
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
                       {sourceTypeLabel(s)}
                     </span>
-                    <span className="truncate">{s.title}</span>
+                    {isPhotoSourceType(s.source_type) ? (
+                      <AssetTitleEditor
+                        hospitalId={hospitalId}
+                        source={s}
+                        duplicated={duplicatePhotoTitles.includes(s.title.trim())}
+                        onRenamed={onChanged}
+                      />
+                    ) : (
+                      <span className="truncate">{s.title}</span>
+                    )}
                   </p>
                   <p className="mt-1 text-xs text-slate-500 truncate">
                     {s.url ? (
@@ -1585,7 +1771,15 @@ function SourcesList({
                   >
                     {sourceStatusLabel(s)}
                   </span>
-                  {s.status !== 'EXCLUDED' && (
+                  {s.status === 'EXCLUDED' ? (
+                    <button
+                      onClick={() => reinclude(s.id)}
+                      disabled={excludingId === s.id}
+                      className="min-h-11 rounded border border-slate-300 bg-white px-3 py-2 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {excludingId === s.id ? '제외 해제 중…' : '제외 해제'}
+                    </button>
+                  ) : (
                     <button
                       onClick={() => exclude(s.id)}
                       disabled={excludingId === s.id}

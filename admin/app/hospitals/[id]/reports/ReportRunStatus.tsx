@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
-import { parseMonthValue, previousMonthValue } from '@/lib/report-period'
+import {
+  parseMonthValue,
+  previousMonthValue,
+  REPORT_MONTH_BLOCK_MESSAGE,
+  reportMonthBlockReason,
+  reportMonthOptions,
+  reportYearOptions,
+} from '@/lib/report-period'
 import {
   getOrCreateReportRequestKey,
   parseReportRuns,
@@ -22,16 +29,13 @@ export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; 
   const [busy, setBusy] = useState(false)
   const active = useRef(false)
   const keys = useRef(new Map<string, string>())
-  const maximumPeriod = parseMonthValue(previousMonthValue()) ?? { year: new Date().getFullYear(), month: 12 }
-  const selectedPeriod = parseMonthValue(period) ?? maximumPeriod
-  const selectableYears = Array.from(
-    { length: Math.max(1, maximumPeriod.year - 2020 + 1) },
-    (_, index) => maximumPeriod.year - index,
-  )
-  const selectableMonths = Array.from(
-    { length: selectedPeriod.year === maximumPeriod.year ? maximumPeriod.month : 12 },
-    (_, index) => index + 1,
-  )
+  const fallbackPeriod = parseMonthValue(previousMonthValue()) ?? { year: new Date().getFullYear(), month: 12 }
+  const selectedPeriod = parseMonthValue(period) ?? fallbackPeriod
+  const selectableYears = reportYearOptions()
+  // 이번 달까지 목록에 남긴다. 마감 전·미래 달은 지우지 않고 이유를 붙여 잠근다 —
+  // 옵션이 사라지면 "왜 이번 달을 못 고르나"라는 질문에 화면이 답하지 못한다.
+  const monthOptions = reportMonthOptions(selectedPeriod.year)
+  const selectedBlockReason = reportMonthBlockReason(selectedPeriod)
 
   const refresh = useCallback(async () => {
     try {
@@ -56,6 +60,9 @@ export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; 
     if (active.current) return
     const parsed = run ? { year: run.periodYear, month: run.periodMonth } : parseMonthValue(period)
     if (!parsed) { setError('생성할 월을 선택해 주세요.'); return }
+    // 마감 전 달은 서버가 400으로 거절한다. 같은 판정을 먼저 해서 실패 대신 이유를 보여준다.
+    const blocked = run ? null : reportMonthBlockReason(parsed)
+    if (blocked) { setError(REPORT_MONTH_BLOCK_MESSAGE[blocked]); return }
     active.current = true
     setBusy(true)
     setError(null)
@@ -107,9 +114,11 @@ export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; 
           value={selectedPeriod.year}
           onChange={(event) => {
             const year = Number(event.target.value)
-            const month = year === maximumPeriod.year
-              ? Math.min(selectedPeriod.month, maximumPeriod.month)
-              : selectedPeriod.month
+            const options = reportMonthOptions(year)
+            // 연도를 바꿀 때 같은 달을 고를 수 없으면 그 해의 마지막 마감된 달로 내린다.
+            const month = options.find((option) => option.month === selectedPeriod.month)?.selectable
+              ? selectedPeriod.month
+              : options.filter((option) => option.selectable).at(-1)?.month ?? selectedPeriod.month
             setPeriod(`${year}-${String(month).padStart(2, '0')}`)
           }}
           className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-3 text-sm"
@@ -123,9 +132,18 @@ export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; 
           onChange={(event) => setPeriod(`${selectedPeriod.year}-${String(Number(event.target.value)).padStart(2, '0')}`)}
           className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-3 text-sm"
         >
-          {selectableMonths.map((month) => <option key={month} value={month}>{month}월</option>)}
+          {monthOptions.map((option) => (
+            <option key={option.month} value={option.month} disabled={!option.selectable}>
+              {option.label}
+            </option>
+          ))}
         </select>
-        <button type="button" onClick={() => void generate()} disabled={busy} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white disabled:opacity-50">{busy ? '요청 중' : '리포트 생성'}</button>
+        <button type="button" onClick={() => void generate()} disabled={busy || selectedBlockReason !== null} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white disabled:opacity-50">{busy ? '요청 중' : '리포트 생성'}</button>
+        {selectedBlockReason && (
+          <p className="basis-full text-sm text-[var(--color-revisit-text-helper)]" role="status">
+            {REPORT_MONTH_BLOCK_MESSAGE[selectedBlockReason]}
+          </p>
+        )}
       </div>
     </section>
   )

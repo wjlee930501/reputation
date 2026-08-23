@@ -13,6 +13,11 @@ const hospital = {
   site_built: true,
   site_live: true,
   schedule_set: true,
+  // 공개 표면 시각 승인 네 항목. 프로파일 단계 완료 판정에 함께 들어간다.
+  logo_url: 'https://cdn.example.com/clinic-logo.svg',
+  brand_primary_color: '#0d5bd1',
+  hero_headline: '동네 주민의 일상을 지키는 진료',
+  site_access_mode: 'appointment',
 }
 const sources = [{ source_type: 'HOMEPAGE', status: 'PROCESSED', raw_text: '병원 진료 근거' }]
 const philosophies = [{ status: 'APPROVED' }]
@@ -20,6 +25,8 @@ const readiness = {
   status: 'READY',
   published_content_count: 1,
   sov_record_count: 2,
+  report_count: 1,
+  v0_report_pdf_count: 1,
   essence: { approved_philosophy_exists: true, source_stale: false },
   checks: [
     'core_profile', 'v0_report', 'site_built', 'domain', 'essence_sources', 'essence_freshness',
@@ -225,6 +232,123 @@ test('later work stays completed when V0 is the current blocker', () => {
     deriveOnboardingSummary(steps, readiness).nextActionHref,
     '/hospitals/hospital-id/dashboard#v0-measurement-runs',
   )
+})
+
+// B-1: 프로파일 단계 안의 시각 승인이 남아 있는데도 단계가 완료로 보이면 8/8 표기가
+// 사실과 달라진다. 승인 필요 항목이 있으면 완료가 아니어야 한다.
+test('pending visual approvals keep the profile step out of the completed count', () => {
+  for (const pending of [
+    { logo_url: null },
+    { brand_primary_color: null },
+    { site_access_mode: null },
+    { hero_headline: null, hero_description: null },
+  ]) {
+    const steps = deriveOnboardingSteps(
+      { ...hospital, ...pending },
+      sources,
+      philosophies,
+      readiness,
+      'hospital-id',
+      acceptedHandoff,
+    )
+    const profile = steps.find((step) => step.key === 'profile')
+    const onboarding = steps.filter((step) => step.phase === 'onboarding')
+
+    assert.equal(profile?.status, 'current', JSON.stringify(pending))
+    assert.equal(onboarding.filter((step) => step.status === 'completed').length, 7)
+    assert.equal(onboarding.length, 8)
+  }
+})
+
+test('the profile step names the remaining visual approvals and clears once approved', () => {
+  const blocked = deriveOnboardingSteps(
+    { ...hospital, logo_url: null, brand_primary_color: null },
+    sources,
+    philosophies,
+    readiness,
+    'hospital-id',
+    acceptedHandoff,
+  ).find((step) => step.key === 'profile')
+
+  assert.match(blocked?.description ?? '', /시각 승인 2건/)
+  assert.match(blocked?.description ?? '', /공식 로고/)
+  assert.match(blocked?.description ?? '', /대표색 1개/)
+
+  const approved = deriveOnboardingSteps(hospital, sources, philosophies, readiness, 'hospital-id', acceptedHandoff)
+    .find((step) => step.key === 'profile')
+  assert.equal(approved?.status, 'completed')
+  assert.doesNotMatch(approved?.description ?? '', /승인 필요|시각 승인 \d/)
+})
+
+// 사진은 선택 항목이다. 없어도 프로파일 단계는 완료될 수 있어야 한다.
+test('missing photos never block the profile step', () => {
+  for (const photoCount of [0, null, undefined]) {
+    const steps = deriveOnboardingSteps(
+      { ...hospital, photo_count: photoCount },
+      sources,
+      philosophies,
+      readiness,
+      'hospital-id',
+      acceptedHandoff,
+    )
+    assert.equal(steps.find((step) => step.key === 'profile')?.status, 'completed')
+  }
+})
+
+// A-7: 3단계 설명은 "초기 진단 + PDF"를 요구한다. 측정만 끝나고 PDF가 없으면
+// 완료로 표시하지 않고, 무엇이 빠졌는지 단계 설명이 말한다.
+test('an initial diagnosis without a report PDF cannot complete step three', () => {
+  const steps = deriveOnboardingSteps(
+    hospital,
+    sources,
+    philosophies,
+    { ...readiness, report_count: 1, v0_report_pdf_count: 0 },
+    'hospital-id',
+    acceptedHandoff,
+  )
+  const v0 = steps.find((step) => step.key === 'v0')
+
+  assert.equal(v0?.status, 'current')
+  assert.match(v0?.description ?? '', /PDF가 아직 없습니다/)
+  assert.equal(
+    steps.filter((step) => step.phase === 'onboarding' && step.status === 'completed').length,
+    7,
+  )
+})
+
+// 월간 리포트 PDF는 초기 진단이 아니다. 리포트 행이 여러 건이어도 초기 진단 PDF가
+// 0이면 3단계는 끝나지 않고, 설명이 "월간 리포트가 아니라"는 점을 짚는다.
+test('monthly report PDFs never stand in for the initial diagnosis', () => {
+  const v0 = deriveOnboardingSteps(
+    hospital,
+    sources,
+    philosophies,
+    { ...readiness, report_count: 4, v0_report_pdf_count: 0 },
+    'hospital-id',
+    acceptedHandoff,
+  ).find((step) => step.key === 'v0')
+
+  assert.equal(v0?.status, 'current')
+  assert.match(v0?.description ?? '', /월간 리포트가 아니라 초기 진단 PDF/)
+})
+
+test('a report PDF completes step three and an unknown PDF count does not block it', () => {
+  for (const readinessVariant of [
+    { ...readiness, v0_report_pdf_count: 1 },
+    { ...readiness, v0_report_pdf_count: undefined },
+  ]) {
+    const v0 = deriveOnboardingSteps(
+      hospital,
+      sources,
+      philosophies,
+      readinessVariant,
+      'hospital-id',
+      acceptedHandoff,
+    ).find((step) => step.key === 'v0')
+
+    assert.equal(v0?.status, 'completed')
+    assert.doesNotMatch(v0?.description ?? '', /아직 없습니다/)
+  }
 })
 
 test('the next-action CTA always points somewhere real', () => {
