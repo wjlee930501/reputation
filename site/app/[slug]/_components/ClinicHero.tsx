@@ -1,6 +1,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 
+import { uniformWeeklyHours } from '@/lib/business-hours'
 import { displayClinicLabels } from '@/lib/clinic-design'
 import type { ClinicAccessMode, ClinicMediaMode } from '@/lib/clinic-design'
 import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
@@ -73,6 +74,9 @@ export function ClinicHero({
 }: Props) {
   const today = todayHours(businessHours)
   const saturday = businessHours?.sat
+  // 요일 편차가 없는 병원에서 `토요일 진료`는 `오늘 진료`와 같은 값을 반복할 뿐이다.
+  // 그 칸을 환자가 실제로 궁금해하는 사실(연중무휴)로 바꾼다.
+  const uniformHours = uniformWeeklyHours(businessHours)
   const specialtyLabel = displayClinicLabels(specialties).join(' · ')
   const locationLabel = displayClinicLabels(region).join(' ')
   const headline = buildClinicHeroHeadline({
@@ -94,7 +98,11 @@ export function ClinicHero({
           </span>
           {/* 조각 사이의 `{' '}`는 장식이 아니다 — 이게 없으면 제목 텍스트가
               `대장항문외과,의료진과 진료 정보를방문 전에 확인하세요`로 읽힌다. */}
-          <h1 className="clinic-hero-editorial-title">
+          <h1
+            className={`clinic-hero-editorial-title${
+              headline.explicitLines ? ' clinic-hero-editorial-title--lines' : ''
+            }`}
+          >
             {headline.lead.map((part, index) => (
               <span key={`${part}-${index}`}>
                 {part}{' '}
@@ -170,8 +178,8 @@ export function ClinicHero({
         </div>
         <div>
           <CalendarIcon className="clinic-icon" />
-          <dt>토요일 진료</dt>
-          <dd>{saturday || '방문 전 전화 확인'}</dd>
+          <dt>{uniformHours ? '휴무일' : '토요일 진료'}</dt>
+          <dd>{uniformHours ? '연중무휴' : saturday || '방문 전 전화 확인'}</dd>
         </div>
       </dl>
 

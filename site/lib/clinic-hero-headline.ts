@@ -20,6 +20,15 @@ export interface ClinicHeroHeadline {
   emphasis: string
   /** 조각을 공백으로 이은 한 문장. 접근성 이름·복사·크롤러가 읽는 값이다. */
   text: string
+  /**
+   * 운영자가 **직접 줄을 나눈** 승인 카피인지.
+   *
+   * 기본 문구를 조각 수만큼 강제로 쌓던 문제(P-A-4) 때문에 조각을 전부 inline으로
+   * 흘렸는데, 그 바람에 운영자가 어드민에서 넣은 줄바꿈까지 무시됐다. 어드민은
+   * "줄바꿈은 최대 3줄까지 반영됩니다"라고 안내하므로 이건 약속 위반이다.
+   * 자동 생성 문구는 지금처럼 폭에 맞춰 흐르고(false), 사람이 정한 줄만 지킨다(true).
+   */
+  explicitLines: boolean
 }
 
 const MAX_PARTS = 3
@@ -55,7 +64,11 @@ export function buildClinicHeroHeadline(input: {
     ? approved
     : defaultParts(input.accessMode, input.specialtyLabel, input.hospitalName)
 
+  // 조각이 둘 이상인 승인 카피만 "사람이 줄을 나눈 것"이다. 한 줄로 승인한 문장은
+  // 나눌 줄이 없으니 기본 문구와 똑같이 폭에 맞춰 흐르면 된다.
+  const explicitLines = approved.length > 1
+
   const emphasis = parts[parts.length - 1]
   const lead = parts.slice(0, -1)
-  return { lead, emphasis, text: parts.join(' ') }
+  return { lead, emphasis, text: parts.join(' '), explicitLines }
 }

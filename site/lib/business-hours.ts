@@ -84,6 +84,23 @@ export function hasWeeklyHours(hours: Record<string, string> | null | undefined)
   return buildWeeklyHoursRows(hours).some((row) => row.value !== null)
 }
 
+/**
+ * 7일 진료시간이 전부 있고 모두 같으며 휴진일이 없는가 — 즉 연중무휴인가.
+ *
+ * 이런 병원에서 첫 화면이 `오늘 진료 09:00~21:00`과 `토요일 진료 09:00~21:00`을 나란히
+ * 놓으면 같은 값을 두 번 말하는 셈이라 정보량이 0이다. 그 자리에 "연중무휴"를 넣으면
+ * 환자가 실제로 알고 싶은 사실(주말·공휴일에도 여는가)을 한 칸으로 전달한다.
+ */
+export function uniformWeeklyHours(
+  hours: Record<string, string> | null | undefined,
+): string | null {
+  if (!hours) return null
+  const values = WEEKDAY_ORDER.map((day) => (hours[day] ?? '').trim())
+  if (values.some((value) => !value || isClosedLabel(value))) return null
+  const [first] = values
+  return values.every((value) => value === first) ? first : null
+}
+
 /** 진료시간 표의 페이지 내 앵커. 표가 실제로 존재하는 곳만 가리킨다. */
 export const VISIT_HOURS_ANCHOR = 'clinic-hours'
 
