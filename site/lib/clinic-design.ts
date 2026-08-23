@@ -48,6 +48,40 @@ export function clinicComposition(density: ClinicContentDensity): ClinicComposit
   }
 }
 
+/** 갤러리를 렌더하는 표면. 표면마다 사진을 몇 장부터·몇 장까지 보여줄지 다르다. */
+export type ClinicGallerySurface = 'home' | 'visit'
+
+export interface ClinicGalleryPolicy {
+  /** 이 장수 미만이면 갤러리를 아예 그리지 않는다. */
+  minimumPhotoCount: number
+  /** 한 번에 보여줄 상한. */
+  previewLimit: number
+}
+
+/** selectClinicGalleryPhotos가 허용하는 상한 — 정책과 선택 로직이 같은 값을 본다. */
+export const CLINIC_GALLERY_MAX = 8
+
+/**
+ * 홈과 `/visit`의 갤러리 장수 정책 (P-E-2).
+ *
+ * 두 화면이 같은 컴포넌트를 쓰면서 홈은 기본값(3장 게이트 + 밀도별 상한), `/visit`은
+ * 인자 하나만 넘겨(1장 게이트 + 컴포넌트 기본 상한 6) 서로 다른 규칙으로 굴러갔다.
+ * 컴포넌트 기본값이 정책을 절반씩 소유하면 한쪽만 바꿔도 조용히 갈리므로,
+ * 두 표면의 값을 여기서 함께 정한다.
+ *
+ * 홈은 사진이 3장 이상 모여 "둘러보기"가 될 때만 노출하고 상한은 콘텐츠 밀도를 따른다.
+ * `/visit`은 방문 준비가 목적이라 1장부터 보여주고 승인된 사진을 상한까지 다 보여준다.
+ */
+export function clinicGalleryPolicy(
+  surface: ClinicGallerySurface,
+  density: ClinicContentDensity = 'standard',
+): ClinicGalleryPolicy {
+  if (surface === 'visit') {
+    return { minimumPhotoCount: 1, previewLimit: CLINIC_GALLERY_MAX }
+  }
+  return { minimumPhotoCount: 3, previewLimit: clinicComposition(density).galleryPreviewLimit }
+}
+
 export function resolveClinicAccessMode(input: {
   configuredMode?: string | null
   specialties: string[]
@@ -88,7 +122,7 @@ export function selectClinicGalleryPhotos(
     photo.asset_kind !== 'EDITORIAL_GRAPHIC' &&
     (!photo.approved_usage || photo.approved_usage.includes('GALLERY'))
   ))
-  const limit = Math.max(1, Math.min(8, requestedLimit))
+  const limit = Math.max(1, Math.min(CLINIC_GALLERY_MAX, requestedLimit))
   const selected = facilityPhotos.slice(0, limit)
   return {
     photos: selected,

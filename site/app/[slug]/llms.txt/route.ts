@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { fetchHospital, fetchContents, TYPE_LABELS } from '@/lib/api'
-import { llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
+import { llmsBusinessHoursLines, llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
@@ -90,6 +90,9 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
       // 단, 승인·의료광고 검수를 통과한 public_about 서사는 아래 별도 블록으로 노출합니다.
       '',
     ]
+
+    // 요일별 진료시간 — JSON-LD openingHoursSpecification과 같은 원본·같은 파서.
+    lines.push(...llmsBusinessHoursLines(hospital.business_hours))
 
     // 승인된 운영 기준에서 검수를 통과한 진료 철학 서사가 있을 때만 블록 추가.
     const publicAbout = llmsTextValue(hospital.public_about)

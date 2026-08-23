@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, HospitalNotFoundError, resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { countLabel } from '@/lib/clinic-counters'
 import { categoryTagClass } from '@/lib/content-meta'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { buildFaqPageJsonLd } from '@/lib/schema'
@@ -172,7 +173,10 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
                       className="clinic-filter-chip"
                       aria-current={activeType === null ? 'page' : undefined}
                     >
-                      전체 <span className="clinic-filter-chip-count">{contents.length}</span>
+                      전체{' '}
+                      <span className="clinic-filter-chip-count">
+                        {countLabel(contents.length, '편')}
+                      </span>
                     </Link>
                     {availableTypes.map((type) => (
                       <Link
@@ -182,7 +186,9 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
                         aria-current={activeType === type ? 'page' : undefined}
                       >
                         {TYPE_LABELS[type] ?? type}{' '}
-                        <span className="clinic-filter-chip-count">{counts.get(type)}</span>
+                        <span className="clinic-filter-chip-count">
+                          {countLabel(counts.get(type) ?? 0, '편')}
+                        </span>
                       </Link>
                     ))}
                   </nav>

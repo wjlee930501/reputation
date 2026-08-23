@@ -40,6 +40,10 @@ const MEASURED_CONTROLS = [
   '.clinic-hero-fact-rail dd a',
   '.clinic-featured-more',
   '.clinic-answers-all',
+  // Wave 3에서 추가된 링크들. 감사 목록과 같은 하한을 처음부터 요구한다.
+  '.clinic-tx-directory-more',
+  '.clinic-faq-more',
+  '.clinic-faq-all',
   '.clinic-keyfact-link',
   '.clinic-visit-location-link',
   '.clinic-footer-site',

@@ -1,4 +1,5 @@
 import type { HospitalPhoto } from '@/lib/api'
+import { countLabel } from '@/lib/clinic-counters'
 import { selectDoctorRole } from '@/lib/clinic-design'
 import { selectVerifiedDoctorImage } from '@/lib/clinic-theme'
 
@@ -112,7 +113,7 @@ export function DoctorIntro({
             <div className="clinic-curator-meta">
               <div className="clinic-curator-meta-cell">
                 <span className="clinic-curator-meta-label">의료 정보 글</span>
-                <span className="clinic-curator-meta-value">{contentCount}편</span>
+                <span className="clinic-curator-meta-value">{countLabel(contentCount, '편')}</span>
               </div>
               <div className="clinic-curator-meta-cell">
                 <span className="clinic-curator-meta-label">담당 진료</span>

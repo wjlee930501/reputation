@@ -107,11 +107,15 @@ export function buildClinicThemeStyle(
   // 두 번째 브랜드 색을 새로 만들지 않는다. 승인된 accent가 없으면 대표색에서 파생한다.
   const accent = normalizeClinicColor(hospital.brand_accent_color, brand)
   const focus = contrastRatio(accent, CLINIC_PAPER) >= 3 ? accent : strong
+  // 승인된 accent를 글자에 쓰려면 종이 대비를 통과해야 한다. 예를 들어 gold
+  // #B79045는 흰 종이에서 3.2:1로 본문급 대비에 미달하므로 그대로 쓸 수 없다.
+  const accentStrong = contrastSafeColor(accent, CLINIC_PAPER, ACTION_CONTRAST)
 
   return {
     '--clinic-brand': brand,
     '--clinic-primary': brand,
     '--clinic-accent': accent,
+    '--clinic-accent-strong': accentStrong,
     '--clinic-brand-strong': strong,
     '--clinic-brand-action': action,
     '--clinic-brand-hover': hover,

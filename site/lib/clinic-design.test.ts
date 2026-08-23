@@ -1,17 +1,24 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import type { HospitalPhoto } from './hospital-payload.ts'
 
 import {
+  CLINIC_GALLERY_MAX,
   clinicContentDensity,
   clinicComposition,
+  clinicGalleryPolicy,
   displayClinicLabels,
   resolveClinicAccessMode,
   resolveClinicMediaMode,
   selectClinicGalleryPhotos,
   selectDoctorRole,
 } from './clinic-design.ts'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 test('content density follows the shared sparse, standard, and rich composition thresholds', () => {
   // Given hospitals with materially different amounts of published information
@@ -95,6 +102,49 @@ test('editorial graphics never masquerade as verified clinic gallery photographs
   ]
 
   assert.deepEqual(selectClinicGalleryPhotos(photos).photos, [photos[0]])
+})
+
+test('the home and visit gallery counts come from one policy, not component defaults', () => {
+  // P-E-2 — 홈은 컴포넌트 기본값(3장 게이트·6장 상한), /visit은 인자 하나(1장 게이트)만
+  // 넘겨서 두 화면이 규칙을 반씩 나눠 갖고 있었다. 정책은 한 함수가 소유한다.
+  assert.deepEqual(clinicGalleryPolicy('home', 'sparse'), {
+    minimumPhotoCount: 3,
+    previewLimit: 4,
+  })
+  assert.deepEqual(clinicGalleryPolicy('home', 'rich'), {
+    minimumPhotoCount: 3,
+    previewLimit: CLINIC_GALLERY_MAX,
+  })
+  assert.deepEqual(clinicGalleryPolicy('visit'), {
+    minimumPhotoCount: 1,
+    previewLimit: CLINIC_GALLERY_MAX,
+  })
+
+  // 상한은 선택 로직이 실제로 허용하는 값과 같아야 한다.
+  const photos = Array.from({ length: 20 }, (_, index) => ({
+    id: String(index),
+    source_type: 'PHOTO_CLINIC_INTERIOR' as const,
+    title: `공간 ${index}`,
+    url: `/photo-${index}.jpg`,
+  }))
+  assert.equal(
+    selectClinicGalleryPhotos(photos, clinicGalleryPolicy('visit').previewLimit).photos.length,
+    CLINIC_GALLERY_MAX,
+  )
+})
+
+test('both gallery surfaces pass an explicit policy so the component keeps no default', () => {
+  const component = readFileSync(
+    join(HERE, '..', 'app', '[slug]', '_components', 'ClinicGallery.tsx'),
+    'utf8',
+  )
+  assert.doesNotMatch(component, /minimumPhotoCount\s*=/)
+  assert.doesNotMatch(component, /previewLimit\s*=/)
+
+  const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
+  const visit = readFileSync(join(HERE, '..', 'app', '[slug]', 'visit', 'page.tsx'), 'utf8')
+  assert.match(home, /policy=\{clinicGalleryPolicy\('home', contentDensity\)\}/)
+  assert.match(visit, /policy=\{clinicGalleryPolicy\('visit'\)\}/)
 })
 
 test('doctor role does not repeat the representative-director label', () => {
