@@ -27,6 +27,30 @@ test('clinic theme accepts valid hospital colors and rejects malformed values', 
   assert.equal(fallback['--clinic-brand'], '#17365D')
 })
 
+test('the approved accent has a text-safe step so it can actually be used on screen', () => {
+  // P-B-7 — 승인된 보조색이 화면에 하나도 닿지 않고 있었다. 글자에 쓰려면 종이 대비를
+  // 통과해야 한다: gold #B79045는 원색 그대로는 3.2:1로 본문급에 미달한다.
+  for (const accent of ['#B79045', '#D6A72C', '#FFFF00', '#46766A', '#17365D']) {
+    const theme = buildClinicThemeStyle({
+      brand_primary_color: '#17365D',
+      brand_accent_color: accent,
+    })
+    assert.equal(theme['--clinic-accent'], accent.toUpperCase())
+    assert.ok(
+      contrastRatio(theme['--clinic-accent-strong'], theme['--clinic-paper']) >= 4.5,
+      `accent ${accent}의 글자용 단계가 종이 대비를 통과하지 않는다`,
+    )
+  }
+
+  // 승인된 보조색이 없으면 대표색에서 파생한다 — 두 번째 색을 지어내지 않는다.
+  const derived = buildClinicThemeStyle({
+    brand_primary_color: '#6F8A56',
+    brand_accent_color: null,
+  })
+  assert.equal(derived['--clinic-accent'], '#6F8A56')
+  assert.equal(derived['--clinic-accent-strong'], derived['--clinic-brand-action'])
+})
+
 test('one approved primary is enough — the whole ramp derives from it', () => {
   // AE가 로고와 대표색 하나만 승인한 병원.
   const theme = buildClinicThemeStyle({
