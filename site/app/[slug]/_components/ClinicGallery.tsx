@@ -1,12 +1,16 @@
 import Image from 'next/image'
 
 import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
-import { selectClinicGalleryPhotos } from '@/lib/clinic-design'
+import { previewCountLabel } from '@/lib/clinic-counters'
+import { selectClinicGalleryPhotos, type ClinicGalleryPolicy } from '@/lib/clinic-design'
 
 interface Props {
   photos: HospitalPhoto[]
-  minimumPhotoCount?: number
-  previewLimit?: number
+  /**
+   * 표면별 장수 정책. 기본값을 두지 않는다 — 홈과 `/visit`이 컴포넌트 기본값과
+   * 호출부 인자로 규칙을 반씩 나눠 갖고 있었고, 그래서 두 화면의 정책이 갈렸다.
+   */
+  policy: ClinicGalleryPolicy
 }
 
 const TYPE_LABELS: Record<HospitalPhoto['source_type'], string> = {
@@ -16,11 +20,12 @@ const TYPE_LABELS: Record<HospitalPhoto['source_type'], string> = {
   PHOTO_TREATMENT_ROOM: '진료/시술실',
 }
 
-export function ClinicGallery({ photos, minimumPhotoCount = 3, previewLimit = 6 }: Props) {
-  const selection = selectClinicGalleryPhotos(photos, previewLimit)
+export function ClinicGallery({ photos, policy }: Props) {
+  const selection = selectClinicGalleryPhotos(photos, policy.previewLimit)
   const visible = selection.photos
-  // 홈은 기본 3장 게이트를 유지하고, /visit만 명시적으로 1장부터 공간 안내를 노출한다.
-  if (visible.length < minimumPhotoCount) return null
+  if (visible.length < policy.minimumPhotoCount) return null
+
+  const previewLabel = previewCountLabel(visible.length, selection.total, '장')
 
   return (
     <section className="clinic-section">
@@ -54,10 +59,8 @@ export function ClinicGallery({ photos, minimumPhotoCount = 3, previewLimit = 6 
             )
           })}
         </div>
-        {selection.remaining > 0 ? (
-          <p className="clinic-gallery-summary">
-            등록된 공간 사진 {selection.total}장 중 대표 {visible.length}장을 보여드립니다.
-          </p>
+        {previewLabel ? (
+          <p className="clinic-gallery-summary">등록된 공간 사진 {previewLabel}을 보여드립니다.</p>
         ) : null}
       </div>
     </section>

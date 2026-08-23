@@ -6,6 +6,7 @@ import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
 import {
   clinicComposition,
   clinicContentDensity,
+  clinicGalleryPolicy,
   resolveClinicAccessMode,
   resolveClinicMediaMode,
 } from '@/lib/clinic-design'
@@ -16,13 +17,14 @@ import {
   selectClinicHeroImage,
 } from '@/lib/clinic-theme'
 import { getApiBase } from '@/lib/config'
-import { buildFaqPageJsonLd, buildPhysicianCredentials } from '@/lib/schema'
+import { buildFaqPageJsonLd, buildPhysicianCredentials, selectFaqEntries } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 
 import { AnswerClusters } from './_components/AnswerClusters'
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
 import { CareFlow } from './_components/CareFlow'
 import { CarePrinciples } from './_components/CarePrinciples'
+import { ClinicFaq } from './_components/ClinicFaq'
 import { ClinicFooter } from './_components/ClinicFooter'
 import { ClinicGallery } from './_components/ClinicGallery'
 import { ClinicHeader } from './_components/ClinicHeader'
@@ -203,6 +205,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   )
 
   // 발행된 FAQ를 병원 단위 FAQPage로 집계 (개별 FAQ 페이지의 FAQPage와 별개).
+  // 화면 FAQ 섹션과 같은 선택 결과를 쓴다 — 구조화 데이터에만 있는 Q&A를 만들지 않는다.
+  const faqEntries = selectFaqEntries(contents, hospitalRootUrl)
   const faqJsonLd = buildFaqPageJsonLd(contents, hospitalRootUrl)
   const pageJsonLd = [clinicJsonLd, breadcrumbJsonLd, ...(faqJsonLd ? [faqJsonLd] : [])]
 
@@ -326,13 +330,15 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             />
           ) : null}
 
+          <ClinicFaq entries={faqEntries} hospitalRootUrl={hospitalRootUrl} />
+
           {composition.showCareFlow ? (
             <CareFlow hospitalRootUrl={hospitalRootUrl} hospitalName={hospital.name} />
           ) : null}
 
           <ClinicGallery
             photos={hospital.photos ?? []}
-            previewLimit={composition.galleryPreviewLimit}
+            policy={clinicGalleryPolicy('home', contentDensity)}
           />
 
           <div id="facts" className="clinic-anchor-target">

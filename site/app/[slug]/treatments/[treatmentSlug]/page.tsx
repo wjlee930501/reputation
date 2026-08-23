@@ -5,7 +5,9 @@ import { notFound } from 'next/navigation'
 import { fetchContents, fetchHospital, resolveAssetUrl, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
 import { getApiBase } from '@/lib/config'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
+import { countLabel } from '@/lib/clinic-counters'
 import { canonicalHospitalUrl } from '@/lib/site-url'
+import { buildTreatmentEmptyStatePaths } from '@/lib/treatment-empty-state'
 import {
   buildTreatmentSlug,
   findTreatmentBySlug,
@@ -133,6 +135,13 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
 
   const pageUrl = `${hospitalRootUrl}/treatments/${canonicalTreatmentSlug}`
 
+  // 관련 글이 아직 없을 때 이 페이지가 빈 문서로 끝나지 않게 할 경로들 (P-A-2).
+  const emptyStatePaths = buildTreatmentEmptyStatePaths({
+    treatments,
+    currentTreatmentName: treatmentName,
+    contents,
+  })
+
   const collectionJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'CollectionPage',
@@ -202,21 +211,74 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
           <section className="clinic-section">
             <div className="clinic-section-inner">
               {relatedContents.length === 0 ? (
-                <div className="clinic-empty">
-                  <span className="clinic-empty-title">관련 의료 정보가 준비 중입니다</span>
-                  <p>{treatmentName}에 대한 환자 안내 글이 곧 발행됩니다.</p>
+                <div className="clinic-treatment-empty">
+                  <header className="clinic-section-head">
+                    <h2 className="clinic-section-title">
+                      {treatmentName} 안내 글은 준비 중입니다
+                    </h2>
+                    <p className="clinic-section-note">
+                      이 영역의 환자 안내 글은 아직 발행되지 않았습니다. 진료 범위와 방문
+                      방법은 아래에서 바로 확인할 수 있고, 개인별 판단은 진료 상담에서
+                      확인합니다.
+                    </p>
+                  </header>
+
+                  <div className="clinic-treatment-empty-actions">
+                    <a className="clinic-btn clinic-btn-cta" href={`tel:${hospital.phone}`}>
+                      전화 상담 {hospital.phone}
+                    </a>
+                    <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/visit`}>
+                      진료시간·오시는 길
+                    </Link>
+                  </div>
+
+                  {emptyStatePaths.siblings.length > 0 ? (
+                    <div className="clinic-treatment-empty-block">
+                      <h3 className="clinic-treatment-empty-heading">이 병원의 다른 진료 영역</h3>
+                      <div className="clinic-treatment-empty-links">
+                        {emptyStatePaths.siblings.map((sibling) => (
+                          <Link
+                            key={sibling.name}
+                            href={`${hospitalRootUrl}/treatments/${buildTreatmentSlug(sibling.name)}`}
+                          >
+                            {sibling.name}
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {emptyStatePaths.recentContents.length > 0 ? (
+                    <div className="clinic-treatment-empty-block">
+                      <h3 className="clinic-treatment-empty-heading">
+                        이미 발행된 의료 정보 {countLabel(contents.length, '편')}
+                      </h3>
+                      <div className="clinic-content-grid">
+                        {emptyStatePaths.recentContents.map((content) => (
+                          <ContentCard
+                            key={content.id}
+                            content={content}
+                            hospitalRootUrl={hospitalRootUrl}
+                            hospitalName={hospital.name}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
                   <Link
                     href={`${hospitalRootUrl}/contents`}
-                    className="clinic-btn clinic-btn-secondary"
-                    style={{ marginTop: 16 }}
+                    className="clinic-btn clinic-btn-secondary clinic-treatment-empty-all"
                   >
-                    전체 의료 정보 보기
+                    의료 정보 전체 보기
                   </Link>
                 </div>
               ) : (
                 <>
                   <header className="clinic-section-header">
-                    <span className="clinic-section-label">관련 콘텐츠 {relatedContents.length}편</span>
+                    <span className="clinic-section-label">
+                      관련 콘텐츠 {countLabel(relatedContents.length, '편')}
+                    </span>
                     <h2 className="clinic-section-heading">{treatmentName} 진료 안내 글 모음</h2>
                     <p className="clinic-section-lede">
                       {treatmentName}와 관련해 환자가 자주 묻는 질문, 질환 정보, 진료 단계를 모았습니다.

@@ -32,6 +32,42 @@ export function buildPhysicianCredentials(hospital: Hospital): Record<string, un
   }
 }
 
+/** 화면과 FAQPage 구조화 데이터가 함께 쓰는 질문 한 건. */
+export interface FaqEntry {
+  id: string
+  question: string
+  answer: string
+  url: string
+}
+
+/**
+ * FAQPage로 내보낼 질문 목록 (P-A-5).
+ *
+ * FAQ 유형으로 승인·발행된 콘텐츠의 질문과 답변 요약만 쓴다. 자유 입력 본문이나
+ * 다른 유형의 제목을 질문처럼 끌어오지 않는다 — 의료광고 검수를 통과한 문장만
+ * 병원 이름 옆에 붙어야 한다.
+ *
+ * 화면 FAQ 섹션과 JSON-LD가 이 함수를 함께 호출한다. 구조화 데이터에만 있고
+ * 페이지에는 없는 Q&A는 검색·답변 엔진이 신뢰하지 않는 형태이므로, 두 출력이
+ * 갈라질 수 없게 선택을 한곳에 둔다.
+ */
+export function selectFaqEntries(
+  contents: ContentSummary[],
+  hospitalRootUrl: string,
+  limit: number = FAQ_MAX_ITEMS,
+): FaqEntry[] {
+  return contents
+    .filter((c) => c.content_type === 'FAQ')
+    .map((c) => ({
+      id: c.id,
+      question: (c.faq_question || c.title || '').trim(),
+      answer: (c.faq_answer_summary || c.meta_description || '').trim(),
+      url: `${hospitalRootUrl}/contents/${c.id}`,
+    }))
+    .filter((entry) => Boolean(entry.question && entry.answer))
+    .slice(0, Math.max(0, limit))
+}
+
 // 발행된 FAQ들을 한 페이지의 FAQPage로 집계한다. 개별 FAQ 상세 페이지는 각자
 // FAQPage를 갖지만, 랜딩(priority 0.8)·목록 페이지에는 집계 노드가 없어 답변엔진이
 // 병원 단위 Q&A 세트를 한 번에 인지하지 못한다 — 이를 메운다.
@@ -39,25 +75,20 @@ export function buildFaqPageJsonLd(
   contents: ContentSummary[],
   hospitalRootUrl: string,
 ): Record<string, unknown> | null {
-  const faqs = contents.filter(
-    (c) =>
-      c.content_type === 'FAQ' &&
-      (c.faq_question || c.title) &&
-      (c.faq_answer_summary || c.meta_description),
-  )
-  if (faqs.length === 0) return null
+  const entries = selectFaqEntries(contents, hospitalRootUrl)
+  if (entries.length === 0) return null
 
   return {
     '@context': 'https://schema.org',
     '@type': 'FAQPage',
     '@id': `${hospitalRootUrl}#faq`,
-    mainEntity: faqs.slice(0, FAQ_MAX_ITEMS).map((c) => ({
+    mainEntity: entries.map((entry) => ({
       '@type': 'Question',
-      name: c.faq_question || c.title,
-      url: `${hospitalRootUrl}/contents/${c.id}`,
+      name: entry.question,
+      url: entry.url,
       acceptedAnswer: {
         '@type': 'Answer',
-        text: c.faq_answer_summary || c.meta_description || '',
+        text: entry.answer,
       },
     })),
   }

@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
+import { clinicGalleryPolicy } from '@/lib/clinic-design'
 import { buildAddressRegionFields } from '@/lib/clinic-schema'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalHospitalUrl } from '@/lib/site-url'
@@ -159,7 +160,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
             websiteUrl={hospital.website_url}
             hoursHref={visitHoursHref(hospitalRootUrl, true)}
           />
-          <ClinicGallery photos={facilityPhotos} minimumPhotoCount={1} />
+          <ClinicGallery photos={facilityPhotos} policy={clinicGalleryPolicy('visit')} />
         </main>
         <ClinicFooter
           hospitalName={hospital.name}

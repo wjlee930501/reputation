@@ -3,6 +3,7 @@ import Link from 'next/link'
 
 import { displayClinicLabels } from '@/lib/clinic-design'
 import type { ClinicAccessMode, ClinicMediaMode } from '@/lib/clinic-design'
+import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
 
 import { CalendarIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
 
@@ -74,17 +75,12 @@ export function ClinicHero({
   const saturday = businessHours?.sat
   const specialtyLabel = displayClinicLabels(specialties).join(' · ')
   const locationLabel = displayClinicLabels(region).join(' ')
-  const approvedHeadlineLines = (heroHeadline ?? '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 3)
-  const defaultHeadlineLines = accessMode === 'urgent'
-    ? [specialtyLabel ? `${specialtyLabel},` : hospitalName, '오늘 진료시간과 위치를', '방문 전에 확인하세요']
-    : accessMode === 'specialist'
-      ? [specialtyLabel ? `${specialtyLabel},` : hospitalName, '진료 분야와 의료진 정보를', '차분히 확인하세요']
-      : [specialtyLabel ? `${specialtyLabel},` : hospitalName, '의료진과 진료 정보를', '방문 전에 확인하세요']
-  const headlineLines = approvedHeadlineLines.length > 0 ? approvedHeadlineLines : defaultHeadlineLines
+  const headline = buildClinicHeroHeadline({
+    approvedHeadline: heroHeadline,
+    accessMode,
+    specialtyLabel,
+    hospitalName,
+  })
 
   return (
     <section
@@ -96,12 +92,15 @@ export function ClinicHero({
           <span className="clinic-hero-editorial-kicker">
             {[locationLabel, specialtyLabel].filter(Boolean).join(' · ')}
           </span>
+          {/* 조각 사이의 `{' '}`는 장식이 아니다 — 이게 없으면 제목 텍스트가
+              `대장항문외과,의료진과 진료 정보를방문 전에 확인하세요`로 읽힌다. */}
           <h1 className="clinic-hero-editorial-title">
-            {headlineLines.map((line, index) => (
-              index === headlineLines.length - 1
-                ? <strong key={`${line}-${index}`}>{line}</strong>
-                : <span key={`${line}-${index}`}>{line}</span>
+            {headline.lead.map((part, index) => (
+              <span key={`${part}-${index}`}>
+                {part}{' '}
+              </span>
             ))}
+            <strong>{headline.emphasis}</strong>
           </h1>
           <p className="clinic-hero-editorial-lede">
             {heroDescription?.trim() || `${hospitalName}의 진료 영역, 진료시간과 위치를 한곳에서 확인할 수 있습니다.`}

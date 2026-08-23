@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 
 import { fetchContents, fetchHospital, HospitalNotFoundError, type ContentSummary } from '@/lib/api'
+import { countLabel } from '@/lib/clinic-counters'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 
@@ -121,7 +122,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
               <Breadcrumb items={breadcrumbItems} />
               <h1 className="clinic-library-hero-title">{hospital.name} 진료 영역</h1>
               <p className="clinic-library-hero-meta">
-                <strong>{treatments.length}개 진료 영역</strong>
+                <strong>진료 영역 {countLabel(treatments.length, '개')}</strong>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <span>{hospital.specialties.join(' · ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
@@ -208,7 +209,9 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
                             <h3 className="clinic-content-group-heading">
                               {treatment.name}
                             </h3>
-                            <span className="clinic-content-group-count">{related.length}편</span>
+                            <span className="clinic-content-group-count">
+                              {countLabel(related.length, '편')}
+                            </span>
                           </div>
                           <div className="clinic-content-grid">
                             {related.map((content) => (
