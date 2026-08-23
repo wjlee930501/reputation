@@ -28,6 +28,7 @@ from app.services import lead_delivery
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_duplicates import find_duplicate_hospitals, matches_hospital_name
 from app.services.lead_privacy import purge_lead_completely_async, scrub_onboarding_note
+from app.services.lead_triage import is_operations_test_lead
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
 router.include_router(recovery_router)
@@ -502,6 +503,10 @@ def _serialize_lead(lead: SalesLead) -> dict:
         "question": lead.question,
         "privacy": lead.privacy,
         "source_path": lead.source_path,
+        # 유입 경로와 점검용 여부는 목록에서 바로 구분돼야 한다 — 점검용 리드가 실제
+        # 고객 이름을 쓰기 때문에 이름만으로는 알 수 없다.
+        "source": getattr(lead, "source", None),
+        "is_operations_test": is_operations_test_lead(lead),
         "status": lead.status,
         "converted_hospital_id": str(lead.converted_hospital_id)
         if lead.converted_hospital_id

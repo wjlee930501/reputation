@@ -49,9 +49,16 @@ test('알 수 없는 상태는 영문 원문 대신 확인 필요로 표시한�
   assert.equal(badge.tone, 'muted')
 })
 
-test('리드 운영 화면은 SLA 대신 인수 처리 기한을 안내한다', () => {
+test('리드 운영 화면은 SLA 대신 우리말 기한 표현을 쓴다', () => {
   assert.doesNotMatch(LEADS_PAGE, /\bSLA\b/)
-  assert.match(LEADS_PAGE, /담당자·계약·인수 처리 기한 입력/)
+  assert.match(LEADS_PAGE, /첫 연락 기한/)
+})
+
+test('전환 버튼은 그 모달이 실제로 받는 것을 말한다', () => {
+  // 이 모달은 중복 확인과 월간 운영량만 받는다. 담당자·계약·처리 기한은 여기서 입력하지
+  // 않으므로, 그렇게 적으면 운영자가 없는 입력을 찾게 된다(F-4).
+  assert.match(LEADS_PAGE, /병원 만들고 온보딩 이동/)
+  assert.doesNotMatch(LEADS_PAGE, /담당자·계약·인수 처리 기한 입력/)
 })
 
 test('복구 사유 최소 길이는 API 계약과 같은 3자다', () => {

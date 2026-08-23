@@ -340,6 +340,10 @@ export interface SalesLead {
   question: string
   privacy: boolean
   source_path: string | null
+  /** 유입 퍼널 — 문의 폼(INQUIRY) 또는 무료 진단(AI_DIAGNOSIS) */
+  source?: string | null
+  /** 운영 점검용 픽스처로 만들어진 요청 */
+  is_operations_test?: boolean
   status?: 'NEW' | 'CONTACTED' | 'CONVERTED' | 'DISMISSED' | string
   converted_hospital_id?: string | null
   converted_at?: string | null
