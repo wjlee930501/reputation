@@ -10,6 +10,7 @@ SE Ranking YMYL Health Study(2025) 등에서 AI 답변(ChatGPT/Gemini/Perplexity
 - _normalize_references 단계에서 white-list domain 외 항목 검출(선택).
 """
 
+import re
 from urllib.parse import urlparse
 
 KR_PUBLIC_SOURCES: list[dict[str, str]] = [
@@ -66,11 +67,51 @@ WHITELIST_DOMAINS: frozenset[str] = frozenset(
     for item in group
 )
 
+_TRAUMA_EMERGENCY_KEYWORDS = (
+    "경증응급외상",
+    "경증응급",
+    "응급외상",
+    "외상치료",
+    "외상진료",
+    "외상처치",
+)
+
 # 브라우징 없이 생성하는 모델에게 URL을 추측시키면 존재하는 다른 질환 문서나 기관
 # 홈페이지가 인용되는 문제가 생긴다. 아래 목록은 사람이 실제 제목과 URL을 확인한
 # 특정 문서만 담는 작은 신뢰 카탈로그다. 키워드가 맞는 문서가 있을 때는 모델이 만든
 # URL보다 이 목록을 우선한다.
 CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
+    {
+        "keywords": (
+            *_TRAUMA_EMERGENCY_KEYWORDS,
+            "골절",
+            "뼈가부러",
+        ),
+        "title": "질병관리청 국가건강정보포털 — 골절",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+    },
+    {
+        "keywords": (
+            *_TRAUMA_EMERGENCY_KEYWORDS,
+            "상처봉합",
+            "열상",
+            "찢어진상처",
+        ),
+        "title": "질병관리청 국가건강정보포털 — 열상",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5679",
+    },
+    {
+        "keywords": (
+            *_TRAUMA_EMERGENCY_KEYWORDS,
+            "상처봉합",
+            "상처관리",
+            "찰과상",
+            "타박상",
+            "자상",
+        ),
+        "title": "질병관리청 국가건강정보포털 — 상처관리와 흉터예방",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5696",
+    },
     {
         "keywords": ("소아발열", "아이발열", "어린이발열"),
         "title": "질병관리청 국가건강정보포털 — 불명열(발열의 평가와 치료)",
@@ -238,7 +279,7 @@ def is_citable_reference_url(url: str) -> bool:
 
 def select_curated_authority_sources(text: str, *, limit: int = 3) -> list[dict[str, str]]:
     """본문 주제와 일치하는, 사람이 검증한 특정 권위 문서를 반환한다."""
-    compact = "".join((text or "").lower().split())
+    compact = re.sub(r"[\W_]+", "", (text or "").lower())
     if not compact or limit <= 0:
         return []
 
