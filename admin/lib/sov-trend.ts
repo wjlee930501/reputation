@@ -11,8 +11,10 @@ export interface SovTrendPoint {
 }
 
 export interface SovTrendWeek extends SovTrendPoint {
-  /** 그 주 언급률 분모에 들어간 측정 수 — 0이면 그 주에 측정 자체가 없었다 */
+  /** 그 주 언급률 분모에 들어간 확정 측정 수 */
   total_count?: number
+  failure_count?: number
+  ambiguous_count?: number
 }
 
 /**
@@ -28,7 +30,11 @@ export interface SovTrendWeek extends SovTrendPoint {
 export function trimTrendToMeasuredWeeks<T extends SovTrendWeek>(points: T[]): T[] {
   const rows = Array.isArray(points) ? points : []
   const firstMeasured = rows.findIndex(
-    (row) => row.sov_pct !== null || (row.total_count ?? 0) > 0,
+    (row) =>
+      row.sov_pct !== null
+      || (row.total_count ?? 0) > 0
+      || (row.failure_count ?? 0) > 0
+      || (row.ambiguous_count ?? 0) > 0,
   )
   if (firstMeasured < 0) return []
   return rows.slice(firstMeasured)

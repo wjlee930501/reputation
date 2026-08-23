@@ -77,6 +77,26 @@ test('a week that was measured but produced no mention is a measurement start, n
   assert.equal(trimmed[0].week_start, '2026-06-08')
 })
 
+test('a week with only failures starts the measured range', () => {
+  const trimmed = trimTrendToMeasuredWeeks([
+    { week_start: '2026-06-01', sov_pct: null, total_count: 0, failure_count: 0 },
+    { week_start: '2026-06-08', sov_pct: null, total_count: 0, failure_count: 12 },
+    { week_start: '2026-06-15', sov_pct: 18, total_count: 150, failure_count: 0 },
+  ])
+
+  assert.equal(trimmed[0].week_start, '2026-06-08')
+})
+
+test('a week with only ambiguous results starts the measured range', () => {
+  const trimmed = trimTrendToMeasuredWeeks([
+    { week_start: '2026-06-01', sov_pct: null, total_count: 0, ambiguous_count: 0 },
+    { week_start: '2026-06-08', sov_pct: null, total_count: 0, ambiguous_count: 7 },
+    { week_start: '2026-06-15', sov_pct: 18, total_count: 150, ambiguous_count: 0 },
+  ])
+
+  assert.equal(trimmed[0].week_start, '2026-06-08')
+})
+
 test('a hospital measured for the first time this week keeps exactly one column', () => {
   const trimmed = trimTrendToMeasuredWeeks(
     Array.from({ length: 12 }, (_, index) =>
