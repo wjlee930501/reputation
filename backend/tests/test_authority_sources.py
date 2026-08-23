@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-key")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///tmp/reputation-test.db")
 os.environ.setdefault("SYNC_DATABASE_URL", "sqlite:///tmp/reputation-test.db")
@@ -9,6 +11,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 from app.utils.authority_sources import (  # noqa: E402
     SOURCE_TYPE_GOV_KR,
     infer_source_type,
+    is_citable_reference_url,
     is_whitelisted_url,
     select_curated_authority_sources,
 )
@@ -47,6 +50,20 @@ def test_infer_source_type_returns_none_for_spoofed_domain():
 
 def test_infer_source_type_returns_expected_type_for_exact_domain():
     assert infer_source_type("https://www.kdca.go.kr/notice") == SOURCE_TYPE_GOV_KR
+
+
+def test_citable_reference_gate_rejects_home_roots_but_accepts_curated_document():
+    assert is_citable_reference_url("https://health.kdca.go.kr") is False
+    assert is_citable_reference_url("https://www.hira.or.kr/") is False
+    assert is_citable_reference_url("https://www.kosem.or.kr") is False
+    assert is_citable_reference_url("https://law.go.kr") is False
+    assert (
+        is_citable_reference_url(
+            "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/"
+            "gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463"
+        )
+        is True
+    )
 
 
 def test_select_curated_authority_sources_returns_topic_specific_document_pages():
@@ -101,3 +118,34 @@ def test_select_curated_authority_sources_supports_general_health_screening():
 
     assert sources[0]["url"].startswith("https://www.nhis.or.kr/")
     assert sources[0]["source_type"] == SOURCE_TYPE_GOV_KR
+
+
+def test_select_curated_authority_sources_supports_trauma_emergency_content():
+    sources = select_curated_authority_sources(
+        "경증 응급·외상 처치와 골절 평가, 상처 봉합",
+    )
+
+    assert [source["url"].rsplit("=", 1)[-1] for source in sources] == [
+        "5463",
+        "5679",
+        "5696",
+    ]
+    assert all("?cntnts_sn=" in source["url"] for source in sources)
+    assert all(source["source_type"] == SOURCE_TYPE_GOV_KR for source in sources)
+
+
+@pytest.mark.parametrize(
+    "focus",
+    (
+        "환자 상태에 따라 유방초음파 검사 계획을 안내합니다",
+        "환자 상태에 따라 항문 열상(치열)과 치핵 치료를 안내합니다",
+    ),
+)
+def test_select_curated_authority_sources_does_not_misclassify_patient_status_as_trauma(
+    focus,
+):
+    sources = select_curated_authority_sources(focus)
+
+    trauma_document_ids = {"5463", "5679", "5696"}
+    selected_document_ids = {source["url"].rsplit("=", 1)[-1] for source in sources}
+    assert selected_document_ids.isdisjoint(trauma_document_ids)

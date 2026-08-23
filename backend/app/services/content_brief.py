@@ -36,9 +36,7 @@ def build_content_brief(
     treatment_name = _first_present(
         getattr(query_target, "treatment", None),
         getattr(query_target, "condition_or_symptom", None),
-        getattr(content_item, "content_type", None).value
-        if hasattr(getattr(content_item, "content_type", None), "value")
-        else str(getattr(content_item, "content_type", "")),
+        target_query,
     )
     treatment_narrative = _treatment_narrative(
         treatment_name=treatment_name,

@@ -362,16 +362,24 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
 
     Matching against the whole generated body is unsafe: a breast-ultrasound article
     that merely mentions cancer screening can otherwise be overwritten with a
-    colorectal-cancer reference.  The approved target query and generated heading
-    define the topic; incidental body phrases must not change its evidence set.
+    colorectal-cancer reference.  The approved target query, treatment narrative,
+    and generated heading define the topic; incidental body phrases must not change
+    its evidence set.
     """
     values: list[object] = []
     if content_brief:
         query_target = content_brief.get("query_target")
+        treatment_narrative = content_brief.get("treatment_narrative")
         values.extend(
             [
                 content_brief.get("target_query"),
                 query_target.get("name") if isinstance(query_target, dict) else None,
+                treatment_narrative.get("treatment")
+                if isinstance(treatment_narrative, dict)
+                else treatment_narrative,
+                treatment_narrative.get("angle")
+                if isinstance(treatment_narrative, dict)
+                else None,
                 *(content_brief.get("must_use_messages") or []),
             ]
         )

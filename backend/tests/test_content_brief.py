@@ -141,6 +141,26 @@ def test_build_content_brief_uses_query_target_action_and_philosophy():
     assert brief["internal_link_target"] is None
 
 
+def test_build_content_brief_uses_target_query_instead_of_content_type_as_treatment():
+    hospital = _hospital()
+    item = _content_item(hospital_id=hospital.id, content_type="DISEASE")
+    target = _query_target(hospital_id=hospital.id)
+    target.name = "경증응급 외상 치료 비용이 얼마나 드는지 알려줘"
+    target.variants[0].query_text = target.name
+    target.treatment = None
+    target.condition_or_symptom = None
+
+    brief = build_content_brief(
+        hospital=hospital,
+        content_item=item,
+        query_target=target,
+    )
+
+    assert brief["target_query"] == target.name
+    assert brief["treatment_narrative"]["treatment"] == target.name
+    assert brief["treatment_narrative"]["treatment"] != "DISEASE"
+
+
 def test_content_brief_schema_rejects_unknown_status():
     with pytest.raises(ValidationError):
         ContentBriefUpdate(brief_status="READY")

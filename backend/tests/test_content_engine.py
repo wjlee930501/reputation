@@ -83,6 +83,21 @@ def test_curated_reference_focus_includes_approved_must_use_medical_topic():
     assert "탈수" in focus
 
 
+def test_curated_reference_focus_includes_treatment_narrative_topic():
+    brief = {
+        "target_query": "노원구에서 주말과 공휴일에도 진료하는 병원 추천해줘",
+        "treatment_narrative": {
+            "treatment": "응급·외상 처치, 골절 평가, 상처 봉합",
+            "angle": "경증 외상의 진단과 치료 선택지를 설명합니다.",
+        },
+    }
+
+    focus = _curated_reference_focus(brief)
+
+    assert "골절 평가" in focus
+    assert "상처 봉합" in focus
+
+
 def test_parse_json_response_extracts_surrounded_object():
     raw = 'Here is the JSON:\n{"title":"제목","body":"본문"}\nDone.'
 
@@ -288,6 +303,76 @@ async def test_generate_content_hard_fails_end_to_end_for_non_whitelisted_only_r
 
     with pytest.raises(ValueError, match="GEO hard-fail"):
         await content_engine.generate_content(hospital, ContentType.DISEASE)
+
+
+async def test_generate_content_uses_curated_trauma_documents_for_existing_disease_brief(
+    monkeypatch,
+):
+    """기존 승인 brief의 treatment가 DISEASE여도 실제 target_query로 근거를 복구한다."""
+    hospital = SimpleNamespace(
+        name="노원탑365의원",
+        address="서울 노원구",
+        phone="02-000-0000",
+        business_hours="",
+        region=["노원"],
+        specialties=["응급의학과"],
+        keywords=["경증 응급 외상"],
+        director_name="김원장",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    body = (
+        "## 외상 진료 전 확인할 점\n"
+        "노원탑365의원 김원장은 노원 지역의 경증 외상을 진료합니다. 365일 운영 여부와 "
+        "증상의 위급도를 함께 확인합니다. "
+        + ("골절과 상처는 손상 위치와 정도에 따라 검사와 처치가 달라질 수 있습니다. " * 90)
+        + "\n\n## 의료기관을 선택할 때\n"
+        + ("출혈이나 변형 등 위험 신호가 있으면 의료진의 평가를 받아야 합니다. " * 40)
+    )
+    payload = {
+        "title": "노원 경증 응급 외상 진료 안내",
+        "body": body,
+        "meta_description": "경증 외상 진료 전 확인할 점과 골절 및 상처 평가 기준을 안내합니다.",
+        "references": [
+            {"title": "질병관리청", "url": "https://health.kdca.go.kr"},
+            {"title": "대한응급의학회", "url": "https://www.kosem.or.kr"},
+        ],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    brief = {
+        "target_query": "경증응급 외상 치료 비용이 얼마나 드는지 알려줘",
+        "treatment_narrative": {
+            "source": "fallback",
+            "treatment": "DISEASE",
+            "angle": "증상, 진단, 치료 선택지를 설명합니다.",
+        },
+    }
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    monkeypatch.setattr(
+        content_engine.client.messages,
+        "create",
+        lambda *_args, **_kwargs: _FakeResponse(),
+    )
+
+    result = await content_engine.generate_content(
+        hospital,
+        ContentType.DISEASE,
+        content_brief=brief,
+    )
+
+    assert result["title"]
+    assert result["body"]
+    assert [reference["url"].rsplit("=", 1)[-1] for reference in result["references"]] == [
+        "5463",
+        "5679",
+        "5696",
+    ]
+    assert all(reference["url"] != "https://health.kdca.go.kr" for reference in result["references"])
 
 
 # ── content_brief dict 필드 → 자연어 프롬프트 조립 회귀 (P-4) ──────────────────
