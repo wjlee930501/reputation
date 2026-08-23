@@ -304,6 +304,7 @@ export interface MeasurementRun {
   }
   query_count: number
   success_count: number
+  ambiguous_count?: number
   failure_count: number
   // 측정 건이 0이면 비율을 만들 수 없다 — null은 '산출 불가'이며 0%와 다르다.
   success_rate: number | null
@@ -340,6 +341,10 @@ export interface SalesLead {
   question: string
   privacy: boolean
   source_path: string | null
+  /** 유입 퍼널 — 문의 폼(INQUIRY) 또는 무료 진단(AI_DIAGNOSIS) */
+  source?: string | null
+  /** 운영 점검용 픽스처로 만들어진 요청 */
+  is_operations_test?: boolean
   status?: 'NEW' | 'CONTACTED' | 'CONVERTED' | 'DISMISSED' | string
   converted_hospital_id?: string | null
   converted_at?: string | null

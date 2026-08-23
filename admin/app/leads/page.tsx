@@ -11,6 +11,7 @@ import { SkeletonTable } from '@/app/components/Skeleton'
 import { PLAN_CONTRACT_LABELS, PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
 import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
 import { leadSourceLabel, safeOperatorError } from '@/lib/operations-journey'
+import { describeLeadAging, sortLeadsByAttention } from '@/lib/lead-aging'
 import {
   type LeadDiagnosisSummary,
   type Tone,
@@ -113,6 +114,9 @@ function readRefusalReasons(error: unknown): string[] {
 export default function LeadsPage() {
   const router = useRouter()
   const [leads, setLeads] = useState<SalesLead[]>([])
+  // 경과·기한은 지금 시각 기준이다. 렌더마다 Date.now()를 읽으면 같은 목록이 스크롤마다
+  // 다른 숫자를 보여주므로, 목록을 불러온 시점을 고정해서 쓴다.
+  const [agingCheckedAt, setAgingCheckedAt] = useState(() => Date.now())
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -200,6 +204,7 @@ export default function LeadsPage() {
         const data = await fetchAPI<SalesLead[]>(`/admin/leads?${query}`)
         const page = Array.isArray(data) ? data : []
         setLeads((prev) => (options?.append ? [...prev, ...page] : page))
+        setAgingCheckedAt(Date.now())
         setHasMore(page.length === limit)
       } catch (e: unknown) {
         setError(safeOperatorError('leads', '상담 요청 다시 불러오기를 누르세요.'))
@@ -361,6 +366,10 @@ export default function LeadsPage() {
     }
   }
 
+  const overdueLeadCount = leads.filter(
+    (lead) => describeLeadAging(lead, agingCheckedAt).slaState === 'OVERDUE',
+  ).length
+
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <div data-current-task className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -390,6 +399,9 @@ export default function LeadsPage() {
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-right shadow-sm">
             <p className="text-xs font-medium text-slate-500">불러온 상담 요청</p>
             <p className="mt-0.5 text-2xl font-bold text-slate-900">{leads.length}</p>
+            {overdueLeadCount > 0 && (
+              <p className="mt-0.5 text-[11px] font-semibold text-red-600">첫 연락 기한 초과 {overdueLeadCount}건</p>
+            )}
           </div>
         </div>
       </div>
@@ -425,7 +437,7 @@ export default function LeadsPage() {
           <table className="admin-responsive-table w-full min-w-0 text-sm lg:min-w-[1040px]">
             <thead className="border-b border-slate-200 bg-slate-50">
               <tr>
-                <th className="px-6 py-3 text-left font-medium text-slate-600">접수 시각</th>
+                <th className="px-6 py-3 text-left font-medium text-slate-600">접수 · 첫 연락 기한</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">병원</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">연락처</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">문의</th>
@@ -435,13 +447,39 @@ export default function LeadsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {leads.map((lead) => (
+              {sortLeadsByAttention(leads, agingCheckedAt).map((lead) => (
                 <tr key={lead.id} className="transition-colors hover:bg-slate-50">
-                  <td className="px-6 py-4 text-xs text-slate-500" data-label="접수 시각">{formatDateTime(lead.created_at)}</td>
+                  <td className="px-6 py-4 text-xs text-slate-500" data-label="접수 · 첫 연락 기한">
+                    {(() => {
+                      const aging = describeLeadAging(lead, agingCheckedAt)
+                      return (
+                        <>
+                          <p className="whitespace-nowrap">{formatDateTime(lead.created_at)}</p>
+                          <p className="mt-0.5 whitespace-nowrap">{aging.elapsedLabel}</p>
+                          <p
+                            className={`mt-1 whitespace-nowrap font-medium ${
+                              aging.slaState === 'OVERDUE'
+                                ? 'text-red-600'
+                                : aging.slaState === 'DUE_SOON'
+                                  ? 'text-amber-700'
+                                  : 'text-slate-400'
+                            }`}
+                          >
+                            {aging.slaLabel}
+                          </p>
+                        </>
+                      )
+                    })()}
+                  </td>
                   <td className="px-6 py-4" data-primary="true">
                     <p className="font-semibold whitespace-nowrap text-slate-900">{lead.clinic_name}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-slate-500">{lead.clinic_type}</span>
+                      {lead.is_operations_test && (
+                        <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-white">
+                          운영 점검용
+                        </span>
+                      )}
                       <span
                         className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                           lead.converted_hospital_id
@@ -918,7 +956,7 @@ export default function LeadsPage() {
                   ? '전환 중...'
                   : linkHospitalId
                     ? '기존 병원에 연결하고 온보딩 이동'
-                    : '담당자·계약·인수 처리 기한 입력'}
+                    : '병원 만들고 온보딩 이동'}
               </button>
               <button
                 type="button"

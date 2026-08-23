@@ -6,6 +6,8 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { fetchAPI } from '@/lib/api'
+import { formatActorLabel } from '@/lib/actor-display'
+import { PHOTO_PUBLIC_GATE_COPY, describePhotoPublicGate } from '@/lib/photo-public-gate'
 
 interface Source {
   id: string
@@ -17,7 +19,13 @@ interface Source {
   file_access_url: string | null
   mime_type: string | null
   is_public: boolean
-  photo_provenance?: { is_complete: boolean; missing_message: string | null } | null
+  photo_provenance?: {
+    is_complete: boolean
+    missing_message: string | null
+    source_owner?: string | null
+    rights_basis_label?: string | null
+    verified_by?: string | null
+  } | null
   raw_text: string | null
   evidence_note_count: number
   display: { source_type_label: string; status_label: string } | null
@@ -161,6 +169,8 @@ export default function WikiPage() {
   }, [notesByGroup])
 
   const photos = includedSources.filter((s) => PHOTO_TYPES.has(s.source_type))
+  // 사진은 근거 자료가 아니다 — "자료 N개"에 섞어 세지 않는다(C-4).
+  const evidenceSources = includedSources.filter((s) => !PHOTO_TYPES.has(s.source_type))
   const [toggleErrors, setToggleErrors] = useState<Record<string, string>>({})
   const [pendingToggleId, setPendingToggleId] = useState<string | null>(null)
 
@@ -198,7 +208,7 @@ export default function WikiPage() {
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
           <span>
-            근거 노트 {allNotes.length}개 · 자료 {includedSources.length}개 · 사진 {photos.length}개
+            근거 노트 {allNotes.length}개 · 근거 자료 {evidenceSources.length}개 · 사진 {photos.length}장
             {excludedCount > 0 && ` (제외한 자료 ${excludedCount}개는 집계에서 빠집니다)`}
           </span>
           <button onClick={refresh} className="text-blue-600 hover:underline">새로 고침</button>
@@ -222,10 +232,7 @@ export default function WikiPage() {
               Photos · /site 노출 게이트
             </p>
             <h2 className="mt-1 text-lg font-bold text-slate-900">사진 자산 ({photos.length})</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              검수 완료된 사진만 토글로 공개. 의료광고법 우려 카테고리(환자 후기·전후 사진)는
-              데이터 모델에서 차단됨.
-            </p>
+            <p className="mt-1 max-w-2xl text-sm text-slate-600">{PHOTO_PUBLIC_GATE_COPY}</p>
           </div>
         </div>
         <div className="px-6 py-5">
@@ -237,6 +244,7 @@ export default function WikiPage() {
             <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
               {photos.map((p) => {
                 const resolved = resolveAssetUrl(p.file_access_url ?? p.file_url)
+                const gate = describePhotoPublicGate(p)
                 return (
                   <div key={p.id} className="rounded-xl border border-slate-200 bg-white overflow-hidden">
                     <div className="relative aspect-[4/3] bg-slate-100">
@@ -253,35 +261,46 @@ export default function WikiPage() {
                         {p.display?.source_type_label ?? p.source_type}
                       </p>
                       <p className="text-sm font-medium text-slate-900 truncate">{p.title}</p>
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                          gate.state === 'PUBLIC'
+                            ? 'bg-blue-100 text-blue-700'
+                            : gate.state === 'PRIVATE_READY'
+                              ? 'bg-slate-100 text-slate-600'
+                              : 'bg-amber-100 text-amber-800'
+                        }`}
+                      >
+                        {gate.badge}
+                      </span>
                       <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={p.is_public}
-                          disabled={
-                            pendingToggleId === p.id ||
-                            (!p.is_public && !(p.photo_provenance?.is_complete ?? false))
-                          }
+                          disabled={pendingToggleId === p.id || !gate.canToggle}
                           onChange={(e) => togglePublic(p.id, e.target.checked)}
                           className="rounded border-slate-300"
                         />
                         <span>
-                          {pendingToggleId === p.id
-                            ? '저장 중…'
-                            : p.is_public
-                              ? '/site에 공개'
-                              : '비공개'}
+                          {pendingToggleId === p.id ? '저장 중…' : '공개 표면에 노출'}
                         </span>
                       </label>
-                      {!p.is_public && !(p.photo_provenance?.is_complete ?? false) && (
+                      {gate.reason && (
                         <p className="text-[11px] leading-4 text-amber-700">
-                          {p.photo_provenance?.missing_message ??
-                            '공개하려면 사진 사용 권리 정보가 필요합니다.'}{' '}
+                          {gate.reason}{' '}
                           <Link
                             href={`/hospitals/${id}/onboarding`}
                             className="underline"
                           >
                             온보딩 화면에서 입력
                           </Link>
+                        </p>
+                      )}
+                      {p.photo_provenance?.is_complete && (
+                        <p className="text-[11px] leading-4 text-slate-500">
+                          사용 권리 확인 · {p.photo_provenance.source_owner ?? '소유자 확인 필요'}
+                          {p.photo_provenance.verified_by
+                            ? ` · 확인 ${formatActorLabel(p.photo_provenance.verified_by)}`
+                            : ''}
                         </p>
                       )}
                       {toggleErrors[p.id] && (

@@ -50,7 +50,7 @@ from app.services.asset_storage import (
     resolve_local_asset_path,
     store_asset_bytes,
 )
-from app.services.audit_log import default_actor, write_audit_log
+from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
 from app.services.essence_engine import (
     compute_source_content_hash,
     compute_sources_snapshot_hash,
@@ -1377,6 +1377,15 @@ async def approve_philosophy(
     body: PhilosophyApprove,
     db: AsyncSession = Depends(get_db),
 ):
+    reviewer = verified_request_actor()
+    if reviewer is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "승인 요청자의 로그인 계정을 확인할 수 없습니다. 다시 로그인한 뒤 "
+                "콘텐츠 운영 기준을 다시 승인해 주세요."
+            ),
+        )
     await acquire_hospital_advisory_lock(db, hospital_id)
     hospital = await _get_hospital_or_404(db, hospital_id)
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
@@ -1438,7 +1447,9 @@ async def approve_philosophy(
     await db.flush()
 
     philosophy.status = PhilosophyStatus.APPROVED
-    philosophy.reviewed_by = body.reviewed_by
+    # 검토자는 확인된 로그인 계정만 기록한다. 요청 본문의 이름은 감사 비교용 주장일 뿐,
+    # 승인 권한이나 기록된 승인자 identity의 대체값이 될 수 없다(C-3).
+    philosophy.reviewed_by = reviewer
     philosophy.approval_note = body.approval_note
     philosophy.approved_at = datetime.now(timezone.utc)
 
@@ -1465,6 +1476,7 @@ async def approve_philosophy(
         detail={
             "version": philosophy.version,
             "claimed_reviewer": body.reviewed_by,
+            "recorded_reviewer": philosophy.reviewed_by,
             "evidence_reviewed_confirmed": True,
             "approval_note": body.approval_note,
             "source_asset_count": len(philosophy.source_asset_ids or []),

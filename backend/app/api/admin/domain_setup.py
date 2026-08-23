@@ -230,13 +230,13 @@ def _checklist(
     return [
         DomainSetupChecklistItem(
             key="domain_saved",
-            label="① 도메인 저장",
+            label="도메인 저장",
             description="병원 계정에 연결할 도메인을 저장합니다.",
             status="DONE" if state.domain else "PENDING",
         ),
         DomainSetupChecklistItem(
             key="purchase",
-            label="② 구매/소유권 확인",
+            label="구매/소유권 확인",
             description="병원 또는 MotionLabs가 도메인 구매와 갱신 책임자를 확정합니다.",
             status="DONE" if purchase_done else "PENDING",
         ),
@@ -248,13 +248,13 @@ def _checklist(
         ),
         DomainSetupChecklistItem(
             key="dns_verified",
-            label="③ DNS 검증 (운영자 작업 완료)",
+            label="DNS 검증 (운영자 작업 완료)",
             description="DNS 레코드 등록 후 연결 검증을 실행합니다. 검증 성공 시 온보딩 5단계 완료.",
             status="DONE" if dns_verified else "PENDING",
         ),
         DomainSetupChecklistItem(
             key="certificate_ready",
-            label="④ HTTPS 인증서 (시스템 후속)",
+            label="HTTPS 인증서 (시스템 후속)",
             description="인증서는 백그라운드에서 자동 발급됩니다.",
             status="DONE" if cert_done else "WAITING" if dns_verified else "PENDING",
         ),

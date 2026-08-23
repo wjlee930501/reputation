@@ -202,12 +202,16 @@ export function DomainChecklist({ plan }: { plan: DomainSetupPlan }) {
     }
   }
   
+  // 번호는 목록 순서에서 매긴다 — 라벨에 박아 두면 단계가 하나 늘 때 번호 없는 단계가
+  // 생기고, 안내를 번호대로 따라가는 운영자가 그 단계를 건너뛴다(E-3).
   return (
-    <ol className="grid gap-2 md:grid-cols-4">
-      {plan.checklist.map((item) => (
+    <ol className="grid gap-2 md:grid-cols-3 xl:grid-cols-5">
+      {plan.checklist.map((item, index) => (
         <li key={item.key} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
           <div className="flex items-start justify-between gap-2">
-            <p className="text-xs font-semibold text-slate-800">{item.label}</p>
+            <p className="text-xs font-semibold text-slate-800">
+              {index + 1}. {item.label}
+            </p>
             <span className={`shrink-0 text-[10px] font-medium ${statusColor(item.status)}`}>
               {statusLabel(item.status)}
             </span>

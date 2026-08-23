@@ -22,6 +22,14 @@ export interface OnboardingStep {
   description: string
   href?: string
   status: 'completed' | 'current' | 'upcoming' | 'locked'
+  /**
+   * 단계 제목 옆에 붙는 짧은 알림.
+   *
+   * 7단계는 자동 검수가 보류한 초안이 쌓여 있어도 목록에서는 다른 단계와 똑같이
+   * 보였다. 그래서 운영자는 운영 기준 화면을 직접 열어 보기 전까지 처리할 초안이
+   * 몇 건 있는지 알 수 없었다.
+   */
+  badge?: string
 }
 
 export interface OnboardingSummary {
@@ -50,6 +58,26 @@ export interface LifecycleSource {
 
 export interface LifecyclePhilosophy {
   status: string
+  version?: number | null
+}
+
+/**
+ * 승인 대기 중인 운영 기준 초안 수.
+ *
+ * 이미 승인된 버전보다 새로운 DRAFT만 센다. 승인된 v3이 운영 중일 때 남아 있는 옛
+ * v1·v2 초안은 처리할 일이 아니므로 알림에 넣으면 없는 작업을 만들어 낸다.
+ */
+export function countPendingPhilosophyDrafts(philosophies: LifecyclePhilosophy[]): number {
+  const rows = Array.isArray(philosophies) ? philosophies : []
+  const approvedVersions = rows
+    .filter((item) => item.status === 'APPROVED')
+    .map((item) => item.version ?? 0)
+  const latestApproved = approvedVersions.length > 0 ? Math.max(...approvedVersions) : null
+
+  return rows.filter(
+    (item) =>
+      item.status === 'DRAFT' && (latestApproved === null || (item.version ?? 0) > latestApproved),
+  ).length
 }
 
 export interface LifecycleHandoff {
@@ -131,6 +159,8 @@ export function deriveOnboardingSteps(
     && readiness?.essence?.approved_philosophy_exists !== false
     && readiness?.essence?.source_stale === false
 
+  const pendingDraftCount = countPendingPhilosophyDrafts(philosophies)
+
   const definitions: Array<Omit<OnboardingStep, 'index' | 'status'> & { done: boolean }> = [
     {
       key: 'handoff',
@@ -197,6 +227,7 @@ export function deriveOnboardingSteps(
       description: 'AI 이중 검수와 안전 규칙으로 현재 근거 자료에 맞는 운영 기준을 자동 준비합니다.',
       href: `/hospitals/${hospitalId}/essence`,
       done: approvedCurrent && readinessCheck(readiness, 'essence_freshness') !== false,
+      badge: pendingDraftCount > 0 ? `승인 대기 초안 ${pendingDraftCount}건` : undefined,
     },
     {
       key: 'schedule',
@@ -232,6 +263,7 @@ export function deriveOnboardingSteps(
     title: item.title,
     description: item.description,
     href: item.href,
+    badge: item.badge,
     // 완료 사실과 진행 순서는 별개다. V0처럼 앞 단계가 막혀 있어도 AE가 이미
     // 끝낸 자료 처리·운영 기준·스케줄을 다시 '대기'로 되돌려 표시하지 않는다.
     status: item.done

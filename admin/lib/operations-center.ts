@@ -172,17 +172,75 @@ export function historyEventLabel(event: string): string {
 }
 const UNKNOWN_SAFE_CAUSE = '원인 설명을 확인할 수 없습니다. 아래 조치가 실패하면 개발팀 문의용 정보를 복사해 주세요.'
 
+/**
+ * 오류 식별자를 운영자가 읽을 수 있는 원인 설명으로 바꾼다.
+ *
+ * 백엔드는 사건을 열 때 한국어 설명(`safe_error_message`)을 함께 남기는 경로도 있지만,
+ * 코드만 남기는 경로도 많다(작업 실행 `safe_error_code`, Slack 전달 실패 등). 그때
+ * 화면은 아는 코드가 여섯 개뿐이어서 나머지를 전부 "원인 설명을 확인할 수 없습니다"로
+ * 덮었다 — 서버는 원인을 알고 있는데 운영자만 모르는 상태였고, 그 문구는 조치가 아니라
+ * 개발팀 문의를 가리키므로 처리 가능한 일이 문의로 흘러갔다.
+ *
+ * 그래서 백엔드가 저장할 수 있는 코드를 여기서 모두 다룬다. 이 목록이 백엔드보다
+ * 뒤처지면 `operations-center.test.ts`의 가드가 실패한다.
+ */
+export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
+  // 초기 진단(V0) 측정
+  V0_REPORT_RETRIES_EXHAUSTED: '외부 AI 측정 재시도를 모두 사용했지만 초기 진단을 완료하지 못했습니다.',
+  V0_PROVIDER_AUTH_OR_MODEL: 'AI 측정 공급자의 인증 또는 모델 설정을 확인해야 합니다.',
+  V0_PROVIDER_UNAVAILABLE: '외부 AI 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.',
+  V0_JUDGE_FAILED: 'AI 답변은 받았지만 공통 언급 판정 단계에서 처리하지 못했습니다.',
+  SOV_HIGH_PRIORITY_CAP_EXCEEDED: '이번 측정에 배정된 질문 수가 한도를 넘어 일부 질문을 측정하지 않았습니다.',
+  // 콘텐츠 생성·발행
+  PROVIDER_TIMEOUT: '콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.',
+  PROVIDER_UNAVAILABLE: '콘텐츠 생성 서비스를 일시적으로 사용할 수 없습니다.',
+  GENERATION_REJECTED: '콘텐츠 생성 서비스가 이번 요청을 처리하지 못했습니다.',
+  MISSING_APPROVED_ESSENCE: '승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다.',
+  IMAGE_GENERATION_FAILED: '본문은 준비됐지만 대표 이미지를 만들지 못했습니다.',
+  IMAGE_PROVIDER_UNAVAILABLE: '대표 이미지 생성 연결이 일시적으로 중단되었습니다.',
+  GENERATION_LEASE_ACTIVE: '같은 콘텐츠의 다른 생성 작업이 아직 진행 중입니다.',
+  STALE_GENERATION_CLAIM: '완료되지 않은 이전 작업 기록 때문에 새 생성을 시작하지 못했습니다.',
+  CONTENT_NOT_GENERATED: '발행 시각까지 콘텐츠 제목과 본문이 준비되지 않았습니다.',
+  CONTENT_GENERATION_PARTIAL: '이번 달 콘텐츠 중 일부만 생성됐습니다.',
+  CONTENT_IMAGE_NOT_READY: '대표 이미지가 준비되지 않아 공개를 중단했습니다.',
+  CONTENT_DISPATCH_FAILED: '콘텐츠 작업을 처리 대기열에 넣지 못했습니다.',
+  MISSING_REFERENCES: '의료 콘텐츠에 필요한 참고 자료가 준비되지 않았습니다.',
+  FORBIDDEN_EXPRESSION: '의료광고 금지 표현이 발견되어 공개를 중단했습니다.',
+  ESSENCE_NOT_ALIGNED: '콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.',
+  MONTHLY_SLOT_GENERATION_FAILED: '이번 달 발행 슬롯의 콘텐츠 생성이 완료되지 않았습니다.',
+  // 운영 기준
+  ESSENCE_AUTO_REVIEW_FAILED: '콘텐츠 운영 기준 자동 검수를 완료하지 못했습니다.',
+  ESSENCE_AUTO_REVIEW_ESCALATED: '콘텐츠 운영 기준 자동 검수가 초안을 보류해 사람 확인이 필요합니다.',
+  // 비용 안전장치
+  COST_BLOCKED: '비용 안전장치가 이 작업의 실행을 보류했습니다.',
+  COST_GUARD_LIMIT_REACHED: '오늘 설정된 사용 한도에 도달해 자동 작업을 보류했습니다.',
+  // 리포트·공개 표면·도메인
+  MONTHLY_REPORT_FAILED: '월간 리포트를 만드는 중 작업이 완료되지 않았습니다.',
+  SITE_BUILD_DISPATCH_FAILED: '공개 정보 갱신 작업을 처리 대기열에 넣지 못했습니다.',
+  CACHE_REVALIDATION_FAILED: '공개 표면의 내용 갱신을 확인하지 못했습니다.',
+  DOMAIN_UNHEALTHY: '공개 주소가 정상으로 응답하지 않습니다.',
+  // 알림·전달
+  PUBLISH_NOTIFICATION_FAILED: '발행은 됐지만 담당자 알림을 보내지 못했습니다.',
+  WEBHOOK_UNAVAILABLE: '알림 전송 대상이 응답하지 않습니다.',
+  DELIVERY_OUTCOME_UNKNOWN: '알림을 보냈지만 전달 결과를 확인하지 못했습니다.',
+  BROKER_UNAVAILABLE: '작업 처리 대기열에 연결하지 못해 작업을 시작하지 못했습니다.',
+  // 상담 요청 무료 진단
+  LEAD_DIAGNOSIS_FAILED: '상담 요청의 무료 진단 측정을 완료하지 못했습니다.',
+  LEAD_DIAGNOSIS_RETRIES_EXHAUSTED: '무료 진단 재시도를 모두 사용했지만 측정을 완료하지 못했습니다.',
+  LEAD_REPORT_RETRIES_EXHAUSTED: '무료 진단 리포트 재시도를 모두 사용했지만 리포트를 만들지 못했습니다.',
+  LEAD_DELIVERY_ABANDONED: '무료 진단 리포트를 신청자에게 전달하지 못한 채 중단했습니다.',
+  // 자료 수집
+  NAVER_ITEMS_FAILED: '자료 수집에서 일부 글을 가져오지 못했습니다.',
+  // 그 밖의 작업 실패
+  TASK_FAILED: '자동 작업이 완료되지 않았습니다.',
+  HOSPITAL_NOT_FOUND: '작업 대상 병원 정보를 찾지 못했습니다.',
+  UNSAFE_STORED_DISPATCH: '저장된 작업 요청이 안전 검사를 통과하지 못해 다시 실행하지 않았습니다.',
+  UNVERIFIED_ADMIN_ACTOR: '요청한 담당자 계정을 확인하지 못했습니다.',
+}
+
 export function safeCauseText(value: string | null | undefined): string {
   const cleaned = value?.trim() ?? ''
-  const safeCodeMessages: Record<string, string> = {
-    V0_REPORT_RETRIES_EXHAUSTED: '외부 AI 측정 재시도를 모두 사용했지만 초기 진단을 완료하지 못했습니다.',
-    V0_PROVIDER_AUTH_OR_MODEL: 'AI 측정 공급자의 인증 또는 모델 설정을 확인해야 합니다.',
-    V0_PROVIDER_UNAVAILABLE: '외부 AI 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.',
-    V0_JUDGE_FAILED: 'AI 답변은 받았지만 공통 언급 판정 단계에서 처리하지 못했습니다.',
-    COST_BLOCKED: '비용 안전장치가 이 작업의 실행을 보류했습니다.',
-    ESSENCE_AUTO_REVIEW_FAILED: '콘텐츠 운영 기준 자동 검수를 완료하지 못했습니다.',
-  }
-  if (safeCodeMessages[cleaned]) return safeCodeMessages[cleaned]
+  if (SAFE_CAUSE_CODE_MESSAGES[cleaned]) return SAFE_CAUSE_CODE_MESSAGES[cleaned]
   const codeLike = /^[A-Z0-9_:-]+$/.test(cleaned)
   const sensitive = /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:https?|redis):\/\/|traceback|task[_ -]?id|api[_ -]?key|secret|token|exception|error|refused|timeout|\b0\d{1,2}[- ]?\d{3,4}[- ]?\d{4}\b/i.test(cleaned)
   const operatorReadable = /[가-힣]{2,}/.test(cleaned)
@@ -355,6 +413,74 @@ export function interpretOperationsConflict(detail: unknown): OperationsConflict
     currentState: typeof record.current_state === 'string' ? record.current_state : null,
     focusTarget: 'current-action',
   }
+}
+
+/**
+ * 처리 기한 한 줄.
+ *
+ * `sla_state`의 `DUE`는 "임박"이 아니라 "아직 지나지 않았다"는 뜻이다. 그런데 화면은
+ * 그걸 전부 "처리 기한 임박"으로 적어서, 열흘 뒤 마감인 일과 두 시간 뒤 마감인 일이
+ * 같은 문구를 달았다. 필터의 `DUE` 항목 라벨도 같은 오해를 담고 있었다.
+ *
+ * 남은 시간을 실제로 계산해서, 임박은 임박할 때만 말한다.
+ */
+export const DUE_SOON_HOURS = 24
+
+export type OperationsDeadlineTone = 'overdue' | 'due_soon' | 'due' | 'none'
+
+export interface OperationsDeadline {
+  tone: OperationsDeadlineTone
+  text: string
+}
+
+function formatDeadlineGap(hours: number): string {
+  if (hours < 1) return `${Math.max(1, Math.floor(hours * 60))}분`
+  if (hours < 48) return `${Math.floor(hours)}시간`
+  return `${Math.floor(hours / 24)}일`
+}
+
+export function describeOperationsDeadline(
+  row: { sla_state: string; sla_due_at: string | null },
+  now: number,
+  formatDate: (value: string) => string,
+): OperationsDeadline {
+  if (row.sla_state === 'NONE' || !row.sla_due_at) {
+    return { tone: 'none', text: '처리 기한 없음' }
+  }
+  const dueAt = Date.parse(row.sla_due_at)
+  if (!Number.isFinite(dueAt)) {
+    return { tone: 'none', text: '처리 기한 확인 필요' }
+  }
+
+  const when = formatDate(row.sla_due_at)
+  const gapHours = (dueAt - now) / 3_600_000
+  if (row.sla_state === 'OVERDUE' || gapHours <= 0) {
+    return { tone: 'overdue', text: `처리 기한 ${formatDeadlineGap(-gapHours)} 지남 · ${when}` }
+  }
+  if (gapHours <= DUE_SOON_HOURS) {
+    return { tone: 'due_soon', text: `처리 기한 ${formatDeadlineGap(gapHours)} 남음 · ${when}` }
+  }
+  return { tone: 'due', text: `처리 기한 ${when}` }
+}
+
+/**
+ * 목록 한 줄의 제목.
+ *
+ * 모든 줄의 제목이 병원 이름이었다. 한 병원에 오늘 확인할 콘텐츠가 세 편이면 같은 제목
+ * 세 줄이 나란히 서고, 서로 무엇이 다른지는 작은 글씨의 "지금 할 일" 문장을 읽어야만
+ * 알 수 있었다. 병원 이름 다음에 그 줄이 무슨 일인지 붙인다.
+ */
+const QUEUE_WORK_LABELS: Record<string, string> = {
+  ONBOARDING: '온보딩 진행',
+  TODAY: '오늘의 운영',
+  REPORTS: '월간 리포트',
+  INCIDENTS: '문제·복구',
+}
+
+export function operationsRowTitle(row: OperationsQueueRow): string {
+  const work = operationStatusLabel(row.status)
+  const fallback = QUEUE_WORK_LABELS[row.queue] ?? '운영 작업'
+  return `${row.customer.name} · ${work === '상태 확인 필요' ? fallback : work}`
 }
 
 export function deriveQueueView(

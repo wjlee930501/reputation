@@ -13,9 +13,11 @@ import { useOperationsCenter } from './useOperationsCenter'
 
 function OperationsCenter() {
   const center = useOperationsCenter()
+  // "지금 먼저 처리"는 지금 보고 있는 큐에서 고른다. overview 전체(네 큐 × 5건)에서
+  // 고르면 다른 탭의 항목을 가리켜, 눌렀을 때 목록에 없는 줄로 이동한다(G-6).
   const currentAction = useMemo(
-    () => selectCurrentAction(center.overview?.items ?? []),
-    [center.overview],
+    () => selectCurrentAction(center.visibleItems.length > 0 ? center.visibleItems : center.page?.items ?? []),
+    [center.page, center.visibleItems],
   )
 
   return (
@@ -28,7 +30,7 @@ function OperationsCenter() {
         <p className="ops-refresh-note">화면은 자동으로 최신 상태를 확인합니다.</p>
       </header>
 
-      <CurrentActionStrip item={currentAction} onOpen={center.select} />
+      <CurrentActionStrip item={currentAction} onOpen={center.select} checkedAt={center.checkedAt} />
       <OperationsFilters query={center.query} overview={center.overview} onPatch={center.patchQuery} />
 
       <div className="mt-4 flex items-end justify-between gap-4">
@@ -60,6 +62,8 @@ function OperationsCenter() {
           onSelect={center.select}
           onRetryLoad={() => void center.reload(false)}
           onPage={(page) => center.patchQuery({ page })}
+          searchTerm={center.query.q}
+          checkedAt={center.checkedAt}
         />
         <OperationDetail
           detail={center.detail}
@@ -69,6 +73,7 @@ function OperationsCenter() {
           permissionDenied={center.permissionDenied}
           onClose={center.close}
           onMutate={(mutation) => void center.mutate(mutation)}
+          checkedAt={center.checkedAt}
         />
       </div>
 

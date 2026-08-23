@@ -6,6 +6,10 @@ import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
+import {
+  GOOGLE_CHANNEL_FIELD_HINTS,
+  findDuplicateChannelUrls,
+} from '@/lib/external-channel-urls'
 import { useHospitalHeader } from '../hospital-context'
 import { DomainSetupPanel } from '../DomainSetupPanel'
 import type { DomainProfile } from '../DomainSetupTypes'
@@ -539,6 +543,8 @@ export default function ProfilePage() {
   }
 
   const checklist = buildProfileChecklist(profile)
+  // 같은 주소가 두 칸에 들어가면 공개 표면에서 같은 링크가 두 번 나간다(E-2).
+  const duplicateChannelUrlWarnings = findDuplicateChannelUrls(profile)
   const totalCount = checklist.length
   const doneCount = checklist.filter((c) => c.status === 'done').length
   const requiredItems = checklist.filter((c) => c.required)
@@ -993,6 +999,13 @@ export default function ProfilePage() {
           <p className="text-xs text-slate-500 mt-0.5">
             네이버 플레이스·구글 지도/병원 정보 URL과 좌표는 AI 답변과 로컬 검색에서 우리 병원을 인식시키는 기본 자료입니다.
           </p>
+          {duplicateChannelUrlWarnings.length > 0 && (
+            <ul className="mt-2 space-y-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+              {duplicateChannelUrlWarnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          )}
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
@@ -1005,6 +1018,7 @@ export default function ProfilePage() {
               placeholder="https://business.google.com/..."
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
+            <p className="mt-1 text-xs text-slate-500">{GOOGLE_CHANNEL_FIELD_HINTS.google_business_profile_url}</p>
           </div>
           <div>
             <label htmlFor="profile-google-maps-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 지도 URL</label>
@@ -1016,6 +1030,7 @@ export default function ProfilePage() {
               placeholder="https://maps.google.com/..."
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
+            <p className="mt-1 text-xs text-slate-500">{GOOGLE_CHANNEL_FIELD_HINTS.google_maps_url}</p>
           </div>
           <div>
             <label htmlFor="profile-naver-place-url" className="block text-sm font-medium text-slate-700 mb-1.5">네이버 플레이스 URL</label>

@@ -3,10 +3,13 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
+  SAFE_CAUSE_CODE_MESSAGES,
   buildDevelopmentSupportSummary,
   canonicalizeOperationsQuery,
   createUserActionKey,
   deriveQueueView,
+  describeOperationsDeadline,
+  operationsRowTitle,
   enabledPostAction,
   effectiveSafeCause,
   interpretOperationsConflict,
@@ -66,7 +69,8 @@ test('canonical query parses supported values and drops unsafe noise', () => {
 test('code-like causes and contact details never render as marketer explanations', () => {
   const fallback = '원인 설명을 확인할 수 없습니다.'
 
-  assert.match(safeCauseText('IMAGE_PROVIDER_UNAVAILABLE'), new RegExp(fallback))
+  // 우리가 모르는 식별자는 그대로 노출하지 않는다.
+  assert.match(safeCauseText('SOME_UNMAPPED_INTERNAL_CODE'), new RegExp(fallback))
   assert.match(safeCauseText('failed for owner@example.test'), new RegExp(fallback))
   assert.match(safeCauseText('redis://private-host:6379'), new RegExp(fallback))
   assert.match(safeCauseText('KeyError: Connection refused'), new RegExp(fallback))
@@ -267,4 +271,136 @@ test('queue view distinguishes loading, empty, error and ready', () => {
   assert.equal(deriveQueueView(null, 'network', false), 'error')
   assert.equal(deriveQueueView({ queue: 'TODAY', total: 0, page: 1, page_size: 25, items: [] }, '', false), 'empty')
   assert.equal(deriveQueueView({ queue: 'TODAY', total: 1, page: 1, page_size: 25, items: [row('a')] }, '', false), 'ready')
+})
+
+test('every error identifier the backend can store has an operator explanation', () => {
+  // 서버는 원인을 알고 코드로 저장하는데 화면 목록이 짧아서 "원인 설명을 확인할 수
+  // 없습니다"로 덮이던 것이 G-1이다. 백엔드 소스에서 코드를 긁어 빠진 것이 없는지 본다.
+  const backendRoot = new URL('../../backend/app/', import.meta.url)
+  const files = [
+    'workers/generation_incident_control.py',
+    'workers/lead_diagnosis_tasks.py',
+    'workers/generation_batch_run.py',
+    'workers/monthly_slot_incident_control.py',
+    'workers/task_incident_control.py',
+    'workers/autonomous_recovery.py',
+    'workers/tasks.py',
+    'services/cost_guard.py',
+    'services/domain_health_control.py',
+    'services/notification_store.py',
+    'services/operation_runs.py',
+    'services/site_revalidation_control.py',
+    'services/hospital_revalidation_control.py',
+    'services/naver_handoff_runs.py',
+    'api/admin/content.py',
+  ]
+
+  const codes = new Set<string>()
+  for (const file of files) {
+    const source = readFileSync(new URL(file, backendRoot), 'utf8')
+    for (const match of source.matchAll(/safe_error_code(?:=|"\s*:\s*)\s*"([A-Z][A-Z0-9_]+)"/g)) {
+      codes.add(match[1])
+    }
+  }
+  // 콘텐츠 생성 사건은 코드→한국어 표를 서버에도 갖고 있다. 그 표의 키도 함께 검사한다.
+  const generation = readFileSync(new URL('workers/generation_incident_control.py', backendRoot), 'utf8')
+  const causeMap = generation.match(/def _generation_safe_cause[\s\S]*?\}\.get\(/)?.[0] ?? ''
+  for (const match of causeMap.matchAll(/"([A-Z][A-Z0-9_]+)":/g)) codes.add(match[1])
+
+  assert.ok(codes.size >= 15, `expected to find backend error codes, found ${codes.size}`)
+  const missing = [...codes].filter((code) => !(code in SAFE_CAUSE_CODE_MESSAGES)).sort()
+  assert.deepEqual(missing, [], `these codes render as an unknown cause: ${missing.join(', ')}`)
+})
+
+test('a known code becomes an explanation, and every explanation reads as Korean prose', () => {
+  assert.equal(
+    safeCauseText('PROVIDER_TIMEOUT'),
+    '콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.',
+  )
+  for (const [code, message] of Object.entries(SAFE_CAUSE_CODE_MESSAGES)) {
+    assert.match(message, /[가-힣]{2,}/, code)
+    // 설명이 다시 원인 미상 문구로 걸러지면 안 된다.
+    assert.equal(safeCauseText(message), message, code)
+  }
+})
+
+test('a future deadline is not called imminent, and a passed one says how far past', () => {
+  const now = Date.parse('2026-08-23T12:00:00Z')
+  const at = (iso: string) => iso.slice(5, 16)
+
+  const far = describeOperationsDeadline(
+    { sla_state: 'DUE', sla_due_at: '2026-09-02T12:00:00Z' },
+    now,
+    at,
+  )
+  assert.equal(far.tone, 'due')
+  assert.doesNotMatch(far.text, /임박|남음/)
+
+  const soon = describeOperationsDeadline(
+    { sla_state: 'DUE', sla_due_at: '2026-08-23T15:00:00Z' },
+    now,
+    at,
+  )
+  assert.equal(soon.tone, 'due_soon')
+  assert.match(soon.text, /3시간 남음/)
+
+  const late = describeOperationsDeadline(
+    { sla_state: 'OVERDUE', sla_due_at: '2026-08-21T12:00:00Z' },
+    now,
+    at,
+  )
+  assert.equal(late.tone, 'overdue')
+  assert.match(late.text, /2일 지남/)
+})
+
+test('a row without a deadline says so instead of showing an imminent one', () => {
+  const now = Date.parse('2026-08-23T12:00:00Z')
+  const none = describeOperationsDeadline({ sla_state: 'NONE', sla_due_at: null }, now, String)
+  assert.equal(none.tone, 'none')
+  assert.equal(none.text, '처리 기한 없음')
+
+  const broken = describeOperationsDeadline({ sla_state: 'DUE', sla_due_at: 'nope' }, now, String)
+  assert.equal(broken.tone, 'none')
+  assert.equal(broken.text, '처리 기한 확인 필요')
+})
+
+test('two rows for the same hospital have different titles', () => {
+  const publishDue = operationsRowTitle(row('content:1', { queue: 'TODAY', status: 'PUBLISH_DUE' }))
+  const overdueReview = operationsRowTitle(row('content:2', { queue: 'TODAY', status: 'OVERDUE_REVIEW' }))
+
+  assert.notEqual(publishDue, overdueReview)
+  assert.match(publishDue, /오늘 발행 예정/)
+  assert.match(overdueReview, /발행 후 확인 기한 지남/)
+})
+
+test('an unknown status falls back to the queue name rather than a bare warning', () => {
+  const title = operationsRowTitle(row('x', { queue: 'REPORTS', status: 'SOMETHING_NEW' }))
+
+  assert.match(title, /월간 리포트/)
+  assert.doesNotMatch(title, /상태 확인 필요/)
+})
+
+test('the queue list explains a search-emptied page instead of contradicting the tab count', () => {
+  const queue = readFileSync(new URL('../app/operations/OperationsQueue.tsx', import.meta.url), 'utf8')
+
+  assert.match(queue, /searchTerm/)
+  assert.match(queue, /이 큐 전체는/)
+  assert.match(queue, /operationsRowTitle/)
+  assert.match(queue, /describeOperationsDeadline/)
+  assert.doesNotMatch(queue, /처리 기한 임박'/)
+})
+
+test('the current action is chosen from the queue on screen, not from every queue', () => {
+  const page = readFileSync(new URL('../app/operations/page.tsx', import.meta.url), 'utf8')
+
+  assert.match(page, /selectCurrentAction\(center\.visibleItems/)
+  assert.doesNotMatch(page, /selectCurrentAction\(center\.overview/)
+})
+
+test('the detail panel shows who owns the task and when it is due', () => {
+  const detail = readFileSync(new URL('../app/operations/OperationDetail.tsx', import.meta.url), 'utf8')
+
+  assert.match(detail, /담당자 · 처리 기한/)
+  assert.match(detail, /row\.owner\?\.name \?\? '미지정'/)
+  assert.match(detail, /describeOperationsDeadline/)
 })

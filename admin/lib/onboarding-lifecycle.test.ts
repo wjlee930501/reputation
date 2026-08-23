@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
+  countPendingPhilosophyDrafts,
   deriveHandoffDueStatus,
   deriveOnboardingSteps,
   deriveOnboardingSummary,
@@ -372,4 +374,72 @@ test('the next-action CTA always points somewhere real', () => {
       )
     }
   }
+})
+
+test('step 7 carries a badge counting the drafts still waiting for approval', () => {
+  const steps = deriveOnboardingSteps(
+    hospital,
+    sources,
+    [
+      { status: 'APPROVED', version: 2 },
+      { status: 'DRAFT', version: 3 },
+      { status: 'DRAFT', version: 4 },
+    ],
+    readiness,
+    'hospital-id',
+    acceptedHandoff,
+  )
+  const step = steps.find((item) => item.key === 'philosophy_approved')
+
+  assert.equal(step?.index, 6)
+  assert.equal(step?.badge, '승인 대기 초안 2건')
+})
+
+test('drafts older than the approved version are not pending work', () => {
+  assert.equal(
+    countPendingPhilosophyDrafts([
+      { status: 'DRAFT', version: 1 },
+      { status: 'DRAFT', version: 2 },
+      { status: 'APPROVED', version: 3 },
+    ]),
+    0,
+  )
+  assert.equal(
+    countPendingPhilosophyDrafts([
+      { status: 'DRAFT', version: 1 },
+      { status: 'DRAFT', version: 4 },
+      { status: 'APPROVED', version: 3 },
+    ]),
+    1,
+  )
+})
+
+test('a hospital with no approved version counts every draft as pending', () => {
+  assert.equal(
+    countPendingPhilosophyDrafts([{ status: 'DRAFT', version: 1 }, { status: 'DRAFT', version: 2 }]),
+    2,
+  )
+})
+
+test('no pending draft means no badge — the step never invents work', () => {
+  const steps = deriveOnboardingSteps(
+    hospital,
+    sources,
+    [{ status: 'APPROVED', version: 3 }],
+    readiness,
+    'hospital-id',
+    acceptedHandoff,
+  )
+
+  assert.equal(steps.find((item) => item.key === 'philosophy_approved')?.badge, undefined)
+  assert.equal(steps.filter((item) => item.badge).length, 0)
+})
+
+test('the onboarding sidebar and card both render the step badge', () => {
+  const page = readFileSync(
+    new URL('../app/hospitals/[id]/onboarding/page.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.equal(page.match(/\{step\.badge && \(/g)?.length, 2)
 })

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { ApiError } from './api.ts'
 import {
+  DOMAIN_SETUP_STEP_ORDER,
   buildFallbackDomainSetupPlan,
   domainManagementModeLabel,
   domainStrategyLabel,
@@ -97,8 +99,29 @@ test('fallback setup plan gives operators a usable CNAME record before backend s
       purpose: '병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결',
     },
   ])
+  // fallback은 서버가 돌려주는 것과 같은 다섯 단계를 같은 순서로 갖는다 — 응답이 실패한
+  // 병원에서만 단계 하나가 사라지면 번호가 어긋난다(E-3).
   assert.deepEqual(
     plan.checklist.map((item) => item.key),
-    ['domain_saved', 'dns_record', 'dns_verified', 'certificate_ready'],
+    ['domain_saved', 'purchase', 'dns_record', 'dns_verified', 'certificate_ready'],
   )
+  assert.equal(plan.checklist[0].status, 'DONE')
+})
+
+test('no checklist label carries its own number — the screen numbers by position', () => {
+  const plan = buildFallbackDomainSetupPlan('ai.clinic.example', 'cname.reputation.motionlabs.kr')
+
+  for (const item of plan.checklist) {
+    assert.doesNotMatch(item.label, /[①②③④⑤]/, item.label)
+  }
+  assert.deepEqual(
+    DOMAIN_SETUP_STEP_ORDER.map((step) => step.key),
+    plan.checklist.map((item) => item.key),
+  )
+
+  const primitives = readFileSync(
+    new URL('../app/hospitals/[id]/DomainSetupPrimitives.tsx', import.meta.url),
+    'utf8',
+  )
+  assert.match(primitives, /\{index \+ 1\}\. \{item\.label\}/)
 })

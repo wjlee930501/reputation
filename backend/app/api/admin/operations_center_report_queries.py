@@ -14,7 +14,7 @@ from app.api.admin.operations_center_query_common import (
     SlaFilter,
     owner_predicate,
 )
-from app.api.admin.operations_center_serializers import owner_projection
+from app.api.admin.operations_center_serializers import owner_projection, sla_state
 from app.models.admin_user import AdminUser
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
@@ -90,11 +90,11 @@ def _report_action(
     )
 
 
-def _previous_period(now: datetime) -> tuple[int, int, datetime, datetime]:
+def _previous_period(now: datetime) -> tuple[int, int, datetime, datetime, datetime]:
     local = now.astimezone(ZoneInfo("Asia/Seoul"))
     year, month = (local.year, local.month - 1) if local.month > 1 else (local.year - 1, 12)
     period = reporting_period(year, month)
-    return year, month, period.starts_at, period.ends_at
+    return year, month, period.starts_at, period.ends_at, period.closes_at
 
 
 def _eligible_hospital_ids_stmt(
@@ -157,10 +157,14 @@ async def load_reports_queue(
     """Load hospitals missing or awaiting delivery of the prior monthly report."""
     if filters.severity not in (None, "HIGH") or filters.sla not in (
         None,
+        SlaFilter.DUE,
         SlaFilter.OVERDUE,
     ):
         return 0, []
-    year, month, period_start, period_end = _previous_period(now)
+    year, month, period_start, period_end, closes_at = _previous_period(now)
+    report_sla_state = sla_state(closes_at, now)
+    if filters.sla is not None and filters.sla.value != report_sla_state:
+        return 0, []
     latest = latest_monthly_report_subquery(year, month)
     latest_delivery = latest_delivery_event_subquery()
     active_report_runs = (
@@ -257,8 +261,13 @@ async def load_reports_queue(
             severity="HIGH",
             impact=_report_operator_copy(report_state_value)[0],
             owner=owner_projection(actor),
-            sla_due_at=handoff.sla_due_at if handoff else None,
-            sla_state="OVERDUE",
+            # 이 줄의 기한은 월간 리포트 마감이다. 예전에는 계약 인수 기한(handoff.sla_due_at)을
+            # 보여 주면서 상태는 무조건 "지남"으로 고정했다. 그러면 화면은 리포트와 아무 관계가
+            # 없는 날짜 옆에 "처리 기한 지남"을 붙이고, 인수 기한이 없는 병원에서는 날짜 없이
+            # 기한만 지났다고 말했다. 월 경계가 아니라 월간 집계가 실제로 닫히는 시각이
+            # 처리 기한이다(G-2).
+            sla_due_at=closes_at,
+            sla_state=report_sla_state,
             next_action=_report_operator_copy(report_state_value)[1],
             action=_report_action(
                 hospital.id,

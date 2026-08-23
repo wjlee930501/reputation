@@ -16,14 +16,17 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import get_request_ip
 from app.models.admin_user import AdminUser
-from app.services.audit_log import reset_request_actor, set_request_actor
+from app.services.audit_log import (
+    UNVERIFIED_ACTOR_PREFIX,
+    reset_request_actor,
+    set_request_actor,
+)
 
 logger = logging.getLogger(__name__)
 
 api_key_header = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 _ADMIN_RATE_LIMIT = parse("100/minute")
 
-UNVERIFIED_ACTOR_PREFIX = "unverified:"
 # 인가는 공유 X-Admin-Key로 이뤄지므로 계정 비활성화만으로는 백엔드 권한이 끊기지 않는다.
 # 최소한 "검증되지 않은 actor가 상태를 바꾸는" 순간은 반드시 드러나야 하므로, 쓰기 메서드는
 # 로그 + Slack 경보 대상으로 삼는다 (읽기는 소음이 커 로그만 남긴다).

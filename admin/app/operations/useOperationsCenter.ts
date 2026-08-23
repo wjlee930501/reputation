@@ -62,6 +62,7 @@ export function useOperationsCenter() {
   const query = useMemo(() => readOperationsQuery(new URLSearchParams(rawQuery)), [rawQuery])
   const [overview, setOverview] = useState<OperationsOverviewResponse | null>(null)
   const [page, setPage] = useState<OperationsQueueResponse | null>(null)
+  const [checkedAt, setCheckedAt] = useState(() => Date.now())
   const [detail, setDetail] = useState<OperationsIncidentDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -105,6 +106,9 @@ export function useOperationsCenter() {
       ])
       setOverview(nextOverview)
       setPage(nextPage)
+      // 남은 처리 기한은 이 응답을 받은 시각 기준이다. 렌더 중에 시계를 읽으면 같은
+      // 목록이 리렌더마다 다른 남은 시간을 보여준다.
+      setCheckedAt(Date.now())
       setLoadError('')
     } catch (error) {
       if (!isAbort(error)) setLoadError(errorMessage(error))
@@ -242,5 +246,5 @@ export function useOperationsCenter() {
     return (page?.items ?? []).filter((item) => [item.customer.name, item.next_action, item.impact, item.owner?.name ?? ''].some((value) => value.toLocaleLowerCase('ko-KR').includes(needle)))
   }, [page, query.q])
 
-  return { query, overview, page, detail, selectedRow, visibleItems, loading, loadError, actionError, permissionDenied, busy, canRaiseLimit, patchQuery, select, mutate, reload: loadCenter, close: () => patchQuery({ detail: null }) }
+  return { query, overview, page, detail, selectedRow, visibleItems, checkedAt, loading, loadError, actionError, permissionDenied, busy, canRaiseLimit, patchQuery, select, mutate, reload: loadCenter, close: () => patchQuery({ detail: null }) }
 }

@@ -10,6 +10,36 @@ export interface SovTrendPoint {
   sov_pct: number | null
 }
 
+export interface SovTrendWeek extends SovTrendPoint {
+  /** 그 주 언급률 분모에 들어간 확정 측정 수 */
+  total_count?: number
+  failure_count?: number
+  ambiguous_count?: number
+}
+
+/**
+ * 측정이 시작되기 전의 주를 잘라낸다.
+ *
+ * 백엔드는 언제나 최근 12주를 돌려주므로, 지난주에 계약한 병원도 11주 분량의
+ * 빈 칸을 받는다. 그 빈 칸이 x축에 그려지면 측정이 열한 번 실패한 것처럼 읽히고,
+ * 그래프의 측정 구간은 오른쪽 끝에 눌려 변화가 보이지 않는다.
+ *
+ * 첫 측정 이후의 공백은 남긴다 — 측정이 끊긴 주는 실제 운영 신호이므로 지우면
+ * 오히려 사실을 가린다.
+ */
+export function trimTrendToMeasuredWeeks<T extends SovTrendWeek>(points: T[]): T[] {
+  const rows = Array.isArray(points) ? points : []
+  const firstMeasured = rows.findIndex(
+    (row) =>
+      row.sov_pct !== null
+      || (row.total_count ?? 0) > 0
+      || (row.failure_count ?? 0) > 0
+      || (row.ambiguous_count ?? 0) > 0,
+  )
+  if (firstMeasured < 0) return []
+  return rows.slice(firstMeasured)
+}
+
 export type SovTrendState =
   /** 이번 주 측정값이 있다 */
   | 'MEASURED'

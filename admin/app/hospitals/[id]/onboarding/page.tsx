@@ -31,8 +31,20 @@ import {
   type LifecycleReadiness,
   type OnboardingStep as StepDef,
 } from '@/lib/onboarding-lifecycle'
+import {
+  describeDomainArtifacts,
+  describeScheduleArtifactState,
+  describeV0ReportArtifactState,
+  resolveReportsArtifactResult,
+  resolveScheduleArtifactResult,
+  type OnboardingArtifact,
+  type OnboardingArtifactLoadState,
+  type ReportArtifactLike,
+  type ScheduleArtifactLike,
+} from '@/lib/onboarding-artifacts'
 import { defaultAssetTitles, duplicateAssetTitles } from '@/lib/asset-title'
 import { sourceUrlWarning } from '@/lib/source-url-warnings'
+import { formatActorLabel } from '@/lib/actor-display'
 import NaverBlogBulkForm from './NaverBlogBulkForm'
 
 interface Hospital {
@@ -46,6 +58,9 @@ interface Hospital {
   site_live?: boolean
   status: string
   aeo_domain?: string | null
+  domain_last_checked_at?: string | null
+  domain_last_check_ok?: boolean | null
+  domain_last_check_reason?: string | null
   website_url?: string | null
   blog_url?: string | null
   kakao_channel_url?: string | null
@@ -291,22 +306,49 @@ export default function OnboardingPage() {
   const [readiness, setReadiness] = useState<LifecycleReadiness | null>(null)
   const [handoff, setHandoff] = useState<Handoff | null>(null)
   const [measurementRuns, setMeasurementRuns] = useState<MeasurementRun[]>([])
+  // 단계 아코디언이 보여줄 결과물 — 리포트 PDF와 발행 스케줄(B-3).
+  const [reportsState, setReportsState] = useState<
+    OnboardingArtifactLoadState<ReportArtifactLike[]>
+  >({ status: 'loading' })
+  const [scheduleState, setScheduleState] = useState<
+    OnboardingArtifactLoadState<ScheduleArtifactLike | null>
+  >({ status: 'loading' })
   const [checkedAt, setCheckedAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const requestIdRef = useRef(0)
+  const requestAbortRef = useRef<AbortController | null>(null)
 
   const refresh = useCallback(async () => {
+    requestAbortRef.current?.abort()
+    const controller = new AbortController()
+    requestAbortRef.current = controller
+    const requestId = ++requestIdRef.current
+    const options = { signal: controller.signal }
     setLoading(true)
     setError(null)
+    setReportsState({ status: 'loading' })
+    setScheduleState({ status: 'loading' })
+
+    void Promise.allSettled([
+      fetchAPI<ReportArtifactLike[]>(`/admin/hospitals/${id}/reports`, options),
+      fetchAPI<ScheduleArtifactLike>(`/admin/hospitals/${id}/schedule`, options),
+    ]).then(([reportResult, scheduleResult]) => {
+      if (requestId !== requestIdRef.current || controller.signal.aborted) return
+      setReportsState(resolveReportsArtifactResult(reportResult))
+      setScheduleState(resolveScheduleArtifactResult(scheduleResult))
+    })
+
     try {
       const [h, s, p, r, handoffs, runs] = await Promise.all([
-        fetchAPI(`/admin/hospitals/${id}`),
-        fetchAPI(`/admin/hospitals/${id}/essence/sources`),
-        fetchAPI(`/admin/hospitals/${id}/essence/philosophies`),
-        fetchAPI<LifecycleReadiness>(`/admin/hospitals/${id}/readiness`),
-        fetchAPI<Handoff[]>('/admin/handoffs'),
-        fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`),
+        fetchAPI(`/admin/hospitals/${id}`, options),
+        fetchAPI(`/admin/hospitals/${id}/essence/sources`, options),
+        fetchAPI(`/admin/hospitals/${id}/essence/philosophies`, options),
+        fetchAPI<LifecycleReadiness>(`/admin/hospitals/${id}/readiness`, options),
+        fetchAPI<Handoff[]>('/admin/handoffs', options),
+        fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`, options),
       ])
+      if (requestId !== requestIdRef.current || controller.signal.aborted) return
       setHospital(h as Hospital)
       setSources(Array.isArray(s) ? (s as Source[]) : [])
       setPhilosophies(Array.isArray(p) ? (p as Philosophy[]) : [])
@@ -315,14 +357,19 @@ export default function OnboardingPage() {
       setMeasurementRuns(Array.isArray(runs) ? runs : [])
       setCheckedAt(Date.now())
     } catch (e: unknown) {
+      if (requestId !== requestIdRef.current || controller.signal.aborted) return
       setError(safeOperatorError('onboarding', '온보딩 정보 다시 불러오기를 누르세요.'))
     } finally {
-      setLoading(false)
+      if (requestId === requestIdRef.current && !controller.signal.aborted) {
+        setLoading(false)
+      }
     }
   }, [id])
 
   useEffect(() => {
+    setHospital(null)
     void refresh()
+    return () => requestAbortRef.current?.abort()
   }, [refresh])
 
   if (loading && !hospital) {
@@ -453,6 +500,9 @@ export default function OnboardingPage() {
               hospitalId={id}
               loading={loading}
               onChanged={refresh}
+              handoff={handoff}
+              reportsState={reportsState}
+              scheduleState={scheduleState}
             />
           ))}
           <section aria-labelledby="post-onboarding-title" className="mt-8 border-t border-slate-300 pt-6">
@@ -460,7 +510,7 @@ export default function OnboardingPage() {
             <p className="mt-1 text-sm text-slate-600">첫 발행과 첫 AI 답변 언급률 측정은 공개 운영 시작 이후의 성과이며 온보딩 완료를 막지 않습니다.</p>
             <div className="mt-4 space-y-4">
               {outcomeSteps.map((step) => (
-                <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} />
+                <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} handoff={handoff} reportsState={reportsState} scheduleState={scheduleState} />
               ))}
             </div>
           </section>
@@ -490,6 +540,11 @@ function StepBadge({ step }: { step: StepDef }) {
         <span className="min-w-0">
           <span className="block text-xs font-semibold">{step.phase === 'onboarding' ? `온보딩 ${step.index + 1}` : `후속 성과 ${step.index - 7}`}</span>
           <span className="block break-words text-sm font-medium">{step.title}</span>
+          {step.badge && (
+            <span className="mt-1 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+              {step.badge}
+            </span>
+          )}
         </span>
       </a>
     </li>
@@ -504,6 +559,9 @@ function StepCard({
   hospitalId,
   loading,
   onChanged,
+  handoff,
+  reportsState,
+  scheduleState,
 }: {
   step: StepDef
   hospital: Hospital | null
@@ -512,6 +570,9 @@ function StepCard({
   hospitalId: string
   loading: boolean
   onChanged: () => void
+  handoff: Handoff | null
+  reportsState: OnboardingArtifactLoadState<ReportArtifactLike[]>
+  scheduleState: OnboardingArtifactLoadState<ScheduleArtifactLike | null>
 }) {
   const tone =
     step.status === 'completed'
@@ -531,13 +592,18 @@ function StepCard({
           <p className="mt-1 text-sm text-slate-600 max-w-2xl">{step.description}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {step.badge && (
+            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
+              {step.badge}
+            </span>
+          )}
           <StepStatusChip status={step.status} />
           <span aria-hidden className="text-xs text-slate-500 transition-transform group-open:rotate-180">▼</span>
         </div>
       </summary>
 
       <div className="border-t border-slate-100 px-4 py-5 sm:px-6">
-        {step.key === 'handoff' && <HandoffStepBody />}
+        {step.key === 'handoff' && <HandoffStepBody handoff={handoff} />}
         {step.key === 'profile' && (
           <ProfileStepBody
             hospital={hospital}
@@ -569,45 +635,129 @@ function StepCard({
         {(['v0', 'site', 'live', 'schedule', 'first_publish', 'sov'] as const).includes(
           step.key as 'v0' | 'site' | 'live' | 'schedule' | 'first_publish' | 'sov',
         ) && (
-          <OperationalStepBody step={step} />
+          <OperationalStepBody
+            step={step}
+            artifacts={operationalStepArtifacts(step.key, { hospital, reportsState, scheduleState })}
+          />
         )}
       </div>
     </details>
   )
 }
 
-function OperationalStepBody({ step }: { step: StepDef }) {
+/**
+ * 단계별로 무엇을 보여줄지 고른다.
+ *
+ * 초기 진단은 리포트 PDF, 콘텐츠 허브·도메인은 공개 주소, 스케줄은 요금제와 발행
+ * 요일이다. 나머지 단계(첫 발행·첫 측정)는 이 화면이 보여줄 결과물이 없다.
+ */
+function operationalStepArtifacts(
+  key: StepDef['key'],
+  data: {
+    hospital: Hospital | null
+    reportsState: OnboardingArtifactLoadState<ReportArtifactLike[]>
+    scheduleState: OnboardingArtifactLoadState<ScheduleArtifactLike | null>
+  },
+): OnboardingArtifact[] {
+  if (key === 'v0') return describeV0ReportArtifactState(data.reportsState)
+  if (key === 'site' || key === 'live') return describeDomainArtifacts(data.hospital)
+  if (key === 'schedule') return describeScheduleArtifactState(data.scheduleState)
+  return []
+}
+
+function StepArtifactList({ artifacts }: { artifacts: OnboardingArtifact[] }) {
+  if (artifacts.length === 0) return null
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <p className="text-sm text-slate-700">
-        {step.status === 'completed'
-          ? '필수 정보가 실제로 저장되어 이 단계가 완료된 것을 확인했습니다.'
-          : step.status === 'locked'
-            ? '앞 필수 단계가 끝나야 이 단계를 진행할 수 있습니다.'
-            : '이 단계 화면에서 안내하는 필수 항목을 확인하고 완료해 주세요.'}
-      </p>
-      {step.href && (
-        <Link
-          href={step.href}
-          className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-blue-200 hover:text-blue-700"
-        >
-          {step.status === 'completed' ? '상태 확인' : '단계 진행'} →
-        </Link>
-      )}
+    <dl className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+      {artifacts.map((artifact) => (
+        <div key={artifact.label} className="min-w-0">
+          <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            {artifact.label}
+          </dt>
+          <dd
+            className={`mt-0.5 break-words text-sm ${
+              artifact.state === 'error'
+                ? 'text-red-700'
+                : artifact.missing
+                  ? 'text-amber-800'
+                  : 'text-slate-800'
+            }`}
+          >
+            {artifact.href ? (
+              <a
+                href={artifact.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-blue-700 underline underline-offset-2"
+              >
+                {artifact.value}
+              </a>
+            ) : (
+              artifact.value
+            )}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+function OperationalStepBody({
+  step,
+  artifacts,
+}: {
+  step: StepDef
+  artifacts: OnboardingArtifact[]
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-slate-700">
+          {step.status === 'completed'
+            ? '필수 정보가 실제로 저장되어 이 단계가 완료된 것을 확인했습니다.'
+            : step.status === 'locked'
+              ? '앞 필수 단계가 끝나야 이 단계를 진행할 수 있습니다.'
+              : '이 단계 화면에서 안내하는 필수 항목을 확인하고 완료해 주세요.'}
+        </p>
+        {step.href && (
+          <Link
+            href={step.href}
+            className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-blue-200 hover:text-blue-700"
+          >
+            {step.status === 'completed' ? '상태 확인' : '단계 진행'} →
+          </Link>
+        )}
+      </div>
+      <StepArtifactList artifacts={artifacts} />
     </div>
   )
 }
 
-function HandoffStepBody() {
+function HandoffStepBody({ handoff }: { handoff: Handoff | null }) {
+  // 계약 번호는 병원 등록 화면에서만 보였고, 인수 단계에서는 확인할 방법이 없었다(E-1).
+  const artifacts: OnboardingArtifact[] = [
+    handoff?.contract_reference
+      ? { label: '계약 번호', value: handoff.contract_reference }
+      : { label: '계약 번호', value: '계약 정보에 아직 저장되지 않았습니다', missing: true },
+    {
+      label: '담당 AE',
+      value: handoff?.ae_owner_name ?? '미지정',
+      missing: !handoff?.ae_owner_name,
+    },
+  ]
+
   return (
-    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <p className="text-sm text-slate-700">계약 정보와 담당 AE가 일치하는지 확인한 뒤 고객 인수 기록을 승인합니다.</p>
-      <Link
-        href="/leads"
-        className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-blue-200 hover:text-blue-700"
-      >
-        인수 대기열 확인
-      </Link>
+    <div className="space-y-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-slate-700">계약 정보와 담당 AE가 일치하는지 확인한 뒤 고객 인수 기록을 승인합니다.</p>
+        <Link
+          href="/leads"
+          className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:border-blue-200 hover:text-blue-700"
+        >
+          인수 대기열 확인
+        </Link>
+      </div>
+      <StepArtifactList artifacts={artifacts} />
     </div>
   )
 }
@@ -921,7 +1071,7 @@ function SourcesStepBody({
       <ProfileUrlCandidates hospital={hospital} hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
       <CrawlForm hospitalId={hospitalId} onCreated={onChanged} />
       <NaverBlogBulkForm hospitalId={hospitalId} onCreated={onChanged} />
-      <UploadForm hospitalId={hospitalId} onCreated={onChanged} />
+      <UploadForm hospitalId={hospitalId} hospitalName={hospital?.name ?? null} onCreated={onChanged} />
       <SourcesList hospitalId={hospitalId} sources={sources} loading={loading} onChanged={onChanged} />
     </div>
   )
@@ -1083,7 +1233,15 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
   )
 }
 
-function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: () => void }) {
+function UploadForm({
+  hospitalId,
+  hospitalName,
+  onCreated,
+}: {
+  hospitalId: string
+  hospitalName: string | null
+  onCreated: () => void
+}) {
   const [type, setType] = useState('PHOTO_DOCTOR')
   const [assetKind, setAssetKind] = useState('')
   const [rightsOwner, setRightsOwner] = useState('')
@@ -1253,7 +1411,11 @@ function UploadForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: 
               required
               value={rightsOwner}
               onChange={(e) => setRightsOwner(e.target.value)}
-              placeholder="사진 소유자 (예: 장편한외과의원)"
+              /*
+                예시로 특정 병원 이름을 박아 두면, 지금 보고 있는 병원의 소유자 칸에 남의
+                병원 이름이 예시로 뜬다. 지금 병원 이름을 쓰고, 모를 때는 예시를 들지 않는다(D-4).
+              */
+              placeholder={hospitalName ? `사진 소유자 (예: ${hospitalName})` : '사진 소유자'}
               aria-label="사진 소유자"
               className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
             />
@@ -1463,7 +1625,7 @@ function PhotoRightsEvidence({
     return (
       <p className="text-xs text-slate-500">
         사용 권리 확인됨 · {provenance.source_owner} · {provenance.rights_basis_label}
-        {provenance.verified_by ? ` · 확인 ${provenance.verified_by}` : ''}
+        {provenance.verified_by ? ` · 확인 ${formatActorLabel(provenance.verified_by)}` : ''}
       </p>
     )
   }
