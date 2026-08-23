@@ -33,9 +33,12 @@ import {
 } from '@/lib/onboarding-lifecycle'
 import {
   describeDomainArtifacts,
-  describeScheduleArtifacts,
-  selectV0ReportArtifacts,
+  describeScheduleArtifactState,
+  describeV0ReportArtifactState,
+  resolveReportsArtifactResult,
+  resolveScheduleArtifactResult,
   type OnboardingArtifact,
+  type OnboardingArtifactLoadState,
   type ReportArtifactLike,
   type ScheduleArtifactLike,
 } from '@/lib/onboarding-artifacts'
@@ -304,36 +307,48 @@ export default function OnboardingPage() {
   const [handoff, setHandoff] = useState<Handoff | null>(null)
   const [measurementRuns, setMeasurementRuns] = useState<MeasurementRun[]>([])
   // 단계 아코디언이 보여줄 결과물 — 리포트 PDF와 발행 스케줄(B-3).
-  const [reports, setReports] = useState<ReportArtifactLike[]>([])
-  const [schedule, setSchedule] = useState<ScheduleArtifactLike | null>(null)
+  const [reportsState, setReportsState] = useState<
+    OnboardingArtifactLoadState<ReportArtifactLike[]>
+  >({ status: 'loading' })
+  const [scheduleState, setScheduleState] = useState<
+    OnboardingArtifactLoadState<ScheduleArtifactLike | null>
+  >({ status: 'loading' })
   const [checkedAt, setCheckedAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const requestIdRef = useRef(0)
+  const requestAbortRef = useRef<AbortController | null>(null)
 
   const refresh = useCallback(async () => {
+    requestAbortRef.current?.abort()
+    const controller = new AbortController()
+    requestAbortRef.current = controller
+    const requestId = ++requestIdRef.current
+    const options = { signal: controller.signal }
     setLoading(true)
     setError(null)
+    setReportsState({ status: 'loading' })
+    setScheduleState({ status: 'loading' })
+
+    void Promise.allSettled([
+      fetchAPI<ReportArtifactLike[]>(`/admin/hospitals/${id}/reports`, options),
+      fetchAPI<ScheduleArtifactLike>(`/admin/hospitals/${id}/schedule`, options),
+    ]).then(([reportResult, scheduleResult]) => {
+      if (requestId !== requestIdRef.current || controller.signal.aborted) return
+      setReportsState(resolveReportsArtifactResult(reportResult))
+      setScheduleState(resolveScheduleArtifactResult(scheduleResult))
+    })
+
     try {
       const [h, s, p, r, handoffs, runs] = await Promise.all([
-        fetchAPI(`/admin/hospitals/${id}`),
-        fetchAPI(`/admin/hospitals/${id}/essence/sources`),
-        fetchAPI(`/admin/hospitals/${id}/essence/philosophies`),
-        fetchAPI<LifecycleReadiness>(`/admin/hospitals/${id}/readiness`),
-        fetchAPI<Handoff[]>('/admin/handoffs'),
-        fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`),
+        fetchAPI(`/admin/hospitals/${id}`, options),
+        fetchAPI(`/admin/hospitals/${id}/essence/sources`, options),
+        fetchAPI(`/admin/hospitals/${id}/essence/philosophies`, options),
+        fetchAPI<LifecycleReadiness>(`/admin/hospitals/${id}/readiness`, options),
+        fetchAPI<Handoff[]>('/admin/handoffs', options),
+        fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`, options),
       ])
-      // 결과물 조회는 보조 정보다. 스케줄은 미설정이면 404이므로 실패를 단계 표시로만 쓴다.
-      void Promise.allSettled([
-        fetchAPI<ReportArtifactLike[]>(`/admin/hospitals/${id}/reports`),
-        fetchAPI<ScheduleArtifactLike>(`/admin/hospitals/${id}/schedule`),
-      ]).then(([reportResult, scheduleResult]) => {
-        setReports(
-          reportResult.status === 'fulfilled' && Array.isArray(reportResult.value)
-            ? reportResult.value
-            : [],
-        )
-        setSchedule(scheduleResult.status === 'fulfilled' ? scheduleResult.value : null)
-      })
+      if (requestId !== requestIdRef.current || controller.signal.aborted) return
       setHospital(h as Hospital)
       setSources(Array.isArray(s) ? (s as Source[]) : [])
       setPhilosophies(Array.isArray(p) ? (p as Philosophy[]) : [])
@@ -342,14 +357,19 @@ export default function OnboardingPage() {
       setMeasurementRuns(Array.isArray(runs) ? runs : [])
       setCheckedAt(Date.now())
     } catch (e: unknown) {
+      if (requestId !== requestIdRef.current || controller.signal.aborted) return
       setError(safeOperatorError('onboarding', '온보딩 정보 다시 불러오기를 누르세요.'))
     } finally {
-      setLoading(false)
+      if (requestId === requestIdRef.current && !controller.signal.aborted) {
+        setLoading(false)
+      }
     }
   }, [id])
 
   useEffect(() => {
+    setHospital(null)
     void refresh()
+    return () => requestAbortRef.current?.abort()
   }, [refresh])
 
   if (loading && !hospital) {
@@ -481,8 +501,8 @@ export default function OnboardingPage() {
               loading={loading}
               onChanged={refresh}
               handoff={handoff}
-              reports={reports}
-              schedule={schedule}
+              reportsState={reportsState}
+              scheduleState={scheduleState}
             />
           ))}
           <section aria-labelledby="post-onboarding-title" className="mt-8 border-t border-slate-300 pt-6">
@@ -490,7 +510,7 @@ export default function OnboardingPage() {
             <p className="mt-1 text-sm text-slate-600">첫 발행과 첫 AI 답변 언급률 측정은 공개 운영 시작 이후의 성과이며 온보딩 완료를 막지 않습니다.</p>
             <div className="mt-4 space-y-4">
               {outcomeSteps.map((step) => (
-                <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} handoff={handoff} reports={reports} schedule={schedule} />
+                <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} handoff={handoff} reportsState={reportsState} scheduleState={scheduleState} />
               ))}
             </div>
           </section>
@@ -540,8 +560,8 @@ function StepCard({
   loading,
   onChanged,
   handoff,
-  reports,
-  schedule,
+  reportsState,
+  scheduleState,
 }: {
   step: StepDef
   hospital: Hospital | null
@@ -551,8 +571,8 @@ function StepCard({
   loading: boolean
   onChanged: () => void
   handoff: Handoff | null
-  reports: ReportArtifactLike[]
-  schedule: ScheduleArtifactLike | null
+  reportsState: OnboardingArtifactLoadState<ReportArtifactLike[]>
+  scheduleState: OnboardingArtifactLoadState<ScheduleArtifactLike | null>
 }) {
   const tone =
     step.status === 'completed'
@@ -617,7 +637,7 @@ function StepCard({
         ) && (
           <OperationalStepBody
             step={step}
-            artifacts={operationalStepArtifacts(step.key, { hospital, reports, schedule })}
+            artifacts={operationalStepArtifacts(step.key, { hospital, reportsState, scheduleState })}
           />
         )}
       </div>
@@ -635,13 +655,13 @@ function operationalStepArtifacts(
   key: StepDef['key'],
   data: {
     hospital: Hospital | null
-    reports: ReportArtifactLike[]
-    schedule: ScheduleArtifactLike | null
+    reportsState: OnboardingArtifactLoadState<ReportArtifactLike[]>
+    scheduleState: OnboardingArtifactLoadState<ScheduleArtifactLike | null>
   },
 ): OnboardingArtifact[] {
-  if (key === 'v0') return selectV0ReportArtifacts(data.reports)
+  if (key === 'v0') return describeV0ReportArtifactState(data.reportsState)
   if (key === 'site' || key === 'live') return describeDomainArtifacts(data.hospital)
-  if (key === 'schedule') return describeScheduleArtifacts(data.schedule)
+  if (key === 'schedule') return describeScheduleArtifactState(data.scheduleState)
   return []
 }
 
@@ -656,7 +676,11 @@ function StepArtifactList({ artifacts }: { artifacts: OnboardingArtifact[] }) {
           </dt>
           <dd
             className={`mt-0.5 break-words text-sm ${
-              artifact.missing ? 'text-amber-800' : 'text-slate-800'
+              artifact.state === 'error'
+                ? 'text-red-700'
+                : artifact.missing
+                  ? 'text-amber-800'
+                  : 'text-slate-800'
             }`}
           >
             {artifact.href ? (

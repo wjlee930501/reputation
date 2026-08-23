@@ -16,7 +16,13 @@ export interface OnboardingArtifact {
   href?: string
   /** 값이 없어서 확인이 필요한 항목 */
   missing?: boolean
+  state?: 'loading' | 'error' | 'empty'
 }
+
+export type OnboardingArtifactLoadState<T> =
+  | { status: 'loading' }
+  | { status: 'error' }
+  | { status: 'loaded'; data: T }
 
 export interface ReportArtifactLike {
   id: string
@@ -45,6 +51,28 @@ export interface ScheduleArtifactLike {
   active_from?: string | null
 }
 
+export function resolveReportsArtifactResult(
+  result: PromiseSettledResult<ReportArtifactLike[]>,
+): OnboardingArtifactLoadState<ReportArtifactLike[]> {
+  if (result.status === 'rejected') return { status: 'error' }
+  return { status: 'loaded', data: Array.isArray(result.value) ? result.value : [] }
+}
+
+export function resolveScheduleArtifactResult(
+  result: PromiseSettledResult<ScheduleArtifactLike>,
+): OnboardingArtifactLoadState<ScheduleArtifactLike | null> {
+  if (result.status === 'fulfilled') return { status: 'loaded', data: result.value ?? null }
+  if (
+    typeof result.reason === 'object'
+    && result.reason !== null
+    && 'status' in result.reason
+    && result.reason.status === 404
+  ) {
+    return { status: 'loaded', data: null }
+  }
+  return { status: 'error' }
+}
+
 const PLAN_LABELS: Record<string, string> = {
   PLAN_20: '리더 20편/월',
   PLAN_16: '그로워 16편/월',
@@ -70,7 +98,12 @@ export function selectV0ReportArtifacts(reports: ReportArtifactLike[]): Onboardi
   const rows = Array.isArray(reports) ? reports : []
   const v0 = rows.filter((report) => report.report_type === 'V0')
   if (v0.length === 0) {
-    return [{ label: '초기 진단 리포트', value: '아직 생성되지 않았습니다', missing: true }]
+    return [{
+      label: '초기 진단 리포트',
+      value: '아직 생성되지 않았습니다',
+      missing: true,
+      state: 'empty',
+    }]
   }
 
   const withPdf = v0.find((report) => report.has_pdf && report.download_url)
@@ -80,6 +113,7 @@ export function selectV0ReportArtifacts(reports: ReportArtifactLike[]): Onboardi
         label: '초기 진단 리포트',
         value: `기록 ${v0.length}건 · PDF 없음 — 다시 만들어야 원장 보고 자료가 생깁니다`,
         missing: true,
+        state: 'empty',
       },
     ]
   }
@@ -92,6 +126,26 @@ export function selectV0ReportArtifacts(reports: ReportArtifactLike[]): Onboardi
       href: withPdf.download_url ?? undefined,
     },
   ]
+}
+
+export function describeV0ReportArtifactState(
+  state: OnboardingArtifactLoadState<ReportArtifactLike[]>,
+): OnboardingArtifact[] {
+  if (state.status === 'loading') {
+    return [{
+      label: '초기 진단 리포트',
+      value: '리포트 정보를 불러오는 중입니다',
+      state: 'loading',
+    }]
+  }
+  if (state.status === 'error') {
+    return [{
+      label: '초기 진단 리포트',
+      value: '리포트 정보를 불러오지 못했습니다. 위의 새로 고침을 눌러 다시 시도해 주세요',
+      state: 'error',
+    }]
+  }
+  return selectV0ReportArtifacts(state.data)
 }
 
 /** 콘텐츠 허브·도메인 단계가 확인해야 하는 공개 주소 사실. */
@@ -145,7 +199,12 @@ export function describeScheduleArtifacts(
   schedule: ScheduleArtifactLike | null,
 ): OnboardingArtifact[] {
   if (!schedule) {
-    return [{ label: '발행 스케줄', value: '아직 저장되지 않았습니다', missing: true }]
+    return [{
+      label: '발행 스케줄',
+      value: '아직 저장되지 않았습니다',
+      missing: true,
+      state: 'empty',
+    }]
   }
 
   const artifacts: OnboardingArtifact[] = []
@@ -173,4 +232,20 @@ export function describeScheduleArtifacts(
   if (from) artifacts.push({ label: '적용 시작', value: from })
 
   return artifacts
+}
+
+export function describeScheduleArtifactState(
+  state: OnboardingArtifactLoadState<ScheduleArtifactLike | null>,
+): OnboardingArtifact[] {
+  if (state.status === 'loading') {
+    return [{ label: '발행 스케줄', value: '스케줄 정보를 불러오는 중입니다', state: 'loading' }]
+  }
+  if (state.status === 'error') {
+    return [{
+      label: '발행 스케줄',
+      value: '스케줄 정보를 불러오지 못했습니다. 위의 새로 고침을 눌러 다시 시도해 주세요',
+      state: 'error',
+    }]
+  }
+  return describeScheduleArtifacts(state.data)
 }

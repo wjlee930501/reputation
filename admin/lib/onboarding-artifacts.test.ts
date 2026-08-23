@@ -4,7 +4,11 @@ import test from 'node:test'
 
 import {
   describeDomainArtifacts,
+  describeScheduleArtifactState,
   describeScheduleArtifacts,
+  describeV0ReportArtifactState,
+  resolveReportsArtifactResult,
+  resolveScheduleArtifactResult,
   selectV0ReportArtifacts,
 } from './onboarding-artifacts.ts'
 
@@ -100,13 +104,61 @@ test('an unknown plan code is shown as-is rather than dropped', () => {
   assert.equal(artifacts[1].missing, true)
 })
 
+test('report loading and errors never masquerade as a confirmed missing PDF', () => {
+  const loading = describeV0ReportArtifactState({ status: 'loading' })[0]
+  const failed = describeV0ReportArtifactState(
+    resolveReportsArtifactResult({ status: 'rejected', reason: new Error('network') }),
+  )[0]
+
+  assert.equal(loading.state, 'loading')
+  assert.match(loading.value, /불러오는 중/)
+  assert.doesNotMatch(loading.value, /아직 생성되지|PDF 없음/)
+  assert.equal(failed.state, 'error')
+  assert.match(failed.value, /불러오지 못했습니다.*다시 시도/)
+  assert.doesNotMatch(failed.value, /아직 생성되지|PDF 없음/)
+})
+
+test('only a successful empty reports response renders the missing report copy', () => {
+  const artifacts = describeV0ReportArtifactState(
+    resolveReportsArtifactResult({ status: 'fulfilled', value: [] }),
+  )
+
+  assert.equal(artifacts[0].state, 'empty')
+  assert.match(artifacts[0].value, /아직 생성되지 않았습니다/)
+})
+
+test('schedule 404 is confirmed empty but network and server failures stay errors', () => {
+  const notFound = describeScheduleArtifactState(
+    resolveScheduleArtifactResult({ status: 'rejected', reason: { status: 404 } }),
+  )[0]
+  const failed = describeScheduleArtifactState(
+    resolveScheduleArtifactResult({ status: 'rejected', reason: { status: 503 } }),
+  )[0]
+
+  assert.equal(notFound.state, 'empty')
+  assert.match(notFound.value, /아직 저장되지 않았습니다/)
+  assert.equal(failed.state, 'error')
+  assert.match(failed.value, /불러오지 못했습니다.*다시 시도/)
+  assert.doesNotMatch(failed.value, /아직 저장되지 않았습니다/)
+})
+
+test('schedule loading uses loading copy rather than confirmed empty copy', () => {
+  const artifact = describeScheduleArtifactState({ status: 'loading' })[0]
+
+  assert.equal(artifact.state, 'loading')
+  assert.match(artifact.value, /불러오는 중/)
+  assert.doesNotMatch(artifact.value, /아직 저장되지 않았습니다/)
+})
+
 test('the onboarding accordion renders these artifacts for the operational steps', () => {
   const page = readFileSync(
     new URL('../app/hospitals/[id]/onboarding/page.tsx', import.meta.url),
     'utf8',
   )
 
-  assert.match(page, /selectV0ReportArtifacts/)
+  assert.match(page, /describeV0ReportArtifactState/)
   assert.match(page, /describeDomainArtifacts/)
-  assert.match(page, /describeScheduleArtifacts/)
+  assert.match(page, /describeScheduleArtifactState/)
+  assert.match(page, /AbortController/)
+  assert.match(page, /requestIdRef/)
 })
