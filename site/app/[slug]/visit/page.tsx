@@ -80,6 +80,8 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
     // /visit으로, 주소를 지역 정보 없는 축약형으로 해석할 수 있다. 엔티티 필드는 허브
     // 페이지(app/[slug]/page.tsx)와 동일하게 두고, 이 페이지 URL은 mainEntityOfPage로 분리한다.
     url: hospitalRootUrl,
+    // 같은 @id로 병합되는 노드끼리 엔티티 필드가 어긋나지 않도록 허브 페이지와 같은 값.
+    logo: hospital.logo_url ?? undefined,
     mainEntityOfPage: `${hospitalRootUrl}/visit`,
     address: {
       '@type': 'PostalAddress',

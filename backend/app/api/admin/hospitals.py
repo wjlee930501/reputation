@@ -8,6 +8,7 @@ PATCH  /admin/hospitals/{id}/domain     — 공개 도메인 상태 확인
 PATCH  /admin/hospitals/{id}/activate   — ACTIVE 전환
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -15,7 +16,16 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field, field_validator
 from slugify import slugify
 from sqlalchemy import func, or_, select
@@ -35,6 +45,7 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
+from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -46,6 +57,13 @@ from app.services.hospital_lifecycle import (
     activation_gate_error,
     evaluate_activation_gate,
     missing_profile_requirement_keys,
+)
+from app.services.hospital_logo import (
+    EXTERNAL_LOGO_URL_MESSAGE,
+    LOGO_ALLOWED_MIME_TYPES,
+    LOGO_MAX_BYTES,
+    is_external_logo_url,
+    public_logo_url,
 )
 from app.services.hospital_profile_autofill import autofill_profile
 from app.services.keyword_analysis import (
@@ -663,6 +681,10 @@ async def update_profile(
         "site_access_mode",
     }
     update_data = body.model_dump(exclude_unset=True)
+    # 공개 표면이 조용히 버릴 값을 저장해 두고 `승인됨`으로 보여 주지 않는다 — 로고는
+    # 온보딩 필수 게이트라, 효과 없는 입력을 통과시키면 운영자가 헛일을 하게 된다(L-1).
+    if is_external_logo_url(update_data.get("logo_url")):
+        raise HTTPException(status_code=400, detail=EXTERNAL_LOGO_URL_MESSAGE)
     was_complete = h.profile_complete
     changed_fields: list[str] = []
     for field, value in update_data.items():
@@ -748,6 +770,81 @@ async def update_profile(
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
     return _serialize(h)
+
+
+@router.post("/{hospital_id}/logo", status_code=status.HTTP_201_CREATED)
+async def upload_hospital_logo(
+    hospital_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """공식 로고 파일을 업로드하고 공개 표면이 읽을 주소로 연결한다.
+
+    URL 입력만 있던 시절에는 운영자가 병원 홈페이지 CDN의 로고를 핫링크할 수밖에
+    없었고, 그 주소는 공개 표면의 자산 허용 목록에 걸려 조용히 사라졌다(L-1). 사진과
+    같은 저장 경로를 써서 우리 오리진에서 서빙한다 — 상대 CDN 정책이 바뀌어도 깨지지
+    않는다.
+    """
+    h = await _get_or_404(db, hospital_id)
+
+    data = await _read_logo_upload(file)
+    mime_type = (file.content_type or "").lower().split(";")[0].strip()
+    if mime_type not in LOGO_ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="로고는 PNG·JPG·WEBP 파일만 올릴 수 있습니다.",
+        )
+
+    # 동기 GCS 업로드는 이벤트 루프를 블로킹할 수 있다 — 워커 스레드에서 실행한다.
+    stored_ref = await asyncio.to_thread(
+        store_asset_bytes,
+        hospital_id=hospital_id,
+        filename=file.filename or "logo",
+        data=data,
+        mime_type=mime_type,
+    )
+    h.logo_url = stored_ref
+    await write_audit_log(
+        db,
+        action="upload_logo",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="hospital",
+        target_id=hospital_id,
+        detail={"byte_size": len(data), "mime_type": mime_type},
+    )
+    if _has_public_site(h):
+        ensure_site_revalidate_configured()
+    await db.commit()
+    await db.refresh(h)
+    if _has_public_site(h):
+        # 커밋 이후 — 실패해도 저장은 이미 성공했다 (R4).
+        await trigger_hospital_site_revalidate_safe(h.slug, hospital_name=h.name)
+    return {"logo_url": public_logo_url(h.slug), "stored": True}
+
+
+_LOGO_CHUNK_BYTES = 256 * 1024
+
+
+async def _read_logo_upload(file: UploadFile) -> bytes:
+    """상한을 넘는 즉시 읽기를 중단한다 — 전부 읽고 검사하면 상한이 무의미하다."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_LOGO_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > LOGO_MAX_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"로고 파일은 {LOGO_MAX_BYTES // (1024 * 1024)}MB 이하여야 합니다.",
+            )
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    if not data:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+    return data
 
 
 @router.post("/{hospital_id}/profile/autofill")

@@ -158,6 +158,10 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     '@id': `${hospitalRootUrl}#clinic`,
     name: hospital.name,
     url: hospitalRootUrl,
+    // Organization.logo — 답변 엔진과 검색이 병원 엔티티를 식별할 때 표준으로 읽는
+    // 필드다. 승인된 로고가 있는데 비워 두면 이 제품의 핵심 지표(AI 답변 언급)에서
+    // 그만큼 손해다. 값은 업로드된 자산의 절대 주소로 정규화돼 있다.
+    logo: hospital.logo_url ?? undefined,
     image: selectClinicDirectorImage(hospital) ?? undefined,
     description: publicAbout ?? undefined,
     slogan: publicAbout ?? undefined,
