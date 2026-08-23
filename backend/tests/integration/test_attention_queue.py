@@ -22,7 +22,7 @@ from app.api.admin.operations import (
     POST_PUBLISH_REVIEW_OVERDUE_HOURS,
     get_attention_queue,
 )
-from app.api.admin.operations_center_query_common import OperationsFilters
+from app.api.admin.operations_center_query_common import OperationsFilters, SlaFilter
 from app.api.admin.operations_center_read_routes import get_global_incident_detail
 from app.core.database import get_db
 from app.core.rate_limit import get_request_ip
@@ -524,7 +524,9 @@ async def test_prior_month_service_interval_controls_legacy_report_attention(pg_
     db = pg_async_session
     served_then_paused = await _active_hospital(db, "지난달해지 의원")
     served_then_paused.status = HospitalStatus.PAUSED
-    year, month, period_start, _period_end = report_queries._previous_period(datetime.now(UTC))
+    year, month, period_start, _period_end, _closes_at = report_queries._previous_period(
+        datetime.now(UTC)
+    )
     assert (year, month) == _previous_month(datetime.now(UTC))
     interval = await db.scalar(
         select(HospitalServiceInterval).where(
@@ -1284,7 +1286,77 @@ async def test_reports_queue_deadline_is_the_report_period_close(pg_async_sessio
     assert row.sla_due_at is not None
     # 인수 기한이 미래인데도 예전에는 그 날짜를 "기한 지남"과 함께 보여줬다.
     assert row.sla_due_at != handoff_due
+    year, month, _period_start, period_end, closes_at = report_queries._previous_period(now)
+    assert (year, month) == _previous_month(now)
+    assert row.sla_due_at == closes_at
+    assert closes_at == period_end + timedelta(minutes=15)
     assert row.sla_due_at < now
+    assert row.sla_state == "OVERDUE"
+
+
+async def test_reports_queue_uses_close_boundary_for_due_and_overdue_filters(
+    pg_async_session,
+):
+    db = pg_async_session
+    hospital = await _active_hospital(db, "리포트마감경계 의원")
+    interval = await db.scalar(
+        select(HospitalServiceInterval).where(
+            HospitalServiceInterval.hospital_id == hospital.id
+        )
+    )
+    assert interval is not None
+    interval.started_at = datetime(2026, 6, 1, tzinfo=UTC)
+    hospital.created_at = interval.started_at
+    await db.flush()
+
+    # 2026-08-01 00:05 KST: 달력상 7월은 끝났지만 00:15 집계 마감 전이다.
+    before_close = datetime(2026, 7, 31, 15, 5, tzinfo=UTC)
+    due_total, due_rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(sla=SlaFilter.DUE),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=before_close,
+    )
+    overdue_total, overdue_rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(sla=SlaFilter.OVERDUE),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=before_close,
+    )
+
+    row = next(item for item in due_rows if item.customer.hospital_id == hospital.id)
+    assert due_total == 1
+    assert row.sla_due_at.astimezone(UTC) == datetime(2026, 7, 31, 15, 15, tzinfo=UTC)
+    assert row.sla_state == "DUE"
+    assert overdue_total == 0
+    assert overdue_rows == []
+
+    after_close = datetime(2026, 7, 31, 15, 16, tzinfo=UTC)
+    due_total, due_rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(sla=SlaFilter.DUE),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=after_close,
+    )
+    overdue_total, overdue_rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(sla=SlaFilter.OVERDUE),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=after_close,
+    )
+
+    row = next(item for item in overdue_rows if item.customer.hospital_id == hospital.id)
+    assert due_total == 0
+    assert due_rows == []
+    assert overdue_total == 1
     assert row.sla_state == "OVERDUE"
 
 
