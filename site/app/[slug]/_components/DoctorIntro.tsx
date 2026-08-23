@@ -57,7 +57,14 @@ export function DoctorIntro({
               priority={priorityPhoto}
               fallback={<span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>}
             />
-            <div className="clinic-curator-figure-meta">
+          </div>
+
+          <div className="clinic-curator-body">
+            {/* 이름은 이 섹션에서 가장 중요한 사실이다 — 누가 진료하는가.
+                사진 아래(좌측 컬럼 맨 끝)에 두면 사진 → 우측 약력 → 다시 좌측 하단으로
+                시선이 Z자로 튀어 가장 늦게 읽혔다. 우측 컬럼 맨 위로 올려 사진과 같은
+                높이에서 시작하게 한다. */}
+            <div className="clinic-curator-identity">
               <span className="clinic-curator-eyebrow">대표원장</span>
               <h3 className="clinic-curator-name">
                 {directorName}
@@ -65,9 +72,7 @@ export function DoctorIntro({
               </h3>
               {doctorRole ? <span className="clinic-curator-role">{doctorRole}</span> : null}
             </div>
-          </div>
 
-          <div className="clinic-curator-body">
             <div className="clinic-curator-tag-row">
               {specialties.map((s) => (
                 <span key={s} className="clinic-curator-tag">{s}</span>

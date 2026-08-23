@@ -50,7 +50,15 @@ function ProblemBlock({ item }: { readonly item: OperationsQueueRow }) {
         </span>
         <span className="ops-badge ops-badge--neutral">{operationStatusLabel(item.status)}</span>
       </div>
-      <p className="ops-readable mt-1.5 text-sm leading-5 text-slate-600">{safeCauseText(item.safe_cause)}</p>
+      {/* 원인은 원인이 있는 행에만 붙인다.
+          온보딩·오늘 발행·리포트 큐는 사건이 아니라 예정된 일감이라 safe_cause가 없다.
+          그런데 이 자리를 늘 채우면 그 행들까지 `원인 설명을 확인할 수 없습니다`가 붙어,
+          아무 문제 없는 줄이 전부 장애처럼 읽히고 조치 대신 개발팀 문의를 가리켰다(G-1). */}
+      {item.safe_cause && (
+        <p className="ops-readable mt-1.5 text-sm leading-5 text-slate-600">
+          {safeCauseText(item.safe_cause)}
+        </p>
+      )}
     </div>
   )
 }

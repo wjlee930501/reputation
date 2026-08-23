@@ -42,13 +42,19 @@ const PLAIN_CONTAINERS = [
   '.clinic-library-hero-inner',
 ]
 
-/** 자기 좌우 여백(--clinic-rail)을 갖는 컨테이너. 바깥 상자는 여백만큼 더 크다. */
+/**
+ * 자기 좌우 여백(--clinic-rail)을 갖는 컨테이너. 바깥 상자는 여백만큼 더 크다.
+ *
+ * 레일 가족은 페이지 최상단 띠(헤더·히어로·팩트 레일·섹션 인덱스)뿐이다. 본문 중간에
+ * 오는 섹션이 레일을 쓰면 텍스트 정렬선은 같아도 DOM 박스가 1296 대 1200으로 갈리고,
+ * 중간 폭(1248~1296)에서는 본문 폭까지 이웃 섹션과 달라진다 — `진료 영역`이 그래서
+ * 여기서 빠졌다(아래 전용 테스트가 그 사실을 지킨다).
+ */
 const RAILED_CONTAINERS = [
   '.clinic-header-row',
   '.clinic-hero-editorial-grid',
   '.clinic-hero-fact-rail',
   '.clinic-section-index',
-  '.clinic-treatment-directory .clinic-section-inner',
 ]
 
 test('the container token is declared once, at 1200px', () => {
@@ -78,6 +84,15 @@ test('railed containers reserve room for their own gutter so content lands on th
       `${selector}의 바깥 폭이 기준선에서 파생되지 않습니다.`,
     )
   }
+})
+
+test('the treatment directory takes the same width as the sections around it', () => {
+  // 본문 중간 섹션이 히어로의 레일 체계를 빌려 쓰면 그 구간만 상자가 다르다.
+  // 폭·여백을 스스로 정하지 않고 .clinic-section / .clinic-section-inner 기본값을 받는다.
+  const body = rules('.clinic-treatment-directory .clinic-section-inner')[0]
+  assert.doesNotMatch(body, /max-width:/)
+  assert.doesNotMatch(body, /padding:/)
+  assert.match(rules('.clinic-treatment-directory')[0], /padding:[^;]*var\(--clinic-section-x\)/)
 })
 
 test('the hero copy sits on the same gutter as the header and the fact rail', () => {

@@ -1115,3 +1115,67 @@ async def test_create_brief_blocks_measurement_action_before_creating_slot(monke
     assert slot_was_resolved is False
     assert db.committed is False
     assert action.linked_content_id is None
+
+
+async def test_reading_the_queue_rediagnoses_from_the_latest_measurements(monkeypatch):
+    """A-2 — 조회가 순수 읽기라 규칙 수정 이후 옛 진단이 화면에 남아 있었다.
+
+    재진단을 도는 경로가 측정 직후 워커와 수동 버튼뿐이라, 측정이 다시 돌지 않은 병원은
+    `성공한 측정값이 없습니다`를 영원히 보여줬다 — 같은 화면의 언급률과 정면으로 어긋난다.
+    """
+    hospital_id = uuid.uuid4()
+    calls: list[uuid.UUID] = []
+
+    async def fake_ensure(db, requested_hospital_id):
+        calls.append(requested_hospital_id)
+
+    async def fake_list(db, requested_hospital_id, *, limit):
+        # 재진단이 먼저 끝난 뒤에 큐를 읽어야 갱신된 결과가 나온다.
+        assert calls == [hospital_id]
+        return []
+
+    monkeypatch.setattr(exposure_actions_api, "ensure_hospital_exposure_actions", fake_ensure)
+    monkeypatch.setattr(exposure_actions_api, "list_top_exposure_actions", fake_list)
+
+    response = await exposure_actions_api.get_exposure_actions(
+        hospital_id,
+        db=_FakeDB(SimpleNamespace(id=hospital_id)),
+        limit=3,
+    )
+
+    assert response == []
+    assert calls == [hospital_id]
+
+
+async def test_a_failed_rediagnosis_still_serves_the_last_known_queue(monkeypatch):
+    """조회에 쓰기를 얹었으므로, 그 실패가 조회 실패가 되면 안 된다.
+
+    대시보드가 통째로 비는 것보다 직전 진단이라도 보여 주는 편이 낫다(재진단 도입 전과
+    같은 결과). 롤백해서 세션을 쓸 수 있는 상태로 되돌린 뒤 계속 읽는다.
+    """
+    hospital_id = uuid.uuid4()
+    action = _action(hospital_id=hospital_id)
+    rollbacks: list[bool] = []
+
+    class _RollbackDB(_FakeDB):
+        async def rollback(self):
+            rollbacks.append(True)
+
+    async def fake_ensure(db, requested_hospital_id):
+        raise RuntimeError("advisory lock timeout")
+
+    async def fake_list(db, requested_hospital_id, *, limit):
+        return [action]
+
+    monkeypatch.setattr(exposure_actions_api, "ensure_hospital_exposure_actions", fake_ensure)
+    monkeypatch.setattr(exposure_actions_api, "list_top_exposure_actions", fake_list)
+
+    response = await exposure_actions_api.get_exposure_actions(
+        hospital_id,
+        db=_RollbackDB(SimpleNamespace(id=hospital_id)),
+        limit=3,
+    )
+
+    assert rollbacks == [True]
+    assert len(response) == 1
+    assert response[0]["id"] == str(action.id)

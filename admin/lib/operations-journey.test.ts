@@ -139,7 +139,11 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
 
   const reportList = readFileSync(new URL('../app/hospitals/[id]/reports/ReportList.tsx', import.meta.url), 'utf8')
   const reportRuns = readFileSync(new URL('../app/hospitals/[id]/reports/ReportRunStatus.tsx', import.meta.url), 'utf8')
-  assert.match(reportList, /고객 영향: 최신 월간 보고 자료를 원장에게 전달할 수 없습니다/)
+  // 고객 영향은 리포트 종류에 따라 다르다 — 월간은 전달 파이프라인이, 초기 진단은
+  // 원장 보고 자료 자체가 막힌다. 두 문장 모두 운영자가 읽을 말로 남아 있어야 한다.
+  assert.match(reportList, /고객 영향:/)
+  assert.match(reportList, /최신 월간 보고 자료를 원장에게 전달할 수 없습니다/)
+  assert.match(reportList, /초기 진단 결과를 원장에게 보고할 자료가 없습니다/)
   assert.match(reportRuns, /고객 영향: 생성·복구 진행 상태를 확인할 수 없습니다/)
   assert.match(reportRuns, /반복 실패 시 ‘개발팀 문의용 정보 복사’를 전달하세요/)
 })

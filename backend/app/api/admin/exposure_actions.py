@@ -6,6 +6,7 @@ PATCH /admin/hospitals/{id}/exposure-actions/{action_id}
 POST  /admin/hospitals/{id}/exposure-actions/{action_id}/create-brief
 """
 
+import logging
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any
@@ -35,6 +36,8 @@ from app.services.exposure_content_linker import (
     unlink_content_from_exposure_action,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Exposure Work Queue"])
 
 ACTION_STATUSES = {"OPEN", "IN_PROGRESS", "BLOCKED", "COMPLETED", "CANCELLED", "ARCHIVED"}
@@ -62,10 +65,37 @@ async def get_exposure_actions(
     db: AsyncSession = Depends(get_db),
     limit: int = Query(default=3, ge=1, le=20),
 ):
-    """Return deterministic top exposure actions without mutating work state."""
+    """Return deterministic top exposure actions, re-diagnosed from the latest measurements.
+
+    이 조회는 원래 순수 읽기였다. 그런데 재진단을 도는 경로가 측정 직후 워커와 운영자의
+    수동 버튼뿐이라, 진단 규칙이 고쳐진 뒤 측정이 한 번도 돌지 않은 병원은 옛 진단을
+    영원히 보여줬다 — 성공 측정 150건이 있는 화면에서 '성공한 측정값이 없습니다'가 같이
+    떠 있는 상태다. 큐를 읽을 때마다 최신 측정 기준으로 자기치유시켜 그 모순을 없앤다.
+
+    재진단은 idempotent다: 변화가 없으면 commit하지 않고, 병원 단위 advisory lock으로
+    동시 조회가 직렬화된다(exposure_action_engine 참조).
+    """
     await _get_hospital_or_404(db, hospital_id)
+    await _self_heal_exposure_actions(db, hospital_id)
     actions = await list_top_exposure_actions(db, hospital_id, limit=limit)
     return [_serialize_action(action) for action in actions]
+
+
+async def _self_heal_exposure_actions(db: AsyncSession, hospital_id: uuid.UUID) -> None:
+    """Refresh derived work before a read, without ever failing the read.
+
+    조회 경로에 쓰기를 얹었으므로 실패 모드를 조회 실패로 만들면 안 된다 — 대시보드가
+    통째로 비는 것보다, 갱신에 실패했을 때 직전 진단이라도 보여주는 편이 낫다(재진단
+    도입 전과 동일한 결과). 실패는 로그로만 남기고 다음 조회에서 다시 시도한다.
+    """
+    try:
+        await ensure_hospital_exposure_actions(db, hospital_id)
+    except Exception:
+        await db.rollback()
+        logger.exception(
+            "exposure_actions self-heal failed on read; serving last diagnosis: hospital=%s",
+            hospital_id,
+        )
 
 
 @router.post("/{hospital_id}/exposure-actions/refresh")

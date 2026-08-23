@@ -60,6 +60,28 @@ test('an approved headline keeps its own line breaks as parts', () => {
   assert.deepEqual(headline.lead, ['증상을 정확히 확인하고'])
   assert.equal(headline.emphasis, '필요한 치료만 안내합니다')
   assert.equal(headline.text, '증상을 정확히 확인하고 필요한 치료만 안내합니다')
+  // 운영자가 나눈 줄이므로 화면에서도 줄이 나뉘어야 한다 (L-3).
+  assert.equal(headline.explicitLines, true)
+})
+
+test('only an operator-authored multi-line headline claims explicit lines', () => {
+  // 자동 생성 문구는 조각이 둘이어도 폭에 맞춰 흘러야 한다 — 조각 수로 줄을 고정하던
+  // P-A-4 회귀를 막는다.
+  const generated = buildClinicHeroHeadline({
+    accessMode: 'urgent',
+    specialtyLabel: '정형외과',
+    hospitalName: '노원탑365의원',
+  })
+  assert.equal(generated.lead.length, 1)
+  assert.equal(generated.explicitLines, false)
+
+  const singleLine = buildClinicHeroHeadline({
+    approvedHeadline: '한 줄로 승인된 문장',
+    accessMode: 'urgent',
+    specialtyLabel: '정형외과',
+    hospitalName: '노원탑365의원',
+  })
+  assert.equal(singleLine.explicitLines, false)
 })
 
 test('a single-line approved headline needs no lead part', () => {
@@ -89,6 +111,16 @@ test('the hero renders the separator and lets the browser choose the line breaks
     ),
     /display:\s*block/,
   )
+})
+
+test('an operator-authored headline gets the block-line modifier, and only it', () => {
+  // 히어로가 모디파이어를 실제로 붙이는가.
+  assert.match(HERO, /headline\.explicitLines/)
+  assert.match(HERO, /clinic-hero-editorial-title--lines/)
+
+  // 그 모디파이어에만 블록이 걸려 있는가 — 기본 규칙은 위 테스트가 지킨다.
+  const modifier = CSS.slice(CSS.indexOf('.clinic-hero-editorial-title--lines span,'))
+  assert.match(modifier.slice(0, modifier.indexOf('\n}')), /display:\s*block/)
 })
 
 test('an approved headline never renders more than three parts', () => {

@@ -80,6 +80,9 @@ class ReportListResponse(BaseModel):
     report_type: str
     display: Optional[dict[str, Any]] = None
     has_pdf: bool
+    # 검증본에 묶인 전달 기록 파이프라인의 대상인지(월간만 true). 초기 진단(V0)은
+    # AE가 PDF를 직접 원장에게 전달하므로 전달 이벤트를 남기지 않는다.
+    delivery_tracked: bool = True
     # 원장 보고용 1페이지 판본이 준비됐는지. 없으면 화면이 그 버튼을 감춘다.
     has_doctor_pdf: bool = False
     doctor_artifact_state: Literal["MISSING", "INVALID", "VALID"] = "MISSING"

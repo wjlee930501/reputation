@@ -86,7 +86,10 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["naver_place_id"] == "38758880"
     assert serialized["brand_primary_color"] == "#17365D"
     assert serialized["brand_accent_color"] == "#B79045"
-    assert serialized["logo_url"] == "https://cdn.example.com/logo.png"
+    # 외부 CDN 로고는 공개 표면의 자산 허용 목록을 통과하지 못한다 — 그대로 내려보내면
+    # 헤더에서 조용히 사라지고 JSON-LD에는 못 쓰는 주소만 남는다(L-1). 업로드된 자산만
+    # 우리 오리진 라우트로 노출한다(test_hospital_logo.py 참조).
+    assert serialized["logo_url"] is None
     assert serialized["hero_image_url"] == "https://cdn.example.com/hero.png"
     assert serialized["hero_media_kind"] == "VERIFIED_FACILITY"
     assert serialized["hero_headline"] == "피부 건강 정보를 차분히 확인하세요"

@@ -61,6 +61,13 @@ export type ReportView = {
   internalDownloadUrl: string | null
   createdAt: string
   sentAt: string | null
+  /**
+   * 검증본 sha256에 묶인 전달 기록 파이프라인의 대상인지(월간만 true).
+   *
+   * 초기 진단(V0)은 AE가 PDF를 직접 원장에게 전달하므로 전달 이벤트를 남기지 않는다.
+   * 이 값을 보지 않으면 V0 행이 월간 전달 서사("전달 전 검수 가능")로 읽힌다.
+   */
+  deliveryTracked: boolean
   deliveryReady: boolean
   deliveryBlockers: readonly string[]
   doctorArtifact: {
@@ -268,6 +275,9 @@ export function parseReport(value: unknown): ReportView | null {
     internalDownloadUrl: text(root.download_url) || null,
     createdAt: text(root.created_at),
     sentAt: text(root.sent_at) || null,
+    // 값을 못 읽으면 월간(전달 추적 대상)으로 본다 — 전달 서사를 잘못 감추는 쪽보다
+    // 잘못 보여주는 쪽이 안전하다(전달 실행은 sha256 검사로 따로 막힌다).
+    deliveryTracked: root.delivery_tracked !== false,
     deliveryReady: root.delivery_ready === true,
     deliveryBlockers: strings(root.delivery_blockers),
     doctorArtifact: {

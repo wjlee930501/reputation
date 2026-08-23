@@ -24,6 +24,7 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import get_essence_readiness
+from app.services.hospital_logo import is_stored_logo_ref, public_logo_url
 from app.services.photo_assets import effective_photo_metadata
 from app.utils.domain import normalize_domain
 from app.utils.error_page import looks_like_error_page_text
@@ -246,6 +247,26 @@ async def get_public_hospital_asset(
     return public_asset_response(asset.file_url, hospital_id=h.id, media_type=asset.mime_type)
 
 
+@router.get("/{slug}/logo")
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_public_hospital_logo(
+    request: Request,
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve the uploaded official logo from the hospital's own origin.
+
+    사진 자산과 같은 저장·서빙 경로를 쓴다. 로고는 병원이 공개하려고 올린 자기 표식이라
+    사진처럼 별도 공개 승인 플래그를 두지 않지만, 저장된 참조가 업로드 자산일 때만
+    응답한다 — 외부 주소를 프록시해 주는 통로가 되지 않게 한다.
+    """
+    h = await _get_active_hospital(db, slug)
+    stored = getattr(h, "logo_url", None)
+    if not is_stored_logo_ref(stored):
+        raise HTTPException(status_code=404, detail="Logo not found")
+    return public_asset_response(stored, hospital_id=h.id, media_type=None)
+
+
 @router.get("/{slug}/contents")
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def list_published_contents(
@@ -443,7 +464,7 @@ def _serialize_hospital(
         "director_photo_url": director_photo,
         "brand_primary_color": getattr(h, "brand_primary_color", None),
         "brand_accent_color": getattr(h, "brand_accent_color", None),
-        "logo_url": _safe_external_url(getattr(h, "logo_url", None)),
+        "logo_url": _public_logo_url(h),
         "hero_image_url": _safe_external_url(getattr(h, "hero_image_url", None)),
         "hero_media_kind": getattr(h, "hero_media_kind", None),
         "hero_headline": getattr(h, "hero_headline", None),
@@ -532,6 +553,21 @@ def _content_image_url(slug: str, item: ContentItem) -> str:
     if ref.startswith("gs://"):
         return f"/api/v1/public/hospitals/{slug}/contents/{item.id}/image"
     return ref
+
+
+def _public_logo_url(h: Hospital) -> str | None:
+    """공개 표면이 실제로 렌더할 수 있는 로고 주소만 내려보낸다.
+
+    업로드된 자산은 백엔드 오리진 라우트로 서빙한다 — 공개 표면의 자산 허용 목록이
+    외부 호스트를 거부하므로, 외부 주소를 그대로 내려보내면 화면에서 조용히 사라진다
+    (L-1). 저장 단계에서 외부 주소를 막지만, 그 이전에 저장된 값이 남아 있을 수 있어
+    여기서도 같은 기준으로 거른다.
+    """
+    stored = getattr(h, "logo_url", None)
+    if not is_stored_logo_ref(stored):
+        return None
+    slug = getattr(h, "slug", None)
+    return public_logo_url(slug) if slug else None
 
 
 def _safe_external_url(value: str | None) -> str | None:
