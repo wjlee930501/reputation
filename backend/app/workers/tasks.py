@@ -129,7 +129,11 @@ from app.services.onboarding_notifications import (
     build_v0_ready_notification,
     enqueue_onboarding_notification_sync,
 )
-from app.services.ops_incident_alerts import open_ops_incident, recover_ops_incident
+from app.services.ops_incident_alerts import (
+    open_ops_incident,
+    recover_ops_incident,
+    recover_ops_incidents_for_hospital,
+)
 from app.services.post_publish_review_policy import (
     AUTO_PUBLISHABLE_STATUSES,
     auto_publish_due_predicate,
@@ -949,7 +953,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 )
             )
 
-    if result.requires_operator:
+    if result.requires_operator and result.previous_philosophy_id is None:
         snapshot = result.snapshot_hash or "unknown"
         _run_async(
             open_ops_incident(
@@ -974,20 +978,21 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
             )
         )
     elif result.status in {
+        EssenceRefreshStatus.ESCALATED,
         EssenceRefreshStatus.AUTO_APPROVED,
         EssenceRefreshStatus.UP_TO_DATE,
     }:
-        if result.snapshot_hash:
-            _run_async(
-                recover_ops_incident(
-                    pipeline="essence_auto_review",
-                    object_type="essence_snapshot",
-                    object_id=f"{hospital_id}:{result.snapshot_hash}",
-                    fingerprint=IncidentFingerprint.VALIDATION_FAILED,
-                    hospital_name=hospital_name,
-                    actor=AUTO_ESSENCE_ACTOR,
-                )
+        _run_async(
+            recover_ops_incidents_for_hospital(
+                hospital_id=hospital_uuid,
+                pipeline="essence_auto_review",
+                incident_type="ESSENCE_AUTO_REVIEW_ESCALATED",
+                hospital_name=hospital_name,
+                actor=AUTO_ESSENCE_ACTOR,
+                reason="approved Essence remains available for generation",
+                notify=False,
             )
+        )
         if result.status == EssenceRefreshStatus.AUTO_APPROVED and result.should_revalidate_site:
             _run_async(
                 trigger_hospital_site_revalidate_safe(

@@ -65,6 +65,7 @@ def generate_monthly_slots(
     target_month: arrow.Arrow,
     start_date: date | None = None,
     hospital_id: object | None = None,
+    allow_shortfall: bool = False,
 ) -> list[tuple[date, ContentType, int, int]]:
     """
     해당 월의 발행 날짜·유형·순번·총편수 목록 생성.
@@ -87,12 +88,21 @@ def generate_monthly_slots(
             dates.append(day_date)
         day = day.shift(days=1)
 
-    if len(dates) < total:
+    if not dates:
+        raise ValueError(
+            "발행 가능한 날짜가 없습니다. "
+            f"발행 요일과 시작일을 확인해 주세요. ({target_month.format('YYYY-MM')})"
+        )
+
+    if len(dates) < total and not allow_shortfall:
         raise ValueError(
             f"발행일 수({len(dates)})가 요금제 편수({total})보다 적습니다. "
             f"발행 요일을 추가하거나 요금제를 변경해 주세요. "
             f"({target_month.format('YYYY-MM')})"
         )
+    if len(dates) < total:
+        type_sequence = type_sequence[: len(dates)]
+        total = len(type_sequence)
 
     selected_dates = _spread_dates(dates, total)
     result = [
