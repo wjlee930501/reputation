@@ -1,10 +1,11 @@
 import uuid
 
 import pytest
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 
 from app.api.admin.hospitals import HospitalProfileUpdate, _serialize, update_profile
+from app.services.hospital_logo import EXTERNAL_LOGO_URL_MESSAGE
 
 VISUAL_FIELDS = (
     "brand_primary_color",
@@ -184,3 +185,72 @@ class _FakeDB:
 
     async def refresh(self, _item):
         pass
+
+
+def _active_complete_hospital(**overrides):
+    values = dict(
+        id=uuid.uuid4(),
+        profile_complete=True,
+        director_name="김원장",
+        director_career="정형외과 전문의",
+        director_philosophy="필요한 진료를 충분히 설명합니다.",
+        address="서울 노원구 동일로 123",
+        phone="02-000-0000",
+        business_hours={"mon": "09:00-18:00"},
+        website_url="https://clinic.example",
+        naver_place_url="https://naver.me/example",
+        google_maps_url="https://maps.google.com/example",
+        latitude=37.65,
+        longitude=127.06,
+        region=["노원구"],
+        specialties=["정형외과"],
+        keywords=["관절 통증"],
+        treatments=[{"name": "척추·관절 진료"}],
+        logo_url="https://legacy-cdn.example/logo.png",
+    )
+    return _FakeHospital(**{**values, **overrides})
+
+
+async def test_active_complete_profile_saves_unrelated_edits_with_unchanged_legacy_logo():
+    """A full-form PATCH must not make a legacy logo block every later edit."""
+    legacy_logo_url = "https://legacy-cdn.example/logo.png"
+    hospital = _active_complete_hospital(logo_url=legacy_logo_url)
+    db = _FakeDB(hospital)
+
+    await update_profile(
+        hospital.id,
+        HospitalProfileUpdate(
+            profile_complete=True,
+            logo_url=legacy_logo_url,
+            specialties=["정형외과", "마취통증의학과", "응급의학과"],
+            hero_description="척추·관절 통증부터 경증 응급까지 진료합니다.",
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert _serialize(hospital)["specialties"] == ["정형외과", "마취통증의학과", "응급의학과"]
+    assert _serialize(hospital)["hero_description"] == "척추·관절 통증부터 경증 응급까지 진료합니다."
+    assert hospital.logo_url == legacy_logo_url
+
+
+async def test_active_complete_profile_rejects_changing_logo_to_new_external_url():
+    hospital = _active_complete_hospital()
+    db = _FakeDB(hospital)
+
+    with pytest.raises(HTTPException) as exc:
+        await update_profile(
+            hospital.id,
+            HospitalProfileUpdate(logo_url="https://new-cdn.example/logo.png"),
+            BackgroundTasks(),
+            db=db,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == {
+        "code": "EXTERNAL_LOGO_URL",
+        "message": EXTERNAL_LOGO_URL_MESSAGE,
+    }
+    assert db.committed is False
+    assert hospital.logo_url == "https://legacy-cdn.example/logo.png"

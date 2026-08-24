@@ -6,6 +6,7 @@ import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isApprovedBrandColor } from '@/lib/clinic-visual-readiness'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
+import { profileSaveErrorMessage } from '@/lib/profile-save-error'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
 import {
   GOOGLE_CHANNEL_FIELD_HINTS,
@@ -456,11 +457,14 @@ export default function ProfilePage() {
               ? `${item.keyword} → ${item.suggested_keyword}`
               : item.keyword
           ))
-          setError(`${detail.message ?? '지역 태그와 핵심 키워드를 분리해 주세요.'}${items.length ? ` (${items.join(', ')})` : ''}`)
+          setError([
+            `${detail.message ?? '지역 태그와 핵심 키워드를 분리해 주세요.'}${items.length ? ` (${items.join(', ')})` : ''}`,
+            `오류 코드: ${detail.code}`,
+          ].join('\n'))
           return
         }
       }
-      setError(safeOperatorError('onboarding', '필수 항목을 확인한 뒤 ‘저장’을 다시 누르세요.'))
+      setError(profileSaveErrorMessage(e))
     } finally {
       setSaving(false)
     }
