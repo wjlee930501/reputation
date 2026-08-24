@@ -64,6 +64,7 @@ function OperationsCenter() {
           onPage={(page) => center.patchQuery({ page })}
           searchTerm={center.query.q}
           checkedAt={center.checkedAt}
+          canRaiseLimit={center.canRaiseLimit}
         />
         <OperationDetail
           detail={center.detail}

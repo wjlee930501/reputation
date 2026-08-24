@@ -60,7 +60,7 @@ _COST_LIMIT_CAUSE_MESSAGE: Final = (
 
 def canonical_cause_code(code: str | None, incident_type: str) -> str:
     """Return a stable root-cause key shared by cost-limit symptoms."""
-    normalized = (code or incident_type or "OPERATION_FAILED").strip().upper()
+    normalized = (code or incident_type or "").strip().upper() or "OPERATION_FAILED"
     return _COST_LIMIT_CAUSE_CODE if normalized in _COST_LIMIT_CAUSE_CODES else normalized
 
 
@@ -68,7 +68,39 @@ def cause_message(code: str, stored_message: str | None, impact: str) -> str:
     """Return non-empty, operator-safe cause copy for an incident projection."""
     if code == _COST_LIMIT_CAUSE_CODE:
         return _COST_LIMIT_CAUSE_MESSAGE
-    return (stored_message or impact or "운영 작업이 완료되지 않은 원인을 확인해야 합니다.").strip()
+    projected = (stored_message or impact or "").strip()
+    return projected or "운영 작업이 완료되지 않은 원인을 확인해야 합니다."
+
+
+def cost_guard_category(
+    incident: Incident,
+    run: OperationRun | None,
+    cause_code: str,
+) -> str | None:
+    """Resolve the budget bucket behind a canonical cost-limit incident."""
+    if cause_code != _COST_LIMIT_CAUSE_CODE:
+        return None
+    if incident.source_type == "COST_GUARD" and incident.source_id:
+        category = incident.source_id.split(":", 1)[0].lower()
+        if category in {"content", "image", "sov", "leadgen"}:
+            return category
+    context = " ".join(
+        filter(
+            None,
+            (
+                incident.incident_type,
+                incident.source_type,
+                run.operation_type if run is not None else None,
+            ),
+        )
+    ).upper()
+    if "LEAD" in context:
+        return "leadgen"
+    if any(token in context for token in ("SOV", "MEASUREMENT", "V0_REPORT")):
+        return "sov"
+    if "IMAGE" in context:
+        return "image"
+    return "content"
 
 
 def owner_projection(user: AdminUser | None) -> OperationsOwner | None:
@@ -185,6 +217,10 @@ def serialize_incident_row(
         run.safe_error_message if run is not None else None
     )
     projected_message = cause_message(projected_code, stored_message, incident.customer_impact)
+    budget_category = cost_guard_category(incident, run, projected_code)
+    projected_group_key = cause_group_key or projected_code
+    if budget_category is not None:
+        projected_group_key = f"{projected_code}:{budget_category}"
     return OperationsQueueRow(
         id=f"incident:{incident.id}",
         queue=OperationsQueue.INCIDENTS,
@@ -204,13 +240,14 @@ def serialize_incident_row(
         retry=retry_action(hospital_id, run) if hospital_id else None,
         cause_code=projected_code,
         cause_message=projected_message,
-        cause_group_key=cause_group_key or projected_code,
+        cause_group_key=projected_group_key,
         same_type_count=max(1, same_type_count),
         affected_hospital_count=(
             affected_hospital_count
             if affected_hospital_count is not None
             else (1 if hospital_id is not None else 0)
         ),
+        cost_guard_category=budget_category,
         safe_cause=projected_message,
         history=history(incident),
         slack=slack_state(outbox),

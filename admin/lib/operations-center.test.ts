@@ -15,6 +15,7 @@ import {
   interpretOperationsConflict,
   operationStatusLabel,
   primaryOperationsMutation,
+  readOperationsQuery,
   runStateLabel,
   safeCauseText,
   selectCurrentAction,
@@ -42,6 +43,12 @@ function row(
     next_action: '콘텐츠를 확인해 주세요.',
     action: { kind: 'REVIEW', label: '확인', method: 'GET', path: '/hospitals/1/content', enabled: true },
     retry: null,
+    cause_code: null,
+    cause_message: null,
+    cause_group_key: null,
+    same_type_count: 1,
+    affected_hospital_count: 0,
+    cost_guard_category: null,
     safe_cause: null,
     history: [],
     slack: null,
@@ -64,6 +71,15 @@ test('canonical query parses supported values and drops unsafe noise', () => {
 
   // Then
   assert.equal(canonical.toString(), 'queue=incidents&status=OPEN&detail=i-1')
+})
+
+test('recovered incidents use a separate canonical view and reset paging', () => {
+  const source = new URLSearchParams('queue=incidents&page=3')
+
+  const next = updateOperationsQuery(source, { recovery: 'confirmed' })
+
+  assert.equal(next.toString(), 'queue=incidents&recovery=confirmed')
+  assert.equal(readOperationsQuery(next).recovery, 'confirmed')
 })
 
 test('code-like causes and contact details never render as marketer explanations', () => {

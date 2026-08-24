@@ -6,12 +6,13 @@ import uuid
 from datetime import datetime
 from types import EllipsisType
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.api.admin.operations_center_query_common import (
+    IncidentRecoveryFilter,
     OperationsFilters,
     owner_predicate,
     sla_predicate,
@@ -23,6 +24,38 @@ from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.schemas.operations import OperationsQueueRow
 
 HospitalScope = uuid.UUID | None | EllipsisType
+
+
+def _group_incident_rows(
+    rows: list[tuple[Incident, Hospital | None, AdminUser | None, OperationRun | None, NotificationOutbox | None]],
+    now: datetime,
+) -> list[OperationsQueueRow]:
+    """Collapse repeated symptoms into one stable root-cause projection."""
+    grouped: dict[str, list[OperationsQueueRow]] = {}
+    for incident, hospital, actor, run, outbox in rows:
+        row = serialize_incident_row(incident, hospital, actor, run, outbox, now)
+        key = row.cause_group_key or row.cause_code or incident.incident_type
+        grouped.setdefault(key, []).append(row)
+
+    projections: list[OperationsQueueRow] = []
+    for key, members in grouped.items():
+        representative = members[0]
+        hospitals = {
+            member.customer.hospital_id
+            for member in members
+            if member.customer.hospital_id is not None
+        }
+        projections.append(
+            representative.model_copy(
+                update={
+                    "id": f"cause:{key}" if len(members) > 1 else representative.id,
+                    "cause_group_key": key,
+                    "same_type_count": len(members),
+                    "affected_hospital_count": len(hospitals),
+                }
+            )
+        )
+    return projections
 
 
 def _hospital_scope_predicate(hospital_scope: HospitalScope) -> ColumnElement[bool] | None:
@@ -65,6 +98,11 @@ async def load_incidents_queue(
         predicates.append(Incident.state == filters.status)
     if filters.severity is not None:
         predicates.append(Incident.severity == filters.severity)
+    if filters.status is None:
+        if filters.recovery == IncidentRecoveryFilter.ACTIVE:
+            predicates.append(Incident.state.in_(("OPEN", "RETRYING")))
+        elif filters.recovery == IncidentRecoveryFilter.CONFIRMED:
+            predicates.append(Incident.state.in_(("RECOVERED", "ACKNOWLEDGED")))
     latest_outbox_id = (
         select(NotificationOutbox.id)
         .where(NotificationOutbox.incident_id == Incident.id)
@@ -73,12 +111,6 @@ async def load_incidents_queue(
         .limit(1)
         .scalar_subquery()
     )
-    count_statement = (
-        select(func.count(Incident.id))
-        .select_from(Incident)
-        .outerjoin(assignee, assignee.id == Incident.owner_id)
-        .where(*predicates)
-    )
     page_statement = (
         select(
             Incident,
@@ -86,7 +118,6 @@ async def load_incidents_queue(
             assignee,
             OperationRun,
             NotificationOutbox,
-            func.count().over().label("_total"),
         )
         .outerjoin(Hospital, Hospital.id == Incident.hospital_id)
         .outerjoin(assignee, assignee.id == Incident.owner_id)
@@ -94,19 +125,12 @@ async def load_incidents_queue(
         .outerjoin(NotificationOutbox, NotificationOutbox.id == latest_outbox_id)
         .where(*predicates)
         .order_by(Incident.sla_due_at.asc().nullslast(), Incident.last_seen_at.desc(), Incident.id)
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
-    rows = list((await db.execute(page_statement)).all())
-    total = (
-        (int(rows[0]._total) if rows else 0)
-        if overview
-        else int((await db.scalar(count_statement)) or 0)
-    )
-    return total, [
-        serialize_incident_row(incident, hospital, actor, run, outbox, now)
-        for incident, hospital, actor, run, outbox, _total in rows
-    ]
+    raw_rows = [tuple(row) for row in (await db.execute(page_statement)).all()]
+    grouped = _group_incident_rows(raw_rows, now)
+    total = len(grouped)
+    start = (page - 1) * page_size
+    return total, grouped[start : start + page_size]
 
 
 __all__ = ("HospitalScope", "load_incidents_queue")

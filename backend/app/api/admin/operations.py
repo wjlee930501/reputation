@@ -410,6 +410,12 @@ async def set_cost_guard_daily_limit(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    before_snapshot = await cost_guard.get_usage_snapshot()
+    before = next(
+        (c for c in before_snapshot["categories"] if c["category"] == payload.category),
+        None,
+    )
+
     # 순서 규약: write_audit_log → commit → 외부 부수효과(Redis).
     # 뒤집으면 Redis만 바뀌고 감사 커밋이 실패했을 때 "누가 상한을 올렸는지" 기록이 없다.
     await write_audit_log(
@@ -418,7 +424,13 @@ async def set_cost_guard_daily_limit(
         actor=actor.email,
         target_type="cost_guard",
         target_id=payload.category,
-        detail={"category": payload.category, "limit": payload.limit},
+        detail={
+            "category": payload.category,
+            "previous_limit": int(before["daily_limit"]) if before else None,
+            "requested_limit": payload.limit,
+            "reason": sanitize_operator_text(payload.reason, limit=200),
+            "change": "RESTORE" if payload.limit is None else "RAISE",
+        },
     )
     await db.commit()
 

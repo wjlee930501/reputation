@@ -39,6 +39,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState('')
+  const [limitReasons, setLimitReasons] = useState<Record<string, string>>({})
   const [refreshing, setRefreshing] = useState(false)
   const refreshingRef = useRef(false)
 
@@ -91,10 +92,20 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
     setNotice('')
     try {
       await fetchAPI('/admin/operations/cost-guard/daily-limit', {
-        method: 'POST', body: JSON.stringify({ category: category.category, limit }),
+        method: 'POST',
+        body: JSON.stringify({
+          category: category.category,
+          limit,
+          reason: limit === null
+            ? '오늘 임시 상향 작업 완료 후 기본 한도 복원'
+            : limitReasons[category.category]?.trim(),
+        }),
       })
       setNotice(limit === null ? '오늘 사용 한도를 기본값으로 되돌렸습니다.' : '오늘 하루 사용 한도를 올렸습니다.')
       await load()
+      if (limit !== null) {
+        setLimitReasons((previous) => ({ ...previous, [category.category]: '' }))
+      }
     } catch (caught) {
       setError(message(caught))
     } finally {
@@ -144,7 +155,26 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
                     <div className="flex justify-between gap-2"><h3 className="font-semibold text-slate-800">{category.label}</h3><span className="text-xs tabular-nums text-slate-500">{category.daily_used}/{category.daily_limit || '∞'}</span></div>
                     <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className={percent >= 100 ? 'h-full bg-red-600' : percent >= 80 ? 'h-full bg-amber-500' : 'h-full bg-blue-600'} style={{ width: `${percent}%` }} /></div>
                     <p className="mt-2 text-xs leading-5 text-slate-500">오늘 실행 {category.daily_actual ?? '확인 불가'}건 · 월 {category.monthly_used ?? '확인 불가'}/{category.monthly_limit || '∞'}건</p>
-                    {canRaiseLimit ? <div className="mt-2 flex gap-2"><button type="button" disabled={busy === category.category} onClick={() => void updateLimit(category, category.daily_limit_default * 2)} className="ops-control flex-1 rounded-lg border border-slate-300 px-2 text-xs font-semibold disabled:opacity-45">오늘 한도 2배</button>{raised ? <button type="button" disabled={busy === category.category} onClick={() => void updateLimit(category, null)} className="ops-control flex-1 rounded-lg border border-slate-300 px-2 text-xs font-semibold disabled:opacity-45">기본 한도로 되돌리기</button> : null}</div> : <p className="mt-2 text-xs text-slate-500">하루 사용 한도 변경은 계정 소유자만 가능합니다.</p>}
+                    {canRaiseLimit ? (
+                      <div className="mt-2 space-y-2">
+                        {!raised ? (
+                          <input
+                            value={limitReasons[category.category] ?? ''}
+                            onChange={(event) => setLimitReasons((previous) => ({ ...previous, [category.category]: event.target.value }))}
+                            maxLength={200}
+                            placeholder="한도 상향 사유 (3자 이상)"
+                            aria-label={`${category.label} 한도 상향 사유`}
+                            className="w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                        ) : null}
+                        <div className="flex gap-2">
+                          {!raised ? (
+                            <button type="button" disabled={busy === category.category || (limitReasons[category.category]?.trim().length ?? 0) < 3} onClick={() => void updateLimit(category, category.daily_limit_default * 2)} className="ops-control flex-1 rounded-lg border border-slate-300 px-2 text-xs font-semibold disabled:opacity-45">오늘 한도 2배</button>
+                          ) : null}
+                          {raised ? <button type="button" disabled={busy === category.category} onClick={() => void updateLimit(category, null)} className="ops-control flex-1 rounded-lg border border-slate-300 px-2 text-xs font-semibold disabled:opacity-45">기본 한도로 되돌리기</button> : null}
+                        </div>
+                      </div>
+                    ) : <p className="mt-2 text-xs text-slate-500">하루 사용 한도 변경은 계정 소유자만 가능합니다.</p>}
                   </section>
                 )
               })}

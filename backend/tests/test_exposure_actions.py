@@ -553,6 +553,84 @@ async def test_patch_exposure_action_updates_work_queue_fields(monkeypatch):
     assert response["linked_content_id"] == str(content_id)
 
 
+async def test_patch_exposure_action_assignee_uses_active_account(monkeypatch):
+    hospital_id = uuid.uuid4()
+    action = _action(hospital_id=hospital_id)
+    account = SimpleNamespace(id=uuid.uuid4(), email="operator@example.test", is_active=True)
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        return _hospital(requested_hospital_id)
+
+    async def fake_get_action(db, requested_hospital_id, requested_action_id):
+        assert requested_hospital_id == hospital_id
+        assert requested_action_id == action.id
+        return action
+
+    monkeypatch.setattr(exposure_actions_api, "_get_hospital_or_404", fake_get_hospital)
+    monkeypatch.setattr(exposure_actions_api, "_get_action_or_404", fake_get_action)
+
+    class AccountDB(_MutatingDB):
+        async def get(self, model, item_id):
+            assert model is exposure_actions_api.AdminUser
+            return account if item_id == account.id else None
+
+    response = await exposure_actions_api.update_exposure_action(
+        hospital_id,
+        action.id,
+        exposure_actions_api.ExposureActionPatch(owner_account_id=account.id),
+        db=AccountDB(),
+    )
+
+    assert action.owner == account.email
+    assert response["owner"] == account.email
+
+
+async def test_group_patch_updates_shared_controls_in_one_commit(monkeypatch):
+    hospital_id = uuid.uuid4()
+    actions = [_action(hospital_id=hospital_id), _action(hospital_id=hospital_id)]
+    account = SimpleNamespace(id=uuid.uuid4(), email="group-owner@example.test", is_active=True)
+
+    async def fake_get_hospital(db, requested_hospital_id):
+        return _hospital(requested_hospital_id)
+
+    monkeypatch.setattr(exposure_actions_api, "_get_hospital_or_404", fake_get_hospital)
+
+    class ScalarResult:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return actions
+
+    class GroupDB(_MutatingDB):
+        async def execute(self, _statement):
+            return ScalarResult()
+
+        async def get(self, model, item_id):
+            assert model is exposure_actions_api.AdminUser
+            return account if item_id == account.id else None
+
+    db = GroupDB()
+    response = await exposure_actions_api.update_exposure_action_group(
+        hospital_id,
+        exposure_actions_api.ExposureActionGroupPatch(
+            action_ids=[action.id for action in actions],
+            status="IN_PROGRESS",
+            owner_account_id=account.id,
+            due_month="2026-09",
+        ),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert all(action.status == "IN_PROGRESS" for action in actions)
+    assert all(action.owner == account.email for action in actions)
+    assert all(action.due_month == "2026-09" for action in actions)
+    assert {item["id"] for item in response} == {str(action.id) for action in actions}
+    audit = next(item for item in db.added if item.action == "update_exposure_action_group")
+    assert audit.detail["owner_account_id"] == str(account.id)
+
+
 async def test_patch_linked_content_null_clears_reverse_content_link(monkeypatch):
     hospital_id = uuid.uuid4()
     action_id = uuid.uuid4()

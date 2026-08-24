@@ -164,6 +164,8 @@ export default function WikiPage() {
     return allNotes.filter((note) => {
       if (category && note.note_type !== category) return false
       const confidence = note.confidence ?? 0
+      if (confidenceBand === 'UNKNOWN' && note.confidence !== null) return false
+      if (confidenceBand !== 'UNKNOWN' && confidenceBand && note.confidence === null) return false
       if (confidenceBand === 'HIGH' && confidence < 0.8) return false
       if (confidenceBand === 'MEDIUM' && (confidence < 0.6 || confidence >= 0.8)) return false
       if (confidenceBand === 'LOW' && confidence >= 0.6) return false
@@ -392,6 +394,7 @@ export default function WikiPage() {
                 <option value="HIGH">80% 이상</option>
                 <option value="MEDIUM">60~79%</option>
                 <option value="LOW">60% 미만</option>
+                <option value="UNKNOWN">신뢰도 미측정</option>
               </select>
             </label>
           </div>

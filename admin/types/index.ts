@@ -601,6 +601,7 @@ export interface OperationsQueueRow {
   readonly cause_group_key: string | null
   readonly same_type_count: number
   readonly affected_hospital_count: number
+  readonly cost_guard_category: string | null
   readonly safe_cause: string | null
   readonly history: readonly OperationsHistoryEntry[]
   readonly slack: OperationsSlack | null
