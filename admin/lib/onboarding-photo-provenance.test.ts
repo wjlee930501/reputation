@@ -51,3 +51,20 @@ test('the operator can record rights evidence and publish in one request', () =>
   // 0052로 비공개가 된 사진에 무엇이 비었는지 그대로 보여 준다.
   assert.match(onboardingPage, /provenance\?\.missing_message/)
 })
+
+test('same-hospital rights defaults and per-file exceptions preserve every rights field', () => {
+  assert.match(onboardingPage, /lastRightsSource = sources\.find/)
+  assert.match(onboardingPage, /setRightsOwner\(\(current\) => current \|\| provenance\.source_owner/)
+  assert.match(onboardingPage, /setRightsBasis\(\(current\) => current \|\| provenance\.rights_basis/)
+  assert.match(onboardingPage, /setRightsEvidence\(\(current\) => current \|\| provenance\.evidence_reference/)
+  assert.match(onboardingPage, /rightsExceptions\[i\] \?\? \{/)
+  assert.match(onboardingPage, /권리 예외 수정/)
+  assert.match(onboardingPage, /공통 권리정보가 선택한 모든 사진에 적용됩니다/)
+  assert.doesNotMatch(onboardingPage, /setRightsEvidence\(''\)/)
+})
+
+test('photo rows show one authoritative visibility state instead of public plus pending', () => {
+  assert.match(onboardingPage, /describePhotoPublicGate\(s\)/)
+  assert.match(onboardingPage, /\{photoGate\?\.badge\}/)
+  assert.match(onboardingPage, /!isPhotoSourceType\(s\.source_type\) && \(/)
+})

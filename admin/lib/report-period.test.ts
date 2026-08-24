@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   currentMonthValue,
+  opsRelevantMonthValue,
   parseMonthValue,
   previousMonthValue,
   reportMonthBlockReason,
@@ -51,6 +52,15 @@ test('currentMonthValue follows KST across the day and year boundary', () => {
   // 2026-07-31T15:30Z == 2026-08-01 00:30 KST.
   assert.equal(currentMonthValue(new Date('2026-07-31T15:30:00Z')), '2026-08')
   assert.equal(currentMonthValue(new Date('2025-12-31T15:30:00Z')), '2026-01')
+})
+
+test('report picker follows the latest real report instead of a stale calendar default', () => {
+  assert.equal(opsRelevantMonthValue([
+    { periodYear: 2026, periodMonth: 7 },
+    { periodYear: 2026, periodMonth: 8 },
+    { periodYear: 2025, periodMonth: 12 },
+  ], new Date('2026-08-24T02:00:00Z')), '2026-08')
+  assert.equal(opsRelevantMonthValue([], new Date('2026-08-24T02:00:00Z')), '2026-07')
 })
 
 // A-8: 2026-08-22에 8월이 목록에서 아예 사라져 "8월 리포트를 만들 수 없다"는 사실만
@@ -105,5 +115,5 @@ test('every past year offers all twelve months', () => {
 test('the year list reaches the current KST year even in January', () => {
   assert.equal(reportYearOptions(new Date('2026-01-05T03:00:00Z'))[0], 2026)
   assert.equal(reportYearOptions(new Date('2026-08-22T03:00:00Z'))[0], 2026)
-  assert.equal(reportYearOptions(new Date('2026-08-22T03:00:00Z')).at(-1), 2020)
+  assert.equal(reportYearOptions(new Date('2026-08-22T03:00:00Z')).at(-1), 2025)
 })

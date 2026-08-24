@@ -47,6 +47,7 @@ import {
 import { defaultAssetTitles, duplicateAssetTitles } from '@/lib/asset-title'
 import { sourceUrlWarning } from '@/lib/source-url-warnings'
 import { formatActorLabel } from '@/lib/actor-display'
+import { describePhotoPublicGate } from '@/lib/photo-public-gate'
 import NaverBlogBulkForm from './NaverBlogBulkForm'
 
 interface Hospital {
@@ -162,6 +163,64 @@ const PHOTO_RIGHTS_BASIS_OPTIONS = [
   { value: 'LICENSE', label: '라이선스 보유 — 촬영·구매 계약이 있음' },
   { value: 'OWNER_CONSENT', label: '촬영 대상·소유자 동의를 받음' },
 ]
+
+interface PhotoRightsDraft {
+  owner: string
+  basis: string
+  reference: string
+}
+
+function photoRightsReady(value: PhotoRightsDraft): boolean {
+  return Boolean(value.owner.trim() && value.basis && value.reference.trim())
+}
+
+function PhotoRightsFields({
+  idPrefix,
+  value,
+  hospitalName,
+  onChange,
+}: {
+  idPrefix: string
+  value: PhotoRightsDraft
+  hospitalName: string | null
+  onChange: (value: PhotoRightsDraft) => void
+}) {
+  return (
+    <div className="grid gap-2 rounded-lg bg-slate-50 p-3 md:grid-cols-2">
+      <input
+        id={`${idPrefix}-rights-owner`}
+        required
+        value={value.owner}
+        onChange={(event) => onChange({ ...value, owner: event.target.value })}
+        placeholder={hospitalName ? `사진 소유자 (예: ${hospitalName})` : '사진 소유자'}
+        aria-label={`${idPrefix} 사진 소유자 예외`}
+        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+      />
+      <select
+        id={`${idPrefix}-rights-basis`}
+        required
+        value={value.basis}
+        onChange={(event) => onChange({ ...value, basis: event.target.value })}
+        aria-label={`${idPrefix} 사진 사용 권리 근거 예외`}
+        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
+      >
+        <option value="">권리 근거 선택</option>
+        {PHOTO_RIGHTS_BASIS_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+      <input
+        id={`${idPrefix}-rights-evidence`}
+        required
+        value={value.reference}
+        onChange={(event) => onChange({ ...value, reference: event.target.value })}
+        placeholder="증빙 위치 (계약 조항, 동의서 파일명 등)"
+        aria-label={`${idPrefix} 사진 사용 권리 증빙 위치 예외`}
+        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs md:col-span-2"
+      />
+    </div>
+  )
+}
 
 function photoProvenanceIsComplete(source: Source): boolean {
   return source.photo_provenance?.is_complete ?? false
@@ -1186,7 +1245,12 @@ function SourcesStepBody({
       <ProfileUrlCandidates hospital={hospital} hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
       <CrawlForm hospitalId={hospitalId} onCreated={onChanged} />
       <NaverBlogBulkForm hospitalId={hospitalId} onCreated={onChanged} />
-      <UploadForm hospitalId={hospitalId} hospitalName={hospital?.name ?? null} onCreated={onChanged} />
+      <UploadForm
+        hospitalId={hospitalId}
+        hospitalName={hospital?.name ?? null}
+        sources={sources}
+        onCreated={onChanged}
+      />
       <SourcesList hospitalId={hospitalId} sources={sources} loading={loading} onChanged={onChanged} />
     </div>
   )
@@ -1279,10 +1343,38 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
   const [type, setType] = useState('HOMEPAGE')
   const [title, setTitle] = useState('')
   const [url, setUrl] = useState('')
+  const [titleTouched, setTitleTouched] = useState(false)
+  const [titleLoading, setTitleLoading] = useState(false)
+  const urlRef = useRef('')
+  const titleTouchedRef = useRef(false)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
   // 서버가 422로 거절할 URL을 저장 누르기 전에 알려 준다. 막지는 않는다.
   const urlWarning = sourceUrlWarning(url)
+
+  async function fillTitleFromUrl() {
+    const requestedUrl = url.trim()
+    if (!requestedUrl || titleTouchedRef.current || titleLoading) return
+    setTitleLoading(true)
+    setFeedback(null)
+    try {
+      const preview = await fetchAPI<{ title: string }>(
+        `/admin/hospitals/${hospitalId}/essence/sources/url-title`,
+        { method: 'POST', body: JSON.stringify({ url: requestedUrl }) },
+      )
+      if (urlRef.current.trim() !== requestedUrl || titleTouchedRef.current) return
+      setTitle(preview.title)
+      setFeedback('페이지 제목을 불러왔습니다. 필요하면 수정하세요.')
+    } catch (e: unknown) {
+      setFeedback(
+        e instanceof ApiError
+          ? e.message
+          : '페이지 제목을 가져오지 못했습니다. 제목을 직접 입력해 주세요.',
+      )
+    } finally {
+      setTitleLoading(false)
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -1295,6 +1387,8 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
       })
       setTitle('')
       setUrl('')
+      setTitleTouched(false)
+      titleTouchedRef.current = false
       setFeedback('URL 크롤 완료. 본문이 자동 추출됐습니다.')
       onCreated()
     } catch (e: unknown) {
@@ -1320,8 +1414,12 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
         <input
           required
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="자료 제목 (예: 병원 공식 홈페이지)"
+          onChange={(e) => {
+            setTitle(e.target.value)
+            setTitleTouched(true)
+            titleTouchedRef.current = true
+          }}
+          placeholder={titleLoading ? '페이지 제목을 가져오는 중…' : 'URL 입력 후 자동으로 채워집니다'}
           className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
         />
       </div>
@@ -1329,7 +1427,12 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
         required
         type="url"
         value={url}
-        onChange={(e) => setUrl(e.target.value)}
+        onChange={(e) => {
+          setUrl(e.target.value)
+          urlRef.current = e.target.value
+          if (!titleTouched) setTitle('')
+        }}
+        onBlur={() => void fillTitleFromUrl()}
         placeholder="https://..."
         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
       />
@@ -1351,10 +1454,12 @@ function CrawlForm({ hospitalId, onCreated }: { hospitalId: string; onCreated: (
 function UploadForm({
   hospitalId,
   hospitalName,
+  sources,
   onCreated,
 }: {
   hospitalId: string
   hospitalName: string | null
+  sources: Source[]
   onCreated: () => void
 }) {
   const [type, setType] = useState('PHOTO_DOCTOR')
@@ -1362,6 +1467,7 @@ function UploadForm({
   const [rightsOwner, setRightsOwner] = useState('')
   const [rightsBasis, setRightsBasis] = useState('')
   const [rightsEvidence, setRightsEvidence] = useState('')
+  const [rightsExceptions, setRightsExceptions] = useState<Record<number, PhotoRightsDraft>>({})
   const [files, setFiles] = useState<File[]>([])
   // 파일마다 제목을 따로 갖는다. 제목 칸이 하나면 N개 자산이 같은 제목으로 저장되고
   // 그 제목이 공개 표면의 캡션·대체 텍스트가 되어 갤러리가 같은 문구를 반복한다(D-1).
@@ -1372,11 +1478,37 @@ function UploadForm({
   const isPhotoType = isPhotoSourceType(type)
   const rightsReady = Boolean(rightsOwner.trim() && rightsBasis && rightsEvidence.trim())
   const duplicateTitles = duplicateAssetTitles(titles)
+  const prefillApplied = useRef(false)
+  const lastRightsSource = sources.find((source) => (
+    isPhotoSourceType(source.source_type)
+    && Boolean(
+      source.photo_provenance?.source_owner
+      || source.photo_provenance?.rights_basis
+      || source.photo_provenance?.evidence_reference
+    )
+  ))
+
+  useEffect(() => {
+    if (prefillApplied.current || !lastRightsSource?.photo_provenance) return
+    prefillApplied.current = true
+    const provenance = lastRightsSource.photo_provenance
+    setRightsOwner((current) => current || provenance.source_owner || '')
+    setRightsBasis((current) => current || provenance.rights_basis || '')
+    setRightsEvidence((current) => current || provenance.evidence_reference || '')
+    const lastAssetKind = lastRightsSource.source_metadata.asset_kind
+    if (
+      typeof lastAssetKind === 'string'
+      && photoAssetKindOptions(type).some((option) => option.value === lastAssetKind)
+    ) {
+      setAssetKind((current) => current || lastAssetKind)
+    }
+  }, [lastRightsSource, type])
 
   function selectFiles(picked: FileList | null) {
     const list = picked ? Array.from(picked) : []
     setFiles(list)
     setTitles(defaultAssetTitles(list.map((file) => file.name)))
+    setRightsExceptions({})
   }
 
   async function submit(e: React.FormEvent) {
@@ -1399,12 +1531,17 @@ function UploadForm({
           fd.append('title', (titles[i] ?? '').trim())
           fd.append('file', file)
           if (isPhotoSourceType(type)) {
+            const fileRights = rightsExceptions[i] ?? {
+              owner: rightsOwner,
+              basis: rightsBasis,
+              reference: rightsEvidence,
+            }
             fd.append('is_public', 'true')
             fd.append('asset_kind', assetKind)
             // 권리 근거가 없으면 서버가 사진을 비공개로 저장한다 — 공개하려면 함께 보낸다.
-            fd.append('photo_source_owner', rightsOwner.trim())
-            fd.append('photo_rights_basis', rightsBasis)
-            fd.append('photo_evidence_reference', rightsEvidence.trim())
+            fd.append('photo_source_owner', fileRights.owner.trim())
+            fd.append('photo_rights_basis', fileRights.basis)
+            fd.append('photo_evidence_reference', fileRights.reference.trim())
           }
           // 일괄 업로드 시 모든 파일에 skip_revalidate=true (마지막 후 명시적 revalidate)
           const url = `/admin/hospitals/${hospitalId}/essence/sources/upload${
@@ -1450,7 +1587,6 @@ function UploadForm({
       }
 
       if (successCount > 0) {
-        setRightsEvidence('')
         selectFiles(null)
         const inp = document.getElementById('upload-file') as HTMLInputElement | null
         if (inp) inp.value = ''
@@ -1520,6 +1656,9 @@ function UploadForm({
       {isPhotoType ? (
         <div className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
           <p className="text-sm font-medium text-slate-700">사진 사용 권리 확인</p>
+          <p className="text-xs leading-5 text-slate-600">
+            공통 권리정보가 선택한 모든 사진에 적용됩니다. 다른 사진만 파일 목록에서 예외로 수정하세요.
+          </p>
           <div className="grid gap-2 md:grid-cols-2">
             <input
               id="upload-rights-owner"
@@ -1558,8 +1697,7 @@ function UploadForm({
             className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
           />
           <p className="text-xs leading-5 text-slate-600">
-            공개되는 사진은 소유자와 사용 근거가 기록되어야 합니다. 지금 채우지 않으면 사진은 저장되지만
-            비공개로 남고, 목록에서 근거를 채운 뒤 공개할 수 있습니다.
+            같은 병원에서 마지막으로 저장한 소유자·권리 근거·증빙 위치를 다음 업로드에도 기본값으로 불러옵니다.
           </p>
         </div>
       ) : null}
@@ -1581,23 +1719,56 @@ function UploadForm({
           <p className="text-sm font-medium text-slate-700">파일별 제목</p>
           <ul className="space-y-2">
             {files.map((file, index) => (
-              <li key={`${file.name}-${index}`} className="grid gap-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] md:items-center">
-                <label
-                  htmlFor={`upload-title-${index}`}
-                  className="truncate text-xs text-slate-500"
-                  title={file.name}
-                >
-                  {file.name}
-                </label>
-                <input
-                  id={`upload-title-${index}`}
-                  value={titles[index] ?? ''}
-                  onChange={(e) =>
-                    setTitles((prev) => prev.map((value, i) => (i === index ? e.target.value : value)))
-                  }
-                  placeholder="제목 (비워 두면 파일명 사용)"
-                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-                />
+              <li key={`${file.name}-${index}`} className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                <div className="grid gap-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] md:items-center">
+                  <label
+                    htmlFor={`upload-title-${index}`}
+                    className="truncate text-xs text-slate-500"
+                    title={file.name}
+                  >
+                    {file.name}
+                  </label>
+                  <input
+                    id={`upload-title-${index}`}
+                    value={titles[index] ?? ''}
+                    onChange={(e) =>
+                      setTitles((prev) => prev.map((value, i) => (i === index ? e.target.value : value)))
+                    }
+                    placeholder="제목 (비워 두면 파일명 사용)"
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  />
+                  {isPhotoType && (
+                    <button
+                      type="button"
+                      onClick={() => setRightsExceptions((current) => {
+                        if (current[index]) {
+                          const next = { ...current }
+                          delete next[index]
+                          return next
+                        }
+                        return {
+                          ...current,
+                          [index]: {
+                            owner: rightsOwner,
+                            basis: rightsBasis,
+                            reference: rightsEvidence,
+                          },
+                        }
+                      })}
+                      className="min-h-10 rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700"
+                    >
+                      {rightsExceptions[index] ? '공통값 사용' : '권리 예외 수정'}
+                    </button>
+                  )}
+                </div>
+                {rightsExceptions[index] && (
+                  <PhotoRightsFields
+                    idPrefix={`upload-file-${index}`}
+                    value={rightsExceptions[index]}
+                    hospitalName={hospitalName}
+                    onChange={(value) => setRightsExceptions((current) => ({ ...current, [index]: value }))}
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -1614,7 +1785,11 @@ function UploadForm({
           disabled={
             busy ||
             files.length === 0 ||
-            (isPhotoType && (!assetKind || !rightsReady))
+            (isPhotoType && (
+              !assetKind
+              || !rightsReady
+              || Object.values(rightsExceptions).some((value) => !photoRightsReady(value))
+            ))
           }
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
         >
@@ -1956,6 +2131,9 @@ function SourcesList({
       <ul className="space-y-2">
         {sources.map((s) => {
           const fileHref = s.file_access_url ?? s.file_url
+          const photoGate = isPhotoSourceType(s.source_type)
+            ? describePhotoPublicGate(s)
+            : null
           return (
             <li
               key={s.id}
@@ -2014,12 +2192,14 @@ function SourcesList({
                     <label className="flex min-h-11 cursor-pointer items-center gap-2">
                       <span
                         className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                          s.is_public
+                          photoGate?.state === 'PUBLIC'
                             ? 'bg-blue-100 text-blue-700'
-                            : 'bg-slate-100 text-slate-600'
+                            : photoGate?.state === 'BLOCKED_PROVENANCE'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-slate-100 text-slate-600'
                         }`}
                       >
-                        {s.is_public ? '공개' : '비공개'}
+                        {photoGate?.badge}
                       </span>
                       <input
                         type="checkbox"
@@ -2035,19 +2215,21 @@ function SourcesList({
                     </label>
                     </div>
                   )}
-                  <span
-                    className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                      s.status === 'PROCESSED'
-                        ? 'bg-green-100 text-green-700'
-                        : s.status === 'ERROR'
-                          ? 'bg-red-100 text-red-700'
-                          : s.status === 'EXCLUDED'
-                            ? 'bg-slate-100 text-slate-500'
-                            : 'bg-yellow-100 text-yellow-800'
-                    }`}
-                  >
-                    {sourceStatusLabel(s)}
-                  </span>
+                  {!isPhotoSourceType(s.source_type) && (
+                    <span
+                      className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                        s.status === 'PROCESSED'
+                          ? 'bg-green-100 text-green-700'
+                          : s.status === 'ERROR'
+                            ? 'bg-red-100 text-red-700'
+                            : s.status === 'EXCLUDED'
+                              ? 'bg-slate-100 text-slate-500'
+                              : 'bg-yellow-100 text-yellow-800'
+                      }`}
+                    >
+                      {sourceStatusLabel(s)}
+                    </span>
+                  )}
                   {s.status === 'EXCLUDED' ? (
                     <button
                       onClick={() => reinclude(s.id)}

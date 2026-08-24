@@ -102,6 +102,33 @@ export function defaultAcquisitionDates(now: Date = new Date()): AcquisitionDate
   }
 }
 
+/** Build an editable contract reference from the Korean business date and request id.
+ *
+ * The onboarding request id is already stable for the lifetime of a new-hospital
+ * workflow, so it gives the generated reference a collision-resistant suffix without
+ * introducing another server-side sequence or changing the handoff contract.
+ */
+export function defaultContractReference(
+  requestId: string,
+  now: Date = new Date(),
+): string {
+  if (!UUID_PATTERN.test(requestId)) {
+    throw new TypeError('Contract reference requires an onboarding request UUID')
+  }
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now)
+  const date = calendarDate(
+    datePart(parts, 'year'),
+    datePart(parts, 'month'),
+    datePart(parts, 'day'),
+  ).replaceAll('-', '')
+  return `CTR-${date}-${requestId.slice(0, 8).toUpperCase()}`
+}
+
 /** Restore only opaque identifiers; clinic/contact details never enter browser storage. */
 export function parseOnboardingWorkflowCheckpoint(
   raw: string | null,

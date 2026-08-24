@@ -423,6 +423,21 @@ async def test_fetch_url_text_keeps_normal_body_with_harmless_title(monkeypatch)
     assert quality is not None
 
 
+@pytest.mark.asyncio
+async def test_fetch_url_text_exposes_normalized_page_title(monkeypatch):
+    ax = _patch_html_fetch(
+        monkeypatch,
+        "<html><head><title>  테스트 병원  |  진료 안내 </title></head>"
+        "<body><p>충분히 긴 병원 진료 안내 본문입니다.</p></body></html>",
+    )
+
+    _text, error, quality = await ax.fetch_url_text("https://example.com/page")
+
+    assert error is None
+    assert quality is not None
+    assert quality.page_title == "테스트 병원 | 진료 안내"
+
+
 def test_validate_response_peer_falls_back_to_socket_getpeername():
     target = FetchTarget(
         url="https://example.com/source",

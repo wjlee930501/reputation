@@ -14,6 +14,7 @@ import {
   acceptancePayload,
   contractPayload,
   defaultAcquisitionDates,
+  defaultContractReference,
   handoffNextAction,
   koreanDateInputValue,
   koreanDateTimeLocalInputValue,
@@ -192,6 +193,14 @@ export default function NewHospitalPage() {
       cancelled = true
     }
   }, [router])
+
+  // The request id is stable across a recoverable onboarding workflow, so an empty
+  // contract field receives one stable default. Operators can still replace or clear
+  // it after this initialization; the effect does not run on field edits.
+  useEffect(() => {
+    if (!creationRequestId) return
+    setContractReference((current) => current || defaultContractReference(creationRequestId))
+  }, [creationRequestId])
 
   useEffect(() => {
     let cancelled = false
@@ -449,7 +458,7 @@ export default function NewHospitalPage() {
         <div className="grid gap-4 sm:grid-cols-3">
           <label className="block text-sm font-medium text-slate-700">계약 번호 <span className="text-red-500">*</span>
             <input required disabled={workflowHandoff?.state === 'CONTRACTED'} value={contractReference} onChange={(e) => setContractReference(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" placeholder="CTR-20260810" />
-            <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">계약 확정 메일 또는 계약 관리의 계약 ID를 넣습니다. 지정된 값이 있으면 그대로 두세요.</span>
+            <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">비어 있으면 계약 번호가 자동 생성됩니다. 계약 관리에 지정된 값이 있으면 수정해 덮어쓰세요.</span>
           </label>
           <label className="block text-sm font-medium text-slate-700">계약 효력일
             <input required disabled={workflowHandoff?.state === 'CONTRACTED'} type="date" value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm disabled:bg-slate-100" />

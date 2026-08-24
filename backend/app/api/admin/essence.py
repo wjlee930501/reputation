@@ -343,7 +343,7 @@ def should_revalidate_on_source_upload(
 
 class SourceCrawlRequest(BaseModel):
     source_type: SourceType
-    title: str = Field(min_length=1, max_length=300)
+    title: str | None = Field(default=None, max_length=300)
     url: str = Field(min_length=10, max_length=1000)
     operator_note: str | None = None
     created_by: str | None = Field(default=None, max_length=100)
@@ -355,6 +355,10 @@ class BlogCrawlRequest(BaseModel):
     url: str = Field(min_length=2, max_length=1000)  # 블로그 URL 또는 blogId
     max_posts: int = Field(default=10, ge=1, le=15)
     operator_note: str | None = None
+
+
+class SourceUrlTitleRequest(BaseModel):
+    url: str = Field(min_length=10, max_length=1000)
 
 
 class BlogCrawlResult(BaseModel):
@@ -973,16 +977,23 @@ async def crawl_source_url(
             detail="페이지 본문을 충분히 가져오지 못했습니다 — 본문을 직접 붙여넣어 주세요.",
         )
 
+    final_title = (body.title or "").strip() or (quality.page_title if quality else None)
+    if not final_title:
+        raise HTTPException(
+            status_code=422,
+            detail="페이지 제목을 찾지 못했습니다. 자료 제목을 직접 입력해 주세요.",
+        )
+
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=body.source_type,
-        title=body.title.strip(),
+        title=final_title,
         url=body.url.strip(),
         raw_text=text or None,
         operator_note=_clean_optional(body.operator_note),
         source_metadata={"crawled_at": datetime.now(timezone.utc).isoformat()},
-        content_hash=compute_source_content_hash(body.title, body.url, text, body.operator_note),
+        content_hash=compute_source_content_hash(final_title, body.url, text, body.operator_note),
         status=SourceStatus.PENDING,
         created_by=body.created_by,
     )
@@ -1003,6 +1014,26 @@ async def crawl_source_url(
     await db.commit()
     await db.refresh(source)
     return _serialize_source(source)
+
+
+@router.post("/sources/url-title")
+async def preview_source_url_title(
+    hospital_id: uuid.UUID,
+    body: SourceUrlTitleRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetch one URL through the existing SSRF-safe path and return its editable title."""
+    await _get_hospital_or_404(db, hospital_id)
+    _text, error, quality = await fetch_url_text(body.url)
+    if error:
+        raise HTTPException(status_code=400, detail=f"페이지 제목 가져오기 실패: {error}")
+    title = quality.page_title if quality else None
+    if not title:
+        raise HTTPException(
+            status_code=422,
+            detail="페이지 <title>을 찾지 못했습니다. 자료 제목을 직접 입력해 주세요.",
+        )
+    return {"title": title}
 
 
 @router.post("/sources/crawl-blog", status_code=status.HTTP_200_OK, response_model=BlogCrawlResult)

@@ -5,6 +5,7 @@ import {
   acceptancePayload,
   contractPayload,
   defaultAcquisitionDates,
+  defaultContractReference,
   handoffNextAction,
   koreanDateInputValue,
   koreanDateTimeLocalInputValue,
@@ -60,6 +61,15 @@ test('contract defaults follow the Korean business date and roll over the month'
     effectiveDate: '2026-12-31',
     slaDueAt: '2027-01-01T18:00',
   })
+})
+
+test('empty onboarding contracts get a stable editable house-style reference', () => {
+  const requestId = 'b1400000-0000-4000-8000-000000000001'
+  assert.equal(
+    defaultContractReference(requestId, new Date('2026-08-24T02:00:00Z')),
+    'CTR-20260824-B1400000',
+  )
+  assert.throws(() => defaultContractReference('not-a-request-id'), /request UUID/)
 })
 
 test('saved contract instants restore into Korean date controls', () => {
