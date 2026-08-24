@@ -26,6 +26,7 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.audit_log import write_audit_log_sync
+from app.services.enum_values import enum_value
 from app.services.essence_engine import (
     _call_anthropic_json,
     apply_mandatory_safety_policy,
@@ -204,7 +205,7 @@ class EssenceRefreshResult:
 
 
 def _status_value(value: object) -> str:
-    return str(getattr(value, "value", value) or "")
+    return str(enum_value(value) or "")
 
 
 def _required_sources(db: Session, hospital_id: uuid.UUID) -> list[HospitalSourceAsset]:

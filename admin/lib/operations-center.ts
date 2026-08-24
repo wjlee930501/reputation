@@ -8,6 +8,7 @@ import {
   type OperationsRunState,
   type OperationsSlackState,
 } from '../types/index.ts'
+import { isRecord } from './type-guards.ts'
 
 export interface OperationsQuery {
   readonly queue: OperationsQueueParam
@@ -421,10 +422,6 @@ export function primaryOperationsMutation(
     }
   }
   return null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export function interpretOperationsConflict(detail: unknown): OperationsConflict {
