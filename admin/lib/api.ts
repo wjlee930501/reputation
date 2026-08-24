@@ -1,4 +1,5 @@
 import { buildAdminCsrfHeaders } from './csrf.ts'
+import { isRecord } from './type-guards.ts'
 
 const BASE = '/api/admin'
 
@@ -118,10 +119,6 @@ function statusMessage(status: number): string | null {
 
 function fallbackMessage(status: number): string {
   return statusMessage(status) ?? `서버 오류 (${status})`
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function toStringList(value: unknown): string[] {

@@ -1,11 +1,8 @@
 import { ApiError } from './api.ts'
+import { isRecord } from './type-guards.ts'
 
 const PROFILE_SAVE_FALLBACK =
   '병원 기본 정보를 저장하지 못했습니다. 입력값과 네트워크 상태를 확인한 뒤 다시 저장해 주세요.'
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function fieldLabel(value: unknown): string | null {
   if (typeof value === 'string' && value.trim()) return value.trim()

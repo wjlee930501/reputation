@@ -1,3 +1,5 @@
+import { isRecord } from './type-guards.ts'
+
 export type NaverHandoffState = 'PENDING' | 'INGESTED' | 'FAILED' | 'SKIPPED'
 
 export interface NaverHandoffItem {
@@ -181,8 +183,4 @@ function requiredNumber(value: unknown): number {
     throw new NaverHandoffParseError()
   }
   return value
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

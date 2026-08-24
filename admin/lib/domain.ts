@@ -3,6 +3,7 @@
 //   - 도메인 저장: 422 → 잘못된 호스트네임 (한국어 메시지), 409 → 다른 병원이 이미 사용 중
 //   - 도메인 검증(POST /domain/verify): 409 → DNS는 정상이나 운영 시작 전 선행 단계 미완료 (detail에 단계 목록)
 import { ApiError } from './api.ts'
+import { isRecord } from './type-guards.ts'
 
 export type DomainErrorKind = 'invalid' | 'conflict' | 'prerequisite' | 'generic'
 export type DomainManagementMode = 'HOSPITAL_MANAGED' | 'MOTIONLABS_MANAGED'
@@ -137,10 +138,6 @@ export function buildFallbackDomainSetupPlan(domain: string, expectedCname: stri
       'TTL은 DNS 검증 속도에 영향을 주지 않습니다. 등록기관 최소값을 사용하세요.',  // DM-U1
     ],
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function toStepLabel(entry: unknown): string {

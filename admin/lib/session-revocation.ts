@@ -1,4 +1,5 @@
 import { hashSessionToken } from './session.ts'
+import { isRecord } from './type-guards.ts'
 
 export type AdminSessionRevocationStatus = 'active' | 'revoked' | 'unavailable'
 
@@ -21,10 +22,6 @@ interface RevokeAdminSessionOptions extends CheckAdminSessionRevocationOptions {
 
 function adminAuthUrl(backendUrl: string, path: string): string {
   return new URL(`/api/v1/admin/auth/${path}`, backendUrl).toString()
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function buildRevocationSignal(): AbortSignal {
