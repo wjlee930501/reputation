@@ -58,6 +58,7 @@ from app.models.sov import (
     SovRecord,
 )
 from app.services import cost_guard, indexnow, notifier, operation_run_payloads, sov_engine
+from app.services.asset_extractor import evidence_text_is_acceptable
 from app.services.audit_log import write_audit_log_sync
 from app.services.content_ai_review import (
     ContentAiReviewStatus,
@@ -716,6 +717,11 @@ def process_source_asset_task(self, source_id: str) -> dict[str, object]:
 
             # 일괄 근거 추출도 Admin 화면 경로와 같은 유료 호출이다 — 같은 예산에 계수한다.
             payloads = _run_async(_metered_process_source_asset(source))
+            payloads = [
+                payload
+                for payload in payloads
+                if evidence_text_is_acceptable(payload.claim, payload.source_excerpt)
+            ]
             for payload in payloads:
                 if not validate_source_excerpt(source, payload.source_excerpt):
                     raise ValueError(

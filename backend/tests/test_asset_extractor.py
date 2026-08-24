@@ -11,11 +11,15 @@ from app.services.asset_extractor import (
     _scope_to_content_container,
     _validate_fetch_url,
     _validate_response_peer,
+    abnormal_character_ratio,
+    decode_html_bytes,
     detect_extractor_for,
+    evidence_text_is_acceptable,
     extract_docx_text,
     extract_pdf_text,
     naver_blog_id_from,
     naver_blog_post_identity,
+    strip_navigation_fragments,
 )
 
 
@@ -119,7 +123,54 @@ def test_scope_to_content_container_extracts_se_main_container():
 
 def test_scope_to_content_container_falls_back_to_full_html():
     html = "<html><body><article>컨테이너 없는 일반 페이지</article></body></html>"
-    assert _scope_to_content_container(html) == html
+    assert "컨테이너 없는 일반 페이지" in _scope_to_content_container(html)
+
+
+def test_decode_html_bytes_detects_euc_kr_meta_over_wrong_http_default():
+    html = '<html><head><meta charset="euc-kr"></head><body>정형외과 진료 안내</body></html>'
+
+    decoded, encoding = decode_html_bytes(
+        html.encode("euc-kr"),
+        declared_encoding="iso-8859-1",
+        content_type="text/html",
+    )
+
+    assert "정형외과 진료 안내" in decoded
+    assert encoding in {"euc-kr", "cp949"}
+    assert abnormal_character_ratio(decoded) == 0
+
+
+def test_general_html_scope_removes_navigation_and_footer():
+    html = (
+        "<html><body><nav><a href='/one'>병원 소개</a><a href='/two'>진료 안내</a></nav>"
+        "<main><h1>척추 진료 철학</h1><p>환자에게 충분히 설명합니다.</p></main>"
+        "<footer>개인정보 처리방침</footer></body></html>"
+    )
+
+    scoped = _scope_to_content_container(html)
+
+    assert "척추 진료 철학" in scoped
+    assert "병원 소개" not in scoped
+    assert "개인정보 처리방침" not in scoped
+
+
+def test_markdown_navigation_fragments_are_removed_before_storage():
+    raw = "* [병원 소개](/about)\n* [진료 안내](/care)\n\n환자에게 충분히 설명하는 진료를 지향합니다."
+
+    cleaned = strip_navigation_fragments(raw)
+
+    assert "병원 소개" not in cleaned
+    assert "진료 안내" not in cleaned
+    assert "충분히 설명" in cleaned
+    assert evidence_text_is_acceptable("충분한 설명", "환자에게 충분히 설명합니다.")
+    assert not evidence_text_is_acceptable("[소개](/about)", "* [진료](/care)")
+
+
+def test_mojibake_script_ratio_rejects_corrupt_evidence():
+    corrupt = "ġӸ ƴ϶ ġ Ӹƴ϶ ġӸƴ϶"
+
+    assert abnormal_character_ratio(corrupt) > 0.08
+    assert not evidence_text_is_acceptable(corrupt, corrupt)
 
 
 def test_detect_extractor_for_image_by_mime():

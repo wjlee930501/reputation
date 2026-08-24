@@ -38,6 +38,7 @@ interface EvidenceNote {
   claim: string
   source_excerpt: string
   confidence: number | null
+  note_metadata?: Record<string, unknown>
 }
 
 interface SourceDetail extends Source {
@@ -97,6 +98,11 @@ export default function WikiPage() {
   const [details, setDetails] = useState<Record<string, SourceDetail>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [category, setCategory] = useState('')
+  const [confidenceBand, setConfidenceBand] = useState('')
+  const [selectedNoteIds, setSelectedNoteIds] = useState<Set<string>>(new Set())
+  const [markingNoise, setMarkingNoise] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -121,6 +127,7 @@ export default function WikiPage() {
         if (entry) next[entry[0]] = entry[1]
       }
       setDetails(next)
+      setSelectedNoteIds(new Set())
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '로딩 실패')
     } finally {
@@ -152,15 +159,29 @@ export default function WikiPage() {
     return notes
   }, [includedSources, details])
 
+  const filteredNotes = useMemo(() => {
+    const needle = search.trim().toLocaleLowerCase('ko-KR')
+    return allNotes.filter((note) => {
+      if (category && note.note_type !== category) return false
+      const confidence = note.confidence ?? 0
+      if (confidenceBand === 'HIGH' && confidence < 0.8) return false
+      if (confidenceBand === 'MEDIUM' && (confidence < 0.6 || confidence >= 0.8)) return false
+      if (confidenceBand === 'LOW' && confidence >= 0.6) return false
+      if (!needle) return true
+      return [note.claim, note.source_excerpt, note.source_title, note.source_type_label]
+        .some((value) => value.toLocaleLowerCase('ko-KR').includes(needle))
+    })
+  }, [allNotes, category, confidenceBand, search])
+
   const notesByGroup = useMemo(() => {
     const grouped = new Map<string, typeof allNotes>()
-    for (const note of allNotes) {
+    for (const note of filteredNotes) {
       const list = grouped.get(note.note_type) ?? []
       list.push(note)
       grouped.set(note.note_type, list)
     }
     return grouped
-  }, [allNotes])
+  }, [filteredNotes])
 
   const orderedGroups = useMemo(() => {
     const known = NOTE_GROUP_ORDER.filter((t) => notesByGroup.has(t))
@@ -193,6 +214,32 @@ export default function WikiPage() {
     } finally {
       setPendingToggleId(null)
     }
+  }
+
+  async function markSelectedAsNoise() {
+    if (selectedNoteIds.size === 0) return
+    setMarkingNoise(true)
+    setError(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${id}/essence/evidence-notes/noise`, {
+        method: 'PATCH',
+        body: JSON.stringify({ note_ids: [...selectedNoteIds], is_noise: true }),
+      })
+      await refresh()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '노이즈 표시를 저장하지 못했습니다.')
+    } finally {
+      setMarkingNoise(false)
+    }
+  }
+
+  function toggleNote(noteId: string) {
+    setSelectedNoteIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(noteId)) next.delete(noteId)
+      else next.add(noteId)
+      return next
+    })
   }
 
   return (
@@ -317,6 +364,59 @@ export default function WikiPage() {
         </div>
       </section>
 
+      {/* 근거 노트 검색·정리 */}
+      {allNotes.length > 0 && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_180px]">
+            <label className="text-xs font-semibold text-slate-600">
+              근거 노트 검색
+              <input
+                type="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="주장·출처 발췌·자료명"
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal"
+              />
+            </label>
+            <label className="text-xs font-semibold text-slate-600">
+              카테고리
+              <select value={category} onChange={(event) => setCategory(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal">
+                <option value="">전체 카테고리</option>
+                {NOTE_GROUP_ORDER.map((type) => <option key={type} value={type}>{NOTE_TYPE_LABELS[type] ?? type}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-semibold text-slate-600">
+              신뢰도
+              <select value={confidenceBand} onChange={(event) => setConfidenceBand(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal">
+                <option value="">전체 신뢰도</option>
+                <option value="HIGH">80% 이상</option>
+                <option value="MEDIUM">60~79%</option>
+                <option value="LOW">60% 미만</option>
+              </select>
+            </label>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input
+                type="checkbox"
+                checked={filteredNotes.length > 0 && filteredNotes.every((note) => selectedNoteIds.has(note.id))}
+                onChange={(event) => setSelectedNoteIds(event.target.checked ? new Set(filteredNotes.map((note) => note.id)) : new Set())}
+                className="rounded border-slate-300"
+              />
+              검색 결과 전체 선택 ({filteredNotes.length}건)
+            </label>
+            <button
+              type="button"
+              disabled={selectedNoteIds.size === 0 || markingNoise}
+              onClick={() => void markSelectedAsNoise()}
+              className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {markingNoise ? '저장 중…' : `선택 ${selectedNoteIds.size}건 노이즈로 표시`}
+            </button>
+          </div>
+        </section>
+      )}
+
       {/* 근거 노트 카테고리별 */}
       {loading && allNotes.length === 0 ? (
         <p className="text-sm text-slate-500 px-2">근거 노트를 불러오는 중…</p>
@@ -332,6 +432,11 @@ export default function WikiPage() {
           >
             온보딩으로 →
           </Link>
+        </section>
+      ) : filteredNotes.length === 0 ? (
+        <section className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
+          <p className="font-semibold text-slate-700">검색 조건에 맞는 근거 노트가 없습니다.</p>
+          <button type="button" onClick={() => { setSearch(''); setCategory(''); setConfidenceBand('') }} className="mt-3 text-sm font-semibold text-blue-700 hover:underline">필터 초기화</button>
         </section>
       ) : (
         <section className="space-y-4">
@@ -351,7 +456,10 @@ export default function WikiPage() {
                 </header>
                 <ul className="divide-y divide-slate-100">
                   {list.map((note) => (
-                    <li key={note.id} className="px-6 py-4 space-y-2 text-sm">
+                    <li key={note.id} className="px-6 py-4 text-sm">
+                      <div className="flex items-start gap-3">
+                        <input type="checkbox" aria-label={`${note.claim} 선택`} checked={selectedNoteIds.has(note.id)} onChange={() => toggleNote(note.id)} className="mt-1 rounded border-slate-300" />
+                        <div className="min-w-0 flex-1 space-y-2">
                       <p className="font-semibold text-slate-900">{note.claim}</p>
                       <blockquote className="rounded-lg border-l-2 border-slate-300 bg-slate-50 px-3 py-2 italic text-slate-700">
                         {note.source_excerpt}
@@ -360,6 +468,8 @@ export default function WikiPage() {
                         출처: {note.source_type_label} · {note.source_title}
                         {note.confidence !== null && ` · 신뢰도 ${(note.confidence * 100).toFixed(0)}%`}
                       </p>
+                        </div>
+                      </div>
                     </li>
                   ))}
                 </ul>
