@@ -427,6 +427,7 @@ export default function ProfilePage() {
     e.preventDefault()
     const missing = buildProfileChecklist(profile).filter((item) => item.required && item.status !== 'done')
     if (profile.profile_complete && missing.length > 0) {
+      setSuccess(false)
       setError(`병원 기본 정보 완료 전 필수 항목을 채워 주세요: ${missing.map((item) => item.label).join(', ')}`)
       document.querySelector('[data-profile-completion]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return

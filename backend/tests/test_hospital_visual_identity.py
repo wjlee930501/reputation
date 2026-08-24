@@ -235,6 +235,29 @@ async def test_active_complete_profile_saves_unrelated_edits_with_unchanged_lega
     assert hospital.logo_url == legacy_logo_url
 
 
+async def test_active_complete_profile_saves_specialties_with_whitespace_legacy_logo():
+    """Legacy storage whitespace must not turn an unchanged external logo into a new one."""
+    stored_logo_url = " https://cdn.example/logo.png "
+    hospital = _active_complete_hospital(logo_url=stored_logo_url)
+    db = _FakeDB(hospital)
+
+    await update_profile(
+        hospital.id,
+        # Keep whitespace in the submitted value so this unit test exercises the
+        # gate's own normalization rather than relying on the Pydantic validator.
+        HospitalProfileUpdate.model_construct(
+            logo_url=stored_logo_url,
+            specialties=["정형외과", "마취통증의학과"],
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert hospital.specialties == ["정형외과", "마취통증의학과"]
+    assert hospital.logo_url == stored_logo_url.strip()
+
+
 async def test_active_complete_profile_rejects_changing_logo_to_new_external_url():
     hospital = _active_complete_hospital()
     db = _FakeDB(hospital)

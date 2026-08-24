@@ -687,6 +687,9 @@ async def update_profile(
     # 화면은 전체 객체를 PATCH하므로, 이미 저장된 레거시 외부 URL을 그대로 재전송한 것은
     # 새 로고 입력이 아니다. 이 값 때문에 전문과목 같은 무관한 수정을 막지 않는다.
     submitted_logo_url = update_data.get("logo_url")
+    if isinstance(submitted_logo_url, str):
+        submitted_logo_url = submitted_logo_url.strip()
+        update_data["logo_url"] = submitted_logo_url
     stored_logo_url = (getattr(h, "logo_url", None) or "").strip()
     if is_external_logo_url(submitted_logo_url) and submitted_logo_url != stored_logo_url:
         raise HTTPException(
@@ -703,7 +706,12 @@ async def update_profile(
             continue
         if value is None and field not in CLEARABLE_FIELDS:
             continue
-        if getattr(h, field, None) != value:
+        stored_value = getattr(h, field, None)
+        # Whitespace around a legacy logo URL is storage noise, not an operator
+        # change. Persist the normalized submitted value without auditing or
+        # revalidating the public site solely because the old row was untrimmed.
+        comparable_stored_value = stored_logo_url if field == "logo_url" else stored_value
+        if comparable_stored_value != value:
             changed_fields.append(field)
         setattr(h, field, value)
 
