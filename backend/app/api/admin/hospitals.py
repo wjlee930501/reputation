@@ -64,6 +64,7 @@ from app.services.hospital_logo import (
     LOGO_ALLOWED_MIME_TYPES,
     LOGO_MAX_BYTES,
     is_external_logo_url,
+    is_stored_logo_ref,
     public_logo_url,
 )
 from app.services.hospital_profile_autofill import autofill_profile
@@ -247,7 +248,6 @@ class HospitalProfileUpdate(BaseModel):
         "google_business_profile_url",
         "google_maps_url",
         "naver_place_url",
-        "logo_url",
         "hero_image_url",
     )
     @classmethod
@@ -260,6 +260,21 @@ class HospitalProfileUpdate(BaseModel):
         parsed = urlparse(cleaned)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("URL must be absolute http(s)")
+        return cleaned
+
+    @field_validator("logo_url")
+    @classmethod
+    def validate_logo_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if is_stored_logo_ref(cleaned):
+            return cleaned
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("URL must be an uploaded logo reference or absolute http(s)")
         return cleaned
 
 
@@ -690,7 +705,12 @@ async def update_profile(
     if isinstance(submitted_logo_url, str):
         submitted_logo_url = submitted_logo_url.strip()
         update_data["logo_url"] = submitted_logo_url
-    stored_logo_url = (getattr(h, "logo_url", None) or "").strip()
+    raw_stored_logo_url = getattr(h, "logo_url", None)
+    stored_logo_url = (
+        raw_stored_logo_url.strip()
+        if isinstance(raw_stored_logo_url, str)
+        else raw_stored_logo_url
+    )
     if is_external_logo_url(submitted_logo_url) and submitted_logo_url != stored_logo_url:
         raise HTTPException(
             status_code=400,
@@ -710,7 +730,11 @@ async def update_profile(
         # Whitespace around a legacy logo URL is storage noise, not an operator
         # change. Persist the normalized submitted value without auditing or
         # revalidating the public site solely because the old row was untrimmed.
-        comparable_stored_value = stored_logo_url if field == "logo_url" else stored_value
+        comparable_stored_value = (
+            stored_value.strip()
+            if field == "logo_url" and isinstance(stored_value, str) and isinstance(value, str)
+            else stored_value
+        )
         if comparable_stored_value != value:
             changed_fields.append(field)
         setattr(h, field, value)

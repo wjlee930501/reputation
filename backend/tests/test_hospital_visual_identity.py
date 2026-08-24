@@ -4,6 +4,7 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 
+from app.api.admin import hospitals as hospitals_api
 from app.api.admin.hospitals import HospitalProfileUpdate, _serialize, update_profile
 from app.services.hospital_logo import EXTERNAL_LOGO_URL_MESSAGE
 
@@ -256,6 +257,65 @@ async def test_active_complete_profile_saves_specialties_with_whitespace_legacy_
     assert db.committed is True
     assert hospital.specialties == ["정형외과", "마취통증의학과"]
     assert hospital.logo_url == stored_logo_url.strip()
+
+
+async def test_active_complete_profile_saves_specialties_with_stored_logo_reference():
+    stored_logo_url = "gs://reputation-images/assets/hospital-id/logo.png"
+    hospital = _active_complete_hospital(logo_url=stored_logo_url)
+    db = _FakeDB(hospital)
+
+    result = await update_profile(
+        hospital.id,
+        HospitalProfileUpdate(
+            logo_url=stored_logo_url,
+            specialties=["정형외과", "마취통증의학과"],
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert result["specialties"] == ["정형외과", "마취통증의학과"]
+    assert result["logo_url"] == stored_logo_url
+    assert hospital.logo_url == stored_logo_url
+
+
+async def test_null_logo_noop_is_not_a_changed_field_or_revalidation_trigger(monkeypatch):
+    hospital = _FakeHospital(
+        id=uuid.uuid4(),
+        profile_complete=False,
+        status="ACTIVE",
+        site_live=True,
+        logo_url=None,
+        competitors=[],
+    )
+    db = _FakeDB(hospital)
+    audit_details = []
+    revalidation_checks = []
+
+    async def capture_audit(_db, **kwargs):
+        audit_details.append(kwargs["detail"])
+
+    monkeypatch.setattr(hospitals_api, "write_audit_log", capture_audit)
+    monkeypatch.setattr(
+        hospitals_api,
+        "ensure_site_revalidate_configured",
+        lambda: revalidation_checks.append(True),
+    )
+
+    await update_profile(
+        hospital.id,
+        HospitalProfileUpdate(logo_url=None, competitors=["비교 병원"]),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert db.committed is True
+    assert hospital.logo_url is None
+    assert audit_details == [
+        {"changed_fields": ["competitors"], "profile_complete_transition": False}
+    ]
+    assert revalidation_checks == []
 
 
 async def test_active_complete_profile_rejects_changing_logo_to_new_external_url():

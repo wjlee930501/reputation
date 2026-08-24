@@ -1,11 +1,13 @@
 'use client'
 
+import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useId, useState } from 'react'
 import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
-import { isApprovedBrandColor } from '@/lib/clinic-visual-readiness'
+import { isApprovedBrandColor, isServableLogo } from '@/lib/clinic-visual-readiness'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
+import { profilePatchPayload } from '@/lib/profile-patch'
 import { profileSaveErrorMessage } from '@/lib/profile-save-error'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
 import {
@@ -40,7 +42,7 @@ interface HospitalProfile {
   director_philosophy: string
   brand_primary_color: string
   brand_accent_color: string
-  logo_url: string
+  logo_url: string | null
   hero_image_url: string
   hero_media_kind: 'VERIFIED_FACILITY' | 'BRAND_GRAPHIC' | ''
   hero_headline: string
@@ -439,7 +441,9 @@ export default function ProfilePage() {
     try {
       await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, {
         method: 'PATCH',
-        body: JSON.stringify(profile),
+        // The upload endpoint owns logo_url. Omitting it prevents a stale profile
+        // snapshot from overwriting or invalidating an uploaded storage reference.
+        body: JSON.stringify(profilePatchPayload(profile)),
       })
       setSuccess(true)
       void refetchHeader() // 프로파일 완료 플래그 등 헤더 진행 점 갱신
@@ -803,15 +807,25 @@ export default function ProfilePage() {
           </label>
         </div>
         <div>
-          <label htmlFor="profile-logo-url" className="block text-sm font-medium text-slate-700 mb-1.5">로고 이미지 URL</label>
-          <input
-            id="profile-logo-url"
-            type="url"
-            value={profile.logo_url ?? ''}
-            onChange={(e) => updateField('logo_url', e.target.value)}
-            placeholder="https://.../logo.png"
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+          <p className="text-sm font-medium text-slate-700">공식 로고</p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-3">
+            <span className={`rounded-lg border px-3 py-2 text-sm ${
+              isServableLogo(profile.logo_url)
+                ? 'border-green-200 bg-green-50 text-green-700'
+                : 'border-amber-200 bg-amber-50 text-amber-800'
+            }`}>
+              {isServableLogo(profile.logo_url) ? '업로드된 로고 있음' : '파일 업로드 필요'}
+            </span>
+            <Link
+              href={`/hospitals/${hospitalId}/onboarding`}
+              className="inline-flex min-h-10 items-center rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              로고 업로드·교체
+            </Link>
+          </div>
+          <p className="mt-1.5 text-xs leading-5 text-slate-500">
+            로고는 URL로 수정하지 않으며, 온보딩의 공개 표면 시각 요소에서 이미지 파일로 관리합니다.
+          </p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="text-sm font-medium text-slate-700">
