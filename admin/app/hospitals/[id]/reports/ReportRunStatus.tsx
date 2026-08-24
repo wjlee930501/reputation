@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
 import {
   parseMonthValue,
-  previousMonthValue,
+  opsRelevantMonthValue,
   REPORT_MONTH_BLOCK_MESSAGE,
   reportMonthBlockReason,
   reportMonthOptions,
@@ -20,16 +20,25 @@ import {
 } from '@/lib/report-run'
 import { ReportRunCard } from './ReportRunCard'
 
-export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; onReview: (reportId: string) => void }) {
+export function ReportRunStatus({
+  hospitalId,
+  reportPeriods,
+  onReview,
+}: {
+  hospitalId: string
+  reportPeriods: ReadonlyArray<{ periodYear: number; periodMonth: number }>
+  onReview: (reportId: string) => void
+}) {
+  const operationalPeriod = opsRelevantMonthValue(reportPeriods)
   const [runs, setRuns] = useState<readonly ReportRunView[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
-  const [period, setPeriod] = useState(previousMonthValue())
+  const [period, setPeriod] = useState(operationalPeriod)
   const [busy, setBusy] = useState(false)
   const active = useRef(false)
   const keys = useRef(new Map<string, string>())
-  const fallbackPeriod = parseMonthValue(previousMonthValue()) ?? { year: new Date().getFullYear(), month: 12 }
+  const fallbackPeriod = parseMonthValue(operationalPeriod) ?? { year: new Date().getFullYear(), month: 12 }
   const selectedPeriod = parseMonthValue(period) ?? fallbackPeriod
   const selectableYears = reportYearOptions()
   // 이번 달까지 목록에 남긴다. 마감 전·미래 달은 지우지 않고 이유를 붙여 잠근다 —
@@ -50,6 +59,9 @@ export function ReportRunStatus({ hospitalId, onReview }: { hospitalId: string; 
   }, [hospitalId])
 
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (reportPeriods.length > 0) setPeriod(operationalPeriod)
+  }, [operationalPeriod, reportPeriods.length])
   useEffect(() => {
     if (!runs.some((run) => run.isActive)) return
     const timer = window.setInterval(() => void refresh(), 5000)

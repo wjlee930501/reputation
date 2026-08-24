@@ -10,7 +10,7 @@ const onboardingPage = readFileSync(
 test('photo uploads send public in the same request without an extra opt-in', () => {
   assert.match(
     onboardingPage,
-    /if \(isPhotoSourceType\(type\)\) \{\s*fd\.append\('is_public', 'true'\)/,
+    /if \(isPhotoSourceType\(type\)\) \{[\s\S]{0,400}fd\.append\('is_public', 'true'\)/,
   )
   assert.doesNotMatch(onboardingPage, /const \[isPublic, setIsPublic\] = useState/)
   assert.doesNotMatch(onboardingPage, /공개 사이트에 표시/)
@@ -42,7 +42,7 @@ test('only photo rows expose their visibility badge and PATCH toggle', () => {
   assert.doesNotMatch(photoTypeGate, /HOMEPAGE|NAVER_BLOG|INTERVIEW|BROCHURE|INTERNAL_NOTE/)
   assert.match(
     onboardingPage,
-    /isPhotoSourceType\(s\.source_type\) && \([\s\S]*s\.is_public \? '공개' : '비공개'/,
+    /isPhotoSourceType\(s\.source_type\) && \([\s\S]*\{photoGate\?\.badge\}/,
   )
   assert.match(
     onboardingPage,

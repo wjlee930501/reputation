@@ -683,14 +683,14 @@ def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     assert "첫 발행" in next_onboarding_step(hospital)
 
 
-def test_readiness_guidance_always_names_customer_impact_and_support_fallback() -> None:
+def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -> None:
     # Given / When
     actions = readiness_next_actions()
 
     # Then
     assert len(actions) == 13
-    assert all("개발팀" in action for action in actions.values())
-    assert all("없으면" in action for action in actions.values())
+    assert all("해당 버튼이 없으면" not in action for action in actions.values())
+    assert all("개발팀에 병원명" not in action for action in actions.values())
     assert "“저장”" in actions["core_profile"]
     assert "병원 기본 정보 탭" in actions["core_profile"]
     assert all("프로파일" not in action for action in actions.values())
@@ -698,6 +698,9 @@ def test_readiness_guidance_always_names_customer_impact_and_support_fallback() 
     assert "“승인”" in actions["essence_philosophy"]
     assert "“스케줄 저장 및 슬롯 생성”" in actions["schedule"]
     assert "“DNS 확인하고 운영 시작”" in actions["domain"]
+    assert "지금 발행" not in actions["published_content"]
+    assert "스케줄 탭" in actions["published_content"]
+    assert "예약 콘텐츠" in readiness_next_actions(has_content_slots=True)["published_content"]
 
 
 def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> None:

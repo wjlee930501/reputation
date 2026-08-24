@@ -7,6 +7,7 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 from app.api.admin import hospitals as hospitals_api
+from app.services.hospital_geocoding import GeocodeResult, GeocodingError
 
 
 class FakeDB:
@@ -36,6 +37,7 @@ def _hospital(**overrides):
         status="ONBOARDING",
         plan=None,
         source_lead_id=None,
+        onboarding_note=None,
         site_live=False,
         site_built=False,
         profile_complete=True,
@@ -59,6 +61,7 @@ def _hospital(**overrides):
         google_business_profile_url=None,
         google_maps_url="https://maps.google.com/example",
         naver_place_url="https://naver.me/example",
+        aeo_domain=None,
         latitude=37.5,
         longitude=127.0,
         wikidata_qid=None,
@@ -109,6 +112,78 @@ async def test_completion_transition_with_missing_fields_keeps_400():
     assert exc.value.status_code == 400
     assert "targeting" in exc.value.detail
     assert db.committed is False
+
+
+async def test_address_change_geocodes_once_and_persists_coordinates(monkeypatch):
+    hospital = _hospital()
+    db = FakeDB(hospital)
+    calls = []
+
+    async def fake_geocode(address):
+        calls.append(address)
+        return GeocodeResult(37.566535, 126.977969)
+
+    monkeypatch.setattr(hospitals_api, "geocode_address", fake_geocode)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(address="서울 중구 세종대로 110"),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert calls == ["서울 중구 세종대로 110"]
+    assert hospital.latitude == 37.566535
+    assert hospital.longitude == 126.977969
+    assert result["latitude"] == 37.566535
+
+
+async def test_address_geocode_failure_is_concrete_and_does_not_save(monkeypatch):
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    async def fail_geocode(_address):
+        raise GeocodingError("입력한 주소에서 좌표를 찾지 못했습니다.")
+
+    monkeypatch.setattr(hospitals_api, "geocode_address", fail_geocode)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.update_profile(
+            hospital.id,
+            hospitals_api.HospitalProfileUpdate(address="잘못된 주소"),
+            BackgroundTasks(),
+            db=db,
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "ADDRESS_GEOCODE_FAILED"
+    assert "좌표를 찾지 못했습니다" in exc.value.detail["message"]
+    assert db.committed is False
+
+
+async def test_advanced_manual_coordinates_skip_address_geocode(monkeypatch):
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    async def unexpected_geocode(_address):
+        raise AssertionError("manual coordinates must not call the provider")
+
+    monkeypatch.setattr(hospitals_api, "geocode_address", unexpected_geocode)
+
+    await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(
+            address="서울 중구 직접 확인 주소",
+            latitude=37.1,
+            longitude=127.1,
+            geocode_address=False,
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert hospital.latitude == 37.1
+    assert hospital.longitude == 127.1
 
 
 def test_list_serializer_includes_custom_domain_for_admin_search():

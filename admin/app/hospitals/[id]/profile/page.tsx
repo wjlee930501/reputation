@@ -350,6 +350,10 @@ export default function ProfilePage() {
   const [error, setError] = useState<string | null>(null)
   const [errorCanReload, setErrorCanReload] = useState(false)
   const [success, setSuccess] = useState(false)
+  const [savedAddress, setSavedAddress] = useState('')
+  const [coordinatesManuallyEdited, setCoordinatesManuallyEdited] = useState(false)
+  const [coordinateNotice, setCoordinateNotice] = useState<string | null>(null)
+  const [weekdayCommonHours, setWeekdayCommonHours] = useState('')
 
   // Autofill state
   const [autofillOpen, setAutofillOpen] = useState(false)
@@ -376,6 +380,7 @@ export default function ProfilePage() {
           latitude: data.latitude ?? null,
           longitude: data.longitude ?? null,
         })
+        setSavedAddress(data.address ?? '')
       })
       .catch((reason: unknown) => {
         if (!isExpectedOperatorRequestFailure(reason)) throw reason
@@ -405,6 +410,20 @@ export default function ProfilePage() {
     setProfile((prev) => ({
       ...prev,
       business_hours: { ...(prev.business_hours ?? {}), [dayKey]: value },
+    }))
+  }
+
+  function applyWeekdayCommonHours() {
+    setProfile((prev) => ({
+      ...prev,
+      business_hours: {
+        ...(prev.business_hours ?? {}),
+        mon: weekdayCommonHours,
+        tue: weekdayCommonHours,
+        wed: weekdayCommonHours,
+        thu: weekdayCommonHours,
+        fri: weekdayCommonHours,
+      },
     }))
   }
 
@@ -438,13 +457,32 @@ export default function ProfilePage() {
     setError(null)
     setErrorCanReload(false)
     setSuccess(false)
+    setCoordinateNotice(null)
     try {
-      await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, {
+      const addressChanged = (profile.address ?? '').trim() !== savedAddress.trim()
+      const saved = await fetchAPI<HospitalProfile>(`/admin/hospitals/${hospitalId}/profile`, {
         method: 'PATCH',
         // The upload endpoint owns logo_url. Omitting it prevents a stale profile
         // snapshot from overwriting or invalidating an uploaded storage reference.
-        body: JSON.stringify(profilePatchPayload(profile)),
+        body: JSON.stringify({
+          ...profilePatchPayload(profile),
+          geocode_address: !coordinatesManuallyEdited,
+        }),
       })
+      setProfile((current) => ({
+        ...current,
+        latitude: saved.latitude,
+        longitude: saved.longitude,
+      }))
+      setSavedAddress(saved.address ?? '')
+      if (addressChanged) {
+        setCoordinateNotice(
+          coordinatesManuallyEdited
+            ? '고급에서 입력한 좌표를 사용했습니다.'
+            : `주소에서 좌표를 한 번 변환했습니다: ${saved.latitude}, ${saved.longitude}`,
+        )
+      }
+      setCoordinatesManuallyEdited(false)
       setSuccess(true)
       void refetchHeader() // 프로파일 완료 플래그 등 헤더 진행 점 갱신
       setTimeout(() => setSuccess(false), 3000)
@@ -973,9 +1011,14 @@ export default function ProfilePage() {
             type="text"
             id="profile-address"
             value={profile.address ?? ''}
-            onChange={(e) => updateField('address', e.target.value)}
+            onChange={(e) => {
+              updateField('address', e.target.value)
+              setCoordinatesManuallyEdited(false)
+              setCoordinateNotice('저장할 때 이 주소를 한 번 좌표로 변환합니다.')
+            }}
             className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${fieldCls('address', !!aiFilled.address)}`}
           />
+          {coordinateNotice && <p className="mt-1.5 text-xs text-slate-500">{coordinateNotice}</p>}
         </div>
         <div>
           <label htmlFor="profile-phone" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
@@ -997,6 +1040,31 @@ export default function ProfilePage() {
             {aiFilled.business_hours && <AiBadge meta={aiFilled.business_hours} />}
           </label>
           <div className="space-y-2">
+            <div className="rounded-lg border border-blue-100 bg-blue-50 p-3">
+              <label htmlFor="profile-weekday-common" className="block text-xs font-semibold text-blue-900">
+                평일 공통 진료시간
+              </label>
+              <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="profile-weekday-common"
+                  type="text"
+                  value={weekdayCommonHours}
+                  onChange={(event) => setWeekdayCommonHours(event.target.value)}
+                  placeholder="09:00 ~ 18:00 (점심 13:00 ~ 14:00)"
+                  className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={applyWeekdayCommonHours}
+                  disabled={!weekdayCommonHours.trim()}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  월–금 한 번에 채우기
+                </button>
+              </div>
+              <p className="mt-1.5 text-xs text-blue-800">아래 요일별 칸에서 휴진·야간 진료 같은 예외만 수정하세요.</p>
+            </div>
+            <p className="text-xs font-semibold text-slate-600">요일별 예외·주말</p>
             {DAYS.map((day, i) => (
               <div key={DAY_KEYS[i]} className="flex items-center gap-3">
                 <span className="w-6 text-sm text-slate-600 font-medium">{day}</span>
@@ -1105,8 +1173,13 @@ export default function ProfilePage() {
             />
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
+        <details className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-700">고급 · 위도/경도 직접 수정</summary>
+          <p className="mt-2 text-xs leading-5 text-slate-500">
+            주소 저장 시 좌표가 자동 변환됩니다. 자동 변환이 실패했거나 지도에서 직접 확인한 경우에만 수정하세요.
+          </p>
+          <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
             <label htmlFor="profile-latitude" className="block text-sm font-medium text-slate-700 mb-1.5">위도</label>
             <input
               type="text"
@@ -1116,19 +1189,21 @@ export default function ProfilePage() {
               onChange={(e) => {
                 const raw = e.target.value.trim()
                 if (raw === '') {
+                  setCoordinatesManuallyEdited(true)
                   updateField('latitude', null)
                   return
                 }
                 const parsed = Number(raw)
                 if (!Number.isFinite(parsed)) return
+                setCoordinatesManuallyEdited(true)
                 updateField('latitude', Math.round(parsed * 1_000_000) / 1_000_000)
               }}
               placeholder="37.497942"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
             <p className="mt-1 text-xs text-slate-500">지도에서 붙여 넣으면 소수점 6자리로 저장됩니다.</p>
-          </div>
-          <div>
+            </div>
+            <div>
             <label htmlFor="profile-longitude" className="block text-sm font-medium text-slate-700 mb-1.5">경도</label>
             <input
               type="text"
@@ -1138,19 +1213,22 @@ export default function ProfilePage() {
               onChange={(e) => {
                 const raw = e.target.value.trim()
                 if (raw === '') {
+                  setCoordinatesManuallyEdited(true)
                   updateField('longitude', null)
                   return
                 }
                 const parsed = Number(raw)
                 if (!Number.isFinite(parsed)) return
+                setCoordinatesManuallyEdited(true)
                 updateField('longitude', Math.round(parsed * 1_000_000) / 1_000_000)
               }}
               placeholder="127.027621"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
             <p className="mt-1 text-xs text-slate-500">지도에서 붙여 넣으면 소수점 6자리로 저장됩니다.</p>
+            </div>
           </div>
-        </div>
+        </details>
       </section>
 
       {/* 운영 기준 정보 */}

@@ -54,6 +54,7 @@ from app.services.essence_engine import (
 )
 from app.services.essence_readiness import get_essence_readiness
 from app.services.hospital_duplicates import find_duplicate_hospitals, normalize_hospital_name
+from app.services.hospital_geocoding import GeocodingError, geocode_address
 from app.services.hospital_lifecycle import (
     activation_gate_error,
     evaluate_activation_gate,
@@ -154,6 +155,9 @@ class HospitalProfileUpdate(BaseModel):
     naver_place_url: str | None = Field(None, max_length=500)
     latitude: float | None = Field(None, ge=-90, le=90)
     longitude: float | None = Field(None, ge=-180, le=180)
+    # True by default: an address change resolves coordinates once during this save.
+    # Advanced manual coordinate edits explicitly set False from the Admin form.
+    geocode_address: bool = True
 
     @field_validator("latitude", "longitude", mode="before")
     @classmethod
@@ -697,6 +701,22 @@ async def update_profile(
         "site_access_mode",
     }
     update_data = body.model_dump(exclude_unset=True)
+    submitted_address = update_data.get("address")
+    address_changed = (
+        isinstance(submitted_address, str)
+        and bool(submitted_address.strip())
+        and submitted_address.strip() != (h.address or "").strip()
+    )
+    if address_changed and body.geocode_address:
+        try:
+            coordinates = await geocode_address(submitted_address)
+        except GeocodingError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "ADDRESS_GEOCODE_FAILED", "message": str(exc)},
+            ) from exc
+        update_data["latitude"] = coordinates.latitude
+        update_data["longitude"] = coordinates.longitude
     # 공개 표면이 조용히 버릴 값을 저장해 두고 `승인됨`으로 보여 주지 않는다 — 로고는
     # 온보딩 필수 게이트라, 새 효과 없는 입력은 통과시키지 않는다(L-1). 다만 프로파일
     # 화면은 전체 객체를 PATCH하므로, 이미 저장된 레거시 외부 URL을 그대로 재전송한 것은
@@ -1087,6 +1107,15 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         .select_from(ContentItem)
         .where(ContentItem.hospital_id == h.id, ContentItem.status == ContentStatus.PUBLISHED),
     )
+    content_slot_count = await _count(
+        db,
+        select(func.count())
+        .select_from(ContentItem)
+        .where(
+            ContentItem.hospital_id == h.id,
+            ContentItem.status != ContentStatus.CANCELLED,
+        ),
+    )
     sov_count = await _count(
         db,
         select(func.count()).select_from(SovRecord).where(SovRecord.hospital_id == h.id),
@@ -1145,7 +1174,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     has_external_profiles = bool(
         h.website_url or h.blog_url or h.kakao_channel_url or h.naver_place_url
     )
-    readiness_actions = readiness_next_actions()
+    readiness_actions = readiness_next_actions(has_content_slots=content_slot_count > 0)
 
     checks = [
         ReadinessCheck(

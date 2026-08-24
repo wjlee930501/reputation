@@ -21,6 +21,7 @@ import logging
 import re
 import socket
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import html2text
@@ -61,6 +62,7 @@ class FetchQuality:
     char_count: int
     has_shell_markers: bool
     link_to_text_ratio: float
+    page_title: str | None = None
 
     @property
     def looks_like_shell(self) -> bool:
@@ -78,6 +80,41 @@ class FetchTarget:
     hostname: str
     port: int
     allowed_ips: frozenset[str]
+
+
+class _TitleParser(HTMLParser):
+    """Read the first HTML title without interpreting scripts or page markup."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_title = False
+        self.parts: list[str] = []
+        self.done = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        _ = attrs
+        if not self.done and tag.lower() == "title":
+            self.in_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.in_title and tag.lower() == "title":
+            self.in_title = False
+            self.done = True
+
+    def handle_data(self, data: str) -> None:
+        if self.in_title and not self.done:
+            self.parts.append(data)
+
+
+def extract_html_title(raw_html: str) -> str | None:
+    """Return a whitespace-normalized, storage-safe ``<title>`` value."""
+    parser = _TitleParser()
+    try:
+        parser.feed(raw_html)
+    except Exception:  # malformed HTML must not break the existing crawl path
+        return None
+    title = re.sub(r"\s+", " ", "".join(parser.parts)).strip()
+    return title[:300] or None
 
 
 def extract_pdf_text(data: bytes) -> str:
@@ -349,6 +386,7 @@ def _assess_fetch_quality(raw_html: str, text: str) -> FetchQuality:
         char_count=char_count,
         has_shell_markers=has_shell_markers,
         link_to_text_ratio=link_to_text_ratio,
+        page_title=extract_html_title(raw_html),
     )
 
 

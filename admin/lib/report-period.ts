@@ -62,8 +62,25 @@ export function parseMonthValue(value: string): { year: number; month: number } 
   return { year, month }
 }
 
-/** 선택 가능한 첫 연도. 그 이전 달은 만들 이력이 없다. */
-export const FIRST_REPORT_YEAR = 2020
+/** 선택 가능한 첫 연도. 서비스 운영 이력이 시작된 해보다 앞선 빈 연도는 숨긴다. */
+export const FIRST_REPORT_YEAR = 2025
+
+/** Existing report data is the operational source of truth for the picker default.
+ * Fall back to the latest closed month only when the hospital has no report yet.
+ */
+export function opsRelevantMonthValue(
+  periods: ReadonlyArray<{ periodYear: number; periodMonth: number }>,
+  now: Date = new Date(),
+): string {
+  const latest = [...periods]
+    .filter((period) => Number.isInteger(period.periodYear) && period.periodMonth >= 1 && period.periodMonth <= 12)
+    .sort((left, right) => (
+      right.periodYear - left.periodYear || right.periodMonth - left.periodMonth
+    ))[0]
+  return latest
+    ? `${latest.periodYear}-${String(latest.periodMonth).padStart(2, '0')}`
+    : previousMonthValue(now)
+}
 
 export type ReportMonthBlockReason = 'NOT_CLOSED' | 'FUTURE'
 

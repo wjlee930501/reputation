@@ -133,7 +133,14 @@ export default function ReportsPage() {
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <header data-current-task className="mb-5"><h2 className="text-xl font-bold text-[var(--color-revisit-text-title)]">월간 리포트 검수와 전달</h2><p className="mt-1 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">측정 근거와 원장 전달용 파일을 먼저 확인하고, 같은 화면에서 전달 이력을 남깁니다.</p></header>
-      <ReportRunStatus hospitalId={hospitalId} onReview={(reportId) => void openReport(reportId)} />
+      <ReportRunStatus
+        hospitalId={hospitalId}
+        reportPeriods={reports.map((report) => ({
+          periodYear: report.periodYear,
+          periodMonth: report.periodMonth,
+        }))}
+        onReview={(reportId) => void openReport(reportId)}
+      />
       {statusMessage && <p className="mb-4 rounded-lg bg-[var(--color-revisit-primary-95)] p-3 text-sm" role="status">{statusMessage}</p>}
       {pageError && <div className="mb-4 rounded-lg border border-[var(--color-revisit-red-50)] p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert"><p>{pageError}</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" onClick={() => window.location.reload()} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 font-bold text-white">리포트 목록 다시 시도</button><button type="button" onClick={() => void copyDeveloperInfo()} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div></div>}
       {loading ? <p className="py-12 text-center text-sm" role="status">리포트 목록을 불러오는 중입니다.</p> : <ReportList reports={reports} loadingId={loadingId} onOpen={(report) => void openReport(report.id)} />}
