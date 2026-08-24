@@ -660,7 +660,11 @@ async def test_operations_incident_filters_paginate_and_empty(pg_async_session):
     actor = await _operations_actor(db, "필터 담당자")
     hospital = await _active_hospital(db, "필터 의원")
     await _incident(db, hospital, owner=actor)
-    await _incident(db, hospital, owner=actor)
+    distinct_cause = await _incident(db, hospital, owner=actor)
+    distinct_cause.incident_type = "CONTENT_WRITE_FAILED"
+    distinct_cause.safe_error_code = "CONTENT_WRITE_FAILED"
+    distinct_cause.safe_error_message = "콘텐츠 저장 작업을 다시 확인해 주세요."
+    await db.flush()
 
     first = await operations_center.get_operations_queue(
         operations_center.OperationsQueue.INCIDENTS,
@@ -1131,7 +1135,7 @@ async def test_operations_overview_query_count_is_constant_for_one_or_many_rows(
     assert many_count == one_count
 
 
-async def test_incident_queue_uses_count_plus_page_only(pg_async_session):
+async def test_incident_queue_groups_same_cause_in_one_query(pg_async_session):
     db = pg_async_session
     actor = await _operations_actor(db)
     hospital = await _active_hospital(db, "쿼리 예산 의원")
@@ -1155,9 +1159,11 @@ async def test_incident_queue_uses_count_plus_page_only(pg_async_session):
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", count_statement)
 
-    assert result.total >= 25
-    assert len(result.items) == 10
-    assert len(statements) == 2
+    assert result.total == 1
+    assert len(result.items) == 1
+    assert result.items[0].same_type_count == 25
+    assert result.items[0].affected_hospital_count == 1
+    assert len(statements) == 1
 
 
 async def test_operations_http_surface_returns_typed_scoping_and_conflict_errors(pg_async_session):
