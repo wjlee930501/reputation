@@ -15,6 +15,11 @@ import {
   reportGapSummary,
 } from '@/lib/attention-queue'
 import { domainSearchText, readHospitalDomainStatus } from '@/lib/hospital-domain-status'
+import {
+  hospitalMatchesStatus,
+  hospitalStatusCounts,
+  type HospitalStatusFilter,
+} from '@/lib/hospital-list-filter'
 import { Hospital, STATUS_LABELS, PLAN_LABELS } from '@/types'
 import { SkeletonTable } from '@/app/components/Skeleton'
 
@@ -28,6 +33,7 @@ export default function HospitalsPage() {
   const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<HospitalStatusFilter>('all')
 
   const loadPage = useCallback(async (skip: number) => {
     if (skip === 0) setLoading(true)
@@ -60,22 +66,22 @@ export default function HospitalsPage() {
   }, [])
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return hospitals
     const q = query.trim().toLowerCase()
-    return hospitals.filter((h) => domainSearchText(h).includes(q))
-  }, [hospitals, query])
+    return hospitals.filter(
+      (hospital) =>
+        hospitalMatchesStatus(hospital, statusFilter)
+        && (!q || domainSearchText(hospital).includes(q)),
+    )
+  }, [hospitals, query, statusFilter])
 
   const stats = useMemo(() => {
-    const active = hospitals.filter((h) => h.status === 'ACTIVE').length
-    // 상태값만 세면 이미 ACTIVE로 넘어간 병원의 남은 승인이 통계에서 사라진다 —
-    // 목록만 보는 운영자에게는 할 일이 0건으로 보였다(O-2).
-    const onboarding = hospitals.filter(
-      (h) =>
-        ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN'].includes(h.status) ||
-        pendingVisualCount(h) > 0,
-    ).length
-    return { total: hospitals.length, active, onboarding }
+    return hospitalStatusCounts(hospitals)
   }, [hospitals])
+
+  const reviewCounts = useMemo(
+    () => new Map((attention?.hospitals ?? []).map((row) => [row.hospital_id, row.unreviewed_count])),
+    [attention],
+  )
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -99,10 +105,10 @@ export default function HospitalsPage() {
 
         {/* Quick stats */}
         {!loading && !error && hospitals.length > 0 && (
-          <div className="flex items-center gap-6 text-xs text-slate-500 mt-4">
-            <StatPill label="전체" value={stats.total} />
-            <StatPill label="운영 중" value={stats.active} tone="good" />
-            <StatPill label="온보딩" value={stats.onboarding} tone="warn" />
+          <div className="flex items-center gap-2 text-xs text-slate-500 mt-4" aria-label="병원 상태 필터">
+            <StatPill label="전체" value={stats.total} selected={statusFilter === 'all'} onClick={() => setStatusFilter('all')} />
+            <StatPill label="운영 중" value={stats.active} tone="good" selected={statusFilter === 'active'} onClick={() => setStatusFilter('active')} />
+            <StatPill label="온보딩" value={stats.onboarding} tone="warn" selected={statusFilter === 'onboarding'} onClick={() => setStatusFilter('onboarding')} />
           </div>
         )}
       </div>
@@ -219,9 +225,9 @@ export default function HospitalsPage() {
               placeholder="병원명, slug, 도메인 검색"
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 sm:w-72"
             />
-            {query && (
+            {(query || statusFilter !== 'all') && (
               <span className="text-xs text-slate-500">
-                {filtered.length}개 일치
+                {filtered.length}개 표시
               </span>
             )}
           </div>
@@ -245,7 +251,7 @@ export default function HospitalsPage() {
                 {filtered.length === 0 && (
                   <tr>
                     <td colSpan={8} className="text-center py-12 text-slate-400">
-                      검색 결과가 없습니다.
+                      {query ? '검색 조건에 맞는 병원이 없습니다.' : '선택한 상태의 병원이 없습니다.'}
                     </td>
                   </tr>
                 )}
@@ -265,6 +271,11 @@ export default function HospitalsPage() {
                         >
                           <div className="font-medium text-slate-900 group-hover:text-blue-700">
                             {h.name}
+                            {(reviewCounts.get(h.id) ?? 0) > 0 && (
+                              <span className="ml-2 inline-flex rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700">
+                                공개 후 확인 필요 {reviewCounts.get(h.id)}건
+                              </span>
+                            )}
                           </div>
                           <div className="text-[11px] text-slate-400 font-mono mt-0.5">
                             {h.slug}
@@ -381,19 +392,32 @@ function StatPill({
   label,
   value,
   tone,
+  selected,
+  onClick,
 }: {
   label: string
   value: number
   tone?: 'good' | 'warn'
+  selected: boolean
+  onClick: () => void
 }) {
   const dot =
     tone === 'good' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : 'bg-slate-400'
   return (
-    <span className="inline-flex items-center gap-1.5">
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 transition-colors ${
+        selected
+          ? 'border-blue-300 bg-blue-50 text-blue-800'
+          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+      }`}
+    >
       <span className={`w-1.5 h-1.5 rounded-full ${dot}`} aria-hidden />
       <span className="text-slate-500">{label}</span>
       <span className="font-semibold text-slate-700">{value}</span>
-    </span>
+    </button>
   )
 }
 

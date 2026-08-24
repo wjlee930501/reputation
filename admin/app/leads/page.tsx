@@ -12,6 +12,7 @@ import { PLAN_CONTRACT_LABELS, PLAN_LABELS, STATUS_LABELS, type SalesLead } from
 import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
 import { leadSourceLabel, safeOperatorError } from '@/lib/operations-journey'
 import { describeLeadAging, sortLeadsByAttention } from '@/lib/lead-aging'
+import { leadEmptyState, type RealLeadSummary } from '@/lib/lead-list'
 import {
   type LeadDiagnosisSummary,
   type Tone,
@@ -121,6 +122,7 @@ export default function LeadsPage() {
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
+  const [summary, setSummary] = useState<RealLeadSummary | null>(null)
 
   // 전환 모달
   const [convertLead, setConvertLead] = useState<SalesLead | null>(null)
@@ -216,9 +218,19 @@ export default function LeadsPage() {
     [attentionOnly],
   )
 
+  const loadSummary = useCallback(async () => {
+    try {
+      setSummary(await fetchAPI<RealLeadSummary>('/admin/leads/summary'))
+    } catch {
+      // 요약 지표 실패가 상담 요청 목록 열람까지 막으면 안 된다.
+      setSummary(null)
+    }
+  }, [])
+
   useEffect(() => {
     void loadLeads(0)
-  }, [loadLeads])
+    void loadSummary()
+  }, [loadLeads, loadSummary])
 
   useEffect(() => {
     const active = leads.some((lead) =>
@@ -298,6 +310,7 @@ export default function LeadsPage() {
       await fetchAPI(`/admin/leads/${lead.id}/erase`, { method: 'POST' })
       // 현재 로드된 창 전체를 다시 읽어 파기 결과를 반영한다 (백엔드 limit 상한 내).
       await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
+      void loadSummary()
     } catch (e: unknown) {
       setEraseError(safeOperatorError('leads', '상담 요청 다시 불러오기를 누른 뒤 개인정보 파기를 다시 실행하세요.'))
     } finally {
@@ -354,6 +367,7 @@ export default function LeadsPage() {
       }
       setActionNotice(notices[kind])
       await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
+      void loadSummary()
     } catch (e: unknown) {
       const reasons = readRefusalReasons(e)
       setActionError(
@@ -366,9 +380,12 @@ export default function LeadsPage() {
     }
   }
 
-  const overdueLeadCount = leads.filter(
-    (lead) => describeLeadAging(lead, agingCheckedAt).slaState === 'OVERDUE',
+  const realLoadedCount = leads.filter((lead) => !lead.is_operations_test).length
+  const realTotal = summary?.total ?? realLoadedCount
+  const overdueLeadCount = summary?.overdue ?? leads.filter(
+    (lead) => !lead.is_operations_test && describeLeadAging(lead, agingCheckedAt).slaState === 'OVERDUE',
   ).length
+  const emptyState = leadEmptyState(attentionOnly, realTotal)
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -383,9 +400,7 @@ export default function LeadsPage() {
           <button
             type="button"
             onClick={() => {
-              const next = !attentionOnly
-              setAttentionOnly(next)
-              void loadLeads(0, { attention: next })
+              setAttentionOnly((current) => !current)
             }}
             aria-pressed={attentionOnly}
             className={`min-h-11 rounded-xl border px-4 py-3 text-xs font-semibold shadow-sm transition-colors ${
@@ -395,10 +410,11 @@ export default function LeadsPage() {
             }`}
           >
             {attentionOnly ? '확인 필요만 보는 중' : '확인 필요만 보기'}
+            {summary && ` ${summary.needs_attention}건`}
           </button>
           <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-right shadow-sm">
-            <p className="text-xs font-medium text-slate-500">불러온 상담 요청</p>
-            <p className="mt-0.5 text-2xl font-bold text-slate-900">{leads.length}</p>
+            <p className="text-xs font-medium text-slate-500">불러온 상담 요청 · 실운영</p>
+            <p className="mt-0.5 text-2xl font-bold text-slate-900">{realTotal}</p>
             {overdueLeadCount > 0 && (
               <p className="mt-0.5 text-[11px] font-semibold text-red-600">첫 연락 기한 초과 {overdueLeadCount}건</p>
             )}
@@ -424,10 +440,8 @@ export default function LeadsPage() {
 
       {!loading && !error && leads.length === 0 && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
-          <p className="text-base font-semibold text-slate-700">아직 접수된 리드가 없습니다.</p>
-          <p className="mt-2 text-sm text-slate-500">
-            공개 페이지 문의 폼으로 들어온 상담 요청이 이곳에 쌓입니다.
-          </p>
+          <p className="text-base font-semibold text-slate-700">{emptyState.title}</p>
+          <p className="mt-2 text-sm text-slate-500">{emptyState.detail}</p>
         </div>
       )}
 
@@ -644,6 +658,8 @@ export default function LeadsPage() {
                                     <button
                                       type="button"
                                       onClick={() => openAction(lead, diagnosis, 'release')}
+                                      title="이 병원 대표번호에 적용된 무료 진단 1회 신청 제한을 해제합니다."
+                                      aria-label="무료 진단 1회 제한 해제 — 병원 대표번호의 무료 진단 신청 제한을 해제합니다"
                                       className="inline-flex min-h-11 items-center text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:underline"
                                     >
                                       1회 제한 해제

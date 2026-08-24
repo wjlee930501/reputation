@@ -26,6 +26,10 @@ class AdminUser(Base):
     role: Mapped[str] = mapped_column(String(30), nullable=False, default="OWNER")
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 운영 점검 계정은 삭제하지 않고 보존하되 실운영 인원 지표에서는 제외한다.
+    is_operations_test: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 이 시각 이전에 발급된 세션은 전부 무효. 발급된 토큰을 서버가 열거할 수 없어
     # 개별 폐기가 불가능하므로, 계정 단위 기준선으로 한 번에 끊는다.

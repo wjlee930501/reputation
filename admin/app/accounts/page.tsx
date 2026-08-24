@@ -11,6 +11,7 @@ type AdminAccount = {
   name: string
   role: 'OWNER' | 'OPERATOR' | string
   is_active: boolean
+  is_operations_test: boolean
   last_login_at: string | null
   created_at: string | null
 }
@@ -140,6 +141,8 @@ export default function AccountsPage() {
   }
 
   const activeOwners = accounts.filter((a) => a.role === 'OWNER' && a.is_active).length
+  const realAccountCount = accounts.filter((account) => !account.is_operations_test).length
+  const operationsTestCount = accounts.length - realAccountCount
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-8">
@@ -165,6 +168,15 @@ export default function AccountsPage() {
           </button>
         )}
       </header>
+
+      {!loading && !loadError && accounts.length > 0 && (
+        <p className="mt-4 text-xs text-slate-500">
+          실운영 계정 <strong className="text-slate-700">{realAccountCount}</strong>개
+          {operationsTestCount > 0 && (
+            <span> · 운영 점검 계정 {operationsTestCount}개 (실운영 지표 제외)</span>
+          )}
+        </p>
+      )}
 
       {!canManage && (
         <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
@@ -283,10 +295,13 @@ export default function AccountsPage() {
                   // 눌러본 뒤 알게 되는 구조를 피한다.
                   const isLastActiveOwner =
                     account.role === 'OWNER' && account.is_active && activeOwners <= 1
+                  const isSuspendedPromotion = !account.is_active && account.role !== 'OWNER'
                   const lockReason = isMe
                     ? '자기 계정은 변경할 수 없습니다'
                     : isLastActiveOwner
                       ? '마지막 소유자입니다'
+                      : isSuspendedPromotion
+                        ? '정지된 계정은 활성화한 뒤 소유자로 승격할 수 있습니다'
                       : ''
                   return (
                     <tr key={account.id} className={account.is_active ? '' : 'bg-slate-50/60'}>
@@ -294,6 +309,11 @@ export default function AccountsPage() {
                         <div className="font-medium text-slate-900">
                           {account.name}
                           {isMe && <span className="ml-2 text-xs font-normal text-blue-600">내 계정</span>}
+                          {account.is_operations_test && (
+                            <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-normal text-slate-600">
+                              운영 점검 · 실지표 제외
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-slate-500">{account.email}</div>
                       </td>

@@ -117,7 +117,7 @@ class TestDiagnosisSummary:
 
 @pytest.mark.asyncio
 class TestNeedsAttentionFilter:
-    async def test_filter_returns_only_leads_that_need_a_human(self, pg_async_session):
+    async def test_filter_uses_lead_triage_not_diagnosis_failure(self, pg_async_session):
         healthy, _ = await _seed_lead(pg_async_session, clinic_name="필터정상의원")
         failed_delivery, _ = await _seed_lead(
             pg_async_session,
@@ -139,19 +139,41 @@ class TestNeedsAttentionFilter:
 
         assert str(failed_delivery.id) in ids
         assert str(blocked_report.id) in ids
-        assert str(healthy.id) not in ids
+        assert str(healthy.id) in ids
 
-    async def test_filter_excludes_leads_with_no_diagnosis_at_all(self, pg_async_session):
-        """진단이 없는 리드는 '확인 필요'가 아니다 — 섞이면 목록이 신호를 잃는다."""
+    async def test_filter_includes_new_leads_with_no_diagnosis(self, pg_async_session):
+        """확인 필요의 신규 조건은 무료 진단 유무와 무관하다."""
         plain, _ = await _seed_lead(
             pg_async_session, clinic_name="필터일반의원", with_diagnosis=False
         )
         rows = await leads_api.list_sales_leads(
             db=pg_async_session, limit=200, offset=0, needs_attention=True
         )
-        assert str(plain.id) not in {row["id"] for row in rows}
+        assert str(plain.id) in {row["id"] for row in rows}
 
     async def test_default_listing_still_returns_everything(self, pg_async_session):
         healthy, _ = await _seed_lead(pg_async_session, clinic_name="기본목록의원")
         rows = await leads_api.list_sales_leads(db=pg_async_session, limit=200, offset=0)
         assert str(healthy.id) in {row["id"] for row in rows}
+
+    async def test_operations_test_lead_is_kept_but_excluded_from_real_work(self, pg_async_session):
+        real, _ = await _seed_lead(pg_async_session, clinic_name="실운영신규의원")
+        qa, _ = await _seed_lead(pg_async_session, clinic_name="운영점검의원")
+        qa.source_path = "/ops-qa"
+        qa.consent_version = "ops-qa-v1"
+        qa.conversion_note = "[OPS-QA-20260824]"
+        await pg_async_session.flush()
+
+        full_rows = await leads_api.list_sales_leads(
+            db=pg_async_session, limit=200, offset=0
+        )
+        attention_rows = await leads_api.list_sales_leads(
+            db=pg_async_session, limit=200, offset=0, needs_attention=True
+        )
+        summary = await leads_api.get_sales_lead_summary(pg_async_session)
+
+        assert str(qa.id) in {row["id"] for row in full_rows}
+        assert str(real.id) in {row["id"] for row in attention_rows}
+        assert str(qa.id) not in {row["id"] for row in attention_rows}
+        assert summary["total"] >= 1
+        assert summary["operations_test"] >= 1

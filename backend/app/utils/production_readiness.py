@@ -95,7 +95,11 @@ def _database_facts() -> dict[str, Any]:
         current_head = db.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
         active_owner_count = int(
             db.execute(
-                text("SELECT count(*) FROM admin_users WHERE is_active IS TRUE AND role = 'OWNER'")
+                text(
+                    "SELECT count(*) FROM admin_users "
+                    "WHERE is_active IS TRUE AND role = 'OWNER' "
+                    "AND is_operations_test IS NOT TRUE"
+                )
             ).scalar_one()
         )
         hospital_count = int(db.execute(text("SELECT count(*) FROM hospitals")).scalar_one())

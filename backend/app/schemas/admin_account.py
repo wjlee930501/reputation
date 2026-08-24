@@ -96,6 +96,7 @@ class AdminAccountResponse(BaseModel):
     name: str
     role: str
     is_active: bool
+    is_operations_test: bool = False
     last_login_at: datetime | None
     created_at: datetime | None
 

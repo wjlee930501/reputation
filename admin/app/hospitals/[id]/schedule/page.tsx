@@ -9,6 +9,8 @@ import {
   DAYS,
   DEFAULT_PUBLISH_DAYS_BY_PLAN,
   firstDayOfNextMonthInputValue,
+  moveScheduleMonth,
+  scheduleMonthLabel,
   validateScheduleCapacity,
 } from '@/lib/schedule'
 import { canSubmitSchedule } from '@/lib/operator-safety'
@@ -66,6 +68,7 @@ export default function SchedulePage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<{ slots_created: number; first_publish_date: string } | null>(null)
+  const [confirmingReplacement, setConfirmingReplacement] = useState(false)
 
   // 현재 운영 중인 스케줄 — 404는 "아직 스케줄 없음"으로 처리
   const [existing, setExisting] = useState<ScheduleInfo | null>(null)
@@ -160,9 +163,14 @@ export default function SchedulePage() {
       return
     }
     if (existing) {
-      const confirmed = confirm('기존 스케줄이 교체되고 미발행 초안 슬롯이 재생성됩니다. 계속할까요?')
-      if (!confirmed) return
+      setConfirmingReplacement(true)
+      return
     }
+    await saveSchedule()
+  }
+
+  async function saveSchedule() {
+    setConfirmingReplacement(false)
     setLoading(true)
     setError(null)
     try {
@@ -327,6 +335,27 @@ export default function SchedulePage() {
           {/* 시작일 */}
           <div>
             <label htmlFor="schedule-active-from" className="block text-sm font-medium text-slate-700 mb-2">시작일</label>
+            <div className="mb-2 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 p-1" aria-label="스케줄 연월 이동">
+              <button
+                type="button"
+                onClick={() => setActiveFrom((current) => moveScheduleMonth(current, -1))}
+                className="min-h-10 rounded-md px-3 text-sm font-semibold text-slate-600 hover:bg-white"
+                aria-label="이전 달"
+              >
+                ←
+              </button>
+              <output className="text-sm font-semibold tabular-nums text-slate-800">
+                {scheduleMonthLabel(activeFrom)}
+              </output>
+              <button
+                type="button"
+                onClick={() => setActiveFrom((current) => moveScheduleMonth(current, 1))}
+                className="min-h-10 rounded-md px-3 text-sm font-semibold text-slate-600 hover:bg-white"
+                aria-label="다음 달"
+              >
+                →
+              </button>
+            </div>
             <input
               id="schedule-active-from"
               type="date"
@@ -385,6 +414,61 @@ export default function SchedulePage() {
         </p>
       </aside>
       </div>
+
+      {confirmingReplacement && existing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="presentation">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="schedule-replacement-title"
+            className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl"
+          >
+            <h3 id="schedule-replacement-title" className="text-lg font-bold text-slate-900">
+              기존 스케줄을 교체할까요?
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              저장하면 기존 설정이 아래 새 기준으로 바뀌고 미발행 초안 슬롯이 재생성됩니다.
+              이 변경은 자동으로 되돌릴 수 없습니다.
+            </p>
+            <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200 px-4 text-sm">
+              <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
+                <dt className="text-slate-500">월간 운영량</dt>
+                <dd className="font-medium text-slate-900">
+                  {PLAN_LABELS[existing.plan] ?? existing.plan} → {PLAN_LABELS[plan as keyof typeof PLAN_LABELS] ?? plan}
+                </dd>
+              </div>
+              <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
+                <dt className="text-slate-500">발행 요일</dt>
+                <dd className="font-medium text-slate-900">
+                  {[...existing.publish_days].sort().map((day) => DAYS[day]).join(', ') || '없음'} →{' '}
+                  {selectedDays.map((day) => DAYS[day]).join(', ') || '없음'}
+                </dd>
+              </div>
+              <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
+                <dt className="text-slate-500">시작일</dt>
+                <dd className="font-medium text-slate-900">{existing.active_from} → {activeFrom}</dd>
+              </div>
+            </dl>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmingReplacement(false)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveSchedule()}
+                disabled={loading}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {loading ? '교체 중...' : '교체하고 슬롯 재생성'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

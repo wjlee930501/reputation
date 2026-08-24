@@ -34,6 +34,13 @@ def test_readiness_covers_every_declared_schedule_and_routed_task() -> None:
     )
 
 
+def test_real_owner_readiness_excludes_operations_test_accounts() -> None:
+    import inspect
+
+    source = inspect.getsource(production_readiness._database_facts)
+    assert "is_operations_test IS NOT TRUE" in source
+
+
 class _CanaryRedis:
     def __init__(self, values: dict[str, bytes]) -> None:
         self.values = values

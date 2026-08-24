@@ -169,7 +169,15 @@ async def update_admin_account(
     account = await _get_account_or_404(db, account_id)
 
     demoting = body.role is not None and body.role != ROLE_OWNER
+    promoting_inactive = (
+        body.role == ROLE_OWNER and account.role != ROLE_OWNER and not account.is_active
+    )
     deactivating = body.is_active is False
+    if promoting_inactive:
+        raise HTTPException(
+            status_code=409,
+            detail="정지된 계정은 소유자로 승격할 수 없습니다. 먼저 계정을 활성화해 주세요.",
+        )
     # 자기 자신의 권한을 낮추거나 스스로를 잠그면 복구 경로가 CLI밖에 남지 않는다.
     if account.id == actor.id and (demoting or deactivating):
         raise HTTPException(

@@ -33,6 +33,18 @@ function parseDateInput(value: string): { year: number; month: number; day: numb
   return { year, month, day }
 }
 
+export function scheduleMonthLabel(value: string): string {
+  const parsed = parseDateInput(value)
+  return parsed ? `${parsed.year}년 ${parsed.month}월` : '연·월 확인 필요'
+}
+
+export function moveScheduleMonth(value: string, offset: number): string {
+  const parsed = parseDateInput(value)
+  if (!parsed || !Number.isInteger(offset)) return value
+  const moved = new Date(Date.UTC(parsed.year, parsed.month - 1 + offset, 1))
+  return `${moved.getUTCFullYear()}-${String(moved.getUTCMonth() + 1).padStart(2, '0')}-01`
+}
+
 export function countMonthlyPublishDates(activeFrom: string, publishDays: number[]): number {
   const parsed = parseDateInput(activeFrom)
   if (!parsed) return 0

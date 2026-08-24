@@ -31,6 +31,7 @@ export interface AdminAccountSummary {
   name: string
   role: 'OWNER' | 'OPERATOR'
   is_active: boolean
+  is_operations_test?: boolean
 }
 
 export interface Hospital {

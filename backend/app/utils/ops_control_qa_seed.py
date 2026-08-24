@@ -145,6 +145,7 @@ def _upsert_admin(db, email: str, name: str, role: str, password: str) -> AdminU
             role=role,
             password_hash=hash_admin_password(password),
             is_active=True,
+            is_operations_test=True,
         )
         db.add(account)
         db.flush()
@@ -152,6 +153,7 @@ def _upsert_admin(db, email: str, name: str, role: str, password: str) -> AdminU
         account.name = name
         account.role = role
         account.is_active = True
+        account.is_operations_test = True
         account.password_hash = hash_admin_password(password)
     return account
 
