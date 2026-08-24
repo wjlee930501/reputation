@@ -54,6 +54,16 @@ async def open_or_touch_incident(
     """Atomically create or reopen one logical incident and preserve its first fact."""
 
     observed_at = now or datetime.now(UTC)
+    # Every incident is, by definition, an exceptional operation.  Keep a durable
+    # machine key and operator-safe explanation even when an older caller only
+    # supplied the incident type/customer impact.  Operations grouping must never
+    # have to infer its key from Korean display copy (FN-04).
+    safe_error_code = normalize_incident_code(
+        request.safe_error_code or request.incident_type
+    )
+    safe_error_message = sanitize_operator_text(
+        request.safe_error_message or request.customer_impact
+    ) or "운영 작업이 완료되지 않은 원인을 확인해야 합니다."
     base = insert(Incident).values(
         id=uuid.uuid4(),
         hospital_id=request.hospital_id,
@@ -67,10 +77,8 @@ async def open_or_touch_incident(
         customer_impact=sanitize_operator_text(request.customer_impact) or "고객 영향 정보를 아직 확인하지 못했습니다.",
         source_type=normalize_incident_code(request.source_type),
         source_id=normalize_source_id(request.source_id),
-        safe_error_code=(
-            normalize_incident_code(request.safe_error_code) if request.safe_error_code else None
-        ),
-        safe_error_message=sanitize_operator_text(request.safe_error_message),
+        safe_error_code=safe_error_code,
+        safe_error_message=safe_error_message,
         next_action=sanitize_operator_text(request.next_action) or "상세 화면에서 원인을 확인하고, 조치 버튼이 없으면 개발팀 문의용 정보를 전달하세요.",
         admin_path=normalize_admin_path(request.admin_path),
         first_seen_at=observed_at,

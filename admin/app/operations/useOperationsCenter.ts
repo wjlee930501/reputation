@@ -98,6 +98,7 @@ export function useOperationsCenter() {
     if (query.severity) filters.set('severity', query.severity)
     if (query.sla) filters.set('sla', query.sla)
     const queueFilters = new URLSearchParams(filters)
+    if (query.queue === 'incidents') queueFilters.set('recovery', query.recovery)
     queueFilters.set('page', String(query.page))
     try {
       const [nextOverview, nextPage] = await Promise.all([
@@ -115,7 +116,7 @@ export function useOperationsCenter() {
     } finally {
       if (!silent && !controller.signal.aborted) setLoading(false)
     }
-  }, [query.owner, query.page, query.queue, query.severity, query.sla, query.status])
+  }, [query.owner, query.page, query.queue, query.recovery, query.severity, query.sla, query.status])
 
   useEffect(() => {
     void loadCenter(false)

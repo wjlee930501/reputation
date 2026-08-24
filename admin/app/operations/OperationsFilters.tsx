@@ -48,6 +48,27 @@ export function OperationsFilters({ query, overview, onPatch }: Props) {
         })}
       </nav>
 
+      {query.queue === 'incidents' ? (
+        <nav className="mt-3 flex gap-2" aria-label="문제 복구 상태">
+          <button
+            type="button"
+            aria-current={query.recovery === 'active' ? 'page' : undefined}
+            onClick={() => onPatch({ recovery: 'active', status: null })}
+            className={`ops-control rounded-full border px-4 text-sm font-semibold ${query.recovery === 'active' ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-300 bg-white text-slate-600'}`}
+          >
+            조치 필요
+          </button>
+          <button
+            type="button"
+            aria-current={query.recovery === 'confirmed' ? 'page' : undefined}
+            onClick={() => onPatch({ recovery: 'confirmed', status: null })}
+            className={`ops-control rounded-full border px-4 text-sm font-semibold ${query.recovery === 'confirmed' ? 'border-emerald-600 bg-emerald-50 text-emerald-800' : 'border-slate-300 bg-white text-slate-600'}`}
+          >
+            복구 확인됨
+          </button>
+        </nav>
+      ) : null}
+
       <details className="ops-filter-panel mt-3">
         <summary className="ops-control">필터 · 현재 화면에만 적용</summary>
         <div className="ops-filter-grid">

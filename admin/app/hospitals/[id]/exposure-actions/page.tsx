@@ -7,6 +7,7 @@ import {
   EXPOSURE_ACTION_LIST_LIMIT,
   summarizeExposureActions,
 } from '@/lib/exposure-action-counts'
+import { groupExposureActions, type ExposureActionGroup } from '@/lib/exposure-action-groups'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
   EXPOSURE_ACTION_TYPE_LABELS,
@@ -151,11 +152,19 @@ interface BriefResultState {
   philosophyGate: ExposureActionCreateBriefResponse['philosophy_gate']
 }
 
+interface AdminAccount {
+  id: string
+  email: string
+  name: string
+  is_active: boolean
+}
+
 export default function ExposureActionsPage() {
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
 
   const [actions, setActions] = useState<ExposureAction[]>([])
+  const [accounts, setAccounts] = useState<AdminAccount[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -170,20 +179,29 @@ export default function ExposureActionsPage() {
   const [ownerDraft, setOwnerDraft] = useState('')
   const [dueMonthDraft, setDueMonthDraft] = useState('')
 
-  const selected = useMemo(
-    () => actions.find((action) => action.id === selectedId) ?? null,
-    [actions, selectedId],
+  const groups = useMemo(() => groupExposureActions(actions), [actions])
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.actions.some((action) => action.id === selectedId)) ?? null,
+    [groups, selectedId],
   )
+  const selected = selectedGroup?.representative ?? null
 
   useEffect(() => {
     if (selected) {
-      setOwnerDraft(selected.owner ?? '')
-      setDueMonthDraft(selected.due_month ?? '')
+      const owner = selectedGroup?.commonOwner
+      setOwnerDraft(owner ? (accounts.find((account) => account.email === owner)?.id ?? '') : '')
+      setDueMonthDraft(selectedGroup?.commonDueMonth ?? '')
     } else {
       setOwnerDraft('')
       setDueMonthDraft('')
     }
-  }, [selected])
+  }, [accounts, selected, selectedGroup])
+
+  useEffect(() => {
+    void fetchAPI<AdminAccount[]>('/admin/accounts')
+      .then((rows) => setAccounts(rows.filter((account) => account.is_active)))
+      .catch(() => setAccounts([]))
+  }, [])
 
   const loadActions = useCallback(async () => {
     setLoading(true)
@@ -261,6 +279,27 @@ export default function ExposureActionsPage() {
     }
   }
 
+  async function patchGroup(group: ExposureActionGroup, patch: Record<string, unknown>, fieldKey: string) {
+    setSavingField(fieldKey)
+    setSaveMessage(null)
+    try {
+      const updated = await fetchAPI<ExposureAction[]>(
+        `/admin/hospitals/${hospitalId}/exposure-actions/group`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ action_ids: group.actions.map((action) => action.id), ...patch }),
+        },
+      )
+      const byId = new Map(updated.map((action) => [action.id, action]))
+      setActions((previous) => previous.map((action) => byId.get(action.id) ?? action))
+      pushSaveMessage('success', `${group.questionCount}개 질문 작업에 함께 저장했습니다.`)
+    } catch (err) {
+      pushSaveMessage('error', err instanceof Error ? err.message : '묶음 작업을 저장하지 못했습니다.')
+    } finally {
+      setSavingField(null)
+    }
+  }
+
   async function handleCreateBrief(action: ExposureAction) {
     setCreatingBriefId(action.id)
     setSaveMessage(null)
@@ -293,7 +332,10 @@ export default function ExposureActionsPage() {
     }
   }
 
-  const counts = useMemo(() => summarizeExposureActions(actions), [actions])
+  const counts = useMemo(
+    () => summarizeExposureActions(groups.map((group) => group.representative)),
+    [groups],
+  )
 
   return (
     <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
@@ -357,7 +399,7 @@ export default function ExposureActionsPage() {
             <div>
               <h3 className="text-lg font-semibold text-slate-900">상위 AI 노출 보완 작업</h3>
               <p className="text-sm text-slate-500">
-                현재 {actions.length}건을 우선순위 순으로 표시합니다
+                진단 유형 {groups.length}건 · 연결 질문 {actions.length}개를 우선순위 순으로 표시합니다
                 {actions.length >= EXPOSURE_ACTION_LIST_LIMIT ? ` · ${EXPOSURE_ACTION_LIST_LIMIT}건까지만 표시 중` : ''}. 행을 선택하면 우측에서 상세 정보를 확인할 수 있습니다.
               </p>
             </div>
@@ -374,7 +416,7 @@ export default function ExposureActionsPage() {
             <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
               AI 노출 보완 작업을 불러오는 중입니다.
             </div>
-          ) : actions.length === 0 ? (
+          ) : groups.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-blue-200 bg-white p-8 text-center">
               <h4 className="text-base font-semibold text-slate-900">표시할 보완 작업이 없습니다.</h4>
               <p className="mt-2 text-sm text-slate-500">
@@ -383,8 +425,9 @@ export default function ExposureActionsPage() {
             </div>
           ) : (
             <ul className="space-y-3" role="list">
-              {actions.map((action) => {
-                const isSelected = action.id === selectedId
+              {groups.map((group) => {
+                const action = group.representative
+                const isSelected = group.actions.some((member) => member.id === selectedId)
                 const typeLabel = EXPOSURE_ACTION_TYPE_LABELS[action.action_type] ?? {
                   label: action.display?.action_type_label ?? action.action_type,
                   color: 'bg-slate-50 text-slate-700 border-slate-200',
@@ -397,7 +440,7 @@ export default function ExposureActionsPage() {
 
                 return (
                   <li
-                    key={action.id}
+                    key={group.key}
                     role="button"
                     tabIndex={0}
                     aria-pressed={isSelected}
@@ -426,16 +469,17 @@ export default function ExposureActionsPage() {
                         />
                       )}
                     </div>
-                    <h4 className="mt-3 text-base font-semibold text-slate-900">{action.title}</h4>
+                    <h4 className="mt-3 text-base font-semibold text-slate-900">
+                      {action.title} (연결 질문 {group.questionCount}개)
+                    </h4>
                     <p className="mt-1 text-sm text-slate-600 line-clamp-2">{action.description}</p>
 
                     <div className="mt-4 grid gap-3 md:grid-cols-3">
                       <InfoBlock
                         label="연결된 환자 질문"
-                        value={action.query_target?.name ?? '미연결'}
-                        muted={!action.query_target}
+                        value={`${group.questionCount}개 질문 체크리스트`}
                       />
-                      <InfoBlock label="담당자" value={action.owner ?? '미지정'} muted={!action.owner} />
+                      <InfoBlock label="담당자" value={group.commonOwner ?? (group.actions.some((member) => member.owner) ? '담당자 혼합' : '미지정')} muted={!group.commonOwner} />
                       <InfoBlock
                         label="진단 근거"
                         value={summarizeEvidence(action)}
@@ -452,29 +496,33 @@ export default function ExposureActionsPage() {
         <aside className="space-y-4">
           <DetailPanel
             action={selected}
+            group={selectedGroup}
+            accounts={accounts}
             ownerDraft={ownerDraft}
             dueMonthDraft={dueMonthDraft}
             savingField={savingField}
-            onOwnerDraftChange={setOwnerDraft}
             onDueMonthDraftChange={setDueMonthDraft}
             onStatusChange={(status) =>
-              selected && patchAction(selected, { status }, 'status')
+              selectedGroup && patchGroup(selectedGroup, { status }, 'status')
             }
-            onOwnerCommit={() => {
-              if (!selected) return
-              if ((selected.owner ?? '') === ownerDraft.trim()) return
-              patchAction(selected, { owner: ownerDraft.trim() || null }, 'owner')
+            onOwnerChange={(owner) => {
+              setOwnerDraft(owner)
+              if (!selectedGroup) return
+              const account = accounts.find((candidate) => candidate.id === owner)
+              if (selectedGroup.commonOwner === (account?.email ?? null)) return
+              void patchGroup(selectedGroup, { owner_account_id: owner || null }, 'owner')
             }}
             onDueMonthCommit={() => {
-              if (!selected) return
+              if (!selectedGroup) return
               const trimmed = dueMonthDraft.trim()
-              if ((selected.due_month ?? '') === trimmed) return
+              if ((selectedGroup.commonDueMonth ?? '') === trimmed) return
               if (trimmed && !/^\d{4}-\d{2}$/.test(trimmed)) {
                 pushSaveMessage('error', '기한은 YYYY-MM 형식으로 입력해주세요.')
                 return
               }
-              patchAction(selected, { due_month: trimmed || null }, 'due_month')
+              patchGroup(selectedGroup, { due_month: trimmed || null }, 'due_month')
             }}
+            onQuestionToggle={(action, completed) => void patchAction(action, { status: completed ? 'COMPLETED' : 'OPEN' }, `question:${action.id}`)}
             onCreateBrief={() => selected && handleCreateBrief(selected)}
             creatingBrief={creatingBriefId === selected?.id}
             briefResult={briefResult && selected && briefResult.actionId === selected.id ? briefResult : null}
@@ -487,14 +535,16 @@ export default function ExposureActionsPage() {
 
 interface DetailPanelProps {
   action: ExposureAction | null
+  group: ExposureActionGroup | null
+  accounts: readonly AdminAccount[]
   ownerDraft: string
   dueMonthDraft: string
   savingField: string | null
-  onOwnerDraftChange: (value: string) => void
   onDueMonthDraftChange: (value: string) => void
   onStatusChange: (status: ExposureActionStatus) => void
-  onOwnerCommit: () => void
+  onOwnerChange: (value: string) => void
   onDueMonthCommit: () => void
+  onQuestionToggle: (action: ExposureAction, completed: boolean) => void
   onCreateBrief: () => void
   creatingBrief: boolean
   briefResult: BriefResultState | null
@@ -502,14 +552,16 @@ interface DetailPanelProps {
 
 function DetailPanel({
   action,
+  group,
+  accounts,
   ownerDraft,
   dueMonthDraft,
   savingField,
-  onOwnerDraftChange,
   onDueMonthDraftChange,
   onStatusChange,
-  onOwnerCommit,
+  onOwnerChange,
   onDueMonthCommit,
+  onQuestionToggle,
   onCreateBrief,
   creatingBrief,
   briefResult,
@@ -575,15 +627,18 @@ function DetailPanel({
             ))}
           </select>
         </Field>
-        <Field label="담당자">
-          <input
+        <Field label="담당자 계정">
+          <select
             value={ownerDraft}
-            onChange={(event) => onOwnerDraftChange(event.target.value)}
-            onBlur={onOwnerCommit}
-            placeholder="담당 AE 이름"
+            onChange={(event) => onOwnerChange(event.target.value)}
             disabled={savingField === 'owner'}
-            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
-          />
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+          >
+            <option value="">미지정</option>
+            {accounts.map((account) => (
+              <option key={account.id} value={account.id}>{account.name} · {account.email}</option>
+            ))}
+          </select>
         </Field>
         <Field label="기한 (월)">
           <input
@@ -598,19 +653,22 @@ function DetailPanel({
       </div>
 
       <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
-        <h4 className="text-sm font-semibold text-slate-700">연결된 환자 질문</h4>
-        {action.query_target ? (
-          <div className="mt-2 space-y-1 text-sm text-slate-700">
-            <div className="font-medium text-slate-900">{action.query_target.name}</div>
-            <div className="text-slate-500">의도: {action.query_target.target_intent}</div>
-            <div className="text-xs text-slate-500">
-              우선순위 {formatQueryTargetPriority(action.query_target.priority)} · 상태 {formatQueryTargetStatus(action.query_target.status)}
-              {action.query_target.target_month ? ` · ${action.query_target.target_month}` : ''}
-            </div>
-          </div>
-        ) : (
-          <p className="mt-2 text-sm text-slate-500">연결된 환자 질문이 없습니다.</p>
-        )}
+        <h4 className="text-sm font-semibold text-slate-700">연결 질문 체크리스트 · {group?.questionCount ?? 0}개</h4>
+        {group && group.actions.length > 0 ? (
+          <ul className="mt-2 space-y-2">
+            {group.actions.map((member) => (
+              <li key={member.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                <label className="flex items-start gap-2 text-sm text-slate-800">
+                  <input type="checkbox" checked={member.status === 'COMPLETED'} disabled={savingField === `question:${member.id}`} onChange={(event) => onQuestionToggle(member, event.target.checked)} className="mt-0.5 rounded border-slate-300" />
+                  <span>
+                    <span className="font-medium">{member.query_target?.name ?? '연결 질문 없음'}</span>
+                    {member.query_target ? <span className="mt-0.5 block text-xs text-slate-500">의도 {member.query_target.target_intent} · 우선순위 {formatQueryTargetPriority(member.query_target.priority)} · {formatQueryTargetStatus(member.query_target.status)}</span> : null}
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="mt-2 text-sm text-slate-500">연결된 환자 질문이 없습니다.</p>}
       </div>
 
       <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">

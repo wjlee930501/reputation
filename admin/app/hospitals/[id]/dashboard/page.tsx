@@ -25,6 +25,7 @@ import {
   describeExposureActions,
   summarizeExposureActions,
 } from '@/lib/exposure-action-counts'
+import { groupExposureActions } from '@/lib/exposure-action-groups'
 import { useHospitalHeader } from '../hospital-context'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
@@ -129,6 +130,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   reject_content: '콘텐츠 반려',
   approve_philosophy: '운영 기준 승인',
   update_exposure_action: 'AI 노출 작업 변경',
+  update_exposure_action_group: 'AI 노출 묶음 작업 변경',
   upload_source_asset: '자료 업로드',
   crawl_source_url: 'URL 자동 크롤',
   exclude_source_asset: '자료 제외',
@@ -311,11 +313,14 @@ export default function DashboardPage() {
   const change = trendSummary.change
   const questionCounts = summarizeQuestionCounts(queryTargets, queries)
   const latestMeasurementRuns = measurementRuns.slice(0, 3)
-  const topExposureActions = exposureActions.slice(0, 3)
+  const exposureActionGroups = groupExposureActions(exposureActions)
+  const topExposureActions = exposureActionGroups.slice(0, 3)
 
   const activeTargets = queryTargets.filter((target) => target.status === 'ACTIVE')
   const lastRun = measurementRuns[0] ?? null
-  const actionCounts = summarizeExposureActions(exposureActions)
+  const actionCounts = summarizeExposureActions(
+    exposureActionGroups.map((group) => group.representative),
+  )
   const blockedActionCount = actionCounts.blocked
   const failedMeasurementCount = measurementRuns.reduce((sum, run) => sum + run.failure_count, 0)
   const pendingChecks = readiness?.checks.filter((check) => !check.passed).slice(0, 2) ?? []
@@ -444,6 +449,9 @@ export default function DashboardPage() {
     if (action === 'update_exposure_action' && detail.changes && typeof detail.changes === 'object') {
       const changes = Object.keys(detail.changes as Record<string, unknown>)
       return `변경 필드: ${changes.join(', ') || '-'}`
+    }
+    if (action === 'update_exposure_action_group' && Array.isArray(detail.action_ids)) {
+      return `연결 질문 ${detail.action_ids.length}개 일괄 변경`
     }
     if (action === 'publish_content' && typeof detail.title === 'string') {
       return `발행: ${detail.title}`
@@ -905,12 +913,13 @@ export default function DashboardPage() {
             />
           ) : (
             <div className="mt-4 grid gap-3">
-              {topExposureActions.map((action) => {
+              {topExposureActions.map((group) => {
+                const action = group.representative
                 const actionType = getExposureActionTypeLabel(action)
                 const actionStatus = getExposureActionStatusLabel(action)
                 return (
                   <div
-                    key={action.id}
+                    key={group.key}
                     className="rounded-xl border border-slate-200 bg-slate-50 p-4"
                   >
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -931,7 +940,7 @@ export default function DashboardPage() {
                           </span>
                         </div>
                         <p className="mt-2 text-sm font-semibold text-slate-900">
-                          {action.title}
+                          {action.title} (연결 질문 {group.questionCount}개)
                         </p>
                         <p className="mt-1 text-sm leading-6 text-slate-600">
                           {action.description}
@@ -942,13 +951,9 @@ export default function DashboardPage() {
                           연결된 환자 질문
                         </p>
                         <p className="mt-1 text-sm font-semibold text-slate-900">
-                          {action.query_target?.name ?? '-'}
+                          {group.questionCount}개 질문 체크리스트
                         </p>
-                        {action.query_target?.target_intent && (
-                          <p className="mt-1 text-xs text-slate-500">
-                            {action.query_target.target_intent}
-                          </p>
-                        )}
+                        <p className="mt-1 text-xs text-slate-500">담당자·기한은 묶음에 한 번 지정</p>
                       </div>
                     </div>
                   </div>

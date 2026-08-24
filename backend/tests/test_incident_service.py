@@ -187,6 +187,20 @@ async def test_empty_operator_copy_gets_actionable_customer_and_support_fallback
 
 
 @pytest.mark.asyncio
+async def test_incident_without_explicit_failure_cause_persists_fn04_fallback(
+    db: AsyncSession,
+) -> None:
+    """Older callers cannot create an exceptional row without a durable cause."""
+    _, _, hospital = await _actors_and_hospital(db)
+    request = replace(_request(hospital), safe_error_code=None, safe_error_message=None)
+
+    incident = await open_or_touch_incident(db, request)
+
+    assert incident.safe_error_code == request.incident_type
+    assert incident.safe_error_message == request.customer_impact
+
+
+@pytest.mark.asyncio
 async def test_duplicate_touch_escalates_and_preserves_first_occurrence(db: AsyncSession) -> None:
     # Given: one low-severity failure assigned to an owner and SLA
     owner, _, hospital = await _actors_and_hospital(db)

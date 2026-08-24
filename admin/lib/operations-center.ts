@@ -15,6 +15,7 @@ export interface OperationsQuery {
   readonly status: string
   readonly severity: string
   readonly sla: string
+  readonly recovery: 'active' | 'confirmed'
   readonly q: string
   readonly detail: string
   readonly page: number
@@ -49,7 +50,7 @@ export interface OperationsMutationDescriptor {
   readonly requiresIdempotencyKey: boolean
 }
 const QUEUES: readonly OperationsQueueParam[] = ['onboarding', 'today', 'reports', 'incidents']
-const FILTER_KEYS = ['queue', 'owner', 'status', 'severity', 'sla', 'q', 'detail', 'page'] as const
+const FILTER_KEYS = ['queue', 'owner', 'status', 'severity', 'sla', 'recovery', 'q', 'detail', 'page'] as const
 
 function bounded(value: string | null, max: number): string {
   return value?.trim().slice(0, max) ?? ''
@@ -57,6 +58,9 @@ function bounded(value: string | null, max: number): string {
 function queueValue(value: string | null): OperationsQueueParam {
   const normalized = value?.toLowerCase()
   return QUEUES.find((queue) => queue === normalized) ?? 'today'
+}
+function recoveryValue(value: string | null): OperationsQuery['recovery'] {
+  return value?.toLowerCase() === 'confirmed' ? 'confirmed' : 'active'
 }
 export function readOperationsQuery(source: URLSearchParams): OperationsQuery {
   const pageValue = Number.parseInt(source.get('page') ?? '', 10)
@@ -66,6 +70,7 @@ export function readOperationsQuery(source: URLSearchParams): OperationsQuery {
     status: bounded(source.get('status'), 60).toUpperCase(),
     severity: bounded(source.get('severity'), 20).toUpperCase(),
     sla: bounded(source.get('sla'), 20).toUpperCase(),
+    recovery: recoveryValue(source.get('recovery')),
     q: bounded(source.get('q'), 120),
     detail: bounded(source.get('detail'), 160),
     page: Number.isSafeInteger(pageValue) && pageValue > 1 ? pageValue : 1,
@@ -80,6 +85,9 @@ export function canonicalizeOperationsQuery(source: URLSearchParams): URLSearchP
   if (query.status) result.set('status', query.status)
   if (query.severity) result.set('severity', query.severity)
   if (query.sla) result.set('sla', query.sla)
+  if (query.queue === 'incidents' && query.recovery === 'confirmed') {
+    result.set('recovery', 'confirmed')
+  }
   if (query.q) result.set('q', query.q)
   if (query.detail) result.set('detail', query.detail)
   if (query.page > 1) result.set('page', String(query.page))
@@ -98,7 +106,7 @@ export function updateOperationsQuery(
     else if (value !== undefined) next.set(key, String(value))
   }
   const changedQueue = patch.queue !== undefined
-  const changedFilter = ['owner', 'status', 'severity', 'sla', 'q'].some((key) => key in patch)
+  const changedFilter = ['owner', 'status', 'severity', 'sla', 'recovery', 'q'].some((key) => key in patch)
   if (changedQueue && patch.detail === undefined) next.delete('detail')
   if (changedQueue || changedFilter) next.delete('page')
   return canonicalizeOperationsQuery(next)

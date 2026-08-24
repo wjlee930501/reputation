@@ -20,6 +20,7 @@ import ipaddress
 import logging
 import re
 import socket
+import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -35,6 +36,7 @@ DEFAULT_FETCH_TIMEOUT = 12.0
 MAX_HTML_BYTES = 4 * 1024 * 1024  # 4MB
 MAX_RAW_TEXT_LENGTH = 60_000
 MAX_REDIRECTS = 4
+MAX_ABNORMAL_CHARACTER_RATIO = 0.08
 
 # fetch 품질 게이트 — 셸/프레임셋만 받아오면 본문이 비었으므로 거부 판단에 쓴다.
 # 'PostView.naver'는 정상 m.blog 본문(링크/스크립트)에도 흔히 등장해 짧은 정상 글을
@@ -55,6 +57,34 @@ _NAVER_CONTENT_XPATHS = (
     "//*[@id='postViewArea']",
     "//div[contains(concat(' ', normalize-space(@class), ' '), ' post_ct ')]",
 )
+_CONTENT_XPATHS = (
+    "//main",
+    "//article",
+    "//*[@role='main']",
+    "//*[contains(concat(' ', normalize-space(@class), ' '), ' content ')]",
+    "//*[contains(concat(' ', normalize-space(@class), ' '), ' contents ')]",
+)
+_NAVIGATION_XPATH = (
+    "//nav|//header|//footer|//aside|"
+    "//*[@role='navigation']|//*[@role='menu']|"
+    "//*[contains(concat(' ', normalize-space(@class), ' '), ' nav ')]|"
+    "//*[contains(concat(' ', normalize-space(@class), ' '), ' navbar ')]|"
+    "//*[contains(concat(' ', normalize-space(@class), ' '), ' menu ')]|"
+    "//*[contains(concat(' ', normalize-space(@class), ' '), ' breadcrumb ')]|"
+    "//*[contains(concat(' ', normalize-space(@class), ' '), ' footer ')]|"
+    "//*[contains(concat(' ', normalize-space(@class), ' '), ' sidebar ')]"
+)
+_META_CHARSET_RE = re.compile(
+    br"<meta[^>]+charset\s*=\s*['\"]?\s*([a-zA-Z0-9._-]+)", re.IGNORECASE
+)
+_META_CONTENT_CHARSET_RE = re.compile(
+    br"<meta[^>]+content\s*=\s*['\"][^'\"]*charset\s*=\s*([a-zA-Z0-9._-]+)",
+    re.IGNORECASE,
+)
+_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*\]\([^)]*\)")
+_NAVIGATION_LINE_RE = re.compile(
+    r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?(?:\[[^\]]*\]\([^)]*\)\s*[|·›>/]?\s*){1,}$"
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +93,8 @@ class FetchQuality:
     has_shell_markers: bool
     link_to_text_ratio: float
     page_title: str | None = None
+    detected_encoding: str | None = None
+    abnormal_character_ratio: float = 0.0
 
     @property
     def looks_like_shell(self) -> bool:
@@ -72,6 +104,10 @@ class FetchQuality:
         if self.has_shell_markers and self.char_count < 2_000:
             return True
         return False
+
+    @property
+    def looks_corrupt(self) -> bool:
+        return self.abnormal_character_ratio > MAX_ABNORMAL_CHARACTER_RATIO
 
 
 @dataclass(frozen=True)
@@ -197,15 +233,25 @@ async def fetch_url_text(url: str) -> tuple[str, str | None, FetchQuality | None
             if "html" not in content_type and "text" not in content_type:
                 return "", f"HTML이 아닌 콘텐츠({content_type})는 자동 추출 불가.", None
             content = response.content[:MAX_HTML_BYTES]
-            html = content.decode(response.encoding or "utf-8", errors="ignore")
+            html, detected_encoding = decode_html_bytes(
+                content,
+                declared_encoding=response.encoding,
+                content_type=content_type,
+            )
             scoped_html = _scope_to_content_container(html)
-            text = _html_to_markdown(scoped_html)
-            quality = _assess_fetch_quality(html, text)
+            text = strip_navigation_fragments(_html_to_markdown(scoped_html))
+            quality = _assess_fetch_quality(
+                html,
+                text,
+                detected_encoding=detected_encoding,
+            )
             # 200으로 돌아온 차단·오류 페이지(soft 403 등)나 리더 폴백의 "Title: 403 Forbidden"
             # 잔재는 근거 자료가 아니라 오류로 취급한다 — 근거 파이프라인/공개 표면 오염을 원천 차단.
             # (본문이 지나치게 짧은 셸/프레임셋은 기존 quality.looks_like_shell 체계가 호출부에서 처리.)
             if looks_like_error_page_text(text):
                 return "", "차단 또는 오류 페이지로 확인되어 본문을 수집하지 않았습니다.", None
+            if quality.looks_corrupt:
+                return "", "문자 인코딩이 깨진 페이지로 확인되어 본문을 수집하지 않았습니다.", quality
             return text[:MAX_RAW_TEXT_LENGTH], None, quality
     except httpx.HTTPStatusError as exc:
         return "", f"HTTP {exc.response.status_code} — URL 접근 실패.", None
@@ -372,10 +418,23 @@ def _scope_to_content_container(html: str) -> str:
         nodes = tree.xpath(xpath)
         if nodes:
             return lxml_html.tostring(nodes[0], encoding="unicode")
-    return html
+    for node in tree.xpath(_NAVIGATION_XPATH):
+        parent = node.getparent()
+        if parent is not None:
+            parent.remove(node)
+    for xpath in _CONTENT_XPATHS:
+        nodes = tree.xpath(xpath)
+        if nodes:
+            return lxml_html.tostring(nodes[0], encoding="unicode")
+    return lxml_html.tostring(tree, encoding="unicode")
 
 
-def _assess_fetch_quality(raw_html: str, text: str) -> FetchQuality:
+def _assess_fetch_quality(
+    raw_html: str,
+    text: str,
+    *,
+    detected_encoding: str | None = None,
+) -> FetchQuality:
     """fetch 결과가 본문인지 빈 셸인지 판단할 단순 신호를 계산한다."""
     char_count = len(text.strip())
     has_shell_markers = bool(SHELL_MARKER_PATTERN.search(raw_html))
@@ -387,6 +446,118 @@ def _assess_fetch_quality(raw_html: str, text: str) -> FetchQuality:
         has_shell_markers=has_shell_markers,
         link_to_text_ratio=link_to_text_ratio,
         page_title=extract_html_title(raw_html),
+        detected_encoding=detected_encoding,
+        abnormal_character_ratio=abnormal_character_ratio(text),
+    )
+
+
+def decode_html_bytes(
+    content: bytes,
+    *,
+    declared_encoding: str | None = None,
+    content_type: str | None = None,
+) -> tuple[str, str]:
+    """Decode Korean legacy pages without silently storing replacement characters."""
+    candidates: list[str] = []
+    if content.startswith(b"\xef\xbb\xbf"):
+        candidates.append("utf-8-sig")
+    elif content.startswith((b"\xff\xfe", b"\xfe\xff")):
+        candidates.append("utf-16")
+
+    content_match = re.search(r"charset\s*=\s*['\"]?\s*([\w.-]+)", content_type or "", re.I)
+    meta_match = _META_CHARSET_RE.search(content[:8192]) or _META_CONTENT_CHARSET_RE.search(
+        content[:8192]
+    )
+    for candidate in (
+        content_match.group(1) if content_match else None,
+        meta_match.group(1).decode("ascii", errors="ignore") if meta_match else None,
+        declared_encoding,
+        "utf-8",
+        "cp949",
+        "euc-kr",
+    ):
+        normalized = (candidate or "").strip().lower()
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    decoded: list[tuple[float, float, int, str, str]] = []
+    for index, encoding in enumerate(candidates):
+        try:
+            text = content.decode(encoding, errors="strict")
+        except (LookupError, UnicodeDecodeError):
+            continue
+        meaningful_count = sum(not char.isspace() for char in text)
+        hangul_count = sum("\uac00" <= char <= "\ud7a3" for char in text)
+        hangul_ratio = hangul_count / max(meaningful_count, 1)
+        decoded.append(
+            (abnormal_character_ratio(text), -hangul_ratio, index, text, encoding)
+        )
+    if decoded:
+        _ratio, _hangul_ratio, _index, text, encoding = min(decoded)
+        return text, encoding
+    return content.decode("utf-8", errors="replace"), "utf-8-replacement"
+
+
+def abnormal_character_ratio(value: str) -> float:
+    """Ratio of controls/replacements and character runs typical of Korean mojibake."""
+    meaningful = [char for char in value if not char.isspace()]
+    if not meaningful:
+        return 0.0
+    abnormal = 0
+    high_latin1 = ["\u00a0" <= char <= "\u00ff" for char in meaningful]
+    for index, char in enumerate(meaningful):
+        codepoint = ord(char)
+        category = unicodedata.category(char)
+        if char == "\ufffd" or category in {"Cc", "Cs", "Co"}:
+            abnormal += 1
+        elif 0x0100 <= codepoint <= 0x052F:
+            abnormal += 1
+        elif high_latin1[index] and (
+            (index > 0 and high_latin1[index - 1])
+            or (index + 1 < len(high_latin1) and high_latin1[index + 1])
+        ):
+            abnormal += 1
+    return abnormal / len(meaningful)
+
+
+def is_navigation_fragment(value: str) -> bool:
+    """Recognize menu/link-list fragments that cannot support an evidence claim."""
+    cleaned = value.strip()
+    if not cleaned:
+        return True
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if not lines:
+        return True
+    nav_lines = 0
+    links = 0
+    for line in lines:
+        line_links = len(_MARKDOWN_LINK_RE.findall(line))
+        links += line_links
+        remainder = _MARKDOWN_LINK_RE.sub("", line).strip(" -*+|·›>/")
+        if _NAVIGATION_LINE_RE.fullmatch(line) or (line_links > 0 and len(remainder) < 12):
+            nav_lines += 1
+    return nav_lines / len(lines) >= 0.6 or (links >= 3 and len(cleaned) < 500)
+
+
+def strip_navigation_fragments(value: str) -> str:
+    """Drop markdown menu lines after DOM-level navigation removal."""
+    kept = [
+        line.rstrip()
+        for line in value.splitlines()
+        if not line.strip() or not is_navigation_fragment(line)
+    ]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def evidence_text_is_acceptable(*values: str) -> bool:
+    """Final storage gate for model-produced evidence claims and excerpts."""
+    cleaned = [value.strip() for value in values if value and value.strip()]
+    if not cleaned:
+        return False
+    return all(
+        abnormal_character_ratio(value) <= MAX_ABNORMAL_CHARACTER_RATIO
+        and not is_navigation_fragment(value)
+        for value in cleaned
     )
 
 

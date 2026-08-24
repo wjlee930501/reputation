@@ -16,12 +16,19 @@ class SlaFilter(StrEnum):
     NONE = "NONE"
 
 
+class IncidentRecoveryFilter(StrEnum):
+    ACTIVE = "ACTIVE"
+    CONFIRMED = "CONFIRMED"
+    ALL = "ALL"
+
+
 @dataclass(frozen=True, slots=True)
 class OperationsFilters:
     owner: str | None = None
     status: str | None = None
     severity: str | None = None
     sla: SlaFilter | None = None
+    recovery: IncidentRecoveryFilter = IncidentRecoveryFilter.ACTIVE
 
 
 def normalize_filters(
@@ -30,6 +37,7 @@ def normalize_filters(
     status: str | None,
     severity: str | None,
     sla: str | None,
+    recovery: str | None = None,
 ) -> OperationsFilters:
     try:
         parsed_sla = SlaFilter(sla.upper()) if sla else None
@@ -44,11 +52,22 @@ def normalize_filters(
                 ),
             },
         ) from exc
+    try:
+        parsed_recovery = IncidentRecoveryFilter((recovery or "ACTIVE").upper())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_RECOVERY_FILTER",
+                "message": "문제 목록 구분이 올바르지 않습니다. 조치 필요 또는 복구 확인됨을 선택해 주세요.",
+            },
+        ) from exc
     return OperationsFilters(
         owner=owner.strip() if owner else None,
         status=status.upper() if status else None,
         severity=severity.upper() if severity else None,
         sla=parsed_sla,
+        recovery=parsed_recovery,
     )
 
 
@@ -79,6 +98,7 @@ def sla_predicate(column, sla: SlaFilter | None, now: datetime):
 
 __all__ = (
     "OperationsFilters",
+    "IncidentRecoveryFilter",
     "SlaFilter",
     "normalize_filters",
     "owner_predicate",

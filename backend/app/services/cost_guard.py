@@ -50,7 +50,7 @@ KILL_SWITCH_KEY = "cost_guard:kill_switch"
 # 없이 AE가 그날치를 푸는 것이 목적이라, **월간 상한은 건드리지 않는다** — 월간이
 # 실제 예산 천장이고, 하루치 상향이 그 천장을 넘어 지출을 늘릴 수는 없다.
 # 상향분은 그날 키에만 저장되므로 다음 날 자동으로 원복된다.
-MAX_DAILY_LIMIT_MULTIPLIER = 3
+MAX_DAILY_LIMIT_MULTIPLIER = 2
 
 CATEGORIES: tuple[str, ...] = ("content", "image", "sov", "leadgen")
 

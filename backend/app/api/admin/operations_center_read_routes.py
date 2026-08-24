@@ -14,7 +14,11 @@ from app.api.admin.operations_center_actions import (
 )
 from app.api.admin.operations_center_incident_queries import load_incidents_queue
 from app.api.admin.operations_center_queries import load_operations_queue
-from app.api.admin.operations_center_query_common import OperationsFilters, normalize_filters
+from app.api.admin.operations_center_query_common import (
+    IncidentRecoveryFilter,
+    OperationsFilters,
+    normalize_filters,
+)
 from app.api.admin.operations_center_serializers import run_summary
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
@@ -39,11 +43,14 @@ async def get_operations_overview(
     status: str | None = None,
     severity: str | None = None,
     sla: str | None = None,
+    recovery: str | None = None,
     db: AsyncSession = Depends(get_db),
     _actor: AdminUser = Depends(require_operations_account),
 ) -> OperationsOverviewResponse:
     """Return all queue counts plus the first five tasks in four fixed queries."""
-    filters = normalize_filters(owner=owner, status=status, severity=severity, sla=sla)
+    filters = normalize_filters(
+        owner=owner, status=status, severity=severity, sla=sla, recovery=recovery
+    )
     summaries: list[OperationsQueueSummary] = []
     items = []
     for queue in OperationsQueue:
@@ -68,13 +75,16 @@ async def get_operations_queue(
     status: str | None = None,
     severity: str | None = None,
     sla: str | None = None,
+    recovery: str | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=_PAGE_SIZE, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     _actor: AdminUser = Depends(require_operations_account),
 ) -> OperationsQueueResponse:
     """Return one filtered queue using at most COUNT plus page SQL."""
-    filters = normalize_filters(owner=owner, status=status, severity=severity, sla=sla)
+    filters = normalize_filters(
+        owner=owner, status=status, severity=severity, sla=sla, recovery=recovery
+    )
     total, items = await load_operations_queue(
         db, queue, filters, page=page, page_size=page_size, overview=False
     )
@@ -90,7 +100,7 @@ async def _incident_detail(
 ) -> IncidentDetailResponse:
     total, items = await load_incidents_queue(
         db,
-        OperationsFilters(),
+        OperationsFilters(recovery=IncidentRecoveryFilter.ALL),
         page=1,
         page_size=1,
         overview=True,

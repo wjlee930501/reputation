@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CostGuardCategoryUsage(BaseModel):
@@ -41,6 +41,15 @@ class CostGuardDailyLimitRequest(BaseModel):
     category: str
     # None이면 오늘치 상향을 해제하고 설정 기본값으로 되돌린다.
     limit: int | None = Field(default=None, gt=0)
+    reason: str = Field(min_length=3, max_length=200)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 3:
+            raise ValueError("한도 변경 사유를 3자 이상 입력해 주세요.")
+        return cleaned
 
 
 class CostGuardDailyLimitResponse(BaseModel):
@@ -169,6 +178,12 @@ class OperationsQueueRow(OperationsSchema):
     next_action: str
     action: OperationsAction
     retry: OperationsAction | None
+    cause_code: str | None = None
+    cause_message: str | None = None
+    cause_group_key: str | None = None
+    same_type_count: int = 1
+    affected_hospital_count: int = 0
+    cost_guard_category: str | None = None
     safe_cause: str | None
     history: list[OperationsHistoryEntry]
     slack: OperationsSlackState | None

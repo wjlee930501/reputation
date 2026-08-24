@@ -13,7 +13,11 @@ from redis.exceptions import RedisError
 
 from app.api.admin import operations as operations_api
 from app.models.content import ContentType
-from app.schemas.operations import CostGuardKillSwitchRequest, CostGuardStatusResponse
+from app.schemas.operations import (
+    CostGuardDailyLimitRequest,
+    CostGuardKillSwitchRequest,
+    CostGuardStatusResponse,
+)
 from app.services import audit_log, cost_guard
 
 
@@ -589,6 +593,53 @@ async def test_kill_switch_endpoint_disable(monkeypatch):
 # 월간 상한은 상향 대상이 아니므로, 이번 달 예산 천장은 어떤 경우에도 유지돼야 한다.
 
 
+async def test_daily_limit_endpoint_audits_who_when_why_before_override(monkeypatch):
+    _set_limits(monkeypatch, daily=10, monthly=1000)
+    redis = FakeRedis()
+    monkeypatch.setattr(cost_guard, "_client", lambda: redis)
+    db = FakeDB()
+    actor = SimpleNamespace(email="owner@example.test")
+    events_at_override = []
+    original_set = cost_guard.set_daily_limit_override
+
+    async def tracking_set(category, limit, **_kwargs):
+        events_at_override.extend(db.events)
+        return await original_set(category, limit, redis_client=redis)
+
+    monkeypatch.setattr(cost_guard, "set_daily_limit_override", tracking_set)
+
+    response = await operations_api.set_cost_guard_daily_limit(
+        CostGuardDailyLimitRequest(
+            category="content",
+            limit=20,
+            reason="오늘 밀린 콘텐츠 생성 복구",
+        ),
+        db=db,
+        actor=actor,
+    )
+
+    audit = db.added[0]
+    assert audit.action == "cost_guard_daily_limit"
+    assert audit.actor == actor.email
+    assert audit.detail == {
+        "category": "content",
+        "previous_limit": 10,
+        "requested_limit": 20,
+        "reason": "오늘 밀린 콘텐츠 생성 복구",
+        "change": "RAISE",
+    }
+    assert events_at_override[0][0] == "add"
+    assert events_at_override[1] == ("commit", None)
+    assert response.daily_limit == 20
+
+
+def test_daily_limit_reason_is_required_for_auditable_change() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        CostGuardDailyLimitRequest(category="content", limit=20, reason="")
+
+
 async def test_daily_override_raises_todays_limit(monkeypatch, alerts):
     _set_limits(monkeypatch, daily=2, monthly=1000)
     redis = FakeRedis()
@@ -597,17 +648,17 @@ async def test_daily_override_raises_todays_limit(monkeypatch, alerts):
     blocked = await cost_guard.check_and_increment("content", redis_client=redis)
     assert blocked.allowed is False
 
-    await cost_guard.set_daily_limit_override("content", 5, redis_client=redis)
+    await cost_guard.set_daily_limit_override("content", 4, redis_client=redis)
 
-    assert (await cost_guard.check_and_increment("content", count=3, redis_client=redis)).allowed
-    # 상향된 5건까지만 — 그 위는 다시 막힌다.
+    assert (await cost_guard.check_and_increment("content", count=2, redis_client=redis)).allowed
+    # 상향된 4건까지만 — 그 위는 다시 막힌다.
     assert (await cost_guard.check_and_increment("content", redis_client=redis)).allowed is False
 
 
 async def test_daily_override_never_lifts_the_monthly_ceiling(monkeypatch, alerts):
     _set_limits(monkeypatch, daily=2, monthly=3)
     redis = FakeRedis()
-    await cost_guard.set_daily_limit_override("content", 6, redis_client=redis)
+    await cost_guard.set_daily_limit_override("content", 4, redis_client=redis)
 
     assert (await cost_guard.check_and_increment("content", count=3, redis_client=redis)).allowed
     blocked = await cost_guard.check_and_increment("content", redis_client=redis)
@@ -647,7 +698,7 @@ async def test_daily_override_is_reclamped_when_stored_value_exceeds_ceiling(mon
 async def test_clear_daily_override_restores_configured_limit(monkeypatch, alerts):
     _set_limits(monkeypatch, daily=2, monthly=1000)
     redis = FakeRedis()
-    await cost_guard.set_daily_limit_override("content", 5, redis_client=redis)
+    await cost_guard.set_daily_limit_override("content", 4, redis_client=redis)
     await cost_guard.clear_daily_limit_override("content", redis_client=redis)
 
     assert (await cost_guard.check_and_increment("content", count=2, redis_client=redis)).allowed
@@ -657,10 +708,10 @@ async def test_clear_daily_override_restores_configured_limit(monkeypatch, alert
 async def test_snapshot_separates_effective_and_configured_daily_limit(monkeypatch):
     _set_limits(monkeypatch, daily=2, monthly=1000)
     redis = FakeRedis()
-    await cost_guard.set_daily_limit_override("content", 5, redis_client=redis)
+    await cost_guard.set_daily_limit_override("content", 4, redis_client=redis)
 
     snapshot = await cost_guard.get_usage_snapshot(redis_client=redis)
     content = next(c for c in snapshot["categories"] if c["category"] == "content")
 
-    assert content["daily_limit"] == 5
+    assert content["daily_limit"] == 4
     assert content["daily_limit_default"] == 2

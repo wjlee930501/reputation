@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, false, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,7 @@ from app.schemas.essence import (
 )
 from app.services.asset_extractor import (
     detect_extractor_for,
+    evidence_text_is_acceptable,
     extract_docx_text,
     extract_pdf_text,
     fetch_url_text,
@@ -386,6 +387,18 @@ class BulkSourceProcessResult(BaseModel):
     source_ids: list[str]
 
 
+class BulkEvidenceNoiseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    note_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    is_noise: bool = True
+
+
+class BulkEvidenceNoiseResponse(BaseModel):
+    updated: int
+    note_ids: list[str]
+
+
 router = APIRouter(prefix="/admin/hospitals/{hospital_id}/essence", tags=["Admin — Essence"])
 
 SOURCE_TYPE_DISPLAY_LABELS = {
@@ -445,6 +458,57 @@ async def list_sources(
         _serialize_source(source, evidence_note_count=counts.get(source.id, 0))
         for source in sources
     ]
+
+
+@router.patch(
+    "/evidence-notes/noise",
+    response_model=BulkEvidenceNoiseResponse,
+)
+async def mark_evidence_notes_as_noise(
+    hospital_id: uuid.UUID,
+    body: BulkEvidenceNoiseRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk hide/unhide extracted noise without deleting its audit evidence."""
+    await _get_hospital_or_404(db, hospital_id)
+    requested_ids = list(dict.fromkeys(body.note_ids))
+    result = await db.execute(
+        select(HospitalSourceEvidenceNote).where(
+            HospitalSourceEvidenceNote.hospital_id == hospital_id,
+            HospitalSourceEvidenceNote.id.in_(requested_ids),
+        )
+    )
+    notes = list(result.scalars().all())
+    if len(notes) != len(requested_ids):
+        raise HTTPException(status_code=404, detail="선택한 근거 노트 중 찾을 수 없는 항목이 있습니다.")
+
+    actor = default_actor()
+    marked_at = datetime.now(timezone.utc).isoformat()
+    for note in notes:
+        metadata = dict(note.note_metadata or {})
+        if body.is_noise:
+            metadata.update(
+                {"is_noise": True, "noise_marked_by": actor, "noise_marked_at": marked_at}
+            )
+        else:
+            for key in ("is_noise", "noise_marked_by", "noise_marked_at"):
+                metadata.pop(key, None)
+        note.note_metadata = metadata
+
+    await write_audit_log(
+        db,
+        action="bulk_mark_evidence_noise",
+        hospital_id=hospital_id,
+        actor=actor,
+        target_type="evidence_note",
+        target_id="bulk",
+        detail={"note_ids": [str(note_id) for note_id in requested_ids], "is_noise": body.is_noise},
+    )
+    await db.commit()
+    return BulkEvidenceNoiseResponse(
+        updated=len(notes),
+        note_ids=[str(note.id) for note in notes],
+    )
 
 
 @router.post("/sources", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse)
@@ -581,6 +645,11 @@ async def process_source(
         # (이 파일의 PDF/DOCX 추출도 동일하게 to_thread 사용).
         async with metered_llm_calls():
             payloads = await asyncio.to_thread(process_source_asset, source)
+        payloads = [
+            payload
+            for payload in payloads
+            if evidence_text_is_acceptable(payload.claim, payload.source_excerpt)
+        ]
         for payload in payloads:
             if not validate_source_excerpt(source, payload.source_excerpt):
                 raise ValueError(
@@ -1632,7 +1701,17 @@ def _included_notes_query():
     return select(HospitalSourceEvidenceNote).join(
         HospitalSourceAsset,
         HospitalSourceAsset.id == HospitalSourceEvidenceNote.source_asset_id,
-    ).where(HospitalSourceAsset.status != SourceStatus.EXCLUDED)
+    ).where(
+        HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+        _not_noise_predicate(),
+    )
+
+
+def _not_noise_predicate():
+    return func.coalesce(
+        HospitalSourceEvidenceNote.note_metadata["is_noise"].as_boolean(),
+        false(),
+    ).is_(False)
 
 
 async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
@@ -1647,6 +1726,7 @@ async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uu
         .where(
             HospitalSourceEvidenceNote.source_asset_id.in_(source_ids),
             HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+            _not_noise_predicate(),
         )
         .group_by(HospitalSourceEvidenceNote.source_asset_id)
     )

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
@@ -46,8 +47,16 @@ ACTION_STATUSES = {"OPEN", "IN_PROGRESS", "BLOCKED", "COMPLETED", "CANCELLED", "
 class ExposureActionPatch(BaseModel):
     status: str | None = None
     owner: str | None = Field(default=None, max_length=100)
+    owner_account_id: uuid.UUID | None = None
     due_month: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
     linked_content_id: uuid.UUID | None = None
+
+
+class ExposureActionGroupPatch(BaseModel):
+    action_ids: list[uuid.UUID] = Field(min_length=1, max_length=20)
+    status: str | None = None
+    owner_account_id: uuid.UUID | None = None
+    due_month: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
 
 
 class CreateBriefBody(BaseModel):
@@ -111,6 +120,73 @@ async def refresh_exposure_actions(
     return [_serialize_action(action) for action in actions]
 
 
+@router.patch("/{hospital_id}/exposure-actions/group")
+async def update_exposure_action_group(
+    hospital_id: uuid.UUID,
+    body: ExposureActionGroupPatch,
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply shared controls to one diagnosis-type card in a single transaction."""
+    await _get_hospital_or_404(db, hospital_id)
+    action_ids = list(dict.fromkeys(body.action_ids))
+    result = await db.execute(
+        select(ExposureAction)
+        .options(
+            selectinload(ExposureAction.query_target).selectinload(AIQueryTarget.variants),
+            selectinload(ExposureAction.gap),
+            selectinload(ExposureAction.linked_content),
+        )
+        .where(
+            ExposureAction.hospital_id == hospital_id,
+            ExposureAction.id.in_(action_ids),
+        )
+        .order_by(ExposureAction.id)
+        .with_for_update()
+    )
+    actions = list(result.scalars().all())
+    if len(actions) != len(action_ids):
+        raise HTTPException(status_code=404, detail="묶음 작업 중 찾을 수 없는 항목이 있습니다.")
+    if body.status is not None and body.status not in ACTION_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid AI exposure work status")
+    if body.due_month is not None:
+        _validate_due_month(body.due_month)
+    account = await db.get(AdminUser, body.owner_account_id) if body.owner_account_id else None
+    if body.owner_account_id and (account is None or not account.is_active):
+        raise HTTPException(status_code=400, detail="활성 운영자 계정을 선택해 주세요.")
+
+    fields = body.model_fields_set
+    canonical_owner = account.email if account is not None else None
+    completed_at = _utcnow()
+    for action in actions:
+        if "status" in fields and body.status is not None:
+            action.status = body.status
+            action.completed_at = completed_at if body.status == "COMPLETED" else None
+        if "owner_account_id" in fields:
+            action.owner = canonical_owner
+        if "due_month" in fields:
+            action.due_month = body.due_month
+
+    await write_audit_log(
+        db,
+        action="update_exposure_action_group",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="exposure_action_group",
+        target_id="bulk",
+        detail={
+            "action_ids": [str(action_id) for action_id in action_ids],
+            "status": body.status if "status" in fields else None,
+            "owner_account_id": (
+                str(body.owner_account_id) if "owner_account_id" in fields and body.owner_account_id else None
+            ),
+            "owner": canonical_owner if "owner_account_id" in fields else None,
+            "due_month": body.due_month if "due_month" in fields else None,
+        },
+    )
+    await db.commit()
+    return [_serialize_action(action) for action in actions]
+
+
 @router.get("/{hospital_id}/exposure-actions/{action_id}")
 async def get_exposure_action(
     hospital_id: uuid.UUID,
@@ -159,6 +235,15 @@ async def update_exposure_action(
     if "owner" in fields and action.owner != body.owner:
         changes["owner"] = {"from": before["owner"], "to": body.owner}
         action.owner = body.owner
+
+    if "owner_account_id" in fields:
+        account = await db.get(AdminUser, body.owner_account_id) if body.owner_account_id else None
+        if body.owner_account_id and (account is None or not account.is_active):
+            raise HTTPException(status_code=400, detail="활성 운영자 계정을 선택해 주세요.")
+        canonical_owner = account.email if account is not None else None
+        if action.owner != canonical_owner:
+            changes["owner"] = {"from": before["owner"], "to": canonical_owner}
+        action.owner = canonical_owner
 
     if "due_month" in fields:
         if body.due_month is not None:
