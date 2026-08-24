@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import and_, func
+
+from app.models.lead import SalesLead
+
 # 운영 점검 픽스처가 남기는 세 값 — 정리 스크립트의 안전 확인과 같은 조합.
 QA_LEAD_SOURCE_PATH = "/ops-qa"
 QA_LEAD_CONSENT_VERSION = "ops-qa-v1"
@@ -28,3 +32,12 @@ def is_operations_test_lead(lead: Any) -> bool:
         return False
     note = getattr(lead, "conversion_note", None) or ""
     return note.startswith(QA_LEAD_NOTE_PREFIX)
+
+
+def operations_test_lead_clause():
+    """SQL equivalent of :func:`is_operations_test_lead` for real-metric queries."""
+    return and_(
+        func.coalesce(SalesLead.source_path, "") == QA_LEAD_SOURCE_PATH,
+        func.coalesce(SalesLead.consent_version, "") == QA_LEAD_CONSENT_VERSION,
+        func.coalesce(SalesLead.conversion_note, "").startswith(QA_LEAD_NOTE_PREFIX),
+    )

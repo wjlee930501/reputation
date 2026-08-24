@@ -142,6 +142,25 @@ async def test_deactivated_account_cannot_act(pg_async_session):
     assert exc.value.status_code == 403
 
 
+async def test_suspended_operator_cannot_be_promoted_until_reactivated(pg_async_session):
+    db = pg_async_session
+    owner = await _seed_account(db)
+    suspended = await _seed_account(db, role=ROLE_OPERATOR, is_active=False)
+    actor = await _owner_actor(db, owner)
+
+    with pytest.raises(HTTPException) as exc:
+        await update_admin_account(
+            suspended.id,
+            AdminAccountUpdateRequest(role=ROLE_OWNER),
+            db,
+            actor,
+        )
+
+    assert exc.value.status_code == 409
+    assert "먼저 계정을 활성화" in str(exc.value.detail)
+    assert suspended.role == ROLE_OPERATOR
+
+
 async def test_cannot_demote_or_deactivate_self(pg_async_session):
     db = pg_async_session
     owner = await _seed_account(db)

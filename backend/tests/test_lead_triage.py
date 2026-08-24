@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 from app.api.admin.leads import _serialize_lead
-from app.services.lead_triage import is_operations_test_lead
+from app.services.lead_triage import is_operations_test_lead, operations_test_lead_clause
 
 
 def _lead(**overrides):
@@ -76,3 +76,12 @@ def test_a_normal_lead_payload_reports_false_rather_than_omitting_the_field():
     # 필드를 빼면 화면이 "모르면 실고객"으로 다뤄야 할지 판단할 근거가 없다.
     assert payload["is_operations_test"] is False
     assert payload["source"] == "INQUIRY"
+
+
+def test_operations_test_sql_clause_uses_the_same_three_markers():
+    sql = str(operations_test_lead_clause().compile(compile_kwargs={"literal_binds": True}))
+
+    assert "sales_leads.source_path" in sql and "'/ops-qa'" in sql
+    assert "sales_leads.consent_version" in sql and "'ops-qa-v1'" in sql
+    assert "sales_leads.conversion_note" in sql and "'[OPS-QA-'" in sql
+    assert sql.count("coalesce") == 3

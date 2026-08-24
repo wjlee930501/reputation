@@ -1,12 +1,12 @@
 """Admin API — sales lead intake review."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from slugify import slugify
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account
@@ -28,11 +28,13 @@ from app.services import lead_delivery
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_duplicates import find_duplicate_hospitals, matches_hospital_name
 from app.services.lead_privacy import purge_lead_completely_async, scrub_onboarding_note
-from app.services.lead_triage import is_operations_test_lead
+from app.services.lead_triage import is_operations_test_lead, operations_test_lead_clause
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
 router.include_router(recovery_router)
 router.include_router(report_view_router)
+
+LEAD_FIRST_CONTACT_TARGET_HOURS = 24
 
 
 class LeadConvertRequest(BaseModel):
@@ -51,7 +53,7 @@ async def list_sales_leads(
     offset: int = Query(default=0, ge=0),
     needs_attention: bool = Query(
         default=False,
-        description="측정 FAILED · 리포트 BLOCKED · 발송 FAILED 중 하나인 진단을 가진 리드만",
+        description="신규이거나 첫 연락 기한을 넘긴 미연락 실운영 리드만",
     ),
 ):
     # offset 없이는 limit 상한(200) 이전의 오래된 리드에 UI가 닿을 수 없다 —
@@ -61,14 +63,9 @@ async def list_sales_leads(
     # 이 함수를 직접 부르면(테스트가 그렇게 한다) 기본값이 truthy가 되어 **항상 필터가
     # 걸린다**. 그러면 목록이 조용히 비어 보인다.
     if needs_attention is True:
-        # 실패는 Slack으로만 알리면 놓친 뒤에 찾을 방법이 없다 — 목록에서 되짚을 수 있어야 한다.
         stmt = stmt.where(
-            select(LeadDiagnosis.id)
-            .where(
-                LeadDiagnosis.lead_id == SalesLead.id,
-                _needs_attention_clause(),
-            )
-            .exists()
+            lead_needs_attention_clause(),
+            not_(operations_test_lead_clause()),
         )
     result = await db.execute(stmt.offset(offset).limit(limit))
     leads = list(result.scalars().all())
@@ -98,6 +95,33 @@ async def list_sales_leads(
         }
         for lead in leads
     ]
+
+
+@router.get("/summary")
+async def get_sales_lead_summary(db: AsyncSession = Depends(get_db)):
+    """Real-operation counters; QA fixtures remain stored and visible in the full list."""
+    test_clause = operations_test_lead_clause()
+    real_clause = not_(test_clause)
+    checked_at = datetime.now(timezone.utc)
+    overdue_clause = lead_overdue_uncontacted_clause(checked_at)
+    row = (
+        await db.execute(
+            select(
+                func.count(SalesLead.id).filter(real_clause),
+                func.count(SalesLead.id).filter(
+                    and_(real_clause, lead_needs_attention_clause(checked_at))
+                ),
+                func.count(SalesLead.id).filter(and_(real_clause, overdue_clause)),
+                func.count(SalesLead.id).filter(test_clause),
+            )
+        )
+    ).one()
+    return {
+        "total": int(row[0] or 0),
+        "needs_attention": int(row[1] or 0),
+        "overdue": int(row[2] or 0),
+        "operations_test": int(row[3] or 0),
+    }
 
 
 @router.get("/{lead_id}/hospital-candidates")
@@ -390,6 +414,29 @@ def _needs_attention_clause():
         LeadDiagnosis.execution_status == ExecutionStatus.FAILED.value,
         LeadDiagnosis.report_status == ReportStatus.BLOCKED.value,
         LeadDiagnosis.delivery_status == DeliveryStatus.FAILED.value,
+    )
+
+
+def lead_uncontacted_clause():
+    """No state-machine change: recognize existing terminal/contacted values only."""
+    return and_(
+        SalesLead.converted_hospital_id.is_(None),
+        SalesLead.converted_at.is_(None),
+        SalesLead.status.notin_(("CONTACTED", "CONVERTED", "DISMISSED")),
+    )
+
+
+def lead_overdue_uncontacted_clause(reference_time: datetime | None = None):
+    checked_at = reference_time or datetime.now(timezone.utc)
+    cutoff = checked_at - timedelta(hours=LEAD_FIRST_CONTACT_TARGET_HOURS)
+    return and_(SalesLead.created_at <= cutoff, lead_uncontacted_clause())
+
+
+def lead_needs_attention_clause(reference_time: datetime | None = None):
+    """확인 필요 = 신규 OR (기한 초과 AND 미연락)."""
+    return or_(
+        SalesLead.status == "NEW",
+        lead_overdue_uncontacted_clause(reference_time),
     )
 
 

@@ -5,6 +5,8 @@ import {
   countMonthlyPublishDates,
   DEFAULT_PUBLISH_DAYS_BY_PLAN,
   firstDayOfNextMonthInputValue,
+  moveScheduleMonth,
+  scheduleMonthLabel,
   localDateInputValue,
   validateScheduleCapacity,
 } from './schedule.ts'
@@ -28,4 +30,10 @@ test('localDateInputValue does not shift the selected day through UTC conversion
 
 test('firstDayOfNextMonthInputValue starts new schedules without past slots', () => {
   assert.equal(firstDayOfNextMonthInputValue(new Date(2026, 4, 11, 9, 0, 0)), '2026-06-01')
+})
+
+test('schedule month navigation crosses year boundaries and uses a readable label', () => {
+  assert.equal(scheduleMonthLabel('2026-08-01'), '2026년 8월')
+  assert.equal(moveScheduleMonth('2026-01-15', -1), '2025-12-01')
+  assert.equal(moveScheduleMonth('2026-12-15', 1), '2027-01-01')
 })
