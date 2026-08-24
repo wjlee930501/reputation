@@ -175,3 +175,89 @@ async def recover_ops_incident(
             )
         await db.commit()
         return True
+
+
+async def recover_ops_incidents_for_hospital(
+    *,
+    hospital_id: uuid.UUID,
+    pipeline: str,
+    incident_type: str,
+    hospital_name: str = "시스템 공통 작업",
+    actor: str = "system",
+    reason: str = "automatic recovery observed",
+    notify: bool = True,
+) -> int:
+    """Recover active incidents for a hospital regardless of their object ID.
+
+    Snapshot-backed incidents can outlive the snapshot hash that opened them. Their
+    durable hospital and pipeline identity is therefore the recovery boundary.
+    """
+
+    sessions = get_async_sessionmaker()
+    async with sessions() as db:
+        incidents = list(
+            (
+                await db.execute(
+                    select(Incident).where(
+                        Incident.hospital_id == hospital_id,
+                        Incident.dedupe_key.startswith(f"incident:v1:{pipeline}:"),
+                        Incident.incident_type == incident_type,
+                        Incident.state.in_(
+                            (IncidentState.OPEN.value, IncidentState.RETRYING.value)
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        recovered_count = 0
+        for incident in incidents:
+            current = incident
+            if current.state == IncidentState.OPEN.value:
+                retrying = await mark_retrying(
+                    db,
+                    current.id,
+                    expected_version=current.version,
+                    actor=actor,
+                    reason=reason,
+                )
+                if not isinstance(retrying, Incident):
+                    continue
+                current = retrying
+            if current.state != IncidentState.RETRYING.value:
+                continue
+            recovered = await mark_recovered(
+                db,
+                current.id,
+                expected_version=current.version,
+                observed_success=True,
+                actor=actor,
+                reason=reason,
+            )
+            if not isinstance(recovered, Incident):
+                continue
+            recovered_count += 1
+            if notify:
+                await enqueue_notification(
+                    db,
+                    build_recovered_incident_notification(
+                        IncidentSlackProjection(
+                            incident_id=recovered.id,
+                            hospital_name=hospital_name,
+                            severity=recovered.severity,
+                            customer_impact=recovered.customer_impact,
+                            next_action=recovered.next_action,
+                            admin_path=recovered.admin_path,
+                            owner_label="미지정",
+                            sla_label="복구됨",
+                            hospital_id=recovered.hospital_id,
+                            operation_run_id=recovered.operation_run_id,
+                            version=recovered.version,
+                            episode_seq=recovered.episode_seq,
+                        ),
+                        settings.ADMIN_BASE_URL,
+                    ),
+                )
+        await db.commit()
+        return recovered_count

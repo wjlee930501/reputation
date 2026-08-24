@@ -55,6 +55,7 @@ def create_next_month_slots_for_schedule(
         schedule.publish_days,
         next_month,
         start_date,
+        allow_shortfall=True,
     )
     # 부분 생성(중단된 이전 배치 등) 뒤에는 비어 있는 순번만 채운다.
     slots = [slot for slot in slots if slot[2] not in existing_sequences]

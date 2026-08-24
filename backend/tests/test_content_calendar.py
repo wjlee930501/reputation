@@ -155,3 +155,33 @@ def test_generate_monthly_slots_spreads_across_allowed_weekdays():
     assert all(d.weekday() in {0, 2, 4} for d in dates)
     assert dates[0].day <= 7
     assert dates[-1].day >= 25
+
+
+def test_generate_monthly_slots_allows_positive_worker_shortfall():
+    slots = generate_monthly_slots(
+        "PLAN_12",
+        [1, 4],
+        arrow.get("2026-09-01").floor("month"),
+        allow_shortfall=True,
+    )
+
+    assert len(slots) == 9
+    assert [sequence_no for _, _, sequence_no, _ in slots] == list(range(1, 10))
+    assert all(total_count == 9 for _, _, _, total_count in slots)
+    assert [scheduled_date for scheduled_date, *_ in slots] == [
+        day.date()
+        for day in arrow.Arrow.range(
+            "day", arrow.get("2026-09-01"), arrow.get("2026-09-30")
+        )
+        if day.weekday() in {1, 4}
+    ]
+
+
+def test_generate_monthly_slots_still_rejects_zero_publishable_days():
+    with pytest.raises(ValueError, match="발행 가능한 날짜가 없습니다"):
+        generate_monthly_slots(
+            "PLAN_12",
+            [],
+            arrow.get("2026-09-01").floor("month"),
+            allow_shortfall=True,
+        )

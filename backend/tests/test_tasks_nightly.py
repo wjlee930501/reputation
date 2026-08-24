@@ -1371,8 +1371,8 @@ class _MonthlySlotDB:
         return False
 
 
-def test_monthly_slot_generation_isolates_valueerror_and_opens_incident(monkeypatch):
-    """발행요일이 적은 스케줄이 generate_monthly_slots ValueError를 내도 이전 병원 슬롯은
+def test_monthly_slot_generation_isolates_other_exceptions_and_opens_incident(monkeypatch):
+    """예상하지 못한 캘린더 오류가 나도 이전 병원 슬롯은
     유지되고, 이후 병원 처리도 계속되며, 실패 병원은 durable incident/outbox로 남는다."""
     hospitals = [
         SimpleNamespace(id="h1", name="첫번째의원", status=HospitalStatus.ACTIVE),
@@ -1400,10 +1400,11 @@ def test_monthly_slot_generation_isolates_valueerror_and_opens_incident(monkeypa
 
     calls = {"n": 0}
 
-    def fake_generate(plan, publish_days, next_month, start_date=None):
+    def fake_generate(plan, publish_days, next_month, start_date=None, *, allow_shortfall=False):
+        assert allow_shortfall is True
         calls["n"] += 1
         if publish_days == [1]:
-            raise ValueError("발행요일 대비 편수가 과다")
+            raise RuntimeError("unexpected calendar failure")
         return [(date(2026, 3, 2), "FAQ", 1, 1)]
 
     opened: list[dict] = []
@@ -1437,6 +1438,44 @@ def test_monthly_slot_generation_isolates_valueerror_and_opens_incident(monkeypa
     assert len(opened) == 1
     assert opened[0]["hospital_id"] == "h2"
     assert opened[0]["hospital_name"] == "문제의원"
+
+
+def test_monthly_slot_generation_recovers_positive_shortfall_without_incident(monkeypatch):
+    hospital = SimpleNamespace(id="h1", name="짧은달의원", status=HospitalStatus.ACTIVE)
+    schedule = SimpleNamespace(
+        id="s1",
+        hospital_id=hospital.id,
+        hospital=hospital,
+        plan="PLAN_12",
+        publish_days=[1, 4],
+        active_from=date(2026, 1, 1),
+    )
+    db = _MonthlySlotDB([schedule])
+    opened: list[dict] = []
+    recovered: list[dict] = []
+
+    async def fake_open(**kwargs):
+        opened.append(kwargs)
+        return uuid.uuid4()
+
+    async def fake_recover(**kwargs):
+        recovered.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 8, 25, tzinfo="Asia/Seoul")
+    )
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "open_monthly_slot_failure", fake_open)
+    monkeypatch.setattr(tasks, "recover_monthly_slot_failure", fake_recover)
+
+    tasks.monthly_slot_generation()
+
+    assert len(db.persisted) == 9
+    assert [item.sequence_no for item in db.persisted] == list(range(1, 10))
+    assert all(item.total_count == 9 for item in db.persisted)
+    assert opened == []
+    assert recovered == [{"hospital_id": "h1", "period_key": "2026-09"}]
 
 
 def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflicts(monkeypatch):

@@ -209,15 +209,58 @@ def test_activation_inside_target_month_only_uses_dates_from_active_from(db):
     assert min(dates) >= date(2026, 8, 10)
 
 
-def test_active_from_on_the_last_day_of_month_is_not_treated_as_future(db):
-    """경계 — active_from이 대상 월 마지막 날이면 아직 '완전히 이전'이 아니다."""
+def test_active_from_on_the_last_day_creates_the_one_available_slot(db):
+    """Worker reconciliation uses every positive-capacity date, even below plan quota."""
     schedule = _make_schedule(db, plan="PLAN_12", publish_days=[0, 1, 2, 3, 4, 5, 6],
                               active_from=MONTH_END)
 
-    # 8/31 하루에 PLAN_12(12편)는 들어가지 않으므로 캘린더가 명시적으로 거부한다 —
-    # 조용히 한 달 앞당겨 발행하는 것보다 실패 알림이 낫다.
+    assert _run(db, schedule) is True
+    rows = db.execute(
+        select(ContentItem).where(ContentItem.schedule_id == schedule.id)
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].scheduled_date == MONTH_END
+    assert rows[0].sequence_no == 1
+    assert rows[0].total_count == 1
+
+
+def test_zero_publishable_days_still_raise(db):
+    schedule = _make_schedule(
+        db,
+        plan="PLAN_12",
+        publish_days=[1],
+        active_from=MONTH_END,
+    )
+
     with pytest.raises(ValueError):
         _run(db, schedule)
+
+
+def test_short_month_creates_actual_capacity_and_is_idempotent(db):
+    month = arrow.get("2026-09-01")
+    month_start = date(2026, 9, 1)
+    month_end = date(2026, 9, 30)
+    schedule = _make_schedule(db, plan="PLAN_12", publish_days=[1, 4])
+
+    assert create_next_month_slots_for_schedule(
+        db, schedule, month, month_start, month_end
+    ) is True
+    assert create_next_month_slots_for_schedule(
+        db, schedule, month, month_start, month_end
+    ) is False
+
+    rows = db.execute(
+        select(ContentItem)
+        .where(
+            ContentItem.schedule_id == schedule.id,
+            ContentItem.scheduled_date >= month_start,
+            ContentItem.scheduled_date <= month_end,
+        )
+        .order_by(ContentItem.sequence_no)
+    ).scalars().all()
+    assert len(rows) == 9
+    assert [row.sequence_no for row in rows] == list(range(1, 10))
+    assert all(row.total_count == 9 for row in rows)
 
 
 def test_inactive_hospital_status_is_skipped(db):
