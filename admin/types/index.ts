@@ -596,6 +596,11 @@ export interface OperationsQueueRow {
   readonly next_action: string
   readonly action: OperationsAction
   readonly retry: OperationsAction | null
+  readonly cause_code: string | null
+  readonly cause_message: string | null
+  readonly cause_group_key: string | null
+  readonly same_type_count: number
+  readonly affected_hospital_count: number
   readonly safe_cause: string | null
   readonly history: readonly OperationsHistoryEntry[]
   readonly slack: OperationsSlack | null

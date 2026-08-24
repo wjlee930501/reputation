@@ -44,6 +44,32 @@ _RETRYABLE_OPERATION_TYPES: Final = frozenset(
     }
 )
 
+_COST_LIMIT_CAUSE_CODES: Final = frozenset(
+    {
+        "COST_BLOCKED",
+        "COST_GUARD_LIMIT_REACHED",
+        "LEAD_DIAGNOSIS_COST_BLOCKED",
+        "WEEKLY_SOV_COST_GUARD_BLOCKED",
+    }
+)
+_COST_LIMIT_CAUSE_CODE: Final = "COST_LIMIT_EXHAUSTED"
+_COST_LIMIT_CAUSE_MESSAGE: Final = (
+    "오늘 설정된 AI 사용 한도가 소진되어 관련 자동 작업과 측정이 차단되었습니다."
+)
+
+
+def canonical_cause_code(code: str | None, incident_type: str) -> str:
+    """Return a stable root-cause key shared by cost-limit symptoms."""
+    normalized = (code or incident_type or "OPERATION_FAILED").strip().upper()
+    return _COST_LIMIT_CAUSE_CODE if normalized in _COST_LIMIT_CAUSE_CODES else normalized
+
+
+def cause_message(code: str, stored_message: str | None, impact: str) -> str:
+    """Return non-empty, operator-safe cause copy for an incident projection."""
+    if code == _COST_LIMIT_CAUSE_CODE:
+        return _COST_LIMIT_CAUSE_MESSAGE
+    return (stored_message or impact or "운영 작업이 완료되지 않은 원인을 확인해야 합니다.").strip()
+
 
 def owner_projection(user: AdminUser | None) -> OperationsOwner | None:
     """Project an optional assignee into the public operations contract."""
@@ -139,6 +165,10 @@ def serialize_incident_row(
     run: OperationRun | None,
     outbox: NotificationOutbox | None,
     now: datetime,
+    *,
+    cause_group_key: str | None = None,
+    same_type_count: int = 1,
+    affected_hospital_count: int | None = None,
 ) -> OperationsQueueRow:
     """Build the operations queue projection for one incident and its related records."""
     hospital_id = incident.hospital_id
@@ -149,6 +179,12 @@ def serialize_incident_row(
         if hospital_id
         else f"/operations/incidents/{incident.id}"
     )
+    stored_code = incident.safe_error_code or (run.safe_error_code if run is not None else None)
+    projected_code = canonical_cause_code(stored_code, incident.incident_type)
+    stored_message = incident.safe_error_message or (
+        run.safe_error_message if run is not None else None
+    )
+    projected_message = cause_message(projected_code, stored_message, incident.customer_impact)
     return OperationsQueueRow(
         id=f"incident:{incident.id}",
         queue=OperationsQueue.INCIDENTS,
@@ -166,7 +202,16 @@ def serialize_incident_row(
             kind="OPEN_INCIDENT", label="문제와 조치 확인", method="GET", path=detail_path
         ),
         retry=retry_action(hospital_id, run) if hospital_id else None,
-        safe_cause=incident.safe_error_message or incident.safe_error_code,
+        cause_code=projected_code,
+        cause_message=projected_message,
+        cause_group_key=cause_group_key or projected_code,
+        same_type_count=max(1, same_type_count),
+        affected_hospital_count=(
+            affected_hospital_count
+            if affected_hospital_count is not None
+            else (1 if hospital_id is not None else 0)
+        ),
+        safe_cause=projected_message,
         history=history(incident),
         slack=slack_state(outbox),
         incident_id=incident.id,

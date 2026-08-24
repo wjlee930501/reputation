@@ -169,6 +169,11 @@ class OperationsQueueRow(OperationsSchema):
     next_action: str
     action: OperationsAction
     retry: OperationsAction | None
+    cause_code: str | None = None
+    cause_message: str | None = None
+    cause_group_key: str | None = None
+    same_type_count: int = 1
+    affected_hospital_count: int = 0
     safe_cause: str | None
     history: list[OperationsHistoryEntry]
     slack: OperationsSlackState | None
