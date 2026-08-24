@@ -480,31 +480,42 @@ def decode_html_bytes(
         if normalized and normalized not in candidates:
             candidates.append(normalized)
 
-    decoded: list[tuple[float, int, str, str]] = []
+    decoded: list[tuple[float, float, int, str, str]] = []
     for index, encoding in enumerate(candidates):
         try:
             text = content.decode(encoding, errors="strict")
         except (LookupError, UnicodeDecodeError):
             continue
-        decoded.append((abnormal_character_ratio(text), index, text, encoding))
+        meaningful_count = sum(not char.isspace() for char in text)
+        hangul_count = sum("\uac00" <= char <= "\ud7a3" for char in text)
+        hangul_ratio = hangul_count / max(meaningful_count, 1)
+        decoded.append(
+            (abnormal_character_ratio(text), -hangul_ratio, index, text, encoding)
+        )
     if decoded:
-        _ratio, _index, text, encoding = min(decoded, key=lambda item: (item[0], item[1]))
+        _ratio, _hangul_ratio, _index, text, encoding = min(decoded)
         return text, encoding
     return content.decode("utf-8", errors="replace"), "utf-8-replacement"
 
 
 def abnormal_character_ratio(value: str) -> float:
-    """Ratio of controls/replacements and scripts typical of Korean mojibake."""
+    """Ratio of controls/replacements and character runs typical of Korean mojibake."""
     meaningful = [char for char in value if not char.isspace()]
     if not meaningful:
         return 0.0
     abnormal = 0
-    for char in meaningful:
+    high_latin1 = ["\u00a0" <= char <= "\u00ff" for char in meaningful]
+    for index, char in enumerate(meaningful):
         codepoint = ord(char)
         category = unicodedata.category(char)
         if char == "\ufffd" or category in {"Cc", "Cs", "Co"}:
             abnormal += 1
         elif 0x0100 <= codepoint <= 0x052F:
+            abnormal += 1
+        elif high_latin1[index] and (
+            (index > 0 and high_latin1[index - 1])
+            or (index + 1 < len(high_latin1) and high_latin1[index + 1])
+        ):
             abnormal += 1
     return abnormal / len(meaningful)
 

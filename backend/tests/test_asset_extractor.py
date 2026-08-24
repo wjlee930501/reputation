@@ -140,6 +140,31 @@ def test_decode_html_bytes_detects_euc_kr_meta_over_wrong_http_default():
     assert abnormal_character_ratio(decoded) == 0
 
 
+def test_decode_html_bytes_prefers_euc_kr_meta_over_conflicting_http_charset():
+    body = "정형외과 진료 안내"
+    html = f'<html><head><meta charset="euc-kr"></head><body>{body}</body></html>'
+    content = html.encode("euc-kr")
+
+    decoded, encoding = decode_html_bytes(
+        content,
+        declared_encoding="iso-8859-1",
+        content_type="text/html; charset=iso-8859-1",
+    )
+
+    mojibake = body.encode("euc-kr").decode("iso-8859-1")
+    assert body in decoded
+    assert mojibake not in decoded
+    assert encoding in {"euc-kr", "cp949"}
+
+
+def test_fetch_quality_rejects_latin1_mojibake_of_korean():
+    mojibake = "정형외과 진료 안내".encode("euc-kr").decode("iso-8859-1")
+
+    quality = _assess_fetch_quality("", mojibake, detected_encoding="iso-8859-1")
+
+    assert quality.looks_corrupt is True
+
+
 def test_general_html_scope_removes_navigation_and_footer():
     html = (
         "<html><body><nav><a href='/one'>병원 소개</a><a href='/two'>진료 안내</a></nav>"
