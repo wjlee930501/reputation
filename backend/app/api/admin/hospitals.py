@@ -64,6 +64,7 @@ from app.services.hospital_logo import (
     LOGO_ALLOWED_MIME_TYPES,
     LOGO_MAX_BYTES,
     is_external_logo_url,
+    is_stored_logo_ref,
     public_logo_url,
 )
 from app.services.hospital_profile_autofill import autofill_profile
@@ -247,7 +248,6 @@ class HospitalProfileUpdate(BaseModel):
         "google_business_profile_url",
         "google_maps_url",
         "naver_place_url",
-        "logo_url",
         "hero_image_url",
     )
     @classmethod
@@ -260,6 +260,21 @@ class HospitalProfileUpdate(BaseModel):
         parsed = urlparse(cleaned)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("URL must be absolute http(s)")
+        return cleaned
+
+    @field_validator("logo_url")
+    @classmethod
+    def validate_logo_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if is_stored_logo_ref(cleaned):
+            return cleaned
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("URL must be an uploaded logo reference or absolute http(s)")
         return cleaned
 
 
@@ -683,9 +698,27 @@ async def update_profile(
     }
     update_data = body.model_dump(exclude_unset=True)
     # 공개 표면이 조용히 버릴 값을 저장해 두고 `승인됨`으로 보여 주지 않는다 — 로고는
-    # 온보딩 필수 게이트라, 효과 없는 입력을 통과시키면 운영자가 헛일을 하게 된다(L-1).
-    if is_external_logo_url(update_data.get("logo_url")):
-        raise HTTPException(status_code=400, detail=EXTERNAL_LOGO_URL_MESSAGE)
+    # 온보딩 필수 게이트라, 새 효과 없는 입력은 통과시키지 않는다(L-1). 다만 프로파일
+    # 화면은 전체 객체를 PATCH하므로, 이미 저장된 레거시 외부 URL을 그대로 재전송한 것은
+    # 새 로고 입력이 아니다. 이 값 때문에 전문과목 같은 무관한 수정을 막지 않는다.
+    submitted_logo_url = update_data.get("logo_url")
+    if isinstance(submitted_logo_url, str):
+        submitted_logo_url = submitted_logo_url.strip()
+        update_data["logo_url"] = submitted_logo_url
+    raw_stored_logo_url = getattr(h, "logo_url", None)
+    stored_logo_url = (
+        raw_stored_logo_url.strip()
+        if isinstance(raw_stored_logo_url, str)
+        else raw_stored_logo_url
+    )
+    if is_external_logo_url(submitted_logo_url) and submitted_logo_url != stored_logo_url:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "EXTERNAL_LOGO_URL",
+                "message": EXTERNAL_LOGO_URL_MESSAGE,
+            },
+        )
     was_complete = h.profile_complete
     changed_fields: list[str] = []
     for field, value in update_data.items():
@@ -693,7 +726,16 @@ async def update_profile(
             continue
         if value is None and field not in CLEARABLE_FIELDS:
             continue
-        if getattr(h, field, None) != value:
+        stored_value = getattr(h, field, None)
+        # Whitespace around a legacy logo URL is storage noise, not an operator
+        # change. Persist the normalized submitted value without auditing or
+        # revalidating the public site solely because the old row was untrimmed.
+        comparable_stored_value = (
+            stored_value.strip()
+            if field == "logo_url" and isinstance(stored_value, str) and isinstance(value, str)
+            else stored_value
+        )
+        if comparable_stored_value != value:
             changed_fields.append(field)
         setattr(h, field, value)
 
