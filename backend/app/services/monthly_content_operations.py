@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from app.models.content import ContentStatus, monthly_quota_for_plan
+from app.services.enum_values import enum_value
 from app.services.post_publish_review_policy import is_human_post_publish_review_sample
 
 POST_PUBLISH_REVIEW_OVERDUE_AFTER = timedelta(hours=24)
@@ -30,7 +31,7 @@ class MonthlyContentOperationSnapshot:
 
 
 def _status_value(item: MonthlyContentOperationItem) -> str:
-    return getattr(item.status, "value", item.status)
+    return enum_value(item.status)
 
 
 def build_monthly_content_operations_snapshot(
