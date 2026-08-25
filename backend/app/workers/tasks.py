@@ -1629,7 +1629,7 @@ def nightly_content_generation(self):
                             hospital.name,
                         )
                     code = "MISSING_APPROVED_ESSENCE"
-                    message = "승인된 콘텐츠 운영 기준을 먼저 승인해 주세요."
+                    message = "콘텐츠 운영 기준의 시스템 자동 승인이 아직 완료되지 않았습니다."
                     recorder.record(
                         item.id,
                         GenerationItemState.SKIPPED,
@@ -2241,7 +2241,7 @@ def _generate_single_content_item(
         return (
             GenerationItemState.SKIPPED,
             "MISSING_APPROVED_ESSENCE",
-            "승인된 콘텐츠 운영 기준을 먼저 승인해 주세요.",
+            "콘텐츠 운영 기준의 시스템 자동 승인이 아직 완료되지 않았습니다.",
         )
 
     # 비용 가드: Claude 호출 예산 확인. 차단 시 생성을 건너뛴다(item은 DRAFT/본문 없음 유지 —

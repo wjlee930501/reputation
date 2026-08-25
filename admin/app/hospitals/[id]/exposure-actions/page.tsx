@@ -406,7 +406,7 @@ export default function ExposureActionsPage() {
             <button
               type="button"
               onClick={loadActions}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              className="min-h-11 min-w-fit shrink-0 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
               새로고침
             </button>
@@ -713,7 +713,7 @@ function DetailPanel({
         )}
         <p className="text-[11px] leading-5 text-slate-500">
           {canCreateBrief
-            ? '콘텐츠 운영 기준이 아직 승인되지 않은 경우에도 콘텐츠 가이드 초안은 생성할 수 있지만, 발행 전에 반드시 운영 기준 승인이 필요합니다. 이 화면에서는 자동 승인·발행이 일어나지 않습니다.'
+            ? '콘텐츠 운영 기준이 아직 자동 승인되지 않아도 콘텐츠 가이드 초안은 만들 수 있습니다. 시스템 검수가 승인하면 예약일에 자동 발행되며, 보류된 예외만 운영 기준 탭에서 확인합니다.'
             : getBriefUnavailableMessage(action.action_type)}
         </p>
         {briefResult && (
@@ -756,7 +756,7 @@ function BriefResultPanel({ result }: { result: BriefResultState }) {
         {philosophyGate.has_approved_philosophy
           ? '승인된 콘텐츠 운영 기준이 적용되었습니다. 예약일 자동 발행 후 콘텐츠 탭에서 공개 내용을 확인하세요.'
           : philosophyGate.message ??
-            '자동 발행 전에 승인된 콘텐츠 운영 기준이 필요합니다. 운영 기준 탭에서 승인을 먼저 진행하세요.'}
+            '시스템 자동 승인이 아직 완료되지 않았습니다. 운영 기준 탭에서 자동 검수 상태와 보류 사유를 확인하세요.'}
       </div>
     </div>
   )

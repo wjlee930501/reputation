@@ -200,7 +200,7 @@ async def set_schedule(
             status_code=409,
             detail={
                 "code": "CONTENT_READINESS_PREREQUISITES_MISSING",
-                "message": "콘텐츠 스케줄 설정 전 근거 자료 처리와 콘텐츠 운영 기준 승인을 완료해 주세요.",
+                "message": "콘텐츠 스케줄 설정 전 근거 자료 처리와 시스템 자동 승인 상태를 확인해 주세요.",
                 "blockers": readiness_blockers,
             },
         )

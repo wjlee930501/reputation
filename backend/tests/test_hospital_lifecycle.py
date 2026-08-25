@@ -43,6 +43,17 @@ def test_active_gate_does_not_require_handoff_or_schedule_after_complete_profile
     assert missing_live_prerequisite_keys(hospital) == []
 
 
+def test_active_gate_does_not_require_custom_domain_dns_or_live_check_success():
+    hospital = _complete_hospital(
+        aeo_domain="clinic.example.com",
+        domain_cert_dns_verified_at=None,
+        domain_last_check_ok=False,
+        domain_last_check_reason="DNS_PENDING",
+    )
+
+    assert missing_live_prerequisite_keys(hospital) == []
+
+
 @pytest.mark.parametrize(
     ("latitude", "longitude"),
     [(float("nan"), 127.0), (91.0, 127.0), (37.5, 181.0), (True, 127.0)],

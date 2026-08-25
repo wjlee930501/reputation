@@ -47,6 +47,7 @@ export default function HospitalLayout({
   const [hospital, setHospital] = useState<Hospital | null>(null)
   const [notFound, setNotFound] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadErrorStatus, setLoadErrorStatus] = useState<number | null>(null)
   const [lifecycleLoading, setLifecycleLoading] = useState(false)
   const [lifecycleError, setLifecycleError] = useState<string | null>(null)
 
@@ -56,12 +57,21 @@ export default function HospitalLayout({
       setHospital(data)
       setNotFound(false)
       setLoadError(null)
+      setLoadErrorStatus(null)
     } catch (e: unknown) {
       if (e instanceof ApiError && e.status === 404) {
         setNotFound(true)
         setLoadError(null)
+        setLoadErrorStatus(null)
       } else {
-        setLoadError(e instanceof Error ? e.message : '병원 정보를 불러오지 못했습니다.')
+        setLoadErrorStatus(e instanceof ApiError ? e.status : null)
+        setLoadError(
+          e instanceof ApiError && e.status === 429
+            ? '요청이 잠시 제한되었습니다. 잠시 후 병원 정보를 다시 불러와 주세요.'
+            : e instanceof Error
+              ? e.message
+              : '병원 정보를 불러오지 못했습니다.',
+        )
       }
     }
   }, [hospitalId])
@@ -130,7 +140,9 @@ export default function HospitalLayout({
             </Link>
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 items-center gap-2">
-                <h1 className="truncate text-base font-bold text-slate-900">{hospital?.name ?? '병원 불러오는 중'}</h1>
+                <h1 className="truncate text-base font-bold text-slate-900">
+                  {hospital?.name ?? (loadError ? '병원 정보 확인 필요' : '병원 불러오는 중')}
+                </h1>
                 {statusInfo && (
                   <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusInfo.color}`}>
                     {statusInfo.label}
@@ -141,7 +153,11 @@ export default function HospitalLayout({
                   서비스 중인 병원이 대부분이고, 그걸 준비 중이라 하면 운영자가 살아
                   있는 주소를 없는 것으로 안다(O-7). 목록·패널과 같은 판정을 쓴다. */}
               <p className="mt-0.5 truncate text-xs text-slate-500">
-                {hospital ? `공개 주소 ${readHospitalDomainStatus(hospital).detail}` : '공개 주소 확인 중'}
+                {hospital
+                  ? `공개 주소 ${readHospitalDomainStatus(hospital).detail}`
+                  : loadError
+                    ? '병원 정보를 다시 불러와 주세요'
+                    : '공개 주소 확인 중'}
               </p>
             </div>
             {hospital && (
@@ -190,7 +206,7 @@ export default function HospitalLayout({
             </Link>
             <div className="flex items-center gap-3 mt-2 flex-wrap">
               <h1 className="heading3 truncate text-[var(--color-revisit-text-title)]">
-                {hospital?.name ?? '불러오는 중...'}
+                {hospital?.name ?? (loadError ? '병원 정보 확인 필요' : '불러오는 중...')}
               </h1>
               {statusInfo && (
                 <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusInfo.color}`}>
@@ -332,11 +348,13 @@ export default function HospitalLayout({
 
       {loadError && (
         <div className="mx-4 mt-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 sm:mx-6 lg:mx-8">
-          <span>병원 정보를 불러오지 못했습니다. ({loadError})</span>
+          <span>
+            {loadErrorStatus === 429 ? loadError : `병원 정보를 불러오지 못했습니다. (${loadError})`}
+          </span>
           <button
             type="button"
             onClick={() => void refetch()}
-            className="shrink-0 rounded-md border border-amber-300 bg-white px-3 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100"
+            className="min-h-11 shrink-0 rounded-md border border-amber-300 bg-white px-3 py-2 text-xs font-medium text-amber-800 hover:bg-amber-100"
           >
             다시 시도
           </button>

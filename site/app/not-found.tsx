@@ -9,7 +9,7 @@ export const metadata: Metadata = {
 // 브랜드된 404 — notFound() 호출 시 Next 기본 화면 대신 노출.
 export default function NotFound() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 px-6">
+    <main id="main-content" className="min-h-screen flex items-center justify-center bg-slate-50 px-6">
       <div className="text-center max-w-md">
         <p className="text-sm font-semibold text-blue-600 mb-2">404</p>
         <h1 className="text-2xl font-bold text-slate-800 mb-3">페이지를 찾을 수 없습니다</h1>
@@ -23,6 +23,6 @@ export default function NotFound() {
           홈으로 이동
         </Link>
       </div>
-    </div>
+    </main>
   )
 }

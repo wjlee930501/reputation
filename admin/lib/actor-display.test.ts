@@ -21,12 +21,12 @@ test('a batch job identifier never appears where an operator name belongs', () =
   }
 })
 
-test('the AI reviewer is labelled as AI, and never as a person who approved', () => {
+test('the AI reviewer is labelled as the normal automatic approver', () => {
   const actor = describeActor('SYSTEM_ESSENCE_AI_REVIEW')
 
   assert.equal(actor.kind, 'AI')
-  assert.equal(actor.label, 'AI 자동 검수')
-  assert.equal(formatActorLabel('SYSTEM_ESSENCE_AI_REVIEW'), 'AI 자동 검수 (사람 승인 아님)')
+  assert.equal(actor.label, 'AI 시스템 자동 승인')
+  assert.equal(formatActorLabel('SYSTEM_ESSENCE_AI_REVIEW'), 'AI 시스템 자동 승인')
 })
 
 test('other system actors keep their own name so the operator knows what ran', () => {

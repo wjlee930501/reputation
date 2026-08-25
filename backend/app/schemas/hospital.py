@@ -21,6 +21,10 @@ class HospitalListItem(BaseModel):
     aeo_domain: Optional[str] = None
     domain_cert_dns_verified_at: Optional[str] = None
     domain_cert_job_state: Optional[str] = None
+    # 커스텀 도메인의 마지막 실관측 결과. 활성화 게이트가 아니라 Admin 소프트 상태다.
+    domain_last_checked_at: Optional[str] = None
+    domain_last_check_ok: Optional[bool] = None
+    domain_last_check_reason: Optional[str] = None
     created_at: Optional[str]
 
 

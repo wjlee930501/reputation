@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ApiError, fetchAPI } from '@/lib/api'
 import { fetchCurrentAccount, type CurrentAccount } from '@/lib/current-account'
@@ -54,6 +54,9 @@ export default function AccountsPage() {
   const [resetTarget, setResetTarget] = useState<AdminAccount | null>(null)
   const [resetPassword, setResetPassword] = useState('')
   const [resetting, setResetting] = useState(false)
+  const resetDialogRef = useRef<HTMLFormElement>(null)
+  const resetPasswordRef = useRef<HTMLInputElement>(null)
+  const resetTriggerRef = useRef<HTMLButtonElement | null>(null)
 
   const [me, setMe] = useState<CurrentAccount | null>(null)
   // 내 역할의 정본은 방금 불러온 명부의 내 행이다 — 세션 토큰의 role은 로그인 시점
@@ -80,6 +83,48 @@ export default function AccountsPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  const closeResetDialog = useCallback(() => {
+    setResetTarget(null)
+    setResetPassword('')
+  }, [])
+
+  useEffect(() => {
+    if (!resetTarget) return
+    const trigger = resetTriggerRef.current
+    const dialog = resetDialogRef.current
+    resetPasswordRef.current?.focus()
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeResetDialog()
+        return
+      }
+      if (event.key !== 'Tab' || !dialog) return
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+        ),
+      )
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      requestAnimationFrame(() => trigger?.focus())
+    }
+  }, [closeResetDialog, resetTarget])
 
   function resetBanners() {
     setActionError('')
@@ -131,8 +176,7 @@ export default function AccountsPage() {
         body: JSON.stringify({ password: resetPassword }),
       })
       setActionSuccess(`${resetTarget.email}의 비밀번호를 재설정했습니다. 본인에게 직접 전달해 주세요.`)
-      setResetTarget(null)
-      setResetPassword('')
+      closeResetDialog()
     } catch (e) {
       setActionError(errorMessage(e, '비밀번호 재설정에 실패했습니다.'))
     } finally {
@@ -162,7 +206,7 @@ export default function AccountsPage() {
               resetBanners()
               setShowCreate((v) => !v)
             }}
-            className="shrink-0 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+            className="min-h-11 shrink-0 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
           >
             {showCreate ? '닫기' : '운영자 추가'}
           </button>
@@ -207,7 +251,7 @@ export default function AccountsPage() {
                 value={form.email}
                 onChange={(e) => setForm({ ...form, email: e.target.value })}
                 placeholder="teammate@motionlabs.kr"
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+                className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2"
               />
             </label>
             <label className="block text-sm">
@@ -218,7 +262,7 @@ export default function AccountsPage() {
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 placeholder="예: 김운영"
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+                className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2"
               />
             </label>
             <label className="block text-sm">
@@ -226,7 +270,7 @@ export default function AccountsPage() {
               <select
                 value={form.role}
                 onChange={(e) => setForm({ ...form, role: e.target.value })}
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+                className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2"
               >
                 <option value="OPERATOR">운영자 — {ROLE_HINTS.OPERATOR}</option>
                 <option value="OWNER">소유자 — {ROLE_HINTS.OWNER}</option>
@@ -241,7 +285,7 @@ export default function AccountsPage() {
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
                 placeholder={`${MIN_PASSWORD_LENGTH}자 이상`}
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+                className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2"
               />
             </label>
           </div>
@@ -252,7 +296,7 @@ export default function AccountsPage() {
           <button
             type="submit"
             disabled={creating}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+            className="min-h-11 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {creating ? '만드는 중...' : '계정 만들기'}
           </button>
@@ -268,7 +312,7 @@ export default function AccountsPage() {
             <button
               type="button"
               onClick={() => void load()}
-              className="mt-3 rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700"
+              className="mt-3 min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700"
             >
               다시 시도
             </button>
@@ -276,8 +320,8 @@ export default function AccountsPage() {
         ) : accounts.length === 0 ? (
           <p className="px-6 py-10 text-center text-sm text-slate-500">등록된 운영자가 없습니다.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+          <div className="admin-responsive-table-wrap overflow-x-auto">
+            <table className="admin-responsive-table w-full min-w-[760px] text-sm">
               <thead className="border-b border-slate-200 bg-slate-50">
                 <tr>
                   <th className="px-6 py-3 text-left font-medium text-slate-600">운영자</th>
@@ -305,7 +349,7 @@ export default function AccountsPage() {
                       : ''
                   return (
                     <tr key={account.id} className={account.is_active ? '' : 'bg-slate-50/60'}>
-                      <td className="px-6 py-4">
+                      <td className="px-6 py-4" data-primary="true">
                         <div className="font-medium text-slate-900">
                           {account.name}
                           {isMe && <span className="ml-2 text-xs font-normal text-blue-600">내 계정</span>}
@@ -317,7 +361,7 @@ export default function AccountsPage() {
                         </div>
                         <div className="text-xs text-slate-500">{account.email}</div>
                       </td>
-                      <td className="px-4 py-4">
+                      <td className="px-4 py-4" data-label="권한">
                         <span
                           className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
                             account.role === 'OWNER'
@@ -328,7 +372,7 @@ export default function AccountsPage() {
                           {ROLE_LABELS[account.role] ?? account.role}
                         </span>
                       </td>
-                      <td className="px-4 py-4">
+                      <td className="px-4 py-4" data-label="상태">
                         <span
                           className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
                             account.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
@@ -337,8 +381,8 @@ export default function AccountsPage() {
                           {account.is_active ? '활성' : '정지'}
                         </span>
                       </td>
-                      <td className="px-4 py-4 text-slate-600">{formatDateTime(account.last_login_at)}</td>
-                      <td className="px-4 py-4">
+                      <td className="px-4 py-4 text-slate-600" data-label="마지막 로그인">{formatDateTime(account.last_login_at)}</td>
+                      <td className="px-4 py-4" data-label="계정 작업">
                         {canManage && (
                           <div className="flex flex-wrap justify-end gap-2">
                             <button
@@ -354,7 +398,7 @@ export default function AccountsPage() {
                                   }로 바꿨습니다.`,
                                 )
                               }
-                              className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
                             >
                               {account.role === 'OWNER' ? '운영자로' : '소유자로'}
                             </button>
@@ -371,19 +415,20 @@ export default function AccountsPage() {
                                     : `${account.email} 계정을 다시 활성화했습니다.`,
                                 )
                               }
-                              className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
                             >
                               {account.is_active ? '정지' : '활성화'}
                             </button>
                             <button
                               type="button"
                               disabled={busy}
-                              onClick={() => {
+                              onClick={(event) => {
                                 resetBanners()
+                                resetTriggerRef.current = event.currentTarget
                                 setResetTarget(account)
                                 setResetPassword('')
                               }}
-                              className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
                             >
                               비밀번호 재설정
                             </button>
@@ -401,39 +446,45 @@ export default function AccountsPage() {
 
       {resetTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
-          <form onSubmit={handleResetPassword} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-            <h2 className="title3 text-slate-900">비밀번호 재설정</h2>
-            <p className="mt-1 text-sm text-slate-600">
+          <form
+            ref={resetDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="password-reset-title"
+            aria-describedby="password-reset-description"
+            onSubmit={handleResetPassword}
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"
+          >
+            <h2 id="password-reset-title" className="title3 text-slate-900">비밀번호 재설정</h2>
+            <p id="password-reset-description" className="mt-1 text-sm text-slate-600">
               <strong>{resetTarget.email}</strong>의 비밀번호를 새로 정합니다. 기존 비밀번호는 즉시 쓸 수 없게 됩니다.
             </p>
-            <label className="mt-4 block text-sm">
+            <label htmlFor="account-reset-password" className="mt-4 block text-sm">
               <span className="font-medium text-slate-700">새 비밀번호</span>
               <input
+                ref={resetPasswordRef}
+                id="account-reset-password"
                 type="password"
                 required
-                autoFocus
                 minLength={MIN_PASSWORD_LENGTH}
                 value={resetPassword}
                 onChange={(e) => setResetPassword(e.target.value)}
                 placeholder={`${MIN_PASSWORD_LENGTH}자 이상`}
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+                className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2"
               />
             </label>
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setResetTarget(null)
-                  setResetPassword('')
-                }}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                onClick={closeResetDialog}
+                className="min-h-11 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700"
               >
                 취소
               </button>
               <button
                 type="submit"
                 disabled={resetting}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                className="min-h-11 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {resetting ? '변경 중...' : '재설정'}
               </button>

@@ -16,7 +16,7 @@ export default async function DiagnosisStatusPage({
 }) {
   const { token } = await params
   return (
-    <main className="dg-page">
+    <main id="main-content" className="dg-page">
       <StatusView token={token} />
     </main>
   )

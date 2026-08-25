@@ -121,6 +121,20 @@ test('no FAQ at all means no FAQPage node', () => {
   )
 })
 
+test('content detail uses approved FAQ fields for both visible FAQ and JSON-LD', () => {
+  const detail = readFileSync(
+    join(HERE, '..', 'app', '[slug]', 'contents', '[contentId]', 'page.tsx'),
+    'utf8',
+  )
+
+  assert.match(detail, /const faqEntries = selectFaqEntries\(\[content\], hospitalRootUrl, 1\)/)
+  assert.match(detail, /buildFaqPageJsonLd\(\[content\], hospitalRootUrl\)/)
+  assert.match(detail, /visibleFaq\.question/)
+  assert.match(detail, /visibleFaq\.answer/)
+  assert.doesNotMatch(detail, /faq_question\s*\|\|\s*content\.title/)
+  assert.doesNotMatch(detail, /faq_answer_summary\s*\|\|\s*content\.meta_description/)
+})
+
 test('the hospital home renders the same FAQ entries it declares in JSON-LD', () => {
   const page = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
   assert.match(page, /const faqEntries = selectFaqEntries\(contents, hospitalRootUrl\)/)

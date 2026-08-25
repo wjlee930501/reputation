@@ -14,7 +14,7 @@
 export type ActorKind =
   /** 로그인한 운영자 */
   | 'HUMAN'
-  /** AI가 판단해 처리했다 — 사람 승인과 구분해야 한다 */
+  /** AI 시스템 검수자가 정상 자동 승인했다 */
   | 'AI'
   /** 사람 판단 없이 자동 실행된 시스템 작업 */
   | 'SYSTEM'
@@ -26,13 +26,13 @@ export type ActorKind =
 export interface ActorDisplay {
   kind: ActorKind
   label: string
-  /** AI·시스템 처리를 사람 승인과 눈으로 구분하기 위한 표시 */
+  /** AI·시스템 자동 처리를 운영자 override와 구분하기 위한 표시 */
   isAutomated: boolean
 }
 
 /** 백엔드가 실제로 저장하는 시스템 행위자 값. */
 const KNOWN_SYSTEM_ACTORS: Record<string, { label: string; kind: 'AI' | 'SYSTEM' }> = {
-  SYSTEM_ESSENCE_AI_REVIEW: { label: 'AI 자동 검수', kind: 'AI' },
+  SYSTEM_ESSENCE_AI_REVIEW: { label: 'AI 시스템 자동 승인', kind: 'AI' },
   SYSTEM_AUTO_PUBLISH: { label: '자동 발행', kind: 'SYSTEM' },
   SYSTEM_EXPOSURE_PLANNER: { label: '자동 작업 편성', kind: 'SYSTEM' },
   SYSTEM_RECURSIVE_LEARNING: { label: '자동 학습 반영', kind: 'SYSTEM' },
@@ -77,9 +77,7 @@ export function describeActor(raw: string | null | undefined): ActorDisplay {
   return { kind: 'HUMAN', label: value, isAutomated: false }
 }
 
-/** 한 줄 표시용 — 자동 처리는 사람 승인과 다르게 읽히도록 꼬리표를 붙인다. */
+/** 한 줄 표시용 — 알려진 시스템 행위자의 정상 자동 처리명을 그대로 쓴다. */
 export function formatActorLabel(raw: string | null | undefined): string {
-  const actor = describeActor(raw)
-  if (actor.kind === 'AI') return `${actor.label} (사람 승인 아님)`
-  return actor.label
+  return describeActor(raw).label
 }
