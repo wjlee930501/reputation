@@ -676,7 +676,7 @@ def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     assert "검증" in next_onboarding_step(hospital)
     hospital.site_live = True
     assert "근거 자료 처리" in next_onboarding_step(hospital)
-    assert "운영 기준 승인" in next_onboarding_step(hospital)
+    assert "운영 기준 자동 승인" in next_onboarding_step(hospital)
     assert "일정" in next_onboarding_step(hospital)
     assert "저장" in next_onboarding_step(hospital)
     hospital.schedule_set = True
@@ -695,7 +695,9 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert "병원 기본 정보 탭" in actions["core_profile"]
     assert all("프로파일" not in action for action in actions.values())
     assert "“근거 추출”" in actions["essence_sources"]
-    assert "“승인”" in actions["essence_philosophy"]
+    assert "시스템 자동 검수" in actions["essence_philosophy"]
+    assert "보류된 예외만" in actions["essence_philosophy"]
+    assert "“승인”을 누르세요" not in actions["essence_philosophy"]
     assert "“스케줄 저장 및 슬롯 생성”" in actions["schedule"]
     assert "“DNS 확인하고 운영 시작”" in actions["domain"]
     assert "지금 발행" not in actions["published_content"]

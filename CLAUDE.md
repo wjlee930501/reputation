@@ -39,12 +39,15 @@
 [STEP 5] 공개 노출 상태 확인 및 ACTIVE 전환 (사람 — Admin에서 AE가)
     • Admin에서 병원 도메인/공개 URL 정보를 입력
     • 활성화 게이트: profile_complete·v0_report_done·site_built 세 가지
-    • 기본 플랫폼 주소는 DNS 없이 활성화하며, 자기 도메인은 DNS/TLS 확인도 통과해야 한다
+    • 기본 플랫폼 주소는 DNS 없이 활성화하며, 자기 도메인의 DNS/TLS 확인 결과는 별도 소프트 상태로 표시한다
+    • schedule_set·자기 도메인 DNS/TLS는 ACTIVE 전환의 선행조건이 아니다
     • 콘텐츠 스케줄은 STEP 6이므로 공개 활성화 선행조건이 아니다
     ↓
-[STEP 6] 콘텐츠 운영 기준 승인 및 스케줄 설정 (사람 — Admin에서 AE가)
+[STEP 6] 콘텐츠 운영 기준 자동 준비 및 스케줄 설정 (시스템 기본, 사람은 예외만)
     • 콘텐츠 준비 품질 게이트:
-      공식 자료 수집 → 모든 텍스트 자료 처리 → 현재 자료 snapshot과 일치하는 콘텐츠 운영 기준 승인
+      공식 자료 수집 → 모든 텍스트 자료 처리 → 현재 자료 snapshot과 일치하는 콘텐츠 운영 기준 생성
+      → essence_auto_review 시스템 검수자가 안전 규칙과 근거를 통과한 기준을 APPROVED로 자동 승인
+    • 자동 검수가 보류한 예외만 AE가 근거를 확인해 수정·재검토하거나 기존 override 경로로 처리
     • 요금제 선택: 스타터 12편/월 60만원, 그로워 16편/월 90만원,
       리더 20편/월 120만원 (모두 부가세 별도)
     • 발행 요일 설정 (예: 화·목 or 월·수·금 등)
@@ -235,7 +238,7 @@ scheduled_date: date    (발행 예정일)
 status: DRAFT|READY|PUBLISHED|REJECTED
 generated_at: datetime  (생성 시각)
 published_at: datetime  (실제 발행 시각)
-published_by: str       (발행 AE 이름)
+published_by: str       (정상 경로는 SYSTEM_AUTO_PUBLISH, 운영 복구 시 AE 이름)
 ```
 
 ### SovRecord (SoV 측정)

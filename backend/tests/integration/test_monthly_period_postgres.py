@@ -1,17 +1,15 @@
-"""Real PostgreSQL proofs for historical eligibility and version serialization."""
+"""Real Alembic-PostgreSQL proofs for eligibility and report-version serialization."""
 
-import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app import models
-from app.core.database import Base
 from app.services.monthly_period import (
     ReportBuildReason,
     eligible_hospital_ids,
@@ -20,10 +18,6 @@ from app.services.monthly_period import (
 )
 
 KST = ZoneInfo("Asia/Seoul")
-POSTGRES_URL = os.getenv(
-    "TASK21_DATABASE_URL",
-    "postgresql://reputation:reputation@localhost:5434/reputation_test",
-)
 
 
 def _report(
@@ -44,24 +38,12 @@ def _report(
     )
 
 
-def test_real_postgres_historical_eligibility_and_concurrent_versions() -> None:
-    schema = f"task21_{uuid.uuid4().hex}"
-    admin_engine = create_engine(POSTGRES_URL, isolation_level="AUTOCOMMIT")
-    with admin_engine.connect() as connection:
-        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
-    engine = create_engine(
-        POSTGRES_URL,
-        connect_args={"options": f"-csearch_path={schema}"},
-        pool_pre_ping=True,
-    )
-    Base.metadata.create_all(engine)
-    eligible = models.Hospital(
-        name="8월 서비스 의원", slug=f"month-eligible-{uuid.uuid4().hex}"
-    )
-    ended = models.Hospital(
-        name="7월 종료 의원", slug=f"month-ended-{uuid.uuid4().hex}"
-    )
-    with Session(engine) as setup:
+def test_real_postgres_historical_eligibility_and_concurrent_versions(pg_engine) -> None:
+    """Use the Alembic-provisioned database so migration-only constraints are exercised."""
+
+    eligible = models.Hospital(name="8월 서비스 의원", slug=f"month-eligible-{uuid.uuid4().hex}")
+    ended = models.Hospital(name="7월 종료 의원", slug=f"month-ended-{uuid.uuid4().hex}")
+    with Session(pg_engine) as setup:
         setup.add_all((eligible, ended))
         setup.flush()
         setup.add_all(
@@ -87,7 +69,7 @@ def test_real_postgres_historical_eligibility_and_concurrent_versions() -> None:
     release_first = threading.Event()
 
     def create_once(first: bool) -> tuple[bool, int]:
-        with Session(engine) as db:
+        with Session(pg_engine) as db:
             plan = lock_report_version_plan(
                 db,
                 hospital_id=eligible_id,
@@ -104,7 +86,7 @@ def test_real_postgres_historical_eligibility_and_concurrent_versions() -> None:
             return plan.create, plan.version
 
     try:
-        with Session(engine) as db:
+        with Session(pg_engine) as db:
             selected = set(eligible_hospital_ids(db, reporting_period(2026, 8)))
         assert eligible_id in selected
         assert ended_id not in selected
@@ -117,11 +99,9 @@ def test_real_postgres_historical_eligibility_and_concurrent_versions() -> None:
             outcomes = [first.result(timeout=10), second.result(timeout=10)]
         assert sorted(outcomes) == [(False, 1), (True, 1)]
 
-        with Session(engine) as db:
+        with Session(pg_engine) as db:
             v1 = db.scalars(
-                select(models.MonthlyReport).where(
-                    models.MonthlyReport.hospital_id == eligible_id
-                )
+                select(models.MonthlyReport).where(models.MonthlyReport.hospital_id == eligible_id)
             ).one()
             late = lock_report_version_plan(
                 db,
@@ -141,7 +121,23 @@ def test_real_postgres_historical_eligibility_and_concurrent_versions() -> None:
             ).all()
             assert list(versions) == [1, 2]
     finally:
-        engine.dispose()
-        with admin_engine.connect() as connection:
-            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-        admin_engine.dispose()
+        # Keep the shared integration database clean; delete the self-referencing
+        # report chain from newest to oldest before removing the hospitals.
+        with Session(pg_engine) as cleanup:
+            reports = cleanup.scalars(
+                select(models.MonthlyReport)
+                .where(models.MonthlyReport.hospital_id == eligible_id)
+                .order_by(models.MonthlyReport.version.desc())
+            ).all()
+            for report in reports:
+                cleanup.delete(report)
+                cleanup.flush()
+            cleanup.execute(
+                delete(models.HospitalServiceInterval).where(
+                    models.HospitalServiceInterval.hospital_id.in_((eligible_id, ended_id))
+                )
+            )
+            cleanup.execute(
+                delete(models.Hospital).where(models.Hospital.id.in_((eligible_id, ended_id)))
+            )
+            cleanup.commit()

@@ -58,12 +58,17 @@ def test_non_object_metadata_is_coerced_before_the_jsonb_merge(monkeypatch) -> N
     assert "jsonb_typeof(source_metadata) IS DISTINCT FROM 'object'" in sql
 
 
-def test_backfill_covers_every_photo_source_type() -> None:
+def test_backfill_covers_every_photo_source_type_that_predated_photo_brand() -> None:
     migration = _load()
+    historical_photo_types = PHOTO_SOURCE_TYPES - {SourceType.PHOTO_BRAND}
 
     assert set(migration.PHOTO_SOURCE_TYPES) == {
-        source_type.value for source_type in PHOTO_SOURCE_TYPES
+        source_type.value for source_type in historical_photo_types
     }
+    # PHOTO_BRAND was added by 0052 alongside the provenance rollout. Do not rewrite
+    # the already-applied 0055 backfill merely because the ORM now recognizes that
+    # PostgreSQL enum value.
+    assert SourceType.PHOTO_BRAND.value not in migration.PHOTO_SOURCE_TYPES
 
 
 def test_backfill_writes_the_same_roles_the_application_recovers_to() -> None:

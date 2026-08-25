@@ -502,27 +502,18 @@ async def generate_content(
     result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
     result["faq_answer_summary"] = _trim_or_none(result.get("faq_answer_summary"), 600)
 
-    # 금지 표현 검사 — 1차 시도 실패 시 자동 정제 (재시도보다 안정적)
-    #
-    # 검사는 **렌더 결과 기준**이고 정제기는 **원문 기준**이다. 이 비대칭은 의도된 것이다:
-    # 정제기를 렌더 텍스트에 돌리면 본문의 링크 목적지까지 사라져 참고자료 링크가 깨진다.
-    # 대신 `최**고**의`처럼 강조가 낀 위반은 정제되지 않고 재검사에서 걸려 재생성으로 간다.
-    #
-    # 그 결과 정제로 못 고치는 위반 클래스가 존재하며, 이는 재시도를 소진해 슬롯을 비울 수
-    # 있다. 빈도를 모른 채 두면 조용히 콘텐츠 기아가 되므로 별도 마커로 남겨 측정 가능하게
-    # 한다("SANITIZE_FAILED"로 집계하면 규칙별 실패율을 볼 수 있다).
+    # 금지 표현이 하나라도 있으면 이 결과는 폐기한다. 문장 일부를 삭제·치환하면 문법과
+    # 의료 의미가 달라질 수 있으므로, tenacity가 공급자를 다시 호출해 공개 필드 전체가
+    # 완전한 새 응답인 결과만 반환하게 한다. 재시도 소진 시 호출자는 결과를 저장하지 않고
+    # 기존 생성 실패 incident/outbox 경로를 연다.
     violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
     if violations:
-        logger.warning(f"Forbidden expressions found: {violations} — auto-sanitizing")
-        result = _sanitize_forbidden(result, violations)
-        remaining = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
-        if remaining:
-            logger.warning(
-                "SANITIZE_FAILED labels=%s — 정제로 제거되지 않아 재생성한다 "
-                "(마크업이 낀 위반은 원문 기준 정제로 제거할 수 없다)",
-                ",".join(remaining),
-            )
-            raise ValueError(f"Cannot sanitize forbidden medical expressions: {remaining}")
+        logger.warning(
+            "Forbidden expressions found labels=%s — discarding the complete response and "
+            "regenerating all public fields",
+            ",".join(violations),
+        )
+        raise ValueError(f"Forbidden medical expressions require complete regeneration: {violations}")
 
     # references는 GEO 검증 전에 이미 정규화됨(list[{title,url,source_type}]) — 중복 정규화 불필요.
 
@@ -789,32 +780,6 @@ def _validate_geo(
         findings.append("숫자/통계 패턴 없음 — claim-evidence 부족 (프롬프트 규칙 3 위반)")
 
     return findings
-
-
-def _sanitize_forbidden(result: dict, violations: list[str]) -> dict:
-    """Remove forbidden medical expressions from generated text as a safety net.
-
-    Operates on every public-surface text field (title/body/meta + FAQ fields).
-    Only used as a fallback when Claude generates text containing banned terms
-    despite prompt instructions.
-    """
-    from app.utils.medical_filter import FORBIDDEN_PATTERNS, normalize_for_check
-
-    sanitized = dict(result)
-    for field in FORBIDDEN_CHECK_FIELDS:
-        text = sanitized.get(field)
-        if not isinstance(text, str):
-            continue
-        # 탐지(check_forbidden)는 NFKC 정규화된 문자열에서 매칭하므로, 제거도 동일하게
-        # 정규화 후 수행해야 전각(１００％)·zero-width 변형이 실제로 지워진다. 정규화 없이
-        # raw에 sub하면 탐지는 되지만 제거가 안 돼 재검사에서 hard-fail한다(리뷰 회귀).
-        text = normalize_for_check(text)
-        for label in violations:
-            pattern = FORBIDDEN_PATTERNS.get(label)
-            if pattern:
-                text = pattern.sub("", text)
-        sanitized[field] = text
-    return sanitized
 
 
 def _normalize_references(raw: object) -> list[dict]:

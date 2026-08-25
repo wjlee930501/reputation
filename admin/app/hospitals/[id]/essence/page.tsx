@@ -982,9 +982,9 @@ export default function EssencePage() {
               </div>
               {selectedDraft.status === 'DRAFT' && (
                 <div className="bg-white border border-emerald-200 rounded-lg p-4 space-y-3">
-                  <p className="text-sm font-semibold text-slate-900">승인</p>
+                  <p className="text-sm font-semibold text-slate-900">자동 보류 예외 승인</p>
                   <p className="text-[11px] text-slate-500 leading-relaxed">
-                    승인 전 체크: ① 항목별 근거 연결이 실제 근거 노트와 맞는지 ② 반드시 담을 메시지 / 피해야 할 표현이 의료광고 금지 표현과 충돌하지 않는지 ③ 근거가 부족한 항목을 운영 기준에서 허용해도 되는지.
+                    정상 경로는 AI 시스템 자동 승인입니다. 자동 검수가 보류한 이 초안을 override할 때만 ① 항목별 근거 연결 ② 의료광고 금지 표현 충돌 ③ 근거 부족 항목을 확인하세요.
                   </p>
                   <div>
                     <p className="mb-1 text-xs font-medium text-slate-600">검토자</p>
@@ -1036,7 +1036,7 @@ export default function EssencePage() {
                     }
                     className="w-full py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"
                   >
-                    {actionLoading === 'approve-draft' ? '승인 중...' : '승인'}
+                    {actionLoading === 'approve-draft' ? '예외 승인 중...' : '예외 승인'}
                   </button>
                 </div>
               )}

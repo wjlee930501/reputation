@@ -118,7 +118,7 @@ def _result_lines(summary: ContentBatchSummary) -> tuple[str, ...]:
     labels = (
         (summary.generated, "초안 저장 완료"),
         (summary.failed, "초안 생성 실패"),
-        (summary.skipped, "콘텐츠 운영 기준 승인 대기"),
+        (summary.skipped, "콘텐츠 운영 기준 자동 검수 대기"),
         (summary.cost_blocked, "자동 작업 안전장치로 대기"),
         (summary.discarded, "운영자 변경으로 결과 미적용"),
         (summary.image_missing, "대표 이미지 생성 필요"),

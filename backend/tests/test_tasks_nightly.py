@@ -627,6 +627,48 @@ def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkey
     assert incident_calls[0]["notify"] is True
 
 
+def test_forbidden_field_retry_exhaustion_opens_incident_without_content_writeback(
+    monkeypatch,
+):
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    item = _nightly_item("금지표현재시도소진의원")
+    incident_calls = []
+    writeback_calls = []
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def exhausted_regeneration(**_kwargs):
+        raise ValueError("forbidden field remained after complete regeneration")
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    def reject_writeback(*args, **kwargs):
+        writeback_calls.append((args, kwargs))
+        raise AssertionError("an exhausted forbidden candidate must never be persisted")
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: SimpleNamespace()
+    )
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(
+        tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", exhausted_regeneration)
+    monkeypatch.setattr(tasks, "write_back_generated_content", reject_writeback)
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.nightly_content_generation.run()
+
+    assert writeback_calls == []
+    assert len(incident_calls) == 1
+    assert incident_calls[0]["code"] == "GENERATION_REJECTED"
+    assert incident_calls[0]["notify"] is True
+
+
 def test_nightly_missing_essence_is_silent_per_hospital_and_one_digest(monkeypatch):
     cycle_date = date(2026, 8, 19)
     db = _NightlyTaskDB()

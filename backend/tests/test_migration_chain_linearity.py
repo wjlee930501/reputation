@@ -24,9 +24,10 @@ CONTENT_CUSTOMIZATION = "0054_add_hospital_content_customization"
 PHOTO_KIND_BACKFILL = "0055_backfill_photo_asset_kind"
 DOMAIN_LIVE_CHECK = "0056_add_domain_live_check"
 OPERATIONS_TEST_ACCOUNTS = "0057_mark_operations_test_accounts"
+MONTHLY_DELIVERY_REPAIR = "0058_repair_monthly_delivery_drift"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = OPERATIONS_TEST_ACCOUNTS
+HEAD = MONTHLY_DELIVERY_REPAIR
 
 
 def _script_directory() -> ScriptDirectory:
@@ -75,6 +76,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         PHOTO_KIND_BACKFILL,
         DOMAIN_LIVE_CHECK,
         OPERATIONS_TEST_ACCOUNTS,
+        MONTHLY_DELIVERY_REPAIR,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -87,6 +89,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         PHOTO_KIND_BACKFILL: CONTENT_CUSTOMIZATION,
         DOMAIN_LIVE_CHECK: PHOTO_KIND_BACKFILL,
         OPERATIONS_TEST_ACCOUNTS: DOMAIN_LIVE_CHECK,
+        MONTHLY_DELIVERY_REPAIR: OPERATIONS_TEST_ACCOUNTS,
     }
 
 
@@ -97,7 +100,12 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
         revision.revision for revision in script.iterate_revisions("heads", PRODUCTION_STAMP)
     ]
 
-    assert pending == [OPERATIONS_TEST_ACCOUNTS, DOMAIN_LIVE_CHECK, PHOTO_KIND_BACKFILL]
+    assert pending == [
+        MONTHLY_DELIVERY_REPAIR,
+        OPERATIONS_TEST_ACCOUNTS,
+        DOMAIN_LIVE_CHECK,
+        PHOTO_KIND_BACKFILL,
+    ]
 
 
 def test_fresh_database_applies_the_whole_chain_in_order() -> None:
@@ -108,7 +116,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-7:] == [
+    assert applied[-8:] == [
         VISUAL_IDENTITY,
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
@@ -116,4 +124,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         PHOTO_KIND_BACKFILL,
         DOMAIN_LIVE_CHECK,
         OPERATIONS_TEST_ACCOUNTS,
+        MONTHLY_DELIVERY_REPAIR,
     ]

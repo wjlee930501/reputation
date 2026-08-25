@@ -270,7 +270,7 @@ def next_onboarding_step(hospital: Hospital) -> str:
         return "도메인 화면에서 공개 주소를 검증하고 운영 시작을 완료하세요."
     if not hospital.schedule_set:
         return (
-            "온보딩 체크리스트에서 근거 자료 처리와 콘텐츠 운영 기준 승인을 완료한 뒤 "
+            "온보딩 체크리스트에서 근거 자료 처리와 콘텐츠 운영 기준 자동 승인을 완료한 뒤 "
             "스케줄 탭에서 월간 콘텐츠 일정과 발행 요일을 저장하세요."
         )
     return "콘텐츠 운영 상태를 확인하고 첫 발행 준비를 진행하세요."

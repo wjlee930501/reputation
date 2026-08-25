@@ -23,7 +23,6 @@ from app.services.content_engine import (  # noqa: E402
     _format_treatment_narrative,
     _normalize_references,
     _parse_json_response,
-    _sanitize_forbidden,
     _validate_body_length,
     _validate_geo,
     _validate_unverified_price_claims,
@@ -184,41 +183,71 @@ def test_forbidden_check_text_ignores_missing_faq_fields():
     assert "제목" in text and "본문" in text
 
 
-def test_sanitize_forbidden_cleans_faq_fields():
-    # 정제 경로도 FAQ 필드를 포함해야 재검사에서 hard-fail하지 않는다 (P1-2).
-    result = {
-        "title": "어깨 통증 진료",
-        "body": "환자 상태에 따라 설명합니다.",
-        "meta_description": "진료 안내",
-        "faq_question": "완치 보장되나요?",
-        "faq_answer_summary": "1등 병원에서 안내합니다.",
-    }
-    violations = check_forbidden(forbidden_check_text(result))
-    assert violations
+async def test_forbidden_response_is_discarded_and_second_complete_content_is_returned(
+    monkeypatch,
+):
+    """A violating field triggers a new provider response; no sentence surgery is persisted."""
 
-    sanitized = _sanitize_forbidden(result, violations)
-
-    assert check_forbidden(forbidden_check_text(sanitized)) == []
-
-
-def test_sanitize_forbidden_removes_obfuscated_terms():
-    # 회귀 가드: NFKC 탐지와 raw 제거가 어긋나 전각/zero-width 위반이 제거되지 않으면
-    # generate_content가 hard-fail한다. 정규화 후 제거로 실제로 사라져야 한다.
-    result = {
-        "title": "１등 진료",          # full-width digit
-        "body": "성공 확률 １００％ 달성, 부작용 제로",  # full-width 100%
-        "meta_description": "완​치 가능",  # zero-width space in 완치
-    }
-    violations = check_forbidden(
-        result["title"] + result["body"] + result["meta_description"]
+    hospital = SimpleNamespace(
+        name="테스트병원",
+        address="서울 강남구",
+        phone="02-000-0000",
+        business_hours={},
+        region=["강남"],
+        specialties=["외과"],
+        keywords=["복통"],
+        director_name="김원장",
+        director_career="외과 전문의",
+        director_philosophy="충분히 설명합니다.",
+        treatments=[],
     )
-    assert violations  # detected
+    first_body = "## 첫 응답\n테스트병원 김원장은 강남에서 설명합니다. " + ("첫 본문입니다. " * 220)
+    second_body = "## 두 번째 응답\n테스트병원 김원장은 강남에서 설명합니다. " + ("두 번째 완전한 본문입니다. " * 180)
+    first = {
+        "title": "최고의 복통 진료",
+        "body": first_body,
+        "meta_description": "첫 번째 응답 요약입니다.",
+        "references": [],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    second = {
+        "title": "복통 진료 전 확인할 점",
+        "body": second_body,
+        "meta_description": "두 번째 완전한 응답의 요약입니다.",
+        "references": [],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    responses = iter((first, second))
+    provider_calls: list[dict] = []
 
-    sanitized = _sanitize_forbidden(result, violations)
-    remaining = check_forbidden(
-        sanitized["title"] + sanitized["body"] + sanitized["meta_description"]
-    )
-    assert remaining == [], f"sanitizer left obfuscated violations: {remaining}"
+    class _FakeResponse:
+        def __init__(self, payload):
+            self.content = [SimpleNamespace(text=json.dumps(payload))]
+
+    def fake_create(*_args, **_kwargs):
+        payload = next(responses)
+        provider_calls.append(payload)
+        return _FakeResponse(payload)
+
+    async def no_cost_record(*_args, **_kwargs):
+        return None
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr("app.services.cost_guard.record_provider_call", no_cost_record)
+    monkeypatch.setattr(content_engine.generate_content.retry, "sleep", no_sleep)
+
+    saved = await content_engine.generate_content(hospital, ContentType.NOTICE)
+
+    assert len(provider_calls) == 2
+    assert saved["title"] == second["title"]
+    assert saved["body"] == second["body"]
+    assert saved["meta_description"] == second["meta_description"]
+    assert first["body"] not in saved.values()
 
 
 # ── references 정규화 순서 회귀 (P-2: GEO hard-fail이 raw references로 검증되던 버그) ──

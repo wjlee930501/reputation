@@ -282,7 +282,7 @@ async def test_content_generation_digest_combines_hospitals_into_one_message(mon
     assert "야간 콘텐츠 준비 결과" in body
     assert "2개 병원 · 3건" in body
     assert "*장편한외과의원* — 초안 저장 완료 2" in body
-    assert "*행복드림의원* — 콘텐츠 운영 기준 승인 대기 1" in body
+    assert "*행복드림의원* — 콘텐츠 운영 기준 자동 검수 대기 1" in body
     assert all(
         label in body
         for label in ("무슨 문제인지", "고객 영향", "지금 할 일", "처리 기한")

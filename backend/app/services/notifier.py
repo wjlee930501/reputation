@@ -522,8 +522,8 @@ async def notify_generation_blocked_no_philosophy(
             "text": {"type": "mrkdwn", "text": (
                 f"🚫 *[콘텐츠 생성 차단]* *{hospital_name}* 운영 기준 미승인으로 콘텐츠 생성 차단\n"
                 f"차단된 슬롯: {blocked_count}건 | 발행 예정일: {scheduled_date}\n\n"
-                f"Admin 운영 기준 탭에서 콘텐츠 운영 기준을 승인해 주세요. "
-                f"승인 전까지 자동 생성이 계속 차단됩니다."
+                f"Admin 운영 기준 탭에서 시스템 자동 검수 상태와 보류 사유를 확인해 주세요. "
+                f"자동 승인이 완료될 때까지 생성은 안전하게 차단됩니다."
             )},
         }],
     )
@@ -547,8 +547,8 @@ async def notify_generation_blocked_philosophy(
                 f"🚫 *[콘텐츠 생성 차단]* *{hospital_name}* 콘텐츠 {blocked_count}건\n"
                 f"발행 예정 기준일: {scheduled_date}\n\n"
                 f"{issue_text}\n\n"
-                f"Admin 운영 기준 탭에서 근거 자료를 정리하고 새 버전을 승인해 주세요. "
-                f"검토 전에는 오염되거나 오래된 기준으로 콘텐츠를 만들지 않습니다."
+                f"Admin 운영 기준 탭에서 근거 자료를 정리하면 시스템이 새 버전을 자동 검수합니다. "
+                f"보류가 계속되는 예외만 사유를 확인해 주세요."
             )},
         }],
     )
@@ -613,7 +613,7 @@ async def notify_naver_assets_digest(
         f"📰 *[네이버 자산 주간 요약]* *{len(entries)}개 병원 · 신규 {created_total}건*\n\n"
         + "\n".join(lines)
         + "\n\n원문은 모두 검토 대기로 저장했습니다. "
-        + f"변경된 병원만 <{admin_url}|Admin에서 근거 추출·승인>해 주세요."
+        + f"변경된 병원만 <{admin_url}|Admin에서 근거 추출·자동 검수 상태 확인>해 주세요."
     )
     return await _send(
         text=f"📰 [네이버 자산 주간 요약] {len(entries)}개 병원 · 신규 {created_total}건",
@@ -633,7 +633,7 @@ async def notify_philosophy_refresh_required(
             "text": {"type": "mrkdwn", "text": (
                 f"🧭 *[콘텐츠 운영 기준 검토]* *{hospital_name}*\n"
                 f"{findings_text}\n\n"
-                f"<{admin_url}|새 근거로 운영 기준 초안을 만들고 검토·승인해 주세요.>"
+                f"<{admin_url}|새 근거를 처리하고 시스템 자동 검수 상태를 확인해 주세요.>"
             )},
         }],
     )
@@ -841,7 +841,7 @@ def _content_generation_line(entry: dict[str, object]) -> str:
     labels = (
         ("generated", "초안 저장 완료"),
         ("failed", "초안 생성 실패"),
-        ("skipped", "콘텐츠 운영 기준 승인 대기"),
+        ("skipped", "콘텐츠 운영 기준 자동 검수 대기"),
         ("cost_blocked", "자동 작업 안전장치로 대기"),
         ("discarded", "운영자 변경으로 결과 미적용"),
         ("image_missing", "대표 이미지 생성 필요"),

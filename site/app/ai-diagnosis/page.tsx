@@ -15,7 +15,7 @@ export const dynamic = 'force-dynamic'
 
 export default function AiDiagnosisPage() {
   return (
-    <main className="dg-page">
+    <main id="main-content" className="dg-page">
       <header className="dg-header">
         <p className="dg-eyebrow">무료 AI 노출 진단</p>
         <h1>우리 병원 AI 노출 현황 진단하기</h1>

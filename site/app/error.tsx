@@ -4,7 +4,7 @@
 // 대신 브랜드된 안내로 노출되도록 한다. 에러 메시지 원문은 노출하지 않는다.
 export default function SiteError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 px-6">
+    <main id="main-content" className="min-h-screen flex items-center justify-center bg-slate-50 px-6">
       <div className="text-center max-w-md">
         <h1 className="text-2xl font-bold text-slate-800 mb-3">페이지를 불러오지 못했습니다</h1>
         <p className="text-slate-500 mb-8 text-sm leading-relaxed">
@@ -17,6 +17,6 @@ export default function SiteError({ reset }: { error: Error & { digest?: string 
           다시 시도
         </button>
       </div>
-    </div>
+    </main>
   )
 }

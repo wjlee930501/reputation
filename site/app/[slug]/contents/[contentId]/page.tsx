@@ -22,6 +22,7 @@ import {
   stripLeadingMarkdownH1,
 } from '@/lib/article-markdown'
 import { safeExternalHref } from '@/lib/safe-url'
+import { buildFaqPageJsonLd, selectFaqEntries } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug, inferPillarTreatment } from '@/lib/treatment-slug'
 
@@ -192,6 +193,8 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
     referenceList.length > 0 ? `참고자료 ${referenceList.length}건` : '참고자료 확인 중'
 
   const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
+  const faqEntries = selectFaqEntries([content], hospitalRootUrl, 1)
+  const visibleFaq = faqEntries[0] ?? null
 
   const pillarTreatment = inferPillarTreatment(hospital.treatments || [], content)
   const pillarSlug = pillarTreatment ? buildTreatmentSlug(pillarTreatment.name) : ''
@@ -295,24 +298,9 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
     })
   }
 
-  // ── FAQ → FAQPage (Question/Answer는 분리 필드 사용. 미존재 시 fallback) ───
-  if (content.content_type === 'FAQ') {
-    const question = content.faq_question || content.title
-    const answer = content.faq_answer_summary || content.meta_description || ''
-    if (answer) {
-      jsonLd.push({
-        '@context': 'https://schema.org',
-        '@type': 'FAQPage',
-        mainEntity: [
-          {
-            '@type': 'Question',
-            name: question,
-            acceptedAnswer: { '@type': 'Answer', text: answer },
-          },
-        ],
-      })
-    }
-  }
+  // 화면과 같은 승인 Q&A 선택기를 쓴다. 제목·메타 설명으로 없는 FAQ를 만들지 않는다.
+  const faqJsonLd = buildFaqPageJsonLd([content], hospitalRootUrl)
+  if (faqJsonLd) jsonLd.push(faqJsonLd)
 
   // ── TREATMENT → MedicalProcedure + (단계 추출 시) HowTo ──────────────────
   if (content.content_type === 'TREATMENT') {
@@ -463,10 +451,10 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                 </aside>
               )}
 
-              {content.content_type === 'FAQ' && content.faq_question && (
+              {visibleFaq && (
                 <dl className="clinic-article-faq" aria-label="자주 묻는 질문">
-                  <dt>{content.faq_question}</dt>
-                  {content.faq_answer_summary && <dd>{content.faq_answer_summary}</dd>}
+                  <dt>{visibleFaq.question}</dt>
+                  <dd>{visibleFaq.answer}</dd>
                 </dl>
               )}
 
