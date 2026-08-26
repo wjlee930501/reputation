@@ -214,6 +214,7 @@ from app.workers.nightly_generation_batch import (
     release_unfinished_claims,
     write_back_generated_content,
 )
+from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.weekly_sov_incident_control import (
     open_weekly_sov_failure,
     recover_weekly_sov_failure,
@@ -3338,6 +3339,14 @@ def monthly_slot_generation():
                     error_code=error_code,
                 )
             )
+
+    # One-off close: keep its session and failure boundary separate from September
+    # reconciliation. The recurring monthly beat runs every six hours on Aug 26-31.
+    if today.year == 2026 and today.month == 8 and today.day >= 26:
+        try:
+            backfill_nowon_august_2026_slots()
+        except Exception:
+            logger.exception("Nowon August backfill failed after monthly slot reconciliation")
 
 
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")

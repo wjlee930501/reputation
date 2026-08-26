@@ -13,13 +13,19 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 import uuid  # noqa: E402
+from collections import Counter  # noqa: E402
+from datetime import date, timedelta  # noqa: E402
 from itertools import groupby  # noqa: E402
 
 import arrow  # noqa: E402
 import pytest  # noqa: E402
 
 from app.models.content import PLAN_DISTRIBUTION, ContentType  # noqa: E402
-from app.services.content_calendar import _interleave_types, generate_monthly_slots  # noqa: E402
+from app.services.content_calendar import (  # noqa: E402
+    _interleave_types,
+    allocate_stacked_dates,
+    generate_monthly_slots,
+)
 
 # 계약 표 (CLAUDE.md "요금제별 월간 편수 배분")를 테스트가 독립적으로 들고 있는다.
 # PLAN_DISTRIBUTION을 그대로 기대값으로 쓰면 배분이 잘못 바뀌어도 자기참조라 통과한다.
@@ -185,3 +191,39 @@ def test_generate_monthly_slots_still_rejects_zero_publishable_days():
             arrow.get("2026-09-01").floor("month"),
             allow_shortfall=True,
         )
+
+
+def test_allocate_stacked_dates_pins_nowon_august_nine_slot_distribution():
+    dates = [date(2026, 8, 26) + timedelta(days=offset) for offset in range(6)]
+
+    allocated = allocate_stacked_dates(dates, 9)
+
+    assert allocated == [
+        date(2026, 8, 26),
+        date(2026, 8, 26),
+        date(2026, 8, 27),
+        date(2026, 8, 28),
+        date(2026, 8, 28),
+        date(2026, 8, 29),
+        date(2026, 8, 30),
+        date(2026, 8, 31),
+        date(2026, 8, 31),
+    ]
+    counts = Counter(allocated)
+    assert len(allocated) == 9
+    assert set(allocated) == set(dates)
+    assert max(counts.values()) == 2
+    assert {day.day for day, count in counts.items() if count == 2} == {26, 28, 31}
+
+
+def test_allocate_stacked_dates_is_deterministic():
+    dates = [date(2026, 8, 26) + timedelta(days=offset) for offset in range(6)]
+
+    assert allocate_stacked_dates(dates, 9) == allocate_stacked_dates(dates, 9)
+
+
+def test_allocate_stacked_dates_rejects_more_than_daily_capacity():
+    dates = [date(2026, 8, 26) + timedelta(days=offset) for offset in range(6)]
+
+    with pytest.raises(ValueError, match="최대 배치 수"):
+        allocate_stacked_dates(dates, 13, max_per_day=2)

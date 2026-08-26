@@ -1520,6 +1520,26 @@ def test_monthly_slot_generation_recovers_positive_shortfall_without_incident(mo
     assert recovered == [{"hospital_id": "h1", "period_key": "2026-09"}]
 
 
+def test_monthly_slot_generation_runs_isolated_nowon_august_backfill(monkeypatch):
+    db = _MonthlySlotDB([])
+    calls = {"count": 0}
+
+    def fake_backfill():
+        calls["count"] += 1
+        return 9
+
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 8, 26, tzinfo="Asia/Seoul")
+    )
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "backfill_nowon_august_2026_slots", fake_backfill)
+
+    tasks.monthly_slot_generation()
+
+    assert db.commit_calls == 1
+    assert calls["count"] == 1
+
+
 def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflicts(monkeypatch):
     hospitals = [
         SimpleNamespace(id="h1", name="첫번째의원", status=HospitalStatus.ACTIVE),
