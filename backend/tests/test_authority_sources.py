@@ -134,6 +134,30 @@ def test_select_curated_authority_sources_supports_trauma_emergency_content():
     assert all(source["source_type"] == SOURCE_TYPE_GOV_KR for source in sources)
 
 
+def test_select_curated_authority_sources_supports_orthopedic_faq_content():
+    sources = select_curated_authority_sources(
+        "노원구 정형외과 병원 선택 기준 — 통증 종류별 진단·치료 항목 비교",
+    )
+
+    assert [source["url"].rsplit("=", 1)[-1] for source in sources] == [
+        "3796",
+        "5969",
+        "3348",
+    ]
+
+
+def test_orthopedic_faq_documents_are_citable_but_koa_homepage_is_not():
+    urls = [
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5969",
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3348",
+    ]
+
+    assert all(is_citable_reference_url(url) for url in urls)
+    assert is_citable_reference_url("https://www.koa.or.kr") is False
+    assert is_citable_reference_url("https://www.koa.or.kr/") is False
+
+
 @pytest.mark.parametrize(
     "focus",
     (
