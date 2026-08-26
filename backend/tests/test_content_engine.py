@@ -404,6 +404,69 @@ async def test_generate_content_uses_curated_trauma_documents_for_existing_disea
     assert all(reference["url"] != "https://health.kdca.go.kr" for reference in result["references"])
 
 
+async def test_generate_content_uses_curated_orthopedic_documents_for_faq(monkeypatch):
+    hospital = SimpleNamespace(
+        name="노원탑365의원",
+        address="서울 노원구",
+        phone="02-000-0000",
+        business_hours="",
+        region=["노원"],
+        specialties=["정형외과"],
+        keywords=["통증 진료"],
+        director_name="김원장",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    focus = "노원구 정형외과 병원 선택 기준 — 통증 종류별 진단·치료 항목 비교"
+    body = (
+        "## 통증 종류별로 확인할 점\n"
+        "노원탑365의원 김원장은 노원 지역에서 통증의 위치와 양상을 먼저 확인합니다. "
+        + ("허리와 무릎 통증은 시작 시점과 움직임에 따른 변화를 기록하면 진료에 도움이 됩니다. " * 90)
+        + "\n\n## 병원을 선택할 때 비교할 항목\n"
+        + ("증상에 따라 문진과 신체 평가 뒤 필요한 검사와 치료 방향이 달라질 수 있습니다. " * 40)
+    )
+    payload = {
+        "title": focus,
+        "body": body,
+        "meta_description": "노원구 정형외과 병원 선택 기준과 통증 종류별 진단 및 치료 항목을 안내합니다.",
+        "references": [
+            {"title": "대한정형외과학회", "url": "https://www.koa.or.kr"},
+        ],
+        "faq_question": focus,
+        "faq_answer_summary": "통증 위치와 양상, 진단 과정과 치료 항목을 함께 비교합니다.",
+    }
+    brief = {
+        "target_query": focus,
+        "focus": focus,
+    }
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    monkeypatch.setattr(
+        content_engine.client.messages,
+        "create",
+        lambda *_args, **_kwargs: _FakeResponse(),
+    )
+
+    result = await content_engine.generate_content(
+        hospital,
+        ContentType.FAQ,
+        content_brief=brief,
+    )
+
+    locked_urls = {
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5969",
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3348",
+    }
+    reference_urls = [reference["url"] for reference in result["references"]]
+    assert locked_urls.intersection(reference_urls)
+    assert "https://www.koa.or.kr" not in reference_urls
+    assert all(not url.endswith("/") for url in reference_urls)
+
+
 # ── content_brief dict 필드 → 자연어 프롬프트 조립 회귀 (P-4) ──────────────────
 
 def test_format_treatment_narrative_renders_sentence_not_dict_repr():

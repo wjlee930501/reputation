@@ -1533,11 +1533,37 @@ def test_monthly_slot_generation_runs_isolated_nowon_august_backfill(monkeypatch
     )
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "backfill_nowon_august_2026_slots", fake_backfill)
+    monkeypatch.setattr(tasks, "regenerate_nowon_orthopedic_faq", lambda: 0)
 
     tasks.monthly_slot_generation()
 
     assert db.commit_calls == 1
     assert calls["count"] == 1
+
+
+def test_monthly_slot_generation_runs_nowon_orthopedic_faq_regenerate(monkeypatch):
+    db = _MonthlySlotDB([])
+    calls = {"backfill": 0, "regenerate": 0}
+
+    def fake_backfill():
+        calls["backfill"] += 1
+        return 9
+
+    def fake_regenerate():
+        calls["regenerate"] += 1
+        return 1
+
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 8, 26, tzinfo="Asia/Seoul")
+    )
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "backfill_nowon_august_2026_slots", fake_backfill)
+    monkeypatch.setattr(tasks, "regenerate_nowon_orthopedic_faq", fake_regenerate)
+
+    tasks.monthly_slot_generation()
+
+    assert db.commit_calls == 1
+    assert calls == {"backfill": 1, "regenerate": 1}
 
 
 def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflicts(monkeypatch):

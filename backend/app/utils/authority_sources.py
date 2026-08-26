@@ -76,6 +76,14 @@ _TRAUMA_EMERGENCY_KEYWORDS = (
     "외상처치",
 )
 
+_ORTHOPEDIC_FAQ_KEYWORDS = (
+    "정형외과",
+    "병원선택",
+    "병원선택기준",
+    "통증종류",
+    "통증종류별",
+)
+
 # 브라우징 없이 생성하는 모델에게 URL을 추측시키면 존재하는 다른 질환 문서나 기관
 # 홈페이지가 인용되는 문제가 생긴다. 아래 목록은 사람이 실제 제목과 URL을 확인한
 # 특정 문서만 담는 작은 신뢰 카탈로그다. 키워드가 맞는 문서가 있을 때는 모델이 만든
@@ -113,6 +121,21 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         ),
         "title": "질병관리청 국가건강정보포털 — 상처관리와 흉터예방",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5696",
+    },
+    {
+        "keywords": _ORTHOPEDIC_FAQ_KEYWORDS,
+        "title": "질병관리청 국가건강정보포털 — 요통",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",
+    },
+    {
+        "keywords": _ORTHOPEDIC_FAQ_KEYWORDS,
+        "title": "질병관리청 국가건강정보포털 — 무릎관절염, 올바로 운동하기",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5969",
+    },
+    {
+        "keywords": _ORTHOPEDIC_FAQ_KEYWORDS,
+        "title": "질병관리청 국가건강정보포털 — 추간판탈출증(디스크)",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3348",
     },
     {
         "keywords": ("소아발열", "아이발열", "어린이발열"),

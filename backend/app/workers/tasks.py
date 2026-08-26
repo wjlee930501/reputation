@@ -215,6 +215,7 @@ from app.workers.nightly_generation_batch import (
     write_back_generated_content,
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
+from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
 from app.workers.weekly_sov_incident_control import (
     open_weekly_sov_failure,
     recover_weekly_sov_failure,
@@ -3347,6 +3348,10 @@ def monthly_slot_generation():
             backfill_nowon_august_2026_slots()
         except Exception:
             logger.exception("Nowon August backfill failed after monthly slot reconciliation")
+        try:
+            regenerate_nowon_orthopedic_faq()
+        except Exception:
+            logger.exception("Nowon orthopedic FAQ regeneration failed after August backfill")
 
 
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
