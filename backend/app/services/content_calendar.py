@@ -59,45 +59,6 @@ def _spread_dates(dates: list[date], total: int) -> list[date]:
     return [dates[index] for index in indexes]
 
 
-def allocate_stacked_dates(
-    dates: list[date],
-    n: int,
-    *,
-    max_per_day: int = 2,
-) -> list[date]:
-    """Allocate up to ``max_per_day`` slots per date in a deterministic order.
-
-    Every date receives one slot before additional slots are spread across the
-    range.  This is intentionally separate from ``_spread_dates``: normal
-    monthly calendars continue to require unique publication dates.
-    """
-    if n <= 0:
-        return []
-    if max_per_day <= 0 or n > len(dates) * max_per_day:
-        raise ValueError("요청한 슬롯 수가 날짜별 최대 배치 수를 초과합니다.")
-
-    counts = [0] * len(dates)
-    for index in range(min(n, len(dates))):
-        counts[index] = 1
-
-    extras = n - len(dates)
-    if extras > 0:
-        last = len(dates) - 1
-        if extras == 1:
-            indexes = [last // 2]
-        else:
-            indexes = [round(i * last / (extras - 1)) for i in range(extras)]
-
-        for preferred_index in indexes:
-            for offset in range(len(dates)):
-                index = (preferred_index + offset) % len(dates)
-                if counts[index] < max_per_day:
-                    counts[index] += 1
-                    break
-
-    return [day for day, count in zip(dates, counts) for _ in range(count)]
-
-
 def generate_monthly_slots(
     plan: str,
     publish_days: list[int],

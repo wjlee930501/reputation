@@ -13,6 +13,7 @@ from collections import Counter  # noqa: E402
 from contextlib import nullcontext  # noqa: E402
 from datetime import date, timedelta  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
+from unittest.mock import Mock  # noqa: E402
 
 from app.models.content import (  # noqa: E402
     ContentItem,
@@ -21,7 +22,9 @@ from app.models.content import (  # noqa: E402
     ContentType,
 )
 from app.models.hospital import Hospital  # noqa: E402
+from app.services import content_calendar  # noqa: E402
 from app.workers import nowon_august_backfill as backfill  # noqa: E402
+from app.workers import tasks  # noqa: E402
 
 
 class _Scalars:
@@ -45,7 +48,9 @@ class _Result:
 
 class _BackfillDB:
     def __init__(self, hospital, schedule, items):
-        self.hospital = hospital
+        self.hospitals = hospital if isinstance(hospital, list) else [hospital]
+        self.hospital = self.hospitals[0]
+        self.selected_hospital = None
         self.schedule = schedule
         self.items = list(items)
         self.commit_calls = 0
@@ -53,24 +58,31 @@ class _BackfillDB:
     def execute(self, stmt):
         entity = stmt.column_descriptions[0].get("entity")
         if entity is Hospital:
-            matches_gate = (
-                self.hospital.name == backfill.NOWON_HOSPITAL_NAME
-                or self.hospital.id == backfill.NOWON_HOSPITAL_ID
-            )
-            return _Result([self.hospital] if matches_gate else [])
+            query_values = set(stmt.compile().params.values())
+            matches = [
+                hospital
+                for hospital in self.hospitals
+                if hospital.id in query_values or hospital.name in query_values
+            ]
+            self.selected_hospital = matches[0] if matches else None
+            return _Result(matches[:1])
         if entity is ContentSchedule:
+            hospital = self.selected_hospital
             matches_schedule = (
-                self.schedule is not None
-                and self.schedule.hospital_id == self.hospital.id
+                hospital is not None
+                and self.schedule is not None
+                and self.schedule.hospital_id == hospital.id
                 and self.schedule.is_active
             )
             return _Result([self.schedule] if matches_schedule else [])
         if entity is ContentItem:
+            hospital = self.selected_hospital
             return _Result(
                 [
                     item
                     for item in self.items
-                    if item.hospital_id == self.hospital.id
+                    if hospital is not None
+                    and item.hospital_id == hospital.id
                     and backfill.AUGUST_START <= item.scheduled_date <= backfill.AUGUST_END
                     and item.status != ContentStatus.CANCELLED
                 ]
@@ -141,9 +153,18 @@ def test_backfill_creates_nine_drafts_without_touching_published_rows(monkeypatc
     published_before = [
         (item.id, item.scheduled_date, item.sequence_no, item.status) for item in db.items
     ]
-    dispatched: list[str] = []
+    generate_monthly_slots = Mock()
+    regenerate_apply_async = Mock()
+    morning_apply_async = Mock()
     monkeypatch.setattr(backfill, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(backfill, "_enqueue_created_drafts", dispatched.extend)
+    monkeypatch.setattr(content_calendar, "generate_monthly_slots", generate_monthly_slots)
+    monkeypatch.setattr(tasks.regenerate_content_item, "apply_async", regenerate_apply_async)
+    monkeypatch.setattr(tasks.morning_content_auto_publish, "apply_async", morning_apply_async)
+    monkeypatch.setattr(
+        backfill,
+        "build_dispatch_headers",
+        lambda purpose, target_id=None: {"purpose": purpose, "target": target_id},
+    )
 
     created = backfill.backfill_nowon_august_2026_slots()
 
@@ -153,20 +174,35 @@ def test_backfill_creates_nine_drafts_without_touching_published_rows(monkeypatc
         (item.id, item.scheduled_date, item.sequence_no, item.status) for item in db.items[:3]
     ] == published_before
     new_items = db.items[3:]
-    assert len(dispatched) == 9
-    assert dispatched == [str(item.id) for item in new_items]
     assert all(item.status == ContentStatus.DRAFT for item in new_items)
     assert all(item.total_count == 12 for item in new_items)
     assert [item.sequence_no for item in new_items] == list(range(4, 13))
-    assert all(date(2026, 8, 26) <= item.scheduled_date <= date(2026, 8, 31) for item in new_items)
-    date_counts = Counter(item.scheduled_date for item in new_items)
-    assert max(date_counts.values()) == 2
-    assert {day.day for day, count in date_counts.items() if count == 2} == {26, 28, 31}
+    assert Counter(item.scheduled_date for item in new_items) == Counter(
+        {
+            date(2026, 8, 26): 2,
+            date(2026, 8, 27): 2,
+            date(2026, 8, 28): 2,
+            date(2026, 8, 29): 1,
+            date(2026, 8, 30): 1,
+            date(2026, 8, 31): 1,
+        }
+    )
     assert all(item.content_type != ContentType.NOTICE for item in new_items)
+    assert generate_monthly_slots.call_count == 0
+    assert not hasattr(backfill, "generate_monthly_slots")
+    assert regenerate_apply_async.call_count == 9
+    assert [
+        call.kwargs["args"][0] for call in regenerate_apply_async.call_args_list
+    ] == [str(item.id) for item in new_items]
+    morning_apply_async.assert_called_once_with(
+        queue="content",
+        headers={"purpose": "morning-content-auto-publish", "target": None},
+    )
 
     assert backfill.backfill_nowon_august_2026_slots() == 0
     assert len(db.items) == 12
-    assert len(dispatched) == 9
+    assert regenerate_apply_async.call_count == 9
+    assert morning_apply_async.call_count == 1
 
 
 def test_backfill_is_noop_when_august_already_has_twelve_items(monkeypatch):
@@ -178,6 +214,69 @@ def test_backfill_is_noop_when_august_already_has_twelve_items(monkeypatch):
     assert backfill.backfill_nowon_august_2026_slots() == 0
     assert db.commit_calls == 0
     assert dispatched == []
+
+
+def test_backfill_subtracts_existing_planned_day_occupancy(monkeypatch):
+    db = _db_with_existing()
+    db.items.append(
+        _content_item(
+            db.hospital.id,
+            db.schedule.id,
+            date(2026, 8, 26),
+            4,
+            ContentStatus.DRAFT,
+            ContentType.COLUMN,
+        )
+    )
+    dispatched: list[str] = []
+    monkeypatch.setattr(backfill, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(backfill, "_enqueue_created_drafts", dispatched.extend)
+
+    assert backfill.backfill_nowon_august_2026_slots() == 8
+
+    new_items = db.items[4:]
+    assert Counter(item.scheduled_date for item in new_items) == Counter(
+        {
+            date(2026, 8, 26): 1,
+            date(2026, 8, 27): 2,
+            date(2026, 8, 28): 2,
+            date(2026, 8, 29): 1,
+            date(2026, 8, 30): 1,
+            date(2026, 8, 31): 1,
+        }
+    )
+    assert len(db.items) == 12
+    assert dispatched == [str(item.id) for item in new_items]
+
+
+def test_backfill_prefers_exact_hospital_id_over_name_match(monkeypatch):
+    name_match = SimpleNamespace(id=uuid.uuid4(), name=backfill.NOWON_HOSPITAL_NAME)
+    id_match = SimpleNamespace(id=backfill.NOWON_HOSPITAL_ID, name="ID 우선 병원")
+    schedule = SimpleNamespace(id=uuid.uuid4(), hospital_id=id_match.id, is_active=True)
+    items = [
+        _content_item(
+            id_match.id,
+            schedule.id,
+            day,
+            sequence,
+            ContentStatus.PUBLISHED,
+            content_type,
+        )
+        for day, sequence, content_type in zip(
+            [date(2026, 8, 20), date(2026, 8, 23), date(2026, 8, 24)],
+            [1, 2, 3],
+            [ContentType.FAQ, ContentType.DISEASE, ContentType.TREATMENT],
+        )
+    ]
+    db = _BackfillDB([name_match, id_match], schedule, items)
+    dispatched: list[str] = []
+    monkeypatch.setattr(backfill, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(backfill, "_enqueue_created_drafts", dispatched.extend)
+
+    assert backfill.backfill_nowon_august_2026_slots() == 9
+    assert db.selected_hospital is id_match
+    assert all(item.hospital_id == id_match.id for item in db.items)
+    assert len(dispatched) == 9
 
 
 def test_backfill_is_noop_for_other_hospital(monkeypatch):

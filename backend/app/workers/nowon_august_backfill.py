@@ -7,9 +7,9 @@ transaction and its tests remain isolated from the hospital-specific queries.
 import logging
 import uuid
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import SyncSessionLocal
@@ -21,7 +21,8 @@ from app.models.content import (
     ContentType,
 )
 from app.models.hospital import Hospital
-from app.services.content_calendar import _interleave_types, allocate_stacked_dates
+from app.services.content_calendar import _interleave_types
+from app.workers.dispatch_auth import build_dispatch_headers
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,18 @@ NOWON_HOSPITAL_NAME = "노원탑365의원"
 NOWON_HOSPITAL_ID = uuid.UUID("8fd5c4a9-dac9-4dd7-a02b-b25f5921882f")
 AUGUST_START = date(2026, 8, 1)
 AUGUST_END = date(2026, 8, 31)
-BACKFILL_START = date(2026, 8, 26)
 BACKFILL_TARGET = 12
+PLANNED_DATES = [
+    date(2026, 8, 26),
+    date(2026, 8, 26),
+    date(2026, 8, 27),
+    date(2026, 8, 27),
+    date(2026, 8, 28),
+    date(2026, 8, 28),
+    date(2026, 8, 29),
+    date(2026, 8, 30),
+    date(2026, 8, 31),
+]
 
 
 def _remaining_plan_12_types(
@@ -64,9 +75,8 @@ def _remaining_plan_12_types(
 
 
 def _enqueue_created_drafts(item_ids: list[str]) -> None:
-    """Dispatch committed drafts through the existing regeneration pipeline."""
-    from app.workers.dispatch_auth import build_dispatch_headers
-    from app.workers.tasks import regenerate_content_item
+    """Generate every committed draft, then run the existing morning publisher."""
+    from app.workers.tasks import morning_content_auto_publish, regenerate_content_item
 
     for item_id in item_ids:
         try:
@@ -76,8 +86,15 @@ def _enqueue_created_drafts(item_ids: list[str]) -> None:
                 headers=build_dispatch_headers("regenerate-content", item_id),
             )
         except Exception:
-            # The rows are durable and nightly recovery can retry failed drafts.
             logger.exception("Nowon August draft enqueue failed: item=%s", item_id)
+
+    try:
+        morning_content_auto_publish.apply_async(
+            queue="content",
+            headers=build_dispatch_headers("morning-content-auto-publish"),
+        )
+    except Exception:
+        logger.exception("Nowon August morning auto-publish enqueue failed")
 
 
 def backfill_nowon_august_2026_slots() -> int:
@@ -85,21 +102,13 @@ def backfill_nowon_august_2026_slots() -> int:
     created_item_ids: list[str] = []
 
     with SyncSessionLocal() as db:
-        hospital = (
-            db.execute(
-                select(Hospital)
-                .where(
-                    or_(
-                        Hospital.name == NOWON_HOSPITAL_NAME,
-                        Hospital.id == NOWON_HOSPITAL_ID,
-                    )
-                )
-                .order_by((Hospital.name == NOWON_HOSPITAL_NAME).desc())
-                .limit(1)
-            )
-            .scalars()
-            .first()
-        )
+        hospital = db.execute(
+            select(Hospital).where(Hospital.id == NOWON_HOSPITAL_ID).limit(1)
+        ).scalars().first()
+        if hospital is None:
+            hospital = db.execute(
+                select(Hospital).where(Hospital.name == NOWON_HOSPITAL_NAME).limit(1)
+            ).scalars().first()
         if hospital is None:
             return 0
 
@@ -135,11 +144,17 @@ def backfill_nowon_august_2026_slots() -> int:
         if missing <= 0:
             return 0
 
-        available_dates = [
-            BACKFILL_START + timedelta(days=offset)
-            for offset in range((AUGUST_END - BACKFILL_START).days + 1)
-        ]
-        slot_dates = allocate_stacked_dates(available_dates, missing, max_per_day=2)
+        occupied_dates = Counter(item.scheduled_date for item in existing_items)
+        slot_dates: list[date] = []
+        for planned_date in PLANNED_DATES:
+            if occupied_dates[planned_date] > 0:
+                occupied_dates[planned_date] -= 1
+            else:
+                slot_dates.append(planned_date)
+        slot_dates = slot_dates[:missing]
+        if not slot_dates:
+            return 0
+
         content_types = _remaining_plan_12_types(existing_items, missing, hospital.id)
         used_sequences = {item.sequence_no for item in existing_items}
         sequence_numbers = [
