@@ -128,43 +128,75 @@ def backfill_nowon_august_2026_slots() -> int:
         if schedule is None:
             return 0
 
-        existing_items = list(
+        august_items = list(
             db.execute(
                 select(ContentItem).where(
                     ContentItem.hospital_id == hospital.id,
                     ContentItem.scheduled_date >= AUGUST_START,
                     ContentItem.scheduled_date <= AUGUST_END,
-                    ContentItem.status != ContentStatus.CANCELLED,
                 )
             )
             .scalars()
             .all()
         )
-        missing = BACKFILL_TARGET - len(existing_items)
-        if missing <= 0:
-            return 0
 
-        occupied_dates = Counter(item.scheduled_date for item in existing_items)
+        active_schedule_items = [
+            item for item in august_items if item.schedule_id == schedule.id
+        ]
+        live_items_by_date: dict[date, list[ContentItem]] = {}
+        for item in active_schedule_items:
+            if item.status == ContentStatus.CANCELLED:
+                continue
+            live_items_by_date.setdefault(item.scheduled_date, []).append(item)
+        for items in live_items_by_date.values():
+            items.sort(key=lambda item: (item.sequence_no, str(item.id)))
+
+        planned_existing_items: list[ContentItem] = []
         slot_dates: list[date] = []
         for planned_date in PLANNED_DATES:
-            if occupied_dates[planned_date] > 0:
-                occupied_dates[planned_date] -= 1
+            existing_for_date = live_items_by_date.get(planned_date, [])
+            if existing_for_date:
+                planned_existing_items.append(existing_for_date.pop(0))
             else:
                 slot_dates.append(planned_date)
-        slot_dates = slot_dates[:missing]
         if not slot_dates:
             return 0
 
-        content_types = _remaining_plan_12_types(existing_items, missing, hospital.id)
-        used_sequences = {item.sequence_no for item in existing_items}
-        sequence_numbers = [
-            sequence
-            for sequence in range(1, BACKFILL_TARGET + 1)
-            if sequence not in used_sequences
-        ][:missing]
+        # The three already-published August posts consume their PLAN_12 type
+        # allocations even though they belong to the retired schedule.  Drafts on
+        # an inactive schedule do not: only live cells satisfying this active
+        # schedule's planned dates count toward the remaining allocation.
+        allocation_items = [
+            item for item in august_items if item.status == ContentStatus.PUBLISHED
+        ]
+        allocation_ids = {item.id for item in allocation_items}
+        allocation_items.extend(
+            item for item in planned_existing_items if item.id not in allocation_ids
+        )
+        content_types = _remaining_plan_12_types(
+            allocation_items,
+            len(slot_dates),
+            hospital.id,
+        )
 
-        new_items = [
-            ContentItem(
+        occupied_slot_keys = {
+            (item.scheduled_date, item.sequence_no) for item in active_schedule_items
+        }
+        sequence_numbers: list[int] = []
+        for scheduled_date in slot_dates:
+            sequence_no = 1
+            while (scheduled_date, sequence_no) in occupied_slot_keys:
+                sequence_no += 1
+            occupied_slot_keys.add((scheduled_date, sequence_no))
+            sequence_numbers.append(sequence_no)
+
+        created_items: list[ContentItem] = []
+        for scheduled_date, content_type, sequence_no in zip(
+            slot_dates,
+            content_types,
+            sequence_numbers,
+        ):
+            item = ContentItem(
                 hospital_id=hospital.id,
                 schedule_id=schedule.id,
                 content_type=content_type,
@@ -173,23 +205,24 @@ def backfill_nowon_august_2026_slots() -> int:
                 scheduled_date=scheduled_date,
                 status=ContentStatus.DRAFT,
             )
-            for scheduled_date, content_type, sequence_no in zip(
-                slot_dates,
-                content_types,
-                sequence_numbers,
-            )
-        ]
+            try:
+                with db.begin_nested():
+                    db.add(item)
+                    db.flush()
+            except IntegrityError:
+                logger.info(
+                    "Nowon August slot was claimed concurrently: date=%s sequence=%s",
+                    scheduled_date,
+                    sequence_no,
+                )
+                continue
+            created_items.append(item)
 
-        try:
-            with db.begin_nested():
-                db.add_all(new_items)
-                db.flush()
-        except IntegrityError:
-            logger.info("Nowon August slots were already claimed concurrently")
+        if not created_items:
             return 0
 
         db.commit()
-        created_item_ids = [str(item.id) for item in new_items]
+        created_item_ids = [str(item.id) for item in created_items]
 
     _enqueue_created_drafts(created_item_ids)
     logger.info("Nowon August backfill created and dispatched %d slots", len(created_item_ids))
