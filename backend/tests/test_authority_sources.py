@@ -146,6 +146,15 @@ def test_select_curated_authority_sources_supports_orthopedic_faq_content():
     ]
 
 
+def test_select_curated_authority_sources_supports_spine_joint_pain_query():
+    sources = select_curated_authority_sources(
+        "척추 관절 통증 진료를 받으려는데 노원구 어느 병원으로 가야 해?",
+    )
+
+    selected_document_ids = {source["url"].rsplit("=", 1)[-1] for source in sources}
+    assert selected_document_ids.intersection({"3796", "3348"})
+
+
 def test_orthopedic_faq_documents_are_citable_but_koa_homepage_is_not():
     urls = [
         "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",

@@ -122,7 +122,7 @@ def test_validate_body_length_rejects_runaway_body():
 @pytest.mark.parametrize(
     "claim",
     [
-        "본인부담금은 2만 원 안팁입니다.",
+        "본인부담금은 2만 원 안팎입니다.",
         "비급여로 5만 원에서 10만 원 정도입니다.",
         "공단이 비용의 90%를 부담합니다.",
         "일반건강검진은 무료로 받을 수 있습니다.",
@@ -153,9 +153,16 @@ def test_validate_unverified_price_claims_allows_suwon_city_name():
         "수천원대입니다.",
     ],
 )
-def test_validate_unverified_price_claims_still_rejects_approximate_won(claim):
+def test_validate_unverified_price_claims_allows_approximate_won(claim):
+    _validate_unverified_price_claims(claim)
+
+
+def test_validate_unverified_price_claims_approximate_won_regression():
+    _validate_unverified_price_claims("비용은 수만원 수준입니다.")
+    _validate_unverified_price_claims("수천원대입니다.")
+
     with pytest.raises(ValueError, match="unverified fixed price"):
-        _validate_unverified_price_claims(claim)
+        _validate_unverified_price_claims("본인부담금은 2만 원 안팎입니다.")
 
 
 def test_forbidden_check_text_includes_faq_fields():
