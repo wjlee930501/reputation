@@ -67,6 +67,7 @@ from app.models.sov import (
     QueryMatrix,
     SovRecord,
 )
+from app.models.usage import HospitalUsageEvent, HospitalUsageKind
 
 __all__ = [
     "Hospital", "Plan", "HospitalStatus", "DomainManagementMode", "DomainDnsStrategy",
@@ -88,4 +89,5 @@ __all__ = [
     "LeadReportToken", "LeadReportArtifact", "LeadDelivery",
     "ExecutionStatus", "ReportStatus", "DeliveryStatus", "AnswerSource", "MentionVerdict",
     "REPORTABLE_EXECUTION_STATUSES",
+    "HospitalUsageEvent", "HospitalUsageKind",
 ]

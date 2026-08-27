@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import uuid
 from contextvars import ContextVar
 from itertools import product
 from typing import Any
@@ -33,6 +34,9 @@ POOL_LEADGEN = "leadgen"
 # 실제 공급자 호출을 어느 예산으로 계수할지. 풀 이름이 곧 cost_guard 카테고리라
 # 무료 진단(leadgen)과 유료 측정(sov)의 실제 지출이 섞이지 않는다.
 _provider_cost_category: ContextVar[str] = ContextVar("sov_provider_cost_category", default=POOL_SOV)
+_provider_hospital_id: ContextVar[uuid.UUID | str | None] = ContextVar(
+    "sov_provider_hospital_id", default=None
+)
 
 
 async def _record_sov_provider_call(count: int = 1) -> None:
@@ -45,6 +49,27 @@ async def _record_sov_provider_call(count: int = 1) -> None:
     from app.services import cost_guard
 
     await cost_guard.record_provider_call(_provider_cost_category.get(), count=count)
+
+
+async def _record_sov_usage(input_tokens: int | None, output_tokens: int | None) -> None:
+    """유료 측정(POOL_SOV)이 이미 존재하는 병원 앞으로 나간 경우에만 원장에 남긴다.
+
+    무료 진단(POOL_LEADGEN)은 원장 구분이 아니다. 계약 병원의 운영 사용량 표에 리드마그넷
+    호출이 섞이면 "이 병원 앞으로 나간 운영 지출"을 다시 갈라낼 수 없다 — 무료 진단의
+    예산 집계는 cost_guard의 leadgen 카테고리가 그대로 맡는다.
+    """
+    hospital_id = _provider_hospital_id.get()
+    if _provider_cost_category.get() != POOL_SOV or hospital_id is None:
+        return
+    from app.services.hospital_usage import record_usage
+
+    await record_usage(
+        hospital_id=hospital_id,
+        kind="sov",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
 
 _sem_lock = threading.Lock()
 _api_semaphores: dict[str, asyncio.Semaphore] = {}
@@ -680,14 +705,17 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
         max_tokens=800,
     )
     usage = _field(response, "usage")
+    input_tokens = _field(usage, "prompt_tokens")
+    output_tokens = _field(usage, "completion_tokens")
+    await _record_sov_usage(input_tokens, output_tokens)
     return {
         "text": response.choices[0].message.content or "",
         "source_urls": [],
         "answer_model": _field(response, "model"),
         # 이 경로는 도구를 주지 않는다 — 검색 0회가 사실이다(None이 아니다).
         "search_calls": 0,
-        "input_tokens": _field(usage, "prompt_tokens"),
-        "output_tokens": _field(usage, "completion_tokens"),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
         "measurement_method": "OPENAI_CHAT_COMPLETIONS",
     }
 
@@ -737,6 +765,7 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
             if text:
                 break
     input_tokens, output_tokens = _extract_openai_usage(response)
+    await _record_sov_usage(input_tokens, output_tokens)
     return {
         "text": text,
         "source_urls": _extract_openai_source_urls(response),
@@ -790,6 +819,7 @@ async def _query_gemini_result(query: str) -> dict[str, Any]:
         timeout=GEMINI_TIMEOUT_SECONDS,
     )
     input_tokens, output_tokens = _extract_gemini_usage(response)
+    await _record_sov_usage(input_tokens, output_tokens)
     return {
         "text": response.text or "",
         "source_urls": _extract_gemini_source_urls(response),
@@ -977,6 +1007,11 @@ async def _parse_mention(hospital_name: str, response_text: str, region: str = "
         max_tokens=300,
         response_format={"type": "json_object"},
     )
+    usage = _field(result, "usage")
+    await _record_sov_usage(
+        _field(usage, "prompt_tokens"),
+        _field(usage, "completion_tokens"),
+    )
     try:
         parsed = json.loads(result.choices[0].message.content or "{}")
     except Exception as exc:
@@ -1041,6 +1076,11 @@ async def _parse_competitors(competitors: list[str], response_text: str) -> list
         max_tokens=500,
         response_format={"type": "json_object"},
     )
+    usage = _field(result, "usage")
+    await _record_sov_usage(
+        _field(usage, "prompt_tokens"),
+        _field(usage, "completion_tokens"),
+    )
     # 판정기 장애를 "미언급"으로 삼키지 않는다. 자사 판정(_parse_mention)은 파싱 실패 시
     # ValueError를 던져 측정이 FAILED로 분모에서 빠지는데, 경쟁사만 조용히 전부 False를
     # 돌려주면 **같은 장애가 자사는 분모 제외, 경쟁사는 미언급으로 집계**된다. 방향이
@@ -1069,6 +1109,7 @@ async def run_single_query(
     competitors: list[str] | None = None,
     pool: str = POOL_SOV,
     region: str = "",
+    hospital_id: uuid.UUID | str | None = None,
 ) -> list[dict]:
     """`pool`은 동시성 풀만 고르고 측정 조건은 바꾸지 않는다.
 
@@ -1085,6 +1126,7 @@ async def run_single_query(
         # 이 측정에서 나가는 실제 호출을 어느 예산으로 셀지 고정한다. 무료 진단이
         # 유료 측정 예산에 섞이면 상한 판단이 무너진다.
         _provider_cost_category.set(pool)
+        _provider_hospital_id.set(hospital_id)
         provider_pool = f"{pool}:gemini" if platform == "gemini" else pool
         async with _get_semaphore(provider_pool):
             try:
@@ -1198,6 +1240,9 @@ async def fetch_answer(
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
     # 무료 진단 경로 — 실제 호출을 leadgen 예산으로 센다(위 measure 경로와 같은 규약).
     _provider_cost_category.set(pool)
+    # 이 경로는 병원이 아직 없는 리드 진단이다. 귀속 대상이 없으므로 원장에 쓰지 않는다
+    # (같은 컨텍스트를 재사용해 앞선 측정의 병원이 남아 있는 경우를 막는다).
+    _provider_hospital_id.set(None)
     async with _get_semaphore(pool):
         try:
             provider_result = await query_fn(query_text)

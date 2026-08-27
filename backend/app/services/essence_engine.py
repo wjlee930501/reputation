@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import re
+import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -299,13 +300,23 @@ _SOURCE_PROCESSING_OUTPUT_SCHEMA: dict[str, Any] = {
 
 
 class _LlmCallCounter:
-    __slots__ = ("count",)
+    __slots__ = ("count", "provider_usage")
 
     def __init__(self) -> None:
         self.count = 0
+        self.provider_usage: list[tuple[int, int]] = []
 
     def tick(self) -> None:
         self.count += 1
+
+    def record_response(self, response: Any) -> None:
+        usage = getattr(response, "usage", None)
+        self.provider_usage.append(
+            (
+                _provider_token(getattr(usage, "input_tokens", 0)),
+                _provider_token(getattr(usage, "output_tokens", 0)),
+            )
+        )
 
 
 # 이 모듈의 Anthropic 호출은 전부 _call_anthropic_json 하나를 지난다. 동기 코드라
@@ -316,8 +327,17 @@ _llm_call_counter: ContextVar[_LlmCallCounter | None] = ContextVar(
 )
 
 
+def _provider_token(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 @asynccontextmanager
-async def metered_llm_calls() -> AsyncIterator[_LlmCallCounter]:
+async def metered_llm_calls(
+    hospital_id: uuid.UUID | str | None = None,
+) -> AsyncIterator[_LlmCallCounter]:
     """블록 안에서 나간 Anthropic 호출을 content 예산의 '실제 호출'로 기록한다.
 
     운영 기준 처리(근거 추출·철학 합성)는 AE가 버튼으로 돌리는 유료 호출인데 종전에는
@@ -333,6 +353,20 @@ async def metered_llm_calls() -> AsyncIterator[_LlmCallCounter]:
             from app.services import cost_guard
 
             await cost_guard.record_provider_call("content", count=counter.count)
+            if hospital_id is not None:
+                from app.services.hospital_usage import record_usage
+
+                usages = iter(counter.provider_usage)
+                for _ in range(counter.count):
+                    input_tokens, output_tokens = next(usages, (0, 0))
+                    await record_usage(
+                        hospital_id=hospital_id,
+                        # 운영 기준 처리는 cost_guard에서도 content 예산으로 센다.
+                        # 온보딩 kind는 프로파일 자동 채움 전용이다.
+                        kind="content",
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
 
 
 def _call_anthropic_json(
@@ -370,6 +404,8 @@ def _call_anthropic_json(
                     "format": {"type": "json_schema", "schema": output_schema}
                 }
             response = client.messages.create(**request, timeout=timeout_seconds)
+            if counter is not None:
+                counter.record_response(response)
             stop_reason = getattr(response, "stop_reason", None)
             if stop_reason in {"max_tokens", "refusal"}:
                 raise ValueError(f"essence LLM incomplete structured output: {stop_reason}")

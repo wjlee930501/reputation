@@ -682,7 +682,7 @@ def _mark_source_processing_error(source_id: uuid.UUID, error: Exception) -> Non
 # ══════════════════════════════════════════════════════════════════
 async def _metered_process_source_asset(source):
     """동기 근거 추출을 실제 공급자 호출 계수와 함께 실행한다."""
-    async with metered_llm_calls():
+    async with metered_llm_calls(source.hospital_id):
         return await asyncio.to_thread(process_source_asset, source)
 
 
@@ -828,7 +828,7 @@ def _cost_guarded_essence_synthesis(
         raise _EssenceReviewCostBlocked(decision.reason or "Essence synthesis cost blocked")
 
     async def _call():
-        async with metered_llm_calls():
+        async with metered_llm_calls(hospital.id):
             return await asyncio.to_thread(
                 synthesize_philosophy,
                 hospital,
@@ -851,7 +851,7 @@ def _cost_guarded_essence_review(
         raise _EssenceReviewCostBlocked(decision.reason or "Essence review cost blocked")
 
     async def _call():
-        async with metered_llm_calls():
+        async with metered_llm_calls(hospital.id):
             return await asyncio.to_thread(
                 review_essence_candidate,
                 hospital,
@@ -1266,6 +1266,7 @@ def trigger_v0_report(self, hospital_id: str):
                             # 무료 진단과 같은 판정 조건 — 지역이 빠지면 동명 기관이
                             # 무료에서는 확정, 유료에서는 보류로 갈린다 (PRD §7-4).
                             region=(hospital.region or [""])[0],
+                            hospital_id=hospital.id,
                         )
                     )
                     for r in results:
@@ -1779,6 +1780,7 @@ def nightly_content_generation(self):
                             hospital.slug,
                             topic=item.title,
                             direction=hospital_image_direction(hospital),
+                            hospital_id=hospital.id,
                         )
                     )
                     if not image_url:
@@ -2134,6 +2136,7 @@ def generate_content_image(self, content_id: str):
                     hospital.slug,
                     topic=item.title or "병원 의료 정보",
                     direction=hospital_image_direction(hospital),
+                    hospital_id=hospital.id,
                 )
             )
             if not image_url:
@@ -2316,6 +2319,7 @@ def _generate_single_content_item(
                     hospital.slug,
                     topic=item.title,
                     direction=hospital_image_direction(hospital),
+                    hospital_id=hospital.id,
                 )
             )
             if not image_url:
@@ -2840,6 +2844,7 @@ def run_sov_for_hospital(self, hospital_id: str):
                         SOV_REPEAT_WEEKLY,
                         competitors=competitors,
                         region=(hospital.region or [""])[0],
+                        hospital_id=hospital.id,
                     )
                 )
                 for r in results:

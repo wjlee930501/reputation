@@ -643,7 +643,7 @@ async def process_source(
     try:
         # 동기 LLM 호출을 워커 스레드로 — 단일 uvicorn worker의 이벤트 루프 블로킹 방지
         # (이 파일의 PDF/DOCX 추출도 동일하게 to_thread 사용).
-        async with metered_llm_calls():
+        async with metered_llm_calls(hospital_id):
             payloads = await asyncio.to_thread(process_source_asset, source)
         payloads = [
             payload
@@ -1404,7 +1404,7 @@ async def create_philosophy_draft(
     # Claude synthesis is a synchronous SDK call and can take close to its 60s
     # timeout. Running it on the event loop starves /health/live and Cloud Run
     # kills the otherwise healthy API instance before the draft can commit.
-    async with metered_llm_calls():
+    async with metered_llm_calls(hospital_id):
         payload = await asyncio.to_thread(
             synthesize_philosophy,
             hospital,
