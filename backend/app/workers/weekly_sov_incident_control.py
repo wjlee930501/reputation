@@ -81,7 +81,7 @@ async def open_weekly_sov_capacity_digest(
                 build_open_incident_notification(
                     IncidentSlackProjection(
                         incident.id,
-                        "주간 SoV 전체 병원",
+                        "주간 검색 노출 전체 병원",
                         incident.severity,
                         incident.customer_impact,
                         incident.next_action,
