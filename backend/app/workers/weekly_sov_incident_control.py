@@ -25,6 +25,82 @@ from app.services.notification_store import enqueue_notification
 _SOURCE_TYPE = "WEEKLY_SOV_MEASUREMENT"
 
 
+def _capacity_digest_key(week_key: str) -> str:
+    return build_incident_key(
+        "weekly_sov_capacity",
+        "week",
+        week_key,
+        IncidentFingerprint.VALIDATION_FAILED,
+    )
+
+
+async def open_weekly_sov_capacity_digest(
+    *, week_key: str, operation_run_id: uuid.UUID | None = None
+) -> uuid.UUID:
+    """Collapse per-hospital HIGH-cap overflow into one durable weekly alert."""
+
+    observed_at = datetime.now(UTC)
+    sessions = get_async_sessionmaker()
+    async with sessions() as db:
+        key = _capacity_digest_key(week_key)
+        previous = await db.scalar(select(Incident).where(Incident.dedupe_key == key))
+        previous_state = previous.state if previous is not None else None
+        incident = await open_or_touch_incident(
+            db,
+            IncidentOpenRequest(
+                pipeline="weekly_sov_capacity",
+                object_type="week",
+                object_id=week_key,
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                incident_type="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
+                severity=IncidentSeverity.HIGH,
+                customer_impact=(
+                    "한 곳 이상 병원의 높은 우선순위 질문 일부가 이번 주 측정에서 제외되었습니다."
+                ),
+                source_type=_SOURCE_TYPE,
+                next_action="운영센터에서 이번 주 쿼리 타깃과 변형 수를 한 번 검토하세요.",
+                admin_path="/operations",
+                hospital_id=None,
+                operation_run_id=operation_run_id,
+                source_id=week_key,
+                safe_error_code="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
+                safe_error_message=(
+                    "주간 측정의 높은 우선순위 항목이 안전 상한을 넘은 병원이 있습니다."
+                ),
+            ),
+            actor="weekly-sov-worker",
+            reason="weekly high-priority capacity digest",
+            now=observed_at,
+        )
+        if previous_state is None or previous_state in {
+            IncidentState.RECOVERED.value,
+            IncidentState.ACKNOWLEDGED.value,
+        }:
+            await enqueue_notification(
+                db,
+                build_open_incident_notification(
+                    IncidentSlackProjection(
+                        incident.id,
+                        "주간 SoV 전체 병원",
+                        incident.severity,
+                        incident.customer_impact,
+                        incident.next_action,
+                        incident.admin_path,
+                        "운영 담당자",
+                        "이번 주 측정 마감 전",
+                        None,
+                        incident.operation_run_id,
+                        incident.version,
+                        incident.safe_error_message,
+                        incident.episode_seq,
+                    ),
+                    settings.ADMIN_BASE_URL,
+                ),
+            )
+        await db.commit()
+        return incident.id
+
+
 def _dedupe_key(hospital_id: uuid.UUID, week_key: str) -> str:
     return build_incident_key(
         "weekly_sov",

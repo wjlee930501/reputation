@@ -1,9 +1,10 @@
 """P1-3/R1 — 야간 생성 catch-up window, cap 절단 감지, 자동 발행 검증."""
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 
+import anthropic
 import arrow
 import httpx
 import pytest
@@ -108,6 +109,53 @@ async def test_generation_rewrites_once_with_automatic_review_feedback(monkeypat
     assert screening.status == "ALIGNED"
     assert screening.summary["automatic_remediation_attempts"] == 1
     assert screening.summary["ai_review"]["status"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_price_geo_seo_value_error_rewrites_in_the_same_tick(monkeypatch):
+    calls = []
+
+    async def reject_then_close(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        if len(calls) == 1:
+            raise ValueError("GEO hard-fail: 가격·지역·검색 구조 게이트")
+        return {"title": "게이트 통과", "body": "수정된 본문"}
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.99,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks, "generate_content", reject_then_close)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief=None,
+    )
+
+    assert content["title"] == "게이트 통과"
+    assert calls[0] == []
+    assert "가격·지역·검색 구조 게이트" in calls[1][0]
+    assert screening.status == "ALIGNED"
 
 
 @pytest.mark.asyncio
@@ -468,6 +516,10 @@ def test_weekly_manifest_without_a_platform_fails_closed():
     ("error", "expected_code"),
     [
         (TimeoutError("secret-token"), "PROVIDER_TIMEOUT"),
+        (
+            anthropic.APITimeoutError(request=httpx.Request("POST", "https://api.test")),
+            "PROVIDER_TIMEOUT",
+        ),
         (ConnectionError("secret-token"), "PROVIDER_UNAVAILABLE"),
         (ValueError("secret-token"), "GENERATION_REJECTED"),
         (RuntimeError("secret-token"), "GENERATION_FAILED"),
@@ -481,15 +533,16 @@ def test_generation_failure_classification_never_persists_exception_text(error, 
     assert "운영 센터" in message
 
 
-def test_fatal_generation_failures_still_request_immediate_slack():
+def test_generation_failures_are_morning_candidates_but_cost_slack_has_one_owner():
     for code in (
-        "COST_BLOCKED",
         "PROVIDER_TIMEOUT",
         "PROVIDER_UNAVAILABLE",
         "GENERATION_REJECTED",
         "GENERATION_FAILED",
+        "CONTENT_IMAGE_NOT_READY",
     ):
         assert tasks.generation_notify_requested(code)
+    assert not tasks.generation_notify_requested("COST_BLOCKED")
     assert not tasks.generation_notify_requested("MISSING_APPROVED_ESSENCE")
 
 
@@ -552,6 +605,7 @@ def _nightly_item(hospital_name: str):
         content_philosophy_id=None,
         essence_status=None,
         essence_check_summary=None,
+        scheduled_date=date(2026, 8, 19),
     )
 
 
@@ -571,7 +625,7 @@ def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date):
     )
 
 
-def test_nightly_cost_blocked_opens_incident_with_notify_true(monkeypatch):
+def test_nightly_cost_blocked_records_without_second_generation_slack(monkeypatch):
     cycle_date = date(2026, 8, 19)
     db = _NightlyTaskDB()
     item = _nightly_item("비용차단의원")
@@ -594,7 +648,7 @@ def test_nightly_cost_blocked_opens_incident_with_notify_true(monkeypatch):
 
     assert len(incident_calls) == 1
     assert incident_calls[0]["code"] == "COST_BLOCKED"
-    assert incident_calls[0]["notify"] is True
+    assert incident_calls[0]["notify"] is False
 
 
 def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkeypatch):
@@ -669,8 +723,8 @@ def test_forbidden_field_retry_exhaustion_opens_incident_without_content_writeba
     assert incident_calls[0]["notify"] is True
 
 
-def test_nightly_missing_essence_is_silent_per_hospital_and_one_digest(monkeypatch):
-    cycle_date = date(2026, 8, 19)
+def test_nightly_missing_essence_waits_until_seven_forty_five_for_one_digest(monkeypatch):
+    cycle_date = datetime(2026, 8, 19, 7, 45)
     db = _NightlyTaskDB()
     items = [_nightly_item("첫번째의원"), _nightly_item("두번째의원")]
     incident_calls = []
@@ -693,11 +747,30 @@ def test_nightly_missing_essence_is_silent_per_hospital_and_one_digest(monkeypat
     assert len(outbox) == 1
     assert outbox[0].notification_type == "MISSING_APPROVED_ESSENCE_DIGEST"
     assert outbox[0].dedupe_key == (
-        f"MISSING_APPROVED_ESSENCE_DIGEST:{cycle_date.isoformat()}"
+        f"MISSING_APPROVED_ESSENCE_DIGEST:{cycle_date.date().isoformat()}"
     )
     visible = str(outbox[0].payload)
     assert "온보딩 병원 2곳 · 글 2건" in visible
     assert "승인 기준이 없어 생성을 건너뜀" in visible
+
+
+def test_nightly_missing_essence_has_no_slack_before_seven_forty_five(monkeypatch):
+    cycle_date = datetime(2026, 8, 19, 7, 0)
+    db = _NightlyTaskDB()
+    item = _nightly_item("재시도중의원")
+    incident_calls = []
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.nightly_content_generation.run()
+
+    assert incident_calls[0]["notify"] is False  # the hospital digest owns this alert
+    assert not [value for value in db.added if isinstance(value, NotificationOutbox)]
 
 
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
@@ -1711,7 +1784,7 @@ def test_auto_publish_due_statement_includes_missing_body_for_blocker_projection
     assert "content_items.scheduled_date <= '2026-06-10'" in sql
 
 
-def test_morning_publish_cycle_enqueues_one_digest_without_per_item_rows(monkeypatch):
+def test_morning_publish_cycle_has_no_success_slack(monkeypatch):
     cycle_date = date(2026, 8, 19)
     content_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
     first_hospital_id = uuid.uuid4()
@@ -1768,8 +1841,7 @@ def test_morning_publish_cycle_enqueues_one_digest_without_per_item_rows(monkeyp
             return False
 
     due_db = CycleDB(due=True)
-    digest_db = CycleDB()
-    sessions = [due_db, digest_db]
+    sessions = [due_db]
 
     def finish_async(awaitable):
         awaitable.close()
@@ -1788,15 +1860,66 @@ def test_morning_publish_cycle_enqueues_one_digest_without_per_item_rows(monkeyp
 
     tasks.morning_content_auto_publish.run()
 
-    outbox = [value for value in digest_db.added if isinstance(value, NotificationOutbox)]
-    assert len(outbox) == 1
-    assert outbox[0].notification_type == "CONTENT_PUBLISH_DIGEST"
-    assert outbox[0].dedupe_key == f"CONTENT_PUBLISH_DIGEST:{cycle_date.isoformat()}"
-    visible = str(outbox[0].payload)
-    assert "병원 2곳 · 글 3건" in visible
-    assert "사실 확인해주세요" in visible
-    assert not any(row.notification_type == "CONTENT_PUBLISHED" for row in outbox)
-    assert digest_db.commits == 1
+    assert sessions == []
+    assert due_db.added == []
+
+
+def test_overdue_post_publish_review_keeps_admin_badge_without_slack(monkeypatch):
+    monkeypatch.setattr(
+        tasks,
+        "SyncSessionLocal",
+        lambda: (_ for _ in ()).throw(AssertionError("Slack outbox must not be opened")),
+    )
+
+    assert tasks._enqueue_overdue_post_publish_review_notifications(
+        datetime(2026, 8, 19, 8, 0)
+    ) == 0
+
+
+def test_seven_forty_five_image_sweep_uses_confirmed_hero_fallback(monkeypatch):
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        scheduled_date=date(2026, 8, 19),
+        title="진료 안내",
+        body="이미 저장된 본문",
+        image_url=None,
+        image_prompt=None,
+    )
+    hospital = SimpleNamespace(
+        hero_image_url="https://cdn.example.test/confirmed-hero.jpg"
+    )
+
+    class DB:
+        commits = 0
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            raise AssertionError("confirmed fallback should be writable")
+
+        def refresh(self, _item):
+            return None
+
+    db = DB()
+
+    def write_fallback(_db, *, item_id, values):
+        assert item_id == item.id
+        item.image_url = values["image_url"]
+        item.image_prompt = values["image_prompt"]
+        return 1
+
+    monkeypatch.setattr(tasks, "write_back_generated_content", write_fallback)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(2026, 8, 19, 7, 45, tzinfo="Asia/Seoul"),
+    )
+
+    assert tasks._write_morning_image_fallback(db, item, hospital) is True
+    assert item.image_url == hospital.hero_image_url
+    assert item.image_prompt == tasks.CONFIRMED_HERO_FALLBACK_PROMPT
+    assert db.commits == 1
 
 
 def test_auto_publish_one_commits_publication_before_external_effects(monkeypatch):
@@ -1817,6 +1940,8 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
         status=tasks.ContentStatus.DRAFT,
         title="진료 전 확인할 점",
         body="상태에 따라 진료 방향을 설명합니다.",
+        image_url="https://storage.googleapis.com/reputation/content.png",
+        image_prompt=None,
         sequence_no=1,
         total_count=8,
         content_type=SimpleNamespace(value="FAQ"),
@@ -1887,6 +2012,48 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
     assert outbox == []
     assert item.post_publish_notified_at is None
+
+
+def test_auto_publish_closes_missing_image_with_confirmed_hospital_hero(monkeypatch):
+    hospital = _publication_hospital()
+    hospital.hero_image_url = "https://cdn.example.test/hospital-hero.jpg"
+    item = _publication_item(hospital, body="진료 기준과 내원 시점을 안내합니다.")
+    item.image_url = None
+    item.image_prompt = None
+    db = _AutoPublishDB(item, hospital)
+    philosophy = _approved_philosophy()
+
+    def assert_fallback_before_gate(candidate, _philosophy):
+        assert candidate.image_url == hospital.hero_image_url
+        return SimpleNamespace(
+            publishable=True,
+            code=None,
+            message=None,
+            violations=(),
+            essence_status="ALIGNED",
+            essence_summary={"blocking": False},
+            philosophy_id=philosophy.id,
+        )
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "assess_content_publication", assert_fallback_before_gate)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(2026, 8, 19, 8, 0, tzinfo="Asia/Seoul"),
+    )
+
+    outcome = tasks._auto_publish_one(item.id)
+
+    assert outcome["kind"] == "published"
+    assert item.status == tasks.ContentStatus.PUBLISHED
+    assert item.image_url == hospital.hero_image_url
+    assert item.image_prompt == tasks.CONFIRMED_HERO_FALLBACK_PROMPT
+    assert [log.action for log in db.added if hasattr(log, "action")] == [
+        "auto_publish_confirmed_image_fallback",
+        "auto_publish_content",
+    ]
 
 
 # ── 08:00 자동 발행 안전 게이트: **실제** assess_content_publication으로 검증 ──

@@ -385,7 +385,9 @@ def test_processed_and_live_lease_items_finish_partial(pg_conn, pg_session, monk
     assert set(run.result_summary["items"]) == {str(success_id), str(locked_id)}
 
 
-async def test_generation_failure_opens_outbox_and_retry_recovers_it(pg_async_session, monkeypatch):
+async def test_generation_failure_stays_silent_before_due_slot_and_retry_recovers_it(
+    pg_async_session, monkeypatch
+):
     hospital = Hospital(
         id=uuid.uuid4(),
         name="복구통합의원",
@@ -446,8 +448,8 @@ async def test_generation_failure_opens_outbox_and_retry_recovers_it(pg_async_se
             NotificationOutbox.notification_type == "INCIDENT_OPEN",
         )
     )
-    # PROVIDER_TIMEOUT first OPEN is immediate (allowlist): INCIDENT_OPEN=1.
-    assert open_outbox == 1
+    # There is no proven due ContentItem/body hole, so provider failure cannot page.
+    assert open_outbox == 0
 
     succeeded_run = OperationRun(
         id=uuid.uuid4(),

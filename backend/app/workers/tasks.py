@@ -18,7 +18,7 @@ import threading
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -70,9 +70,7 @@ from app.services.content_publication import (
     assess_content_publication,
 )
 from app.services.content_publish_notifications import (
-    enqueue_content_publish_digest_sync,
     enqueue_missing_approved_essence_digest_sync,
-    enqueue_post_publish_review_overdue_notification_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
@@ -137,7 +135,6 @@ from app.services.ops_incident_alerts import (
 from app.services.post_publish_review_policy import (
     AUTO_PUBLISHABLE_STATUSES,
     auto_publish_due_predicate,
-    human_post_publish_review_predicate,
     publicly_operational_hospital_predicate,
 )
 from app.services.report_artifact_validation import (
@@ -217,6 +214,7 @@ from app.workers.nightly_generation_batch import (
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
 from app.workers.weekly_sov_incident_control import (
+    open_weekly_sov_capacity_digest,
     open_weekly_sov_failure,
     recover_weekly_sov_failure,
 )
@@ -239,6 +237,55 @@ logger = logging.getLogger(__name__)
 
 AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
+MORNING_CLOSE_START = time(7, 45)
+CONFIRMED_HERO_FALLBACK_PROMPT = "confirmed hospital hero fallback"
+
+
+def _morning_close_due(item: ContentItem, *, now_kst=None) -> bool:
+    """Return whether this slot is in its final pre-publication close window."""
+
+    observed = now_kst or arrow.now("Asia/Seoul")
+    scheduled_date = getattr(item, "scheduled_date", None)
+    return bool(
+        scheduled_date is not None
+        and scheduled_date <= observed.date()
+        and observed.time().replace(tzinfo=None) >= MORNING_CLOSE_START
+    )
+
+
+def _confirmed_hospital_hero_url(hospital: Hospital) -> str | None:
+    """Use only the operator-saved absolute hospital hero as a publication fallback."""
+
+    candidate = str(getattr(hospital, "hero_image_url", "") or "").strip()
+    if not candidate:
+        return None
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return candidate
+
+
+def _write_morning_image_fallback(db, item: ContentItem, hospital: Hospital) -> bool:
+    """Close a due image hole with the hospital's confirmed hero, preserving text."""
+
+    fallback_url = _confirmed_hospital_hero_url(hospital)
+    if fallback_url is None or not _morning_close_due(item):
+        return False
+    written = write_back_generated_content(
+        db,
+        item_id=item.id,
+        values={
+            "image_url": fallback_url,
+            "image_prompt": CONFIRMED_HERO_FALLBACK_PROMPT,
+        },
+    )
+    if written == 0:
+        db.rollback()
+        return False
+    db.commit()
+    db.refresh(item)
+    logger.warning("Using confirmed hospital hero fallback for due content %s", item.id)
+    return True
 
 
 def _review_findings(summary: object) -> list[str]:
@@ -1624,7 +1671,12 @@ def nightly_content_generation(self):
                     db.commit()
                     first_gate_observation = hospital_id not in missing_essence_hospitals
                     missing_essence_hospitals.add(hospital_id)
-                    missing_essence_outcomes.append({"hospital_id": hospital_id})
+                    missing_essence_outcomes.append(
+                        {
+                            "hospital_id": hospital_id,
+                            "scheduled_date": getattr(item, "scheduled_date", now_kst.date()),
+                        }
+                    )
                     if first_gate_observation:
                         logger.warning(
                             "Skipping content generation without approved clinic writing "
@@ -1789,7 +1841,8 @@ def nightly_content_generation(self):
                         logger.warning(
                             "Image generation returned no URL for %s (text saved)", item.id
                         )
-                        item_state = GenerationItemState.PARTIAL
+                        if not _write_morning_image_fallback(db, item, hospital):
+                            item_state = GenerationItemState.PARTIAL
                     else:
                         image_written = write_back_generated_content(
                             db,
@@ -1818,7 +1871,8 @@ def nightly_content_generation(self):
                     )
                     db.rollback()
                     db.refresh(item)  # re-sync after rollback
-                    item_state = GenerationItemState.PARTIAL
+                    if not _write_morning_image_fallback(db, item, hospital):
+                        item_state = GenerationItemState.PARTIAL
 
                 readiness_failure = None
                 if item_state != GenerationItemState.DISCARDED:
@@ -1972,7 +2026,14 @@ def nightly_content_generation(self):
         stuck_items = load_stuck_claims(db, window_start, tomorrow)
         if stuck_items:
             _record_locked_generation_items(recorder, stuck_items)
-        if missing_essence_outcomes:
+        if (
+            missing_essence_outcomes
+            and now_kst.time().replace(tzinfo=None) >= MORNING_CLOSE_START
+            and any(
+                outcome["scheduled_date"] <= now_kst.date()
+                for outcome in missing_essence_outcomes
+            )
+        ):
             enqueue_missing_approved_essence_digest_sync(
                 db, now_kst.date(), missing_essence_outcomes
             )
@@ -2325,7 +2386,7 @@ def _generate_single_content_item(
             if not image_url:
                 # 실패 센티널("")을 그대로 쓰면 기존 이미지를 지운다.
                 logger.warning("Image generation returned no URL for %s (text saved)", item.id)
-                image_failed = True
+                image_failed = not _write_morning_image_fallback(db, item, hospital)
             elif write_back_generated_content(
                 db,
                 item_id=item.id,
@@ -2348,7 +2409,7 @@ def _generate_single_content_item(
             )
             db.rollback()
             db.refresh(item)
-            image_failed = True
+            image_failed = not _write_morning_image_fallback(db, item, hospital)
     if image_failed:
         _persist_publication_readiness(db, item, philosophy)
         return (
@@ -2394,7 +2455,6 @@ def morning_content_auto_publish(self):
         with SyncSessionLocal() as db:
             due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
 
-        published_outcomes: list[dict] = []
         for content_id in due_ids:
             outcome = _auto_publish_one(content_id)
             if outcome is None:
@@ -2413,7 +2473,6 @@ def morning_content_auto_publish(self):
                 )
                 continue
 
-            published_outcomes.append(outcome)
             _run_async(
                 recover_generation_incidents(
                     content_id,
@@ -2446,8 +2505,6 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
-        if published_outcomes:
-            _enqueue_morning_content_publish_digest(today, published_outcomes)
         _enqueue_overdue_post_publish_review_notifications(datetime.now(timezone.utc))
 
         # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
@@ -2469,33 +2526,13 @@ def _auto_publish_due_stmt(today):
     )
 
 
-def _enqueue_morning_content_publish_digest(
-    cycle_date: date, published_outcomes: Sequence[Mapping[str, object]]
-) -> None:
-    with SyncSessionLocal() as db:
-        enqueue_content_publish_digest_sync(db, cycle_date, published_outcomes)
-        db.commit()
-
-
 def _enqueue_overdue_post_publish_review_notifications(now: datetime) -> int:
-    overdue_before = now - timedelta(hours=24)
-    with SyncSessionLocal() as db:
-        rows = db.execute(
-            select(ContentItem, Hospital)
-            .join(Hospital, ContentItem.hospital_id == Hospital.id)
-            .where(
-                human_post_publish_review_predicate(),
-                ContentItem.published_at < overdue_before,
-                publicly_operational_hospital_predicate(),
-            )
-            .order_by(ContentItem.published_at, ContentItem.id)
-        ).all()
-        enqueued = 0
-        for item, hospital in rows:
-            enqueue_post_publish_review_overdue_notification_sync(db, item, hospital)
-            enqueued += 1
-        db.commit()
-    return enqueued
+    """Keep overdue review visible in Admin without producing Slack noise."""
+
+    del now
+    # The Admin badge is query-derived by the operations query; no mutation or
+    # notification is required for it to remain visible.
+    return 0
 
 
 def _admin_content_url(hospital_id: object, content_id: object) -> str:
@@ -2524,6 +2561,26 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             return None
         if hospital.status != HospitalStatus.ACTIVE or not hospital.site_live:
             return None
+
+        fallback_url = _confirmed_hospital_hero_url(hospital)
+        if (
+            item.title
+            and item.body
+            and not getattr(item, "image_url", None)
+            and fallback_url is not None
+            and _morning_close_due(item)
+        ):
+            item.image_url = fallback_url
+            item.image_prompt = CONFIRMED_HERO_FALLBACK_PROMPT
+            write_audit_log_sync(
+                db,
+                action="auto_publish_confirmed_image_fallback",
+                hospital_id=hospital.id,
+                actor=AUTO_PUBLISH_ACTOR,
+                target_type="content_item",
+                target_id=item.id,
+                detail={"scheduled_date": str(item.scheduled_date)},
+            )
 
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
         assessment = assess_content_publication(item, philosophy)
@@ -2703,19 +2760,9 @@ def run_sov_for_hospital(self, hospital_id: str):
                     SOV_HIGH_PRIORITY_CAP,
                 )
                 _run_async(
-                    open_ops_incident(
-                        pipeline="weekly_sov_capacity",
-                        object_type="hospital",
-                        object_id=str(hospital.id),
-                        incident_type="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
-                        safe_error_code="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
-                        problem="주간 측정의 높은 우선순위 항목 수가 안전 상한을 초과했습니다.",
-                        customer_impact="일부 높은 우선순위 질문이 이번 주 측정에서 제외되었습니다.",
-                        next_action="운영센터에서 쿼리 타깃과 변형 수를 검토하세요.",
-                        source_type="WEEKLY_SOV_MEASUREMENT",
-                        hospital_name=hospital.name,
-                        hospital_id=hospital.id,
-                        actor="weekly-sov-worker",
+                    open_weekly_sov_capacity_digest(
+                        week_key=week_key,
+                        operation_run_id=_operation_run_id_from_task(self),
                     )
                 )
 

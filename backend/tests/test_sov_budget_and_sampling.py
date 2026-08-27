@@ -9,7 +9,7 @@
 """
 import uuid
 
-from app.workers import tasks
+from app.workers import tasks, weekly_sov_incident_control
 
 # ── 비용 가드 예약 단위 = 실제 공급자 호출 수 ──
 
@@ -34,6 +34,15 @@ def test_budget_units_never_undercount_when_repeats_grow():
     single = tasks.sov_budget_units(query_count=3, platform_count=2, repeat_count=1)
     many = tasks.sov_budget_units(query_count=3, platform_count=2, repeat_count=10)
     assert many == single * 10
+
+
+def test_high_priority_capacity_uses_one_digest_key_per_week():
+    first = weekly_sov_incident_control._capacity_digest_key("2026-W35")
+    same_week_other_hospital = weekly_sov_incident_control._capacity_digest_key("2026-W35")
+    next_week = weekly_sov_incident_control._capacity_digest_key("2026-W36")
+
+    assert first == same_week_other_hospital
+    assert first != next_week
 
 
 # ── V0 표본 질의 결정성 ──
