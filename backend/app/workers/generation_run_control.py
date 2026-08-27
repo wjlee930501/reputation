@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
+import anthropic
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
@@ -96,7 +97,7 @@ class ExplicitRunContext:
 def classify_generation_failure(error: BaseException) -> tuple[str, str]:
     """Map runtime failures to allowlisted operator-safe facts."""
     match error:
-        case TimeoutError():
+        case TimeoutError() | anthropic.APITimeoutError():
             code = "PROVIDER_TIMEOUT"
         case ConnectionError():
             code = "PROVIDER_UNAVAILABLE"

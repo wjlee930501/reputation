@@ -228,40 +228,19 @@ async def test_generation_gate_inherits_open_legacy_episode_without_repaging(
     assert captured == {"opened": 1, "notified": 0}
 
 
-async def test_generation_gate_does_not_touch_unchanged_open_incident(monkeypatch) -> None:
-    incident_id = uuid.uuid4()
-    current = SimpleNamespace(id=incident_id, state="OPEN")
+def test_open_generation_episode_can_wake_at_morning_cutoff_once() -> None:
+    should_send = generation_incident_control._should_send_generation_notification
 
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, _exc_type, _exc, _traceback):
-            return None
-
-        async def scalar(self, _statement):
-            return current
-
-    async def must_not_open(*_args, **_kwargs):
-        raise AssertionError("unchanged open incident must not be touched")
-
-    monkeypatch.setattr(
-        generation_incident_control,
-        "get_async_sessionmaker",
-        lambda: lambda: FakeSession(),
+    assert should_send(
+        notify_requested=True,
+        previous_state="OPEN",
+        notification_already_enqueued=False,
     )
-    monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", must_not_open)
-
-    result = await generation_incident_control.open_generation_incident(
-        item_id=uuid.uuid4(),
-        hospital_id=uuid.uuid4(),
-        hospital_name="테스트의원",
-        run_id=uuid.uuid4(),
-        code="MISSING_APPROVED_ESSENCE",
-        message="raw detail",
+    assert not should_send(
+        notify_requested=True,
+        previous_state="OPEN",
+        notification_already_enqueued=True,
     )
-
-    assert result == incident_id
 
 
 async def test_open_cause_suppresses_content_not_generated_symptom(monkeypatch) -> None:
@@ -366,6 +345,7 @@ def test_generation_gate_is_hospital_scoped_and_paged_once_per_state_episode() -
     assert not generation_incident_control._should_send_generation_notification(
         notify_requested=True,
         previous_state="OPEN",
+        notification_already_enqueued=True,
     )
 
 
@@ -373,22 +353,23 @@ def test_generation_incident_pages_once_until_it_recovers() -> None:
     should_send = generation_incident_control._should_send_generation_notification
 
     assert should_send(notify_requested=True, previous_state=None)
-    assert not should_send(notify_requested=True, previous_state="OPEN")
+    assert not should_send(
+        notify_requested=True,
+        previous_state="OPEN",
+        notification_already_enqueued=True,
+    )
     assert not should_send(notify_requested=False, previous_state=None)
     assert should_send(notify_requested=True, previous_state="RECOVERED")
 
 
-def test_expected_generation_pending_never_pages_but_actual_failure_does() -> None:
-    should_send = generation_incident_control._should_send_generation_notification
-    assert generation_incident_control._IMMEDIATE_GENERATION_NOTIFICATION_CODES == {
-        "COST_BLOCKED",
+def test_generation_notification_candidates_wait_for_morning_readiness_proof() -> None:
+    assert generation_incident_control._IMMEDIATE_GENERATION_NOTIFICATION_CODES == frozenset()
+
+    morning_codes = (
         "PROVIDER_TIMEOUT",
         "PROVIDER_UNAVAILABLE",
         "GENERATION_REJECTED",
         "GENERATION_FAILED",
-    }
-
-    expected_pending_codes = (
         "CONTENT_NOT_GENERATED",
         "FORBIDDEN_EXPRESSION",
         "ESSENCE_NOT_ALIGNED",
@@ -398,48 +379,11 @@ def test_expected_generation_pending_never_pages_but_actual_failure_does() -> No
         "GENERATION_LEASE_ACTIVE",
         "STALE_GENERATION_CLAIM",
     )
-    for code in expected_pending_codes:
-        assert not generation_incident_control.generation_notify_requested(code)
-        assert not should_send(notify_requested=True, previous_state=None, code=code)
-        assert not should_send(
-            notify_requested=True,
-            previous_state=None,
-            code=code,
-            has_open_cause=False,
-        )
-
-    for code in (
-        "COST_BLOCKED",
-        "PROVIDER_TIMEOUT",
-        "PROVIDER_UNAVAILABLE",
-        "GENERATION_REJECTED",
-        "GENERATION_FAILED",
-    ):
+    for code in morning_codes:
         assert generation_incident_control.generation_notify_requested(code)
-        assert should_send(
-            notify_requested=True,
-            previous_state=None,
-            code=code,
-            has_open_cause=False,
-        )
-
+    assert not generation_incident_control.generation_notify_requested("COST_BLOCKED")
     assert not generation_incident_control.generation_notify_requested(
         "MISSING_APPROVED_ESSENCE"
-    )
-    assert not should_send(
-        notify_requested=False, previous_state=None, code="MISSING_APPROVED_ESSENCE"
-    )
-    assert not should_send(
-        notify_requested=True,
-        previous_state=None,
-        code="CONTENT_NOT_GENERATED",
-        has_open_cause=True,
-    )
-    assert not should_send(
-        notify_requested=True,
-        previous_state=None,
-        code="CONTENT_NOT_GENERATED",
-        has_open_cause=False,
     )
 
 
@@ -449,110 +393,54 @@ def test_human_now_generation_pages_once_per_episode_then_again_after_recovery()
 
     assert generation_incident_control.generation_notify_requested(code)
     assert should_send(notify_requested=True, previous_state=None, code=code)
-    assert not should_send(notify_requested=True, previous_state="OPEN", code=code)
-    assert not should_send(notify_requested=True, previous_state="RETRYING", code=code)
-    assert should_send(notify_requested=True, previous_state="RECOVERED", code=code)
-
-
-def test_morning_blocked_self_healable_codes_do_not_request_slack() -> None:
-    for code in (
-        "CONTENT_NOT_GENERATED",
-        "MISSING_REFERENCES",
-        "FORBIDDEN_EXPRESSION",
-        "ESSENCE_NOT_ALIGNED",
-        "CONTENT_IMAGE_NOT_READY",
-    ):
-        assert not generation_incident_control.generation_notify_requested(code)
-
-
-def test_seven_forty_five_then_eight_oh_one_content_not_generated_never_pages() -> None:
-    should_send = generation_incident_control._should_send_generation_notification
-
     assert not should_send(
-        notify_requested=generation_incident_control.generation_notify_requested(
-            "CONTENT_NOT_GENERATED"
-        ),
-        previous_state=None,
-        code="CONTENT_NOT_GENERATED",
-        has_open_cause=True,
+        notify_requested=True,
+        previous_state="OPEN",
+        code=code,
+        notification_already_enqueued=True,
     )
     assert not should_send(
         notify_requested=True,
-        previous_state=None,
-        code="CONTENT_NOT_GENERATED",
-        has_open_cause=False,
+        previous_state="RETRYING",
+        code=code,
+        notification_already_enqueued=True,
     )
+    assert should_send(notify_requested=True, previous_state="RECOVERED", code=code)
 
 
-def test_expected_pending_promotes_to_human_now_once_after_48h() -> None:
-    should_send = generation_incident_control._should_send_generation_notification
-    first_seen = datetime(2026, 8, 16, 1, 0, tzinfo=UTC)
-    before = datetime(2026, 8, 18, 0, 59, tzinfo=UTC)
-    crossed = datetime(2026, 8, 18, 1, 0, tzinfo=UTC)
-    after = datetime(2026, 8, 18, 2, 0, tzinfo=UTC)
+def test_morning_cutoff_requires_due_date_and_exact_missing_artifact() -> None:
+    due = SimpleNamespace(
+        scheduled_date=datetime(2026, 8, 19).date(),
+        body=None,
+        image_url=None,
+    )
+    before = datetime(2026, 8, 18, 22, 44, tzinfo=UTC)  # 07:44 KST
+    cutoff = datetime(2026, 8, 18, 22, 45, tzinfo=UTC)  # 07:45 KST
 
-    assert not should_send(
-        notify_requested=False,
-        previous_state="OPEN",
-        code="CONTENT_NOT_GENERATED",
-        first_seen_at=first_seen,
-        last_seen_at=first_seen,
-        now=before,
+    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "GENERATION_REJECTED"):
+        assert not generation_incident_control._morning_notification_due(
+            code=code, item=due, observed_at=before
+        )
+        assert generation_incident_control._morning_notification_due(
+            code=code, item=due, observed_at=cutoff
+        )
+
+    due.body = "이미 저장된 본문"
+    assert not generation_incident_control._morning_notification_due(
+        code="PROVIDER_TIMEOUT", item=due, observed_at=cutoff
     )
-    assert should_send(
-        notify_requested=False,
-        previous_state="OPEN",
-        code="CONTENT_NOT_GENERATED",
-        first_seen_at=first_seen,
-        last_seen_at=first_seen,
-        now=crossed,
+    assert generation_incident_control._morning_notification_due(
+        code="CONTENT_IMAGE_NOT_READY", item=due, observed_at=cutoff
     )
-    assert not should_send(
-        notify_requested=False,
-        previous_state="OPEN",
-        code="CONTENT_NOT_GENERATED",
-        first_seen_at=first_seen,
-        last_seen_at=crossed,
-        now=after,
+    due.image_url = "https://cdn.example.test/image.jpg"
+    assert not generation_incident_control._morning_notification_due(
+        code="CONTENT_IMAGE_NOT_READY", item=due, observed_at=cutoff
     )
 
-    assert not should_send(
-        notify_requested=False,
-        previous_state="RECOVERED",
-        code="CONTENT_NOT_GENERATED",
-        first_seen_at=first_seen,
-        last_seen_at=crossed,
-        now=after + timedelta(days=2),
-    )
-    assert not should_send(
-        notify_requested=False,
-        previous_state="ACKNOWLEDGED",
-        code="CONTENT_NOT_GENERATED",
-        first_seen_at=first_seen,
-        last_seen_at=crossed,
-        now=after + timedelta(days=2),
-    )
-
-    # Reopen starts a new episode clock. The previous 48h crossing must not
-    # silence the second episode (last_seen_at >= old threshold forever).
-    episode2_start = datetime(2026, 8, 20, 9, 0, tzinfo=UTC)
-    episode2_before = datetime(2026, 8, 22, 8, 59, tzinfo=UTC)
-    episode2_cross = datetime(2026, 8, 22, 9, 0, tzinfo=UTC)
-    assert not should_send(
-        notify_requested=False,
-        previous_state="OPEN",
-        code="CONTENT_NOT_GENERATED",
-        first_seen_at=episode2_start,
-        last_seen_at=episode2_start,
-        now=episode2_before,
-    )
-    assert should_send(
-        notify_requested=False,
-        previous_state="OPEN",
-        code="CONTENT_NOT_GENERATED",
-        first_seen_at=episode2_start,
-        last_seen_at=episode2_start,
-        now=episode2_cross,
+    due.scheduled_date = datetime(2026, 8, 20).date()
+    due.body = None
+    assert not generation_incident_control._morning_notification_due(
+        code="GENERATION_REJECTED", item=due, observed_at=cutoff
     )
 
 

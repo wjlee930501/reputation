@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
-from app.models.operations import Incident, IncidentSeverity, IncidentState
+from app.models.content import ContentItem
+from app.models.operations import (
+    Incident,
+    IncidentSeverity,
+    IncidentState,
+    NotificationOutbox,
+)
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
 from app.services.incidents import (
     build_incident_key,
@@ -21,24 +28,35 @@ from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
 
-_EXPECTED_PENDING_CODES = {
-    "CONTENT_NOT_GENERATED",
-    "FORBIDDEN_EXPRESSION",
-    "ESSENCE_NOT_ALIGNED",
-    "MISSING_REFERENCES",
-    "CONTENT_IMAGE_NOT_READY",
-    "IMAGE_GENERATION_FAILED",
-    "GENERATION_LEASE_ACTIVE",
-    "STALE_GENERATION_CLAIM",
-}
-_IMMEDIATE_GENERATION_NOTIFICATION_CODES = {
-    "COST_BLOCKED",
+_MORNING_BODY_NOTIFICATION_CODES = {
     "PROVIDER_TIMEOUT",
     "PROVIDER_UNAVAILABLE",
     "GENERATION_REJECTED",
     "GENERATION_FAILED",
+    "CONTENT_NOT_GENERATED",
+    "GENERATION_LEASE_ACTIVE",
+    "STALE_GENERATION_CLAIM",
 }
-_EXPECTED_PENDING_STALE_AFTER = timedelta(hours=48)
+_MORNING_STORED_GATE_NOTIFICATION_CODES = {
+    "FORBIDDEN_EXPRESSION",
+    "ESSENCE_NOT_ALIGNED",
+    "MISSING_REFERENCES",
+}
+_MORNING_IMAGE_NOTIFICATION_CODES = {
+    "CONTENT_IMAGE_NOT_READY",
+    "IMAGE_GENERATION_FAILED",
+}
+# The cost guard owns its hard-stop incident/outbox projection.  Generation still
+# records COST_BLOCKED, but a second generation Slack would violate the one-message
+# hard-stop contract.
+_IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = frozenset()
+_MORNING_GENERATION_NOTIFICATION_CODES = frozenset(
+    _MORNING_BODY_NOTIFICATION_CODES
+    | _MORNING_STORED_GATE_NOTIFICATION_CODES
+    | _MORNING_IMAGE_NOTIFICATION_CODES
+)
+_KST = ZoneInfo("Asia/Seoul")
+_MORNING_NOTIFICATION_START = time(7, 45)
 
 
 def _generation_operator_copy(code: str) -> tuple[str, str]:
@@ -51,7 +69,8 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             "일시적인 외부 서비스 장애입니다. 다음 예약 배치가 자동으로 다시 시도하므로 지금은 기다리세요."
         ),
         "GENERATION_REJECTED": (
-            "운영 센터에서 해당 항목의 “작업 다시 시도”를 한 번 누르고 완료 결과를 확인하세요."
+            "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다. "
+            "운영 센터에서 게이트 문구와 승인된 병원 정보를 확인하세요."
         ),
         "MISSING_APPROVED_ESSENCE": (
             "병원별로 근거 자료를 처리하고 운영 기준을 한 번 승인하세요. 승인 전에는 재시도할 "
@@ -101,7 +120,9 @@ def _generation_safe_cause(code: str) -> str:
     return {
         "PROVIDER_TIMEOUT": "콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.",
         "PROVIDER_UNAVAILABLE": "콘텐츠 생성 서비스를 일시적으로 사용할 수 없습니다.",
-        "GENERATION_REJECTED": "콘텐츠 생성 서비스가 이번 요청을 처리하지 못했습니다.",
+        "GENERATION_REJECTED": (
+            "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다."
+        ),
         "MISSING_APPROVED_ESSENCE": "승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다.",
         "COST_BLOCKED": "오늘 설정된 사용 한도에 도달해 자동 생성을 시작하지 않았습니다.",
         "IMAGE_GENERATION_FAILED": "본문은 준비됐지만 대표 이미지를 만들지 못했습니다.",
@@ -159,23 +180,37 @@ def _incident_identity(
 
 
 def generation_notify_requested(code: str) -> bool:
-    """Slack only when AI cannot proceed and a human must act now."""
+    """Return whether this code may page during the final morning close window."""
 
-    return code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES
+    return code in (
+        _IMMEDIATE_GENERATION_NOTIFICATION_CODES
+        | _MORNING_GENERATION_NOTIFICATION_CODES
+    )
 
 
-def _expected_pending_crossed_stale(
-    *,
-    first_seen_at: datetime | None,
-    last_seen_at: datetime | None,
-    now: datetime | None,
+def _morning_notification_due(
+    *, code: str, item: ContentItem | None, observed_at: datetime
 ) -> bool:
-    """Promote expected pending once, 48h after the current episode start (first_seen_at)."""
+    """Page only for an unresolved due slot at/after its 07:45 KST close sweep."""
 
-    if first_seen_at is None or last_seen_at is None or now is None:
+    if code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES:
+        return True
+    if code not in _MORNING_GENERATION_NOTIFICATION_CODES or item is None:
         return False
-    threshold = first_seen_at + _EXPECTED_PENDING_STALE_AFTER
-    return last_seen_at < threshold <= now
+    local_now = observed_at.astimezone(_KST)
+    scheduled_date = getattr(item, "scheduled_date", None)
+    if scheduled_date is None or scheduled_date > local_now.date():
+        return False
+    if local_now.time().replace(tzinfo=None) < _MORNING_NOTIFICATION_START:
+        return False
+
+    body_present = bool(str(getattr(item, "body", "") or "").strip())
+    image_present = bool(str(getattr(item, "image_url", "") or "").strip())
+    if code in _MORNING_BODY_NOTIFICATION_CODES:
+        return not body_present
+    if code in _MORNING_IMAGE_NOTIFICATION_CODES:
+        return body_present and not image_present
+    return body_present
 
 
 def _should_send_generation_notification(
@@ -184,32 +219,15 @@ def _should_send_generation_notification(
     previous_state: str | None,
     code: str | None = None,
     has_open_cause: bool = False,
+    notification_already_enqueued: bool = False,
     first_seen_at: datetime | None = None,
     last_seen_at: datetime | None = None,
     now: datetime | None = None,
 ) -> bool:
-    """Page once per human-now episode; expected pending pages only after 48h."""
+    """Page once per episode after the caller proves the morning gate is still open."""
 
-    if has_open_cause:
-        return False
-    if code in _EXPECTED_PENDING_CODES:
-        if previous_state in {
-            IncidentState.RECOVERED.value,
-            IncidentState.ACKNOWLEDGED.value,
-        }:
-            # New episode. Do not score stale against the previous episode clock.
-            return False
-        return _expected_pending_crossed_stale(
-            first_seen_at=first_seen_at,
-            last_seen_at=last_seen_at,
-            now=now,
-        )
-    if not notify_requested:
-        return False
-    return previous_state is None or previous_state in {
-        IncidentState.RECOVERED.value,
-        IncidentState.ACKNOWLEDGED.value,
-    }
+    del previous_state, code, first_seen_at, last_seen_at, now
+    return notify_requested and not has_open_cause and not notification_already_enqueued
 
 
 def _projection(
@@ -282,16 +300,6 @@ async def open_generation_incident(
             if legacy_open is not None:
                 previous_state = legacy_open.state
 
-        # An unchanged preparation gate has no new operational information.
-        # Item-level operation runs still record every scheduler observation;
-        # avoid churning the durable incident version and outbox projection.
-        if (
-            code == "MISSING_APPROVED_ESSENCE"
-            and previous is not None
-            and previous.state == IncidentState.OPEN
-        ):
-            return previous.id
-
         customer_impact, next_action = _generation_operator_copy(code)
         incident = await open_or_touch_incident(
             db,
@@ -316,28 +324,42 @@ async def open_generation_incident(
             reason="generation attempt failed",
         )
         observed_at = datetime.now(UTC)
+        get_item = getattr(db, "get", None)
+        item = await get_item(ContentItem, item_id) if get_item is not None else None
+        notification_due = notify and _morning_notification_due(
+            code=code,
+            item=item,
+            observed_at=observed_at,
+        )
+        notification = None
+        notification_already_enqueued = False
+        if notification_due:
+            notification = build_open_incident_notification(
+                _projection(
+                    incident,
+                    hospital_name,
+                    run_id,
+                    "병원 운영 담당자",
+                    "예정 공개 전",
+                ),
+                settings.ADMIN_BASE_URL,
+            )
+            notification_already_enqueued = (
+                await db.scalar(
+                    select(NotificationOutbox.id).where(
+                        NotificationOutbox.dedupe_key == notification.dedupe_key
+                    )
+                )
+            ) is not None
         if _should_send_generation_notification(
-            notify_requested=notify,
+            notify_requested=notification_due,
             previous_state=previous_state,
             code=code,
             has_open_cause=has_open_cause,
-            first_seen_at=previous.first_seen_at if previous is not None else None,
-            last_seen_at=previous.last_seen_at if previous is not None else None,
-            now=observed_at,
+            notification_already_enqueued=notification_already_enqueued,
         ):
-            await enqueue_notification(
-                db,
-                build_open_incident_notification(
-                    _projection(
-                        incident,
-                        hospital_name,
-                        run_id,
-                        "병원 운영 담당자",
-                        "예정 공개 전",
-                    ),
-                    settings.ADMIN_BASE_URL,
-                ),
-            )
+            assert notification is not None
+            await enqueue_notification(db, notification)
         await db.commit()
         return incident.id
 

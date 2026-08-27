@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -41,6 +42,35 @@ def test_untracked_task_failure_does_not_emit_an_unrecoverable_alert(monkeypatch
     )
 
     assert delivered == []
+
+
+def test_classified_generation_run_suppresses_generic_failure_slack(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
+    run = SimpleNamespace(
+        id=run_id,
+        operation_type="REGENERATE_CONTENT",
+        safe_error_code="GENERATION_REJECTED",
+    )
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", FakeSession)
+    monkeypatch.setattr(task_incident_control, "_tracked_run", lambda *_args: run)
+    monkeypatch.setattr(
+        task_incident_control,
+        "_open_incident",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("generic incident must not be opened after classification")
+        ),
+    )
+
+    assert task_incident_control.record_task_failure(task, "worker-task") is False
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,10 @@ from app.services.notification_messages import (
 )
 
 _FINGERPRINT = IncidentFingerprint.UNKNOWN
+_CLASSIFIED_GENERATION_OPERATIONS = {
+    "REGENERATE_CONTENT",
+    "REGENERATE_CONTENT_IMAGE",
+}
 
 
 class SignalRequest(Protocol):
@@ -53,6 +57,15 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
     with SyncSessionLocal() as db:
         run = _tracked_run(db, run_id, worker_task_id)
         if run is None:
+            return False
+        if (
+            run.operation_type in _CLASSIFIED_GENERATION_OPERATIONS
+            and run.safe_error_code
+            and run.safe_error_code != "TASK_FAILED"
+        ):
+            # The task body has already terminalized the exact run and projected a
+            # generation-specific incident.  The Celery failure signal carries no
+            # new truth and must not create a second generic Slack episode.
             return False
         previous_state = db.scalar(
             select(Incident.state).where(Incident.dedupe_key == _incident_key(run.id))
