@@ -123,7 +123,7 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5696",
     },
     {
-        "keywords": _ORTHOPEDIC_FAQ_KEYWORDS,
+        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "관절", "통증"),
         "title": "질병관리청 국가건강정보포털 — 요통",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",
     },
@@ -133,7 +133,7 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5969",
     },
     {
-        "keywords": _ORTHOPEDIC_FAQ_KEYWORDS,
+        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "관절", "통증"),
         "title": "질병관리청 국가건강정보포털 — 추간판탈출증(디스크)",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3348",
     },
