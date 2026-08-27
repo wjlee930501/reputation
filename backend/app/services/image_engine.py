@@ -173,12 +173,19 @@ class _CallCounter:
         self.count += 1
 
 
-async def _record_image_calls(counter: _CallCounter) -> None:
+async def _record_image_calls(
+    counter: _CallCounter, hospital_id: uuid.UUID | str | None = None
+) -> None:
     if counter.count <= 0:
         return
     from app.services import cost_guard
 
     await cost_guard.record_provider_call("image", count=counter.count)
+    if hospital_id is not None:
+        from app.services.hospital_usage import record_usage
+
+        for _ in range(counter.count):
+            await record_usage(hospital_id=hospital_id, kind="image")
 
 
 async def generate_image(
@@ -187,6 +194,7 @@ async def generate_image(
     *,
     topic: str | None = None,
     direction: HospitalImageDirection | None = None,
+    hospital_id: uuid.UUID | str | None = None,
 ) -> tuple[str, str]:
     """
     대표 이미지 생성 후 GCS에 저장.
@@ -225,7 +233,7 @@ async def generate_image(
         except Exception as e:  # noqa: BLE001 — gpt-image-2 불가 시 Google 경로로 폴백
             logger.error("gpt-image-2 path failed, falling back to Google image: %s", e)
         finally:
-            await _record_image_calls(attempts)
+            await _record_image_calls(attempts, hospital_id)
 
     # ── Vertex AI Gemini image (기본 또는 폴백) ──
     if not settings.GCP_PROJECT_ID:
@@ -255,7 +263,7 @@ async def generate_image(
             logger.error("Google image fallback failed: %s", fallback_exc)
             return ("", "")
     finally:
-        await _record_image_calls(fallback_attempts)
+        await _record_image_calls(fallback_attempts, hospital_id)
 
 
 def _upload_png_to_gcs(image_bytes: bytes, hospital_name: str) -> str:

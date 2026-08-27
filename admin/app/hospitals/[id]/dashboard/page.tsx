@@ -108,6 +108,24 @@ interface AuditLogRow {
   created_at: string | null
 }
 
+interface HospitalUsageWindow {
+  count: number
+  input_tokens: number
+  output_tokens: number
+}
+
+interface HospitalUsageKind {
+  kind: string
+  label: string
+  daily: HospitalUsageWindow
+  monthly: HospitalUsageWindow
+}
+
+interface HospitalUsageResponse {
+  hospital_id: string
+  kinds: HospitalUsageKind[]
+}
+
 const AUDIT_ACTION_LABELS: Record<string, string> = {
   trigger_v0_report: '초기 진단 리포트 다시 만들기',
   trigger_v0_report_requested: '초기 진단 리포트 다시 만들기 요청',
@@ -150,6 +168,12 @@ function formatDateTime(value: string | null) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function formatUsage(value: number | null | undefined) {
+  // 값이 비어 오는 것은 "0회"가 아니라 "관측 없음"이다 — 0으로 접으면 조회 실패가
+  // 사용량 0처럼 읽힌다.
+  return typeof value === 'number' ? value.toLocaleString('ko-KR') : '—'
 }
 
 function formatMeasurementMethod(method: string) {
@@ -234,6 +258,7 @@ export default function DashboardPage() {
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
   const [operationError, setOperationError] = useState<string | null>(null)
   const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([])
+  const [usageKinds, setUsageKinds] = useState<HospitalUsageKind[]>([])
   // 이번 달 전월 이월 콘텐츠 중 아직 발행되지 않은 슬롯 수 — 우선 발행 알림용
   const [carriedOverCount, setCarriedOverCount] = useState(0)
 
@@ -263,8 +288,9 @@ export default function DashboardPage() {
       ),
       fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${id}/query-targets`),
       fetchAPI<AuditLogRow[]>(`/admin/hospitals/${id}/operations/audit-logs?limit=20`),
+      fetchAPI<HospitalUsageResponse>(`/admin/hospitals/${id}/usage`),
     ])
-      .then(([trend, qs, readinessData, runs, actions, targets, audit]) => {
+      .then(([trend, qs, readinessData, runs, actions, targets, audit, usage]) => {
         if (cancelled) return
         let failedCount = 0
         function unwrap<T>(result: PromiseSettledResult<T>, fallback: T): T {
@@ -279,6 +305,7 @@ export default function DashboardPage() {
         const actionsValue = unwrap(actions, [] as ExposureAction[])
         const targetsValue = unwrap(targets, [] as AIQueryTarget[])
         const auditValue = unwrap(audit, [] as AuditLogRow[])
+        const usageValue = unwrap(usage, null as HospitalUsageResponse | null)
 
         setTrendData(Array.isArray(trendValue) ? trendValue : [])
         setQueries(Array.isArray(queriesValue) ? queriesValue : [])
@@ -287,6 +314,7 @@ export default function DashboardPage() {
         setExposureActions(Array.isArray(actionsValue) ? actionsValue : [])
         setQueryTargets(Array.isArray(targetsValue) ? targetsValue : [])
         setAuditLogs(Array.isArray(auditValue) ? auditValue : [])
+        setUsageKinds(Array.isArray(usageValue?.kinds) ? usageValue.kinds : [])
 
         if (failedCount > 0) {
           setError('일부 데이터를 불러오지 못했습니다. 표시된 수치가 불완전할 수 있으니 새로고침 후 다시 확인해 주세요.')
@@ -625,6 +653,47 @@ export default function DashboardPage() {
                 <AlertLine tone="good" label="큰 확인 항목 없음" hint="현재는 다음 액션 중심으로 운영을 이어가면 됩니다." />
               )}
             </div>
+          </div>
+        </section>
+      )}
+
+      {!loading && (
+        <section className="admin-panel p-5">
+          <div>
+            <p className="admin-eyebrow">관측 지표</p>
+            <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">사용량</h3>
+            <p className="body4 admin-muted mt-1">
+              공급자 호출과 공급자가 보고한 토큰을 병원별로 관측한 값입니다. 오늘·이번 달 모두 한국 시간 기준이며,
+              청구 또는 과금 자료가 아닙니다.
+            </p>
+          </div>
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead>
+                <tr className="text-left text-xs font-medium text-slate-500">
+                  <th className="px-3 py-2">구분</th>
+                  <th className="px-3 py-2 text-right">오늘 호출</th>
+                  <th className="px-3 py-2 text-right">오늘 입력 토큰</th>
+                  <th className="px-3 py-2 text-right">오늘 출력 토큰</th>
+                  <th className="px-3 py-2 text-right">이번 달 호출</th>
+                  <th className="px-3 py-2 text-right">이번 달 입력 토큰</th>
+                  <th className="px-3 py-2 text-right">이번 달 출력 토큰</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {usageKinds.map((usage) => (
+                  <tr key={usage.kind}>
+                    <td className="px-3 py-2 font-medium text-slate-800">{usage.label}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatUsage(usage.daily?.count)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatUsage(usage.daily?.input_tokens)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatUsage(usage.daily?.output_tokens)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatUsage(usage.monthly?.count)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatUsage(usage.monthly?.input_tokens)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-700">{formatUsage(usage.monthly?.output_tokens)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
       )}

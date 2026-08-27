@@ -69,6 +69,7 @@ from app.services.hospital_logo import (
     public_logo_url,
 )
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.hospital_usage import LEDGER_KINDS, aggregate_usage
 from app.services.keyword_analysis import (
     analyze_keyword,
 )
@@ -301,6 +302,32 @@ class ProfileAutofillRequest(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("URL must be absolute http(s)")
         return cleaned
+
+
+class HospitalUsageWindowResponse(BaseModel):
+    count: int
+    input_tokens: int
+    output_tokens: int
+
+
+class HospitalUsageKindResponse(BaseModel):
+    kind: str
+    label: str
+    daily: HospitalUsageWindowResponse
+    monthly: HospitalUsageWindowResponse
+
+
+class HospitalUsageResponse(BaseModel):
+    hospital_id: str
+    kinds: list[HospitalUsageKindResponse]
+
+
+_HOSPITAL_USAGE_LABELS = {
+    "onboarding": "온보딩",
+    "content": "콘텐츠 생성",
+    "image": "이미지 생성",
+    "sov": "AI 답변 언급률 측정",
+}
 
 
 @dataclass(frozen=True)
@@ -590,6 +617,27 @@ async def list_hospitals(
 async def get_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     h = await _get_or_404(db, hospital_id)
     return _serialize(h)
+
+
+@router.get("/{hospital_id}/usage", response_model=HospitalUsageResponse)
+async def get_hospital_usage(
+    hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> HospitalUsageResponse:
+    """관측용 사용량 — 공급자 호출/토큰의 오늘(KST)·이번 달(KST) 합계. 청구 자료가 아니다."""
+    await _get_or_404(db, hospital_id)
+    totals = await aggregate_usage(db, hospital_id)
+    return HospitalUsageResponse(
+        hospital_id=str(hospital_id),
+        kinds=[
+            HospitalUsageKindResponse(
+                kind=kind,
+                label=_HOSPITAL_USAGE_LABELS[kind],
+                daily=HospitalUsageWindowResponse(**totals[kind]["daily"]),
+                monthly=HospitalUsageWindowResponse(**totals[kind]["monthly"]),
+            )
+            for kind in LEDGER_KINDS
+        ],
+    )
 
 
 @router.patch("/{hospital_id}/profile", response_model=HospitalDetail)
@@ -929,7 +977,12 @@ async def autofill_hospital_profile(
     website_url = body.website_url or h.website_url
     blog_url = body.blog_url or h.blog_url
 
-    result = await autofill_profile(name, website_url=website_url, blog_url=blog_url)
+    result = await autofill_profile(
+        name,
+        website_url=website_url,
+        blog_url=blog_url,
+        hospital_id=hospital_id,
+    )
 
     await write_audit_log(
         db,

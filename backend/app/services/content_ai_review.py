@@ -220,6 +220,15 @@ async def review_generated_content(
                 ],
             ),
         )
+        from app.services.hospital_usage import record_usage
+
+        usage = getattr(response, "usage", None)
+        await record_usage(
+            hospital_id=getattr(hospital, "id", None),
+            kind="content",
+            input_tokens=getattr(usage, "input_tokens", 0),
+            output_tokens=getattr(usage, "output_tokens", 0),
+        )
         return _parse_response(response.content[0].text)
     except Exception as exc:  # provider and parser failures are advisory-unavailable
         logger.warning("Independent content AI review unavailable: %s", type(exc).__name__)

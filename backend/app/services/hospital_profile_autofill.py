@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
 
 import anthropic
@@ -167,7 +168,9 @@ async def _gather_sources(
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
-async def _extract_with_claude(name: str, aggregated_text: str) -> dict:
+async def _extract_with_claude(
+    name: str, aggregated_text: str, *, hospital_id: uuid.UUID | str | None = None
+) -> dict:
     user_message = (
         f"[병원명]\n{name}\n\n"
         f"[출처 텍스트]\n{aggregated_text}\n\n"
@@ -189,6 +192,15 @@ async def _extract_with_claude(name: str, aggregated_text: str) -> dict:
             system=EXTRACTION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         ),
+    )
+    from app.services.hospital_usage import record_usage
+
+    usage = getattr(response, "usage", None)
+    await record_usage(
+        hospital_id=hospital_id,
+        kind="onboarding",
+        input_tokens=getattr(usage, "input_tokens", 0),
+        output_tokens=getattr(usage, "output_tokens", 0),
     )
     raw = response.content[0].text
     parsed = _parse_json_response(raw, json_module=json)
@@ -333,7 +345,11 @@ def _collect_violations(draft: dict) -> list[dict]:
 
 
 async def autofill_profile(
-    name: str, website_url: str | None = None, blog_url: str | None = None
+    name: str,
+    website_url: str | None = None,
+    blog_url: str | None = None,
+    *,
+    hospital_id: uuid.UUID | str | None = None,
 ) -> AutofillResult:
     """병원명 + URL로 프로파일 초안을 생성한다(저장하지 않음).
 
@@ -347,7 +363,7 @@ async def autofill_profile(
 
     aggregated = "\n\n".join(blocks)
     try:
-        fields = await _extract_with_claude(name, aggregated)
+        fields = await _extract_with_claude(name, aggregated, hospital_id=hospital_id)
     except Exception as exc:  # noqa: BLE001 — 추출 실패는 치명적이지 않음
         logger.warning("autofill extraction failed for %s: %s", name, exc)
         return result

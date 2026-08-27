@@ -459,6 +459,16 @@ async def generate_content(
         ),
     )
 
+    from app.services.hospital_usage import record_usage
+
+    usage = getattr(response, "usage", None)
+    await record_usage(
+        hospital_id=getattr(hospital, "id", None),
+        kind="content",
+        input_tokens=getattr(usage, "input_tokens", 0),
+        output_tokens=getattr(usage, "output_tokens", 0),
+    )
+
     raw = response.content[0].text
 
     result = _parse_json_response(raw, json_module=json)
