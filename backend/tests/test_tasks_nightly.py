@@ -4,6 +4,10 @@ import uuid
 from datetime import date
 from types import SimpleNamespace
 
+
+class APITimeoutError(Exception):
+    """Dummy anthropic.APITimeoutError for classification test."""
+
 import arrow
 import httpx
 import pytest
@@ -470,6 +474,7 @@ def test_weekly_manifest_without_a_platform_fails_closed():
         (TimeoutError("secret-token"), "PROVIDER_TIMEOUT"),
         (ConnectionError("secret-token"), "PROVIDER_UNAVAILABLE"),
         (ValueError("secret-token"), "GENERATION_REJECTED"),
+        (APITimeoutError("secret-token"), "PROVIDER_TIMEOUT"),
         (RuntimeError("secret-token"), "GENERATION_FAILED"),
     ],
 )

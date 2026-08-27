@@ -102,6 +102,8 @@ def classify_generation_failure(error: BaseException) -> tuple[str, str]:
             code = "PROVIDER_UNAVAILABLE"
         case ValueError():
             code = "GENERATION_REJECTED"
+        case _ if type(error).__name__ == "APITimeoutError":
+            code = "PROVIDER_TIMEOUT"
         case _:
             code = "GENERATION_FAILED"
     return code, _SAFE_FAILURE_MESSAGE
