@@ -22,6 +22,14 @@ const essencePage = readFileSync(
   new URL('../app/hospitals/[id]/essence/page.tsx', import.meta.url),
   'utf8',
 )
+const hospitalLayout = readFileSync(
+  new URL('../app/hospitals/[id]/layout.tsx', import.meta.url),
+  'utf8',
+)
+const wikiPage = readFileSync(
+  new URL('../app/hospitals/[id]/wiki/page.tsx', import.meta.url),
+  'utf8',
+)
 
 test('profile R1 offers one-click weekdays and keeps coordinates under advanced controls', () => {
   assert.match(profilePage, /월–금 한 번에 채우기/)
@@ -49,4 +57,11 @@ test('URL material title is fetched into an editable field and author defaults t
 test('dashboard does not hard-code dead-end recovery button guidance', () => {
   assert.doesNotMatch(dashboardPage, /지금 발행 \(운영 복구\)/)
   assert.doesNotMatch(dashboardPage, /해당 버튼이 없으면/)
+})
+
+test('photo guidance describes automatic publication and current state, not a required Wiki toggle', () => {
+  assert.doesNotMatch(hospitalLayout, /사진 공개 토글/)
+  assert.match(hospitalLayout, /사진 권리·공개 상태/)
+  assert.doesNotMatch(wikiPage, /사진 자산은 토글로/)
+  assert.match(wikiPage, /사진 자산의 사용 권리 기록과 현재 병원 사이트 표시 상태/)
 })

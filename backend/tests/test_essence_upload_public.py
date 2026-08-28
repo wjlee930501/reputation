@@ -32,8 +32,14 @@ def test_photo_upload_defaults_to_public(source_type: SourceType):
 
 
 @pytest.mark.parametrize("source_type", PHOTO_SOURCE_TYPES)
-def test_photo_upload_can_stay_private(source_type: SourceType):
-    assert resolve_upload_is_public(source_type, False) is False
+def test_complete_photo_upload_never_needs_a_followup_publish(source_type: SourceType):
+    assert resolve_upload_is_public(source_type, False, provenance_complete=True) is True
+
+
+@pytest.mark.parametrize("source_type", PHOTO_SOURCE_TYPES)
+def test_photo_upload_without_complete_provenance_stays_private(source_type: SourceType):
+    assert resolve_upload_is_public(source_type, None, provenance_complete=False) is False
+    assert resolve_upload_is_public(source_type, False, provenance_complete=False) is False
 
 
 @pytest.mark.parametrize(

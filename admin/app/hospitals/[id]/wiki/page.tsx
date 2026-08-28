@@ -253,7 +253,7 @@ export default function WikiPage() {
         <h2 className="mt-2 text-2xl font-bold text-slate-900">병원 자산 Wiki</h2>
         <p className="mt-2 text-sm text-slate-600 max-w-2xl">
           AE가 인입한 자료에서 추출된 근거 노트(claim + 출처 발췌)를 카테고리별로 모았습니다.
-          사진 자산은 토글로 /site 공개 표면에 노출 여부를 결정합니다.
+          사진 자산의 사용 권리 기록과 현재 병원 사이트 표시 상태도 함께 확인합니다.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
           <span>
@@ -273,12 +273,12 @@ export default function WikiPage() {
         </div>
       )}
 
-      {/* 사진 토글 */}
+      {/* 사진 공개 상태 */}
       <section className="rounded-2xl bg-white border border-slate-200 shadow-sm">
         <div className="flex items-start justify-between gap-3 px-6 py-5 border-b border-slate-100">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-600">
-              Photos · /site 노출 게이트
+              Photos · 병원 사이트 표시 상태
             </p>
             <h2 className="mt-1 text-lg font-bold text-slate-900">사진 자산 ({photos.length})</h2>
             <p className="mt-1 max-w-2xl text-sm text-slate-600">{PHOTO_PUBLIC_GATE_COPY}</p>
@@ -330,7 +330,13 @@ export default function WikiPage() {
                           className="rounded border-slate-300"
                         />
                         <span>
-                          {pendingToggleId === p.id ? '저장 중…' : '공개 표면에 노출'}
+                          {pendingToggleId === p.id
+                            ? '저장 중…'
+                            : p.is_public
+                              ? '병원 사이트 표시 중 · 선택 해제 시 공개 중지'
+                              : gate.state === 'PRIVATE_READY'
+                                ? '운영자가 공개 중지함 · 다시 표시'
+                                : '사용 권리 정보 필요'}
                         </span>
                       </label>
                       {gate.reason && (

@@ -24,6 +24,24 @@ test('onboarding surfaces replace SLA jargon with an actionable Korean due date'
   assert.match(ONBOARDING_PAGE, /병원명과 .* 개발팀에 전달/)
 })
 
+test('handoff escalation appears once and only while the handoff is actually overdue', () => {
+  assert.equal(
+    ONBOARDING_PAGE.match(/병원명과 현재 화면의 문구를 개발팀에 전달/g)?.length,
+    1,
+  )
+  assert.match(
+    ONBOARDING_PAGE,
+    /handoffDueStatus\.isOverdue && \([\s\S]{0,500}병원명과 현재 화면의 문구를 개발팀에 전달/,
+  )
+})
+
+test('the completed KEEP-8 header becomes status copy instead of another required task', () => {
+  assert.match(
+    ONBOARDING_PAGE,
+    /completedCount === onboardingSteps\.length \? '온보딩 상태' : '지금 해야 할 일'/,
+  )
+})
+
 test('new hospital copy matches navigation and explains create plus acceptance', () => {
   assert.match(NEW_HOSPITAL_PAGE, /<h1[^>]*>신규 병원 온보딩<\/h1>/)
   assert.match(ADMIN_SHELL, /label: '신규 병원 온보딩'/)

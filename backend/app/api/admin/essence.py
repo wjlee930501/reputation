@@ -155,19 +155,19 @@ def resolve_upload_is_public(
     *,
     provenance_complete: bool = True,
 ) -> bool:
-    """사진 업로드는 기본 공개. 비사진은 공개 요청이 와도 비공개로 둔다.
+    """권리 근거가 완전한 사진 업로드는 즉시 공개한다.
 
     권리 근거가 없는 사진은 공개로 저장될 수 없다(0052의 CHECK 제약). 공개를 명시적으로
     요청한 경우는 호출자가 먼저 422로 돌려보내므로, 여기서 비공개로 낮추는 것은 공개를
-    요청하지 않은 업로드뿐이다 — 파일은 남고 근거를 채우면 공개 토글로 내보낼 수 있다.
+    요청하지 않은 불완전한 업로드뿐이다. 완전한 근거를 함께 보낸 사진은 예전 폼 값과
+    무관하게 공개해, 업로드 뒤 별도 공개 PATCH가 필요하지 않게 한다. 운영자는 저장 후
+    공개 상태를 다시 끌 수 있다.
     """
     if source_type not in PHOTO_SOURCE_TYPES:
         return False
     if not provenance_complete:
         return False
-    if is_public_form is None:
-        return True
-    return bool(is_public_form)
+    return True
 
 
 def build_photo_source_metadata(

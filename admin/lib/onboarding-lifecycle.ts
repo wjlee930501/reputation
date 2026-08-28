@@ -345,21 +345,20 @@ export function deriveOnboardingSummary(
       stateLabel: '온보딩 완료',
       stateClassName: 'bg-green-100 text-green-800',
       headline: '공개 운영 시작까지 온보딩을 완료했습니다.',
-      detail: `이제 정기 운영 성과를 시작합니다. 다음 후속 작업은 ${nextOutcome.title}입니다.`,
-      nextActionLabel: nextOutcome.title,
-      nextActionHref: nextOutcome.href ?? null,
+      detail: 'KEEP-8 필수 작업은 모두 끝났습니다. 첫 발행과 AI 답변 언급률은 온보딩과 분리된 정기 운영 성과로 관리합니다.',
+      nextActionLabel: '',
+      nextActionHref: null,
       blockedReason: null,
     }
   }
 
-  const dashboardHref = steps.find((step) => step.key === 'sov')?.href ?? null
   return {
     stateLabel: '정기 운영 중',
     stateClassName: 'bg-green-100 text-green-800',
     headline: '온보딩과 첫 정기 운영 성과를 확인했습니다.',
     detail: '콘텐츠 발행과 AI 답변 언급률 측정을 정기 운영 대시보드에서 관리합니다.',
-    nextActionLabel: '운영 대시보드 확인',
-    nextActionHref: dashboardHref,
+    nextActionLabel: '',
+    nextActionHref: null,
     blockedReason: null,
   }
 }

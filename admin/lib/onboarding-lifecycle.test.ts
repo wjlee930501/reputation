@@ -182,7 +182,28 @@ test('LIVE is completed before content scheduling and recurring outcomes do not 
     'hospital-id',
     acceptedHandoff,
   )
-  assert.equal(deriveOnboardingSummary(withoutOutcomes, readiness).stateLabel, '온보딩 완료')
+  const completedSummary = deriveOnboardingSummary(withoutOutcomes, readiness)
+  assert.equal(completedSummary.stateLabel, '온보딩 완료')
+  assert.equal(completedSummary.nextActionHref, null)
+  assert.equal(completedSummary.blockedReason, null)
+  assert.doesNotMatch(completedSummary.detail, /다음 (후속 )?작업/)
+})
+
+test('8/8 never leaves a next-action CTA even when post-onboarding outcomes are complete', () => {
+  const steps = deriveOnboardingSteps(
+    hospital,
+    sources,
+    philosophies,
+    readiness,
+    'hospital-id',
+    acceptedHandoff,
+  )
+  const summary = deriveOnboardingSummary(steps, readiness)
+
+  assert.equal(steps.filter((step) => step.phase === 'onboarding' && step.status === 'completed').length, 8)
+  assert.equal(summary.nextActionHref, null)
+  assert.equal(summary.nextActionLabel, '')
+  assert.equal(summary.blockedReason, null)
 })
 
 test('stale approved essence and partially processed included sources block readiness', () => {
