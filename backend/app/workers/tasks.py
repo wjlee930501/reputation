@@ -96,7 +96,10 @@ from app.services.essence_engine import (
     synthesize_philosophy,
     validate_source_excerpt,
 )
-from app.services.essence_readiness import get_current_approved_philosophy_sync
+from app.services.essence_readiness import (
+    get_current_approved_philosophy_sync,
+    get_essence_readiness_sync,
+)
 from app.services.image_direction import hospital_image_direction
 from app.services.image_engine import generate_image
 from app.services.incident_types import IncidentFingerprint
@@ -239,6 +242,20 @@ AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
 MORNING_CLOSE_START = time(7, 45)
 CONFIRMED_HERO_FALLBACK_PROMPT = "confirmed hospital hero fallback"
+
+
+def _generation_philosophy_sync(db, hospital_id: uuid.UUID) -> HospitalContentPhilosophy | None:
+    """Use the last approved standard for generation while refresh is pending.
+
+    ``current`` is intentionally stricter because it also protects the public
+    philosophy surface.  A newly added or changed source can therefore make it
+    temporarily ``None`` even though an approved, previously validated snapshot
+    still exists.  Generation may safely use that last-good approved snapshot;
+    onboarding hospitals with no approved snapshot remain blocked.
+    """
+
+    readiness = get_essence_readiness_sync(db, hospital_id)
+    return readiness.current or readiness.approved
 
 
 def _morning_close_due(item: ContentItem, *, now_kst=None) -> bool:
@@ -1657,7 +1674,7 @@ def nightly_content_generation(self):
                 )
                 existing_titles = [r[0] for r in existing.all()]
 
-                philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+                philosophy = _generation_philosophy_sync(db, hospital.id)
                 if not philosophy:
                     item.content_philosophy_id = None
                     item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
@@ -2292,7 +2309,7 @@ def _generate_single_content_item(
     )
     existing_titles = [row[0] for row in existing.all()]
 
-    philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+    philosophy = _generation_philosophy_sync(db, hospital.id)
     if not philosophy:
         item.content_philosophy_id = None
         item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
