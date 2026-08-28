@@ -7,11 +7,12 @@ import { PHOTO_PUBLIC_GATE_COPY, describePhotoPublicGate } from './photo-public-
 const complete = { is_complete: true, missing_message: null }
 const incomplete = { is_complete: false, missing_message: '사진을 공개하려면 사진 소유자을(를) 입력해야 합니다.' }
 
-test('a pending photo with complete rights can still be published', () => {
-  // 실제 게이트는 처리 상태가 아니라 권리 기록이다.
+test('a complete private photo is one the operator deliberately unpublished later', () => {
+  // 신규 업로드는 서버가 바로 공개하므로, 이 상태는 후속 공개 클릭 대기가 아니다.
   const gate = describePhotoPublicGate({ status: 'PENDING', is_public: false, photo_provenance: complete })
 
   assert.equal(gate.state, 'PRIVATE_READY')
+  assert.equal(gate.badge, '공개 중지됨')
   assert.equal(gate.canToggle, true)
   assert.equal(gate.reason, null)
 })
@@ -49,8 +50,9 @@ test('a missing provenance payload is treated as missing rights, not as permitte
 })
 
 test('the gate copy names the real condition and denies the review-status one', () => {
-  assert.match(PHOTO_PUBLIC_GATE_COPY, /사용 권리 기록/)
+  assert.match(PHOTO_PUBLIC_GATE_COPY, /업로드한 사진은 병원 사이트에 바로 표시/)
   assert.match(PHOTO_PUBLIC_GATE_COPY, /자료 처리 상태와는 무관/)
+  assert.doesNotMatch(PHOTO_PUBLIC_GATE_COPY, /토글로 .*노출 여부를 결정/)
 })
 
 test('the wiki screen states the real gate and never claims review status decides it', () => {
@@ -59,4 +61,5 @@ test('the wiki screen states the real gate and never claims review status decide
   assert.match(page, /PHOTO_PUBLIC_GATE_COPY/)
   assert.match(page, /describePhotoPublicGate/)
   assert.doesNotMatch(page, /검수 완료된 사진만/)
+  assert.doesNotMatch(page, /사진 자산은 토글로/)
 })

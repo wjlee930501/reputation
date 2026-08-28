@@ -14,6 +14,8 @@ test('photo uploads send public in the same request without an extra opt-in', ()
   )
   assert.doesNotMatch(onboardingPage, /const \[isPublic, setIsPublic\] = useState/)
   assert.doesNotMatch(onboardingPage, /공개 사이트에 표시/)
+  assert.match(onboardingPage, /업로드와 동시에 병원 사이트에 표시/)
+  assert.match(onboardingPage, /Wiki에서 다시 공개할 필요가 없습니다/)
 })
 
 test('photo file input shows the locked multi-select hint above it', () => {
@@ -25,7 +27,7 @@ test('photo file input shows the locked multi-select hint above it', () => {
   assert.match(onboardingPage, /\{isPhotoType && <p[^>]*>여러 장을 한 번에 고를 수 있습니다<\/p>\}/)
 })
 
-test('only photo rows expose their visibility badge and PATCH toggle', () => {
+test('only photo rows show visibility and preserve the later unpublish control', () => {
   const photoTypeGate = onboardingPage.match(
     /const PHOTO_SOURCE_TYPES = new Set\(\[([\s\S]*?)\]\)/,
   )?.[1]
@@ -48,5 +50,7 @@ test('only photo rows expose their visibility badge and PATCH toggle', () => {
     onboardingPage,
     /`\/admin\/hospitals\/\$\{hospitalId\}\/essence\/sources\/\$\{sourceId\}\/public`[\s\S]*method: 'PATCH'[\s\S]*JSON\.stringify\(\{ is_public: next \}\)/,
   )
+  assert.match(onboardingPage, /병원 사이트 표시 중 · 선택 해제 시 공개 중지/)
+  assert.match(onboardingPage, /운영자가 공개 중지함 · 다시 표시/)
   assert.doesNotMatch(onboardingPage, /일괄 공개|전체 공개|publish.?all/i)
 })

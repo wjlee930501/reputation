@@ -489,7 +489,9 @@ export default function OnboardingPage() {
         <div data-current-task className="mt-3 rounded-xl border border-white/15 bg-white/10 p-3 sm:mt-5 sm:p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
-              <p className="text-xs font-semibold text-blue-100">지금 해야 할 일</p>
+              <p className="text-xs font-semibold text-blue-100">
+                {completedCount === onboardingSteps.length ? '온보딩 상태' : '지금 해야 할 일'}
+              </p>
               <p className="mt-1 text-base font-bold text-white sm:text-lg">{summary.headline}</p>
               <p className="mt-1 hidden max-w-3xl text-sm leading-6 text-blue-50/90 sm:block">{summary.detail}</p>
               {blockedReason && (
@@ -1658,6 +1660,7 @@ function UploadForm({
           <p className="text-sm font-medium text-slate-700">사진 사용 권리 확인</p>
           <p className="text-xs leading-5 text-slate-600">
             공통 권리정보가 선택한 모든 사진에 적용됩니다. 다른 사진만 파일 목록에서 예외로 수정하세요.
+            권리정보가 완전한 사진은 업로드와 동시에 병원 사이트에 표시되므로 Wiki에서 다시 공개할 필요가 없습니다.
           </p>
           <div className="grid gap-2 md:grid-cols-2">
             <input
@@ -2212,6 +2215,15 @@ function SourcesList({
                         aria-label={`${s.title} 공개 사이트 표시`}
                         className="rounded border-slate-300"
                       />
+                      <span className="text-xs text-slate-600">
+                        {pendingPublicId === s.id
+                          ? '저장 중…'
+                          : s.is_public
+                            ? '병원 사이트 표시 중 · 선택 해제 시 공개 중지'
+                            : photoGate?.state === 'PRIVATE_READY'
+                              ? '운영자가 공개 중지함 · 다시 표시'
+                              : '사용 권리 정보 필요'}
+                      </span>
                     </label>
                     </div>
                   )}

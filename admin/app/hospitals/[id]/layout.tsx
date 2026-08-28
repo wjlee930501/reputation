@@ -29,7 +29,7 @@ const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
 ]
 
 const CONFIG_TABS: Array<{ label: string; path: string; hint: string }> = [
-  { label: 'Wiki', path: 'wiki', hint: '검증된 근거 노트 + 사진 공개 토글' },
+  { label: 'Wiki', path: 'wiki', hint: '검증된 근거 노트 + 사진 권리·공개 상태' },
   { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준 자동 준비·예외 확인' },
   { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini 같은 AI 답변 서비스에 노출시킬 환자 질문 정의' },
   { label: '노출 보완', path: 'exposure-actions', hint: 'AI에 더 잘 노출되도록 보완할 작업과 콘텐츠 가이드 연결' },

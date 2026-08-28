@@ -6,7 +6,7 @@
 초록으로 남아 있었다(순수 함수 단위 테스트만 존재). 여기서는 라우트 함수를 실제
 AsyncSession으로 호출해 다음을 고정한다:
 
-* 근거를 갖춘 업로드는 공개 상태로 커밋된다 (500 없음)
+* 근거를 갖춘 업로드는 예전 공개 폼 값과 무관하게 공개 상태로 커밋된다 (500 없음)
 * 근거 없이 공개를 요청하면 무엇이 비었는지 알려 주는 422로 막힌다 (조용한 비공개 저장 아님)
 * 공개를 요청하지 않은 업로드는 근거 없이도 비공개로 저장된다 (사진은 게이트가 아니다)
 * 근거 없는 공개 토글은 IntegrityError가 아니라 설명 가능한 422로 막힌다
@@ -136,6 +136,38 @@ async def test_public_photo_upload_with_rights_evidence_commits(pg_async_session
     assert stored.is_public is True
     assert stored.photo_source_owner == "사진근거테스트병원"
     assert stored.photo_evidence_reference == "계약서 부속 합의서 3조"
+
+
+async def test_complete_owner_consent_upload_is_public_without_followup_patch(
+    pg_async_session,
+):
+    """예전 폼 값이 false여도 완전한 동의 업로드 자체가 공개를 끝내야 한다."""
+    hospital = await _seed_hospital(pg_async_session)
+
+    response = await essence_api.upload_source_file(
+        hospital_id=hospital.id,
+        source_type=SourceType.PHOTO_CLINIC_EXTERIOR,
+        title="병원 외관",
+        file=_upload_file(),
+        is_public=False,
+        asset_kind="VERIFIED_FACILITY",
+        photo_source_owner="사진근거테스트병원",
+        photo_rights_basis="OWNER_CONSENT",
+        photo_evidence_reference="외관 촬영 동의서 2026-08",
+        operator_note=None,
+        created_by="AE",
+        skip_revalidate=False,
+        db=pg_async_session,
+    )
+
+    assert response["is_public"] is True
+    assert response["photo_provenance"]["is_complete"] is True
+    assert response["photo_provenance"]["rights_basis"] == "OWNER_CONSENT"
+
+    stored = await _get_source(pg_async_session, response["id"])
+    assert stored.is_public is True
+    assert stored.photo_verified_by
+    assert stored.photo_verified_at
 
 
 async def test_asking_to_publish_without_rights_evidence_is_refused_at_upload(pg_async_session):

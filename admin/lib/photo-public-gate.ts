@@ -12,7 +12,7 @@
  */
 
 export const PHOTO_PUBLIC_GATE_COPY =
-  '사용 권리 기록(소유자·권리 근거·증빙 위치·확인 담당자)이 모두 있는 사진만 공개할 수 있습니다. 자료 처리 상태와는 무관합니다. 의료광고법 우려 카테고리(환자 후기·전후 사진)는 애초에 등록할 수 없습니다.'
+  '소유자·권리 근거·증빙 위치를 확인해 업로드한 사진은 병원 사이트에 바로 표시됩니다. 권리 기록이 불완전한 사진은 공개되지 않으며, 필요할 때만 여기서 공개를 중지하거나 다시 표시합니다. 자료 처리 상태와는 무관합니다. 의료광고법 우려 카테고리(환자 후기·전후 사진)는 애초에 등록할 수 없습니다.'
 
 export interface PhotoGateSourceLike {
   status?: string
@@ -66,5 +66,7 @@ export function describePhotoPublicGate(source: PhotoGateSourceLike): PhotoGate 
         ?? '공개하려면 사진 사용 권리 정보가 필요합니다.',
     }
   }
-  return { state: 'PRIVATE_READY', badge: '비공개', canToggle: true, reason: null }
+  // 완전한 권리 기록을 갖춘 신규 업로드는 서버가 즉시 공개한다. 따라서 이 상태는
+  // 업로드 뒤 공개 클릭을 기다리는 상태가 아니라, 운영자가 나중에 공개를 중지한 상태다.
+  return { state: 'PRIVATE_READY', badge: '공개 중지됨', canToggle: true, reason: null }
 }
