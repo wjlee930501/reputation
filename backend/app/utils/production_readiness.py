@@ -78,6 +78,8 @@ EXPECTED_TASKS = {
     "app.workers.tasks.monthly_slot_generation",
     "app.workers.tasks.morning_content_auto_publish",
     "app.workers.tasks.nightly_content_generation",
+    "app.workers.tasks.overnight_content_generation_recovery",
+    "app.workers.tasks.prepublish_content_generation_recovery",
     "app.workers.tasks.purge_expired_leads",
     "app.workers.tasks.regenerate_content_item",
     "app.workers.tasks.reconcile_essence_snapshots",

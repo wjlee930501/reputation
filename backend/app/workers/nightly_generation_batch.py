@@ -10,8 +10,6 @@ from app.models.hospital import Hospital, HospitalStatus
 NIGHTLY_GENERATION_CAP = 50
 NIGHTLY_GENERATION_CLAIM_TTL_HOURS = 2
 
-GENERATION_CATCHUP_DAYS = 7
-
 # 생성 결과를 되쓸 수 있는 상태. 그 외(CANCELLED/PUBLISHED 등)는 운영자·발행 파이프라인이
 # 이미 확정한 상태이므로 야간 배치가 덮어쓰면 안 된다.
 GENERATION_WRITE_BACK_STATUSES = (
@@ -60,10 +58,15 @@ def _nightly_generation_claim_filter(claim_cutoff: datetime):
 
 
 def _needs_generation_recovery():
+    """Select only missing generation fragments, never a stored gate by itself.
+
+    A blocking readiness summary on an otherwise complete item is publication
+    state, not permission to rewrite its body or image.  The 07:45 gate pager
+    owns that state.
+    """
     return or_(
         ContentItem.body.is_(None),
         ContentItem.image_url.is_(None),
-        ContentItem.essence_check_summary["blocking"].as_boolean().is_(True),
     )
 
 

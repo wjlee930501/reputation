@@ -10,7 +10,13 @@ from urllib.parse import urlparse
 
 import anthropic
 import httpx
-from tenacity import before_sleep_log, retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.core.config import settings
 from app.models.content import ContentType
@@ -401,6 +407,11 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     stop=stop_after_attempt(3),
     wait=wait_exponential(min=2, max=10),
     before_sleep=before_sleep_log(logger, logging.WARNING),
+    # An empty normalized reference list is deterministic for this provider
+    # response.  Retrying the writer two more times only spends money before the
+    # same curated catalog recovery below.  Other hard gates still retain their
+    # bounded provider retries.
+    retry=retry_if_not_exception_type(MissingCitableReferencesError),
     reraise=True,
 )
 async def _generate_content_attempt(
@@ -555,7 +566,7 @@ async def generate_content(
     content_brief: dict | None = None,
     remediation_findings: list[str] | None = None,
 ) -> dict:
-    """Generate with hard retries, then recover only an exhausted empty-reference gate."""
+    """Generate with hard retries, healing an empty-reference result immediately."""
 
     try:
         return await _generate_content_attempt(
@@ -568,9 +579,10 @@ async def generate_content(
         )
     except MissingCitableReferencesError as exc:
         result = exc.result
-        # The provider has already exhausted all tenacity attempts.  Preserve any
-        # citable provider references; only an actually empty list may be healed
-        # from the human-verified, topic-specific catalog.
+        # MissingCitableReferencesError is excluded from tenacity, so this runs
+        # after the first provider result in the same tick.  Preserve any citable
+        # provider references; only an actually empty list may be healed from the
+        # human-verified, topic-specific catalog.
         if result.get("references"):
             raise
         curated_references = select_curated_authority_sources(
