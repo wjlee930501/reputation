@@ -78,6 +78,15 @@ SEASON_MONTHS = {
     "겨울": {12, 1, 2},
 }
 
+
+class MissingCitableReferencesError(ValueError):
+    """Keep the last safe provider result available after reference retries exhaust."""
+
+    def __init__(self, message: str, result: dict):
+        super().__init__(message)
+        self.result = result
+
+
 client = anthropic.Anthropic(
     api_key=settings.ANTHROPIC_API_KEY,
     timeout=90.0,
@@ -394,7 +403,7 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
-async def generate_content(
+async def _generate_content_attempt(
     hospital: Hospital,
     content_type: ContentType,
     existing_titles: list[str] | None = None,
@@ -482,15 +491,19 @@ async def generate_content(
     # 빈 배열로 저장돼 근거 없이 발행이 완료된다. 정규화된 리스트로 검사해야
     # tenacity 재시도가 "화이트리스트 통과 references 1개 이상"을 실제로 강제한다.
     result["references"] = _normalize_references(result.get("references"))
-    curated_references = select_curated_authority_sources(
-        _curated_reference_focus(content_brief, result),
-    )
-    if curated_references:
-        # 생성 모델은 브라우징하지 않으므로 존재하는 엉뚱한 문서 ID를 만들어낼 수
-        # 있다. 주제가 매칭되는 검증 카탈로그가 있으면 추측 URL을 전부 대체한다.
-        result["references"] = curated_references
     if settings.APP_ENV == "production" and result["references"]:
         result["references"] = await _drop_definitively_broken_references(result["references"])
+
+    return _validate_generated_result(result, hospital, content_type, content_brief)
+
+
+def _validate_generated_result(
+    result: dict,
+    hospital: Hospital,
+    content_type: ContentType,
+    content_brief: dict | None,
+) -> dict:
+    """Apply every stored-content hard gate to one normalized provider result."""
 
     # ── SEO/GEO 검증 ──────────────────────────────────────────────
     seo_findings = _validate_seo(result, hospital, content_brief, content_type)
@@ -532,6 +545,46 @@ async def generate_content(
     result["meta_description"] = _trim_or_none(result.get("meta_description"), 300)
 
     return result
+
+
+async def generate_content(
+    hospital: Hospital,
+    content_type: ContentType,
+    existing_titles: list[str] | None = None,
+    philosophy: HospitalContentPhilosophy | None = None,
+    content_brief: dict | None = None,
+    remediation_findings: list[str] | None = None,
+) -> dict:
+    """Generate with hard retries, then recover only an exhausted empty-reference gate."""
+
+    try:
+        return await _generate_content_attempt(
+            hospital,
+            content_type,
+            existing_titles,
+            philosophy,
+            content_brief,
+            remediation_findings,
+        )
+    except MissingCitableReferencesError as exc:
+        result = exc.result
+        # The provider has already exhausted all tenacity attempts.  Preserve any
+        # citable provider references; only an actually empty list may be healed
+        # from the human-verified, topic-specific catalog.
+        if result.get("references"):
+            raise
+        curated_references = select_curated_authority_sources(
+            _curated_reference_focus(content_brief, result),
+        )
+        if not curated_references:
+            raise
+        result["references"] = curated_references
+        return _validate_generated_result(result, hospital, content_type, content_brief)
+
+
+# Keep the retry controller observable/configurable at the public seam used by tests and
+# provider-call metering, while the catalog fallback remains strictly outside tenacity.
+generate_content.retry = _generate_content_attempt.retry
 
 
 def _build_remediation_context(findings: list[str] | None) -> str:
@@ -765,9 +818,12 @@ def _validate_geo(
 
     # ── HARD: 필수 references 빈 리스트 ─────────────────────────────
     if content_type in REFERENCES_REQUIRED_TYPES and not refs:
-        raise ValueError(
-            f"GEO hard-fail: references is empty for {content_type.value} "
-            "— 학회/KDCA 출처 1개 이상 필수"
+        raise MissingCitableReferencesError(
+            (
+                f"GEO hard-fail: references is empty for {content_type.value} "
+                "— 학회/KDCA 출처 1개 이상 필수"
+            ),
+            result,
         )
 
     # ── HARD: 승인된 엔티티 정확 표기 ────────────────────────────────

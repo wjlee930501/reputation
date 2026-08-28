@@ -382,11 +382,22 @@ async def test_generate_content_uses_curated_trauma_documents_for_existing_disea
     class _FakeResponse:
         content = [SimpleNamespace(text=json.dumps(payload))]
 
+    provider_calls = 0
+
+    def create_response(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        return _FakeResponse()
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(
         content_engine.client.messages,
         "create",
-        lambda *_args, **_kwargs: _FakeResponse(),
+        create_response,
     )
+    monkeypatch.setattr(content_engine.generate_content.retry, "sleep", no_sleep)
 
     result = await content_engine.generate_content(
         hospital,
@@ -396,12 +407,69 @@ async def test_generate_content_uses_curated_trauma_documents_for_existing_disea
 
     assert result["title"]
     assert result["body"]
+    assert provider_calls == 3
     assert [reference["url"].rsplit("=", 1)[-1] for reference in result["references"]] == [
         "5463",
         "5679",
         "5696",
     ]
     assert all(reference["url"] != "https://health.kdca.go.kr" for reference in result["references"])
+
+
+async def test_generate_content_keeps_valid_model_reference_when_catalog_also_matches(
+    monkeypatch,
+):
+    hospital = SimpleNamespace(
+        name="노원탑365의원",
+        address="서울 노원구",
+        phone="02-000-0000",
+        business_hours="",
+        region=["노원"],
+        specialties=["정형외과"],
+        keywords=["통증 진료"],
+        director_name="김원장",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    body = (
+        "## 증상 확인\n노원탑365의원 김원장은 노원 지역의 통증 양상을 확인합니다. "
+        + ("환자 상태에 따라 검사와 치료 방향이 달라질 수 있습니다. " * 130)
+        + "\n\n## 진료 기준\n"
+        + ("위험 신호가 있으면 의료진 평가가 필요합니다. " * 70)
+    )
+    model_url = (
+        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/"
+        "gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796"
+    )
+    payload = {
+        "title": "노원 통증 진료 기준",
+        "body": body,
+        "meta_description": "노원 지역 통증 진료에서 확인할 증상과 검사 기준을 안내합니다.",
+        "references": [{"title": "질병관리청 건강정보", "url": model_url}],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    calls = 0
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    def create_response(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr(content_engine.client.messages, "create", create_response)
+
+    result = await content_engine.generate_content(
+        hospital,
+        ContentType.DISEASE,
+        content_brief={"target_query": "노원 정형외과 통증 진료 기준"},
+    )
+
+    assert calls == 1
+    assert [reference["url"] for reference in result["references"]] == [model_url]
 
 
 async def test_generate_content_uses_curated_orthopedic_documents_for_faq(monkeypatch):

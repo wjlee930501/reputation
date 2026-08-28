@@ -30,7 +30,6 @@ from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
 from app.services.incidents import mark_recovered, mark_retrying, open_or_touch_incident
 from app.services.notification_messages import (
     build_open_incident_notification,
-    build_recovered_incident_notification,
 )
 from app.services.notification_store import enqueue_notification
 
@@ -158,10 +157,15 @@ async def _open_domain_incident(
         IncidentFingerprint.DOMAIN_UNHEALTHY,
     )
     previous = await db.scalar(select(Incident).where(Incident.dedupe_key == dedupe_key))
-    should_notify = previous is None or previous.state in {
-        IncidentState.RECOVERED.value,
-        IncidentState.ACKNOWLEDGED.value,
-    }
+    # 확인 완료는 이 도메인·원인 episode를 사람이 닫았다는 뜻이다. 같은 health
+    # observation이 다시 들어와도 ACK를 OPEN으로 되돌리거나 새 Slack episode로
+    # 재활용하지 않는다. 실제 복구 뒤 재발한 RECOVERED episode만 다시 연다.
+    if (
+        previous is not None
+        and previous.state == IncidentState.ACKNOWLEDGED.value
+    ):
+        return False
+    should_notify = previous is None or previous.state == IncidentState.RECOVERED.value
     incident = await open_or_touch_incident(
         db,
         IncidentOpenRequest(
@@ -235,11 +239,6 @@ async def _recover_domain_incident(
     )
     if not isinstance(result, Incident):
         return False
-    await enqueue_notification(
-        db,
-        build_recovered_incident_notification(
-            incident_projection(result, hospital.name, run.id, "복구됨"),
-            settings.ADMIN_BASE_URL,
-        ),
-    )
+    # 자동 확인된 정상 상태가 incident를 닫는 최종 증거다. 인증서 복구와 동일하게
+    # 성공 Slack이나 확인 클릭을 요구하지 않는다.
     return True

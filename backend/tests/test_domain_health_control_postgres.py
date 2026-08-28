@@ -21,6 +21,89 @@ _ASYNC_URL = os.getenv(
 
 
 @pytest.mark.asyncio
+async def test_acknowledged_domain_cause_is_not_reopened_or_repaged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incident = type(
+        "AcknowledgedIncident",
+        (),
+        {
+            "id": uuid.uuid4(),
+            "state": IncidentState.ACKNOWLEDGED.value,
+            "safe_error_code": "DOMAIN_UNHEALTHY",
+            "episode_seq": 3,
+        },
+    )()
+
+    class DB:
+        async def scalar(self, _statement):
+            return incident
+
+    async def reject_reopen(*_args, **_kwargs):
+        raise AssertionError("ACKNOWLEDGED domain episode must remain closed")
+
+    monkeypatch.setattr(control, "open_or_touch_incident", reject_reopen)
+
+    opened = await control._open_domain_incident(
+        DB(),
+        type("Hospital", (), {"id": uuid.uuid4(), "name": "테스트의원"})(),
+        type("Run", (), {"id": uuid.uuid4(), "completed_at": datetime.now(UTC)})(),
+        "example.test",
+        "timeout",
+    )
+
+    assert opened is False
+    assert incident.state == IncidentState.ACKNOWLEDGED.value
+    assert incident.episode_seq == 3
+
+
+@pytest.mark.asyncio
+async def test_auto_recovery_closes_domain_incident_without_success_slack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hospital_id = uuid.uuid4()
+    incident = Incident(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        state=IncidentState.OPEN.value,
+        version=1,
+        source_type="DOMAIN_HEALTH",
+        source_id=f"{hospital_id}:example.test",
+    )
+
+    class DB:
+        async def scalar(self, _statement):
+            return incident
+
+    async def mark_retrying(_db, _incident_id, **_kwargs):
+        incident.state = IncidentState.RETRYING.value
+        incident.version += 1
+        return incident
+
+    async def mark_recovered(_db, _incident_id, **_kwargs):
+        incident.state = IncidentState.RECOVERED.value
+        incident.version += 1
+        return incident
+
+    async def reject_notification(*_args, **_kwargs):
+        raise AssertionError("automatic domain recovery must not enqueue Slack")
+
+    monkeypatch.setattr(control, "mark_retrying", mark_retrying)
+    monkeypatch.setattr(control, "mark_recovered", mark_recovered)
+    monkeypatch.setattr(control, "enqueue_notification", reject_notification)
+
+    recovered = await control._recover_domain_incident(
+        DB(),
+        type("Hospital", (), {"id": hospital_id, "name": "테스트의원"})(),
+        type("Run", (), {"id": uuid.uuid4(), "completed_at": datetime.now(UTC)})(),
+        "example.test",
+    )
+
+    assert recovered is True
+    assert incident.state == IncidentState.RECOVERED.value
+
+
+@pytest.mark.asyncio
 async def test_wrong_marker_resets_streak_and_three_valid_checks_recover_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -126,7 +209,7 @@ async def test_wrong_marker_resets_streak_and_three_valid_checks_recover_once(
             assert incidents[0].occurrence_count == 3
             assert incidents[0].admin_path == f"/hospitals/{hospital_id}/onboarding"
             assert run_count == 8
-            assert outbox_count == 2
+            assert outbox_count == 1
     finally:
         async with sessions() as db:
             await db.execute(

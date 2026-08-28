@@ -566,6 +566,9 @@ class _NightlyTaskDB:
         self.commits = 0
 
     class _QueryResult:
+        def scalars(self):
+            return self
+
         def all(self):
             return []
 
@@ -785,6 +788,69 @@ def test_nightly_missing_essence_has_no_slack_before_seven_forty_five(monkeypatc
 
     assert incident_calls[0]["notify"] is False  # the hospital digest owns this alert
     assert not [value for value in db.added if isinstance(value, NotificationOutbox)]
+
+
+def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="게이트확인의원")
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital=hospital,
+        hospital_id=hospital.id,
+        scheduled_date=date(2026, 8, 19),
+        sequence_no=1,
+        title=None,
+        body=None,
+        image_url=None,
+        essence_check_summary=None,
+    )
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [item]
+
+    class DB:
+        commits = 0
+
+        def execute(self, _statement):
+            return Result()
+
+        def commit(self):
+            self.commits += 1
+
+    assessment = SimpleNamespace(
+        publishable=False,
+        code="CONTENT_NOT_GENERATED",
+        message="제목과 본문이 아직 생성되지 않았습니다.",
+    )
+    incident_calls = []
+
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: assessment)
+    monkeypatch.setattr(tasks, "apply_publication_assessment", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "open_generation_incident",
+        lambda **kwargs: incident_calls.append(kwargs),
+    )
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+
+    paged = tasks._page_morning_stored_publication_gates(
+        DB(),
+        now_kst=arrow.get(2026, 8, 19, 7, 45, tzinfo="Asia/Seoul"),
+    )
+
+    assert paged == 1
+    assert len(incident_calls) == 1
+    assert incident_calls[0]["code"] == "CONTENT_NOT_GENERATED"
+    assert incident_calls[0]["notify"] is True
 
 
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
