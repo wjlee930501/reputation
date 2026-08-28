@@ -9,6 +9,8 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 from app.utils.authority_sources import (  # noqa: E402
+    SOURCE_TYPE_CLINIC,
+    SOURCE_TYPE_GOV_GLOBAL,
     SOURCE_TYPE_GOV_KR,
     infer_source_type,
     is_citable_reference_url,
@@ -54,7 +56,9 @@ def test_infer_source_type_returns_expected_type_for_exact_domain():
 
 def test_citable_reference_gate_rejects_home_roots_but_accepts_curated_document():
     assert is_citable_reference_url("https://health.kdca.go.kr") is False
+    assert is_citable_reference_url("https://www.kdca.go.kr/") is False
     assert is_citable_reference_url("https://www.hira.or.kr/") is False
+    assert is_citable_reference_url("https://www.koa.or.kr/") is False
     assert is_citable_reference_url("https://www.kosem.or.kr") is False
     assert is_citable_reference_url("https://law.go.kr") is False
     assert (
@@ -143,6 +147,48 @@ def test_select_curated_authority_sources_supports_orthopedic_faq_content():
         "3796",
         "5969",
         "3348",
+    ]
+
+
+def test_select_curated_authority_sources_supports_spine_joint_pain_query():
+    sources = select_curated_authority_sources(
+        "척추 관절 통증 진료를 받으려는데 노원구 어느 병원으로 가야 해?",
+    )
+
+    assert [source["url"].rsplit("=", 1)[-1] for source in sources] == [
+        "3796",
+        "3348",
+    ]
+    assert all(source["source_type"] == SOURCE_TYPE_GOV_KR for source in sources)
+
+
+def test_select_curated_authority_sources_supports_eswt_query():
+    sources = select_curated_authority_sources(
+        "상계동 체외충격파 치료 가능한 병원 추천해줘",
+    )
+
+    assert sources == [
+        {
+            "title": (
+                "Extracorporeal shock wave therapy is effective in treating chronic "
+                "plantar fasciitis: A meta-analysis of RCTs"
+            ),
+            "url": "https://pubmed.ncbi.nlm.nih.gov/28403111/",
+            "source_type": SOURCE_TYPE_GOV_GLOBAL,
+        },
+        {
+            "title": (
+                "The evolving use of extracorporeal shock wave therapy in managing "
+                "musculoskeletal and neurological diagnoses"
+            ),
+            "url": (
+                "https://www.mayoclinic.org/medical-professionals/"
+                "physical-medicine-rehabilitation/news/"
+                "the-evolving-use-of-extracorporeal-shock-wave-therapy-in-managing-"
+                "musculoskeletal-and-neurological-diagnoses/mac-20527246"
+            ),
+            "source_type": SOURCE_TYPE_CLINIC,
+        },
     ]
 
 

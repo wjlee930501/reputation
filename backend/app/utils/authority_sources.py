@@ -123,7 +123,7 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5696",
     },
     {
-        "keywords": _ORTHOPEDIC_FAQ_KEYWORDS,
+        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "관절", "통증"),
         "title": "질병관리청 국가건강정보포털 — 요통",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",
     },
@@ -133,9 +133,30 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5969",
     },
     {
-        "keywords": _ORTHOPEDIC_FAQ_KEYWORDS,
+        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "관절", "통증"),
         "title": "질병관리청 국가건강정보포털 — 추간판탈출증(디스크)",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3348",
+    },
+    {
+        "keywords": ("체외충격파", "충격파치료", "ESWT"),
+        "title": (
+            "Extracorporeal shock wave therapy is effective in treating chronic "
+            "plantar fasciitis: A meta-analysis of RCTs"
+        ),
+        "url": "https://pubmed.ncbi.nlm.nih.gov/28403111/",
+    },
+    {
+        "keywords": ("체외충격파", "충격파치료", "ESWT"),
+        "title": (
+            "The evolving use of extracorporeal shock wave therapy in managing "
+            "musculoskeletal and neurological diagnoses"
+        ),
+        "url": (
+            "https://www.mayoclinic.org/medical-professionals/"
+            "physical-medicine-rehabilitation/news/"
+            "the-evolving-use-of-extracorporeal-shock-wave-therapy-in-managing-"
+            "musculoskeletal-and-neurological-diagnoses/mac-20527246"
+        ),
     },
     {
         "keywords": ("소아발열", "아이발열", "어린이발열"),

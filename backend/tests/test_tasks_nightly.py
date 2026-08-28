@@ -23,7 +23,6 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
 from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
-from app.services.essence_engine import compute_sources_snapshot_hash
 from app.workers import tasks
 
 
@@ -48,6 +47,21 @@ def test_nightly_generation_stmt_covers_window_bounds():
 def test_generation_catchup_window_is_seven_days():
     """일시 장애를 사람에게 올리지 않고 일주일 동안 자동 재시도한다."""
     assert tasks.GENERATION_CATCHUP_DAYS == 7
+
+
+def test_maintenance_window_empty_drafts_stay_on_general_nightly_path():
+    compiled = str(
+        tasks._nightly_generation_stmt(date(2026, 8, 28), date(2026, 8, 31)).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "content_items.scheduled_date >= '2026-08-28'" in compiled
+    assert "content_items.scheduled_date <= '2026-08-31'" in compiled
+    assert "content_items.body IS NULL" in compiled
+    assert "content_items.status IN ('DRAFT', 'REJECTED', 'READY')" in compiled
+    assert "hospitals.status IN ('ACTIVE')" in compiled
+    assert "hospitals.site_live IS true" in compiled
 
 
 def test_nightly_generation_recovers_legacy_ready_items_with_missing_assets():
@@ -639,7 +653,7 @@ def test_nightly_cost_blocked_records_without_second_generation_slack(monkeypatc
 
     _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
     monkeypatch.setattr(
-        tasks, "get_current_approved_philosophy_sync", lambda *_args: SimpleNamespace()
+        tasks, "_generation_philosophy_sync", lambda *_args: SimpleNamespace()
     )
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", block_cost)
     monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
@@ -668,7 +682,7 @@ def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkey
 
     _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
     monkeypatch.setattr(
-        tasks, "get_current_approved_philosophy_sync", lambda *_args: SimpleNamespace()
+        tasks, "_generation_philosophy_sync", lambda *_args: SimpleNamespace()
     )
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
     monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", provider_timeout)
@@ -705,7 +719,7 @@ def test_forbidden_field_retry_exhaustion_opens_incident_without_content_writeba
 
     _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
     monkeypatch.setattr(
-        tasks, "get_current_approved_philosophy_sync", lambda *_args: SimpleNamespace()
+        tasks, "_generation_philosophy_sync", lambda *_args: SimpleNamespace()
     )
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
     monkeypatch.setattr(
@@ -734,7 +748,7 @@ def test_nightly_missing_essence_waits_until_seven_forty_five_for_one_digest(mon
 
     _patch_nightly_task_shell(monkeypatch, db, items, cycle_date)
     monkeypatch.setattr(
-        tasks, "get_current_approved_philosophy_sync", lambda *_args: None
+        tasks, "_generation_philosophy_sync", lambda *_args: None
     )
     monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
 
@@ -764,7 +778,7 @@ def test_nightly_missing_essence_has_no_slack_before_seven_forty_five(monkeypatc
         incident_calls.append(kwargs)
 
     _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
 
     tasks.nightly_content_generation.run()
@@ -1082,7 +1096,7 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
         }
 
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(
         tasks,
         "screen_content_against_philosophy",
@@ -1136,7 +1150,7 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
     async def forbidden_call(*_args, **_kwargs):
         raise AssertionError("승인 전에는 공급자/비용 가드를 호출하면 안 된다")
 
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: None)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", forbidden_call)
     monkeypatch.setattr(tasks, "generate_content", forbidden_call)
 
@@ -1150,7 +1164,7 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
 
 
 def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch):
-    """마지막 승인 철학이 있으면 current PENDING이어도 생성하고, 온보딩만 MISSING으로 건너뛴다."""
+    """Last-good approval generates while current/public refresh is pending."""
     hospital = SimpleNamespace(id=uuid.uuid4(), name="승인의원", slug="approved-clinic")
     processed = SimpleNamespace(
         id=uuid.uuid4(),
@@ -1170,7 +1184,9 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
     approved = SimpleNamespace(
         id=uuid.uuid4(),
         status=PhilosophyStatus.APPROVED,
-        source_snapshot_hash=compute_sources_snapshot_hash([processed]),
+        # The saved baseline is deliberately stale relative to ``processed``.
+        # Public/current must remain unavailable while generation uses approved.
+        source_snapshot_hash="previous-approved-snapshot",
         source_asset_ids=[processed.id],
     )
 
@@ -1305,6 +1321,9 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
         faq_answer_summary=None,
     )
     approved_db = DB(approved, [processed, pending])
+    assert (
+        tasks.get_current_approved_philosophy_sync(approved_db, hospital.id) is None
+    )
     outcome, code, _message = tasks._generate_single_content_item(
         approved_db, pending_item, hospital
     )
@@ -2414,7 +2433,7 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
 
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
     monkeypatch.setattr(tasks, "generate_image", _boom_image)
-    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
     # 이 테스트의 대상은 write-back 가드다 — 브리프 플래너는 범위 밖이라 고정한다.
     monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", lambda *a, **k: None)
     monkeypatch.setattr(
