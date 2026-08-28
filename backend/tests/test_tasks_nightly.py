@@ -26,8 +26,7 @@ from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatu
 from app.workers import tasks
 
 
-def test_nightly_generation_stmt_covers_window_bounds():
-    """야간 배치가 며칠 누락돼도 catch-up window 안의 슬롯을 다시 집어야 한다."""
+def test_nightly_generation_stmt_selects_only_missing_fragments():
     window_start = date(2026, 6, 3)
     tomorrow = date(2026, 6, 11)
 
@@ -38,15 +37,9 @@ def test_nightly_generation_stmt_covers_window_bounds():
     assert "scheduled_date <= '2026-06-11'" in sql
     assert "body IS NULL" in sql
     assert "image_url IS NULL" in sql
-    assert "essence_check_summary" in sql
-    assert "blocking" in sql
+    assert "essence_check_summary" not in sql.split("WHERE", 1)[1]
     # cap+1로 읽어 절단 발생을 감지한다
     assert f"LIMIT {tasks.NIGHTLY_GENERATION_CAP + 1}" in sql
-
-
-def test_generation_catchup_window_is_seven_days():
-    """일시 장애를 사람에게 올리지 않고 일주일 동안 자동 재시도한다."""
-    assert tasks.GENERATION_CATCHUP_DAYS == 7
 
 
 def test_maintenance_window_empty_drafts_stay_on_general_nightly_path():
@@ -642,6 +635,31 @@ def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date):
     )
 
 
+def test_twenty_three_batch_queries_tomorrow_only(monkeypatch):
+    db = _NightlyTaskDB()
+    loaded_windows = []
+    observed = datetime(2026, 8, 19, 23, 0)
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "GenerationBatchRecorder", _NightlyTaskRecorder)
+    monkeypatch.setattr(
+        tasks,
+        "_load_nightly_generation_batch",
+        lambda _db, start, end: (loaded_windows.append((start, end)) or [], 0),
+    )
+    monkeypatch.setattr(tasks, "load_stuck_claims", lambda *_args: [])
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(observed, tzinfo="Asia/Seoul"),
+    )
+
+    tasks.nightly_content_generation.run()
+
+    assert loaded_windows == [(date(2026, 8, 20), date(2026, 8, 20))]
+
+
 def test_nightly_cost_blocked_records_without_second_generation_slack(monkeypatch):
     cycle_date = date(2026, 8, 19)
     db = _NightlyTaskDB()
@@ -696,6 +714,159 @@ def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkey
     assert len(incident_calls) == 1
     assert incident_calls[0]["code"] == "PROVIDER_TIMEOUT"
     assert incident_calls[0]["notify"] is True
+
+
+def test_same_slot_and_generation_reason_spends_writer_once_across_thirty_sweeps(
+    monkeypatch,
+):
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    item = _nightly_item("중복차단의원")
+    writer_calls = 0
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    def fail_writer(*_args, **_kwargs):
+        nonlocal writer_calls
+        writer_calls += 1
+        raise TimeoutError("same provider gate")
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(
+        tasks, "_generation_philosophy_sync", lambda *_args: SimpleNamespace(id="p1")
+    )
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", fail_writer)
+    async def ignore_incident(**_kwargs):
+        return None
+
+    monkeypatch.setattr(tasks, "open_generation_incident", ignore_incident)
+
+    for _ in range(30):
+        tasks.nightly_content_generation.run()
+
+    assert writer_calls == 1
+    assert item.essence_check_summary["generation_attempt"]["reason"] == "PROVIDER_TIMEOUT"
+
+
+def test_changed_generation_context_allows_exactly_one_retry(monkeypatch):
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        body=None,
+        content_type=SimpleNamespace(value="FAQ"),
+        scheduled_date=date(2026, 8, 20),
+        query_target_id=None,
+        essence_check_summary=None,
+    )
+    hospital = SimpleNamespace(id=item.hospital_id, name="원인변경의원")
+    old_philosophy = SimpleNamespace(id="old")
+    new_philosophy = SimpleNamespace(id="new")
+    db = _NightlyTaskDB()
+    cost_calls = 0
+
+    tasks._remember_generation_attempt(db, item, old_philosophy, "PROVIDER_TIMEOUT")
+
+    async def block_cost(*_args, **_kwargs):
+        nonlocal cost_calls
+        cost_calls += 1
+        return SimpleNamespace(allowed=False, reason="cap")
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: new_philosophy)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", block_cost)
+
+    first = tasks._generate_single_content_item(db, item, hospital)
+    second = tasks._generate_single_content_item(db, item, hospital)
+
+    assert first[:2] == (tasks.GenerationItemState.SKIPPED, "COST_BLOCKED")
+    assert second[:2] == (tasks.GenerationItemState.SKIPPED, "COST_BLOCKED")
+    assert cost_calls == 1
+
+
+def test_existing_image_is_absolute_zero_recall_guard(monkeypatch):
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        body="stored body",
+        image_url="https://cdn.example/existing.webp",
+        content_type=SimpleNamespace(value="FAQ"),
+        essence_check_summary=None,
+    )
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="이미지보존의원", slug="image-guard")
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "generate_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("existing image must not call image providers")
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "generate_content",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stored body must not call content writer")
+        ),
+    )
+
+    for _ in range(5):
+        state, code, _message = tasks._generate_single_content_item(
+            _NightlyTaskDB(), item, hospital
+        )
+        assert state == tasks.GenerationItemState.SUCCEEDED
+        assert code is None
+
+
+def test_recovery_fills_image_fragment_without_rewriting_body(monkeypatch):
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        body="immutable stored body",
+        title="stored title",
+        image_url=None,
+        content_type=SimpleNamespace(value="FAQ"),
+        essence_check_summary=None,
+    )
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="조각복구의원", slug="fragment")
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    image_calls = 0
+
+    class DB(_NightlyTaskDB):
+        def refresh(self, _item):
+            return None
+
+    async def image_only(*_args, **_kwargs):
+        nonlocal image_calls
+        image_calls += 1
+        return "https://cdn.example/recovered.webp", "prompt"
+
+    def write_image(_db, *, item_id, values):
+        assert item_id == item.id
+        assert set(values) == {"image_url", "image_prompt"}
+        item.image_url = values["image_url"]
+        return 1
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "generate_image", image_only)
+    monkeypatch.setattr(tasks, "hospital_image_direction", lambda *_args: None)
+    monkeypatch.setattr(tasks, "write_back_generated_content", write_image)
+    monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "_generate_with_auto_review",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fragment recovery must not rewrite the body")
+        ),
+    )
+
+    state, code, _message = tasks._generate_single_content_item(DB(), item, hospital)
+
+    assert state == tasks.GenerationItemState.SUCCEEDED
+    assert code is None
+    assert image_calls == 1
+    assert item.body == "immutable stored body"
 
 
 def test_forbidden_field_retry_exhaustion_opens_incident_without_content_writeback(
@@ -851,6 +1022,69 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
     assert len(incident_calls) == 1
     assert incident_calls[0]["code"] == "CONTENT_NOT_GENERATED"
     assert incident_calls[0]["notify"] is True
+
+
+def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="아침복구의원")
+    item = SimpleNamespace(id=uuid.uuid4(), hospital=hospital)
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [item]
+
+    class DB:
+        def execute(self, _statement):
+            return Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    fallbacks = []
+    pages = []
+    monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(
+            2026, 8, 19, 7, 45, tzinfo="Asia/Seoul"
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_write_morning_image_fallback",
+        lambda _db, target, owner: fallbacks.append((target.id, owner.id)) or True,
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_page_morning_stored_publication_gates",
+        lambda _db, **kwargs: pages.append(kwargs["now_kst"]) or 1,
+    )
+    monkeypatch.setattr(
+        tasks,
+        "generate_content",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("07:45 must not generate content")
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "generate_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("07:45 must use only the stored hero fallback")
+        ),
+    )
+
+    tasks.prepublish_content_generation_recovery.run()
+
+    assert fallbacks == [(item.id, hospital.id)]
+    assert len(pages) == 1
 
 
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
@@ -1066,6 +1300,65 @@ def test_build_measurement_specs_applies_high_cap(monkeypatch):
 
     assert trimmed == 3
     assert len(specs) == 2
+
+
+@pytest.mark.parametrize("priority", ["NORMAL", "LOW"])
+def test_build_measurement_specs_caps_normal_and_low_combined(monkeypatch, priority):
+    hospital = SimpleNamespace(id="h1")
+    fallback = [
+        SimpleNamespace(
+            id=f"q-{index}",
+            query_text=f"질문 {index}",
+            priority=priority,
+            query_intent="LOCAL",
+        )
+        for index in range(12)
+    ]
+    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+
+    specs, trimmed_high = tasks._build_measurement_specs(
+        db=_SpecDB([]),
+        hospital=hospital,
+        query_targets=[],
+        fallback_queries=fallback,
+        is_even_week=True,
+        is_month_start=True,
+        high_priority_cap=30,
+        total_spec_cap=5,
+    )
+
+    assert trimmed_high == 0
+    assert len(specs) == 5
+    assert {spec["priority"] for spec in specs} == {priority}
+
+
+def test_weekly_manifest_reconnect_cannot_widen_selected_cap():
+    cells = [
+        SimpleNamespace(
+            query_matrix_id=f"q-{index}",
+            query_text=f"질문 {index}",
+            platform="chatgpt",
+            query_target_id=None,
+            query_variant_id=None,
+            state="FAILED",
+        )
+        for index in range(8)
+    ]
+    selected = [
+        {
+            "query_id": cell.query_matrix_id,
+            "platform": cell.platform,
+            "target_id": None,
+            "variant_id": None,
+        }
+        for cell in cells[:3]
+    ]
+
+    pending = tasks._pending_weekly_manifest_specs(
+        SimpleNamespace(cells=cells), selected
+    )
+
+    assert [spec["query_id"] for spec in pending] == ["q-0", "q-1", "q-2"]
 
 
 def test_nightly_generation_orders_carried_over_items_first():
@@ -1942,6 +2235,20 @@ def test_morning_publish_cycle_has_no_success_slack(monkeypatch):
     monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: outcomes[content_id])
     monkeypatch.setattr(tasks, "_run_async", finish_async)
     monkeypatch.setattr(tasks, "_enqueue_overdue_post_publish_review_notifications", lambda _now: 0)
+    monkeypatch.setattr(
+        tasks,
+        "generate_content",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("08:00 is publish-only")
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "generate_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("08:00 is publish-only")
+        ),
+    )
 
     tasks.morning_content_auto_publish.run()
 

@@ -126,6 +126,8 @@ celery_app.conf.update(
     worker_hijack_root_logger=False,
     task_routes={
         "app.workers.tasks.nightly_content_generation": {"queue": "content"},
+        "app.workers.tasks.overnight_content_generation_recovery": {"queue": "content"},
+        "app.workers.tasks.prepublish_content_generation_recovery": {"queue": "content"},
         "app.workers.tasks.regenerate_content_item": {"queue": "content"},
         "app.workers.tasks.auto_review_essence_snapshot": {"queue": "content"},
         "app.workers.tasks.reconcile_essence_snapshots": {"queue": "default"},
@@ -178,17 +180,21 @@ celery_app.conf.update(
         # 23시 생성 이후 운영 기준 승인·비용 차단 해제·일시 공급자 장애가 해결된 항목을
         # 아침 발행 전에 다시 회수한다. 횟수를 네 번으로 제한해 무한 비용 재시도를 막는다.
         "overnight-content-generation-recovery": {
-            "task": "app.workers.tasks.nightly_content_generation",
+            "task": "app.workers.tasks.overnight_content_generation_recovery",
             "schedule": crontab(hour="1,4,7", minute=0),
-            "options": {"headers": build_dispatch_headers("nightly-content-generation")},
+            "options": {
+                "headers": build_dispatch_headers("overnight-content-generation-recovery")
+            },
         },
         "prepublish-content-generation-recovery": {
-            "task": "app.workers.tasks.nightly_content_generation",
+            "task": "app.workers.tasks.prepublish_content_generation_recovery",
             "schedule": crontab(hour=7, minute=45),
-            "options": {"headers": build_dispatch_headers("nightly-content-generation")},
+            "options": {
+                "headers": build_dispatch_headers("prepublish-content-generation-recovery")
+            },
         },
         # 22:30 — 오늘까지 생성되지 못한 슬롯을 병원별 하루 한 편의 빈 미래 날짜로
-        # 옮긴다. 23:00 생성보다 먼저 실행해 오래된 슬롯이 7일 창 밖에서 좌초되지 않게 한다.
+        # 옮긴다. 23:00의 내일 슬롯 전용 생성 전에 실행해 오래된 슬롯이 좌초되지 않게 한다.
         "stranded-content-recovery": {
             "task": "app.workers.content_backlog_recovery.reconcile",
             "schedule": crontab(hour=22, minute=30),

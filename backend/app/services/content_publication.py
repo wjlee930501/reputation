@@ -176,6 +176,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             "automatic_remediation_attempts",
             "reviewer_driven_rewrites",
             "ai_review",
+            # Scheduled generation uses this durable JSON fragment to avoid
+            # paying again for the same unchanged body/image failure.
+            "generation_attempt",
         ):
             value = previous_summary.get(key)
             if value is not None:

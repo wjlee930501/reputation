@@ -334,7 +334,7 @@ async def test_generate_content_hard_fails_end_to_end_for_non_whitelisted_only_r
         await content_engine.generate_content(hospital, ContentType.DISEASE)
 
 
-async def test_generate_content_uses_curated_trauma_documents_for_existing_disease_brief(
+async def test_generate_content_injects_curated_trauma_documents_on_first_empty_refs_failure(
     monkeypatch,
 ):
     """기존 승인 brief의 treatment가 DISEASE여도 실제 target_query로 근거를 복구한다."""
@@ -407,7 +407,7 @@ async def test_generate_content_uses_curated_trauma_documents_for_existing_disea
 
     assert result["title"]
     assert result["body"]
-    assert provider_calls == 3
+    assert provider_calls == 1
     assert [reference["url"].rsplit("=", 1)[-1] for reference in result["references"]] == [
         "5463",
         "5679",

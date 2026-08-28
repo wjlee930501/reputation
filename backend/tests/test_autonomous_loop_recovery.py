@@ -77,12 +77,14 @@ def test_recovery_beat_and_retryable_month_schedules_are_declared() -> None:
     assert str(schedules["prepublish-content-generation-recovery"]["schedule"]) == (
         "<crontab: 45 7 * * * (m/h/dM/MY/d)>"
     )
-    for key in (
-        "overnight-content-generation-recovery",
-        "prepublish-content-generation-recovery",
-    ):
-        assert schedules[key]["task"] == "app.workers.tasks.nightly_content_generation"
-        assert schedules[key]["options"]["headers"]
+    assert schedules["overnight-content-generation-recovery"]["task"] == (
+        "app.workers.tasks.overnight_content_generation_recovery"
+    )
+    assert schedules["prepublish-content-generation-recovery"]["task"] == (
+        "app.workers.tasks.prepublish_content_generation_recovery"
+    )
+    assert schedules["overnight-content-generation-recovery"]["options"]["headers"]
+    assert schedules["prepublish-content-generation-recovery"]["options"]["headers"]
     assert str(schedules["monthly-slot-generation"]["schedule"]) == (
         "<crontab: 0 */6 25-31 * * (m/h/dM/MY/d)>"
     )

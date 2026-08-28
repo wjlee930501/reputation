@@ -205,7 +205,6 @@ from app.workers.monthly_slot_incident_control import (
 )
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
 from app.workers.nightly_generation_batch import (
-    GENERATION_CATCHUP_DAYS,
     NIGHTLY_GENERATION_CAP,
     _load_nightly_generation_batch,
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
@@ -301,8 +300,263 @@ def _write_morning_image_fallback(db, item: ContentItem, hospital: Hospital) -> 
         return False
     db.commit()
     db.refresh(item)
+    _clear_generation_attempt(db, item)
     logger.warning("Using confirmed hospital hero fallback for due content %s", item.id)
     return True
+
+
+_GENERATION_ATTEMPT_KEY = "generation_attempt"
+
+
+def _generation_attempt_context(
+    item: ContentItem, philosophy: HospitalContentPhilosophy | None
+) -> str:
+    """Fingerprint inputs whose change can justify one more body attempt."""
+
+    philosophy_id = str(getattr(philosophy, "id", "") or "MISSING")
+    content_type = str(getattr(getattr(item, "content_type", None), "value", "") or "")
+    scheduled_date = str(getattr(item, "scheduled_date", "") or "")
+    query_target_id = str(getattr(item, "query_target_id", "") or "")
+    return (
+        f"philosophy={philosophy_id};content_type={content_type};"
+        f"scheduled_date={scheduled_date};query_target={query_target_id}"
+    )
+
+
+def _stored_generation_attempt(item: ContentItem) -> dict[str, str]:
+    summary = getattr(item, "essence_check_summary", None)
+    if not isinstance(summary, dict):
+        return {}
+    attempt = summary.get(_GENERATION_ATTEMPT_KEY)
+    if not isinstance(attempt, dict):
+        return {}
+    return {
+        "context": str(attempt.get("context") or ""),
+        "reason": str(attempt.get("reason") or ""),
+    }
+
+
+def _generation_attempt_is_unchanged(
+    item: ContentItem, philosophy: HospitalContentPhilosophy | None
+) -> bool:
+    previous = _stored_generation_attempt(item)
+    return bool(
+        previous.get("reason")
+        and previous.get("context") == _generation_attempt_context(item, philosophy)
+    )
+
+
+def _remember_generation_attempt(
+    db,
+    item: ContentItem,
+    philosophy: HospitalContentPhilosophy | None,
+    reason: str,
+) -> None:
+    """Persist one no-body outcome without adding a schema column."""
+
+    summary = getattr(item, "essence_check_summary", None)
+    updated = dict(summary) if isinstance(summary, dict) else {}
+    updated[_GENERATION_ATTEMPT_KEY] = {
+        "context": _generation_attempt_context(item, philosophy),
+        "reason": reason,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    item.essence_check_summary = updated
+    db.commit()
+
+
+def _clear_generation_attempt(db, item: ContentItem) -> None:
+    summary = getattr(item, "essence_check_summary", None)
+    if not isinstance(summary, dict) or _GENERATION_ATTEMPT_KEY not in summary:
+        return
+    updated = dict(summary)
+    updated.pop(_GENERATION_ATTEMPT_KEY, None)
+    item.essence_check_summary = updated
+    db.commit()
+
+
+def _recover_missing_content_image(
+    db,
+    item: ContentItem,
+    hospital: Hospital,
+    philosophy: HospitalContentPhilosophy,
+) -> GenerationItemState:
+    """Fill only a missing image; an existing image is an absolute no-call guard."""
+
+    if getattr(item, "image_url", None):
+        _clear_generation_attempt(db, item)
+        return GenerationItemState.SUCCEEDED
+    try:
+        image_url, image_prompt = _run_async(
+            generate_image(
+                item.content_type,
+                hospital.slug,
+                topic=item.title,
+                direction=hospital_image_direction(hospital),
+                hospital_id=hospital.id,
+            )
+        )
+        if not image_url:
+            logger.warning("Image generation returned no URL for %s (text saved)", item.id)
+            if _write_morning_image_fallback(db, item, hospital):
+                _clear_generation_attempt(db, item)
+                return GenerationItemState.SUCCEEDED
+            _remember_generation_attempt(db, item, philosophy, "IMAGE_GENERATION_FAILED")
+            return GenerationItemState.PARTIAL
+        image_written = write_back_generated_content(
+            db,
+            item_id=item.id,
+            values={"image_url": image_url, "image_prompt": image_prompt},
+        )
+        if image_written == 0:
+            db.rollback()
+            logger.warning(
+                "Image write-back skipped for %s — status changed during image generation",
+                item.id,
+            )
+            return GenerationItemState.DISCARDED
+        db.commit()
+        db.refresh(item)
+        _clear_generation_attempt(db, item)
+        return GenerationItemState.SUCCEEDED
+    except Exception as error:
+        logger.warning(
+            "Image generation failed for %s (text saved): %s",
+            item.id,
+            type(error).__name__,
+        )
+        db.rollback()
+        db.refresh(item)
+        if _write_morning_image_fallback(db, item, hospital):
+            _clear_generation_attempt(db, item)
+            return GenerationItemState.SUCCEEDED
+        _remember_generation_attempt(db, item, philosophy, "IMAGE_GENERATION_FAILED")
+        return GenerationItemState.PARTIAL
+
+
+def _record_generation_batch_outcome(
+    db,
+    recorder: GenerationBatchRecorder,
+    item: ContentItem,
+    hospital: Hospital,
+    state: GenerationItemState,
+    code: str | None,
+    message: str | None,
+) -> None:
+    """Persist one batch outcome and its existing incident lifecycle."""
+
+    if state == GenerationItemState.FAILED:
+        code = code or "GENERATION_FAILED"
+        message = message or "자동 발행 준비 검사를 통과하지 못했습니다."
+        recorder.record(
+            item.id,
+            state,
+            safe_error_code=code,
+            safe_error_message=message,
+        )
+        failed_run = recorder.item_run(
+            item.id,
+            hospital.id,
+            "REGENERATE_CONTENT",
+            OperationRunState.FAILED,
+            safe_error_code=code,
+            safe_error_message=message,
+        )
+        _run_async(
+            open_generation_incident(
+                item_id=item.id,
+                hospital_id=hospital.id,
+                hospital_name=hospital.name,
+                run_id=failed_run.id,
+                code=code,
+                message=message,
+                notify=generation_notify_requested(code),
+            )
+        )
+        return
+    if state == GenerationItemState.PARTIAL:
+        code = code or "IMAGE_GENERATION_FAILED"
+        message = message or "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다."
+        recorder.record(
+            item.id,
+            state,
+            safe_error_code=code,
+            safe_error_message=message,
+        )
+        text_run = create_item_run(
+            db,
+            parent_run_id=recorder.run.id,
+            item_id=item.id,
+            hospital_id=hospital.id,
+            operation_type="REGENERATE_CONTENT",
+            state=OperationRunState.SUCCEEDED,
+            result={"state": "SUCCEEDED", "artifact": "text"},
+            attempt_kind="text",
+        )
+        _run_async(
+            recover_generation_incidents(
+                item.id,
+                hospital.id,
+                hospital.name,
+                text_run.id,
+                include_image=False,
+            )
+        )
+        image_run = recorder.item_run(
+            item.id,
+            hospital.id,
+            "REGENERATE_CONTENT_IMAGE",
+            OperationRunState.FAILED,
+            safe_error_code=code,
+            safe_error_message=message,
+        )
+        _run_async(
+            open_generation_incident(
+                item_id=item.id,
+                hospital_id=hospital.id,
+                hospital_name=hospital.name,
+                run_id=image_run.id,
+                code=code,
+                message=message,
+                notify=generation_notify_requested(code),
+            )
+        )
+        return
+    if state == GenerationItemState.DISCARDED:
+        recorder.record(item.id, state)
+        recorder.item_run(
+            item.id,
+            hospital.id,
+            "REGENERATE_CONTENT_IMAGE",
+            OperationRunState.CANCELLED,
+        )
+        return
+    if state == GenerationItemState.SKIPPED:
+        code = code or "GENERATION_SKIPPED"
+        message = message or "생성 조건이 이전 시도와 달라지지 않아 건너뛰었습니다."
+        recorder.record(
+            item.id,
+            state,
+            safe_error_code=code,
+            safe_error_message=message,
+        )
+        return
+
+    recorder.record(item.id, GenerationItemState.SUCCEEDED)
+    success_run = recorder.item_run(
+        item.id,
+        hospital.id,
+        "REGENERATE_CONTENT",
+        OperationRunState.SUCCEEDED,
+    )
+    _run_async(
+        recover_generation_incidents(
+            item.id,
+            hospital.id,
+            hospital.name,
+            success_run.id,
+        )
+    )
 
 
 def _review_findings(summary: object) -> list[str]:
@@ -483,6 +737,7 @@ def v0_sample_query_stmt(hospital_id):
 # 주간 측정에서 HIGH 우선순위 쿼리 spec 상한 — target 자동 시드로 매트릭스가 폭증해도
 # 매주 전량 측정되며 API 비용이 무한정 늘지 않도록 태스크 측에서 잘라낸다.
 SOV_HIGH_PRIORITY_CAP = settings.SOV_HIGH_PRIORITY_CAP
+SOV_TOTAL_SPEC_CAP = settings.SOV_TOTAL_SPEC_CAP
 
 _tls = threading.local()
 
@@ -1581,16 +1836,11 @@ def build_aeo_site(self, hospital_id: str):
     acks_late=True,
 )
 def nightly_content_generation(self):
-    """내일 발행 예정인 콘텐츠를 오늘 밤에 생성.
-
-    catch-up window (P1-3/R1): 야간 배치가 누락(워커 다운 등)돼도 슬롯이 영구 고아가
-    되지 않도록 '오늘-{GENERATION_CATCHUP_DAYS}일 ~ 내일' 범위의 미생성 슬롯을 함께
-    집어 재시도한다.
-    """
+    """At 23:00, generate only tomorrow's missing content fragments."""
     require_dispatch(self, "nightly-content-generation")
     now_kst = arrow.now("Asia/Seoul")
-    window_start = now_kst.shift(days=-GENERATION_CATCHUP_DAYS).date()
     tomorrow = now_kst.shift(days=1).date()
+    window_start = tomorrow
 
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
@@ -1634,6 +1884,7 @@ def nightly_content_generation(self):
             hospital_name = hospital.name
             claim_time = item.generation_claimed_at
             item_state = GenerationItemState.SUCCEEDED
+            philosophy = None
 
             if getattr(item, "_generation_reclaimed_stale", False):
                 stale_code = "STALE_GENERATION_CLAIM"
@@ -1666,6 +1917,13 @@ def nightly_content_generation(self):
                 )
 
             try:
+                if getattr(item, "body", None):
+                    state, code, message = _generate_single_content_item(db, item, hospital)
+                    _record_generation_batch_outcome(
+                        db, recorder, item, hospital, state, code, message
+                    )
+                    continue
+
                 # 기존 제목 목록 (중복 방지)
                 existing = db.execute(
                     select(ContentItem.title).where(
@@ -1676,6 +1934,17 @@ def nightly_content_generation(self):
                 existing_titles = [r[0] for r in existing.all()]
 
                 philosophy = _generation_philosophy_sync(db, hospital.id)
+                if _generation_attempt_is_unchanged(item, philosophy):
+                    previous = _stored_generation_attempt(item)
+                    recorder.record(
+                        item.id,
+                        GenerationItemState.SKIPPED,
+                        safe_error_code=previous["reason"],
+                        safe_error_message=(
+                            "직전 생성 차단 원인이 달라지지 않아 비용 재시도를 건너뛰었습니다."
+                        ),
+                    )
+                    continue
                 if not philosophy:
                     item.content_philosophy_id = None
                     item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
@@ -1686,7 +1955,9 @@ def nightly_content_generation(self):
                         ],
                         "checked_at": datetime.now(timezone.utc).isoformat(),
                     }
-                    db.commit()
+                    _remember_generation_attempt(
+                        db, item, philosophy, "MISSING_APPROVED_ESSENCE"
+                    )
                     first_gate_observation = hospital_id not in missing_essence_hospitals
                     missing_essence_hospitals.add(hospital_id)
                     missing_essence_outcomes.append(
@@ -1742,6 +2013,7 @@ def nightly_content_generation(self):
                     )
                     code = "COST_BLOCKED"
                     message = "비용 가드가 생성을 보류했습니다. 운영 센터에서 한도를 확인해 주세요."
+                    _remember_generation_attempt(db, item, philosophy, code)
                     recorder.record(
                         item.id,
                         GenerationItemState.SKIPPED,
@@ -1842,55 +2114,11 @@ def nightly_content_generation(self):
                 db.refresh(item)  # expire_on_commit=False — 조건부 UPDATE 결과를 다시 읽어온다
                 logger.info(f"Content generated: {hospital.name} — {item.title}")
 
-                # 대표 이미지 생성 (gpt-image-2, 제목 주제 주입 — 실패해도 텍스트는 유지)
-                try:
-                    image_url, image_prompt = _run_async(
-                        generate_image(
-                            item.content_type,
-                            hospital.slug,
-                            topic=item.title,
-                            direction=hospital_image_direction(hospital),
-                            hospital_id=hospital.id,
-                        )
-                    )
-                    if not image_url:
-                        # generate_image는 실패·비용차단을 ("", "") 센티널로 알린다.
-                        # 그대로 대입하면 기존 이미지를 지우게 되므로 값이 있을 때만 쓴다.
-                        logger.warning(
-                            "Image generation returned no URL for %s (text saved)", item.id
-                        )
-                        if not _write_morning_image_fallback(db, item, hospital):
-                            item_state = GenerationItemState.PARTIAL
-                    else:
-                        image_written = write_back_generated_content(
-                            db,
-                            item_id=item.id,
-                            values={"image_url": image_url, "image_prompt": image_prompt},
-                        )
-                        if image_written == 0:
-                            # 이미지 생성 중 상태가 바뀌어 쓰지 못했다. 성공으로만 보고하면
-                            # 이미지 없는 글이 생긴 걸 아무도 모른다 — 요약에 드러낸다.
-                            db.rollback()
-                            db.refresh(item)
-                            logger.warning(
-                                "Image write-back skipped for %s — status changed during "
-                                "image generation",
-                                item.id,
-                            )
-                            item_state = GenerationItemState.DISCARDED
-                        else:
-                            db.commit()
-                            db.refresh(item)
-                except Exception as img_e:
-                    logger.warning(
-                        "Image generation failed for %s (text saved): %s",
-                        item.id,
-                        type(img_e).__name__,
-                    )
-                    db.rollback()
-                    db.refresh(item)  # re-sync after rollback
-                    if not _write_morning_image_fallback(db, item, hospital):
-                        item_state = GenerationItemState.PARTIAL
+                # 대표 이미지는 비어 있을 때만 채운다. 기존 이미지가 있으면 공급자 파이프를
+                # 절대 다시 호출하지 않는다.
+                image_state = _recover_missing_content_image(db, item, hospital, philosophy)
+                if image_state != GenerationItemState.SUCCEEDED:
+                    item_state = image_state
 
                 readiness_failure = None
                 if item_state != GenerationItemState.DISCARDED:
@@ -2005,6 +2233,8 @@ def nightly_content_generation(self):
                 logger.error("Content generation failed for item %s: %s", item.id, type(e).__name__)
                 db.rollback()
                 db.expire_all()
+                if not getattr(item, "body", None):
+                    _remember_generation_attempt(db, item, philosophy, code)
                 recorder.record(
                     item.id,
                     GenerationItemState.FAILED,
@@ -2063,6 +2293,104 @@ def nightly_content_generation(self):
         # 승인 기준 누락은 위에서 병원별 상태만 남기고 이 실행의 요약을 한 번 보낸다. 재시도
         # 소진 후 남은 최종 발행 차단은 08시 배치에서 한 번의 요약으로만 알린다.
         logger.info("Nightly generation finalized %d item claims", len(claimed_item_ids))
+
+
+@celery_app.task(
+    name="app.workers.tasks.overnight_content_generation_recovery",
+    bind=True,
+    soft_time_limit=3000,
+    time_limit=3300,
+    acks_late=True,
+)
+def overnight_content_generation_recovery(self):
+    """At 01/04/07, fill missing fragments without rewriting a stored body."""
+
+    require_dispatch(self, "overnight-content-generation-recovery")
+    today = arrow.now("Asia/Seoul").date()
+    with SyncSessionLocal() as db:
+        task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
+        recorder = GenerationBatchRecorder(db, task_id, today, today)
+        items, truncated_count = _load_nightly_generation_batch(db, today, today)
+        if truncated_count:
+            logger.warning(
+                "overnight fragment recovery cap reached: %d items deferred beyond cap %d",
+                truncated_count,
+                NIGHTLY_GENERATION_CAP,
+            )
+        for item in items:
+            claim_time = item.generation_claimed_at
+            philosophy = None
+            try:
+                philosophy = _generation_philosophy_sync(db, item.hospital.id)
+                # _generate_single_content_item repeats this lookup so all callers
+                # share one policy.  The inexpensive duplicate read is preferable
+                # to allowing an exception path to lose the context fingerprint.
+                state, code, message = _generate_single_content_item(
+                    db, item, item.hospital
+                )
+                _record_generation_batch_outcome(
+                    db, recorder, item, item.hospital, state, code, message
+                )
+            except Exception as error:
+                code, message = classify_generation_failure(error)
+                logger.error(
+                    "Overnight fragment recovery failed for item %s: %s",
+                    item.id,
+                    type(error).__name__,
+                )
+                db.rollback()
+                db.expire_all()
+                if not getattr(item, "body", None):
+                    _remember_generation_attempt(db, item, philosophy, code)
+                _record_generation_batch_outcome(
+                    db,
+                    recorder,
+                    item,
+                    item.hospital,
+                    GenerationItemState.FAILED,
+                    code,
+                    message,
+                )
+            finally:
+                released = release_unfinished_claims(
+                    db,
+                    [item.id],
+                    expected_claimed_at=claim_time,
+                )
+                if released:
+                    db.commit()
+        recorder.finish()
+
+
+@celery_app.task(
+    name="app.workers.tasks.prepublish_content_generation_recovery",
+    bind=True,
+)
+def prepublish_content_generation_recovery(self):
+    """At 07:45, apply confirmed hero fallbacks and page stored Korean gates."""
+
+    require_dispatch(self, "prepublish-content-generation-recovery")
+    now_kst = arrow.now("Asia/Seoul")
+    with SyncSessionLocal() as db:
+        items = list(
+            db.execute(
+                select(ContentItem)
+                .join(Hospital, ContentItem.hospital_id == Hospital.id)
+                .where(
+                    auto_publish_due_predicate(now_kst.date()),
+                    publicly_operational_hospital_predicate(),
+                    ContentItem.body.isnot(None),
+                    ContentItem.image_url.is_(None),
+                )
+                .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
+                .options(joinedload(ContentItem.hospital))
+            )
+            .scalars()
+            .all()
+        )
+        for item in items:
+            _write_morning_image_fallback(db, item, item.hospital)
+        _page_morning_stored_publication_gates(db, now_kst=now_kst)
 
 
 @celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)
@@ -2302,15 +2630,6 @@ def generate_content_image(self, content_id: str):
 def _generate_single_content_item(
     db, item: ContentItem, hospital: Hospital
 ) -> tuple[GenerationItemState, str | None, str | None]:
-    existing = db.execute(
-        select(ContentItem.title).where(
-            ContentItem.hospital_id == hospital.id,
-            ContentItem.id != item.id,
-            ContentItem.title.isnot(None),
-        )
-    )
-    existing_titles = [row[0] for row in existing.all()]
-
     philosophy = _generation_philosophy_sync(db, hospital.id)
     if not philosophy:
         item.content_philosophy_id = None
@@ -2322,12 +2641,59 @@ def _generate_single_content_item(
             ],
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
-        db.commit()
+        _remember_generation_attempt(db, item, philosophy, "MISSING_APPROVED_ESSENCE")
         return (
             GenerationItemState.SKIPPED,
             "MISSING_APPROVED_ESSENCE",
             "콘텐츠 운영 기준의 시스템 자동 승인이 아직 완료되지 않았습니다.",
         )
+
+    # A stored body is immutable in every scheduled sweep.  Recover only its
+    # missing image, and never enter the content writer or its cost guard.
+    if getattr(item, "body", None):
+        previous = _stored_generation_attempt(item)
+        if (
+            previous.get("reason") == "IMAGE_GENERATION_FAILED"
+            and _generation_attempt_is_unchanged(item, philosophy)
+        ):
+            return (
+                GenerationItemState.SKIPPED,
+                previous["reason"],
+                "직전 이미지 차단 원인이 달라지지 않아 비용 재시도를 건너뛰었습니다.",
+            )
+        image_state = _recover_missing_content_image(db, item, hospital, philosophy)
+        if image_state == GenerationItemState.PARTIAL:
+            _persist_publication_readiness(db, item, philosophy)
+            return (
+                image_state,
+                "IMAGE_GENERATION_FAILED",
+                "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다.",
+            )
+        if image_state == GenerationItemState.DISCARDED:
+            return image_state, None, None
+        readiness_failure = _persist_publication_readiness(db, item, philosophy)
+        if readiness_failure is not None:
+            return GenerationItemState.FAILED, *readiness_failure
+        return GenerationItemState.SUCCEEDED, None, None
+
+    # The same empty slot and unchanged generation context gets no second writer
+    # call.  A philosophy/context change removes this suppression exactly once.
+    if _generation_attempt_is_unchanged(item, philosophy):
+        previous = _stored_generation_attempt(item)
+        return (
+            GenerationItemState.SKIPPED,
+            previous["reason"],
+            "직전 생성 차단 원인이 달라지지 않아 비용 재시도를 건너뛰었습니다.",
+        )
+
+    existing = db.execute(
+        select(ContentItem.title).where(
+            ContentItem.hospital_id == hospital.id,
+            ContentItem.id != item.id,
+            ContentItem.title.isnot(None),
+        )
+    )
+    existing_titles = [row[0] for row in existing.all()]
 
     # 비용 가드: Claude 호출 예산 확인. 차단 시 생성을 건너뛴다(item은 DRAFT/본문 없음 유지 —
     # 다음 야간 배치의 생성 재시도가 커버한다). 하드 상한 알림은 가드가 자체 발송한다.
@@ -2336,6 +2702,7 @@ def _generate_single_content_item(
         logger.warning(
             "단일 콘텐츠 재생성이 비용 가드로 차단됨: %s — %s", hospital.name, cost_decision.reason
         )
+        _remember_generation_attempt(db, item, philosophy, "COST_BLOCKED")
         return (
             GenerationItemState.SKIPPED,
             "COST_BLOCKED",
@@ -2390,52 +2757,16 @@ def _generate_single_content_item(
     db.commit()
     db.refresh(item)
 
-    image_failed = False
-    if not item.image_url:
-        try:
-            image_url, image_prompt = _run_async(
-                generate_image(
-                    item.content_type,
-                    hospital.slug,
-                    topic=item.title,
-                    direction=hospital_image_direction(hospital),
-                    hospital_id=hospital.id,
-                )
-            )
-            if not image_url:
-                # 실패 센티널("")을 그대로 쓰면 기존 이미지를 지운다.
-                logger.warning("Image generation returned no URL for %s (text saved)", item.id)
-                image_failed = not _write_morning_image_fallback(db, item, hospital)
-            elif write_back_generated_content(
-                db,
-                item_id=item.id,
-                values={"image_url": image_url, "image_prompt": image_prompt},
-            ):
-                db.commit()
-                db.refresh(item)
-            else:
-                db.rollback()
-                logger.warning(
-                    "Image write-back skipped for %s — status changed during image generation",
-                    item.id,
-                )
-                return GenerationItemState.DISCARDED, None, None
-        except Exception as img_e:
-            logger.warning(
-                "Image generation failed for %s (text saved): %s",
-                item.id,
-                type(img_e).__name__,
-            )
-            db.rollback()
-            db.refresh(item)
-            image_failed = not _write_morning_image_fallback(db, item, hospital)
-    if image_failed:
+    image_state = _recover_missing_content_image(db, item, hospital, philosophy)
+    if image_state == GenerationItemState.PARTIAL:
         _persist_publication_readiness(db, item, philosophy)
         return (
             GenerationItemState.PARTIAL,
             "IMAGE_GENERATION_FAILED",
             "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다.",
         )
+    if image_state == GenerationItemState.DISCARDED:
+        return image_state, None, None
     readiness_failure = _persist_publication_readiness(db, item, philosophy)
     if readiness_failure is not None:
         return GenerationItemState.FAILED, *readiness_failure
@@ -2842,6 +3173,21 @@ def run_sov_for_hospital(self, hospital_id: str):
                     )
                 )
 
+            if not measurement_specs:
+                logger.info(
+                    "No weekly-eligible queries for hospital %s in %s",
+                    hospital_id,
+                    week_key,
+                )
+                _run_async(
+                    recover_weekly_sov_failure(
+                        hospital_id=hospital.id,
+                        week_key=week_key,
+                    )
+                )
+                return
+
+            selected_weekly_specs = measurement_specs
             frozen_specs, _ = _build_measurement_specs(
                 db=db,
                 hospital=hospital,
@@ -2850,6 +3196,7 @@ def run_sov_for_hospital(self, hospital_id: str):
                 is_even_week=True,
                 is_month_start=True,
                 high_priority_cap=-1,
+                total_spec_cap=-1,
             )
             try:
                 manifest = freeze_dispatch_manifest(
@@ -2870,21 +3217,14 @@ def run_sov_for_hospital(self, hospital_id: str):
                 )
                 raise RuntimeError("weekly_sov_no_measurement_manifest")
             db.commit()
-            measurement_specs = [
-                {
-                    "query_id": cell.query_matrix_id,
-                    "query_text": cell.query_text,
-                    "platform": cell.platform,
-                    "target_id": cell.query_target_id,
-                    "variant_id": cell.query_variant_id,
-                    "manifest_cell": cell,
-                }
-                for cell in manifest.cells
-                if cell.state == "FAILED"
-            ]
+            measurement_specs = _pending_weekly_manifest_specs(
+                manifest, selected_weekly_specs
+            )
             if not measurement_specs:
                 logger.info("Monthly manifest has no pending cells for hospital %s", hospital_id)
-                if _weekly_manifest_is_resolved(manifest):
+                if _selected_weekly_manifest_is_resolved(
+                    manifest, selected_weekly_specs
+                ):
                     _run_async(
                         recover_weekly_sov_failure(hospital_id=hospital.id, week_key=week_key)
                     )
@@ -3047,6 +3387,54 @@ def _record_weekly_sov_failure(
             error_code=error_code,
             operation_run_id=operation_run_id,
         )
+    )
+
+
+def _sov_spec_identity(spec: Mapping[str, object]) -> tuple[str, str, str, str]:
+    return (
+        str(spec.get("query_id") or ""),
+        _normalize_platform(str(spec.get("platform") or "")),
+        str(spec.get("target_id") or ""),
+        str(spec.get("variant_id") or ""),
+    )
+
+
+def _pending_weekly_manifest_specs(manifest, selected_specs: list[dict]) -> list[dict]:
+    """Reconnect selected weekly specs to FAILED manifest cells without widening the cap."""
+
+    selected = {_sov_spec_identity(spec) for spec in selected_specs}
+    pending: list[dict] = []
+    for cell in getattr(manifest, "cells", ()) or ():
+        spec = {
+            "query_id": cell.query_matrix_id,
+            "query_text": cell.query_text,
+            "platform": cell.platform,
+            "target_id": cell.query_target_id,
+            "variant_id": cell.query_variant_id,
+            "manifest_cell": cell,
+        }
+        if cell.state == "FAILED" and _sov_spec_identity(spec) in selected:
+            pending.append(spec)
+    return pending
+
+
+def _selected_weekly_manifest_is_resolved(manifest, selected_specs: list[dict]) -> bool:
+    selected = {_sov_spec_identity(spec) for spec in selected_specs}
+    matched_states = [
+        cell.state
+        for cell in (getattr(manifest, "cells", ()) or ())
+        if _sov_spec_identity(
+            {
+                "query_id": cell.query_matrix_id,
+                "platform": cell.platform,
+                "target_id": cell.query_target_id,
+                "variant_id": cell.query_variant_id,
+            }
+        )
+        in selected
+    ]
+    return bool(matched_states) and all(
+        state in {"SUCCESS", "EXCLUDED"} for state in matched_states
     )
 
 
@@ -3222,6 +3610,14 @@ def _apply_high_priority_cap(specs: list[dict], cap: int) -> tuple[list[dict], i
     return kept, dropped
 
 
+def _apply_total_spec_cap(specs: list[dict], cap: int) -> list[dict]:
+    """Bound HIGH/NORMAL/LOW combined while preserving deterministic priority order."""
+
+    if cap < 0:
+        return specs
+    return specs[:cap]
+
+
 def _build_measurement_specs(
     *,
     db,
@@ -3231,11 +3627,13 @@ def _build_measurement_specs(
     is_even_week: bool = True,
     is_month_start: bool = True,
     high_priority_cap: int = SOV_HIGH_PRIORITY_CAP,
+    total_spec_cap: int = SOV_TOTAL_SPEC_CAP,
 ) -> tuple[list[dict], int]:
     """주간 측정 spec 목록을 만든다.
 
     target/variant 유래 spec도 fallback 쿼리와 동일하게 target.priority 기준으로 게이팅한다
-    (V0 후 target 자동 시드로 인해 스로틀링이 죽는 문제 방지). 마지막에 HIGH 상한을 적용한다.
+    (V0 후 target 자동 시드로 인해 스로틀링이 죽는 문제 방지). 마지막에 HIGH 상한과
+    전체 상한을 적용해 NORMAL/LOW도 무제한 확장되지 않게 한다.
     Returns: (specs, 잘린 HIGH spec 개수).
     """
     specs: list[dict] = []
@@ -3284,12 +3682,23 @@ def _build_measurement_specs(
             )
 
     if specs:
-        return _apply_high_priority_cap(specs, high_priority_cap)
+        capped, trimmed_high = _apply_high_priority_cap(specs, high_priority_cap)
+        return _apply_total_spec_cap(capped, total_spec_cap), trimmed_high
 
     platforms = ["chatgpt"]
     if settings.GEMINI_API_KEY:
         platforms.append("gemini")
-    for query in fallback_queries:
+    sorted_fallback_queries = sorted(
+        fallback_queries,
+        key=lambda query: (
+            priority_rank.get(
+                str(getattr(query, "priority", "NORMAL") or "NORMAL").upper(), 9
+            ),
+            str(getattr(query, "query_text", "") or ""),
+            str(getattr(query, "id", "") or ""),
+        ),
+    )
+    for query in sorted_fallback_queries:
         for platform in platforms:
             specs.append(
                 {
@@ -3302,7 +3711,8 @@ def _build_measurement_specs(
                     "query_intent": str(getattr(query, "query_intent", "LOCAL") or "LOCAL"),
                 }
             )
-    return _apply_high_priority_cap(specs, high_priority_cap)
+    capped, trimmed_high = _apply_high_priority_cap(specs, high_priority_cap)
+    return _apply_total_spec_cap(capped, total_spec_cap), trimmed_high
 
 
 def _ensure_variant_query_matrix(db, hospital: Hospital, variant: AIQueryVariant) -> QueryMatrix:

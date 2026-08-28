@@ -370,12 +370,12 @@ class Settings(BaseSettings):
     # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
     COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
     COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
-    # SoV: 병원50 × 주간 spec 다수 × 4주 여유 ≈ 20000
-    COST_GUARD_MONTHLY_SOV_QUERIES: int = 20000
+    # SoV may never have a larger provider-call envelope than content generation.
+    COST_GUARD_MONTHLY_SOV_QUERIES: int = 3000
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
     COST_GUARD_DAILY_IMAGE_CALLS: int = 250
-    COST_GUARD_DAILY_SOV_QUERIES: int = 2000
+    COST_GUARD_DAILY_SOV_QUERIES: int = 250
     # 무료 진단(1단) 답변 호출 상한. **선착순 자리 수는 호출 상한이 아니다** —
     # 자리 20개 × 질의3 × 플랫폼2 × 반복3 = 360건이 정상 상한이고, 측정 재시도(최대 3회)가
     # 겹치면 그 3배까지 늘어난다. 일일 500은 정상분 360 + 복구 여유이며, 이 선을 넘는
@@ -409,7 +409,9 @@ class Settings(BaseSettings):
     # 주간 측정에서 HIGH 우선순위 쿼리 상한 — 초과분은 잘라내고 ops 알림 (비용 가드)
     SOV_HIGH_PRIORITY_CAP: int = 30
     # 우선순위와 무관한 주간 측정 spec 총상한 — NORMAL/LOW 증가에 따른 무제한 비용 방지
-    SOV_TOTAL_SPEC_CAP: int = 100
+    # 50 specs × 5 repeats = 250 provider calls, no larger than the default
+    # daily content-generation envelope.
+    SOV_TOTAL_SPEC_CAP: int = 50
 
     # Domain
     CNAME_TARGET: str = "cname.reputation.motionlabs.kr"

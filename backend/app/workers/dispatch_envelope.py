@@ -30,6 +30,12 @@ TASK_PURPOSES = {
     "app.workers.tasks.trigger_v0_report": "trigger-v0-report",
     "app.workers.tasks.build_aeo_site": "build-aeo-site",
     "app.workers.tasks.nightly_content_generation": "nightly-content-generation",
+    "app.workers.tasks.overnight_content_generation_recovery": (
+        "overnight-content-generation-recovery"
+    ),
+    "app.workers.tasks.prepublish_content_generation_recovery": (
+        "prepublish-content-generation-recovery"
+    ),
     "app.workers.tasks.regenerate_content_item": "regenerate-content",
     "app.workers.tasks.auto_review_essence_snapshot": "auto-review-essence-snapshot",
     "app.workers.tasks.reconcile_essence_snapshots": "reconcile-essence-snapshots",
