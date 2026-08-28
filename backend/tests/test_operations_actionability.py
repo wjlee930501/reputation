@@ -243,9 +243,31 @@ def test_open_generation_episode_can_wake_at_morning_cutoff_once() -> None:
     )
 
 
-async def test_open_cause_suppresses_content_not_generated_symptom(monkeypatch) -> None:
-    scalar_results = iter((None, uuid.uuid4()))
-    captured = {"notifications": 0}
+async def test_open_cause_pages_its_korean_gate_instead_of_empty_slot_symptom(
+    monkeypatch,
+) -> None:
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 8, 18, 22, 45, tzinfo=UTC)
+            return value if tz is None else value.astimezone(tz)
+
+    cause_id = uuid.uuid4()
+    cause = SimpleNamespace(
+        id=cause_id,
+        state="OPEN",
+        severity="HIGH",
+        customer_impact="예정 공개 콘텐츠가 제때 공개되지 않습니다.",
+        next_action="운영 센터에서 가격·지역·검색 구조 게이트를 확인하세요.",
+        admin_path="/operations",
+        hospital_id=uuid.uuid4(),
+        version=1,
+        episode_seq=1,
+        safe_error_code="GENERATION_REJECTED",
+        safe_error_message="가격·지역·검색 구조 자동 검수 게이트가 통과되지 않았습니다.",
+    )
+    scalar_results = iter((None, cause, None))
+    captured = {"notifications": []}
 
     class FakeSession:
         async def __aenter__(self):
@@ -257,29 +279,26 @@ async def test_open_cause_suppresses_content_not_generated_symptom(monkeypatch) 
         async def scalar(self, _statement):
             return next(scalar_results)
 
+        async def get(self, _model, _item_id):
+            return SimpleNamespace(
+                scheduled_date=datetime(2026, 8, 19).date(),
+                body=None,
+                image_url=None,
+            )
+
         async def commit(self):
             return None
 
     async def fake_open(_db, request, **_kwargs):
-        return SimpleNamespace(
-            id=uuid.uuid4(),
-            severity="HIGH",
-            customer_impact=request.customer_impact,
-            next_action=request.next_action,
-            admin_path=request.admin_path,
-            hospital_id=request.hospital_id,
-            version=1,
-            episode_seq=1,
-            safe_error_code=request.safe_error_code,
-            safe_error_message=request.safe_error_message,
-        )
+        raise AssertionError("the stored gate must reuse the exact open cause")
 
-    async def capture_notification(_db, _intent):
-        captured["notifications"] += 1
+    async def capture_notification(_db, intent):
+        captured["notifications"].append(intent)
 
     monkeypatch.setattr(
         generation_incident_control, "get_async_sessionmaker", lambda: lambda: FakeSession()
     )
+    monkeypatch.setattr(generation_incident_control, "datetime", FrozenDatetime)
     monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", fake_open)
     monkeypatch.setattr(generation_incident_control, "enqueue_notification", capture_notification)
 
@@ -293,7 +312,10 @@ async def test_open_cause_suppresses_content_not_generated_symptom(monkeypatch) 
         notify=True,
     )
 
-    assert captured["notifications"] == 0
+    assert len(captured["notifications"]) == 1
+    payload = captured["notifications"][0].message.payload_json()
+    assert "가격·지역·검색 구조 자동 검수 게이트" in payload
+    assert "발행 시각까지 콘텐츠 제목과 본문" not in payload
 
 
 def test_generation_projection_uses_the_specific_safe_cause() -> None:
@@ -360,6 +382,49 @@ def test_generation_incident_pages_once_until_it_recovers() -> None:
     )
     assert not should_send(notify_requested=False, previous_state=None)
     assert should_send(notify_requested=True, previous_state="RECOVERED")
+    assert not should_send(notify_requested=True, previous_state="ACKNOWLEDGED")
+
+
+async def test_acknowledged_generation_cause_keeps_the_same_episode(monkeypatch) -> None:
+    incident_id = uuid.uuid4()
+    acknowledged = SimpleNamespace(
+        id=incident_id,
+        state="ACKNOWLEDGED",
+        safe_error_code="GENERATION_REJECTED",
+        episode_seq=4,
+    )
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def scalar(self, _statement):
+            return acknowledged
+
+    async def reject_reopen(*_args, **_kwargs):
+        raise AssertionError("ACKNOWLEDGED must not reopen the same slot and cause")
+
+    monkeypatch.setattr(
+        generation_incident_control, "get_async_sessionmaker", lambda: lambda: FakeSession()
+    )
+    monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", reject_reopen)
+
+    result = await generation_incident_control.open_generation_incident(
+        item_id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        hospital_name="테스트의원",
+        run_id=uuid.uuid4(),
+        code="GENERATION_REJECTED",
+        message="raw gate detail",
+        notify=True,
+    )
+
+    assert result == incident_id
+    assert acknowledged.state == "ACKNOWLEDGED"
+    assert acknowledged.episode_seq == 4
 
 
 def test_generation_notification_candidates_wait_for_morning_readiness_proof() -> None:

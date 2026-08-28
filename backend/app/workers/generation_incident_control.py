@@ -226,7 +226,9 @@ def _should_send_generation_notification(
 ) -> bool:
     """Page once per episode after the caller proves the morning gate is still open."""
 
-    del previous_state, code, first_seen_at, last_seen_at, now
+    del code, first_seen_at, last_seen_at, now
+    if previous_state == IncidentState.ACKNOWLEDGED.value:
+        return False
     return notify_requested and not has_open_cause and not notification_already_enqueued
 
 
@@ -268,21 +270,46 @@ async def open_generation_incident(
         )
         previous = await db.scalar(select(Incident).where(Incident.dedupe_key == dedupe_key))
         previous_state = previous.state if previous is not None else None
-        has_open_cause = False
+        if (
+            previous is not None
+            and previous_state == IncidentState.ACKNOWLEDGED.value
+            and getattr(previous, "safe_error_code", None) == code
+        ):
+            # 같은 슬롯·원인을 사람이 확인 완료한 episode는 유지한다. 다음 sweep이
+            # ACK를 OPEN으로 되돌리거나 episode_seq를 올려 다시 paging하면 안 된다.
+            return previous.id
+
+        blocking_cause = None
         if code == "CONTENT_NOT_GENERATED":
-            has_open_cause = (
-                await db.scalar(
-                    select(Incident.id).where(
+            cause_states = {
+                IncidentState.OPEN.value,
+                IncidentState.RETRYING.value,
+                IncidentState.ACKNOWLEDGED.value,
+            }
+            if (
+                previous is not None
+                and previous.state in cause_states
+                and getattr(previous, "safe_error_code", None) != code
+            ):
+                # MISSING_REFERENCES shares the missing-prerequisite fingerprint with
+                # CONTENT_NOT_GENERATED, so the exact cause may already be this row.
+                blocking_cause = previous
+            else:
+                blocking_cause = await db.scalar(
+                    select(Incident)
+                    .where(
                         Incident.hospital_id == hospital_id,
-                        Incident.state.in_((
-                            IncidentState.OPEN.value,
-                            IncidentState.RETRYING.value,
-                        )),
+                        Incident.state.in_(tuple(cause_states)),
                         Incident.safe_error_code != "CONTENT_NOT_GENERATED",
                         Incident.source_id.in_((str(item_id), str(hospital_id))),
                     )
+                    .order_by(Incident.last_seen_at.desc(), Incident.id.desc())
                 )
-            ) is not None
+            if (
+                blocking_cause is not None
+                and blocking_cause.state == IncidentState.ACKNOWLEDGED.value
+            ):
+                return blocking_cause.id
 
         # The old implementation opened one incident per content item for this
         # hospital-level gate.  During the first rollout of the hospital-scoped
@@ -300,34 +327,39 @@ async def open_generation_incident(
             if legacy_open is not None:
                 previous_state = legacy_open.state
 
-        customer_impact, next_action = _generation_operator_copy(code)
-        incident = await open_or_touch_incident(
-            db,
-            IncidentOpenRequest(
-                pipeline="content_generation",
-                object_type=object_type,
-                object_id=object_id,
-                fingerprint=_fingerprint(code),
-                incident_type="CONTENT_GENERATION_FAILED",
-                severity=_generation_severity(code),
-                customer_impact=customer_impact,
-                source_type="CONTENT_GENERATION",
-                next_action=next_action,
-                admin_path=admin_path,
-                hospital_id=hospital_id,
-                operation_run_id=run_id,
-                source_id=object_id,
-                safe_error_code=code,
-                safe_error_message=_generation_safe_cause(code),
-            ),
-            actor="content-generation-worker",
-            reason="generation attempt failed",
-        )
+        if blocking_cause is not None:
+            incident = blocking_cause
+            notification_code = incident.safe_error_code or code
+        else:
+            customer_impact, next_action = _generation_operator_copy(code)
+            incident = await open_or_touch_incident(
+                db,
+                IncidentOpenRequest(
+                    pipeline="content_generation",
+                    object_type=object_type,
+                    object_id=object_id,
+                    fingerprint=_fingerprint(code),
+                    incident_type="CONTENT_GENERATION_FAILED",
+                    severity=_generation_severity(code),
+                    customer_impact=customer_impact,
+                    source_type="CONTENT_GENERATION",
+                    next_action=next_action,
+                    admin_path=admin_path,
+                    hospital_id=hospital_id,
+                    operation_run_id=run_id,
+                    source_id=object_id,
+                    safe_error_code=code,
+                    safe_error_message=_generation_safe_cause(code),
+                ),
+                actor="content-generation-worker",
+                reason="generation attempt failed",
+            )
+            notification_code = code
         observed_at = datetime.now(UTC)
         get_item = getattr(db, "get", None)
         item = await get_item(ContentItem, item_id) if get_item is not None else None
         notification_due = notify and _morning_notification_due(
-            code=code,
+            code=notification_code,
             item=item,
             observed_at=observed_at,
         )
@@ -353,9 +385,18 @@ async def open_generation_incident(
             ) is not None
         if _should_send_generation_notification(
             notify_requested=notification_due,
-            previous_state=previous_state,
-            code=code,
-            has_open_cause=has_open_cause,
+            previous_state=(
+                incident.state
+                if blocking_cause is not None
+                else (
+                    previous_state
+                    if previous is not None
+                    and getattr(previous, "safe_error_code", None) == notification_code
+                    else None
+                )
+            ),
+            code=notification_code,
+            has_open_cause=False,
             notification_already_enqueued=notification_already_enqueued,
         ):
             assert notification is not None

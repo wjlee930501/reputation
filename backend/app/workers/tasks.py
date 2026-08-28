@@ -1620,6 +1620,7 @@ def nightly_content_generation(self):
             else:
                 logger.info(f"No content to generate for {window_start}~{tomorrow}")
             recorder.finish()
+            _page_morning_stored_publication_gates(db, now_kst=now_kst)
             return
 
         claimed_item_ids = [item.id for item in items]
@@ -2055,6 +2056,7 @@ def nightly_content_generation(self):
                 db, now_kst.date(), missing_essence_outcomes
             )
         recorder.finish()
+        _page_morning_stored_publication_gates(db, now_kst=now_kst)
 
         # 성공과 자동 복구 중간 상태는 Slack으로 보내지 않는다. 인시던트/실행 기록이 다음
         # 배치의 입력이 되고, 01·04·07·07:45 재시도가 스스로 복구한다. 사람만 해결할 수 있는
@@ -2453,6 +2455,63 @@ def _persist_publication_readiness(
         assessment.code or "GENERATION_FAILED",
         assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다.",
     )
+
+
+def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
+    """At 07:45, page the exact persisted blocker without publishing the slot."""
+
+    observed = now_kst or arrow.now("Asia/Seoul")
+    observed_time = observed.time().replace(tzinfo=None)
+    if not MORNING_CLOSE_START <= observed_time < time(8, 0):
+        return 0
+
+    items = list(
+        db.execute(
+            select(ContentItem)
+            .join(Hospital, ContentItem.hospital_id == Hospital.id)
+            .where(
+                auto_publish_due_predicate(observed.date()),
+                publicly_operational_hospital_predicate(),
+            )
+            .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
+            .options(joinedload(ContentItem.hospital))
+        )
+        .scalars()
+        .all()
+    )
+    paged = 0
+    for item in items:
+        hospital = item.hospital
+        philosophy = get_current_approved_philosophy_sync(db, hospital.id)
+        assessment = assess_content_publication(item, philosophy)
+        if assessment.publishable:
+            continue
+
+        apply_publication_assessment(item, assessment)
+        code = assessment.code or "GENERATION_FAILED"
+        message = assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다."
+        blocked_run = ensure_publication_block_run(
+            db,
+            item=item,
+            hospital=hospital,
+            code=code,
+            message=message,
+        )
+        # The async incident transaction must be able to reference this run.
+        db.commit()
+        _run_async(
+            open_generation_incident(
+                item_id=item.id,
+                hospital_id=hospital.id,
+                hospital_name=hospital.name,
+                run_id=blocked_run.id,
+                code=code,
+                message=message,
+                notify=generation_notify_requested(code),
+            )
+        )
+        paged += 1
+    return paged
 
 
 # ══════════════════════════════════════════════════════════════════
