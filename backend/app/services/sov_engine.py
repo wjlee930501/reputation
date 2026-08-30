@@ -424,8 +424,9 @@ def generate_query_matrix_specs(
     # 리포트가 어긋난다(PRD §7-4).
     analyses = {keyword: analyze_keyword(keyword, region) for keyword in keywords}
 
+    measurement_templates = [spec for spec in _TEMPLATE_SPECS if spec[1] != QUERY_INTENT_INFO]
     for (template, intent, applies), keyword, specialty in product(
-        _TEMPLATE_SPECS, keywords, specialties
+        measurement_templates, keywords, specialties
     ):
         analysis = analyses[keyword]
         if "{keyword}" in template:
@@ -504,6 +505,9 @@ _QUERY_DESIGN_KEYS = (
     "template_fingerprint",
     "lexicon_fingerprint",
     "slot_count",
+    "measurement_window",
+    "tracking_set_fingerprint",
+    "tracking_set_size",
 )
 
 SYSTEM_PROMPT_SOV = (
@@ -521,14 +525,19 @@ OPENAI_SEARCH_TOOL_CHOICE = "auto"
 PROMPT_DELIVERY = "system_role"
 
 
-def measurement_protocol() -> dict:
+def measurement_protocol(
+    *,
+    measurement_window: str | None = None,
+    tracking_set_fingerprint: str | None = None,
+    tracking_set_size: int | None = None,
+) -> dict:
     """이 측정이 어떤 조건에서 이뤄졌는지 — 접수/동결 시점에 스냅샷할 값 전부.
 
     **버전 문자열만 두지 않는다.** 사람이 버전을 올리는 것을 잊으면 조건이 바뀐 측정이
     같은 버전으로 기록되고, 그때부터 비교 게이트는 통과하는데 숫자는 못 믿게 된다.
     지시문·판정 프롬프트의 지문을 함께 넣어 잊을 수 없게 만든다.
     """
-    return {
+    protocol = {
         "policy_version": MEASUREMENT_POLICY_VERSION,
         "system_prompt": SYSTEM_PROMPT_SOV,
         "openai_tool_choice": OPENAI_SEARCH_TOOL_CHOICE,
@@ -549,6 +558,13 @@ def measurement_protocol() -> dict:
         # 질의 설계. 실행을 막지는 않지만(저장된 질의로 잴 수 있다) 기간 비교는 막는다.
         **query_mapper.query_design(),
     }
+    optional_basis = {
+        "measurement_window": measurement_window,
+        "tracking_set_fingerprint": tracking_set_fingerprint,
+        "tracking_set_size": tracking_set_size,
+    }
+    protocol.update({key: value for key, value in optional_basis.items() if value is not None})
+    return protocol
 
 
 def _fingerprint(text: str) -> str:

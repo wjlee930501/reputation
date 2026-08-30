@@ -568,6 +568,7 @@ def build_doctor_report_view(
     records: list,
     platforms: list[str] | None = None,
     sov_coverage: MonthlySovPayload | None = None,
+    comparison_reason: str | None = None,
 ) -> DoctorReportView:
     """원장에게 보낼 1페이지의 모든 문구와 숫자를 만든다.
 
@@ -578,22 +579,46 @@ def build_doctor_report_view(
     prev_count = _as_hundred(prev_sov_pct)
     measured = this_count is not None
 
-    delta = None if (this_count is None or prev_count is None) else this_count - prev_count
-    if delta is None:
-        delta_sentence = None
+    comparison_is_valid = comparison_reason in (None, "MATCHED_COHORT")
+    delta = (
+        None
+        if this_count is None or prev_count is None or not comparison_is_valid
+        else this_count - prev_count
+    )
+    if not measured:
+        delta_sentence = "이번 달은 측정이 충분히 이뤄지지 않았습니다"
+    elif comparison_reason == "NO_PRIOR_MANIFEST" or (
+        prev_count is None and comparison_reason is None
+    ):
+        delta_sentence = "이번 달이 기준선입니다"
+    elif comparison_reason not in (None, "MATCHED_COHORT"):
+        delta_sentence = "측정 기준이 바뀌어 다음 달부터 비교합니다"
+    elif delta is None:
+        delta_sentence = "이번 달이 기준선입니다"
     elif delta > 0:
-        delta_sentence = f"전월 {prev_count}번 → 이번 달 {this_count}번 ({delta}개 늘었습니다)"
+        delta_sentence = f"지난달 {prev_count}번 → 이번 달 {this_count}번 ({delta}개 늘었습니다)"
     elif delta < 0:
-        delta_sentence = f"전월 {prev_count}번 → 이번 달 {this_count}번 ({abs(delta)}개 줄었습니다)"
+        delta_sentence = f"지난달 {prev_count}번 → 이번 달 {this_count}번 ({abs(delta)}개 줄었습니다)"
     else:
-        delta_sentence = f"전월 {prev_count}번 → 이번 달 {this_count}번 (변화 없습니다)"
+        delta_sentence = f"지난달 {prev_count}번 → 이번 달 {this_count}번 (변화 없습니다)"
 
-    new_questions = int((attribution or {}).get("new_mention_count") or 0)
     first_measured_questions = int(
         (attribution or {}).get("first_measured_mention_count") or 0
     )
     non_comparable_questions = int((attribution or {}).get("non_comparable_count") or 0)
-    ahead_of = _competitor_outcomes(records)
+    mention_rows = (
+        (attribution or {}).get("new_mention_cells")
+        or (attribution or {}).get("new_mention_queries")
+        or []
+    )
+    new_mention_sentences = [
+        {
+            "query_text": str(row.get("query_text") or ""),
+            "platform_label": str(row.get("platform_label") or "AI"),
+        }
+        for row in mention_rows[:5]
+        if str(row.get("query_text") or "").strip()
+    ]
 
     tiles: list[DoctorTile] = [
         {
@@ -601,19 +626,7 @@ def build_doctor_report_view(
             "value": f"{published_count}편" if plan_quota is None else f"{plan_quota}편 중 {published_count}편",
             "hint": "약정한 편수 대비 진행률입니다.",
         },
-        {
-            "label": "지난달 기준에서 새로 확인된 병원 언급",
-            "value": f"{new_questions}개",
-            "hint": "지난달에도 정상 확인한 같은 질문에는 없었지만 이번 달에는 나온 경우입니다.",
-        },
     ]
-    if ahead_of:
-        top = ahead_of[0]
-        tiles.append({
-            "label": "가장 많이 언급된 다른 병원",
-            "value": top["name"],
-            "hint": f"같은 질문들에서 {top['mention_count']}번 언급됐습니다.",
-        })
 
     if measured:
         summary = (
@@ -622,6 +635,11 @@ def build_doctor_report_view(
         )
     else:
         summary = "이번 달은 측정이 충분히 이뤄지지 않아 횟수를 보고드리지 않습니다."
+    if measured and delta_sentence in {
+        "이번 달이 기준선입니다",
+        "측정 기준이 바뀌어 다음 달부터 비교합니다",
+    }:
+        summary = f"{delta_sentence}. 이번 달 현재는 환자 질문 100번 중 {this_count}번입니다."
 
     ours = ["다음 달에도 계획한 글을 예정대로 발행합니다."]
     if attribution and attribution.get("new_mention_queries"):
@@ -666,6 +684,10 @@ def build_doctor_report_view(
         "summary": summary,
         "coverage_text": coverage_text,
         "tiles": tiles,
+        "new_mention_sentences": new_mention_sentences,
+        "new_mention_empty_text": (
+            "이번 달에는 지난달과 같은 질문에서 새로 확인된 병원 언급이 없습니다."
+        ),
         "evidence": _pick_evidence(records, getattr(hospital, "name", "") or ""),
         "next_actions": {
             "ours": ours,

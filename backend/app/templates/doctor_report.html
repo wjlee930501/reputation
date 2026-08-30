@@ -28,7 +28,7 @@
   .coverage { font-size: 7.8pt; color: #516070; margin-top: 4px; }
 
   .headline { text-align: center; padding: 9px 12px; margin: 7px 0; border: 1.5px solid #1A4B8C; border-radius: 6px; }
-  .headline .num { font-size: 29pt; font-weight: 800; color: #1A4B8C; line-height: 1; }
+  .headline .num { font-size: 19pt; font-weight: 800; color: #1A4B8C; line-height: 1.2; }
   .headline .unit { font-size: 8.5pt; color: #344054; }
   .headline .delta { font-size: 8pt; color: #475467; margin-top: 4px; }
   .headline .none { font-size: 10pt; color: #667085; }
@@ -38,6 +38,10 @@
   .tiles .lbl { font-size: 7.5pt; color: #667085; }
   .tiles .val { font-size: 11pt; font-weight: 750; color: #1A4B8C; margin: 2px 0; }
   .tiles .hint { font-size: 7.8pt; color: #667085; line-height: 1.3; }
+
+  .mentions { background: #F2F6FC; border-radius: 5px; padding: 7px 10px; }
+  .mentions li { font-size: 8.2pt; margin-bottom: 3px; }
+  .mentions .platform { color: #667085; font-size: 7.5pt; }
 
   .case { border-left: 3px solid #1A4B8C; background: #F7F9FC; padding: 7px 9px; margin: 5px 0; border-radius: 0 5px 5px 0; }
   .case.miss { border-left-color: #C0641E; background: #FDF7F2; }
@@ -72,12 +76,8 @@
 <h2>이번 달 우리 병원은 어땠나요?</h2>
 <div class="headline">
   {% if view.measured %}
-    <div class="unit">환자 질문 100번 중</div>
-    <div class="num">{{ view.headline.of_hundred }}번</div>
-    <div class="unit">AI가 우리 병원을 답변에 넣었습니다</div>
-    {% if view.headline.delta_sentence %}
-      <div class="delta">{{ view.headline.delta_sentence }}</div>
-    {% endif %}
+    <div class="num">{{ view.headline.delta_sentence }}</div>
+    <div class="delta">이번 달 현재: 환자 질문 100번 중 {{ view.headline.of_hundred }}번</div>
   {% else %}
     <div class="none">이번 달은 측정이 충분히 이뤄지지 않았습니다.</div>
   {% endif %}
@@ -94,6 +94,19 @@
     {% endfor %}
   </tr>
 </table>
+
+<h2>어떤 질문에서 우리 병원이 새로 나왔나요?</h2>
+<div class="mentions">
+  {% if view.new_mention_sentences %}
+  <ul>
+    {% for mention in view.new_mention_sentences %}
+    <li>“{{ mention.query_text }}” <span class="platform">{{ mention.platform_label }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+    {{ view.new_mention_empty_text }}
+  {% endif %}
+</div>
 
 {% if view.evidence.found or view.evidence.missing %}
 <h2>실제로 어떻게 나왔나요?</h2>

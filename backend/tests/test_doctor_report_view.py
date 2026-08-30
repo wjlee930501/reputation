@@ -55,7 +55,11 @@ def _view(**overrides):
             "new_mention_count": 3,
             "first_measured_mention_count": 2,
             "non_comparable_count": 1,
-            "new_mention_cells": [{"query_text": "q"}],
+            "new_mention_cells": [
+                {"query_text": "강남 치질 병원 추천해줘", "platform_label": "ChatGPT"},
+                {"query_text": "강남 대장내시경 병원 알려줘", "platform_label": "Gemini"},
+                {"query_text": "강남 항문외과 어디가 좋아?", "platform_label": "ChatGPT"},
+            ],
         },
         "records": [_record(mentioned=True), _record(mentioned=False)],
         "platforms": ["chatgpt", "gemini"],
@@ -71,6 +75,8 @@ def _all_copy(view) -> str:
         parts.append(view["headline"]["delta_sentence"])
     for tile in view["tiles"]:
         parts += [tile["label"], str(tile["value"]), tile["hint"]]
+    for mention in view["new_mention_sentences"]:
+        parts += [mention["query_text"], mention["platform_label"]]
     parts += view["next_actions"]["ours"] + view["next_actions"]["yours"]
     return " ".join(parts)
 
@@ -86,12 +92,12 @@ def test_headline_is_a_count_out_of_a_hundred_not_a_percentage():
 
 
 def test_month_over_month_is_written_in_counts_and_plain_korean():
-    assert _view()["headline"]["delta_sentence"] == "전월 39번 → 이번 달 47번 (8개 늘었습니다)"
+    assert _view()["headline"]["delta_sentence"] == "지난달 39번 → 이번 달 47번 (8개 늘었습니다)"
     assert _view(sov_pct=31.0)["headline"]["delta_sentence"] == (
-        "전월 39번 → 이번 달 31번 (8개 줄었습니다)"
+        "지난달 39번 → 이번 달 31번 (8개 줄었습니다)"
     )
     assert _view(sov_pct=39.0)["headline"]["delta_sentence"] == (
-        "전월 39번 → 이번 달 39번 (변화 없습니다)"
+        "지난달 39번 → 이번 달 39번 (변화 없습니다)"
     )
 
 
@@ -101,16 +107,23 @@ def test_an_unmeasured_month_never_reports_zero():
 
     assert view["measured"] is False
     assert view["headline"]["of_hundred"] is None
-    assert view["headline"]["delta_sentence"] is None
+    assert view["headline"]["delta_sentence"] == "이번 달은 측정이 충분히 이뤄지지 않았습니다"
     assert "0번" not in view["summary"]
     assert "측정" in view["summary"]
 
 
-def test_first_month_has_no_comparison_instead_of_a_fake_one():
-    view = _view(prev_sov_pct=None)
+def test_first_month_explicitly_names_the_baseline():
+    view = _view(prev_sov_pct=None, comparison_reason="NO_PRIOR_MANIFEST")
 
     assert view["headline"]["prev_of_hundred"] is None
-    assert view["headline"]["delta_sentence"] is None
+    assert view["headline"]["delta_sentence"] == "이번 달이 기준선입니다"
+
+
+def test_incomparable_month_explicitly_names_the_policy_change():
+    view = _view(comparison_reason="MEASUREMENT_POLICY_CHANGED")
+
+    assert view["headline"]["delta"] is None
+    assert view["headline"]["delta_sentence"] == "측정 기준이 바뀌어 다음 달부터 비교합니다"
 
 
 @pytest.mark.parametrize("banned", BANNED_IN_DOCTOR_COPY)
@@ -135,18 +148,27 @@ def test_publishing_tile_degrades_when_no_quota_is_known():
 
 def test_attribution_copy_separates_real_change_from_missing_baseline():
     view = _view()
-    tile = next(
-        t for t in view["tiles"]
-        if t["label"] == "지난달 기준에서 새로 확인된 병원 언급"
-    )
     copy = _all_copy(view)
 
-    assert tile["value"] == "3개"
-    assert "지난달에도 정상 확인한 같은 질문" in tile["hint"]
+    assert len(view["new_mention_sentences"]) == 3
+    assert view["new_mention_sentences"][0]["query_text"] == "강남 치질 병원 추천해줘"
     assert "이번 달 처음 확인된 질문 2개" in copy
     assert "새로 좋아진 결과로 계산하지 않았습니다" in copy
     assert "지난달 측정이 끝나지 않은 질문 1개" in copy
     assert "다음 달 정상 측정 후 비교합니다" in copy
+
+
+def test_doctor_tiles_do_not_include_a_competitor_story():
+    view = _view(
+        records=[
+            _record(
+                mentioned=False,
+                competitors=[{"name": "다른병원", "is_mentioned": True}],
+            )
+        ]
+    )
+
+    assert all("다른 병원" not in tile["label"] for tile in view["tiles"])
 
 
 def test_evidence_pairs_one_appearance_with_one_absence():
@@ -243,6 +265,8 @@ def test_template_renders_the_headline_and_evidence():
     text = _body_text(html)
 
     assert "100번 중" in text and "47번" in text
+    assert "지난달 39번 → 이번 달 47번" in text
+    assert "강남 치질 병원 추천해줘" in text
     assert "강남 대장내시경" in text and "장편한외과의원이 좋습니다" in text
     assert "A의원" in text
     assert "원장님께 부탁드립니다" in text

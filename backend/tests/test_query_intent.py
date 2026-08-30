@@ -185,10 +185,8 @@ def test_generated_specs_carry_intent_and_match_plain_generation() -> None:
     texts = generate_query_matrix(REGION, SPECIALTIES, KEYWORDS)
 
     assert sorted(text for text, _ in specs) == sorted(texts)
-    assert {intent for _, intent in specs} == {QUERY_INTENT_LOCAL, QUERY_INTENT_INFO}
-    for text, intent in specs:
-        if intent == QUERY_INTENT_INFO:
-            assert not any(r in text for r in REGION), f"INFO인데 지역이 들어있다: {text}"
+    assert specs
+    assert {intent for _, intent in specs} == {QUERY_INTENT_LOCAL}
 
 
 def test_classify_recovers_intent_from_text_for_untemplated_queries() -> None:

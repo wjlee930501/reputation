@@ -106,6 +106,17 @@ def test_monthly_reports_close_after_the_next_month_boundary():
     assert schedule.day_of_month == set(range(1, 8))
 
 
+def test_monthly_sov_measurement_runs_only_in_the_month_end_window():
+    entry = celery_app.conf.beat_schedule["monthly-sov-measurement"]
+
+    assert entry["task"] == "app.workers.tasks.run_monthly_sov_measurement"
+    assert entry["schedule"].minute == {0}
+    assert entry["schedule"].hour == {0, 6, 12, 18}
+    assert entry["schedule"].day_of_month == set(range(24, 32))
+    assert _resolved_queue(entry["task"]) == "sov"
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-08-30.1"
+
+
 def test_monthly_artifact_incident_reconciliation_runs_each_minute_on_reports_queue():
     task_name = "app.workers.monthly_artifact_reconciliation.reconcile"
     entry = celery_app.conf.beat_schedule["reconcile-monthly-artifact-incidents"]
