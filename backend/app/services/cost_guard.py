@@ -84,6 +84,18 @@ if monthly == 0 then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
 return {1, '', new_daily, new_monthly}
 """
 
+_RELEASE_BUDGET_SCRIPT = """
+local count = tonumber(ARGV[1])
+for _, key in ipairs(KEYS) do
+  local current = tonumber(redis.call('GET', key) or '0')
+  local released = math.min(current, count)
+  if released > 0 then redis.call('DECRBY', key, released) end
+end
+return 1
+"""
+
+_UNLIMITED_REMAINING = 2**63 - 1
+
 
 @dataclass(frozen=True)
 class CostGuardDecision:
@@ -346,6 +358,88 @@ async def check_and_increment(
             exc.__class__.__name__,
         )
         return CostGuardDecision(True, None)
+
+
+async def remaining_units(
+    category: str,
+    *,
+    redis_client: redis_async.Redis | None = None,
+) -> tuple[int, int]:
+    """현재 기간의 (일일, 월간) 예약 가능 수를 반환한다.
+
+    재디스패치 판단용이므로 Redis를 읽지 못하면 fail-closed로 ``(0, 0)``을
+    반환한다. 설정상 상한이 없는 범위는 충분히 큰 값으로 표현한다.
+    """
+    if category not in _CATEGORY_LABELS:
+        raise ValueError(f"unknown cost_guard category: {category}")
+    if not settings.COST_GUARD_ENABLED:
+        return (_UNLIMITED_REMAINING, _UNLIMITED_REMAINING)
+
+    client = redis_client or _client()
+    try:
+        if await _is_kill_switch_active(client):
+            return (0, 0)
+        now = _now()
+        daily_period = _daily_period(now)
+        monthly_period = _monthly_period(now)
+        daily_limit, monthly_limit = _limits(category)
+        daily_limit = await _effective_daily_limit(
+            client, category, daily_period, daily_limit
+        )
+        daily_raw = await client.get(_daily_key(category, daily_period))
+        monthly_raw = await client.get(_monthly_key(category, monthly_period))
+        daily_used = int(daily_raw or 0)
+        monthly_used = int(monthly_raw or 0)
+        daily_remaining = (
+            _UNLIMITED_REMAINING
+            if daily_limit <= 0
+            else max(daily_limit - daily_used, 0)
+        )
+        monthly_remaining = (
+            _UNLIMITED_REMAINING
+            if monthly_limit <= 0
+            else max(monthly_limit - monthly_used, 0)
+        )
+        return daily_remaining, monthly_remaining
+    except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
+        logger.warning(
+            "cost_guard remaining capacity unavailable: category=%s error=%s",
+            category,
+            exc.__class__.__name__,
+        )
+        return (0, 0)
+
+
+async def release_reservation(
+    category: str,
+    count: int,
+    *,
+    redis_client: redis_async.Redis | None = None,
+) -> None:
+    """사용하지 않은 예약을 일일·월간 카운터에서 원자적으로 반환한다."""
+    if count <= 0 or not settings.COST_GUARD_ENABLED:
+        return
+    if category not in _CATEGORY_LABELS:
+        raise ValueError(f"unknown cost_guard category: {category}")
+
+    client = redis_client or _client()
+    now = _now()
+    try:
+        await client.eval(
+            _RELEASE_BUDGET_SCRIPT,
+            2,
+            _daily_key(category, _daily_period(now)),
+            _monthly_key(category, _monthly_period(now)),
+            count,
+        )
+    except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
+        # 반환 실패가 원래 예외를 가리거나 태스크 정리를 막으면 안 된다.
+        logger.warning(
+            "cost_guard reservation release skipped: category=%s count=%s error=%s",
+            category,
+            count,
+            exc.__class__.__name__,
+        )
 
 
 async def record_provider_call(

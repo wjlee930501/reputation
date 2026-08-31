@@ -382,6 +382,13 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat(monkeypatch):
     monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(
+            2026, 8, 10, 12, tzinfo="Asia/Seoul"
+        ),
+    )
+    monkeypatch.setattr(
         tasks, "register_convertible_tracking_sets", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [converted])

@@ -19,11 +19,13 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time, timedelta, timezone
+from time import monotonic
 from typing import Any
 from urllib.parse import urlparse
 
 import arrow
 import httpx
+from billiard.exceptions import SoftTimeLimitExceeded, WorkerLostError
 from celery import current_task
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -188,7 +190,11 @@ from app.utils.db_locks import (
     release_hospital_advisory_session_lock_sync,
 )
 from app.workers.content_publication_block_control import ensure_publication_block_run
-from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
+from app.workers.dispatch_auth import (
+    DispatchAuthorizationError,
+    build_dispatch_headers,
+    require_dispatch,
+)
 from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_incident_control import (
     generation_notify_requested,
@@ -698,6 +704,7 @@ class MonthlyBatchIncompleteError(RuntimeError):
 
 
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
+SOV_CHUNK_STOP_SECONDS = 1650
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
 # V0 첫 측정에 쓰는 질문 개수.
 # 5였을 때: 플랫폼당 25개 관측이라 1건 차이로 언급률이 4%p씩 튀었다(±8%p 수준).
@@ -3111,14 +3118,16 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
     time_limit=2100,
 )
 def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = None):
-    require_dispatch(self, "run-sov", hospital_id)
-    if not _operation_run_claimed_or_legacy(self):
-        logger.info(
-            "Skipping duplicate RUN_SOV delivery without OperationRun claim: hospital=%s",
-            hospital_id,
-        )
-        return
+    task_started_at = monotonic()
+    reserved_units = 0
     try:
+        require_dispatch(self, "run-sov", hospital_id)
+        if not _operation_run_claimed_or_legacy(self):
+            logger.info(
+                "Skipping duplicate RUN_SOV delivery without OperationRun claim: hospital=%s",
+                hospital_id,
+            )
+            return
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, uuid.UUID(hospital_id))
             if not hospital or hospital.status not in (
@@ -3264,11 +3273,18 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                 _record_weekly_sov_failure(
                     hospital,
                     period_key,
-                    f"{failure_prefix}_NO_MEASUREMENT_MANIFEST",
+                    error_code := f"{failure_prefix}_NO_MEASUREMENT_MANIFEST",
                     _operation_run_id_from_task(self),
                     measurement_mode=measurement_mode,
                 )
-                raise RuntimeError("weekly_sov_no_measurement_manifest")
+                _finish_sov_operation_run(
+                    db,
+                    self,
+                    OperationRunState.FAILED,
+                    error_code,
+                    _sov_operation_error_message(error_code),
+                )
+                return
             db.commit()
             measurement_specs = _pending_weekly_manifest_specs(
                 manifest, selected_weekly_specs
@@ -3289,11 +3305,18 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                 _record_weekly_sov_failure(
                     hospital,
                     period_key,
-                    f"{failure_prefix}_UNRESOLVED_MANIFEST_STATE",
+                    error_code := f"{failure_prefix}_UNRESOLVED_MANIFEST_STATE",
                     _operation_run_id_from_task(self),
                     measurement_mode=measurement_mode,
                 )
-                raise RuntimeError("weekly_sov_unresolved_manifest_state")
+                _finish_sov_operation_run(
+                    db,
+                    self,
+                    OperationRunState.FAILED,
+                    error_code,
+                    _sov_operation_error_message(error_code),
+                )
+                return
 
             if not _manifest_execution_policy_matches(manifest):
                 logger.warning(
@@ -3303,46 +3326,18 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                 _record_weekly_sov_failure(
                     hospital,
                     period_key,
-                    f"{failure_prefix}_MEASUREMENT_POLICY_DRIFT",
+                    error_code := f"{failure_prefix}_MEASUREMENT_POLICY_DRIFT",
                     _operation_run_id_from_task(self),
                     measurement_mode=measurement_mode,
                 )
-                raise RuntimeError("weekly_sov_measurement_policy_drift")
-
-            # 비용 가드: spec 개수 × **반복 횟수**만큼 예산을 run 단위로 일괄 확인.
-            # 각 spec은 run_single_query에서 SOV_REPEAT_WEEKLY번 실제 호출을 낸다.
-            # 반복 횟수를 빼면 가드가 실제 호출의 1/SOV_REPEAT_WEEKLY만 예약한다.
-            # 차단 시 측정을 건너뛰고 ops 알림만 남긴다(예외로 재시도를 유발하지 않는다 —
-            # 재시도해도 상한에 다시 걸린다).
-            # spec은 이미 (질의 × 플랫폼) 조합이므로 platform_count=1로 넘긴다.
-            sov_decision = _run_async(
-                cost_guard.check_and_increment(
-                    "sov",
-                    count=sov_budget_units(
-                        query_count=len(measurement_specs),
-                        platform_count=1,
-                        repeat_count=SOV_REPEAT_WEEKLY,
-                    ),
+                _finish_sov_operation_run(
+                    db,
+                    self,
+                    OperationRunState.FAILED,
+                    error_code,
+                    _sov_operation_error_message(error_code),
                 )
-            )
-            if not sov_decision.allowed:
-                logger.warning(
-                    "%s AI 언급률 측정이 비용 가드로 차단됨: %s — %s",
-                    measurement_mode,
-                    hospital.name,
-                    sov_decision.reason,
-                )
-                # cost_guard가 일/월 범위별로 첫 상한 도달만 알린다.
-                # 병원별 작업은 실행 기록만 남겨 같은 원인을 중복 전파하지 않는다. 다만
-                # OperationRun은 성공으로 닫히면 안 되므로 Celery 실패 신호를 남긴다.
-                _record_weekly_sov_failure(
-                    hospital,
-                    period_key,
-                    f"{failure_prefix}_COST_GUARD_BLOCKED",
-                    _operation_run_id_from_task(self),
-                    measurement_mode=measurement_mode,
-                )
-                raise RuntimeError("weekly_sov_cost_guard_blocked")
+                return
 
             competitors = hospital.competitors or []
             run = _start_measurement_run(
@@ -3357,22 +3352,104 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                 },
                 measurement_protocol_kwargs=protocol_kwargs,
             )
-            records = []
-            attempt_pairs = []
             success_count = 0
             failure_count = 0
-            for spec in measurement_specs:
-                results = _run_async(
-                    run_single_query(
-                        hospital.name,
-                        spec["query_text"],
-                        spec["platform"],
-                        SOV_REPEAT_WEEKLY,
-                        competitors=competitors,
-                        region=(hospital.region or [""])[0],
-                        hospital_id=hospital.id,
+            for spec_index, spec in enumerate(measurement_specs):
+                if _sov_chunk_deadline_reached(task_started_at):
+                    _finish_measurement_run(run, success_count, failure_count)
+                    db.commit()
+                    error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
+                    _record_weekly_sov_failure(
+                        hospital,
+                        period_key,
+                        error_code,
+                        _operation_run_id_from_task(self),
+                        measurement_mode=measurement_mode,
                     )
+                    _finish_sov_operation_run(
+                        db,
+                        self,
+                        OperationRunState.PARTIAL,
+                        error_code,
+                        _sov_operation_error_message(error_code),
+                    )
+                    return
+
+                # 각 cell 바로 앞에서만 반복 횟수만큼 예약한다. 완료 cell은 즉시
+                # 커밋하므로 다음 6시간 슬롯에서 pending 필터가 다시 고르지 않는다.
+                reserved_units = SOV_REPEAT_WEEKLY
+                sov_decision = _run_async(
+                    cost_guard.check_and_increment("sov", count=reserved_units)
                 )
+                if not sov_decision.allowed:
+                    reserved_units = 0
+                    logger.warning(
+                        "%s AI 언급률 측정이 비용 가드로 차단됨: %s — %s",
+                        measurement_mode,
+                        hospital.name,
+                        sov_decision.reason,
+                    )
+                    _finish_measurement_run(run, success_count, failure_count)
+                    db.commit()
+                    error_code = f"{failure_prefix}_COST_GUARD_BLOCKED"
+                    _record_weekly_sov_failure(
+                        hospital,
+                        period_key,
+                        error_code,
+                        _operation_run_id_from_task(self),
+                        measurement_mode=measurement_mode,
+                    )
+                    _finish_sov_operation_run(
+                        db,
+                        self,
+                        OperationRunState.FAILED,
+                        error_code,
+                        _sov_operation_error_message(error_code),
+                    )
+                    return
+
+                try:
+                    results = _run_async(
+                        run_single_query(
+                            hospital.name,
+                            spec["query_text"],
+                            spec["platform"],
+                            SOV_REPEAT_WEEKLY,
+                            competitors=competitors,
+                            region=(hospital.region or [""])[0],
+                            hospital_id=hospital.id,
+                        )
+                    )
+                except (SoftTimeLimitExceeded, DispatchAuthorizationError, WorkerLostError):
+                    _run_async(cost_guard.release_reservation("sov", reserved_units))
+                    reserved_units = 0
+                    _finish_measurement_run(run, success_count, failure_count)
+                    db.commit()
+                    error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
+                    _record_weekly_sov_failure(
+                        hospital,
+                        period_key,
+                        error_code,
+                        _operation_run_id_from_task(self),
+                        measurement_mode=measurement_mode,
+                    )
+                    _finish_sov_operation_run(
+                        db,
+                        self,
+                        OperationRunState.PARTIAL,
+                        error_code,
+                        _sov_operation_error_message(error_code),
+                    )
+                    return
+                except Exception:
+                    _run_async(cost_guard.release_reservation("sov", reserved_units))
+                    reserved_units = 0
+                    raise
+
+                # 공급자 호출은 끝났으므로 이후 DB 오류가 나더라도 사용한 예약은 반환하지 않는다.
+                reserved_units = 0
+                records = []
+                attempt_pairs = []
                 for r in results:
                     measurement_status, _failure_reason = _measurement_status_for_result(r)
                     if measurement_status == "SUCCESS":
@@ -3390,10 +3467,37 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                     )
                     records.append(record)
                     attempt_pairs.append((spec["manifest_cell"], record))
+                db.add_all(records)
+                db.flush()
+                db.add_all([link_attempt(cell, record) for cell, record in attempt_pairs])
+                run.query_count = success_count + failure_count
+                run.success_count = success_count
+                run.failure_count = failure_count
+                db.commit()
 
-            db.add_all(records)
-            db.flush()
-            db.add_all([link_attempt(cell, record) for cell, record in attempt_pairs])
+                if (
+                    spec_index + 1 < len(measurement_specs)
+                    and _sov_chunk_deadline_reached(task_started_at)
+                ):
+                    _finish_measurement_run(run, success_count, failure_count)
+                    db.commit()
+                    error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
+                    _record_weekly_sov_failure(
+                        hospital,
+                        period_key,
+                        error_code,
+                        _operation_run_id_from_task(self),
+                        measurement_mode=measurement_mode,
+                    )
+                    _finish_sov_operation_run(
+                        db,
+                        self,
+                        OperationRunState.PARTIAL,
+                        error_code,
+                        _sov_operation_error_message(error_code),
+                    )
+                    return
+
             _finish_measurement_run(run, success_count, failure_count)
             db.commit()
 
@@ -3401,14 +3505,22 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
             # 액션 생성을 일으키는 구조에 의존하지 않고 다음 콘텐츠 생성이 최신 결과를 읽는다.
             _refresh_exposure_actions_sync(hospital.id)
             if failure_count > 0:
+                error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
                 _record_weekly_sov_failure(
                     hospital,
                     period_key,
-                    f"{failure_prefix}_MEASUREMENT_PARTIAL",
+                    error_code,
                     _operation_run_id_from_task(self),
                     measurement_mode=measurement_mode,
                 )
-                raise RuntimeError("weekly_sov_measurement_partial")
+                _finish_sov_operation_run(
+                    db,
+                    self,
+                    OperationRunState.PARTIAL,
+                    error_code,
+                    _sov_operation_error_message(error_code),
+                )
+                return
             _run_async(
                 _recover_sov_failure(
                     hospital_id=hospital.id,
@@ -3417,8 +3529,95 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                 )
             )
 
+    except DispatchAuthorizationError:
+        with SyncSessionLocal() as db:
+            _finish_sov_operation_run(
+                db,
+                self,
+                OperationRunState.FAILED,
+                "RUN_SOV_DISPATCH_AUTHORIZATION_FAILED",
+                "인증된 작업 실행 시간이 지나 측정을 시작하지 못했습니다.",
+            )
+        return
+    except (SoftTimeLimitExceeded, WorkerLostError):
+        if reserved_units:
+            _run_async(cost_guard.release_reservation("sov", reserved_units))
+        with SyncSessionLocal() as db:
+            _finish_sov_operation_run(
+                db,
+                self,
+                OperationRunState.PARTIAL,
+                "RUN_SOV_MEASUREMENT_PARTIAL",
+                "측정 제한 시간 안에 완료하지 못한 항목이 남아 있습니다.",
+            )
+        return
     except Exception as exc:
         raise self.retry(exc=exc, countdown=300)
+
+
+def _sov_chunk_deadline_reached(started_at: float) -> bool:
+    return monotonic() - started_at >= SOV_CHUNK_STOP_SECONDS
+
+
+def _sov_operation_error_message(error_code: str) -> str:
+    suffix = error_code.rsplit("_SOV_", 1)[-1]
+    messages = {
+        "COST_GUARD_BLOCKED": "비용 한도를 초과해 AI 검색 노출 측정을 진행하지 못했습니다.",
+        "NO_MEASUREMENT_MANIFEST": "활성 측정 질문이나 대상이 없어 측정을 시작하지 못했습니다.",
+        "UNRESOLVED_MANIFEST_STATE": "완료·제외·재측정 대상으로 분류되지 않은 측정 항목이 남아 있습니다.",
+        "MEASUREMENT_POLICY_DRIFT": "동결한 측정 기준과 현재 실행 기준이 달라 외부 호출을 시작하지 않았습니다.",
+        "MEASUREMENT_PARTIAL": "일부 AI 검색 서비스 측정이 완료되지 않았습니다.",
+    }
+    return messages.get(suffix, "AI 검색 노출 측정이 완료되지 않았습니다.")
+
+
+def _finish_sov_operation_run(
+    db,
+    task,
+    state: OperationRunState,
+    safe_error_code: str,
+    safe_error_message: str,
+) -> uuid.UUID | None:
+    """태스크 본문이 소유한 RUN_SOV 실행을 CAS로 종결한다."""
+    run_id = _operation_run_id_from_task(task)
+    request = getattr(task, "request", None)
+    worker_id = getattr(request, "id", None)
+    claim_version = getattr(request, "operation_run_claim_version", None)
+    if (
+        run_id is None
+        or not isinstance(worker_id, str)
+        or not worker_id.strip()
+        or not isinstance(claim_version, int)
+        or isinstance(claim_version, bool)
+    ):
+        return None
+    result = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == run_id,
+            OperationRun.operation_type == "RUN_SOV",
+            OperationRun.task_id == worker_id,
+            OperationRun.state == OperationRunState.RUNNING,
+            OperationRun.lease_owner == worker_id,
+            OperationRun.version == claim_version,
+        )
+        .values(
+            state=state,
+            completed_at=datetime.now(timezone.utc),
+            heartbeat_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            total_count=1,
+            success_count=0,
+            failure_count=1,
+            safe_error_code=safe_error_code,
+            safe_error_message=safe_error_message,
+            version=OperationRun.version + 1,
+        )
+        .returning(OperationRun.id)
+    ).scalar_one_or_none()
+    db.commit()
+    return result
 
 
 def _operation_run_id_from_task(task) -> uuid.UUID | None:
@@ -4037,11 +4236,18 @@ def _log_blocked_convertible_tracking_sets(registration: Any) -> None:
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
 def run_weekly_monitoring():
     require_dispatch(current_task, "weekly-sov-monitoring")
+    today_kst = arrow.now("Asia/Seoul").date()
     observed_at = datetime.now(timezone.utc)
-    week_key = _weekly_measurement_key(arrow.now("Asia/Seoul").date())
+    week_key = _weekly_measurement_key(today_kst)
     with SyncSessionLocal() as db:
         registration = register_convertible_tracking_sets(db, n=15)
         _log_blocked_convertible_tracking_sets(registration)
+        if today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY:
+            logger.info(
+                "Weekly visibility measurement dispatch skipped during the month-end window: %s",
+                today_kst,
+            )
+            return
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         monthly_ids = {
@@ -4304,6 +4510,12 @@ def _ensure_monthly_sov_operation_run(
         if existing.state == OperationRunState.REQUESTED:
             return existing
         if existing.state in {OperationRunState.FAILED, OperationRunState.PARTIAL}:
+            if (
+                existing.state == OperationRunState.FAILED
+                and (existing.safe_error_code or "").endswith("COST_GUARD_BLOCKED")
+                and not _monthly_sov_pending_budget_fits(db, hospital, period_key)
+            ):
+                return None
             # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 월말 윈도우의 다음
             # 6시간 슬롯이 FAILED manifest cells만 재시도하게 한다. 새 월간 키를 만들지
             # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
@@ -4365,6 +4577,34 @@ def _ensure_monthly_sov_operation_run(
             raise
         return existing if existing.state == OperationRunState.REQUESTED else None
     return run
+
+
+def _monthly_sov_pending_budget_fits(db, hospital: Hospital, period_key: str) -> bool:
+    try:
+        year_text, month_text = period_key.split("-", 1)
+        year, month = int(year_text), int(month_text)
+    except (TypeError, ValueError):
+        return False
+    manifest = db.execute(
+        select(MonthlyMeasurementManifest)
+        .options(selectinload(MonthlyMeasurementManifest.cells))
+        .where(
+            MonthlyMeasurementManifest.hospital_id == hospital.id,
+            MonthlyMeasurementManifest.period_year == year,
+            MonthlyMeasurementManifest.period_month == month,
+        )
+    ).scalar_one_or_none()
+    if manifest is None:
+        return False
+    pending_count = sum(
+        getattr(cell, "state", None) == "FAILED"
+        for cell in (getattr(manifest, "cells", ()) or ())
+    )
+    if pending_count <= 0:
+        return False
+    needed = pending_count * SOV_REPEAT_WEEKLY
+    daily_remaining, monthly_remaining = _run_async(cost_guard.remaining_units("sov"))
+    return needed <= daily_remaining and needed <= monthly_remaining
 
 
 def _mark_weekly_sov_operation_queued(db, run_id: uuid.UUID, observed_at: datetime) -> bool:
