@@ -176,6 +176,7 @@ from app.services.sov_tracking_set import (
     MEASUREMENT_WINDOW_MONTH_END,
     hospital_in_monthly_cohort,
     iter_monthly_sov_cohort,
+    register_convertible_tracking_sets,
     tracking_set_fingerprint,
     tracking_set_members,
 )
@@ -4016,6 +4017,7 @@ def run_weekly_monitoring():
     observed_at = datetime.now(timezone.utc)
     week_key = _weekly_measurement_key(arrow.now("Asia/Seoul").date())
     with SyncSessionLocal() as db:
+        register_convertible_tracking_sets(db, n=15)
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         monthly_ids = {
@@ -4076,6 +4078,7 @@ def run_monthly_sov_measurement():
     observed_at = datetime.now(timezone.utc)
     period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
     with SyncSessionLocal() as db:
+        register_convertible_tracking_sets(db, n=15)
         hospitals = iter_monthly_sov_cohort(
             db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
         )

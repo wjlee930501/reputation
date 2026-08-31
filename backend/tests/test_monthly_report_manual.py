@@ -75,6 +75,13 @@ class FakeSession:
     def get(self, _model, _pk):
         return self.hospital
 
+    def execute(self, _stmt):
+        class _Result:
+            def scalar_one_or_none(self):
+                return uuid.uuid4()
+
+        return _Result()
+
     def rollback(self):
         self.rolled_back = True
 

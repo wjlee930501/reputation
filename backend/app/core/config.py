@@ -377,11 +377,10 @@ class Settings(BaseSettings):
     # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
     COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
     COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
-    # 월간 전환 가드 산식(H = ACTIVE + 측정 이력 + 유효 LOCAL 고정 세트 병원 수):
-    # daily >= H × 15 × 2 platforms × 5 repeats + ceil(10%) retry proposal.
-    # monthly = 이번 달 이미 사용한 양 + 오늘 daily 산식의 양.
-    # H는 프로덕션 DB에서 센 뒤 명시적으로 설정한다. 이 보수적 기본값은 주간 풀샘플
-    # 전체를 통과시키기 위한 우회값이 아니다.
+    # Locked August 2026 conversion envelope for H=7 named hospitals.
+    # 1260 = 7×15×2×5 + 210 retry remainder. 4260 = 3000 already-used + 1260 today.
+    # NOT a weekly full-sample raise. Register the 7 tracking sets first, then
+    # apply these env values so weekly retries cannot eat the new budget.
     COST_GUARD_MONTHLY_SOV_QUERIES: int = 4260
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
@@ -413,8 +412,9 @@ class Settings(BaseSettings):
 
     # SoV
     SOV_TRACKING_SET_N_DEFAULT: int = 15
-    # 0/음수는 ACTIVE + 측정 이력 + 유효한 10..15개 LOCAL 고정 세트 병원을 모두
-    # 측정한다. 양수는 같은 데이터 기반 코호트를 정렬 순서대로 제한한다.
+    # LIMIT=7 converts the first 7 valid tracking-set hospitals in stable order
+    # (locked conversion names after register_convertible_tracking_sets).
+    # 0/negative stays empty (register-only). 0 does NOT mean all hospitals.
     SOV_MONTHLY_COHORT_LIMIT: int = 7
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.

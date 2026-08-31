@@ -169,26 +169,47 @@ def test_one_shot_matches_only_locked_names_and_reports_blockers(monkeypatch):
     }
     assert result["blocked"] == [
         {
-            "hospital_id": str(invalid_hospital.id),
+            "name": invalid_hospital.name,
             "reason": "not enough LOCAL ACTIVE targets",
+            "hospital_id": str(invalid_hospital.id),
         },
-        {"hospital_id": str(no_record_hospital.id), "reason": "no SovRecord"},
+        {
+            "name": no_record_hospital.name,
+            "reason": "no SovRecord",
+            "hospital_id": str(no_record_hospital.id),
+        },
         {"name": "마포성모탑", "reason": "ambiguous"},
         {"name": "노원탑365", "reason": "not found"},
     ]
 
 
+def test_conversion_name_tokens_are_the_locked_seven():
+    assert CONVERSION_HOSPITAL_NAME_TOKENS == (
+        "강심장내과",
+        "행복드림",
+        "장편한외과",
+        "마포성모탑",
+        "노원탑365",
+        "서울W위례",
+        "연세속시원",
+    )
+
+
 def test_non_positive_cohort_limit_is_empty_and_positive_limit_is_applied(monkeypatch):
-    first = SimpleNamespace(id=uuid.uuid4())
-    second = SimpleNamespace(id=uuid.uuid4())
-    invalid = SimpleNamespace(id=uuid.uuid4())
+    first = SimpleNamespace(id=uuid.uuid4(), name="강심장내과 의원")
+    second = SimpleNamespace(id=uuid.uuid4(), name="행복드림 의원")
+    invalid = SimpleNamespace(id=uuid.uuid4(), name="장편한외과 의원")
+    outsider = SimpleNamespace(id=uuid.uuid4(), name="다른병원")
     targets = {
         first.id: [_target(f"첫 병원 질문 {index}") for index in range(15)],
         second.id: [_target(f"둘째 병원 질문 {index}") for index in range(10)],
         invalid.id: [_target(f"부족 병원 질문 {index}") for index in range(9)],
+        outsider.id: [_target(f"외부 병원 질문 {index}") for index in range(15)],
     }
     monkeypatch.setattr(
-        sov_tracking_set, "_convertible_hospitals", lambda _db: [first, second, invalid]
+        sov_tracking_set,
+        "_convertible_hospitals",
+        lambda _db: [outsider, first, second, invalid],
     )
     monkeypatch.setattr(
         sov_tracking_set,
@@ -359,6 +380,9 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat(monkeypatch):
 
     monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks, "register_convertible_tracking_sets", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [converted])
     monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 7)
     monkeypatch.setattr(
@@ -373,6 +397,39 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat(monkeypatch):
     )
 
     tasks.run_weekly_monitoring.run()
+
+
+def test_monthly_measurement_registers_locked_names_before_cohort(monkeypatch):
+    order: list[object] = []
+
+    class _DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(2026, 8, 31, 12, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "register_convertible_tracking_sets",
+        lambda *_args, **_kwargs: order.append("register") or {"registered": [], "blocked": []},
+    )
+    monkeypatch.setattr(
+        tasks,
+        "iter_monthly_sov_cohort",
+        lambda *_args, **_kwargs: order.append("cohort") or [],
+    )
+
+    tasks.run_monthly_sov_measurement.run()
+
+    assert order == ["register", "cohort"]
 
 
 def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):

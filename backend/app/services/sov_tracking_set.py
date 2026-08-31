@@ -259,7 +259,13 @@ def register_convertible_tracking_sets(
             continue
         hospital = matches[0]
         if not _hospital_has_sov_record(db, hospital.id):
-            blocked.append({"hospital_id": str(hospital.id), "reason": "no SovRecord"})
+            blocked.append(
+                {
+                    "name": hospital.name,
+                    "reason": "no SovRecord",
+                    "hospital_id": str(hospital.id),
+                }
+            )
             continue
         result = register_tracking_set(db, hospital.id, n=n)
         if bool(result["valid"]):
@@ -267,8 +273,9 @@ def register_convertible_tracking_sets(
         else:
             blocked.append(
                 {
-                    "hospital_id": str(hospital.id),
+                    "name": hospital.name,
                     "reason": str(result["reason"]),
+                    "hospital_id": str(hospital.id),
                 }
             )
     return {
@@ -278,12 +285,19 @@ def register_convertible_tracking_sets(
     }
 
 
+def _hospital_matches_conversion_names(hospital: Hospital) -> bool:
+    name = str(getattr(hospital, "name", "") or "")
+    return any(token in name for token in CONVERSION_HOSPITAL_NAME_TOKENS)
+
+
 def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
     if limit is None or limit <= 0:
         return []
     hospitals = _convertible_hospitals(db)
     cohort: list[Hospital] = []
     for hospital in hospitals:
+        if not _hospital_matches_conversion_names(hospital):
+            continue
         if _stored_tracking_set_is_valid(_load_targets(db, hospital.id)):
             cohort.append(hospital)
             if len(cohort) >= limit:
