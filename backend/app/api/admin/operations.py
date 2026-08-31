@@ -50,9 +50,9 @@ from app.services.monthly_delivery_projection import (
 from app.services.monthly_events import MonthlyRunStage
 from app.services.monthly_period import (
     MonthlyPeriodError,
-    prior_month_to_close,
     reporting_period,
     require_closed_period,
+    scheduled_report_period,
 )
 from app.services.operation_run_payloads import UnsafeDispatchPayload, parse_stored_dispatch
 from app.services.operation_runs import (
@@ -692,7 +692,7 @@ async def generate_monthly_report_operation(
         period = (
             require_closed_period(year, month, now=now_kst)
             if year is not None and month is not None
-            else prior_month_to_close(now_kst)
+            else scheduled_report_period(now_kst)
         )
     except MonthlyPeriodError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

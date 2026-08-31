@@ -377,16 +377,15 @@ class Settings(BaseSettings):
     # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
     COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
     COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
-    # SoV 공존 봉투:
-    # H_monthly × N × 2 platforms × 5 repeats + H_new × 150(V0)
-    # + H_weekly_remaining × weekly_specs × 5 + retry.
-    # 프로덕션은 실제 ACTIVE/코호트 수를 센 뒤 명시적으로 설정한다. 이 보수적 기본값은
-    # 주간 풀샘플 전체를 통과시키기 위한 우회값이 아니다.
-    COST_GUARD_MONTHLY_SOV_QUERIES: int = 3000
+    # Locked August 2026 conversion envelope for H=7 named hospitals.
+    # 1260 = 7×15×2×5 + 210 retry remainder. 4260 = 3000 already-used + 1260 today.
+    # NOT a weekly full-sample raise. Register the 7 tracking sets first, then
+    # apply these env values so weekly retries cannot eat the new budget.
+    COST_GUARD_MONTHLY_SOV_QUERIES: int = 4260
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
     COST_GUARD_DAILY_IMAGE_CALLS: int = 250
-    COST_GUARD_DAILY_SOV_QUERIES: int = 250
+    COST_GUARD_DAILY_SOV_QUERIES: int = 1260
     # 무료 진단(1단) 답변 호출 상한. **선착순 자리 수는 호출 상한이 아니다** —
     # 자리 20개 × 질의3 × 플랫폼2 × 반복3 = 360건이 정상 상한이고, 측정 재시도(최대 3회)가
     # 겹치면 그 3배까지 늘어난다. 일일 500은 정상분 360 + 복구 여유이며, 이 선을 넘는
@@ -413,9 +412,10 @@ class Settings(BaseSettings):
 
     # SoV
     SOV_TRACKING_SET_N_DEFAULT: int = 15
-    # 0은 tracking-set 등록만 하고 측정 방식은 전환하지 않는다. 3은 파일럿, 큰 값은
-    # ACTIVE + 유효 세트 + 측정 이력 조건을 만족하는 병원을 순서대로 모두 전환한다.
-    SOV_MONTHLY_COHORT_LIMIT: int = 0
+    # LIMIT=7 converts the first 7 valid tracking-set hospitals in stable order
+    # (locked conversion names after register_convertible_tracking_sets).
+    # 0/negative stays empty (register-only). 0 does NOT mean all hospitals.
+    SOV_MONTHLY_COHORT_LIMIT: int = 7
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5

@@ -15,6 +15,7 @@ from app.services.monthly_period import (
     prior_month_to_close,
     reporting_period,
     require_closed_period,
+    scheduled_report_period,
     service_interval_overlaps,
 )
 
@@ -48,8 +49,10 @@ def test_reporting_period_handles_leap_year_and_year_boundary() -> None:
 
 def test_prior_month_closes_only_at_or_after_0015_kst() -> None:
     exact_cutoff = prior_month_to_close(datetime(2026, 9, 1, 0, 15, tzinfo=KST))
+    august_cutoff = prior_month_to_close(datetime(2026, 8, 1, 0, 15, tzinfo=KST))
 
     assert (exact_cutoff.year, exact_cutoff.month) == (2026, 8)
+    assert (august_cutoff.year, august_cutoff.month) == (2026, 7)
     with pytest.raises(MonthlyPeriodError, match="00시 15분 이후"):
         prior_month_to_close(datetime(2026, 9, 1, 0, 14, 59, tzinfo=KST))
 
@@ -62,6 +65,38 @@ def test_manual_period_rejects_current_and_future_with_next_action() -> None:
         require_closed_period(2026, 9, now=now)
     with pytest.raises(MonthlyPeriodError, match="지난달까지만 선택"):
         require_closed_period(2027, 1, now=now)
+
+
+def test_august_2026_conversion_period_is_allowed_on_august_31() -> None:
+    period = require_closed_period(
+        2026, 8, now=datetime(2026, 8, 31, 12, tzinfo=KST)
+    )
+
+    assert (period.year, period.month) == (2026, 8)
+
+
+@pytest.mark.parametrize(
+    "now",
+    [
+        datetime(2026, 8, 31, 12, tzinfo=KST),
+        datetime(2026, 9, 1, 0, 14, tzinfo=KST),
+    ],
+)
+def test_september_2026_still_requires_its_normal_close(now: datetime) -> None:
+    with pytest.raises(MonthlyPeriodError, match="지난달까지만 선택"):
+        require_closed_period(2026, 9, now=now)
+
+
+def test_scheduled_report_period_uses_august_only_inside_conversion_window() -> None:
+    august_today = scheduled_report_period(datetime(2026, 8, 31, 12, tzinfo=KST))
+    july_on_first = scheduled_report_period(datetime(2026, 8, 1, 0, 15, tzinfo=KST))
+    august_on_september_close = scheduled_report_period(
+        datetime(2026, 9, 1, 0, 15, tzinfo=KST)
+    )
+
+    assert (august_today.year, august_today.month) == (2026, 8)
+    assert (july_on_first.year, july_on_first.month) == (2026, 7)
+    assert (august_on_september_close.year, august_on_september_close.month) == (2026, 8)
 
 
 @pytest.mark.parametrize(

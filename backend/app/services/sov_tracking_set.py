@@ -18,6 +18,15 @@ TRACKING_SET_N_MAX = 15
 TRACKING_SET_N_DEFAULT = 15
 MEASUREMENT_WINDOW_MONTH_START = "month_start"
 MEASUREMENT_WINDOW_MONTH_END = "month_end"
+CONVERSION_HOSPITAL_NAME_TOKENS = (
+    "강심장내과",
+    "행복드림",
+    "장편한외과",
+    "마포성모탑",
+    "노원탑365",
+    "서울W위례",
+    "연세속시원",
+)
 
 
 def _target_query_text(target: AIQueryTarget) -> str:
@@ -87,6 +96,13 @@ def tracking_set_is_valid(members: Iterable[AIQueryTarget]) -> bool:
     return TRACKING_SET_N_MIN <= size <= TRACKING_SET_N_MAX
 
 
+def _stored_tracking_set_is_valid(targets: Iterable[AIQueryTarget]) -> bool:
+    flagged = [target for target in targets if bool(target.in_tracking_set)]
+    return tracking_set_is_valid(flagged) and len(tracking_set_members(flagged)) == len(
+        flagged
+    )
+
+
 def _validate_n(n: int) -> None:
     if not TRACKING_SET_N_MIN <= n <= TRACKING_SET_N_MAX:
         raise ValueError(
@@ -153,7 +169,12 @@ def register_tracking_set(
     db, hospital_id: uuid.UUID, n: int = TRACKING_SET_N_DEFAULT
 ) -> dict[str, object]:
     proposed = propose_tracking_set(db, hospital_id, n=n)
-    selected_ids = {target.id for target in proposed}
+    valid = tracking_set_is_valid(proposed) and all(
+        str(getattr(target, "status", "") or "").upper() == "ACTIVE"
+        and _target_intent(target) == QUERY_INTENT_LOCAL
+        for target in proposed
+    )
+    selected_ids = {target.id for target in proposed} if valid else set()
     targets = _load_targets(db, hospital_id)
     changed = 0
     for target in targets:
@@ -165,17 +186,24 @@ def register_tracking_set(
     return {
         "hospital_id": str(hospital_id),
         "requested_size": n,
-        "registered_size": len(proposed),
-        "valid": tracking_set_is_valid(proposed),
+        "proposed_size": len(proposed),
+        "registered_size": len(proposed) if valid else 0,
+        "valid": valid,
         "changed": changed,
-        "fingerprint": tracking_set_fingerprint(proposed, n=n),
+        "fingerprint": tracking_set_fingerprint(proposed, n=n) if valid else None,
+        "reason": (
+            None
+            if valid
+            else (
+                "not enough LOCAL ACTIVE targets: "
+                f"found {len(proposed)}, requires {TRACKING_SET_N_MIN}..{TRACKING_SET_N_MAX}"
+            )
+        ),
     }
 
 
-def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
-    if limit is None or limit <= 0:
-        return []
-    hospitals = list(
+def _convertible_hospitals(db) -> list[Hospital]:
+    return list(
         db.execute(
             select(Hospital)
             .where(
@@ -187,9 +215,90 @@ def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
         .scalars()
         .all()
     )
+
+
+def _active_hospital_name_matches(db, token: str) -> list[Hospital]:
+    return list(
+        db.execute(
+            select(Hospital)
+            .where(
+                Hospital.status == HospitalStatus.ACTIVE,
+                Hospital.name.contains(token),
+            )
+            .order_by(Hospital.created_at, Hospital.id)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _hospital_has_sov_record(db, hospital_id: uuid.UUID) -> bool:
+    return (
+        db.execute(
+            select(SovRecord.id).where(SovRecord.hospital_id == hospital_id).limit(1)
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def register_convertible_tracking_sets(
+    db, n: int = TRACKING_SET_N_DEFAULT
+) -> dict[str, object]:
+    """Register the locked conversion names; invalid hospitals stay off the set."""
+
+    _validate_n(n)
+    registered: list[dict[str, str]] = []
+    blocked: list[dict[str, str]] = []
+    for token in CONVERSION_HOSPITAL_NAME_TOKENS:
+        matches = _active_hospital_name_matches(db, token)
+        if not matches:
+            blocked.append({"name": token, "reason": "not found"})
+            continue
+        if len(matches) > 1:
+            blocked.append({"name": token, "reason": "ambiguous"})
+            continue
+        hospital = matches[0]
+        if not _hospital_has_sov_record(db, hospital.id):
+            blocked.append(
+                {
+                    "name": hospital.name,
+                    "reason": "no SovRecord",
+                    "hospital_id": str(hospital.id),
+                }
+            )
+            continue
+        result = register_tracking_set(db, hospital.id, n=n)
+        if bool(result["valid"]):
+            registered.append({"hospital_id": str(hospital.id), "name": hospital.name})
+        else:
+            blocked.append(
+                {
+                    "name": hospital.name,
+                    "reason": str(result["reason"]),
+                    "hospital_id": str(hospital.id),
+                }
+            )
+    return {
+        "target_count": len(CONVERSION_HOSPITAL_NAME_TOKENS),
+        "registered": registered,
+        "blocked": blocked,
+    }
+
+
+def _hospital_matches_conversion_names(hospital: Hospital) -> bool:
+    name = str(getattr(hospital, "name", "") or "")
+    return any(token in name for token in CONVERSION_HOSPITAL_NAME_TOKENS)
+
+
+def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
+    if limit is None or limit <= 0:
+        return []
+    hospitals = _convertible_hospitals(db)
     cohort: list[Hospital] = []
     for hospital in hospitals:
-        if tracking_set_is_valid(tracking_set_members(_load_targets(db, hospital.id))):
+        if not _hospital_matches_conversion_names(hospital):
+            continue
+        if _stored_tracking_set_is_valid(_load_targets(db, hospital.id)):
             cohort.append(hospital)
             if len(cohort) >= limit:
                 break

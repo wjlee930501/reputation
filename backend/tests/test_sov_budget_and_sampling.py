@@ -49,14 +49,8 @@ def test_weekly_sov_cap_cannot_outspend_daily_content_generation():
     weekly_sov_max_calls = tasks.SOV_TOTAL_SPEC_CAP * tasks.SOV_REPEAT_WEEKLY
 
     assert weekly_sov_max_calls <= tasks.settings.COST_GUARD_DAILY_CONTENT_CALLS
-    assert (
-        tasks.settings.COST_GUARD_DAILY_SOV_QUERIES
-        <= tasks.settings.COST_GUARD_DAILY_CONTENT_CALLS
-    )
-    assert (
-        tasks.settings.COST_GUARD_MONTHLY_SOV_QUERIES
-        <= tasks.settings.COST_GUARD_MONTHLY_CONTENT_CALLS
-    )
+    assert tasks.settings.COST_GUARD_DAILY_SOV_QUERIES == 1260
+    assert tasks.settings.COST_GUARD_MONTHLY_SOV_QUERIES == 4260
 
 
 # ── V0 표본 질의 결정성 ──

@@ -118,10 +118,11 @@ from app.services.monthly_period import (
     MonthlyPeriodError,
     ReportBuildReason,
     eligible_hospital_ids,
+    is_august_2026_conversion_window,
     lock_report_version_plan,
-    prior_month_to_close,
     reporting_period,
     require_closed_period,
+    scheduled_report_period,
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
@@ -176,6 +177,7 @@ from app.services.sov_tracking_set import (
     MEASUREMENT_WINDOW_MONTH_END,
     hospital_in_monthly_cohort,
     iter_monthly_sov_cohort,
+    register_convertible_tracking_sets,
     tracking_set_fingerprint,
     tracking_set_members,
 )
@@ -4010,12 +4012,36 @@ def monthly_slot_generation():
             logger.exception("Nowon orthopedic FAQ regeneration failed after August backfill")
 
 
+def _log_blocked_convertible_tracking_sets(registration: Any) -> None:
+    if not isinstance(registration, Mapping):
+        return
+
+    for blocked_item in registration.get("blocked") or []:
+        if not isinstance(blocked_item, Mapping):
+            continue
+        name = str(blocked_item.get("name") or "unknown").replace("SoV", "visibility")  # copy-guard: internal-only
+        reason = str(blocked_item.get("reason") or "unknown").replace("SoV", "visibility")  # copy-guard: internal-only
+        extra = (
+            {"hospital_id": blocked_item["hospital_id"]}
+            if "hospital_id" in blocked_item
+            else {}
+        )
+        logger.warning(
+            "Conversion tracking set blocked: name=%s reason=%s",
+            name,
+            reason,
+            extra=extra,
+        )
+
+
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
 def run_weekly_monitoring():
     require_dispatch(current_task, "weekly-sov-monitoring")
     observed_at = datetime.now(timezone.utc)
     week_key = _weekly_measurement_key(arrow.now("Asia/Seoul").date())
     with SyncSessionLocal() as db:
+        registration = register_convertible_tracking_sets(db, n=15)
+        _log_blocked_convertible_tracking_sets(registration)
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         monthly_ids = {
@@ -4076,6 +4102,8 @@ def run_monthly_sov_measurement():
     observed_at = datetime.now(timezone.utc)
     period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
     with SyncSessionLocal() as db:
+        registration = register_convertible_tracking_sets(db, n=15)
+        _log_blocked_convertible_tracking_sets(registration)
         hospitals = iter_monthly_sov_cohort(
             db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
         )
@@ -4497,6 +4525,35 @@ def _latest_monthly_report(db, hospital_id: uuid.UUID, year: int, month: int):
     )
 
 
+def _monthly_sov_measurement_succeeded(
+    db, hospital_id: uuid.UUID, period_key: str
+) -> bool:
+    run_id = db.execute(
+        select(OperationRun.id).where(
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == "RUN_SOV",
+            OperationRun.idempotency_key == f"monthly-sov:{hospital_id}:{period_key}",
+            OperationRun.state == OperationRunState.SUCCEEDED,
+        )
+    ).scalar_one_or_none()
+    return run_id is not None
+
+
+def _prior_monthly_manifest(db, hospital_id: uuid.UUID, now: arrow.Arrow):
+    # August 2026 is the first converted month. Its report must not inherit weekly
+    # mention cells from July as a month-over-month comparison.
+    if now.year == 2026 and now.month == 8:
+        return None
+    prior_anchor = now.shift(months=-1)
+    return db.execute(
+        select(MonthlyMeasurementManifest).where(
+            MonthlyMeasurementManifest.hospital_id == hospital_id,
+            MonthlyMeasurementManifest.period_year == prior_anchor.year,
+            MonthlyMeasurementManifest.period_month == prior_anchor.month,
+        )
+    ).scalar_one_or_none()
+
+
 def _finish_monthly_operation_run(
     db,
     run_id: uuid.UUID | None,
@@ -4670,14 +4727,7 @@ def _build_monthly_report_for_hospital(
         return "skipped_existing"
     prev_start = now.shift(months=-1).floor("month").datetime
     prev_end = now.floor("month").datetime
-    prior_anchor = now.shift(months=-1)
-    prior_manifest = db.execute(
-        select(MonthlyMeasurementManifest).where(
-            MonthlyMeasurementManifest.hospital_id == h.id,
-            MonthlyMeasurementManifest.period_year == prior_anchor.year,
-            MonthlyMeasurementManifest.period_month == prior_anchor.month,
-        )
-    ).scalar_one_or_none()
+    prior_manifest = _prior_monthly_manifest(db, h.id, now)
     current_loaded = load_monthly_sov_manifest(db, manifest) if manifest is not None else None
     prior_loaded = (
         load_monthly_sov_manifest(db, prior_manifest) if prior_manifest is not None else None
@@ -4946,7 +4996,7 @@ def run_monthly_reports(self):
     require_dispatch(self, "monthly-reports")
     now = arrow.now("Asia/Seoul")
     try:
-        period = prior_month_to_close(now.datetime)
+        period = scheduled_report_period(now.datetime)
     except MonthlyPeriodError as exc:
         logger.info("Monthly close is not ready: %s", exc)
         return {"status": "period_not_closed"}
@@ -4957,6 +5007,17 @@ def run_monthly_reports(self):
         stmt = select(Hospital).where(Hospital.id.in_(hospital_ids))
         result = db.execute(stmt)
         hospitals = result.scalars().all()
+        if (
+            period.year == 2026
+            and period.month == 8
+            and is_august_2026_conversion_window(now.datetime)
+        ):
+            period_key = f"{period.year:04d}-{period.month:02d}"
+            hospitals = [
+                hospital
+                for hospital in hospitals
+                if _monthly_sov_measurement_succeeded(db, hospital.id, period_key)
+            ]
         failures: list[str] = []
         successes = 0
 
@@ -5054,7 +5115,7 @@ def generate_monthly_report_for_hospital(
         period = (
             require_closed_period(year, month, now=now.datetime)
             if year is not None and month is not None
-            else prior_month_to_close(now.datetime)
+            else scheduled_report_period(now.datetime)
         )
     except MonthlyPeriodError as exc:
         logger.error("Monthly report period is not closed: %s", exc)
@@ -5067,6 +5128,20 @@ def generate_monthly_report_for_hospital(
         if hospital is None:
             logger.error(f"Monthly report requested for unknown hospital {hospital_id}")
             return {"status": "hospital_not_found"}
+        if (
+            period.year == 2026
+            and period.month == 8
+            and not (
+                _monthly_sov_measurement_succeeded(
+                    db, hospital.id, f"{period.year:04d}-{period.month:02d}"
+                )
+            )
+        ):
+            return {
+                "status": "measurement_not_succeeded",
+                "year": period.year,
+                "month": period.month,
+            }
         _mark_monthly_operation_run_running(db, run_id, anchor.year, anchor.month)
         correlation_key = (
             f"operation-run:{run_id}"

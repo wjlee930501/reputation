@@ -22,6 +22,7 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
+from app.models.sov import SovRecord
 from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
 from app.workers import tasks
 
@@ -284,7 +285,12 @@ def test_weekly_monitoring_commits_operation_run_before_sov_dispatch(monkeypatch
                         return _Result(scalar=run.id)
                 return _Result(scalar=None)
             entity = _statement_entity(stmt)
+            if entity is SovRecord:
+                return _Result(items=[])
             if entity is Hospital:
+                compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                if "hospitals.name LIKE" in compiled:
+                    return _Result(items=[])
                 return _Result(items=[hospital])
             if entity is OperationRun:
                 return _Result(items=[])
@@ -365,7 +371,12 @@ def test_weekly_monitoring_isolates_broker_failure_and_keeps_run_requested(monke
                         return _Result(scalar=run.id)
                 return _Result(scalar=None)
             entity = _statement_entity(stmt)
+            if entity is SovRecord:
+                return _Result(items=[])
             if entity is Hospital:
+                compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                if "hospitals.name LIKE" in compiled:
+                    return _Result(items=[])
                 return _Result(items=hospitals)
             if entity is OperationRun:
                 return _Result(items=[])
