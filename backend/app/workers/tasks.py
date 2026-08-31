@@ -118,6 +118,7 @@ from app.services.monthly_period import (
     MonthlyPeriodError,
     ReportBuildReason,
     eligible_hospital_ids,
+    is_august_2026_conversion_window,
     lock_report_version_plan,
     reporting_period,
     require_closed_period,
@@ -5006,7 +5007,11 @@ def run_monthly_reports(self):
         stmt = select(Hospital).where(Hospital.id.in_(hospital_ids))
         result = db.execute(stmt)
         hospitals = result.scalars().all()
-        if period.year == 2026 and period.month == 8:
+        if (
+            period.year == 2026
+            and period.month == 8
+            and is_august_2026_conversion_window(now.datetime)
+        ):
             period_key = f"{period.year:04d}-{period.month:02d}"
             hospitals = [
                 hospital
