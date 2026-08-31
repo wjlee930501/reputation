@@ -10,10 +10,12 @@ from app.services import sov_engine, sov_tracking_set
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_types import CellAttempt, ManifestCellInput
 from app.services.sov_tracking_set import (
+    CONVERSION_HOSPITAL_NAME_TOKENS,
     MEASUREMENT_WINDOW_MONTH_END,
     MEASUREMENT_WINDOW_MONTH_START,
     monthly_sov_guard_units,
     register_convertible_tracking_sets,
+    register_tracking_set,
     tracking_set_fingerprint,
     tracking_set_is_valid,
     tracking_set_members,
@@ -74,7 +76,7 @@ def test_tracking_members_are_active_flagged_and_local_only():
     assert tracking_set_members([local, info, unflagged, paused]) == [local]
 
 
-def test_one_shot_registers_valid_set_and_blocks_invalid_set(monkeypatch):
+def test_register_tracking_set_flags_only_valid_local_members(monkeypatch):
     valid_hospital = SimpleNamespace(id=uuid.uuid4())
     blocked_hospital = SimpleNamespace(id=uuid.uuid4())
     valid_targets = [_target(f"지역 병원 질문 {index}", tracking=False) for index in range(16)]
@@ -94,11 +96,6 @@ def test_one_shot_registers_valid_set_and_blocks_invalid_set(monkeypatch):
     db = _DB()
     monkeypatch.setattr(
         sov_tracking_set,
-        "_convertible_hospitals",
-        lambda _db: [valid_hospital, blocked_hospital],
-    )
-    monkeypatch.setattr(
-        sov_tracking_set,
         "_load_targets",
         lambda _db, hospital_id: targets_by_hospital[hospital_id],
     )
@@ -108,21 +105,80 @@ def test_one_shot_registers_valid_set_and_blocks_invalid_set(monkeypatch):
         lambda _db, hospital_id, n: targets_by_hospital[hospital_id][:n],
     )
 
-    result = register_convertible_tracking_sets(db, n=15)
+    valid_result = register_tracking_set(db, valid_hospital.id, n=15)
+    blocked_result = register_tracking_set(db, blocked_hospital.id, n=15)
 
     assert [target.in_tracking_set for target in valid_targets] == [True] * 15 + [False]
     assert not any(target.in_tracking_set for target in blocked_targets)
-    assert result["registered"] == [str(valid_hospital.id)]
-    assert result["blocked"] == [
-        {
-            "hospital_id": str(blocked_hospital.id),
-            "reason": "not enough LOCAL ACTIVE targets: found 9, requires 10..15",
-        }
-    ]
+    assert valid_result["valid"] is True
+    assert valid_result["registered_size"] == 15
+    assert blocked_result["valid"] is False
+    assert blocked_result["registered_size"] == 0
+    assert blocked_result["reason"] == (
+        "not enough LOCAL ACTIVE targets: found 9, requires 10..15"
+    )
     assert db.flushes == 2
 
 
-def test_non_positive_cohort_limit_selects_all_valid_hospitals(monkeypatch):
+def test_one_shot_matches_only_locked_names_and_reports_blockers(monkeypatch):
+    hospitals = [
+        SimpleNamespace(id=uuid.uuid4(), name=f"{token} 의원")
+        for token in CONVERSION_HOSPITAL_NAME_TOKENS
+        if token != "노원탑365"
+    ]
+    hospitals.append(SimpleNamespace(id=uuid.uuid4(), name="마포성모탑 별관"))
+    by_token = {
+        token: [hospital for hospital in hospitals if token in hospital.name]
+        for token in CONVERSION_HOSPITAL_NAME_TOKENS
+    }
+    has_record = {hospital.id for hospital in hospitals}
+    no_record_hospital = by_token["장편한외과"][0]
+    has_record.remove(no_record_hospital.id)
+    invalid_hospital = by_token["행복드림"][0]
+
+    monkeypatch.setattr(
+        sov_tracking_set,
+        "_active_hospital_name_matches",
+        lambda _db, token: by_token[token],
+    )
+    monkeypatch.setattr(
+        sov_tracking_set,
+        "_hospital_has_sov_record",
+        lambda _db, hospital_id: hospital_id in has_record,
+    )
+
+    def _register(_db, hospital_id, n):
+        valid = hospital_id != invalid_hospital.id
+        return {
+            "hospital_id": str(hospital_id),
+            "requested_size": n,
+            "registered_size": n if valid else 0,
+            "valid": valid,
+            "reason": None if valid else "not enough LOCAL ACTIVE targets",
+        }
+
+    monkeypatch.setattr(sov_tracking_set, "register_tracking_set", _register)
+
+    result = register_convertible_tracking_sets(object(), n=15)
+
+    assert result["target_count"] == 7
+    assert {item["name"] for item in result["registered"]} == {
+        "강심장내과 의원",
+        "서울W위례 의원",
+        "연세속시원 의원",
+    }
+    assert result["blocked"] == [
+        {
+            "hospital_id": str(invalid_hospital.id),
+            "reason": "not enough LOCAL ACTIVE targets",
+        },
+        {"hospital_id": str(no_record_hospital.id), "reason": "no SovRecord"},
+        {"name": "마포성모탑", "reason": "ambiguous"},
+        {"name": "노원탑365", "reason": "not found"},
+    ]
+
+
+def test_non_positive_cohort_limit_is_empty_and_positive_limit_is_applied(monkeypatch):
     first = SimpleNamespace(id=uuid.uuid4())
     second = SimpleNamespace(id=uuid.uuid4())
     invalid = SimpleNamespace(id=uuid.uuid4())
@@ -140,10 +196,11 @@ def test_non_positive_cohort_limit_selects_all_valid_hospitals(monkeypatch):
         lambda _db, hospital_id: targets[hospital_id],
     )
 
-    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=0) == [first, second]
-    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=-1) == [first, second]
-    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=None) == [first, second]
+    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=0) == []
+    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=-1) == []
+    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=None) == []
     assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=1) == [first]
+    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=7) == [first, second]
 
 
 class _SpecDB:
@@ -265,11 +322,12 @@ def test_window_mismatch_uses_existing_policy_changed_reason():
     assert summary.comparison.change_pct is None
 
 
-def test_guard_defaults_do_not_cover_two_weekly_full_sample_hospitals():
-    assert Settings.model_fields["COST_GUARD_MONTHLY_SOV_QUERIES"].default == 3000
-    assert Settings.model_fields["COST_GUARD_DAILY_SOV_QUERIES"].default == 250
-    assert 2 * 50 * 5 > 250
-    assert 3000 // (50 * 5) == 12
+def test_guard_defaults_pin_locked_august_conversion_envelope():
+    assert Settings.model_fields["COST_GUARD_MONTHLY_SOV_QUERIES"].default == 4260
+    assert Settings.model_fields["COST_GUARD_DAILY_SOV_QUERIES"].default == 1260
+    assert Settings.model_fields["SOV_MONTHLY_COHORT_LIMIT"].default == 7
+    assert 7 * 15 * 2 * 5 + 210 == 1260
+    assert 3000 + 1260 == 4260
     assert monthly_sov_guard_units(
         3,
         15,
@@ -302,7 +360,7 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat(monkeypatch):
     monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [converted])
-    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 0)
+    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 7)
     monkeypatch.setattr(
         tasks,
         "_ensure_weekly_sov_operation_run",

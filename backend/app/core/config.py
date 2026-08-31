@@ -382,11 +382,11 @@ class Settings(BaseSettings):
     # monthly = 이번 달 이미 사용한 양 + 오늘 daily 산식의 양.
     # H는 프로덕션 DB에서 센 뒤 명시적으로 설정한다. 이 보수적 기본값은 주간 풀샘플
     # 전체를 통과시키기 위한 우회값이 아니다.
-    COST_GUARD_MONTHLY_SOV_QUERIES: int = 3000
+    COST_GUARD_MONTHLY_SOV_QUERIES: int = 4260
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
     COST_GUARD_DAILY_IMAGE_CALLS: int = 250
-    COST_GUARD_DAILY_SOV_QUERIES: int = 250
+    COST_GUARD_DAILY_SOV_QUERIES: int = 1260
     # 무료 진단(1단) 답변 호출 상한. **선착순 자리 수는 호출 상한이 아니다** —
     # 자리 20개 × 질의3 × 플랫폼2 × 반복3 = 360건이 정상 상한이고, 측정 재시도(최대 3회)가
     # 겹치면 그 3배까지 늘어난다. 일일 500은 정상분 360 + 복구 여유이며, 이 선을 넘는
@@ -415,7 +415,7 @@ class Settings(BaseSettings):
     SOV_TRACKING_SET_N_DEFAULT: int = 15
     # 0/음수는 ACTIVE + 측정 이력 + 유효한 10..15개 LOCAL 고정 세트 병원을 모두
     # 측정한다. 양수는 같은 데이터 기반 코호트를 정렬 순서대로 제한한다.
-    SOV_MONTHLY_COHORT_LIMIT: int = 0
+    SOV_MONTHLY_COHORT_LIMIT: int = 7
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5
