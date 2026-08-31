@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 from app.core.celery_app import REDBEAT_SCHEDULE_VERSION, celery_app
+from app.workers.dispatch_envelope import PURPOSE_HEADER, expected_purpose
 
 _ENTRYPOINT = Path(__file__).resolve().parents[1] / "docker-entrypoint.sh"
 
@@ -108,8 +109,12 @@ def test_monthly_reports_close_after_the_next_month_boundary():
 
 def test_monthly_sov_measurement_runs_only_in_the_month_end_window():
     entry = celery_app.conf.beat_schedule["monthly-sov-measurement"]
+    task_name = "app.workers.tasks.run_monthly_sov_measurement"
+    purpose = expected_purpose(task_name)
 
-    assert entry["task"] == "app.workers.tasks.run_monthly_sov_measurement"
+    assert entry["task"] == task_name
+    assert purpose == "monthly-sov-measurement"
+    assert purpose == entry["options"]["headers"][PURPOSE_HEADER]
     assert entry["schedule"].minute == {0}
     assert entry["schedule"].hour == {0, 6, 12, 18}
     assert entry["schedule"].day_of_month == set(range(24, 32))

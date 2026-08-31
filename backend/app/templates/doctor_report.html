@@ -51,11 +51,6 @@
 
   ul { margin: 3px 0 0 14px; }
   li { margin-bottom: 2px; }
-  .actions { display: table; width: 100%; table-layout: fixed; }
-  .actions > div { display: table-cell; width: 50%; vertical-align: top; }
-  .actions > div:first-child { padding-right: 6px; }
-  .ask { background: #FFF8E8; border-radius: 5px; padding: 7px 9px; }
-  .ask .lbl { font-size: 7.5pt; color: #8A5A0A; font-weight: 700; }
 
   .foot { margin-top: 8px; border-top: 1px solid #D0D5DD; padding-top: 5px; font-size: 8pt; color: #667085; }
   .foot li { margin-bottom: 1px; }
@@ -127,33 +122,11 @@
   <div class="q">아직 안 나오는 사례 — “{{ view.evidence.missing.question }}”</div>
   <div class="a">{{ view.evidence.missing.excerpt }}</div>
   <div class="src">
-    {% if view.evidence.missing.competitors %}
-      대신 {{ view.evidence.missing.competitors|join(', ') }}이(가) 언급됐습니다.
-      그래서 이번 달 이 주제의 글을 씁니다.
-    {% else %}
-      그래서 이번 달 이 주제의 글을 씁니다.
-    {% endif %}
+    그래서 이번 달 이 주제의 글을 씁니다.
   </div>
 </div>
 {% endif %}
 {% endif %}
-
-<div class="actions">
-  <div>
-    <h2>다음 달에는 무엇을 하나요?</h2>
-    <ul>
-      {% for action in view.next_actions.ours %}<li>{{ action }}</li>{% endfor %}
-    </ul>
-  </div>
-  <div>
-    <h2>원장님께 부탁드립니다</h2>
-    <div class="ask">
-      <ul>
-        {% for action in view.next_actions.yours %}<li>{{ action }}</li>{% endfor %}
-      </ul>
-    </div>
-  </div>
-</div>
 
 <div class="foot">
   <ul>

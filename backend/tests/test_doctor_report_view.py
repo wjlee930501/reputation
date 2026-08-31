@@ -257,7 +257,7 @@ def test_template_renders_the_headline_and_evidence():
         _view(
             records=[
                 _record(mentioned=True, text="강남 대장내시경", raw="장편한외과의원이 좋습니다"),
-                _record(mentioned=False, text="강남 치질 병원", raw="A의원을 추천합니다",
+                _record(mentioned=False, text="강남 치질 병원", raw="치질 진료 정보를 확인하세요",
                         competitors=[{"name": "A의원", "is_mentioned": True}]),
             ]
         )
@@ -268,8 +268,11 @@ def test_template_renders_the_headline_and_evidence():
     assert "지난달 39번 → 이번 달 47번" in text
     assert "강남 치질 병원 추천해줘" in text
     assert "강남 대장내시경" in text and "장편한외과의원이 좋습니다" in text
-    assert "A의원" in text
-    assert "원장님께 부탁드립니다" in text
+    assert "치질 진료 정보를 확인하세요" in text
+    assert "그래서 이번 달 이 주제의 글을 씁니다" in text
+    assert "대신 A의원이(가) 언급됐습니다" not in text
+    assert "다음 달에는 무엇을 하나요?" not in text
+    assert "원장님께 부탁드립니다" not in text
 
 
 def test_rendered_report_never_shows_a_percent_sign_to_the_doctor():
