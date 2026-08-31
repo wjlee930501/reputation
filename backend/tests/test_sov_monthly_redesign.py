@@ -165,7 +165,7 @@ def test_one_shot_matches_only_locked_names_and_reports_blockers(monkeypatch):
     assert result["target_count"] == 7
     assert {item["name"] for item in result["registered"]} == {
         "강심장내과 의원",
-        "서울W위례 의원",
+        "서울W내과의원 위례점 의원",
         "연세속시원 의원",
     }
     assert result["blocked"] == [
@@ -191,7 +191,7 @@ def test_conversion_name_tokens_are_the_locked_seven():
         "장편한외과",
         "마포성모탑",
         "노원탑365",
-        "서울W위례",
+        "서울W내과의원 위례점",
         "연세속시원",
     )
 
