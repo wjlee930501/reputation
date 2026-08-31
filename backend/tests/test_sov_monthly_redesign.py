@@ -525,7 +525,7 @@ def test_monthly_measurement_registers_locked_names_before_cohort(monkeypatch):
 
 
 def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="전환 의원")
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="장편한외과")
     july = SimpleNamespace(id=uuid.uuid4(), version=3, pdf_path="gs://reports/july.pdf")
     july_snapshot = (july.id, july.version, july.pdf_path)
     run_id = uuid.uuid4()
@@ -593,7 +593,7 @@ def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
 
 
 def test_august_conversion_batch_skips_without_successful_measurement(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="측정 대기 의원")
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="행복드림의원")
 
     class _Result:
         def scalars(self):

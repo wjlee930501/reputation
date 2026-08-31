@@ -10,8 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core.celery_app import celery_app
 from app.models.hospital import HospitalStatus
 from app.models.operations import OperationRunState
+from app.services.monthly_period import (
+    is_august_2026_conversion_window,
+    scheduled_report_period,
+)
+from app.services.sov_tracking_set import CONVERSION_HOSPITAL_NAME_TOKENS
 from app.workers import task_incident_control, tasks, weekly_sov_incident_control
 from app.workers.tasks import ManifestError
 
@@ -651,3 +657,230 @@ def test_no_slack_digest_helper_was_added_as_the_fix():
     source = Path(weekly_sov_incident_control.__file__).read_text(encoding="utf-8")
     assert "digest" not in inspect.getsource(weekly_sov_incident_control._open_sov_failure)
     assert "COST_GUARD_BLOCKED" in source
+
+
+# ── additional STOP: 9/1 00:15 August report requires monthly SUCCESS ─────────
+
+
+def _patch_monthly_report_batch(monkeypatch, hospitals, *, now, succeeded_ids=None):
+    succeeded_ids = set(succeeded_ids or ())
+    built: list[tuple[object, int, int]] = []
+    run_id = uuid.uuid4()
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return list(hospitals)
+
+        def scalar_one_or_none(self):
+            return None
+
+    class _DB:
+        def execute(self, _stmt):
+            return _Result()
+
+        def get(self, _model, item_id):
+            if item_id == run_id:
+                return SimpleNamespace(state=OperationRunState.SUCCEEDED)
+            return next((h for h in hospitals if h.id == item_id), None)
+
+        def rollback(self):
+            pytest.fail("monthly report batch rolled back")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks, "eligible_hospital_ids", lambda *_args: [hospital.id for hospital in hospitals]
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_monthly_sov_measurement_succeeded",
+        lambda _db, hospital_id, _period_key: hospital_id in succeeded_ids,
+    )
+    monkeypatch.setattr(
+        tasks, "_start_scheduled_monthly_operation_run", lambda *_args: (run_id, False)
+    )
+    monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_args: None)
+
+    def _build(_db, observed_hospital, anchor, **_kwargs):
+        built.append((observed_hospital.id, anchor.year, anchor.month))
+        return "created"
+
+    monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", _build)
+    monkeypatch.setattr(tasks, "_finish_monthly_operation_run", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(now),
+    )
+    return built
+
+
+def test_sep1_close_is_august_and_conversion_window_is_off():
+    now = tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul").datetime
+    period = scheduled_report_period(now)
+    assert (period.year, period.month) == (2026, 8)
+    assert is_august_2026_conversion_window(now) is False
+
+
+def test_sep1_does_not_build_august_report_without_monthly_success(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="행복드림의원")
+    built = _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids=set(),
+    )
+
+    result = tasks.run_monthly_reports.run()
+
+    assert built == []
+    assert result == {
+        "status": "SUCCEEDED",
+        "total_count": 0,
+        "success_count": 0,
+        "failure_count": 0,
+    }
+
+
+def test_sep1_succeeded_converted_hospital_can_build_august_report(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="장편한외과")
+    built = _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids={hospital.id},
+    )
+
+    result = tasks.run_monthly_reports.run()
+
+    assert built == [(hospital.id, 2026, 8)]
+    assert result["status"] == "SUCCEEDED"
+
+
+def test_sep1_does_not_overwrite_july_when_building_august(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="연세속시원내과")
+    july = SimpleNamespace(id=uuid.uuid4(), version=2, pdf_path="gs://reports/july.pdf")
+    snapshot = (july.id, july.version, july.pdf_path)
+    built = _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids={hospital.id},
+    )
+
+    def _latest(_db, hospital_id, year, month):
+        assert hospital_id == hospital.id
+        assert (year, month) == (2026, 8)
+        return None
+
+    monkeypatch.setattr(tasks, "_latest_monthly_report", _latest)
+
+    tasks.run_monthly_reports.run()
+
+    assert built == [(hospital.id, 2026, 8)]
+    assert (july.id, july.version, july.pdf_path) == snapshot
+
+
+def test_sep1_conversion_window_off_does_not_unbind_success_gate(monkeypatch):
+    now = tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul").datetime
+    assert is_august_2026_conversion_window(now) is False
+    failed = SimpleNamespace(id=uuid.uuid4(), name="강심장내과")
+    built = _patch_monthly_report_batch(
+        monkeypatch,
+        [failed],
+        now=tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids=set(),
+    )
+
+    tasks.run_monthly_reports.run()
+
+    assert built == []
+    source = inspect.getsource(tasks.run_monthly_reports)
+    assert "is_august_2026_conversion_window" not in source
+    assert "_hospital_requires_monthly_sov_success" in source
+
+
+def test_sep1_non_converted_hospital_without_monthly_run_still_builds(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="주간측정외과")
+    assert not any(token in hospital.name for token in CONVERSION_HOSPITAL_NAME_TOKENS)
+    built = _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids=set(),
+    )
+
+    result = tasks.run_monthly_reports.run()
+
+    assert built == [(hospital.id, 2026, 8)]
+    assert result["status"] == "SUCCEEDED"
+
+
+def test_generate_monthly_report_skips_converted_hospital_without_success(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="마포성모탑의원")
+
+    class _DB:
+        def get(self, _model, _id):
+            return hospital
+
+        def execute(self, _stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _DB())
+    monkeypatch.setattr(
+        tasks, "_monthly_sov_measurement_succeeded", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_build_monthly_report_for_hospital",
+        lambda *_args, **_kwargs: pytest.fail("manual August report built without success"),
+    )
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
+    )
+
+    result = tasks.generate_monthly_report_for_hospital.run(str(hospital.id))
+
+    assert result == {
+        "status": "measurement_not_succeeded",
+        "year": 2026,
+        "month": 8,
+    }
+
+
+def test_monthly_measurement_beat_stays_day_24_to_31_and_skips_sep1(monkeypatch):
+    entry = celery_app.conf.beat_schedule["monthly-sov-measurement"]
+    assert entry["schedule"].day_of_month == set(range(24, 32))
+    dispatched = []
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(2026, 9, 1, 0, 0, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(
+        tasks.run_sov_for_hospital,
+        "apply_async",
+        lambda **kwargs: dispatched.append(kwargs),
+    )
+
+    tasks.run_monthly_sov_measurement.run()
+
+    assert dispatched == []

@@ -185,3 +185,20 @@ def test_gemini_output_cap_is_not_the_binding_constraint() -> None:
         f"GEMINI_MAX_OUTPUT_TOKENS={sov_engine.GEMINI_MAX_OUTPUT_TOKENS} 가 OpenAI 실측 "
         f"출력 {measured_openai_max_output}토큰보다 작다 — Gemini만 잘린다."
     )
+
+
+def test_monthly_fixed_set_one_shot_exceeds_soft_limit_so_chunk_commit_is_required() -> None:
+    """월말 고정 세트는 spec이 순차라 15×2 cell × p50 62.8s가 1800s를 넘는다.
+
+    주간 상한 불변식만 보면 이 초과가 가려진다. 한 번에 끝내라고 고치지 말고
+    완료 cell을 커밋한 뒤 PARTIAL로 멈추고 다음 6시간 슬롯이 pending만 이어가게 한다.
+    """
+    from app.workers import tasks
+
+    sequential_specs = 15 * 2
+    estimated = sequential_specs * MEASURED_LATENCY_SECONDS["openai:gpt-5-mini-2025-08-07"]["p50"]
+    assert estimated > tasks.run_sov_for_hospital.soft_time_limit
+    assert tasks.SOV_CHUNK_STOP_SECONDS < tasks.run_sov_for_hospital.soft_time_limit
+    source = open(tasks.__file__, encoding="utf-8").read()
+    assert "_sov_chunk_deadline_reached" in source
+    assert "reserved_units = SOV_REPEAT_WEEKLY" in source
