@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -397,6 +398,90 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat(monkeypatch):
     )
 
     tasks.run_weekly_monitoring.run()
+
+
+@pytest.mark.parametrize("beat", ["weekly", "monthly"])
+def test_measurement_beats_log_each_blocked_tracking_set(
+    monkeypatch, caplog, beat
+):
+    hospital_id = str(uuid.uuid4())
+    registration = {
+        "registered": [],
+        "blocked": [
+            {"name": "노원탑365", "reason": "not found"},
+            {"name": "마포성모탑", "reason": "ambiguous"},
+            {
+                "name": "행복드림 의원",
+                "reason": "not enough LOCAL ACTIVE targets",
+                "hospital_id": hospital_id,
+            },
+            {"name": "잘못된 세트", "reason": "invalid SoV set"},
+        ],
+    }
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class _DB:
+        def execute(self, _stmt):
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks,
+        "register_convertible_tracking_sets",
+        lambda *_args, **_kwargs: registration,
+    )
+    monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [])
+    if beat == "monthly":
+        monkeypatch.setattr(
+            tasks.arrow,
+            "now",
+            lambda *_args, **_kwargs: tasks.arrow.get(
+                2026, 8, 31, 12, tzinfo="Asia/Seoul"
+            ),
+        )
+
+    with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
+        if beat == "weekly":
+            tasks.run_weekly_monitoring.run()
+        else:
+            tasks.run_monthly_sov_measurement.run()
+
+    warnings = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Conversion tracking set blocked:")
+    ]
+    assert len(warnings) == len(registration["blocked"])
+    assert [record.getMessage() for record in warnings] == [
+        "Conversion tracking set blocked: name=노원탑365 reason=not found",
+        "Conversion tracking set blocked: name=마포성모탑 reason=ambiguous",
+        (
+            "Conversion tracking set blocked: name=행복드림 의원 "
+            "reason=not enough LOCAL ACTIVE targets"
+        ),
+        "Conversion tracking set blocked: name=잘못된 세트 reason=invalid visibility set",
+    ]
+    assert all("SoV" not in record.getMessage() for record in warnings)
+    assert [hasattr(record, "hospital_id") for record in warnings] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert warnings[2].hospital_id == hospital_id
 
 
 def test_monthly_measurement_registers_locked_names_before_cohort(monkeypatch):

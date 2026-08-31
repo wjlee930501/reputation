@@ -4011,13 +4011,36 @@ def monthly_slot_generation():
             logger.exception("Nowon orthopedic FAQ regeneration failed after August backfill")
 
 
+def _log_blocked_convertible_tracking_sets(registration: Any) -> None:
+    if not isinstance(registration, Mapping):
+        return
+
+    for blocked_item in registration.get("blocked") or []:
+        if not isinstance(blocked_item, Mapping):
+            continue
+        name = str(blocked_item.get("name") or "unknown").replace("SoV", "visibility")  # copy-guard: internal-only
+        reason = str(blocked_item.get("reason") or "unknown").replace("SoV", "visibility")  # copy-guard: internal-only
+        extra = (
+            {"hospital_id": blocked_item["hospital_id"]}
+            if "hospital_id" in blocked_item
+            else {}
+        )
+        logger.warning(
+            "Conversion tracking set blocked: name=%s reason=%s",
+            name,
+            reason,
+            extra=extra,
+        )
+
+
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
 def run_weekly_monitoring():
     require_dispatch(current_task, "weekly-sov-monitoring")
     observed_at = datetime.now(timezone.utc)
     week_key = _weekly_measurement_key(arrow.now("Asia/Seoul").date())
     with SyncSessionLocal() as db:
-        register_convertible_tracking_sets(db, n=15)
+        registration = register_convertible_tracking_sets(db, n=15)
+        _log_blocked_convertible_tracking_sets(registration)
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         monthly_ids = {
@@ -4078,7 +4101,8 @@ def run_monthly_sov_measurement():
     observed_at = datetime.now(timezone.utc)
     period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
     with SyncSessionLocal() as db:
-        register_convertible_tracking_sets(db, n=15)
+        registration = register_convertible_tracking_sets(db, n=15)
+        _log_blocked_convertible_tracking_sets(registration)
         hospitals = iter_monthly_sov_cohort(
             db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
         )
