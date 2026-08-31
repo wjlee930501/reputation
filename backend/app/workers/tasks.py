@@ -118,11 +118,10 @@ from app.services.monthly_period import (
     MonthlyPeriodError,
     ReportBuildReason,
     eligible_hospital_ids,
-    is_august_2026_conversion_window,
     lock_report_version_plan,
-    prior_month_to_close,
     reporting_period,
     require_closed_period,
+    scheduled_report_period,
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
@@ -4968,13 +4967,8 @@ def _build_monthly_report_for_hospital(
 def run_monthly_reports(self):
     require_dispatch(self, "monthly-reports")
     now = arrow.now("Asia/Seoul")
-    conversion_window = is_august_2026_conversion_window(now.datetime)
     try:
-        period = (
-            require_closed_period(2026, 8, now=now.datetime)
-            if conversion_window
-            else prior_month_to_close(now.datetime)
-        )
+        period = scheduled_report_period(now.datetime)
     except MonthlyPeriodError as exc:
         logger.info("Monthly close is not ready: %s", exc)
         return {"status": "period_not_closed"}
@@ -4985,7 +4979,7 @@ def run_monthly_reports(self):
         stmt = select(Hospital).where(Hospital.id.in_(hospital_ids))
         result = db.execute(stmt)
         hospitals = result.scalars().all()
-        if conversion_window:
+        if period.year == 2026 and period.month == 8:
             period_key = f"{period.year:04d}-{period.month:02d}"
             hospitals = [
                 hospital
@@ -5089,7 +5083,7 @@ def generate_monthly_report_for_hospital(
         period = (
             require_closed_period(year, month, now=now.datetime)
             if year is not None and month is not None
-            else prior_month_to_close(now.datetime)
+            else scheduled_report_period(now.datetime)
         )
     except MonthlyPeriodError as exc:
         logger.error("Monthly report period is not closed: %s", exc)
@@ -5105,7 +5099,6 @@ def generate_monthly_report_for_hospital(
         if (
             period.year == 2026
             and period.month == 8
-            and is_august_2026_conversion_window(now.datetime)
             and not (
                 _monthly_sov_measurement_succeeded(
                     db, hospital.id, f"{period.year:04d}-{period.month:02d}"

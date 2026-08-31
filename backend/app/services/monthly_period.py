@@ -98,6 +98,19 @@ def is_august_2026_conversion_window(now: datetime) -> bool:
     )
 
 
+def scheduled_report_period(now: datetime) -> MonthlyPeriod:
+    """Resolve the month the scheduled close should generate.
+
+    2026-08-24..31 KST is the conversion one-shot: generate in-progress August
+    instead of the already-closed July prior month. September onward keeps the
+    normal prior-month close.
+    """
+
+    if is_august_2026_conversion_window(now):
+        return reporting_period(2026, 8)
+    return prior_month_to_close(now)
+
+
 def require_closed_period(year: int, month: int, *, now: datetime) -> MonthlyPeriod:
     """Reject a requested month until its immutable close boundary has passed."""
 
