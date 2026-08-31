@@ -205,10 +205,7 @@ def _is_successful_measurement(record: Any) -> bool:
     `sum(1 for r in successful if r.is_mentioned)` 형태이기 때문이다 — None은 falsy라
     보류가 조용히 '미언급'으로 분모에 남는다.
     """
-    status = getattr(record, "measurement_status", None)
-    if not (status is None or str(status).upper() == "SUCCESS"):
-        return False
-    return getattr(record, "mention_verdict", None) != sov_engine.VERDICT_AMBIGUOUS
+    return sov_engine.record_is_confirmed(record)
 
 
 def _is_failed_measurement(record: Any) -> bool:

@@ -237,7 +237,7 @@ def build_strategy_summary(
         for action in exposure_actions
         if str(getattr(action, "status", "")).upper() == "COMPLETED"
         and getattr(action, "completed_at", None) is not None
-        and period_start <= action.completed_at <= period_end
+        and period_start <= action.completed_at < period_end
     ]
     completed_items = [_serialize_strategy_action(action, targets_by_id) for action in sorted(
         completed,
@@ -272,17 +272,7 @@ def build_strategy_summary(
 
 
 def _successful_measurement(record: Any) -> bool:
-    status = getattr(record, "measurement_status", None)
-    if str(status or "SUCCESS").upper() == "FAILED":
-        return False
-    if hasattr(record, "raw_response"):
-        if not str(getattr(record, "raw_response", "") or "").strip():
-            return False
-    # 판정 보류(AMBIGUOUS, is_mentioned=None)는 분모에서 뺀다 — falsy 비교로 흘리면
-    # 보류가 미언급으로 계상된다 (PRD F3-7). sov_engine.record_is_confirmed와 같은 기준.
-    if getattr(record, "mention_verdict", None) == sov_engine.VERDICT_AMBIGUOUS:
-        return False
-    return getattr(record, "is_mentioned", None) is not None
+    return sov_engine.record_is_confirmed(record)
 
 
 def _competitor_outcomes(records: list) -> list[dict[str, Any]]:

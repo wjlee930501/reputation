@@ -5,10 +5,43 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 
 from app.api.admin import exposure_actions as exposure_actions_api
+from app.services import exposure_action_engine
 from app.services.exposure_action_engine import (
+    _is_successful_measurement,
     _reconcile_stale_work,
     build_exposure_recommendations,
 )
+
+
+def test_successful_measurement_delegates_complete_confirmation_semantics():
+    incomplete = SimpleNamespace(
+        measurement_status="SUCCESS", mention_verdict=None, is_mentioned=None
+    )
+    legacy = SimpleNamespace(is_mentioned=False)
+
+    assert _is_successful_measurement(incomplete) is False
+    assert _is_successful_measurement(legacy) is True
+
+
+def test_default_diagnosis_date_uses_kst_calendar_date(monkeypatch):
+    class _MachineDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 8, 31)
+
+    class _KstBoundaryDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert getattr(tz, "key", None) == "Asia/Seoul"
+            return cls(2026, 9, 1, 0, 30, tzinfo=tz)
+
+    monkeypatch.setattr(exposure_action_engine, "date", _MachineDate)
+    monkeypatch.setattr(exposure_action_engine, "datetime", _KstBoundaryDateTime)
+    target = _target(target_month=None)
+
+    recommendations = build_exposure_recommendations([target], [])
+
+    assert recommendations[0].due_month == "2026-09"
 
 
 class _FakeDB:

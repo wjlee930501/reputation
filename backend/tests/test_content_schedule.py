@@ -57,6 +57,34 @@ class _FakeDB:
         pass
 
 
+async def test_set_schedule_issues_hospital_row_lock_before_readiness(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
+    db = _FakeDB(hospital)
+    statements = []
+    original_execute = db.execute
+
+    async def recording_execute(statement):
+        statements.append(statement)
+        return await original_execute(statement)
+
+    db.execute = recording_execute
+
+    async def blocked(_db, _hospital):
+        assert statements
+        assert "FOR UPDATE" in str(statements[0]).upper()
+        return ["blocked"]
+
+    monkeypatch.setattr(content_api, "_schedule_readiness_blockers", blocked)
+    body = content_api.ScheduleCreate(
+        plan="PLAN_12",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 9, 2),
+    )
+
+    with pytest.raises(HTTPException):
+        await content_api.set_schedule(hospital.id, body, db=db)
+
+
 @pytest.fixture(autouse=True)
 def _allow_content_readiness_for_existing_schedule_tests(monkeypatch):
     async def _ready(_db, _hospital):

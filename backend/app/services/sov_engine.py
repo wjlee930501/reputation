@@ -1030,13 +1030,39 @@ async def _parse_mention(hospital_name: str, response_text: str, region: str = "
     )
     try:
         parsed = json.loads(result.choices[0].message.content or "{}")
-    except Exception as exc:
-        raise ValueError("mention_parse_failed") from exc
-    if not isinstance(parsed, dict) or parsed.get("verdict") not in _VERDICTS:
+    except (json.JSONDecodeError, TypeError):
+        raise ValueError("mention_parse_failed") from None
+    if not isinstance(parsed, dict):
         raise ValueError("mention_parse_failed")
 
-    verdict = parsed["verdict"]
+    verdict = parsed.get("verdict")
+    if not isinstance(verdict, str) or verdict not in _VERDICTS:
+        raise ValueError("mention_parse_failed")
     matched_text = parsed.get("matched_text")
+    mention_context = parsed.get("mention_context")
+    mention_rank = parsed.get("mention_rank")
+    sentiment = parsed.get("sentiment")
+    if (
+        (matched_text is not None and not isinstance(matched_text, str))
+        or (mention_context is not None and not isinstance(mention_context, str))
+        or (
+            mention_rank is not None
+            and (
+                isinstance(mention_rank, bool)
+                or not isinstance(mention_rank, int)
+                or mention_rank <= 0
+            )
+        )
+        or (
+            sentiment is not None
+            and (
+                not isinstance(sentiment, str)
+                or sentiment not in {"positive", "neutral", "negative"}
+            )
+        )
+    ):
+        raise ValueError("mention_parse_failed")
+
     if verdict == VERDICT_MATCHED and not _corroborates(
         hospital_name, matched_text, response_text
     ):
@@ -1058,9 +1084,9 @@ async def _parse_mention(hospital_name: str, response_text: str, region: str = "
             else (False if verdict == VERDICT_NOT_MATCHED else None)
         ),
         "matched_text": matched_text,
-        "mention_rank": parsed.get("mention_rank"),
-        "sentiment": parsed.get("sentiment"),
-        "mention_context": parsed.get("mention_context"),
+        "mention_rank": mention_rank,
+        "sentiment": sentiment,
+        "mention_context": mention_context,
     }
 
 
@@ -1105,14 +1131,30 @@ async def _parse_competitors(competitors: list[str], response_text: str) -> list
     # 사전 필터에서 걸러 all-false를 돌려주는 경로(위)는 실패가 아니라 판정 결과다.
     try:
         parsed = json.loads(result.choices[0].message.content or "{}")
-    except Exception as exc:
-        raise ValueError("competitor_parse_failed") from exc
+    except (json.JSONDecodeError, TypeError):
+        raise ValueError("competitor_parse_failed") from None
     if isinstance(parsed, dict) and "competitors" in parsed:
         parsed = parsed["competitors"]
     if not isinstance(parsed, list):
         raise ValueError("competitor_parse_failed")
     for item in parsed:
-        if not isinstance(item, dict) or not isinstance(item.get("is_mentioned"), bool):
+        if not isinstance(item, dict):
+            raise ValueError("competitor_parse_failed")
+        name = item.get("name")
+        mention_rank = item.get("mention_rank")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(item.get("is_mentioned"), bool)
+            or (
+                mention_rank is not None
+                and (
+                    isinstance(mention_rank, bool)
+                    or not isinstance(mention_rank, int)
+                    or mention_rank <= 0
+                )
+            )
+        ):
             raise ValueError("competitor_parse_failed")
     return parsed
 

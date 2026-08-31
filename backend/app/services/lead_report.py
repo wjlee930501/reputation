@@ -30,7 +30,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.core.config import settings
-from app.models.lead_diagnosis import LeadDiagnosis, LeadDiagnosisResult, MentionVerdict
+from app.models.lead_diagnosis import LeadDiagnosis, LeadDiagnosisResult
 from app.services import sov_engine
 
 # 리포트가 칸을 인쇄하는 순서. 측정 엔진의 PLATFORMS와 같은 집합이어야 한다.
@@ -195,7 +195,7 @@ def build_lead_report_payload(
         if not rows:
             continue
         succeeded = [r for r in rows if r.measurement_status == "SUCCESS"]
-        confirmed = [r for r in succeeded if r.mention_verdict != MentionVerdict.AMBIGUOUS.value]
+        confirmed = [r for r in succeeded if sov_engine.record_is_confirmed(r)]
         # 한 건이라도 계측된 진단만 검색 사용을 표기한다. 전부 NULL(계측 이전)이면
         # 0으로 인쇄해 "검색을 한 번도 안 썼다"는 없는 사실을 만들지 않는다.
         instrumented = [r for r in succeeded if r.search_calls is not None]
@@ -232,9 +232,7 @@ def build_lead_report_payload(
         slot = int(query["slot"])
         rows = [row for row in results if row.query_slot == slot]
         succeeded = [row for row in rows if row.measurement_status == "SUCCESS"]
-        confirmed = [
-            row for row in succeeded if row.mention_verdict != MentionVerdict.AMBIGUOUS.value
-        ]
+        confirmed = [row for row in succeeded if sov_engine.record_is_confirmed(row)]
         queries.append(
             QueryDisclosure(
                 slot=slot,

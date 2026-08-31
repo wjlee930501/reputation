@@ -11,6 +11,25 @@ class _FakeChoice:
         self.message = SimpleNamespace(content=content)
 
 
+class _PayloadCompletions:
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def create(self, **kwargs):
+        return SimpleNamespace(
+            choices=[_FakeChoice(json.dumps(self.payload))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        )
+
+
+def _mock_parse_response(monkeypatch, payload):
+    monkeypatch.setattr(
+        sov_engine.openai_client.chat,
+        "completions",
+        _PayloadCompletions(payload),
+    )
+
+
 class _QuotaError(RuntimeError):
     status_code = 429
     code = "credit_balance_exhausted"
@@ -70,6 +89,67 @@ async def test_parse_competitors_accepts_json_object_wrapper(monkeypatch):
     parsed = await sov_engine._parse_competitors(["경쟁병원"], "경쟁병원이 먼저 언급되었습니다.")
 
     assert parsed == [{"name": "경쟁병원", "is_mentioned": True, "mention_rank": 1}]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"mention_rank": 0},
+        {"mention_rank": True},
+        {"sentiment": "mixed"},
+        {"sentiment": []},
+        {"matched_text": 123},
+        {"mention_context": []},
+    ],
+)
+async def test_parse_mention_rejects_malformed_metadata(monkeypatch, metadata):
+    payload = {
+        "verdict": "MATCHED",
+        "matched_text": "장편한외과의원",
+        "mention_rank": 1,
+        "sentiment": "positive",
+        "mention_context": "추천 목록",
+        **metadata,
+    }
+    _mock_parse_response(monkeypatch, payload)
+
+    with pytest.raises(ValueError, match="^mention_parse_failed$"):
+        await sov_engine._parse_mention("장편한외과의원", "장편한외과의원을 추천합니다.")
+
+
+async def test_parse_mention_accepts_valid_metadata(monkeypatch):
+    payload = {
+        "verdict": "MATCHED",
+        "matched_text": "장편한외과의원",
+        "mention_rank": 2,
+        "sentiment": "neutral",
+        "mention_context": "지역 병원 목록",
+    }
+    _mock_parse_response(monkeypatch, payload)
+
+    parsed = await sov_engine._parse_mention(
+        "장편한외과의원", "장편한외과의원이 지역 병원 목록에 있습니다."
+    )
+
+    assert parsed["mention_rank"] == 2
+    assert parsed["sentiment"] == "neutral"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"name": "", "is_mentioned": True, "mention_rank": 1},
+        {"name": 123, "is_mentioned": True, "mention_rank": 1},
+        {"name": "경쟁병원", "is_mentioned": 1, "mention_rank": 1},
+        {"name": "경쟁병원", "is_mentioned": True, "mention_rank": 0},
+        {"name": "경쟁병원", "is_mentioned": True, "mention_rank": False},
+    ],
+)
+async def test_parse_competitors_rejects_malformed_metadata(monkeypatch, entry):
+    _mock_parse_response(monkeypatch, {"competitors": [entry]})
+
+    with pytest.raises(ValueError, match="^competitor_parse_failed$"):
+        await sov_engine._parse_competitors(["경쟁병원"], "경쟁병원이 언급되었습니다.")
 
 
 # ── calculate_sov: 성공 측정 0건이면 None (측정 안 됨 ≠ 실제 0% 언급) ──
@@ -439,7 +519,12 @@ class TestRecordConfirmation:
             self.is_mentioned = mentioned
 
     def test_legacy_binary_rows_stay_confirmed(self):
-        assert sov_engine.record_is_confirmed(self._Row(verdict=None, mentioned=False))
+        legacy = SimpleNamespace(mention_verdict=None, is_mentioned=False)
+        assert sov_engine.record_is_confirmed(legacy)
+
+    def test_success_without_boolean_is_not_confirmed(self):
+        row = self._Row(verdict=None, mentioned=None)
+        assert not sov_engine.record_is_confirmed(row)
 
     def test_ambiguous_rows_are_not_confirmed_and_not_failed(self):
         row = self._Row(verdict="AMBIGUOUS", mentioned=None)

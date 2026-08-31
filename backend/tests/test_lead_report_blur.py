@@ -126,6 +126,24 @@ class TestAggregationCannotBeInflated:
             assert segment.mention_rate == 25.0   # 2/8 — 보류를 미언급으로 세면 2/9가 된다
         assert payload.total_unconfirmed == 2
 
+    def test_success_without_boolean_is_unconfirmed_but_legacy_boolean_is_confirmed(self):
+        diagnosis = _diagnosis()
+        rows = _results(diagnosis, mentioned_per_platform=0, failed_per_platform=0)
+        incomplete = rows[0]
+        incomplete.mention_verdict = None
+        incomplete.is_mentioned = None
+        legacy = rows[1]
+        legacy.mention_verdict = None
+        legacy.is_mentioned = False
+
+        payload = lead_report.build_lead_report_payload(
+            diagnosis, rows, generated_at=datetime(2026, 7, 30, tzinfo=timezone.utc)
+        )
+
+        chatgpt = next(segment for segment in payload.segments if segment.platform == "chatgpt")
+        assert chatgpt.measured == 8
+        assert chatgpt.ambiguous == 1
+
 
 class TestDisclosedConditionsMatchTheMeasurement:
     """리포트가 공개하는 측정 조건은 렌더 시점이 아니라 **측정 시점**의 것이다."""

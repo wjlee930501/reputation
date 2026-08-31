@@ -6,6 +6,7 @@ import arrow
 import pytest
 from fastapi import HTTPException
 
+from app.api.admin import sov as sov_api
 from app.api.admin.sov import get_sov_measurement_runs, get_sov_queries, get_sov_trend
 from app.workers.tasks import _build_sov_record_from_result, _measurement_status_for_result
 
@@ -377,3 +378,13 @@ def test_sov_record_builder_persists_platform_failure_reason_and_source_urls():
     assert record.measurement_status == "FAILED"
     assert record.failure_reason == "competitor_parse_failed"
     assert record.source_urls == ["https://example.com/source"]
+
+
+def test_admin_sov_confirmation_uses_canonical_boolean_requirement():
+    incomplete = SimpleNamespace(
+        measurement_status="SUCCESS", mention_verdict=None, is_mentioned=None
+    )
+    legacy = SimpleNamespace(is_mentioned=False)
+
+    assert sov_api._is_successful_measurement(incomplete) is False
+    assert sov_api._is_successful_measurement(legacy) is True

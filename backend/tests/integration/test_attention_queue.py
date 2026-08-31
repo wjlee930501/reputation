@@ -8,6 +8,7 @@
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
@@ -253,7 +254,8 @@ async def test_paused_or_non_live_hospitals_do_not_create_human_work(pg_async_se
 
 
 def _previous_month(now: datetime) -> tuple[int, int]:
-    return (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
+    local = now.astimezone(ZoneInfo("Asia/Seoul"))
+    return (local.year, local.month - 1) if local.month > 1 else (local.year - 1, 12)
 
 
 async def _active_hospital(db, name: str, *, created_months_ago: int = 6) -> Hospital:

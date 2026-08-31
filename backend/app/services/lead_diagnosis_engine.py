@@ -22,7 +22,6 @@ from app.models.lead_diagnosis import (
     ExecutionStatus,
     LeadDiagnosis,
     LeadDiagnosisResult,
-    MentionVerdict,
 )
 from app.services import cost_guard, lead_query_cache, sov_engine
 from app.services.ops_incident_alerts import open_ops_incident
@@ -192,10 +191,7 @@ def is_confirmed(measurement: _Measurement) -> bool:
 
     AMBIGUOUS는 측정은 성공했지만 확정되지 않았으므로 분모가 아니다.
     """
-    return (
-        measurement.measurement_status == MEASUREMENT_SUCCESS
-        and measurement.mention_verdict != MentionVerdict.AMBIGUOUS.value
-    )
+    return sov_engine.record_is_confirmed(measurement)
 
 
 def confirmed_per_platform(planned: list[_Measurement]) -> dict[str, int]:

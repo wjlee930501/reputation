@@ -16,9 +16,20 @@ from app.services.report_artifact_validation import (
 )
 from app.services.report_engine import (
     TEMPLATE_DIR,
+    _successful_measurement,
     build_strategy_summary,
     report_pdf_filename,
 )
+
+
+def test_report_confirmation_excludes_incomplete_success_and_keeps_legacy_boolean():
+    incomplete = SimpleNamespace(
+        measurement_status="SUCCESS", mention_verdict=None, is_mentioned=None
+    )
+    legacy = SimpleNamespace(is_mentioned=False)
+
+    assert _successful_measurement(incomplete) is False
+    assert _successful_measurement(legacy) is True
 
 
 def _render(**overrides) -> str:
@@ -205,6 +216,26 @@ def test_strategy_summary_connects_targets_platform_sov_gaps_and_actions():
     assert summary["compliance_caveat"]
 
 
+def test_strategy_summary_excludes_action_completed_exactly_at_period_end():
+    period_end = datetime(2026, 8, 1)
+    action = SimpleNamespace(
+        status="COMPLETED", completed_at=period_end, query_target_id=None
+    )
+
+    summary = build_strategy_summary(
+        hospital=SimpleNamespace(),
+        query_targets=[],
+        sov_records=[],
+        exposure_gaps=[],
+        exposure_actions=[action],
+        period_start=datetime(2026, 7, 1),
+        period_end=period_end,
+        next_month="2026-08",
+    )
+
+    assert summary["completed_actions"] == []
+
+
 def test_monthly_report_renders_data_driven_strategy_instead_of_generic_recommendations():
     strategy = {
         "query_targets": [{
@@ -254,7 +285,7 @@ def test_monthly_report_renders_data_driven_strategy_instead_of_generic_recommen
     assert "리뷰 수집 캠페인 실행" not in html
 
 
-def test_strategy_summary_excludes_empty_explicit_success_measurement():
+def test_strategy_summary_uses_canonical_confirmation_not_raw_response_presence():
     target = SimpleNamespace(
         id="target-1",
         name="강남 치질 수술 추천",
@@ -298,8 +329,8 @@ def test_strategy_summary_excludes_empty_explicit_success_measurement():
         next_month="2026-08",
     )
 
-    assert summary["query_targets"][0]["sov_pct"] == 100.0
-    assert summary["query_targets"][0]["failed_measurement_count"] == 1
+    assert summary["query_targets"][0]["sov_pct"] == 50.0
+    assert summary["query_targets"][0]["failed_measurement_count"] == 0
 
 
 @pytest.mark.parametrize("failure_mode", ["mkdir", "write", "hash", "upload"])

@@ -193,7 +193,7 @@ async def set_schedule(
     콘텐츠 스케줄 설정.
     저장 즉시 해당 월의 ContentItem 슬롯을 자동 생성.
     """
-    hospital = await _get_hospital(db, hospital_id)
+    hospital = await _get_hospital_for_schedule_update(db, hospital_id)
     readiness_blockers = await _schedule_readiness_blockers(db, hospital)
     if readiness_blockers:
         raise HTTPException(
@@ -917,6 +917,22 @@ async def _get_hospital(db, hospital_id) -> Hospital:
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return h
+
+
+async def _get_hospital_for_schedule_update(
+    db: AsyncSession, hospital_id: uuid.UUID
+) -> Hospital:
+    """Serialize schedule replacement while retaining lightweight fake-session support."""
+    result = await db.execute(
+        select(Hospital).where(Hospital.id == hospital_id).with_for_update()
+    )
+    scalar_one_or_none = getattr(result, "scalar_one_or_none", None)
+    if scalar_one_or_none is None:
+        return await _get_hospital(db, hospital_id)
+    hospital = scalar_one_or_none()
+    if hospital is None:
+        raise HTTPException(status_code=404, detail="Hospital not found")
+    return hospital
 
 
 def _has_public_site(hospital: Hospital) -> bool:

@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, Iterable, Sequence
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -145,7 +146,7 @@ def build_exposure_recommendations(
     *,
     today: date | None = None,
 ) -> list[ExposureRecommendation]:
-    diagnosis_date = today or date.today()
+    diagnosis_date = today or _kst_today()
     active_targets = [
         target
         for target in targets
@@ -536,10 +537,11 @@ def _is_successful_measurement(record: Any) -> bool:
     AMBIGUOUS를 남기면 `is_mentioned`의 None이 falsy라 '미언급'으로 계상되고,
     노출 액션 우선순위가 있지도 않은 미언급을 근거로 매겨진다.
     """
-    status = getattr(record, "measurement_status", None)
-    if not (status is None or str(status).upper() == "SUCCESS"):
-        return False
-    return getattr(record, "mention_verdict", None) != sov_engine.VERDICT_AMBIGUOUS
+    return sov_engine.record_is_confirmed(record)
+
+
+def _kst_today() -> date:
+    return datetime.now(ZoneInfo("Asia/Seoul")).date()
 
 
 def _competitor_mention_count(records: Iterable[Any]) -> int:
