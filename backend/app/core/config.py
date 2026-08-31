@@ -377,11 +377,11 @@ class Settings(BaseSettings):
     # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
     COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
     COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
-    # SoV 공존 봉투:
-    # H_monthly × N × 2 platforms × 5 repeats + H_new × 150(V0)
-    # + H_weekly_remaining × weekly_specs × 5 + retry.
-    # 프로덕션은 실제 ACTIVE/코호트 수를 센 뒤 명시적으로 설정한다. 이 보수적 기본값은
-    # 주간 풀샘플 전체를 통과시키기 위한 우회값이 아니다.
+    # 월간 전환 가드 산식(H = ACTIVE + 측정 이력 + 유효 LOCAL 고정 세트 병원 수):
+    # daily >= H × 15 × 2 platforms × 5 repeats + ceil(10%) retry proposal.
+    # monthly = 이번 달 이미 사용한 양 + 오늘 daily 산식의 양.
+    # H는 프로덕션 DB에서 센 뒤 명시적으로 설정한다. 이 보수적 기본값은 주간 풀샘플
+    # 전체를 통과시키기 위한 우회값이 아니다.
     COST_GUARD_MONTHLY_SOV_QUERIES: int = 3000
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
@@ -413,8 +413,8 @@ class Settings(BaseSettings):
 
     # SoV
     SOV_TRACKING_SET_N_DEFAULT: int = 15
-    # 0은 tracking-set 등록만 하고 측정 방식은 전환하지 않는다. 3은 파일럿, 큰 값은
-    # ACTIVE + 유효 세트 + 측정 이력 조건을 만족하는 병원을 순서대로 모두 전환한다.
+    # 0/음수는 ACTIVE + 측정 이력 + 유효한 10..15개 LOCAL 고정 세트 병원을 모두
+    # 측정한다. 양수는 같은 데이터 기반 코호트를 정렬 순서대로 제한한다.
     SOV_MONTHLY_COHORT_LIMIT: int = 0
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.

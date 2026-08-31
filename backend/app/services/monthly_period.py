@@ -16,6 +16,8 @@ from app.models.monthly_control import HospitalServiceInterval
 from app.models.report import MonthlyReport
 
 KST = ZoneInfo("Asia/Seoul")
+AUGUST_2026_CONVERSION_START_DAY = 24
+AUGUST_2026_CONVERSION_END_DAY = 31
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,10 +85,25 @@ def prior_month_to_close(now: datetime) -> MonthlyPeriod:
     return period
 
 
+def is_august_2026_conversion_window(now: datetime) -> bool:
+    """Return whether the locked month-end conversion window is open in KST."""
+
+    observed_at = _as_kst(now)
+    return (
+        observed_at.year == 2026
+        and observed_at.month == 8
+        and AUGUST_2026_CONVERSION_START_DAY
+        <= observed_at.day
+        <= AUGUST_2026_CONVERSION_END_DAY
+    )
+
+
 def require_closed_period(year: int, month: int, *, now: datetime) -> MonthlyPeriod:
     """Reject a requested month until its immutable close boundary has passed."""
 
     period = reporting_period(year, month)
+    if year == 2026 and month == 8 and is_august_2026_conversion_window(now):
+        return period
     if _as_kst(now) < period.closes_at:
         raise MonthlyPeriodError(
             "아직 마감되지 않은 월입니다. 해당 월 마감 시각인 00시 15분 이후, "

@@ -118,6 +118,7 @@ from app.services.monthly_period import (
     MonthlyPeriodError,
     ReportBuildReason,
     eligible_hospital_ids,
+    is_august_2026_conversion_window,
     lock_report_version_plan,
     prior_month_to_close,
     reporting_period,
@@ -4497,6 +4498,35 @@ def _latest_monthly_report(db, hospital_id: uuid.UUID, year: int, month: int):
     )
 
 
+def _monthly_sov_measurement_succeeded(
+    db, hospital_id: uuid.UUID, period_key: str
+) -> bool:
+    run_id = db.execute(
+        select(OperationRun.id).where(
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == "RUN_SOV",
+            OperationRun.idempotency_key == f"monthly-sov:{hospital_id}:{period_key}",
+            OperationRun.state == OperationRunState.SUCCEEDED,
+        )
+    ).scalar_one_or_none()
+    return run_id is not None
+
+
+def _prior_monthly_manifest(db, hospital_id: uuid.UUID, now: arrow.Arrow):
+    # August 2026 is the first converted month. Its report must not inherit weekly
+    # mention cells from July as a month-over-month comparison.
+    if now.year == 2026 and now.month == 8:
+        return None
+    prior_anchor = now.shift(months=-1)
+    return db.execute(
+        select(MonthlyMeasurementManifest).where(
+            MonthlyMeasurementManifest.hospital_id == hospital_id,
+            MonthlyMeasurementManifest.period_year == prior_anchor.year,
+            MonthlyMeasurementManifest.period_month == prior_anchor.month,
+        )
+    ).scalar_one_or_none()
+
+
 def _finish_monthly_operation_run(
     db,
     run_id: uuid.UUID | None,
@@ -4670,14 +4700,7 @@ def _build_monthly_report_for_hospital(
         return "skipped_existing"
     prev_start = now.shift(months=-1).floor("month").datetime
     prev_end = now.floor("month").datetime
-    prior_anchor = now.shift(months=-1)
-    prior_manifest = db.execute(
-        select(MonthlyMeasurementManifest).where(
-            MonthlyMeasurementManifest.hospital_id == h.id,
-            MonthlyMeasurementManifest.period_year == prior_anchor.year,
-            MonthlyMeasurementManifest.period_month == prior_anchor.month,
-        )
-    ).scalar_one_or_none()
+    prior_manifest = _prior_monthly_manifest(db, h.id, now)
     current_loaded = load_monthly_sov_manifest(db, manifest) if manifest is not None else None
     prior_loaded = (
         load_monthly_sov_manifest(db, prior_manifest) if prior_manifest is not None else None
@@ -4945,8 +4968,13 @@ def _build_monthly_report_for_hospital(
 def run_monthly_reports(self):
     require_dispatch(self, "monthly-reports")
     now = arrow.now("Asia/Seoul")
+    conversion_window = is_august_2026_conversion_window(now.datetime)
     try:
-        period = prior_month_to_close(now.datetime)
+        period = (
+            require_closed_period(2026, 8, now=now.datetime)
+            if conversion_window
+            else prior_month_to_close(now.datetime)
+        )
     except MonthlyPeriodError as exc:
         logger.info("Monthly close is not ready: %s", exc)
         return {"status": "period_not_closed"}
@@ -4957,6 +4985,13 @@ def run_monthly_reports(self):
         stmt = select(Hospital).where(Hospital.id.in_(hospital_ids))
         result = db.execute(stmt)
         hospitals = result.scalars().all()
+        if conversion_window:
+            period_key = f"{period.year:04d}-{period.month:02d}"
+            hospitals = [
+                hospital
+                for hospital in hospitals
+                if _monthly_sov_measurement_succeeded(db, hospital.id, period_key)
+            ]
         failures: list[str] = []
         successes = 0
 
@@ -5067,6 +5102,21 @@ def generate_monthly_report_for_hospital(
         if hospital is None:
             logger.error(f"Monthly report requested for unknown hospital {hospital_id}")
             return {"status": "hospital_not_found"}
+        if (
+            period.year == 2026
+            and period.month == 8
+            and is_august_2026_conversion_window(now.datetime)
+            and not (
+                _monthly_sov_measurement_succeeded(
+                    db, hospital.id, f"{period.year:04d}-{period.month:02d}"
+                )
+            )
+        ):
+            return {
+                "status": "measurement_not_succeeded",
+                "year": period.year,
+                "month": period.month,
+            }
         _mark_monthly_operation_run_running(db, run_id, anchor.year, anchor.month)
         correlation_key = (
             f"operation-run:{run_id}"

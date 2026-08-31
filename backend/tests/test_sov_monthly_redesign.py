@@ -1,17 +1,19 @@
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from app.core.config import Settings
-from app.services import sov_engine
+from app.services import sov_engine, sov_tracking_set
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_types import CellAttempt, ManifestCellInput
 from app.services.sov_tracking_set import (
     MEASUREMENT_WINDOW_MONTH_END,
     MEASUREMENT_WINDOW_MONTH_START,
     monthly_sov_guard_units,
+    register_convertible_tracking_sets,
     tracking_set_fingerprint,
     tracking_set_is_valid,
     tracking_set_members,
@@ -70,6 +72,78 @@ def test_tracking_members_are_active_flagged_and_local_only():
     paused.status = "PAUSED"
 
     assert tracking_set_members([local, info, unflagged, paused]) == [local]
+
+
+def test_one_shot_registers_valid_set_and_blocks_invalid_set(monkeypatch):
+    valid_hospital = SimpleNamespace(id=uuid.uuid4())
+    blocked_hospital = SimpleNamespace(id=uuid.uuid4())
+    valid_targets = [_target(f"지역 병원 질문 {index}", tracking=False) for index in range(16)]
+    valid_targets[-1].in_tracking_set = True
+    blocked_targets = [_target(f"부족한 지역 질문 {index}") for index in range(9)]
+    targets_by_hospital = {
+        valid_hospital.id: valid_targets,
+        blocked_hospital.id: blocked_targets,
+    }
+
+    class _DB:
+        flushes = 0
+
+        def flush(self):
+            self.flushes += 1
+
+    db = _DB()
+    monkeypatch.setattr(
+        sov_tracking_set,
+        "_convertible_hospitals",
+        lambda _db: [valid_hospital, blocked_hospital],
+    )
+    monkeypatch.setattr(
+        sov_tracking_set,
+        "_load_targets",
+        lambda _db, hospital_id: targets_by_hospital[hospital_id],
+    )
+    monkeypatch.setattr(
+        sov_tracking_set,
+        "propose_tracking_set",
+        lambda _db, hospital_id, n: targets_by_hospital[hospital_id][:n],
+    )
+
+    result = register_convertible_tracking_sets(db, n=15)
+
+    assert [target.in_tracking_set for target in valid_targets] == [True] * 15 + [False]
+    assert not any(target.in_tracking_set for target in blocked_targets)
+    assert result["registered"] == [str(valid_hospital.id)]
+    assert result["blocked"] == [
+        {
+            "hospital_id": str(blocked_hospital.id),
+            "reason": "not enough LOCAL ACTIVE targets: found 9, requires 10..15",
+        }
+    ]
+    assert db.flushes == 2
+
+
+def test_non_positive_cohort_limit_selects_all_valid_hospitals(monkeypatch):
+    first = SimpleNamespace(id=uuid.uuid4())
+    second = SimpleNamespace(id=uuid.uuid4())
+    invalid = SimpleNamespace(id=uuid.uuid4())
+    targets = {
+        first.id: [_target(f"첫 병원 질문 {index}") for index in range(15)],
+        second.id: [_target(f"둘째 병원 질문 {index}") for index in range(10)],
+        invalid.id: [_target(f"부족 병원 질문 {index}") for index in range(9)],
+    }
+    monkeypatch.setattr(
+        sov_tracking_set, "_convertible_hospitals", lambda _db: [first, second, invalid]
+    )
+    monkeypatch.setattr(
+        sov_tracking_set,
+        "_load_targets",
+        lambda _db, hospital_id: targets[hospital_id],
+    )
+
+    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=0) == [first, second]
+    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=-1) == [first, second]
+    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=None) == [first, second]
+    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=1) == [first]
 
 
 class _SpecDB:
@@ -228,7 +302,7 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat(monkeypatch):
     monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [converted])
-    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 1)
+    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 0)
     monkeypatch.setattr(
         tasks,
         "_ensure_weekly_sov_operation_run",
@@ -241,6 +315,136 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat(monkeypatch):
     )
 
     tasks.run_weekly_monitoring.run()
+
+
+def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="전환 의원")
+    july = SimpleNamespace(id=uuid.uuid4(), version=3, pdf_path="gs://reports/july.pdf")
+    july_snapshot = (july.id, july.version, july.pdf_path)
+    run_id = uuid.uuid4()
+    built: list[tuple[int, int]] = []
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [hospital]
+
+    class _DB:
+        def execute(self, _stmt):
+            return _Result()
+
+        def get(self, _model, item_id):
+            if item_id == run_id:
+                return SimpleNamespace(state=tasks.OperationRunState.SUCCEEDED)
+            return None
+
+        def rollback(self):
+            pytest.fail("August conversion batch rolled back")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tasks, "eligible_hospital_ids", lambda *_args: [hospital.id])
+    monkeypatch.setattr(tasks, "_monthly_sov_measurement_succeeded", lambda *_args: True)
+    monkeypatch.setattr(
+        tasks, "_start_scheduled_monthly_operation_run", lambda *_args: (run_id, False)
+    )
+
+    def _latest(_db, hospital_id, year, month):
+        assert hospital_id == hospital.id
+        assert (year, month) == (2026, 8)
+        return None
+
+    def _build(_db, observed_hospital, anchor, **_kwargs):
+        assert observed_hospital is hospital
+        built.append((anchor.year, anchor.month))
+        return "created"
+
+    monkeypatch.setattr(tasks, "_latest_monthly_report", _latest)
+    monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", _build)
+    monkeypatch.setattr(tasks, "_finish_monthly_operation_run", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(
+            2026, 8, 31, 12, 0, tzinfo="Asia/Seoul"
+        ),
+    )
+
+    result = tasks.run_monthly_reports.run()
+
+    assert result["status"] == "SUCCEEDED"
+    assert built == [(2026, 8)]
+    assert (july.id, july.version, july.pdf_path) == july_snapshot
+
+
+def test_august_conversion_batch_skips_without_successful_measurement(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="측정 대기 의원")
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [hospital]
+
+    class _DB:
+        def execute(self, _stmt):
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tasks, "eligible_hospital_ids", lambda *_args: [hospital.id])
+    monkeypatch.setattr(tasks, "_monthly_sov_measurement_succeeded", lambda *_args: False)
+    monkeypatch.setattr(
+        tasks,
+        "_build_monthly_report_for_hospital",
+        lambda *_args, **_kwargs: pytest.fail("report built before monthly measurement success"),
+    )
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(
+            2026, 8, 31, 12, 0, tzinfo="Asia/Seoul"
+        ),
+    )
+
+    assert tasks.run_monthly_reports.run() == {
+        "status": "SUCCEEDED",
+        "total_count": 0,
+        "success_count": 0,
+        "failure_count": 0,
+    }
+
+
+def test_august_conversion_does_not_load_july_measurement_cells():
+    class _DB:
+        def execute(self, _stmt):
+            pytest.fail("August conversion queried a prior monthly manifest")
+
+    august = tasks.arrow.get(2026, 8, 31, 12, tzinfo="Asia/Seoul")
+
+    assert tasks._prior_monthly_manifest(_DB(), uuid.uuid4(), august) is None
+
+
+def test_monthly_measurement_copy_guard_strings_are_preserved():
+    source = Path(tasks.__file__).read_text()
+
+    assert '"Hospital %s is no longer in the monthly measurement cohort"' in source
+    assert '"Monthly measurement window is not open: %s"' in source
 
 
 def test_failed_monthly_operation_is_rearmed_for_failed_cell_retry():

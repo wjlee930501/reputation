@@ -87,6 +87,13 @@ def tracking_set_is_valid(members: Iterable[AIQueryTarget]) -> bool:
     return TRACKING_SET_N_MIN <= size <= TRACKING_SET_N_MAX
 
 
+def _stored_tracking_set_is_valid(targets: Iterable[AIQueryTarget]) -> bool:
+    flagged = [target for target in targets if bool(target.in_tracking_set)]
+    return tracking_set_is_valid(flagged) and len(tracking_set_members(flagged)) == len(
+        flagged
+    )
+
+
 def _validate_n(n: int) -> None:
     if not TRACKING_SET_N_MIN <= n <= TRACKING_SET_N_MAX:
         raise ValueError(
@@ -153,7 +160,12 @@ def register_tracking_set(
     db, hospital_id: uuid.UUID, n: int = TRACKING_SET_N_DEFAULT
 ) -> dict[str, object]:
     proposed = propose_tracking_set(db, hospital_id, n=n)
-    selected_ids = {target.id for target in proposed}
+    valid = tracking_set_is_valid(proposed) and all(
+        str(getattr(target, "status", "") or "").upper() == "ACTIVE"
+        and _target_intent(target) == QUERY_INTENT_LOCAL
+        for target in proposed
+    )
+    selected_ids = {target.id for target in proposed} if valid else set()
     targets = _load_targets(db, hospital_id)
     changed = 0
     for target in targets:
@@ -165,17 +177,24 @@ def register_tracking_set(
     return {
         "hospital_id": str(hospital_id),
         "requested_size": n,
-        "registered_size": len(proposed),
-        "valid": tracking_set_is_valid(proposed),
+        "proposed_size": len(proposed),
+        "registered_size": len(proposed) if valid else 0,
+        "valid": valid,
         "changed": changed,
-        "fingerprint": tracking_set_fingerprint(proposed, n=n),
+        "fingerprint": tracking_set_fingerprint(proposed, n=n) if valid else None,
+        "reason": (
+            None
+            if valid
+            else (
+                "not enough LOCAL ACTIVE targets: "
+                f"found {len(proposed)}, requires {TRACKING_SET_N_MIN}..{TRACKING_SET_N_MAX}"
+            )
+        ),
     }
 
 
-def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
-    if limit is None or limit <= 0:
-        return []
-    hospitals = list(
+def _convertible_hospitals(db) -> list[Hospital]:
+    return list(
         db.execute(
             select(Hospital)
             .where(
@@ -187,11 +206,46 @@ def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
         .scalars()
         .all()
     )
+
+
+def register_convertible_tracking_sets(
+    db, n: int = TRACKING_SET_N_DEFAULT
+) -> dict[str, object]:
+    """Register every eligible hospital, retaining invalid candidates as blockers."""
+
+    _validate_n(n)
+    hospitals = _convertible_hospitals(db)
+    registered: list[str] = []
+    results: list[dict[str, object]] = []
+    blocked: list[dict[str, str]] = []
+    for hospital in hospitals:
+        result = register_tracking_set(db, hospital.id, n=n)
+        results.append(result)
+        if bool(result["valid"]):
+            registered.append(str(hospital.id))
+        else:
+            blocked.append(
+                {
+                    "hospital_id": str(hospital.id),
+                    "reason": str(result["reason"]),
+                }
+            )
+    return {
+        "candidate_count": len(hospitals),
+        "registered": registered,
+        "blocked": blocked,
+        "results": results,
+    }
+
+
+def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
+    hospitals = _convertible_hospitals(db)
+    capped = limit is not None and limit > 0
     cohort: list[Hospital] = []
     for hospital in hospitals:
-        if tracking_set_is_valid(tracking_set_members(_load_targets(db, hospital.id))):
+        if _stored_tracking_set_is_valid(_load_targets(db, hospital.id)):
             cohort.append(hospital)
-            if len(cohort) >= limit:
+            if capped and len(cohort) >= limit:
                 break
     return cohort
 
