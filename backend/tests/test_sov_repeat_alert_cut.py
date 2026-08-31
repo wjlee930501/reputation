@@ -302,7 +302,7 @@ def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
     assert enqueued == []
 
 
-# ── 3. 6-hour beat does not rearm COST_GUARD when budget does not fit ────────
+# ── 3. 6-hour beat rearms only retryable monthly operation runs ───────────────
 
 
 def _failed_monthly_run(*, code: str, state=OperationRunState.FAILED):
@@ -321,6 +321,65 @@ def _failed_monthly_run(*, code: str, state=OperationRunState.FAILED):
         safe_error_message="failed",
         version=3,
     )
+
+
+def test_partial_monthly_run_rearms_for_failed_cell_retry():
+    existing = _failed_monthly_run(
+        code="MONTHLY_SOV_MEASUREMENT_PARTIAL",
+        state=OperationRunState.PARTIAL,
+    )
+    old_task_id = existing.task_id
+
+    class _DB:
+        commits = 0
+
+        def execute(self, _stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: existing)
+
+        def commit(self):
+            self.commits += 1
+
+    db = _DB()
+    run = tasks._ensure_monthly_sov_operation_run(
+        db, SimpleNamespace(id=uuid.uuid4()), "2026-08", datetime.now(UTC)
+    )
+
+    assert run is existing
+    assert run.state == OperationRunState.REQUESTED
+    assert run.task_id != old_task_id
+    assert run.version == 4
+    assert db.commits == 1
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "MONTHLY_SOV_NO_MEASUREMENT_MANIFEST",
+        "MONTHLY_SOV_MEASUREMENT_POLICY_DRIFT",
+        "MONTHLY_SOV_MEASUREMENT_PARTIAL",
+    ],
+)
+def test_non_retryable_failed_monthly_run_stays_closed(code):
+    existing = _failed_monthly_run(code=code)
+
+    class _DB:
+        commits = 0
+
+        def execute(self, _stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: existing)
+
+        def commit(self):
+            self.commits += 1
+
+    db = _DB()
+    run = tasks._ensure_monthly_sov_operation_run(
+        db, SimpleNamespace(id=uuid.uuid4()), "2026-08", datetime.now(UTC)
+    )
+
+    assert run is None
+    assert existing.state == OperationRunState.FAILED
+    assert existing.version == 3
+    assert db.commits == 0
 
 
 def test_cost_guard_failed_run_does_not_rearm_when_budget_insufficient(monkeypatch):

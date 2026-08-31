@@ -4509,15 +4509,10 @@ def _ensure_monthly_sov_operation_run(
     if existing is not None:
         if existing.state == OperationRunState.REQUESTED:
             return existing
-        if existing.state in {OperationRunState.FAILED, OperationRunState.PARTIAL}:
-            if (
-                existing.state == OperationRunState.FAILED
-                and (existing.safe_error_code or "").endswith("COST_GUARD_BLOCKED")
-                and not _monthly_sov_pending_budget_fits(db, hospital, period_key)
-            ):
-                return None
+
+        def _rearm_existing() -> OperationRun:
             # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 월말 윈도우의 다음
-            # 6시간 슬롯이 FAILED manifest cells만 재시도하게 한다. 새 월간 키를 만들지
+            # 6시간 슬롯이 실패한 manifest cells만 재시도하게 한다. 새 월간 키를 만들지
             # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
             existing.state = OperationRunState.REQUESTED
             existing.task_id = str(uuid.uuid4())
@@ -4534,6 +4529,17 @@ def _ensure_monthly_sov_operation_run(
             existing.version += 1
             db.commit()
             return existing
+
+        if existing.state == OperationRunState.PARTIAL:
+            return _rearm_existing()
+        if existing.state == OperationRunState.FAILED:
+            code = existing.safe_error_code or ""
+            if (
+                code.endswith("COST_GUARD_BLOCKED")
+                and _monthly_sov_pending_budget_fits(db, hospital, period_key)
+            ):
+                return _rearm_existing()
+            return None
         return None
     hospital_id = str(hospital.id)
     run = OperationRun(

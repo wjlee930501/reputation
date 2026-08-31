@@ -654,10 +654,10 @@ def test_monthly_measurement_copy_guard_strings_are_preserved():
     assert '"Monthly measurement window is not open: %s"' in source
 
 
-def test_failed_monthly_operation_is_rearmed_for_failed_cell_retry():
+def test_partial_monthly_operation_is_rearmed_for_failed_cell_retry():
     old_task_id = str(uuid.uuid4())
     existing = SimpleNamespace(
-        state=tasks.OperationRunState.FAILED,
+        state=tasks.OperationRunState.PARTIAL,
         task_id=old_task_id,
         queued_at=datetime.now(UTC),
         started_at=datetime.now(UTC),
