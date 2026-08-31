@@ -22,6 +22,11 @@ class DoctorTile(TypedDict):
     hint: str
 
 
+class DoctorMentionSentence(TypedDict):
+    query_text: str
+    platform_label: str
+
+
 class DoctorEvidenceCase(TypedDict):
     question: str
     excerpt: str
@@ -47,6 +52,8 @@ class DoctorReportView(TypedDict):
     summary: str
     coverage_text: str
     tiles: list[DoctorTile]
+    new_mention_sentences: list[DoctorMentionSentence]
+    new_mention_empty_text: str
     evidence: DoctorEvidence
     next_actions: DoctorNextActions
     footnotes: list[str]

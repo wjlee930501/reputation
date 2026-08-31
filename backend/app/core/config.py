@@ -272,6 +272,13 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in stripped.split(",") if origin.strip()]
         return value
 
+    @field_validator("SOV_TRACKING_SET_N_DEFAULT")
+    @classmethod
+    def _validate_tracking_set_size(cls, value: int) -> int:
+        if not 10 <= value <= 15:
+            raise ValueError("SOV_TRACKING_SET_N_DEFAULT must be between 10 and 15")
+        return value
+
     # DB
     DATABASE_URL: str = ""
     SYNC_DATABASE_URL: str = ""
@@ -370,7 +377,11 @@ class Settings(BaseSettings):
     # 월간 상한 (병원50 × 리더 20편 × 재시도 여유 ≈ 3000)
     COST_GUARD_MONTHLY_CONTENT_CALLS: int = 3000
     COST_GUARD_MONTHLY_IMAGE_CALLS: int = 3000
-    # SoV may never have a larger provider-call envelope than content generation.
+    # SoV 공존 봉투:
+    # H_monthly × N × 2 platforms × 5 repeats + H_new × 150(V0)
+    # + H_weekly_remaining × weekly_specs × 5 + retry.
+    # 프로덕션은 실제 ACTIVE/코호트 수를 센 뒤 명시적으로 설정한다. 이 보수적 기본값은
+    # 주간 풀샘플 전체를 통과시키기 위한 우회값이 아니다.
     COST_GUARD_MONTHLY_SOV_QUERIES: int = 3000
     # 일일 상한 = 월간의 1/10 수준(피크 하루 폭주 차단용)
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
@@ -401,12 +412,15 @@ class Settings(BaseSettings):
     LOG_JSON: bool = True
 
     # SoV
-    # 주간 측정 반복 횟수. 월간 리포트는 새로 측정하지 않고 이 기록을 집계하므로
-    # 이 값이 곧 원장 보고 숫자의 표본 크기다.
-    # (SOV_REPEAT_COUNT라는 '월간용' 설정이 있었으나 앱이 한 번도 읽지 않는 죽은 값이라
-    #  제거했다 — 월간 측정이라는 것이 애초에 없다.)
+    SOV_TRACKING_SET_N_DEFAULT: int = 15
+    # 0은 tracking-set 등록만 하고 측정 방식은 전환하지 않는다. 3은 파일럿, 큰 값은
+    # ACTIVE + 유효 세트 + 측정 이력 조건을 만족하는 병원을 순서대로 모두 전환한다.
+    SOV_MONTHLY_COHORT_LIMIT: int = 0
+    SOV_MONTHLY_WINDOW_START_DAY: int = 24
+    # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5
-    # 주간 측정에서 HIGH 우선순위 쿼리 상한 — 초과분은 잘라내고 ops 알림 (비용 가드)
+    # 아래 priority/cap 설정은 공존 기간의 주간 legacy 경로에만 적용한다. 월간 고정 세트는
+    # 세트 크기 자체가 봉투이며 이 값들로 절단하거나 회전하지 않는다.
     SOV_HIGH_PRIORITY_CAP: int = 30
     # 우선순위와 무관한 주간 측정 spec 총상한 — NORMAL/LOW 증가에 따른 무제한 비용 방지
     # 50 specs × 5 repeats = 250 provider calls, no larger than the default

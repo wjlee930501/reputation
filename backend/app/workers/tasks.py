@@ -172,6 +172,13 @@ from app.services.sov_engine import (
     generate_query_matrix_specs,
     run_single_query,
 )
+from app.services.sov_tracking_set import (
+    MEASUREMENT_WINDOW_MONTH_END,
+    hospital_in_monthly_cohort,
+    iter_monthly_sov_cohort,
+    tracking_set_fingerprint,
+    tracking_set_members,
+)
 from app.services.v0_claim import v0_claim_is_alive_sync
 from app.utils.db_locks import (
     acquire_hospital_advisory_lock_sync,
@@ -216,8 +223,10 @@ from app.workers.nightly_generation_batch import (
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
 from app.workers.weekly_sov_incident_control import (
+    open_monthly_sov_failure,
     open_weekly_sov_capacity_digest,
     open_weekly_sov_failure,
+    recover_monthly_sov_failure,
     recover_weekly_sov_failure,
 )
 
@@ -3099,7 +3108,7 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
     soft_time_limit=1800,
     time_limit=2100,
 )
-def run_sov_for_hospital(self, hospital_id: str):
+def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = None):
     require_dispatch(self, "run-sov", hospital_id)
     if not _operation_run_claimed_or_legacy(self):
         logger.info(
@@ -3116,10 +3125,26 @@ def run_sov_for_hospital(self, hospital_id: str):
             ):
                 return
 
+            measurement_mode = measurement_mode or _sov_measurement_mode_from_operation_run(
+                db, self
+            )
+            monthly = measurement_mode == "monthly"
+            if monthly and not hospital_in_monthly_cohort(
+                db,
+                hospital.id,
+                limit=settings.SOV_MONTHLY_COHORT_LIMIT,
+            ):
+                logger.info(
+                    "Hospital %s is no longer in the monthly measurement cohort", hospital_id
+                )
+                return
+
             # priority 기반 쿼리 필터링 — beat은 월요일 02:00 KST(=일요일 UTC)에 발화하므로
             # UTC date.today()를 쓰면 ISO 주차 짝/홀이 뒤집히고 월초 판정도 어긋난다 (P1-5).
             today_kst = arrow.now("Asia/Seoul").date()
             week_key = _weekly_measurement_key(today_kst)
+            period_key = f"{today_kst.year:04d}-{today_kst.month:02d}" if monthly else week_key
+            failure_prefix = "MONTHLY_SOV" if monthly else "WEEKLY_SOV"
             is_even_week = _is_even_measurement_week(today_kst)
             current_month_day = today_kst.day
             is_month_start = current_month_day <= 7  # 월초 첫째 주
@@ -3132,7 +3157,11 @@ def run_sov_for_hospital(self, hospital_id: str):
             all_queries = result.scalars().all()
             target_result = db.execute(
                 select(AIQueryTarget)
-                .options(selectinload(AIQueryTarget.variants))
+                .options(
+                    selectinload(AIQueryTarget.variants).selectinload(
+                        AIQueryVariant.query_matrix
+                    )
+                )
                 .where(
                     AIQueryTarget.hospital_id == hospital.id,
                     AIQueryTarget.status == "ACTIVE",
@@ -3140,13 +3169,20 @@ def run_sov_for_hospital(self, hospital_id: str):
             )
             query_targets = target_result.scalars().all()
 
+            if monthly:
+                query_targets = tracking_set_members(query_targets)
+
             # priority 필터 적용 (HIGH 항상 / NORMAL 짝수주 / LOW 월초) — 동일 규칙을
             # target/variant 유래 spec에도 적용하기 위해 _priority_included 헬퍼로 단일화한다.
-            queries = [
-                q
-                for q in all_queries
-                if _priority_included(q.priority, is_even_week, is_month_start)
-            ]
+            queries = (
+                []
+                if monthly
+                else [
+                    q
+                    for q in all_queries
+                    if _priority_included(q.priority, is_even_week, is_month_start)
+                ]
+            )
 
             measurement_specs, trimmed_high = _build_measurement_specs(
                 db=db,
@@ -3155,10 +3191,12 @@ def run_sov_for_hospital(self, hospital_id: str):
                 fallback_queries=queries,
                 is_even_week=is_even_week,
                 is_month_start=is_month_start,
-                high_priority_cap=SOV_HIGH_PRIORITY_CAP,
+                high_priority_cap=-1 if monthly else SOV_HIGH_PRIORITY_CAP,
+                total_spec_cap=-1 if monthly else SOV_TOTAL_SPEC_CAP,
+                measurement_mode=measurement_mode,
             )
 
-            if trimmed_high:
+            if trimmed_high and not monthly:
                 # HIGH 상한 절단은 조용히 쿼리를 버리는 것과 같다 — 로그 + ops 알림 (P?-7).
                 logger.warning(
                     "HIGH priority query cap reached for %s: %d specs trimmed (cap %d)",
@@ -3175,29 +3213,40 @@ def run_sov_for_hospital(self, hospital_id: str):
 
             if not measurement_specs:
                 logger.info(
-                    "No weekly-eligible queries for hospital %s in %s",
+                    "No %s-eligible queries for hospital %s in %s",
+                    measurement_mode,
                     hospital_id,
-                    week_key,
+                    period_key,
                 )
                 _run_async(
-                    recover_weekly_sov_failure(
+                    _recover_sov_failure(
                         hospital_id=hospital.id,
-                        week_key=week_key,
+                        period_key=period_key,
+                        measurement_mode=measurement_mode,
                     )
                 )
                 return
 
             selected_weekly_specs = measurement_specs
-            frozen_specs, _ = _build_measurement_specs(
-                db=db,
-                hospital=hospital,
-                query_targets=query_targets,
-                fallback_queries=all_queries,
-                is_even_week=True,
-                is_month_start=True,
-                high_priority_cap=-1,
-                total_spec_cap=-1,
-            )
+            if monthly:
+                frozen_specs = measurement_specs
+                protocol_kwargs = {
+                    "measurement_window": MEASUREMENT_WINDOW_MONTH_END,
+                    "tracking_set_fingerprint": tracking_set_fingerprint(query_targets),
+                    "tracking_set_size": len(query_targets),
+                }
+            else:
+                frozen_specs, _ = _build_measurement_specs(
+                    db=db,
+                    hospital=hospital,
+                    query_targets=query_targets,
+                    fallback_queries=all_queries,
+                    is_even_week=True,
+                    is_month_start=True,
+                    high_priority_cap=-1,
+                    total_spec_cap=-1,
+                )
+                protocol_kwargs = None
             try:
                 manifest = freeze_dispatch_manifest(
                     db,
@@ -3206,14 +3255,16 @@ def run_sov_for_hospital(self, hospital_id: str):
                     today_kst.month,
                     frozen_specs,
                     gemini_configured=bool(settings.GEMINI_API_KEY),
+                    measurement_protocol_kwargs=protocol_kwargs,
                 )
             except ManifestError:
                 logger.info("No queries available to freeze for hospital %s", hospital_id)
                 _record_weekly_sov_failure(
                     hospital,
-                    week_key,
-                    "WEEKLY_SOV_NO_MEASUREMENT_MANIFEST",
+                    period_key,
+                    f"{failure_prefix}_NO_MEASUREMENT_MANIFEST",
                     _operation_run_id_from_task(self),
+                    measurement_mode=measurement_mode,
                 )
                 raise RuntimeError("weekly_sov_no_measurement_manifest")
             db.commit()
@@ -3226,14 +3277,19 @@ def run_sov_for_hospital(self, hospital_id: str):
                     manifest, selected_weekly_specs
                 ):
                     _run_async(
-                        recover_weekly_sov_failure(hospital_id=hospital.id, week_key=week_key)
+                        _recover_sov_failure(
+                            hospital_id=hospital.id,
+                            period_key=period_key,
+                            measurement_mode=measurement_mode,
+                        )
                     )
                     return
                 _record_weekly_sov_failure(
                     hospital,
-                    week_key,
-                    "WEEKLY_SOV_UNRESOLVED_MANIFEST_STATE",
+                    period_key,
+                    f"{failure_prefix}_UNRESOLVED_MANIFEST_STATE",
                     _operation_run_id_from_task(self),
+                    measurement_mode=measurement_mode,
                 )
                 raise RuntimeError("weekly_sov_unresolved_manifest_state")
 
@@ -3244,9 +3300,10 @@ def run_sov_for_hospital(self, hospital_id: str):
                 )
                 _record_weekly_sov_failure(
                     hospital,
-                    week_key,
-                    "WEEKLY_SOV_MEASUREMENT_POLICY_DRIFT",
+                    period_key,
+                    f"{failure_prefix}_MEASUREMENT_POLICY_DRIFT",
                     _operation_run_id_from_task(self),
+                    measurement_mode=measurement_mode,
                 )
                 raise RuntimeError("weekly_sov_measurement_policy_drift")
 
@@ -3268,7 +3325,8 @@ def run_sov_for_hospital(self, hospital_id: str):
             )
             if not sov_decision.allowed:
                 logger.warning(
-                    "주간 AI 언급률 측정이 비용 가드로 차단됨: %s — %s",
+                    "%s AI 언급률 측정이 비용 가드로 차단됨: %s — %s",
+                    measurement_mode,
                     hospital.name,
                     sov_decision.reason,
                 )
@@ -3277,9 +3335,10 @@ def run_sov_for_hospital(self, hospital_id: str):
                 # OperationRun은 성공으로 닫히면 안 되므로 Celery 실패 신호를 남긴다.
                 _record_weekly_sov_failure(
                     hospital,
-                    week_key,
-                    "WEEKLY_SOV_COST_GUARD_BLOCKED",
+                    period_key,
+                    f"{failure_prefix}_COST_GUARD_BLOCKED",
                     _operation_run_id_from_task(self),
+                    measurement_mode=measurement_mode,
                 )
                 raise RuntimeError("weekly_sov_cost_guard_blocked")
 
@@ -3287,12 +3346,14 @@ def run_sov_for_hospital(self, hospital_id: str):
             run = _start_measurement_run(
                 db,
                 hospital,
-                run_label=f"weekly_sov_{today_kst.isoformat()}",
+                run_label=f"{measurement_mode}_sov_{today_kst.isoformat()}",
                 config={
                     "source": "run_sov_for_hospital",
+                    "measurement_mode": measurement_mode,
                     "repeat_count": SOV_REPEAT_WEEKLY,
                     "spec_count": len(measurement_specs),
                 },
+                measurement_protocol_kwargs=protocol_kwargs,
             )
             records = []
             attempt_pairs = []
@@ -3340,12 +3401,19 @@ def run_sov_for_hospital(self, hospital_id: str):
             if failure_count > 0:
                 _record_weekly_sov_failure(
                     hospital,
-                    week_key,
-                    "WEEKLY_SOV_MEASUREMENT_PARTIAL",
+                    period_key,
+                    f"{failure_prefix}_MEASUREMENT_PARTIAL",
                     _operation_run_id_from_task(self),
+                    measurement_mode=measurement_mode,
                 )
                 raise RuntimeError("weekly_sov_measurement_partial")
-            _run_async(recover_weekly_sov_failure(hospital_id=hospital.id, week_key=week_key))
+            _run_async(
+                _recover_sov_failure(
+                    hospital_id=hospital.id,
+                    period_key=period_key,
+                    measurement_mode=measurement_mode,
+                )
+            )
 
     except Exception as exc:
         raise self.retry(exc=exc, countdown=300)
@@ -3364,6 +3432,17 @@ def _operation_run_id_from_task(task) -> uuid.UUID | None:
         return None
 
 
+def _sov_measurement_mode_from_operation_run(db, task) -> str:
+    run_id = _operation_run_id_from_task(task)
+    if run_id is None:
+        return "weekly"
+    run = db.get(OperationRun, run_id)
+    summary = getattr(run, "result_summary", None)
+    if isinstance(summary, dict) and summary.get("measurement_mode") == "monthly":
+        return "monthly"
+    return "weekly"
+
+
 def _operation_run_claimed_or_legacy(task) -> bool:
     """Run only legacy tasks or tasks that OperationRun signals actually claimed."""
 
@@ -3378,16 +3457,37 @@ def _record_weekly_sov_failure(
     week_key: str,
     error_code: str,
     operation_run_id: uuid.UUID | None,
+    *,
+    measurement_mode: str = "weekly",
 ) -> None:
-    _run_async(
-        open_weekly_sov_failure(
+    if measurement_mode == "monthly":
+        coroutine = open_monthly_sov_failure(
+            hospital_id=hospital.id,
+            hospital_name=hospital.name,
+            period_key=week_key,
+            error_code=error_code,
+            operation_run_id=operation_run_id,
+        )
+    else:
+        coroutine = open_weekly_sov_failure(
             hospital_id=hospital.id,
             hospital_name=hospital.name,
             week_key=week_key,
             error_code=error_code,
             operation_run_id=operation_run_id,
         )
-    )
+    _run_async(coroutine)
+
+
+def _recover_sov_failure(
+    *, hospital_id: uuid.UUID, period_key: str, measurement_mode: str
+):
+    if measurement_mode == "monthly":
+        return recover_monthly_sov_failure(
+            hospital_id=hospital_id,
+            period_key=period_key,
+        )
+    return recover_weekly_sov_failure(hospital_id=hospital_id, week_key=period_key)
 
 
 def _sov_spec_identity(spec: Mapping[str, object]) -> tuple[str, str, str, str]:
@@ -3457,7 +3557,12 @@ def _manifest_execution_policy_matches(manifest) -> bool:
 
 
 def _start_measurement_run(
-    db, hospital: Hospital, *, run_label: str, config: dict
+    db,
+    hospital: Hospital,
+    *,
+    run_label: str,
+    config: dict,
+    measurement_protocol_kwargs: dict | None = None,
 ) -> MeasurementRun:
     now = datetime.now(timezone.utc)
     # 실제 호출 모드를 라벨에 정확히 반영. UI/리포트가 "ChatGPT 답변 노출률"이라고 잘못
@@ -3490,7 +3595,9 @@ def _start_measurement_run(
                 **({"gemini": settings.GEMINI_MODEL} if settings.GEMINI_API_KEY else {}),
             },
             # 실행 시점 측정 정책 — 이 run의 숫자가 어떤 조건에서 나왔는지 남긴다.
-            "measurement_protocol": sov_engine.measurement_protocol(),
+            "measurement_protocol": sov_engine.measurement_protocol(
+                **(measurement_protocol_kwargs or {})
+            ),
         },
     )
     db.add(run)
@@ -3628,6 +3735,7 @@ def _build_measurement_specs(
     is_month_start: bool = True,
     high_priority_cap: int = SOV_HIGH_PRIORITY_CAP,
     total_spec_cap: int = SOV_TOTAL_SPEC_CAP,
+    measurement_mode: str = "weekly",
 ) -> tuple[list[dict], int]:
     """주간 측정 spec 목록을 만든다.
 
@@ -3650,7 +3758,9 @@ def _build_measurement_specs(
     )
     for target in sorted_targets:
         target_priority = str(getattr(target, "priority", "NORMAL") or "NORMAL").upper()
-        if not _priority_included(target_priority, is_even_week, is_month_start):
+        if measurement_mode != "monthly" and not _priority_included(
+            target_priority, is_even_week, is_month_start
+        ):
             continue
         active_variants = sorted(
             [variant for variant in target.variants if variant.is_active],
@@ -3665,6 +3775,9 @@ def _build_measurement_specs(
             if platform == "gemini" and not settings.GEMINI_API_KEY:
                 continue
             query = _ensure_variant_query_matrix(db, hospital, variant)
+            query_intent = str(getattr(query, "query_intent", "LOCAL") or "LOCAL").upper()
+            if query_intent == sov_engine.QUERY_INTENT_INFO:
+                continue
             key = (query.id, platform)
             if key in seen:
                 continue
@@ -3677,11 +3790,13 @@ def _build_measurement_specs(
                     "target_id": target.id,
                     "variant_id": variant.id,
                     "priority": target_priority,
-                    "query_intent": str(getattr(query, "query_intent", "LOCAL") or "LOCAL"),
+                    "query_intent": query_intent,
                 }
             )
 
     if specs:
+        if measurement_mode == "monthly":
+            return specs, 0
         capped, trimmed_high = _apply_high_priority_cap(specs, high_priority_cap)
         return _apply_total_spec_cap(capped, total_spec_cap), trimmed_high
 
@@ -3699,6 +3814,9 @@ def _build_measurement_specs(
         ),
     )
     for query in sorted_fallback_queries:
+        query_intent = str(getattr(query, "query_intent", "LOCAL") or "LOCAL").upper()
+        if query_intent == sov_engine.QUERY_INTENT_INFO:
+            continue
         for platform in platforms:
             specs.append(
                 {
@@ -3708,7 +3826,7 @@ def _build_measurement_specs(
                     "target_id": None,
                     "variant_id": None,
                     "priority": str(getattr(query, "priority", "NORMAL") or "NORMAL").upper(),
-                    "query_intent": str(getattr(query, "query_intent", "LOCAL") or "LOCAL"),
+                    "query_intent": query_intent,
                 }
             )
     capped, trimmed_high = _apply_high_priority_cap(specs, high_priority_cap)
@@ -3900,7 +4018,15 @@ def run_weekly_monitoring():
     with SyncSessionLocal() as db:
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
-        hospitals = result.scalars().all()
+        monthly_ids = {
+            hospital.id
+            for hospital in iter_monthly_sov_cohort(
+                db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
+            )
+        }
+        hospitals = [
+            hospital for hospital in result.scalars().all() if hospital.id not in monthly_ids
+        ]
 
         for h in hospitals:
             run = _ensure_weekly_sov_operation_run(db, h, week_key, observed_at)
@@ -3936,6 +4062,45 @@ def run_weekly_monitoring():
                 countdown=1800,
                 headers=build_dispatch_headers("adjust-query-priorities"),
             )
+
+
+@celery_app.task(name="app.workers.tasks.run_monthly_sov_measurement")
+def run_monthly_sov_measurement():
+    """Run each converted hospital's fixed LOCAL set once in the month-end window."""
+
+    require_dispatch(current_task, "monthly-sov-measurement")
+    today_kst = arrow.now("Asia/Seoul").date()
+    if today_kst.day < settings.SOV_MONTHLY_WINDOW_START_DAY:
+        logger.info("Monthly measurement window is not open: %s", today_kst)
+        return
+    observed_at = datetime.now(timezone.utc)
+    period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
+    with SyncSessionLocal() as db:
+        hospitals = iter_monthly_sov_cohort(
+            db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
+        )
+        for hospital in hospitals:
+            run = _ensure_monthly_sov_operation_run(db, hospital, period_key, observed_at)
+            if run is None or run.task_id is None:
+                continue
+            hospital_id = str(hospital.id)
+            try:
+                run_sov_for_hospital.apply_async(
+                    args=[hospital_id],
+                    queue="sov",
+                    headers={
+                        **build_dispatch_headers("run-sov", hospital_id),
+                        "operation_run_id": str(run.id),
+                    },
+                    task_id=run.task_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Monthly visibility measurement dispatch failed; recovery will redispatch",
+                    extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
+                )
+                continue
+            _mark_weekly_sov_operation_queued(db, run.id, observed_at)
 
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
@@ -4072,6 +4237,87 @@ def _ensure_weekly_sov_operation_run(
             )
         ),
         result_summary={"measurement_week": week_key},
+        requested_at=observed_at,
+        version=1,
+    )
+    db.add(run)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.execute(
+            select(OperationRun).where(
+                OperationRun.hospital_id == hospital.id,
+                OperationRun.operation_type == "RUN_SOV",
+                OperationRun.idempotency_key == idempotency_key,
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing if existing.state == OperationRunState.REQUESTED else None
+    return run
+
+
+def _ensure_monthly_sov_operation_run(
+    db,
+    hospital: Hospital,
+    period_key: str,
+    observed_at: datetime,
+) -> OperationRun | None:
+    idempotency_key = f"monthly-sov:{hospital.id}:{period_key}"
+    existing = db.execute(
+        select(OperationRun).where(
+            OperationRun.hospital_id == hospital.id,
+            OperationRun.operation_type == "RUN_SOV",
+            OperationRun.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.state == OperationRunState.REQUESTED:
+            return existing
+        if existing.state in {OperationRunState.FAILED, OperationRunState.PARTIAL}:
+            # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 월말 윈도우의 다음
+            # 6시간 슬롯이 FAILED manifest cells만 재시도하게 한다. 새 월간 키를 만들지
+            # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
+            existing.state = OperationRunState.REQUESTED
+            existing.task_id = str(uuid.uuid4())
+            existing.queued_at = None
+            existing.started_at = None
+            existing.completed_at = None
+            existing.lease_owner = None
+            existing.lease_expires_at = None
+            existing.success_count = 0
+            existing.failure_count = 0
+            existing.skipped_count = 0
+            existing.safe_error_code = None
+            existing.safe_error_message = None
+            existing.version += 1
+            db.commit()
+            return existing
+        return None
+    hospital_id = str(hospital.id)
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="RUN_SOV",
+        state=OperationRunState.REQUESTED,
+        idempotency_key=idempotency_key,
+        requested_by_id=None,
+        task_id=str(uuid.uuid4()),
+        attempt_count=0,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload=operation_run_payloads.build_request_payload(
+            operation_run_payloads.DispatchPayload(
+                "hospital", hospital_id, "sov", (hospital_id,)
+            )
+        ),
+        result_summary={
+            "measurement_month": period_key,
+            "measurement_mode": "monthly",
+        },
         requested_at=observed_at,
         version=1,
     )
@@ -4633,6 +4879,7 @@ def _build_monthly_report_for_hospital(
             records=sov_records,
             platforms=report_platforms,
             sov_coverage=monthly_sov_payload,
+            comparison_reason=monthly_sov_payload["comparison"]["reason"],
         )
         public_url = _public_site_url(h.aeo_domain, h.slug)
         doctor_artifact = generate_doctor_pdf_report(

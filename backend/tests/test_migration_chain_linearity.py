@@ -26,9 +26,10 @@ DOMAIN_LIVE_CHECK = "0056_add_domain_live_check"
 OPERATIONS_TEST_ACCOUNTS = "0057_mark_operations_test_accounts"
 MONTHLY_DELIVERY_REPAIR = "0058_repair_monthly_delivery_drift"
 HOSPITAL_USAGE_EVENTS = "0059_add_hospital_usage_events"
+TRACKING_SET = "0060_add_ai_query_target_tracking_set"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = HOSPITAL_USAGE_EVENTS
+HEAD = TRACKING_SET
 
 
 def _script_directory() -> ScriptDirectory:
@@ -79,6 +80,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         OPERATIONS_TEST_ACCOUNTS,
         MONTHLY_DELIVERY_REPAIR,
         HOSPITAL_USAGE_EVENTS,
+        TRACKING_SET,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -93,6 +95,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         OPERATIONS_TEST_ACCOUNTS: DOMAIN_LIVE_CHECK,
         MONTHLY_DELIVERY_REPAIR: OPERATIONS_TEST_ACCOUNTS,
         HOSPITAL_USAGE_EVENTS: MONTHLY_DELIVERY_REPAIR,
+        TRACKING_SET: HOSPITAL_USAGE_EVENTS,
     }
 
 
@@ -104,6 +107,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        TRACKING_SET,
         HOSPITAL_USAGE_EVENTS,
         MONTHLY_DELIVERY_REPAIR,
         OPERATIONS_TEST_ACCOUNTS,
@@ -120,7 +124,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-9:] == [
+    assert applied[-10:] == [
         VISUAL_IDENTITY,
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
@@ -130,4 +134,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         OPERATIONS_TEST_ACCOUNTS,
         MONTHLY_DELIVERY_REPAIR,
         HOSPITAL_USAGE_EVENTS,
+        TRACKING_SET,
     ]

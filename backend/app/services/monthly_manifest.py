@@ -58,6 +58,7 @@ def freeze_monthly_manifest(
     *,
     gemini_configured: bool,
     existing: MonthlyMeasurementManifest | None = None,
+    measurement_protocol_kwargs: dict | None = None,
 ) -> MonthlyMeasurementManifest:
     if existing is not None:
         return existing
@@ -75,7 +76,9 @@ def freeze_monthly_manifest(
             "query_intents": {spec.query_key: spec.query_intent for spec in specs},
             # 동결 시점의 측정 정책. 전월 대비 비교는 두 달의 이 스냅샷이 같을 때만
             # 성립한다 — 정책이 바뀐 달을 성과 변화로 붙여 팔 수 없다.
-            "measurement_protocol": sov_engine.measurement_protocol(),
+            "measurement_protocol": sov_engine.measurement_protocol(
+                **(measurement_protocol_kwargs or {})
+            ),
         },
         closes_at=_month_close(year, month),
     )
@@ -113,6 +116,7 @@ def freeze_dispatch_manifest(
     measurement_specs: list[dict],
     *,
     gemini_configured: bool,
+    measurement_protocol_kwargs: dict | None = None,
 ) -> MonthlyMeasurementManifest:
     existing = session.execute(
         select(MonthlyMeasurementManifest).where(
@@ -145,6 +149,7 @@ def freeze_dispatch_manifest(
         specs,
         gemini_configured=gemini_configured,
         existing=existing,
+        measurement_protocol_kwargs=measurement_protocol_kwargs,
     )
 
 

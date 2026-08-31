@@ -309,6 +309,7 @@ async def seed_query_targets_from_matrix(
         select(QueryMatrix).where(
             QueryMatrix.hospital_id == hospital_id,
             QueryMatrix.is_active,
+            QueryMatrix.query_intent != sov_engine.QUERY_INTENT_INFO,
         )
     )
     matrix_rows: list[QueryMatrix] = list(matrix_result.scalars().all())
@@ -828,6 +829,7 @@ def _serialize_target(target: AIQueryTarget, operational_summary: dict | None = 
         "competitor_names": target.competitor_names or [],
         "priority": target.priority,
         "status": target.status,
+        "in_tracking_set": bool(getattr(target, "in_tracking_set", False)),
         "display": _serialize_target_display(target),
         "target_month": target.target_month,
         "created_by": target.created_by,

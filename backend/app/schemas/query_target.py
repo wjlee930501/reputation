@@ -112,6 +112,7 @@ class AIQueryTargetBase(BaseModel):
     competitor_names: list[str] = Field(default_factory=list)
     priority: QueryTargetPriority = "NORMAL"
     status: QueryTargetStatus = "ACTIVE"
+    in_tracking_set: bool = False
     target_month: str | None = Field(default=None, max_length=7)
     created_by: str | None = Field(default=None, max_length=100)
     updated_by: str | None = Field(default=None, max_length=100)
@@ -166,6 +167,7 @@ class AIQueryTargetUpdate(BaseModel):
     competitor_names: list[str] | None = None
     priority: QueryTargetPriority | None = None
     status: QueryTargetStatus | None = None
+    in_tracking_set: bool | None = None
     target_month: str | None = Field(default=None, max_length=7)
     updated_by: str | None = Field(default=None, max_length=100)
 
@@ -226,6 +228,7 @@ class AIQueryTargetListItem(BaseModel):
     competitor_names: list[str]
     priority: str
     status: str
+    in_tracking_set: bool
     display: dict[str, object] | None = None
     target_month: str | None
     created_by: str | None

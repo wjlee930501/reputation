@@ -56,6 +56,11 @@ class AIQueryTarget(Base):
         UniqueConstraint("hospital_id", "name", name="uq_ai_query_targets_hospital_name"),
         Index("ix_ai_query_targets_hospital_id", "hospital_id"),
         Index(
+            "ix_ai_query_targets_hospital_tracking_set",
+            "hospital_id",
+            "in_tracking_set",
+        ),
+        Index(
             "ix_ai_query_targets_hospital_status_priority_month",
             "hospital_id",
             "status",
@@ -82,6 +87,9 @@ class AIQueryTarget(Base):
     competitor_names: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     priority: Mapped[str] = mapped_column(String(20), default="NORMAL", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE", nullable=False)
+    in_tracking_set: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
     target_month: Mapped[str | None] = mapped_column(String(7))
     created_by: Mapped[str | None] = mapped_column(String(100))
     updated_by: Mapped[str | None] = mapped_column(String(100))

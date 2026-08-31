@@ -101,11 +101,13 @@ async def open_weekly_sov_capacity_digest(
         return incident.id
 
 
-def _dedupe_key(hospital_id: uuid.UUID, week_key: str) -> str:
+def _dedupe_key(hospital_id: uuid.UUID, period_key: str, *, monthly: bool = False) -> str:
+    pipeline = "monthly_sov" if monthly else "weekly_sov"
+    object_type = "hospital_month" if monthly else "hospital_week"
     return build_incident_key(
-        "weekly_sov",
-        "hospital_week",
-        f"{hospital_id}:{week_key}",
+        pipeline,
+        object_type,
+        f"{hospital_id}:{period_key}",
         IncidentFingerprint.VALIDATION_FAILED,
     )
 
@@ -118,33 +120,82 @@ async def open_weekly_sov_failure(
     error_code: str,
     operation_run_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
+    return await _open_sov_failure(
+        hospital_id=hospital_id,
+        hospital_name=hospital_name,
+        period_key=week_key,
+        error_code=error_code,
+        operation_run_id=operation_run_id,
+        monthly=False,
+    )
+
+
+async def open_monthly_sov_failure(
+    *,
+    hospital_id: uuid.UUID,
+    hospital_name: str,
+    period_key: str,
+    error_code: str,
+    operation_run_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    return await _open_sov_failure(
+        hospital_id=hospital_id,
+        hospital_name=hospital_name,
+        period_key=period_key,
+        error_code=error_code,
+        operation_run_id=operation_run_id,
+        monthly=True,
+    )
+
+
+async def _open_sov_failure(
+    *,
+    hospital_id: uuid.UUID,
+    hospital_name: str,
+    period_key: str,
+    error_code: str,
+    operation_run_id: uuid.UUID | None,
+    monthly: bool,
+) -> uuid.UUID:
     observed_at = datetime.now(UTC)
+    pipeline = "monthly_sov" if monthly else "weekly_sov"
+    object_type = "hospital_month" if monthly else "hospital_week"
+    incident_type = (
+        "MONTHLY_SOV_MEASUREMENT_FAILED" if monthly else "WEEKLY_SOV_MEASUREMENT_FAILED"
+    )
+    period_label = "이번 달" if monthly else "이번 주"
+    actor = "monthly-sov-worker" if monthly else "weekly-sov-worker"
     sessions = get_async_sessionmaker()
     async with sessions() as db:
-        key = _dedupe_key(hospital_id, week_key)
+        key = _dedupe_key(hospital_id, period_key, monthly=monthly)
         previous = await db.scalar(select(Incident).where(Incident.dedupe_key == key))
         previous_state = previous.state if previous is not None else None
         incident = await open_or_touch_incident(
             db,
             IncidentOpenRequest(
-                pipeline="weekly_sov",
-                object_type="hospital_week",
-                object_id=f"{hospital_id}:{week_key}",
+                pipeline=pipeline,
+                object_type=object_type,
+                object_id=f"{hospital_id}:{period_key}",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
-                incident_type="WEEKLY_SOV_MEASUREMENT_FAILED",
+                incident_type=incident_type,
                 severity=IncidentSeverity.HIGH,
-                customer_impact="주간 AI 노출 측정이 완료되지 않아 운영 판단과 월간 리포트 근거가 비게 됩니다.",
-                source_type=_SOURCE_TYPE,
-                next_action="측정 질문 설정, 비용 한도, 외부 측정 서비스 장애 여부를 확인한 뒤 주간 측정을 재시도하세요.",
+                customer_impact=(
+                    f"{period_label} AI 노출 측정이 완료되지 않아 월간 리포트 근거가 비게 됩니다."
+                ),
+                source_type=("MONTHLY_SOV_MEASUREMENT" if monthly else _SOURCE_TYPE),
+                next_action=(
+                    "측정 질문 설정, 비용 한도, 외부 측정 서비스 장애 여부를 확인한 뒤 "
+                    f"{period_label} 측정을 재시도하세요."
+                ),
                 admin_path=f"/hospitals/{hospital_id}/reports",
                 hospital_id=hospital_id,
                 operation_run_id=operation_run_id,
-                source_id=f"{hospital_id}:{week_key}",
+                source_id=f"{hospital_id}:{period_key}",
                 safe_error_code=sanitize_operator_text(error_code, limit=100),
                 safe_error_message=_safe_message(error_code),
             ),
-            actor="weekly-sov-worker",
-            reason="weekly visibility measurement failed",
+            actor=actor,
+            reason=f"{pipeline} visibility measurement failed",
             now=observed_at,
         )
         if previous_state is None or previous_state in {
@@ -162,11 +213,12 @@ async def open_weekly_sov_failure(
                         incident.next_action,
                         incident.admin_path,
                         "병원 운영 담당자",
-                        "이번 주 측정 마감 전",
+                        f"{period_label} 측정 마감 전",
                         incident.hospital_id,
                         incident.operation_run_id,
                         incident.version,
-                        incident.safe_error_message or "주간 AI 검색 노출 측정에 실패했습니다.",
+                        incident.safe_error_message
+                        or f"{period_label} AI 검색 노출 측정에 실패했습니다.",
                         incident.episode_seq,
                     ),
                     settings.ADMIN_BASE_URL,
@@ -177,11 +229,23 @@ async def open_weekly_sov_failure(
 
 
 async def recover_weekly_sov_failure(*, hospital_id: uuid.UUID, week_key: str) -> bool:
+    return await _recover_sov_failure(hospital_id, week_key, monthly=False)
+
+
+async def recover_monthly_sov_failure(*, hospital_id: uuid.UUID, period_key: str) -> bool:
+    return await _recover_sov_failure(hospital_id, period_key, monthly=True)
+
+
+async def _recover_sov_failure(
+    hospital_id: uuid.UUID, period_key: str, *, monthly: bool
+) -> bool:
+    actor = "monthly-sov-worker" if monthly else "weekly-sov-worker"
+    cadence = "monthly" if monthly else "weekly"
     sessions = get_async_sessionmaker()
     async with sessions() as db:
         incident = await db.scalar(
             select(Incident).where(
-                Incident.dedupe_key == _dedupe_key(hospital_id, week_key),
+                Incident.dedupe_key == _dedupe_key(hospital_id, period_key, monthly=monthly),
                 Incident.state.in_((IncidentState.OPEN.value, IncidentState.RETRYING.value)),
             )
         )
@@ -193,8 +257,8 @@ async def recover_weekly_sov_failure(*, hospital_id: uuid.UUID, week_key: str) -
                 db,
                 current.id,
                 expected_version=current.version,
-                actor="weekly-sov-worker",
-                reason="weekly visibility measurement retry observed",
+                actor=actor,
+                reason=f"{cadence} visibility measurement retry observed",
             )
             if not isinstance(retrying, Incident):
                 await db.rollback()
@@ -205,14 +269,24 @@ async def recover_weekly_sov_failure(*, hospital_id: uuid.UUID, week_key: str) -
             current.id,
             expected_version=current.version,
             observed_success=True,
-            actor="weekly-sov-worker",
-            reason="weekly visibility measurement succeeded",
+            actor=actor,
+            reason=f"{cadence} visibility measurement succeeded",
         )
         await db.commit()
         return isinstance(recovered, Incident)
 
 
 def _safe_message(error_code: str) -> str:
+    if error_code.startswith("MONTHLY_SOV_"):
+        suffix = error_code.removeprefix("MONTHLY_SOV_")
+        monthly_messages = {
+            "COST_GUARD_BLOCKED": "비용 한도를 초과해 이번 달 AI 검색 노출 측정이 차단되었습니다.",
+            "NO_MEASUREMENT_MANIFEST": "활성 고정 질문이나 측정 대상이 없어 이번 달 측정을 시작할 수 없습니다.",
+            "UNRESOLVED_MANIFEST_STATE": "이번 달 측정에 완료·제외·재측정 대상으로 분류되지 않은 항목이 남아 있습니다.",
+            "MEASUREMENT_POLICY_DRIFT": "동결한 측정 기준과 현재 실행 기준이 달라 외부 AI 측정 호출을 시작하지 않았습니다.",
+            "MEASUREMENT_PARTIAL": "일부 AI 검색 서비스 측정이 실패해 이번 달 측정이 부분 완료 상태입니다.",
+        }
+        return monthly_messages.get(suffix, "이번 달 AI 검색 노출 측정이 완료되지 않았습니다.")
     match error_code:
         case "WEEKLY_SOV_COST_GUARD_BLOCKED":
             return "비용 한도를 초과해 주간 AI 검색 노출 측정이 차단되었습니다."

@@ -44,6 +44,7 @@ TASK_PURPOSES = {
     "app.workers.tasks.run_sov_for_hospital": "run-sov",
     "app.workers.tasks.monthly_slot_generation": "monthly-slot-generation",
     "app.workers.tasks.run_weekly_monitoring": "weekly-sov-monitoring",
+    "app.workers.tasks.run_monthly_sov_measurement": "monthly-sov-measurement",
     "app.workers.tasks.adjust_query_priorities": "adjust-query-priorities",
     "app.workers.tasks.run_monthly_reports": "monthly-reports",
     "app.workers.tasks.retry_site_revalidation": "retry-site-revalidation",

@@ -15,7 +15,7 @@ from app.workers.dispatch_auth import (
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-08-21.1"
+REDBEAT_SCHEDULE_VERSION = "2026-08-30.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -134,6 +134,7 @@ celery_app.conf.update(
         "app.workers.tasks.morning_content_auto_publish": {"queue": "content"},
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
+        "app.workers.tasks.run_monthly_sov_measurement": {"queue": "sov"},
         "app.workers.tasks.run_monthly_reports": {"queue": "reports"},
         "app.workers.tasks.generate_monthly_report_for_hospital": {"queue": "reports"},
         "app.workers.tasks.trigger_v0_report": {"queue": "reports"},
@@ -218,6 +219,12 @@ celery_app.conf.update(
             "task": "app.workers.tasks.run_weekly_monitoring",
             "schedule": crontab(hour=2, minute=0, day_of_week=1),
             "options": {"headers": build_dispatch_headers("weekly-sov-monitoring")},
+        },
+        # 매월 24일~말일 6시간마다 — 전환 코호트의 고정 LOCAL 세트를 월말에 완주한다.
+        "monthly-sov-measurement": {
+            "task": "app.workers.tasks.run_monthly_sov_measurement",
+            "schedule": crontab(hour="*/6", minute=0, day_of_month="24-31"),
+            "options": {"headers": build_dispatch_headers("monthly-sov-measurement")},
         },
         # 매월 1일 00:15 — 직전 달 자료가 모두 들어온 뒤 월간 SoV 리포트를 마감한다.
         "monthly-reports": {
