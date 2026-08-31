@@ -326,8 +326,10 @@ async def _previous_month_report_gaps(db: AsyncSession) -> AttentionReports:
                 ),
             )
             .where(
-                # 현재 상태가 아니라 그 달에 실제 서비스 대상이었는지를 본다.
+                # 지난달 서비스 구간을 우선하되, 아직 운영 전인 병원은 기대 대상이 아니다.
+                # 지난달 서비스 후 중지된 병원은 누락 감시를 유지한다.
                 Hospital.id.in_(eligible_hospital_ids),
+                Hospital.status.in_((HospitalStatus.ACTIVE, HospitalStatus.PAUSED)),
                 or_(
                     MonthlyReport.id.is_(None),
                     and_(

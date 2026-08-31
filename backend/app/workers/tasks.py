@@ -3134,7 +3134,9 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                 hospital.id,
                 limit=settings.SOV_MONTHLY_COHORT_LIMIT,
             ):
-                logger.info("Hospital %s is no longer in the monthly SoV cohort", hospital_id)
+                logger.info(
+                    "Hospital %s is no longer in the monthly measurement cohort", hospital_id
+                )
                 return
 
             # priority 기반 쿼리 필터링 — beat은 월요일 02:00 KST(=일요일 UTC)에 발화하므로
@@ -4069,7 +4071,7 @@ def run_monthly_sov_measurement():
     require_dispatch(current_task, "monthly-sov-measurement")
     today_kst = arrow.now("Asia/Seoul").date()
     if today_kst.day < settings.SOV_MONTHLY_WINDOW_START_DAY:
-        logger.info("Monthly SoV window is not open: %s", today_kst)
+        logger.info("Monthly measurement window is not open: %s", today_kst)
         return
     observed_at = datetime.now(timezone.utc)
     period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
