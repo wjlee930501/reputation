@@ -198,10 +198,14 @@ async def _open_sov_failure(
             reason=f"{pipeline} visibility measurement failed",
             now=observed_at,
         )
-        if previous_state is None or previous_state in {
-            IncidentState.RECOVERED.value,
-            IncidentState.ACKNOWLEDGED.value,
-        }:
+        if not error_code.endswith("COST_GUARD_BLOCKED") and (
+            previous_state is None
+            or previous_state
+            in {
+                IncidentState.RECOVERED.value,
+                IncidentState.ACKNOWLEDGED.value,
+            }
+        ):
             await enqueue_notification(
                 db,
                 build_open_incident_notification(

@@ -38,6 +38,7 @@ _FINGERPRINT = IncidentFingerprint.UNKNOWN
 _CLASSIFIED_GENERATION_OPERATIONS = {
     "REGENERATE_CONTENT",
     "REGENERATE_CONTENT_IMAGE",
+    "RUN_SOV",
 }
 
 
@@ -64,7 +65,7 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
             and run.safe_error_code != "TASK_FAILED"
         ):
             # The task body has already terminalized the exact run and projected a
-            # generation-specific incident.  The Celery failure signal carries no
+            # pipeline-specific incident.  The Celery failure signal carries no
             # new truth and must not create a second generic Slack episode.
             return False
         previous_state = db.scalar(
@@ -125,12 +126,13 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
         if recovered is None:
             return False
         incident = recovered
-        _enqueue(
-            db,
-            build_recovered_incident_notification(
-                _projection(db, incident), settings.ADMIN_BASE_URL
-            ),
-        )
+        if run.operation_type != "RUN_SOV":
+            _enqueue(
+                db,
+                build_recovered_incident_notification(
+                    _projection(db, incident), settings.ADMIN_BASE_URL
+                ),
+            )
         _audit(db, incident, "incident_recovered")
         db.commit()
     return True

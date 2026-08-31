@@ -65,9 +65,19 @@ class FakeRedis:
         self.ttls.pop(key, None)
         return 1
 
-    async def eval(self, _script, _numkeys, daily_key, monthly_key, count, daily_limit,
-                   monthly_limit, daily_ttl, monthly_ttl):
+    async def eval(self, _script, _numkeys, *keys_and_args):
         await self._guard()
+        daily_key, monthly_key = keys_and_args[0], keys_and_args[1]
+        argv = keys_and_args[_numkeys:]
+        count = int(argv[0])
+        if len(argv) == 1:
+            for key in (daily_key, monthly_key):
+                current = int(self.store.get(key, 0))
+                released = min(current, count)
+                if released > 0:
+                    self.store[key] = current - released
+            return 1
+        daily_limit, monthly_limit, daily_ttl, monthly_ttl = argv[1:5]
         daily = int(self.store.get(daily_key, 0))
         monthly = int(self.store.get(monthly_key, 0))
         if monthly_limit > 0 and monthly + count > monthly_limit:
@@ -715,3 +725,30 @@ async def test_snapshot_separates_effective_and_configured_daily_limit(monkeypat
 
     assert content["daily_limit"] == 4
     assert content["daily_limit_default"] == 2
+
+
+async def test_remaining_units_are_fail_closed_and_count_unused_capacity(monkeypatch):
+    _set_limits(monkeypatch, category="sov", daily=10, monthly=20)
+    redis = FakeRedis()
+    await cost_guard.check_and_increment("sov", count=4, redis_client=redis)
+
+    remaining = await cost_guard.remaining_units("sov", redis_client=redis)
+    assert remaining == (6, 16)
+
+    redis.fail = True
+    assert await cost_guard.remaining_units("sov", redis_client=redis) == (0, 0)
+
+
+async def test_release_reservation_refunds_unused_units_without_going_negative(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="sov", daily=10, monthly=20)
+    redis = FakeRedis()
+    await cost_guard.check_and_increment("sov", count=5, redis_client=redis)
+
+    await cost_guard.release_reservation("sov", 3, redis_client=redis)
+    remaining = await cost_guard.remaining_units("sov", redis_client=redis)
+    assert remaining == (8, 18)
+
+    await cost_guard.release_reservation("sov", 99, redis_client=redis)
+    remaining = await cost_guard.remaining_units("sov", redis_client=redis)
+    assert remaining == (10, 20)
+    assert alerts.calls == []

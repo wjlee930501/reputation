@@ -382,6 +382,13 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat(monkeypatch):
     monkeypatch.setattr(tasks, "SyncSessionLocal", _DB)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(
+            2026, 8, 10, 12, tzinfo="Asia/Seoul"
+        ),
+    )
+    monkeypatch.setattr(
         tasks, "register_convertible_tracking_sets", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [converted])
@@ -518,7 +525,7 @@ def test_monthly_measurement_registers_locked_names_before_cohort(monkeypatch):
 
 
 def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="전환 의원")
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="장편한외과")
     july = SimpleNamespace(id=uuid.uuid4(), version=3, pdf_path="gs://reports/july.pdf")
     july_snapshot = (july.id, july.version, july.pdf_path)
     run_id = uuid.uuid4()
@@ -586,7 +593,7 @@ def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
 
 
 def test_august_conversion_batch_skips_without_successful_measurement(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="측정 대기 의원")
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="행복드림의원")
 
     class _Result:
         def scalars(self):
@@ -647,10 +654,10 @@ def test_monthly_measurement_copy_guard_strings_are_preserved():
     assert '"Monthly measurement window is not open: %s"' in source
 
 
-def test_failed_monthly_operation_is_rearmed_for_failed_cell_retry():
+def test_partial_monthly_operation_is_rearmed_for_failed_cell_retry():
     old_task_id = str(uuid.uuid4())
     existing = SimpleNamespace(
-        state=tasks.OperationRunState.FAILED,
+        state=tasks.OperationRunState.PARTIAL,
         task_id=old_task_id,
         queued_at=datetime.now(UTC),
         started_at=datetime.now(UTC),
