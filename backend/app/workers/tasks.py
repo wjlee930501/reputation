@@ -164,8 +164,10 @@ from app.services.site_revalidate import (
     trigger_site_revalidate,
 )
 from app.services.site_revalidation_control import (
+    content_is_revalidation_recoverable,
     record_retry_failure,
     record_revalidation_success,
+    run_revalidation_direction,
 )
 from app.services.sov_engine import (
     MENTION_RATE_INTENTS,
@@ -5487,12 +5489,15 @@ def _site_revalidation_context(
         except (TypeError, ValueError):
             return None
         content = db.get(ContentItem, content_id)
-        if (
-            content is None
-            or content.hospital_id != hospital.id
-            or content.status != ContentStatus.PUBLISHED
+        if content is None or content.hospital_id != hospital.id:
+            return None
+        # 복구 계획 조회(start_revalidation_failure)와 **같은** 조건을 쓴다. 현재 status로
+        # 거르면 반려로 내려간 글의 재시도가 첫 실패 직후 조용히 끊긴다.
+        if not content_is_revalidation_recoverable(
+            content, direction=run_revalidation_direction(run.request_payload)
         ):
             return None
+        # 무효화 경로는 방향과 무관하게 동일하다 — 내릴 때도 허브·목록·llms.txt를 함께 턴다.
         return content_site_paths(hospital.slug, content.id, treatments)
 
 
