@@ -181,6 +181,26 @@ def _report_delivery_blockers(r: MonthlyReport) -> list[str]:
     return blockers
 
 
+def _report_delivery_warnings(r: MonthlyReport) -> list[str]:
+    """Return operator-facing notices that must not withhold delivery.
+
+    These surface adjacent operational hygiene (e.g. an unfinished post-publish
+    observability sample, a plan shortfall) the AE should know about, but none of
+    them cast doubt on the report's SoV numbers, so unlike _report_delivery_blockers
+    they never gate mark-sent.
+    """
+    if r.report_type != "MONTHLY":
+        return []
+    content_summary = r.content_summary if isinstance(r.content_summary, dict) else {}
+    operations_summary = content_summary.get("operations")
+    warnings: list[str] = []
+    if isinstance(operations_summary, dict):
+        for warning in operations_summary.get("delivery_warnings") or []:
+            if isinstance(warning, str) and warning:
+                warnings.append(warning)
+    return warnings
+
+
 def _artifact_state(
     report: MonthlyReport, artifact: MonthlyReportArtifact | None
 ) -> ReportArtifactState:
@@ -271,7 +291,15 @@ def _current_essence_delivery_blockers(
     r: MonthlyReport,
     readiness: EssenceReadiness,
 ) -> list[str]:
-    """Validate the stored report snapshot against current source truth."""
+    """Validate the stored report snapshot against current source truth for true blockers.
+
+    Only conditions that cast doubt on whether the report reflects an actual, safe
+    operating standard block delivery: no approved philosophy currently matches the
+    hospital's sources, or a source added since generation is still unprocessed. A
+    later approved philosophy *version* existing is not one of these — the report's
+    SoV numbers do not depend on the essence version — so that case is a warning
+    only; see _current_essence_delivery_warnings.
+    """
     if r.report_type != "MONTHLY":
         return []
 
@@ -282,15 +310,28 @@ def _current_essence_delivery_blockers(
         )
     if readiness.has_unprocessed_sources:
         blockers.append("현재 처리되지 않은 온보딩 자료가 남아 있습니다.")
+    return blockers
+
+
+def _current_essence_delivery_warnings(
+    r: MonthlyReport,
+    readiness: EssenceReadiness,
+) -> list[str]:
+    """Non-blocking notice that the approved philosophy moved on after report generation.
+
+    A version bump alone does not mean the delivered numbers are wrong, so this must
+    never gate mark-sent — it is a freshness signal for the AE, not a second approval
+    gate.
+    """
+    if r.report_type != "MONTHLY" or readiness.current is None:
+        return []
 
     essence = r.essence_summary if isinstance(r.essence_summary, dict) else {}
     stored_version = essence.get("philosophy_version")
-    current_version = readiness.current.version if readiness.current is not None else None
+    current_version = readiness.current.version
     if current_version is not None and stored_version != current_version:
-        blockers.append(
-            "리포트 생성 후 콘텐츠 운영 기준 버전이 변경되었습니다. 리포트를 다시 생성해 주세요."
-        )
-    return blockers
+        return ["운영 기준이 리포트 생성 이후 갱신되었습니다 — 필요 시 재생성해 주세요."]
+    return []
 
 
 @router.get(
@@ -703,6 +744,7 @@ def _serialize(
     artifact: MonthlyReportArtifact | None = None,
     events: list[MonthlyDeliveryEvent] | None = None,
     current_blockers: list[str] | None = None,
+    current_warnings: list[str] | None = None,
     review_evidence: dict[str, object] | None = None,
 ) -> dict:
     gate = _delivery_gate(r, manifest, artifact)
@@ -716,6 +758,11 @@ def _serialize(
     if not delivered:
         delivery_blockers.extend(current_blockers or [])
     ready = delivered or (gate.ready and not current_blockers)
+    # Warnings never affect readiness — they surface for visibility regardless of
+    # delivered state (report-level operations warnings) or gate outcome (current
+    # essence version drift).
+    delivery_warnings = _report_delivery_warnings(r)
+    delivery_warnings.extend(current_warnings or [])
     artifact_state = _artifact_state(r, artifact)
     artifact_metadata = (
         parse_doctor_artifact_metadata(artifact.validation_metadata)
@@ -765,6 +812,7 @@ def _serialize(
         "delivery_ready": ready,
         "customer_ready": ready,
         "delivery_blockers": delivery_blockers,
+        "delivery_warnings": delivery_warnings,
         "effective_delivery": serialize_event(effective) if effective is not None else None,
         "delivery_history": [serialize_event(event) for event in delivery_events] if full else [],
         "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -798,9 +846,11 @@ async def _serialize_report(
     events = await _get_delivery_events(db, report.id)
     gate = _delivery_gate(report, manifest, artifact)
     current_blockers: list[str] = []
+    current_warnings: list[str] = []
     if gate.ready and report.report_type == "MONTHLY":
         readiness = await get_essence_readiness(db, report.hospital_id)
         current_blockers = _current_essence_delivery_blockers(report, readiness)
+        current_warnings = _current_essence_delivery_warnings(report, readiness)
     review_evidence = await build_report_review_evidence(db, report) if full else None
     return _serialize(
         report,
@@ -809,5 +859,6 @@ async def _serialize_report(
         artifact=artifact,
         events=events,
         current_blockers=current_blockers,
+        current_warnings=current_warnings,
         review_evidence=review_evidence,
     )

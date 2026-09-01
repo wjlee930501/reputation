@@ -40,8 +40,10 @@ def test_today_queue_and_post_publish_sampling_share_automatic_operation_boundar
     assert "hospitals.status = 'ACTIVE'" in operational_sql
     assert "hospitals.site_live IS true" in operational_sql
     assert "content_items.sequence_no = 1" in review_sql
-    assert "automatic_remediation_attempts" in review_sql
     assert "content_items.body_updated_at > content_items.published_at" in review_sql
+    # Remediation alone no longer pulls an item into the sample — a rewrite the automatic
+    # safety gate already applied is evidence the gate worked, not a reason to re-sample it.
+    assert "automatic_remediation_attempts" not in review_sql
 
 
 def test_generation_failure_names_customer_impact_and_one_recovery_control() -> None:

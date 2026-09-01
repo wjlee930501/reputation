@@ -78,7 +78,10 @@ def build_monthly_content_operations_snapshot(
     elif shortfall > 0:
         warnings.append(f"약정 콘텐츠 {plan_quota}편 중 {published_count}편만 발행되었습니다.")
     if pending_samples:
-        blockers.append(
+        # 사후검수는 발행을 이미 통과한 콘텐츠에 대한 관찰용 표본이지 두 번째 승인
+        # 큐가 아니다(post_publish_review_policy.py 참고) — 표본 미완료로 원장 전달을
+        # 막지 않는다. 운영 센터 큐에는 여전히 TODO로 남는다.
+        warnings.append(
             f"월간 리포트 필수 사후검수 샘플 {len(pending_samples)}건이 아직 완료되지 않았습니다."
         )
 
@@ -97,9 +100,11 @@ def build_monthly_content_operations_snapshot(
             "overdue_count": len(overdue_samples),
             "cutoff_at": cutoff_at.isoformat(),
         },
+        # 콘텐츠 운영 경고(약정 미달, 사후검수 표본 미완료)는 원장 전달을 막지 않는다.
+        # 닫힌 달의 운영 결과는 뒤늦게 채워 지울 수 없고, 사후검수는 관찰용 표본일 뿐
+        # 두 번째 승인 큐가 아니므로(post_publish_review_policy.py) 둘 다 경고로 보존해
+        # AE가 원장 앞에서 설명하거나 운영 센터에서 뒤이어 정리하게 한다.
         "delivery_blockers": blockers,
-        # 이미 닫힌 달의 약정 미달은 뒤늦게 채워서 지울 수 있는 전달 차단 사유가 아니다.
-        # 실패한 운영 결과도 숨기지 않고 보고해야 하므로 경고로 보존한다.
         "delivery_warnings": warnings,
         "operator_copy": {
             "label": "콘텐츠 운영 증거",
@@ -112,18 +117,18 @@ def build_monthly_content_operations_snapshot(
                 "운영량과 최소 검수 근거가 맞아 원장 보고 자료로 검토할 수 있습니다."
                 if not blockers and not warnings
                 else (
-                    "필수 사후검수가 끝나지 않아 원장님께 월간 결과를 전달할 수 없습니다."
+                    blockers[0]
                     if blockers
-                    else "약정 대비 실제 발행 결과를 숨기지 않고 원장님께 설명해야 합니다."
+                    else "약정 미달·사후검수 대기 등 운영 경고가 있어도 리포트는 전달할 수 있으며, 원장님께 숨기지 않고 설명해야 합니다."
                 )
             ),
             "next_action": (
                 "측정 근거와 원장 전달용 PDF를 이어서 확인해 주세요."
                 if not blockers and not warnings
                 else (
-                    "운영 센터에서 사후검수 대기 항목을 완료한 뒤 리포트를 다시 만들어 주세요."
+                    blockers[0]
                     if blockers
-                    else "리포트에 표시된 약정 미달 수를 확인하고 원인과 다음 달 복구 계획을 함께 설명해 주세요."
+                    else "리포트에 표시된 운영 경고를 확인하고, 필요하면 운영 센터에서 사후검수·복구 계획을 이어서 정리해 주세요."
                 )
             ),
         },

@@ -516,6 +516,39 @@ async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(mo
     assert report.sent_at is None
 
 
+async def test_mark_report_sent_allows_delivery_when_only_essence_version_changed(monkeypatch):
+    """A newer approved philosophy version alone must warn, not block — the report's
+    SoV numbers do not depend on the essence version (docs/reviews/2026-09-01
+    -value-alignment-review.md §3.4, §5 item 14)."""
+    hospital, report, actor, db = _ready_db()
+
+    async def _newer_version(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=4)
+        return EssenceReadiness(
+            approved=philosophy,
+            current=philosophy,
+            processed_source_count=4,
+            required_source_count=4,
+            current_snapshot_hash="snapshot",
+        )
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _newer_version)
+
+    payload = await reports_api.mark_report_sent(
+        hospital.id,
+        report.id,
+        ReportDeliveryRequest(
+            artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
+        ),
+        db=db,
+        actor=actor,
+    )
+
+    assert report.sent_at is not None
+    assert payload["display"]["screening_status"] == "DELIVERED"
+
+
 async def test_mark_report_sent_rejects_artifact_hash_mismatch(monkeypatch):
     hospital, report, actor, db = _ready_db()
 
@@ -801,6 +834,36 @@ def test_report_detail_keeps_delivered_reports_downloadable_even_if_current_read
     assert payload["customer_ready"] is True
     assert payload["delivery_blockers"] == []
     assert payload["display"]["screening_status"] == "DELIVERED"
+
+
+def test_report_detail_surfaces_delivery_warnings_without_blocking_readiness():
+    """Pending post-publish samples and essence version drift are visible but soft —
+    they never flip delivery_ready/customer_ready to False."""
+    report = _report(
+        content_summary={
+            "published_count": 8,
+            "operations": {
+                "schema_version": 1,
+                "delivery_blockers": [],
+                "delivery_warnings": [
+                    "월간 리포트 필수 사후검수 샘플 1건이 아직 완료되지 않았습니다."
+                ],
+            },
+        },
+    )
+    payload = _serialize(
+        report,
+        full=True,
+        manifest=_bind_manifest(report, _manifest()),
+        artifact=_doctor_artifact(report_id=report.id, path=report.doctor_pdf_path),
+        current_warnings=["운영 기준이 리포트 생성 이후 갱신되었습니다 — 필요 시 재생성해 주세요."],
+    )
+
+    assert payload["delivery_ready"] is True
+    assert payload["customer_ready"] is True
+    assert payload["delivery_blockers"] == []
+    assert any("사후검수 샘플" in warning for warning in payload["delivery_warnings"])
+    assert any("갱신되었습니다" in warning for warning in payload["delivery_warnings"])
 
 
 @pytest.mark.parametrize(
