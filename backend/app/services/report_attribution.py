@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Final, Literal, Protocol, TypedDict, assert_never
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Final, Literal, Protocol, TypedDict, assert_never
 from uuid import UUID
 
 from app.models.content import ContentType
+from app.services.content_citations import build_citation_match, hub_page_label
 from app.services.monthly_sov_types import ManifestCellInput
 
 CONTENT_TYPE_ORDER: Final = (
@@ -207,4 +208,166 @@ def build_content_attribution_summary(
         "sov_pct": request.sov_pct,
         "prev_sov_pct": request.prev_sov_pct,
         "change_pct": request.change_pct,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════
+# 인용 귀속 — "AI 답변이 우리 글을 실제로 읽었는가"
+#
+# 언급률은 인용률의 함수다(indexnow.py:3-10 실측: 인용 시 93% vs 미인용 4%).
+# 여기서는 인과를 주장하지 않고, 같은 셀(질문×AI 서비스)의 채택 답변이 인용한
+# URL을 병원 공개 표면에 귀속해 **관찰된 사실**만 집계한다.
+# ══════════════════════════════════════════════════════════════════
+
+
+class CitedQueryPayload(TypedDict):
+    query_text: str
+    platform_label: str
+
+
+class CitedContentPayload(TypedDict):
+    content_id: str
+    title: str | None
+    content_type: str | None
+    cited_cell_count: int
+    cited_url_count: int
+    queries: list[CitedQueryPayload]
+
+
+class CitedHubPagePayload(TypedDict):
+    page_key: str
+    label: str
+    cited_cell_count: int
+    queries: list[CitedQueryPayload]
+
+
+class CitationSummaryPayload(TypedDict):
+    measured_cell_count: int
+    cited_cell_count: int
+    cited_cell_pct: float | None
+    content_cited_cell_count: int
+    hub_cited_cell_count: int
+    cited_content_count: int
+    cited_items: list[CitedContentPayload]
+    hub_pages: list[CitedHubPagePayload]
+
+
+@dataclass(frozen=True, slots=True)
+class CitationAttributionInput:
+    """`hospital`은 slug·aeo_domain만 읽는다 (ORM 인스턴스가 아니어도 된다)."""
+
+    hospital: Any
+    cells: tuple[ManifestCellInput, ...]
+    records_by_id: Mapping[UUID, Any] = field(default_factory=dict)
+    content_items: Sequence[Any] = ()
+    max_visible_items: int = 10
+
+
+def _content_type_code(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value.value if isinstance(value, ContentType) else str(value)
+
+
+def _source_urls_of(record: Any) -> list[str]:
+    return [
+        value.strip()
+        for value in (getattr(record, "source_urls", None) or [])
+        if isinstance(value, str) and value.strip()
+    ]
+
+
+def build_citation_attribution(
+    request: CitationAttributionInput,
+) -> CitationSummaryPayload:
+    """월간 manifest 셀의 채택 답변이 인용한 자사 URL을 글 단위로 집계한다."""
+    content_by_key = {
+        str(getattr(item, "id", "")).strip().lower(): item
+        for item in request.content_items
+        if getattr(item, "id", None) is not None
+    }
+    measured_cell_count = 0
+    cited_cell_count = 0
+    content_cited_cell_count = 0
+    hub_cited_cell_count = 0
+    content_cells: dict[str, int] = {}
+    content_urls: dict[str, set[str]] = {}
+    content_queries: dict[str, list[CitedQueryPayload]] = {}
+    hub_cells: dict[str, int] = {}
+    hub_queries: dict[str, list[CitedQueryPayload]] = {}
+
+    for cell in sorted(request.cells, key=lambda row: (row.query_key, row.platform)):
+        selected = cell.selected_attempt
+        if selected is None:
+            continue
+        measured_cell_count += 1
+        record = request.records_by_id.get(selected.record_id)
+        if record is None:
+            continue
+        match = build_citation_match(
+            _source_urls_of(record), request.hospital, request.content_items
+        )
+        if not match.has_owned:
+            continue
+        cited_cell_count += 1
+        query: CitedQueryPayload = {
+            "query_text": cell.query_text,
+            "platform_label": _platform_label(cell.platform),
+        }
+        if match.contents:
+            content_cited_cell_count += 1
+        if match.hub_pages:
+            hub_cited_cell_count += 1
+        for content_key, urls in match.contents.items():
+            content_cells[content_key] = content_cells.get(content_key, 0) + 1
+            content_urls.setdefault(content_key, set()).update(urls)
+            rows = content_queries.setdefault(content_key, [])
+            if query not in rows:
+                rows.append(query)
+        for page_key in match.hub_pages:
+            hub_cells[page_key] = hub_cells.get(page_key, 0) + 1
+            hub_rows_for_page = hub_queries.setdefault(page_key, [])
+            if query not in hub_rows_for_page:
+                hub_rows_for_page.append(query)
+
+    cited_items: list[CitedContentPayload] = [
+        {
+            "content_id": key,
+            "title": getattr(content_by_key.get(key), "title", None),
+            "content_type": _content_type_code(
+                getattr(content_by_key.get(key), "content_type", None)
+            ),
+            "cited_cell_count": count,
+            "cited_url_count": len(content_urls.get(key, ())),
+            "queries": content_queries.get(key, []),
+        }
+        for key, count in content_cells.items()
+    ]
+    cited_items.sort(
+        key=lambda row: (-row["cited_cell_count"], str(row["title"] or ""), row["content_id"])
+    )
+    hub_pages: list[CitedHubPagePayload] = [
+        {
+            "page_key": key,
+            "label": hub_page_label(key),
+            "cited_cell_count": count,
+            "queries": hub_queries.get(key, []),
+        }
+        for key, count in hub_cells.items()
+    ]
+    hub_pages.sort(key=lambda row: (-row["cited_cell_count"], row["page_key"]))
+
+    return {
+        "measured_cell_count": measured_cell_count,
+        "cited_cell_count": cited_cell_count,
+        "cited_cell_pct": (
+            round(cited_cell_count / measured_cell_count * 100, 1)
+            if measured_cell_count
+            else None
+        ),
+        "content_cited_cell_count": content_cited_cell_count,
+        "hub_cited_cell_count": hub_cited_cell_count,
+        "cited_content_count": len(cited_items),
+        "cited_items": cited_items[: request.max_visible_items],
+        "hub_pages": hub_pages[: request.max_visible_items],
     }

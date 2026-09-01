@@ -12,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 from app.models.hospital import Hospital
 from app.services import sov_engine
+from app.services.content_citations import platform_owned_source_roots
 from app.services.doctor_pdf_contracts import (
     DoctorEvidence,
     DoctorEvidenceCase,
@@ -19,7 +20,10 @@ from app.services.doctor_pdf_contracts import (
     DoctorTile,
 )
 from app.services.monthly_sov_types import MonthlySovPayload
-from app.services.report_attribution import ContentAttributionPayload
+from app.services.report_attribution import (
+    CitationSummaryPayload,
+    ContentAttributionPayload,
+)
 
 logger = logging.getLogger(__name__)
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
@@ -106,7 +110,10 @@ def _owned_source_roots(hospital: Hospital | None) -> set[tuple[str, str]]:
     if getattr(hospital, "aeo_domain", None):
         candidates.append(f"https://{hospital.aeo_domain}")
 
-    roots: set[tuple[str, str]] = set()
+    # 자기 도메인이 없는 병원은 플랫폼 기본 주소(경로형·서브도메인형)로 서빙된다.
+    # 이 두 형태를 owned 후보에 넣지 않으면 허브가 인용돼도 owned=0으로 집계돼
+    # "우리 글이 AI에 읽혔는가"가 구조적으로 항상 0이 된다.
+    roots: set[tuple[str, str]] = set(platform_owned_source_roots(hospital))
     for candidate in candidates:
         if not isinstance(candidate, str) or not candidate.strip():
             continue
@@ -389,6 +396,7 @@ def generate_pdf_report(
     strategy: dict[str, Any] | None = None,
     sov_coverage: MonthlySovPayload | None = None,
     content_operations: dict[str, Any] | None = None,
+    citations: CitationSummaryPayload | None = None,
     report_version: int | None = None,
 ) -> str:
     """
@@ -432,6 +440,9 @@ def generate_pdf_report(
         strategy=strategy,
         sov_coverage=sov_coverage,
         content_operations=content_operations,
+        # AI 답변이 인용한 자사 URL의 글 단위 귀속(월간 전용). None이면 섹션 미노출 —
+        # `citations` 키가 없던 과거 리포트도 그대로 렌더된다.
+        citations=citations,
         generated_at=now.datetime,
     )
 
@@ -556,6 +567,7 @@ def build_doctor_report_view(
     plan_quota: int | None,
     attribution: ContentAttributionPayload | None,
     records: list,
+    citations: CitationSummaryPayload | None = None,
     platforms: list[str] | None = None,
     sov_coverage: MonthlySovPayload | None = None,
     comparison_reason: str | None = None,
@@ -684,4 +696,15 @@ def build_doctor_report_view(
             "yours": ["월 1회 30분 통화로 요즘 환자분들이 많이 묻는 것을 알려주세요."],
         },
         "footnotes": footnotes,
+        # 아래 3개는 아직 원장 1페이지에 렌더하지 않는다 — 편집 변경은 별도 작업이다.
+        # 값만 뷰 모델에 실어 두면 템플릿만 바꿔 3막 구조("우리가 한 일")로 갈 수 있다.
+        "cited_content_count": int((citations or {}).get("cited_content_count") or 0),
+        "cited_cells": int((citations or {}).get("cited_cell_count") or 0),
+        "top_cited_items": [
+            {
+                "title": (str(row.get("title")).strip() if row.get("title") else None),
+                "cited_cell_count": int(row.get("cited_cell_count") or 0),
+            }
+            for row in ((citations or {}).get("cited_items") or [])[:3]
+        ],
     }

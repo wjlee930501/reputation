@@ -158,6 +158,35 @@ def test_attribution_copy_separates_real_change_from_missing_baseline():
     assert "다음 달 정상 측정 후 비교합니다" in copy
 
 
+def test_citation_facts_are_exposed_to_the_view_but_not_yet_shown_to_the_doctor():
+    """원장 1페이지 편집 변경은 별도 작업이다 — 지금은 값만 실어 두고 렌더하지 않는다."""
+    view = _view(citations={
+        "cited_cell_count": 4,
+        "cited_content_count": 2,
+        "cited_items": [
+            {"title": "치질 수술 FAQ", "cited_cell_count": 3},
+            {"title": "강남 치질 병원 안내", "cited_cell_count": 1},
+            {"title": "세 번째 글", "cited_cell_count": 1},
+            {"title": "네 번째 글", "cited_cell_count": 1},
+        ],
+    })
+
+    assert view["cited_cells"] == 4
+    assert view["cited_content_count"] == 2
+    assert [row["title"] for row in view["top_cited_items"]] == [
+        "치질 수술 FAQ", "강남 치질 병원 안내", "세 번째 글"
+    ]
+    assert "치질 수술 FAQ" not in _all_copy(view)
+
+
+def test_citations_absent_defaults_to_zero_for_older_reports():
+    view = _view()
+
+    assert view["cited_cells"] == 0
+    assert view["cited_content_count"] == 0
+    assert view["top_cited_items"] == []
+
+
 def test_doctor_tiles_do_not_include_a_competitor_story():
     view = _view(
         records=[

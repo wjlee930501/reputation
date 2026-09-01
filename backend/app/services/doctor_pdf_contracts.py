@@ -45,6 +45,13 @@ class DoctorNextActions(TypedDict):
     yours: list[str]
 
 
+class DoctorCitedItem(TypedDict):
+    """AI 답변이 인용한 우리 글 1건. 현재 원장 1페이지에는 렌더하지 않는다."""
+
+    title: str | None
+    cited_cell_count: int
+
+
 class DoctorReportView(TypedDict):
     measured: bool
     hospital_name: str
@@ -57,6 +64,10 @@ class DoctorReportView(TypedDict):
     evidence: DoctorEvidence
     next_actions: DoctorNextActions
     footnotes: list[str]
+    # 인용 귀속 — 원장 1페이지 편집은 별도 작업에서 바꾼다. 지금은 값만 노출한다.
+    cited_content_count: int
+    cited_cells: int
+    top_cited_items: list[DoctorCitedItem]
 
 
 @dataclass(frozen=True, slots=True)
