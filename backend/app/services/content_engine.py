@@ -22,7 +22,11 @@ from app.core.config import settings
 from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
-from app.services.essence_engine import effective_safety_policy
+from app.services.essence_engine import (
+    MANDATORY_AVOID_MESSAGES,
+    MANDATORY_MEDICAL_AD_RISK_RULES,
+    effective_safety_policy,
+)
 from app.utils.authority_sources import (
     infer_source_type,
     is_citable_reference_url,
@@ -30,7 +34,7 @@ from app.utils.authority_sources import (
     render_source_hint_block,
     select_curated_authority_sources,
 )
-from app.utils.medical_filter import check_forbidden_content_fields
+from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden_content_fields
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +97,15 @@ class MissingCitableReferencesError(ValueError):
         self.result = result
 
 
+# 재시도해도 결과가 달라지지 않는 Anthropic 4xx. 429(RateLimitError)와 5xx,
+# 타임아웃은 여기 넣지 않는다 — 그건 기다리면 풀린다.
+NON_RETRYABLE_PROVIDER_ERRORS: tuple[type[Exception], ...] = (
+    anthropic.BadRequestError,
+    anthropic.AuthenticationError,
+    anthropic.PermissionDeniedError,
+    anthropic.NotFoundError,
+)
+
 client = anthropic.Anthropic(
     api_key=settings.ANTHROPIC_API_KEY,
     timeout=90.0,
@@ -102,7 +115,7 @@ client = anthropic.Anthropic(
 # ── 시스템 프롬프트 ───────────────────────────────────────────────
 # 검색·AI용 별도 문법을 가장하지 않고, 환자에게 유용한 고유 정보·정확한 출처·명확한
 # 구조를 우선한다. 의료광고법 자동 점검과 발행 후 사람 검수는 별도 게이트에서 수행한다.
-SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_TEMPLATE = """\
 당신은 병원 의료 콘텐츠 전문 작가입니다.
 승인된 병원 자료와 공신력 있는 의료 근거를 바탕으로, 환자에게 실제로 도움이 되는 고유한 콘텐츠를 작성하세요.
 검색엔진과 AI가 내용을 오해하지 않도록 질문·답·근거·병원 사실을 명확히 구분합니다.
@@ -133,11 +146,12 @@ SYSTEM_PROMPT = """\
    봄철·여름철·가을철·겨울철 제목이나 도입을 만들지 마세요. 계절성이 필요 없으면 연중형 제목을 사용하세요.
 
 [의료광고법 준수 — 절대 금지 표현]
-1등 · 최고 · 최우수 · 유일/전국 유일 · 완치 · 100% · 성공률 · 부작용 없는 ·
-검증된 · 가장 잘하는 · 국내 최초 · 세계 최초 · 특허 · 독보적 ·
-OO만의 노하우 · 효과 보장 · 최첨단 · 안전한 시술 · 통증 없는 · 흉터 없는
+__FORBIDDEN_EXPRESSIONS__
 
 위 표현은 변형(예: "통증 제로", "흉터 zero")도 모두 금지. 환자 후기/치료경험담 톤도 금지(2024 사전심의 강화).
+
+[플랫폼 공통 의료광고 안전 규칙 — 모든 병원에 항상 적용]
+__MANDATORY_SAFETY_RULES__
 
 [최상급·단정·예후 과장 금지 — 추가]
 - **최상급/단정 표현 금지**: "가장 ~"(가장 확실한·가장 좋은·가장 빠른 등), "확실한 방법", "걱정 없이",
@@ -173,6 +187,40 @@ OO만의 노하우 · 효과 보장 · 최첨단 · 안전한 시술 · 통증 �
   "faq_answer_summary": "FAQ 유형일 때만 채움 — 짧고 직접적인 답변 1~2문장(180자 이내). FAQPage rich result에 들어감. 다른 유형은 null."
 }
 """
+
+# 금지 표현 목록과 플랫폼 공통 안전 규칙은 **여기 한 번만** 렌더링한다.
+# 이전에는 같은 목록이 (1) 시스템 프롬프트 하드코딩, (2) 철학 컨텍스트의
+# avoid_messages, (3) 브리프 컨텍스트의 avoid_messages 로 3중 삽입돼
+# 호출마다 같은 문장을 반복해서 지불했다. 유일한 원본은
+# utils/medical_filter.FORBIDDEN_EXPRESSIONS 와
+# essence_engine.MANDATORY_* 이며, 철학/브리프 렌더러는
+# _MANDATORY_SAFETY_ENTRIES 에 있는 항목을 그대로 반복하지 않는다.
+# (검사 게이트인 check_forbidden_content_fields 는 이 변경과 무관하게 유지된다.)
+_MANDATORY_SAFETY_ENTRIES: frozenset[str] = frozenset(
+    [*MANDATORY_AVOID_MESSAGES, *MANDATORY_MEDICAL_AD_RISK_RULES]
+)
+
+# MANDATORY_AVOID_MESSAGES 는 문장 안에 FORBIDDEN_EXPRESSIONS 를 그대로 이어 붙인
+# 형태다. 위 "[의료광고법 준수 — 절대 금지 표현]" 절이 곧 그 규칙의 렌더링이므로
+# 여기서 다시 찍으면 같은 목록이 한 프롬프트에 두 번 들어간다. 따라서 아래 절에는
+# 표현 목록이 없는 MANDATORY_MEDICAL_AD_RISK_RULES 만 넣는다.
+SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.replace(
+    "__FORBIDDEN_EXPRESSIONS__", " · ".join(FORBIDDEN_EXPRESSIONS)
+).replace(
+    "__MANDATORY_SAFETY_RULES__",
+    "\n".join(f"- {rule}" for rule in MANDATORY_MEDICAL_AD_RISK_RULES),
+)
+
+# 정적 시스템 블록 = SYSTEM_PROMPT + 권위 출처 화이트리스트. 병원·아이템과 무관하게
+# 바이트 단위로 고정이라 prompt cache 접두어로 쓸 수 있다. Sonnet 계열의 최소 캐시
+# 접두어는 1024 토큰이고 이 블록은 한국어 4,000자 이상(≈2.5k~4k tok)이라 여유 있게
+# 넘는다. 여기에 시각·UUID 같은 변동 값을 절대 넣지 말 것 — 넣는 순간 캐시가 죽는다.
+STATIC_SYSTEM_BLOCK = f"{SYSTEM_PROMPT}\n\n{render_source_hint_block()}"
+
+# 프롬프트에 넣는 기존 제목 상한. 상한이 없으면 1년 운영한 병원에서 200편 이상의
+# 제목이 매 호출에 실려 입력이 1.6~2배로 불어난다. 중복 회피에 필요한 것은
+# "최근에 무엇을 썼는가"이므로 최신 N개면 충분하다.
+EXISTING_TITLE_PROMPT_LIMIT = 60
 
 # ── 유형별 사용자 프롬프트 ────────────────────────────────────────
 TYPE_PROMPTS = {
@@ -282,10 +330,27 @@ def _fill_type_prompt(content_type: ContentType, hospital: Hospital) -> str:
     )
 
 
+def _hospital_specific_safety(philosophy: HospitalContentPhilosophy | None) -> dict[str, list[str]]:
+    """플랫폼 공통 규칙을 제거한, 이 병원에만 해당하는 안전 문구.
+
+    공통 규칙은 STATIC_SYSTEM_BLOCK 에 이미 한 번 들어가 있다. 여기서 다시 실으면
+    같은 문장을 호출마다 두 번 더 지불하게 된다. 병원 고유 문구는 그대로 남긴다.
+    """
+    safety_policy = effective_safety_policy(philosophy)
+    return {
+        field: [
+            value
+            for value in safety_policy[field]
+            if value not in _MANDATORY_SAFETY_ENTRIES
+        ]
+        for field in ("avoid_messages", "medical_ad_risk_rules")
+    }
+
+
 def _build_philosophy_context(philosophy: HospitalContentPhilosophy | None) -> str:
     if not philosophy:
         return ""
-    safety_policy = effective_safety_policy(philosophy)
+    safety_policy = _hospital_specific_safety(philosophy)
     treatments = "\n".join(
         f"- {item.get('treatment', '진료 항목')}: {item.get('angle', '')}"
         for item in (philosophy.treatment_narratives or [])
@@ -346,9 +411,50 @@ def _format_internal_link_target(value: object) -> str:
     return ""
 
 
-def _build_content_brief_context(content_brief: dict | None) -> str:
+_SAME_AS_PHILOSOPHY = "- (위 [승인된 콘텐츠 운영 기준]과 동일)"
+
+
+def _brief_safety_bullets(
+    brief_values: object, philosophy_values: list[str] | None
+) -> str:
+    """브리프의 안전/메시지 필드를 중복 없이 렌더링.
+
+    브리프는 대부분 철학에서 그대로 파생되므로(build_content_brief) 같은 목록이
+    한 프롬프트 안에 두 번 실린다. 플랫폼 공통 규칙은 정적 시스템 블록에 이미 있고,
+    철학과 바이트 단위로 같은 목록은 참조 한 줄로 대체한다. 브리프에만 있는 값은
+    그대로 남겨 운영자가 슬롯 단위로 덧붙인 지시가 사라지지 않게 한다.
+    """
+    values = [
+        str(value)
+        for value in (brief_values or [])
+        if str(value).strip() and str(value) not in _MANDATORY_SAFETY_ENTRIES
+    ]
+    if not values:
+        return _bullet_list([])
+    if philosophy_values is not None and values == list(philosophy_values):
+        return _SAME_AS_PHILOSOPHY
+    return _bullet_list(values)
+
+
+def _build_content_brief_context(
+    content_brief: dict | None,
+    philosophy: HospitalContentPhilosophy | None = None,
+) -> str:
     if not content_brief:
         return ""
+
+    philosophy_must_use: list[str] | None = None
+    philosophy_avoid: list[str] | None = None
+    philosophy_risk: list[str] | None = None
+    if philosophy is not None:
+        hospital_safety = _hospital_specific_safety(philosophy)
+        philosophy_must_use = [
+            str(value)
+            for value in (getattr(philosophy, "must_use_messages", None) or [])
+            if str(value).strip()
+        ]
+        philosophy_avoid = hospital_safety["avoid_messages"]
+        philosophy_risk = hospital_safety["medical_ad_risk_rules"]
 
     return f"""
 [승인된 콘텐츠 가이드]
@@ -356,16 +462,28 @@ target_query: {content_brief.get('target_query') or ''}
 patient_intent: {content_brief.get('patient_intent') or ''}
 treatment_narrative: {_format_treatment_narrative(content_brief.get('treatment_narrative'))}
 must_use_messages:
-{_bullet_list(content_brief.get('must_use_messages') or [])}
+{_brief_safety_bullets(content_brief.get('must_use_messages'), philosophy_must_use)}
 avoid_messages:
-{_bullet_list(content_brief.get('avoid_messages') or [])}
+{_brief_safety_bullets(content_brief.get('avoid_messages'), philosophy_avoid)}
 medical_risk_rules:
-{_bullet_list(content_brief.get('medical_risk_rules') or [])}
+{_brief_safety_bullets(content_brief.get('medical_risk_rules'), philosophy_risk)}
 internal_link_target: {_format_internal_link_target(content_brief.get('internal_link_target'))}
 operator_notes:
 {_bullet_list(content_brief.get('operator_notes') or [])}
 planned_publish_date: {content_brief.get('planned_publish_date') or ''}
 """.strip()
+
+
+def _usage_token(usage: object, field: str) -> int:
+    """usage 필드를 방어적으로 정수로 읽는다.
+
+    SDK는 캐시를 쓰지 않은 응답에서 cache_* 필드를 None으로 돌려주고, 테스트 더블은
+    아예 usage가 없을 수 있다. 둘 다 0으로 접는다.
+    """
+    try:
+        return max(0, int(getattr(usage, field, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _bullet_list(values: list) -> str:
@@ -411,7 +529,15 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     # response.  Retrying the writer two more times only spends money before the
     # same curated catalog recovery below.  Other hard gates still retain their
     # bounded provider retries.
-    retry=retry_if_not_exception_type(MissingCitableReferencesError),
+    #
+    # NON_RETRYABLE_PROVIDER_ERRORS: a malformed request, a bad key, a revoked
+    # permission or a missing model does not become valid by waiting.  Retrying
+    # them burned three request slots and up to 12s of backoff per item before
+    # surfacing the same error.  Rate limits (429), 5xx and timeouts stay
+    # retryable, as do our own validation ValueErrors.
+    retry=retry_if_not_exception_type(
+        (MissingCitableReferencesError, *NON_RETRYABLE_PROVIDER_ERRORS)
+    ),
     reraise=True,
 )
 async def _generate_content_attempt(
@@ -431,16 +557,19 @@ async def _generate_content_attempt(
 
     profile_ctx = _build_profile_context(hospital)
     philosophy_ctx = _build_philosophy_context(philosophy)
-    brief_ctx = _build_content_brief_context(content_brief)
+    brief_ctx = _build_content_brief_context(content_brief, philosophy)
     type_prompt = _fill_type_prompt(content_type, hospital)
 
     avoid_titles = ""
     if existing_titles:
-        avoid_titles = "\n\n이미 작성된 제목 (중복 금지):\n" + "\n".join(f"- {t}" for t in existing_titles)
+        # 상한을 한 번 더 여기서 건다. 호출자(tasks.py)가 이미 LIMIT을 걸지만,
+        # 다른 경로나 테스트가 긴 목록을 넘겨도 프롬프트가 부풀지 않게 한다.
+        recent_titles = list(existing_titles)[:EXISTING_TITLE_PROMPT_LIMIT]
+        avoid_titles = "\n\n최근 발행 제목 일부 (중복 금지):\n" + "\n".join(
+            f"- {t}" for t in recent_titles
+        )
 
-    essence_context = f"\n\n{philosophy_ctx}" if philosophy_ctx else ""
     brief_context = f"\n\n{brief_ctx}" if brief_ctx else ""
-    source_hint = f"\n\n{render_source_hint_block()}"
     curated_candidates = select_curated_authority_sources(
         _curated_reference_focus(content_brief),
     )
@@ -455,10 +584,34 @@ async def _generate_content_attempt(
             f"{rendered_candidates}"
         )
     remediation_context = _build_remediation_context(remediation_findings)
+
+    # 프롬프트 캐시 배치. 접두어 일치 방식이라 "고정 → 병원 단위 고정 → 아이템 단위 변동"
+    # 순서를 지켜야 한다.
+    #   블록 1 (STATIC_SYSTEM_BLOCK): 작성 규칙 + 금지 표현 + 출처 화이트리스트.
+    #     모든 병원·모든 아이템에서 동일 → 여기서 캐시 breakpoint.
+    #   블록 2 (프로파일 + 운영 기준): 병원마다 다르지만 같은 병원의 월간 배치 안에서는
+    #     동일 → 두 번째 breakpoint. 한 병원의 12~20편이 이 블록을 재사용한다.
+    #   user 메시지: 유형 프롬프트·브리프·최근 제목·큐레이션 후보·재작성 지적처럼
+    #     아이템마다 바뀌는 것만. 여기에 변동 값을 몰아둬야 위 두 블록이 살아남는다.
+    hospital_system_block = profile_ctx
+    if philosophy_ctx:
+        hospital_system_block = f"{profile_ctx}\n\n{philosophy_ctx}"
+    system_blocks = [
+        {
+            "type": "text",
+            "text": STATIC_SYSTEM_BLOCK,
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": hospital_system_block,
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
     user_message = (
-        f"{profile_ctx}{essence_context}{brief_context}\n\n"
-        f"{type_prompt}{avoid_titles}{source_hint}{curated_candidate_hint}{remediation_context}"
-    )
+        f"{brief_context}\n\n"
+        f"{type_prompt}{avoid_titles}{curated_candidate_hint}{remediation_context}"
+    ).strip()
 
     # 실제 공급자 호출 계수. 이 함수는 tenacity로 최대 3회 재시도되고 Anthropic 클라이언트는
     # max_retries=0이라, 본문 1회 실행 = HTTP 요청 1회다. 여기서 세지 않으면 비용 화면의
@@ -474,7 +627,7 @@ async def _generate_content_attempt(
         lambda: client.messages.create(
             model=settings.CLAUDE_MODEL,
             max_tokens=5500,
-            system=SYSTEM_PROMPT,
+            system=system_blocks,
             messages=[{"role": "user", "content": user_message}],
         ),
     )
@@ -482,11 +635,28 @@ async def _generate_content_attempt(
     from app.services.hospital_usage import record_usage
 
     usage = getattr(response, "usage", None)
+    # 캐시된 입력은 usage.input_tokens에 포함되지 않는다. 두 필드를 더하지 않으면
+    # 캐시가 붙는 순간 원장(ledger)의 입력 토큰이 급감해 "비용이 줄었다"가 아니라
+    # "계측이 깨졌다"로 보인다. 과금되는 입력 총량을 그대로 유지하고, 캐시 적중은
+    # 별도 로그로 관찰한다(스키마 변경 없음).
+    cache_creation_tokens = _usage_token(usage, "cache_creation_input_tokens")
+    cache_read_tokens = _usage_token(usage, "cache_read_input_tokens")
+    uncached_input_tokens = _usage_token(usage, "input_tokens")
+    logger.info(
+        "content generation usage: hospital=%s type=%s input=%d "
+        "cache_creation=%d cache_read=%d output=%d",
+        getattr(hospital, "id", None),
+        getattr(content_type, "value", content_type),
+        uncached_input_tokens,
+        cache_creation_tokens,
+        cache_read_tokens,
+        _usage_token(usage, "output_tokens"),
+    )
     await record_usage(
         hospital_id=getattr(hospital, "id", None),
         kind="content",
-        input_tokens=getattr(usage, "input_tokens", 0),
-        output_tokens=getattr(usage, "output_tokens", 0),
+        input_tokens=uncached_input_tokens + cache_creation_tokens + cache_read_tokens,
+        output_tokens=_usage_token(usage, "output_tokens"),
     )
 
     raw = response.content[0].text
