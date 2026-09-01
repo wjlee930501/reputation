@@ -8,6 +8,14 @@ from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.services.essence_engine import effective_safety_policy
+from app.services.query_target_structure import (
+    clinical_keyword_from_query,
+    natural_patient_question,
+)
+
+# 캘린더 생성 단계에서 슬롯에 남기는 결정 근거 키. 이때의 content_brief는 아직
+# "콘텐츠 가이드"가 아니라 계획 메모다 — 승인·재사용 판정에서 브리프로 세면 안 된다.
+PLANNING_REASON_KEY = "planning_reason"
 
 BRIEF_STATUS_DRAFT = "DRAFT"
 BRIEF_STATUS_APPROVED = "APPROVED"
@@ -17,6 +25,15 @@ BRIEF_STATUSES = {
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_NEEDS_REVIEW,
 }
+
+
+def is_usable_content_brief(brief: Any) -> bool:
+    """실제 작성 지시가 들어 있는 브리프인가.
+
+    격차 기반 캘린더가 심어 둔 `{"planning_reason": ...}`만 있는 슬롯은 아직 브리프가
+    없는 것과 같다. 이걸 브리프로 세면 승인·재생성 경로가 빈 가이드를 통과시킨다.
+    """
+    return isinstance(brief, dict) and bool(str(brief.get("target_query") or "").strip())
 
 
 def build_content_brief(
@@ -44,9 +61,19 @@ def build_content_brief(
         philosophy=philosophy,
     )
     safety_policy = effective_safety_policy(philosophy)
+    region_terms = _list(getattr(query_target, "region_terms", None))
 
     return {
         "target_query": target_query,
+        # ── 측정 질의를 프롬프트·검증이 그대로 쓸 수 있는 형태로 분해해 둔다.
+        # 예전에는 target_query 한 줄만 프롬프트에 들어가서, 글이 그 질문에 답했는지
+        # 아무도 확인하지 않았다(리뷰 §1.2 C).
+        # - target_keyword: 제목·첫 H2·FAQ 질문에 반드시 등장해야 하는 임상 키워드
+        # - target_question: FAQ의 faq_question / 다른 유형의 "첫 문단이 답할 질문"
+        # - target_region_terms: LOCAL 프롬프트에 넣을 지역 (병원 keywords 전체가 아니라)
+        "target_keyword": _target_keyword(query_target, target_query, region_terms),
+        "target_question": natural_patient_question(target_query),
+        "target_region_terms": [str(term) for term in region_terms if term],
         "patient_intent": _patient_intent(query_target, exposure_action),
         "query_target": _query_target_reference(query_target),
         "exposure_action": _exposure_action_reference(exposure_action),
@@ -91,6 +118,13 @@ def _target_query(query_target: AIQueryTarget | None, content_item: ContentItem)
     if active_variants:
         return active_variants[0].query_text
 
+    # target.name은 측정에 실제로 쓰인 질의 원문이다(V0 시드는 QueryMatrix.query_text를
+    # 그대로 넣는다). 아래 조합 문자열보다 **항상 우선**한다 — 조합은 "강남역 허리디스크
+    # 증상 탐색"처럼 환자가 쓰지 않는 말이 되고, 그게 그대로 프롬프트의 대상 질문이 된다.
+    name = str(getattr(query_target, "name", "") or "").strip()
+    if name:
+        return name
+
     parts = [
         _first(_list(getattr(query_target, "region_terms", None))),
         getattr(query_target, "treatment", None),
@@ -99,6 +133,23 @@ def _target_query(query_target: AIQueryTarget | None, content_item: ContentItem)
     ]
     synthesized = " ".join(part for part in parts if part)
     return synthesized or getattr(query_target, "name", "")
+
+
+def _target_keyword(
+    query_target: AIQueryTarget | None,
+    target_query: str,
+    region_terms: list,
+) -> str | None:
+    """이 글이 반드시 다뤄야 하는 임상 키워드.
+
+    구조 필드(질환·시술)를 먼저 쓰고, 비어 있으면 질의에서 가장 긴 비지역 토큰을
+    쓴다. 지역명(질의의 첫 토큰)이 주제어로 잡히지 않게 하는 것이 요점이다.
+    """
+    for field_name in ("condition_or_symptom", "treatment", "specialty"):
+        value = getattr(query_target, field_name, None) if query_target else None
+        if value and str(value).strip():
+            return str(value).strip()
+    return clinical_keyword_from_query(target_query, region_terms)
 
 
 def _patient_intent(
@@ -123,6 +174,8 @@ def _query_target_reference(query_target: AIQueryTarget | None) -> dict[str, Any
         "target_month": query_target.target_month,
         "treatment": query_target.treatment,
         "condition_or_symptom": query_target.condition_or_symptom,
+        "region_terms": _list(getattr(query_target, "region_terms", None)),
+        "specialty": getattr(query_target, "specialty", None),
         "decision_criteria": _list(query_target.decision_criteria),
     }
 

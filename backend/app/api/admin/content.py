@@ -33,7 +33,9 @@ from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
     BRIEF_STATUSES,
+    PLANNING_REASON_KEY,
     build_content_brief,
+    is_usable_content_brief,
 )
 from app.services.content_calendar import generate_monthly_slots
 from app.services.content_engine import (
@@ -59,6 +61,11 @@ from app.services.essence_readiness import (
 from app.services.exposure_content_linker import (
     link_content_to_exposure_action,
     unlink_content_from_exposure_action,
+)
+from app.services.gap_driven_slots import (
+    build_gap_targets,
+    gap_target_rows_stmt,
+    plan_gap_driven_slots,
 )
 from app.services.gcs_utils import get_signed_url
 from app.services.ops_incident_alerts import open_ops_incident
@@ -260,16 +267,29 @@ async def set_schedule(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # 측정된 미언급 격차가 이번 달 슬롯의 유형과 대상 질문을 정하게 한다.
+    # 격차가 없으면(첫 스케줄 등) 정적 배분 결과를 그대로 쓴다.
+    gap_targets = build_gap_targets(
+        (await db.execute(gap_target_rows_stmt(hospital_id))).all()
+    )
+    planned = plan_gap_driven_slots(slots, plan=body.plan, gap_targets=gap_targets)
+
     created_items: list[ContentItem] = []
-    for slot_date, ctype, seq_no, total in slots:
+    for slot in planned:
         item = ContentItem(
             hospital_id=hospital_id,
             schedule_id=schedule.id,
-            content_type=ctype,
-            sequence_no=seq_no,
-            total_count=total,
-            scheduled_date=slot_date,
+            content_type=slot.content_type,
+            sequence_no=slot.sequence_no,
+            total_count=slot.total_count,
+            scheduled_date=slot.scheduled_date,
             status=ContentStatus.DRAFT,
+            query_target_id=slot.query_target_id,
+            # 결정 근거는 기존 JSON 컬럼에 남긴다(마이그레이션 없음). brief_status는
+            # 비워 둬 생성 시점 브리프 승인 경로를 그대로 태운다.
+            content_brief=(
+                {PLANNING_REASON_KEY: slot.planning_reason} if slot.planning_reason else None
+            ),
         )
         db.add(item)
         created_items.append(item)
@@ -1102,7 +1122,8 @@ async def _apply_content_brief_update(
 
     if "brief_status" in fields:
         if body.brief_status == BRIEF_STATUS_APPROVED:
-            if not item.content_brief:
+            # 계획 메모(planning_reason)만 있는 슬롯은 아직 가이드가 아니다.
+            if not is_usable_content_brief(item.content_brief):
                 raise HTTPException(status_code=400, detail="Cannot approve an empty content guide")
             philosophy = await _get_approved_philosophy(db, hospital.id)
             if philosophy is None:

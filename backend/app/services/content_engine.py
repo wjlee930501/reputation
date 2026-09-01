@@ -317,17 +317,91 @@ def _build_profile_context(hospital: Hospital) -> str:
 """.strip()
 
 
-def _fill_type_prompt(content_type: ContentType, hospital: Hospital) -> str:
+# 측정 질의로 프롬프트를 조향하는 유형. COLUMN·HEALTH·NOTICE는 측정 질의가 아니라
+# 원장 목소리·계절·병원 운영이 주제라 조향 대상이 아니다.
+TARGET_STEERED_TYPES: frozenset = frozenset(
+    {
+        ContentType.FAQ,
+        ContentType.DISEASE,
+        ContentType.TREATMENT,
+        ContentType.LOCAL,
+    }
+)
+
+
+def _target_steering(content_brief: dict | None) -> dict[str, object]:
+    """브리프에서 프롬프트 조향에 쓸 값만 뽑는다(build_content_brief가 채운 필드)."""
+    brief = content_brief or {}
+    return {
+        "query": str(brief.get("target_query") or "").strip(),
+        "question": str(brief.get("target_question") or "").strip(),
+        "keyword": str(brief.get("target_keyword") or "").strip(),
+        "regions": [
+            str(term).strip()
+            for term in (brief.get("target_region_terms") or [])
+            if str(term).strip()
+        ],
+    }
+
+
+def _target_prompt_block(content_type: ContentType, target: dict[str, object]) -> str:
+    """"이 글은 이 질문에 답한다"를 아이템 단위 사용자 메시지에 못 박는다.
+
+    정적 시스템 블록(프롬프트 캐시 접두어)은 건드리지 않는다 — 여기 들어가는 값은
+    아이템마다 바뀌므로 시스템 블록에 넣으면 캐시가 매번 깨진다.
+    """
+    if content_type not in TARGET_STEERED_TYPES:
+        return ""
+    if not (target["question"] or target["keyword"]):
+        return ""
+
+    lines = ["", "[측정된 환자 질문 — 이 글이 답해야 하는 대상]"]
+    if target["query"]:
+        lines.append(f"- 측정 질의 원문: {target['query']}")
+    if target["question"]:
+        lines.append(f"- 환자 질문 문장: {target['question']}")
+    if target["keyword"]:
+        lines.append(
+            f"- 핵심 키워드(제목 또는 첫 H2에 반드시 그대로 포함): {target['keyword']}"
+        )
+    if target["regions"]:
+        lines.append(f"- 지역: {', '.join(target['regions'])}")
+    lines.append("- 첫 문단에서 위 환자 질문에 직접 답하세요. 질문과 무관한 주제로 넓히지 마세요.")
+    if content_type is ContentType.FAQ:
+        lines.append(
+            "- faq_question 필드에는 위 '환자 질문 문장'을 그대로 쓰세요(다듬기는 최소한으로)."
+        )
+        lines.append("- faq_answer_summary는 그 질문에 대한 직접 답변이어야 합니다.")
+    return "\n".join(lines) + "\n"
+
+
+def _fill_type_prompt(
+    content_type: ContentType,
+    hospital: Hospital,
+    content_brief: dict | None = None,
+) -> str:
     template = TYPE_PROMPTS.get(content_type, "")
+    target = _target_steering(content_brief)
+
+    # 측정된 타깃이 있으면 병원 키워드 **전체**가 아니라 그 질문의 키워드만 넣는다.
+    # 전체를 넣으면 글이 어느 질문에도 정확히 대응하지 않는 종합 안내가 된다.
+    keywords_text = ", ".join(hospital.keywords or [])
+    if target["keyword"] and content_type in TARGET_STEERED_TYPES:
+        keywords_text = str(target["keyword"])
+    # LOCAL은 프로파일 region 전체가 아니라 **측정된 지역**을 쓴다.
     region_text = " ".join(hospital.region or [])
-    return template.format(
-        keywords=", ".join(hospital.keywords or []),
+    if content_type is ContentType.LOCAL and target["regions"]:
+        region_text = " ".join(target["regions"])
+
+    filled = template.format(
+        keywords=keywords_text,
         specialties=", ".join(hospital.specialties or []),
         director_name=hospital.director_name or "",
         director_philosophy=hospital.director_philosophy or "",
         region=region_text,
         treatments=[t.get("name", "") for t in (hospital.treatments or [])],
     )
+    return f"{filled}{_target_prompt_block(content_type, target)}"
 
 
 def _hospital_specific_safety(philosophy: HospitalContentPhilosophy | None) -> dict[str, list[str]]:
@@ -558,7 +632,7 @@ async def _generate_content_attempt(
     profile_ctx = _build_profile_context(hospital)
     philosophy_ctx = _build_philosophy_context(philosophy)
     brief_ctx = _build_content_brief_context(content_brief, philosophy)
-    type_prompt = _fill_type_prompt(content_type, hospital)
+    type_prompt = _fill_type_prompt(content_type, hospital, content_brief)
 
     avoid_titles = ""
     if existing_titles:
@@ -689,9 +763,12 @@ def _validate_generated_result(
     # ── SEO/GEO 검증 ──────────────────────────────────────────────
     seo_findings = _validate_seo(result, hospital, content_brief, content_type)
     geo_findings = _validate_geo(result, hospital, content_type)
+    # 측정 질의 대응 검사. 워커가 이 목록을 보고 한 번만 보완 재작성을 돌린다.
+    target_findings = _validate_target_alignment(result, content_brief)
+    result["target_alignment_findings"] = target_findings
 
-    # 두 검증에서 나온 SOFT 결과를 result에 첨부 — AE 화면이 참조할 수 있도록
-    all_findings = seo_findings + geo_findings
+    # 세 검증에서 나온 SOFT 결과를 result에 첨부 — AE 화면이 참조할 수 있도록
+    all_findings = seo_findings + geo_findings + target_findings
     result["seo_geo_findings"] = all_findings
     result["seo_geo_score"] = max(0, 100 - len(all_findings) * 10)
     if all_findings:
@@ -931,12 +1008,16 @@ def _validate_seo(
             )
 
     # ── primary keyword 결정 ────────────────────────────────────────
-    # content_brief.target_query 우선, 없으면 hospital.keywords 첫 항목 첫 토큰
+    # 1순위는 브리프가 분해해 둔 임상 키워드다. 예전에는 target_query의 **첫 토큰**을
+    # 썼는데 측정 질의의 첫 토큰은 거의 항상 지역명("강남역")이라, 이 검사가 사실상
+    # "지역명이 본문에 있는가"만 재고 있었다(GEO 검증이 이미 하는 일).
     primary_kw: str = ""
     if content_brief:
-        tq = (content_brief.get("target_query") or "").strip()
-        if tq:
-            primary_kw = tq.split()[0]
+        primary_kw = str(content_brief.get("target_keyword") or "").strip()
+        if not primary_kw:
+            tq = (content_brief.get("target_query") or "").strip()
+            if tq:
+                primary_kw = tq.split()[0]
     if not primary_kw and hospital.keywords:
         primary_kw = (hospital.keywords[0] or "").split()[0]
 
@@ -975,6 +1056,42 @@ def _validate_seo(
         findings.append("listicle/표 없음 — AI 인용률 저하 가능 (프롬프트 규칙 5 위반)")
 
     return findings
+
+
+# 생성 결과가 측정 질의를 실제로 답했는지 보는 검사의 표지 문자열.
+# 워커(tasks._generate_with_auto_review)가 이 접두어로 지적을 식별해 **한 번만**
+# 보완 재작성을 돌린다. 무한 재시도가 아니다 — 두 번째도 놓치면 글은 살리고 soft
+# finding으로 남겨 Admin에서 보이게 한다.
+TARGET_KEYWORD_FINDING_PREFIX = "측정 질의 키워드 미반영"
+
+
+def _validate_target_alignment(result: dict, content_brief: dict | None) -> list[str]:
+    """측정 질의의 임상 키워드가 제목·첫 H2·FAQ 질문 중 한 곳에는 있어야 한다.
+
+    본문 어딘가에 한 번 나오는 것으로는 부족하다 — AI가 이 글을 그 질문의 답으로
+    고르려면 키워드가 문서의 **주제 위치**에 있어야 한다. 반대로 하드 게이트로
+    올리면 한국어 형태 변화(‘허리디스크’ vs ‘허리 디스크’)로 정상 결과가 버려지므로,
+    한 번의 보완 재작성까지만 요구하고 그 뒤에는 통과시킨다.
+    """
+    brief = content_brief or {}
+    keyword = str(brief.get("target_keyword") or "").strip()
+    if not keyword:
+        return []
+
+    title = str(result.get("title") or "")
+    faq_question = str(result.get("faq_question") or "")
+    body = str(result.get("body") or "")
+    first_h2_match = re.search(r"^##\s+(.+)$", body, flags=re.MULTILINE)
+    first_h2 = first_h2_match.group(1) if first_h2_match else ""
+
+    if any(keyword in place for place in (title, first_h2, faq_question)):
+        return []
+
+    target_query = str(brief.get("target_query") or "").strip()
+    return [
+        f"{TARGET_KEYWORD_FINDING_PREFIX}: '{keyword}'이(가) 제목·첫 H2·FAQ 질문 어디에도 "
+        f"없습니다. 측정 질의: {target_query or '(없음)'}"
+    ]
 
 
 def _validate_geo(
