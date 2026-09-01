@@ -107,9 +107,10 @@ async def test_cache_refresh_failure_escalates_once_without_undoing_publication(
             assert published.status == ContentStatus.PUBLISHED
             assert published.published_at == published_at
             assert terminal_run is not None and terminal_run.failure_count == 1
+            # The refreshed cache incident closes itself — no operator confirmation.
             assert sorted(incident.state for incident in incidents) == [
+                IncidentState.ACKNOWLEDGED.value,
                 IncidentState.OPEN.value,
-                IncidentState.RECOVERED.value,
             ]
             assert outbox_count == 1
     finally:

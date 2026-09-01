@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.operations import Incident, NotificationOutbox
+from app.services.incident_types import incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection
 
 
@@ -31,6 +32,7 @@ def incident_projection(
         run_id,
         incident.version,
         episode_seq=incident.episode_seq,
+        incident_type=incident_type_of(incident),
     )
 
 

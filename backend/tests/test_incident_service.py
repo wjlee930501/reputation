@@ -15,6 +15,10 @@ from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
 from app.models.hospital import Hospital
 from app.models.operations import Incident, IncidentSeverity, IncidentState
+from app.services.incident_safety import (
+    incident_escalated_to_human,
+    should_notify_incident_recovery,
+)
 from app.services.incidents import (
     IncidentFilters,
     IncidentFingerprint,
@@ -23,6 +27,7 @@ from app.services.incidents import (
     IncidentVersionConflict,
     acknowledge_incident,
     assign_incident,
+    auto_acknowledge_incident,
     build_incident_key,
     incident_filter_expressions,
     mark_recovered,
@@ -555,3 +560,131 @@ async def test_admin_deep_links_allow_ui_routes_and_reject_unsafe_paths(db: Asyn
     # Then: real browser routes survive and unsafe/BFF paths fail to the real UI queue
     assert operations.admin_path == "/operations"
     assert normalized == ["/operations"] * len(malicious_paths)
+
+
+def _recovery_incident(
+    *,
+    first_seen_at: datetime,
+    owner_id: uuid.UUID | None = None,
+    sla_due_at: datetime | None = None,
+    state: IncidentState = IncidentState.RECOVERED,
+) -> Incident:
+    """Build one detached incident row for the pure recovery-notice policy."""
+
+    return Incident(
+        id=uuid.uuid4(),
+        dedupe_key=f"incident:v1:test:object:{uuid.uuid4().hex}",
+        incident_type="BACKGROUND_TASK_FAILED",
+        state=state.value,
+        severity=IncidentSeverity.HIGH.value,
+        customer_impact="자동 작업이 완료되지 않았습니다.",
+        source_type="OPERATION_RUN",
+        next_action="운영 관제에서 확인하세요.",
+        admin_path="/operations",
+        owner_id=owner_id,
+        sla_due_at=sla_due_at,
+        first_seen_at=first_seen_at,
+        last_seen_at=first_seen_at,
+        version=1,
+        episode_seq=1,
+    )
+
+
+def test_short_unowned_recovery_produces_no_slack_message() -> None:
+    # Given: an incident nobody was assigned that healed inside the recovery window
+    now = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    incident = _recovery_incident(first_seen_at=now - timedelta(minutes=10))
+
+    # When / Then: the machine's own round trip is a log line, not a Slack message
+    assert should_notify_incident_recovery(incident, now=now) is False
+    assert incident_escalated_to_human(incident) is False
+
+
+@pytest.mark.parametrize(
+    ("owner_id", "sla_due_at", "age_minutes"),
+    [
+        (uuid.UUID("b1000000-0000-0000-0000-000000000001"), None, 5),
+        (None, datetime(2026, 8, 19, 18, 0, tzinfo=UTC), 5),
+        (None, None, 45),
+    ],
+)
+def test_recovery_still_pages_when_a_person_was_already_involved(
+    owner_id: uuid.UUID | None, sla_due_at: datetime | None, age_minutes: int
+) -> None:
+    # Given: an incident that was assigned, given a deadline, or open long enough to read
+    now = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    incident = _recovery_incident(
+        first_seen_at=now - timedelta(minutes=age_minutes),
+        owner_id=owner_id,
+        sla_due_at=sla_due_at,
+    )
+
+    # When / Then: the recovery closes the loop for the person who saw the failure
+    assert should_notify_incident_recovery(incident, now=now) is True
+
+
+def test_retrying_rows_are_context_not_operator_work() -> None:
+    # Given: one incident automatic recovery owns and one waiting on a person
+    now = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    retrying = _recovery_incident(first_seen_at=now, state=IncidentState.RETRYING)
+    open_incident = _recovery_incident(first_seen_at=now, state=IncidentState.OPEN)
+
+    # When
+    retrying_labels = project_incident_labels(retrying, now=now)
+    open_labels = project_incident_labels(open_incident, now=now)
+
+    # Then: the RETRYING row stays visible but stops asking for a retry click
+    assert retrying_labels.requires_operator_action is False
+    assert retrying_labels.automatic_recovery_in_progress is True
+    assert retrying_labels.state_label == "자동 재시도 중"
+    assert open_labels.requires_operator_action is True
+    assert open_labels.automatic_recovery_in_progress is False
+
+
+@pytest.mark.asyncio
+async def test_system_acknowledgement_closes_a_recovered_incident_without_a_person(
+    db: AsyncSession,
+) -> None:
+    # Given: an incident the machine opened, retried and recovered on its own
+    now = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    _, _, hospital = await _actors_and_hospital(db)
+    incident = await open_or_touch_incident(db, _request(hospital), now=now)
+    retrying = await mark_retrying(
+        db, incident.id, expected_version=incident.version, actor="system", reason="자동 재시도"
+    )
+    assert isinstance(retrying, Incident)
+    recovered = await mark_recovered(
+        db,
+        retrying.id,
+        expected_version=retrying.version,
+        observed_success=True,
+        actor="system",
+        reason="자동 복구",
+        now=now,
+    )
+    assert isinstance(recovered, Incident)
+
+    # When: the system closes it instead of queueing a "확인 완료" click
+    closed = await auto_acknowledge_incident(
+        db,
+        recovered.id,
+        expected_version=recovered.version,
+        actor="system",
+        reason="자동 복구 종료",
+        now=now,
+    )
+
+    # Then: the row closes and the NULL actor marks it a machine acknowledgement
+    assert isinstance(closed, Incident)
+    assert closed.state == IncidentState.ACKNOWLEDGED.value
+    assert closed.acknowledged_at is not None
+    assert closed.acknowledged_by_id is None
+    actions = [
+        row.action
+        for row in (
+            await db.execute(
+                select(AdminAuditLog).where(AdminAuditLog.target_id == incident.id)
+            )
+        ).scalars()
+    ]
+    assert "incident_auto_acknowledged" in actions

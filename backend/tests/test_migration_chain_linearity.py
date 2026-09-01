@@ -27,9 +27,10 @@ OPERATIONS_TEST_ACCOUNTS = "0057_mark_operations_test_accounts"
 MONTHLY_DELIVERY_REPAIR = "0058_repair_monthly_delivery_drift"
 HOSPITAL_USAGE_EVENTS = "0059_add_hospital_usage_events"
 TRACKING_SET = "0060_add_ai_query_target_tracking_set"
+SYSTEM_INCIDENT_ACK = "0061_allow_system_incident_acknowledgement"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = TRACKING_SET
+HEAD = SYSTEM_INCIDENT_ACK
 
 
 def _script_directory() -> ScriptDirectory:
@@ -107,6 +108,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        SYSTEM_INCIDENT_ACK,
         TRACKING_SET,
         HOSPITAL_USAGE_EVENTS,
         MONTHLY_DELIVERY_REPAIR,
@@ -125,7 +127,6 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
 
     assert len(applied) == len(set(applied))
     assert applied[-10:] == [
-        VISUAL_IDENTITY,
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -135,4 +136,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         MONTHLY_DELIVERY_REPAIR,
         HOSPITAL_USAGE_EVENTS,
         TRACKING_SET,
+        SYSTEM_INCIDENT_ACK,
     ]

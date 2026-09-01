@@ -31,6 +31,67 @@ class IncidentFingerprint(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class IncidentAudience(StrEnum):
+    """Who can actually act on an incident type.
+
+    ``OPERATOR`` incidents describe customer-visible work an AE can finish in Admin.
+    ``DEVELOPER`` incidents describe infrastructure an AE cannot repair (broker,
+    background task crashes, notification transport, cache refresh, PDF rendering).
+    Routing those to a separate webhook keeps the AE channel actionable.
+    """
+
+    OPERATOR = "operator"
+    DEVELOPER = "developer"
+
+
+SLACK_CHANNEL = "SLACK"
+SLACK_DEVELOPER_CHANNEL = "SLACK_DEV"
+
+# Only pure-infrastructure incident types are registered here. Every type absent from
+# this set defaults to ``OPERATOR`` so a new incident is never silently hidden from
+# the AE channel.
+_DEVELOPER_INCIDENT_TYPES: frozenset[str] = frozenset(
+    {
+        "BACKGROUND_TASK_FAILED",
+        "BROKER_UNAVAILABLE",
+        "UNSAFE_STORED_DISPATCH",
+        "NOTIFICATION_DELIVERY_FAILED",
+        "NOTIFICATION_DELIVERY_UNKNOWN",
+        "CACHE_REVALIDATION_FAILED",
+        "MONTHLY_DOCTOR_PDF_BLOCKED",
+    }
+)
+
+
+def incident_audience(incident_type: str | None) -> IncidentAudience:
+    """Return the audience registered for one incident type (default: operator)."""
+
+    if not incident_type:
+        return IncidentAudience.OPERATOR
+    if incident_type.strip().upper() in _DEVELOPER_INCIDENT_TYPES:
+        return IncidentAudience.DEVELOPER
+    return IncidentAudience.OPERATOR
+
+
+def incident_type_of(incident: object) -> str:
+    """Read an incident row's registry key defensively.
+
+    Legacy projections and lightweight adapters can hand over objects without the
+    column. An unknown type simply routes to the operator channel.
+    """
+
+    value = getattr(incident, "incident_type", "")
+    return value if isinstance(value, str) else ""
+
+
+def notification_channel_for_incident_type(incident_type: str | None) -> str:
+    """Map one incident type onto the outbox channel that will carry it."""
+
+    if incident_audience(incident_type) is IncidentAudience.DEVELOPER:
+        return SLACK_DEVELOPER_CHANNEL
+    return SLACK_CHANNEL
+
+
 @dataclass(frozen=True, slots=True)
 class IncidentOpenRequest:
     pipeline: str
@@ -97,3 +158,6 @@ class IncidentLabels:
     next_action: str
     admin_path: str
     requires_operator_action: bool
+    # RETRYING rows stay in the queue as a collapsed secondary state: automatic
+    # recovery already owns them, so they are context, not work.
+    automatic_recovery_in_progress: bool = False

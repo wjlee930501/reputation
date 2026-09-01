@@ -22,8 +22,14 @@ from app.models.operations import (
     OperationRunState,
 )
 from app.services.dependency_incident_helpers import incident_projection, open_notice_exists
+from app.services.incident_safety import should_notify_incident_recovery
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
-from app.services.incidents import mark_recovered, mark_retrying, open_or_touch_incident
+from app.services.incidents import (
+    auto_acknowledge_incident,
+    mark_recovered,
+    mark_retrying,
+    open_or_touch_incident,
+)
 from app.services.notification_messages import (
     build_open_incident_notification,
     build_recovered_incident_notification,
@@ -263,16 +269,31 @@ async def record_revalidation_success(run_id: uuid.UUID, expected_attempt_count:
                 actor="site-revalidation-worker",
                 reason="public cache refresh observed",
             )
-            if isinstance(recovered, Incident) and await open_notice_exists(db, incident.id):
-                hospital = await db.get(Hospital, run.hospital_id)
-                if hospital is not None:
-                    await enqueue_notification(
-                        db,
-                        build_recovered_incident_notification(
-                            incident_projection(recovered, hospital.name, run.id, "복구됨"),
-                            settings.ADMIN_BASE_URL,
-                        ),
-                    )
+            if isinstance(recovered, Incident):
+                observed_at = datetime.now(UTC)
+                notify_recovery = (
+                    await open_notice_exists(db, incident.id)
+                    and should_notify_incident_recovery(recovered, now=observed_at)
+                )
+                if notify_recovery:
+                    hospital = await db.get(Hospital, run.hospital_id)
+                    if hospital is not None:
+                        await enqueue_notification(
+                            db,
+                            build_recovered_incident_notification(
+                                incident_projection(recovered, hospital.name, run.id, "복구됨"),
+                                settings.ADMIN_BASE_URL,
+                            ),
+                        )
+                # Cache refresh recovers itself within minutes; nobody has to confirm it.
+                await auto_acknowledge_incident(
+                    db,
+                    recovered.id,
+                    expected_version=recovered.version,
+                    actor="site-revalidation-worker",
+                    reason="public cache refresh observed",
+                    now=observed_at,
+                )
         await db.commit()
         return True
 

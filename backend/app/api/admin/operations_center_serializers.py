@@ -8,7 +8,7 @@ from typing import Final, Literal
 
 from app.models.admin_user import AdminUser
 from app.models.hospital import Hospital
-from app.models.operations import Incident, NotificationOutbox, OperationRun
+from app.models.operations import Incident, IncidentState, NotificationOutbox, OperationRun
 from app.schemas.operations import (
     OperationsAction,
     OperationsCustomer,
@@ -248,6 +248,9 @@ def serialize_incident_row(
             else (1 if hospital_id is not None else 0)
         ),
         cost_guard_category=budget_category,
+        # RETRYING is automatic recovery in flight. Keep the row (the FE groups and
+        # collapses it) but stop counting it as work waiting on a person.
+        requires_operator_action=incident.state == IncidentState.OPEN.value,
         safe_cause=projected_message,
         history=history(incident),
         slack=slack_state(outbox),

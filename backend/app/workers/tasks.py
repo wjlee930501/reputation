@@ -72,6 +72,7 @@ from app.services.content_publication import (
     assess_content_publication,
 )
 from app.services.content_publish_notifications import (
+    enqueue_generation_blocked_digest_sync,
     enqueue_missing_approved_essence_digest_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
@@ -209,7 +210,11 @@ from app.workers.dispatch_auth import (
 )
 from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_incident_control import (
+    PREPUBLISH_MORNING_BATCH,
+    PUBLISH_MORNING_BATCH,
+    generation_block_digest_due,
     generation_notify_requested,
+    generation_safe_cause,
     open_generation_incident,
     recover_generation_incidents,
 )
@@ -2930,7 +2935,12 @@ def _persist_publication_readiness(
 
 
 def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
-    """At 07:45, page the exact persisted blocker without publishing the slot."""
+    """At 07:45, record the persisted blockers and summarize them in one Slack message.
+
+    Every blocked slot keeps its own incident because the Admin retry controls act
+    on incidents. Slack gets one digest per batch instead of one page per content
+    item, and blockers the 01·04·07 recovery still owns are left out until 08:00.
+    """
 
     observed = now_kst or arrow.now("Asia/Seoul")
     observed_time = observed.time().replace(tzinfo=None)
@@ -2952,6 +2962,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
         .all()
     )
     paged = 0
+    blocked_outcomes: list[dict[str, object]] = []
     for item in items:
         hospital = item.hospital
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
@@ -2979,10 +2990,26 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                 run_id=blocked_run.id,
                 code=code,
                 message=message,
-                notify=generation_notify_requested(code),
+                notify=False,
             )
         )
+        if generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH):
+            blocked_outcomes.append(
+                {
+                    "hospital_id": hospital.id,
+                    "hospital_name": hospital.name,
+                    "content_id": item.id,
+                    "title": item.title,
+                    "code": code,
+                    "cause": generation_safe_cause(code),
+                }
+            )
         paged += 1
+    if blocked_outcomes:
+        enqueue_generation_blocked_digest_sync(
+            db, observed.date(), PREPUBLISH_MORNING_BATCH, blocked_outcomes
+        )
+        db.commit()
     return paged
 
 
@@ -3003,11 +3030,14 @@ def morning_content_auto_publish(self):
         with SyncSessionLocal() as db:
             due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
 
+        blocked_outcomes: list[dict[str, object]] = []
         for content_id in due_ids:
             outcome = _auto_publish_one(content_id)
             if outcome is None:
                 continue
             if outcome["kind"] == "blocked":
+                # The incident stays per item (it drives the Admin retry control);
+                # Slack gets one digest for the whole batch below.
                 _run_async(
                     open_generation_incident(
                         item_id=content_id,
@@ -3016,9 +3046,22 @@ def morning_content_auto_publish(self):
                         run_id=outcome["run_id"],
                         code=outcome["code"],
                         message=outcome["message"],
-                        notify=generation_notify_requested(outcome["code"]),
+                        notify=False,
                     )
                 )
+                if generation_block_digest_due(
+                    outcome["code"], batch=PUBLISH_MORNING_BATCH
+                ):
+                    blocked_outcomes.append(
+                        {
+                            "hospital_id": outcome["hospital_id"],
+                            "hospital_name": outcome["hospital_name"],
+                            "content_id": content_id,
+                            "title": outcome.get("title"),
+                            "code": outcome["code"],
+                            "cause": generation_safe_cause(outcome["code"]),
+                        }
+                    )
                 continue
 
             _run_async(
@@ -3053,6 +3096,13 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
+        if blocked_outcomes:
+            with SyncSessionLocal() as digest_db:
+                enqueue_generation_blocked_digest_sync(
+                    digest_db, today, PUBLISH_MORNING_BATCH, blocked_outcomes
+                )
+                digest_db.commit()
+
         # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
         # 개별 알림 대신 자동 완료와 미해결 예외를 한 번의 운영 요약으로만 보낸다.
     except Exception as exc:

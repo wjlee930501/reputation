@@ -11,7 +11,11 @@ from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentSeverity, IncidentState
 from app.services.incident_safety import sanitize_operator_text
-from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+from app.services.incident_types import (
+    IncidentFingerprint,
+    IncidentOpenRequest,
+    incident_type_of,
+)
 from app.services.incidents import (
     build_incident_key,
     mark_recovered,
@@ -93,6 +97,7 @@ async def open_weekly_sov_capacity_digest(
                         incident.version,
                         incident.safe_error_message,
                         incident.episode_seq,
+                        incident_type_of(incident),
                     ),
                     settings.ADMIN_BASE_URL,
                 ),
@@ -224,6 +229,7 @@ async def _open_sov_failure(
                         incident.safe_error_message
                         or f"{period_label} AI 검색 노출 측정에 실패했습니다.",
                         incident.episode_seq,
+                        incident_type_of(incident),
                     ),
                     settings.ADMIN_BASE_URL,
                 ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -34,13 +35,20 @@ PUBLISH_DIGEST_NOTIFICATION_TYPE = "CONTENT_PUBLISH_DIGEST"
 MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE = (
     "MISSING_APPROVED_ESSENCE_DIGEST"
 )
+GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE = "GENERATION_BLOCKED_DIGEST"
 POST_PUBLISH_REVIEW_OVERDUE_TYPE = "POST_PUBLISH_REVIEW_OVERDUE"
 _DEDUPE_PREFIX = f"{PUBLISH_NOTIFICATION_TYPE}:"
 _DIGEST_DEDUPE_PREFIX = f"{PUBLISH_DIGEST_NOTIFICATION_TYPE}:"
 _MISSING_ESSENCE_DIGEST_DEDUPE_PREFIX = (
     f"{MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE}:"
 )
+_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX = (
+    f"{GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE}:"
+)
 _REVIEW_OVERDUE_DEDUPE_PREFIX = f"{POST_PUBLISH_REVIEW_OVERDUE_TYPE}:"
+# Slack Block Kit truncates long sections; keep the digest inside one readable block.
+_DIGEST_MAX_HOSPITALS = 12
+_DIGEST_MAX_ITEMS_PER_HOSPITAL = 5
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -208,6 +216,78 @@ def build_missing_approved_essence_digest_intent(
     )
 
 
+def build_generation_blocked_digest_intent(
+    cycle_date: date,
+    batch: str,
+    blocked_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationIntent:
+    """Build one blocked-publication summary for a Seoul morning batch.
+
+    Per-item incidents stay in the database because they drive the Admin retry
+    controls. Slack gets one grouped message instead of one page per content item.
+    """
+
+    if not blocked_outcomes:
+        raise NotificationPayloadError("GENERATION_BLOCKED_DIGEST_ITEMS_REQUIRED")
+    entries = [
+        (
+            str(outcome.get("hospital_name") or "이름 미확인 병원"),
+            str(outcome.get("content_id") or ""),
+            str(outcome.get("code") or "UNKNOWN"),
+            str(outcome.get("cause") or "자동 생성 작업이 완료되지 않았습니다."),
+            str(outcome.get("title") or "제목 없는 콘텐츠"),
+        )
+        for outcome in blocked_outcomes
+    ]
+    identity = sorted({f"{content_id}:{code}" for _, content_id, code, _, _ in entries})
+    digest = hashlib.sha256("\n".join(identity).encode()).hexdigest()[:32]
+    hospitals: dict[str, list[tuple[str, str, str]]] = {}
+    for hospital_name, _content_id, code, cause, title in entries:
+        hospitals.setdefault(hospital_name, []).append((title, code, cause))
+    action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
+    shown = sorted(hospitals.items())[:_DIGEST_MAX_HOSPITALS]
+    hidden = len(hospitals) - len(shown)
+    lines = []
+    for hospital_name, items in shown:
+        detail = " · ".join(
+            f"{_publish_safe_text(title, 60)}({_publish_safe_text(cause, 80)})"
+            for title, _code, cause in items[:_DIGEST_MAX_ITEMS_PER_HOSPITAL]
+        )
+        remainder = len(items) - min(len(items), _DIGEST_MAX_ITEMS_PER_HOSPITAL)
+        if remainder > 0:
+            detail = f"{detail} · 그 외 {remainder}건"
+        lines.append(f"• *{_publish_safe_text(hospital_name, 100)}* 차단 {len(items)}건\n  {detail}")
+    if hidden > 0:
+        lines.append(f"• 그 외 {hidden}곳")
+    summary = f"병원 {len(hospitals)}곳 · 글 {len(entries)}건"
+    message = validated_message(
+        RenderedSlackMessage(
+            f"무슨 문제인지: 자동 발행 차단 {summary} · "
+            "고객 영향: 예정 글이 공개되지 않음 · "
+            "지금 할 일: 운영센터에서 차단 항목 조치 · 처리 기한: 오늘 중",
+            (
+                header_block("generation_blocked_digest_header", "자동 발행 차단 요약"),
+                section_block("generation_blocked_digest_summary", f"*{summary}*"),
+                section_block("generation_blocked_digest_items", "\n".join(lines)),
+                action_block(
+                    "generation_blocked_digest_action", action_url, "운영센터에서 모아보기"
+                ),
+            ),
+            action_url,
+        ),
+        settings.ADMIN_BASE_URL,
+    )
+    return NotificationIntent(
+        dedupe_key=(
+            f"{_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX}"
+            f"{cycle_date.isoformat()}:{batch}:{digest}"
+        ),
+        notification_type=GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE,
+        message=message,
+        max_attempts=3,
+    )
+
+
 def build_post_publish_review_overdue_intent(
     item: PublishedItem, hospital: HospitalIdentity
 ) -> NotificationIntent:
@@ -297,6 +377,25 @@ def enqueue_missing_approved_essence_digest_sync(
     """Add at most one onboarding skip digest for the Seoul calendar date."""
 
     intent = build_missing_approved_essence_digest_intent(cycle_date, skipped_outcomes)
+    existing = db.execute(
+        select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    return _enqueue_notification_sync(db, intent)
+
+
+def enqueue_generation_blocked_digest_sync(
+    db: Session,
+    cycle_date: date,
+    batch: str,
+    blocked_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationOutbox | None:
+    """Add at most one blocked-publication digest per morning batch and blocked set."""
+
+    if not blocked_outcomes:
+        return None
+    intent = build_generation_blocked_digest_intent(cycle_date, batch, blocked_outcomes)
     existing = db.execute(
         select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
     ).scalar_one_or_none()
