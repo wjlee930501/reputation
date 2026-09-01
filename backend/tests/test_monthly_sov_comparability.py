@@ -62,23 +62,87 @@ def _cell(
     )
 
 
-def test_adaptive_repetitions_do_not_change_fixed_cell_score() -> None:
-    # Given: 같은 HIGH 셀에 성공 측정이 한 번인 달과 네 번인 달
-    one_attempt = _cell("high", "chatgpt", mentioned=True)
-    repeated_attempts = _cell(
+def test_repeated_measurements_contribute_to_the_cell_score() -> None:
+    """셀 점수는 대표 1건의 0/1이 아니라 성공 반복의 언급 빈도(k/n)다.
+
+    예전에는 반복 5회를 결제하고 1건만 썼다(나머지 4건 폐기, tie-break가 UUID라
+    사실상 무작위 1건). 그 규칙에서는 아래 두 달의 점수가 같았지만, 실제로는
+    "5번 중 5번 나온 달"과 "5번 중 1번 나온 달"은 같은 달이 아니다.
+    """
+    # Given: 같은 셀에서 5회 중 5회 언급된 달과 5회 중 1회만 언급된 달
+    always = _cell(
         "high",
         "chatgpt",
-        attempts=tuple(_attempt(index, mentioned=True) for index in range(4)),
+        attempts=tuple(_attempt(index, mentioned=True) for index in range(5)),
+    )
+    once_in_five = _cell(
+        "high",
+        "chatgpt",
+        attempts=(
+            _attempt(0, mentioned=True),
+            *(_attempt(index, mentioned=False) for index in range(1, 5)),
+        ),
     )
     stable_other_cell = _cell("normal", "chatgpt", mentioned=False)
 
-    # When: 고정 셀 기준으로 각각 월간 점수를 계산한다
-    once = build_monthly_sov((one_attempt, stable_other_cell), ("chatgpt",))
-    repeated = build_monthly_sov((repeated_attempts, stable_other_cell), ("chatgpt",))
+    # When
+    strong = build_monthly_sov((always, stable_other_cell), ("chatgpt",))
+    weak = build_monthly_sov((once_in_five, stable_other_cell), ("chatgpt",))
 
-    # Then: 반복 횟수는 점수와 분모를 바꾸지 않는다
-    assert once.sov_pct == repeated.sov_pct == 50.0
-    assert once.segments.local.measured_count == repeated.segments.local.measured_count == 2
+    # Then: 빈도가 다르면 점수도 다르고, 표본 크기는 폐기되지 않고 그대로 남는다
+    assert strong.sov_pct == 50.0  # (5/5 + 0/1) / 2
+    assert weak.sov_pct == 10.0  # (1/5 + 0/1) / 2
+    assert strong.attempts_used == 6
+    assert strong.mentioned_attempts == 5
+    assert weak.mentioned_attempts == 1
+    # 셀 수(분모의 구조)는 그대로다 — 바뀐 것은 셀 하나가 이진값이 아니라는 것뿐이다.
+    assert strong.segments.local.measured_count == weak.segments.local.measured_count == 2
+
+
+def test_single_attempt_cells_still_score_as_k_over_one() -> None:
+    """반복 도입 이전 manifest(셀당 성공 1건)도 그대로 계산된다 — k/1이다."""
+    legacy = (
+        _cell("q1", "chatgpt", mentioned=True),
+        _cell("q2", "chatgpt", mentioned=False),
+    )
+
+    summary = build_monthly_sov(legacy, ("chatgpt",))
+
+    assert summary.sov_pct == 50.0
+    assert summary.attempts_used == 2
+    assert summary.measurement_basis.repeat_count == 1
+
+
+def test_headline_uncertainty_comes_from_the_actual_repeat_sample() -> None:
+    # Given: 질문 2개 × 반복 5회 = 성공 시도 10건, 그중 5건 언급
+    cells = (
+        _cell(
+            "q1",
+            "chatgpt",
+            attempts=tuple(_attempt(index, mentioned=True) for index in range(5)),
+        ),
+        _cell(
+            "q2",
+            "chatgpt",
+            attempts=tuple(_attempt(index + 5, mentioned=False) for index in range(5)),
+        ),
+    )
+
+    # When
+    summary = build_monthly_sov(cells, ("chatgpt",))
+
+    # Then: 5/10의 Wilson 95% 구간이 그대로 붙는다
+    assert summary.sov_pct == 50.0
+    assert summary.mention_frequency == 0.5
+    assert (summary.ci95_low, summary.ci95_high) == (23.66, 76.34)
+    assert summary.margin_of_hundred == 26
+    assert summary.measurement_basis.to_payload() == {
+        "question_count": 2,
+        "platform_count": 1,
+        "cell_count": 2,
+        "repeat_count": 5,
+        "attempts_used": 10,
+    }
 
 
 def test_platform_macro_gives_each_configured_platform_equal_weight() -> None:
@@ -249,6 +313,157 @@ def test_delta_uses_only_query_cells_matched_within_every_platform() -> None:
     assert summary.comparison.prior_unmatched_cell_count == 1
 
 
+def test_headline_and_prior_share_the_matched_cohort_denominator() -> None:
+    """헤드라인·전월·증감이 같은 셀 집합 위에 있어야 한다.
+
+    예전에는 헤드라인만 전 셀(current-only 포함), 전월은 매칭 셀만 써서
+    30셀 대 29셀을 나란히 놓고 증감이라 불렀다.
+    """
+    current = (
+        _cell("shared", "chatgpt", mentioned=True),
+        _cell("current-only", "chatgpt", mentioned=False),
+    )
+    prior = (_cell("shared", "chatgpt", mentioned=False),)
+
+    summary = build_monthly_sov(
+        current,
+        ("chatgpt",),
+        prior_cells=prior,
+        prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
+    )
+
+    # 헤드라인 = 매칭 코호트(shared 1셀) = 100%, 전 셀 기준 50%는 따로 공개한다
+    assert summary.comparison.status == "COMPARABLE"
+    assert summary.sov_pct == 100.0
+    assert summary.sov_pct_all_cells == 50.0
+    assert summary.comparison.prior_sov_pct == 0.0
+    assert summary.comparison.change_pct == 100.0
+    # 두 달의 표본 수도 같은 셀 집합에서 세므로 대칭이다
+    assert summary.comparison.current_attempts_used == 1
+    assert summary.comparison.prior_attempts_used == 1
+    assert summary.attempts_used == summary.comparison.current_attempts_used
+    payload = summary.to_payload()
+    assert payload["sov_pct"] == 100.0
+    assert payload["sov_pct_all_cells"] == 50.0
+    # 표본 각주도 같은 코호트를 설명해야 한다 — current-only 셀은 세지 않는다
+    assert payload["measurement_basis"]["cell_count"] == 1
+    assert payload["measurement_basis"]["attempts_used"] == 1
+
+
+def test_a_one_cell_flip_is_reported_as_normal_variation() -> None:
+    """셀 하나가 뒤집힌 정도의 변화는 노이즈로 판정돼야 한다."""
+    current = tuple(
+        _cell(
+            f"q{index}",
+            "chatgpt",
+            attempts=tuple(
+                _attempt(index * 5 + repeat, mentioned=index < 5)
+                for repeat in range(5)
+            ),
+        )
+        for index in range(10)
+    )
+    prior = tuple(
+        _cell(
+            f"q{index}",
+            "chatgpt",
+            attempts=tuple(
+                _attempt(100 + index * 5 + repeat, mentioned=index < 4)
+                for repeat in range(5)
+            ),
+        )
+        for index in range(10)
+    )
+
+    summary = build_monthly_sov(
+        current,
+        ("chatgpt",),
+        prior_cells=prior,
+        prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
+    )
+
+    # 50% → 40%, 10점 차이지만 50개 시도 표본에서는 구간이 겹친다
+    assert summary.comparison.current_sov_pct == 50.0
+    assert summary.comparison.prior_sov_pct == 40.0
+    assert summary.comparison.significance == "WITHIN_NOISE"
+    assert summary.to_payload()["significance"] == "WITHIN_NOISE"
+
+
+def test_a_large_move_on_the_same_cohort_is_reported_as_significant() -> None:
+    current = tuple(
+        _cell(
+            f"q{index}",
+            "chatgpt",
+            attempts=tuple(
+                _attempt(index * 5 + repeat, mentioned=index < 9) for repeat in range(5)
+            ),
+        )
+        for index in range(10)
+    )
+    prior = tuple(
+        _cell(
+            f"q{index}",
+            "chatgpt",
+            attempts=tuple(
+                _attempt(200 + index * 5 + repeat, mentioned=index < 1)
+                for repeat in range(5)
+            ),
+        )
+        for index in range(10)
+    )
+
+    summary = build_monthly_sov(
+        current,
+        ("chatgpt",),
+        prior_cells=prior,
+        prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
+    )
+
+    assert summary.comparison.significance == "SIGNIFICANT_UP"
+    assert summary.comparison.current_ci95_low is not None
+    assert summary.comparison.current_ci95_low > summary.comparison.prior_ci95_high
+
+
+def test_a_non_comparable_month_carries_no_significance_verdict() -> None:
+    summary = build_monthly_sov(
+        (_cell("q1", "chatgpt", mentioned=True),),
+        ("chatgpt",),
+    )
+
+    assert summary.comparison.status == "NON_COMPARABLE"
+    assert summary.comparison.significance is None
+    assert summary.to_payload()["significance"] is None
+
+
+def test_representative_attempt_is_deterministic_and_prefers_mention_context() -> None:
+    """대표 응답(evidence 인용문)은 같은 입력이면 항상 같아야 한다."""
+    rich = CellAttempt(
+        record_id=uuid.UUID(int=90),
+        measured_at=BASE_TIME + timedelta(minutes=9),
+        succeeded=True,
+        is_mentioned=True,
+        answer_model="test-answer-model",
+        mention_context="장편한외과의원은 대장항문 전문으로 자주 추천됩니다",
+    )
+    thin = CellAttempt(
+        record_id=uuid.UUID(int=1),
+        measured_at=BASE_TIME,
+        succeeded=True,
+        is_mentioned=True,
+        answer_model="test-answer-model",
+        mention_context="언급",
+    )
+    unmentioned = _attempt(0, mentioned=False)
+    cell = _cell("q1", "chatgpt", attempts=(unmentioned, thin, rich))
+
+    # 언급된 시도 우선 → 문맥이 긴 시도 → (동률이면) 이른 시각 → record_id
+    assert cell.selected_attempt is rich
+    assert cell.mention_frequency == 2 / 3
+
+
 def test_actual_answer_model_change_suppresses_monthly_delta() -> None:
     current = _cell(
         "q1",
@@ -330,6 +545,9 @@ def test_payload_counts_and_query_breakdown_equal_fixed_cells() -> None:
         "state_label": "측정 완료",
         "measured": True,
         "mentioned": True,
+        "attempts_used": 1,
+        "mentioned_attempts": 1,
+        "mention_frequency": 1.0,
     }
     assert not ({"query_matrix_id", "query_target_id", "record_id", "raw_response"} & payload["cells"][0].keys())
 

@@ -14,6 +14,14 @@ class DoctorHeadline(TypedDict):
     prev_of_hundred: int | None
     delta: int | None
     delta_sentence: str | None
+    # 헤드라인이 선 표본과 그 불확실성. 델타 문장이 "의미 있는/정상 변동 범위"를
+    # 고르는 근거가 여기에 그대로 남는다 — 문구만 있고 근거가 없으면 방어 못 한다.
+    attempts_used: int | None
+    mention_frequency: float | None
+    ci95_low_of_hundred: int | None
+    ci95_high_of_hundred: int | None
+    margin_of_hundred: int | None
+    significance: str | None
 
 
 class DoctorTile(TypedDict):

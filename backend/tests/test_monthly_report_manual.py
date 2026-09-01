@@ -685,7 +685,7 @@ def test_doctor_artifact_storage_failure_keeps_report_blocked_and_opens_recovery
     monkeypatch.setattr(
         tasks,
         "load_monthly_sov_manifest",
-        lambda *_args: SimpleNamespace(cells=(), selected_records=()),
+        lambda *_args: SimpleNamespace(cells=(), selected_records=(), scored_records=()),
     )
     monkeypatch.setattr(tasks, "build_monthly_sov", lambda *_args, **_kwargs: FakeMonthlySov())
     monkeypatch.setattr(tasks, "generate_pdf_report", lambda **_kwargs: "gs://qa-private/ae.pdf")

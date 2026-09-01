@@ -155,7 +155,13 @@ def _payload(
 def build_content_attribution_summary(
     request: ContentAttributionInput,
 ) -> ContentAttributionPayload:
-    """Classify current mentions only against the same frozen prior cell."""
+    """Classify current mentions only against the same frozen prior cell.
+
+    셀 하나의 판정은 대표 응답(``selected_attempt``)이 쓴다. 대표는 언급된 시도를
+    먼저 고르는 결정적 규칙이므로, 여기서 "새로 확인된 질문"은 **이번 달 반복 중
+    한 번이라도 나왔고 지난달에는 한 번도 안 나온 셀**을 뜻한다. 헤드라인 점수는
+    이와 달리 셀 빈도(k/n)를 쓴다 — 둘의 목적이 다르다(하나는 사례 나열, 하나는 비율).
+    """
     prior_by_key = (
         {(cell.query_key, cell.platform): cell for cell in request.prior_cells}
         if request.prior_cells is not None

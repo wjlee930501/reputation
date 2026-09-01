@@ -5081,7 +5081,14 @@ def _build_monthly_report_for_hospital(
             else None
         ),
     )
-    sov_records = list(current_loaded.selected_records) if current_loaded is not None else []
+    # 타깃별 언급 빈도는 성공 측정 **전부**로 센다. 대표 1건(evidence용)은 언급된
+    # 시도를 먼저 고르므로 비율 계산에 쓰면 위로 편향된다.
+    sov_records = list(current_loaded.scored_records) if current_loaded is not None else []
+    evidence_records = (
+        list(current_loaded.selected_records) if current_loaded is not None else []
+    )
+    # 헤드라인·전월·증감은 모두 같은 분모 위에 있다 — 비교가 성립하면 셋 다 매칭
+    # 코호트 기준이고, 아니면 셋 다 이번 달 전 셀 기준(전월·증감은 None)이다.
     sov_pct = monthly_sov.sov_pct
     prev_sov = monthly_sov.comparison.prior_sov_pct
     change_pct = monthly_sov.comparison.change_pct
@@ -5255,7 +5262,7 @@ def _build_monthly_report_for_hospital(
             published_count=len(published_contents),
             plan_quota=monthly_quota_for_plan(h.plan),
             attribution=attribution,
-            records=sov_records,
+            records=evidence_records,
             platforms=report_platforms,
             sov_coverage=monthly_sov_payload,
             comparison_reason=monthly_sov_payload["comparison"]["reason"],

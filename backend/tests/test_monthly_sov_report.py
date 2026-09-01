@@ -11,10 +11,23 @@ from app.services.monthly_sov_types import CellAttempt, ManifestCellInput
 BASE_TIME = datetime(2026, 8, 3, tzinfo=timezone.utc)
 
 
-def _cell(query_key: str, platform: str, *, state: str, intent: str = "LOCAL"):
+def _cell(
+    query_key: str,
+    platform: str,
+    *,
+    state: str,
+    intent: str = "LOCAL",
+    repeats: int = 1,
+    mentioned: int = 1,
+):
     attempts = (
-        CellAttempt(uuid.uuid4(), BASE_TIME, True, True),
-    ) if state == "SUCCESS" else ()
+        tuple(
+            CellAttempt(uuid.uuid4(), BASE_TIME, True, index < mentioned)
+            for index in range(repeats)
+        )
+        if state == "SUCCESS"
+        else ()
+    )
     return ManifestCellInput(
         query_key=query_key,
         query_text=f"환자 질문 {query_key}",
@@ -86,3 +99,73 @@ def test_ae_pdf_discloses_counts_and_non_comparable_action_without_raw_codes() -
     assert "스타터 · 월 12편" in html
     assert "AI 답변 내 병원 언급률" in html
     assert payload["comparison"]["next_action"] in html
+    # 각주가 사실과 맞아야 한다 — 예전 문구는 "성공 결과 1개만 사용", "통계적 평균값"이었다.
+    assert "성공 결과 1개만 사용" not in html
+    assert "통계적 평균값" not in html
+
+
+def test_ae_pdf_footnote_states_the_actual_repeat_sample_and_interval() -> None:
+    payload = build_monthly_sov(
+        (
+            _cell("q1", "chatgpt", state="SUCCESS", repeats=5, mentioned=3),
+            _cell("q2", "chatgpt", state="SUCCESS", repeats=5, mentioned=2),
+        ),
+        ("chatgpt",),
+    ).to_payload()
+    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates"
+    template = Environment(loader=FileSystemLoader(template_dir)).get_template("report.html")
+
+    html = template.render(
+        hospital=SimpleNamespace(
+            name="테스트의원", region=["서울"], specialties=["내과"], plan="PLAN_12"
+        ),
+        report_type="MONTHLY",
+        period_start=BASE_TIME,
+        period_end=BASE_TIME,
+        generated_at=BASE_TIME,
+        sov_pct=payload["sov_pct"],
+        sov_measured=True,
+        published_count=0,
+        repeat_count=5,
+        sov_coverage=payload,
+    )
+
+    assert payload["sov_pct"] == 50.0  # (3/5 + 2/5) / 2
+    assert "성공한 반복 측정을 모두 사용해" in html
+    assert "질문 2개 ×" in html
+    assert "반복 5회 = 측정 10건입니다" in html
+    assert "95% 신뢰구간" in html
+
+
+def test_ae_pdf_still_renders_a_legacy_payload_without_the_new_keys() -> None:
+    """DB에 남아 있는 예전 sov_summary에도 템플릿이 깨지지 않아야 한다."""
+    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates"
+    template = Environment(loader=FileSystemLoader(template_dir)).get_template("report.html")
+
+    html = template.render(
+        hospital=SimpleNamespace(
+            name="테스트의원", region=["서울"], specialties=["내과"], plan="PLAN_12"
+        ),
+        report_type="MONTHLY",
+        period_start=BASE_TIME,
+        period_end=BASE_TIME,
+        generated_at=BASE_TIME,
+        sov_pct=40.0,
+        sov_measured=True,
+        published_count=0,
+        repeat_count=5,
+        sov_coverage={
+            "planned_count": 2,
+            "success_count": 2,
+            "failed_count": 0,
+            "excluded_count": 0,
+            "platforms": [],
+            "queries": [],
+            "cells": [],
+            "segments": {},
+            "comparison": {"status": "NON_COMPARABLE", "next_action": "이번 달 수치만 전달"},
+        },
+    )
+
+    assert "95% 신뢰구간" not in html
+    assert "계획한 2개 조합 중 2개를 측정했고" in html

@@ -20,6 +20,7 @@ from app.services.doctor_pdf_contracts import (
 )
 from app.services.monthly_sov_types import MonthlySovPayload
 from app.services.report_attribution import ContentAttributionPayload
+from app.services.sov_statistics import DeltaSignificance
 
 logger = logging.getLogger(__name__)
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
@@ -484,8 +485,10 @@ def _upload_to_gcs(local_path: Path, slug: str, filename: str) -> str:
 # 원장이 자기 폰으로 확인했을 때 방어할 수 있는 최소 길이. 너무 길면 안 읽는다.
 DOCTOR_EXCERPT_CHARS = 260
 
-# 월간 변동이 이 폭 안이면 "정상 범위"로 안내한다. 안 쓰면 다음 달 하락이 해지 대화가 된다.
-NORMAL_FLUCTUATION = 5
+# NORMAL_FLUCTUATION(고정 5) 상수는 제거했다. 근거 없는 상수였고 실측 노이즈의
+# 1/4~1/5이라 "정상 범위"라는 말이 사실이 아니었다. 이제 각주의 오차 범위는
+# 이번 달 실제 표본으로 계산한 Wilson 구간에서 나오고(services/sov_statistics.py),
+# 증감 문장은 그 구간이 겹치는지로 고른다.
 
 _PLATFORM_LABELS = {"chatgpt": "챗GPT", "gemini": "제미나이"}
 
@@ -547,6 +550,26 @@ def _pick_evidence(records: list, hospital_name: str) -> DoctorEvidence:
     return {"found": _shape(mentioned, found=True), "missing": _shape(missing, found=False)}
 
 
+def _error_margin_footnote(
+    margin_of_hundred: int | None, basis: dict[str, Any]
+) -> str:
+    """오차 범위 각주 — 고정 상수가 아니라 이번 달 표본에서 계산한 값으로 쓴다.
+
+    표본 정보가 없는 구버전 payload에서는 숫자를 지어내지 않고, AI 답변이
+    매번 달라진다는 사실만 남긴다.
+    """
+    questions = int(basis.get("question_count") or 0)
+    repeats = int(basis.get("repeat_count") or 0)
+    platform_count = int(basis.get("platform_count") or 0)
+    if margin_of_hundred is None or not questions or not repeats:
+        return "AI 답변은 같은 질문에도 매번 달라져 횟수가 다소 오르내립니다."
+    if platform_count > 1:
+        scope = f"질문 {questions}개 × AI 서비스 {platform_count}곳 × 반복 {repeats}회 기준"
+    else:
+        scope = f"질문 {questions}개 × 반복 {repeats}회 기준"
+    return f"이번 달 수치의 오차 범위는 ±{margin_of_hundred}번입니다 ({scope})."
+
+
 def build_doctor_report_view(
     *,
     hospital: Any,
@@ -559,6 +582,7 @@ def build_doctor_report_view(
     platforms: list[str] | None = None,
     sov_coverage: MonthlySovPayload | None = None,
     comparison_reason: str | None = None,
+    significance: DeltaSignificance | None = None,
 ) -> DoctorReportView:
     """원장에게 보낼 1페이지의 모든 문구와 숫자를 만든다.
 
@@ -568,6 +592,13 @@ def build_doctor_report_view(
     this_count = _as_hundred(sov_pct)
     prev_count = _as_hundred(prev_sov_pct)
     measured = this_count is not None
+
+    coverage = sov_coverage or {}
+    # 유의성은 호출부가 명시하지 않으면 월간 payload에서 읽는다. 둘 다 없으면
+    # (구버전 payload) 상승·하락을 단정하지 않고 변화만 읽어준다.
+    verdict: DeltaSignificance | None = significance or coverage.get("significance")
+    margin_of_hundred = coverage.get("margin_of_hundred")
+    basis = coverage.get("measurement_basis") or {}
 
     comparison_is_valid = comparison_reason in (None, "MATCHED_COHORT")
     delta = (
@@ -585,12 +616,24 @@ def build_doctor_report_view(
         delta_sentence = "측정 기준이 바뀌어 다음 달부터 비교합니다"
     elif delta is None:
         delta_sentence = "이번 달이 기준선입니다"
-    elif delta > 0:
-        delta_sentence = f"지난달 {prev_count}번 → 이번 달 {this_count}번 ({delta}개 늘었습니다)"
-    elif delta < 0:
-        delta_sentence = f"지난달 {prev_count}번 → 이번 달 {this_count}번 ({abs(delta)}개 줄었습니다)"
     else:
-        delta_sentence = f"지난달 {prev_count}번 → 이번 달 {this_count}번 (변화 없습니다)"
+        # **증감의 해석은 부호가 아니라 표본이 정한다.** 예전에는 delta > 0이면
+        # 무조건 "늘었습니다"였는데, 셀 하나가 뒤집히면 3점이 움직이는 표본에서
+        # 그 문장은 노이즈를 성과로 판 것이다. 이제 두 달의 95% 구간이 겹치지
+        # 않을 때만 "의미 있는" 변화라고 말한다.
+        movement = f"지난달 {prev_count}번 → 이번 달 {this_count}번"
+        if verdict == "SIGNIFICANT_UP":
+            delta_sentence = f"{movement} (의미 있는 상승입니다)"
+        elif verdict == "SIGNIFICANT_DOWN":
+            delta_sentence = f"{movement} (의미 있는 하락입니다)"
+        elif verdict == "WITHIN_NOISE":
+            delta_sentence = f"{movement} (정상 변동 범위 안입니다)"
+        elif delta > 0:
+            delta_sentence = f"{movement} ({delta}개 늘었습니다)"
+        elif delta < 0:
+            delta_sentence = f"{movement} ({abs(delta)}개 줄었습니다)"
+        else:
+            delta_sentence = f"{movement} (변화 없습니다)"
 
     first_measured_questions = int(
         (attribution or {}).get("first_measured_mention_count") or 0
@@ -648,7 +691,7 @@ def build_doctor_report_view(
 
     footnotes = [
         f"{platform_names}에 환자들이 실제로 쓰는 표현으로 질문해 답변을 모았습니다.",
-        f"횟수가 {NORMAL_FLUCTUATION}개 안팎으로 오르내리는 것은 정상 범위입니다.",
+        _error_margin_footnote(margin_of_hundred, basis),
         "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.",
     ]
     if first_measured_questions:
@@ -670,6 +713,14 @@ def build_doctor_report_view(
             "prev_of_hundred": prev_count,
             "delta": delta,
             "delta_sentence": delta_sentence,
+            # 숫자의 실체 — 반복 표본 크기, 빈도, 95% 구간, 유의성 판정.
+            # 템플릿은 쓰지 않지만 Admin·미팅 자료가 같은 근거를 보게 한다.
+            "attempts_used": coverage.get("attempts_used"),
+            "mention_frequency": coverage.get("mention_frequency"),
+            "ci95_low_of_hundred": _as_hundred(coverage.get("ci95_low")),
+            "ci95_high_of_hundred": _as_hundred(coverage.get("ci95_high")),
+            "margin_of_hundred": margin_of_hundred,
+            "significance": verdict,
         },
         "summary": summary,
         "coverage_text": coverage_text,
