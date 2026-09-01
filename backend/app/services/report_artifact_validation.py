@@ -46,23 +46,29 @@ def validate_doctor_pdf(
             "원장 전달용 PDF 파일을 열어 확인할 수 없습니다.",
         ) from exc
 
-    if len(reader.pages) != 1:
+    # 본문은 언제나 1쪽이다. 부록(추적 질문 전체표)이 렌더될 때만 2쪽이 되고,
+    # 그 사실은 호출부가 기대값으로 못 박는다 — "왜인지 모르게 2쪽"인 PDF는
+    # 원장에게 나가면 안 된다.
+    expected_pages = 2 if expectation.appendix_expected else 1
+    page_count = len(reader.pages)
+    if page_count != expected_pages:
         raise DoctorPdfValidationError(
             "DOCTOR_PDF_PAGE_COUNT_INVALID",
-            f"원장 전달용 PDF가 1쪽이 아니라 {len(reader.pages)}쪽으로 만들어졌습니다.",
+            f"원장 전달용 PDF가 {expected_pages}쪽이 아니라 {page_count}쪽으로 만들어졌습니다.",
         )
 
     page = reader.pages[0]
-    width = abs(float(page.mediabox.width))
-    height = abs(float(page.mediabox.height))
-    if not (
-        abs(width - _A4_WIDTH_PT) <= _PAGE_TOLERANCE_PT
-        and abs(height - _A4_HEIGHT_PT) <= _PAGE_TOLERANCE_PT
-    ):
-        raise DoctorPdfValidationError(
-            "DOCTOR_PDF_PAGE_SIZE_INVALID",
-            "원장 전달용 PDF가 A4 크기로 만들어지지 않았습니다.",
-        )
+    for sheet in reader.pages:
+        width = abs(float(sheet.mediabox.width))
+        height = abs(float(sheet.mediabox.height))
+        if not (
+            abs(width - _A4_WIDTH_PT) <= _PAGE_TOLERANCE_PT
+            and abs(height - _A4_HEIGHT_PT) <= _PAGE_TOLERANCE_PT
+        ):
+            raise DoctorPdfValidationError(
+                "DOCTOR_PDF_PAGE_SIZE_INVALID",
+                "원장 전달용 PDF가 A4 크기로 만들어지지 않았습니다.",
+            )
 
     extracted_text = page.extract_text() or ""
     normalized_text = _normalize_text(extracted_text)
@@ -107,7 +113,7 @@ def validate_doctor_pdf(
     return DoctorArtifactMetadata(
         validation_version=DOCTOR_ARTIFACT_VALIDATION_VERSION,
         validation_source="SYSTEM",
-        page_count=1,
+        page_count=page_count,
         page_size="A4",
         glyph_count=glyph_count,
         font_family="Pretendard",

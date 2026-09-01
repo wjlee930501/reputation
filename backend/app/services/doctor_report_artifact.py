@@ -43,6 +43,7 @@ def generate_doctor_pdf_report(
         coverage_text=str(view["coverage_text"]),
         caveat_text=_CAVEAT,
         public_url=public_url,
+        appendix_expected=bool(view.get("appendix_rows")),
     )
     rendered = render_validated_doctor_pdf(
         view=view, period_label=label, public_url=public_url, expectation=expectation

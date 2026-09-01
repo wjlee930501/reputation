@@ -185,6 +185,17 @@
 {% endif %}
 {% endif %}
 
+{% if report_type == 'MONTHLY' and talking_points %}
+<h2>🗣️ 원장 미팅 토킹 포인트</h2>
+<p class="note">
+  원장님 보고 자리에서 그대로 읽을 수 있게 만든 3문장입니다. 숫자는 이 리포트의 값에서 그대로
+  가져왔으며 문장을 새로 쓰지 않았습니다. 이 섹션은 원장 전달용 PDF에는 들어가지 않습니다.
+</p>
+<ol>
+  {% for line in talking_points %}<li>{{ line }}</li>{% endfor %}
+</ol>
+{% endif %}
+
 {% if report_type == 'MONTHLY' and attribution %}
 <h2>🔗 콘텐츠 발행과 AI 언급 변화</h2>
 <p class="note">

@@ -14,7 +14,12 @@ from app.models.monthly_control import (
     MonthlyDeliveryEvent,
     ReportDeliveryEventType,
 )
-from app.services.monthly_events import MonthlyEvent, MonthlyEventType, project_monthly_event
+from app.services.monthly_events import (
+    MonthlyEvent,
+    MonthlyEventType,
+    monthly_headline_label,
+    project_monthly_event,
+)
 from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_milestone_messages import MilestoneProjection
 from app.workers.milestone_monthly_facts import ReportFacts, load_report_facts
@@ -201,6 +206,7 @@ def _monthly_event(request: _MonthlyEventRequest) -> MonthlyEvent:
         "담당 AE",
         None,
         request.occurred_at,
+        monthly_headline_label(report.sov_summary),
     )
 
 

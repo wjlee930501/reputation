@@ -17,7 +17,8 @@ class DoctorArtifactProjection(BaseModel):
     ]
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     byte_size: int | None = Field(default=None, gt=0)
-    page_count: Literal[1] | None = None
+    # 본문 1쪽 + (부록이 있으면) 2쪽. 그 외 쪽수는 검증을 통과하지 못한다.
+    page_count: Literal[1, 2] | None = None
     validated_at: datetime | None = None
     validation_version: Literal["doctor-pdf-v1"] | None = None
 

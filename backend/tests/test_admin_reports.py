@@ -143,6 +143,17 @@ def test_monthly_customer_delivery_fails_closed(
     assert gate.ready is False
 
 
+def test_monthly_customer_delivery_accepts_the_two_page_appendix_artifact():
+    """부록이 붙은 2쪽 리포트도 전달 가능하다 — 1쪽 강제는 부록을 막던 규칙이었다."""
+    report = _report()
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    artifact.validation_metadata = {**artifact.validation_metadata, "page_count": 2}
+
+    gate = _delivery_gate(report, _bind_manifest(report, _manifest()), artifact)
+
+    assert gate.ready is True
+
+
 def test_monthly_customer_delivery_requires_matching_valid_doctor_artifact():
     report = _report()
     artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
@@ -156,7 +167,8 @@ def test_monthly_customer_delivery_requires_matching_valid_doctor_artifact():
 @pytest.mark.parametrize(
     "metadata_override",
     [
-        {"page_count": 2},
+        # 1쪽(본문) 또는 2쪽(본문+부록)만 유효하다. 그 밖의 쪽수는 조판 사고다.
+        {"page_count": 3},
         {"page_size": "LETTER"},
         {"font_family": "NanumGothic"},
         {"font_embedded": False},

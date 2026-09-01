@@ -1,7 +1,9 @@
 """PDF 리포트 생성 엔진 — V0 및 월간 리포트"""
 import logging
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -14,17 +16,24 @@ from app.models.hospital import Hospital
 from app.services import sov_engine
 from app.services.content_citations import platform_owned_source_roots
 from app.services.doctor_pdf_contracts import (
+    DoctorAppendixRow,
     DoctorEvidence,
     DoctorEvidenceCase,
+    DoctorMentionSentence,
+    DoctorNextActions,
+    DoctorPublishedItem,
     DoctorReportView,
     DoctorTile,
+    DoctorV0Baseline,
 )
 from app.services.monthly_sov_types import MonthlySovPayload
 from app.services.report_attribution import (
     CitationSummaryPayload,
     ContentAttributionPayload,
+    QuestionRowPayload,
 )
 from app.services.sov_statistics import DeltaSignificance
+from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
@@ -398,6 +407,7 @@ def generate_pdf_report(
     sov_coverage: MonthlySovPayload | None = None,
     content_operations: dict[str, Any] | None = None,
     citations: CitationSummaryPayload | None = None,
+    talking_points: list[str] | None = None,
     report_version: int | None = None,
 ) -> str:
     """
@@ -444,6 +454,9 @@ def generate_pdf_report(
         # AI 답변이 인용한 자사 URL의 글 단위 귀속(월간 전용). None이면 섹션 미노출 —
         # `citations` 키가 없던 과거 리포트도 그대로 렌더된다.
         citations=citations,
+        # AE가 원장 앞에서 그대로 읽을 3문장. 원장 PDF에는 넣지 않는다 —
+        # 이건 내부 준비물이지 고객 문서가 아니다.
+        talking_points=talking_points or [],
         generated_at=now.datetime,
     )
 
@@ -581,6 +594,273 @@ def _error_margin_footnote(
     return f"이번 달 수치의 오차 범위는 ±{margin_of_hundred}번입니다 ({scope})."
 
 
+# ── 원장 1페이지의 3막 ─────────────────────────────────────────────────
+# 막 1 "이번 달 저희가 한 일" → 막 2 "무엇이 달라졌나" → 막 3 "다음 달 계획".
+# 예전에는 막 2만 있었다. 그래서 원장 미팅이 숫자 방어로 시작해 숫자 방어로
+# 끝났고, AE에게는 "무엇을 했고 다음엔 무엇을 한다"를 말할 페이지가 없었다.
+
+DOCTOR_ACT1_TITLE_LIMIT = 3
+DOCTOR_MENTION_LIST_LIMIT = 3
+DOCTOR_TRIMMED_LIST_LIMIT = 2
+DOCTOR_APPENDIX_ROW_LIMIT = 15
+# 경쟁 병원 이름은 같은 질문에서 2회 이상 관측될 때만 적는다. 1회 관측은 그날
+# 답변 하나일 수 있어 원장 앞에서 방어되지 않는다.
+DOCTOR_COMPETITOR_MIN_OBSERVATIONS = 2
+
+# 1페이지 트리밍 예산 — CSS overflow에 맡기면 넘친 내용이 **조용히** 잘리고
+# 무엇이 잘렸는지 아무도 모른다. 대신 뷰가 결정적인 순서로 덜어내고 무엇을
+# 뺐는지 `trimmed`에 남긴다(테스트가 그 순서를 고정한다).
+# 값은 실제 WeasyPrint 렌더로 잡았다: 최대 밀도 뷰가 추정 55줄에서 2쪽으로
+# 넘쳤고 48줄에서 1쪽에 들어갔다.
+DOCTOR_PAGE1_LINE_BUDGET = 48
+# 한 줄에 들어가는 대략적인 글자 수. 폰트 크기별로 다르다(본문 9.2pt,
+# 인용문 7.8pt, 각주 8pt). 정확한 조판이 아니라 **상한 추정**이면 충분하다.
+_PAGE1_BODY_CPL = 46
+_PAGE1_EXCERPT_CPL = 62
+_PAGE1_FOOTNOTE_CPL = 60
+# 머리글·요약 박스·헤드라인 박스·타일·소제목 4개·링크가 쓰는 고정 줄 수.
+_PAGE1_FIXED_LINES = 17
+
+
+def _wrapped_lines(text: str | None, chars_per_line: int) -> int:
+    if not text:
+        return 0
+    return max(1, ceil(len(text) / chars_per_line))
+
+
+def _content_type_code(value: Any) -> str:
+    return str(getattr(value, "value", value) or "")
+
+
+def _published_items(
+    published_contents: Sequence[Any], cited_titles: set[str]
+) -> list[DoctorPublishedItem]:
+    """막 1에 이름을 올릴 글. 인용된 글 → 측정 질문을 겨냥한 글 → FAQ 순.
+
+    편수 타일만으로는 "무엇을 했나"에 답이 안 된다. 원장이 제목을 읽어야
+    자기 병원 이야기가 된다. 순서는 AI가 실제로 읽은 글을 앞에 세운다.
+    """
+    ranked: list[tuple[int, str, bool]] = []
+    for content in published_contents:
+        title = str(getattr(content, "title", "") or "").strip()
+        if not title:
+            continue
+        cited = title in cited_titles
+        gap_driven = getattr(content, "query_target_id", None) is not None
+        if cited:
+            rank = 0
+        elif gap_driven:
+            rank = 1
+        elif _content_type_code(getattr(content, "content_type", None)) == "FAQ":
+            rank = 2
+        else:
+            rank = 3
+        ranked.append((rank, title, cited))
+    ranked.sort(key=lambda row: (row[0], row[1]))
+    items: list[DoctorPublishedItem] = []
+    seen: set[str] = set()
+    for _rank, title, cited in ranked:
+        if title in seen:
+            continue
+        seen.add(title)
+        items.append({"title": title, "cited": cited})
+        if len(items) >= DOCTOR_ACT1_TITLE_LIMIT:
+            break
+    return items
+
+
+def _citation_line(citations: CitationSummaryPayload | None) -> str | None:
+    """"AI가 우리 글을 읽었는가"를 한 줄로. 구버전 리포트에는 없어 생략한다.
+
+    분모는 이번 달 **성공 측정한 답변 수**다. "질문 N개"라고 쓰면 질문×AI 서비스
+    조합을 질문 수로 부풀리는 셈이라 쓰지 않는다 — coverage_text와 같은 단위다.
+    """
+    if not citations:
+        return None
+    measured = int(citations.get("measured_cell_count") or 0)
+    if measured <= 0:
+        return None
+    cited = int(citations.get("cited_cell_count") or 0)
+    return (
+        f"AI 답변이 저희 병원 글·페이지를 인용한 횟수: {cited}건"
+        f"(확인한 답변 {measured}개 중)"
+    )
+
+
+def _mention_sentences(rows: Sequence[Any], limit: int) -> list[DoctorMentionSentence]:
+    return [
+        {
+            "query_text": str(row.get("query_text") or ""),
+            "platform_label": str(row.get("platform_label") or "AI"),
+        }
+        for row in rows[:limit]
+        if str(row.get("query_text") or "").strip()
+    ]
+
+
+def _competitor_by_question(records: Sequence[Any]) -> dict[str, str]:
+    """질문별로 가장 많이 언급된 경쟁 병원 이름. 관측 1회짜리는 버린다."""
+    counts: dict[str, dict[str, int]] = {}
+    for record in records:
+        if not _successful_measurement(record):
+            continue
+        question = _query_text_of(record) or ""
+        if not question:
+            continue
+        bucket = counts.setdefault(question, {})
+        for name in dict.fromkeys(_competitors_named_in(record)):
+            bucket[name] = bucket.get(name, 0) + 1
+    top: dict[str, str] = {}
+    for question, bucket in counts.items():
+        if not bucket:
+            continue
+        name, count = min(bucket.items(), key=lambda pair: (-pair[1], pair[0]))
+        if count >= DOCTOR_COMPETITOR_MIN_OBSERVATIONS:
+            top[question] = name
+    return top
+
+
+def _cited_title_by_question(citations: CitationSummaryPayload | None) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in (citations or {}).get("cited_items") or []:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        for query in item.get("queries") or []:
+            text = str(query.get("query_text") or "").strip()
+            if text and text not in mapping:
+                mapping[text] = title
+    return mapping
+
+
+def _appendix_count_label(attempts_used: int, mentioned_attempts: int) -> str:
+    if attempts_used <= 0:
+        return "측정 없음"
+    if mentioned_attempts <= 0:
+        return "안 나옴"
+    return f"{attempts_used}번 중 {mentioned_attempts}번"
+
+
+def _appendix_rows(
+    question_rows: Sequence[QuestionRowPayload],
+    *,
+    has_prior_month: bool,
+    competitors: dict[str, str],
+    cited_titles: dict[str, str],
+) -> list[DoctorAppendixRow]:
+    """2쪽 부록 — 추적 질문 전체를 한 표로. 1페이지가 못 담는 '전부'가 여기 있다."""
+    rows: list[DoctorAppendixRow] = []
+    for row in question_rows[:DOCTOR_APPENDIX_ROW_LIMIT]:
+        text = str(row.get("query_text") or "").strip()
+        if not text:
+            continue
+        rows.append({
+            "query_text": text,
+            "prev_label": (
+                _appendix_count_label(
+                    int(row.get("prior_attempts_used") or 0),
+                    int(row.get("prior_mentioned_attempts") or 0),
+                )
+                if has_prior_month
+                else "측정 없음"
+            ),
+            "current_label": _appendix_count_label(
+                int(row.get("current_attempts_used") or 0),
+                int(row.get("current_mentioned_attempts") or 0),
+            ),
+            "competitor": competitors.get(text, "—"),
+            "cited_title": cited_titles.get(text, "—"),
+        })
+    return rows
+
+
+def _medical_safe_lines(lines: Sequence[str]) -> list[str]:
+    """공개 문구와 같은 의료광고 금지 표현 검사를 원장 리포트 문장에도 건다.
+
+    지금 문장은 전부 코드 상수라 걸릴 일이 없지만, 게이트가 없으면 다음에
+    문구를 고치는 사람이 그 사실을 모른다.
+    """
+    return [line for line in lines if line and not check_forbidden(line)]
+
+
+def _v0_footnote() -> str:
+    return (
+        "서비스 시작 시점(V0)은 지금과 다른 반복 방식으로 측정해 같은 기준의 비교가 "
+        "아니라 참고용 값입니다."
+    )
+
+
+def _talking_points(
+    *,
+    measured: bool,
+    published_count: int,
+    plan_quota: int | None,
+    published_items: Sequence[DoctorPublishedItem],
+    citations: CitationSummaryPayload | None,
+    this_count: int | None,
+    delta_sentence: str,
+    lost_count: int,
+    ours: Sequence[str],
+) -> list[str]:
+    """AE가 원장 앞에서 그대로 읽을 수 있는 3문장. 숫자는 전부 뷰에서 바인딩한다."""
+    volume = (
+        f"이번 달 {published_count}편을 발행했습니다."
+        if plan_quota is None
+        else f"이번 달 약정 {plan_quota}편 중 {published_count}편을 발행했습니다."
+    )
+    if published_items:
+        volume = f"{volume[:-1]}, 대표 글은 “{published_items[0]['title']}”입니다."
+    if citations:
+        cited_cells = int(citations.get("cited_cell_count") or 0)
+        volume = f"{volume} AI 답변이 저희 글·페이지를 인용한 건수는 {cited_cells}건입니다."
+    if measured and this_count is not None:
+        change = f"환자 질문 100번 중 병원이 나온 횟수는 {this_count}번이고, {delta_sentence}."
+    else:
+        change = "이번 달은 측정이 충분히 이뤄지지 않아 횟수를 보고드리지 않습니다."
+    if lost_count:
+        change = f"{change} 이번 달 빠진 질문은 {lost_count}개입니다."
+    plan = f"다음 달 계획: {ours[0]}" if ours else "다음 달 계획은 리포트 본문을 참고해 주세요."
+    return _medical_safe_lines([volume, change, plan])
+
+
+def _page1_line_cost(
+    *,
+    summary: str,
+    coverage_text: str,
+    delta_sentence: str,
+    v0_baseline: DoctorV0Baseline | None,
+    published_items: Sequence[DoctorPublishedItem],
+    citation_line: str | None,
+    new_mentions: Sequence[DoctorMentionSentence],
+    lost_mentions: Sequence[DoctorMentionSentence],
+    next_actions: DoctorNextActions,
+    evidence: DoctorEvidence,
+    footnotes: Sequence[str],
+) -> int:
+    """1페이지에 들어갈 대략적인 줄 수. 정밀 조판이 아니라 상한 추정이다."""
+    total = _PAGE1_FIXED_LINES
+    total += _wrapped_lines(summary, _PAGE1_BODY_CPL)
+    total += _wrapped_lines(coverage_text, _PAGE1_FOOTNOTE_CPL)
+    total += _wrapped_lines(delta_sentence, _PAGE1_BODY_CPL)
+    if v0_baseline is not None:
+        total += 1
+    total += sum(_wrapped_lines(item["title"], _PAGE1_BODY_CPL) for item in published_items)
+    total += _wrapped_lines(citation_line, _PAGE1_BODY_CPL)
+    for row in (*new_mentions, *lost_mentions):
+        total += _wrapped_lines(row["query_text"], _PAGE1_BODY_CPL)
+    total += sum(
+        _wrapped_lines(line, _PAGE1_BODY_CPL)
+        for line in (*next_actions["ours"], *next_actions["yours"])
+    )
+    for case in (evidence["found"], evidence["missing"]):
+        if case is None:
+            continue
+        total += 1 + _wrapped_lines(case["question"], _PAGE1_BODY_CPL)
+        total += _wrapped_lines(case["excerpt"], _PAGE1_EXCERPT_CPL)
+    total += sum(_wrapped_lines(note, _PAGE1_FOOTNOTE_CPL) for note in footnotes)
+    return total
+
+
 def build_doctor_report_view(
     *,
     hospital: Any,
@@ -591,12 +871,14 @@ def build_doctor_report_view(
     attribution: ContentAttributionPayload | None,
     records: list,
     citations: CitationSummaryPayload | None = None,
+    published_contents: Sequence[Any] = (),
+    v0_baseline: DoctorV0Baseline | None = None,
     platforms: list[str] | None = None,
     sov_coverage: MonthlySovPayload | None = None,
     comparison_reason: str | None = None,
     significance: DeltaSignificance | None = None,
 ) -> DoctorReportView:
-    """원장에게 보낼 1페이지의 모든 문구와 숫자를 만든다.
+    """원장에게 보낼 1페이지(+선택적 2쪽 부록)의 모든 문구와 숫자를 만든다.
 
     숫자는 전부 코드 바인딩이다 — 시장 1위 리포팅 툴의 현재 1순위 불만이 AI 요약의
     숫자 환각이라, 이 함수는 LLM을 쓰지 않는다.
@@ -656,14 +938,17 @@ def build_doctor_report_view(
         or (attribution or {}).get("new_mention_queries")
         or []
     )
-    new_mention_sentences = [
-        {
-            "query_text": str(row.get("query_text") or ""),
-            "platform_label": str(row.get("platform_label") or "AI"),
-        }
-        for row in mention_rows[:5]
-        if str(row.get("query_text") or "").strip()
-    ]
+    new_mention_sentences = _mention_sentences(mention_rows, DOCTOR_MENTION_LIST_LIMIT)
+    # 지난달 manifest가 없으면 "빠진 질문"이라는 말 자체가 성립하지 않는다.
+    has_prior_month = bool((attribution or {}).get("has_prior_month"))
+    lost_mention_sentences = (
+        _mention_sentences(
+            (attribution or {}).get("lost_mention_cells") or [],
+            DOCTOR_MENTION_LIST_LIMIT,
+        )
+        if has_prior_month
+        else []
+    )
 
     tiles: list[DoctorTile] = [
         {
@@ -672,6 +957,12 @@ def build_doctor_report_view(
             "hint": "약정한 편수 대비 진행률입니다.",
         },
     ]
+
+    cited_titles_by_question = _cited_title_by_question(citations)
+    published_items = _published_items(
+        published_contents, set(cited_titles_by_question.values())
+    )
+    citation_line = _citation_line(citations)
 
     if measured:
         summary = (
@@ -687,10 +978,18 @@ def build_doctor_report_view(
         summary = f"{delta_sentence}. 이번 달 현재는 환자 질문 100번 중 {this_count}번입니다."
 
     ours = ["다음 달에도 계획한 글을 예정대로 발행합니다."]
-    if attribution and attribution.get("new_mention_queries"):
+    if lost_mention_sentences:
+        ours.append("이번 달 빠진 질문을 먼저 확인해 다음 글의 주제를 정합니다.")
+    elif attribution and attribution.get("new_mention_queries"):
         ours.append("아직 병원이 나오지 않는 질문을 겨냥해 다음 글의 주제를 정합니다.")
     else:
         ours.append("아직 병원이 나오지 않는 질문을 추려 다음 글의 주제를 정합니다.")
+    next_actions: DoctorNextActions = {
+        "ours": _medical_safe_lines(ours)[:2],
+        "yours": _medical_safe_lines(
+            ["월 1회 30분 통화로 요즘 환자분들이 많이 묻는 것을 알려주세요."]
+        )[:1],
+    }
 
     platform_names = ", ".join(_platform_label(p) for p in (platforms or [])) or "챗GPT, 제미나이"
     if sov_coverage is None:
@@ -706,6 +1005,8 @@ def build_doctor_report_view(
         _error_margin_footnote(margin_of_hundred, basis),
         "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.",
     ]
+    if v0_baseline is not None:
+        footnotes.append(_v0_footnote())
     if first_measured_questions:
         footnotes.append(
             f"이번 달 처음 확인된 질문 {first_measured_questions}개는 지난달 결과가 없어 "
@@ -716,6 +1017,78 @@ def build_doctor_report_view(
             f"지난달 측정이 끝나지 않은 질문 {non_comparable_questions}개는 비교에서 제외했습니다. "
             "다음 달 정상 측정 후 비교합니다."
         )
+
+    evidence = _pick_evidence(records, getattr(hospital, "name", "") or "")
+
+    # ── 1페이지 트리밍 ────────────────────────────────────────────────
+    # 넘칠 때 무엇을 먼저 버릴지는 편집 결정이지 CSS 결정이 아니다.
+    # 순서: ① 안 나온 사례 → ② 새 질문 2개로 → ③ 빠진 질문 2개로
+    #      → ④ 글 제목 2개로 → ⑤ 나온 사례.
+    trimmed: list[str] = []
+
+    def _cost() -> int:
+        return _page1_line_cost(
+            summary=summary,
+            coverage_text=coverage_text,
+            delta_sentence=delta_sentence,
+            v0_baseline=v0_baseline,
+            published_items=published_items,
+            citation_line=citation_line,
+            new_mentions=new_mention_sentences,
+            lost_mentions=lost_mention_sentences,
+            next_actions=next_actions,
+            evidence=evidence,
+            footnotes=footnotes,
+        )
+
+    def _drop_missing_evidence() -> bool:
+        if evidence["missing"] is None:
+            return False
+        evidence["missing"] = None
+        return True
+
+    def _shrink_new_mentions() -> bool:
+        if len(new_mention_sentences) <= DOCTOR_TRIMMED_LIST_LIMIT:
+            return False
+        del new_mention_sentences[DOCTOR_TRIMMED_LIST_LIMIT:]
+        return True
+
+    def _shrink_lost_mentions() -> bool:
+        if len(lost_mention_sentences) <= DOCTOR_TRIMMED_LIST_LIMIT:
+            return False
+        del lost_mention_sentences[DOCTOR_TRIMMED_LIST_LIMIT:]
+        return True
+
+    def _shrink_published_items() -> bool:
+        if len(published_items) <= DOCTOR_TRIMMED_LIST_LIMIT:
+            return False
+        del published_items[DOCTOR_TRIMMED_LIST_LIMIT:]
+        return True
+
+    def _drop_found_evidence() -> bool:
+        if evidence["found"] is None:
+            return False
+        evidence["found"] = None
+        return True
+
+    for label, step in (
+        ("EVIDENCE_MISSING", _drop_missing_evidence),
+        ("NEW_MENTIONS", _shrink_new_mentions),
+        ("LOST_MENTIONS", _shrink_lost_mentions),
+        ("PUBLISHED_TITLES", _shrink_published_items),
+        ("EVIDENCE_FOUND", _drop_found_evidence),
+    ):
+        if _cost() <= DOCTOR_PAGE1_LINE_BUDGET:
+            break
+        if step():
+            trimmed.append(label)
+
+    appendix_rows = _appendix_rows(
+        (attribution or {}).get("question_rows") or [],
+        has_prior_month=has_prior_month,
+        competitors=_competitor_by_question(records),
+        cited_titles=cited_titles_by_question,
+    )
 
     return {
         "measured": measured,
@@ -737,18 +1110,19 @@ def build_doctor_report_view(
         "summary": summary,
         "coverage_text": coverage_text,
         "tiles": tiles,
+        "published_items": published_items,
+        "citation_line": citation_line,
         "new_mention_sentences": new_mention_sentences,
         "new_mention_empty_text": (
             "이번 달에는 지난달과 같은 질문에서 새로 확인된 병원 언급이 없습니다."
         ),
-        "evidence": _pick_evidence(records, getattr(hospital, "name", "") or ""),
-        "next_actions": {
-            "ours": ours,
-            "yours": ["월 1회 30분 통화로 요즘 환자분들이 많이 묻는 것을 알려주세요."],
-        },
+        "lost_mention_sentences": lost_mention_sentences,
+        "v0_baseline": v0_baseline,
+        "evidence": evidence,
+        "next_actions": next_actions,
         "footnotes": footnotes,
-        # 아래 3개는 아직 원장 1페이지에 렌더하지 않는다 — 편집 변경은 별도 작업이다.
-        # 값만 뷰 모델에 실어 두면 템플릿만 바꿔 3막 구조("우리가 한 일")로 갈 수 있다.
+        "appendix_rows": appendix_rows,
+        "trimmed": trimmed,
         "cited_content_count": int((citations or {}).get("cited_content_count") or 0),
         "cited_cells": int((citations or {}).get("cited_cell_count") or 0),
         "top_cited_items": [
@@ -758,4 +1132,15 @@ def build_doctor_report_view(
             }
             for row in ((citations or {}).get("cited_items") or [])[:3]
         ],
+        "talking_points": _talking_points(
+            measured=measured,
+            published_count=published_count,
+            plan_quota=plan_quota,
+            published_items=published_items,
+            citations=citations,
+            this_count=this_count,
+            delta_sentence=delta_sentence,
+            lost_count=int((attribution or {}).get("lost_mention_count") or 0),
+            ours=next_actions["ours"],
+        ),
     }

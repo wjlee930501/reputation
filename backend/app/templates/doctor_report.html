@@ -2,7 +2,12 @@
 
    편집 방침(VERSIONUP §5-3): 지표는 4개 이하, 헤드라인은 분수, 섹션 제목은 2인칭
    질문형, 증거(답변 원문)가 리포트의 심장. 여기 있는 문구와 숫자는 전부
-   build_doctor_report_view가 만든다 — 템플릿은 계산하지 않는다. #}
+   build_doctor_report_view가 만든다 — 템플릿은 계산하지 않는다.
+
+   구조는 3막이다: ① 이번 달 저희가 한 일 ② 무엇이 달라졌나 ③ 다음 달 계획.
+   1페이지가 넘칠 때 무엇을 뺄지도 뷰가 정한다(view.trimmed) — CSS overflow에
+   맡기면 무엇이 잘렸는지 아무도 모르는 채로 원장에게 나간다.
+   2쪽 부록(추적 질문 전체표)은 view.appendix_rows가 있을 때만 붙는다. #}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -22,28 +27,33 @@
   .head .who { font-size: 15pt; font-weight: 750; color: #1A4B8C; }
   .head .when { font-size: 8pt; color: #667085; margin-top: 2px; }
 
-  h2 { font-size: 10pt; color: #1A4B8C; margin: 10px 0 5px; }
+  h2 { font-size: 10pt; color: #1A4B8C; margin: 9px 0 4px; }
+  h2 .act { font-size: 8pt; color: #667085; font-weight: 600; }
 
   .summary { font-size: 9.5pt; background: #F2F6FC; border-radius: 5px; padding: 8px 10px; }
   .coverage { font-size: 7.8pt; color: #516070; margin-top: 4px; }
 
-  .headline { text-align: center; padding: 9px 12px; margin: 7px 0; border: 1.5px solid #1A4B8C; border-radius: 6px; }
-  .headline .num { font-size: 19pt; font-weight: 800; color: #1A4B8C; line-height: 1.2; }
-  .headline .unit { font-size: 8.5pt; color: #344054; }
+  .headline { text-align: center; padding: 8px 12px; margin: 6px 0; border: 1.5px solid #1A4B8C; border-radius: 6px; }
+  .headline .num { font-size: 17pt; font-weight: 800; color: #1A4B8C; line-height: 1.2; }
   .headline .delta { font-size: 8pt; color: #475467; margin-top: 4px; }
+  .headline .base { font-size: 8pt; color: #667085; margin-top: 3px; }
   .headline .none { font-size: 10pt; color: #667085; }
 
   .tiles { width: 100%; border-collapse: separate; border-spacing: 5px 0; margin-top: 4px; }
-  .tiles td { background: #F7F8FA; border-radius: 5px; padding: 7px; vertical-align: top; width: 33%; }
+  .tiles td { background: #F7F8FA; border-radius: 5px; padding: 7px; vertical-align: top; }
   .tiles .lbl { font-size: 7.5pt; color: #667085; }
   .tiles .val { font-size: 11pt; font-weight: 750; color: #1A4B8C; margin: 2px 0; }
   .tiles .hint { font-size: 7.8pt; color: #667085; line-height: 1.3; }
 
-  .mentions { background: #F2F6FC; border-radius: 5px; padding: 7px 10px; }
-  .mentions li { font-size: 8.2pt; margin-bottom: 3px; }
-  .mentions .platform { color: #667085; font-size: 7.5pt; }
+  .panel { background: #F2F6FC; border-radius: 5px; padding: 7px 10px; }
+  .panel li { font-size: 8.2pt; margin-bottom: 3px; }
+  .panel .platform { color: #667085; font-size: 7.5pt; }
+  .panel .tag { color: #1A4B8C; font-size: 7.5pt; font-weight: 650; }
+  .panel .cite { font-size: 8.2pt; color: #344054; margin-top: 4px; }
+  .panel.miss { background: #FDF7F2; }
+  .panel .sub { font-size: 8pt; font-weight: 700; color: #344054; margin-bottom: 2px; }
 
-  .case { border-left: 3px solid #1A4B8C; background: #F7F9FC; padding: 7px 9px; margin: 5px 0; border-radius: 0 5px 5px 0; }
+  .case { border-left: 3px solid #1A4B8C; background: #F7F9FC; padding: 6px 9px; margin: 5px 0; border-radius: 0 5px 5px 0; }
   .case.miss { border-left-color: #C0641E; background: #FDF7F2; }
   .case .q { font-weight: 700; font-size: 8.2pt; }
   .case .a { font-size: 7.8pt; color: #344054; margin-top: 3px; }
@@ -56,6 +66,11 @@
   .foot li { margin-bottom: 1px; }
   .public-link { margin-top: 4px; }
   .public-link a { color: #1A4B8C; font-weight: 650; text-decoration: underline; }
+
+  .appendix { page-break-before: always; }
+  table.rows { width: 100%; border-collapse: collapse; margin-top: 5px; font-size: 7.6pt; }
+  table.rows th { background: #F2F6FC; color: #1A4B8C; text-align: left; padding: 4px 5px; border-bottom: 1px solid #D0D5DD; }
+  table.rows td { padding: 4px 5px; border-bottom: 1px solid #EAECF0; vertical-align: top; }
 </style>
 </head>
 <body>
@@ -68,16 +83,8 @@
 <div class="summary">{{ view.summary }}</div>
 <div class="coverage">{{ view.coverage_text }}</div>
 
-<h2>이번 달 우리 병원은 어땠나요?</h2>
-<div class="headline">
-  {% if view.measured %}
-    <div class="num">{{ view.headline.delta_sentence }}</div>
-    <div class="delta">이번 달 현재: 환자 질문 100번 중 {{ view.headline.of_hundred }}번</div>
-  {% else %}
-    <div class="none">이번 달은 측정이 충분히 이뤄지지 않았습니다.</div>
-  {% endif %}
-</div>
-
+{# ── 막 1 ─────────────────────────────────────────────────────────── #}
+<h2><span class="act">막 1</span> 이번 달 저희가 한 일</h2>
 <table class="tiles">
   <tr>
     {% for tile in view.tiles %}
@@ -89,9 +96,35 @@
     {% endfor %}
   </tr>
 </table>
+{% if view.published_items or view.citation_line %}
+<div class="panel" style="margin-top:5px;">
+  {% if view.published_items %}
+  <ul>
+    {% for item in view.published_items %}
+    <li>“{{ item.title }}”{% if item.cited %} <span class="tag">AI가 인용</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if view.citation_line %}<div class="cite">{{ view.citation_line }}</div>{% endif %}
+</div>
+{% endif %}
 
-<h2>어떤 질문에서 우리 병원이 새로 나왔나요?</h2>
-<div class="mentions">
+{# ── 막 2 ─────────────────────────────────────────────────────────── #}
+<h2><span class="act">막 2</span> 무엇이 달라졌나요?</h2>
+<div class="headline">
+  {% if view.measured %}
+    <div class="num">{{ view.headline.delta_sentence }}</div>
+    <div class="delta">이번 달 현재: 환자 질문 100번 중 {{ view.headline.of_hundred }}번</div>
+    {% if view.v0_baseline %}
+    <div class="base">{{ view.v0_baseline.sentence }}</div>
+    {% endif %}
+  {% else %}
+    <div class="none">이번 달은 측정이 충분히 이뤄지지 않았습니다.</div>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <div class="sub">새로 나온 질문</div>
   {% if view.new_mention_sentences %}
   <ul>
     {% for mention in view.new_mention_sentences %}
@@ -102,6 +135,17 @@
     {{ view.new_mention_empty_text }}
   {% endif %}
 </div>
+
+{% if view.lost_mention_sentences %}
+<div class="panel miss" style="margin-top:4px;">
+  <div class="sub">이번 달 빠진 질문</div>
+  <ul>
+    {% for mention in view.lost_mention_sentences %}
+    <li>“{{ mention.query_text }}” <span class="platform">{{ mention.platform_label }}</span></li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 
 {% if view.evidence.found or view.evidence.missing %}
 <h2>실제로 어떻게 나왔나요?</h2>
@@ -128,12 +172,53 @@
 {% endif %}
 {% endif %}
 
+{# ── 막 3 ─────────────────────────────────────────────────────────── #}
+<h2><span class="act">막 3</span> 다음 달에는 무엇을 하나요?</h2>
+<div class="panel">
+  <ul>
+    {% for line in view.next_actions.ours %}<li>{{ line }}</li>{% endfor %}
+  </ul>
+  {% if view.next_actions.yours %}
+  <div class="cite">원장님께 부탁드릴 한 가지 — {{ view.next_actions.yours[0] }}</div>
+  {% endif %}
+</div>
+
 <div class="foot">
   <ul>
     {% for note in view.footnotes %}<li>{{ note }}</li>{% endfor %}
   </ul>
   <div class="public-link"><a href="{{ public_url }}">병원 공개 정보 페이지 보기</a></div>
 </div>
+
+{% if view.appendix_rows %}
+<div class="appendix">
+  <div class="head">
+    <div class="who">{{ view.hospital_name }}</div>
+    <div class="when">{{ period_label }} 리포트 · 부록 — 확인한 질문 전체</div>
+  </div>
+  <table class="rows">
+    <tr>
+      <th style="width:34%">질문</th>
+      <th style="width:13%">지난달</th>
+      <th style="width:13%">이번달</th>
+      <th style="width:18%">가장 많이 나온 다른 병원</th>
+      <th style="width:22%">AI가 인용한 우리 글</th>
+    </tr>
+    {% for row in view.appendix_rows %}
+    <tr>
+      <td>{{ row.query_text }}</td>
+      <td>{{ row.prev_label }}</td>
+      <td>{{ row.current_label }}</td>
+      <td>{{ row.competitor }}</td>
+      <td>{{ row.cited_title }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <div class="foot">
+    같은 질문을 여러 번 물어 나온 횟수입니다. 비어 있는 칸은 확인된 결과가 없다는 뜻입니다.
+  </div>
+</div>
+{% endif %}
 
 </body>
 </html>

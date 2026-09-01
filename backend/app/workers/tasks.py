@@ -17,7 +17,7 @@ import logging
 import threading
 import uuid
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
 from typing import Any
@@ -76,6 +76,7 @@ from app.services.content_publish_notifications import (
     enqueue_missing_approved_essence_digest_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
+from app.services.doctor_pdf_contracts import DoctorV0Baseline
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
@@ -755,6 +756,97 @@ V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
 # 측정이 빨라져(p50 24.7s) 15개로 늘려도 태스크 예산 안에 들어온다
 # (15 × 5회 × 2플랫폼 = 150호출 ÷ 동시10 × 25s ≈ 375s < soft_time_limit 1800s).
 V0_QUERY_SAMPLE_COUNT = 15
+
+# V0 첫 측정 실행에 붙는 라벨. 월간 리포트가 "서비스 시작 시점" 축을 그릴 때
+# 그때 실제로 물어본 질문 세트를 이 라벨로 되찾는다.
+V0_MEASUREMENT_RUN_LABEL = "V0 first measurement"
+
+# V0와 월간의 질문 세트가 이 비율 이상 겹칠 때만 "시작 시점 대비" 한 줄을 쓴다.
+# V0는 반복 프로토콜·측정 창이 달라 완전한 비교 대상이 아니다 — 질문마저 다르면
+# 두 수치를 나란히 놓는 것 자체가 거짓말이 된다.
+V0_BASELINE_MIN_OVERLAP = 0.8
+
+
+def _normalized_query_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def v0_query_overlap_ratio(
+    v0_query_texts: Iterable[object], tracking_query_texts: Iterable[object]
+) -> float:
+    """V0 질문 중 지금 추적 세트에도 있는 비율. 분모는 언제나 V0 쪽이다."""
+    v0 = {text for value in v0_query_texts if (text := _normalized_query_text(value))}
+    if not v0:
+        return 0.0
+    tracking = {
+        text for value in tracking_query_texts if (text := _normalized_query_text(value))
+    }
+    return len(v0 & tracking) / len(v0)
+
+
+def build_v0_baseline(
+    *,
+    v0_sov_pct: float | None,
+    current_sov_pct: float | None,
+    v0_query_texts: Iterable[object],
+    tracking_query_texts: Iterable[object],
+) -> DoctorV0Baseline | None:
+    """"서비스 시작 시점(V0) 대비" 한 줄. 겹침이 부족하면 아무 말도 하지 않는다.
+
+    V0를 월간과 **비교 가능하게 만들지 않는다** — 반복 횟수·측정 창·집계 방식이
+    다르다. 여기서 만드는 것은 라벨이 붙은 참고선 하나이고, 각주가 그 한계를
+    같은 페이지에서 밝힌다.
+    """
+    if v0_sov_pct is None or current_sov_pct is None:
+        return None
+    if (
+        v0_query_overlap_ratio(v0_query_texts, tracking_query_texts)
+        < V0_BASELINE_MIN_OVERLAP
+    ):
+        return None
+    started = round(v0_sov_pct)
+    current = round(current_sov_pct)
+    return {
+        "of_hundred": started,
+        "current_of_hundred": current,
+        "sentence": f"서비스 시작 시점(V0) 대비: {started}번 → {current}번",
+    }
+
+
+def _load_v0_baseline(
+    db, hospital_id, *, current_sov_pct: float | None, tracking_query_texts: Iterable[object]
+) -> DoctorV0Baseline | None:
+    """V0 리포트와 그때 실제로 물어본 질문 세트를 읽어 참고선을 만든다."""
+    v0_report = db.execute(
+        select(MonthlyReport)
+        .where(
+            MonthlyReport.hospital_id == hospital_id,
+            MonthlyReport.report_type == "V0",
+        )
+        .order_by(MonthlyReport.created_at)
+        .limit(1)
+    ).scalars().first()
+    if v0_report is None:
+        return None
+    v0_sov_pct = (v0_report.sov_summary or {}).get("sov_pct")
+    if not isinstance(v0_sov_pct, (int, float)):
+        return None
+    v0_query_texts = db.execute(
+        select(QueryMatrix.query_text)
+        .join(SovRecord, SovRecord.query_id == QueryMatrix.id)
+        .join(MeasurementRun, MeasurementRun.id == SovRecord.measurement_run_id)
+        .where(
+            MeasurementRun.hospital_id == hospital_id,
+            MeasurementRun.run_label == V0_MEASUREMENT_RUN_LABEL,
+        )
+        .distinct()
+    ).scalars().all()
+    return build_v0_baseline(
+        v0_sov_pct=float(v0_sov_pct),
+        current_sov_pct=current_sov_pct,
+        v0_query_texts=v0_query_texts,
+        tracking_query_texts=tracking_query_texts,
+    )
 
 
 def sov_budget_units(*, query_count: int, platform_count: int, repeat_count: int) -> int:
@@ -1587,7 +1679,7 @@ def trigger_v0_report(self, hospital_id: str):
                     run = _start_measurement_run(
                         db,
                         hospital,
-                        run_label="V0 first measurement",
+                        run_label=V0_MEASUREMENT_RUN_LABEL,
                         config=v0_measurement_run_config(
                             repeat_count=V0_REPEAT_COUNT,
                             operation_run_id=v0_operation_run_id,
@@ -5326,6 +5418,36 @@ def _build_monthly_report_for_hospital(
     )
     monthly_sov_payload = monthly_sov.to_payload()
 
+    # "서비스 시작 시점(V0) 대비" 참고선. 질문 세트가 충분히 겹치지 않으면 None이라
+    # 원장 페이지에 아무 말도 하지 않는다 — 다른 질문으로 잰 두 수치를 나란히
+    # 놓는 순간 그 줄은 거짓말이 된다.
+    v0_baseline = _load_v0_baseline(
+        db,
+        h.id,
+        current_sov_pct=sov_pct,
+        tracking_query_texts=[
+            cell.query_text for cell in (current_loaded.cells if current_loaded else ())
+        ],
+    )
+    # 원장 뷰를 AE PDF보다 **먼저** 만든다. 토킹 포인트는 이 뷰가 바인딩한 숫자에서
+    # 나오고, 내부 PDF와 Admin이 그 같은 문장을 읽어야 한 자리에서 두 말이 안 된다.
+    doctor_view = build_doctor_report_view(
+        hospital=h,
+        sov_pct=sov_pct,
+        prev_sov_pct=prev_sov,
+        published_count=len(published_contents),
+        plan_quota=monthly_quota_for_plan(h.plan),
+        attribution=attribution,
+        citations=citations,
+        published_contents=list(published_contents),
+        v0_baseline=v0_baseline,
+        records=evidence_records,
+        platforms=report_platforms,
+        sov_coverage=monthly_sov_payload,
+        comparison_reason=monthly_sov_payload["comparison"]["reason"],
+    )
+    talking_points = list(doctor_view["talking_points"])
+
     pdf_path = generate_pdf_report(
         hospital=h,
         period_start=period_start,
@@ -5339,6 +5461,7 @@ def _build_monthly_report_for_hospital(
         sov_coverage=monthly_sov_payload,
         content_operations=content_operations.payload,
         citations=citations,
+        talking_points=talking_points,
         report_version=version_plan.version,
     )
     essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
@@ -5359,6 +5482,8 @@ def _build_monthly_report_for_hospital(
             "attribution": attribution,
             "strategy": strategy,
             "citations": citations,
+            # AE 미팅 키트 — Admin 리포트 상세가 content_summary를 그대로 준다.
+            "talking_points": talking_points,
         },
         essence_summary=essence_summary,
     )
@@ -5385,19 +5510,6 @@ def _build_monthly_report_for_hospital(
 
     artifact_error: DoctorPdfValidationError | None = None
     try:
-        doctor_view = build_doctor_report_view(
-            hospital=h,
-            sov_pct=sov_pct,
-            prev_sov_pct=prev_sov,
-            published_count=len(published_contents),
-            plan_quota=monthly_quota_for_plan(h.plan),
-            attribution=attribution,
-            citations=citations,
-            records=evidence_records,
-            platforms=report_platforms,
-            sov_coverage=monthly_sov_payload,
-            comparison_reason=monthly_sov_payload["comparison"]["reason"],
-        )
         public_url = _public_site_url(h.aeo_domain, h.slug)
         doctor_artifact = generate_doctor_pdf_report(
             h, report.id, period_start, doctor_view, public_url
