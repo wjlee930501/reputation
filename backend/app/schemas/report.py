@@ -94,6 +94,9 @@ class ReportListResponse(BaseModel):
     delivery_ready: bool = False
     customer_ready: bool = False
     delivery_blockers: list[str] = Field(default_factory=list)
+    # 전달을 막지 않는 경고(약정 미달, 사후검수 표본 미완료, 운영 기준 버전 갱신 등).
+    # blockers와 달리 mark-sent를 막지 않는다 — Admin은 소프트 스타일로만 표시한다.
+    delivery_warnings: list[str] = Field(default_factory=list)
     effective_delivery: Optional[dict[str, Any]] = None
     delivery_history: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str

@@ -75,6 +75,12 @@ export type ReportView = {
   deliveryTracked: boolean
   deliveryReady: boolean
   deliveryBlockers: readonly string[]
+  /**
+   * 전달을 막지 않는 경고(약정 미달, 사후검수 표본 미완료, 운영 기준 버전 갱신 등).
+   * deliveryBlockers와 달리 존재해도 전달 버튼을 비활성화하지 않는다 — 소프트 스타일로만
+   * 표시한다.
+   */
+  deliveryWarnings: readonly string[]
   doctorArtifact: {
     state: 'MISSING' | 'INVALID' | 'VALID'
     stateLabel: string
@@ -301,6 +307,7 @@ export function parseReport(value: unknown): ReportView | null {
     deliveryTracked: root.delivery_tracked !== false,
     deliveryReady: root.delivery_ready === true,
     deliveryBlockers: strings(root.delivery_blockers),
+    deliveryWarnings: strings(root.delivery_warnings),
     doctorArtifact: {
       state: artifactState === 'VALID' || artifactState === 'INVALID' ? artifactState : 'MISSING',
       stateLabel: text(artifact?.state_label, '원장 전달용 PDF를 확인할 수 없습니다'),

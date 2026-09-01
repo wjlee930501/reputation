@@ -8,6 +8,11 @@ function dateTime(value: string | null): string {
 
 export function ReportEvidence({ report, onCopyNotification }: { report: ReportView; onCopyNotification: () => void }) {
   const review = report.review
+  // 콘텐츠 운영 경고는 아래 운영 증거 섹션에서 이미 표시하므로 여기서는 중복되지 않는
+  // 나머지 경고(예: 운영 기준 버전 갱신)만 보여준다. 어느 쪽도 전달 버튼을 막지 않는다.
+  const otherWarnings = report.deliveryWarnings.filter(
+    (warning) => !report.contentOperations?.deliveryWarnings.includes(warning),
+  )
   return (
     <div className="space-y-5">
       <section className="rounded-xl border border-[var(--color-revisit-primary-80)] bg-[var(--color-revisit-primary-95)] p-4" aria-labelledby="review-status-heading" data-review-section="status">
@@ -21,6 +26,11 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
             <Copy label="고객 영향" value="확인되지 않은 자료를 전달하면 원장님께 잘못된 결과를 설명할 수 있습니다." />
             <Copy label="지금 할 일" value="아래 측정·파일·운영 기준 근거를 확인하고 안내된 조치를 실행해 주세요." />
           </dl>
+        )}
+        {otherWarnings.length > 0 && (
+          <ul className="mt-3 rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-3 text-sm leading-6 text-[var(--color-revisit-text-title)]">
+            {otherWarnings.map((warning) => <li key={warning}>주의: {warning}</li>)}
+          </ul>
         )}
       </section>
 

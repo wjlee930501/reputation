@@ -79,6 +79,11 @@ export function ReportList({
                           초기 진단은 전달 기록을 남기지 않습니다. 내부 검수 자료를 확인한 뒤 원장에게 직접 보고해 주세요.
                         </p>
                       )}
+                      {report.deliveryWarnings.length > 0 && (
+                        <p className="mt-1 max-w-sm text-xs leading-5 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
+                          주의: {report.deliveryWarnings[0]}
+                        </p>
+                      )}
                     </td>
                     <td className="px-5 py-4" data-label="내부 검수 자료">
                       {report.internalDownloadUrl ? (
