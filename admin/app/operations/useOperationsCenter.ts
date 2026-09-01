@@ -189,10 +189,13 @@ export function useOperationsCenter() {
   }, [loadDetail, selectedRow])
 
   useEffect(() => {
+    // shouldPollRun(state) is false for every terminal run state (SUCCEEDED/PARTIAL/
+    // FAILED/CANCELLED), so this effect naturally stops re-arming the timer once a
+    // run finishes — no separate "stop" branch needed.
     if (!detail?.run || !shouldPollRun(detail.run.state)) return
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void loadDetail(detail.incident)
-    }, 3_000)
+    }, 5_000)
     return () => window.clearInterval(timer)
   }, [detail, loadDetail])
 

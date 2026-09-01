@@ -442,6 +442,18 @@ export default function ContentPage() {
     setActionSuccess(null)
   }
 
+  // 단건 액션 후 월 전체를 다시 불러오는 대신, 바뀐 아이템 하나만 다시 받아 목록/상세에
+  // 병합한다. 실패해도 조용히 넘어간다 — 다음 자연스러운 새로고침에서 맞춰진다.
+  const refreshItem = useCallback(async (itemId: string) => {
+    try {
+      const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}`)
+      setItems((prev) => prev.map((it) => (it.id === full.id ? full : it)))
+      setSelected((prev) => (prev && prev.id === full.id ? full : prev))
+    } catch {
+      // best-effort
+    }
+  }, [id])
+
   async function handlePublish(itemId: string) {
     const payload = buildManualPublishPayload(currentOperatorName ?? '')
     if (!payload) {
@@ -460,7 +472,7 @@ export default function ContentPage() {
       setPublishSuccessId(itemId)
       setActionSuccess('운영 복구 발행을 완료했습니다.')
       void refetchHeader()
-      load()
+      void refreshItem(itemId)
     } catch (e: unknown) {
       const message = safeOperatorError('content', '의료광고 확인 결과를 검토한 뒤 ‘운영 복구 발행’을 다시 누르세요.')
       const violationList = readViolationsFromError(e)
@@ -496,7 +508,7 @@ export default function ContentPage() {
       setActionSuccess('공개 내용 확인을 완료로 기록했습니다.')
       const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}`)
       setSelected(full)
-      load()
+      setItems((prev) => prev.map((it) => (it.id === full.id ? full : it)))
     } catch (e: unknown) {
       setEditError(safeOperatorError('content', '최신 공개 글을 확인한 뒤 ‘문제 없음’을 다시 누르세요.'))
     } finally {
@@ -512,7 +524,7 @@ export default function ContentPage() {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/reject`, { method: 'POST' })
       setActionSuccess('콘텐츠를 반려했습니다. 야간에 재생성됩니다.')
       void refetchHeader()
-      load()
+      void refreshItem(itemId)
       setSelected(null)
     } catch (e: unknown) {
       const message = safeOperatorError('content', '최신 상태를 다시 확인한 뒤 ‘문제 발견’을 다시 누르세요.')
@@ -531,7 +543,8 @@ export default function ContentPage() {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/regenerate`, { method: 'POST' })
       setActionSuccess('재생성 요청을 등록했습니다. 잠시 후 초안이 갱신됩니다.')
       void refetchHeader()
-      load()
+      // 재생성은 비동기 큐잉만 하고 이 응답 시점엔 서버 상태가 아직 그대로다 —
+      // 다시 불러와도 보여줄 변화가 없다. 다음 자연스러운 새로고침에서 반영된다.
       setSelected(null)
     } catch (e: unknown) {
       const message = safeOperatorError('content', '콘텐츠 목록을 다시 불러온 뒤 ‘다시 만들기’를 누르세요.')
@@ -591,7 +604,7 @@ export default function ContentPage() {
         method: 'POST',
       })
       setActionSuccess('이미지 재생성을 요청했습니다. 본문은 그대로 유지됩니다.')
-      load()
+      // 이미지 재생성도 비동기 큐잉 — 이 시점엔 아직 반영할 서버 변화가 없다.
     } catch (e: unknown) {
       const message = safeOperatorError('content', '본문 상태를 확인한 뒤 ‘이미지만 다시 만들기’를 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
@@ -737,7 +750,7 @@ export default function ContentPage() {
       setRecoverableDraft(null)
       setSelected(updated)
       setEditMode(false)
-      load()
+      setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
     } catch (e: unknown) {
       const violationList = readViolationsFromError(e)
       if (violationList.length > 0) {
@@ -791,7 +804,7 @@ export default function ContentPage() {
       })
       setSelected(updated)
       setBriefEditMode(false)
-      load()
+      setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
     } catch (e: unknown) {
       setBriefError(safeOperatorError('content', '콘텐츠 가이드 내용을 확인한 뒤 ‘저장’을 다시 누르세요.'))
     } finally {

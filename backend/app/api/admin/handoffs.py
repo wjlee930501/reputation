@@ -145,6 +145,7 @@ async def _payloads_batch(
 @router.get("")
 async def list_handoffs(
     state: HandoffState | None = Query(default=None),
+    hospital_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     _actor: AdminUser = Depends(require_active_account),
@@ -154,7 +155,8 @@ async def list_handoffs(
     stmt = select(HospitalHandoff).order_by(HospitalHandoff.updated_at.desc()).limit(limit)
     if state is not None:
         stmt = stmt.where(HospitalHandoff.state == state)
-
+    if hospital_id is not None:
+        stmt = stmt.where(HospitalHandoff.hospital_id == hospital_id)
     rows = list((await db.execute(stmt)).scalars().all())
     return await _payloads_batch(db, rows)
 

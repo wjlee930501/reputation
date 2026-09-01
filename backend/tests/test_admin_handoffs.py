@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
@@ -341,3 +342,71 @@ async def test_list_handoffs_applies_limit_and_batches_lookups() -> None:
     assert db.calls == ["handoffs", "hospitals", "users"]
     assert len(result) == 1
     assert result[0]["hospital_name"] == "서초 병원"
+
+
+class ListDB:
+    """Fake session for list_handoffs — filters an in-memory list the same way the
+    real WHERE clauses would, by inspecting the compiled statement text. Avoids
+    needing a live database just to exercise the query-building branches."""
+
+    def __init__(self, handoffs: list[HospitalHandoff]):
+        self.handoffs = handoffs
+
+    async def get(self, model, object_id):
+        return None
+
+    async def execute(self, stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is not HospitalHandoff:
+            # 배치 이름 조회(Hospital/AdminUser IN(...))는 이 테스트의 관심사가 아니다.
+            result = Mock()
+            result.scalars.return_value.all.return_value = []
+            return result
+        rendered = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        rows = list(self.handoffs)
+        if "hospital_handoffs.hospital_id = " in rendered:
+            rows = [h for h in rows if h.hospital_id.hex in rendered]
+        if "hospital_handoffs.state = " in rendered:
+            rows = [h for h in rows if f"'{h.state.value}'" in rendered]
+        result = Mock()
+        result.scalars.return_value.all.return_value = rows
+        return result
+
+
+def _pending_for(hospital_id: uuid.UUID, operator: AdminUser) -> HospitalHandoff:
+    handoff = HospitalHandoff.pending(
+        hospital_id,
+        sales_owner_id=operator.id,
+        ae_owner_id=operator.id,
+        source=HandoffSource.DIRECT_CREATE,
+    )
+    handoff.id = uuid.uuid4()
+    handoff.version = 1
+    handoff.created_at = datetime.now(UTC)
+    handoff.updated_at = datetime.now(UTC)
+    return handoff
+
+
+async def test_list_handoffs_filters_by_hospital_id() -> None:
+    operator = _account("OPERATOR")
+    target_hospital_id = uuid.uuid4()
+    matching = _pending_for(target_hospital_id, operator)
+    other = _pending_for(uuid.uuid4(), operator)
+    db = ListDB([matching, other])
+
+    rows = await handoffs_api.list_handoffs(
+        state=None, hospital_id=target_hospital_id, db=db, _actor=operator
+    )
+
+    assert [row["id"] for row in rows] == [matching.id]
+
+
+async def test_list_handoffs_without_hospital_id_returns_all() -> None:
+    operator = _account("OPERATOR")
+    matching = _pending_for(uuid.uuid4(), operator)
+    other = _pending_for(uuid.uuid4(), operator)
+    db = ListDB([matching, other])
+
+    rows = await handoffs_api.list_handoffs(state=None, hospital_id=None, db=db, _actor=operator)
+
+    assert {row["id"] for row in rows} == {matching.id, other.id}
