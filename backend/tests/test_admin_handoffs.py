@@ -395,7 +395,7 @@ async def test_list_handoffs_filters_by_hospital_id() -> None:
     db = ListDB([matching, other])
 
     rows = await handoffs_api.list_handoffs(
-        state=None, hospital_id=target_hospital_id, db=db, _actor=operator
+        state=None, hospital_id=target_hospital_id, limit=100, db=db, _actor=operator
     )
 
     assert [row["id"] for row in rows] == [matching.id]
@@ -407,6 +407,8 @@ async def test_list_handoffs_without_hospital_id_returns_all() -> None:
     other = _pending_for(uuid.uuid4(), operator)
     db = ListDB([matching, other])
 
-    rows = await handoffs_api.list_handoffs(state=None, hospital_id=None, db=db, _actor=operator)
+    rows = await handoffs_api.list_handoffs(
+        state=None, hospital_id=None, limit=100, db=db, _actor=operator
+    )
 
     assert {row["id"] for row in rows} == {matching.id, other.id}
