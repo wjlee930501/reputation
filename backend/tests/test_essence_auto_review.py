@@ -266,3 +266,131 @@ def test_second_ai_adjudicator_fails_closed_below_confidence(monkeypatch) -> Non
     assert review.approves is False
     assert review.decision == "ESCALATE"
     assert review.findings == ("근거 범위 확인 필요",)
+
+
+def _hospital() -> SimpleNamespace:
+    return SimpleNamespace(id=uuid.uuid4(), name="테스트 병원")
+
+
+def _previous() -> SimpleNamespace:
+    return SimpleNamespace(
+        version=1,
+        positioning_statement=None,
+        doctor_voice=None,
+        patient_promise=None,
+        must_use_messages=[],
+        treatment_narratives=[],
+    )
+
+
+def _note(claim: str = "근거", excerpt: str = "원문 발췌") -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        source_asset_id=uuid.uuid4(),
+        note_type="KEY_MESSAGE",
+        claim=claim,
+        source_excerpt=excerpt,
+    )
+
+
+def _escalating_primary(**overrides) -> dict:
+    payload = {
+        "decision": "ESCALATE",
+        "confidence": 0.96,
+        "blocking_findings": ["positioning_statement 표현이 근거 범위를 넘습니다"],
+        "advisory_notes": [],
+        "reviewed_evidence_note_ids": [],
+        "finding_fields": [],
+        "finding_evidence_note_ids": [],
+        "summary": "확인 필요",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _run_escalated_review(monkeypatch, primary: dict, candidate: dict, notes: list):
+    """1차 ESCALATE → 2차 재정을 태우고, 2차 입력 payload를 돌려준다."""
+    prompts: list[str] = []
+    responses = iter(
+        [
+            primary,
+            {
+                "decision": "CONFIRM_ESCALATION",
+                "confidence": 0.99,
+                "blocking_findings": ["사람 확인 필요"],
+                "summary": "확정",
+            },
+        ]
+    )
+
+    def fake_call(_system_prompt, data, **_kwargs):
+        prompts.append(data)
+        return next(responses)
+
+    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    essence_auto_review.review_essence_candidate(
+        _hospital(), _previous(), candidate, notes
+    )
+    assert len(prompts) == 2
+    return json.loads(prompts[1].split("UNTRUSTED_JSON:\n", 1)[1])
+
+
+def test_adjudication_sends_only_blocker_linked_evidence_not_the_whole_case(monkeypatch) -> None:
+    linked = _note(claim="포지셔닝 근거", excerpt="근거 있는 포지셔닝 원문")
+    unrelated = [_note(claim=f"무관 근거 {index}") for index in range(30)]
+    candidate = _empty_candidate(uuid.uuid4())
+    candidate["positioning_statement"] = "근거 기반 설명"
+    candidate["evidence_map"] = {
+        "positioning_statement": [str(linked.id)],
+        "must_use_messages": [str(note.id) for note in unrelated],
+    }
+
+    payload = _run_escalated_review(
+        monkeypatch,
+        _escalating_primary(
+            finding_fields=["positioning_statement"],
+            finding_evidence_note_ids=[str(linked.id)],
+        ),
+        candidate,
+        [linked, *unrelated],
+    )
+
+    assert "review_case" not in payload
+    assert [entry["id"] for entry in payload["evidence_notes"]] == [str(linked.id)]
+    assert payload["candidate"]["positioning_statement"] == "근거 기반 설명"
+    assert payload["primary_review"]["decision"] == "ESCALATE"
+    assert payload["evidence_scope"]["reviewed_notes"] == 31
+
+
+def test_adjudication_falls_back_to_the_fields_named_in_findings(monkeypatch) -> None:
+    linked = _note(claim="포지셔닝 근거")
+    unrelated = _note(claim="무관 근거")
+    candidate = _empty_candidate(uuid.uuid4())
+    candidate["positioning_statement"] = "근거 기반 설명"
+    candidate["evidence_map"] = {
+        "positioning_statement": [str(linked.id)],
+        "must_use_messages": [str(unrelated.id)],
+    }
+
+    # 모델이 식별자를 돌려주지 않아도 finding 문구가 지목한 필드의 근거로 좁힌다.
+    payload = _run_escalated_review(
+        monkeypatch, _escalating_primary(), candidate, [linked, unrelated]
+    )
+
+    assert [entry["id"] for entry in payload["evidence_notes"]] == [str(linked.id)]
+
+
+def test_adjudication_evidence_subset_is_capped(monkeypatch) -> None:
+    notes = [_note(claim=f"근거 {index}") for index in range(40)]
+    candidate = _empty_candidate(uuid.uuid4())
+    candidate["positioning_statement"] = "근거 기반 설명"
+    candidate["evidence_map"] = {"positioning_statement": [str(note.id) for note in notes]}
+
+    payload = _run_escalated_review(
+        monkeypatch,
+        _escalating_primary(blocking_findings=["필드를 특정하지 않은 일반 지적"]),
+        candidate,
+        notes,
+    )
+
+    assert len(payload["evidence_notes"]) == essence_auto_review._MAX_ADJUDICATION_NOTES
