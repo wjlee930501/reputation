@@ -1,42 +1,27 @@
 import { Metadata } from 'next'
-import Link from 'next/link'
 import { notFound } from 'next/navigation'
+import { Suspense } from 'react'
 
-import { fetchContents, fetchHospital, HospitalNotFoundError, resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
-import { countLabel } from '@/lib/clinic-counters'
-import { categoryTagClass } from '@/lib/content-meta'
+import { fetchContents, fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { buildFaqPageJsonLd } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
-import { ContentCover } from '../_components/ContentCover'
-import { ChevronRightIcon } from '../_components/icons'
 import { ClinicFooter } from '../_components/ClinicFooter'
 import { ClinicHeader } from '../_components/ClinicHeader'
 import { JsonLd } from '../_components/JsonLd'
+import { ContentsFeed } from './_components/ContentsFeed'
+import { ContentsFeedView } from './_components/ContentsFeedView'
 
 interface Props {
   params: Promise<{ slug: string }>
-  searchParams: Promise<{ type?: string }>
 }
 
-export const revalidate = 3600
-
-const PRIORITY_TYPES = ['FAQ', 'DISEASE', 'TREATMENT', 'COLUMN', 'HEALTH', 'LOCAL', 'NOTICE']
-
-function contentDate(content: ContentSummary): number {
-  const value = content.published_at || content.scheduled_date
-  const parsed = value ? new Date(value).getTime() : NaN
-  return Number.isNaN(parsed) ? 0 : parsed
-}
-
-function formatDate(value: string | null | undefined, fallback: string) {
-  if (!value) return fallback
-  const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return fallback
-  return parsed.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' })
-}
+// Next.js는 `revalidate`를 정적으로 파싱해야 해서 lib/fetch-policy.ts의
+// REVALIDATE_SECONDS를 import해 쓸 수 없다(import된 식별자는 빌드가 거부한다) — 값은
+// 그 상수와 반드시 같게 유지한다.
+export const revalidate = 1800
 
 export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
   const params = await paramsPromise
@@ -60,8 +45,8 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
   }
 }
 
-export default async function ContentsLibraryPage({ params: paramsPromise, searchParams: searchParamsPromise }: Props) {
-  const [params, search] = await Promise.all([paramsPromise, searchParamsPromise])
+export default async function ContentsLibraryPage({ params: paramsPromise }: Props) {
+  const params = await paramsPromise
   let hospital
   let contents
   try {
@@ -73,24 +58,6 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
     if (e instanceof HospitalNotFoundError) notFound()
     throw e
   }
-
-  // 유형별 개수 집계 + 표시 순서(우선순위 유형 → 나머지).
-  const counts = new Map<string, number>()
-  for (const content of contents) {
-    counts.set(content.content_type, (counts.get(content.content_type) ?? 0) + 1)
-  }
-  const availableTypes = [
-    ...PRIORITY_TYPES.filter((type) => counts.has(type)),
-    ...Array.from(counts.keys()).filter((type) => !PRIORITY_TYPES.includes(type)),
-  ]
-
-  // 필터는 클라이언트 상태 없이 쿼리 파라미터 링크로만 구현 — 서버 컴포넌트 유지.
-  const activeType = search.type && counts.has(search.type) ? search.type : null
-
-  // 통합 시간순(최신 먼저) 피드. 필터가 있으면 해당 유형만.
-  const sorted = [...contents].sort((a, b) => contentDate(b) - contentDate(a))
-  const filtered = activeType ? sorted.filter((c) => c.content_type === activeType) : sorted
-  const [featured, ...feedRest] = filtered
 
   const hospitalRootUrl = canonicalHospitalUrl(hospital, params.slug)
   const breadcrumbItems = [
@@ -122,9 +89,6 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
     buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl),
     ...(faqJsonLd ? [faqJsonLd] : []),
   ]
-
-  const chipHref = (type: string | null) =>
-    type ? `${hospitalRootUrl}/contents?type=${type}` : `${hospitalRootUrl}/contents`
 
   return (
     <>
@@ -162,106 +126,26 @@ export default async function ContentsLibraryPage({ params: paramsPromise, searc
 
           <section className="clinic-section clinic-section--tight">
             <div className="clinic-section-inner">
-              {contents.length === 0 ? (
-                <div className="clinic-empty">
-                  <span className="clinic-empty-title">아직 발행된 콘텐츠가 없습니다</span>
-                  <p>진료 안내와 건강 정보 글을 준비하고 있습니다.</p>
-                </div>
-              ) : (
-                <>
-                  <nav className="clinic-filter-chips" aria-label="유형별 필터">
-                    <Link
-                      href={chipHref(null)}
-                      className="clinic-filter-chip"
-                      aria-current={activeType === null ? 'page' : undefined}
-                    >
-                      전체{' '}
-                      <span className="clinic-filter-chip-count">
-                        {countLabel(contents.length, '편')}
-                      </span>
-                    </Link>
-                    {availableTypes.map((type) => (
-                      <Link
-                        key={type}
-                        href={chipHref(type)}
-                        className="clinic-filter-chip"
-                        aria-current={activeType === type ? 'page' : undefined}
-                      >
-                        {TYPE_LABELS[type] ?? type}{' '}
-                        <span className="clinic-filter-chip-count">
-                          {countLabel(counts.get(type) ?? 0, '편')}
-                        </span>
-                      </Link>
-                    ))}
-                  </nav>
-
-                  {featured && (
-                    <Link
-                      href={`${hospitalRootUrl}/contents/${featured.id}`}
-                      className="clinic-feed-featured"
-                      aria-label={`대표 글 — ${featured.title}`}
-                    >
-                      <ContentCover
-                        type={featured.content_type}
-                        src={resolveAssetUrl(featured.image_url)}
-                        variant="featured"
-                      />
-                      <span className="clinic-feed-featured-kicker">
-                        {activeType ? `${TYPE_LABELS[activeType] ?? activeType} · 최신 글` : '가장 최근 글'}
-                      </span>
-                      <span className={`clinic-tag ${categoryTagClass(featured.content_type)}`}>
-                        {TYPE_LABELS[featured.content_type] ?? featured.content_type}
-                      </span>
-                      <h2 className="clinic-feed-featured-title">{featured.faq_question || featured.title}</h2>
-                      {featured.meta_description && (
-                        <p className="clinic-feed-featured-excerpt">{featured.meta_description}</p>
-                      )}
-                      <span className="clinic-feed-featured-meta">
-                        <strong>{hospital.director_name} 원장</strong>
-                        <span className="clinic-content-card-meta-dot" aria-hidden="true" />
-                        <span>{formatDate(featured.published_at, featured.scheduled_date)}</span>
-                        <span className="clinic-content-card-meta-dot" aria-hidden="true" />
-                        <span>{featured.reading_minutes ?? 1}분 분량</span>
-                      </span>
-                    </Link>
-                  )}
-
-                  {feedRest.length > 0 && (
-                    <ol className="clinic-feed-list">
-                      {feedRest.map((content) => {
-                        const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
-                        return (
-                          <li key={content.id}>
-                            <Link
-                              href={`${hospitalRootUrl}/contents/${content.id}`}
-                              className="clinic-feed-row"
-                              aria-label={`${typeLabel} — ${content.title}`}
-                            >
-                              <span className="clinic-feed-row-main">
-                                <span className={`clinic-tag clinic-tag--sm ${categoryTagClass(content.content_type)}`}>
-                                  {typeLabel}
-                                </span>
-                                <span className="clinic-feed-row-title">
-                                  {content.faq_question || content.title}
-                                </span>
-                                {content.meta_description && (
-                                  <span className="clinic-feed-row-excerpt">{content.meta_description}</span>
-                                )}
-                              </span>
-                              <span className="clinic-feed-row-aside">
-                                <span className="clinic-feed-row-date">
-                                  {formatDate(content.published_at, content.scheduled_date)}
-                                </span>
-                                <ChevronRightIcon className="clinic-icon clinic-feed-row-arrow" aria-hidden="true" />
-                              </span>
-                            </Link>
-                          </li>
-                        )
-                      })}
-                    </ol>
-                  )}
-                </>
-              )}
+              {/* ?type= 필터는 클라이언트에서 읽는다(ContentsFeed) — 이 서버 컴포넌트가
+                  searchParams를 읽지 않아야 페이지가 쿼리와 무관하게 ISR로 정적 생성된다.
+                  Suspense 폴백은 필터 없음(activeType=null) 상태와 동일한 마크업이라
+                  기본 진입(?type= 없음)에서는 하이드레이션 전후로 화면이 바뀌지 않는다. */}
+              <Suspense
+                fallback={
+                  <ContentsFeedView
+                    contents={contents}
+                    hospitalRootUrl={hospitalRootUrl}
+                    directorName={hospital.director_name}
+                    activeType={null}
+                  />
+                }
+              >
+                <ContentsFeed
+                  contents={contents}
+                  hospitalRootUrl={hospitalRootUrl}
+                  directorName={hospital.director_name}
+                />
+              </Suspense>
             </div>
           </section>
         </main>

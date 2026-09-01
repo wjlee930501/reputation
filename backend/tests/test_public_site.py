@@ -187,6 +187,7 @@ def test_serialize_hospital_summary_exposes_llms_index_fields_only():
         website_url="https://example.com",
         plan="PLAN_16",
         director_philosophy="비공개 메모",
+        treatments=[{"name": "피부 레이저", "description": "설명"}],
         updated_at=datetime(2026, 6, 1, 12, 0, 0),
         created_at=datetime(2026, 5, 1, 12, 0, 0),
     )
@@ -201,6 +202,8 @@ def test_serialize_hospital_summary_exposes_llms_index_fields_only():
     assert summary["address"] == "서울시 강남구"
     assert summary["phone"] == "02-123-4567"
     assert summary["website_url"] == "https://example.com"
+    # sitemap 빌더가 병원별 detail을 추가 호출하지 않도록 목록에도 진료 항목을 싣는다.
+    assert summary["treatments"] == [{"name": "피부 레이저", "description": "설명"}]
     assert summary["updated_at"] == "2026-06-01T12:00:00"
     # 내부 전용 필드는 목록에도 노출하지 않는다.
     assert "plan" not in summary
@@ -218,6 +221,7 @@ def test_serialize_hospital_summary_sanitizes_website_url():
         address=None,
         phone=None,
         website_url="javascript:alert(1)",
+        treatments=None,
         updated_at=None,
         created_at=None,
     )
@@ -226,6 +230,7 @@ def test_serialize_hospital_summary_sanitizes_website_url():
 
     assert summary["website_url"] is None
     assert summary["updated_at"] is None
+    assert summary["treatments"] == []
 
 
 def _hospital_with_photo(director_photo_url):
