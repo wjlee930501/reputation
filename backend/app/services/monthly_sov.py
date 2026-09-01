@@ -1,7 +1,10 @@
+from dataclasses import dataclass
+
 from app.services import sov_engine
 from app.services.monthly_sov_types import (
     ComparisonSummary,
     ManifestCellInput,
+    MeasurementBasis,
     MonthlySovSummary,
     PlatformSummary,
     QueryIntent,
@@ -9,6 +12,16 @@ from app.services.monthly_sov_types import (
     SegmentCollection,
     SegmentSummary,
 )
+from app.services.sov_statistics import delta_significance, wilson_interval
+
+
+def _scored_cells(
+    cells: tuple[ManifestCellInput, ...], intent: QueryIntent
+) -> tuple[ManifestCellInput, ...]:
+    """점수에 실제로 들어가는 셀 — 성공 반복이 1건 이상 있는 셀만."""
+    return tuple(
+        cell for cell in cells if cell.query_intent == intent and cell.attempts_used > 0
+    )
 
 
 def _macro_rate(
@@ -16,51 +29,58 @@ def _macro_rate(
     platforms: tuple[str, ...],
     intent: QueryIntent,
 ) -> float | None:
+    """플랫폼별로 **셀 빈도(k/n)의 평균**을 낸 뒤, 플랫폼끼리 다시 평균한다.
+
+    매크로 구조(플랫폼 동일 가중, 셀 동일 가중)는 그대로 두고 셀 하나의 값만
+    "대표 1건의 0/1"에서 "성공 반복의 언급 빈도"로 바꿨다. 반복이 1회뿐인
+    구버전 manifest는 k/1이 되어 예전과 같은 값을 준다.
+    """
     platform_rates: list[float] = []
     for platform in platforms:
-        attempts = tuple(
-            cell.selected_attempt
-            for cell in cells
-            if cell.platform == platform and cell.query_intent == intent
+        scored = tuple(
+            cell for cell in _scored_cells(cells, intent) if cell.platform == platform
         )
-        selected = tuple(attempt for attempt in attempts if attempt is not None)
-        if not selected:
+        if not scored:
             return None
-        platform_rates.append(sum(attempt.is_mentioned for attempt in selected) / len(selected))
+        frequencies = [cell.mention_frequency or 0.0 for cell in scored]
+        platform_rates.append(sum(frequencies) / len(frequencies))
     return round(sum(platform_rates) / len(platform_rates) * 100, 2) if platform_rates else None
+
+
+def _attempt_counts(
+    cells: tuple[ManifestCellInput, ...], intent: QueryIntent
+) -> tuple[int, int]:
+    """(언급 시도 수 k, 전체 성공 시도 수 n) — 불확실성 계산의 표본."""
+    scored = _scored_cells(cells, intent)
+    return (
+        sum(cell.mentioned_attempts for cell in scored),
+        sum(cell.attempts_used for cell in scored),
+    )
 
 
 def _segment(
     cells: tuple[ManifestCellInput, ...], platforms: tuple[str, ...], intent: QueryIntent
 ) -> SegmentSummary:
-    selected = tuple(
-        attempt
-        for cell in cells
-        if cell.query_intent == intent
-        for attempt in (cell.selected_attempt,)
-        if attempt is not None
-    )
+    scored = _scored_cells(cells, intent)
+    mentioned_attempts, attempts_used = _attempt_counts(cells, intent)
     return SegmentSummary(
-        measured_count=len(selected),
-        mentioned_count=sum(attempt.is_mentioned for attempt in selected),
+        measured_count=len(scored),
+        # 셀 단위 "한 번이라도 언급된" 수. 셀 점수는 빈도지만 이 칸은 커버리지 공개용이다.
+        mentioned_count=sum(cell.mentioned_attempts > 0 for cell in scored),
         mention_rate=_macro_rate(cells, platforms, intent),
+        attempts_used=attempts_used,
+        mentioned_attempts=mentioned_attempts,
     )
 
 
 def _platform_summary(cells: tuple[ManifestCellInput, ...], platform: str) -> PlatformSummary:
     rows = tuple(cell for cell in cells if cell.platform == platform)
-    local_attempts = tuple(
-        attempt
-        for cell in rows
-        if cell.query_intent == "LOCAL"
-        for attempt in (cell.selected_attempt,)
-        if attempt is not None
-    )
-    selected_attempts = tuple(
-        attempt
-        for cell in rows
-        for attempt in (cell.selected_attempt,)
-        if attempt is not None
+    local_cells = _scored_cells(rows, "LOCAL")
+    local_frequencies = [cell.mention_frequency or 0.0 for cell in local_cells]
+    # 모델·검색 계측은 셀이 아니라 **모든 성공 시도**를 본다 — 반복 중 한 건만
+    # 다른 모델로 답했어도 그 사실이 보여야 비교 게이트가 제 역할을 한다.
+    scored_attempts = tuple(
+        attempt for cell in rows for attempt in cell.successful_attempts
     )
     return PlatformSummary(
         platform=platform,
@@ -69,28 +89,28 @@ def _platform_summary(cells: tuple[ManifestCellInput, ...], platform: str) -> Pl
         success_count=sum(cell.state == "SUCCESS" for cell in rows),
         failed_count=sum(cell.state == "FAILED" for cell in rows),
         excluded_count=sum(cell.state == "EXCLUDED" for cell in rows),
-        measured_count=len(local_attempts),
-        mentioned_count=sum(attempt.is_mentioned for attempt in local_attempts),
+        measured_count=len(local_cells),
+        mentioned_count=sum(cell.mentioned_attempts > 0 for cell in local_cells),
         mention_rate=(
-            round(sum(attempt.is_mentioned for attempt in local_attempts) / len(local_attempts) * 100, 2)
-            if local_attempts
+            round(sum(local_frequencies) / len(local_frequencies) * 100, 2)
+            if local_frequencies
             else None
         ),
+        attempts_used=sum(cell.attempts_used for cell in local_cells),
+        mentioned_attempts=sum(cell.mentioned_attempts for cell in local_cells),
         answer_models=tuple(
-            sorted({attempt.answer_model for attempt in selected_attempts if attempt.answer_model})
+            sorted({attempt.answer_model for attempt in scored_attempts if attempt.answer_model})
         ),
-        model_observation_complete=bool(selected_attempts)
-        and all(attempt.answer_model for attempt in selected_attempts),
-        search_observed_count=sum(attempt.search_calls is not None for attempt in selected_attempts),
-        search_used_count=sum((attempt.search_calls or 0) > 0 for attempt in selected_attempts),
+        model_observation_complete=bool(scored_attempts)
+        and all(attempt.answer_model for attempt in scored_attempts),
+        search_observed_count=sum(attempt.search_calls is not None for attempt in scored_attempts),
+        search_used_count=sum((attempt.search_calls or 0) > 0 for attempt in scored_attempts),
     )
 
 
 def _query_summary(cells: tuple[ManifestCellInput, ...], query_key: str) -> QuerySummary:
     rows = tuple(cell for cell in cells if cell.query_key == query_key)
-    selected = tuple(
-        attempt for cell in rows for attempt in (cell.selected_attempt,) if attempt is not None
-    )
+    scored = tuple(cell for cell in rows if cell.attempts_used > 0)
     first = rows[0]
     return QuerySummary(
         query_key=query_key,
@@ -102,12 +122,28 @@ def _query_summary(cells: tuple[ManifestCellInput, ...], query_key: str) -> Quer
         success_count=sum(cell.state == "SUCCESS" for cell in rows),
         failed_count=sum(cell.state == "FAILED" for cell in rows),
         excluded_count=sum(cell.state == "EXCLUDED" for cell in rows),
-        measured_count=len(selected),
-        mentioned_count=sum(attempt.is_mentioned for attempt in selected),
+        measured_count=len(scored),
+        mentioned_count=sum(cell.mentioned_attempts > 0 for cell in scored),
+        attempts_used=sum(cell.attempts_used for cell in scored),
+        mentioned_attempts=sum(cell.mentioned_attempts for cell in scored),
     )
 
 
-def _non_comparable(reason: str, *, current_unmatched: int, prior_unmatched: int) -> ComparisonSummary:
+@dataclass(frozen=True, slots=True)
+class ComparisonResult:
+    """비교 판정과 **그 판정이 선 셀 집합**.
+
+    헤드라인과 표본 각주가 델타와 같은 코호트를 쓰려면 매칭된 이번 달 셀이
+    호출부까지 따라와야 한다. NON_COMPARABLE이면 빈 튜플이다.
+    """
+
+    summary: ComparisonSummary
+    matched_current_cells: tuple[ManifestCellInput, ...]
+
+
+def _non_comparable(
+    reason: str, *, current_unmatched: int, prior_unmatched: int
+) -> ComparisonResult:
     messages = {
         "NO_PRIOR_MANIFEST": "지난달에 같은 기준으로 고정한 측정표가 없습니다.",
         "PLATFORM_COHORT_MISSING": "이번 달과 지난달에 사용한 AI 서비스 구성이 다릅니다.",
@@ -123,18 +159,23 @@ def _non_comparable(reason: str, *, current_unmatched: int, prior_unmatched: int
         ),
         "ANSWER_MODEL_UNKNOWN": "실제 응답 모델 기록이 없어 두 달의 측정 조건을 확인할 수 없습니다.",
     }
-    return ComparisonSummary(
-        status="NON_COMPARABLE",
-        reason=reason,
-        current_sov_pct=None,
-        prior_sov_pct=None,
-        change_pct=None,
-        matched_cell_count=0,
-        current_unmatched_cell_count=current_unmatched,
-        prior_unmatched_cell_count=prior_unmatched,
-        problem=messages[reason],
-        customer_impact="전월 대비 증감 숫자는 표시하지 않습니다.",
-        next_action="이번 달 현재 수치만 전달하고, 전월 대비 상승·하락 표현은 사용하지 마세요.",
+    return ComparisonResult(
+        summary=ComparisonSummary(
+            status="NON_COMPARABLE",
+            reason=reason,
+            current_sov_pct=None,
+            prior_sov_pct=None,
+            change_pct=None,
+            matched_cell_count=0,
+            current_unmatched_cell_count=current_unmatched,
+            prior_unmatched_cell_count=prior_unmatched,
+            problem=messages[reason],
+            customer_impact="전월 대비 증감 숫자는 표시하지 않습니다.",
+            next_action=(
+                "이번 달 현재 수치만 전달하고, 전월 대비 상승·하락 표현은 사용하지 마세요."
+            ),
+        ),
+        matched_current_cells=(),
     )
 
 
@@ -145,7 +186,7 @@ def _comparison(
     prior_platforms: tuple[str, ...] | None,
     current_protocol: dict | None = None,
     prior_protocol: dict | None = None,
-) -> ComparisonSummary:
+) -> ComparisonResult:
     current_keys = {
         (cell.query_key, cell.platform)
         for cell in current
@@ -199,8 +240,7 @@ def _comparison(
     matched = tuple(
         key
         for key in sorted(current_keys & prior_keys)
-        if current_by_key[key].selected_attempt is not None
-        and prior_by_key[key].selected_attempt is not None
+        if current_by_key[key].attempts_used > 0 and prior_by_key[key].attempts_used > 0
     )
     matched_keys = set(matched)
     if any(not any(key[1] == platform for key in matched) for platform in current_platforms):
@@ -210,14 +250,21 @@ def _comparison(
             prior_unmatched=len(prior_keys - matched_keys),
         )
 
-    model_pairs = tuple(
-        (
-            current_by_key[key].selected_attempt.answer_model,
-            prior_by_key[key].selected_attempt.answer_model,
+    # 응답 모델은 대표 시도가 아니라 **매칭 셀의 모든 성공 시도**에서 모은다. 반복
+    # 5회 중 한 건만 다른 모델로 답해도 두 달의 측정 조건은 같지 않다.
+    def _models(cell: ManifestCellInput) -> tuple[str | None, ...]:
+        return tuple(
+            sorted(
+                {attempt.answer_model for attempt in cell.successful_attempts},
+                key=lambda value: (value is None, value or ""),
+            )
         )
-        for key in matched
-    )
-    if any(current_model is None or prior_model is None for current_model, prior_model in model_pairs):
+
+    model_pairs = tuple((_models(current_by_key[key]), _models(prior_by_key[key])) for key in matched)
+    if any(
+        None in current_model or None in prior_model
+        for current_model, prior_model in model_pairs
+    ):
         return _non_comparable(
             "ANSWER_MODEL_UNKNOWN",
             current_unmatched=len(current_keys - matched_keys),
@@ -239,18 +286,38 @@ def _comparison(
         if current_score is not None and prior_score is not None
         else None
     )
-    return ComparisonSummary(
-        status="COMPARABLE",
-        reason="MATCHED_COHORT",
-        current_sov_pct=current_score,
-        prior_sov_pct=prior_score,
-        change_pct=change,
-        matched_cell_count=len(matched),
-        current_unmatched_cell_count=len(current_keys - matched_keys),
-        prior_unmatched_cell_count=len(prior_keys - matched_keys),
-        problem=None,
-        customer_impact="같은 AI 서비스와 같은 질문으로 확인한 변화만 표시합니다.",
-        next_action="전월 대비 수치는 같은 질문 기준 변화로 설명하세요.",
+    # 두 달 모두 **같은 매칭 셀 집합** 위에서 시도를 센다. 이 대칭이 깨지면
+    # 헤드라인과 델타가 다른 분모를 쓰게 되고, 그게 예전의 결함이었다.
+    current_mentioned, current_attempts = _attempt_counts(current_matched, "LOCAL")
+    prior_mentioned, prior_attempts = _attempt_counts(prior_matched, "LOCAL")
+    current_interval = wilson_interval(current_mentioned, current_attempts)
+    prior_interval = wilson_interval(prior_mentioned, prior_attempts)
+    return ComparisonResult(
+        summary=ComparisonSummary(
+            status="COMPARABLE",
+            reason="MATCHED_COHORT",
+            current_sov_pct=current_score,
+            prior_sov_pct=prior_score,
+            change_pct=change,
+            matched_cell_count=len(matched),
+            current_unmatched_cell_count=len(current_keys - matched_keys),
+            prior_unmatched_cell_count=len(prior_keys - matched_keys),
+            current_attempts_used=current_attempts,
+            current_mentioned_attempts=current_mentioned,
+            prior_attempts_used=prior_attempts,
+            prior_mentioned_attempts=prior_mentioned,
+            current_ci95_low=None if current_interval is None else current_interval.low_pct,
+            current_ci95_high=None if current_interval is None else current_interval.high_pct,
+            prior_ci95_low=None if prior_interval is None else prior_interval.low_pct,
+            prior_ci95_high=None if prior_interval is None else prior_interval.high_pct,
+            significance=delta_significance(
+                current_mentioned, current_attempts, prior_mentioned, prior_attempts
+            ),
+            problem=None,
+            customer_impact="같은 AI 서비스와 같은 질문으로 확인한 변화만 표시합니다.",
+            next_action="전월 대비 수치는 같은 질문 기준 변화로 설명하세요.",
+        ),
+        matched_current_cells=current_matched,
     )
 
 
@@ -267,8 +334,40 @@ def build_monthly_sov(
     queries = tuple(
         _query_summary(cells, query_key) for query_key in sorted({cell.query_key for cell in cells})
     )
+    result = _comparison(
+        cells, platforms, prior_cells, prior_platforms, current_protocol, prior_protocol
+    )
+    comparison = result.summary
+    all_cells_rate = _macro_rate(cells, platforms, "LOCAL")
+    # **헤드라인과 델타는 같은 분모를 쓴다.** 비교가 성립하는 달에는 헤드라인·표본·
+    # 오차 범위가 모두 매칭 코호트 기준이고, 전 셀 기준 수치는 sov_pct_all_cells로
+    # 따로 공개한다. 예전에는 헤드라인만 전 셀이라 30셀과 29셀을 나란히 놓고 증감이라 불렀다.
+    headline_on_cohort = (
+        comparison.status == "COMPARABLE" and comparison.current_sov_pct is not None
+    )
+    headline_rate = comparison.current_sov_pct if headline_on_cohort else all_cells_rate
+    headline_cells = result.matched_current_cells if headline_on_cohort else cells
+    mentioned_attempts, attempts_used = _attempt_counts(headline_cells, "LOCAL")
+    interval = wilson_interval(mentioned_attempts, attempts_used)
+    scored = _scored_cells(headline_cells, "LOCAL")
     return MonthlySovSummary(
-        sov_pct=_macro_rate(cells, platforms, "LOCAL"),
+        sov_pct=headline_rate,
+        sov_pct_all_cells=all_cells_rate,
+        attempts_used=attempts_used,
+        mentioned_attempts=mentioned_attempts,
+        ci95_low=None if interval is None else interval.low_pct,
+        ci95_high=None if interval is None else interval.high_pct,
+        margin_of_hundred=None if interval is None else interval.margin_of_hundred,
+        measurement_basis=MeasurementBasis(
+            question_count=len({cell.query_key for cell in scored}),
+            platform_count=len({cell.platform for cell in scored}),
+            cell_count=len(scored),
+            # 셀당 평균 반복 수. 구버전 manifest(1회)는 1, 현행은 5다.
+            repeat_count=(
+                round(sum(cell.attempts_used for cell in scored) / len(scored)) if scored else 0
+            ),
+            attempts_used=sum(cell.attempts_used for cell in scored),
+        ),
         planned_count=sum(cell.state != "EXCLUDED" for cell in cells),
         success_count=sum(cell.state == "SUCCESS" for cell in cells),
         failed_count=sum(cell.state == "FAILED" for cell in cells),
@@ -285,7 +384,5 @@ def build_monthly_sov(
             local=_segment(cells, platforms, "LOCAL"),
             info=_segment(cells, platforms, "INFO"),
         ),
-        comparison=_comparison(
-            cells, platforms, prior_cells, prior_platforms, current_protocol, prior_protocol
-        ),
+        comparison=comparison,
     )

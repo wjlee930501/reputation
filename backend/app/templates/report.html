@@ -70,7 +70,21 @@
 <p class="note">
   {% if sov_measured %}
     {% if report_type == 'MONTHLY' and sov_coverage %}
-    ※ 월초에 고정한 질문과 AI 서비스의 각 조합에서 성공 결과 1개만 사용했습니다. 추가 반복 측정은 점수 비중을 늘리지 않습니다.
+    ※ 월초에 고정한 질문과 AI 서비스의 각 조합마다 성공한 반복 측정을 모두 사용해 조합별 언급 빈도를 구하고,
+    그 빈도를 조합·AI 서비스 순으로 평균했습니다.
+    {% if sov_coverage.measurement_basis is defined and sov_coverage.measurement_basis and sov_coverage.measurement_basis.attempts_used %}
+    이번 달 표본은 질문 {{ sov_coverage.measurement_basis.question_count }}개 ×
+    AI 서비스 {{ sov_coverage.measurement_basis.platform_count }}곳 ×
+    반복 {{ sov_coverage.measurement_basis.repeat_count }}회 = 측정 {{ sov_coverage.measurement_basis.attempts_used }}건입니다.
+    {% endif %}
+    {% if sov_coverage.ci95_low is defined and sov_coverage.ci95_low is not none %}
+    95% 신뢰구간 {{ "%.1f"|format(sov_coverage.ci95_low) }}~{{ "%.1f"|format(sov_coverage.ci95_high) }}%
+    (같은 셀의 반복은 서로 독립이 아니므로 실제 오차는 이보다 넓습니다).
+    {% endif %}
+    {% if sov_coverage.comparison and sov_coverage.comparison.status == 'COMPARABLE' %}
+    표시된 언급률은 지난달과 공통으로 성공한 조합만으로 계산해 전월 수치와 분모가 같습니다
+    {%- if sov_coverage.sov_pct_all_cells is defined and sov_coverage.sov_pct_all_cells is not none %} (이번 달 전체 조합 기준은 {{ "%.1f"|format(sov_coverage.sov_pct_all_cells) }}%){% endif %}.
+    {% endif %}
     {% else %}
     ※ 각 검색 쿼리를 {{ repeat_count }}회 반복 발송하여 통계적으로 측정한 수치입니다.
     {% endif %}
@@ -347,7 +361,8 @@
 
 <div class="footer">
   본 리포트는 MotionLabs Re:putation 시스템이 자동 생성하였습니다.<br>
-  AI 검색 결과는 알고리즘 특성상 매회 상이할 수 있으며, 본 수치는 통계적 평균값입니다.<br>
+  AI 검색 결과는 알고리즘 특성상 매회 상이합니다. 본 수치는 반복 측정한 언급 빈도의 평균이며,
+  표본에서 오는 오차 범위가 있습니다.<br>
   문의: contact@motionlabs.co.kr
 </div>
 </body>

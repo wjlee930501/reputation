@@ -186,3 +186,39 @@ def test_related_content_empty_when_nothing_matches():
     contents = [_content("FAQ", "치질 FAQ")]
     summary = _summary(current=current, prior=prior, contents=contents)
     assert summary["new_mention_cells"][0]["related_contents"] == []
+
+
+def test_new_mention_now_means_appeared_at_least_once_in_the_repeats():
+    """반복 측정을 쓰면서 "새로 나온 질문"의 뜻도 명시된다.
+
+    대표 응답은 언급된 시도를 먼저 고르므로, 이번 달 5회 중 1회라도 나왔고
+    지난달에는 한 번도 안 나온 셀이 "새로 확인된 질문"이 된다. 예전에는
+    무작위로 뽑힌 1건이 그 판정을 좌우했다(같은 달을 두 번 계산하면 결과가 달랐다).
+    """
+    current = [
+        ManifestCellInput(
+            query_key="A",
+            query_text="강남 치질 병원",
+            platform="chatgpt",
+            query_intent="LOCAL",
+            state="SUCCESS",
+            query_matrix_id=None,
+            query_target_id=None,
+            query_variant_id=None,
+            query_intent_source="FROZEN",
+            attempts=tuple(
+                CellAttempt(
+                    record_id=uuid.UUID(int=index + 1),
+                    measured_at=datetime(2026, 8, 1, tzinfo=UTC),
+                    succeeded=True,
+                    is_mentioned=index == 4,
+                )
+                for index in range(5)
+            ),
+        )
+    ]
+    prior = [_cell("A", mentioned=False, query_text="강남 치질 병원")]
+
+    summary = _summary(current=current, prior=prior)
+
+    assert summary["new_mention_count"] == 1

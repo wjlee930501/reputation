@@ -156,7 +156,13 @@ def _payload(
 def build_content_attribution_summary(
     request: ContentAttributionInput,
 ) -> ContentAttributionPayload:
-    """Classify current mentions only against the same frozen prior cell."""
+    """Classify current mentions only against the same frozen prior cell.
+
+    셀 하나의 판정은 대표 응답(``selected_attempt``)이 쓴다. 대표는 언급된 시도를
+    먼저 고르는 결정적 규칙이므로, 여기서 "새로 확인된 질문"은 **이번 달 반복 중
+    한 번이라도 나왔고 지난달에는 한 번도 안 나온 셀**을 뜻한다. 헤드라인 점수는
+    이와 달리 셀 빈도(k/n)를 쓴다 — 둘의 목적이 다르다(하나는 사례 나열, 하나는 비율).
+    """
     prior_by_key = (
         {(cell.query_key, cell.platform): cell for cell in request.prior_cells}
         if request.prior_cells is not None
@@ -280,7 +286,12 @@ def _source_urls_of(record: Any) -> list[str]:
 def build_citation_attribution(
     request: CitationAttributionInput,
 ) -> CitationSummaryPayload:
-    """월간 manifest 셀의 채택 답변이 인용한 자사 URL을 글 단위로 집계한다."""
+    """월간 manifest 셀의 성공 답변들이 인용한 자사 URL을 글 단위로 집계한다.
+
+    헤드라인(월간 언급 빈도)과 같은 원칙으로 셀의 **모든 성공 반복**을 본다 — 반복
+    중 하나라도 자사 URL을 인용했으면 그 셀은 "인용됨"이고, 글·허브 페이지 매칭은
+    반복 간 합집합이다. 대표 1건만 보면 인용이 구조적으로 과소 집계된다.
+    """
     content_by_key = {
         str(getattr(item, "id", "")).strip().lower(): item
         for item in request.content_items
@@ -297,16 +308,18 @@ def build_citation_attribution(
     hub_queries: dict[str, list[CitedQueryPayload]] = {}
 
     for cell in sorted(request.cells, key=lambda row: (row.query_key, row.platform)):
-        selected = cell.selected_attempt
-        if selected is None:
+        succeeded = [attempt for attempt in cell.attempts if attempt.succeeded]
+        if not succeeded:
             continue
         measured_cell_count += 1
-        record = request.records_by_id.get(selected.record_id)
-        if record is None:
+        cell_urls: list[str] = []
+        for attempt in succeeded:
+            record = request.records_by_id.get(attempt.record_id)
+            if record is not None:
+                cell_urls.extend(_source_urls_of(record))
+        if not cell_urls:
             continue
-        match = build_citation_match(
-            _source_urls_of(record), request.hospital, request.content_items
-        )
+        match = build_citation_match(cell_urls, request.hospital, request.content_items)
         if not match.has_owned:
             continue
         cited_cell_count += 1

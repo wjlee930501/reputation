@@ -92,12 +92,69 @@ def test_headline_is_a_count_out_of_a_hundred_not_a_percentage():
 
 
 def test_month_over_month_is_written_in_counts_and_plain_korean():
+    """유의성 판정이 없는(구버전 payload) 경우에만 증감을 숫자로만 읽어준다."""
     assert _view()["headline"]["delta_sentence"] == "지난달 39번 → 이번 달 47번 (8개 늘었습니다)"
     assert _view(sov_pct=31.0)["headline"]["delta_sentence"] == (
         "지난달 39번 → 이번 달 31번 (8개 줄었습니다)"
     )
     assert _view(sov_pct=39.0)["headline"]["delta_sentence"] == (
         "지난달 39번 → 이번 달 39번 (변화 없습니다)"
+    )
+
+
+def test_delta_sentence_is_chosen_by_significance_not_by_sign():
+    """+8이라는 부호가 아니라 표본이 문장을 정한다.
+
+    셀 하나가 뒤집히면 3점이 움직이는 표본에서 "8개 늘었습니다"는 노이즈를
+    성과로 판 문장이었다.
+    """
+    noise = _view(significance="WITHIN_NOISE")
+    up = _view(significance="SIGNIFICANT_UP")
+    down = _view(sov_pct=31.0, significance="SIGNIFICANT_DOWN")
+
+    assert noise["headline"]["delta_sentence"] == (
+        "지난달 39번 → 이번 달 47번 (정상 변동 범위 안입니다)"
+    )
+    assert up["headline"]["delta_sentence"] == (
+        "지난달 39번 → 이번 달 47번 (의미 있는 상승입니다)"
+    )
+    assert down["headline"]["delta_sentence"] == (
+        "지난달 39번 → 이번 달 31번 (의미 있는 하락입니다)"
+    )
+    assert noise["headline"]["significance"] == "WITHIN_NOISE"
+
+
+def test_significance_and_error_margin_come_from_the_monthly_payload():
+    """호출부가 따로 넘기지 않아도 월간 payload에 있으면 그대로 쓴다."""
+    view = _view(
+        sov_coverage={
+            "planned_count": 30,
+            "success_count": 30,
+            "attempts_used": 150,
+            "mention_frequency": 0.47,
+            "ci95_low": 39.2,
+            "ci95_high": 55.0,
+            "margin_of_hundred": 8,
+            "significance": "WITHIN_NOISE",
+            "measurement_basis": {
+                "question_count": 15,
+                "platform_count": 2,
+                "cell_count": 30,
+                "repeat_count": 5,
+                "attempts_used": 150,
+            },
+        }
+    )
+
+    assert view["headline"]["delta_sentence"] == (
+        "지난달 39번 → 이번 달 47번 (정상 변동 범위 안입니다)"
+    )
+    assert view["headline"]["attempts_used"] == 150
+    assert view["headline"]["ci95_low_of_hundred"] == 39
+    assert view["headline"]["ci95_high_of_hundred"] == 55
+    assert (
+        "이번 달 수치의 오차 범위는 ±8번입니다 (질문 15개 × AI 서비스 2곳 × 반복 5회 기준)."
+        in view["footnotes"]
     )
 
 
@@ -251,9 +308,37 @@ def test_footnotes_always_carry_the_honesty_caveats():
     """나쁜 달에 이 문구가 없으면 자연 변동이 해지 대화가 된다."""
     footnotes = " ".join(_view()["footnotes"])
 
-    assert "정상 범위" in footnotes
+    # 표본 정보가 없으면 오차 범위 숫자를 지어내지 않는다 — 대신 변동 사실만 남긴다.
+    assert "오르내립니다" in footnotes
     assert "보장하지 않습니다" in footnotes
     assert "챗GPT" in footnotes
+
+
+def test_error_margin_footnote_is_measured_not_a_fixed_constant():
+    """예전의 고정 상수(±5번)는 실측 노이즈의 1/4~1/5이라 사실이 아니었다."""
+    import app.services.report_engine as report_engine
+
+    assert not hasattr(report_engine, "NORMAL_FLUCTUATION")
+
+    thin = _view(
+        sov_coverage={
+            "planned_count": 4,
+            "success_count": 4,
+            "margin_of_hundred": 24,
+            "measurement_basis": {
+                "question_count": 2,
+                "platform_count": 1,
+                "cell_count": 2,
+                "repeat_count": 5,
+                "attempts_used": 10,
+            },
+        }
+    )
+
+    assert (
+        "이번 달 수치의 오차 범위는 ±24번입니다 (질문 2개 × 반복 5회 기준)."
+        in thin["footnotes"]
+    )
 
 
 # ── 템플릿까지 실제로 렌더되는가 ────────────────────────────────────────
