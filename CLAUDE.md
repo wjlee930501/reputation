@@ -102,7 +102,10 @@
     • 게이트: "현재 승인된 운영 기준 없음"·"미처리 자료 존재"만 전달을 막는 진짜 blocker다.
       사후검수 표본 미완료, 운영 기준 버전 갱신(essence version drift)은 경고(warning)로만
       표시되고 원장 전달을 막지 않는다 (`api/admin/reports.py`)
-    • Slack → AE: 월간 리포트 완료
+    • 원장용 PDF: 1쪽은 3막(이번 달 한 일 → 무엇이 달라졌나(새로 나온·빠진 질문, V0 대비) →
+      다음 달 계획), 질문별 표는 조건부 2쪽 부록. 검증은 1쪽 또는 부록 포함 2쪽만 허용
+      (`services/report_artifact_validation.py`). AE용 내부 PDF에는 "원장 미팅 토킹 포인트"가 실린다
+    • Slack → AE: 월간 리포트 완료 (헤드라인 "언급 N번(전월 대비 ±Δ, 유의성)" 한 줄 포함)
     • AE가 원장에게 보고 (시스템이 보내지 않음)
 
 ### 보조 배치 (전체 목록은 `backend/app/core/celery_app.py` 참고)
