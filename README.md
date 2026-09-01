@@ -64,7 +64,8 @@ make copy-guard          # 사용자 노출 문구(의료광고 금지 표현 �
 backend/.venv/bin/python -m ruff check backend
 backend/.venv/bin/python -m pytest -q
 ```
-(Docker 컨테이너 안에서 돌리려면 `make test`로 `docker compose exec api pytest -v` 실행)
+(Docker 컨테이너 안에서 돌리려면 `make test` — api 이미지는 `uv sync --locked --no-dev`로 빌드되어
+pytest가 없으므로, 먼저 컨테이너 안에서 dev extra를 동기화한 뒤 `uv run --no-sync pytest -v`로 실행한다)
 
 ### 기타 유용한 타깃
 ```bash
