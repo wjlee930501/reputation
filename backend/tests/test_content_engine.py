@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 
 os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-key")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///tmp/reputation-test.db")
@@ -598,5 +599,83 @@ def test_legacy_empty_approved_philosophy_gets_runtime_safety_floor():
 
     context = _build_philosophy_context(philosophy)
 
-    assert "의료광고 공통 금지 표현" in context
-    assert "치료 효과·성공·완치·안전성을 단정하거나 보장하지 않습니다." in context
+    # 플랫폼 공통 안전 규칙은 정적 시스템 블록에 **정확히 한 번** 실린다.
+    # 철학 컨텍스트가 같은 문장을 다시 실으면 호출마다 중복 비용이 발생한다.
+    assert "의료광고 공통 금지 표현" not in context
+    assert "치료 효과·성공·완치·안전성을 단정하거나 보장하지 않습니다." not in context
+    assert content_engine.STATIC_SYSTEM_BLOCK.count(
+        "치료 효과·성공·완치·안전성을 단정하거나 보장하지 않습니다."
+    ) == 1
+    assert (
+        content_engine.STATIC_SYSTEM_BLOCK.count(
+            " · ".join(content_engine.FORBIDDEN_EXPRESSIONS)
+        )
+        == 1
+    )
+
+
+def test_static_system_block_meets_sonnet_cache_minimum():
+    """Sonnet 계열 최소 캐시 접두어는 1024 토큰. 정적 블록이 그 아래로 내려가면
+    cache_control을 붙여도 조용히 캐시되지 않는다."""
+    # 한국어는 문자당 약 1토큰 이상으로 잡히므로 문자 수 하한으로 보수적으로 검증한다.
+    assert len(content_engine.STATIC_SYSTEM_BLOCK) > 2000
+
+
+async def test_generate_content_sends_cached_system_blocks(monkeypatch):
+    """system은 캐시 breakpoint를 가진 블록 리스트여야 하고, 아이템마다 바뀌는
+    내용(최근 제목 등)은 user 메시지에만 있어야 한다."""
+    payload = {
+        "title": "대장내시경 검사 전 준비 안내",
+        "body": (
+            "## 준비\n" + "검사 전 준비 사항을 단계별로 안내합니다. " * 60
+            + "\n\n## 주의\n" + "검사 당일 주의할 점을 정리했습니다. " * 60
+            + "\n\n## 문의\n" + "노원 테스트의원 김의사 원장에게 문의하세요. " * 20
+        ),
+        "meta_description": "대장내시경 검사 전 준비 과정을 단계별로 안내합니다. 식이 조절과 장 정결 방법을 확인하세요.",
+        "references": [],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="테스트의원",
+        address="서울시 노원구",
+        phone="02-000-0000",
+        business_hours=None,
+        region=["노원"],
+        specialties=["내과"],
+        keywords=["대장내시경"],
+        director_name="김의사",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    captured: dict = {}
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeResponse()
+
+    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+
+    await content_engine.generate_content(
+        hospital,
+        ContentType.NOTICE,
+        existing_titles=[f"제목 {n}" for n in range(200)],
+    )
+
+    system = captured["system"]
+    assert isinstance(system, list) and len(system) == 2
+    assert system[0]["text"] == content_engine.STATIC_SYSTEM_BLOCK
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+    assert system[1]["cache_control"] == {"type": "ephemeral"}
+    assert "테스트의원" in system[1]["text"]
+
+    # 변동분은 정적 블록 밖에 있어야 캐시가 산다.
+    user_message = captured["messages"][0]["content"]
+    assert "최근 발행 제목 일부" in user_message
+    assert "제목 0" not in system[0]["text"]
+    assert user_message.count("- 제목 ") == content_engine.EXISTING_TITLE_PROMPT_LIMIT

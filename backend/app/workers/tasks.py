@@ -66,7 +66,7 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     review_generated_content,
 )
-from app.services.content_engine import generate_content
+from app.services.content_engine import EXISTING_TITLE_PROMPT_LIMIT, generate_content
 from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
@@ -1944,12 +1944,20 @@ def nightly_content_generation(self):
                     )
                     continue
 
-                # 기존 제목 목록 (중복 방지)
+                # 기존 제목 목록 (중복 방지). 상한 없이 전부 실으면 1년 운영한
+                # 병원에서 수백 개 제목이 매 호출 프롬프트에 들어간다. 중복 회피에
+                # 필요한 것은 최근 무엇을 썼는지이므로 최신 N개만 가져온다.
                 existing = db.execute(
-                    select(ContentItem.title).where(
+                    select(ContentItem.title)
+                    .where(
                         ContentItem.hospital_id == hospital.id,
                         ContentItem.title.isnot(None),
                     )
+                    .order_by(
+                        ContentItem.scheduled_date.desc().nullslast(),
+                        ContentItem.published_at.desc().nullslast(),
+                    )
+                    .limit(EXISTING_TITLE_PROMPT_LIMIT)
                 )
                 existing_titles = [r[0] for r in existing.all()]
 
@@ -2706,12 +2714,19 @@ def _generate_single_content_item(
             "직전 생성 차단 원인이 달라지지 않아 비용 재시도를 건너뛰었습니다.",
         )
 
+    # 최신 N개만. 상한 없는 전량 주입은 프롬프트 입력을 병원 연차에 비례해 부풀린다.
     existing = db.execute(
-        select(ContentItem.title).where(
+        select(ContentItem.title)
+        .where(
             ContentItem.hospital_id == hospital.id,
             ContentItem.id != item.id,
             ContentItem.title.isnot(None),
         )
+        .order_by(
+            ContentItem.scheduled_date.desc().nullslast(),
+            ContentItem.published_at.desc().nullslast(),
+        )
+        .limit(EXISTING_TITLE_PROMPT_LIMIT)
     )
     existing_titles = [row[0] for row in existing.all()]
 
