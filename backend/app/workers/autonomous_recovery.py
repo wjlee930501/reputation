@@ -13,7 +13,7 @@ from sqlalchemy import and_, func, or_, select
 from app.core.celery_app import celery_app
 from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem
-from app.models.hospital import Hospital
+from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import (
     Incident,
     IncidentSeverity,
@@ -109,7 +109,19 @@ def reconcile() -> RecoveryCounts:
                 .where(
                     Hospital.profile_complete.is_(True),
                     Hospital.v0_report_done.is_(True),
-                    Hospital.site_built.is_(False),
+                    or_(
+                        Hospital.site_built.is_(False),
+                        # 허브는 준비됐는데 기본 주소 자동 활성화가 유실된 병원. STEP5 재촉
+                        # Slack을 없앤 뒤에는 이 재실행이 유일한 복구 경로다 —
+                        # build_aeo_site는 이미 ACTIVE·PAUSED·자기 도메인 병원을 건드리지
+                        # 않으므로 재배달해도 안전하다.
+                        and_(
+                            Hospital.site_built.is_(True),
+                            Hospital.site_live.is_(False),
+                            Hospital.status == HospitalStatus.PENDING_DOMAIN,
+                            or_(Hospital.aeo_domain.is_(None), Hospital.aeo_domain == ""),
+                        ),
+                    ),
                 )
                 .order_by(Hospital.created_at, Hospital.id)
                 .with_for_update(skip_locked=True)

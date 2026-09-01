@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
+from app.services.hospital_activation import evaluate_auto_activation
 from app.services.hospital_lifecycle import activation_gate_snapshot
 from app.services.notification_milestone_messages import MilestoneProjection
 from app.services.onboarding_events import (
@@ -98,6 +99,21 @@ async def _current_observations(
     return tuple(observations)
 
 
+def _needs_manual_activation(hospital: Hospital, handoff_accepted: bool) -> bool:
+    """사람이 실제로 눌러야 하는 병원만 ACTIVATION_READY를 만든다.
+
+    이미 ACTIVE인 병원은 위쪽 분기에서 걸러지고, 기본 주소만 쓰는 병원은 허브 준비
+    태스크가 그대로 운영을 시작하므로 재촉할 대상이 아니다. 남는 것은 자기 도메인이
+    지정돼 DNS 확인이 필요한 병원과, 자동 전환 대상이 아닌 상태(PAUSED 등)뿐이다.
+    PAUSED는 운영자가 일부러 멈춘 것이므로 활성화를 재촉하지 않는다.
+    """
+    if hospital.status is HospitalStatus.PAUSED:
+        return False
+    if not activation_gate_snapshot(hospital, handoff_accepted=handoff_accepted)["ready"]:
+        return False
+    return evaluate_auto_activation(hospital) is not None
+
+
 def _current_event(
     hospital: Hospital,
     handoff: HospitalHandoff,
@@ -108,7 +124,7 @@ def _current_event(
     if hospital.status is HospitalStatus.ACTIVE:
         occurred_at = active_since or hospital.updated_at
         event_type = OnboardingEventType.HOSPITAL_ACTIVE
-    elif activation_gate_snapshot(hospital, handoff_accepted=accepted)["ready"]:
+    elif _needs_manual_activation(hospital, accepted):
         occurred_at = max(hospital.updated_at, handoff.updated_at)
         event_type = OnboardingEventType.ACTIVATION_READY
     elif accepted and handoff.accepted_at is not None:

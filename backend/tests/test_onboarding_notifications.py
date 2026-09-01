@@ -10,8 +10,10 @@ from sqlalchemy.dialects import postgresql
 
 from app.models.operations import JSONValue, NotificationOutboxState
 from app.services.onboarding_notifications import (
+    ACTIVATED_NOTIFICATION_TYPE,
     SITE_BUILT_NOTIFICATION_TYPE,
     V0_READY_NOTIFICATION_TYPE,
+    build_hospital_activated_notification,
     build_site_built_notification,
     build_v0_ready_notification,
     enqueue_onboarding_notification_sync,
@@ -145,3 +147,39 @@ def test_v0_session_lock_is_released_after_running_commit() -> None:
     # 측정 루프는 세션 락 해제 뒤에 있다. 30분 측정 동안 풀 커넥션에 락이 남으면 안 된다.
     loop = v0_source.index("for q in sample_queries:")
     assert release < loop
+
+
+def test_activated_intent_names_the_platform_address_and_has_one_admin_action() -> None:
+    first = build_hospital_activated_notification(
+        hospital_id=_HOSPITAL_ID,
+        hospital_name="장편한외과",
+        public_url="https://jangpyeonhan.reputation.example/",
+        admin_base_url=_ADMIN,
+    )
+    second = build_hospital_activated_notification(
+        hospital_id=_HOSPITAL_ID,
+        hospital_name="병원명이 바뀌어도 활성화 사건은 동일",
+        public_url="https://jangpyeonhan.reputation.example/",
+        admin_base_url=_ADMIN,
+    )
+
+    encoded = json.dumps(first.message.payload(), ensure_ascii=False)
+    assert first.dedupe_key == second.dedupe_key == f"ONBOARDING_HOSPITAL_ACTIVATED:{_HOSPITAL_ID}:v1"
+    assert first.notification_type == ACTIVATED_NOTIFICATION_TYPE
+    # 공개 주소는 본문 텍스트로만 들어간다 — Slack 액션 URL은 Admin 하나뿐이어야 한다.
+    assert _urls(first.message.payload()) == [f"{_ADMIN}/hospitals/{_HOSPITAL_ID}/dashboard"]
+    assert "운영 시작됨 — 기본 주소 https://jangpyeonhan.reputation.example/" in encoded
+
+
+def test_site_built_nag_states_why_auto_activation_was_impossible() -> None:
+    intent = build_site_built_notification(
+        hospital_id=_HOSPITAL_ID,
+        hospital_name="장편한외과",
+        blocked_reason="병원 자기 도메인이 지정돼 있어 DNS·인증서 확인 후 직접 운영을 시작해야 합니다.",
+        admin_base_url=_ADMIN,
+    )
+
+    encoded = json.dumps(intent.message.payload(), ensure_ascii=False)
+    assert "자동 시작 불가 사유" in encoded
+    assert "자기 도메인" in encoded
+    assert intent.notification_type == SITE_BUILT_NOTIFICATION_TYPE

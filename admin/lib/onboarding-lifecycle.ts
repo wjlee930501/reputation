@@ -217,8 +217,8 @@ export function deriveOnboardingSteps(
     {
       key: 'live',
       phase: 'onboarding',
-      title: '도메인 확인 및 공개 운영 시작',
-      description: '공개 주소와 도메인 상태를 확인한 뒤 공개 운영을 시작합니다.',
+      title: '공개 운영 시작',
+      description: '기본 플랫폼 주소는 선행 단계 세 가지가 통과하면 자동으로 운영이 시작됩니다. 자기 도메인을 쓰는 병원만 도메인을 입력하고 상태를 확인해 주세요.',
       href: `/hospitals/${hospitalId}/profile#domain-setup`,
       done: Boolean(hospital?.site_live) && readinessCheck(readiness, 'domain') !== false,
     },
