@@ -22,7 +22,10 @@ interface Props {
   params: Promise<{ slug: string }>
 }
 
-export const revalidate = 3600
+// Next.js는 `revalidate`를 정적으로 파싱해야 해서 lib/fetch-policy.ts의
+// REVALIDATE_SECONDS를 import해 쓸 수 없다(import된 식별자는 빌드가 거부한다) — 값은
+// 그 상수와 반드시 같게 유지한다.
+export const revalidate = 1800
 
 const COLUMN_FIRST = ['COLUMN', 'FAQ', 'DISEASE', 'TREATMENT', 'HEALTH', 'LOCAL', 'NOTICE']
 

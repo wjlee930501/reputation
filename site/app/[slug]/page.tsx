@@ -17,6 +17,7 @@ import {
   selectClinicHeroImage,
 } from '@/lib/clinic-theme'
 import { getApiBase } from '@/lib/config'
+import { REVALIDATE_SECONDS } from '@/lib/fetch-policy'
 import { buildFaqPageJsonLd, buildPhysicianCredentials, selectFaqEntries } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 
@@ -40,13 +41,16 @@ interface Props {
   params: Promise<{ slug: string }>
 }
 
-export const revalidate = 3600
+// Next.js는 `revalidate`를 정적으로 파싱해야 해서 lib/fetch-policy.ts의
+// REVALIDATE_SECONDS를 import해 쓸 수 없다(import된 식별자는 빌드가 거부한다) — 값은
+// 그 상수와 반드시 같게 유지한다.
+export const revalidate = 1800
 
 export async function generateStaticParams() {
   try {
     const apiBase = getApiBase(false)
     if (!apiBase) return []
-    const res = await fetch(`${apiBase}/hospitals`, { next: { revalidate: 3600 } })
+    const res = await fetch(`${apiBase}/hospitals`, { next: { revalidate: REVALIDATE_SECONDS } })
     if (!res.ok) return []
     const hospitals = (await res.json()) as Array<{ slug: string }>
     return hospitals.map((h) => ({ slug: h.slug }))

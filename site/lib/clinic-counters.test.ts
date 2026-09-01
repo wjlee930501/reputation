@@ -30,7 +30,10 @@ test('the public surfaces that show a count go through this helper', () => {
     join(HERE, '..', 'app', '[slug]', '_components', 'ClinicGallery.tsx'),
     join(HERE, '..', 'app', '[slug]', '_components', 'DoctorIntro.tsx'),
     join(HERE, '..', 'app', '[slug]', 'treatments', 'page.tsx'),
-    join(HERE, '..', 'app', '[slug]', 'contents', 'page.tsx'),
+    // 유형 필터(?type=)가 ISR을 막지 않도록 목록·필터 렌더링은 별도 컴포넌트로
+    // 옮겼다(contents/page.tsx 자체는 개수 표기를 하지 않는다) — 상세는
+    // app/[slug]/contents/_components/ContentsFeedView.tsx 참고.
+    join(HERE, '..', 'app', '[slug]', 'contents', '_components', 'ContentsFeedView.tsx'),
     join(HERE, '..', 'app', '[slug]', 'treatments', '[treatmentSlug]', 'page.tsx'),
   ]
 

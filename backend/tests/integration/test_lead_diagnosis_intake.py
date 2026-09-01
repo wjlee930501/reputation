@@ -20,7 +20,7 @@ from app.services.lead_report_token import hash_report_token
 
 # slowapi @limiter.limit 우회 — 라우트를 FastAPI 요청 라이프사이클 밖에서 직접 호출한다.
 create_diagnosis = diagnosis_api.create_diagnosis.__wrapped__
-get_slot_availability = diagnosis_api.get_slot_availability
+get_slot_availability = diagnosis_api.get_slot_availability.__wrapped__
 
 
 class FakeRequest:
@@ -200,13 +200,13 @@ class TestDailySlots:
     async def test_slot_endpoint_reports_the_real_count(self, pg_async_session, monkeypatch):
         """랜딩의 "남은 자리"는 실제 카운터다 — 희소성을 연출하려고 꾸미지 않는다."""
         monkeypatch.setattr(settings, "LEADGEN_DAILY_SLOTS", 5)
-        before = await get_slot_availability(pg_async_session)
+        before = await get_slot_availability(FakeRequest(), pg_async_session)
         assert before["used"] == 0
         assert before["remaining"] == 5
 
         await _post(pg_async_session)
 
-        after = await get_slot_availability(pg_async_session)
+        after = await get_slot_availability(FakeRequest(), pg_async_session)
         assert after["used"] == 1
         assert after["remaining"] == 4
         assert after["total"] == 5

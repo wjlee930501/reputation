@@ -23,7 +23,7 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
-from app.services.essence_readiness import get_essence_readiness
+from app.services.essence_readiness import get_current_approved_philosophy_id, get_essence_readiness
 from app.services.hospital_logo import is_stored_logo_ref, public_logo_url
 from app.services.photo_assets import effective_photo_metadata
 from app.utils.domain import normalize_domain
@@ -171,6 +171,10 @@ def _serialize_hospital_summary(h: Hospital) -> dict:
 
     /llms.txt 루트 인덱스가 name·region·specialties 등을 직접 출력하므로
     목록 응답에도 포함해야 한다.
+
+    `treatments`는 sitemap 빌더가 병원별 진료 항목 슬러그를 나열할 때 쓴다 — 목록에
+    없으면 병원마다 detail(`/{slug}`)을 추가로 불러야 했다(N+1). `_safe_treatments`로
+    상세 응답과 동일한 의료광고 필터를 거친다.
     """
     return {
         "slug": h.slug,
@@ -182,6 +186,7 @@ def _serialize_hospital_summary(h: Hospital) -> dict:
         "address": h.address,
         "phone": h.phone,
         "website_url": _safe_external_url(h.website_url),
+        "treatments": _safe_treatments(h.treatments),
         "updated_at": h.updated_at.isoformat()
         if h.updated_at
         else h.created_at.isoformat()
@@ -334,15 +339,20 @@ async def get_content_public(
 async def get_public_content_image(
     request: Request, slug: str, content_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ):
-    """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302)."""
+    """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302).
+
+    `get_essence_readiness()`는 신선도 판정에 쓰지 않는 원문(raw_text 등)까지 포함해
+    소스 자산 전체 행을 로드한다. 이미지 프록시는 "지금 신선한 승인 철학의 id"만
+    있으면 되므로 그 컬럼만 선택하는 `get_current_approved_philosophy_id()`를 쓴다
+    (크롤러·next/image가 반복 호출하는 경로라 요청당 데이터 이동량이 누적된다).
+    """
     h = await _get_active_hospital(db, slug)
-    essence = await get_essence_readiness(db, h.id)
-    public_philosophy = essence.public_philosophy
+    current_philosophy_id = await get_current_approved_philosophy_id(db, h.id)
     item = await db.get(ContentItem, content_id)
     if (
         not item
         or item.hospital_id != h.id
-        or not _is_public_safe_content(item, public_philosophy.id if public_philosophy else None)
+        or not _is_public_safe_content(item, current_philosophy_id)
         or not item.image_url
     ):
         raise HTTPException(status_code=404, detail="Content image not found")
