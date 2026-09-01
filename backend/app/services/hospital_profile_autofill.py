@@ -17,15 +17,26 @@ import uuid
 from dataclasses import dataclass, field
 
 import anthropic
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.services import naver_place
 from app.services.asset_extractor import fetch_url_text
 from app.services.content_engine import _parse_json_response
+from app.utils.anthropic_retry import is_retryable_anthropic_error
 from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
+
+
+def _autofill_model() -> str:
+    """자동 채우기 모델 — 기본은 빠른 모델, AUTOFILL_MODEL로 되돌릴 수 있다.
+
+    구조화 추출 뒤에 _normalize_fields/_field_value_is_grounded가 필드마다 원문 발췌
+    일치를 결정론적으로 검증하므로, 이 단계에서 Sonnet급 추론을 살 이유가 없다.
+    """
+    return settings.AUTOFILL_MODEL or settings.CLAUDE_MODEL_FAST
+
 
 _client = anthropic.Anthropic(
     api_key=settings.ANTHROPIC_API_KEY,
@@ -33,7 +44,10 @@ _client = anthropic.Anthropic(
     max_retries=0,  # tenacity가 백오프로 재시도
 )
 
-# 소스별 입력 텍스트 상한 — 토큰/비용 통제. 합쳐 ~50K자.
+# 소스별 입력 텍스트 상한 — 토큰/비용 통제.
+# 홈페이지·블로그·네이버 플레이스 3개 소스 × 18K자 = 입력 최대 ~54K자(≈20K 토큰).
+# 추출 결과는 아래 _field_value_is_grounded가 원문 발췌와 대조해 결정론적으로 검증하므로
+# 상한을 더 올려 모델에 원문을 더 넣어도 정확도가 그만큼 오르지 않는다.
 _MAX_PER_SOURCE = 18_000
 
 # 추출 결과에서 medical_filter를 적용할 텍스트 필드(광고성·공개 표면 우려).
@@ -167,7 +181,13 @@ async def _gather_sources(
     return blocks, statuses, naver_res
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=2, max=10),
+    # 결정적 4xx(잘못된 요청·인증·권한·모델 오타)는 재시도해도 같은 실패다.
+    # 재시도 1회 = 유료 호출 1회이므로 즉시 중단하고 호출부의 best-effort 폴백으로 넘긴다.
+    retry=retry_if_exception(is_retryable_anthropic_error),
+)
 async def _extract_with_claude(
     name: str, aggregated_text: str, *, hospital_id: uuid.UUID | str | None = None
 ) -> dict:
@@ -187,7 +207,7 @@ async def _extract_with_claude(
     response = await loop.run_in_executor(
         None,
         lambda: _client.messages.create(
-            model=settings.CLAUDE_MODEL,
+            model=_autofill_model(),
             max_tokens=3000,
             system=EXTRACTION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -26,6 +27,32 @@ logger = logging.getLogger(__name__)
 
 _MAX_FINDINGS = 5
 _PASS_CONFIDENCE = 0.85
+
+# 검수 1건마다 클라이언트를 새로 만들면 커넥션 풀과 TLS 핸드셰이크를 매번 버린다.
+# essence_engine._anthropic_client와 같은 lazy 싱글턴.
+_client_instance: anthropic.Anthropic | None = None
+_client_lock = threading.Lock()
+
+
+def _anthropic_client() -> anthropic.Anthropic:
+    global _client_instance
+    if _client_instance is None:
+        with _client_lock:
+            if _client_instance is None:
+                _client_instance = anthropic.Anthropic(
+                    api_key=settings.ANTHROPIC_API_KEY,
+                    timeout=60.0,
+                    max_retries=0,
+                )
+    return _client_instance
+
+
+def _reset_clients_for_tests() -> None:
+    """테스트가 ANTHROPIC_API_KEY/생성자를 바꿔치기한 뒤 캐시를 비우기 위한 훅."""
+
+    global _client_instance
+    with _client_lock:
+        _client_instance = None
 
 _SYSTEM_PROMPT = """\
 당신은 병원 의료 콘텐츠의 독립 안전 검수자입니다.
@@ -199,11 +226,7 @@ async def review_generated_content(
             content_brief=content_brief,
         )
     )
-    client = anthropic.Anthropic(
-        api_key=settings.ANTHROPIC_API_KEY,
-        timeout=60.0,
-        max_retries=0,
-    )
+    client = _anthropic_client()
     try:
         await cost_guard.record_provider_call("content")
         response = await asyncio.get_running_loop().run_in_executor(

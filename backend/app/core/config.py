@@ -316,6 +316,9 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     CLAUDE_MODEL: str = "claude-sonnet-4-5"
     CLAUDE_MODEL_FAST: str = "claude-haiku-4-5-20251001"
+    # 프로파일 자동 채우기는 결정론적 grounding 검증이 뒤따르는 구조화 추출 작업이라
+    # 빠른 모델로 충분하다. 비우면 CLAUDE_MODEL_FAST를 쓰고, 값을 넣으면 되돌릴 수 있다.
+    AUTOFILL_MODEL: str = ""
 
     # Jina Reader — 프로파일 자동 채우기 시 네이버 플레이스 등 봇 차단 사이트 우회 읽기.
     # 선택값: 비어 있어도 무인증 free tier로 동작(분당 제한 빡빡). 키가 있으면 상향.

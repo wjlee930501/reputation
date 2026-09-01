@@ -376,3 +376,78 @@ def test_deterministic_fallback_runs_without_api_key(monkeypatch):
     assert notes
     assert all(n.source_excerpt in asset.raw_text or n.source_excerpt in asset.operator_note for n in notes)
     assert any(n.note_type == EvidenceNoteType.DOCTOR_PHILOSOPHY for n in notes)
+
+
+def test_json_provider_call_does_not_retry_deterministic_client_error(monkeypatch, llm_key):
+    """결정적 4xx는 재시도해도 같은 실패다 — 유료 호출이 3배로 늘면 안 된다."""
+    import anthropic
+    import httpx
+
+    http_response = httpx.Response(
+        400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
+
+    class BadRequestMessages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            raise anthropic.BadRequestError(
+                "invalid request", response=http_response, body=None
+            )
+
+    messages = BadRequestMessages()
+    monkeypatch.setattr(
+        essence_engine,
+        "_anthropic_client",
+        lambda: SimpleNamespace(messages=messages),
+    )
+
+    with pytest.raises(anthropic.BadRequestError):
+        essence_engine._call_anthropic_json("system", "data", max_tokens=100)
+
+    assert messages.calls == 1
+
+
+def test_json_provider_call_still_retries_transient_provider_error(monkeypatch, llm_key):
+    class FlakyMessages:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("upstream 503")
+            return SimpleNamespace(
+                content=[SimpleNamespace(text='{"ok": true}')], stop_reason="end_turn"
+            )
+
+    messages = FlakyMessages()
+    monkeypatch.setattr(
+        essence_engine,
+        "_anthropic_client",
+        lambda: SimpleNamespace(messages=messages),
+    )
+
+    assert essence_engine._call_anthropic_json("system", "data", max_tokens=100) == {"ok": True}
+    assert messages.calls == 2
+
+
+def test_anthropic_client_is_reused_across_calls(monkeypatch, llm_key):
+    """호출마다 클라이언트를 새로 만들면 커넥션 풀과 TLS 세션을 매번 버린다."""
+    created: list[dict] = []
+
+    class FakeAnthropicClient:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(essence_engine.anthropic, "Anthropic", FakeAnthropicClient)
+    essence_engine._reset_clients_for_tests()
+
+    first = essence_engine._anthropic_client()
+    second = essence_engine._anthropic_client()
+
+    assert first is second
+    assert len(created) == 1
+    assert created[0]["max_retries"] == 0
