@@ -4,6 +4,7 @@ import logging
 import re
 import unicodedata
 import uuid
+from datetime import datetime
 from urllib.parse import quote
 
 import httpx
@@ -139,11 +140,17 @@ async def trigger_content_site_revalidate_safe(
     *,
     hospital_name: str | None = None,
     treatments: list | None = None,
+    unpublished_from: datetime | None = None,
 ) -> bool:
     """커밋 이후 호출용 — 실패해도 절대 raise하지 않는다 (P2-9b).
 
     발행 커밋 뒤 revalidate 실패로 500을 돌려주면 AE는 실패로 인지하고 재시도하다
     "Already published"를 만난다. 프로덕션 포함, 경고 로그 + Slack 운영 알림으로 강등.
+
+    반려·비공개(내림)로 호출할 때는 `unpublished_from`에 직전 published_at을 넘긴다.
+    반려가 발행 메타를 지우기 때문에, 이 값이 없으면 내려간 글이 어느 판(edition)으로
+    캐시에 남아 있는지 식별할 수 없어 내구성 있는 재시도가 열리지 않는다.
+    무효화 경로 자체는 올림과 동일한 content_site_paths 전체다.
     """
     try:
         return await trigger_site_revalidate(paths=content_site_paths(slug, content_id, treatments))
@@ -155,7 +162,9 @@ async def trigger_content_site_revalidate_safe(
             logger.warning("revalidation failure has invalid content identity")
             return False
         try:
-            plan = await start_revalidation_failure(slug, parsed_content_id)
+            plan = await start_revalidation_failure(
+                slug, parsed_content_id, unpublished_from=unpublished_from
+            )
             if plan is None:
                 logger.warning(
                     "durable revalidation recovery skipped: code=tenant_or_publication_not_found"

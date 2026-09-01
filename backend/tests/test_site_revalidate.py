@@ -1,4 +1,6 @@
 """P2-9b — revalidate 경로 커버리지(treatment pillar + 루트 llms.txt) + post-commit 안전 강등."""
+from datetime import datetime, timezone
+
 import pytest
 
 from app.services import site_revalidate
@@ -44,8 +46,9 @@ async def test_trigger_content_site_revalidate_safe_never_raises(monkeypatch):
     async def boom(*, paths):
         raise RuntimeError("revalidate endpoint down")
 
-    async def fake_start(slug, content_id):
+    async def fake_start(slug, content_id, *, unpublished_from=None):
         assert slug == "test-clinic"
+        assert unpublished_from is None
         return RevalidationRetryPlan(content_id, 60, False, True)
 
     def fake_send_task(name, *, args, queue, countdown, headers):
@@ -124,6 +127,39 @@ async def test_hospital_revalidation_failure_is_persisted_and_requeued(monkeypat
             ),
         )
     ]
+
+
+async def test_unpublish_revalidate_passes_previous_publication_edition(monkeypatch):
+    """반려(내림)는 직전 published_at을 넘겨야 내구성 있는 복구 run이 열린다."""
+    seen = {}
+    edition = datetime(2026, 8, 20, 23, 5, tzinfo=timezone.utc)
+
+    async def boom(*, paths):
+        seen["paths"] = paths
+        raise RuntimeError("revalidate endpoint down")
+
+    async def fake_start(slug, content_id, *, unpublished_from=None):
+        seen["unpublished_from"] = unpublished_from
+        return None
+
+    monkeypatch.setattr(site_revalidate, "trigger_site_revalidate", boom)
+    monkeypatch.setattr(site_revalidate, "start_revalidation_failure", fake_start)
+
+    ok = await site_revalidate.trigger_content_site_revalidate_safe(
+        "test-clinic",
+        "f5aa8f49-fc76-46b6-b6d5-d372dad2522a",
+        treatments=[{"name": "도수치료"}],
+        unpublished_from=edition,
+    )
+
+    assert ok is False
+    assert seen["unpublished_from"] == edition
+    # 내림도 올림과 완전히 같은 경로 집합을 턴다.
+    assert seen["paths"] == site_revalidate._normalize_paths(
+        site_revalidate.content_site_paths(
+            "test-clinic", "f5aa8f49-fc76-46b6-b6d5-d372dad2522a", [{"name": "도수치료"}]
+        )
+    )
 
 
 @pytest.mark.parametrize("path", ["", "no-slash", None])

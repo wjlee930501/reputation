@@ -867,7 +867,9 @@ async def reject_content(
     item.title = None
     item.image_url = None
     # 발행됐던 아이템을 반려하면 발행 메타도 초기화 — 재생성·재발행 시 이전 발행 기록이
-    # 새 본문에 잘못 남는 것 방지.
+    # 새 본문에 잘못 남는 것 방지. 다만 캐시 무효화 복구는 "어느 판이 캐시에 남아 있는가"를
+    # 알아야 하므로 지우기 전 값을 붙잡아 revalidate 호출에 넘긴다.
+    previous_published_at = item.published_at
     item.published_at = None
     item.published_by = None
     item.post_publish_notified_at = None
@@ -905,8 +907,14 @@ async def reject_content(
     )
     await db.commit()
     if should_revalidate:
+        # 내림(unpublish)도 올림과 동일한 경로 집합을 무효화한다. 실패 시 previous_published_at이
+        # 내구성 있는 재시도 run의 식별자가 된다 — 없으면 반려된 글이 ISR 캐시에 계속 남는다.
         await trigger_content_site_revalidate_safe(
-            hospital.slug, item.id, hospital_name=hospital.name, treatments=hospital.treatments
+            hospital.slug,
+            item.id,
+            hospital_name=hospital.name,
+            treatments=hospital.treatments,
+            unpublished_from=previous_published_at,
         )
     return {"detail": "Rejected. Will be regenerated tonight."}
 
