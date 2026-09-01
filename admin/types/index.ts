@@ -80,6 +80,18 @@ export interface Hospital {
   director_career?: string
   director_philosophy?: string
   treatments?: Array<{ name: string; description: string }>
+  // 아래 9개는 병원 기본 정보(profile) 편집 폼 전용 필드 — GET /admin/hospitals/{id}는
+  // 이미 이 값들을 함께 내려주므로, 헤더 컨텍스트가 같은 응답을 재사용할 수 있게
+  // 여기서도 선언해 둔다 (profile 페이지의 중복 fetch 제거).
+  brand_primary_color?: string | null
+  brand_accent_color?: string | null
+  logo_url?: string | null
+  hero_image_url?: string | null
+  hero_media_kind?: 'VERIFIED_FACILITY' | 'BRAND_GRAPHIC' | '' | null
+  hero_headline?: string | null
+  hero_description?: string | null
+  image_style_direction?: string | null
+  site_access_mode?: 'urgent' | 'appointment' | 'specialist' | '' | null
 }
 
 export interface ContentReference {

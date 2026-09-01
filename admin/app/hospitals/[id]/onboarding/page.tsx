@@ -48,6 +48,7 @@ import { defaultAssetTitles, duplicateAssetTitles } from '@/lib/asset-title'
 import { sourceUrlWarning } from '@/lib/source-url-warnings'
 import { formatActorLabel } from '@/lib/actor-display'
 import { describePhotoPublicGate } from '@/lib/photo-public-gate'
+import { useHospitalHeader } from '../hospital-context'
 import NaverBlogBulkForm from './NaverBlogBulkForm'
 
 interface Hospital {
@@ -361,7 +362,11 @@ function getProfileUrlCandidates(hospital: Hospital | null, sources: Source[]): 
 
 export default function OnboardingPage() {
   const { id } = useParams<{ id: string }>()
-  const [hospital, setHospital] = useState<Hospital | null>(null)
+  // 레이아웃이 이미 같은 GET /admin/hospitals/{id}를 받아 컨텍스트에 들고 있다 — 이
+  // 페이지는 그걸 그대로 쓴다. 컨텍스트가 아직 못 받아온 것(loading)과 실패/없음을
+  // 구분해야 하므로 loading도 함께 받는다.
+  const { hospital: headerHospital, loading: headerLoading, refetch: refetchHeader } = useHospitalHeader()
+  const hospital: Hospital | null = headerHospital
   const [sources, setSources] = useState<Source[]>([])
   const [philosophies, setPhilosophies] = useState<Philosophy[]>([])
   const [readiness, setReadiness] = useState<LifecycleReadiness | null>(null)
@@ -380,7 +385,10 @@ export default function OnboardingPage() {
   const requestIdRef = useRef(0)
   const requestAbortRef = useRef<AbortController | null>(null)
 
-  const refresh = useCallback(async () => {
+  // refreshHeaderToo=false만 초기 마운트에서 쓴다 — 그 시점엔 레이아웃이 이미 자기
+  // 몫의 GET /admin/hospitals/{id}를 막 시작했으므로 중복 요청을 만들 필요가 없다.
+  // 그 외 모든 호출(각 단계의 onChanged)은 기본값 true로 헤더도 함께 최신화한다.
+  const refresh = useCallback(async (refreshHeaderToo: boolean = true) => {
     requestAbortRef.current?.abort()
     const controller = new AbortController()
     requestAbortRef.current = controller
@@ -401,22 +409,21 @@ export default function OnboardingPage() {
     })
 
     try {
-      const [h, s, p, r, handoffs, runs] = await Promise.all([
-        fetchAPI(`/admin/hospitals/${id}`, options),
+      const [s, p, r, handoffs, runs] = await Promise.all([
         fetchAPI(`/admin/hospitals/${id}/essence/sources`, options),
         fetchAPI(`/admin/hospitals/${id}/essence/philosophies`, options),
         fetchAPI<LifecycleReadiness>(`/admin/hospitals/${id}/readiness`, options),
-        fetchAPI<Handoff[]>('/admin/handoffs', options),
+        fetchAPI<Handoff[]>(`/admin/handoffs?hospital_id=${id}`, options),
         fetchAPI<MeasurementRun[]>(`/admin/hospitals/${id}/sov/measurement-runs`, options),
       ])
       if (requestId !== requestIdRef.current || controller.signal.aborted) return
-      setHospital(h as Hospital)
       setSources(Array.isArray(s) ? (s as Source[]) : [])
       setPhilosophies(Array.isArray(p) ? (p as Philosophy[]) : [])
       setReadiness(r)
-      setHandoff(handoffs.find((item) => item.hospital_id === id) ?? null)
+      setHandoff(handoffs[0] ?? null)
       setMeasurementRuns(Array.isArray(runs) ? runs : [])
       setCheckedAt(Date.now())
+      if (refreshHeaderToo) void refetchHeader()
     } catch (e: unknown) {
       if (requestId !== requestIdRef.current || controller.signal.aborted) return
       setError(safeOperatorError('onboarding', '온보딩 정보 다시 불러오기를 누르세요.'))
@@ -425,15 +432,25 @@ export default function OnboardingPage() {
         setLoading(false)
       }
     }
+  }, [id, refetchHeader])
+
+  // 소스 처리 진행 상황만 알면 되는 폴링용 — sources 하나만 다시 받아 병합한다.
+  // (essence.py의 목록 응답은 병원 배지·리소스 등 무거운 항목을 포함하지 않는다.)
+  const refreshSources = useCallback(async () => {
+    try {
+      const s = await fetchAPI(`/admin/hospitals/${id}/essence/sources`)
+      setSources(Array.isArray(s) ? (s as Source[]) : [])
+    } catch {
+      // best-effort — 다음 전체 refresh()에서 실제 오류가 드러난다
+    }
   }, [id])
 
   useEffect(() => {
-    setHospital(null)
-    void refresh()
+    void refresh(false)
     return () => requestAbortRef.current?.abort()
   }, [refresh])
 
-  if (loading && !hospital) {
+  if ((loading || headerLoading) && !hospital) {
     return <p>온보딩 정보를 불러오는 중…</p>
   }
 
@@ -533,7 +550,7 @@ export default function OnboardingPage() {
           </span>
           <button
             type="button"
-            onClick={refresh}
+            onClick={() => void refresh()}
             className="min-h-11 text-xs font-medium text-blue-100 underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
           >
             새로 고침
@@ -577,6 +594,7 @@ export default function OnboardingPage() {
               hospitalId={id}
               loading={loading}
               onChanged={refresh}
+              onSourcesChanged={refreshSources}
               handoff={handoff}
               reportsState={reportsState}
               scheduleState={scheduleState}
@@ -587,7 +605,7 @@ export default function OnboardingPage() {
             <p className="mt-1 text-sm text-slate-600">첫 발행과 첫 AI 답변 언급률 측정은 공개 운영 시작 이후의 성과이며 온보딩 완료를 막지 않습니다.</p>
             <div className="mt-4 space-y-4">
               {outcomeSteps.map((step) => (
-                <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} handoff={handoff} reportsState={reportsState} scheduleState={scheduleState} />
+                <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} onSourcesChanged={refreshSources} handoff={handoff} reportsState={reportsState} scheduleState={scheduleState} />
               ))}
             </div>
           </section>
@@ -636,6 +654,7 @@ function StepCard({
   hospitalId,
   loading,
   onChanged,
+  onSourcesChanged,
   handoff,
   reportsState,
   scheduleState,
@@ -647,6 +666,8 @@ function StepCard({
   hospitalId: string
   loading: boolean
   onChanged: () => void
+  // 'processing' 단계 폴링 전용 — 자료 목록만 가볍게 다시 받아온다.
+  onSourcesChanged: () => void
   handoff: Handoff | null
   reportsState: OnboardingArtifactLoadState<ReportArtifactLike[]>
   scheduleState: OnboardingArtifactLoadState<ScheduleArtifactLike | null>
@@ -698,7 +719,12 @@ function StepCard({
               onChanged={onChanged}
               loading={loading}
             />
-            <ProcessingStepBody hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
+            <ProcessingStepBody
+              hospitalId={hospitalId}
+              sources={sources}
+              onChanged={onChanged}
+              onSourcesChanged={onSourcesChanged}
+            />
           </div>
         )}
         {step.key === 'philosophy_approved' && (
@@ -2286,10 +2312,12 @@ function ProcessingStepBody({
   hospitalId,
   sources,
   onChanged,
+  onSourcesChanged,
 }: {
   hospitalId: string
   sources: Source[]
   onChanged: () => void
+  onSourcesChanged: () => void
 }) {
   const pending = sources.filter((s) => s.status === 'PENDING' && (s.raw_text?.trim() ?? '').length > 0)
   const processed = sources.filter((s) => s.status === 'PROCESSED')
@@ -2319,11 +2347,14 @@ function ProcessingStepBody({
       setBulkTracking(false)
       setProcessingActive(false)
       setBulkFeedback('대기 자료 처리가 끝났습니다. 완료·오류 상태를 확인해 주세요.')
+      // 처리가 끝난 시점에만 전체 새로고침 한 번 — readiness·philosophy 등 다른 단계
+      // 상태도 이 시점에 함께 맞춘다. 추적 중에는 sources만 가볍게 폴링했다(아래).
+      onChanged()
       return
     }
-    const timer = window.setInterval(onChanged, 5000)
+    const timer = window.setInterval(onSourcesChanged, 5000)
     return () => window.clearInterval(timer)
-  }, [bulkTracking, onChanged, pending.length])
+  }, [bulkTracking, onChanged, onSourcesChanged, pending.length])
 
   async function process(sourceId: string) {
     if (busyId || bulkTracking) return
@@ -2366,7 +2397,7 @@ function ProcessingStepBody({
         setBulkTracking(true)
         setElapsedSeconds(0)
         setProcessingActive(true)
-        window.setTimeout(onChanged, 2500)
+        window.setTimeout(onSourcesChanged, 2500)
       }
     } catch (e: unknown) {
       setBulkFeedback(safeOperatorError('onboarding', '오류 자료 다시 처리를 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.'))

@@ -45,6 +45,9 @@ export default function HospitalLayout({
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
   const [hospital, setHospital] = useState<Hospital | null>(null)
+  // 컨텍스트를 초기 렌더에 쓰는 하위 페이지(profile/onboarding)가 "아직 못 받아옴"과
+  // "받아왔는데 실패/없음"을 구분할 수 있게 — 첫 refetch가 끝나면 false로 고정된다.
+  const [headerLoading, setHeaderLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loadErrorStatus, setLoadErrorStatus] = useState<number | null>(null)
@@ -73,6 +76,8 @@ export default function HospitalLayout({
               : '병원 정보를 불러오지 못했습니다.',
         )
       }
+    } finally {
+      setHeaderLoading(false)
     }
   }, [hospitalId])
 
@@ -129,7 +134,7 @@ export default function HospitalLayout({
   }
 
   return (
-    <HospitalHeaderContext.Provider value={{ hospital, refetch }}>
+    <HospitalHeaderContext.Provider value={{ hospital, loading: headerLoading, refetch }}>
     <div className="flex min-h-full flex-col">
       {/* Hospital header */}
       <header className="border-b border-slate-200 bg-white px-4 py-3 lg:px-8 lg:pb-0 lg:pt-5">

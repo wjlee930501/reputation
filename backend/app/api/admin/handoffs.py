@@ -94,12 +94,15 @@ async def _payload(db: AsyncSession, handoff: HospitalHandoff) -> dict[str, obje
 @router.get("")
 async def list_handoffs(
     state: HandoffState | None = Query(default=None),
+    hospital_id: uuid.UUID | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     _actor: AdminUser = Depends(require_active_account),
 ) -> list[dict[str, object]]:
     stmt = select(HospitalHandoff).order_by(HospitalHandoff.updated_at.desc())
     if state is not None:
         stmt = stmt.where(HospitalHandoff.state == state)
+    if hospital_id is not None:
+        stmt = stmt.where(HospitalHandoff.hospital_id == hospital_id)
     rows = list((await db.execute(stmt)).scalars().all())
     return [await _payload(db, row) for row in rows]
 

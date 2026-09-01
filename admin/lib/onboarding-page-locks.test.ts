@@ -8,14 +8,17 @@ const ONBOARDING_PAGE = readFileSync(
 )
 
 test('initial hospital loading renders only the loading phrase before lifecycle derivation', () => {
+  // hospital은 이제 레이아웃 헤더 컨텍스트(useHospitalHeader)에서 온다 — 이 페이지
+  // 자신의 refresh() 로딩(loading)과 컨텍스트 로딩(headerLoading)을 둘 다 확인해야
+  // "아직 못 받아옴"과 "실패/없음"을 구분할 수 있다.
   const loadingBranch = ONBOARDING_PAGE.match(
-    /if \(loading && !hospital\) \{([\s\S]*?)\n  \}/,
+    /if \(\(loading \|\| headerLoading\) && !hospital\) \{([\s\S]*?)\n  \}/,
   )?.[1]
 
   assert.equal(loadingBranch?.trim(), 'return <p>온보딩 정보를 불러오는 중…</p>')
   assert.ok(
     ONBOARDING_PAGE.indexOf('const steps = deriveOnboardingSteps(')
-      > ONBOARDING_PAGE.indexOf('if (loading && !hospital)'),
+      > ONBOARDING_PAGE.indexOf('if ((loading || headerLoading) && !hospital)'),
   )
   assert.ok(
     ONBOARDING_PAGE.indexOf('const summary = deriveOnboardingSummary(')
