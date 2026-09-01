@@ -31,7 +31,13 @@ revision:
 	docker compose exec api alembic revision --autogenerate -m "$$msg"
 
 test:
-	docker compose exec api pytest -v
+	# backend/Dockerfile builds the api image with `uv sync --locked --no-dev`, so
+	# pytest isn't installed in the running container — sync the dev extra into the
+	# image's venv first (UV_PROJECT_ENVIRONMENT pins the target explicitly; the
+	# runtime stage only sets VIRTUAL_ENV, which uv project commands don't read),
+	# then run tests through that synced environment with uv run --no-sync.
+	docker compose exec -e UV_PROJECT_ENVIRONMENT=/opt/venv api uv sync --locked --extra dev
+	docker compose exec -e UV_PROJECT_ENVIRONMENT=/opt/venv api uv run --no-sync pytest -v
 
 test-local: test-backend-local test-frontend copy-guard
 
