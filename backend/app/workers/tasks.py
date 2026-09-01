@@ -615,6 +615,9 @@ async def _generate_with_auto_review(
     findings = _review_findings(getattr(item, "essence_check_summary", None))
     automatic_rewrites = int(bool(findings))
     reviewer_driven_rewrites = 0
+    # 측정 질의 키워드 미반영은 **한 번만** 보완 재작성을 부른다. 하드 게이트로 올리면
+    # 한국어 형태 변화 때문에 정상 글이 버려지고, 무제한 재시도로 두면 비용만 늘어난다.
+    alignment_remediation_used = False
     last_content: dict | None = None
     last_screening = None
     last_ai_review = None
@@ -647,6 +650,19 @@ async def _generate_with_auto_review(
                 continue
             raise
         last_generation_error = None
+
+        # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
+        # (content_engine._validate_target_alignment가 채운다)
+        alignment_findings = list(last_content.get("target_alignment_findings") or [])
+        if (
+            alignment_findings
+            and not alignment_remediation_used
+            and generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS
+        ):
+            alignment_remediation_used = True
+            findings = alignment_findings
+            continue
+
         last_ai_review = None
         last_screening = screen_content_against_philosophy(
             _screening_probe(last_content), philosophy
@@ -693,6 +709,11 @@ async def _generate_with_auto_review(
         )
 
     summary = dict(last_screening.summary or {})
+    # 보완 재작성 후에도 키워드가 주제 위치에 없으면 글은 살리고 기록만 남긴다.
+    # Admin의 콘텐츠 상세가 essence_check_summary를 그대로 보여주므로 AE가 확인할 수 있다.
+    residual_alignment = list(last_content.get("target_alignment_findings") or [])
+    if residual_alignment:
+        summary["target_alignment_findings"] = residual_alignment
     if automatic_rewrites > 0:
         summary["automatic_remediation_attempts"] = automatic_rewrites
     if reviewer_driven_rewrites > 0:

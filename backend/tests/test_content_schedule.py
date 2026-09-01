@@ -30,6 +30,11 @@ class _ExecuteResult:
     def scalars(self):
         return _ScalarResult(self._items)
 
+    def all(self):
+        # 이 더블은 스케줄 조회만 모사한다. 격차 타깃 조회(gap_target_rows_stmt)는
+        # 행이 없는 병원과 같으므로 빈 목록 — 슬롯은 정적 배분 그대로 만들어진다.
+        return []
+
 
 class _FakeDB:
     def __init__(self, hospital, schedules=None):

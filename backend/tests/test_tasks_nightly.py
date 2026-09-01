@@ -120,6 +120,117 @@ async def test_generation_rewrites_once_with_automatic_review_feedback(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_target_keyword_miss_triggers_exactly_one_rewrite(monkeypatch):
+    """측정 질의 키워드가 주제 위치에 없으면 **한 번만** 보완 재작성을 돌린다."""
+    calls = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        if len(calls) == 1:
+            return {
+                "title": "허리 통증 안내",
+                "body": "본문",
+                "target_alignment_findings": [
+                    "측정 질의 키워드 미반영: '허리디스크'이(가) 제목·첫 H2·FAQ 질문 어디에도 없습니다."
+                ],
+            }
+        return {
+            "title": "허리디스크 치료 안내",
+            "body": "본문",
+            "target_alignment_findings": [],
+        }
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.99,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "허리디스크"},
+    )
+
+    assert len(calls) == 2, "생성은 정확히 두 번(최초 + 보완 1회)이어야 한다"
+    assert "허리디스크" in calls[1][0]
+    assert content["title"] == "허리디스크 치료 안내"
+    assert screening.summary["automatic_remediation_attempts"] == 1
+    # 두 번째에 통과했으므로 잔여 soft finding은 남지 않는다.
+    assert "target_alignment_findings" not in screening.summary
+
+
+@pytest.mark.asyncio
+async def test_target_keyword_miss_twice_accepts_the_article_with_a_soft_finding(monkeypatch):
+    """두 번째도 놓치면 글은 살리고 Admin에서 보이도록 기록만 남긴다(무한 재시도 금지)."""
+    calls = []
+    finding = "측정 질의 키워드 미반영: '허리디스크'이(가) 제목·첫 H2·FAQ 질문 어디에도 없습니다."
+
+    async def always_misses(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "허리 통증 안내",
+            "body": "본문",
+            "target_alignment_findings": [finding],
+        }
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.99,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks, "generate_content", always_misses)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "허리디스크"},
+    )
+
+    assert len(calls) == tasks.AUTO_REMEDIATION_MAX_GENERATIONS
+    assert content["title"] == "허리 통증 안내"
+    assert screening.status == "ALIGNED", "발행을 막지 않는다"
+    assert screening.summary["target_alignment_findings"] == [finding]
+
+
+@pytest.mark.asyncio
 async def test_price_geo_seo_value_error_rewrites_in_the_same_tick(monkeypatch):
     calls = []
 
@@ -1835,8 +1946,11 @@ class _NestedSlotTransaction:
 
 class _MonthlySlotDB:
     def __init__(self, schedules):
-        # 2~3번째 execute는 스케줄별 기존 계획 슬롯 순번 조회(scalars().all()) 이다.
-        self._results = [_Result(items=schedules), _Result(items=[]), _Result(items=[])]
+        # 첫 execute는 스케줄 목록, 이후 스케줄마다 2회다:
+        #   (1) 기존 계획 슬롯 순번 조회, (2) 열린 노출 격차 타깃 조회(행 없음 = 정적 배분).
+        self._results = [_Result(items=schedules)] + [
+            _Result(items=[]) for _ in range(2 * max(len(schedules), 4))
+        ]
         self.execute_calls = 0
         self.flush_calls = 0
         self.commit_calls = 0
@@ -2086,9 +2200,15 @@ class _Scalars:
 
 
 class _Result:
-    def __init__(self, items=None, scalar=None):
+    def __init__(self, items=None, scalar=None, rows=None):
         self._items = items
         self._scalar = scalar
+        # rows: execute(...).all() 결과. 격차 타깃 조회처럼 스칼라가 아닌 행을 돌려주는
+        # 쿼리를 모사한다.
+        self._rows = rows if rows is not None else []
+
+    def all(self):
+        return list(self._rows)
 
     def scalars(self):
         return _Scalars(self._items)
