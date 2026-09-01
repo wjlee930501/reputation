@@ -2,7 +2,6 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-import arrow
 import pytest
 from fastapi import HTTPException
 
@@ -34,28 +33,51 @@ class _FakeDB:
         return self.execute_results.pop(0)
 
 
-def _record(query_id, *, status="SUCCESS", is_mentioned=False, measured_at=None, ai_platform="chatgpt"):
+def _agg_row(
+    query_id,
+    *,
+    ai_platform="chatgpt",
+    total_count=0,
+    mention_count=0,
+    failure_count=0,
+    ambiguous_count=0,
+    last_measured_at=None,
+):
+    """One (query_id, ai_platform) group row as the aggregation SQL now returns it —
+    get_sov_queries no longer sees individual SovRecord rows, only these sums."""
     return SimpleNamespace(
         query_id=query_id,
-        measurement_status=status,
-        is_mentioned=is_mentioned,
         ai_platform=ai_platform,
-        measured_at=measured_at or datetime(2026, 5, 1, tzinfo=timezone.utc),
+        total_count=total_count,
+        mention_count=mention_count,
+        failure_count=failure_count,
+        ambiguous_count=ambiguous_count,
+        last_measured_at=last_measured_at or datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+
+
+def _trend_row(
+    week_offset, *, total_count=0, mention_count=0, failure_count=0, ambiguous_count=0
+):
+    """One week-bucket row as get_sov_trend's aggregation SQL now returns it."""
+    return SimpleNamespace(
+        week_offset=week_offset,
+        total_count=total_count,
+        mention_count=mention_count,
+        failure_count=failure_count,
+        ambiguous_count=ambiguous_count,
     )
 
 
 async def test_sov_queries_exclude_failed_records_from_denominator():
+    """failure_count는 SQL 쪽 FILTER가 이미 뺀 값이지만, 최종 응답에 그대로 실려야 한다."""
     hospital_id = uuid.uuid4()
     query_id = uuid.uuid4()
     query = SimpleNamespace(id=query_id, query_text="강남 치질 병원 추천")
-    records = [
-        _record(query_id, status="SUCCESS", is_mentioned=True),
-        _record(query_id, status=None, is_mentioned=False),
-        _record(query_id, status="FAILED", is_mentioned=True),
-    ]
+    rows = [_agg_row(query_id, total_count=2, mention_count=1, failure_count=1)]
     db = _FakeDB(
         hospital=SimpleNamespace(id=hospital_id),
-        execute_results=[_ScalarResult([query]), _ScalarResult(records)],
+        execute_results=[_ScalarResult([query]), _ScalarResult(rows)],
     )
 
     response = await get_sov_queries(hospital_id, db)
@@ -67,18 +89,18 @@ async def test_sov_queries_exclude_failed_records_from_denominator():
 
 
 async def test_sov_queries_split_success_and_failure_by_platform():
+    """플랫폼별 합이 쿼리 전체 합과도 일치해야 한다 — get_sov_queries가 SQL이 이미
+    (query_id, ai_platform)별로 묶어 온 행들을 합산만 하는지 확인한다."""
     hospital_id = uuid.uuid4()
     query_id = uuid.uuid4()
     query = SimpleNamespace(id=query_id, query_text="강남 치질 병원 추천")
-    records = [
-        _record(query_id, status="SUCCESS", is_mentioned=True, ai_platform="chatgpt"),
-        _record(query_id, status="SUCCESS", is_mentioned=False, ai_platform="chatgpt"),
-        _record(query_id, status="SUCCESS", is_mentioned=True, ai_platform="gemini"),
-        _record(query_id, status="FAILED", is_mentioned=True, ai_platform="gemini"),
+    rows = [
+        _agg_row(query_id, ai_platform="chatgpt", total_count=2, mention_count=1, failure_count=0),
+        _agg_row(query_id, ai_platform="gemini", total_count=1, mention_count=1, failure_count=1),
     ]
     db = _FakeDB(
         hospital=SimpleNamespace(id=hospital_id),
-        execute_results=[_ScalarResult([query]), _ScalarResult(records)],
+        execute_results=[_ScalarResult([query]), _ScalarResult(rows)],
     )
 
     response = await get_sov_queries(hospital_id, db)
@@ -109,15 +131,10 @@ async def test_sov_queries_split_success_and_failure_by_platform():
 
 async def test_sov_trend_excludes_failed_records_from_denominator():
     hospital_id = uuid.uuid4()
-    query_id = uuid.uuid4()
-    measured_at = arrow.now("Asia/Seoul").shift(days=-1).datetime
-    records = [
-        _record(query_id, status="SUCCESS", is_mentioned=True, measured_at=measured_at),
-        _record(query_id, status="FAILED", is_mentioned=True, measured_at=measured_at),
-    ]
+    rows = [_trend_row(11, total_count=1, mention_count=1, failure_count=1)]
     db = _FakeDB(
         hospital=SimpleNamespace(id=hospital_id),
-        execute_results=[_ScalarResult(records)],
+        execute_results=[_ScalarResult(rows)],
     )
 
     response = await get_sov_trend(hospital_id, db)
@@ -133,13 +150,13 @@ async def test_sov_queries_report_none_when_every_measurement_failed():
     hospital_id = uuid.uuid4()
     query_id = uuid.uuid4()
     query = SimpleNamespace(id=query_id, query_text="강남 치질 병원 추천")
-    records = [
-        _record(query_id, status="FAILED", is_mentioned=False, ai_platform="chatgpt"),
-        _record(query_id, status="FAILED", is_mentioned=True, ai_platform="gemini"),
+    rows = [
+        _agg_row(query_id, ai_platform="chatgpt", total_count=0, mention_count=0, failure_count=1),
+        _agg_row(query_id, ai_platform="gemini", total_count=0, mention_count=0, failure_count=1),
     ]
     db = _FakeDB(
         hospital=SimpleNamespace(id=hospital_id),
-        execute_results=[_ScalarResult([query]), _ScalarResult(records)],
+        execute_results=[_ScalarResult([query]), _ScalarResult(rows)],
     )
 
     response = await get_sov_queries(hospital_id, db)
@@ -164,14 +181,14 @@ async def test_sov_queries_sort_places_unmeasured_queries_last():
         SimpleNamespace(id=zero_id, query_text="언급 0% 질문"),
         SimpleNamespace(id=measured_id, query_text="언급 100% 질문"),
     ]
-    records = [
-        _record(unmeasured_id, status="FAILED", is_mentioned=False),
-        _record(zero_id, status="SUCCESS", is_mentioned=False),
-        _record(measured_id, status="SUCCESS", is_mentioned=True),
+    rows = [
+        _agg_row(unmeasured_id, total_count=0, mention_count=0, failure_count=1),
+        _agg_row(zero_id, total_count=1, mention_count=0, failure_count=0),
+        _agg_row(measured_id, total_count=1, mention_count=1, failure_count=0),
     ]
     db = _FakeDB(
         hospital=SimpleNamespace(id=hospital_id),
-        execute_results=[_ScalarResult(queries), _ScalarResult(records)],
+        execute_results=[_ScalarResult(queries), _ScalarResult(rows)],
     )
 
     response = await get_sov_queries(hospital_id, db)
@@ -179,15 +196,27 @@ async def test_sov_queries_sort_places_unmeasured_queries_last():
     assert [row["mention_rate"] for row in response] == [100.0, 0.0, None]
 
 
+async def test_sov_queries_returns_early_without_an_aggregation_query_when_no_active_queries():
+    """활성 쿼리가 없으면 SovRecord 집계 쿼리 자체를 날리지 않는다."""
+    hospital_id = uuid.uuid4()
+    db = _FakeDB(
+        hospital=SimpleNamespace(id=hospital_id),
+        execute_results=[_ScalarResult([])],
+    )
+
+    response = await get_sov_queries(hospital_id, db)
+
+    assert response == []
+    assert db.execute_results == []  # 두 번째 쿼리(집계)가 소비되지 않았다 = 아예 안 나감
+
+
 async def test_sov_trend_reports_none_for_weeks_without_successful_measurement():
     """전부 FAILED인 주간은 sov_pct가 None이어야 하며 0.0이면 허위 보고가 된다."""
     hospital_id = uuid.uuid4()
-    query_id = uuid.uuid4()
-    measured_at = arrow.now("Asia/Seoul").shift(days=-1).datetime
-    records = [_record(query_id, status="FAILED", is_mentioned=True, measured_at=measured_at)]
+    rows = [_trend_row(11, total_count=0, mention_count=0, failure_count=1)]
     db = _FakeDB(
         hospital=SimpleNamespace(id=hospital_id),
-        execute_results=[_ScalarResult(records)],
+        execute_results=[_ScalarResult(rows)],
     )
 
     response = await get_sov_trend(hospital_id, db)

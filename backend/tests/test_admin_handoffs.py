@@ -251,3 +251,93 @@ async def test_acceptance_rejects_stale_version_before_mutation() -> None:
 
     assert exc.value.status_code == 409
     assert handoff.accepted_at is None
+
+
+class _ScalarResult:
+    def __init__(self, values):
+        self.values = values
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.values
+
+
+class BatchListDB:
+    """Fakes the exact `db.execute` sequence `list_handoffs` issues: the page query,
+    then (only if non-empty) one Hospital IN(...) and one AdminUser IN(...) query."""
+
+    def __init__(self, *, rows, hospitals=(), users=()):
+        self.rows = rows
+        self.hospitals = list(hospitals)
+        self.users = list(users)
+        self.calls: list[str] = []
+
+    async def execute(self, stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is HospitalHandoff:
+            self.calls.append("handoffs")
+            return _ScalarResult(self.rows)
+        if entity is Hospital:
+            self.calls.append("hospitals")
+            return _ScalarResult(self.hospitals)
+        if entity is AdminUser:
+            self.calls.append("users")
+            return _ScalarResult(self.users)
+        raise AssertionError(f"unexpected entity {entity}")
+
+
+async def test_payloads_batch_resolves_names_without_a_query_per_row() -> None:
+    ae = _account("OPERATOR")
+    sales = _account("OPERATOR")
+    hospital = Hospital(id=uuid.uuid4(), name="강남 병원", slug="gangnam")
+    handoff_a = _pending(ae)
+    handoff_a.hospital_id = hospital.id
+    handoff_a.sales_owner_id = sales.id
+    handoff_b = _pending(ae)
+    handoff_b.hospital_id = hospital.id
+    handoff_b.sales_owner_id = ae.id  # 같은 담당자를 두 행이 공유 — IN(...)엔 한 번만 담긴다
+
+    db = BatchListDB(rows=[handoff_a, handoff_b], hospitals=[hospital], users=[ae, sales])
+
+    payloads = await handoffs_api._payloads_batch(db, [handoff_a, handoff_b])
+
+    assert db.calls == ["hospitals", "users"]  # 행 수와 무관하게 딱 2번
+    assert payloads[0]["hospital_name"] == "강남 병원"
+    assert payloads[0]["sales_owner_name"] == sales.name
+    assert payloads[1]["hospital_name"] == "강남 병원"
+    assert payloads[1]["sales_owner_name"] == ae.name
+
+
+async def test_payloads_batch_skips_the_user_query_when_no_owner_is_set() -> None:
+    """hospital_id는 스키마상 필수라 병원 조회는 항상 돌지만, sales/ae/accepted가
+    전부 비어 있으면(초기 상태 등) admin_users IN(...) 조회는 아예 나가지 않아야 한다."""
+    operator = _account("OPERATOR")
+    handoff = _pending(operator)
+    handoff.sales_owner_id = None
+    handoff.ae_owner_id = None
+
+    db = BatchListDB(rows=[handoff])  # hospitals=() — 매칭 병원 없음
+
+    payloads = await handoffs_api._payloads_batch(db, [handoff])
+
+    assert db.calls == ["hospitals"]  # user_ids가 비어 있으니 admin_users 조회는 스킵
+    assert payloads[0]["hospital_name"] is None
+    assert payloads[0]["sales_owner_name"] is None
+
+
+async def test_list_handoffs_applies_limit_and_batches_lookups() -> None:
+    ae = _account("OPERATOR")
+    hospital = Hospital(id=uuid.uuid4(), name="서초 병원", slug="seocho")
+    handoff = _pending(ae)
+    handoff.hospital_id = hospital.id
+    handoff.sales_owner_id = ae.id
+
+    db = BatchListDB(rows=[handoff], hospitals=[hospital], users=[ae])
+
+    result = await handoffs_api.list_handoffs(state=None, limit=5, db=db, _actor=ae)
+
+    assert db.calls == ["handoffs", "hospitals", "users"]
+    assert len(result) == 1
+    assert result[0]["hospital_name"] == "서초 병원"
