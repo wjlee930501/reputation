@@ -129,6 +129,8 @@ celery_app.conf.update(
         "app.workers.tasks.overnight_content_generation_recovery": {"queue": "content"},
         "app.workers.tasks.prepublish_content_generation_recovery": {"queue": "content"},
         "app.workers.tasks.regenerate_content_item": {"queue": "content"},
+        "app.workers.tasks.generate_content_image": {"queue": "content"},
+        "app.workers.tasks.process_source_asset_task": {"queue": "default"},
         "app.workers.tasks.auto_review_essence_snapshot": {"queue": "content"},
         "app.workers.tasks.reconcile_essence_snapshots": {"queue": "default"},
         "app.workers.tasks.morning_content_auto_publish": {"queue": "content"},
@@ -141,6 +143,7 @@ celery_app.conf.update(
         "app.workers.tasks.build_aeo_site": {"queue": "default"},
         "app.workers.tasks.retry_site_revalidation": {"queue": "default"},
         "app.workers.tasks.monthly_slot_generation": {"queue": "default"},
+        "app.workers.tasks.backfill_indexnow": {"queue": "default"},
         # 라우팅 누락 시 기본 "celery" 큐로 떨어지는데 배포 워커는 명시한 큐만
         # 소비하므로 영원히 실행되지 않는다 — beat 태스크는 반드시 여기 등록할 것
         # (tests/test_celery_routing.py가 회귀를 막는다).
@@ -154,6 +157,8 @@ celery_app.conf.update(
         "app.workers.lead_diagnosis_tasks.run_lead_diagnosis": {"queue": "leadgen"},
         "app.workers.lead_diagnosis_tasks.build_lead_report": {"queue": "leadgen"},
         "app.workers.lead_diagnosis_tasks.send_lead_report_email": {"queue": "leadgen"},
+        "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_measurement": {"queue": "leadgen"},
+        "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_report": {"queue": "leadgen"},
         "app.workers.lead_diagnosis_tasks.notify_lead_intake": {"queue": "default"},
         "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": {"queue": "default"},
         "app.workers.notification_tasks.dispatch_notification_outbox": {"queue": "default"},

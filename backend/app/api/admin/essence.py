@@ -39,6 +39,7 @@ from app.schemas.essence import (
     SourceAssetResponse,
     SourcePublicToggle,
 )
+from app.services import cost_guard
 from app.services.asset_extractor import (
     detect_extractor_for,
     evidence_text_is_acceptable,
@@ -638,6 +639,27 @@ async def process_source(
     if not source.raw_text or not source.raw_text.strip():
         raise HTTPException(
             status_code=400, detail="자료 본문이 없는 URL 전용 자료는 처리할 수 없습니다."
+        )
+
+    # 이미 같은 내용으로 처리된 자료를 재요청하면(예: 화면 재클릭) 워커 경로(tasks.py의
+    # process_source_asset_task)와 동일하게 재추출 없이 그대로 반환한다 — 유료 호출과
+    # 근거 노트 재생성을 아끼기 위함.
+    current_hash = compute_source_content_hash(
+        source.title, source.url, source.raw_text, source.operator_note
+    )
+    if source.status == SourceStatus.PROCESSED and source.content_hash == current_hash:
+        existing_notes = await _get_notes_for_source(db, source.id)
+        return _serialize_source(
+            source, evidence_notes=existing_notes, evidence_note_count=len(existing_notes)
+        )
+
+    # 일괄 처리(process_source_asset_task)와 같은 유료 호출 예산을 쓴다 — 예약 없이
+    # metered_llm_calls만 쓰면 실제 호출 관측만 될 뿐 킬스위치/상한을 무시하고 나간다.
+    decision = await cost_guard.check_and_increment("content")
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=decision.reason or "비용 가드 상한으로 자료 처리가 차단되었습니다.",
         )
 
     try:
@@ -1399,6 +1421,15 @@ async def create_philosophy_draft(
     if not notes:
         raise HTTPException(
             status_code=400, detail="운영 기준 초안 생성에 사용할 근거 노트가 없습니다."
+        )
+
+    # 워커의 essence 자동 검수 경로(_cost_guarded_essence_synthesis)와 같은 예산 예약을
+    # 거친다 — 예약 없이 metered_llm_calls만 쓰면 킬스위치/상한이 무시된 채 나간다.
+    decision = await cost_guard.check_and_increment("content")
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=decision.reason or "비용 가드 상한으로 운영 기준 초안 생성이 차단되었습니다.",
         )
 
     # Claude synthesis is a synchronous SDK call and can take close to its 60s

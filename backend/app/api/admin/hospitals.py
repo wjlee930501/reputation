@@ -45,6 +45,7 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
+from app.services import cost_guard
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
@@ -976,6 +977,16 @@ async def autofill_hospital_profile(
         raise HTTPException(status_code=400, detail="병원명이 필요합니다.")
     website_url = body.website_url or h.website_url
     blog_url = body.blog_url or h.blog_url
+
+    # 자동 채우기의 Claude 구조화 추출도 유료 호출이다 — content 예산을 예약해
+    # 킬스위치/상한을 존중한다(종전에는 record_provider_call만 있어 관측만 되고
+    # 차단되지 않았다).
+    decision = await cost_guard.check_and_increment("content")
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=decision.reason or "비용 가드 상한으로 프로파일 자동 채우기가 차단되었습니다.",
+        )
 
     result = await autofill_profile(
         name,

@@ -152,6 +152,10 @@ class Hospital(Base):
     specialties: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"), nullable=False)
     keywords: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"), nullable=False)
     competitors: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"), nullable=False)
+    # 콘텐츠 자동 생성이 우선 배정할 진료 분야 편집 범위 커스터마이즈. migration 0054.
+    content_focus_topics: Mapped[list] = mapped_column(
+        JSON, default=list, server_default=text("'[]'"), nullable=False
+    )
 
     # ── 원장 정보 ────────────────────────────────────────────────────
     director_name: Mapped[str | None] = mapped_column(String(100))
@@ -168,6 +172,10 @@ class Hospital(Base):
     hero_media_kind: Mapped[str | None] = mapped_column(String(32))
     hero_headline: Mapped[str | None] = mapped_column(String(160))
     hero_description: Mapped[str | None] = mapped_column(String(320))
+    # 공개 사이트 히어로에 강조 표시할 진료 분야 커스터마이즈. migration 0054.
+    hero_specialties: Mapped[list] = mapped_column(
+        JSON, default=list, server_default=text("'[]'"), nullable=False
+    )
     image_style_direction: Mapped[str | None] = mapped_column(String(600))
     site_access_mode: Mapped[str | None] = mapped_column(String(20))
     # Physician schema의 hasCredential / alumniOf / memberOf 매핑용 구조화 자격 정보.
