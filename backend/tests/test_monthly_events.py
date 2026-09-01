@@ -319,3 +319,83 @@ def test_mixed_daily_summary_has_stable_constituents_and_one_operations_link() -
     assert "MEASUREMENT_FAILED" not in payload_json
     assert "HANDOFF_OVERDUE" not in payload_json
     assert "BLOCKED" not in payload_json
+
+
+# ── 마일스톤 한 줄에 들어가는 헤드라인 숫자 ────────────────────────────
+# 알림만 보고 AE가 원장에게 무슨 말을 할지 알 수 있어야 한다. 예전 메시지에는
+# 숫자가 하나도 없어서 Admin을 열기 전까지 아무것도 모르는 상태였다.
+
+
+def _sov_summary(**overrides):
+    payload = {
+        "sov_pct": 47.0,
+        "prev_sov_pct": 39.0,
+        "comparison": {"significance": "WITHIN_NOISE"},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_monthly_headline_label_reads_count_delta_and_significance() -> None:
+    from app.services.monthly_events import monthly_headline_label
+
+    assert monthly_headline_label(_sov_summary()) == "언급 47번(전월 대비 +8번, 정상 변동 범위)"
+    assert monthly_headline_label(
+        _sov_summary(comparison={"significance": "SIGNIFICANT_UP"})
+    ) == "언급 47번(전월 대비 +8번, 의미 있는 상승)"
+    assert monthly_headline_label(
+        _sov_summary(sov_pct=31.0, comparison={"significance": "SIGNIFICANT_DOWN"})
+    ) == "언급 31번(전월 대비 -8번, 의미 있는 하락)"
+
+
+def test_monthly_headline_label_never_invents_a_missing_number() -> None:
+    from app.services.monthly_events import monthly_headline_label
+
+    assert monthly_headline_label(_sov_summary(sov_pct=None)) is None
+    assert monthly_headline_label(None) is None
+    # 전월이 없으면 델타를 만들지 않고 이번 달만 말한다.
+    assert monthly_headline_label(_sov_summary(prev_sov_pct=None)) == "언급 47번"
+    # 유의성 판정이 없으면 괄호에 판정을 넣지 않는다.
+    assert monthly_headline_label(_sov_summary(comparison={})) == "언급 47번(전월 대비 +8번)"
+    # 비교가 성립하지 않은 달에는 델타를 쓰지 않는다 — 원장 리포트도 쓰지 않는다.
+    assert monthly_headline_label(
+        _sov_summary(comparison={"status": "NON_COMPARABLE", "reason": "MEASUREMENT_POLICY_CHANGED"})
+    ) == "언급 47번"
+
+
+def test_monthly_slack_summary_line_carries_the_headline_numbers() -> None:
+    event = _monthly(
+        MonthlyEventType.CUSTOMER_READY,
+        headline_label="언급 47번(전월 대비 +8번, 정상 변동 범위)",
+    )
+    projection = project_monthly_event(event)
+    batch = MilestoneBatch((projection,), _NOW - timedelta(hours=1), _NOW)
+
+    intent = build_milestone_summary_notification(batch, _ADMIN)
+    body = intent.message.payload_json()
+
+    assert "언급 47번(전월 대비 +8번, 정상 변동 범위)" in body
+    assert body.count("언급 47번") == 1
+
+
+def test_monthly_action_notification_carries_the_headline_numbers() -> None:
+    event = _monthly(
+        MonthlyEventType.ARTIFACT_VALIDATION_PENDING,
+        artifact_state=ReportArtifactState.MISSING,
+        doctor_artifact_id=None,
+        delivery_ready=False,
+        headline_label="언급 47번(전월 대비 +8번, 정상 변동 범위)",
+    )
+
+    intent = build_milestone_action_notification(project_monthly_event(event), _ADMIN)
+
+    assert "언급 47번" in intent.message.payload_json()
+
+
+def test_a_milestone_without_a_headline_adds_no_extra_line() -> None:
+    projection = project_monthly_event(_monthly(MonthlyEventType.CUSTOMER_READY))
+    batch = MilestoneBatch((projection,), _NOW - timedelta(hours=1), _NOW)
+
+    body = build_milestone_summary_notification(batch, _ADMIN).message.payload_json()
+
+    assert "이번 달 결과" not in body

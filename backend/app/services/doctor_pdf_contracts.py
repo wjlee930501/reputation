@@ -54,28 +54,71 @@ class DoctorNextActions(TypedDict):
 
 
 class DoctorCitedItem(TypedDict):
-    """AI 답변이 인용한 우리 글 1건. 현재 원장 1페이지에는 렌더하지 않는다."""
+    """AI 답변이 인용한 우리 글 1건."""
 
     title: str | None
     cited_cell_count: int
 
 
+class DoctorPublishedItem(TypedDict):
+    """막 1 "이번 달 저희가 한 일"에 이름을 올리는 글 1편."""
+
+    title: str
+    cited: bool
+
+
+class DoctorAppendixRow(TypedDict):
+    """2쪽 부록의 질문 1줄. 숫자는 전부 뷰가 만든 문자열이다."""
+
+    query_text: str
+    prev_label: str
+    current_label: str
+    competitor: str
+    cited_title: str
+
+
+class DoctorV0Baseline(TypedDict):
+    """서비스 시작 시점(V0) 대비 — 질문 세트가 충분히 겹칠 때만 채운다."""
+
+    of_hundred: int
+    current_of_hundred: int
+    sentence: str
+
+
 class DoctorReportView(TypedDict):
+    """원장 1페이지의 3막 + 선택적 2쪽 부록.
+
+    막 1 "이번 달 저희가 한 일" → 막 2 "무엇이 달라졌나" → 막 3 "다음 달 계획".
+    """
+
     measured: bool
     hospital_name: str
     headline: DoctorHeadline
     summary: str
     coverage_text: str
     tiles: list[DoctorTile]
+    # 막 1
+    published_items: list[DoctorPublishedItem]
+    citation_line: str | None
+    # 막 2
     new_mention_sentences: list[DoctorMentionSentence]
     new_mention_empty_text: str
+    lost_mention_sentences: list[DoctorMentionSentence]
+    v0_baseline: DoctorV0Baseline | None
     evidence: DoctorEvidence
+    # 막 3
     next_actions: DoctorNextActions
     footnotes: list[str]
-    # 인용 귀속 — 원장 1페이지 편집은 별도 작업에서 바꾼다. 지금은 값만 노출한다.
+    # 2쪽 부록 — 비어 있으면 렌더하지 않고 PDF도 1쪽으로 검증된다.
+    appendix_rows: list[DoctorAppendixRow]
+    # 페이지 1이 넘칠 때 실제로 무엇을 뺐는지. 트리밍 순서를 테스트로 고정한다.
+    trimmed: list[str]
+    # 인용 귀속
     cited_content_count: int
     cited_cells: int
     top_cited_items: list[DoctorCitedItem]
+    # AE 전용 — 원장 PDF에는 렌더하지 않고 내부 리포트·Admin이 읽는다.
+    talking_points: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +127,9 @@ class DoctorPdfExpectation:
     coverage_text: str
     caveat_text: str
     public_url: str
+    # 부록이 렌더되는 리포트만 2쪽이다. 렌더 여부를 기대값으로 못 박아야
+    # "왜인지 모르게 2쪽"인 PDF가 원장에게 나가지 않는다.
+    appendix_expected: bool = False
 
 
 class DoctorArtifactMetadata(BaseModel):
@@ -93,7 +139,7 @@ class DoctorArtifactMetadata(BaseModel):
 
     validation_version: Literal["doctor-pdf-v1"]
     validation_source: Literal["SYSTEM"]
-    page_count: Literal[1]
+    page_count: Literal[1, 2]
     page_size: Literal["A4"]
     glyph_count: int = Field(gt=0)
     font_family: Literal["Pretendard"]

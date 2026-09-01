@@ -24,7 +24,9 @@ class AttributionContent(Protocol):
 
 
 class MentionCellPayload(TypedDict):
-    classification: Literal["NEW_MENTION", "FIRST_MEASURED_MENTION", "NON_COMPARABLE"]
+    classification: Literal[
+        "NEW_MENTION", "FIRST_MEASURED_MENTION", "NON_COMPARABLE", "LOST_MENTION"
+    ]
     query_text: str
     platform_label: str
     classification_label: str
@@ -32,6 +34,18 @@ class MentionCellPayload(TypedDict):
     customer_impact: str
     next_action: str
     related_contents: list[str]
+
+
+class QuestionRowPayload(TypedDict):
+    """질문 1개(플랫폼 합산)의 지난달·이번달 언급 횟수. 원장 리포트 2쪽 부록의 행."""
+
+    query_key: str
+    query_text: str
+    current_attempts_used: int
+    current_mentioned_attempts: int
+    prior_attempts_used: int
+    prior_mentioned_attempts: int
+    prior_measured: bool
 
 
 class ContentAttributionPayload(TypedDict):
@@ -42,10 +56,15 @@ class ContentAttributionPayload(TypedDict):
     new_mention_cells: list[MentionCellPayload]
     first_measured_mention_cells: list[MentionCellPayload]
     non_comparable_cells: list[MentionCellPayload]
+    lost_mention_cells: list[MentionCellPayload]
     new_mention_queries: list[MentionCellPayload]
     new_mention_count: int
     first_measured_mention_count: int
     non_comparable_count: int
+    lost_mention_count: int
+    # 지난달 manifest가 아예 없으면 "빠진 질문"을 말할 근거 자체가 없다.
+    has_prior_month: bool
+    question_rows: list[QuestionRowPayload]
     sov_pct: float | None
     prev_sov_pct: float | None
     change_pct: float | None
@@ -65,7 +84,9 @@ class ContentAttributionInput:
 
 @dataclass(frozen=True, slots=True)
 class AttributionCopy:
-    classification: Literal["NEW_MENTION", "FIRST_MEASURED_MENTION", "NON_COMPARABLE"]
+    classification: Literal[
+        "NEW_MENTION", "FIRST_MEASURED_MENTION", "NON_COMPARABLE", "LOST_MENTION"
+    ]
     label: str
     meaning: str
     customer_impact: str
@@ -92,6 +113,15 @@ NEW_MENTION_COPY: Final = AttributionCopy(
     "지난달에도 정상 측정된 같은 질문에서는 병원이 나오지 않았고 이번 달에는 나왔습니다.",
     "같은 질문과 AI 서비스 기준으로 확인된 변화입니다.",
     "인과관계로 단정하지 말고 같은 기간에 관찰된 변화로 설명하세요.",
+)
+
+
+LOST_MENTION_COPY: Final = AttributionCopy(
+    "LOST_MENTION",
+    "이번 달 빠진 언급",
+    "지난달에는 같은 질문에서 병원이 나왔는데 이번 달에는 한 번도 나오지 않았습니다.",
+    "성과가 나빠졌다고 단정할 수는 없지만 다음 달에 먼저 확인할 질문입니다.",
+    "이 질문을 다음 달 콘텐츠 주제 후보로 올리세요.",
 )
 
 
@@ -171,7 +201,15 @@ def build_content_attribution_summary(
     new_mentions: list[MentionCellPayload] = []
     first_measured: list[MentionCellPayload] = []
     non_comparable: list[MentionCellPayload] = []
+    lost_mentions: list[MentionCellPayload] = []
     for cell in sorted(request.current_cells, key=lambda row: (row.query_key, row.platform)):
+        prior_cell = prior_by_key.get((cell.query_key, cell.platform))
+        if _is_lost_mention(cell, prior_cell):
+            lost_mentions.append(_payload(
+                cell,
+                request.published_contents,
+                LOST_MENTION_COPY,
+            ))
         current_attempt = cell.selected_attempt
         if current_attempt is None or not current_attempt.is_mentioned:
             continue
@@ -207,14 +245,67 @@ def build_content_attribution_summary(
         "new_mention_cells": new_mentions[:visible],
         "first_measured_mention_cells": first_measured[:visible],
         "non_comparable_cells": non_comparable[:visible],
+        "lost_mention_cells": lost_mentions[:visible],
         "new_mention_queries": new_mentions[:visible],
         "new_mention_count": len(new_mentions),
         "first_measured_mention_count": len(first_measured),
         "non_comparable_count": len(non_comparable),
+        "lost_mention_count": len(lost_mentions),
+        "has_prior_month": request.prior_cells is not None,
+        "question_rows": _question_rows(request.current_cells, prior_by_key),
         "sov_pct": request.sov_pct,
         "prev_sov_pct": request.prev_sov_pct,
         "change_pct": request.change_pct,
     }
+
+
+def _is_lost_mention(
+    cell: ManifestCellInput, prior: ManifestCellInput | None
+) -> bool:
+    """지난달 이 셀에서는 나왔고(k>0) 이번 달에는 한 번도 안 나온(k=0) 경우.
+
+    비교의 분모는 헤드라인과 같은 **매칭 코호트**다 — 두 달 모두 성공 반복이
+    있어야 하고, 없는 쪽은 "빠졌다"가 아니라 "측정이 없다"이므로 제외한다.
+    새 언급(`selected_attempt` 기준)과 달리 여기서는 셀 빈도(k/n)를 쓴다:
+    "이번 달에 한 번도 안 나왔다"는 대표 1건이 아니라 반복 전체가 답해야 한다.
+    """
+    if prior is None:
+        return False
+    return (
+        prior.attempts_used > 0
+        and prior.mentioned_attempts > 0
+        and cell.attempts_used > 0
+        and cell.mentioned_attempts == 0
+    )
+
+
+def _question_rows(
+    current_cells: tuple[ManifestCellInput, ...],
+    prior_by_key: Mapping[tuple[str, str], ManifestCellInput],
+) -> list[QuestionRowPayload]:
+    """질문 단위(플랫폼 합산) 지난달·이번달 표. 원장 리포트 2쪽 부록이 읽는다."""
+    rows: dict[str, QuestionRowPayload] = {}
+    for cell in sorted(current_cells, key=lambda row: (row.query_key, row.platform)):
+        row = rows.get(cell.query_key)
+        if row is None:
+            row = {
+                "query_key": cell.query_key,
+                "query_text": cell.query_text,
+                "current_attempts_used": 0,
+                "current_mentioned_attempts": 0,
+                "prior_attempts_used": 0,
+                "prior_mentioned_attempts": 0,
+                "prior_measured": False,
+            }
+            rows[cell.query_key] = row
+        row["current_attempts_used"] += cell.attempts_used
+        row["current_mentioned_attempts"] += cell.mentioned_attempts
+        prior = prior_by_key.get((cell.query_key, cell.platform))
+        if prior is not None:
+            row["prior_attempts_used"] += prior.attempts_used
+            row["prior_mentioned_attempts"] += prior.mentioned_attempts
+            row["prior_measured"] = row["prior_measured"] or prior.attempts_used > 0
+    return list(rows.values())
 
 
 # ══════════════════════════════════════════════════════════════════

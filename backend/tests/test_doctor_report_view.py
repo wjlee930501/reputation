@@ -7,9 +7,12 @@ AE용 리포트와 같은 데이터를 쓰지만 편집이 다르다. 여기서 
 - 합성 점수("AI 노출 지수 78점")를 만들지 않는다 — 산식 없는 지수는 미검증 방식이다.
 - 측정이 없으면 0을 만들어내지 않는다. 허위 0은 원장 보고에 들어가면 안 된다.
 - 숫자는 전부 코드 바인딩 — LLM 자유 서술 금지(요약 숫자 환각이 1순위 불만).
+- 페이지는 3막이다: ① 이번 달 저희가 한 일 ② 무엇이 달라졌나 ③ 다음 달 계획.
+  1페이지가 넘칠 때 무엇을 뺄지는 **뷰가 결정적인 순서로** 정한다(CSS overflow 금지).
 """
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -22,6 +25,14 @@ BANNED_IN_DOCTOR_COPY = [
     "SoV", "sov", "언급률", "노출 갭", "심각도", "쿼리", "질의",
     "%p", "지수", "스코어", "AEO",
 ]
+
+
+def _content(title: str, *, content_type: str = "DISEASE", targeted: bool = False):
+    return SimpleNamespace(
+        title=title,
+        content_type=content_type,
+        query_target_id=uuid4() if targeted else None,
+    )
 
 
 def _record(
@@ -55,11 +66,15 @@ def _view(**overrides):
             "new_mention_count": 3,
             "first_measured_mention_count": 2,
             "non_comparable_count": 1,
+            "lost_mention_count": 0,
+            "has_prior_month": True,
             "new_mention_cells": [
                 {"query_text": "강남 치질 병원 추천해줘", "platform_label": "ChatGPT"},
                 {"query_text": "강남 대장내시경 병원 알려줘", "platform_label": "Gemini"},
                 {"query_text": "강남 항문외과 어디가 좋아?", "platform_label": "ChatGPT"},
             ],
+            "lost_mention_cells": [],
+            "question_rows": [],
         },
         "records": [_record(mentioned=True), _record(mentioned=False)],
         "platforms": ["chatgpt", "gemini"],
@@ -75,8 +90,13 @@ def _all_copy(view) -> str:
         parts.append(view["headline"]["delta_sentence"])
     for tile in view["tiles"]:
         parts += [tile["label"], str(tile["value"]), tile["hint"]]
-    for mention in view["new_mention_sentences"]:
+    for mention in (*view["new_mention_sentences"], *view["lost_mention_sentences"]):
         parts += [mention["query_text"], mention["platform_label"]]
+    parts += [item["title"] for item in view["published_items"]]
+    if view["citation_line"]:
+        parts.append(view["citation_line"])
+    if view["v0_baseline"]:
+        parts.append(view["v0_baseline"]["sentence"])
     parts += view["next_actions"]["ours"] + view["next_actions"]["yours"]
     return " ".join(parts)
 
@@ -215,46 +235,76 @@ def test_attribution_copy_separates_real_change_from_missing_baseline():
     assert "다음 달 정상 측정 후 비교합니다" in copy
 
 
-def test_citation_facts_are_exposed_to_the_view_but_not_yet_shown_to_the_doctor():
-    """원장 1페이지 편집 변경은 별도 작업이다 — 지금은 값만 실어 두고 렌더하지 않는다."""
-    view = _view(citations={
+# ── 막 1: 이번 달 저희가 한 일 ─────────────────────────────────────────
+
+
+def _citations(**overrides):
+    payload = {
+        "measured_cell_count": 30,
         "cited_cell_count": 4,
         "cited_content_count": 2,
         "cited_items": [
-            {"title": "치질 수술 FAQ", "cited_cell_count": 3},
-            {"title": "강남 치질 병원 안내", "cited_cell_count": 1},
-            {"title": "세 번째 글", "cited_cell_count": 1},
-            {"title": "네 번째 글", "cited_cell_count": 1},
+            {
+                "title": "치질 수술 FAQ",
+                "cited_cell_count": 3,
+                "queries": [{"query_text": "강남 치질 병원 추천해줘", "platform_label": "ChatGPT"}],
+            },
+            {"title": "강남 치질 병원 안내", "cited_cell_count": 1, "queries": []},
+            {"title": "세 번째 글", "cited_cell_count": 1, "queries": []},
+            {"title": "네 번째 글", "cited_cell_count": 1, "queries": []},
         ],
-    })
+    }
+    payload.update(overrides)
+    return payload
 
+
+def test_act_one_names_the_articles_and_puts_cited_ones_first():
+    """편수 타일만으로는 "무엇을 했나"에 답이 안 된다 — 원장이 제목을 읽어야 한다."""
+    view = _view(
+        citations=_citations(),
+        published_contents=[
+            _content("계절 건강 정보", content_type="HEALTH"),
+            _content("대장내시경 준비 안내", content_type="TREATMENT", targeted=True),
+            _content("치질 수술 FAQ", content_type="FAQ"),
+            _content("병원 공지", content_type="NOTICE"),
+        ],
+    )
+
+    assert [item["title"] for item in view["published_items"]] == [
+        "치질 수술 FAQ", "대장내시경 준비 안내", "계절 건강 정보"
+    ]
+    assert view["published_items"][0]["cited"] is True
+    assert view["published_items"][1]["cited"] is False
+
+
+def test_act_one_citation_line_counts_answers_not_invented_questions():
+    view = _view(citations=_citations())
+
+    assert view["citation_line"] == (
+        "AI 답변이 저희 병원 글·페이지를 인용한 횟수: 4건(확인한 답변 30개 중)"
+    )
     assert view["cited_cells"] == 4
     assert view["cited_content_count"] == 2
     assert [row["title"] for row in view["top_cited_items"]] == [
         "치질 수술 FAQ", "강남 치질 병원 안내", "세 번째 글"
     ]
-    assert "치질 수술 FAQ" not in _all_copy(view)
 
 
-def test_citations_absent_defaults_to_zero_for_older_reports():
+def test_act_one_citation_line_is_omitted_for_older_reports_without_citations():
+    """인용 귀속 이전에 만들어진 리포트는 0건이 아니라 '모른다'이다."""
     view = _view()
 
+    assert view["citation_line"] is None
+    assert view["published_items"] == []
     assert view["cited_cells"] == 0
     assert view["cited_content_count"] == 0
     assert view["top_cited_items"] == []
 
 
-def test_doctor_tiles_do_not_include_a_competitor_story():
-    view = _view(
-        records=[
-            _record(
-                mentioned=False,
-                competitors=[{"name": "다른병원", "is_mentioned": True}],
-            )
-        ]
-    )
+def test_act_one_citation_line_is_omitted_when_nothing_was_measured():
+    view = _view(citations=_citations(measured_cell_count=0, cited_cell_count=0))
 
-    assert all("다른 병원" not in tile["label"] for tile in view["tiles"])
+    assert view["citation_line"] is None
 
 
 def test_evidence_pairs_one_appearance_with_one_absence():
@@ -304,6 +354,16 @@ def test_next_actions_separate_what_we_do_from_what_the_doctor_does():
     assert "원장" not in " ".join(actions["ours"])
 
 
+def test_next_action_copy_passes_the_medical_ad_filter():
+    """막 3은 원장이 읽는 공개 성격의 문구다 — 공개 경로와 같은 필터를 통과해야 한다."""
+    from app.utils.medical_filter import check_forbidden
+
+    actions = _view()["next_actions"]
+
+    for line in (*actions["ours"], *actions["yours"]):
+        assert check_forbidden(line) == []
+
+
 def test_footnotes_always_carry_the_honesty_caveats():
     """나쁜 달에 이 문구가 없으면 자연 변동이 해지 대화가 된다."""
     footnotes = " ".join(_view()["footnotes"])
@@ -339,6 +399,296 @@ def test_error_margin_footnote_is_measured_not_a_fixed_constant():
         "이번 달 수치의 오차 범위는 ±24번입니다 (질문 2개 × 반복 5회 기준)."
         in thin["footnotes"]
     )
+
+
+# ── 막 2: 빠진 질문 · 시작 시점 대비 ───────────────────────────────────
+
+
+def _lost(*texts):
+    return [
+        {"query_text": text, "platform_label": "ChatGPT", "classification": "LOST_MENTION"}
+        for text in texts
+    ]
+
+
+def _attribution(**overrides):
+    payload = {
+        "new_mention_count": 0,
+        "first_measured_mention_count": 0,
+        "non_comparable_count": 0,
+        "new_mention_cells": [],
+        "has_prior_month": True,
+        "lost_mention_count": 0,
+        "lost_mention_cells": [],
+        "question_rows": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_lost_mentions_are_shown_so_a_down_month_has_a_page_to_answer_from():
+    """헤드라인이 내려간 달에 "어디서 빠졌나"를 답할 곳이 없으면 해지 대화가 된다."""
+    view = _view(
+        attribution=_attribution(
+            lost_mention_count=4, lost_mention_cells=_lost("가", "나", "다", "라")
+        )
+    )
+
+    assert [row["query_text"] for row in view["lost_mention_sentences"]] == ["가", "나", "다"]
+
+
+def test_lost_mentions_are_omitted_when_there_is_no_prior_month():
+    """지난달 manifest가 없으면 "빠졌다"는 말 자체가 성립하지 않는다."""
+    view = _view(
+        attribution=_attribution(
+            has_prior_month=False, lost_mention_count=2, lost_mention_cells=_lost("가", "나")
+        )
+    )
+
+    assert view["lost_mention_sentences"] == []
+
+
+def test_lost_mentions_steer_next_month_copy():
+    view = _view(
+        attribution=_attribution(
+            lost_mention_count=1, lost_mention_cells=_lost("강남 치질 병원 추천해줘")
+        )
+    )
+
+    assert "이번 달 빠진 질문을 먼저 확인해" in " ".join(view["next_actions"]["ours"])
+
+
+def test_v0_baseline_line_is_rendered_only_when_the_caller_supplies_it():
+    baseline = {
+        "of_hundred": 31,
+        "current_of_hundred": 47,
+        "sentence": "서비스 시작 시점(V0) 대비: 31번 → 47번",
+    }
+    with_v0 = _view(v0_baseline=baseline)
+
+    assert with_v0["v0_baseline"] == baseline
+    assert "참고용 값입니다" in " ".join(with_v0["footnotes"])
+    assert _view()["v0_baseline"] is None
+    assert not any("V0" in note for note in _view()["footnotes"])
+
+
+# ── 1페이지 트리밍 순서 ────────────────────────────────────────────────
+
+
+def _crowded(**overrides):
+    long_answer = "환자분이 이해하기 쉬운 말로 검사 과정과 준비 방법을 안내합니다. " * 8
+    params = {
+        "citations": {
+            "measured_cell_count": 30,
+            "cited_cell_count": 6,
+            "cited_content_count": 3,
+            "cited_items": [],
+        },
+        "published_contents": [
+            _content("치질 수술 뒤 회복 기간에 대해 자주 묻는 질문", content_type="FAQ"),
+            _content("대장내시경 검사 전날 준비 안내", content_type="TREATMENT"),
+            _content("겨울철 항문 질환 예방 생활 습관", content_type="HEALTH"),
+        ],
+        "attribution": _attribution(
+            new_mention_count=3,
+            first_measured_mention_count=2,
+            non_comparable_count=1,
+            new_mention_cells=[
+                {"query_text": "강남 치질 병원 추천해줘", "platform_label": "ChatGPT"},
+                {"query_text": "강남 대장내시경 병원 알려줘", "platform_label": "Gemini"},
+                {"query_text": "강남 항문외과 어디가 좋아?", "platform_label": "ChatGPT"},
+            ],
+            lost_mention_count=3,
+            lost_mention_cells=_lost(
+                "치질 수술 후 회복 기간이 얼마나 되나요",
+                "대장내시경은 몇 년마다 받아야 하나요",
+                "항문 통증이 계속되면 어디로 가야 하나요",
+            ),
+        ),
+        "records": [
+            _record(mentioned=True, text="강남 대장내시경", raw=f"장편한외과의원 {long_answer}"),
+            _record(mentioned=False, text="강남 치질 병원", raw=long_answer),
+        ],
+        "v0_baseline": {
+            "of_hundred": 31,
+            "current_of_hundred": 47,
+            "sentence": "서비스 시작 시점(V0) 대비: 31번 → 47번",
+        },
+    }
+    params.update(overrides)
+    return _view(**params)
+
+
+def test_a_roomy_page_keeps_both_examples_and_full_lists():
+    view = _view(records=[_record(mentioned=True), _record(mentioned=False)])
+
+    assert view["trimmed"] == []
+    assert view["evidence"]["found"] is not None
+    assert view["evidence"]["missing"] is not None
+
+
+def test_page_one_trimming_drops_the_not_shown_example_before_shortening_lists():
+    """넘칠 때 무엇을 버릴지는 편집 결정이다 — CSS overflow는 조용히 잘라 버린다."""
+    view = _crowded()
+
+    assert view["trimmed"][0] == "EVIDENCE_MISSING"
+    assert view["evidence"]["missing"] is None
+    assert view["evidence"]["found"] is not None
+
+
+def test_page_one_trimming_follows_a_fixed_order_and_records_what_it_dropped():
+    view = _crowded()
+    order = [
+        "EVIDENCE_MISSING",
+        "NEW_MENTIONS",
+        "LOST_MENTIONS",
+        "PUBLISHED_TITLES",
+        "EVIDENCE_FOUND",
+    ]
+
+    assert view["trimmed"] == order[: len(view["trimmed"])]
+    assert view["trimmed"]
+    if "NEW_MENTIONS" in view["trimmed"]:
+        assert len(view["new_mention_sentences"]) == 2
+    if "LOST_MENTIONS" in view["trimmed"]:
+        assert len(view["lost_mention_sentences"]) == 2
+    if "PUBLISHED_TITLES" in view["trimmed"]:
+        assert len(view["published_items"]) == 2
+
+
+# ── 2쪽 부록 ──────────────────────────────────────────────────────────
+
+
+def _question_row(key, text, *, current=(10, 6), prior=(10, 4), prior_measured=True):
+    return {
+        "query_key": key,
+        "query_text": text,
+        "current_attempts_used": current[0],
+        "current_mentioned_attempts": current[1],
+        "prior_attempts_used": prior[0],
+        "prior_mentioned_attempts": prior[1],
+        "prior_measured": prior_measured,
+    }
+
+
+def test_appendix_lists_every_tracking_question_with_both_months():
+    view = _view(
+        attribution=_attribution(
+            question_rows=[
+                _question_row("q1", "강남 치질 병원 추천해줘"),
+                _question_row("q2", "강남 대장내시경 병원", current=(10, 0), prior=(10, 3)),
+                _question_row("q3", "새로 추가된 질문", prior=(0, 0), prior_measured=False),
+            ]
+        ),
+        citations={
+            "measured_cell_count": 30,
+            "cited_cell_count": 1,
+            "cited_content_count": 1,
+            "cited_items": [
+                {
+                    "title": "치질 수술 FAQ",
+                    "cited_cell_count": 1,
+                    "queries": [
+                        {"query_text": "강남 치질 병원 추천해줘", "platform_label": "ChatGPT"}
+                    ],
+                }
+            ],
+        },
+        records=[
+            _record(
+                mentioned=False,
+                text="강남 치질 병원 추천해줘",
+                platform="chatgpt",
+                competitors=[{"name": "가나다외과", "is_mentioned": True}],
+            ),
+            _record(
+                mentioned=False,
+                text="강남 치질 병원 추천해줘",
+                platform="gemini",
+                competitors=[{"name": "가나다외과", "is_mentioned": True}],
+            ),
+            _record(
+                mentioned=False,
+                text="강남 대장내시경 병원",
+                platform="chatgpt",
+                competitors=[{"name": "한번만외과", "is_mentioned": True}],
+            ),
+        ],
+    )
+
+    rows = view["appendix_rows"]
+    assert [row["query_text"] for row in rows] == [
+        "강남 치질 병원 추천해줘",
+        "강남 대장내시경 병원",
+        "새로 추가된 질문",
+    ]
+    assert rows[0]["prev_label"] == "10번 중 4번"
+    assert rows[0]["current_label"] == "10번 중 6번"
+    assert rows[0]["cited_title"] == "치질 수술 FAQ"
+    assert rows[1]["current_label"] == "안 나옴"
+    assert rows[2]["prev_label"] == "측정 없음"
+    # 관측 2회 이상인 경쟁 병원만 이름을 적는다. 숫자는 절대 쓰지 않는다.
+    assert rows[0]["competitor"] == "가나다외과"
+    assert rows[1]["competitor"] == "—"
+    assert not any(char.isdigit() for char in rows[0]["competitor"])
+
+
+def test_appendix_is_empty_when_no_question_rows_exist():
+    """부록이 비면 PDF는 1쪽으로 남는다 — 빈 2쪽을 만들지 않는다."""
+    assert _view()["appendix_rows"] == []
+
+
+def test_appendix_caps_rows_at_the_tracking_set_size():
+    view = _view(
+        attribution=_attribution(
+            question_rows=[
+                _question_row(f"q{index}", f"질문 {index}") for index in range(20)
+            ]
+        )
+    )
+
+    assert len(view["appendix_rows"]) == 15
+
+
+# ── AE 토킹 포인트 ────────────────────────────────────────────────────
+
+
+def test_talking_points_are_three_number_bound_sentences_in_the_report_order():
+    view = _view(
+        citations=_citations(),
+        published_contents=[_content("치질 수술 FAQ", content_type="FAQ")],
+    )
+    points = view["talking_points"]
+
+    assert len(points) == 3
+    assert "16편 중 12편" in points[0]
+    assert "치질 수술 FAQ" in points[0]
+    assert "4건" in points[0]
+    assert "47번" in points[1]
+    assert "지난달 39번 → 이번 달 47번" in points[1]
+    assert points[2].startswith("다음 달 계획")
+
+
+def test_talking_points_never_report_a_number_for_an_unmeasured_month():
+    points = _view(sov_pct=None)["talking_points"]
+
+    assert "측정이 충분히 이뤄지지 않아" in points[1]
+    assert "0번" not in " ".join(points)
+
+
+def test_talking_points_pass_the_medical_ad_filter():
+    from app.utils.medical_filter import check_forbidden
+
+    for line in _view(citations=_citations())["talking_points"]:
+        assert check_forbidden(line) == []
+
+
+def test_talking_points_are_not_shown_to_the_doctor():
+    """토킹 포인트는 AE 준비물이다 — 원장 PDF에 들어가면 내부 문구가 새는 것이다."""
+    view = _view(citations=_citations())
+
+    for line in view["talking_points"]:
+        assert line not in _body_text(_render(view))
 
 
 # ── 템플릿까지 실제로 렌더되는가 ────────────────────────────────────────
@@ -385,8 +735,11 @@ def test_template_renders_the_headline_and_evidence():
     assert "치질 진료 정보를 확인하세요" in text
     assert "그래서 이번 달 이 주제의 글을 씁니다" in text
     assert "대신 A의원이(가) 언급됐습니다" not in text
-    assert "다음 달에는 무엇을 하나요?" not in text
-    assert "원장님께 부탁드립니다" not in text
+    # 3막이 전부 렌더된다 — 예전에는 막 2만 있었다.
+    assert "이번 달 저희가 한 일" in text
+    assert "무엇이 달라졌나요?" in text
+    assert "다음 달에는 무엇을 하나요?" in text
+    assert "원장님께 부탁드릴 한 가지" in text
 
 
 def test_rendered_report_never_shows_a_percent_sign_to_the_doctor():

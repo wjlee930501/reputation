@@ -62,6 +62,9 @@ class MilestoneProjection:
     requires_action: bool
     is_recovery: bool
     recovery_of: str | None = None
+    # 월간 리포트 마일스톤에만 있는 한 줄 요약 — "언급 47번(전월 대비 +8번, 정상 변동 범위)".
+    # 알림만 보고 원장에게 무슨 말을 할지 알 수 있게 한다.
+    headline_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,8 +163,14 @@ def _single_notification(
     url = admin_url(admin_base_url, milestone.admin_path)
     status = safe_text(milestone.status_label, 100)
     deadline_label = _deadline_label(milestone)
+    headline_line = (
+        f"이번 달 결과: {safe_text(milestone.headline_label, 120)}\n"
+        if milestone.headline_label
+        else ""
+    )
     details = (
         f"무슨 문제인지: {status}\n"
+        f"{headline_line}"
         f"고객 영향: {safe_text(milestone.customer_impact, 400)}\n"
         f"지금 할 일: {safe_text(milestone.next_action, 400)}\n"
         f"담당: {safe_text(milestone.owner_label, 100)} · "
@@ -217,9 +226,15 @@ def _summary_path(milestones: Sequence[MilestoneProjection]) -> str:
 
 
 def _summary_line(milestone: MilestoneProjection) -> str:
+    headline_line = (
+        f"  이번 달 결과: {safe_text(milestone.headline_label, 120)}\n"
+        if milestone.headline_label
+        else ""
+    )
     return (
         f"• *{safe_text(milestone.hospital_name, 100)}* · "
         f"무슨 문제인지: {safe_text(milestone.status_label, 100)}\n"
+        f"{headline_line}"
         f"  고객 영향: {safe_text(milestone.customer_impact, 300)}\n"
         f"  지금 할 일: {safe_text(milestone.next_action, 300)}\n"
         f"담당: {safe_text(milestone.owner_label, 80)} · "
