@@ -66,7 +66,6 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     review_generated_content,
 )
-from app.services.content_citations import platform_public_base_url
 from app.services.content_engine import EXISTING_TITLE_PROMPT_LIMIT, generate_content
 from app.services.content_publication import (
     apply_publication_assessment,
@@ -103,6 +102,13 @@ from app.services.essence_readiness import (
     get_current_approved_philosophy_sync,
     get_essence_readiness_sync,
 )
+from app.services.hospital_activation import (
+    AUTO_ACTIVATE_ACTOR,
+    activate_hospital_sync,
+    blocker_reason,
+    evaluate_auto_activation,
+    public_site_url,
+)
 from app.services.image_direction import hospital_image_direction
 from app.services.image_engine import generate_image
 from app.services.incident_types import IncidentFingerprint
@@ -129,6 +135,7 @@ from app.services.monthly_period import (
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
 from app.services.onboarding_notifications import (
+    build_hospital_activated_notification,
     build_site_built_notification,
     build_v0_ready_notification,
     enqueue_onboarding_notification_sync,
@@ -1821,18 +1828,8 @@ def trigger_v0_report(self, hospital_id: str):
 # 콘텐츠 허브 공개 노출 상태 준비
 # ══════════════════════════════════════════════════════════════════
 def _public_site_url(aeo_domain: str | None, slug: str | None) -> str:
-    """실제 접근 가능한 공개 허브 URL을 만든다.
-
-    site.py의 호스트 라우팅 규칙과 일치시킨다:
-      1. 병원 자기 도메인(aeo_domain)이 있으면 https://{aeo_domain}/
-      2. 없으면 기본 서브도메인 https://{slug}.{platform host}/  (SITE_BASE_URL 호스트 파생)
-    존재하지 않던 하드코딩 preview.motionlabs.io를 대체한다.
-    """
-    if aeo_domain:
-        return f"https://{aeo_domain}/"
-    # 인용 귀속(content_citations)이 매칭에 쓰는 것과 같은 호스트 규칙을 재사용한다 —
-    # 두 곳이 어긋나면 실제로 서빙되는 주소가 owned로 집계되지 않는다.
-    return platform_public_base_url(slug) or settings.SITE_BASE_URL
+    """실제 접근 가능한 공개 허브 URL. 활성화 서비스와 같은 규칙을 쓴다."""
+    return public_site_url(aeo_domain, slug)
 
 
 def _site_build_prerequisites_met(hospital: Hospital) -> bool:
@@ -1849,8 +1846,17 @@ def _site_build_prerequisites_met(hospital: Hospital) -> bool:
     max_retries=3,
 )
 def build_aeo_site(self, hospital_id: str):
-    """콘텐츠 허브 노출 상태 전환 + Slack 알림 (legacy task name; 실제 공개 화면은 Next.js /site 담당)"""
+    """콘텐츠 허브 노출 상태 전환 + 기본 주소 자동 운영 시작 (legacy task name)
+
+    STEP5 게이트 세 가지는 모두 시스템 플래그다. 마지막 전환만 사람 클릭으로 남기면
+    AE는 자기가 만들지 않은 사실을 확인하는 클릭 하나 때문에 Slack 두 건을 받는다.
+    자기 도메인이 없는 병원은 여기서 그대로 ACTIVE가 되고, 자기 도메인이 지정된 병원만
+    수동 경로로 남는다 — DNS는 병원 것이라 시점을 시스템이 정할 수 없다.
+    """
     require_dispatch(self, "build-aeo-site", hospital_id)
+    activated_slug: str | None = None
+    activated_name: str | None = None
+    activated_treatments: list | None = None
     with SyncSessionLocal() as db:
         hospital = db.get(Hospital, uuid.UUID(hospital_id))
         if not hospital:
@@ -1863,24 +1869,63 @@ def build_aeo_site(self, hospital_id: str):
                 hospital.v0_report_done,
             )
             return
-        if hospital.site_built:
-            return
 
-        hospital.site_built = True
-        # ACTIVE/PAUSED 병원을 강등하지 않는다 — admin의 "허브 재준비"나 도메인 재저장이
-        # 라이브 공개 허브를 PENDING_DOMAIN으로 떨어뜨려 공개 표면 전체가 404 되는 것 방지.
-        # (공개 엔드포인트는 status==ACTIVE && site_live 필수.) 도메인이 실제로 바뀐 경우의
-        # 강등은 connect_domain이 검증 무효화와 함께 명시적으로 수행한다.
-        if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PAUSED):
-            hospital.status = HospitalStatus.PENDING_DOMAIN
-        enqueue_onboarding_notification_sync(
-            db,
-            build_site_built_notification(
-                hospital_id=hospital.id,
-                hospital_name=hospital.name,
-            ),
+        newly_built = not hospital.site_built
+        if newly_built:
+            hospital.site_built = True
+            # ACTIVE/PAUSED 병원을 강등하지 않는다 — admin의 "허브 재준비"나 도메인 재저장이
+            # 라이브 공개 허브를 PENDING_DOMAIN으로 떨어뜨려 공개 표면 전체가 404 되는 것 방지.
+            # (공개 엔드포인트는 status==ACTIVE && site_live 필수.) 도메인이 실제로 바뀐 경우의
+            # 강등은 connect_domain이 검증 무효화와 함께 명시적으로 수행한다.
+            if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PAUSED):
+                hospital.status = HospitalStatus.PENDING_DOMAIN
+
+        # 재실행(acks_late·자율 복구)에서도 같은 답이 나온다: 이미 ACTIVE면 ALREADY_ACTIVE로
+        # 끝나 감사행도 알림도 늘지 않고, PAUSED는 어떤 경우에도 자동으로 되살리지 않는다.
+        blocker = evaluate_auto_activation(hospital)
+        activated = False
+        if blocker is None:
+            result = activate_hospital_sync(
+                db,
+                hospital,
+                actor=AUTO_ACTIVATE_ACTOR,
+                reason="SITE_BUILD_AUTO_ACTIVATION",
+            )
+            activated = result.activated_now
+
+        if activated:
+            enqueue_onboarding_notification_sync(
+                db,
+                build_hospital_activated_notification(
+                    hospital_id=hospital.id,
+                    hospital_name=hospital.name,
+                    public_url=_public_site_url(hospital.aeo_domain, hospital.slug),
+                ),
+            )
+            activated_slug = hospital.slug
+            activated_name = hospital.name
+            activated_treatments = hospital.treatments
+        elif newly_built:
+            # 자동 시작이 불가능했을 때만 재촉 알림이 남고, 왜 사람이 필요한지 함께 말한다.
+            enqueue_onboarding_notification_sync(
+                db,
+                build_site_built_notification(
+                    hospital_id=hospital.id,
+                    hospital_name=hospital.name,
+                    blocked_reason=blocker_reason(blocker) if blocker is not None else None,
+                ),
+            )
+
+        if newly_built or activated:
+            db.commit()
+
+    # 커밋 이후 — revalidate 실패는 활성화를 되돌리지 않는다 (R4, activate 엔드포인트와 동일).
+    if activated_slug:
+        _run_async(
+            trigger_hospital_site_revalidate_safe(
+                activated_slug, activated_treatments, hospital_name=activated_name
+            )
         )
-        db.commit()
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -21,7 +21,12 @@ import {
   type DomainFeedback,
 } from './DomainSetupPrimitives'
 import { DEFAULT_CNAME_TARGET, platformSubdomainUrl, statusBadge, trimmed } from './DomainSetupState'
-import { isPlatformAddressBrowsable, missingActivationPrerequisites } from '@/lib/hospital-activation'
+import {
+  isPlatformAddressBrowsable,
+  missingActivationPrerequisites,
+  platformActivationMode,
+  type PlatformActivationMode,
+} from '@/lib/hospital-activation'
 import { safeOperatorError } from '@/lib/operations-journey'
 import { customDomainLiveUrl } from '@/lib/domain-live-links'
 import {
@@ -30,6 +35,13 @@ import {
   customDomainPanelStatus,
   domainLastCheckedLabel,
 } from '@/lib/hospital-domain-status'
+
+const PLATFORM_ADDRESS_STATE_LABEL: Record<PlatformActivationMode, string> = {
+  live: '운영 중',
+  automatic: '자동 운영 시작 대기',
+  manual: '담당자 실행 필요',
+  blocked: '선행 단계 필요',
+}
 
 function _certElapsedMinutes(started: string | null | undefined, now?: number): number {
   return certificateIssuingElapsedMinutes(started, now) ?? 0
@@ -100,6 +112,9 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     profile.domain_last_check_ok,
   )
   const platformAddressBrowsable = isPlatformAddressBrowsable(profile)
+  // 기본 주소는 게이트 세 가지가 통과하면 백엔드가 스스로 운영을 시작한다. 화면이 이미
+  // 끝난 일을 버튼으로 남겨두면, AE는 자기가 만들지 않은 사실을 확인하는 클릭을 계속한다.
+  const platformMode = platformActivationMode(profile)
   const customDomainUrl = customDomainLiveUrl({
     site_live: profile.site_live,
     aeo_domain: currentDomain,
@@ -428,7 +443,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold text-slate-900">자기 도메인 연결 <span className="text-slate-400 font-normal">(선택)</span></h3>
-            <p className="text-sm text-slate-700 mt-1">기본 플랫폼 주소는 선행 단계 완료 후 직접 활성화하며, 병원 자기 도메인 연결은 선택입니다.</p>
+            <p className="text-sm text-slate-700 mt-1">기본 플랫폼 주소는 선행 단계 세 가지가 통과하면 자동으로 운영이 시작되고, 병원 자기 도메인 연결만 담당자가 입력·확인합니다.</p>
           </div>
           <div className="shrink-0 text-right">
             <span className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full border ${badge.cls}`}>
@@ -445,7 +460,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         {subdomainUrl && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
             <p className="text-sm font-semibold text-emerald-800">
-              기본 주소 · {profile.site_live ? '운영 중' : '명시적 활성화 필요'}
+              기본 주소 · {PLATFORM_ADDRESS_STATE_LABEL[platformMode]}
             </p>
             {platformAddressBrowsable ? (
               <a
@@ -461,12 +476,18 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
                 {subdomainUrl}
               </p>
             )}
-            {profile.site_live ? (
+            {platformMode === 'live' ? (
               <p className="mt-1 text-xs text-emerald-700/80">이 주소로 현재 공개 중입니다. 아래 자기 도메인 연결은 선택입니다.</p>
+            ) : platformMode === 'automatic' ? (
+              <p className="mt-1 text-xs text-emerald-700/80" data-testid="platform-auto-activation">
+                선행 단계가 모두 통과했습니다. 기본 주소는 콘텐츠 허브 준비가 끝나는 즉시 시스템이 운영을 시작하므로 담당자가 누를 것은 없습니다.
+              </p>
             ) : (
               <div className="mt-2 space-y-2">
                 <p className="text-xs text-emerald-700/80">
-                  별도 DNS·인증서 없이 사용할 수 있지만, 운영 전환은 담당자가 직접 실행해야 합니다.
+                  {platformMode === 'blocked'
+                    ? '선행 단계가 모두 통과하면 기본 주소는 자동으로 운영이 시작됩니다.'
+                    : '자기 도메인이 지정된 병원은 DNS·인증서 확인 시점을 시스템이 정할 수 없어, 기본 주소 운영 시작을 담당자가 실행합니다.'}
                 </p>
                 {activationMissing.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">

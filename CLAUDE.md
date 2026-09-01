@@ -34,11 +34,18 @@
     • Next.js /site 공개 표면이 승인된 병원 정보와 콘텐츠를 읽어 노출할 수 있게 상태를 준비
     • Schema.org MedicalClinic 마크업, FAQ/진료 안내, 콘텐츠 목록은 /site가 동적으로 제공
     • 별도 홈페이지/HTML 납품물이 아니라 AI와 검색엔진이 참고할 병원 정보·콘텐츠 허브 운영 상태를 만든다
-    • 준비 완료 시 Slack → AE: "콘텐츠 허브 노출 준비 완료 — Admin에서 공개 정보와 도메인 상태 확인 필요"
+    • 준비 완료 시 STEP 5 활성화 게이트를 즉시 평가한다 (아래 참조)
+    • 자동 활성화가 불가능한 경우에만 Slack → AE: "콘텐츠 허브 노출 준비 완료 — Admin에서 공개 정보와 도메인 상태 확인 필요"
     ↓
-[STEP 5] 공개 노출 상태 확인 및 ACTIVE 전환 (사람 — Admin에서 AE가)
-    • Admin에서 병원 도메인/공개 URL 정보를 입력
-    • 활성화 게이트: profile_complete·v0_report_done·site_built 세 가지
+[STEP 5] 공개 노출 상태 전환 (시스템 기본, 사람은 자기 도메인만)
+    • 활성화 게이트: profile_complete·v0_report_done·site_built 세 가지 — 모두 시스템 플래그
+    • 자기 도메인이 없는 병원은 STEP 4 허브 준비가 끝나는 즉시 게이트를 평가해
+      기본 플랫폼 주소로 자동 ACTIVE 전환(site_live=true) — AE 클릭 없음
+      Slack → AE: "운영 시작됨 — 기본 주소 {url}" 1건 (SITE_BUILT 재촉 알림을 대체)
+    • 자기 도메인(aeo_domain)이 지정된 병원만 AE가 Admin에서 도메인을 입력하고
+      DNS/TLS 확인 후 직접 운영을 시작한다 (DNS는 병원 소유라 시점을 시스템이 정할 수 없다)
+      이때만 SITE_BUILT 알림이 남고, 자동 시작이 불가능했던 사유를 함께 알린다
+    • PAUSED 등 자동 전환 대상이 아닌 상태는 어떤 재실행에도 자동으로 되살리지 않는다
     • 기본 플랫폼 주소는 DNS 없이 활성화하며, 자기 도메인의 DNS/TLS 확인 결과는 별도 소프트 상태로 표시한다
     • schedule_set·자기 도메인 DNS/TLS는 ACTIVE 전환의 선행조건이 아니다
     • 콘텐츠 스케줄은 STEP 6이므로 공개 활성화 선행조건이 아니다
