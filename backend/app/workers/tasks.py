@@ -230,6 +230,11 @@ from app.workers.nightly_generation_batch import (
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
+from app.workers.v0_checkpoint import (
+    find_reusable_v0_measurement_run,
+    load_v0_checkpoint,
+    v0_measurement_run_config,
+)
 from app.workers.weekly_sov_incident_control import (
     open_monthly_sov_failure,
     open_weekly_sov_capacity_digest,
@@ -1438,6 +1443,9 @@ def trigger_v0_report(self, hospital_id: str):
     """프로파일 완료 후 V0 분석 즉시 실행"""
     require_dispatch(self, "trigger-v0-report", hospital_id)
     prior_status: str | None = None  # ANALYZING 전환 전 상태 — 실패 시 복원용 (P2-15)
+    # 이 V0 요청의 lineage. Celery의 retry는 request.headers를 그대로 재발행하므로
+    # 재시도 전 실행이 남긴 측정을 정확히 지목하는 열쇠가 된다 (v0_checkpoint 참조).
+    v0_operation_run_id = _operation_run_id_from_task(self)
     try:
         # 세션 락은 커넥션에 붙는다 — 중간 commit이 커넥션을 풀에 반환해 버리면 unlock이
         # 다른 커넥션에서 돌아 조용히 실패한다. 그래서 이 태스크만 커넥션을 고정한다.
@@ -1448,6 +1456,7 @@ def trigger_v0_report(self, hospital_id: str):
             # 같은 키의 xact 락(자료 저장·운영 기준)까지 막는다.
             acquire_hospital_advisory_session_lock_sync(db, hospital_uuid)
             run = None
+            checkpoint = None
             try:
                 acquire_hospital_advisory_lock_sync(db, hospital_uuid)
                 hospital = db.get(Hospital, hospital_uuid)
@@ -1523,132 +1532,164 @@ def trigger_v0_report(self, hospital_id: str):
                         existing_count,
                     )
 
-                # AI 답변 언급률 측정 (V0: 쿼리 수 제한, 빠른 실행)
-                run = _start_measurement_run(
-                    db,
-                    hospital,
-                    run_label="V0 first measurement",
-                    config={"source": "trigger_v0_report", "repeat_count": V0_REPEAT_COUNT},
+                # 측정 체크포인트: 이 요청이 이미 150건을 측정해 두었다면 다시 사지 않는다.
+                # PDF·GCS·커밋 실패로 인한 재시도가 가장 비싼 단계를 되풀이하던 문제를
+                # 여기서 끊는다 (아키텍처 리뷰 §2-3). 판정 규칙은 v0_checkpoint 모듈.
+                reusable_run = find_reusable_v0_measurement_run(
+                    db, hospital.id, operation_run_id=v0_operation_run_id
                 )
+                if reusable_run is not None:
+                    checkpoint = load_v0_checkpoint(
+                        db, reusable_run, default_repeat_count=V0_REPEAT_COUNT
+                    )
+                    logger.warning(
+                        "Reusing completed V0 measurement %s for %s — retry skips %d "
+                        "paid provider calls",
+                        reusable_run.id,
+                        hospital.name,
+                        checkpoint.success_count + checkpoint.failure_count,
+                    )
+                else:
+                    # AI 답변 언급률 측정 (V0: 쿼리 수 제한, 빠른 실행)
+                    run = _start_measurement_run(
+                        db,
+                        hospital,
+                        run_label="V0 first measurement",
+                        config=v0_measurement_run_config(
+                            repeat_count=V0_REPEAT_COUNT,
+                            operation_run_id=v0_operation_run_id,
+                        ),
+                    )
                 db.commit()
             finally:
                 release_v0_session_lock(db, hospital_uuid)
-            if run is None:
+            if run is None and checkpoint is None:
                 return
-            all_records = []
-            success_count = 0
-            failure_count = 0
-            failure_reasons: Counter[str] = Counter()
-            platform_counts: dict[str, Counter[str]] = {}
-            blocked_platforms: dict[str, str] = {}
-            result = db.execute(v0_sample_query_stmt(hospital.id))
-            sample_queries = result.scalars().all()
+            if checkpoint is not None:
+                # 체크포인트 경로: 측정 루프도, 비용 가드 예약도 건너뛴다. 이미 낸 호출을
+                # 두 번 예약하면 가드가 실제 지출의 2배를 세고 상한이 조기 소진된다.
+                all_records = checkpoint.records
+                success_count = checkpoint.success_count
+                failure_count = checkpoint.failure_count
+                failure_summary = checkpoint.failure_summary
+                platforms = checkpoint.platforms
+                v0_repeat_count = checkpoint.repeat_count
+            else:
+                all_records = []
+                success_count = 0
+                failure_count = 0
+                failure_reasons: Counter[str] = Counter()
+                platform_counts: dict[str, Counter[str]] = {}
+                blocked_platforms: dict[str, str] = {}
+                result = db.execute(v0_sample_query_stmt(hospital.id))
+                sample_queries = result.scalars().all()
 
-            platforms = ["chatgpt"]
-            if settings.GEMINI_API_KEY:
-                platforms.append("gemini")
-            competitors = hospital.competitors or []
-            planned_counts = {
-                platform: len(sample_queries) * V0_REPEAT_COUNT for platform in platforms
-            }
+                platforms = ["chatgpt"]
+                if settings.GEMINI_API_KEY:
+                    platforms.append("gemini")
+                competitors = hospital.competitors or []
+                planned_counts = {
+                    platform: len(sample_queries) * V0_REPEAT_COUNT for platform in platforms
+                }
 
-            # 비용 가드: V0 측정 예산 확인(쿼리 × 플랫폼 × **반복 횟수**).
-            # 반복 횟수를 빼면 실제 호출의 1/V0_REPEAT_COUNT만 예약하게 되어 가드가
-            # 5배 적게 센다. run_single_query가 repeat_count만큼 실제 호출을 낸다.
-            # V0는 사람이 기다리는 플로우이므로 차단 시 ANALYZING을 이전 상태로 되돌리고,
-            # 명확한 실패 사유를 ops Slack으로 보낸다.
-            v0_units = sov_budget_units(
-                query_count=len(sample_queries),
-                platform_count=len(platforms),
-                repeat_count=V0_REPEAT_COUNT,
-            )
-            v0_decision = _run_async(cost_guard.check_and_increment("sov", count=v0_units))
-            if not v0_decision.allowed:
-                logger.warning(
-                    "V0 측정이 비용 가드로 차단됨: %s — %s", hospital.name, v0_decision.reason
+                # 비용 가드: V0 측정 예산 확인(쿼리 × 플랫폼 × **반복 횟수**).
+                # 반복 횟수를 빼면 실제 호출의 1/V0_REPEAT_COUNT만 예약하게 되어 가드가
+                # 5배 적게 센다. run_single_query가 repeat_count만큼 실제 호출을 낸다.
+                # V0는 사람이 기다리는 플로우이므로 차단 시 ANALYZING을 이전 상태로 되돌리고,
+                # 명확한 실패 사유를 ops Slack으로 보낸다.
+                v0_units = sov_budget_units(
+                    query_count=len(sample_queries),
+                    platform_count=len(platforms),
+                    repeat_count=V0_REPEAT_COUNT,
                 )
-                if prior_status:
-                    hospital.status = HospitalStatus(prior_status)
-                    db.commit()
-                _run_async(
-                    open_ops_incident(
-                        pipeline="v0_report",
-                        object_type="hospital",
-                        object_id=str(hospital.id),
-                        incident_type="V0_REPORT_COST_BLOCKED",
-                        safe_error_code="COST_BLOCKED",
-                        problem="초기 진단 측정이 비용 안전장치로 시작되지 않았습니다.",
-                        customer_impact="초기 진단 리포트 생성이 시작되지 않았습니다.",
-                        next_action="비용 안전장치 상태를 확인하고 조정 후 초기 진단을 재실행하세요.",
-                        source_type="V0_REPORT",
-                        hospital_name=hospital.name,
-                        hospital_id=hospital.id,
-                        actor="v0-report-worker",
-                        notify=True,
+                v0_decision = _run_async(cost_guard.check_and_increment("sov", count=v0_units))
+                if not v0_decision.allowed:
+                    logger.warning(
+                        "V0 측정이 비용 가드로 차단됨: %s — %s", hospital.name, v0_decision.reason
                     )
-                )
-                return
-
-            for q in sample_queries:
-                for platform in platforms:
-                    if platform in blocked_platforms:
-                        continue
-                    results = _run_async(
-                        run_single_query(
-                            hospital.name,
-                            q.query_text,
-                            platform,
-                            repeat_count=V0_REPEAT_COUNT,
-                            competitors=competitors,
-                            # 무료 진단과 같은 판정 조건 — 지역이 빠지면 동명 기관이
-                            # 무료에서는 확정, 유료에서는 보류로 갈린다 (PRD §7-4).
-                            region=(hospital.region or [""])[0],
+                    if prior_status:
+                        hospital.status = HospitalStatus(prior_status)
+                        db.commit()
+                    _run_async(
+                        open_ops_incident(
+                            pipeline="v0_report",
+                            object_type="hospital",
+                            object_id=str(hospital.id),
+                            incident_type="V0_REPORT_COST_BLOCKED",
+                            safe_error_code="COST_BLOCKED",
+                            problem="초기 진단 측정이 비용 안전장치로 시작되지 않았습니다.",
+                            customer_impact="초기 진단 리포트 생성이 시작되지 않았습니다.",
+                            next_action="비용 안전장치 상태를 확인하고 조정 후 초기 진단을 재실행하세요.",
+                            source_type="V0_REPORT",
+                            hospital_name=hospital.name,
                             hospital_id=hospital.id,
+                            actor="v0-report-worker",
+                            notify=True,
                         )
                     )
-                    for r in results:
-                        measurement_status, _failure_reason = _measurement_status_for_result(r)
-                        if measurement_status == "SUCCESS":
-                            success_count += 1
-                        else:
-                            failure_count += 1
-                        platform_counts.setdefault(platform, Counter())[measurement_status] += 1
-                        if measurement_status == "FAILED":
-                            failure_reasons[
-                                f"{platform}:{_failure_reason or 'measurement_failed'}"
-                            ] += 1
-                        record = _build_sov_record_from_result(
-                            hospital_id=hospital.id,
-                            query_id=q.id,
-                            measurement_run_id=run.id,
-                            platform=platform,
-                            result=r,
-                        )
-                        db.add(record)
-                        # 언급률 분모가 유형을 알아야 INFO(이길 수 없는 질문)를 뺄 수 있다.
-                        all_records.append({**r, "query_intent": q.query_intent})
-                    outage_reason = _provider_batch_outage_reason(results)
-                    if outage_reason:
-                        blocked_platforms[platform] = outage_reason
-                        logger.error(
-                            "V0 provider circuit opened: platform=%s reason=%s remaining queries skipped",
-                            platform,
-                            outage_reason,
-                        )
+                    return
 
-            failure_summary = _classify_v0_failure(
-                failure_reasons,
-                platform_counts,
-                planned_counts=planned_counts,
-                blocked_platforms=blocked_platforms,
-            )
-            _finish_measurement_run(
-                run,
-                success_count,
-                failure_count,
-                error_summary=failure_summary if failure_count else None,
-            )
-            db.commit()
+                for q in sample_queries:
+                    for platform in platforms:
+                        if platform in blocked_platforms:
+                            continue
+                        results = _run_async(
+                            run_single_query(
+                                hospital.name,
+                                q.query_text,
+                                platform,
+                                repeat_count=V0_REPEAT_COUNT,
+                                competitors=competitors,
+                                # 무료 진단과 같은 판정 조건 — 지역이 빠지면 동명 기관이
+                                # 무료에서는 확정, 유료에서는 보류로 갈린다 (PRD §7-4).
+                                region=(hospital.region or [""])[0],
+                                hospital_id=hospital.id,
+                            )
+                        )
+                        for r in results:
+                            measurement_status, _failure_reason = _measurement_status_for_result(r)
+                            if measurement_status == "SUCCESS":
+                                success_count += 1
+                            else:
+                                failure_count += 1
+                            platform_counts.setdefault(platform, Counter())[measurement_status] += 1
+                            if measurement_status == "FAILED":
+                                failure_reasons[
+                                    f"{platform}:{_failure_reason or 'measurement_failed'}"
+                                ] += 1
+                            record = _build_sov_record_from_result(
+                                hospital_id=hospital.id,
+                                query_id=q.id,
+                                measurement_run_id=run.id,
+                                platform=platform,
+                                result=r,
+                            )
+                            db.add(record)
+                            # 언급률 분모가 유형을 알아야 INFO(이길 수 없는 질문)를 뺄 수 있다.
+                            all_records.append({**r, "query_intent": q.query_intent})
+                        outage_reason = _provider_batch_outage_reason(results)
+                        if outage_reason:
+                            blocked_platforms[platform] = outage_reason
+                            logger.error(
+                                "V0 provider circuit opened: platform=%s reason=%s remaining queries skipped",
+                                platform,
+                                outage_reason,
+                            )
+
+                failure_summary = _classify_v0_failure(
+                    failure_reasons,
+                    platform_counts,
+                    planned_counts=planned_counts,
+                    blocked_platforms=blocked_platforms,
+                )
+                _finish_measurement_run(
+                    run,
+                    success_count,
+                    failure_count,
+                    error_summary=failure_summary if failure_count else None,
+                )
+                db.commit()
+                v0_repeat_count = V0_REPEAT_COUNT
             _ensure_v0_has_successful_measurements(
                 success_count,
                 failure_count,
@@ -1666,7 +1707,9 @@ def trigger_v0_report(self, hospital_id: str):
                 period_end=now.datetime,
                 report_type="V0",
                 sov_pct=sov_pct,
-                repeat_count=V0_REPEAT_COUNT,
+                # 체크포인트를 재사용하면 그 측정이 실제로 쓴 반복 횟수를 적는다 —
+                # 리포트가 "5회 반복"이라고 말하려면 그 숫자가 사실이어야 한다.
+                repeat_count=v0_repeat_count,
             )
 
             # DB 저장
