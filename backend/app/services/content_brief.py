@@ -196,10 +196,6 @@ def _treatment_narrative(
     }
 
 
-def _medical_risk_rules(philosophy: HospitalContentPhilosophy | None) -> list[str]:
-    return effective_safety_policy(philosophy)["medical_ad_risk_rules"]
-
-
 def _list(value: Any) -> list:
     return value if isinstance(value, list) else []
 

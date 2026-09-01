@@ -303,8 +303,6 @@ _LEGACY_INFO_MARKERS: tuple[str, ...] = (
     "수술 후 회복 기간 얼마나 돼?",
 )
 
-QUERY_TEMPLATES = [template for template, _, _ in _TEMPLATE_SPECS]
-
 # 템플릿의 고정부(치환자를 뺀 부분)로 기존 질문 텍스트의 유형을 되찾는다.
 # 마이그레이션 백필과, 템플릿을 거치지 않고 들어온 AIQueryTarget 질문에 쓴다.
 # 현재 세트 + 폐기된 옛 세트를 **모두** 본다.
@@ -791,15 +789,6 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
     }
-
-
-async def _query_gemini(query: str) -> str:
-    """진단 코드와 기존 호출부를 위한 text-only 호환 래퍼.
-
-    재시도는 `_query_gemini_result` 한 계층에서만 수행한다. 래퍼까지 장식하면 일시
-    장애 한 건이 3×3회로 증폭된다.
-    """
-    return str((await _query_gemini_result(query))["text"])
 
 
 @retry(

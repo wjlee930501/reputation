@@ -57,7 +57,6 @@ from app.services.essence_readiness import (
     get_essence_readiness,
 )
 from app.services.exposure_content_linker import (
-    ensure_brief_capable_action,
     link_content_to_exposure_action,
     unlink_content_from_exposure_action,
 )
@@ -1115,10 +1114,6 @@ async def _apply_content_brief_update(
             item.brief_approved_by = None
     elif "brief_approved_by" in fields and item.brief_status == BRIEF_STATUS_APPROVED:
         item.brief_approved_by = body.brief_approved_by
-
-
-def _ensure_brief_capable_exposure_action(exposure_action: ExposureAction) -> None:
-    ensure_brief_capable_action(exposure_action)
 
 
 def _enum_value(value):

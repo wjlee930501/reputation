@@ -157,6 +157,7 @@ export type SourceType =
   | 'PHOTO_CLINIC_EXTERIOR'
   | 'PHOTO_CLINIC_INTERIOR'
   | 'PHOTO_TREATMENT_ROOM'
+  | 'PHOTO_BRAND'
   | 'OTHER'
 
 export type SourceStatus = 'PENDING' | 'PROCESSED' | 'EXCLUDED' | 'ERROR'
@@ -439,30 +440,6 @@ export interface ScheduleInfo {
   is_active: boolean
 }
 
-export interface Report {
-  id: string
-  hospital_id: string
-  period_year: number
-  period_month: number
-  report_type: 'V0' | 'MONTHLY'
-  pdf_path: string | null
-  has_pdf?: boolean
-  has_doctor_pdf?: boolean
-  doctor_artifact_state?: 'MISSING' | 'INVALID' | 'VALID'
-  doctor_artifact_sha256?: string | null
-  download_url?: string | null
-  sov_summary: Record<string, unknown> | null
-  content_summary: Record<string, unknown> | null
-  essence_summary?: Record<string, unknown> | null
-  created_at: string
-  sent_at: string | null
-  delivery_ready?: boolean
-  customer_ready?: boolean
-  delivery_blockers?: string[]
-  effective_delivery?: ({ event_type?: string | null } & Record<string, unknown>) | null
-  delivery_history?: Array<Record<string, unknown>>
-}
-
 export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   ONBOARDING: { label: '온보딩 진행 중', color: 'bg-gray-100 text-gray-700' },
   ANALYZING: { label: 'AI 진단 분석 중', color: 'bg-blue-100 text-blue-700' },
@@ -541,7 +518,6 @@ export type OperationsSlackState =
   | 'HOLD'
   | 'SENT'
   | 'FAILED'
-export type OperationsIncidentState = 'OPEN' | 'RETRYING' | 'RECOVERED' | 'ACKNOWLEDGED'
 
 export interface OperationsOwner {
   readonly id: string

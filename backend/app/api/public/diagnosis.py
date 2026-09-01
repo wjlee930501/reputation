@@ -64,7 +64,7 @@ _NON_WORD = re.compile(r"[\s\-_·]+")
 # 자리가 열려야** 하기 때문이다. 자정 리셋은 새벽에 자리가 소진되어, 정작 원장님이
 # 출근해서 들어오면 이미 마감돼 있는 상태를 만든다.
 #
-# **랜딩 문구와 같은 값이어야 한다** (site/lib/landing-copy.ts의 heroScarcity.note).
+# 실시간 잔여 수는 접수 화면(/ai-diagnosis, no-store)이 이 값을 그대로 보여준다.
 # 어긋나면 신청자가 안내받은 시각에 와서 마감 화면을 본다.
 SLOT_RESET_HOUR_KST = 8
 

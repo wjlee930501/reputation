@@ -128,7 +128,3 @@ def resolve_legacy_asset_path(asset_ref: str, *, expected_hospital_id: uuid.UUID
         f"local://{hospital_id}/{filename}",
         expected_hospital_id=expected_hospital_id,
     )
-
-
-def is_private_asset_ref(asset_ref: str | None) -> bool:
-    return bool(asset_ref and (asset_ref.startswith("local://") or asset_ref.startswith("gs://")))

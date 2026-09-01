@@ -2245,7 +2245,6 @@ def test_morning_publish_cycle_has_no_success_slack(monkeypatch):
     )
     monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: outcomes[content_id])
     monkeypatch.setattr(tasks, "_run_async", finish_async)
-    monkeypatch.setattr(tasks, "_enqueue_overdue_post_publish_review_notifications", lambda _now: 0)
     monkeypatch.setattr(
         tasks,
         "generate_content",
@@ -2265,18 +2264,6 @@ def test_morning_publish_cycle_has_no_success_slack(monkeypatch):
 
     assert sessions == []
     assert due_db.added == []
-
-
-def test_overdue_post_publish_review_keeps_admin_badge_without_slack(monkeypatch):
-    monkeypatch.setattr(
-        tasks,
-        "SyncSessionLocal",
-        lambda: (_ for _ in ()).throw(AssertionError("Slack outbox must not be opened")),
-    )
-
-    assert tasks._enqueue_overdue_post_publish_review_notifications(
-        datetime(2026, 8, 19, 8, 0)
-    ) == 0
 
 
 def test_seven_forty_five_image_sweep_uses_confirmed_hero_fallback(monkeypatch):
@@ -2570,12 +2557,14 @@ def _approved_philosophy():
 
 
 def _arm_external_effect_tripwires(monkeypatch) -> dict[str, list]:
-    """차단 판정 뒤 공개 표면·색인·Slack으로 새는 효과가 있는지 감시한다.
+    """차단 판정 뒤 공개 표면·색인으로 새는 효과가 있는지 감시한다.
 
     지금은 _auto_publish_one이 이 함수들을 직접 부르지 않지만, 커밋 이전으로 외부
     효과가 옮겨오는 리팩터가 들어오면 차단된 글이 공개될 수 있다. 그물을 미리 친다.
+    개별 Slack 발행 알림(구 notify_content_auto_published)은 호출자가 없어 삭제됐으므로
+    더 이상 감시할 대상이 아니다.
     """
-    calls: dict[str, list] = {"revalidate": [], "indexnow": [], "published_slack": []}
+    calls: dict[str, list] = {"revalidate": [], "indexnow": []}
 
     async def fake_revalidate(*args, **kwargs):
         calls["revalidate"].append((args, kwargs))
@@ -2585,13 +2574,8 @@ def _arm_external_effect_tripwires(monkeypatch) -> dict[str, list]:
         calls["indexnow"].append((args, kwargs))
         return True
 
-    async def fake_published_slack(**kwargs):
-        calls["published_slack"].append(kwargs)
-        return True
-
     monkeypatch.setattr(tasks, "trigger_content_site_revalidate_safe", fake_revalidate)
     monkeypatch.setattr(tasks.indexnow, "submit_content_published_safe", fake_indexnow)
-    monkeypatch.setattr(tasks.notifier, "notify_content_auto_published", fake_published_slack)
     return calls
 
 
@@ -2622,7 +2606,7 @@ def test_auto_publish_blocks_content_with_forbidden_expression(monkeypatch):
     assert len(runs) == 1
     assert runs[0].operation_type == "REGENERATE_CONTENT"
     assert runs[0].request_payload["_dispatch"]["target_id"] == str(item.id)
-    assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
+    assert effects == {"revalidate": [], "indexnow": []}
 
 
 def test_auto_publish_blocks_markdown_hidden_forbidden_expression(monkeypatch):
@@ -2648,7 +2632,7 @@ def test_auto_publish_blocks_markdown_hidden_forbidden_expression(monkeypatch):
     assert item.published_at is None
     assert item.published_by is None
     assert [log.action for log in db.added if hasattr(log, "action")] == ["auto_publish_blocked"]
-    assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
+    assert effects == {"revalidate": [], "indexnow": []}
 
 
 def test_auto_publish_blocks_when_no_approved_philosophy(monkeypatch):
@@ -2672,7 +2656,7 @@ def test_auto_publish_blocks_when_no_approved_philosophy(monkeypatch):
     assert item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
     assert item.essence_check_summary["blocking"] is True
     assert [log.action for log in db.added if hasattr(log, "action")] == ["auto_publish_blocked"]
-    assert effects == {"revalidate": [], "indexnow": [], "published_slack": []}
+    assert effects == {"revalidate": [], "indexnow": []}
 
 
 def test_auto_publish_records_content_block_before_revalidation_dependency(monkeypatch):
@@ -2707,7 +2691,9 @@ def test_auto_publish_is_idempotent(monkeypatch):
     hospital = _publication_hospital()
     item = _publication_item(hospital, body="증상 단계에 따라 진료 방향을 설명드립니다.")
     db = _AutoPublishDB(item, hospital)
-    effects = _arm_external_effect_tripwires(monkeypatch)
+    # _auto_publish_one은 revalidate/indexnow를 직접 부르지 않지만, 앞으로 그 효과가
+    # 커밋 이전으로 옮겨오는 리팩터가 들어와도 이 테스트가 실제 호출을 하지 않도록 그물을 친다.
+    _arm_external_effect_tripwires(monkeypatch)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(
         tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
@@ -2728,7 +2714,6 @@ def test_auto_publish_is_idempotent(monkeypatch):
     assert [log.action for log in audits] == ["auto_publish_content"]
     outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
     assert outbox == []
-    assert effects["published_slack"] == []
 
 
 def test_auto_publish_accepts_ready_status(monkeypatch):

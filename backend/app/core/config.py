@@ -323,7 +323,6 @@ class Settings(BaseSettings):
 
     # Google Cloud — Gemini 이미지 생성(Imagen GA endpoint 종료 후 대체)
     GCP_PROJECT_ID: str = ""
-    GCP_LOCATION: str = "us-central1"
     GCP_STORAGE_BUCKET: str = "reputation-images"
     ASSET_LOCAL_UPLOAD_DIR: str = "/tmp/private_asset_uploads"
     # Certificate Manager 기반 신규 커스텀 도메인 자동 프로비저닝.
@@ -461,8 +460,6 @@ class Settings(BaseSettings):
     # 하루 32,000원으로 수학적으로 묶인다. 그래서 cost_guard에 별도 카테고리를 두지 않는다.
     # 랜딩의 "오늘 남은 자리 N/20"에 그대로 노출되는 마케팅 숫자이기도 하다.
     LEADGEN_DAILY_SLOTS: int = 20
-    # 질의 3개 고정. 5개는 건당 2,498원으로 상한까지 여유가 4%뿐이라 재시도 몇 번에 넘긴다.
-    LEADGEN_QUERY_COUNT: int = 3
     LEADGEN_REPEAT_COUNT: int = 3
     # 무료 진단 전용 공급자 동시성. sov_engine의 전역 세마포어를 그대로 쓰면 유료 측정과
     # 경합하므로(PRD F6-1) 풀을 분리한다. 실제 값은 출시 전 20건 동시 주입 부하 시험으로 확정.

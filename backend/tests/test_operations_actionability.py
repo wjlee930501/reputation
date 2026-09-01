@@ -12,7 +12,6 @@ from app.api.admin import operations_center_report_queries as report_queries
 from app.api.admin import operations_center_today_queries as today_queries
 from app.api.admin.operations_center_serializers import next_onboarding_step
 from app.models.hospital import Hospital
-from app.services import notifier as legacy_notifier
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.post_publish_review_policy import (
@@ -679,32 +678,3 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
     assert "담당: 미지정(담당자 지정 필요)" in payload
     assert "처리 기한: 운영 센터에서 확인" in payload
     assert "SLA" not in payload
-
-
-async def test_auto_publish_slack_uses_plain_public_content_language(monkeypatch) -> None:
-    # Given
-    captured = {}
-
-    async def capture_send(**payload):
-        captured.update(payload)
-        return True
-
-    monkeypatch.setattr(legacy_notifier, "_send", capture_send)
-
-    # When
-    await legacy_notifier.notify_content_auto_published(
-        hospital_name="테스트의원",
-        title="진료 안내",
-        content_type="FAQ",
-        sequence_no=1,
-        total_count=12,
-        scheduled_date="2026-08-10",
-        public_url="https://clinic.example.test/contents/1",
-        admin_url="https://admin.example.test/hospitals/1/content",
-    )
-
-    # Then
-    body = captured["blocks"][0]["text"]["text"]
-    assert "공개 내용 확인 필요" in captured["text"]
-    assert "Admin에서 공개 내용 확인" in body
-    assert "후행" not in body

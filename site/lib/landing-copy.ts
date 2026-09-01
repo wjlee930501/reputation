@@ -15,7 +15,7 @@
  */
 
 /** 화면에 올리는 모든 수치의 공통 형태. 출처가 타입 차원에서 필수다. */
-export type Figure = {
+type Figure = {
   value: string
   label: string
   /** 어디서 온 숫자인가. 화면에 그대로 노출된다. */
@@ -81,16 +81,6 @@ export const landingHero = {
  * 실시간 잔여 수는 접수 화면(/ai-diagnosis)이 no-store로 보여준다 — 마감 판정은
  * 언제나 거기서 일어난다.
  */
-export const heroScarcity = {
-  /**
-   * 리셋 시각은 **코드와 같아야 한다.** 자리 경계는 `SLOT_RESET_HOUR_KST = 8`이 정한다
-   * (backend/app/api/public/diagnosis.py). 어긋나면 신청자가 안내받은 시각에 와서
-   * 마감 화면을 본다. 양쪽 테스트가 이 값을 각각 고정한다.
-   */
-  // 단위를 CTA와 맞춘다. "20분"은 사람 세는 높임말이지만 바로 옆 "아침 8시" 때문에
-  // 시간으로 읽히기 쉽고, 같은 할당량을 페이지 아래에서는 "20곳"이라 부르고 있었다.
-  note: "매일 선착순 20곳만 접수하며, 매일 아침 8시에 리셋됩니다.",
-}
 
 /**
  * 히어로 아래로 흐르는 환자 질문 띠.
