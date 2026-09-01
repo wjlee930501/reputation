@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Final, assert_never
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, case, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.api.admin.operations_center_query_common import (
     OperationsFilters,
@@ -36,6 +37,8 @@ from app.services.post_publish_review_policy import (
 _OVERDUE_REVIEW_HOURS: Final = 24
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
 _TODAY_ACTION_LABEL: Final = "콘텐츠 확인"
+# The automatic publisher runs at 08:00 KST; before it does, a due slot is not work.
+_AUTO_PUBLISH_HOUR: Final = time(8, 0)
 
 
 def _today_operator_copy(*, review: bool) -> tuple[str, str]:
@@ -49,6 +52,23 @@ def _today_operator_copy(*, review: bool) -> tuple[str, str]:
         f"운영 센터의 “{_TODAY_ACTION_LABEL}”을 눌러 발행 가능한 상태인지 확인하세요. "
         "처리할 버튼이 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요.",
     )
+
+
+def operator_visible_publish_due_predicate(
+    today: date, now: datetime
+) -> ColumnElement[bool]:
+    """Return the due-publish rows that are actually waiting on a person.
+
+    A slot scheduled for today is normal state until the 08:00 KST publisher has had
+    its turn; showing it as MEDIUM operator work before then invents a task nobody
+    can finish. A slot whose scheduled date already passed is real work and stays
+    visible at every hour.
+    """
+
+    due_publish = auto_publish_due_predicate(today)
+    if now.astimezone(_SEOUL).time() < _AUTO_PUBLISH_HOUR:
+        return and_(due_publish, ContentItem.scheduled_date < today)
+    return due_publish
 
 
 async def load_today_queue(
@@ -69,7 +89,7 @@ async def load_today_queue(
     today = now.astimezone(_SEOUL).date()
     overdue_before = now - timedelta(hours=_OVERDUE_REVIEW_HOURS)
     waiting_review = human_post_publish_review_predicate()
-    due_publish = auto_publish_due_predicate(today)
+    due_publish = operator_visible_publish_due_predicate(today, now)
     task_state = case(
         (and_(waiting_review, ContentItem.published_at < overdue_before), "OVERDUE_REVIEW"),
         (waiting_review, "REVIEW_PENDING"),
@@ -208,4 +228,4 @@ async def load_today_queue(
     return total, items
 
 
-__all__ = ("load_today_queue",)
+__all__ = ("load_today_queue", "operator_visible_publish_due_predicate")

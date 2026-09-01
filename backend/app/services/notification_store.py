@@ -40,6 +40,9 @@ class ClaimedNotification:
     max_attempts: int
     lease_owner: str
     version: int
+    # Transport routing key. "SLACK" is the operator channel; "SLACK_DEV" carries
+    # incidents whose registered audience is the developer.
+    channel: str = "SLACK"
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +320,7 @@ async def claim_notification_batch(
                 row.max_attempts,
                 worker_id,
                 row.version,
+                row.channel,
             )
         )
     await db.commit()

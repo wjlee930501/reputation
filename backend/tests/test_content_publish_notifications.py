@@ -4,15 +4,24 @@ import uuid
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from app.models.operations import NotificationOutboxState
 from app.services.content_publish_notifications import (
     build_content_publish_digest_intent,
+    build_generation_blocked_digest_intent,
     build_missing_approved_essence_digest_intent,
     build_post_publish_review_overdue_intent,
     build_publish_notification_intent,
     enqueue_post_publish_review_overdue_notification_sync,
     parse_publish_notification_identity,
     project_publish_notification,
+)
+from app.services.notification_contracts import NotificationPayloadError
+from app.workers.generation_incident_control import (
+    PREPUBLISH_MORNING_BATCH,
+    PUBLISH_MORNING_BATCH,
+    generation_block_digest_due,
 )
 
 
@@ -189,3 +198,92 @@ def test_publish_projection_treats_missing_success_alert_as_intentional_silence(
     assert projection["state"] == "NOT_REQUIRED"
     assert projection["label"] == "자동 관제 중"
     assert projection["problem"] is None
+
+
+def _blocked(hospital_name: str, code: str, title: str) -> dict[str, object]:
+    return {
+        "hospital_id": uuid.uuid4(),
+        "hospital_name": hospital_name,
+        "content_id": uuid.uuid4(),
+        "title": title,
+        "code": code,
+        "cause": f"{code} 상태로 공개를 중단했습니다.",
+    }
+
+
+def test_many_blocked_slots_collapse_into_one_morning_slack_message() -> None:
+    # Given: one morning batch that blocked five slots across two hospitals
+    blocked = [
+        _blocked("가나의원", "FORBIDDEN_EXPRESSION", f"금지 표현 {index}") for index in range(3)
+    ] + [_blocked("다라의원", "MISSING_REFERENCES", f"참고 자료 {index}") for index in range(2)]
+
+    # When
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 8, 19), PUBLISH_MORNING_BATCH, blocked
+    )
+
+    # Then: one intent carries every hospital and item instead of five pages
+    payload = intent.message.payload_json()
+    assert intent.notification_type == "GENERATION_BLOCKED_DIGEST"
+    assert "병원 2곳 · 글 5건" in payload
+    assert "가나의원" in payload
+    assert "다라의원" in payload
+    assert intent.dedupe_key.startswith("GENERATION_BLOCKED_DIGEST:2026-08-19:PUBLISH_0800:")
+    assert len(intent.message.blocks) <= 50
+
+
+def test_blocked_digest_identity_is_stable_for_the_same_blocked_set() -> None:
+    # Given: the same blocked set observed twice in one batch, in different order
+    first = _blocked("가나의원", "FORBIDDEN_EXPRESSION", "금지 표현")
+    second = _blocked("다라의원", "MISSING_REFERENCES", "참고 자료")
+
+    # When
+    forward = build_generation_blocked_digest_intent(
+        date(2026, 8, 19), PUBLISH_MORNING_BATCH, [first, second]
+    )
+    reverse = build_generation_blocked_digest_intent(
+        date(2026, 8, 19), PUBLISH_MORNING_BATCH, [second, first]
+    )
+    changed = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PUBLISH_MORNING_BATCH,
+        [first, second, _blocked("마바의원", "ESSENCE_NOT_ALIGNED", "운영 기준")],
+    )
+
+    # Then: a repeated batch re-sends nothing, and a genuinely new blocker does
+    assert forward.dedupe_key == reverse.dedupe_key
+    assert changed.dedupe_key != forward.dedupe_key
+
+
+def test_blocked_digest_refuses_an_empty_batch() -> None:
+    with pytest.raises(NotificationPayloadError):
+        build_generation_blocked_digest_intent(date(2026, 8, 19), PUBLISH_MORNING_BATCH, [])
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_LEASE_ACTIVE",
+        "STALE_GENERATION_CLAIM",
+        "IMAGE_GENERATION_FAILED",
+        "CONTENT_IMAGE_NOT_READY",
+    ],
+)
+def test_provider_transient_blockers_wait_for_the_seven_forty_five_recovery(code: str) -> None:
+    # Given / When: the same transient code at 07:45 and again at 08:00
+    prepublish = generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH)
+    publish = generation_block_digest_due(code, batch=PUBLISH_MORNING_BATCH)
+
+    # Then: only a blocker that survived the automatic recovery reaches Slack
+    assert prepublish is False
+    assert publish is True
+
+
+@pytest.mark.parametrize(
+    "code", ["FORBIDDEN_EXPRESSION", "ESSENCE_NOT_ALIGNED", "MISSING_REFERENCES"]
+)
+def test_human_only_blockers_are_summarized_at_seven_forty_five(code: str) -> None:
+    # A stored safety gate cannot heal itself, so waiting costs the publication slot.
+    assert generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH) is True

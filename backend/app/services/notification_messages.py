@@ -11,6 +11,7 @@ from urllib.parse import urljoin, urlsplit
 
 from app.models.operations import JSONValue
 from app.services.incident_safety import normalize_incident_code, sanitize_operator_text
+from app.services.incident_types import notification_channel_for_incident_type
 from app.services.notification_contracts import (
     IncidentSlackProjection,
     NotificationIntent,
@@ -40,22 +41,29 @@ def _incident_notification(
     incident: IncidentSlackProjection, admin_base_url: str, *, recovered: bool
 ) -> NotificationIntent:
     event = "INCIDENT_RECOVERED" if recovered else "INCIDENT_OPEN"
-    status = "복구 확인" if recovered else "운영 확인 필요"
+    status = "자동 복구 완료" if recovered else "운영 확인 필요"
     hospital_name = _safe_text(incident.hospital_name, 100)
     owner_label = _operator_owner_label(incident.owner_label)
-    deadline_label = _operator_deadline_label(incident.sla_label)
+    # A recovered incident is closed by the system, so it carries no deadline.
+    deadline_label = "조치 불필요" if recovered else _operator_deadline_label(incident.sla_label)
     severity_label = _operator_severity_label(incident.severity)
     url = _admin_url(admin_base_url, incident.admin_path)
     problem = "자동 복구가 확인되었습니다." if recovered else incident.problem
+    # Recovery is informational: the system already closed the incident, so the
+    # message must not create a "확인 완료" click for a person.
     next_action = (
-        "운영센터에서 복구 결과를 확인하고 ‘확인 완료’ 처리하세요."
+        "추가 조치가 필요하지 않습니다. 시스템이 이 건을 확인 완료로 종료했습니다."
         if recovered
         else incident.next_action
     )
-    action_label = "복구 상태 확인" if recovered else "운영센터에서 조치하기"
+    action_label = "복구 기록 보기" if recovered else "운영센터에서 조치하기"
     support_fallback = (
-        "운영센터의 조치 버튼을 사용할 수 없거나 같은 문제가 반복되면 "
-        "‘개발팀 문의용 정보 복사’를 개발팀에 전달하세요."
+        "같은 문제가 다시 열리면 그때 다시 알립니다."
+        if recovered
+        else (
+            "운영센터의 조치 버튼을 사용할 수 없거나 같은 문제가 반복되면 "
+            "‘개발팀 문의용 정보 복사’를 개발팀에 전달하세요."
+        )
     )
     developer_reference = _developer_reference(incident)
     message = _message(
@@ -106,6 +114,7 @@ def _incident_notification(
         dedupe_key=f"{event}:{incident.incident_id}:e{incident.episode_seq}",
         notification_type=event,
         message=message,
+        channel=notification_channel_for_incident_type(incident.incident_type),
         hospital_id=incident.hospital_id,
         incident_id=incident.incident_id,
         operation_run_id=incident.operation_run_id,

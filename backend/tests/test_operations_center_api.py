@@ -124,6 +124,27 @@ def test_incident_projection_never_emits_blank_cause_fields() -> None:
     assert row.cause_message == "운영 작업이 완료되지 않은 원인을 확인해야 합니다."
 
 
+def test_incident_rows_mark_automatic_retries_as_context_not_operator_work() -> None:
+    """RETRYING rows stay in the response but stop counting as work waiting on a person."""
+    from app.api.admin.operations_center_serializers import serialize_incident_row
+
+    # Given: the same incident while automatic recovery owns it and after it stops
+    retrying = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="일시 지연")
+    retrying.state = "RETRYING"
+    waiting = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="일시 지연")
+
+    # When
+    retrying_row = serialize_incident_row(
+        retrying, None, None, None, None, retrying.last_seen_at
+    )
+    waiting_row = serialize_incident_row(waiting, None, None, None, None, waiting.last_seen_at)
+
+    # Then: the row survives for the FE to collapse, with the flag telling it apart
+    assert retrying_row.status == "RETRYING"
+    assert retrying_row.requires_operator_action is False
+    assert waiting_row.requires_operator_action is True
+
+
 def test_operation_actions_distinguish_browser_navigation_from_bff_mutations() -> None:
     """Mutation paths target the Admin BFF while links remain browser navigation paths."""
 

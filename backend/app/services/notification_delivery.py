@@ -14,7 +14,11 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.operations import IncidentSeverity, NotificationOutbox, NotificationOutboxState
-from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+from app.services.incident_types import (
+    SLACK_DEVELOPER_CHANNEL,
+    IncidentFingerprint,
+    IncidentOpenRequest,
+)
 from app.services.incidents import open_or_touch_incident
 from app.services.notification_store import (
     ClaimedNotification,
@@ -48,12 +52,18 @@ async def dispatch_notification_batch(
     client: httpx.AsyncClient,
     *,
     webhook_url: str,
+    developer_webhook_url: str = "",
     worker_id: str,
     now: datetime | None = None,
     limit: int = 20,
     throttle: Callable[[], Awaitable[None]] | None = None,
 ) -> DispatchResult:
-    """Recover, claim, send once per row, throttle, and CAS-finalize."""
+    """Recover, claim, send once per row, throttle, and CAS-finalize.
+
+    Rows on the developer channel go to ``developer_webhook_url`` when one is
+    configured. With no developer webhook the routing collapses back to the single
+    operator webhook, so an unset setting changes nothing.
+    """
 
     dispatch_at = now or datetime.now(UTC)
     async with sessions() as stale_db:
@@ -70,7 +80,8 @@ async def dispatch_notification_batch(
     pause = throttle or _default_throttle
     counts = {state: 0 for state in ("sent", "retried", "held", "failed", "stale")}
     for index, row in enumerate(claimed):
-        decision = await deliver_once(client, webhook_url, row.payload, dispatch_at)
+        target_url = _webhook_for(row, webhook_url, developer_webhook_url)
+        decision = await deliver_once(client, target_url, row.payload, dispatch_at)
         if decision.state == NotificationOutboxState.RETRYING and row.attempt_count >= row.max_attempts:
             decision = TransportDecision(
                 NotificationOutboxState.FAILED,
@@ -98,6 +109,16 @@ async def dispatch_notification_batch(
         if decision.attempted and index < len(claimed) - 1:
             await pause()
     return DispatchResult(claimed=len(claimed), **counts)
+
+
+def _webhook_for(
+    claimed: ClaimedNotification, operator_webhook_url: str, developer_webhook_url: str
+) -> str:
+    """Pick the webhook for one claimed row without ever dropping a notification."""
+
+    if claimed.channel == SLACK_DEVELOPER_CHANNEL and developer_webhook_url:
+        return developer_webhook_url
+    return operator_webhook_url
 
 
 async def _finalize(

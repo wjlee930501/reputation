@@ -602,6 +602,12 @@ export interface OperationsQueueRow {
   readonly same_type_count: number
   readonly affected_hospital_count: number
   readonly cost_guard_category: string | null
+  /**
+   * False marks a row that is context, not work — automatic recovery owns it
+   * (RETRYING), or the normal schedule has not reached it yet. Render it in a
+   * collapsed/secondary state instead of hiding it.
+   */
+  readonly requires_operator_action?: boolean
   readonly safe_cause: string | null
   readonly history: readonly OperationsHistoryEntry[]
   readonly slack: OperationsSlack | null

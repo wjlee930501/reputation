@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.api.admin import operations_center_report_queries as report_queries
@@ -540,6 +541,39 @@ def test_today_queue_guidance_uses_the_content_check_link_for_both_states() -> N
     assert "병원 채널" in publish_impact
     assert "콘텐츠 확인" in review_action
     assert "콘텐츠 확인" in publish_action
+
+
+def _due_publish_sql(now: datetime) -> str:
+    return str(
+        today_queries.operator_visible_publish_due_predicate(
+            date(2026, 8, 19), now
+        ).compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+
+
+def test_todays_publication_slot_is_not_operator_work_before_the_eight_am_publisher() -> None:
+    # Given: 07:30 KST — the automatic publisher has not run yet
+    before = _due_publish_sql(datetime(2026, 8, 18, 22, 30, tzinfo=UTC))
+
+    # Then: only a slot whose scheduled date already passed is real work
+    assert "content_items.scheduled_date < '2026-08-19'" in before
+
+
+@pytest.mark.parametrize(
+    "moment",
+    [
+        datetime(2026, 8, 18, 23, 0, tzinfo=UTC),  # 08:00 KST
+        datetime(2026, 8, 19, 4, 0, tzinfo=UTC),  # 13:00 KST
+    ],
+)
+def test_publication_slot_becomes_operator_work_once_the_publisher_has_had_its_turn(
+    moment: datetime,
+) -> None:
+    # Given / When: at or after 08:00 KST the slot should have been published
+    after = _due_publish_sql(moment)
+
+    # Then: today's unpublished slot is visible again
+    assert "content_items.scheduled_date < '2026-08-19'" not in after
 
 
 def test_report_queue_guides_the_operator_to_the_real_generation_control() -> None:

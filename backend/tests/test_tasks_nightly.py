@@ -1103,11 +1103,20 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
         def all(self):
             return [item]
 
+        def scalar_one_or_none(self):
+            return None
+
     class DB:
         commits = 0
 
+        def __init__(self):
+            self.added = []
+
         def execute(self, _statement):
             return Result()
+
+        def add(self, value):
+            self.added.append(value)
 
         def commit(self):
             self.commits += 1
@@ -1134,15 +1143,21 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
     )
     monkeypatch.setattr(tasks, "_run_async", lambda value: value)
 
+    db = DB()
     paged = tasks._page_morning_stored_publication_gates(
-        DB(),
+        db,
         now_kst=arrow.get(2026, 8, 19, 7, 45, tzinfo="Asia/Seoul"),
     )
 
     assert paged == 1
     assert len(incident_calls) == 1
     assert incident_calls[0]["code"] == "CONTENT_NOT_GENERATED"
-    assert incident_calls[0]["notify"] is True
+    # The incident still opens per item, but Slack gets exactly one batch digest.
+    assert incident_calls[0]["notify"] is False
+    digests = [row for row in db.added if isinstance(row, NotificationOutbox)]
+    assert len(digests) == 1
+    assert digests[0].notification_type == "GENERATION_BLOCKED_DIGEST"
+    assert "게이트확인의원" in str(digests[0].payload)
 
 
 def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatch):

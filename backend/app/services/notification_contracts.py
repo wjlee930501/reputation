@@ -61,6 +61,8 @@ class IncidentSlackProjection:
     version: int = 1
     problem: str = "자동 작업이 완료되지 않았습니다."
     episode_seq: int = 1
+    # Registry key that decides which Slack channel carries this projection.
+    incident_type: str = ""
 
 
 def validate_message(message: SlackMessage, *, allowed_admin_base_url: str) -> None:

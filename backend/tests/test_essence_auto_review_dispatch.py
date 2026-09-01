@@ -264,9 +264,18 @@ async def test_hospital_recovery_ignores_changed_snapshot_hash(monkeypatch) -> N
         incident.version += 1
         return incident
 
+    async def fake_auto_acknowledged(_db, _incident_id, *, expected_version, **_kwargs):
+        transitions.append(("acknowledged", expected_version))
+        incident.state = IncidentState.ACKNOWLEDGED.value
+        incident.version += 1
+        return incident
+
     monkeypatch.setattr(ops_incident_alerts, "get_async_sessionmaker", lambda: lambda: db)
     monkeypatch.setattr(ops_incident_alerts, "mark_retrying", fake_retrying)
     monkeypatch.setattr(ops_incident_alerts, "mark_recovered", fake_recovered)
+    monkeypatch.setattr(
+        ops_incident_alerts, "auto_acknowledge_incident", fake_auto_acknowledged
+    )
 
     recovered = await ops_incident_alerts.recover_ops_incidents_for_hospital(
         hospital_id=hospital_id,
@@ -276,6 +285,7 @@ async def test_hospital_recovery_ignores_changed_snapshot_hash(monkeypatch) -> N
     )
 
     assert recovered == 1
-    assert transitions == [("retrying", 1), ("recovered", 2)]
-    assert incident.state == IncidentState.RECOVERED.value
+    # The machine closes what the machine recovered — no human "확인 완료" click.
+    assert transitions == [("retrying", 1), ("recovered", 2), ("acknowledged", 3)]
+    assert incident.state == IncidentState.ACKNOWLEDGED.value
     assert db.committed is True

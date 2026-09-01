@@ -132,8 +132,11 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
         with sync_factory() as db:
             recovered = db.get(Incident, incident_ids[0])
             assert recovered is not None
-            assert recovered.state == "RECOVERED"
+            # The machine opened, retried, recovered and closed this without a person.
+            assert recovered.state == "ACKNOWLEDGED"
             assert recovered.recovered_at is not None
+            assert recovered.acknowledged_at is not None
+            assert recovered.acknowledged_by_id is None
             notices = list(
                 db.scalars(
                     select(NotificationOutbox).where(
@@ -141,11 +144,13 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
                     )
                 )
             )
-            assert sorted(notice.notification_type for notice in notices) == [
-                "INCIDENT_OPEN",
-                "INCIDENT_RECOVERED",
+            # A short unowned round trip produces no recovery Slack at all.
+            assert sorted(notice.notification_type for notice in notices) == ["INCIDENT_OPEN"]
+            assert audit_actions[-3:] == [
+                "incident_retrying",
+                "incident_recovered",
+                "incident_auto_acknowledged",
             ]
-            assert audit_actions[-2:] == ["incident_retrying", "incident_recovered"]
         assert task_incident_control.record_task_success(celery_task, run.task_id) is False
 
         with sync_factory() as db:

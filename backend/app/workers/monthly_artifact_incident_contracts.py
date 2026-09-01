@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 
 from app.models.operations import Incident
+from app.services.incident_types import incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection
 
 
@@ -47,4 +48,5 @@ def incident_projection(
         version=incident.version,
         problem=problem,
         episode_seq=incident.episode_seq,
+        incident_type=incident_type_of(incident),
     )

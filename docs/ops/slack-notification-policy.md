@@ -66,6 +66,27 @@ Slack은 DB 상태의 읽기 전용 투영이다. 도메인 트랜잭션은 Slac
 전송 실패로 인계·활성화·리포트 상태를 되돌리지 않는다. 실패는 outbox와 알림 incident에 남아
 Admin에서 확인·재시도할 수 있어야 한다.
 
+## 자동 복구는 사람의 확인을 요구하지 않는다
+
+자동 재시도가 스스로 복구한 인시던트는 시스템이 `ACKNOWLEDGED`로 종료한다
+(`acknowledged_by_id`가 비어 있으면 시스템 종료, 채워져 있으면 사람이 확인한 것이다).
+담당자·처리 기한이 지정된 적 없고 30분 안에 복구된 건은 Slack을 아예 보내지 않는다 — DB
+인시던트와 감사 로그가 기록이다. 사람에게 이미 도달한 건(담당자 배정·기한 지정·30분 이상
+열려 있던 건)만 복구 메시지를 보내며, 그 메시지는 정보 전달용이라 "‘확인 완료’ 처리하세요"
+같은 행동 요구를 넣지 않는다. 07:45·08:00 발행 차단은 콘텐츠 건별이 아니라 배치당 한 건의
+요약으로 보내고, 자동 재시도가 이미 소유한 공급자 일시 오류 계열(`PROVIDER_TIMEOUT`,
+`PROVIDER_UNAVAILABLE`, `GENERATION_LEASE_ACTIVE`, `STALE_GENERATION_CLAIM`, 이미지 계열)은
+07:45 복구를 넘겨 08:00까지 남은 경우에만 요약에 넣는다. 운영센터 큐에서도 08:00 이전의
+당일 발행 예정 슬롯과 `RETRYING` 인시던트는 사람의 일이 아니므로
+`requires_operator_action=false`로 접어서 표시한다.
+
+AE가 고칠 수 없는 순수 인프라 인시던트(`BACKGROUND_TASK_FAILED`, `BROKER_UNAVAILABLE`,
+`UNSAFE_STORED_DISPATCH`, `NOTIFICATION_DELIVERY_FAILED/UNKNOWN`,
+`CACHE_REVALIDATION_FAILED`, `MONTHLY_DOCTOR_PDF_BLOCKED`)는 인시던트 타입 레지스트리에서
+`audience = "developer"`로 표시하고 `SLACK_WEBHOOK_URL_DEV`가 설정된 경우 개발 채널로
+보낸다. 레지스트리에 없는 타입의 기본값은 `operator`이며, `SLACK_WEBHOOK_URL_DEV`가 비어
+있으면 기존과 동일하게 운영 채널 한 곳으로만 나간다.
+
 ## 중복 억제와 재알림
 
 - 생성 누락은 날짜가 아니라 **미해결 콘텐츠 ID 집합**이 바뀔 때만 다시 알린다.
@@ -82,6 +103,7 @@ Admin에서 확인·재시도할 수 있어야 한다.
 - 생성·측정 대상이 0건인 정상 실행
 - 이미 처리된 멱등 작업
 - 자동 재시도 중이며 아직 최종 실패가 아닌 외부 API 오류
+- 담당자·기한이 없고 30분 안에 자동 복구된 인시던트의 복구 사실
 
 0건 파기라도 작업 로그와 모니터링 지표에는 남는다. Slack에서 없앤 것이지 실행 기록을
 없앤 것이 아니다.

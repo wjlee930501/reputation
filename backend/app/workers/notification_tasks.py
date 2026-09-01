@@ -35,6 +35,7 @@ async def _dispatch_once(worker_id: str) -> tuple[DispatchResult, int, int]:
             sessions,
             client,
             webhook_url=settings.SLACK_WEBHOOK_URL,
+            developer_webhook_url=settings.SLACK_WEBHOOK_URL_DEV,
             worker_id=worker_id,
         )
     # Slack SENT is committed before domain hooks by design. Reapply any publish

@@ -399,6 +399,10 @@ class Settings(BaseSettings):
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""
+    # 개발팀 전용 채널. AE가 고칠 수 없는 순수 인프라 인시던트(브로커·백그라운드 작업·
+    # 알림 전송·캐시 갱신·원장 PDF 렌더)는 이 웹훅으로 보낸다. 비워 두면 기존과 동일하게
+    # SLACK_WEBHOOK_URL 한 곳으로만 나간다 — 설정 전 동작 변화가 없다.
+    SLACK_WEBHOOK_URL_DEV: str = ""
     # webhook SSRF 방어 — 허용 호스트(쉼표 구분). 기본은 Slack 공식 호스트만(V-013).
     SLACK_WEBHOOK_ALLOWED_HOSTS: str = "hooks.slack.com"
 
