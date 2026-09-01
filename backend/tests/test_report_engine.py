@@ -285,6 +285,47 @@ def test_monthly_report_renders_data_driven_strategy_instead_of_generic_recommen
     assert "리뷰 수집 캠페인 실행" not in html
 
 
+def test_monthly_report_renders_the_articles_the_ai_actually_cited():
+    citations = {
+        "measured_cell_count": 30,
+        "cited_cell_count": 4,
+        "cited_cell_pct": 13.3,
+        "content_cited_cell_count": 3,
+        "hub_cited_cell_count": 1,
+        "cited_content_count": 1,
+        "cited_items": [{
+            "content_id": "c1",
+            "title": "치질 수술 FAQ",
+            "content_type": "FAQ",
+            "cited_cell_count": 3,
+            "cited_url_count": 1,
+            "queries": [{"query_text": "강남 치질 병원 추천해줘", "platform_label": "ChatGPT"}],
+        }],
+        "hub_pages": [{
+            "page_key": "home",
+            "label": "병원 홈",
+            "cited_cell_count": 1,
+            "queries": [{"query_text": "강남 항문외과 어디가 좋아?", "platform_label": "Gemini"}],
+        }],
+    }
+
+    html = _render(report_type="MONTHLY", strategy=None, attribution=None, citations=citations)
+
+    assert "AI가 인용한 우리 글" in html
+    assert "치질 수술 FAQ" in html
+    assert "강남 치질 병원 추천해줘 · ChatGPT" in html
+    assert "인용된 병원 정보 페이지" in html
+    assert "병원 홈" in html
+
+
+def test_legacy_reports_without_citations_still_render():
+    """`citations` 키가 없던 과거 리포트를 다시 렌더해도 섹션만 빠지고 깨지지 않는다."""
+    html = _render(report_type="MONTHLY", strategy=None, attribution=None)
+
+    assert "AI가 인용한 우리 글" not in html
+    assert "월간 AI 노출 콘텐츠 운영 리포트" in html
+
+
 def test_strategy_summary_uses_canonical_confirmation_not_raw_response_presence():
     target = SimpleNamespace(
         id="target-1",

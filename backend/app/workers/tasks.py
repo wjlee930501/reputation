@@ -66,6 +66,7 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     review_generated_content,
 )
+from app.services.content_citations import platform_public_base_url
 from app.services.content_engine import EXISTING_TITLE_PROMPT_LIMIT, generate_content
 from app.services.content_publication import (
     apply_publication_assessment,
@@ -147,7 +148,9 @@ from app.services.report_artifact_validation import (
     parse_doctor_artifact_metadata,
 )
 from app.services.report_attribution import (
+    CitationAttributionInput,
     ContentAttributionInput,
+    build_citation_attribution,
     build_content_attribution_summary,
 )
 from app.services.report_engine import (
@@ -1832,10 +1835,9 @@ def _public_site_url(aeo_domain: str | None, slug: str | None) -> str:
     """
     if aeo_domain:
         return f"https://{aeo_domain}/"
-    host = (urlparse(settings.SITE_BASE_URL).hostname or "").lower()
-    if host and slug:
-        return f"https://{slug}.{host}/"
-    return settings.SITE_BASE_URL
+    # 인용 귀속(content_citations)이 매칭에 쓰는 것과 같은 호스트 규칙을 재사용한다 —
+    # 두 곳이 어긋나면 실제로 서빙되는 주소가 owned로 집계되지 않는다.
+    return platform_public_base_url(slug) or settings.SITE_BASE_URL
 
 
 def _site_build_prerequisites_met(hospital: Hospital) -> bool:
@@ -5133,6 +5135,32 @@ def _build_monthly_report_for_hospital(
         )
     )
 
+    # 인용 귀속 — AI 답변이 인용한 URL을 우리 글·허브 페이지에 매칭한다.
+    # 매칭 대상은 이 달 발행분이 아니라 **발행된 전체 글**이다. AI는 지난달 글도
+    # 인용하고, 그때 "우리 글이 읽혔다"는 사실은 이 달의 결과이기 때문이다.
+    citation_content_rows = db.execute(
+        select(
+            ContentItem.id,
+            ContentItem.title,
+            ContentItem.content_type,
+        ).where(
+            ContentItem.hospital_id == h.id,
+            ContentItem.status == ContentStatus.PUBLISHED,
+        )
+    ).all()
+    citation_records_by_id = {
+        record.id: record
+        for record in (current_loaded.selected_records if current_loaded is not None else ())
+    }
+    citations = build_citation_attribution(
+        CitationAttributionInput(
+            hospital=h,
+            cells=current_loaded.cells if current_loaded is not None else (),
+            records_by_id=citation_records_by_id,
+            content_items=citation_content_rows,
+        )
+    )
+
     # Persist the measurement-to-action layer that the Admin and PDF already know how to
     # render. Previously this analysis existed only as a helper and never entered the
     # production monthly-report path, so source evidence and next actions disappeared.
@@ -5203,6 +5231,7 @@ def _build_monthly_report_for_hospital(
         strategy=strategy,
         sov_coverage=monthly_sov_payload,
         content_operations=content_operations.payload,
+        citations=citations,
         report_version=version_plan.version,
     )
     essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
@@ -5222,6 +5251,7 @@ def _build_monthly_report_for_hospital(
             "operations": content_operations.payload,
             "attribution": attribution,
             "strategy": strategy,
+            "citations": citations,
         },
         essence_summary=essence_summary,
     )
@@ -5255,6 +5285,7 @@ def _build_monthly_report_for_hospital(
             published_count=len(published_contents),
             plan_quota=monthly_quota_for_plan(h.plan),
             attribution=attribution,
+            citations=citations,
             records=sov_records,
             platforms=report_platforms,
             sov_coverage=monthly_sov_payload,

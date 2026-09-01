@@ -238,6 +238,44 @@
 {% endif %}
 {% endif %}
 
+{% if report_type == 'MONTHLY' and citations %}
+<h2>📄 AI가 인용한 우리 글</h2>
+<p class="note">
+  이번 기간에 측정한 답변 {{ citations.measured_cell_count }}건 중
+  {{ citations.cited_cell_count }}건이 병원 공개 표면(허브 페이지 또는 발행한 글)을 근거로 인용했습니다.
+  {% if citations.cited_cell_pct is not none %}(인용된 답변 비율 {{ "%.1f"|format(citations.cited_cell_pct) }}%){% endif %}
+  인용은 AI가 그 페이지를 실제로 읽었다는 관찰 사실이며, 언급의 원인으로 단정하지 않습니다.
+</p>
+{% if citations.cited_items %}
+<table>
+  <tr><th>인용된 글</th><th>유형</th><th>인용된 답변 수</th><th>어떤 질문에서 인용됐는지</th></tr>
+  {% for item in citations.cited_items %}
+  <tr>
+    <td>{{ item.title or '(제목 없음)' }}</td>
+    <td>{{ item.content_type or '—' }}</td>
+    <td>{{ item.cited_cell_count }}</td>
+    <td>{% if item.queries %}{% for q in item.queries %}{{ q.query_text }} · {{ q.platform_label }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="note">이번 기간 측정에서 개별 발행 글이 인용된 기록은 없습니다.</p>
+{% endif %}
+{% if citations.hub_pages %}
+<h3>인용된 병원 정보 페이지</h3>
+<table>
+  <tr><th>페이지</th><th>인용된 답변 수</th><th>어떤 질문에서 인용됐는지</th></tr>
+  {% for page in citations.hub_pages %}
+  <tr>
+    <td>{{ page.label }}</td>
+    <td>{{ page.cited_cell_count }}</td>
+    <td>{% if page.queries %}{% for q in page.queries %}{{ q.query_text }} · {{ q.platform_label }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endif %}
+
 {% if report_type == 'MONTHLY' and strategy %}
 <h2>🎯 환자 질문 목표별 AI 노출 결과</h2>
 {% if strategy.query_targets %}

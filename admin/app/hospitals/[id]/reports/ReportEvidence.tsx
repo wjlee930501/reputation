@@ -30,6 +30,12 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
           <p className="text-sm font-semibold text-[var(--color-revisit-text-helper)]">AI 답변 내 병원 언급률 {report.sovPct === null ? '확인 불가' : `${report.sovPct.toFixed(1)}%`}</p>
         </div>
         {review && <EvidenceCopy copy={review.measurement} />}
+        {report.citations && (
+          <p className="mt-3 text-sm leading-6 text-[var(--color-revisit-text-helper)]">
+            AI가 인용한 우리 글: 측정한 답변 {report.citations.measuredCells}건 중 {report.citations.citedCells}건이 병원 공개 표면을 인용했고,
+            인용된 발행 글은 {report.citations.citedContentCount}편입니다.
+          </p>
+        )}
         {review && (
           <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Count label="계획" value={review.measurement.plannedCount} />
