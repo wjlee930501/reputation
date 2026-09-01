@@ -43,6 +43,7 @@ async def open_ops_incident(
     actor: str = "system",
     sla_label: str = "확인 필요",
     notify: bool = True,
+    severity: IncidentSeverity = IncidentSeverity.HIGH,
 ) -> uuid.UUID:
     """Open/touch one incident and enqueue only on first-open or reopen."""
 
@@ -58,7 +59,7 @@ async def open_ops_incident(
                 object_id=object_id,
                 fingerprint=fingerprint,
                 incident_type=incident_type,
-                severity=IncidentSeverity.HIGH,
+                severity=severity,
                 customer_impact=customer_impact,
                 source_type=source_type,
                 next_action=next_action,

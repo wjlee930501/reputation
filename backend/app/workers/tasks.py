@@ -48,7 +48,7 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReportArtifact
-from app.models.operations import OperationRun, OperationRunState
+from app.models.operations import IncidentSeverity, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import (
     AIQueryTarget,
@@ -1224,12 +1224,14 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
     hospital_uuid = uuid.UUID(hospital_id)
     hospital_name = "병원"
     hospital_slug: str | None = None
+    hospital_status: HospitalStatus | None = None
     try:
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, hospital_uuid)
             if hospital is not None:
                 hospital_name = hospital.name
                 hospital_slug = hospital.slug
+                hospital_status = getattr(hospital, "status", None)
             result = refresh_essence_snapshot(
                 db,
                 hospital_uuid,
@@ -1321,6 +1323,37 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 admin_path=f"/hospitals/{hospital_id}/essence",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
+            )
+        )
+    elif result.status == EssenceRefreshStatus.ESCALATED and hospital_status == HospitalStatus.ACTIVE:
+        # 승인된 운영 기준이 이미 있어 지금까지 notify=False 복구로만 처리되던 경로.
+        # ACTIVE 병원은 콘텐츠가 계속 자동 생성되므로, 새 자료가 반영되지 않고 있다는
+        # 사실을 무음으로 두지 않는다 — 스냅샷 해시 단위로 중복 없이 1건만 연다.
+        snapshot = result.snapshot_hash or "unknown"
+        _run_async(
+            open_ops_incident(
+                pipeline="essence_auto_review",
+                object_type="essence_snapshot",
+                object_id=f"{hospital_id}:{snapshot}",
+                incident_type="ESSENCE_AUTO_REVIEW_ESCALATED",
+                safe_error_code="ESSENCE_AUTO_REVIEW_ESCALATED",
+                problem=(
+                    result.findings[0]
+                    if result.findings
+                    else "AI 근거 검수가 새 자료 반영을 보류했습니다."
+                ),
+                customer_impact=(
+                    "콘텐츠 생성은 마지막으로 승인된 운영 기준으로 계속되며, "
+                    "새로 추가된 자료는 이 예외가 검토되기 전까지 반영되지 않습니다."
+                ),
+                next_action="운영센터 Essence 페이지에서 보류된 예외를 확인해 주세요.",
+                source_type="ESSENCE_AUTO_REVIEW",
+                hospital_name=hospital_name,
+                hospital_id=hospital_uuid,
+                admin_path=f"/hospitals/{hospital_id}/essence",
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                actor=AUTO_ESSENCE_ACTOR,
+                severity=IncidentSeverity.MEDIUM,
             )
         )
     elif result.status in {
@@ -4302,12 +4335,6 @@ def run_weekly_monitoring():
     with SyncSessionLocal() as db:
         registration = register_convertible_tracking_sets(db, n=15)
         _log_blocked_convertible_tracking_sets(registration)
-        if today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY:
-            logger.info(
-                "Weekly visibility measurement dispatch skipped during the month-end window: %s",
-                today_kst,
-            )
-            return
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         monthly_ids = {
@@ -4316,6 +4343,14 @@ def run_weekly_monitoring():
                 db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
             )
         }
+        if today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY and monthly_ids:
+            # 월말 창에서는 이 병원들이 run_monthly_sov_measurement로 측정되므로
+            # 주간 배치에서만 제외한다 — 코호트 밖 병원은 계속 주간 측정한다.
+            logger.info(
+                "Weekly visibility measurement skipped for monthly cohort during month-end window: %s hospitals on %s",
+                len(monthly_ids),
+                today_kst,
+            )
         hospitals = [
             hospital for hospital in result.scalars().all() if hospital.id not in monthly_ids
         ]

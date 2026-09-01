@@ -348,6 +348,116 @@ def test_weekly_monitoring_commits_operation_run_before_sov_dispatch(monkeypatch
     assert db.commits >= 2
 
 
+class _WeeklyWindowDB:
+    """월말 창(24일+) 주간 배치용 fake — 코호트/비코호트 병원을 함께 담는다."""
+
+    def __init__(self, hospitals):
+        self.hospitals = hospitals
+        self.added: list[object] = []
+        self.commits = 0
+
+    def execute(self, stmt):
+        if isinstance(stmt, Update):
+            for run in self.added:
+                if isinstance(run, OperationRun):
+                    run.state = OperationRunState.QUEUED
+                    run.queued_at = arrow.get(2026, 8, 28).datetime
+                    run.version += 1
+                    return _Result(scalar=run.id)
+            return _Result(scalar=None)
+        entity = _statement_entity(stmt)
+        if entity is SovRecord:
+            return _Result(items=[])
+        if entity is Hospital:
+            return _Result(items=self.hospitals)
+        if entity is OperationRun:
+            return _Result(items=[])
+        raise AssertionError(f"unexpected entity: {entity}")
+
+    def add(self, value):
+        self.added.append(value)
+
+    def commit(self):
+        self.commits += 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def test_weekly_monitoring_skips_only_monthly_cohort_during_month_end_window(monkeypatch):
+    """day >= SOV_MONTHLY_WINDOW_START_DAY: 월간 코호트 병원만 주간 배치에서 빠지고,
+    코호트 밖 병원은 계속 매주 측정된다 (2026-09-01 무음실패 리뷰 §2.4-1)."""
+
+    cohort_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
+    other_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
+    dispatched: list[str] = []
+
+    db = _WeeklyWindowDB([cohort_hospital, other_hospital])
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks, "register_convertible_tracking_sets", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [cohort_hospital]
+    )
+    monkeypatch.setattr(
+        # 월말 창(28일)로 고정
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(2026, 8, 28, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(
+        tasks.run_sov_for_hospital,
+        "apply_async",
+        lambda **kwargs: dispatched.append(kwargs["args"][0]),
+    )
+    monkeypatch.setattr(tasks.adjust_query_priorities, "apply_async", lambda **_kwargs: None)
+
+    tasks.run_weekly_monitoring.run()
+
+    assert dispatched == [str(other_hospital.id)]
+    assert str(cohort_hospital.id) not in dispatched
+
+
+def test_weekly_monitoring_before_window_measures_non_cohort_hospitals(monkeypatch):
+    """day < SOV_MONTHLY_WINDOW_START_DAY: 이전과 동일하게 코호트 밖 병원은 매주 측정된다."""
+
+    cohort_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
+    other_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
+    dispatched: list[str] = []
+
+    db = _WeeklyWindowDB([cohort_hospital, other_hospital])
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks, "register_convertible_tracking_sets", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [cohort_hospital]
+    )
+    monkeypatch.setattr(
+        # 월말 창 이전(10일)로 고정 — 코호트 제외 동작은 이전과 동일해야 한다
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: arrow.get(2026, 8, 10, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(
+        tasks.run_sov_for_hospital,
+        "apply_async",
+        lambda **kwargs: dispatched.append(kwargs["args"][0]),
+    )
+    monkeypatch.setattr(tasks.adjust_query_priorities, "apply_async", lambda **_kwargs: None)
+
+    tasks.run_weekly_monitoring.run()
+
+    assert dispatched == [str(other_hospital.id)]
+    assert str(cohort_hospital.id) not in dispatched
+
+
 def test_weekly_monitoring_isolates_broker_failure_and_keeps_run_requested(monkeypatch):
     first_id = uuid.uuid4()
     second_id = uuid.uuid4()
