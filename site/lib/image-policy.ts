@@ -33,7 +33,3 @@ export function isOffAllowlistExternalUrl(src: string | null | undefined): boole
     return false
   }
 }
-
-export function shouldBypassNextImageOptimization(src: string | null | undefined): boolean {
-  return isOffAllowlistExternalUrl(src)
-}

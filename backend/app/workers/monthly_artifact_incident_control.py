@@ -38,15 +38,6 @@ async def record_monthly_artifact_failure(
         return incident.id
 
 
-async def ensure_monthly_artifact_failure(
-    context: MonthlyArtifactIncidentContext,
-    error: DoctorPdfValidationError,
-) -> tuple[uuid.UUID, bool]:
-    """Repair a crash gap once without adding another OPEN notification."""
-
-    return (await ensure_monthly_artifact_failures((context,), error))[0]
-
-
 async def ensure_monthly_artifact_failures(
     contexts: Sequence[MonthlyArtifactIncidentContext],
     error: DoctorPdfValidationError,

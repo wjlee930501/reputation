@@ -1,21 +1,10 @@
 from datetime import datetime
-from typing import Literal
 from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from app.models.handoff import HandoffSource, HandoffState
 from app.models.hospital import Plan
-
-
-class HandoffPendingCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    sales_owner_id: UUID
-    ae_owner_id: UUID
-    acceptance_source: Literal[
-        HandoffSource.DIRECT_CREATE, HandoffSource.LEAD_CONVERSION
-    ] = HandoffSource.DIRECT_CREATE
 
 
 class HandoffContract(BaseModel):

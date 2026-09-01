@@ -8,19 +8,13 @@ from datetime import datetime
 from enum import StrEnum
 from typing import assert_never
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.models.monthly_control import ReportArtifactState
-from app.models.operations import NotificationOutbox
 from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_milestone_messages import (
     MilestoneKind,
     MilestoneProjection,
-    build_milestone_action_notification,
-    build_milestone_recovery_notification,
 )
 from app.services.notification_milestone_rendering import operator_deadline
-from app.services.notification_outbox import enqueue_notification
 
 
 class MonthlyEventType(StrEnum):
@@ -258,18 +252,3 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
             )
         case unreachable:
             assert_never(unreachable)
-
-
-async def enqueue_monthly_event(
-    db: AsyncSession, event: MonthlyEvent, admin_base_url: str
-) -> NotificationOutbox:
-    """Enqueue action/recovery without committing or changing report truth."""
-
-    projection = project_monthly_event(event)
-    if projection.requires_action:
-        intent = build_milestone_action_notification(projection, admin_base_url)
-    elif projection.is_recovery:
-        intent = build_milestone_recovery_notification(projection, admin_base_url)
-    else:
-        raise NotificationPayloadError("MILESTONE_SUMMARY_REQUIRED")
-    return await enqueue_notification(db, intent, now=event.occurred_at)

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.models import HandoffSource, HandoffState, HospitalHandoff
-from app.schemas.handoff import HandoffAccept, HandoffContract, HandoffPendingCreate
+from app.schemas.handoff import HandoffAccept, HandoffContract
 
 
 def _sqlite_engine() -> sa.Engine:
@@ -87,21 +87,6 @@ def test_contract_schema_rejects_missing_owner_contract_and_sla_facts() -> None:
         ("plan",),
         ("sla_due_at",),
     }
-
-
-def test_pending_schema_is_immutable_boundary_data() -> None:
-    # Given: a parsed pending handoff request
-    request = HandoffPendingCreate(
-        sales_owner_id=uuid.uuid4(),
-        ae_owner_id=uuid.uuid4(),
-    )
-
-    # When: downstream code tries to mutate it
-    with pytest.raises(ValidationError):
-        request.sales_owner_id = uuid.uuid4()
-
-    # Then: the original owner remains intact
-    assert request.sales_owner_id is not None
 
 
 def test_contract_schema_rejects_naive_effective_and_sla_datetimes() -> None:

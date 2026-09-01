@@ -11,7 +11,6 @@ from app.models.essence import HospitalContentPhilosophy
 from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     REFERENCES_REQUIRED_TYPES,
-    forbidden_check_text,
 )
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
@@ -85,12 +84,6 @@ def publication_field_values(item: ContentItem) -> dict:
         if isinstance(ref, dict)
     ).strip()
     return values
-
-
-def publication_text(item: ContentItem) -> str:
-    return forbidden_check_text(
-        {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
-    )
 
 
 def assess_content_publication(

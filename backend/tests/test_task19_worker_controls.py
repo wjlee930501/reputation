@@ -94,11 +94,6 @@ def test_domain_monitor_uses_bounded_no_redirect_probe_and_durable_control(monke
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _Session([hospital]))
     monkeypatch.setattr(tasks.httpx, "Client", Client)
     monkeypatch.setattr(tasks, "record_domain_health_check", record)
-    monkeypatch.setattr(
-        tasks,
-        "_get_redis",
-        lambda: (_ for _ in ()).throw(AssertionError("Redis must not hold domain truth")),
-    )
 
     result = tasks.monitor_live_custom_domains.run()
 

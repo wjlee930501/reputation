@@ -191,10 +191,6 @@ def compute_sources_snapshot_hash(sources: Iterable[HospitalSourceAsset]) -> str
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
-def get_source_text(asset: HospitalSourceAsset) -> str:
-    return "\n".join(part for part in [asset.raw_text or "", asset.operator_note or ""] if part)
-
-
 def find_excerpt_bounds(asset: HospitalSourceAsset, excerpt: str) -> tuple[int | None, int | None]:
     raw_text = asset.raw_text or ""
     operator_note = asset.operator_note or ""

@@ -408,15 +408,6 @@ async def erase_lead_pii(lead_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     }
 
 
-def _needs_attention_clause():
-    """AE가 손을 써야 하는 진단의 정의 — 세 축 중 하나라도 종결 실패인 경우."""
-    return or_(
-        LeadDiagnosis.execution_status == ExecutionStatus.FAILED.value,
-        LeadDiagnosis.report_status == ReportStatus.BLOCKED.value,
-        LeadDiagnosis.delivery_status == DeliveryStatus.FAILED.value,
-    )
-
-
 def lead_uncontacted_clause():
     """No state-machine change: recognize existing terminal/contacted values only."""
     return and_(

@@ -117,14 +117,6 @@ def missing_profile_requirement_keys(hospital: Hospital) -> list[str]:
     ]
 
 
-def missing_profile_requirement_labels(hospital: Hospital) -> list[str]:
-    return [
-        requirement.label
-        for requirement in profile_requirements(hospital)
-        if not requirement.passed
-    ]
-
-
 def activation_requirements(
     hospital: Hospital, *, handoff_accepted: bool | None = None
 ) -> list[ActivationRequirement]:
