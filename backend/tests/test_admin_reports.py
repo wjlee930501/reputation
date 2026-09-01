@@ -1049,3 +1049,159 @@ def test_only_monthly_reports_are_tracked_by_the_delivery_receipt_pipeline():
 
     assert monthly["delivery_tracked"] is True
     assert v0["delivery_tracked"] is False
+
+
+class _ListFakeResult:
+    def __init__(self, values):
+        self.values = values
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.values
+
+
+class _ListDB:
+    """Fakes exactly the query shape `list_reports` should now issue: one page query
+    plus one IN(...) query per related table (skipped when its id set is empty)."""
+
+    def __init__(self, *, hospital, reports, manifests=(), artifacts=(), events=()):
+        self.hospital = hospital
+        self.reports = list(reports)
+        self.manifests = list(manifests)
+        self.artifacts = list(artifacts)
+        self.events = list(events)
+        self.calls: list[str] = []
+
+    async def get(self, model, object_id):
+        name = getattr(model, "__name__", "")
+        if name == "Hospital":
+            return self.hospital if self.hospital and self.hospital.id == object_id else None
+        return None
+
+    async def execute(self, statement):
+        entity = statement.column_descriptions[0].get("entity")
+        name = getattr(entity, "__name__", "")
+        self.calls.append(name)
+        if name == "MonthlyReport":
+            return _ListFakeResult(self.reports)
+        if name == "MonthlyMeasurementManifest":
+            return _ListFakeResult(self.manifests)
+        if name == "MonthlyReportArtifact":
+            return _ListFakeResult(self.artifacts)
+        if name == "MonthlyDeliveryEvent":
+            return _ListFakeResult(self.events)
+        raise AssertionError(f"unexpected entity {name}")
+
+
+async def test_list_reports_uses_a_fixed_query_count_for_v0_only_hospitals(monkeypatch):
+    """N reports must not cost N manifest/artifact/event/readiness round-trips.
+
+    V0 reports never need a manifest or essence readiness (`_delivery_gate` short
+    circuits on `report.pdf_path` alone), so those two IN(...) queries — and
+    get_essence_readiness — must not run at all here; only the page query plus the
+    artifact/event batches.
+    """
+    hospital = SimpleNamespace(id=uuid.uuid4())
+    reports = [
+        _report(
+            id=uuid.uuid4(),
+            hospital_id=hospital.id,
+            report_type="V0",
+            manifest_id=None,
+            doctor_pdf_path=None,
+        )
+        for _ in range(5)
+    ]
+
+    async def _fail_if_called(db, hospital_id):
+        raise AssertionError("get_essence_readiness must not run for a V0-only page")
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fail_if_called)
+
+    db = _ListDB(hospital=hospital, reports=reports)
+
+    result = await reports_api.list_reports(hospital.id, limit=24, offset=0, db=db)
+
+    assert len(result) == 5
+    assert db.calls == ["MonthlyReport", "MonthlyReportArtifact", "MonthlyDeliveryEvent"]
+    assert all(item["report_type"] == "V0" for item in result)
+
+
+async def test_list_reports_reads_essence_readiness_once_for_the_whole_page(monkeypatch):
+    """A page mixing several ready MONTHLY reports must call get_essence_readiness
+    exactly once — not once per report — since they all share one hospital_id."""
+    hospital = SimpleNamespace(id=uuid.uuid4())
+    reports = [_report(id=uuid.uuid4(), hospital_id=hospital.id) for _ in range(3)]
+    manifests = [_bind_manifest(r, _manifest()) for r in reports]
+    artifacts = [_doctor_artifact(report_id=r.id, path=r.doctor_pdf_path) for r in reports]
+
+    calls = []
+
+    async def _counting_readiness(db, hospital_id):
+        calls.append(hospital_id)
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(
+            approved=philosophy,
+            current=philosophy,
+            processed_source_count=4,
+            required_source_count=4,
+            current_snapshot_hash="snapshot",
+        )
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _counting_readiness)
+
+    db = _ListDB(hospital=hospital, reports=reports, manifests=manifests, artifacts=artifacts)
+
+    result = await reports_api.list_reports(hospital.id, limit=24, offset=0, db=db)
+
+    assert len(result) == 3
+    assert calls == [hospital.id]  # 리포트 3건인데 딱 1번
+    assert db.calls == [
+        "MonthlyReport",
+        "MonthlyMeasurementManifest",
+        "MonthlyReportArtifact",
+        "MonthlyDeliveryEvent",
+    ]
+    assert all(item["delivery_ready"] is True for item in result)
+
+
+async def test_list_reports_respects_limit_and_offset_params():
+    hospital = SimpleNamespace(id=uuid.uuid4())
+    reports = [
+        _report(id=uuid.uuid4(), hospital_id=hospital.id, report_type="V0", manifest_id=None)
+        for _ in range(2)
+    ]
+    db = _ListDB(hospital=hospital, reports=reports)
+
+    await reports_api.list_reports(hospital.id, limit=10, offset=5, db=db)
+
+    # 페이지 쿼리에 offset/limit이 실제로 실린다 — 컴파일된 SQL 텍스트로 확인한다.
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.dialects import postgresql
+
+    from app.models.report import MonthlyReport
+
+    page_stmt = (
+        sa_select(MonthlyReport)
+        .where(MonthlyReport.hospital_id == hospital.id)
+        .order_by(MonthlyReport.created_at.desc())
+        .offset(5)
+        .limit(10)
+    )
+    sql = str(
+        page_stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    assert "OFFSET 5" in sql
+    assert "LIMIT 10" in sql
+
+
+async def test_list_reports_returns_empty_without_any_batch_query_when_no_reports():
+    hospital = SimpleNamespace(id=uuid.uuid4())
+    db = _ListDB(hospital=hospital, reports=[])
+
+    result = await reports_api.list_reports(hospital.id, limit=24, offset=0, db=db)
+
+    assert result == []
+    assert db.calls == ["MonthlyReport"]  # 빈 페이지면 배치 조회 자체를 스킵한다

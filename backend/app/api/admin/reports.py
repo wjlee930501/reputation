@@ -7,6 +7,7 @@ POST /admin/hospitals/{hospital_id}/reports/{report_id}/mark-sent — 원장 전
 """
 
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -297,17 +298,68 @@ def _current_essence_delivery_blockers(
     "/{hospital_id}/reports",
     response_model=list[ReportListResponse],
 )
-async def list_reports(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """리포트 목록 (최신순)"""
+async def list_reports(
+    hospital_id: uuid.UUID,
+    limit: int = Query(default=24, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """리포트 목록 (최신순)
+
+    이전에는 리포트 하나당 manifest/artifact/delivery events 조회 + essence readiness
+    조회(소스 자산 전체 로드 포함)를 각각 새로 날려 N+1이었다. 이 병원 하나로 스코프된
+    목록이므로 네 종류 모두 IN(...) 배치 조회 1회씩(+ readiness 1회)으로 묶는다 —
+    리포트가 몇 건이든 쿼리 수는 고정이다.
+    """
     await _get_hospital_or_404(db, hospital_id)
 
     result = await db.execute(
         select(MonthlyReport)
         .where(MonthlyReport.hospital_id == hospital_id)
         .order_by(MonthlyReport.created_at.desc())
+        .offset(offset)
+        .limit(limit)
     )
     reports = result.scalars().all()
-    return [await _serialize_report(db, r) for r in reports]
+    if not reports:
+        return []
+
+    report_ids = [r.id for r in reports]
+    manifest_ids = {r.manifest_id for r in reports if r.manifest_id is not None}
+
+    manifests_by_id = await _get_manifests_by_id(db, manifest_ids)
+    artifacts_by_report = await _get_doctor_artifacts_by_report_id(db, report_ids)
+    events_by_report = await _get_delivery_events_by_report_id(db, report_ids)
+
+    # readiness는 gate.ready인 MONTHLY 리포트가 하나라도 있을 때만 읽는다 — V0뿐인
+    # 병원(_delivery_gate가 V0에서 절대 이 조건을 요구하지 않는다)이라면 원래도
+    # get_essence_readiness가 한 번도 불리지 않았다; 배치로 바뀌었다고 그 병원에
+    # 없던 쿼리를 새로 만들지 않는다. 모든 리포트가 같은 hospital_id이므로
+    # (라우트 스코프) 필요할 때도 딱 한 번만 읽는다.
+    needs_readiness = any(
+        r.report_type == "MONTHLY"
+        and _delivery_gate(
+            r,
+            manifests_by_id.get(r.manifest_id) if r.manifest_id else None,
+            artifacts_by_report.get(r.id),
+        ).ready
+        for r in reports
+    )
+    readiness = await get_essence_readiness(db, hospital_id) if needs_readiness else None
+
+    return [
+        await _serialize_report(
+            db,
+            r,
+            preloaded=ReportPreload(
+                manifest=manifests_by_id.get(r.manifest_id) if r.manifest_id else None,
+                artifact=artifacts_by_report.get(r.id),
+                events=events_by_report.get(r.id, []),
+                readiness=readiness,
+            ),
+        )
+        for r in reports
+    ]
 
 
 @router.get("/{hospital_id}/reports/{report_id}", response_model=ReportResponse)
@@ -604,6 +656,58 @@ async def _get_delivery_events(
     return list(result.scalars().all())
 
 
+@dataclass(frozen=True, slots=True)
+class ReportPreload:
+    """Batch-fetched inputs for one report's `_serialize_report`, so a list of N
+    reports costs 4 queries total instead of ~4 per report (N+1)."""
+
+    manifest: MonthlyMeasurementManifest | None
+    artifact: MonthlyReportArtifact | None
+    events: list[MonthlyDeliveryEvent]
+    readiness: EssenceReadiness | None
+
+
+async def _get_manifests_by_id(
+    db: AsyncSession, manifest_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, MonthlyMeasurementManifest]:
+    if not manifest_ids:
+        return {}
+    result = await db.execute(
+        select(MonthlyMeasurementManifest).where(MonthlyMeasurementManifest.id.in_(manifest_ids))
+    )
+    return {m.id: m for m in result.scalars().all()}
+
+
+async def _get_doctor_artifacts_by_report_id(
+    db: AsyncSession, report_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, MonthlyReportArtifact]:
+    if not report_ids:
+        return {}
+    result = await db.execute(
+        select(MonthlyReportArtifact).where(
+            MonthlyReportArtifact.report_id.in_(report_ids),
+            MonthlyReportArtifact.audience == "DOCTOR",
+        )
+    )
+    return {a.report_id: a for a in result.scalars().all()}
+
+
+async def _get_delivery_events_by_report_id(
+    db: AsyncSession, report_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[MonthlyDeliveryEvent]]:
+    if not report_ids:
+        return {}
+    result = await db.execute(
+        select(MonthlyDeliveryEvent)
+        .where(MonthlyDeliveryEvent.report_id.in_(report_ids))
+        .order_by(MonthlyDeliveryEvent.created_at, MonthlyDeliveryEvent.id)
+    )
+    events_by_report: dict[uuid.UUID, list[MonthlyDeliveryEvent]] = defaultdict(list)
+    for event in result.scalars().all():
+        events_by_report[event.report_id].append(event)
+    return dict(events_by_report)
+
+
 def _effective_delivery_event(
     events: list[MonthlyDeliveryEvent],
 ) -> MonthlyDeliveryEvent | None:
@@ -791,15 +895,34 @@ def _serialize(
 
 
 async def _serialize_report(
-    db: AsyncSession, report: MonthlyReport, *, full: bool = False
+    db: AsyncSession,
+    report: MonthlyReport,
+    *,
+    full: bool = False,
+    preloaded: ReportPreload | None = None,
 ) -> dict:
-    manifest = await _get_manifest(db, report.manifest_id)
-    artifact = await _get_doctor_artifact(db, report.id)
-    events = await _get_delivery_events(db, report.id)
+    """Serialize one report.
+
+    Pass `preloaded` (built by `list_reports` with batched IN(...) queries) to skip
+    the per-report manifest/artifact/events/readiness lookups below — the single-report
+    callers (`get_report`, delivery mutations) leave it unset and keep their original
+    per-report query shape.
+    """
+    if preloaded is not None:
+        manifest = preloaded.manifest
+        artifact = preloaded.artifact
+        events = preloaded.events
+        readiness = preloaded.readiness
+    else:
+        manifest = await _get_manifest(db, report.manifest_id)
+        artifact = await _get_doctor_artifact(db, report.id)
+        events = await _get_delivery_events(db, report.id)
+        readiness = None
     gate = _delivery_gate(report, manifest, artifact)
     current_blockers: list[str] = []
     if gate.ready and report.report_type == "MONTHLY":
-        readiness = await get_essence_readiness(db, report.hospital_id)
+        if readiness is None:
+            readiness = await get_essence_readiness(db, report.hospital_id)
         current_blockers = _current_essence_delivery_blockers(report, readiness)
     review_evidence = await build_report_review_evidence(db, report) if full else None
     return _serialize(
