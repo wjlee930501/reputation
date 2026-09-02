@@ -186,9 +186,6 @@ _ENV_TEMPLATE_INTENTIONAL_OVERRIDES = {
     # Deployment-specific "project:region:instance" placeholder — every real
     # deployment sets its own, so there is no meaningful shared default to match.
     "CLOUD_SQL_CONNECTION_NAME",
-    # Production intentionally pins the Korea region; us-central1 is only a
-    # reasonable fallback for local/dev tooling that never talks to GCP.
-    "GCP_LOCATION",
     # config.py's defaults are localhost dev conveniences; _validate_production_config()
     # in that same file actively rejects localhost/http/wildcard values in production,
     # so the template must diverge from the default by design.
