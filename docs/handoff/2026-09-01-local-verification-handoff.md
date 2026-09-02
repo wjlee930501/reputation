@@ -101,6 +101,136 @@ WP18이 `load_incidents_queue`를 의도적으로 2-pass(원인 그룹 판별 �
 6번 `terraform fmt -check`(통과)와 `require_no_dropped_terraform_env` 가드(scripts 79건 통과),
 2번 백필 CLI(`python -m app.utils.query_target_backfill --hospital-id ...`) 존재 확인.
 `terraform plan` 자체는 GCP 자격증명·원격 state가 필요해 실행하지 않았다.
+---
+
+## 코드 리뷰 라운드 결과 (2026-09-02, 로컬 세션)
+
+위 로컬 검증이 "테스트가 통과하는가"였다면, 이 라운드는 **"이 변경이 실제로 의도한 일을 하는가"**를
+도메인별로 코드를 읽어 검수한 결과다. 범위는 동일하게 `9e3e699..9e7e1fc`(42커밋, 224파일)이며,
+5개 도메인 슬라이스에 리뷰어를 붙여 **코드로 확인된 결함만** 보고하게 했다.
+
+| 슬라이스 | Critical | Important | Minor |
+|---|:--:|:--:|:--:|
+| SoV 통계·월간 리포트·인용 귀속 | 0 | 4 | 10 |
+| 콘텐츠 생성·운영 기준·비용 | 0 | 1 | 5 |
+| 활성화·슬롯·공개 표면 | 0 | 3 | 8 |
+| 알림·인시던트·운영센터·인프라 | 0 | 5 | 12 |
+| Admin·Site·문서 | 0 | 4 | 8 |
+| **합계** | **0** | **17** | **43** |
+
+Important 17건 전부와 Minor 대부분을 수정했고, 수정분을 **별도 검수자가 독립 검증**해 Important
+3건을 추가로 찾아 2차 수정까지 마쳤다.
+
+### 반드시 알아야 할 수정 (제품 동작이 바뀐 것)
+
+**1. 월간 헤드라인이 자기 신뢰구간 밖에 놓일 수 있었다** (`services/monthly_sov.py`)
+점추정 `sov_pct`는 플랫폼 동일가중 macro 평균인데 `ci95_*`·유의성·전월 델타는 pooled Wilson이었다.
+플랫폼별 셀 수가 치우치면 "100번 중 50번"이 구간 [22, 40] 밖으로 나가고, `delta_sentence`가
+"12번 → 12번 (의미 있는 상승)" 같은 자기모순 문장을 만들 수 있었다. 헤드라인·델타·구간·유의성을
+모두 같은 pooled 추정량(`_pooled_rate`)으로 통일했다. 플랫폼 동일가중은 `PlatformSummary`
+(플랫폼 분해 표)에만 남는다. 회귀 테스트가 "헤드라인은 항상 자기 구간 안"을 5가지 셀 형상에서 고정한다.
+
+**2. PAUSED 병원이 자동으로 되살아날 수 있었다** (`workers/tasks.py:build_aeo_site`,
+`api/admin/hospitals.py`, `services/hospital_activation.py`)
+활성화 판정이 잠금 없는 메모리 스냅샷으로 이뤄지고 행 잠금은 전환을 결정한 **뒤에** 걸렸다. AE가
+`/pause`를 누르는 순간 재배달된 build가 PAUSED를 덮어쓸 수 있었다. 또 `PATCH /activate`가
+`AUTO_ACTIVATABLE_STATUSES`를 검사하지 않아 PAUSED + 자기 도메인 병원을 DNS 확인 없이 열었다.
+읽기를 `with_for_update=True`로 바꾸고, 서비스 계층에 `HospitalNotActivatable`(409, `/resume`로 안내)
+가드를 넣었다. Postgres 동시성 테스트가 실제 락 경합으로 이를 고정한다(수정 전 코드에서 실패 확인).
+
+**3. 전환 코호트의 주간 측정이 상시 0건이었다** (`workers/tasks.py` weekly SoV)
+`c94423a`의 월말 창 조건이 로그만 남기고, 코호트 제외는 무조건 적용되고 있었다. 유료 파일럿 병원이
+1~23일 주간 측정에서 통째로 빠졌고 잘못된 동작을 테스트가 고정하고 있었다. 제외를 창(24일~말일)
+안으로 옮기고 테스트 2건을 바로잡았다.
+
+**4. 개발 채널 분리가 프로덕션에 배선되지 않았다** (`terraform/secretmanager.tf`,
+`scripts/deploy.sh`, `setup-gcp.sh`, `.env*.example`)
+`SLACK_WEBHOOK_URL_DEV`는 코드·라우팅·outbox 컬럼까지 다 있었지만 Secret Manager에도 Cloud Run env에도
+없어, 인프라 인시던트가 폴백으로 전부 AE 채널로 나갔다 — `c1b4745`가 없애려던 소음이 그대로였다.
+전 경로에 배선하고, **이런 누락을 잡는 역방향 env 템플릿 가드**를 추가했다(현재 미선언 키 0건).
+
+**5. "열림만 알리고 닫힘은 안 알리는" Slack 상태가 있었다** (`services/ops_incident_alerts.py`,
+`workers/task_incident_control.py`, `services/dependency_incident_helpers.py`)
+`INCIDENT_OPEN`은 항상 나가는데 복구 메시지만 30분 규칙으로 억제돼, AE 채널에 해소되지 않는
+"운영 확인 필요"가 남았다. 규칙을 **"OPEN이 실제로 outbox에 들어갔으면 복구 메시지를 짝으로 보낸다"**
+(`open_notice_exists`) 하나로 단순화하고, `should_notify_incident_recovery`·
+`incident_escalated_to_human`·`RECOVERY_AUTO_CLOSE_WINDOW`와 `RUN_SOV` 예외를 삭제했다.
+CLAUDE.md의 "30분" 서술도 이에 맞춰 고쳤다.
+
+**6. 원장 PDF 1쪽 규칙에 최종 보증이 없어 전달이 막힐 수 있었다** (`services/report_engine.py`)
+트리밍 사다리 5단계 뒤 예산 재확인이 없었고 각주·요약·다음 달 계획은 어느 단계에서도 줄지 않았다.
+넘치면 `DOCTOR_PDF_PAGE_COUNT_INVALID` → 아티팩트 미생성 → `doctor_artifact_missing`으로
+**전달 자체가 차단**된다. 사다리를 12단계로 확장하고 부록에 문자 예산을 넣었다.
+2차 검수에서 발견된 파생 결함도 함께 고쳤다 — 각주 삭제 단계가 V0 면책 각주를 먼저 먹어
+"V0 대비 31번 → 47번"만 남고 "V0는 다른 반복 방식이라 같은 기준의 비교가 아니다"가 사라질 수 있었다.
+이제 기준선과 면책 각주는 함께 살고 함께 죽는다(불변식 테스트 + 12개 사다리 단계 전수 도달 테스트).
+
+**7. 비용 가드가 막으면 이미 지불한 생성본을 버렸다** (`workers/tasks.py:_generate_with_auto_review`)
+정렬 보완 재작성 도중 일일 한도가 소진되면 `last_screening is None`으로 `RuntimeError`가 나고,
+정상적인 1차 생성 결과가 통째로 폐기됐다. 살아남은 후보를 검수해 잔여 지적과 함께 DRAFT로 남긴다.
+
+**8. Admin 활성화 판정 순서가 백엔드와 반대였다** (`admin/lib/hospital-activation.ts`)
+자기 도메인을 먼저 입력한 병원에 "선행 단계가 통과하면 자동으로 시작됩니다"라고 안내했지만
+백엔드는 `CUSTOM_DOMAIN_PENDING`으로 영원히 자동 전환하지 않는다. 순서를 백엔드와 일치시켰다.
+
+**9. 08:00 이전 슬롯이 AE 처리 목록을 부풀렸다** (`operations_center_today_queries.py`, `admin/app/operations/`)
+백엔드는 제외(WHERE) 대신 `requires_operator_action=false` 접힘으로 바꿨는데, 이를 읽는 Admin 코드가
+없어 아무것도 달라지지 않았다. 접힌 행을 "예정 (08:00 자동 발행 대기)" 구획으로 분리하고
+처리 건수·현재 작업 선택에서 제외했다.
+
+**10. 공개 표면에 의료광고 필터가 걸려 있지 않았다** (`api/public/site.py`)
+CLAUDE.md가 선언한 세 번째 필터 지점인데 발행 콘텐츠 본문·제목·FAQ는 검사 없이 나갔다. 금지 표현
+목록이 확장돼도 이미 발행된 글은 계속 서빙됐다. `_is_public_safe_content`가 fail-closed로 걸러낸다
+(목록·상세·llms.txt·sitemap 동일 술어).
+
+그 외 수정: 리포트 전달 blocker 전체 목록 노출(기존엔 1건씩), 리포트 목록 readiness N+1 부활 차단,
+인용 귀속 오탐(자기 도메인이 플랫폼 호스트와 같은 경우·경로 없는 blog_url), V0 측정 재구매 방지
+술어를 SQL로 하향, 격차 슬롯 재실행 시 절반 상한 초과, 발행 후 본문 수정 시 캐시 무효화 재시도 누락,
+스케줄 행 잠금이 조용히 풀리던 폴백 제거, 자동 검수 2차 재정의 무관 근거 폴백 제거,
+`IncidentSlackProjection.incident_type` 필수화, 인시던트 큐 1차 조회 스칼라 축소,
+`X-Has-More`/`X-Next-Offset` 헤더와 Admin 프록시 전달, 고아 함수·죽은 08:00 성공 요약 빌더 삭제,
+`make test`의 DB 테스트 대량 skip과 root 소유 캐시, CI aux DSN·pydantic 버전 lock 기반 해석.
+
+### 문서 정합성 수정
+
+- `CLAUDE.md` STEP 8 게이트: "blocker는 2건뿐"이 사실이 아니었다. 실제로는 스냅샷 blocker
+  (`_report_delivery_blockers` 11종), 게이트(`_delivery_gate`: coverage·manifest·doctor artifact),
+  전달 시점 재검사(`_current_essence_delivery_blockers` 2종)의 **3층**이다.
+- `CLAUDE.md` Slack 규격의 "08:00 성공 최대 1건"은 살아 있는 코드 경로가 없었다(STEP 7의 "성공은
+  조용히"와 자기모순). 문서를 코드에 맞추고 죽은 빌더를 삭제했다.
+- 보조 배치 표에 15분 주기 3종(`reconcile-essence-snapshots`·`project-milestone-events`·
+  `live-custom-domain-health`) 추가, `monthly-reports`의 `minute=15` 명시.
+- 격차 재배정은 `MISSING_MENTION`만이 아니라 `LOW_MENTION_SHARE`도 후순위로 포함한다.
+- 루트 `AGENTS.md`는 gitignore 대상이라 리뷰·CI 어디에도 안 걸리면서 Imagen 3·STEP 9·`GCP_LOCATION`·
+  `gpt-4o`(배포가 거부하는 부동 계열명)를 Codex/Cursor 계열 워커에게 먹이고 있었다. CLAUDE.md를
+  가리키는 포인터로 대체했다(여전히 untracked).
+
+### 최종 검증 (전부 로컬 실행)
+
+| 항목 | 리뷰 전 | 리뷰 후 |
+|---|---|---|
+| 백엔드 전체 (Postgres·Redis·`REQUIRE_PDF_RENDER=1`) | 2,645 통과 | **2,696 통과 / 1 skip / 실패 0** |
+| Admin `npm test` / typecheck / lint | 511 | **520 통과**, 클린 |
+| Site `npm test` / typecheck / lint | 296 | **297 통과**, 클린 |
+| `pytest scripts` (배포 런타임 가드) | 79 | **82 통과** |
+| ruff · copy-guard · DB 연결 예산 · `terraform fmt` · CI YAML 파싱 | 통과 | 통과 |
+
+남은 1 skip은 `TASK22_DATABASE_URL` 환경 게이트다(설계된 게이트, 실패 아님).
+
+### 이 라운드에서 조치하지 않은 것
+
+- **컨테이너 `make test`는 여전히 전부 초록이 아니다.** `-u root`·DSN 주입으로 DB 테스트 대량 skip은
+  해소했지만, 저장소 루트 파일이 컨테이너에 마운트되지 않아(`docker-compose.yml`을 읽는 가드 테스트
+  5개) 그리고 26개 테스트가 `localhost:5434`를 하드코딩해 실패가 남는다. Makefile 주석에 명시했고
+  로컬 정본은 `make test-backend-local`이다.
+- **CI에서 WeasyPrint용 `libcairo2`를 제거**했다. 설치된 weasyprint 69.0은 cairo/gdk-pixbuf를 열지
+  않고 `backend/Dockerfile` 런타임에도 없어 CI와 컨테이너를 일치시킨 것이지만, Ubuntu apt 레인을
+  로컬에서 돌릴 수 없다 — **CI 첫 실행에서 PDF 렌더 잡을 확인할 것**.
+- outbox의 `INCIDENT_OPEN`/`INCIDENT_RECOVERED` 순서는 재시도 백오프 중 역전될 수 있다. 인시던트별
+  head-of-line 잠금 비용이 이득보다 커서 `claim_notification_batch`에 허용 범위를 주석으로 남겼다.
+- 운영센터 탭 배지(`OperationsFilters.tsx`)는 여전히 백엔드 `overview.queues[].total`을 쓴다.
+  "처리 필요"라고 주장하는 지표(큐 목록·현재 작업)만 실제 처리 대상 기준으로 고쳤다.
+- `docs/reviews/2026-09-01-*.md` 두 문서는 이번 수정을 반영하지 않았다 — 그 시점의 관찰 기록으로 둔다.
 
 ---
 
@@ -124,8 +254,14 @@ cd ../admin && npm ci && cd ../site && npm ci && cd ..
 ### 1-1. 전체 백엔드 스위트 (Postgres·Redis 기동 상태)
 ```bash
 cd backend
-INTEGRATION_DATABASE_URL=postgresql://reputation:reputation@localhost:5434/reputation_test \
-REQUIRE_PDF_RENDER=1 uv run --no-sync pytest -q
+# 드라이버 접두사가 셋 다 다르다 — INCIDENT만 async 픽스처라 +asyncpg여야 한다.
+# (접두사 없이 postgresql:// 을 주면 "asyncio extension requires an async driver"로 12건 ERROR)
+# 정본 값은 .github/workflows/ci.yml 과 Makefile(TEST_DB_ASYNC/TEST_DB_SYNC)에 있다.
+INTEGRATION_DATABASE_URL=postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test \
+INCIDENT_TEST_DATABASE_URL=postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test \
+OPERATIONS_TEST_DATABASE_URL=postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test \
+REQUIRE_PDF_RENDER=1 DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib \
+  uv run --no-sync pytest -q
 ```
 기대: 실패 0. 클라우드에서 못 돈 파일 중 **변경과 직접 관련된 것**:
 

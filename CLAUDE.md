@@ -60,8 +60,9 @@
       리더 20편/월 120만원 (모두 부가세 별도)
     • 발행 요일 설정 (예: 화·목 or 월·수·금 등)
     • 저장 시 첫 달 콘텐츠 캘린더 자동 생성 — 슬롯 유형은 요금제 배분표를 상한으로 하되,
-      측정된 미언급 격차(`MISSING_MENTION`)가 FAQ·LOCAL·DISEASE·TREATMENT 슬롯의 최대 절반까지
-      재배정한다 (`services/gap_driven_slots.py`, 콘텐츠 유형표 참고)
+      측정된 격차가 FAQ·LOCAL·DISEASE·TREATMENT 슬롯의 최대 절반까지 재배정한다 —
+      미언급(`MISSING_MENTION`) 우선, 저언급(`LOW_MENTION_SHARE`) 후순위 격차
+      (`services/gap_driven_slots.py`, 콘텐츠 유형표 참고)
     • 자료가 추가·수정되면 최신 snapshot과의 일치("current")가 깨져 새 승인이 필요해진다.
       다만 생성은 새 승인이 나올 때까지 **마지막으로 승인된 스냅샷("approved")을 그대로 계속 쓰고**,
       **발행만 현재("current") 승인본을 강제**한다 — 생성이 완전히 멈추지 않으면서도
@@ -99,9 +100,16 @@
     • 인용 귀속: AI 답변이 실제로 인용한 URL을 병원의 공개 표면(플랫폼 경로·서브도메인·
       자기 도메인 전부)에 매칭해 "AI가 인용한 우리 글" 건수를 글 단위 1급 사실로 리포트에
       싣는다 (`services/content_citations.py`, `services/report_attribution.py`)
-    • 게이트: "현재 승인된 운영 기준 없음"·"미처리 자료 존재"만 전달을 막는 진짜 blocker다.
+    • 게이트: "전달"(mark-sent)은 3중 레이어를 모두 통과해야 한다(`api/admin/reports.py`).
+      ① 생성 시점 스냅샷 검사(`_report_delivery_blockers`, 약 11개 조건 — PDF 준비·AI
+      언급률 요약 존재·월간 콘텐츠 발행/운영 요약·승인된 운영 기준 존재·자료 최신성·
+      미처리 자료·재검수 필요 콘텐츠·운영 기준 없이 생성된 콘텐츠·의료광고 리스크 등)
+      ② 측정·산출물 게이트(`_delivery_gate` — 이번 달 측정 완주·manifest 매칭/마감·
+      검증된 원장 보고용 PDF, ①의 첫 위반 사유도 여기서 함께 반환)
+      ③ 전달 시점 실시간 재검사(`_current_essence_delivery_blockers`) — ①②를 통과한
+      뒤에도 "현재 승인된 운영 기준 없음"·"미처리 자료 존재" 두 가지만 다시 확인한다.
       사후검수 표본 미완료, 운영 기준 버전 갱신(essence version drift)은 경고(warning)로만
-      표시되고 원장 전달을 막지 않는다 (`api/admin/reports.py`)
+      표시되고 원장 전달을 막지 않는다
     • 원장용 PDF: 1쪽은 3막(이번 달 한 일 → 무엇이 달라졌나(새로 나온·빠진 질문, V0 대비) →
       다음 달 계획), 질문별 표는 조건부 2쪽 부록. 검증은 1쪽 또는 부록 포함 2쪽만 허용
       (`services/report_artifact_validation.py`). AE용 내부 PDF에는 "원장 미팅 토킹 포인트"가 실린다
@@ -118,9 +126,10 @@
 | 매주 월 02:00 | weekly-sov-monitoring | 전체 ACTIVE 병원 측정 (월말 창엔 월간 코호트만 제외) |
 | 매월 24~31일 */6h | monthly-sov-measurement | 전환 코호트 월말 측정 완주 |
 | 매월 25~31일 */6h | monthly-slot-generation | 다음 달 콘텐츠 슬롯 자동 생성(격차 재배정 포함) |
-| 매월 1~7일 */6h | monthly-reports | 월간 리포트 마감 |
+| 매월 1~7일 */6h(매 정시 15분) | monthly-reports | 월간 리포트 마감 |
 | 매주 화 03:00 | weekly-naver-source-sync | 병원 네이버 블로그 신규 글 자산 인입 |
 | 매일 04:00 | purge-expired-leads | 보관기간 만료 리드 파기 |
+| 15분마다 (3종) | reconcile-essence-snapshots / project-milestone-events / live-custom-domain-health | 유실된 운영 기준 변경 snapshot 회수, 운영 마일스톤 요약 투영, 병원 자기 도메인 TLS/Host 헬스 체크 |
 | 1분마다 (4종) | drain-lead-diagnoses / dispatch-notification-outbox / reconcile-monthly-artifact-incidents / reconcile-autonomous-workflows | 무료 진단 폴러, Slack outbox 발송, 산출물·워크플로 유실 복구 |
 | 5분마다 (6종) | canary-default/content/sov/reports/leadgen/certificates | 경로별 헬스 체크 |
 ```
@@ -152,8 +161,9 @@
 | NOTICE | 1 | 1 | 0 |
 
 > 모든 가격은 부가세 별도다. 이 표는 요금제별 **월간 편수 상한**(`models/content.py:PLAN_DISTRIBUTION`)이다.
-> 실제 슬롯 생성 시 FAQ·LOCAL·DISEASE·TREATMENT 네 유형은 측정된 미언급 격차에 따라
-> 유형 배분의 최대 절반까지 서로 재배정될 수 있다. 월 총 편수와 COLUMN·HEALTH·NOTICE는
+> 실제 슬롯 생성 시 FAQ·LOCAL·DISEASE·TREATMENT 네 유형은 측정된 격차(미언급
+> `MISSING_MENTION` 우선, 저언급 `LOW_MENTION_SHARE` 후순위)에 따라 유형 배분의 최대
+> 절반까지 서로 재배정될 수 있다. 월 총 편수와 COLUMN·HEALTH·NOTICE는
 > 절대 바뀌지 않는다 (`services/gap_driven_slots.py`).
 
 ---
@@ -334,11 +344,13 @@ pdf_path, doctor_pdf_path, sent_at
 
 - **즉시 알림**: 무료 진단/일반 문의 접수, 진단·PDF·이메일 최종 실패, Celery 최종 실패·보안/비용
   가드, V0 리포트 완료
-- **운영 요약** (배치당 최대 1건류): 23:00 야간 생성, 08:00 발행(성공/차단/생성 누락 각 최대
-  1건, 콘텐츠 건별 알림 없음), 주간 네이버 자산 수집, 주간 측정 시작, 15분 온보딩·월간 마일스톤
-- **로그 전용**: 자동 재시도가 담당자 배정·기한 지정 없이 30분 안에 스스로 복구한 인시던트는
-  Slack을 보내지 않는다 (DB 인시던트·감사 로그만 남김). 이미 사람에게 도달한 건만 정보 전달용
-  복구 메시지를 보낸다
+- **운영 요약** (배치당 최대 1건류): 23:00 야간 생성, 08:00 발행(성공은 조용히 진행 —
+  Slack 없음. 자동 복구를 넘겨 소진된 차단만 실행 배치당 요약 최대 1건, 콘텐츠 건별
+  알림 없음), 주간 네이버 자산 수집, 주간 측정 시작, 15분 온보딩·월간 마일스톤
+- **로그 전용**: 자동 복구된 인시던트는 `INCIDENT_OPEN` 공지가 실제로 Slack에 나간 경우에만
+  복구 메시지를 짝으로 보낸다. OPEN이 나간 적 없는 건(파이프라인이 `notify=False`로 자기
+  인시던트를 낸 경우)은 Slack 없이 DB 인시던트·감사 로그만 남긴다 — "열림만 알리고 닫힘은
+  안 알리는" 상태는 만들지 않는다 (`services/dependency_incident_helpers.py:open_notice_exists`)
 - **인프라 인시던트** (`BACKGROUND_TASK`/`BROKER`/`UNSAFE_DISPATCH`/`NOTIFICATION_DELIVERY`/
   `DOCTOR_PDF_BLOCKED`/`CACHE_REVALIDATION` 등)는 AE 채널이 아니라 `SLACK_WEBHOOK_URL_DEV`
   개발 채널로 분리
