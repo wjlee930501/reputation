@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -232,12 +233,8 @@ def _env_string_for_default(default: object) -> str:
     return str(default)
 
 
-def test_production_env_template_matches_config_defaults_except_intentional_overrides() -> None:
-    """`.env.production.example`은 deploy.sh가 env를 통째로 교체하는 실제 배포 입력이다 —
-    config.py 기본값과 값이 갈리면 그 드리프트가 그대로 프로덕션에 실려 나간다. 실제로
-    GOOGLE_IMAGE_MODEL(2.5 vs 3.1)과 LEAD_CONSENT_VERSION(2026-05 vs 2026-08, 재동의 필요)이
-    이렇게 뒤처져 있었다.
-    """
+def _settings_fields() -> dict[str, object]:
+    """Return `Settings.model_fields` without triggering production boot validation."""
     sys.path.insert(0, str(PROJECT_ROOT / "backend"))
     # Settings()는 모듈 임포트 시점에 인스턴스화되고(config.py 하단 `settings = Settings()`),
     # APP_ENV 기본값이 "production"이라 프로덕션 전용 필수 시크릿 검증이 곧장 걸린다 —
@@ -245,7 +242,123 @@ def test_production_env_template_matches_config_defaults_except_intentional_over
     os.environ.setdefault("APP_ENV", "test")
     from app.core.config import Settings  # noqa: PLC0415 — sys.path 준비 후에만 임포트 가능
 
-    fields = Settings.model_fields
+    return Settings.model_fields
+
+
+def _deploy_sh_name_arrays() -> tuple[frozenset[str], frozenset[str]]:
+    """Read deploy.sh's own key lists so this guard never re-declares them here.
+
+    Returns (Secret Manager 주입 키, deploy.sh가 직접 주입하는 키). Both sets describe
+    keys that legitimately have no line in `.env.production.example`, and deploy.sh is
+    the single source for both — a hand-copied duplicate here would drift the moment
+    someone adds a secret, which is exactly the failure this guard exists to catch.
+    """
+    text = (PROJECT_ROOT / "scripts" / "deploy.sh").read_text()
+    managed: set[str] = set()
+    injected: set[str] = set()
+    for match in re.finditer(r"^([A-Z_]+)=\(\n(.*?)^\)$", text, re.MULTILINE | re.DOTALL):
+        name, body = match.group(1), match.group(2)
+        # `"${OTHER[@]}"` 확장 줄은 무시하고 리터럴 키 이름만 모은다.
+        values = set(re.findall(r'^\s*"([A-Z][A-Z0-9_]*)"\s*$', body, re.MULTILINE))
+        if name.endswith("_SECRET_NAMES"):
+            managed |= values
+        elif name == "DEPLOY_INJECTED_ENV_KEYS":
+            injected |= values
+    assert managed, "deploy.sh에서 *_SECRET_NAMES 배열을 찾지 못했다 — 파서가 깨졌다."
+    assert injected, "deploy.sh에서 DEPLOY_INJECTED_ENV_KEYS를 찾지 못했다 — 파서가 깨졌다."
+    return frozenset(managed), frozenset(injected)
+
+
+# Settings 필드 중 두 .env 템플릿 어디에도 줄이 없어도 되는 키. Secret Manager 주입 키와
+# deploy.sh 자체 주입 키는 위 파서가 deploy.sh에서 직접 읽어 오므로 여기 적지 않는다 —
+# 이 목록은 "그 둘 중 어느 쪽도 아닌데 템플릿에 없는" 예외만 이유와 함께 담는다.
+_ENV_TEMPLATE_EXEMPT_FIELDS: dict[str, str] = {}
+
+# 반대 방향의 예외 — Settings 필드가 아닌데 템플릿에 줄이 있어도 되는 키. 백엔드
+# 설정이 아니라 컨테이너 실행 인자·프런트엔드 빌드 입력·일회성 CLI 입력이라
+# config.py에 대응 필드가 없는 것이 정상이다. 여기 없는 템플릿 전용 키는 대개
+# 삭제된 Settings 필드의 잔해다(예: 사라진 GCP_LOCATION).
+_TEMPLATE_ONLY_KEYS: dict[str, str] = {
+    # backend/docker-entrypoint.sh가 celery 실행 인자로만 읽는다.
+    "CELERY_CONCURRENCY": "docker-entrypoint.sh celery -c",
+    "CELERY_MAX_TASKS_PER_CHILD": "docker-entrypoint.sh celery --max-tasks-per-child",
+    # docker-compose.yml의 flower 서비스 basic-auth.
+    "FLOWER_USER": "docker-compose flower basic-auth",
+    "FLOWER_PASSWORD": "docker-compose flower basic-auth",
+    # google-genai/GCS SDK가 직접 읽는 표준 환경변수. compose가 키 파일을 마운트한다.
+    "GOOGLE_APPLICATION_CREDENTIALS": "GCP SDK 표준 변수 (docker-compose 볼륨 마운트)",
+    # app/utils/admin_user.py의 create-owner CLI가 os.getenv로 한 번 읽는 부트스트랩 입력.
+    "ADMIN_EMAIL": "admin_user.py create-owner CLI",
+    "ADMIN_NAME": "admin_user.py create-owner CLI",
+    "ADMIN_PASSWORD": "admin_user.py create-owner CLI",
+    # Next.js(admin/site) 빌드·런타임 입력. 백엔드 Settings에는 대응 필드가 없다.
+    "NEXT_PUBLIC_API_URL": "Next.js 빌드 입력",
+    "NEXT_PUBLIC_BACKEND_URL": "Next.js 빌드 입력",
+    "NEXT_PUBLIC_SITE_URL": "Next.js 빌드 입력",
+    "NEXT_PUBLIC_GA_MEASUREMENT_ID": "Next.js 빌드 입력",
+    "NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION": "Next.js 빌드 입력",
+}
+
+
+def test_env_templates_declare_every_settings_field() -> None:
+    """새 Settings 필드가 프로덕션 주입 경로 없이 추가되는 것을 막는다.
+
+    기존 가드는 한 방향(템플릿에 있는 키만 검사)이라 `SLACK_WEBHOOK_URL_DEV`처럼
+    config.py에만 존재하고 어떤 템플릿·시크릿·배포 스크립트에도 없는 필드를 놓쳤다.
+    Secret Manager가 주입하는 키와 deploy.sh가 직접 주입하는 키는 템플릿에 줄이 없는
+    것이 정상이므로 deploy.sh의 목록에서 그대로 읽어 면제한다.
+    """
+    fields = set(_settings_fields())
+    managed_secrets, deploy_injected = _deploy_sh_name_arrays()
+    exempt = managed_secrets | deploy_injected | set(_ENV_TEMPLATE_EXEMPT_FIELDS)
+
+    missing: list[str] = []
+    for template in (".env.example", ".env.production.example"):
+        declared = {key for key, _ in _dotenv_pairs((PROJECT_ROOT / template).read_text())}
+        for key in sorted(fields - declared - exempt):
+            missing.append(f"{template}: {key}")
+
+    assert not missing, (
+        "config.py의 Settings 필드가 .env 템플릿에 선언되지 않았다 — 프로덕션에 값을 넣을 "
+        "경로가 없다는 뜻이다. 템플릿에 줄을 추가하거나, Secret Manager 주입이면 "
+        "scripts/deploy.sh의 *_SECRET_NAMES 배열에, deploy.sh가 직접 넣는 값이면 "
+        "DEPLOY_INJECTED_ENV_KEYS에 등록할 것. 셋 중 어느 쪽도 아니면 "
+        "_ENV_TEMPLATE_EXEMPT_FIELDS에 이유와 함께 추가:\n  " + "\n  ".join(missing)
+    )
+
+
+def test_env_templates_declare_no_keys_that_settings_no_longer_has() -> None:
+    """삭제된 Settings 필드의 잔해가 템플릿에 남는 것을 막는다 — 반대 방향 가드다.
+
+    config→템플릿 한 방향만 보던 가드는 `GCP_LOCATION`처럼 config.py에서 사라졌는데
+    두 템플릿에 줄만 남은 키를 통과시켰다. 그 줄을 보고 값을 채운 사람은 아무 데도
+    도달하지 않는 환경변수를 프로덕션에 싣게 된다.
+    """
+    fields = set(_settings_fields())
+    managed_secrets, deploy_injected = _deploy_sh_name_arrays()
+    allowed_extra = managed_secrets | deploy_injected | set(_TEMPLATE_ONLY_KEYS)
+
+    stale: list[str] = []
+    for template in (".env.example", ".env.production.example"):
+        declared = {key for key, _ in _dotenv_pairs((PROJECT_ROOT / template).read_text())}
+        for key in sorted(declared - fields - allowed_extra):
+            stale.append(f"{template}: {key}")
+
+    assert not stale, (
+        ".env 템플릿에 config.py의 Settings 필드가 아닌 키가 남아 있다 — 대개 삭제된 "
+        "필드의 잔해이고, 채워 넣어도 아무 코드도 읽지 않는다. 줄을 지우거나, 백엔드 "
+        "설정이 아닌 정당한 키라면 _TEMPLATE_ONLY_KEYS에 소비처와 함께 등록할 것:\n  "
+        + "\n  ".join(stale)
+    )
+
+
+def test_production_env_template_matches_config_defaults_except_intentional_overrides() -> None:
+    """`.env.production.example`은 deploy.sh가 env를 통째로 교체하는 실제 배포 입력이다 —
+    config.py 기본값과 값이 갈리면 그 드리프트가 그대로 프로덕션에 실려 나간다. 실제로
+    GOOGLE_IMAGE_MODEL(2.5 vs 3.1)과 LEAD_CONSENT_VERSION(2026-05 vs 2026-08, 재동의 필요)이
+    이렇게 뒤처져 있었다.
+    """
+    fields = _settings_fields()
     template_text = (PROJECT_ROOT / ".env.production.example").read_text()
 
     mismatches = []

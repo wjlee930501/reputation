@@ -1,4 +1,4 @@
-.PHONY: setup up down logs migrate revision test demo-seed essence-backfill copy-guard admin-create-owner db-budget-guard
+.PHONY: setup up down logs migrate revision test test-db-setup demo-seed essence-backfill copy-guard admin-create-owner db-budget-guard
 .PHONY: clinic-visual-readiness clinic-visual-seed-report clinic-visual-seed
 .PHONY: deploy-api deploy-worker deploy-beat deploy-all deploy-migrate setup-gcp build-image
 
@@ -30,7 +30,30 @@ revision:
 	@read -p "Migration message: " msg; \
 	docker compose exec api alembic revision --autogenerate -m "$$msg"
 
-test:
+# 컨테이너 안에서 도는 DB 기반 테스트(~50개 파일)가 쓰는 별도 테스트 DB.
+# compose의 db 서비스는 POSTGRES_DB=reputation 하나만 만들고, 호스트 포트는 5434지만
+# 컨테이너 네트워크에서는 db:5432다. 기본값(localhost:5434)을 그대로 두면 컨테이너
+# 안에서는 접속이 안 돼 그 테스트들이 전부 조용히 skip된다.
+TEST_DB_PLAIN := postgresql://reputation:reputation@db:5432/reputation_test
+TEST_DB_ASYNC := postgresql+asyncpg://reputation:reputation@db:5432/reputation_test
+TEST_DB_SYNC  := postgresql+psycopg2://reputation:reputation@db:5432/reputation_test
+
+test-db-setup:
+	# 멱등 — 이미 있으면 CREATE DATABASE가 실패하고, 그 다음 SELECT가 "정말 있는지"를
+	# 증명한다. 진짜 접속 불가는 두 번째 명령에서 시끄럽게 깨진다.
+	-docker compose exec -T db psql -U reputation -d postgres -c "CREATE DATABASE reputation_test"
+	docker compose exec -T db psql -U reputation -d reputation_test -c "SELECT 1" > /dev/null
+	docker compose exec -T \
+		-e DATABASE_URL="$(TEST_DB_ASYNC)" -e SYNC_DATABASE_URL="$(TEST_DB_SYNC)" \
+		api alembic upgrade head
+
+# 알려진 한계: 이 타깃은 아직 전체 스위트를 통과시키지 못한다. compose api는
+# ./backend만 /app에 마운트하므로 리포 루트 파일(docker-compose.yml, site/, Makefile)을
+# 읽는 계약 테스트가 FileNotFoundError로 깨지고, 테스트 DB URL을 env로 받지 않고
+# localhost:5434를 하드코딩한 파일들(backend/tests에 26개)은 컨테이너 네트워크에서
+# 접속하지 못한다. 둘 다 이 타깃보다 넓은 문제다 — 전체 스위트는 `make test-backend-local`
+# (호스트 실행)이 정본이고, 이 타깃은 컨테이너 환경 자체를 검증하는 용도다.
+test: test-db-setup
 	# backend/Dockerfile builds the api image with `uv sync --locked --no-dev`, so
 	# pytest isn't installed in the running container — sync the dev extra into the
 	# image's venv first (UV_PROJECT_ENVIRONMENT pins the target explicitly; the
@@ -40,7 +63,16 @@ test:
 	# then switches to `appuser`, so a sync as the default user dies on
 	# "Permission denied" when it rewrites site-packages.
 	docker compose exec -u root -e UV_PROJECT_ENVIRONMENT=/opt/venv api uv sync --locked --extra dev
-	docker compose exec -u root -e UV_PROJECT_ENVIRONMENT=/opt/venv api uv run --no-sync pytest -v
+	# pytest는 기본 사용자(appuser)로 돈다 — root로 돌리면 /app 바인드 마운트에
+	# root 소유의 .pytest_cache/__pycache__가 호스트 워크트리에 남아 이후 로컬 실행이
+	# 권한 오류로 깨진다. 캐시를 아예 만들지 않게 해서 원인을 없앤다.
+	docker compose exec \
+		-e UV_PROJECT_ENVIRONMENT=/opt/venv \
+		-e PYTHONDONTWRITEBYTECODE=1 \
+		-e INTEGRATION_DATABASE_URL="$(TEST_DB_PLAIN)" \
+		-e INCIDENT_TEST_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e OPERATIONS_TEST_DATABASE_URL="$(TEST_DB_SYNC)" \
+		api uv run --no-sync pytest -v -p no:cacheprovider
 
 test-local: test-backend-local test-frontend copy-guard
 

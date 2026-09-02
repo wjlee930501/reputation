@@ -93,6 +93,10 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/reputation_test
       SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test
       INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reputation_test
+      # 인시던트·operations 제약 증명 테스트는 위 postgres_aux(5434)를 쓴다. 없으면
+      # os.getenv가 None이라 pytest.skip으로 조용히 빠져 CI에서 한 번도 돌지 않는다.
+      INCIDENT_TEST_DATABASE_URL: postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test
+      OPERATIONS_TEST_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test
       # 블러 리포트 검사(F5-3)는 실제 PDF에서 텍스트를 추출해 가림 대상이 0회 등장하는지
       # 본다. 이 값이 없으면 그 테스트가 조용히 skip되어, 가장 중요한 검사가 어디에서도
       # 돌지 않게 된다 — CI에서는 네이티브 의존성을 깔고 강제 실행한다.
@@ -114,10 +118,20 @@ jobs:
         with:
           version: "0.8.13"
 
+      # REQUIRE_PDF_RENDER=1 아래에서 WeasyPrint가 실제로 렌더하므로 그것이 dlopen하는
+      # 네이티브 라이브러리가 있어야 한다. 목록은 backend/Dockerfile 런타임 스테이지의
+      # WeasyPrint 줄과 **같은 것**을 깐다 — CI에만 있는 패키지는 프로덕션 이미지에 없는
+      # 의존성을 대신 채워 주는 셈이라, 정작 컨테이너에서 깨지는 렌더를 초록으로 통과시킨다.
+      #
+      # uv.lock이 고정한 weasyprint 69가 실제로 여는 것은 text/ffi.py 기준
+      # gobject/pango/harfbuzz/fontconfig/pangoft2뿐이다(앞 둘은 libpango·libpangoft2가
+      # 의존성으로 끌어온다). 래스터 이미지는 v53 이후 gdk-pixbuf가 아니라 Pillow로
+      # 읽고(images.py), cffi는 휠로 배포돼 libffi 헤더가 필요 없으며, PDF 출력은 cairo가
+      # 아니라 pydyf가 쓴다.
       - name: Install WeasyPrint native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2
+          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b
 
       # Resolves the exact dependency graph from uv.lock (matching backend/Dockerfile's
       # `uv sync --locked --no-dev`, plus the dev extra for pytest/ruff) instead of
@@ -202,14 +216,29 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.8.13"
+
       # scripts/test_deploy_runtime.py imports backend/app/core/config.py (to check the
       # .env templates against Settings' real defaults) without the rest of the backend
-      # dependency graph, so install just the two packages that module needs — pinned to
-      # the versions backend/uv.lock resolves, so this doesn't drift from what CI's
-      # backend job (and production) actually run.
-      - name: Install pytest
+      # dependency graph, so install just the two packages that module needs. The
+      # versions are read out of backend/uv.lock instead of being written here: a
+      # hand-copied pin silently goes stale and this job then validates config.py under
+      # a pydantic the backend job and production never run. pip pulls the transitive
+      # chain (pydantic-core, annotated-types, …) itself.
+      - name: Install pytest and config dependencies resolved from backend/uv.lock
         working-directory: .
-        run: python -m pip install --upgrade pip pytest "pydantic==2.13.3" "pydantic-settings==2.14.2"
+        run: |
+          uv export --project backend --no-dev --no-hashes --no-emit-project \
+            -o /tmp/backend-requirements.txt
+          grep -E '^(pydantic|pydantic-settings)==' /tmp/backend-requirements.txt \
+            > /tmp/config-requirements.txt
+          test -s /tmp/config-requirements.txt
+          cat /tmp/config-requirements.txt
+          python -m pip install --upgrade pip pytest
+          python -m pip install -r /tmp/config-requirements.txt
 
       - name: Terraform fmt
         run: terraform fmt -check -recursive

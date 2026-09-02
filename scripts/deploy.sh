@@ -145,6 +145,10 @@ BACKEND_OPTIONAL_SECRET_NAMES=(
   # IndexNow 키. backend가 제출하고 site가 같은 값을 키 파일로 응답해야 소유가 증명된다 —
   # 두 서비스에 반드시 같은 시크릿을 주입할 것. 미설정이면 제출만 건너뛰고 발행은 정상 동작.
   "INDEXNOW_KEY"
+  # 개발팀 전용 Slack 채널(docs/ops/slack-notification-policy.md). AE가 고칠 수 없는
+  # 인프라 인시던트만 이쪽으로 나간다. 비어 있으면 config.py가 기존대로 SLACK_WEBHOOK_URL
+  # 한 곳으로만 보내므로 부재는 정상 동작이다 — 배포를 막지 않는 optional로 둔다.
+  "SLACK_WEBHOOK_URL_DEV"
 )
 
 SITE_REQUIRED_SECRET_NAMES=(
