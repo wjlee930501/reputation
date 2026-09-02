@@ -28,9 +28,10 @@ MONTHLY_DELIVERY_REPAIR = "0058_repair_monthly_delivery_drift"
 HOSPITAL_USAGE_EVENTS = "0059_add_hospital_usage_events"
 TRACKING_SET = "0060_add_ai_query_target_tracking_set"
 SYSTEM_INCIDENT_ACK = "0061_allow_system_incident_acknowledgement"
+MANIFEST_SUPERSEDE = "0062_allow_monthly_manifest_protocol_supersede"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = SYSTEM_INCIDENT_ACK
+HEAD = MANIFEST_SUPERSEDE
 
 
 def _script_directory() -> ScriptDirectory:
@@ -82,6 +83,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         MONTHLY_DELIVERY_REPAIR,
         HOSPITAL_USAGE_EVENTS,
         TRACKING_SET,
+        MANIFEST_SUPERSEDE,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -97,6 +99,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         MONTHLY_DELIVERY_REPAIR: OPERATIONS_TEST_ACCOUNTS,
         HOSPITAL_USAGE_EVENTS: MONTHLY_DELIVERY_REPAIR,
         TRACKING_SET: HOSPITAL_USAGE_EVENTS,
+        MANIFEST_SUPERSEDE: SYSTEM_INCIDENT_ACK,
     }
 
 
@@ -108,6 +111,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        MANIFEST_SUPERSEDE,
         SYSTEM_INCIDENT_ACK,
         TRACKING_SET,
         HOSPITAL_USAGE_EVENTS,
@@ -126,7 +130,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-10:] == [
+    assert applied[-11:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -137,4 +141,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         HOSPITAL_USAGE_EVENTS,
         TRACKING_SET,
         SYSTEM_INCIDENT_ACK,
+        MANIFEST_SUPERSEDE,
     ]

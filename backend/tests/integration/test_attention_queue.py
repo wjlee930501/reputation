@@ -1331,11 +1331,12 @@ async def test_today_queue_marks_a_review_past_the_window_as_overdue(pg_async_se
     assert row.sla_due_at < now
 
 
-async def test_reports_queue_deadline_is_the_report_period_close(pg_async_session):
+async def test_reports_queue_has_no_staff_deadline(pg_async_session):
     db = pg_async_session
     hospital = await _active_hospital(db, "리포트기한 의원")
-    handoff_due = datetime.now(UTC) + timedelta(days=30)
-    await _accepted_handoff(db, hospital, sla_due_at=handoff_due)
+    await _accepted_handoff(
+        db, hospital, sla_due_at=datetime.now(UTC) + timedelta(days=30)
+    )
     now = datetime.now(UTC)
 
     _total, rows = await report_queries.load_reports_queue(
@@ -1343,41 +1344,52 @@ async def test_reports_queue_deadline_is_the_report_period_close(pg_async_sessio
     )
 
     row = next(item for item in rows if item.customer.hospital_id == hospital.id)
-    assert row.sla_due_at is not None
-    # 인수 기한이 미래인데도 예전에는 그 날짜를 "기한 지남"과 함께 보여줬다.
-    assert row.sla_due_at != handoff_due
-    year, month, _period_start, period_end, closes_at = report_queries._previous_period(now)
-    assert (year, month) == _previous_month(now)
-    assert row.sla_due_at == closes_at
-    assert closes_at == period_end + timedelta(minutes=15)
-    assert row.sla_due_at < now
-    assert row.sla_state == "OVERDUE"
+    assert row.sla_due_at is None
+    assert row.sla_state == "NONE"
 
 
-async def test_reports_queue_uses_close_boundary_for_due_and_overdue_filters(
-    pg_async_session,
-):
+async def test_reports_queue_ignores_deadline_sla_filters(pg_async_session):
     db = pg_async_session
     hospital = await _active_hospital(db, "리포트마감경계 의원")
-    interval = await db.scalar(
-        select(HospitalServiceInterval).where(
-            HospitalServiceInterval.hospital_id == hospital.id
-        )
-    )
-    assert interval is not None
-    interval.started_at = datetime(2026, 6, 1, tzinfo=UTC)
-    hospital.created_at = interval.started_at
-    await db.flush()
+    now = datetime.now(UTC)
 
-    # 2026-08-01 00:05 KST: 달력상 7월은 끝났지만 00:15 집계 마감 전이다.
-    before_close = datetime(2026, 7, 31, 15, 5, tzinfo=UTC)
+    total, rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=now,
+    )
+
+    row = next(item for item in rows if item.customer.hospital_id == hospital.id)
+    assert total >= 1
+    assert row.sla_due_at is None
+    assert row.sla_state == "NONE"
+
+    none_total, none_rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(sla=SlaFilter.NONE),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=now,
+    )
+
+    none_row = next(
+        item for item in none_rows if item.customer.hospital_id == hospital.id
+    )
+    assert none_total >= 1
+    assert none_row.sla_due_at is None
+    assert none_row.sla_state == "NONE"
+
     due_total, due_rows = await report_queries.load_reports_queue(
         db,
         OperationsFilters(sla=SlaFilter.DUE),
         page=1,
         page_size=100,
         overview=False,
-        now=before_close,
+        now=now,
     )
     overdue_total, overdue_rows = await report_queries.load_reports_queue(
         db,
@@ -1385,39 +1397,13 @@ async def test_reports_queue_uses_close_boundary_for_due_and_overdue_filters(
         page=1,
         page_size=100,
         overview=False,
-        now=before_close,
+        now=now,
     )
 
-    row = next(item for item in due_rows if item.customer.hospital_id == hospital.id)
-    assert due_total == 1
-    assert row.sla_due_at.astimezone(UTC) == datetime(2026, 7, 31, 15, 15, tzinfo=UTC)
-    assert row.sla_state == "DUE"
-    assert overdue_total == 0
-    assert overdue_rows == []
-
-    after_close = datetime(2026, 7, 31, 15, 16, tzinfo=UTC)
-    due_total, due_rows = await report_queries.load_reports_queue(
-        db,
-        OperationsFilters(sla=SlaFilter.DUE),
-        page=1,
-        page_size=100,
-        overview=False,
-        now=after_close,
-    )
-    overdue_total, overdue_rows = await report_queries.load_reports_queue(
-        db,
-        OperationsFilters(sla=SlaFilter.OVERDUE),
-        page=1,
-        page_size=100,
-        overview=False,
-        now=after_close,
-    )
-
-    row = next(item for item in overdue_rows if item.customer.hospital_id == hospital.id)
     assert due_total == 0
     assert due_rows == []
-    assert overdue_total == 1
-    assert row.sla_state == "OVERDUE"
+    assert overdue_total == 0
+    assert overdue_rows == []
 
 
 async def test_overview_summary_reports_no_sampled_overdue_count(pg_async_session):

@@ -8,6 +8,7 @@ import pytest
 
 from app.core.config import Settings
 from app.services import sov_engine, sov_tracking_set
+from app.services.monthly_manifest import freeze_dispatch_manifest, summarize_manifest
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_types import CellAttempt, ManifestCellInput
 from app.services.sov_tracking_set import (
@@ -237,6 +238,166 @@ class _SpecDB:
         }
         for query in self.rows.values():
             query.hospital_id = hospital_id
+
+
+class _ManifestSession:
+    def __init__(self):
+        self.manifest = None
+        self.flush_count = 0
+
+    def execute(self, _statement):
+        manifest = self.manifest
+
+        class _Result:
+            def scalar_one_or_none(self):
+                return manifest
+
+        return _Result()
+
+    def add(self, value):
+        self.manifest = value
+
+    def flush(self):
+        self.flush_count += 1
+
+
+def _dispatch_specs(target_count: int, *, platforms: tuple[str, ...]) -> list[dict]:
+    specs = []
+    for index in range(target_count):
+        query_id = uuid.uuid4()
+        target_id = uuid.uuid4()
+        for platform in platforms:
+            specs.append(
+                {
+                    "query_id": query_id,
+                    "query_text": f"지역 병원 질문 {index}",
+                    "platform": platform,
+                    "target_id": target_id,
+                    "variant_id": uuid.uuid4(),
+                    "query_intent": "LOCAL",
+                }
+            )
+    return specs
+
+
+def test_month_end_tracking_freeze_supersedes_weekly_uncapped_denominator():
+    session = _ManifestSession()
+    hospital_id = uuid.uuid4()
+    weekly_specs = _dispatch_specs(105, platforms=("chatgpt", "gemini"))
+    tracking_specs = _dispatch_specs(15, platforms=("chatgpt", "gemini"))
+
+    weekly_manifest = freeze_dispatch_manifest(
+        session,
+        hospital_id,
+        2026,
+        8,
+        weekly_specs,
+        gemini_configured=True,
+    )
+    weekly_manifest.closed_at = datetime(2026, 9, 1, tzinfo=UTC)
+    assert summarize_manifest(
+        weekly_manifest.cells,
+        closed=True,
+        configured_platforms=weekly_manifest.configured_platforms,
+    ).planned_count == 210
+
+    monthly_manifest = freeze_dispatch_manifest(
+        session,
+        hospital_id,
+        2026,
+        8,
+        tracking_specs,
+        gemini_configured=True,
+        measurement_protocol_kwargs={
+            "measurement_window": MEASUREMENT_WINDOW_MONTH_END,
+            "tracking_set_fingerprint": "locked-tracking-set",
+            "tracking_set_size": 15,
+        },
+    )
+
+    summary = summarize_manifest(
+        monthly_manifest.cells,
+        closed=False,
+        configured_platforms=monthly_manifest.configured_platforms,
+    )
+    assert monthly_manifest is weekly_manifest
+    assert summary.planned_count == 15 * 2
+    assert summary.failed_count == 15 * 2
+    assert monthly_manifest.closed_at is None
+    assert monthly_manifest.platform_provenance["measurement_protocol"] == (
+        sov_engine.measurement_protocol(
+            measurement_window=MEASUREMENT_WINDOW_MONTH_END,
+            tracking_set_fingerprint="locked-tracking-set",
+            tracking_set_size=15,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("cell_variant", "selected_variant"),
+    [(None, uuid.uuid4()), (uuid.uuid4(), None)],
+)
+def test_monthly_remasure_matches_failed_cell_across_null_variant_identity(
+    cell_variant, selected_variant
+):
+    query_id = uuid.uuid4()
+    selected_target_id = uuid.uuid4()
+    cell = SimpleNamespace(
+        query_matrix_id=query_id,
+        query_text="지역 병원 추천",
+        platform="chatgpt",
+        query_target_id=None,
+        query_variant_id=cell_variant,
+        state="FAILED",
+    )
+    selected = [
+        {
+            "query_id": query_id,
+            "query_text": cell.query_text,
+            "platform": "chatgpt",
+            "target_id": selected_target_id,
+            "variant_id": selected_variant,
+        }
+    ]
+
+    pending = tasks._pending_weekly_manifest_specs(
+        SimpleNamespace(cells=[cell]), selected
+    )
+
+    assert len(pending) == 1
+    assert pending[0]["manifest_cell"] is cell
+    assert not tasks._selected_weekly_manifest_is_resolved(
+        SimpleNamespace(cells=[cell]), selected
+    )
+
+    cell.state = "SUCCESS"
+    assert tasks._selected_weekly_manifest_is_resolved(
+        SimpleNamespace(cells=[cell]), selected
+    )
+
+
+def test_remasure_does_not_match_different_non_null_tracking_targets():
+    query_id = uuid.uuid4()
+    cell = SimpleNamespace(
+        query_matrix_id=query_id,
+        query_text="지역 병원 추천",
+        platform="chatgpt",
+        query_target_id=uuid.uuid4(),
+        query_variant_id=None,
+        state="FAILED",
+    )
+    selected = [
+        {
+            "query_id": query_id,
+            "platform": "chatgpt",
+            "target_id": uuid.uuid4(),
+            "variant_id": uuid.uuid4(),
+        }
+    ]
+
+    assert tasks._pending_weekly_manifest_specs(
+        SimpleNamespace(cells=[cell]), selected
+    ) == []
 
 
 def test_monthly_specs_ignore_priority_and_caps_but_keep_legacy_helpers(monkeypatch):

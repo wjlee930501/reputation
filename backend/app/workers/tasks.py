@@ -3965,19 +3965,31 @@ def _recover_sov_failure(
     return recover_weekly_sov_failure(hospital_id=hospital_id, week_key=period_key)
 
 
-def _sov_spec_identity(spec: Mapping[str, object]) -> tuple[str, str, str, str]:
+def _sov_spec_identity(spec: Mapping[str, object]) -> tuple[str, str, str]:
     return (
         str(spec.get("query_id") or ""),
         _normalize_platform(str(spec.get("platform") or "")),
         str(spec.get("target_id") or ""),
-        str(spec.get("variant_id") or ""),
+    )
+
+
+def _sov_spec_identities_match(
+    left: tuple[str, str, str], right: tuple[str, str, str]
+) -> bool:
+    left_query, left_platform, left_target = left
+    right_query, right_platform, right_target = right
+    return (
+        bool(left_query)
+        and left_query == right_query
+        and left_platform == right_platform
+        and (not left_target or not right_target or left_target == right_target)
     )
 
 
 def _pending_weekly_manifest_specs(manifest, selected_specs: list[dict]) -> list[dict]:
     """Reconnect selected weekly specs to FAILED manifest cells without widening the cap."""
 
-    selected = {_sov_spec_identity(spec) for spec in selected_specs}
+    selected = [_sov_spec_identity(spec) for spec in selected_specs]
     pending: list[dict] = []
     for cell in getattr(manifest, "cells", ()) or ():
         spec = {
@@ -3988,29 +4000,37 @@ def _pending_weekly_manifest_specs(manifest, selected_specs: list[dict]) -> list
             "variant_id": cell.query_variant_id,
             "manifest_cell": cell,
         }
-        if cell.state == "FAILED" and _sov_spec_identity(spec) in selected:
+        identity = _sov_spec_identity(spec)
+        if cell.state == "FAILED" and any(
+            _sov_spec_identities_match(identity, chosen) for chosen in selected
+        ):
             pending.append(spec)
     return pending
 
 
 def _selected_weekly_manifest_is_resolved(manifest, selected_specs: list[dict]) -> bool:
-    selected = {_sov_spec_identity(spec) for spec in selected_specs}
-    matched_states = [
-        cell.state
-        for cell in (getattr(manifest, "cells", ()) or ())
-        if _sov_spec_identity(
-            {
-                "query_id": cell.query_matrix_id,
-                "platform": cell.platform,
-                "target_id": cell.query_target_id,
-                "variant_id": cell.query_variant_id,
-            }
-        )
-        in selected
-    ]
-    return bool(matched_states) and all(
-        state in {"SUCCESS", "EXCLUDED"} for state in matched_states
-    )
+    cells = list(getattr(manifest, "cells", ()) or ())
+    selected = [_sov_spec_identity(spec) for spec in selected_specs]
+    if not selected:
+        return False
+    for chosen in selected:
+        states = [
+            cell.state
+            for cell in cells
+            if _sov_spec_identities_match(
+                _sov_spec_identity(
+                    {
+                        "query_id": cell.query_matrix_id,
+                        "platform": cell.platform,
+                        "target_id": cell.query_target_id,
+                    }
+                ),
+                chosen,
+            )
+        ]
+        if not states or any(state not in {"SUCCESS", "EXCLUDED"} for state in states):
+            return False
+    return True
 
 
 def _weekly_manifest_is_resolved(manifest) -> bool:
