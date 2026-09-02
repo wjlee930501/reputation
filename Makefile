@@ -36,8 +36,11 @@ test:
 	# image's venv first (UV_PROJECT_ENVIRONMENT pins the target explicitly; the
 	# runtime stage only sets VIRTUAL_ENV, which uv project commands don't read),
 	# then run tests through that synced environment with uv run --no-sync.
-	docker compose exec -e UV_PROJECT_ENVIRONMENT=/opt/venv api uv sync --locked --extra dev
-	docker compose exec -e UV_PROJECT_ENVIRONMENT=/opt/venv api uv run --no-sync pytest -v
+	# -u root: the runtime stage copies /opt/venv from the builder without chown and
+	# then switches to `appuser`, so a sync as the default user dies on
+	# "Permission denied" when it rewrites site-packages.
+	docker compose exec -u root -e UV_PROJECT_ENVIRONMENT=/opt/venv api uv sync --locked --extra dev
+	docker compose exec -u root -e UV_PROJECT_ENVIRONMENT=/opt/venv api uv run --no-sync pytest -v
 
 test-local: test-backend-local test-frontend copy-guard
 
