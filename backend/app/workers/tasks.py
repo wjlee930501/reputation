@@ -124,6 +124,7 @@ from app.services.monthly_manifest import (
     close_manifest,
     freeze_dispatch_manifest,
     link_attempt,
+    summarize_manifest,
 )
 from app.services.monthly_period import (
     MonthlyPeriodError,
@@ -4976,10 +4977,10 @@ def _start_scheduled_monthly_operation_run(
             OperationRunState.RUNNING,
         )
         stale = active and last_seen <= observed_at - timedelta(hours=1)
-        retryable = existing.state in (
-            OperationRunState.FAILED,
-            OperationRunState.PARTIAL,
-        )
+        # PARTIAL is a durable operator-visible block (coverage/artifact), not a
+        # transient build failure. Reopening it every six hours created a new
+        # immutable report version without changing the underlying measurement.
+        retryable = existing.state == OperationRunState.FAILED
         if stale or retryable:
             existing.state = OperationRunState.RUNNING
             existing.completed_at = None
@@ -5054,15 +5055,102 @@ def _latest_monthly_report(db, hospital_id: uuid.UUID, year: int, month: int):
 def _monthly_sov_measurement_succeeded(
     db, hospital_id: uuid.UUID, period_key: str
 ) -> bool:
-    run_id = db.execute(
-        select(OperationRun.id).where(
+    run = db.execute(
+        select(OperationRun).where(
             OperationRun.hospital_id == hospital_id,
             OperationRun.operation_type == "RUN_SOV",
             OperationRun.idempotency_key == f"monthly-sov:{hospital_id}:{period_key}",
             OperationRun.state == OperationRunState.SUCCEEDED,
         )
     ).scalar_one_or_none()
-    return run_id is not None
+    if run is None:
+        return False
+    try:
+        year_text, month_text = period_key.split("-", 1)
+        year, month = int(year_text), int(month_text)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    manifest = db.execute(
+        select(MonthlyMeasurementManifest)
+        .options(selectinload(MonthlyMeasurementManifest.cells))
+        .where(
+            MonthlyMeasurementManifest.hospital_id == hospital_id,
+            MonthlyMeasurementManifest.period_year == year,
+            MonthlyMeasurementManifest.period_month == month,
+        )
+    ).scalar_one_or_none()
+    if manifest is None:
+        _mark_monthly_measurement_incomplete(
+            db,
+            run,
+            planned=0,
+            success=0,
+            failed=0,
+            manifest_closed=False,
+        )
+        return False
+
+    observed_at = datetime.now(timezone.utc)
+    if manifest.closed_at is None:
+        if observed_at < manifest.closes_at:
+            return False
+        close_manifest(manifest, now=observed_at)
+        db.commit()
+    summary = summarize_manifest(
+        manifest.cells,
+        closed=manifest.closed_at is not None,
+        configured_platforms=manifest.configured_platforms,
+    )
+    complete = (
+        summary.quality == "COMPLETE"
+        and summary.planned_count > 0
+        and summary.success_count == summary.planned_count
+        and summary.failed_count == 0
+        and manifest.closed_at is not None
+    )
+    if not complete:
+        _mark_monthly_measurement_incomplete(
+            db,
+            run,
+            planned=summary.planned_count,
+            success=summary.success_count,
+            failed=summary.failed_count,
+            manifest_closed=manifest.closed_at is not None,
+        )
+    return complete
+
+
+def _mark_monthly_measurement_incomplete(
+    db,
+    run: OperationRun,
+    *,
+    planned: int,
+    success: int,
+    failed: int,
+    manifest_closed: bool,
+) -> None:
+    """Reconcile a task-level success that did not complete the frozen denominator."""
+    run.state = OperationRunState.PARTIAL
+    run.total_count = 1
+    run.success_count = 0
+    run.failure_count = 1
+    run.safe_error_code = "MONTHLY_MEASUREMENT_INCOMPLETE"
+    run.safe_error_message = (
+        "필수 측정이 완료되지 않았습니다. 실패한 측정 항목만 복구한 뒤 리포트를 생성해 주세요."
+    )
+    result_summary = dict(run.result_summary or {})
+    result_summary.update(
+        {
+            "measurement_quality": "INCOMPLETE",
+            "planned_count": planned,
+            "success_count": success,
+            "failed_count": failed,
+            "manifest_closed": manifest_closed,
+        }
+    )
+    run.result_summary = result_summary
+    run.version += 1
+    db.commit()
 
 
 def _hospital_requires_monthly_sov_success(db, hospital, period) -> bool:
@@ -5609,14 +5697,17 @@ def run_monthly_reports(self):
         hospital_ids = eligible_hospital_ids(db, period)
         stmt = select(Hospital).where(Hospital.id.in_(hospital_ids))
         result = db.execute(stmt)
-        hospitals = result.scalars().all()
+        eligible_hospitals = result.scalars().all()
         period_key = f"{period.year:04d}-{period.month:02d}"
-        hospitals = [
-            hospital
-            for hospital in hospitals
-            if not _hospital_requires_monthly_sov_success(db, hospital, period)
-            or _monthly_sov_measurement_succeeded(db, hospital.id, period_key)
-        ]
+        hospitals = []
+        blocked: list[str] = []
+        for hospital in eligible_hospitals:
+            if _hospital_requires_monthly_sov_success(
+                db, hospital, period
+            ) and not _monthly_sov_measurement_succeeded(db, hospital.id, period_key):
+                blocked.append(hospital.name)
+                continue
+            hospitals.append(hospital)
         failures: list[str] = []
         successes = 0
 
@@ -5626,31 +5717,35 @@ def run_monthly_reports(self):
                 existing_run = db.get(OperationRun, run_id)
                 if existing_run is not None and existing_run.state == OperationRunState.SUCCEEDED:
                     successes += 1
+                elif existing_run is not None and existing_run.state == OperationRunState.PARTIAL:
+                    blocked.append(h.name)
                 else:
                     failures.append(h.name)
                 continue
             try:
                 latest = _latest_monthly_report(db, h.id, anchor.year, anchor.month)
                 rebuilding = latest is not None
-                outcome = _build_monthly_report_for_hospital(
-                    db,
-                    h,
-                    anchor,
-                    rebuild=rebuilding,
-                    build_reason=(
-                        ReportBuildReason.AUTOMATIC_RECOVERY
-                        if rebuilding
-                        else ReportBuildReason.SCHEDULED_CLOSE
-                    ),
-                    correlation_key=f"scheduled:{h.id}:{anchor.year}-{anchor.month:02d}",
-                    operation_run_id=run_id,
-                )
+                if latest is not None and latest.quality != "COMPLETE":
+                    outcome = "coverage_incomplete"
+                else:
+                    outcome = _build_monthly_report_for_hospital(
+                        db,
+                        h,
+                        anchor,
+                        rebuild=rebuilding,
+                        build_reason=(
+                            ReportBuildReason.AUTOMATIC_RECOVERY
+                            if rebuilding
+                            else ReportBuildReason.SCHEDULED_CLOSE
+                        ),
+                        correlation_key=f"scheduled:{h.id}:{anchor.year}-{anchor.month:02d}",
+                        operation_run_id=run_id,
+                    )
                 _finish_monthly_operation_run(db, run_id, h.id, anchor.year, anchor.month, outcome)
                 finished_run = db.get(OperationRun, run_id)
-                if finished_run is not None and finished_run.state in (
-                    OperationRunState.PARTIAL,
-                    OperationRunState.FAILED,
-                ):
+                if finished_run is not None and finished_run.state == OperationRunState.PARTIAL:
+                    blocked.append(h.name)
+                elif finished_run is not None and finished_run.state == OperationRunState.FAILED:
                     failures.append(h.name)
                 else:
                     successes += 1
@@ -5662,13 +5757,13 @@ def run_monthly_reports(self):
 
         result = {
             "status": "PARTIAL"
-            if failures and successes
+            if blocked or (failures and successes)
             else "FAILED"
             if failures
             else "SUCCEEDED",
-            "total_count": len(hospitals),
+            "total_count": len(eligible_hospitals),
             "success_count": successes,
-            "failure_count": len(failures),
+            "failure_count": len(failures) + len(blocked),
         }
     if failures:
         raise MonthlyBatchIncompleteError(f"scheduled monthly reports incomplete: {len(failures)}")

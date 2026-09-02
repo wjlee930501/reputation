@@ -635,10 +635,10 @@ def test_august_conversion_batch_skips_without_successful_measurement(monkeypatc
     )
 
     assert tasks.run_monthly_reports.run() == {
-        "status": "SUCCEEDED",
-        "total_count": 0,
+        "status": "PARTIAL",
+        "total_count": 1,
         "success_count": 0,
-        "failure_count": 0,
+        "failure_count": 1,
     }
 
 

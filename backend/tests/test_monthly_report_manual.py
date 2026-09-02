@@ -107,6 +107,7 @@ def captured_anchor(monkeypatch):
 
 def _use_session(monkeypatch, session: FakeSession) -> None:
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(tasks, "_monthly_sov_measurement_succeeded", lambda *_args: True)
 
 
 def test_defaults_to_previous_month(monkeypatch, captured_anchor):
@@ -1015,11 +1016,16 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
     )
 
     # When: the monthly batch processes both hospitals
-    with pytest.raises(tasks.MonthlyBatchIncompleteError):
-        tasks.run_monthly_reports()
+    result = tasks.run_monthly_reports()
 
-    # Then: Celery retries the incomplete batch, the success remains committed,
-    # and each hospital keeps its own durable truth.
+    # Then: the incomplete artifact stays operator-visible without retrying the
+    # whole batch, the success remains committed, and each hospital keeps truth.
+    assert result == {
+        "status": "PARTIAL",
+        "total_count": 2,
+        "success_count": 1,
+        "failure_count": 1,
+    }
     runs = list(
         monthly_pg_session.execute(
             select(OperationRun).where(
