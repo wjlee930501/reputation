@@ -98,6 +98,14 @@ class MissingCitableReferencesError(ValueError):
         self.result = result
 
 
+class DirectorNameMissingError(ValueError):
+    """Keep the last provider result available for one deterministic name heal."""
+
+    def __init__(self, message: str, result: dict):
+        super().__init__(message)
+        self.result = result
+
+
 client = anthropic.Anthropic(
     api_key=settings.ANTHROPIC_API_KEY,
     timeout=90.0,
@@ -805,36 +813,45 @@ async def generate_content(
     content_brief: dict | None = None,
     remediation_findings: list[str] | None = None,
 ) -> dict:
-    """Generate with hard retries, healing an empty-reference result immediately."""
+    """Generate with hard retries and apply bounded deterministic heals."""
 
     try:
-        return await _generate_content_attempt(
-            hospital,
-            content_type,
-            existing_titles,
-            philosophy,
-            content_brief,
-            remediation_findings,
-        )
-    except MissingCitableReferencesError as exc:
+        try:
+            return await _generate_content_attempt(
+                hospital,
+                content_type,
+                existing_titles,
+                philosophy,
+                content_brief,
+                remediation_findings,
+            )
+        except MissingCitableReferencesError as exc:
+            result = exc.result
+            # MissingCitableReferencesError is excluded from tenacity, so this runs
+            # after the first provider result in the same tick.  Preserve any citable
+            # provider references; only an actually empty list may be healed from the
+            # human-verified, topic-specific catalog.
+            if result.get("references"):
+                raise
+            curated_references = select_curated_authority_sources(
+                _curated_reference_focus(content_brief, result),
+            )
+            if not curated_references:
+                raise
+            result["references"] = curated_references
+            return _validate_generated_result(result, hospital, content_type, content_brief)
+    except DirectorNameMissingError as exc:
         result = exc.result
-        # MissingCitableReferencesError is excluded from tenacity, so this runs
-        # after the first provider result in the same tick.  Preserve any citable
-        # provider references; only an actually empty list may be healed from the
-        # human-verified, topic-specific catalog.
-        if result.get("references"):
+        director = (hospital.director_name or "").strip()
+        body = (result.get("body") or "").rstrip()
+        if not director or director in body:
             raise
-        curated_references = select_curated_authority_sources(
-            _curated_reference_focus(content_brief, result),
-        )
-        if not curated_references:
-            raise
-        result["references"] = curated_references
+        result["body"] = f"{body}\n\n본원 {director} 원장이 진료를 담당합니다."
         return _validate_generated_result(result, hospital, content_type, content_brief)
 
 
 # Keep the retry controller observable/configurable at the public seam used by tests and
-# provider-call metering, while the catalog fallback remains strictly outside tenacity.
+# provider-call metering, while deterministic heals remain strictly outside tenacity.
 generate_content.retry = _generate_content_attempt.retry
 
 
@@ -1089,9 +1106,6 @@ def _validate_geo(
       • 병원명·원장명·지역명 중 프로파일에 있는 값이 본문에서 누락됐을 때
 
     SOFT (반환 리스트에 추가):
-      • hospital.name이 body에 없을 때
-      • hospital.director_name이 body에 없을 때
-      • hospital.region 토큰 중 어느 것도 body에 없을 때
       • 숫자/통계 패턴(SEO_STAT_PATTERN)이 body에 없을 때
     """
     body: str = result.get("body") or ""
@@ -1113,12 +1127,15 @@ def _validate_geo(
     if hospital_name and hospital_name not in body:
         raise ValueError(f"GEO hard-fail: 병원명 '{hospital_name}' body 미포함")
 
-    # ── SOFT: 원장명 공출현 ──────────────────────────────────────────
+    # ── HARD: 원장명 공출현 ──────────────────────────────────────────
     director = (hospital.director_name or "").strip()
     if director and director not in body:
-        raise ValueError(f"GEO hard-fail: 원장명 '{director}' body 미포함")
+        raise DirectorNameMissingError(
+            f"GEO hard-fail: 원장명 '{director}' body 미포함",
+            result,
+        )
 
-    # ── SOFT: 지역명 공출현 (region 중 하나라도 있으면 통과) ──────────
+    # ── HARD: 지역명 공출현 (region 중 하나라도 있으면 통과) ──────────
     regions = [r for r in (hospital.region or []) if r]
     if regions and not any(r in body for r in regions):
         raise ValueError(f"GEO hard-fail: 지역 엔티티 {regions} body 미포함")
