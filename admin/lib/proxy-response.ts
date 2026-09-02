@@ -2,6 +2,9 @@ const FORWARDED_RESPONSE_HEADERS = [
   'content-disposition',
   'content-type',
   'location',
+  // 목록 API의 잘림 신호 (예: /admin/handoffs) — 브라우저는 이 프록시를 통해서만 백엔드를 본다
+  'x-has-more',
+  'x-next-offset',
 ]
 
 export function buildProxyResponse(upstream: Response): Response {

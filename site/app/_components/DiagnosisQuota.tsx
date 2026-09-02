@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 
-import { parseDiagnosisSlots, type DiagnosisSlots } from '@/lib/diagnosis-slots'
+import { diagnosisSlotResetCopy, parseDiagnosisSlots, type DiagnosisSlots } from '@/lib/diagnosis-slots'
 
 type DiagnosisQuotaProps = {
   slots: DiagnosisSlots | null
@@ -46,7 +46,7 @@ export function DiagnosisQuota({ slots, variant = 'hero' }: DiagnosisQuotaProps)
           </p>
         )}
       </div>
-      <p className="diagnosis-quota-reset">매일 오전 8시에 새 접수가 열립니다.</p>
+      <p className="diagnosis-quota-reset">{diagnosisSlotResetCopy()}</p>
     </div>
   )
 }

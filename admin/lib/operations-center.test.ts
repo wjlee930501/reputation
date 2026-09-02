@@ -10,12 +10,15 @@ import {
   deriveQueueView,
   describeOperationsDeadline,
   operationsRowTitle,
+  actionableOperationsCount,
   enabledPostAction,
   effectiveSafeCause,
   interpretOperationsConflict,
   operationStatusLabel,
+  partitionOperationsRows,
   primaryOperationsMutation,
   readOperationsQuery,
+  requiresOperatorAction,
   runStateLabel,
   safeCauseText,
   selectCurrentAction,
@@ -146,6 +149,47 @@ test('selecting a task in another queue keeps its explicitly supplied detail', (
 
   // Then
   assert.equal(next.toString(), 'queue=incidents&detail=incident%3A2')
+})
+
+test('a due-publish row before 08:00 KST is not actionable, and older responses default to actionable', () => {
+  // Given
+  const foldedRow = row('content:1', { requires_operator_action: false })
+  const actionableRow = row('content:2', { requires_operator_action: true })
+  const legacyRow = row('content:3', { requires_operator_action: undefined })
+
+  // When / Then
+  assert.equal(requiresOperatorAction(foldedRow), false)
+  assert.equal(requiresOperatorAction(actionableRow), true)
+  assert.equal(requiresOperatorAction(legacyRow), true)
+})
+
+test('partitioning splits actionable rows from rows folded until 08:00 auto-publish', () => {
+  // Given
+  const items = [
+    row('content:1', { requires_operator_action: false }),
+    row('content:2', { requires_operator_action: true }),
+    row('content:3'),
+  ]
+
+  // When
+  const { actionable, pending } = partitionOperationsRows(items)
+
+  // Then
+  assert.deepEqual(actionable.map((item) => item.id), ['content:2', 'content:3'])
+  assert.deepEqual(pending.map((item) => item.id), ['content:1'])
+})
+
+test('actionable count excludes folded rows so "N건 처리 필요" never inflates with scheduled work', () => {
+  // Given
+  const items = [
+    row('content:1', { requires_operator_action: false }),
+    row('content:2', { requires_operator_action: false }),
+    row('content:3', { requires_operator_action: true }),
+  ]
+
+  // When / Then
+  assert.equal(actionableOperationsCount(items), 1)
+  assert.equal(actionableOperationsCount([]), 0)
 })
 
 test('current action prioritizes overdue before critical and Slack failures', () => {
@@ -406,11 +450,20 @@ test('the queue list explains a search-emptied page instead of contradicting the
   assert.doesNotMatch(queue, /처리 기한 임박'/)
 })
 
-test('the current action is chosen from the queue on screen, not from every queue', () => {
+test('the current action is chosen from the actionable rows of the queue on screen, not from every queue', () => {
   const page = readFileSync(new URL('../app/operations/page.tsx', import.meta.url), 'utf8')
 
-  assert.match(page, /selectCurrentAction\(center\.visibleItems/)
+  assert.match(page, /partitionOperationsRows\(center\.visibleItems/)
+  assert.match(page, /selectCurrentAction\(visibleActionable\)/)
   assert.doesNotMatch(page, /selectCurrentAction\(center\.overview/)
+})
+
+test('the queue list folds pre-08:00 auto-publish rows out of the actionable list', () => {
+  const queue = readFileSync(new URL('../app/operations/OperationsQueue.tsx', import.meta.url), 'utf8')
+
+  assert.match(queue, /partitionOperationsRows\(visibleItems\)/)
+  assert.match(queue, /예정 \(08:00 자동 발행 대기\)/)
+  assert.doesNotMatch(queue, /visibleItems\.map/)
 })
 
 test('the detail panel shows who owns the task and when it is due', () => {

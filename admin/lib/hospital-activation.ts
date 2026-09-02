@@ -93,8 +93,13 @@ export function hasCustomDomain(hospital: PlatformActivationInput): boolean {
 }
 
 export function platformActivationMode(hospital: PlatformActivationInput): PlatformActivationMode {
+  // 백엔드 evaluate_auto_activation과 같은 순서로 판정한다(services/hospital_activation.py):
+  // ACTIVE(live) → PAUSED 등 자동 전환 불가 상태·자기 도메인(manual) → 게이트 미충족(blocked)
+  // → automatic. 게이트가 아직 안 통과했어도 자기 도메인/PAUSED면 백엔드는 CUSTOM_DOMAIN_PENDING
+  // 또는 STATUS_NOT_AUTO_ADVANCEABLE을 먼저 반환하므로, 화면도 'blocked'가 아니라 'manual'로
+  // 봐야 "선행 단계가 통과하면 자동으로 시작된다"는 blocked 문구를 잘못 보여주지 않는다.
   if (isPlatformAddressBrowsable(hospital)) return 'live'
-  if (missingActivationPrerequisites(hospital).length > 0) return 'blocked'
   if (hasCustomDomain(hospital) || hospital.status === 'PAUSED') return 'manual'
+  if (missingActivationPrerequisites(hospital).length > 0) return 'blocked'
   return 'automatic'
 }

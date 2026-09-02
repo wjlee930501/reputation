@@ -35,3 +35,19 @@ test('buildProxyResponse forces private no-store for admin responses', async () 
   assert.equal(forwarded.headers.get('cache-control'), 'no-store, private')
   assert.equal(forwarded.headers.get('etag'), null)
 })
+
+test('buildProxyResponse forwards list truncation headers', () => {
+  const upstream = new Response('[]', {
+    status: 200,
+    headers: {
+      'content-type': 'application/json',
+      'x-has-more': 'true',
+      'x-next-offset': '100',
+    },
+  })
+
+  const forwarded = buildProxyResponse(upstream)
+
+  assert.equal(forwarded.headers.get('x-has-more'), 'true')
+  assert.equal(forwarded.headers.get('x-next-offset'), '100')
+})

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  belongsToMonthView,
   buildPublicContentUrl,
   countCarriedOver,
   countUnpublishedCarriedOver,
@@ -161,4 +162,20 @@ test('buildPublicContentUrl normalizes schemes, slashes, and content ids', () =>
   assert.equal(buildPublicContentUrl('https://jangclinic.kr/', 'content 1'), 'https://jangclinic.kr/contents/content%201')
   assert.equal(buildPublicContentUrl('jangclinic.kr', 'abc'), 'https://jangclinic.kr/contents/abc')
   assert.equal(buildPublicContentUrl(null, 'abc'), null)
+})
+
+test('belongsToMonthView keeps items whose scheduled_date matches the viewed year/month', () => {
+  assert.equal(belongsToMonthView({ scheduled_date: '2026-09-15' }, 2026, 9), true)
+  assert.equal(belongsToMonthView({ scheduled_date: '2026-09-15T00:00:00Z' }, 2026, 9), true)
+})
+
+test('belongsToMonthView drops items rejected past the last day of the month (rescheduled to next month)', () => {
+  // reject_content가 오늘 이하인 scheduled_date를 내일로 재스케줄 — 월말 반려는 다음 달로 넘어간다.
+  assert.equal(belongsToMonthView({ scheduled_date: '2026-10-01' }, 2026, 9), false)
+})
+
+test('belongsToMonthView is conservative about missing/unparseable dates (keeps existing merge behavior)', () => {
+  assert.equal(belongsToMonthView({ scheduled_date: null }, 2026, 9), true)
+  assert.equal(belongsToMonthView({}, 2026, 9), true)
+  assert.equal(belongsToMonthView({ scheduled_date: 'not-a-date' }, 2026, 9), true)
 })

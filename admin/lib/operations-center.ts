@@ -113,6 +113,38 @@ export function updateOperationsQuery(
   return canonicalizeOperationsQuery(next)
 }
 
+/**
+ * 08:00 자동 발행 전 당일 발행 예정 행은 `requires_operator_action: false`로 온다
+ * (`backend/app/schemas/operations.py`). 필드가 없는 옛 응답은 사람 업무로 취급한다.
+ */
+export function requiresOperatorAction(
+  item: Pick<OperationsQueueRow, 'requires_operator_action'>,
+): boolean {
+  return item.requires_operator_action !== false
+}
+
+/**
+ * 지금 처리해야 할 행과, 정해진 시각(08:00 자동 발행)까지 기다리면 되는 행을 나눈다.
+ * 후자는 큐에서 사라지지 않되 처리 목록·현재 작업 선정에서는 빠져야 한다.
+ */
+export function partitionOperationsRows<T extends Pick<OperationsQueueRow, 'requires_operator_action'>>(
+  items: readonly T[],
+): { readonly actionable: readonly T[]; readonly pending: readonly T[] } {
+  const actionable: T[] = []
+  const pending: T[] = []
+  for (const item of items) {
+    if (requiresOperatorAction(item)) actionable.push(item)
+    else pending.push(item)
+  }
+  return { actionable, pending }
+}
+
+export function actionableOperationsCount(
+  items: readonly Pick<OperationsQueueRow, 'requires_operator_action'>[],
+): number {
+  return partitionOperationsRows(items).actionable.length
+}
+
 function actionPriority(item: OperationsQueueRow): number {
   if (item.sla_state === 'OVERDUE') return 0
   if (item.severity === 'CRITICAL' || item.severity === 'HIGH') return 1

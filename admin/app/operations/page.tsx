@@ -2,7 +2,7 @@
 
 import { Suspense, useMemo } from 'react'
 
-import { selectCurrentAction } from '@/lib/operations-center'
+import { partitionOperationsRows, selectCurrentAction } from '@/lib/operations-center'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { CostGuardPanel } from './CostGuardPanel'
 import { CurrentActionStrip } from './CurrentActionStrip'
@@ -15,10 +15,13 @@ function OperationsCenter() {
   const center = useOperationsCenter()
   // "지금 먼저 처리"는 지금 보고 있는 큐에서 고른다. overview 전체(네 큐 × 5건)에서
   // 고르면 다른 탭의 항목을 가리켜, 눌렀을 때 목록에 없는 줄로 이동한다(G-6).
-  const currentAction = useMemo(
-    () => selectCurrentAction(center.visibleItems.length > 0 ? center.visibleItems : center.page?.items ?? []),
+  // 08:00 자동 발행 전의 당일 발행 예정 행(requires_operator_action=false)은 사람이
+  // 지금 처리할 수 없는 일이라 현재 작업 후보에서 제외한다.
+  const visibleActionable = useMemo(
+    () => partitionOperationsRows(center.visibleItems.length > 0 ? center.visibleItems : center.page?.items ?? []).actionable,
     [center.page, center.visibleItems],
   )
+  const currentAction = useMemo(() => selectCurrentAction(visibleActionable), [visibleActionable])
 
   return (
     <div className="ops-page">

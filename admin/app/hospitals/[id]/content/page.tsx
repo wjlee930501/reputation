@@ -9,6 +9,7 @@ import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
+  belongsToMonthView,
   buildPublicContentUrl,
   ContentOperationsFilter,
   countCarriedOver,
@@ -447,12 +448,20 @@ export default function ContentPage() {
   const refreshItem = useCallback(async (itemId: string) => {
     try {
       const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}`)
+      // 반려(reject)는 scheduled_date가 오늘 이하면 내일로 재스케줄한다 — 월말 반려는 다음
+      // 달로 넘어간다. 그 결과를 이번 달 목록에 그대로 병합하면 다음 달 슬롯이 이번 달
+      // 화면에 유령처럼 남으므로, 조회 중인 연/월과 다르면 병합 대신 제거한다.
+      if (!belongsToMonthView(full, year, month)) {
+        setItems((prev) => prev.filter((it) => it.id !== full.id))
+        setSelected((prev) => (prev && prev.id === full.id ? null : prev))
+        return
+      }
       setItems((prev) => prev.map((it) => (it.id === full.id ? full : it)))
       setSelected((prev) => (prev && prev.id === full.id ? full : prev))
     } catch {
       // best-effort
     }
-  }, [id])
+  }, [id, year, month])
 
   async function handlePublish(itemId: string) {
     const payload = buildManualPublishPayload(currentOperatorName ?? '')

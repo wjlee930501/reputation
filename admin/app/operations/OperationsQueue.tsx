@@ -8,6 +8,7 @@ import {
   describeOperationsDeadline,
   operationStatusLabel,
   operationsRowTitle,
+  partitionOperationsRows,
   safeCauseText,
 } from '@/lib/operations-center'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
@@ -190,6 +191,35 @@ function SelectButton({ item, selectedId, onSelect }: {
   )
 }
 
+// 08:00 자동 발행 전의 당일 발행 예정 행은 사람이 지금 처리할 수 없는 정상 상태다.
+// 접어서 아래에 남겨 두되, 처리 목록·검색 결과 판단에서는 빼야 "N건 처리 필요"가
+// 아직 할 수 없는 일까지 세지 않는다.
+const PENDING_SECTION_TITLE = '예정 (08:00 자동 발행 대기)'
+
+function PendingSection({ items }: { readonly items: readonly OperationsQueueRow[] }) {
+  if (items.length === 0) return null
+  return (
+    <details className="ops-queue-pending mt-4 rounded-xl border border-slate-200 bg-slate-50">
+      <summary className="ops-control cursor-pointer px-4 py-3 text-sm font-semibold text-slate-700">
+        {PENDING_SECTION_TITLE} {items.length}건
+      </summary>
+      <div className="border-t border-slate-200 p-4">
+        <p className="text-xs leading-5 text-slate-500">
+          08:00 자동 발행 전까지는 처리할 작업이 아닙니다. 자동 발행 이후에도 공개되지 않은 채 남아 있으면 위 목록에 다시 나타납니다.
+        </p>
+        <ul className="mt-3 space-y-2">
+          {items.map((item) => (
+            <li key={item.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <p className="ops-readable text-sm font-semibold text-slate-800">{operationsRowTitle(item)}</p>
+              <p className="ops-readable mt-1 text-xs leading-5 text-slate-500">{item.impact}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
+  )
+}
+
 export function OperationsQueueList(props: QueueProps) {
   const { data, visibleItems, loading, error, selectedId, onSelect, onRetryLoad, onPage, searchTerm, checkedAt, canRaiseLimit } = props
   if (loading && data === null) {
@@ -207,7 +237,8 @@ export function OperationsQueueList(props: QueueProps) {
       </div>
     )
   }
-  if (visibleItems.length === 0) {
+  const { actionable, pending } = partitionOperationsRows(visibleItems)
+  if (actionable.length === 0 && pending.length === 0) {
     // 탭 숫자는 서버가 센 큐 전체이고 검색은 이 화면에서만 걸린다. 검색 때문에 비었는데
     // "처리할 일이 없습니다"라고 하면 탭 숫자와 정면으로 어긋난다(G-5).
     const hiddenBySearch = searchTerm.length > 0 && (data?.items.length ?? 0) > 0
@@ -229,31 +260,41 @@ export function OperationsQueueList(props: QueueProps) {
 
   return (
     <section aria-labelledby="ops-queue-heading" className="min-w-0">
-      <div className="ops-table-wrap rounded-xl border border-slate-200 bg-white">
-        <table className="ops-table w-full table-fixed">
-          <thead><tr><th>병원 · 무슨 문제인지</th><th>고객 영향</th><th>지금 할 일 · 처리 기한</th><th>처리</th></tr></thead>
-          <tbody>
-            {visibleItems.map((item) => (
-              <tr key={item.id} data-selected={selectedId === item.id}>
-                <td><ProblemBlock item={item} canRaiseLimit={canRaiseLimit} /></td>
-                <td><ImpactBlock item={item} /></td>
-                <td><ActionBlock item={item} now={checkedAt} /></td>
-                <td><SelectButton item={item} selectedId={selectedId} onSelect={onSelect} /></td>
-              </tr>
+      {actionable.length === 0 ? (
+        <div className="ops-queue-state">
+          <p className="font-semibold text-slate-800">지금 이 조건에서 처리할 일이 없습니다.</p>
+          <p className="mt-1 text-sm text-slate-500">아래 예정 항목은 08:00 자동 발행 후 처리가 필요하면 다시 나타납니다.</p>
+        </div>
+      ) : (
+        <>
+          <div className="ops-table-wrap rounded-xl border border-slate-200 bg-white">
+            <table className="ops-table w-full table-fixed">
+              <thead><tr><th>병원 · 무슨 문제인지</th><th>고객 영향</th><th>지금 할 일 · 처리 기한</th><th>처리</th></tr></thead>
+              <tbody>
+                {actionable.map((item) => (
+                  <tr key={item.id} data-selected={selectedId === item.id}>
+                    <td><ProblemBlock item={item} canRaiseLimit={canRaiseLimit} /></td>
+                    <td><ImpactBlock item={item} /></td>
+                    <td><ActionBlock item={item} now={checkedAt} /></td>
+                    <td><SelectButton item={item} selectedId={selectedId} onSelect={onSelect} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="ops-cards" aria-label="운영 작업 카드 목록">
+            {actionable.map((item) => (
+              <article key={item.id} className="rounded-xl border border-slate-200 bg-white p-4">
+                <ProblemBlock item={item} canRaiseLimit={canRaiseLimit} />
+                <div className="mt-3 border-t border-slate-100 pt-3"><p className="text-xs font-bold text-slate-500">고객 영향</p><ImpactBlock item={item} /></div>
+                <div className="mt-3 border-t border-slate-100 pt-3"><p className="text-xs font-bold text-slate-500">지금 할 일</p><ActionBlock item={item} now={checkedAt} /></div>
+                <div className="mt-3"><SelectButton item={item} selectedId={selectedId} onSelect={onSelect} /></div>
+              </article>
             ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="ops-cards" aria-label="운영 작업 카드 목록">
-        {visibleItems.map((item) => (
-          <article key={item.id} className="rounded-xl border border-slate-200 bg-white p-4">
-            <ProblemBlock item={item} canRaiseLimit={canRaiseLimit} />
-            <div className="mt-3 border-t border-slate-100 pt-3"><p className="text-xs font-bold text-slate-500">고객 영향</p><ImpactBlock item={item} /></div>
-            <div className="mt-3 border-t border-slate-100 pt-3"><p className="text-xs font-bold text-slate-500">지금 할 일</p><ActionBlock item={item} now={checkedAt} /></div>
-            <div className="mt-3"><SelectButton item={item} selectedId={selectedId} onSelect={onSelect} /></div>
-          </article>
-        ))}
-      </div>
+          </div>
+        </>
+      )}
+      <PendingSection items={pending} />
       {data && data.total > data.page_size ? (
         <nav aria-label="운영 목록 페이지" className="mt-4 flex items-center justify-between gap-3">
           <button type="button" disabled={data.page <= 1} onClick={() => onPage(data.page - 1)} className="ops-control rounded-lg border border-slate-300 px-4 text-sm disabled:opacity-40">이전</button>
