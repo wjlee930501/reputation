@@ -1133,11 +1133,15 @@ async def test_operations_overview_query_count_is_constant_for_one_or_many_rows(
         await _incident(db, extra, owner=actor)
     many_count = await _overview_query_count(db, actor)
 
-    assert one_count <= 5
+    # 6 = 온보딩·오늘·리포트 대기열 각 1회 + 인시던트 대기열 2회(원인 그룹 → 해당 페이지
+    # 상세, `load_incidents_queue`의 2-pass). 행 수가 아니라 대기열 수에만 비례해야 한다.
+    assert one_count <= 6
     assert many_count == one_count
 
 
-async def test_incident_queue_groups_same_cause_in_one_query(pg_async_session):
+async def test_incident_queue_groups_same_cause_in_a_constant_number_of_queries(
+    pg_async_session,
+):
     db = pg_async_session
     actor = await _operations_actor(db)
     hospital = await _active_hospital(db, "쿼리 예산 의원")
@@ -1165,7 +1169,9 @@ async def test_incident_queue_groups_same_cause_in_one_query(pg_async_session):
     assert len(result.items) == 1
     assert result.items[0].same_type_count == 25
     assert result.items[0].affected_hospital_count == 1
-    assert len(statements) == 1
+    # 인시던트 25건이 원인 1건으로 묶여도 쿼리는 2회 고정이다(그룹 판별 pass + 해당
+    # 페이지 상세 pass). 건수에 비례해 늘어나면 N+1이므로 이 수치는 상한이자 하한이다.
+    assert len(statements) == 2
 
 
 async def test_operations_http_surface_returns_typed_scoping_and_conflict_errors(pg_async_session):

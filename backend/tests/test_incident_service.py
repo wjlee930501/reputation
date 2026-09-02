@@ -683,7 +683,7 @@ async def test_system_acknowledgement_closes_a_recovered_incident_without_a_pers
         row.action
         for row in (
             await db.execute(
-                select(AdminAuditLog).where(AdminAuditLog.target_id == incident.id)
+                select(AdminAuditLog).where(AdminAuditLog.target_id == str(incident.id))
             )
         ).scalars()
     ]
