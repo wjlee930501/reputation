@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Final, Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.models.monthly_control import (
     MonthlyMeasurementAttempt,
@@ -49,49 +49,15 @@ def _month_close(year: int, month: int) -> datetime:
     return datetime(next_year, next_month, 1, 0, 15, tzinfo=ZoneInfo("Asia/Seoul"))
 
 
-def freeze_monthly_manifest(
-    session,
-    hospital_id: uuid.UUID,
-    year: int,
-    month: int,
-    specs: list[ManifestCellSpec],
-    *,
-    gemini_configured: bool,
-    existing: MonthlyMeasurementManifest | None = None,
-    measurement_protocol_kwargs: dict | None = None,
-) -> MonthlyMeasurementManifest:
-    if existing is not None:
-        return existing
-    if not specs:
-        raise ManifestError("manifest requires at least one cell")
-    platforms = ["chatgpt", *(["gemini"] if gemini_configured else [])]
-    manifest = MonthlyMeasurementManifest(
-        hospital_id=hospital_id,
-        period_year=year,
-        period_month=month,
-        configured_platforms=platforms,
-        platform_provenance={
-            "chatgpt": "ALWAYS",
-            "gemini": "CONFIGURED" if gemini_configured else "NOT_CONFIGURED",
-            "query_intents": {spec.query_key: spec.query_intent for spec in specs},
-            # 동결 시점의 측정 정책. 전월 대비 비교는 두 달의 이 스냅샷이 같을 때만
-            # 성립한다 — 정책이 바뀐 달을 성과 변화로 붙여 팔 수 없다.
-            "measurement_protocol": sov_engine.measurement_protocol(
-                **(measurement_protocol_kwargs or {})
-            ),
-        },
-        closes_at=_month_close(year, month),
-    )
-    # `measurement_specs` is already expanded to query × platform by the dispatcher.
-    # Do not expand it again here. Platform-specific Query Target variants can have
-    # different wording per provider; cross-expanding them would measure the Gemini
-    # variant on ChatGPT and the ChatGPT variant on Gemini, doubling cost and
-    # corrupting the frozen denominator.
-    frozen_queries = {
-        (spec.query_key, spec.platform.lower()): spec
-        for spec in specs
-    }
-    manifest.cells = [
+def _configured_platforms(*, gemini_configured: bool) -> list[str]:
+    return ["chatgpt", *(["gemini"] if gemini_configured else [])]
+
+
+def _frozen_cells(specs: list[ManifestCellSpec]) -> list[MonthlyMeasurementCell]:
+    # `specs` is already expanded to query × platform by the dispatcher. Platform-
+    # specific variants must not be cross-expanded here.
+    frozen_queries = {(spec.query_key, spec.platform.lower()): spec for spec in specs}
+    return [
         MonthlyMeasurementCell(
             query_key=spec.query_key,
             query_text=spec.query_text,
@@ -103,6 +69,146 @@ def freeze_monthly_manifest(
         )
         for spec in frozen_queries.values()
     ]
+
+
+def _protocol_snapshot(measurement_protocol_kwargs: dict | None) -> dict:
+    return sov_engine.measurement_protocol(**(measurement_protocol_kwargs or {}))
+
+
+def _is_month_end_tracking_protocol(protocol: dict) -> bool:
+    fingerprint = protocol.get("tracking_set_fingerprint")
+    size = protocol.get("tracking_set_size")
+    return (
+        protocol.get("measurement_window") == "month_end"
+        and isinstance(fingerprint, str)
+        and bool(fingerprint)
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and size > 0
+    )
+
+
+def _manifest_matches_month_end_freeze(
+    manifest: MonthlyMeasurementManifest,
+    *,
+    protocol: dict,
+    platforms: list[str],
+    cells: list[MonthlyMeasurementCell],
+) -> bool:
+    provenance = manifest.platform_provenance
+    stored_protocol = (
+        provenance.get("measurement_protocol") if isinstance(provenance, dict) else None
+    )
+    stored_keys = {
+        (cell.query_key, cell.platform.lower())
+        for cell in (getattr(manifest, "cells", ()) or ())
+    }
+    incoming_keys = {(cell.query_key, cell.platform.lower()) for cell in cells}
+    return (
+        list(manifest.configured_platforms or []) == platforms
+        and stored_keys == incoming_keys
+        and sov_engine.same_measurement_basis(
+            stored_protocol,
+            protocol,
+            platforms=tuple(platforms),
+        )
+    )
+
+
+def _replace_manifest_freeze(
+    session,
+    manifest: MonthlyMeasurementManifest,
+    *,
+    year: int,
+    month: int,
+    specs: list[ManifestCellSpec],
+    cells: list[MonthlyMeasurementCell],
+    platforms: list[str],
+    protocol: dict,
+) -> MonthlyMeasurementManifest:
+    # Keep the manifest row/id because monthly_reports has a RESTRICT foreign key to
+    # it. The transaction-local guard is recognized by the DB triggers only for this
+    # protocol supersede; ordinary manifest mutation and attempt deletion stay blocked.
+    get_bind = getattr(session, "get_bind", None)
+    bind = get_bind() if callable(get_bind) else None
+    postgres_guard = getattr(getattr(bind, "dialect", None), "name", None) == "postgresql"
+    if postgres_guard:
+        session.execute(text("SET LOCAL app.monthly_manifest_supersede = 'on'"))
+    # Clearing and flushing first lets delete-orphan remove old cells/attempts before
+    # same-key replacement cells are inserted under the unique constraint.
+    manifest.cells.clear()
+    session.flush()
+    manifest.configured_platforms = platforms
+    manifest.platform_provenance = {
+        "chatgpt": "ALWAYS",
+        "gemini": "CONFIGURED" if "gemini" in platforms else "NOT_CONFIGURED",
+        "query_intents": {spec.query_key: spec.query_intent for spec in specs},
+        "measurement_protocol": protocol,
+    }
+    manifest.frozen_at = datetime.now(timezone.utc)
+    manifest.closes_at = _month_close(year, month)
+    manifest.closed_at = None
+    manifest.cells = cells
+    session.flush()
+    if postgres_guard:
+        session.execute(text("SET LOCAL app.monthly_manifest_supersede = 'off'"))
+    return manifest
+
+
+def freeze_monthly_manifest(
+    session,
+    hospital_id: uuid.UUID,
+    year: int,
+    month: int,
+    specs: list[ManifestCellSpec],
+    *,
+    gemini_configured: bool,
+    existing: MonthlyMeasurementManifest | None = None,
+    measurement_protocol_kwargs: dict | None = None,
+) -> MonthlyMeasurementManifest:
+    if not specs:
+        if existing is not None:
+            return existing
+        raise ManifestError("manifest requires at least one cell")
+    platforms = _configured_platforms(gemini_configured=gemini_configured)
+    protocol = _protocol_snapshot(measurement_protocol_kwargs)
+    cells = _frozen_cells(specs)
+    if existing is not None:
+        if not _is_month_end_tracking_protocol(protocol):
+            return existing
+        if _manifest_matches_month_end_freeze(
+            existing,
+            protocol=protocol,
+            platforms=platforms,
+            cells=cells,
+        ):
+            return existing
+        return _replace_manifest_freeze(
+            session,
+            existing,
+            year=year,
+            month=month,
+            specs=specs,
+            cells=cells,
+            platforms=platforms,
+            protocol=protocol,
+        )
+    manifest = MonthlyMeasurementManifest(
+        hospital_id=hospital_id,
+        period_year=year,
+        period_month=month,
+        configured_platforms=platforms,
+        platform_provenance={
+            "chatgpt": "ALWAYS",
+            "gemini": "CONFIGURED" if gemini_configured else "NOT_CONFIGURED",
+            "query_intents": {spec.query_key: spec.query_intent for spec in specs},
+            # 동결 시점의 측정 정책. 전월 대비 비교는 두 달의 이 스냅샷이 같을 때만
+            # 성립한다 — 정책이 바뀐 달을 성과 변화로 붙여 팔 수 없다.
+            "measurement_protocol": protocol,
+        },
+        closes_at=_month_close(year, month),
+    )
+    manifest.cells = cells
     session.add(manifest)
     session.flush()
     return manifest

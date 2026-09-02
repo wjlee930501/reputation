@@ -26,6 +26,24 @@ class _RecordingDb:
         return 0
 
 
+class _RowsResult:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def all(self):
+        return self.rows
+
+
+class _RowsDb:
+    def __init__(self, rows):
+        self.rows = rows
+        self.execute_calls = 0
+
+    async def execute(self, _statement):
+        self.execute_calls += 1
+        return _RowsResult(self.rows)
+
+
 def _delivery_facts():
     hospital_id = uuid.uuid4()
     manifest_id = uuid.uuid4()
@@ -110,6 +128,21 @@ def test_report_queue_state_uses_delivery_gate_instead_of_sent_at_only():
     )
 
 
+def test_report_queue_preserves_manifest_gate_distinctions():
+    report, manifest, artifact = _delivery_facts()
+
+    manifest.hospital_id = uuid.uuid4()
+    assert report_queries._report_queue_state(report, manifest, artifact)[0] == (
+        "MANIFEST_MISMATCH"
+    )
+
+    manifest.hospital_id = report.hospital_id
+    manifest.closed_at = None
+    assert report_queries._report_queue_state(report, manifest, artifact)[0] == (
+        "MANIFEST_OPEN"
+    )
+
+
 def test_incomplete_report_queue_action_never_offers_report_regeneration():
     control = report_queries._report_action(
         uuid.uuid4(), state="COVERAGE_INCOMPLETE", year=2026, month=8
@@ -131,33 +164,55 @@ def test_previous_period_exposes_the_fifteen_minute_monthly_close():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("now", "accepted", "rejected"),
-    [
-        (datetime(2026, 7, 31, 15, 5, tzinfo=UTC), SlaFilter.DUE, SlaFilter.OVERDUE),
-        (datetime(2026, 7, 31, 15, 16, tzinfo=UTC), SlaFilter.OVERDUE, SlaFilter.DUE),
-    ],
-)
-async def test_report_sla_filter_matches_the_close_time_state(now, accepted, rejected):
-    accepted_db = _RecordingDb()
-    await report_queries.load_reports_queue(
-        accepted_db,
-        OperationsFilters(sla=accepted),
-        page=1,
-        page_size=10,
-        overview=False,
-        now=now,
-    )
-    assert accepted_db.execute_calls == 1
+async def test_report_rows_have_no_staff_sla_deadline():
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="월간 보고 병원")
+    db = _RowsDb([(hospital, None, None, None, None, None)])
 
-    rejected_db = _RecordingDb()
-    result = await report_queries.load_reports_queue(
-        rejected_db,
-        OperationsFilters(sla=rejected),
+    total, rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(),
         page=1,
         page_size=10,
         overview=False,
-        now=now,
+        now=datetime(2026, 9, 2, tzinfo=UTC),
     )
+
+    assert total == 1
+    assert rows[0].queue.value == "REPORTS"
+    assert rows[0].sla_due_at is None
+    assert rows[0].sla_state == "NONE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sla", [None, SlaFilter.NONE])
+async def test_report_queue_accepts_unfiltered_and_no_deadline_sla_filters(sla):
+    db = _RecordingDb()
+
+    await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(sla=sla),
+        page=1,
+        page_size=10,
+        overview=False,
+        now=datetime(2026, 9, 2, tzinfo=UTC),
+    )
+
+    assert db.execute_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sla", [SlaFilter.DUE, SlaFilter.OVERDUE])
+async def test_report_queue_is_empty_for_deadline_sla_filters(sla):
+    db = _RecordingDb()
+
+    result = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(sla=sla),
+        page=1,
+        page_size=10,
+        overview=False,
+        now=datetime(2026, 9, 2, tzinfo=UTC),
+    )
+
     assert result == (0, [])
-    assert rejected_db.execute_calls == 0
+    assert db.execute_calls == 0
