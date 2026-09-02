@@ -461,7 +461,7 @@ async def test_operations_reports_queue_uses_delivery_events_not_sent_at(pg_asyn
     )
 
     row = next(item for item in rows if item.customer.hospital_id == hospital.id)
-    assert row.status == "DELIVERY_PENDING"
+    assert row.status == "COVERAGE_INCOMPLETE"
     assert row.report_id == report.id
 
 
@@ -489,7 +489,7 @@ async def test_operations_reports_queue_reads_only_latest_report_version(pg_asyn
     )
 
     row = next(item for item in rows if item.customer.hospital_id == hospital.id)
-    assert row.status == "DELIVERY_PENDING"
+    assert row.status == "COVERAGE_INCOMPLETE"
     assert row.report_id == latest.id
 
 

@@ -218,11 +218,13 @@ test('run and Slack labels are exhaustive over every backend state', () => {
 })
 
 test('customer-facing operation labels never expose raw backend states', () => {
-  const states = ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN', 'ACTIVE', 'PAUSED', 'PUBLISH_DUE', 'REVIEW_PENDING', 'OVERDUE_REVIEW', 'MISSING', 'DELIVERY_PENDING', 'OPEN', 'RETRYING', 'RECOVERED', 'ACKNOWLEDGED']
+  const states = ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN', 'ACTIVE', 'PAUSED', 'PUBLISH_DUE', 'REVIEW_PENDING', 'OVERDUE_REVIEW', 'MISSING', 'COVERAGE_INCOMPLETE', 'MANIFEST_MISMATCH', 'MANIFEST_OPEN', 'DOCTOR_ARTIFACT_MISSING', 'DOCTOR_ARTIFACT_INVALID', 'REPORT_BLOCKED', 'DELIVERY_PENDING', 'OPEN', 'RETRYING', 'RECOVERED', 'ACKNOWLEDGED']
 
   assert.deepEqual(states.map(operationStatusLabel), [
     '온보딩 진행 중', 'AI 진단 분석 중', '콘텐츠 허브 준비 중', '공개 주소 확인 대기', '운영 중', '운영 일시 정지',
-    '오늘 발행 예정', '발행 후 확인 대기', '발행 후 확인 기한 지남', '지난달 보고서 미생성', '원장 전달 검수 대기',
+    '오늘 발행 예정', '발행 후 확인 대기', '발행 후 확인 기한 지남', '지난달 보고서 미생성',
+    '필수 측정 미완료', '측정 집계 연결 오류', '측정 집계 마감 대기', '원장 전달용 PDF 없음',
+    '원장 전달용 PDF 검증 실패', '리포트 전달 차단', '원장 전달 검수 대기',
     '처리 필요', '복구 재시도 중', '복구 확인됨', '확인 완료',
   ])
   assert.equal(operationStatusLabel('UNRECOGNIZED'), '상태 확인 필요')

@@ -191,6 +191,12 @@ export function operationStatusLabel(status: string): string {
     case 'REVIEW_PENDING': return '발행 후 확인 대기'
     case 'OVERDUE_REVIEW': return '발행 후 확인 기한 지남'
     case 'MISSING': return '지난달 보고서 미생성'
+    case 'COVERAGE_INCOMPLETE': return '필수 측정 미완료'
+    case 'MANIFEST_MISMATCH': return '측정 집계 연결 오류'
+    case 'MANIFEST_OPEN': return '측정 집계 마감 대기'
+    case 'DOCTOR_ARTIFACT_MISSING': return '원장 전달용 PDF 없음'
+    case 'DOCTOR_ARTIFACT_INVALID': return '원장 전달용 PDF 검증 실패'
+    case 'REPORT_BLOCKED': return '리포트 전달 차단'
     case 'DELIVERY_PENDING': return '원장 전달 검수 대기'
     case 'OPEN': return '처리 필요'
     case 'RETRYING': return '복구 재시도 중'
@@ -256,6 +262,7 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   COST_BLOCKED: '비용 안전장치가 이 작업의 실행을 보류했습니다.',
   COST_GUARD_LIMIT_REACHED: '오늘 설정된 사용 한도에 도달해 자동 작업을 보류했습니다.',
   // 리포트·공개 표면·도메인
+  MONTHLY_MEASUREMENT_INCOMPLETE: '필수 측정이 완료되지 않아 실패한 항목만 복구해야 합니다.',
   MONTHLY_REPORT_FAILED: '월간 리포트를 만드는 중 작업이 완료되지 않았습니다.',
   SITE_BUILD_DISPATCH_FAILED: '공개 정보 갱신 작업을 처리 대기열에 넣지 못했습니다.',
   CACHE_REVALIDATION_FAILED: '공개 표면의 내용 갱신을 확인하지 못했습니다.',

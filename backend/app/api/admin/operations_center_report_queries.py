@@ -2,10 +2,10 @@
 
 import uuid
 from datetime import datetime, timedelta
-from typing import Final, Literal, assert_never
+from typing import Final, Literal, assert_never, cast
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import ColumnElement, Select, and_, case, func, or_, select
+from sqlalchemy import ColumnElement, Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -15,10 +15,16 @@ from app.api.admin.operations_center_query_common import (
     owner_predicate,
 )
 from app.api.admin.operations_center_serializers import owner_projection, sla_state
+from app.api.admin.reports import _delivery_gate
 from app.models.admin_user import AdminUser
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
-from app.models.monthly_control import HospitalServiceInterval, ReportDeliveryEventType
+from app.models.monthly_control import (
+    HospitalServiceInterval,
+    MonthlyMeasurementManifest,
+    MonthlyReportArtifact,
+    ReportDeliveryEventType,
+)
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.schemas.operations import (
@@ -34,7 +40,16 @@ from app.services.monthly_delivery_projection import (
 )
 from app.services.monthly_period import reporting_period
 
-ReportQueueState = Literal["MISSING", "DELIVERY_PENDING"]
+ReportQueueState = Literal[
+    "MISSING",
+    "COVERAGE_INCOMPLETE",
+    "MANIFEST_MISMATCH",
+    "MANIFEST_OPEN",
+    "DOCTOR_ARTIFACT_MISSING",
+    "DOCTOR_ARTIFACT_INVALID",
+    "REPORT_BLOCKED",
+    "DELIVERY_PENDING",
+]
 _REPORT_ACTION_LABEL: Final = "보고서 확인"
 _ACTIVE_MONTHLY_RUN_STATES: Final = (
     OperationRunState.REQUESTED.value,
@@ -57,6 +72,31 @@ def _report_operator_copy(state: ReportQueueState) -> tuple[str, str]:
             return (
                 "생성된 지난달 보고서의 원장 전달 검수가 완료되지 않았습니다.",
                 f"운영 센터의 “{_REPORT_ACTION_LABEL}”을 눌러 고객용 PDF와 전달 기록을 확인하세요.",
+            )
+        case "COVERAGE_INCOMPLETE":
+            return (
+                "필수 측정이 완료되지 않아 지난달 보고서를 원장님께 전달할 수 없습니다.",
+                "보고서 확인에서 계획·성공·실패 수를 확인한 뒤 측정 복구 경로로 남은 항목만 다시 측정하세요.",
+            )
+        case "MANIFEST_MISMATCH" | "MANIFEST_OPEN":
+            return (
+                "지난달 측정 집계가 보고 기간과 맞지 않거나 아직 마감되지 않았습니다.",
+                "보고서 확인에서 측정 집계 연결과 마감 상태를 확인하세요.",
+            )
+        case "DOCTOR_ARTIFACT_MISSING":
+            return (
+                "원장 전달용 PDF가 없어 지난달 보고서를 전달할 수 없습니다.",
+                "보고서 확인에서 원장 전달용 PDF 생성 상태를 확인하세요.",
+            )
+        case "DOCTOR_ARTIFACT_INVALID":
+            return (
+                "원장 전달용 PDF 검증이 실패해 지난달 보고서를 전달할 수 없습니다.",
+                "보고서 확인에서 PDF 검증 실패 사유를 확인하세요.",
+            )
+        case "REPORT_BLOCKED":
+            return (
+                "지난달 보고서의 필수 운영 검수가 끝나지 않아 전달할 수 없습니다.",
+                "보고서 확인에서 표시된 차단 사유를 해결한 뒤 전달 가능 상태를 다시 확인하세요.",
             )
         case unreachable:
             assert_never(unreachable)
@@ -88,6 +128,32 @@ def _report_action(
         method="GET",
         path=f"/hospitals/{hospital_id}/reports",
     )
+
+
+def _report_queue_state(
+    report: MonthlyReport | None,
+    manifest: MonthlyMeasurementManifest | None,
+    artifact: MonthlyReportArtifact | None,
+) -> tuple[ReportQueueState, str | None]:
+    """Project the reports queue from the same gate that protects mark-sent."""
+    if report is None:
+        return "MISSING", None
+    gate = _delivery_gate(report, manifest, artifact)
+    if gate.ready:
+        return "DELIVERY_PENDING", None
+    if gate.code is None:
+        return "REPORT_BLOCKED", gate.message
+    state = gate.code.upper()
+    if state not in {
+        "COVERAGE_INCOMPLETE",
+        "MANIFEST_MISMATCH",
+        "MANIFEST_OPEN",
+        "DOCTOR_ARTIFACT_MISSING",
+        "DOCTOR_ARTIFACT_INVALID",
+        "REPORT_BLOCKED",
+    }:
+        state = "REPORT_BLOCKED"
+    return cast(ReportQueueState, state), gate.message
 
 
 def _previous_period(now: datetime) -> tuple[int, int, datetime, datetime, datetime]:
@@ -179,7 +245,6 @@ async def load_reports_queue(
         .subquery()
     )
     assignee = aliased(AdminUser)
-    report_state = case((MonthlyReport.id.is_(None), "MISSING"), else_="DELIVERY_PENDING")
     predicates = [
         Hospital.id.in_(_eligible_hospital_ids_stmt(period_start, period_end)),
         active_report_runs.c.hospital_id.is_(None),
@@ -195,8 +260,6 @@ async def load_reports_queue(
     owner_filter = owner_predicate(assignee, filters.owner)
     if owner_filter is not None:
         predicates.append(owner_filter)
-    if filters.status:
-        predicates.append(report_state == filters.status)
 
     def with_joins(statement):
         return (
@@ -225,28 +288,43 @@ async def load_reports_queue(
             .outerjoin(assignee, assignee.id == HospitalHandoff.ae_owner_id)
         )
 
-    count_stmt = with_joins(select(func.count(Hospital.id)).select_from(Hospital)).where(
-        *predicates
-    )
-    page_stmt = with_joins(
+    candidate_stmt = with_joins(
         select(
             Hospital,
             MonthlyReport,
+            MonthlyMeasurementManifest,
+            MonthlyReportArtifact,
             HospitalHandoff,
             assignee,
-            report_state.label("report_state"),
-            func.count().over().label("_total"),
         )
-    ).where(*predicates)
-    page_stmt = (
-        page_stmt.order_by(Hospital.name, Hospital.id)
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
-    rows = list((await db.execute(page_stmt)).all())
-    total = int(rows[0]._total) if overview and rows else 0
-    if not overview:
-        total = int((await db.scalar(count_stmt)) or 0)
+    candidate_stmt = (
+        candidate_stmt.outerjoin(
+            MonthlyMeasurementManifest,
+            MonthlyMeasurementManifest.id == MonthlyReport.manifest_id,
+        )
+        .outerjoin(
+            MonthlyReportArtifact,
+            and_(
+                MonthlyReportArtifact.report_id == MonthlyReport.id,
+                MonthlyReportArtifact.audience == "DOCTOR",
+            ),
+        )
+        .where(*predicates)
+        .order_by(Hospital.name, Hospital.id)
+    )
+    candidates = []
+    for hospital, report, manifest, artifact, handoff, actor in (
+        await db.execute(candidate_stmt)
+    ).all():
+        report_state_value, safe_cause = _report_queue_state(report, manifest, artifact)
+        if filters.status is not None and report_state_value != filters.status:
+            continue
+        candidates.append(
+            (hospital, report, handoff, actor, report_state_value, safe_cause)
+        )
+    total = len(candidates)
+    rows = candidates[(page - 1) * page_size : page * page_size]
 
     return total, [
         OperationsQueueRow(
@@ -276,7 +354,7 @@ async def load_reports_queue(
                 month=month,
             ),
             retry=None,
-            safe_cause=None,
+            safe_cause=safe_cause,
             history=[OperationsHistoryEntry(event="REPORT_READY", at=report.created_at)]
             if report
             else [],
@@ -284,7 +362,7 @@ async def load_reports_queue(
             report_id=report.id if report else None,
             occurred_at=report.created_at if report else period_start,
         )
-        for hospital, report, handoff, actor, report_state_value, _total in rows
+        for hospital, report, handoff, actor, report_state_value, safe_cause in rows
     ]
 
 
