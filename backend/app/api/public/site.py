@@ -1,3 +1,4 @@
+import logging
 import re
 import uuid
 from urllib.parse import urlparse
@@ -22,13 +23,16 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
-from app.services.essence_readiness import get_essence_readiness
+from app.services.essence_readiness import get_current_approved_philosophy_id, get_essence_readiness
 from app.services.hospital_logo import is_stored_logo_ref, public_logo_url
 from app.services.photo_assets import effective_photo_metadata
 from app.utils.domain import normalize_domain
 from app.utils.error_page import looks_like_error_page_text
-from app.utils.medical_filter import check_forbidden
+from app.utils.medical_filter import check_forbidden, check_forbidden_content_fields
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
 
@@ -171,6 +175,10 @@ def _serialize_hospital_summary(h: Hospital) -> dict:
 
     /llms.txt 루트 인덱스가 name·region·specialties 등을 직접 출력하므로
     목록 응답에도 포함해야 한다.
+
+    `treatments`는 sitemap 빌더가 병원별 진료 항목 슬러그를 나열할 때 쓴다 — 목록에
+    없으면 병원마다 detail(`/{slug}`)을 추가로 불러야 했다(N+1). `_safe_treatments`로
+    상세 응답과 동일한 의료광고 필터를 거친다.
     """
     return {
         "slug": h.slug,
@@ -182,6 +190,7 @@ def _serialize_hospital_summary(h: Hospital) -> dict:
         "address": h.address,
         "phone": h.phone,
         "website_url": _safe_external_url(h.website_url),
+        "treatments": _safe_treatments(h.treatments),
         "updated_at": h.updated_at.isoformat()
         if h.updated_at
         else h.created_at.isoformat()
@@ -301,7 +310,9 @@ async def list_published_contents(
         .limit(limit)
     )
     items = result.scalars().all()
-    return [_serialize_item(item, h.slug) for item in items]
+    # SQL 조건으로 표현할 수 없는 마지막 게이트(의료광고 필터)를 여기서 한 번 더 건다 —
+    # sitemap·llms.txt·목록이 모두 이 응답을 읽으므로 여기서 빠지면 공개 표면 전체에서 빠진다.
+    return [_serialize_item(item, h.slug) for item in items if _is_public_safe_content(item)]
 
 
 @router.get("/{slug}/contents/{content_id}")
@@ -334,15 +345,20 @@ async def get_content_public(
 async def get_public_content_image(
     request: Request, slug: str, content_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 ):
-    """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302)."""
+    """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302).
+
+    `get_essence_readiness()`는 신선도 판정에 쓰지 않는 원문(raw_text 등)까지 포함해
+    소스 자산 전체 행을 로드한다. 이미지 프록시는 "지금 신선한 승인 철학의 id"만
+    있으면 되므로 그 컬럼만 선택하는 `get_current_approved_philosophy_id()`를 쓴다
+    (크롤러·next/image가 반복 호출하는 경로라 요청당 데이터 이동량이 누적된다).
+    """
     h = await _get_active_hospital(db, slug)
-    essence = await get_essence_readiness(db, h.id)
-    public_philosophy = essence.public_philosophy
+    current_philosophy_id = await get_current_approved_philosophy_id(db, h.id)
     item = await db.get(ContentItem, content_id)
     if (
         not item
         or item.hospital_id != h.id
-        or not _is_public_safe_content(item, public_philosophy.id if public_philosophy else None)
+        or not _is_public_safe_content(item, current_philosophy_id)
         or not item.image_url
     ):
         raise HTTPException(status_code=404, detail="Content image not found")
@@ -537,11 +553,34 @@ def _is_public_safe_content(
         else current_philosophy_id is not None
         and item.content_philosophy_id == current_philosophy_id
     )
-    return (
+    if not (
         current_matches
         and item.status == ContentStatus.PUBLISHED
         and item.essence_status == ESSENCE_STATUS_ALIGNED
-    )
+    ):
+        return False
+    violations = _forbidden_content_violations(item)
+    if violations:
+        # 발행 게이트를 통과한 뒤 본문이 수정됐거나, 필터가 강화되기 전에 발행된 글이
+        # 공개 표면에 남아 있을 수 있다. CLAUDE.md가 이 모듈을 세 번째 적용 지점으로
+        # 규정한 이유이며, 위반 시 fail-closed — 목록·상세·이미지 모두에서 사라진다.
+        logger.warning(
+            "Public content withheld by the medical-ad filter: content_id=%s labels=%s",
+            getattr(item, "id", None),
+            ",".join(violations),
+        )
+        return False
+    return True
+
+
+def _forbidden_content_violations(item: ContentItem) -> list[str]:
+    """공개 직렬화 직전 마지막 의료광고 검사 (아이템당 한 번).
+
+    검사 대상 필드는 생성 엔진의 `FORBIDDEN_CHECK_FIELDS`를 그대로 재사용한다 —
+    공개 텍스트 필드가 늘어날 때 세 적용 지점이 함께 따라오게 하는 유일한 방법이다.
+    """
+    values = {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
+    return check_forbidden_content_fields(values, FORBIDDEN_CHECK_FIELDS)
 
 
 def _content_image_url(slug: str, item: ContentItem) -> str:

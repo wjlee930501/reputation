@@ -17,7 +17,11 @@ from app.api.admin.operations_center_query_common import (
     owner_predicate,
     sla_predicate,
 )
-from app.api.admin.operations_center_serializers import serialize_incident_row
+from app.api.admin.operations_center_serializers import (
+    canonical_cause_code,
+    cost_guard_category,
+    serialize_incident_row,
+)
 from app.models.admin_user import AdminUser
 from app.models.hospital import Hospital
 from app.models.operations import Incident, NotificationOutbox, OperationRun
@@ -56,6 +60,35 @@ def _group_incident_rows(
             )
         )
     return projections
+
+
+def _cause_group_key(
+    *,
+    incident_safe_error_code: str | None,
+    incident_type: str,
+    source_type: str | None,
+    source_id: str | None,
+    run_safe_error_code: str | None,
+    run_operation_type: str | None,
+) -> str:
+    """Same grouping key `serialize_incident_row` derives, without building a full row.
+
+    Takes scalars so the lean pass-1 query below can select just the cause-key columns
+    instead of hydrating whole `Incident` objects for every match — must stay identical
+    to `serialize_incident_row`'s `projected_group_key` or the two passes disagree on
+    which incidents share a group.
+    """
+    projected_code = canonical_cause_code(
+        incident_safe_error_code or run_safe_error_code, incident_type
+    )
+    budget_category = cost_guard_category(
+        projected_code,
+        incident_type=incident_type,
+        source_type=source_type,
+        source_id=source_id,
+        run_operation_type=run_operation_type,
+    )
+    return f"{projected_code}:{budget_category}" if budget_category is not None else projected_code
 
 
 def _hospital_scope_predicate(hospital_scope: HospitalScope) -> ColumnElement[bool] | None:
@@ -103,6 +136,71 @@ async def load_incidents_queue(
             predicates.append(Incident.state.in_(("OPEN", "RETRYING")))
         elif filters.recovery == IncidentRecoveryFilter.CONFIRMED:
             predicates.append(Incident.state.in_(("RECOVERED", "ACKNOWLEDGED")))
+    order_by = (
+        Incident.sla_due_at.asc().nullslast(),
+        Incident.last_seen_at.desc(),
+        Incident.id,
+    )
+
+    # Pass 1 — figure out cause groups with a lean 2-table join (Incident + the
+    # OperationRun it may reference; AdminUser is joined only so `owner_filter` above
+    # can apply, no columns of it are read). Only the cause-key columns are selected,
+    # so a filter matching thousands of incidents costs a scalar tuple each instead of
+    # a hydrated ORM object with every column and its identity-map entry. No
+    # Hospital/NotificationOutbox here and no Slack/customer projection either — group
+    # membership is all this pass needs, and most of it is thrown away by the
+    # `list(groups.keys())[start:...]` page slice below.
+    group_statement = (
+        select(
+            Incident.id,
+            Incident.safe_error_code,
+            Incident.incident_type,
+            Incident.source_type,
+            Incident.source_id,
+            OperationRun.safe_error_code,
+            OperationRun.operation_type,
+        )
+        .select_from(Incident)
+        .outerjoin(assignee, assignee.id == Incident.owner_id)
+        .outerjoin(OperationRun, OperationRun.id == Incident.operation_run_id)
+        .where(*predicates)
+        .order_by(*order_by)
+    )
+    group_rows = (await db.execute(group_statement)).all()
+
+    groups: dict[str, list[uuid.UUID]] = {}
+    for (
+        row_id,
+        incident_code,
+        incident_type,
+        source_type,
+        source_id,
+        run_code,
+        run_operation_type,
+    ) in group_rows:
+        key = _cause_group_key(
+            incident_safe_error_code=incident_code,
+            incident_type=incident_type,
+            source_type=source_type,
+            source_id=source_id,
+            run_safe_error_code=run_code,
+            run_operation_type=run_operation_type,
+        )
+        groups.setdefault(key, []).append(row_id)
+
+    total = len(groups)
+    start = (page - 1) * page_size
+    page_incident_ids = [
+        incident_id
+        for key in list(groups.keys())[start : start + page_size]
+        for incident_id in groups[key]
+    ]
+    if not page_incident_ids:
+        return total, []
+
+    # Pass 2 — load the full projection (Hospital/AdminUser/OperationRun/
+    # NotificationOutbox) only for the incidents whose groups landed on this page,
+    # instead of for every incident that matched the filter.
     latest_outbox_id = (
         select(NotificationOutbox.id)
         .where(NotificationOutbox.incident_id == Incident.id)
@@ -123,14 +221,12 @@ async def load_incidents_queue(
         .outerjoin(assignee, assignee.id == Incident.owner_id)
         .outerjoin(OperationRun, OperationRun.id == Incident.operation_run_id)
         .outerjoin(NotificationOutbox, NotificationOutbox.id == latest_outbox_id)
-        .where(*predicates)
-        .order_by(Incident.sla_due_at.asc().nullslast(), Incident.last_seen_at.desc(), Incident.id)
+        .where(Incident.id.in_(page_incident_ids))
+        .order_by(*order_by)
     )
     raw_rows = [tuple(row) for row in (await db.execute(page_statement)).all()]
     grouped = _group_incident_rows(raw_rows, now)
-    total = len(grouped)
-    start = (page - 1) * page_size
-    return total, grouped[start : start + page_size]
+    return total, grouped
 
 
 __all__ = ("HospitalScope", "load_incidents_queue")

@@ -3,7 +3,7 @@
 from datetime import timedelta
 from typing import Final
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, or_
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.content import ContentItem, ContentStatus
@@ -13,8 +13,11 @@ AUTO_PUBLISHABLE_STATUSES: Final = (ContentStatus.DRAFT, ContentStatus.READY)
 AUTO_PUBLISH_CATCHUP_DAYS: Final = 7
 
 # The automatic review remains the publication gate. Human review is observability sampling,
-# not a second approval queue. Keep one baseline item per monthly sequence, then add only
-# machine-observed risk: automatic remediation or a body edit after publication.
+# not a second approval queue — it never blocks monthly report delivery. Keep the sample small:
+# one baseline item per monthly sequence, plus any item whose body was edited after publication
+# (an AE actually changed something an automated check would not have caught). An item the
+# automatic safety gate already remediated is evidence the gate worked, not a reason to sample
+# it again, so remediation counts are excluded here.
 POST_PUBLISH_SAMPLE_SEQUENCE: Final = 1
 
 
@@ -48,11 +51,6 @@ def human_post_publish_review_predicate() -> ColumnElement[bool]:
         ContentItem.published_at.is_not(None),
         or_(
             ContentItem.sequence_no == POST_PUBLISH_SAMPLE_SEQUENCE,
-            func.coalesce(
-                ContentItem.essence_check_summary["automatic_remediation_attempts"].as_integer(),
-                0,
-            )
-            > 0,
             ContentItem.body_updated_at > ContentItem.published_at,
         ),
     )
@@ -67,14 +65,6 @@ def is_human_post_publish_review_sample(item: ContentItem) -> bool:
     """
     if item.status != ContentStatus.PUBLISHED or item.published_at is None:
         return False
-    summary = item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
-    remediation_attempts = summary.get("automatic_remediation_attempts")
-    return (
-        item.sequence_no == POST_PUBLISH_SAMPLE_SEQUENCE
-        or (isinstance(remediation_attempts, int) and remediation_attempts > 0)
-        or (
-            item.body_updated_at is not None
-            and item.published_at is not None
-            and item.body_updated_at > item.published_at
-        )
+    return item.sequence_no == POST_PUBLISH_SAMPLE_SEQUENCE or (
+        item.body_updated_at is not None and item.body_updated_at > item.published_at
     )

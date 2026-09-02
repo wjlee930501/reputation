@@ -36,6 +36,7 @@ __all__ = (
     "IncidentNotFound",
     "IncidentOpenRequest", "IncidentTransitionConflict", "IncidentVersionConflict",
     "acknowledge_incident", "assign_incident",
+    "auto_acknowledge_incident",
     "build_incident_key",
     "incident_filter_expressions",
     "mark_recovered", "mark_retrying", "open_or_touch_incident",
@@ -219,6 +220,32 @@ async def acknowledge_incident(
         db, incident_id, expected_version, IncidentState.RECOVERED,
         IncidentState.ACKNOWLEDGED, actor, "incident_acknowledged", reason,
         {"acknowledged_at": acknowledged_at, "acknowledged_by_id": acknowledged_by_id},
+        acknowledged_at,
+    )
+
+
+async def auto_acknowledge_incident(
+    db: AsyncSession,
+    incident_id: uuid.UUID,
+    *,
+    expected_version: int,
+    actor: str = "system",
+    reason: str = "automatic recovery closed the incident",
+    now: datetime | None = None,
+) -> IncidentMutationResult:
+    """Close a machine-recovered incident without asking a person to confirm it.
+
+    A system acknowledgement leaves ``acknowledged_by_id`` NULL. That NULL is the
+    durable marker separating "the machine closed this" from "a person read and
+    closed this", so callers that must preserve a human decision can still tell
+    the two apart.
+    """
+
+    acknowledged_at = now or datetime.now(UTC)
+    return await _transition(
+        db, incident_id, expected_version, IncidentState.RECOVERED,
+        IncidentState.ACKNOWLEDGED, actor, "incident_auto_acknowledged", reason,
+        {"acknowledged_at": acknowledged_at, "acknowledged_by_id": None},
         acknowledged_at,
     )
 

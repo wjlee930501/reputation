@@ -184,6 +184,10 @@ class OperationsQueueRow(OperationsSchema):
     same_type_count: int = 1
     affected_hospital_count: int = 0
     cost_guard_category: str | None = None
+    # False marks a row that is context, not work: automatic recovery owns it right
+    # now, or the normal schedule has not reached it yet. The row stays in the
+    # response so the FE can collapse it instead of losing it.
+    requires_operator_action: bool = True
     safe_cause: str | None
     history: list[OperationsHistoryEntry]
     slack: OperationsSlackState | None

@@ -11,6 +11,7 @@
 """
 import base64
 import logging
+import threading
 import uuid
 from io import BytesIO
 
@@ -21,6 +22,88 @@ from app.models.content import ContentType
 from app.services.image_direction import HospitalImageDirection, image_direction_prompt
 
 logger = logging.getLogger(__name__)
+
+# ── 공급자 클라이언트 lazy 싱글턴 ────────────────────────────────────────
+# 시도마다 클라이언트를 새로 만들면 커넥션 풀과 TLS 세션을 매번 버린다.
+# 초기화만 잠그고(Celery prefork 자식 안 스레드 동시 진입) 이후에는 그대로 재사용한다.
+_openai_client_instance = None
+_google_client_instance = None
+_client_lock = threading.Lock()
+
+
+def _get_openai_client():
+    global _openai_client_instance
+    if _openai_client_instance is None:
+        from openai import OpenAI
+
+        with _client_lock:
+            if _openai_client_instance is None:
+                _openai_client_instance = OpenAI(
+                    api_key=settings.OPENAI_API_KEY, timeout=180.0, max_retries=0
+                )
+    return _openai_client_instance
+
+
+def _get_google_client():
+    global _google_client_instance
+    if _google_client_instance is None:
+        from google import genai
+        from google.genai import types
+
+        with _client_lock:
+            if _google_client_instance is None:
+                _google_client_instance = genai.Client(
+                    vertexai=True,
+                    project=settings.GCP_PROJECT_ID,
+                    location=settings.GOOGLE_IMAGE_LOCATION,
+                    http_options=types.HttpOptions(api_version="v1"),
+                )
+    return _google_client_instance
+
+
+def _reset_clients_for_tests() -> None:
+    """테스트가 settings/SDK 생성자를 바꿔치기한 뒤 캐시를 비우기 위한 훅."""
+
+    global _openai_client_instance, _google_client_instance
+    with _client_lock:
+        _openai_client_instance = None
+        _google_client_instance = None
+
+
+class ImageSafetyBlockedError(ValueError):
+    """모델 안전/정책 차단 — 같은 프롬프트를 다시 보내도 항상 같은 결과다."""
+
+
+# Vertex 이미지 모델이 프롬프트를 정책으로 막을 때 쓰는 finish_reason 계열.
+_GOOGLE_BLOCK_MARKERS = (
+    "IMAGE_SAFETY",
+    "SAFETY",
+    "PROHIBITED_CONTENT",
+    "BLOCKLIST",
+    "RECITATION",
+    "SPII",
+)
+
+
+def _looks_like_policy_block(value: object) -> bool:
+    text = str(value).upper()
+    return any(marker in text for marker in _GOOGLE_BLOCK_MARKERS)
+
+
+def _is_transient_google_image_error(exc: BaseException) -> bool:
+    """안전 차단과 결정적 4xx는 재시도 금지 — 바로 안전 폴백 프롬프트로 넘긴다.
+
+    종전에는 IMAGE_SAFETY 차단도 3회 재시도한 뒤 폴백 프롬프트를 다시 3회 재시도해
+    이미지 1장에 최대 6회 유료 호출이 나갔다. 차단은 같은 입력에 항상 같은 결과다.
+    """
+    if isinstance(exc, ImageSafetyBlockedError) or _looks_like_policy_block(exc):
+        return False
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(exc, "code", None)
+    if isinstance(status, int) and 400 <= status < 500 and status != 429:
+        return False
+    return True
 
 
 def _is_transient_openai_error(exc: BaseException) -> bool:
@@ -327,9 +410,7 @@ def _openai_generate_and_upload(
     if counter is not None:
         counter.tick()
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=180.0, max_retries=0)
+        client = _get_openai_client()
         # response_format은 gpt-image 계열에서 기본 b64_json이며 일부 버전이 명시 전달을
         # 거부하므로 전달하지 않는다(기본값 사용).
         result = client.images.generate(
@@ -354,23 +435,24 @@ def _openai_generate_and_upload(
         raise
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=15))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=2, max=15),
+    retry=retry_if_exception(_is_transient_google_image_error),
+)
 def _generate_and_upload(
     prompt: str, hospital_name: str, *, counter: _CallCounter | None = None
 ) -> str:
-    """동기 — Vertex AI Gemini 이미지 생성 + GCS 업로드 (기본/폴백)."""
+    """동기 — Vertex AI Gemini 이미지 생성 + GCS 업로드 (기본/폴백).
+
+    안전/정책 차단은 재시도하지 않고 즉시 raise → 호출부가 안전 폴백 프롬프트로 넘어간다.
+    """
     if counter is not None:
         counter.tick()
     try:
-        from google import genai
         from google.genai import types
 
-        client = genai.Client(
-            vertexai=True,
-            project=settings.GCP_PROJECT_ID,
-            location=settings.GOOGLE_IMAGE_LOCATION,
-            http_options=types.HttpOptions(api_version="v1"),
-        )
+        client = _get_google_client()
         response = client.models.generate_content(
             model=settings.GOOGLE_IMAGE_MODEL,
             contents=prompt,
@@ -402,10 +484,16 @@ def _generate_and_upload(
                 str(getattr(candidate, "finish_reason", None))
                 for candidate in (response.candidates or [])
             ]
-            raise ValueError(
+            message = (
                 "Google image model returned no image payload "
                 f"(finish_reasons={finish_reasons})"
             )
+            prompt_feedback = getattr(response, "prompt_feedback", None)
+            if _looks_like_policy_block(finish_reasons) or _looks_like_policy_block(
+                getattr(prompt_feedback, "block_reason", "")
+            ):
+                raise ImageSafetyBlockedError(message)
+            raise ValueError(message)
         return _upload_png_to_gcs(image_bytes, hospital_name)
 
     except ImportError:

@@ -19,7 +19,14 @@ from app.models.operations import (
     NotificationOutbox,
     NotificationOutboxState,
 )
+from app.services.incident_types import (
+    SLACK_DEVELOPER_CHANNEL,
+    IncidentAudience,
+    incident_audience,
+)
+from app.services.notification_delivery import _webhook_for
 from app.services.notification_outbox import (
+    ClaimedNotification,
     DispatchResult,
     IncidentSlackProjection,
     NotificationIntent,
@@ -79,6 +86,7 @@ def _projection(incident_id: uuid.UUID | None = None) -> IncidentSlackProjection
         admin_path="/operations?state=OPEN",
         owner_label="김효진 팀장",
         sla_label="오늘 18:00",
+        incident_type="CONTENT_GENERATION_FAILED",
     )
 
 
@@ -108,6 +116,67 @@ async def outbox_sessions():
             await cleanup.execute(text("DELETE FROM incidents WHERE dedupe_key LIKE 'OPS-QA-T10-%'"))
             await cleanup.commit()
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "incident_type",
+    [
+        "BACKGROUND_TASK_FAILED",
+        "BROKER_UNAVAILABLE",
+        "UNSAFE_STORED_DISPATCH",
+        "NOTIFICATION_DELIVERY_FAILED",
+        "NOTIFICATION_DELIVERY_UNKNOWN",
+        "CACHE_REVALIDATION_FAILED",
+        "MONTHLY_DOCTOR_PDF_BLOCKED",
+    ],
+)
+def test_pure_infrastructure_incidents_leave_the_ae_channel(incident_type: str) -> None:
+    # Given: an incident whose repair is not something an AE can perform in Admin
+    projection = replace(_projection(), incident_type=incident_type)
+
+    # When
+    intent = build_open_incident_notification(projection, "https://admin.example.test")
+
+    # Then: the intent is addressed to the developer channel
+    assert incident_audience(incident_type) is IncidentAudience.DEVELOPER
+    assert intent.channel == SLACK_DEVELOPER_CHANNEL
+
+
+@pytest.mark.parametrize(
+    "incident_type", ["CONTENT_GENERATION_FAILED", "MONTHLY_REPORT_BLOCKED", "", "BRAND_NEW_TYPE"]
+)
+def test_unregistered_incident_types_stay_on_the_operator_channel(incident_type: str) -> None:
+    # Given / When: any incident type the registry does not mark as developer-only
+    intent = build_open_incident_notification(
+        replace(_projection(), incident_type=incident_type), "https://admin.example.test"
+    )
+
+    # Then: the AE channel is the default, so a new type is never silently hidden
+    assert incident_audience(incident_type) is IncidentAudience.OPERATOR
+    assert intent.channel == "SLACK"
+
+
+def test_developer_rows_fall_back_to_the_operator_webhook_until_one_is_configured() -> None:
+    # Given: one developer-channel row and one ordinary operator row
+    developer = _claimed("SLACK_DEV")
+    operator = _claimed("SLACK")
+
+    # When / Then: an unset developer webhook changes nothing about delivery
+    assert _webhook_for(developer, "https://ops.example.test", "") == "https://ops.example.test"
+    assert (
+        _webhook_for(developer, "https://ops.example.test", "https://dev.example.test")
+        == "https://dev.example.test"
+    )
+    assert (
+        _webhook_for(operator, "https://ops.example.test", "https://dev.example.test")
+        == "https://ops.example.test"
+    )
+
+
+def _claimed(channel: str) -> ClaimedNotification:
+    return ClaimedNotification(
+        uuid.uuid4(), None, None, None, {"text": "운영 알림"}, 1, 3, "worker", 1, channel
+    )
 
 
 def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -> None:
@@ -162,8 +231,11 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
     assert "운영센터에서 조치하기" in open_intent.message.payload_json()
     recovered_payload = recovered.message.payload_json()
     assert "자동 복구가 확인되었습니다" in recovered_payload
-    assert "운영센터에서 복구 결과를 확인" in recovered_payload
-    assert "복구 상태 확인" in recovered_payload
+    # Recovery is informational: it must never ask a person to confirm machine work.
+    assert "추가 조치가 필요하지 않습니다" in recovered_payload
+    assert "확인 완료’ 처리하세요" not in recovered_payload
+    assert "복구 기록 보기" in recovered_payload
+    assert "처리 기한: 조치 불필요" in recovered_payload
     assert "재시도를 확인해 주세요" not in recovered_payload
 
 

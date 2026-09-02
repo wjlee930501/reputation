@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentSeverity, IncidentState
-from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+from app.services.dependency_incident_helpers import open_notice_exists
+from app.services.incident_types import (
+    IncidentFingerprint,
+    IncidentOpenRequest,
+    incident_type_of,
+)
 from app.services.incidents import (
+    auto_acknowledge_incident,
     build_incident_key,
     mark_recovered,
     mark_retrying,
@@ -43,6 +51,7 @@ async def open_ops_incident(
     actor: str = "system",
     sla_label: str = "확인 필요",
     notify: bool = True,
+    severity: IncidentSeverity = IncidentSeverity.HIGH,
 ) -> uuid.UUID:
     """Open/touch one incident and enqueue only on first-open or reopen."""
 
@@ -58,7 +67,7 @@ async def open_ops_incident(
                 object_id=object_id,
                 fingerprint=fingerprint,
                 incident_type=incident_type,
-                severity=IncidentSeverity.HIGH,
+                severity=severity,
                 customer_impact=customer_impact,
                 source_type=source_type,
                 next_action=next_action,
@@ -97,6 +106,7 @@ async def open_ops_incident(
                         version=incident.version,
                         problem=incident.safe_error_message or problem,
                         episode_seq=incident.episode_seq,
+                        incident_type=incident_type_of(incident),
                     ),
                     settings.ADMIN_BASE_URL,
                 ),
@@ -152,27 +162,14 @@ async def recover_ops_incident(
         )
         if not isinstance(recovered, Incident):
             return False
-        if notify:
-            await enqueue_notification(
-                db,
-                build_recovered_incident_notification(
-                    IncidentSlackProjection(
-                        incident_id=recovered.id,
-                        hospital_name=hospital_name,
-                        severity=recovered.severity,
-                        customer_impact=recovered.customer_impact,
-                        next_action=recovered.next_action,
-                        admin_path=recovered.admin_path,
-                        owner_label="미지정",
-                        sla_label="복구됨",
-                        hospital_id=recovered.hospital_id,
-                        operation_run_id=recovered.operation_run_id,
-                        version=recovered.version,
-                        episode_seq=recovered.episode_seq,
-                    ),
-                    settings.ADMIN_BASE_URL,
-                ),
-            )
+        await _close_recovered_incident(
+            db,
+            recovered,
+            hospital_name=hospital_name,
+            actor=actor,
+            reason=reason,
+            notify=notify,
+        )
         await db.commit()
         return True
 
@@ -238,26 +235,65 @@ async def recover_ops_incidents_for_hospital(
             if not isinstance(recovered, Incident):
                 continue
             recovered_count += 1
-            if notify:
-                await enqueue_notification(
-                    db,
-                    build_recovered_incident_notification(
-                        IncidentSlackProjection(
-                            incident_id=recovered.id,
-                            hospital_name=hospital_name,
-                            severity=recovered.severity,
-                            customer_impact=recovered.customer_impact,
-                            next_action=recovered.next_action,
-                            admin_path=recovered.admin_path,
-                            owner_label="미지정",
-                            sla_label="복구됨",
-                            hospital_id=recovered.hospital_id,
-                            operation_run_id=recovered.operation_run_id,
-                            version=recovered.version,
-                            episode_seq=recovered.episode_seq,
-                        ),
-                        settings.ADMIN_BASE_URL,
-                    ),
-                )
+            await _close_recovered_incident(
+                db,
+                recovered,
+                hospital_name=hospital_name,
+                actor=actor,
+                reason=reason,
+                notify=notify,
+            )
         await db.commit()
         return recovered_count
+
+
+async def _close_recovered_incident(
+    db: AsyncSession,
+    recovered: Incident,
+    *,
+    hospital_name: str,
+    actor: str,
+    reason: str,
+    notify: bool,
+) -> None:
+    """Close a machine-recovered incident and page only when the OPEN notice went out.
+
+    The recovery Slack asked an operator to click "확인 완료" on work no person ever
+    started. The system now acknowledges the incident itself, and only an incident
+    whose "운영 확인 필요" notice actually reached the outbox keeps an (informational)
+    recovery message — suppressing that half would leave an open Slack line that
+    nothing ever closes.
+    """
+
+    now = datetime.now(UTC)
+    notify_recovery = notify and await open_notice_exists(db, recovered.id)
+    if notify_recovery:
+        await enqueue_notification(
+            db,
+            build_recovered_incident_notification(
+                IncidentSlackProjection(
+                    incident_id=recovered.id,
+                    hospital_name=hospital_name,
+                    severity=recovered.severity,
+                    customer_impact=recovered.customer_impact,
+                    next_action=recovered.next_action,
+                    admin_path=recovered.admin_path,
+                    owner_label="미지정",
+                    sla_label="복구됨",
+                    hospital_id=recovered.hospital_id,
+                    operation_run_id=recovered.operation_run_id,
+                    version=recovered.version,
+                    episode_seq=recovered.episode_seq,
+                    incident_type=incident_type_of(recovered),
+                ),
+                settings.ADMIN_BASE_URL,
+            ),
+        )
+    await auto_acknowledge_incident(
+        db,
+        recovered.id,
+        expected_version=recovered.version,
+        actor=actor,
+        reason=reason,
+        now=now,
+    )

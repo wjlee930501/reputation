@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -9,7 +10,6 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Literal, Protocol, TypedDict, assert_never
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -27,20 +27,22 @@ from app.services.notification_milestone_rendering import (
     section_block,
     validated_message,
 )
-from app.services.notification_store import enqueue_notification
 
 PUBLISH_NOTIFICATION_TYPE = "CONTENT_PUBLISHED"
-PUBLISH_DIGEST_NOTIFICATION_TYPE = "CONTENT_PUBLISH_DIGEST"
 MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE = (
     "MISSING_APPROVED_ESSENCE_DIGEST"
 )
-POST_PUBLISH_REVIEW_OVERDUE_TYPE = "POST_PUBLISH_REVIEW_OVERDUE"
+GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE = "GENERATION_BLOCKED_DIGEST"
 _DEDUPE_PREFIX = f"{PUBLISH_NOTIFICATION_TYPE}:"
-_DIGEST_DEDUPE_PREFIX = f"{PUBLISH_DIGEST_NOTIFICATION_TYPE}:"
 _MISSING_ESSENCE_DIGEST_DEDUPE_PREFIX = (
     f"{MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE}:"
 )
-_REVIEW_OVERDUE_DEDUPE_PREFIX = f"{POST_PUBLISH_REVIEW_OVERDUE_TYPE}:"
+_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX = (
+    f"{GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE}:"
+)
+# Slack Block Kit truncates long sections; keep the digest inside one readable block.
+_DIGEST_MAX_HOSPITALS = 12
+_DIGEST_MAX_ITEMS_PER_HOSPITAL = 5
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -119,49 +121,6 @@ def build_publish_notification_intent(
     )
 
 
-def build_content_publish_digest_intent(
-    cycle_date: date,
-    published_outcomes: Sequence[Mapping[str, object]],
-) -> NotificationIntent:
-    """Build one neutral summary for an Asia/Seoul morning publication cycle."""
-
-    if not published_outcomes:
-        raise NotificationPayloadError("PUBLISH_DIGEST_ITEMS_REQUIRED")
-    hospital_ids = {
-        str(outcome["hospital_id"])
-        for outcome in published_outcomes
-        if outcome.get("hospital_id") is not None
-    }
-    if not hospital_ids:
-        raise NotificationPayloadError("PUBLISH_DIGEST_HOSPITALS_REQUIRED")
-    hospital_count = len(hospital_ids)
-    item_count = len(published_outcomes)
-    action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=TODAY")
-    summary = f"병원 {hospital_count}곳 · 글 {item_count}건"
-    message = validated_message(
-        RenderedSlackMessage(
-            f"오늘 발행 요약 · {summary} · Admin에서 사실 확인해주세요",
-            (
-                header_block("publish_digest_header", "오늘 발행 요약"),
-                section_block(
-                    "publish_digest_summary",
-                    f"*{summary}*\n오늘 자동 공개된 글을 요약했습니다. "
-                    "Admin에서 공개 내용을 사실 확인해주세요.",
-                ),
-                action_block("publish_digest_action", action_url, "오늘 공개 내용 확인"),
-            ),
-            action_url,
-        ),
-        settings.ADMIN_BASE_URL,
-    )
-    return NotificationIntent(
-        dedupe_key=f"{_DIGEST_DEDUPE_PREFIX}{cycle_date.isoformat()}",
-        notification_type=PUBLISH_DIGEST_NOTIFICATION_TYPE,
-        message=message,
-        max_attempts=3,
-    )
-
-
 def build_missing_approved_essence_digest_intent(
     cycle_date: date,
     skipped_outcomes: Sequence[Mapping[str, object]],
@@ -208,44 +167,74 @@ def build_missing_approved_essence_digest_intent(
     )
 
 
-def build_post_publish_review_overdue_intent(
-    item: PublishedItem, hospital: HospitalIdentity
+def build_generation_blocked_digest_intent(
+    cycle_date: date,
+    batch: str,
+    blocked_outcomes: Sequence[Mapping[str, object]],
 ) -> NotificationIntent:
-    """Build one overdue human-review alert for one publication episode."""
+    """Build one blocked-publication summary for a Seoul morning batch.
 
-    if item.published_at is None:
-        raise NotificationPayloadError("PUBLISHED_AT_REQUIRED")
-    action_url = admin_url(
-        settings.ADMIN_BASE_URL,
-        f"/hospitals/{hospital.id}/content?content={item.id}",
-    )
-    hospital_name = _publish_safe_text(hospital.name, 100)
-    title = _publish_safe_text(item.title or "제목 없는 콘텐츠", 180)
-    details = (
-        "무슨 문제인지: 자동 공개 후 표본 검수가 24시간 넘게 남아 있습니다.\n"
-        "고객 영향: 자동 검수는 통과했지만 사람의 최소 사후 확인이 지연되고 있습니다.\n"
-        "지금 할 일: Admin에서 공개 글과 이미지를 확인하고 검수 완료 처리해 주세요.\n"
-        "처리 기한: 가능한 한 빨리"
-    )
+    Per-item incidents stay in the database because they drive the Admin retry
+    controls. Slack gets one grouped message instead of one page per content item.
+    """
+
+    if not blocked_outcomes:
+        raise NotificationPayloadError("GENERATION_BLOCKED_DIGEST_ITEMS_REQUIRED")
+    entries = [
+        (
+            str(outcome.get("hospital_name") or "이름 미확인 병원"),
+            str(outcome.get("content_id") or ""),
+            str(outcome.get("code") or "UNKNOWN"),
+            str(outcome.get("cause") or "자동 생성 작업이 완료되지 않았습니다."),
+            str(outcome.get("title") or "제목 없는 콘텐츠"),
+        )
+        for outcome in blocked_outcomes
+    ]
+    identity = sorted({f"{content_id}:{code}" for _, content_id, code, _, _ in entries})
+    digest = hashlib.sha256("\n".join(identity).encode()).hexdigest()[:32]
+    hospitals: dict[str, list[tuple[str, str, str]]] = {}
+    for hospital_name, _content_id, code, cause, title in entries:
+        hospitals.setdefault(hospital_name, []).append((title, code, cause))
+    action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
+    shown = sorted(hospitals.items())[:_DIGEST_MAX_HOSPITALS]
+    hidden = len(hospitals) - len(shown)
+    lines = []
+    for hospital_name, items in shown:
+        detail = " · ".join(
+            f"{_publish_safe_text(title, 60)}({_publish_safe_text(cause, 80)})"
+            for title, _code, cause in items[:_DIGEST_MAX_ITEMS_PER_HOSPITAL]
+        )
+        remainder = len(items) - min(len(items), _DIGEST_MAX_ITEMS_PER_HOSPITAL)
+        if remainder > 0:
+            detail = f"{detail} · 그 외 {remainder}건"
+        lines.append(f"• *{_publish_safe_text(hospital_name, 100)}* 차단 {len(items)}건\n  {detail}")
+    if hidden > 0:
+        lines.append(f"• 그 외 {hidden}곳")
+    summary = f"병원 {len(hospitals)}곳 · 글 {len(entries)}건"
     message = validated_message(
         RenderedSlackMessage(
-            "무슨 문제인지: 공개 후 표본 검수 지연 · "
-            "고객 영향: 사후 확인 지연 · 지금 할 일: Admin 검수 완료 · 처리 기한: 가능한 한 빨리",
+            f"무슨 문제인지: 자동 발행 차단 {summary} · "
+            "고객 영향: 예정 글이 공개되지 않음 · "
+            "지금 할 일: 운영센터에서 차단 항목 조치 · 처리 기한: 오늘 중",
             (
-                header_block("post_publish_review_header", "공개 후 검수 지연"),
-                section_block("post_publish_review_identity", f"*{hospital_name}*\n{title}"),
-                section_block("post_publish_review_context", details),
-                action_block("post_publish_review_action", action_url, "Admin에서 검수 완료"),
+                header_block("generation_blocked_digest_header", "자동 발행 차단 요약"),
+                section_block("generation_blocked_digest_summary", f"*{summary}*"),
+                section_block("generation_blocked_digest_items", "\n".join(lines)),
+                action_block(
+                    "generation_blocked_digest_action", action_url, "운영센터에서 모아보기"
+                ),
             ),
             action_url,
         ),
         settings.ADMIN_BASE_URL,
     )
     return NotificationIntent(
-        dedupe_key=_review_overdue_dedupe_key(item.id, item.published_at),
-        notification_type=POST_PUBLISH_REVIEW_OVERDUE_TYPE,
+        dedupe_key=(
+            f"{_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX}"
+            f"{cycle_date.isoformat()}:{batch}:{digest}"
+        ),
+        notification_type=GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE,
         message=message,
-        hospital_id=hospital.id,
         max_attempts=3,
     )
 
@@ -257,36 +246,6 @@ def _publish_safe_text(value: str, limit: int) -> str:
         .replace("[email redacted]", "[이메일 숨김]")
         .replace("[phone redacted]", "[연락처 숨김]")
     )
-
-
-async def enqueue_publish_notification(
-    db: AsyncSession, item: PublishedItem, hospital: HospitalIdentity
-) -> NotificationOutbox:
-    return await enqueue_notification(db, build_publish_notification_intent(item, hospital))
-
-
-def enqueue_publish_notification_sync(
-    db: Session, item: PublishedItem, hospital: HospitalIdentity
-) -> NotificationOutbox:
-    """Add the intent to the same sync transaction as automatic publication."""
-
-    return _enqueue_notification_sync(db, build_publish_notification_intent(item, hospital))
-
-
-def enqueue_content_publish_digest_sync(
-    db: Session,
-    cycle_date: date,
-    published_outcomes: Sequence[Mapping[str, object]],
-) -> NotificationOutbox:
-    """Add at most one morning publication digest for the Seoul calendar date."""
-
-    intent = build_content_publish_digest_intent(cycle_date, published_outcomes)
-    existing = db.execute(
-        select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
-    ).scalar_one_or_none()
-    if existing is not None:
-        return existing
-    return _enqueue_notification_sync(db, intent)
 
 
 def enqueue_missing_approved_essence_digest_sync(
@@ -305,12 +264,17 @@ def enqueue_missing_approved_essence_digest_sync(
     return _enqueue_notification_sync(db, intent)
 
 
-def enqueue_post_publish_review_overdue_notification_sync(
-    db: Session, item: PublishedItem, hospital: HospitalIdentity
-) -> NotificationOutbox:
-    """Add one overdue-review notification intent without committing."""
+def enqueue_generation_blocked_digest_sync(
+    db: Session,
+    cycle_date: date,
+    batch: str,
+    blocked_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationOutbox | None:
+    """Add at most one blocked-publication digest per morning batch and blocked set."""
 
-    intent = build_post_publish_review_overdue_intent(item, hospital)
+    if not blocked_outcomes:
+        return None
+    intent = build_generation_blocked_digest_intent(cycle_date, batch, blocked_outcomes)
     existing = db.execute(
         select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
     ).scalar_one_or_none()
@@ -395,10 +359,6 @@ def project_publish_notification(
 
 def _publish_dedupe_key(content_id: uuid.UUID, published_at: datetime) -> str:
     return f"{_DEDUPE_PREFIX}{content_id}:{_publication_epoch_micros(published_at)}"
-
-
-def _review_overdue_dedupe_key(content_id: uuid.UUID, published_at: datetime) -> str:
-    return f"{_REVIEW_OVERDUE_DEDUPE_PREFIX}{content_id}:{_publication_epoch_micros(published_at)}"
 
 
 def _publication_epoch_micros(published_at: datetime) -> int:

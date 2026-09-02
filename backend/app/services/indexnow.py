@@ -194,15 +194,6 @@ async def submit_content_published(
     )
 
 
-async def submit_hospital_pages(
-    *, slug: str, aeo_domain: str | None, treatments: list | None = None
-) -> bool:
-    base = public_base_url(aeo_domain)
-    return await submit_urls(
-        base_url=base, urls=_absolute(base, hospital_site_paths(slug, treatments))
-    )
-
-
 def hospital_all_urls(
     *,
     slug: str,

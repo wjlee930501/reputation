@@ -39,6 +39,22 @@ def test_uncertain_or_flagged_review_never_passes(payload: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_review_client_is_created_once_and_reused(monkeypatch) -> None:
+    """검수 1건마다 클라이언트를 새로 만들면 커넥션 풀을 매번 버린다."""
+    created: list[dict] = []
+
+    class FakeAnthropicClient:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(content_ai_review.anthropic, "Anthropic", FakeAnthropicClient)
+    content_ai_review._reset_clients_for_tests()
+
+    assert content_ai_review._anthropic_client() is content_ai_review._anthropic_client()
+    assert len(created) == 1
+    assert created[0]["max_retries"] == 0
+
+
 async def test_cost_block_returns_unavailable_without_provider_call(monkeypatch) -> None:
     async def blocked(*_args, **_kwargs):
         return SimpleNamespace(allowed=False)

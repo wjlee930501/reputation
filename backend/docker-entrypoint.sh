@@ -3,6 +3,15 @@ set -euo pipefail
 
 SERVICE="${SERVICE:-api}"
 
+# Docker Compose (and any caller that passes an explicit command, e.g.
+# `docker compose run ... some command`) sets a `command:` — honor it verbatim
+# instead of silently discarding it in favor of the SERVICE-based dispatch below.
+# Cloud Run services deploy with no command/args, so this is a no-op there and
+# SERVICE continues to select the branch.
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
+
 case "$SERVICE" in
   api)
     exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"

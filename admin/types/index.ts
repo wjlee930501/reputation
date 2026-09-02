@@ -80,6 +80,18 @@ export interface Hospital {
   director_career?: string
   director_philosophy?: string
   treatments?: Array<{ name: string; description: string }>
+  // 아래 9개는 병원 기본 정보(profile) 편집 폼 전용 필드 — GET /admin/hospitals/{id}는
+  // 이미 이 값들을 함께 내려주므로, 헤더 컨텍스트가 같은 응답을 재사용할 수 있게
+  // 여기서도 선언해 둔다 (profile 페이지의 중복 fetch 제거).
+  brand_primary_color?: string | null
+  brand_accent_color?: string | null
+  logo_url?: string | null
+  hero_image_url?: string | null
+  hero_media_kind?: 'VERIFIED_FACILITY' | 'BRAND_GRAPHIC' | '' | null
+  hero_headline?: string | null
+  hero_description?: string | null
+  image_style_direction?: string | null
+  site_access_mode?: 'urgent' | 'appointment' | 'specialist' | '' | null
 }
 
 export interface ContentReference {
@@ -157,6 +169,7 @@ export type SourceType =
   | 'PHOTO_CLINIC_EXTERIOR'
   | 'PHOTO_CLINIC_INTERIOR'
   | 'PHOTO_TREATMENT_ROOM'
+  | 'PHOTO_BRAND'
   | 'OTHER'
 
 export type SourceStatus = 'PENDING' | 'PROCESSED' | 'EXCLUDED' | 'ERROR'
@@ -439,30 +452,6 @@ export interface ScheduleInfo {
   is_active: boolean
 }
 
-export interface Report {
-  id: string
-  hospital_id: string
-  period_year: number
-  period_month: number
-  report_type: 'V0' | 'MONTHLY'
-  pdf_path: string | null
-  has_pdf?: boolean
-  has_doctor_pdf?: boolean
-  doctor_artifact_state?: 'MISSING' | 'INVALID' | 'VALID'
-  doctor_artifact_sha256?: string | null
-  download_url?: string | null
-  sov_summary: Record<string, unknown> | null
-  content_summary: Record<string, unknown> | null
-  essence_summary?: Record<string, unknown> | null
-  created_at: string
-  sent_at: string | null
-  delivery_ready?: boolean
-  customer_ready?: boolean
-  delivery_blockers?: string[]
-  effective_delivery?: ({ event_type?: string | null } & Record<string, unknown>) | null
-  delivery_history?: Array<Record<string, unknown>>
-}
-
 export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   ONBOARDING: { label: '온보딩 진행 중', color: 'bg-gray-100 text-gray-700' },
   ANALYZING: { label: 'AI 진단 분석 중', color: 'bg-blue-100 text-blue-700' },
@@ -541,7 +530,6 @@ export type OperationsSlackState =
   | 'HOLD'
   | 'SENT'
   | 'FAILED'
-export type OperationsIncidentState = 'OPEN' | 'RETRYING' | 'RECOVERED' | 'ACKNOWLEDGED'
 
 export interface OperationsOwner {
   readonly id: string
@@ -602,6 +590,12 @@ export interface OperationsQueueRow {
   readonly same_type_count: number
   readonly affected_hospital_count: number
   readonly cost_guard_category: string | null
+  /**
+   * False marks a row that is context, not work — automatic recovery owns it
+   * (RETRYING), or the normal schedule has not reached it yet. Render it in a
+   * collapsed/secondary state instead of hiding it.
+   */
+  readonly requires_operator_action?: boolean
   readonly safe_cause: string | null
   readonly history: readonly OperationsHistoryEntry[]
   readonly slack: OperationsSlack | null

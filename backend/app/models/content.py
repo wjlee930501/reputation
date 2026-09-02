@@ -173,6 +173,9 @@ class ContentItem(Base):
     brief_approved_by: Mapped[str | None] = mapped_column(String(100))
     essence_status: Mapped[str | None] = mapped_column(String(50))
     essence_check_summary: Mapped[dict | None] = mapped_column(_jsonb_type())
+    # 병원별 편집 범위 커스터마이즈(hospitals.content_focus_topics)에서 이번 아이템이
+    # 어떤 포커스 토픽에 매핑됐는지 기록한다. migration 0054.
+    content_focus_topic: Mapped[str | None] = mapped_column(String(40))
 
     # 본문 근거 자료 (GEO 신호 — AI 인용 가능성 ↑)
     # list of {"title": str, "url": str}
@@ -201,6 +204,8 @@ class ContentItem(Base):
     post_publish_reviewed_by: Mapped[str | None] = mapped_column(String(100))
     body_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     generation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 생성 이미지가 의미론적(semantic) 정책 검수를 통과한 시각. migration 0053.
+    image_policy_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

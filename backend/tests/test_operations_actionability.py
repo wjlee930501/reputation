@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.api.admin import operations_center_report_queries as report_queries
 from app.api.admin import operations_center_today_queries as today_queries
 from app.api.admin.operations_center_serializers import next_onboarding_step
 from app.models.hospital import Hospital
-from app.services import notifier as legacy_notifier
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.post_publish_review_policy import (
+    auto_publish_due_predicate,
     human_post_publish_review_predicate,
     publicly_operational_hospital_predicate,
 )
@@ -40,8 +41,10 @@ def test_today_queue_and_post_publish_sampling_share_automatic_operation_boundar
     assert "hospitals.status = 'ACTIVE'" in operational_sql
     assert "hospitals.site_live IS true" in operational_sql
     assert "content_items.sequence_no = 1" in review_sql
-    assert "automatic_remediation_attempts" in review_sql
     assert "content_items.body_updated_at > content_items.published_at" in review_sql
+    # Remediation alone no longer pulls an item into the sample — a rewrite the automatic
+    # safety gate already applied is evidence the gate worked, not a reason to re-sample it.
+    assert "automatic_remediation_attempts" not in review_sql
 
 
 def test_generation_failure_names_customer_impact_and_one_recovery_control() -> None:
@@ -521,6 +524,7 @@ def test_generation_notification_has_one_developer_fallback() -> None:
         owner_label="병원 운영 담당자",
         sla_label="예정 공개 전",
         problem="콘텐츠 생성 서비스가 이번 요청을 처리하지 못했습니다.",
+        incident_type="CONTENT_GENERATION_FAILED",
     )
 
     payload = build_open_incident_notification(
@@ -540,6 +544,54 @@ def test_today_queue_guidance_uses_the_content_check_link_for_both_states() -> N
     assert "병원 채널" in publish_impact
     assert "콘텐츠 확인" in review_action
     assert "콘텐츠 확인" in publish_action
+
+
+_TODAY = date(2026, 8, 19)
+
+
+def test_todays_publication_slot_is_not_operator_work_before_the_eight_am_publisher() -> None:
+    # Given: 07:30 KST — the automatic publisher has not run yet
+    before_publisher = datetime(2026, 8, 18, 22, 30, tzinfo=UTC)
+
+    # Then: today's slot is context, a slot whose date already passed is real work
+    assert not today_queries.publish_due_requires_operator_action(
+        _TODAY, _TODAY, before_publisher
+    )
+    assert today_queries.publish_due_requires_operator_action(
+        _TODAY - timedelta(days=1), _TODAY, before_publisher
+    )
+
+
+@pytest.mark.parametrize(
+    "moment",
+    [
+        datetime(2026, 8, 18, 23, 0, tzinfo=UTC),  # 08:00 KST
+        datetime(2026, 8, 19, 4, 0, tzinfo=UTC),  # 13:00 KST
+    ],
+)
+def test_publication_slot_becomes_operator_work_once_the_publisher_has_had_its_turn(
+    moment: datetime,
+) -> None:
+    # Given / When: at or after 08:00 KST the slot should have been published
+
+    # Then: today's unpublished slot counts as operator work again
+    assert today_queries.publish_due_requires_operator_action(_TODAY, _TODAY, moment)
+
+
+def test_due_publish_query_predicate_never_drops_the_pre_eight_am_rows() -> None:
+    """The fold is a per-row flag, not a WHERE clause — the row must stay in the page.
+
+    Dropping it from the query removed it from `total` too, so the FE could not
+    collapse a row it never received and the count silently disagreed with the list.
+    """
+    sql = str(
+        auto_publish_due_predicate(_TODAY).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "content_items.scheduled_date <= '2026-08-19'" in sql
+    assert "content_items.scheduled_date < '2026-08-19'" not in sql
 
 
 def test_report_queue_guides_the_operator_to_the_real_generation_control() -> None:
@@ -669,6 +721,7 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
         admin_path="/operations",
         owner_label="미지정",
         sla_label="확인 필요",
+        incident_type="CONTENT_GENERATION_FAILED",
     )
 
     # When
@@ -679,32 +732,3 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
     assert "담당: 미지정(담당자 지정 필요)" in payload
     assert "처리 기한: 운영 센터에서 확인" in payload
     assert "SLA" not in payload
-
-
-async def test_auto_publish_slack_uses_plain_public_content_language(monkeypatch) -> None:
-    # Given
-    captured = {}
-
-    async def capture_send(**payload):
-        captured.update(payload)
-        return True
-
-    monkeypatch.setattr(legacy_notifier, "_send", capture_send)
-
-    # When
-    await legacy_notifier.notify_content_auto_published(
-        hospital_name="테스트의원",
-        title="진료 안내",
-        content_type="FAQ",
-        sequence_no=1,
-        total_count=12,
-        scheduled_date="2026-08-10",
-        public_url="https://clinic.example.test/contents/1",
-        admin_url="https://admin.example.test/hospitals/1/content",
-    )
-
-    # Then
-    body = captured["blocks"][0]["text"]["text"]
-    assert "공개 내용 확인 필요" in captured["text"]
-    assert "Admin에서 공개 내용 확인" in body
-    assert "후행" not in body

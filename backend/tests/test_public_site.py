@@ -187,6 +187,7 @@ def test_serialize_hospital_summary_exposes_llms_index_fields_only():
         website_url="https://example.com",
         plan="PLAN_16",
         director_philosophy="비공개 메모",
+        treatments=[{"name": "피부 레이저", "description": "설명"}],
         updated_at=datetime(2026, 6, 1, 12, 0, 0),
         created_at=datetime(2026, 5, 1, 12, 0, 0),
     )
@@ -201,6 +202,8 @@ def test_serialize_hospital_summary_exposes_llms_index_fields_only():
     assert summary["address"] == "서울시 강남구"
     assert summary["phone"] == "02-123-4567"
     assert summary["website_url"] == "https://example.com"
+    # sitemap 빌더가 병원별 detail을 추가 호출하지 않도록 목록에도 진료 항목을 싣는다.
+    assert summary["treatments"] == [{"name": "피부 레이저", "description": "설명"}]
     assert summary["updated_at"] == "2026-06-01T12:00:00"
     # 내부 전용 필드는 목록에도 노출하지 않는다.
     assert "plan" not in summary
@@ -218,6 +221,7 @@ def test_serialize_hospital_summary_sanitizes_website_url():
         address=None,
         phone=None,
         website_url="javascript:alert(1)",
+        treatments=None,
         updated_at=None,
         created_at=None,
     )
@@ -226,6 +230,7 @@ def test_serialize_hospital_summary_sanitizes_website_url():
 
     assert summary["website_url"] is None
     assert summary["updated_at"] is None
+    assert summary["treatments"] == []
 
 
 def _hospital_with_photo(director_photo_url):
@@ -585,3 +590,102 @@ async def test_list_published_contents_defaults_offset_to_zero(monkeypatch):
 
     contents_stmt = db.statements[1]
     assert contents_stmt._offset_clause.value == 0
+
+
+# ── 의료광고 필터: 공개 직렬화(세 번째 적용 지점) ─────────────────────────
+
+
+def _published_item(**overrides):
+    """발행 게이트를 통과한 공개 후보 1건."""
+    values = {
+        "id": uuid.uuid4(),
+        "status": ContentStatus.PUBLISHED,
+        "essence_status": ESSENCE_STATUS_ALIGNED,
+        "content_type": "FAQ",
+        "title": "치질 수술 회복 기간 안내",
+        "body": "환자분이 자주 묻는 회복 기간을 정리했습니다.",
+        "meta_description": "회복 기간 안내",
+        "faq_question": "회복까지 얼마나 걸리나요?",
+        "faq_answer_summary": "평균 2주입니다.",
+        "image_url": None,
+        "scheduled_date": date(2026, 6, 1),
+        "published_at": datetime(2026, 6, 1, 8, 0, 0),
+        "body_updated_at": None,
+        "references_list": [],
+        "query_target_id": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("title", "완치를 약속하는 치질 수술"),
+        ("body", "저희 시술은 **부작용 없는** 치료입니다."),
+        ("faq_question", "성공률이 얼마나 되나요?"),
+        ("meta_description", "국내 최초 도입 장비"),
+    ],
+)
+def test_published_content_with_forbidden_expression_is_not_public_safe(field, value):
+    """발행 뒤 수정되거나 필터 강화 전에 발행된 글은 공개 직렬화에서 fail-closed."""
+    assert _is_public_safe_content(_published_item(**{field: value})) is False
+
+
+def test_clean_published_content_stays_public_safe():
+    assert _is_public_safe_content(_published_item()) is True
+
+
+def test_forbidden_check_reads_the_body_as_rendered_markdown():
+    """`최**고**의`는 화면에 '최고의'로 렌더된다 — 마크업으로 우회할 수 없다."""
+    assert _is_public_safe_content(_published_item(body="저희는 최**고**의 병원입니다.")) is False
+    # 반대로 짝이 맞지 않는 별표는 리터럴이므로 오탐하지 않는다.
+    assert _is_public_safe_content(_published_item(body="가격은 5*3 만원 수준입니다.")) is True
+
+
+async def test_list_published_contents_drops_items_that_fail_the_filter(monkeypatch):
+    """목록은 sitemap·llms.txt의 원천이라 여기서 빠지면 공개 표면 전체에서 빠진다."""
+    clean = _published_item()
+    dirty = _published_item(title="완치 보장 프로그램")
+    db = _SequentialFakeDB(
+        [_FakeResult([_active_hospital()]), _FakeResult([clean, dirty])]
+    )
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+
+    async def _fresh(*_args, **_kwargs):
+        return SimpleNamespace(public_philosophy=philosophy)
+
+    monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
+
+    result = await _list_published_contents(
+        SimpleNamespace(), "test-hospital", limit=20, offset=0, db=db
+    )
+
+    assert [entry["id"] for entry in result] == [str(clean.id)]
+
+
+def test_serialize_hospital_summary_drops_treatments_with_forbidden_expressions():
+    """목록(요약) 경로도 상세와 같은 의료광고 필터를 거친다 — sitemap이 이 응답을 읽는다."""
+    hospital = SimpleNamespace(
+        slug="test-hospital",
+        name="테스트병원",
+        aeo_domain=None,
+        region=[],
+        specialties=[],
+        director_name=None,
+        address=None,
+        phone=None,
+        website_url=None,
+        treatments=[
+            {"name": "치질 수술", "description": "회복 기간을 안내합니다."},
+            {"name": "대장 내시경", "description": "부작용 없는 검사입니다."},
+        ],
+        updated_at=None,
+        created_at=None,
+    )
+
+    summary = _serialize_hospital_summary(hospital)
+
+    assert summary["treatments"] == [
+        {"name": "치질 수술", "description": "회복 기간을 안내합니다."}
+    ]

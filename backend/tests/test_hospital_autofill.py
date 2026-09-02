@@ -293,3 +293,84 @@ async def test_autofill_endpoint_end_to_end_with_real_signature(monkeypatch):
     # autofill 감사 로그가 기록되고 커밋됐다.
     assert db.committed is True
     assert db.added and db.added[0].action == "autofill_profile"
+
+
+# ── 모델 선택 / 재시도 필터 ───────────────────────────────────────
+def test_autofill_uses_the_fast_model_by_default(monkeypatch):
+    """구조화 추출 + 결정론적 grounding 검증이라 Sonnet급 추론을 살 이유가 없다."""
+    monkeypatch.setattr(af.settings, "AUTOFILL_MODEL", "")
+    monkeypatch.setattr(af.settings, "CLAUDE_MODEL_FAST", "fast-model")
+    monkeypatch.setattr(af.settings, "CLAUDE_MODEL", "expensive-model")
+
+    assert af._autofill_model() == "fast-model"
+
+
+def test_autofill_model_is_revertible_by_config(monkeypatch):
+    monkeypatch.setattr(af.settings, "AUTOFILL_MODEL", "expensive-model")
+    monkeypatch.setattr(af.settings, "CLAUDE_MODEL_FAST", "fast-model")
+
+    assert af._autofill_model() == "expensive-model"
+
+
+async def test_autofill_request_sends_the_configured_model(monkeypatch):
+    async def ok_fetch(url: str):
+        return "김원장", None, None
+
+    async def fake_naver(name: str):
+        return naver_place.NaverPlaceResult(None, "", "없음")
+
+    monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
+    monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
+    monkeypatch.setattr(af.settings, "AUTOFILL_MODEL", "")
+    monkeypatch.setattr(af.settings, "CLAUDE_MODEL_FAST", "fast-model")
+
+    captured: dict = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        fields = {
+            "director_name": {
+                "value": "김원장",
+                "source": "homepage",
+                "confidence": 0.9,
+                "evidence": "김원장",
+            }
+        }
+        return _fake_claude_response(fields)
+
+    monkeypatch.setattr(af._client.messages, "create", create)
+
+    await af.autofill_profile("장편한외과의원", "http://hp", None)
+
+    assert captured["model"] == "fast-model"
+
+
+async def test_autofill_does_not_retry_deterministic_client_error(monkeypatch):
+    """결정적 4xx를 3회 재시도하면 유료 호출만 3배가 된다."""
+    import anthropic
+    import httpx
+
+    async def ok_fetch(url: str):
+        return "김원장", None, None
+
+    async def fake_naver(name: str):
+        return naver_place.NaverPlaceResult(None, "", "없음")
+
+    monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
+    monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
+
+    http_response = httpx.Response(
+        400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
+    calls = {"n": 0}
+
+    def create(**_kwargs):
+        calls["n"] += 1
+        raise anthropic.BadRequestError("bad request", response=http_response, body=None)
+
+    monkeypatch.setattr(af._client.messages, "create", create)
+
+    result = await af.autofill_profile("장편한외과의원", "http://hp", None)
+
+    assert calls["n"] == 1
+    assert result.draft == {}

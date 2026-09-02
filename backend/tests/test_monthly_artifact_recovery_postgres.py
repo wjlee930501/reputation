@@ -61,7 +61,7 @@ def test_failed_v1_then_valid_v2_recovers_once(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(
         tasks,
         "load_monthly_sov_manifest",
-        lambda *_args: SimpleNamespace(cells=(), selected_records=()),
+        lambda *_args: SimpleNamespace(cells=(), selected_records=(), scored_records=()),
     )
     monkeypatch.setattr(tasks, "build_monthly_sov", lambda *_args, **_kwargs: monthly_sov())
     monkeypatch.setattr(tasks, "generate_pdf_report", lambda **_kwargs: "gs://qa-private/ae.pdf")

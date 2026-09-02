@@ -87,6 +87,9 @@ def project_incident_labels(incident: Incident, *, now: datetime) -> IncidentLab
     sla_label = "기한 미설정"
     if incident.sla_due_at is not None:
         sla_label = "기한 초과" if incident.sla_due_at < now else "기한 내"
+    # RETRYING means automatic recovery owns the incident right now. Asking an
+    # operator to act on it produces a retry click that duplicates work the
+    # scheduler already does, so the row stays visible but is not operator work.
     return IncidentLabels(
         state_labels[state],
         severity_labels[severity],
@@ -94,7 +97,8 @@ def project_incident_labels(incident: Incident, *, now: datetime) -> IncidentLab
         sla_label,
         sanitize_operator_text(incident.next_action) or "운영 센터에서 확인",
         normalize_admin_path(incident.admin_path),
-        state in {IncidentState.OPEN, IncidentState.RETRYING},
+        state is IncidentState.OPEN,
+        state is IncidentState.RETRYING,
     )
 
 

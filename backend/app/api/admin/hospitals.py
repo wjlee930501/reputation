@@ -45,6 +45,7 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
+from app.services import cost_guard
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
@@ -53,6 +54,13 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
 )
 from app.services.essence_readiness import get_essence_readiness
+from app.services.hospital_activation import (
+    ActivationOutcome,
+    HospitalNotActivatable,
+)
+from app.services.hospital_activation import (
+    activate_hospital as activate_hospital_transition,
+)
 from app.services.hospital_duplicates import find_duplicate_hospitals, normalize_hospital_name
 from app.services.hospital_geocoding import GeocodingError, geocode_address
 from app.services.hospital_lifecycle import (
@@ -977,6 +985,16 @@ async def autofill_hospital_profile(
     website_url = body.website_url or h.website_url
     blog_url = body.blog_url or h.blog_url
 
+    # 자동 채우기의 Claude 구조화 추출도 유료 호출이다 — content 예산을 예약해
+    # 킬스위치/상한을 존중한다(종전에는 record_provider_call만 있어 관측만 되고
+    # 차단되지 않았다).
+    decision = await cost_guard.check_and_increment("content")
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=decision.reason or "비용 가드 상한으로 프로파일 자동 채우기가 차단되었습니다.",
+        )
+
     result = await autofill_profile(
         name,
         website_url=website_url,
@@ -1017,8 +1035,11 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
 
     Content scheduling belongs to STEP 6 and is deliberately not an activation
     prerequisite.
+
+    판정과 전환은 같은 행 잠금 안에서 일어나야 한다 — 게이트를 읽은 뒤 전환하기까지
+    사이에 들어온 `/pause` 커밋이 조용히 덮이면 일시 정지가 되살아난다.
     """
-    h = await _get_or_404(db, hospital_id)
+    h = await _get_or_404(db, hospital_id, for_update=True)
     if h.status == HospitalStatus.ACTIVE:
         return {
             "detail": f"{h.name} activated",
@@ -1036,28 +1057,18 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     # DM-F3: 기본 플랫폼 주소 활성화는 커스텀 도메인과 독립적으로 가능.
     # 커스텀 도메인이 설정되어 있어도 기본 서브도메인으로 라이브할 수 있다.
     # 커스텀 도메인 검증은 별도의 /domain/verify 엔드포인트에서 처리한다.
+    # 전환 자체는 워커의 자동 활성화와 같은 서비스 한 곳에서만 수행한다.
 
-    previous_status = h.status.value if hasattr(h.status, "value") else str(h.status)
     ensure_site_revalidate_configured()
-    h.status = HospitalStatus.ACTIVE
-    h.site_live = True
-    await open_service_interval(db, hospital_id, ServiceIntervalProvenance.ACTIVATION)
-    await write_audit_log(
-        db,
-        action="activate_hospital",
-        hospital_id=hospital_id,
-        actor=default_actor(),
-        target_type="hospital",
-        target_id=hospital_id,
-        detail={
-            "previous_status": previous_status,
-            "new_status": HospitalStatus.ACTIVE.value,
-            "aeo_domain": h.aeo_domain,
-            "activation_method": "platform_subdomain",
-            "certificate_ready": True,
-            "activation_gate": gate,
-        },
-    )
+    try:
+        result = await activate_hospital_transition(
+            db, h, actor=default_actor(), reason="OPERATOR_PLATFORM_ACTIVATION"
+        )
+    except HospitalNotActivatable as exc:
+        # PAUSED 재개는 DNS 재확인이 붙은 /resume만 수행한다.
+        raise HTTPException(status_code=409, detail=exc.as_detail()) from exc
+    if result.outcome is ActivationOutcome.BLOCKED:
+        raise HTTPException(status_code=409, detail=activation_gate_error(result.gate))
     await db.commit()
     # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 활성화는 이미 성공했다.
     await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
@@ -1355,8 +1366,17 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
-async def _get_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:
-    h = await db.get(Hospital, hospital_id)
+async def _get_or_404(
+    db: AsyncSession, hospital_id: uuid.UUID, *, for_update: bool = False
+) -> Hospital:
+    """`for_update=True`는 상태 전환 엔드포인트 전용 — 판정과 쓰기를 한 잠금 안에 둔다.
+
+    기본 경로는 인자를 아예 넘기지 않는다 — 읽기 전용 조회의 SQL을 바꿀 이유가 없다.
+    """
+    if for_update:
+        h = await db.get(Hospital, hospital_id, with_for_update=True)
+    else:
+        h = await db.get(Hospital, hospital_id)
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return h

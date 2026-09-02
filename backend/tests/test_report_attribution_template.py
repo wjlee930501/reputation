@@ -157,3 +157,36 @@ def test_report_renders_content_operations_truthfully():
     assert "15편" in html
     assert "약정 콘텐츠 16편 중 15편만 발행되었습니다." in html
     assert "다음 달 복구 계획" in html
+
+
+# ── 원장 미팅 토킹 포인트(AE 전용) ─────────────────────────────────────
+# 원장용 PDF와 같은 숫자를 쓰되, 이 섹션은 내부 PDF에만 있다.
+
+
+_POINTS = [
+    "이번 달 약정 16편 중 12편을 발행했습니다.",
+    "환자 질문 100번 중 병원이 나온 횟수는 47번이고, 지난달 39번 → 이번 달 47번 (정상 변동 범위 안입니다).",
+    "다음 달 계획: 아직 병원이 나오지 않는 질문을 겨냥해 다음 글의 주제를 정합니다.",
+]
+
+
+def test_ae_report_renders_the_meeting_talking_points():
+    html = _render(_sample_attribution(), talking_points=_POINTS)
+
+    assert "원장 미팅 토킹 포인트" in html
+    for line in _POINTS:
+        assert line in html
+    assert "원장 전달용 PDF에는 들어가지 않습니다" in html
+
+
+def test_ae_report_omits_the_section_when_no_talking_points_exist():
+    """구버전 리포트를 다시 열어도 빈 제목만 남지 않는다."""
+    html = _render(_sample_attribution(), talking_points=[])
+
+    assert "원장 미팅 토킹 포인트" not in html
+
+
+def test_v0_report_never_shows_meeting_talking_points():
+    html = _render(None, report_type="V0", talking_points=_POINTS)
+
+    assert "원장 미팅 토킹 포인트" not in html

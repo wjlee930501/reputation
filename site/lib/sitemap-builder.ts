@@ -10,6 +10,7 @@
 
 import type { MetadataRoute } from 'next'
 
+import { REVALIDATE_SECONDS } from './fetch-policy.ts'
 import type { SitemapScope } from './sitemap-host.ts'
 import { normalizeCustomDomain, platformSiteUrl } from './site-url.ts'
 import { buildTreatmentSlug } from './treatment-slug.ts'
@@ -56,10 +57,15 @@ async function fetchAllContents(apiBase: string, slug: string): Promise<ContentE
   for (;;) {
     let page: ContentEntry[]
     try {
-      const res = await fetch(
-        `${apiBase}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENT_PAGE_SIZE}&offset=${offset}`,
-        { next: { revalidate: 3600 } },
-      )
+      // 첫 페이지(offset=0)는 lib/api.ts의 fetchContents(slug, 500)와 정확히 같은 URL
+      // 모양(`?limit=500`, offset 파라미터 없음)을 써서 같은 Next data cache 키를
+      // 공유한다 — offset=0을 명시하면 별도 키로 갈라져 같은 병원 콘텐츠를 캐시가
+      // 두 번 들고 있게 된다.
+      const url =
+        offset === 0
+          ? `${apiBase}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENT_PAGE_SIZE}`
+          : `${apiBase}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENT_PAGE_SIZE}&offset=${offset}`
+      const res = await fetch(url, { next: { revalidate: REVALIDATE_SECONDS } })
       if (!res.ok) {
         console.warn(
           `[sitemap] Failed to fetch contents for ${slug} at offset ${offset}: HTTP ${res.status}`,
@@ -139,7 +145,7 @@ export async function appendHospitalEntries(
   if (!treatments) {
     try {
       const detailRes = await fetch(`${apiBase}/hospitals/${encodeURIComponent(hospital.slug)}`, {
-        next: { revalidate: 3600 },
+        next: { revalidate: REVALIDATE_SECONDS },
       })
       if (detailRes.ok) {
         const detail = await detailRes.json()
@@ -203,7 +209,7 @@ async function resolveHostSlug(apiBase: string, hostname: string): Promise<strin
 async function fetchHospitalDetail(apiBase: string, slug: string): Promise<HospitalEntry | null> {
   try {
     const detailRes = await fetch(`${apiBase}/hospitals/${encodeURIComponent(slug)}`, {
-      next: { revalidate: 3600 },
+      next: { revalidate: REVALIDATE_SECONDS },
     })
     if (detailRes.ok) return (await detailRes.json()) as HospitalEntry
   } catch (err) {
@@ -241,7 +247,7 @@ export async function buildSitemap(
   const entries = platformBaseEntries()
   let hospitals: HospitalEntry[]
   try {
-    const res = await fetch(`${apiBase}/hospitals`, { next: { revalidate: 3600 } })
+    const res = await fetch(`${apiBase}/hospitals`, { next: { revalidate: REVALIDATE_SECONDS } })
     if (!res.ok) {
       console.error(`[sitemap] Failed to fetch hospitals: HTTP ${res.status}`)
       return entries

@@ -316,6 +316,9 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     CLAUDE_MODEL: str = "claude-sonnet-4-5"
     CLAUDE_MODEL_FAST: str = "claude-haiku-4-5-20251001"
+    # 프로파일 자동 채우기는 결정론적 grounding 검증이 뒤따르는 구조화 추출 작업이라
+    # 빠른 모델로 충분하다. 비우면 CLAUDE_MODEL_FAST를 쓰고, 값을 넣으면 되돌릴 수 있다.
+    AUTOFILL_MODEL: str = ""
 
     # Jina Reader — 프로파일 자동 채우기 시 네이버 플레이스 등 봇 차단 사이트 우회 읽기.
     # 선택값: 비어 있어도 무인증 free tier로 동작(분당 제한 빡빡). 키가 있으면 상향.
@@ -323,7 +326,6 @@ class Settings(BaseSettings):
 
     # Google Cloud — Gemini 이미지 생성(Imagen GA endpoint 종료 후 대체)
     GCP_PROJECT_ID: str = ""
-    GCP_LOCATION: str = "us-central1"
     GCP_STORAGE_BUCKET: str = "reputation-images"
     ASSET_LOCAL_UPLOAD_DIR: str = "/tmp/private_asset_uploads"
     # Certificate Manager 기반 신규 커스텀 도메인 자동 프로비저닝.
@@ -396,6 +398,10 @@ class Settings(BaseSettings):
 
     # Slack
     SLACK_WEBHOOK_URL: str = ""
+    # 개발팀 전용 채널. AE가 고칠 수 없는 순수 인프라 인시던트(브로커·백그라운드 작업·
+    # 알림 전송·캐시 갱신·원장 PDF 렌더)는 이 웹훅으로 보낸다. 비워 두면 기존과 동일하게
+    # SLACK_WEBHOOK_URL 한 곳으로만 나간다 — 설정 전 동작 변화가 없다.
+    SLACK_WEBHOOK_URL_DEV: str = ""
     # webhook SSRF 방어 — 허용 호스트(쉼표 구분). 기본은 Slack 공식 호스트만(V-013).
     SLACK_WEBHOOK_ALLOWED_HOSTS: str = "hooks.slack.com"
 
@@ -461,8 +467,6 @@ class Settings(BaseSettings):
     # 하루 32,000원으로 수학적으로 묶인다. 그래서 cost_guard에 별도 카테고리를 두지 않는다.
     # 랜딩의 "오늘 남은 자리 N/20"에 그대로 노출되는 마케팅 숫자이기도 하다.
     LEADGEN_DAILY_SLOTS: int = 20
-    # 질의 3개 고정. 5개는 건당 2,498원으로 상한까지 여유가 4%뿐이라 재시도 몇 번에 넘긴다.
-    LEADGEN_QUERY_COUNT: int = 3
     LEADGEN_REPEAT_COUNT: int = 3
     # 무료 진단 전용 공급자 동시성. sov_engine의 전역 세마포어를 그대로 쓰면 유료 측정과
     # 경합하므로(PRD F6-1) 풀을 분리한다. 실제 값은 출시 전 20건 동시 주입 부하 시험으로 확정.

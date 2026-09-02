@@ -16,11 +16,6 @@ import { readSessionToken } from './session.ts'
 
 const ALLOWED_PREFIXES = [
   'hospitals',
-  'content',
-  'reports',
-  'sov',
-  'domain',
-  'essence',
   'leads',
   'handoffs',
   // 전역 제어 평면 — 병원 단위가 아니라 /admin/operations, /admin/accounts로 열린다.

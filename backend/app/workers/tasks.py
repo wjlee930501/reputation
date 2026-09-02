@@ -17,7 +17,7 @@ import logging
 import threading
 import uuid
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
 from typing import Any
@@ -48,7 +48,7 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReportArtifact
-from app.models.operations import OperationRun, OperationRunState
+from app.models.operations import IncidentSeverity, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import (
     AIQueryTarget,
@@ -66,15 +66,17 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     review_generated_content,
 )
-from app.services.content_engine import generate_content
+from app.services.content_engine import EXISTING_TITLE_PROMPT_LIMIT, generate_content
 from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
 )
 from app.services.content_publish_notifications import (
+    enqueue_generation_blocked_digest_sync,
     enqueue_missing_approved_essence_digest_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
+from app.services.doctor_pdf_contracts import DoctorV0Baseline
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
@@ -102,6 +104,13 @@ from app.services.essence_readiness import (
     get_current_approved_philosophy_sync,
     get_essence_readiness_sync,
 )
+from app.services.hospital_activation import (
+    AUTO_ACTIVATE_ACTOR,
+    activate_hospital_sync,
+    blocker_reason,
+    evaluate_auto_activation,
+    public_site_url,
+)
 from app.services.image_direction import hospital_image_direction
 from app.services.image_engine import generate_image
 from app.services.incident_types import IncidentFingerprint
@@ -128,6 +137,7 @@ from app.services.monthly_period import (
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
 from app.services.onboarding_notifications import (
+    build_hospital_activated_notification,
     build_site_built_notification,
     build_v0_ready_notification,
     enqueue_onboarding_notification_sync,
@@ -147,7 +157,9 @@ from app.services.report_artifact_validation import (
     parse_doctor_artifact_metadata,
 )
 from app.services.report_attribution import (
+    CitationAttributionInput,
     ContentAttributionInput,
+    build_citation_attribution,
     build_content_attribution_summary,
 )
 from app.services.report_engine import (
@@ -164,8 +176,10 @@ from app.services.site_revalidate import (
     trigger_site_revalidate,
 )
 from app.services.site_revalidation_control import (
+    content_is_revalidation_recoverable,
     record_retry_failure,
     record_revalidation_success,
+    run_revalidation_direction,
 )
 from app.services.sov_engine import (
     MENTION_RATE_INTENTS,
@@ -197,7 +211,11 @@ from app.workers.dispatch_auth import (
 )
 from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_incident_control import (
+    PREPUBLISH_MORNING_BATCH,
+    PUBLISH_MORNING_BATCH,
+    generation_block_digest_due,
     generation_notify_requested,
+    generation_safe_cause,
     open_generation_incident,
     recover_generation_incidents,
 )
@@ -230,6 +248,11 @@ from app.workers.nightly_generation_batch import (
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
+from app.workers.v0_checkpoint import (
+    find_reusable_v0_measurement_run,
+    load_v0_checkpoint,
+    v0_measurement_run_config,
+)
 from app.workers.weekly_sov_incident_control import (
     open_monthly_sov_failure,
     open_weekly_sov_capacity_digest,
@@ -608,6 +631,9 @@ async def _generate_with_auto_review(
     findings = _review_findings(getattr(item, "essence_check_summary", None))
     automatic_rewrites = int(bool(findings))
     reviewer_driven_rewrites = 0
+    # 측정 질의 키워드 미반영은 **한 번만** 보완 재작성을 부른다. 하드 게이트로 올리면
+    # 한국어 형태 변화 때문에 정상 글이 버려지고, 무제한 재시도로 두면 비용만 늘어난다.
+    alignment_remediation_used = False
     last_content: dict | None = None
     last_screening = None
     last_ai_review = None
@@ -638,8 +664,25 @@ async def _generate_with_auto_review(
             findings = [f"생성 안전검사 실패: {' '.join(str(exc).split())[:300]}"]
             if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
                 continue
+            if last_content is not None and last_screening is None:
+                # 앞선 회차가 만들어 둔(이미 결제된) 후보가 있다. 보완 재작성이 실패했다고
+                # 그 후보까지 버리면 정상 글 한 편을 돈만 쓰고 폐기하는 셈이다.
+                break
             raise
         last_generation_error = None
+
+        # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
+        # (content_engine._validate_target_alignment가 채운다)
+        alignment_findings = list(last_content.get("target_alignment_findings") or [])
+        if (
+            alignment_findings
+            and not alignment_remediation_used
+            and generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS
+        ):
+            alignment_remediation_used = True
+            findings = alignment_findings
+            continue
+
         last_ai_review = None
         last_screening = screen_content_against_philosophy(
             _screening_probe(last_content), philosophy
@@ -667,6 +710,15 @@ async def _generate_with_auto_review(
         if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
             reviewer_driven_rewrites += 1
 
+    if last_content is not None and last_screening is None:
+        # 키워드 보완을 위해 재작성으로 넘어갔지만 그 재작성이 비용 가드·생성 실패로
+        # 끝난 경우다. 남은 후보는 심사만 받지 않았을 뿐 이미 결제된 정상 후보이므로
+        # 여기서 심사해 살린다(잔여 키워드 지적은 아래 summary에 그대로 기록된다).
+        last_screening = screen_content_against_philosophy(
+            _screening_probe(last_content), philosophy
+        )
+        last_generation_error = None
+
     if last_content is None or last_screening is None:
         if last_generation_error is not None:
             raise last_generation_error
@@ -686,6 +738,11 @@ async def _generate_with_auto_review(
         )
 
     summary = dict(last_screening.summary or {})
+    # 보완 재작성 후에도 키워드가 주제 위치에 없으면 글은 살리고 기록만 남긴다.
+    # Admin의 콘텐츠 상세가 essence_check_summary를 그대로 보여주므로 AE가 확인할 수 있다.
+    residual_alignment = list(last_content.get("target_alignment_findings") or [])
+    if residual_alignment:
+        summary["target_alignment_findings"] = residual_alignment
     if automatic_rewrites > 0:
         summary["automatic_remediation_attempts"] = automatic_rewrites
     if reviewer_driven_rewrites > 0:
@@ -712,6 +769,97 @@ V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
 # 측정이 빨라져(p50 24.7s) 15개로 늘려도 태스크 예산 안에 들어온다
 # (15 × 5회 × 2플랫폼 = 150호출 ÷ 동시10 × 25s ≈ 375s < soft_time_limit 1800s).
 V0_QUERY_SAMPLE_COUNT = 15
+
+# V0 첫 측정 실행에 붙는 라벨. 월간 리포트가 "서비스 시작 시점" 축을 그릴 때
+# 그때 실제로 물어본 질문 세트를 이 라벨로 되찾는다.
+V0_MEASUREMENT_RUN_LABEL = "V0 first measurement"
+
+# V0와 월간의 질문 세트가 이 비율 이상 겹칠 때만 "시작 시점 대비" 한 줄을 쓴다.
+# V0는 반복 프로토콜·측정 창이 달라 완전한 비교 대상이 아니다 — 질문마저 다르면
+# 두 수치를 나란히 놓는 것 자체가 거짓말이 된다.
+V0_BASELINE_MIN_OVERLAP = 0.8
+
+
+def _normalized_query_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def v0_query_overlap_ratio(
+    v0_query_texts: Iterable[object], tracking_query_texts: Iterable[object]
+) -> float:
+    """V0 질문 중 지금 추적 세트에도 있는 비율. 분모는 언제나 V0 쪽이다."""
+    v0 = {text for value in v0_query_texts if (text := _normalized_query_text(value))}
+    if not v0:
+        return 0.0
+    tracking = {
+        text for value in tracking_query_texts if (text := _normalized_query_text(value))
+    }
+    return len(v0 & tracking) / len(v0)
+
+
+def build_v0_baseline(
+    *,
+    v0_sov_pct: float | None,
+    current_sov_pct: float | None,
+    v0_query_texts: Iterable[object],
+    tracking_query_texts: Iterable[object],
+) -> DoctorV0Baseline | None:
+    """"서비스 시작 시점(V0) 대비" 한 줄. 겹침이 부족하면 아무 말도 하지 않는다.
+
+    V0를 월간과 **비교 가능하게 만들지 않는다** — 반복 횟수·측정 창·집계 방식이
+    다르다. 여기서 만드는 것은 라벨이 붙은 참고선 하나이고, 각주가 그 한계를
+    같은 페이지에서 밝힌다.
+    """
+    if v0_sov_pct is None or current_sov_pct is None:
+        return None
+    if (
+        v0_query_overlap_ratio(v0_query_texts, tracking_query_texts)
+        < V0_BASELINE_MIN_OVERLAP
+    ):
+        return None
+    started = round(v0_sov_pct)
+    current = round(current_sov_pct)
+    return {
+        "of_hundred": started,
+        "current_of_hundred": current,
+        "sentence": f"서비스 시작 시점(V0) 대비: {started}번 → {current}번",
+    }
+
+
+def _load_v0_baseline(
+    db, hospital_id, *, current_sov_pct: float | None, tracking_query_texts: Iterable[object]
+) -> DoctorV0Baseline | None:
+    """V0 리포트와 그때 실제로 물어본 질문 세트를 읽어 참고선을 만든다."""
+    v0_report = db.execute(
+        select(MonthlyReport)
+        .where(
+            MonthlyReport.hospital_id == hospital_id,
+            MonthlyReport.report_type == "V0",
+        )
+        .order_by(MonthlyReport.created_at)
+        .limit(1)
+    ).scalars().first()
+    if v0_report is None:
+        return None
+    v0_sov_pct = (v0_report.sov_summary or {}).get("sov_pct")
+    if not isinstance(v0_sov_pct, (int, float)):
+        return None
+    v0_query_texts = db.execute(
+        select(QueryMatrix.query_text)
+        .join(SovRecord, SovRecord.query_id == QueryMatrix.id)
+        .join(MeasurementRun, MeasurementRun.id == SovRecord.measurement_run_id)
+        .where(
+            MeasurementRun.hospital_id == hospital_id,
+            MeasurementRun.run_label == V0_MEASUREMENT_RUN_LABEL,
+        )
+        .distinct()
+    ).scalars().all()
+    return build_v0_baseline(
+        v0_sov_pct=float(v0_sov_pct),
+        current_sov_pct=current_sov_pct,
+        v0_query_texts=v0_query_texts,
+        tracking_query_texts=tracking_query_texts,
+    )
 
 
 def sov_budget_units(*, query_count: int, platform_count: int, repeat_count: int) -> int:
@@ -772,44 +920,6 @@ def _run_async(coro):
         asyncio.set_event_loop(loop)
         _tls.loop = loop
     return loop.run_until_complete(coro)
-
-
-_redis_client = None
-
-
-def _get_redis():
-    global _redis_client
-    if _redis_client is None:
-        import redis
-
-        _redis_client = redis.from_url(settings.REDIS_URL)
-    return _redis_client
-
-
-def _already_done(key: str) -> bool:
-    """Idempotency READ — True if this daily run was already marked done (CELERY-4).
-
-    Fail-open: returns False on a Redis error so a transient broker hiccup never
-    silently drops a scheduled run (better to risk a duplicate than to lose it).
-    """
-    try:
-        return _get_redis().get(key) is not None
-    except Exception:
-        logger.warning("Redis idempotency read unavailable for %s; proceeding", key)
-        return False
-
-
-def _mark_done(key: str, ttl_seconds: int = 82_800) -> None:
-    """Mark a daily run done AFTER its side effects succeeded (claim-after-success).
-
-    Claiming before the work would forfeit the entire day's notification on a
-    mid-task crash, since the beat fires only once/day and the key would block any
-    re-trigger for ~23h.
-    """
-    try:
-        _get_redis().set(key, "1", ex=ttl_seconds)
-    except Exception:
-        logger.warning("Redis idempotency mark unavailable for %s", key)
 
 
 def _auto_publish_block_alert_key(
@@ -1217,12 +1327,14 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
     hospital_uuid = uuid.UUID(hospital_id)
     hospital_name = "병원"
     hospital_slug: str | None = None
+    hospital_status: HospitalStatus | None = None
     try:
         with SyncSessionLocal() as db:
             hospital = db.get(Hospital, hospital_uuid)
             if hospital is not None:
                 hospital_name = hospital.name
                 hospital_slug = hospital.slug
+                hospital_status = getattr(hospital, "status", None)
             result = refresh_essence_snapshot(
                 db,
                 hospital_uuid,
@@ -1314,6 +1426,37 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 admin_path=f"/hospitals/{hospital_id}/essence",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
+            )
+        )
+    elif result.status == EssenceRefreshStatus.ESCALATED and hospital_status == HospitalStatus.ACTIVE:
+        # 승인된 운영 기준이 이미 있어 지금까지 notify=False 복구로만 처리되던 경로.
+        # ACTIVE 병원은 콘텐츠가 계속 자동 생성되므로, 새 자료가 반영되지 않고 있다는
+        # 사실을 무음으로 두지 않는다 — 스냅샷 해시 단위로 중복 없이 1건만 연다.
+        snapshot = result.snapshot_hash or "unknown"
+        _run_async(
+            open_ops_incident(
+                pipeline="essence_auto_review",
+                object_type="essence_snapshot",
+                object_id=f"{hospital_id}:{snapshot}",
+                incident_type="ESSENCE_AUTO_REVIEW_ESCALATED",
+                safe_error_code="ESSENCE_AUTO_REVIEW_ESCALATED",
+                problem=(
+                    result.findings[0]
+                    if result.findings
+                    else "AI 근거 검수가 새 자료 반영을 보류했습니다."
+                ),
+                customer_impact=(
+                    "콘텐츠 생성은 마지막으로 승인된 운영 기준으로 계속되며, "
+                    "새로 추가된 자료는 이 예외가 검토되기 전까지 반영되지 않습니다."
+                ),
+                next_action="운영센터 Essence 페이지에서 보류된 예외를 확인해 주세요.",
+                source_type="ESSENCE_AUTO_REVIEW",
+                hospital_name=hospital_name,
+                hospital_id=hospital_uuid,
+                admin_path=f"/hospitals/{hospital_id}/essence",
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                actor=AUTO_ESSENCE_ACTOR,
+                severity=IncidentSeverity.MEDIUM,
             )
         )
     elif result.status in {
@@ -1438,6 +1581,9 @@ def trigger_v0_report(self, hospital_id: str):
     """프로파일 완료 후 V0 분석 즉시 실행"""
     require_dispatch(self, "trigger-v0-report", hospital_id)
     prior_status: str | None = None  # ANALYZING 전환 전 상태 — 실패 시 복원용 (P2-15)
+    # 이 V0 요청의 lineage. Celery의 retry는 request.headers를 그대로 재발행하므로
+    # 재시도 전 실행이 남긴 측정을 정확히 지목하는 열쇠가 된다 (v0_checkpoint 참조).
+    v0_operation_run_id = _operation_run_id_from_task(self)
     try:
         # 세션 락은 커넥션에 붙는다 — 중간 commit이 커넥션을 풀에 반환해 버리면 unlock이
         # 다른 커넥션에서 돌아 조용히 실패한다. 그래서 이 태스크만 커넥션을 고정한다.
@@ -1448,6 +1594,7 @@ def trigger_v0_report(self, hospital_id: str):
             # 같은 키의 xact 락(자료 저장·운영 기준)까지 막는다.
             acquire_hospital_advisory_session_lock_sync(db, hospital_uuid)
             run = None
+            checkpoint = None
             try:
                 acquire_hospital_advisory_lock_sync(db, hospital_uuid)
                 hospital = db.get(Hospital, hospital_uuid)
@@ -1523,132 +1670,164 @@ def trigger_v0_report(self, hospital_id: str):
                         existing_count,
                     )
 
-                # AI 답변 언급률 측정 (V0: 쿼리 수 제한, 빠른 실행)
-                run = _start_measurement_run(
-                    db,
-                    hospital,
-                    run_label="V0 first measurement",
-                    config={"source": "trigger_v0_report", "repeat_count": V0_REPEAT_COUNT},
+                # 측정 체크포인트: 이 요청이 이미 150건을 측정해 두었다면 다시 사지 않는다.
+                # PDF·GCS·커밋 실패로 인한 재시도가 가장 비싼 단계를 되풀이하던 문제를
+                # 여기서 끊는다 (아키텍처 리뷰 §2-3). 판정 규칙은 v0_checkpoint 모듈.
+                reusable_run = find_reusable_v0_measurement_run(
+                    db, hospital.id, operation_run_id=v0_operation_run_id
                 )
+                if reusable_run is not None:
+                    checkpoint = load_v0_checkpoint(
+                        db, reusable_run, default_repeat_count=V0_REPEAT_COUNT
+                    )
+                    logger.warning(
+                        "Reusing completed V0 measurement %s for %s — retry skips %d "
+                        "paid provider calls",
+                        reusable_run.id,
+                        hospital.name,
+                        checkpoint.success_count + checkpoint.failure_count,
+                    )
+                else:
+                    # AI 답변 언급률 측정 (V0: 쿼리 수 제한, 빠른 실행)
+                    run = _start_measurement_run(
+                        db,
+                        hospital,
+                        run_label=V0_MEASUREMENT_RUN_LABEL,
+                        config=v0_measurement_run_config(
+                            repeat_count=V0_REPEAT_COUNT,
+                            operation_run_id=v0_operation_run_id,
+                        ),
+                    )
                 db.commit()
             finally:
                 release_v0_session_lock(db, hospital_uuid)
-            if run is None:
+            if run is None and checkpoint is None:
                 return
-            all_records = []
-            success_count = 0
-            failure_count = 0
-            failure_reasons: Counter[str] = Counter()
-            platform_counts: dict[str, Counter[str]] = {}
-            blocked_platforms: dict[str, str] = {}
-            result = db.execute(v0_sample_query_stmt(hospital.id))
-            sample_queries = result.scalars().all()
+            if checkpoint is not None:
+                # 체크포인트 경로: 측정 루프도, 비용 가드 예약도 건너뛴다. 이미 낸 호출을
+                # 두 번 예약하면 가드가 실제 지출의 2배를 세고 상한이 조기 소진된다.
+                all_records = checkpoint.records
+                success_count = checkpoint.success_count
+                failure_count = checkpoint.failure_count
+                failure_summary = checkpoint.failure_summary
+                platforms = checkpoint.platforms
+                v0_repeat_count = checkpoint.repeat_count
+            else:
+                all_records = []
+                success_count = 0
+                failure_count = 0
+                failure_reasons: Counter[str] = Counter()
+                platform_counts: dict[str, Counter[str]] = {}
+                blocked_platforms: dict[str, str] = {}
+                result = db.execute(v0_sample_query_stmt(hospital.id))
+                sample_queries = result.scalars().all()
 
-            platforms = ["chatgpt"]
-            if settings.GEMINI_API_KEY:
-                platforms.append("gemini")
-            competitors = hospital.competitors or []
-            planned_counts = {
-                platform: len(sample_queries) * V0_REPEAT_COUNT for platform in platforms
-            }
+                platforms = ["chatgpt"]
+                if settings.GEMINI_API_KEY:
+                    platforms.append("gemini")
+                competitors = hospital.competitors or []
+                planned_counts = {
+                    platform: len(sample_queries) * V0_REPEAT_COUNT for platform in platforms
+                }
 
-            # 비용 가드: V0 측정 예산 확인(쿼리 × 플랫폼 × **반복 횟수**).
-            # 반복 횟수를 빼면 실제 호출의 1/V0_REPEAT_COUNT만 예약하게 되어 가드가
-            # 5배 적게 센다. run_single_query가 repeat_count만큼 실제 호출을 낸다.
-            # V0는 사람이 기다리는 플로우이므로 차단 시 ANALYZING을 이전 상태로 되돌리고,
-            # 명확한 실패 사유를 ops Slack으로 보낸다.
-            v0_units = sov_budget_units(
-                query_count=len(sample_queries),
-                platform_count=len(platforms),
-                repeat_count=V0_REPEAT_COUNT,
-            )
-            v0_decision = _run_async(cost_guard.check_and_increment("sov", count=v0_units))
-            if not v0_decision.allowed:
-                logger.warning(
-                    "V0 측정이 비용 가드로 차단됨: %s — %s", hospital.name, v0_decision.reason
+                # 비용 가드: V0 측정 예산 확인(쿼리 × 플랫폼 × **반복 횟수**).
+                # 반복 횟수를 빼면 실제 호출의 1/V0_REPEAT_COUNT만 예약하게 되어 가드가
+                # 5배 적게 센다. run_single_query가 repeat_count만큼 실제 호출을 낸다.
+                # V0는 사람이 기다리는 플로우이므로 차단 시 ANALYZING을 이전 상태로 되돌리고,
+                # 명확한 실패 사유를 ops Slack으로 보낸다.
+                v0_units = sov_budget_units(
+                    query_count=len(sample_queries),
+                    platform_count=len(platforms),
+                    repeat_count=V0_REPEAT_COUNT,
                 )
-                if prior_status:
-                    hospital.status = HospitalStatus(prior_status)
-                    db.commit()
-                _run_async(
-                    open_ops_incident(
-                        pipeline="v0_report",
-                        object_type="hospital",
-                        object_id=str(hospital.id),
-                        incident_type="V0_REPORT_COST_BLOCKED",
-                        safe_error_code="COST_BLOCKED",
-                        problem="초기 진단 측정이 비용 안전장치로 시작되지 않았습니다.",
-                        customer_impact="초기 진단 리포트 생성이 시작되지 않았습니다.",
-                        next_action="비용 안전장치 상태를 확인하고 조정 후 초기 진단을 재실행하세요.",
-                        source_type="V0_REPORT",
-                        hospital_name=hospital.name,
-                        hospital_id=hospital.id,
-                        actor="v0-report-worker",
-                        notify=True,
+                v0_decision = _run_async(cost_guard.check_and_increment("sov", count=v0_units))
+                if not v0_decision.allowed:
+                    logger.warning(
+                        "V0 측정이 비용 가드로 차단됨: %s — %s", hospital.name, v0_decision.reason
                     )
-                )
-                return
-
-            for q in sample_queries:
-                for platform in platforms:
-                    if platform in blocked_platforms:
-                        continue
-                    results = _run_async(
-                        run_single_query(
-                            hospital.name,
-                            q.query_text,
-                            platform,
-                            repeat_count=V0_REPEAT_COUNT,
-                            competitors=competitors,
-                            # 무료 진단과 같은 판정 조건 — 지역이 빠지면 동명 기관이
-                            # 무료에서는 확정, 유료에서는 보류로 갈린다 (PRD §7-4).
-                            region=(hospital.region or [""])[0],
+                    if prior_status:
+                        hospital.status = HospitalStatus(prior_status)
+                        db.commit()
+                    _run_async(
+                        open_ops_incident(
+                            pipeline="v0_report",
+                            object_type="hospital",
+                            object_id=str(hospital.id),
+                            incident_type="V0_REPORT_COST_BLOCKED",
+                            safe_error_code="COST_BLOCKED",
+                            problem="초기 진단 측정이 비용 안전장치로 시작되지 않았습니다.",
+                            customer_impact="초기 진단 리포트 생성이 시작되지 않았습니다.",
+                            next_action="비용 안전장치 상태를 확인하고 조정 후 초기 진단을 재실행하세요.",
+                            source_type="V0_REPORT",
+                            hospital_name=hospital.name,
                             hospital_id=hospital.id,
+                            actor="v0-report-worker",
+                            notify=True,
                         )
                     )
-                    for r in results:
-                        measurement_status, _failure_reason = _measurement_status_for_result(r)
-                        if measurement_status == "SUCCESS":
-                            success_count += 1
-                        else:
-                            failure_count += 1
-                        platform_counts.setdefault(platform, Counter())[measurement_status] += 1
-                        if measurement_status == "FAILED":
-                            failure_reasons[
-                                f"{platform}:{_failure_reason or 'measurement_failed'}"
-                            ] += 1
-                        record = _build_sov_record_from_result(
-                            hospital_id=hospital.id,
-                            query_id=q.id,
-                            measurement_run_id=run.id,
-                            platform=platform,
-                            result=r,
-                        )
-                        db.add(record)
-                        # 언급률 분모가 유형을 알아야 INFO(이길 수 없는 질문)를 뺄 수 있다.
-                        all_records.append({**r, "query_intent": q.query_intent})
-                    outage_reason = _provider_batch_outage_reason(results)
-                    if outage_reason:
-                        blocked_platforms[platform] = outage_reason
-                        logger.error(
-                            "V0 provider circuit opened: platform=%s reason=%s remaining queries skipped",
-                            platform,
-                            outage_reason,
-                        )
+                    return
 
-            failure_summary = _classify_v0_failure(
-                failure_reasons,
-                platform_counts,
-                planned_counts=planned_counts,
-                blocked_platforms=blocked_platforms,
-            )
-            _finish_measurement_run(
-                run,
-                success_count,
-                failure_count,
-                error_summary=failure_summary if failure_count else None,
-            )
-            db.commit()
+                for q in sample_queries:
+                    for platform in platforms:
+                        if platform in blocked_platforms:
+                            continue
+                        results = _run_async(
+                            run_single_query(
+                                hospital.name,
+                                q.query_text,
+                                platform,
+                                repeat_count=V0_REPEAT_COUNT,
+                                competitors=competitors,
+                                # 무료 진단과 같은 판정 조건 — 지역이 빠지면 동명 기관이
+                                # 무료에서는 확정, 유료에서는 보류로 갈린다 (PRD §7-4).
+                                region=(hospital.region or [""])[0],
+                                hospital_id=hospital.id,
+                            )
+                        )
+                        for r in results:
+                            measurement_status, _failure_reason = _measurement_status_for_result(r)
+                            if measurement_status == "SUCCESS":
+                                success_count += 1
+                            else:
+                                failure_count += 1
+                            platform_counts.setdefault(platform, Counter())[measurement_status] += 1
+                            if measurement_status == "FAILED":
+                                failure_reasons[
+                                    f"{platform}:{_failure_reason or 'measurement_failed'}"
+                                ] += 1
+                            record = _build_sov_record_from_result(
+                                hospital_id=hospital.id,
+                                query_id=q.id,
+                                measurement_run_id=run.id,
+                                platform=platform,
+                                result=r,
+                            )
+                            db.add(record)
+                            # 언급률 분모가 유형을 알아야 INFO(이길 수 없는 질문)를 뺄 수 있다.
+                            all_records.append({**r, "query_intent": q.query_intent})
+                        outage_reason = _provider_batch_outage_reason(results)
+                        if outage_reason:
+                            blocked_platforms[platform] = outage_reason
+                            logger.error(
+                                "V0 provider circuit opened: platform=%s reason=%s remaining queries skipped",
+                                platform,
+                                outage_reason,
+                            )
+
+                failure_summary = _classify_v0_failure(
+                    failure_reasons,
+                    platform_counts,
+                    planned_counts=planned_counts,
+                    blocked_platforms=blocked_platforms,
+                )
+                _finish_measurement_run(
+                    run,
+                    success_count,
+                    failure_count,
+                    error_summary=failure_summary if failure_count else None,
+                )
+                db.commit()
+                v0_repeat_count = V0_REPEAT_COUNT
             _ensure_v0_has_successful_measurements(
                 success_count,
                 failure_count,
@@ -1666,7 +1845,9 @@ def trigger_v0_report(self, hospital_id: str):
                 period_end=now.datetime,
                 report_type="V0",
                 sov_pct=sov_pct,
-                repeat_count=V0_REPEAT_COUNT,
+                # 체크포인트를 재사용하면 그 측정이 실제로 쓴 반복 횟수를 적는다 —
+                # 리포트가 "5회 반복"이라고 말하려면 그 숫자가 사실이어야 한다.
+                repeat_count=v0_repeat_count,
             )
 
             # DB 저장
@@ -1778,19 +1959,8 @@ def trigger_v0_report(self, hospital_id: str):
 # 콘텐츠 허브 공개 노출 상태 준비
 # ══════════════════════════════════════════════════════════════════
 def _public_site_url(aeo_domain: str | None, slug: str | None) -> str:
-    """실제 접근 가능한 공개 허브 URL을 만든다.
-
-    site.py의 호스트 라우팅 규칙과 일치시킨다:
-      1. 병원 자기 도메인(aeo_domain)이 있으면 https://{aeo_domain}/
-      2. 없으면 기본 서브도메인 https://{slug}.{platform host}/  (SITE_BASE_URL 호스트 파생)
-    존재하지 않던 하드코딩 preview.motionlabs.io를 대체한다.
-    """
-    if aeo_domain:
-        return f"https://{aeo_domain}/"
-    host = (urlparse(settings.SITE_BASE_URL).hostname or "").lower()
-    if host and slug:
-        return f"https://{slug}.{host}/"
-    return settings.SITE_BASE_URL
+    """실제 접근 가능한 공개 허브 URL. 활성화 서비스와 같은 규칙을 쓴다."""
+    return public_site_url(aeo_domain, slug)
 
 
 def _site_build_prerequisites_met(hospital: Hospital) -> bool:
@@ -1807,10 +1977,23 @@ def _site_build_prerequisites_met(hospital: Hospital) -> bool:
     max_retries=3,
 )
 def build_aeo_site(self, hospital_id: str):
-    """콘텐츠 허브 노출 상태 전환 + Slack 알림 (legacy task name; 실제 공개 화면은 Next.js /site 담당)"""
+    """콘텐츠 허브 노출 상태 전환 + 기본 주소 자동 운영 시작 (legacy task name)
+
+    STEP5 게이트 세 가지는 모두 시스템 플래그다. 마지막 전환만 사람 클릭으로 남기면
+    AE는 자기가 만들지 않은 사실을 확인하는 클릭 하나 때문에 Slack 두 건을 받는다.
+    자기 도메인이 없는 병원은 여기서 그대로 ACTIVE가 되고, 자기 도메인이 지정된 병원만
+    수동 경로로 남는다 — DNS는 병원 것이라 시점을 시스템이 정할 수 없다.
+    """
     require_dispatch(self, "build-aeo-site", hospital_id)
+    activated_slug: str | None = None
+    activated_name: str | None = None
+    activated_treatments: list | None = None
     with SyncSessionLocal() as db:
-        hospital = db.get(Hospital, uuid.UUID(hospital_id))
+        # 판정(evaluate_auto_activation)과 전환이 같은 행 잠금 안에서 일어나야 한다.
+        # 잠금 없이 읽은 스냅샷으로 판정하면, 재배달·복구 재디스패치가 그 사이 커밋된
+        # `/pause`를 덮어 PAUSED 병원을 되살리고(STEP5 위반), 동시에 도는 두 build가
+        # 둘 다 게이트를 통과해 감사행·Slack 인텐트가 중복된다.
+        hospital = db.get(Hospital, uuid.UUID(hospital_id), with_for_update=True)
         if not hospital:
             return
         if not _site_build_prerequisites_met(hospital):
@@ -1821,24 +2004,63 @@ def build_aeo_site(self, hospital_id: str):
                 hospital.v0_report_done,
             )
             return
-        if hospital.site_built:
-            return
 
-        hospital.site_built = True
-        # ACTIVE/PAUSED 병원을 강등하지 않는다 — admin의 "허브 재준비"나 도메인 재저장이
-        # 라이브 공개 허브를 PENDING_DOMAIN으로 떨어뜨려 공개 표면 전체가 404 되는 것 방지.
-        # (공개 엔드포인트는 status==ACTIVE && site_live 필수.) 도메인이 실제로 바뀐 경우의
-        # 강등은 connect_domain이 검증 무효화와 함께 명시적으로 수행한다.
-        if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PAUSED):
-            hospital.status = HospitalStatus.PENDING_DOMAIN
-        enqueue_onboarding_notification_sync(
-            db,
-            build_site_built_notification(
-                hospital_id=hospital.id,
-                hospital_name=hospital.name,
-            ),
+        newly_built = not hospital.site_built
+        if newly_built:
+            hospital.site_built = True
+            # ACTIVE/PAUSED 병원을 강등하지 않는다 — admin의 "허브 재준비"나 도메인 재저장이
+            # 라이브 공개 허브를 PENDING_DOMAIN으로 떨어뜨려 공개 표면 전체가 404 되는 것 방지.
+            # (공개 엔드포인트는 status==ACTIVE && site_live 필수.) 도메인이 실제로 바뀐 경우의
+            # 강등은 connect_domain이 검증 무효화와 함께 명시적으로 수행한다.
+            if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PAUSED):
+                hospital.status = HospitalStatus.PENDING_DOMAIN
+
+        # 재실행(acks_late·자율 복구)에서도 같은 답이 나온다: 이미 ACTIVE면 ALREADY_ACTIVE로
+        # 끝나 감사행도 알림도 늘지 않고, PAUSED는 어떤 경우에도 자동으로 되살리지 않는다.
+        blocker = evaluate_auto_activation(hospital)
+        activated = False
+        if blocker is None:
+            result = activate_hospital_sync(
+                db,
+                hospital,
+                actor=AUTO_ACTIVATE_ACTOR,
+                reason="SITE_BUILD_AUTO_ACTIVATION",
+            )
+            activated = result.activated_now
+
+        if activated:
+            enqueue_onboarding_notification_sync(
+                db,
+                build_hospital_activated_notification(
+                    hospital_id=hospital.id,
+                    hospital_name=hospital.name,
+                    public_url=_public_site_url(hospital.aeo_domain, hospital.slug),
+                ),
+            )
+            activated_slug = hospital.slug
+            activated_name = hospital.name
+            activated_treatments = hospital.treatments
+        elif newly_built:
+            # 자동 시작이 불가능했을 때만 재촉 알림이 남고, 왜 사람이 필요한지 함께 말한다.
+            enqueue_onboarding_notification_sync(
+                db,
+                build_site_built_notification(
+                    hospital_id=hospital.id,
+                    hospital_name=hospital.name,
+                    blocked_reason=blocker_reason(blocker) if blocker is not None else None,
+                ),
+            )
+
+        if newly_built or activated:
+            db.commit()
+
+    # 커밋 이후 — revalidate 실패는 활성화를 되돌리지 않는다 (R4, activate 엔드포인트와 동일).
+    if activated_slug:
+        _run_async(
+            trigger_hospital_site_revalidate_safe(
+                activated_slug, activated_treatments, hospital_name=activated_name
+            )
         )
-        db.commit()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1942,12 +2164,20 @@ def nightly_content_generation(self):
                     )
                     continue
 
-                # 기존 제목 목록 (중복 방지)
+                # 기존 제목 목록 (중복 방지). 상한 없이 전부 실으면 1년 운영한
+                # 병원에서 수백 개 제목이 매 호출 프롬프트에 들어간다. 중복 회피에
+                # 필요한 것은 최근 무엇을 썼는지이므로 최신 N개만 가져온다.
                 existing = db.execute(
-                    select(ContentItem.title).where(
+                    select(ContentItem.title)
+                    .where(
                         ContentItem.hospital_id == hospital.id,
                         ContentItem.title.isnot(None),
                     )
+                    .order_by(
+                        ContentItem.scheduled_date.desc().nullslast(),
+                        ContentItem.published_at.desc().nullslast(),
+                    )
+                    .limit(EXISTING_TITLE_PROMPT_LIMIT)
                 )
                 existing_titles = [r[0] for r in existing.all()]
 
@@ -2704,12 +2934,19 @@ def _generate_single_content_item(
             "직전 생성 차단 원인이 달라지지 않아 비용 재시도를 건너뛰었습니다.",
         )
 
+    # 최신 N개만. 상한 없는 전량 주입은 프롬프트 입력을 병원 연차에 비례해 부풀린다.
     existing = db.execute(
-        select(ContentItem.title).where(
+        select(ContentItem.title)
+        .where(
             ContentItem.hospital_id == hospital.id,
             ContentItem.id != item.id,
             ContentItem.title.isnot(None),
         )
+        .order_by(
+            ContentItem.scheduled_date.desc().nullslast(),
+            ContentItem.published_at.desc().nullslast(),
+        )
+        .limit(EXISTING_TITLE_PROMPT_LIMIT)
     )
     existing_titles = [row[0] for row in existing.all()]
 
@@ -2807,7 +3044,12 @@ def _persist_publication_readiness(
 
 
 def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
-    """At 07:45, page the exact persisted blocker without publishing the slot."""
+    """At 07:45, record the persisted blockers and summarize them in one Slack message.
+
+    Every blocked slot keeps its own incident because the Admin retry controls act
+    on incidents. Slack gets one digest per batch instead of one page per content
+    item, and blockers the 01·04·07 recovery still owns are left out until 08:00.
+    """
 
     observed = now_kst or arrow.now("Asia/Seoul")
     observed_time = observed.time().replace(tzinfo=None)
@@ -2829,6 +3071,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
         .all()
     )
     paged = 0
+    blocked_outcomes: list[dict[str, object]] = []
     for item in items:
         hospital = item.hospital
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
@@ -2856,10 +3099,26 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                 run_id=blocked_run.id,
                 code=code,
                 message=message,
-                notify=generation_notify_requested(code),
+                notify=False,
             )
         )
+        if generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH):
+            blocked_outcomes.append(
+                {
+                    "hospital_id": hospital.id,
+                    "hospital_name": hospital.name,
+                    "content_id": item.id,
+                    "title": item.title,
+                    "code": code,
+                    "cause": generation_safe_cause(code),
+                }
+            )
         paged += 1
+    if blocked_outcomes:
+        enqueue_generation_blocked_digest_sync(
+            db, observed.date(), PREPUBLISH_MORNING_BATCH, blocked_outcomes
+        )
+        db.commit()
     return paged
 
 
@@ -2880,11 +3139,14 @@ def morning_content_auto_publish(self):
         with SyncSessionLocal() as db:
             due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
 
+        blocked_outcomes: list[dict[str, object]] = []
         for content_id in due_ids:
             outcome = _auto_publish_one(content_id)
             if outcome is None:
                 continue
             if outcome["kind"] == "blocked":
+                # The incident stays per item (it drives the Admin retry control);
+                # Slack gets one digest for the whole batch below.
                 _run_async(
                     open_generation_incident(
                         item_id=content_id,
@@ -2893,9 +3155,22 @@ def morning_content_auto_publish(self):
                         run_id=outcome["run_id"],
                         code=outcome["code"],
                         message=outcome["message"],
-                        notify=generation_notify_requested(outcome["code"]),
+                        notify=False,
                     )
                 )
+                if generation_block_digest_due(
+                    outcome["code"], batch=PUBLISH_MORNING_BATCH
+                ):
+                    blocked_outcomes.append(
+                        {
+                            "hospital_id": outcome["hospital_id"],
+                            "hospital_name": outcome["hospital_name"],
+                            "content_id": content_id,
+                            "title": outcome.get("title"),
+                            "code": outcome["code"],
+                            "cause": generation_safe_cause(outcome["code"]),
+                        }
+                    )
                 continue
 
             _run_async(
@@ -2930,10 +3205,17 @@ def morning_content_auto_publish(self):
                     treatments=outcome["treatments"],
                 )
             )
-        _enqueue_overdue_post_publish_review_notifications(datetime.now(timezone.utc))
+        if blocked_outcomes:
+            with SyncSessionLocal() as digest_db:
+                enqueue_generation_blocked_digest_sync(
+                    digest_db, today, PUBLISH_MORNING_BATCH, blocked_outcomes
+                )
+                digest_db.commit()
 
-        # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
-        # 개별 알림 대신 자동 완료와 미해결 예외를 한 번의 운영 요약으로만 보낸다.
+        # 정상 발행은 Slack을 아예 보내지 않는다 — DB 상태·감사 로그·공개 표면
+        # 재검증이 기록이다. Slack에 나가는 것은 바로 위의 차단 요약 한 건뿐이며,
+        # 그것도 07:45 복구를 넘겨 소진된 차단만 담는다
+        # (docs/ops/slack-notification-policy.md).
     except Exception as exc:
         logger.exception("morning_content_auto_publish failed")
         raise self.retry(exc=exc, countdown=300)
@@ -2949,15 +3231,6 @@ def _auto_publish_due_stmt(today):
         )
         .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
     )
-
-
-def _enqueue_overdue_post_publish_review_notifications(now: datetime) -> int:
-    """Keep overdue review visible in Admin without producing Slack noise."""
-
-    del now
-    # The Admin badge is query-derived by the operations query; no mutation or
-    # notification is required for it to remain visible.
-    return 0
 
 
 def _admin_content_url(hospital_id: object, content_id: object) -> str:
@@ -4242,12 +4515,6 @@ def run_weekly_monitoring():
     with SyncSessionLocal() as db:
         registration = register_convertible_tracking_sets(db, n=15)
         _log_blocked_convertible_tracking_sets(registration)
-        if today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY:
-            logger.info(
-                "Weekly visibility measurement dispatch skipped during the month-end window: %s",
-                today_kst,
-            )
-            return
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         monthly_ids = {
@@ -4256,8 +4523,21 @@ def run_weekly_monitoring():
                 db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
             )
         }
+        # 월말 창(24일~말일)에서만 코호트를 뺀다. 그 창 밖에서는 월간 측정이 돌지
+        # 않으므로, 무조건 제외하면 코호트 병원은 한 달 내내 주간 측정에서도 빠져
+        # 아무 측정 없이 지나간다 (CLAUDE.md STEP 8 / 보조 배치 표).
+        in_month_end_window = (
+            today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY and bool(monthly_ids)
+        )
+        if in_month_end_window:
+            logger.info(
+                "Weekly visibility measurement skipped for monthly cohort during month-end window: %s hospitals on %s",
+                len(monthly_ids),
+                today_kst,
+            )
+        excluded_ids = monthly_ids if in_month_end_window else set()
         hospitals = [
-            hospital for hospital in result.scalars().all() if hospital.id not in monthly_ids
+            hospital for hospital in result.scalars().all() if hospital.id not in excluded_ids
         ]
 
         for h in hospitals:
@@ -5021,7 +5301,14 @@ def _build_monthly_report_for_hospital(
             else None
         ),
     )
-    sov_records = list(current_loaded.selected_records) if current_loaded is not None else []
+    # 타깃별 언급 빈도는 성공 측정 **전부**로 센다. 대표 1건(evidence용)은 언급된
+    # 시도를 먼저 고르므로 비율 계산에 쓰면 위로 편향된다.
+    sov_records = list(current_loaded.scored_records) if current_loaded is not None else []
+    evidence_records = (
+        list(current_loaded.selected_records) if current_loaded is not None else []
+    )
+    # 헤드라인·전월·증감은 모두 같은 분모 위에 있다 — 비교가 성립하면 셋 다 매칭
+    # 코호트 기준이고, 아니면 셋 다 이번 달 전 셀 기준(전월·증감은 None)이다.
     sov_pct = monthly_sov.sov_pct
     prev_sov = monthly_sov.comparison.prior_sov_pct
     change_pct = monthly_sov.comparison.change_pct
@@ -5070,6 +5357,30 @@ def _build_monthly_report_for_hospital(
             sov_pct=sov_pct,
             prev_sov_pct=prev_sov,
             change_pct=change_pct,
+        )
+    )
+
+    # 인용 귀속 — AI 답변이 인용한 URL을 우리 글·허브 페이지에 매칭한다.
+    # 매칭 대상은 이 달 발행분이 아니라 **발행된 전체 글**이다. AI는 지난달 글도
+    # 인용하고, 그때 "우리 글이 읽혔다"는 사실은 이 달의 결과이기 때문이다.
+    citation_content_rows = db.execute(
+        select(
+            ContentItem.id,
+            ContentItem.title,
+            ContentItem.content_type,
+        ).where(
+            ContentItem.hospital_id == h.id,
+            ContentItem.status == ContentStatus.PUBLISHED,
+        )
+    ).all()
+    # 인용 귀속도 헤드라인과 같은 원칙 — 셀의 모든 성공 반복(scored_records)을 본다.
+    citation_records_by_id = {record.id: record for record in sov_records}
+    citations = build_citation_attribution(
+        CitationAttributionInput(
+            hospital=h,
+            cells=current_loaded.cells if current_loaded is not None else (),
+            records_by_id=citation_records_by_id,
+            content_items=citation_content_rows,
         )
     )
 
@@ -5131,6 +5442,36 @@ def _build_monthly_report_for_hospital(
     )
     monthly_sov_payload = monthly_sov.to_payload()
 
+    # "서비스 시작 시점(V0) 대비" 참고선. 질문 세트가 충분히 겹치지 않으면 None이라
+    # 원장 페이지에 아무 말도 하지 않는다 — 다른 질문으로 잰 두 수치를 나란히
+    # 놓는 순간 그 줄은 거짓말이 된다.
+    v0_baseline = _load_v0_baseline(
+        db,
+        h.id,
+        current_sov_pct=sov_pct,
+        tracking_query_texts=[
+            cell.query_text for cell in (current_loaded.cells if current_loaded else ())
+        ],
+    )
+    # 원장 뷰를 AE PDF보다 **먼저** 만든다. 토킹 포인트는 이 뷰가 바인딩한 숫자에서
+    # 나오고, 내부 PDF와 Admin이 그 같은 문장을 읽어야 한 자리에서 두 말이 안 된다.
+    doctor_view = build_doctor_report_view(
+        hospital=h,
+        sov_pct=sov_pct,
+        prev_sov_pct=prev_sov,
+        published_count=len(published_contents),
+        plan_quota=monthly_quota_for_plan(h.plan),
+        attribution=attribution,
+        citations=citations,
+        published_contents=list(published_contents),
+        v0_baseline=v0_baseline,
+        records=evidence_records,
+        platforms=report_platforms,
+        sov_coverage=monthly_sov_payload,
+        comparison_reason=monthly_sov_payload["comparison"]["reason"],
+    )
+    talking_points = list(doctor_view["talking_points"])
+
     pdf_path = generate_pdf_report(
         hospital=h,
         period_start=period_start,
@@ -5143,6 +5484,8 @@ def _build_monthly_report_for_hospital(
         strategy=strategy,
         sov_coverage=monthly_sov_payload,
         content_operations=content_operations.payload,
+        citations=citations,
+        talking_points=talking_points,
         report_version=version_plan.version,
     )
     essence_summary = build_monthly_essence_summary(db, h, period_start, period_end)
@@ -5162,6 +5505,9 @@ def _build_monthly_report_for_hospital(
             "operations": content_operations.payload,
             "attribution": attribution,
             "strategy": strategy,
+            "citations": citations,
+            # AE 미팅 키트 — Admin 리포트 상세가 content_summary를 그대로 준다.
+            "talking_points": talking_points,
         },
         essence_summary=essence_summary,
     )
@@ -5188,18 +5534,6 @@ def _build_monthly_report_for_hospital(
 
     artifact_error: DoctorPdfValidationError | None = None
     try:
-        doctor_view = build_doctor_report_view(
-            hospital=h,
-            sov_pct=sov_pct,
-            prev_sov_pct=prev_sov,
-            published_count=len(published_contents),
-            plan_quota=monthly_quota_for_plan(h.plan),
-            attribution=attribution,
-            records=sov_records,
-            platforms=report_platforms,
-            sov_coverage=monthly_sov_payload,
-            comparison_reason=monthly_sov_payload["comparison"]["reason"],
-        )
         public_url = _public_site_url(h.aeo_domain, h.slug)
         doctor_artifact = generate_doctor_pdf_report(
             h, report.id, period_start, doctor_view, public_url
@@ -5487,12 +5821,15 @@ def _site_revalidation_context(
         except (TypeError, ValueError):
             return None
         content = db.get(ContentItem, content_id)
-        if (
-            content is None
-            or content.hospital_id != hospital.id
-            or content.status != ContentStatus.PUBLISHED
+        if content is None or content.hospital_id != hospital.id:
+            return None
+        # 복구 계획 조회(start_revalidation_failure)와 **같은** 조건을 쓴다. 현재 status로
+        # 거르면 반려로 내려간 글의 재시도가 첫 실패 직후 조용히 끊긴다.
+        if not content_is_revalidation_recoverable(
+            content, direction=run_revalidation_direction(run.request_payload)
         ):
             return None
+        # 무효화 경로는 방향과 무관하게 동일하다 — 내릴 때도 허브·목록·llms.txt를 함께 턴다.
         return content_site_paths(hospital.slug, content.id, treatments)
 
 

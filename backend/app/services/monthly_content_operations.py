@@ -71,14 +71,20 @@ def build_monthly_content_operations_snapshot(
     ]
 
     shortfall = max((plan_quota or 0) - published_count, 0) if plan_quota is not None else 0
-    blockers: list[str] = []
+    # 이 스냅샷은 전달을 막는 blocker를 만들지 않는다(e217e02). 닫힌 달의 운영 결과는
+    # 뒤늦게 채워 지울 수 없고, 사후검수는 관찰용 표본일 뿐 두 번째 승인 큐가 아니다
+    # (post_publish_review_policy.py). 전부 경고로만 남겨 AE가 원장 앞에서 설명하거나
+    # 운영 센터에서 뒤이어 정리하게 한다.
     warnings: list[str] = []
     if plan_quota is None:
         warnings.append("요금제별 약정 콘텐츠 편수를 확인할 수 없습니다.")
     elif shortfall > 0:
         warnings.append(f"약정 콘텐츠 {plan_quota}편 중 {published_count}편만 발행되었습니다.")
     if pending_samples:
-        blockers.append(
+        # 사후검수는 발행을 이미 통과한 콘텐츠에 대한 관찰용 표본이지 두 번째 승인
+        # 큐가 아니다(post_publish_review_policy.py 참고) — 표본 미완료로 원장 전달을
+        # 막지 않는다. 운영 센터 큐에는 여전히 TODO로 남는다.
+        warnings.append(
             f"월간 리포트 필수 사후검수 샘플 {len(pending_samples)}건이 아직 완료되지 않았습니다."
         )
 
@@ -97,39 +103,31 @@ def build_monthly_content_operations_snapshot(
             "overdue_count": len(overdue_samples),
             "cutoff_at": cutoff_at.isoformat(),
         },
-        "delivery_blockers": blockers,
-        # 이미 닫힌 달의 약정 미달은 뒤늦게 채워서 지울 수 있는 전달 차단 사유가 아니다.
-        # 실패한 운영 결과도 숨기지 않고 보고해야 하므로 경고로 보존한다.
+        # 콘텐츠 운영 경고(약정 미달, 사후검수 표본 미완료)는 원장 전달을 막지 않으므로
+        # 이 목록은 항상 비어 있다. 계약(리포트 payload 스키마)을 유지하기 위해 남긴다.
+        "delivery_blockers": [],
         "delivery_warnings": warnings,
         "operator_copy": {
             "label": "콘텐츠 운영 증거",
             "problem": (
-                "약정 발행량과 필수 사후검수 샘플이 모두 닫힌 월 기준으로 확인됐습니다."
-                if not blockers and not warnings
-                else (blockers or warnings)[0]
+                warnings[0]
+                if warnings
+                else "약정 발행량과 필수 사후검수 샘플이 모두 닫힌 월 기준으로 확인됐습니다."
             ),
             "customer_impact": (
-                "운영량과 최소 검수 근거가 맞아 원장 보고 자료로 검토할 수 있습니다."
-                if not blockers and not warnings
-                else (
-                    "필수 사후검수가 끝나지 않아 원장님께 월간 결과를 전달할 수 없습니다."
-                    if blockers
-                    else "약정 대비 실제 발행 결과를 숨기지 않고 원장님께 설명해야 합니다."
-                )
+                "약정 미달·사후검수 대기 등 운영 경고가 있어도 리포트는 전달할 수 있으며, 원장님께 숨기지 않고 설명해야 합니다."
+                if warnings
+                else "운영량과 최소 검수 근거가 맞아 원장 보고 자료로 검토할 수 있습니다."
             ),
             "next_action": (
-                "측정 근거와 원장 전달용 PDF를 이어서 확인해 주세요."
-                if not blockers and not warnings
-                else (
-                    "운영 센터에서 사후검수 대기 항목을 완료한 뒤 리포트를 다시 만들어 주세요."
-                    if blockers
-                    else "리포트에 표시된 약정 미달 수를 확인하고 원인과 다음 달 복구 계획을 함께 설명해 주세요."
-                )
+                "리포트에 표시된 운영 경고를 확인하고, 필요하면 운영 센터에서 사후검수·복구 계획을 이어서 정리해 주세요."
+                if warnings
+                else "측정 근거와 원장 전달용 PDF를 이어서 확인해 주세요."
             ),
         },
     }
     return MonthlyContentOperationSnapshot(
         payload=payload,
-        delivery_blockers=tuple(blockers),
+        delivery_blockers=(),
         delivery_warnings=tuple(warnings),
     )

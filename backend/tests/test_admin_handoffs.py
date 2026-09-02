@@ -1,8 +1,9 @@
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import Mock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app.api.admin import handoffs as handoffs_api
 from app.models.admin_user import AdminUser
@@ -251,3 +252,242 @@ async def test_acceptance_rejects_stale_version_before_mutation() -> None:
 
     assert exc.value.status_code == 409
     assert handoff.accepted_at is None
+
+
+class _ScalarResult:
+    def __init__(self, values):
+        self.values = values
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return self.values
+
+
+class BatchListDB:
+    """Fakes the exact `db.execute` sequence `list_handoffs` issues: the page query,
+    then (only if non-empty) one Hospital IN(...) and one AdminUser IN(...) query."""
+
+    def __init__(self, *, rows, hospitals=(), users=()):
+        self.rows = rows
+        self.hospitals = list(hospitals)
+        self.users = list(users)
+        self.calls: list[str] = []
+
+    async def execute(self, stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is HospitalHandoff:
+            self.calls.append("handoffs")
+            return _ScalarResult(self.rows)
+        if entity is Hospital:
+            self.calls.append("hospitals")
+            return _ScalarResult(self.hospitals)
+        if entity is AdminUser:
+            self.calls.append("users")
+            return _ScalarResult(self.users)
+        raise AssertionError(f"unexpected entity {entity}")
+
+
+async def test_payloads_batch_resolves_names_without_a_query_per_row() -> None:
+    ae = _account("OPERATOR")
+    sales = _account("OPERATOR")
+    hospital = Hospital(id=uuid.uuid4(), name="강남 병원", slug="gangnam")
+    handoff_a = _pending(ae)
+    handoff_a.hospital_id = hospital.id
+    handoff_a.sales_owner_id = sales.id
+    handoff_b = _pending(ae)
+    handoff_b.hospital_id = hospital.id
+    handoff_b.sales_owner_id = ae.id  # 같은 담당자를 두 행이 공유 — IN(...)엔 한 번만 담긴다
+
+    db = BatchListDB(rows=[handoff_a, handoff_b], hospitals=[hospital], users=[ae, sales])
+
+    payloads = await handoffs_api._payloads_batch(db, [handoff_a, handoff_b])
+
+    assert db.calls == ["hospitals", "users"]  # 행 수와 무관하게 딱 2번
+    assert payloads[0]["hospital_name"] == "강남 병원"
+    assert payloads[0]["sales_owner_name"] == sales.name
+    assert payloads[1]["hospital_name"] == "강남 병원"
+    assert payloads[1]["sales_owner_name"] == ae.name
+
+
+async def test_payloads_batch_skips_the_user_query_when_no_owner_is_set() -> None:
+    """hospital_id는 스키마상 필수라 병원 조회는 항상 돌지만, sales/ae/accepted가
+    전부 비어 있으면(초기 상태 등) admin_users IN(...) 조회는 아예 나가지 않아야 한다."""
+    operator = _account("OPERATOR")
+    handoff = _pending(operator)
+    handoff.sales_owner_id = None
+    handoff.ae_owner_id = None
+
+    db = BatchListDB(rows=[handoff])  # hospitals=() — 매칭 병원 없음
+
+    payloads = await handoffs_api._payloads_batch(db, [handoff])
+
+    assert db.calls == ["hospitals"]  # user_ids가 비어 있으니 admin_users 조회는 스킵
+    assert payloads[0]["hospital_name"] is None
+    assert payloads[0]["sales_owner_name"] is None
+
+
+async def test_list_handoffs_applies_limit_and_batches_lookups() -> None:
+    ae = _account("OPERATOR")
+    hospital = Hospital(id=uuid.uuid4(), name="서초 병원", slug="seocho")
+    handoff = _pending(ae)
+    handoff.hospital_id = hospital.id
+    handoff.sales_owner_id = ae.id
+
+    db = BatchListDB(rows=[handoff], hospitals=[hospital], users=[ae])
+
+    response = Response()
+    result = await handoffs_api.list_handoffs(
+        response, state=None, limit=5, offset=0, db=db, _actor=ae
+    )
+
+    assert db.calls == ["handoffs", "hospitals", "users"]
+    assert len(result) == 1
+    assert result[0]["hospital_name"] == "서초 병원"
+
+
+class ListDB:
+    """Fake session for list_handoffs — filters an in-memory list the same way the
+    real WHERE clauses would, by inspecting the compiled statement text. Avoids
+    needing a live database just to exercise the query-building branches."""
+
+    def __init__(self, handoffs: list[HospitalHandoff]):
+        self.handoffs = handoffs
+
+    async def get(self, model, object_id):
+        return None
+
+    async def execute(self, stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is not HospitalHandoff:
+            # 배치 이름 조회(Hospital/AdminUser IN(...))는 이 테스트의 관심사가 아니다.
+            result = Mock()
+            result.scalars.return_value.all.return_value = []
+            return result
+        rendered = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        rows = list(self.handoffs)
+        if "hospital_handoffs.hospital_id = " in rendered:
+            rows = [h for h in rows if h.hospital_id.hex in rendered]
+        if "hospital_handoffs.state = " in rendered:
+            rows = [h for h in rows if f"'{h.state.value}'" in rendered]
+        result = Mock()
+        result.scalars.return_value.all.return_value = rows
+        return result
+
+
+def _pending_for(hospital_id: uuid.UUID, operator: AdminUser) -> HospitalHandoff:
+    handoff = HospitalHandoff.pending(
+        hospital_id,
+        sales_owner_id=operator.id,
+        ae_owner_id=operator.id,
+        source=HandoffSource.DIRECT_CREATE,
+    )
+    handoff.id = uuid.uuid4()
+    handoff.version = 1
+    handoff.created_at = datetime.now(UTC)
+    handoff.updated_at = datetime.now(UTC)
+    return handoff
+
+
+async def test_list_handoffs_filters_by_hospital_id() -> None:
+    operator = _account("OPERATOR")
+    target_hospital_id = uuid.uuid4()
+    matching = _pending_for(target_hospital_id, operator)
+    other = _pending_for(uuid.uuid4(), operator)
+    db = ListDB([matching, other])
+
+    rows = await handoffs_api.list_handoffs(
+        Response(),
+        state=None,
+        hospital_id=target_hospital_id,
+        limit=100,
+        offset=0,
+        db=db,
+        _actor=operator,
+    )
+
+    assert [row["id"] for row in rows] == [matching.id]
+
+
+async def test_list_handoffs_without_hospital_id_returns_all() -> None:
+    operator = _account("OPERATOR")
+    matching = _pending_for(uuid.uuid4(), operator)
+    other = _pending_for(uuid.uuid4(), operator)
+    db = ListDB([matching, other])
+
+    rows = await handoffs_api.list_handoffs(
+        Response(), state=None, hospital_id=None, limit=100, offset=0, db=db, _actor=operator
+    )
+
+    assert {row["id"] for row in rows} == {matching.id, other.id}
+
+
+# ── 목록 페이지네이션: 조용한 잘림을 없앤다 ──────────────────────────────
+
+
+class _PagingDB(ListDB):
+    """SQL의 OFFSET/LIMIT을 in-memory 슬라이스로 그대로 재현한다."""
+
+    def __init__(self, handoffs: list[HospitalHandoff]):
+        super().__init__(handoffs)
+        self.limits: list[int] = []
+        self.offsets: list[int] = []
+
+    async def execute(self, stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is not HospitalHandoff:
+            return await super().execute(stmt)
+        limit = stmt._limit_clause.value
+        offset = stmt._offset_clause.value if stmt._offset_clause is not None else 0
+        self.limits.append(limit)
+        self.offsets.append(offset)
+        result = Mock()
+        result.scalars.return_value.all.return_value = self.handoffs[offset : offset + limit]
+        return result
+
+
+def _pending_rows(count: int, operator: AdminUser) -> list[HospitalHandoff]:
+    return [_pending_for(uuid.uuid4(), operator) for _ in range(count)]
+
+
+async def test_list_handoffs_reports_has_more_when_truncated() -> None:
+    operator = _account("OPERATOR")
+    db = _PagingDB(_pending_rows(5, operator))
+    response = Response()
+
+    rows = await handoffs_api.list_handoffs(
+        response, state=None, limit=2, offset=0, db=db, _actor=operator
+    )
+
+    assert len(rows) == 2
+    # 잘림 판정을 위해 limit+1건을 읽는다.
+    assert db.limits == [3] and db.offsets == [0]
+    assert response.headers[handoffs_api.HAS_MORE_HEADER] == "true"
+    assert response.headers[handoffs_api.NEXT_OFFSET_HEADER] == "2"
+
+
+async def test_list_handoffs_offset_moves_the_window_and_ends_cleanly() -> None:
+    operator = _account("OPERATOR")
+    handoffs = _pending_rows(5, operator)
+    db = _PagingDB(handoffs)
+    response = Response()
+
+    rows = await handoffs_api.list_handoffs(
+        response, state=None, limit=2, offset=4, db=db, _actor=operator
+    )
+
+    assert [row["id"] for row in rows] == [handoffs[4].id]
+    assert db.offsets == [4]
+    assert response.headers[handoffs_api.HAS_MORE_HEADER] == "false"
+    assert response.headers[handoffs_api.NEXT_OFFSET_HEADER] == "5"
+
+
+def test_list_handoffs_offset_query_parameter_defaults_to_zero() -> None:
+    """직접 호출 테스트는 의존성 해석을 거치지 않으므로 선언 자체를 확인한다."""
+    import inspect
+
+    signature = inspect.signature(handoffs_api.list_handoffs)
+    offset_default = signature.parameters["offset"].default
+    assert offset_default.default == 0
+    assert offset_default.metadata[0].ge == 0

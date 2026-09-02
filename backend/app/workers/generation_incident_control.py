@@ -17,7 +17,11 @@ from app.models.operations import (
     IncidentState,
     NotificationOutbox,
 )
-from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+from app.services.incident_types import (
+    IncidentFingerprint,
+    IncidentOpenRequest,
+    incident_type_of,
+)
 from app.services.incidents import (
     build_incident_key,
     mark_recovered,
@@ -57,6 +61,45 @@ _MORNING_GENERATION_NOTIFICATION_CODES = frozenset(
 )
 _KST = ZoneInfo("Asia/Seoul")
 _MORNING_NOTIFICATION_START = time(7, 45)
+
+# Codes whose recovery the scheduler already owns (01·04·07·07:45 sweeps and the
+# 22:30 stranded-slot recovery). They are worth a Slack line only once they have
+# survived the 07:45 prepublish recovery and still block the 08:00 publication.
+_PROVIDER_TRANSIENT_NOTIFICATION_CODES = frozenset(
+    {
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_LEASE_ACTIVE",
+        "STALE_GENERATION_CLAIM",
+        "IMAGE_GENERATION_FAILED",
+        "CONTENT_IMAGE_NOT_READY",
+    }
+)
+# One Slack digest per morning batch replaces the per-content-item pages.
+PREPUBLISH_MORNING_BATCH = "PREPUBLISH_0745"
+PUBLISH_MORNING_BATCH = "PUBLISH_0800"
+
+
+def is_provider_transient_generation_code(code: str) -> bool:
+    """Return whether automatic recovery is expected to clear this code by itself."""
+
+    return code in _PROVIDER_TRANSIENT_NOTIFICATION_CODES
+
+
+def generation_block_digest_due(code: str, *, batch: str) -> bool:
+    """Return whether one blocked slot belongs in this morning batch's digest."""
+
+    if code not in _MORNING_GENERATION_NOTIFICATION_CODES:
+        return False
+    if batch == PREPUBLISH_MORNING_BATCH and is_provider_transient_generation_code(code):
+        return False
+    return True
+
+
+def generation_safe_cause(code: str) -> str:
+    """Operator-safe Korean cause for one generation blocker code."""
+
+    return _generation_safe_cause(code)
 
 
 def _generation_operator_copy(code: str) -> tuple[str, str]:
@@ -249,6 +292,7 @@ def _projection(
         incident.version,
         incident.safe_error_message or _generation_safe_cause(incident.safe_error_code or ""),
         incident.episode_seq,
+        incident_type=incident_type_of(incident),
     )
 
 

@@ -169,9 +169,8 @@ def test_content_generation_records_a_call_before_each_anthropic_request(monkeyp
     # 프롬프트 조립은 이 테스트의 관심사가 아니다 — 계수 지점만 본다.
     monkeypatch.setattr(content_engine, "_build_profile_context", lambda _h: "프로파일")
     monkeypatch.setattr(content_engine, "_build_philosophy_context", lambda _p: "")
-    monkeypatch.setattr(content_engine, "_build_content_brief_context", lambda _b: "")
-    monkeypatch.setattr(content_engine, "_fill_type_prompt", lambda _t, _h: "유형")
-    monkeypatch.setattr(content_engine, "render_source_hint_block", lambda: "")
+    monkeypatch.setattr(content_engine, "_build_content_brief_context", lambda _b, _p=None: "")
+    monkeypatch.setattr(content_engine, "_fill_type_prompt", lambda _t, _h, _b=None: "유형")
     monkeypatch.setattr(content_engine.generate_content.retry, "sleep", lambda _s: None)
     assert FakeResponse  # 성공 경로 없이 재시도만 보므로 사용하지 않는다
 

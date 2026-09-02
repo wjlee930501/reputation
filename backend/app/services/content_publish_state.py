@@ -1,4 +1,4 @@
-"""Query and recover authoritative publication notification state."""
+"""Query the authoritative publication notification state for Admin projections."""
 
 from __future__ import annotations
 
@@ -9,16 +9,12 @@ from datetime import UTC, datetime
 from pydantic import TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem, ContentStatus
-from app.models.hospital import Hospital
-from app.models.operations import NotificationOutbox, NotificationOutboxState
+from app.models.operations import NotificationOutbox
 from app.services.content_publish_notifications import (
     PUBLISH_NOTIFICATION_TYPE,
     PublishNotificationState,
-    build_publish_notification_intent,
-    enqueue_publish_notification_sync,
     parse_publish_notification_identity,
     project_publish_notification,
 )
@@ -66,34 +62,6 @@ async def attach_publish_notification_state(
             notification_id=row.id if row is not None else None,
             safe_error_code=row.safe_error_code if row is not None else None,
         )
-
-
-def recover_publish_notification_sync(
-    db: Session, item: ContentItem, hospital: Hospital
-) -> NotificationOutbox:
-    """Ensure legacy/manual publications have an intent and requeue a known failure."""
-
-    intent = build_publish_notification_intent(item, hospital)
-    existing = db.scalar(
-        select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
-    )
-    if existing is None:
-        return enqueue_publish_notification_sync(db, item, hospital)
-    if existing.state == NotificationOutboxState.FAILED.value:
-        now = datetime.now(UTC)
-        existing.state = NotificationOutboxState.RETRYING.value
-        existing.next_attempt_at = now
-        existing.attempt_count = 0
-        existing.lease_owner = None
-        existing.lease_expires_at = None
-        existing.provider_message_id = None
-        existing.provider_response = None
-        existing.safe_error_code = None
-        existing.safe_error_message = None
-        existing.sent_at = None
-        existing.version += 1
-        existing.updated_at = now
-    return existing
 
 
 def _parse_state(value: str) -> PublishNotificationState:

@@ -7,7 +7,9 @@ const payload = {
   id: 'report-2', hospital_id: 'hospital-1', period_year: 2026, period_month: 7,
   report_type: 'MONTHLY', display: { report_type_label: '월간 리포트', screening_status_label: '검수 대기' },
   has_pdf: true, download_url: '/internal.pdf', created_at: '2026-08-10T00:00:00Z', sent_at: null,
-  delivery_ready: true, delivery_blockers: [], doctor_artifact_state: 'VALID',
+  delivery_ready: true, delivery_blockers: [],
+  delivery_warnings: ['약정 콘텐츠 16편 중 15편만 발행되었습니다.', '운영 기준이 리포트 생성 이후 갱신되었습니다 — 필요 시 재생성해 주세요.'],
+  doctor_artifact_state: 'VALID',
   doctor_artifact: { state: 'VALID', state_label: '원장 전달용 PDF 검증 완료', sha256: 'a'.repeat(64), page_count: 1, validated_at: '2026-08-10T00:01:00Z' },
   review_evidence: {
     version: 2, version_label: '새 버전 2 · 이전 리포트 보존', supersedes_report_id: 'report-1',
@@ -49,6 +51,11 @@ test('strict report boundary preserves frozen cells, version lineage, and honest
   assert.equal(report?.contentOperations?.pendingReviewCount, 1)
   assert.equal(report?.contentOperations?.scheduledSlotStateCounts.DRAFT, 1)
   assert.equal(report?.contentOperations?.deliveryWarnings.length, 1)
+  // 리포트 전체 경고(콘텐츠 운영 경고 + 운영 기준 버전 갱신 등)는 delivery_ready를 그대로
+  // true로 두면서 별도로 노출된다 — 전달을 막지 않는다.
+  assert.equal(report?.deliveryReady, true)
+  assert.equal(report?.deliveryWarnings.length, 2)
+  assert.ok(report?.deliveryWarnings.some((warning) => warning.includes('갱신되었습니다')))
   assert.doesNotMatch(JSON.stringify(report), /SLA|CUSTOMER_READY|raw_response/)
 })
 

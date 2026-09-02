@@ -288,3 +288,85 @@ async def test_exposure_actions_populated_after_seed():
     # 시드 완료 — 노출 보완 엔진은 이 target들로 actions를 만들 수 있다
     assert len(targets) > 0
     assert targets[0].status == "ACTIVE"
+
+
+# ─────────────────────────────────────────────
+# 8. 구조 필드 시드 — 콘텐츠 계획이 타깃을 구분할 수 있어야 한다
+# ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_seed_fills_structured_fields_from_the_query_sentence():
+    """예전에는 전부 빈 값이라 유형 친화도가 타깃 간 상수였다(리뷰 §1.2 B)."""
+    hospital_id = uuid.uuid4()
+    rows = [
+        _matrix_row("강남역에서 허리디스크 치료하는 병원 알려줘", hospital_id),
+        _matrix_row("역삼동 대장내시경 가능한 병원 추천해줘", hospital_id),
+        _matrix_row("강남역 정형외과 병원 추천해줘", hospital_id),
+    ]
+    db = _FakeAsyncDB(matrix_rows=rows)
+
+    await seed_query_targets_from_matrix(db, hospital_id)
+
+    from app.models.sov import AIQueryTarget
+    targets = {o.name: o for o in db.added if isinstance(o, AIQueryTarget)}
+
+    disease = targets["강남역에서 허리디스크 치료하는 병원 알려줘"]
+    assert disease.condition_or_symptom == "허리디스크"
+    assert disease.treatment is None
+    assert disease.region_terms == ["강남역"]
+    assert disease.target_intent == "증상 탐색"
+
+    procedure = targets["역삼동 대장내시경 가능한 병원 추천해줘"]
+    assert procedure.treatment == "대장내시경"
+    assert procedure.condition_or_symptom is None
+    assert procedure.region_terms == ["역삼동"]
+    assert procedure.target_intent == "추천 탐색"
+
+    local = targets["강남역 정형외과 병원 추천해줘"]
+    assert local.specialty == "정형외과"
+    assert local.region_terms == ["강남역"]
+    assert local.condition_or_symptom is None
+
+
+@pytest.mark.asyncio
+async def test_seed_backfills_structure_on_existing_targets():
+    """재시드는 기존 target의 빈 구조 필드도 채운다(멱등, 수기 편집 보존)."""
+    hospital_id = uuid.uuid4()
+    query_text = "강남역에서 허리디스크 치료하는 병원 알려줘"
+
+    from app.models.sov import AIQueryTarget
+
+    existing = AIQueryTarget(
+        hospital_id=hospital_id,
+        name=query_text,
+        target_intent="증상 탐색",
+        region_terms=[],
+        condition_or_symptom=None,
+        treatment=None,
+        decision_criteria=[],
+        platforms=["CHATGPT", "GEMINI"],
+        competitor_names=[],
+        priority="HIGH",
+        status="ACTIVE",
+    )
+    existing.variants = []
+
+    db = _FakeAsyncDB(matrix_rows=[_matrix_row(query_text, hospital_id)])
+    db._existing_targets = [existing]
+
+    original_execute = db.execute
+
+    async def execute(stmt):
+        if db._execute_call == 0:
+            db._execute_call += 1
+            return _FakeResult(db._existing_targets)
+        return await original_execute(stmt)
+
+    db.execute = execute
+
+    result = await seed_query_targets_from_matrix(db, hospital_id)
+
+    assert result["created"] == 0
+    assert result["skipped"] == 1
+    assert existing.condition_or_symptom == "허리디스크"
+    assert existing.region_terms == ["강남역"]

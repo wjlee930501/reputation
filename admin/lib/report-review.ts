@@ -28,6 +28,11 @@ export type MentionEvidence = ActionCopy & {
   platformLabel: string
   relatedContents: readonly string[]
 }
+export type CitationEvidence = {
+  measuredCells: number
+  citedCells: number
+  citedContentCount: number
+}
 export type ContentOperationsEvidence = ActionCopy & {
   planQuota: number | null
   publishedCount: number
@@ -70,6 +75,12 @@ export type ReportView = {
   deliveryTracked: boolean
   deliveryReady: boolean
   deliveryBlockers: readonly string[]
+  /**
+   * 전달을 막지 않는 경고(약정 미달, 사후검수 표본 미완료, 운영 기준 버전 갱신 등).
+   * deliveryBlockers와 달리 존재해도 전달 버튼을 비활성화하지 않는다 — 소프트 스타일로만
+   * 표시한다.
+   */
+  deliveryWarnings: readonly string[]
   doctorArtifact: {
     state: 'MISSING' | 'INVALID' | 'VALID'
     stateLabel: string
@@ -104,6 +115,12 @@ export type ReportView = {
   cells: readonly MeasurementCell[]
   platforms: readonly PlatformMeasurementEvidence[]
   mentions: readonly MentionEvidence[]
+  /**
+   * AI 답변이 병원 공개 표면(허브·발행 글)을 인용한 관찰 집계.
+   *
+   * `citations` 키가 없던 과거 리포트는 null이다 — 화면은 이 경우 줄을 감춘다.
+   */
+  citations: CitationEvidence | null
   contentOperations: ContentOperationsEvidence | null
   deliveryHistory: readonly ReportEvent[]
   effectiveEventType: string | null
@@ -222,6 +239,16 @@ function parseMentions(value: unknown): MentionEvidence[] {
   })
 }
 
+function parseCitations(value: unknown): CitationEvidence | null {
+  const citations = record(record(value)?.citations)
+  if (!citations) return null
+  return {
+    measuredCells: number(citations.measured_cell_count),
+    citedCells: number(citations.cited_cell_count),
+    citedContentCount: number(citations.cited_content_count),
+  }
+}
+
 function parseContentOperations(value: unknown): ContentOperationsEvidence | null {
   const content = record(value)
   const operations = record(content?.operations)
@@ -280,6 +307,7 @@ export function parseReport(value: unknown): ReportView | null {
     deliveryTracked: root.delivery_tracked !== false,
     deliveryReady: root.delivery_ready === true,
     deliveryBlockers: strings(root.delivery_blockers),
+    deliveryWarnings: strings(root.delivery_warnings),
     doctorArtifact: {
       state: artifactState === 'VALID' || artifactState === 'INVALID' ? artifactState : 'MISSING',
       stateLabel: text(artifact?.state_label, '원장 전달용 PDF를 확인할 수 없습니다'),
@@ -317,6 +345,7 @@ export function parseReport(value: unknown): ReportView | null {
     cells: parseCells(sov?.cells),
     platforms: parsePlatforms(sov?.platforms),
     mentions: parseMentions(root.content_summary),
+    citations: parseCitations(root.content_summary),
     contentOperations: parseContentOperations(root.content_summary),
     deliveryHistory: parseEvents(root.delivery_history),
     effectiveEventType: text(effective?.event_type) || null,

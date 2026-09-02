@@ -185,9 +185,10 @@ class Incident(Base):
             "(state IN ('OPEN', 'RETRYING') AND recovered_at IS NULL)",
             name="ck_incidents_recovery_fact",
         ),
+        # A NULL acknowledged_by_id on an ACKNOWLEDGED row means the system closed
+        # an automatically recovered incident; a non-NULL one means a person did.
         CheckConstraint(
-            "(state = 'ACKNOWLEDGED' AND acknowledged_at IS NOT NULL "
-            "AND acknowledged_by_id IS NOT NULL) OR "
+            "(state = 'ACKNOWLEDGED' AND acknowledged_at IS NOT NULL) OR "
             "(state <> 'ACKNOWLEDGED' AND acknowledged_at IS NULL "
             "AND acknowledged_by_id IS NULL)",
             name="ck_incidents_acknowledgement_fact",

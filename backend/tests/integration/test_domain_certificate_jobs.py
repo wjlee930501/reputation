@@ -14,6 +14,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.hospital import DomainCertJobState, Hospital, HospitalStatus
+from app.models.operations import Incident, NotificationOutbox
 from app.services.domain_certificate_manager import DomainCertificateResult
 
 _DEFAULT_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
@@ -66,6 +67,13 @@ async def certificate_job_sessions(pg_engine):
         yield sessions, hospital_id, domain
     finally:
         async with sessions() as db:
+            # 인시던트·발송 대기 행을 병원보다 먼저 지운다. 두 테이블의 hospital_id는
+            # ON DELETE SET NULL이라 병원만 지우면 전역(hospital_id=NULL) 행으로 남고,
+            # 뒤에 도는 테스트의 전역 outbox 배치가 그 행까지 집어 삼킨다.
+            await db.execute(
+                delete(NotificationOutbox).where(NotificationOutbox.hospital_id == hospital_id)
+            )
+            await db.execute(delete(Incident).where(Incident.hospital_id == hospital_id))
             await db.execute(delete(Hospital).where(Hospital.id == hospital_id))
             await db.commit()
         await engine.dispose()

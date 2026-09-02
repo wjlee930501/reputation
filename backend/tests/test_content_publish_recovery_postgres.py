@@ -9,9 +9,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import pytest
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import Session
 
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
@@ -25,15 +24,17 @@ from app.models.operations import (
 from app.services import notification_delivery
 from app.services.content_publish_notifications import (
     PUBLISH_NOTIFICATION_TYPE,
-    enqueue_publish_notification,
+    build_publish_notification_intent,
 )
 from app.services.content_publish_reconciliation import reconcile_sent_publish_notifications
-from app.services.content_publish_state import recover_publish_notification_sync
 from app.services.incidents import mark_retrying
-from app.services.notification_outbox import dispatch_notification_batch
+from app.services.notification_outbox import (
+    dispatch_notification_batch,
+    enqueue_notification,
+    retry_notification,
+)
 
 _ASYNC_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
-_SYNC_URL = "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test"
 
 
 @pytest.mark.asyncio
@@ -42,7 +43,6 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
 ) -> None:
     engine = create_async_engine(_ASYNC_URL)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    sync_engine = create_engine(_SYNC_URL)
     hospital_id = uuid.uuid4()
     schedule_id = uuid.uuid4()
     content_id = uuid.uuid4()
@@ -82,7 +82,9 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
             )
             db.add_all((hospital, schedule, item))
             await db.flush()
-            outbox = await enqueue_publish_notification(db, item, hospital)
+            outbox = await enqueue_notification(
+                db, build_publish_notification_intent(item, hospital)
+            )
             outbox_id = outbox.id
             await db.commit()
 
@@ -120,12 +122,22 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
         assert (first.retried, second_retry.retried, third.failed) == (1, 1, 1)
         assert failed_calls == 3
 
-        with Session(sync_engine, expire_on_commit=False) as db:
-            item = db.get(ContentItem, content_id)
-            hospital = db.get(Hospital, hospital_id)
-            assert item is not None and hospital is not None
-            recover_publish_notification_sync(db, item, hospital)
-            db.commit()
+        # 실패로 소진된 행을 다시 살리는 유일한 프로덕션 경로는 Admin의 수동 재시도다
+        # (api/admin이 호출하는 notification_store.retry_notification). 테스트도 같은
+        # 경로를 써야 "FAILED → RETRYING → 재발송"이 실제로 가능한지 증명한다.
+        async with sessions() as db:
+            failed = await db.get(NotificationOutbox, outbox_id)
+            assert failed is not None
+            assert failed.state == NotificationOutboxState.FAILED.value
+            retried = await retry_notification(
+                db,
+                failed.id,
+                expected_version=failed.version,
+                actor="ae-operator",
+                reason="Slack 전송 실패 확인 후 수동 재시도",
+            )
+            assert isinstance(retried, NotificationOutbox)
+            await db.commit()
 
         class HookFailure(RuntimeError):
             pass
@@ -287,7 +299,6 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 {"hospital_id": hospital_id},
             )
             await cleanup.commit()
-        sync_engine.dispose()
         await engine.dispose()
 
 

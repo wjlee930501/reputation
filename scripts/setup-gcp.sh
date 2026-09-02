@@ -127,6 +127,10 @@ declare -A SECRETS=(
   ["ADMIN_SECRET_KEY"]="Admin API 인증 키"
   ["WORKER_DISPATCH_SECRET"]="Celery 작업 메시지 전용 서명 키 (32자 이상)"
   ["SLACK_WEBHOOK_URL"]="Slack 웹훅 URL"
+  # AE가 고칠 수 없는 인프라 인시던트 전용 개발 채널. 값을 비워 두면 backend가 기존대로
+  # SLACK_WEBHOOK_URL 한 곳으로만 보내지만, deploy.sh가 optional secret으로 mount하므로
+  # 컨테이너와 버전(빈 문자열이라도)은 있어야 한다.
+  ["SLACK_WEBHOOK_URL_DEV"]="개발팀 전용 Slack 웹훅 URL (선택 — 비워 두면 단일 채널)"
   ["ADMIN_SESSION_SECRET"]="Admin 세션 서명키"
   ["DB_PASSWORD"]="Cloud SQL 앱 사용자 비밀번호"
   # REDIS_URL은 deploy.sh REQUIRED_SECRET_NAMES에 포함되므로 여기서 반드시 컨테이너를

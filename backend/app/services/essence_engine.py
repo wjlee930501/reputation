@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -24,7 +25,7 @@ from typing import Any, AsyncIterator, Iterable
 
 import anthropic
 from sqlalchemy import select
-from tenacity import Retrying, stop_after_attempt, wait_exponential
+from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.models.content import ContentItem
@@ -38,6 +39,7 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital
+from app.utils.anthropic_retry import is_retryable_anthropic_error
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden
 
@@ -111,14 +113,34 @@ _LOCAL_CONTEXT_PATTERN = re.compile(
 )
 
 
+# 클라이언트 1개 = HTTP 커넥션 풀 1개다. 호출마다 새로 만들면 재시도마다 TLS 핸드셰이크를
+# 다시 하고 풀을 버린다. Celery prefork 자식 프로세스 안에서 스레드가 동시에 들어올 수 있으므로
+# 초기화만 잠근다(sov_engine._get_gemini_client와 같은 lazy 싱글턴 패턴).
+_anthropic_client_instance: anthropic.Anthropic | None = None
+_anthropic_client_lock = threading.Lock()
+
+
 def _anthropic_client() -> anthropic.Anthropic | None:
+    global _anthropic_client_instance
     if not settings.ANTHROPIC_API_KEY:
         return None
-    return anthropic.Anthropic(
-        api_key=settings.ANTHROPIC_API_KEY,
-        timeout=60.0,
-        max_retries=0,
-    )
+    if _anthropic_client_instance is None:
+        with _anthropic_client_lock:
+            if _anthropic_client_instance is None:
+                _anthropic_client_instance = anthropic.Anthropic(
+                    api_key=settings.ANTHROPIC_API_KEY,
+                    timeout=60.0,
+                    max_retries=0,
+                )
+    return _anthropic_client_instance
+
+
+def _reset_clients_for_tests() -> None:
+    """테스트가 ANTHROPIC_API_KEY/생성자를 바꿔치기한 뒤 캐시를 비우기 위한 훅."""
+
+    global _anthropic_client_instance
+    with _anthropic_client_lock:
+        _anthropic_client_instance = None
 
 
 def llm_enabled() -> bool:
@@ -167,10 +189,6 @@ def compute_sources_snapshot_hash(sources: Iterable[HospitalSourceAsset]) -> str
             )
         )
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
-
-
-def get_source_text(asset: HospitalSourceAsset) -> str:
-    return "\n".join(part for part in [asset.raw_text or "", asset.operator_note or ""] if part)
 
 
 def find_excerpt_bounds(asset: HospitalSourceAsset, excerpt: str) -> tuple[int | None, int | None]:
@@ -384,6 +402,9 @@ def _call_anthropic_json(
     for attempt in Retrying(
         stop=stop_after_attempt(attempts),
         wait=wait_exponential(min=1, max=4),
+        # 결정적 4xx(잘못된 요청·인증·권한·모델 오타)는 재시도해도 같은 실패라
+        # 유료 호출만 3배로 늘린다. 타임아웃·5xx·429·파서 실패만 재시도한다.
+        retry=retry_if_exception(is_retryable_anthropic_error),
         reraise=True,
     ):
         with attempt:

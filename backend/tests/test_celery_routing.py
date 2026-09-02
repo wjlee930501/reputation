@@ -7,6 +7,7 @@ task_routes에 없는 태스크는 Celery 기본 "celery" 큐로 떨어져 영�
 이 파일이 진실을 *복사*할 뿐이라, 새 큐를 추가하고 워커 인자를 안 고쳐도 두 곳을 같이
 고치는 한 통과한다. 실제 배포 인자에서 파싱해야 둘의 드리프트가 실패로 드러난다.
 """
+import importlib
 import re
 from pathlib import Path
 
@@ -73,6 +74,32 @@ def test_all_task_routes_target_consumed_queues():
             f"task_routes entry '{task_name}' targets queue '{queue}' which no worker "
             f"consumes (workers consume only {sorted(KNOWN_WORKER_QUEUES)})."
         )
+
+
+def test_every_registered_worker_task_has_a_task_routes_entry():
+    """등록된 태스크에 라우팅이 없으면 명시적 queue= 없는 호출이 기본 'celery' 큐로 떨어져
+    영원히 실행되지 않는다 — 회귀 사례: generate_content_image, process_source_asset_task,
+    recover_lead_diagnosis_measurement/report, backfill_indexnow가 각 호출 지점에서
+    queue=를 명시했기 때문에 우연히 동작했다.
+
+    `celery_app.tasks`는 `include=`에 나열된 모듈이 실제로 import돼야 채워지므로,
+    여기서 명시적으로 import한다(celery worker 기동 시 로더가 하는 일과 동일).
+    """
+    for module_name in celery_app.conf.include:
+        importlib.import_module(module_name)
+
+    worker_task_names = sorted(
+        name for name in celery_app.tasks if name.startswith("app.workers.")
+    )
+    assert len(worker_task_names) >= 20, (
+        "worker task 모듈이 제대로 import되지 않아 이 검사가 무력화됐을 수 있다 "
+        f"(registered={len(worker_task_names)})"
+    )
+
+    missing = [name for name in worker_task_names if _resolved_queue(name) is None]
+    assert not missing, (
+        f"task_routes에 없는 워커 태스크: {missing} — 기본 'celery' 큐로 떨어져 실행되지 않는다."
+    )
 
 
 def test_pii_purge_task_is_routed():

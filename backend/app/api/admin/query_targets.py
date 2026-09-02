@@ -41,6 +41,10 @@ from app.schemas.query_target import (
 )
 from app.services import sov_engine
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.query_target_structure import (
+    apply_structure_to_target,
+    describe_query_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +356,9 @@ async def seed_query_targets_from_matrix(
             existing_target = existing_by_name[q.query_text]
             if existing_target is not None:
                 changed = _ensure_dual_platform_variants(existing_target, q, db)
+                # 이미 만들어진 target의 빈 구조 필드도 여기서 채운다. 재시드는 멱등해야
+                # 하므로 AE가 손으로 넣은 값은 건드리지 않는다(빈 필드만 채움).
+                changed = apply_structure_to_target(existing_target) or changed
                 if changed:
                     backfilled += 1
             skipped += 1
@@ -361,14 +368,21 @@ async def seed_query_targets_from_matrix(
         is_mentioned = mentioned_by_query.get(str(q.id))
         priority = "NORMAL" if is_mentioned else "HIGH"
 
+        # 질의 문장에서 지역·진료과·임상 키워드·환자 의도를 되찾아 구조 필드를 채운다.
+        # 예전에는 전부 빈 값("증상 탐색"/[]/None)이라 콘텐츠 계획이 타깃을 구분하지
+        # 못했다 — 어떤 슬롯이 어떤 질문을 답할지가 사실상 무작위였다.
+        # 질의는 sov_engine 템플릿으로 만들어졌으므로 병원 프로파일을 다시 읽지 않고
+        # 문장만으로 복원할 수 있다(= 이 함수의 DB 접근 횟수는 그대로다).
+        structure = describe_query_text(q.query_text)
+
         target = AIQueryTarget(
             hospital_id=hospital_id,
             name=q.query_text,
-            target_intent="증상 탐색",      # V0 기본값; AE가 추후 편집
-            region_terms=[],
-            specialty=None,
-            condition_or_symptom=None,
-            treatment=None,
+            target_intent=structure.target_intent,
+            region_terms=list(structure.region_terms),
+            specialty=structure.specialty,
+            condition_or_symptom=structure.condition_or_symptom,
+            treatment=structure.treatment,
             decision_criteria=[],
             platforms=["CHATGPT", "GEMINI"],
             competitor_names=[],

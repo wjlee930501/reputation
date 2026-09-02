@@ -117,3 +117,24 @@ export function countUnpublishedCarriedOver(items: CarriedOverItem[]): number {
     (item) => isCarriedOver(item) && !['PUBLISHED', 'CANCELLED'].includes(item.status ?? ''),
   ).length
 }
+
+// 반려(reject_content)는 scheduled_date가 오늘 이하이면 내일로 재스케줄한다(backend
+// api/admin/content.py:reject_content). 월말에 반려하면 다음 달로 넘어가는데, 단건
+// 새로고침(refreshItem)이 그 결과를 그대로 병합하면 다음 달 슬롯이 이번 달 화면에
+// 유령처럼 남는다 — 병합 전 반드시 이 판정을 거쳐야 한다.
+export interface ScheduledContentItem {
+  scheduled_date?: string | null
+}
+
+/** 아이템의 scheduled_date가 화면이 보고 있는 연/월과 같은가.
+ * 날짜를 파싱할 수 없으면(값 없음/형식 불명) 보수적으로 true를 반환해 기존 병합 동작을 유지한다. */
+export function belongsToMonthView(
+  item: ScheduledContentItem,
+  viewYear: number,
+  viewMonth: number,
+): boolean {
+  const match = /^(\d{4})-(\d{2})-\d{2}/.exec(item.scheduled_date ?? '')
+  if (!match) return true
+  const [, y, m] = match
+  return Number(y) === viewYear && Number(m) === viewMonth
+}

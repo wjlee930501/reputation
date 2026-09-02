@@ -11,7 +11,6 @@ import {
   funnelSection,
 
   pricingSection,
-  heroScarcity,
   landingHero,
   limitItems,
   limitsSection,
@@ -70,7 +69,6 @@ const ALL_COPY = [
   funnelSection.caveat,
   ...funnelSection.slots.map((s) => s.name),
   funnelSection.slotsCaption,
-  heroScarcity.note,
   previewSection.label,
   previewSection.heading,
   previewSection.includesLabel,
@@ -361,15 +359,6 @@ test('the hero claim stays inside what we measured', () => {
   assert.doesNotMatch(heroText, /대부분|거의 모든|모든 병원/)
 })
 
-test('the scarcity note carries the whole rule', () => {
-  /**
-   * "오늘 N분 남음" 배지를 뺐으므로 각주가 규칙 전부를 진다 — 몇 명까지인지,
-   * 언제 다시 열리는지. 둘 중 하나가 빠지면 신청자가 헛걸음한다.
-   */
-  assert.match(heroScarcity.note, /20분|20곳/)
-  assert.match(heroScarcity.note, /리셋|열립니다|초기화/)
-})
-
 test('every pricing tier includes direct MotionLabs marketer management', () => {
   assert.deepEqual(
     pricingSection.plans.map(({ name, price, monthlyContents, vatExcluded }) => ({
@@ -389,16 +378,6 @@ test('every pricing tier includes direct MotionLabs marketer management', () => 
     assert.match(plan.management, /모션랩스.*전담 마케터.*직접.*관리.*소통/)
     assert.doesNotMatch(`${plan.management} ${plan.note}`, /월 \d+편|\d+편 발행/)
   }
-})
-
-test('the reset time in the copy matches the code', () => {
-  /**
-   * 자리 경계는 백엔드의 `SLOT_RESET_HOUR_KST = 8`이 정한다
-   * (backend/app/api/public/diagnosis.py, 그쪽 테스트가 값 8을 고정한다).
-   * 여기서 다른 시각을 적으면 신청자가 안내받은 시각에 와서 마감 화면을 본다.
-   */
-  assert.match(heroScarcity.note, /아침 8시/)
-  assert.doesNotMatch(heroScarcity.note, /자정/)
 })
 
 // ── 통증은 당사자의 문장으로 ────────────────────────────────────────

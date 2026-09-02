@@ -16,6 +16,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    # 호스트에도 노출한다. 컨테이너 밖에서 도는 백엔드 테스트 일부가 Celery 브로커를
+    # redis://localhost:6379로 직접 잡는다 (예: tests/test_admin_domain.py의 도메인 검증
+    # 디스패치). 노출하지 않으면 그 테스트만 브로커 접속 실패로 깨진다.
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import assert_never
 from urllib.parse import urlsplit
 
@@ -61,6 +61,12 @@ class IncidentSlackProjection:
     version: int = 1
     problem: str = "자동 작업이 완료되지 않았습니다."
     episode_seq: int = 1
+    # Registry key that decides which Slack channel carries this projection.
+    # Required and keyword-only on purpose: an omitted type silently routed a
+    # developer-only incident to the AE channel, and a positional 14th argument
+    # is the kind of thing that goes missing again. Omission now fails at
+    # construction.
+    incident_type: str = field(kw_only=True)
 
 
 def validate_message(message: SlackMessage, *, allowed_admin_base_url: str) -> None:

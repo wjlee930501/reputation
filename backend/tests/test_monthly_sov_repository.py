@@ -53,7 +53,7 @@ def _load(cell, *, live_intent: str, snapshots: dict[str, str] | None):
     )
 
 
-def test_loader_preserves_source_ids_and_selects_one_success_record() -> None:
+def test_loader_preserves_source_ids_and_keeps_every_success_record() -> None:
     cell = _cell_with_attempts()
 
     loaded = _load(cell, live_intent="LOCAL", snapshots={cell.query_key: "LOCAL"})
@@ -64,14 +64,20 @@ def test_loader_preserves_source_ids_and_selects_one_success_record() -> None:
     assert metric_cell.query_target_id == cell.query_target_id
     assert metric_cell.query_variant_id == cell.query_variant_id
     assert metric_cell.query_intent_source == "FROZEN"
+    # 대표 응답은 여전히 1건(언급된 시도 우선)이지만, 점수는 성공 측정 전부를 본다.
     assert [record.id for record in loaded.selected_records] == [uuid.UUID(int=1)]
+    assert {record.id for record in loaded.scored_records} == {
+        uuid.UUID(int=1),
+        uuid.UUID(int=2),
+    }
+    assert metric_cell.attempts_used == 2
+    assert metric_cell.mentioned_attempts == 1
 
 
 def test_ambiguous_records_are_never_selected_for_the_monthly_score() -> None:
     """판정 보류(SUCCESS + is_mentioned=None)는 월간 집계에 들어가면 안 된다.
 
-    이 필터가 없으면 selected_attempt가 보류를 선택해 `sum(attempt.is_mentioned ...)`이
-    None에서 TypeError로 죽는다 — 월간 리포트 생성이 통째로 실패하는 결함이었다.
+    이 필터가 없으면 보류가 셀 빈도(k/n)의 분모에 섞여 미언급으로 계상된다.
     """
     confirmed = SimpleNamespace(
         id=uuid.UUID(int=7),
@@ -124,7 +130,8 @@ def test_frozen_query_intent_wins_over_later_live_classification_change() -> Non
 
     assert loaded.cells[0].query_intent == "LOCAL"
     assert loaded.cells[0].query_intent_source == "FROZEN"
-    assert summary.sov_pct == 100.0
+    # 성공 2건 중 1건 언급 → 셀 빈도 1/2. (반복을 쓰기 전에는 대표 1건이 언급이라 100%였다)
+    assert summary.sov_pct == 50.0
 
 
 def test_legacy_manifest_marks_live_intent_as_unfrozen() -> None:

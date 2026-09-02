@@ -52,7 +52,7 @@ check_api_key() {
   local key="$1"
   local val
   val=$(grep "^${key}=" .env 2>/dev/null | cut -d= -f2-)
-  if [[ -z "$val" || "$val" == *REPLACE_ME* || "$val" == *placeholder* || "$val" == "sk-ant-..." || "$val" == "sk-..." || "$val" == "pplx-..." ]]; then
+  if [[ -z "$val" || "$val" == *REPLACE_ME* || "$val" == *placeholder* || "$val" == "sk-ant-..." || "$val" == "sk-..." ]]; then
     return 1
   fi
   return 0
@@ -253,9 +253,9 @@ docker exec reputation-db-1 psql -U reputation -d reputation -c \
   "UPDATE hospitals SET status='ACTIVE' WHERE id='$TEST_ID'" >/dev/null 2>&1
 
 # ─── 6. V0 리포트 (API 키 필요) ───────────────────────────────────
-header "6. V0 리포트 생성 (OpenAI + Perplexity 필요)"
+header "6. V0 리포트 생성 (OpenAI 필요)"
 
-if check_api_key "OPENAI_API_KEY" && check_api_key "PERPLEXITY_API_KEY"; then
+if check_api_key "OPENAI_API_KEY"; then
   info "V0 리포트 태스크 트리거 중..."
   V0_RES=$(curl -sf --max-time 5 -X POST "$BASE/api/v1/admin/hospitals/$TEST_ID/reports/v0" \
     -H "X-Admin-Key: $ADMIN_KEY" 2>/dev/null) || V0_RES="{}"
@@ -266,7 +266,7 @@ if check_api_key "OPENAI_API_KEY" && check_api_key "PERPLEXITY_API_KEY"; then
     fail "V0 리포트 트리거 실패: $(echo $V0_RES | head -c 200)"
   fi
 else
-  skip "V0 리포트 — OPENAI_API_KEY 또는 PERPLEXITY_API_KEY 미설정"
+  skip "V0 리포트 — OPENAI_API_KEY 미설정"
 fi
 
 # ─── 7. 콘텐츠 생성 태스크 (API 키 필요) ──────────────────────────

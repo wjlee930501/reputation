@@ -27,8 +27,13 @@ class _EssenceTaskDB:
         return self.hospital
 
 
-def _run_essence_task(monkeypatch, result: EssenceRefreshResult):
-    hospital = SimpleNamespace(id=result.hospital_id, name="에센스테스트의원", slug="essence-test")
+def _run_essence_task(monkeypatch, result: EssenceRefreshResult, *, hospital_status=None):
+    hospital = SimpleNamespace(
+        id=result.hospital_id,
+        name="에센스테스트의원",
+        slug="essence-test",
+        status=hospital_status,
+    )
     opened: list[dict] = []
     recovered: list[dict] = []
 
@@ -95,6 +100,8 @@ def test_essence_reviewer_cost_guard_blocks_before_provider(monkeypatch) -> None
 
 
 def test_escalated_snapshot_with_approved_essence_recovers_without_opening(monkeypatch) -> None:
+    """Non-ACTIVE hospitals (no live content generation yet) still recover silently."""
+
     hospital_id = uuid.uuid4()
     result = EssenceRefreshResult(
         status=EssenceRefreshStatus.ESCALATED,
@@ -104,7 +111,9 @@ def test_escalated_snapshot_with_approved_essence_recovers_without_opening(monke
         findings=("new source conflicts with approved essence",),
     )
 
-    response, opened, recovered = _run_essence_task(monkeypatch, result)
+    response, opened, recovered = _run_essence_task(
+        monkeypatch, result, hospital_status=tasks.HospitalStatus.PENDING_DOMAIN
+    )
 
     assert response["status"] == "ESCALATED"
     assert opened == []
@@ -113,6 +122,40 @@ def test_escalated_snapshot_with_approved_essence_recovers_without_opening(monke
     assert recovered[0]["pipeline"] == "essence_auto_review"
     assert recovered[0]["incident_type"] == "ESSENCE_AUTO_REVIEW_ESCALATED"
     assert recovered[0]["notify"] is False
+
+
+def test_escalated_snapshot_with_approved_essence_opens_incident_for_active_hospital(
+    monkeypatch,
+) -> None:
+    """ACTIVE hospitals keep generating content on the last approved version, so the
+    escalation that blocks new sources from being reflected must open a visible
+    (MEDIUM) incident instead of the silent notify=False recovery."""
+
+    hospital_id = uuid.uuid4()
+    result = EssenceRefreshResult(
+        status=EssenceRefreshStatus.ESCALATED,
+        hospital_id=hospital_id,
+        snapshot_hash="current-snapshot",
+        previous_philosophy_id=uuid.uuid4(),
+        findings=("new source conflicts with approved essence",),
+    )
+
+    response, opened, recovered = _run_essence_task(
+        monkeypatch, result, hospital_status=tasks.HospitalStatus.ACTIVE
+    )
+
+    assert response["status"] == "ESCALATED"
+    assert recovered == []
+    assert len(opened) == 1
+    incident = opened[0]
+    assert incident["incident_type"] == "ESSENCE_AUTO_REVIEW_ESCALATED"
+    assert incident["object_id"] == f"{hospital_id}:current-snapshot"
+    assert incident["object_type"] == "essence_snapshot"
+    assert incident["pipeline"] == "essence_auto_review"
+    assert incident["severity"] == tasks.IncidentSeverity.MEDIUM
+    assert incident["hospital_id"] == hospital_id
+    assert "마지막으로 승인된" in incident["customer_impact"]
+    assert "essence" in incident["admin_path"]
 
 
 def test_escalated_snapshot_without_approved_essence_opens_incident(monkeypatch) -> None:
@@ -221,9 +264,18 @@ async def test_hospital_recovery_ignores_changed_snapshot_hash(monkeypatch) -> N
         incident.version += 1
         return incident
 
+    async def fake_auto_acknowledged(_db, _incident_id, *, expected_version, **_kwargs):
+        transitions.append(("acknowledged", expected_version))
+        incident.state = IncidentState.ACKNOWLEDGED.value
+        incident.version += 1
+        return incident
+
     monkeypatch.setattr(ops_incident_alerts, "get_async_sessionmaker", lambda: lambda: db)
     monkeypatch.setattr(ops_incident_alerts, "mark_retrying", fake_retrying)
     monkeypatch.setattr(ops_incident_alerts, "mark_recovered", fake_recovered)
+    monkeypatch.setattr(
+        ops_incident_alerts, "auto_acknowledge_incident", fake_auto_acknowledged
+    )
 
     recovered = await ops_incident_alerts.recover_ops_incidents_for_hospital(
         hospital_id=hospital_id,
@@ -233,6 +285,7 @@ async def test_hospital_recovery_ignores_changed_snapshot_hash(monkeypatch) -> N
     )
 
     assert recovered == 1
-    assert transitions == [("retrying", 1), ("recovered", 2)]
-    assert incident.state == IncidentState.RECOVERED.value
+    # The machine closes what the machine recovered — no human "확인 완료" click.
+    assert transitions == [("retrying", 1), ("recovered", 2), ("acknowledged", 3)]
+    assert incident.state == IncidentState.ACKNOWLEDGED.value
     assert db.committed is True

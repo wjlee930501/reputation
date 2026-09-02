@@ -8,7 +8,7 @@ from typing import Final, Literal
 
 from app.models.admin_user import AdminUser
 from app.models.hospital import Hospital
-from app.models.operations import Incident, NotificationOutbox, OperationRun
+from app.models.operations import Incident, IncidentState, NotificationOutbox, OperationRun
 from app.schemas.operations import (
     OperationsAction,
     OperationsCustomer,
@@ -73,26 +73,27 @@ def cause_message(code: str, stored_message: str | None, impact: str) -> str:
 
 
 def cost_guard_category(
-    incident: Incident,
-    run: OperationRun | None,
     cause_code: str,
+    *,
+    incident_type: str,
+    source_type: str | None,
+    source_id: str | None,
+    run_operation_type: str | None,
 ) -> str | None:
-    """Resolve the budget bucket behind a canonical cost-limit incident."""
+    """Resolve the budget bucket behind a canonical cost-limit incident.
+
+    Takes the five scalars it actually reads rather than the ORM rows, so the queue's
+    cheap grouping pass can call it on a column projection instead of loading whole
+    `Incident` objects just to throw them away.
+    """
     if cause_code != _COST_LIMIT_CAUSE_CODE:
         return None
-    if incident.source_type == "COST_GUARD" and incident.source_id:
-        category = incident.source_id.split(":", 1)[0].lower()
+    if source_type == "COST_GUARD" and source_id:
+        category = source_id.split(":", 1)[0].lower()
         if category in {"content", "image", "sov", "leadgen"}:
             return category
     context = " ".join(
-        filter(
-            None,
-            (
-                incident.incident_type,
-                incident.source_type,
-                run.operation_type if run is not None else None,
-            ),
-        )
+        filter(None, (incident_type, source_type, run_operation_type))
     ).upper()
     if "LEAD" in context:
         return "leadgen"
@@ -217,7 +218,13 @@ def serialize_incident_row(
         run.safe_error_message if run is not None else None
     )
     projected_message = cause_message(projected_code, stored_message, incident.customer_impact)
-    budget_category = cost_guard_category(incident, run, projected_code)
+    budget_category = cost_guard_category(
+        projected_code,
+        incident_type=incident.incident_type,
+        source_type=incident.source_type,
+        source_id=incident.source_id,
+        run_operation_type=run.operation_type if run is not None else None,
+    )
     projected_group_key = cause_group_key or projected_code
     if budget_category is not None:
         projected_group_key = f"{projected_code}:{budget_category}"
@@ -248,6 +255,9 @@ def serialize_incident_row(
             else (1 if hospital_id is not None else 0)
         ),
         cost_guard_category=budget_category,
+        # RETRYING is automatic recovery in flight. Keep the row (the FE groups and
+        # collapses it) but stop counting it as work waiting on a person.
+        requires_operator_action=incident.state == IncidentState.OPEN.value,
         safe_cause=projected_message,
         history=history(incident),
         slack=slack_state(outbox),

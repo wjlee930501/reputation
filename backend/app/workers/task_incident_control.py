@@ -22,8 +22,9 @@ from app.models.operations import (
     NotificationOutboxState,
     OperationRun,
 )
+from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.incident_safety import build_incident_key
-from app.services.incident_types import IncidentFingerprint
+from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import (
     IncidentSlackProjection,
     NotificationIntent,
@@ -126,7 +127,15 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
         if recovered is None:
             return False
         incident = recovered
-        if run.operation_type != "RUN_SOV":
+        # BACKGROUND_TASK_FAILED recovers when the next scheduled attempt succeeds.
+        # Nobody started that work, so the recovery is informational and the system
+        # closes the incident itself instead of queueing a "확인 완료" click. It is
+        # still sent whenever the "운영 확인 필요" notice actually reached the outbox:
+        # a delivered OPEN must always be closed by its RECOVERED. When no OPEN was
+        # queued — a run the pipeline already terminalized with its own classified
+        # incident, so `record_task_failure` returned early — nothing is owed and the
+        # DB incident plus its audit trail stay the only record.
+        if open_notice_exists_sync(db, incident.id):
             _enqueue(
                 db,
                 build_recovered_incident_notification(
@@ -134,6 +143,16 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
                 ),
             )
         _audit(db, incident, "incident_recovered")
+        acknowledged = _transition_incident(
+            db,
+            incident,
+            expected_state=IncidentState.RECOVERED,
+            next_state=IncidentState.ACKNOWLEDGED,
+            acknowledged=True,
+        )
+        if acknowledged is not None:
+            incident = acknowledged
+            _audit(db, incident, "incident_auto_acknowledged")
         db.commit()
     return True
 
@@ -240,6 +259,7 @@ def _transition_incident(
     expected_state: IncidentState,
     next_state: IncidentState,
     recovered: bool = False,
+    acknowledged: bool = False,
 ) -> Incident | None:
     now = datetime.now(UTC)
     values: dict[str, object] = {
@@ -250,6 +270,10 @@ def _transition_incident(
     }
     if recovered:
         values["recovered_at"] = now
+    if acknowledged:
+        # NULL owner marks a system acknowledgement, not a person's confirmation.
+        values["acknowledged_at"] = now
+        values["acknowledged_by_id"] = None
     statement = (
         update(Incident)
         .where(
@@ -301,6 +325,7 @@ def _projection(db: Session, incident: Incident) -> IncidentSlackProjection:
         operation_run_id=incident.operation_run_id,
         version=incident.version,
         episode_seq=incident.episode_seq,
+        incident_type=incident_type_of(incident),
     )
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Final, assert_never
 from zoneinfo import ZoneInfo
 
@@ -36,6 +36,8 @@ from app.services.post_publish_review_policy import (
 _OVERDUE_REVIEW_HOURS: Final = 24
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
 _TODAY_ACTION_LABEL: Final = "콘텐츠 확인"
+# The automatic publisher runs at 08:00 KST; before it does, a due slot is not work.
+_AUTO_PUBLISH_HOUR: Final = time(8, 0)
 
 
 def _today_operator_copy(*, review: bool) -> tuple[str, str]:
@@ -49,6 +51,25 @@ def _today_operator_copy(*, review: bool) -> tuple[str, str]:
         f"운영 센터의 “{_TODAY_ACTION_LABEL}”을 눌러 발행 가능한 상태인지 확인하세요. "
         "처리할 버튼이 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요.",
     )
+
+
+def publish_due_requires_operator_action(
+    scheduled_date: date, today: date, now: datetime
+) -> bool:
+    """Return whether a due-publish slot is work a person must do right now.
+
+    A slot scheduled for today is normal state until the 08:00 KST publisher has had
+    its turn; counting it as MEDIUM operator work before then invents a task nobody
+    can finish. Dropping it from the response instead was worse — the row vanished
+    from the queue and from the totals, so the FE could not collapse what it never
+    received. The row ships either way and only this flag changes, which is what
+    `OperationsQueueRow.requires_operator_action` and the Slack policy both promise.
+    A slot whose scheduled date already passed is real work at every hour.
+    """
+
+    if scheduled_date < today:
+        return True
+    return now.astimezone(_SEOUL).time() >= _AUTO_PUBLISH_HOUR
 
 
 async def load_today_queue(
@@ -187,6 +208,13 @@ async def load_today_queue(
                 sla_due_at=due_at,
                 sla_state=sla_state(due_at, now),
                 next_action=next_action,
+                # 08:00 자동 발행 전의 당일 슬롯은 응답에 남되 사람 업무로 세지 않는다.
+                requires_operator_action=(
+                    review
+                    or publish_due_requires_operator_action(
+                        content.scheduled_date, today, now
+                    )
+                ),
                 action=OperationsAction(
                     kind="REVIEW_CONTENT",
                     label=_TODAY_ACTION_LABEL,
@@ -208,4 +236,4 @@ async def load_today_queue(
     return total, items
 
 
-__all__ = ("load_today_queue",)
+__all__ = ("load_today_queue", "publish_due_requires_operator_action")

@@ -186,3 +186,167 @@ def test_related_content_empty_when_nothing_matches():
     contents = [_content("FAQ", "치질 FAQ")]
     summary = _summary(current=current, prior=prior, contents=contents)
     assert summary["new_mention_cells"][0]["related_contents"] == []
+
+
+def test_new_mention_now_means_appeared_at_least_once_in_the_repeats():
+    """반복 측정을 쓰면서 "새로 나온 질문"의 뜻도 명시된다.
+
+    대표 응답은 언급된 시도를 먼저 고르므로, 이번 달 5회 중 1회라도 나왔고
+    지난달에는 한 번도 안 나온 셀이 "새로 확인된 질문"이 된다. 예전에는
+    무작위로 뽑힌 1건이 그 판정을 좌우했다(같은 달을 두 번 계산하면 결과가 달랐다).
+    """
+    current = [
+        ManifestCellInput(
+            query_key="A",
+            query_text="강남 치질 병원",
+            platform="chatgpt",
+            query_intent="LOCAL",
+            state="SUCCESS",
+            query_matrix_id=None,
+            query_target_id=None,
+            query_variant_id=None,
+            query_intent_source="FROZEN",
+            attempts=tuple(
+                CellAttempt(
+                    record_id=uuid.UUID(int=index + 1),
+                    measured_at=datetime(2026, 8, 1, tzinfo=UTC),
+                    succeeded=True,
+                    is_mentioned=index == 4,
+                )
+                for index in range(5)
+            ),
+        )
+    ]
+    prior = [_cell("A", mentioned=False, query_text="강남 치질 병원")]
+
+    summary = _summary(current=current, prior=prior)
+
+    assert summary["new_mention_count"] == 1
+
+
+# ── 빠진 언급 ─────────────────────────────────────────────────
+# 새로 나온 질문만 보이면 헤드라인이 내려간 달에 "어디서 빠졌나"를 답할 수 없다.
+# 판정은 헤드라인과 같은 매칭 코호트 위에서, 대표 1건이 아니라 셀 빈도(k/n)로 한다.
+
+
+def _repeat_cell(
+    query_key: str,
+    *,
+    mentioned_attempts: int,
+    attempts: int = 5,
+    platform: str = "chatgpt",
+    state: str = "SUCCESS",
+) -> ManifestCellInput:
+    rows = tuple(
+        CellAttempt(
+            record_id=uuid.uuid5(uuid.NAMESPACE_URL, f"{query_key}:{platform}:{index}"),
+            measured_at=datetime(2026, 8, 1, tzinfo=UTC),
+            succeeded=True,
+            is_mentioned=index < mentioned_attempts,
+        )
+        for index in range(attempts)
+    )
+    return ManifestCellInput(
+        query_key=query_key,
+        query_text=f"환자 질문 {query_key}",
+        platform=platform,
+        query_intent="LOCAL",
+        state=state,
+        query_matrix_id=None,
+        query_target_id=None,
+        query_variant_id=None,
+        query_intent_source="FROZEN",
+        attempts=rows,
+    )
+
+
+def test_a_question_that_stopped_appearing_is_reported_as_a_lost_mention():
+    summary = _summary(
+        current=[_repeat_cell("q1", mentioned_attempts=0)],
+        prior=[_repeat_cell("q1", mentioned_attempts=3)],
+    )
+
+    assert summary["lost_mention_count"] == 1
+    assert summary["lost_mention_cells"][0]["classification"] == "LOST_MENTION"
+    assert summary["lost_mention_cells"][0]["query_text"] == "환자 질문 q1"
+    assert "한 번도 나오지 않았습니다" in summary["lost_mention_cells"][0]["meaning"]
+
+
+def test_a_question_that_still_appears_even_once_is_not_lost():
+    """반복 중 한 번이라도 나왔으면 빠진 게 아니다 — 대표 1건으로 판정하지 않는다."""
+    summary = _summary(
+        current=[_repeat_cell("q1", mentioned_attempts=1)],
+        prior=[_repeat_cell("q1", mentioned_attempts=5)],
+    )
+
+    assert summary["lost_mention_count"] == 0
+
+
+def test_an_unmeasured_month_on_either_side_is_not_a_lost_mention():
+    """측정이 없는 것과 빠진 것은 다르다. 섞으면 운영 실패를 성과 하락으로 판다."""
+    prior_only = _summary(
+        current=[_repeat_cell("q1", mentioned_attempts=0, state="FAILED")],
+        prior=[_repeat_cell("q1", mentioned_attempts=3)],
+    )
+    current_only = _summary(
+        current=[_repeat_cell("q1", mentioned_attempts=0)],
+        prior=[_repeat_cell("q1", mentioned_attempts=0, state="FAILED")],
+    )
+
+    assert prior_only["lost_mention_count"] == 0
+    assert current_only["lost_mention_count"] == 0
+
+
+def test_lost_mentions_require_the_same_frozen_cell_in_both_months():
+    summary = _summary(
+        current=[_repeat_cell("q1", mentioned_attempts=0, platform="gemini")],
+        prior=[_repeat_cell("q1", mentioned_attempts=4, platform="chatgpt")],
+    )
+
+    assert summary["lost_mention_count"] == 0
+
+
+def test_no_prior_manifest_means_no_lost_mention_claim_at_all():
+    summary = _summary(current=[_repeat_cell("q1", mentioned_attempts=0)], prior=None)
+
+    assert summary["has_prior_month"] is False
+    assert summary["lost_mention_count"] == 0
+
+
+def test_prior_manifest_presence_is_reported_so_the_doctor_page_can_omit_the_block():
+    summary = _summary(
+        current=[_repeat_cell("q1", mentioned_attempts=1)],
+        prior=[_repeat_cell("q1", mentioned_attempts=1)],
+    )
+
+    assert summary["has_prior_month"] is True
+
+
+# ── 질문 단위 표(원장 리포트 2쪽 부록) ─────────────────────────
+
+
+def test_question_rows_sum_platforms_and_carry_both_months():
+    summary = _summary(
+        current=[
+            _repeat_cell("q1", mentioned_attempts=3, platform="chatgpt"),
+            _repeat_cell("q1", mentioned_attempts=1, platform="gemini"),
+        ],
+        prior=[
+            _repeat_cell("q1", mentioned_attempts=2, platform="chatgpt"),
+            _repeat_cell("q1", mentioned_attempts=2, platform="gemini"),
+        ],
+    )
+
+    row = summary["question_rows"][0]
+    assert row["query_key"] == "q1"
+    assert (row["current_attempts_used"], row["current_mentioned_attempts"]) == (10, 4)
+    assert (row["prior_attempts_used"], row["prior_mentioned_attempts"]) == (10, 4)
+    assert row["prior_measured"] is True
+
+
+def test_question_rows_mark_a_question_with_no_prior_cell_as_unmeasured_last_month():
+    summary = _summary(current=[_repeat_cell("q2", mentioned_attempts=2)], prior=[])
+
+    row = summary["question_rows"][0]
+    assert row["prior_attempts_used"] == 0
+    assert row["prior_measured"] is False

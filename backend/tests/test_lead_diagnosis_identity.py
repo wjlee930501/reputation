@@ -133,10 +133,10 @@ class TestSlotDayBoundary:
         assert _slot_day(start) == _slot_day(end) == date(2026, 7, 31)
 
     def test_the_reset_hour_matches_what_the_landing_promises(self):
-        """랜딩 각주가 안내하는 시각과 코드가 갈라지면 신청자가 마감 화면을 본다.
+        """접수 화면이 안내하는 시각과 코드가 갈라지면 신청자가 마감 화면을 본다.
 
-        문구는 site/lib/landing-copy.ts의 heroScarcity.note에 있고, 그쪽 테스트가
-        '자정' 같은 다른 시각을 쓰지 못하게 막는다. 여기서는 코드 쪽 값을 고정한다.
+        실시간 잔여 수는 접수 화면(/ai-diagnosis, no-store)이 이 값을 그대로 보여준다.
+        여기서는 코드 쪽 값을 고정한다.
         """
         from app.api.public.diagnosis import SLOT_RESET_HOUR_KST
 

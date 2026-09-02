@@ -1133,11 +1133,15 @@ async def test_operations_overview_query_count_is_constant_for_one_or_many_rows(
         await _incident(db, extra, owner=actor)
     many_count = await _overview_query_count(db, actor)
 
-    assert one_count <= 5
+    # 6 = 온보딩·오늘·리포트 대기열 각 1회 + 인시던트 대기열 2회(원인 그룹 → 해당 페이지
+    # 상세, `load_incidents_queue`의 2-pass). 행 수가 아니라 대기열 수에만 비례해야 한다.
+    assert one_count <= 6
     assert many_count == one_count
 
 
-async def test_incident_queue_groups_same_cause_in_one_query(pg_async_session):
+async def test_incident_queue_groups_same_cause_in_a_constant_number_of_queries(
+    pg_async_session,
+):
     db = pg_async_session
     actor = await _operations_actor(db)
     hospital = await _active_hospital(db, "쿼리 예산 의원")
@@ -1165,7 +1169,9 @@ async def test_incident_queue_groups_same_cause_in_one_query(pg_async_session):
     assert len(result.items) == 1
     assert result.items[0].same_type_count == 25
     assert result.items[0].affected_hospital_count == 1
-    assert len(statements) == 1
+    # 인시던트 25건이 원인 1건으로 묶여도 쿼리는 2회 고정이다(그룹 판별 pass + 해당
+    # 페이지 상세 pass). 건수에 비례해 늘어나면 N+1이므로 이 수치는 상한이자 하한이다.
+    assert len(statements) == 2
 
 
 async def test_operations_http_surface_returns_typed_scoping_and_conflict_errors(pg_async_session):
@@ -1261,6 +1267,52 @@ async def test_today_queue_deadline_is_the_review_window_not_the_handoff_date(pg
     # 발행 후 검수 기한은 공개 시각 + 24시간이다.
     assert abs((row.sla_due_at - (content.published_at + timedelta(hours=24))).total_seconds()) < 1
     assert row.sla_state == "DUE"
+
+
+async def test_today_queue_folds_the_pre_eight_am_slot_instead_of_dropping_it(pg_async_session):
+    """08:00 자동 발행 전의 당일 슬롯은 응답에 남고 플래그만 false여야 한다.
+
+    예전에는 WHERE 절에서 통째로 빼서 목록과 total 양쪽에서 사라졌다. 프런트는 받지도
+    못한 행을 접을 수 없고, 스키마가 약속한 requires_operator_action=false 계약과도
+    어긋났다.
+    """
+    db = pg_async_session
+    hospital = await _hospital(db, "발행대기 의원")
+    due_today = await _content(
+        db, hospital, status=ContentStatus.DRAFT, published_hours_ago=None
+    )
+    overdue = await _content(
+        db,
+        hospital,
+        status=ContentStatus.DRAFT,
+        published_hours_ago=None,
+        scheduled_days_ago=2,
+    )
+    seoul = ZoneInfo("Asia/Seoul")
+    before = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(
+        hours=7, minutes=30
+    )
+
+    total, rows = await today_queries.load_today_queue(
+        db, OperationsFilters(), page=1, page_size=100, overview=False, now=before
+    )
+
+    folded = next(item for item in rows if item.content_id == due_today.id)
+    still_work = next(item for item in rows if item.content_id == overdue.id)
+    assert folded.status == "PUBLISH_DUE"
+    assert folded.requires_operator_action is False
+    # 접힌 행도 total에 포함된다 — 목록과 개수가 어긋나면 안 된다.
+    assert total == len(rows) >= 2
+    # 예정일이 이미 지난 슬롯은 시각과 무관하게 사람의 일이다.
+    assert still_work.requires_operator_action is True
+
+    after = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
+    _total, later_rows = await today_queries.load_today_queue(
+        db, OperationsFilters(), page=1, page_size=100, overview=False, now=after
+    )
+
+    later = next(item for item in later_rows if item.content_id == due_today.id)
+    assert later.requires_operator_action is True
 
 
 async def test_today_queue_marks_a_review_past_the_window_as_overdue(pg_async_session):

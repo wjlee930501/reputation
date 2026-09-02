@@ -34,6 +34,18 @@ resource "google_secret_manager_secret" "slack_webhook_url" {
   }
 }
 
+# 개발팀 전용 Slack 채널. AE가 고칠 수 없는 인프라 인시던트만 이쪽으로 나간다.
+# 값이 빈 문자열이면 backend는 기존대로 SLACK_WEBHOOK_URL 한 곳으로만 보낸다 —
+# 즉 "빈 버전 1개"가 유효한 운영 상태이며, 그래도 secret 컨테이너와 버전은 있어야
+# Cloud Run이 mount할 수 있다(INDEXNOW_KEY와 같은 취급).
+resource "google_secret_manager_secret" "slack_webhook_url_dev" {
+  secret_id = "SLACK_WEBHOOK_URL_DEV"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
 resource "google_secret_manager_secret" "admin_secret_key" {
   secret_id = "ADMIN_SECRET_KEY"
   project   = var.project_id
@@ -135,6 +147,7 @@ locals {
     OPENAI_API_KEY           = google_secret_manager_secret.openai_api_key.secret_id
     GEMINI_API_KEY           = google_secret_manager_secret.gemini_api_key.secret_id
     SLACK_WEBHOOK_URL        = google_secret_manager_secret.slack_webhook_url.secret_id
+    SLACK_WEBHOOK_URL_DEV    = google_secret_manager_secret.slack_webhook_url_dev.secret_id
     ADMIN_SECRET_KEY         = google_secret_manager_secret.admin_secret_key.secret_id
     WORKER_DISPATCH_SECRET   = google_secret_manager_secret.worker_dispatch_secret.secret_id
     ADMIN_SESSION_SECRET     = google_secret_manager_secret.admin_session_secret.secret_id

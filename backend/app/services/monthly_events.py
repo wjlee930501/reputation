@@ -8,19 +8,13 @@ from datetime import datetime
 from enum import StrEnum
 from typing import assert_never
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.models.monthly_control import ReportArtifactState
-from app.models.operations import NotificationOutbox
 from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_milestone_messages import (
     MilestoneKind,
     MilestoneProjection,
-    build_milestone_action_notification,
-    build_milestone_recovery_notification,
 )
 from app.services.notification_milestone_rendering import operator_deadline
-from app.services.notification_outbox import enqueue_notification
 
 
 class MonthlyEventType(StrEnum):
@@ -114,6 +108,44 @@ def monthly_run_operator_copy(stage: MonthlyRunStage) -> MonthlyRunOperatorCopy:
             assert_never(unreachable)
 
 
+_SIGNIFICANCE_LABELS = {
+    "SIGNIFICANT_UP": "의미 있는 상승",
+    "SIGNIFICANT_DOWN": "의미 있는 하락",
+    "WITHIN_NOISE": "정상 변동 범위",
+}
+
+
+def monthly_headline_label(sov_summary: object) -> str | None:
+    """Slack 한 줄에 넣을 "언급 N번(전월 대비 ±Δ, 유의성)".
+
+    AE가 알림만 보고 원장에게 무슨 말을 할지 알 수 있어야 한다 — 지금까지 마일스톤
+    메시지에는 숫자가 하나도 없었다. 숫자가 없으면 Admin을 열기 전까지 아무것도
+    모르고, 그 클릭이 리포트 전달을 하루 늦춘다.
+
+    측정이 없거나 비교가 성립하지 않으면 **없는 숫자를 지어내지 않고** 있는 만큼만
+    쓴다. 유의성 판정이 없으면 괄호도 붙이지 않는다.
+    """
+    if not isinstance(sov_summary, dict):
+        return None
+    sov_pct = sov_summary.get("sov_pct")
+    if not isinstance(sov_pct, (int, float)):
+        return None
+    current = round(sov_pct)
+    comparison = sov_summary.get("comparison")
+    comparison = comparison if isinstance(comparison, dict) else {}
+    # 비교가 성립하지 않은 달에 델타를 쓰면 Slack과 원장 리포트가 서로 다른 말을 한다
+    # (리포트는 "측정 기준이 바뀌어 다음 달부터 비교합니다"라고 쓴다).
+    comparable = comparison.get("status", "COMPARABLE") == "COMPARABLE"
+    prev_pct = sov_summary.get("prev_sov_pct")
+    significance = comparison.get("significance") or sov_summary.get("significance")
+    if not comparable or not isinstance(prev_pct, (int, float)):
+        return f"언급 {current}번"
+    delta = current - round(prev_pct)
+    verdict = _SIGNIFICANCE_LABELS.get(str(significance or ""))
+    detail = f"전월 대비 {delta:+d}번" + (f", {verdict}" if verdict else "")
+    return f"언급 {current}번({detail})"
+
+
 @dataclass(frozen=True, slots=True)
 class MonthlyEvent:
     event_id: uuid.UUID
@@ -135,6 +167,8 @@ class MonthlyEvent:
     owner_label: str
     sla_due_at: datetime | None
     occurred_at: datetime
+    # "언급 47번(전월 대비 +8번, 정상 변동 범위)". 없으면 줄을 붙이지 않는다.
+    headline_label: str | None = None
 
 
 def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
@@ -173,6 +207,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 admin_path,
                 False,
                 False,
+                headline_label=event.headline_label,
             )
         case MonthlyEventType.ARTIFACT_VALIDATION_PENDING:
             if not coverage_complete or artifact_valid or event.delivery_ready:
@@ -190,6 +225,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 admin_path,
                 True,
                 False,
+                headline_label=event.headline_label,
             )
         case MonthlyEventType.BLOCKED:
             if customer_ready:
@@ -208,6 +244,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 admin_path,
                 True,
                 False,
+                headline_label=event.headline_label,
             )
         case MonthlyEventType.DELIVERY_CORRECTED:
             return MilestoneProjection(
@@ -224,6 +261,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 False,
                 True,
                 f"report:{event.report_id}:delivery",
+                headline_label=event.headline_label,
             )
         case MonthlyEventType.DELIVERY_RESCINDED:
             return MilestoneProjection(
@@ -239,6 +277,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 admin_path,
                 True,
                 False,
+                headline_label=event.headline_label,
             )
         case MonthlyEventType.DELIVERY_REDELIVERED:
             return MilestoneProjection(
@@ -255,21 +294,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 False,
                 True,
                 f"report:{event.report_id}:delivery",
+                headline_label=event.headline_label,
             )
         case unreachable:
             assert_never(unreachable)
-
-
-async def enqueue_monthly_event(
-    db: AsyncSession, event: MonthlyEvent, admin_base_url: str
-) -> NotificationOutbox:
-    """Enqueue action/recovery without committing or changing report truth."""
-
-    projection = project_monthly_event(event)
-    if projection.requires_action:
-        intent = build_milestone_action_notification(projection, admin_base_url)
-    elif projection.is_recovery:
-        intent = build_milestone_recovery_notification(projection, admin_base_url)
-    else:
-        raise NotificationPayloadError("MILESTONE_SUMMARY_REQUIRED")
-    return await enqueue_notification(db, intent, now=event.occurred_at)

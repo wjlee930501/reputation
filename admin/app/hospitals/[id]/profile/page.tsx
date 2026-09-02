@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { useCallback, useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isApprovedBrandColor, isServableLogo } from '@/lib/clinic-visual-readiness'
@@ -343,9 +343,8 @@ function AiBadge({ meta }: AiBadgeProps) {
 export default function ProfilePage() {
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
-  const { hospital, refetch: refetchHeader } = useHospitalHeader()
+  const { hospital, loading: headerLoading, refetch: refetchHeader } = useHospitalHeader()
   const [profile, setProfile] = useState<Partial<HospitalProfile>>({})
-  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [errorCanReload, setErrorCanReload] = useState(false)
@@ -366,29 +365,28 @@ export default function ProfilePage() {
   const [autofillResult, setAutofillResult] = useState<AutofillResponse | null>(null)
   const [aiFilled, setAiFilled] = useState<Record<string, AutofillFieldMeta>>({})
 
+  // 레이아웃이 이미 같은 GET /admin/hospitals/{id}를 받아 컨텍스트에 들고 있다 — 폼을
+  // 그걸로 한 번만 채우고, 저장 후에는 PATCH 응답으로 직접 갱신한다(중복 fetch 제거).
+  // ref로 "한 번만"을 지켜야 한다: hospital은 refetchHeader() 호출마다 바뀌므로,
+  // 매번 이 효과가 돌면 저장 직후 다시 편집 중인 내용을 서버 스냅샷으로 덮어써버린다.
+  const seededFromHeaderRef = useRef(false)
   useEffect(() => {
-    fetchAPI<HospitalProfile>(`/admin/hospitals/${hospitalId}`)
-      .then((data) => {
-        setProfile({
-          ...data,
-          business_hours: data.business_hours ?? {},
-          region: data.region ?? [],
-          specialties: data.specialties ?? [],
-          keywords: data.keywords ?? [],
-          competitors: data.competitors ?? [],
-          treatments: data.treatments ?? [],
-          latitude: data.latitude ?? null,
-          longitude: data.longitude ?? null,
-        })
-        setSavedAddress(data.address ?? '')
-      })
-      .catch((reason: unknown) => {
-        if (!isExpectedOperatorRequestFailure(reason)) throw reason
-        setErrorCanReload(true)
-        setError(safeOperatorError('onboarding', '운영 화면을 다시 불러 병원 기본 정보를 확인하세요.'))
-      })
-      .finally(() => setLoading(false))
-  }, [hospitalId])
+    if (seededFromHeaderRef.current || !hospital) return
+    seededFromHeaderRef.current = true
+    const data = hospital as unknown as HospitalProfile
+    setProfile({
+      ...data,
+      business_hours: data.business_hours ?? {},
+      region: data.region ?? [],
+      specialties: data.specialties ?? [],
+      keywords: data.keywords ?? [],
+      competitors: data.competitors ?? [],
+      treatments: data.treatments ?? [],
+      latitude: data.latitude ?? null,
+      longitude: data.longitude ?? null,
+    })
+    setSavedAddress(data.address ?? '')
+  }, [hospital])
 
   function updateField<K extends keyof HospitalProfile>(key: K, value: HospitalProfile[K]) {
     setProfile((prev) => ({ ...prev, [key]: value }))
@@ -586,8 +584,21 @@ export default function ProfilePage() {
     }
   }
 
-  if (loading) {
+  if (headerLoading && !hospital) {
     return <div className="p-4 text-slate-500 sm:p-6 lg:p-8">불러오는 중...</div>
+  }
+
+  if (!hospital) {
+    return (
+      <div className="p-4 sm:p-6 lg:p-8">
+        <OperatorIssuePanel
+          message={safeOperatorError('onboarding', '운영 화면을 다시 불러 병원 기본 정보를 확인하세요.')}
+          surface="onboarding"
+          onRetry={() => void refetchHeader()}
+          retryLabel="병원 기본 정보 다시 불러오기"
+        />
+      </div>
+    )
   }
 
   const checklist = buildProfileChecklist(profile)

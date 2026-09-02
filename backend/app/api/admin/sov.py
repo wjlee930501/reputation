@@ -11,7 +11,7 @@ from typing import Any
 
 import arrow
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import Integer, and_, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -19,7 +19,7 @@ from app.core.database import get_db
 from app.models.hospital import Hospital
 from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
 from app.services import sov_engine
-from app.services.sov_engine import MENTION_RATE_INTENTS
+from app.services.sov_engine import MENTION_RATE_INTENTS, VERDICT_AMBIGUOUS
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — AI Answer Mention Rate"])
 
@@ -50,6 +50,45 @@ def _display_label(labels: dict[str, str], value: str | None) -> str | None:
     if value is None:
         return None
     return labels.get(str(value).upper(), str(value))
+
+
+# ── SQL 집계 조건 ────────────────────────────────────────────────
+# sov_engine.record_is_confirmed / record_is_ambiguous의 SQL 등가물. 두 함수가 쓰는
+# 조건과 어긋나면 admin 화면과 월간 리포트·우선순위 엔진의 언급률이 다시 갈린다
+# (PRD F3-7, sov_engine.record_is_confirmed 참고).
+#
+# mention_verdict에 대한 부등호 비교는 `is_distinct_from`을 쓴다 — 3값 도입 이전
+# 레거시 행은 verdict가 NULL이고, SQL에서 `verdict != 'AMBIGUOUS'`는 NULL과 비교하면
+# NULL(=거짓 취급)이 되어 레거시 행이 통째로 분모에서 빠진다. `IS DISTINCT FROM`만
+# NULL을 "AMBIGUOUS가 아님"으로 취급해 Python의 `verdict == VERDICT_AMBIGUOUS`와
+# 동일하게 동작한다.
+def _status_success_clause():
+    return func.upper(func.coalesce(SovRecord.measurement_status, "SUCCESS")) == "SUCCESS"
+
+
+def _confirmed_clause():
+    status_success = _status_success_clause()
+    return and_(
+        status_success,
+        SovRecord.mention_verdict.is_distinct_from(VERDICT_AMBIGUOUS),
+        SovRecord.is_mentioned.is_not(None),
+    )
+
+
+def _mentioned_clause():
+    return and_(_confirmed_clause(), SovRecord.is_mentioned.is_(True))
+
+
+def _failed_clause():
+    return ~_status_success_clause()
+
+
+def _ambiguous_clause():
+    status_success = _status_success_clause()
+    return and_(
+        status_success,
+        or_(SovRecord.mention_verdict == VERDICT_AMBIGUOUS, SovRecord.is_mentioned.is_(None)),
+    )
 
 
 @router.get("/{hospital_id}/sov/measurement-runs")
@@ -94,8 +133,28 @@ async def get_sov_trend(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     # 언급률 분모는 LOCAL(지역 의도) 질문만 쓴다 — 월간 리포트의 calculate_sov와 같은
     # 기준이어야 Admin 추이와 원장 리포트의 숫자가 갈리지 않는다. INFO(지역 없는 의학
     # 설명) 질문은 AI가 특정 의원 이름을 댈 이유가 없어 병원이 무엇을 하든 0으로 고정이다.
-    all_rows_stmt = (
-        select(SovRecord)
+    #
+    # 12주 전체 행(raw_response 포함)을 로드해 파이썬으로 주차별로 나누는 대신, SQL에서
+    # 바로 주차 버킷(0=window_start가 속한 주 ... 11=이번 주)으로 묶어 집계한다.
+    # 현재 화면의 "주"는 캘린더 주(월요일 기준)가 아니라 조회 시점(now) 기준 7일 롤링
+    # 구간이므로 `date_trunc('week', ...)`는 이 경계를 그대로 반영하지 못한다(요청 시각에
+    # 따라 캘린더 주 경계와 어긋난다) — 대신 window_start로부터 경과한 정수 주(0~11)를
+    # 계산해 그 롤링 경계를 SQL에서 그대로 재현한다.
+    week_seconds = 7 * 24 * 3600
+    week_offset = cast(
+        func.floor(func.extract("epoch", SovRecord.measured_at - window_start) / week_seconds),
+        Integer,
+    ).label("week_offset")
+
+    trend_stmt = (
+        select(
+            week_offset,
+            func.count(SovRecord.id).filter(_confirmed_clause()).label("total_count"),
+            func.count(SovRecord.id).filter(_mentioned_clause()).label("mention_count"),
+            func.count(SovRecord.id).filter(_failed_clause()).label("failure_count"),
+            func.count(SovRecord.id).filter(_ambiguous_clause()).label("ambiguous_count"),
+        )
+        .select_from(SovRecord)
         .join(QueryMatrix, SovRecord.query_id == QueryMatrix.id)
         .where(
             SovRecord.hospital_id == hospital_id,
@@ -103,17 +162,17 @@ async def get_sov_trend(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             SovRecord.measured_at < window_end,
             QueryMatrix.query_intent.in_(tuple(MENTION_RATE_INTENTS)),
         )
+        .group_by(week_offset)
     )
-    all_rows = (await db.execute(all_rows_stmt)).scalars().all()
+    buckets = {int(row.week_offset): row for row in (await db.execute(trend_stmt)).all()}
 
     result = []
-    for start_dt, end_dt, label in weeks:
-        rows = [r for r in all_rows if start_dt <= r.measured_at < end_dt]
-        successful_rows = [r for r in rows if _is_successful_measurement(r)]
-        total = len(successful_rows)
-        mentioned = sum(1 for r in successful_rows if r.is_mentioned)
-        failure_count = sum(1 for r in rows if _is_failed_measurement(r))
-        ambiguous_count = sum(1 for r in rows if sov_engine.record_is_ambiguous(r))
+    for index, (_start_dt, _end_dt, label) in enumerate(weeks):
+        bucket = buckets.get(index)
+        total = bucket.total_count if bucket else 0
+        mentioned = bucket.mention_count if bucket else 0
+        failure_count = bucket.failure_count if bucket else 0
+        ambiguous_count = bucket.ambiguous_count if bucket else 0
         # 성공 측정 0건이면 None — 측정 실패/미측정 주간을 '언급률 0%'로 보고하면
         # 원장 보고에 허위 수치가 들어간다 (sov_engine.calculate_sov의 반환 계약과 동일).
         sov_pct = round(mentioned / total * 100, 1) if total > 0 else None
@@ -144,30 +203,50 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
         QueryMatrix.is_active,
     )
     queries = (await db.execute(q_stmt)).scalars().all()
+    if not queries:
+        return []
 
     query_ids = [q.id for q in queries]
-    all_records_stmt = select(SovRecord).where(
-        SovRecord.hospital_id == hospital_id,
-        SovRecord.query_id.in_(query_ids),
+    # raw_response(AI 응답 원문) 포함 전체 행을 로드해 파이썬으로 그룹핑하는 대신,
+    # 쿼리×플랫폼별로 SQL에서 바로 집계한다. 플랫폼별 집계가 필요하므로(응답 화면의
+    # platform_breakdown) query_id 하나로만 묶지 않고 ai_platform도 함께 GROUP BY한다 —
+    # 그룹 수는 쿼리 수 × 플랫폼 수(보통 2~3개)로 원본 행 수보다 훨씬 작다.
+    agg_stmt = (
+        select(
+            SovRecord.query_id,
+            SovRecord.ai_platform,
+            func.count(SovRecord.id).filter(_confirmed_clause()).label("total_count"),
+            func.count(SovRecord.id).filter(_mentioned_clause()).label("mention_count"),
+            func.count(SovRecord.id).filter(_failed_clause()).label("failure_count"),
+            func.count(SovRecord.id).filter(_ambiguous_clause()).label("ambiguous_count"),
+            func.max(SovRecord.measured_at).label("last_measured_at"),
+        )
+        .where(
+            SovRecord.hospital_id == hospital_id,
+            SovRecord.query_id.in_(query_ids),
+        )
+        .group_by(SovRecord.query_id, SovRecord.ai_platform)
     )
-    all_records_result = await db.execute(all_records_stmt)
-    all_records = all_records_result.scalars().all()
-    records_by_query: dict = defaultdict(list)
-    for r in all_records:
-        records_by_query[r.query_id].append(r)
+    agg_rows = (await db.execute(agg_stmt)).all()
+
+    rows_by_query: dict = defaultdict(list)
+    for row in agg_rows:
+        rows_by_query[row.query_id].append(row)
 
     result = []
     for q in queries:
-        records = records_by_query[q.id]
-        successful_records = [r for r in records if _is_successful_measurement(r)]
-        total = len(successful_records)
-        mentioned = sum(1 for r in successful_records if r.is_mentioned)
-        failure_count = sum(1 for r in records if _is_failed_measurement(r))
-        ambiguous_count = sum(1 for r in records if sov_engine.record_is_ambiguous(r))
+        rows = rows_by_query.get(q.id, [])
+        total = sum(row.total_count for row in rows)
+        mentioned = sum(row.mention_count for row in rows)
+        failure_count = sum(row.failure_count for row in rows)
+        ambiguous_count = sum(row.ambiguous_count for row in rows)
         # 전부 실패했거나 아직 측정 전인 쿼리는 None — 0%로 표기하면 '언급되지 않았다'는
         # 사실이 아닌 진단이 되어 보완 작업 우선순위까지 왜곡된다.
         mention_rate = round(mentioned / total * 100, 1) if total > 0 else None
-        last_measured = max((r.measured_at for r in records), default=None)
+        last_measured = max(
+            (row.last_measured_at for row in rows if row.last_measured_at is not None),
+            default=None,
+        )
         result.append({
             "query_id": str(q.id),
             "query_text": q.query_text,
@@ -176,7 +255,7 @@ async def get_sov_queries(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
             "total_count": total,
             "failure_count": failure_count,
             "ambiguous_count": ambiguous_count,
-            "platform_breakdown": _build_platform_breakdown(records),
+            "platform_breakdown": _build_platform_breakdown(rows),
             "last_measured_at": last_measured.isoformat() if last_measured else None,
         })
 
@@ -215,10 +294,19 @@ def _is_failed_measurement(record: Any) -> bool:
     return not (status is None or str(status).upper() == "SUCCESS")
 
 
-def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:
+def _build_platform_breakdown(agg_rows: list[Any]) -> dict[str, dict[str, Any]]:
+    """쿼리 하나의 (query_id, ai_platform)별 SQL 집계 행들로부터 플랫폼별 분해를 만든다.
+
+    각 행은 get_sov_queries의 agg_stmt(GROUP BY query_id, ai_platform)에서 이미
+    성공/언급/실패/판정보류를 SQL FILTER로 나눠 계산해 왔다. 다만 GROUP BY는 원시
+    `ai_platform` 값이므로 같은 서비스가 대소문자만 다르게 저장돼 있으면
+    ("chatgpt"/"ChatGPT") 행이 둘로 나뉜다. 표시 키로 대문자화하면서 뒤 행이 앞 행을
+    **덮어써** 측정 일부가 조용히 사라졌다 — 그래서 여기서 키별로 합산한 뒤
+    mention_rate를 합산값에서 다시 계산한다.
+    """
     breakdown: dict[str, dict[str, Any]] = {}
-    for record in records:
-        platform = str(getattr(record, "ai_platform", None) or "UNKNOWN").upper()
+    for row in agg_rows:
+        platform = str(getattr(row, "ai_platform", None) or "UNKNOWN").upper()
         bucket = breakdown.setdefault(
             platform,
             {
@@ -230,21 +318,16 @@ def _build_platform_breakdown(records: list[Any]) -> dict[str, dict[str, Any]]:
                 "mention_rate": None,
             },
         )
-        if _is_successful_measurement(record):
-            bucket["total_count"] += 1
-            if getattr(record, "is_mentioned", False):
-                bucket["mention_count"] += 1
-        elif sov_engine.record_is_ambiguous(record):
-            # 판정 보류는 실패가 아니다 — 실패로 접으면 운영 화면이 공급자 장애로
-            # 오독하고, PRD F3-7의 '별도 집계' 요구도 깨진다.
-            bucket["ambiguous_count"] += 1
-        else:
-            bucket["failure_count"] += 1
-
+        bucket["mention_count"] += row.mention_count or 0
+        bucket["total_count"] += row.total_count or 0
+        bucket["failure_count"] += row.failure_count or 0
+        bucket["ambiguous_count"] += row.ambiguous_count or 0
     for bucket in breakdown.values():
         total = bucket["total_count"]
         # 해당 플랫폼 측정이 전부 실패한 경우 None — 실패를 0% 언급으로 뒤바꾸지 않는다.
-        bucket["mention_rate"] = round(bucket["mention_count"] / total * 100, 1) if total else None
+        bucket["mention_rate"] = (
+            round(bucket["mention_count"] / total * 100, 1) if total else None
+        )
     return dict(sorted(breakdown.items()))
 
 

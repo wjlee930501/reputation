@@ -25,7 +25,11 @@ from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.content_brief import BRIEF_STATUS_DRAFT, build_content_brief
+from app.services.content_brief import (
+    BRIEF_STATUS_DRAFT,
+    build_content_brief,
+    is_usable_content_brief,
+)
 from app.services.essence_readiness import get_current_approved_philosophy
 from app.services.exposure_action_engine import (
     ensure_hospital_exposure_actions,
@@ -435,7 +439,9 @@ async def _apply_linked_content_update(
 
 
 def _has_existing_linked_brief(action: ExposureAction, item: ContentItem) -> bool:
-    if not getattr(item, "content_brief", None):
+    # 계획 메모(planning_reason)만 있는 슬롯은 브리프가 없는 것으로 본다 —
+    # 그렇지 않으면 격차 기반 캘린더가 심은 슬롯에 실제 가이드가 만들어지지 않는다.
+    if not is_usable_content_brief(getattr(item, "content_brief", None)):
         return False
     action_id = _uuid_or_none(getattr(action, "id", None))
     item_id = _uuid_or_none(getattr(item, "id", None))

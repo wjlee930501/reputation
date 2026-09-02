@@ -7,6 +7,7 @@ POST /admin/hospitals/{hospital_id}/reports/{report_id}/mark-sent — 원장 전
 """
 
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -83,6 +84,16 @@ class DeliveryGate:
     ready: bool
     code: str | None
     message: str | None
+    # 게이트를 막은 이유 **전부**. `message`는 그중 첫 줄(기존 호환용)이다.
+    # report_blocked는 보통 여러 이유가 동시에 성립하는데, 첫 줄만 노출하면
+    # AE가 하나를 고친 뒤 다시 저장하고서야 다음 이유를 알게 된다.
+    messages: tuple[str, ...] = ()
+
+    @property
+    def all_messages(self) -> tuple[str, ...]:
+        if self.messages:
+            return self.messages
+        return (self.message,) if self.message else ()
 
 
 def _screening_status(r: MonthlyReport, *, delivered: bool | None = None) -> str:
@@ -181,6 +192,26 @@ def _report_delivery_blockers(r: MonthlyReport) -> list[str]:
     return blockers
 
 
+def _report_delivery_warnings(r: MonthlyReport) -> list[str]:
+    """Return operator-facing notices that must not withhold delivery.
+
+    These surface adjacent operational hygiene (e.g. an unfinished post-publish
+    observability sample, a plan shortfall) the AE should know about, but none of
+    them cast doubt on the report's SoV numbers, so unlike _report_delivery_blockers
+    they never gate mark-sent.
+    """
+    if r.report_type != "MONTHLY":
+        return []
+    content_summary = r.content_summary if isinstance(r.content_summary, dict) else {}
+    operations_summary = content_summary.get("operations")
+    warnings: list[str] = []
+    if isinstance(operations_summary, dict):
+        for warning in operations_summary.get("delivery_warnings") or []:
+            if isinstance(warning, str) and warning:
+                warnings.append(warning)
+    return warnings
+
+
 def _artifact_state(
     report: MonthlyReport, artifact: MonthlyReportArtifact | None
 ) -> ReportArtifactState:
@@ -263,7 +294,7 @@ def _delivery_gate(
 
     blockers = _report_delivery_blockers(report)
     if blockers:
-        return DeliveryGate(False, "report_blocked", blockers[0])
+        return DeliveryGate(False, "report_blocked", blockers[0], tuple(blockers))
     return DeliveryGate(True, None, None)
 
 
@@ -271,7 +302,15 @@ def _current_essence_delivery_blockers(
     r: MonthlyReport,
     readiness: EssenceReadiness,
 ) -> list[str]:
-    """Validate the stored report snapshot against current source truth."""
+    """Validate the stored report snapshot against current source truth for true blockers.
+
+    Only conditions that cast doubt on whether the report reflects an actual, safe
+    operating standard block delivery: no approved philosophy currently matches the
+    hospital's sources, or a source added since generation is still unprocessed. A
+    later approved philosophy *version* existing is not one of these — the report's
+    SoV numbers do not depend on the essence version — so that case is a warning
+    only; see _current_essence_delivery_warnings.
+    """
     if r.report_type != "MONTHLY":
         return []
 
@@ -282,32 +321,90 @@ def _current_essence_delivery_blockers(
         )
     if readiness.has_unprocessed_sources:
         blockers.append("현재 처리되지 않은 온보딩 자료가 남아 있습니다.")
+    return blockers
+
+
+def _current_essence_delivery_warnings(
+    r: MonthlyReport,
+    readiness: EssenceReadiness,
+) -> list[str]:
+    """Non-blocking notice that the approved philosophy moved on after report generation.
+
+    A version bump alone does not mean the delivered numbers are wrong, so this must
+    never gate mark-sent — it is a freshness signal for the AE, not a second approval
+    gate.
+    """
+    if r.report_type != "MONTHLY" or readiness.current is None:
+        return []
 
     essence = r.essence_summary if isinstance(r.essence_summary, dict) else {}
     stored_version = essence.get("philosophy_version")
-    current_version = readiness.current.version if readiness.current is not None else None
+    current_version = readiness.current.version
     if current_version is not None and stored_version != current_version:
-        blockers.append(
-            "리포트 생성 후 콘텐츠 운영 기준 버전이 변경되었습니다. 리포트를 다시 생성해 주세요."
-        )
-    return blockers
+        return ["운영 기준이 리포트 생성 이후 갱신되었습니다 — 필요 시 재생성해 주세요."]
+    return []
 
 
 @router.get(
     "/{hospital_id}/reports",
     response_model=list[ReportListResponse],
 )
-async def list_reports(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """리포트 목록 (최신순)"""
+async def list_reports(
+    hospital_id: uuid.UUID,
+    limit: int = Query(default=24, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """리포트 목록 (최신순)
+
+    이전에는 리포트 하나당 manifest/artifact/delivery events 조회 + essence readiness
+    조회(소스 자산 전체 로드 포함)를 각각 새로 날려 N+1이었다. 이 병원 하나로 스코프된
+    목록이므로 네 종류 모두 IN(...) 배치 조회 1회씩(+ readiness 1회)으로 묶는다 —
+    리포트가 몇 건이든 쿼리 수는 고정이다.
+    """
     await _get_hospital_or_404(db, hospital_id)
 
     result = await db.execute(
         select(MonthlyReport)
         .where(MonthlyReport.hospital_id == hospital_id)
         .order_by(MonthlyReport.created_at.desc())
+        .offset(offset)
+        .limit(limit)
     )
     reports = result.scalars().all()
-    return [await _serialize_report(db, r) for r in reports]
+    if not reports:
+        return []
+
+    report_ids = [r.id for r in reports]
+    manifest_ids = {r.manifest_id for r in reports if r.manifest_id is not None}
+
+    manifests_by_id = await _get_manifests_by_id(db, manifest_ids)
+    artifacts_by_report = await _get_doctor_artifacts_by_report_id(db, report_ids)
+    events_by_report = await _get_delivery_events_by_report_id(db, report_ids)
+
+    # readiness는 MONTHLY 리포트가 하나라도 있을 때 읽는다 — V0뿐인 병원이라면
+    # (_serialize_report가 V0에서 readiness를 보지 않는다) 원래도 한 번도 불리지
+    # 않았으니 배치로 바뀌었다고 없던 쿼리를 새로 만들지 않는다. 반대로 게이트가
+    # 막힌 MONTHLY도 warning(사후검수 표본·essence version drift)을 붙이려면
+    # readiness가 필요하다 — gate.ready로 좁히면 전부 막힌 달에 preload가 None으로
+    # 넘어가 리포트마다 get_essence_readiness를 개별 호출하는 N+1로 되돌아간다.
+    # 모든 리포트가 같은 hospital_id이므로 (라우트 스코프) 읽어도 딱 한 번이다.
+    needs_readiness = any(r.report_type == "MONTHLY" for r in reports)
+    readiness = await get_essence_readiness(db, hospital_id) if needs_readiness else None
+
+    return [
+        await _serialize_report(
+            db,
+            r,
+            preloaded=ReportPreload(
+                manifest=manifests_by_id.get(r.manifest_id) if r.manifest_id else None,
+                artifact=artifacts_by_report.get(r.id),
+                events=events_by_report.get(r.id, []),
+                readiness=readiness,
+            ),
+        )
+        for r in reports
+    ]
 
 
 @router.get("/{hospital_id}/reports/{report_id}", response_model=ReportResponse)
@@ -604,6 +701,58 @@ async def _get_delivery_events(
     return list(result.scalars().all())
 
 
+@dataclass(frozen=True, slots=True)
+class ReportPreload:
+    """Batch-fetched inputs for one report's `_serialize_report`, so a list of N
+    reports costs 4 queries total instead of ~4 per report (N+1)."""
+
+    manifest: MonthlyMeasurementManifest | None
+    artifact: MonthlyReportArtifact | None
+    events: list[MonthlyDeliveryEvent]
+    readiness: EssenceReadiness | None
+
+
+async def _get_manifests_by_id(
+    db: AsyncSession, manifest_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, MonthlyMeasurementManifest]:
+    if not manifest_ids:
+        return {}
+    result = await db.execute(
+        select(MonthlyMeasurementManifest).where(MonthlyMeasurementManifest.id.in_(manifest_ids))
+    )
+    return {m.id: m for m in result.scalars().all()}
+
+
+async def _get_doctor_artifacts_by_report_id(
+    db: AsyncSession, report_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, MonthlyReportArtifact]:
+    if not report_ids:
+        return {}
+    result = await db.execute(
+        select(MonthlyReportArtifact).where(
+            MonthlyReportArtifact.report_id.in_(report_ids),
+            MonthlyReportArtifact.audience == "DOCTOR",
+        )
+    )
+    return {a.report_id: a for a in result.scalars().all()}
+
+
+async def _get_delivery_events_by_report_id(
+    db: AsyncSession, report_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[MonthlyDeliveryEvent]]:
+    if not report_ids:
+        return {}
+    result = await db.execute(
+        select(MonthlyDeliveryEvent)
+        .where(MonthlyDeliveryEvent.report_id.in_(report_ids))
+        .order_by(MonthlyDeliveryEvent.created_at, MonthlyDeliveryEvent.id)
+    )
+    events_by_report: dict[uuid.UUID, list[MonthlyDeliveryEvent]] = defaultdict(list)
+    for event in result.scalars().all():
+        events_by_report[event.report_id].append(event)
+    return dict(events_by_report)
+
+
 def _effective_delivery_event(
     events: list[MonthlyDeliveryEvent],
 ) -> MonthlyDeliveryEvent | None:
@@ -703,6 +852,7 @@ def _serialize(
     artifact: MonthlyReportArtifact | None = None,
     events: list[MonthlyDeliveryEvent] | None = None,
     current_blockers: list[str] | None = None,
+    current_warnings: list[str] | None = None,
     review_evidence: dict[str, object] | None = None,
 ) -> dict:
     gate = _delivery_gate(r, manifest, artifact)
@@ -712,10 +862,19 @@ def _serialize(
         latest_event_type=effective.event_type if effective is not None else None,
         legacy_sent_at_present=bool(r.sent_at),
     )
-    delivery_blockers = [] if gate.ready or delivered else [gate.message or "전달할 수 없습니다."]
+    delivery_blockers = (
+        []
+        if gate.ready or delivered
+        else list(gate.all_messages) or ["전달할 수 없습니다."]
+    )
     if not delivered:
         delivery_blockers.extend(current_blockers or [])
     ready = delivered or (gate.ready and not current_blockers)
+    # Warnings never affect readiness — they surface for visibility regardless of
+    # delivered state (report-level operations warnings) or gate outcome (current
+    # essence version drift).
+    delivery_warnings = _report_delivery_warnings(r)
+    delivery_warnings.extend(current_warnings or [])
     artifact_state = _artifact_state(r, artifact)
     artifact_metadata = (
         parse_doctor_artifact_metadata(artifact.validation_metadata)
@@ -765,6 +924,7 @@ def _serialize(
         "delivery_ready": ready,
         "customer_ready": ready,
         "delivery_blockers": delivery_blockers,
+        "delivery_warnings": delivery_warnings,
         "effective_delivery": serialize_event(effective) if effective is not None else None,
         "delivery_history": [serialize_event(event) for event in delivery_events] if full else [],
         "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -791,16 +951,41 @@ def _serialize(
 
 
 async def _serialize_report(
-    db: AsyncSession, report: MonthlyReport, *, full: bool = False
+    db: AsyncSession,
+    report: MonthlyReport,
+    *,
+    full: bool = False,
+    preloaded: ReportPreload | None = None,
 ) -> dict:
-    manifest = await _get_manifest(db, report.manifest_id)
-    artifact = await _get_doctor_artifact(db, report.id)
-    events = await _get_delivery_events(db, report.id)
+    """Serialize one report.
+
+    Pass `preloaded` (built by `list_reports` with batched IN(...) queries) to skip
+    the per-report manifest/artifact/events/readiness lookups below — the single-report
+    callers (`get_report`, delivery mutations) leave it unset and keep their original
+    per-report query shape.
+    """
+    if preloaded is not None:
+        manifest = preloaded.manifest
+        artifact = preloaded.artifact
+        events = preloaded.events
+        readiness = preloaded.readiness
+    else:
+        manifest = await _get_manifest(db, report.manifest_id)
+        artifact = await _get_doctor_artifact(db, report.id)
+        events = await _get_delivery_events(db, report.id)
+        readiness = None
     gate = _delivery_gate(report, manifest, artifact)
     current_blockers: list[str] = []
-    if gate.ready and report.report_type == "MONTHLY":
-        readiness = await get_essence_readiness(db, report.hospital_id)
-        current_blockers = _current_essence_delivery_blockers(report, readiness)
+    current_warnings: list[str] = []
+    if report.report_type == "MONTHLY":
+        if readiness is None:
+            readiness = await get_essence_readiness(db, report.hospital_id)
+        # 경고는 게이트 결과와 무관하게 노출한다 — 운영 기준 버전 드리프트는 전달을
+        # 막지 않지만, 게이트가 막힌 달일수록 AE가 먼저 알아야 하는 사실이다.
+        # 추가 blocker는 게이트를 통과한 리포트에만 얹는다(막힌 이유를 두 번 세지 않는다).
+        current_warnings = _current_essence_delivery_warnings(report, readiness)
+        if gate.ready:
+            current_blockers = _current_essence_delivery_blockers(report, readiness)
     review_evidence = await build_report_review_evidence(db, report) if full else None
     return _serialize(
         report,
@@ -809,5 +994,6 @@ async def _serialize_report(
         artifact=artifact,
         events=events,
         current_blockers=current_blockers,
+        current_warnings=current_warnings,
         review_evidence=review_evidence,
     )

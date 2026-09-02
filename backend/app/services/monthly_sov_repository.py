@@ -32,7 +32,12 @@ class MonthlySovDataError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class LoadedMonthlySov:
     cells: tuple[ManifestCellInput, ...]
+    # 셀당 대표 응답 1건. 원장 리포트의 '나온 사례/안 나온 사례' 인용문용이다.
     selected_records: tuple[SovRecord, ...]
+    # 점수에 실제로 쓴 성공 측정 전부(셀당 최대 반복 수만큼). 타깃별 언급 빈도처럼
+    # 비율을 세는 곳은 대표 1건이 아니라 이쪽을 써야 한다 — 대표는 언급된 시도를
+    # 먼저 고르므로 그걸로 비율을 세면 위로 편향된다.
+    scored_records: tuple[SovRecord, ...]
 
 
 def _state(value: str) -> CellState:
@@ -83,11 +88,11 @@ def load_monthly_sov_manifest(
                 record_id=attempt.sov_record.id,
                 measured_at=attempt.sov_record.measured_at,
                 # **확정 판정만 성공으로 승격한다.** AMBIGUOUS는 status가 SUCCESS이고
-                # is_mentioned가 None이다 — 그대로 흘리면 selected_attempt가 보류를
-                # 선택해 `sum(attempt.is_mentioned ...)`이 None에서 TypeError로 죽거나,
-                # falsy 비교 경로에서는 보류가 미언급으로 계상된다 (PRD F3-7 위반).
+                # is_mentioned가 None이다 — 그대로 흘리면 셀 빈도(k/n)의 분모에
+                # 보류가 섞여 미언급으로 계상된다 (PRD F3-7 위반).
                 succeeded=sov_engine.record_is_confirmed(attempt.sov_record),
                 is_mentioned=bool(attempt.sov_record.is_mentioned),
+                mention_context=getattr(attempt.sov_record, "mention_context", None),
                 answer_model=(
                     str(answer_model).strip()
                     if (answer_model := getattr(attempt.sov_record, "answer_model", None))
@@ -122,7 +127,11 @@ def load_monthly_sov_manifest(
         for selected in (cell.selected_attempt,)
         if selected is not None
     )
+    scored_ids = tuple(
+        attempt.record_id for cell in cells for attempt in cell.successful_attempts
+    )
     return LoadedMonthlySov(
         cells=tuple(cells),
         selected_records=tuple(records_by_id[record_id] for record_id in selected_ids),
+        scored_records=tuple(records_by_id[record_id] for record_id in scored_ids),
     )

@@ -259,6 +259,13 @@ def test_run_sov_typed_failure_skips_generic_task_failed_slack(monkeypatch):
 
 
 def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
+    """OPEN 공지가 나간 적이 없으면 복구도 조용히 끝난다.
+
+    RUN_SOV의 비용 차단·분류된 실패는 파이프라인이 자기 인시던트를 내므로 위
+    `record_task_failure`가 일찍 반환하고 generic OPEN 공지를 만들지 않는다. 그 뒤의
+    성공은 인시던트만 닫고 Slack을 만들지 않아야 한다. 반대로 OPEN이 실제로 나간
+    건이라면 RECOVERED가 반드시 따라간다(tests/test_task_incidents.py).
+    """
     run_id = uuid.uuid4()
     task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
     run = SimpleNamespace(id=run_id, operation_type="RUN_SOV", task_id="worker-task")
@@ -270,8 +277,12 @@ def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
     enqueued = []
 
     class FakeSession:
+        def __init__(self):
+            # 조회 순서: 인시던트 → 이 인시던트의 INCIDENT_OPEN outbox 행(없음)
+            self._results = [incident, None]
+
         def scalar(self, _stmt):
-            return incident
+            return self._results.pop(0) if self._results else None
 
         def commit(self):
             return None
@@ -480,7 +491,11 @@ def test_monthly_15x2x5_at_concurrency_2_exceeds_1800s_so_chunk_stop_exists():
 # ── 5. weekly must not drain month-end Redis ─────────────────────────────────
 
 
-def test_weekly_skips_remaining_hospital_dispatch_during_month_end_window(monkeypatch):
+def test_weekly_skips_only_monthly_cohort_during_month_end_window(monkeypatch):
+    """월말 창(24일+)에는 월간 코호트에 든 병원만 주간 배치에서 빠진다 — 코호트 밖
+    병원까지 통째로 스킵되던 것은 2026-09-01 무음실패 리뷰 §2.4-1의 확인된 버그였다."""
+
+    cohort = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
     remaining = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
     dispatched = []
 
@@ -489,7 +504,7 @@ def test_weekly_skips_remaining_hospital_dispatch_during_month_end_window(monkey
             return self
 
         def all(self):
-            return [remaining]
+            return [cohort, remaining]
 
     class _DB:
         def execute(self, _stmt):
@@ -506,21 +521,29 @@ def test_weekly_skips_remaining_hospital_dispatch_during_month_end_window(monkey
     monkeypatch.setattr(
         tasks, "register_convertible_tracking_sets", lambda *_args, **_kwargs: None
     )
-    monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [cohort])
     monkeypatch.setattr(
         tasks.arrow,
         "now",
         lambda *_args, **_kwargs: tasks.arrow.get(2026, 8, 31, 2, tzinfo="Asia/Seoul"),
     )
     monkeypatch.setattr(
+        tasks,
+        "_ensure_weekly_sov_operation_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4(), task_id=str(uuid.uuid4())),
+    )
+    monkeypatch.setattr(
         tasks.run_sov_for_hospital,
         "apply_async",
-        lambda **kwargs: dispatched.append(kwargs),
+        lambda **kwargs: dispatched.append(kwargs["args"][0]),
     )
+    monkeypatch.setattr(tasks, "_mark_weekly_sov_operation_queued", lambda *_args: True)
+    monkeypatch.setattr(tasks.adjust_query_priorities, "apply_async", lambda **_kwargs: None)
 
     tasks.run_weekly_monitoring.run()
 
-    assert dispatched == []
+    assert dispatched == [str(remaining.id)]
+    assert str(cohort.id) not in dispatched
 
 
 def test_weekly_still_dispatches_non_cohort_before_window(monkeypatch):

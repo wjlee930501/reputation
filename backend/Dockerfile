@@ -72,9 +72,17 @@ USER appuser
 
 ENV PYTHONPATH=/app
 
-# Parity with docker-compose; Cloud Run uses its own probes. Only meaningful for
-# the api SERVICE (worker/beat expose no HTTP server) — non-api containers will
-# report unhealthy locally, which is expected.
+# Parity with docker-compose; Cloud Run uses its own probes. This probe path is
+# only meaningful for the api SERVICE.
+#
+# On Cloud Run, worker/beat deploy with no command/args, so docker-entrypoint.sh
+# falls through to its SERVICE branch and starts app/workers/health_server.py as a
+# sidecar ($PORT, /live and /ready) — without it the revision never goes ready.
+# Under docker-compose, worker/beat/flower each set an explicit `command:`, and the
+# entrypoint honours it verbatim (`exec "$@"` before the SERVICE dispatch), so no
+# health server runs locally and nothing listens on $PORT at all. Either way this
+# HEALTHCHECK's /health/live path exists only on the api app, so non-api containers
+# report unhealthy locally. That is expected and is not what gates Cloud Run.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-8000}/health/live" || exit 1
 

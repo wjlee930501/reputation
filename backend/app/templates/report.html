@@ -70,7 +70,25 @@
 <p class="note">
   {% if sov_measured %}
     {% if report_type == 'MONTHLY' and sov_coverage %}
-    ※ 월초에 고정한 질문과 AI 서비스의 각 조합에서 성공 결과 1개만 사용했습니다. 추가 반복 측정은 점수 비중을 늘리지 않습니다.
+    ※ 월초에 고정한 질문과 AI 서비스의 각 조합에서 성공한 반복 측정을 모두 사용해,
+    전체 측정 건수 중 병원이 언급된 건수의 비율로 계산했습니다.
+    {% if sov_coverage.measurement_basis is defined and sov_coverage.measurement_basis and sov_coverage.measurement_basis.attempts_used %}
+    이번 달 표본은 질문 {{ sov_coverage.measurement_basis.question_count }}개 ×
+    AI 서비스 {{ sov_coverage.measurement_basis.platform_count }}곳 ×
+    {% if sov_coverage.measurement_basis.repeat_min and sov_coverage.measurement_basis.repeat_max and sov_coverage.measurement_basis.repeat_min != sov_coverage.measurement_basis.repeat_max -%}
+    반복 {{ sov_coverage.measurement_basis.repeat_min }}~{{ sov_coverage.measurement_basis.repeat_max }}회
+    {%- else -%}
+    반복 {{ sov_coverage.measurement_basis.repeat_count }}회
+    {%- endif %} = 측정 {{ sov_coverage.measurement_basis.attempts_used }}건입니다.
+    {% endif %}
+    {% if sov_coverage.ci95_low is defined and sov_coverage.ci95_low is not none %}
+    95% 신뢰구간 {{ "%.1f"|format(sov_coverage.ci95_low) }}~{{ "%.1f"|format(sov_coverage.ci95_high) }}%
+    (같은 셀의 반복은 서로 독립이 아니므로 실제 오차는 이보다 넓습니다).
+    {% endif %}
+    {% if sov_coverage.comparison and sov_coverage.comparison.status == 'COMPARABLE' %}
+    표시된 언급률은 지난달과 공통으로 성공한 조합만으로 계산해 전월 수치와 분모가 같습니다
+    {%- if sov_coverage.sov_pct_all_cells is defined and sov_coverage.sov_pct_all_cells is not none %} (이번 달 전체 조합 기준은 {{ "%.1f"|format(sov_coverage.sov_pct_all_cells) }}%){% endif %}.
+    {% endif %}
     {% else %}
     ※ 각 검색 쿼리를 {{ repeat_count }}회 반복 발송하여 통계적으로 측정한 수치입니다.
     {% endif %}
@@ -171,6 +189,17 @@
 {% endif %}
 {% endif %}
 
+{% if report_type == 'MONTHLY' and talking_points %}
+<h2>🗣️ 원장 미팅 토킹 포인트</h2>
+<p class="note">
+  원장님 보고 자리에서 그대로 읽을 수 있게 만든 3문장입니다. 숫자는 이 리포트의 값에서 그대로
+  가져왔으며 문장을 새로 쓰지 않았습니다. 이 섹션은 원장 전달용 PDF에는 들어가지 않습니다.
+</p>
+<ol>
+  {% for line in talking_points %}<li>{{ line }}</li>{% endfor %}
+</ol>
+{% endif %}
+
 {% if report_type == 'MONTHLY' and attribution %}
 <h2>🔗 콘텐츠 발행과 AI 언급 변화</h2>
 <p class="note">
@@ -232,6 +261,44 @@
     <td>{{ q.query_text }} · {{ q.platform_label }}<br>{{ q.meaning }}</td>
     <td>{{ q.customer_impact }}</td>
     <td>{{ q.next_action }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endif %}
+
+{% if report_type == 'MONTHLY' and citations %}
+<h2>📄 AI가 인용한 우리 글</h2>
+<p class="note">
+  이번 기간에 측정한 답변 {{ citations.measured_cell_count }}건 중
+  {{ citations.cited_cell_count }}건이 병원 공개 표면(허브 페이지 또는 발행한 글)을 근거로 인용했습니다.
+  {% if citations.cited_cell_pct is not none %}(인용된 답변 비율 {{ "%.1f"|format(citations.cited_cell_pct) }}%){% endif %}
+  인용은 AI가 그 페이지를 실제로 읽었다는 관찰 사실이며, 언급의 원인으로 단정하지 않습니다.
+</p>
+{% if citations.cited_items %}
+<table>
+  <tr><th>인용된 글</th><th>유형</th><th>인용된 답변 수</th><th>어떤 질문에서 인용됐는지</th></tr>
+  {% for item in citations.cited_items %}
+  <tr>
+    <td>{{ item.title or '(제목 없음)' }}</td>
+    <td>{{ item.content_type or '—' }}</td>
+    <td>{{ item.cited_cell_count }}</td>
+    <td>{% if item.queries %}{% for q in item.queries %}{{ q.query_text }} · {{ q.platform_label }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="note">이번 기간 측정에서 개별 발행 글이 인용된 기록은 없습니다.</p>
+{% endif %}
+{% if citations.hub_pages %}
+<h3>인용된 병원 정보 페이지</h3>
+<table>
+  <tr><th>페이지</th><th>인용된 답변 수</th><th>어떤 질문에서 인용됐는지</th></tr>
+  {% for page in citations.hub_pages %}
+  <tr>
+    <td>{{ page.label }}</td>
+    <td>{{ page.cited_cell_count }}</td>
+    <td>{% if page.queries %}{% for q in page.queries %}{{ q.query_text }} · {{ q.platform_label }}{% if not loop.last %}<br>{% endif %}{% endfor %}{% else %}—{% endif %}</td>
   </tr>
   {% endfor %}
 </table>
@@ -309,7 +376,8 @@
 
 <div class="footer">
   본 리포트는 MotionLabs Re:putation 시스템이 자동 생성하였습니다.<br>
-  AI 검색 결과는 알고리즘 특성상 매회 상이할 수 있으며, 본 수치는 통계적 평균값입니다.<br>
+  AI 검색 결과는 알고리즘 특성상 매회 상이합니다. 본 수치는 반복 측정한 언급 빈도의 평균이며,
+  표본에서 오는 오차 범위가 있습니다.<br>
   문의: contact@motionlabs.co.kr
 </div>
 </body>

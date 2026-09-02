@@ -82,9 +82,13 @@ async def test_real_postgres_scan_keeps_only_highest_state_and_summary_dedupes(
                 status=HospitalStatus.ONBOARDING,
             ),
             Hospital(
+                # ACTIVATION_READY는 사람이 실제로 눌러야 하는 병원에만 남는다. 기본 주소만
+                # 쓰는 병원은 허브 준비 태스크가 스스로 활성화하므로, 이 fixture는 DNS가
+                # 병원 것인 자기 도메인 병원이어야 한다.
                 name=f"{_PREFIX}-READY",
                 slug="ops-qa-t13-onboarding-ready",
                 status=HospitalStatus.PENDING_DOMAIN,
+                aeo_domain="ops-qa-t13-ready.example.invalid",
                 profile_complete=True,
                 v0_report_done=True,
                 site_built=True,

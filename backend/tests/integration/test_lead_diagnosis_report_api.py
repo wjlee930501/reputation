@@ -5,6 +5,7 @@
 import itertools
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -27,8 +28,18 @@ from app.models.lead_diagnosis import (
 from app.models.operations import Incident, IncidentState, OperationRun
 from app.services import lead_report_token
 
-get_status = diagnosis_api.get_diagnosis_status
-get_report = diagnosis_api.get_diagnosis_report
+# slowapi @limiter.limit 우회 — 라우트를 FastAPI 요청 라이프사이클 밖에서 직접 호출한다
+# (test_lead_diagnosis_intake.py·test_public_site.py와 동일 패턴).
+_get_status = diagnosis_api.get_diagnosis_status.__wrapped__
+_get_report = diagnosis_api.get_diagnosis_report.__wrapped__
+
+
+async def get_status(token, db):
+    return await _get_status(SimpleNamespace(), token, db)
+
+
+async def get_report(token, db):
+    return await _get_report(SimpleNamespace(), token, db)
 
 _slot_sequence = itertools.count(300)
 
@@ -165,10 +176,24 @@ class TestTokenGate:
             await get_report(raw, pg_async_session)
         assert exc.value.status_code == 404
 
-    async def test_access_is_counted(self, pg_async_session, tmp_path):
+    async def test_status_polling_does_not_count_as_access(self, pg_async_session, tmp_path):
+        """상태 폴링은 반복 호출된다 — 매번 UPDATE+commit하면 폴링이 쓰기 부하가 된다."""
         diagnosis, raw = await _seed(pg_async_session, tmp_path=tmp_path)
         await get_status(raw, pg_async_session)
         await get_status(raw, pg_async_session)
+
+        token = (
+            await pg_async_session.execute(
+                select(LeadReportToken).where(LeadReportToken.diagnosis_id == diagnosis.id)
+            )
+        ).scalar_one()
+        assert token.access_count == 0
+        assert token.last_accessed_at is None
+
+    async def test_report_view_is_counted(self, pg_async_session, tmp_path):
+        diagnosis, raw = await _seed(pg_async_session, tmp_path=tmp_path)
+        await get_report(raw, pg_async_session)
+        await get_report(raw, pg_async_session)
 
         token = (
             await pg_async_session.execute(

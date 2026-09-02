@@ -4,6 +4,13 @@ import { parseHospitalPayload, type Hospital } from './hospital-payload.ts'
 export { resolveAssetUrl } from './hospital-payload.ts'
 export type { DirectorCredentials, Hospital, HospitalPhoto, HospitalPhotoType } from './hospital-payload.ts'
 
+// 백엔드 하드캡(le=500)과 동일. 콘텐츠 목록을 요청하는 페이지가 60/200/500 등 서로 다른
+// limit을 넘기면 Next data cache가 URL별로 독립된 키를 만들어(같은 병원인데 캐시가
+// 4갈래로 나뉨) 만료·재요청이 따로 돈다. 항상 이 한 값으로만 요청해 캐시 키를 하나로
+// 묶고, 호출부가 원하는 개수는 응답을 받은 뒤 slice한다. sitemap-builder.ts의 첫 페이지
+// 요청도 같은 URL 모양(`?limit=500`)을 써서 같은 캐시 키를 공유한다.
+const CONTENTS_FETCH_LIMIT = 500
+
 export type ContentReferenceSourceType =
   | 'GOV_KR'
   | 'ACADEMIC_KR'
@@ -67,7 +74,7 @@ export class ContentNotFoundError extends Error {
 export async function fetchHospital(slug: string): Promise<Hospital> {
   // 경로 세그먼트는 항상 인코딩 — 라우트 파라미터는 URL 디코드된 값이라 ?/#/%2F 류가
   // 백엔드 요청의 쿼리·경로로 주입될 수 있다 (admin BFF buildSafeAdminProxyPath와 동일 정책).
-  const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, publicFetchInit(3600))
+  const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, publicFetchInit())
   if (res.status === 404) throw new HospitalNotFoundError(slug)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching hospital`)
   const hospital = parseHospitalPayload(await res.json())
@@ -120,27 +127,27 @@ function isContentDetailPayload(value: unknown): value is ContentDetail {
 }
 
 export async function fetchContents(slug: string, limit?: number): Promise<ContentSummary[]> {
-  const base = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents`
-  const url = limit ? `${base}?limit=${limit}` : base
-  const res = await fetch(url, publicFetchInit(1800))
+  // 항상 같은 URL(하드캡 500)로 요청해 캐시 키를 하나로 유지한다 — 호출부가 원하는
+  // 개수(60/200/...)는 아래에서 slice한다.
+  const url = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENTS_FETCH_LIMIT}`
+  const res = await fetch(url, publicFetchInit())
   // 404는 "콘텐츠 0건"이 아니라 병원 자체가 없거나 비활성 상태라는 뜻이다(콘텐츠가 0건이면
   // 백엔드가 200 []를 내려준다) — fetchHospital과 동일한 타입으로 던져 페이지의 notFound()
-  // 분기와 맞물리게 한다. 그 외 !res.ok(5xx/429 등)를 조용히 []로 삼키면 ISR
-  // (revalidate 1800~3600초) 캐시가 "콘텐츠 없음" 화면으로 고착되므로 던져서 Next.js가
-  // 이전 캐시를 유지하게 한다.
+  // 분기와 맞물리게 한다. 그 외 !res.ok(5xx/429 등)를 조용히 []로 삼키면 ISR 캐시가
+  // "콘텐츠 없음" 화면으로 고착되므로 던져서 Next.js가 이전 캐시를 유지하게 한다.
   if (res.status === 404) throw new HospitalNotFoundError(slug)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching contents`)
   const contents = await res.json()
   if (!Array.isArray(contents) || !contents.every(isContentSummaryPayload)) {
     throw new Error('Invalid contents payload')
   }
-  return contents
+  return typeof limit === 'number' ? contents.slice(0, limit) : contents
 }
 
 export async function fetchContent(slug: string, contentId: string): Promise<ContentDetail> {
   const res = await fetch(
     `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents/${encodeURIComponent(contentId)}`,
-    publicFetchInit(1800),
+    publicFetchInit(),
   )
   if (res.status === 404) throw new ContentNotFoundError(contentId)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching content`)

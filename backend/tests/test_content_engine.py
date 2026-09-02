@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 
 os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-key")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///tmp/reputation-test.db")
@@ -15,6 +16,7 @@ from tenacity import stop_after_attempt  # noqa: E402
 from app.models.content import ContentType  # noqa: E402
 from app.services import content_engine  # noqa: E402
 from app.services.content_engine import (  # noqa: E402
+    FORBIDDEN_CHECK_FIELDS,
     _build_content_brief_context,
     _build_philosophy_context,
     _build_remediation_context,
@@ -26,9 +28,8 @@ from app.services.content_engine import (  # noqa: E402
     _validate_body_length,
     _validate_geo,
     _validate_unverified_price_claims,
-    forbidden_check_text,
 )
-from app.utils.medical_filter import check_forbidden  # noqa: E402
+from app.utils.medical_filter import check_forbidden_content_fields  # noqa: E402
 
 
 def test_parse_json_response_accepts_fenced_json():
@@ -158,31 +159,6 @@ def test_validate_unverified_price_claims_still_rejects_approximate_won(claim):
         _validate_unverified_price_claims(claim)
 
 
-def test_forbidden_check_text_includes_faq_fields():
-    # P1-2 회귀 가드: FAQPage rich result로 그대로 노출되는 faq_question/faq_answer_summary가
-    # 금지 표현 검사 텍스트에서 빠지면 의료광고법 필터를 통째로 우회한다.
-    result = {
-        "title": "어깨 통증 진료 안내",
-        "body": "환자 상태에 따라 진료 방향을 설명합니다.",
-        "meta_description": "어깨 통증 진료 안내입니다.",
-        "faq_question": "어깨 통증 완치 가능한가요?",
-        "faq_answer_summary": "성공률이 높은 치료를 안내합니다.",
-    }
-
-    violations = check_forbidden(forbidden_check_text(result))
-
-    assert "완치" in violations
-    assert "성공률" in violations
-
-
-def test_forbidden_check_text_ignores_missing_faq_fields():
-    result = {"title": "제목", "body": "본문", "meta_description": None}
-
-    text = forbidden_check_text(result)
-
-    assert "제목" in text and "본문" in text
-
-
 async def test_forbidden_response_is_discarded_and_second_complete_content_is_returned(
     monkeypatch,
 ):
@@ -248,6 +224,45 @@ async def test_forbidden_response_is_discarded_and_second_complete_content_is_re
     assert saved["body"] == second["body"]
     assert saved["meta_description"] == second["meta_description"]
     assert first["body"] not in saved.values()
+
+
+# ── FAQ 필드 금지 표현 회귀 (P1-2) ────────────────────────────────────
+
+
+@pytest.mark.parametrize("field", ["faq_question", "faq_answer_summary"])
+def test_generation_layer_catches_forbidden_expressions_in_faq_fields(field):
+    """FAQ 필드는 공개 표면(FAQPage rich result)에 그대로 나가므로 **생성 단계**에서
+    걸러야 한다. 발행 게이트만 잡으면 위반 초안이 매일 밤 쌓이고, 08:00 발행 배치가
+    차단 요약을 올릴 때까지 아무도 모른다.
+
+    이 테스트는 `FORBIDDEN_CHECK_FIELDS`에서 FAQ 필드를 빼는 순간 실패한다 —
+    생성 엔진이 실제로 쓰는 그 튜플을 그대로 넘기기 때문이다.
+    """
+    result = {
+        "title": "복통 진료 전 확인할 점",
+        "body": "## 증상\n테스트병원 김원장은 강남에서 충분히 설명합니다.",
+        "meta_description": "복통 진료 전 확인할 점을 정리했습니다.",
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    result[field] = "부작용 없는 시술인가요?"
+
+    violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
+
+    assert violations == ["부작용 없는"]
+    assert field in FORBIDDEN_CHECK_FIELDS
+
+
+def test_clean_faq_fields_pass_the_generation_layer_check():
+    result = {
+        "title": "복통 진료 전 확인할 점",
+        "body": "## 증상\n테스트병원 김원장은 강남에서 충분히 설명합니다.",
+        "meta_description": "복통 진료 전 확인할 점을 정리했습니다.",
+        "faq_question": "복통이 계속되면 언제 병원에 가야 하나요?",
+        "faq_answer_summary": "증상이 이틀 이상 이어지면 진료를 받아보시길 권합니다.",
+    }
+
+    assert check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS) == []
 
 
 # ── references 정규화 순서 회귀 (P-2: GEO hard-fail이 raw references로 검증되던 버그) ──
@@ -598,5 +613,83 @@ def test_legacy_empty_approved_philosophy_gets_runtime_safety_floor():
 
     context = _build_philosophy_context(philosophy)
 
-    assert "의료광고 공통 금지 표현" in context
-    assert "치료 효과·성공·완치·안전성을 단정하거나 보장하지 않습니다." in context
+    # 플랫폼 공통 안전 규칙은 정적 시스템 블록에 **정확히 한 번** 실린다.
+    # 철학 컨텍스트가 같은 문장을 다시 실으면 호출마다 중복 비용이 발생한다.
+    assert "의료광고 공통 금지 표현" not in context
+    assert "치료 효과·성공·완치·안전성을 단정하거나 보장하지 않습니다." not in context
+    assert content_engine.STATIC_SYSTEM_BLOCK.count(
+        "치료 효과·성공·완치·안전성을 단정하거나 보장하지 않습니다."
+    ) == 1
+    assert (
+        content_engine.STATIC_SYSTEM_BLOCK.count(
+            " · ".join(content_engine.FORBIDDEN_EXPRESSIONS)
+        )
+        == 1
+    )
+
+
+def test_static_system_block_meets_sonnet_cache_minimum():
+    """Sonnet 계열 최소 캐시 접두어는 1024 토큰. 정적 블록이 그 아래로 내려가면
+    cache_control을 붙여도 조용히 캐시되지 않는다."""
+    # 한국어는 문자당 약 1토큰 이상으로 잡히므로 문자 수 하한으로 보수적으로 검증한다.
+    assert len(content_engine.STATIC_SYSTEM_BLOCK) > 2000
+
+
+async def test_generate_content_sends_cached_system_blocks(monkeypatch):
+    """system은 캐시 breakpoint를 가진 블록 리스트여야 하고, 아이템마다 바뀌는
+    내용(최근 제목 등)은 user 메시지에만 있어야 한다."""
+    payload = {
+        "title": "대장내시경 검사 전 준비 안내",
+        "body": (
+            "## 준비\n" + "검사 전 준비 사항을 단계별로 안내합니다. " * 60
+            + "\n\n## 주의\n" + "검사 당일 주의할 점을 정리했습니다. " * 60
+            + "\n\n## 문의\n" + "노원 테스트의원 김의사 원장에게 문의하세요. " * 20
+        ),
+        "meta_description": "대장내시경 검사 전 준비 과정을 단계별로 안내합니다. 식이 조절과 장 정결 방법을 확인하세요.",
+        "references": [],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="테스트의원",
+        address="서울시 노원구",
+        phone="02-000-0000",
+        business_hours=None,
+        region=["노원"],
+        specialties=["내과"],
+        keywords=["대장내시경"],
+        director_name="김의사",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    captured: dict = {}
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeResponse()
+
+    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+
+    await content_engine.generate_content(
+        hospital,
+        ContentType.NOTICE,
+        existing_titles=[f"제목 {n}" for n in range(200)],
+    )
+
+    system = captured["system"]
+    assert isinstance(system, list) and len(system) == 2
+    assert system[0]["text"] == content_engine.STATIC_SYSTEM_BLOCK
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+    assert system[1]["cache_control"] == {"type": "ephemeral"}
+    assert "테스트의원" in system[1]["text"]
+
+    # 변동분은 정적 블록 밖에 있어야 캐시가 산다.
+    user_message = captured["messages"][0]["content"]
+    assert "최근 발행 제목 일부" in user_message
+    assert "제목 0" not in system[0]["text"]
+    assert user_message.count("- 제목 ") == content_engine.EXISTING_TITLE_PROMPT_LIMIT

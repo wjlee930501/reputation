@@ -68,3 +68,38 @@ export function readServerActivationBlockers(
 export function isPlatformAddressBrowsable(hospital: { site_live?: boolean | null }): boolean {
   return hospital.site_live === true
 }
+
+export interface PlatformActivationInput extends HospitalActivationInput {
+  site_live?: boolean | null
+  aeo_domain?: string | null
+  status?: string | null
+}
+
+/**
+ * 기본 플랫폼 주소가 어떤 경로로 운영을 시작하는가.
+ *
+ * - `live`: 이미 공개 운영 중 — 사람이 할 일 없음
+ * - `automatic`: 선행 조건이 모두 통과했고 자기 도메인이 없다 — 허브 준비 태스크가
+ *   그대로 ACTIVE로 전환한다(백엔드 `services/hospital_activation.py`). 버튼을 두면
+ *   AE가 이미 끝난 일을 누르게 된다.
+ * - `manual`: 자기 도메인이 지정됐거나 일시 정지 상태 — DNS는 병원 것이라 시점을
+ *   시스템이 정할 수 없다. 버튼을 남긴다.
+ * - `blocked`: 선행 조건이 남아 있다.
+ */
+export type PlatformActivationMode = 'live' | 'automatic' | 'manual' | 'blocked'
+
+export function hasCustomDomain(hospital: PlatformActivationInput): boolean {
+  return (hospital.aeo_domain ?? '').trim().length > 0
+}
+
+export function platformActivationMode(hospital: PlatformActivationInput): PlatformActivationMode {
+  // 백엔드 evaluate_auto_activation과 같은 순서로 판정한다(services/hospital_activation.py):
+  // ACTIVE(live) → PAUSED 등 자동 전환 불가 상태·자기 도메인(manual) → 게이트 미충족(blocked)
+  // → automatic. 게이트가 아직 안 통과했어도 자기 도메인/PAUSED면 백엔드는 CUSTOM_DOMAIN_PENDING
+  // 또는 STATUS_NOT_AUTO_ADVANCEABLE을 먼저 반환하므로, 화면도 'blocked'가 아니라 'manual'로
+  // 봐야 "선행 단계가 통과하면 자동으로 시작된다"는 blocked 문구를 잘못 보여주지 않는다.
+  if (isPlatformAddressBrowsable(hospital)) return 'live'
+  if (hasCustomDomain(hospital) || hospital.status === 'PAUSED') return 'manual'
+  if (missingActivationPrerequisites(hospital).length > 0) return 'blocked'
+  return 'automatic'
+}

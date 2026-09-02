@@ -64,7 +64,7 @@ _NON_WORD = re.compile(r"[\s\-_·]+")
 # 자리가 열려야** 하기 때문이다. 자정 리셋은 새벽에 자리가 소진되어, 정작 원장님이
 # 출근해서 들어오면 이미 마감돼 있는 상태를 만든다.
 #
-# **랜딩 문구와 같은 값이어야 한다** (site/lib/landing-copy.ts의 heroScarcity.note).
+# 실시간 잔여 수는 접수 화면(/ai-diagnosis, no-store)이 이 값을 그대로 보여준다.
 # 어긋나면 신청자가 안내받은 시각에 와서 마감 화면을 본다.
 SLOT_RESET_HOUR_KST = 8
 
@@ -167,7 +167,8 @@ def _remaining_slots(used: int) -> int:
 
 
 @router.get("/slots")
-async def get_slot_availability(db: AsyncSession = Depends(get_db)):
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_slot_availability(request: Request, db: AsyncSession = Depends(get_db)):
     """오늘 남은 자리. 랜딩의 "오늘 남은 자리 N / 20"이 이 값을 그대로 쓴다.
 
     **실제 카운터다.** 희소성을 연출하려고 숫자를 조작하지 않는다 — 방법론을 공개하는
@@ -186,10 +187,16 @@ async def get_slot_availability(db: AsyncSession = Depends(get_db)):
     }
 
 
-async def _resolve_token(db: AsyncSession, raw_token: str) -> tuple[LeadReportToken, LeadDiagnosis]:
+async def _resolve_token(
+    db: AsyncSession, raw_token: str, *, record_access: bool = True
+) -> tuple[LeadReportToken, LeadDiagnosis]:
     """토큰 → (토큰 행, 진단). 실패는 전부 404로 통일한다.
 
     "만료됨"과 "없음"을 구분해 알려주면 토큰 존재 여부를 확인하는 오라클이 된다.
+
+    `record_access=False`는 상태 폴링처럼 반복 호출되는 경로용이다 — 매 호출마다
+    UPDATE+commit을 하면 폴링이 그대로 쓰기 부하가 된다. 실제 리포트 열람(전체 GET)에서만
+    `access_count`를 기록한다.
     """
     token_hash = lead_report_token.hash_report_token(raw_token or "")
     row = (
@@ -207,9 +214,10 @@ async def _resolve_token(db: AsyncSession, raw_token: str) -> tuple[LeadReportTo
     if diagnosis is None:  # pragma: no cover - FK CASCADE로 함께 지워진다
         raise HTTPException(status_code=404, detail="유효하지 않은 링크입니다.")
 
-    row.last_accessed_at = now
-    row.access_count = (row.access_count or 0) + 1
-    await db.commit()
+    if record_access:
+        row.last_accessed_at = now
+        row.access_count = (row.access_count or 0) + 1
+        await db.commit()
     return row, diagnosis
 
 
@@ -239,13 +247,14 @@ def _public_phase(diagnosis: LeadDiagnosis) -> str:
 
 
 @router.get("/{token}/status")
-async def get_diagnosis_status(token: str, db: AsyncSession = Depends(get_db)):
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_diagnosis_status(request: Request, token: str, db: AsyncSession = Depends(get_db)):
     """접수 직후 사용자가 보는 화면이 폴링한다 (PRD F6-5).
 
     이메일 확인 링크를 없앴으므로(F1-4), 이 페이지가 "메일이 안 와도 결과에 도달하는
     두 번째 경로"를 겸한다.
     """
-    _, diagnosis = await _resolve_token(db, token)
+    _, diagnosis = await _resolve_token(db, token, record_access=False)
     phase = _public_phase(diagnosis)
     return {
         "phase": phase,
@@ -269,7 +278,8 @@ async def get_diagnosis_status(token: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{token}")
-async def get_diagnosis_report(token: str, db: AsyncSession = Depends(get_db)):
+@limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
+async def get_diagnosis_report(request: Request, token: str, db: AsyncSession = Depends(get_db)):
     """블러 리포트 PDF.
 
     파기 후에는 **410 Gone**이다. 404가 아닌 이유는 "있었고 우리가 지웠다"가 사실이기
