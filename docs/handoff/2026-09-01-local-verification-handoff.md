@@ -13,6 +13,97 @@
 
 ---
 
+## 로컬 검증 결과 (2026-09-02, macOS 26.5 / Docker 29.2.1 / Postgres 16 / Redis 7)
+
+**1장(반드시 확인)은 전부 실행했고 지금은 전 항목 통과다.** 처음 돌렸을 때 21건이 깨졌고,
+그중 3건은 이 브랜치가 만든 진짜 회귀였다. 아래가 최종 상태다.
+
+| 항목 | 결과 |
+|---|---|
+| 1-1 전체 백엔드 스위트 (Postgres+Redis, `REQUIRE_PDF_RENDER=1`) | **2,645 통과 / 2 skip / 실패 0** |
+| 1-2 마이그레이션 왕복 (`head → 0060 → head`) | 통과 |
+| 1-2 autogenerate 드리프트 | **`add_column`/`drop_column` 0건** (main 기준선은 각 4건 → 0053/0054 컬럼 복원 확인) |
+| 1-3 Docker 배선 (build/up/entrypoint/queue/health) | 통과 |
+| 1-3 `make migrate` | 통과 |
+| 1-3 `make test` | **실패 → 수정함** (아래 D) |
+| 1-4 CI 커버리지 게이트 (`--cov-fail-under=60`) | 통과 (83.25%) |
+| 프론트 admin/site test·typecheck·lint·build | 전부 통과 (`npm ci` 양쪽 클린) |
+| 가드 (copy-guard / DB 연결 예산 / ruff) | 전부 통과 |
+| `terraform fmt -check -recursive` | 통과 |
+
+### 이번 검증에서 고친 것
+
+**A. `operations_center` 파사드 재노출 삭제 — 통합 테스트 13건 붕괴 (회귀)**
+`c4f2f54`(데드코드 정리)가 `api/admin/operations_center.py`의 재노출 15개를 지웠는데,
+`tests/integration/test_attention_queue.py`가 하위 모듈이 아니라 이 파사드를 통해
+`get_operations_overview`·`get_operations_queue` 등을 직접 호출한다. Postgres 게이트가 걸린
+테스트라 클라우드에서는 정적 참조만 보고 "미사용"으로 판단됐다. 재노출을 되살리고,
+다시 지워지지 않도록 "통합 테스트까지 돌려보고 지워라"는 주석을 남겼다.
+
+**B. `test_incident_service.py:686` — UUID를 VARCHAR 컬럼에 비교 (회귀)**
+`AdminAuditLog.target_id`는 `String(80)`이고 `write_audit_log`가 `str(...)`로 저장한다.
+새로 추가된 시스템 ACK 테스트만 `str()` 없이 비교해 asyncpg가 `TypeError: expected str, got
+UUID`를 던졌다. 같은 파일 300행을 포함해 다른 모든 호출부는 이미 `str()`을 쓴다.
+
+**C. 인시던트 대기열 쿼리 예산 — 2-pass 전환과 어긋난 단언 (회귀)**
+WP18이 `load_incidents_queue`를 의도적으로 2-pass(원인 그룹 판별 → 해당 페이지 상세)로
+바꿨는데, 기존 단언은 `len(statements) == 1`(그리고 개요 예산 `<= 5`)에 묶여 있었다.
+가드의 목적은 "행 수에 비례하지 않는다"(N+1 금지)이지 "정확히 1회"가 아니므로,
+2-pass를 반영해 상수 예산으로 갱신했다 — 인시던트 대기열 `== 2`, 개요 `<= 6`,
+`many_count == one_count`는 그대로. 테스트 이름도
+`test_incident_queue_groups_same_cause_in_a_constant_number_of_queries`로 바꿨다.
+
+**D. `make test`가 컨테이너에서 실행 불가 (이 브랜치가 새로 쓴 레시피)**
+`uv sync --locked --extra dev`가 `/opt/venv`를 다시 쓰려다
+`Permission denied (os error 13)`로 죽는다. 런타임 스테이지가 빌더의 `/opt/venv`를 chown 없이
+복사한 뒤 `appuser`로 전환하기 때문이다. 두 `docker compose exec`에 `-u root`를 붙여 해결.
+
+**E. 인증서 잡 테스트가 전역 outbox 행을 남김 (main에도 있던 선행 문제)**
+`tests/integration/test_domain_certificate_jobs.py`의 fixture가 병원 행만 지운다. `incidents`·
+`notification_outbox`의 `hospital_id`는 `ON DELETE SET NULL`이라 인시던트/발송 대기 행이
+전역(`hospital_id=NULL`) 행으로 살아남고, 뒤에 도는
+`test_content_publish_recovery_postgres.py`의 **전역** outbox 배치가 그 행까지 집어 삼켜
+`(1,1,1)` 대신 `(2,2,2)`가 된다. main 기준선에서도 동일하게 재현되므로 회귀는 아니지만,
+로컬 스위트를 초록으로 만들려면 필요해서 teardown 순서를 고쳤다.
+
+### 이 문서에서 틀렸던 지시 (수정 반영)
+
+- `docker compose up -d db redis` 뒤 "Redis :6379"는 사실이 아니었다 — compose의 `redis`
+  서비스에 `ports`가 없어 호스트에서 접속할 수 없고,
+  `tests/test_admin_domain.py::test_verify_domain_accepts_lb_address_for_apex_domain`이
+  브로커 접속 실패로 깨진다. `docker-compose.yml`의 redis에 `6379:6379`를 노출했다.
+- `alembic revision --autogenerate ... --sql`은 alembic이 거부한다
+  (`Using --sql with --autogenerate does not make any sense`). 드리프트 확인은 `--sql` 없이
+  리비전을 생성한 뒤 `op.add_column`/`op.drop_column`을 세고 파일을 지우는 방식으로 해야 한다.
+- macOS에서 `REQUIRE_PDF_RENDER=1`을 돌리려면 `brew install pango`와
+  `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`가 필요하다. 없으면 WeasyPrint가
+  `libgobject-2.0-0`을 못 찾아 PDF 테스트 6건이 깨진다 (코드 문제가 아님).
+
+### 남은 관찰 사항 (조치 안 함)
+
+- **autogenerate 잔여 소음**: 컬럼 차이는 0이지만 `alter_column` 48건 + 인덱스 재생성 27건이
+  계속 제안된다(JSON/JSONB 표기, 인덱스가 마이그레이션에만 있고 `__table_args__`에 없음).
+  **main 기준선과 개수가 완전히 동일**하므로 이 브랜치가 만든 것이 아니다.
+- **compose에서 worker/beat 헬스 서버가 안 뜬다**: `docker-entrypoint.sh`의 `"$@"` 분기가
+  compose의 `command:`를 그대로 실행하면서 SERVICE 분기(헬스 서버 사이드카)를 건너뛴다.
+  Cloud Run은 인자를 주지 않으므로 영향 없다 — `SERVICE=worker`로 인자 없이 직접 띄워
+  `/live`·`/ready` 200을 확인했다. 다만 `backend/Dockerfile`의 새 주석("worker/beat도 HTTP
+  서버를 띄운다")은 compose 기준으로는 더 이상 맞지 않는다.
+- **컨테이너 안 `make test`는 여전히 DB 의존 테스트가 깨진다**: 테스트가 `localhost:5434`를
+  하드코딩하는데 컨테이너 안에서는 `db:5432`다. `-u root` 수정으로 pytest 자체는 돌고
+  2,195건이 통과한다. 컨테이너 경로를 초록으로 만들려면 테스트의 URL 하드코딩을 걷어내야 하고,
+  그건 이 브랜치 범위 밖이다. 로컬 정본은 `make test-backend-local`이다.
+
+### 아직 안 한 것
+
+2장(실제 공급자 호출)과 3장(운영 판단) 전체 — 유료 API 키·프로덕션 DB·GCP 자격증명이 필요해
+로컬에서 실행하지 않았다. 3장 중 검증 가능한 것만 확인: 7번 Admin lockfile(`npm ci` 클린),
+6번 `terraform fmt -check`(통과)와 `require_no_dropped_terraform_env` 가드(scripts 79건 통과),
+2번 백필 CLI(`python -m app.utils.query_target_backfill --hospital-id ...`) 존재 확인.
+`terraform plan` 자체는 GCP 자격증명·원격 state가 필요해 실행하지 않았다.
+
+---
+
 ## 0. 준비 (한 번)
 
 ```bash
