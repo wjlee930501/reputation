@@ -264,6 +264,68 @@ def test_clean_faq_fields_pass_the_generation_layer_check():
 
     assert check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS) == []
 
+async def test_generate_content_heals_missing_approved_director_name_after_retries(
+    monkeypatch,
+):
+    """Admin regeneration can persist after all model rewrites omit the director name."""
+
+    hospital = SimpleNamespace(
+        name="강심장내과의원",
+        address="서울 강남구",
+        phone="02-000-0000",
+        business_hours={},
+        region=["강남"],
+        specialties=["내과"],
+        keywords=["심장 진료"],
+        director_name="장현경",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    body_without_director = (
+        "## 진료 안내\n강심장내과의원은 강남 지역에서 환자 상태를 확인합니다. "
+        + ("증상과 검사 결과에 따라 진료 방향은 달라질 수 있습니다. " * 90)
+        + "\n\n## 내원 전 확인\n"
+        + ("복용 중인 약과 이전 검사 자료를 준비하면 진료에 도움이 됩니다. " * 45)
+    )
+    payload = {
+        "title": "심장 진료 전 확인할 점",
+        "body": body_without_director,
+        "meta_description": "강남 심장 진료 전 준비할 내용과 진료 과정을 안내합니다.",
+        "references": [],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    provider_calls = 0
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    def fake_create(*_args, **_kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        return _FakeResponse()
+
+    async def no_cost_record(*_args, **_kwargs):
+        return None
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr("app.services.cost_guard.record_provider_call", no_cost_record)
+    monkeypatch.setattr(content_engine.generate_content.retry, "sleep", no_sleep)
+
+    saved = await content_engine.generate_content(hospital, ContentType.NOTICE)
+
+    assert provider_calls == 3
+    assert "장현경" not in body_without_director
+    assert saved["body"] == (
+        f"{body_without_director.rstrip()}\n\n본원 장현경 원장이 진료를 담당합니다."
+    )
+    _validate_geo(saved, hospital, ContentType.NOTICE)
+
+
 
 # ── references 정규화 순서 회귀 (P-2: GEO hard-fail이 raw references로 검증되던 버그) ──
 
