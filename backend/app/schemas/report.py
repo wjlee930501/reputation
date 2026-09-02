@@ -94,6 +94,9 @@ class ReportListResponse(BaseModel):
     essence_summary: Optional[Any] = None
     delivery_ready: bool = False
     customer_ready: bool = False
+    # 전달을 막은 이유 **전부**. 예전에는 게이트가 여러 이유로 막혀도 첫 줄 하나만
+    # 담아, AE가 하나를 고쳐 재생성한 뒤에야 다음 이유를 알 수 있었다. 첫 원소는
+    # 여전히 대표 사유이므로 화면의 `deliveryBlockers[0]` 표시는 그대로 동작한다.
     delivery_blockers: list[str] = Field(default_factory=list)
     # 전달을 막지 않는 경고(약정 미달, 사후검수 표본 미완료, 운영 기준 버전 갱신 등).
     # blockers와 달리 mark-sent를 막지 않는다 — Admin은 소프트 스타일로만 표시한다.

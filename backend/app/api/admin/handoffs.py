@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -142,22 +142,42 @@ async def _payloads_batch(
     ]
 
 
+#: 잘림 여부·다음 페이지 시작점을 알리는 응답 헤더. 응답 본문은 목록 그대로 유지해
+#: 기존 호출부(Admin의 `fetchAPI<Handoff[]>`)를 깨지 않는다.
+HAS_MORE_HEADER = "X-Has-More"
+NEXT_OFFSET_HEADER = "X-Next-Offset"
+
+
 @router.get("")
 async def list_handoffs(
+    response: Response,
     state: HandoffState | None = Query(default=None),
     hospital_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
     _actor: AdminUser = Depends(require_active_account),
 ) -> list[dict[str, object]]:
     # 필터 구성과 배치 로딩을 분리해 둔다 — hospital_id 필터가 여기 추가돼도
     # _payloads_batch의 배치 조회 로직은 그대로 재사용된다.
-    stmt = select(HospitalHandoff).order_by(HospitalHandoff.updated_at.desc()).limit(limit)
+    #
+    # limit+1건을 읽어 "더 있다"를 판정한다. 예전에는 limit 기본값 100에서 조용히 잘려
+    # 운영자가 목록 끝을 전부라고 믿을 수 있었다.
+    stmt = (
+        select(HospitalHandoff)
+        .order_by(HospitalHandoff.updated_at.desc())
+        .offset(offset)
+        .limit(limit + 1)
+    )
     if state is not None:
         stmt = stmt.where(HospitalHandoff.state == state)
     if hospital_id is not None:
         stmt = stmt.where(HospitalHandoff.hospital_id == hospital_id)
     rows = list((await db.execute(stmt)).scalars().all())
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    response.headers[HAS_MORE_HEADER] = "true" if has_more else "false"
+    response.headers[NEXT_OFFSET_HEADER] = str(offset + len(rows))
     return await _payloads_batch(db, rows)
 
 

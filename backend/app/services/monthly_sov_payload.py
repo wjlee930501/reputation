@@ -74,7 +74,11 @@ class MeasurementBasisPayload(TypedDict):
     question_count: int
     platform_count: int
     cell_count: int
+    # 셀당 평균 반복 수와, 그 평균이 감추는 최소·최대. 각주는 min == max일 때만
+    # "반복 N회 기준"이라 쓰고 아니면 "반복 N~M회 기준"이라 쓴다.
     repeat_count: int
+    repeat_min: int
+    repeat_max: int
     attempts_used: int
 
 

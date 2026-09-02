@@ -34,6 +34,23 @@ def _incident(*, safe_error_code: str, hospital_id=None, last_seen_at=None):
     )
 
 
+def _group_row(incident, run=None):
+    """Pass 1 selects only the cause-key columns, not whole ORM rows.
+
+    Keeping the tuple shape here in one place makes the projection's column order a
+    single fact the tests share with the query.
+    """
+    return (
+        incident.id,
+        incident.safe_error_code,
+        incident.incident_type,
+        incident.source_type,
+        incident.source_id,
+        run.safe_error_code if run is not None else None,
+        run.operation_type if run is not None else None,
+    )
+
+
 class _Result:
     """Mimics AsyncSession.execute(...) result: only `.all()` is used by the queue."""
 
@@ -72,7 +89,7 @@ async def test_total_counts_cause_groups_not_raw_incidents():
     distinct = _incident(safe_error_code="SITE_BUILD_FAILED")
     # ordering matches the query's ORDER BY (sla_due_at, last_seen_at desc, id) —
     # not exercised further here, first-seen order is enough for grouping.
-    group_rows = [(shared_a, None), (distinct, None), (shared_b, None)]
+    group_rows = [_group_row(shared_a), _group_row(distinct), _group_row(shared_b)]
 
     from app.models.hospital import Hospital
 
@@ -102,7 +119,7 @@ async def test_pass_two_only_requests_the_current_pages_incident_ids():
     """With page_size=1, page 2 must load only the second group's incident — not all."""
     first = _incident(safe_error_code="SITE_BUILD_FAILED")
     second = _incident(safe_error_code="DOMAIN_CERT_FAILED")
-    group_rows = [(first, None), (second, None)]
+    group_rows = [_group_row(first), _group_row(second)]
 
     from app.models.hospital import Hospital
 
@@ -128,7 +145,7 @@ async def test_pass_two_only_requests_the_current_pages_incident_ids():
 async def test_empty_page_short_circuits_without_a_second_query():
     """A page past the last group must not issue a page_statement at all."""
     only = _incident(safe_error_code="SITE_BUILD_FAILED")
-    db = _FakeDB([(only, None)], [])
+    db = _FakeDB([_group_row(only)], [])
 
     total, items = await load_incidents_queue(
         db,

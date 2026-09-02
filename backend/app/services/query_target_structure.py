@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 from app.services.keyword_analysis import (
     KeywordAnalysis,
@@ -190,6 +191,18 @@ def _collect_bindings(
     bound.pop(value, None)
 
 
+@lru_cache(maxsize=4096)
+def _classify_binding_keyword(keyword: str) -> KeywordAnalysis:
+    """분해 후보의 키워드 분류 — 같은 문자열이 후보마다 반복해서 들어온다.
+
+    한 문장을 분해하면 템플릿 15개 × 최대 400개 후보가 나오고, 후보들은 대부분 같은
+    키워드 조각을 공유한다. `analyze_keyword`는 순수 함수(같은 입력 → 같은 결과)라
+    문자열 하나짜리 호출만 캐시해도 안전하다. `known_regions`를 받는 호출은 인자가
+    해시 불가능(list)할 수 있어 여기로 오지 않는다.
+    """
+    return analyze_keyword(keyword)
+
+
 def _binding_rank(
     binding: dict[str, str], applies: frozenset
 ) -> tuple[int, int, int, int]:
@@ -201,7 +214,7 @@ def _binding_rank(
     keyword = binding.get("keyword")
     class_miss = 0
     if keyword:
-        analysis = analyze_keyword(keyword)
+        analysis = _classify_binding_keyword(keyword)
         if applies and analysis.keyword_class not in applies:
             class_miss = 1
         elif analysis.keyword_class is KeywordClass.UNKNOWN:
@@ -221,7 +234,13 @@ def _match_template(text: str) -> tuple[str, frozenset, dict[str, str]] | None:
         _collect_bindings(text, parts, 0, 0, {}, bindings)
         if not bindings:
             continue
-        binding = min(bindings, key=lambda item: (_binding_rank(item, applies), sorted(item.items())))
+        # 후보가 하나면 비교할 대상이 없다 — 정렬 키를 만들 이유도 없다.
+        if len(bindings) == 1:
+            binding = bindings[0]
+        else:
+            binding = min(
+                bindings, key=lambda item: (_binding_rank(item, applies), sorted(item.items()))
+            )
         rank = (*_binding_rank(binding, applies), order)
         if best is None or rank < best[0]:
             best = (rank, template, applies, binding)

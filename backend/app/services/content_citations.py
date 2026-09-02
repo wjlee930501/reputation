@@ -133,12 +133,17 @@ def hospital_surface_roots(hospital: Any) -> tuple[SurfaceRoot, ...]:
         seen.add(key)
         roots.append(SurfaceRoot(host=host, base_path=base_path))
 
+    platform_host = platform_site_host()
     custom_host = _host_of(getattr(hospital, "aeo_domain", None))
-    _add(custom_host, "")
+    # 자기 도메인이 플랫폼 기본 호스트와 같으면 (플랫폼 호스트, "") 루트가 먼저 서서
+    # 그 호스트의 **모든 경로**가 이 병원 것이 된다 — 다른 병원의
+    # /{다른 slug}/contents/... 까지 이 병원 인용으로 귀속된다. 그 호스트에서 이
+    # 병원의 범위는 아래 경로형 루트(/{slug})가 이미 정확히 표현한다.
+    if custom_host and custom_host != platform_host:
+        _add(custom_host, "")
     subdomain = platform_subdomain_host(slug)
     if subdomain:
         _add(subdomain, "")
-    platform_host = platform_site_host()
     if platform_host and slug:
         _add(platform_host, f"/{slug}")
     return tuple(roots)

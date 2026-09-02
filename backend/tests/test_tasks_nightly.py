@@ -231,6 +231,105 @@ async def test_target_keyword_miss_twice_accepts_the_article_with_a_soft_finding
 
 
 @pytest.mark.asyncio
+async def test_alignment_rewrite_blocked_by_cost_guard_keeps_the_paid_candidate(monkeypatch):
+    """키워드 보완 재작성이 비용 가드에 막혀도 이미 결제한 1회차 글은 버리지 않는다.
+
+    회귀: 1회차에서 alignment finding 때문에 심사 없이 continue한 뒤 2회차가 비용 가드로
+    막히면 last_screening이 None이라 RuntimeError가 나고, 정상 글 한 편이 폐기된 채
+    GENERATION_FAILED 인시던트만 남았다.
+    """
+    generations = []
+    finding = "측정 질의 키워드 미반영: '허리디스크'이(가) 제목·첫 H2·FAQ 질문 어디에도 없습니다."
+
+    async def generate_once(*_args, **kwargs):
+        generations.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "허리 통증 안내",
+            "body": "본문",
+            "target_alignment_findings": [finding],
+        }
+
+    async def block_second_generation(*_args, **_kwargs):
+        return SimpleNamespace(allowed=False)
+
+    async def reviewer_must_not_run(**_kwargs):
+        raise AssertionError("심사를 통과하지 못한 후보에 리뷰어를 태우지 않는다")
+
+    monkeypatch.setattr(tasks, "generate_content", generate_once)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_must_not_run)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", block_second_generation)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "허리디스크"},
+    )
+
+    assert len(generations) == 1, "유료 생성은 1회만 나갔다"
+    assert content["title"] == "허리 통증 안내"
+    assert screening.status == "ALIGNED", "DRAFT로 저장돼 발행 게이트로 넘어간다"
+    assert screening.summary["target_alignment_findings"] == [finding]
+    assert "automatic_remediation_attempts" not in screening.summary
+
+
+@pytest.mark.asyncio
+async def test_alignment_rewrite_failure_keeps_the_paid_candidate(monkeypatch):
+    """보완 재작성이 생성 안전검사(ValueError)로 죽어도 1회차 정상 후보를 살린다."""
+    generations = []
+    finding = "측정 질의 키워드 미반영: '허리디스크'이(가) 제목·첫 H2·FAQ 질문 어디에도 없습니다."
+
+    async def miss_then_fail(*_args, **kwargs):
+        generations.append(kwargs.get("remediation_findings"))
+        if len(generations) == 1:
+            return {
+                "title": "허리 통증 안내",
+                "body": "본문",
+                "target_alignment_findings": [finding],
+            }
+        raise ValueError("본문이 최소 분량에 미달합니다")
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def reviewer_must_not_run(**_kwargs):
+        raise AssertionError("심사를 통과하지 못한 후보에 리뷰어를 태우지 않는다")
+
+    monkeypatch.setattr(tasks, "generate_content", miss_then_fail)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_must_not_run)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "허리디스크"},
+    )
+
+    assert len(generations) == 2, "재작성까지 두 번 결제됐고, 그중 살아남은 건 1회차다"
+    assert content["title"] == "허리 통증 안내"
+    assert screening.status == "ALIGNED"
+    assert screening.summary["target_alignment_findings"] == [finding]
+    assert screening.summary["automatic_remediation_attempts"] == 1
+
+
+@pytest.mark.asyncio
 async def test_price_geo_seo_value_error_rewrites_in_the_same_tick(monkeypatch):
     calls = []
 
@@ -534,8 +633,13 @@ def test_weekly_monitoring_skips_only_monthly_cohort_during_month_end_window(mon
     assert str(cohort_hospital.id) not in dispatched
 
 
-def test_weekly_monitoring_before_window_measures_non_cohort_hospitals(monkeypatch):
-    """day < SOV_MONTHLY_WINDOW_START_DAY: 이전과 동일하게 코호트 밖 병원은 매주 측정된다."""
+def test_weekly_monitoring_before_window_measures_the_cohort_too(monkeypatch):
+    """day < SOV_MONTHLY_WINDOW_START_DAY: 코호트도 주간 측정에 포함된다.
+
+    월간 측정(run_monthly_sov_measurement)은 24일~말일에만 돈다. 그 창 밖에서까지
+    코호트를 주간 배치에서 빼면 전환 코호트 병원은 매달 23일까지 아무 측정도 받지
+    못한다 — 제외는 월말 창 안에서만 성립한다 (CLAUDE.md STEP 8).
+    """
 
     cohort_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
     other_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
@@ -551,7 +655,7 @@ def test_weekly_monitoring_before_window_measures_non_cohort_hospitals(monkeypat
         tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [cohort_hospital]
     )
     monkeypatch.setattr(
-        # 월말 창 이전(10일)로 고정 — 코호트 제외 동작은 이전과 동일해야 한다
+        # 월말 창 이전(10일)로 고정 — 이날은 월간 측정이 돌지 않는다
         tasks.arrow,
         "now",
         lambda *_args, **_kwargs: arrow.get(2026, 8, 10, tzinfo="Asia/Seoul"),
@@ -565,8 +669,7 @@ def test_weekly_monitoring_before_window_measures_non_cohort_hospitals(monkeypat
 
     tasks.run_weekly_monitoring.run()
 
-    assert dispatched == [str(other_hospital.id)]
-    assert str(cohort_hospital.id) not in dispatched
+    assert dispatched == [str(cohort_hospital.id), str(other_hospital.id)]
 
 
 def test_weekly_monitoring_isolates_broker_failure_and_keeps_run_requested(monkeypatch):

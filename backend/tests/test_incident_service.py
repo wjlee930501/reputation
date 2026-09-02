@@ -14,11 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
 from app.models.hospital import Hospital
-from app.models.operations import Incident, IncidentSeverity, IncidentState
-from app.services.incident_safety import (
-    incident_escalated_to_human,
-    should_notify_incident_recovery,
+from app.models.operations import (
+    Incident,
+    IncidentSeverity,
+    IncidentState,
+    NotificationOutbox,
+    NotificationOutboxState,
 )
+from app.services.dependency_incident_helpers import open_notice_exists
 from app.services.incidents import (
     IncidentFilters,
     IncidentFingerprint,
@@ -590,37 +593,45 @@ def _recovery_incident(
     )
 
 
-def test_short_unowned_recovery_produces_no_slack_message() -> None:
-    # Given: an incident nobody was assigned that healed inside the recovery window
-    now = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
-    incident = _recovery_incident(first_seen_at=now - timedelta(minutes=10))
-
-    # When / Then: the machine's own round trip is a log line, not a Slack message
-    assert should_notify_incident_recovery(incident, now=now) is False
-    assert incident_escalated_to_human(incident) is False
-
-
-@pytest.mark.parametrize(
-    ("owner_id", "sla_due_at", "age_minutes"),
-    [
-        (uuid.UUID("b1000000-0000-0000-0000-000000000001"), None, 5),
-        (None, datetime(2026, 8, 19, 18, 0, tzinfo=UTC), 5),
-        (None, None, 45),
-    ],
-)
-def test_recovery_still_pages_when_a_person_was_already_involved(
-    owner_id: uuid.UUID | None, sla_due_at: datetime | None, age_minutes: int
+@pytest.mark.asyncio
+async def test_recovery_slack_is_owed_exactly_when_the_open_notice_was_queued(
+    db: AsyncSession,
 ) -> None:
-    # Given: an incident that was assigned, given a deadline, or open long enough to read
-    now = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
-    incident = _recovery_incident(
-        first_seen_at=now - timedelta(minutes=age_minutes),
-        owner_id=owner_id,
-        sla_due_at=sla_due_at,
-    )
+    """OPEN과 RECOVERED는 쌍으로만 억제된다.
 
-    # When / Then: the recovery closes the loop for the person who saw the failure
-    assert should_notify_incident_recovery(incident, now=now) is True
+    예전에는 담당자·기한 없이 30분 안에 복구된 건의 RECOVERED만 지웠다. OPEN은 이미
+    나간 뒤였으므로 채널에 "운영 확인 필요"가 아무도 닫지 않는 채로 남았다. 이제는
+    OPEN 공지가 실제로 outbox에 들어갔는지 하나만 본다.
+    """
+    # Given: 두 인시던트 — 한쪽만 OPEN 공지가 실제로 큐에 들어갔다
+    _owner, _second, hospital = await _actors_and_hospital(db)
+    notified = await open_or_touch_incident(db, _request(hospital))
+    silent = await open_or_touch_incident(
+        db, _request(hospital, fingerprint=IncidentFingerprint.PROVIDER_REJECTED)
+    )
+    queued_at = datetime(2026, 8, 19, 9, 0, tzinfo=UTC)
+    db.add(
+        NotificationOutbox(
+            id=uuid.uuid4(),
+            hospital_id=hospital.id,
+            incident_id=notified.id,
+            dedupe_key=f"INCIDENT_OPEN:{notified.id}:e1",
+            notification_type="INCIDENT_OPEN",
+            channel="SLACK",
+            state=NotificationOutboxState.PENDING.value,
+            payload={"blocks": []},
+            fallback_text="운영 확인 필요",
+            max_attempts=3,
+            next_attempt_at=queued_at,
+            created_at=queued_at,
+            updated_at=queued_at,
+        )
+    )
+    await db.flush()
+
+    # When / Then: 나간 OPEN은 반드시 닫히고, 나가지 않은 건은 조용히 끝난다
+    assert await open_notice_exists(db, notified.id) is True
+    assert await open_notice_exists(db, silent.id) is False
 
 
 def test_retrying_rows_are_context_not_operator_work() -> None:

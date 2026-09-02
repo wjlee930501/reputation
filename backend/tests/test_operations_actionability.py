@@ -16,6 +16,7 @@ from app.models.hospital import Hospital
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.post_publish_review_policy import (
+    auto_publish_due_predicate,
     human_post_publish_review_predicate,
     publicly_operational_hospital_predicate,
 )
@@ -523,6 +524,7 @@ def test_generation_notification_has_one_developer_fallback() -> None:
         owner_label="병원 운영 담당자",
         sla_label="예정 공개 전",
         problem="콘텐츠 생성 서비스가 이번 요청을 처리하지 못했습니다.",
+        incident_type="CONTENT_GENERATION_FAILED",
     )
 
     payload = build_open_incident_notification(
@@ -544,20 +546,20 @@ def test_today_queue_guidance_uses_the_content_check_link_for_both_states() -> N
     assert "콘텐츠 확인" in publish_action
 
 
-def _due_publish_sql(now: datetime) -> str:
-    return str(
-        today_queries.operator_visible_publish_due_predicate(
-            date(2026, 8, 19), now
-        ).compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
-    )
+_TODAY = date(2026, 8, 19)
 
 
 def test_todays_publication_slot_is_not_operator_work_before_the_eight_am_publisher() -> None:
     # Given: 07:30 KST — the automatic publisher has not run yet
-    before = _due_publish_sql(datetime(2026, 8, 18, 22, 30, tzinfo=UTC))
+    before_publisher = datetime(2026, 8, 18, 22, 30, tzinfo=UTC)
 
-    # Then: only a slot whose scheduled date already passed is real work
-    assert "content_items.scheduled_date < '2026-08-19'" in before
+    # Then: today's slot is context, a slot whose date already passed is real work
+    assert not today_queries.publish_due_requires_operator_action(
+        _TODAY, _TODAY, before_publisher
+    )
+    assert today_queries.publish_due_requires_operator_action(
+        _TODAY - timedelta(days=1), _TODAY, before_publisher
+    )
 
 
 @pytest.mark.parametrize(
@@ -571,10 +573,25 @@ def test_publication_slot_becomes_operator_work_once_the_publisher_has_had_its_t
     moment: datetime,
 ) -> None:
     # Given / When: at or after 08:00 KST the slot should have been published
-    after = _due_publish_sql(moment)
 
-    # Then: today's unpublished slot is visible again
-    assert "content_items.scheduled_date < '2026-08-19'" not in after
+    # Then: today's unpublished slot counts as operator work again
+    assert today_queries.publish_due_requires_operator_action(_TODAY, _TODAY, moment)
+
+
+def test_due_publish_query_predicate_never_drops_the_pre_eight_am_rows() -> None:
+    """The fold is a per-row flag, not a WHERE clause — the row must stay in the page.
+
+    Dropping it from the query removed it from `total` too, so the FE could not
+    collapse a row it never received and the count silently disagreed with the list.
+    """
+    sql = str(
+        auto_publish_due_predicate(_TODAY).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "content_items.scheduled_date <= '2026-08-19'" in sql
+    assert "content_items.scheduled_date < '2026-08-19'" not in sql
 
 
 def test_report_queue_guides_the_operator_to_the_real_generation_control() -> None:
@@ -704,6 +721,7 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
         admin_path="/operations",
         owner_label="미지정",
         sla_label="확인 필요",
+        incident_type="CONTENT_GENERATION_FAILED",
     )
 
     # When

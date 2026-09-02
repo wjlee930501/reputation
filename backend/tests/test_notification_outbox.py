@@ -86,6 +86,7 @@ def _projection(incident_id: uuid.UUID | None = None) -> IncidentSlackProjection
         admin_path="/operations?state=OPEN",
         owner_label="김효진 팀장",
         sla_label="오늘 18:00",
+        incident_type="CONTENT_GENERATION_FAILED",
     )
 
 

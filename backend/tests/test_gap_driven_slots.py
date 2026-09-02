@@ -26,6 +26,7 @@ from app.models.content import PLAN_DISTRIBUTION, ContentType
 from app.services.content_calendar import generate_monthly_slots
 from app.services.gap_driven_slots import (
     GAP_DRIVEN_TYPES,
+    ExistingSlot,
     GapTarget,
     build_gap_targets,
     plan_gap_driven_slots,
@@ -229,3 +230,107 @@ def test_build_gap_targets_dedupes_to_the_most_urgent_gap():
 
     assert len(targets) == 1
     assert targets[0].gap_rank == 0
+
+
+# ── 재실행: 상한은 한 달에 한 번만 소진된다 ──────────────────────────────────
+
+
+def _two_run_union(plan: str, first_targets, second_targets, first_batch_size: int):
+    """부분 생성(1회차) 뒤 남은 순번만 채우는 재실행(2회차)을 그대로 재현한다.
+
+    monthly_slots.create_next_month_slots_for_schedule과 같은 순서다:
+    월 전체를 계획 → 이미 저장된 순번을 걸러내고 나머지만 저장.
+    """
+    slots = _slots(plan)
+    first = plan_gap_driven_slots(slots, plan=plan, gap_targets=first_targets)
+    stored = [p for p in first if p.sequence_no <= first_batch_size]
+    existing = [
+        ExistingSlot(
+            sequence_no=p.sequence_no,
+            content_type=p.content_type,
+            gap_driven=p.query_target_id is not None,
+        )
+        for p in stored
+    ]
+    second = plan_gap_driven_slots(
+        slots, plan=plan, gap_targets=second_targets, existing=existing
+    )
+    union = stored + [p for p in second if p.sequence_no > first_batch_size]
+    return slots, union
+
+
+@pytest.mark.parametrize("plan", PLANS)
+def test_rerun_with_new_targets_stays_within_caps(plan):
+    """1회차 결과 + 2회차 결과의 합집합도 재배정 상한 안에 있어야 한다.
+
+    2회차의 격차 목록은 1회차와 다르다(측정이 계속 돌기 때문). 그래서 월 전체를
+    다시 계획하면 1회차가 이미 쓴 예산을 모르는 채 처음부터 다시 쓰게 된다.
+    """
+    slots, union = _two_run_union(plan, _local_targets(10), _mixed_targets(10), 8)
+    base = Counter(slot[1] for slot in slots)
+    after = Counter(p.content_type for p in union)
+
+    assert len(union) == len(slots)
+    assert {p.sequence_no for p in union} == {slot[2] for slot in slots}
+
+    pool_size = sum(1 for slot in slots if slot[1] in GAP_DRIVEN_TYPES)
+    committed = [p for p in union if p.query_target_id]
+    assert len(committed) <= int(pool_size * 0.5)
+
+    ceiling = max(PLAN_DISTRIBUTION[plan].get(t, 0) for t in GAP_DRIVEN_TYPES)
+    for content_type in GAP_DRIVEN_TYPES:
+        assert after[content_type] <= ceiling
+        assert after[content_type] >= base[content_type] - int(base[content_type] * 0.5)
+
+    for content_type in UNTOUCHED_TYPES:
+        assert after[content_type] == PLAN_DISTRIBUTION[plan].get(content_type, 0)
+
+
+def test_rerun_without_existing_slots_exceeds_the_half_pool_budget():
+    """`existing`을 넘기지 않으면 50% 예산이 두 번 소진된다 — 회귀를 고정한다."""
+    plan = "PLAN_20"
+    slots = _slots(plan)
+    pool_size = sum(1 for slot in slots if slot[1] in GAP_DRIVEN_TYPES)
+    budget = int(pool_size * 0.5)
+
+    first = plan_gap_driven_slots(slots, plan=plan, gap_targets=_local_targets(10))
+    stored = [p for p in first if p.sequence_no <= 8]
+    # 재실행이 이미 만들어진 슬롯을 모른 채 월 전체를 다시 계획하는 과거 동작.
+    naive = plan_gap_driven_slots(slots, plan=plan, gap_targets=_mixed_targets(10))
+    naive_union = stored + [p for p in naive if p.sequence_no > 8]
+    naive_committed = [p for p in naive_union if p.query_target_id]
+    assert len(naive_committed) > budget, "이 시나리오가 상한을 깨야 회귀 테스트가 성립한다"
+
+    _, guarded_union = _two_run_union(plan, _local_targets(10), _mixed_targets(10), 8)
+    guarded_committed = [p for p in guarded_union if p.query_target_id]
+    assert len(guarded_committed) <= budget
+
+
+def test_rerun_keeps_already_stored_slot_types_and_targets():
+    """이미 저장된 순번은 2회차 계획이 다시 건드리지 않는다."""
+    plan = "PLAN_16"
+    slots = _slots(plan)
+    first = plan_gap_driven_slots(slots, plan=plan, gap_targets=_local_targets(10))
+    stored = {p.sequence_no: p for p in first if p.sequence_no <= 5}
+    existing = [
+        ExistingSlot(
+            sequence_no=p.sequence_no,
+            content_type=p.content_type,
+            gap_driven=p.query_target_id is not None,
+        )
+        for p in stored.values()
+    ]
+
+    second = plan_gap_driven_slots(
+        slots, plan=plan, gap_targets=_mixed_targets(8), existing=existing
+    )
+    replanned = {p.sequence_no: p for p in second if p.sequence_no in stored}
+
+    for sequence_no, kept in stored.items():
+        assert replanned[sequence_no].content_type is kept.content_type
+        # 저장된 슬롯에는 새 타깃이 붙지 않는다.
+        assert replanned[sequence_no].query_target_id is None
+    new_targets = {
+        p.query_target_id for p in second if p.query_target_id and p.sequence_no not in stored
+    }
+    assert len(new_targets) == len([p for p in second if p.query_target_id])

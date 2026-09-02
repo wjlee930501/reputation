@@ -97,7 +97,7 @@ async def open_weekly_sov_capacity_digest(
                         incident.version,
                         incident.safe_error_message,
                         incident.episode_seq,
-                        incident_type_of(incident),
+                        incident_type=incident_type_of(incident),
                     ),
                     settings.ADMIN_BASE_URL,
                 ),
@@ -229,7 +229,7 @@ async def _open_sov_failure(
                         incident.safe_error_message
                         or f"{period_label} AI 검색 노출 측정에 실패했습니다.",
                         incident.episode_seq,
-                        incident_type_of(incident),
+                        incident_type=incident_type_of(incident),
                     ),
                     settings.ADMIN_BASE_URL,
                 ),

@@ -13,6 +13,7 @@ from app.models.content import ContentItem
 from app.models.hospital import Hospital
 from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.services.content_publish_notifications import build_publish_notification_intent
+from app.services.incident_types import incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection, validate_message
 from app.services.notification_messages import build_open_incident_notification
 from app.services.operation_run_payloads import DispatchPayload, build_request_payload
@@ -112,6 +113,7 @@ def _ensure_incident_and_outbox(
         version=incident.version,
         problem="대표 이미지 생성이 완료되지 않았습니다.",
         episode_seq=incident.episode_seq,
+        incident_type=incident_type_of(incident),
     )
     intent = build_open_incident_notification(projection, _ADMIN_BASE_URL)
     validate_message(intent.message, allowed_admin_base_url=_ADMIN_BASE_URL)

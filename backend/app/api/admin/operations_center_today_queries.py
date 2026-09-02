@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import and_, case, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
-from sqlalchemy.sql.elements import ColumnElement
 
 from app.api.admin.operations_center_query_common import (
     OperationsFilters,
@@ -54,21 +53,23 @@ def _today_operator_copy(*, review: bool) -> tuple[str, str]:
     )
 
 
-def operator_visible_publish_due_predicate(
-    today: date, now: datetime
-) -> ColumnElement[bool]:
-    """Return the due-publish rows that are actually waiting on a person.
+def publish_due_requires_operator_action(
+    scheduled_date: date, today: date, now: datetime
+) -> bool:
+    """Return whether a due-publish slot is work a person must do right now.
 
     A slot scheduled for today is normal state until the 08:00 KST publisher has had
-    its turn; showing it as MEDIUM operator work before then invents a task nobody
-    can finish. A slot whose scheduled date already passed is real work and stays
-    visible at every hour.
+    its turn; counting it as MEDIUM operator work before then invents a task nobody
+    can finish. Dropping it from the response instead was worse — the row vanished
+    from the queue and from the totals, so the FE could not collapse what it never
+    received. The row ships either way and only this flag changes, which is what
+    `OperationsQueueRow.requires_operator_action` and the Slack policy both promise.
+    A slot whose scheduled date already passed is real work at every hour.
     """
 
-    due_publish = auto_publish_due_predicate(today)
-    if now.astimezone(_SEOUL).time() < _AUTO_PUBLISH_HOUR:
-        return and_(due_publish, ContentItem.scheduled_date < today)
-    return due_publish
+    if scheduled_date < today:
+        return True
+    return now.astimezone(_SEOUL).time() >= _AUTO_PUBLISH_HOUR
 
 
 async def load_today_queue(
@@ -89,7 +90,7 @@ async def load_today_queue(
     today = now.astimezone(_SEOUL).date()
     overdue_before = now - timedelta(hours=_OVERDUE_REVIEW_HOURS)
     waiting_review = human_post_publish_review_predicate()
-    due_publish = operator_visible_publish_due_predicate(today, now)
+    due_publish = auto_publish_due_predicate(today)
     task_state = case(
         (and_(waiting_review, ContentItem.published_at < overdue_before), "OVERDUE_REVIEW"),
         (waiting_review, "REVIEW_PENDING"),
@@ -207,6 +208,13 @@ async def load_today_queue(
                 sla_due_at=due_at,
                 sla_state=sla_state(due_at, now),
                 next_action=next_action,
+                # 08:00 자동 발행 전의 당일 슬롯은 응답에 남되 사람 업무로 세지 않는다.
+                requires_operator_action=(
+                    review
+                    or publish_due_requires_operator_action(
+                        content.scheduled_date, today, now
+                    )
+                ),
                 action=OperationsAction(
                     kind="REVIEW_CONTENT",
                     label=_TODAY_ACTION_LABEL,
@@ -228,4 +236,4 @@ async def load_today_queue(
     return total, items
 
 
-__all__ = ("load_today_queue", "operator_visible_publish_due_predicate")
+__all__ = ("load_today_queue", "publish_due_requires_operator_action")

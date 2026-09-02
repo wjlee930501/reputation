@@ -8,6 +8,7 @@ executing them.
 
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.dialects import postgresql
@@ -85,3 +86,51 @@ def test_get_sov_queries_aggregation_sql_compiles_and_groups_by_query_and_platfo
     assert sql.count("FILTER (WHERE") == 4
     # raw_response(AI 응답 원문)를 더 이상 로드하지 않는다 — SELECT 절에 없어야 한다.
     assert "raw_response" not in sql
+
+
+def test_platform_breakdown_merges_case_variant_rows_instead_of_overwriting():
+    """GROUP BY는 원시 `ai_platform`이라 대소문자 변종이 두 행으로 나뉜다.
+
+    표시 키로 대문자화하면서 뒤 행이 앞 행을 덮어쓰면 측정 일부가 조용히 사라지고,
+    화면의 mention_rate가 남은 한 행만으로 계산된다.
+    """
+    rows = [
+        SimpleNamespace(
+            ai_platform="chatgpt",
+            total_count=8,
+            mention_count=6,
+            failure_count=1,
+            ambiguous_count=1,
+        ),
+        SimpleNamespace(
+            ai_platform="ChatGPT",
+            total_count=2,
+            mention_count=0,
+            failure_count=3,
+            ambiguous_count=2,
+        ),
+    ]
+
+    breakdown = sov_api._build_platform_breakdown(rows)
+
+    assert list(breakdown) == ["CHATGPT"]
+    merged = breakdown["CHATGPT"]
+    assert merged["total_count"] == 10
+    assert merged["mention_count"] == 6
+    assert merged["failure_count"] == 4
+    assert merged["ambiguous_count"] == 3
+    assert merged["mention_rate"] == 60.0
+
+
+def test_platform_breakdown_reports_no_rate_when_nothing_was_confirmed():
+    rows = [
+        SimpleNamespace(
+            ai_platform="gemini",
+            total_count=0,
+            mention_count=0,
+            failure_count=5,
+            ambiguous_count=0,
+        )
+    ]
+
+    assert sov_api._build_platform_breakdown(rows)["GEMINI"]["mention_rate"] is None

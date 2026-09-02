@@ -16,6 +16,7 @@ from tenacity import stop_after_attempt  # noqa: E402
 from app.models.content import ContentType  # noqa: E402
 from app.services import content_engine  # noqa: E402
 from app.services.content_engine import (  # noqa: E402
+    FORBIDDEN_CHECK_FIELDS,
     _build_content_brief_context,
     _build_philosophy_context,
     _build_remediation_context,
@@ -27,9 +28,8 @@ from app.services.content_engine import (  # noqa: E402
     _validate_body_length,
     _validate_geo,
     _validate_unverified_price_claims,
-    forbidden_check_text,
 )
-from app.utils.medical_filter import check_forbidden  # noqa: E402
+from app.utils.medical_filter import check_forbidden_content_fields  # noqa: E402
 
 
 def test_parse_json_response_accepts_fenced_json():
@@ -159,31 +159,6 @@ def test_validate_unverified_price_claims_still_rejects_approximate_won(claim):
         _validate_unverified_price_claims(claim)
 
 
-def test_forbidden_check_text_includes_faq_fields():
-    # P1-2 회귀 가드: FAQPage rich result로 그대로 노출되는 faq_question/faq_answer_summary가
-    # 금지 표현 검사 텍스트에서 빠지면 의료광고법 필터를 통째로 우회한다.
-    result = {
-        "title": "어깨 통증 진료 안내",
-        "body": "환자 상태에 따라 진료 방향을 설명합니다.",
-        "meta_description": "어깨 통증 진료 안내입니다.",
-        "faq_question": "어깨 통증 완치 가능한가요?",
-        "faq_answer_summary": "성공률이 높은 치료를 안내합니다.",
-    }
-
-    violations = check_forbidden(forbidden_check_text(result))
-
-    assert "완치" in violations
-    assert "성공률" in violations
-
-
-def test_forbidden_check_text_ignores_missing_faq_fields():
-    result = {"title": "제목", "body": "본문", "meta_description": None}
-
-    text = forbidden_check_text(result)
-
-    assert "제목" in text and "본문" in text
-
-
 async def test_forbidden_response_is_discarded_and_second_complete_content_is_returned(
     monkeypatch,
 ):
@@ -249,6 +224,45 @@ async def test_forbidden_response_is_discarded_and_second_complete_content_is_re
     assert saved["body"] == second["body"]
     assert saved["meta_description"] == second["meta_description"]
     assert first["body"] not in saved.values()
+
+
+# ── FAQ 필드 금지 표현 회귀 (P1-2) ────────────────────────────────────
+
+
+@pytest.mark.parametrize("field", ["faq_question", "faq_answer_summary"])
+def test_generation_layer_catches_forbidden_expressions_in_faq_fields(field):
+    """FAQ 필드는 공개 표면(FAQPage rich result)에 그대로 나가므로 **생성 단계**에서
+    걸러야 한다. 발행 게이트만 잡으면 위반 초안이 매일 밤 쌓이고, 08:00 발행 배치가
+    차단 요약을 올릴 때까지 아무도 모른다.
+
+    이 테스트는 `FORBIDDEN_CHECK_FIELDS`에서 FAQ 필드를 빼는 순간 실패한다 —
+    생성 엔진이 실제로 쓰는 그 튜플을 그대로 넘기기 때문이다.
+    """
+    result = {
+        "title": "복통 진료 전 확인할 점",
+        "body": "## 증상\n테스트병원 김원장은 강남에서 충분히 설명합니다.",
+        "meta_description": "복통 진료 전 확인할 점을 정리했습니다.",
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    result[field] = "부작용 없는 시술인가요?"
+
+    violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
+
+    assert violations == ["부작용 없는"]
+    assert field in FORBIDDEN_CHECK_FIELDS
+
+
+def test_clean_faq_fields_pass_the_generation_layer_check():
+    result = {
+        "title": "복통 진료 전 확인할 점",
+        "body": "## 증상\n테스트병원 김원장은 강남에서 충분히 설명합니다.",
+        "meta_description": "복통 진료 전 확인할 점을 정리했습니다.",
+        "faq_question": "복통이 계속되면 언제 병원에 가야 하나요?",
+        "faq_answer_summary": "증상이 이틀 이상 이어지면 진료를 받아보시길 권합니다.",
+    }
+
+    assert check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS) == []
 
 
 # ── references 정규화 순서 회귀 (P-2: GEO hard-fail이 raw references로 검증되던 버그) ──

@@ -496,3 +496,60 @@ def test_rebuilt_doctor_artifacts_keep_distinct_immutable_paths_and_hashes(
     assert Path(second.path).read_bytes() == b"validated-v2"
     assert sha256(Path(first.path).read_bytes()).hexdigest() == first.sha256
     assert sha256(Path(second.path).read_bytes()).hexdigest() == second.sha256
+
+
+# ── 자사 인용(owned source) 매칭 경계 ──────────────────────────────────
+
+
+def _hospital_with(**overrides):
+    fields = {
+        "website_url": None,
+        "blog_url": None,
+        "kakao_channel_url": None,
+        "google_business_profile_url": None,
+        "google_maps_url": None,
+        "naver_place_url": None,
+        "aeo_domain": None,
+        "slug": "jangpyeonhan",
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def test_a_pathless_shared_host_never_claims_the_whole_host():
+    """`blog_url`이 경로 없이 저장되면 남의 네이버 블로그가 우리 인용이 된다."""
+    from app.services.report_engine import _matches_owned_source, _owned_source_roots
+
+    roots = _owned_source_roots(_hospital_with(blog_url="https://blog.naver.com"))
+
+    assert not _matches_owned_source("https://blog.naver.com/other-clinic/123", roots)
+    assert not _matches_owned_source("https://blog.naver.com/", roots)
+
+
+def test_an_owned_shared_host_path_still_matches_its_own_posts():
+    from app.services.report_engine import _matches_owned_source, _owned_source_roots
+
+    roots = _owned_source_roots(_hospital_with(blog_url="https://blog.naver.com/jangpyeonhan"))
+
+    assert _matches_owned_source("https://blog.naver.com/jangpyeonhan/223", roots)
+    assert _matches_owned_source("https://m.blog.naver.com/jangpyeonhan", roots) is False
+    assert not _matches_owned_source("https://blog.naver.com/other-clinic/223", roots)
+
+
+def test_owned_matching_normalizes_encoding_and_duplicate_slashes_like_citations():
+    """인용 URL 정규화와 같은 규칙을 써야 한글 경로가 owned에서 빠지지 않는다."""
+    from app.services.report_engine import _matches_owned_source, _owned_source_roots
+
+    roots = _owned_source_roots(_hospital_with(website_url="https://clinic.example.kr/진료안내/"))
+
+    assert _matches_owned_source(
+        "https://clinic.example.kr//%EC%A7%84%EB%A3%8C%EC%95%88%EB%82%B4/%EB%8C%80%EC%9E%A5", roots
+    )
+
+
+def test_a_private_host_without_a_path_still_owns_its_whole_domain():
+    from app.services.report_engine import _matches_owned_source, _owned_source_roots
+
+    roots = _owned_source_roots(_hospital_with(website_url="https://clinic.example.kr"))
+
+    assert _matches_owned_source("https://www.clinic.example.kr/doctor", roots)

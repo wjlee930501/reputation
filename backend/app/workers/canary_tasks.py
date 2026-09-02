@@ -89,6 +89,9 @@ def _outbox_contract_dry_run() -> None:
         admin_path="/operations",
         owner_label="자동 점검",
         sla_label="확인 완료",
+        # 렌더 계약만 검증하는 드라이런이라 실제로 전송되지 않지만, 채널 라우팅까지
+        # 같은 경로로 돌려 보려면 개발 채널 타입을 쓰는 것이 사실에 가깝다.
+        incident_type="BACKGROUND_TASK_FAILED",
     )
     intent = build_open_incident_notification(projection, settings.ADMIN_BASE_URL)
     validate_message(intent.message, allowed_admin_base_url=settings.ADMIN_BASE_URL)

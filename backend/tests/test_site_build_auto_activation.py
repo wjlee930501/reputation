@@ -36,6 +36,7 @@ class _FakeSyncDB:
         self.added: list[object] = []
         self.commits = 0
         self.executed: list[object] = []
+        self.locked_reads: list[bool] = []
 
     def __enter__(self) -> _FakeSyncDB:
         return self
@@ -43,7 +44,10 @@ class _FakeSyncDB:
     def __exit__(self, *_args: object) -> bool:
         return False
 
-    def get(self, _model: object, object_id: uuid.UUID) -> Hospital | None:
+    def get(
+        self, _model: object, object_id: uuid.UUID, *, with_for_update: bool = False
+    ) -> Hospital | None:
+        self.locked_reads.append(bool(with_for_update))
         return self.hospital if self.hospital.id == object_id else None
 
     def execute(self, statement: object) -> _FakeResult:
@@ -231,31 +235,56 @@ def test_build_before_profile_and_v0_gates_changes_nothing(monkeypatch) -> None:
 # ── 엔드포인트가 같은 서비스를 쓰는지 ───────────────────────────────
 
 
+class _FakeAsyncDB:
+    """`/activate`가 쓰는 만큼만 흉내내는 비동기 세션."""
+
+    def __init__(self, hospital: Hospital) -> None:
+        self.hospital = hospital
+        self.added: list[object] = []
+        self.commits = 0
+        self.locked_reads: list[bool] = []
+
+    async def get(
+        self, _model: object, object_id: uuid.UUID, *, with_for_update: bool = False
+    ) -> Hospital | None:
+        self.locked_reads.append(bool(with_for_update))
+        return self.hospital if self.hospital.id == object_id else None
+
+    async def scalar(self, _statement: object) -> None:
+        return None
+
+    def add(self, item: object) -> None:
+        self.added.append(item)
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+
+def _patch_activate_endpoint_side_effects(monkeypatch) -> None:
+    """revalidate 설정 검사와 실제 revalidate 호출만 비활성화한다.
+
+    monkeypatch로 되돌리지 않으면 이 모듈 이후의 모든 테스트가 no-op revalidate를
+    물려받는다(프로세스 전역 오염).
+    """
+    import app.api.admin.hospitals as hospitals_api
+
+    async def _noop_revalidate(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setattr(hospitals_api, "ensure_site_revalidate_configured", lambda: None)
+    monkeypatch.setattr(
+        hospitals_api, "trigger_hospital_site_revalidate_safe", _noop_revalidate
+    )
+
+
 @pytest.mark.asyncio
-async def test_activate_endpoint_uses_the_shared_transition() -> None:
+async def test_activate_endpoint_uses_the_shared_transition(monkeypatch) -> None:
+    import app.api.admin.hospitals as hospitals_api
     from app.api.admin.hospitals import activate_hospital as activate_endpoint
     from app.services import hospital_activation
 
     hospital = _hospital(site_built=True, status=HospitalStatus.PENDING_DOMAIN)
-
-    class _FakeAsyncDB:
-        def __init__(self) -> None:
-            self.added: list[object] = []
-            self.commits = 0
-
-        async def get(self, _model: object, object_id: uuid.UUID) -> Hospital | None:
-            return hospital if hospital.id == object_id else None
-
-        async def scalar(self, _statement: object) -> None:
-            return None
-
-        def add(self, item: object) -> None:
-            self.added.append(item)
-
-        async def commit(self) -> None:
-            self.commits += 1
-
-    db = _FakeAsyncDB()
+    db = _FakeAsyncDB(hospital)
     calls: list[str] = []
     original = hospital_activation.activate_hospital
 
@@ -263,19 +292,10 @@ async def test_activate_endpoint_uses_the_shared_transition() -> None:
         calls.append(kwargs["reason"])
         return await original(*args, **kwargs)
 
-    import app.api.admin.hospitals as hospitals_api
+    _patch_activate_endpoint_side_effects(monkeypatch)
+    monkeypatch.setattr(hospitals_api, "activate_hospital_transition", _tracked)
 
-    hospitals_api.activate_hospital_transition = _tracked  # type: ignore[assignment]
-    hospitals_api.ensure_site_revalidate_configured = lambda: None  # type: ignore[assignment]
-
-    async def _noop_revalidate(*_args, **_kwargs):
-        return True
-
-    hospitals_api.trigger_hospital_site_revalidate_safe = _noop_revalidate  # type: ignore[assignment]
-    try:
-        result = await activate_endpoint(hospital.id, db)
-    finally:
-        hospitals_api.activate_hospital_transition = original  # type: ignore[assignment]
+    result = await activate_endpoint(hospital.id, db)
 
     assert calls == ["OPERATOR_PLATFORM_ACTIVATION"]
     assert result["site_live"] is True
@@ -284,6 +304,32 @@ async def test_activate_endpoint_uses_the_shared_transition() -> None:
     assert audit.action == "activate_hospital"
     assert audit.actor != AUTO_ACTIVATE_ACTOR
     assert db.commits == 1
+    # 판정과 전환은 잠긴 행 위에서 일어나야 한다.
+    assert db.locked_reads == [True]
+
+
+@pytest.mark.asyncio
+async def test_activate_endpoint_refuses_to_revive_a_paused_hospital(monkeypatch) -> None:
+    """PAUSED 재개는 DNS를 다시 확인하는 /resume만 한다 — /activate는 409로 막는다."""
+
+    from fastapi import HTTPException
+
+    from app.api.admin.hospitals import activate_hospital as activate_endpoint
+    from app.services.hospital_activation import STATUS_NOT_ACTIVATABLE_CODE
+
+    hospital = _hospital(site_built=True, site_live=True, status=HospitalStatus.PAUSED)
+    db = _FakeAsyncDB(hospital)
+    _patch_activate_endpoint_side_effects(monkeypatch)
+
+    with pytest.raises(HTTPException) as raised:
+        await activate_endpoint(hospital.id, db)
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail["code"] == STATUS_NOT_ACTIVATABLE_CODE
+    assert "/resume" in raised.value.detail["message"]
+    assert hospital.status is HospitalStatus.PAUSED
+    assert db.added == []
+    assert db.commits == 0
 
 
 @pytest.mark.asyncio

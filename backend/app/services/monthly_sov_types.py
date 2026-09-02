@@ -302,6 +302,11 @@ class MeasurementBasis:
     cell_count: int
     repeat_count: int
     attempts_used: int
+    # 셀별 반복 수의 최소·최대. `repeat_count`(평균)만으로는 부분 측정된 달을
+    # 설명할 수 없어 각주가 존재하지 않은 표본("반복 3회")을 말하게 된다.
+    # 구버전 payload에는 없으므로 기본값 0이고, 읽는 쪽이 0을 "모름"으로 다룬다.
+    repeat_min: int = 0
+    repeat_max: int = 0
 
     def to_payload(self) -> MeasurementBasisPayload:
         return {
@@ -309,6 +314,8 @@ class MeasurementBasis:
             "platform_count": self.platform_count,
             "cell_count": self.cell_count,
             "repeat_count": self.repeat_count,
+            "repeat_min": self.repeat_min,
+            "repeat_max": self.repeat_max,
             "attempts_used": self.attempts_used,
         }
 

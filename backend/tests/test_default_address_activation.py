@@ -20,8 +20,11 @@ class FakeDB:
         self.hospital = hospital
         self.committed = False
         self.added = []
+        self.locked_reads: list[bool] = []
 
-    async def get(self, model, object_id):
+    async def get(self, model, object_id, *, with_for_update=False):
+        # 상태 전환 엔드포인트는 판정과 쓰기를 한 잠금 안에 두려고 FOR UPDATE로 읽는다.
+        self.locked_reads.append(bool(with_for_update))
         return self.hospital if self.hospital.id == object_id else None
 
     async def scalar(self, stmt):
@@ -78,6 +81,8 @@ async def test_activate_without_custom_domain():
     assert hospital.site_live is True
     assert result["site_live"] is True
     assert db.committed is True
+    # 게이트 판정과 전환은 잠긴 행 위에서 일어난다 (동시 /pause가 덮이지 않도록).
+    assert db.locked_reads == [True]
 
 
 @pytest.mark.asyncio

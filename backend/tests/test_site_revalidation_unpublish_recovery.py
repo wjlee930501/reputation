@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.content import ContentItem, ContentStatus
-from app.models.operations import OperationRun
+from app.models.operations import OperationRun, OperationRunState
 from app.services import site_revalidation_control as control
 from app.workers import tasks
 
@@ -26,9 +26,11 @@ _PUBLISHED_AT = datetime(2026, 8, 20, 23, 5, tzinfo=UTC)
 class _FakeAsyncSession:
     """start_revalidation_failure가 쓰는 좁은 표면만 흉내낸다."""
 
-    def __init__(self, hospital, content):
+    def __init__(self, hospital, content, existing_runs=None):
         self._hospital = hospital
         self._content = content
+        # 멱등 키 → 이미 열려 있는(또는 닫힌) run. 키가 겹치는지를 그대로 재현한다.
+        self._existing_runs = existing_runs or {}
         self.added: list[OperationRun] = []
         self.commits = 0
 
@@ -42,8 +44,14 @@ class _FakeAsyncSession:
         row = None if self._content is None else (self._hospital, self._content)
         return SimpleNamespace(one_or_none=lambda: row)
 
-    async def scalar(self, _statement):
-        return None  # 기존 run 없음 — 항상 새로 연다.
+    async def scalar(self, statement):
+        """조회한 멱등 키에 해당하는 run만 돌려준다 (없으면 새로 연다)."""
+        if not self._existing_runs:
+            return None
+        for value in statement.compile().params.values():
+            if isinstance(value, str) and value in self._existing_runs:
+                return self._existing_runs[value]
+        return None
 
     def add(self, obj):
         self.added.append(obj)
@@ -70,8 +78,8 @@ def _content(hospital_id, *, status, published_at, content_id=None):
     )
 
 
-def _install(monkeypatch, hospital, content) -> _FakeAsyncSession:
-    session = _FakeAsyncSession(hospital, content)
+def _install(monkeypatch, hospital, content, existing_runs=None) -> _FakeAsyncSession:
+    session = _FakeAsyncSession(hospital, content, existing_runs)
     monkeypatch.setattr(control, "get_async_sessionmaker", lambda: (lambda: session))
 
     async def _no_incident(_db, _run, *, terminal):
@@ -202,6 +210,88 @@ async def test_publish_and_unpublish_runs_do_not_share_idempotency_key(monkeypat
     )
     assert publish_run.request_payload["direction"] == control.DIRECTION_PUBLISH
     assert unpublish_run.request_payload["direction"] == control.DIRECTION_UNPUBLISH
+
+
+# ── (d) 발행 후 본문 수정판의 갱신 실패도 재시도를 얻는다 ─────────────────
+
+
+_EDITED_AT = datetime(2026, 8, 21, 9, 30, tzinfo=UTC)
+
+
+def _succeeded_run(hospital_id, content_id, key) -> OperationRun:
+    """직전 판의 캐시 갱신이 성공으로 닫힌 상태."""
+    return OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type="SITE_REVALIDATION",
+        state=OperationRunState.SUCCEEDED.value,
+        idempotency_key=key,
+        request_payload={"content_id": str(content_id), "direction": control.DIRECTION_PUBLISH},
+        attempt_count=1,
+        total_count=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_edit_after_a_successful_refresh_opens_a_new_retry(monkeypatch):
+    """발행 성공 → AE 본문 수정 → 갱신 실패면 새 run이 열려야 한다.
+
+    published_at만으로 판을 식별하면 수정본의 실패가 이미 SUCCEEDED로 닫힌 run에
+    흡수돼 재시도도 인시던트도 없이 사라진다 (공개 표면에 옛 본문 잔존).
+    """
+    hospital = _hospital()
+    content_id = uuid.uuid4()
+    first_key = f"site-revalidation:{content_id}:{_PUBLISHED_AT.isoformat()}"
+
+    edited = _content(
+        hospital.id,
+        status=ContentStatus.PUBLISHED,
+        published_at=_PUBLISHED_AT,
+        content_id=content_id,
+    )
+    edited.body_updated_at = _EDITED_AT
+    session = _install(
+        monkeypatch,
+        hospital,
+        edited,
+        {first_key: _succeeded_run(hospital.id, content_id, first_key)},
+    )
+
+    plan = await control.start_revalidation_failure(hospital.slug, content_id)
+
+    assert plan is not None
+    assert plan.created is True
+    assert plan.delay_seconds == 60
+    (run,) = session.added
+    assert run.idempotency_key == f"{first_key}:r{_EDITED_AT.isoformat()}"
+    assert run.request_payload["direction"] == control.DIRECTION_PUBLISH
+
+
+@pytest.mark.asyncio
+async def test_same_edition_failure_still_reuses_the_closed_run(monkeypatch):
+    """같은 판(수정 없음)의 반복 실패는 예전처럼 기존 run으로 합쳐진다 — 키는 판 단위다."""
+    hospital = _hospital()
+    content_id = uuid.uuid4()
+    first_key = f"site-revalidation:{content_id}:{_PUBLISHED_AT.isoformat()}"
+    published = _content(
+        hospital.id,
+        status=ContentStatus.PUBLISHED,
+        published_at=_PUBLISHED_AT,
+        content_id=content_id,
+    )
+    session = _install(
+        monkeypatch,
+        hospital,
+        published,
+        {first_key: _succeeded_run(hospital.id, content_id, first_key)},
+    )
+
+    plan = await control.start_revalidation_failure(hospital.slug, content_id)
+
+    assert plan is not None
+    assert plan.created is False
+    assert plan.delay_seconds is None
+    assert session.added == []
 
 
 def test_run_direction_defaults_to_publish_for_legacy_payloads():

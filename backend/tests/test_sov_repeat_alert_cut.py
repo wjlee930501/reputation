@@ -259,6 +259,13 @@ def test_run_sov_typed_failure_skips_generic_task_failed_slack(monkeypatch):
 
 
 def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
+    """OPEN 공지가 나간 적이 없으면 복구도 조용히 끝난다.
+
+    RUN_SOV의 비용 차단·분류된 실패는 파이프라인이 자기 인시던트를 내므로 위
+    `record_task_failure`가 일찍 반환하고 generic OPEN 공지를 만들지 않는다. 그 뒤의
+    성공은 인시던트만 닫고 Slack을 만들지 않아야 한다. 반대로 OPEN이 실제로 나간
+    건이라면 RECOVERED가 반드시 따라간다(tests/test_task_incidents.py).
+    """
     run_id = uuid.uuid4()
     task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
     run = SimpleNamespace(id=run_id, operation_type="RUN_SOV", task_id="worker-task")
@@ -270,8 +277,12 @@ def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
     enqueued = []
 
     class FakeSession:
+        def __init__(self):
+            # 조회 순서: 인시던트 → 이 인시던트의 INCIDENT_OPEN outbox 행(없음)
+            self._results = [incident, None]
+
         def scalar(self, _stmt):
-            return incident
+            return self._results.pop(0) if self._results else None
 
         def commit(self):
             return None

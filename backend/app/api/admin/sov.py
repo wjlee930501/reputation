@@ -298,23 +298,36 @@ def _build_platform_breakdown(agg_rows: list[Any]) -> dict[str, dict[str, Any]]:
     """쿼리 하나의 (query_id, ai_platform)별 SQL 집계 행들로부터 플랫폼별 분해를 만든다.
 
     각 행은 get_sov_queries의 agg_stmt(GROUP BY query_id, ai_platform)에서 이미
-    성공/언급/실패/판정보류를 SQL FILTER로 나눠 계산해 왔으므로 여기서는 재집계 없이
-    표시용 라벨과 mention_rate만 붙인다.
+    성공/언급/실패/판정보류를 SQL FILTER로 나눠 계산해 왔다. 다만 GROUP BY는 원시
+    `ai_platform` 값이므로 같은 서비스가 대소문자만 다르게 저장돼 있으면
+    ("chatgpt"/"ChatGPT") 행이 둘로 나뉜다. 표시 키로 대문자화하면서 뒤 행이 앞 행을
+    **덮어써** 측정 일부가 조용히 사라졌다 — 그래서 여기서 키별로 합산한 뒤
+    mention_rate를 합산값에서 다시 계산한다.
     """
     breakdown: dict[str, dict[str, Any]] = {}
     for row in agg_rows:
         platform = str(getattr(row, "ai_platform", None) or "UNKNOWN").upper()
-        total = row.total_count
+        bucket = breakdown.setdefault(
+            platform,
+            {
+                "platform_label": _display_label(PLATFORM_DISPLAY_LABELS, platform),
+                "mention_count": 0,
+                "total_count": 0,
+                "failure_count": 0,
+                "ambiguous_count": 0,
+                "mention_rate": None,
+            },
+        )
+        bucket["mention_count"] += row.mention_count or 0
+        bucket["total_count"] += row.total_count or 0
+        bucket["failure_count"] += row.failure_count or 0
+        bucket["ambiguous_count"] += row.ambiguous_count or 0
+    for bucket in breakdown.values():
+        total = bucket["total_count"]
         # 해당 플랫폼 측정이 전부 실패한 경우 None — 실패를 0% 언급으로 뒤바꾸지 않는다.
-        mention_rate = round(row.mention_count / total * 100, 1) if total else None
-        breakdown[platform] = {
-            "platform_label": _display_label(PLATFORM_DISPLAY_LABELS, platform),
-            "mention_count": row.mention_count,
-            "total_count": total,
-            "failure_count": row.failure_count,
-            "ambiguous_count": row.ambiguous_count,
-            "mention_rate": mention_rate,
-        }
+        bucket["mention_rate"] = (
+            round(bucket["mention_count"] / total * 100, 1) if total else None
+        )
     return dict(sorted(breakdown.items()))
 
 

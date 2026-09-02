@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Final
 
 from sqlalchemy import ColumnElement
@@ -20,9 +20,6 @@ _SECRET: Final = re.compile(
 )
 _PHONE: Final = re.compile(r"(?<!\d)(?:\+?82[- ]?)?0?1\d[- ]?\d{3,4}[- ]?\d{4}(?!\d)")
 _ADMIN_ROUTE_ROOTS: Final = ("/operations", "/hospitals", "/leads")
-# An incident that opened and healed inside this window never reached a human, so
-# its recovery is a log line, not a Slack message.
-RECOVERY_AUTO_CLOSE_WINDOW: Final = timedelta(minutes=30)
 
 
 def build_incident_key(
@@ -103,32 +100,6 @@ def project_incident_labels(incident: Incident, *, now: datetime) -> IncidentLab
         state is IncidentState.OPEN,
         state is IncidentState.RETRYING,
     )
-
-
-def incident_escalated_to_human(incident: Incident) -> bool:
-    """Return whether a person was ever put on the hook for this incident."""
-
-    return incident.owner_id is not None or incident.sla_due_at is not None
-
-
-def should_notify_incident_recovery(incident: Incident, *, now: datetime) -> bool:
-    """Return whether an automatic recovery still deserves a Slack message.
-
-    A failure that opened and healed inside the recovery window, with nobody
-    assigned and no acknowledgement, is machine noise: the durable incident row and
-    its audit trail are the record. Only an incident that already reached a human —
-    assigned, given a deadline, or open long enough to have been read — gets a
-    (purely informational) recovery message.
-    """
-
-    if incident_escalated_to_human(incident):
-        return True
-    first_seen = incident.first_seen_at
-    if first_seen is None:
-        return True
-    if first_seen.tzinfo is None:
-        first_seen = first_seen.replace(tzinfo=UTC)
-    return (now - first_seen) >= RECOVERY_AUTO_CLOSE_WINDOW
 
 
 def normalize_incident_code(value: str) -> str:

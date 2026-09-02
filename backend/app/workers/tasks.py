@@ -664,6 +664,10 @@ async def _generate_with_auto_review(
             findings = [f"생성 안전검사 실패: {' '.join(str(exc).split())[:300]}"]
             if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
                 continue
+            if last_content is not None and last_screening is None:
+                # 앞선 회차가 만들어 둔(이미 결제된) 후보가 있다. 보완 재작성이 실패했다고
+                # 그 후보까지 버리면 정상 글 한 편을 돈만 쓰고 폐기하는 셈이다.
+                break
             raise
         last_generation_error = None
 
@@ -705,6 +709,15 @@ async def _generate_with_auto_review(
         findings = list(last_ai_review.findings)
         if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
             reviewer_driven_rewrites += 1
+
+    if last_content is not None and last_screening is None:
+        # 키워드 보완을 위해 재작성으로 넘어갔지만 그 재작성이 비용 가드·생성 실패로
+        # 끝난 경우다. 남은 후보는 심사만 받지 않았을 뿐 이미 결제된 정상 후보이므로
+        # 여기서 심사해 살린다(잔여 키워드 지적은 아래 summary에 그대로 기록된다).
+        last_screening = screen_content_against_philosophy(
+            _screening_probe(last_content), philosophy
+        )
+        last_generation_error = None
 
     if last_content is None or last_screening is None:
         if last_generation_error is not None:
@@ -1976,7 +1989,11 @@ def build_aeo_site(self, hospital_id: str):
     activated_name: str | None = None
     activated_treatments: list | None = None
     with SyncSessionLocal() as db:
-        hospital = db.get(Hospital, uuid.UUID(hospital_id))
+        # 판정(evaluate_auto_activation)과 전환이 같은 행 잠금 안에서 일어나야 한다.
+        # 잠금 없이 읽은 스냅샷으로 판정하면, 재배달·복구 재디스패치가 그 사이 커밋된
+        # `/pause`를 덮어 PAUSED 병원을 되살리고(STEP5 위반), 동시에 도는 두 build가
+        # 둘 다 게이트를 통과해 감사행·Slack 인텐트가 중복된다.
+        hospital = db.get(Hospital, uuid.UUID(hospital_id), with_for_update=True)
         if not hospital:
             return
         if not _site_build_prerequisites_met(hospital):
@@ -3195,8 +3212,10 @@ def morning_content_auto_publish(self):
                 )
                 digest_db.commit()
 
-        # 정상 발행은 DB 상태·감사 로그·공개 표면 재검증으로 종료한다. Slack에는
-        # 개별 알림 대신 자동 완료와 미해결 예외를 한 번의 운영 요약으로만 보낸다.
+        # 정상 발행은 Slack을 아예 보내지 않는다 — DB 상태·감사 로그·공개 표면
+        # 재검증이 기록이다. Slack에 나가는 것은 바로 위의 차단 요약 한 건뿐이며,
+        # 그것도 07:45 복구를 넘겨 소진된 차단만 담는다
+        # (docs/ops/slack-notification-policy.md).
     except Exception as exc:
         logger.exception("morning_content_auto_publish failed")
         raise self.retry(exc=exc, countdown=300)
@@ -4504,16 +4523,21 @@ def run_weekly_monitoring():
                 db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
             )
         }
-        if today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY and monthly_ids:
-            # 월말 창에서는 이 병원들이 run_monthly_sov_measurement로 측정되므로
-            # 주간 배치에서만 제외한다 — 코호트 밖 병원은 계속 주간 측정한다.
+        # 월말 창(24일~말일)에서만 코호트를 뺀다. 그 창 밖에서는 월간 측정이 돌지
+        # 않으므로, 무조건 제외하면 코호트 병원은 한 달 내내 주간 측정에서도 빠져
+        # 아무 측정 없이 지나간다 (CLAUDE.md STEP 8 / 보조 배치 표).
+        in_month_end_window = (
+            today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY and bool(monthly_ids)
+        )
+        if in_month_end_window:
             logger.info(
                 "Weekly visibility measurement skipped for monthly cohort during month-end window: %s hospitals on %s",
                 len(monthly_ids),
                 today_kst,
             )
+        excluded_ids = monthly_ids if in_month_end_window else set()
         hospitals = [
-            hospital for hospital in result.scalars().all() if hospital.id not in monthly_ids
+            hospital for hospital in result.scalars().all() if hospital.id not in excluded_ids
         ]
 
         for h in hospitals:

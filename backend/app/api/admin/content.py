@@ -949,14 +949,15 @@ async def _get_hospital(db, hospital_id) -> Hospital:
 async def _get_hospital_for_schedule_update(
     db: AsyncSession, hospital_id: uuid.UUID
 ) -> Hospital:
-    """Serialize schedule replacement while retaining lightweight fake-session support."""
+    """Serialize schedule replacement: the row lock is unconditional.
+
+    폴백으로 잠금 없는 조회를 허용하면 Result 타입이 조금만 달라져도 직렬화가 조용히
+    사라진다 — 스케줄 교체는 슬롯 삭제/재생성을 동반하므로 그 조용한 실패가 가장 위험하다.
+    """
     result = await db.execute(
         select(Hospital).where(Hospital.id == hospital_id).with_for_update()
     )
-    scalar_one_or_none = getattr(result, "scalar_one_or_none", None)
-    if scalar_one_or_none is None:
-        return await _get_hospital(db, hospital_id)
-    hospital = scalar_one_or_none()
+    hospital = result.scalar_one_or_none()
     if hospital is None:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return hospital

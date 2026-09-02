@@ -7,6 +7,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.models.operations import Incident, NotificationOutbox
 from app.services.incident_types import incident_type_of
@@ -50,12 +51,28 @@ def safe_domain_cause(reason: str) -> str:
     }.get(reason, "병원 연결 주소에서 올바른 병원 정보를 확인하지 못했습니다.")
 
 
+def _open_notice_query(incident_id: uuid.UUID):
+    return select(NotificationOutbox.id).where(
+        NotificationOutbox.incident_id == incident_id,
+        NotificationOutbox.notification_type == "INCIDENT_OPEN",
+    )
+
+
 async def open_notice_exists(db: AsyncSession, incident_id: uuid.UUID) -> bool:
-    return (
-        await db.scalar(
-            select(NotificationOutbox.id).where(
-                NotificationOutbox.incident_id == incident_id,
-                NotificationOutbox.notification_type == "INCIDENT_OPEN",
-            )
-        )
-    ) is not None
+    """Return whether an "운영 확인 필요" notice was ever queued for this incident.
+
+    This is the only condition that decides whether an automatic recovery still owes
+    Slack a message. A Slack pair is all-or-nothing: an OPEN that reached the outbox
+    will reach the channel, so it must always be followed by its RECOVERED, or the
+    channel keeps an "운영 확인 필요" line that nothing ever closes. An incident whose
+    OPEN was never queued (already OPEN when it was touched again, or opened with
+    `notify=False`) never reached a person, so its recovery stays a log line.
+    """
+
+    return (await db.scalar(_open_notice_query(incident_id))) is not None
+
+
+def open_notice_exists_sync(db: Session, incident_id: uuid.UUID) -> bool:
+    """Sync sibling of `open_notice_exists` for Celery signal handlers."""
+
+    return db.scalar(_open_notice_query(incident_id)) is not None

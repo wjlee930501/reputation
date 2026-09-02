@@ -432,6 +432,10 @@ def test_the_candidate_query_bounds_status_and_age_in_sql():
     cutoff = now - timedelta(seconds=v0_checkpoint.V0_CHECKPOINT_MAX_AGE_SECONDS)
     assert cutoff.strftime("%Y-%m-%d %H:%M:%S") in candidate_sql
     assert "ORDER BY measurement_runs.completed_at DESC" in candidate_sql
+    # V0 판정도 SQL에 있어야 한다. LIMIT 뒤 파이썬에서 거르면, 6시간 창에 주간·월간
+    # 측정이 상한(20건)만큼 쌓인 병원은 재사용 가능한 V0 측정을 후보에서 놓친다.
+    assert "measurement_runs.config ->> 'source'" in candidate_sql
+    assert f"'{v0_checkpoint.V0_MEASUREMENT_SOURCE}'" in candidate_sql
 
 
 def test_the_consumption_query_only_counts_v0_reports_created_after_the_run():

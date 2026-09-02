@@ -137,6 +137,10 @@ def find_reusable_v0_measurement_run(
                 MeasurementRun.status.in_(REUSABLE_RUN_STATUSES),
                 MeasurementRun.completed_at.isnot(None),
                 MeasurementRun.completed_at >= cutoff,
+                # V0 판정은 SQL이 건다. 예전에는 이 조건이 LIMIT **이후** 파이썬에서
+                # 적용돼, 6시간 창에 주간·월간 측정이 20건 넘게 쌓인 병원은 재사용
+                # 가능한 V0 측정을 가지고도 후보 20건에서 밀려 다시 150건을 결제했다.
+                MeasurementRun.config["source"].as_string() == V0_MEASUREMENT_SOURCE,
             )
             .order_by(MeasurementRun.completed_at.desc())
             .limit(_CANDIDATE_SCAN_LIMIT)
@@ -146,6 +150,9 @@ def find_reusable_v0_measurement_run(
     )
     wanted = str(operation_run_id) if operation_run_id is not None else None
     for run in candidates:
+        # SQL 술어가 이미 걸렀지만, config가 객체가 아닌 형태(문자열로 직렬화된
+        # 구버전 행 등)를 JSON 연산자가 어떻게 판정하는지는 방언에 달려 있다.
+        # 읽는 쪽에서 한 번 더 fail-closed로 확인한다.
         if not _is_v0_run(run):
             continue
         # lineage가 있는 요청은 **정확히 자기 실행**만 재사용한다. 다른 요청의 측정을

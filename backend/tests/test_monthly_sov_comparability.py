@@ -90,8 +90,8 @@ def test_repeated_measurements_contribute_to_the_cell_score() -> None:
     weak = build_monthly_sov((once_in_five, stable_other_cell), ("chatgpt",))
 
     # Then: 빈도가 다르면 점수도 다르고, 표본 크기는 폐기되지 않고 그대로 남는다
-    assert strong.sov_pct == 50.0  # (5/5 + 0/1) / 2
-    assert weak.sov_pct == 10.0  # (1/5 + 0/1) / 2
+    assert strong.sov_pct == 83.33  # 5/6 (성공 시도 6건 중 5건 언급)
+    assert weak.sov_pct == 16.67  # 1/6
     assert strong.attempts_used == 6
     assert strong.mentioned_attempts == 5
     assert weak.mentioned_attempts == 1
@@ -141,12 +141,20 @@ def test_headline_uncertainty_comes_from_the_actual_repeat_sample() -> None:
         "platform_count": 1,
         "cell_count": 2,
         "repeat_count": 5,
+        "repeat_min": 5,
+        "repeat_max": 5,
         "attempts_used": 10,
     }
 
 
-def test_platform_macro_gives_each_configured_platform_equal_weight() -> None:
-    # Given: ChatGPT는 성공 2칸, Gemini는 성공 1칸과 실패 1칸이다
+def test_headline_is_pooled_while_platform_breakdown_keeps_equal_weighting() -> None:
+    """헤드라인은 풀드(성공 시도 전체의 k/n), 플랫폼 동일 가중은 breakdown에만 남는다.
+
+    예전에는 헤드라인이 플랫폼 동일 가중 매크로였는데 구간·유의성은 풀드 k/n이라,
+    점 추정이 자기 95% 구간 밖에 놓일 수 있었다(그 결과가 "12번 → 12번 (의미 있는
+    상승입니다)"였다). 이제 헤드라인·구간·델타·유의성이 한 추정량 위에 선다.
+    """
+    # Given: ChatGPT는 성공 2칸(둘 다 언급), Gemini는 성공 1칸(미언급)과 실패 1칸이다
     cells = (
         _cell("q1", "chatgpt", mentioned=True),
         _cell("q2", "chatgpt", mentioned=True),
@@ -157,12 +165,50 @@ def test_platform_macro_gives_each_configured_platform_equal_weight() -> None:
     # When
     summary = build_monthly_sov(cells, ("chatgpt", "gemini"))
 
-    # Then: 3개 성공행의 원시 평균 66.67%가 아니라 (100% + 0%) / 2다
-    assert summary.sov_pct == 50.0
+    # Then: 헤드라인은 성공 시도 3건 중 2건 = 66.67%이고, 자기 구간 안에 있다
+    assert summary.sov_pct == 66.67
+    assert summary.ci95_low <= summary.sov_pct <= summary.ci95_high
+    # 플랫폼 동일 가중은 버리지 않는다 — breakdown이 플랫폼마다 따로 공개한다
+    assert [(row.platform, row.mention_rate) for row in summary.platforms] == [
+        ("chatgpt", 100.0),
+        ("gemini", 0.0),
+    ]
     assert [(row.platform, row.planned_count, row.success_count) for row in summary.platforms] == [
         ("chatgpt", 2, 2),
         ("gemini", 2, 1),
     ]
+
+
+def test_the_headline_always_lies_inside_its_own_confidence_interval() -> None:
+    """회귀 방지: 점 추정과 구간이 다른 추정량에서 나오면 이 불변식이 깨진다.
+
+    셀마다 반복 수와 셀 수가 다른(= 매크로와 풀드가 갈리는) 표본들로 확인한다.
+    """
+    shapes = (
+        ((5, 5), (1, 0)),  # 5회 중 5회 언급 셀 + 1회 중 0회 셀
+        ((5, 0), (1, 1)),
+        ((5, 3), (2, 1), (1, 0)),
+        ((1, 1),),
+        ((4, 0), (4, 0)),
+    )
+    for shape in shapes:
+        cells = tuple(
+            _cell(
+                f"q{index}",
+                "chatgpt",
+                attempts=tuple(
+                    _attempt(index * 10 + repeat, mentioned=repeat < mentioned)
+                    for repeat in range(repeats)
+                ),
+            )
+            for index, (repeats, mentioned) in enumerate(shape)
+        )
+
+        summary = build_monthly_sov(cells, ("chatgpt",))
+
+        assert summary.sov_pct is not None
+        assert summary.ci95_low is not None and summary.ci95_high is not None
+        assert summary.ci95_low <= summary.sov_pct <= summary.ci95_high, shape
 
 
 def test_info_cells_are_disclosed_but_do_not_change_local_headline() -> None:

@@ -22,7 +22,6 @@ from app.models.operations import (
     OperationRunState,
 )
 from app.services.dependency_incident_helpers import incident_projection, open_notice_exists
-from app.services.incident_safety import should_notify_incident_recovery
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
 from app.services.incidents import (
     auto_acknowledge_incident,
@@ -82,6 +81,24 @@ def content_is_revalidation_recoverable(content: ContentItem, *, direction: str)
     return content.published_at is not None or direction == DIRECTION_UNPUBLISH
 
 
+def _publish_key(
+    content_id: uuid.UUID, published_at: datetime, body_updated_at: datetime | None
+) -> str:
+    """올림 방향 run의 멱등 키 — 발행 시각만으로는 판(edition)을 식별하지 못한다.
+
+    AE가 발행 후 본문을 고치면(`update_content`) published_at은 그대로다. 발행 직후의
+    갱신이 이미 SUCCEEDED로 닫혀 있으면, 수정본의 갱신 실패는 같은 키에 흡수돼
+    재시도도 인시던트도 열리지 않고 사라진다 — 공개 표면에 옛 본문이 남는다.
+    본문 수정 시각을 키에 넣어 판마다 별도 run이 열리게 한다.
+
+    본문 수정이 없는 첫 발행은 접미사 없이 예전 키를 그대로 쓴다(기존 run과 호환).
+    """
+    key = f"site-revalidation:{content_id}:{published_at.isoformat()}"
+    if body_updated_at is None:
+        return key
+    return f"{key}:r{body_updated_at.isoformat()}"
+
+
 async def start_revalidation_failure(
     slug: str,
     content_id: uuid.UUID,
@@ -126,7 +143,7 @@ async def start_revalidation_failure(
         # 같은 아이템의 올림/내림이 하나의 run으로 합쳐지면, 나중 내림이 예전 올림 run에
         # 흡수돼 재시도 없이 사라진다. 방향을 키에 넣어 분리한다.
         key = (
-            f"site-revalidation:{content.id}:{edition.isoformat()}"
+            _publish_key(content.id, edition, content.body_updated_at)
             if direction == DIRECTION_PUBLISH
             else f"site-revalidation:{content.id}:unpublish:{edition.isoformat()}"
         )
@@ -271,11 +288,7 @@ async def record_revalidation_success(run_id: uuid.UUID, expected_attempt_count:
             )
             if isinstance(recovered, Incident):
                 observed_at = datetime.now(UTC)
-                notify_recovery = (
-                    await open_notice_exists(db, incident.id)
-                    and should_notify_incident_recovery(recovered, now=observed_at)
-                )
-                if notify_recovery:
+                if await open_notice_exists(db, incident.id):
                     hospital = await db.get(Hospital, run.hospital_id)
                     if hospital is not None:
                         await enqueue_notification(

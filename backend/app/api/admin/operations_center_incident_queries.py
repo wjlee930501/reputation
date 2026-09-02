@@ -62,16 +62,32 @@ def _group_incident_rows(
     return projections
 
 
-def _cause_group_key(incident: Incident, run: OperationRun | None) -> str:
+def _cause_group_key(
+    *,
+    incident_safe_error_code: str | None,
+    incident_type: str,
+    source_type: str | None,
+    source_id: str | None,
+    run_safe_error_code: str | None,
+    run_operation_type: str | None,
+) -> str:
     """Same grouping key `serialize_incident_row` derives, without building a full row.
 
-    Used by the lean pass-1 query below to find cause groups before paying for the
-    full 5-table join — must stay identical to `serialize_incident_row`'s
-    `projected_group_key` or the two passes disagree on which incidents share a group.
+    Takes scalars so the lean pass-1 query below can select just the cause-key columns
+    instead of hydrating whole `Incident` objects for every match — must stay identical
+    to `serialize_incident_row`'s `projected_group_key` or the two passes disagree on
+    which incidents share a group.
     """
-    stored_code = incident.safe_error_code or (run.safe_error_code if run is not None else None)
-    projected_code = canonical_cause_code(stored_code, incident.incident_type)
-    budget_category = cost_guard_category(incident, run, projected_code)
+    projected_code = canonical_cause_code(
+        incident_safe_error_code or run_safe_error_code, incident_type
+    )
+    budget_category = cost_guard_category(
+        projected_code,
+        incident_type=incident_type,
+        source_type=source_type,
+        source_id=source_id,
+        run_operation_type=run_operation_type,
+    )
     return f"{projected_code}:{budget_category}" if budget_category is not None else projected_code
 
 
@@ -128,12 +144,23 @@ async def load_incidents_queue(
 
     # Pass 1 — figure out cause groups with a lean 2-table join (Incident + the
     # OperationRun it may reference; AdminUser is joined only so `owner_filter` above
-    # can apply, no columns of it are read). No Hospital/NotificationOutbox here, and no
-    # per-incident Slack/customer projection is built — group membership is all this
-    # pass needs, so it stays far cheaper than the full 5-table row this queue used to
-    # load in full just to group and throw most of it away on `grouped[start:...]`.
+    # can apply, no columns of it are read). Only the cause-key columns are selected,
+    # so a filter matching thousands of incidents costs a scalar tuple each instead of
+    # a hydrated ORM object with every column and its identity-map entry. No
+    # Hospital/NotificationOutbox here and no Slack/customer projection either — group
+    # membership is all this pass needs, and most of it is thrown away by the
+    # `list(groups.keys())[start:...]` page slice below.
     group_statement = (
-        select(Incident, OperationRun)
+        select(
+            Incident.id,
+            Incident.safe_error_code,
+            Incident.incident_type,
+            Incident.source_type,
+            Incident.source_id,
+            OperationRun.safe_error_code,
+            OperationRun.operation_type,
+        )
+        .select_from(Incident)
         .outerjoin(assignee, assignee.id == Incident.owner_id)
         .outerjoin(OperationRun, OperationRun.id == Incident.operation_run_id)
         .where(*predicates)
@@ -142,8 +169,24 @@ async def load_incidents_queue(
     group_rows = (await db.execute(group_statement)).all()
 
     groups: dict[str, list[uuid.UUID]] = {}
-    for incident, run in group_rows:
-        groups.setdefault(_cause_group_key(incident, run), []).append(incident.id)
+    for (
+        row_id,
+        incident_code,
+        incident_type,
+        source_type,
+        source_id,
+        run_code,
+        run_operation_type,
+    ) in group_rows:
+        key = _cause_group_key(
+            incident_safe_error_code=incident_code,
+            incident_type=incident_type,
+            source_type=source_type,
+            source_id=source_id,
+            run_safe_error_code=run_code,
+            run_operation_type=run_operation_type,
+        )
+        groups.setdefault(key, []).append(row_id)
 
     total = len(groups)
     start = (page - 1) * page_size

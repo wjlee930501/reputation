@@ -10,6 +10,7 @@ from app.models.hospital import HospitalStatus
 from app.services.content_brief import PLANNING_REASON_KEY
 from app.services.content_calendar import generate_monthly_slots
 from app.services.gap_driven_slots import (
+    ExistingSlot,
     build_gap_targets,
     gap_target_rows_stmt,
     plan_gap_driven_slots,
@@ -42,16 +43,27 @@ def create_next_month_slots_for_schedule(
     # 월 전체에 아이템이 1건이라도 있으면 건너뛰던 과거 조건은, 지난달에서 이월된
     # (carried_over_from) 1건이나 다른 스케줄의 행 하나가 다음 달 약정 편수 전체 생성을
     # 통째로 막았다. 이월 슬롯은 계획 편수에 포함되지 않으므로 판정에서 제외한다.
-    existing_sequences = set(
-        db.execute(
-            select(ContentItem.sequence_no).where(
-                ContentItem.schedule_id == schedule.id,
-                ContentItem.carried_over_from.is_(None),
-                ContentItem.scheduled_date >= next_month_start,
-                ContentItem.scheduled_date <= next_month_end,
-            )
-        ).scalars().all()
-    )
+    existing_rows = db.execute(
+        select(
+            ContentItem.sequence_no,
+            ContentItem.content_type,
+            ContentItem.query_target_id,
+        ).where(
+            ContentItem.schedule_id == schedule.id,
+            ContentItem.carried_over_from.is_(None),
+            ContentItem.scheduled_date >= next_month_start,
+            ContentItem.scheduled_date <= next_month_end,
+        )
+    ).all()
+    existing_slots = [
+        ExistingSlot(
+            sequence_no=row.sequence_no,
+            content_type=row.content_type,
+            gap_driven=row.query_target_id is not None,
+        )
+        for row in existing_rows
+    ]
+    existing_sequences = {slot.sequence_no for slot in existing_slots}
     planned_total = sum(PLAN_DISTRIBUTION.get(schedule.plan, {}).values())
     if planned_total and len(existing_sequences) >= planned_total:
         return False
@@ -66,8 +78,12 @@ def create_next_month_slots_for_schedule(
 
     # 측정된 미언급 격차가 유형과 대상 질문을 정하게 한다. 월 전체 슬롯을 놓고 계산해야
     # 유형 상한을 정확히 지킬 수 있으므로, 기존 순번 필터링보다 **먼저** 적용한다.
+    # 이미 만들어진 슬롯은 `existing`으로 넘겨 재실행이 상한을 다시 쓰지 못하게 한다 —
+    # 넘기지 않으면 1회차와 2회차 결과의 합집합이 "유형 배분의 절반" 상한을 넘는다.
     gap_targets = build_gap_targets(db.execute(gap_target_rows_stmt(hospital.id)).all())
-    planned = plan_gap_driven_slots(slots, plan=schedule.plan, gap_targets=gap_targets)
+    planned = plan_gap_driven_slots(
+        slots, plan=schedule.plan, gap_targets=gap_targets, existing=existing_slots
+    )
 
     # 부분 생성(중단된 이전 배치 등) 뒤에는 비어 있는 순번만 채운다.
     planned = [slot for slot in planned if slot.sequence_no not in existing_sequences]

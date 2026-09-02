@@ -6,7 +6,6 @@ from datetime import datetime
 from math import ceil
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import arrow
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -14,7 +13,11 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.core.config import settings
 from app.models.hospital import Hospital
 from app.services import sov_engine
-from app.services.content_citations import platform_owned_source_roots
+from app.services.content_citations import (
+    normalize_cited_url,
+    platform_owned_source_roots,
+    platform_site_host,
+)
 from app.services.doctor_pdf_contracts import (
     DoctorAppendixRow,
     DoctorEvidence,
@@ -127,27 +130,70 @@ def _owned_source_roots(hospital: Hospital | None) -> set[tuple[str, str]]:
     for candidate in candidates:
         if not isinstance(candidate, str) or not candidate.strip():
             continue
-        parsed = urlparse(candidate.strip())
-        host = (parsed.hostname or "").lower().removeprefix("www.")
-        if not host:
+        # 인용 URL과 **같은 정규화**를 쓴다(percent-decoding, 중복 슬래시, 끝 슬래시).
+        # 예전에는 여기만 urlparse 원본이라, 인코딩된 한글 경로가 인용되면
+        # content_citations는 맞다고 보는데 여기서는 owned가 아니라고 봤다.
+        normalized = normalize_cited_url(candidate)
+        if normalized is None:
             continue
-        roots.add((host, parsed.path.rstrip("/")))
+        roots.add((normalized.host, "" if normalized.path == "/" else normalized.path))
     return roots
 
 
+# 여러 병원이 함께 쓰는 호스트. 여기서 기준 경로가 비면 "호스트 전체가 우리 것"이
+# 되어, 예컨대 blog_url이 `https://blog.naver.com`(경로 없이 저장된 값)인 병원은
+# 남의 네이버 블로그 인용까지 자기 인용으로 집계한다. 이런 호스트는 경로가 있어야
+# 인정한다. 플랫폼 공개 표면 호스트도 같은 이유로 여기 포함된다(`_is_shared_source_host`).
+_SHARED_SOURCE_HOSTS = frozenset({
+    "blog.naver.com",
+    "m.blog.naver.com",
+    "cafe.naver.com",
+    "m.cafe.naver.com",
+    "post.naver.com",
+    "in.naver.com",
+    "map.naver.com",
+    "place.naver.com",
+    "m.place.naver.com",
+    "pcmap.place.naver.com",
+    "naver.me",
+    "blog.me",
+    "modoo.at",
+    "pf.kakao.com",
+    "place.map.kakao.com",
+    "map.kakao.com",
+    "brunch.co.kr",
+    "tistory.com",
+    "instagram.com",
+    "facebook.com",
+    "m.facebook.com",
+    "youtube.com",
+    "google.com",
+    "maps.google.com",
+    "sites.google.com",
+    "g.page",
+    "linktr.ee",
+})
+
+
+def _is_shared_source_host(host: str) -> bool:
+    return host in _SHARED_SOURCE_HOSTS or host == platform_site_host()
+
+
 def _matches_owned_source(url: str, roots: set[tuple[str, str]]) -> bool:
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower().removeprefix("www.")
-    path = parsed.path.rstrip("/")
-    return any(
-        host == root_host
-        and (
-            not root_path
-            or path == root_path
-            or path.startswith(f"{root_path}/")
-        )
-        for root_host, root_path in roots
-    )
+    normalized = normalize_cited_url(url)
+    if normalized is None:
+        return False
+    path = "" if normalized.path == "/" else normalized.path
+    for root_host, root_path in roots:
+        if normalized.host != root_host:
+            continue
+        if not root_path:
+            if _is_shared_source_host(root_host):
+                continue
+            return True
+        if path == root_path or path.startswith(f"{root_path}/"):
+            return True
+    return False
 
 
 def build_strategy_summary(
@@ -587,10 +633,21 @@ def _error_margin_footnote(
     platform_count = int(basis.get("platform_count") or 0)
     if margin_of_hundred is None or not questions or not repeats:
         return "AI 답변은 같은 질문에도 매번 달라져 횟수가 다소 오르내립니다."
+    # `repeat_count`는 셀당 평균이다. 부분 측정된 달(어떤 질문은 5회, 어떤 질문은
+    # 1회)에서 평균만 쓰면 실제로 존재하지 않은 표본("반복 3회 기준")을 원장에게
+    # 말하게 된다. 최소·최대가 다르면 범위로 적는다. 구버전 payload에는 두 값이
+    # 없어(0) 예전처럼 평균 하나로 적는다.
+    repeat_min = int(basis.get("repeat_min") or 0)
+    repeat_max = int(basis.get("repeat_max") or 0)
+    repeat_scope = (
+        f"반복 {repeat_min}~{repeat_max}회"
+        if repeat_min and repeat_max and repeat_min != repeat_max
+        else f"반복 {repeats}회"
+    )
     if platform_count > 1:
-        scope = f"질문 {questions}개 × AI 서비스 {platform_count}곳 × 반복 {repeats}회 기준"
+        scope = f"질문 {questions}개 × AI 서비스 {platform_count}곳 × {repeat_scope} 기준"
     else:
-        scope = f"질문 {questions}개 × 반복 {repeats}회 기준"
+        scope = f"질문 {questions}개 × {repeat_scope} 기준"
     return f"이번 달 수치의 오차 범위는 ±{margin_of_hundred}번입니다 ({scope})."
 
 
@@ -603,9 +660,20 @@ DOCTOR_ACT1_TITLE_LIMIT = 3
 DOCTOR_MENTION_LIST_LIMIT = 3
 DOCTOR_TRIMMED_LIST_LIMIT = 2
 DOCTOR_APPENDIX_ROW_LIMIT = 15
+# 부록 칸의 글자 수 상한. 행 수만 15로 묶고 글자 수를 풀어 두면, 긴 질문이나 긴 글
+# 제목이 좁은 열(질문 34%, 다른 병원 18%, 인용 글 22%)에서 3~4줄로 접혀 15행이
+# 3쪽으로 넘친다. 그 PDF는 `report_artifact_validation`이 통째로 버리므로(2쪽만 허용)
+# 원장에게 나갈 파일이 아예 만들어지지 않는다. 값은 각 열에서 **2줄**을 넘지 않도록
+# 폭에서 역산했다(7.6pt 한글 기준: 질문 ~22자/줄, 인용 글 ~14자/줄, 다른 병원 ~11자/줄).
+DOCTOR_APPENDIX_QUERY_CHARS = 44
+DOCTOR_APPENDIX_COMPETITOR_CHARS = 22
+DOCTOR_APPENDIX_CITED_TITLE_CHARS = 28
 # 경쟁 병원 이름은 같은 질문에서 2회 이상 관측될 때만 적는다. 1회 관측은 그날
 # 답변 하나일 수 있어 원장 앞에서 방어되지 않는다.
 DOCTOR_COMPETITOR_MIN_OBSERVATIONS = 2
+# 각주는 여기까지만 덜어낸다. 앞 3개는 측정 방법·오차 범위·의료 주의 문구이고,
+# 마지막 것은 `doctor_report_artifact._CAVEAT`로 PDF 검증이 존재를 확인한다.
+DOCTOR_MIN_FOOTNOTES = 3
 
 # 1페이지 트리밍 예산 — CSS overflow에 맡기면 넘친 내용이 **조용히** 잘리고
 # 무엇이 잘렸는지 아무도 모른다. 대신 뷰가 결정적인 순서로 덜어내고 무엇을
@@ -741,6 +809,14 @@ def _appendix_count_label(attempts_used: int, mentioned_attempts: int) -> str:
     return f"{attempts_used}번 중 {mentioned_attempts}번"
 
 
+def _clip(text: str, limit: int) -> str:
+    """부록 칸이 정해진 줄 수를 넘지 않도록 자른다. 자른 사실은 말줄임표로 보인다."""
+    value = text.strip()
+    if len(value) <= limit:
+        return value
+    return f"{value[: limit - 1].rstrip()}…"
+
+
 def _appendix_rows(
     question_rows: Sequence[QuestionRowPayload],
     *,
@@ -748,14 +824,18 @@ def _appendix_rows(
     competitors: dict[str, str],
     cited_titles: dict[str, str],
 ) -> list[DoctorAppendixRow]:
-    """2쪽 부록 — 추적 질문 전체를 한 표로. 1페이지가 못 담는 '전부'가 여기 있다."""
+    """2쪽 부록 — 추적 질문 전체를 한 표로. 1페이지가 못 담는 '전부'가 여기 있다.
+
+    행 수(15)와 **칸당 글자 수**를 함께 묶는다. 행 수만 묶으면 긴 질문·긴 글 제목이
+    좁은 열에서 3~4줄로 접혀 부록이 3쪽으로 넘치고, 그 PDF는 검증에서 버려진다.
+    """
     rows: list[DoctorAppendixRow] = []
     for row in question_rows[:DOCTOR_APPENDIX_ROW_LIMIT]:
         text = str(row.get("query_text") or "").strip()
         if not text:
             continue
         rows.append({
-            "query_text": text,
+            "query_text": _clip(text, DOCTOR_APPENDIX_QUERY_CHARS),
             "prev_label": (
                 _appendix_count_label(
                     int(row.get("prior_attempts_used") or 0),
@@ -768,8 +848,12 @@ def _appendix_rows(
                 int(row.get("current_attempts_used") or 0),
                 int(row.get("current_mentioned_attempts") or 0),
             ),
-            "competitor": competitors.get(text, "—"),
-            "cited_title": cited_titles.get(text, "—"),
+            "competitor": _clip(
+                competitors.get(text, "—"), DOCTOR_APPENDIX_COMPETITOR_CHARS
+            ),
+            "cited_title": _clip(
+                cited_titles.get(text, "—"), DOCTOR_APPENDIX_CITED_TITLE_CHARS
+            ),
         })
     return rows
 
@@ -1023,7 +1107,15 @@ def build_doctor_report_view(
     # ── 1페이지 트리밍 ────────────────────────────────────────────────
     # 넘칠 때 무엇을 먼저 버릴지는 편집 결정이지 CSS 결정이 아니다.
     # 순서: ① 안 나온 사례 → ② 새 질문 2개로 → ③ 빠진 질문 2개로
-    #      → ④ 글 제목 2개로 → ⑤ 나온 사례.
+    #      → ④ 글 제목 2개로 → ⑤ 나온 사례
+    #      → ⑥ 부가 각주 → ⑦ V0 기준선 → ⑧ 인용 한 줄
+    #      → ⑨ 빠진 질문 전부 → ⑩ 새 질문 전부 → ⑪ 글 제목 전부 → ⑫ 다음 달 계획 1줄.
+    #
+    # ⑥ 이후가 없던 시절에는 사다리 다섯 칸을 다 쓰고도 예산을 넘으면 **거기서
+    # 멈췄다.** 그러면 1쪽이 2쪽으로 넘치고, 부록이 없는 리포트는 페이지 수 검증
+    # (`DOCTOR_PDF_PAGE_COUNT_INVALID`)에 걸려 아티팩트가 아예 만들어지지 않으며,
+    # Admin은 그 달을 `doctor_artifact_missing`으로 잠근다 — 밀도가 높은 달일수록
+    # 원장 리포트가 나가지 않는다는 뜻이었다.
     trimmed: list[str] = []
 
     def _cost() -> int:
@@ -1071,17 +1163,93 @@ def build_doctor_report_view(
         evidence["found"] = None
         return True
 
+    def _drop_last_footnote() -> bool:
+        # V0 각주는 기준선이 살아 있는 동안 건너뛴다. 그냥 마지막을 pop하면
+        # 부가 각주가 없는 평범한 달에는 마지막 각주가 곧 V0 각주라서,
+        # "V0 대비 31번 → 47번"이 본문에 남은 채 그 값이 참고용이라는 설명만
+        # 사라진다 (예산을 채우면 ⑦ V0_BASELINE 칸까지 가지도 않는다).
+        # 기준선을 뺄 때는 ⑦이 각주까지 같이 지운다.
+        if len(footnotes) <= DOCTOR_MIN_FOOTNOTES:
+            return False
+        for index in range(len(footnotes) - 1, DOCTOR_MIN_FOOTNOTES - 1, -1):
+            if v0_baseline is not None and footnotes[index] == _v0_footnote():
+                continue
+            footnotes.pop(index)
+            return True
+        return False
+
+    def _drop_v0_baseline() -> bool:
+        nonlocal v0_baseline
+        if v0_baseline is None:
+            return False
+        v0_baseline = None
+        # 기준선을 빼면 그 각주도 설명할 대상이 없다.
+        if _v0_footnote() in footnotes:
+            footnotes.remove(_v0_footnote())
+        return True
+
+    def _drop_citation_line() -> bool:
+        nonlocal citation_line
+        if citation_line is None:
+            return False
+        citation_line = None
+        return True
+
+    def _drop_all_lost_mentions() -> bool:
+        if not lost_mention_sentences:
+            return False
+        lost_mention_sentences.clear()
+        return True
+
+    def _drop_all_new_mentions() -> bool:
+        if not new_mention_sentences:
+            return False
+        new_mention_sentences.clear()
+        return True
+
+    def _drop_all_published_items() -> bool:
+        if not published_items:
+            return False
+        published_items.clear()
+        return True
+
+    def _shrink_next_actions() -> bool:
+        if len(next_actions["ours"]) <= 1:
+            return False
+        del next_actions["ours"][1:]
+        return True
+
     for label, step in (
         ("EVIDENCE_MISSING", _drop_missing_evidence),
         ("NEW_MENTIONS", _shrink_new_mentions),
         ("LOST_MENTIONS", _shrink_lost_mentions),
         ("PUBLISHED_TITLES", _shrink_published_items),
         ("EVIDENCE_FOUND", _drop_found_evidence),
+        ("FOOTNOTES", _drop_last_footnote),
+        ("V0_BASELINE", _drop_v0_baseline),
+        ("CITATION_LINE", _drop_citation_line),
+        ("LOST_MENTIONS_ALL", _drop_all_lost_mentions),
+        ("NEW_MENTIONS_ALL", _drop_all_new_mentions),
+        ("PUBLISHED_TITLES_ALL", _drop_all_published_items),
+        ("NEXT_ACTIONS", _shrink_next_actions),
     ):
+        # 각 칸은 예산을 다시 확인하며 **더 뺄 것이 없을 때까지** 반복한다.
+        # (각주처럼 한 번에 한 줄씩 빠지는 칸이 있다.)
+        while _cost() > DOCTOR_PAGE1_LINE_BUDGET and step():
+            if label not in trimmed:
+                trimmed.append(label)
         if _cost() <= DOCTOR_PAGE1_LINE_BUDGET:
             break
-        if step():
-            trimmed.append(label)
+
+    if _cost() > DOCTOR_PAGE1_LINE_BUDGET:
+        # 사다리를 전부 써도 남는 경우는 남은 고정 문구(요약·측정 범위·필수 각주)만으로
+        # 예산을 넘었다는 뜻이다. 조용히 넘기지 않고 남긴다 — 이 로그가 뜨면 예산이나
+        # 고정 문구 길이를 다시 잡아야 한다.
+        logger.warning(
+            "Doctor page 1 still exceeds the line budget after trimming: cost=%s budget=%s",
+            _cost(),
+            DOCTOR_PAGE1_LINE_BUDGET,
+        )
 
     appendix_rows = _appendix_rows(
         (attribution or {}).get("question_rows") or [],

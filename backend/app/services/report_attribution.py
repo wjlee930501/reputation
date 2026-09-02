@@ -399,7 +399,10 @@ def build_citation_attribution(
     hub_queries: dict[str, list[CitedQueryPayload]] = {}
 
     for cell in sorted(request.cells, key=lambda row: (row.query_key, row.platform)):
-        succeeded = [attempt for attempt in cell.attempts if attempt.succeeded]
+        # 헤드라인과 **같은 접근자**를 쓴다. `cell.attempts`를 직접 거르면
+        # state=FAILED인데 성공 시도가 남아 있는 손상 셀이 여기서만 측정으로
+        # 세어져, 인용 분모(확인한 답변 수)가 헤드라인 분모와 어긋난다.
+        succeeded = cell.successful_attempts
         if not succeeded:
             continue
         measured_cell_count += 1

@@ -1242,6 +1242,43 @@ async def test_list_reports_reads_essence_readiness_once_for_the_whole_page(monk
     assert all(item["delivery_ready"] is True for item in result)
 
 
+async def test_list_reports_reads_essence_readiness_once_even_when_every_report_is_blocked(
+    monkeypatch,
+):
+    """게이트가 막힌 MONTHLY도 warning(사후검수 표본·essence version drift)을 붙이려면
+    readiness가 필요하다. preload 조건을 gate.ready로 좁히면 전부 막힌 달에는
+    readiness=None이 넘어가 _serialize_report가 리포트마다 직접 읽는 N+1로 돌아간다.
+    """
+    hospital = SimpleNamespace(id=uuid.uuid4())
+    # 원장 보고용 아티팩트가 없어 세 건 모두 doctor_artifact_missing으로 막힌다.
+    reports = [_report(id=uuid.uuid4(), hospital_id=hospital.id) for _ in range(3)]
+    manifests = [_bind_manifest(r, _manifest()) for r in reports]
+
+    calls = []
+
+    async def _counting_readiness(db, hospital_id):
+        calls.append(hospital_id)
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(
+            approved=philosophy,
+            current=philosophy,
+            processed_source_count=4,
+            required_source_count=4,
+            current_snapshot_hash="snapshot",
+        )
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _counting_readiness)
+
+    db = _ListDB(hospital=hospital, reports=reports, manifests=manifests)
+
+    result = await reports_api.list_reports(hospital.id, limit=24, offset=0, db=db)
+
+    assert len(result) == 3
+    assert all(item["delivery_ready"] is False for item in result)
+    assert all("검증된 원장 보고용 PDF가 없습니다." in item["delivery_blockers"] for item in result)
+    assert calls == [hospital.id]  # 막힌 리포트 3건이어도 딱 1번
+
+
 async def test_list_reports_respects_limit_and_offset_params():
     hospital = SimpleNamespace(id=uuid.uuid4())
     reports = [
@@ -1280,3 +1317,98 @@ async def test_list_reports_returns_empty_without_any_batch_query_when_no_report
 
     assert result == []
     assert db.calls == ["MonthlyReport"]  # 빈 페이지면 배치 조회 자체를 스킵한다
+
+
+def test_report_detail_lists_every_gate_blocker_not_only_the_first():
+    """게이트가 여러 이유로 막혔으면 전부 보여야 한다.
+
+    첫 줄만 노출하면 AE가 하나를 고쳐 재생성한 뒤에야 다음 이유를 알게 되고,
+    닫힌 달의 리포트가 왕복 한 번당 이유 하나씩만 드러난다.
+    """
+    report = _report(
+        pdf_path=None,
+        sov_summary=None,
+        essence_summary={"approved_philosophy_exists": False},
+    )
+
+    gate = _delivery_gate(report, _bind_manifest(report, _manifest()), None)
+    assert gate.code == "doctor_artifact_missing"
+
+    ready_report = _report(
+        essence_summary={
+            "approved_philosophy_exists": False,
+            "source_count": 0,
+            "processed_source_count": 0,
+        },
+        content_summary={"published_count": 8, "operations": {"delivery_blockers": []}},
+    )
+    ready_gate = _delivery_gate(
+        ready_report,
+        _bind_manifest(ready_report, _manifest()),
+        _doctor_artifact(report_id=ready_report.id, path=ready_report.doctor_pdf_path),
+    )
+
+    assert ready_gate.code == "report_blocked"
+    # message는 그대로 첫 줄(호환), messages는 전부
+    assert ready_gate.message == ready_gate.messages[0]
+    assert len(ready_gate.messages) > 1
+
+    payload = _serialize(
+        ready_report,
+        full=True,
+        manifest=_bind_manifest(ready_report, _manifest()),
+        artifact=_doctor_artifact(
+            report_id=ready_report.id, path=ready_report.doctor_pdf_path
+        ),
+    )
+
+    assert payload["delivery_blockers"] == list(ready_gate.messages)
+    assert any("승인된 콘텐츠 운영 기준" in blocker for blocker in payload["delivery_blockers"])
+    assert any("온보딩 자료" in blocker for blocker in payload["delivery_blockers"])
+
+
+def test_a_gate_with_a_single_reason_still_reports_exactly_that_reason():
+    report = _report(pdf_path=None, report_type="V0")
+
+    payload = _serialize(report, manifest=None, artifact=None)
+
+    assert payload["delivery_blockers"] == ["초기 진단 PDF가 아직 만들어지지 않았습니다."]
+
+
+async def test_report_detail_shows_essence_warnings_even_when_the_gate_is_blocked(monkeypatch):
+    """경고는 게이트 결과와 무관하게 노출한다 (_serialize의 주석이 말하는 계약).
+
+    예전에는 `gate.ready`일 때만 계산해서, 막힌 달일수록 운영 기준 드리프트를
+    화면에서 볼 수 없었다 — 정확히 AE가 그 사실을 가장 먼저 알아야 하는 상황이다.
+    """
+    report = _report()
+    philosophy = SimpleNamespace(version=9)
+    readiness = EssenceReadiness(
+        approved=philosophy,
+        current=philosophy,
+        processed_source_count=4,
+        required_source_count=4,
+        current_snapshot_hash="snapshot",
+    )
+
+    async def _readiness(_db, _hospital_id):
+        return readiness
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _readiness)
+    monkeypatch.setattr(reports_api, "_get_manifest", _async_none)
+    monkeypatch.setattr(reports_api, "_get_doctor_artifact", _async_none)
+    monkeypatch.setattr(reports_api, "_get_delivery_events", _async_empty_list)
+
+    payload = await reports_api._serialize_report(object(), report)
+
+    assert payload["delivery_ready"] is False
+    assert payload["delivery_blockers"], "게이트가 막힌 이유는 그대로 남아야 한다"
+    assert any("운영 기준" in warning for warning in payload["delivery_warnings"])
+
+
+async def _async_none(*_args, **_kwargs):
+    return None
+
+
+async def _async_empty_list(*_args, **_kwargs):
+    return []

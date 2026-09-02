@@ -24,38 +24,47 @@ def _scored_cells(
     )
 
 
-def _macro_rate(
-    cells: tuple[ManifestCellInput, ...],
-    platforms: tuple[str, ...],
-    intent: QueryIntent,
-) -> float | None:
-    """플랫폼별로 **셀 빈도(k/n)의 평균**을 낸 뒤, 플랫폼끼리 다시 평균한다.
-
-    매크로 구조(플랫폼 동일 가중, 셀 동일 가중)는 그대로 두고 셀 하나의 값만
-    "대표 1건의 0/1"에서 "성공 반복의 언급 빈도"로 바꿨다. 반복이 1회뿐인
-    구버전 manifest는 k/1이 되어 예전과 같은 값을 준다.
-    """
-    platform_rates: list[float] = []
-    for platform in platforms:
-        scored = tuple(
-            cell for cell in _scored_cells(cells, intent) if cell.platform == platform
-        )
-        if not scored:
-            return None
-        frequencies = [cell.mention_frequency or 0.0 for cell in scored]
-        platform_rates.append(sum(frequencies) / len(frequencies))
-    return round(sum(platform_rates) / len(platform_rates) * 100, 2) if platform_rates else None
-
-
 def _attempt_counts(
     cells: tuple[ManifestCellInput, ...], intent: QueryIntent
 ) -> tuple[int, int]:
-    """(언급 시도 수 k, 전체 성공 시도 수 n) — 불확실성 계산의 표본."""
+    """(언급 시도 수 k, 전체 성공 시도 수 n) — 점 추정과 불확실성의 **공통 표본**."""
     scored = _scored_cells(cells, intent)
     return (
         sum(cell.mentioned_attempts for cell in scored),
         sum(cell.attempts_used for cell in scored),
     )
+
+
+def _pooled_rate(
+    cells: tuple[ManifestCellInput, ...],
+    platforms: tuple[str, ...],
+    intent: QueryIntent,
+) -> float | None:
+    """성공 반복 전체를 하나로 합친 언급 빈도(k/n)를 %로.
+
+    **점 추정·95% 구간·전월 대비 델타·유의성이 모두 이 하나의 추정량 위에 선다.**
+    예전에는 점 추정만 플랫폼 동일 가중 매크로(셀 빈도의 평균의 평균)였고 구간과
+    유의성은 `_attempt_counts`의 풀드 k/n이었다. 두 추정량은 셀마다 반복 수·셀 수가
+    다르면 서로 다른 값을 주므로, 점 추정이 자기 구간 밖에 놓이고 "12번 → 12번
+    (의미 있는 상승입니다)" 같은 문장이 리포트에 나갈 수 있었다.
+
+    플랫폼 동일 가중 자체는 버리지 않는다 — 플랫폼별 breakdown
+    (`_platform_summary`)이 플랫폼마다 따로 계산해 그대로 공개한다.
+
+    구성한 플랫폼 중 한 곳이라도 점수에 쓸 셀이 없으면 숫자를 만들지 않는다
+    (기존 fail-closed 규칙 그대로 — 한 플랫폼이 통째로 실패한 달을 한 플랫폼짜리
+    수치로 팔지 않는다).
+    """
+    scored = _scored_cells(cells, intent)
+    if not scored or not platforms:
+        return None
+    for platform in platforms:
+        if not any(cell.platform == platform for cell in scored):
+            return None
+    mentioned_attempts, attempts_used = _attempt_counts(cells, intent)
+    if attempts_used <= 0:
+        return None
+    return round(mentioned_attempts / attempts_used * 100, 2)
 
 
 def _segment(
@@ -67,7 +76,7 @@ def _segment(
         measured_count=len(scored),
         # 셀 단위 "한 번이라도 언급된" 수. 셀 점수는 빈도지만 이 칸은 커버리지 공개용이다.
         mentioned_count=sum(cell.mentioned_attempts > 0 for cell in scored),
-        mention_rate=_macro_rate(cells, platforms, intent),
+        mention_rate=_pooled_rate(cells, platforms, intent),
         attempts_used=attempts_used,
         mentioned_attempts=mentioned_attempts,
     )
@@ -76,6 +85,9 @@ def _segment(
 def _platform_summary(cells: tuple[ManifestCellInput, ...], platform: str) -> PlatformSummary:
     rows = tuple(cell for cell in cells if cell.platform == platform)
     local_cells = _scored_cells(rows, "LOCAL")
+    # 플랫폼 breakdown만 **셀 동일 가중**(셀 빈도의 평균)을 유지한다. 헤드라인은
+    # 풀드 추정(`_pooled_rate`)이라 두 숫자가 다를 수 있고, 그건 의도된 것이다 —
+    # 여기서 답하는 질문은 "이 AI 서비스에서는 어땠나"이지 "전체가 얼마인가"가 아니다.
     local_frequencies = [cell.mention_frequency or 0.0 for cell in local_cells]
     # 모델·검색 계측은 셀이 아니라 **모든 성공 시도**를 본다 — 반복 중 한 건만
     # 다른 모델로 답했어도 그 사실이 보여야 비교 게이트가 제 역할을 한다.
@@ -279,17 +291,18 @@ def _comparison(
 
     current_matched = tuple(current_by_key[key] for key in matched)
     prior_matched = tuple(prior_by_key[key] for key in matched)
-    current_score = _macro_rate(current_matched, current_platforms, "LOCAL")
-    prior_score = _macro_rate(prior_matched, current_platforms, "LOCAL")
+    # 두 달 모두 **같은 매칭 셀 집합** 위에서 시도를 센다. 이 대칭이 깨지면
+    # 헤드라인과 델타가 다른 분모를 쓰게 되고, 그게 예전의 결함이었다.
+    current_mentioned, current_attempts = _attempt_counts(current_matched, "LOCAL")
+    prior_mentioned, prior_attempts = _attempt_counts(prior_matched, "LOCAL")
+    # 점 추정도 구간·유의성과 **같은 풀드 표본**에서 나온다.
+    current_score = _pooled_rate(current_matched, current_platforms, "LOCAL")
+    prior_score = _pooled_rate(prior_matched, current_platforms, "LOCAL")
     change = (
         round(current_score - prior_score, 1)
         if current_score is not None and prior_score is not None
         else None
     )
-    # 두 달 모두 **같은 매칭 셀 집합** 위에서 시도를 센다. 이 대칭이 깨지면
-    # 헤드라인과 델타가 다른 분모를 쓰게 되고, 그게 예전의 결함이었다.
-    current_mentioned, current_attempts = _attempt_counts(current_matched, "LOCAL")
-    prior_mentioned, prior_attempts = _attempt_counts(prior_matched, "LOCAL")
     current_interval = wilson_interval(current_mentioned, current_attempts)
     prior_interval = wilson_interval(prior_mentioned, prior_attempts)
     return ComparisonResult(
@@ -338,7 +351,7 @@ def build_monthly_sov(
         cells, platforms, prior_cells, prior_platforms, current_protocol, prior_protocol
     )
     comparison = result.summary
-    all_cells_rate = _macro_rate(cells, platforms, "LOCAL")
+    all_cells_rate = _pooled_rate(cells, platforms, "LOCAL")
     # **헤드라인과 델타는 같은 분모를 쓴다.** 비교가 성립하는 달에는 헤드라인·표본·
     # 오차 범위가 모두 매칭 코호트 기준이고, 전 셀 기준 수치는 sov_pct_all_cells로
     # 따로 공개한다. 예전에는 헤드라인만 전 셀이라 30셀과 29셀을 나란히 놓고 증감이라 불렀다.
@@ -366,6 +379,11 @@ def build_monthly_sov(
             repeat_count=(
                 round(sum(cell.attempts_used for cell in scored) / len(scored)) if scored else 0
             ),
+            # 평균만으로는 부분 측정된 달을 설명할 수 없다 — 5회와 1회가 섞인 달도
+            # 각주에는 "반복 3회 기준"으로 나가 실제로 존재하지 않은 표본을 말한다.
+            # 최소·최대를 함께 남겨 각주가 "3~5회"라고 정직하게 쓰게 한다.
+            repeat_min=min((cell.attempts_used for cell in scored), default=0),
+            repeat_max=max((cell.attempts_used for cell in scored), default=0),
             attempts_used=sum(cell.attempts_used for cell in scored),
         ),
         planned_count=sum(cell.state != "EXCLUDED" for cell in cells),

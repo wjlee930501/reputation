@@ -130,11 +130,44 @@ def test_ae_pdf_footnote_states_the_actual_repeat_sample_and_interval() -> None:
         sov_coverage=payload,
     )
 
-    assert payload["sov_pct"] == 50.0  # (3/5 + 2/5) / 2
+    assert payload["sov_pct"] == 50.0  # 성공 시도 10건 중 5건 언급
     assert "성공한 반복 측정을 모두 사용해" in html
     assert "질문 2개 ×" in html
     assert "반복 5회 = 측정 10건입니다" in html
     assert "95% 신뢰구간" in html
+
+
+def test_ae_pdf_footnote_writes_a_repeat_range_when_repeats_were_uneven() -> None:
+    """반복 수가 질문마다 다른 달에 평균 하나로 적으면 없던 표본을 말하게 된다."""
+    payload = build_monthly_sov(
+        (
+            _cell("q1", "chatgpt", state="SUCCESS", repeats=5, mentioned=3),
+            _cell("q2", "chatgpt", state="SUCCESS", repeats=1, mentioned=0),
+        ),
+        ("chatgpt",),
+    ).to_payload()
+    template_dir = Path(__file__).resolve().parents[1] / "app" / "templates"
+    template = Environment(loader=FileSystemLoader(template_dir)).get_template("report.html")
+
+    html = template.render(
+        hospital=SimpleNamespace(
+            name="테스트의원", region=["서울"], specialties=["내과"], plan="PLAN_12"
+        ),
+        report_type="MONTHLY",
+        period_start=BASE_TIME,
+        period_end=BASE_TIME,
+        generated_at=BASE_TIME,
+        sov_pct=payload["sov_pct"],
+        sov_measured=True,
+        published_count=0,
+        repeat_count=5,
+        sov_coverage=payload,
+    )
+
+    assert payload["measurement_basis"]["repeat_min"] == 1
+    assert payload["measurement_basis"]["repeat_max"] == 5
+    assert "반복 1~5회 = 측정 6건입니다" in html
+    assert "반복 3회" not in html
 
 
 def test_ae_pdf_still_renders_a_legacy_payload_without_the_new_keys() -> None:

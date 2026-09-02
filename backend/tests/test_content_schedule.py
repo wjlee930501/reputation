@@ -24,11 +24,16 @@ class _ScalarResult:
 
 
 class _ExecuteResult:
-    def __init__(self, items=None):
+    def __init__(self, items=None, hospital=None):
         self._items = items
+        self._hospital = hospital
 
     def scalars(self):
         return _ScalarResult(self._items)
+
+    def scalar_one_or_none(self):
+        # set_schedule의 SELECT ... FOR UPDATE가 읽는 병원 행.
+        return self._hospital
 
     def all(self):
         # 이 더블은 스케줄 조회만 모사한다. 격차 타깃 조회(gap_target_rows_stmt)는
@@ -47,7 +52,7 @@ class _FakeDB:
         return self.hospital if object_id == self.hospital.id else None
 
     async def execute(self, statement):
-        return _ExecuteResult(self.schedules)
+        return _ExecuteResult(self.schedules, self.hospital)
 
     def add(self, item):
         self.added.append(item)
@@ -358,7 +363,7 @@ async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):
         async def execute(self, statement):
             if isinstance(statement, Delete):
                 self.deletes.append(statement)
-            return _ExecuteResult(self.schedules)
+            return _ExecuteResult(self.schedules, self.hospital)
 
     hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
     db = _RecordingDB(hospital, [old_schedule])
@@ -410,7 +415,7 @@ async def test_set_schedule_preserves_carried_over_unpublished_slots(monkeypatch
         async def execute(self, statement):
             if isinstance(statement, Delete):
                 self.deletes.append(statement)
-            return _ExecuteResult(self.schedules)
+            return _ExecuteResult(self.schedules, self.hospital)
 
     hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
     db = _RecordingDB(hospital, [old_schedule])

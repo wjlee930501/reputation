@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentSeverity, IncidentState
-from app.services.incident_safety import should_notify_incident_recovery
+from app.services.dependency_incident_helpers import open_notice_exists
 from app.services.incident_types import (
     IncidentFingerprint,
     IncidentOpenRequest,
@@ -256,15 +256,17 @@ async def _close_recovered_incident(
     reason: str,
     notify: bool,
 ) -> None:
-    """Close a machine-recovered incident and page only when a human was involved.
+    """Close a machine-recovered incident and page only when the OPEN notice went out.
 
     The recovery Slack asked an operator to click "확인 완료" on work no person ever
     started. The system now acknowledges the incident itself, and only an incident
-    that already reached a human keeps an (informational) recovery message.
+    whose "운영 확인 필요" notice actually reached the outbox keeps an (informational)
+    recovery message — suppressing that half would leave an open Slack line that
+    nothing ever closes.
     """
 
     now = datetime.now(UTC)
-    notify_recovery = notify and should_notify_incident_recovery(recovered, now=now)
+    notify_recovery = notify and await open_notice_exists(db, recovered.id)
     if notify_recovery:
         await enqueue_notification(
             db,

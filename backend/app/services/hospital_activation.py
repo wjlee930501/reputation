@@ -82,6 +82,32 @@ def blocker_reason(blocker: AutoActivationBlocker) -> str:
     return _BLOCKER_REASONS[blocker]
 
 
+#: `/activate`가 PAUSED 병원을 되살릴 때 쓰는 코드. 재개는 DNS 재확인이 붙은 `/resume`만
+#: 수행한다 — 두 경로가 갈라지면 일시 정지가 우회된다.
+STATUS_NOT_ACTIVATABLE_CODE = "STATUS_NOT_ACTIVATABLE"
+STATUS_NOT_ACTIVATABLE_MESSAGE = (
+    "일시 정지 등 자동 전환 대상이 아닌 상태입니다. 재개는 /resume 으로 진행해 주세요."
+)
+
+
+class HospitalNotActivatable(Exception):
+    """자동 전환 대상이 아닌 상태에서 활성화를 시도했다.
+
+    `AUTO_ACTIVATABLE_STATUSES` 판정을 `evaluate_auto_activation`에만 두면 워커 경로만
+    보호되고 Admin `/activate`는 PAUSED를 그대로 ACTIVE로 되살린다. 전환 함수 자체에서
+    막아 두 경로가 같은 규칙을 쓰게 한다.
+    """
+
+    def __init__(self, status: HospitalStatus) -> None:
+        super().__init__(STATUS_NOT_ACTIVATABLE_MESSAGE)
+        self.status = status
+        self.code = STATUS_NOT_ACTIVATABLE_CODE
+        self.message = STATUS_NOT_ACTIVATABLE_MESSAGE
+
+    def as_detail(self) -> dict[str, str]:
+        return {"code": self.code, "message": self.message}
+
+
 @dataclass(frozen=True, slots=True)
 class ActivationResult:
     outcome: ActivationOutcome
@@ -106,9 +132,13 @@ def public_site_url(aeo_domain: str | None, slug: str | None) -> str:
     site.py의 호스트 라우팅 규칙과 일치시킨다:
       1. 병원 자기 도메인(aeo_domain)이 있으면 https://{aeo_domain}/
       2. 없으면 기본 서브도메인 https://{slug}.{platform host}/  (SITE_BASE_URL 호스트 파생)
+
+    `has_custom_domain`과 **같은** 정규화를 쓴다 — 공백뿐인 aeo_domain을 truthy로 보면
+    자동 활성화는 기본 주소로 가는데 Slack 문구만 "https://   /"가 되어 어긋난다.
     """
-    if aeo_domain:
-        return f"https://{aeo_domain}/"
+    domain = normalize_domain(aeo_domain)
+    if domain:
+        return f"https://{domain}/"
     # 인용 귀속(content_citations)이 매칭에 쓰는 것과 같은 호스트 규칙을 재사용한다 —
     # 두 곳이 어긋나면 실제로 서빙되는 주소가 owned로 집계되지 않는다.
     return platform_public_base_url(slug) or settings.SITE_BASE_URL
@@ -173,10 +203,15 @@ async def activate_hospital(
     actor: str | None = None,
     reason: str,
 ) -> ActivationResult:
-    """공개 운영 전환 한 번. 커밋은 호출자 책임이다 (감사행 → commit → 외부 효과)."""
+    """공개 운영 전환 한 번. 커밋은 호출자 책임이다 (감사행 → commit → 외부 효과).
+
+    자동 전환 대상이 아닌 상태(PAUSED 등)는 `HospitalNotActivatable`로 막는다.
+    """
 
     if hospital.status is HospitalStatus.ACTIVE:
         return _already_active_result(hospital, activation_gate_snapshot(hospital))
+    if hospital.status not in AUTO_ACTIVATABLE_STATUSES:
+        raise HospitalNotActivatable(hospital.status)
 
     gate = activation_gate_snapshot(hospital)
     if not gate["ready"]:
@@ -209,6 +244,8 @@ def activate_hospital_sync(
 
     if hospital.status is HospitalStatus.ACTIVE:
         return _already_active_result(hospital, activation_gate_snapshot(hospital))
+    if hospital.status not in AUTO_ACTIVATABLE_STATUSES:
+        raise HospitalNotActivatable(hospital.status)
 
     gate = activation_gate_snapshot(hospital)
     if not gate["ready"]:

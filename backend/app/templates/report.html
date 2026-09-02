@@ -70,12 +70,16 @@
 <p class="note">
   {% if sov_measured %}
     {% if report_type == 'MONTHLY' and sov_coverage %}
-    ※ 월초에 고정한 질문과 AI 서비스의 각 조합마다 성공한 반복 측정을 모두 사용해 조합별 언급 빈도를 구하고,
-    그 빈도를 조합·AI 서비스 순으로 평균했습니다.
+    ※ 월초에 고정한 질문과 AI 서비스의 각 조합에서 성공한 반복 측정을 모두 사용해,
+    전체 측정 건수 중 병원이 언급된 건수의 비율로 계산했습니다.
     {% if sov_coverage.measurement_basis is defined and sov_coverage.measurement_basis and sov_coverage.measurement_basis.attempts_used %}
     이번 달 표본은 질문 {{ sov_coverage.measurement_basis.question_count }}개 ×
     AI 서비스 {{ sov_coverage.measurement_basis.platform_count }}곳 ×
-    반복 {{ sov_coverage.measurement_basis.repeat_count }}회 = 측정 {{ sov_coverage.measurement_basis.attempts_used }}건입니다.
+    {% if sov_coverage.measurement_basis.repeat_min and sov_coverage.measurement_basis.repeat_max and sov_coverage.measurement_basis.repeat_min != sov_coverage.measurement_basis.repeat_max -%}
+    반복 {{ sov_coverage.measurement_basis.repeat_min }}~{{ sov_coverage.measurement_basis.repeat_max }}회
+    {%- else -%}
+    반복 {{ sov_coverage.measurement_basis.repeat_count }}회
+    {%- endif %} = 측정 {{ sov_coverage.measurement_basis.attempts_used }}건입니다.
     {% endif %}
     {% if sov_coverage.ci95_low is defined and sov_coverage.ci95_low is not none %}
     95% 신뢰구간 {{ "%.1f"|format(sov_coverage.ci95_low) }}~{{ "%.1f"|format(sov_coverage.ci95_high) }}%

@@ -401,6 +401,58 @@ def test_error_margin_footnote_is_measured_not_a_fixed_constant():
     )
 
 
+def test_error_margin_footnote_writes_a_range_when_repeats_were_uneven():
+    """`repeat_count`는 평균이다 — 부분 측정된 달에 평균만 쓰면 없던 표본을 말한다.
+
+    질문마다 5회·1회로 측정된 달의 평균은 3회지만, 실제로 3회 측정된 질문은 하나도
+    없을 수 있다. 최소·최대가 다르면 범위로 적는다.
+    """
+    uneven = _view(
+        sov_coverage={
+            "planned_count": 4,
+            "success_count": 4,
+            "margin_of_hundred": 24,
+            "measurement_basis": {
+                "question_count": 2,
+                "platform_count": 1,
+                "cell_count": 2,
+                "repeat_count": 3,
+                "repeat_min": 1,
+                "repeat_max": 5,
+                "attempts_used": 6,
+            },
+        }
+    )
+
+    assert (
+        "이번 달 수치의 오차 범위는 ±24번입니다 (질문 2개 × 반복 1~5회 기준)."
+        in uneven["footnotes"]
+    )
+
+
+def test_error_margin_footnote_keeps_the_single_number_for_legacy_payloads():
+    """repeat_min/max가 없던 구버전 payload는 예전처럼 평균 하나로 적는다."""
+    legacy = _view(
+        sov_coverage={
+            "planned_count": 4,
+            "success_count": 4,
+            "margin_of_hundred": 24,
+            "measurement_basis": {
+                "question_count": 2,
+                "platform_count": 2,
+                "cell_count": 4,
+                "repeat_count": 5,
+                "attempts_used": 20,
+            },
+        }
+    )
+
+    assert (
+        "이번 달 수치의 오차 범위는 ±24번입니다 (질문 2개 × AI 서비스 2곳 × 반복 5회 기준)."
+        in legacy["footnotes"]
+    )
+
+
 # ── 막 2: 빠진 질문 · 시작 시점 대비 ───────────────────────────────────
 
 
@@ -554,6 +606,237 @@ def test_page_one_trimming_follows_a_fixed_order_and_records_what_it_dropped():
         assert len(view["lost_mention_sentences"]) == 2
     if "PUBLISHED_TITLES" in view["trimmed"]:
         assert len(view["published_items"]) == 2
+
+
+# ── 사다리 아랫칸(⑥~⑫) ────────────────────────────────────────────────
+#
+# `_crowded()`는 ⑤까지만 닿는다. 아래 헬퍼는 같은 뷰를 밀도만 키워 ⑥~⑫를
+# 실제로 밟게 한다 — 이 칸들은 밟히지 않으면 아무 테스트도 지키지 못한다.
+
+V0_BASELINE = {
+    "of_hundred": 31,
+    "current_of_hundred": 47,
+    "sentence": "서비스 시작 시점(V0) 대비: 31번 → 47번",
+}
+
+
+def _long_cells(count: int, chars: int):
+    filler = "환자분들이 실제로 검색창에 입력하는 아주 긴 질문 문장 예시 " * 60
+    return [
+        {
+            "query_text": filler[:chars] + str(index),
+            "platform_label": "ChatGPT" if index % 2 == 0 else "Gemini",
+        }
+        for index in range(count)
+    ]
+
+
+def _dense(*, count: int, chars: int, hospital=HOSPITAL, extra_footnotes: bool = True):
+    """예산을 크게 넘겨 사다리 아랫칸까지 내려가는 뷰.
+
+    `extra_footnotes=True`면 부가 각주 두 개(첫 측정·비교 제외)가 V0 각주 뒤에 붙어
+    ⑥이 무엇을 먼저 버리는지 드러난다. `False`면 각주 목록의 **마지막이 곧 V0 각주**인
+    평범한 달이 된다 — ⑥이 무조건 pop하던 시절 기준선만 남고 설명이 사라지던 조합이다.
+    """
+    title_filler = "아주 긴 콘텐츠 제목 예시 문장을 여기에 반복해서 넣는다 " * 40
+    long_answer = "환자분이 이해하기 쉬운 말로 검사 과정과 준비 방법을 안내합니다. " * 8
+    return _view(
+        hospital=hospital,
+        citations={
+            "measured_cell_count": 30,
+            "cited_cell_count": 6,
+            "cited_content_count": 3,
+            "cited_items": [],
+        },
+        published_contents=[
+            _content(title_filler[:chars] + str(index)) for index in range(count)
+        ],
+        attribution=_attribution(
+            new_mention_count=count,
+            first_measured_mention_count=2 if extra_footnotes else 0,
+            non_comparable_count=1 if extra_footnotes else 0,
+            new_mention_cells=_long_cells(count, chars),
+            lost_mention_count=count,
+            lost_mention_cells=_long_cells(count, chars),
+        ),
+        records=[
+            _record(mentioned=True, text="강남 대장내시경", raw=f"{hospital.name} {long_answer}"),
+            _record(mentioned=False, text="강남 치질 병원", raw=long_answer),
+        ],
+        v0_baseline=dict(V0_BASELINE),
+    )
+
+
+DENSITY_SWEEP = [
+    (count, chars, extras)
+    for count in (1, 2, 3, 5)
+    for chars in (20, 60, 120, 200, 300, 600, 1400)
+    for extras in (True, False)
+]
+
+
+def _near_budget(*, title_chars: int, extra_footnotes: bool):
+    """딱 한 개의 손잡이(대표 글 제목 길이)만 1글자씩 움직이는 뷰.
+
+    사다리 앞칸들은 한 번에 여러 줄을 덜어내서, 굵은 눈금으로 훑으면 "각주 한 줄만
+    빼면 예산에 들어맞는" 좁은 구간(제목 한 줄 = 46자 폭)을 통째로 건너뛴다.
+    ⑥의 V0 각주 버그가 사는 곳이 정확히 그 구간이라 손잡이를 하나로 줄였다.
+    """
+    filler = "대장내시경 검사를 앞두고 환자분들이 가장 많이 물어보시는 준비 과정과 주의사항 정리 " * 20
+    long_answer = "환자분이 이해하기 쉬운 말로 검사 과정과 준비 방법을 안내합니다. " * 8
+    return _view(
+        citations={
+            "measured_cell_count": 30,
+            "cited_cell_count": 6,
+            "cited_content_count": 3,
+            "cited_items": [],
+        },
+        published_contents=[_content(filler[:title_chars] or "대장내시경 검사 전날 준비 안내")],
+        attribution=_attribution(
+            new_mention_count=3,
+            first_measured_mention_count=2 if extra_footnotes else 0,
+            non_comparable_count=1 if extra_footnotes else 0,
+            new_mention_cells=[
+                {"query_text": f"강남 치질 병원 추천해줘 {index}", "platform_label": "ChatGPT"}
+                for index in range(3)
+            ],
+            lost_mention_count=3,
+            lost_mention_cells=_lost(
+                "치질 수술 후 회복 기간이 얼마나 되나요",
+                "대장내시경은 몇 년마다 받아야 하나요",
+                "항문 통증이 계속되면 어디로 가야 하나요",
+            ),
+        ),
+        records=[
+            _record(mentioned=True, text="강남 대장내시경", raw=f"장편한외과의원 {long_answer}"),
+            _record(mentioned=False, text="강남 치질 병원", raw=long_answer),
+        ],
+        v0_baseline=dict(V0_BASELINE),
+    )
+
+
+def test_the_v0_caveat_never_outlives_the_v0_baseline_line():
+    """⑥이 마지막 각주를 무조건 pop하면, 부가 각주가 없는 평범한 달에는 그 마지막이
+    곧 V0 각주다 — "31번 → 47번"은 본문에 남고 그 값이 참고용이라는 설명만 사라진다
+    (한 줄을 뺀 것으로 예산이 채워져 ⑦ V0_BASELINE까지 내려가지도 않는다).
+    기준선과 각주는 같이 살거나 같이 죽는다.
+    """
+    from app.services.report_engine import _v0_footnote
+
+    kept_both = 0
+    for extra_footnotes in (False, True):
+        for title_chars in range(0, 900):
+            view = _near_budget(title_chars=title_chars, extra_footnotes=extra_footnotes)
+            has_baseline = bool(view["v0_baseline"])
+            has_caveat = _v0_footnote() in view["footnotes"]
+            assert has_baseline == has_caveat, (
+                f"title_chars={title_chars} extra_footnotes={extra_footnotes} "
+                f"trimmed={view['trimmed']}: 기준선={has_baseline} 각주={has_caveat}"
+            )
+            if "FOOTNOTES" in view["trimmed"] and has_baseline:
+                kept_both += 1
+
+    # 스윕이 위험 구간(⑥이 각주를 덜어냈는데 기준선은 살아 있는 상태)을 실제로
+    # 지났는지 확인한다 — 지나지 않았다면 위 단언은 아무것도 지키지 않은 것이다.
+    assert kept_both > 0
+
+
+def test_footnote_trimming_drops_the_extras_and_keeps_the_v0_caveat():
+    """⑥은 부가 각주(첫 측정·비교 제외)부터 버리고 V0 각주는 건너뛴다."""
+    from app.services.report_engine import _v0_footnote
+
+    view = _dense(count=2, chars=120)
+
+    assert "FOOTNOTES" in view["trimmed"]
+    assert "V0_BASELINE" not in view["trimmed"]
+    assert view["v0_baseline"] == V0_BASELINE
+    assert _v0_footnote() in view["footnotes"]
+    assert not any("처음 확인된 질문" in note for note in view["footnotes"])
+    assert not any("비교에서 제외" in note for note in view["footnotes"])
+
+
+def test_dropping_the_v0_baseline_takes_its_caveat_with_it():
+    """⑦까지 내려가면 기준선과 각주가 함께 사라진다."""
+    from app.services.report_engine import _v0_footnote
+
+    view = _dense(count=2, chars=200)
+
+    assert "V0_BASELINE" in view["trimmed"]
+    assert view["v0_baseline"] is None
+    assert _v0_footnote() not in view["footnotes"]
+
+
+def test_citation_line_is_dropped_after_the_v0_baseline():
+    view = _dense(count=2, chars=200)
+
+    assert view["trimmed"].index("CITATION_LINE") > view["trimmed"].index("V0_BASELINE")
+    assert view["citation_line"] is None
+
+
+def test_the_all_rungs_clear_the_lists_lost_first_then_new_then_titles():
+    lost_only = _dense(count=2, chars=200)
+
+    assert "LOST_MENTIONS_ALL" in lost_only["trimmed"]
+    assert lost_only["lost_mention_sentences"] == []
+    assert lost_only["new_mention_sentences"]  # 아직 남아 있다 — 순서가 지켜졌다
+
+    everything = _dense(count=3, chars=1400)
+
+    assert everything["trimmed"][-3:] == [
+        "LOST_MENTIONS_ALL",
+        "NEW_MENTIONS_ALL",
+        "PUBLISHED_TITLES_ALL",
+    ]
+    assert everything["new_mention_sentences"] == []
+    assert everything["published_items"] == []
+
+
+def test_the_last_rung_shortens_next_month_plan_to_one_line():
+    """사다리를 다 써도 남으면 마지막으로 다음 달 계획을 한 줄로 줄인다.
+
+    고정 문구만으로 예산을 넘기려면 병원 이름이 비상식적으로 길어야 한다 — 이
+    칸이 실제로 동작하는지 확인하는 것이 목적이다.
+    """
+    view = _dense(
+        count=3,
+        chars=1400,
+        hospital=SimpleNamespace(name="장편한" * 400 + "외과의원"),
+    )
+
+    assert view["trimmed"][-1] == "NEXT_ACTIONS"
+    assert len(view["next_actions"]["ours"]) == 1
+    assert len(view["next_actions"]["yours"]) == 1  # 원장이 할 일은 끝까지 남는다
+
+
+def test_every_trimming_rung_is_reachable_by_some_real_input():
+    """사다리 12칸 전부가 어떤 입력에서는 실제로 밟힌다.
+
+    밟히지 않는 칸은 검증되지 않는 코드다 — ⑥의 V0 각주 버그도 ⑥~⑫를 밟는
+    테스트가 하나도 없어서 통과했다.
+    """
+    seen: set[str] = set()
+    for count, chars, extras in DENSITY_SWEEP:
+        seen.update(_dense(count=count, chars=chars, extra_footnotes=extras)["trimmed"])
+    seen.update(
+        _dense(count=3, chars=1400, hospital=SimpleNamespace(name="장편한" * 400 + "외과의원"))[
+            "trimmed"
+        ]
+    )
+
+    assert seen == {
+        "EVIDENCE_MISSING",
+        "NEW_MENTIONS",
+        "LOST_MENTIONS",
+        "PUBLISHED_TITLES",
+        "EVIDENCE_FOUND",
+        "FOOTNOTES",
+        "V0_BASELINE",
+        "CITATION_LINE",
+        "LOST_MENTIONS_ALL",
+        "NEW_MENTIONS_ALL",
+        "PUBLISHED_TITLES_ALL",
+        "NEXT_ACTIONS",
+    }
 
 
 # ── 2쪽 부록 ──────────────────────────────────────────────────────────

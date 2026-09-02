@@ -84,6 +84,16 @@ class DeliveryGate:
     ready: bool
     code: str | None
     message: str | None
+    # 게이트를 막은 이유 **전부**. `message`는 그중 첫 줄(기존 호환용)이다.
+    # report_blocked는 보통 여러 이유가 동시에 성립하는데, 첫 줄만 노출하면
+    # AE가 하나를 고친 뒤 다시 저장하고서야 다음 이유를 알게 된다.
+    messages: tuple[str, ...] = ()
+
+    @property
+    def all_messages(self) -> tuple[str, ...]:
+        if self.messages:
+            return self.messages
+        return (self.message,) if self.message else ()
 
 
 def _screening_status(r: MonthlyReport, *, delivered: bool | None = None) -> str:
@@ -284,7 +294,7 @@ def _delivery_gate(
 
     blockers = _report_delivery_blockers(report)
     if blockers:
-        return DeliveryGate(False, "report_blocked", blockers[0])
+        return DeliveryGate(False, "report_blocked", blockers[0], tuple(blockers))
     return DeliveryGate(True, None, None)
 
 
@@ -372,20 +382,14 @@ async def list_reports(
     artifacts_by_report = await _get_doctor_artifacts_by_report_id(db, report_ids)
     events_by_report = await _get_delivery_events_by_report_id(db, report_ids)
 
-    # readiness는 gate.ready인 MONTHLY 리포트가 하나라도 있을 때만 읽는다 — V0뿐인
-    # 병원(_delivery_gate가 V0에서 절대 이 조건을 요구하지 않는다)이라면 원래도
-    # get_essence_readiness가 한 번도 불리지 않았다; 배치로 바뀌었다고 그 병원에
-    # 없던 쿼리를 새로 만들지 않는다. 모든 리포트가 같은 hospital_id이므로
-    # (라우트 스코프) 필요할 때도 딱 한 번만 읽는다.
-    needs_readiness = any(
-        r.report_type == "MONTHLY"
-        and _delivery_gate(
-            r,
-            manifests_by_id.get(r.manifest_id) if r.manifest_id else None,
-            artifacts_by_report.get(r.id),
-        ).ready
-        for r in reports
-    )
+    # readiness는 MONTHLY 리포트가 하나라도 있을 때 읽는다 — V0뿐인 병원이라면
+    # (_serialize_report가 V0에서 readiness를 보지 않는다) 원래도 한 번도 불리지
+    # 않았으니 배치로 바뀌었다고 없던 쿼리를 새로 만들지 않는다. 반대로 게이트가
+    # 막힌 MONTHLY도 warning(사후검수 표본·essence version drift)을 붙이려면
+    # readiness가 필요하다 — gate.ready로 좁히면 전부 막힌 달에 preload가 None으로
+    # 넘어가 리포트마다 get_essence_readiness를 개별 호출하는 N+1로 되돌아간다.
+    # 모든 리포트가 같은 hospital_id이므로 (라우트 스코프) 읽어도 딱 한 번이다.
+    needs_readiness = any(r.report_type == "MONTHLY" for r in reports)
     readiness = await get_essence_readiness(db, hospital_id) if needs_readiness else None
 
     return [
@@ -858,7 +862,11 @@ def _serialize(
         latest_event_type=effective.event_type if effective is not None else None,
         legacy_sent_at_present=bool(r.sent_at),
     )
-    delivery_blockers = [] if gate.ready or delivered else [gate.message or "전달할 수 없습니다."]
+    delivery_blockers = (
+        []
+        if gate.ready or delivered
+        else list(gate.all_messages) or ["전달할 수 없습니다."]
+    )
     if not delivered:
         delivery_blockers.extend(current_blockers or [])
     ready = delivered or (gate.ready and not current_blockers)
@@ -969,11 +977,15 @@ async def _serialize_report(
     gate = _delivery_gate(report, manifest, artifact)
     current_blockers: list[str] = []
     current_warnings: list[str] = []
-    if gate.ready and report.report_type == "MONTHLY":
+    if report.report_type == "MONTHLY":
         if readiness is None:
             readiness = await get_essence_readiness(db, report.hospital_id)
-        current_blockers = _current_essence_delivery_blockers(report, readiness)
+        # 경고는 게이트 결과와 무관하게 노출한다 — 운영 기준 버전 드리프트는 전달을
+        # 막지 않지만, 게이트가 막힌 달일수록 AE가 먼저 알아야 하는 사실이다.
+        # 추가 blocker는 게이트를 통과한 리포트에만 얹는다(막힌 이유를 두 번 세지 않는다).
         current_warnings = _current_essence_delivery_warnings(report, readiness)
+        if gate.ready:
+            current_blockers = _current_essence_delivery_blockers(report, readiness)
     review_evidence = await build_report_review_evidence(db, report) if full else None
     return _serialize(
         report,

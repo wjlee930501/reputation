@@ -27,6 +27,7 @@ from app.services.essence_engine import (
     MANDATORY_MEDICAL_AD_RISK_RULES,
     effective_safety_policy,
 )
+from app.utils.anthropic_retry import NON_RETRYABLE_ANTHROPIC_ERRORS
 from app.utils.authority_sources import (
     infer_source_type,
     is_citable_reference_url,
@@ -96,15 +97,6 @@ class MissingCitableReferencesError(ValueError):
         super().__init__(message)
         self.result = result
 
-
-# 재시도해도 결과가 달라지지 않는 Anthropic 4xx. 429(RateLimitError)와 5xx,
-# 타임아웃은 여기 넣지 않는다 — 그건 기다리면 풀린다.
-NON_RETRYABLE_PROVIDER_ERRORS: tuple[type[Exception], ...] = (
-    anthropic.BadRequestError,
-    anthropic.AuthenticationError,
-    anthropic.PermissionDeniedError,
-    anthropic.NotFoundError,
-)
 
 client = anthropic.Anthropic(
     api_key=settings.ANTHROPIC_API_KEY,
@@ -604,13 +596,13 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     # same curated catalog recovery below.  Other hard gates still retain their
     # bounded provider retries.
     #
-    # NON_RETRYABLE_PROVIDER_ERRORS: a malformed request, a bad key, a revoked
+    # NON_RETRYABLE_ANTHROPIC_ERRORS: a malformed request, a bad key, a revoked
     # permission or a missing model does not become valid by waiting.  Retrying
     # them burned three request slots and up to 12s of backoff per item before
     # surfacing the same error.  Rate limits (429), 5xx and timeouts stay
     # retryable, as do our own validation ValueErrors.
     retry=retry_if_not_exception_type(
-        (MissingCitableReferencesError, *NON_RETRYABLE_PROVIDER_ERRORS)
+        (MissingCitableReferencesError, *NON_RETRYABLE_ANTHROPIC_ERRORS)
     ),
     reraise=True,
 )
@@ -880,15 +872,6 @@ FORBIDDEN_CHECK_FIELDS = (
     "faq_question",
     "faq_answer_summary",
 )
-
-
-def forbidden_check_text(result: dict) -> str:
-    """생성 결과에서 금지 표현 검사 대상 텍스트를 하나로 합친다."""
-    return " ".join(
-        value
-        for value in (result.get(field) for field in FORBIDDEN_CHECK_FIELDS)
-        if isinstance(value, str) and value
-    )
 
 
 def _parse_json_response(raw: str, *, json_module) -> dict:

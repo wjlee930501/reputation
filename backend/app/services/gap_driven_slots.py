@@ -22,6 +22,9 @@
    - 받는 쪽은 그 요금제에서 한 유형에 허용된 **최대 배분치**를 넘지 않는다
      (PLAN_16이면 4편 — 즉 어떤 달도 같은 요금제가 원래 낼 수 있는 모양을 벗어나지 않는다).
 4. **결정론.** 같은 (슬롯, 요금제, 타깃 목록) 입력은 항상 같은 계획을 낸다.
+5. **재실행에서도 상한은 한 번만 소진된다.** 부분 생성 뒤 두 번째 배치가 남은 순번만
+   채울 때, 이미 저장된 슬롯을 `existing`으로 넘기면 그 슬롯이 쓴 예산과 donor 몫을
+   먼저 차감한다. 넘기지 않으면 두 실행 결과의 합집합이 3번 상한을 넘을 수 있다.
 
 DB는 이 모듈이 직접 읽지 않는다. 호출부(sync 워커 / async Admin API)가 각자
 `gap_target_rows_stmt()`로 읽어 `GapTarget` 목록으로 넘긴다.
@@ -79,6 +82,22 @@ class GapTarget:
     @property
     def sort_key(self) -> tuple:
         return (self.gap_rank, self.priority_rank, self.name, str(self.id))
+
+
+@dataclass(frozen=True, slots=True)
+class ExistingSlot:
+    """이미 DB에 만들어진 이 달 슬롯 1개.
+
+    부분 생성 뒤 재실행이 **남은 순번만** 채우는데, 계획은 매번 월 전체를 새로 세운다.
+    그래서 상한(50% 예산·유형별 절반 giveaway)을 재실행마다 처음부터 다시 쓰면
+    1회차 결과와 2회차 결과의 합집합이 상한을 넘을 수 있다. 이미 쓴 몫을 계획기에
+    되먹여 예산이 한 달에 한 번만 소진되게 한다.
+    """
+
+    sequence_no: int
+    content_type: ContentType
+    #: 격차 타깃이 확정된 슬롯인가 (= 재배정 예산을 한 칸 쓴 슬롯).
+    gap_driven: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,10 +202,15 @@ def plan_gap_driven_slots(
     *,
     plan: str,
     gap_targets: list[GapTarget],
+    existing: list[ExistingSlot] | tuple[ExistingSlot, ...] = (),
 ) -> list[SlotPlan]:
     """정적 배분으로 만든 슬롯 목록에 격차 기반 유형·타깃 결정을 얹는다.
 
     격차 타깃이 없으면 입력을 그대로 돌려준다(= 기존 동작).
+
+    `existing`은 이미 만들어진 이 달 슬롯이다. 재실행(부분 생성 뒤 두 번째 배치)은
+    남은 순번만 저장하므로, 그 슬롯들이 이미 쓴 예산·giveaway를 여기서 차감하지 않으면
+    두 실행의 합집합이 "네 유형 슬롯의 절반" 상한을 넘는다.
     """
     plans = [
         _MutableSlot(
@@ -228,8 +252,12 @@ def plan_gap_driven_slots(
         for content_type in GAP_DRIVEN_TYPES
     }
 
-    available = list(pool_indexes)
-    used = 0
+    # 이전 실행이 이미 저장한 슬롯의 몫을 먼저 차감한다 — 그 슬롯은 다시 배정할 수도,
+    # 다시 예산을 쓸 수도 없다.
+    used = _consume_existing(plans, pool_indexes, existing, counts, giveaway_left)
+    done_sequences = {item.sequence_no for item in existing}
+    available = [index for index in pool_indexes if plans[index].sequence_no not in done_sequences]
+
     for target in gap_targets:
         if used >= budget or not available:
             break
@@ -247,6 +275,38 @@ def plan_gap_driven_slots(
         used += 1
 
     return [_freeze(slot) for slot in plans]
+
+
+def _consume_existing(
+    plans: list[_MutableSlot],
+    pool_indexes: list[int],
+    existing: list[ExistingSlot] | tuple[ExistingSlot, ...],
+    counts: dict[ContentType, int],
+    giveaway_left: dict[ContentType, int],
+) -> int:
+    """이미 저장된 슬롯이 쓴 예산·giveaway를 반영하고, 쓴 예산 칸 수를 돌려준다.
+
+    저장된 유형을 계획에도 되씌운다 — 그래야 이번 실행이 보는 유형 분포가 DB의 실제
+    분포와 같아지고, 받는 쪽 상한(`receive_ceiling`) 판정이 거짓말을 하지 않는다.
+    """
+    if not existing:
+        return 0
+    done_by_sequence = {item.sequence_no: item for item in existing}
+    used = 0
+    for index in pool_indexes:
+        slot = plans[index]
+        done = done_by_sequence.get(slot.sequence_no)
+        if done is None:
+            continue
+        if done.content_type is not slot.base_type:
+            # 지난 실행이 유형을 바꿔 만든 슬롯 — 그때 소진한 donor 몫을 그대로 되돌린다.
+            giveaway_left[slot.base_type] = giveaway_left.get(slot.base_type, 0) - 1
+            counts[slot.base_type] = counts.get(slot.base_type, 0) - 1
+            counts[done.content_type] = counts.get(done.content_type, 0) + 1
+            slot.content_type = done.content_type
+        if done.gap_driven:
+            used += 1
+    return used
 
 
 def _place_target(

@@ -17,7 +17,11 @@ from app.models.operations import (
     IncidentState,
     NotificationOutbox,
 )
-from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+from app.services.incident_types import (
+    IncidentFingerprint,
+    IncidentOpenRequest,
+    incident_type_of,
+)
 from app.services.incidents import (
     build_incident_key,
     mark_recovered,
@@ -288,6 +292,7 @@ def _projection(
         incident.version,
         incident.safe_error_message or _generation_safe_cause(incident.safe_error_code or ""),
         incident.episode_seq,
+        incident_type=incident_type_of(incident),
     )
 
 

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from unittest.mock import Mock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app.api.admin import handoffs as handoffs_api
 from app.models.admin_user import AdminUser
@@ -337,7 +337,10 @@ async def test_list_handoffs_applies_limit_and_batches_lookups() -> None:
 
     db = BatchListDB(rows=[handoff], hospitals=[hospital], users=[ae])
 
-    result = await handoffs_api.list_handoffs(state=None, limit=5, db=db, _actor=ae)
+    response = Response()
+    result = await handoffs_api.list_handoffs(
+        response, state=None, limit=5, offset=0, db=db, _actor=ae
+    )
 
     assert db.calls == ["handoffs", "hospitals", "users"]
     assert len(result) == 1
@@ -395,7 +398,13 @@ async def test_list_handoffs_filters_by_hospital_id() -> None:
     db = ListDB([matching, other])
 
     rows = await handoffs_api.list_handoffs(
-        state=None, hospital_id=target_hospital_id, limit=100, db=db, _actor=operator
+        Response(),
+        state=None,
+        hospital_id=target_hospital_id,
+        limit=100,
+        offset=0,
+        db=db,
+        _actor=operator,
     )
 
     assert [row["id"] for row in rows] == [matching.id]
@@ -408,7 +417,77 @@ async def test_list_handoffs_without_hospital_id_returns_all() -> None:
     db = ListDB([matching, other])
 
     rows = await handoffs_api.list_handoffs(
-        state=None, hospital_id=None, limit=100, db=db, _actor=operator
+        Response(), state=None, hospital_id=None, limit=100, offset=0, db=db, _actor=operator
     )
 
     assert {row["id"] for row in rows} == {matching.id, other.id}
+
+
+# ── 목록 페이지네이션: 조용한 잘림을 없앤다 ──────────────────────────────
+
+
+class _PagingDB(ListDB):
+    """SQL의 OFFSET/LIMIT을 in-memory 슬라이스로 그대로 재현한다."""
+
+    def __init__(self, handoffs: list[HospitalHandoff]):
+        super().__init__(handoffs)
+        self.limits: list[int] = []
+        self.offsets: list[int] = []
+
+    async def execute(self, stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is not HospitalHandoff:
+            return await super().execute(stmt)
+        limit = stmt._limit_clause.value
+        offset = stmt._offset_clause.value if stmt._offset_clause is not None else 0
+        self.limits.append(limit)
+        self.offsets.append(offset)
+        result = Mock()
+        result.scalars.return_value.all.return_value = self.handoffs[offset : offset + limit]
+        return result
+
+
+def _pending_rows(count: int, operator: AdminUser) -> list[HospitalHandoff]:
+    return [_pending_for(uuid.uuid4(), operator) for _ in range(count)]
+
+
+async def test_list_handoffs_reports_has_more_when_truncated() -> None:
+    operator = _account("OPERATOR")
+    db = _PagingDB(_pending_rows(5, operator))
+    response = Response()
+
+    rows = await handoffs_api.list_handoffs(
+        response, state=None, limit=2, offset=0, db=db, _actor=operator
+    )
+
+    assert len(rows) == 2
+    # 잘림 판정을 위해 limit+1건을 읽는다.
+    assert db.limits == [3] and db.offsets == [0]
+    assert response.headers[handoffs_api.HAS_MORE_HEADER] == "true"
+    assert response.headers[handoffs_api.NEXT_OFFSET_HEADER] == "2"
+
+
+async def test_list_handoffs_offset_moves_the_window_and_ends_cleanly() -> None:
+    operator = _account("OPERATOR")
+    handoffs = _pending_rows(5, operator)
+    db = _PagingDB(handoffs)
+    response = Response()
+
+    rows = await handoffs_api.list_handoffs(
+        response, state=None, limit=2, offset=4, db=db, _actor=operator
+    )
+
+    assert [row["id"] for row in rows] == [handoffs[4].id]
+    assert db.offsets == [4]
+    assert response.headers[handoffs_api.HAS_MORE_HEADER] == "false"
+    assert response.headers[handoffs_api.NEXT_OFFSET_HEADER] == "5"
+
+
+def test_list_handoffs_offset_query_parameter_defaults_to_zero() -> None:
+    """직접 호출 테스트는 의존성 해석을 거치지 않으므로 선언 자체를 확인한다."""
+    import inspect
+
+    signature = inspect.signature(handoffs_api.list_handoffs)
+    offset_default = signature.parameters["offset"].default
+    assert offset_default.default == 0
+    assert offset_default.metadata[0].ge == 0

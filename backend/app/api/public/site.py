@@ -1,3 +1,4 @@
+import logging
 import re
 import uuid
 from urllib.parse import urlparse
@@ -22,13 +23,16 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import get_current_approved_philosophy_id, get_essence_readiness
 from app.services.hospital_logo import is_stored_logo_ref, public_logo_url
 from app.services.photo_assets import effective_photo_metadata
 from app.utils.domain import normalize_domain
 from app.utils.error_page import looks_like_error_page_text
-from app.utils.medical_filter import check_forbidden
+from app.utils.medical_filter import check_forbidden, check_forbidden_content_fields
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/public/hospitals", tags=["Public — Site"])
 
@@ -306,7 +310,9 @@ async def list_published_contents(
         .limit(limit)
     )
     items = result.scalars().all()
-    return [_serialize_item(item, h.slug) for item in items]
+    # SQL 조건으로 표현할 수 없는 마지막 게이트(의료광고 필터)를 여기서 한 번 더 건다 —
+    # sitemap·llms.txt·목록이 모두 이 응답을 읽으므로 여기서 빠지면 공개 표면 전체에서 빠진다.
+    return [_serialize_item(item, h.slug) for item in items if _is_public_safe_content(item)]
 
 
 @router.get("/{slug}/contents/{content_id}")
@@ -547,11 +553,34 @@ def _is_public_safe_content(
         else current_philosophy_id is not None
         and item.content_philosophy_id == current_philosophy_id
     )
-    return (
+    if not (
         current_matches
         and item.status == ContentStatus.PUBLISHED
         and item.essence_status == ESSENCE_STATUS_ALIGNED
-    )
+    ):
+        return False
+    violations = _forbidden_content_violations(item)
+    if violations:
+        # 발행 게이트를 통과한 뒤 본문이 수정됐거나, 필터가 강화되기 전에 발행된 글이
+        # 공개 표면에 남아 있을 수 있다. CLAUDE.md가 이 모듈을 세 번째 적용 지점으로
+        # 규정한 이유이며, 위반 시 fail-closed — 목록·상세·이미지 모두에서 사라진다.
+        logger.warning(
+            "Public content withheld by the medical-ad filter: content_id=%s labels=%s",
+            getattr(item, "id", None),
+            ",".join(violations),
+        )
+        return False
+    return True
+
+
+def _forbidden_content_violations(item: ContentItem) -> list[str]:
+    """공개 직렬화 직전 마지막 의료광고 검사 (아이템당 한 번).
+
+    검사 대상 필드는 생성 엔진의 `FORBIDDEN_CHECK_FIELDS`를 그대로 재사용한다 —
+    공개 텍스트 필드가 늘어날 때 세 적용 지점이 함께 따라오게 하는 유일한 방법이다.
+    """
+    values = {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
+    return check_forbidden_content_fields(values, FORBIDDEN_CHECK_FIELDS)
 
 
 def _content_image_url(slug: str, item: ContentItem) -> str:

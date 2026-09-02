@@ -279,7 +279,19 @@ async def claim_notification_batch(
     limit: int = 50,
     lease_seconds: int = 120,
 ) -> tuple[ClaimedNotification, ...]:
-    """Lease a deterministic due batch and commit before any transport I/O."""
+    """Lease a deterministic due batch and commit before any transport I/O.
+
+    Ordering caveat (accepted, not a bug to route around): the batch is ordered by
+    `next_attempt_at` first, and a transient send failure pushes that row's next
+    attempt into the future. So an `INCIDENT_OPEN` that failed once can land in the
+    channel *after* the `INCIDENT_RECOVERED` that was enqueued later — during the
+    retry backoff window the two Slack lines can read out of order. Both still
+    arrive, which is the invariant that matters (a delivered OPEN is always closed);
+    strict per-incident ordering would need a head-of-line lock per incident and
+    would stall every other notification behind one failing row. The messages carry
+    their own status text ("운영 확인 필요" / "자동 복구 완료"), so a reader is never
+    left guessing which state is current.
+    """
 
     claimed_at = now or datetime.now(UTC)
     rows = list(

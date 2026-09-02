@@ -22,7 +22,8 @@ from app.models.operations import (
     NotificationOutboxState,
     OperationRun,
 )
-from app.services.incident_safety import build_incident_key, should_notify_incident_recovery
+from app.services.dependency_incident_helpers import open_notice_exists_sync
+from app.services.incident_safety import build_incident_key
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import (
     IncidentSlackProjection,
@@ -127,11 +128,14 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
             return False
         incident = recovered
         # BACKGROUND_TASK_FAILED recovers when the next scheduled attempt succeeds.
-        # Nobody started that work, so the recovery is informational at most and the
-        # system closes the incident itself instead of queueing a "확인 완료" click.
-        if run.operation_type != "RUN_SOV" and should_notify_incident_recovery(
-            incident, now=datetime.now(UTC)
-        ):
+        # Nobody started that work, so the recovery is informational and the system
+        # closes the incident itself instead of queueing a "확인 완료" click. It is
+        # still sent whenever the "운영 확인 필요" notice actually reached the outbox:
+        # a delivered OPEN must always be closed by its RECOVERED. When no OPEN was
+        # queued — a run the pipeline already terminalized with its own classified
+        # incident, so `record_task_failure` returned early — nothing is owed and the
+        # DB incident plus its audit trail stay the only record.
+        if open_notice_exists_sync(db, incident.id):
             _enqueue(
                 db,
                 build_recovered_incident_notification(

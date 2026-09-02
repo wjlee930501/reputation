@@ -233,3 +233,37 @@ def test_platform_served_hospital_is_no_longer_structurally_owned_zero(url, owne
     roots = _owned_source_roots(_hospital())
 
     assert _matches_owned_source(url, roots) is owned
+
+
+def test_a_custom_domain_equal_to_the_platform_host_never_claims_other_hospitals():
+    """`aeo_domain`이 플랫폼 기본 호스트와 같으면 그 호스트 전체가 이 병원 것이 됐다.
+
+    (플랫폼 호스트, "") 루트가 목록 맨 앞에 서서 `_relative_path`가 먼저 걸리므로,
+    다른 병원의 `/{다른 slug}/contents/...` 인용까지 이 병원 글로 귀속됐다.
+    """
+    hospital = _hospital(slug="jangpyeonhan", aeo_domain=PLATFORM_HOST)
+
+    roots = hospital_surface_roots(hospital)
+
+    assert (PLATFORM_HOST, "") not in [(root.host, root.base_path) for root in roots]
+    assert (PLATFORM_HOST, "/jangpyeonhan") in [(root.host, root.base_path) for root in roots]
+
+    match = build_citation_match(
+        [f"https://{PLATFORM_HOST}/other-clinic/contents/{OTHER_CONTENT_ID}"],
+        hospital,
+        [SimpleNamespace(id=OTHER_CONTENT_ID, title="남의 병원 글")],
+    )
+
+    assert not match.has_owned
+
+
+def test_a_custom_domain_equal_to_the_platform_host_still_matches_its_own_path():
+    hospital = _hospital(slug="jangpyeonhan", aeo_domain=PLATFORM_HOST)
+
+    contents = match_cited_content(
+        [f"https://{PLATFORM_HOST}/jangpyeonhan/contents/{CONTENT_ID}"],
+        hospital,
+        [SimpleNamespace(id=CONTENT_ID, title="우리 글")],
+    )
+
+    assert list(contents) == [str(CONTENT_ID).lower()]

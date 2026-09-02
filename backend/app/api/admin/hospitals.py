@@ -56,6 +56,7 @@ from app.services.essence_engine import (
 from app.services.essence_readiness import get_essence_readiness
 from app.services.hospital_activation import (
     ActivationOutcome,
+    HospitalNotActivatable,
 )
 from app.services.hospital_activation import (
     activate_hospital as activate_hospital_transition,
@@ -1034,8 +1035,11 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
 
     Content scheduling belongs to STEP 6 and is deliberately not an activation
     prerequisite.
+
+    판정과 전환은 같은 행 잠금 안에서 일어나야 한다 — 게이트를 읽은 뒤 전환하기까지
+    사이에 들어온 `/pause` 커밋이 조용히 덮이면 일시 정지가 되살아난다.
     """
-    h = await _get_or_404(db, hospital_id)
+    h = await _get_or_404(db, hospital_id, for_update=True)
     if h.status == HospitalStatus.ACTIVE:
         return {
             "detail": f"{h.name} activated",
@@ -1056,9 +1060,13 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     # 전환 자체는 워커의 자동 활성화와 같은 서비스 한 곳에서만 수행한다.
 
     ensure_site_revalidate_configured()
-    result = await activate_hospital_transition(
-        db, h, actor=default_actor(), reason="OPERATOR_PLATFORM_ACTIVATION"
-    )
+    try:
+        result = await activate_hospital_transition(
+            db, h, actor=default_actor(), reason="OPERATOR_PLATFORM_ACTIVATION"
+        )
+    except HospitalNotActivatable as exc:
+        # PAUSED 재개는 DNS 재확인이 붙은 /resume만 수행한다.
+        raise HTTPException(status_code=409, detail=exc.as_detail()) from exc
     if result.outcome is ActivationOutcome.BLOCKED:
         raise HTTPException(status_code=409, detail=activation_gate_error(result.gate))
     await db.commit()
@@ -1358,8 +1366,17 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
-async def _get_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:
-    h = await db.get(Hospital, hospital_id)
+async def _get_or_404(
+    db: AsyncSession, hospital_id: uuid.UUID, *, for_update: bool = False
+) -> Hospital:
+    """`for_update=True`는 상태 전환 엔드포인트 전용 — 판정과 쓰기를 한 잠금 안에 둔다.
+
+    기본 경로는 인자를 아예 넘기지 않는다 — 읽기 전용 조회의 SQL을 바꿀 이유가 없다.
+    """
+    if for_update:
+        h = await db.get(Hospital, hospital_id, with_for_update=True)
+    else:
+        h = await db.get(Hospital, hospital_id)
     if not h:
         raise HTTPException(status_code=404, detail="Hospital not found")
     return h

@@ -175,6 +175,9 @@ def test_second_ai_adjudicator_can_clear_primary_false_positive(monkeypatch) -> 
                 "blocking_findings": ["근거 있는 지역명 존재를 도배로 판단"],
                 "advisory_notes": [],
                 "reviewed_evidence_note_ids": [str(note_id)],
+                # 2차 재정은 blocker와 연결된 근거가 특정될 때만 호출된다.
+                "finding_fields": ["positioning_statement"],
+                "finding_evidence_note_ids": [str(note_id)],
                 "summary": "지역명 확인 필요",
             },
             {
@@ -225,6 +228,7 @@ def test_second_ai_adjudicator_can_clear_primary_false_positive(monkeypatch) -> 
 
 
 def test_second_ai_adjudicator_fails_closed_below_confidence(monkeypatch) -> None:
+    note_id = uuid.uuid4()
     responses = iter(
         [
             {
@@ -232,7 +236,9 @@ def test_second_ai_adjudicator_fails_closed_below_confidence(monkeypatch) -> Non
                 "confidence": 0.96,
                 "blocking_findings": ["근거 범위 확인 필요"],
                 "advisory_notes": [],
-                "reviewed_evidence_note_ids": [],
+                "reviewed_evidence_note_ids": [str(note_id)],
+                "finding_fields": ["positioning_statement"],
+                "finding_evidence_note_ids": [str(note_id)],
                 "summary": "확인 필요",
             },
             {
@@ -243,11 +249,17 @@ def test_second_ai_adjudicator_fails_closed_below_confidence(monkeypatch) -> Non
             },
         ]
     )
-    monkeypatch.setattr(
-        essence_auto_review,
-        "_call_anthropic_json",
-        lambda *_args, **_kwargs: next(responses),
-    )
+    calls: list[object] = []
+
+    def fake_call(*_args, **_kwargs):
+        calls.append(_kwargs)
+        return next(responses)
+
+    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+
+    candidate = _empty_candidate(uuid.uuid4())
+    candidate["positioning_statement"] = "근거 기반 설명"
+    candidate["evidence_map"] = {"positioning_statement": [str(note_id)]}
 
     review = essence_auto_review.review_essence_candidate(
         SimpleNamespace(id=uuid.uuid4(), name="테스트 병원"),
@@ -259,10 +271,19 @@ def test_second_ai_adjudicator_fails_closed_below_confidence(monkeypatch) -> Non
             must_use_messages=[],
             treatment_narratives=[],
         ),
-        _empty_candidate(uuid.uuid4()),
-        [],
+        candidate,
+        [
+            SimpleNamespace(
+                id=note_id,
+                source_asset_id=uuid.uuid4(),
+                note_type="KEY_MESSAGE",
+                claim="근거",
+                source_excerpt="원문 발췌",
+            )
+        ],
     )
 
+    assert len(calls) == 2, "2차 재정이 실제로 호출된 뒤 확신 미달로 막혀야 한다"
     assert review.approves is False
     assert review.decision == "ESCALATE"
     assert review.findings == ("근거 범위 확인 필요",)
@@ -386,11 +407,36 @@ def test_adjudication_evidence_subset_is_capped(monkeypatch) -> None:
     candidate["positioning_statement"] = "근거 기반 설명"
     candidate["evidence_map"] = {"positioning_statement": [str(note.id) for note in notes]}
 
-    payload = _run_escalated_review(
-        monkeypatch,
-        _escalating_primary(blocking_findings=["필드를 특정하지 않은 일반 지적"]),
-        candidate,
-        notes,
-    )
+    # 1차 blocker가 positioning_statement를 지목했고 그 필드에만 근거가 40건 걸려 있다.
+    payload = _run_escalated_review(monkeypatch, _escalating_primary(), candidate, notes)
 
     assert len(payload["evidence_notes"]) == essence_auto_review._MAX_ADJUDICATION_NOTES
+
+
+def test_adjudication_is_skipped_when_no_evidence_maps_to_the_blocker(monkeypatch) -> None:
+    """blocker와 연결된 근거를 특정하지 못하면 2차 재정을 사지 않고 에스컬레이션을 확정한다.
+
+    회귀: 예전에는 UUID 정렬 순서로 아무 근거나 25건 채워 재정을 호출했다. 재정자는
+    blocker와 무관한 자료를 보고 자동 승인을 뒤집을 수 있었고, 그걸 막는 건 프롬프트 문구뿐이었다.
+    """
+    notes = [_note(claim=f"근거 {index}") for index in range(30)]
+    candidate = _empty_candidate(uuid.uuid4())
+    candidate["must_use_messages"] = ["근거 기반 메시지"]
+    candidate["evidence_map"] = {"must_use_messages": [str(note.id) for note in notes]}
+
+    calls: list[str] = []
+
+    def fake_call(_system_prompt, data, **_kwargs):
+        calls.append(data)
+        return _escalating_primary(blocking_findings=["필드를 특정하지 않은 일반 지적"])
+
+    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    review = essence_auto_review.review_essence_candidate(
+        _hospital(), _previous(), candidate, notes
+    )
+
+    assert len(calls) == 1, "2차 재정 호출은 아예 나가지 않아야 한다"
+    assert review.decision == "ESCALATE"
+    assert review.approves is False
+    assert "관련 근거 미확인" in review.summary
+    assert review.findings == ("필드를 특정하지 않은 일반 지적",)

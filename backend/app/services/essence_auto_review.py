@@ -689,8 +689,10 @@ def _adjudication_note_ids(
 ) -> list[str]:
     """2차 재정이 실제로 대조해야 하는 근거 노트만 고른다.
 
-    우선순위: 1차 검수가 직접 지목한 노트 → 지목한 필드의 evidence_map 노트 →
-    (아무것도 특정되지 않았을 때) 후보가 연결한 근거 전체. 어느 경로든 상한이 걸린다.
+    우선순위: 1차 검수가 직접 지목한 노트 → 지목한 필드의 evidence_map 노트.
+    어느 쪽도 blocker와 연결된 근거를 특정하지 못하면 **빈 목록**을 돌려준다 —
+    UUID 정렬 순서로 아무 근거나 채워 보내면 재정자는 blocker와 무관한 자료를 근거로
+    자동 승인을 뒤집을 수 있다. 호출부가 그때 재정을 생략하고 에스컬레이션을 확정한다.
     """
 
     valid_ids = {str(note.id) for note in notes}
@@ -710,12 +712,6 @@ def _adjudication_note_ids(
             for item in raw if isinstance(raw, list) else [raw]:
                 if item and str(item) in valid_ids and str(item) not in selected:
                     selected.append(str(item))
-    if not selected:
-        selected = [
-            note_id
-            for note_id in sorted(_candidate_evidence_ids(candidate))
-            if note_id in valid_ids
-        ]
     return selected[:_MAX_ADJUDICATION_NOTES]
 
 
@@ -788,6 +784,18 @@ def review_essence_candidate(
     adjudication_note_ids = set(
         _adjudication_note_ids(candidate, selected_notes, response, primary.findings)
     )
+    if not adjudication_note_ids:
+        # blocker와 연결된 근거를 특정하지 못했다. 무관한 근거를 채워 재정을 사면
+        # 재정자는 blocker와 상관없는 자료를 보고 자동 승인을 뒤집을 수 있다.
+        return EssenceAiReview(
+            decision="ESCALATE",
+            confidence=primary.confidence,
+            findings=primary.findings or ("2차 독립 AI 검수가 자동 승인을 보류했습니다.",),
+            reviewed_evidence_note_ids=tuple(sorted(required_ids)),
+            summary="관련 근거 미확인 — 1차 blocker와 연결된 근거를 특정하지 못해 2차 재정을 생략했습니다.",
+            model=settings.CLAUDE_MODEL_FAST,
+        )
+
     adjudication_notes = [
         note for note in selected_notes if str(note.id) in adjudication_note_ids
     ]
