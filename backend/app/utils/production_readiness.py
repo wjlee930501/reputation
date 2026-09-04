@@ -35,6 +35,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "dispatch-notification-outbox",
     "drain-lead-diagnoses",
     "live-custom-domain-health",
+    "monthly-report-gap-summary",
     "monthly-reports",
     "monthly-sov-measurement",
     "monthly-slot-generation",
@@ -94,6 +95,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.run_monthly_sov_measurement",
     "app.workers.tasks.run_sov_for_hospital",
     "app.workers.tasks.run_weekly_monitoring",
+    "app.workers.tasks.summarize_monthly_report_gaps",
     "app.workers.tasks.trigger_v0_report",
 }
 

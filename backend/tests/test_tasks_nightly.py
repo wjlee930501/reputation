@@ -476,7 +476,7 @@ def test_query_priority_promotes_only_unmentioned_targets():
 
 def test_weekly_monitoring_commits_operation_run_before_sov_dispatch(monkeypatch):
     hospital_id = uuid.uuid4()
-    hospital = SimpleNamespace(id=hospital_id, status=HospitalStatus.ACTIVE)
+    hospital = SimpleNamespace(id=hospital_id, name="주간 모니터링 의원", status=HospitalStatus.ACTIVE)
     dispatched: list[dict] = []
     adjusted: list[dict] = []
 
@@ -676,8 +676,8 @@ def test_weekly_monitoring_isolates_broker_failure_and_keeps_run_requested(monke
     first_id = uuid.uuid4()
     second_id = uuid.uuid4()
     hospitals = [
-        SimpleNamespace(id=first_id, status=HospitalStatus.ACTIVE),
-        SimpleNamespace(id=second_id, status=HospitalStatus.ACTIVE),
+        SimpleNamespace(id=first_id, name="브로커 실패 의원", status=HospitalStatus.ACTIVE),
+        SimpleNamespace(id=second_id, name="브로커 성공 의원", status=HospitalStatus.ACTIVE),
     ]
     dispatched: list[str] = []
     last_success_id: uuid.UUID | None = None
