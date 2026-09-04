@@ -308,7 +308,9 @@ def test_valid_two_page_artifact_recovers_false_invalid_incident(
             validated_at=datetime.now(timezone.utc),
             validation_metadata=artifact_value.metadata.model_dump(mode="json"),
         )
-        session.add_all((hospital, report, artifact))
+        session.add_all((hospital, report))
+        session.flush()
+        session.add(artifact)
         session.commit()
         context = MonthlyArtifactIncidentContext(
             hospital_id=hospital_id,

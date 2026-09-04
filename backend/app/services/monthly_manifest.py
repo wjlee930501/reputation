@@ -134,9 +134,18 @@ def _replace_manifest_freeze(
 ) -> MonthlyMeasurementManifest:
     if manifest.closed_at is not None:
         raise ManifestPolicyDrift("closed monthly manifest cannot be superseded")
-    # `link_attempt` makes SUCCESS terminal at the cell level, so this also proves
-    # that no confirmed SUCCESS attempt can be erased by the replacement.
-    if any(cell.state == "SUCCESS" for cell in manifest.cells):
+    provenance = manifest.platform_provenance
+    stored_protocol = (
+        provenance.get("measurement_protocol") if isinstance(provenance, dict) else None
+    )
+    # Once month-end tracking has started, `link_attempt` makes SUCCESS terminal at
+    # the cell level. Weekly successes may still be superseded by the authoritative
+    # month-end tracking freeze.
+    if (
+        isinstance(stored_protocol, dict)
+        and _is_month_end_tracking_protocol(stored_protocol)
+        and any(cell.state == "SUCCESS" for cell in manifest.cells)
+    ):
         raise ManifestPolicyDrift("monthly manifest with successful attempts cannot be superseded")
     referenced_report_id = session.execute(
         select(MonthlyReport.id).where(MonthlyReport.manifest_id == manifest.id).limit(1)

@@ -164,10 +164,20 @@ def test_freeze_deduplicates_exact_query_platform_specs_without_cross_expanding(
     ]
 
 
-def test_freeze_refuses_to_replace_manifest_with_successful_cells() -> None:
+def test_freeze_refuses_to_replace_successful_month_end_manifest_on_protocol_drift() -> None:
     session = FakeSession()
     manifest = freeze_monthly_manifest(
-        session, uuid.uuid4(), 2026, 8, [_spec(1)], gemini_configured=False
+        session,
+        uuid.uuid4(),
+        2026,
+        8,
+        [_spec(1)],
+        gemini_configured=False,
+        measurement_protocol_kwargs={
+            "measurement_window": "month_end",
+            "tracking_set_fingerprint": "original",
+            "tracking_set_size": 1,
+        },
     )
     manifest.cells[0].state = "SUCCESS"
 
