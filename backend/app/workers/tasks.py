@@ -121,6 +121,7 @@ from app.services.monthly_content_operations import (
 from app.services.monthly_events import MonthlyRunStage
 from app.services.monthly_manifest import (
     ManifestError,
+    ManifestPolicyDrift,
     apply_manifest_to_report,
     close_manifest,
     freeze_dispatch_manifest,
@@ -3574,6 +3575,27 @@ def run_sov_for_hospital(
                     gemini_configured=bool(settings.GEMINI_API_KEY),
                     measurement_protocol_kwargs=protocol_kwargs,
                 )
+            except ManifestPolicyDrift as exc:
+                logger.warning(
+                    "Monthly measurement manifest drift blocks provider calls for hospital %s: %s",
+                    hospital_id,
+                    exc,
+                )
+                _record_weekly_sov_failure(
+                    hospital,
+                    period_key,
+                    error_code := f"{failure_prefix}_MEASUREMENT_POLICY_DRIFT",
+                    _operation_run_id_from_task(self),
+                    measurement_mode=measurement_mode,
+                )
+                _finish_sov_operation_run(
+                    db,
+                    self,
+                    OperationRunState.FAILED,
+                    error_code,
+                    _sov_operation_error_message(error_code),
+                )
+                return
             except ManifestError:
                 logger.info("No queries available to freeze for hospital %s", hospital_id)
                 _record_weekly_sov_failure(

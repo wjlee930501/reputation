@@ -1,21 +1,33 @@
+import os
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import create_engine, delete, select, text, update
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.orm import Session
 
-from app.models.monthly_control import MonthlyMeasurementCell
+from app.models.hospital import Hospital
+from app.models.monthly_control import MonthlyMeasurementCell, MonthlyMeasurementManifest
 from app.models.sov import SovRecord
 from app.services.monthly_manifest import (
     ManifestCellSpec,
     ManifestError,
+    ManifestPolicyDrift,
     apply_manifest_to_report,
     close_manifest,
     exclude_cell,
     freeze_dispatch_manifest,
     freeze_monthly_manifest,
     link_attempt,
+    reopen_incomplete_manifest_for_recovery,
     summarize_manifest,
+)
+
+_POSTGRES_URL = os.getenv(
+    "TASK22_DATABASE_URL",
+    "postgresql://reputation:reputation@localhost:5434/reputation_test",
 )
 
 
@@ -150,6 +162,193 @@ def test_freeze_deduplicates_exact_query_platform_specs_without_cross_expanding(
         ("variant:1", "chatgpt"),
         ("variant:1", "gemini"),
     ]
+
+
+def test_freeze_refuses_to_replace_manifest_with_successful_cells() -> None:
+    session = FakeSession()
+    manifest = freeze_monthly_manifest(
+        session, uuid.uuid4(), 2026, 8, [_spec(1)], gemini_configured=False
+    )
+    manifest.cells[0].state = "SUCCESS"
+
+    with pytest.raises(ManifestPolicyDrift, match="successful attempts"):
+        freeze_monthly_manifest(
+            session,
+            manifest.hospital_id,
+            2026,
+            8,
+            [_spec(2)],
+            gemini_configured=False,
+            existing=manifest,
+            measurement_protocol_kwargs={
+                "measurement_window": "month_end",
+                "tracking_set_fingerprint": "changed",
+                "tracking_set_size": 1,
+            },
+        )
+
+    assert manifest.cells[0].state == "SUCCESS"
+
+
+def test_freeze_refuses_to_replace_manifest_referenced_by_report() -> None:
+    class ReferencedSession(FakeSession):
+        def execute(self, _statement):
+            return SimpleNamespace(scalar_one_or_none=lambda: uuid.uuid4())
+
+    session = ReferencedSession()
+    manifest = freeze_monthly_manifest(
+        session, uuid.uuid4(), 2026, 8, [_spec(1)], gemini_configured=False
+    )
+    original_cells = list(manifest.cells)
+
+    with pytest.raises(ManifestPolicyDrift, match="referenced by a report"):
+        freeze_monthly_manifest(
+            session,
+            manifest.hospital_id,
+            2026,
+            8,
+            [_spec(2)],
+            gemini_configured=False,
+            existing=manifest,
+            measurement_protocol_kwargs={
+                "measurement_window": "month_end",
+                "tracking_set_fingerprint": "changed",
+                "tracking_set_size": 1,
+            },
+        )
+
+    assert manifest.cells == original_cells
+
+
+def test_freeze_replaces_only_open_unmeasured_unreferenced_manifest() -> None:
+    class UnreferencedSession(FakeSession):
+        def execute(self, _statement):
+            return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+    session = UnreferencedSession()
+    manifest = freeze_monthly_manifest(
+        session, uuid.uuid4(), 2026, 8, [_spec(1)], gemini_configured=False
+    )
+
+    replaced = freeze_monthly_manifest(
+        session,
+        manifest.hospital_id,
+        2026,
+        8,
+        [_spec(2)],
+        gemini_configured=False,
+        existing=manifest,
+        measurement_protocol_kwargs={
+            "measurement_window": "month_end",
+            "tracking_set_fingerprint": "authoritative",
+            "tracking_set_size": 1,
+        },
+    )
+
+    assert replaced is manifest
+    assert manifest.closed_at is None
+    assert [cell.query_key for cell in manifest.cells] == ["variant:2"]
+
+
+def test_recovery_reopen_uses_only_the_recovery_guard() -> None:
+    statements: list[str] = []
+
+    class PostgresSession:
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def execute(self, statement):
+            statements.append(str(statement))
+
+        def flush(self):
+            return None
+
+    manifest = SimpleNamespace(
+        period_year=2026,
+        period_month=8,
+        closed_at=datetime(2026, 9, 1, 0, 15, tzinfo=timezone.utc),
+        configured_platforms=["chatgpt"],
+        cells=[SimpleNamespace(state="FAILED", platform="chatgpt")],
+    )
+
+    reopened = reopen_incomplete_manifest_for_recovery(
+        PostgresSession(),
+        manifest,
+        now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+    )
+
+    assert reopened is True
+    assert manifest.closed_at is None
+    assert statements == [
+        "SET LOCAL app.monthly_manifest_recovery = 'on'",
+        "SET LOCAL app.monthly_manifest_recovery = 'off'",
+    ]
+
+
+def test_postgres_supersede_cannot_reopen_but_recovery_can() -> None:
+    engine = create_engine(_POSTGRES_URL, future=True)
+    try:
+        connection = engine.connect()
+    except OperationalError as exc:
+        engine.dispose()
+        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+    connection.close()
+    hospital_id = uuid.uuid4()
+    closed_at = datetime(2026, 9, 1, 0, 15, tzinfo=timezone.utc)
+    with Session(engine, expire_on_commit=False) as db:
+        try:
+            hospital = Hospital(
+                id=hospital_id,
+                name="월간 측정표 복구 가드 의원",
+                slug=f"manifest-recovery-{uuid.uuid4().hex}",
+            )
+            manifest = MonthlyMeasurementManifest(
+                hospital_id=hospital_id,
+                period_year=2026,
+                period_month=8,
+                configured_platforms=["chatgpt"],
+                platform_provenance={"measurement_protocol": {}},
+                closes_at=closed_at,
+                closed_at=closed_at,
+                cells=[
+                    MonthlyMeasurementCell(
+                        query_key="query:recovery",
+                        query_text="복구할 측정 질문",
+                        platform="chatgpt",
+                        state="FAILED",
+                    )
+                ],
+            )
+            db.add_all((hospital, manifest))
+            db.commit()
+
+            with pytest.raises(DBAPIError, match="closed monthly manifest cannot be superseded"):
+                with db.begin_nested():
+                    db.execute(text("SET LOCAL app.monthly_manifest_supersede = 'on'"))
+                    db.execute(
+                        update(MonthlyMeasurementManifest)
+                        .where(MonthlyMeasurementManifest.id == manifest.id)
+                        .values(closed_at=None)
+                    )
+
+            db.expire(manifest)
+            assert manifest.closed_at == closed_at
+            assert reopen_incomplete_manifest_for_recovery(
+                db,
+                manifest,
+                now=datetime(2026, 9, 2, tzinfo=timezone.utc),
+            )
+            db.commit()
+            assert db.scalar(
+                select(MonthlyMeasurementManifest.closed_at).where(
+                    MonthlyMeasurementManifest.id == manifest.id
+                )
+            ) is None
+        finally:
+            db.rollback()
+            db.execute(delete(Hospital).where(Hospital.id == hospital_id))
+            db.commit()
+    engine.dispose()
 
 
 def test_link_attempt_requires_confirmed_measurement_before_success() -> None:

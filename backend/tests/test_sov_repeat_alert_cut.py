@@ -18,7 +18,7 @@ from app.services.monthly_period import (
     scheduled_report_period,
 )
 from app.workers import task_incident_control, tasks, weekly_sov_incident_control
-from app.workers.tasks import ManifestError
+from app.workers.tasks import ManifestError, ManifestPolicyDrift
 
 # ── 1. terminal failures must not Celery-retry ──────────────────────────────
 
@@ -146,6 +146,28 @@ def test_cost_guard_block_closes_failed_run_without_retry(monkeypatch):
 
     assert retries == []
     assert recorded[0]["args"][2].endswith("NO_MEASUREMENT_MANIFEST")
+    assert finished[0]["args"][2] == OperationRunState.FAILED
+
+
+def test_manifest_supersede_refusal_records_policy_drift_without_retry(monkeypatch):
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="테스트의원",
+        status=HospitalStatus.ACTIVE,
+        competitors=[],
+        region=["서울"],
+    )
+    task, retries, finished, recorded = _patch_sov_task_shell(monkeypatch, hospital)
+
+    def drift(*_args, **_kwargs):
+        raise ManifestPolicyDrift("manifest has successful attempts")
+
+    monkeypatch.setattr(tasks, "freeze_dispatch_manifest", drift)
+
+    _call_run_sov(task, str(hospital.id))
+
+    assert retries == []
+    assert recorded[0]["args"][2].endswith("MEASUREMENT_POLICY_DRIFT")
     assert finished[0]["args"][2] == OperationRunState.FAILED
 
 

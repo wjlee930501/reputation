@@ -57,13 +57,13 @@ def apply_complete(report: MonthlyReport, manifest: MonthlyMeasurementManifest) 
     report.delivery_blockers = ["DOCTOR_ARTIFACT_UNVALIDATED"]
 
 
-def published(report_id: uuid.UUID) -> PublishedDoctorPdf:
+def published(report_id: uuid.UUID, *, page_count: int = 1) -> PublishedDoctorPdf:
     digest = report_id.hex * 2
     byte_size = 4096
     metadata = DoctorArtifactMetadata(
         validation_version="doctor-pdf-v1",
         validation_source="SYSTEM",
-        page_count=1,
+        page_count=page_count,
         page_size="A4",
         glyph_count=840,
         font_family="Pretendard",
