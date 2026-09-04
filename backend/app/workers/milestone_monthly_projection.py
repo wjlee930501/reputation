@@ -21,7 +21,7 @@ from app.services.monthly_events import (
     project_monthly_event,
 )
 from app.services.notification_contracts import NotificationPayloadError
-from app.services.notification_milestone_messages import MilestoneProjection
+from app.services.notification_milestone_messages import MilestoneKind, MilestoneProjection
 from app.workers.milestone_monthly_facts import ReportFacts, load_report_facts
 from app.workers.milestone_projection_support import (
     MilestoneStateScan,
@@ -67,13 +67,17 @@ async def observe_monthly_milestones(
 
     facts_by_report = await load_report_facts(db)
     current = tuple(
-        _project_observed_current(facts, observed_at) for facts in facts_by_report.values()
+        (facts, _project_observed_current(facts, observed_at))
+        for facts in facts_by_report.values()
     )
-    states = {key: projection.stable_id for key, projection in current}
+    states = {key: projection.stable_id for _facts, (key, projection) in current}
     changed = tuple(
         projection
-        for key, projection in current
+        for facts, (key, projection) in current
         if previous_states.get(key) != projection.stable_id
+        and not (
+            facts.delivered and projection.kind is MilestoneKind.MONTHLY_CUSTOMER_READY
+        )
     )
     deliveries = await _project_delivery_events(db, facts_by_report, delivery_since, observed_at)
     return MilestoneStateScan((*changed, *deliveries), states)
@@ -115,6 +119,8 @@ async def _project_delivery_events(
 
 def _project_current(facts: ReportFacts, window: ProjectionWindow) -> MilestoneProjection | None:
     event_type = _current_state(facts)
+    if facts.delivered and event_type is MonthlyEventType.CUSTOMER_READY:
+        return None
     occurred_at = _legacy_transition_time(facts, event_type)
     if occurred_at is None or not in_window(occurred_at, window):
         return None
@@ -166,7 +172,11 @@ def _legacy_transition_time(facts: ReportFacts, event_type: MonthlyEventType) ->
 def _state_fingerprint(facts: ReportFacts) -> str:
     report = facts.report
     artifact_state = facts.artifact_state.value
-    artifact_id = str(facts.artifact.id) if facts.artifact is not None else "none"
+    artifact_id = (
+        "delivered"
+        if facts.delivered
+        else str(facts.artifact.id) if facts.artifact is not None else "none"
+    )
     manifest_closed = facts.manifest is not None and facts.manifest.closed_at is not None
     return ":".join(
         (
@@ -177,6 +187,7 @@ def _state_fingerprint(facts: ReportFacts) -> str:
             str(manifest_closed),
             artifact_state,
             artifact_id,
+            str(facts.delivered),
             *facts.blockers,
         )
     )

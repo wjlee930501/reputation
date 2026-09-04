@@ -74,7 +74,6 @@ from app.services.content_publication import (
 )
 from app.services.content_publish_notifications import (
     enqueue_generation_blocked_digest_sync,
-    enqueue_missing_approved_essence_digest_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_pdf_contracts import DoctorV0Baseline
@@ -489,6 +488,8 @@ def _record_generation_batch_outcome(
     state: GenerationItemState,
     code: str | None,
     message: str | None,
+    *,
+    notify: bool | None = None,
 ) -> None:
     """Persist one batch outcome and its existing incident lifecycle."""
 
@@ -517,7 +518,7 @@ def _record_generation_batch_outcome(
                 run_id=failed_run.id,
                 code=code,
                 message=message,
-                notify=generation_notify_requested(code),
+                notify=generation_notify_requested(code) if notify is None else notify,
             )
         )
         return
@@ -565,7 +566,7 @@ def _record_generation_batch_outcome(
                 run_id=image_run.id,
                 code=code,
                 message=message,
-                notify=generation_notify_requested(code),
+                notify=generation_notify_requested(code) if notify is None else notify,
             )
         )
         return
@@ -2122,7 +2123,6 @@ def nightly_content_generation(self):
 
         claimed_item_ids = [item.id for item in items]
         missing_essence_hospitals: set[uuid.UUID] = set()
-        missing_essence_outcomes: list[dict[str, object]] = []
 
         for item in items:
             item_id = item.id
@@ -2215,12 +2215,6 @@ def nightly_content_generation(self):
                     )
                     first_gate_observation = hospital_id not in missing_essence_hospitals
                     missing_essence_hospitals.add(hospital_id)
-                    missing_essence_outcomes.append(
-                        {
-                            "hospital_id": hospital_id,
-                            "scheduled_date": getattr(item, "scheduled_date", now_kst.date()),
-                        }
-                    )
                     if first_gate_observation:
                         logger.warning(
                             "Skipping content generation without approved clinic writing "
@@ -2529,17 +2523,6 @@ def nightly_content_generation(self):
         stuck_items = load_stuck_claims(db, window_start, tomorrow)
         if stuck_items:
             _record_locked_generation_items(recorder, stuck_items)
-        if (
-            missing_essence_outcomes
-            and now_kst.time().replace(tzinfo=None) >= MORNING_CLOSE_START
-            and any(
-                outcome["scheduled_date"] <= now_kst.date()
-                for outcome in missing_essence_outcomes
-            )
-        ):
-            enqueue_missing_approved_essence_digest_sync(
-                db, now_kst.date(), missing_essence_outcomes
-            )
         recorder.finish()
         _page_morning_stored_publication_gates(db, now_kst=now_kst)
 
@@ -2584,7 +2567,7 @@ def overnight_content_generation_recovery(self):
                     db, item, item.hospital
                 )
                 _record_generation_batch_outcome(
-                    db, recorder, item, item.hospital, state, code, message
+                    db, recorder, item, item.hospital, state, code, message, notify=False
                 )
             except Exception as error:
                 code, message = classify_generation_failure(error)
@@ -2605,6 +2588,7 @@ def overnight_content_generation_recovery(self):
                     GenerationItemState.FAILED,
                     code,
                     message,
+                    notify=False,
                 )
             finally:
                 released = release_unfinished_claims(
@@ -3089,6 +3073,11 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
         apply_publication_assessment(item, assessment)
         code = assessment.code or "GENERATION_FAILED"
         message = assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다."
+        if code == "CONTENT_NOT_GENERATED":
+            stored_code = _stored_generation_attempt(item).get("reason")
+            if stored_code in {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED"}:
+                code = stored_code
+                message = generation_safe_cause(code)
         blocked_run = ensure_publication_block_run(
             db,
             item=item,

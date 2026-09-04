@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -19,6 +20,7 @@ from app.models.hospital import Hospital
 from app.models.monthly_control import (
     MonthlyMeasurementManifest,
     MonthlyReportArtifact,
+    ReportArtifactState,
 )
 from app.models.operations import (
     Incident,
@@ -30,10 +32,12 @@ from app.models.report import MonthlyReport
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.notification_outbox import dispatch_notification_batch
 from app.services.report_artifact_validation import DOCTOR_ARTIFACT_VALIDATION_VERSION
+from app.workers import milestone_monthly_projection
 from app.workers.milestone_event_tasks import (
     canonical_projection_window,
     project_milestone_window,
 )
+from app.workers.milestone_monthly_facts import ReportFacts
 from app.workers.milestone_monthly_projection import observe_monthly_milestones
 from tests.milestone_projector_support import (
     ADMIN_EMAIL,
@@ -62,6 +66,84 @@ def _valid_artifact_metadata(*, sha256: str, byte_size: int) -> dict[str, object
         "sha256": sha256,
         "byte_size": byte_size,
     }
+
+
+@pytest.mark.asyncio
+async def test_effective_delivery_advances_state_and_ignores_artifact_replacement(
+    monkeypatch,
+) -> None:
+    report_id = uuid.uuid4()
+    hospital_id = uuid.uuid4()
+    report = SimpleNamespace(
+        id=report_id,
+        quality="COMPLETE",
+        planned_count=20,
+        success_count=20,
+        failed_count=0,
+        created_at=datetime(2026, 8, 10, tzinfo=UTC),
+        period_year=2026,
+        period_month=7,
+        sov_summary=None,
+    )
+    hospital = SimpleNamespace(id=hospital_id, name="전달완료의원")
+    manifest = SimpleNamespace(closed_at=datetime(2026, 8, 10, tzinfo=UTC))
+
+    def facts(*, artifact_id: uuid.UUID, delivered: bool) -> ReportFacts:
+        return ReportFacts(
+            report=report,
+            hospital=hospital,
+            manifest=manifest,
+            artifact=SimpleNamespace(
+                id=artifact_id,
+                validated_at=datetime(2026, 8, 10, 1, tzinfo=UTC),
+                created_at=datetime(2026, 8, 10, tzinfo=UTC),
+            ),
+            artifact_state=ReportArtifactState.VALID,
+            ready=True,
+            delivered=delivered,
+            blockers=(),
+        )
+
+    first_artifact_id = uuid.uuid4()
+    before_delivery = facts(artifact_id=first_artifact_id, delivered=False)
+    key, projection = milestone_monthly_projection._project_observed_current(
+        before_delivery, datetime(2026, 8, 10, 2, tzinfo=UTC)
+    )
+
+    class EmptyDeliveries:
+        def scalars(self):
+            return ()
+
+    class DB:
+        async def execute(self, _statement):
+            return EmptyDeliveries()
+
+    current_facts = facts(artifact_id=first_artifact_id, delivered=True)
+
+    async def load_delivered(_db):
+        return {report_id: current_facts}
+
+    monkeypatch.setattr(milestone_monthly_projection, "load_report_facts", load_delivered)
+    delivered = await observe_monthly_milestones(
+        DB(),
+        datetime(2026, 8, 10, 3, tzinfo=UTC),
+        {key: projection.stable_id},
+        datetime(2026, 8, 10, 2, tzinfo=UTC),
+    )
+
+    assert delivered.milestones == ()
+    assert delivered.states[key] != projection.stable_id
+
+    current_facts = facts(artifact_id=uuid.uuid4(), delivered=True)
+    regenerated = await observe_monthly_milestones(
+        DB(),
+        datetime(2026, 8, 10, 4, tzinfo=UTC),
+        delivered.states,
+        datetime(2026, 8, 10, 3, tzinfo=UTC),
+    )
+
+    assert regenerated.milestones == ()
+    assert regenerated.states == delivered.states
 
 
 @pytest.mark.asyncio
@@ -248,6 +330,30 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
         assert outbox is not None and outbox.state == NotificationOutboxState.FAILED
         assert incident is not None and incident.state == IncidentState.OPEN
         assert report is not None and (report.quality, report.success_count) == ("COMPLETE", 20)
+        ready_states = current.states
+
+    # Once delivery becomes effective, the durable fingerprint advances without
+    # re-emitting CUSTOMER_READY. Artifact regeneration then remains silent too.
+    delivered_at = later_window.end + timedelta(minutes=20)
+    async with monthly_sessions() as db:
+        report = await db.get(MonthlyReport, report_id)
+        artifact = await db.get(
+            MonthlyReportArtifact,
+            uuid.UUID("d1340000-0000-0000-0000-000000000001"),
+        )
+        assert report is not None and artifact is not None
+        report.sent_at = delivered_at
+        await db.commit()
+
+    async with monthly_sessions() as db:
+        delivered = await observe_monthly_milestones(
+            db,
+            delivered_at + timedelta(minutes=5),
+            ready_states,
+            later_window.end,
+        )
+        assert delivered.milestones == ()
+        assert delivered.states[f"monthly:{report_id}"] != ready_states[f"monthly:{report_id}"]
 
 
 async def _no_pause() -> None:

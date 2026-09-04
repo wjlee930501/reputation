@@ -59,6 +59,7 @@ _MORNING_GENERATION_NOTIFICATION_CODES = frozenset(
     | _MORNING_STORED_GATE_NOTIFICATION_CODES
     | _MORNING_IMAGE_NOTIFICATION_CODES
 )
+_MORNING_DIGEST_ONLY_CODES = frozenset({"MISSING_APPROVED_ESSENCE", "COST_BLOCKED"})
 _KST = ZoneInfo("Asia/Seoul")
 _MORNING_NOTIFICATION_START = time(7, 45)
 
@@ -89,7 +90,7 @@ def is_provider_transient_generation_code(code: str) -> bool:
 def generation_block_digest_due(code: str, *, batch: str) -> bool:
     """Return whether one blocked slot belongs in this morning batch's digest."""
 
-    if code not in _MORNING_GENERATION_NOTIFICATION_CODES:
+    if code not in _MORNING_GENERATION_NOTIFICATION_CODES | _MORNING_DIGEST_ONLY_CODES:
         return False
     if batch == PREPUBLISH_MORNING_BATCH and is_provider_transient_generation_code(code):
         return False

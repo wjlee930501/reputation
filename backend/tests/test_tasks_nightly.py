@@ -1051,6 +1051,37 @@ def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkey
     assert incident_calls[0]["notify"] is True
 
 
+def test_overnight_recovery_records_failure_without_individual_notification(monkeypatch):
+    cycle_date = datetime(2026, 8, 19, 7, 0)
+    db = _NightlyTaskDB()
+    item = _nightly_item("야간복구의원")
+    incident_calls = []
+
+    async def capture_incident(**kwargs):
+        incident_calls.append(kwargs)
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(
+        tasks, "_generation_philosophy_sync", lambda *_args: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_generate_single_content_item",
+        lambda *_args: (
+            tasks.GenerationItemState.FAILED,
+            "GENERATION_FAILED",
+            "자동 생성이 완료되지 않았습니다.",
+        ),
+    )
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+
+    tasks.overnight_content_generation_recovery.run()
+
+    assert len(incident_calls) == 1
+    assert incident_calls[0]["code"] == "GENERATION_FAILED"
+    assert incident_calls[0]["notify"] is False
+
+
 def test_same_slot_and_generation_reason_spends_writer_once_across_thirty_sweeps(
     monkeypatch,
 ):
@@ -1246,7 +1277,7 @@ def test_forbidden_field_retry_exhaustion_opens_incident_without_content_writeba
     assert incident_calls[0]["notify"] is True
 
 
-def test_nightly_missing_essence_waits_until_seven_forty_five_for_one_digest(monkeypatch):
+def test_nightly_missing_essence_never_owns_the_morning_digest(monkeypatch):
     cycle_date = datetime(2026, 8, 19, 7, 45)
     db = _NightlyTaskDB()
     items = [_nightly_item("첫번째의원"), _nightly_item("두번째의원")]
@@ -1266,15 +1297,7 @@ def test_nightly_missing_essence_waits_until_seven_forty_five_for_one_digest(mon
     assert len(incident_calls) == 2
     assert {call["code"] for call in incident_calls} == {"MISSING_APPROVED_ESSENCE"}
     assert not any(call["notify"] for call in incident_calls)
-    outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]
-    assert len(outbox) == 1
-    assert outbox[0].notification_type == "MISSING_APPROVED_ESSENCE_DIGEST"
-    assert outbox[0].dedupe_key == (
-        f"MISSING_APPROVED_ESSENCE_DIGEST:{cycle_date.date().isoformat()}"
-    )
-    visible = str(outbox[0].payload)
-    assert "온보딩 병원 2곳 · 글 2건" in visible
-    assert "승인 기준이 없어 생성을 건너뜀" in visible
+    assert not [value for value in db.added if isinstance(value, NotificationOutbox)]
 
 
 def test_nightly_missing_essence_has_no_slack_before_seven_forty_five(monkeypatch):
@@ -1372,6 +1395,89 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
     assert len(digests) == 1
     assert digests[0].notification_type == "GENERATION_BLOCKED_DIGEST"
     assert "게이트확인의원" in str(digests[0].payload)
+
+
+@pytest.mark.parametrize(
+    ("stored_code", "visible_cause"),
+    [
+        ("MISSING_APPROVED_ESSENCE", "승인된 콘텐츠 운영 기준이 없어"),
+        ("COST_BLOCKED", "오늘 설정된 사용 한도에 도달해"),
+    ],
+)
+def test_seven_forty_five_digest_surfaces_stored_generation_cause_once(
+    monkeypatch, stored_code, visible_cause
+):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="원인표시의원")
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital=hospital,
+        hospital_id=hospital.id,
+        scheduled_date=date(2026, 8, 19),
+        sequence_no=1,
+        title=None,
+        body=None,
+        image_url=None,
+        essence_check_summary={
+            "generation_attempt": {"context": "stored", "reason": stored_code}
+        },
+    )
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [item]
+
+        def scalar_one_or_none(self):
+            return None
+
+    class DB:
+        def __init__(self):
+            self.added = []
+
+        def execute(self, _statement):
+            return Result()
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            return None
+
+    assessment = SimpleNamespace(
+        publishable=False,
+        code="CONTENT_NOT_GENERATED",
+        message="제목과 본문이 아직 생성되지 않았습니다.",
+    )
+    incident_calls = []
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: assessment)
+    monkeypatch.setattr(tasks, "apply_publication_assessment", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "open_generation_incident",
+        lambda **kwargs: incident_calls.append(kwargs),
+    )
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+
+    db = DB()
+    paged = tasks._page_morning_stored_publication_gates(
+        db,
+        now_kst=arrow.get(2026, 8, 19, 7, 45, tzinfo="Asia/Seoul"),
+    )
+
+    assert paged == 1
+    assert incident_calls[0]["code"] == stored_code
+    assert incident_calls[0]["notify"] is False
+    digests = [row for row in db.added if isinstance(row, NotificationOutbox)]
+    assert len(digests) == 1
+    assert visible_cause in str(digests[0].payload)
 
 
 def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatch):
