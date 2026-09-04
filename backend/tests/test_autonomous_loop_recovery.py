@@ -238,7 +238,7 @@ def test_reconciler_does_not_duplicate_legitimately_queued_operation(monkeypatch
     assert session.commits == 1
 
 
-def test_reconciler_fails_unsafe_stranded_operation_without_dispatch(monkeypatch) -> None:
+def test_reconciler_rebuilds_unsafe_stored_dispatch_from_hospital_truth(monkeypatch) -> None:
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     hospital_id = uuid.uuid4()
     run = SimpleNamespace(
@@ -262,20 +262,80 @@ def test_reconciler_fails_unsafe_stranded_operation_without_dispatch(monkeypatch
         version=1,
     )
     session = _RecoverySession(operation_runs=(run,))
-    dispatched: list[tuple[str, list[str]]] = []
+    dispatched: list[tuple[str, list[str], dict[str, object]]] = []
 
     monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
     monkeypatch.setattr(
         autonomous_recovery.celery_app,
         "send_task",
-        lambda name, args, **_kwargs: dispatched.append((name, args)),
+        lambda name, args, **kwargs: dispatched.append((name, args, kwargs)),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result == {"site_builds": 0, "site_revalidations": 0, "operation_runs": 1}
+    assert dispatched == [
+        (
+            "app.workers.tasks.build_aeo_site",
+            [str(hospital_id)],
+            {
+                "queue": "default",
+                "headers": {
+                    **autonomous_recovery.build_dispatch_headers(
+                        "build-aeo-site", str(hospital_id)
+                    ),
+                    "operation_run_id": str(run.id),
+                },
+                "task_id": "unsafe-dispatch",
+            },
+        )
+    ]
+    assert run.state == OperationRunState.QUEUED
+    assert run.safe_error_code is None
+    assert run.completed_at is None
+    assert run.version == 2
+    assert session.added == []
+
+
+def test_reconciler_fails_unrebuildable_dispatch_with_incident_and_open_intent(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.REQUESTED,
+        hospital_id=hospital_id,
+        task_id="unsafe-monthly-dispatch",
+        request_payload={"_dispatch": {"task_args": [str(uuid.uuid4())]}},
+        result_summary={},
+        requested_at=now - timedelta(minutes=10),
+        queued_at=None,
+        safe_error_code=None,
+        safe_error_message=None,
+        version=1,
+    )
+    session = _RecoverySession(operation_runs=(run,))
+    intents = []
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+    )
+    monkeypatch.setattr(
+        autonomous_recovery,
+        "enqueue_notification_sync",
+        lambda _db, intent, **_kwargs: intents.append(intent),
     )
 
     result = autonomous_recovery.reconcile.run()
 
     assert result == {"site_builds": 0, "site_revalidations": 0, "operation_runs": 0}
-    assert dispatched == []
     assert run.state == OperationRunState.FAILED
     assert run.safe_error_code == "UNSAFE_STORED_DISPATCH"
     assert run.completed_at == now
@@ -287,6 +347,11 @@ def test_reconciler_fails_unsafe_stranded_operation_without_dispatch(monkeypatch
     assert incident.operation_run_id == run.id
     assert incident.safe_error_code == "UNSAFE_STORED_DISPATCH"
     assert incident.hospital_id == hospital_id
+    assert len(intents) == 1
+    assert intents[0].notification_type == "INCIDENT_OPEN"
+    assert intents[0].channel == "SLACK_DEV"
+    assert intents[0].incident_id == incident.id
+    assert intents[0].operation_run_id == run.id
 
 
 def test_reconciler_allows_monthly_report_period_dispatch(monkeypatch) -> None:
@@ -343,6 +408,47 @@ def test_reconciler_allows_monthly_report_period_dispatch(monkeypatch) -> None:
             },
         )
     ]
+
+
+def test_reconciler_rebuilds_monthly_dispatch_from_summary_and_replaces_missing_task_id(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.REQUESTED,
+        hospital_id=hospital_id,
+        task_id=None,
+        request_payload={"_dispatch": {"task_args": "corrupt"}},
+        result_summary={"period_year": 2026, "period_month": 7},
+        requested_at=now - timedelta(minutes=10),
+        queued_at=None,
+        completed_at=None,
+        safe_error_code="BROKER_TIMEOUT",
+        safe_error_message="previous dispatch state unknown",
+        version=1,
+    )
+    session = _RecoverySession(operation_runs=(run,))
+    dispatched = []
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda name, args, **kwargs: dispatched.append((name, args, kwargs)),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["operation_runs"] == 1
+    assert dispatched[0][1] == [str(hospital_id), 2026, 7]
+    assert dispatched[0][2]["task_id"] == run.task_id
+    assert uuid.UUID(run.task_id)
+    assert run.state == OperationRunState.QUEUED
+    assert run.safe_error_code is None
+    assert session.added == []
 
 
 def test_reconciler_allows_monthly_report_rebuild_true_dispatch(monkeypatch) -> None:
@@ -474,7 +580,7 @@ def test_reconciler_allows_monthly_report_coverage_recovery_dispatch(monkeypatch
     assert session.added == []
 
 
-def test_reconciler_rejects_monthly_report_rebuild_false(monkeypatch) -> None:
+def test_reconciler_rebuilds_monthly_report_dispatch_without_false_flag(monkeypatch) -> None:
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     hospital_id = uuid.uuid4()
     run = SimpleNamespace(
@@ -501,20 +607,22 @@ def test_reconciler_rejects_monthly_report_rebuild_false(monkeypatch) -> None:
 
     monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    dispatched = []
     monkeypatch.setattr(
         autonomous_recovery.celery_app,
         "send_task",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+        lambda _name, args, **_kwargs: dispatched.append(args),
     )
 
     result = autonomous_recovery.reconcile.run()
 
-    assert result["operation_runs"] == 0
-    assert run.state == OperationRunState.FAILED
-    assert len(session.added) == 1
+    assert result["operation_runs"] == 1
+    assert dispatched == [[str(hospital_id), 2026, 7]]
+    assert run.state == OperationRunState.QUEUED
+    assert session.added == []
 
 
-def test_reconciler_rejects_monthly_report_extra_args(monkeypatch) -> None:
+def test_reconciler_drops_unsafe_monthly_report_extra_args(monkeypatch) -> None:
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     hospital_id = uuid.uuid4()
     run = SimpleNamespace(
@@ -541,17 +649,19 @@ def test_reconciler_rejects_monthly_report_extra_args(monkeypatch) -> None:
 
     monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    dispatched = []
     monkeypatch.setattr(
         autonomous_recovery.celery_app,
         "send_task",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+        lambda _name, args, **_kwargs: dispatched.append(args),
     )
 
     result = autonomous_recovery.reconcile.run()
 
-    assert result["operation_runs"] == 0
-    assert run.state == OperationRunState.FAILED
-    assert len(session.added) == 1
+    assert result["operation_runs"] == 1
+    assert dispatched == [[str(hospital_id), 2026, 7, True]]
+    assert run.state == OperationRunState.QUEUED
+    assert session.added == []
 
 
 def test_monthly_slot_reconciliation_runs_after_the_twenty_fifth(monkeypatch) -> None:

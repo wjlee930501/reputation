@@ -18,6 +18,7 @@ from app.services.notification_store import (
     claim_notification_batch,
     create_delivery_unknown_incident,
     enqueue_notification,
+    enqueue_notification_sync,
     recover_stale_sending,
     retry_notification,
 )
@@ -37,6 +38,7 @@ __all__ = (
     "create_delivery_unknown_incident",
     "dispatch_notification_batch",
     "enqueue_notification",
+    "enqueue_notification_sync",
     "recover_stale_sending",
     "retry_notification",
 )

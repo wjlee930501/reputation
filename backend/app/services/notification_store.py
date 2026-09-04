@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.audit import AdminAuditLog
@@ -89,6 +90,37 @@ async def enqueue_notification(
         return row
     existing = select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
     return (await db.execute(existing)).scalar_one()
+
+
+def enqueue_notification_sync(
+    db: Session, intent: NotificationIntent, *, now: datetime | None = None
+) -> None:
+    """Add one intent to a synchronous business transaction without committing it."""
+
+    validate_message(intent.message, allowed_admin_base_url=settings.ADMIN_BASE_URL)
+    if not intent.dedupe_key.strip() or intent.max_attempts < 1:
+        raise NotificationPayloadError("INVALID_NOTIFICATION_INTENT")
+    created_at = now or datetime.now(UTC)
+    db.execute(
+        insert(NotificationOutbox)
+        .values(
+            id=uuid.uuid4(),
+            hospital_id=intent.hospital_id,
+            incident_id=intent.incident_id,
+            operation_run_id=intent.operation_run_id,
+            dedupe_key=intent.dedupe_key,
+            notification_type=intent.notification_type,
+            channel=intent.channel,
+            state=NotificationOutboxState.PENDING.value,
+            payload=intent.message.payload(),
+            fallback_text=intent.message.fallback_text,
+            max_attempts=intent.max_attempts,
+            next_attempt_at=created_at,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        .on_conflict_do_nothing(index_elements=[NotificationOutbox.dedupe_key])
+    )
 
 
 async def retry_notification(
