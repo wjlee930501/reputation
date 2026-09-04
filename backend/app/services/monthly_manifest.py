@@ -11,6 +11,7 @@ from app.models.monthly_control import (
     MonthlyMeasurementCell,
     MonthlyMeasurementManifest,
 )
+from app.models.report import MonthlyReport
 from app.services import sov_engine
 from app.services.monthly_period import is_monthly_recovery_window
 
@@ -21,6 +22,10 @@ EXCLUSION_REASONS: Final[frozenset[str]] = frozenset(
 
 class ManifestError(RuntimeError):
     pass
+
+
+class ManifestPolicyDrift(ManifestError):
+    """The live month-end basis differs from a manifest that cannot be replaced."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,9 +132,30 @@ def _replace_manifest_freeze(
     platforms: list[str],
     protocol: dict,
 ) -> MonthlyMeasurementManifest:
-    # Keep the manifest row/id because monthly_reports has a RESTRICT foreign key to
-    # it. The transaction-local guard is recognized by the DB triggers only for this
-    # protocol supersede; ordinary manifest mutation and attempt deletion stay blocked.
+    if manifest.closed_at is not None:
+        raise ManifestPolicyDrift("closed monthly manifest cannot be superseded")
+    provenance = manifest.platform_provenance
+    stored_protocol = (
+        provenance.get("measurement_protocol") if isinstance(provenance, dict) else None
+    )
+    # Once month-end tracking has started, `link_attempt` makes SUCCESS terminal at
+    # the cell level. Weekly successes may still be superseded by the authoritative
+    # month-end tracking freeze.
+    if (
+        isinstance(stored_protocol, dict)
+        and _is_month_end_tracking_protocol(stored_protocol)
+        and any(cell.state == "SUCCESS" for cell in manifest.cells)
+    ):
+        raise ManifestPolicyDrift("monthly manifest with successful attempts cannot be superseded")
+    referenced_report_id = session.execute(
+        select(MonthlyReport.id).where(MonthlyReport.manifest_id == manifest.id).limit(1)
+    ).scalar_one_or_none()
+    if referenced_report_id is not None:
+        raise ManifestPolicyDrift("monthly manifest referenced by a report cannot be superseded")
+
+    # Keep the manifest row/id. The transaction-local guard is recognized by the DB
+    # triggers only for this pre-measurement protocol supersede; ordinary manifest
+    # mutation and attempt deletion stay blocked.
     get_bind = getattr(session, "get_bind", None)
     bind = get_bind() if callable(get_bind) else None
     postgres_guard = getattr(getattr(bind, "dialect", None), "name", None) == "postgresql"
@@ -148,7 +174,6 @@ def _replace_manifest_freeze(
     }
     manifest.frozen_at = datetime.now(timezone.utc)
     manifest.closes_at = _month_close(year, month)
-    manifest.closed_at = None
     manifest.cells = cells
     session.flush()
     if postgres_guard:
@@ -352,11 +377,11 @@ def reopen_incomplete_manifest_for_recovery(
     bind = get_bind() if callable(get_bind) else None
     postgres_guard = getattr(getattr(bind, "dialect", None), "name", None) == "postgresql"
     if postgres_guard:
-        session.execute(text("SET LOCAL app.monthly_manifest_supersede = 'on'"))
+        session.execute(text("SET LOCAL app.monthly_manifest_recovery = 'on'"))
     manifest.closed_at = None
     session.flush()
     if postgres_guard:
-        session.execute(text("SET LOCAL app.monthly_manifest_supersede = 'off'"))
+        session.execute(text("SET LOCAL app.monthly_manifest_recovery = 'off'"))
     return True
 
 

@@ -15,6 +15,7 @@ from app.models.monthly_control import MonthlyReportArtifact
 from app.models.operations import Incident, IncidentState, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.services.report_artifact_validation import (
+    DoctorArtifactMetadata,
     DoctorPdfValidationError,
     parse_doctor_artifact_metadata,
 )
@@ -92,9 +93,17 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
             cast(MonthlyReportArtifact.byte_size, String)
             == metadata.op("->>")("byte_size"),
             metadata == canonical_metadata,
+            func.jsonb_typeof(metadata.op("->")("page_count")) == "number",
+            func.jsonb_typeof(metadata.op("->")("glyph_count")) == "number",
+            func.jsonb_typeof(metadata.op("->")("link_count")) == "number",
+            func.jsonb_typeof(metadata.op("->")("byte_size")) == "number",
+            func.jsonb_typeof(metadata.op("->")("font_embedded")) == "boolean",
+            func.jsonb_typeof(metadata.op("->")("korean_to_unicode")) == "boolean",
+            func.jsonb_typeof(metadata.op("->")("expected_link_present")) == "boolean",
+            func.jsonb_typeof(metadata.op("->")("required_text_present")) == "boolean",
             metadata.op("->>")("validation_version") == "doctor-pdf-v1",
             metadata.op("->>")("validation_source") == "SYSTEM",
-            metadata.op("->>")("page_count") == "1",
+            metadata.op("->>")("page_count").in_(("1", "2")),
             metadata.op("->>")("page_size") == "A4",
             glyph_text.op("~")(r"^[1-9][0-9]*$"),
             metadata.op("->>")("font_family") == "Pretendard",
@@ -244,6 +253,19 @@ def _artifact_is_valid(
         artifact.validated
         and artifact.path == report.doctor_pdf_path
         and metadata is not None
+        and _metadata_is_canonical(artifact.validation_metadata, metadata)
         and metadata.sha256 == artifact.sha256
         and metadata.byte_size == artifact.byte_size
+    )
+
+
+def _metadata_is_canonical(value: object, metadata: DoctorArtifactMetadata) -> bool:
+    """Reject Pydantic-coercible JSON so Python and the SQL JSONB predicate agree."""
+
+    if not isinstance(value, dict):
+        return False
+    canonical = metadata.model_dump(mode="json")
+    return value.keys() == canonical.keys() and all(
+        type(value[key]) is type(expected) and value[key] == expected
+        for key, expected in canonical.items()
     )

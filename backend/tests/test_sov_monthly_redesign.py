@@ -8,7 +8,11 @@ import pytest
 
 from app.core.config import Settings
 from app.services import sov_engine, sov_tracking_set
-from app.services.monthly_manifest import freeze_dispatch_manifest, summarize_manifest
+from app.services.monthly_manifest import (
+    ManifestPolicyDrift,
+    freeze_dispatch_manifest,
+    summarize_manifest,
+)
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_types import CellAttempt, ManifestCellInput
 from app.services.sov_tracking_set import (
@@ -230,8 +234,8 @@ class _ManifestSession:
         self.manifest = None
         self.flush_count = 0
 
-    def execute(self, _statement):
-        manifest = self.manifest
+    def execute(self, statement):
+        manifest = None if "monthly_reports.id" in str(statement) else self.manifest
 
         class _Result:
             def scalar_one_or_none(self):
@@ -265,7 +269,7 @@ def _dispatch_specs(target_count: int, *, platforms: tuple[str, ...]) -> list[di
     return specs
 
 
-def test_month_end_tracking_freeze_supersedes_weekly_uncapped_denominator():
+def test_month_end_tracking_freeze_supersedes_weekly_successful_uncapped_denominator():
     session = _ManifestSession()
     hospital_id = uuid.uuid4()
     weekly_specs = _dispatch_specs(105, platforms=("chatgpt", "gemini"))
@@ -279,10 +283,10 @@ def test_month_end_tracking_freeze_supersedes_weekly_uncapped_denominator():
         weekly_specs,
         gemini_configured=True,
     )
-    weekly_manifest.closed_at = datetime(2026, 9, 1, tzinfo=UTC)
+    weekly_manifest.cells[0].state = "SUCCESS"
     assert summarize_manifest(
         weekly_manifest.cells,
-        closed=True,
+        closed=False,
         configured_platforms=weekly_manifest.configured_platforms,
     ).planned_count == 210
 
@@ -315,6 +319,54 @@ def test_month_end_tracking_freeze_supersedes_weekly_uncapped_denominator():
             tracking_set_fingerprint="locked-tracking-set",
             tracking_set_size=15,
         )
+    )
+
+
+def test_month_end_tracking_freeze_rejects_closed_weekly_uncapped_denominator():
+    session = _ManifestSession()
+    hospital_id = uuid.uuid4()
+    weekly_specs = _dispatch_specs(105, platforms=("chatgpt", "gemini"))
+    tracking_specs = _dispatch_specs(15, platforms=("chatgpt", "gemini"))
+
+    weekly_manifest = freeze_dispatch_manifest(
+        session,
+        hospital_id,
+        2026,
+        8,
+        weekly_specs,
+        gemini_configured=True,
+    )
+    weekly_manifest.closed_at = datetime(2026, 9, 1, tzinfo=UTC)
+    assert summarize_manifest(
+        weekly_manifest.cells,
+        closed=True,
+        configured_platforms=weekly_manifest.configured_platforms,
+    ).planned_count == 210
+
+    with pytest.raises(ManifestPolicyDrift, match="closed"):
+        freeze_dispatch_manifest(
+            session,
+            hospital_id,
+            2026,
+            8,
+            tracking_specs,
+            gemini_configured=True,
+            measurement_protocol_kwargs={
+                "measurement_window": MEASUREMENT_WINDOW_MONTH_END,
+                "tracking_set_fingerprint": "locked-tracking-set",
+                "tracking_set_size": 15,
+            },
+        )
+
+    summary = summarize_manifest(
+        weekly_manifest.cells,
+        closed=True,
+        configured_platforms=weekly_manifest.configured_platforms,
+    )
+    assert summary.planned_count == 105 * 2
+    assert weekly_manifest.closed_at == datetime(2026, 9, 1, tzinfo=UTC)
+    assert weekly_manifest.platform_provenance["measurement_protocol"] == (
+        sov_engine.measurement_protocol()
     )
 
 

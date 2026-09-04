@@ -10,6 +10,7 @@ from sqlalchemy import select, text
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentState
+from app.services.dependency_incident_helpers import open_notice_exists
 from app.services.incident_types import (
     IncidentNotFound,
     IncidentTransitionConflict,
@@ -82,15 +83,16 @@ async def recover_monthly_artifact_failure_batch(
                 )
                 match result:
                     case Incident() as recovered_incident:
-                        await enqueue_notification(
-                            db,
-                            build_recovered_incident_notification(
-                                incident_projection(
-                                    context, recovered_incident, problem="복구 완료"
+                        if await open_notice_exists(db, recovered_incident.id):
+                            await enqueue_notification(
+                                db,
+                                build_recovered_incident_notification(
+                                    incident_projection(
+                                        context, recovered_incident, problem="복구 완료"
+                                    ),
+                                    settings.ADMIN_BASE_URL,
                                 ),
-                                settings.ADMIN_BASE_URL,
-                            ),
-                        )
+                            )
                         recovered += 1
                     case IncidentNotFound() | IncidentVersionConflict() | IncidentTransitionConflict():
                         continue

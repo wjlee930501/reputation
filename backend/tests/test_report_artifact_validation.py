@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pypdf import PdfWriter
@@ -16,6 +17,7 @@ from app.services.report_artifact_validation import (
     render_validated_doctor_pdf,
     validate_doctor_pdf,
 )
+from app.workers.monthly_artifact_reconciliation import _artifact_is_valid
 
 
 def _blank_pdf(pages: int) -> bytes:
@@ -86,6 +88,36 @@ def test_persisted_metadata_parser_fails_closed_for_incomplete_or_old_shapes() -
         )
         is None
     )
+
+
+def test_reconciler_uses_closed_two_page_metadata_contract() -> None:
+    metadata = {
+        "validation_version": DOCTOR_ARTIFACT_VALIDATION_VERSION,
+        "validation_source": "SYSTEM",
+        "page_count": 2,
+        "page_size": "A4",
+        "glyph_count": 840,
+        "font_family": "Pretendard",
+        "font_embedded": True,
+        "korean_to_unicode": True,
+        "link_count": 1,
+        "expected_link_present": True,
+        "required_text_present": True,
+        "sha256": "a" * 64,
+        "byte_size": 4096,
+    }
+    report = SimpleNamespace(doctor_pdf_path="gs://private/doctor.pdf")
+    artifact = SimpleNamespace(
+        validated=True,
+        path=report.doctor_pdf_path,
+        sha256=metadata["sha256"],
+        byte_size=metadata["byte_size"],
+        validation_metadata=metadata,
+    )
+
+    assert _artifact_is_valid(report, artifact)
+    artifact.validation_metadata = {**metadata, "page_count": "2"}
+    assert not _artifact_is_valid(report, artifact)
 
 
 @pytest.mark.parametrize(
