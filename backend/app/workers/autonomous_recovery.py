@@ -31,6 +31,7 @@ from app.workers.dispatch_envelope import expected_purpose
 _BATCH_SIZE: Final = 100
 _REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
 _QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=1)
+_INTEGER_ARG: Final = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,28 +39,37 @@ class _RedispatchPolicy:
     task_name: str
     queue: str
     target_type: str
-    arg_count: int
-    allow_rebuild_true_arg: bool = False
+    allowed_arg_suffixes: tuple[tuple[object, ...], ...] = ((),)
 
 
 _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
     "TRIGGER_V0_REPORT": _RedispatchPolicy(
-        "app.workers.tasks.trigger_v0_report", "reports", "hospital", 1
+        "app.workers.tasks.trigger_v0_report", "reports", "hospital"
     ),
-    "RUN_SOV": _RedispatchPolicy("app.workers.tasks.run_sov_for_hospital", "sov", "hospital", 1),
-    "REBUILD_SITE": _RedispatchPolicy("app.workers.tasks.build_aeo_site", "default", "hospital", 1),
+    "RUN_SOV": _RedispatchPolicy(
+        "app.workers.tasks.run_sov_for_hospital",
+        "sov",
+        "hospital",
+        ((), ("monthly", _INTEGER_ARG, _INTEGER_ARG)),
+    ),
+    "REBUILD_SITE": _RedispatchPolicy(
+        "app.workers.tasks.build_aeo_site", "default", "hospital"
+    ),
     "GENERATE_MONTHLY_REPORT": _RedispatchPolicy(
         "app.workers.tasks.generate_monthly_report_for_hospital",
         "reports",
         "hospital",
-        3,
-        True,
+        (
+            (_INTEGER_ARG, _INTEGER_ARG),
+            (_INTEGER_ARG, _INTEGER_ARG, True),
+            (_INTEGER_ARG, _INTEGER_ARG, True, True),
+        ),
     ),
     "REGENERATE_CONTENT": _RedispatchPolicy(
-        "app.workers.tasks.regenerate_content_item", "content", "content_item", 1
+        "app.workers.tasks.regenerate_content_item", "content", "content_item"
     ),
     "REGENERATE_CONTENT_IMAGE": _RedispatchPolicy(
-        "app.workers.tasks.generate_content_image", "content", "content_item", 1
+        "app.workers.tasks.generate_content_image", "content", "content_item"
     ),
 }
 
@@ -277,13 +287,22 @@ def _args_match_policy(
     args = dispatch.task_args
     if not args or args[0] != dispatch.target_id:
         return False
-    if len(args) == policy.arg_count:
-        return True
-    return (
-        policy.allow_rebuild_true_arg
-        and len(args) == policy.arg_count + 1
-        and args[-1] is True
+    return any(
+        len(args) == len(suffix) + 1
+        and all(
+            _arg_matches_shape(value, expected)
+            for value, expected in zip(args[1:], suffix, strict=True)
+        )
+        for suffix in policy.allowed_arg_suffixes
     )
+
+
+def _arg_matches_shape(value: object, expected: object) -> bool:
+    if expected is _INTEGER_ARG:
+        return type(value) is int
+    if expected is True:
+        return value is True
+    return value == expected
 
 
 def _fail_unsafe_operation_run(db, run: OperationRun, observed_at: datetime) -> None:

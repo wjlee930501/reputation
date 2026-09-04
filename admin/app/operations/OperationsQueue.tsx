@@ -159,6 +159,11 @@ function ActionBlock({ item, now }: { readonly item: OperationsQueueRow; readonl
     <div className="min-w-0 text-sm">
       <p className="ops-readable leading-5 text-slate-700">{item.next_action}</p>
       <p className="mt-2 font-semibold text-slate-800">담당 · {item.owner?.name ?? '미지정'}</p>
+      {item.queue === 'REPORTS' && typeof item.days_since_close === 'number' ? (
+        <p className="mt-1 font-semibold text-slate-700">
+          {item.days_since_close === 0 ? '월간 마감 당일' : `월간 마감 후 ${item.days_since_close}일`}
+        </p>
+      ) : null}
       <p
         className={
           deadline.tone === 'overdue'

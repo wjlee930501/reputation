@@ -1227,7 +1227,8 @@ def test_stale_scheduled_run_is_reclaimed_for_automatic_recovery(
     hospital = Hospital(name="월간 중단 의원", slug=f"monthly-stale-{uuid.uuid4().hex}")
     monthly_pg_session.add(hospital)
     monthly_pg_session.flush()
-    stale_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    now = arrow.get(2026, 7, 31, 21, tzinfo="Asia/Seoul")
+    stale_at = now.shift(hours=-2).datetime.astimezone(timezone.utc)
     run = OperationRun(
         hospital_id=hospital.id,
         operation_type="SCHEDULED_MONTHLY_REPORT",
@@ -1248,7 +1249,7 @@ def test_stale_scheduled_run_is_reclaimed_for_automatic_recovery(
     run_id, replayed = tasks._start_scheduled_monthly_operation_run(
         monthly_pg_session,
         hospital,
-        arrow.get(2026, 7, 31, 21, tzinfo="Asia/Seoul"),
+        now,
     )
 
     monthly_pg_session.refresh(run)

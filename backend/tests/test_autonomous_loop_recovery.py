@@ -89,7 +89,10 @@ def test_recovery_beat_and_retryable_month_schedules_are_declared() -> None:
         "<crontab: 0 */6 25-31 * * (m/h/dM/MY/d)>"
     )
     assert str(schedules["monthly-reports"]["schedule"]) == (
-        "<crontab: 15 0 1 * * (m/h/dM/MY/d)>"
+        "<crontab: 15 0 1-7 * * (m/h/dM/MY/d)>"
+    )
+    assert str(schedules["monthly-report-gap-summary"]["schedule"]) == (
+        "<crontab: 0 9 1-7 * * (m/h/dM/MY/d)>"
     )
 
 
@@ -382,6 +385,92 @@ def test_reconciler_allows_monthly_report_rebuild_true_dispatch(monkeypatch) -> 
     assert dispatched == [[str(hospital_id), 2026, 7, True]]
     assert run.state == OperationRunState.QUEUED
     assert run.version == 4
+    assert session.added == []
+
+
+def test_reconciler_allows_monthly_sov_dispatch(monkeypatch) -> None:
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="RUN_SOV",
+        state=OperationRunState.REQUESTED,
+        hospital_id=hospital_id,
+        task_id="monthly-sov-dispatch",
+        request_payload={
+            "_dispatch": {
+                "target_type": "hospital",
+                "target_id": str(hospital_id),
+                "queue": "sov",
+                "task_args": [str(hospital_id), "monthly", 2026, 8],
+            }
+        },
+        requested_at=now - timedelta(minutes=10),
+        queued_at=None,
+        safe_error_code=None,
+        safe_error_message=None,
+        version=1,
+    )
+    session = _RecoverySession(operation_runs=(run,))
+    dispatched: list[list[object]] = []
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda _name, args, **_kwargs: dispatched.append(args),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["operation_runs"] == 1
+    assert dispatched == [[str(hospital_id), "monthly", 2026, 8]]
+    assert run.state == OperationRunState.QUEUED
+    assert run.safe_error_code is None
+    assert session.added == []
+
+
+def test_reconciler_allows_monthly_report_coverage_recovery_dispatch(monkeypatch) -> None:
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.QUEUED,
+        hospital_id=hospital_id,
+        task_id="monthly-coverage-recovery-dispatch",
+        request_payload={
+            "_dispatch": {
+                "target_type": "hospital",
+                "target_id": str(hospital_id),
+                "queue": "reports",
+                "task_args": [str(hospital_id), 2026, 7, True, True],
+            }
+        },
+        requested_at=now - timedelta(hours=2),
+        queued_at=now - timedelta(hours=2),
+        safe_error_code=None,
+        safe_error_message=None,
+        version=1,
+    )
+    session = _RecoverySession(operation_runs=(run,))
+    dispatched: list[list[object]] = []
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda _name, args, **_kwargs: dispatched.append(args),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["operation_runs"] == 1
+    assert dispatched == [[str(hospital_id), 2026, 7, True, True]]
+    assert run.state == OperationRunState.QUEUED
+    assert run.safe_error_code is None
     assert session.added == []
 
 

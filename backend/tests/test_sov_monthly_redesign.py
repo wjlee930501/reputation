@@ -12,7 +12,6 @@ from app.services.monthly_manifest import freeze_dispatch_manifest, summarize_ma
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_types import CellAttempt, ManifestCellInput
 from app.services.sov_tracking_set import (
-    CONVERSION_HOSPITAL_NAME_TOKENS,
     MEASUREMENT_WINDOW_MONTH_END,
     MEASUREMENT_WINDOW_MONTH_START,
     monthly_sov_guard_units,
@@ -122,27 +121,23 @@ def test_register_tracking_set_flags_only_valid_local_members(monkeypatch):
     assert db.flushes == 2
 
 
-def test_one_shot_matches_only_locked_names_and_reports_blockers(monkeypatch):
+def test_registration_uses_flagged_hospitals_and_reports_blockers(monkeypatch):
     hospitals = [
-        SimpleNamespace(id=uuid.uuid4(), name=f"{token} 의원")
-        for token in CONVERSION_HOSPITAL_NAME_TOKENS
-        if token != "노원탑365"
+        SimpleNamespace(id=uuid.uuid4(), name="이름이 바뀐 첫 병원"),
+        SimpleNamespace(id=uuid.uuid4(), name="이름이 바뀐 둘째 병원"),
+        SimpleNamespace(id=uuid.uuid4(), name="이름이 바뀐 셋째 병원"),
     ]
-    hospitals.append(SimpleNamespace(id=uuid.uuid4(), name="마포성모탑 별관"))
-    by_token = {
-        token: [hospital for hospital in hospitals if token in hospital.name]
-        for token in CONVERSION_HOSPITAL_NAME_TOKENS
-    }
     has_record = {hospital.id for hospital in hospitals}
-    no_record_hospital = by_token["장편한외과"][0]
+    no_record_hospital = hospitals[2]
     has_record.remove(no_record_hospital.id)
-    invalid_hospital = by_token["행복드림"][0]
+    invalid_hospital = hospitals[1]
 
-    monkeypatch.setattr(
-        sov_tracking_set,
-        "_active_hospital_name_matches",
-        lambda _db, token: by_token[token],
-    )
+    class _DB:
+        def execute(self, _statement):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: hospitals)
+            )
+
     monkeypatch.setattr(
         sov_tracking_set,
         "_hospital_has_sov_record",
@@ -161,13 +156,11 @@ def test_one_shot_matches_only_locked_names_and_reports_blockers(monkeypatch):
 
     monkeypatch.setattr(sov_tracking_set, "register_tracking_set", _register)
 
-    result = register_convertible_tracking_sets(object(), n=15)
+    result = register_convertible_tracking_sets(_DB(), n=15)
 
-    assert result["target_count"] == 7
+    assert result["target_count"] == 3
     assert {item["name"] for item in result["registered"]} == {
-        "강심장내과 의원",
-        "서울W내과의원 위례점 의원",
-        "연세속시원 의원",
+        hospitals[0].name,
     }
     assert result["blocked"] == [
         {
@@ -180,28 +173,20 @@ def test_one_shot_matches_only_locked_names_and_reports_blockers(monkeypatch):
             "reason": "no SovRecord",
             "hospital_id": str(no_record_hospital.id),
         },
-        {"name": "마포성모탑", "reason": "ambiguous"},
-        {"name": "노원탑365", "reason": "not found"},
     ]
 
 
-def test_conversion_name_tokens_are_the_locked_seven():
-    assert CONVERSION_HOSPITAL_NAME_TOKENS == (
-        "강심장내과",
-        "행복드림",
-        "장편한외과",
-        "마포성모탑",
-        "노원탑365",
-        "서울W내과의원 위례점",
-        "연세속시원",
-    )
+def test_monthly_cohort_membership_survives_hospital_rename():
+    hospital = SimpleNamespace(monthly_sov_cohort=True, name="완전히 바뀐 병원명")
+
+    assert sov_tracking_set._hospital_matches_monthly_cohort(hospital)
 
 
 def test_non_positive_cohort_limit_is_empty_and_positive_limit_is_applied(monkeypatch):
-    first = SimpleNamespace(id=uuid.uuid4(), name="강심장내과 의원")
-    second = SimpleNamespace(id=uuid.uuid4(), name="행복드림 의원")
-    invalid = SimpleNamespace(id=uuid.uuid4(), name="장편한외과 의원")
-    outsider = SimpleNamespace(id=uuid.uuid4(), name="다른병원")
+    first = SimpleNamespace(id=uuid.uuid4(), name="첫 병원", monthly_sov_cohort=True)
+    second = SimpleNamespace(id=uuid.uuid4(), name="둘째 병원", monthly_sov_cohort=True)
+    invalid = SimpleNamespace(id=uuid.uuid4(), name="부족 병원", monthly_sov_cohort=True)
+    outsider = SimpleNamespace(id=uuid.uuid4(), name="다른 병원", monthly_sov_cohort=False)
     targets = {
         first.id: [_target(f"첫 병원 질문 {index}") for index in range(15)],
         second.id: [_target(f"둘째 병원 질문 {index}") for index in range(10)],
@@ -691,7 +676,9 @@ def test_monthly_measurement_registers_locked_names_before_cohort(monkeypatch):
 
 
 def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="장편한외과")
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="장편한외과", monthly_sov_cohort=True
+    )
     july = SimpleNamespace(id=uuid.uuid4(), version=3, pdf_path="gs://reports/july.pdf")
     july_snapshot = (july.id, july.version, july.pdf_path)
     run_id = uuid.uuid4()
@@ -729,6 +716,7 @@ def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
     monkeypatch.setattr(
         tasks, "_start_scheduled_monthly_operation_run", lambda *_args: (run_id, False)
     )
+    monkeypatch.setattr(tasks, "_latest_monthly_report_operation_run", lambda *_args: None)
 
     def _latest(_db, hospital_id, year, month):
         assert hospital_id == hospital.id
@@ -759,7 +747,9 @@ def test_august_conversion_batch_uses_august_and_preserves_july(monkeypatch):
 
 
 def test_august_conversion_batch_skips_without_successful_measurement(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="행복드림의원")
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="행복드림의원", monthly_sov_cohort=True
+    )
 
     class _Result:
         def scalars(self):
@@ -782,11 +772,13 @@ def test_august_conversion_batch_skips_without_successful_measurement(monkeypatc
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tasks, "eligible_hospital_ids", lambda *_args: [hospital.id])
     monkeypatch.setattr(tasks, "_monthly_sov_measurement_succeeded", lambda *_args: False)
+    monkeypatch.setattr(tasks, "_latest_monthly_report_operation_run", lambda *_args: None)
     monkeypatch.setattr(
         tasks,
         "_build_monthly_report_for_hospital",
         lambda *_args, **_kwargs: pytest.fail("report built before monthly measurement success"),
     )
+    monkeypatch.setattr(tasks, "_record_weekly_sov_failure", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         tasks.arrow,
         "now",

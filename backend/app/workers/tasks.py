@@ -22,6 +22,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
 from typing import Any
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import arrow
 import httpx
@@ -124,16 +125,21 @@ from app.services.monthly_manifest import (
     close_manifest,
     freeze_dispatch_manifest,
     link_attempt,
+    reopen_incomplete_manifest_for_recovery,
     summarize_manifest,
 )
 from app.services.monthly_period import (
     MonthlyPeriodError,
     ReportBuildReason,
     eligible_hospital_ids,
+    is_monthly_recovery_window,
     lock_report_version_plan,
     reporting_period,
     require_closed_period,
     scheduled_report_period,
+)
+from app.services.monthly_report_gap_notifications import (
+    enqueue_monthly_report_gap_summary_sync,
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
@@ -190,7 +196,6 @@ from app.services.sov_engine import (
     run_single_query,
 )
 from app.services.sov_tracking_set import (
-    CONVERSION_HOSPITAL_NAME_TOKENS,
     MEASUREMENT_WINDOW_MONTH_END,
     hospital_in_monthly_cohort,
     iter_monthly_sov_cohort,
@@ -3391,7 +3396,13 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
     soft_time_limit=1800,
     time_limit=2100,
 )
-def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = None):
+def run_sov_for_hospital(
+    self,
+    hospital_id: str,
+    measurement_mode: str | None = None,
+    measurement_year: int | None = None,
+    measurement_month: int | None = None,
+):
     task_started_at = monotonic()
     reserved_units = 0
     try:
@@ -3426,9 +3437,30 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
 
             # priority 기반 쿼리 필터링 — beat은 월요일 02:00 KST(=일요일 UTC)에 발화하므로
             # UTC date.today()를 쓰면 ISO 주차 짝/홀이 뒤집히고 월초 판정도 어긋난다 (P1-5).
-            today_kst = arrow.now("Asia/Seoul").date()
+            now_kst = arrow.now("Asia/Seoul")
+            today_kst = now_kst.date()
             week_key = _weekly_measurement_key(today_kst)
-            period_key = f"{today_kst.year:04d}-{today_kst.month:02d}" if monthly else week_key
+            if monthly:
+                resolved_period = _resolve_monthly_measurement_period(
+                    today_kst,
+                    measurement_year,
+                    measurement_month,
+                    observed_at=now_kst.datetime,
+                )
+                if resolved_period is None:
+                    _finish_sov_operation_run(
+                        db,
+                        self,
+                        OperationRunState.FAILED,
+                        "MONTHLY_SOV_OUTSIDE_RECOVERY_WINDOW",
+                        "월간 측정 복구 기간이 아니어서 외부 호출을 시작하지 않았습니다.",
+                    )
+                    return
+                period_year, period_month = resolved_period
+                period_key = f"{period_year:04d}-{period_month:02d}"
+            else:
+                period_year, period_month = today_kst.year, today_kst.month
+                period_key = week_key
             failure_prefix = "MONTHLY_SOV" if monthly else "WEEKLY_SOV"
             is_even_week = _is_even_measurement_week(today_kst)
             current_month_day = today_kst.day
@@ -3536,8 +3568,8 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                 manifest = freeze_dispatch_manifest(
                     db,
                     hospital.id,
-                    today_kst.year,
-                    today_kst.month,
+                    period_year,
+                    period_month,
                     frozen_specs,
                     gemini_configured=bool(settings.GEMINI_API_KEY),
                     measurement_protocol_kwargs=protocol_kwargs,
@@ -3559,6 +3591,10 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                     _sov_operation_error_message(error_code),
                 )
                 return
+            if monthly:
+                reopen_incomplete_manifest_for_recovery(
+                    db, manifest, now=datetime.now(timezone.utc)
+                )
             db.commit()
             measurement_specs = _pending_weekly_manifest_specs(
                 manifest, selected_weekly_specs
@@ -3568,6 +3604,12 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                 if _selected_weekly_manifest_is_resolved(
                     manifest, selected_weekly_specs
                 ):
+                    if monthly:
+                        completed = _complete_monthly_measurement_and_dispatch_report(
+                            db, self, hospital, manifest, period_year, period_month
+                        )
+                        if not completed:
+                            return
                     _run_async(
                         _recover_sov_failure(
                             hospital_id=hospital.id,
@@ -3795,6 +3837,12 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
                     _sov_operation_error_message(error_code),
                 )
                 return
+            if monthly:
+                completed = _complete_monthly_measurement_and_dispatch_report(
+                    db, self, hospital, manifest, period_year, period_month
+                )
+                if not completed:
+                    return
             _run_async(
                 _recover_sov_failure(
                     hospital_id=hospital.id,
@@ -3831,6 +3879,260 @@ def run_sov_for_hospital(self, hospital_id: str, measurement_mode: str | None = 
 
 def _sov_chunk_deadline_reached(started_at: float) -> bool:
     return monotonic() - started_at >= SOV_CHUNK_STOP_SECONDS
+
+
+def _resolve_monthly_measurement_period(
+    today_kst: date,
+    measurement_year: int | None,
+    measurement_month: int | None,
+    *,
+    observed_at: datetime | None = None,
+) -> tuple[int, int] | None:
+    if (measurement_year is None) != (measurement_month is None):
+        return None
+    if measurement_year is None or measurement_month is None:
+        requested = (today_kst.year, today_kst.month)
+    else:
+        requested = (measurement_year, measurement_month)
+    observed_at = observed_at or datetime.combine(
+        today_kst, time.min, tzinfo=ZoneInfo("Asia/Seoul")
+    )
+    if today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY:
+        return requested if requested == (today_kst.year, today_kst.month) else None
+    if is_monthly_recovery_window(observed_at, *requested):
+        return requested
+    return None
+
+
+def _complete_monthly_measurement_and_dispatch_report(
+    db,
+    task,
+    hospital: Hospital,
+    manifest: MonthlyMeasurementManifest,
+    year: int,
+    month: int,
+) -> bool:
+    """Close recovered coverage and enqueue one authenticated report rebuild."""
+
+    observed_at = datetime.now(timezone.utc)
+    period_key = f"{year:04d}-{month:02d}"
+    coverage = summarize_manifest(
+        manifest.cells,
+        closed=True,
+        configured_platforms=manifest.configured_platforms,
+    )
+    complete = (
+        coverage.quality == "COMPLETE"
+        and coverage.planned_count > 0
+        and coverage.success_count == coverage.planned_count
+        and coverage.failed_count == 0
+        and coverage.excluded_count == 0
+    )
+    if not complete:
+        error_code = "MONTHLY_SOV_MEASUREMENT_INCOMPLETE"
+        _record_weekly_sov_failure(
+            hospital,
+            period_key,
+            error_code,
+            _operation_run_id_from_task(task),
+            measurement_mode="monthly",
+        )
+        _finish_sov_operation_run(
+            db,
+            task,
+            OperationRunState.PARTIAL,
+            error_code,
+            _sov_operation_error_message(error_code),
+        )
+        return False
+    if is_monthly_recovery_window(observed_at, year, month) and manifest.closed_at is None:
+        close_manifest(manifest, now=observed_at)
+
+    run_id = _operation_run_id_from_task(task)
+    request = getattr(task, "request", None)
+    worker_id = getattr(request, "id", None)
+    claim_version = getattr(request, "operation_run_claim_version", None)
+    if (
+        run_id is not None
+        and isinstance(worker_id, str)
+        and worker_id.strip()
+        and isinstance(claim_version, int)
+        and not isinstance(claim_version, bool)
+    ):
+        current = db.get(OperationRun, run_id)
+        summary = dict(getattr(current, "result_summary", None) or {})
+        summary.update(
+            {"measurement_mode": "monthly", "measurement_month": period_key}
+        )
+        db.execute(
+            update(OperationRun)
+            .where(
+                OperationRun.id == run_id,
+                OperationRun.operation_type == "RUN_SOV",
+                OperationRun.task_id == worker_id,
+                OperationRun.state == OperationRunState.RUNNING,
+                OperationRun.lease_owner == worker_id,
+                OperationRun.version == claim_version,
+            )
+            .values(
+                state=OperationRunState.SUCCEEDED,
+                completed_at=observed_at,
+                heartbeat_at=None,
+                lease_owner=None,
+                lease_expires_at=None,
+                total_count=1,
+                success_count=1,
+                failure_count=0,
+                skipped_count=0,
+                result_summary=summary,
+                safe_error_code=None,
+                safe_error_message=None,
+                version=OperationRun.version + 1,
+            )
+        )
+    db.commit()
+    if not is_monthly_recovery_window(observed_at, year, month):
+        return True
+    _dispatch_automatic_monthly_report_recovery(db, hospital, year, month)
+    return True
+
+
+def _monthly_report_quality_is_complete(report) -> bool:
+    return (
+        report is not None
+        and report.quality == "COMPLETE"
+        and report.planned_count > 0
+        and report.success_count == report.planned_count
+        and report.failed_count == 0
+        and report.excluded_count == 0
+    )
+
+
+def _coverage_recovery_run_is_stale(run: OperationRun, observed_at: datetime) -> bool:
+    """True when a non-terminal coverage-recovery run looks abandoned."""
+
+    if run.state not in (
+        OperationRunState.REQUESTED,
+        OperationRunState.QUEUED,
+        OperationRunState.RUNNING,
+    ):
+        return False
+    if run.state == OperationRunState.RUNNING and run.lease_expires_at is not None:
+        lease_expires_at = run.lease_expires_at
+        if lease_expires_at.tzinfo is None:
+            lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+        return lease_expires_at <= observed_at
+    if run.state == OperationRunState.RUNNING:
+        last_seen = run.heartbeat_at or run.started_at or run.queued_at or run.requested_at
+    elif run.state == OperationRunState.QUEUED:
+        last_seen = run.queued_at or run.requested_at
+    else:
+        last_seen = run.requested_at
+    if last_seen is None:
+        return True
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    return last_seen <= observed_at - timedelta(hours=1)
+
+
+def _dispatch_automatic_monthly_report_recovery(
+    db, hospital: Hospital, year: int, month: int
+) -> OperationRun | None:
+    latest = _latest_monthly_report(db, hospital.id, year, month)
+    report_complete = _monthly_report_quality_is_complete(latest)
+    if report_complete:
+        return None
+    idempotency_key = f"coverage-recovery:{hospital.id}:{year:04d}-{month:02d}"
+    existing = db.execute(
+        select(OperationRun).where(
+            OperationRun.hospital_id == hospital.id,
+            OperationRun.operation_type == "GENERATE_MONTHLY_REPORT",
+            OperationRun.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+    hospital_id = str(hospital.id)
+    task_args = (hospital_id, year, month, True, True)
+    dispatch_payload = operation_run_payloads.build_request_payload(
+        operation_run_payloads.DispatchPayload(
+            "hospital", hospital_id, "reports", task_args
+        )
+    )
+    observed_at = datetime.now(timezone.utc)
+
+    def _enqueue(run: OperationRun) -> OperationRun:
+        try:
+            generate_monthly_report_for_hospital.apply_async(
+                args=list(task_args),
+                queue="reports",
+                headers={
+                    **build_dispatch_headers("generate-monthly-report", hospital_id),
+                    "operation_run_id": str(run.id),
+                },
+                task_id=run.task_id,
+            )
+        except Exception:  # noqa: BLE001 - REQUESTED run is recovered by the workflow reconciler.
+            logger.exception(
+                "Automatic monthly report recovery dispatch failed; reconciler will retry",
+                extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
+            )
+            return run
+        _mark_weekly_sov_operation_queued(db, run.id, datetime.now(timezone.utc))
+        return run
+
+    def _rearm_existing(run: OperationRun) -> OperationRun:
+        # 같은 coverage-recovery 키를 재사용한다. FAILED/PARTIAL 이후 remasure가
+        # COMPLETE여도 리포트가 없으면 새 OperationRun을 만들지 않고 재무장한다.
+        run.state = OperationRunState.REQUESTED
+        run.task_id = str(uuid.uuid4())
+        run.requested_at = observed_at
+        run.queued_at = None
+        run.started_at = None
+        run.completed_at = None
+        run.heartbeat_at = None
+        run.lease_owner = None
+        run.lease_expires_at = None
+        run.total_count = 1
+        run.success_count = 0
+        run.failure_count = 0
+        run.skipped_count = 0
+        run.safe_error_code = None
+        run.safe_error_message = None
+        run.request_payload = dispatch_payload
+        run.result_summary = {"period_year": year, "period_month": month}
+        run.version += 1
+        db.commit()
+        return _enqueue(run)
+
+    if existing is not None:
+        if existing.state in (
+            OperationRunState.REQUESTED,
+            OperationRunState.QUEUED,
+            OperationRunState.RUNNING,
+        ) and not _coverage_recovery_run_is_stale(existing, observed_at):
+            return existing
+        return _rearm_existing(existing)
+
+    task_id = str(uuid.uuid4())
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.REQUESTED,
+        idempotency_key=idempotency_key,
+        requested_by_id=None,
+        task_id=task_id,
+        attempt_count=0,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload=dispatch_payload,
+        result_summary={"period_year": year, "period_month": month},
+        version=1,
+    )
+    db.add(run)
+    db.commit()
+    return _enqueue(run)
 
 
 def _sov_operation_error_message(error_code: str) -> str:
@@ -4619,9 +4921,10 @@ def run_monthly_sov_measurement():
             if run is None or run.task_id is None:
                 continue
             hospital_id = str(hospital.id)
+            task_args = [hospital_id, "monthly", today_kst.year, today_kst.month]
             try:
                 run_sov_for_hospital.apply_async(
-                    args=[hospital_id],
+                    args=task_args,
                     queue="sov",
                     headers={
                         **build_dispatch_headers("run-sov", hospital_id),
@@ -4800,6 +5103,16 @@ def _ensure_monthly_sov_operation_run(
     observed_at: datetime,
 ) -> OperationRun | None:
     idempotency_key = f"monthly-sov:{hospital.id}:{period_key}"
+    try:
+        year_text, month_text = period_key.split("-", 1)
+        year, month = int(year_text), int(month_text)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    hospital_id = str(hospital.id)
+    task_args = (hospital_id, "monthly", year, month)
+    dispatch_payload = operation_run_payloads.build_request_payload(
+        operation_run_payloads.DispatchPayload("hospital", hospital_id, "sov", task_args)
+    )
     existing = db.execute(
         select(OperationRun).where(
             OperationRun.hospital_id == hospital.id,
@@ -4809,6 +5122,12 @@ def _ensure_monthly_sov_operation_run(
     ).scalar_one_or_none()
     if existing is not None:
         if existing.state == OperationRunState.REQUESTED:
+            existing.request_payload = dispatch_payload
+            existing.result_summary = {
+                "measurement_month": period_key,
+                "measurement_mode": "monthly",
+            }
+            db.commit()
             return existing
 
         def _rearm_existing() -> OperationRun:
@@ -4827,22 +5146,34 @@ def _ensure_monthly_sov_operation_run(
             existing.skipped_count = 0
             existing.safe_error_code = None
             existing.safe_error_message = None
+            existing.request_payload = dispatch_payload
+            existing.result_summary = {
+                "measurement_month": period_key,
+                "measurement_mode": "monthly",
+            }
             existing.version += 1
             db.commit()
             return existing
 
-        if existing.state == OperationRunState.PARTIAL:
+        if existing.state == OperationRunState.PARTIAL and _monthly_sov_retry_window(
+            period_key, observed_at
+        ):
             return _rearm_existing()
         if existing.state == OperationRunState.FAILED:
             code = existing.safe_error_code or ""
-            if (
-                code.endswith("COST_GUARD_BLOCKED")
-                and _monthly_sov_pending_budget_fits(db, hospital, period_key)
+            retry_window = _monthly_sov_retry_window(period_key, observed_at)
+            if code.endswith("COST_GUARD_BLOCKED") and retry_window and (
+                _monthly_sov_pending_budget_fits(db, hospital, period_key)
             ):
                 return _rearm_existing()
+            if retry_window and not code.endswith("COST_GUARD_BLOCKED"):
+                failed_cell_count = _monthly_sov_failed_cell_count(
+                    db, hospital.id, period_key
+                )
+                if failed_cell_count is None or failed_cell_count > 0:
+                    return _rearm_existing()
             return None
         return None
-    hospital_id = str(hospital.id)
     run = OperationRun(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -4856,11 +5187,7 @@ def _ensure_monthly_sov_operation_run(
         success_count=0,
         failure_count=0,
         skipped_count=0,
-        request_payload=operation_run_payloads.build_request_payload(
-            operation_run_payloads.DispatchPayload(
-                "hospital", hospital_id, "sov", (hospital_id,)
-            )
-        ),
+        request_payload=dispatch_payload,
         result_summary={
             "measurement_month": period_key,
             "measurement_mode": "monthly",
@@ -4886,28 +5213,49 @@ def _ensure_monthly_sov_operation_run(
     return run
 
 
-def _monthly_sov_pending_budget_fits(db, hospital: Hospital, period_key: str) -> bool:
+def _monthly_sov_retry_window(period_key: str, observed_at: datetime) -> bool:
     try:
         year_text, month_text = period_key.split("-", 1)
         year, month = int(year_text), int(month_text)
-    except (TypeError, ValueError):
+    except (AttributeError, TypeError, ValueError):
         return False
+    local = observed_at.astimezone(ZoneInfo("Asia/Seoul"))
+    if (
+        (year, month) == (local.year, local.month)
+        and local.day >= settings.SOV_MONTHLY_WINDOW_START_DAY
+    ):
+        return True
+    return is_monthly_recovery_window(observed_at, year, month)
+
+
+def _monthly_sov_failed_cell_count(
+    db, hospital_id: uuid.UUID, period_key: str
+) -> int | None:
+    try:
+        year_text, month_text = period_key.split("-", 1)
+        year, month = int(year_text), int(month_text)
+    except (AttributeError, TypeError, ValueError):
+        return 0
     manifest = db.execute(
         select(MonthlyMeasurementManifest)
         .options(selectinload(MonthlyMeasurementManifest.cells))
         .where(
-            MonthlyMeasurementManifest.hospital_id == hospital.id,
+            MonthlyMeasurementManifest.hospital_id == hospital_id,
             MonthlyMeasurementManifest.period_year == year,
             MonthlyMeasurementManifest.period_month == month,
         )
     ).scalar_one_or_none()
     if manifest is None:
-        return False
-    pending_count = sum(
+        return None
+    return sum(
         getattr(cell, "state", None) == "FAILED"
         for cell in (getattr(manifest, "cells", ()) or ())
     )
-    if pending_count <= 0:
+
+
+def _monthly_sov_pending_budget_fits(db, hospital: Hospital, period_key: str) -> bool:
+    pending_count = _monthly_sov_failed_cell_count(db, hospital.id, period_key)
+    if pending_count is None or pending_count <= 0:
         return False
     needed = pending_count * SOV_REPEAT_WEEKLY
     daily_remaining, monthly_remaining = _run_async(cost_guard.remaining_units("sov"))
@@ -4935,7 +5283,7 @@ def _mark_weekly_sov_operation_queued(db, run_id: uuid.UUID, observed_at: dateti
 
 
 # ══════════════════════════════════════════════════════════════════
-# 월간 리포트 (다음 달 1일 00:15 마감, 7일까지 6시간 간격 자동 복구)
+# 월간 리포트 (다음 달 1일 00:15 첫 마감, 2~7일 매일 자동 복구)
 # ══════════════════════════════════════════════════════════════════
 def _monthly_operation_run_id(task) -> uuid.UUID | None:
     headers = getattr(getattr(task, "request", None), "headers", None)
@@ -4946,6 +5294,123 @@ def _monthly_operation_run_id(task) -> uuid.UUID | None:
         return uuid.UUID(str(raw)) if raw else None
     except ValueError:
         return None
+
+
+def _start_monthly_report_batch_run(db, task, period) -> uuid.UUID | None:
+    task_id = getattr(getattr(task, "request", None), "id", None)
+    if not isinstance(task_id, str) or not task_id.strip():
+        return None
+    existing = db.execute(
+        select(OperationRun).where(
+            OperationRun.operation_type == "MONTHLY_REPORT_BATCH",
+            OperationRun.idempotency_key == f"monthly-report-batch:{task_id}",
+        )
+    ).scalar_one_or_none()
+    observed_at = datetime.now(timezone.utc)
+    if existing is None:
+        existing = OperationRun(
+            id=uuid.uuid4(),
+            hospital_id=None,
+            operation_type="MONTHLY_REPORT_BATCH",
+            state=OperationRunState.RUNNING,
+            idempotency_key=f"monthly-report-batch:{task_id}",
+            requested_by_id=None,
+            task_id=task_id,
+            attempt_count=1,
+            total_count=0,
+            success_count=0,
+            failure_count=0,
+            skipped_count=0,
+            request_payload={
+                "source_type": "MONTHLY_REPORT_BATCH",
+                "source_id": f"{period.year:04d}-{period.month:02d}",
+            },
+            result_summary={
+                "period_year": period.year,
+                "period_month": period.month,
+            },
+            started_at=observed_at,
+            heartbeat_at=observed_at,
+            version=1,
+        )
+        db.add(existing)
+    else:
+        existing.state = OperationRunState.RUNNING
+        existing.completed_at = None
+        existing.heartbeat_at = observed_at
+        existing.attempt_count += 1
+        existing.safe_error_code = None
+        existing.safe_error_message = None
+        existing.version += 1
+    headers = getattr(task.request, "headers", None)
+    if not isinstance(headers, dict):
+        headers = {}
+        task.request.headers = headers
+    # Runtime correlation only. The plain ``operation_run_id`` header is an
+    # authorization claim for Admin-dispatched tasks; setting it on a Beat retry
+    # would make AuthenticatedTask demand an incompatible stored dispatch policy.
+    headers["reputation_dispatch_operation_run_id"] = str(existing.id)
+    db.commit()
+    return existing.id
+
+
+def _finish_monthly_report_batch_run(
+    db, run_id: uuid.UUID | None, result: Mapping[str, int | str], *, hard_failure: bool
+) -> None:
+    if run_id is None:
+        return
+    run = db.get(OperationRun, run_id)
+    if run is None:
+        return
+    failures = int(result["failure_count"])
+    successes = int(result["success_count"])
+    run.state = (
+        OperationRunState.FAILED
+        if hard_failure and successes == 0
+        else OperationRunState.PARTIAL
+        if failures
+        else OperationRunState.SUCCEEDED
+    )
+    run.completed_at = datetime.now(timezone.utc)
+    run.heartbeat_at = None
+    run.total_count = int(result["total_count"])
+    run.success_count = successes
+    run.failure_count = failures
+    run.skipped_count = 0
+    run.result_summary = dict(result)
+    if hard_failure:
+        run.safe_error_code = "MONTHLY_REPORT_BATCH_FAILED"
+        run.safe_error_message = "월간 리포트 자동 마감 중 완료하지 못한 병원이 있습니다."
+    run.version += 1
+    db.commit()
+
+
+def _dispatch_monthly_sov_catchup(
+    db, hospital: Hospital, period_key: str, observed_at: datetime
+) -> uuid.UUID | None:
+    run = _ensure_monthly_sov_operation_run(db, hospital, period_key, observed_at)
+    if run is None or run.task_id is None:
+        return None
+    year, month = (int(value) for value in period_key.split("-", 1))
+    hospital_id = str(hospital.id)
+    try:
+        run_sov_for_hospital.apply_async(
+            args=[hospital_id, "monthly", year, month],
+            queue="sov",
+            headers={
+                **build_dispatch_headers("run-sov", hospital_id),
+                "operation_run_id": str(run.id),
+            },
+            task_id=run.task_id,
+        )
+    except Exception:  # noqa: BLE001 - REQUESTED run is redispatched by reconciliation.
+        logger.exception(
+            "Monthly measurement catch-up dispatch failed; recovery will redispatch",
+            extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
+        )
+        return run.id
+    _mark_weekly_sov_operation_queued(db, run.id, observed_at)
+    return run.id
 
 
 def _mark_monthly_operation_run_running(
@@ -4977,6 +5442,39 @@ def _mark_monthly_operation_run_running(
     db.commit()
 
 
+def _mark_monthly_report_measurement_incomplete(
+    db,
+    run_id: uuid.UUID | None,
+    hospital_id: uuid.UUID,
+    year: int,
+    month: int,
+) -> None:
+    if run_id is None:
+        return
+    run = db.get(OperationRun, run_id)
+    if run is None:
+        return
+    run.state = OperationRunState.PARTIAL
+    run.completed_at = datetime.now(timezone.utc)
+    run.heartbeat_at = None
+    run.lease_owner = None
+    run.lease_expires_at = None
+    run.total_count = 1
+    run.success_count = 0
+    run.failure_count = 1
+    run.skipped_count = 0
+    run.safe_error_code = "MONTHLY_MEASUREMENT_INCOMPLETE"
+    run.safe_error_message = "필수 측정이 완료되지 않아 월간 리포트를 만들지 않았습니다."
+    run.result_summary = {
+        "stage": MonthlyRunStage.BLOCKED.value,
+        "period_year": year,
+        "period_month": month,
+        "hospital_id": str(hospital_id),
+    }
+    run.version += 1
+    db.commit()
+
+
 def _start_scheduled_monthly_operation_run(
     db, hospital: Hospital, now: arrow.Arrow
 ) -> tuple[uuid.UUID, bool]:
@@ -4989,7 +5487,7 @@ def _start_scheduled_monthly_operation_run(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        observed_at = datetime.now(timezone.utc)
+        observed_at = now.datetime.astimezone(timezone.utc)
         last_seen = existing.heartbeat_at or existing.started_at or existing.requested_at
         active = existing.state in (
             OperationRunState.REQUESTED,
@@ -5072,17 +5570,68 @@ def _latest_monthly_report(db, hospital_id: uuid.UUID, year: int, month: int):
     )
 
 
+def _latest_monthly_report_operation_run(
+    db, hospital_id: uuid.UUID, year: int, month: int
+) -> OperationRun | None:
+    """Return the newest report-generation run that belongs to this period."""
+
+    period_key = f"{year:04d}-{month:02d}"
+    runs = (
+        db.execute(
+            select(OperationRun)
+            .where(
+                OperationRun.hospital_id == hospital_id,
+                OperationRun.operation_type.in_(
+                    ("SCHEDULED_MONTHLY_REPORT", "GENERATE_MONTHLY_REPORT")
+                ),
+            )
+            .order_by(OperationRun.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    for run in runs:
+        summary = run.result_summary if isinstance(run.result_summary, Mapping) else {}
+        payload = run.request_payload if isinstance(run.request_payload, Mapping) else {}
+        summary_period = (
+            summary.get("period_year"),
+            summary.get("period_month"),
+        )
+        if summary_period == (year, month):
+            return run
+        if payload.get("source_id") == period_key:
+            return run
+        if run.idempotency_key in {
+            f"scheduled:{hospital_id}:{period_key}",
+            f"coverage-recovery:{hospital_id}:{period_key}",
+        }:
+            return run
+    return None
+
+
 def _monthly_sov_measurement_succeeded(
     db, hospital_id: uuid.UUID, period_key: str
 ) -> bool:
-    run = db.execute(
-        select(OperationRun).where(
-            OperationRun.hospital_id == hospital_id,
-            OperationRun.operation_type == "RUN_SOV",
-            OperationRun.idempotency_key == f"monthly-sov:{hospital_id}:{period_key}",
-            OperationRun.state == OperationRunState.SUCCEEDED,
+    run = (
+        db.execute(
+            select(OperationRun)
+            .where(
+                OperationRun.hospital_id == hospital_id,
+                OperationRun.operation_type == "RUN_SOV",
+                OperationRun.state == OperationRunState.SUCCEEDED,
+                or_(
+                    OperationRun.idempotency_key
+                    == f"monthly-sov:{hospital_id}:{period_key}",
+                    OperationRun.result_summary["measurement_month"].as_string()
+                    == period_key,
+                ),
+            )
+            .order_by(OperationRun.completed_at.desc(), OperationRun.created_at.desc())
+            .limit(1)
         )
-    ).scalar_one_or_none()
+        .scalars()
+        .first()
+    )
     if run is None:
         return False
     try:
@@ -5110,15 +5659,9 @@ def _monthly_sov_measurement_succeeded(
         )
         return False
 
-    observed_at = datetime.now(timezone.utc)
-    if manifest.closed_at is None:
-        if observed_at < manifest.closes_at:
-            return False
-        close_manifest(manifest, now=observed_at)
-        db.commit()
     summary = summarize_manifest(
         manifest.cells,
-        closed=manifest.closed_at is not None,
+        closed=True,
         configured_platforms=manifest.configured_platforms,
     )
     complete = (
@@ -5126,9 +5669,16 @@ def _monthly_sov_measurement_succeeded(
         and summary.planned_count > 0
         and summary.success_count == summary.planned_count
         and summary.failed_count == 0
-        and manifest.closed_at is not None
+        and summary.excluded_count == 0
     )
-    if not complete:
+    if complete:
+        observed_at = datetime.now(timezone.utc)
+        if manifest.closed_at is None:
+            if observed_at < manifest.closes_at:
+                return False
+            close_manifest(manifest, now=observed_at)
+            db.commit()
+    else:
         _mark_monthly_measurement_incomplete(
             db,
             run,
@@ -5179,8 +5729,7 @@ def _hospital_requires_monthly_sov_success(db, hospital, period) -> bool:
     전환 윈도우(8/24–31)에 묶지 않는다. 9/1 직전 달 마감에서도 실패한 전환 병원은
     빈 월간 리포트를 만들지 않고, 월간 측정을 쓰지 않는 병원은 기존 마감 경로를 탄다.
     """
-    name = str(getattr(hospital, "name", "") or "")
-    if any(token in name for token in CONVERSION_HOSPITAL_NAME_TOKENS):
+    if bool(getattr(hospital, "monthly_sov_cohort", False)):
         return True
     hospital_id = getattr(hospital, "id", None)
     if hospital_id is None:
@@ -5714,6 +6263,7 @@ def run_monthly_reports(self):
     anchor = arrow.get(period.ends_at).shift(microseconds=-1)
 
     with SyncSessionLocal() as db:
+        batch_run_id = _start_monthly_report_batch_run(db, self, period)
         hospital_ids = eligible_hospital_ids(db, period)
         stmt = select(Hospital).where(Hospital.id.in_(hospital_ids))
         result = db.execute(stmt)
@@ -5721,17 +6271,50 @@ def run_monthly_reports(self):
         period_key = f"{period.year:04d}-{period.month:02d}"
         hospitals = []
         blocked: list[str] = []
+        observed_at = now.datetime.astimezone(timezone.utc)
         for hospital in eligible_hospitals:
             if _hospital_requires_monthly_sov_success(
                 db, hospital, period
             ) and not _monthly_sov_measurement_succeeded(db, hospital.id, period_key):
                 blocked.append(hospital.name)
+                measurement_run_id = (
+                    _dispatch_monthly_sov_catchup(db, hospital, period_key, observed_at)
+                    if is_monthly_recovery_window(
+                        now.datetime, period.year, period.month
+                    )
+                    else None
+                )
+                _record_weekly_sov_failure(
+                    hospital,
+                    period_key,
+                    "MONTHLY_SOV_MEASUREMENT_INCOMPLETE",
+                    measurement_run_id,
+                    measurement_mode="monthly",
+                )
                 continue
-            hospitals.append(hospital)
+            latest_run = _latest_monthly_report_operation_run(
+                db, hospital.id, period.year, period.month
+            )
+            if latest_run is not None:
+                if latest_run.state == OperationRunState.SUCCEEDED:
+                    hospitals.append((hospital, "already_succeeded"))
+                    continue
+                if latest_run.state in (
+                    OperationRunState.PARTIAL,
+                    OperationRunState.REQUESTED,
+                    OperationRunState.QUEUED,
+                    OperationRunState.RUNNING,
+                ):
+                    blocked.append(hospital.name)
+                    continue
+            hospitals.append((hospital, "build"))
         failures: list[str] = []
         successes = 0
 
-        for h in hospitals:
+        for h, action in hospitals:
+            if action == "already_succeeded":
+                successes += 1
+                continue
             run_id, replayed = _start_scheduled_monthly_operation_run(db, h, anchor)
             if replayed:
                 existing_run = db.get(OperationRun, run_id)
@@ -5785,9 +6368,24 @@ def run_monthly_reports(self):
             "success_count": successes,
             "failure_count": len(failures) + len(blocked),
         }
+        _finish_monthly_report_batch_run(
+            db, batch_run_id, result, hard_failure=bool(failures)
+        )
     if failures:
         raise MonthlyBatchIncompleteError(f"scheduled monthly reports incomplete: {len(failures)}")
     return result
+
+
+@celery_app.task(name="app.workers.tasks.summarize_monthly_report_gaps")
+def summarize_monthly_report_gaps():
+    """Queue at most one durable prior-month gap summary per KST calendar day."""
+
+    require_dispatch(current_task, "monthly-report-gap-summary")
+    observed_at = datetime.now(timezone.utc)
+    with SyncSessionLocal() as db:
+        queued = enqueue_monthly_report_gap_summary_sync(db, now=observed_at)
+        db.commit()
+    return {"queued": queued}
 
 
 @celery_app.task(
@@ -5808,6 +6406,7 @@ def generate_monthly_report_for_hospital(
     year: int | None = None,
     month: int | None = None,
     rebuild: bool = False,
+    automatic_recovery: bool = False,
 ):
     """병원 1곳의 월간 리포트를 수동으로 만든다 (Admin '월간 리포트 생성').
 
@@ -5847,8 +6446,13 @@ def generate_monthly_report_for_hospital(
                 db, hospital.id, f"{period.year:04d}-{period.month:02d}"
             )
         ):
+            _mark_monthly_report_measurement_incomplete(
+                db, run_id, hospital.id, period.year, period.month
+            )
             return {
+                "skipped": True,
                 "status": "measurement_not_succeeded",
+                "message": "필수 측정이 완료되지 않아 리포트를 만들지 않았습니다.",
                 "year": period.year,
                 "month": period.month,
             }
@@ -5861,7 +6465,11 @@ def generate_monthly_report_for_hospital(
         try:
             build_kwargs = {
                 "rebuild": rebuild,
-                "build_reason": ReportBuildReason.MANUAL_REBUILD,
+                "build_reason": (
+                    ReportBuildReason.AUTOMATIC_RECOVERY
+                    if automatic_recovery
+                    else ReportBuildReason.MANUAL_REBUILD
+                ),
                 "correlation_key": correlation_key,
             }
             if run_id is not None:

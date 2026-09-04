@@ -38,7 +38,7 @@ from app.services.monthly_delivery_projection import (
     latest_delivery_event_subquery,
     latest_monthly_report_subquery,
 )
-from app.services.monthly_period import reporting_period
+from app.services.monthly_period import is_monthly_recovery_window, reporting_period
 
 ReportQueueState = Literal[
     "MISSING",
@@ -59,14 +59,16 @@ _ACTIVE_MONTHLY_RUN_STATES: Final = (
 _MONTHLY_RUN_TYPES: Final = ("GENERATE_MONTHLY_REPORT", "SCHEDULED_MONTHLY_REPORT")
 
 
-def _report_operator_copy(state: ReportQueueState) -> tuple[str, str]:
+def _report_operator_copy(
+    state: ReportQueueState, *, monthly_recovery_open: bool = False
+) -> tuple[str, str]:
     match state:
         case "MISSING":
             return (
                 "지난달 보고서가 없어 원장 보고가 지연됩니다.",
-                "운영 센터에서 처리 사유를 남기고 “지난달 리포트 생성”을 누르세요. "
-                "생성 작업이 시작되면 작업 기록에서 진행 상태를 확인하세요. 버튼이 없거나 "
-                "작업이 시작되지 않으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요.",
+                "시스템이 매월 1~7일 00시 15분에 지난달 측정과 리포트 마감을 다시 시도합니다. "
+                "자동 복구 뒤에도 남아 있으면 처리 사유를 남기고 “지난달 리포트 생성”을 누른 뒤 "
+                "작업 기록에서 진행 상태를 확인하세요.",
             )
         case "DELIVERY_PENDING":
             return (
@@ -74,9 +76,16 @@ def _report_operator_copy(state: ReportQueueState) -> tuple[str, str]:
                 f"운영 센터의 “{_REPORT_ACTION_LABEL}”을 눌러 고객용 PDF와 전달 기록을 확인하세요.",
             )
         case "COVERAGE_INCOMPLETE":
+            if not monthly_recovery_open:
+                return (
+                    "필수 측정이 완료되지 않아 지난달 보고서를 원장님께 전달할 수 없습니다.",
+                    "시스템은 매월 1~7일 실패한 측정을 자동으로 다시 실행합니다. "
+                    "현재는 보고서 확인에서 남은 계획·성공·실패 수와 다음 복구 창을 확인하세요.",
+                )
             return (
                 "필수 측정이 완료되지 않아 지난달 보고서를 원장님께 전달할 수 없습니다.",
-                "보고서 확인에서 계획·성공·실패 수를 확인한 뒤 측정 복구 경로로 남은 항목만 다시 측정하세요.",
+                "시스템이 매월 1~7일 실패한 측정만 다시 실행합니다. 이 복구 기간 안에서 "
+                "즉시 다시 실행하려면 운영 센터의 “지난달 월간 재측정”을 사용하세요.",
             )
         case "MANIFEST_MISMATCH" | "MANIFEST_OPEN":
             return (
@@ -108,6 +117,7 @@ def _report_action(
     state: ReportQueueState,
     year: int,
     month: int,
+    monthly_recovery_open: bool = False,
 ) -> OperationsAction:
     """Expose the least-click recovery available for each report queue state."""
     if state == "MISSING":
@@ -120,6 +130,14 @@ def _report_action(
                 f"?year={year}&month={month}"
             ),
             reason_required=True,
+            requires_idempotency_key=True,
+        )
+    if state == "COVERAGE_INCOMPLETE" and monthly_recovery_open:
+        return OperationsAction(
+            kind="RUN_SOV",
+            label="지난달 월간 재측정",
+            method="POST",
+            path=f"/hospitals/{hospital_id}/operations/run-sov?measurement_mode=monthly",
             requires_idempotency_key=True,
         )
     return OperationsAction(
@@ -226,7 +244,15 @@ async def load_reports_queue(
         SlaFilter.NONE,
     ):
         return 0, []
-    year, month, period_start, period_end, _closes_at = _previous_period(now)
+    year, month, period_start, period_end, closes_at = _previous_period(now)
+    days_since_close = max(
+        0,
+        (
+            now.astimezone(ZoneInfo("Asia/Seoul")).date()
+            - closes_at.astimezone(ZoneInfo("Asia/Seoul")).date()
+        ).days,
+    )
+    monthly_recovery_open = is_monthly_recovery_window(now, year, month)
     latest = latest_monthly_report_subquery(year, month)
     latest_delivery = latest_delivery_event_subquery()
     active_report_runs = (
@@ -333,18 +359,26 @@ async def load_reports_queue(
             ),
             status=report_state_value,
             severity="HIGH",
-            impact=_report_operator_copy(report_state_value)[0],
+            impact=_report_operator_copy(
+                report_state_value,
+                monthly_recovery_open=monthly_recovery_open,
+            )[0],
             owner=owner_projection(actor),
             # REPORTS는 전달 준비 상태를 보여 주는 큐이지 스태프 SLA 큐가 아니다.
             # 월간 집계 마감은 커버리지/전달 게이트이며 운영자 처리 기한으로 투영하지 않는다.
             sla_due_at=None,
             sla_state="NONE",
-            next_action=_report_operator_copy(report_state_value)[1],
+            days_since_close=days_since_close,
+            next_action=_report_operator_copy(
+                report_state_value,
+                monthly_recovery_open=monthly_recovery_open,
+            )[1],
             action=_report_action(
                 hospital.id,
                 state=report_state_value,
                 year=year,
                 month=month,
+                monthly_recovery_open=monthly_recovery_open,
             ),
             retry=None,
             safe_cause=safe_cause,

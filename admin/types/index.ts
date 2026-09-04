@@ -581,6 +581,7 @@ export interface OperationsQueueRow {
   readonly owner: OperationsOwner | null
   readonly sla_due_at: string | null
   readonly sla_state: OperationsSlaState
+  readonly days_since_close?: number | null
   readonly next_action: string
   readonly action: OperationsAction
   readonly retry: OperationsAction | null

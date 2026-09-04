@@ -197,6 +197,7 @@ class OperationsQueueRow(OperationsSchema):
     report_id: UUID | None = None
     version: int | None = None
     occurred_at: datetime
+    days_since_close: int | None = None
 
 
 class OperationsQueueSummary(OperationsSchema):

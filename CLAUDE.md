@@ -88,12 +88,13 @@
           건만, `services/post_publish_review_policy.py`)을 확인, 문제 발견 시 즉시 수정 또는
           비공개 후 재생성 — 이 표본은 관찰용이며 월간 리포트 전달을 막지 않는다
     ↓
-[STEP 8] 월간 AI 답변 언급 리포트 (시스템 — 매월 24일~말일 측정 완주, 1~7일 마감·자동 복구)
+[STEP 8] 월간 AI 답변 언급 리포트 (시스템 — 매월 24일~말일 측정 완주, 1일 첫 마감·7일까지 자동 복구)
     • 측정: 매월 24일부터 말일까지 6시간마다(`monthly-sov-measurement`) 전환 코호트의
       고정 tracking set(N=15, 주 5회 반복)을 완주한다. 같은 기간 주간 측정(월 02:00)은
       이 코호트만 제외하고 나머지 ACTIVE 병원은 그대로 측정한다(전면 스킵 아님)
-    • 마감: 매월 1~7일 6시간마다(`monthly-reports`) 직전 달 자료가 모두 들어온 병원부터
-      순차로 리포트를 마감 — 실패분은 이 창 안에서 자동 재시도
+    • 마감: 매월 1일 00:15(`monthly-reports`) 직전 달 자료가 모두 들어온 병원부터
+      첫 마감하고, 2~7일에도 매일 00:15 한 번씩 놓친 실행·측정 미완료를 자동 복구한다.
+      1~7일 매일 09:00에는 자동 복구 뒤에도 남은 미생성·측정 미완료를 한 건으로 요약한다
     • 헤드라인: 셀(질문×AI 서비스)당 1회 대표값이 아니라 **반복 측정 빈도**(k/5)를 쓰고,
       Wilson 구간으로 "의미 있는 변화"와 "표본 노이즈"를 코드가 판정한다. 헤드라인과
       전월 대비 델타는 항상 같은 매칭 셀 집합을 쓴다 (`services/sov_statistics.py`)
@@ -126,7 +127,8 @@
 | 매주 월 02:00 | weekly-sov-monitoring | 전체 ACTIVE 병원 측정 (월말 창엔 월간 코호트만 제외) |
 | 매월 24~31일 */6h | monthly-sov-measurement | 전환 코호트 월말 측정 완주 |
 | 매월 25~31일 */6h | monthly-slot-generation | 다음 달 콘텐츠 슬롯 자동 생성(격차 재배정 포함) |
-| 매월 1~7일 */6h(매 정시 15분) | monthly-reports | 월간 리포트 마감 |
+| 매월 1~7일 매일 00:15 | monthly-reports | 1일 첫 월간 리포트 마감, 2~7일 놓친 실행·측정 미완료 자동 복구 |
+| 매월 1~7일 매일 09:00 | monthly-report-gap-summary | 자동 복구 뒤 남은 미생성·측정 미완료 일일 요약 1건 |
 | 매주 화 03:00 | weekly-naver-source-sync | 병원 네이버 블로그 신규 글 자산 인입 |
 | 매일 04:00 | purge-expired-leads | 보관기간 만료 리드 파기 |
 | 15분마다 (3종) | reconcile-essence-snapshots / project-milestone-events / live-custom-domain-health | 유실된 운영 기준 변경 snapshot 회수, 운영 마일스톤 요약 투영, 병원 자기 도메인 TLS/Host 헬스 체크 |

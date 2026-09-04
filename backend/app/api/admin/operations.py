@@ -9,7 +9,7 @@ row proves broker acceptance.
 import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
@@ -50,6 +50,7 @@ from app.services.monthly_delivery_projection import (
 from app.services.monthly_events import MonthlyRunStage
 from app.services.monthly_period import (
     MonthlyPeriodError,
+    is_monthly_recovery_window,
     reporting_period,
     require_closed_period,
     scheduled_report_period,
@@ -515,6 +516,7 @@ async def trigger_v0_report_operation(
 @router.post("/{hospital_id}/operations/run-sov")
 async def run_sov_operation(
     hospital_id: uuid.UUID,
+    measurement_mode: Literal["weekly", "monthly"] = "weekly",
     db: AsyncSession = Depends(get_db),
     idempotency_key: IdempotencyKeyHeader = None,
 ):
@@ -529,6 +531,41 @@ async def run_sov_operation(
             status_code=409,
             detail="활성 문구가 있는 환자 질문 타깃이 없어 AI 언급률 측정을 실행할 수 없습니다.",
         )
+    task_args: list[JSONValue] = [str(hospital.id)]
+    operation_key = idempotency_key
+    detail = "AI 언급률 측정이 큐에 등록되었습니다."
+    if measurement_mode == "monthly":
+        now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
+        try:
+            period = scheduled_report_period(now_kst)
+        except MonthlyPeriodError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not is_monthly_recovery_window(
+            now_kst, period.year, period.month
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="지난달 월간 측정 복구는 매월 1일 00시 15분부터 7일까지 실행할 수 있습니다.",
+            )
+        if not hospital.monthly_sov_cohort:
+            raise HTTPException(
+                status_code=409,
+                detail="이 병원은 월간 측정 코호트가 아니어서 주간 측정을 사용해야 합니다.",
+            )
+        if idempotency_key is None:
+            raise HTTPException(
+                status_code=400,
+                detail="중복 측정을 막는 요청 키가 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+            )
+        request_fingerprint = hashlib.sha256(idempotency_key.encode()).hexdigest()[:20]
+        operation_key = (
+            f"monthly-sov-remasure:{hospital.id}:{period.year:04d}-{period.month:02d}:"
+            f"{request_fingerprint}"
+        )
+        task_args = [str(hospital.id), "monthly", period.year, period.month]
+        detail = (
+            f"{period.year}년 {period.month}월 월간 AI 언급률 재측정이 큐에 등록되었습니다."
+        )
     dispatch = await _enqueue_with_truthful_audit(
         db,
         action="run_sov",
@@ -536,12 +573,12 @@ async def run_sov_operation(
         target_type="hospital",
         target_id=hospital.id,
         task=run_sov_for_hospital,
-        args=[str(hospital.id)],
+        args=task_args,
         queue="sov",
-        idempotency_key=idempotency_key,
+        idempotency_key=operation_key,
     )
     return {
-        "detail": "AI 언급률 측정이 큐에 등록되었습니다.",
+        "detail": detail,
         "hospital_id": str(hospital.id),
         "operation_run_id": str(dispatch.run.id),
         "operation_state": dispatch.run.state,

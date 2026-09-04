@@ -126,13 +126,12 @@ def test_essence_auto_review_has_immediate_and_periodic_recovery_routes():
     assert REDBEAT_SCHEDULE_VERSION >= "2026-08-18.2"
 
 
-def test_monthly_reports_close_once_on_the_first_day_kst():
-    """월간 리포트는 매월 1일 00:15 KST에 한 번만 마감한다."""
+def test_monthly_reports_close_first_on_day_one_and_catch_up_daily_through_day_seven():
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
     assert schedule.minute == {15}
     assert schedule.hour == {0}
-    assert schedule.day_of_month == {1}
-    assert REDBEAT_SCHEDULE_VERSION >= "2026-09-02.1"
+    assert schedule.day_of_month == set(range(1, 8))
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-09-04.1"
 
 
 def test_monthly_sov_measurement_runs_only_in_the_month_end_window():

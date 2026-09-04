@@ -8,6 +8,7 @@ from app.models.operations import JSONValue
 
 _SAFE_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,99}$")
 _SAFE_UUID = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", re.I)
+_SAFE_ENUM_ARGS = frozenset({"monthly", "weekly"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +77,7 @@ def _safe_arg(value: JSONValue, index: int) -> JSONValue:
     match value:
         case None | bool() | int():
             return value
-        case str() if _SAFE_UUID.fullmatch(value):
+        case str() if _SAFE_UUID.fullmatch(value) or value in _SAFE_ENUM_ARGS:
             return value
         case str() | float() | list() | dict():
             raise UnsafeDispatchPayload(f"task_args[{index}]")

@@ -12,6 +12,7 @@ from app.models.monthly_control import (
     MonthlyMeasurementManifest,
 )
 from app.services import sov_engine
+from app.services.monthly_period import is_monthly_recovery_window
 
 EXCLUSION_REASONS: Final[frozenset[str]] = frozenset(
     {"DUPLICATE_TARGET", "RETIRED_BEFORE_MEASUREMENT", "LEGAL_REMOVAL"}
@@ -325,6 +326,38 @@ def close_manifest(manifest: MonthlyMeasurementManifest, *, now: datetime) -> No
     if now < manifest.closes_at:
         raise ManifestError("manifest cannot close before cutoff")
     manifest.closed_at = now
+
+
+def reopen_incomplete_manifest_for_recovery(
+    session, manifest: MonthlyMeasurementManifest, *, now: datetime
+) -> bool:
+    """Reopen only an incomplete prior-month manifest during the bounded window."""
+
+    if manifest.closed_at is None or not is_monthly_recovery_window(
+        now, manifest.period_year, manifest.period_month
+    ):
+        return False
+    summary = summarize_manifest(
+        manifest.cells,
+        closed=True,
+        configured_platforms=manifest.configured_platforms,
+    )
+    if (
+        summary.quality == "COMPLETE"
+        and summary.failed_count == 0
+        and summary.excluded_count == 0
+    ):
+        return False
+    get_bind = getattr(session, "get_bind", None)
+    bind = get_bind() if callable(get_bind) else None
+    postgres_guard = getattr(getattr(bind, "dialect", None), "name", None) == "postgresql"
+    if postgres_guard:
+        session.execute(text("SET LOCAL app.monthly_manifest_supersede = 'on'"))
+    manifest.closed_at = None
+    session.flush()
+    if postgres_guard:
+        session.execute(text("SET LOCAL app.monthly_manifest_supersede = 'off'"))
+    return True
 
 
 def exclude_cell(cell, *, role: str, reason: str, actor_id: uuid.UUID) -> None:
