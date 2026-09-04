@@ -396,6 +396,38 @@ def test_non_cost_failed_monthly_run_rearms_failed_cells_in_month_end_window(cod
     assert db.commits == 1
 
 
+def test_non_cost_failed_monthly_run_without_manifest_rearms_in_retry_window():
+    existing = _failed_monthly_run(code="MONTHLY_SOV_NO_MEASUREMENT_MANIFEST")
+    old_task_id = existing.task_id
+
+    class _DB:
+        commits = 0
+
+        def __init__(self):
+            self.results = iter((existing, None))
+
+        def execute(self, _stmt):
+            value = next(self.results)
+            return SimpleNamespace(scalar_one_or_none=lambda: value)
+
+        def commit(self):
+            self.commits += 1
+
+    db = _DB()
+    run = tasks._ensure_monthly_sov_operation_run(
+        db,
+        SimpleNamespace(id=uuid.uuid4()),
+        "2026-08",
+        datetime(2026, 8, 28, tzinfo=UTC),
+    )
+
+    assert run is existing
+    assert existing.state == OperationRunState.REQUESTED
+    assert existing.task_id != old_task_id
+    assert existing.version == 4
+    assert db.commits == 1
+
+
 def test_non_cost_failed_monthly_run_stays_closed_outside_bounded_windows():
     existing = _failed_monthly_run(code="MONTHLY_SOV_MEASUREMENT_PARTIAL")
 

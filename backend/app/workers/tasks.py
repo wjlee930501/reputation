@@ -5166,10 +5166,12 @@ def _ensure_monthly_sov_operation_run(
                 _monthly_sov_pending_budget_fits(db, hospital, period_key)
             ):
                 return _rearm_existing()
-            if retry_window and not code.endswith("COST_GUARD_BLOCKED") and (
-                _monthly_sov_failed_cell_count(db, hospital.id, period_key) > 0
-            ):
-                return _rearm_existing()
+            if retry_window and not code.endswith("COST_GUARD_BLOCKED"):
+                failed_cell_count = _monthly_sov_failed_cell_count(
+                    db, hospital.id, period_key
+                )
+                if failed_cell_count is None or failed_cell_count > 0:
+                    return _rearm_existing()
             return None
         return None
     run = OperationRun(
@@ -5228,7 +5230,7 @@ def _monthly_sov_retry_window(period_key: str, observed_at: datetime) -> bool:
 
 def _monthly_sov_failed_cell_count(
     db, hospital_id: uuid.UUID, period_key: str
-) -> int:
+) -> int | None:
     try:
         year_text, month_text = period_key.split("-", 1)
         year, month = int(year_text), int(month_text)
@@ -5244,7 +5246,7 @@ def _monthly_sov_failed_cell_count(
         )
     ).scalar_one_or_none()
     if manifest is None:
-        return 0
+        return None
     return sum(
         getattr(cell, "state", None) == "FAILED"
         for cell in (getattr(manifest, "cells", ()) or ())
@@ -5253,7 +5255,7 @@ def _monthly_sov_failed_cell_count(
 
 def _monthly_sov_pending_budget_fits(db, hospital: Hospital, period_key: str) -> bool:
     pending_count = _monthly_sov_failed_cell_count(db, hospital.id, period_key)
-    if pending_count <= 0:
+    if pending_count is None or pending_count <= 0:
         return False
     needed = pending_count * SOV_REPEAT_WEEKLY
     daily_remaining, monthly_remaining = _run_async(cost_guard.remaining_units("sov"))
