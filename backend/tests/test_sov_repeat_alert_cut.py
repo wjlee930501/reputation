@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -968,6 +968,197 @@ def test_latest_report_run_resolution_uses_the_requested_period():
         tasks._latest_monthly_report_operation_run(_DB(), hospital_id, 2026, 8)
         is requested
     )
+
+
+def _coverage_recovery_db(existing):
+    class _Result:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar_one_or_none(self):
+            return self._value
+
+    class _DB:
+        def __init__(self):
+            self.commits = 0
+            self.added = []
+            self._existing = existing
+
+        def execute(self, _statement):
+            return _Result(self._existing)
+
+        def add(self, obj):
+            self.added.append(obj)
+
+        def commit(self):
+            self.commits += 1
+
+    return _DB()
+
+
+def test_failed_coverage_recovery_rearms_after_complete_remeasure(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="복구재시도의원")
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.FAILED,
+        idempotency_key=f"coverage-recovery:{hospital.id}:2026-08",
+        task_id="old-task",
+        queued_at=datetime(2026, 9, 2, tzinfo=UTC),
+        started_at=datetime(2026, 9, 2, tzinfo=UTC),
+        completed_at=datetime(2026, 9, 2, tzinfo=UTC),
+        heartbeat_at=None,
+        lease_owner="dead-worker",
+        lease_expires_at=datetime(2026, 9, 2, tzinfo=UTC),
+        success_count=0,
+        failure_count=1,
+        skipped_count=0,
+        safe_error_code="MONTHLY_REPORT_FAILED",
+        safe_error_message="이전 자동 복구가 실패했습니다.",
+        request_payload={},
+        result_summary={"period_year": 2026, "period_month": 8},
+        attempt_count=1,
+        version=3,
+    )
+    # Remeasure is done; monthly report itself is still incomplete → must rearm.
+    report = SimpleNamespace(
+        quality="PARTIAL",
+        planned_count=10,
+        success_count=4,
+        failed_count=6,
+        excluded_count=0,
+    )
+    db = _coverage_recovery_db(existing)
+    dispatches = []
+
+    monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_a, **_k: report)
+    monkeypatch.setattr(
+        tasks.generate_monthly_report_for_hospital,
+        "apply_async",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+    monkeypatch.setattr(
+        tasks, "build_dispatch_headers", lambda *_a, **_k: {"purpose": "generate-monthly-report"}
+    )
+    monkeypatch.setattr(tasks, "_mark_weekly_sov_operation_queued", lambda *_a, **_k: None)
+
+    run = tasks._dispatch_automatic_monthly_report_recovery(db, hospital, 2026, 8)
+
+    assert run is existing
+    assert existing.state == OperationRunState.REQUESTED
+    assert existing.task_id != "old-task"
+    assert existing.safe_error_code is None
+    assert existing.safe_error_message is None
+    assert existing.version == 4
+    assert existing.attempt_count == 1
+    assert db.commits == 1
+    assert db.added == []
+    assert len(dispatches) == 1
+    assert dispatches[0]["task_id"] == existing.task_id
+    assert dispatches[0]["args"] == [str(hospital.id), 2026, 8, True, True]
+    assert dispatches[0]["headers"]["operation_run_id"] == str(existing.id)
+
+
+def test_complete_report_skips_coverage_recovery_redispatch(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="완료의원")
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        state=OperationRunState.FAILED,
+        version=2,
+        task_id="should-not-change",
+    )
+    report = SimpleNamespace(
+        quality="COMPLETE",
+        planned_count=10,
+        success_count=10,
+        failed_count=0,
+        excluded_count=0,
+    )
+    db = _coverage_recovery_db(existing)
+    dispatches = []
+    monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_a, **_k: report)
+    monkeypatch.setattr(
+        tasks.generate_monthly_report_for_hospital,
+        "apply_async",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+
+    assert tasks._dispatch_automatic_monthly_report_recovery(db, hospital, 2026, 8) is None
+    assert dispatches == []
+    assert existing.state == OperationRunState.FAILED
+    assert existing.task_id == "should-not-change"
+
+
+def test_succeeded_complete_coverage_recovery_does_not_redispatch(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="성공완료의원")
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        state=OperationRunState.SUCCEEDED,
+        version=5,
+        task_id="done-task",
+        attempt_count=1,
+    )
+    report = SimpleNamespace(
+        quality="COMPLETE",
+        planned_count=8,
+        success_count=8,
+        failed_count=0,
+        excluded_count=0,
+    )
+    db = _coverage_recovery_db(existing)
+    dispatches = []
+    monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_a, **_k: report)
+    monkeypatch.setattr(
+        tasks.generate_monthly_report_for_hospital,
+        "apply_async",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+
+    assert tasks._dispatch_automatic_monthly_report_recovery(db, hospital, 2026, 8) is None
+    assert dispatches == []
+    assert existing.state == OperationRunState.SUCCEEDED
+    assert existing.task_id == "done-task"
+    assert existing.version == 5
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        OperationRunState.REQUESTED,
+        OperationRunState.QUEUED,
+        OperationRunState.RUNNING,
+    ],
+)
+def test_fresh_coverage_recovery_run_does_not_redispatch(monkeypatch, state):
+    now = datetime.now(UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="진행중의원")
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        state=state,
+        task_id="in-flight-task",
+        requested_at=now,
+        queued_at=now if state != OperationRunState.REQUESTED else None,
+        started_at=now if state == OperationRunState.RUNNING else None,
+        heartbeat_at=now if state == OperationRunState.RUNNING else None,
+        lease_owner="worker" if state == OperationRunState.RUNNING else None,
+        lease_expires_at=(
+            now + timedelta(minutes=5) if state == OperationRunState.RUNNING else None
+        ),
+    )
+    db = _coverage_recovery_db(existing)
+    monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tasks.generate_monthly_report_for_hospital,
+        "apply_async",
+        lambda **_kwargs: pytest.fail("fresh in-flight run was redispatched"),
+    )
+
+    run = tasks._dispatch_automatic_monthly_report_recovery(db, hospital, 2026, 8)
+
+    assert run is existing
+    assert existing.task_id == "in-flight-task"
+    assert db.commits == 0
 
 
 def test_task_success_without_complete_manifest_is_reconciled_to_partial():

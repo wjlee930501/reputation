@@ -3997,18 +3997,50 @@ def _complete_monthly_measurement_and_dispatch_report(
     return True
 
 
+def _monthly_report_quality_is_complete(report) -> bool:
+    return (
+        report is not None
+        and report.quality == "COMPLETE"
+        and report.planned_count > 0
+        and report.success_count == report.planned_count
+        and report.failed_count == 0
+        and report.excluded_count == 0
+    )
+
+
+def _coverage_recovery_run_is_stale(run: OperationRun, observed_at: datetime) -> bool:
+    """True when a non-terminal coverage-recovery run looks abandoned."""
+
+    if run.state not in (
+        OperationRunState.REQUESTED,
+        OperationRunState.QUEUED,
+        OperationRunState.RUNNING,
+    ):
+        return False
+    if run.state == OperationRunState.RUNNING and run.lease_expires_at is not None:
+        lease_expires_at = run.lease_expires_at
+        if lease_expires_at.tzinfo is None:
+            lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+        return lease_expires_at <= observed_at
+    if run.state == OperationRunState.RUNNING:
+        last_seen = run.heartbeat_at or run.started_at or run.queued_at or run.requested_at
+    elif run.state == OperationRunState.QUEUED:
+        last_seen = run.queued_at or run.requested_at
+    else:
+        last_seen = run.requested_at
+    if last_seen is None:
+        return True
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    return last_seen <= observed_at - timedelta(hours=1)
+
+
 def _dispatch_automatic_monthly_report_recovery(
     db, hospital: Hospital, year: int, month: int
 ) -> OperationRun | None:
     latest = _latest_monthly_report(db, hospital.id, year, month)
-    if (
-        latest is not None
-        and latest.quality == "COMPLETE"
-        and latest.planned_count > 0
-        and latest.success_count == latest.planned_count
-        and latest.failed_count == 0
-        and latest.excluded_count == 0
-    ):
+    report_complete = _monthly_report_quality_is_complete(latest)
+    if report_complete:
         return None
     idempotency_key = f"coverage-recovery:{hospital.id}:{year:04d}-{month:02d}"
     existing = db.execute(
@@ -4018,11 +4050,69 @@ def _dispatch_automatic_monthly_report_recovery(
             OperationRun.idempotency_key == idempotency_key,
         )
     ).scalar_one_or_none()
-    if existing is not None:
-        return existing
     hospital_id = str(hospital.id)
-    task_id = str(uuid.uuid4())
     task_args = (hospital_id, year, month, True, True)
+    dispatch_payload = operation_run_payloads.build_request_payload(
+        operation_run_payloads.DispatchPayload(
+            "hospital", hospital_id, "reports", task_args
+        )
+    )
+    observed_at = datetime.now(timezone.utc)
+
+    def _enqueue(run: OperationRun) -> OperationRun:
+        try:
+            generate_monthly_report_for_hospital.apply_async(
+                args=list(task_args),
+                queue="reports",
+                headers={
+                    **build_dispatch_headers("generate-monthly-report", hospital_id),
+                    "operation_run_id": str(run.id),
+                },
+                task_id=run.task_id,
+            )
+        except Exception:  # noqa: BLE001 - REQUESTED run is recovered by the workflow reconciler.
+            logger.exception(
+                "Automatic monthly report recovery dispatch failed; reconciler will retry",
+                extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
+            )
+            return run
+        _mark_weekly_sov_operation_queued(db, run.id, datetime.now(timezone.utc))
+        return run
+
+    def _rearm_existing(run: OperationRun) -> OperationRun:
+        # 같은 coverage-recovery 키를 재사용한다. FAILED/PARTIAL 이후 remasure가
+        # COMPLETE여도 리포트가 없으면 새 OperationRun을 만들지 않고 재무장한다.
+        run.state = OperationRunState.REQUESTED
+        run.task_id = str(uuid.uuid4())
+        run.requested_at = observed_at
+        run.queued_at = None
+        run.started_at = None
+        run.completed_at = None
+        run.heartbeat_at = None
+        run.lease_owner = None
+        run.lease_expires_at = None
+        run.total_count = 1
+        run.success_count = 0
+        run.failure_count = 0
+        run.skipped_count = 0
+        run.safe_error_code = None
+        run.safe_error_message = None
+        run.request_payload = dispatch_payload
+        run.result_summary = {"period_year": year, "period_month": month}
+        run.version += 1
+        db.commit()
+        return _enqueue(run)
+
+    if existing is not None:
+        if existing.state in (
+            OperationRunState.REQUESTED,
+            OperationRunState.QUEUED,
+            OperationRunState.RUNNING,
+        ) and not _coverage_recovery_run_is_stale(existing, observed_at):
+            return existing
+        return _rearm_existing(existing)
+
+    task_id = str(uuid.uuid4())
     run = OperationRun(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -4036,34 +4126,13 @@ def _dispatch_automatic_monthly_report_recovery(
         success_count=0,
         failure_count=0,
         skipped_count=0,
-        request_payload=operation_run_payloads.build_request_payload(
-            operation_run_payloads.DispatchPayload(
-                "hospital", hospital_id, "reports", task_args
-            )
-        ),
+        request_payload=dispatch_payload,
         result_summary={"period_year": year, "period_month": month},
         version=1,
     )
     db.add(run)
     db.commit()
-    try:
-        generate_monthly_report_for_hospital.apply_async(
-            args=list(task_args),
-            queue="reports",
-            headers={
-                **build_dispatch_headers("generate-monthly-report", hospital_id),
-                "operation_run_id": str(run.id),
-            },
-            task_id=task_id,
-        )
-    except Exception:  # noqa: BLE001 - REQUESTED run is recovered by the workflow reconciler.
-        logger.exception(
-            "Automatic monthly report recovery dispatch failed; reconciler will retry",
-            extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
-        )
-        return run
-    _mark_weekly_sov_operation_queued(db, run.id, datetime.now(timezone.utc))
-    return run
+    return _enqueue(run)
 
 
 def _sov_operation_error_message(error_code: str) -> str:
