@@ -48,7 +48,8 @@ terraform/.terraform/
 
 # Artifacts
 artifacts/
-reports/
+# Root-only: do NOT use bare reports/ — that also drops admin/app/hospitals/[id]/reports
+/reports/
 tmp/
 celerybeat-schedule
 .deploy-rollback
