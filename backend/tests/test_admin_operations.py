@@ -182,6 +182,44 @@ async def test_run_sov_operation_queues_task_after_audit_commit(monkeypatch):
     assert audit_rows[0].actor == "AE-test"
 
 
+async def test_run_sov_operation_dispatches_prior_month_in_monthly_mode(monkeypatch):
+    hospital = _hospital(
+        status=HospitalStatus.ACTIVE,
+        monthly_sov_cohort=True,
+    )
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc)
+            return value.astimezone(tz) if tz is not None else value.replace(tzinfo=None)
+
+    async def active_variant(_db, _hospital_id):
+        return True
+
+    monkeypatch.setattr(operations_api, "datetime", _FixedDateTime)
+    monkeypatch.setattr(operations_api, "_has_active_query_variant", active_variant)
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", task.apply_async)
+
+    response = await operations_api.run_sov_operation(
+        hospital.id,
+        measurement_mode="monthly",
+        db=db,
+        idempotency_key="monthly-remeasure-click",
+    )
+
+    assert task.calls == [
+        {"args": [str(hospital.id), "monthly", 2026, 8], "queue": "sov"}
+    ]
+    run = next(row for row in db.added if isinstance(row, OperationRun))
+    assert run.idempotency_key.startswith(
+        f"monthly-sov-remasure:{hospital.id}:2026-08:"
+    )
+    assert response["detail"] == "2026년 8월 월간 AI 언급률 재측정이 큐에 등록되었습니다."
+
+
 async def test_queue_failure_never_records_queued_true(monkeypatch):
     hospital = _hospital(status=HospitalStatus.ACTIVE)
     db = FakeDB(hospital=hospital)

@@ -197,6 +197,11 @@ class Hospital(Base):
     site_built: Mapped[bool] = mapped_column(Boolean, default=False)
     site_live: Mapped[bool] = mapped_column(Boolean, default=False)
     schedule_set: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Stable month-end measurement membership. Hospital names are mutable and
+    # therefore cannot be the source of truth for the reporting cohort.
+    monthly_sov_cohort: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
 
     # ── 타임스탬프 ───────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

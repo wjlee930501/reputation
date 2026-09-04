@@ -75,6 +75,20 @@ def test_classified_generation_run_suppresses_generic_failure_slack(monkeypatch)
     assert task_incident_control.record_task_failure(task, "worker-task") is False
 
 
+def test_runtime_batch_header_supplies_failure_correlation() -> None:
+    run_id = uuid.uuid4()
+    task = SimpleNamespace(
+        request=SimpleNamespace(
+            headers={"reputation_dispatch_operation_run_id": str(run_id)}
+        )
+    )
+
+    assert task_incident_control._run_identity(task, " monthly-batch-task ") == (
+        run_id,
+        "monthly-batch-task",
+    )
+
+
 @pytest.mark.asyncio
 async def test_exact_run_failure_opens_then_same_run_success_recovers(
     signal_store,

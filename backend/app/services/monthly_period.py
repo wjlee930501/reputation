@@ -18,6 +18,7 @@ from app.models.report import MonthlyReport
 KST = ZoneInfo("Asia/Seoul")
 AUGUST_2026_CONVERSION_START_DAY = 24
 AUGUST_2026_CONVERSION_END_DAY = 31
+MONTHLY_RECOVERY_END_DAY = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +110,19 @@ def scheduled_report_period(now: datetime) -> MonthlyPeriod:
     if is_august_2026_conversion_window(now):
         return reporting_period(2026, 8)
     return prior_month_to_close(now)
+
+
+def is_monthly_recovery_window(now: datetime, year: int, month: int) -> bool:
+    """Return whether prior-month failed cells may be retried on days 1..7 KST."""
+
+    observed_at = _as_kst(now)
+    if not 1 <= observed_at.day <= MONTHLY_RECOVERY_END_DAY:
+        return False
+    try:
+        prior = prior_month_to_close(observed_at)
+    except MonthlyPeriodError:
+        return False
+    return (prior.year, prior.month) == (year, month)
 
 
 def require_closed_period(year: int, month: int, *, now: datetime) -> MonthlyPeriod:

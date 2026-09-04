@@ -47,6 +47,7 @@ TASK_PURPOSES = {
     "app.workers.tasks.run_monthly_sov_measurement": "monthly-sov-measurement",
     "app.workers.tasks.adjust_query_priorities": "adjust-query-priorities",
     "app.workers.tasks.run_monthly_reports": "monthly-reports",
+    "app.workers.tasks.summarize_monthly_report_gaps": "monthly-report-gap-summary",
     "app.workers.tasks.retry_site_revalidation": "retry-site-revalidation",
     "app.workers.tasks.monitor_live_custom_domains": "live-custom-domain-health",
     "app.workers.tasks.purge_expired_leads": "purge-expired-leads",

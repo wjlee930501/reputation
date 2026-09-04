@@ -165,7 +165,9 @@ def _run_identity(
     headers = getattr(task.request, "headers", None)
     if not isinstance(headers, dict):
         return None
-    raw = headers.get("operation_run_id")
+    raw = headers.get("operation_run_id") or headers.get(
+        "reputation_dispatch_operation_run_id"
+    )
     if not isinstance(raw, str):
         return None
     try:

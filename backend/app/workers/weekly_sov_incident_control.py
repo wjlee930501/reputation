@@ -295,6 +295,7 @@ def _safe_message(error_code: str) -> str:
             "UNRESOLVED_MANIFEST_STATE": "이번 달 측정에 완료·제외·재측정 대상으로 분류되지 않은 항목이 남아 있습니다.",
             "MEASUREMENT_POLICY_DRIFT": "동결한 측정 기준과 현재 실행 기준이 달라 외부 AI 측정 호출을 시작하지 않았습니다.",
             "MEASUREMENT_PARTIAL": "일부 AI 검색 서비스 측정이 실패해 이번 달 측정이 부분 완료 상태입니다.",
+            "MEASUREMENT_INCOMPLETE": "필수 측정 일부가 완료되지 않아 이번 달 리포트를 만들 수 없습니다.",
         }
         return monthly_messages.get(suffix, "이번 달 AI 검색 노출 측정이 완료되지 않았습니다.")
     match error_code:

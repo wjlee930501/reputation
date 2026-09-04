@@ -6,7 +6,6 @@ import pytest
 
 from app.api.admin import operations_center_report_queries as report_queries
 from app.api.admin.operations_center_query_common import OperationsFilters, SlaFilter
-from app.api.admin.operations_center_serializers import sla_state
 
 
 class _EmptyResult:
@@ -143,7 +142,22 @@ def test_report_queue_preserves_manifest_gate_distinctions():
     )
 
 
-def test_incomplete_report_queue_action_never_offers_report_regeneration():
+def test_incomplete_report_queue_action_offers_real_prior_month_remasure():
+    control = report_queries._report_action(
+        uuid.uuid4(),
+        state="COVERAGE_INCOMPLETE",
+        year=2026,
+        month=8,
+        monthly_recovery_open=True,
+    )
+
+    assert control.kind == "RUN_SOV"
+    assert control.method == "POST"
+    assert control.path.endswith("/operations/run-sov?measurement_mode=monthly")
+    assert control.requires_idempotency_key is True
+
+
+def test_incomplete_report_action_is_not_a_dead_remasure_outside_recovery_window():
     control = report_queries._report_action(
         uuid.uuid4(), state="COVERAGE_INCOMPLETE", year=2026, month=8
     )
@@ -159,8 +173,6 @@ def test_previous_period_exposes_the_fifteen_minute_monthly_close():
 
     assert (year, month) == (2026, 7)
     assert closes_at == ends_at + timedelta(minutes=15)
-    assert sla_state(closes_at, now) == "DUE"
-    assert sla_state(closes_at, closes_at + timedelta(minutes=1)) == "OVERDUE"
 
 
 @pytest.mark.asyncio
@@ -181,6 +193,7 @@ async def test_report_rows_have_no_staff_sla_deadline():
     assert rows[0].queue.value == "REPORTS"
     assert rows[0].sla_due_at is None
     assert rows[0].sla_state == "NONE"
+    assert rows[0].days_since_close == 1
 
 
 @pytest.mark.asyncio

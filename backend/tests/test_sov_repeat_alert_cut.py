@@ -17,7 +17,6 @@ from app.services.monthly_period import (
     is_august_2026_conversion_window,
     scheduled_report_period,
 )
-from app.services.sov_tracking_set import CONVERSION_HOSPITAL_NAME_TOKENS
 from app.workers import task_incident_control, tasks, weekly_sov_incident_control
 from app.workers.tasks import ManifestError
 
@@ -313,7 +312,7 @@ def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
     assert enqueued == []
 
 
-# ── 3. 6-hour beat rearms only retryable monthly operation runs ───────────────
+# ── 3. bounded windows rearm failed monthly cells ─────────────────────────────
 
 
 def _failed_monthly_run(*, code: str, state=OperationRunState.FAILED):
@@ -364,14 +363,41 @@ def test_partial_monthly_run_rearms_for_failed_cell_retry():
 
 @pytest.mark.parametrize(
     "code",
-    [
-        "MONTHLY_SOV_NO_MEASUREMENT_MANIFEST",
-        "MONTHLY_SOV_MEASUREMENT_POLICY_DRIFT",
-        "MONTHLY_SOV_MEASUREMENT_PARTIAL",
-    ],
+    ["MONTHLY_SOV_MEASUREMENT_POLICY_DRIFT", "MONTHLY_SOV_MEASUREMENT_PARTIAL"],
 )
-def test_non_retryable_failed_monthly_run_stays_closed(code):
+def test_non_cost_failed_monthly_run_rearms_failed_cells_in_month_end_window(code):
     existing = _failed_monthly_run(code=code)
+    manifest = SimpleNamespace(cells=[SimpleNamespace(state="FAILED")])
+
+    class _DB:
+        commits = 0
+
+        def __init__(self):
+            self.results = iter((existing, manifest))
+
+        def execute(self, _stmt):
+            value = next(self.results)
+            return SimpleNamespace(scalar_one_or_none=lambda: value)
+
+        def commit(self):
+            self.commits += 1
+
+    db = _DB()
+    run = tasks._ensure_monthly_sov_operation_run(
+        db,
+        SimpleNamespace(id=uuid.uuid4()),
+        "2026-08",
+        datetime(2026, 8, 28, tzinfo=UTC),
+    )
+
+    assert run is existing
+    assert existing.state == OperationRunState.REQUESTED
+    assert existing.version == 4
+    assert db.commits == 1
+
+
+def test_non_cost_failed_monthly_run_stays_closed_outside_bounded_windows():
+    existing = _failed_monthly_run(code="MONTHLY_SOV_MEASUREMENT_PARTIAL")
 
     class _DB:
         commits = 0
@@ -384,13 +410,30 @@ def test_non_retryable_failed_monthly_run_stays_closed(code):
 
     db = _DB()
     run = tasks._ensure_monthly_sov_operation_run(
-        db, SimpleNamespace(id=uuid.uuid4()), "2026-08", datetime.now(UTC)
+        db,
+        SimpleNamespace(id=uuid.uuid4()),
+        "2026-08",
+        datetime(2026, 9, 8, tzinfo=UTC),
     )
 
     assert run is None
     assert existing.state == OperationRunState.FAILED
-    assert existing.version == 3
     assert db.commits == 0
+
+
+def test_monthly_task_resolves_prior_period_only_after_close_cutoff():
+    before = tasks.arrow.get(2026, 9, 1, 0, 14, 59, tzinfo="Asia/Seoul")
+    at_cutoff = tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul")
+
+    assert (
+        tasks._resolve_monthly_measurement_period(
+            before.date(), 2026, 8, observed_at=before.datetime
+        )
+        is None
+    )
+    assert tasks._resolve_monthly_measurement_period(
+        at_cutoff.date(), 2026, 8, observed_at=at_cutoff.datetime
+    ) == (2026, 8)
 
 
 def test_cost_guard_failed_run_does_not_rearm_when_budget_insufficient(monkeypatch):
@@ -790,6 +833,7 @@ def _patch_monthly_report_batch(monkeypatch, hospitals, *, now, succeeded_ids=No
     monkeypatch.setattr(
         tasks, "_start_scheduled_monthly_operation_run", lambda *_args: (run_id, False)
     )
+    monkeypatch.setattr(tasks, "_latest_monthly_report_operation_run", lambda *_args: None)
     monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_args: None)
 
     def _build(_db, observed_hospital, anchor, **_kwargs):
@@ -798,6 +842,8 @@ def _patch_monthly_report_batch(monkeypatch, hospitals, *, now, succeeded_ids=No
 
     monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", _build)
     monkeypatch.setattr(tasks, "_finish_monthly_operation_run", lambda *_args: None)
+    monkeypatch.setattr(tasks, "_dispatch_monthly_sov_catchup", lambda *_args: None)
+    monkeypatch.setattr(tasks, "_record_weekly_sov_failure", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         tasks.arrow,
         "now",
@@ -814,12 +860,25 @@ def test_sep1_close_is_august_and_conversion_window_is_off():
 
 
 def test_sep1_does_not_build_august_report_without_monthly_success(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="행복드림의원")
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="행복드림의원", monthly_sov_cohort=True)
     built = _patch_monthly_report_batch(
         monkeypatch,
         [hospital],
         now=tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
         succeeded_ids=set(),
+    )
+
+    catchups = []
+    incidents = []
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_monthly_sov_catchup",
+        lambda *_args: catchups.append(True) or uuid.uuid4(),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_record_weekly_sov_failure",
+        lambda *args, **kwargs: incidents.append((args, kwargs)),
     )
 
     result = tasks.run_monthly_reports.run()
@@ -831,10 +890,14 @@ def test_sep1_does_not_build_august_report_without_monthly_success(monkeypatch):
         "success_count": 0,
         "failure_count": 1,
     }
+    assert catchups == [True]
+    assert len(incidents) == 1
+    assert incidents[0][0][2] == "MONTHLY_SOV_MEASUREMENT_INCOMPLETE"
+    assert incidents[0][1]["measurement_mode"] == "monthly"
 
 
 def test_sep1_succeeded_converted_hospital_can_build_august_report(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="장편한외과")
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="장편한외과", monthly_sov_cohort=True)
     built = _patch_monthly_report_batch(
         monkeypatch,
         [hospital],
@@ -846,6 +909,65 @@ def test_sep1_succeeded_converted_hospital_can_build_august_report(monkeypatch):
 
     assert built == [(hospital.id, 2026, 8)]
     assert result["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize(
+    ("run_state", "expected_status"),
+    [
+        (OperationRunState.SUCCEEDED, "SUCCEEDED"),
+        (OperationRunState.PARTIAL, "PARTIAL"),
+    ],
+)
+def test_daily_close_does_not_duplicate_terminal_report_run(
+    monkeypatch, run_state, expected_status
+):
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="자동복구의원", monthly_sov_cohort=True
+    )
+    built = _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 9, 2, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids={hospital.id},
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_latest_monthly_report_operation_run",
+        lambda *_args: SimpleNamespace(state=run_state),
+    )
+
+    result = tasks.run_monthly_reports.run()
+
+    assert built == []
+    assert result["status"] == expected_status
+    assert result["success_count"] == (
+        1 if run_state == OperationRunState.SUCCEEDED else 0
+    )
+
+
+def test_latest_report_run_resolution_uses_the_requested_period():
+    hospital_id = uuid.uuid4()
+    other = SimpleNamespace(
+        result_summary={"period_year": 2026, "period_month": 7},
+        request_payload={},
+        idempotency_key=f"scheduled:{hospital_id}:2026-07",
+    )
+    requested = SimpleNamespace(
+        result_summary={"period_year": 2026, "period_month": 8},
+        request_payload={},
+        idempotency_key=f"coverage-recovery:{hospital_id}:2026-08",
+    )
+
+    class _DB:
+        def execute(self, _statement):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: [other, requested])
+            )
+
+    assert (
+        tasks._latest_monthly_report_operation_run(_DB(), hospital_id, 2026, 8)
+        is requested
+    )
 
 
 def test_task_success_without_complete_manifest_is_reconciled_to_partial():
@@ -877,6 +999,12 @@ def test_task_success_without_complete_manifest_is_reconciled_to_partial():
         def scalar_one_or_none(self):
             return self.value
 
+        def scalars(self):
+            return self
+
+        def first(self):
+            return self.value
+
     class _DB:
         def __init__(self):
             self.results = iter((run, manifest))
@@ -891,7 +1019,7 @@ def test_task_success_without_complete_manifest_is_reconciled_to_partial():
     db = _DB()
 
     assert not tasks._monthly_sov_measurement_succeeded(db, hospital_id, "2026-08")
-    assert manifest.closed_at is not None
+    assert manifest.closed_at is None
     assert run.state == OperationRunState.PARTIAL
     assert run.safe_error_code == "MONTHLY_MEASUREMENT_INCOMPLETE"
     assert run.result_summary == {
@@ -900,7 +1028,7 @@ def test_task_success_without_complete_manifest_is_reconciled_to_partial():
         "planned_count": 210,
         "success_count": 0,
         "failed_count": 210,
-        "manifest_closed": True,
+        "manifest_closed": False,
     }
 
 
@@ -922,6 +1050,12 @@ def test_task_success_with_closed_complete_manifest_can_build_report():
             self.value = value
 
         def scalar_one_or_none(self):
+            return self.value
+
+        def scalars(self):
+            return self
+
+        def first(self):
             return self.value
 
     class _DB:
@@ -992,6 +1126,7 @@ def test_scheduled_batch_does_not_rebuild_existing_degraded_report(monkeypatch):
     monkeypatch.setattr(
         tasks, "_start_scheduled_monthly_operation_run", lambda *_args: (run_id, False)
     )
+    monkeypatch.setattr(tasks, "_latest_monthly_report_operation_run", lambda *_args: None)
     monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_args: degraded)
     monkeypatch.setattr(
         tasks,
@@ -1045,7 +1180,7 @@ def test_sep1_does_not_overwrite_july_when_building_august(monkeypatch):
 def test_sep1_conversion_window_off_does_not_unbind_success_gate(monkeypatch):
     now = tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul").datetime
     assert is_august_2026_conversion_window(now) is False
-    failed = SimpleNamespace(id=uuid.uuid4(), name="강심장내과")
+    failed = SimpleNamespace(id=uuid.uuid4(), name="강심장내과", monthly_sov_cohort=True)
     built = _patch_monthly_report_batch(
         monkeypatch,
         [failed],
@@ -1062,8 +1197,9 @@ def test_sep1_conversion_window_off_does_not_unbind_success_gate(monkeypatch):
 
 
 def test_sep1_non_converted_hospital_without_monthly_run_still_builds(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="주간측정외과")
-    assert not any(token in hospital.name for token in CONVERSION_HOSPITAL_NAME_TOKENS)
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="주간측정외과", monthly_sov_cohort=False
+    )
     built = _patch_monthly_report_batch(
         monkeypatch,
         [hospital],
@@ -1078,14 +1214,35 @@ def test_sep1_non_converted_hospital_without_monthly_run_still_builds(monkeypatc
 
 
 def test_generate_monthly_report_skips_converted_hospital_without_success(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="마포성모탑의원")
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        state=OperationRunState.RUNNING,
+        completed_at=None,
+        heartbeat_at=datetime.now(UTC),
+        lease_owner="worker-task",
+        lease_expires_at=datetime.now(UTC),
+        total_count=0,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        safe_error_code=None,
+        safe_error_message=None,
+        result_summary=None,
+        version=2,
+    )
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="마포성모탑의원", monthly_sov_cohort=True
+    )
 
     class _DB:
-        def get(self, _model, _id):
-            return hospital
+        def get(self, _model, item_id):
+            return run if item_id == run_id else hospital
 
         def execute(self, _stmt):
             return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+        def commit(self):
+            return None
 
         def __enter__(self):
             return self
@@ -1108,13 +1265,188 @@ def test_generate_monthly_report_skips_converted_hospital_without_success(monkey
         lambda *_args, **_kwargs: tasks.arrow.get(2026, 9, 1, 0, 15, tzinfo="Asia/Seoul"),
     )
 
+    def _mark(_db, _run_id, _hospital_id, _year, _month):
+        assert _run_id is None
+        assert _hospital_id == hospital.id
+        run.state = OperationRunState.PARTIAL
+        run.safe_error_code = "MONTHLY_MEASUREMENT_INCOMPLETE"
+
+    monkeypatch.setattr(tasks, "_mark_monthly_report_measurement_incomplete", _mark)
     result = tasks.generate_monthly_report_for_hospital.run(str(hospital.id))
 
     assert result == {
+        "skipped": True,
         "status": "measurement_not_succeeded",
+        "message": "필수 측정이 완료되지 않아 리포트를 만들지 않았습니다.",
         "year": 2026,
         "month": 8,
     }
+    assert run.state == OperationRunState.PARTIAL
+    assert run.safe_error_code == "MONTHLY_MEASUREMENT_INCOMPLETE"
+
+
+def test_measurement_not_succeeded_terminalizer_sets_partial_run_state():
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        state=OperationRunState.RUNNING,
+        completed_at=None,
+        heartbeat_at=datetime.now(UTC),
+        lease_owner="worker",
+        lease_expires_at=datetime.now(UTC),
+        total_count=0,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        safe_error_code=None,
+        safe_error_message=None,
+        result_summary=None,
+        version=2,
+    )
+
+    class _DB:
+        def get(self, _model, item_id):
+            return run if item_id == run_id else None
+
+        def commit(self):
+            return None
+
+    tasks._mark_monthly_report_measurement_incomplete(
+        _DB(), run_id, uuid.uuid4(), 2026, 8
+    )
+
+    assert run.state == OperationRunState.PARTIAL
+    assert run.failure_count == 1
+    assert run.safe_error_code == "MONTHLY_MEASUREMENT_INCOMPLETE"
+
+
+def test_complete_monthly_remeasurement_closes_and_dispatches_report(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="자동복구의원")
+    manifest = SimpleNamespace(
+        cells=[],
+        configured_platforms=["chatgpt"],
+        closes_at=datetime(2026, 9, 1, tzinfo=UTC),
+        closed_at=None,
+    )
+    commits = []
+    dispatched = []
+    db = SimpleNamespace(commit=lambda: commits.append(True))
+    task = SimpleNamespace(request=SimpleNamespace(headers={}))
+    monkeypatch.setattr(
+        tasks,
+        "summarize_manifest",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            quality="COMPLETE",
+            planned_count=1,
+            success_count=1,
+            failed_count=0,
+            excluded_count=0,
+        ),
+    )
+    monkeypatch.setattr(tasks, "is_monthly_recovery_window", lambda *_args: True)
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_automatic_monthly_report_recovery",
+        lambda *args: dispatched.append(args),
+    )
+
+    assert tasks._complete_monthly_measurement_and_dispatch_report(
+        db, task, hospital, manifest, 2026, 8
+    )
+    assert manifest.closed_at is not None
+    assert commits == [True]
+    assert dispatched == [(db, hospital, 2026, 8)]
+
+
+def test_excluded_monthly_remeasurement_stays_open_and_does_not_dispatch(
+    monkeypatch,
+):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="미완료의원")
+    manifest = SimpleNamespace(
+        cells=[], configured_platforms=["chatgpt"], closed_at=None
+    )
+    incidents = []
+    finished = []
+    monkeypatch.setattr(
+        tasks,
+        "summarize_manifest",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            quality="COMPLETE",
+            planned_count=1,
+            success_count=1,
+            failed_count=0,
+            excluded_count=1,
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_record_weekly_sov_failure",
+        lambda *args, **kwargs: incidents.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_finish_sov_operation_run",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_automatic_monthly_report_recovery",
+        lambda *_args: pytest.fail("incomplete measurement dispatched a report"),
+    )
+
+    assert not tasks._complete_monthly_measurement_and_dispatch_report(
+        SimpleNamespace(),
+        SimpleNamespace(request=SimpleNamespace(headers={})),
+        hospital,
+        manifest,
+        2026,
+        8,
+    )
+    assert manifest.closed_at is None
+    assert incidents[0][0][2] == "MONTHLY_SOV_MEASUREMENT_INCOMPLETE"
+    assert finished[0][0][2] == OperationRunState.PARTIAL
+
+
+def test_monthly_report_batch_run_attaches_failure_correlation_header():
+    added = []
+
+    class _DB:
+        def execute(self, _stmt):
+            return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+        def add(self, value):
+            added.append(value)
+
+        def get(self, _model, item_id):
+            return next((row for row in added if row.id == item_id), None)
+
+        def commit(self):
+            return None
+
+    task = SimpleNamespace(
+        request=SimpleNamespace(id="monthly-batch-task", headers={})
+    )
+    period = SimpleNamespace(year=2026, month=8)
+    db = _DB()
+
+    run_id = tasks._start_monthly_report_batch_run(db, task, period)
+
+    assert run_id == added[0].id
+    assert added[0].task_id == "monthly-batch-task"
+    assert task.request.headers["reputation_dispatch_operation_run_id"] == str(run_id)
+    assert "operation_run_id" not in task.request.headers
+    tasks._finish_monthly_report_batch_run(
+        db,
+        run_id,
+        {
+            "status": "FAILED",
+            "total_count": 1,
+            "success_count": 0,
+            "failure_count": 1,
+        },
+        hard_failure=True,
+    )
+    assert added[0].state == OperationRunState.FAILED
+    assert added[0].safe_error_code == "MONTHLY_REPORT_BATCH_FAILED"
 
 
 def test_monthly_measurement_beat_stays_day_24_to_31_and_skips_sep1(monkeypatch):

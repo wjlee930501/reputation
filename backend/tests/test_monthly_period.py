@@ -11,6 +11,7 @@ from app.services.monthly_manifest import _month_close
 from app.services.monthly_period import (
     MonthlyPeriodError,
     ReportBuildReason,
+    is_monthly_recovery_window,
     plan_report_version,
     prior_month_to_close,
     reporting_period,
@@ -29,12 +30,12 @@ def test_pin_manifest_close_is_first_day_at_0015_kst() -> None:
     assert _month_close(2028, 2) == datetime(2028, 3, 1, 0, 15, tzinfo=KST)
 
 
-def test_monthly_close_runs_once_on_the_first_day_kst() -> None:
+def test_monthly_close_keeps_day_one_first_tick_and_catches_up_through_day_seven() -> None:
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
 
     assert schedule.minute == {15}
     assert schedule.hour == {0}
-    assert schedule.day_of_month == {1}
+    assert schedule.day_of_month == set(range(1, 8))
 
 
 def test_reporting_period_handles_leap_year_and_year_boundary() -> None:
@@ -55,6 +56,21 @@ def test_prior_month_closes_only_at_or_after_0015_kst() -> None:
     assert (august_cutoff.year, august_cutoff.month) == (2026, 7)
     with pytest.raises(MonthlyPeriodError, match="00시 15분 이후"):
         prior_month_to_close(datetime(2026, 9, 1, 0, 14, 59, tzinfo=KST))
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        (datetime(2026, 9, 1, 0, 14, 59, tzinfo=KST), False),
+        (datetime(2026, 9, 1, 0, 15, tzinfo=KST), True),
+        (datetime(2026, 9, 7, 23, 59, tzinfo=KST), True),
+        (datetime(2026, 9, 8, 0, 0, tzinfo=KST), False),
+    ],
+)
+def test_monthly_recovery_window_is_bounded_from_close_through_day_seven(
+    now: datetime, expected: bool
+) -> None:
+    assert is_monthly_recovery_window(now, 2026, 8) is expected
 
 
 def test_manual_period_rejects_current_and_future_with_next_action() -> None:
