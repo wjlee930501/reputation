@@ -73,14 +73,20 @@ def validate_doctor_pdf(
     extracted_text = page.extract_text() or ""
     normalized_text = _normalize_text(extracted_text)
     required = (
-        expectation.hospital_name,
-        expectation.coverage_text,
-        expectation.caveat_text,
+        ("hospital_name", expectation.hospital_name),
+        ("coverage_text", expectation.coverage_text),
+        ("caveat_text", expectation.caveat_text),
     )
-    if not all(_normalize_text(text) in normalized_text for text in required):
+    missing_fields = [
+        field_name
+        for field_name, text in required
+        if _normalize_text(text) not in normalized_text
+    ]
+    if missing_fields:
         raise DoctorPdfValidationError(
             "DOCTOR_PDF_REQUIRED_TEXT_MISSING",
-            "원장 전달용 PDF에서 병원명, 측정 범위 또는 주의 문구를 확인하지 못했습니다.",
+            "원장 전달용 PDF에서 필수 문구를 확인하지 못했습니다: "
+            f"{', '.join(missing_fields)}.",
         )
 
     glyph_count = sum("가" <= character <= "힣" for character in extracted_text)
@@ -128,7 +134,8 @@ def validate_doctor_pdf(
 
 
 def _normalize_text(value: str) -> str:
-    return " ".join(value.split())
+    # PDF extraction may insert whitespace inside a word at a visual line wrap.
+    return "".join(value.split())
 
 
 def _pretendard_font_facts(page: DictionaryObject) -> tuple[bool, bool]:
