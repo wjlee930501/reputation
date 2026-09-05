@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from pypdf import PdfWriter
 
+from app.services import report_artifact_validation
 from app.services.report_artifact_validation import (
     DOCTOR_ARTIFACT_VALIDATION_VERSION,
     DoctorPdfExpectation,
@@ -37,6 +38,63 @@ def _expectation(*, appendix_expected: bool = False) -> DoctorPdfExpectation:
         public_url="https://reputation.motionlabs.kr/jangpyeonhan",
         appendix_expected=appendix_expected,
     )
+
+
+def _stub_valid_pdf(monkeypatch: pytest.MonkeyPatch, extracted_text: str) -> None:
+    page = SimpleNamespace(
+        mediabox=SimpleNamespace(width=595.28, height=841.89),
+        extract_text=lambda: extracted_text,
+    )
+    monkeypatch.setattr(
+        report_artifact_validation,
+        "PdfReader",
+        lambda *_args, **_kwargs: SimpleNamespace(pages=[page]),
+    )
+    monkeypatch.setattr(
+        report_artifact_validation,
+        "_pretendard_font_facts",
+        lambda _page: (True, True),
+    )
+    monkeypatch.setattr(
+        report_artifact_validation,
+        "_uri_links",
+        lambda _page: (_expectation().public_url,),
+    )
+
+
+def test_required_text_allows_whitespace_inserted_mid_word_by_pdf_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expectation = _expectation()
+    extracted_text = "\n".join(
+        (
+            expectation.hospital_name,
+            expectation.coverage_text.replace("제미나이", "제미 나이"),
+            expectation.caveat_text,
+        )
+    )
+    # Collapsing whitespace still leaves the extractor-inserted space inside the word.
+    assert " ".join(expectation.coverage_text.split()) not in " ".join(extracted_text.split())
+    _stub_valid_pdf(monkeypatch, extracted_text)
+
+    metadata = validate_doctor_pdf(b"simulated-pdf", expectation)
+
+    assert metadata.required_text_present is True
+
+
+def test_required_text_names_every_field_that_is_truly_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expectation = _expectation()
+    _stub_valid_pdf(monkeypatch, expectation.hospital_name)
+
+    with pytest.raises(DoctorPdfValidationError) as exc:
+        validate_doctor_pdf(b"simulated-pdf", expectation)
+
+    assert exc.value.code == "DOCTOR_PDF_REQUIRED_TEXT_MISSING"
+    assert "coverage_text" in exc.value.problem
+    assert "caveat_text" in exc.value.problem
+    assert "hospital_name" not in exc.value.problem
 
 
 def test_validator_rejects_a_two_page_artifact_when_no_appendix_was_rendered() -> None:
