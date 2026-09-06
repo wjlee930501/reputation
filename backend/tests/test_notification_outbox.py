@@ -19,6 +19,7 @@ from app.models.operations import (
     NotificationOutbox,
     NotificationOutboxState,
 )
+from app.services import notification_delivery
 from app.services.incident_types import (
     SLACK_DEVELOPER_CHANNEL,
     IncidentAudience,
@@ -156,13 +157,13 @@ def test_unregistered_incident_types_stay_on_the_operator_channel(incident_type:
     assert intent.channel == "SLACK"
 
 
-def test_developer_rows_fall_back_to_the_operator_webhook_until_one_is_configured() -> None:
+def test_developer_rows_never_fall_back_to_the_operator_webhook() -> None:
     # Given: one developer-channel row and one ordinary operator row
     developer = _claimed("SLACK_DEV")
     operator = _claimed("SLACK")
 
-    # When / Then: an unset developer webhook changes nothing about delivery
-    assert _webhook_for(developer, "https://ops.example.test", "") == "https://ops.example.test"
+    # When / Then: an unset developer webhook cannot cross the audience boundary
+    assert _webhook_for(developer, "https://ops.example.test", "") is None
     assert (
         _webhook_for(developer, "https://ops.example.test", "https://dev.example.test")
         == "https://dev.example.test"
@@ -171,6 +172,110 @@ def test_developer_rows_fall_back_to_the_operator_webhook_until_one_is_configure
         _webhook_for(operator, "https://ops.example.test", "https://dev.example.test")
         == "https://ops.example.test"
     )
+
+
+@pytest.mark.asyncio
+async def test_missing_developer_webhook_holds_without_http_attempt(
+    monkeypatch, caplog
+) -> None:
+    row = _claimed(SLACK_DEVELOPER_CHANNEL)
+    decisions = []
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def recover(*_args, **_kwargs):
+        return 0
+
+    async def claim(*_args, **_kwargs):
+        return (row,)
+
+    async def finalize(_db, claimed, decision, _now):
+        decisions.append((claimed, decision))
+        return True
+
+    monkeypatch.setattr(notification_delivery, "recover_stale_sending", recover)
+    monkeypatch.setattr(notification_delivery, "claim_notification_batch", claim)
+    monkeypatch.setattr(notification_delivery, "_finalize", finalize)
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text="ok")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await dispatch_notification_batch(
+            FakeSession,
+            client,
+            webhook_url="https://hooks.slack.com/services/OPERATOR/ONLY/X",
+            developer_webhook_url="",
+            worker_id="worker-dev-webhook-missing",
+            now=_NOW,
+        )
+
+    assert (result.claimed, result.held, result.sent) == (1, 1, 0)
+    assert requests == []
+    assert "Developer Slack webhook missing" in caplog.text
+    assert len(decisions) == 1
+    claimed, decision = decisions[0]
+    assert claimed is row
+    assert decision.state == NotificationOutboxState.HOLD
+    assert decision.code == "DEV_WEBHOOK_MISSING"
+    assert decision.attempted is False
+
+
+@pytest.mark.asyncio
+async def test_configured_developer_webhook_uses_only_developer_url(monkeypatch) -> None:
+    row = _claimed(SLACK_DEVELOPER_CHANNEL)
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def recover(*_args, **_kwargs):
+        return 0
+
+    async def claim(*_args, **_kwargs):
+        return (row,)
+
+    async def finalize(*_args, **_kwargs):
+        return True
+
+    async def success_hook(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(notification_delivery, "recover_stale_sending", recover)
+    monkeypatch.setattr(notification_delivery, "claim_notification_batch", claim)
+    monkeypatch.setattr(notification_delivery, "_finalize", finalize)
+    monkeypatch.setattr(notification_delivery, "run_notification_success_hook", success_hook)
+
+    requested_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        return httpx.Response(200, text="ok")
+
+    developer_url = "https://hooks.slack.com/services/DEVELOPER/ONLY/X"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await dispatch_notification_batch(
+            FakeSession,
+            client,
+            webhook_url="https://hooks.slack.com/services/OPERATOR/ONLY/X",
+            developer_webhook_url=developer_url,
+            worker_id="worker-dev-webhook-configured",
+            now=_NOW,
+        )
+
+    assert (result.sent, result.held) == (1, 0)
+    assert requested_urls == [developer_url]
 
 
 def _claimed(channel: str) -> ClaimedNotification:
