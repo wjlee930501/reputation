@@ -1392,6 +1392,7 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
     assert len(digests) == 1
     assert digests[0].notification_type == "GENERATION_BLOCKED_DIGEST"
     assert "게이트확인의원" in str(digests[0].payload)
+    assert "제목 없는 콘텐츠" in str(digests[0].payload)
 
 
 @pytest.mark.parametrize(
@@ -1399,6 +1400,7 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
     [
         ("MISSING_APPROVED_ESSENCE", "승인된 콘텐츠 운영 기준이 없어"),
         ("COST_BLOCKED", "오늘 설정된 사용 한도에 도달해"),
+        ("GENERATION_REJECTED", "가격·지역·검색 구조 자동 검수 게이트가"),
     ],
 )
 def test_seven_forty_five_digest_surfaces_stored_generation_cause_once(
@@ -1475,6 +1477,9 @@ def test_seven_forty_five_digest_surfaces_stored_generation_cause_once(
     digests = [row for row in db.added if isinstance(row, NotificationOutbox)]
     assert len(digests) == 1
     assert visible_cause in str(digests[0].payload)
+    if stored_code == "GENERATION_REJECTED":
+        assert "생성 검수 게이트 거절" in str(digests[0].payload)
+        assert "제목 없는 콘텐츠" not in str(digests[0].payload)
 
 
 def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatch):
@@ -3131,6 +3136,27 @@ def test_auto_publish_records_content_block_before_revalidation_dependency(monke
     assert payload["kind"] == "blocked"
     assert payload["code"] == "CONTENT_NOT_GENERATED"
     assert any(isinstance(value, OperationRun) for value in db.added)
+
+
+def test_auto_publish_surfaces_stored_generation_rejection(monkeypatch):
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body=None, title=None)
+    item.essence_check_summary = {
+        "generation_attempt": {
+            "context": "same rejected inputs",
+            "reason": "GENERATION_REJECTED",
+        }
+    }
+    db = _AutoPublishDB(item, hospital)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+
+    payload = tasks._auto_publish_one(item.id)
+
+    assert payload["kind"] == "blocked"
+    assert payload["code"] == "GENERATION_REJECTED"
+    assert "가격·지역·검색 구조 자동 검수 게이트가" in payload["message"]
+    assert payload["attempt_fingerprint"] == "same rejected inputs"
 
 
 def test_auto_publish_is_idempotent(monkeypatch):
