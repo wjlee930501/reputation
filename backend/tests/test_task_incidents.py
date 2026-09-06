@@ -75,6 +75,52 @@ def test_classified_generation_run_suppresses_generic_failure_slack(monkeypatch)
     assert task_incident_control.record_task_failure(task, "worker-task") is False
 
 
+def test_run_sov_task_failed_stays_durable_without_generic_slack(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
+    run = SimpleNamespace(
+        id=run_id,
+        operation_type="RUN_SOV",
+        safe_error_code="TASK_FAILED",
+    )
+    incident = SimpleNamespace(id=uuid.uuid4())
+    committed = []
+    audits = []
+
+    class FakeSession:
+        def scalar(self, _stmt):
+            return None
+
+        def commit(self):
+            committed.append(True)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", FakeSession)
+    monkeypatch.setattr(task_incident_control, "_tracked_run", lambda *_args: run)
+    monkeypatch.setattr(task_incident_control, "_open_incident", lambda *_args: incident)
+    monkeypatch.setattr(
+        task_incident_control,
+        "_enqueue",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("RUN_SOV TASK_FAILED must not enqueue generic Slack")
+        ),
+    )
+    monkeypatch.setattr(
+        task_incident_control,
+        "_audit",
+        lambda _db, opened, action: audits.append((opened, action)),
+    )
+
+    assert task_incident_control.record_task_failure(task, "worker-task") is True
+    assert committed == [True]
+    assert audits == [(incident, "generic_task_failure_opened")]
+
+
 def test_runtime_batch_header_supplies_failure_correlation() -> None:
     run_id = uuid.uuid4()
     task = SimpleNamespace(

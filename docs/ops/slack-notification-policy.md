@@ -93,8 +93,11 @@ AE가 고칠 수 없는 순수 인프라 인시던트(`BACKGROUND_TASK_FAILED`, 
 `UNSAFE_STORED_DISPATCH`, `NOTIFICATION_DELIVERY_FAILED/UNKNOWN`,
 `CACHE_REVALIDATION_FAILED`, `MONTHLY_DOCTOR_PDF_BLOCKED`)는 인시던트 타입 레지스트리에서
 `audience = "developer"`로 표시하고 `SLACK_WEBHOOK_URL_DEV`가 설정된 경우 개발 채널로
-보낸다. 레지스트리에 없는 타입의 기본값은 `operator`이며, `SLACK_WEBHOOK_URL_DEV`가 비어
-있으면 기존과 동일하게 운영 채널 한 곳으로만 나간다.
+보낸다. 레지스트리에 없는 타입의 기본값은 `operator`다. `SLACK_WEBHOOK_URL_DEV`가 비어
+있어도 개발 채널 알림을 운영 채널로 폴백하지 않는다. 해당 outbox 행은
+`DEV_WEBHOOK_MISSING` 코드와 함께 `HOLD`로 남고 worker가 오류를 기록하므로, 설정 후 Admin에서
+수동 재시도할 수 있다. **배포 전 `SLACK_WEBHOOK_URL_DEV`가 실제 개발팀 채널 webhook으로
+설정되었는지 확인한다.**
 
 ## 중복 억제와 재알림
 

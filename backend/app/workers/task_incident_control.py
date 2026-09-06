@@ -41,6 +41,7 @@ _CLASSIFIED_GENERATION_OPERATIONS = {
     "REGENERATE_CONTENT_IMAGE",
     "RUN_SOV",
 }
+_GENERIC_FAILURE_SLACK_SUPPRESSED_OPERATIONS = {"RUN_SOV"}
 
 
 class SignalRequest(Protocol):
@@ -73,10 +74,15 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
             select(Incident.state).where(Incident.dedupe_key == _incident_key(run.id))
         )
         incident = _open_incident(db, run)
-        if previous_state is None or previous_state in {
-            IncidentState.RECOVERED.value,
-            IncidentState.ACKNOWLEDGED.value,
-        }:
+        should_notify = run.operation_type not in _GENERIC_FAILURE_SLACK_SUPPRESSED_OPERATIONS
+        if should_notify and (
+            previous_state is None
+            or previous_state
+            in {
+                IncidentState.RECOVERED.value,
+                IncidentState.ACKNOWLEDGED.value,
+            }
+        ):
             _enqueue(
                 db,
                 build_open_incident_notification(

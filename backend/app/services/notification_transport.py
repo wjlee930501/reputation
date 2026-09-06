@@ -115,6 +115,7 @@ def safe_error_message(code: str | None) -> str | None:
     return {
         "DELIVERY_OUTCOME_UNKNOWN": "Slack 수신 여부를 확인한 뒤 수동으로 재시도해 주세요.",
         "DELIVERY_RETRY_EXHAUSTED": "Slack 설정과 상태를 확인한 뒤 수동으로 재시도해 주세요.",
+        "DEV_WEBHOOK_MISSING": "개발팀 Slack Webhook 설정 후 알림을 수동 재시도해 주세요.",
         "WEBHOOK_NOT_CONFIGURED": "Slack Webhook 설정을 확인해 주세요.",
         "WEBHOOK_URL_REJECTED": "허용된 Slack Webhook 주소인지 확인해 주세요.",
         "SLACK_PERMANENT_ERROR": "Slack 요청 구성을 확인해 주세요.",
