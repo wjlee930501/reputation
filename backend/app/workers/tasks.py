@@ -3532,6 +3532,8 @@ def run_sov_for_hospital(
                     open_weekly_sov_capacity_digest(
                         week_key=week_key,
                         operation_run_id=_operation_run_id_from_task(self),
+                        hospital_name=hospital.name,
+                        trimmed_count=trimmed_high,
                     )
                 )
 

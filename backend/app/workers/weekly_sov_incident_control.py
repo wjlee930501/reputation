@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
@@ -27,6 +27,8 @@ from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
 
 _SOURCE_TYPE = "WEEKLY_SOV_MEASUREMENT"
+_CAPACITY_DIGEST_MESSAGE = "이번 주 HIGH 우선순위 측정 항목이 안전 상한으로 제외되었습니다."
+_CAPACITY_DIGEST_DETAILS = "병원별 제외: "
 
 
 def _capacity_digest_key(week_key: str) -> str:
@@ -39,16 +41,29 @@ def _capacity_digest_key(week_key: str) -> str:
 
 
 async def open_weekly_sov_capacity_digest(
-    *, week_key: str, operation_run_id: uuid.UUID | None = None
+    *,
+    week_key: str,
+    operation_run_id: uuid.UUID | None = None,
+    hospital_name: str | None = None,
+    trimmed_count: int | None = None,
 ) -> uuid.UUID:
-    """Collapse per-hospital HIGH-cap overflow into one durable weekly alert."""
+    """Collapse per-hospital HIGH-cap overflow into one Admin-only weekly incident."""
 
     observed_at = datetime.now(UTC)
     sessions = get_async_sessionmaker()
     async with sessions() as db:
         key = _capacity_digest_key(week_key)
+        # Hospital jobs fan out concurrently. Serialize this one weekly summary so
+        # two workers cannot both read the same prior message and lose one detail.
+        await db.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0)))
+        )
         previous = await db.scalar(select(Incident).where(Incident.dedupe_key == key))
-        previous_state = previous.state if previous is not None else None
+        capacity_message = _capacity_digest_safe_message(
+            previous.safe_error_message if previous is not None else None,
+            hospital_name=hospital_name,
+            trimmed_count=trimmed_count,
+        )
         incident = await open_or_touch_incident(
             db,
             IncidentOpenRequest(
@@ -57,10 +72,8 @@ async def open_weekly_sov_capacity_digest(
                 object_id=week_key,
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 incident_type="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
-                severity=IncidentSeverity.HIGH,
-                customer_impact=(
-                    "한 곳 이상 병원의 높은 우선순위 질문 일부가 이번 주 측정에서 제외되었습니다."
-                ),
+                severity=IncidentSeverity.MEDIUM,
+                customer_impact=capacity_message,
                 source_type=_SOURCE_TYPE,
                 next_action="운영센터에서 이번 주 쿼리 타깃과 변형 수를 한 번 검토하세요.",
                 admin_path="/operations",
@@ -68,42 +81,39 @@ async def open_weekly_sov_capacity_digest(
                 operation_run_id=operation_run_id,
                 source_id=week_key,
                 safe_error_code="SOV_HIGH_PRIORITY_CAP_EXCEEDED",
-                safe_error_message=(
-                    "주간 측정의 높은 우선순위 항목이 안전 상한을 넘은 병원이 있습니다."
-                ),
+                safe_error_message=capacity_message,
             ),
             actor="weekly-sov-worker",
             reason="weekly high-priority capacity digest",
             now=observed_at,
         )
-        if previous_state is None or previous_state in {
-            IncidentState.RECOVERED.value,
-            IncidentState.ACKNOWLEDGED.value,
-        }:
-            await enqueue_notification(
-                db,
-                build_open_incident_notification(
-                    IncidentSlackProjection(
-                        incident.id,
-                        "주간 검색 노출 전체 병원",
-                        incident.severity,
-                        incident.customer_impact,
-                        incident.next_action,
-                        incident.admin_path,
-                        "운영 담당자",
-                        "이번 주 측정 마감 전",
-                        None,
-                        incident.operation_run_id,
-                        incident.version,
-                        incident.safe_error_message,
-                        incident.episode_seq,
-                        incident_type=incident_type_of(incident),
-                    ),
-                    settings.ADMIN_BASE_URL,
-                ),
-            )
         await db.commit()
         return incident.id
+
+
+def _capacity_digest_safe_message(
+    previous_message: str | None,
+    *,
+    hospital_name: str | None,
+    trimmed_count: int | None,
+) -> str:
+    """Keep named cap-trim observations visible on the weekly Admin incident."""
+
+    previous = sanitize_operator_text(previous_message)
+    name = sanitize_operator_text(hospital_name, limit=100)
+    if not name or trimmed_count is None or trimmed_count <= 0:
+        return previous or _CAPACITY_DIGEST_MESSAGE
+
+    detail = f"{name} {trimmed_count}개"
+    prior_details = ""
+    if previous and _CAPACITY_DIGEST_DETAILS in previous:
+        prior_details = previous.partition(_CAPACITY_DIGEST_DETAILS)[2]
+        if detail in prior_details.split("; "):
+            return previous
+
+    details = f"{detail}; {prior_details}" if prior_details else detail
+    message = f"{_CAPACITY_DIGEST_MESSAGE} {_CAPACITY_DIGEST_DETAILS}{details}"
+    return sanitize_operator_text(message) or _CAPACITY_DIGEST_MESSAGE
 
 
 def _dedupe_key(hospital_id: uuid.UUID, period_key: str, *, monthly: bool = False) -> str:
