@@ -159,7 +159,7 @@ def test_many_blocked_slots_collapse_into_one_morning_slack_message() -> None:
     assert "병원 2곳 · 글 5건" in payload
     assert "가나의원" in payload
     assert "다라의원" in payload
-    assert intent.dedupe_key.startswith("GENERATION_BLOCKED_DIGEST:2026-08-19:PUBLISH_0800:")
+    assert intent.dedupe_key.startswith("GENERATION_BLOCKED_DIGEST:v2:")
     assert len(intent.message.blocks) <= 50
 
 
@@ -184,6 +184,33 @@ def test_blocked_digest_identity_is_stable_for_the_same_blocked_set() -> None:
     # Then: a repeated batch re-sends nothing, and a genuinely new blocker does
     assert forward.dedupe_key == reverse.dedupe_key
     assert changed.dedupe_key != forward.dedupe_key
+
+
+def test_unchanged_rejected_slot_is_suppressed_across_mornings() -> None:
+    rejected = {
+        **_blocked("거절확인의원", "GENERATION_REJECTED", ""),
+        "cause": "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다.",
+        "attempt_fingerprint": "same generation inputs",
+    }
+
+    first = build_generation_blocked_digest_intent(
+        date(2026, 8, 19), PREPUBLISH_MORNING_BATCH, [rejected]
+    )
+    second = build_generation_blocked_digest_intent(
+        date(2026, 8, 20), PUBLISH_MORNING_BATCH, [rejected]
+    )
+    changed = build_generation_blocked_digest_intent(
+        date(2026, 8, 20),
+        PUBLISH_MORNING_BATCH,
+        [{**rejected, "attempt_fingerprint": "new inputs"}],
+    )
+
+    payload = first.message.payload_json()
+    assert first.dedupe_key == second.dedupe_key
+    assert changed.dedupe_key != first.dedupe_key
+    assert "생성 검수 게이트 거절" in payload
+    assert "가격·지역·검색 구조 자동 검수 게이트가" in payload
+    assert "제목 없는 콘텐츠" not in payload
 
 
 def test_blocked_digest_refuses_an_empty_batch() -> None:

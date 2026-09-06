@@ -176,6 +176,8 @@ def build_generation_blocked_digest_intent(
 
     Per-item incidents stay in the database because they drive the Admin retry
     controls. Slack gets one grouped message instead of one page per content item.
+    The cycle and batch locate the observation, but unchanged blocker identities
+    deliberately share one durable notification key across observations.
     """
 
     if not blocked_outcomes:
@@ -186,14 +188,20 @@ def build_generation_blocked_digest_intent(
             str(outcome.get("content_id") or ""),
             str(outcome.get("code") or "UNKNOWN"),
             str(outcome.get("cause") or "자동 생성 작업이 완료되지 않았습니다."),
-            str(outcome.get("title") or "제목 없는 콘텐츠"),
+            _generation_blocked_display_title(outcome.get("title"), outcome.get("code")),
+            str(outcome.get("attempt_fingerprint") or ""),
         )
         for outcome in blocked_outcomes
     ]
-    identity = sorted({f"{content_id}:{code}" for _, content_id, code, _, _ in entries})
+    identity = sorted(
+        {
+            f"{content_id}:{code}:{attempt_fingerprint}"
+            for _, content_id, code, _, _, attempt_fingerprint in entries
+        }
+    )
     digest = hashlib.sha256("\n".join(identity).encode()).hexdigest()[:32]
     hospitals: dict[str, list[tuple[str, str, str]]] = {}
-    for hospital_name, _content_id, code, cause, title in entries:
+    for hospital_name, _content_id, code, cause, title, _attempt_fingerprint in entries:
         hospitals.setdefault(hospital_name, []).append((title, code, cause))
     action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
     shown = sorted(hospitals.items())[:_DIGEST_MAX_HOSPITALS]
@@ -229,14 +237,23 @@ def build_generation_blocked_digest_intent(
         settings.ADMIN_BASE_URL,
     )
     return NotificationIntent(
-        dedupe_key=(
-            f"{_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX}"
-            f"{cycle_date.isoformat()}:{batch}:{digest}"
-        ),
+        # A due slot remains the same operational state across morning batches and
+        # calendar days. Re-page only when the content/code set or a persisted
+        # generation-attempt fingerprint changes.
+        dedupe_key=f"{_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX}v2:{digest}",
         notification_type=GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE,
         message=message,
         max_attempts=3,
     )
+
+
+def _generation_blocked_display_title(title: object, code: object) -> str:
+    visible_title = str(title or "").strip()
+    if visible_title:
+        return visible_title
+    if str(code or "") == "GENERATION_REJECTED":
+        return "생성 검수 게이트 거절"
+    return "제목 없는 콘텐츠"
 
 
 def _publish_safe_text(value: str, limit: int) -> str:
@@ -270,7 +287,7 @@ def enqueue_generation_blocked_digest_sync(
     batch: str,
     blocked_outcomes: Sequence[Mapping[str, object]],
 ) -> NotificationOutbox | None:
-    """Add at most one blocked-publication digest per morning batch and blocked set."""
+    """Add at most one digest for an unchanged blocked-publication set."""
 
     if not blocked_outcomes:
         return None

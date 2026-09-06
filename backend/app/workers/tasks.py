@@ -352,6 +352,9 @@ def _write_morning_image_fallback(db, item: ContentItem, hospital: Hospital) -> 
 
 
 _GENERATION_ATTEMPT_KEY = "generation_attempt"
+_STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
+    {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
+)
 
 
 def _generation_attempt_context(
@@ -380,6 +383,20 @@ def _stored_generation_attempt(item: ContentItem) -> dict[str, str]:
         "context": str(attempt.get("context") or ""),
         "reason": str(attempt.get("reason") or ""),
     }
+
+
+def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str, str]:
+    """Prefer a persisted generation cause over the empty-content symptom."""
+
+    code = assessment.code or "GENERATION_FAILED"
+    message = assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다."
+    if code != "CONTENT_NOT_GENERATED":
+        return code, message
+
+    stored_code = _stored_generation_attempt(item).get("reason")
+    if stored_code in _STORED_EMPTY_CONTENT_BLOCK_CODES:
+        return stored_code, generation_safe_cause(stored_code)
+    return code, message
 
 
 def _generation_attempt_is_unchanged(
@@ -3071,13 +3088,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
             continue
 
         apply_publication_assessment(item, assessment)
-        code = assessment.code or "GENERATION_FAILED"
-        message = assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다."
-        if code == "CONTENT_NOT_GENERATED":
-            stored_code = _stored_generation_attempt(item).get("reason")
-            if stored_code in {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED"}:
-                code = stored_code
-                message = generation_safe_cause(code)
+        code, message = _publication_block_details(item, assessment)
         blocked_run = ensure_publication_block_run(
             db,
             item=item,
@@ -3107,6 +3118,9 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                     "title": item.title,
                     "code": code,
                     "cause": generation_safe_cause(code),
+                    "attempt_fingerprint": _stored_generation_attempt(item).get(
+                        "context"
+                    ),
                 }
             )
         paged += 1
@@ -3165,6 +3179,7 @@ def morning_content_auto_publish(self):
                             "title": outcome.get("title"),
                             "code": outcome["code"],
                             "cause": generation_safe_cause(outcome["code"]),
+                            "attempt_fingerprint": outcome.get("attempt_fingerprint"),
                         }
                     )
                 continue
@@ -3281,11 +3296,12 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
         apply_publication_assessment(item, assessment)
         admin_url = _admin_content_url(hospital.id, item.id)
         if not assessment.publishable:
+            code, message = _publication_block_details(item, assessment)
             findings = assessment.essence_summary.get("findings") or []
             operator_reason = (
                 str(findings[0])
                 if findings
-                else (assessment.message or "자동 안전검사를 통과하지 못했습니다.")
+                else message
             )
             write_audit_log_sync(
                 db,
@@ -3295,8 +3311,8 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 target_type="content_item",
                 target_id=item.id,
                 detail={
-                    "code": assessment.code,
-                    "reason": assessment.message,
+                    "code": code,
+                    "reason": message,
                     "scheduled_date": str(item.scheduled_date),
                 },
             )
@@ -3304,14 +3320,14 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 db,
                 item=item,
                 hospital=hospital,
-                code=assessment.code or "GENERATION_FAILED",
-                message=assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다.",
+                code=code,
+                message=message,
             )
             db.commit()
             return {
                 "kind": "blocked",
-                "code": assessment.code or "UNKNOWN",
-                "message": assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다.",
+                "code": code,
+                "message": message,
                 "reason": operator_reason,
                 "hospital_id": hospital.id,
                 "hospital_name": hospital.name,
@@ -3319,6 +3335,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 "scheduled_date": str(item.scheduled_date),
                 "admin_url": admin_url,
                 "run_id": blocked_run.id,
+                "attempt_fingerprint": _stored_generation_attempt(item).get("context"),
             }
 
         # Publishing without a working cache invalidation path can leave a successful DB
