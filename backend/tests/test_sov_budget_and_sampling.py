@@ -8,7 +8,11 @@
    한 트랜잭션에서 삽입돼 created_at이 전부 같으므로, 사실상 무작위 표본이었다.
 """
 import uuid
+from types import SimpleNamespace
 
+import pytest
+
+from app.models.operations import IncidentSeverity
 from app.workers import tasks, weekly_sov_incident_control
 
 # ── 비용 가드 예약 단위 = 실제 공급자 호출 수 ──
@@ -43,6 +47,72 @@ def test_high_priority_capacity_uses_one_digest_key_per_week():
 
     assert first == same_week_other_hospital
     assert first != next_week
+
+
+@pytest.mark.asyncio
+async def test_high_priority_capacity_is_named_admin_incident_without_slack(monkeypatch):
+    previous = SimpleNamespace(
+        safe_error_message=(
+            "이번 주 HIGH 우선순위 측정 항목이 안전 상한으로 제외되었습니다. "
+            "병원별 제외: 기존의원 2개"
+        )
+    )
+    opened = []
+
+    class _DB:
+        committed = False
+        locked = False
+
+        async def execute(self, _stmt):
+            self.locked = True
+
+        async def scalar(self, _stmt):
+            return previous
+
+        async def commit(self):
+            self.committed = True
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    db = _DB()
+
+    class _Sessions:
+        def __call__(self):
+            return db
+
+    async def fake_open(_db, request, **_kwargs):
+        opened.append(request)
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def reject_slack(*_args, **_kwargs):
+        raise AssertionError("capacity digest must not enqueue Slack")
+
+    monkeypatch.setattr(
+        weekly_sov_incident_control, "get_async_sessionmaker", lambda: _Sessions()
+    )
+    monkeypatch.setattr(weekly_sov_incident_control, "open_or_touch_incident", fake_open)
+    monkeypatch.setattr(weekly_sov_incident_control, "enqueue_notification", reject_slack)
+
+    incident_id = await weekly_sov_incident_control.open_weekly_sov_capacity_digest(
+        week_key="2026-W35",
+        hospital_name="새로운의원",
+        trimmed_count=7,
+    )
+
+    assert incident_id is not None
+    assert db.committed is True
+    assert db.locked is True
+    assert len(opened) == 1
+    request = opened[0]
+    assert request.severity is IncidentSeverity.MEDIUM
+    assert "새로운의원 7개" in request.customer_impact
+    assert "기존의원 2개" in request.customer_impact
+    assert request.safe_error_message == request.customer_impact
+    assert "주간 검색 노출 전체 병원" not in request.safe_error_message
 
 
 def test_weekly_sov_cap_cannot_outspend_daily_content_generation():

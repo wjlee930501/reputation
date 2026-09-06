@@ -127,6 +127,36 @@ def _patch_sov_task_shell(monkeypatch, hospital, *, measurement_mode="weekly"):
     return task, retries, finished, recorded
 
 
+def test_weekly_cap_digest_receives_hospital_name_and_trimmed_count(monkeypatch):
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="테스트의원",
+        status=HospitalStatus.ACTIVE,
+        competitors=[],
+        region=["서울"],
+    )
+    task, _retries, _finished, _recorded = _patch_sov_task_shell(monkeypatch, hospital)
+    opened = []
+
+    monkeypatch.setattr(tasks, "_build_measurement_specs", lambda **_kwargs: ([], 4))
+
+    async def fake_open(**kwargs):
+        opened.append(kwargs)
+        return uuid.uuid4()
+
+    async def fake_recover(**_kwargs):
+        return False
+
+    monkeypatch.setattr(tasks, "open_weekly_sov_capacity_digest", fake_open)
+    monkeypatch.setattr(tasks, "_recover_sov_failure", fake_recover)
+
+    _call_run_sov(task, str(hospital.id))
+
+    assert len(opened) == 1
+    assert opened[0]["hospital_name"] == "테스트의원"
+    assert opened[0]["trimmed_count"] == 4
+
+
 def test_cost_guard_block_closes_failed_run_without_retry(monkeypatch):
     hospital = SimpleNamespace(
         id=uuid.uuid4(),
