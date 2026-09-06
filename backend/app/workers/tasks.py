@@ -6,7 +6,7 @@ Celery 태스크 전체
 - nightly_content_generation: 매일 밤 내일 콘텐츠 생성
 - morning_content_auto_publish: 매일 아침 오늘 콘텐츠 자동 검증·발행 + 예외 요약
 - run_sov_for_hospital: 단일 병원 AI 답변 언급률 측정
-- run_weekly_monitoring: 전체 병원 주간 측정
+- run_weekly_monitoring: 월간 코호트를 제외한 ACTIVE 병원 주간 측정
 - adjust_query_priorities: AI 답변 언급 결과 기반 질문 우선순위 조정
 - run_monthly_reports: 전체 병원 월간 리포트
 """
@@ -4857,21 +4857,16 @@ def run_weekly_monitoring():
                 db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
             )
         }
-        # 월말 창(24일~말일)에서만 코호트를 뺀다. 그 창 밖에서는 월간 측정이 돌지
-        # 않으므로, 무조건 제외하면 코호트 병원은 한 달 내내 주간 측정에서도 빠져
-        # 아무 측정 없이 지나간다 (CLAUDE.md STEP 8 / 보조 배치 표).
-        in_month_end_window = (
-            today_kst.day >= settings.SOV_MONTHLY_WINDOW_START_DAY and bool(monthly_ids)
-        )
-        if in_month_end_window:
+        # 주간 배치는 매주 월간 코호트를 건너뛴다. 해당 병원의 측정은
+        # 월말 창에서 run_monthly_sov_measurement가 전담한다 (CLAUDE.md STEP 8).
+        if monthly_ids:
             logger.info(
-                "Weekly visibility measurement skipped for monthly cohort during month-end window: %s hospitals on %s",
+                "Weekly visibility measurement skipped for monthly cohort: %s hospitals on %s",
                 len(monthly_ids),
                 today_kst,
             )
-        excluded_ids = monthly_ids if in_month_end_window else set()
         hospitals = [
-            hospital for hospital in result.scalars().all() if hospital.id not in excluded_ids
+            hospital for hospital in result.scalars().all() if hospital.id not in monthly_ids
         ]
 
         for h in hospitals:

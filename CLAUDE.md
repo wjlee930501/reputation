@@ -124,7 +124,7 @@
 | 매일 22:30 | stranded-content-recovery | 오래된 미생성 슬롯을 병원별 하루 한 편으로 재배치 |
 | 매일 01·04·07시 | overnight-content-generation-recovery | 밤사이 승인·비용 차단·공급자 오류 회수 |
 | 매일 07:45 | prepublish-content-generation-recovery | 발행 직전 마지막 회수 |
-| 매주 월 02:00 | weekly-sov-monitoring | 전체 ACTIVE 병원 측정 (월말 창엔 월간 코호트만 제외) |
+| 매주 월 02:00 | weekly-sov-monitoring | 월간 코호트는 매주 제외하고 비코호트 ACTIVE 병원 측정 (코호트는 월말 배치 전담) |
 | 매월 24~31일 */6h | monthly-sov-measurement | 전환 코호트 월말 측정 완주 |
 | 매월 25~31일 */6h | monthly-slot-generation | 다음 달 콘텐츠 슬롯 자동 생성(격차 재배정 포함) |
 | 매월 1~7일 매일 00:15 | monthly-reports | 1일 첫 월간 리포트 마감, 2~7일 놓친 실행·측정 미완료 자동 복구 |

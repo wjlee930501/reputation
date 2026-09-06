@@ -557,12 +557,10 @@ def test_guard_defaults_pin_locked_august_conversion_envelope():
     ) == 1145
 
 
-def test_converted_cohort_is_not_dispatched_by_weekly_beat_in_the_month_end_window(monkeypatch):
-    """월말 창(24일~말일)에서만 코호트를 주간 배치에서 뺀다.
-
-    창 밖에서는 월간 측정이 돌지 않으므로 무조건 빼면 코호트 병원이 한 달 내내
-    아무 측정 없이 지나간다 (CLAUDE.md STEP 8 / 보조 배치 표).
-    """
+def test_converted_cohort_is_not_dispatched_by_weekly_beat_outside_month_end_window(
+    monkeypatch,
+):
+    """월말 창 밖에서도 전환 코호트는 주간 배치에서 항상 빠진다."""
     converted = SimpleNamespace(id=uuid.uuid4())
 
     class _Result:
@@ -588,7 +586,7 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat_in_the_month_end_wind
         tasks.arrow,
         "now",
         lambda *_args, **_kwargs: tasks.arrow.get(
-            2026, 8, 26, 12, tzinfo="Asia/Seoul"
+            2026, 8, 10, 12, tzinfo="Asia/Seoul"
         ),
     )
     monkeypatch.setattr(
