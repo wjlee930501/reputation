@@ -588,9 +588,9 @@ def test_monthly_15x2x5_at_concurrency_2_exceeds_1800s_so_chunk_stop_exists():
 # ── 5. weekly must not drain month-end Redis ─────────────────────────────────
 
 
-def test_weekly_skips_only_monthly_cohort_during_month_end_window(monkeypatch):
-    """월말 창(24일+)에는 월간 코호트에 든 병원만 주간 배치에서 빠진다 — 코호트 밖
-    병원까지 통째로 스킵되던 것은 2026-09-01 무음실패 리뷰 §2.4-1의 확인된 버그였다."""
+@pytest.mark.parametrize("day", [10, 31])
+def test_weekly_always_skips_only_monthly_cohort(monkeypatch, day):
+    """월말 창 안팟에서 코호트만 빼고 비코호트 ACTIVE 병원은 주간 배치한다."""
 
     cohort = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
     remaining = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
@@ -622,7 +622,7 @@ def test_weekly_skips_only_monthly_cohort_during_month_end_window(monkeypatch):
     monkeypatch.setattr(
         tasks.arrow,
         "now",
-        lambda *_args, **_kwargs: tasks.arrow.get(2026, 8, 31, 2, tzinfo="Asia/Seoul"),
+        lambda *_args, **_kwargs: tasks.arrow.get(2026, 8, day, 2, tzinfo="Asia/Seoul"),
     )
     monkeypatch.setattr(
         tasks,

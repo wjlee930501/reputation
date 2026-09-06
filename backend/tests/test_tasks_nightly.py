@@ -558,8 +558,8 @@ def test_weekly_monitoring_commits_operation_run_before_sov_dispatch(monkeypatch
     assert db.commits >= 2
 
 
-class _WeeklyWindowDB:
-    """월말 창(24일+) 주간 배치용 fake — 코호트/비코호트 병원을 함께 담는다."""
+class _WeeklyCohortDB:
+    """주간 배치용 fake — 코호트/비코호트 병원을 함께 담는다."""
 
     def __init__(self, hospitals):
         self.hospitals = hospitals
@@ -597,15 +597,14 @@ class _WeeklyWindowDB:
         return False
 
 
-def test_weekly_monitoring_skips_only_monthly_cohort_during_month_end_window(monkeypatch):
-    """day >= SOV_MONTHLY_WINDOW_START_DAY: 월간 코호트 병원만 주간 배치에서 빠지고,
-    코호트 밖 병원은 계속 매주 측정된다 (2026-09-01 무음실패 리뷰 §2.4-1)."""
+def test_weekly_monitoring_always_skips_only_monthly_cohort(monkeypatch):
+    """월간 코호트 병원만 주간 배치에서 빠지고 비코호트 ACTIVE 병원은 측정된다."""
 
     cohort_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
     other_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
     dispatched: list[str] = []
 
-    db = _WeeklyWindowDB([cohort_hospital, other_hospital])
+    db = _WeeklyCohortDB([cohort_hospital, other_hospital])
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -633,19 +632,16 @@ def test_weekly_monitoring_skips_only_monthly_cohort_during_month_end_window(mon
     assert str(cohort_hospital.id) not in dispatched
 
 
-def test_weekly_monitoring_before_window_measures_the_cohort_too(monkeypatch):
-    """day < SOV_MONTHLY_WINDOW_START_DAY: 코호트도 주간 측정에 포함된다.
-
-    월간 측정(run_monthly_sov_measurement)은 24일~말일에만 돈다. 그 창 밖에서까지
-    코호트를 주간 배치에서 빼면 전환 코호트 병원은 매달 23일까지 아무 측정도 받지
-    못한다 — 제외는 월말 창 안에서만 성립한다 (CLAUDE.md STEP 8).
-    """
+def test_weekly_monitoring_before_window_skips_cohort_and_dispatches_non_cohort(
+    monkeypatch,
+):
+    """월말 창 전에도 코호트는 제외하고 비코호트 ACTIVE 병원은 주간 측정한다."""
 
     cohort_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
     other_hospital = SimpleNamespace(id=uuid.uuid4(), status=HospitalStatus.ACTIVE)
     dispatched: list[str] = []
 
-    db = _WeeklyWindowDB([cohort_hospital, other_hospital])
+    db = _WeeklyCohortDB([cohort_hospital, other_hospital])
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -655,7 +651,7 @@ def test_weekly_monitoring_before_window_measures_the_cohort_too(monkeypatch):
         tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [cohort_hospital]
     )
     monkeypatch.setattr(
-        # 월말 창 이전(10일)로 고정 — 이날은 월간 측정이 돌지 않는다
+        # 월말 창 이전(10일)로 고정
         tasks.arrow,
         "now",
         lambda *_args, **_kwargs: arrow.get(2026, 8, 10, tzinfo="Asia/Seoul"),
@@ -669,7 +665,8 @@ def test_weekly_monitoring_before_window_measures_the_cohort_too(monkeypatch):
 
     tasks.run_weekly_monitoring.run()
 
-    assert dispatched == [str(cohort_hospital.id), str(other_hospital.id)]
+    assert dispatched == [str(other_hospital.id)]
+    assert str(cohort_hospital.id) not in dispatched
 
 
 def test_weekly_monitoring_isolates_broker_failure_and_keeps_run_requested(monkeypatch):
