@@ -251,6 +251,7 @@ export default function DashboardPage() {
   const [queries, setQueries] = useState<QueryRow[]>([])
   const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [measurementRuns, setMeasurementRuns] = useState<MeasurementRun[]>([])
+  const [measurementCheckedAt, setMeasurementCheckedAt] = useState(0)
   const [exposureActions, setExposureActions] = useState<ExposureAction[]>([])
   const [queryTargets, setQueryTargets] = useState<AIQueryTarget[]>([])
   const [loading, setLoading] = useState(true)
@@ -312,6 +313,7 @@ export default function DashboardPage() {
         setQueries(Array.isArray(queriesValue) ? queriesValue : [])
         setReadiness(readinessValue)
         setMeasurementRuns(Array.isArray(runsValue) ? runsValue : [])
+        setMeasurementCheckedAt(Date.now())
         setExposureActions(Array.isArray(actionsValue) ? actionsValue : [])
         setQueryTargets(Array.isArray(targetsValue) ? targetsValue : [])
         setAuditLogs(Array.isArray(auditValue) ? auditValue : [])
@@ -334,6 +336,18 @@ export default function DashboardPage() {
 
     return () => { cancelled = true }
   }, [id])
+
+  useEffect(() => {
+    const hasRunningV0 = measurementRuns.some(
+      (run) => run.run_label === 'V0 first measurement' && run.status === 'RUNNING',
+    )
+    if (!hasRunningV0) return
+
+    // 서버 조회 시각에서 시작해 claim lease 경계를 따라간다. 렌더 도중 현재 시각을
+    // 읽으면 결과가 재렌더 시점에 따라 달라지고 SSR purity도 깨지므로 effect만 갱신한다.
+    const tick = setInterval(() => setMeasurementCheckedAt(Date.now()), 30000)
+    return () => clearInterval(tick)
+  }, [measurementRuns])
 
   // 측정이 시작되기 전의 주는 차트에서 잘라낸다 — 빈 칸이 측정 실패로 읽힌다(A-5).
   const measuredWeeks = trimTrendToMeasuredWeeks(trendData)
@@ -369,7 +383,9 @@ export default function DashboardPage() {
     const heartbeatAt = Date.parse(run.updated_at ?? run.started_at ?? '')
     // 백엔드의 살아 있는 V0 claim(40분)과 같은 경계다. 하드 종료 뒤 남은 오래된
     // RUNNING 행이 재실행 버튼을 영구히 잠그거나 자동 진행이라고 오해시키지 않는다.
-    return Number.isFinite(heartbeatAt) && Date.now() - heartbeatAt < 40 * 60 * 1000
+    return Number.isFinite(heartbeatAt)
+      && measurementCheckedAt > 0
+      && measurementCheckedAt - heartbeatAt < 40 * 60 * 1000
   })
   const hasMeasurement = measurementRuns.some(
     (run) => run.status === 'COMPLETED' || run.status === 'PARTIAL',

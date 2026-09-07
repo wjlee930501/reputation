@@ -59,6 +59,18 @@ test('dashboard does not hard-code dead-end recovery button guidance', () => {
   assert.doesNotMatch(dashboardPage, /해당 버튼이 없으면/)
 })
 
+test('dashboard evaluates the V0 lease against an effect-driven clock', () => {
+  const predicateStart = dashboardPage.indexOf('const v0InProgress')
+  const predicateEnd = dashboardPage.indexOf('const hasMeasurement', predicateStart)
+  assert.ok(predicateStart >= 0 && predicateEnd > predicateStart)
+  const predicate = dashboardPage.slice(predicateStart, predicateEnd)
+
+  assert.doesNotMatch(predicate, /Date\.now\(\)/)
+  assert.match(predicate, /measurementCheckedAt - heartbeatAt/)
+  assert.match(dashboardPage, /setInterval\(\(\) => setMeasurementCheckedAt\(Date\.now\(\)\), 30000\)/)
+  assert.match(dashboardPage, /clearInterval\(tick\)/)
+})
+
 test('photo guidance describes automatic publication and current state, not a required Wiki toggle', () => {
   assert.doesNotMatch(hospitalLayout, /사진 공개 토글/)
   assert.match(hospitalLayout, /사진 권리·공개 상태/)
