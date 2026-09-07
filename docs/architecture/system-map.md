@@ -1,8 +1,8 @@
 # Re:putation 현재 시스템 구조
 
-문서 버전: **2.3** · 조사·갱신일: **2026-09-07 (Asia/Seoul)**
-소스 기준선: **`39dc1f8a98abe9193a8e2202395d2272c370fe8e`**
-구현 상태: **기준선 위 작업 로컬 검증·독립 리뷰 완료. 커밋·운영 전환·배포 전**
+문서 버전: **2.4** · 조사·갱신일: **2026-09-08 (Asia/Seoul)**
+소스 기준선: **`31129d9911910b82c1161829d922a9760fac13a1`**
+구현 상태: **기준선 위 V0 공개 게이트 분리·자동 이어가기 구현 및 검증 중. 운영 배포 전**
 
 범위: Backend, Admin, Site, Celery, 데이터 모델, 비용·복구·알림, 배포 구성. 현재 작업 트리의 실제 호출 경로를 근거로 갱신했으며, 완료 증거는 [감사 후속 구현 기록](../reviews/2026-09-07-purpose-autonomy-efficiency-implementation.md)에 모은다. 외부 AI 답변의 임상적 정확성이나 검색 노출 효과를 새로 실험한 문서는 아니다.
 
@@ -32,7 +32,7 @@ flowchart LR
   Worker --> Notify["Slack outbox / 무료 진단 이메일"]
 ```
 
-운영 서비스는 `reputation-api`, `reputation-worker`, `reputation-beat`, `reputation-site`, `reputation-admin` **모두 Cloud Run**이다. DB는 Cloud SQL PostgreSQL, Redis는 Memorystore 구성이다. Vercel 지원 코드·옛 배포 문서는 남아 있으나 현재 운영 프론트엔드는 Cloud Run이다. 실제 확인한 릴리스는 [배포 기록](../releases/2026-09-07-345a642.md)을 본다.
+운영 서비스는 `reputation-api`, `reputation-worker`, `reputation-beat`, `reputation-site`, `reputation-admin` **모두 Cloud Run**이다. DB는 Cloud SQL PostgreSQL, Redis는 Memorystore 구성이다. Vercel 지원 코드·옛 배포 문서는 남아 있으나 현재 운영 프론트엔드는 Cloud Run이다. 최근 전체 운영 전환 증거는 [2026-09-07~08 배포 기록](../releases/2026-09-07-eb55518-partial.md)을 본다.
 
 ## 2. 코드의 책임 경계
 
@@ -72,9 +72,9 @@ Backend는 Python 3.11, FastAPI, SQLAlchemy, Alembic, Celery, Jinja2/WeasyPrint�
 ## 4. 온보딩과 공개 게이트
 
 1. 계약 인수와 운영 담당자를 기록한다. 최초 `profile_complete=True` 전환에는 승인된 인수와 필수 프로파일 항목이 필요하다. 현재 필수 항목에는 공식 병원 식별 정보·좌표·진료 항목 등이 포함되므로 옛 입력 목록을 복사해서 검증하지 않는다.
-2. 프로파일 완료를 저장하고 V0 작업을 등록한다. V0는 측정·PDF를 저장한 뒤 `v0_report_done`을 올리고 후속 사이트 준비를 진행한다.
-3. `build_aeo_site`는 이름과 달리 병원별 HTML/CSS 파일 생성기가 아니다. `site_built` 상태를 준비하고 공통 Site에서 제공할 병원을 활성화한다.
-4. 공개 활성화 공통 선행조건은 **`profile_complete && v0_report_done && site_built`**다. 일정이나 Essence 승인은 여기에 추가하지 않는다. 기본 플랫폼 주소는 조건 충족 시 자동 활성화하며, 자기 도메인은 별도 연결·검증 경로를 따른다. 자동 작업은 PAUSED 병원을 임의로 재개하지 않는다.
+2. 프로파일 완료를 저장하면 V0 초기 진단과 사이트 준비를 서로 독립적으로 등록한다. V0는 측정·PDF를 저장하고 `v0_report_done`을 올리는 백그라운드 산출물이며, 진행 중이거나 늦게 끝난다는 이유로 사이트 준비와 공개 시작을 막지 않는다.
+3. `build_aeo_site`는 이름과 달리 병원별 HTML/CSS 파일 생성기가 아니다. 프로파일이 완료된 병원의 `site_built` 상태를 준비하고 공통 Site에서 제공할 병원을 활성화한다.
+4. 공개 활성화 공통 선행조건은 **`profile_complete && site_built`**다. 일정·Essence 승인·V0 완료를 여기에 추가하지 않는다. 기본 플랫폼 주소는 조건 충족 시 자동 활성화하며, 자기 도메인은 별도 연결·DNS/TLS 검증 경로를 따른다. 자동 작업은 PAUSED 병원을 임의로 재개하지 않는다. 늦게 끝난 V0도 이미 결정된 ACTIVE·PAUSED·PENDING_DOMAIN 상태를 되돌리지 않는다.
 5. 콘텐츠 운영 준비는 별도다. 일정 설정과 최신 전체 자료 기반의 유효한 Essence가 필요하다. 병원 기본 화면 공개와 콘텐츠 신규 생성 준비를 같은 단계로 묶지 않는다.
 
 `HospitalStatus`는 ONBOARDING, ANALYZING, BUILDING, PENDING_DOMAIN, ACTIVE, PAUSED를 가지지만 모든 변경이 하나의 엄격한 상태 전이 그래프에 모인 것은 아니다. 일시중지는 서비스 구간을 닫고 공개 API는 ACTIVE를 요구한다. `site_live`는 중지 시에도 남을 수 있다. 재개 경로의 도메인 검사는 신규 연결의 모든 DNS/TLS 검사와 동일하다고 단정하지 않는다.
@@ -128,8 +128,8 @@ flowchart LR
 1. 대상 슬롯을 claim하고 lease·운영 실행 기록을 저장한다. 자동 생성은 ACTIVE/live 병원을 대상으로 하고 한 번에 최대 50개, 기본 2시간 lease를 사용한다.
 2. 질문 타깃·보완 행동·최근 제목을 바탕으로 brief를 만들고 현재 Essence·source snapshot과 치료별 환자 설명·주의·근거를 writer와 reviewer에 같은 입력으로 넣는다. 생성 당시와 최근 재검사 Essence ID는 따로 보존한다.
 3. Anthropic Claude로 구조화된 본문을 생성한다. 현재 분량 검사는 공백 등을 제외한 평문 **1,800~5,200자**다. FAQ는 질문과 답변 요약을 별도로 요구하고 NOTICE를 제외한 의료 유형은 인용 가능한 참고자료를 요구한다.
-4. 제목·본문·FAQ·참고자료 제목과 URL 등 전체 공개 후보를 hash하고 필드별 coverage를 남긴다. 독립 검수는 HARD/SOFT/UNCERTAIN finding을 보존하며, unresolved HARD/UNCERTAIN은 발행을 막는다. 개선된 후보는 새 hash로 다시 검수한다. 결정적 금지 표현·근거·형식 검사도 함께 적용한다. 운영 전환 preflight의 공개 글 115건은 미해결 22건(REVISE 19, UNAVAILABLE 3)과 AI 검수 레거시 기준 허용 93건(ABSENT 92, PASS 1)으로 분류됐다. 배포 전 exact allowlist가 FAQ 질문 끝 물음표만 3건 CAS 수정한 뒤 미해결 후보 22건을 독립 재검수한다. AI 검수 레거시 93건은 과거 상태만을 이유로 공급자 재검수하지 않고, 전체 전환 뒤 exact baseline ID의 새 엄격 공개 gate 결과를 read-only로 확인한다.
-5. 대표 이미지는 생성, 정책 검수, 업로드를 별도 단계로 처리한다. 기존 업로드 이미지는 다시 내려받아 검수할 수 있고, 업로드 일시 실패는 생성·검수를 반복하지 않는다. 새 발행에는 이미지 내용 hash·콘텐츠 주제 hash·정책 버전에 묶인 인증이 필요하다. 운영 점검에서는 공개 글 115건 중 109건에 이 결합 인증이 없었고, 나머지 6건도 기존 검수 시각만 가진 상태였다. 배포 전 일회성 Job/CLI가 115건 모두의 실제 바이트를 다시 검수하고 content-addressed 불변 사본과 인증을 CAS로 저장하거나 안전하지 않은 이미지를 교체해야 한다. 공개 GCS 이미지 프록시 URL에는 인증된 내용 hash를 `?v=`로 붙인다. Site 이미지 최적화 캐시의 최소 TTL이 86,400초이므로 교체된 바이트의 hash가 URL cache key도 바꾼다. 기존 검수 시각 호환은 복구 중 구 API의 전환 구간에만 허용한다. 새 API와 비공개 기존 행의 일반 생성·발행에는 엄격한 byte-bound gate를 적용하며 영구 레거시 우회나 가짜 인증값을 허용하지 않는다.
+4. 제목·본문·FAQ·참고자료 제목과 URL 등 전체 공개 후보를 hash하고 필드별 coverage를 남긴다. 독립 검수는 HARD/SOFT/UNCERTAIN finding을 보존하며, unresolved HARD/UNCERTAIN은 발행을 막는다. 개선된 후보는 새 hash로 다시 검수한다. 결정적 금지 표현·근거·형식 검사도 함께 적용한다. 2026-09-07~08 전환에서는 고정 manifest의 FAQ 3건을 CAS 수정하고 본문 22건을 독립 재검수한 뒤, 공개 글 115건의 strict gate를 read-only로 확인했다. AI 검수 레거시 상태만을 이유로 나머지 글을 유료 재검수하지 않았다.
+5. 대표 이미지는 생성, 정책 검수, 업로드를 별도 단계로 처리한다. 기존 업로드 이미지는 다시 내려받아 검수할 수 있고, 업로드 일시 실패는 생성·검수를 반복하지 않는다. 새 발행에는 이미지 내용 hash·콘텐츠 주제 hash·정책 버전에 묶인 인증이 필요하다. 2026-09-07~08 일회성 전환은 당시 공개 이미지 115건의 실제 바이트를 다시 검수하고 content-addressed 불변 사본과 인증을 CAS로 저장했으며, 79건은 바이트를 유지하고 36건은 교체했다. 공개 GCS 이미지 프록시 URL에는 인증된 내용 hash를 `?v=`로 붙인다. Site 이미지 최적화 캐시의 최소 TTL이 86,400초이므로 교체된 바이트의 hash가 URL cache key도 바꾼다. 새 API와 비공개 기존 행의 일반 생성·발행에는 엄격한 byte-bound gate를 적용하며 영구 레거시 우회나 가짜 인증값을 허용하지 않는다.
 6. 결과 저장은 `generation_claim_token`과 `content_revision`을 조건부 UPDATE로 확인한다. 운영자 편집·취소·발행이나 새 claim 뒤에 도착한 늦은 응답은 현재 행을 덮어쓰지 않는다.
 
 근거: [계획](../../backend/app/services/content_target_planner.py), [본문 엔진](../../backend/app/services/content_engine.py), [이미지 엔진](../../backend/app/services/image_engine.py), [공개 이미지 URL](../../backend/app/api/public/site.py), [Site 이미지 캐시](../../site/next.config.mjs), [배치 claim·writeback](../../backend/app/workers/nightly_generation_batch.py), [의료 표현 검사](../../backend/app/utils/medical_filter.py).
@@ -152,7 +152,9 @@ flowchart LR
 
 월간 고정 측정 대상은 명시적인 `monthly_sov_cohort`, ACTIVE, 기존 측정 기록, 유효한 LOCAL 질문 세트를 만족하는 병원이다. 코드 기본 상한은 7곳이다. 모든 ACTIVE 병원이나 무료 진단 전환 리드를 자동으로 같은 코호트로 취급하지 않는다. 양 플랫폼 구성 시 기본 15개 LOCAL 질문 × 2플랫폼 × 5회 반복이며 24일부터 월말까지 측정한다. Gemini 미설정이면 해당 플랫폼을 생략한다. 월간 대상은 주간 레거시 측정에서 제외한다.
 
-월간과 V0는 manifest뿐 아니라 질문·플랫폼·반복·protocol이 고정된 `MeasurementObservationSlot`을 먼저 만든다. 각 슬롯은 답변과 판정을 별도 상태로 저장하므로 판정 실패 때 이미 받은 답변을 다시 사지 않고 그 단계부터 재개한다. answer 원문·hash·모델·검색·인용·usage와 judgment 입력 fingerprint·방법·실패 이유를 분리한다. 작업 구현의 품질 상태는 계획 슬롯 전체가 확정된 COMPLETE, 일부 확정된 LIMITED, 확정 슬롯이 없는 UNAVAILABLE다. 기존 manifest/attempt만 있는 과거 실행은 새 고정 슬롯 lineage와 구분한다.
+월간과 V0는 manifest뿐 아니라 질문·플랫폼·반복·protocol이 고정된 `MeasurementObservationSlot`을 먼저 만든다. 각 슬롯은 답변과 판정을 별도 상태로 저장하므로 판정 실패 때 이미 받은 답변을 다시 사지 않고 그 단계부터 재개한다. answer 원문·hash·모델·검색·인용·usage와 judgment 입력 fingerprint·방법·실패 이유를 분리한다. V0는 병원명·지역·경쟁사 등 판정 입력도 run에 동결하고 약 480초의 짧은 실행 구간마다 진행 상태를 commit한 뒤 같은 `OperationRun`·`MeasurementRun`으로 자동 이어간다. 정상 구간 이어가기는 실제 오류의 재시도 예산을 소모하지 않는다. 1,800초 soft limit과 2,100초 hard limit은 최종 안전장치로 유지하고, soft limit은 공급자 실패로 바꾸지 않고 이어가기 경로로 전달하며, hard kill 뒤 lease가 만료된 RUNNING 작업은 자율 복구가 인수한다. 작업 구현의 품질 상태는 계획 슬롯 전체가 확정된 COMPLETE, 일부 확정된 LIMITED, 확정 슬롯이 없는 UNAVAILABLE다. 기존 manifest/attempt만 있는 과거 실행은 새 고정 슬롯 lineage와 구분한다.
+
+변경 배경은 2026-09-08 운영 관측이다. 기존 단일 V0 실행은 1,800초 soft limit을 공급자 오류 처리 안에서 흡수한 뒤 2,100초 hard limit으로 종료됐고, 150개 고정 슬롯 중 122개 확정·1개 실패·27개 대기와 리포트 0건을 남겼다. 새 경로는 시작한 슬롯의 체크포인트를 끝낸 뒤 480초 경계에서 스스로 이어가며, soft limit도 같은 재개 경로로 전달한다. 이 수치는 원인 확인 시점의 한 실행 기록이며 정상 완료 시간 보장은 아니다.
 
 통합 언급률은 확인된 LOCAL 반복의 언급 횟수/성공 반복 횟수다. 비교 가능한 전월이 있으면 headline은 양 기간의 공통 matched cohort를 사용하고 전체 셀 값은 별도 보존한다. 실패·미확정은 분모에서 제외하며 구성된 플랫폼 하나가 통째로 없으면 통합 숫자를 만들지 않는다. 플랫폼 집계는 셀 빈도 평균을 사용하므로 반복 수가 불균등하면 단순 합산과 다를 수 있다. 전월 질문·플랫폼·모델 조건이 비교 가능한지 확인하며 첫 측정을 전월 대비 증가로 표현하지 않는다. 참고한 콘텐츠, 새 언급, 첫 관측, 비교 불가, 미언급 전환을 구분한다.
 
@@ -165,7 +167,7 @@ flowchart LR
 5. AE가 PDF를 직접 전달한 뒤 현재 artifact hash에 결합된 전달 기록을 남긴다. 정정·철회·재전달은 별도 이벤트이며, 이 API가 이메일을 발송하는 것은 아니다.
 6. 월초 재실행과 산출물 reconciliation이 유실·미완료 작업을 복구한다. 같은 월의 보고서·근거를 무분별하게 새로 만들어 성공처럼 보이게 하지 않는다.
 
-V0는 같은 MonthlyReport 모델의 `report_type=V0`를 사용하는 초기 진단 흐름이다. V0 원장용 PDF도 실제 경로·hash·크기·검증 메타데이터가 있는 Artifact로 저장하고, 현재 artifact를 다시 검증한 뒤 전달 기록을 허용한다. 생성→다운로드→전달과 변조·구판 차단은 로컬 검증을 통과했으며 운영 artifact 증거는 후속 구현 기록에 남긴다.
+V0는 같은 MonthlyReport 모델의 `report_type=V0`를 사용하는 초기 진단 흐름이다. 공개 활성화와 독립된 백그라운드 작업이며, V0가 완료되면 이미 ACTIVE·PAUSED·PENDING_DOMAIN인 병원 상태를 바꾸지 않는다. V0 원장용 PDF도 실제 경로·hash·크기·검증 메타데이터가 있는 Artifact로 저장하고, 현재 artifact를 다시 검증한 뒤 전달 기록을 허용한다. 생성→다운로드→전달과 변조·구판 차단은 로컬 검증을 통과했으며 운영 artifact 증거는 후속 구현 기록에 남긴다.
 
 근거: [SoV 엔진](../../backend/app/services/sov_engine.py), [월간 manifest](../../backend/app/services/monthly_manifest.py), [월간 집계](../../backend/app/services/monthly_sov.py), [통계 입력](../../backend/app/services/monthly_sov_types.py), [귀속·비교](../../backend/app/services/report_attribution.py), [PDF 엔진](../../backend/app/services/report_engine.py), [리포트 API·전달 게이트](../../backend/app/api/admin/reports.py), [월간 산출물 복구](../../backend/app/workers/monthly_artifact_reconciliation.py).
 

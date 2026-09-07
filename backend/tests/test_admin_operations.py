@@ -448,7 +448,7 @@ async def test_verify_domain_operation_activates_when_cname_matches(monkeypatch)
 
 
 async def test_verify_domain_operation_blocks_live_without_readiness(monkeypatch):
-    hospital = _hospital(v0_report_done=False, site_built=True, schedule_set=True)
+    hospital = _hospital(profile_complete=False, site_built=True, schedule_set=True)
     db = FakeDB(hospital=hospital)
 
     async def _fake_check_domain_dns(domain, strategy=DomainDnsStrategy.CNAME):
@@ -552,7 +552,6 @@ async def test_verify_domain_operation_accepts_apex_address_strategy(monkeypatch
     ("missing_key", "overrides", "handoff_state"),
     [
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )
@@ -683,7 +682,29 @@ async def test_trigger_v0_rejects_analyzing_in_progress(monkeypatch):
         await operations_api.trigger_v0_report_operation(hospital.id, db=db)
 
     assert exc.value.status_code == 409
-    assert "이미 초기 진단을 만들고 있습니다" in exc.value.detail["message"]
+    assert "초기 진단을 백그라운드에서 만들고 있습니다" in exc.value.detail["message"]
     assert exc.value.detail["operation_run_id"] == str(active.id)
     assert exc.value.detail["operation_state"] == "RUNNING"
     assert queued == []
+
+
+async def test_trigger_v0_rejects_active_hospital_in_progress(monkeypatch):
+    """공개 상태와 무관하게 살아 있는 V0에 같은 유료 측정을 더하지 않는다."""
+    hospital = _hospital(v0_report_done=False, status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+    active = OperationRun(id=uuid.uuid4(), state="RUNNING")
+
+    async def _alive(_db, _hospital_id):
+        return True
+
+    async def _active(_db, _hospital_id):
+        return active
+
+    monkeypatch.setattr(operations_api, "v0_claim_is_alive", _alive)
+    monkeypatch.setattr(operations_api, "latest_active_v0_run", _active)
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.trigger_v0_report_operation(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert "백그라운드" in exc.value.detail["message"]

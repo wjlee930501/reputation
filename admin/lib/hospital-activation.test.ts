@@ -44,7 +44,7 @@ test('server-provided activation blockers remain authoritative and canonically o
   ])
 })
 
-test('platform address activates automatically once the three gates pass', () => {
+test('platform address activates automatically once the public gates pass', () => {
   const gatesMet = { profile_complete: true, v0_report_done: true, site_built: true }
   assert.equal(platformActivationMode({ ...gatesMet, site_live: false }), 'automatic')
   assert.equal(platformActivationMode({ ...gatesMet, site_live: true }), 'live')
@@ -61,10 +61,10 @@ test('custom-domain and paused hospitals keep the manual activation path', () =>
   assert.equal(hasCustomDomain({ aeo_domain: 'ai.clinic.co.kr' }), true)
 })
 
-test('unmet gates never read as automatic activation', () => {
+test('background V0 does not block automatic activation', () => {
   assert.equal(
     platformActivationMode({ profile_complete: true, v0_report_done: false, site_built: true }),
-    'blocked',
+    'automatic',
   )
 })
 
@@ -95,7 +95,7 @@ test('platformActivationMode matches backend evaluate_auto_activation ordering (
     'manual',
   )
 
-  // 자기 도메인도 없고 PAUSED도 아닌데 게이트만 미충족이면 'blocked' (자동 활성화 안내 문구 대상).
+  // 자기 도메인도 없고 PAUSED도 아니면 백그라운드 V0와 무관하게 자동 활성화한다.
   assert.equal(
     platformActivationMode({
       profile_complete: true,
@@ -103,6 +103,6 @@ test('platformActivationMode matches backend evaluate_auto_activation ordering (
       site_built: true,
       site_live: false,
     }),
-    'blocked',
+    'automatic',
   )
 })

@@ -238,7 +238,7 @@ test('raw-text-less pending rows and photos do not satisfy the evidence source r
   }
 })
 
-test('later work stays completed when V0 is the current blocker', () => {
+test('background V0 does not lock or replace the next operator action', () => {
   const steps = deriveOnboardingSteps(
     { ...hospital, v0_report_done: false, site_built: false, site_live: false },
     sources,
@@ -248,13 +248,15 @@ test('later work stays completed when V0 is the current blocker', () => {
     acceptedHandoff,
   )
 
-  assert.equal(steps.find((step) => step.key === 'v0')?.status, 'current')
+  assert.equal(steps.find((step) => step.key === 'v0')?.status, 'upcoming')
+  assert.equal(steps.find((step) => step.key === 'v0')?.badge, '백그라운드 진행')
+  assert.equal(steps.find((step) => step.key === 'site')?.status, 'current')
   assert.equal(steps.find((step) => step.key === 'processing')?.status, 'completed')
   assert.equal(steps.find((step) => step.key === 'philosophy_approved')?.status, 'completed')
   assert.equal(steps.find((step) => step.key === 'schedule')?.status, 'completed')
   assert.equal(
     deriveOnboardingSummary(steps, readiness).nextActionHref,
-    '/hospitals/hospital-id/dashboard#v0-measurement-runs',
+    '/hospitals/hospital-id/profile#domain-setup',
   )
 })
 
@@ -332,8 +334,9 @@ test('an initial diagnosis without a report PDF cannot complete step three', () 
   )
   const v0 = steps.find((step) => step.key === 'v0')
 
-  assert.equal(v0?.status, 'current')
-  assert.match(v0?.description ?? '', /PDF가 아직 없습니다/)
+  assert.equal(v0?.status, 'upcoming')
+  assert.match(v0?.description ?? '', /백그라운드/)
+  assert.equal(deriveOnboardingSummary(steps, readiness).stateLabel, '정기 운영 중')
   assert.equal(
     steps.filter((step) => step.phase === 'onboarding' && step.status === 'completed').length,
     7,
@@ -341,7 +344,7 @@ test('an initial diagnosis without a report PDF cannot complete step three', () 
 })
 
 // 월간 보고서 PDF는 초기 진단이 아니다. 보고서 행이 여러 건이어도 초기 진단 PDF가
-// 0이면 3단계는 끝나지 않고, 설명이 "월간 보고서가 아니라"는 점을 짚는다.
+// 0이면 진단 항목은 끝나지 않지만 운영자의 다음 행동과 공개를 막지 않는다.
 test('monthly report PDFs never stand in for the initial diagnosis', () => {
   const v0 = deriveOnboardingSteps(
     hospital,
@@ -352,8 +355,8 @@ test('monthly report PDFs never stand in for the initial diagnosis', () => {
     acceptedHandoff,
   ).find((step) => step.key === 'v0')
 
-  assert.equal(v0?.status, 'current')
-  assert.match(v0?.description ?? '', /월간 보고서가 아니라 초기 진단 PDF/)
+  assert.equal(v0?.status, 'upcoming')
+  assert.match(v0?.description ?? '', /다른 설정과 공개 운영을 막지 않습니다|백그라운드/)
 })
 
 test('a report PDF completes step three and an unknown PDF count does not block it', () => {

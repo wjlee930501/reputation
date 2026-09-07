@@ -203,7 +203,7 @@ export default function HospitalsPage() {
         <div className="bg-white border border-dashed border-slate-300 rounded-xl py-16 px-6 text-center">
           <p className="text-base font-semibold text-slate-700">아직 등록된 병원이 없습니다.</p>
           <p className="text-sm text-slate-500 mt-2 max-w-md mx-auto">
-            계약이 체결된 병원을 등록하면 초기 진단 보고서 → 병원 정보 허브 준비 → 콘텐츠 자동 생성 순서로 진행됩니다.
+            계약이 체결된 병원을 등록하면 초기 진단은 백그라운드에서 진행되고, 병원 정보 허브 준비와 콘텐츠 설정은 기다리지 않고 계속할 수 있습니다.
           </p>
           <Link
             href="/hospitals/new"

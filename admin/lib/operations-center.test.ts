@@ -461,6 +461,13 @@ test('recoverable content blockers explain automatic recovery before human actio
   assert.match(safeCauseText('FAQ_FIELDS_MISSING'), /다음 복구 배치에서 다시 생성/)
 })
 
+test('terminal V0 policy drift does not promise automatic recovery', () => {
+  const explanation = safeCauseText('V0_MEASUREMENT_POLICY_DRIFT')
+  assert.match(explanation, /안전하게 중단/)
+  assert.match(explanation, /배포 기준을 확인/)
+  assert.doesNotMatch(explanation, /자동 재개/)
+})
+
 test('a future deadline is not called imminent, and a passed one says how far past', () => {
   const now = Date.parse('2026-08-23T12:00:00Z')
   const at = (iso: string) => iso.slice(5, 16)

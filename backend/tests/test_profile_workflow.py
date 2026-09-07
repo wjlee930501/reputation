@@ -39,6 +39,9 @@ class PendingProfileDB:
     async def commit(self):
         self.committed = True
 
+    async def refresh(self, _item):
+        return None
+
 
 async def test_complete_profile_returns_machine_blocker_and_enqueues_nothing() -> None:
     hospital = SimpleNamespace(
@@ -95,3 +98,50 @@ async def test_complete_profile_returns_machine_blocker_and_enqueues_nothing() -
     assert exc.value.status_code == 409
     assert exc.value.detail["code"] == "HANDOFF_NOT_ACCEPTED"
     assert tasks.tasks == []
+
+
+async def test_profile_completion_dispatches_site_build_independently_from_v0(
+    monkeypatch,
+) -> None:
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="QA", slug="qa", profile_complete=False,
+        status="ONBOARDING", plan=None, source_lead_id=None, onboarding_note=None, site_live=False,
+        site_built=False, v0_report_done=False, schedule_set=False, created_at=None,
+        address="서울", phone="02", business_hours={"mon": "09-18"},
+        website_url="https://clinic.example", blog_url=None, kakao_channel_url=None,
+        google_business_profile_url=None, google_maps_url="https://maps.example/x",
+        naver_place_url="https://naver.me/example", latitude=37.5, longitude=127.0,
+        wikidata_qid=None, gbp_place_id=None, naver_place_id=None, kakao_place_id=None,
+        hira_org_id=None, region=["서울"], specialties=["외과"], keywords=["진료"],
+        competitors=[], director_name="김원장", director_career="전문의",
+        director_philosophy="충분히 설명합니다.", director_credentials=None,
+        treatments=[{"name": "진료"}], aeo_domain=None,
+    )
+    background = BackgroundTasks()
+    dispatched = []
+
+    async def _dispatch(_db, command, _task):
+        dispatched.append(command.operation_type)
+        return None
+
+    monkeypatch.setattr(hospitals_api, "dispatch_operation", _dispatch)
+
+    await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(profile_complete=True),
+        background,
+        db=PendingProfileDB(
+            hospital,
+            SimpleNamespace(state=HandoffState.HANDOFF_ACCEPTED),
+        ),
+    )
+
+    assert dispatched == ["TRIGGER_V0_REPORT"]
+    assert len(background.tasks) == 1
+    site_task = background.tasks[0]
+    assert getattr(getattr(site_task.func, "__self__", None), "name", None) == (
+        hospitals_api.build_aeo_site.name
+    )
+    assert getattr(site_task.func, "__name__", None) == "apply_async"
+    assert site_task.kwargs["args"] == [str(hospital.id)]
+    assert site_task.kwargs["queue"] == "default"

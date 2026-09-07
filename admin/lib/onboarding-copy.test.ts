@@ -38,7 +38,7 @@ test('handoff escalation appears once and only while the handoff is actually ove
 test('the completed KEEP-8 header becomes status copy instead of another required task', () => {
   assert.match(
     ONBOARDING_PAGE,
-    /completedCount === onboardingSteps\.length \? '온보딩 상태' : '지금 해야 할 일'/,
+    /completedRequiredCount === requiredOnboardingSteps\.length \? '온보딩 상태' : '지금 해야 할 일'/,
   )
 })
 

@@ -68,7 +68,7 @@ def _weekly_worst_case_calls() -> int:
     return settings.SOV_HIGH_PRIORITY_CAP * settings.SOV_REPEAT_COUNT_WEEKLY
 
 
-@pytest.mark.parametrize("task_name", ["run_sov_for_hospital", "trigger_v0_report"])
+@pytest.mark.parametrize("task_name", ["run_sov_for_hospital"])
 def test_measurement_fits_inside_its_celery_soft_time_limit(task_name: str) -> None:
     """물량 ÷ 동시성 × 실측 p50 이 태스크 soft_time_limit 안에 들어와야 한다.
 
@@ -81,10 +81,7 @@ def test_measurement_fits_inside_its_celery_soft_time_limit(task_name: str) -> N
     soft_limit = task.soft_time_limit
     assert soft_limit, f"{task_name}에 soft_time_limit이 없다 (전역 600초가 적용된다)"
 
-    if task_name == "trigger_v0_report":
-        calls = tasks.V0_QUERY_SAMPLE_COUNT * tasks.V0_REPEAT_COUNT * 2  # 2 플랫폼
-    else:
-        calls = _weekly_worst_case_calls()
+    calls = _weekly_worst_case_calls()
 
     # 최악의 모델(가장 느린 실측 p50)을 기준으로 잡는다.
     slowest_p50 = max(v["p50"] for v in MEASURED_LATENCY_SECONDS.values())
@@ -97,6 +94,26 @@ def test_measurement_fits_inside_its_celery_soft_time_limit(task_name: str) -> N
         f"넘는다. 동시성을 올리거나 물량 상한(SOV_HIGH_PRIORITY_CAP="
         f"{settings.SOV_HIGH_PRIORITY_CAP}) 을 낮춰라."
     )
+
+
+def test_v0_is_sequentially_chunked_with_one_slot_of_soft_limit_headroom() -> None:
+    """A semaphore does not parallelize V0's sequential slot loop.
+
+    The chunk stops before starting another slot. Headroom covers one ChatGPT
+    answer plus own/competitor judgments, each with three bounded HTTP attempts.
+    """
+    from app.workers import tasks
+
+    task = tasks.trigger_v0_report
+    sequential_slots = tasks.V0_QUERY_SAMPLE_COUNT * tasks.V0_REPEAT_COUNT * 2
+    sequential_p50 = sequential_slots * max(
+        value["p50"] for value in MEASURED_LATENCY_SECONDS.values()
+    )
+    one_slot_timeout_ceiling = 3 * 3 * sov_engine.OPENAI_TIMEOUT_SECONDS
+
+    assert sequential_p50 > task.soft_time_limit
+    assert tasks.V0_CHUNK_STOP_SECONDS + one_slot_timeout_ceiling < task.soft_time_limit
+    assert tasks.V0_CHUNK_STOP_SECONDS < task.time_limit
 
 
 @pytest.mark.asyncio

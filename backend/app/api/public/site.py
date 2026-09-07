@@ -119,7 +119,6 @@ async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
             Hospital.profile_complete.is_(True),
-            Hospital.v0_report_done.is_(True),
             Hospital.site_built.is_(True),
         )
         .limit(1)
@@ -158,7 +157,6 @@ async def get_tenant_health_by_domain(
                     Hospital.status == HospitalStatus.ACTIVE,
                     Hospital.site_live.is_(True),
                     Hospital.profile_complete.is_(True),
-                    Hospital.v0_report_done.is_(True),
                     Hospital.site_built.is_(True),
                 )
                 .limit(1)
@@ -184,7 +182,6 @@ async def list_hospitals(request: Request, db: AsyncSession = Depends(get_db)):
         Hospital.status == HospitalStatus.ACTIVE,
         Hospital.site_live.is_(True),
         Hospital.profile_complete.is_(True),
-        Hospital.v0_report_done.is_(True),
         Hospital.site_built.is_(True),
     )
     result = await db.execute(stmt)

@@ -119,5 +119,5 @@ test('activationBlockers allows default platform domain only after all prerequis
     v0_report_done: false,
     site_built: true,
     schedule_set: false,
-  }), ['초기 진단 보고서'])
+  }), [])
 })

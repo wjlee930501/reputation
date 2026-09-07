@@ -422,7 +422,6 @@ async def test_resume_rejected_when_not_paused():
     ("missing_key", "overrides", "handoff_state"),
     [
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )

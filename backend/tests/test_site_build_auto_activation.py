@@ -1,6 +1,6 @@
 """기본 플랫폼 주소 자동 활성화 (STEP 4 → STEP 5).
 
-게이트 세 가지는 모두 시스템 플래그다. 자기 도메인이 없는 병원은 허브 준비가 끝나는
+공개 게이트는 프로필과 허브 준비다. 자기 도메인이 없는 병원은 V0를 기다리지 않고
 즉시 운영이 시작되고, 자기 도메인이 지정된 병원과 일시 정지 병원만 손대지 않는다.
 `build_aeo_site`는 acks_late·자율 복구로 두 번 이상 돌 수 있으므로 재실행에서
 감사 로그도 알림도 늘지 않아야 한다.
@@ -123,6 +123,16 @@ def _run_build(monkeypatch, hospital: Hospital) -> tuple[_FakeSyncDB, list, list
 
 def test_platform_address_hospital_with_all_gates_is_auto_activatable() -> None:
     hospital = _hospital(site_built=True, status=HospitalStatus.PENDING_DOMAIN)
+    assert evaluate_auto_activation(hospital) is None
+
+
+def test_platform_address_does_not_wait_for_background_v0() -> None:
+    hospital = _hospital(
+        site_built=True,
+        v0_report_done=False,
+        status=HospitalStatus.PENDING_DOMAIN,
+    )
+
     assert evaluate_auto_activation(hospital) is None
 
 

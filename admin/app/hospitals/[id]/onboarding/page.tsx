@@ -269,19 +269,6 @@ function sourceFileFormatLabel(mimeType: string | null): string {
   return '파일 형식 확인 필요'
 }
 
-function measurementPlannedCount(run: MeasurementRun | null): number {
-  const platforms = run?.error_summary?.platforms
-  if (!platforms || typeof platforms !== 'object' || Array.isArray(platforms)) {
-    return run?.query_count ?? 0
-  }
-  const planned = Object.values(platforms).reduce((sum: number, value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return sum
-    const count = (value as Record<string, unknown>).planned_count
-    return sum + (typeof count === 'number' ? count : 0)
-  }, 0)
-  return planned > 0 ? planned : (run?.query_count ?? 0)
-}
-
 function getProcessingBlockReason(source: Source): string | null {
   if (source.status === 'EXCLUDED' || source.status === 'PROCESSED') return null
   if (hasProcessableText(source)) return null
@@ -502,17 +489,12 @@ export default function OnboardingPage() {
     handoff,
   )
   const summary = deriveOnboardingSummary(steps, readiness)
-  const latestMeasurementRun = measurementRuns.find((run) => run.run_label === 'V0 first measurement') ?? null
-  const latestV0Message = typeof latestMeasurementRun?.error_summary?.safe_error_message === 'string'
-    ? latestMeasurementRun.error_summary.safe_error_message
-    : null
-  const v0IsCurrent = steps.some((step) => step.key === 'v0' && step.status === 'current')
-  const blockedReason = v0IsCurrent && latestMeasurementRun?.status === 'FAILED'
-    ? `${latestV0Message ?? '외부 답변 측정을 완료하지 못했습니다.'} 성공 ${latestMeasurementRun.success_count}건·실패 ${latestMeasurementRun.failure_count}건·예정 ${measurementPlannedCount(latestMeasurementRun)}건 중 나머지는 추가 비용을 막기 위해 중단했으며, 사람 확인이 필요합니다.`
-    : summary.blockedReason
+  const blockedReason = summary.blockedReason
   const onboardingSteps = steps.filter((step) => step.phase === 'onboarding')
+  const requiredOnboardingSteps = onboardingSteps.filter((step) => step.key !== 'v0')
   const outcomeSteps = steps.filter((step) => step.phase === 'post_onboarding')
-  const completedCount = onboardingSteps.filter((step) => step.status === 'completed').length
+  const completedRequiredCount = requiredOnboardingSteps.filter((step) => step.status === 'completed').length
+  const v0Complete = steps.some((step) => step.key === 'v0' && step.status === 'completed')
   const slaDueAt = handoff?.sla_due_at ? new Date(handoff.sla_due_at) : null
   const handoffDueStatus = deriveHandoffDueStatus(handoff, checkedAt)
 
@@ -528,7 +510,7 @@ export default function OnboardingPage() {
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
               <p className="text-xs font-semibold text-blue-100">
-                {completedCount === onboardingSteps.length ? '온보딩 상태' : '지금 해야 할 일'}
+                {completedRequiredCount === requiredOnboardingSteps.length ? '온보딩 상태' : '지금 해야 할 일'}
               </p>
               <p className="mt-1 text-base font-bold text-white sm:text-lg">{summary.headline}</p>
               <p className="mt-1 hidden max-w-3xl text-sm leading-6 text-blue-50/90 sm:block">{summary.detail}</p>
@@ -562,8 +544,8 @@ export default function OnboardingPage() {
             {(() => {
               const current = onboardingSteps.find((step) => step.status === 'current')
               return current
-                ? `완료 ${completedCount}/${onboardingSteps.length} · 다음 필수: ${current.index + 1}단계 ${current.title}`
-                : `완료 ${completedCount}/${onboardingSteps.length}`
+                ? `필수 완료 ${completedRequiredCount}/${requiredOnboardingSteps.length} · 다음 필수: ${current.index + 1}단계 ${current.title} · 초기 진단 ${v0Complete ? '완료' : '백그라운드 진행'}`
+                : `필수 완료 ${completedRequiredCount}/${requiredOnboardingSteps.length} · 초기 진단 ${v0Complete ? '완료' : '백그라운드 진행'}`
             })()}
           </span>
           <span className={`rounded-full px-3 py-1 text-xs font-semibold ${summary.stateClassName}`}>
@@ -589,7 +571,7 @@ export default function OnboardingPage() {
           <details className="lg:hidden">
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-slate-800 [&::-webkit-details-marker]:hidden">
               전체 단계 보기
-              <span className="text-xs text-slate-500">{completedCount}/{onboardingSteps.length} 완료</span>
+              <span className="text-xs text-slate-500">필수 {completedRequiredCount}/{requiredOnboardingSteps.length} 완료</span>
             </summary>
             <ol className="mt-2 space-y-1 border-t border-slate-100 pt-2">
               {onboardingSteps.map((s) => (

@@ -626,10 +626,12 @@ def _active_hospital(slug="test-hospital"):
     )
 
 
-def test_public_hospital_requires_every_step_five_gate():
+def test_public_hospital_requires_profile_and_site_but_not_background_v0():
     hospital = _active_hospital()
     assert _is_active_public_hospital(hospital)
-    for field in ("profile_complete", "v0_report_done", "site_built"):
+    hospital.v0_report_done = False
+    assert _is_active_public_hospital(hospital)
+    for field in ("profile_complete", "site_built"):
         drifted = _active_hospital()
         setattr(drifted, field, False)
         assert not _is_active_public_hospital(drifted)

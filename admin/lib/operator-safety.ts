@@ -101,7 +101,6 @@ export interface ActivationReadiness {
 export function activationBlockers(readiness: ActivationReadiness): string[] {
   return [
     !readiness.profile_complete ? '병원 프로필' : null,
-    !readiness.v0_report_done ? '초기 진단 보고서' : null,
     !readiness.site_built ? '병원 정보 허브' : null,
   ].filter((item): item is string => Boolean(item))
 }

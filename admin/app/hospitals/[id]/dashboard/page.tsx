@@ -251,6 +251,7 @@ export default function DashboardPage() {
   const [queries, setQueries] = useState<QueryRow[]>([])
   const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [measurementRuns, setMeasurementRuns] = useState<MeasurementRun[]>([])
+  const [measurementCheckedAt, setMeasurementCheckedAt] = useState(0)
   const [exposureActions, setExposureActions] = useState<ExposureAction[]>([])
   const [queryTargets, setQueryTargets] = useState<AIQueryTarget[]>([])
   const [loading, setLoading] = useState(true)
@@ -312,6 +313,7 @@ export default function DashboardPage() {
         setQueries(Array.isArray(queriesValue) ? queriesValue : [])
         setReadiness(readinessValue)
         setMeasurementRuns(Array.isArray(runsValue) ? runsValue : [])
+        setMeasurementCheckedAt(Date.now())
         setExposureActions(Array.isArray(actionsValue) ? actionsValue : [])
         setQueryTargets(Array.isArray(targetsValue) ? targetsValue : [])
         setAuditLogs(Array.isArray(auditValue) ? auditValue : [])
@@ -334,6 +336,18 @@ export default function DashboardPage() {
 
     return () => { cancelled = true }
   }, [id])
+
+  useEffect(() => {
+    const hasRunningV0 = measurementRuns.some(
+      (run) => run.run_label === 'V0 first measurement' && run.status === 'RUNNING',
+    )
+    if (!hasRunningV0) return
+
+    // 서버 조회 시각에서 시작해 claim lease 경계를 따라간다. 렌더 도중 현재 시각을
+    // 읽으면 결과가 재렌더 시점에 따라 달라지고 SSR purity도 깨지므로 effect만 갱신한다.
+    const tick = setInterval(() => setMeasurementCheckedAt(Date.now()), 30000)
+    return () => clearInterval(tick)
+  }, [measurementRuns])
 
   // 측정이 시작되기 전의 주는 차트에서 잘라낸다 — 빈 칸이 측정 실패로 읽힌다(A-5).
   const measuredWeeks = trimTrendToMeasuredWeeks(trendData)
@@ -364,6 +378,15 @@ export default function DashboardPage() {
   // V0는 한 번만 만든다 — 이미 완료된 병원은 백엔드가 재실행을 거절한다(409).
   // 버튼을 열어두면 눌러본 뒤에야 알게 되므로 미리 잠그고 이유를 보여준다.
   const v0AlreadyDone = Boolean(hospital?.v0_report_done)
+  const v0InProgress = measurementRuns.some((run) => {
+    if (run.run_label !== 'V0 first measurement' || run.status !== 'RUNNING') return false
+    const heartbeatAt = Date.parse(run.updated_at ?? run.started_at ?? '')
+    // 백엔드의 살아 있는 V0 claim(40분)과 같은 경계다. 하드 종료 뒤 남은 오래된
+    // RUNNING 행이 재실행 버튼을 영구히 잠그거나 자동 진행이라고 오해시키지 않는다.
+    return Number.isFinite(heartbeatAt)
+      && measurementCheckedAt > 0
+      && measurementCheckedAt - heartbeatAt < 40 * 60 * 1000
+  })
   const hasMeasurement = measurementRuns.some(
     (run) => run.status === 'COMPLETED' || run.status === 'PARTIAL',
   )
@@ -710,9 +733,9 @@ export default function DashboardPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               <OperationButton
-                label="초기 진단 보고서 다시 만들기"
+                label={v0InProgress ? '초기 진단 백그라운드 진행 중' : '초기 진단 보고서 다시 만들기'}
                 loading={operationLoading === 'v0'}
-                disabled={v0AlreadyDone}
+                disabled={v0AlreadyDone || v0InProgress}
                 onClick={() => runOperation('v0', 'trigger-v0-report')}
               />
               <OperationButton
@@ -737,6 +760,11 @@ export default function DashboardPage() {
             <p className="mt-3 text-xs text-slate-600">
               초기 진단 보고서는 이미 생성됐습니다. 초기 진단은 병원당 한 번만 만들며, 이후 수치는
               &lsquo;병원 언급률 측정&rsquo;과 월간 보고서로 확인합니다.
+            </p>
+          )}
+          {v0InProgress && !v0AlreadyDone && (
+            <p className="mt-3 text-xs text-slate-600">
+              초기 진단은 시스템이 백그라운드에서 이어서 처리합니다. 기다리지 않고 병원 정보 허브와 나머지 설정을 계속 진행하세요.
             </p>
           )}
           {!canRunSov && (

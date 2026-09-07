@@ -711,8 +711,7 @@ def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     assert "병원 기본 정보 탭" in next_onboarding_step(hospital)
     assert "저장" in next_onboarding_step(hospital)
     hospital.profile_complete = True
-    assert "초기 진단 리포트" in next_onboarding_step(hospital)
-    assert "확인" in next_onboarding_step(hospital)
+    assert "공개 정보" in next_onboarding_step(hospital)
     hospital.v0_report_done = True
     assert "공개 정보" in next_onboarding_step(hospital)
     hospital.site_built = True

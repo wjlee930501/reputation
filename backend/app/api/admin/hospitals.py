@@ -3,7 +3,7 @@ Admin API — 병원 프로파일 관리
 POST   /admin/hospitals                 — 신규 등록
 GET    /admin/hospitals                 — 전체 목록
 GET    /admin/hospitals/{id}            — 상세 조회
-PATCH  /admin/hospitals/{id}/profile    — 프로파일 수정 + 완료 시 V0 트리거
+PATCH  /admin/hospitals/{id}/profile    — 프로파일 수정 + 완료 시 V0·사이트 준비 독립 트리거
 PATCH  /admin/hospitals/{id}/domain     — 공개 도메인 상태 확인
 PATCH  /admin/hospitals/{id}/activate   — ACTIVE 전환
 """
@@ -100,7 +100,8 @@ from app.services.site_revalidate import (
     trigger_hospital_site_revalidate_safe,
 )
 from app.utils.medical_filter import check_forbidden
-from app.workers.tasks import trigger_v0_report
+from app.workers.dispatch_auth import build_dispatch_headers
+from app.workers.tasks import build_aeo_site, trigger_v0_report
 
 logger = logging.getLogger(__name__)
 
@@ -657,9 +658,8 @@ async def update_profile(
 ):
     """
     프로파일 수정.
-    profile_complete=True 설정 시 자동으로 V0 분석 트리거.
+    profile_complete=True 설정 시 V0 분석과 콘텐츠 허브 준비를 각각 트리거.
     """
-    _ = background_tasks
     h = await _get_or_404(db, hospital_id)
 
     if body.keywords is not None:
@@ -864,8 +864,16 @@ async def update_profile(
     await db.commit()
     await db.refresh(h)
 
-    # 프로파일 완료로 변경된 경우 V0 분석 자동 트리거 — OperationRun을 남겨 운영 화면에 붙인다.
+    # 프로파일 완료로 변경되면 V0와 허브 준비를 독립적으로 시작한다. 초기 진단은
+    # 장시간 걸릴 수 있는 백그라운드 산출물이므로 그 큐의 지연·실패가 공개 준비를
+    # 막아서는 안 된다. 허브 태스크는 자율 복구에서도 멱등 재디스패치된다.
     if not was_complete and h.profile_complete:
+        background_tasks.add_task(
+            build_aeo_site.apply_async,
+            args=[str(h.id)],
+            queue="default",
+            headers=build_dispatch_headers("build-aeo-site", str(h.id)),
+        )
         try:
             await dispatch_operation(
                 db,
@@ -1031,10 +1039,10 @@ async def autofill_hospital_profile(
 
 @router.patch("/{hospital_id}/activate")
 async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Start STEP 5 public operation after profile, V0, and site build.
+    """Start STEP 5 public operation after profile and site build.
 
-    Content scheduling belongs to STEP 6 and is deliberately not an activation
-    prerequisite.
+    V0 and content scheduling are separate background/STEP 6 workflows and are
+    deliberately not activation prerequisites.
 
     판정과 전환은 같은 행 잠금 안에서 일어나야 한다 — 게이트를 읽은 뒤 전환하기까지
     사이에 들어온 `/pause` 커밋이 조용히 덮이면 일시 정지가 되살아난다.

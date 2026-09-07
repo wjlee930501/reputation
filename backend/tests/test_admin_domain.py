@@ -221,7 +221,6 @@ async def test_verify_domain_blocks_live_without_profile_complete(
 @pytest.mark.parametrize(
     "overrides,expected_label",
     [
-        ({"v0_report_done": False}, "초기 진단 리포트"),
         ({"site_built": False}, "콘텐츠 허브 준비"),
     ],
 )
@@ -380,7 +379,6 @@ async def test_verify_domain_requires_domain_set():
     ("missing_key", "overrides", "handoff_state"),
     [
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )
