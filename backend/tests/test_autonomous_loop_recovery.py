@@ -239,6 +239,93 @@ def test_reconciler_does_not_duplicate_legitimately_queued_operation(monkeypatch
     assert session.commits == 1
 
 
+def test_reconciler_requeues_only_expired_running_v0_with_same_lineage(monkeypatch) -> None:
+    now = datetime(2026, 9, 8, 3, 0, tzinfo=UTC)
+    hospital_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="TRIGGER_V0_REPORT",
+        state=OperationRunState.RUNNING,
+        hospital_id=hospital_id,
+        task_id="hard-killed-v0-task",
+        request_payload={},
+        requested_at=now - timedelta(hours=2),
+        queued_at=now - timedelta(hours=2),
+        heartbeat_at=now - timedelta(hours=1),
+        lease_owner="hard-killed-v0-task",
+        lease_expires_at=now - timedelta(seconds=1),
+        completed_at=None,
+        safe_error_code=None,
+        safe_error_message=None,
+        version=7,
+    )
+    session = _RecoverySession(operation_runs=(run,))
+    dispatched = []
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda name, args, **kwargs: dispatched.append((name, args, kwargs)),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["operation_runs"] == 1
+    assert dispatched == [
+        (
+            "app.workers.tasks.trigger_v0_report",
+            [str(hospital_id)],
+            {
+                "queue": "reports",
+                "headers": {
+                    **autonomous_recovery.build_dispatch_headers(
+                        "trigger-v0-report", str(hospital_id)
+                    ),
+                    "operation_run_id": str(run.id),
+                },
+                "task_id": "hard-killed-v0-task",
+            },
+        )
+    ]
+    assert run.state == OperationRunState.QUEUED
+    assert run.lease_owner is None
+    assert run.lease_expires_at is None
+    assert run.version == 8
+
+
+def test_reconciler_does_not_take_over_live_running_v0(monkeypatch) -> None:
+    now = datetime(2026, 9, 8, 3, 0, tzinfo=UTC)
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="TRIGGER_V0_REPORT",
+        state=OperationRunState.RUNNING,
+        hospital_id=uuid.uuid4(),
+        task_id="live-v0-task",
+        request_payload={},
+        requested_at=now - timedelta(hours=2),
+        queued_at=now - timedelta(hours=2),
+        heartbeat_at=now,
+        lease_owner="live-v0-task",
+        lease_expires_at=now + timedelta(seconds=1),
+    )
+    session = _RecoverySession(operation_runs=(run,))
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a live V0 lease must not be duplicated")
+        ),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["operation_runs"] == 0
+    assert run.state == OperationRunState.RUNNING
+
+
 def test_reconciler_rebuilds_unsafe_stored_dispatch_from_hospital_truth(monkeypatch) -> None:
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     hospital_id = uuid.uuid4()

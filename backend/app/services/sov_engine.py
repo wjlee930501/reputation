@@ -13,6 +13,7 @@ from itertools import product
 from typing import Any
 from urllib.parse import urlparse
 
+from billiard.exceptions import SoftTimeLimitExceeded
 from google import genai as google_genai
 from google.genai import types as genai_types
 from openai import AsyncOpenAI
@@ -1525,6 +1526,8 @@ async def fetch_answer(
         async with _get_semaphore(provider_pool):
             try:
                 provider_result = await query_fn(query_text)
+            except SoftTimeLimitExceeded:
+                raise
             except Exception as exc:  # noqa: BLE001 — 측정 1건의 실패는 진단을 멈추지 않는다.
                 failure_reason = provider_failure_reason(exc)
                 logger.error("Query failed (%s): %s", platform, failure_reason)
@@ -1670,6 +1673,8 @@ async def judge_answer(
                 competitor_mentions = (
                     await _parse_competitors(competitors, response_text) if competitors else []
                 )
+            except SoftTimeLimitExceeded:
+                raise
             except Exception as exc:  # noqa: BLE001 - preserve answer and retry judgment only.
                 return {
                     "measurement_status": "FAILED",

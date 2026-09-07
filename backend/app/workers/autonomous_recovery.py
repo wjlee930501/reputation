@@ -105,6 +105,14 @@ def _operation_redispatch_is_due(run: OperationRun, observed_at: datetime) -> bo
     elif run.state == OperationRunState.QUEUED:
         last_transition = run.queued_at or run.requested_at
         grace = _QUEUED_REDISPATCH_GRACE
+    elif (
+        run.operation_type == "TRIGGER_V0_REPORT"
+        and run.state == OperationRunState.RUNNING
+        and run.lease_expires_at is not None
+    ):
+        # V0's stage checkpoints make takeover safe after the former worker's
+        # durable lease proves it can no longer own this execution.
+        return run.lease_expires_at <= observed_at
     else:
         return False
     return last_transition <= observed_at - grace
@@ -122,7 +130,6 @@ def reconcile() -> RecoveryCounts:
                 select(Hospital)
                 .where(
                     Hospital.profile_complete.is_(True),
-                    Hospital.v0_report_done.is_(True),
                     or_(
                         Hospital.site_built.is_(False),
                         # 허브는 준비됐는데 기본 주소 자동 활성화가 유실된 병원. STEP5 재촉
@@ -176,6 +183,12 @@ def reconcile() -> RecoveryCounts:
                             OperationRun.state == OperationRunState.QUEUED,
                             func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
                             <= observed_at - _QUEUED_REDISPATCH_GRACE,
+                        ),
+                        and_(
+                            OperationRun.operation_type == "TRIGGER_V0_REPORT",
+                            OperationRun.state == OperationRunState.RUNNING,
+                            OperationRun.lease_expires_at.isnot(None),
+                            OperationRun.lease_expires_at <= observed_at,
                         ),
                     ),
                 )
@@ -238,6 +251,9 @@ def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> b
     run.state = OperationRunState.QUEUED
     run.queued_at = observed_at
     run.completed_at = None
+    run.heartbeat_at = None
+    run.lease_owner = None
+    run.lease_expires_at = None
     run.safe_error_code = None
     run.safe_error_message = None
     run.version += 1

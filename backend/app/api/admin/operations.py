@@ -467,21 +467,22 @@ async def trigger_v0_report_operation(
     # 태스크는 v0_report_done인 병원을 조용히 건너뛴다(중복 리포트·중복 측정 비용 방지).
     # 그대로 큐에 넣으면 화면은 "등록했습니다"라고 알리는데 아무 일도 일어나지 않아,
     # AE가 리포트를 기다리다 놓친다. 큐에 넣기 전에 사실대로 거절한다.
-    if hospital.status == HospitalStatus.ANALYZING:
-        active = await latest_active_v0_run(db, hospital.id)
-        alive = await v0_claim_is_alive(db, hospital.id)
-        if alive or active is not None:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": (
-                        "이 병원은 이미 초기 진단을 만들고 있습니다. "
-                        "진행 상태에서 결과를 확인하세요."
-                    ),
-                    "operation_run_id": str(active.id) if active is not None else None,
-                    "operation_state": str(active.state) if active is not None else "ANALYZING",
-                },
-            )
+    # V0는 공개 라이프사이클과 독립적으로 돌아가므로 ACTIVE·PAUSED 병원도 실행 중일
+    # 수 있다. ANALYZING 상태만 보면 라이브 병원에서 같은 유료 측정을 중복 큐잉한다.
+    active = await latest_active_v0_run(db, hospital.id)
+    alive = await v0_claim_is_alive(db, hospital.id)
+    if alive or active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "이 병원은 이미 초기 진단을 백그라운드에서 만들고 있습니다. "
+                    "다른 설정을 계속 진행하고 결과는 진행 상태에서 확인하세요."
+                ),
+                "operation_run_id": str(active.id) if active is not None else None,
+                "operation_state": str(active.state) if active is not None else "RUNNING",
+            },
+        )
     if hospital.v0_report_done:
         raise HTTPException(
             status_code=409,

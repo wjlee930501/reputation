@@ -110,7 +110,7 @@ async def test_activate_with_pending_custom_domain():
 
 @pytest.mark.asyncio
 async def test_activate_respects_activation_gate():
-    """활성화 게이트는 여전히 검증됨 (profile_complete, v0_report_done, site_built)."""
+    """공개 활성화 게이트(profile_complete, site_built)는 여전히 검증된다."""
     hospital = make_hospital(
         profile_complete=False,  # 게이트 조건 미달
         aeo_domain=None,

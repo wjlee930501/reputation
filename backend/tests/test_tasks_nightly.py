@@ -1786,9 +1786,11 @@ def test_build_aeo_site_has_autoretry(monkeypatch):
 
 @pytest.mark.parametrize(
     ("profile_complete", "v0_report_done", "expected"),
-    [(True, True, True), (False, True, False), (True, False, False)],
+    [(True, True, True), (False, True, False), (True, False, True)],
 )
-def test_site_build_requires_profile_and_v0(profile_complete, v0_report_done, expected):
+def test_site_build_requires_profile_but_not_background_v0(
+    profile_complete, v0_report_done, expected
+):
     hospital = SimpleNamespace(
         profile_complete=profile_complete,
         v0_report_done=v0_report_done,

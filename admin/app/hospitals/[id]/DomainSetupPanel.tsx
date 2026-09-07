@@ -112,7 +112,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
     profile.domain_last_check_ok,
   )
   const platformAddressBrowsable = isPlatformAddressBrowsable(profile)
-  // 기본 주소는 게이트 세 가지가 통과하면 백엔드가 스스로 운영을 시작한다. 화면이 이미
+  // 기본 주소는 프로필·허브 게이트가 통과하면 백엔드가 스스로 운영을 시작한다. 화면이 이미
   // 끝난 일을 버튼으로 남겨두면, AE는 자기가 만들지 않은 사실을 확인하는 클릭을 계속한다.
   const platformMode = platformActivationMode(profile)
   const customDomainUrl = customDomainLiveUrl({
@@ -443,7 +443,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold text-slate-900">자기 도메인 연결 <span className="text-slate-400 font-normal">(선택)</span></h3>
-            <p className="text-sm text-slate-700 mt-1">기본 플랫폼 주소는 선행 단계 세 가지가 통과하면 자동으로 운영이 시작되고, 병원 자기 도메인 연결만 담당자가 입력·확인합니다.</p>
+            <p className="text-sm text-slate-700 mt-1">기본 플랫폼 주소는 병원 기본 정보와 콘텐츠 허브 준비가 끝나면 자동으로 운영이 시작되고, 병원 자기 도메인 연결만 담당자가 입력·확인합니다. 초기 진단은 별도로 백그라운드에서 계속됩니다.</p>
           </div>
           <div className="shrink-0 text-right">
             <span className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full border ${badge.cls}`}>

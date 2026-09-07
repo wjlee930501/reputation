@@ -173,7 +173,6 @@ async def connect_domain(
     if (
         (domain_changed or not h.site_built)
         and bool(getattr(h, "profile_complete", False))
-        and bool(getattr(h, "v0_report_done", False))
     ):
         background_tasks.add_task(
             build_aeo_site.apply_async,
@@ -185,7 +184,7 @@ async def connect_domain(
     if domain_changed or not h.site_built:
         return {
             "detail": (
-                f"Domain {domain} set. Content hub refresh will start after profile and V0 gates."
+                f"Domain {domain} set. Content hub refresh will start after the profile gate."
             )
         }
     return {"detail": f"Domain {domain} unchanged. No exposure refresh needed."}

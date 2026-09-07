@@ -935,11 +935,15 @@ class MonthlyBatchIncompleteError(RuntimeError):
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
 SOV_CHUNK_STOP_SECONDS = 1650
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
+V0_CHUNK_STOP_SECONDS = 480
+V0_CONTINUATION_MAX_RETRIES = 200
 # V0 첫 측정에 쓰는 질문 개수.
 # 5였을 때: 플랫폼당 25개 관측이라 1건 차이로 언급률이 4%p씩 튀었다(±8%p 수준).
 # 원장에게 처음 보여주는 '진단서'의 오차로는 너무 크다. 타임아웃 수정과 luna 전환으로
-# 측정이 빨라져(p50 24.7s) 15개로 늘려도 태스크 예산 안에 들어온다
-# (15 × 5회 × 2플랫폼 = 150호출 ÷ 동시10 × 25s ≈ 375s < soft_time_limit 1800s).
+# 측정 표본은 15 × 5회 × 2플랫폼 = 150개다. 각 슬롯은 답변과 판정을 durable
+# checkpoint한 뒤 순차 실행하고, 짧은 청크마다 같은 lineage로 이어간다. 세마포어
+# 용량은 동시 실행을 스스로 만들지 않으므로 전체를 한 Celery 시도에 맞춘다고
+# 가정하지 않는다.
 V0_QUERY_SAMPLE_COUNT = 15
 
 # V0 첫 측정 실행에 붙는 라벨. 월간 리포트가 "서비스 시작 시점" 축을 그릴 때
@@ -1010,6 +1014,90 @@ def _v0_query_snapshot(queries: Iterable[QueryMatrix]) -> list[dict[str, str]]:
     ]
 
 
+def _v0_judgment_context(hospital: Hospital) -> dict[str, Any]:
+    """Freeze every hospital field that can change a saved answer's verdict."""
+    return {
+        "hospital_identity": str(hospital.id),
+        "hospital_name": hospital.name,
+        "region": str((hospital.region or [""])[0]),
+        "competitors": [str(name) for name in (hospital.competitors or [])],
+    }
+
+
+def _parse_v0_judgment_context(
+    value: object, *, hospital_id: uuid.UUID
+) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    identity = value.get("hospital_identity")
+    hospital_name = value.get("hospital_name")
+    region = value.get("region")
+    competitors = value.get("competitors")
+    if (
+        identity != str(hospital_id)
+        or not isinstance(hospital_name, str)
+        or not hospital_name.strip()
+        or not isinstance(region, str)
+        or not isinstance(competitors, list)
+        or any(not isinstance(name, str) for name in competitors)
+    ):
+        return None
+    return {
+        "hospital_identity": identity,
+        "hospital_name": hospital_name,
+        "region": region,
+        "competitors": list(competitors),
+    }
+
+
+def _v0_platforms_from_run(run: MeasurementRun) -> list[str] | None:
+    """Read the provider set frozen by `_start_measurement_run`."""
+    config = run.config if isinstance(run.config, dict) else {}
+    model_names = config.get("model_names")
+    if not isinstance(model_names, dict):
+        return None
+    platforms = [name for name in ("chatgpt", "gemini") if name in model_names]
+    if not platforms or set(model_names) != set(platforms):
+        return None
+    return platforms
+
+
+def _v0_resume_judgment_context(
+    run: MeasurementRun,
+    hospital: Hospital,
+    slots: Sequence[MeasurementObservationSlot],
+    protocol: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Load the frozen context, safely upgrading pre-snapshot in-flight runs."""
+    config = run.config if isinstance(run.config, dict) else {}
+    frozen = _parse_v0_judgment_context(
+        config.get("judgment_context"), hospital_id=hospital.id
+    )
+    if frozen is not None:
+        return frozen
+
+    # Rows created before judgment_context was introduced can be upgraded only
+    # when every already-attempted judgment proves the current profile produces
+    # its exact saved fingerprint. Otherwise mixing identities would corrupt one
+    # MeasurementRun, so fail before another provider call.
+    candidate = _v0_judgment_context(hospital)
+    for slot in slots:
+        if slot.judgment_input_fingerprint is None:
+            continue
+        expected = sov_engine.judgment_input_fingerprint(
+            hospital_identity=candidate["hospital_identity"],
+            hospital_name=candidate["hospital_name"],
+            response_text=slot.raw_response or "",
+            region=candidate["region"],
+            competitors=candidate["competitors"],
+            policy=dict(protocol),
+        )
+        if slot.judgment_input_fingerprint != expected:
+            raise RuntimeError("resumable V0 judgment context changed")
+    run.config = {**config, "judgment_context": candidate}
+    return candidate
+
+
 def _local_v0_query_texts(snapshot: object) -> dict[uuid.UUID, str] | None:
     """Parse an immutable V0 query snapshot; malformed lineage is unusable."""
     if not isinstance(snapshot, list) or not snapshot:
@@ -1035,8 +1123,10 @@ def _local_v0_query_texts(snapshot: object) -> dict[uuid.UUID, str] | None:
     return local_queries or None
 
 
-def _v0_queries_from_snapshot(db, snapshot: object) -> list[QueryMatrix] | None:
-    """Reload the exact frozen V0 cohort in its original order for slot recovery."""
+def _v0_queries_from_snapshot(
+    db, snapshot: object, *, hospital_id: uuid.UUID
+) -> list[QueryMatrix] | None:
+    """Reload frozen provider inputs while verifying their live FK ownership."""
     if not isinstance(snapshot, list) or not snapshot:
         return None
     ordered_ids: list[uuid.UUID] = []
@@ -1059,21 +1149,27 @@ def _v0_queries_from_snapshot(db, snapshot: object) -> list[QueryMatrix] | None:
             return None
         ordered_ids.append(query_id)
         expected[query_id] = (query_text, query_intent)
-    rows = {
+    live_rows = {
         row.id: row
         for row in db.execute(
             select(QueryMatrix).where(QueryMatrix.id.in_(ordered_ids))
         ).scalars()
     }
-    if set(rows) != set(ordered_ids):
-        return None
-    ordered = [rows[query_id] for query_id in ordered_ids]
-    if any(
-        (row.query_text, row.query_intent) != expected[row.id]
-        for row in ordered
+    if set(live_rows) != set(ordered_ids) or any(
+        row.hospital_id != hospital_id for row in live_rows.values()
     ):
         return None
-    return ordered
+    # Query text/intent may be edited after the first chunk. The immutable snapshot,
+    # not the mutable tracking row, remains the provider input for this lineage.
+    return [
+        QueryMatrix(
+            id=query_id,
+            hospital_id=hospital_id,
+            query_text=expected[query_id][0],
+            query_intent=expected[query_id][1],
+        )
+        for query_id in ordered_ids
+    ]
 
 
 def _load_v0_baseline(
@@ -1328,12 +1424,88 @@ class V0MeasurementUnavailable(RuntimeError):
         )
 
 
+class V0MeasurementPolicyDrift(RuntimeError):
+    """A continuation cannot mix provider or judge policies in one run."""
+
+    summary = {
+        "safe_error_code": "V0_MEASUREMENT_POLICY_DRIFT",
+        "safe_error_message": "초기 진단 도중 측정 기준이 변경되어 안전하게 중단했습니다.",
+        "next_action": "기존 측정 근거를 보존한 상태에서 운영 배포 기준을 확인해 주세요.",
+    }
+
+
 class V0CostDeferred(RuntimeError):
     """The measurement remains resumable and must not become an unavailable result."""
 
 
 class V0MeasurementResumable(RuntimeError):
     """At least one bounded slot stage has attempts remaining."""
+
+
+def _v0_chunk_deadline_reached(started_at: float) -> bool:
+    """Leave task-limit headroom for the last already-started provider slot."""
+    return monotonic() - started_at >= V0_CHUNK_STOP_SECONDS
+
+
+def _require_v0_execution_policy(
+    protocol: Mapping[str, Any], platforms: Sequence[str]
+) -> None:
+    if not sov_engine.same_execution_policy(
+        dict(protocol),
+        sov_engine.measurement_protocol(),
+        platforms=tuple(platforms),
+    ):
+        raise V0MeasurementPolicyDrift("resumable V0 execution policy changed")
+
+
+def _checkpoint_v0_progress(
+    run: MeasurementRun, slots: Sequence[MeasurementObservationSlot]
+) -> None:
+    """Persist partial progress before handing the lineage to the next chunk."""
+    summary = summarize_observation_slots(slots, deadline_reached=False)
+    run.query_count = summary.planned_slots
+    run.success_count = summary.confirmed_slots
+    run.failure_count = summary.answer_failed_slots + summary.judgment_failed_slots
+    run.error_summary = {
+        **summary.to_payload(),
+        "safe_error_code": "V0_MEASUREMENT_IN_PROGRESS",
+    }
+
+
+def _v0_retry_kwargs(task, failure_retry_count: int) -> dict[str, Any]:
+    """Keep workflow failure budget separate from normal chunk count."""
+    kwargs = dict(getattr(task.request, "kwargs", None) or {})
+    kwargs["failure_retry_count"] = failure_retry_count
+    return kwargs
+
+
+def _v0_workflow_failure_count(run: MeasurementRun | None) -> int:
+    config = run.config if run is not None and isinstance(run.config, dict) else {}
+    if "workflow_failure_count" not in config:
+        return 0
+    value = config["workflow_failure_count"]
+    if type(value) is int and 0 <= value <= V0_CONTINUATION_MAX_RETRIES:
+        return value
+    # Corrupt durable budget must never reopen retries indefinitely.
+    return V0_CONTINUATION_MAX_RETRIES
+
+
+def _persist_v0_workflow_failure_count(
+    measurement_run_id: uuid.UUID | None, failure_count: int
+) -> None:
+    """Keep generic failure budget across a hard-kill OperationRun redispatch."""
+    if measurement_run_id is None:
+        return
+    with SyncSessionLocal() as db:
+        run = db.get(MeasurementRun, measurement_run_id, with_for_update=True)
+        if run is None:
+            return
+        current = _v0_workflow_failure_count(run)
+        if failure_count <= current:
+            return
+        config = run.config if isinstance(run.config, dict) else {}
+        run.config = {**config, "workflow_failure_count": failure_count}
+        db.commit()
 
 
 def _seconds_until_next_kst_cost_window(now: datetime | None = None) -> int:
@@ -2533,13 +2705,18 @@ def release_v0_session_lock(db, hospital_uuid: uuid.UUID) -> None:
     soft_time_limit=1800,
     time_limit=2100,
 )
-def trigger_v0_report(self, hospital_id: str):
+def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
     """프로파일 완료 후 V0 분석 즉시 실행"""
     require_dispatch(self, "trigger-v0-report", hospital_id)
+    if type(failure_retry_count) is not int or failure_retry_count < 0:
+        raise ValueError("failure_retry_count must be a non-negative integer")
+    task_started_at = monotonic()
+    failure_checkpoint_run_id: uuid.UUID | None = None
     prior_status: str | None = None  # ANALYZING 전환 전 상태 — 실패 시 복원용 (P2-15)
     # 이 V0 요청의 lineage. Celery의 retry는 request.headers를 그대로 재발행하므로
     # 재시도 전 실행이 남긴 측정을 정확히 지목하는 열쇠가 된다 (v0_checkpoint 참조).
     v0_operation_run_id = _operation_run_id_from_task(self)
+    claimed_measurement_run = None
     try:
         # 세션 락은 커넥션에 붙는다 — 중간 commit이 커넥션을 풀에 반환해 버리면 unlock이
         # 다른 커넥션에서 돌아 조용히 실패한다. 그래서 이 태스크만 커넥션을 고정한다.
@@ -2565,23 +2742,30 @@ def trigger_v0_report(self, hospital_id: str):
                         "message": "이미 초기 진단 리포트가 있어 다시 만들지 않습니다.",
                     }
 
-                # in-progress 가드: 다른 실행이 이미 ANALYZING으로 클레임했다면 중복 측정 금지.
+                # in-progress 가드: 상태와 무관하게 다른 실행의 살아 있는 측정이 있으면
+                # 중복 측정 금지. V0는 공개 라이프사이클과 독립이므로 병원이 이미
+                # ACTIVE·PAUSED여도 유료 측정 클레임은 살아 있을 수 있다.
                 #
                 # 단, ANALYZING만 보고 판단하면 안 된다. 실패 경로는 _reset_v0_analyzing_status로
                 # 상태를 복원하지만 **하드 종료(SIGKILL·OOM·Cloud Run scale-in)에서는 except가
                 # 실행되지 않는다**. 그러면 재배달된 실행이 ANALYZING을 보고 조용히 return하고,
-                # v0_report_done은 영원히 False로 남아 STEP4까지 함께 멈춘 채 Slack 신호도 없다.
+                # v0_report_done은 영원히 False로 남아 초기 진단만 완료되지 않는다.
                 # 그래서 클레임의 생존 여부를 측정 실행 기록으로 확인해 만료된 클레임은 탈취한다.
-                if hospital.status == HospitalStatus.ANALYZING:
-                    if _v0_claim_is_alive(db, hospital.id):
-                        logger.info(
-                            "V0 report already in progress for %s; skipping duplicate",
-                            hospital.name,
-                        )
-                        return {
-                            "skipped": "already_in_progress",
-                            "message": "이미 초기 진단을 만들고 있습니다.",
-                        }
+                claim_alive = _v0_claim_is_alive(db, hospital.id)
+                if claim_alive and v0_operation_run_id is not None:
+                    claimed_measurement_run = find_resumable_v0_measurement_run(
+                        db, hospital.id, operation_run_id=v0_operation_run_id
+                    )
+                if claim_alive and claimed_measurement_run is None:
+                    logger.info(
+                        "V0 report already in progress for %s; skipping duplicate",
+                        hospital.name,
+                    )
+                    return {
+                        "skipped": "already_in_progress",
+                        "message": "이미 초기 진단을 백그라운드에서 만들고 있습니다.",
+                    }
+                if hospital.status == HospitalStatus.ANALYZING and not claim_alive:
                     logger.warning(
                         "Reclaiming a stale V0 ANALYZING claim for %s — the previous run died "
                         "without releasing it",
@@ -2593,7 +2777,13 @@ def trigger_v0_report(self, hospital_id: str):
                     if hasattr(hospital.status, "value")
                     else str(hospital.status)
                 )
-                hospital.status = HospitalStatus.ANALYZING
+                # ANALYZING은 온보딩 초입의 진행 표시일 뿐이다. 이미 허브 준비·도메인
+                # 대기·운영·일시 정지로 전진한 상태를 V0가 되돌리지 않는다.
+                if hospital.status in (
+                    HospitalStatus.ONBOARDING,
+                    HospitalStatus.ANALYZING,
+                ):
+                    hospital.status = HospitalStatus.ANALYZING
                 db.commit()
                 # commit이 xact 락을 풀므로, RUNNING 행을 커밋할 때까지 세션 락 + 새 xact 락을 유지한다.
                 acquire_hospital_advisory_lock_sync(db, hospital_uuid)
@@ -2645,13 +2835,15 @@ def trigger_v0_report(self, hospital_id: str):
                         checkpoint.success_count + checkpoint.failure_count,
                     )
                 else:
-                    run = find_resumable_v0_measurement_run(
+                    run = claimed_measurement_run or find_resumable_v0_measurement_run(
                         db, hospital.id, operation_run_id=v0_operation_run_id
                     )
                     if run is not None:
                         run_config = run.config if isinstance(run.config, dict) else {}
                         sample_queries = _v0_queries_from_snapshot(
-                            db, run_config.get("query_snapshot")
+                            db,
+                            run_config.get("query_snapshot"),
+                            hospital_id=hospital.id,
                         )
                         if sample_queries is None:
                             raise RuntimeError("resumable V0 run has invalid query snapshot")
@@ -2672,6 +2864,7 @@ def trigger_v0_report(self, hospital_id: str):
                             operation_run_id=v0_operation_run_id,
                         )
                         run_config["query_snapshot"] = _v0_query_snapshot(sample_queries)
+                        run_config["judgment_context"] = _v0_judgment_context(hospital)
                         run = _start_measurement_run(
                             db,
                             hospital,
@@ -2684,6 +2877,11 @@ def trigger_v0_report(self, hospital_id: str):
             if run is None and checkpoint is None:
                 return
             if checkpoint is not None:
+                failure_checkpoint_run_id = reusable_run.id
+                failure_retry_count = max(
+                    failure_retry_count,
+                    _v0_workflow_failure_count(reusable_run),
+                )
                 # 체크포인트 경로: 측정 루프도, 비용 가드 예약도 건너뛴다. 이미 낸 호출을
                 # 두 번 예약하면 가드가 실제 지출의 2배를 세고 상한이 조기 소진된다.
                 all_records = checkpoint.records
@@ -2693,11 +2891,15 @@ def trigger_v0_report(self, hospital_id: str):
                 platforms = checkpoint.platforms
                 v0_repeat_count = checkpoint.repeat_count
             else:
+                failure_checkpoint_run_id = run.id
+                failure_retry_count = max(
+                    failure_retry_count,
+                    _v0_workflow_failure_count(run),
+                )
                 all_records = []
-                platforms = ["chatgpt"]
-                if settings.GEMINI_API_KEY:
-                    platforms.append("gemini")
-                competitors = hospital.competitors or []
+                platforms = _v0_platforms_from_run(run)
+                if platforms is None:
+                    raise RuntimeError("V0 measurement platform snapshot is invalid")
                 protocol = (
                     run.config.get("measurement_protocol")
                     if isinstance(run.config, dict)
@@ -2705,6 +2907,7 @@ def trigger_v0_report(self, hospital_id: str):
                 )
                 if not isinstance(protocol, dict):
                     raise RuntimeError("V0 measurement protocol is missing")
+                _require_v0_execution_policy(protocol, platforms)
 
                 # Freeze every repeat before the first provider call. A hard kill can
                 # therefore resume the exact answer or judgment stage without changing
@@ -2724,13 +2927,28 @@ def trigger_v0_report(self, hospital_id: str):
                         slot_groups.append((q, platform, slots))
                 db.commit()
                 all_slots = [slot for _q, _platform, slots in slot_groups for slot in slots]
+                judgment_context = _v0_resume_judgment_context(
+                    run, hospital, all_slots, protocol
+                )
+                competitors = judgment_context["competitors"]
+                db.commit()
 
                 for q, _platform, slots in slot_groups:
                     for slot in slots:
+                        if not slot_is_terminal(slot) and _v0_chunk_deadline_reached(
+                            task_started_at
+                        ):
+                            _checkpoint_v0_progress(run, all_slots)
+                            db.commit()
+                            raise V0MeasurementResumable(
+                                "V0 measurement chunk completed with durable progress"
+                            )
                         result = _execute_paid_observation_slot(
                             db,
                             slot=slot,
                             hospital=hospital,
+                            hospital_name=judgment_context["hospital_name"],
+                            region=judgment_context["region"],
                             query_text=q.query_text,
                             competitors=competitors,
                             protocol=protocol,
@@ -2751,14 +2969,7 @@ def trigger_v0_report(self, hospital_id: str):
                 # terminal observations and are never replaced by a new answer.
                 deadline_reached = all(slot_is_terminal(slot) for slot in all_slots)
                 if not deadline_reached:
-                    run.query_count = len(all_slots)
-                    run.success_count = sum(
-                        slot.judgment_status == "CONFIRMED" for slot in all_slots
-                    )
-                    run.failure_count = len(all_slots) - int(run.success_count or 0)
-                    run.error_summary = summarize_observation_slots(
-                        all_slots, deadline_reached=False
-                    ).to_payload()
+                    _checkpoint_v0_progress(run, all_slots)
                     db.commit()
                     raise V0MeasurementResumable(
                         "V0 observation slots remain resumable"
@@ -2904,8 +3115,12 @@ def trigger_v0_report(self, hospital_id: str):
                     validation_metadata=pdf_artifact.validation_metadata,
                 )
             )
+            # 긴 V0 실행 중 다른 세션이 허브를 ACTIVE/PAUSED로 전환했을 수 있다.
+            # pinned 세션 identity-map의 옛 ANALYZING 값을 쓰지 말고 최신 행을 잠근다.
+            db.refresh(hospital, with_for_update=True)
             hospital.v0_report_done = True
-            hospital.status = HospitalStatus.BUILDING
+            if hospital.status in (HospitalStatus.ONBOARDING, HospitalStatus.ANALYZING):
+                hospital.status = HospitalStatus.BUILDING
             enqueue_onboarding_notification_sync(
                 db,
                 build_v0_ready_notification(
@@ -2923,9 +3138,8 @@ def trigger_v0_report(self, hospital_id: str):
             # V0 결과를 롤백하지 않고 로그만 남긴다 (post-commit side effect 격리).
             _seed_query_targets_from_matrix_sync(hospital.id)
 
-            # 콘텐츠 허브 공개 노출 상태 준비 태스크 큐잉 — V0가 이미 커밋된 뒤의 post-commit
-            # 사이드이펙트다. 큐잉 실패가 outer except로 흘러가면 self.retry가 v0_report_done
-            # 멱등 가드에 막혀 STEP4가 영구 유실되므로, 여기서 격리하고 실패는 ops 알림만 낸다.
+            # 콘텐츠 허브 준비는 프로필 완료 시 이미 독립 디스패치된다. 이 호출은 V0가
+            # 끝났을 때 한 번 더 보내는 멱등 복구 신호이며, 실패는 V0 결과를 되돌리지 않는다.
             try:
                 build_aeo_site.apply_async(
                     args=[hospital_id],
@@ -2962,18 +3176,34 @@ def trigger_v0_report(self, hospital_id: str):
         raise self.retry(
             exc=exc,
             countdown=_seconds_until_next_kst_cost_window(),
-            max_retries=30,
+            kwargs=_v0_retry_kwargs(self, failure_retry_count),
+            max_retries=V0_CONTINUATION_MAX_RETRIES,
         )
     except V0MeasurementResumable as exc:
         _reset_v0_analyzing_status(hospital_id, prior_status)
-        raise self.retry(exc=exc, countdown=120, max_retries=30)
+        raise self.retry(
+            exc=exc,
+            countdown=120,
+            kwargs=_v0_retry_kwargs(self, failure_retry_count),
+            max_retries=V0_CONTINUATION_MAX_RETRIES,
+        )
+    except SoftTimeLimitExceeded as exc:
+        _reset_v0_analyzing_status(hospital_id, prior_status)
+        raise self.retry(
+            exc=exc,
+            countdown=120,
+            kwargs=_v0_retry_kwargs(self, failure_retry_count),
+            max_retries=V0_CONTINUATION_MAX_RETRIES,
+        )
     except Exception as exc:
         logger.error(f"trigger_v0_report failed: {exc}")
         # 이 실행이 ANALYZING을 클레임했다면 복원 — 그래야 재시도/수동 재트리거가
         # in-progress 가드를 통과한다 (P2-15).
         _reset_v0_analyzing_status(hospital_id, prior_status)
-        terminal_measurement_failure = isinstance(exc, V0MeasurementUnavailable)
-        if terminal_measurement_failure or self.request.retries >= self.max_retries:
+        terminal_measurement_failure = isinstance(
+            exc, (V0MeasurementUnavailable, V0MeasurementPolicyDrift)
+        )
+        if terminal_measurement_failure or failure_retry_count >= self.max_retries:
             # 공급자별 재시도와 회로 차단까지 끝난 측정 실패는 150건 전체를 Celery가
             # 다시 돌려도 회복되지 않는다. 즉시 사람 확인 대상으로 넘긴다. 그 밖의
             # 일시적 작업 오류만 task-level 재시도를 사용한다.
@@ -3005,7 +3235,16 @@ def trigger_v0_report(self, hospital_id: str):
             except Exception:
                 logger.exception("V0 final-failure ops alert delivery failed (non-fatal)")
             raise exc
-        raise self.retry(exc=exc, countdown=120)
+        next_failure_count = failure_retry_count + 1
+        _persist_v0_workflow_failure_count(
+            failure_checkpoint_run_id, next_failure_count
+        )
+        raise self.retry(
+            exc=exc,
+            countdown=120,
+            kwargs=_v0_retry_kwargs(self, next_failure_count),
+            max_retries=V0_CONTINUATION_MAX_RETRIES,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -3017,7 +3256,7 @@ def _public_site_url(aeo_domain: str | None, slug: str | None) -> str:
 
 
 def _site_build_prerequisites_met(hospital: Hospital) -> bool:
-    return bool(hospital.profile_complete and hospital.v0_report_done)
+    return bool(hospital.profile_complete)
 
 
 @celery_app.task(
@@ -3032,7 +3271,7 @@ def _site_build_prerequisites_met(hospital: Hospital) -> bool:
 def build_aeo_site(self, hospital_id: str):
     """콘텐츠 허브 노출 상태 전환 + 기본 주소 자동 운영 시작 (legacy task name)
 
-    STEP5 게이트 세 가지는 모두 시스템 플래그다. 마지막 전환만 사람 클릭으로 남기면
+    STEP5의 프로필·허브 게이트는 모두 시스템 플래그다. 마지막 전환만 사람 클릭으로 남기면
     AE는 자기가 만들지 않은 사실을 확인하는 클릭 하나 때문에 Slack 두 건을 받는다.
     자기 도메인이 없는 병원은 여기서 그대로 ACTIVE가 되고, 자기 도메인이 지정된 병원만
     수동 경로로 남는다 — DNS는 병원 것이라 시점을 시스템이 정할 수 없다.
@@ -3051,10 +3290,9 @@ def build_aeo_site(self, hospital_id: str):
             return
         if not _site_build_prerequisites_met(hospital):
             logger.warning(
-                "Skipping site build before profile/V0 gates: hospital_id=%s profile_complete=%s v0_report_done=%s",
+                "Skipping site build before profile gate: hospital_id=%s profile_complete=%s",
                 hospital.id,
                 hospital.profile_complete,
-                hospital.v0_report_done,
             )
             return
 
@@ -5826,6 +6064,8 @@ def _execute_paid_observation_slot(
     *,
     slot: MeasurementObservationSlot,
     hospital: Hospital,
+    hospital_name: str | None = None,
+    region: str | None = None,
     query_text: str,
     competitors: list[str],
     protocol: Mapping[str, Any],
@@ -5834,7 +6074,8 @@ def _execute_paid_observation_slot(
     monthly_cell=None,
 ) -> dict[str, Any]:
     """Resume exactly one paid answer/judgment slot and checkpoint each stage."""
-    region = (hospital.region or [""])[0]
+    judgment_hospital_name = hospital_name or hospital.name
+    judgment_region = region if region is not None else (hospital.region or [""])[0]
     if slot_needs_answer(slot):
         claim = claim_slot_stage(db, slot.id, stage="ANSWER")
         if claim is None:
@@ -5862,6 +6103,11 @@ def _execute_paid_observation_slot(
                 fetch_answer(
                     query_text,
                     slot.platform,
+                    requested_model=(
+                        protocol.get("openai_model_query")
+                        if slot.platform == "chatgpt"
+                        else protocol.get("gemini_model")
+                    ),
                     hospital_id=hospital.id,
                     workflow=f"{slot.scope.lower()}_sov_answer",
                     run_id=str(slot.measurement_run_id),
@@ -5869,6 +6115,8 @@ def _execute_paid_observation_slot(
                     attempt_id=str(answer_attempt),
                 )
             )
+        except SoftTimeLimitExceeded:
+            raise
         except Exception as exc:  # provider may have accepted the request; keep reservation
             answer = {
                 "measurement_status": "FAILED",
@@ -5906,9 +6154,9 @@ def _execute_paid_observation_slot(
 
     fingerprint = judgment_input_fingerprint(
         hospital_identity=str(hospital.id),
-        hospital_name=hospital.name,
+        hospital_name=judgment_hospital_name,
         response_text=slot.raw_response or "",
-        region=region,
+        region=judgment_region,
         competitors=competitors,
         policy=protocol,
     )
@@ -5927,7 +6175,7 @@ def _execute_paid_observation_slot(
         }
 
     judgment_reservation = sov_engine.estimate_judgment_provider_calls(
-        hospital.name,
+        judgment_hospital_name,
         slot.raw_response or "",
         competitors=competitors,
     )
@@ -5955,9 +6203,9 @@ def _execute_paid_observation_slot(
     try:
         judgment = _run_async(
             judge_answer(
-                hospital.name,
+                judgment_hospital_name,
                 slot.raw_response or "",
-                region=region,
+                region=judgment_region,
                 competitors=competitors,
                 hospital_identity=str(hospital.id),
                 hospital_id=hospital.id,
@@ -5968,6 +6216,8 @@ def _execute_paid_observation_slot(
                 policy=protocol,
             )
         )
+    except SoftTimeLimitExceeded:
+        raise
     except Exception as exc:  # retain answer; only the judgment stage failed
         judgment = {
             "measurement_status": "FAILED",

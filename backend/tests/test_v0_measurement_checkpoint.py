@@ -82,6 +82,7 @@ class FakeSession:
         self.artifacts: list[MonthlyReportArtifact] = []
         self.reports: list[MonthlyReport] = []
         self.commits = 0
+        self.status_on_refresh: HospitalStatus | None = None
 
     # -- context manager (SyncSessionPinnedConnection / SyncSessionLocal 대역) --
     def __enter__(self) -> "FakeSession":
@@ -91,9 +92,11 @@ class FakeSession:
         return False
 
     # -- session API --
-    def get(self, model: type, ident: uuid.UUID) -> Any:
+    def get(self, model: type, ident: uuid.UUID, **_kwargs: Any) -> Any:
         if model is Hospital and ident == self.hospital.id:
             return self.hospital
+        if model is MeasurementRun:
+            return next((row for row in self.measurement_runs if row.id == ident), None)
         if model is SovRecord:
             return next((row for row in self.sov_records if row.id == ident), None)
         return None
@@ -114,6 +117,12 @@ class FakeSession:
 
     def flush(self) -> None:
         return None
+
+    def refresh(self, obj: Any, *, with_for_update: bool = False) -> None:
+        assert obj is self.hospital
+        assert with_for_update is True
+        if self.status_on_refresh is not None:
+            self.hospital.status = self.status_on_refresh
 
     def commit(self) -> None:
         self.commits += 1
@@ -145,9 +154,11 @@ class FakeSession:
             # 컴파일되는지를 별도 테스트로 못 박고, 세션은 후보 목록만 돌려준다.
             compiled = stmt.compile(dialect=postgresql.dialect())
             if 1 in compiled.params.values():
-                # This harness exercises completed-checkpoint reuse. Incomplete
-                # same-lineage recovery has a dedicated real-Postgres slot test.
-                candidates = []
+                candidates = [
+                    run
+                    for run in self.measurement_runs
+                    if run.status in v0_checkpoint.RESUMABLE_RUN_STATUSES
+                ]
             else:
                 candidates = [
                     run
@@ -214,7 +225,10 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
     hospital.keywords = ["무릎"]
     hospital.competitors = []
 
-    session = FakeSession(hospital, [_query("노원구 정형외과 추천"), _query("노원구 무릎")])
+    queries = [_query("노원구 정형외과 추천"), _query("노원구 무릎")]
+    for query in queries:
+        query.hospital_id = hospital.id
+    session = FakeSession(hospital, queries)
     provider_calls: list[str] = []
     cost_reservations: list[int] = []
     pdf_calls: list[int] = []
@@ -280,6 +294,10 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
         return rows
 
     def _execute_slot(db, *, slot, query_text, **_kwargs):
+        if tasks.slot_is_terminal(slot):
+            record = db.get(SovRecord, slot.sov_record_id)
+            assert record is not None
+            return tasks._result_from_sov_record(record)
         provider_calls.append(f"{slot.platform}:{query_text}:{slot.repeat_no}")
         # The production path owns one answer and one judgment reservation per
         # unresolved slot. This harness records that split while keeping its fake
@@ -297,6 +315,14 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
         slot.answer_status = "RECEIVED"
         slot.raw_response = result["raw_response"]
         slot.judgment_status = "CONFIRMED"
+        slot.judgment_input_fingerprint = tasks.judgment_input_fingerprint(
+            hospital_identity=str(slot.hospital_id),
+            hospital_name=hospital.name,
+            response_text=result["raw_response"],
+            region=hospital.region[0],
+            competitors=[],
+            policy=tasks.sov_engine.measurement_protocol(),
+        )
         slot.sov_record_id = record.id
         return result
 
@@ -346,6 +372,126 @@ def _run_task(hospital_id: uuid.UUID, *, operation_run_id: uuid.UUID | None) -> 
         return task.run(str(hospital_id))
     finally:
         task.pop_request()
+
+
+def test_chunk_continuation_reuses_same_run_and_completed_slots(
+    harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    operation_run_id = uuid.uuid4()
+    monkeypatch.setattr(
+        tasks,
+        "_v0_chunk_deadline_reached",
+        lambda _started_at: len(harness.provider_calls) >= 3,
+    )
+
+    with pytest.raises(tasks.V0MeasurementResumable):
+        monkeypatch.setattr(
+            tasks.trigger_v0_report,
+            "retry",
+            lambda **kwargs: (_ for _ in ()).throw(kwargs["exc"]),
+        )
+        _run_task(harness.hospital.id, operation_run_id=operation_run_id)
+
+    run = harness.session.measurement_runs[0]
+    assert len(harness.provider_calls) == 3
+    assert run.query_count == 10
+    assert run.success_count == 3
+    assert run.failure_count == 0
+    assert run.error_summary["pending_slots"] == 7
+
+    monkeypatch.setattr(tasks, "_v0_chunk_deadline_reached", lambda _started_at: False)
+    _run_task(harness.hospital.id, operation_run_id=operation_run_id)
+
+    assert len(harness.session.measurement_runs) == 1
+    assert len(harness.provider_calls) == 10
+    assert len(harness.cost_reservations) == 20
+    assert harness.hospital.v0_report_done is True
+
+
+def test_v0_resume_uses_frozen_platform_and_judgment_context() -> None:
+    hospital_id = uuid.uuid4()
+    hospital = Hospital(name="변경 후 병원", slug="changed")
+    hospital.id = hospital_id
+    hospital.region = ["변경 지역"]
+    hospital.competitors = ["변경 경쟁사"]
+    run = MeasurementRun(
+        hospital_id=hospital_id,
+        run_label=tasks.V0_MEASUREMENT_RUN_LABEL,
+        status="RUNNING",
+        config={
+            "model_names": {
+                "chatgpt": "frozen-openai",
+                "gemini": "frozen-gemini",
+            },
+            "judgment_context": {
+                "hospital_identity": str(hospital_id),
+                "hospital_name": "동결 병원",
+                "region": "동결 지역",
+                "competitors": ["동결 경쟁사"],
+            },
+        },
+    )
+
+    assert tasks._v0_platforms_from_run(run) == ["chatgpt", "gemini"]
+    assert tasks._v0_resume_judgment_context(run, hospital, [], {}) == {
+        "hospital_identity": str(hospital_id),
+        "hospital_name": "동결 병원",
+        "region": "동결 지역",
+        "competitors": ["동결 경쟁사"],
+    }
+
+
+def test_v0_resume_uses_frozen_query_text_after_tracking_row_changes(harness) -> None:
+    query = harness.session.queries[0]
+    snapshot = tasks._v0_query_snapshot(harness.session.queries)
+    original_text = query.query_text
+    original_intent = query.query_intent
+    query.query_text = "나중에 변경된 질문"
+    query.query_intent = "BRAND"
+
+    resumed = tasks._v0_queries_from_snapshot(
+        harness.session,
+        snapshot,
+        hospital_id=harness.hospital.id,
+    )
+
+    assert resumed is not None
+    assert (resumed[0].id, resumed[0].query_text, resumed[0].query_intent) == (
+        query.id,
+        original_text,
+        original_intent,
+    )
+
+
+def test_v0_policy_drift_stops_before_an_incomplete_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frozen = tasks.sov_engine.measurement_protocol()
+    changed = {**frozen, "judge_model": "different-judge"}
+    monkeypatch.setattr(tasks.sov_engine, "measurement_protocol", lambda: changed)
+
+    with pytest.raises(tasks.V0MeasurementPolicyDrift):
+        tasks._require_v0_execution_policy(frozen, ["chatgpt"])
+
+
+def test_v0_workflow_failure_budget_survives_dispatch_kwargs_loss(harness) -> None:
+    run = MeasurementRun(
+        hospital_id=harness.hospital.id,
+        run_label=tasks.V0_MEASUREMENT_RUN_LABEL,
+        status="RUNNING",
+        config={"workflow_failure_count": 2},
+    )
+    harness.session.add(run)
+
+    assert tasks._v0_workflow_failure_count(run) == 2
+    tasks._persist_v0_workflow_failure_count(run.id, 3)
+    assert tasks._v0_workflow_failure_count(run) == 3
+
+    run.config = {"workflow_failure_count": "corrupt"}
+    assert (
+        tasks._v0_workflow_failure_count(run)
+        == tasks.V0_CONTINUATION_MAX_RETRIES
+    )
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -408,6 +554,17 @@ def test_a_fresh_trigger_still_measures(harness):
     assert len(harness.session.measurement_runs) == 1
     assert harness.session.measurement_runs[0].status == "COMPLETED"
     assert harness.hospital.v0_report_done is True
+
+
+@pytest.mark.parametrize("late_status", [HospitalStatus.ACTIVE, HospitalStatus.PAUSED])
+def test_late_v0_completion_preserves_concurrent_live_status(harness, late_status):
+    """사이트 워커가 먼저 전진시킨 최신 상태를 pinned V0 snapshot이 덮지 않는다."""
+    harness.session.status_on_refresh = late_status
+
+    _run_task(harness.hospital.id, operation_run_id=uuid.uuid4())
+
+    assert harness.hospital.v0_report_done is True
+    assert harness.hospital.status is late_status
 
 
 def test_a_different_v0_request_does_not_inherit_the_previous_measurement(harness):

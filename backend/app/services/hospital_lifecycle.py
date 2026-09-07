@@ -123,15 +123,14 @@ def activation_requirements(
     """Return the canonical STEP 5 public-activation prerequisites.
 
     ``handoff_accepted`` is compatibility-only. Handoff tracking and content
-    scheduling are separate workflows and never block public activation.
+    scheduling are separate workflows and never block public activation. The V0
+    diagnostic also runs independently in the background; a slow measurement must
+    not hide an otherwise ready hospital site.
     """
 
     return [
         ActivationRequirement(
             "profile_complete", "병원 기본 정보 완료", "병원 기본 정보의 필수 항목을 완료하세요.", hospital.profile_complete
-        ),
-        ActivationRequirement(
-            "v0_report_done", "초기 진단 리포트", "초기 진단 리포트 생성을 완료하세요.", hospital.v0_report_done
         ),
         ActivationRequirement(
             "site_built", "콘텐츠 허브 준비", "AI 노출 콘텐츠 허브 준비를 완료하세요.", hospital.site_built

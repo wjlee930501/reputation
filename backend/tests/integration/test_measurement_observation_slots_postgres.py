@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models.hospital import Hospital
@@ -32,6 +32,20 @@ def _record(*, hospital_id, query_id, run_id, raw_response):
         raw_response=raw_response,
         measurement_status="SUCCESS",
     )
+
+
+def _cleanup_hospital(session: Session, hospital_id: uuid.UUID) -> None:
+    # The slot points to SovRecord, while Hospital cascades SovRecord before the
+    # slot in ORM dependency order. Remove the referencing rows explicitly.
+    session.execute(
+        delete(MeasurementObservationSlot).where(
+            MeasurementObservationSlot.hospital_id == hospital_id
+        )
+    )
+    hospital = session.get(Hospital, hospital_id)
+    if hospital is not None:
+        session.delete(hospital)
+    session.commit()
 
 
 def test_takeover_discards_late_provider_returns_and_caps_claimed_attempts(pg_engine):
@@ -228,10 +242,7 @@ def test_takeover_discards_late_provider_returns_and_caps_claimed_attempts(pg_en
             )
     finally:
         with Session(pg_engine) as cleanup:
-            hospital = cleanup.get(Hospital, hospital_id)
-            if hospital is not None:
-                cleanup.delete(hospital)
-                cleanup.commit()
+            _cleanup_hospital(cleanup, hospital_id)
 
 
 def test_judgment_retry_reuses_answer_and_settles_each_stage(pg_engine, monkeypatch):
@@ -345,10 +356,7 @@ def test_judgment_retry_reuses_answer_and_settles_each_stage(pg_engine, monkeypa
         assert final.judgment_status == "CONFIRMED"
 
     with Session(pg_engine) as cleanup:
-        hospital = cleanup.get(Hospital, hospital_id)
-        if hospital is not None:
-            cleanup.delete(hospital)
-            cleanup.commit()
+        _cleanup_hospital(cleanup, hospital_id)
 
 
 def test_cost_blocks_do_not_consume_stage_attempts_and_zero_judgment_checks_guard(
@@ -482,7 +490,4 @@ def test_cost_blocks_do_not_consume_stage_attempts_and_zero_judgment_checks_guar
         assert [entry[1] for entry in settlements] == [1, 0]
 
     with Session(pg_engine) as cleanup:
-        hospital = cleanup.get(Hospital, hospital_id)
-        if hospital is not None:
-            cleanup.delete(hospital)
-            cleanup.commit()
+        _cleanup_hospital(cleanup, hospital_id)

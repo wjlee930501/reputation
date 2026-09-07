@@ -364,6 +364,13 @@ export default function DashboardPage() {
   // V0는 한 번만 만든다 — 이미 완료된 병원은 백엔드가 재실행을 거절한다(409).
   // 버튼을 열어두면 눌러본 뒤에야 알게 되므로 미리 잠그고 이유를 보여준다.
   const v0AlreadyDone = Boolean(hospital?.v0_report_done)
+  const v0InProgress = measurementRuns.some((run) => {
+    if (run.run_label !== 'V0 first measurement' || run.status !== 'RUNNING') return false
+    const heartbeatAt = Date.parse(run.updated_at ?? run.started_at ?? '')
+    // 백엔드의 살아 있는 V0 claim(40분)과 같은 경계다. 하드 종료 뒤 남은 오래된
+    // RUNNING 행이 재실행 버튼을 영구히 잠그거나 자동 진행이라고 오해시키지 않는다.
+    return Number.isFinite(heartbeatAt) && Date.now() - heartbeatAt < 40 * 60 * 1000
+  })
   const hasMeasurement = measurementRuns.some(
     (run) => run.status === 'COMPLETED' || run.status === 'PARTIAL',
   )
@@ -710,9 +717,9 @@ export default function DashboardPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               <OperationButton
-                label="초기 진단 보고서 다시 만들기"
+                label={v0InProgress ? '초기 진단 백그라운드 진행 중' : '초기 진단 보고서 다시 만들기'}
                 loading={operationLoading === 'v0'}
-                disabled={v0AlreadyDone}
+                disabled={v0AlreadyDone || v0InProgress}
                 onClick={() => runOperation('v0', 'trigger-v0-report')}
               />
               <OperationButton
@@ -737,6 +744,11 @@ export default function DashboardPage() {
             <p className="mt-3 text-xs text-slate-600">
               초기 진단 보고서는 이미 생성됐습니다. 초기 진단은 병원당 한 번만 만들며, 이후 수치는
               &lsquo;병원 언급률 측정&rsquo;과 월간 보고서로 확인합니다.
+            </p>
+          )}
+          {v0InProgress && !v0AlreadyDone && (
+            <p className="mt-3 text-xs text-slate-600">
+              초기 진단은 시스템이 백그라운드에서 이어서 처리합니다. 기다리지 않고 병원 정보 허브와 나머지 설정을 계속 진행하세요.
             </p>
           )}
           {!canRunSov && (

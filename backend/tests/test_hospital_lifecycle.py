@@ -73,6 +73,11 @@ def test_active_gate_returns_canonical_order():
     )
     assert missing_live_prerequisite_keys(hospital) == [
         "profile_complete",
-        "v0_report_done",
         "site_built",
     ]
+
+
+def test_active_gate_does_not_wait_for_background_v0() -> None:
+    hospital = _complete_hospital(v0_report_done=False)
+
+    assert missing_live_prerequisite_keys(hospital) == []

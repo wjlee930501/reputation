@@ -267,6 +267,8 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   V0_PROVIDER_AUTH_OR_MODEL: '답변 측정 서비스의 인증 또는 모델 설정을 확인해야 합니다.',
   V0_PROVIDER_UNAVAILABLE: '외부 답변 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.',
   V0_JUDGE_FAILED: '측정 답변은 받았지만 병원 언급 여부를 판정하지 못했습니다.',
+  V0_MEASUREMENT_IN_PROGRESS: '초기 진단 측정이 백그라운드에서 이어지고 있습니다. 다른 설정과 공개 운영을 계속할 수 있습니다.',
+  V0_MEASUREMENT_POLICY_DRIFT: '초기 진단 도중 측정 안전 기준이 바뀌어 안전하게 중단했습니다. 기존 측정 근거는 보존되며 현재 배포 기준을 확인해야 합니다.',
   SOV_HIGH_PRIORITY_CAP_EXCEEDED: '이번 측정에 배정된 질문 수가 한도를 넘어 일부 질문을 측정하지 않았습니다.',
   // 콘텐츠 생성·발행
   PROVIDER_TIMEOUT: '콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.',

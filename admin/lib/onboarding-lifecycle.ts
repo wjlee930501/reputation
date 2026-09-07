@@ -196,8 +196,8 @@ export function deriveOnboardingSteps(
       phase: 'onboarding',
       title: '초기 진단 보고서',
       description: readiness?.v0_report_pdf_count === 0
-        ? '초기 AI 답변 노출 진단 보고서 PDF가 아직 없습니다. 월간 보고서가 아니라 초기 진단 PDF까지 만들어야 이 단계가 끝납니다.'
-        : '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다.',
+        ? '시스템이 초기 AI 답변 노출 진단과 PDF 생성을 백그라운드에서 계속합니다. 기다리지 않고 허브·도메인·콘텐츠 설정을 진행할 수 있습니다.'
+        : '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다. 이 작업은 다른 설정과 공개 운영을 막지 않습니다.',
       href: `/hospitals/${hospitalId}/dashboard#v0-measurement-runs`,
       // 단계 설명이 초기 진단 + PDF를 요구하므로 완료 판정도 둘을 본다. 측정만 끝나고
       // PDF 생성이 실패한 병원을 완료로 표시하면 원장 보고 자료가 없는 채로 넘어가고,
@@ -205,6 +205,7 @@ export function deriveOnboardingSteps(
       done: Boolean(hospital?.v0_report_done)
         && readinessCheck(readiness, 'v0_report') !== false
         && readiness?.v0_report_pdf_count !== 0,
+      badge: hospital?.v0_report_done ? undefined : '백그라운드 진행',
     },
     {
       key: 'site',
@@ -218,7 +219,7 @@ export function deriveOnboardingSteps(
       key: 'live',
       phase: 'onboarding',
       title: '공개 운영 시작',
-      description: '기본 플랫폼 주소는 선행 단계 세 가지가 통과하면 자동으로 운영이 시작됩니다. 자기 도메인을 쓰는 병원만 도메인을 입력하고 상태를 확인해 주세요.',
+      description: '기본 플랫폼 주소는 병원 기본 정보와 콘텐츠 허브 준비가 끝나면 자동으로 운영이 시작됩니다. 자기 도메인을 쓰는 병원만 도메인을 입력하고 상태를 확인해 주세요.',
       href: `/hospitals/${hospitalId}/profile#domain-setup`,
       done: Boolean(hospital?.site_live) && readinessCheck(readiness, 'domain') !== false,
     },
@@ -267,7 +268,9 @@ export function deriveOnboardingSteps(
     },
   ]
 
-  const firstIncomplete = definitions.findIndex((item) => !item.done)
+  // V0는 독립 백그라운드 작업이다. 미완료 상태를 진행 표시에 남기되, 다음 운영 작업을
+  // 가리거나 뒤 단계를 잠그지 않는다.
+  const firstIncomplete = definitions.findIndex((item) => !item.done && item.key !== 'v0')
   const steps: OnboardingStep[] = definitions.map((item, index) => ({
     key: item.key,
     index,
@@ -280,6 +283,8 @@ export function deriveOnboardingSteps(
     // 끝낸 자료 처리·운영 기준·스케줄을 다시 '대기'로 되돌려 표시하지 않는다.
     status: item.done
       ? 'completed'
+      : item.key === 'v0'
+        ? 'upcoming'
       : index === firstIncomplete
         ? 'current'
         : item.phase === 'onboarding' && firstIncomplete >= 0 && index > firstIncomplete

@@ -507,6 +507,26 @@ class TestProviderTelemetry:
         assert answer["search_calls"] == 1
         assert answer["answer_model"] == "gpt-5.6-luna-2026-07-01"
 
+    @pytest.mark.asyncio
+    async def test_fetch_answer_does_not_swallow_worker_soft_timeout(self, monkeypatch):
+        async def timed_out(_query):
+            raise sov_engine.SoftTimeLimitExceeded()
+
+        monkeypatch.setattr(sov_engine, "_query_chatgpt", timed_out)
+
+        with pytest.raises(sov_engine.SoftTimeLimitExceeded):
+            await sov_engine.fetch_answer("수원 외과 추천", "chatgpt")
+
+    @pytest.mark.asyncio
+    async def test_judge_answer_does_not_swallow_worker_soft_timeout(self, monkeypatch):
+        async def timed_out(*_args, **_kwargs):
+            raise sov_engine.SoftTimeLimitExceeded()
+
+        monkeypatch.setattr(sov_engine, "_parse_mention", timed_out)
+
+        with pytest.raises(sov_engine.SoftTimeLimitExceeded):
+            await sov_engine.judge_answer("병원", "병원 답변")
+
 
 def test_system_prompt_does_not_instruct_the_model_to_name_hospitals():
     """지시문이 병원명을 시키면, 우리가 세는 대상(병원명 등장)을 우리가 만든 것이다."""

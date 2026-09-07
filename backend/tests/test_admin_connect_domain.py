@@ -458,7 +458,6 @@ async def test_activate_hospital_accepts_apex_address_strategy(monkeypatch):
         item["key"] for item in detail["activation_gate"]["prerequisites"]
     ] == [
         "profile_complete",
-        "v0_report_done",
         "site_built",
     ]
 
@@ -535,7 +534,6 @@ async def test_activate_hospital_subdomain_default_without_custom_domain(monkeyp
     ("missing_key", "overrides", "handoff_state"),
     [
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )
@@ -559,7 +557,6 @@ async def test_activate_blocks_each_authoritative_gate(
     ("missing_key", "overrides", "handoff_state"),
     [
         ("profile_complete", {"profile_complete": False}, HandoffState.HANDOFF_ACCEPTED),
-        ("v0_report_done", {"v0_report_done": False}, HandoffState.HANDOFF_ACCEPTED),
         ("site_built", {"site_built": False}, HandoffState.HANDOFF_ACCEPTED),
     ],
 )

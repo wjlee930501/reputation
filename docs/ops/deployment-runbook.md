@@ -1,10 +1,10 @@
 # 현재 배포와 헬스체크
 
-문서 버전: **2.4** · 갱신일: **2026-09-07 (Asia/Seoul)**
-소스 기준선: **`39dc1f8a98abe9193a8e2202395d2272c370fe8e`**
-구현 상태: **기준선 위 작업 로컬 검증·독립 리뷰 완료. 커밋·운영 전환·배포 전**
+문서 버전: **2.5** · 갱신일: **2026-09-08 (Asia/Seoul)**
+소스 기준선: **`31129d9911910b82c1161829d922a9760fac13a1`**
+구현 상태: **기준선 위 V0 공개 게이트 분리·자동 이어가기 구현 및 검증 중. 운영 배포 전**
 
-이 문서는 현재 작업 코드의 배포 진입점과 운영 구성을 설명한다. `docs/plans`의 Vercel/Supabase 구성은 과거 대체 배포안이다. 마지막으로 완료가 확인된 운영 배포는 [릴리스 기록](../releases/2026-09-07-345a642.md)이며, 이번 변경의 증거는 [감사 후속 구현 기록](../reviews/2026-09-07-purpose-autonomy-efficiency-implementation.md)에 대기 상태로 분리했다.
+이 문서는 현재 작업 코드의 배포 진입점과 운영 구성을 설명한다. `docs/plans`의 Vercel/Supabase 구성은 과거 대체 배포안이다. 마지막으로 완료가 확인된 전체 운영 전환은 [2026-09-07~08 릴리스 기록](../releases/2026-09-07-eb55518-partial.md)에 있다. 현재 기준선 위 V0 공개 게이트 분리·자동 이어가기 변경은 아직 운영에 배포하지 않았다.
 
 ## 운영 구성
 
@@ -32,7 +32,7 @@ make copy-guard
 bash scripts/deploy.sh all
 ```
 
-이번 변경 전까지의 전체 배포 순서는 다음과 같다. 아래 기존 이미지 인증 gate가 배포 스크립트와 복구 작업에 연결된 뒤 그 gate를 포함한 최종 순서를 사용한다.
+전체 배포의 표준 순서는 다음과 같다.
 
 1. 어떤 변경보다 먼저 필수 설정·도메인·secret·저장소·런타임 조건을 검사한다.
 2. 현재 서비스 5개의 리비전을 `.deploy-rollback`에 보관한다.
@@ -43,28 +43,17 @@ bash scripts/deploy.sh all
 7. API, Site, Admin을 배포한다.
 8. 실제 트래픽·리비전과 외부 공개 표면을 별도로 검사한다. 앞선 readiness만으로 이후 프론트엔드까지 검증되었다고 보지 않는다.
 
-이번 변경의 마이그레이션 체인은 `0065_provider_usage` → `0066_content_contracts` → `0067_measurement_slots` → `0068_lead_cost_deferral` → `0069_content_first_publication`이고 expected head는 `0069_content_first_publication`이다. 공급자 시도 원장, 콘텐츠 revision·provenance·이미지 인증, 월간/V0 고정 관측 슬롯, 무료 진단 비용 차단 재개 시각, 최초 공개 시각·주체를 추가한다. `0069`는 남아 있는 `published_at`·`published_by`만 최초 공개 사실로 백필한다. 이전 수동 반려가 이미 지운 과거 값은 추정하지 않고 NULL로 남긴다. 배포 직전 이미지의 expected head, Alembic heads와 운영 DB current head를 다시 읽어 모두 일치시킨다.
+현재 운영 DB의 마이그레이션 체인은 `0065_provider_usage` → `0066_content_contracts` → `0067_measurement_slots` → `0068_lead_cost_deferral` → `0069_content_first_publication`이고 expected head는 `0069_content_first_publication`이다. 공급자 시도 원장, 콘텐츠 revision·provenance·이미지 인증, 월간/V0 고정 관측 슬롯, 무료 진단 비용 차단 재개 시각, 최초 공개 시각·주체를 추가했다. `0069`는 남아 있던 `published_at`·`published_by`만 최초 공개 사실로 백필했다. 이전 수동 반려가 이미 지운 과거 값은 추정하지 않고 NULL로 남겼다. 배포 직전 이미지의 expected head, Alembic heads와 운영 DB current head를 다시 읽어 모두 일치시킨다.
 
-### 이번 API rollout의 기존 공개 콘텐츠 gate
+### 2026-09-07~08 기존 공개 콘텐츠 전환
 
-운영 read-only preflight는 공개 글 115건을 exact ID manifest로 고정했다. AI 검수는 미해결 22건(REVISE 19, UNAVAILABLE 3), AI 검수 레거시 기준 허용 93건(ABSENT 92, PASS 1)이고, FAQ 질문 끝 물음표만 고칠 대상은 3건이다. 이미지 인증은 109건이 새 내용·주제·정책 결합값이 없고 6건은 기존 검수 시각만 있다. 이 6건도 포함해 이미지 115건 모두를 실제 바이트에 묶는다. 상세 운영 ID와 실행 산출물은 추적하지 않는 `/private/tmp/reputation-autonomy-release` 아래에 두며 문서나 로그 요약에 ID를 나열하지 않는다.
+이 일회성 전환은 완료된 운영 이력이며 반복 실행 절차가 아니다. 공개 글 115건을 exact manifest로 고정한 뒤 FAQ 3건을 CAS로 수리하고 본문 22건을 독립 검수했으며, 기존 이미지 115건을 실제 바이트에 묶어 인증했다. 최종 결과는 7개 tenant·공개 글 115건 모두 public safe, 누락·미인증·미해결 0건이었다. 이미지 79건은 기존 바이트를 유지하고 36건은 안전한 바이트로 교체했으며, 배포 후 115건 모두 HTTP 200과 실제 바이트 SHA-256·URL 인증 hash 일치를 확인했다.
 
-순서는 다음과 같이 고정한다. 뒤 단계는 앞 단계의 complete 증거가 없으면 시작하지 않는다.
-
-1. 최종 Backend immutable image를 만든 뒤 기존 5개 서비스 revision을 보관하고 migration expected head `0069_content_first_publication`을 적용한다.
-2. `control` 큐와 새 IndexNow·공급자 사용량 drain task를 소비하는 Worker를 Beat와 API보다 먼저 배포한다.
-3. [FAQ 구두점 복구](../../backend/app/utils/repair_legacy_faq_questions.py)를 dry-run하여 revision·후보 hash에 묶인 exact 3건 plan을 만든다. 같은 plan을 CAS apply해 물음표만 수정하고, 3건 모두 독립 검수 대기 상태인지 확인한다.
-4. [기존 공개 본문 재검수](../../backend/app/services/content_public_review_backfill.py)를 exact 22건 allowlist로 dry-run한 뒤 제한된 batch로 반복한다. 후보·brief·현재 Essence·source snapshot·revision CAS가 일치한 결과만 저장한다. ABSENT 92건과 PASS 1건은 레거시 상태라는 이유만으로 공급자 재검수하지 않는다.
-5. [기존 이미지 인증](../../backend/app/services/content_image_certification.py)을 exact 115건 manifest로 dry-run한 뒤 제한된 batch로 반복한다. 실제 저장 이미지 바이트를 정책 검수하고 content-addressed 불변 사본과 byte-bound 인증을 CAS로 저장한다. 안전하지 않은 이미지는 교체하며, URL에서 만든 가짜 hash나 영구 레거시 허용값을 쓰지 않는다. 공개 GCS 이미지 프록시 URL의 `?v=`가 저장된 인증 내용 hash와 같고 교체 뒤 새 hash로 바뀌는지도 확인한다.
-6. 레거시 이미지 시각 우회가 없는 새 엄격 공개 gate를 exact baseline ID manifest에 대해 read-only로 실행한다. ID 집합에 추가·누락·상태 drift가 없어야 하고, 115건의 허용·차단 사유와 공개 표면이 앞선 수리 결과와 정확히 맞아야 한다. 비공개 기존 행도 일반 생성·발행 경로의 엄격한 gate를 통과해야 한다.
-7. 새 Worker의 7개 큐 canary와 새 정기 복구 task를 확인하고 RedBeat `2026-09-07.2`를 재조정한 뒤 Beat와 production readiness를 실행한다.
-8. 그 뒤에만 API를 배포하고 Site/Admin, 실제 트래픽·revision과 외부 공개 표면을 검증한다.
-
-FAQ·본문·이미지 복구 도구는 로컬 검증을 통과했지만 이 gate의 운영 실행 증거는 아직 없다. 유료 공급자 호출이 포함된 본문·이미지 backfill도 실행하지 않았다. 현재 문서는 배포 허가가 아니며, 최종 단계별 JSON·로그·readiness 결과는 `/private/tmp/reputation-autonomy-release`에서 확인하고 실행 후 검증표에 요약한다.
+마이그레이션 → Worker → 콘텐츠·이미지 전환과 새 strict public gate → RedBeat·Beat·readiness → API·Site·Admin → 공개 HTTP 검증 순서를 사용했다. 상세 결과와 당시 소스·digest·비용 범위는 [2026-09-07~08 운영 전환 기록](../releases/2026-09-07-eb55518-partial.md)에 보존한다. 이후 배포에서 이 backfill을 다시 실행하지 말고 현재 공개 gate를 회귀 검사한다. 상세 운영 ID나 비공개 payload를 문서·로그 요약에 나열하지 않는다.
 
 `backend`는 Backend 3종 배포다. **`api`도 Worker와 Beat를 먼저 함께 갱신하는 경로**이므로 API만 바뀐다고 가정하지 않는다. `worker`, `beat`, `site`, `admin`, `migrate` 개별 대상도 제공한다. 정확한 범위는 스크립트의 마지막 case문을 확인한다.
 
-2026-09-07 배포는 로컬 업로드 지연 때문에 Cloud Build와 digest 기반 rollout을 사용했고 기존 서비스 환경·secret 참조 hash 보존을 별도로 검증했다. 이 실행을 `scripts/deploy.sh`의 기본 Cloud Build 기능으로 오해하지 않는다. 반복 가능한 기본 진입점은 위 스크립트이며 대체 배포도 같은 마이그레이션·Worker/Beat·readiness 순서를 지켜야 한다.
+2026-09-07~08 전환은 로컬 업로드 지연 때문에 Cloud Build와 digest 기반 rollout을 사용했고 기존 서비스 환경·secret 참조 hash 보존을 별도로 검증했다. 이 실행을 `scripts/deploy.sh`의 기본 Cloud Build 기능으로 오해하지 않는다. 반복 가능한 기본 진입점은 위 스크립트이며 대체 배포도 같은 마이그레이션·Worker/Beat·readiness 순서를 지켜야 한다.
 
 ## 검증할 증거
 
@@ -78,8 +67,9 @@ FAQ·본문·이미지 복구 도구는 로컬 검증을 통과했지만 이 gat
 | 병원 공개 표면 | 홈페이지와 대표 글, 이미지 SSR, 정확한 병원·canonical·공개 주소 |
 | 크롤러 표면 | host별 sitemap, robots, llms.txt의 404/503·no-store, 부분 sitemap 금지, 구조화 데이터와 공개 URL 범위 |
 | 복구 | IndexNow intent와 provider usage spool의 1분 drain, retry 상한·중복 억제·정상 무알림 |
-| 공개 본문 | FAQ exact 3건 CAS 수리 뒤 검수 대기, 미해결 exact 22건 독립 재검수 종결, AI 검수 레거시 93건을 과거 상태만으로 재호출하지 않았는지 확인 |
-| 기존 이미지 | 공개 115건 전체의 실제 바이트 재검수, 109건 인증 공백과 6건 검수 시각 전용 상태 해소, 불변 사본·CAS writeback Job/CLI 종결, 인증 hash 기반 프록시 URL 버전 변경 확인 |
+| V0 백그라운드 | V0 미완료 병원의 프로파일·허브·주소 조건에 따른 공개, 같은 run의 짧은 구간 이어가기, 완료 슬롯 비재구매, 만료 RUNNING lease 인수, ACTIVE·PAUSED 상태 보존 |
+| 공개 본문 | 현재 strict public gate, 후보 hash·근거·검수 상태와 공개 API 결과 일치 |
+| 기존 이미지 | 실제 바이트·내용 hash·주제 hash·정책 버전 인증과 프록시 URL 버전 일치 |
 | 로그 | 새 revision의 실제 오류와 작업 실패 여부, control/background queue wait; 조회 시점·범위 기록 |
 
 병원 헬스는 `https://{병원 공개 호스트}/.well-known/reputation-health`다. HTTP 200뿐 아니라 `hospital_id`, `slug`, `canonical_host`, `release`(Cloud Run에서는 `K_REVISION`)가 해당 병원·배포와 맞아야 한다. 기본 주소와 자기 도메인을 모두 사용하는 운영 집합을 대상으로 확인한다.
@@ -88,11 +78,9 @@ FAQ·본문·이미지 복구 도구는 로컬 검증을 통과했지만 이 gat
 
 Worker는 `control,default,content,sov,reports,leadgen,certificates` 7개 큐를 하나의 서비스에서 소비한다. 발행·캐시 복구·자율 복구가 control priority 0으로 들어가고 IndexNow·usage spool은 낮은 우선순위다. control canary를 포함해 큐별 최신 canary가 현재 release를 가리키는지 확인한다. control은 전용 Worker가 아니므로 부하 중 30초 기준을 충족했는지는 queue wait 구조화 로그로 따로 증명한다.
 
-RedBeat `2026-09-07.2`에는 IndexNow retry와 provider usage spool drain이 매 1분 추가된다. 영속 스케줄 재조정 뒤 등록 이름·task route·서명 목적이 새 이미지와 맞는지 확인한다. 정상 drain·복구를 Slack 메시지로 시험하지 말고 DB 실행 상태와 구조화 로그를 사용한다. 배포 전 기존 이미지 인증은 이 주기 작업이 아니라 별도 일회성 Job/CLI로 실행한다. 최종 실패나 사람이 결정할 예외만 [알림 정책](slack-notification-policy.md)에 따라 확인한다.
+RedBeat `2026-09-07.2`에는 IndexNow retry와 provider usage spool drain이 매 1분 추가된다. 영속 스케줄 재조정 뒤 등록 이름·task route·서명 목적이 새 이미지와 맞는지 확인한다. 정상 drain·복구를 Slack 메시지로 시험하지 말고 DB 실행 상태와 구조화 로그를 사용한다. 2026-09-07~08 기존 이미지 인증은 주기 작업이 아니라 완료 후 제거한 일회성 Job/CLI였다. 최종 실패나 사람이 결정할 예외만 [알림 정책](slack-notification-policy.md)에 따라 확인한다.
 
-동결된 Backend 전체 검증은 3,084 passed, 0 failed, 0 skipped, 19 warnings, coverage 83.06%, 98.20초다. `0069` 최초 공개 이력과 인증 hash 기반 이미지 URL cache key까지 포함하며 실제 PostgreSQL·Redis·native PDF, fresh schema와 데이터가 채워진 `0064`에서 `0069`로의 upgrade를 검증했다. Ruff·diff·copy guard도 통과했고 DB 연결 예산은 75/80이다. 독립 검토 결과는 code APPROVE, architecture CLEAR이며 P0/P1은 0건이고, 마지막 이력·이미지 수정의 좁은 결합 리뷰도 APPROVE다.
-
-초기 A01~A17 구현 커밋 `8bc8353`의 Draft PR #82 Linux CI는 9/9 통과했고 Backend job은 4분 33초였다. Admin·Site tests·typecheck·lint·production build, Backend/Admin/Site Docker build, security·Terraform·guard도 이 결과에 포함된다. 로컬에서는 Admin 전체 536/536 tests 뒤 마지막 raw fallback 수정의 관련 19 tests·typecheck, Site 310 tests·typecheck·lint가 통과했다. 후속 `0069`와 이미지 URL cache key 수정까지 합친 최종 결합 CI는 대기다. 이 증거는 운영 migration·backfill·canary·배포 성공을 뜻하지 않는다. 남은 증거는 [후속 구현 기록](../reviews/2026-09-07-purpose-autonomy-efficiency-implementation.md)에 분리한다.
+2026-09-08 운영 전환 runtime `ede3d8f5a8adec849c987d21c1491afef03edbca`의 [PR #86 CI](https://github.com/wjlee930501/reputation/actions/runs/34142628859)는 9/9 통과했다. Backend는 3,095 passed, 0 failed, 0 skipped, 17 warnings, coverage 83.03%였고 Admin·Site 검사와 컨테이너 빌드도 통과했다. 운영에서는 5개 서비스·3개 영속 Job, DB head, 7개 큐 readiness, 공개 115건과 실제 이미지 바이트를 확인했다. 이 완료 범위와 남은 장기 WATCH는 [후속 구현 기록](../reviews/2026-09-07-purpose-autonomy-efficiency-implementation.md)에 분리한다.
 
 ## 롤백과 문서 변경
 
