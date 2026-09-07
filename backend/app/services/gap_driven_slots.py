@@ -98,6 +98,7 @@ class ExistingSlot:
     content_type: ContentType
     #: 격차 타깃이 확정된 슬롯인가 (= 재배정 예산을 한 칸 쓴 슬롯).
     gap_driven: bool = False
+    query_target_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,7 +259,10 @@ def plan_gap_driven_slots(
     done_sequences = {item.sequence_no for item in existing}
     available = [index for index in pool_indexes if plans[index].sequence_no not in done_sequences]
 
+    existing_target_ids = {item.query_target_id for item in existing if item.query_target_id}
     for target in gap_targets:
+        if target.id in existing_target_ids:
+            continue
         if used >= budget or not available:
             break
         placed = _place_target(

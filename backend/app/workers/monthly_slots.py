@@ -72,6 +72,7 @@ def create_next_month_slots_for_schedule(
             sequence_no=row.sequence_no,
             content_type=row.content_type,
             gap_driven=row.query_target_id is not None,
+            query_target_id=row.query_target_id,
         )
         for row in existing_rows
     ]

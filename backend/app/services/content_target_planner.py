@@ -100,6 +100,7 @@ def prepare_automatic_content_brief_sync(
     planning_reason = previous_brief.get(PLANNING_REASON_KEY)
     if planning_reason:
         brief[PLANNING_REASON_KEY] = planning_reason
+    brief["operator_notes"] = list(previous_brief.get("operator_notes") or [])
     item.content_brief = brief
     item.brief_status = BRIEF_STATUS_APPROVED
     item.brief_approved_at = datetime.now(timezone.utc)
@@ -174,21 +175,16 @@ def _choose_target(db: Any, *, item: ContentItem, hospital_id: Any) -> AIQueryTa
     )
     gap_rank = _mention_gap_rank(db, hospital_id=hospital_id)
     slot_month = slot_date.strftime("%Y-%m")
-    # 정렬 순서가 곧 제품 정책이다.
-    #   1) 아직 콘텐츠에 연결되지 않은 노출 액션이 열려 있는 타깃
-    #   2) 미언급(MISSING_MENTION) → 낮은 언급률(LOW_MENTION_SHARE) → 격차 없음
-    #   3) 측정 우선순위(HIGH/NORMAL/LOW)
-    #   4) 이 슬롯 유형이 실제로 답할 수 있는 질문인가(유형 친화도)
-    #   5) 이번 달 사용 횟수 — 동률 안에서 라운드로빈해 한 질문에 몰리지 않게
-    # 4를 5보다 앞에 둔 것이 이번 변경의 핵심이다. 예전에는 사용 횟수가 먼저라
-    # 유형과 전혀 맞지 않는 타깃이 먼저 소진됐다.
+    # 적합한 질문 안에서는 이번 달 아직 다루지 않은 질문부터 답한다.
+    # 격차/우선순위를 사용 횟수보다 먼저 두면 한 HIGH 질문을 모든 글에 반복한다.
     return min(
         targets,
         key=lambda target: (
+            _content_type_affinity(target, item.content_type),
+            usage[str(target.id)] > 0,
             0 if str(target.id) in action_target_ids else 1,
             gap_rank.get(str(target.id), NO_MENTION_GAP_RANK),
             PRIORITY_RANK.get(str(target.priority or "NORMAL").upper(), 9),
-            _content_type_affinity(target, item.content_type),
             usage[str(target.id)],
             0 if target.target_month == slot_month else 1,
             str(target.name or ""),

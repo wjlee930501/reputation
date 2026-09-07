@@ -334,3 +334,15 @@ def test_rerun_keeps_already_stored_slot_types_and_targets():
         p.query_target_id for p in second if p.query_target_id and p.sequence_no not in stored
     }
     assert len(new_targets) == len([p for p in second if p.query_target_id])
+
+
+def test_partial_calendar_repair_does_not_reassign_existing_question():
+    targets = _local_targets(10)
+    slots = _slots("PLAN_12")
+    first = plan_gap_driven_slots(slots, plan="PLAN_12", gap_targets=targets)
+    stored = next(p for p in first if p.query_target_id)
+    repaired = plan_gap_driven_slots(slots, plan="PLAN_12", gap_targets=targets, existing=[
+        ExistingSlot(sequence_no=stored.sequence_no, content_type=stored.content_type,
+                     gap_driven=True, query_target_id=stored.query_target_id)
+    ])
+    assert all(p.query_target_id != stored.query_target_id for p in repaired)

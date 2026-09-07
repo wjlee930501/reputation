@@ -244,3 +244,28 @@ def test_existing_approved_brief_receives_current_planned_publish_date() -> None
 
     assert result["planned_publish_date"] == "2026-07-31"
     assert "planned_publish_date" not in item.content_brief
+
+
+def test_used_high_priority_gap_does_not_repeat_while_fitting_question_is_uncovered():
+    used = _target(name="유방초음파 검사 비용", treatment="유방초음파", priority="HIGH")
+    fresh = _target(name="위내시경 검사 준비", treatment="위내시경", priority="NORMAL")
+    chosen = _choose(
+        _PlannerDB(targets=[used, fresh], used_ids=[used.id] * 3,
+                   gaps=[(used.id, "MISSING_MENTION")], action_ids=[used.id]),
+        ContentType.TREATMENT, uuid.uuid4(),
+    )
+    assert chosen is fresh
+
+
+def test_replanned_brief_preserves_operator_recovery_feedback(monkeypatch):
+    from app.services import content_target_planner as planner
+    monkeypatch.setattr(planner, "_load_target", lambda *args: None)
+    monkeypatch.setattr(planner, "_choose_target", lambda *args, **kwargs: None)
+    monkeypatch.setattr(planner, "_load_or_choose_action", lambda *args, **kwargs: None)
+    monkeypatch.setattr(planner, "build_content_brief", lambda **kwargs: {"operator_notes": []})
+    item = SimpleNamespace(brief_status=None, content_brief={"operator_notes": ["무료 표현 금지"]},
+                           query_target_id=None, scheduled_date=date(2026, 9, 7))
+    brief = planner.prepare_automatic_content_brief_sync(
+        None, item=item, hospital=SimpleNamespace(id=uuid.uuid4()), philosophy=SimpleNamespace(),
+    )
+    assert brief["operator_notes"] == ["무료 표현 금지"]
