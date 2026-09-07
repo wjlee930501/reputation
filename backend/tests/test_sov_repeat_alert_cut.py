@@ -403,7 +403,10 @@ def test_partial_monthly_run_rearms_for_failed_cell_retry():
 
     db = _DB()
     run = tasks._ensure_monthly_sov_operation_run(
-        db, SimpleNamespace(id=uuid.uuid4()), "2026-08", datetime.now(UTC)
+        db,
+        SimpleNamespace(id=uuid.uuid4()),
+        "2026-08",
+        datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
     )
 
     assert run is existing
@@ -535,7 +538,10 @@ def test_cost_guard_failed_run_does_not_rearm_when_budget_insufficient(monkeypat
     monkeypatch.setattr(tasks, "_monthly_sov_pending_budget_fits", lambda *_args: False)
 
     run = tasks._ensure_monthly_sov_operation_run(
-        _DB(), SimpleNamespace(id=uuid.uuid4()), "2026-08", datetime.now(UTC)
+        _DB(),
+        SimpleNamespace(id=uuid.uuid4()),
+        "2026-08",
+        datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
     )
 
     assert run is None
@@ -558,7 +564,10 @@ def test_cost_guard_failed_run_rearms_when_remaining_units_cover_pending(monkeyp
     monkeypatch.setattr(tasks, "_monthly_sov_pending_budget_fits", lambda *_args: True)
 
     run = tasks._ensure_monthly_sov_operation_run(
-        _DB(), SimpleNamespace(id=uuid.uuid4()), "2026-08", datetime.now(UTC)
+        _DB(),
+        SimpleNamespace(id=uuid.uuid4()),
+        "2026-08",
+        datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
     )
 
     assert run is existing
