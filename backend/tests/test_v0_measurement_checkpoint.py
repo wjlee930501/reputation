@@ -35,8 +35,8 @@ class _Result:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
 
-    def scalars(self) -> "_Result":
-        return self
+    def scalars(self) -> "_ScalarResult":
+        return _ScalarResult(self._rows)
 
     def __iter__(self):
         return iter(self._rows)
@@ -51,6 +51,22 @@ class _Result:
         return self._rows[0] if self._rows else None
 
     def scalar_one_or_none(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+
+class _ScalarResult:
+    """SQLAlchemy ScalarResult subset; deliberately excludes Result-only methods."""
+
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def all(self) -> list[Any]:
+        return list(self._rows)
+
+    def one_or_none(self) -> Any:
         return self._rows[0] if self._rows else None
 
 

@@ -198,7 +198,7 @@ def find_resumable_v0_measurement_run(
             .limit(1)
         )
         .scalars()
-        .scalar_one_or_none()
+        .one_or_none()
     )
     if candidates is None or _already_consumed_by_report(db, candidates):
         return None

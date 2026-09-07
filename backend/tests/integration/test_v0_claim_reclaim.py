@@ -9,6 +9,7 @@ STEP4(콘텐츠 허브 준비)도 같은 태스크에서 큐잉되므로 함께 
 상태 컬럼만으로는 "진행 중"과 "죽은 채 방치됨"을 구분할 수 없어, 측정 실행을
 하트비트로 쓴다. 그 판정이 실제 SQL에서 맞는지가 이 테스트의 대상이다.
 """
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -17,6 +18,10 @@ from sqlalchemy.orm import Session
 
 from app.services.v0_claim import V0_CLAIM_MAX_AGE_SECONDS
 from app.workers.tasks import _v0_claim_is_alive
+from app.workers.v0_checkpoint import (
+    V0_MEASUREMENT_SOURCE,
+    find_resumable_v0_measurement_run,
+)
 
 
 def _seed_hospital(conn) -> uuid.UUID:
@@ -85,3 +90,39 @@ def test_another_hospitals_running_measurement_does_not_leak(pg_conn):
 
     with Session(bind=pg_conn, join_transaction_mode="create_savepoint") as session:
         assert _v0_claim_is_alive(session, hospital_id) is False
+
+
+def test_same_lineage_incomplete_measurement_is_resumable_with_real_scalar_result(pg_conn):
+    """The production Session.scalars() path returns ScalarResult, not Result."""
+    hospital_id = _seed_hospital(pg_conn)
+    operation_run_id = uuid.uuid4()
+    measurement_run_id = uuid.uuid4()
+    pg_conn.execute(
+        text(
+            "INSERT INTO measurement_runs "
+            "(id, hospital_id, run_label, status, config, started_at) "
+            "VALUES (:id, :hospital_id, 'V0 first measurement', 'RUNNING', "
+            "CAST(:config AS jsonb), :started_at)"
+        ),
+        {
+            "id": measurement_run_id,
+            "hospital_id": hospital_id,
+            "config": json.dumps(
+                {
+                    "source": V0_MEASUREMENT_SOURCE,
+                    "operation_run_id": str(operation_run_id),
+                }
+            ),
+            "started_at": datetime.now(timezone.utc) - timedelta(minutes=1),
+        },
+    )
+
+    with Session(bind=pg_conn, join_transaction_mode="create_savepoint") as session:
+        resumed = find_resumable_v0_measurement_run(
+            session,
+            hospital_id,
+            operation_run_id=operation_run_id,
+        )
+
+    assert resumed is not None
+    assert resumed.id == measurement_run_id
