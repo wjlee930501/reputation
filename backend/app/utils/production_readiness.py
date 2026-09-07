@@ -153,11 +153,13 @@ def _workflow_facts() -> dict[str, bool]:
     import app.workers.canary_tasks  # noqa: F401, PLC0415
     import app.workers.content_backlog_recovery  # noqa: F401, PLC0415
     import app.workers.domain_certificate_tasks  # noqa: F401, PLC0415
+    import app.workers.indexnow_retry  # noqa: F401, PLC0415
     import app.workers.lead_diagnosis_tasks  # noqa: F401, PLC0415
     import app.workers.milestone_event_tasks  # noqa: F401, PLC0415
     import app.workers.monthly_artifact_reconciliation  # noqa: F401, PLC0415
     import app.workers.naver_sync  # noqa: F401, PLC0415
     import app.workers.notification_tasks  # noqa: F401, PLC0415
+    import app.workers.provider_usage_recovery  # noqa: F401, PLC0415
     import app.workers.tasks  # noqa: F401, PLC0415
 
     registered = set(celery_app.tasks)
