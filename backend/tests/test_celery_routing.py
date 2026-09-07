@@ -11,7 +11,11 @@ import importlib
 import re
 from pathlib import Path
 
-from app.core.celery_app import REDBEAT_SCHEDULE_VERSION, celery_app
+from app.core.celery_app import (
+    REDBEAT_SCHEDULE_VERSION,
+    ROUTED_TASK_PRIORITIES,
+    celery_app,
+)
 from app.workers.dispatch_envelope import PURPOSE_HEADER, expected_purpose
 
 _ENTRYPOINT = Path(__file__).resolve().parents[1] / "docker-entrypoint.sh"
@@ -87,6 +91,16 @@ def test_redis_priority_contract_puts_control_before_background_recovery():
     assert routes["app.workers.autonomous_recovery.reconcile"]["priority"] == 0
     assert routes["app.workers.indexnow_retry.drain"]["priority"] == 9
     assert routes["app.workers.provider_usage_recovery.drain"]["priority"] == 9
+
+
+def test_routed_priority_is_bound_to_registered_tasks_before_apply_async():
+    """Task.apply_async의 기본 priority가 route priority를 덮지 않아야 한다."""
+    for module_name in celery_app.conf.include:
+        importlib.import_module(module_name)
+
+    for task_name, priority in ROUTED_TASK_PRIORITIES.items():
+        assert celery_app.conf.task_routes[task_name]["priority"] == priority
+        assert celery_app.tasks[task_name].priority == priority
 
 
 def test_every_registered_worker_task_has_a_task_routes_entry():

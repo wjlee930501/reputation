@@ -24,6 +24,21 @@ REDBEAT_SCHEDULE_VERSION = "2026-09-07.2"
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
 
+# ``Task.apply_async`` copies ``task_default_priority`` onto the registered Task
+# before routing. Celery's router preserves that non-null value, so a priority
+# present only in ``task_routes`` does not override the default. Keep the small
+# exceptional set here and also bind it onto each registered Task via
+# ``task_annotations`` so Beat/Task.apply_async and send_task publish the same
+# wire priority.
+ROUTED_TASK_PRIORITIES = {
+    "app.workers.tasks.morning_content_auto_publish": 0,
+    "app.workers.tasks.retry_site_revalidation": 0,
+    "app.workers.autonomous_recovery.reconcile": 0,
+    "app.workers.canary_tasks.canary_control": 0,
+    "app.workers.indexnow_retry.drain": 9,
+    "app.workers.provider_usage_recovery.drain": 9,
+}
+
 if settings.SENTRY_DSN:
     import sentry_sdk
     from sentry_sdk.integrations.celery import CeleryIntegration
@@ -124,6 +139,10 @@ celery_app.conf.update(
     broker_transport_options={"queue_order_strategy": "priority"},
     task_queue_max_priority=9,
     task_default_priority=4,
+    task_annotations={
+        task_name: {"priority": priority}
+        for task_name, priority in ROUTED_TASK_PRIORITIES.items()
+    },
     # Beat 신뢰성 (Cloud Run 롤아웃 중 구/신 beat가 잠시 공존):
     # RedBeat은 Redis 분산 락으로 단일 dispatcher를 보장하고, 스케줄 상태를
     # Redis에 보존해 재시작 후에도 last-run 정보가 유지된다(중복/누락 방지).
@@ -147,7 +166,12 @@ celery_app.conf.update(
         "app.workers.tasks.process_source_asset_task": {"queue": "default"},
         "app.workers.tasks.auto_review_essence_snapshot": {"queue": "content"},
         "app.workers.tasks.reconcile_essence_snapshots": {"queue": "default"},
-        "app.workers.tasks.morning_content_auto_publish": {"queue": "control", "priority": 0},
+        "app.workers.tasks.morning_content_auto_publish": {
+            "queue": "control",
+            "priority": ROUTED_TASK_PRIORITIES[
+                "app.workers.tasks.morning_content_auto_publish"
+            ],
+        },
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
         "app.workers.tasks.run_monthly_sov_measurement": {"queue": "sov"},
@@ -156,7 +180,12 @@ celery_app.conf.update(
         "app.workers.tasks.generate_monthly_report_for_hospital": {"queue": "reports"},
         "app.workers.tasks.trigger_v0_report": {"queue": "reports"},
         "app.workers.tasks.build_aeo_site": {"queue": "default"},
-        "app.workers.tasks.retry_site_revalidation": {"queue": "control", "priority": 0},
+        "app.workers.tasks.retry_site_revalidation": {
+            "queue": "control",
+            "priority": ROUTED_TASK_PRIORITIES[
+                "app.workers.tasks.retry_site_revalidation"
+            ],
+        },
         "app.workers.tasks.monthly_slot_generation": {"queue": "default"},
         "app.workers.tasks.backfill_indexnow": {"queue": "default"},
         # 라우팅 누락 시 기본 "celery" 큐로 떨어지는데 배포 워커는 명시한 큐만
@@ -179,9 +208,22 @@ celery_app.conf.update(
         "app.workers.notification_tasks.dispatch_notification_outbox": {"queue": "default"},
         "app.workers.milestone_event_tasks.project_milestone_events": {"queue": "default"},
         "app.workers.monthly_artifact_reconciliation.reconcile": {"queue": "reports"},
-        "app.workers.autonomous_recovery.reconcile": {"queue": "control", "priority": 0},
-        "app.workers.indexnow_retry.drain": {"queue": "default", "priority": 9},
-        "app.workers.provider_usage_recovery.drain": {"queue": "default", "priority": 9},
+        "app.workers.autonomous_recovery.reconcile": {
+            "queue": "control",
+            "priority": ROUTED_TASK_PRIORITIES[
+                "app.workers.autonomous_recovery.reconcile"
+            ],
+        },
+        "app.workers.indexnow_retry.drain": {
+            "queue": "default",
+            "priority": ROUTED_TASK_PRIORITIES["app.workers.indexnow_retry.drain"],
+        },
+        "app.workers.provider_usage_recovery.drain": {
+            "queue": "default",
+            "priority": ROUTED_TASK_PRIORITIES[
+                "app.workers.provider_usage_recovery.drain"
+            ],
+        },
         "app.workers.content_backlog_recovery.reconcile": {"queue": "default"},
         "app.workers.domain_certificate_tasks.provision_domain_certificate": {
             "queue": "certificates"
@@ -192,7 +234,12 @@ celery_app.conf.update(
         "app.workers.canary_tasks.canary_reports": {"queue": "reports"},
         "app.workers.canary_tasks.canary_leadgen": {"queue": "leadgen"},
         "app.workers.canary_tasks.canary_certificates": {"queue": "certificates"},
-        "app.workers.canary_tasks.canary_control": {"queue": "control", "priority": 0},
+        "app.workers.canary_tasks.canary_control": {
+            "queue": "control",
+            "priority": ROUTED_TASK_PRIORITIES[
+                "app.workers.canary_tasks.canary_control"
+            ],
+        },
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성
