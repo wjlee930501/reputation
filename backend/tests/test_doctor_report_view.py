@@ -1097,3 +1097,11 @@ def test_late_recovery_is_disclosed_without_backdating_monthly_results():
     assert view['tiles'][0]['value'] == '12편 중 7편'
     assert '기간 전 공개 1편' in view['tiles'][0]['hint']
     assert '마감 후 보충 완료 4편' in view['tiles'][0]['hint']
+
+
+def test_answer_table_markers_do_not_leak_into_doctor_excerpt():
+    raw = "장편한외과의원 안내\n| 항목 | 설명 |\n|---|---|\n| 검사 | 상담 후 결정 |"
+    view = _view(records=[_record(mentioned=True, raw=raw)])
+    excerpt = view['evidence']['found']['excerpt']
+    assert '|' not in excerpt and '---' not in excerpt
+    assert '항목' in excerpt and '상담 후 결정' in excerpt

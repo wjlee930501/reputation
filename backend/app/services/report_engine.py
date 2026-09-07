@@ -576,6 +576,8 @@ def _excerpt_around(text: str, needle: str, *, width: int = DOCTOR_EXCERPT_CHARS
     body = re.sub(r"!?\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", text or "")
     body = re.sub(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+)", "", body)
     body = re.sub(r"(\*\*|__|~~|`)", "", body)
+    body = re.sub(r"(?m)^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$", "", body)
+    body = re.sub(r"\s*\|\s*", " · ", body)
     body = re.sub(r"(?m)^\s*[-*_]{3,}\s*$", "", body)
     # Decorative emoji force a custom CID encoding in the production font stack,
     # corrupting text extraction for the entire Korean font. Keep answer words.
